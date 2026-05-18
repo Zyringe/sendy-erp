@@ -82,7 +82,9 @@ def test_d1(tmp_db, tmp_path):
     conn.close()
 
 
-def test_dump_d2_no_writes(tmp_db, tmp_path):
+def test_dump_d2_no_writes(tmp_db, tmp_path, monkeypatch):
+    # write the dump into tmp_path, not the real data/exports dir
+    monkeypatch.setattr(uc, "EXPORTS", tmp_path)
     conn = sqlite3.connect(tmp_db)
     _p(conn, 905101, "ตัว")
     conn.commit()
@@ -94,8 +96,7 @@ def test_dump_d2_no_writes(tmp_db, tmp_path):
     assert conn.execute("SELECT unit_type FROM products WHERE id=905101"
                         ).fetchone()[0] == "ตัว"          # untouched
     conn.close()
-    assert os.path.exists(os.path.join(REPO, "data", "exports",
-                                       "bucket_D2_fill_N.csv"))
+    assert (tmp_path / "bucket_D2_fill_N.csv").exists()
 
 
 def test_d1_dry_run_writes_nothing(tmp_db, tmp_path):
