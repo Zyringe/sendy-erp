@@ -1,0 +1,28 @@
+{
+  "_doc": "BSN unit acronym -> full Thai. Confirmed by Put 2026-05-18 (HIGH+MED applied; UNKNOWN excluded -> apply script skips conversion for these and lists them). Source: data/exports/acronym_map_review.csv review.",
+  "_unknown_skip": ["ปน", "กส", "บล"],
+  "map": {
+    "กล": "กล่อง",
+    "อน": "อัน",
+    "ผน": "แผ่น",
+    "หล": "โหล",
+    "ชด": "ชุด",
+    "ผง": "แผง",
+    "มน": "ม้วน",
+    "ลง": "ลัง",
+    "ซง": "ซอง",
+    "โหล": "โหล",
+    "กก": "กิโลกรัม",
+    "ซอง": "ซอง",
+    "ตว": "ตัว",
+    "แพ": "แพ็ค",
+    "ลก": "ลูก",
+    "อัน": "อัน",
+    "ขด": "ขีด",
+    "ถุ": "ถุง",
+    "ชุด": "ชุด",
+    "ลัง": "ลัง",
+    "กน": "ก้อน",
+    "หด": "หลอด"
+  }
+}
