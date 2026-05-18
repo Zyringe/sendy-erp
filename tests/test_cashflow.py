@@ -60,6 +60,19 @@ def _ins_paid(conn, re_id, iv_no, amount):
     )
 
 
+def _ins_sr(conn, sr_no, ref_invoice, customer, customer_code, date_iso, net,
+            line=1, vat_type=1):
+    """Sales-return (credit-note) line, mirrors test_payments_alloc._ins_sr."""
+    conn.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, ref_invoice, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (date_iso, f"{sr_no}-{line}", sr_no, ref_invoice, customer,
+         customer_code, 1, 'ตัว', net, vat_type, net, net),
+    )
+
+
 def _by_month(rows):
     return {r['month']: r for r in rows}
 
@@ -353,11 +366,13 @@ def test_cash_in_reconciles_with_payments_alloc(empty_db_conn):
 def test_combined_dataset_full_reconciliation(empty_db_conn):
     """Combined pure-legacy + mixed(real+NULL) + all-real dataset.
 
-    Asserts:
+    Asserts (credit-note-aware identity):
       - Σ cash_in_by_month == Σ invoice_settlement collected (฿0.01)
-      - Σ billed == Σ collected + Σ outstanding (to the cent; outstanding
-        includes genuine negatives from overpaid)
-      - Σ overpaid_excess == Σ max(0, collected - billed)
+      - Σ billed - Σ credit_notes - Σ collected == Σ outstanding (to the
+        cent; outstanding includes genuine negatives from overpaid)
+      - Σ overpaid_excess == Σ max(0, collected - net_owed)
+      - this fixture has no SR rows so Σ credit_notes == 0 and the identity
+        collapses back to the legacy billed==collected+outstanding form
     """
     c = empty_db_conn
 
@@ -392,21 +407,29 @@ def test_combined_dataset_full_reconciliation(empty_db_conn):
     c.commit()
 
     settle = pa.invoice_settlement(conn=c)
-    total_billed      = round(sum(r['billed']      for r in settle), 2)
-    total_collected   = round(sum(r['collected']   for r in settle), 2)
-    total_outstanding = round(sum(r['outstanding'] for r in settle), 2)
-    total_overpaid    = round(sum(max(0.0, r['collected'] - r['billed'])
-                                  for r in settle), 2)
+    total_billed       = round(sum(r['billed']       for r in settle), 2)
+    total_credit_notes = round(sum(r['credit_notes'] for r in settle), 2)
+    total_collected    = round(sum(r['collected']    for r in settle), 2)
+    total_outstanding  = round(sum(r['outstanding']  for r in settle), 2)
+    total_overpaid     = round(sum(max(0.0, r['collected'] - r['net_owed'])
+                                   for r in settle), 2)
 
     total_cash_in = round(
         sum(r['cash_in'] for r in cf.cash_in_by_month(conn=c)), 2)
 
-    # cash_in ties to collected
+    # cash_in ties to collected (credit notes are NOT cash)
     assert abs(total_cash_in - total_collected) < 0.01, (
         f"cash_in={total_cash_in:.2f} "
         f"!= collected={total_collected:.2f}")
 
-    # accounting identity to the cent (outstanding includes negatives)
+    # credit-note-aware accounting identity to the cent
+    # (outstanding includes negatives from overpaid)
+    assert abs(total_billed - total_credit_notes
+               - total_collected - total_outstanding) < 0.01
+
+    # this fixture has no SR rows
+    assert total_credit_notes == pytest.approx(0.0)
+    # with cn==0 the identity collapses to the legacy form
     assert abs(total_billed
                - (total_collected + total_outstanding)) < 0.01
 
@@ -418,3 +441,62 @@ def test_combined_dataset_full_reconciliation(empty_db_conn):
     assert total_outstanding == pytest.approx(400.0)
     # overpaid excess only from CMB-OP = 200
     assert total_overpaid == pytest.approx(200.0)
+
+
+def test_credit_note_aware_identity_and_cash_unaffected_by_sr(empty_db_conn):
+    """Combined identity with real SR rows:
+      Σ billed - Σ credit_notes - Σ collected == Σ outstanding
+    and cash_in is UNAFFECTED by credit notes (a credit note is not cash).
+    """
+    c = empty_db_conn
+
+    # IV-A: 1000 billed, SR 300, payment 700 → fully paid
+    _ins_sale(c, 'CID-A', 'ACME', 'C01', '2026-01-05', 1000)
+    _ins_sr(c, 'SR-CID-A', 'CID-A', 'ACME', 'C01', '2026-01-15', 300)
+    r_a = _ins_receipt(c, 'RE-CID-A', 'ACME', '2026-02-01', total=700)
+    _ins_paid(c, r_a, 'CID-A', 700)
+
+    # IV-B: 800 billed, SR 800 → fully credited, no cash
+    _ins_sale(c, 'CID-B', 'SHOP', 'C02', '2026-01-10', 800)
+    _ins_sr(c, 'SR-CID-B', 'CID-B', 'SHOP', 'C02', '2026-01-20', 800)
+
+    # IV-C: 500 billed, no SR, no payment → outstanding 500
+    _ins_sale(c, 'CID-C', 'SHOP', 'C02', '2026-01-25', 500)
+
+    # SR with NULL ref — unattributable, must not net anywhere
+    _ins_sr(c, 'SR-CID-X', None, 'SHOP', 'C02', '2026-01-28', 999)
+
+    c.commit()
+
+    settle = pa.invoice_settlement(conn=c)
+    total_billed       = round(sum(r['billed']       for r in settle), 2)
+    total_credit_notes = round(sum(r['credit_notes'] for r in settle), 2)
+    total_collected    = round(sum(r['collected']    for r in settle), 2)
+    total_outstanding  = round(sum(r['outstanding']  for r in settle), 2)
+
+    total_cash_in = round(
+        sum(r['cash_in'] for r in cf.cash_in_by_month(conn=c)), 2)
+
+    # billed only from real IVs (SR excluded from inv CTE)
+    assert total_billed == pytest.approx(2300.0)        # 1000+800+500
+    assert total_credit_notes == pytest.approx(1100.0)  # 300+800 (NULL ref dropped)
+    assert total_collected == pytest.approx(700.0)
+    # outstanding: A=0, B=0, C=500 → 500
+    assert total_outstanding == pytest.approx(500.0)
+
+    # credit-note-aware identity holds exactly
+    assert abs(total_billed - total_credit_notes
+               - total_collected - total_outstanding) < 0.01
+
+    # cash_in is unaffected by SR — only the real 700 receipt is cash
+    assert total_cash_in == pytest.approx(700.0)
+    assert abs(total_cash_in - total_collected) < 0.01
+
+    # ar_aging exposes total_credit_notes and stays consistent
+    ag = cf.ar_aging(as_of='2026-12-31', conn=c)
+    assert ag['total_credit_notes'] == pytest.approx(1100.0)
+    assert ag['total_billed'] == pytest.approx(2300.0)
+    assert ag['total_collected'] == pytest.approx(700.0)
+    assert ag['total_outstanding'] == pytest.approx(500.0)
+    assert abs(ag['total_billed'] - ag['total_credit_notes']
+               - ag['total_collected'] - ag['total_outstanding']) < 0.01

@@ -14,6 +14,14 @@ REUSE RULE — do NOT re-implement reconciliation here:
     so it shares the exact same per-invoice attribution rule. This keeps
     Σ cash_in == Σ invoice_settlement().collected (within float noise).
 
+CREDIT NOTES ARE NOT CASH:
+  Credit-note (SR) netting lives entirely in payments_alloc — it reduces
+  net_owed / outstanding but a credit note was never cash received.
+  cash_in_by_month() and payments_alloc.cash_in_rows() are therefore
+  UNCHANGED by credit notes: they still report only actual receipts, and
+  Σ cash_in == Σ collected continues to hold. Only ar_aging() surfaces
+  credit notes (via total_credit_notes) since it reports AR balances.
+
 LEGACY-NULL-AMOUNT RULE (same as payments_alloc.py — real wins over NULL):
   Rows imported before migration 058 have paid_invoices.amount IS NULL.
   Those rows mean "linked but amount unknown". Per invoice:
@@ -143,13 +151,17 @@ def ar_aging(as_of: Optional[str] = None,
             {'label':'61-90', 'from':61, 'to':90,  'amount':float, 'count':int},
             {'label':'90+',   'from':91, 'to':None, 'amount':float, 'count':int},
         ],
-        'total_outstanding': float,
-        'total_billed':      float,
-        'total_collected':   float,
+        'total_outstanding':   float,
+        'total_billed':        float,
+        'total_credit_notes':  float,
+        'total_collected':     float,
       }
 
-    RECONCILE IDENTITY:
-      total_billed == total_collected + total_outstanding (within ฿0.01).
+    RECONCILE IDENTITY (credit-note-aware):
+      total_billed - total_credit_notes - total_collected
+          == total_outstanding   (within ฿0.01).
+      With no SR rows total_credit_notes == 0 and this collapses to the
+      legacy form total_billed == total_collected + total_outstanding.
     """
     _EPS = 0.005
     as_of_str = as_of or _today_iso()
@@ -187,16 +199,18 @@ def ar_aging(as_of: Optional[str] = None,
         b['amount'] = round(b['amount'] + inv['outstanding'], 2)
         b['count'] += 1
 
-    total_outstanding = round(sum(b['amount'] for b in buckets), 2)
-    total_billed      = round(sum(r['billed']    for r in rows), 2)
-    total_collected   = round(sum(r['collected'] for r in rows), 2)
+    total_outstanding   = round(sum(b['amount'] for b in buckets), 2)
+    total_billed        = round(sum(r['billed']       for r in rows), 2)
+    total_credit_notes  = round(sum(r['credit_notes'] for r in rows), 2)
+    total_collected     = round(sum(r['collected']    for r in rows), 2)
 
     return {
-        'as_of':             as_of_str,
-        'buckets':           buckets,
-        'total_outstanding': total_outstanding,
-        'total_billed':      total_billed,
-        'total_collected':   total_collected,
+        'as_of':              as_of_str,
+        'buckets':            buckets,
+        'total_outstanding':  total_outstanding,
+        'total_billed':       total_billed,
+        'total_credit_notes': total_credit_notes,
+        'total_collected':    total_collected,
     }
 
 

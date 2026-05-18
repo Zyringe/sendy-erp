@@ -34,6 +34,26 @@ LEGACY-NULL-AMOUNT RULE (real amounts win over legacy NULLs):
   payment that happens to coexist with a legacy NULL link no longer
   silently inflates to fully-paid.
 
+CREDIT-NOTE (SR) NETTING:
+  Sales-return rows (sales_transactions.doc_base LIKE 'SR%') carry a
+  positive `net` (the credit-note value) and a `ref_invoice` pointing at
+  the ORIGINAL invoice's doc_base. They are NOT billable invoices on their
+  own (the `inv` CTE already excludes 'SR%'), but they reduce what the
+  customer owes on the referenced invoice:
+
+      net_owed = round(billed - credit_notes, 2)
+
+  Settlement is measured against net_owed, NOT billed:
+    • real-amount invoices  → collected = Σ real amounts
+    • pure-legacy invoices  → collected = net_owed   (a pre-058 NULL link
+      means "this invoice is settled"; with a credit note that means the
+      *post-credit* balance is settled, so collected = net_owed, not billed)
+    • outstanding = round(net_owed - collected, 2)
+
+  SR rows with ref_invoice NULL or '' are unattributable and netted
+  against nothing (see unattributable_sr_count()). A credit note whose
+  ref_invoice matches no billable invoice simply has no invoice to reduce.
+
 Python 3.9 — Optional[...] not `X | None`.
 """
 from __future__ import annotations
@@ -130,6 +150,15 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
             WHERE {' AND '.join(sale_conds)}
             GROUP BY st.doc_base
         ),
+        cn AS (
+            SELECT ref_invoice                AS iv_no,
+                   ROUND(SUM(net), 2)         AS credit_notes
+            FROM sales_transactions
+            WHERE doc_base LIKE 'SR%'
+              AND ref_invoice IS NOT NULL
+              AND ref_invoice <> ''
+            GROUP BY ref_invoice
+        ),
         pay AS (
             SELECT pi.iv_no                                  AS iv_no,
                    SUM(CASE WHEN pi.amount IS NOT NULL
@@ -149,11 +178,13 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
                inv.customer_code,
                inv.invoice_date,
                inv.billed,
+               COALESCE(cn.credit_notes, 0.0)    AS credit_notes,
                COALESCE(pay.real_collected, 0.0) AS real_collected,
                COALESCE(pay.has_real, 0)         AS has_real,
                COALESCE(pay.has_legacy, 0)       AS has_legacy,
                pay.last_pay                       AS last_pay
         FROM inv
+        LEFT JOIN cn  ON cn.iv_no  = inv.doc_base
         LEFT JOIN pay ON pay.iv_no = inv.doc_base
     """
     params = list(sale_params)
@@ -163,27 +194,35 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
 
 
 def _reconcile(row):
-    """Apply legacy-NULL rule + status classification to one raw row."""
+    """Apply legacy-NULL rule + credit-note netting + status to one row."""
     billed = round(row['billed'] or 0.0, 2)
+    credit_notes = round(row['credit_notes'] or 0.0, 2)
+    # What the customer actually owes after credit notes net down the bill.
+    net_owed = round(billed - credit_notes, 2)
+
     if row['has_real']:
         # Real amount(s) present — trust them; ignore any NULL legacy
         # link on this same invoice.
         collected = round(row['real_collected'] or 0.0, 2)
     elif row['has_legacy']:
         # Pure-legacy invoice: pre-058 binary behaviour — a NULL-amount
-        # link ⇒ fully paid.
-        collected = billed
+        # link ⇒ the *post-credit* balance is settled, so it collects
+        # net_owed (NOT billed; the credit note never was cash to collect).
+        collected = net_owed
     else:
         collected = 0.0
 
-    outstanding = round(billed - collected, 2)
+    outstanding = round(net_owed - collected, 2)
     # Clamp float noise around zero, but never hide a genuine negative
     # (overpaid) — that must surface as a flag.
     if abs(outstanding) < _EPS:
         outstanding = 0.0
 
-    if collected - billed > _EPS:
+    if collected - net_owed > _EPS:
         status = 'overpaid'
+    elif net_owed <= _EPS and credit_notes > _EPS and collected <= _EPS:
+        # Bill fully wiped by credit notes, nothing collected.
+        status = 'fully_credited'
     elif collected <= 0:
         status = 'unpaid'
     elif outstanding <= _EPS:
@@ -191,15 +230,22 @@ def _reconcile(row):
     else:
         status = 'partial'
 
+    # Data-quality flag: credited beyond what was billed (broken SR ref or
+    # over-issued credit note). net_owed goes negative in that case.
+    over_credited = credit_notes > billed + _EPS
+
     return {
         'doc_base': row['doc_base'],
         'customer': row['customer'],
         'customer_code': row['customer_code'],
         'invoice_date': row['invoice_date'],
         'billed': billed,
+        'credit_notes': credit_notes,
+        'net_owed': net_owed,
         'collected': collected,
         'outstanding': outstanding,
         'status': status,
+        'over_credited': over_credited,
         'last_payment_date': row['last_pay'],
     }
 
@@ -322,7 +368,8 @@ def invoice_settlement(customer=None, date_from=None, date_to=None,
     """Per-invoice settlement (read-only).
 
     Returns list[dict]: doc_base, customer, customer_code, invoice_date,
-    billed, collected, outstanding, status, last_payment_date.
+    billed, credit_notes, net_owed, collected, outstanding, status,
+    over_credited, last_payment_date.
     """
     with _ConnCtx(conn, db_path) as c:
         raw = _settlement_rows(c, customer=customer,
@@ -330,6 +377,26 @@ def invoice_settlement(customer=None, date_from=None, date_to=None,
     out = [_reconcile(r) for r in raw]
     out.sort(key=lambda d: (d['invoice_date'] or '', d['doc_base']))
     return out
+
+
+# ── 1b. unattributable_sr_count ──────────────────────────────────────────────
+def unattributable_sr_count(conn=None, db_path=None):
+    """Count of credit-note (SR) rows that net against NOTHING because
+    `ref_invoice` is NULL or '' — i.e. an SR that cannot be attributed to
+    an original invoice. Read-only data-quality probe.
+
+    Counts SR *rows* (one per sales_transactions line), matching the
+    grain of the synthetic `_ins_sr` helper and of how SR rows are stored.
+    """
+    sql = """
+        SELECT COUNT(*) AS n
+        FROM sales_transactions
+        WHERE doc_base LIKE 'SR%'
+          AND (ref_invoice IS NULL OR ref_invoice = '')
+    """
+    with _ConnCtx(conn, db_path) as c:
+        row = c.execute(sql).fetchone()
+    return int(row['n'] if row is not None else 0)
 
 
 # ── 2. customer_outstanding ──────────────────────────────────────────────────

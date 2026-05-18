@@ -43,6 +43,24 @@ def _ins_paid(conn, re_id, iv_no, amount):
     )
 
 
+def _ins_sr(conn, sr_no, ref_invoice, customer, customer_code, date_iso, net,
+            line=1, vat_type=1):
+    """One sales-return (credit-note) line.
+
+    Stored exactly like parse_weekly emits SR rows: doc_base starts with
+    'SR', net is the positive credit-note value, ref_invoice points at the
+    original IV's doc_base (may be None / '' for unattributable returns).
+    """
+    conn.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, ref_invoice, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (date_iso, f"{sr_no}-{line}", sr_no, ref_invoice, customer,
+         customer_code, 1, 'ตัว', net, vat_type, net, net),
+    )
+
+
 def _by_doc(rows):
     return {r['doc_base']: r for r in rows}
 
@@ -219,6 +237,129 @@ def test_filter_by_customer_and_dates(empty_db_conn):
     in_jan = _by_doc(pa.invoice_settlement(
         date_from='2026-01-01', date_to='2026-01-31', conn=c))
     assert set(in_jan) == {'IVA', 'IVB'}
+
+
+# ── credit notes (SR rows netting against the original invoice) ──────────────
+
+def test_credit_note_reduces_net_owed_unpaid(empty_db_conn):
+    """IV billed 1000, SR 300 against it, no payment.
+    net_owed = 1000 - 300 = 700; outstanding 700; unpaid."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV-CN1', 'ACME', 'C01', '2026-01-10', 1000)
+    _ins_sr(c, 'SR-CN1', 'IV-CN1', 'ACME', 'C01', '2026-01-20', 300)
+    c.commit()
+
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-CN1']
+    assert iv['billed'] == 1000.0
+    assert iv['credit_notes'] == 300.0
+    assert iv['net_owed'] == 700.0
+    assert iv['collected'] == 0.0
+    assert iv['outstanding'] == 700.0
+    assert iv['status'] == 'unpaid'
+
+
+def test_credit_note_with_full_payment_of_net_owed_is_paid(empty_db_conn):
+    """IV 1000, SR 300, payment 700 → net_owed 700, fully paid."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV-CN2', 'ACME', 'C01', '2026-01-10', 1000)
+    _ins_sr(c, 'SR-CN2', 'IV-CN2', 'ACME', 'C01', '2026-01-20', 300)
+    r = _ins_receipt(c, 'RE-CN2', 'ACME', '2026-02-01', total=700)
+    _ins_paid(c, r, 'IV-CN2', 700)
+    c.commit()
+
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-CN2']
+    assert iv['billed'] == 1000.0
+    assert iv['credit_notes'] == 300.0
+    assert iv['net_owed'] == 700.0
+    assert iv['collected'] == 700.0
+    assert iv['outstanding'] == 0.0
+    assert iv['status'] == 'paid'
+
+
+def test_credit_note_equals_billed_fully_credited(empty_db_conn):
+    """IV 1000, SR 1000, no payment → net_owed 0, status fully_credited."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV-CN3', 'ACME', 'C01', '2026-01-10', 1000)
+    _ins_sr(c, 'SR-CN3', 'IV-CN3', 'ACME', 'C01', '2026-01-20', 1000)
+    c.commit()
+
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-CN3']
+    assert iv['billed'] == 1000.0
+    assert iv['credit_notes'] == 1000.0
+    assert iv['net_owed'] == 0.0
+    assert iv['collected'] == 0.0
+    assert iv['outstanding'] == 0.0
+    assert iv['status'] == 'fully_credited'
+
+
+def test_credit_note_then_overpaid_net_owed(empty_db_conn):
+    """IV 1000, SR 200 → net_owed 800; payment 1000 → outstanding -200,
+    overpaid."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV-CN4', 'ACME', 'C01', '2026-01-10', 1000)
+    _ins_sr(c, 'SR-CN4', 'IV-CN4', 'ACME', 'C01', '2026-01-20', 200)
+    r = _ins_receipt(c, 'RE-CN4', 'ACME', '2026-02-01', total=1000)
+    _ins_paid(c, r, 'IV-CN4', 1000)
+    c.commit()
+
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-CN4']
+    assert iv['billed'] == 1000.0
+    assert iv['credit_notes'] == 200.0
+    assert iv['net_owed'] == 800.0
+    assert iv['collected'] == 1000.0
+    assert iv['outstanding'] == -200.0
+    assert iv['status'] == 'overpaid'
+
+
+def test_multiple_credit_notes_summed(empty_db_conn):
+    """Two SR rows (150 + 250) against one IV sum to 400 credit_notes."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV-CN5', 'ACME', 'C01', '2026-01-10', 1000)
+    _ins_sr(c, 'SR-CN5A', 'IV-CN5', 'ACME', 'C01', '2026-01-20', 150)
+    _ins_sr(c, 'SR-CN5B', 'IV-CN5', 'ACME', 'C01', '2026-01-25', 250)
+    c.commit()
+
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-CN5']
+    assert iv['credit_notes'] == 400.0
+    assert iv['net_owed'] == 600.0
+    assert iv['outstanding'] == 600.0
+    assert iv['status'] == 'unpaid'
+
+
+def test_credit_note_does_not_bleed_to_other_invoice(empty_db_conn):
+    """SR against IV-A must not reduce IV-B's net_owed."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV-CNA', 'ACME', 'C01', '2026-01-10', 1000)
+    _ins_sale(c, 'IV-CNB', 'ACME', 'C01', '2026-01-11', 500)
+    _ins_sr(c, 'SR-CNA', 'IV-CNA', 'ACME', 'C01', '2026-01-20', 300)
+    c.commit()
+
+    rows = _by_doc(pa.invoice_settlement(conn=c))
+    assert rows['IV-CNA']['credit_notes'] == 300.0
+    assert rows['IV-CNA']['net_owed'] == 700.0
+    assert rows['IV-CNB']['credit_notes'] == 0.0
+    assert rows['IV-CNB']['net_owed'] == 500.0
+    assert rows['IV-CNB']['outstanding'] == 500.0
+
+
+def test_credit_note_null_ref_invoice_ignored(empty_db_conn):
+    """SR with ref_invoice NULL/'' is unattributable — must not net against
+    any invoice (and is excluded from settlement billing as an SR row)."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV-CN6', 'ACME', 'C01', '2026-01-10', 1000)
+    _ins_sr(c, 'SR-CN6N', None, 'ACME', 'C01', '2026-01-20', 300)
+    _ins_sr(c, 'SR-CN6E', '', 'ACME', 'C01', '2026-01-21', 400)
+    c.commit()
+
+    rows = _by_doc(pa.invoice_settlement(conn=c))
+    iv = rows['IV-CN6']
+    assert iv['credit_notes'] == 0.0
+    assert iv['net_owed'] == 1000.0
+    assert iv['outstanding'] == 1000.0
+    # SR rows themselves are not billable invoices
+    assert 'SR-CN6N' not in rows
+    assert 'SR-CN6E' not in rows
+    assert pa.unattributable_sr_count(conn=c) == 2
 
 
 # ── customer_outstanding ─────────────────────────────────────────────────────
