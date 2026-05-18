@@ -17,7 +17,7 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 import normalize_bsn_units as nz  # noqa: E402
 
-P1, P2, P3 = 900701, 900702, 900703
+P1, P2, P3, P5 = 900701, 900702, 900703, 900705
 
 
 def _prod(c, pid):
@@ -42,7 +42,7 @@ def _sale(c, pid, unit):
 def _mapfile(tmp_path):
     p = tmp_path / "m.json"
     json.dump({"map": {"หล": "โหล", "โหล": "โหล", "ผง": "แผง",
-                       "แผง": "แผง"}}, open(p, "w"))
+                       "แผง": "แผง", "!ผง": "แผง"}}, open(p, "w"))
     return str(p)
 
 
@@ -58,6 +58,9 @@ def test_normalize(tmp_db, tmp_path):
     _prod(conn, P3)
     _uc(conn, P3, "ผง", 1000)          # collision: acronym bigger → keep 1000
     _uc(conn, P3, "แผง", 1)
+    _prod(conn, P5)
+    _uc(conn, P5, "ผง", 7)             # batch-collision: two acronyms, same
+    _uc(conn, P5, "!ผง", 3)            # product, both → แผง (no pre-existing)
     conn.commit()
     sl_before = conn.execute(
         "SELECT COUNT(*) FROM stock_levels").fetchone()[0]
@@ -91,6 +94,12 @@ def test_normalize(tmp_db, tmp_path):
     r3 = conn.execute("SELECT bsn_unit,ratio FROM unit_conversions WHERE "
                       "product_id=?", (P3,)).fetchall()
     assert [(x[0], x[1]) for x in r3] == [("แผง", 1000)]
+
+    # P5 batch-collision: two acronyms on same product → same target, none
+    # pre-existing → collapse to ONE row, max ratio, no UNIQUE error
+    r5 = conn.execute("SELECT bsn_unit,ratio FROM unit_conversions WHERE "
+                      "product_id=?", (P5,)).fetchall()
+    assert [(x[0], x[1]) for x in r5] == [("แผง", 7)]
 
     # ledger ledger-only / stock untouched
     assert conn.execute("SELECT COUNT(*) FROM stock_levels"

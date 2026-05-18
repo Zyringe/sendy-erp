@@ -1,5 +1,5 @@
 {
-  "_doc": "BSN unit acronym -> full Thai. Confirmed by Put 2026-05-18. ปน=ปื้น, กส=กระสอบ, บล=แผง, ดก=ดอก (drill bits ดจ., Put-confirmed; was a missed acronym found via pid 294). Other ~19 missing acronyms pending Put review in data/exports/acronym_missing_review_20260518.csv.",
+  "_doc": "BSN unit acronym -> full Thai. Confirmed by Put 2026-05-18. ปน=ปื้น, กส=กระสอบ, บล=แผง, ดก=ดอก (drill bits ดจ., Put-confirmed; was a missed acronym found via pid 294). Other ~19 missing acronyms pending Put review in data/exports/acronym_missing_review_20260518.csv. | 2026-05-18b: +18 acronyms from Put-reviewed acronym_missing_review CSV (หค=โหลคู่, กร=ตัว, etc.; คค skipped — ค่าขนส่ง).",
   "_unknown_skip": [],
   "map": {
     "ดก": "ดอก",
@@ -27,6 +27,24 @@
     "ชุด": "ชุด",
     "ลัง": "ลัง",
     "กน": "ก้อน",
-    "หด": "หลอด"
+    "หด": "หลอด",
+    "หค": "โหลคู่",
+    "กร": "ตัว",
+    "สน": "เส้น",
+    "กป": "กระป๋อง",
+    "คู": "คู่",
+    "หอ": "ห่อ",
+    "คน": "คัน",
+    "ทง": "แท่ง",
+    "ผื": "ผืน",
+    "แก": "แกลลอน",
+    "ถง": "ถุง",
+    "แพค": "แพ็ค",
+    "!กล": "กล่อง",
+    "!คู": "คู่",
+    "ชน": "ชิ้น",
+    "!ลก": "ลูก",
+    "!หด": "หลอด",
+    "!หล": "โหล"
   }
 }

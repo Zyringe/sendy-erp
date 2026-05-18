@@ -124,20 +124,45 @@ def main(argv=None):
         conn.close()
         return 0
 
-    # ---- APPLY ----
-    # bump the surviving full row to the larger ratio before dropping acronym
-    for pid, a, ra, tg, rf, fid, keep in conflict:
-        conn.execute("UPDATE unit_conversions SET ratio=? WHERE id=?",
-                      (keep, fid))
-    for _id, _pid, _fr, _to in dedupe:
-        conn.execute("DELETE FROM unit_conversions WHERE id=?", (_id,))
-    for _id, _pid, _fr, _to in rename:
-        conn.execute("UPDATE unit_conversions SET bsn_unit=? WHERE id=?",
-                      (_to, _id))
-    for t in LEDGER:
-        for a, full in M.items():
-            conn.execute(f"UPDATE {t} SET unit=? WHERE unit=?", (full, a))
-    conn.commit()
+    # ---- APPLY (single transaction) ----
+    conn.execute("BEGIN")
+    try:
+        # bump surviving full row to the larger ratio before dropping acronym
+        for pid, a, ra, tg, rf, fid, keep in conflict:
+            conn.execute("UPDATE unit_conversions SET ratio=? WHERE id=?",
+                          (keep, fid))
+        for _id, _pid, _fr, _to in dedupe:
+            conn.execute("DELETE FROM unit_conversions WHERE id=?", (_id,))
+        # Renames are collision-checked LIVE: two different acronyms on the
+        # same product can map to the same full unit (e.g. !คู & คู → คู่);
+        # the plan only saw pre-existing rows. If the target now exists,
+        # fall back to max-ratio dedupe instead of a colliding UPDATE.
+        for _id, _pid, _fr, _to in rename:
+            ex = conn.execute(
+                "SELECT id, ratio FROM unit_conversions "
+                "WHERE product_id=? AND bsn_unit=? AND id<>?",
+                (_pid, _to, _id)).fetchone()
+            if ex is None:
+                conn.execute("UPDATE unit_conversions SET bsn_unit=? "
+                             "WHERE id=?", (_to, _id))
+            else:
+                mine = conn.execute("SELECT ratio FROM unit_conversions "
+                                     "WHERE id=?", (_id,)).fetchone()[0]
+                keep = max(ex["ratio"] or 0, mine or 0)
+                conn.execute("UPDATE unit_conversions SET ratio=? WHERE id=?",
+                             (keep, ex["id"]))
+                conn.execute("DELETE FROM unit_conversions WHERE id=?",
+                             (_id,))
+        for t in LEDGER:
+            for a, full in M.items():
+                conn.execute(f"UPDATE {t} SET unit=? WHERE unit=?",
+                             (full, a))
+        conn.execute("COMMIT")
+    except Exception as e:
+        conn.execute("ROLLBACK")
+        print(f"ROLLED BACK: {e}", file=sys.stderr)
+        conn.close()
+        return 1
 
     bad_uc = conn.execute(
         "SELECT COUNT(*) FROM unit_conversions WHERE bsn_unit IN (%s)"
