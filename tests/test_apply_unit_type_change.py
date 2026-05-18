@@ -99,6 +99,36 @@ def test_dump_d2_no_writes(tmp_db, tmp_path, monkeypatch):
     assert (tmp_path / "bucket_D2_fill_N.csv").exists()
 
 
+def test_d2_apply(tmp_db, tmp_path):
+    conn = sqlite3.connect(tmp_db)
+    _p(conn, 905301, "ตัว"); _t(conn, 905301, 3)
+    conn.execute("INSERT INTO unit_conversions (product_id,bsn_unit,ratio) "
+                 "VALUES (905301,'แผง',5)")               # will → 1
+    conn.commit()
+    conn.close()
+    reviewed = _csv(tmp_path, [{"product_id": 905301, "bsn_unit": "แผง",
+                                uc.DEC: "1 and change ตัว unit to แผง"}])
+    d2 = tmp_path / "d2.csv"
+    with open(d2, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["product_id", "product_name", "from_unit", "to_unit",
+                    "current_stock", "convert_by_N"])
+        w.writerow([905301, "P", "ตัว", "แผง", 3, "1"])
+    assert uc.main([reviewed, "--db", tmp_db, "--d2", str(d2),
+                    "--apply"]) == 0
+    conn = sqlite3.connect(tmp_db)
+
+    def one(s, *a):
+        return conn.execute(s, a).fetchone()[0]
+
+    assert one("SELECT unit_type FROM products WHERE id=905301") == "แผง"
+    assert one("SELECT quantity FROM stock_levels WHERE product_id=905301"
+               ) == 3                                     # ×1 = unchanged
+    assert one("SELECT ratio FROM unit_conversions WHERE product_id=905301 "
+               "AND bsn_unit='แผง'") == 1                  # decision "1 ..."
+    conn.close()
+
+
 def test_d1_dry_run_writes_nothing(tmp_db, tmp_path):
     conn = sqlite3.connect(tmp_db)
     _p(conn, 905201, "โหล"); _t(conn, 905201, 5)

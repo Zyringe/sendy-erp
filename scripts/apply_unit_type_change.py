@@ -47,6 +47,8 @@ def main(argv=None):
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--dump-d2", action="store_true",
                     help="write bucket_D2_fill_N.csv and exit")
+    ap.add_argument("--d2", type=Path,
+                    help="apply the filled bucket_D2_fill_N.csv")
     a = ap.parse_args(argv)
     if not a.csv_path.exists():
         print(f"CSV not found: {a.csv_path}", file=sys.stderr)
@@ -55,6 +57,9 @@ def main(argv=None):
     ts = time.strftime("%Y%m%d-%H%M%S")
     conn = sqlite3.connect(str(a.db))
     conn.row_factory = sqlite3.Row
+
+    if a.d2:
+        return _run_d2(conn, a)
 
     # group D1 by product
     prod = {}                         # pid -> {to,N,from}
@@ -165,6 +170,91 @@ def main(argv=None):
             bad.append((pid, nu, ns, old * info["N"]))
     print(f"\nAPPLIED. {len(plan)} products. mismatches: "
           f"{len(bad)} {bad[:5] if bad else 'OK'}")
+    conn.close()
+    return 0 if not bad else 1
+
+
+def _run_d2(conn, a):
+    """Apply the filled bucket_D2_fill_N.csv: decision was
+    '1 and change <X> unit to <Y>' → unit_type=Y, transactions ×N,
+    recalc stock, set ratio=1 for that product's D2 bsn_units."""
+    if not a.d2.exists():
+        print(f"D2 csv not found: {a.d2}", file=sys.stderr)
+        return 2
+    plan = {}
+    with open(a.d2, encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            try:
+                pid = int(r["product_id"])
+                n = int(float(r["convert_by_N"]))
+            except (TypeError, ValueError):
+                continue
+            plan[pid] = (r["to_unit"].strip(), n)
+    # bsn_units that carried a D2 decision for each pid → ratio 1
+    bunits = defaultdict(set)
+    with open(a.csv_path, encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            d = (r.get(DEC) or "").strip()
+            if not d.startswith("1 and change"):
+                continue
+            try:
+                pid = int(r["product_id"])
+            except (TypeError, ValueError):
+                continue
+            bu = (r.get("bsn_unit") or "").strip()
+            if pid in plan and bu:
+                bunits[pid].add(bu)
+
+    print(f"=== Bucket D2 | {len(plan)} products (ratio→1) ===")
+    rows = []
+    for pid, (to, n) in sorted(plan.items()):
+        p = conn.execute("SELECT product_name,unit_type FROM products "
+                         "WHERE id=?", (pid,)).fetchone()
+        st = conn.execute("SELECT COALESCE(SUM(quantity_change),0) FROM "
+                          "transactions WHERE product_id=?",
+                          (pid,)).fetchone()[0]
+        rows.append((pid, to, n, st))
+        print(f"  pid {pid} '{p['product_name'][:30]:30}' "
+              f"{p['unit_type']}→{to} ×{n} stock {st}→{st * n} "
+              f"ratio1={sorted(bunits[pid])}")
+    if not a.apply:
+        print("\nDRY-RUN. Unique backup then --apply.")
+        conn.close()
+        return 0
+    conn.execute("BEGIN")
+    try:
+        for pid, to, n, _ in rows:
+            conn.execute("UPDATE products SET unit_type=? WHERE id=?",
+                         (to, pid))
+            if n != 1:
+                conn.execute("UPDATE transactions SET quantity_change="
+                             "quantity_change*? WHERE product_id=?",
+                             (n, pid))
+            conn.execute("DELETE FROM stock_levels WHERE product_id=?",
+                         (pid,))
+            conn.execute("INSERT INTO stock_levels (product_id,quantity) "
+                         "SELECT ?,COALESCE(SUM(quantity_change),0) FROM "
+                         "transactions WHERE product_id=?", (pid, pid))
+            for bu in bunits[pid]:
+                if conn.execute("SELECT 1 FROM unit_conversions WHERE "
+                                "product_id=? AND bsn_unit=?",
+                                (pid, bu)).fetchone():
+                    conn.execute("UPDATE unit_conversions SET ratio=1 WHERE "
+                                 "product_id=? AND bsn_unit=?", (pid, bu))
+                else:
+                    conn.execute("INSERT INTO unit_conversions (product_id,"
+                                 "bsn_unit,ratio) VALUES (?,?,1)", (pid, bu))
+        conn.execute("COMMIT")
+    except Exception as e:
+        conn.execute("ROLLBACK")
+        print(f"ROLLED BACK: {e}", file=sys.stderr)
+        conn.close()
+        return 1
+    bad = [pid for pid, to, n, _ in rows if conn.execute(
+        "SELECT unit_type FROM products WHERE id=?", (pid,)).fetchone()[0]
+        != to]
+    print(f"\nAPPLIED. {len(rows)} products. unit_type mismatches: "
+          f"{len(bad)} {bad or 'OK'}")
     conn.close()
     return 0 if not bad else 1
 
