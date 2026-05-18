@@ -1,0 +1,218 @@
+{% extends 'base.html' %}
+{% block title %}Payroll {{ run.year_month }} – Sendy HR{% endblock %}
+{% block page_title %}Payroll Run #{{ run.id }} — {{ run.year_month }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('hr.payroll_list') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i>รายการ Run
+  </a>
+  <a href="{{ url_for('hr.payroll_export', run_id=run.id) }}"
+     class="btn btn-sm btn-outline-secondary ms-1">
+    <i class="bi bi-download me-1"></i>CSV
+  </a>
+  {% if session.role == 'admin' and run.status == 'draft' %}
+  <form method="post" action="{{ url_for('hr.payroll_finalize', run_id=run.id) }}"
+        class="d-inline ms-1"
+        onsubmit="return confirm('Finalize payroll run #{{ run.id }}? ไม่สามารถแก้ไขได้อีก')">
+    <button type="submit" class="btn btn-sm btn-success">
+      <i class="bi bi-check-circle me-1"></i>Finalize
+    </button>
+  </form>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+
+{# ── Run summary ─────────────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="row g-2 small">
+      <div class="col-md-2">
+        <span class="text-muted">บริษัท:</span>
+        <strong>{{ run.company_name or run.company_id }}</strong>
+      </div>
+      <div class="col-md-2">
+        <span class="text-muted">เดือน:</span>
+        <strong>{{ run.year_month }}</strong>
+      </div>
+      <div class="col-md-2">
+        <span class="text-muted">สถานะ:</span>
+        {% if run.status == 'finalized' %}
+          <span class="badge bg-success">finalized</span>
+        {% else %}
+          <span class="badge bg-secondary">draft</span>
+        {% endif %}
+      </div>
+      <div class="col-md-3">
+        <span class="text-muted">Finalized:</span>
+        <strong>{{ be_year(run.finalized_at) if run.finalized_at else '–' }}</strong>
+      </div>
+      <div class="col-md-3 text-end">
+        <span class="text-muted">เงินสุทธิรวม:</span>
+        <strong class="fs-5">{{ fmt_baht(items | sum(attribute='net_pay')) }}</strong>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Items table ─────────────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th>รหัส</th>
+          <th>ชื่อ</th>
+          <th class="text-end">เงินเดือน</th>
+          <th class="text-end">ฐานคำนวณ</th>
+          <th class="text-end">เบี้ยขยัน</th>
+          <th class="text-end">โบนัส</th>
+          <th class="text-end">รายการเพิ่ม</th>
+          <th class="text-end">หักลา</th>
+          <th class="text-end">ประกันสังคม</th>
+          <th class="text-end">รายการหัก</th>
+          <th class="text-end fw-bold">เงินสุทธิ</th>
+          <th>หมายเหตุ</th>
+          {% if session.role == 'admin' and run.status == 'draft' %}
+          <th class="text-end">แก้ไข</th>
+          {% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in items %}
+        <tr>
+          <td class="font-mono small">{{ item.emp_code }}</td>
+          <td>
+            <a href="{{ url_for('hr.payslip', run_id=run.id, item_id=item.id) }}"
+               class="text-decoration-none small" target="_blank">
+              {{ item.full_name }}
+              <i class="bi bi-file-text ms-1 text-muted" title="payslip"></i>
+            </a>
+          </td>
+          <td class="text-end small">{{ fmt_baht(item.salary_rate) }}</td>
+          <td class="text-end small">{{ fmt_baht(item.base_amount) }}</td>
+          <td class="text-end small {% if item.diligence_forfeited %}text-decoration-line-through text-muted{% endif %}">
+            {{ fmt_baht(item.diligence_allowance) }}
+            {% if item.diligence_forfeited %}
+              <span class="text-danger small">(หัก)</span>
+            {% endif %}
+          </td>
+          <td class="text-end small">{{ fmt_baht(item.bonus) }}</td>
+          <td class="text-end small">{{ fmt_baht(item.other_additions) }}</td>
+          <td class="text-end small {% if item.unpaid_leave_deduction > 0 %}text-danger{% endif %}">
+            {% if item.unpaid_leave_deduction > 0 %}
+              -{{ fmt_baht(item.unpaid_leave_deduction) }}
+              <small>({{ item.unpaid_leave_days }}วัน)</small>
+            {% else %}–{% endif %}
+          </td>
+          <td class="text-end small text-danger">{{ fmt_baht(item.sso_employee) }}</td>
+          <td class="text-end small {% if item.other_deductions > 0 %}text-danger{% endif %}">
+            {% if item.other_deductions > 0 %}-{{ fmt_baht(item.other_deductions) }}{% else %}–{% endif %}
+          </td>
+          <td class="text-end fw-bold">{{ fmt_baht(item.net_pay) }}</td>
+          <td class="small text-muted" style="max-width:200px;white-space:normal">
+            {{ item.note or '–' }}
+          </td>
+          {% if session.role == 'admin' and run.status == 'draft' %}
+          <td class="text-end">
+            <button class="btn btn-sm btn-outline-secondary"
+                    data-bs-toggle="modal"
+                    data-bs-target="#editItem{{ item.id }}">
+              <i class="bi bi-pencil"></i>
+            </button>
+          </td>
+          {% endif %}
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="13" class="text-center text-muted py-4">ไม่มีรายการพนักงาน</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      {% if items %}
+      <tfoot class="table-group-divider">
+        <tr>
+          <td colspan="3" class="text-end small text-muted">รวม:</td>
+          <td class="text-end small">{{ fmt_baht(items | sum(attribute='base_amount')) }}</td>
+          <td class="text-end small"></td>
+          <td class="text-end small">{{ fmt_baht(items | sum(attribute='bonus')) }}</td>
+          <td class="text-end small">{{ fmt_baht(items | sum(attribute='other_additions')) }}</td>
+          <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='unpaid_leave_deduction')) }}</td>
+          <td class="text-end small text-danger">{{ fmt_baht(items | sum(attribute='sso_employee')) }}</td>
+          <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='other_deductions')) }}</td>
+          <td class="text-end fw-bold">{{ fmt_baht(items | sum(attribute='net_pay')) }}</td>
+          <td colspan="2"></td>
+        </tr>
+      </tfoot>
+      {% endif %}
+    </table>
+  </div>
+</div>
+
+{# ── Edit item modals (admin, draft only) ────────────────────────────────── #}
+{% if session.role == 'admin' and run.status == 'draft' %}
+{% for item in items %}
+<div class="modal fade" id="editItem{{ item.id }}" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title small">แก้ไข — {{ item.full_name }}</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" action="{{ url_for('hr.payroll_item_edit', run_id=run.id, item_id=item.id) }}">
+        <div class="modal-body">
+          <div class="row g-2">
+            <div class="col-6">
+              <label class="form-label small">โบนัส (฿)</label>
+              <input type="number" name="bonus" class="form-control form-control-sm"
+                     value="{{ item.bonus or 0 }}" step="0.01" min="0">
+            </div>
+            <div class="col-6">
+              <label class="form-label small">รายการเพิ่มอื่น (฿)</label>
+              <input type="number" name="other_additions" class="form-control form-control-sm"
+                     value="{{ item.other_additions or 0 }}" step="0.01" min="0">
+            </div>
+            <div class="col-12">
+              <label class="form-label small">รายละเอียดรายการเพิ่ม</label>
+              <input type="text" name="other_additions_note" class="form-control form-control-sm"
+                     value="{{ item.other_additions_note or '' }}">
+            </div>
+            <div class="col-6">
+              <label class="form-label small">รายการหักอื่น (฿)</label>
+              <input type="number" name="other_deductions" class="form-control form-control-sm"
+                     value="{{ item.other_deductions or 0 }}" step="0.01" min="0">
+            </div>
+            <div class="col-6">
+              <label class="form-label small">รายละเอียดรายการหัก</label>
+              <input type="text" name="other_deductions_note" class="form-control form-control-sm"
+                     value="{{ item.other_deductions_note or '' }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label small">มาสาย (late toggle)</label>
+              <select name="late" class="form-select form-select-sm">
+                <option value="">— ไม่เปลี่ยน —</option>
+                <option value="1">บังคับหักเบี้ยขยัน (มาสาย)</option>
+                <option value="0">ยกเลิก late forfeit</option>
+              </select>
+              <div class="form-text">
+                เบี้ยขยันปัจจุบัน:
+                {% if item.diligence_forfeited %}
+                  <span class="text-danger">หัก ({{ item.diligence_forfeit_reason }})</span>
+                {% else %}
+                  <span class="text-success">ได้รับ</span>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-primary btn-sm">บันทึก + คำนวณใหม่</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

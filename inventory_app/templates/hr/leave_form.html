@@ -1,0 +1,89 @@
+{% extends 'base.html' %}
+{% block title %}{{ page_title }} – Sendy HR{% endblock %}
+{% block page_title %}{{ page_title }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('hr.leave_list') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i>รายการลา
+  </a>
+{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width:640px">
+  <div class="card-header"><i class="bi bi-calendar-x me-1"></i>{{ page_title }}</div>
+  <div class="card-body">
+    <form method="post" action="{{ action_url }}">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label small">พนักงาน <span class="text-danger">*</span></label>
+          <select name="employee_id" class="form-select form-select-sm" required>
+            <option value="">— เลือกพนักงาน —</option>
+            {% for emp in employees %}
+            <option value="{{ emp.id }}"
+              {% if form.get('employee_id') == emp.id|string or (req and req.employee_id == emp.id) %}selected{% endif %}>
+              {{ emp.emp_code }} — {{ emp.full_name }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label small">ประเภทการลา <span class="text-danger">*</span></label>
+          <select name="leave_type_id" class="form-select form-select-sm" required>
+            <option value="">— เลือกประเภท —</option>
+            {% for lt in leave_types %}
+            <option value="{{ lt.id }}"
+              {% if form.get('leave_type_id') == lt.id|string or (req and req.leave_type_id == lt.id) %}selected{% endif %}>
+              {{ lt.name_th }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-5">
+          <label class="form-label small">วันที่เริ่ม <span class="text-danger">*</span></label>
+          <input type="date" name="start_date" class="form-control form-control-sm"
+                 value="{{ form.get('start_date', req.start_date if req else '') }}" required>
+        </div>
+        <div class="col-md-5">
+          <label class="form-label small">วันที่สิ้นสุด <span class="text-danger">*</span></label>
+          <input type="date" name="end_date" class="form-control form-control-sm"
+                 value="{{ form.get('end_date', req.end_date if req else '') }}" required>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label small">จำนวน (วัน) <span class="text-danger">*</span></label>
+          <input type="number" name="days" class="form-control form-control-sm"
+                 value="{{ form.get('days', req.days if req else '1') }}"
+                 step="0.5" min="0.5" required>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small">สถานะ</label>
+          <select name="status" class="form-select form-select-sm">
+            <option value="approved" {% if form.get('status','approved') == 'approved' %}selected{% endif %}>อนุมัติ</option>
+            <option value="pending" {% if form.get('status') == 'pending' %}selected{% endif %}>รอ</option>
+            <option value="rejected" {% if form.get('status') == 'rejected' %}selected{% endif %}>ปฏิเสธ</option>
+            <option value="cancelled" {% if form.get('status') == 'cancelled' %}selected{% endif %}>ยกเลิก</option>
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small">ใบรับรองแพทย์</label>
+          <select name="has_medical_cert" class="form-select form-select-sm">
+            <option value="0" {% if form.get('has_medical_cert','0') == '0' %}selected{% endif %}>ไม่มี</option>
+            <option value="1" {% if form.get('has_medical_cert') == '1' %}selected{% endif %}>มี</option>
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label small">เหตุผล</label>
+          <input type="text" name="reason" class="form-control form-control-sm"
+                 value="{{ form.get('reason', req.reason if req else '') }}">
+        </div>
+        <div class="col-12">
+          <button type="submit" class="btn btn-primary">
+            <i class="bi bi-save me-1"></i>บันทึก
+          </button>
+          <a href="{{ url_for('hr.leave_list') }}"
+             class="btn btn-outline-secondary ms-2">ยกเลิก</a>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

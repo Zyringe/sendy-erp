@@ -1,0 +1,157 @@
+{% extends 'base.html' %}
+{% block title %}{{ acct.code }} – บัญชีรับ-จ่าย – Sendy{% endblock %}
+{% block page_title %}รายการบัญชี: {{ acct.code }}{% endblock %}
+
+{% block topbar_actions %}
+<a href="{{ url_for('cashbook.dashboard', vat=vat_flag) }}" class="btn btn-sm btn-outline-secondary">
+  <i class="bi bi-arrow-left me-1"></i>กลับ
+</a>
+{% endblock %}
+
+{% block content %}
+
+{# ── Account header ────────────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <div class="d-flex flex-wrap gap-3 align-items-center">
+      <div>
+        <span class="badge bg-secondary fs-6">{{ acct.code }}</span>
+        {% if acct.is_transfer %}
+        <span class="badge bg-warning text-dark ms-1">บัญชีพักเงิน/โอน</span>
+        {% endif %}
+      </div>
+      {% if acct.account_owner_name %}
+      <div class="small"><i class="bi bi-person me-1"></i>{{ acct.account_owner_name }}</div>
+      {% endif %}
+      {% if acct.bank_name %}
+      <div class="small"><i class="bi bi-bank me-1"></i>{{ acct.bank_name }}</div>
+      {% endif %}
+      {% if acct.bank_account_no %}
+      <div class="small text-muted"><i class="bi bi-credit-card me-1"></i>{{ acct.bank_account_no }}</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{# ── Running totals banner ─────────────────────────────────────────────────── #}
+<div class="row g-3 mb-3">
+  <div class="col-sm-4">
+    <div class="stat-card py-2">
+      <div class="stat-card-label small">รายรับ (ที่กรอง)</div>
+      <div class="fw-semibold text-success">฿{{ "{:,.2f}".format(sum_income) }}</div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="stat-card py-2">
+      <div class="stat-card-label small">รายจ่าย (ที่กรอง)</div>
+      <div class="fw-semibold text-danger">฿{{ "{:,.2f}".format(sum_expense) }}</div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="stat-card py-2">
+      <div class="stat-card-label small">คงเหลือ</div>
+      <div class="fw-semibold {% if balance >= 0 %}text-primary{% else %}text-danger{% endif %}">
+        ฿{{ "{:,.2f}".format(balance) }}
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Filters ───────────────────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <form method="get" class="row g-2 align-items-end">
+      <input type="hidden" name="vat" value="{{ vat_flag }}">
+      <div class="col-auto">
+        <label class="form-label small mb-1">เดือน</label>
+        <select name="month" class="form-select form-select-sm" onchange="this.form.submit()">
+          <option value="">— ทุกเดือน —</option>
+          {% for m in months %}
+          <option value="{{ m }}" {% if m == month_filter %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label small mb-1">ประเภท</label>
+        <select name="dir" class="form-select form-select-sm" onchange="this.form.submit()">
+          <option value="">— ทั้งหมด —</option>
+          <option value="income"  {% if dir_filter=='income'  %}selected{% endif %}>รายรับ</option>
+          <option value="expense" {% if dir_filter=='expense' %}selected{% endif %}>รายจ่าย</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <a href="{{ url_for('cashbook.account_ledger', account_id=acct.id, vat=vat_flag) }}"
+           class="btn btn-sm btn-outline-secondary">ล้าง</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# ── Transaction table ─────────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span class="fw-semibold">
+      <i class="bi bi-list-ul me-1"></i>รายการ
+    </span>
+    <span class="text-muted small">{{ total_count | default(0) }} รายการ</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>วันที่</th>
+          <th>ประเภท</th>
+          <th>หมวดหมู่</th>
+          <th>หมวดหมู่ (ผู้ใช้)</th>
+          <th class="text-end">จำนวนเงิน</th>
+          <th>รายละเอียด</th>
+          <th>หมายเหตุ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="small text-nowrap">{{ r.txn_date }}</td>
+          <td>
+            {% if r.direction == 'income' %}
+            <span class="badge bg-success-subtle text-success">รายรับ</span>
+            {% else %}
+            <span class="badge bg-danger-subtle text-danger">รายจ่าย</span>
+            {% endif %}
+          </td>
+          <td class="small">{{ r.category or '—' }}</td>
+          <td class="small text-muted">{{ r.user_category or '' }}</td>
+          <td class="text-end fw-semibold small
+            {% if r.direction=='income' %}text-success{% else %}text-danger{% endif %}">
+            ฿{{ "{:,.2f}".format(r.amount) }}
+          </td>
+          <td class="small">{{ r.description or '' }}</td>
+          <td class="small text-muted">{{ r.note or '' }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="7" class="text-center text-muted py-3">ไม่มีรายการในช่วงนี้</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# ── Pagination ────────────────────────────────────────────────────────────── #}
+{% if total_pages > 1 %}
+<nav>
+  <ul class="pagination pagination-sm">
+    {% for p in range(1, total_pages + 1) %}
+    <li class="page-item {% if p == page %}active{% endif %}">
+      <a class="page-link"
+         href="{{ url_for('cashbook.account_ledger', account_id=acct.id, vat=vat_flag, month=month_filter, dir=dir_filter, page=p) }}">
+        {{ p }}
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</nav>
+{% endif %}
+
+{% endblock %}

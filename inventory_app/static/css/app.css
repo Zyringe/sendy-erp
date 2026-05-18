@@ -70,6 +70,67 @@ body {
   overflow: hidden;
 }
 
+/* Brand row: holds logo link + module switcher dropdown */
+.sidebar-brand-row {
+  display: flex;
+  align-items: center;
+  padding: 16px 12px 12px;
+  border-bottom: 1px solid rgba(255,255,255,.07);
+  gap: 8px;
+}
+
+/* Logo portion of brand row (was .sidebar-brand) */
+.sidebar-brand-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+
+/* Module switcher button */
+.sidebar-module-btn {
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.12);
+  color: rgba(255,255,255,.75);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: .8rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+.sidebar-module-btn:hover,
+.sidebar-module-btn:focus {
+  background: rgba(255,255,255,.14);
+  color: #fff;
+  border-color: rgba(255,255,255,.2);
+}
+.sidebar-module-btn::after { margin-left: 4px; }
+
+/* Module switcher dropdown menu */
+.sidebar-module-menu {
+  min-width: 200px;
+  font-size: .875rem;
+}
+.sidebar-module-menu .dropdown-item {
+  padding: .45rem .9rem;
+}
+.sidebar-module-menu .dropdown-item.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Active module label strip */
+.sidebar-module-label {
+  font-size: .68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--bsn-gold);
+  padding: 6px 16px 4px;
+}
+
+/* Legacy class kept for any external reference */
 .sidebar-brand {
   display: flex;
   align-items: center;

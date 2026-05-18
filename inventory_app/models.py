@@ -2,6 +2,7 @@ import re
 import sqlite3
 
 from database import get_connection
+import bsn_units
 from collections import defaultdict
 from datetime import date
 
@@ -668,7 +669,29 @@ def get_pending_unit_conversions(search=None):
     sql += " GROUP BY t.product_id, t.bsn_unit ORDER BY p.product_name"
     rows = conn.execute(sql, params).fetchall()
     conn.close()
-    return rows
+    # Flag rows whose bsn_unit is still an UNKNOWN acronym (import already
+    # normalises known ones) so the UI can ask Put for the full unit name.
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['is_acronym'] = not bsn_units.is_known(d['bsn_unit'])
+        out.append(d)
+    return out
+
+
+def learn_acronyms_normalize(pairs: dict):
+    """For each acronym→full Put typed on /unit-conversions: persist it to
+    bsn_unit_full.json and rewrite that acronym → full across the BSN
+    ledger (so it matches unit_conversions and never recurs)."""
+    if not pairs:
+        return
+    conn = get_connection()
+    for acr, full in pairs.items():
+        bsn_units.add_acronym(acr, full)
+        for t in ('sales_transactions', 'purchase_transactions'):
+            conn.execute(f"UPDATE {t} SET unit=? WHERE unit=?", (full, acr))
+    conn.commit()
+    conn.close()
 
 
 def save_unit_conversions(items: list):
@@ -935,6 +958,10 @@ def import_weekly(entries: list, file_type: str, filename: str) -> dict:
     new_bsn_codes = {}   # code → name for codes not yet in mapping table
 
     for e in entries:
+        # Auto-normalise the BSN unit acronym → full Thai so it matches the
+        # (already-normalised) unit_conversions table → far fewer pending.
+        # Unknown acronyms are left as-is and surface on /unit-conversions.
+        e['unit'] = bsn_units.normalize_unit(e.get('unit'))
         # คำนวณ doc_base ก่อน (IV6900527-1 → IV6900527, IV6900527 → IV6900527)
         doc_no   = e['doc_no']
         doc_base = doc_no.rsplit('-', 1)[0] if '-' in doc_no else doc_no
@@ -2131,25 +2158,63 @@ def import_payments(filepath):
     """Import payment CSV into received_payments + paid_invoices tables.
 
     Uses idempotent upserts (ON CONFLICT DO UPDATE) so re-importing the same
-    file refreshes amounts without creating duplicate rows.
+    file any number of times leaves row counts and every amount/total identical
+    after the first successful run.
 
-    Returns dict:
-      imported  — RE records written (new inserts only; upserted-existing not counted)
-      skipped   — RE records that raised an exception during import
+    Re_id resolution
+    ----------------
+    We use ``INSERT ... ON CONFLICT(re_no) DO UPDATE ... RETURNING id`` (SQLite
+    ≥3.35, available here as sqlite 3.35+).  RETURNING delivers the canonical
+    row id for BOTH the INSERT path and the UPDATE path in a single statement,
+    removing all dependence on ``cur.lastrowid`` which is unreliable for the
+    conflict/UPDATE path (it retains a stale value from the most recent plain
+    INSERT on that connection, not 0 as the old guard assumed).
+
+    Per-record transactional boundary
+    ----------------------------------
+    Each RE record is wrapped in a SAVEPOINT so that a single bad record
+    (malformed amount, FK violation, etc.) is fully rolled back without
+    discarding the good work that came before.  After the loop a single
+    ``conn.commit()`` flushes all survivors.
+
+    Returns dict
+    ------------
+      imported  — brand-new RE rows (did not exist before this run)
+      updated   — existing RE rows refreshed (upsert took the UPDATE path)
+      skipped   — RE records that raised an exception (isolated, rolled back)
       total     — total RE records parsed from the file
+      errors    — list of up to 5 distinct exception reprs from skipped records
+                  (empty list when all records imported cleanly)
 
-    Note: 'skipped' no longer counts RE records that already existed (those are
-    silently upserted). It only counts records that failed with an exception.
-    Legacy rows imported before migration 058 have amount/total = NULL; they
-    are updated to carry the real amounts only when that RE is re-imported.
+    Invariant: ``imported + updated + skipped == total`` always holds.
+
+    Note: legacy rows imported before migration 058 have amount/total = NULL;
+    they are updated to carry real amounts the first time that RE is re-imported.
     """
     records = parse_payment_csv(filepath)
     conn = get_connection()
     imported = 0
+    updated = 0
     skipped = 0
-    for r in records:
+    errors = []          # up to 5 distinct repr strings
+
+    for i, r in enumerate(records):
+        sp = f"sp_re_{i}"
         try:
-            cur = conn.execute(
+            conn.execute(f"SAVEPOINT {sp}")
+
+            # --- Classify as new vs existing BEFORE the upsert ---
+            # (rowcount after an UPSERT is always 1 in SQLite regardless of path,
+            # so we must pre-check existence to distinguish insert from update.)
+            existing = conn.execute(
+                "SELECT 1 FROM received_payments WHERE re_no=?", (r['re_no'],)
+            ).fetchone()
+            is_new = existing is None
+
+            # --- Authoritative upsert with RETURNING id ---
+            # RETURNING delivers the real id for BOTH the INSERT and the UPDATE
+            # conflict path — no dependence on cur.lastrowid.
+            row = conn.execute(
                 """INSERT INTO received_payments
                        (re_no, date_iso, customer, salesperson, cancelled, total)
                    VALUES (?,?,?,?,?,?)
@@ -2158,18 +2223,16 @@ def import_payments(filepath):
                        customer=excluded.customer,
                        salesperson=excluded.salesperson,
                        cancelled=excluded.cancelled,
-                       total=excluded.total""",
+                       total=excluded.total
+                   RETURNING id""",
                 (r['re_no'], r['date_iso'], r['customer'], r['salesperson'],
                  1 if r['cancelled'] else 0, r.get('total'))
-            )
-            re_id = cur.lastrowid
-            if not re_id:
-                # ON CONFLICT branch: lastrowid is 0 for UPDATE — fetch the real id
-                re_id = conn.execute(
-                    "SELECT id FROM received_payments WHERE re_no=?", (r['re_no'],)
-                ).fetchone()[0]
+            ).fetchone()
 
-            new_insert = bool(cur.rowcount and cur.lastrowid)
+            assert row is not None, f"RETURNING id returned nothing for re_no={r['re_no']!r}"
+            re_id = row[0]
+            assert re_id, f"re_id resolved to falsy value for re_no={r['re_no']!r}"
+
             for iv in r['iv_list']:
                 conn.execute(
                     """INSERT INTO paid_invoices (re_id, iv_no, amount)
@@ -2178,13 +2241,30 @@ def import_payments(filepath):
                            amount=excluded.amount""",
                     (re_id, iv['iv_no'], iv['amount'])
                 )
-            if new_insert:
+
+            conn.execute(f"RELEASE SAVEPOINT {sp}")
+
+            if is_new:
                 imported += 1
-        except Exception:
+            else:
+                updated += 1
+
+        except Exception as exc:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {sp}")
+            conn.execute(f"RELEASE SAVEPOINT {sp}")
             skipped += 1
+            if len(errors) < 5:
+                errors.append(repr(exc))
+
     conn.commit()
     conn.close()
-    return {'imported': imported, 'skipped': skipped, 'total': len(records)}
+    return {
+        'imported': imported,
+        'updated': updated,
+        'skipped': skipped,
+        'total': len(records),
+        'errors': errors,
+    }
 
 
 def get_payment_status(status='all', search='', date_from='', date_to='', page=1, per_page=50):

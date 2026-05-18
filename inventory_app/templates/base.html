@@ -20,17 +20,52 @@
 
 <!-- ── Sidebar ─────────────────────────────────────── -->
 <aside class="sidebar" id="sidebar">
-  <a class="sidebar-brand" href="{{ url_for('dashboard') }}">
-    <div class="sidebar-brand-icon">
-      <img src="{{ url_for('static', filename='img/logo_sendai.png') }}" alt="Sendai">
+
+  {# ── Brand row: logo + module switcher ── #}
+  <div class="sidebar-brand-row">
+    <a class="sidebar-brand-logo" href="{{ url_for('dashboard') }}">
+      <div class="sidebar-brand-icon">
+        <img src="{{ url_for('static', filename='img/logo_sendai.png') }}" alt="Sendai">
+      </div>
+      <div>
+        <div class="sidebar-brand-text">Sendy</div>
+        <div class="sidebar-brand-sub">by Sendai</div>
+      </div>
+    </a>
+
+    {# Module switcher dropdown #}
+    {% set cur_mod = visible_modules | selectattr('key','equalto', active_module) | list %}
+    {% set cur_mod = cur_mod[0] if cur_mod else visible_modules[0] %}
+    <div class="dropdown ms-auto">
+      <button class="btn btn-sm sidebar-module-btn dropdown-toggle"
+              type="button"
+              data-bs-toggle="dropdown"
+              aria-expanded="false"
+              title="เปลี่ยนโมดูล">
+        <i class="bi {{ cur_mod.icon }}"></i>
+      </button>
+      <ul class="dropdown-menu dropdown-menu-end sidebar-module-menu">
+        {% for mod in visible_modules %}
+        <li>
+          <a class="dropdown-item {% if mod.key == active_module %}active{% endif %}"
+             href="{{ url_for(mod.first_endpoint) }}">
+            <i class="bi {{ mod.icon }} me-2"></i>{{ mod.name }}
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
     </div>
-    <div>
-      <div class="sidebar-brand-text">Sendy</div>
-      <div class="sidebar-brand-sub">by Sendai</div>
-    </div>
-  </a>
+  </div>
+
+  {# ── Active module label ── #}
+  <div class="sidebar-module-label">
+    <i class="bi {{ cur_mod.icon }} me-1"></i>{{ cur_mod.name }}
+  </div>
 
   <nav class="sidebar-nav">
+
+    {# ── ภาพรวม ── #}
+    {% if active_module == 'overview' %}
     <div class="sidebar-section">ภาพรวม</div>
     <a href="{{ url_for('dashboard') }}"
        class="sidebar-link {% if request.endpoint == 'dashboard' %}active{% endif %}">
@@ -43,7 +78,10 @@
       <span class="badge-count">{{ alert_count }}</span>
       {% endif %}
     </a>
+    {% endif %}
 
+    {# ── คลังสินค้า ── #}
+    {% if active_module == 'operation' %}
     <div class="sidebar-section">คลังสินค้า</div>
     <a href="{{ url_for('products.product_list') }}"
        class="sidebar-link {% if 'product' in (request.endpoint or '') %}active{% endif %}">
@@ -63,15 +101,29 @@
       <i class="bi bi-upc-scan"></i> พิมพ์ป้าย/บาร์โค้ด
     </a>
     {% endif %}
+    <a href="{{ url_for('catalog_view') }}"
+       class="sidebar-link {% if request.endpoint == 'catalog_view' %}active{% endif %}">
+      <i class="bi bi-book"></i> Catalog
+    </a>
+    {% endif %}
 
+    {# ── การค้า & บัญชี ── #}
+    {% if active_module == 'accounting' %}
+    {% if session.role in ['admin','manager'] %}
+    <div class="sidebar-section">บัญชี</div>
+    <a href="{{ url_for('accounting_summary') }}"
+       class="sidebar-link {% if request.endpoint == 'accounting_summary' %}active{% endif %}">
+      <i class="bi bi-calculator"></i> สรุปกำไร-ขาดทุน
+    </a>
+    <a href="{{ url_for('cashflow_dashboard') }}"
+       class="sidebar-link {% if request.endpoint == 'cashflow_dashboard' %}active{% endif %}">
+      <i class="bi bi-cash-stack"></i> กระแสเงินสด
+    </a>
+    {% endif %}
     <div class="sidebar-section">การค้า</div>
     <a href="{{ url_for('trade_dashboard') }}"
        class="sidebar-link {% if request.endpoint == 'trade_dashboard' %}active{% endif %}">
       <i class="bi bi-bar-chart-line"></i> ภาพรวมการค้า
-    </a>
-    <a href="{{ url_for('catalog_view') }}"
-       class="sidebar-link {% if request.endpoint == 'catalog_view' %}active{% endif %}">
-      <i class="bi bi-book"></i> Catalog
     </a>
     <a href="{{ url_for('sales_view') }}"
        class="sidebar-link {% if request.endpoint == 'sales_view' %}active{% endif %}">
@@ -127,7 +179,50 @@
        class="sidebar-link {% if request.endpoint == 'ecommerce' and request.args.get('tab') == 'lazada' %}active{% endif %}">
       <i class="bi bi-shop" style="color:#003087"></i> Lazada
     </a>
+    {% endif %}
 
+    {# ── บุคลากร (HR) — admin/manager only ── #}
+    {% if active_module == 'hr' and session.role in ['admin', 'manager'] %}
+    <div class="sidebar-section">บุคลากร (HR)</div>
+    <a href="{{ url_for('hr.dashboard') }}"
+       class="sidebar-link {% if request.endpoint == 'hr.dashboard' %}active{% endif %}">
+      <i class="bi bi-person-badge"></i> HR Dashboard
+    </a>
+    <a href="{{ url_for('hr.employee_list') }}"
+       class="sidebar-link {% if request.endpoint in ['hr.employee_list','hr.employee_new','hr.employee_detail','hr.employee_entitlements'] %}active{% endif %}">
+      <i class="bi bi-people"></i> พนักงาน
+    </a>
+    <a href="{{ url_for('hr.leave_list') }}"
+       class="sidebar-link {% if request.endpoint in ['hr.leave_list','hr.leave_new'] %}active{% endif %}">
+      <i class="bi bi-calendar-x"></i> การลา
+    </a>
+    <a href="{{ url_for('hr.payroll_list') }}"
+       class="sidebar-link {% if (request.endpoint or '').startswith('hr.payroll') or request.endpoint == 'hr.payslip' %}active{% endif %}">
+      <i class="bi bi-cash-coin"></i> Payroll
+    </a>
+    {% endif %}
+
+    {# ── บัญชีรับ-จ่าย — admin/manager only ── #}
+    {% if active_module == 'cashbook' and session.role in ['admin', 'manager'] %}
+    <div class="sidebar-section">บัญชีรับ-จ่าย</div>
+    <a href="{{ url_for('cashbook.dashboard', vat='novat') }}"
+       class="sidebar-link {% if request.endpoint == 'cashbook.dashboard' %}active{% endif %}">
+      <i class="bi bi-speedometer2"></i> Dashboard
+    </a>
+    {% if is_admin %}
+    <a href="{{ url_for('cashbook.import_view') }}"
+       class="sidebar-link {% if request.endpoint == 'cashbook.import_view' %}active{% endif %}">
+      <i class="bi bi-upload"></i> นำเข้าข้อมูล
+    </a>
+    {% endif %}
+    <a href="{{ url_for('cashbook.export_view', vat='novat') }}"
+       class="sidebar-link {% if request.endpoint == 'cashbook.export_view' %}active{% endif %}">
+      <i class="bi bi-download"></i> Export (.xlsx)
+    </a>
+    {% endif %}
+
+    {# ── นำเข้าข้อมูล ── #}
+    {% if active_module == 'data' %}
     <div class="sidebar-section">นำเข้าข้อมูล</div>
     <a href="{{ url_for('import_weekly') }}"
        class="sidebar-link {% if request.endpoint == 'import_weekly' %}active{% endif %}">
@@ -148,8 +243,10 @@
        class="sidebar-link {% if (request.endpoint or '').startswith('supplier_catalogue.') %}active{% endif %}">
       <i class="bi bi-journals"></i> แคตตาล็อกผู้จัดจำหน่าย
     </a>
+    {% endif %}
 
-    {% if is_admin %}
+    {# ── ระบบ — admin only ── #}
+    {% if active_module == 'admin_module' and is_admin %}
     <div class="sidebar-section">ระบบ</div>
     <a href="{{ url_for('user_list') }}"
        class="sidebar-link {% if request.endpoint in ['user_list','user_new','user_edit'] %}active{% endif %}">

@@ -1,0 +1,167 @@
+{% extends 'base.html' %}
+{% block title %}HR Dashboard – Sendy{% endblock %}
+{% block page_title %}บุคลากร (HR){% endblock %}
+
+{% block content %}
+<div class="row g-3 mb-4">
+  {# ── Stat cards ─────────────────────────────────────────────────────── #}
+  <div class="col-6 col-md-3">
+    <div class="card text-center">
+      <div class="card-body py-3">
+        <div class="display-6 fw-bold text-primary">{{ headcount }}</div>
+        <div class="small text-muted">พนักงานที่ active</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card text-center">
+      <div class="card-body py-3">
+        <div class="display-6 fw-bold text-warning">{{ on_leave|length }}</div>
+        <div class="small text-muted">กำลังลาวันนี้</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card text-center">
+      <div class="card-body py-3">
+        <div class="display-6 fw-bold {% if probation_ending %}text-danger{% else %}text-success{% endif %}">
+          {{ probation_ending|length }}
+        </div>
+        <div class="small text-muted">ทดลองงานสิ้นสุดใน 14 วัน</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card text-center">
+      <div class="card-body py-3">
+        <div class="display-6 fw-bold {% if over_quota_alerts %}text-danger{% else %}text-success{% endif %}">
+          {{ over_quota_alerts|length }}
+        </div>
+        <div class="small text-muted">แจ้งเตือนลาเกินสิทธิ์</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4">
+  {# ── On leave today ─────────────────────────────────────────────────── #}
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header"><i class="bi bi-calendar-x me-1"></i>ลาวันนี้ ({{ today_iso }})</div>
+      <div class="card-body p-0">
+        {% if on_leave %}
+        <table class="table table-sm mb-0">
+          <thead><tr><th>รหัส</th><th>ชื่อ</th><th>ประเภทการลา</th><th>ถึง</th></tr></thead>
+          <tbody>
+            {% for r in on_leave %}
+            <tr>
+              <td class="font-mono small">{{ r.emp_code }}</td>
+              <td>{{ r.full_name }}</td>
+              <td>{{ r.leave_name }}</td>
+              <td class="small text-muted">{{ be_year(r.end_date) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="text-muted p-3 text-center small">ไม่มีพนักงานลาวันนี้</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Probation ending ───────────────────────────────────────────────── #}
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header"><i class="bi bi-hourglass-split me-1 text-warning"></i>ทดลองงานสิ้นสุดใน 14 วัน</div>
+      <div class="card-body p-0">
+        {% if probation_ending %}
+        <table class="table table-sm mb-0">
+          <thead><tr><th>รหัส</th><th>ชื่อ</th><th>วันสิ้นสุดทดลองงาน</th></tr></thead>
+          <tbody>
+            {% for r in probation_ending %}
+            <tr>
+              <td class="font-mono small">{{ r.emp_code }}</td>
+              <td>{{ r.full_name }}</td>
+              <td class="text-danger fw-semibold">{{ be_year(r.probation_end_date) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="text-muted p-3 text-center small">ไม่มีรายการ</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Payroll status ──────────────────────────────────────────────────── #}
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header"><i class="bi bi-cash-coin me-1"></i>สถานะ Payroll</div>
+      <div class="card-body p-0">
+        {% if payroll_runs %}
+        <table class="table table-sm mb-0">
+          <thead><tr><th>เดือน</th><th>บริษัท</th><th>สถานะ</th><th class="text-end">เงินสุทธิรวม</th></tr></thead>
+          <tbody>
+            {% for run in payroll_runs[:10] %}
+            <tr>
+              <td>
+                <a href="{{ url_for('hr.payroll_detail', run_id=run.id) }}" class="text-decoration-none">
+                  {{ run.year_month }}
+                </a>
+              </td>
+              <td class="small text-muted">{{ run.company_name or run.company_id }}</td>
+              <td>
+                {% if run.status == 'finalized' %}
+                  <span class="badge bg-success">finalized</span>
+                {% else %}
+                  <span class="badge bg-secondary">draft</span>
+                {% endif %}
+              </td>
+              <td class="text-end small">{{ fmt_baht(run.total_net or 0) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="text-muted p-3 text-center small">ยังไม่มี payroll run</div>
+        {% endif %}
+      </div>
+      {% if session.role == 'admin' %}
+      <div class="card-footer">
+        <a href="{{ url_for('hr.payroll_list') }}" class="btn btn-sm btn-outline-primary">
+          <i class="bi bi-plus me-1"></i>ไปหน้า Payroll
+        </a>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Over-quota alerts ──────────────────────────────────────────────── #}
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header"><i class="bi bi-exclamation-triangle me-1 text-danger"></i>ลาเกินสิทธิ์</div>
+      <div class="card-body p-0">
+        {% if over_quota_alerts %}
+        <table class="table table-sm mb-0">
+          <thead><tr><th>รหัส</th><th>ชื่อ</th><th>ประเภท</th><th class="text-end">เกิน (วัน)</th></tr></thead>
+          <tbody>
+            {% for a in over_quota_alerts %}
+            <tr>
+              <td class="font-mono small">{{ a.emp_code }}</td>
+              <td>{{ a.full_name }}</td>
+              <td>{{ a.leave_code }}</td>
+              <td class="text-end text-danger fw-semibold">{{ a.over }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="text-muted p-3 text-center small">ไม่มีรายการเกินสิทธิ์</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

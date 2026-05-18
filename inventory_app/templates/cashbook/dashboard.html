@@ -1,0 +1,266 @@
+{% extends 'base.html' %}
+{% block title %}บัญชีรับ-จ่าย – Sendy{% endblock %}
+{% block page_title %}บัญชีรับ-จ่าย{% endblock %}
+
+{% block topbar_actions %}
+<a href="{{ url_for('cashbook.export_view', vat=vat_flag) }}"
+   class="btn btn-sm btn-outline-secondary">
+  <i class="bi bi-download me-1"></i>Export
+</a>
+{% if is_admin %}
+<a href="{{ url_for('cashbook.import_view') }}"
+   class="btn btn-sm btn-primary ms-1">
+  <i class="bi bi-upload me-1"></i>นำเข้าข้อมูล
+</a>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+
+{# ── VAT toggle ─────────────────────────────────────────────────────────── #}
+<div class="mb-3">
+  <a href="{{ url_for('cashbook.dashboard', vat='novat') }}"
+     class="btn btn-sm {% if vat_flag=='novat' %}btn-primary{% else %}btn-outline-secondary{% endif %} me-1">
+    ไม่รวม VAT (NoVat)
+  </a>
+  <a href="{{ url_for('cashbook.dashboard', vat='vat') }}"
+     class="btn btn-sm {% if vat_flag=='vat' %}btn-primary{% else %}btn-outline-secondary{% endif %}">
+    รวม VAT
+  </a>
+</div>
+
+{# ── Headline P&L (excluding transfer accounts) ──────────────────────────── #}
+<div class="row g-3 mb-4">
+  <div class="col-sm-4">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#dcf2e0">
+          <i class="bi bi-arrow-down-circle" style="color:#2e7d3a"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">รายรับรวม</div>
+          <div class="stat-card-value text-success">฿{{ "{:,.2f}".format(total_income) }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#fdecee">
+          <i class="bi bi-arrow-up-circle" style="color:#c41e2a"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">รายจ่ายรวม</div>
+          <div class="stat-card-value text-danger">฿{{ "{:,.2f}".format(total_expense) }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon"
+             style="background:{% if total_balance >= 0 %}#e0f2fe{% else %}#fdecee{% endif %}">
+          <i class="bi bi-wallet2"
+             style="color:{% if total_balance >= 0 %}#0284c7{% else %}#c41e2a{% endif %}"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">คงเหลือ</div>
+          <div class="stat-card-value {% if total_balance >= 0 %}text-primary{% else %}text-danger{% endif %}">
+            ฿{{ "{:,.2f}".format(total_balance) }}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="text-subtle small mb-4">
+  <i class="bi bi-info-circle me-1"></i>
+  ตัวเลขข้างต้นไม่นับบัญชีพักเงิน/โอนระหว่างบัญชี
+  (is_transfer=1) — เป็น Operating P&L เท่านั้น
+</p>
+
+{# ── Per-account table ─────────────────────────────────────────────────────── #}
+{% if op_accounts %}
+<div class="card mb-4">
+  <div class="card-header fw-semibold">
+    <i class="bi bi-bank me-1"></i>บัญชีดำเนินการ
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>รหัส</th>
+          <th>เจ้าของ</th>
+          <th>ธนาคาร</th>
+          <th class="text-end">รายรับ</th>
+          <th class="text-end">รายจ่าย</th>
+          <th class="text-end">คงเหลือ</th>
+          <th class="text-end">#รายการ</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in op_accounts %}
+        <tr>
+          <td><span class="badge bg-secondary">{{ a.code }}</span></td>
+          <td>{{ a.account_owner_name or '—' }}</td>
+          <td class="small text-muted">{{ a.bank_name or '—' }}</td>
+          <td class="text-end text-success small">฿{{ "{:,.2f}".format(a.income) }}</td>
+          <td class="text-end text-danger small">฿{{ "{:,.2f}".format(a.expense) }}</td>
+          <td class="text-end fw-semibold small
+            {% if a.balance >= 0 %}text-primary{% else %}text-danger{% endif %}">
+            ฿{{ "{:,.2f}".format(a.balance) }}
+          </td>
+          <td class="text-end small text-muted">{{ a.txn_count }}</td>
+          <td>
+            <a href="{{ url_for('cashbook.account_ledger', account_id=a.id, vat=vat_flag) }}"
+               class="btn btn-xs btn-outline-primary btn-sm py-0 px-2 small">บัญชี</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# ── Transfer accounts section ─────────────────────────────────────────────── #}
+{% if tr_accounts %}
+<div class="card mb-4 border-secondary">
+  <div class="card-header text-muted small">
+    <i class="bi bi-arrow-left-right me-1"></i>
+    บัญชีพักเงิน/โอนระหว่างบัญชี (ไม่นับใน P&L)
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>รหัส</th>
+          <th>เจ้าของ</th>
+          <th class="text-end">รายรับ</th>
+          <th class="text-end">รายจ่าย</th>
+          <th class="text-end">คงเหลือ</th>
+          <th class="text-end">#รายการ</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in tr_accounts %}
+        <tr class="text-muted">
+          <td>
+            <span class="badge bg-secondary">{{ a.code }}</span>
+            <span class="badge bg-warning text-dark ms-1 small">transfer</span>
+          </td>
+          <td>{{ a.account_owner_name or '—' }}</td>
+          <td class="text-end small">฿{{ "{:,.2f}".format(a.income) }}</td>
+          <td class="text-end small">฿{{ "{:,.2f}".format(a.expense) }}</td>
+          <td class="text-end small">฿{{ "{:,.2f}".format(a.balance) }}</td>
+          <td class="text-end small">{{ a.txn_count }}</td>
+          <td>
+            <a href="{{ url_for('cashbook.account_ledger', account_id=a.id, vat=vat_flag) }}"
+               class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2 small">บัญชี</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if not op_accounts and not tr_accounts %}
+<div class="alert alert-info">
+  <i class="bi bi-info-circle me-1"></i>
+  ยังไม่มีข้อมูลบัญชี — กรุณา
+  {% if is_admin %}
+  <a href="{{ url_for('cashbook.import_view') }}">นำเข้าไฟล์ cashbook</a>
+  {% else %}
+  ขอให้ Admin นำเข้าข้อมูล
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="row g-4 mb-4">
+  {# ── Category summary ───────────────────────────────────────────────────── #}
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header fw-semibold">
+        <i class="bi bi-tags me-1"></i>รายรับตามหมวดหมู่
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm mb-0">
+          <tbody>
+            {% for c in income_cats %}
+            <tr>
+              <td>{{ c.category }}</td>
+              <td class="text-end text-success small">฿{{ "{:,.2f}".format(c.total) }}</td>
+            </tr>
+            {% else %}
+            <tr><td class="text-muted small" colspan="2">ไม่มีข้อมูล</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header fw-semibold">
+        <i class="bi bi-tags me-1"></i>รายจ่ายตามหมวดหมู่
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm mb-0">
+          <tbody>
+            {% for c in expense_cats %}
+            <tr>
+              <td>{{ c.category }}</td>
+              <td class="text-end text-danger small">฿{{ "{:,.2f}".format(c.total) }}</td>
+            </tr>
+            {% else %}
+            <tr><td class="text-muted small" colspan="2">ไม่มีข้อมูล</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Monthly trend ─────────────────────────────────────────────────────────── #}
+{% if monthly %}
+<div class="card mb-4">
+  <div class="card-header fw-semibold">
+    <i class="bi bi-calendar3 me-1"></i>สรุปรายเดือน (ไม่รวมบัญชีพักเงิน)
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>เดือน</th>
+          <th class="text-end">รายรับ</th>
+          <th class="text-end">รายจ่าย</th>
+          <th class="text-end">คงเหลือ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in monthly %}
+        {% set bal = m.income - m.expense %}
+        <tr>
+          <td class="small">{{ m.month }}</td>
+          <td class="text-end text-success small">฿{{ "{:,.2f}".format(m.income) }}</td>
+          <td class="text-end text-danger small">฿{{ "{:,.2f}".format(m.expense) }}</td>
+          <td class="text-end fw-semibold small
+            {% if bal >= 0 %}text-primary{% else %}text-danger{% endif %}">
+            ฿{{ "{:,.2f}".format(bal) }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

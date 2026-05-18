@@ -52,7 +52,7 @@ CREATE TABLE companies (
 
 INSERT INTO companies (code, name_th, short_name) VALUES
     ('BSN', 'บุญสวัสดิ์ นำชัย', 'BSN'),
-    ('SD',  'เซ็นไดเทรดเดิ้ง',  'Sendai Trading');
+    ('SD',  'เซ็นไดเทรดดิ้ง',  'Sendai Trading');
 
 -- ── expense_categories ────────────────────────────────────────────────────
 CREATE TABLE expense_categories (

@@ -1,0 +1,96 @@
+{% extends 'base.html' %}
+{% block title %}Payroll – Sendy HR{% endblock %}
+{% block page_title %}Payroll Runs{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  {# ── Generate new run (admin only) ──────────────────────────────────── #}
+  {% if session.role == 'admin' %}
+  <div class="col-md-4">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-play-circle me-1"></i>สร้าง Payroll Run</div>
+      <div class="card-body">
+        <form method="post" action="{{ url_for('hr.payroll_generate') }}">
+          <div class="mb-2">
+            <label class="form-label small">เดือน (YYYY-MM) <span class="text-danger">*</span></label>
+            <input type="month" name="year_month" class="form-control form-control-sm"
+                   value="{{ current_ym }}" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small">บริษัท <span class="text-danger">*</span></label>
+            <select name="company_id" class="form-select form-select-sm" required>
+              {% for co in companies %}
+              <option value="{{ co.id }}">{{ co.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary btn-sm w-100">
+            <i class="bi bi-lightning me-1"></i>Generate / Refresh Draft
+          </button>
+          <div class="mt-2 text-muted small">
+            หาก draft ของเดือน+บริษัทนั้นมีอยู่แล้ว ระบบจะ rebuild items ใหม่.
+            Run ที่ finalized แล้วจะไม่ถูกแตะ.
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Runs list ───────────────────────────────────────────────────────── #}
+  <div class="{% if session.role == 'admin' %}col-md-8{% else %}col-12{% endif %}">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-list-ul me-1"></i>รายการ Payroll Runs</div>
+      <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>เดือน</th>
+              <th>บริษัท</th>
+              <th class="text-center">พนักงาน</th>
+              <th class="text-end">เงินสุทธิรวม</th>
+              <th>สถานะ</th>
+              <th>วันที่ finalize</th>
+              <th class="text-end"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for run in runs %}
+            <tr>
+              <td class="font-mono small text-muted">{{ run.id }}</td>
+              <td class="fw-semibold">{{ run.year_month }}</td>
+              <td class="small text-muted">{{ run.company_name or run.company_id }}</td>
+              <td class="text-center small">{{ run.item_count or 0 }}</td>
+              <td class="text-end">{{ fmt_baht(run.total_net or 0) }}</td>
+              <td>
+                {% if run.status == 'finalized' %}
+                  <span class="badge bg-success">finalized</span>
+                {% else %}
+                  <span class="badge bg-secondary">draft</span>
+                {% endif %}
+              </td>
+              <td class="small text-muted">{{ be_year(run.finalized_at) if run.finalized_at else '–' }}</td>
+              <td class="text-end">
+                <a href="{{ url_for('hr.payroll_detail', run_id=run.id) }}"
+                   class="btn btn-sm btn-outline-primary">
+                  <i class="bi bi-eye"></i>
+                </a>
+                <a href="{{ url_for('hr.payroll_export', run_id=run.id) }}"
+                   class="btn btn-sm btn-outline-secondary">
+                  <i class="bi bi-download"></i>
+                </a>
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="8" class="text-center text-muted py-4">ยังไม่มี payroll run</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
