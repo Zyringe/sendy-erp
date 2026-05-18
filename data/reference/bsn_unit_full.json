@@ -1,7 +1,10 @@
 {
-  "_doc": "BSN unit acronym -> full Thai. Confirmed by Put 2026-05-18 (HIGH+MED applied; UNKNOWN excluded -> apply script skips conversion for these and lists them). Source: data/exports/acronym_map_review.csv review.",
-  "_unknown_skip": ["ปน", "กส", "บล"],
+  "_doc": "BSN unit acronym -> full Thai. Confirmed by Put 2026-05-18. All 3 former unknowns resolved 2026-05-18: ปน=ปื้น (saws), กส=กระสอบ (20kg พุก sack), บล=แผง (low-confidence, single row pid467 รีเวทแผง). Source: data/exports/acronym_map_review.csv + Put confirmation.",
+  "_unknown_skip": [],
   "map": {
+    "ปน": "ปื้น",
+    "กส": "กระสอบ",
+    "บล": "แผง",
     "กล": "กล่อง",
     "อน": "อัน",
     "ผน": "แผ่น",
