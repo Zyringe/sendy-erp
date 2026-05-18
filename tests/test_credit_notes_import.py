@@ -377,3 +377,261 @@ def test_three_run_idempotency(tmp_path, tmp_db_conn):
     assert net_after_r1 == pytest.approx(net_before), (
         "Σ SR net in sales_transactions must not increase from import"
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tests 11–17: populate_sr_writeoffs + written_off_summary
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Fixture topology
+# ─────────────────
+# SR9900001  ref→IV9900001  which EXISTS in sales_transactions  → NOT written off
+# SR9900002  ref→IV9900999  which does NOT exist                → pre_system
+# SR9900003  ref→NULL                                           → no_ref
+#
+# The "real" IV9900001 is seeded as a non-SR sales_transactions row so the
+# populate logic can find it via doc_base lookup.
+#
+# Migration note: migration 060 (sr_writeoffs table) must be applied to the
+# temp DB before any of these tests run.  tmp_db_conn copies the live DB at
+# test-collection time, which may predate migration 060.  Each test calls
+# _ensure_060(conn) to apply the migration DDL if the table is absent.
+
+def _ensure_060(conn):
+    """Create sr_writeoffs + indexes in the temp DB if the table doesn't exist yet.
+    Applied inline rather than via run_pending_migrations to work safely against
+    both tmp_db (copy of live, may predate 060) and empty_db (schema clone with
+    empty applied_migrations, which triggers the bootstrap-backfill path and would
+    skip running 060's DDL even when the table is absent)."""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sr_writeoffs'"
+    ).fetchone()
+    if exists is None:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS sr_writeoffs (
+                id              INTEGER PRIMARY KEY,
+                sr_doc_base     TEXT    NOT NULL,
+                sr_doc_no       TEXT    NOT NULL,
+                reason          TEXT    NOT NULL CHECK(reason IN ('pre_system','no_ref')),
+                ref_invoice_raw TEXT,
+                net_amount      REAL    NOT NULL DEFAULT 0.0,
+                customer        TEXT,
+                sr_date_iso     TEXT,
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+                UNIQUE(sr_doc_no)
+            );
+            CREATE INDEX IF NOT EXISTS idx_srwo_doc_base ON sr_writeoffs(sr_doc_base);
+            CREATE INDEX IF NOT EXISTS idx_srwo_reason   ON sr_writeoffs(reason);
+        """)
+
+
+def _seed_real_iv(conn, doc_base="IV9900001", net=500.0):
+    """Seed a minimal (non-SR) invoice row so ref-lookup can find it."""
+    conn.execute(
+        """INSERT INTO sales_transactions
+               (date_iso, doc_no, doc_base, customer, qty, net, vat_type,
+                discount, total, unit_price, synced_to_stock)
+           VALUES ('2024-06-01', ?, ?, 'ลูกค้าทดสอบ', 1.0, ?, 1,
+                   '', ?, 0.0, 0)""",
+        (doc_base + "-1", doc_base, net, net)
+    )
+    conn.commit()
+
+
+def _seed_sr_for_writeoff(conn, doc_no, doc_base, ref_invoice, net=200.0,
+                           customer="ร้านทดสอบZ"):
+    """Seed an SR row with the given ref_invoice (may be None)."""
+    conn.execute(
+        """INSERT INTO sales_transactions
+               (date_iso, doc_no, doc_base, customer, qty, net, vat_type,
+                ref_invoice, discount, total, unit_price, synced_to_stock)
+           VALUES ('2024-07-01', ?, ?, ?, 1.0, ?, 1, ?,
+                   '', ?, 0.0, 0)""",
+        (doc_no, doc_base, customer, net, ref_invoice, net)
+    )
+    conn.commit()
+
+
+def _wo_count(conn):
+    return conn.execute("SELECT COUNT(*) FROM sr_writeoffs").fetchone()[0]
+
+
+def _wo_rows(conn):
+    return conn.execute(
+        "SELECT * FROM sr_writeoffs ORDER BY sr_doc_no"
+    ).fetchall()
+
+
+# ── Test 11: classification — real-IV ref excluded, pre_system + no_ref written off ──
+
+def test_populate_classifies_correctly(empty_db_conn):
+    """populate_sr_writeoffs classifies the three archetypal SR docs correctly."""
+    import import_credit_notes as icn
+
+    conn = empty_db_conn
+    _ensure_060(conn)
+    # IV9900001 exists → SR9900001 must NOT be written off
+    _seed_real_iv(conn, "IV9900001", net=500.0)
+    _seed_sr_for_writeoff(conn, "SR9900001-1", "SR9900001", "IV9900001", net=100.0)
+
+    # IV9900999 does NOT exist → pre_system
+    _seed_sr_for_writeoff(conn, "SR9900002-1", "SR9900002", "IV9900999", net=200.0)
+
+    # NULL ref → no_ref
+    _seed_sr_for_writeoff(conn, "SR9900003-1", "SR9900003", None, net=300.0)
+
+    summary = icn.populate_sr_writeoffs(conn=conn)
+    conn.commit()
+
+    assert summary["pre_system"] == 1, f"Expected 1 pre_system; got {summary}"
+    assert summary["no_ref"] == 1, f"Expected 1 no_ref; got {summary}"
+    # Only 2 rows in sr_writeoffs (the excluded real-IV one must NOT appear)
+    rows = _wo_rows(conn)
+    assert len(rows) == 2, f"Expected 2 writeoff rows; got {len(rows)}: {[dict(r) for r in rows]}"
+
+    reasons = {r["sr_doc_no"]: r["reason"] for r in rows}
+    assert "SR9900002-1" in reasons
+    assert reasons["SR9900002-1"] == "pre_system"
+    assert "SR9900003-1" in reasons
+    assert reasons["SR9900003-1"] == "no_ref"
+    # Real-IV SR must be absent
+    assert "SR9900001-1" not in reasons
+
+
+# ── Test 12: excluded SR (ref → real IV) is never written off ─────────────────
+
+def test_populate_excludes_matched_sr(empty_db_conn):
+    """An SR whose ref_invoice matches a real IV row is never inserted into sr_writeoffs."""
+    import import_credit_notes as icn
+
+    conn = empty_db_conn
+    _ensure_060(conn)
+    _seed_real_iv(conn, "IV9900001", net=500.0)
+    _seed_sr_for_writeoff(conn, "SR9900001-1", "SR9900001", "IV9900001", net=100.0)
+
+    summary = icn.populate_sr_writeoffs(conn=conn)
+    conn.commit()
+
+    assert summary["pre_system"] == 0
+    assert summary["no_ref"] == 0
+    assert _wo_count(conn) == 0
+
+
+# ── Test 13: idempotency — running twice produces the same rows, no duplicates ──
+
+def test_populate_idempotent(empty_db_conn):
+    """Running populate_sr_writeoffs twice: second run is a complete no-op on rows."""
+    import import_credit_notes as icn
+
+    conn = empty_db_conn
+    _ensure_060(conn)
+    _seed_sr_for_writeoff(conn, "SR9900002-1", "SR9900002", "IV9900999", net=200.0)
+    _seed_sr_for_writeoff(conn, "SR9900003-1", "SR9900003", None, net=300.0)
+
+    summary1 = icn.populate_sr_writeoffs(conn=conn)
+    conn.commit()
+    count_after_run1 = _wo_count(conn)
+
+    summary2 = icn.populate_sr_writeoffs(conn=conn)
+    conn.commit()
+    count_after_run2 = _wo_count(conn)
+
+    assert count_after_run2 == count_after_run1, (
+        f"Run2 must not add rows; run1={count_after_run1}, run2={count_after_run2}"
+    )
+    # Summaries should reflect the same totals regardless of which run
+    assert summary1["pre_system"] == summary2["pre_system"]
+    assert summary1["no_ref"] == summary2["no_ref"]
+    assert abs(summary1["total_net"] - summary2["total_net"]) < 0.01
+
+
+# ── Test 14: net amounts stored and summed correctly ──────────────────────────
+
+def test_populate_net_amounts(empty_db_conn):
+    """net_amount on each row matches the SR's net; total_net sums both."""
+    import import_credit_notes as icn
+
+    conn = empty_db_conn
+    _ensure_060(conn)
+    _seed_sr_for_writeoff(conn, "SR9900002-1", "SR9900002", "IV9900999", net=250.0)
+    _seed_sr_for_writeoff(conn, "SR9900003-1", "SR9900003", None, net=350.0)
+
+    summary = icn.populate_sr_writeoffs(conn=conn)
+    conn.commit()
+
+    rows = {r["sr_doc_no"]: r for r in _wo_rows(conn)}
+    assert abs(rows["SR9900002-1"]["net_amount"] - 250.0) < 0.01
+    assert abs(rows["SR9900003-1"]["net_amount"] - 350.0) < 0.01
+    assert abs(summary["total_net"] - 600.0) < 0.01
+
+
+# ── Test 15: written_off_summary returns correct counts and Σ net ──────────────
+
+def test_written_off_summary(empty_db_conn):
+    """written_off_summary() reads sr_writeoffs and returns counts + Σ net per reason."""
+    import import_credit_notes as icn
+
+    conn = empty_db_conn
+    _ensure_060(conn)
+    _seed_sr_for_writeoff(conn, "SR9900002-1", "SR9900002", "IV9900999", net=200.0)
+    _seed_sr_for_writeoff(conn, "SR9900003-1", "SR9900003", None, net=300.0)
+
+    icn.populate_sr_writeoffs(conn=conn)
+    conn.commit()
+
+    s = icn.written_off_summary(conn=conn)
+    assert s["pre_system"]["count"] == 1
+    assert abs(s["pre_system"]["net"] - 200.0) < 0.01
+    assert s["no_ref"]["count"] == 1
+    assert abs(s["no_ref"]["net"] - 300.0) < 0.01
+    assert s["total"]["count"] == 2
+    assert abs(s["total"]["net"] - 500.0) < 0.01
+
+
+# ── Test 16: written_off_summary on empty table returns zero counts ────────────
+
+def test_written_off_summary_empty(empty_db_conn):
+    """written_off_summary() returns zeroes when sr_writeoffs is empty."""
+    import import_credit_notes as icn
+
+    conn = empty_db_conn
+    _ensure_060(conn)
+    s = icn.written_off_summary(conn=conn)
+    assert s["pre_system"]["count"] == 0
+    assert s["no_ref"]["count"] == 0
+    assert s["total"]["count"] == 0
+    assert s["total"]["net"] == 0.0
+
+
+# ── Test 17: payments_alloc AR math unchanged after populate ──────────────────
+
+def test_populate_does_not_change_ar(empty_db_conn):
+    """populate_sr_writeoffs writes to sr_writeoffs only; payments_alloc results unchanged."""
+    import import_credit_notes as icn
+    import payments_alloc as pa
+
+    conn = empty_db_conn
+    _ensure_060(conn)
+
+    # Seed a real invoice + matched SR + unattributable SR, then capture AR
+    _seed_real_iv(conn, "IV9900001", net=1000.0)
+    _seed_sr_for_writeoff(conn, "SR9900001-1", "SR9900001", "IV9900001", net=100.0)
+    _seed_sr_for_writeoff(conn, "SR9900002-1", "SR9900002", "IV9900999", net=200.0)
+    _seed_sr_for_writeoff(conn, "SR9900003-1", "SR9900003", None, net=300.0)
+
+    invs_before = pa.invoice_settlement(conn=conn)
+    billed_before = round(sum(i["billed"] for i in invs_before), 2)
+    cn_before = round(sum(i["credit_notes"] for i in invs_before), 2)
+    outstanding_before = round(sum(i["outstanding"] for i in invs_before), 2)
+
+    icn.populate_sr_writeoffs(conn=conn)
+    conn.commit()
+
+    invs_after = pa.invoice_settlement(conn=conn)
+    billed_after = round(sum(i["billed"] for i in invs_after), 2)
+    cn_after = round(sum(i["credit_notes"] for i in invs_after), 2)
+    outstanding_after = round(sum(i["outstanding"] for i in invs_after), 2)
+
+    assert billed_after == pytest.approx(billed_before), "billed must not change"
+    assert cn_after == pytest.approx(cn_before), "credit_notes must not change"
+    assert outstanding_after == pytest.approx(outstanding_before), "outstanding must not change"

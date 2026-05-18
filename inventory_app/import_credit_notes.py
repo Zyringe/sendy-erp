@@ -1,6 +1,14 @@
 """
 Idempotent importer for the standalone Express ใบลดหนี้ (SR / credit-note) file.
 
+Also provides:
+  populate_sr_writeoffs(conn=None) -> dict
+      Scan sales_transactions for unattributable SR docs and persist a write-off
+      marker in sr_writeoffs.  See that function's docstring for full details.
+
+  written_off_summary(conn=None) -> dict
+      Read-only aggregate over sr_writeoffs for reporting.
+
 Design
 ------
 The standalone file (cumulative, Jan 2024 → present) overlaps entirely with SR
@@ -225,3 +233,159 @@ def _process_entry(conn, entry, ref_conflicts):
         )
     )
     return {"outcome": "new_recorded"}
+
+
+# ── SR write-off helpers ──────────────────────────────────────────────────────
+
+def populate_sr_writeoffs(conn=None, db_path=None):
+    """Scan sales_transactions for unattributable SR docs and persist write-off
+    markers in sr_writeoffs.
+
+    Classification logic (per doc_no row):
+      - no_ref      : ref_invoice IS NULL or '' (after strip)
+      - pre_system  : ref_invoice non-empty but no sales_transactions row has
+                      doc_base = that ref_invoice (pre-cutoff or HS… refs)
+      - excluded    : ref_invoice matches a real doc_base in sales_transactions
+                      → NOT written off; these SR credit notes net correctly
+                      through payments_alloc
+
+    Grain: one sr_writeoffs row per sales_transactions doc_no (line level).
+    This is the stable identity key used throughout the pipeline.
+
+    Idempotency: INSERT … ON CONFLICT(sr_doc_no) DO UPDATE net_amount/reason so
+    re-running is safe and produces the same rows.  Only non-excluded SRs are
+    touched.
+
+    Connection contract: accepts optional caller-supplied conn (used, not
+    committed/closed) or opens/owns one via config.DATABASE_PATH.
+
+    Returns
+    -------
+    dict with keys:
+      pre_system  — count of rows classified as pre_system (this run)
+      no_ref      — count of rows classified as no_ref (this run)
+      total_net   — Σ net_amount across all rows upserted (this run)
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = _open_conn(db_path)
+
+    # Fetch all SR rows from sales_transactions
+    sr_rows = conn.execute(
+        """SELECT doc_no, doc_base, date_iso, customer, ref_invoice, net
+           FROM sales_transactions
+           WHERE doc_base LIKE 'SR%'
+        """
+    ).fetchall()
+
+    # Build a set of all doc_base values that exist in sales_transactions so we
+    # can quickly check whether a ref_invoice points to a real in-system invoice.
+    # We only need non-SR doc_bases (an SR pointing to another SR is pre_system).
+    real_doc_bases = {
+        row[0] for row in conn.execute(
+            "SELECT DISTINCT doc_base FROM sales_transactions WHERE doc_base NOT LIKE 'SR%'"
+        ).fetchall()
+    }
+
+    pre_system_count = 0
+    no_ref_count = 0
+    total_net = 0.0
+
+    for row in sr_rows:
+        doc_no = row["doc_no"]
+        doc_base = row["doc_base"]
+        ref_raw = (row["ref_invoice"] or "").strip()
+        net_amount = row["net"] or 0.0
+
+        # Determine classification
+        if not ref_raw:
+            reason = "no_ref"
+        elif ref_raw in real_doc_bases:
+            # Ref matches a real in-system invoice — not unattributable; skip
+            continue
+        else:
+            reason = "pre_system"
+
+        # Upsert into sr_writeoffs
+        conn.execute(
+            """INSERT INTO sr_writeoffs
+                   (sr_doc_base, sr_doc_no, reason, ref_invoice_raw,
+                    net_amount, customer, sr_date_iso)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(sr_doc_no) DO UPDATE SET
+                   reason          = excluded.reason,
+                   ref_invoice_raw = excluded.ref_invoice_raw,
+                   net_amount      = excluded.net_amount,
+                   customer        = excluded.customer,
+                   sr_date_iso     = excluded.sr_date_iso
+            """,
+            (
+                doc_base,
+                doc_no,
+                reason,
+                row["ref_invoice"],
+                net_amount,
+                row["customer"],
+                row["date_iso"],
+            )
+        )
+
+        if reason == "pre_system":
+            pre_system_count += 1
+        else:
+            no_ref_count += 1
+        total_net += net_amount
+
+    if own_conn:
+        conn.commit()
+        conn.close()
+
+    return {
+        "pre_system": pre_system_count,
+        "no_ref": no_ref_count,
+        "total_net": round(total_net, 2),
+    }
+
+
+def written_off_summary(conn=None, db_path=None):
+    """Read-only aggregate over sr_writeoffs.
+
+    Returns
+    -------
+    dict:
+      pre_system  — {'count': int, 'net': float}
+      no_ref      — {'count': int, 'net': float}
+      total       — {'count': int, 'net': float}
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = _open_conn(db_path)
+
+    rows = conn.execute(
+        """SELECT reason,
+                  COUNT(*)        AS cnt,
+                  ROUND(SUM(net_amount), 2) AS net_sum
+           FROM sr_writeoffs
+           GROUP BY reason
+        """
+    ).fetchall()
+
+    if own_conn:
+        conn.close()
+
+    result = {
+        "pre_system": {"count": 0, "net": 0.0},
+        "no_ref": {"count": 0, "net": 0.0},
+        "total": {"count": 0, "net": 0.0},
+    }
+    for r in rows:
+        reason = r["reason"]
+        cnt = int(r["cnt"])
+        net = float(r["net_sum"] or 0.0)
+        if reason in result:
+            result[reason]["count"] = cnt
+            result[reason]["net"] = net
+        result["total"]["count"] += cnt
+        result["total"]["net"] = round(result["total"]["net"] + net, 2)
+
+    return result
