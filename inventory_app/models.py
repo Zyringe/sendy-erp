@@ -859,27 +859,40 @@ def delete_transactions_by_ids(ids):
 
 # ── Product Code Mapping (BSN ↔ internal SKU) ─────────────────────────────────
 
-def get_mapping(bsn_code: str):
+def get_mapping(bsn_code: str, bsn_unit: str = None):
+    """Resolve a BSN code's mapping. Unit-aware (mig 061): an exact
+    (bsn_code, bsn_unit) override row beats the bsn_unit='' catch-all.
+    bsn_unit=None (or '') → catch-all only = legacy single-mapping behavior.
+    """
     conn = get_connection()
     row = conn.execute(
-        "SELECT * FROM product_code_mapping WHERE bsn_code = ?", (bsn_code,)
+        """SELECT * FROM product_code_mapping
+            WHERE bsn_code = ? AND bsn_unit IN (?, '')
+            ORDER BY (bsn_unit = '')      -- exact unit (0) before catch-all (1)
+            LIMIT 1""",
+        (bsn_code, bsn_unit or '')
     ).fetchone()
     conn.close()
     return row
 
 
 def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
-                   ignore_reason=None):
+                   ignore_reason=None, bsn_unit=''):
+    """Upsert a mapping row. bsn_unit='' (default) = the catch-all row, so
+    every existing caller keeps writing/updating exactly that row (unchanged
+    behavior). A non-empty bsn_unit creates/updates a per-unit override."""
     conn = get_connection()
     conn.execute("""
-        INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, is_ignored, ignore_reason)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(bsn_code) DO UPDATE SET
+        INSERT INTO product_code_mapping
+            (bsn_code, bsn_name, product_id, is_ignored, ignore_reason, bsn_unit)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(bsn_code, bsn_unit) DO UPDATE SET
             bsn_name      = excluded.bsn_name,
             product_id    = excluded.product_id,
             is_ignored    = excluded.is_ignored,
             ignore_reason = excluded.ignore_reason
-    """, (bsn_code, bsn_name, product_id, is_ignored, ignore_reason))
+    """, (bsn_code, bsn_name, product_id, is_ignored, ignore_reason,
+          bsn_unit or ''))
     conn.commit()
     conn.close()
 
@@ -920,11 +933,19 @@ def resolve_pending_mappings(conn):
         ('sales_transactions',    'sales'),
         ('purchase_transactions', 'purchase'),
     ):
+        # Unit-aware (mig 061): an exact (bsn_code, unit) override row beats
+        # the bsn_unit='' catch-all. COALESCE so a NULL ledger unit still
+        # matches the catch-all. For codes with only a catch-all row this is
+        # identical to the pre-061 query (zero behavior change).
         conn.execute(f"""
             UPDATE {table}
             SET product_id = (
                 SELECT m.product_id FROM product_code_mapping m
-                WHERE m.bsn_code = {table}.bsn_code AND m.product_id IS NOT NULL
+                WHERE m.bsn_code = {table}.bsn_code
+                  AND m.bsn_unit IN (COALESCE({table}.unit, ''), '')
+                  AND m.product_id IS NOT NULL
+                ORDER BY (m.bsn_unit = '')
+                LIMIT 1
             )
             WHERE product_id IS NULL AND bsn_code IS NOT NULL
         """)
@@ -1005,10 +1026,15 @@ def import_weekly(entries: list, file_type: str, filename: str) -> dict:
                 conn.execute(f"DELETE FROM {table} WHERE id=?", (old['id'],))
             overwritten += len(old_rows)
 
-        # Resolve product_id via mapping table
+        # Resolve product_id via mapping table — unit-aware (mig 061):
+        # exact (bsn_code, unit) override beats the bsn_unit='' catch-all.
+        # e['unit'] is already acronym-normalised above.
         mapping = conn.execute(
-            "SELECT product_id, is_ignored FROM product_code_mapping WHERE bsn_code = ?",
-            (e['product_code_raw'],)
+            """SELECT product_id, is_ignored FROM product_code_mapping
+                WHERE bsn_code = ? AND bsn_unit IN (?, '')
+                ORDER BY (bsn_unit = '')
+                LIMIT 1""",
+            (e['product_code_raw'], e.get('unit') or '')
         ).fetchone()
         product_id = mapping['product_id'] if mapping else None
         is_ignored = mapping['is_ignored'] if mapping else 0
@@ -4110,11 +4136,13 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
             (new_pid,)
         )
 
-        # Upsert mapping (bsn_code → new product)
+        # Upsert mapping (bsn_code → new product). mig 061: write the
+        # bsn_unit='' catch-all (per-unit overrides managed elsewhere).
         conn.execute("""
-            INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, is_ignored)
-            VALUES (?, ?, ?, 0)
-            ON CONFLICT(bsn_code) DO UPDATE SET
+            INSERT INTO product_code_mapping
+                (bsn_code, bsn_name, product_id, is_ignored, bsn_unit)
+            VALUES (?, ?, ?, 0, '')
+            ON CONFLICT(bsn_code, bsn_unit) DO UPDATE SET
                 product_id = excluded.product_id,
                 is_ignored = 0
         """, (sug['bsn_code'], sug['bsn_name'], new_pid))

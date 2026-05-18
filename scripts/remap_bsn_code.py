@@ -13,6 +13,11 @@ preserved — this is NOT merge_product).
 unit_conversions are left as-is (they are product+unit scoped; the orphan
 already has the right ones). Dry-run by default. --apply commits. Unique
 backup first.
+
+NOTE: this repoints the WHOLE code (the bsn_unit='' catch-all). For a code
+that must route to DIFFERENT products depending on the SOLD UNIT (a real
+ตัว/แผง SKU split, mig 061), use scripts/apply_unit_aware_remap.py instead —
+it writes per-(bsn_code, bsn_unit) override rows. The two are complementary.
 """
 from __future__ import annotations
 
