@@ -33,9 +33,28 @@ def _cols(conn):
         "PRAGMA table_info(product_code_mapping)")}
 
 
+def _reset_pre061(conn):
+    """Force product_code_mapping back to the exact PRE-061 shape so the
+    test is deterministic whether or not live has migration 061 applied."""
+    conn.executescript("""
+        DROP TABLE IF EXISTS product_code_mapping;
+        CREATE TABLE product_code_mapping (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            bsn_code    TEXT UNIQUE NOT NULL,
+            bsn_name    TEXT NOT NULL,
+            product_id  INTEGER REFERENCES products(id),
+            is_ignored  INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        ALTER TABLE product_code_mapping ADD COLUMN ignore_reason TEXT;
+    """)
+    conn.commit()
+
+
 def test_up_adds_bsn_unit_and_composite_unique(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    _reset_pre061(conn)
     _apply(conn, MIG)
 
     cols = _cols(conn)
@@ -70,6 +89,7 @@ def test_up_adds_bsn_unit_and_composite_unique(tmp_db):
 def test_up_backfills_catchall_and_preserves_data(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    _reset_pre061(conn)
     # seed a row with ignore_reason to prove preservation
     conn.execute("INSERT INTO product_code_mapping "
                  "(bsn_code,bsn_name,product_id,is_ignored,ignore_reason) "
@@ -99,6 +119,7 @@ def test_up_backfills_catchall_and_preserves_data(tmp_db):
 def test_down_restores_single_unique_and_drops_overrides(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    _reset_pre061(conn)
     _apply(conn, MIG)
     pid = conn.execute(
         "SELECT id FROM products WHERE is_active=1 LIMIT 1").fetchone()[0]
