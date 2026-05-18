@@ -963,11 +963,18 @@ def import_weekly(entries: list, file_type: str, filename: str) -> dict:
                         (old['product_id'], old['doc_no'])
                     )
                     conn.execute("DELETE FROM stock_levels WHERE product_id=?", (old['product_id'],))
+                    # Use a literal product_id, not the SELECTed column: if
+                    # no transactions remain, "SELECT product_id, SUM(...)"
+                    # yields a (NULL, 0) row → stock_levels.product_id is an
+                    # INTEGER PK so NULL auto-assigns a rowid not in
+                    # products → orphan row (silent when FK off) / FK-fail
+                    # (FK on, as in get_connection). Subquery keeps it safe.
                     conn.execute("""
                         INSERT INTO stock_levels (product_id, quantity)
-                        SELECT product_id, COALESCE(SUM(quantity_change), 0)
-                        FROM transactions WHERE product_id=?
-                    """, (old['product_id'],))
+                        VALUES (?, COALESCE(
+                            (SELECT SUM(quantity_change) FROM transactions
+                             WHERE product_id=?), 0))
+                    """, (old['product_id'], old['product_id']))
                 conn.execute(f"DELETE FROM {table} WHERE id=?", (old['id'],))
             overwritten += len(old_rows)
 
@@ -2067,7 +2074,16 @@ def get_purchases(product_id=None, date_from=None, date_to=None, page=1, per_pag
 # ── Payment Status ─────────────────────────────────────────────────────────────
 
 def parse_payment_csv(filepath):
-    """Parse การรับชำระหนี้ CSV (cp874). Returns list of RE dicts with iv_list."""
+    """Parse การรับชำระหนี้ CSV (cp874). Returns list of RE dicts with iv_list.
+
+    iv_list shape: list of dicts, each {'iv_no': str, 'amount': float}.
+
+    total (per RE record): sum of iv_list amounts. The RE header line carries
+    what appear to be matching totals but they vary in layout depending on
+    whether a cheque column is present, so the sum-of-IVs is the reliable
+    source of truth. A receipt total equals what it applied across invoices,
+    so sum-of-IVs is mathematically correct and avoids header-column ambiguity.
+    """
     import re as _re
     records = []
     current = None
@@ -2081,6 +2097,7 @@ def parse_payment_csv(filepath):
             m = _re.match(r'^(\d{2}/\d{2}/\d{2})\s+(\*?RE\S+)\s+(.+?)\s{2,}(\S+)\s', text)
             if m:
                 if current:
+                    current['total'] = sum(iv['amount'] for iv in current['iv_list'])
                     records.append(current)
                 d, re_no, customer, sp = m.groups()
                 cancelled = re_no.startswith('*')
@@ -2097,18 +2114,35 @@ def parse_payment_csv(filepath):
                     'iv_list': []
                 }
                 continue
-            # IV sub-row
-            m2 = _re.match(r'\s*(IV\S+)\s+\d{2}/\d{2}/\d{2}\s+[\d,]+\.\d{2}', text)
+            # IV sub-row — capture both the IV number (group 1) and the amount
+            # (group 2: may contain thousands commas, e.g. "1,234.56").
+            m2 = _re.match(r'\s*(IV\S+)\s+\d{2}/\d{2}/\d{2}\s+([\d,]+\.\d{2})', text)
             if m2 and current:
-                current['iv_list'].append(m2.group(1))
+                iv_no = m2.group(1)
+                amount = float(m2.group(2).replace(',', ''))
+                current['iv_list'].append({'iv_no': iv_no, 'amount': amount})
     if current:
+        current['total'] = sum(iv['amount'] for iv in current['iv_list'])
         records.append(current)
     return records
 
 
 def import_payments(filepath):
     """Import payment CSV into received_payments + paid_invoices tables.
-    Returns dict with imported, skipped, total counts."""
+
+    Uses idempotent upserts (ON CONFLICT DO UPDATE) so re-importing the same
+    file refreshes amounts without creating duplicate rows.
+
+    Returns dict:
+      imported  — RE records written (new inserts only; upserted-existing not counted)
+      skipped   — RE records that raised an exception during import
+      total     — total RE records parsed from the file
+
+    Note: 'skipped' no longer counts RE records that already existed (those are
+    silently upserted). It only counts records that failed with an exception.
+    Legacy rows imported before migration 058 have amount/total = NULL; they
+    are updated to carry the real amounts only when that RE is re-imported.
+    """
     records = parse_payment_csv(filepath)
     conn = get_connection()
     imported = 0
@@ -2116,19 +2150,36 @@ def import_payments(filepath):
     for r in records:
         try:
             cur = conn.execute(
-                "INSERT OR IGNORE INTO received_payments (re_no, date_iso, customer, salesperson, cancelled) VALUES (?,?,?,?,?)",
-                (r['re_no'], r['date_iso'], r['customer'], r['salesperson'], 1 if r['cancelled'] else 0)
+                """INSERT INTO received_payments
+                       (re_no, date_iso, customer, salesperson, cancelled, total)
+                   VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(re_no) DO UPDATE SET
+                       date_iso=excluded.date_iso,
+                       customer=excluded.customer,
+                       salesperson=excluded.salesperson,
+                       cancelled=excluded.cancelled,
+                       total=excluded.total""",
+                (r['re_no'], r['date_iso'], r['customer'], r['salesperson'],
+                 1 if r['cancelled'] else 0, r.get('total'))
             )
-            if cur.lastrowid and cur.rowcount:
-                re_id = cur.lastrowid
-                for iv in r['iv_list']:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO paid_invoices (re_id, iv_no) VALUES (?,?)",
-                        (re_id, iv)
-                    )
+            re_id = cur.lastrowid
+            if not re_id:
+                # ON CONFLICT branch: lastrowid is 0 for UPDATE — fetch the real id
+                re_id = conn.execute(
+                    "SELECT id FROM received_payments WHERE re_no=?", (r['re_no'],)
+                ).fetchone()[0]
+
+            new_insert = bool(cur.rowcount and cur.lastrowid)
+            for iv in r['iv_list']:
+                conn.execute(
+                    """INSERT INTO paid_invoices (re_id, iv_no, amount)
+                       VALUES (?,?,?)
+                       ON CONFLICT(re_id, iv_no) DO UPDATE SET
+                           amount=excluded.amount""",
+                    (re_id, iv['iv_no'], iv['amount'])
+                )
+            if new_insert:
                 imported += 1
-            else:
-                skipped += 1
         except Exception:
             skipped += 1
     conn.commit()
@@ -3438,6 +3489,186 @@ def recalculate_waccs_for_products(product_ids):
         recalculate_product_wacc(pid, conn)
     conn.commit()
     conn.close()
+
+
+# ── Accounting Summary ────────────────────────────────────────────────────────
+
+def get_accounting_summary(date_from=None, date_to=None):
+    """
+    Aggregate profit / cost / expenses / commission for the /accounting page.
+
+    date_from / date_to: 'YYYY-MM-DD' strings.
+    Defaults to the most recent month that has sales data.
+
+    Revenue  = SUM(net) from sales_transactions          — pre-VAT, post-doc-discount
+    COGS     = SUM(qty * cost_price) from products        — current cost_price (WACC basis)
+               Lines where product has no cost_price are counted separately (no_cost_lines)
+    Expenses = SUM(amount_pre_vat) from expense_log       — 0 rows currently, shown as 0
+    Commission = SUM(amount_paid) from commission_payouts — actual paid, by year_month overlap
+
+    company_id = 1 (BSN) is the only scope in this DB.
+    """
+    import calendar as _cal
+
+    conn = get_connection()
+
+    # ── Resolve default period ────────────────────────────────────────────────
+    if not date_from and not date_to:
+        # Latest month with sales data
+        row = conn.execute(
+            "SELECT MAX(date_iso) AS mx FROM sales_transactions"
+        ).fetchone()
+        if row and row['mx']:
+            from datetime import datetime as _dt
+            latest = _dt.strptime(row['mx'][:7], '%Y-%m')
+            date_from = latest.strftime('%Y-%m-01')
+            date_to = latest.strftime(
+                f'%Y-%m-{_cal.monthrange(latest.year, latest.month)[1]:02d}'
+            )
+        else:
+            today = date.today()
+            date_from = today.strftime('%Y-%m-01')
+            date_to = today.strftime(
+                f'%Y-%m-{_cal.monthrange(today.year, today.month)[1]:02d}'
+            )
+    elif date_from and not date_to:
+        date_to = date.today().isoformat()
+    elif date_to and not date_from:
+        date_from = '2000-01-01'
+
+    # ── Revenue (sales net) ───────────────────────────────────────────────────
+    s = conn.execute("""
+        SELECT COALESCE(SUM(net), 0)  AS total_net,
+               COUNT(*)               AS line_count,
+               COUNT(DISTINCT doc_no) AS doc_count
+          FROM sales_transactions
+         WHERE date_iso >= ? AND date_iso <= ?
+    """, (date_from, date_to)).fetchone()
+    sales_net = float(s['total_net'])
+
+    # ── COGS (current cost_price × qty; unmapped lines counted separately) ────
+    cogs_row = conn.execute("""
+        SELECT COALESCE(SUM(st.qty * COALESCE(p.cost_price, 0)), 0) AS cogs,
+               COUNT(CASE WHEN p.cost_price IS NULL THEN 1 END)     AS no_cost_lines,
+               COUNT(CASE WHEN p.cost_price = 0    THEN 1 END)      AS zero_cost_lines
+          FROM sales_transactions st
+          LEFT JOIN products p ON p.id = st.product_id
+         WHERE st.date_iso >= ? AND st.date_iso <= ?
+    """, (date_from, date_to)).fetchone()
+    cogs = float(cogs_row['cogs'])
+    no_cost_lines = cogs_row['no_cost_lines'] or 0
+    zero_cost_lines = cogs_row['zero_cost_lines'] or 0
+
+    # ── Gross profit ──────────────────────────────────────────────────────────
+    gross_profit = sales_net - cogs
+    margin_pct = (gross_profit / sales_net * 100.0) if sales_net > 0 else 0.0
+
+    # ── Expenses (expense_log, BSN = company_id 1) ────────────────────────────
+    exp_total = conn.execute("""
+        SELECT COALESCE(SUM(amount_pre_vat), 0) AS total
+          FROM expense_log
+         WHERE company_id = 1
+           AND date_iso >= ? AND date_iso <= ?
+    """, (date_from, date_to)).fetchone()
+    expenses = float(exp_total['total'])
+
+    # Expenses by category
+    exp_by_cat = conn.execute("""
+        SELECT ec.name_th AS category_name,
+               ec.code    AS category_code,
+               COALESCE(SUM(el.amount_pre_vat), 0) AS total
+          FROM expense_categories ec
+          LEFT JOIN expense_log el ON el.category_id = ec.id
+                AND el.company_id = 1
+                AND el.date_iso >= ? AND el.date_iso <= ?
+         WHERE ec.is_active = 1
+         GROUP BY ec.id, ec.code, ec.name_th, ec.sort_order
+         ORDER BY ec.sort_order
+    """, (date_from, date_to)).fetchall()
+
+    # ── Commission (actual paid, overlapping the period's months) ─────────────
+    # Extract YYYY-MM range from the date filter, match commission_payouts.year_month
+    ym_from = date_from[:7]
+    ym_to = date_to[:7]
+    comm_row = conn.execute("""
+        SELECT COALESCE(SUM(amount_paid), 0) AS total
+          FROM commission_payouts
+         WHERE year_month >= ? AND year_month <= ?
+    """, (ym_from, ym_to)).fetchone()
+    commission_total = float(comm_row['total'])
+
+    # ── Net profit (approximate) ──────────────────────────────────────────────
+    net_profit = gross_profit - expenses - commission_total
+
+    # ── Brand breakdown (own-brands first per CLAUDE.md priority) ────────────
+    # Own-brand order: Golden Lion (sort 10) → A-SPEC (sort 20) → Sendai (sort 30)
+    # then 3rd-party by sort_order → finally NULL brand rows
+    brand_rows = conn.execute("""
+        SELECT
+          COALESCE(b.name_th, b.name, '(ไม่ระบุแบรนด์)') AS brand_label,
+          b.is_own_brand,
+          COALESCE(b.sort_order, 9999)                    AS sort_ord,
+          ROUND(SUM(st.net), 2)                           AS sales_net,
+          ROUND(SUM(st.qty * COALESCE(p.cost_price, 0)), 2) AS cogs_approx,
+          COUNT(st.id)                                    AS line_count,
+          COUNT(CASE WHEN p.cost_price IS NULL OR p.cost_price = 0 THEN 1 END)
+                                                          AS no_cost_lines
+        FROM sales_transactions st
+        LEFT JOIN products  p ON p.id = st.product_id
+        LEFT JOIN brands    b ON b.id = p.brand_id
+        WHERE st.date_iso >= ? AND st.date_iso <= ?
+        GROUP BY b.id, b.name, b.name_th, b.is_own_brand, b.sort_order
+        ORDER BY COALESCE(b.is_own_brand, 0) DESC,
+                 COALESCE(b.sort_order, 9999),
+                 SUM(st.net) DESC
+    """, (date_from, date_to)).fetchall()
+
+    brand_breakdown = []
+    for r in brand_rows:
+        sn = float(r['sales_net'] or 0)
+        cg = float(r['cogs_approx'] or 0)
+        gp = sn - cg
+        mp = (gp / sn * 100.0) if sn > 0 else 0.0
+        brand_breakdown.append({
+            'brand_label': r['brand_label'],
+            'is_own_brand': bool(r['is_own_brand']),
+            'sales_net': sn,
+            'cogs_approx': cg,
+            'gross_profit': gp,
+            'margin_pct': mp,
+            'line_count': r['line_count'],
+            'no_cost_lines': r['no_cost_lines'] or 0,
+        })
+
+    # ── Available months (for period selector) ────────────────────────────────
+    months_rows = conn.execute("""
+        SELECT DISTINCT strftime('%Y-%m', date_iso) AS ym
+          FROM sales_transactions
+         ORDER BY ym DESC
+         LIMIT 36
+    """).fetchall()
+    available_months = [r['ym'] for r in months_rows]
+
+    conn.close()
+
+    return {
+        'date_from': date_from,
+        'date_to': date_to,
+        'sales_net': sales_net,
+        'doc_count': s['doc_count'],
+        'line_count': s['line_count'],
+        'cogs': cogs,
+        'no_cost_lines': no_cost_lines,
+        'zero_cost_lines': zero_cost_lines,
+        'gross_profit': gross_profit,
+        'margin_pct': margin_pct,
+        'expenses': expenses,
+        'expenses_by_category': [dict(r) for r in exp_by_cat],
+        'commission_total': commission_total,
+        'net_profit': net_profit,
+        'brand_breakdown': brand_breakdown,
+        'available_months': available_months,
+    }
 
 
 # ── Ecommerce Listing Mapping ──────────────────────────────────────────────────
