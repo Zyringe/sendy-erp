@@ -36,7 +36,9 @@ SELECT u.id, u.product_id, u.bsn_unit, u.ratio
 FROM unit_conversions u
 WHERE u.product_id NOT IN (
         SELECT product_id FROM product_code_mapping
-        WHERE COALESCE(is_ignored,0)=0)
+        WHERE COALESCE(is_ignored,0)=0
+          AND product_id IS NOT NULL)   -- NULL in NOT IN → matches nothing
+                                        -- (unmapped codes have NULL pid)
   AND NOT EXISTS (SELECT 1 FROM sales_transactions s
         WHERE s.product_id=u.product_id AND s.unit=u.bsn_unit)
   AND NOT EXISTS (SELECT 1 FROM purchase_transactions x
