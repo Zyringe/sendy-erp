@@ -12,6 +12,9 @@ Locks the Codex adversarial-review findings (2026-05-20):
 - [medium] 061's rollback rebuilt product_code_mapping without dropping the
           trigger first → same SQLite trigger-revalidation crash. 061's
           rollback must now run cleanly with trigger 021 present.
+- [high]  Application path: models.set_product_brand() must NOT re-corrupt
+          split-code rows with a by-code refresh (the redundant manual
+          UPDATE was removed; it now relies on the 063 trigger).
 
 tmp_db is a copy of the live DB (carries trigger 021 / 061-shape mapping),
 the exact precondition that mattered on Railway.
@@ -22,6 +25,7 @@ import sqlite3
 import pytest
 
 import database
+import models
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MIG61 = os.path.join(REPO, "data", "migrations", "061_mapping_unit_aware.sql")
@@ -218,6 +222,51 @@ def test_063_rollback_restores_by_code_trigger(tmp_db):
     sql = _trigger_sql(conn)
     assert sql is not None
     assert "bsn_unit" not in sql, "063 rollback restores by-code trigger"
+    conn.close()
+
+
+# ── [high] application path: set_product_brand() must not re-corrupt ─────────
+def test_set_product_brand_is_unit_aware_via_trigger(tmp_db):
+    """The real UI path (blueprints/products.py → models.set_product_brand)
+    must only refresh brand_kind for rows that resolve to the changed
+    product. Before the fix a redundant by-code UPDATE in
+    set_product_brand() overwrote the 063 trigger's narrower result and
+    re-corrupted the OTHER product's split-code rows."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    _reset_pre061(conn)
+    _apply(conn, MIG61)
+    _apply(conn, MIG63)
+
+    A, B = _two_products(conn)
+    own, third = _brand(conn, True), _brand(conn, False)
+    conn.execute("UPDATE products SET brand_id=? WHERE id=?", (third, A))
+    conn.execute("UPDATE products SET brand_id=? WHERE id=?", (own, B))
+    conn.execute("INSERT INTO product_code_mapping "
+                 "(bsn_code,bsn_name,product_id,bsn_unit) "
+                 "VALUES ('ZAPP63','x',?, 'กล่อง')", (A,))
+    conn.execute("INSERT INTO product_code_mapping "
+                 "(bsn_code,bsn_name,product_id,bsn_unit) "
+                 "VALUES ('ZAPP63','x',?, '')", (B,))
+    _ins_es(conn, "ZAPP63", "กล่อง", "SENTINEL", "ZAPPA")   # → A
+    _ins_es(conn, "ZAPP63", "ชิ้น", "SENTINEL", "ZAPPB")    # → B (catch-all)
+    conn.commit()
+    conn.close()
+
+    # real application path (opens its own monkeypatched connection)
+    models.set_product_brand(A, own)
+
+    conn = sqlite3.connect(tmp_db)
+    a_kind = conn.execute(
+        "SELECT brand_kind FROM express_sales WHERE doc_no='ZAPPA'"
+    ).fetchone()[0]
+    b_kind = conn.execute(
+        "SELECT brand_kind FROM express_sales WHERE doc_no='ZAPPB'"
+    ).fetchone()[0]
+    assert a_kind == "own", "A's row must follow A's new brand"
+    assert b_kind == "SENTINEL", (
+        "set_product_brand() must not touch B's row (resolves to product "
+        "B via catch-all) — no redundant by-code refresh")
     conn.close()
 
 
