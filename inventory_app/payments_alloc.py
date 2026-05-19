@@ -144,7 +144,10 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
     """Per-invoice billed/collected with the legacy-NULL rule applied.
 
     Aggregations computed per doc_base, then reconciled in Python:
-      - billed         = ROUND(SUM(net), 2) over the invoice's lines
+      - billed         = ROUND(SUM(CASE WHEN vat_type=2 THEN net*1.07
+                         ELSE net END), 2) — what the customer OWES/PAYS
+                         ("แยก VAT" lines carry 7% output VAT; net itself
+                         stays the ex-VAT revenue figure elsewhere)
       - real_collected = SUM(paid_invoices.amount) over non-cancelled links
                          that have a non-NULL amount
       - has_real       = any non-cancelled link with amount IS NOT NULL
@@ -309,7 +312,13 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
                    MIN(st.customer)                  AS customer,
                    MIN(st.customer_code)             AS customer_code,
                    MIN(st.date_iso)                  AS invoice_date,
-                   ROUND(SUM(st.net), 2)             AS billed
+                   -- VAT-aware: vat_type=2 ("แยก VAT") bills the customer
+                   -- net + 7% output VAT, so what they OWE/PAY is net*1.07.
+                   -- Same per-line idiom as models.py / test_vat_math.py.
+                   -- (Revenue stays ex-VAT — see cashflow.revenue_by_month.)
+                   ROUND(SUM(CASE WHEN st.vat_type = 2
+                                  THEN st.net * 1.07 ELSE st.net END), 2)
+                                                     AS billed
             FROM sales_transactions st
             WHERE {' AND '.join(sale_conds)}
             GROUP BY st.doc_base
@@ -508,7 +517,8 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
                SUBSTR(MAX(rp.date_iso), 1, 7)      AS month,
                MAX(rp.id)                          AS re_id,
                ROUND(COALESCE(
-                   (SELECT SUM(st2.net)
+                   (SELECT SUM(CASE WHEN st2.vat_type = 2
+                                    THEN st2.net * 1.07 ELSE st2.net END)
                     FROM sales_transactions st2
                     WHERE st2.doc_base = pi.iv_no
                       AND {sale_filter}

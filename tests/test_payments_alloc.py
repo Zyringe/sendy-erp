@@ -707,3 +707,85 @@ def test_cash_in_rows_nets_sr_receipt_links(empty_db_conn):
     assert total_cash == pytest.approx(total_collected), (
         f"cash_in {total_cash} != collected {total_collected}"
     )
+
+
+# ── VAT-aware billed (vat_type=2 = แยก VAT → customer pays net*1.07) ──────────
+#
+# Convention shared with models.py / test_vat_math.py:
+#   billed per line = CASE WHEN vat_type=2 THEN net*1.07 ELSE net END
+# `net` is pre-VAT post-doc-discount; the customer of a "แยก VAT" invoice
+# actually remits net + 7% output VAT. payments_alloc previously summed bare
+# `net`, so every paid vat_type=2 invoice read as overpaid by ~7% (the
+# spurious ฿105k / ฿442k customer-credit balance). Revenue stays ex-VAT
+# (cashflow.revenue_by_month) — only what the customer OWES/PAYS is grossed.
+
+def test_vat2_invoice_billed_is_grossed_and_settles_at_107(empty_db_conn):
+    c = empty_db_conn
+    _ins_sale(c, 'IV-V2', 'ACME', 'C01', '2026-01-10', 1000.0, vat_type=2)
+    r = _ins_receipt(c, 'RE-V2', 'ACME', '2026-02-01', total=1070.0)
+    _ins_paid(c, r, 'IV-V2', 1070.0)
+    c.commit()
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-V2']
+    assert iv['billed'] == 1070.0
+    assert iv['collected'] == 1070.0
+    assert iv['outstanding'] == 0.0
+    assert iv['status'] == 'paid'          # NOT 'overpaid' (the old bug)
+
+
+def test_vat2_paid_at_net_is_underpaid_not_settled(empty_db_conn):
+    """Paying only the pre-VAT net on a แยก-VAT bill leaves 7% owed."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV-V2B', 'ACME', 'C01', '2026-01-10', 1000.0, vat_type=2)
+    r = _ins_receipt(c, 'RE-V2B', 'ACME', '2026-02-01', total=1000.0)
+    _ins_paid(c, r, 'IV-V2B', 1000.0)
+    c.commit()
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-V2B']
+    assert iv['billed'] == 1070.0
+    assert iv['outstanding'] == 70.0
+    assert iv['status'] == 'partial'
+
+
+def test_vat1_and_vat0_unaffected_by_gross(empty_db_conn):
+    c = empty_db_conn
+    _ins_sale(c, 'IV-V1', 'ACME', 'C01', '2026-01-10', 1000.0, vat_type=1)
+    _ins_sale(c, 'IV-V0', 'ACME', 'C01', '2026-01-10', 1000.0, vat_type=0)
+    for d in ('IV-V1', 'IV-V0'):
+        r = _ins_receipt(c, f'RE-{d}', 'ACME', '2026-02-01', total=1000.0)
+        _ins_paid(c, r, d, 1000.0)
+    c.commit()
+    rows = _by_doc(pa.invoice_settlement(conn=c))
+    assert rows['IV-V1']['billed'] == 1000.0
+    assert rows['IV-V0']['billed'] == 1000.0
+    assert rows['IV-V1']['status'] == 'paid'
+    assert rows['IV-V0']['status'] == 'paid'
+
+
+def test_vat_mixed_lines_billed_line_by_line(empty_db_conn):
+    """A doc with both vat_type=1 and =2 lines grosses only the =2 line."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV-VM', 'ACME', 'C01', '2026-01-10', 500.0, line=1,
+              vat_type=1)
+    _ins_sale(c, 'IV-VM', 'ACME', 'C01', '2026-01-10', 500.0, line=2,
+              vat_type=2)
+    c.commit()
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-VM']
+    assert iv['billed'] == 1035.0          # 500 + 500*1.07
+
+
+def test_vat2_pure_legacy_cash_in_is_grossed_and_reconciles(empty_db_conn):
+    """Pure-legacy (NULL amount) vat_type=2 invoice: collected == net_owed ==
+    grossed billed, and Σ cash_in == Σ collected (cash_in legacy path must
+    gross identically or the reconciliation identity breaks)."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV-VL', 'ACME', 'C01', '2026-01-10', 1000.0, vat_type=2)
+    r = _ins_receipt(c, 'RE-VL', 'ACME', '2026-02-01', total=None)
+    _ins_paid(c, r, 'IV-VL', None)         # legacy NULL-amount link
+    c.commit()
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-VL']
+    assert iv['billed'] == 1070.0
+    assert iv['collected'] == 1070.0
+    assert iv['status'] == 'paid'
+    total_collected = round(
+        sum(x['collected'] for x in pa.invoice_settlement(conn=c)), 2)
+    total_cash = round(sum(x['amount'] for x in pa.cash_in_rows(conn=c)), 2)
+    assert total_cash == pytest.approx(total_collected)

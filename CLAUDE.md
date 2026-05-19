@@ -107,11 +107,18 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 - `total` = `unit_price × qty × (1 − line_discount)` — line subtotal, **pre-VAT, pre-doc-discount**
 - `net` = line's share หลังหัก doc-level discount (e.g. 2% cash/early-pay)
 - ~96.5% rows: `total == net`; ~3.5%: `net = total × 0.98`
-- **`total` และ `net` ทั้งคู่ ไม่รวม VAT** — ใช้ `vat_type` คำนวณ VAT นอก row:
-  - `0` = ยกเว้น VAT
-  - `1` = VAT แยกนอก → `net × 1.07`
-  - `2` = VAT รวมใน → pre-VAT = `net / 1.07`
-- **Revenue column for analysis: `net`** (after all discounts)
+- **`net` = ยอดก่อน VAT (ex-VAT) เสมอ** — ใช้ `vat_type` หา **ยอดที่ลูกค้าจ่ายจริง**:
+  - `0` = ยกเว้น VAT → ลูกค้าจ่าย `net`
+  - `1` = ไม่บวก VAT ตอนเก็บเงิน (เช่น ขายหน้าร้าน/เงินสด) → ลูกค้าจ่าย `net`
+  - `2` = **แยก VAT** (ขายต้องเพิ่ม VAT 7%) → ลูกค้าจ่าย **`net × 1.07`**
+  - **Idiom เดียวทั้ง codebase**: `CASE WHEN vat_type=2 THEN net*1.07 ELSE net END`
+    (models.py · payments_alloc.py · cashflow ar_aging · tests/test_vat_math.py)
+  - ⚠️ ก่อน 2026-05-19 doc นี้เขียนกลับด้าน (`1→×1.07, 2→÷1.07`) — ผิด.
+    payments_alloc/cashflow เคยใช้ `SUM(net)` เปล่า ทำให้บิล `แยก VAT` ที่จ่าย
+    ครบทุกใบดู "จ่ายเกิน 7%" → ยอดเครดิตค้างคืนลูกค้าปลอม ~฿446k. แก้แล้ว.
+- **Revenue column for analysis: `net`** (ex-VAT, after all discounts) — VAT 7%
+  ของ `vat_type=2` เป็น **ภาษีขายที่ต้องนำส่ง ไม่ใช่รายได้**; แตะเฉพาะการกระทบ
+  ยอดเงินสด/ลูกหนี้ (`billed`/`collected`) ห้ามเอาไปคิดเป็นรายได้
 - **Parser fixed 2026-04-28** — `_DISCOUNT_COL` regex ขยาย char class รองรับ `.` และ `%` ใน line/doc-level discount.
   - Bugs ที่ fix: (1) line discount แบบ decimal baht (`32.00`) shift column ผิด, (2) doc-level discount แบบ `%` (`2%`) truncate net.
   - Re-import historical files แล้วเพื่อแก้ ~695 rows.
