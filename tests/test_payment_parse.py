@@ -602,3 +602,149 @@ def test_wrong_reid_cross_contamination(tmp_path, tmp_db_conn):
         assert iv_amounts[iv_no] == pytest.approx(2500.00), (
             f"{iv_no} amount wrong: {iv_amounts[iv_no]}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEW: SR(−) receipt-link sub-rows
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# A receipt can apply a credit note against the invoices it settles. Express
+# emits these as an "SR…" sub-row carrying a NEGATIVE amount, e.g.
+#   "                             SR6900009    27/03/69         -2293.20"
+# inside an RE block. The OLD parser only matched "IV\S+" sub-rows, so the
+# negative SR line was silently dropped — the receipt then looked like it
+# applied only the +IV amounts and the invoice read as fantasy "overpaid".
+#
+# Parse contract (NEW):
+#   - capture SR sub-rows with an optional leading '-' on the amount
+#   - tag each iv_list item with kind = 'IV' | 'SR'
+#   - received_payments.total stays Σ IV(+) ONLY (legacy total-based tests
+#     must remain green): the SR(−) is a netting link, not extra collected.
+
+PAYMENT_SR_LINES = [
+    '"(BSN)บจก.บุญสวัสดิ์นำชัย                                                                                          หน้า   :        1"',
+    '"  รายงานการรับชำระหนี้ เรียงตามวันที่ของใบเสร็จ"',
+    '"---------------------------------------------------------------------------------------------------------------------------------"',
+    '"  วันที่  เลขที่ใบเสร็จ  ชื่อลูกค้า                          พนักงานขาย     ตัดเงินมัดจำ ยอดตามใบกำกับ   ชำระเป็น ง/ส       เช็ครับ"',
+    '"---------------------------------------------------------------------------------------------------------------------------------"',
+    # Oracle: RE6900208 — IV6802996 +5242.02, SR6900009 -2293.20 → net 2948.82
+    '"27/03/69  RE6900208    เจริญทรัพย์การค้า                        06                               2948.82        2949.00                      0.18"',
+    '"                             IV6802996    13/12/68          5242.02"',
+    '"                             SR6900009    27/03/69         -2293.20"',
+    '',
+    # Plain IV-only RE — unaffected, total = Σ IV(+)
+    '"28/03/69  RE6900300    ลูกค้าเงินสด                             06                               1000.00        1000.00"',
+    '"                             IV6900400    20/03/69          1000.00"',
+    '',
+    # SR with thousands-comma negative amount
+    '"29/03/69  RE6900301    ลูกค้าทดสอบ                              06                               5000.00        5000.00"',
+    '"                             IV6900401    21/03/69          6,234.56"',
+    '"                             SR6900050    22/03/69         -1,234.56"',
+    '',
+]
+
+
+@pytest.fixture
+def sr_payment_file(tmp_path):
+    p = tmp_path / "payment_sr.csv"
+    p.write_text("\n".join(PAYMENT_SR_LINES) + "\n", encoding="cp874")
+    return str(p)
+
+
+def test_parse_sr_negative_subrow_captured(sr_payment_file):
+    """SR sub-row with leading '-' is captured into iv_list (was dropped)."""
+    records = models.parse_payment_csv(sr_payment_file)
+    by_re = {r["re_no"]: r for r in records}
+    items = by_re["RE6900208"]["iv_list"]
+    by_no = {it["iv_no"]: it for it in items}
+    assert "IV6802996" in by_no
+    assert "SR6900009" in by_no, "SR(-) receipt link was dropped by the parser"
+    assert by_no["IV6802996"]["amount"] == pytest.approx(5242.02)
+    assert by_no["SR6900009"]["amount"] == pytest.approx(-2293.20)
+
+
+def test_parse_sr_kind_tagging(sr_payment_file):
+    """Each iv_list item is tagged kind='IV' or kind='SR'."""
+    records = models.parse_payment_csv(sr_payment_file)
+    by_re = {r["re_no"]: r for r in records}
+    by_no = {it["iv_no"]: it for it in by_re["RE6900208"]["iv_list"]}
+    assert by_no["IV6802996"]["kind"] == "IV"
+    assert by_no["SR6900009"]["kind"] == "SR"
+
+
+def test_parse_re_total_is_sum_of_positive_iv_only(sr_payment_file):
+    """received_payments.total stays Σ IV(+) ONLY — SR(-) is NOT subtracted
+    from `total` (preserve existing total-based tests). Netting happens in
+    payments_alloc via the receipt links, not in the header total."""
+    records = models.parse_payment_csv(sr_payment_file)
+    by_re = {r["re_no"]: r for r in records}
+    assert by_re["RE6900208"]["total"] == pytest.approx(5242.02)
+    assert by_re["RE6900300"]["total"] == pytest.approx(1000.00)
+    assert by_re["RE6900301"]["total"] == pytest.approx(6234.56)
+
+
+def test_parse_sr_thousands_comma_negative(sr_payment_file):
+    """Negative SR amount with thousands comma parses to negative float."""
+    records = models.parse_payment_csv(sr_payment_file)
+    by_re = {r["re_no"]: r for r in records}
+    by_no = {it["iv_no"]: it for it in by_re["RE6900301"]["iv_list"]}
+    assert by_no["SR6900050"]["amount"] == pytest.approx(-1234.56)
+    assert by_no["SR6900050"]["kind"] == "SR"
+
+
+def test_parse_iv_only_record_still_tagged_iv(sr_payment_file):
+    """Plain IV-only RE: items still carry kind='IV' (regression guard)."""
+    records = models.parse_payment_csv(sr_payment_file)
+    by_re = {r["re_no"]: r for r in records}
+    items = by_re["RE6900300"]["iv_list"]
+    assert all(it["kind"] == "IV" for it in items)
+    assert items[0]["iv_no"] == "IV6900400"
+
+
+def test_import_sr_receipt_link_persisted(tmp_path, tmp_db_conn):
+    """import_payments persists the SR(-) receipt link in paid_invoices with a
+    NEGATIVE amount and iv_no = SR doc_base; received_payments.total = Σ IV(+).
+    """
+    import models as m
+    path = _build_payment_file(tmp_path, PAYMENT_SR_LINES, "pay_sr.csv")
+    result = m.import_payments(path)
+    assert result["errors"] == []
+
+    conn = tmp_db_conn
+    rp_total = conn.execute(
+        "SELECT total FROM received_payments WHERE re_no='RE6900208'"
+    ).fetchone()["total"]
+    assert rp_total == pytest.approx(5242.02)
+
+    links = conn.execute(
+        """SELECT pi.iv_no, pi.amount
+           FROM paid_invoices pi
+           JOIN received_payments rp ON rp.id = pi.re_id
+           WHERE rp.re_no = 'RE6900208'
+           ORDER BY pi.iv_no"""
+    ).fetchall()
+    by_no = {r["iv_no"]: r["amount"] for r in links}
+    assert by_no["IV6802996"] == pytest.approx(5242.02)
+    assert by_no["SR6900009"] == pytest.approx(-2293.20)
+
+
+def test_import_sr_receipt_link_idempotent(tmp_path, tmp_db_conn):
+    """Re-importing the SR file twice: no duplicate links, amounts identical."""
+    import models as m
+    path = _build_payment_file(tmp_path, PAYMENT_SR_LINES, "pay_sr2.csv")
+    m.import_payments(path)
+    m.import_payments(path)
+
+    conn = tmp_db_conn
+    cnt = conn.execute(
+        """SELECT COUNT(*) FROM paid_invoices pi
+           JOIN received_payments rp ON rp.id = pi.re_id
+           WHERE rp.re_no IN ('RE6900208','RE6900300','RE6900301')"""
+    ).fetchone()[0]
+    assert cnt == 5  # IV+SR, IV, IV+SR
+    sr = conn.execute(
+        """SELECT pi.amount FROM paid_invoices pi
+           JOIN received_payments rp ON rp.id = pi.re_id
+           WHERE rp.re_no='RE6900208' AND pi.iv_no='SR6900009'"""
+    ).fetchone()["amount"]
+    assert sr == pytest.approx(-2293.20)

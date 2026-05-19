@@ -635,3 +635,158 @@ def test_populate_does_not_change_ar(empty_db_conn):
     assert billed_after == pytest.approx(billed_before), "billed must not change"
     assert cn_after == pytest.approx(cn_before), "credit_notes must not change"
     assert outstanding_after == pytest.approx(outstanding_before), "outstanding must not change"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tests 18–22: credit_note_amounts (migration 062) — authoritative SR credited
+# value parsed from the ใบลดหนี้ master "รวมทั้งสิ้น" column.
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# The master line's "รวมทั้งสิ้น" (post-doc-discount, post-VAT-policy) is the
+# single authoritative credited figure. parse_weekly._SR_MASTER_RE captures it
+# as total_amt. _upsert_credit_note_amounts() caches one row per SR doc_base in
+# credit_note_amounts so payments_alloc can net the EXACT credited amount.
+#
+# ORACLE (from the real 18.5.69 file):
+#   SR6900009  ref=IV6802996  master total = 2293.20 (detail line net is 2340.00,
+#   so using the detail sum over-credits the invoice — that is the bug).
+
+def _ensure_062(conn):
+    """Apply migration 062 via the real runner against the temp DB."""
+    import database
+    database.run_pending_migrations(conn, verbose=False)
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='credit_note_amounts'"
+    ).fetchone()
+    if exists is None:
+        # empty_db schema-clone path: applied_migrations empty + brands present
+        # → runner takes the bootstrap-backfill branch and never executes 062's
+        # DDL. Apply the DDL inline so these tests work on both fixtures.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS credit_note_amounts (
+                id              INTEGER PRIMARY KEY,
+                sr_doc_base     TEXT    NOT NULL,
+                ref_invoice     TEXT,
+                credited_amount REAL    NOT NULL DEFAULT 0.0,
+                sr_date_iso     TEXT,
+                customer        TEXT,
+                source          TEXT,
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+                UNIQUE(sr_doc_base)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cna_ref_invoice
+                ON credit_note_amounts(ref_invoice);
+        """)
+        conn.commit()
+
+
+# ── Oracle fixture: SR6900009, ref IV6802996, master total 2293.20 ────────────
+_SR_ORACLE = _CN_HEADER + [
+    '"  SR6900009    27/03/69  เจริญทรัพย์การค้า                    06         IV6802996    1         2%       2293.20         0.00       2293.20        Y      2"',
+    '"     Y   1 614ก4220\xa0\xa0ก๊อกซิงค์(P)ผนังหางปลา#41/2        12.00แผง             195.00                  2340.00                                IV6802996-  5"',
+    '',
+]
+
+
+def test_migration_062_table_exists(tmp_db_conn):
+    """Migration 062 creates credit_note_amounts with the documented columns."""
+    conn = tmp_db_conn
+    _ensure_062(conn)
+    cols = {r["name"] for r in conn.execute(
+        "PRAGMA table_info(credit_note_amounts)"
+    ).fetchall()}
+    assert {"id", "sr_doc_base", "ref_invoice", "credited_amount",
+            "sr_date_iso", "customer", "source", "created_at"} <= cols
+
+
+def test_credit_note_amounts_oracle_SR6900009(tmp_path, tmp_db_conn):
+    """ORACLE: SR6900009 → ref_invoice IV6802996, credited_amount 2293.20.
+
+    This is the master "รวมทั้งสิ้น" value (post 2% doc discount), NOT the
+    detail line net 2340.00 — that distinction is the whole point.
+    """
+    import import_credit_notes as icn
+
+    conn = tmp_db_conn
+    _ensure_062(conn)
+
+    path = _write_cn_file(tmp_path, _SR_ORACLE, "oracle.csv")
+    icn.import_credit_notes(path, conn=conn)
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT * FROM credit_note_amounts WHERE sr_doc_base='SR6900009'"
+    ).fetchone()
+    assert row is not None, "SR6900009 not cached in credit_note_amounts"
+    assert row["ref_invoice"] == "IV6802996"
+    assert row["credited_amount"] == pytest.approx(2293.20)
+    assert row["credited_amount"] != pytest.approx(2340.00), (
+        "must be the master total, not the detail-line net"
+    )
+    # BE 27/03/69 → 2569 - 543 = CE 2026 (parse_weekly._be_to_iso)
+    assert row["sr_date_iso"] == "2026-03-27"
+    assert row["customer"] == "เจริญทรัพย์การค้า"
+
+
+def test_credit_note_amounts_idempotent(tmp_path, tmp_db_conn):
+    """Re-import: one row per SR doc_base, value identical, no duplicates."""
+    import import_credit_notes as icn
+
+    conn = tmp_db_conn
+    _ensure_062(conn)
+    path = _write_cn_file(tmp_path, _SR_ORACLE, "oracle_idem.csv")
+
+    icn.import_credit_notes(path, conn=conn)
+    conn.commit()
+    icn.import_credit_notes(path, conn=conn)
+    conn.commit()
+
+    rows = conn.execute(
+        "SELECT * FROM credit_note_amounts WHERE sr_doc_base='SR6900009'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["credited_amount"] == pytest.approx(2293.20)
+
+
+def test_credit_note_amounts_multi_sr_one_row_each(tmp_path, tmp_db_conn):
+    """A file with several SR masters → one credit_note_amounts row per SR."""
+    import import_credit_notes as icn
+
+    conn = tmp_db_conn
+    _ensure_062(conn)
+
+    multi = _CN_HEADER + [
+        '"  SR8800001    08/01/67  ร้านทดสอบA                           06         IV8800100    1                  1000.00         0.00       1000.00        Y      2"',
+        '"     Y   1 041ม5560\xa0\xa0มือจับ(P)#555-350มิล.              2.00แผง             500.00                  1000.00                                IV8800100-  1"',
+        '',
+        '"  SR8800003    10/01/67  ร้านทดสอบC                           31         IV8800300    1                   750.00         0.00        750.00        Y      2"',
+        '"     Y   1 031บ4124\xa0\xa0ใบตัดเพชร\xa04.5"                   3.00ใบ              250.00                   750.00                                IV8800300-  1"',
+        '',
+    ]
+    path = _write_cn_file(tmp_path, multi, "multi.csv")
+    icn.import_credit_notes(path, conn=conn)
+    conn.commit()
+
+    rows = {r["sr_doc_base"]: r for r in conn.execute(
+        "SELECT * FROM credit_note_amounts WHERE sr_doc_base IN ('SR8800001','SR8800003')"
+    ).fetchall()}
+    assert rows["SR8800001"]["credited_amount"] == pytest.approx(1000.0)
+    assert rows["SR8800001"]["ref_invoice"] == "IV8800100"
+    assert rows["SR8800003"]["credited_amount"] == pytest.approx(750.0)
+    assert rows["SR8800003"]["ref_invoice"] == "IV8800300"
+
+
+def test_credit_note_amounts_does_not_touch_sales_transactions(tmp_path, tmp_db_conn):
+    """Caching credited amounts must not mutate sales_transactions Σ net."""
+    import import_credit_notes as icn
+
+    conn = tmp_db_conn
+    _ensure_062(conn)
+    _seed_sr(conn, "SR8800001-1", "SR8800001", ref_invoice=None, net=1000.0)
+    net_before = _sr_net_sum(conn)
+
+    path = _write_cn_file(tmp_path, _SR_MIXED, "cna_mixed.csv")
+    icn.import_credit_notes(path, conn=conn)
+    conn.commit()
+
+    assert _sr_net_sum(conn) == pytest.approx(net_before)

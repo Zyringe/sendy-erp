@@ -2129,13 +2129,22 @@ def get_purchases(product_id=None, date_from=None, date_to=None, page=1, per_pag
 def parse_payment_csv(filepath):
     """Parse การรับชำระหนี้ CSV (cp874). Returns list of RE dicts with iv_list.
 
-    iv_list shape: list of dicts, each {'iv_no': str, 'amount': float}.
+    iv_list shape: list of dicts, each
+        {'iv_no': str, 'amount': float, 'kind': 'IV' | 'SR'}.
 
-    total (per RE record): sum of iv_list amounts. The RE header line carries
-    what appear to be matching totals but they vary in layout depending on
-    whether a cheque column is present, so the sum-of-IVs is the reliable
-    source of truth. A receipt total equals what it applied across invoices,
-    so sum-of-IVs is mathematically correct and avoids header-column ambiguity.
+    A receipt may apply a credit note against the invoices it settles.
+    Express emits these as an "SR…" sub-row carrying a NEGATIVE amount
+    (optional leading '-'), e.g.
+        "                             SR6900009    27/03/69         -2293.20"
+    These SR(-) lines ARE captured (kind='SR', amount negative). Dropping
+    them — as the old IV-only regex did — made the receipt look like it
+    applied only the +IV total, so the invoice read as fantasy "overpaid".
+
+    total (per RE record): Σ of the POSITIVE IV amounts ONLY (kind=='IV').
+    SR(-) lines are netting links, NOT extra collected cash, and the
+    header total / existing total-based tests are Σ IV(+). The netting of
+    SR(-) against the invoice happens downstream in payments_alloc via the
+    persisted receipt links, not in this header total.
     """
     import re as _re
     records = []
@@ -2150,7 +2159,9 @@ def parse_payment_csv(filepath):
             m = _re.match(r'^(\d{2}/\d{2}/\d{2})\s+(\*?RE\S+)\s+(.+?)\s{2,}(\S+)\s', text)
             if m:
                 if current:
-                    current['total'] = sum(iv['amount'] for iv in current['iv_list'])
+                    current['total'] = sum(
+                        iv['amount'] for iv in current['iv_list']
+                        if iv['kind'] == 'IV')
                     records.append(current)
                 d, re_no, customer, sp = m.groups()
                 cancelled = re_no.startswith('*')
@@ -2167,15 +2178,24 @@ def parse_payment_csv(filepath):
                     'iv_list': []
                 }
                 continue
-            # IV sub-row — capture both the IV number (group 1) and the amount
-            # (group 2: may contain thousands commas, e.g. "1,234.56").
-            m2 = _re.match(r'\s*(IV\S+)\s+\d{2}/\d{2}/\d{2}\s+([\d,]+\.\d{2})', text)
+            # Sub-row — IV (settled invoice, positive) or SR (credit-note
+            # receipt link, NEGATIVE with an optional leading '-').
+            # group1 = doc no (IV…/SR…), group2 = optional '-', group3 =
+            # amount which may carry thousands commas (e.g. "1,234.56").
+            m2 = _re.match(
+                r'\s*((?:IV|SR)\S+)\s+\d{2}/\d{2}/\d{2}\s+(-?)([\d,]+\.\d{2})',
+                text)
             if m2 and current:
-                iv_no = m2.group(1)
-                amount = float(m2.group(2).replace(',', ''))
-                current['iv_list'].append({'iv_no': iv_no, 'amount': amount})
+                doc_no = m2.group(1)
+                sign = -1.0 if m2.group(2) == '-' else 1.0
+                amount = sign * float(m2.group(3).replace(',', ''))
+                kind = 'SR' if doc_no.startswith('SR') else 'IV'
+                current['iv_list'].append(
+                    {'iv_no': doc_no, 'amount': amount, 'kind': kind})
     if current:
-        current['total'] = sum(iv['amount'] for iv in current['iv_list'])
+        current['total'] = sum(
+            iv['amount'] for iv in current['iv_list']
+            if iv['kind'] == 'IV')
         records.append(current)
     return records
 

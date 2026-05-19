@@ -477,3 +477,233 @@ def test_fifo_skips_already_paid_invoice(empty_db_conn):
     assert [a['doc_base'] for a in al] == ['P-OPEN']
     assert al[0]['applied'] == 150.0
     assert al[0]['outstanding_after'] == 50.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# credit_note_amounts (migration 062) authoritative netting + SR(-) receipt link
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Two coupled changes the `cn` / `pay` CTEs must honour:
+#
+#  1. `cn` is now driven by credit_note_amounts (the authoritative master
+#     "รวมทั้งสิ้น" value), joined ref_invoice = inv.doc_base. The old
+#     sales_transactions SR.net sum is kept ONLY as a LEFT-JOIN fallback for
+#     SR docs that are absent from credit_note_amounts (legacy / not yet
+#     imported).
+#
+#  2. collected = Σ IV(+) receipt links − Σ SR(−) receipt links (the SR(−)
+#     line that import_payments now persists into paid_invoices with a
+#     negative amount and iv_no = SR doc_base).
+#
+# No double count: the SR reduces net_owed (via cn) AND reduces collected
+# (via the SR(−) receipt link) by the SAME credited amount, so
+# outstanding = net_owed − collected is unaffected by the credit's
+# magnitude when the receipt actually applied it.
+
+def _ensure_cna(conn):
+    """Create credit_note_amounts in the schema-clone DB if absent."""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='credit_note_amounts'"
+    ).fetchone()
+    if exists is None:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS credit_note_amounts (
+                id              INTEGER PRIMARY KEY,
+                sr_doc_base     TEXT    NOT NULL,
+                ref_invoice     TEXT,
+                credited_amount REAL    NOT NULL DEFAULT 0.0,
+                sr_date_iso     TEXT,
+                customer        TEXT,
+                source          TEXT,
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+                UNIQUE(sr_doc_base)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cna_ref_invoice
+                ON credit_note_amounts(ref_invoice);
+        """)
+
+
+def _ins_cna(conn, sr_doc_base, ref_invoice, credited_amount):
+    conn.execute(
+        """INSERT INTO credit_note_amounts
+               (sr_doc_base, ref_invoice, credited_amount, sr_date_iso,
+                customer, source)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(sr_doc_base) DO UPDATE SET
+               ref_invoice=excluded.ref_invoice,
+               credited_amount=excluded.credited_amount""",
+        (sr_doc_base, ref_invoice, credited_amount, '2026-01-20',
+         'ACME', 'test'),
+    )
+
+
+def test_iv6802996_oracle_shape(empty_db_conn):
+    """The exact production shape that produced the false ฿105,604.
+
+    IV6802996 billed 5242.02; SR6900009 credited 2293.20 (master total, NOT
+    detail net 2340.00). RE6900208 applies IV6802996 +5242.02 and the SR(-)
+    receipt link -2293.20.
+
+    Expected: billed 5242.02 / credit_notes 2293.20 / collected 2948.82 /
+    net_owed 2948.82 / outstanding 0.00 / status paid.
+    """
+    c = empty_db_conn
+    _ensure_cna(c)
+    # billed = 5242.02 across 6 lines (matches the live decomposition)
+    for ln, net in enumerate(
+            [1470.0, 882.0, 279.3, 317.52, 2293.2, 0.0], start=1):
+        _ins_sale(c, 'IV6802996', 'เจริญทรัพย์การค้า', 'C06',
+                  '2025-12-13', net, line=ln)
+    # SR detail line net (2340.00) in sales_transactions — must be IGNORED
+    # by `cn` because credit_note_amounts has the authoritative 2293.20.
+    _ins_sr(c, 'SR6900009', 'IV6802996', 'เจริญทรัพย์การค้า', 'C06',
+            '2026-03-27', 2340.0)
+    _ins_cna(c, 'SR6900009', 'IV6802996', 2293.20)
+    # Receipt: +IV link and -SR netting link
+    r = _ins_receipt(c, 'RE6900208', 'เจริญทรัพย์การค้า', '2026-03-27',
+                     total=5242.02)
+    _ins_paid(c, r, 'IV6802996', 5242.02)
+    _ins_paid(c, r, 'SR6900009', -2293.20)
+    c.commit()
+
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV6802996']
+    assert iv['billed'] == 5242.02
+    assert iv['credit_notes'] == 2293.20
+    assert iv['collected'] == 2948.82
+    assert iv['net_owed'] == 2948.82
+    assert iv['outstanding'] == 0.0
+    assert iv['status'] == 'paid'
+
+
+def test_cn_uses_authoritative_amount_over_sr_net(empty_db_conn):
+    """When credit_note_amounts has the SR, its credited_amount wins over the
+    sales_transactions SR.net sum."""
+    c = empty_db_conn
+    _ensure_cna(c)
+    _ins_sale(c, 'IV-A1', 'ACME', 'C01', '2026-01-10', 1000)
+    _ins_sr(c, 'SR-A1', 'IV-A1', 'ACME', 'C01', '2026-01-20', 350)  # net 350
+    _ins_cna(c, 'SR-A1', 'IV-A1', 300)  # authoritative 300
+    c.commit()
+
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-A1']
+    assert iv['credit_notes'] == 300.0  # NOT 350
+    assert iv['net_owed'] == 700.0
+    assert iv['outstanding'] == 700.0
+    assert iv['status'] == 'unpaid'
+
+
+def test_cn_fallback_to_sr_net_when_absent_from_cna(empty_db_conn):
+    """SR doc NOT in credit_note_amounts → fall back to the old SR.net sum
+    (documented behaviour: legacy / not-yet-imported SR still nets)."""
+    c = empty_db_conn
+    _ensure_cna(c)  # table exists but empty for this SR
+    _ins_sale(c, 'IV-B1', 'ACME', 'C01', '2026-01-10', 1000)
+    _ins_sr(c, 'SR-B1', 'IV-B1', 'ACME', 'C01', '2026-01-20', 250)
+    c.commit()
+
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-B1']
+    assert iv['credit_notes'] == 250.0  # fallback SR.net
+    assert iv['net_owed'] == 750.0
+
+
+def test_cash_only_invoice_unaffected_by_cn_changes(empty_db_conn):
+    """No SR anywhere: a plain paid invoice is unchanged (regression guard)."""
+    c = empty_db_conn
+    _ensure_cna(c)
+    _ins_sale(c, 'IV-C1', 'ACME', 'C01', '2026-01-10', 1000)
+    r = _ins_receipt(c, 'RE-C1', 'ACME', '2026-02-01', total=1000)
+    _ins_paid(c, r, 'IV-C1', 1000)
+    c.commit()
+
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-C1']
+    assert iv['billed'] == 1000.0
+    assert iv['credit_notes'] == 0.0
+    assert iv['collected'] == 1000.0
+    assert iv['outstanding'] == 0.0
+    assert iv['status'] == 'paid'
+
+
+def test_partial_with_cn_and_sr_receipt_link(empty_db_conn):
+    """IV 1000, CN 200 (authoritative) applied via SR(-) receipt link, plus a
+    partial +IV payment of 500. net_owed 800, collected = 500 - 200 = 300,
+    outstanding 500, partial."""
+    c = empty_db_conn
+    _ensure_cna(c)
+    _ins_sale(c, 'IV-D1', 'ACME', 'C01', '2026-01-10', 1000)
+    _ins_sr(c, 'SR-D1', 'IV-D1', 'ACME', 'C01', '2026-01-20', 200)
+    _ins_cna(c, 'SR-D1', 'IV-D1', 200)
+    r = _ins_receipt(c, 'RE-D1', 'ACME', '2026-02-01', total=500)
+    _ins_paid(c, r, 'IV-D1', 500)
+    _ins_paid(c, r, 'SR-D1', -200)
+    c.commit()
+
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-D1']
+    assert iv['billed'] == 1000.0
+    assert iv['credit_notes'] == 200.0
+    assert iv['net_owed'] == 800.0
+    assert iv['collected'] == 300.0
+    assert iv['outstanding'] == 500.0
+    assert iv['status'] == 'partial'
+
+
+def test_cn_in_file_but_no_receipt_link(empty_db_conn):
+    """Credit note exists in credit_note_amounts and reduces net_owed, but the
+    customer never paid (no receipt at all). collected 0, outstanding =
+    net_owed."""
+    c = empty_db_conn
+    _ensure_cna(c)
+    _ins_sale(c, 'IV-E1', 'ACME', 'C01', '2026-01-10', 1000)
+    _ins_sr(c, 'SR-E1', 'IV-E1', 'ACME', 'C01', '2026-01-20', 300)
+    _ins_cna(c, 'SR-E1', 'IV-E1', 300)
+    c.commit()
+
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-E1']
+    assert iv['credit_notes'] == 300.0
+    assert iv['net_owed'] == 700.0
+    assert iv['collected'] == 0.0
+    assert iv['outstanding'] == 700.0
+    assert iv['status'] == 'unpaid'
+
+
+def test_sr_receipt_link_present_but_sr_not_in_cna_fallback(empty_db_conn):
+    """SR(-) receipt link exists and an SR.net fallback (no credit_note_amounts
+    row). cn falls back to SR.net=300; collected = 1000 - 300 = 700;
+    net_owed = 700; outstanding 0; paid."""
+    c = empty_db_conn
+    _ensure_cna(c)
+    _ins_sale(c, 'IV-F1', 'ACME', 'C01', '2026-01-10', 1000)
+    _ins_sr(c, 'SR-F1', 'IV-F1', 'ACME', 'C01', '2026-01-20', 300)
+    r = _ins_receipt(c, 'RE-F1', 'ACME', '2026-02-01', total=1000)
+    _ins_paid(c, r, 'IV-F1', 1000)
+    _ins_paid(c, r, 'SR-F1', -300)
+    c.commit()
+
+    iv = _by_doc(pa.invoice_settlement(conn=c))['IV-F1']
+    assert iv['credit_notes'] == 300.0
+    assert iv['net_owed'] == 700.0
+    assert iv['collected'] == 700.0
+    assert iv['outstanding'] == 0.0
+    assert iv['status'] == 'paid'
+
+
+def test_cash_in_rows_nets_sr_receipt_links(empty_db_conn):
+    """cash_in_rows must be symmetric with collected: Σ cash_in == Σ collected.
+    The SR(-) link reduces the receipt's attributed cash."""
+    c = empty_db_conn
+    _ensure_cna(c)
+    _ins_sale(c, 'IV-G1', 'ACME', 'C01', '2026-01-10', 5242.02, line=1)
+    _ins_sr(c, 'SR-G1', 'IV-G1', 'ACME', 'C01', '2026-03-27', 2340.0)
+    _ins_cna(c, 'SR-G1', 'IV-G1', 2293.20)
+    r = _ins_receipt(c, 'RE-G1', 'ACME', '2026-03-27', total=5242.02)
+    _ins_paid(c, r, 'IV-G1', 5242.02)
+    _ins_paid(c, r, 'SR-G1', -2293.20)
+    c.commit()
+
+    settle = pa.invoice_settlement(conn=c)
+    total_collected = round(sum(x['collected'] for x in settle), 2)
+    cash = pa.cash_in_rows(conn=c)
+    total_cash = round(sum(x['amount'] for x in cash), 2)
+    assert total_collected == pytest.approx(2948.82)
+    assert total_cash == pytest.approx(total_collected), (
+        f"cash_in {total_cash} != collected {total_collected}"
+    )

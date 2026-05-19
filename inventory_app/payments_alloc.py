@@ -34,17 +34,40 @@ LEGACY-NULL-AMOUNT RULE (real amounts win over legacy NULLs):
   payment that happens to coexist with a legacy NULL link no longer
   silently inflates to fully-paid.
 
-CREDIT-NOTE (SR) NETTING:
-  Sales-return rows (sales_transactions.doc_base LIKE 'SR%') carry a
-  positive `net` (the credit-note value) and a `ref_invoice` pointing at
-  the ORIGINAL invoice's doc_base. They are NOT billable invoices on their
-  own (the `inv` CTE already excludes 'SR%'), but they reduce what the
-  customer owes on the referenced invoice:
+CREDIT-NOTE (SR) NETTING — AUTHORITATIVE AMOUNT (migration 062):
+  Sales-return / credit-note SR docs reduce what the customer owes on the
+  referenced invoice. The credited value is the ใบลดหนี้ master
+  "รวมทั้งสิ้น" (post-doc-discount, post-VAT-policy), cached per SR
+  doc_base in `credit_note_amounts` by import_credit_notes. The `cn` CTE:
+
+    • cn_auth : credit_note_amounts.credited_amount, grouped by
+                ref_invoice = inv.doc_base  (AUTHORITATIVE).
+    • cn_fb   : LEGACY FALLBACK — SUM(sales_transactions.net) over SR rows
+                whose doc_base is ABSENT from credit_note_amounts (SR not
+                yet imported from the standalone ใบลดหนี้ file). A given SR
+                is counted on exactly ONE side, never both.
+    • credit_notes = cn_auth + cn_fb summed per invoice.
+
+  The SR detail-line `net` in sales_transactions is PRE-doc-discount and
+  over-credits the invoice (e.g. SR6900009 detail net 2340.00 vs master
+  2293.20). Using the authoritative cached value is what removes the false
+  "overpaid" customer-credit balance.
 
       net_owed = round(billed - credit_notes, 2)
 
-  Settlement is measured against net_owed, NOT billed:
-    • real-amount invoices  → collected = Σ real amounts
+  collected NETS the SR(-) receipt links: a receipt that applied a credit
+  note carries an SR row in paid_invoices with a NEGATIVE amount and
+  iv_no = SR doc_base. Those are re-attributed to the original invoice via
+  credit_note_amounts.ref_invoice, so:
+
+      collected = Σ IV(+) receipt links  −  Σ SR(-) receipt links
+
+  NO DOUBLE COUNT: the SR reduces net_owed (via `cn`) AND reduces collected
+  (via the SR(-) receipt link) by the same credited amount, so
+  outstanding = net_owed − collected is unchanged by the credit's
+  magnitude when the receipt actually applied it. Settlement is measured
+  against net_owed, NOT billed:
+    • real-amount invoices  → collected = Σ real (IV(+) − SR(-))
     • pure-legacy invoices  → collected = net_owed   (a pre-058 NULL link
       means "this invoice is settled"; with a credit note that means the
       *post-credit* balance is settled, so collected = net_owed, not billed)
@@ -101,6 +124,20 @@ def _today_iso() -> str:
     return date.today().isoformat()
 
 
+def _has_cna(conn) -> bool:
+    """True when credit_note_amounts (migration 062) exists in this DB.
+
+    The pytest schema-clone / pre-062 live snapshots may not have it yet;
+    when absent we transparently fall back to the legacy SR.net-sum `cn`
+    and skip SR(-) receipt re-attribution, so behaviour is byte-identical
+    to pre-062 for those databases (existing fixtures stay green).
+    """
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type='table' AND name='credit_note_amounts'"
+    ).fetchone() is not None
+
+
 # ── core settlement query ────────────────────────────────────────────────────
 def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
                       as_of=None):
@@ -139,17 +176,108 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
     # so a late receipt simply doesn't count yet (point-in-time AR).
     pay_date_cap = "AND rp.date_iso <= ?" if as_of else ""
 
-    sql = f"""
-        WITH inv AS (
-            SELECT st.doc_base                       AS doc_base,
-                   MIN(st.customer)                  AS customer,
-                   MIN(st.customer_code)             AS customer_code,
-                   MIN(st.date_iso)                  AS invoice_date,
-                   ROUND(SUM(st.net), 2)             AS billed
+    has_cna = _has_cna(conn)
+
+    if has_cna:
+        # AUTHORITATIVE credited amount = credit_note_amounts.credited_amount
+        # (migration 062 — the ใบลดหนี้ master "รวมทั้งสิ้น",
+        # post-doc-discount/VAT-policy). The sales_transactions SR.net sum is
+        # kept ONLY as a fallback for SR docs ABSENT from
+        # credit_note_amounts (legacy / SR not yet imported). A given SR is
+        # counted on exactly ONE side, never both.
+        cn_cte = """
+        sr_fallback AS (
+            SELECT st.ref_invoice              AS iv_no,
+                   st.doc_base                 AS sr_doc_base,
+                   ROUND(SUM(st.net), 2)       AS sr_net
             FROM sales_transactions st
-            WHERE {' AND '.join(sale_conds)}
-            GROUP BY st.doc_base
+            WHERE st.doc_base LIKE 'SR%'
+              AND st.ref_invoice IS NOT NULL
+              AND st.ref_invoice <> ''
+              AND st.doc_base NOT IN (SELECT sr_doc_base FROM credit_note_amounts)
+            GROUP BY st.ref_invoice, st.doc_base
         ),
+        cn AS (
+            SELECT iv_no,
+                   ROUND(SUM(credit_notes), 2) AS credit_notes
+            FROM (
+                SELECT ref_invoice AS iv_no,
+                       credited_amount AS credit_notes
+                FROM credit_note_amounts
+                WHERE ref_invoice IS NOT NULL AND ref_invoice <> ''
+                UNION ALL
+                SELECT iv_no, sr_net AS credit_notes FROM sr_fallback
+            )
+            GROUP BY iv_no
+        ),"""
+        pay_cte = f"""
+        pay AS (
+            -- collected nets the SR(-) receipt links: a receipt that applied
+            -- a credit note carries an SR row in paid_invoices with a
+            -- NEGATIVE amount and iv_no = SR doc_base. Re-attributed to the
+            -- ORIGINAL invoice via credit_note_amounts.ref_invoice so it
+            -- reduces that invoice's collected, symmetrically with how `cn`
+            -- reduces its net_owed (no double count).
+            SELECT iv_no,
+                   ROUND(SUM(real_amt), 2)              AS real_collected,
+                   MAX(has_real)                        AS has_real,
+                   MAX(has_legacy)                      AS has_legacy,
+                   MAX(last_pay)                        AS last_pay
+            FROM (
+                SELECT pi.iv_no                                  AS iv_no,
+                       CASE WHEN pi.amount IS NOT NULL
+                            THEN pi.amount ELSE 0 END             AS real_amt,
+                       CASE WHEN pi.amount IS NOT NULL
+                            THEN 1 ELSE 0 END                     AS has_real,
+                       CASE WHEN pi.amount IS NULL
+                            THEN 1 ELSE 0 END                     AS has_legacy,
+                       rp.date_iso                                AS last_pay
+                FROM paid_invoices pi
+                JOIN received_payments rp
+                  ON rp.id = pi.re_id AND rp.cancelled = 0 {pay_date_cap}
+                WHERE pi.iv_no NOT LIKE 'SR%'
+
+                UNION ALL
+
+                SELECT srref.ref_invoice                         AS iv_no,
+                       CASE WHEN pi.amount IS NOT NULL
+                            THEN pi.amount ELSE 0 END             AS real_amt,
+                       0                                          AS has_real,
+                       0                                          AS has_legacy,
+                       NULL                                       AS last_pay
+                FROM paid_invoices pi
+                JOIN received_payments rp
+                  ON rp.id = pi.re_id AND rp.cancelled = 0 {pay_date_cap}
+                JOIN (
+                    -- Resolve the SR doc_base → original invoice ref.
+                    -- AUTHORITATIVE: credit_note_amounts.ref_invoice.
+                    -- FALLBACK: the SR's own sales_transactions.ref_invoice
+                    -- when the SR is not yet cached (mirrors `cn`'s
+                    -- auth-then-fallback so collected nets symmetrically
+                    -- with net_owed and Σ cash_in stays == Σ collected).
+                    SELECT sr_doc_base AS sr_doc_base,
+                           ref_invoice AS ref_invoice
+                    FROM credit_note_amounts
+                    WHERE ref_invoice IS NOT NULL AND ref_invoice <> ''
+                    UNION
+                    SELECT st.doc_base AS sr_doc_base,
+                           st.ref_invoice AS ref_invoice
+                    FROM sales_transactions st
+                    WHERE st.doc_base LIKE 'SR%'
+                      AND st.ref_invoice IS NOT NULL
+                      AND st.ref_invoice <> ''
+                      AND st.doc_base NOT IN
+                          (SELECT sr_doc_base FROM credit_note_amounts)
+                ) srref
+                  ON srref.sr_doc_base = pi.iv_no
+                WHERE pi.iv_no LIKE 'SR%'
+            )
+            GROUP BY iv_no
+        )"""
+    else:
+        # Pre-062 legacy path (schema-clone / old snapshots): byte-identical
+        # to the original behaviour — cn = SR.net sum, no SR(-) netting.
+        cn_cte = """
         cn AS (
             SELECT ref_invoice                AS iv_no,
                    ROUND(SUM(net), 2)         AS credit_notes
@@ -158,7 +286,8 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
               AND ref_invoice IS NOT NULL
               AND ref_invoice <> ''
             GROUP BY ref_invoice
-        ),
+        ),"""
+        pay_cte = f"""
         pay AS (
             SELECT pi.iv_no                                  AS iv_no,
                    SUM(CASE WHEN pi.amount IS NOT NULL
@@ -172,7 +301,19 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
             JOIN received_payments rp
               ON rp.id = pi.re_id AND rp.cancelled = 0 {pay_date_cap}
             GROUP BY pi.iv_no
-        )
+        )"""
+
+    sql = f"""
+        WITH inv AS (
+            SELECT st.doc_base                       AS doc_base,
+                   MIN(st.customer)                  AS customer,
+                   MIN(st.customer_code)             AS customer_code,
+                   MIN(st.date_iso)                  AS invoice_date,
+                   ROUND(SUM(st.net), 2)             AS billed
+            FROM sales_transactions st
+            WHERE {' AND '.join(sale_conds)}
+            GROUP BY st.doc_base
+        ),{cn_cte}{pay_cte}
         SELECT inv.doc_base,
                inv.customer,
                inv.customer_code,
@@ -189,7 +330,10 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
     """
     params = list(sale_params)
     if as_of:
-        params.append(as_of)
+        # One bind per rendered `{pay_date_cap}` placeholder. The legacy
+        # `pay` CTE renders it once; the CNA-aware `pay` CTE renders it
+        # twice (IV branch + SR branch). Count, don't hardcode.
+        params.extend([as_of] * pay_cte.count("rp.date_iso <= ?"))
     return conn.execute(sql, params).fetchall()
 
 
@@ -312,6 +456,8 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
     """
 
     # Real links: one emitted row each, in their own receipt month.
+    # POSITIVE IV links only here; the SR(-) netting links are emitted by
+    # sr_link_sql below so Σ cash_in stays == Σ collected.
     real_sql = f"""
         SELECT SUBSTR(rp.date_iso, 1, 7)          AS month,
                rp.id                              AS re_id,
@@ -320,6 +466,38 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
         JOIN paid_invoices pi ON pi.re_id = rp.id
              AND pi.amount IS NOT NULL
         WHERE {where} AND {billable}
+          AND pi.iv_no NOT LIKE 'SR%'
+    """
+
+    # SR(-) receipt links re-attributed to the ORIGINAL invoice via
+    # credit_note_amounts.ref_invoice. amount is negative → subtracts cash in
+    # the receipt's own month. Gated by `billable` on the ORIGINAL invoice
+    # (cna.ref_invoice), exactly mirroring the `pay` CTE so the per-invoice
+    # collected and the per-receipt cash attribution net identically.
+    sr_billable = (f"EXISTS (SELECT 1 FROM sales_transactions st2 "
+                   f"WHERE st2.doc_base = srref.ref_invoice AND {sale_filter})")
+    sr_link_sql = f"""
+        SELECT SUBSTR(rp.date_iso, 1, 7)          AS month,
+               rp.id                              AS re_id,
+               ROUND(COALESCE(pi.amount, 0.0), 2) AS amount
+        FROM received_payments rp
+        JOIN paid_invoices pi ON pi.re_id = rp.id
+             AND pi.amount IS NOT NULL
+             AND pi.iv_no LIKE 'SR%'
+        JOIN (
+            SELECT sr_doc_base AS sr_doc_base, ref_invoice AS ref_invoice
+            FROM credit_note_amounts
+            WHERE ref_invoice IS NOT NULL AND ref_invoice <> ''
+            UNION
+            SELECT st.doc_base AS sr_doc_base, st.ref_invoice AS ref_invoice
+            FROM sales_transactions st
+            WHERE st.doc_base LIKE 'SR%'
+              AND st.ref_invoice IS NOT NULL
+              AND st.ref_invoice <> ''
+              AND st.doc_base NOT IN (SELECT sr_doc_base FROM credit_note_amounts)
+        ) srref ON srref.sr_doc_base = pi.iv_no
+        WHERE {where}
+          AND {sr_billable}
     """
 
     # Pure-legacy candidates: invoices that DO have a non-cancelled NULL
@@ -343,13 +521,21 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
     """
 
     with _ConnCtx(conn, db_path) as c:
+        cna_present = _has_cna(c)
         has_real = {r['iv_no']: r['has_real']
                     for r in c.execute(has_real_sql, params).fetchall()}
         real_rows = c.execute(real_sql, params).fetchall()
+        sr_rows = (c.execute(sr_link_sql, params).fetchall()
+                   if cna_present else [])
         legacy_rows = c.execute(legacy_sql, params).fetchall()
 
     out = []
     for r in real_rows:
+        out.append({'month': r['month'],
+                    're_id': r['re_id'],
+                    'amount': round(float(r['amount']), 2)})
+    for r in sr_rows:
+        # negative amount → nets the receipt's attributed cash
         out.append({'month': r['month'],
                     're_id': r['re_id'],
                     'amount': round(float(r['amount']), 2)})

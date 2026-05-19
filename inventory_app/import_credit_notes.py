@@ -66,7 +66,13 @@ import sqlite3
 from typing import Optional
 
 from config import DATABASE_PATH
-from parse_weekly import parse_credit_notes
+from parse_weekly import (
+    parse_credit_notes,
+    _SR_MASTER_RE,
+    _be_to_iso,
+    _clean,
+    _parse_float_or_zero,
+)
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -138,12 +144,18 @@ def import_credit_notes(
             if len(errors) < 5:
                 errors.append(repr(exc))
 
+    # Cache the authoritative per-SR credited amount (master "รวมทั้งสิ้น")
+    # so payments_alloc can net the EXACT figure instead of the SR detail-line
+    # net sum (which is pre-doc-discount and over-credits the invoice).
+    cna = _upsert_credit_note_amounts(conn, path)
+
     if own_conn:
         conn.commit()
         conn.close()
 
     return {
         "parsed": parsed,
+        "credit_note_amounts": cna,
         "existing_matched": existing_matched,
         "refs_backfilled": refs_backfilled,
         "ref_conflicts": ref_conflicts,
@@ -233,6 +245,94 @@ def _process_entry(conn, entry, ref_conflicts):
         )
     )
     return {"outcome": "new_recorded"}
+
+
+# ── credit_note_amounts upsert (migration 062) ────────────────────────────────
+
+def _upsert_credit_note_amounts(conn, path):
+    """Parse the ใบลดหนี้ MASTER lines and cache one row per SR doc_base in
+    credit_note_amounts (migration 062).
+
+    The master row's "รวมทั้งสิ้น" column (parse_weekly._SR_MASTER_RE group
+    `total_amt`) is the single authoritative credited value: it already
+    incorporates the SR's document-level discount and VAT policy. The SR
+    *detail* line net stored in sales_transactions is PRE-doc-discount and
+    over-credits the invoice — that mismatch is exactly the bug this table
+    fixes (the false ฿105,604 "overpaid" balance).
+
+    We re-scan the raw file with the imported `_SR_MASTER_RE` rather than
+    re-deriving from parse_credit_notes() output so the master "total" is
+    taken verbatim from the master line (the flattened detail entries carry
+    the per-line amount, not the master total).
+
+    Idempotent: ON CONFLICT(sr_doc_base) DO UPDATE — re-running the same or a
+    superset cumulative file leaves one row per SR with identical values.
+
+    Cancelled SR masters (leading '*') are skipped: a cancelled credit note
+    credits nothing, so it must not net against the invoice.
+
+    Returns dict: {'parsed_masters': int, 'upserted': int, 'skipped_cancelled': int}.
+    """
+    parsed_masters = 0
+    upserted = 0
+    skipped_cancelled = 0
+
+    # Migration 062 may not be applied yet (pre-062 snapshots / schema-clone
+    # test fixtures). Without the table this is a graceful no-op: AR math
+    # transparently falls back to the legacy SR.net `cn` in payments_alloc,
+    # so behaviour is byte-identical to pre-062 for those databases.
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type='table' AND name='credit_note_amounts'"
+    ).fetchone()
+    if has_table is None:
+        return {
+            "parsed_masters": 0,
+            "upserted": 0,
+            "skipped_cancelled": 0,
+            "skipped_no_table": True,
+        }
+
+    with open(path, encoding="cp874") as f:
+        raw_lines = f.readlines()
+
+    for raw in raw_lines:
+        line = _clean(raw)
+        if not line:
+            continue
+        m = _SR_MASTER_RE.match(line.lstrip())
+        if not m:
+            continue
+        parsed_masters += 1
+        (cancel, sr_no, date_be, customer, salesperson, ref_inv,
+         vat_type, doc_disc, goods_val, vat_amt, total_amt) = m.groups()
+        if cancel:
+            skipped_cancelled += 1
+            continue
+        credited = _parse_float_or_zero(total_amt)
+        ref = ref_inv.strip() if ref_inv else None
+        conn.execute(
+            """INSERT INTO credit_note_amounts
+                   (sr_doc_base, ref_invoice, credited_amount,
+                    sr_date_iso, customer, source)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(sr_doc_base) DO UPDATE SET
+                   ref_invoice     = excluded.ref_invoice,
+                   credited_amount = excluded.credited_amount,
+                   sr_date_iso     = excluded.sr_date_iso,
+                   customer        = excluded.customer,
+                   source          = excluded.source
+            """,
+            (sr_no, ref, credited, _be_to_iso(date_be),
+             customer.strip(), "ใบลดหนี้"),
+        )
+        upserted += 1
+
+    return {
+        "parsed_masters": parsed_masters,
+        "upserted": upserted,
+        "skipped_cancelled": skipped_cancelled,
+    }
 
 
 # ── SR write-off helpers ──────────────────────────────────────────────────────
