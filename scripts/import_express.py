@@ -30,12 +30,14 @@ from pathlib import Path
 # Resolve sibling modules
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
+sys.path.insert(0, str(_HERE.parent / 'inventory_app'))  # for bsn_units
 
 import parse_express_credit_notes as p_cn        # noqa: E402
 import parse_express_payments_in as p_pin        # noqa: E402
 import parse_express_ar_snapshot as p_ar          # noqa: E402
 import parse_express_payments_out as p_pout       # noqa: E402
 import parse_express_sales as p_sales             # noqa: E402
+import bsn_units                                   # noqa: E402
 
 DB_PATH = _HERE.parent / 'inventory_app' / 'instance' / 'inventory.db'
 
@@ -266,7 +268,7 @@ def _import_sales(conn, path, batch_id, company_id, incremental=True):
             batch_id, r.doc_no, r.line_no, doc_type, r.date_iso, company_id,
             customer_code, r.customer_name, cust_id,
             r.product_code, _product_id_by_code(conn, r.product_code), r.product_name,
-            r.qty, r.unit, r.return_flag, r.unit_price, r.vat_type,
+            r.qty, bsn_units.normalize_unit(r.unit), r.return_flag, r.unit_price, r.vat_type,
             r.discount, r.total, r.total_discount, r.net, r.ref_doc, int(r.is_warning),
         ))
     return len(records) - skipped, 0

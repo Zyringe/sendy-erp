@@ -173,9 +173,20 @@ def set_product_brand(product_id, brand_id):
     """Assign (or clear) a brand on a product. Pass None to clear.
 
     Side effects to keep commission state consistent:
-      1. Refresh express_sales.brand_kind for any rows whose product_code
-         maps to this product (so the commission engine sees the new
-         classification immediately).
+      1. express_sales.brand_kind is refreshed by the DB trigger
+         refresh_brand_kind_on_product_brand_change (migration 063,
+         unit-aware: resolves each row by (product_code, unit) exactly
+         like the import resolver). It fires AFTER UPDATE OF brand_id
+         within the statement below — before commit() and before the
+         top-up read — so the commission engine sees the new
+         classification immediately.
+
+         NOTE: do NOT add a manual by-product_code UPDATE of
+         express_sales here. mig 061 made product_code_mapping
+         unit-aware (one bsn_code → different products per unit); a
+         by-code refresh re-corrupts split-code rows that resolve to a
+         DIFFERENT product, overwriting the trigger's correct result.
+         (Codex adversarial review, high finding, 2026-05-20.)
       2. Top-up auto-pay for pre-2026-02 invoices that include this
          product and whose commission_due just changed (e.g. third → own
          flips a 5% line to 10% — without a top-up the invoice would
@@ -184,16 +195,6 @@ def set_product_brand(product_id, brand_id):
     conn = get_connection()
     conn.execute("UPDATE products SET brand_id = ? WHERE id = ?",
                  (brand_id, product_id))
-    conn.execute("""
-        UPDATE express_sales
-           SET brand_kind = (
-               SELECT CASE WHEN b.is_own_brand = 1 THEN 'own' ELSE 'third_party' END
-                 FROM brands b WHERE b.id = ?
-           )
-         WHERE product_code IN (
-             SELECT bsn_code FROM product_code_mapping WHERE product_id = ?
-         )
-    """, (brand_id, product_id))
     conn.commit()
     conn.close()
 
@@ -217,15 +218,21 @@ def _topup_pre_feb_for_product(product_id, commission_mod, cutoff='2026-02-01'):
     note='pre-Feb 2026 auto-paid (top-up after brand change)'.
     """
     conn = get_connection()
-    codes = [r[0] for r in conn.execute(
-        'SELECT bsn_code FROM product_code_mapping WHERE product_id = ?',
+    # cheap guard: nothing to do if this product has no mapping at all
+    if conn.execute(
+        'SELECT 1 FROM product_code_mapping WHERE product_id = ? LIMIT 1',
         (product_id,)
-    ).fetchall()]
-    if not codes:
+    ).fetchone() is None:
         conn.close()
         return
-    placeholders = ','.join(['?'] * len(codes))
-    triples = conn.execute(f"""
+    # Unit-aware (mig 061/063): a split bsn_code resolves to DIFFERENT
+    # products by express_sales.unit. Selecting invoices by
+    # `es.product_code IN (codes)` would auto-pay invoices that only
+    # contain ANOTHER product sharing the code. Match each es row through
+    # the SAME resolver the trigger/import use, so only invoices whose
+    # (product_code, unit) actually resolves to THIS product are topped up.
+    # (Codex adversarial review high finding, 2026-05-20.)
+    triples = conn.execute("""
         SELECT DISTINCT pin.salesperson_code,
                         substr(pin.date_iso, 1, 7) AS ym,
                         ref.invoice_no
@@ -234,9 +241,17 @@ def _topup_pre_feb_for_product(product_id, commission_mod, cutoff='2026-02-01'):
           JOIN express_sales es ON es.doc_no = ref.invoice_no
          WHERE pin.is_void = 0
            AND pin.salesperson_code <> ''
-           AND es.product_code IN ({placeholders})
            AND es.date_iso < ?
-    """, codes + [cutoff]).fetchall()
+           AND ? = (
+               SELECT m.product_id
+                 FROM product_code_mapping m
+                WHERE m.bsn_code = es.product_code
+                  AND m.bsn_unit IN (COALESCE(es.unit, ''), '')
+                  AND m.product_id IS NOT NULL
+                ORDER BY (m.bsn_unit = '')
+                LIMIT 1
+           )
+    """, (cutoff, product_id)).fetchall()
     conn.close()
 
     inserted = 0
