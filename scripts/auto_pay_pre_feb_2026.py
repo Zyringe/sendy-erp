@@ -30,7 +30,7 @@ sys.path.insert(0, str(_HERE.parent / 'inventory_app'))
 import sqlite3
 import commission
 
-DB = '/Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db'
+DB = '/Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db'
 INVOICE_CUTOFF = '2026-02-01'   # invoices STRICTLY older than this auto-paid
 
 PAID_DATE = '2026-02-01'

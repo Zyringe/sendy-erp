@@ -157,7 +157,7 @@ def main():
         print()
         print("DRY-RUN — no DB changes made. Re-run with --apply to commit.")
         print("STRONGLY RECOMMENDED: backup first")
-        print("    bash ~/Documents/Sendai-Boonsawat/sendy_erp/scripts/backup_db.sh")
+        print("    bash ~/Sendai-Boonsawat/sendy_erp/scripts/backup_db.sh")
         return
 
     # Apply

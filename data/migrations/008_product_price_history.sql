@@ -16,8 +16,8 @@
 -- for charts and price trend reports.
 --
 -- Apply:
---   sqlite3 /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
---       < /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/migrations/008_product_price_history.sql
+--   sqlite3 /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
+--       < /Users/putty/Sendai-Boonsawat/sendy_erp/data/migrations/008_product_price_history.sql
 --
 -- Rollback: 008_product_price_history.rollback.sql
 

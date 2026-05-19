@@ -3,8 +3,8 @@
 -- trigger created by 003_audit_triggers.sql).
 --
 -- Apply rollback:
---   sqlite3 /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
---       < /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/migrations/022_audit_customers_region.rollback.sql
+--   sqlite3 /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
+--       < /Users/putty/Sendai-Boonsawat/sendy_erp/data/migrations/022_audit_customers_region.rollback.sql
 --
 -- Verify:
 --   sqlite3 .../inventory.db ".schema audit_customers_update"

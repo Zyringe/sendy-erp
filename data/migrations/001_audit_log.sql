@@ -4,8 +4,8 @@
 -- rolled out in a follow-up migration once the table shape is in place.
 --
 -- Apply:
---   sqlite3 /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
---       < /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/migrations/001_audit_log.sql
+--   sqlite3 /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
+--       < /Users/putty/Sendai-Boonsawat/sendy_erp/data/migrations/001_audit_log.sql
 --
 -- Verify:
 --   sqlite3 .../inventory.db ".schema audit_log"

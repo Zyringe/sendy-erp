@@ -5,8 +5,8 @@
 -- are retained — drop them separately if a clean slate is desired.
 --
 -- Apply rollback:
---   sqlite3 /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
---       < /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/migrations/003_audit_triggers.rollback.sql
+--   sqlite3 /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
+--       < /Users/putty/Sendai-Boonsawat/sendy_erp/data/migrations/003_audit_triggers.rollback.sql
 --
 -- Verify (each should be 0):
 --   sqlite3 .../inventory.db "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'audit_%';"

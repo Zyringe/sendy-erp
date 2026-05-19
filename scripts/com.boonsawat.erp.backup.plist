@@ -3,7 +3,7 @@
   launchd agent for daily ERP DB backup.
 
   Install:
-    cp /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/scripts/com.boonsawat.erp.backup.plist ~/Library/LaunchAgents/
+    cp /Users/putty/Sendai-Boonsawat/sendy_erp/scripts/com.boonsawat.erp.backup.plist ~/Library/LaunchAgents/
     launchctl load ~/Library/LaunchAgents/com.boonsawat.erp.backup.plist
 
   Verify it's loaded:
@@ -35,7 +35,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/putty/Documents/Sendai-Boonsawat/sendy_erp/scripts/backup_db.sh</string>
+        <string>/Users/putty/Sendai-Boonsawat/sendy_erp/scripts/backup_db.sh</string>
     </array>
 
     <key>StartCalendarInterval</key>
@@ -50,12 +50,12 @@
     <false/>
 
     <key>StandardOutPath</key>
-    <string>/Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/logs/backup.stdout.log</string>
+    <string>/Users/putty/Sendai-Boonsawat/sendy_erp/data/logs/backup.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/logs/backup.stderr.log</string>
+    <string>/Users/putty/Sendai-Boonsawat/sendy_erp/data/logs/backup.stderr.log</string>
 
     <key>WorkingDirectory</key>
-    <string>/Users/putty/Documents/Sendai-Boonsawat/sendy_erp</string>
+    <string>/Users/putty/Sendai-Boonsawat/sendy_erp</string>
 </dict>
 </plist>

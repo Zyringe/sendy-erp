@@ -27,8 +27,8 @@ from collections import defaultdict
 import xlrd
 
 XLS_PATH = "/Volumes/ZYRINGE/barcode all (put) edit.xls"
-DB_PATH  = os.path.expanduser("~/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db")
-OUT_DIR  = os.path.expanduser("~/Documents/Sendai-Boonsawat/sendy_erp/data/exports")
+DB_PATH  = os.path.expanduser("~/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db")
+OUT_DIR  = os.path.expanduser("~/Sendai-Boonsawat/sendy_erp/data/exports")
 
 CODE_RE = re.compile(r"#\s*([A-Za-z0-9][A-Za-z0-9\-/.]*)")
 INCH_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:''|\")")

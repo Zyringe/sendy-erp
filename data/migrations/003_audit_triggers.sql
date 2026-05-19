@@ -12,8 +12,8 @@
 -- known user) can write directly to audit_log.
 --
 -- Apply:
---   sqlite3 /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
---       < /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/migrations/003_audit_triggers.sql
+--   sqlite3 /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
+--       < /Users/putty/Sendai-Boonsawat/sendy_erp/data/migrations/003_audit_triggers.sql
 --
 -- Rollback: 003_audit_triggers.rollback.sql
 --
