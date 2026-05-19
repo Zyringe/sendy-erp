@@ -161,6 +161,47 @@ def test_063_backfill_repairs_corrupted_rows(tmp_db):
     conn.close()
 
 
+def test_063_backfill_resolves_unbranded_product_to_null(tmp_db):
+    """[P2] Split code where the EXACT-unit winning product has
+    brand_id IS NULL (a supported state). The backfill must still
+    resolve to THAT product (not fall through to the catch-all
+    product's brand) and set brand_kind = NULL — exactly what the
+    trigger does. Earlier the inner JOIN brands dropped the unbranded
+    winner before ORDER BY/LIMIT."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    _reset_pre061(conn)
+    _apply(conn, MIG61)
+
+    A, B = _two_products(conn)
+    own = _brand(conn, True)
+    conn.execute("UPDATE products SET brand_id=NULL WHERE id=?", (A,))
+    conn.execute("UPDATE products SET brand_id=? WHERE id=?", (own, B))
+    conn.execute("INSERT INTO product_code_mapping "
+                 "(bsn_code,bsn_name,product_id,bsn_unit) "
+                 "VALUES ('ZNB63','x',?, 'กล่อง')", (A,))   # exact → A (no brand)
+    conn.execute("INSERT INTO product_code_mapping "
+                 "(bsn_code,bsn_name,product_id,bsn_unit) "
+                 "VALUES ('ZNB63','x',?, '')", (B,))         # catch-all → B (own)
+    _ins_es(conn, "ZNB63", "กล่อง", "STALE", "ZNB1")   # resolves to A
+    _ins_es(conn, "ZNB63", "ชิ้น", "STALE", "ZNB2")    # resolves to B (own)
+    conn.commit()
+
+    _apply(conn, MIG63)   # backfill
+
+    a_kind = conn.execute(
+        "SELECT brand_kind FROM express_sales WHERE doc_no='ZNB1'"
+    ).fetchone()[0]
+    b_kind = conn.execute(
+        "SELECT brand_kind FROM express_sales WHERE doc_no='ZNB2'"
+    ).fetchone()[0]
+    assert a_kind is None, (
+        "row resolves to product A (exact unit) which has no brand → "
+        "brand_kind must be NULL, NOT the catch-all product's brand")
+    assert b_kind == "own", "catch-all row still resolves to B (own)"
+    conn.close()
+
+
 def test_063_backfill_preserves_unresolved_rows(tmp_db):
     """A row whose code resolves to nothing must keep its brand_kind
     (EXISTS guard — never nulled)."""

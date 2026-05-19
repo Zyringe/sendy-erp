@@ -64,25 +64,37 @@ BEGIN
 END;
 
 -- (2) One-time backfill: recompute brand_kind for every resolvable row -------
--- Uses the exact resolver rule. The EXISTS guard means rows whose code does
--- not resolve to a product keep their current brand_kind (never nulled).
+-- Resolution MUST mirror the trigger / import resolver EXACTLY: pick the
+-- winning product_id from product_code_mapping ALONE (bsn_code + unit-aware,
+-- product_id NOT NULL), THEN look up that product's brand separately. Do NOT
+-- JOIN brands inside the resolver — a winning product with brand_id IS NULL
+-- (a supported state) would be filtered out before ORDER BY/LIMIT and the
+-- backfill would wrongly fall through to a different mapping. With the brand
+-- lookup OUTSIDE, a resolved-but-unbranded product yields brand_kind = NULL,
+-- exactly what the trigger does (Codex review P2, 2026-05-20).
+-- EXISTS guard: rows whose code resolves to no product keep their current
+-- brand_kind (never nulled); resolved rows are recomputed (NULL if the
+-- resolved product has no brand — consistent with the trigger).
 UPDATE express_sales
    SET brand_kind = (
-       SELECT CASE WHEN b.is_own_brand = 1 THEN 'own' ELSE 'third_party' END
-         FROM product_code_mapping m
-         JOIN products p ON p.id = m.product_id
-         JOIN brands   b ON b.id = p.brand_id
-        WHERE m.bsn_code = express_sales.product_code
-          AND m.bsn_unit IN (COALESCE(express_sales.unit, ''), '')
-          AND m.product_id IS NOT NULL
-        ORDER BY (m.bsn_unit = '')
-        LIMIT 1
+       SELECT CASE WHEN br.is_own_brand = 1 THEN 'own' ELSE 'third_party' END
+         FROM brands br
+        WHERE br.id = (
+              SELECT p.brand_id FROM products p
+               WHERE p.id = (
+                     SELECT m.product_id
+                       FROM product_code_mapping m
+                      WHERE m.bsn_code = express_sales.product_code
+                        AND m.bsn_unit IN (COALESCE(express_sales.unit, ''), '')
+                        AND m.product_id IS NOT NULL
+                      ORDER BY (m.bsn_unit = '')
+                      LIMIT 1
+               )
+        )
    )
  WHERE EXISTS (
        SELECT 1
          FROM product_code_mapping m
-         JOIN products p ON p.id = m.product_id
-         JOIN brands   b ON b.id = p.brand_id
         WHERE m.bsn_code = express_sales.product_code
           AND m.bsn_unit IN (COALESCE(express_sales.unit, ''), '')
           AND m.product_id IS NOT NULL
