@@ -9,13 +9,13 @@ Restore from a backup file written by `scripts/backup_db.sh`. Never auto-restore
    pkill -f 'inventory_app/app.py'      # or stop your dev server / launchd
    ```
 2. **Identify the backup to restore.** Daily, monthly, and yearly snapshots live under:
-   - `/Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/backups/inventory-YYYY-MM-DD.db`
-   - `/Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/backups/monthly/inventory-YYYY-MM.db`
-   - `/Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/backups/yearly/inventory-YYYY.db`
+   - `/Users/putty/Sendai-Boonsawat/sendy_erp/data/backups/inventory-YYYY-MM-DD.db`
+   - `/Users/putty/Sendai-Boonsawat/sendy_erp/data/backups/monthly/inventory-YYYY-MM.db`
+   - `/Users/putty/Sendai-Boonsawat/sendy_erp/data/backups/yearly/inventory-YYYY.db`
 
    List candidates with row counts:
    ```
-   for f in /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/backups/inventory-*.db; do
+   for f in /Users/putty/Sendai-Boonsawat/sendy_erp/data/backups/inventory-*.db; do
        echo "$f"
        sqlite3 "$f" "SELECT 'products', COUNT(*) FROM products UNION ALL SELECT 'transactions', COUNT(*) FROM transactions;"
    done
@@ -30,12 +30,12 @@ Restore from a backup file written by `scripts/backup_db.sh`. Never auto-restore
 
 1. **Move the current live DB aside** (do not delete — keep as recovery point).
    ```
-   LIVE=/Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db
+   LIVE=/Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db
    mv "$LIVE" "${LIVE}.before-restore-$(date +%Y%m%d-%H%M%S)"
    ```
 2. **Copy the backup into place.** Plain `cp` is fine here because the live file is no longer in use.
    ```
-   cp /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/backups/inventory-YYYY-MM-DD.db "$LIVE"
+   cp /Users/putty/Sendai-Boonsawat/sendy_erp/data/backups/inventory-YYYY-MM-DD.db "$LIVE"
    ```
 3. **Verify.**
    ```
@@ -53,10 +53,10 @@ Restore from a backup file written by `scripts/backup_db.sh`. Never auto-restore
 
 The pre-restore live DB is still on disk as `inventory.db.before-restore-<timestamp>`. To revert:
 ```
-mv /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
-   /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db.failed-restore
-mv /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db.before-restore-* \
-   /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db
+mv /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
+   /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db.failed-restore
+mv /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db.before-restore-* \
+   /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db
 ```
 
 ## Notes

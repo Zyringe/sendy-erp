@@ -6,8 +6,8 @@
 -- (depends on companies + suppliers), then po_sequences (independent).
 --
 -- Apply:
---   sqlite3 /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
---       < /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/migrations/012_purchase_orders.rollback.sql
+--   sqlite3 /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
+--       < /Users/putty/Sendai-Boonsawat/sendy_erp/data/migrations/012_purchase_orders.rollback.sql
 
 BEGIN;
 

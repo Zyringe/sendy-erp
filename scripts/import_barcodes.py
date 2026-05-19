@@ -13,8 +13,8 @@ import csv
 import os
 import sqlite3
 
-DB_PATH  = os.path.expanduser("~/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db")
-EXPORTS  = os.path.expanduser("~/Documents/Sendai-Boonsawat/sendy_erp/data/exports")
+DB_PATH  = os.path.expanduser("~/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db")
+EXPORTS  = os.path.expanduser("~/Sendai-Boonsawat/sendy_erp/data/exports")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS product_barcodes (

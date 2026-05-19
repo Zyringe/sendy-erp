@@ -28,7 +28,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DB = Path('/Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db')
+DB = Path('/Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db')
 
 OWN_BRANDS = {'SENDAI', 'GOLDEN LION', 'A-SPEC'}
 

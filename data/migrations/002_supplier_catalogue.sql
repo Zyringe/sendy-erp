@@ -5,8 +5,8 @@
 -- (or directly to purchased product_name_raw values).
 --
 -- Apply:
---   sqlite3 /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
---       < /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/migrations/002_supplier_catalogue.sql
+--   sqlite3 /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
+--       < /Users/putty/Sendai-Boonsawat/sendy_erp/data/migrations/002_supplier_catalogue.sql
 --
 -- Verify:
 --   sqlite3 .../inventory.db ".schema suppliers"

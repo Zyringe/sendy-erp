@@ -15,21 +15,21 @@
 -- Pre-flight (recommended):
 --   1. Stop the Flask app.
 --   2. Take a backup:
---        /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/scripts/backup_db.sh
+--        /Users/putty/Sendai-Boonsawat/sendy_erp/scripts/backup_db.sh
 --   3. Confirm no triggers reference these tables (none expected at v002):
 --        sqlite3 .../inventory.db "SELECT name, sql FROM sqlite_master
 --          WHERE type='trigger' AND sql LIKE '%supplier_catalogue%';"
 --
 -- Apply rollback:
---   sqlite3 /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
---       < /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/migrations/002_supplier_catalogue.rollback.sql
+--   sqlite3 /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
+--       < /Users/putty/Sendai-Boonsawat/sendy_erp/data/migrations/002_supplier_catalogue.rollback.sql
 --
 -- Verify (each should be 0):
 --   sqlite3 .../inventory.db ".tables" | tr ' ' '\n' | grep -c '^supplier_'
 --   sqlite3 .../inventory.db ".tables" | tr ' ' '\n' | grep -c '^suppliers$'
 --
 -- Restore from backup (full DB-level rollback, if rollback above fails):
---   See /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/scripts/RESTORE.md
+--   See /Users/putty/Sendai-Boonsawat/sendy_erp/scripts/RESTORE.md
 
 BEGIN;
 

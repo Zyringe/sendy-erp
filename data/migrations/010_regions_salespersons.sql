@@ -27,8 +27,8 @@
 -- will DROP customers.zone and DROP TABLE customer_regions.
 --
 -- Apply:
---   sqlite3 /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
---       < /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/data/migrations/010_regions_salespersons.sql
+--   sqlite3 /Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db \
+--       < /Users/putty/Sendai-Boonsawat/sendy_erp/data/migrations/010_regions_salespersons.sql
 --
 -- Rollback: 010_regions_salespersons.rollback.sql
 

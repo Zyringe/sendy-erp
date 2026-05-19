@@ -16,7 +16,7 @@
 #   non-zero = failure (sqlite3 backup failed, source missing, etc.)
 #
 # Run via launchd (see com.boonsawat.erp.backup.plist) or manually:
-#   /Users/putty/Documents/Sendai-Boonsawat/sendy_erp/scripts/backup_db.sh
+#   /Users/putty/Sendai-Boonsawat/sendy_erp/scripts/backup_db.sh
 #
 # macOS TCC note: ~/Documents is sandboxed. The terminal/launchd job needs
 # Full Disk Access to read/write files there. If the daemon silently fails,
@@ -25,7 +25,7 @@
 
 set -euo pipefail
 
-ERP_ROOT="/Users/putty/Documents/Sendai-Boonsawat/sendy_erp"
+ERP_ROOT="/Users/putty/Sendai-Boonsawat/sendy_erp"
 SRC_DB="${ERP_ROOT}/inventory_app/instance/inventory.db"
 BACKUP_DIR="${ERP_ROOT}/data/backups"
 MONTHLY_DIR="${BACKUP_DIR}/monthly"

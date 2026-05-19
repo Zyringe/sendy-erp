@@ -9,7 +9,7 @@
 ## Dev Server
 ```
 runtimeExecutable: /Users/putty/.virtualenvs/erp/bin/python
-runtimeArgs: ["/Users/putty/Documents/Sendai-Boonsawat/sendy_erp/inventory_app/app.py"]
+runtimeArgs: ["/Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/app.py"]
 port: 5001
 ```
 
@@ -31,7 +31,7 @@ Shell shortcuts: `sendy-up` / `sendy-down` / `sendy-log` (logs ที่ `/tmp/s
 - **Database**: SQLite → `inventory_app/instance/inventory.db`
 - **Encoding**: UTF-8 สำหรับ DB, **cp874** สำหรับไฟล์ BSN CSV
 - **Deploy**: Railway (gunicorn 2 workers), persistent volume `/data`, healthcheck `/healthz`
-- **GitHub**: https://github.com/Zyringe/sendai-boonsawat-erp
+- **GitHub**: https://github.com/Zyringe/sendy-erp
 
 ## โครงสร้างไฟล์สำคัญ
 ```

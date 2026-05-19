@@ -18,7 +18,7 @@ import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path("/Users/putty/Documents/Sendai-Boonsawat")
+ROOT = Path("/Users/putty/Sendai-Boonsawat")
 DB = ROOT / "sendy_erp/inventory_app/instance/inventory.db"
 TOP_MATCH = ROOT / "Design/Catalog/2026_extract/slide_top_match.csv"
 ALL_MATCH = ROOT / "Design/Catalog/2026_extract/slide_sku_matches.csv"
