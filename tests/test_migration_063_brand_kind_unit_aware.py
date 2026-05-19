@@ -36,6 +36,8 @@ MIG63 = os.path.join(
 RB63 = os.path.join(
     REPO, "data", "migrations",
     "063_brand_kind_unit_aware_trigger.rollback.sql")
+MIG64 = os.path.join(
+    REPO, "data", "migrations", "064_express_unit_normalize_enforced.sql")
 
 TRIGGER = "refresh_brand_kind_on_product_brand_change"
 
@@ -253,6 +255,48 @@ def test_express_unit_normalize_enables_exact_resolution(tmp_db):
     assert kind == "own", (
         "after normalize the exact-unit override resolves to product A "
         "(own) — NOT the catch-all product B (third_party)")
+    conn.close()
+
+
+def test_064_migration_alone_repairs_raw_unit_rows(tmp_db):
+    """[high] Deploy/migration ALONE (no manual script) must repair
+    historical raw-unit rows. Insert a raw-'กล' split-code row after
+    061+063, then apply 064: it normalizes the unit and recomputes
+    brand_kind so the exact-unit override resolves correctly."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    _reset_pre061(conn)
+    _apply(conn, MIG61)
+    _apply(conn, MIG63)
+
+    A, B = _two_products(conn)
+    own, third = _brand(conn, True), _brand(conn, False)
+    conn.execute("UPDATE products SET brand_id=? WHERE id=?", (own, A))
+    conn.execute("UPDATE products SET brand_id=? WHERE id=?", (third, B))
+    conn.execute("INSERT INTO product_code_mapping "
+                 "(bsn_code,bsn_name,product_id,bsn_unit) "
+                 "VALUES ('ZM64','x',?, 'กล่อง')", (A,))
+    conn.execute("INSERT INTO product_code_mapping "
+                 "(bsn_code,bsn_name,product_id,bsn_unit) "
+                 "VALUES ('ZM64','x',?, '')", (B,))
+    _ins_es(conn, "ZM64", "กล", "SENTINEL", "ZM64A")   # RAW acronym
+    conn.commit()
+
+    _apply(conn, MIG64)          # migration only — no manual script
+
+    unit, kind = conn.execute(
+        "SELECT unit, brand_kind FROM express_sales WHERE doc_no='ZM64A'"
+    ).fetchone()
+    assert unit == "กล่อง", "064 must normalize historical raw unit"
+    assert kind == "own", (
+        "after 064 the exact-unit override resolves to A (own), "
+        "not the catch-all B (third_party)")
+
+    _apply(conn, MIG64)          # idempotent: re-apply changes nothing
+    unit2, kind2 = conn.execute(
+        "SELECT unit, brand_kind FROM express_sales WHERE doc_no='ZM64A'"
+    ).fetchone()
+    assert (unit2, kind2) == ("กล่อง", "own")
     conn.close()
 
 

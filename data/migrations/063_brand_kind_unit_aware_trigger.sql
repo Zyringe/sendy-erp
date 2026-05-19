@@ -35,14 +35,20 @@
 -- No table is rebuilt here, so there is no DROP TABLE / RENAME trigger
 -- re-validation hazard (the 061 prod-down failure mode does not apply).
 --
--- DEPLOY DEPENDENCY (Codex review high, 2026-05-20): express_sales.unit was
---   imported RAW (e.g. 'กล') while product_code_mapping.bsn_unit is canonical
---   ('กล่อง'), so this resolver only works once Express units are normalized.
---   import_express.py now normalizes on write (parity with the weekly import).
---   For rows already imported, run AFTER this migration deploys:
---       ~/.virtualenvs/erp/bin/python scripts/backfill_express_unit_normalize.py
---   (idempotent: normalizes historical express_sales.unit then re-runs the
---   brand_kind recompute below; safe to run regardless of migration order).
+-- UNIT-NORMALIZATION DEPENDENCY (Codex review high, 2026-05-20):
+--   express_sales.unit was imported RAW (e.g. 'กล') while
+--   product_code_mapping.bsn_unit is canonical ('กล่อง'), so this resolver
+--   only works once Express units are normalized. This is now handled
+--   AUTOMATICALLY and enforced — no manual step:
+--     * NEW rows: import_express.py normalizes on write (parity w/ weekly).
+--     * HISTORICAL rows: migration 064 (runs right after this one) seeds
+--       bsn_unit_alias and normalizes express_sales.unit, then recomputes
+--       brand_kind again on the now-canonical units.
+--   This 063 recompute may run on still-raw units (064 hasn't run yet);
+--   that's fine — 064 re-runs the identical recompute after normalizing,
+--   so the final post-deploy state is correct regardless of order.
+--   scripts/backfill_express_unit_normalize.py is kept as an OPTIONAL
+--   ad-hoc re-run tool; it is no longer a required deploy step.
 --
 -- NOTE: do NOT self-insert into applied_migrations here. The runner records
 --   every migration it executes automatically.

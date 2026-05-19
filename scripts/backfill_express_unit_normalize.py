@@ -11,14 +11,15 @@ wrong brand_kind / commission. import_express.py now normalizes on write
 were already imported, then re-runs the 063 brand_kind recompute now that
 units are comparable.
 
-Run AFTER deploying (migration 063 + the import_express normalize change):
+NOTE: as of migration 064 this normalization + recompute runs AUTOMATICALLY
+on deploy (064 seeds bsn_unit_alias and does it in SQL). This script is now
+OPTIONAL — kept as an idempotent ad-hoc re-run tool (e.g. after a manual
+data poke), not a required deploy step.
 
     ~/.virtualenvs/erp/bin/python scripts/backfill_express_unit_normalize.py
 
 Idempotent: normalize_unit() is a no-op on already-canonical units and the
-brand_kind recompute is deterministic, so re-running changes nothing. Order
-vs the auto-run mig063 does not matter — running this last leaves the
-correct final state regardless.
+brand_kind recompute is deterministic, so re-running changes nothing.
 """
 from __future__ import annotations
 
