@@ -32,8 +32,21 @@
 --
 -- NOTE: do NOT self-insert into applied_migrations here. The runner records
 --   every migration it executes automatically.
+--
+-- TRIGGER HAZARD (fixed 2026-05-19): trigger refresh_brand_kind_on_product_brand_change
+--   (migration 021, AFTER UPDATE OF brand_id ON products) has a body that
+--   references product_code_mapping. SQLite >=3.25 re-validates every trigger
+--   body during DROP TABLE / ALTER TABLE RENAME, so the table swap below aborts
+--   with "no such table: main.product_code_mapping" on any DB where 021 already
+--   ran (= Railway's volume DB running 061 fresh; local never re-runs 061 since
+--   it is already in applied_migrations). Fix: drop the trigger before the swap
+--   and recreate it verbatim (from 021) after. DROP ... IF EXISTS keeps this
+--   idempotent and safe against the crash-loop-left state.
 
 BEGIN;
+
+DROP TRIGGER IF EXISTS refresh_brand_kind_on_product_brand_change;
+DROP TABLE   IF EXISTS product_code_mapping_new;
 
 CREATE TABLE product_code_mapping_new (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,5 +73,21 @@ FROM product_code_mapping;
 
 DROP TABLE product_code_mapping;
 ALTER TABLE product_code_mapping_new RENAME TO product_code_mapping;
+
+-- Recreate the trigger verbatim from 021_brand_kind_trigger.sql now that
+-- product_code_mapping exists again (post-RENAME).
+CREATE TRIGGER refresh_brand_kind_on_product_brand_change
+AFTER UPDATE OF brand_id ON products
+WHEN OLD.brand_id IS NOT NEW.brand_id
+BEGIN
+    UPDATE express_sales
+       SET brand_kind = (
+           SELECT CASE WHEN b.is_own_brand = 1 THEN 'own' ELSE 'third_party' END
+             FROM brands b WHERE b.id = NEW.brand_id
+       )
+     WHERE product_code IN (
+         SELECT bsn_code FROM product_code_mapping WHERE product_id = NEW.id
+     );
+END;
 
 COMMIT;

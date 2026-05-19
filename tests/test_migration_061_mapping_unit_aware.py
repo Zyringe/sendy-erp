@@ -174,3 +174,81 @@ def test_runner_records_061_exactly_once(empty_db, tmp_path, monkeypatch):
     assert "bsn_unit" in {r[1] for r in conn.execute(
         "PRAGMA table_info(product_code_mapping)")}
     conn.close()
+
+
+# ── Regression: the product_code_mapping rebuild must not orphan the
+#    refresh_brand_kind_on_product_brand_change trigger (migration 021).
+#
+#    Bug (prod-down 2026-05-19): trigger 021's body references
+#    product_code_mapping. 061's DROP TABLE / ALTER RENAME made SQLite
+#    re-validate the trigger mid-swap on Railway's volume DB →
+#    "error in trigger refresh_brand_kind_on_product_brand_change:
+#     no such table: main.product_code_mapping" → boot crash-loop.
+#    Local never re-runs 061 (already in applied_migrations) so it was
+#    invisible until deploy. Fix: 061 drops the trigger before the swap
+#    and recreates it verbatim after. This test locks that contract by
+#    asserting the trigger survives 061 AND still fires end-to-end. ──────
+
+TRIGGER = "refresh_brand_kind_on_product_brand_change"
+
+
+def _trigger_sql(conn):
+    r = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+        (TRIGGER,)).fetchone()
+    return r[0] if r else None
+
+
+def test_061_preserves_brand_kind_trigger(tmp_db):
+    """061 must leave trigger 021 present and pointing at the rebuilt
+    product_code_mapping. tmp_db is a copy of the live DB, which carries
+    trigger 021 — the exact precondition that crashed Railway."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    assert _trigger_sql(conn) is not None, (
+        "precondition: live DB must carry trigger 021 for this test to "
+        "mean anything")
+
+    _reset_pre061(conn)          # pre-061 table shape; trigger 021 untouched
+    _apply(conn, MIG)            # must NOT raise (the prod failure point)
+
+    sql = _trigger_sql(conn)
+    assert sql is not None, "061 dropped the trigger and never recreated it"
+    assert "product_code_mapping" in sql
+    assert "bsn_unit" in {r[1] for r in conn.execute(
+        "PRAGMA table_info(product_code_mapping)")}
+    conn.close()
+
+
+def test_061_trigger_still_fires_after_rebuild(tmp_db):
+    """End-to-end: after 061, updating products.brand_id must still
+    refresh express_sales.brand_kind through the rebuilt mapping."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    _reset_pre061(conn)
+    _apply(conn, MIG)
+
+    own = conn.execute(
+        "SELECT id FROM brands WHERE is_own_brand=1 LIMIT 1").fetchone()[0]
+    third = conn.execute(
+        "SELECT id FROM brands WHERE is_own_brand=0 LIMIT 1").fetchone()[0]
+    pid = conn.execute(
+        "SELECT id FROM products WHERE is_active=1 LIMIT 1").fetchone()[0]
+
+    conn.execute("INSERT INTO product_code_mapping "
+                 "(bsn_code,bsn_name,product_id,bsn_unit) "
+                 "VALUES ('ZTRG1','t',?, '')", (pid,))
+    conn.execute(
+        "INSERT INTO express_sales "
+        "(batch_id,doc_no,line_no,doc_type,date_iso,company_id,"
+        " product_code,brand_kind) "
+        "VALUES (1,'ZD1',1,'IV','2026-05-19',1,'ZTRG1','stale')")
+    conn.execute("UPDATE products SET brand_id=? WHERE id=?", (third, pid))
+    conn.execute("UPDATE products SET brand_id=? WHERE id=?", (own, pid))
+    conn.commit()
+
+    assert conn.execute(
+        "SELECT brand_kind FROM express_sales WHERE product_code='ZTRG1'"
+    ).fetchone()[0] == "own"
+    conn.close()
