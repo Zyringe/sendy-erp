@@ -218,15 +218,21 @@ def _topup_pre_feb_for_product(product_id, commission_mod, cutoff='2026-02-01'):
     note='pre-Feb 2026 auto-paid (top-up after brand change)'.
     """
     conn = get_connection()
-    codes = [r[0] for r in conn.execute(
-        'SELECT bsn_code FROM product_code_mapping WHERE product_id = ?',
+    # cheap guard: nothing to do if this product has no mapping at all
+    if conn.execute(
+        'SELECT 1 FROM product_code_mapping WHERE product_id = ? LIMIT 1',
         (product_id,)
-    ).fetchall()]
-    if not codes:
+    ).fetchone() is None:
         conn.close()
         return
-    placeholders = ','.join(['?'] * len(codes))
-    triples = conn.execute(f"""
+    # Unit-aware (mig 061/063): a split bsn_code resolves to DIFFERENT
+    # products by express_sales.unit. Selecting invoices by
+    # `es.product_code IN (codes)` would auto-pay invoices that only
+    # contain ANOTHER product sharing the code. Match each es row through
+    # the SAME resolver the trigger/import use, so only invoices whose
+    # (product_code, unit) actually resolves to THIS product are topped up.
+    # (Codex adversarial review high finding, 2026-05-20.)
+    triples = conn.execute("""
         SELECT DISTINCT pin.salesperson_code,
                         substr(pin.date_iso, 1, 7) AS ym,
                         ref.invoice_no
@@ -235,9 +241,17 @@ def _topup_pre_feb_for_product(product_id, commission_mod, cutoff='2026-02-01'):
           JOIN express_sales es ON es.doc_no = ref.invoice_no
          WHERE pin.is_void = 0
            AND pin.salesperson_code <> ''
-           AND es.product_code IN ({placeholders})
            AND es.date_iso < ?
-    """, codes + [cutoff]).fetchall()
+           AND ? = (
+               SELECT m.product_id
+                 FROM product_code_mapping m
+                WHERE m.bsn_code = es.product_code
+                  AND m.bsn_unit IN (COALESCE(es.unit, ''), '')
+                  AND m.product_id IS NOT NULL
+                ORDER BY (m.bsn_unit = '')
+                LIMIT 1
+           )
+    """, (cutoff, product_id)).fetchall()
     conn.close()
 
     inserted = 0

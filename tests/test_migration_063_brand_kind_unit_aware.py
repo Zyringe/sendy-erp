@@ -311,6 +311,71 @@ def test_set_product_brand_is_unit_aware_via_trigger(tmp_db):
     conn.close()
 
 
+# ── [high] pre-Feb top-up must be unit-aware (no cross-product auto-pay) ──────
+class _FakeCommission:
+    """Stub so the test isolates the invoice SELECTION, not the real
+    commission engine. Every invoice has an unpaid shortfall."""
+    def clear_override_cache(self):
+        pass
+
+    def get_invoice_commission_for_sp(self, ym, sp):
+        return [{"invoice_no": "INVA", "remaining": 100.0},
+                {"invoice_no": "INVB", "remaining": 100.0}]
+
+    def __init__(self):
+        self.paid = []
+
+    def record_payout(self, **kw):
+        self.paid.append(kw["invoice_no"])
+
+
+def test_topup_pre_feb_is_unit_aware(tmp_db):
+    """Split code ZTOP63: unit 'กล่อง' → product A, catch-all → product B.
+    Topping up after A's brand change must consider ONLY INVA (resolves
+    to A). INVB contains only B (catch-all) and must NOT be auto-paid.
+    The pre-fix by-code selector would wrongly include INVB."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    _reset_pre061(conn)
+    _apply(conn, MIG61)
+    A, B = _two_products(conn)
+    conn.execute("INSERT INTO product_code_mapping "
+                 "(bsn_code,bsn_name,product_id,bsn_unit) "
+                 "VALUES ('ZTOP63','x',?, 'กล่อง')", (A,))
+    conn.execute("INSERT INTO product_code_mapping "
+                 "(bsn_code,bsn_name,product_id,bsn_unit) "
+                 "VALUES ('ZTOP63','x',?, '')", (B,))
+    # pre-cutoff invoices: INVA (unit กล่อง → A), INVB (unit ชิ้น → B)
+    conn.execute(
+        "INSERT INTO express_sales (batch_id,doc_no,line_no,doc_type,"
+        "date_iso,company_id,product_code,unit,brand_kind) "
+        "VALUES (1,'INVA',1,'IV','2026-01-10',1,'ZTOP63','กล่อง','x')")
+    conn.execute(
+        "INSERT INTO express_sales (batch_id,doc_no,line_no,doc_type,"
+        "date_iso,company_id,product_code,unit,brand_kind) "
+        "VALUES (1,'INVB',1,'IV','2026-01-10',1,'ZTOP63','ชิ้น','x')")
+    for inv in ("INVA", "INVB"):
+        cur = conn.execute(
+            "INSERT INTO express_payments_in (batch_id,doc_no,date_iso,"
+            "company_id,customer_name,salesperson_code,is_void) "
+            "VALUES (1,?, '2026-01-15',1,'c','06',0)", ("RE" + inv,))
+        conn.execute(
+            "INSERT INTO express_payment_in_invoice_refs "
+            "(payment_in_id,invoice_no) VALUES (?,?)", (cur.lastrowid, inv))
+    conn.commit()
+    conn.close()
+
+    fake = _FakeCommission()
+    models._topup_pre_feb_for_product(A, fake)
+
+    assert "INVA" in fake.paid, "invoice resolving to A must be topped up"
+    assert "INVB" not in fake.paid, (
+        "INVB resolves to product B via catch-all — changing A's brand "
+        "must NOT auto-pay it (by-code selector bug)")
+    conn = sqlite3.connect(tmp_db)
+    conn.close()
+
+
 # ── runner records 063 exactly once (no self-insert) ─────────────────────────
 def test_runner_records_063_exactly_once(tmp_db, tmp_path, monkeypatch):
     """tmp_db's applied_migrations is populated (live copy) so the runner
