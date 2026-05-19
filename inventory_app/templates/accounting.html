@@ -1,0 +1,326 @@
+{% extends 'base.html' %}
+{% block title %}สรุปกำไร-ขาดทุน – Sendy{% endblock %}
+{% block page_title %}สรุปกำไร-ขาดทุน (BSN){% endblock %}
+
+{% block content %}
+
+{# ── Disclaimer ──────────────────────────────────────────────────────────── #}
+<div class="alert alert-secondary py-2 mb-3 small">
+  <i class="bi bi-info-circle me-1"></i>
+  <strong>ข้อมูลเฉพาะ บุญสวัสดิ์ นำชัย (BSN)</strong> &nbsp;·&nbsp;
+  รายได้ = <code>net</code> (ก่อน VAT, หลังหัก discount) &nbsp;·&nbsp;
+  COGS = qty × cost_price ปัจจุบัน (<strong>ประมาณการ</strong>) &nbsp;·&nbsp;
+  ไม่รวม VAT &nbsp;·&nbsp;
+  กำไรสุทธิโดยประมาณ = กำไรขั้นต้น − ค่าใช้จ่าย − ค่าคอมมิชชั่น
+</div>
+
+{# ── Period selector ──────────────────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-body py-2">
+    <form method="get" class="row g-2 align-items-end">
+
+      {# Month shortcut #}
+      <div class="col-md-3">
+        <label class="form-label small mb-1">เดือน (เลือกด่วน)</label>
+        <select name="month" class="form-select form-select-sm"
+                onchange="this.form.date_from.value='';this.form.date_to.value='';this.form.submit()">
+          <option value="">— เลือกเดือน —</option>
+          {% for ym in s.available_months %}
+          <option value="{{ ym }}"
+            {% if ym == s.date_from[:7] %}selected{% endif %}>
+            {{ ym }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="col-auto d-flex align-items-end">
+        <span class="text-subtle small me-2">หรือกำหนดวันที่เอง</span>
+      </div>
+
+      <div class="col-md-2">
+        <label class="form-label small mb-1">ตั้งแต่วันที่</label>
+        <input type="date" name="date_from" class="form-control form-control-sm"
+               value="{{ s.date_from or '' }}">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small mb-1">ถึงวันที่</label>
+        <input type="date" name="date_to" class="form-control form-control-sm"
+               value="{{ s.date_to or '' }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
+        <a href="{{ url_for('accounting_summary') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# ── Period label ─────────────────────────────────────────────────────────── #}
+<div class="mb-3 text-subtle small">
+  ช่วงเวลา: <strong>{{ s.date_from }}</strong> ถึง <strong>{{ s.date_to }}</strong>
+  &nbsp;·&nbsp; {{ s.doc_count | fmt_qty }} เอกสาร &nbsp;·&nbsp; {{ s.line_count | fmt_qty }} รายการ
+</div>
+
+{# ── KPI Cards — row 1 ────────────────────────────────────────────────────── #}
+<div class="row g-3 mb-3">
+
+  {# ยอดขายสุทธิ #}
+  <div class="col-sm-6 col-xl-3">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#dcf2e0">
+          <i class="bi bi-graph-up-arrow" style="color:#2e7d3a"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">ยอดขายสุทธิ</div>
+          <div class="stat-card-value text-success">{{ s.sales_net | fmt_price }}</div>
+        </div>
+      </div>
+      <div class="mt-2 text-subtle small">รายได้ pre-VAT หลังส่วนลด (net)</div>
+    </div>
+  </div>
+
+  {# ต้นทุนขาย / COGS #}
+  <div class="col-sm-6 col-xl-3">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#fdf3dd">
+          <i class="bi bi-box-seam" style="color:#b45309"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">ต้นทุนขาย (COGS)</div>
+          <div class="stat-card-value text-warning">{{ s.cogs | fmt_price }}</div>
+        </div>
+      </div>
+      <div class="mt-2 text-subtle small">
+        ประมาณการ qty × cost_price ปัจจุบัน
+        {% if s.no_cost_lines > 0 %}
+        <span class="text-danger">· {{ s.no_cost_lines }} รายการไม่มีต้นทุน</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# กำไรขั้นต้น #}
+  <div class="col-sm-6 col-xl-3">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:{% if s.gross_profit >= 0 %}#e8f5e9{% else %}#fdecee{% endif %}">
+          <i class="bi bi-currency-exchange"
+             style="color:{% if s.gross_profit >= 0 %}#2e7d3a{% else %}#c41e2a{% endif %}"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">กำไรขั้นต้น</div>
+          <div class="stat-card-value {% if s.gross_profit >= 0 %}text-success{% else %}text-danger{% endif %}">
+            {{ s.gross_profit | fmt_price }}
+          </div>
+        </div>
+      </div>
+      <div class="mt-2 text-subtle small">
+        {% if s.sales_net > 0 %}
+        Margin {{ "%.1f"|format(s.margin_pct) }}%
+        {% else %}—{% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ค่าใช้จ่าย #}
+  <div class="col-sm-6 col-xl-3">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#f3e8ff">
+          <i class="bi bi-receipt-cutoff" style="color:#7e22ce"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">ค่าใช้จ่าย</div>
+          <div class="stat-card-value" style="color:#7e22ce">{{ s.expenses | fmt_price }}</div>
+        </div>
+      </div>
+      <div class="mt-2 text-subtle small">
+        {% if s.expenses == 0 %}
+        ยังไม่มีข้อมูลค่าใช้จ่าย
+        {% else %}
+        รวม expense_log ช่วงนี้
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+</div>
+
+{# ── KPI Cards — row 2 ────────────────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+
+  {# ค่าคอมมิชชั่น #}
+  <div class="col-sm-6 col-xl-4">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#fff3e0">
+          <i class="bi bi-person-check" style="color:#d97706"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">ค่าคอมมิชชั่น (จ่ายแล้ว)</div>
+          <div class="stat-card-value text-warning">{{ s.commission_total | fmt_price }}</div>
+        </div>
+      </div>
+      <div class="mt-2 text-subtle small">
+        SUM(commission_payouts) เดือนที่ตรงกัน
+        <a href="{{ url_for('commission_dashboard') }}" class="ms-1">ดูรายละเอียด →</a>
+      </div>
+    </div>
+  </div>
+
+  {# กำไรสุทธิโดยประมาณ #}
+  <div class="col-sm-6 col-xl-8">
+    <div class="stat-card h-100" style="border-left: 4px solid {% if s.net_profit >= 0 %}#2e7d3a{% else %}#c41e2a{% endif %}">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon"
+             style="background:{% if s.net_profit >= 0 %}#e8f5e9{% else %}#fdecee{% endif %}; width:3rem; height:3rem">
+          <i class="bi bi-bank"
+             style="color:{% if s.net_profit >= 0 %}#2e7d3a{% else %}#c41e2a{% endif %}; font-size:1.4rem"></i>
+        </div>
+        <div>
+          <div class="stat-card-label fw-bold">กำไรสุทธิโดยประมาณ</div>
+          <div class="stat-card-value {% if s.net_profit >= 0 %}text-success{% else %}text-danger{% endif %}"
+               style="font-size:1.6rem">
+            {{ s.net_profit | fmt_price }}
+          </div>
+        </div>
+        <div class="ms-auto text-end text-subtle small">
+          <div>= กำไรขั้นต้น {{ s.gross_profit | fmt_price }}</div>
+          <div>− ค่าใช้จ่าย {{ s.expenses | fmt_price }}</div>
+          <div>− ค่าคอมฯ {{ s.commission_total | fmt_price }}</div>
+        </div>
+      </div>
+      <div class="mt-2">
+        <span class="badge bg-warning text-dark">ประมาณการ</span>
+        <span class="text-subtle small ms-2">COGS ใช้ cost_price ปัจจุบัน · ไม่รวม VAT · BSN เท่านั้น</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+{# ── Brand breakdown table ─────────────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-tag me-2 text-accent"></i>ยอดขายแยกตามแบรนด์</span>
+    <span class="text-subtle small">own-brand ก่อน · 3rd-party ถัดไป</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr>
+          <th>แบรนด์</th>
+          <th class="text-end">ยอดขายสุทธิ</th>
+          <th class="text-end">COGS (ประมาณ)</th>
+          <th class="text-end">กำไรขั้นต้น</th>
+          <th class="text-end">Margin %</th>
+          <th class="text-end text-subtle small">รายการ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in s.brand_breakdown %}
+        <tr {% if row.is_own_brand %}class="table-light fw-semibold"{% endif %}>
+          <td>
+            {% if row.is_own_brand %}
+            <span class="badge" style="background:#8a5d00; color:#fff">own</span>
+            {% endif %}
+            {{ row.brand_label }}
+            {% if row.no_cost_lines > 0 %}
+            <span class="badge bg-warning text-dark ms-1" title="{{ row.no_cost_lines }} รายการไม่มี cost_price">
+              {{ row.no_cost_lines }} ไม่มีต้นทุน
+            </span>
+            {% endif %}
+          </td>
+          <td class="text-end">{{ row.sales_net | fmt_price }}</td>
+          <td class="text-end">{{ row.cogs_approx | fmt_price }}</td>
+          <td class="text-end {% if row.gross_profit >= 0 %}text-success{% else %}text-danger{% endif %}">
+            {{ row.gross_profit | fmt_price }}
+          </td>
+          <td class="text-end">
+            {% if row.sales_net > 0 %}
+              <span class="{% if row.margin_pct >= 20 %}text-success{% elif row.margin_pct >= 0 %}text-warning{% else %}text-danger{% endif %}">
+                {{ "%.1f"|format(row.margin_pct) }}%
+              </span>
+            {% else %}—{% endif %}
+          </td>
+          <td class="text-end text-subtle small">{{ row.line_count | fmt_qty }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-subtle">ไม่มียอดขายในช่วงนี้</td></tr>
+        {% endfor %}
+      </tbody>
+      <tfoot class="table-secondary fw-bold">
+        <tr>
+          <td>รวมทั้งหมด</td>
+          <td class="text-end">{{ s.sales_net | fmt_price }}</td>
+          <td class="text-end">{{ s.cogs | fmt_price }}</td>
+          <td class="text-end {% if s.gross_profit >= 0 %}text-success{% else %}text-danger{% endif %}">
+            {{ s.gross_profit | fmt_price }}
+          </td>
+          <td class="text-end">
+            {% if s.sales_net > 0 %}{{ "%.1f"|format(s.margin_pct) }}%{% else %}—{% endif %}
+          </td>
+          <td class="text-end text-subtle small">{{ s.line_count | fmt_qty }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+</div>
+
+{# ── Expenses by category ──────────────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-header">
+    <i class="bi bi-receipt-cutoff me-2 text-accent"></i>ค่าใช้จ่ายแยกตามหมวด (BSN)
+  </div>
+  {% if s.expenses == 0 %}
+  <div class="card-body text-subtle text-center py-4">
+    <i class="bi bi-inbox fs-3 d-block mb-2"></i>
+    ยังไม่มีข้อมูลค่าใช้จ่าย — กรอกผ่านหน้าบันทึกค่าใช้จ่ายเมื่อพร้อม
+  </div>
+  {% else %}
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr>
+          <th>หมวดค่าใช้จ่าย</th>
+          <th class="text-end">ยอดรวม (ก่อน VAT)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for cat in s.expenses_by_category %}
+        {% if cat.total > 0 %}
+        <tr>
+          <td>{{ cat.category_name }}</td>
+          <td class="text-end">{{ cat.total | fmt_price }}</td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+      <tfoot class="table-secondary fw-bold">
+        <tr>
+          <td>รวม</td>
+          <td class="text-end">{{ s.expenses | fmt_price }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Assumptions footnote ─────────────────────────────────────────────────── #}
+<div class="card border-0 bg-light mb-2">
+  <div class="card-body py-2 small text-subtle">
+    <strong>ข้อสมมติฐาน:</strong>
+    รายได้ใช้ <code>net</code> (pre-VAT, post-discount) จาก <code>sales_transactions</code> ·
+    COGS = qty × <code>products.cost_price</code> ปัจจุบัน (ไม่ใช่ WACC ณ วันขาย — ค่าประมาณ) ·
+    สินค้าที่ยังไม่มี <code>cost_price</code> นับ COGS = 0 (understate) ·
+    ค่าคอมมิชชั่น = ยอดที่จ่ายจริงใน <code>commission_payouts</code> เดือนที่ตรงกัน ·
+    ไม่รวม VAT ทั้งด้านรายได้และต้นทุน ·
+    ข้อมูล BSN (company_id = 1) เท่านั้น · Sendai Trading = ไม่มีข้อมูลในระบบ
+  </div>
+</div>
+
+{% endblock %}

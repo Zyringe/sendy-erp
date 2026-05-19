@@ -218,11 +218,15 @@ def main(argv=None):
             conn.execute("UPDATE products SET sku_code=? WHERE id=?", (skuc, pid))
         if pname:
             conn.execute("UPDATE products SET product_name=? WHERE id=?", (pname, pid))
+    # mig 061: product_code_mapping is keyed by (bsn_code, bsn_unit).
+    # This script writes the bsn_unit='' catch-all (per-unit overrides are
+    # managed via /mapping or apply_unit_aware_remap.py).
     for bsn_code, bsn_name, pid in mappings:
         conn.execute("""
-            INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id,is_ignored)
-            VALUES (?,?,?,0)
-            ON CONFLICT(bsn_code) DO UPDATE SET
+            INSERT INTO product_code_mapping
+                (bsn_code,bsn_name,product_id,is_ignored,bsn_unit)
+            VALUES (?,?,?,0,'')
+            ON CONFLICT(bsn_code,bsn_unit) DO UPDATE SET
               bsn_name=excluded.bsn_name, product_id=excluded.product_id,
               is_ignored=0, ignore_reason=NULL
         """, (bsn_code, bsn_name, pid))
@@ -245,7 +249,10 @@ def main(argv=None):
             conn.execute(f"""
                 UPDATE {tbl} SET product_id=(
                   SELECT m.product_id FROM product_code_mapping m
-                  WHERE m.bsn_code={tbl}.bsn_code AND m.product_id IS NOT NULL)
+                  WHERE m.bsn_code={tbl}.bsn_code
+                    AND m.bsn_unit IN (COALESCE({tbl}.unit,''), '')
+                    AND m.product_id IS NOT NULL
+                  ORDER BY (m.bsn_unit='') LIMIT 1)
                 WHERE bsn_code IN ({qs})
             """, changed_codes)
 

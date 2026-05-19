@@ -200,6 +200,45 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
 {% else %}
 {# ── Tab 1: Pending mappings — Suggest button only (old dropdown removed) #}
 
+{# ─── Per-unit overrides (mig 061, read-only) — always shown on the
+   mapping tab so Put can review code↔unit splits regardless of pending #}
+{% if overrides %}
+<div class="card mb-3">
+  <div class="card-header py-2 d-flex align-items-center gap-2">
+    <i class="bi bi-funnel"></i>
+    <span class="fw-600">Overrides ที่ตั้งไว้ (รหัสเดียวกัน แยกตามหน่วย)</span>
+    <span class="text-subtle small">{{ overrides|length }} รายการ</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th style="width:130px">รหัส BSN</th>
+          <th style="width:100px" class="text-center">หน่วย BSN</th>
+          <th class="text-center" style="width:80px">SKU</th>
+          <th>สินค้า</th>
+          <th class="text-center" style="width:90px">หน่วยระบบ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in overrides %}
+        <tr>
+          <td><span class="badge badge-gray font-mono">{{ o.bsn_code }}</span></td>
+          <td class="text-center"><span class="badge badge-warning font-mono">{{ o.bsn_unit }}</span></td>
+          <td class="text-center"><span class="badge badge-info">{{ o.sku }}</span></td>
+          <td class="small">{{ o.product_name }}</td>
+          <td class="text-center text-subtle">{{ o.unit_type }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer small text-subtle">
+    เมื่อ import: ขายหน่วยที่ override → SKU ที่กำหนด · หน่วยอื่น → mapping ปกติ
+  </div>
+</div>
+{% endif %}
+
 {% if not pending %}
 <div class="card">
   <div class="card-body text-center py-5">
@@ -296,6 +335,23 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                 </div>
                 <div class="form-text small" id="sm-mapconv-hint">
                   <!-- populated dynamically: source of bsn_unit value -->
+                </div>
+              </div>
+
+              {# mig 061: optional per-unit override. เว้นว่าง = ทุกหน่วย
+                 (catch-all, พฤติกรรมเดิม). ใส่หน่วย = bsn_code นี้เมื่อขาย
+                 หน่วยนี้ → สินค้าตัวนี้เท่านั้น (ตัว/แผง แยก SKU) #}
+              <div class="mt-2">
+                <label class="form-label small mb-1">
+                  <i class="bi bi-funnel me-1"></i>
+                  หน่วย BSN ที่ override
+                  <span class="text-subtle">(เว้นว่าง = ทุกหน่วย)</span>
+                </label>
+                <input type="text" class="form-control form-control-sm"
+                       id="sm-map-bsn-unit" style="max-width:160px"
+                       placeholder="เช่น แผง (เว้นว่างได้)">
+                <div class="form-text small text-subtle">
+                  ใส่เฉพาะกรณีรหัสนี้ขายหลายหน่วยและแต่ละหน่วยเป็นคนละ SKU
                 </div>
               </div>
 
@@ -661,6 +717,9 @@ function confirmExistingMap() {
     entry.bsn_unit = bsnUnitInput;
     entry.unit_conversion_ratio = ratio;
   }
+  // mig 061: optional per-unit mapping override (blank = catch-all)
+  const mapUnit = document.getElementById('sm-map-bsn-unit').value.trim();
+  if (mapUnit) { entry.map_bsn_unit = mapUnit; }
   saveSingle(entry);
 }
 

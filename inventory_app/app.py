@@ -24,6 +24,9 @@ from parse_platform import (parse_shopee, parse_lazada, export_shopee, export_la
 from blueprints.products import bp_products
 from blueprints.supplier_catalogue import bp_supplier_catalogue
 from blueprints.mobile import bp_mobile
+from blueprints.hr import bp_hr
+from blueprints.cashbook import bp_cashbook
+import cashflow as cf_mod
 
 app = Flask(__name__)
 # Honor X-Forwarded-Proto/Host from Railway's edge so url_for and post-login
@@ -44,6 +47,8 @@ os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
 app.register_blueprint(bp_products)
 app.register_blueprint(bp_supplier_catalogue)
 app.register_blueprint(bp_mobile)
+app.register_blueprint(bp_hr)
+app.register_blueprint(bp_cashbook)
 
 with app.app_context():
     # SKIP_DB_INIT=1 lets the app boot without touching the database. Used
@@ -125,10 +130,185 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
 # admin can POST anything
 
 
+# ── Module definitions for sidebar switcher ──────────────────────────────────
+# Each entry: key, name_th, icon (bootstrap-icons class), first_endpoint
+# (first_endpoint is used to build the switcher navigation target).
+# Roles 'admin' and 'manager' can see 'hr'; only 'admin' sees 'admin_module'.
+_MODULE_DEFS = [
+    {
+        'key': 'overview',
+        'name': 'ภาพรวม',
+        'icon': 'bi-speedometer2',
+        'first_endpoint': 'dashboard',
+        'roles': None,  # all roles
+    },
+    {
+        'key': 'operation',
+        'name': 'คลังสินค้า',
+        'icon': 'bi-box-seam',
+        'first_endpoint': 'products.product_list',
+        'roles': None,
+    },
+    {
+        'key': 'accounting',
+        'name': 'การค้า & บัญชี',
+        'icon': 'bi-cash-coin',
+        'first_endpoint': 'trade_dashboard',  # staff-safe landing (sales/purchases/customers)
+        'roles': None,  # module visible to all; only the /accounting cost link+route is admin/manager
+    },
+    {
+        'key': 'hr',
+        'name': 'บุคลากร (HR)',
+        'icon': 'bi-people',
+        'first_endpoint': 'hr.dashboard',
+        'roles': ('admin', 'manager'),
+    },
+    {
+        'key': 'cashbook',
+        'name': 'บัญชีรับ-จ่าย',
+        'icon': 'bi-journal-text',
+        'first_endpoint': 'cashbook.dashboard',
+        'roles': ('admin', 'manager'),
+    },
+    {
+        'key': 'data',
+        'name': 'นำเข้าข้อมูล',
+        'icon': 'bi-upload',
+        'first_endpoint': 'import_weekly',
+        'roles': None,
+    },
+    {
+        'key': 'admin_module',
+        'name': 'ระบบ',
+        'icon': 'bi-gear',
+        'first_endpoint': 'user_list',
+        'roles': ('admin',),
+    },
+]
+
+# Map each endpoint to the module key it belongs to.
+# Endpoints not listed here fall back to 'overview'.
+_ENDPOINT_MODULE = {
+    # overview
+    'dashboard': 'overview',
+    'alerts_view': 'overview',
+    # operation
+    'products.product_list': 'operation',
+    'products.product_detail': 'operation',
+    'products.product_new': 'operation',
+    'products.product_edit': 'operation',
+    'products.stock_in': 'operation',
+    'products.stock_out': 'operation',
+    'products.stock_adjust': 'operation',
+    'transaction_history': 'operation',
+    'conversion_list': 'operation',
+    'conversion_new': 'operation',
+    'conversion_edit': 'operation',
+    'conversion_run': 'operation',
+    'conversion_delete': 'operation',
+    'conversion_deactivate': 'operation',
+    'conversion_activate': 'operation',
+    'conversion_history': 'operation',
+    'labels_view': 'operation',
+    'catalog_view': 'operation',
+    # accounting
+    'accounting_summary': 'accounting',
+    'cashflow_dashboard': 'accounting',
+    'trade_dashboard': 'accounting',
+    'sales_view': 'accounting',
+    'sales_doc': 'accounting',
+    'purchases_view': 'accounting',
+    'purchases_doc': 'accounting',
+    'customer_list': 'accounting',
+    'customer_summary': 'accounting',
+    'customer_map': 'accounting',
+    'supplier_list': 'accounting',
+    'supplier_summary': 'accounting',
+    'payment_status': 'accounting',
+    'payment_customers': 'accounting',
+    'payment_customer_detail': 'accounting',
+    'import_payments': 'accounting',
+    'commission_dashboard': 'accounting',
+    'commission_payouts': 'accounting',
+    'commission_sp': 'accounting',
+    'commission_sp_invoice': 'accounting',
+    'commission_export': 'accounting',
+    'commission_overrides': 'accounting',
+    'commission_override_new': 'accounting',
+    'commission_override_edit': 'accounting',
+    'commission_override_toggle': 'accounting',
+    'commission_override_delete': 'accounting',
+    'express_ar_dashboard': 'accounting',
+    'express_ar_customer': 'accounting',
+    'express_ap_dashboard': 'accounting',
+    'express_import': 'accounting',
+    'ecommerce': 'accounting',
+    'ecommerce_import': 'accounting',
+    'ecommerce_sku_edit': 'accounting',
+    'ecommerce_export': 'accounting',
+    'ecommerce_mapping_export': 'accounting',
+    'ecommerce_mapping_import': 'accounting',
+    'ecommerce_listings_import': 'accounting',
+    'ecommerce_listings_mapping_export': 'accounting',
+    'ecommerce_listings_mapping_import': 'accounting',
+    # hr
+    'hr.dashboard': 'hr',
+    'hr.employee_list': 'hr',
+    'hr.employee_new': 'hr',
+    'hr.employee_detail': 'hr',
+    'hr.employee_entitlements': 'hr',
+    'hr.leave_list': 'hr',
+    'hr.leave_new': 'hr',
+    'hr.payroll_list': 'hr',
+    'hr.payroll_detail': 'hr',
+    'hr.payslip': 'hr',
+    # data
+    'import_weekly': 'data',
+    'mapping': 'data',
+    'mapping_save': 'data',
+    'mapping_suggest': 'data',
+    'mapping_suggestion_approve': 'data',
+    'unit_conversions': 'data',
+    'unit_conversions_save': 'data',
+    'unit_conversions_edit': 'data',
+    'review_transactions': 'data',
+    'supplier_catalogue.supplier_catalogue_list': 'data',
+    'supplier_catalogue.supplier_catalogue_detail': 'data',
+    'supplier_catalogue.supplier_catalogue_new': 'data',
+    'supplier_catalogue.supplier_catalogue_edit': 'data',
+    'supplier_catalogue.supplier_catalogue_compare': 'data',
+    'supplier_catalogue.supplier_catalogue_map': 'data',
+    'supplier_catalogue.supplier_quick_update': 'data',
+    # cashbook
+    'cashbook.dashboard':     'cashbook',
+    'cashbook.account_ledger': 'cashbook',
+    'cashbook.import_view':   'cashbook',
+    'cashbook.export_view':   'cashbook',
+    # admin_module
+    'user_list': 'admin_module',
+    'user_new': 'admin_module',
+    'user_edit': 'admin_module',
+    'toggle_db_routes': 'admin_module',
+    'upload_db': 'admin_module',
+    'upload_db_confirm': 'admin_module',
+    'download_db': 'admin_module',
+    'admin_simulate_role': 'admin_module',
+    'admin_exit_simulate': 'admin_module',
+    'audit_log': 'admin_module',
+}
+
+
 @app.context_processor
 def inject_auth():
     role = session.get('role', '')
     real_role = session.get('_real_role')
+    endpoint = request.endpoint or ''
+    active_module = _ENDPOINT_MODULE.get(endpoint, 'overview')
+    # Build the list of modules visible to the current role
+    visible_modules = []
+    for m in _MODULE_DEFS:
+        if m['roles'] is None or role in m['roles']:
+            visible_modules.append(m)
     return {
         'is_admin':      role == 'admin',
         'is_manager':    role in ('admin', 'manager'),
@@ -139,6 +319,8 @@ def inject_auth():
         'alert_count':   models.count_stock_alerts(),
         'db_routes_enabled': app.config['DB_ROUTES_ENABLED'],
         'pending_suggestions_count': models.count_pending_suggestions(),
+        'active_module': active_module,
+        'visible_modules': visible_modules,
     }
 
 
@@ -153,6 +335,14 @@ def require_login():
     if not role:
         flash('กรุณาเข้าสู่ระบบก่อน', 'warning')
         return redirect(url_for('login', next=request.url))
+    # HR module: staff cannot access any hr.* endpoint (GET or POST)
+    if (endpoint or '').startswith('hr.') and role == 'staff':
+        flash('ไม่มีสิทธิ์เข้าถึงระบบบุคลากร', 'danger')
+        return redirect(url_for('dashboard'))
+    # Cashbook module: staff cannot access any cashbook.* endpoint (GET or POST)
+    if (endpoint or '').startswith('cashbook.') and role == 'staff':
+        flash('ไม่มีสิทธิ์เข้าถึงระบบบัญชีรับ-จ่าย', 'danger')
+        return redirect(url_for('dashboard'))
     if request.method != 'POST':
         return
     if role == 'staff' and endpoint not in _STAFF_POST_OK:
@@ -833,6 +1023,21 @@ def unit_conversions():
 
 @app.route('/unit-conversions/save', methods=['POST'])
 def unit_conversions_save():
+    # Pass 1: full-unit names Put typed for unknown acronyms
+    # key: "fullunit_<product_id>_<acronym>"
+    learned = {}                       # acronym -> full
+    acr_full = {}                      # (pid_str, acronym) -> full
+    for key, val in request.form.items():
+        if key.startswith('fullunit_'):
+            parts = key[9:].split('_', 1)
+            full = (val or '').strip()
+            if len(parts) == 2 and full:
+                learned[parts[1]] = full
+                acr_full[(parts[0], parts[1])] = full
+    if learned:
+        # persist to bsn_unit_full.json + normalise the whole ledger
+        models.learn_acronyms_normalize(learned)
+
     items = []
     for key, val in request.form.items():
         # key format: "ratio_<product_id>_<bsn_unit>"
@@ -842,12 +1047,21 @@ def unit_conversions_save():
                 try:
                     ratio = float(val)
                     if ratio > 0:
-                        items.append({'product_id': int(parts[0]), 'bsn_unit': parts[1], 'ratio': ratio})
+                        pid_s, bsn_unit = parts[0], parts[1]
+                        # if Put named this acronym, store conv under the
+                        # FULL unit (ledger was just normalised to match)
+                        bsn_unit = acr_full.get((pid_s, bsn_unit), bsn_unit)
+                        items.append({'product_id': int(pid_s),
+                                      'bsn_unit': bsn_unit, 'ratio': ratio})
                 except (ValueError, IndexError):
                     pass
     if items:
         models.save_unit_conversions(items)
-        flash(f'บันทึกการแปลงหน่วย {len(items)} รายการเรียบร้อย', 'success')
+        msg = f'บันทึกการแปลงหน่วย {len(items)} รายการเรียบร้อย'
+        if learned:
+            msg += (f'  |  เรียนรู้หน่วยใหม่ {len(learned)} ตัว '
+                    f'(จำไว้ใช้ครั้งต่อไป)')
+        flash(msg, 'success')
     return redirect(url_for('unit_conversions'))
 
 
@@ -909,6 +1123,16 @@ def mapping():
     color_codes = conn.execute(
         "SELECT code, name_th FROM color_finish_codes ORDER BY sort_order, code"
     ).fetchall()
+    # mig 061: per-unit override rows (bsn_unit<>'') — shown read-only so
+    # Put can see which codes are split by unit.
+    overrides = conn.execute("""
+        SELECT m.bsn_code, m.bsn_unit, m.product_id,
+               p.sku, p.product_name, p.unit_type
+          FROM product_code_mapping m
+          JOIN products p ON p.id = m.product_id
+         WHERE m.bsn_unit <> ''
+         ORDER BY m.bsn_code, m.bsn_unit
+    """).fetchall()
     conn.close()
     tab = request.args.get('tab', 'mapping')
     return render_template(
@@ -919,6 +1143,7 @@ def mapping():
         next_sku=next_sku,
         brands=brands,
         color_codes=color_codes,
+        overrides=overrides,
         active_tab=tab,
     )
 
@@ -930,8 +1155,11 @@ def mapping_suggest(bsn_code):
     if not session.get('role'):
         abort(403)
     conn = get_connection()
+    # mig 061: a code may now have multiple rows (catch-all + overrides).
+    # LIMIT 1 (catch-all preferred) keeps bsn_name stable for the modal.
     row = conn.execute(
-        "SELECT bsn_code, bsn_name FROM product_code_mapping WHERE bsn_code = ?",
+        "SELECT bsn_code, bsn_name FROM product_code_mapping "
+        "WHERE bsn_code = ? ORDER BY (bsn_unit = '') DESC LIMIT 1",
         (bsn_code,),
     ).fetchone()
     if not row:
@@ -952,7 +1180,12 @@ def mapping_save():
         action   = item.get('action')       # 'map', 'new', 'ignore', 'stage'
         if action == 'map':
             pid = int(item['product_id'])
-            models.upsert_mapping(bsn_code, item['bsn_name'], product_id=pid)
+            # mig 061: optional per-unit override. map_bsn_unit='' (default)
+            # = the catch-all row → unchanged behavior. A non-empty value
+            # creates/updates a (bsn_code, unit) override → that product.
+            map_unit = (item.get('map_bsn_unit') or '').strip()
+            models.upsert_mapping(bsn_code, item['bsn_name'], product_id=pid,
+                                  bsn_unit=map_unit)
             # Optional: capture unit_conversion at map time when BSN unit ≠ product unit
             bsn_unit = (item.get('bsn_unit') or '').strip()
             ratio = item.get('unit_conversion_ratio')
@@ -1468,7 +1701,7 @@ def import_payments():
     f.save(tmp_path)
     result = models.import_payments(tmp_path)
     flash(
-        f'นำเข้าสำเร็จ {result["imported"]} ใบเสร็จ  |  ข้ามซ้ำ {result["skipped"]} รายการ',
+        f'นำเข้าสำเร็จ {result["imported"]} ใบเสร็จใหม่  |  อัปเดต {result["updated"]} ใบเสร็จเดิม  |  ข้ามซ้ำ {result["skipped"]} รายการ',
         'success'
     )
     return redirect(url_for('payment_status'))
@@ -2099,6 +2332,7 @@ def api_product_barcodes(product_id):
 
 # ── Commission / Express AR-AP dashboards ───────────────────────────────────
 import commission as commission_mod  # noqa: E402
+import hr as hr_mod  # noqa: E402  (referenced by blueprints/hr.py via direct import; kept here for parity with commission pattern)
 
 # Make import_express's machinery available to the upload form. We inject
 # our own DB connection so the import shares this app's transaction
@@ -2787,6 +3021,111 @@ def express_ap_dashboard():
                            recent=[dict(r) for r in recent],
                            summary=dict(summary) if summary else {},
                            date_from=date_from, date_to=date_to)
+
+
+# ── Accounting Summary ────────────────────────────────────────────────────────
+
+@app.route('/accounting')
+def accounting_summary():
+    """
+    Accounting summary landing page for the 'การค้า & บัญชี' module.
+    Admin + manager: full view including cost/margin.
+    Staff: redirected — same gating as cost-visible pages (e.g. customer_summary).
+    """
+    if session.get('role') not in ('admin', 'manager'):
+        flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
+        return redirect(url_for('dashboard'))
+
+    date_from = request.args.get('date_from') or None
+    date_to = request.args.get('date_to') or None
+    year_month = request.args.get('month') or None  # YYYY-MM shortcut
+
+    # If a YYYY-MM shortcut is given, derive date_from/date_to from it
+    if year_month and not date_from and not date_to:
+        import calendar as _cal
+        try:
+            y, m = int(year_month[:4]), int(year_month[5:7])
+            date_from = f'{y:04d}-{m:02d}-01'
+            date_to = f'{y:04d}-{m:02d}-{_cal.monthrange(y, m)[1]:02d}'
+        except (ValueError, IndexError):
+            year_month = None
+
+    summary = models.get_accounting_summary(date_from, date_to)
+    return render_template('accounting.html', s=summary)
+
+
+# ── Cash Flow Dashboard ────────────────────────────────────────────────────────
+
+@app.route('/cashflow')
+def cashflow_dashboard():
+    """Cash flow dashboard: cash-in by RE month + AR aging + accrual revenue.
+
+    Admin + manager only (same gating as accounting_summary).
+    Optional ?from=YYYY-MM&to=YYYY-MM period filter.
+    Default: last 12 months ending the latest data month.
+    """
+    if session.get('role') not in ('admin', 'manager'):
+        flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
+        return redirect(url_for('dashboard'))
+
+    from_month = request.args.get('from') or None
+    to_month   = request.args.get('to')   or None
+
+    # Derive date_from / date_to from YYYY-MM shortcuts
+    def _month_start(ym):
+        """'YYYY-MM' → 'YYYY-MM-01'"""
+        return ym + '-01'
+
+    def _month_end(ym):
+        """'YYYY-MM' → last day of that month"""
+        import calendar as _cal
+        try:
+            y, m = int(ym[:4]), int(ym[5:7])
+            return f'{y:04d}-{m:02d}-{_cal.monthrange(y, m)[1]:02d}'
+        except (ValueError, IndexError):
+            return ym + '-31'
+
+    # Default: last 12 calendar months ending today's month
+    if not from_month or not to_month:
+        today = date.today()
+        to_month   = today.strftime('%Y-%m')
+        # 12 months back: subtract 11 months
+        fm_year  = today.year  - ((11 - today.month + 1) // 12)
+        fm_month = ((today.month - 12) % 12) or 12
+        if today.month <= 12:
+            fm_year  = today.year if today.month > 12 else today.year - 1
+            fm_month = today.month - 11
+            if fm_month <= 0:
+                fm_month += 12
+                fm_year  -= 1
+        from_month = f'{fm_year:04d}-{fm_month:02d}'
+
+    date_from = _month_start(from_month)
+    date_to   = _month_end(to_month)
+
+    cash_rows   = cf_mod.cash_in_by_month(date_from=date_from, date_to=date_to)
+    aging       = cf_mod.ar_aging()          # always point-in-time today
+    revenue_rows = cf_mod.revenue_by_month(date_from=date_from, date_to=date_to)
+
+    total_cash_in     = round(sum(r['cash_in'] for r in cash_rows), 2)
+    total_receipts    = sum(r['receipts'] for r in cash_rows)
+    total_outstanding = aging['total_outstanding']
+    total_open_count  = sum(b['count'] for b in aging['buckets'])
+
+    return render_template(
+        'cashflow.html',
+        cash_rows=cash_rows,
+        aging=aging,
+        revenue_rows=revenue_rows,
+        total_cash_in=total_cash_in,
+        total_receipts=total_receipts,
+        total_outstanding=total_outstanding,
+        total_open_count=total_open_count,
+        from_month=from_month,
+        to_month=to_month,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
 
 if __name__ == '__main__':

@@ -1,0 +1,197 @@
+{% extends 'base.html' %}
+{% block title %}การลา – Sendy HR{% endblock %}
+{% block page_title %}รายการลา ({{ requests|length }}){% endblock %}
+
+{% block topbar_actions %}
+  {% if session.role == 'admin' %}
+  <a href="{{ url_for('hr.leave_new') }}" class="btn btn-primary btn-sm">
+    <i class="bi bi-plus-lg me-1"></i>บันทึกการลา
+  </a>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+
+{# ── Filter bar ─────────────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <form method="get" class="row g-2 align-items-end">
+      <div class="col-md-3">
+        <label class="form-label small mb-1">พนักงาน</label>
+        <select name="employee_id" class="form-select form-select-sm">
+          <option value="">— ทุกคน —</option>
+          {% for emp in employees %}
+          <option value="{{ emp.id }}" {% if filter_emp == emp.id|string %}selected{% endif %}>
+            {{ emp.emp_code }} — {{ emp.full_name }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small mb-1">เดือน (YYYY-MM)</label>
+        <input type="month" name="month" class="form-control form-control-sm"
+               value="{{ filter_month or '' }}">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small mb-1">ประเภทการลา</label>
+        <select name="leave_type_id" class="form-select form-select-sm">
+          <option value="">— ทุกประเภท —</option>
+          {% for lt in leave_types %}
+          <option value="{{ lt.id }}" {% if filter_lt == lt.id|string %}selected{% endif %}>
+            {{ lt.name_th }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
+        <a href="{{ url_for('hr.leave_list') }}"
+           class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# ── Leave table ─────────────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>พนักงาน</th>
+          <th>ประเภทการลา</th>
+          <th>วันที่เริ่ม</th>
+          <th>วันที่สิ้นสุด</th>
+          <th class="text-end">จำนวน (วัน)</th>
+          <th>สถานะ</th>
+          <th>ใบรับรองแพทย์</th>
+          <th>เหตุผล</th>
+          {% if session.role == 'admin' %}
+          <th class="text-end">จัดการ</th>
+          {% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in requests %}
+        <tr>
+          <td class="font-mono small text-muted">{{ r.id }}</td>
+          <td>
+            <a href="{{ url_for('hr.employee_detail', id=r.employee_id) }}"
+               class="text-decoration-none">{{ r.full_name }}</a>
+            <span class="text-muted small">({{ r.emp_code }})</span>
+          </td>
+          <td class="small">{{ r.leave_name }}</td>
+          <td class="small">{{ be_year(r.start_date) }}</td>
+          <td class="small">{{ be_year(r.end_date) }}</td>
+          <td class="text-end">{{ r.days }}</td>
+          <td>
+            {% if r.status == 'approved' %}<span class="badge bg-success">อนุมัติ</span>
+            {% elif r.status == 'pending' %}<span class="badge bg-warning text-dark">รอ</span>
+            {% elif r.status == 'rejected' %}<span class="badge bg-danger">ปฏิเสธ</span>
+            {% else %}<span class="badge bg-secondary">ยกเลิก</span>
+            {% endif %}
+          </td>
+          <td class="text-center">
+            {% if r.has_medical_cert %}<i class="bi bi-check-circle text-success"></i>{% else %}–{% endif %}
+          </td>
+          <td class="small text-muted">{{ r.reason or '–' }}</td>
+          {% if session.role == 'admin' %}
+          <td class="text-end">
+            <button class="btn btn-sm btn-outline-secondary"
+                    data-bs-toggle="modal"
+                    data-bs-target="#editModal{{ r.id }}">
+              <i class="bi bi-pencil"></i>
+            </button>
+            <form method="post"
+                  action="{{ url_for('hr.leave_delete', id=r.id) }}"
+                  class="d-inline"
+                  onsubmit="return confirm('ลบรายการลานี้?')">
+              <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-trash"></i>
+              </button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="10" class="text-center text-muted py-4">ไม่มีรายการลา</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# ── Edit modals (admin only) ────────────────────────────────────────────── #}
+{% if session.role == 'admin' %}
+{% for r in requests %}
+<div class="modal fade" id="editModal{{ r.id }}" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title small">แก้ไขการลา #{{ r.id }} — {{ r.full_name }}</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" action="{{ url_for('hr.leave_edit', id=r.id) }}">
+        <div class="modal-body">
+          <input type="hidden" name="employee_id" value="{{ r.employee_id }}">
+          <div class="mb-2">
+            <label class="form-label small">ประเภทการลา</label>
+            <select name="leave_type_id" class="form-select form-select-sm">
+              {% for lt in leave_types %}
+              <option value="{{ lt.id }}" {% if lt.id == r.leave_type_id %}selected{% endif %}>{{ lt.name_th }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="row g-2">
+            <div class="col-6">
+              <label class="form-label small">วันเริ่ม</label>
+              <input type="date" name="start_date" class="form-control form-control-sm"
+                     value="{{ r.start_date }}">
+            </div>
+            <div class="col-6">
+              <label class="form-label small">วันสิ้นสุด</label>
+              <input type="date" name="end_date" class="form-control form-control-sm"
+                     value="{{ r.end_date }}">
+            </div>
+            <div class="col-4">
+              <label class="form-label small">จำนวน (วัน)</label>
+              <input type="number" name="days" class="form-control form-control-sm"
+                     value="{{ r.days }}" step="0.5" min="0.5">
+            </div>
+            <div class="col-4">
+              <label class="form-label small">สถานะ</label>
+              <select name="status" class="form-select form-select-sm">
+                <option value="approved" {% if r.status=='approved' %}selected{% endif %}>อนุมัติ</option>
+                <option value="pending" {% if r.status=='pending' %}selected{% endif %}>รอ</option>
+                <option value="rejected" {% if r.status=='rejected' %}selected{% endif %}>ปฏิเสธ</option>
+                <option value="cancelled" {% if r.status=='cancelled' %}selected{% endif %}>ยกเลิก</option>
+              </select>
+            </div>
+            <div class="col-4">
+              <label class="form-label small">ใบรับรองแพทย์</label>
+              <select name="has_medical_cert" class="form-select form-select-sm">
+                <option value="0" {% if not r.has_medical_cert %}selected{% endif %}>ไม่มี</option>
+                <option value="1" {% if r.has_medical_cert %}selected{% endif %}>มี</option>
+              </select>
+            </div>
+          </div>
+          <div class="mt-2">
+            <label class="form-label small">เหตุผล</label>
+            <input type="text" name="reason" class="form-control form-control-sm"
+                   value="{{ r.reason or '' }}">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-primary btn-sm">บันทึก</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

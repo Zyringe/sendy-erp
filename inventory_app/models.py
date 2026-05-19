@@ -2,6 +2,7 @@ import re
 import sqlite3
 
 from database import get_connection
+import bsn_units
 from collections import defaultdict
 from datetime import date
 
@@ -668,7 +669,29 @@ def get_pending_unit_conversions(search=None):
     sql += " GROUP BY t.product_id, t.bsn_unit ORDER BY p.product_name"
     rows = conn.execute(sql, params).fetchall()
     conn.close()
-    return rows
+    # Flag rows whose bsn_unit is still an UNKNOWN acronym (import already
+    # normalises known ones) so the UI can ask Put for the full unit name.
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['is_acronym'] = not bsn_units.is_known(d['bsn_unit'])
+        out.append(d)
+    return out
+
+
+def learn_acronyms_normalize(pairs: dict):
+    """For each acronym→full Put typed on /unit-conversions: persist it to
+    bsn_unit_full.json and rewrite that acronym → full across the BSN
+    ledger (so it matches unit_conversions and never recurs)."""
+    if not pairs:
+        return
+    conn = get_connection()
+    for acr, full in pairs.items():
+        bsn_units.add_acronym(acr, full)
+        for t in ('sales_transactions', 'purchase_transactions'):
+            conn.execute(f"UPDATE {t} SET unit=? WHERE unit=?", (full, acr))
+    conn.commit()
+    conn.close()
 
 
 def save_unit_conversions(items: list):
@@ -836,27 +859,40 @@ def delete_transactions_by_ids(ids):
 
 # ── Product Code Mapping (BSN ↔ internal SKU) ─────────────────────────────────
 
-def get_mapping(bsn_code: str):
+def get_mapping(bsn_code: str, bsn_unit: str = None):
+    """Resolve a BSN code's mapping. Unit-aware (mig 061): an exact
+    (bsn_code, bsn_unit) override row beats the bsn_unit='' catch-all.
+    bsn_unit=None (or '') → catch-all only = legacy single-mapping behavior.
+    """
     conn = get_connection()
     row = conn.execute(
-        "SELECT * FROM product_code_mapping WHERE bsn_code = ?", (bsn_code,)
+        """SELECT * FROM product_code_mapping
+            WHERE bsn_code = ? AND bsn_unit IN (?, '')
+            ORDER BY (bsn_unit = '')      -- exact unit (0) before catch-all (1)
+            LIMIT 1""",
+        (bsn_code, bsn_unit or '')
     ).fetchone()
     conn.close()
     return row
 
 
 def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
-                   ignore_reason=None):
+                   ignore_reason=None, bsn_unit=''):
+    """Upsert a mapping row. bsn_unit='' (default) = the catch-all row, so
+    every existing caller keeps writing/updating exactly that row (unchanged
+    behavior). A non-empty bsn_unit creates/updates a per-unit override."""
     conn = get_connection()
     conn.execute("""
-        INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, is_ignored, ignore_reason)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(bsn_code) DO UPDATE SET
+        INSERT INTO product_code_mapping
+            (bsn_code, bsn_name, product_id, is_ignored, ignore_reason, bsn_unit)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(bsn_code, bsn_unit) DO UPDATE SET
             bsn_name      = excluded.bsn_name,
             product_id    = excluded.product_id,
             is_ignored    = excluded.is_ignored,
             ignore_reason = excluded.ignore_reason
-    """, (bsn_code, bsn_name, product_id, is_ignored, ignore_reason))
+    """, (bsn_code, bsn_name, product_id, is_ignored, ignore_reason,
+          bsn_unit or ''))
     conn.commit()
     conn.close()
 
@@ -897,11 +933,19 @@ def resolve_pending_mappings(conn):
         ('sales_transactions',    'sales'),
         ('purchase_transactions', 'purchase'),
     ):
+        # Unit-aware (mig 061): an exact (bsn_code, unit) override row beats
+        # the bsn_unit='' catch-all. COALESCE so a NULL ledger unit still
+        # matches the catch-all. For codes with only a catch-all row this is
+        # identical to the pre-061 query (zero behavior change).
         conn.execute(f"""
             UPDATE {table}
             SET product_id = (
                 SELECT m.product_id FROM product_code_mapping m
-                WHERE m.bsn_code = {table}.bsn_code AND m.product_id IS NOT NULL
+                WHERE m.bsn_code = {table}.bsn_code
+                  AND m.bsn_unit IN (COALESCE({table}.unit, ''), '')
+                  AND m.product_id IS NOT NULL
+                ORDER BY (m.bsn_unit = '')
+                LIMIT 1
             )
             WHERE product_id IS NULL AND bsn_code IS NOT NULL
         """)
@@ -935,6 +979,10 @@ def import_weekly(entries: list, file_type: str, filename: str) -> dict:
     new_bsn_codes = {}   # code → name for codes not yet in mapping table
 
     for e in entries:
+        # Auto-normalise the BSN unit acronym → full Thai so it matches the
+        # (already-normalised) unit_conversions table → far fewer pending.
+        # Unknown acronyms are left as-is and surface on /unit-conversions.
+        e['unit'] = bsn_units.normalize_unit(e.get('unit'))
         # คำนวณ doc_base ก่อน (IV6900527-1 → IV6900527, IV6900527 → IV6900527)
         doc_no   = e['doc_no']
         doc_base = doc_no.rsplit('-', 1)[0] if '-' in doc_no else doc_no
@@ -963,18 +1011,30 @@ def import_weekly(entries: list, file_type: str, filename: str) -> dict:
                         (old['product_id'], old['doc_no'])
                     )
                     conn.execute("DELETE FROM stock_levels WHERE product_id=?", (old['product_id'],))
+                    # Use a literal product_id, not the SELECTed column: if
+                    # no transactions remain, "SELECT product_id, SUM(...)"
+                    # yields a (NULL, 0) row → stock_levels.product_id is an
+                    # INTEGER PK so NULL auto-assigns a rowid not in
+                    # products → orphan row (silent when FK off) / FK-fail
+                    # (FK on, as in get_connection). Subquery keeps it safe.
                     conn.execute("""
                         INSERT INTO stock_levels (product_id, quantity)
-                        SELECT product_id, COALESCE(SUM(quantity_change), 0)
-                        FROM transactions WHERE product_id=?
-                    """, (old['product_id'],))
+                        VALUES (?, COALESCE(
+                            (SELECT SUM(quantity_change) FROM transactions
+                             WHERE product_id=?), 0))
+                    """, (old['product_id'], old['product_id']))
                 conn.execute(f"DELETE FROM {table} WHERE id=?", (old['id'],))
             overwritten += len(old_rows)
 
-        # Resolve product_id via mapping table
+        # Resolve product_id via mapping table — unit-aware (mig 061):
+        # exact (bsn_code, unit) override beats the bsn_unit='' catch-all.
+        # e['unit'] is already acronym-normalised above.
         mapping = conn.execute(
-            "SELECT product_id, is_ignored FROM product_code_mapping WHERE bsn_code = ?",
-            (e['product_code_raw'],)
+            """SELECT product_id, is_ignored FROM product_code_mapping
+                WHERE bsn_code = ? AND bsn_unit IN (?, '')
+                ORDER BY (bsn_unit = '')
+                LIMIT 1""",
+            (e['product_code_raw'], e.get('unit') or '')
         ).fetchone()
         product_id = mapping['product_id'] if mapping else None
         is_ignored = mapping['is_ignored'] if mapping else 0
@@ -2067,7 +2127,25 @@ def get_purchases(product_id=None, date_from=None, date_to=None, page=1, per_pag
 # ── Payment Status ─────────────────────────────────────────────────────────────
 
 def parse_payment_csv(filepath):
-    """Parse การรับชำระหนี้ CSV (cp874). Returns list of RE dicts with iv_list."""
+    """Parse การรับชำระหนี้ CSV (cp874). Returns list of RE dicts with iv_list.
+
+    iv_list shape: list of dicts, each
+        {'iv_no': str, 'amount': float, 'kind': 'IV' | 'SR'}.
+
+    A receipt may apply a credit note against the invoices it settles.
+    Express emits these as an "SR…" sub-row carrying a NEGATIVE amount
+    (optional leading '-'), e.g.
+        "                             SR6900009    27/03/69         -2293.20"
+    These SR(-) lines ARE captured (kind='SR', amount negative). Dropping
+    them — as the old IV-only regex did — made the receipt look like it
+    applied only the +IV total, so the invoice read as fantasy "overpaid".
+
+    total (per RE record): Σ of the POSITIVE IV amounts ONLY (kind=='IV').
+    SR(-) lines are netting links, NOT extra collected cash, and the
+    header total / existing total-based tests are Σ IV(+). The netting of
+    SR(-) against the invoice happens downstream in payments_alloc via the
+    persisted receipt links, not in this header total.
+    """
     import re as _re
     records = []
     current = None
@@ -2081,6 +2159,9 @@ def parse_payment_csv(filepath):
             m = _re.match(r'^(\d{2}/\d{2}/\d{2})\s+(\*?RE\S+)\s+(.+?)\s{2,}(\S+)\s', text)
             if m:
                 if current:
+                    current['total'] = sum(
+                        iv['amount'] for iv in current['iv_list']
+                        if iv['kind'] == 'IV')
                     records.append(current)
                 d, re_no, customer, sp = m.groups()
                 cancelled = re_no.startswith('*')
@@ -2097,43 +2178,139 @@ def parse_payment_csv(filepath):
                     'iv_list': []
                 }
                 continue
-            # IV sub-row
-            m2 = _re.match(r'\s*(IV\S+)\s+\d{2}/\d{2}/\d{2}\s+[\d,]+\.\d{2}', text)
+            # Sub-row — IV (settled invoice, positive) or SR (credit-note
+            # receipt link, NEGATIVE with an optional leading '-').
+            # group1 = doc no (IV…/SR…), group2 = optional '-', group3 =
+            # amount which may carry thousands commas (e.g. "1,234.56").
+            m2 = _re.match(
+                r'\s*((?:IV|SR)\S+)\s+\d{2}/\d{2}/\d{2}\s+(-?)([\d,]+\.\d{2})',
+                text)
             if m2 and current:
-                current['iv_list'].append(m2.group(1))
+                doc_no = m2.group(1)
+                sign = -1.0 if m2.group(2) == '-' else 1.0
+                amount = sign * float(m2.group(3).replace(',', ''))
+                kind = 'SR' if doc_no.startswith('SR') else 'IV'
+                current['iv_list'].append(
+                    {'iv_no': doc_no, 'amount': amount, 'kind': kind})
     if current:
+        current['total'] = sum(
+            iv['amount'] for iv in current['iv_list']
+            if iv['kind'] == 'IV')
         records.append(current)
     return records
 
 
 def import_payments(filepath):
     """Import payment CSV into received_payments + paid_invoices tables.
-    Returns dict with imported, skipped, total counts."""
+
+    Uses idempotent upserts (ON CONFLICT DO UPDATE) so re-importing the same
+    file any number of times leaves row counts and every amount/total identical
+    after the first successful run.
+
+    Re_id resolution
+    ----------------
+    We use ``INSERT ... ON CONFLICT(re_no) DO UPDATE ... RETURNING id`` (SQLite
+    ≥3.35, available here as sqlite 3.35+).  RETURNING delivers the canonical
+    row id for BOTH the INSERT path and the UPDATE path in a single statement,
+    removing all dependence on ``cur.lastrowid`` which is unreliable for the
+    conflict/UPDATE path (it retains a stale value from the most recent plain
+    INSERT on that connection, not 0 as the old guard assumed).
+
+    Per-record transactional boundary
+    ----------------------------------
+    Each RE record is wrapped in a SAVEPOINT so that a single bad record
+    (malformed amount, FK violation, etc.) is fully rolled back without
+    discarding the good work that came before.  After the loop a single
+    ``conn.commit()`` flushes all survivors.
+
+    Returns dict
+    ------------
+      imported  — brand-new RE rows (did not exist before this run)
+      updated   — existing RE rows refreshed (upsert took the UPDATE path)
+      skipped   — RE records that raised an exception (isolated, rolled back)
+      total     — total RE records parsed from the file
+      errors    — list of up to 5 distinct exception reprs from skipped records
+                  (empty list when all records imported cleanly)
+
+    Invariant: ``imported + updated + skipped == total`` always holds.
+
+    Note: legacy rows imported before migration 058 have amount/total = NULL;
+    they are updated to carry real amounts the first time that RE is re-imported.
+    """
     records = parse_payment_csv(filepath)
     conn = get_connection()
     imported = 0
+    updated = 0
     skipped = 0
-    for r in records:
+    errors = []          # up to 5 distinct repr strings
+
+    for i, r in enumerate(records):
+        sp = f"sp_re_{i}"
         try:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO received_payments (re_no, date_iso, customer, salesperson, cancelled) VALUES (?,?,?,?,?)",
-                (r['re_no'], r['date_iso'], r['customer'], r['salesperson'], 1 if r['cancelled'] else 0)
-            )
-            if cur.lastrowid and cur.rowcount:
-                re_id = cur.lastrowid
-                for iv in r['iv_list']:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO paid_invoices (re_id, iv_no) VALUES (?,?)",
-                        (re_id, iv)
-                    )
+            conn.execute(f"SAVEPOINT {sp}")
+
+            # --- Classify as new vs existing BEFORE the upsert ---
+            # (rowcount after an UPSERT is always 1 in SQLite regardless of path,
+            # so we must pre-check existence to distinguish insert from update.)
+            existing = conn.execute(
+                "SELECT 1 FROM received_payments WHERE re_no=?", (r['re_no'],)
+            ).fetchone()
+            is_new = existing is None
+
+            # --- Authoritative upsert with RETURNING id ---
+            # RETURNING delivers the real id for BOTH the INSERT and the UPDATE
+            # conflict path — no dependence on cur.lastrowid.
+            row = conn.execute(
+                """INSERT INTO received_payments
+                       (re_no, date_iso, customer, salesperson, cancelled, total)
+                   VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(re_no) DO UPDATE SET
+                       date_iso=excluded.date_iso,
+                       customer=excluded.customer,
+                       salesperson=excluded.salesperson,
+                       cancelled=excluded.cancelled,
+                       total=excluded.total
+                   RETURNING id""",
+                (r['re_no'], r['date_iso'], r['customer'], r['salesperson'],
+                 1 if r['cancelled'] else 0, r.get('total'))
+            ).fetchone()
+
+            assert row is not None, f"RETURNING id returned nothing for re_no={r['re_no']!r}"
+            re_id = row[0]
+            assert re_id, f"re_id resolved to falsy value for re_no={r['re_no']!r}"
+
+            for iv in r['iv_list']:
+                conn.execute(
+                    """INSERT INTO paid_invoices (re_id, iv_no, amount)
+                       VALUES (?,?,?)
+                       ON CONFLICT(re_id, iv_no) DO UPDATE SET
+                           amount=excluded.amount""",
+                    (re_id, iv['iv_no'], iv['amount'])
+                )
+
+            conn.execute(f"RELEASE SAVEPOINT {sp}")
+
+            if is_new:
                 imported += 1
             else:
-                skipped += 1
-        except Exception:
+                updated += 1
+
+        except Exception as exc:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {sp}")
+            conn.execute(f"RELEASE SAVEPOINT {sp}")
             skipped += 1
+            if len(errors) < 5:
+                errors.append(repr(exc))
+
     conn.commit()
     conn.close()
-    return {'imported': imported, 'skipped': skipped, 'total': len(records)}
+    return {
+        'imported': imported,
+        'updated': updated,
+        'skipped': skipped,
+        'total': len(records),
+        'errors': errors,
+    }
 
 
 def get_payment_status(status='all', search='', date_from='', date_to='', page=1, per_page=50):
@@ -3440,6 +3617,186 @@ def recalculate_waccs_for_products(product_ids):
     conn.close()
 
 
+# ── Accounting Summary ────────────────────────────────────────────────────────
+
+def get_accounting_summary(date_from=None, date_to=None):
+    """
+    Aggregate profit / cost / expenses / commission for the /accounting page.
+
+    date_from / date_to: 'YYYY-MM-DD' strings.
+    Defaults to the most recent month that has sales data.
+
+    Revenue  = SUM(net) from sales_transactions          — pre-VAT, post-doc-discount
+    COGS     = SUM(qty * cost_price) from products        — current cost_price (WACC basis)
+               Lines where product has no cost_price are counted separately (no_cost_lines)
+    Expenses = SUM(amount_pre_vat) from expense_log       — 0 rows currently, shown as 0
+    Commission = SUM(amount_paid) from commission_payouts — actual paid, by year_month overlap
+
+    company_id = 1 (BSN) is the only scope in this DB.
+    """
+    import calendar as _cal
+
+    conn = get_connection()
+
+    # ── Resolve default period ────────────────────────────────────────────────
+    if not date_from and not date_to:
+        # Latest month with sales data
+        row = conn.execute(
+            "SELECT MAX(date_iso) AS mx FROM sales_transactions"
+        ).fetchone()
+        if row and row['mx']:
+            from datetime import datetime as _dt
+            latest = _dt.strptime(row['mx'][:7], '%Y-%m')
+            date_from = latest.strftime('%Y-%m-01')
+            date_to = latest.strftime(
+                f'%Y-%m-{_cal.monthrange(latest.year, latest.month)[1]:02d}'
+            )
+        else:
+            today = date.today()
+            date_from = today.strftime('%Y-%m-01')
+            date_to = today.strftime(
+                f'%Y-%m-{_cal.monthrange(today.year, today.month)[1]:02d}'
+            )
+    elif date_from and not date_to:
+        date_to = date.today().isoformat()
+    elif date_to and not date_from:
+        date_from = '2000-01-01'
+
+    # ── Revenue (sales net) ───────────────────────────────────────────────────
+    s = conn.execute("""
+        SELECT COALESCE(SUM(net), 0)  AS total_net,
+               COUNT(*)               AS line_count,
+               COUNT(DISTINCT doc_no) AS doc_count
+          FROM sales_transactions
+         WHERE date_iso >= ? AND date_iso <= ?
+    """, (date_from, date_to)).fetchone()
+    sales_net = float(s['total_net'])
+
+    # ── COGS (current cost_price × qty; unmapped lines counted separately) ────
+    cogs_row = conn.execute("""
+        SELECT COALESCE(SUM(st.qty * COALESCE(p.cost_price, 0)), 0) AS cogs,
+               COUNT(CASE WHEN p.cost_price IS NULL THEN 1 END)     AS no_cost_lines,
+               COUNT(CASE WHEN p.cost_price = 0    THEN 1 END)      AS zero_cost_lines
+          FROM sales_transactions st
+          LEFT JOIN products p ON p.id = st.product_id
+         WHERE st.date_iso >= ? AND st.date_iso <= ?
+    """, (date_from, date_to)).fetchone()
+    cogs = float(cogs_row['cogs'])
+    no_cost_lines = cogs_row['no_cost_lines'] or 0
+    zero_cost_lines = cogs_row['zero_cost_lines'] or 0
+
+    # ── Gross profit ──────────────────────────────────────────────────────────
+    gross_profit = sales_net - cogs
+    margin_pct = (gross_profit / sales_net * 100.0) if sales_net > 0 else 0.0
+
+    # ── Expenses (expense_log, BSN = company_id 1) ────────────────────────────
+    exp_total = conn.execute("""
+        SELECT COALESCE(SUM(amount_pre_vat), 0) AS total
+          FROM expense_log
+         WHERE company_id = 1
+           AND date_iso >= ? AND date_iso <= ?
+    """, (date_from, date_to)).fetchone()
+    expenses = float(exp_total['total'])
+
+    # Expenses by category
+    exp_by_cat = conn.execute("""
+        SELECT ec.name_th AS category_name,
+               ec.code    AS category_code,
+               COALESCE(SUM(el.amount_pre_vat), 0) AS total
+          FROM expense_categories ec
+          LEFT JOIN expense_log el ON el.category_id = ec.id
+                AND el.company_id = 1
+                AND el.date_iso >= ? AND el.date_iso <= ?
+         WHERE ec.is_active = 1
+         GROUP BY ec.id, ec.code, ec.name_th, ec.sort_order
+         ORDER BY ec.sort_order
+    """, (date_from, date_to)).fetchall()
+
+    # ── Commission (actual paid, overlapping the period's months) ─────────────
+    # Extract YYYY-MM range from the date filter, match commission_payouts.year_month
+    ym_from = date_from[:7]
+    ym_to = date_to[:7]
+    comm_row = conn.execute("""
+        SELECT COALESCE(SUM(amount_paid), 0) AS total
+          FROM commission_payouts
+         WHERE year_month >= ? AND year_month <= ?
+    """, (ym_from, ym_to)).fetchone()
+    commission_total = float(comm_row['total'])
+
+    # ── Net profit (approximate) ──────────────────────────────────────────────
+    net_profit = gross_profit - expenses - commission_total
+
+    # ── Brand breakdown (own-brands first per CLAUDE.md priority) ────────────
+    # Own-brand order: Golden Lion (sort 10) → A-SPEC (sort 20) → Sendai (sort 30)
+    # then 3rd-party by sort_order → finally NULL brand rows
+    brand_rows = conn.execute("""
+        SELECT
+          COALESCE(b.name_th, b.name, '(ไม่ระบุแบรนด์)') AS brand_label,
+          b.is_own_brand,
+          COALESCE(b.sort_order, 9999)                    AS sort_ord,
+          ROUND(SUM(st.net), 2)                           AS sales_net,
+          ROUND(SUM(st.qty * COALESCE(p.cost_price, 0)), 2) AS cogs_approx,
+          COUNT(st.id)                                    AS line_count,
+          COUNT(CASE WHEN p.cost_price IS NULL OR p.cost_price = 0 THEN 1 END)
+                                                          AS no_cost_lines
+        FROM sales_transactions st
+        LEFT JOIN products  p ON p.id = st.product_id
+        LEFT JOIN brands    b ON b.id = p.brand_id
+        WHERE st.date_iso >= ? AND st.date_iso <= ?
+        GROUP BY b.id, b.name, b.name_th, b.is_own_brand, b.sort_order
+        ORDER BY COALESCE(b.is_own_brand, 0) DESC,
+                 COALESCE(b.sort_order, 9999),
+                 SUM(st.net) DESC
+    """, (date_from, date_to)).fetchall()
+
+    brand_breakdown = []
+    for r in brand_rows:
+        sn = float(r['sales_net'] or 0)
+        cg = float(r['cogs_approx'] or 0)
+        gp = sn - cg
+        mp = (gp / sn * 100.0) if sn > 0 else 0.0
+        brand_breakdown.append({
+            'brand_label': r['brand_label'],
+            'is_own_brand': bool(r['is_own_brand']),
+            'sales_net': sn,
+            'cogs_approx': cg,
+            'gross_profit': gp,
+            'margin_pct': mp,
+            'line_count': r['line_count'],
+            'no_cost_lines': r['no_cost_lines'] or 0,
+        })
+
+    # ── Available months (for period selector) ────────────────────────────────
+    months_rows = conn.execute("""
+        SELECT DISTINCT strftime('%Y-%m', date_iso) AS ym
+          FROM sales_transactions
+         ORDER BY ym DESC
+         LIMIT 36
+    """).fetchall()
+    available_months = [r['ym'] for r in months_rows]
+
+    conn.close()
+
+    return {
+        'date_from': date_from,
+        'date_to': date_to,
+        'sales_net': sales_net,
+        'doc_count': s['doc_count'],
+        'line_count': s['line_count'],
+        'cogs': cogs,
+        'no_cost_lines': no_cost_lines,
+        'zero_cost_lines': zero_cost_lines,
+        'gross_profit': gross_profit,
+        'margin_pct': margin_pct,
+        'expenses': expenses,
+        'expenses_by_category': [dict(r) for r in exp_by_cat],
+        'commission_total': commission_total,
+        'net_profit': net_profit,
+        'brand_breakdown': brand_breakdown,
+        'available_months': available_months,
+    }
+
+
 # ── Ecommerce Listing Mapping ──────────────────────────────────────────────────
 
 def import_ecommerce_listings(records):
@@ -3799,11 +4156,13 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
             (new_pid,)
         )
 
-        # Upsert mapping (bsn_code → new product)
+        # Upsert mapping (bsn_code → new product). mig 061: write the
+        # bsn_unit='' catch-all (per-unit overrides managed elsewhere).
         conn.execute("""
-            INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, is_ignored)
-            VALUES (?, ?, ?, 0)
-            ON CONFLICT(bsn_code) DO UPDATE SET
+            INSERT INTO product_code_mapping
+                (bsn_code, bsn_name, product_id, is_ignored, bsn_unit)
+            VALUES (?, ?, ?, 0, '')
+            ON CONFLICT(bsn_code, bsn_unit) DO UPDATE SET
                 product_id = excluded.product_id,
                 is_ignored = 0
         """, (sug['bsn_code'], sug['bsn_name'], new_pid))

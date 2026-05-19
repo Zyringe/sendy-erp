@@ -1,0 +1,210 @@
+{% extends 'base.html' %}
+{% block title %}{{ page_title }} – Sendy HR{% endblock %}
+{% block page_title %}{{ page_title }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('hr.employee_list') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i>รายชื่อพนักงาน
+  </a>
+{% endblock %}
+
+{% block content %}
+
+{% if mode == 'entitlements' %}
+{# ── Entitlement edit mode ─────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-header">
+    <i class="bi bi-calendar3 me-1"></i>แก้ไขสิทธิ์ลา — {{ employee.full_name }}
+    <span class="badge bg-secondary ms-2">ปี {{ year + 543 }}</span>
+  </div>
+  <div class="card-body">
+    {% if session.role == 'admin' %}
+    <form method="post" action="{{ action_url }}">
+      <input type="hidden" name="year" value="{{ year }}">
+      <div class="alert alert-info small py-2">
+        <i class="bi bi-info-circle me-1"></i>
+        ปล่อยว่างไว้หากต้องการใช้ค่า default ของระบบ ({{ year + 543 }}).
+        ใส่ตัวเลขเพื่อ override เฉพาะรายบุคคล.
+      </div>
+      <table class="table table-sm align-middle">
+        <thead>
+          <tr>
+            <th>ประเภทการลา</th>
+            <th style="width:120px">สิทธิ์ (วัน) — Override</th>
+            <th>ใช้ไปแล้ว</th>
+            <th>คงเหลือ</th>
+            <th>หมายเหตุ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for lt in leave_types %}
+            {% set ent = ent_by_type.get(lt.id) %}
+            {% set b = leave_balance.get(lt.code) %}
+          <tr>
+            <td>{{ lt.name_th }}</td>
+            <td>
+              <input type="number" name="quota_{{ lt.id }}" class="form-control form-control-sm"
+                     step="0.5" min="0"
+                     value="{{ ent.quota_days if ent and ent.quota_days is not none else '' }}"
+                     placeholder="{{ lt.default_quota_days if lt.default_quota_days is not none else '∞' }}">
+            </td>
+            <td class="small text-muted">{{ b.used if b else '–' }}</td>
+            <td class="small">
+              {% if b %}
+                {% if b.remaining > 1e307 %}ไม่จำกัด{% else %}{{ b.remaining }}{% endif %}
+              {% else %}–{% endif %}
+            </td>
+            <td>
+              <input type="text" name="note_{{ lt.id }}" class="form-control form-control-sm"
+                     value="{{ ent.note if ent else '' }}" placeholder="หมายเหตุ">
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <button type="submit" class="btn btn-primary btn-sm">
+        <i class="bi bi-save me-1"></i>บันทึกสิทธิ์
+      </button>
+      <a href="{{ url_for('hr.employee_detail', id=employee.id) }}"
+         class="btn btn-outline-secondary btn-sm ms-2">ยกเลิก</a>
+    </form>
+    {% else %}
+    <div class="alert alert-warning small">เฉพาะ Admin เท่านั้นที่แก้ไขสิทธิ์ลาได้</div>
+    {% endif %}
+  </div>
+</div>
+
+{% else %}
+{# ── New employee form ───────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-header"><i class="bi bi-person-plus me-1"></i>{{ page_title }}</div>
+  <div class="card-body">
+    <form method="post" action="{{ action_url }}">
+      <div class="row g-3">
+        <div class="col-md-3">
+          <label class="form-label small">รหัสพนักงาน <span class="text-danger">*</span></label>
+          <input type="text" name="emp_code" class="form-control form-control-sm"
+                 value="{{ form.get('emp_code','') }}" required placeholder="EMP003">
+        </div>
+        <div class="col-md-5">
+          <label class="form-label small">ชื่อ-นามสกุล <span class="text-danger">*</span></label>
+          <input type="text" name="full_name" class="form-control form-control-sm"
+                 value="{{ form.get('full_name','') }}" required>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small">ชื่อเล่น</label>
+          <input type="text" name="nickname" class="form-control form-control-sm"
+                 value="{{ form.get('nickname','') }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small">เลขบัตรประชาชน (13 หลัก)</label>
+          <input type="text" name="national_id" class="form-control form-control-sm"
+                 value="{{ form.get('national_id','') }}" maxlength="13">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small">เพศ</label>
+          <select name="gender" class="form-select form-select-sm">
+            <option value="M" {% if form.get('gender') == 'M' %}selected{% endif %}>ชาย</option>
+            <option value="F" {% if form.get('gender') == 'F' %}selected{% endif %}>หญิง</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small">เบอร์โทร</label>
+          <input type="text" name="phone" class="form-control form-control-sm"
+                 value="{{ form.get('phone','') }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label small">ที่อยู่</label>
+          <textarea name="address" class="form-control form-control-sm" rows="2">{{ form.get('address','') }}</textarea>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small">ตำแหน่ง</label>
+          <input type="text" name="position" class="form-control form-control-sm"
+                 value="{{ form.get('position','') }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small">บริษัท</label>
+          <select name="company_id" class="form-select form-select-sm">
+            {% for co in companies %}
+            <option value="{{ co.id }}" {% if form.get('company_id','1') == co.id|string %}selected{% endif %}>
+              {{ co.name }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small">ประเภทการจ้าง</label>
+          <select name="employment_type" class="form-select form-select-sm">
+            <option value="monthly" {% if form.get('employment_type','monthly') == 'monthly' %}selected{% endif %}>รายเดือน</option>
+            <option value="daily" {% if form.get('employment_type') == 'daily' %}selected{% endif %}>รายวัน</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small">วันเริ่มงาน</label>
+          <input type="date" name="start_date" class="form-control form-control-sm"
+                 value="{{ form.get('start_date','') }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small">ระยะทดลองงาน (วัน)</label>
+          <input type="number" name="probation_days" class="form-control form-control-sm"
+                 value="{{ form.get('probation_days','90') }}" min="0">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small">ประกันสังคม</label>
+          <select name="sso_enrolled" class="form-select form-select-sm">
+            <option value="1" {% if form.get('sso_enrolled','1') == '1' %}selected{% endif %}>เข้า</option>
+            <option value="0" {% if form.get('sso_enrolled') == '0' %}selected{% endif %}>ไม่เข้า</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small">เบี้ยขยัน (฿/เดือน)</label>
+          <input type="number" name="diligence_allowance" class="form-control form-control-sm"
+                 value="{{ form.get('diligence_allowance','0') }}" step="0.01" min="0">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small">เงินเดือนเริ่มต้น (฿)</label>
+          <input type="number" name="initial_salary" class="form-control form-control-sm"
+                 value="{{ form.get('initial_salary','') }}" step="0.01" min="0">
+        </div>
+
+        <hr class="col-12 my-1">
+        <div class="col-12 small text-muted">ข้อมูลธนาคาร</div>
+        <div class="col-md-4">
+          <label class="form-label small">ธนาคาร</label>
+          <input type="text" name="bank_name" class="form-control form-control-sm"
+                 value="{{ form.get('bank_name','') }}">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small">สาขา</label>
+          <input type="text" name="bank_branch" class="form-control form-control-sm"
+                 value="{{ form.get('bank_branch','') }}">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small">เลขบัญชี</label>
+          <input type="text" name="bank_account_no" class="form-control form-control-sm"
+                 value="{{ form.get('bank_account_no','') }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small">ชื่อบัญชี</label>
+          <input type="text" name="bank_account_name" class="form-control form-control-sm"
+                 value="{{ form.get('bank_account_name','') }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small">Note</label>
+          <input type="text" name="note" class="form-control form-control-sm"
+                 value="{{ form.get('note','') }}">
+        </div>
+
+        <div class="col-12">
+          <button type="submit" class="btn btn-primary">
+            <i class="bi bi-save me-1"></i>บันทึก
+          </button>
+          <a href="{{ url_for('hr.employee_list') }}"
+             class="btn btn-outline-secondary ms-2">ยกเลิก</a>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

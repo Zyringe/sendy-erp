@@ -1,0 +1,326 @@
+{% extends 'base.html' %}
+{% block title %}{{ employee.full_name }} – Sendy HR{% endblock %}
+{% block page_title %}{{ employee.full_name }} ({{ employee.emp_code }}){% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('hr.employee_list') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i>รายชื่อพนักงาน
+  </a>
+{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  {# ── Personal info card ──────────────────────────────────────────────── #}
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-person me-1"></i>ข้อมูลส่วนตัว</span>
+        {% if session.role == 'admin' %}
+        <button class="btn btn-sm btn-outline-secondary" type="button"
+                data-bs-toggle="collapse" data-bs-target="#editForm">
+          <i class="bi bi-pencil me-1"></i>แก้ไข
+        </button>
+        {% endif %}
+      </div>
+      <div class="card-body">
+        <dl class="row mb-0 small">
+          <dt class="col-5">รหัสพนักงาน</dt>
+          <dd class="col-7 font-mono">{{ employee.emp_code }}</dd>
+          <dt class="col-5">ชื่อ-นามสกุล</dt>
+          <dd class="col-7">{{ employee.full_name }}</dd>
+          <dt class="col-5">ชื่อเล่น</dt>
+          <dd class="col-7">{{ employee.nickname or '–' }}</dd>
+          <dt class="col-5">เลขบัตรประชาชน</dt>
+          <dd class="col-7 font-mono">{{ employee.national_id or '–' }}</dd>
+          <dt class="col-5">เพศ</dt>
+          <dd class="col-7">{{ 'ชาย' if employee.gender == 'M' else ('หญิง' if employee.gender == 'F' else '–') }}</dd>
+          <dt class="col-5">เบอร์โทร</dt>
+          <dd class="col-7">{{ employee.phone or '–' }}</dd>
+          <dt class="col-5">ที่อยู่</dt>
+          <dd class="col-7">{{ employee.address or '–' }}</dd>
+          <dt class="col-5">ตำแหน่ง</dt>
+          <dd class="col-7">{{ employee.position or '–' }}</dd>
+          <dt class="col-5">บริษัท</dt>
+          <dd class="col-7">{{ employee.company_name or '–' }}</dd>
+          <dt class="col-5">ประเภทการจ้าง</dt>
+          <dd class="col-7">{{ employee.employment_type or '–' }}</dd>
+          <dt class="col-5">วันเริ่มงาน</dt>
+          <dd class="col-7">{{ be_year(employee.start_date) }}</dd>
+          <dt class="col-5">วันสิ้นสุดทดลองงาน</dt>
+          <dd class="col-7">{{ be_year(employee.probation_end_date) if employee.probation_end_date else '–' }}</dd>
+          <dt class="col-5">วันสิ้นสุดการจ้าง</dt>
+          <dd class="col-7">{{ be_year(employee.end_date) if employee.end_date else '–' }}</dd>
+          <dt class="col-5">ประกันสังคม</dt>
+          <dd class="col-7">{{ 'เข้า' if employee.sso_enrolled else 'ไม่เข้า' }}</dd>
+          <dt class="col-5">เบี้ยขยัน</dt>
+          <dd class="col-7">{{ fmt_baht(employee.diligence_allowance or 0) }}</dd>
+        </dl>
+      </div>
+      {# ── Edit form (collapsible, admin only) ─── #}
+      {% if session.role == 'admin' %}
+      <div class="collapse" id="editForm">
+        <div class="card-body border-top bg-light">
+          <form method="post" action="{{ url_for('hr.employee_edit', id=employee.id) }}">
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label small">รหัสพนักงาน</label>
+                <input type="text" name="emp_code" class="form-control form-control-sm"
+                       value="{{ employee.emp_code or '' }}" required>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small">ชื่อ-นามสกุล</label>
+                <input type="text" name="full_name" class="form-control form-control-sm"
+                       value="{{ employee.full_name or '' }}" required>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small">ชื่อเล่น</label>
+                <input type="text" name="nickname" class="form-control form-control-sm"
+                       value="{{ employee.nickname or '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small">เลขบัตรประชาชน</label>
+                <input type="text" name="national_id" class="form-control form-control-sm"
+                       value="{{ employee.national_id or '' }}" maxlength="13">
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small">เพศ</label>
+                <select name="gender" class="form-select form-select-sm">
+                  <option value="M" {% if employee.gender == 'M' %}selected{% endif %}>ชาย</option>
+                  <option value="F" {% if employee.gender == 'F' %}selected{% endif %}>หญิง</option>
+                </select>
+              </div>
+              <div class="col-md-9">
+                <label class="form-label small">เบอร์โทร</label>
+                <input type="text" name="phone" class="form-control form-control-sm"
+                       value="{{ employee.phone or '' }}">
+              </div>
+              <div class="col-12">
+                <label class="form-label small">ที่อยู่</label>
+                <textarea name="address" class="form-control form-control-sm" rows="2">{{ employee.address or '' }}</textarea>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small">ตำแหน่ง</label>
+                <input type="text" name="position" class="form-control form-control-sm"
+                       value="{{ employee.position or '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small">บริษัท (company_id)</label>
+                <input type="number" name="company_id" class="form-control form-control-sm"
+                       value="{{ employee.company_id or 1 }}">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">วันเริ่มงาน</label>
+                <input type="date" name="start_date" class="form-control form-control-sm"
+                       value="{{ employee.start_date or '' }}">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">วันสิ้นสุดทดลองงาน</label>
+                <input type="date" name="probation_end_date" class="form-control form-control-sm"
+                       value="{{ employee.probation_end_date or '' }}">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">วันสิ้นสุดการจ้าง</label>
+                <input type="date" name="end_date" class="form-control form-control-sm"
+                       value="{{ employee.end_date or '' }}">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">ประกันสังคม</label>
+                <select name="sso_enrolled" class="form-select form-select-sm">
+                  <option value="1" {% if employee.sso_enrolled %}selected{% endif %}>เข้า</option>
+                  <option value="0" {% if not employee.sso_enrolled %}selected{% endif %}>ไม่เข้า</option>
+                </select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">เบี้ยขยัน (฿/เดือน)</label>
+                <input type="number" name="diligence_allowance" class="form-control form-control-sm"
+                       value="{{ employee.diligence_allowance or 0 }}" step="0.01" min="0">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">สถานะ</label>
+                <select name="is_active" class="form-select form-select-sm">
+                  <option value="1" {% if employee.is_active %}selected{% endif %}>Active</option>
+                  <option value="0" {% if not employee.is_active %}selected{% endif %}>Inactive</option>
+                </select>
+              </div>
+              {# Bank #}
+              <div class="col-12"><hr class="my-1"><small class="text-muted">ข้อมูลธนาคาร</small></div>
+              <div class="col-md-4">
+                <input type="hidden" name="employment_type" value="{{ employee.employment_type or 'monthly' }}">
+                <input type="hidden" name="probation_days" value="{{ employee.probation_days or 90 }}">
+                <label class="form-label small">ธนาคาร</label>
+                <input type="text" name="bank_name" class="form-control form-control-sm"
+                       value="{{ employee.bank_name or '' }}">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">สาขา</label>
+                <input type="text" name="bank_branch" class="form-control form-control-sm"
+                       value="{{ employee.bank_branch or '' }}">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">เลขบัญชี</label>
+                <input type="text" name="bank_account_no" class="form-control form-control-sm"
+                       value="{{ employee.bank_account_no or '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small">ชื่อบัญชี</label>
+                <input type="text" name="bank_account_name" class="form-control form-control-sm"
+                       value="{{ employee.bank_account_name or '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small">Note</label>
+                <input type="text" name="note" class="form-control form-control-sm"
+                       value="{{ employee.note or '' }}">
+              </div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-primary btn-sm">
+                  <i class="bi bi-save me-1"></i>บันทึก
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Bank info (full, shown to admin+manager) ────────────────────────── #}
+  <div class="col-md-6">
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-bank me-1"></i>ข้อมูลธนาคาร</div>
+      <div class="card-body">
+        <dl class="row mb-0 small">
+          <dt class="col-5">ธนาคาร</dt>
+          <dd class="col-7">{{ employee.bank_name or '–' }}</dd>
+          <dt class="col-5">สาขา</dt>
+          <dd class="col-7">{{ employee.bank_branch or '–' }}</dd>
+          <dt class="col-5">เลขบัญชี</dt>
+          <dd class="col-7 font-mono">{{ employee.bank_account_no or '–' }}</dd>
+          <dt class="col-5">ชื่อบัญชี</dt>
+          <dd class="col-7">{{ employee.bank_account_name or '–' }}</dd>
+        </dl>
+      </div>
+    </div>
+
+    {# ── Salary history ──── #}
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-cash-stack me-1"></i>ประวัติเงินเดือน</span>
+      </div>
+      <div class="card-body p-0">
+        {% if salary_history %}
+        <table class="table table-sm mb-0">
+          <thead><tr><th>วันที่มีผล</th><th>เงินเดือน</th><th>เหตุผล</th><th>หมายเหตุ</th></tr></thead>
+          <tbody>
+            {% for sh in salary_history %}
+            <tr>
+              <td class="small">{{ be_year(sh.effective_date) }}</td>
+              <td class="fw-semibold">{{ fmt_baht(sh.monthly_salary) }}</td>
+              <td class="small text-muted">
+                {% set reason_map = {'initial': 'เริ่มงาน', 'post_probation': 'หลังทดลองงาน', 'raise': 'ปรับเพิ่ม', 'adjust': 'ปรับปรุง'} %}
+                {{ reason_map.get(sh.reason, sh.reason) }}
+              </td>
+              <td class="small text-muted">{{ sh.note or '–' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="text-muted p-3 text-center small">ยังไม่มีประวัติเงินเดือน</div>
+        {% endif %}
+      </div>
+      {% if session.role == 'admin' %}
+      <div class="card-footer">
+        <button class="btn btn-sm btn-outline-secondary" type="button"
+                data-bs-toggle="collapse" data-bs-target="#addSalaryForm">
+          <i class="bi bi-plus me-1"></i>เพิ่มรายการ
+        </button>
+        <div class="collapse mt-2" id="addSalaryForm">
+          <form method="post" action="{{ url_for('hr.employee_salary_add', id=employee.id) }}">
+            <div class="row g-2">
+              <div class="col-md-4">
+                <label class="form-label small">วันที่มีผล</label>
+                <input type="date" name="effective_date" class="form-control form-control-sm" required>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">เงินเดือน (฿)</label>
+                <input type="number" name="monthly_salary" class="form-control form-control-sm"
+                       step="0.01" min="0" required>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">เหตุผล</label>
+                <select name="reason" class="form-select form-select-sm">
+                  <option value="raise">ปรับเพิ่ม</option>
+                  <option value="post_probation">หลังทดลองงาน</option>
+                  <option value="adjust">ปรับปรุง</option>
+                  <option value="initial">เริ่มงาน</option>
+                </select>
+              </div>
+              <div class="col-12">
+                <label class="form-label small">หมายเหตุ</label>
+                <input type="text" name="note" class="form-control form-control-sm">
+              </div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-sm btn-primary">
+                  <i class="bi bi-save me-1"></i>บันทึก
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    {# ── Leave balance this year ──── #}
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-calendar3 me-1"></i>สิทธิ์ลา ปี {{ year + 543 }}</span>
+        {% if session.role == 'admin' %}
+        <a href="{{ url_for('hr.employee_entitlements', id=employee.id, year=year) }}"
+           class="btn btn-sm btn-outline-secondary">
+          <i class="bi bi-pencil me-1"></i>แก้ไขสิทธิ์
+        </a>
+        {% endif %}
+      </div>
+      <div class="card-body p-0">
+        {% if leave_balance %}
+        <table class="table table-sm mb-0">
+          <thead>
+            <tr>
+              <th>ประเภทการลา</th>
+              <th class="text-end">สิทธิ์ (วัน)</th>
+              <th class="text-end">ใช้ไป</th>
+              <th class="text-end">คงเหลือ</th>
+              <th class="text-end text-danger">เกิน</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for lt in leave_types %}
+              {% set b = leave_balance.get(lt.code) %}
+              {% if b %}
+              <tr>
+                <td class="small">{{ lt.name_th }}</td>
+                <td class="text-end small">
+                  {% if b.entitlement > 1e307 %}ไม่จำกัด{% else %}{{ b.entitlement | int }}{% endif %}
+                </td>
+                <td class="text-end small">{{ b.used }}</td>
+                <td class="text-end small">
+                  {% if b.remaining > 1e307 %}ไม่จำกัด{% else %}{{ b.remaining }}{% endif %}
+                </td>
+                <td class="text-end small {% if b.over > 0 %}text-danger fw-semibold{% endif %}">
+                  {{ b.over if b.over > 0 else '–' }}
+                </td>
+              </tr>
+              {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="text-muted p-3 text-center small">ยังไม่มีข้อมูลการลา</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

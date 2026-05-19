@@ -1,0 +1,88 @@
+{% extends 'base.html' %}
+{% block title %}พนักงาน – Sendy HR{% endblock %}
+{% block page_title %}รายชื่อพนักงาน ({{ employees|length }}){% endblock %}
+
+{% block topbar_actions %}
+  {% if session.role == 'admin' %}
+  <a href="{{ url_for('hr.employee_new') }}" class="btn btn-primary btn-sm">
+    <i class="bi bi-plus-lg me-1"></i>เพิ่มพนักงาน
+  </a>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <form method="get" class="row g-2 align-items-center">
+      <div class="col-auto">
+        <div class="form-check form-switch mb-0">
+          <input class="form-check-input" type="checkbox" id="inactiveToggle"
+                 name="inactive" value="1"
+                 {% if show_inactive %}checked{% endif %}
+                 onchange="this.form.submit()">
+          <label class="form-check-label small" for="inactiveToggle">แสดงพนักงานที่ลาออก/ไม่ active</label>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th>รหัส</th>
+          <th>ชื่อ-นามสกุล</th>
+          <th>ตำแหน่ง</th>
+          <th>บริษัท</th>
+          <th>เลขบัตรประชาชน</th>
+          <th>เริ่มงาน</th>
+          <th>ทดลองงานสิ้นสุด</th>
+          <th>สถานะ</th>
+          <th class="text-end"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for emp in employees %}
+        <tr>
+          <td class="font-mono small">{{ emp.emp_code }}</td>
+          <td>
+            <a href="{{ url_for('hr.employee_detail', id=emp.id) }}"
+               class="text-decoration-none fw-semibold">
+              {{ emp.full_name }}
+            </a>
+            {% if emp.nickname %}<span class="text-muted small">({{ emp.nickname }})</span>{% endif %}
+          </td>
+          <td class="small">{{ emp.position or '–' }}</td>
+          <td class="small text-muted">{{ emp.company_name or '–' }}</td>
+          <td class="font-mono small text-muted">{{ mask_nid(emp.national_id) }}</td>
+          <td class="small">{{ be_year(emp.start_date) }}</td>
+          <td class="small {% if emp.probation_end_date %}text-warning{% endif %}">
+            {{ be_year(emp.probation_end_date) if emp.probation_end_date else '–' }}
+          </td>
+          <td>
+            {% if emp.is_active %}
+              <span class="badge bg-success">active</span>
+            {% else %}
+              <span class="badge bg-secondary">inactive</span>
+            {% endif %}
+          </td>
+          <td class="text-end">
+            <a href="{{ url_for('hr.employee_detail', id=emp.id) }}"
+               class="btn btn-sm btn-outline-primary">
+              <i class="bi bi-eye"></i>
+            </a>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="9" class="text-center text-muted py-4">ไม่มีรายการพนักงาน</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,179 @@
+{% extends 'base.html' %}
+{% block title %}ใบเงินเดือน {{ item.emp_code }} {{ run.year_month }}{% endblock %}
+{% block page_title %}ใบเงินเดือน — {{ item.full_name }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  @media print {
+    .sidebar, .topbar, .topbar-actions, .sidebar-backdrop,
+    .no-print, .btn, nav, header, .alert { display: none !important; }
+    .main-wrap { margin-left: 0 !important; }
+    .payslip-card { box-shadow: none !important; border: 1px solid #ccc !important; }
+    body { background: white !important; }
+  }
+  .payslip-card { max-width: 680px; margin: 0 auto; }
+  .payslip-table td, .payslip-table th { padding: 4px 8px; font-size: 0.9rem; }
+  .payslip-divider { border-top: 2px solid #333; }
+  .payslip-header { background: #1a1a1a; color: white; padding: 16px 20px; border-radius: 4px 4px 0 0; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="no-print mb-3">
+  <button onclick="window.print()" class="btn btn-primary btn-sm">
+    <i class="bi bi-printer me-1"></i>พิมพ์ / บันทึก PDF
+  </button>
+  <a href="{{ url_for('hr.payroll_detail', run_id=run.id) }}"
+     class="btn btn-sm btn-outline-secondary ms-2">
+    <i class="bi bi-arrow-left me-1"></i>กลับ Payroll Run
+  </a>
+</div>
+
+<div class="payslip-card card shadow-sm">
+  {# ── Header ────────────────────────────────────────────────────────────── #}
+  <div class="payslip-header">
+    <div class="d-flex justify-content-between align-items-start">
+      <div>
+        <h5 class="mb-0 fw-bold">บริษัท บุญสวัสดิ์ นำชัย จำกัด</h5>
+        <div class="small opacity-75">ใบเงินเดือน (Payslip)</div>
+      </div>
+      <div class="text-end">
+        <div class="fw-bold fs-5">{{ run.year_month }}</div>
+        <div class="small opacity-75">
+          {% set ym = run.year_month.split('-') %}
+          {% set month_names = ['', 'มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน',
+                                   'กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'] %}
+          เดือน {{ month_names[ym[1]|int] }} พ.ศ. {{ ym[0]|int + 543 }}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card-body p-4">
+    {# ── Employee info ─────────────────────────────────────────────────────── #}
+    <div class="row g-2 mb-3 pb-3 border-bottom">
+      <div class="col-6">
+        <table class="table table-borderless table-sm mb-0 small">
+          <tr><td class="text-muted" style="width:120px">รหัสพนักงาน</td><td class="fw-semibold font-mono">{{ item.emp_code }}</td></tr>
+          <tr><td class="text-muted">ชื่อ-นามสกุล</td><td class="fw-semibold">{{ item.full_name }}</td></tr>
+          <tr><td class="text-muted">ตำแหน่ง</td><td>{{ employee.position or '–' }}</td></tr>
+          <tr><td class="text-muted">วันเริ่มงาน</td><td>{{ be_year(employee.start_date) }}</td></tr>
+        </table>
+      </div>
+      <div class="col-6">
+        <table class="table table-borderless table-sm mb-0 small">
+          <tr><td class="text-muted" style="width:100px">ธนาคาร</td><td>{{ item.bank_name or '–' }}</td></tr>
+          <tr><td class="text-muted">สาขา</td><td>{{ item.bank_branch or '–' }}</td></tr>
+          <tr><td class="text-muted">เลขบัญชี</td><td class="font-mono">{{ item.bank_account_no or '–' }}</td></tr>
+          <tr><td class="text-muted">ชื่อบัญชี</td><td>{{ item.bank_account_name or '–' }}</td></tr>
+        </table>
+      </div>
+    </div>
+
+    {# ── Earnings & deductions ────────────────────────────────────────────── #}
+    <div class="row g-3">
+      {# Left: Earnings #}
+      <div class="col-6">
+        <h6 class="fw-bold mb-2">รายการรับ</h6>
+        <table class="table payslip-table table-borderless mb-0 small">
+          <tr>
+            <td>เงินเดือน</td>
+            <td class="text-end">{{ fmt_baht(item.base_amount) }}</td>
+          </tr>
+          {% if not item.diligence_forfeited and item.diligence_allowance and item.diligence_allowance > 0 %}
+          <tr>
+            <td>เบี้ยขยัน</td>
+            <td class="text-end">{{ fmt_baht(item.diligence_allowance) }}</td>
+          </tr>
+          {% endif %}
+          {% if item.bonus and item.bonus > 0 %}
+          <tr>
+            <td>โบนัส</td>
+            <td class="text-end">{{ fmt_baht(item.bonus) }}</td>
+          </tr>
+          {% endif %}
+          {% if item.other_additions and item.other_additions > 0 %}
+          <tr>
+            <td>รายการเพิ่ม{% if item.other_additions_note %} ({{ item.other_additions_note }}){% endif %}</td>
+            <td class="text-end">{{ fmt_baht(item.other_additions) }}</td>
+          </tr>
+          {% endif %}
+          <tr class="payslip-divider">
+            <td class="fw-semibold">รวมรายรับ (Gross)</td>
+            <td class="text-end fw-semibold">{{ fmt_baht(item.gross) }}</td>
+          </tr>
+        </table>
+      </div>
+
+      {# Right: Deductions #}
+      <div class="col-6">
+        <h6 class="fw-bold mb-2">รายการหัก</h6>
+        <table class="table payslip-table table-borderless mb-0 small">
+          {% if item.unpaid_leave_deduction and item.unpaid_leave_deduction > 0 %}
+          <tr>
+            <td>หักลา ({{ item.unpaid_leave_days }} วัน)</td>
+            <td class="text-end text-danger">-{{ fmt_baht(item.unpaid_leave_deduction) }}</td>
+          </tr>
+          {% endif %}
+          {% if item.diligence_forfeited and item.diligence_allowance and item.diligence_allowance > 0 %}
+          <tr>
+            <td>เบี้ยขยัน ({{ 'มาสาย' if item.diligence_forfeit_reason == 'late' else 'มีการลา' }})</td>
+            <td class="text-end text-danger">(-{{ fmt_baht(item.diligence_allowance) }})</td>
+          </tr>
+          {% endif %}
+          {% if item.sso_employee and item.sso_employee > 0 %}
+          <tr>
+            <td>ประกันสังคม (ลูกจ้าง)</td>
+            <td class="text-end text-danger">-{{ fmt_baht(item.sso_employee) }}</td>
+          </tr>
+          {% endif %}
+          {% if item.other_deductions and item.other_deductions > 0 %}
+          <tr>
+            <td>รายการหักอื่น{% if item.other_deductions_note %} ({{ item.other_deductions_note }}){% endif %}</td>
+            <td class="text-end text-danger">-{{ fmt_baht(item.other_deductions) }}</td>
+          </tr>
+          {% endif %}
+          {% if item.note %}
+          <tr>
+            <td colspan="2" class="small text-muted">{{ item.note }}</td>
+          </tr>
+          {% endif %}
+        </table>
+      </div>
+    </div>
+
+    {# ── Net pay ────────────────────────────────────────────────────────────── #}
+    <div class="mt-3 p-3 bg-light rounded d-flex justify-content-between align-items-center">
+      <span class="fw-bold fs-6">เงินที่ได้รับสุทธิ (Net Pay)</span>
+      <span class="fw-bold fs-4 text-success">{{ fmt_baht(item.net_pay) }}</span>
+    </div>
+
+    {% if item.commission_amount and item.commission_amount > 0 %}
+    <div class="mt-2 small text-muted">
+      <i class="bi bi-info-circle me-1"></i>
+      Commission เดือนนี้ {{ fmt_baht(item.commission_amount) }} (แสดงเพื่อทราบ — ไม่รวมใน net pay)
+    </div>
+    {% endif %}
+
+    {# ── SSO employer (informational) ─────────────────────────────────────── #}
+    {% if item.sso_employer and item.sso_employer > 0 %}
+    <div class="mt-2 small text-muted">
+      <i class="bi bi-building me-1"></i>
+      ประกันสังคม (นายจ้าง — ต้นทุน): {{ fmt_baht(item.sso_employer) }}
+    </div>
+    {% endif %}
+
+    {# ── Footer ───────────────────────────────────────────────────────────── #}
+    <div class="mt-4 pt-3 border-top row small text-muted">
+      <div class="col-6">
+        <div>Run #{{ run.id }} สถานะ: {{ 'Finalized' if run.status == 'finalized' else 'Draft' }}</div>
+        <div>วันที่ออกเอกสาร: {{ be_year(run.finalized_at or '') }}</div>
+      </div>
+      <div class="col-6 text-end">
+        <div class="mt-4 pt-2">ลงชื่อผู้รับ ........................................</div>
+        <div class="text-muted mt-1">({{ item.full_name }})</div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

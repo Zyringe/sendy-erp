@@ -59,12 +59,23 @@
               </div>
               {% endif %}
             </td>
-            <td class="text-center"><span class="badge badge-warning font-mono">{{ p.bsn_unit }}</span></td>
+            <td class="text-center">
+              <span class="badge badge-warning font-mono">{{ p.bsn_unit }}</span>
+              {% if p.is_acronym %}
+              <div class="small text-danger mt-1">acronym ยังไม่รู้จัก</div>
+              <input type="text"
+                     name="fullunit_{{ p.product_id }}_{{ p.bsn_unit }}"
+                     class="form-control form-control-sm text-center mt-1"
+                     style="max-width:140px;margin:auto"
+                     placeholder="หน่วยเต็ม เช่น โหล">
+              {% endif %}
+            </td>
             <td class="text-center"><span class="badge badge-info">{{ p.unit_type }}</span></td>
             <td class="text-center text-subtle">{{ p.row_count }}</td>
             <td class="text-center">
-              <div class="input-group input-group-sm justify-content-center" style="max-width:160px;margin:auto">
-                <span class="input-group-text">1 {{ p.bsn_unit }} =</span>
+              <div class="input-group input-group-sm justify-content-center" style="max-width:170px;margin:auto">
+                <span class="input-group-text">1
+                  {%- if p.is_acronym %} หน่วยเต็ม{% else %} {{ p.bsn_unit }}{% endif %} =</span>
                 <input type="number" step="0.01" min="0.01"
                        name="ratio_{{ p.product_id }}_{{ p.bsn_unit }}"
                        class="form-control text-center" value="1" required>
