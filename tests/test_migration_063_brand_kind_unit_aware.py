@@ -202,6 +202,60 @@ def test_063_backfill_resolves_unbranded_product_to_null(tmp_db):
     conn.close()
 
 
+def test_express_unit_normalize_enables_exact_resolution(tmp_db):
+    """[high] express_sales.unit is imported RAW ('กล') but mappings are
+    canonical ('กล่อง'). Until normalized, a split code's exact-unit
+    override never matches and rows fall through to the catch-all
+    product. scripts/backfill_express_unit_normalize must normalize the
+    unit AND recompute brand_kind so the resolver works on real data."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "backfill_express_unit_normalize",
+        os.path.join(REPO, "scripts", "backfill_express_unit_normalize.py"))
+    bf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bf)
+
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    _reset_pre061(conn)
+    _apply(conn, MIG61)
+    _apply(conn, MIG63)
+
+    A, B = _two_products(conn)
+    own, third = _brand(conn, True), _brand(conn, False)
+    conn.execute("UPDATE products SET brand_id=? WHERE id=?", (own, A))
+    conn.execute("UPDATE products SET brand_id=? WHERE id=?", (third, B))
+    conn.execute("INSERT INTO product_code_mapping "
+                 "(bsn_code,bsn_name,product_id,bsn_unit) "
+                 "VALUES ('ZRAW63','x',?, 'กล่อง')", (A,))   # canonical override
+    conn.execute("INSERT INTO product_code_mapping "
+                 "(bsn_code,bsn_name,product_id,bsn_unit) "
+                 "VALUES ('ZRAW63','x',?, '')", (B,))         # catch-all → B
+    _ins_es(conn, "ZRAW63", "กล", "SENTINEL", "ZRAW1")  # RAW acronym for กล่อง
+    conn.commit()
+
+    # before normalize: 'กล' != 'กล่อง' → would resolve to catch-all B
+    pre = conn.execute(
+        "SELECT brand_kind FROM express_sales WHERE doc_no='ZRAW1'"
+    ).fetchone()[0]
+    assert pre == "SENTINEL"
+    conn.close()
+
+    conn = sqlite3.connect(tmp_db)
+    bf.normalize_and_recompute(conn)
+    conn.close()
+
+    conn = sqlite3.connect(tmp_db)
+    unit, kind = conn.execute(
+        "SELECT unit, brand_kind FROM express_sales WHERE doc_no='ZRAW1'"
+    ).fetchone()
+    assert unit == "กล่อง", "raw 'กล' must be normalized to canonical 'กล่อง'"
+    assert kind == "own", (
+        "after normalize the exact-unit override resolves to product A "
+        "(own) — NOT the catch-all product B (third_party)")
+    conn.close()
+
+
 def test_063_backfill_preserves_unresolved_rows(tmp_db):
     """A row whose code resolves to nothing must keep its brand_kind
     (EXISTS guard — never nulled)."""
