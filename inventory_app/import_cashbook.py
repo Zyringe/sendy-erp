@@ -32,8 +32,12 @@ HR sync rules (sync_salary_sheet)
 ----------------------------------
 - Match existing employees by full_name (first+' '+last) or nickname.
 - Existing employees: NO-CLOBBER. Never UPDATE any field. Sheet/DB diffs
-  are surfaced as 'DIFF <emp_code> <field>: ...' entries in result.warnings
-  (bank_account_no values are masked — field name + 'differs' marker only).
+  for the 3 previously-fillable fields (nickname, bank_name,
+  bank_account_no) are surfaced as 'DIFF <emp_code> <field>: ...' entries
+  in result.warnings (bank_account_no values are masked — field name +
+  'differs' marker only). Drift on is_active, sso_deduction, salary is
+  NOT surfaced — manage via HR UI. (Same as pre-no-clobber behaviour:
+  the old "fill if NULL" rule never touched those fields either.)
 - New employees: create with next EMP-code, company_id=1 (BSN assumption,
   documented), diligence_allowance=0, sso_enrolled=(sso_deduction>0),
   is_active from sheet, start_date=NULL, bank from sheet.
@@ -244,10 +248,13 @@ def sync_salary_sheet(parsed, conn):
                        no-clobber rule for existing employees; reserved for
                        future use, dict-shape preserved for caller stability)
       skipped        — list of emp_codes whose existing-employee match was
-                       not modified; sheet/DB mismatches are surfaced via
-                       'warnings' as DIFF lines (bank_account_no masked)
+                       not modified; mismatches on the 3 previously-fillable
+                       fields (nickname, bank_name, bank_account_no) are
+                       surfaced via 'warnings' as DIFF lines (bank_account_no
+                       masked). Drift on is_active, sso_deduction, salary is
+                       NOT surfaced — manage via HR UI.
       warnings       — list of warning strings (start_date unknown for new
-                       employees, DIFF lines for existing-employee mismatches)
+                       employees; DIFF lines for the 3 lockable fields only)
     """
     salary_rows = parsed.get("salary", [])
     result = {

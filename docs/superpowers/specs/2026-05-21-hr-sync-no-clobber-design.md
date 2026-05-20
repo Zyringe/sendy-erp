@@ -25,8 +25,11 @@ risks silently undoing manual edits.
 
 Make cashbook re-import incapable of modifying any field on an **existing**
 employee. New-employee auto-create stays. When the sheet disagrees with the
-DB, emit a diff warning into the import result so Put can act in HR UI if
-desired.
+DB on any of the **three previously-fillable fields** (`nickname`,
+`bank_name`, `bank_account_no`), emit a diff warning into the import
+result so Put can act in HR UI if desired. Drift on other HR fields
+(`is_active`, `sso_deduction`, `salary`) is intentionally **not surfaced**
+— see Non-Goals.
 
 ## Non-Goals
 
@@ -40,6 +43,13 @@ desired.
 - **No selective-write "unlock" affordance.** If Put ever needs to copy a
   sheet value into an existing employee row, he edits the field in HR UI.
   The salary sheet is no longer authoritative for any existing employee.
+- **No DIFF warnings for `is_active`, `sso_deduction`, or `salary`.** The
+  old "fill if NULL" rule never touched these for existing employees
+  either — they sit in the "do NOT modify" set documented in the
+  function's original docstring. This PR preserves that behaviour
+  exactly. Surfacing drift on those fields is a separate concern with its
+  own design questions (auto-update? warn-only? require explicit HR-UI
+  confirmation?) and belongs in a follow-up ticket if needed.
 
 ## Design — Approach 1 ("existence-is-the-lock")
 
