@@ -104,7 +104,17 @@ _BASE_QUERY = """
            rcv.ref_amount,
            es.product_code,
            es.product_name_raw,
-           es.brand_kind         AS brand_kind,
+           -- Derive brand_kind from the resolved product's brand at read
+           -- time, NOT from es.brand_kind. The cached column is set at
+           -- import + by the mig 063 trigger (on products.brand_id), but
+           -- product_code_mapping remaps (apply_unit_aware_remap,
+           -- cleanup_split_mapping_stubs, etc.) don't fire the trigger,
+           -- so the cache can lag behind the resolved product. NULL
+           -- (unresolved or brand_id IS NULL) preserves the regex
+           -- fallback contract for unbranded products.
+           CASE WHEN b.is_own_brand = 1 THEN 'own'
+                WHEN b.is_own_brand = 0 THEN 'third_party'
+                ELSE NULL END    AS brand_kind,
            es.net                AS line_net,
            es.total              AS line_total,
            es.qty                AS qty,
@@ -622,7 +632,11 @@ def get_invoice_line_breakdown(year_month, salesperson_code, invoice_no, db_path
                es.unit,
                es.unit_price,
                es.net               AS line_net,
-               es.brand_kind,
+               -- See _BASE_QUERY for rationale: derive from resolved
+               -- product's brand, not the (possibly stale) es.brand_kind.
+               CASE WHEN b.is_own_brand = 1 THEN 'own'
+                    WHEN b.is_own_brand = 0 THEN 'third_party'
+                    ELSE NULL END   AS brand_kind,
                p.id                 AS sendy_product_id,
                p.brand_id           AS sendy_brand_id,
                b.code               AS sendy_brand_code,
