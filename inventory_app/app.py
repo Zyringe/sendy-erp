@@ -125,6 +125,7 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'customer_reassign', 'customer_bulk_reassign',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
     'mapping_suggestion_approve',
+    'import_credit_notes_preview', 'import_credit_notes_commit',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
 # the route. Other admin-only writes use _require_admin().
@@ -230,6 +231,8 @@ _ENDPOINT_MODULE = {
     'payment_customers': 'accounting',
     'payment_customer_detail': 'accounting',
     'import_payments': 'accounting',
+    'import_credit_notes_preview': 'accounting',
+    'import_credit_notes_commit': 'accounting',
     'commission_dashboard': 'accounting',
     'commission_payouts': 'accounting',
     'commission_sp': 'accounting',
@@ -1704,6 +1707,111 @@ def import_payments():
     result = models.import_payments(tmp_path)
     flash(
         f'นำเข้าสำเร็จ {result["imported"]} ใบเสร็จใหม่  |  อัปเดต {result["updated"]} ใบเสร็จเดิม  |  ข้ามซ้ำ {result["skipped"]} รายการ',
+        'success'
+    )
+    return redirect(url_for('payment_status'))
+
+
+# ── Credit-note import (ใบลดหนี้): preview + commit ───────────────────────────
+#
+# Two-stage flow because credit_note_amounts (mig 062) is the AUTHORITATIVE
+# per-SR credited amount used by payments_alloc.  Importing a stale file would
+# silently overwrite live values via ON CONFLICT.  The preview stage runs the
+# full importer in a transaction and rolls back, surfacing which credit_note_
+# amounts rows would CHANGE so Put can decide before committing.
+
+_CN_PREVIEW_DIR = 'cn-preview'  # subfolder under UPLOAD_FOLDER
+_CN_PREVIEW_TTL_SEC = 60 * 60   # 1 hour
+
+
+def _cn_preview_dir():
+    p = os.path.join(config.UPLOAD_FOLDER, _CN_PREVIEW_DIR)
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+def _cn_preview_path(token):
+    """Resolve a token to its preview file path.  Token is the saved filename
+    (uuid.csv).  Returns None if invalid, missing, or expired."""
+    # token must be a bare filename ending in .csv — reject anything with
+    # path separators or non-csv extensions
+    if not token or '/' in token or '\\' in token or not token.endswith('.csv'):
+        return None
+    path = os.path.join(_cn_preview_dir(), token)
+    if not os.path.isfile(path):
+        return None
+    age = datetime.now().timestamp() - os.path.getmtime(path)
+    if age > _CN_PREVIEW_TTL_SEC:
+        return None
+    return path
+
+
+@app.route('/import-credit-notes/preview', methods=['POST'])
+def import_credit_notes_preview():
+    if session.get('role') not in ('admin', 'manager'):
+        flash('ต้องเป็น Admin หรือ Manager', 'danger')
+        return redirect(url_for('payment_status'))
+    f = request.files.get('cn_file')
+    if not f or not f.filename.endswith('.csv'):
+        flash('กรุณาเลือกไฟล์ .csv', 'danger')
+        return redirect(url_for('payment_status'))
+
+    import uuid
+    from import_credit_notes import preview_credit_notes_import
+
+    token = f'{uuid.uuid4().hex}.csv'
+    tmp_path = os.path.join(_cn_preview_dir(), token)
+    f.save(tmp_path)
+
+    try:
+        preview = preview_credit_notes_import(tmp_path)
+    except Exception as exc:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        flash(f'อ่านไฟล์ไม่สำเร็จ: {exc}', 'danger')
+        return redirect(url_for('payment_status'))
+
+    return render_template(
+        'import_cn_preview.html',
+        preview=preview,
+        token=token,
+        original_filename=f.filename,
+    )
+
+
+@app.route('/import-credit-notes/commit', methods=['POST'])
+def import_credit_notes_commit():
+    if session.get('role') not in ('admin', 'manager'):
+        flash('ต้องเป็น Admin หรือ Manager', 'danger')
+        return redirect(url_for('payment_status'))
+    token = (request.form.get('token') or '').strip()
+    path = _cn_preview_path(token)
+    if path is None:
+        flash('ไฟล์ที่ตรวจสอบหมดอายุ — กรุณาอัปโหลดใหม่', 'warning')
+        return redirect(url_for('payment_status'))
+
+    from import_credit_notes import import_credit_notes as _do_import
+
+    try:
+        result = _do_import(path)
+    except Exception as exc:
+        flash(f'นำเข้าไม่สำเร็จ: {exc}', 'danger')
+        return redirect(url_for('payment_status'))
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    cna = result.get('credit_note_amounts') or {}
+    flash(
+        f'นำเข้าใบลดหนี้สำเร็จ — '
+        f'backfilled ref {result.get("refs_backfilled", 0)} ใบ  |  '
+        f'credit_note_amounts upsert {cna.get("upserted", 0)} รายการ  |  '
+        f'ใหม่ {result.get("new_recorded", 0)} ใบ  |  '
+        f'ข้าม {result.get("already_new", 0) + result.get("skipped", 0)} ใบ',
         'success'
     )
     return redirect(url_for('payment_status'))
