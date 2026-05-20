@@ -1,4 +1,7 @@
-"""Force current stock to an explicit target, by rebuilding the single
+"""DEPRECATED: one-off from 2026-05-18. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Force current stock to an explicit target, by rebuilding the single
 opening ADJUST @2024-01-03 (3/1/2567) — per Put's 2026-05-18 decision.
 
 Two target groups:

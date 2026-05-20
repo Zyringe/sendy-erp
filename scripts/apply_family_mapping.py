@@ -1,4 +1,7 @@
-"""Apply product_families from family_review.csv:
+"""DEPRECATED: one-off from 2026-05-08. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Apply product_families from family_review.csv:
   - INSERT a product_families row per CSV line (unless skip='Y')
   - UPDATE products.family_id for SKUs in the cluster
 

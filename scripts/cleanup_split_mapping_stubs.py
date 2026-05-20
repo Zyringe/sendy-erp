@@ -1,4 +1,7 @@
-"""Cleanup the 5 split-mapping stub products into their canonical siblings.
+"""DEPRECATED: one-off from 2026-05-20. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Cleanup the 5 split-mapping stub products into their canonical siblings.
 
 Each stub is a placeholder product (no brand, 0 stock, unit_type='ตัว') that
 exists ONLY to serve as a FK target for BSN mappings where bsn_unit='ตัว'.

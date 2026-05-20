@@ -1,4 +1,7 @@
-"""One-shot fix for product_id=592 (ไขควงลองไฟ MATA เล็ก K11-1155).
+"""DEPRECATED: one-off from 2026-05-06. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+One-shot fix for product_id=592 (ไขควงลองไฟ MATA เล็ก K11-1155).
 
 Bug: BSN purchase rows recorded with unit='อน' for this product were never
 synced to ledger because product 592 had no unit_conversion for 'อน' (only
@@ -20,10 +23,10 @@ Fix:
      replay_history_apply.py won't restore them.
 
 Run on default local DB:
-  /Users/putty/.virtualenvs/erp/bin/python scripts/fix_k11_1155_unit_conversion.py
+  python scripts/fix_k11_1155_unit_conversion.py
 
 Run on a specific DB file (e.g. prod snapshot):
-  /Users/putty/.virtualenvs/erp/bin/python scripts/fix_k11_1155_unit_conversion.py /path/to/inventory.db
+  python scripts/fix_k11_1155_unit_conversion.py /path/to/inventory.db
 """
 from __future__ import annotations
 import shutil

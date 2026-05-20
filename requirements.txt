@@ -1,6 +1,9 @@
-flask>=3.1
-werkzeug>=3.1
-gunicorn>=21.0
-pandas>=2.0
-openpyxl>=3.1
-rapidfuzz>=3.0
+# Pinned to currently-working versions. Cap on major to avoid silent
+# breaking-change pulls on Railway redeploy. Bump deliberately with
+# a tested upgrade PR.
+flask>=3.1,<4
+werkzeug>=3.1,<4
+gunicorn>=21.0,<24
+pandas>=2.3,<3
+openpyxl>=3.1,<4
+rapidfuzz>=3.13,<4

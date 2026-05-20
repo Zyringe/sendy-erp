@@ -1,7 +1,10 @@
 """
+DEPRECATED: one-off from 2026-05-17. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
 Apply mapping + compute platform stock from product_platform_overview CSV.
 
-CSV: /Users/putty/Downloads/product_platform_overview_*.csv
+CSV: $SENDY_INPUT_DIR/product_platform_overview_*.csv (defaults to ~/Downloads)
 CSV columns:
   Platform, platform_sku_id, Parent ID, Variation ID, Listing name, Variation,
   Seller SKU, Stock, Suggested SKU, Suggested name, Confidence, checked,
@@ -41,6 +44,7 @@ Run
 import argparse
 import csv
 import datetime
+import os
 import re
 import sqlite3
 import sys
@@ -54,9 +58,10 @@ EXPORTS = ROOT / 'data' / 'exports'
 sys.path.insert(0, str(ROOT / 'inventory_app'))
 from parse_platform import export_shopee, export_lazada  # noqa: E402
 
-DEFAULT_CSV = ('/Users/putty/Downloads/'
-               'product_platform_overview_20260504.xlsx - '
-               'To Map (Active + In Stock) (1).csv')
+_INPUT_DIR = os.environ.get('SENDY_INPUT_DIR', os.path.expanduser('~/Downloads'))
+DEFAULT_CSV = os.path.join(_INPUT_DIR,
+                           'product_platform_overview_20260504.xlsx - '
+                           'To Map (Active + In Stock) (1).csv')
 
 COL_INTERNAL_SKU = '→ internal_sku (fill in)'
 COL_QTY_PER_SALE = '→ qty_per_sale (default 1)'

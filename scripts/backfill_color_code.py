@@ -1,4 +1,7 @@
-"""Backfill products.color_code where it's NULL by parsing product_name and
+"""DEPRECATED: one-off from 2026-05-08. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Backfill products.color_code where it's NULL by parsing product_name and
 matching detected color_th to color_finish_codes.name_th.
 
 Useful after a new color_finish_codes migration adds basic colors (e.g. mig

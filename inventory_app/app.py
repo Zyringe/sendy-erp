@@ -1,3 +1,27 @@
+"""Sendy ERP — Flask application module.
+
+This is the largest file in the app (~3,600 LOC). It owns:
+
+- Flask app construction (`app = Flask(__name__)`) + blueprint registration
+- The session-based auth model: /login, /logout, _login_required, role check
+- The POST permission gate (`_STAFF_POST_OK`, `_MANAGER_POST_OK`, `_before_request`)
+- Most legacy routes that pre-date the blueprint split: trade dashboard,
+  customers, suppliers, BSN import / mapping / unit-conversions, payment
+  status, ecommerce, conversions (manufacturing), commission UI, express
+  AR/AP, labels, admin DB upload/download
+- The module-switcher sidebar metadata (`_MODULES`)
+
+Domain-coherent areas have been extracted to blueprints (see
+`inventory_app/blueprints/`): products, cashbook, hr, supplier_catalogue,
+mobile. Future splits — inventory, bsn, sales, payments, ecommerce, admin —
+are opportunistic; do one when a natural touchpoint brings you here.
+
+Permission model (see `_STAFF_POST_OK` / `_MANAGER_POST_OK` near the top):
+  - admin: full access + user management
+  - manager: see cost/GP/payments; cannot edit products/users
+  - staff: import weekly flow + read-only views (no cost/GP, no hr.*,
+    no cashbook.*, no supplier_catalogue.*)
+"""
 import io
 import os
 import sys

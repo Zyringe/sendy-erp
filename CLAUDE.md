@@ -64,7 +64,7 @@ sendy_erp/
   railway.toml          ← nixpacks + healthcheckPath=/healthz
   pytest.ini, requirements*.txt
   data/
-    migrations/         ← 0NN_name.sql + .rollback.sql (latest: **064**)
+    migrations/         ← 0NN_name.sql + .rollback.sql (latest: **070**)
     source/, source-backup.zip, exports/
   docs/                 ← engineering notes
   scripts/              ← apply_sku_*, parse_*, import_*, backup_db.sh, com.boonsawat.erp.backup.plist
@@ -84,7 +84,7 @@ sendy_erp/
     instance/inventory.db
 ```
 
-## Schema ตาราง (ปัจจุบัน — เวอร์ชัน schema migration 037, 2026-05-07)
+## Schema ตาราง (ปัจจุบัน — เวอร์ชัน schema migration 070, 2026-05-21)
 
 ### products
 ```
@@ -187,6 +187,24 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 - `batch_id='history_import'` → IN+OUT pair (net=0) สำหรับข้อมูลก่อน cutoff 3/3/2569
 - redirect flow: import → mapping (ถ้า pending) → unit_conversions (ถ้า pending) → sales view
 
+## Denormalized cache contracts (read before touching payment math)
+
+Two tables hold derived values that the app must keep in sync with their source ledger. Drift here causes silent finance bugs.
+
+### `payment_amounts` (mig 058)
+- **Source of truth:** `received_payments` per-IV allocations.
+- **Invariant:** for every `received_payments` row with allocations, there is exactly one `payment_amounts` row per (payment_id, doc_no) with `amount_applied` summing to the payment.
+- **Drift signal:** `SUM(payment_amounts.amount_applied) ≠ received_payments.amount` for the same payment_id.
+- **Recovery:** rerun `payments_alloc.allocate_fifo()` for the affected customer; it is idempotent and recomputes from scratch.
+- **History:** drift caused phantom-credit ฿446k bug (fixed by VAT-aware `billed` formula, commit 339e92a in PR #27).
+
+### `credit_note_amounts` (mig 062)
+- **Source of truth:** ใบลดหนี้ master CSV — NOT `sales_transactions` SR rows (those are pre-VAT line totals, not the customer-facing CN amount).
+- **Invariant:** every CN doc_no has exactly one row in `credit_note_amounts` with the master-CSV amount.
+- **Drift signal:** missing doc_no, or `amount` differs from the CSV.
+- **Recovery:** rerun `/payment-status` CN import (PR #36/#37 two-step preview/confirm UI).
+- **History:** drift caused phantom-overpay ฿105k bug (fixed by mig 062, commit 2535c86 in PR #27).
+
 ## Recent business modules (mig 054–064, shipped May 2026)
 
 > ทั้งกลุ่มนี้เป็น **production code** ที่ระเบียบ ledger + reporting พึ่งพา. อย่าเสนอ rewrite/duplicate ก่อนอ่าน module CLAUDE-MD ใน blueprints/ แต่ละตัว.
@@ -242,7 +260,7 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 - **werkzeug BuildError** หลังเพิ่ม route ใหม่: restart server ด้วยมือทุกครั้ง — auto-reloader reload template ได้ แต่ URL map ใน memory ยังเก่า
 - **Auto-reloader double-startup**: ใช้ `use_reloader=False` ใน dev server config
 
-## Migrations (latest: 064 — see `data/migrations/` for canonical files)
+## Migrations (latest: 070 — see `data/migrations/` for canonical files)
 
 | Mig | Date | What |
 |-----|------|------|
@@ -279,6 +297,12 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 | **062** | 2026-05-19 | **credit_note_amounts (authoritative per-SR) → fixes ฿105k phantom-overpaid bug** |
 | 063 | 2026-05-20 | brand_kind_unit_aware_trigger |
 | 064 | 2026-05-20 | bsn_unit_alias + express_unit normalize enforced (PR #29 merged) |
+| **065** | 2026-05-20 | **ar_followup_log + outreach workspace** (PR #38 merged) |
+| 066 | 2026-05-20 | data-quality cleanup (โหล/กล่อง normalize, 33 fixes) |
+| **067** | 2026-05-20 | **drop cashbook_vat_flag** (NoVat-only by design, PR #39 merged) |
+| 068 | 2026-05-21 | drop express_sales.brand_kind (write-only cache removal, PR #44 merged) |
+| **069** | 2026-05-21 | **products.units_per_carton/box NOT NULL DEFAULT 1** (this PR) |
+| **070** | 2026-05-21 | **audit_log triggers on transactions + received_payments** (this PR) |
 
 > Migration runner: `database.py::init_db()` reads `data/migrations/NNN_*.sql` + `.rollback.sql`. SHA256 + duration_ms recorded in `applied_migrations`. เพิ่ม migration ใหม่: เลข NNN ถัดไป → restart → รันอัตโนมัติ. Rollback: รัน `.rollback.sql` + DELETE จาก `applied_migrations` ด้วยมือ.
 >

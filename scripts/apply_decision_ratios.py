@@ -1,4 +1,7 @@
-"""Bucket B — apply Put's reviewed `decision` ratios to unit_conversions.
+"""DEPRECATED: one-off from 2026-05-19. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Bucket B — apply Put's reviewed `decision` ratios to unit_conversions.
 
 Reads the reviewed stock_mapping_suggested CSV. For every row whose
 `decision` is numeric AND the remap column is blank or '-', upsert
@@ -16,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 import time
 from pathlib import Path
@@ -23,8 +27,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "inventory_app" / "instance" / "inventory.db"
 EXPORTS = ROOT / "data" / "exports"
-DEFAULT_CSV = Path("/Users/putty/Downloads/stock_mapping_suggested_20260518"
-                   " - stock_mapping_suggested_20260518.csv")
+_INPUT_DIR = Path(os.environ.get("SENDY_INPUT_DIR", os.path.expanduser("~/Downloads")))
+DEFAULT_CSV = _INPUT_DIR / ("stock_mapping_suggested_20260518"
+                            " - stock_mapping_suggested_20260518.csv")
 import sqlite3  # noqa: E402
 
 DEC = "decision"

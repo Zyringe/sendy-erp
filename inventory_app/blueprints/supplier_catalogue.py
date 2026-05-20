@@ -20,6 +20,22 @@ bp_supplier_catalogue = Blueprint('supplier_catalogue', __name__,
                                   url_prefix='/supplier-catalogue')
 
 
+# ── Role gate ────────────────────────────────────────────────────────────────
+# Every route in this blueprint exposes procurement-cost-sensitive data
+# (list_price, net_cash_price). The role model says staff must not see
+# cost/GP. The app-level _before_request middleware checks POSTs against
+# _STAFF_POST_OK / _MANAGER_POST_OK and gates hr.*/cashbook.* GETs, but it
+# does NOT gate supplier_catalogue.* GETs — those would leak prices.
+# Block all access here so the gate lives next to the data.
+
+@bp_supplier_catalogue.before_request
+def _require_admin_or_manager():
+    role = session.get('role')
+    if role not in ('admin', 'manager'):
+        flash('ไม่มีสิทธิ์เข้าถึงข้อมูลราคาผู้ผลิต', 'danger')
+        return redirect(url_for('dashboard'))
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _BRACKET_RE = re.compile(r"[\[\(].*?[\]\)]")

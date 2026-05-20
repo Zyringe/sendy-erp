@@ -1,4 +1,7 @@
-"""One-shot: mark every commission for INVOICES issued BEFORE 2026-02 as paid.
+"""DEPRECATED: one-off from 2026-05-02. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+One-shot: mark every commission for INVOICES issued BEFORE 2026-02 as paid.
 
 Per Put 2026-05-02: "commission ที่จ่ายแล้วที่เป็นเลขที่เอกสารตั้งแต่ก่อน
 เดือน 2 ปี 69 ให้ถือว่าจ่ายแล้วทั้งหมด".
@@ -29,8 +32,8 @@ sys.path.insert(0, str(_HERE.parent / 'inventory_app'))
 
 import sqlite3
 import commission
+from config import DATABASE_PATH as DB  # noqa: E402 — commission already imports config
 
-DB = '/Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db'
 INVOICE_CUTOFF = '2026-02-01'   # invoices STRICTLY older than this auto-paid
 
 PAID_DATE = '2026-02-01'

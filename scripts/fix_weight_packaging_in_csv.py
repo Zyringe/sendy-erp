@@ -1,4 +1,7 @@
-"""Move weight values out of `packaging` column → `size` column.
+"""DEPRECATED: one-off from 2026-05-07. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Move weight values out of `packaging` column → `size` column.
 
 Reads sku_name_rebuilt_2026-05-07.csv (or any rebuilt CSV).
 For each row where `packaging` looks like a weight (kg / g / ขีด / kg):

@@ -51,8 +51,8 @@ def main():
 
     if args.all_months:
         import sqlite3
-        conn = sqlite3.connect(
-            '/Users/putty/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db')
+        from config import DATABASE_PATH
+        conn = sqlite3.connect(DATABASE_PATH)
         months = [r[0] for r in conn.execute(
             "SELECT DISTINCT substr(date_iso, 1, 7) FROM express_payments_in WHERE is_void=0 ORDER BY 1"
         ).fetchall()]

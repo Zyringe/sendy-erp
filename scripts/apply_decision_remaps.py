@@ -1,4 +1,7 @@
-"""Bucket C+E — re-map bsn_code/bsn_unit to the product Put named in the
+"""DEPRECATED: one-off from 2026-05-19. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Bucket C+E — re-map bsn_code/bsn_unit to the product Put named in the
 review CSV (decision blank or '-', remap-target column filled), with
 unit_conversions ratio = 1. Both products stay active (split preserved).
 
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import re
 import sys
 import time
@@ -28,8 +32,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "inventory_app" / "instance" / "inventory.db"
 EXPORTS = ROOT / "data" / "exports"
-DEFAULT_CSV = Path("/Users/putty/Downloads/stock_mapping_suggested_20260518"
-                   " - stock_mapping_suggested_20260518.csv")
+_INPUT_DIR = Path(os.environ.get("SENDY_INPUT_DIR", os.path.expanduser("~/Downloads")))
+DEFAULT_CSV = _INPUT_DIR / ("stock_mapping_suggested_20260518"
+                            " - stock_mapping_suggested_20260518.csv")
 sys.path.insert(0, str(ROOT / "inventory_app"))
 import sqlite3  # noqa: E402
 

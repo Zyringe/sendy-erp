@@ -1,4 +1,7 @@
-"""Apply full structured update from rebuilt CSV → products table.
+"""DEPRECATED: one-off from 2026-05-07. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Apply full structured update from rebuilt CSV → products table.
 
 Sets product_name (rename) + 5 new structured columns (series, model, size,
 condition, pack_variant). Also fills color_code + packaging where CSV has a

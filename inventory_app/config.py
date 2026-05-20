@@ -12,9 +12,21 @@ LOW_STOCK_DEFAULT_THRESHOLD = 10
 ITEMS_PER_PAGE = 50
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'imports')
 
-# Override via Railway environment variables
-SECRET_KEY     = os.environ.get('SECRET_KEY',     'sendai-boonsawat-erp-secret')
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD',  'sendai12345')
+# Override via Railway environment variables.
+# No committed fallbacks — fail loudly so a stray local run can't
+# silently boot with publicly-known secrets.
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(
+            f"{name} environment variable is required. "
+            f"For local dev, copy .env.example to .env and set values."
+        )
+    return value
+
+
+SECRET_KEY     = _require_env('SECRET_KEY')
+ADMIN_PASSWORD = _require_env('ADMIN_PASSWORD')
 
 # Session config — "จำฉันไว้" persists for 30 days.
 # When user ticks the checkbox at /login, the route sets session.permanent=True

@@ -1,4 +1,7 @@
-"""Rebuild the opening balance v2 — three buckets, all driven from the
+"""DEPRECATED: one-off from 2026-05-18. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Rebuild the opening balance v2 — three buckets, all driven from the
 opening ADJUST @2024-01-03 (3/1/2567) so stock at the BSN cutoff 3/3/2569
 (2026-03-03) hits the right target. Post-cutoff real movements carry forward.
 
@@ -35,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 import time
 from pathlib import Path
@@ -42,8 +46,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "inventory_app" / "instance" / "inventory.db"
 EXPORTS = ROOT / "data" / "exports"
-DEFAULT_CSV = Path(
-    "/Users/putty/Downloads/Inventory Management - Opening_Stock (1).csv")
+_INPUT_DIR = Path(os.environ.get("SENDY_INPUT_DIR", os.path.expanduser("~/Downloads")))
+DEFAULT_CSV = _INPUT_DIR / "Inventory Management - Opening_Stock (1).csv"
 
 sys.path.insert(0, str(ROOT / "inventory_app"))
 import sqlite3  # noqa: E402

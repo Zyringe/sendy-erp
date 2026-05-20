@@ -1,4 +1,7 @@
-"""Backfill products.sub_category from sku_name_rebuilt CSV's `category` column.
+"""DEPRECATED: one-off from 2026-05-08. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Backfill products.sub_category from sku_name_rebuilt CSV's `category` column.
 
 The CSV holds granular Thai type text (e.g. "กลอนมะยม", "บานพับสแตนเลส")
 that's more specific than the broad categories table. Stored as plain TEXT

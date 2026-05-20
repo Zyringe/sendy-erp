@@ -1,4 +1,7 @@
-"""Apply reviewed BSN mapping + unit conversions + re-sync stock from the
+"""DEPRECATED: one-off from 2026-05-18. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Apply reviewed BSN mapping + unit conversions + re-sync stock from the
 stock_and_mapping review CSV (the export from export_product_query.py + a
 hand-added `Checked` column).
 
@@ -25,6 +28,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import statistics
 import sys
 from pathlib import Path
@@ -33,9 +37,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "inventory_app" / "instance" / "inventory.db"
 MAP_JSON = ROOT / "data" / "reference" / "bsn_unit_full.json"
 EXPORTS = ROOT / "data" / "exports"
-DEFAULT_CSV = Path(
-    "/Users/putty/Downloads/sku_code_final_2026-05-12.xlsx - stock_and_mapping (1).csv"
-)
+_INPUT_DIR = Path(os.environ.get("SENDY_INPUT_DIR", os.path.expanduser("~/Downloads")))
+DEFAULT_CSV = _INPUT_DIR / "sku_code_final_2026-05-12.xlsx - stock_and_mapping (1).csv"
 
 sys.path.insert(0, str(ROOT / "inventory_app"))
 import sqlite3  # noqa: E402
