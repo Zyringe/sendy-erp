@@ -88,3 +88,39 @@ def test_existing_employee_with_null_nickname_not_refilled(empty_db_conn):
     msg = diff_warnings[0]
     assert "EMP001" in msg
     assert "nickname" in msg
+
+
+# ── Test 1 — non-NULL custom value (วิภา=หลุย case) ──────────────────────────
+
+def test_existing_employee_with_non_null_nickname_not_modified(empty_db_conn):
+    """
+    Seed nickname='หลุย' (Put's custom value, different from sheet's 'วิภา').
+    DB must remain 'หลุย'; a DIFF warning must surface both values.
+    """
+    conn = empty_db_conn
+    _seed_employee(conn, full_name="วิภา ทดสอบ", nickname="หลุย",
+                   emp_code="EMP002")
+
+    parsed = _parsed_salary([{
+        "first_name": "วิภา", "last_name": "ทดสอบ",
+        "nickname":   "วิภา",
+        "bank":       None, "bank_account_no": None,
+        "salary": 12000.0, "sso_deduction": 600.0, "is_active": True,
+    }])
+
+    result = ic.sync_salary_sheet(parsed, conn)
+
+    db_nickname = conn.execute(
+        "SELECT nickname FROM employees WHERE emp_code='EMP002'"
+    ).fetchone()[0]
+    assert db_nickname == "หลุย", \
+        f"DB nickname must remain 'หลุย', got {db_nickname!r}"
+
+    assert "EMP002" in result["skipped"]
+    diffs = [w for w in result["warnings"] if "DIFF" in w]
+    assert len(diffs) == 1, f"Expected exactly 1 DIFF warning, got: {diffs!r}"
+    msg = diffs[0]
+    assert "EMP002" in msg
+    assert "nickname" in msg
+    assert "หลุย" in msg
+    assert "วิภา" in msg
