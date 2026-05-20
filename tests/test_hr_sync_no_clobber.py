@@ -16,9 +16,21 @@ import pytest
 import import_cashbook as ic
 
 
+def _seed_companies(conn):
+    """Idempotently seed BSN (id=1) + SD (id=2) so employees.company_id FK satisfied."""
+    conn.execute(
+        "INSERT OR IGNORE INTO companies (id, code, name_th) VALUES (1, 'BSN', 'บุญสวัสดิ์ นำชัย')"
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO companies (id, code, name_th) VALUES (2, 'SD', 'เซ็นไดเทรดดิ้ง')"
+    )
+    conn.commit()
+
+
 def _seed_employee(conn, *, full_name, nickname=None, bank_name=None,
                    bank_account_no=None, emp_code="EMP001"):
     """Insert one row into employees with the schema columns the sync touches."""
+    _seed_companies(conn)
     conn.execute(
         """INSERT INTO employees
              (emp_code, full_name, nickname, bank_name, bank_account_no,
