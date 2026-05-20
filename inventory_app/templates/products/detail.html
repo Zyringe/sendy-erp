@@ -105,6 +105,7 @@
         <form method="post"
               action="{{ url_for('products.product_online_stock', product_id=product.id) }}"
               class="d-flex gap-2 align-items-center">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="hidden" name="platform" id="onlinePlatform" value="shopee">
           <input type="number" name="quantity" id="onlineQty" step="0.5" min="0"
                  value="{{ product.shopee_stock }}"
@@ -248,6 +249,7 @@
       <div class="modal fade" id="brandModal" tabindex="-1">
         <div class="modal-dialog">
           <form method="post" action="{{ url_for('products.product_set_brand', product_id=product.id) }}" class="modal-content">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="modal-header">
               <h5 class="modal-title">เลือกยี่ห้อ</h5>
               <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -320,6 +322,7 @@
               </div>
 
               <form method="post" action="{{ url_for('products.product_sku_code_save', product_id=product.id) }}" class="mb-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <label class="form-label small">แก้ไขเอง (จะ lock ป้องกัน regen)</label>
                 <div class="input-group input-group-sm">
                   <input type="text" name="sku_code" class="form-control font-mono"
@@ -332,6 +335,7 @@
               <hr>
 
               <form method="post" action="{{ url_for('products.product_regen_sku_code', product_id=product.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <p class="small mb-2">
                   หรือ <strong>regenerate อัตโนมัติ</strong> จาก structured cols (category, brand, model, size, color):
                 </p>
@@ -353,6 +357,7 @@
               <button type="button" class="btn-close btn-sm" data-bs-dismiss="modal"></button>
             </div>
             <form method="post" action="{{ url_for('products.product_location_save', product_id=product.id) }}" id="locationForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <div class="modal-body py-2 px-3">
                 <div id="locationFields">
                   {% for loc in locations %}
@@ -431,6 +436,7 @@
     {% if is_admin %}
     <form method="post" action="{{ url_for('products.product_deactivate', product_id=product.id) }}"
           onsubmit="return confirm('ปิดใช้งานสินค้านี้?')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-sm w-100" style="background:#fdecee;color:#c41e2a;border:none">
         <i class="bi bi-trash me-1"></i>ปิดใช้งานสินค้า
       </button>
@@ -485,6 +491,7 @@
                 {% if is_admin and promo.is_active %}
                 <form method="post" action="{{ url_for('products.promotion_deactivate', promo_id=promo.id) }}"
                       onsubmit="return confirm('ยกเลิกโปรโมชันนี้?')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button type="submit" class="btn btn-xs"
                           style="background:#fdecee;color:#c41e2a;border:none">ยกเลิก</button>
                 </form>

@@ -129,6 +129,7 @@
     <form method="post"
           action="{{ url_for('customer_reassign', customer_code=master.code) }}"
           class="row g-2 align-items-end">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="col-md-4">
         <label class="form-label small mb-1">Salesperson</label>
         <select name="salesperson" class="form-select form-select-sm">

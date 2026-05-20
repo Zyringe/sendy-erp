@@ -14,6 +14,7 @@
           ต้องมีคอลัมน์: <code>SKU, Product_Name, บรรจุ/ลัง, บรรจุ/กล่อง, หน่วย</code>
         </div>
         <form method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="mb-4">
             <label class="form-label">เลือกไฟล์ CSV</label>
             <input type="file" name="csv_file" class="form-control" accept=".csv" required>
@@ -62,6 +63,7 @@
       <div class="card-header"><i class="bi bi-check-circle me-2 text-accent"></i>ยืนยันการนำเข้า</div>
       <div class="card-body">
         <form method="post" action="{{ url_for('products.csv_import_confirm') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="mb-3">
             <div class="form-check">
               <input class="form-check-input" type="checkbox" name="overwrite" value="1" id="chkOverwrite">

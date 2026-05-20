@@ -107,6 +107,7 @@
                   action="{{ url_for('hr.leave_delete', id=r.id) }}"
                   class="d-inline"
                   onsubmit="return confirm('ลบรายการลานี้?')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-sm btn-outline-danger">
                 <i class="bi bi-trash"></i>
               </button>
@@ -135,6 +136,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <form method="post" action="{{ url_for('hr.leave_edit', id=r.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="modal-body">
           <input type="hidden" name="employee_id" value="{{ r.employee_id }}">
           <div class="mb-2">

@@ -183,7 +183,10 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
 
   fetch('/mapping/suggestions/' + id + '/approve', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+    },
     body: JSON.stringify(payload)
   }).then(r => r.json()).then(d => {
     if (d.ok) {
@@ -771,7 +774,10 @@ function confirmIgnore() {
 function saveSingle(entry) {
   fetch('{{ url_for("mapping_save") }}', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+    },
     body: JSON.stringify({ mappings: [entry] })
   }).then(r => r.json()).then(d => {
     if (d.ok) {

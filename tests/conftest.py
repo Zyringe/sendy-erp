@@ -23,6 +23,16 @@ import sqlite3
 
 import pytest
 
+# Disable CSRF for the test client so the ~400 existing POST tests don't need
+# to be rewritten to include a csrf_token. tests/test_csrf_protection.py opts
+# back in per-fixture to assert the gate works on a real request path.
+#
+# Unconditional override (NOT setdefault) — a developer with WTF_CSRF_ENABLED=True
+# exported in their shell would otherwise tank the entire test suite. Tests
+# must NEVER run with CSRF on by accident; opt-in via csrf_client is the
+# supported path.
+os.environ['WTF_CSRF_ENABLED'] = 'False'
+
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 LIVE_DB   = os.path.join(REPO_ROOT, 'inventory_app', 'instance', 'inventory.db')
 

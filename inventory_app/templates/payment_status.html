@@ -211,6 +211,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <form method="post" action="{{ url_for('import_payments') }}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="modal-body">
           <p class="small text-subtle mb-3">
             อัปโหลดไฟล์ <strong>การรับชำระหนี้_เรียงตามวันที่ใบเสร็จ</strong> จากระบบ BSN (.csv, encoding CP874)<br>
@@ -240,6 +241,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <form method="post" action="{{ url_for('import_credit_notes_preview') }}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="modal-body">
           <p class="small text-subtle mb-3">
             อัปโหลดไฟล์ <strong>ใบลดหนี้_&lt;date&gt;</strong> จากระบบ BSN (.csv, encoding CP874)<br>

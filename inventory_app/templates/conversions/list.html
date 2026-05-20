@@ -112,6 +112,7 @@
               <form method="post" action="{{ url_for('conversion_deactivate', formula_id=f.id) }}"
                     class="d-inline"
                     onsubmit="return confirm('ปิดใช้งานสูตร &quot;{{ f.name }}&quot;?')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-sm btn-outline-danger" title="ปิดใช้งาน">
                   <i class="bi bi-x-circle"></i>
                 </button>
@@ -120,6 +121,7 @@
               <form method="post" action="{{ url_for('conversion_activate', formula_id=f.id) }}"
                     class="d-inline"
                     onsubmit="return confirm('เปิดใช้งานสูตร &quot;{{ f.name }}&quot;?')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-sm btn-outline-success" title="เปิดใช้งาน">
                   <i class="bi bi-check-circle"></i>
                 </button>
@@ -139,6 +141,7 @@
 <div class="modal fade" id="deleteFormulaModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <form method="post" id="deleteFormulaForm" class="modal-content">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="modal-header">
         <h5 class="modal-title"><i class="bi bi-exclamation-triangle text-danger me-1"></i>ยืนยันการลบสูตร</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>

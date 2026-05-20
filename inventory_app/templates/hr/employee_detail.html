@@ -61,6 +61,7 @@
       <div class="collapse" id="editForm">
         <div class="card-body border-top bg-light">
           <form method="post" action="{{ url_for('hr.employee_edit', id=employee.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="row g-2">
               <div class="col-md-6">
                 <label class="form-label small">รหัสพนักงาน</label>
@@ -237,6 +238,7 @@
         </button>
         <div class="collapse mt-2" id="addSalaryForm">
           <form method="post" action="{{ url_for('hr.employee_salary_add', id=employee.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="row g-2">
               <div class="col-md-4">
                 <label class="form-label small">วันที่มีผล</label>

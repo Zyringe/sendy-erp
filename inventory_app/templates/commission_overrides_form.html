@@ -10,6 +10,7 @@
 {% set is_active_val = (v.get('is_active') in (1, '1', 'on', True)) if (form is not none) else (rule.is_active if rule else 1) %}
 
 <form method="post" class="row g-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
   {# ── Scope ──────────────────────────────────────────────────────────── #}
   <div class="col-12">

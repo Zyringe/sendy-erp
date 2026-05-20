@@ -18,6 +18,7 @@
         </div>
 
         <form method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="mb-3">
             <label class="form-label">ไฟล์ .xlsx</label>
             <input type="file" name="cashbook_file" accept=".xlsx"

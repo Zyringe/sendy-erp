@@ -13,6 +13,7 @@
 <div class="row justify-content-center">
   <div class="col-lg-7">
     <form method="post" id="convForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
       {# ── ชื่อสูตร ── #}
       <div class="card mb-3">

@@ -259,6 +259,7 @@ Two tables hold derived values that the app must keep in sync with their source 
 - **Blueprint endpoint naming**: routes ใน blueprint ต้องเรียกด้วย `<bp>.<func>` ทั้งใน `_STAFF_POST_OK` และ `url_for()`
 - **werkzeug BuildError** หลังเพิ่ม route ใหม่: restart server ด้วยมือทุกครั้ง — auto-reloader reload template ได้ แต่ URL map ใน memory ยังเก่า
 - **Auto-reloader double-startup**: ใช้ `use_reloader=False` ใน dev server config
+- **CSRF protection**: ทุก POST form template ต้องมี `<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">` หลัง `<form method="post">`. flask-wtf `CSRFProtect(app)` ปฏิเสธ POST ที่ไม่มี token (HTTP 400 → จัด redirect+flash โดย global handler). Production = on by default; tests รันด้วย `WTF_CSRF_ENABLED=False` (set ใน `tests/conftest.py`). Route ใหม่ POST ไม่ต้องเพิ่ม decorator — ป้องกันอัตโนมัติ. Exempt เฉพาะ `/bootstrap/upload-db` (gated ด้วย BOOTSTRAP_TOKEN, ไม่มี session).
 
 ## Migrations (latest: 070 — see `data/migrations/` for canonical files)
 

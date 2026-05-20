@@ -80,6 +80,7 @@
           <td class="text-end">
             <form method="post" action="{{ url_for('commission_delete_payout', payout_id=p.id) }}"
                   onsubmit="return confirm('ลบรายการจ่าย {{ p.amount_paid }} ของ {{ p.salesperson_code }} {{ p.year_month }}?')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button class="btn btn-link text-danger btn-sm p-0"><i class="bi bi-trash"></i></button>
             </form>
           </td>

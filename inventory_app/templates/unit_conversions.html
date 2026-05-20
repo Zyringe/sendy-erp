@@ -36,6 +36,7 @@
 </div>
 
 <form method="post" action="{{ url_for('unit_conversions_save') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div class="card mb-4">
     <div class="table-responsive">
       <table class="table mb-0">
@@ -142,6 +143,7 @@
             </span>
             <form class="ratio-form d-none" id="form-{{ uc.id }}"
                   method="post" action="{{ url_for('unit_conversions_edit') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <input type="hidden" name="product_id" value="{{ uc.product_id }}">
               <input type="hidden" name="bsn_unit" value="{{ uc.bsn_unit }}">
               <div class="input-group input-group-sm justify-content-center" style="max-width:170px;margin:auto">

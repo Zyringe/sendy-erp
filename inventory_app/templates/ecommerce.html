@@ -291,6 +291,7 @@
           <div class="modal fade" id="editModal{{ r.id }}" tabindex="-1">
             <div class="modal-dialog modal-sm">
               <form method="POST" action="{{ url_for('ecommerce_sku_edit', sku_id=r.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="platform" value="{{ tab }}">
                 <input type="hidden" name="page" value="{{ page }}">
                 <input type="hidden" name="q" value="{{ search }}">
@@ -441,6 +442,7 @@
 <div class="modal fade" id="uploadModal{{ plat }}" tabindex="-1">
   <div class="modal-dialog">
     <form method="POST" action="{{ url_for('ecommerce_import') }}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="platform" value="{{ plat | lower }}">
       <div class="modal-content">
         <div class="modal-header">
@@ -489,6 +491,7 @@
 <div class="modal fade" id="uploadOrdersModal" tabindex="-1">
   <div class="modal-dialog modal-lg">
     <form method="POST" action="{{ url_for('ecommerce_listings_import') }}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title"><i class="bi bi-upload me-1 text-warning"></i>นำเข้าไฟล์คำสั่งซื้อ</h5>
@@ -540,6 +543,7 @@
 <div class="modal fade" id="uploadListingMappingModal" tabindex="-1">
   <div class="modal-dialog">
     <form method="POST" action="{{ url_for('ecommerce_listings_mapping_import') }}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title"><i class="bi bi-link-45deg me-1"></i>อัพโหลด Listing Mapping</h5>
@@ -572,6 +576,7 @@
 <div class="modal fade" id="uploadMappingModal" tabindex="-1">
   <div class="modal-dialog">
     <form method="POST" action="{{ url_for('ecommerce_mapping_import') }}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title"><i class="bi bi-link-45deg me-1"></i>อัพโหลดไฟล์ Mapping</h5>

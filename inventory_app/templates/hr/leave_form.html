@@ -13,6 +13,7 @@
   <div class="card-header"><i class="bi bi-calendar-x me-1"></i>{{ page_title }}</div>
   <div class="card-body">
     <form method="post" action="{{ action_url }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="row g-3">
         <div class="col-12">
           <label class="form-label small">พนักงาน <span class="text-danger">*</span></label>
