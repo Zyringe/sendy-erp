@@ -638,6 +638,74 @@ def customer_outstanding(as_of=None, conn=None, db_path=None):
     return rows
 
 
+# ── 2b. customer_credit_rows ─────────────────────────────────────────────────
+def customer_credit_rows(threshold: float = 5.0,
+                         as_of: Optional[str] = None,
+                         conn: Optional[sqlite3.Connection] = None,
+                         db_path: Optional[str] = None) -> list[dict]:
+    """Per-invoice list where the customer overpaid (outstanding < 0).
+
+    Filters `invoice_settlement()` for invoices whose reconciled
+    `outstanding` is strictly negative AND |outstanding| >= threshold.
+    Pass threshold=0 to surface everything down to the _EPS clamp.
+
+    `as_of` (ISO date, default today): only invoices with
+    invoice_date <= as_of appear. Prevents future-dated invoices (e.g. a
+    typo'd 2027 date) from polluting a "point-in-time today" view and
+    keeps `days_old` non-negative.
+
+    Sort: credit DESC, then invoice_date DESC (newer first).
+
+    Returns dicts with keys:
+        doc_base, customer, customer_code, invoice_date,
+        billed, credit_notes, collected,
+        credit            # = -outstanding, always > 0 in this list
+        days_old          # int, today - invoice_date (>= 0)
+    """
+    as_of_iso = as_of or _today_iso()
+    today = date.today()
+    settled = invoice_settlement(conn=conn, db_path=db_path)
+
+    out: list[dict] = []
+    for r in settled:
+        outstanding = r['outstanding']
+        if outstanding >= 0:
+            continue  # not overpaid
+
+        inv_date = r.get('invoice_date')
+        if inv_date and inv_date > as_of_iso:
+            continue  # future-dated; skip
+
+        credit = round(-outstanding, 2)
+        if credit < threshold:
+            continue
+
+        days_old: Optional[int] = None
+        if inv_date:
+            try:
+                y, m, d = (int(x) for x in inv_date.split('-')[:3])
+                days_old = (today - date(y, m, d)).days
+            except (ValueError, TypeError):
+                days_old = None
+
+        out.append({
+            'doc_base':      r['doc_base'],
+            'customer':      r['customer'],
+            'customer_code': r['customer_code'],
+            'invoice_date':  inv_date,
+            'billed':        r['billed'],
+            'credit_notes':  r['credit_notes'],
+            'collected':     r['collected'],
+            'credit':        credit,
+            'days_old':      days_old,
+        })
+
+    # Stable sort: sort by least-significant key first, then by primary.
+    out.sort(key=lambda x: x['invoice_date'] or '', reverse=True)
+    out.sort(key=lambda x: x['credit'], reverse=True)
+    return out
+
+
 # ── 3. allocate_fifo ─────────────────────────────────────────────────────────
 def allocate_fifo(customer, payment_amount, as_of=None,
                   conn=None, db_path=None):

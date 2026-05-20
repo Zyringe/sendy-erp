@@ -29,6 +29,7 @@ from blueprints.cashbook import bp_cashbook
 import cashflow as cf_mod
 import revenue as rev_mod
 import ar_followup as arf_mod
+import payments_alloc as pa_mod
 
 app = Flask(__name__)
 # Honor X-Forwarded-Proto/Host from Railway's edge so url_for and post-login
@@ -3223,6 +3224,18 @@ def cashflow_dashboard():
     total_outstanding = aging['total_outstanding']
     total_open_count  = sum(b['count'] for b in aging['buckets'])
 
+    # Customer-credit-balance section (point-in-time today, not period).
+    # Single snapshot then Python-filter — avoids double-querying and the
+    # drift that two separate calls could produce in a concurrent import.
+    show_all_credit  = request.args.get('show_all') in ('1', 'true', 'on')
+    credit_threshold = 0.0 if show_all_credit else 5.0
+    all_credit_rows  = pa_mod.customer_credit_rows(threshold=0.0)
+    credit_rows = (all_credit_rows if show_all_credit
+                   else [r for r in all_credit_rows
+                         if r['credit'] >= credit_threshold])
+    credit_total = round(sum(r['credit'] for r in credit_rows), 2)
+    credit_hidden_count = len(all_credit_rows) - len(credit_rows)
+
     return render_template(
         'cashflow.html',
         cash_rows=cash_rows,
@@ -3236,6 +3249,10 @@ def cashflow_dashboard():
         to_month=to_month,
         date_from=date_from,
         date_to=date_to,
+        credit_rows=credit_rows,
+        credit_total=credit_total,
+        credit_hidden_count=credit_hidden_count,
+        show_all_credit=show_all_credit,
     )
 
 
