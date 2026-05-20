@@ -17,6 +17,18 @@ import pytest
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 LIVE_DB   = os.path.join(REPO_ROOT, 'inventory_app', 'instance', 'inventory.db')
 
+# Worktrees don't carry the instance/inventory.db — fall back to the main
+# workspace's live DB so the schema-clone fixture finds it. Read-only at the
+# fixture level (URI mode=ro), but we avoid symlinking the file into the
+# worktree because that turns `python app.py` from the worktree into a
+# live-DB-write footgun.
+if not os.path.exists(LIVE_DB):
+    _WORKSPACE_LIVE_DB = os.path.expanduser(
+        '~/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db'
+    )
+    if os.path.exists(_WORKSPACE_LIVE_DB):
+        LIVE_DB = _WORKSPACE_LIVE_DB
+
 
 # ── DB fixtures ──────────────────────────────────────────────────────────────
 

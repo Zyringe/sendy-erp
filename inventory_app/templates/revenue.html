@@ -1,0 +1,359 @@
+{% extends 'base.html' %}
+{% block title %}รายได้ – Sendy{% endblock %}
+{% block page_title %}รายได้ (BSN){% endblock %}
+
+{% block content %}
+
+{# ── Disclaimer ──────────────────────────────────────────────────────────── #}
+<div class="alert alert-secondary py-2 mb-3 small">
+  <i class="bi bi-info-circle me-1"></i>
+  <strong>รายได้ตามเกณฑ์คงค้าง (Accrual)</strong> &nbsp;·&nbsp;
+  รับรู้เมื่อออกใบกำกับ (วันที่ขาย) ไม่ใช่เมื่อรับชำระ &nbsp;·&nbsp;
+  BSN เท่านั้น &nbsp;·&nbsp; ไม่รวม VAT
+</div>
+
+{# ── Period selector ──────────────────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-body py-2">
+    <form method="get" class="row g-2 align-items-end">
+      <div class="col-auto">
+        <label class="form-label small mb-1">ตั้งแต่เดือน</label>
+        <input type="month" name="from" class="form-control form-control-sm"
+               value="{{ from_month or '' }}">
+      </div>
+      <div class="col-auto">
+        <label class="form-label small mb-1">ถึงเดือน</label>
+        <input type="month" name="to" class="form-control form-control-sm"
+               value="{{ to_month or '' }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
+        <a href="{{ url_for('revenue_dashboard') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+      </div>
+      <div class="col-auto align-self-end text-subtle small">
+        ช่วง: {{ date_from }} – {{ date_to }}
+      </div>
+    </form>
+  </div>
+</div>
+
+{# ── KPI Cards ────────────────────────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+
+  {# รายได้รวมช่วงนี้ #}
+  <div class="col-sm-6 col-xl-4">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#dcf2e0">
+          <i class="bi bi-graph-up-arrow" style="color:#2e7d3a"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">รายได้รวมช่วงนี้</div>
+          <div class="stat-card-value text-success">{{ total_revenue | fmt_price }}</div>
+        </div>
+      </div>
+      <div class="mt-2 text-subtle small">
+        ตามวันที่ขาย · post-doc-discount · pre-VAT
+      </div>
+    </div>
+  </div>
+
+  {# จำนวนใบกำกับ #}
+  <div class="col-sm-6 col-xl-4">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#e3edfb">
+          <i class="bi bi-receipt" style="color:#1d4ed8"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">จำนวนใบกำกับ</div>
+          <div class="stat-card-value">{{ total_invoices | fmt_qty }} ใบ</div>
+        </div>
+      </div>
+      <div class="mt-2 text-subtle small">
+        ไม่รวมใบลดหนี้ (SR) และยกยอด (HS)
+      </div>
+    </div>
+  </div>
+
+  {# ลูกค้าที่ซื้อ #}
+  <div class="col-sm-6 col-xl-4">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#fdf3dd">
+          <i class="bi bi-people" style="color:#b45309"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">ลูกค้าที่ซื้อ</div>
+          <div class="stat-card-value">{{ total_customers | fmt_qty }} ราย</div>
+        </div>
+      </div>
+      <div class="mt-2 text-subtle small">
+        ลูกค้าไม่ซ้ำ (distinct) ที่มีใบกำกับ
+      </div>
+    </div>
+  </div>
+
+  {# ยอดเฉลี่ย/ใบ (AOV) #}
+  <div class="col-sm-6 col-xl-4">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#fdecee">
+          <i class="bi bi-calculator" style="color:#c41e2a"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">ยอดเฉลี่ย/ใบ (AOV)</div>
+          <div class="stat-card-value">{{ aov | fmt_price }}</div>
+        </div>
+      </div>
+      <div class="mt-2 text-subtle small">
+        Average Order Value = รายได้รวม ÷ จำนวนใบกำกับ
+      </div>
+    </div>
+  </div>
+
+</div>
+
+{# ── รายได้รายเดือน ──────────────────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-bar-chart-line me-2 text-accent"></i>รายได้รายเดือน</span>
+    <span class="text-subtle small">Accrual basis — วันที่ขาย</span>
+  </div>
+
+  {% if revenue_rows %}
+  {# bar chart using inline CSS widths #}
+  {% set max_rev = revenue_rows | map(attribute='revenue') | max %}
+  <div class="card-body pb-0">
+    {% for row in revenue_rows %}
+    {% set bar_pct = ((row.revenue / max_rev * 100) | round(1)) if max_rev > 0 else 0 %}
+    <div class="d-flex align-items-center mb-2 gap-2">
+      <div class="text-subtle small" style="width:6rem; flex-shrink:0">{{ row.month }}</div>
+      <div class="flex-grow-1">
+        <div style="background:#e8f5e9; border-radius:3px; height:1.2rem; position:relative;">
+          <div style="background:#2e7d3a; border-radius:3px; height:100%; width:{{ bar_pct }}%;
+                      min-width:{% if row.revenue > 0 %}2px{% else %}0{% endif %}"></div>
+        </div>
+      </div>
+      <div class="text-end small fw-semibold" style="width:7rem; flex-shrink:0">
+        {{ row.revenue | fmt_price }}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="table-responsive mt-2">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th>เดือน</th>
+          <th class="text-end">รายได้สุทธิ (฿)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in revenue_rows %}
+        <tr>
+          <td>{{ row.month }}</td>
+          <td class="text-end">{{ row.revenue | fmt_price }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot class="table-secondary fw-bold">
+        <tr>
+          <td>รวม</td>
+          <td class="text-end text-success">{{ total_revenue | fmt_price }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  {% else %}
+  <div class="card-body text-subtle text-center py-4">
+    <i class="bi bi-inbox fs-3 d-block mb-2"></i>
+    ไม่มีข้อมูลในช่วงนี้
+  </div>
+  {% endif %}
+</div>
+
+{# ── เปรียบเทียบรายได้ (Accrual) กับเงินเข้า (Cash) ─────────────────────── #}
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>
+      <i class="bi bi-arrow-left-right me-2 text-accent"></i>
+      เปรียบเทียบรายได้ (Accrual) กับเงินเข้า (Cash)
+    </span>
+    <span class="text-subtle small">รายเดือน</span>
+  </div>
+
+  {% if month_compare %}
+  <div class="card-body py-2 small text-subtle">
+    ส่วนต่างบวก = ออกบิลแล้วยังไม่เก็บเงิน (AR เพิ่ม) ·
+    ลบ = เก็บเงินใบเก่ามากกว่าออกใบใหม่
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th>เดือน</th>
+          <th class="text-end">รายได้ (฿)</th>
+          <th class="text-end">เงินเข้า (฿)</th>
+          <th class="text-end">ส่วนต่าง (฿)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in month_compare %}
+        <tr>
+          <td>{{ row.month }}</td>
+          <td class="text-end">{{ row.revenue | fmt_price }}</td>
+          <td class="text-end">{{ row.cash_in | fmt_price }}</td>
+          <td class="text-end {% if row.gap > 0.5 %}text-warning fw-semibold{% elif row.gap < -0.5 %}text-success fw-semibold{% else %}text-subtle{% endif %}">
+            {{ row.gap | fmt_price }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot class="table-secondary fw-bold">
+        {% set gap_total = total_revenue - total_cash_in %}
+        <tr>
+          <td>รวม</td>
+          <td class="text-end">{{ total_revenue | fmt_price }}</td>
+          <td class="text-end">{{ total_cash_in | fmt_price }}</td>
+          <td class="text-end {% if gap_total > 0.5 %}text-warning{% elif gap_total < -0.5 %}text-success{% endif %}">
+            {{ gap_total | fmt_price }}
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-body text-subtle text-center py-3">ไม่มีข้อมูลในช่วงนี้</div>
+  {% endif %}
+</div>
+
+{# ── Top 20 ลูกค้า ───────────────────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>
+      <i class="bi bi-trophy me-2 text-accent"></i>
+      Top 20 ลูกค้าที่ทำรายได้สูงสุด
+    </span>
+    <span class="text-subtle small">เรียงตามรายได้ในช่วงนี้</span>
+  </div>
+
+  {% if top_customers %}
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th style="width:3rem">#</th>
+          <th>ลูกค้า</th>
+          <th>รหัส</th>
+          <th class="text-end">รายได้ (฿)</th>
+          <th class="text-end">จำนวนใบกำกับ</th>
+          <th class="text-end">% ของช่วง</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in top_customers %}
+        <tr>
+          <td class="text-subtle">{{ loop.index }}</td>
+          <td>{{ row.customer }}</td>
+          <td class="text-subtle small">{{ row.customer_code or '—' }}</td>
+          <td class="text-end">{{ row.revenue | fmt_price }}</td>
+          <td class="text-end text-subtle">{{ row.invoice_count | fmt_qty }}</td>
+          <td class="text-end text-subtle small">
+            {% if total_revenue > 0 %}
+            {{ "%.1f"|format(row.revenue / total_revenue * 100) }}%
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-body text-subtle text-center py-3">ไม่มีข้อมูลในช่วงนี้</div>
+  {% endif %}
+</div>
+
+{# ── Top 10 แบรนด์ ───────────────────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>
+      <i class="bi bi-tags me-2 text-accent"></i>
+      Top 10 แบรนด์ที่ทำรายได้สูงสุด
+    </span>
+    <span class="text-subtle small">เรียงตามรายได้ในช่วงนี้</span>
+  </div>
+
+  {% if top_brands %}
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th style="width:3rem">#</th>
+          <th>แบรนด์</th>
+          <th>code</th>
+          <th class="text-end">รายได้ (฿)</th>
+          <th class="text-end">จำนวนบรรทัด</th>
+          <th class="text-end">% ของช่วง</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% set ns = namespace(rev_sum=0, line_sum=0, pct_sum=0.0) %}
+        {% for row in top_brands %}
+        {% set ns.rev_sum = ns.rev_sum + row.revenue %}
+        {% set ns.line_sum = ns.line_sum + row.line_count %}
+        {% set pct = (row.revenue / total_revenue * 100) if total_revenue > 0 else 0 %}
+        {% set ns.pct_sum = ns.pct_sum + pct %}
+        <tr {% if row.brand_display == 'ไม่ระบุแบรนด์' %}class="table-warning"{% endif %}>
+          <td class="text-subtle">{{ loop.index }}</td>
+          <td>
+            {{ row.brand_display }}
+            {% if row.brand_display == 'ไม่ระบุแบรนด์' %}
+            <span class="badge bg-warning text-dark ms-1">ยังไม่ map</span>
+            {% endif %}
+          </td>
+          <td class="text-subtle small">{{ row.brand_code or '—' }}</td>
+          <td class="text-end">{{ row.revenue | fmt_price }}</td>
+          <td class="text-end text-subtle">{{ row.line_count | fmt_qty }}</td>
+          <td class="text-end text-subtle small">
+            {% if total_revenue > 0 %}
+            {{ "%.1f"|format(pct) }}%
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot class="table-secondary fw-bold">
+        <tr>
+          <td colspan="2">รวม Top {{ top_brands | length }}</td>
+          <td></td>
+          <td class="text-end">{{ ns.rev_sum | fmt_price }}</td>
+          <td class="text-end text-subtle">{{ ns.line_sum | fmt_qty }}</td>
+          <td class="text-end text-subtle small">
+            {% if total_revenue > 0 %}
+            {{ "%.1f"|format(ns.pct_sum) }}%
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-body text-subtle text-center py-3">ไม่มีข้อมูลในช่วงนี้</div>
+  {% endif %}
+</div>
+
+{# ── Assumptions footnote ─────────────────────────────────────────────────── #}
+<div class="card border-0 bg-light mb-2">
+  <div class="card-body py-2 small text-subtle">
+    <strong>ข้อสมมติฐาน:</strong>
+    รายได้ = <code>net</code> จาก <code>sales_transactions</code> ตามวันที่ขาย — post-doc-discount, pre-VAT ·
+    ไม่รวมใบลดหนี้ (SR) และยกยอด (HS) ·
+    BSN เท่านั้น ·
+    'ไม่ระบุแบรนด์' = สินค้าที่ยังไม่ได้ map กับ <code>products</code> + <code>brands</code>
+  </div>
+</div>
+
+{% endblock %}
