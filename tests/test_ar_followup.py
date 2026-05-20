@@ -225,3 +225,183 @@ def test_ranking_includes_last_log(empty_db_conn):
     rows = arf.customer_ranking(conn=c)
     assert rows[0]['last_log_date'] == today
     assert rows[0]['last_log_result'] == 'promised'
+
+
+# ── customer-identity (customer_code as stable key) ─────────────────────────
+# Codex adversarial-review finding (HIGH): aggregating by customer NAME splits
+# one debtor across name spellings and orphans follow-up history. Key by
+# customer_code where present.
+
+def test_ranking_aggregates_by_customer_code_when_names_differ(empty_db_conn):
+    """Same customer_code, two name spellings (trailing space) → ONE row."""
+    c = empty_db_conn
+    today = date.today().isoformat()
+    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today, 1000, line=1)
+    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today, 2000, line=1)
+    c.commit()
+
+    rows = arf.customer_ranking(conn=c)
+    assert len(rows) == 1
+    assert rows[0]['outstanding'] == pytest.approx(3000)
+    assert rows[0]['customer_code'] == 'CA'
+    assert rows[0]['invoice_count'] == 2
+
+
+def test_ranking_falls_back_to_name_when_no_code(empty_db_conn):
+    """No customer_code (walk-in) → group by name."""
+    c = empty_db_conn
+    today = date.today().isoformat()
+    _ins_sale(c, 'IV01', 'หน้าร้าน',   None, today, 100, line=1)
+    _ins_sale(c, 'IV02', 'หน้าร้าน',   None, today, 200, line=1)
+    _ins_sale(c, 'IV03', 'หน้าร้าน 2', None, today, 50,  line=1)
+    c.commit()
+
+    rows = arf.customer_ranking(conn=c)
+    assert len(rows) == 2
+    by_name = {r['customer']: r['outstanding'] for r in rows}
+    assert by_name['หน้าร้าน']   == pytest.approx(300)
+    assert by_name['หน้าร้าน 2'] == pytest.approx(50)
+
+
+def test_ranking_canonical_name_from_most_recent_invoice(empty_db_conn):
+    """When same code has multiple name spellings, ranking row shows the
+    name from the most-recent invoice (deterministic display)."""
+    c = empty_db_conn
+    today = date.today()
+    old   = (today - timedelta(days=60)).isoformat()
+    newer = (today - timedelta(days=5)).isoformat()
+    _ins_sale(c, 'IV01', 'ลูกค้า A (เก่า)',  'CA', old,   1000, line=1)
+    _ins_sale(c, 'IV02', 'ลูกค้า A (ใหม่)', 'CA', newer, 500,  line=1)
+    c.commit()
+
+    rows = arf.customer_ranking(conn=c)
+    assert len(rows) == 1
+    assert rows[0]['customer'] == 'ลูกค้า A (ใหม่)'
+
+
+def test_detail_finds_all_name_variants_for_code(empty_db_conn):
+    """Detail lookup with EITHER name spelling returns BOTH invoices."""
+    c = empty_db_conn
+    today = date.today().isoformat()
+    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today, 1000, line=1)
+    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today, 2000, line=1)
+    c.commit()
+
+    rows_a = arf.get_customer_ar_detail(customer='ลูกค้า A',  conn=c)
+    rows_b = arf.get_customer_ar_detail(customer='ลูกค้า A ', conn=c)
+    assert sorted(r['doc_base'] for r in rows_a) == ['IV01', 'IV02']
+    assert sorted(r['doc_base'] for r in rows_b) == ['IV01', 'IV02']
+
+
+def test_followups_finds_all_name_variants_for_code(empty_db_conn):
+    """Followup history spans all name spellings sharing customer_code."""
+    c = empty_db_conn
+    today = date.today().isoformat()
+    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today, 1000, line=1)
+    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today, 2000, line=1)
+    arf.log_outreach(conn=c, customer='ลูกค้า A',  customer_code='CA',
+                     log_date=today, channel='phone',
+                     result='no_answer', created_by='admin')
+    arf.log_outreach(conn=c, customer='ลูกค้า A ', customer_code='CA',
+                     log_date=today, channel='line',
+                     result='promised',  created_by='admin')
+    c.commit()
+
+    rows = arf.get_customer_followups(customer='ลูกค้า A', conn=c)
+    assert len(rows) == 2
+
+
+def test_ranking_last_log_aggregates_by_group(empty_db_conn):
+    """Ranking's last_log uses the newest log across all name variants of
+    the same customer_code (not whatever spelling happens to be alphabetized first)."""
+    c = empty_db_conn
+    today = date.today()
+    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today.isoformat(), 1000, line=1)
+    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today.isoformat(), 2000, line=1)
+    arf.log_outreach(conn=c, customer='ลูกค้า A',  customer_code='CA',
+                     log_date=(today - timedelta(days=5)).isoformat(),
+                     channel='phone', result='no_answer', created_by='admin')
+    arf.log_outreach(conn=c, customer='ลูกค้า A ', customer_code='CA',
+                     log_date=today.isoformat(),
+                     channel='line',  result='promised',  created_by='admin')
+    c.commit()
+
+    rows = arf.customer_ranking(conn=c)
+    assert len(rows) == 1
+    assert rows[0]['last_log_date']   == today.isoformat()
+    assert rows[0]['last_log_result'] == 'promised'
+
+
+# ── overdue (supersession + terminal-state awareness) ───────────────────────
+# Codex adversarial-review finding (MEDIUM): list_overdue_followups blindly
+# returned every row whose next_action_date had passed. Only the LATEST log
+# per customer-group counts, and terminal results (paid_full / closed) close
+# the loop.
+
+def test_overdue_excludes_superseded_by_later_log(empty_db_conn):
+    """A later log rescheduling to future supersedes the older overdue row."""
+    c = empty_db_conn
+    today = date.today()
+    arf.log_outreach(conn=c, customer='A', customer_code='CA',
+                     log_date=(today - timedelta(days=20)).isoformat(),
+                     channel='phone', result='promised',
+                     next_action_date=(today - timedelta(days=10)).isoformat(),
+                     created_by='admin')
+    arf.log_outreach(conn=c, customer='A', customer_code='CA',
+                     log_date=(today - timedelta(days=5)).isoformat(),
+                     channel='phone', result='no_answer',
+                     next_action_date=(today + timedelta(days=7)).isoformat(),
+                     created_by='admin')
+    c.commit()
+
+    assert arf.list_overdue_followups(conn=c, as_of=today.isoformat()) == []
+
+
+def test_overdue_excludes_terminal_paid_full(empty_db_conn):
+    """Latest log = paid_full → debt closed, never overdue."""
+    c = empty_db_conn
+    today = date.today()
+    arf.log_outreach(conn=c, customer='A', customer_code='CA',
+                     log_date=(today - timedelta(days=10)).isoformat(),
+                     channel='phone', result='paid_full',
+                     next_action_date=(today - timedelta(days=5)).isoformat(),
+                     created_by='admin')
+    c.commit()
+
+    assert arf.list_overdue_followups(conn=c, as_of=today.isoformat()) == []
+
+
+def test_overdue_excludes_terminal_closed(empty_db_conn):
+    """Latest log = closed → account closed, never overdue."""
+    c = empty_db_conn
+    today = date.today()
+    arf.log_outreach(conn=c, customer='A', customer_code='CA',
+                     log_date=(today - timedelta(days=10)).isoformat(),
+                     channel='phone', result='closed',
+                     next_action_date=(today - timedelta(days=5)).isoformat(),
+                     created_by='admin')
+    c.commit()
+
+    assert arf.list_overdue_followups(conn=c, as_of=today.isoformat()) == []
+
+
+def test_overdue_includes_only_unresolved_past_due(empty_db_conn):
+    """Mix: only customer A (unresolved past-due) should appear; B (paid_full)
+    and C (future next-action) excluded."""
+    c = empty_db_conn
+    today  = date.today()
+    past   = (today - timedelta(days=5)).isoformat()
+    future = (today + timedelta(days=5)).isoformat()
+    arf.log_outreach(conn=c, customer='A', customer_code='CA',
+                     log_date=past, channel='phone', result='promised',
+                     next_action_date=past,   created_by='admin')
+    arf.log_outreach(conn=c, customer='B', customer_code='CB',
+                     log_date=past, channel='phone', result='paid_full',
+                     next_action_date=past,   created_by='admin')
+    arf.log_outreach(conn=c, customer='C', customer_code='CC',
+                     log_date=past, channel='phone', result='promised',
+                     next_action_date=future, created_by='admin')
+    c.commit()
+
+    overdue = arf.list_overdue_followups(conn=c, as_of=today.isoformat())
+    assert [r['customer'] for r in overdue] == ['A']
