@@ -189,3 +189,53 @@ def test_bank_account_no_diff_does_not_leak_raw_values(empty_db_conn):
     for w in result["warnings"]:
         assert "1234567890" not in w, f"DB account leaked into warning: {w!r}"
         assert "9999999999" not in w, f"Sheet account leaked into warning: {w!r}"
+
+
+# ── Test 4 — new employee still auto-created from sheet ──────────────────────
+
+def test_new_employee_still_auto_created(empty_db_conn):
+    """
+    Sheet has a person not in DB. The new-employee branch must still run:
+    employees row inserted with auto EMP-code, employee_salary_history seed
+    row inserted, result['created'] populated, "start_date unknown" warning
+    emitted.
+    """
+    conn = empty_db_conn
+    _seed_companies(conn)  # required for FK; no existing employee seeded
+
+    parsed = _parsed_salary([{
+        "first_name": "ใหม่", "last_name": "มาเอง",
+        "nickname":   "ใหม่",
+        "bank":       "กสิกร",
+        "bank_account_no": "5551112220",
+        "salary": 13000.0, "sso_deduction": 650.0, "is_active": True,
+    }])
+
+    result = ic.sync_salary_sheet(parsed, conn)
+
+    row = conn.execute(
+        "SELECT emp_code, nickname, bank_name, bank_account_no "
+        "FROM employees WHERE full_name='ใหม่ มาเอง'"
+    ).fetchone()
+    assert row is not None, "New employee must be inserted"
+    emp_code = row[0]
+    assert emp_code.startswith("EMP")
+    assert row[1] == "ใหม่"
+    assert row[2] == "กสิกร"
+    assert row[3] == "5551112220"
+
+    assert emp_code in result["created"]
+    assert emp_code not in result["skipped"]
+    assert emp_code not in result["updated"]
+
+    hist = conn.execute(
+        "SELECT effective_date, reason FROM employee_salary_history "
+        "WHERE employee_id=(SELECT id FROM employees WHERE emp_code=?)",
+        (emp_code,),
+    ).fetchone()
+    assert hist is not None, "Salary history seed row missing for new employee"
+    assert hist[1] == "initial"
+
+    start_warnings = [w for w in result["warnings"] if "start_date" in w]
+    assert len(start_warnings) >= 1, \
+        "Expected 'start_date unknown' warning for new employee"
