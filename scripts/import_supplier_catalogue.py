@@ -17,7 +17,7 @@ What it does (one transaction per file):
      (item_id, version_id) — guarantees one history row per item per version.
 
 Run:
-  /Users/putty/.virtualenvs/erp/bin/python scripts/import_supplier_catalogue.py \
+  python scripts/import_supplier_catalogue.py \
       --file "/Volumes/ZYRINGE/ใบราคาสินค้าเดือน 2-69.xlsx" \
       --supplier "ศรีไทยเจริญโลหะกิจ" \
       --catalogue-date 2026-02 \

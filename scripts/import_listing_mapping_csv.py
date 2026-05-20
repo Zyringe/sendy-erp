@@ -30,9 +30,10 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DEFAULT_CSV = ('/Users/putty/Downloads/'
-               'listing_mapping_cleaned_20260427 - '
-               'listing_mapping_cleaned_20260427 (1).csv')
+_INPUT_DIR = os.environ.get('SENDY_INPUT_DIR', os.path.expanduser('~/Downloads'))
+DEFAULT_CSV = os.path.join(_INPUT_DIR,
+                           'listing_mapping_cleaned_20260427 - '
+                           'listing_mapping_cleaned_20260427 (1).csv')
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / 'inventory_app' / 'instance' / 'inventory.db'

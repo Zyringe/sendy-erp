@@ -4,7 +4,7 @@ Goal: validate that we can extract name/unit/price/discount + font-color flag
       and roughly match catalogue items to ERP purchase_transactions.
 
 Run:
-  /Users/putty/.virtualenvs/erp/bin/python scripts/poc_supplier_catalogue.py
+  python scripts/poc_supplier_catalogue.py
 
 No DB writes. Output: JSON to stdout + match report.
 """

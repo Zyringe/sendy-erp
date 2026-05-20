@@ -20,10 +20,10 @@ Fix:
      replay_history_apply.py won't restore them.
 
 Run on default local DB:
-  /Users/putty/.virtualenvs/erp/bin/python scripts/fix_k11_1155_unit_conversion.py
+  python scripts/fix_k11_1155_unit_conversion.py
 
 Run on a specific DB file (e.g. prod snapshot):
-  /Users/putty/.virtualenvs/erp/bin/python scripts/fix_k11_1155_unit_conversion.py /path/to/inventory.db
+  python scripts/fix_k11_1155_unit_conversion.py /path/to/inventory.db
 """
 from __future__ import annotations
 import shutil

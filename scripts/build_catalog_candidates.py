@@ -18,11 +18,18 @@ import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path("/Users/putty/Sendai-Boonsawat")
-DB = ROOT / "sendy_erp/inventory_app/instance/inventory.db"
-TOP_MATCH = ROOT / "Design/Catalog/2026_extract/slide_top_match.csv"
-ALL_MATCH = ROOT / "Design/Catalog/2026_extract/slide_sku_matches.csv"
-OUT = ROOT / "sendy_erp/data/exports/catalog_candidates_2026.csv"
+import os
+
+# sendy_erp root (this file lives in sendy_erp/scripts/)
+SENDY_ROOT = Path(__file__).resolve().parents[1]
+# Workspace root (Sendai-Boonsawat/) — assumed to be sendy_erp's parent.
+# Override with SENDY_WORKSPACE_ROOT if the worktree layout differs.
+WORKSPACE_ROOT = Path(os.environ.get("SENDY_WORKSPACE_ROOT",
+                                     str(SENDY_ROOT.parent)))
+DB = SENDY_ROOT / "inventory_app/instance/inventory.db"
+TOP_MATCH = WORKSPACE_ROOT / "Design/Catalog/2026_extract/slide_top_match.csv"
+ALL_MATCH = WORKSPACE_ROOT / "Design/Catalog/2026_extract/slide_sku_matches.csv"
+OUT = SENDY_ROOT / "data/exports/catalog_candidates_2026.csv"
 
 
 def load_top_matches():

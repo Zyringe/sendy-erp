@@ -23,12 +23,14 @@ Sorted by |delta| DESC.
 from __future__ import annotations
 
 import csv
+import os
 import sqlite3
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "inventory_app" / "instance" / "inventory.db"
-OPENING_CSV = Path("/Users/putty/Downloads/Inventory Management - Opening_Stock.csv")
+_INPUT_DIR = Path(os.environ.get("SENDY_INPUT_DIR", os.path.expanduser("~/Downloads")))
+OPENING_CSV = _INPUT_DIR / "Inventory Management - Opening_Stock.csv"
 OUT_XLSX = ROOT / "data" / "exports" / "stock_reconciliation_2026-05-08.xlsx"
 
 DELTA_THRESHOLD_ABS = 50      # absolute units

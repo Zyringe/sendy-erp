@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 import time
 from pathlib import Path
@@ -42,8 +43,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "inventory_app" / "instance" / "inventory.db"
 EXPORTS = ROOT / "data" / "exports"
-DEFAULT_CSV = Path(
-    "/Users/putty/Downloads/Inventory Management - Opening_Stock (1).csv")
+_INPUT_DIR = Path(os.environ.get("SENDY_INPUT_DIR", os.path.expanduser("~/Downloads")))
+DEFAULT_CSV = _INPUT_DIR / "Inventory Management - Opening_Stock (1).csv"
 
 sys.path.insert(0, str(ROOT / "inventory_app"))
 import sqlite3  # noqa: E402
