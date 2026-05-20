@@ -56,24 +56,37 @@ if emp_row is not None:
     eid      = emp_row[0]
     emp_code = emp_row[1]
     # Existing employee — never modify. Diff the 3 previously-fillable
-    # fields and surface mismatches as warnings.
-    for idx, field, sheet_val in (
-        (2, "nickname",        nickname),
-        (3, "bank_name",       bank),
-        (4, "bank_account_no", bank_acct),
+    # fields and surface mismatches as warnings. bank_account_no is
+    # masked (PII): emit field name only, never raw values.
+    for idx, field, sheet_val, sensitive in (
+        (2, "nickname",        nickname,  False),
+        (3, "bank_name",       bank,      False),
+        (4, "bank_account_no", bank_acct, True),
     ):
         db_val = emp_row[idx]
         # Treat None and "" as equivalent (both = blank).
         sv = sheet_val or None
         dv = db_val or None
         if sv != dv:
-            result["warnings"].append(
-                f"DIFF {emp_code} {field}: sheet={sheet_val!r} "
-                f"db={db_val!r} (skipped — edit in HR UI to change)"
-            )
+            if sensitive:
+                result["warnings"].append(
+                    f"DIFF {emp_code} {field}: sheet differs from DB "
+                    f"(skipped — edit in HR UI)"
+                )
+            else:
+                result["warnings"].append(
+                    f"DIFF {emp_code} {field}: sheet={sheet_val!r} "
+                    f"db={db_val!r} (skipped — edit in HR UI to change)"
+                )
     result["skipped"].append(emp_code)
     continue
 ```
+
+**PII handling note.** `bank_account_no` is the only sensitive field of the
+three. Its warning carries only the field name and a "differs" marker —
+never the raw account number from either source. `nickname` and `bank_name`
+keep raw values in warnings because they are low-sensitivity and the raw
+diff is the only thing that makes the warning actionable.
 
 The new-employee branch (`import_cashbook.py:318` onward) is unchanged.
 `_build_nickname_map()` and the `salary_advances` full-replace step
@@ -103,8 +116,8 @@ follow-up could group them under a separate result key. Not in scope here.
 
 ## Testing
 
-New file `tests/test_hr_sync_no_clobber.py`. Five cases — one regression
-guard plus four behaviour assertions:
+New file `tests/test_hr_sync_no_clobber.py`. Six cases — one regression
+guard, four behaviour assertions, one PII assertion:
 
 1. **`test_existing_employee_with_non_null_nickname_not_modified`** — Seed
    employee with `nickname='หลุย'`. Run `sync_salary_sheet` with a row whose
@@ -126,6 +139,14 @@ guard plus four behaviour assertions:
    WHERE emp_code=?` to simulate Put clearing via HR UI. Re-run import on
    same workbook. Assert: DB nickname still NULL after second run; diff
    warning emitted on second run.
+6. **`test_bank_account_no_diff_does_not_leak_raw_values`** — PII
+   regression. Seed employee with `bank_account_no='1234567890'`. Sheet
+   row carries `bank_account_no='9999999999'`. Run `sync_salary_sheet`.
+   Assert: a warning is emitted that contains `bank_account_no` and `DIFF`
+   AND `emp_code`; assert no warning string contains the substrings
+   `'1234567890'` or `'9999999999'`. This locks the masking behaviour so a
+   future refactor cannot regress to dumping raw account numbers into
+   `result["warnings"]`.
 
 Tests must use an isolated SQLite fixture (existing `conftest.py` pattern in
 `tests/`). No tests against `instance/inventory.db`.
