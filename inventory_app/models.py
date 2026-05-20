@@ -173,20 +173,12 @@ def set_product_brand(product_id, brand_id):
     """Assign (or clear) a brand on a product. Pass None to clear.
 
     Side effects to keep commission state consistent:
-      1. express_sales.brand_kind is refreshed by the DB trigger
-         refresh_brand_kind_on_product_brand_change (migration 063,
-         unit-aware: resolves each row by (product_code, unit) exactly
-         like the import resolver). It fires AFTER UPDATE OF brand_id
-         within the statement below — before commit() and before the
-         top-up read — so the commission engine sees the new
-         classification immediately.
-
-         NOTE: do NOT add a manual by-product_code UPDATE of
-         express_sales here. mig 061 made product_code_mapping
-         unit-aware (one bsn_code → different products per unit); a
-         by-code refresh re-corrupts split-code rows that resolve to a
-         DIFFERENT product, overwriting the trigger's correct result.
-         (Codex adversarial review, high finding, 2026-05-20.)
+      1. express_sales.brand_kind was removed in mig 068. Brand-kind is now
+         derived at read time in commission._BASE_QUERY's CASE expression
+         from brands.is_own_brand. No cache, no trigger, no drift risk.
+         The trigger refresh_brand_kind_on_product_brand_change (mig 063)
+         was also removed in mig 068 — no in-DB side effect fires on
+         brand_id UPDATE after that migration.
       2. Top-up auto-pay for pre-2026-02 invoices that include this
          product and whose commission_due just changed (e.g. third → own
          flips a 5% line to 10% — without a top-up the invoice would
