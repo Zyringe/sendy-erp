@@ -33,6 +33,29 @@ Shell shortcuts: `sendy-up` / `sendy-down` / `sendy-log` (logs ที่ `/tmp/s
 - **Deploy**: Railway (gunicorn 2 workers), persistent volume `/data`, healthcheck `/healthz`
 - **GitHub**: https://github.com/Zyringe/sendy-erp
 
+## Commands (most common)
+
+```bash
+# Run dev server (prefer over Claude Preview MCP — TCC sandbox blocks it)
+~/.virtualenvs/erp/bin/python sendy_erp/inventory_app/app.py
+# or (when shell aliases are loaded)
+sendy-up        # starts server, logs → /tmp/sendy.log
+sendy-down      # kills server
+sendy-log       # tails /tmp/sendy.log
+
+# Tests (from sendy_erp/ — pytest.ini sets pythonpath=inventory_app .)
+cd sendy_erp && ~/.virtualenvs/erp/bin/pytest                            # full suite
+cd sendy_erp && ~/.virtualenvs/erp/bin/pytest tests/test_cashflow.py     # single file
+cd sendy_erp && ~/.virtualenvs/erp/bin/pytest -k vat                     # by name keyword
+cd sendy_erp && ~/.virtualenvs/erp/bin/pytest -x -ra                     # stop on first fail
+
+# Manual DB backup (launchd backup is paused — see project_backup_paused memory)
+sendy_erp/scripts/backup_db.sh
+
+# Migration: drop a new `NNN_name.sql` + `NNN_name.rollback.sql` into
+# data/migrations/ then restart server — runner auto-applies on init_db().
+```
+
 ## โครงสร้างไฟล์สำคัญ
 ```
 sendy_erp/
@@ -41,7 +64,7 @@ sendy_erp/
   railway.toml          ← nixpacks + healthcheckPath=/healthz
   pytest.ini, requirements*.txt
   data/
-    migrations/         ← 0NN_name.sql + .rollback.sql (latest: 037)
+    migrations/         ← 0NN_name.sql + .rollback.sql (latest: **064**)
     source/, source-backup.zip, exports/
   docs/                 ← engineering notes
   scripts/              ← apply_sku_*, parse_*, import_*, backup_db.sh, com.boonsawat.erp.backup.plist
@@ -139,7 +162,7 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 ### pending_product_suggestions *(mig 036)*
 รหัส BSN ที่ smart-mapping ยังไม่ได้ผูก — ใช้คู่กับ `/mapping/suggestions/<id>/approve`
 
-### Tables เพิ่มเติม (รวม ~ 60+ tables)
+### Tables เพิ่มเติม (รวม ~ 70+ tables)
 - **Audit/system**: `audit_log` (mig 023), `applied_migrations`, `import_log`, `users`
 - **Taxonomy**: `categories`, `color_finish_codes`, `product_attributes`, `product_brand_map`, `product_barcodes`
 - **Geography/sales rep**: `regions`, `salespersons`, `customer_regions`, `customers`, `suppliers`, `companies`
@@ -150,7 +173,10 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 - **Purchase orders**: `purchase_orders`, `purchase_order_lines`, `po_receipts`, `po_sequences`
 - **Express (Sendai Trading)**: `express_sales`, `express_ar_outstanding`, `express_credit_notes(_lines)`, `express_payments_in/out`, `express_payment_in_invoice_refs`, `express_payment_out_receive_refs`, `express_import_log`
 - **Ecommerce**: `ecommerce_listings`, `platform_skus`, `listing_bundles`
-- **Receivables/Payables**: `received_payments`, `paid_invoices`
+- **Receivables/Payables**: `received_payments`, `paid_invoices`; per-IV upsert via mig 058 (adds `received_payments.amount_applied` for per-invoice allocation); `credit_note_imports` (mig 059), `credit_note_amounts` (mig 062 — authoritative per-SR from ใบลดหนี้ master, replaces `sales_transactions.SR.net` for credit math), `sr_writeoffs` (mig 060)
+- **HR** (mig 054 — 9 tables): `employees`, `employee_salary_history`, `leave_types`, `employee_leave_entitlements`, `leave_requests`, `payroll_runs`, `payroll_items`, `hr_config`, `company_holidays`; `salary_advances` added mig 057
+- **Cashbook** (mig 055–056): `cashbook_accounts`, `cashbook_categories`, `cashbook_transactions` (`is_transfer` flag added mig 056)
+- **Unit aliases** (mig 064): `bsn_unit_alias` — normalizes Express unit strings before resolver matching
 - **Misc**: `expense_categories`, `expense_log`, `promotions`, `stock_levels`
 
 ## BSN Sync Logic
@@ -160,6 +186,16 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 - `_sync_bsn_to_stock()` สร้าง transaction IN (ซื้อ) / OUT (ขาย) แล้ว set synced_to_stock=1
 - `batch_id='history_import'` → IN+OUT pair (net=0) สำหรับข้อมูลก่อน cutoff 3/3/2569
 - redirect flow: import → mapping (ถ้า pending) → unit_conversions (ถ้า pending) → sales view
+
+## Recent business modules (mig 054–064, shipped May 2026)
+
+> ทั้งกลุ่มนี้เป็น **production code** ที่ระเบียบ ledger + reporting พึ่งพา. อย่าเสนอ rewrite/duplicate ก่อนอ่าน module CLAUDE-MD ใน blueprints/ แต่ละตัว.
+
+- **HR (Phase 1)** — `bp_hr` blueprint. SSO 5%, probation-raise next-full-month, เบี้ยขยัน auto-forfeit, manager=read-all/admin=write. Phase 4 `/accounting` NOT started.
+- **Cashbook** — `import_cashbook` (`/cashbook/import`, vat flag). Excel round-trip; NoVat imported, Vat workbook pending. Transfer-acct auto-detect via `is_transfer`. Re-importing Salary_Sheet overwrites employee nicknames → add override before frequent re-imports.
+- **Cash Flow + payments allocation** — `/cashflow` dashboard. `payments_alloc.py::allocate_fifo()` allocates received_payments oldest-first; legacy NULL allocations = fully-paid. Hook `cashflow.revenue_by_month` ready for Phase 3 Revenue dashboard (not yet built).
+- **Credit-note math** — `credit_note_amounts` is **authoritative**. Don't compute credit from `sales_transactions` SR rows (gross ≠ ใบลดหนี้ master). `collected = ΣIV(+) − ΣSR(−)` using authoritative CN amounts. `import_credit_notes.py` exists but UI route not wired (gap).
+- **Brand-kind unit-aware resolver** (mig 061–064, PR #29 merged) — product resolution must consider `brand_kind` + unit; pure `bsn_code` join overstates split-code lines. **Open: commission engine `_BASE_QUERY` still joins by `bsn_code` only** (GitHub issue #30 — money path, validate before merging).
 
 ## Routes (กลุ่มหลัก)
 
@@ -185,6 +221,12 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 
 **Express (Sendai Trading)**: `/express/{import,ar,ap}`, `/express/ar/customer/<code>`
 
+**HR** (blueprint `bp_hr`): `/hr/*` — employees, salary history, payroll runs, leave management
+
+**Cashbook**: `/cashbook`, `/cashbook/import` (vat / novat workbooks)
+
+**Cash Flow**: `/cashflow` (AR aging, allocations, payments-in dashboard)
+
 **Mobile** (blueprint `bp_mobile`, breakpoint 992px): `/m/*`
 
 ## สิ่งที่ต้องระวัง
@@ -200,20 +242,49 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 - **werkzeug BuildError** หลังเพิ่ม route ใหม่: restart server ด้วยมือทุกครั้ง — auto-reloader reload template ได้ แต่ URL map ใน memory ยังเก่า
 - **Auto-reloader double-startup**: ใช้ `use_reloader=False` ใน dev server config
 
-## Migrations recent
+## Migrations (latest: 064 — see `data/migrations/` for canonical files)
 
 | Mig | Date | What |
 |-----|------|------|
 | 023 | 2026-05-04 | audit_log + commission_overrides |
 | 024 | 2026-05-04 | listing_bundles |
 | 025 | 2026-05-05 | product_families + product_images + brands.short_code + products.family_id |
-| 026–032 | 2026-05-05 to 06 | brands/colors/packaging/typo cleanup rounds 1–4 + bronze color |
+| 026–032 | 2026-05-05/06 | brands/colors/packaging/typo cleanup rounds 1–4 + bronze color |
 | 033 | 2026-05-07 | products structured columns (series/model/size/color/packaging/condition/pack_variant) + products_full VIEW |
-| 034–035 | 2026-05-07 | colors round 5 + packaging extend |
-| 036 | 2026-05-07 | pending_product_suggestions |
-| 037 | 2026-05-07 | smart_mapping_extras |
+| 034–037 | 2026-05-07 | colors round 5, packaging extend, pending_product_suggestions, smart_mapping_extras |
+| 038 | 2026-05-08 | basic_color_codes |
+| 039 | 2026-05-17 | sku_codes_and_categories |
+| 040 | 2026-05-17 | categories_short_codes_and_new |
+| 041 | 2026-05-17 | more_broad_categories |
+| 042 | 2026-05-17 | color_variants_round6 |
+| 043 | 2026-05-17 | product_families_display_format |
+| 044 | 2026-05-17 | **drop_redundant_tables** (destructive — check before rerun) |
+| 045 | 2026-05-17 | brand "Jolan" |
+| 046 | 2026-05-17 | products.material column |
+| 047 | 2026-05-17 | reflective color codes |
+| 048 | 2026-05-17 | apparel categories |
+| 049 | 2026-05-17 | color codes round 7 |
+| 050 | 2026-05-17 | 3rd-party brands (batch 1) |
+| 051 | 2026-05-17 | sub_cat_short_code |
+| 052 | 2026-05-17 | 3rd-party brands (batch 2) |
+| 053 | 2026-05-17 | customer geo-map fields (gmap_lat/lng/place_id) |
+| **054** | 2026-05-18 | **HR module (9 tables) + bp_hr** |
+| **055** | 2026-05-18 | **Cashbook (accounts/categories/transactions)** |
+| 056 | 2026-05-18 | cashbook.is_transfer |
+| 057 | 2026-05-18 | salary_advances |
+| **058** | 2026-05-18 | **payment_amounts (per-IV allocation) → enables /cashflow** |
+| 059 | 2026-05-18 | credit_note_imports |
+| 060 | 2026-05-18 | sr_writeoffs |
+| 061 | 2026-05-19 | mapping_unit_aware (rebuilds product_code_mapping with unit awareness) |
+| **062** | 2026-05-19 | **credit_note_amounts (authoritative per-SR) → fixes ฿105k phantom-overpaid bug** |
+| 063 | 2026-05-20 | brand_kind_unit_aware_trigger |
+| 064 | 2026-05-20 | bsn_unit_alias + express_unit normalize enforced (PR #29 merged) |
 
 > Migration runner: `database.py::init_db()` reads `data/migrations/NNN_*.sql` + `.rollback.sql`. SHA256 + duration_ms recorded in `applied_migrations`. เพิ่ม migration ใหม่: เลข NNN ถัดไป → restart → รันอัตโนมัติ. Rollback: รัน `.rollback.sql` + DELETE จาก `applied_migrations` ด้วยมือ.
+>
+> **⚠ Applied migrations are immutable by default.** Fix bugs by writing a new forward migration with a higher NNN — that's the safe path that keeps prod/dev/restore environments in sync.
+>
+> **Escape hatch (rare):** runner is filename-keyed and does NOT re-check sha256, so in-place editing an already-applied mig is *technically possible* without bumping the number. Only acceptable when **all** of these hold: (1) edit is rerun-safe (idempotent), (2) the change hasn't been deployed to Railway yet, (3) no other dev/restore DB has the old filename in `applied_migrations`. Otherwise prod will silently keep the old SQL while fresh environments run the new SQL → schema drift. When in doubt, write a new mig.
 
 ## Auth + Deploy
 ดู `/erp-permissions` (role/POST whitelist) และ `/erp-deploy` (Railway env, DB sync flow). Production env vars: `SECRET_KEY` (rotated 2026-05-05), `ADMIN_PASSWORD`, `DATA_DIR=/data`. Bootstrap-only: `SKIP_DB_INIT`, `BOOTSTRAP_TOKEN` (unset หลัง first seed).
