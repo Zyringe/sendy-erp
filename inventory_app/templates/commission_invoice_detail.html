@@ -114,9 +114,9 @@
 
 <div class="text-subtle small mt-3 px-2">
   <i class="bi bi-info-circle"></i>
-  ถ้าระบบ classify "Brand" ผิด → กดปุ่ม
-  <i class="bi bi-pencil-square"></i> เพื่อไปหน้าสินค้า → แก้ยี่ห้อ →
-  รัน <code>scripts/load_brand_map.py /path/to/brand.csv</code>
-  เพื่อ refresh brand_kind cache (หรือลบและ import sales ใหม่ก็ได้)
+  ถ้า brand badge แสดงค่าผิด: เช็คว่า product นี้ map ถูกใน /mapping
+  หรือไม่ และ product.brand_id ตั้งค่าถูกต้องที่หน้า product detail หรือเปล่า
+  (brand_kind ดึงจาก brands.is_own_brand ตอน query — ไม่มี cache แล้ว
+  หลัง mig 068)
 </div>
 {% endblock %}
