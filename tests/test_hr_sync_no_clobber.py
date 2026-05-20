@@ -288,3 +288,119 @@ def test_re_import_idempotent_after_manual_clear(empty_db_conn):
     diffs = [w for w in result2["warnings"] if "DIFF" in w and "nickname" in w]
     assert len(diffs) == 1, \
         f"Expected exactly 1 nickname DIFF warning on pass 2, got: {diffs!r}"
+
+
+# ── Test 7 — advance unmatched when existing employee has NULL nickname ──────
+import datetime as _dt
+import openpyxl
+
+
+def _build_minimal_advance_test_wb(path, *, full_first, full_last,
+                                    sheet_nickname, advance_raw_name,
+                                    advance_amount=500.0):
+    """
+    Build the smallest workbook import_cashbook can process: 1 account with 1
+    transaction, Salary_Sheet with 1 employee, 1 advance row, minimal Setup +
+    Overview.
+    """
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    ws_ov = wb.create_sheet("Overview")
+    ws_ov.cell(row=3, column=2, value="รายรับ");  ws_ov.cell(row=3, column=3, value=1000.0)
+    ws_ov.cell(row=4, column=2, value="รายจ่าย"); ws_ov.cell(row=4, column=3, value=500.0)
+    ws_ov.cell(row=5, column=2, value="คงเหลือ"); ws_ov.cell(row=5, column=3, value=500.0)
+
+    ws = wb.create_sheet("Txn_MAIN")
+    for ci, h in enumerate(
+        ["วันที่", "ประเภท", "หมวดหมู่", "หมวดหมู่_ผู้ใช้",
+         "จำนวนเงิน", "รายละเอียด", "หมายเหตุ"], 1):
+        ws.cell(row=1, column=ci, value=h)
+    ws.cell(row=2, column=9, value="Bank");           ws.cell(row=2, column=10, value="KBank")
+    ws.cell(row=3, column=9, value="Account Number"); ws.cell(row=3, column=10, value="0000000000")
+    ws.cell(row=4, column=9, value="Name");           ws.cell(row=4, column=10, value="เจ้าของ")
+    ws.cell(row=2, column=1, value=_dt.datetime(2026, 4, 1))
+    ws.cell(row=2, column=2, value="รายรับ")
+    ws.cell(row=2, column=3, value="เงินฝาก")
+    ws.cell(row=2, column=5, value=1000.0)
+    ws.cell(row=3, column=1, value=_dt.datetime(2026, 4, 2))
+    ws.cell(row=3, column=2, value="รายจ่าย")
+    ws.cell(row=3, column=3, value="เงินเดือน")
+    ws.cell(row=3, column=5, value=500.0)
+
+    ws_sal = wb.create_sheet("Salary_Sheet")
+    ws_sal.cell(row=1, column=1, value="des")
+    for ci, h in enumerate(
+        ["", "ชื่อ", "นามสกุล", "ชื่อเล่น", "ธนาคาร", "เลขบัญชี",
+         "เงินเดือน", "หักประกันสังคม", "เงินเดือนสุทธิ", "is_active"], 1):
+        ws_sal.cell(row=2, column=ci, value=h)
+    ws_sal.cell(row=3, column=2, value=full_first)
+    ws_sal.cell(row=3, column=3, value=full_last)
+    ws_sal.cell(row=3, column=4, value=sheet_nickname)
+    ws_sal.cell(row=3, column=5, value=None)
+    ws_sal.cell(row=3, column=6, value=None)
+    ws_sal.cell(row=3, column=7, value=10000.0)
+    ws_sal.cell(row=3, column=8, value=500.0)
+    ws_sal.cell(row=3, column=9, value=9500.0)
+    ws_sal.cell(row=3, column=10, value=True)
+
+    ws_adv = wb.create_sheet("เบิกเงินล่วงหน้า")
+    ws_adv.cell(row=2, column=2, value="วันที่")
+    ws_adv.cell(row=2, column=3, value="ชื่อ")
+    ws_adv.cell(row=2, column=4, value="เบิกเงินล่วงหน้า")
+    ws_adv.cell(row=2, column=5, value="หมายเหตุ")
+    ws_adv.cell(row=3, column=2, value=_dt.datetime(2026, 4, 10))
+    ws_adv.cell(row=3, column=3, value=advance_raw_name)
+    ws_adv.cell(row=3, column=4, value=advance_amount)
+    ws_adv.cell(row=3, column=5, value=None)
+
+    ws_setup = wb.create_sheet("Setup")
+    ws_setup.cell(row=2, column=2, value="รายรับ")
+    ws_setup.cell(row=2, column=3, value="รายจ่าย")
+    ws_setup.cell(row=3, column=2, value="เงินฝาก")
+    ws_setup.cell(row=3, column=3, value="เงินเดือน")
+
+    wb.save(path)
+
+
+def test_advance_unmatched_when_existing_nickname_null(empty_db_conn, tmp_path):
+    """
+    Existing employee has full_name='ทดสอบ อิดิ' with nickname=NULL.
+    Sheet brings nickname='ทด' AND a salary advance with raw_name='ทด'.
+
+    Expected after import:
+      - employee row UNCHANGED (DB nickname still NULL)
+      - advance row inserted, but employee_id=NULL (raw_name preserved)
+      - DIFF warning for the nickname mismatch emitted
+    """
+    conn = empty_db_conn
+    # Seed employee with NULL nickname.
+    _seed_employee(conn, full_name="ทดสอบ อิดิ", nickname=None,
+                   emp_code="EMP010")
+
+    wb_path = str(tmp_path / "advance_unmatched.xlsx")
+    _build_minimal_advance_test_wb(
+        wb_path,
+        full_first="ทดสอบ", full_last="อิดิ",
+        sheet_nickname="ทด",
+        advance_raw_name="ทด",
+    )
+
+    ic.import_cashbook(wb_path, conn=conn)
+
+    # 1. Employee row unchanged.
+    db_nickname = conn.execute(
+        "SELECT nickname FROM employees WHERE emp_code='EMP010'"
+    ).fetchone()[0]
+    assert db_nickname is None, \
+        f"DB nickname must remain NULL after import, got {db_nickname!r}"
+
+    # 2. Advance row inserted, employee_id NULL, raw_name preserved.
+    adv_rows = conn.execute(
+        "SELECT employee_id, raw_name FROM salary_advances WHERE raw_name='ทด'"
+    ).fetchall()
+    assert len(adv_rows) == 1, \
+        f"Expected exactly 1 advance row with raw_name='ทด', got {adv_rows!r}"
+    assert adv_rows[0][0] is None, \
+        "Advance must be unmatched (employee_id=NULL) until nickname is set"
+    assert adv_rows[0][1] == "ทด"
