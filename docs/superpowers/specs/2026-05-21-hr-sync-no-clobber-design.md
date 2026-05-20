@@ -90,7 +90,45 @@ diff is the only thing that makes the warning actionable.
 
 The new-employee branch (`import_cashbook.py:318` onward) is unchanged.
 `_build_nickname_map()` and the `salary_advances` full-replace step
-(`import_cashbook.py:525-571`) are unchanged.
+(`import_cashbook.py:525-571`) are unchanged in code, but see "Knock-on
+effect on salary_advances matching" below.
+
+### Docstring update (in-scope)
+
+`sync_salary_sheet`'s docstring at `import_cashbook.py:236-242` claims
+`updated — list of emp_codes updated (nickname / bank filled)`. After this
+change, the existing-employee branch never appends to `result["updated"]`,
+so the list is permanently `[]` for that branch. The key itself stays
+(callers may do `.get("updated", [])`); update the docstring text to read
+`updated — list of emp_codes updated (always empty for existing employees
+under no-clobber rule; reserved for future use)`. No caller code changes —
+the dict shape is preserved.
+
+### Knock-on effect on salary_advances matching
+
+`import_cashbook.py:537-549` calls `_build_nickname_map(conn)` **after**
+`sync_salary_sheet` runs, then matches each advance's `raw_name` against
+that map. Today, when sync fills a NULL `employee.nickname` from the sheet,
+the advance lookup that follows can match it. Under Approach 1, sync no
+longer fills, so an advance whose `raw_name` would have matched a
+freshly-filled nickname becomes unmatched (`employee_id=None`,
+`adv_unmatched += 1`).
+
+This affects the motivating case directly: any advance with `raw_name='กี'`
+will not attach to กิติยา's row until her `employee.nickname` is populated
+in HR UI. The advance row still inserts (with `employee_id=NULL` and the
+raw_name preserved) — no data is lost, just unattributed.
+
+**Operator step (one-time, post-deploy):** for each employee whose nickname
+appears in the salary sheet but is NULL in DB, set the nickname via the HR
+UI before the next cashbook re-import. After that one fixup, the advance
+match is stable across re-imports. The DIFF warning emitted by the new
+sync surfaces exactly which (employee, nickname) pairs need this treatment.
+
+This is the same kind of one-time operator setup the rejected Approach 2
+required (re-clear-then-save to bootstrap a lock). Approach 1 trades
+"set up override locks" for "populate missing nicknames" — both are
+one-time, ~5 employees of friction.
 
 ### Why this fixes the motivating case
 
@@ -116,8 +154,9 @@ follow-up could group them under a separate result key. Not in scope here.
 
 ## Testing
 
-New file `tests/test_hr_sync_no_clobber.py`. Six cases — one regression
-guard, four behaviour assertions, one PII assertion:
+New file `tests/test_hr_sync_no_clobber.py`. Seven cases — one
+new-employee regression guard, four behaviour assertions, one PII
+assertion, one salary-advance knock-on regression guard:
 
 1. **`test_existing_employee_with_non_null_nickname_not_modified`** — Seed
    employee with `nickname='หลุย'`. Run `sync_salary_sheet` with a row whose
@@ -140,13 +179,26 @@ guard, four behaviour assertions, one PII assertion:
    same workbook. Assert: DB nickname still NULL after second run; diff
    warning emitted on second run.
 6. **`test_bank_account_no_diff_does_not_leak_raw_values`** — PII
-   regression. Seed employee with `bank_account_no='1234567890'`. Sheet
-   row carries `bank_account_no='9999999999'`. Run `sync_salary_sheet`.
-   Assert: a warning is emitted that contains `bank_account_no` and `DIFF`
-   AND `emp_code`; assert no warning string contains the substrings
-   `'1234567890'` or `'9999999999'`. This locks the masking behaviour so a
-   future refactor cannot regress to dumping raw account numbers into
-   `result["warnings"]`.
+   regression. Seed employee with `bank_account_no='1234567890'`, AND
+   seed `nickname` + `bank_name` to **match the sheet exactly** so they
+   produce no warning. Sheet row carries
+   `bank_account_no='9999999999'` (the only divergent field). Run
+   `sync_salary_sheet`. Assert: exactly one warning emitted; that warning
+   contains `bank_account_no`, `DIFF`, `emp_code`; that warning does NOT
+   contain `'1234567890'` or `'9999999999'`; and (defensive) no warning
+   string in the full result list contains either digit substring. This
+   locks masking behaviour so a future refactor cannot regress to dumping
+   raw account numbers into `result["warnings"]`. (Pre-matching nickname
+   and bank_name ensures the test passes for the right reason — bank_acct
+   diff isolated as the only candidate for leak.)
+7. **`test_advance_unmatched_when_existing_nickname_null`** — Knock-on
+   regression guard. Seed existing employee with `nickname=NULL`. Sheet
+   has `nickname='X'` plus a salary advance with `raw_name='X'`. Run full
+   `import_cashbook`. Assert: employee row unchanged (DB nickname still
+   NULL); advance row inserted with `employee_id=NULL`; DIFF warning for
+   the nickname mismatch is emitted. This documents the trade — the
+   advance is preserved, just unattributed until Put fills the nickname
+   in HR UI.
 
 Tests must use an isolated SQLite fixture (existing `conftest.py` pattern in
 `tests/`). No tests against `instance/inventory.db`.
@@ -154,7 +206,8 @@ Tests must use an isolated SQLite fixture (existing `conftest.py` pattern in
 ## Rollout
 
 1. Branch `fix/hr-sync-no-clobber` off `main`.
-2. Single PR containing the code change + 5 tests.
+2. Single PR containing the code change + 7 tests + docstring fix on
+   `sync_salary_sheet` (`import_cashbook.py:236-242`).
 3. Pre-merge gates: full `pytest` green, `codex:rescue` adversarial pass,
    `/scrutinize` review.
 4. Squash-merge to `main`; Railway auto-deploys via existing flow.
@@ -176,6 +229,18 @@ Tests must use an isolated SQLite fixture (existing `conftest.py` pattern in
 - **Operational risk:** Put must read the diff warnings in the import
   result if he wants to know about sheet-vs-DB mismatches. The flow is
   unchanged otherwise.
+- **Pre-existing matching edge case (not introduced here, but worth
+  flagging):** `sync_salary_sheet` matches existing employees by
+  `full_name`, falling back to `WHERE nickname=?` against the sheet's
+  nickname. If `full_name` doesn't match (typo, slight rename) AND the DB
+  employee's `nickname` is NULL, both lookups fail and the row falls
+  through to the new-employee INSERT path — creating a duplicate
+  employee. Approach 1 doesn't fix this and doesn't make it worse. Worth
+  knowing about when watching the post-deploy verification step.
+- **Salary-advance side effect (see "Knock-on effect" above):** the same
+  one-time operator step (populate missing nicknames in HR UI) needed to
+  silence DIFF warnings is also what keeps advances attributed. Documented
+  in the design above; test #7 locks the behaviour.
 
 ## Rejected alternatives (recorded for the next reviewer)
 
