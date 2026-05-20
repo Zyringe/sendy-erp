@@ -128,6 +128,37 @@ def test_login_template_renders_csrf_token(csrf_client):
     )
 
 
+def test_ajax_post_with_x_csrftoken_header_is_accepted(csrf_client):
+    """AJAX POST endpoints (e.g. /mapping/suggest, /customers/geocode) send
+    the token via X-CSRFToken header read from the base.html meta tag.
+
+    Verify Flask-WTF accepts the header-based token form, not just the
+    form-data field. base.html's csrf-token meta is the canonical source
+    for JS — break this and the mapping / geocode AJAX flows break.
+    """
+    client, flask_app = csrf_client
+    # Scrape token from meta tag rendered on an authenticated page.
+    resp = client.get('/unit-conversions')
+    assert resp.status_code == 200
+    import re
+    m = re.search(rb'<meta name="csrf-token" content="([^"]+)"', resp.data)
+    assert m, "base.html must include <meta name=csrf-token ...> for AJAX clients"
+    token = m.group(1).decode()
+
+    # Pick any POST route — /unit-conversions/save accepts simple form data.
+    # Send the token as a header, NOT in the body — mirrors the AJAX path.
+    resp = client.post(
+        '/unit-conversions/save',
+        headers={'X-CSRFToken': token},
+        data={'ratio_1_lng': '0'},  # no items saved
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302, (
+        f"Expected 302 redirect after valid X-CSRFToken header POST, "
+        f"got {resp.status_code}: {resp.data[:300]!r}"
+    )
+
+
 def test_bootstrap_upload_db_is_csrf_exempt(csrf_client):
     """/bootstrap/upload-db is gated by BOOTSTRAP_TOKEN env (no session),
     so it must be exempted from CSRF. Verify both that the exempt
