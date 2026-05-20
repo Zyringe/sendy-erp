@@ -1,4 +1,7 @@
 """
+DEPRECATED: one-off from 2026-04-28. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
 One-off re-import + stock baseline reset.
 
 Inputs (read-only):

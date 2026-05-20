@@ -1,4 +1,7 @@
-"""Apply reviewed per-unit mapping overrides (mig 061) + re-attribute and
+"""DEPRECATED: one-off from 2026-05-19. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Apply reviewed per-unit mapping overrides (mig 061) + re-attribute and
 re-sync the affected ledger rows.
 
 Input: the CSV produced by scripts/export_multiunit_candidates.py with

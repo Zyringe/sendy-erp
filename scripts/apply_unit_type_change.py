@@ -1,4 +1,7 @@
-"""Bucket D1 — change a product's base unit_type and convert its ledger.
+"""DEPRECATED: one-off from 2026-05-19. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Bucket D1 — change a product's base unit_type and convert its ledger.
 
 Reads the reviewed CSV. For decision text:
   "change the unit from <X> to <Y> then convert old stock by x<N>.

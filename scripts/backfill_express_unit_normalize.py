@@ -1,4 +1,7 @@
-"""One-time, idempotent backfill: normalize historical express_sales.unit.
+"""DEPRECATED: one-off from 2026-05-20. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+One-time, idempotent backfill: normalize historical express_sales.unit.
 
 Why: Express sales were imported with the RAW BSN unit acronym (e.g. 'กล')
 while product_code_mapping.bsn_unit is canonical (e.g. 'กล่อง'). The

@@ -1,4 +1,7 @@
-"""Bucket C+E — re-map bsn_code/bsn_unit to the product Put named in the
+"""DEPRECATED: one-off from 2026-05-19. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Bucket C+E — re-map bsn_code/bsn_unit to the product Put named in the
 review CSV (decision blank or '-', remap-target column filled), with
 unit_conversions ratio = 1. Both products stay active (split preserved).
 

@@ -1,4 +1,7 @@
-"""Rebuild the opening balance so stock at the BSN cutoff 3/3/2569
+"""DEPRECATED: one-off from 2026-05-18. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Rebuild the opening balance so stock at the BSN cutoff 3/3/2569
 (2026-03-03) equals the physical count in the Opening_Stock CSV.
 
 Why: the old opening balances were back-solved from `current − BSN history`

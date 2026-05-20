@@ -1,4 +1,7 @@
-"""Global BSN-unit acronym → full-Thai normalisation.
+"""DEPRECATED: one-off from 2026-05-19. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Global BSN-unit acronym → full-Thai normalisation.
 
 The 2026-05-18 stock_and_mapping apply only normalised the reviewed TRUE-row
 subset. ~1,569 unit_conversions rows + ~13k ledger rows still hold the

@@ -1,4 +1,7 @@
-"""Compensate opening-balance ADJUST records on 2024-01-03 to restore
+"""DEPRECATED: one-off from 2026-05-08. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Compensate opening-balance ADJUST records on 2024-01-03 to restore
 stock_levels to the state captured in a backup, AFTER a sync flush
 created new BSN transactions that revealed unit/data gaps.
 

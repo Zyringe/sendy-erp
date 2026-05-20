@@ -1,4 +1,7 @@
-"""Bucket B — apply Put's reviewed `decision` ratios to unit_conversions.
+"""DEPRECATED: one-off from 2026-05-19. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Bucket B — apply Put's reviewed `decision` ratios to unit_conversions.
 
 Reads the reviewed stock_mapping_suggested CSV. For every row whose
 `decision` is numeric AND the remap column is blank or '-', upsert

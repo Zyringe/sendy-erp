@@ -1,4 +1,7 @@
-"""Strict brand backfill: SET products.brand_id WHERE NULL and brand name
+"""DEPRECATED: one-off from 2026-05-08. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Strict brand backfill: SET products.brand_id WHERE NULL and brand name
 appears in product_name as a standalone word (\\b token \\b regex).
 
 Stricter than brand_backfill_suggest.py — uses word-boundary matching to

@@ -1,4 +1,7 @@
 """
+DEPRECATED: one-off from 2026-05-17. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
 Apply mapping + compute platform stock from product_platform_overview CSV.
 
 CSV: $SENDY_INPUT_DIR/product_platform_overview_*.csv (defaults to ~/Downloads)

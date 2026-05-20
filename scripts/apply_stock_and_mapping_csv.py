@@ -1,4 +1,7 @@
-"""Apply reviewed BSN mapping + unit conversions + re-sync stock from the
+"""DEPRECATED: one-off from 2026-05-18. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Apply reviewed BSN mapping + unit conversions + re-sync stock from the
 stock_and_mapping review CSV (the export from export_product_query.py + a
 hand-added `Checked` column).
 

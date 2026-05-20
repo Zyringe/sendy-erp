@@ -1,4 +1,7 @@
 """
+DEPRECATED: one-off from 2026-05-04. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
 Apply: replay BSN history into transactions ledger on PRODUCTION.
 
 Same logic as replay_history_dry_run.py + safety:

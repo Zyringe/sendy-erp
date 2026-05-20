@@ -1,4 +1,7 @@
-"""One-shot: mark every commission for INVOICES issued BEFORE 2026-02 as paid.
+"""DEPRECATED: one-off from 2026-05-02. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+One-shot: mark every commission for INVOICES issued BEFORE 2026-02 as paid.
 
 Per Put 2026-05-02: "commission ที่จ่ายแล้วที่เป็นเลขที่เอกสารตั้งแต่ก่อน
 เดือน 2 ปี 69 ให้ถือว่าจ่ายแล้วทั้งหมด".

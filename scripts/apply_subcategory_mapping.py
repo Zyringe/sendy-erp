@@ -1,4 +1,7 @@
-"""Apply broad-category mapping from subcategory_mapping_review.csv to
+"""DEPRECATED: one-off from 2026-05-08. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Apply broad-category mapping from subcategory_mapping_review.csv to
 products.category_id, plus add any user-proposed new broad categories.
 
 Resolution rules per CSV row (one row per distinct sub_category):

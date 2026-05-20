@@ -1,4 +1,7 @@
-"""Rebuild the opening balance v2 — three buckets, all driven from the
+"""DEPRECATED: one-off from 2026-05-18. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
+Rebuild the opening balance v2 — three buckets, all driven from the
 opening ADJUST @2024-01-03 (3/1/2567) so stock at the BSN cutoff 3/3/2569
 (2026-03-03) hits the right target. Post-cutoff real movements carry forward.
 

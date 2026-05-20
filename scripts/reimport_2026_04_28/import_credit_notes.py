@@ -1,4 +1,7 @@
 """
+DEPRECATED: one-off from 2026-04-28. Kept for audit trail. Do not re-run;
+if a similar fix is needed, write a new dated script.
+
 Idempotent re-import of BSN credit notes (ใบลดหนี้ / SR rows) into sales_transactions.
 
 Source:
