@@ -1,0 +1,154 @@
+{% extends 'base.html' %}
+{% block title %}ตามทวงหนี้ – Sendy{% endblock %}
+{% block page_title %}ตามทวงหนี้ลูกค้า (AR Follow-up){% endblock %}
+
+{% block content %}
+
+<div class="alert alert-secondary py-2 mb-3 small">
+  <i class="bi bi-info-circle me-1"></i>
+  ข้อมูลจาก settlement engine (VAT-aware, credit-note-netted) ของ BSN
+  &nbsp;·&nbsp; เรียงตามยอดค้างมากสุด &nbsp;·&nbsp; <a href="{{ url_for('ar_followup_export') }}">ดาวน์โหลด CSV</a>
+</div>
+
+{# ── KPI: aging bucket cards ────────────────────────────────────────────── #}
+<div class="row g-2 mb-3">
+  {% for b in aging.buckets %}
+  <div class="col-6 col-md-3">
+    <a href="?bucket={{ b.label }}" class="text-decoration-none">
+    <div class="stat-card {% if bucket == b.label %}border-primary{% endif %}">
+      <div class="text-subtle small">{{ b.label }} วัน</div>
+      <div class="fs-5 fw-bold">฿{{ '{:,.0f}'.format(b.amount) }}</div>
+      <div class="small text-subtle">{{ b.count }} ใบ</div>
+    </div>
+    </a>
+  </div>
+  {% endfor %}
+</div>
+<div class="d-flex justify-content-between align-items-end mb-3">
+  <div>
+    <span class="text-subtle small">รวมค้างทั้งหมด:</span>
+    <strong class="fs-5">฿{{ '{:,.2f}'.format(aging.total_outstanding) }}</strong>
+  </div>
+  <div class="small text-subtle">ณ {{ aging.as_of }}</div>
+</div>
+
+{# ── Overdue alerts ─────────────────────────────────────────────────────── #}
+{% if overdue %}
+<div class="alert alert-warning py-2 small">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  <strong>{{ overdue|length }} รายการนัดติดตามเกินกำหนด</strong>:
+  {% for o in overdue[:5] %}
+    <a href="{{ url_for('ar_followup_customer', customer_name=o.customer) }}">{{ o.customer }}</a> ({{ o.next_action_date }}){% if not loop.last %}, {% endif %}
+  {% endfor %}
+  {% if overdue|length > 5 %}+ อีก {{ overdue|length - 5 }} ราย{% endif %}
+</div>
+{% endif %}
+
+{# ── Filter bar ─────────────────────────────────────────────────────────── #}
+<form method="get" class="card mb-3">
+  <div class="card-body py-2">
+    <div class="row g-2 align-items-end">
+      <div class="col-md-3">
+        <label class="form-label small mb-1">ค้นหาลูกค้า</label>
+        <input type="text" name="q" value="{{ search }}" class="form-control form-control-sm" placeholder="ชื่อหรือรหัส">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small mb-1">Bucket</label>
+        <select name="bucket" class="form-select form-select-sm">
+          <option value="">ทั้งหมด</option>
+          {% for b in ['0-30','31-60','61-90','90+'] %}
+          <option value="{{ b }}" {% if bucket == b %}selected{% endif %}>{{ b }} วัน</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small mb-1">ยอดขั้นต่ำ (฿)</label>
+        <input type="text" name="min" value="{{ min_str }}" class="form-control form-control-sm" placeholder="เช่น 1000">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small mb-1">เรียงตาม</label>
+        <select name="sort" class="form-select form-select-sm">
+          <option value="outstanding" {% if sort=='outstanding' %}selected{% endif %}>ยอดค้าง</option>
+          <option value="age" {% if sort=='age' %}selected{% endif %}>อายุสูงสุด</option>
+          <option value="count" {% if sort=='count' %}selected{% endif %}>จำนวนใบ</option>
+        </select>
+      </div>
+      <div class="col-md-3 d-flex gap-2">
+        <button type="submit" class="btn btn-sm btn-primary">กรอง</button>
+        <a href="{{ url_for('ar_followup') }}" class="btn btn-sm btn-outline-secondary">ล้าง</a>
+      </div>
+    </div>
+  </div>
+</form>
+
+{# ── Ranking table ──────────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0 align-middle">
+        <thead class="table-light">
+          <tr>
+            <th>ลูกค้า</th>
+            <th class="text-end">ยอดค้างรวม</th>
+            <th class="text-end">#ใบ</th>
+            <th class="text-end">อายุสูงสุด</th>
+            <th class="text-end">0-30</th>
+            <th class="text-end">31-60</th>
+            <th class="text-end">61-90</th>
+            <th class="text-end text-danger">90+</th>
+            <th>ติดตามล่าสุด</th>
+            <th>ผล</th>
+            <th>นัดต่อไป</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td>
+              <a href="{{ url_for('ar_followup_customer', customer_name=r.customer) }}">
+                <strong>{{ r.customer }}</strong>
+              </a>
+              {% if r.customer_code %}<span class="text-subtle small">[{{ r.customer_code }}]</span>{% endif %}
+            </td>
+            <td class="text-end fw-bold">฿{{ '{:,.0f}'.format(r.outstanding) }}</td>
+            <td class="text-end">{{ r.invoice_count }}</td>
+            <td class="text-end">
+              {% if r.oldest_age_days > 90 %}<span class="badge bg-danger">{{ r.oldest_age_days }}d</span>
+              {% elif r.oldest_age_days > 60 %}<span class="badge bg-warning text-dark">{{ r.oldest_age_days }}d</span>
+              {% else %}{{ r.oldest_age_days }}d{% endif %}
+            </td>
+            <td class="text-end small">{% if r.age_buckets['0-30'] %}฿{{ '{:,.0f}'.format(r.age_buckets['0-30']) }}{% else %}<span class="text-subtle">–</span>{% endif %}</td>
+            <td class="text-end small">{% if r.age_buckets['31-60'] %}฿{{ '{:,.0f}'.format(r.age_buckets['31-60']) }}{% else %}<span class="text-subtle">–</span>{% endif %}</td>
+            <td class="text-end small">{% if r.age_buckets['61-90'] %}฿{{ '{:,.0f}'.format(r.age_buckets['61-90']) }}{% else %}<span class="text-subtle">–</span>{% endif %}</td>
+            <td class="text-end small">{% if r.age_buckets['90+'] %}<span class="text-danger fw-bold">฿{{ '{:,.0f}'.format(r.age_buckets['90+']) }}</span>{% else %}<span class="text-subtle">–</span>{% endif %}</td>
+            <td class="small">{{ r.last_log_date or '—' }}</td>
+            <td class="small">
+              {% set rmap = {'promised':'นัดจ่าย','partial_paid':'จ่ายบางส่วน','paid_full':'จ่ายครบ','denied':'ปฏิเสธ','no_answer':'ไม่รับ','wrong_number':'เลขผิด','closed':'ปิดบัญชี','snooze':'พัก','other':'อื่นๆ'} %}
+              {{ rmap.get(r.last_log_result, '—') }}
+            </td>
+            <td class="small">
+              {% if r.next_action_date %}
+                {% if r.next_action_date <= aging.as_of %}<span class="text-danger fw-bold">{{ r.next_action_date }}</span>{% else %}{{ r.next_action_date }}{% endif %}
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="11" class="text-center text-subtle py-4">ไม่พบลูกค้าตามเงื่อนไข</td></tr>
+          {% endfor %}
+        </tbody>
+        {% if rows %}
+        <tfoot>
+          <tr class="table-light fw-bold">
+            <td>รวม {{ rows|length }} ลูกค้า</td>
+            <td class="text-end">฿{{ '{:,.0f}'.format(rows | sum(attribute='outstanding')) }}</td>
+            <td class="text-end">{{ rows | sum(attribute='invoice_count') }}</td>
+            <td colspan="8"></td>
+          </tr>
+        </tfoot>
+        {% endif %}
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

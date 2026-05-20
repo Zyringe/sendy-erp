@@ -1,0 +1,215 @@
+{% extends 'base.html' %}
+{% block title %}ตามทวง: {{ customer_name }} – Sendy{% endblock %}
+{% block page_title %}ตามทวง: {{ customer_name }}{% endblock %}
+
+{% block content %}
+
+<div class="mb-3">
+  <a href="{{ url_for('ar_followup') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left"></i> กลับรายการ
+  </a>
+  {% if customer_code %}<span class="text-subtle small ms-2">รหัส [{{ customer_code }}]</span>{% endif %}
+</div>
+
+{# ── Summary card ───────────────────────────────────────────────────────── #}
+<div class="row g-3 mb-3">
+  <div class="col-md-4">
+    <div class="stat-card">
+      <div class="text-subtle small">ยอดค้างรวม</div>
+      <div class="fs-4 fw-bold">฿{{ '{:,.2f}'.format(total_outstanding) }}</div>
+      <div class="small text-subtle">{{ invoices|length }} ใบ</div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="stat-card">
+      <div class="text-subtle small">จำนวนครั้งที่ติดตาม</div>
+      <div class="fs-4 fw-bold">{{ followups|length }}</div>
+      <div class="small text-subtle">{% if followups %}ล่าสุด {{ followups[0].log_date }}{% else %}ยังไม่ได้ติดตาม{% endif %}</div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="stat-card">
+      <div class="text-subtle small">นัดติดตามถัดไป</div>
+      {% set next = followups|selectattr('next_action_date')|list %}
+      <div class="fs-4 fw-bold">
+        {% if next %}{{ next[0].next_action_date }}{% else %}—{% endif %}
+      </div>
+      <div class="small text-subtle">{% if next %}{{ next[0].notes or '' }}{% endif %}</div>
+    </div>
+  </div>
+</div>
+
+{# ── Add outreach form (admin only) ─────────────────────────────────────── #}
+{% if is_admin %}
+<div class="card mb-3">
+  <div class="card-header py-2"><strong>บันทึกการติดตามใหม่</strong></div>
+  <div class="card-body py-3">
+    <form method="post" action="{{ url_for('ar_followup_log_new') }}">
+      <input type="hidden" name="customer" value="{{ customer_name }}">
+      <input type="hidden" name="customer_code" value="{{ customer_code or '' }}">
+      <div class="row g-2">
+        <div class="col-md-2">
+          <label class="form-label small mb-1">วันที่</label>
+          <input type="date" name="log_date" value="{{ today }}" class="form-control form-control-sm" required>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label small mb-1">ช่อง</label>
+          <select name="channel" class="form-select form-select-sm" required>
+            <option value="phone">โทร</option>
+            <option value="line">LINE</option>
+            <option value="sms">SMS</option>
+            <option value="email">Email</option>
+            <option value="visit">ไปทวง</option>
+            <option value="other">อื่นๆ</option>
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label small mb-1">ผล</label>
+          <select name="result" class="form-select form-select-sm" required>
+            <option value="promised">นัดจ่าย</option>
+            <option value="partial_paid">จ่ายบางส่วน</option>
+            <option value="paid_full">จ่ายครบ</option>
+            <option value="no_answer">ไม่รับ</option>
+            <option value="denied">ปฏิเสธ</option>
+            <option value="wrong_number">เลขผิด</option>
+            <option value="snooze">พักไว้ก่อน</option>
+            <option value="closed">ปิดบัญชี</option>
+            <option value="other">อื่นๆ</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small mb-1">คุยกับใคร</label>
+          <input type="text" name="contact_person" class="form-control form-control-sm" placeholder="ชื่อผู้รับสาย">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small mb-1">ยอดที่นัดจ่าย (฿)</label>
+          <input type="text" name="promised_amount" class="form-control form-control-sm" placeholder="เช่น 10000">
+        </div>
+
+        <div class="col-md-3">
+          <label class="form-label small mb-1">วันที่นัดจ่าย</label>
+          <input type="date" name="promised_date" class="form-control form-control-sm">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small mb-1">นัดติดตามอีกครั้ง</label>
+          <input type="date" name="next_action_date" class="form-control form-control-sm">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small mb-1">บันทึก</label>
+          <input type="text" name="notes" class="form-control form-control-sm" placeholder="รายละเอียดการคุย">
+        </div>
+
+        <div class="col-12">
+          <button type="submit" class="btn btn-primary btn-sm">บันทึก</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{# ── Outstanding invoices ──────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-header py-2"><strong>ใบที่ค้างอยู่</strong></div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 align-middle">
+        <thead class="table-light">
+          <tr>
+            <th>วันที่</th>
+            <th>เลขที่</th>
+            <th>VAT</th>
+            <th class="text-end">เรียกเก็บ</th>
+            <th class="text-end">CN</th>
+            <th class="text-end">รับแล้ว</th>
+            <th class="text-end">ค้าง</th>
+            <th class="text-end">อายุ</th>
+            <th>สถานะ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for inv in invoices %}
+          <tr>
+            <td class="small">{{ inv.invoice_date or '—' }}</td>
+            <td><a href="{{ url_for('sales_doc', doc_base=inv.doc_base) }}">{{ inv.doc_base }}</a></td>
+            <td class="small">
+              {% if inv.vat_type == 2 %}<span class="badge bg-warning text-dark">แยก VAT</span>
+              {% elif inv.vat_type == 0 %}<span class="badge bg-secondary">ยกเว้น</span>
+              {% else %}<span class="text-subtle">รวม</span>{% endif %}
+            </td>
+            <td class="text-end">฿{{ '{:,.2f}'.format(inv.billed) }}</td>
+            <td class="text-end">{% if inv.credit_notes %}฿{{ '{:,.2f}'.format(inv.credit_notes) }}{% else %}<span class="text-subtle">–</span>{% endif %}</td>
+            <td class="text-end">{% if inv.collected %}฿{{ '{:,.2f}'.format(inv.collected) }}{% else %}<span class="text-subtle">–</span>{% endif %}</td>
+            <td class="text-end fw-bold">฿{{ '{:,.2f}'.format(inv.outstanding) }}</td>
+            <td class="text-end">
+              {% if inv.age_days and inv.age_days > 90 %}<span class="badge bg-danger">{{ inv.age_days }}d</span>
+              {% elif inv.age_days and inv.age_days > 60 %}<span class="badge bg-warning text-dark">{{ inv.age_days }}d</span>
+              {% else %}{{ inv.age_days or '—' }}d{% endif %}
+            </td>
+            <td class="small">{{ inv.status }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="9" class="text-center text-subtle py-4">ไม่มีบิลค้าง</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{# ── Outreach history ───────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-header py-2"><strong>ประวัติการติดตาม</strong> ({{ followups|length }})</div>
+  <div class="card-body p-0">
+    {% if followups %}
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 align-middle">
+        <thead class="table-light">
+          <tr>
+            <th>วันที่</th>
+            <th>ช่อง</th>
+            <th>ผล</th>
+            <th>คุยกับ</th>
+            <th class="text-end">นัดจ่าย</th>
+            <th>วันที่นัด</th>
+            <th>นัดติดตามอีก</th>
+            <th>บันทึก</th>
+            <th>โดย</th>
+            {% if is_admin %}<th></th>{% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% set channel_map = {'phone':'โทร','line':'LINE','sms':'SMS','email':'Email','visit':'ไปทวง','other':'อื่นๆ'} %}
+          {% set result_map = {'promised':'นัดจ่าย','partial_paid':'จ่ายบางส่วน','paid_full':'จ่ายครบ','denied':'ปฏิเสธ','no_answer':'ไม่รับ','wrong_number':'เลขผิด','closed':'ปิดบัญชี','snooze':'พักไว้','other':'อื่นๆ'} %}
+          {% for f in followups %}
+          <tr>
+            <td class="small">{{ f.log_date }}</td>
+            <td class="small">{{ channel_map.get(f.channel, f.channel) }}</td>
+            <td class="small">{{ result_map.get(f.result, f.result) }}</td>
+            <td class="small">{{ f.contact_person or '—' }}</td>
+            <td class="text-end small">{% if f.promised_amount %}฿{{ '{:,.2f}'.format(f.promised_amount) }}{% else %}<span class="text-subtle">–</span>{% endif %}</td>
+            <td class="small">{{ f.promised_date or '—' }}</td>
+            <td class="small">{{ f.next_action_date or '—' }}</td>
+            <td class="small">{{ f.notes or '—' }}</td>
+            <td class="small text-subtle">{{ f.created_by }}</td>
+            {% if is_admin %}
+            <td class="text-end">
+              <form method="post" action="{{ url_for('ar_followup_log_delete', log_id=f.id) }}"
+                    onsubmit="return confirm('ลบรายการนี้?');" class="d-inline">
+                <input type="hidden" name="customer" value="{{ customer_name }}">
+                <button type="submit" class="btn btn-sm btn-link text-danger p-0">ลบ</button>
+              </form>
+            </td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="text-center text-subtle py-4">ยังไม่ได้ติดตาม</div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

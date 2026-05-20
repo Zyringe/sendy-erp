@@ -28,6 +28,7 @@ from blueprints.hr import bp_hr
 from blueprints.cashbook import bp_cashbook
 import cashflow as cf_mod
 import revenue as rev_mod
+import ar_followup as arf_mod
 
 app = Flask(__name__)
 # Honor X-Forwarded-Proto/Host from Railway's edge so url_for and post-login
@@ -217,6 +218,12 @@ _ENDPOINT_MODULE = {
     'accounting_summary': 'accounting',
     'cashflow_dashboard': 'accounting',
     'revenue_dashboard': 'accounting',
+    'ar_followup': 'accounting',
+    'ar_followup_customer': 'accounting',
+    'ar_followup_log_new': 'accounting',
+    'ar_followup_log_edit': 'accounting',
+    'ar_followup_log_delete': 'accounting',
+    'ar_followup_export': 'accounting',
     'trade_dashboard': 'accounting',
     'sales_view': 'accounting',
     'sales_doc': 'accounting',
@@ -3316,6 +3323,224 @@ def revenue_dashboard():
         date_from=date_from,
         date_to=date_to,
     )
+
+
+# ── AR Follow-up workspace ───────────────────────────────────────────────────
+
+def _arf_require_manager():
+    if session.get('role') not in ('admin', 'manager'):
+        flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
+        return redirect(url_for('dashboard'))
+    return None
+
+
+def _arf_require_admin():
+    if session.get('role') != 'admin':
+        flash('ต้องใช้บัญชี Admin', 'danger')
+        return redirect(url_for('ar_followup'))
+    return None
+
+
+@app.route('/accounting/ar-followup')
+def ar_followup():
+    """Ranked AR follow-up workspace.
+
+    Filters (query params):
+      ?bucket=0-30|31-60|61-90|90+   — only show customers with $$ in that bucket
+      ?min=<฿>                       — min outstanding per customer
+      ?q=<text>                      — case-insensitive customer-name search
+      ?sort=outstanding|age|count    — default outstanding
+    """
+    redirect_ = _arf_require_manager()
+    if redirect_:
+        return redirect_
+
+    bucket   = request.args.get('bucket', '').strip()
+    min_str  = request.args.get('min', '').strip()
+    search   = request.args.get('q', '').strip()
+    sort     = request.args.get('sort', 'outstanding')
+
+    try:
+        min_amt = float(min_str.replace(',', '')) if min_str else 0.0
+    except ValueError:
+        min_amt = 0.0
+
+    rows = arf_mod.customer_ranking(min_outstanding=min_amt)
+
+    if bucket in ('0-30', '31-60', '61-90', '90+'):
+        rows = [r for r in rows if r['age_buckets'].get(bucket, 0) > 0]
+    if search:
+        s = search.lower()
+        rows = [r for r in rows if s in (r['customer'] or '').lower()
+                                or s in (r.get('customer_code') or '').lower()]
+    if sort == 'age':
+        rows.sort(key=lambda r: -r['oldest_age_days'])
+    elif sort == 'count':
+        rows.sort(key=lambda r: -r['invoice_count'])
+    # else: already sorted by outstanding DESC
+
+    aging = cf_mod.ar_aging()
+    overdue = arf_mod.list_overdue_followups()
+
+    return render_template(
+        'ar_followup.html',
+        rows=rows,
+        aging=aging,
+        overdue=overdue,
+        bucket=bucket,
+        min_str=min_str,
+        search=search,
+        sort=sort,
+    )
+
+
+@app.route('/accounting/ar-followup/customer/<path:customer_name>')
+def ar_followup_customer(customer_name):
+    redirect_ = _arf_require_manager()
+    if redirect_:
+        return redirect_
+
+    invoices = arf_mod.get_customer_ar_detail(customer=customer_name)
+    followups = arf_mod.get_customer_followups(customer=customer_name)
+    total_outstanding = round(sum(i['outstanding'] for i in invoices), 2)
+    # Customer code from any invoice (they should all match).
+    customer_code = invoices[0]['customer_code'] if invoices else None
+
+    return render_template(
+        'ar_followup_detail.html',
+        customer_name=customer_name,
+        customer_code=customer_code,
+        invoices=invoices,
+        followups=followups,
+        total_outstanding=total_outstanding,
+        today=date.today().isoformat(),
+    )
+
+
+@app.route('/accounting/ar-followup/log/new', methods=['POST'])
+def ar_followup_log_new():
+    redirect_ = _arf_require_admin()
+    if redirect_:
+        return redirect_
+
+    customer = request.form.get('customer', '').strip()
+    if not customer:
+        flash('ระบุชื่อลูกค้าไม่ถูกต้อง', 'danger')
+        return redirect(url_for('ar_followup'))
+
+    def _f(name):
+        v = request.form.get(name, '').strip()
+        return v or None
+
+    promised_amount = _f('promised_amount')
+    try:
+        promised_amount = float(promised_amount.replace(',', '')) if promised_amount else None
+    except ValueError:
+        promised_amount = None
+
+    try:
+        arf_mod.log_outreach(
+            customer=customer,
+            customer_code=_f('customer_code'),
+            log_date=_f('log_date') or date.today().isoformat(),
+            channel=request.form.get('channel', 'phone'),
+            contact_person=_f('contact_person'),
+            result=request.form.get('result', 'other'),
+            promised_amount=promised_amount,
+            promised_date=_f('promised_date'),
+            next_action_date=_f('next_action_date'),
+            notes=_f('notes'),
+            created_by=session.get('display_name') or session.get('role') or 'admin',
+        )
+        flash('บันทึกการติดตามแล้ว', 'success')
+    except sqlite3.IntegrityError as e:
+        flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
+
+    return redirect(url_for('ar_followup_customer', customer_name=customer))
+
+
+@app.route('/accounting/ar-followup/log/<int:log_id>/edit', methods=['POST'])
+def ar_followup_log_edit(log_id):
+    redirect_ = _arf_require_admin()
+    if redirect_:
+        return redirect_
+
+    customer = request.form.get('customer', '').strip()
+    def _f(name):
+        v = request.form.get(name, '').strip()
+        return v or None
+
+    promised_amount = _f('promised_amount')
+    try:
+        promised_amount = float(promised_amount.replace(',', '')) if promised_amount else None
+    except ValueError:
+        promised_amount = None
+
+    try:
+        arf_mod.update_outreach(
+            log_id=log_id,
+            log_date=_f('log_date'),
+            channel=_f('channel'),
+            contact_person=_f('contact_person'),
+            result=_f('result'),
+            promised_amount=promised_amount,
+            promised_date=_f('promised_date'),
+            next_action_date=_f('next_action_date'),
+            notes=_f('notes'),
+        )
+        flash('อัปเดตแล้ว', 'success')
+    except sqlite3.IntegrityError as e:
+        flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
+
+    if customer:
+        return redirect(url_for('ar_followup_customer', customer_name=customer))
+    return redirect(url_for('ar_followup'))
+
+
+@app.route('/accounting/ar-followup/log/<int:log_id>/delete', methods=['POST'])
+def ar_followup_log_delete(log_id):
+    redirect_ = _arf_require_admin()
+    if redirect_:
+        return redirect_
+
+    customer = request.form.get('customer', '').strip()
+    arf_mod.delete_outreach(log_id=log_id)
+    flash('ลบรายการแล้ว', 'success')
+    if customer:
+        return redirect(url_for('ar_followup_customer', customer_name=customer))
+    return redirect(url_for('ar_followup'))
+
+
+@app.route('/accounting/ar-followup/export.csv')
+def ar_followup_export():
+    redirect_ = _arf_require_manager()
+    if redirect_:
+        return redirect_
+
+    rows = arf_mod.customer_ranking()
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    buf.write('﻿')  # BOM so Excel reads UTF-8 Thai correctly
+    w = _csv.writer(buf)
+    w.writerow(['ลูกค้า', 'รหัส', '#ใบ', 'ยอดค้างรวม',
+                'อายุสูงสุด(วัน)', '0-30', '31-60', '61-90', '90+',
+                'ติดตามล่าสุด', 'ผลล่าสุด', 'นัดหมายถัดไป'])
+    for r in rows:
+        b = r['age_buckets']
+        w.writerow([r['customer'], r.get('customer_code') or '',
+                    r['invoice_count'], f'{r["outstanding"]:.2f}',
+                    r['oldest_age_days'],
+                    f'{b["0-30"]:.2f}', f'{b["31-60"]:.2f}',
+                    f'{b["61-90"]:.2f}', f'{b["90+"]:.2f}',
+                    r.get('last_log_date') or '',
+                    r.get('last_log_result') or '',
+                    r.get('next_action_date') or ''])
+
+    from flask import Response
+    fname = f'ar_followup_{date.today().strftime("%Y%m%d")}.csv'
+    return Response(buf.getvalue().encode('utf-8'), mimetype='text/csv',
+                    headers={'Content-Disposition': f'attachment; filename={fname}'})
 
 
 if __name__ == '__main__':
