@@ -103,9 +103,14 @@
   <div class="card-header d-flex justify-content-between align-items-center">
     <span><i class="bi bi-receipt me-2 text-accent"></i>รายการบิล ({{ '{:,}'.format(total) }} รายการ)</span>
     {% if is_admin %}
-    <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#importModal">
-      <i class="bi bi-upload me-1"></i>อัปเดตข้อมูลชำระหนี้
-    </button>
+    <div class="d-flex gap-2">
+      <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#importModal">
+        <i class="bi bi-upload me-1"></i>อัปเดตข้อมูลชำระหนี้
+      </button>
+      <button class="btn btn-sm btn-outline-warning" data-bs-toggle="modal" data-bs-target="#importCnModal">
+        <i class="bi bi-arrow-counterclockwise me-1"></i>อัปเดตใบลดหนี้
+      </button>
+    </div>
     {% endif %}
   </div>
 
@@ -217,6 +222,36 @@
           <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
           <button type="submit" class="btn btn-primary btn-sm">
             <i class="bi bi-cloud-upload me-1"></i>นำเข้า
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+{# ── CN Import Modal (preview-first) ───────────────────────────────────── #}
+<div class="modal fade" id="importCnModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">
+          <i class="bi bi-arrow-counterclockwise me-2"></i>อัปเดตใบลดหนี้ (Credit Notes)
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" action="{{ url_for('import_credit_notes_preview') }}" enctype="multipart/form-data">
+        <div class="modal-body">
+          <p class="small text-subtle mb-3">
+            อัปโหลดไฟล์ <strong>ใบลดหนี้_&lt;date&gt;</strong> จากระบบ BSN (.csv, encoding CP874)<br>
+            ระบบจะ <strong>ตรวจสอบก่อน</strong> แล้วโชว์ผลกระทบให้ดู (เพิ่มใหม่ / เปลี่ยน / เท่าเดิม)<br>
+            ยังไม่บันทึก — กดยืนยันในหน้าถัดไป
+          </p>
+          <input type="file" name="cn_file" class="form-control" accept=".csv" required>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
+          <button type="submit" class="btn btn-warning btn-sm">
+            <i class="bi bi-search me-1"></i>ตรวจสอบ
           </button>
         </div>
       </form>
