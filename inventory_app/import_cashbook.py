@@ -280,39 +280,32 @@ def sync_salary_sheet(parsed, conn):
             ).fetchone()
 
         if emp_row is not None:
-            # ── Existing employee — limited update (HARD CONSTRAINT) ──────────
-            eid       = emp_row[0]
-            emp_code  = emp_row[1]
-            changed   = False
-
-            # Fill nickname if currently NULL/blank
-            if nickname and not emp_row[2]:
-                conn.execute(
-                    "UPDATE employees SET nickname=?, updated_at=datetime('now','localtime') WHERE id=?",
-                    (nickname, eid),
-                )
-                changed = True
-
-            # Fill bank_* only if currently NULL
-            if bank and not emp_row[3]:
-                conn.execute(
-                    "UPDATE employees SET bank_name=?, updated_at=datetime('now','localtime') WHERE id=?",
-                    (bank, eid),
-                )
-                changed = True
-            if bank_acct and not emp_row[4]:
-                conn.execute(
-                    "UPDATE employees SET bank_account_no=?, updated_at=datetime('now','localtime') WHERE id=?",
-                    (bank_acct, eid),
-                )
-                changed = True
-
-            # Do NOT modify: salary, salary_history, diligence, probation,
-            # start_date, sso_enrolled, company_id, is_active — authoritative.
-            if changed:
-                result["updated"].append(emp_code)
-            else:
-                result["skipped"].append(emp_code)
+            # ── Existing employee — NO-CLOBBER RULE ──────────────────────────
+            # Diff the 3 previously-fillable fields and surface mismatches as
+            # warnings. Never UPDATE. bank_account_no is masked (PII): emit
+            # field name only, never raw values from either side.
+            emp_code = emp_row[1]
+            for idx, field, sheet_val, sensitive in (
+                (2, "nickname",        nickname,  False),
+                (3, "bank_name",       bank,      False),
+                (4, "bank_account_no", bank_acct, True),
+            ):
+                db_val = emp_row[idx]
+                # Treat None and "" as equivalent (both = blank).
+                sv = sheet_val or None
+                dv = db_val or None
+                if sv != dv:
+                    if sensitive:
+                        result["warnings"].append(
+                            f"DIFF {emp_code} {field}: sheet differs from DB "
+                            f"(skipped — edit in HR UI)"
+                        )
+                    else:
+                        result["warnings"].append(
+                            f"DIFF {emp_code} {field}: sheet={sheet_val!r} "
+                            f"db={db_val!r} (skipped — edit in HR UI to change)"
+                        )
+            result["skipped"].append(emp_code)
             continue
 
         # ── New employee ─────────────────────────────────────────────────────
