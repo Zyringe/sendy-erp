@@ -44,6 +44,7 @@
     </div>
 
     <form method="post" action="{{ url_for('upload_db_confirm') }}" class="d-flex gap-2">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" name="action" value="cancel" class="btn btn-secondary">
         <i class="bi bi-x-lg me-1"></i>ยกเลิก (ลบไฟล์ที่อัปโหลด)
       </button>
@@ -61,6 +62,7 @@
       <br><small class="text-muted">Backup อัตโนมัติก่อนแทนที่ทุกครั้ง</small>
     </div>
     <form method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="mb-3">
         <label class="form-label fw-bold">โหมดการ upload</label>
         <div class="form-check">

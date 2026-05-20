@@ -192,6 +192,7 @@
 
 {# ── Confirm ───────────────────────────────────────────────────────────── #}
 <form method="post" action="{{ url_for('import_credit_notes_commit') }}" class="d-flex justify-content-end gap-2">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="token" value="{{ token }}">
   <a href="{{ url_for('payment_status') }}" class="btn btn-outline-secondary">
     ยกเลิก

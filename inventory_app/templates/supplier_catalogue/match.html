@@ -32,6 +32,7 @@
 
 <form method="post"
       action="{{ url_for('supplier_catalogue.supplier_catalogue_mapping_save', supplier_id=supplier.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="purchase_name_raw" value="{{ purchase_name }}">
   <input type="hidden" name="back_q" value="{{ back_q }}">
 

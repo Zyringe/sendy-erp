@@ -78,6 +78,7 @@
 
 {# ── Bulk action form (wraps the table) ──────────────────────────────────── #}
 <form method="post" action="{{ url_for('customer_bulk_reassign') }}" id="bulk-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   {# preserve filters on submit so we can redirect back to the same view #}
   <input type="hidden" name="q" value="{{ search }}">
   <input type="hidden" name="salesperson_filter" value="{{ salesperson_filter }}">

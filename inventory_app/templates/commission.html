@@ -57,6 +57,7 @@
 
 {# ── Per-salesperson breakdown + bulk pay form ───────────────────────────── #}
 <form method="post" action="{{ url_for('commission_record_payout') }}" id="payout-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="month" value="{{ year_month }}">
 
   <div class="card mb-2">

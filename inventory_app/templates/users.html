@@ -48,6 +48,7 @@
                   {# Simulate button (non-admin only) #}
                   {% if u.role != 'admin' %}
                   <form method="post" action="{{ url_for('admin_simulate_role') }}" class="d-inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="role" value="{{ u.role }}">
                     <button type="submit" class="btn btn-xs btn-outline-primary" title="จำลองเป็น {{ u.role }}">
                       <i class="bi bi-person-badge"></i>
@@ -63,6 +64,7 @@
                   {% if u.role != 'admin' %}
                   <form method="post" action="{{ url_for('user_delete', uid=u.id) }}" class="d-inline"
                         onsubmit="return confirm('ลบผู้ใช้ {{ u.username }}?')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button type="submit" class="btn btn-xs btn-outline-danger">
                       <i class="bi bi-trash"></i>
                     </button>
@@ -74,6 +76,7 @@
             <tr class="collapse" id="edit-{{ u.id }}">
               <td colspan="5" class="bg-light py-3 px-4">
                 <form method="post" action="{{ url_for('user_edit', uid=u.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <div class="row g-2 align-items-end">
                     <div class="col-sm-3">
                       <label class="form-label small mb-1">ชื่อแสดง</label>
@@ -122,6 +125,7 @@
       </div>
       <div class="card-body">
         <form method="post" action="{{ url_for('user_new') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="mb-3">
             <label class="form-label">ชื่อผู้ใช้ (username)</label>
             <input type="text" name="username" class="form-control" required

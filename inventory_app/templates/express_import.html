@@ -50,6 +50,7 @@
 <div class="card mb-3">
   <div class="card-body">
     <form method="post" enctype="multipart/form-data" class="row g-3 align-items-end">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="col-md-3">
         <label class="form-label small">ประเภทไฟล์</label>
         <select name="file_type" class="form-select form-select-sm" required>

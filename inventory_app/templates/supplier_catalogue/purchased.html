@@ -85,6 +85,7 @@
                     action="{{ url_for('supplier_catalogue.supplier_catalogue_mapping_delete',
                                        supplier_id=supplier.id, mapping_id=r.mapping_id) }}"
                     onsubmit="return confirm('ยืนยันยกเลิกการผูกรายการนี้?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="back_q" value="{{ search }}">
                 <button class="btn btn-sm btn-outline-danger">ลบ</button>
               </form>

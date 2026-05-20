@@ -14,6 +14,7 @@
   <form method="post" action="{{ url_for('hr.payroll_finalize', run_id=run.id) }}"
         class="d-inline ms-1"
         onsubmit="return confirm('Finalize payroll run #{{ run.id }}? ไม่สามารถแก้ไขได้อีก')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit" class="btn btn-sm btn-success">
       <i class="bi bi-check-circle me-1"></i>Finalize
     </button>
@@ -160,6 +161,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <form method="post" action="{{ url_for('hr.payroll_item_edit', run_id=run.id, item_id=item.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="modal-body">
           <div class="row g-2">
             <div class="col-6">

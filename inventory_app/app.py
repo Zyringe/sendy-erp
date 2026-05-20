@@ -32,6 +32,7 @@ from datetime import date, datetime
 
 from flask import (Flask, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort, send_file)
+from flask_wtf.csrf import CSRFProtect, CSRFError
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -69,6 +70,21 @@ app.config['SESSION_COOKIE_HTTPONLY']    = config.SESSION_COOKIE_HTTPONLY
 app.config['SESSION_COOKIE_SAMESITE']    = config.SESSION_COOKIE_SAMESITE
 app.config['SESSION_COOKIE_SECURE']      = config.SESSION_COOKIE_SECURE
 
+# CSRF protection. Production default = on. Tests set WTF_CSRF_ENABLED=False
+# via env (tests/conftest.py) so the existing POST tests don't need rewriting;
+# tests/test_csrf_protection.py re-enables it per-fixture to assert the gate works.
+app.config['WTF_CSRF_ENABLED'] = (
+    os.environ.get('WTF_CSRF_ENABLED', 'True').lower() not in ('false', '0', 'no')
+)
+csrf = CSRFProtect(app)
+
+
+@app.errorhandler(CSRFError)
+def _csrf_error(e):
+    flash(f'เซสชันหมดอายุ กรุณารีเฟรชหน้าและลองอีกครั้ง ({e.description})', 'danger')
+    return redirect(request.referrer or url_for('dashboard'))
+
+
 os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
 
 app.register_blueprint(bp_products)
@@ -100,6 +116,7 @@ def healthz():
 # and never renders a template — so it works on a fresh empty volume. Unset
 # BOOTSTRAP_TOKEN after the seed to disable the endpoint.
 @app.route('/bootstrap/upload-db', methods=['GET', 'POST'])
+@csrf.exempt
 def bootstrap_upload_db():
     expected = os.environ.get('BOOTSTRAP_TOKEN', '')
     if not expected:

@@ -36,6 +36,7 @@
       <tbody>
         {% for r in regions %}
         <form method="post" class="row-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <tr>
             <td class="font-mono small">{{ r.id }}</td>
             <td><span class="badge badge-info font-mono">{{ r.code }}</span></td>

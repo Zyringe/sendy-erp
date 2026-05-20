@@ -103,6 +103,7 @@
             </a>
             <form method="post" action="{{ url_for('commission_overrides_toggle', override_id=r.id) }}"
                   class="d-inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-sm btn-outline-secondary"
                       title="{{ 'ปิดใช้' if r.is_active else 'เปิดใช้' }}">
                 <i class="bi bi-{{ 'toggle-on' if r.is_active else 'toggle-off' }}"></i>
@@ -111,6 +112,7 @@
             <form method="post" action="{{ url_for('commission_overrides_delete', override_id=r.id) }}"
                   class="d-inline"
                   onsubmit="return confirm('ลบ rule #{{ r.id }} ถาวร?\\n(audit_log จะเก็บประวัติไว้)');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-sm btn-outline-danger" title="ลบถาวร">
                 <i class="bi bi-trash"></i>
               </button>

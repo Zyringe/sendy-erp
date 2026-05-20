@@ -27,6 +27,7 @@
 
 {% if suggestions %}
 <form method="post" action="{{ url_for('products.product_categorize_save') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="back_show" value="{{ show }}">
   <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">

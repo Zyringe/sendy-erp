@@ -261,6 +261,7 @@
       <i class="bi bi-people"></i> จัดการผู้ใช้
     </a>
     <form method="post" action="{{ url_for('toggle_db_routes') }}" class="d-grid px-2 mt-1">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-sm {% if db_routes_enabled %}btn-warning{% else %}btn-outline-secondary{% endif %}">
         <i class="bi bi-database{% if db_routes_enabled %}-fill{% endif %}"></i>
         {% if db_routes_enabled %}
@@ -316,6 +317,7 @@
           </a>
         {% endif %}
         <form method="post" action="{{ url_for('logout') }}" class="d-inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="btn btn-sm btn-outline-secondary" aria-label="ออกจากระบบ">
             <i class="bi bi-box-arrow-right"></i>
             <span class="d-none d-lg-inline ms-1">ออก</span>
@@ -336,6 +338,7 @@
     <i class="bi bi-person-badge-fill"></i>
     โหมดจำลอง: กำลังดูในฐานะ <span style="text-transform:uppercase;margin:0 .25rem">{{ simulating_as }}</span>
     <form method="post" action="{{ url_for('admin_exit_simulate') }}" class="ms-auto mb-0">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-sm" style="background:#1c1917;color:#fef3c7;border:none;font-size:.8rem">
         <i class="bi bi-x-circle me-1"></i>ออกจากโหมดจำลอง
       </button>

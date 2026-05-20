@@ -59,6 +59,7 @@ cd sendy_erp && ~/.virtualenvs/erp/bin/pytest                          # full su
 `tests/conftest.py` provides:
 - `tmp_db` fixture (copies live DB to a tmp_path + monkeypatches `config.DATABASE_PATH`) so tests never touch the live DB.
 - Dummy `SECRET_KEY` / `ADMIN_PASSWORD` env via `os.environ.setdefault` (config now requires env, would otherwise fail at collection).
+- `WTF_CSRF_ENABLED=False` env (unconditional) so existing POST tests don't need csrf_token rewrites.
 
 ## Adding a migration
 
@@ -75,3 +76,32 @@ For table-rebuild migrations (NOT NULL, type change, etc.), capture dependent VI
 2. If the route accepts POST, add its endpoint name to `_STAFF_POST_OK` or `_MANAGER_POST_OK` in `app.py`. The `tests/test_post_whitelist.py` typo-guard test will catch stale strings.
 3. Restart the server (auto-reloader does NOT pick up new URL map entries reliably).
 4. Add a test in `tests/test_<area>.py` (route-level via `app.test_client()` + session pre-population, or unit — see `tests/test_bp_products_routes.py` for the route-level pattern).
+
+### CSRF protection
+
+POST routes are CSRF-protected by default — no decorator required. All POST forms must include the hidden token input immediately after the opening `<form>` tag:
+
+```html
+<form method="post" action="...">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    ...
+</form>
+```
+
+For AJAX / `fetch()` POSTs, read the token from the meta tag in `base.html` and send via `X-CSRFToken` header:
+
+```js
+fetch(url, {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+  },
+  body: JSON.stringify(payload)
+})
+```
+
+Flask-WTF's `CSRFProtect(app)` rejects POSTs without a valid token with HTTP 400. The global `CSRFError` handler converts the 400 into a flash message + redirect to `request.referrer` (falling back to `/dashboard`).
+
+Exemptions are explicit via `@csrf.exempt`. Currently exempt:
+- `/bootstrap/upload-db` — gated by the `BOOTSTRAP_TOKEN` env var, has no logged-in session, no rendered form. Token is its own CSRF.
