@@ -31,9 +31,9 @@ Behaviour overview
 HR sync rules (sync_salary_sheet)
 ----------------------------------
 - Match existing employees by full_name (first+' '+last) or nickname.
-- Existing employees: fill nickname if NULL/blank; optionally fill bank_*
-  if NULL.  Do NOT touch salary, salary_history, diligence, probation,
-  start_date, sso_enrolled, company_id, is_active for existing employees.
+- Existing employees: NO-CLOBBER. Never UPDATE any field. Sheet/DB diffs
+  are surfaced as 'DIFF <emp_code> <field>: ...' entries in result.warnings
+  (bank_account_no values are masked — field name + 'differs' marker only).
 - New employees: create with next EMP-code, company_id=1 (BSN assumption,
   documented), diligence_allowance=0, sso_enrolled=(sso_deduction>0),
   is_active from sheet, start_date=NULL, bank from sheet.
@@ -41,6 +41,9 @@ HR sync rules (sync_salary_sheet)
   reason='imported_salary_sheet').
 - Idempotent: match-first, no duplicates on re-run.
 - Emits a WARNING for each new employee that start_date is unknown.
+- Knock-on: an advance whose raw_name would match a freshly-filled nickname
+  is now inserted with employee_id=NULL until Put fills the nickname in
+  HR UI (see test_advance_unmatched_when_existing_nickname_null).
 
 Encoding notes
 --------------
@@ -237,9 +240,14 @@ def sync_salary_sheet(parsed, conn):
     -------
     dict with keys:
       created        — list of emp_codes created
-      updated        — list of emp_codes updated (nickname / bank filled)
-      skipped        — list of full_names skipped (no change needed)
-      warnings       — list of warning strings
+      updated        — list of emp_codes updated (always empty under the
+                       no-clobber rule for existing employees; reserved for
+                       future use, dict-shape preserved for caller stability)
+      skipped        — list of emp_codes whose existing-employee match was
+                       not modified; sheet/DB mismatches are surfaced via
+                       'warnings' as DIFF lines (bank_account_no masked)
+      warnings       — list of warning strings (start_date unknown for new
+                       employees, DIFF lines for existing-employee mismatches)
     """
     salary_rows = parsed.get("salary", [])
     result = {
