@@ -66,10 +66,55 @@ def _customer_code_by_name(conn, name):
     return row[0] if row else None
 
 
-def _product_id_by_code(conn, code):
-    """Express product codes are not stored on products today — return None.
-    Wired here so mapping logic can plug in later."""
-    return None
+def _product_id_by_code(conn, code, unit=None):
+    """Resolve Express product_code (+ unit) → Sendy product_id via
+    product_code_mapping. Uses the canonical unit-aware predicate (mirrors
+    mig 063/064 resolver): exact (bsn_code, bsn_unit) beats bsn_unit='' catch-all.
+    Returns None for unmapped codes.
+    """
+    if not code:
+        return None
+    row = conn.execute(
+        """
+        SELECT m.product_id
+          FROM product_code_mapping m
+         WHERE m.bsn_code = ?
+           AND m.bsn_unit IN (COALESCE(?, ''), '')
+           AND m.product_id IS NOT NULL
+         ORDER BY (m.bsn_unit = '')
+         LIMIT 1
+        """,
+        (code, unit),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _brand_kind_for_product(conn, product_id):
+    """Return 'own' / 'third_party' / None from a product's brand.
+
+    Mirrors the mig 063 trigger contract: a resolved product whose brand
+    row is missing (products.brand_id NULL, or pointing nowhere) yields
+    NULL, NOT 'third_party'. This is important — downstream commission
+    code falls back to regex classification only when brand_kind is NULL.
+    Defaulting to 'third_party' here would lock unbranded but
+    own-brand-looking rows into the lower rate.
+    """
+    if product_id is None:
+        return None
+    row = conn.execute(
+        """
+        SELECT CASE
+                 WHEN b.id IS NULL    THEN NULL
+                 WHEN b.is_own_brand = 1 THEN 'own'
+                 ELSE 'third_party'
+               END
+          FROM products p
+          LEFT JOIN brands b ON b.id = p.brand_id
+         WHERE p.id = ?
+        """,
+        (product_id,),
+    ).fetchone()
+    return row[0] if row else None
 
 
 # ── per-file-type writers ────────────────────────────────────────────────────
@@ -252,23 +297,28 @@ def _import_sales(conn, path, batch_id, company_id, incremental=True):
         if customer_code:
             row = conn.execute('SELECT code FROM customers WHERE code = ?', (customer_code,)).fetchone()
             cust_id = row[0] if row else None
+        # Normalize unit FIRST — both the mapping resolver and the canonical
+        # express_sales.unit value must be on the canonical alias.
+        norm_unit = bsn_units.normalize_unit(r.unit)
+        prod_id = _product_id_by_code(conn, r.product_code, norm_unit)
+        brand_kind = _brand_kind_for_product(conn, prod_id)
         conn.execute("""
             INSERT INTO express_sales
                 (batch_id, doc_no, line_no, doc_type, date_iso, company_id,
                  customer_code, customer_name, customer_id,
-                 product_code, product_id, product_name_raw,
+                 product_code, product_id, product_name_raw, brand_kind,
                  qty, unit, return_flag, unit_price, vat_type,
                  discount, total, total_discount, net, ref_doc, is_warning)
             VALUES (?, ?, ?, ?, ?, ?,
                     ?, ?, ?,
-                    ?, ?, ?,
+                    ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?)
         """, (
             batch_id, r.doc_no, r.line_no, doc_type, r.date_iso, company_id,
             customer_code, r.customer_name, cust_id,
-            r.product_code, _product_id_by_code(conn, r.product_code), r.product_name,
-            r.qty, bsn_units.normalize_unit(r.unit), r.return_flag, r.unit_price, r.vat_type,
+            r.product_code, prod_id, r.product_name, brand_kind,
+            r.qty, norm_unit, r.return_flag, r.unit_price, r.vat_type,
             r.discount, r.total, r.total_discount, r.net, r.ref_doc, int(r.is_warning),
         ))
     return len(records) - skipped, 0

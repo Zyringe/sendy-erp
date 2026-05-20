@@ -109,7 +109,7 @@ _BASE_QUERY = """
            es.total              AS line_total,
            es.qty                AS qty,
            es.unit_price         AS unit_price,
-           pcm.product_id        AS sendy_product_id,
+           p.id                  AS sendy_product_id,
            p.brand_id            AS sendy_brand_id,
            b.code                AS sendy_brand_code,
            b.name                AS sendy_brand_name
@@ -130,8 +130,20 @@ _BASE_QUERY = """
            GROUP BY pin.salesperson_code, ref.invoice_no
       ) rcv
       JOIN express_sales          es   ON es.doc_no = rcv.invoice_no
-      LEFT JOIN product_code_mapping pcm ON pcm.bsn_code = es.product_code
-      LEFT JOIN products          p    ON p.id = pcm.product_id
+      -- Unit-aware product resolution (mirrors mig 063/064 resolver). Joining
+      -- product_code_mapping by bsn_code alone duplicates each sales line by
+      -- the number of mapping rows (post-mig 061 a code can have multiple
+      -- bsn_unit variants). The scalar subquery picks the single winning
+      -- product_id: exact (bsn_code, unit) beats the bsn_unit='' catch-all.
+      LEFT JOIN products          p    ON p.id = (
+          SELECT m.product_id
+            FROM product_code_mapping m
+           WHERE m.bsn_code = es.product_code
+             AND m.bsn_unit IN (COALESCE(es.unit, ''), '')
+             AND m.product_id IS NOT NULL
+           ORDER BY (m.bsn_unit = '')   -- exact (0) before catch-all (1)
+           LIMIT 1
+      )
       LEFT JOIN brands            b    ON b.id = p.brand_id
      WHERE 1=1
 """
@@ -601,6 +613,7 @@ def get_invoice_line_breakdown(year_month, salesperson_code, invoice_no, db_path
     # mapped). Falls back to NULL only for genuinely unmapped codes.
     # Also peek for any product-level commission override and the
     # canonical Sendy product name (preferred over the Express raw name).
+    # Unit-aware resolver — see _BASE_QUERY for the same predicate / rationale.
     rows = conn.execute("""
         SELECT es.product_code,
                es.product_name_raw,
@@ -610,13 +623,20 @@ def get_invoice_line_breakdown(year_month, salesperson_code, invoice_no, db_path
                es.unit_price,
                es.net               AS line_net,
                es.brand_kind,
-               m.product_id         AS sendy_product_id,
+               p.id                 AS sendy_product_id,
                p.brand_id           AS sendy_brand_id,
                b.code               AS sendy_brand_code,
                b.name               AS sendy_brand_name
           FROM express_sales es
-          LEFT JOIN product_code_mapping m ON m.bsn_code = es.product_code
-          LEFT JOIN products p ON p.id = m.product_id
+          LEFT JOIN products p ON p.id = (
+              SELECT m.product_id
+                FROM product_code_mapping m
+               WHERE m.bsn_code = es.product_code
+                 AND m.bsn_unit IN (COALESCE(es.unit, ''), '')
+                 AND m.product_id IS NOT NULL
+               ORDER BY (m.bsn_unit = '')
+               LIMIT 1
+          )
           LEFT JOIN brands   b ON b.id = p.brand_id
          WHERE es.doc_no = ?
          ORDER BY es.line_no
