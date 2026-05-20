@@ -9,6 +9,15 @@ The inventory_app modules use bare imports (`from database import ...`).
 pytest.ini adds inventory_app/ to pythonpath so those imports work.
 """
 import os
+
+# Inject dummy secrets BEFORE any test imports config. The app's config.py
+# now requires SECRET_KEY / ADMIN_PASSWORD env vars (no fallback defaults),
+# so without these the test collection phase blows up. test_config_secrets.py
+# uses monkeypatch.setattr(os, 'environ', ...) which replaces os.environ
+# wholesale for the test duration, so it isn't affected by these defaults.
+os.environ.setdefault('SECRET_KEY', 'test-only-secret')
+os.environ.setdefault('ADMIN_PASSWORD', 'test-only-admin')
+
 import shutil
 import sqlite3
 
