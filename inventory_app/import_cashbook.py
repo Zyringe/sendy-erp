@@ -31,9 +31,13 @@ Behaviour overview
 HR sync rules (sync_salary_sheet)
 ----------------------------------
 - Match existing employees by full_name (first+' '+last) or nickname.
-- Existing employees: fill nickname if NULL/blank; optionally fill bank_*
-  if NULL.  Do NOT touch salary, salary_history, diligence, probation,
-  start_date, sso_enrolled, company_id, is_active for existing employees.
+- Existing employees: NO-CLOBBER. Never UPDATE any field. Sheet/DB diffs
+  for the 3 previously-fillable fields (nickname, bank_name,
+  bank_account_no) are surfaced as 'DIFF <emp_code> <field>: ...' entries
+  in result.warnings (bank_account_no values are masked — field name +
+  'differs' marker only). Drift on is_active, sso_deduction, salary is
+  NOT surfaced — manage via HR UI. (Same as pre-no-clobber behaviour:
+  the old "fill if NULL" rule never touched those fields either.)
 - New employees: create with next EMP-code, company_id=1 (BSN assumption,
   documented), diligence_allowance=0, sso_enrolled=(sso_deduction>0),
   is_active from sheet, start_date=NULL, bank from sheet.
@@ -41,6 +45,9 @@ HR sync rules (sync_salary_sheet)
   reason='imported_salary_sheet').
 - Idempotent: match-first, no duplicates on re-run.
 - Emits a WARNING for each new employee that start_date is unknown.
+- Knock-on: an advance whose raw_name would match a freshly-filled nickname
+  is now inserted with employee_id=NULL until Put fills the nickname in
+  HR UI (see test_advance_unmatched_when_existing_nickname_null).
 
 Encoding notes
 --------------
@@ -237,9 +244,17 @@ def sync_salary_sheet(parsed, conn):
     -------
     dict with keys:
       created        — list of emp_codes created
-      updated        — list of emp_codes updated (nickname / bank filled)
-      skipped        — list of full_names skipped (no change needed)
-      warnings       — list of warning strings
+      updated        — list of emp_codes updated (always empty under the
+                       no-clobber rule for existing employees; reserved for
+                       future use, dict-shape preserved for caller stability)
+      skipped        — list of emp_codes whose existing-employee match was
+                       not modified; mismatches on the 3 previously-fillable
+                       fields (nickname, bank_name, bank_account_no) are
+                       surfaced via 'warnings' as DIFF lines (bank_account_no
+                       masked). Drift on is_active, sso_deduction, salary is
+                       NOT surfaced — manage via HR UI.
+      warnings       — list of warning strings (start_date unknown for new
+                       employees; DIFF lines for the 3 lockable fields only)
     """
     salary_rows = parsed.get("salary", [])
     result = {
@@ -280,39 +295,32 @@ def sync_salary_sheet(parsed, conn):
             ).fetchone()
 
         if emp_row is not None:
-            # ── Existing employee — limited update (HARD CONSTRAINT) ──────────
-            eid       = emp_row[0]
-            emp_code  = emp_row[1]
-            changed   = False
-
-            # Fill nickname if currently NULL/blank
-            if nickname and not emp_row[2]:
-                conn.execute(
-                    "UPDATE employees SET nickname=?, updated_at=datetime('now','localtime') WHERE id=?",
-                    (nickname, eid),
-                )
-                changed = True
-
-            # Fill bank_* only if currently NULL
-            if bank and not emp_row[3]:
-                conn.execute(
-                    "UPDATE employees SET bank_name=?, updated_at=datetime('now','localtime') WHERE id=?",
-                    (bank, eid),
-                )
-                changed = True
-            if bank_acct and not emp_row[4]:
-                conn.execute(
-                    "UPDATE employees SET bank_account_no=?, updated_at=datetime('now','localtime') WHERE id=?",
-                    (bank_acct, eid),
-                )
-                changed = True
-
-            # Do NOT modify: salary, salary_history, diligence, probation,
-            # start_date, sso_enrolled, company_id, is_active — authoritative.
-            if changed:
-                result["updated"].append(emp_code)
-            else:
-                result["skipped"].append(emp_code)
+            # ── Existing employee — NO-CLOBBER RULE ──────────────────────────
+            # Diff the 3 previously-fillable fields and surface mismatches as
+            # warnings. Never UPDATE. bank_account_no is masked (PII): emit
+            # field name only, never raw values from either side.
+            emp_code = emp_row[1]
+            for idx, field, sheet_val, sensitive in (
+                (2, "nickname",        nickname,  False),
+                (3, "bank_name",       bank,      False),
+                (4, "bank_account_no", bank_acct, True),
+            ):
+                db_val = emp_row[idx]
+                # Treat None and "" as equivalent (both = blank).
+                sv = sheet_val or None
+                dv = db_val or None
+                if sv != dv:
+                    if sensitive:
+                        result["warnings"].append(
+                            f"DIFF {emp_code} {field}: sheet differs from DB "
+                            f"(skipped — edit in HR UI)"
+                        )
+                    else:
+                        result["warnings"].append(
+                            f"DIFF {emp_code} {field}: sheet={sheet_val!r} "
+                            f"db={db_val!r} (skipped — edit in HR UI to change)"
+                        )
+            result["skipped"].append(emp_code)
             continue
 
         # ── New employee ─────────────────────────────────────────────────────
