@@ -68,18 +68,29 @@ The column itself was added in mig 021. Triggers are layered (063 replaces 021's
 -- data/migrations/068_drop_express_sales_brand_kind.sql
 BEGIN;
 
--- Drop the triggers that kept the cache fresh.
+-- Drop the trigger that kept the cache fresh (created by mig 063;
+-- replaced any mig 021-era trigger with the same name).
 DROP TRIGGER IF EXISTS refresh_brand_kind_on_product_brand_change;
--- The mig 021 trigger may have been replaced by mig 063 with the same name,
--- but include any historical trigger name we find at audit time. The PR
--- implementation will run a `SELECT name FROM sqlite_master WHERE
--- type='trigger' AND tbl_name='express_sales'` audit first to enumerate.
+
+-- Drop the index on the column (SQLite requires this before DROP COLUMN).
+DROP INDEX IF EXISTS idx_express_sales_brandkind;
 
 -- Drop the column.
 ALTER TABLE express_sales DROP COLUMN brand_kind;
 
 COMMIT;
 ```
+
+**Audit confirmation (run against live DB before writing the mig):**
+
+```
+sqlite> SELECT name, type FROM sqlite_master WHERE tbl_name='express_sales';
+... refresh_brand_kind_on_product_brand_change|trigger
+... idx_express_sales_brandkind|index
+... (other indexes unrelated to brand_kind)
+```
+
+Confirmed: ONE trigger + ONE index reference the column. Both go in the mig.
 
 **SQLite version:** local dev is 3.51.0 (well above the 3.35.0 cutoff for `ALTER TABLE DROP COLUMN`). Railway runs Python 3.9 via Nixpacks → Debian-based base image → SQLite ≥ 3.40 in practice. The migration will fail loudly at deploy if the runtime SQLite is too old; that's an acceptable smoke failure (revert + bump Nixpacks base).
 
