@@ -3,7 +3,7 @@ import_cashbook.py — Cashbook Excel importer for Sendy ERP.
 
 Entry points
 ------------
-  import_cashbook(path, vat_flag=None, conn=None) -> dict
+  import_cashbook(path, conn=None) -> dict
       Full import + HR sync.
 
   sync_salary_sheet(parsed, conn) -> dict
@@ -12,23 +12,21 @@ Entry points
 
 Behaviour overview
 ------------------
-1. vat_flag derived from filename via is_novat_file() unless overridden.
-2. Parses workbook via parse_cashbook.parse_cashbook().
-3. Applies migration 056 (is_transfer column) if not yet present, via
+1. Parses workbook via parse_cashbook.parse_cashbook().
+2. Applies migration 056 (is_transfer column) if not yet present, via
    database.run_pending_migrations().
-4. Upserts cashbook_accounts by code (stable id).
-5. Detects transfer/passthrough accounts heuristically:
+3. Upserts cashbook_accounts by code (stable id).
+4. Detects transfer/passthrough accounts heuristically:
      abs(Σincome − Σexpense) < 0.01  AND  Σincome > 0
    Sets is_transfer=1.  Clobber-guard: if existing is_transfer=1 and
    heuristic now returns False, leaves it at 1 and emits a warning.
-6. Idempotent full-replace per (vat_flag, account_id):
-     DELETE FROM cashbook_transactions WHERE vat_flag=? AND account_id=?
+5. Idempotent full-replace per account_id:
+     DELETE FROM cashbook_transactions WHERE account_id=?
      then INSERT fresh rows.
-7. Upserts cashbook_categories from Setup + transaction categories.
-8. Full-replace salary_advances per vat_flag; matches raw_name to
-   employees.nickname.
-9. Calls sync_salary_sheet() for HR employee upsert.
-10. Returns summary dict (counts + reconciliation + warnings).
+6. Upserts cashbook_categories from Setup + transaction categories.
+7. Full-replace salary_advances; matches raw_name to employees.nickname.
+8. Calls sync_salary_sheet() for HR employee upsert.
+9. Returns summary dict (counts + reconciliation + warnings).
 
 HR sync rules (sync_salary_sheet)
 ----------------------------------
@@ -61,7 +59,7 @@ import uuid
 import datetime
 from typing import Any, Dict, List, Optional
 
-from parse_cashbook import parse_cashbook, is_novat_file
+from parse_cashbook import parse_cashbook
 import database
 
 
@@ -366,17 +364,14 @@ def sync_salary_sheet(parsed, conn):
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
-def import_cashbook(path, vat_flag=None, conn=None):
+def import_cashbook(path, conn=None):
     """
     Import a cashbook Excel workbook into the Sendy ERP database.
 
     Parameters
     ----------
     path : str
-        Absolute path to the .xlsx workbook (NoVat or Vat variant).
-    vat_flag : str or None
-        'novat' | 'vat' | None.  If None, derived from filename via
-        is_novat_file(path).
+        Absolute path to the .xlsx workbook.
     conn : sqlite3.Connection or None
         Database connection.  If None, a new connection is opened via
         database.get_connection() and closed before return.
@@ -401,27 +396,23 @@ def import_cashbook(path, vat_flag=None, conn=None):
         conn = database.get_connection()
 
     try:
-        return _do_import(path, vat_flag, conn)
+        return _do_import(path, conn)
     finally:
         if _own_conn:
             conn.close()
 
 
-def _do_import(path, vat_flag, conn):
+def _do_import(path, conn):
     """Core import logic operating on a given connection."""
 
-    # ── Step 1: determine vat_flag ────────────────────────────────────────────
-    if vat_flag is None:
-        vat_flag = "novat" if is_novat_file(path) else "vat"
-
-    # ── Step 2: parse workbook ────────────────────────────────────────────────
+    # ── Step 1: parse workbook ────────────────────────────────────────────────
     parsed = parse_cashbook(path)
     all_warnings = list(parsed.get("warnings", []))
 
-    # ── Step 3: ensure migration 056 ─────────────────────────────────────────
+    # ── Step 2: ensure migration 056 ─────────────────────────────────────────
     _ensure_migration_056(conn)
 
-    # ── Step 4: build per-account transaction sums for transfer detection ─────
+    # ── Step 3: build per-account transaction sums for transfer detection ─────
     account_income  = {}   # code → Σincome
     account_expense = {}   # code → Σexpense
     for txn in parsed["transactions"]:
@@ -432,7 +423,7 @@ def _do_import(path, vat_flag, conn):
         else:
             account_expense[code] = account_expense.get(code, 0.0) + amt
 
-    # ── Step 5: upsert cashbook_accounts ─────────────────────────────────────
+    # ── Step 4: upsert cashbook_accounts ─────────────────────────────────────
     acct_id_map       = {}   # code → id
     accounts_created  = 0
     accounts_updated  = 0
@@ -465,7 +456,7 @@ def _do_import(path, vat_flag, conn):
         is_transfer_flags[code] = is_transfer
         _set_is_transfer(conn, acct_id, is_transfer, all_warnings)
 
-    # ── Step 6: idempotent full-replace transactions per (vat_flag, acct_id) ──
+    # ── Step 5: idempotent full-replace transactions per account_id ───────────
     batch_id   = str(uuid.uuid4())
     source_file = os.path.basename(path)
     txn_counts  = {}
@@ -476,19 +467,19 @@ def _do_import(path, vat_flag, conn):
         txns_by_code.setdefault(txn["account_code"], []).append(txn)
 
     for code, acct_id in acct_id_map.items():
-        # Delete existing rows for this (vat_flag, account_id)
+        # Delete existing rows for this account_id
         conn.execute(
-            "DELETE FROM cashbook_transactions WHERE vat_flag=? AND account_id=?",
-            (vat_flag, acct_id),
+            "DELETE FROM cashbook_transactions WHERE account_id=?",
+            (acct_id,),
         )
         rows = txns_by_code.get(code, [])
         for txn in rows:
             conn.execute(
                 """INSERT INTO cashbook_transactions
                      (account_id, txn_date, direction, category, user_category,
-                      amount, description, note, vat_flag, source_file,
+                      amount, description, note, source_file,
                       source_sheet, source_row, import_batch_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     acct_id,
                     txn["txn_date"],
@@ -498,7 +489,6 @@ def _do_import(path, vat_flag, conn):
                     txn["amount"],
                     txn.get("description"),
                     txn.get("note"),
-                    vat_flag,
                     source_file,
                     txn.get("source_sheet"),
                     txn.get("source_row"),
@@ -507,7 +497,7 @@ def _do_import(path, vat_flag, conn):
             )
         txn_counts[code] = len(rows)
 
-    # ── Step 7: upsert cashbook_categories ───────────────────────────────────
+    # ── Step 6: upsert cashbook_categories ───────────────────────────────────
     cats_before = conn.execute(
         "SELECT COUNT(*) FROM cashbook_categories"
     ).fetchone()[0]
@@ -532,21 +522,19 @@ def _do_import(path, vat_flag, conn):
     ).fetchone()[0]
     categories_added = cats_after - cats_before
 
-    # ── Step 8: salary_advances — full-replace per vat_flag ──────────────────
-    conn.execute(
-        "DELETE FROM salary_advances WHERE vat_flag=?", (vat_flag,)
-    )
+    # ── Step 7: salary_advances — full-replace ───────────────────────────────
+    conn.execute("DELETE FROM salary_advances")
 
     # Build up-to-date nickname map (after employee sync would run, but sync
     # hasn't happened yet — use pre-existing employees for nickname matching;
     # new employees from this sheet also need matching, handled below)
     # We will do a two-pass: first sync employees, then match advances.
 
-    # ── Step 9: HR employee sync ──────────────────────────────────────────────
+    # ── Step 8: HR employee sync ──────────────────────────────────────────────
     sync_result = sync_salary_sheet(parsed, conn)
     all_warnings.extend(sync_result.get("warnings", []))
 
-    # ── Step 10: insert advances with nickname matching ───────────────────────
+    # ── Step 9: insert advances with nickname matching ───────────────────────
     # Rebuild nickname map now that new employees have been created
     nickname_map = _build_nickname_map(conn)
 
@@ -568,15 +556,14 @@ def _do_import(path, vat_flag, conn):
         conn.execute(
             """INSERT INTO salary_advances
                  (employee_id, advance_date, amount, raw_name, note,
-                  vat_flag, source_file, import_batch_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                  source_file, import_batch_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 emp_id,
                 adv["advance_date"],
                 adv["amount"],
                 raw_name,
                 adv.get("note"),
-                vat_flag,
                 source_file,
                 batch_id,
             ),
@@ -585,7 +572,7 @@ def _do_import(path, vat_flag, conn):
 
     conn.commit()
 
-    # ── Step 11: reconciliation block (excluding is_transfer accounts) ────────
+    # ── Step 10: reconciliation block (excluding is_transfer accounts) ────────
     non_transfer_codes = {
         code for code, is_tr in is_transfer_flags.items() if not is_tr
     }

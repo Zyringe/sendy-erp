@@ -3,7 +3,7 @@
 {% block page_title %}รายการบัญชี: {{ acct.code }}{% endblock %}
 
 {% block topbar_actions %}
-<a href="{{ url_for('cashbook.dashboard', vat=vat_flag) }}" class="btn btn-sm btn-outline-secondary">
+<a href="{{ url_for('cashbook.dashboard') }}" class="btn btn-sm btn-outline-secondary">
   <i class="bi bi-arrow-left me-1"></i>กลับ
 </a>
 {% endblock %}
@@ -61,7 +61,6 @@
 <div class="card mb-3">
   <div class="card-body py-2">
     <form method="get" class="row g-2 align-items-end">
-      <input type="hidden" name="vat" value="{{ vat_flag }}">
       <div class="col-auto">
         <label class="form-label small mb-1">เดือน</label>
         <select name="month" class="form-select form-select-sm" onchange="this.form.submit()">
@@ -80,7 +79,7 @@
         </select>
       </div>
       <div class="col-auto">
-        <a href="{{ url_for('cashbook.account_ledger', account_id=acct.id, vat=vat_flag) }}"
+        <a href="{{ url_for('cashbook.account_ledger', account_id=acct.id) }}"
            class="btn btn-sm btn-outline-secondary">ล้าง</a>
       </div>
     </form>
@@ -145,7 +144,7 @@
     {% for p in range(1, total_pages + 1) %}
     <li class="page-item {% if p == page %}active{% endif %}">
       <a class="page-link"
-         href="{{ url_for('cashbook.account_ledger', account_id=acct.id, vat=vat_flag, month=month_filter, dir=dir_filter, page=p) }}">
+         href="{{ url_for('cashbook.account_ledger', account_id=acct.id, month=month_filter, dir=dir_filter, page=p) }}">
         {{ p }}
       </a>
     </li>

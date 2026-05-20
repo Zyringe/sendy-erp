@@ -42,7 +42,7 @@ def _fmt_baht(val) -> str:
         return "฿0.00"
 
 
-def _get_accounts_with_totals(conn, vat_flag: str):
+def _get_accounts_with_totals(conn):
     """
     Return list of dicts: one per account with income/expense/balance sums
     and transaction count.  Transfer accounts are included but flagged.
@@ -62,12 +62,11 @@ def _get_accounts_with_totals(conn, vat_flag: str):
             COALESCE(SUM(CASE WHEN t.direction='expense' THEN t.amount ELSE 0 END), 0) AS expense,
             COUNT(t.id) AS txn_count
         FROM cashbook_accounts a
-        LEFT JOIN cashbook_transactions t
-            ON t.account_id = a.id AND t.vat_flag = ?
+        LEFT JOIN cashbook_transactions t ON t.account_id = a.id
         WHERE a.is_active = 1
         GROUP BY a.id
         ORDER BY a.is_transfer ASC, a.sort_order ASC, a.id ASC
-    """, (vat_flag,)).fetchall()
+    """).fetchall()
 
     result = []
     for r in rows:
@@ -77,9 +76,9 @@ def _get_accounts_with_totals(conn, vat_flag: str):
     return result
 
 
-def _get_monthly_summary(conn, vat_flag: str, exclude_transfer: bool = True):
+def _get_monthly_summary(conn, exclude_transfer: bool = True):
     """Monthly income/expense totals, optionally excluding transfer accounts."""
-    transfer_clause = "AND a.is_transfer = 0" if exclude_transfer else ""
+    transfer_clause = "WHERE a.is_transfer = 0" if exclude_transfer else ""
     rows = conn.execute(f"""
         SELECT
             strftime('%Y-%m', t.txn_date) AS month,
@@ -87,14 +86,14 @@ def _get_monthly_summary(conn, vat_flag: str, exclude_transfer: bool = True):
             SUM(CASE WHEN t.direction='expense' THEN t.amount ELSE 0 END) AS expense
         FROM cashbook_transactions t
         JOIN cashbook_accounts a ON a.id = t.account_id
-        WHERE t.vat_flag = ? {transfer_clause}
+        {transfer_clause}
         GROUP BY month
         ORDER BY month ASC
-    """, (vat_flag,)).fetchall()
+    """).fetchall()
     return [dict(r) for r in rows]
 
 
-def _get_category_summary(conn, vat_flag: str):
+def _get_category_summary(conn):
     """Income and expense totals by category, excluding transfer accounts."""
     rows = conn.execute("""
         SELECT
@@ -103,10 +102,10 @@ def _get_category_summary(conn, vat_flag: str):
             SUM(t.amount) AS total
         FROM cashbook_transactions t
         JOIN cashbook_accounts a ON a.id = t.account_id
-        WHERE t.vat_flag = ? AND a.is_transfer = 0
+        WHERE a.is_transfer = 0
         GROUP BY t.direction, category
         ORDER BY t.direction DESC, total DESC
-    """, (vat_flag,)).fetchall()
+    """).fetchall()
     income_cats = [dict(r) for r in rows if r["direction"] == "income"]
     expense_cats = [dict(r) for r in rows if r["direction"] == "expense"]
     return income_cats, expense_cats
@@ -116,13 +115,9 @@ def _get_category_summary(conn, vat_flag: str):
 
 @bp_cashbook.route("/")
 def dashboard():
-    vat_flag = request.args.get("vat", "novat")
-    if vat_flag not in ("novat", "vat"):
-        vat_flag = "novat"
-
     conn = database.get_connection()
     try:
-        accounts = _get_accounts_with_totals(conn, vat_flag)
+        accounts = _get_accounts_with_totals(conn)
     finally:
         conn.close()
 
@@ -136,14 +131,13 @@ def dashboard():
 
     conn = database.get_connection()
     try:
-        monthly = _get_monthly_summary(conn, vat_flag, exclude_transfer=True)
-        income_cats, expense_cats = _get_category_summary(conn, vat_flag)
+        monthly = _get_monthly_summary(conn, exclude_transfer=True)
+        income_cats, expense_cats = _get_category_summary(conn)
     finally:
         conn.close()
 
     return render_template(
         "cashbook/dashboard.html",
-        vat_flag=vat_flag,
         accounts=accounts,
         op_accounts=op_accounts,
         tr_accounts=tr_accounts,
@@ -167,16 +161,13 @@ def account_ledger(account_id):
             flash("ไม่พบบัญชีนี้ในระบบ", "danger")
             return redirect(url_for("cashbook.dashboard"))
 
-        vat_flag  = request.args.get("vat", "novat")
-        if vat_flag not in ("novat", "vat"):
-            vat_flag = "novat"
         month_filter = request.args.get("month", "").strip()
         dir_filter   = request.args.get("dir", "").strip()
         page         = max(1, int(request.args.get("page", 1)))
         per_page     = 50
 
-        params = [account_id, vat_flag]
-        where  = ["t.account_id=?", "t.vat_flag=?"]
+        params = [account_id]
+        where  = ["t.account_id=?"]
 
         if month_filter:
             where.append("strftime('%Y-%m', t.txn_date)=?")
@@ -216,9 +207,9 @@ def account_ledger(account_id):
         months = conn.execute(
             """SELECT DISTINCT strftime('%Y-%m', txn_date) AS m
                FROM cashbook_transactions
-               WHERE account_id=? AND vat_flag=?
+               WHERE account_id=?
                ORDER BY m""",
-            (account_id, vat_flag),
+            (account_id,),
         ).fetchall()
     finally:
         conn.close()
@@ -229,7 +220,6 @@ def account_ledger(account_id):
         "cashbook/account_ledger.html",
         acct=dict(acct),
         rows=[dict(r) for r in rows],
-        vat_flag=vat_flag,
         month_filter=month_filter,
         dir_filter=dir_filter,
         page=page,
@@ -256,8 +246,6 @@ def import_view():
             flash("กรุณาเลือกไฟล์ .xlsx", "danger")
             return redirect(url_for("cashbook.import_view"))
 
-        vat_select = request.form.get("vat_flag", "auto")
-
         # Save to temp file
         tmp = tempfile.NamedTemporaryFile(
             suffix=".xlsx", delete=False,
@@ -267,8 +255,7 @@ def import_view():
             f.save(tmp.name)
             tmp.close()
 
-            vat_arg = None if vat_select == "auto" else vat_select
-            summary = cashbook_mod.import_cashbook(tmp.name, vat_flag=vat_arg)
+            summary = cashbook_mod.import_cashbook(tmp.name)
         finally:
             try:
                 os.unlink(tmp.name)
@@ -283,17 +270,13 @@ def import_view():
 
 @bp_cashbook.route("/export")
 def export_view():
-    vat_flag = request.args.get("vat", "novat")
-    if vat_flag not in ("novat", "vat"):
-        vat_flag = "novat"
-
     conn = database.get_connection()
     try:
-        xlsx_bytes = _build_export_xlsx(conn, vat_flag)
+        xlsx_bytes = _build_export_xlsx(conn)
     finally:
         conn.close()
 
-    filename = f"cashbook_{vat_flag}_export.xlsx"
+    filename = "cashbook_export.xlsx"
     response = make_response(xlsx_bytes)
     response.headers["Content-Type"] = (
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -304,14 +287,14 @@ def export_view():
 
 # ── Export builder ────────────────────────────────────────────────────────────
 
-def _build_export_xlsx(conn, vat_flag: str) -> bytes:
+def _build_export_xlsx(conn) -> bytes:
     """
     Build a round-trip-compatible .xlsx in the same multi-sheet format the
     parser expects.  Sheets:
       Overview              — computed P&L (excluding transfer accounts)
       Txn_<code>            — one per account (header + rows + I/J sidecar)
       Salary_Sheet          — from employees + latest salary_history
-      เบิกเงินล่วงหน้า      — from salary_advances (for this vat_flag)
+      เบิกเงินล่วงหน้า      — from salary_advances
       Setup                 — cashbook_categories
     """
     wb = openpyxl.Workbook()
@@ -334,8 +317,8 @@ def _build_export_xlsx(conn, vat_flag: str) -> bytes:
                   COALESCE(SUM(CASE WHEN direction='income'  THEN amount ELSE 0 END), 0) AS inc,
                   COALESCE(SUM(CASE WHEN direction='expense' THEN amount ELSE 0 END), 0) AS exp
                 FROM cashbook_transactions
-                WHERE vat_flag=? AND account_id IN ({placeholders})""",
-            [vat_flag] + list(non_transfer_ids),
+                WHERE account_id IN ({placeholders})""",
+            list(non_transfer_ids),
         ).fetchone()
         if row_ov:
             income_total  = row_ov["inc"] or 0.0
@@ -381,9 +364,9 @@ def _build_export_xlsx(conn, vat_flag: str) -> bytes:
             """SELECT txn_date, direction, category, user_category,
                       amount, description, note
                FROM cashbook_transactions
-               WHERE account_id=? AND vat_flag=?
+               WHERE account_id=?
                ORDER BY txn_date ASC, id ASC""",
-            (acct["id"], vat_flag),
+            (acct["id"],),
         ).fetchall()
 
         for ri, txn in enumerate(txns, start=2):
@@ -472,9 +455,7 @@ def _build_export_xlsx(conn, vat_flag: str) -> bytes:
                   sa.amount, sa.note
            FROM salary_advances sa
            LEFT JOIN employees e ON e.id = sa.employee_id
-           WHERE sa.vat_flag=?
-           ORDER BY sa.advance_date ASC, sa.id ASC""",
-        (vat_flag,),
+           ORDER BY sa.advance_date ASC, sa.id ASC"""
     ).fetchall()
 
     import datetime as _dt2
