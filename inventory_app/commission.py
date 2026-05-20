@@ -43,10 +43,9 @@ def _fmt_rate_pct(rate):
 
 
 # ── Brand classifier ────────────────────────────────────────────────────────
-# Used as fallback when express_sales.brand_kind is NULL — for example a
-# brand-new product imported after the brand_map was last refreshed. The
-# canonical source is product_brand_map (loaded from brand.csv) plus the
-# brand_kind column it backfills onto express_sales.
+# Used as fallback when the CASE derive in _BASE_QUERY produces NULL
+# (resolved product has no brand_id). The regex classification is the
+# last-resort heuristic when the product is unmapped or unbranded.
 _OWN_BRAND_RE = re.compile(
     r'(?:Sendai|SENDAI|\bSD\b|\bS/D\b|S\.D\.|'
     r'สิงห์|Golden\s*Lion|GOLDEN\s*LION|GOLDENLION|GL-|'
@@ -105,13 +104,8 @@ _BASE_QUERY = """
            es.product_code,
            es.product_name_raw,
            -- Derive brand_kind from the resolved product's brand at read
-           -- time, NOT from es.brand_kind. The cached column is set at
-           -- import + by the mig 063 trigger (on products.brand_id), but
-           -- product_code_mapping remaps (apply_unit_aware_remap,
-           -- cleanup_split_mapping_stubs, etc.) don't fire the trigger,
-           -- so the cache can lag behind the resolved product. NULL
-           -- (unresolved or brand_id IS NULL) preserves the regex
-           -- fallback contract for unbranded products.
+           -- time. (The express_sales.brand_kind cache was removed in
+           -- mig 068; this is now the only source of truth.)
            CASE WHEN b.is_own_brand = 1 THEN 'own'
                 WHEN b.is_own_brand = 0 THEN 'third_party'
                 ELSE NULL END    AS brand_kind,
@@ -633,7 +627,7 @@ def get_invoice_line_breakdown(year_month, salesperson_code, invoice_no, db_path
                es.unit_price,
                es.net               AS line_net,
                -- See _BASE_QUERY for rationale: derive from resolved
-               -- product's brand, not the (possibly stale) es.brand_kind.
+               -- product's brand (the brand_kind cache is gone per mig 068).
                CASE WHEN b.is_own_brand = 1 THEN 'own'
                     WHEN b.is_own_brand = 0 THEN 'third_party'
                     ELSE NULL END   AS brand_kind,

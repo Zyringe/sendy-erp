@@ -89,34 +89,6 @@ def _product_id_by_code(conn, code, unit=None):
     return row[0] if row else None
 
 
-def _brand_kind_for_product(conn, product_id):
-    """Return 'own' / 'third_party' / None from a product's brand.
-
-    Mirrors the mig 063 trigger contract: a resolved product whose brand
-    row is missing (products.brand_id NULL, or pointing nowhere) yields
-    NULL, NOT 'third_party'. This is important — downstream commission
-    code falls back to regex classification only when brand_kind is NULL.
-    Defaulting to 'third_party' here would lock unbranded but
-    own-brand-looking rows into the lower rate.
-    """
-    if product_id is None:
-        return None
-    row = conn.execute(
-        """
-        SELECT CASE
-                 WHEN b.id IS NULL    THEN NULL
-                 WHEN b.is_own_brand = 1 THEN 'own'
-                 ELSE 'third_party'
-               END
-          FROM products p
-          LEFT JOIN brands b ON b.id = p.brand_id
-         WHERE p.id = ?
-        """,
-        (product_id,),
-    ).fetchone()
-    return row[0] if row else None
-
-
 # ── per-file-type writers ────────────────────────────────────────────────────
 def _existing_doc_nos(conn, table):
     return {r[0] for r in conn.execute(f'SELECT doc_no FROM {table}').fetchall()}
@@ -301,23 +273,22 @@ def _import_sales(conn, path, batch_id, company_id, incremental=True):
         # express_sales.unit value must be on the canonical alias.
         norm_unit = bsn_units.normalize_unit(r.unit)
         prod_id = _product_id_by_code(conn, r.product_code, norm_unit)
-        brand_kind = _brand_kind_for_product(conn, prod_id)
         conn.execute("""
             INSERT INTO express_sales
                 (batch_id, doc_no, line_no, doc_type, date_iso, company_id,
                  customer_code, customer_name, customer_id,
-                 product_code, product_id, product_name_raw, brand_kind,
+                 product_code, product_id, product_name_raw,
                  qty, unit, return_flag, unit_price, vat_type,
                  discount, total, total_discount, net, ref_doc, is_warning)
             VALUES (?, ?, ?, ?, ?, ?,
                     ?, ?, ?,
-                    ?, ?, ?, ?,
+                    ?, ?, ?,
                     ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?)
         """, (
             batch_id, r.doc_no, r.line_no, doc_type, r.date_iso, company_id,
             customer_code, r.customer_name, cust_id,
-            r.product_code, prod_id, r.product_name, brand_kind,
+            r.product_code, prod_id, r.product_name,
             r.qty, norm_unit, r.return_flag, r.unit_price, r.vat_type,
             r.discount, r.total, r.total_discount, r.net, r.ref_doc, int(r.is_warning),
         ))
