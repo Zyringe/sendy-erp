@@ -27,6 +27,7 @@ from blueprints.mobile import bp_mobile
 from blueprints.hr import bp_hr
 from blueprints.cashbook import bp_cashbook
 import cashflow as cf_mod
+import revenue as rev_mod
 
 app = Flask(__name__)
 # Honor X-Forwarded-Proto/Host from Railway's edge so url_for and post-login
@@ -214,6 +215,7 @@ _ENDPOINT_MODULE = {
     # accounting
     'accounting_summary': 'accounting',
     'cashflow_dashboard': 'accounting',
+    'revenue_dashboard': 'accounting',
     'trade_dashboard': 'accounting',
     'sales_view': 'accounting',
     'sales_doc': 'accounting',
@@ -3085,20 +3087,14 @@ def cashflow_dashboard():
         except (ValueError, IndexError):
             return ym + '-31'
 
-    # Default: last 12 calendar months ending today's month
+    # Default: last 12 calendar months ending today's month (inclusive).
+    # Subtract 11 from (year*12 + month-1) to land on the same month one year ago + 1.
     if not from_month or not to_month:
         today = date.today()
-        to_month   = today.strftime('%Y-%m')
-        # 12 months back: subtract 11 months
-        fm_year  = today.year  - ((11 - today.month + 1) // 12)
-        fm_month = ((today.month - 12) % 12) or 12
-        if today.month <= 12:
-            fm_year  = today.year if today.month > 12 else today.year - 1
-            fm_month = today.month - 11
-            if fm_month <= 0:
-                fm_month += 12
-                fm_year  -= 1
-        from_month = f'{fm_year:04d}-{fm_month:02d}'
+        to_month = today.strftime('%Y-%m')
+        total = today.year * 12 + (today.month - 1) - 11
+        fm_year, fm_month = divmod(total, 12)
+        from_month = f'{fm_year:04d}-{fm_month + 1:02d}'
 
     date_from = _month_start(from_month)
     date_to   = _month_end(to_month)
@@ -3121,6 +3117,92 @@ def cashflow_dashboard():
         total_receipts=total_receipts,
         total_outstanding=total_outstanding,
         total_open_count=total_open_count,
+        from_month=from_month,
+        to_month=to_month,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+
+# ── Revenue Dashboard ─────────────────────────────────────────────────────────
+
+@app.route('/revenue')
+def revenue_dashboard():
+    """Revenue dashboard: monthly revenue (accrual) + accrual-vs-cash
+    side-by-side + top customers + top brands + period KPIs.
+
+    Admin + manager only (same gating as cashflow_dashboard).
+    Optional ?from=YYYY-MM&to=YYYY-MM period filter.
+    Default: last 12 months ending today's month.
+    """
+    if session.get('role') not in ('admin', 'manager'):
+        flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
+        return redirect(url_for('dashboard'))
+
+    from_month = request.args.get('from') or None
+    to_month   = request.args.get('to')   or None
+
+    def _month_start(ym):
+        return ym + '-01'
+
+    def _month_end(ym):
+        import calendar as _cal
+        try:
+            y, m = int(ym[:4]), int(ym[5:7])
+            return f'{y:04d}-{m:02d}-{_cal.monthrange(y, m)[1]:02d}'
+        except (ValueError, IndexError):
+            return ym + '-31'
+
+    # Default: last 12 calendar months ending today's month (inclusive).
+    # Subtract 11 from (year*12 + month-1) to land on the same month one year ago + 1.
+    if not from_month or not to_month:
+        today = date.today()
+        to_month = today.strftime('%Y-%m')
+        total = today.year * 12 + (today.month - 1) - 11
+        fm_year, fm_month = divmod(total, 12)
+        from_month = f'{fm_year:04d}-{fm_month + 1:02d}'
+
+    date_from = _month_start(from_month)
+    date_to   = _month_end(to_month)
+
+    summary       = rev_mod.revenue_summary(date_from=date_from, date_to=date_to)
+    revenue_rows  = cf_mod.revenue_by_month(date_from=date_from, date_to=date_to)
+    cash_rows     = cf_mod.cash_in_by_month(date_from=date_from, date_to=date_to)
+    top_customers = rev_mod.top_customers_by_revenue(
+                        date_from=date_from, date_to=date_to, limit=20)
+    top_brands    = rev_mod.top_brands_by_revenue(
+                        date_from=date_from, date_to=date_to, limit=10)
+
+    # Accrual-vs-Cash by month: full outer join in Python so gaps show as 0.
+    months = sorted({r['month'] for r in revenue_rows} |
+                    {r['month'] for r in cash_rows})
+    rev_by_m  = {r['month']: r['revenue'] for r in revenue_rows}
+    cash_by_m = {r['month']: r['cash_in']  for r in cash_rows}
+    month_compare = []
+    for m in months:
+        rev_v  = rev_by_m.get(m, 0.0)
+        cash_v = cash_by_m.get(m, 0.0)
+        month_compare.append({
+            'month':   m,
+            'revenue': round(rev_v, 2),
+            'cash_in': round(cash_v, 2),
+            'gap':     round(rev_v - cash_v, 2),
+        })
+
+    total_cash_in = round(sum(r['cash_in'] for r in cash_rows), 2)
+
+    return render_template(
+        'revenue.html',
+        total_revenue=summary['total_revenue'],
+        total_invoices=summary['total_invoices'],
+        total_customers=summary['total_customers'],
+        aov=summary['aov'],
+        total_cash_in=total_cash_in,
+        revenue_rows=revenue_rows,
+        cash_rows=cash_rows,
+        month_compare=month_compare,
+        top_customers=top_customers,
+        top_brands=top_brands,
         from_month=from_month,
         to_month=to_month,
         date_from=date_from,

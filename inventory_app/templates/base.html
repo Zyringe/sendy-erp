@@ -119,6 +119,10 @@
        class="sidebar-link {% if request.endpoint == 'cashflow_dashboard' %}active{% endif %}">
       <i class="bi bi-cash-stack"></i> กระแสเงินสด
     </a>
+    <a href="{{ url_for('revenue_dashboard') }}"
+       class="sidebar-link {% if request.endpoint == 'revenue_dashboard' %}active{% endif %}">
+      <i class="bi bi-graph-up"></i> รายได้
+    </a>
     {% endif %}
     <div class="sidebar-section">การค้า</div>
     <a href="{{ url_for('trade_dashboard') }}"
