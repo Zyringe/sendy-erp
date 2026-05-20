@@ -239,3 +239,52 @@ def test_new_employee_still_auto_created(empty_db_conn):
     start_warnings = [w for w in result["warnings"] if "start_date" in w]
     assert len(start_warnings) >= 1, \
         "Expected 'start_date unknown' warning for new employee"
+
+
+# ── Test 5 — end-to-end idempotence after Put clears a field in HR UI ────────
+
+def test_re_import_idempotent_after_manual_clear(empty_db_conn):
+    """
+    Simulate Put's workflow:
+      1. First import creates EMP with nickname filled.
+      2. Put manually clears the nickname via HR UI (modelled here as a
+         direct UPDATE … SET nickname=NULL).
+      3. Second import on the same sheet row must NOT refill the nickname.
+    """
+    conn = empty_db_conn
+    _seed_companies(conn)  # required for FK; no existing employee seeded
+
+    parsed = _parsed_salary([{
+        "first_name": "ทดสอบ", "last_name": "อิดิ",
+        "nickname":   "ทด",
+        "bank":       None, "bank_account_no": None,
+        "salary": 10000.0, "sso_deduction": 500.0, "is_active": True,
+    }])
+
+    # Pass 1 — creates the employee.
+    result1 = ic.sync_salary_sheet(parsed, conn)
+    emp_code = result1["created"][0]
+    row = conn.execute(
+        "SELECT nickname FROM employees WHERE emp_code=?", (emp_code,)
+    ).fetchone()
+    assert row[0] == "ทด", "Initial sync must populate nickname for new employee"
+
+    # Simulate Put clearing via HR UI.
+    conn.execute(
+        "UPDATE employees SET nickname=NULL WHERE emp_code=?", (emp_code,)
+    )
+    conn.commit()
+
+    # Pass 2 — must NOT refill.
+    result2 = ic.sync_salary_sheet(parsed, conn)
+    row = conn.execute(
+        "SELECT nickname FROM employees WHERE emp_code=?", (emp_code,)
+    ).fetchone()
+    assert row[0] is None, \
+        f"DB nickname must stay NULL on re-import, got {row[0]!r}"
+
+    assert emp_code in result2["skipped"]
+    assert emp_code not in result2["updated"]
+    diffs = [w for w in result2["warnings"] if "DIFF" in w and "nickname" in w]
+    assert len(diffs) == 1, \
+        f"Expected exactly 1 nickname DIFF warning on pass 2, got: {diffs!r}"
