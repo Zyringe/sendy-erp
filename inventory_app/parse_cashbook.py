@@ -36,19 +36,6 @@ from typing import Any, Dict, List, Optional
 import openpyxl
 
 
-# ── Public helpers ────────────────────────────────────────────────────────────
-
-def is_novat_file(path: str) -> bool:
-    """
-    Return True if the filename (basename) contains 'novat' (case-insensitive).
-    Call this in the importer to decide whether to tag transactions as VAT-exempt.
-    Parser itself is file-agnostic; vat_flag is NOT embedded in row data.
-    """
-    import os
-    basename = os.path.basename(path).lower()
-    return "novat" in basename
-
-
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _clean_account_no(raw: Any) -> Optional[str]:
@@ -430,7 +417,7 @@ def _parse_setup_sheet(ws) -> Dict[str, List[str]]:
 
 def parse_cashbook(path: str) -> Dict[str, Any]:
     """
-    Parse a cashbook Excel workbook (NoVat or Vat variant).
+    Parse a cashbook Excel workbook.
 
     Parameters
     ----------
@@ -450,7 +437,6 @@ def parse_cashbook(path: str) -> Dict[str, Any]:
 
     Notes
     -----
-    - does NOT set vat_flag on rows; call is_novat_file(path) in the importer.
     - does NOT write to any database.
     """
     wb = openpyxl.load_workbook(path, data_only=True)

@@ -202,16 +202,34 @@ def _import_cashbook():
     return import_cashbook
 
 
-# ── Helper: ensure mig 056 on the tmp_db ─────────────────────────────────────
+# ── Helper: ensure mig 056 + 067 on the tmp_db ───────────────────────────────
 
 def _ensure_mig056(conn):
-    """Apply migration 056 if cashbook_accounts.is_transfer is missing."""
+    """
+    Apply migration 056 if cashbook_accounts.is_transfer is missing,
+    AND migration 067 if cashbook_transactions still has vat_flag.
+
+    The fixture copies the live DB which may pre-date 067 — without this,
+    the tests' INSERT statements (which no longer include vat_flag) collide
+    with the NOT NULL CHECK constraint on the legacy column.
+    """
     cols = [r[1] for r in conn.execute("PRAGMA table_info(cashbook_accounts)").fetchall()]
     if 'is_transfer' not in cols:
         conn.execute(
             "ALTER TABLE cashbook_accounts ADD COLUMN is_transfer INTEGER NOT NULL DEFAULT 0 "
             "CHECK(is_transfer IN (0,1))"
         )
+        conn.commit()
+
+    txn_cols = [r[1] for r in conn.execute("PRAGMA table_info(cashbook_transactions)").fetchall()]
+    if 'vat_flag' in txn_cols:
+        import os as _os
+        mig_path = _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+            'data', 'migrations', '067_drop_cashbook_vat_flag.sql',
+        )
+        with open(mig_path, 'r') as f:
+            conn.executescript(f.read())
         conn.commit()
 
 
@@ -240,42 +258,6 @@ class TestMigration056:
             "PRAGMA table_info(cashbook_accounts)"
         ).fetchall()]
         assert "is_transfer" in cols, "is_transfer column missing from cashbook_accounts"
-
-
-class TestVatFlagDerivation:
-
-    def test_novat_flag_derived_from_filename(self, synth_wb, tmp_db, tmp_db_conn):
-        """Filename contains 'NoVat' → vat_flag should be 'novat'."""
-        _ensure_mig056(tmp_db_conn)
-        mod = _import_cashbook()
-        result = mod.import_cashbook(synth_wb, conn=tmp_db_conn)
-        tmp_db_conn.commit()
-        # The importer should have stored vat_flag='novat' rows
-        row = tmp_db_conn.execute(
-            "SELECT DISTINCT vat_flag FROM cashbook_transactions WHERE vat_flag IS NOT NULL LIMIT 1"
-        ).fetchone()
-        assert row is not None
-        assert row[0] == "novat"
-
-    def test_explicit_vat_flag_override(self, synth_wb, tmp_db, tmp_db_conn):
-        """Explicit vat_flag='vat' must override filename-based detection."""
-        _ensure_mig056(tmp_db_conn)
-        mod = _import_cashbook()
-        mod.import_cashbook(synth_wb, vat_flag="vat", conn=tmp_db_conn)
-        tmp_db_conn.commit()
-        # Scope to the synthetic accounts (MAIN/PASS) which only this batch creates,
-        # so the assertion is independent of any pre-existing live data.
-        rows = tmp_db_conn.execute(
-            """SELECT DISTINCT vat_flag FROM cashbook_transactions
-               WHERE account_id IN (
-                   SELECT id FROM cashbook_accounts WHERE code IN ('MAIN', 'PASS')
-               )"""
-        ).fetchall()
-        assert len(rows) > 0, "No transactions found for synthetic MAIN/PASS accounts"
-        flags = {r[0] for r in rows}
-        assert flags == {"vat"}, (
-            f"Expected all synthetic-batch rows to have vat_flag='vat', got {flags}"
-        )
 
 
 class TestAccountUpsert:

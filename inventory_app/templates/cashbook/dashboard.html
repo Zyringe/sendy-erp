@@ -3,7 +3,7 @@
 {% block page_title %}บัญชีรับ-จ่าย{% endblock %}
 
 {% block topbar_actions %}
-<a href="{{ url_for('cashbook.export_view', vat=vat_flag) }}"
+<a href="{{ url_for('cashbook.export_view') }}"
    class="btn btn-sm btn-outline-secondary">
   <i class="bi bi-download me-1"></i>Export
 </a>
@@ -16,18 +16,6 @@
 {% endblock %}
 
 {% block content %}
-
-{# ── VAT toggle ─────────────────────────────────────────────────────────── #}
-<div class="mb-3">
-  <a href="{{ url_for('cashbook.dashboard', vat='novat') }}"
-     class="btn btn-sm {% if vat_flag=='novat' %}btn-primary{% else %}btn-outline-secondary{% endif %} me-1">
-    ไม่รวม VAT (NoVat)
-  </a>
-  <a href="{{ url_for('cashbook.dashboard', vat='vat') }}"
-     class="btn btn-sm {% if vat_flag=='vat' %}btn-primary{% else %}btn-outline-secondary{% endif %}">
-    รวม VAT
-  </a>
-</div>
 
 {# ── Headline P&L (excluding transfer accounts) ──────────────────────────── #}
 <div class="row g-3 mb-4">
@@ -115,7 +103,7 @@
           </td>
           <td class="text-end small text-muted">{{ a.txn_count }}</td>
           <td>
-            <a href="{{ url_for('cashbook.account_ledger', account_id=a.id, vat=vat_flag) }}"
+            <a href="{{ url_for('cashbook.account_ledger', account_id=a.id) }}"
                class="btn btn-xs btn-outline-primary btn-sm py-0 px-2 small">บัญชี</a>
           </td>
         </tr>
@@ -159,7 +147,7 @@
           <td class="text-end small">฿{{ "{:,.2f}".format(a.balance) }}</td>
           <td class="text-end small">{{ a.txn_count }}</td>
           <td>
-            <a href="{{ url_for('cashbook.account_ledger', account_id=a.id, vat=vat_flag) }}"
+            <a href="{{ url_for('cashbook.account_ledger', account_id=a.id) }}"
                class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2 small">บัญชี</a>
           </td>
         </tr>

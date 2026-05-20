@@ -570,20 +570,6 @@ class TestWarningsList:
         assert isinstance(result["warnings"], list)
 
 
-class TestVatHelper:
-    """is_novat_file helper function."""
-
-    def test_novat_detection(self):
-        pc = _import_parser()
-        assert pc.is_novat_file("NoVat_Account.xlsx") is True
-        assert pc.is_novat_file("/some/path/novat_account.xlsx") is True
-
-    def test_vat_detection(self):
-        pc = _import_parser()
-        assert pc.is_novat_file("Vat_Account.xlsx") is False
-        assert pc.is_novat_file("Account.xlsx") is False
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Integration test — real file (skipped if absent)
 # ══════════════════════════════════════════════════════════════════════════════
