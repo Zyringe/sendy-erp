@@ -32,12 +32,14 @@ HR sync rules (sync_salary_sheet)
 ----------------------------------
 - Match existing employees by full_name (first+' '+last) or nickname.
 - Existing employees: NO-CLOBBER. Never UPDATE any field. Sheet/DB diffs
-  for the 3 previously-fillable fields (nickname, bank_name,
-  bank_account_no) are surfaced as 'DIFF <emp_code> <field>: ...' entries
-  in result.warnings (bank_account_no values are masked — field name +
-  'differs' marker only). Drift on is_active, sso_deduction, salary is
-  NOT surfaced — manage via HR UI. (Same as pre-no-clobber behaviour:
-  the old "fill if NULL" rule never touched those fields either.)
+  on 5 fields are surfaced as 'DIFF <emp_code> <field>: ...' entries in
+  result.warnings:
+    - 3 previously-fillable text fields: nickname, bank_name, bank_account_no
+      (bank_account_no values are masked — field name + 'differs' marker only).
+    - 2 derived state fields: sso_enrolled (from sheet.sso_deduction > 0),
+      is_active (from sheet.is_active truthy).
+  Drift on salary remains NOT surfaced — managed via employee_salary_history
+  (its own state machine).
 - New employees: create with next EMP-code, company_id=1 (BSN assumption,
   documented), diligence_allowance=0, sso_enrolled=(sso_deduction>0),
   is_active from sheet, start_date=NULL, bank from sheet.
@@ -248,13 +250,16 @@ def sync_salary_sheet(parsed, conn):
                        no-clobber rule for existing employees; reserved for
                        future use, dict-shape preserved for caller stability)
       skipped        — list of emp_codes whose existing-employee match was
-                       not modified; mismatches on the 3 previously-fillable
-                       fields (nickname, bank_name, bank_account_no) are
-                       surfaced via 'warnings' as DIFF lines (bank_account_no
-                       masked). Drift on is_active, sso_deduction, salary is
-                       NOT surfaced — manage via HR UI.
+                       not modified; mismatches on 5 fields are surfaced via
+                       'warnings' as DIFF lines:
+                         text:  nickname, bank_name, bank_account_no
+                                (bank_account_no masked)
+                         int:   sso_enrolled (from sso_deduction>0),
+                                is_active
+                       Drift on salary is NOT surfaced — manage via
+                       employee_salary_history (its own state machine).
       warnings       — list of warning strings (start_date unknown for new
-                       employees; DIFF lines for the 3 lockable fields only)
+                       employees; DIFF lines for the 5 covered fields)
     """
     salary_rows = parsed.get("salary", [])
     result = {
@@ -296,17 +301,18 @@ def sync_salary_sheet(parsed, conn):
 
         if emp_row is not None:
             # ── Existing employee — NO-CLOBBER RULE ──────────────────────────
-            # Diff the 3 previously-fillable fields and surface mismatches as
-            # warnings. Never UPDATE. bank_account_no is masked (PII): emit
-            # field name only, never raw values from either side.
+            # Diff 5 fields (3 previously-fillable text + 2 derived state) and
+            # surface mismatches as warnings. Never UPDATE. bank_account_no is
+            # masked (PII): emit field name only, never raw values from either
+            # side.
             emp_code = emp_row[1]
+            # Text fields — treat None ≡ '' as blank.
             for idx, field, sheet_val, sensitive in (
                 (2, "nickname",        nickname,  False),
                 (3, "bank_name",       bank,      False),
                 (4, "bank_account_no", bank_acct, True),
             ):
                 db_val = emp_row[idx]
-                # Treat None and "" as equivalent (both = blank).
                 sv = sheet_val or None
                 dv = db_val or None
                 if sv != dv:
@@ -320,6 +326,24 @@ def sync_salary_sheet(parsed, conn):
                             f"DIFF {emp_code} {field}: sheet={sheet_val!r} "
                             f"db={db_val!r} (skipped — edit in HR UI to change)"
                         )
+
+            # Derived int-valued state — direct equality, no None-normalization
+            # (0 is a valid value, not a blank). sso_enrolled is derived from
+            # the sheet's sso_deduction (>0 → 1); is_active is derived from
+            # the sheet's truthy boolean → 1.
+            sheet_sso_enrolled = 1 if sso_ded > 0 else 0
+            sheet_is_active    = 1 if is_active else 0
+            for idx, field, sheet_val in (
+                (6, "sso_enrolled", sheet_sso_enrolled),
+                (7, "is_active",    sheet_is_active),
+            ):
+                db_val = emp_row[idx]
+                if sheet_val != db_val:
+                    result["warnings"].append(
+                        f"DIFF {emp_code} {field}: sheet={sheet_val} "
+                        f"db={db_val} (skipped — edit in HR UI to change)"
+                    )
+
             result["skipped"].append(emp_code)
             continue
 

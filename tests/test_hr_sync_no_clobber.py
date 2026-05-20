@@ -28,7 +28,8 @@ def _seed_companies(conn):
 
 
 def _seed_employee(conn, *, full_name, nickname=None, bank_name=None,
-                   bank_account_no=None, emp_code="EMP001"):
+                   bank_account_no=None, emp_code="EMP001",
+                   sso_enrolled=0, is_active=1):
     """Insert one row into employees with the schema columns the sync touches."""
     _seed_companies(conn)
     conn.execute(
@@ -36,8 +37,9 @@ def _seed_employee(conn, *, full_name, nickname=None, bank_name=None,
              (emp_code, full_name, nickname, bank_name, bank_account_no,
               company_id, sso_enrolled, diligence_allowance, is_active,
               start_date, probation_days)
-           VALUES (?, ?, ?, ?, ?, 1, 0, 0, 1, NULL, 90)""",
-        (emp_code, full_name, nickname, bank_name, bank_account_no),
+           VALUES (?, ?, ?, ?, ?, 1, ?, 0, ?, NULL, 90)""",
+        (emp_code, full_name, nickname, bank_name, bank_account_no,
+         sso_enrolled, is_active),
     )
     conn.commit()
 
@@ -99,7 +101,7 @@ def test_existing_employee_with_non_null_nickname_not_modified(empty_db_conn):
     """
     conn = empty_db_conn
     _seed_employee(conn, full_name="วิภา ทดสอบ", nickname="หลุย",
-                   emp_code="EMP002")
+                   sso_enrolled=1, is_active=1, emp_code="EMP002")
 
     parsed = _parsed_salary([{
         "first_name": "วิภา", "last_name": "ทดสอบ",
@@ -136,7 +138,8 @@ def test_existing_employee_matching_sheet_silent_skip(empty_db_conn):
     conn = empty_db_conn
     _seed_employee(conn, full_name="สมศักดิ์ ทดสอบ",
                    nickname="ศักดิ์", bank_name="กสิกร",
-                   bank_account_no="1234567890", emp_code="EMP003")
+                   bank_account_no="1234567890",
+                   sso_enrolled=1, is_active=1, emp_code="EMP003")
 
     parsed = _parsed_salary([{
         "first_name": "สมศักดิ์", "last_name": "ทดสอบ",
@@ -166,7 +169,8 @@ def test_bank_account_no_diff_does_not_leak_raw_values(empty_db_conn):
     conn = empty_db_conn
     _seed_employee(conn, full_name="สมหญิง ทดสอบ",
                    nickname="หญิง", bank_name="ไทยพาณิชย์",
-                   bank_account_no="1234567890", emp_code="EMP004")
+                   bank_account_no="1234567890",
+                   sso_enrolled=1, is_active=1, emp_code="EMP004")
 
     parsed = _parsed_salary([{
         "first_name": "สมหญิง", "last_name": "ทดสอบ",
@@ -404,3 +408,106 @@ def test_advance_unmatched_when_existing_nickname_null(empty_db_conn, tmp_path):
     assert adv_rows[0][0] is None, \
         "Advance must be unmatched (employee_id=NULL) until nickname is set"
     assert adv_rows[0][1] == "ทด"
+
+
+# ── Issue #43 — extended drift coverage: sso_enrolled + is_active ─────────────
+
+def test_sheet_sso_deduction_diff_emits_warning(empty_db_conn):
+    """
+    Seed employee with sso_enrolled=1, sheet row has sso_deduction=0.0
+    (derived sheet_sso_enrolled=0). DIFF warning expected. DB unchanged.
+    """
+    conn = empty_db_conn
+    _seed_employee(conn, full_name="สมจิต ทดสอบ", nickname="จิต",
+                   bank_name="กสิกร", bank_account_no="1111000022",
+                   sso_enrolled=1, is_active=1, emp_code="EMP020")
+
+    parsed = _parsed_salary([{
+        "first_name": "สมจิต", "last_name": "ทดสอบ",
+        "nickname":   "จิต",                       # matches DB
+        "bank":       "กสิกร",                    # matches DB
+        "bank_account_no": "1111000022",          # matches DB
+        "salary": 12000.0, "sso_deduction": 0.0,   # diverges (sheet → 0; DB → 1)
+        "is_active": True,
+    }])
+
+    result = ic.sync_salary_sheet(parsed, conn)
+
+    db_sso = conn.execute(
+        "SELECT sso_enrolled FROM employees WHERE emp_code='EMP020'"
+    ).fetchone()[0]
+    assert db_sso == 1, f"DB sso_enrolled must remain 1, got {db_sso!r}"
+
+    diff_warnings = [w for w in result["warnings"] if "DIFF" in w]
+    sso_diffs = [w for w in diff_warnings if "sso_enrolled" in w]
+    assert len(sso_diffs) == 1, \
+        f"Expected exactly 1 sso_enrolled DIFF warning, got: {diff_warnings!r}"
+    msg = sso_diffs[0]
+    assert "EMP020" in msg
+    assert "sheet=0" in msg
+    assert "db=1" in msg
+    assert "EMP020" in result["skipped"]
+
+
+def test_sheet_is_active_diff_emits_warning(empty_db_conn):
+    """
+    Seed employee with is_active=1, sheet row has is_active=False.
+    DIFF warning expected. DB unchanged.
+    """
+    conn = empty_db_conn
+    _seed_employee(conn, full_name="ลาออก ทดสอบ", nickname="ลา",
+                   bank_name="ไทยพาณิชย์", bank_account_no="9999888877",
+                   sso_enrolled=0, is_active=1, emp_code="EMP021")
+
+    parsed = _parsed_salary([{
+        "first_name": "ลาออก", "last_name": "ทดสอบ",
+        "nickname":   "ลา",
+        "bank":       "ไทยพาณิชย์",
+        "bank_account_no": "9999888877",
+        "salary": 0.0, "sso_deduction": 0.0,
+        "is_active": False,                        # diverges (sheet → 0; DB → 1)
+    }])
+
+    result = ic.sync_salary_sheet(parsed, conn)
+
+    db_active = conn.execute(
+        "SELECT is_active FROM employees WHERE emp_code='EMP021'"
+    ).fetchone()[0]
+    assert db_active == 1, f"DB is_active must remain 1, got {db_active!r}"
+
+    diff_warnings = [w for w in result["warnings"] if "DIFF" in w]
+    active_diffs = [w for w in diff_warnings if "is_active" in w]
+    assert len(active_diffs) == 1, \
+        f"Expected exactly 1 is_active DIFF warning, got: {diff_warnings!r}"
+    msg = active_diffs[0]
+    assert "EMP021" in msg
+    assert "sheet=0" in msg
+    assert "db=1" in msg
+    assert "EMP021" in result["skipped"]
+
+
+def test_sso_and_active_match_no_warning(empty_db_conn):
+    """
+    All 5 fields match sheet exactly → zero DIFF warnings.
+    Regression guard ensuring the new sso/active diffs don't fire on equal values.
+    """
+    conn = empty_db_conn
+    _seed_employee(conn, full_name="ตรงกัน ทดสอบ", nickname="ตรง",
+                   bank_name="กสิกร", bank_account_no="1234567890",
+                   sso_enrolled=1, is_active=1, emp_code="EMP022")
+
+    parsed = _parsed_salary([{
+        "first_name": "ตรงกัน", "last_name": "ทดสอบ",
+        "nickname":   "ตรง",
+        "bank":       "กสิกร",
+        "bank_account_no": "1234567890",
+        "salary": 15000.0, "sso_deduction": 750.0,  # >0 → sheet_sso_enrolled=1 (matches)
+        "is_active": True,                          # → sheet_is_active=1 (matches)
+    }])
+
+    result = ic.sync_salary_sheet(parsed, conn)
+
+    diff_warnings = [w for w in result["warnings"] if "DIFF" in w]
+    assert diff_warnings == [], \
+        f"Expected zero DIFF warnings, got: {diff_warnings!r}"
+    assert "EMP022" in result["skipped"]
