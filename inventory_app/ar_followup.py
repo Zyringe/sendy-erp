@@ -166,8 +166,7 @@ def _customer_group(conn, customer: str) -> tuple:
     If the name has no associated customer_code in sales or logs, returns
     (None, [customer]) so behavior degrades to a single-name lookup.
 
-    Used by detail/followup lookups so the workspace doesn't split one
-    debtor across name spellings (Codex review 2026-05-20).
+    Used internally by _resolve_target as the name-based fallback path.
     """
     row = conn.execute("""
         SELECT customer_code FROM sales_transactions
@@ -199,17 +198,48 @@ def _customer_group(conn, customer: str) -> tuple:
     return (code, names)
 
 
+def _resolve_target(conn, target: str) -> tuple:
+    """Resolve a URL/lookup target to (customer_code, [names_list]).
+
+    `target` can be EITHER a customer_code (stable, preferred URL key) OR a
+    customer name (legacy bookmark / orphan customer fallback). Code lookup
+    wins when both interpretations are possible. Returns (None, [target])
+    for unresolvable orphan strings so callers degrade to single-string
+    lookup instead of erroring.
+
+    Why: routing by customer_code keeps URLs stable across upstream name
+    typo-fixes and disambiguates same-name / different-customer collisions
+    (scrutinize findings 2 & 3, 2026-05-20).
+    """
+    if not target:
+        return (None, [])
+    target = target.strip()
+    # Try as customer_code first.
+    name_rows = conn.execute("""
+        SELECT DISTINCT customer FROM sales_transactions
+        WHERE TRIM(customer_code) = ? AND customer IS NOT NULL AND customer != ''
+        UNION
+        SELECT DISTINCT customer FROM ar_followup_log
+        WHERE TRIM(customer_code) = ? AND customer IS NOT NULL AND customer != ''
+    """, (target, target)).fetchall()
+    if name_rows:
+        return (target, [r[0] for r in name_rows])
+    # Fall back to name-based resolution (legacy bookmarks / orphan customers).
+    return _customer_group(conn, target)
+
+
 def get_customer_ar_detail(customer: str,
                             conn: Optional[sqlite3.Connection] = None,
                             db_path: Optional[str] = None) -> List[dict]:
     """Outstanding invoices for one customer with age_days, sorted by age DESC.
 
     Each row carries everything `invoice_settlement` returns + age_days + vat_type.
-    Spans all name spellings that share `customer`'s customer_code.
+    `customer` may be a customer_code OR a name — `_resolve_target` figures
+    it out and pulls invoices across every name in the customer group.
     """
     with _ConnCtx(conn, db_path) as c:
         today = date.today()
-        _, names = _customer_group(c, customer)
+        _, names = _resolve_target(c, customer)
         all_rows = []
         seen_docs = set()
         for n in names:
@@ -322,11 +352,11 @@ def get_customer_followups(customer: str,
                            db_path: Optional[str] = None) -> List[dict]:
     """All outreach rows for one customer, newest log_date first (id tiebreak).
 
-    Spans all name spellings that share `customer`'s customer_code so a
-    debtor's history doesn't fragment across name typos.
+    `customer` may be a customer_code OR a name — `_resolve_target` figures
+    it out and pulls history across every name in the customer group.
     """
     with _ConnCtx(conn, db_path) as c:
-        code, names = _customer_group(c, customer)
+        code, names = _resolve_target(c, customer)
         if code:
             placeholders = ','.join('?' * len(names))
             rows = c.execute(f"""
@@ -346,30 +376,55 @@ def get_customer_followups(customer: str,
 def list_overdue_followups(as_of: Optional[str] = None,
                             conn: Optional[sqlite3.Connection] = None,
                             db_path: Optional[str] = None) -> List[dict]:
-    """Outreach rows whose `next_action_date` is on or before as_of (today),
-    restricted to the LATEST log per customer-group and excluding terminal
-    results (paid_full / closed).
+    """Past-due outreach obligations per customer group.
 
-    Why: an older overdue task is meaningless once a newer log has rescheduled
-    it or marked the account paid_full / closed. Returning every past-due row
-    would re-surface obligations that have already been resolved or superseded.
+    Two-CTE design:
+      latest_with_action — the newest log per group that has a non-NULL
+        next_action_date (this is the "current plan" the customer is on)
+      latest_overall — the newest log per group, regardless of next_action_date
+        (used to detect terminal state from a NULL-next-action follow-up)
+
+    A customer appears in overdue when:
+      - their `latest_with_action.next_action_date` <= `as_of`, AND
+      - their `latest_overall.result` is NOT terminal (paid_full / closed)
+
+    Why both CTEs: if staff logs "no_answer" with no follow-up date set, the
+    prior past-due plan must stay visible (the debt is not resolved), but if
+    the latest log is `paid_full` (terminal) with NULL next_action, the
+    customer is closed and must not re-surface. The single-CTE / "rn=1 from
+    all rows" approach silently dropped the first case (scrutinize finding 1,
+    2026-05-20).
     """
     as_of = as_of or date.today().isoformat()
     with _ConnCtx(conn, db_path) as c:
         rows = c.execute("""
-            WITH ranked AS (
+            WITH
+            latest_overall AS (
                 SELECT *,
                        ROW_NUMBER() OVER (
                          PARTITION BY COALESCE(NULLIF(TRIM(customer_code), ''), customer)
                          ORDER BY log_date DESC, id DESC
                        ) AS rn
                 FROM ar_followup_log
+            ),
+            latest_with_action AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY COALESCE(NULLIF(TRIM(customer_code), ''), customer)
+                         ORDER BY log_date DESC, id DESC
+                       ) AS rn_action
+                FROM ar_followup_log
+                WHERE next_action_date IS NOT NULL
             )
-            SELECT * FROM ranked
-            WHERE rn = 1
-              AND next_action_date IS NOT NULL
-              AND next_action_date <= ?
-              AND result NOT IN ('paid_full', 'closed')
-            ORDER BY next_action_date ASC, id ASC
+            SELECT la.*
+            FROM latest_with_action la
+            JOIN latest_overall lo
+              ON COALESCE(NULLIF(TRIM(la.customer_code), ''), la.customer)
+                 = COALESCE(NULLIF(TRIM(lo.customer_code), ''), lo.customer)
+             AND lo.rn = 1
+            WHERE la.rn_action = 1
+              AND la.next_action_date <= ?
+              AND lo.result NOT IN ('paid_full', 'closed')
+            ORDER BY la.next_action_date ASC, la.id ASC
         """, (as_of,)).fetchall()
-        return [{k: r[k] for k in r.keys() if k != 'rn'} for r in rows]
+        return [{k: r[k] for k in r.keys() if k != 'rn_action'} for r in rows]

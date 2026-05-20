@@ -405,3 +405,135 @@ def test_overdue_includes_only_unresolved_past_due(empty_db_conn):
 
     overdue = arf.list_overdue_followups(conn=c, as_of=today.isoformat())
     assert [r['customer'] for r in overdue] == ['A']
+
+
+# ── overdue: fall-back to prior log when latest has NULL next_action_date ───
+# Scrutinize finding 1 (major): a latest log without a planned follow-up date
+# would silently swallow customers whose prior log left a past-due obligation.
+# The intent ("which customers need attention?") demands that the prior plan
+# stays visible until something terminal (paid_full / closed) lands.
+
+def test_overdue_falls_back_to_prior_when_latest_has_null(empty_db_conn):
+    """Latest log = no_answer with no follow-up date → keep showing the
+    older past-due obligation; customer is NOT resolved."""
+    c = empty_db_conn
+    today = date.today()
+    arf.log_outreach(conn=c, customer='A', customer_code='CA',
+                     log_date=(today - timedelta(days=20)).isoformat(),
+                     channel='phone', result='promised',
+                     next_action_date=(today - timedelta(days=10)).isoformat(),
+                     created_by='admin')
+    arf.log_outreach(conn=c, customer='A', customer_code='CA',
+                     log_date=(today - timedelta(days=5)).isoformat(),
+                     channel='phone', result='no_answer',
+                     next_action_date=None, created_by='admin')
+    c.commit()
+
+    overdue = arf.list_overdue_followups(conn=c, as_of=today.isoformat())
+    customers = [r['customer'] for r in overdue]
+    assert customers == ['A'], (
+        "Customer A has unresolved past-due plan from prior log; "
+        "latest log set no new follow-up date — must not vanish."
+    )
+    # And the row carries the prior plan's next_action_date, not None.
+    assert overdue[0]['next_action_date'] == (today - timedelta(days=10)).isoformat()
+
+
+def test_overdue_excludes_when_latest_terminal_even_with_prior_action_date(empty_db_conn):
+    """Latest log = paid_full (NULL next_action) overrides a prior past-due
+    plan; customer is closed, must not appear."""
+    c = empty_db_conn
+    today = date.today()
+    arf.log_outreach(conn=c, customer='A', customer_code='CA',
+                     log_date=(today - timedelta(days=20)).isoformat(),
+                     channel='phone', result='promised',
+                     next_action_date=(today - timedelta(days=10)).isoformat(),
+                     created_by='admin')
+    arf.log_outreach(conn=c, customer='A', customer_code='CA',
+                     log_date=(today - timedelta(days=2)).isoformat(),
+                     channel='visit', result='paid_full',
+                     next_action_date=None, created_by='admin')
+    c.commit()
+
+    assert arf.list_overdue_followups(conn=c, as_of=today.isoformat()) == []
+
+
+def test_overdue_uses_latest_action_date_when_present(empty_db_conn):
+    """When the latest log has its own non-NULL next_action_date in the
+    future, the prior past-due plan is superseded (the staff explicitly
+    rescheduled). Customer NOT overdue."""
+    c = empty_db_conn
+    today = date.today()
+    arf.log_outreach(conn=c, customer='A', customer_code='CA',
+                     log_date=(today - timedelta(days=20)).isoformat(),
+                     channel='phone', result='promised',
+                     next_action_date=(today - timedelta(days=10)).isoformat(),
+                     created_by='admin')
+    arf.log_outreach(conn=c, customer='A', customer_code='CA',
+                     log_date=(today - timedelta(days=2)).isoformat(),
+                     channel='phone', result='promised',
+                     next_action_date=(today + timedelta(days=7)).isoformat(),
+                     created_by='admin')
+    c.commit()
+
+    assert arf.list_overdue_followups(conn=c, as_of=today.isoformat()) == []
+
+
+# ── _resolve_target: route key can be either customer_code OR name ──────────
+# Scrutinize finding 2 (major) + 3 (nit): URL keys must be stable across
+# typo-fixes upstream. customer_code is the right primary key when present.
+
+def test_resolve_target_accepts_customer_code(empty_db_conn):
+    """A bare customer_code string resolves to the full name-set of that code."""
+    c = empty_db_conn
+    today = date.today().isoformat()
+    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today, 1000, line=1)
+    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today, 2000, line=1)
+    c.commit()
+
+    code, names = arf._resolve_target(c, 'CA')
+    assert code == 'CA'
+    assert set(names) == {'ลูกค้า A', 'ลูกค้า A '}
+
+
+def test_resolve_target_falls_back_to_name(empty_db_conn):
+    """Old name-based bookmark / walk-in still resolves correctly."""
+    c = empty_db_conn
+    today = date.today().isoformat()
+    _ins_sale(c, 'IV01', 'หน้าร้าน', None, today, 100, line=1)
+    c.commit()
+
+    code, names = arf._resolve_target(c, 'หน้าร้าน')
+    assert code is None
+    assert names == ['หน้าร้าน']
+
+
+def test_resolve_target_code_lookup_finds_all_invoices(empty_db_conn):
+    """Detail lookup via customer_code returns BOTH variant invoices."""
+    c = empty_db_conn
+    today = date.today().isoformat()
+    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today, 1000, line=1)
+    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today, 2000, line=1)
+    c.commit()
+
+    # Detail lookup uses _resolve_target under the hood now.
+    rows = arf.get_customer_ar_detail(customer='CA', conn=c)
+    assert sorted(r['doc_base'] for r in rows) == ['IV01', 'IV02']
+
+
+def test_resolve_target_code_lookup_finds_all_followups(empty_db_conn):
+    """Followup lookup via customer_code returns BOTH variant logs."""
+    c = empty_db_conn
+    today = date.today().isoformat()
+    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today, 1000, line=1)
+    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today, 2000, line=1)
+    arf.log_outreach(conn=c, customer='ลูกค้า A',  customer_code='CA',
+                     log_date=today, channel='phone',
+                     result='no_answer', created_by='admin')
+    arf.log_outreach(conn=c, customer='ลูกค้า A ', customer_code='CA',
+                     log_date=today, channel='line',
+                     result='promised', created_by='admin')
+    c.commit()
+
+    rows = arf.get_customer_followups(customer='CA', conn=c)
+    assert len(rows) == 2

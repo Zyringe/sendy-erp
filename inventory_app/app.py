@@ -3394,20 +3394,35 @@ def ar_followup():
     )
 
 
-@app.route('/accounting/ar-followup/customer/<path:customer_name>')
-def ar_followup_customer(customer_name):
+@app.route('/accounting/ar-followup/customer/<path:customer_key>')
+def ar_followup_customer(customer_key):
+    """Per-customer detail page. `customer_key` is the URL slug — either a
+    `customer_code` (preferred, stable) or a customer name (legacy bookmark
+    or orphan customer). Resolved by `arf_mod._resolve_target` inside the
+    detail/followup helpers."""
     redirect_ = _arf_require_manager()
     if redirect_:
         return redirect_
 
-    invoices = arf_mod.get_customer_ar_detail(customer=customer_name)
-    followups = arf_mod.get_customer_followups(customer=customer_name)
+    invoices = arf_mod.get_customer_ar_detail(customer=customer_key)
+    followups = arf_mod.get_customer_followups(customer=customer_key)
     total_outstanding = round(sum(i['outstanding'] for i in invoices), 2)
-    # Customer code from any invoice (they should all match).
-    customer_code = invoices[0]['customer_code'] if invoices else None
+
+    # Display name = name on the most recent invoice; else newest log; else key.
+    if invoices:
+        latest_inv = max(invoices, key=lambda i: i.get('invoice_date') or '')
+        customer_name = latest_inv['customer']
+        customer_code = latest_inv.get('customer_code')
+    elif followups:
+        customer_name = followups[0]['customer']
+        customer_code = followups[0].get('customer_code')
+    else:
+        customer_name = customer_key
+        customer_code = None
 
     return render_template(
         'ar_followup_detail.html',
+        customer_key=customer_key,
         customer_name=customer_name,
         customer_code=customer_code,
         invoices=invoices,
@@ -3424,6 +3439,12 @@ def ar_followup_log_new():
         return redirect_
 
     customer = request.form.get('customer', '').strip()
+    customer_code = (request.form.get('customer_code') or '').strip() or None
+    # Redirect target = URL slug of the detail page. Prefer customer_code
+    # (stable) over name; fall back to customer_key form field for legacy
+    # bookmarks; finally fall back to the name.
+    customer_key = (request.form.get('customer_key') or '').strip() \
+                   or customer_code or customer
     if not customer:
         flash('ระบุชื่อลูกค้าไม่ถูกต้อง', 'danger')
         return redirect(url_for('ar_followup'))
@@ -3441,7 +3462,7 @@ def ar_followup_log_new():
     try:
         arf_mod.log_outreach(
             customer=customer,
-            customer_code=_f('customer_code'),
+            customer_code=customer_code,
             log_date=_f('log_date') or date.today().isoformat(),
             channel=request.form.get('channel', 'phone'),
             contact_person=_f('contact_person'),
@@ -3456,7 +3477,7 @@ def ar_followup_log_new():
     except sqlite3.IntegrityError as e:
         flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
 
-    return redirect(url_for('ar_followup_customer', customer_name=customer))
+    return redirect(url_for('ar_followup_customer', customer_key=customer_key))
 
 
 @app.route('/accounting/ar-followup/log/<int:log_id>/edit', methods=['POST'])
@@ -3465,7 +3486,7 @@ def ar_followup_log_edit(log_id):
     if redirect_:
         return redirect_
 
-    customer = request.form.get('customer', '').strip()
+    customer_key = (request.form.get('customer_key') or '').strip()
     def _f(name):
         v = request.form.get(name, '').strip()
         return v or None
@@ -3492,8 +3513,8 @@ def ar_followup_log_edit(log_id):
     except sqlite3.IntegrityError as e:
         flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
 
-    if customer:
-        return redirect(url_for('ar_followup_customer', customer_name=customer))
+    if customer_key:
+        return redirect(url_for('ar_followup_customer', customer_key=customer_key))
     return redirect(url_for('ar_followup'))
 
 
@@ -3503,11 +3524,11 @@ def ar_followup_log_delete(log_id):
     if redirect_:
         return redirect_
 
-    customer = request.form.get('customer', '').strip()
+    customer_key = (request.form.get('customer_key') or '').strip()
     arf_mod.delete_outreach(log_id=log_id)
     flash('ลบรายการแล้ว', 'success')
-    if customer:
-        return redirect(url_for('ar_followup_customer', customer_name=customer))
+    if customer_key:
+        return redirect(url_for('ar_followup_customer', customer_key=customer_key))
     return redirect(url_for('ar_followup'))
 
 

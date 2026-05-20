@@ -38,7 +38,7 @@
   <i class="bi bi-exclamation-triangle me-1"></i>
   <strong>{{ overdue|length }} รายการนัดติดตามเกินกำหนด</strong>:
   {% for o in overdue[:5] %}
-    <a href="{{ url_for('ar_followup_customer', customer_name=o.customer) }}">{{ o.customer }}</a> ({{ o.next_action_date }}){% if not loop.last %}, {% endif %}
+    <a href="{{ url_for('ar_followup_customer', customer_key=(o.customer_code or o.customer)) }}">{{ o.customer }}</a> ({{ o.next_action_date }}){% if not loop.last %}, {% endif %}
   {% endfor %}
   {% if overdue|length > 5 %}+ อีก {{ overdue|length - 5 }} ราย{% endif %}
 </div>
@@ -105,7 +105,7 @@
           {% for r in rows %}
           <tr>
             <td>
-              <a href="{{ url_for('ar_followup_customer', customer_name=r.customer) }}">
+              <a href="{{ url_for('ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}">
                 <strong>{{ r.customer }}</strong>
               </a>
               {% if r.customer_code %}<span class="text-subtle small">[{{ r.customer_code }}]</span>{% endif %}

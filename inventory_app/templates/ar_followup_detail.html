@@ -47,6 +47,7 @@
     <form method="post" action="{{ url_for('ar_followup_log_new') }}">
       <input type="hidden" name="customer" value="{{ customer_name }}">
       <input type="hidden" name="customer_code" value="{{ customer_code or '' }}">
+      <input type="hidden" name="customer_key" value="{{ customer_key }}">
       <div class="row g-2">
         <div class="col-md-2">
           <label class="form-label small mb-1">วันที่</label>
@@ -196,7 +197,7 @@
             <td class="text-end">
               <form method="post" action="{{ url_for('ar_followup_log_delete', log_id=f.id) }}"
                     onsubmit="return confirm('ลบรายการนี้?');" class="d-inline">
-                <input type="hidden" name="customer" value="{{ customer_name }}">
+                <input type="hidden" name="customer_key" value="{{ customer_key }}">
                 <button type="submit" class="btn btn-sm btn-link text-danger p-0">ลบ</button>
               </form>
             </td>
