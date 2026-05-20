@@ -152,3 +152,40 @@ def test_existing_employee_matching_sheet_silent_skip(empty_db_conn):
     assert diff_warnings == [], \
         f"Expected zero DIFF warnings, got: {diff_warnings!r}"
     assert "EMP003" in result["skipped"]
+
+
+# ── Test 6 — bank_account_no values must NEVER appear in warning text ────────
+
+def test_bank_account_no_diff_does_not_leak_raw_values(empty_db_conn):
+    """
+    Seed employee with bank_account_no='1234567890' AND matching nickname +
+    bank_name (so they emit no warning). Sheet has a different account number
+    ('9999999999'). The only DIFF warning must be the bank_account_no one,
+    and neither '1234567890' nor '9999999999' may appear in any warning.
+    """
+    conn = empty_db_conn
+    _seed_employee(conn, full_name="สมหญิง ทดสอบ",
+                   nickname="หญิง", bank_name="ไทยพาณิชย์",
+                   bank_account_no="1234567890", emp_code="EMP004")
+
+    parsed = _parsed_salary([{
+        "first_name": "สมหญิง", "last_name": "ทดสอบ",
+        "nickname":   "หญิง",                       # matches DB
+        "bank":       "ไทยพาณิชย์",                 # matches DB
+        "bank_account_no": "9999999999",            # diverges
+        "salary": 14000.0, "sso_deduction": 700.0, "is_active": True,
+    }])
+
+    result = ic.sync_salary_sheet(parsed, conn)
+
+    diff_warnings = [w for w in result["warnings"] if "DIFF" in w]
+    assert len(diff_warnings) == 1, \
+        f"Expected exactly 1 DIFF warning, got: {diff_warnings!r}"
+    msg = diff_warnings[0]
+    assert "bank_account_no" in msg
+    assert "EMP004" in msg
+
+    # PII regression — neither account number may appear in any warning text.
+    for w in result["warnings"]:
+        assert "1234567890" not in w, f"DB account leaked into warning: {w!r}"
+        assert "9999999999" not in w, f"Sheet account leaked into warning: {w!r}"
