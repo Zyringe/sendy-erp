@@ -77,9 +77,14 @@ def test_product_pricing_renders(admin_client, tmp_db):
 
 
 def test_product_detail_unknown_id_redirects_to_list(admin_client):
-    """Unknown id flashes 'ไม่พบสินค้า' and redirects to /products
-    (per blueprints/products.py::product_detail)."""
+    """Unknown id flashes 'ไม่พบสินค้า' and 302-redirects to /products
+    (per blueprints/products.py::product_detail). product_pricing on
+    the same unknown id would abort(404), so this test is specific to
+    the detail route's documented redirect contract."""
     resp = admin_client.get('/products/99999999', follow_redirects=False)
-    # product_detail flashes + redirects; product_pricing aborts(404).
-    # Detail route specifically redirects — assert that path.
-    assert resp.status_code in (302, 404)
+    assert resp.status_code == 302
+    location = resp.headers.get('Location', '')
+    # Tolerate absolute (http://localhost/products) or relative (/products).
+    assert location.endswith('/products') or '/products' in location, (
+        f"Expected redirect to /products, got Location={location!r}"
+    )

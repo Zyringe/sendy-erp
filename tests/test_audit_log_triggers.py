@@ -212,11 +212,22 @@ def test_received_payments_delete_logged(tmp_db):
 # ── rollback ─────────────────────────────────────────────────────────────────
 
 def test_rollback_removes_only_mig070_triggers(tmp_db):
-    """Rollback drops the 4 new triggers but leaves the pre-existing audit_*
-    triggers (e.g. audit_products_insert) intact."""
+    """Rollback drops the 4 new triggers + the audit_log index, removes the
+    bookkeeping row from applied_migrations so the runner re-applies on next
+    boot, and leaves the pre-existing audit_* triggers (e.g.
+    audit_products_insert) intact."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
     _apply_chain(conn)
+
+    # Record the applied-migrations row mig 070 inserts (only present after
+    # the runner's bookkeeping INSERT; the migration script itself doesn't
+    # self-insert, so simulate the runner's INSERT here).
+    conn.execute(
+        "INSERT OR IGNORE INTO applied_migrations (filename, applied_by) "
+        "VALUES ('070_audit_log_triggers.sql', 'test-fixture')"
+    )
+    conn.commit()
 
     new_triggers = (
         "audit_transactions_insert",
@@ -231,6 +242,13 @@ def test_rollback_removes_only_mig070_triggers(tmp_db):
         ).fetchone()
         assert got is not None, f"{name} should exist after mig 070"
 
+    # New audit_log index created by forward mig 070.
+    got = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='index' AND name='idx_audit_log_table_time'"
+    ).fetchone()
+    assert got is not None, "idx_audit_log_table_time should exist after mig 070"
+
     _apply(conn, ROLLBACK_070)
 
     for name in new_triggers:
@@ -239,6 +257,23 @@ def test_rollback_removes_only_mig070_triggers(tmp_db):
             (name,),
         ).fetchone()
         assert got is None, f"{name} should be dropped after rollback"
+
+    # Index dropped by rollback.
+    got = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='index' AND name='idx_audit_log_table_time'"
+    ).fetchone()
+    assert got is None, "idx_audit_log_table_time should be dropped after rollback"
+
+    # applied_migrations bookkeeping row removed so runner re-applies on boot.
+    row = conn.execute(
+        "SELECT filename FROM applied_migrations "
+        "WHERE filename='070_audit_log_triggers.sql'"
+    ).fetchone()
+    assert row is None, (
+        "rollback must DELETE the applied_migrations row so the runner "
+        "re-applies 070 on next boot"
+    )
 
     # Pre-existing audit trigger must still be present.
     got = conn.execute(

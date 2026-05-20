@@ -107,4 +107,11 @@ BEGIN
     );
 END;
 
+-- Index for forensic queries. audit_log had no indexes before this; queries
+-- like "what changed in received_payments last week" were full scans. With
+-- transactions now triggering an audit row on every BSN sync (~thousands per
+-- weekly import), audit_log grows fast and lookup speed matters.
+CREATE INDEX IF NOT EXISTS idx_audit_log_table_time
+    ON audit_log(table_name, created_at DESC);
+
 COMMIT;
