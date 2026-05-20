@@ -1,0 +1,204 @@
+{% extends 'base.html' %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0">
+    <i class="bi bi-arrow-counterclockwise me-2 text-warning"></i>
+    ตรวจสอบใบลดหนี้ก่อนนำเข้า
+  </h4>
+  <a href="{{ url_for('payment_status') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-x-lg me-1"></i>ยกเลิก
+  </a>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <div class="row small">
+      <div class="col-md-6">
+        <strong>ไฟล์:</strong> <code>{{ original_filename }}</code>
+      </div>
+      <div class="col-md-3">
+        <strong>SR entries:</strong> {{ '{:,}'.format(preview.parsed) }}
+      </div>
+      <div class="col-md-3">
+        <strong>Masters:</strong>
+        {% set cna = preview.credit_note_amounts %}
+        {{ '{:,}'.format(cna.parsed_masters) }}
+        {% if cna.skipped_cancelled %}
+          <span class="text-subtle">(ยกเลิก {{ cna.skipped_cancelled }})</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── credit_note_amounts diff (authoritative table — main signal) ────── #}
+<div class="card mb-3">
+  <div class="card-header">
+    <i class="bi bi-coin me-2 text-accent"></i>
+    <strong>credit_note_amounts</strong>
+    <span class="text-subtle small">— ตารางที่ใช้นับ outstanding (authoritative)</span>
+    <div class="small text-subtle mt-1">
+      เฉพาะ SR ที่อยู่ในไฟล์ ({{ preview.credit_note_amounts.upserted }} ใบ)
+    </div>
+  </div>
+  <div class="card-body">
+    <div class="row text-center">
+      <div class="col-md-4">
+        <div class="display-6 text-success">{{ preview.cna_diff.new|length }}</div>
+        <div class="small text-subtle">🟢 ใหม่ (จะเพิ่ม)</div>
+      </div>
+      <div class="col-md-4">
+        <div class="display-6 text-secondary">{{ preview.cna_diff.unchanged }}</div>
+        <div class="small text-subtle">⚪ ตรงกับ DB</div>
+      </div>
+      <div class="col-md-4">
+        <div class="display-6 {% if preview.cna_diff.changed %}text-warning{% else %}text-secondary{% endif %}">
+          {{ preview.cna_diff.changed|length }}
+        </div>
+        <div class="small text-subtle">🟠 จะเปลี่ยน (ระวัง)</div>
+      </div>
+    </div>
+
+    {% if preview.cna_diff.changed %}
+    <div class="alert alert-warning mt-3 small mb-2">
+      <i class="bi bi-exclamation-triangle me-1"></i>
+      <strong>มี {{ preview.cna_diff.changed|length }} ใบที่ยอดในไฟล์ไม่ตรงกับในระบบ</strong>
+      — อาจเกิดจากไฟล์เก่ากว่า DB หรือ master "รวมทั้งสิ้น" ถูกแก้.
+      ถ้าไม่แน่ใจ ให้ยกเลิกแล้วเช็คไฟล์ก่อน
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm small mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>SR doc_base</th>
+            <th>อ้าง IV</th>
+            <th class="text-end">ใน DB</th>
+            <th class="text-end">ในไฟล์</th>
+            <th class="text-end">ส่วนต่าง</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in preview.cna_diff.changed %}
+          <tr>
+            <td><code>{{ row.sr_doc_base }}</code></td>
+            <td><code>{{ row.ref_invoice or '-' }}</code></td>
+            <td class="text-end">{{ '{:,.2f}'.format(row.db_amount) }}</td>
+            <td class="text-end">{{ '{:,.2f}'.format(row.file_amount) }}</td>
+            <td class="text-end {% if row.diff > 0 %}text-success{% else %}text-danger{% endif %}">
+              {{ '{:+,.2f}'.format(row.diff) }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if preview.cna_diff.new %}
+    <details class="mt-3">
+      <summary class="small text-subtle">
+        แสดง {{ preview.cna_diff.new|length }} ใบใหม่
+      </summary>
+      <div class="table-responsive mt-2">
+        <table class="table table-sm small mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>SR doc_base</th>
+              <th>อ้าง IV</th>
+              <th class="text-end">credited_amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in preview.cna_diff.new %}
+            <tr>
+              <td><code>{{ row.sr_doc_base }}</code></td>
+              <td><code>{{ row.ref_invoice or '-' }}</code></td>
+              <td class="text-end">{{ '{:,.2f}'.format(row.credited_amount) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+    {% endif %}
+  </div>
+</div>
+
+{# ── sales_transactions ref backfill ───────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-header">
+    <i class="bi bi-link-45deg me-2 text-accent"></i>
+    <strong>sales_transactions</strong>
+    <span class="text-subtle small">— SR ที่มีอยู่ใน DB</span>
+  </div>
+  <div class="card-body">
+    <div class="row small">
+      <div class="col-md-4">
+        <strong>Matched:</strong> {{ '{:,}'.format(preview.existing_matched) }} ใบ
+      </div>
+      <div class="col-md-4">
+        <strong>ref backfill:</strong>
+        <span class="{% if preview.refs_backfilled %}text-success{% endif %}">
+          {{ '{:,}'.format(preview.refs_backfilled) }} ใบ
+        </span>
+      </div>
+      <div class="col-md-4">
+        <strong>ใหม่ (side table):</strong> {{ '{:,}'.format(preview.new_recorded) }} ใบ
+        {% if preview.already_new %}
+          <span class="text-subtle">/ เคยบันทึก {{ preview.already_new }}</span>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if preview.ref_conflicts %}
+    <div class="alert alert-warning mt-3 small mb-2">
+      <i class="bi bi-exclamation-triangle me-1"></i>
+      <strong>มี {{ preview.ref_conflicts|length }} ใบที่ ref_invoice ใน DB ไม่ตรงกับในไฟล์</strong>
+      — ระบบจะ <em>ไม่</em> ทับของเดิม (log อย่างเดียว)
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm small mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>doc_no</th>
+            <th>DB ref</th>
+            <th>File ref</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in preview.ref_conflicts %}
+          <tr>
+            <td><code>{{ c.doc_no }}</code></td>
+            <td><code>{{ c.db_ref }}</code></td>
+            <td><code>{{ c.file_ref }}</code></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if preview.errors %}
+    <div class="alert alert-danger mt-3 small mb-0">
+      <strong>Parse errors:</strong>
+      <ul class="mb-0 mt-1">
+        {% for e in preview.errors %}<li><code>{{ e }}</code></li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Confirm ───────────────────────────────────────────────────────────── #}
+<form method="post" action="{{ url_for('import_credit_notes_commit') }}" class="d-flex justify-content-end gap-2">
+  <input type="hidden" name="token" value="{{ token }}">
+  <a href="{{ url_for('payment_status') }}" class="btn btn-outline-secondary">
+    ยกเลิก
+  </a>
+  <button type="submit" class="btn btn-warning">
+    <i class="bi bi-check-lg me-1"></i>ยืนยันนำเข้า
+  </button>
+</form>
+
+{% endblock %}

@@ -447,6 +447,136 @@ def populate_sr_writeoffs(conn=None, db_path=None):
     }
 
 
+def _file_sr_doc_bases(path):
+    """Parse the ใบลดหนี้ master section and return the set of non-cancelled
+    sr_doc_base values the file will upsert.  Mirrors the cancel/non-cancel
+    branching in `_upsert_credit_note_amounts` so the preview's diff scope
+    matches the importer's actual write scope exactly.
+    """
+    file_srs = set()
+    with open(path, encoding="cp874") as f:
+        for raw in f:
+            line = _clean(raw)
+            if not line:
+                continue
+            m = _SR_MASTER_RE.match(line.lstrip())
+            if not m:
+                continue
+            cancel, sr_no = m.groups()[0], m.groups()[1]
+            if cancel:
+                continue
+            file_srs.add(sr_no)
+    return file_srs
+
+
+def preview_credit_notes_import(path, db_path=None):
+    """Dry-run preview of import_credit_notes(path).
+
+    Opens its own connection, snapshots credit_note_amounts FOR THE SRs IN
+    THIS FILE, runs the importer, snapshots again, computes the per-SR diff,
+    and ROLLS BACK so no writes persist.  The returned dict mirrors
+    import_credit_notes() plus a `cna_diff` key showing what would change in
+    credit_note_amounts (the authoritative per-SR credited-amount table from
+    mig 062):
+
+      cna_diff:
+        new:       list of {sr_doc_base, credited_amount, ref_invoice} for
+                   SRs in the file but not currently in credit_note_amounts
+        unchanged: count of file SRs whose master total equals the existing
+                   credited_amount (within 0.005)
+        changed:   list of {sr_doc_base, db_amount, file_amount, diff,
+                   ref_invoice} for file SRs whose master total differs from
+                   DB — the danger signal (stale file, or master total revised)
+
+    IMPORTANT: the diff is SCOPED to SRs in this file's master section.  Rows
+    in credit_note_amounts that this file does not touch are not counted in
+    any bucket.  This keeps `unchanged` meaningful — it answers "how many file
+    SRs match DB?", not "how many DB rows weren't touched?".
+
+    Use case: UI preview screen.  The route renders this dict, user confirms,
+    and a second route then calls import_credit_notes() for real.
+    """
+    # Scope: which SRs will this file actually upsert?  Cancelled masters are
+    # skipped by the importer, so they must be skipped from the diff too.
+    file_srs = _file_sr_doc_bases(path)
+
+    conn = _open_conn(db_path)
+    # Disable Python sqlite3's implicit transaction handling so our explicit
+    # BEGIN/ROLLBACK fully bracket the import_credit_notes() call.  Without
+    # this, the module's auto-BEGIN-before-DML interacts unpredictably with
+    # the SAVEPOINTs inside import_credit_notes(), and conn.rollback() may
+    # leave UPDATEs committed.
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN")
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='credit_note_amounts'"
+        ).fetchone()
+
+        def _snapshot_scoped():
+            """Read only the rows for file SRs.  Returns dict[sr_doc_base] →
+            Row(credited_amount, ref_invoice); missing keys = SR not in DB."""
+            if has_table is None or not file_srs:
+                return {}
+            placeholders = ",".join("?" * len(file_srs))
+            rows = conn.execute(
+                f"SELECT sr_doc_base, credited_amount, ref_invoice "
+                f"FROM credit_note_amounts WHERE sr_doc_base IN ({placeholders})",
+                tuple(file_srs),
+            ).fetchall()
+            return {r["sr_doc_base"]: r for r in rows}
+
+        before = _snapshot_scoped()
+
+        result = import_credit_notes(path, conn=conn)
+
+        after = _snapshot_scoped()
+
+        new = []
+        unchanged = 0
+        changed = []
+        for sr in file_srs:
+            if sr not in after:
+                # File SR didn't make it into credit_note_amounts.  Most
+                # plausibly: pre-mig062 DB where the upsert is a no-op.
+                # Don't classify (no signal to convey).
+                continue
+            file_amt = float(after[sr]["credited_amount"] or 0.0)
+            ref     = after[sr]["ref_invoice"]
+            if sr not in before:
+                new.append({
+                    "sr_doc_base": sr,
+                    "credited_amount": round(file_amt, 2),
+                    "ref_invoice": ref,
+                })
+            else:
+                db_amt = float(before[sr]["credited_amount"] or 0.0)
+                if abs(file_amt - db_amt) < 0.005:
+                    unchanged += 1
+                else:
+                    changed.append({
+                        "sr_doc_base": sr,
+                        "db_amount": round(db_amt, 2),
+                        "file_amount": round(file_amt, 2),
+                        "diff": round(file_amt - db_amt, 2),
+                        "ref_invoice": ref,
+                    })
+
+        result["cna_diff"] = {
+            "new": new,
+            "unchanged": unchanged,
+            "changed": changed,
+        }
+        return result
+    finally:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        conn.close()
+
+
 def written_off_summary(conn=None, db_path=None):
     """Read-only aggregate over sr_writeoffs.
 
