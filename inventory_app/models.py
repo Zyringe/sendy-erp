@@ -1,3 +1,30 @@
+"""Sendy ERP — business logic + DB queries (raw SQL, no ORM).
+
+The largest file in the app (~4,400 LOC). Holds:
+
+- Product / brand / category readers + pricing summary helpers
+  (`get_product_pricing_summary` — the customer-facing price view)
+- Transaction ledger helpers (`record_*`, stock-level math)
+- BSN sync + mapping (`product_code_mapping`, `unit_conversions`)
+- Cost/WACC math: `get_wacc`, `_recompute_wacc_for_product`,
+  `get_cost_history`
+- HR queries (employees, leave entitlements, payroll runs)
+- Commission helpers (shared with `commission.py` engine)
+- Receivable/AR aging (used by `cashflow.py` + `/payment-status`)
+- Search / filter / sort builders for the listing pages
+
+Conventions:
+  - All queries open their own connection via `database.get_connection()`.
+  - Functions returning sequences yield sqlite3.Row objects (template-friendly).
+  - Money math: read `sendy_erp/CLAUDE.md` for the VAT-aware `billed`
+    formula — never write `SUM(net)` directly for ar/cashflow.
+  - Do NOT expose `cost_price` to customer-facing routes — use
+    `base_sell_price` or `get_product_pricing_summary()`.
+
+Future split: this file is a candidate for domain-based extraction
+(models_products.py / models_transactions.py / models_commission.py /
+models_hr.py) when next major touch arrives — opportunistic, not big-bang.
+"""
 import re
 import sqlite3
 

@@ -1,3 +1,30 @@
+"""Sendy ERP — schema bootstrap + migration runner.
+
+Owns:
+- `SCHEMA` constant: the base SQL for a fresh DB (used only on first boot
+  if no tables exist; otherwise the migration runner takes over)
+- `get_connection()`: returns a sqlite3.Connection with `row_factory=Row`,
+  WAL journal mode, and `foreign_keys = ON`
+- `init_db()`: idempotent bootstrap — runs `SCHEMA` against empty DBs,
+  then applies any pending migrations from `data/migrations/NNN_*.sql`
+- `_apply_pending_migrations()`: the migration runner — filename-keyed,
+  uses `INSERT OR IGNORE` into `applied_migrations` (legacy migs 025-052
+  self-insert; the runner's bookkeeping is idempotent either way)
+
+Migration runner contract:
+  - Files MUST be named `NNN_descriptive_name.sql` + `.rollback.sql`
+  - Forward script wraps work in `BEGIN; ... COMMIT;`
+  - For table-rebuilds with FK references, use `PRAGMA foreign_keys=OFF`
+    BEFORE `BEGIN;` (no-op inside a transaction) — see mig 069 for the
+    working pattern
+  - Filename is the immutable key; runner does NOT re-check sha256, so
+    in-place edits to an already-applied migration are technically
+    possible BUT silently break prod/dev parity. Use a new higher-NNN
+    migration to fix bugs (see sendy_erp/CLAUDE.md for the rare-exception
+    rules)
+  - On failure: the script's own BEGIN/COMMIT is rolled back; boot fails
+    loudly (safe default)
+"""
 import sqlite3
 import os
 import time

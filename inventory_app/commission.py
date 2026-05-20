@@ -25,6 +25,25 @@ Output: list of dicts per salesperson with total / own / third splits and
 commission breakdown so the dashboard can show "below + above" detail.
 
 Real-time: NO snapshot table — query runs on demand.
+
+Override cache contract (`commission_overrides` table):
+  The cache stores manual per-(salesperson, year_month) commission overrides.
+  Reads bypass the formula above and return the override value directly.
+  Writes happen via the /commission/overrides UI.
+
+  Invariant: when any of the underlying tables change for a (sp_code, ym)
+  that has an override, the override is NOT auto-recomputed. It stays
+  pinned to the manually-entered value. This is intentional — overrides
+  represent finance's authoritative decision that supersedes the formula.
+
+  Drift signal: if the formula output and the override disagree by more
+  than 10% on a year-month with no documented "why", flag for finance
+  review (likely a missed re-payment or a stale override).
+
+  Recovery: delete the override row; the formula re-takes over on next query.
+
+  IMPORTANT: do not silently invalidate overrides from migration scripts.
+  Overrides are user data, not derived data.
 """
 from __future__ import annotations
 
