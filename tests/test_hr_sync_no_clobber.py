@@ -124,3 +124,31 @@ def test_existing_employee_with_non_null_nickname_not_modified(empty_db_conn):
     assert "nickname" in msg
     assert "หลุย" in msg
     assert "วิภา" in msg
+
+
+# ── Test 3 — sheet matches DB → no warnings, silent skip ─────────────────────
+
+def test_existing_employee_matching_sheet_silent_skip(empty_db_conn):
+    """
+    Seed all 3 lockable fields identically to the sheet row. sync must emit
+    zero DIFF warnings and the emp_code must land in 'skipped'.
+    """
+    conn = empty_db_conn
+    _seed_employee(conn, full_name="สมศักดิ์ ทดสอบ",
+                   nickname="ศักดิ์", bank_name="กสิกร",
+                   bank_account_no="1234567890", emp_code="EMP003")
+
+    parsed = _parsed_salary([{
+        "first_name": "สมศักดิ์", "last_name": "ทดสอบ",
+        "nickname":   "ศักดิ์",
+        "bank":       "กสิกร",
+        "bank_account_no": "1234567890",
+        "salary": 15000.0, "sso_deduction": 750.0, "is_active": True,
+    }])
+
+    result = ic.sync_salary_sheet(parsed, conn)
+
+    diff_warnings = [w for w in result["warnings"] if "DIFF" in w]
+    assert diff_warnings == [], \
+        f"Expected zero DIFF warnings, got: {diff_warnings!r}"
+    assert "EMP003" in result["skipped"]
