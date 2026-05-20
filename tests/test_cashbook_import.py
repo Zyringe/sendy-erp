@@ -556,8 +556,17 @@ class TestSalaryAdvances:
         assert n == 2, f"Expected 2 advances from this batch, got {n}"
 
     def test_advance_ball_matched(self, synth_wb, tmp_db, tmp_db_conn):
-        """'บอล' nickname → matched to EMP001 (employee_id set)."""
+        """'บอล' nickname → matched to EMP001 (employee_id set).
+
+        Under no-clobber the import will not fill EMP001's nickname from the
+        sheet. Pre-seed it here so the advance lookup has something to match.
+        This is the same operator step Put performs in HR UI in production.
+        """
         _ensure_mig056(tmp_db_conn)
+        tmp_db_conn.execute(
+            "UPDATE employees SET nickname='บอล' WHERE emp_code='EMP001'"
+        )
+        tmp_db_conn.commit()
         mod = _import_cashbook()
         mod.import_cashbook(synth_wb, conn=tmp_db_conn)
         tmp_db_conn.commit()
@@ -680,17 +689,32 @@ class TestEmployeeSync:
         assert row is not None
         assert row[0] == 1, f"Expected company_id=1, got {row[0]}"
 
-    def test_emp001_nickname_filled(self, synth_wb, tmp_db, tmp_db_conn):
-        """EMP001 had no nickname — salary sheet has 'บอล' → nickname must be set."""
+    def test_emp001_nickname_preserved_under_no_clobber(self, synth_wb, tmp_db, tmp_db_conn):
+        """
+        No-clobber rule: whatever nickname EMP001 has in the DB before import,
+        the import must not change it. Pre-seed NULL → stays NULL; the sheet's
+        'บอล' is never written to an existing employee.
+        """
         _ensure_mig056(tmp_db_conn)
+
+        # Pre-seed EMP001's nickname to NULL to make the test deterministic
+        # (the cloned live DB may have any value; reset it for this assertion).
+        tmp_db_conn.execute(
+            "UPDATE employees SET nickname=NULL WHERE emp_code='EMP001'"
+        )
+        tmp_db_conn.commit()
+
         mod = _import_cashbook()
         mod.import_cashbook(synth_wb, conn=tmp_db_conn)
         tmp_db_conn.commit()
+
         row = tmp_db_conn.execute(
             "SELECT nickname FROM employees WHERE emp_code='EMP001'"
         ).fetchone()
         assert row is not None
-        assert row[0] == "บอล", f"EMP001 nickname should be 'บอล', got {row[0]!r}"
+        assert row[0] is None, (
+            f"No-clobber: EMP001 nickname must remain NULL after import, got {row[0]!r}"
+        )
 
     def test_emp001_salary_not_clobbered(self, synth_wb, tmp_db, tmp_db_conn):
         """HARD CONSTRAINT: EMP001's salary_history rows must NOT change."""
@@ -856,6 +880,11 @@ class TestRealFileImport:
     def test_real_import_run1(self, tmp_db, tmp_db_conn):
         """First import: basic shape checks."""
         _ensure_mig056(tmp_db_conn)
+        # Pre-seed EMP001 nickname so advance matching works under no-clobber.
+        tmp_db_conn.execute(
+            "UPDATE employees SET nickname='บอล' WHERE emp_code='EMP001'"
+        )
+        tmp_db_conn.commit()
         mod = _import_cashbook()
         result = mod.import_cashbook(REAL_FILE, conn=tmp_db_conn)
         tmp_db_conn.commit()
@@ -885,12 +914,12 @@ class TestRealFileImport:
         n = tmp_db_conn.execute("SELECT COUNT(*) FROM employees").fetchone()[0]
         assert n == 5, f"Expected 5 employees, got {n}"
 
-        # EMP001 nickname set to บอล
+        # EMP001 nickname preserved (no-clobber) — pre-seeded above
         row = tmp_db_conn.execute(
             "SELECT nickname FROM employees WHERE emp_code='EMP001'"
         ).fetchone()
         assert row is not None
-        assert row[0] == "บอล", f"EMP001 nickname must be 'บอล', got {row[0]!r}"
+        assert row[0] == "บอล", f"EMP001 nickname must be 'บอล' (preserved, not clobbered), got {row[0]!r}"
 
         # EMP001 diligence_allowance unchanged
         row = tmp_db_conn.execute(
