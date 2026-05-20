@@ -123,6 +123,10 @@
        class="sidebar-link {% if request.endpoint == 'revenue_dashboard' %}active{% endif %}">
       <i class="bi bi-graph-up"></i> รายได้
     </a>
+    <a href="{{ url_for('ar_followup') }}"
+       class="sidebar-link {% if request.endpoint in ('ar_followup','ar_followup_customer') %}active{% endif %}">
+      <i class="bi bi-telephone-forward"></i> ตามทวงหนี้
+    </a>
     {% endif %}
     <div class="sidebar-section">การค้า</div>
     <a href="{{ url_for('trade_dashboard') }}"
