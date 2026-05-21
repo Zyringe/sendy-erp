@@ -73,3 +73,31 @@ def test_revenue_route_blocks_non_admin_manager(route_db):
     r = c.get('/revenue', follow_redirects=False)
     # Same gating as /cashflow — bounce to dashboard (302)
     assert r.status_code in (302, 303)
+
+
+# ── /revenue/unmapped drill-down ─────────────────────────────────────────────
+
+def test_revenue_unmapped_route_renders(route_db):
+    c = _client_as_admin()
+    r = c.get('/revenue/unmapped')
+    assert r.status_code == 200
+    body = r.data.decode('utf-8', errors='replace')
+    assert 'ไม่ระบุแบรนด์' in body or 'ยังไม่ได้ map' in body
+    assert 'unmapped' in body or 'no brand' in body  # source badges
+
+
+def test_revenue_unmapped_blocks_non_admin_manager(route_db):
+    from app import app
+    c = app.test_client()
+    with c.session_transaction() as s:
+        s['role'] = 'staff'
+    r = c.get('/revenue/unmapped', follow_redirects=False)
+    assert r.status_code in (302, 303)
+
+
+def test_revenue_unmapped_respects_limit_param(route_db):
+    c = _client_as_admin()
+    r = c.get('/revenue/unmapped?limit=5')
+    assert r.status_code == 200
+    body = r.data.decode('utf-8', errors='replace')
+    assert 'value="5"' in body  # limit input prepopulated

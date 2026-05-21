@@ -216,3 +216,91 @@ def top_brands_by_revenue(date_from: Optional[str] = None,
         'revenue':       round(r['revenue'] or 0.0, 2),
         'line_count':    r['line_count'],
     } for r in rows]
+
+
+# ── 4. unmapped_revenue_drilldown ────────────────────────────────────────────
+
+def unmapped_revenue_drilldown(date_from: Optional[str] = None,
+                                date_to: Optional[str] = None,
+                                limit: int = 100,
+                                conn: Optional[sqlite3.Connection] = None,
+                                db_path: Optional[str] = None) -> List[dict]:
+    """Drill into the 'ไม่ระบุแบรนด์' bucket from top_brands_by_revenue.
+
+    Two sources collapse into that bucket; this function surfaces both
+    ranked by revenue so mapping work can target the biggest items first:
+
+      A) sales_transactions.product_id IS NULL — unmapped BSN code.
+         Grouped by (bsn_code, product_name_raw). source_type='unmapped_code'.
+
+      B) product_id is set but products.brand_id IS NULL.
+         Grouped by (product_id, product_name). source_type='no_brand'.
+
+    Returns list[{
+        'source_type':       'unmapped_code' | 'no_brand',
+        'bsn_code':          Optional[str],   # set for unmapped_code rows
+        'product_id':        Optional[int],   # set for no_brand rows
+        'display_name':      str,             # raw BSN name OR product_name
+        'revenue':           float,
+        'line_count':        int,
+        'distinct_customers': int,
+    }] sorted by revenue DESC, capped at `limit`.
+    """
+    date_where, params = _date_conds(date_from, date_to)
+    base_filter = _SALES_FILTER.replace('doc_base', 'st.doc_base')
+    date_filter = date_where.replace('date_iso', 'st.date_iso')
+
+    sql = f"""
+        WITH unmapped_code AS (
+            SELECT
+                'unmapped_code' AS source_type,
+                st.bsn_code     AS bsn_code,
+                NULL            AS product_id,
+                COALESCE(NULLIF(TRIM(st.product_name_raw), ''),
+                         '(no name) ' || COALESCE(st.bsn_code, '?')) AS display_name,
+                ROUND(SUM(st.net), 2) AS revenue,
+                COUNT(*)              AS line_count,
+                COUNT(DISTINCT st.customer_code) AS distinct_customers
+              FROM sales_transactions st
+             WHERE {base_filter}
+               AND st.product_id IS NULL
+               {date_filter}
+             GROUP BY st.bsn_code, st.product_name_raw
+        ),
+        no_brand AS (
+            SELECT
+                'no_brand'      AS source_type,
+                NULL            AS bsn_code,
+                p.id            AS product_id,
+                COALESCE(NULLIF(TRIM(p.product_name), ''),
+                         '(product #' || p.id || ')') AS display_name,
+                ROUND(SUM(st.net), 2) AS revenue,
+                COUNT(*)              AS line_count,
+                COUNT(DISTINCT st.customer_code) AS distinct_customers
+              FROM sales_transactions st
+              JOIN products p ON p.id = st.product_id
+             WHERE {base_filter}
+               AND p.brand_id IS NULL
+               {date_filter}
+             GROUP BY p.id, p.product_name
+        )
+        SELECT * FROM unmapped_code
+        UNION ALL
+        SELECT * FROM no_brand
+        ORDER BY revenue DESC
+        LIMIT ?
+    """
+    # Date params appear twice (once per CTE); _date_conds returns one set.
+    full_params = params + params + [limit]
+    with _ConnCtx(conn, db_path) as c:
+        rows = c.execute(sql, full_params).fetchall()
+
+    return [{
+        'source_type':        r['source_type'],
+        'bsn_code':           r['bsn_code'],
+        'product_id':         r['product_id'],
+        'display_name':       r['display_name'],
+        'revenue':            round(r['revenue'] or 0.0, 2),
+        'line_count':         r['line_count'],
+        'distinct_customers': r['distinct_customers'],
+    } for r in rows]

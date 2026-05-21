@@ -260,6 +260,7 @@ _ENDPOINT_MODULE = {
     'accounting_summary': 'accounting',
     'cashflow_dashboard': 'accounting',
     'revenue_dashboard': 'accounting',
+    'revenue_unmapped_drilldown': 'accounting',
     'ar_followup': 'accounting',
     'ar_followup_customer': 'accounting',
     'ar_followup_log_new': 'accounting',
@@ -3380,6 +3381,57 @@ def revenue_dashboard():
         to_month=to_month,
         date_from=date_from,
         date_to=date_to,
+    )
+
+
+@app.route('/revenue/unmapped')
+def revenue_unmapped_drilldown():
+    """Drill into the 'ไม่ระบุแบรนด์' bucket from /revenue.
+
+    Shows ranked list of (unmapped BSN code) + (no-brand product) items
+    so mapping work can target the biggest items first. Admin + manager
+    only. Optional ?from=YYYY-MM&to=YYYY-MM filter (defaults to last 12
+    months — mirrors /revenue).
+    """
+    if session.get('role') not in ('admin', 'manager'):
+        flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
+        return redirect(url_for('dashboard'))
+
+    from_month = request.args.get('from') or None
+    to_month   = request.args.get('to')   or None
+    limit_raw  = request.args.get('limit', '100')
+    try:
+        limit = max(1, min(int(limit_raw), 500))
+    except ValueError:
+        limit = 100
+
+    if not from_month or not to_month:
+        today = date.today()
+        to_month = today.strftime('%Y-%m')
+        total = today.year * 12 + (today.month - 1) - 11
+        fm_year, fm_month = divmod(total, 12)
+        from_month = f'{fm_year:04d}-{fm_month + 1:02d}'
+
+    import calendar as _cal
+    def _month_end(ym):
+        y, m = int(ym[:4]), int(ym[5:7])
+        return f'{y:04d}-{m:02d}-{_cal.monthrange(y, m)[1]:02d}'
+
+    date_from = from_month + '-01'
+    date_to   = _month_end(to_month)
+
+    rows = rev_mod.unmapped_revenue_drilldown(
+        date_from=date_from, date_to=date_to, limit=limit,
+    )
+    bucket_total = round(sum(r['revenue'] for r in rows), 2)
+
+    return render_template(
+        'revenue_unmapped.html',
+        rows=rows,
+        bucket_total=bucket_total,
+        from_month=from_month,
+        to_month=to_month,
+        limit=limit,
     )
 
 

@@ -1,0 +1,125 @@
+{% extends 'base.html' %}
+{% block title %}ไม่ระบุแบรนด์ — drill-down – Sendy{% endblock %}
+{% block page_title %}ไม่ระบุแบรนด์ — รายการที่ใหญ่ที่สุด{% endblock %}
+
+{% block content %}
+
+<div class="mb-3">
+  <a href="{{ url_for('revenue_dashboard', **{'from': from_month, 'to': to_month}) }}"
+     class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i>กลับหน้ารายได้
+  </a>
+</div>
+
+<div class="alert alert-warning py-2 mb-3 small">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  <strong>กลุ่มรายได้ที่ยังไม่ได้ map กับแบรนด์</strong> &nbsp;·&nbsp;
+  เรียงตามรายได้ในช่วง <strong>{{ from_month }} ถึง {{ to_month }}</strong> &nbsp;·&nbsp;
+  Map รายการบนสุดก่อน → ช่วยลดสัดส่วน 'ไม่ระบุแบรนด์' ใน /revenue ได้ไวที่สุด
+</div>
+
+{# ── Period selector + limit ──────────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-body py-2">
+    <form method="get" class="row g-2 align-items-end">
+      <div class="col-auto">
+        <label class="form-label small mb-1">ตั้งแต่เดือน</label>
+        <input type="month" name="from" class="form-control form-control-sm"
+               value="{{ from_month or '' }}">
+      </div>
+      <div class="col-auto">
+        <label class="form-label small mb-1">ถึงเดือน</label>
+        <input type="month" name="to" class="form-control form-control-sm"
+               value="{{ to_month or '' }}">
+      </div>
+      <div class="col-auto">
+        <label class="form-label small mb-1">จำกัด</label>
+        <input type="number" name="limit" class="form-control form-control-sm"
+               value="{{ limit }}" min="1" max="500" style="width:6rem">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
+      </div>
+      <div class="col-auto ms-auto align-self-end small text-muted">
+        รวมในตาราง: <strong>฿{{ "{:,.2f}".format(bucket_total) }}</strong>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# ── Drill-down table ─────────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-header d-flex align-items-center">
+    <span class="me-2"><i class="bi bi-list-ol me-1"></i>รายการที่ยังไม่ได้ map</span>
+    <span class="text-subtle small">{{ rows | length }} แถว</span>
+  </div>
+  {% if rows %}
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th style="width:3rem">#</th>
+          <th>ที่มา</th>
+          <th>BSN code / สินค้า</th>
+          <th>ชื่อ (raw)</th>
+          <th class="text-end">รายได้ (฿)</th>
+          <th class="text-end">บรรทัด</th>
+          <th class="text-end">ลูกค้า</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="text-muted small">{{ loop.index }}</td>
+          <td>
+            {% if r.source_type == 'unmapped_code' %}
+              <span class="badge bg-warning text-dark">unmapped code</span>
+            {% else %}
+              <span class="badge bg-secondary">no brand</span>
+            {% endif %}
+          </td>
+          <td class="font-mono small">
+            {% if r.bsn_code %}
+              {{ r.bsn_code }}
+            {% elif r.product_id %}
+              <a href="{{ url_for('products.product_detail', product_id=r.product_id) }}"
+                 class="text-decoration-none">#{{ r.product_id }}</a>
+            {% else %}—{% endif %}
+          </td>
+          <td class="small">{{ r.display_name }}</td>
+          <td class="text-end">{{ "{:,.2f}".format(r.revenue) }}</td>
+          <td class="text-end text-muted small">{{ r.line_count }}</td>
+          <td class="text-end text-muted small">{{ r.distinct_customers }}</td>
+          <td class="text-end">
+            {% if r.source_type == 'unmapped_code' and r.bsn_code %}
+              <a href="{{ url_for('mapping') }}?q={{ r.bsn_code }}"
+                 class="btn btn-sm btn-outline-primary">
+                <i class="bi bi-link"></i> map
+              </a>
+            {% elif r.source_type == 'no_brand' and r.product_id %}
+              <a href="{{ url_for('products.product_detail', product_id=r.product_id) }}"
+                 class="btn btn-sm btn-outline-primary">
+                <i class="bi bi-pencil"></i> edit
+              </a>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-body text-muted text-center py-3">ไม่มีรายการในช่วงนี้</div>
+  {% endif %}
+</div>
+
+<div class="card border-0 bg-light">
+  <div class="card-body py-2 small text-muted">
+    <strong>วิธีตีความ:</strong>
+    <span class="badge bg-warning text-dark">unmapped code</span> = BSN code ยังไม่ได้ผูกกับ <code>products</code> (แก้: หน้า <code>/mapping</code>) ·
+    <span class="badge bg-secondary">no brand</span> = สินค้ามี product_id แล้ว แต่ <code>brand_id IS NULL</code> (แก้: เปิดหน้าสินค้านั้นแล้วเลือกแบรนด์)
+  </div>
+</div>
+
+{% endblock %}
