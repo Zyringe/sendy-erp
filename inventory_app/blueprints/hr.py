@@ -452,6 +452,28 @@ def payroll_finalize(run_id: int):
     return redirect(url_for("hr.payroll_detail", run_id=run_id))
 
 
+@bp_hr.route("/payroll/<int:run_id>/reopen", methods=["POST"])
+def payroll_reopen(run_id: int):
+    _require_admin()
+    run = hrq.get_payroll_run(run_id)
+    if not run:
+        abort(404)
+    if run["status"] != "finalized":
+        flash("Run นี้เป็น draft อยู่แล้ว ไม่ต้อง reopen", "warning")
+        return redirect(url_for("hr.payroll_detail", run_id=run_id))
+    reason = (request.form.get("reason") or "").strip()
+    if not reason:
+        flash("ต้องระบุเหตุผลในการ reopen run นี้", "danger")
+        return redirect(url_for("hr.payroll_detail", run_id=run_id))
+    try:
+        hr_mod.reopen_run(run_id, reason=reason,
+                          actor=session.get("username") or "unknown")
+        flash(f"Reopened run #{run_id} แล้ว — แก้ไขเสร็จอย่าลืม finalize ใหม่", "success")
+    except Exception as e:
+        flash(f"ไม่สามารถ reopen: {e}", "danger")
+    return redirect(url_for("hr.payroll_detail", run_id=run_id))
+
+
 @bp_hr.route("/payroll/<int:run_id>/export.csv")
 def payroll_export(run_id: int):
     run = hrq.get_payroll_run(run_id)

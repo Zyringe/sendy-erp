@@ -127,6 +127,12 @@
             <td class="text-end text-danger">-{{ fmt_baht(item.sso_employee) }}</td>
           </tr>
           {% endif %}
+          {% if item.salary_advance_deduction and item.salary_advance_deduction > 0 %}
+          <tr>
+            <td>เบิกล่วงหน้า</td>
+            <td class="text-end text-danger">-{{ fmt_baht(item.salary_advance_deduction) }}</td>
+          </tr>
+          {% endif %}
           {% if item.other_deductions and item.other_deductions > 0 %}
           <tr>
             <td>รายการหักอื่น{% if item.other_deductions_note %} ({{ item.other_deductions_note }}){% endif %}</td>

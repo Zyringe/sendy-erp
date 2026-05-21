@@ -31,6 +31,7 @@ Python 3.9 — Optional[...] not `X | None`.
 from __future__ import annotations
 
 import calendar
+import json
 import sqlite3
 from datetime import date
 from typing import Optional
@@ -345,10 +346,21 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
     )
     unpaid_deduction = round(rate / divisor * unpaid_days, 2)
 
-    # diligence — forfeited by any affects_diligence approved leave in month
+    # diligence — must work the FULL month (started by period_start AND
+    # still employed at period_end). Applied BEFORE leave-forfeit so the
+    # existing leave logic only sees the post-partial-month allowance.
     diligence_allowance = float(emp["diligence_allowance"] or 0)
     diligence_forfeited = 0
     diligence_reason = None
+    if diligence_allowance > 0:
+        partial_month = (
+            (start_date is not None and start_date > period_start)
+            or (end_date is not None and end_date < period_end)
+        )
+        if partial_month:
+            diligence_allowance = 0
+    # leave-based forfeit only applies if any allowance survives the partial
+    # check above (an employee with allowance=0 already has nothing to forfeit).
     if diligence_allowance > 0:
         hit = c.execute(
             """SELECT 1
@@ -637,6 +649,49 @@ def finalize_run(run_id: int,
                        WHERE run_id = :run_id
                   )""",
             {"run_id": run_id, "period_end": period_end.isoformat()},
+        )
+        c.commit()
+        return c.execute(
+            "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+
+
+# ── reopen a finalized run (admin escape hatch) ──────────────────────────────
+def reopen_run(run_id: int, reason: str, actor: str,
+               conn: Optional[sqlite3.Connection] = None,
+               db_path: Optional[str] = None):
+    """Un-finalize a finalized run. Records an explicit audit_log entry with
+    the actor + human reason so the "why" survives (mig 071's UPDATE trigger
+    captures the field diff with user=NULL).
+
+    Does NOT un-stamp advances: the `_build_item` advance filter
+    (`deducted_in_run_id IS NULL OR = run_id`) already includes
+    already-stamped-to-this-run advances on regenerate. Un-stamping would
+    create a foot-gun — if the admin forgets to re-finalize, the unstamped
+    advances would bleed into the next month's run (the exact bug we fixed
+    when reconciling 2026-05).
+
+    Raises ValueError on empty reason. Returns the run row, or None if
+    run_id not found. No-op (returns row) if run is already draft.
+    """
+    if not reason or not reason.strip():
+        raise ValueError("reason is required")
+    with _ConnCtx(conn, db_path) as c:
+        run = c.execute(
+            "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        if run is None:
+            return None
+        if run["status"] != "finalized":
+            return run
+        c.execute(
+            "UPDATE payroll_runs SET status='draft', finalized_at=NULL WHERE id=?",
+            (run_id,),
+        )
+        c.execute(
+            """INSERT INTO audit_log (table_name, row_id, action, changed_fields, user)
+                 VALUES ('payroll_runs', ?, 'UPDATE', ?, ?)""",
+            (run_id, json.dumps({"reopen_reason": reason.strip()}), actor),
         )
         c.commit()
         return c.execute(

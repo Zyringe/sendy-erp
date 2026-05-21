@@ -326,3 +326,46 @@ def test_migration_054_applied_exactly_once(tmp_db_conn):
     assert tmp_db_conn.execute(
         "SELECT COUNT(*) FROM hr_config"
     ).fetchone()[0] == 4
+
+
+# ── full-month diligence rule ────────────────────────────────────────────────
+
+def test_partial_first_month_no_diligence(tmp_db_conn):
+    """Employee who starts mid-month gets no diligence that month."""
+    eid = _mk_employee(tmp_db_conn, 'T_PART1', 'partial-first', '2026-09-15',
+                       monthly_salary=15000.0, diligence=500.0)
+    run = hr.generate_run('2026-09', 1, created_by=1, conn=tmp_db_conn)
+    it = _item(tmp_db_conn, run['id'], eid)
+    assert it['diligence_allowance'] == 0
+    assert it['diligence_forfeited'] == 0  # not 'forfeited' — simply not eligible
+
+
+def test_full_month_after_partial_gets_diligence(tmp_db_conn):
+    """Next full month after partial start: diligence resumes."""
+    eid = _mk_employee(tmp_db_conn, 'T_PART2', 'partial-then-full', '2026-09-15',
+                       monthly_salary=15000.0, diligence=500.0)
+    run = hr.generate_run('2026-10', 1, created_by=1, conn=tmp_db_conn)
+    it = _item(tmp_db_conn, run['id'], eid)
+    assert it['diligence_allowance'] == 500
+    assert it['diligence_forfeited'] == 0
+
+
+def test_partial_last_month_no_diligence(tmp_db_conn):
+    """Employee whose end_date is mid-month gets no diligence that month."""
+    eid = _mk_employee(tmp_db_conn, 'T_PART3', 'partial-end', '2026-01-01',
+                       monthly_salary=15000.0, diligence=500.0)
+    tmp_db_conn.execute("UPDATE employees SET end_date='2026-09-15' WHERE id=?", (eid,))
+    tmp_db_conn.commit()
+    run = hr.generate_run('2026-09', 1, created_by=1, conn=tmp_db_conn)
+    it = _item(tmp_db_conn, run['id'], eid)
+    assert it['diligence_allowance'] == 0
+
+
+def test_start_on_first_day_is_full_month(tmp_db_conn):
+    """start_date == period_start counts as full month (boundary check)."""
+    eid = _mk_employee(tmp_db_conn, 'T_PART4', 'first-day', '2026-09-01',
+                       monthly_salary=15000.0, diligence=500.0)
+    run = hr.generate_run('2026-09', 1, created_by=1, conn=tmp_db_conn)
+    it = _item(tmp_db_conn, run['id'], eid)
+    assert it['diligence_allowance'] == 500
+
