@@ -533,6 +533,21 @@ def generate_run(year_month: str, company_id: int, created_by: int,
                  d["sso_employee"], d["sso_employer"],
                  d["commission_amount"], d["gross"], d["net_pay"], d["note"]),
             )
+        # Reconcile orphaned advance stamps. Scenario: run was finalized
+        # (advances stamped to this run), then reopened, then regenerated
+        # against a different employee set (e.g. someone went is_active=0).
+        # Their advance stays stamped to this run but no item deducts it,
+        # so the standard filter (`IS NULL OR = run_id`) excludes it forever.
+        # Un-stamp so the advance follows the employee to their next paid run.
+        c.execute(
+            """UPDATE salary_advances
+                  SET deducted_in_run_id = NULL
+                WHERE deducted_in_run_id = ?
+                  AND employee_id NOT IN (
+                      SELECT employee_id FROM payroll_items WHERE run_id = ?
+                  )""",
+            (run_id, run_id),
+        )
         c.commit()
         return c.execute(
             "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)

@@ -37,6 +37,16 @@ def _leave_type_id(conn, code):
     ).fetchone()[0]
 
 
+def _add_advance(conn, employee_id, advance_date, amount):
+    conn.execute(
+        """INSERT INTO salary_advances
+             (employee_id, advance_date, amount, raw_name)
+           VALUES (?, ?, ?, 'test')""",
+        (employee_id, advance_date, amount),
+    )
+    conn.commit()
+
+
 def _mk_employee(conn, emp_code, full_name, start_date,
                  monthly_salary=13000.0, diligence=0.0, sso_enrolled=1,
                  company_id=1, gender='M'):
@@ -438,4 +448,64 @@ def test_reopen_run_idempotent_on_draft(tmp_db_conn_hr_clean):
 def test_reopen_run_missing_id_returns_none(tmp_db_conn_hr_clean):
     assert hr.reopen_run(99999, reason='x', actor='a',
                          conn=tmp_db_conn_hr_clean) is None
+
+
+# ── 8. generate_run reconciles orphaned advance stamps ──────────────────────
+
+def test_regenerate_unstamps_advances_for_dropped_employees(tmp_db_conn_hr_clean):
+    """Scenario: run finalized → advances stamped → reopen → employee X
+    set inactive → regenerate drops X. Without the reconcile, X's advance
+    stays stamped to this run forever and is never deducted. With the
+    reconcile, the stamp is cleared so X's advance follows them to the
+    next paid run."""
+    eid = _mk_employee(tmp_db_conn_hr_clean, 'T_ORPH', 'orphan-target',
+                       '2026-01-01', monthly_salary=15000.0)
+    _add_advance(tmp_db_conn_hr_clean, eid, '2026-09-05', 500.0)
+    run = hr.generate_run('2026-09', 1, created_by=1, conn=tmp_db_conn_hr_clean)
+    rid = run['id']
+    hr.finalize_run(rid, conn=tmp_db_conn_hr_clean)
+    # Advance is now stamped to this run.
+    stamped = tmp_db_conn_hr_clean.execute(
+        "SELECT deducted_in_run_id FROM salary_advances WHERE employee_id=?",
+        (eid,),
+    ).fetchone()[0]
+    assert stamped == rid
+    # Reopen + deactivate employee + regenerate
+    hr.reopen_run(rid, reason='need to drop X', actor='admin',
+                  conn=tmp_db_conn_hr_clean)
+    tmp_db_conn_hr_clean.execute(
+        "UPDATE employees SET is_active=0 WHERE id=?", (eid,)
+    )
+    tmp_db_conn_hr_clean.commit()
+    hr.generate_run('2026-09', 1, created_by=1, conn=tmp_db_conn_hr_clean)
+    # X's advance must be un-stamped (NULL), not orphan-stamped to rid.
+    after = tmp_db_conn_hr_clean.execute(
+        "SELECT deducted_in_run_id FROM salary_advances WHERE employee_id=?",
+        (eid,),
+    ).fetchone()[0]
+    assert after is None, (
+        f"orphaned advance still stamped to run {after} — would never deduct"
+    )
+
+
+def test_regenerate_keeps_stamps_for_employees_still_in_run(tmp_db_conn_hr_clean):
+    """Inverse: when the employee is still in the regenerated run, the
+    advance stamp must NOT be cleared. Otherwise the next month would
+    double-deduct."""
+    eid = _mk_employee(tmp_db_conn_hr_clean, 'T_KEEP', 'keep-stamp',
+                       '2026-01-01', monthly_salary=15000.0)
+    _add_advance(tmp_db_conn_hr_clean, eid, '2026-09-05', 500.0)
+    run = hr.generate_run('2026-09', 1, created_by=1, conn=tmp_db_conn_hr_clean)
+    rid = run['id']
+    hr.finalize_run(rid, conn=tmp_db_conn_hr_clean)
+    hr.reopen_run(rid, reason='unrelated edit', actor='admin',
+                  conn=tmp_db_conn_hr_clean)
+    hr.generate_run('2026-09', 1, created_by=1, conn=tmp_db_conn_hr_clean)
+    after = tmp_db_conn_hr_clean.execute(
+        "SELECT deducted_in_run_id FROM salary_advances WHERE employee_id=?",
+        (eid,),
+    ).fetchone()[0]
+    assert after == rid, (
+        "stamp must persist when employee is still in regenerated run"
+    )
 

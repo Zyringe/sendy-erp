@@ -367,6 +367,103 @@ def test_mig_074_salary_advances_insert_logs_raw_name_and_source(tmp_db):
     conn.close()
 
 
+MIG_075 = os.path.join(REPO, "data", "migrations",
+                       "075_audit_employees_full_payload.sql")
+ROLLBACK_075 = os.path.join(REPO, "data", "migrations",
+                            "075_audit_employees_full_payload.rollback.sql")
+
+
+def test_mig_075_employees_update_logs_bank_account_change(tmp_db):
+    """Money path: silently changing bank_account_no must NOT be possible —
+    mig 071 missed this. Mig 075 closes the gap."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cur = conn.execute(
+        """INSERT INTO employees
+             (emp_code, full_name, gender, company_id, start_date,
+              probation_days, sso_enrolled, diligence_allowance, is_active,
+              bank_name, bank_account_no)
+           VALUES ('T_BANK','bank-target','M',1,'2026-01-01', 90, 0, 0, 1,
+                   'KBank','1234567890')"""
+    )
+    eid = cur.lastrowid
+    conn.commit()
+    before = conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE table_name='employees' "
+        "AND row_id=? AND action='UPDATE'", (eid,)
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE employees SET bank_account_no='9999999999' WHERE id=?", (eid,)
+    )
+    conn.commit()
+    after = conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE table_name='employees' "
+        "AND row_id=? AND action='UPDATE'", (eid,)
+    ).fetchone()[0]
+    assert after > before, "bank_account_no change must be audited (money path)"
+    payload = conn.execute(
+        "SELECT changed_fields FROM audit_log WHERE table_name='employees' "
+        "AND row_id=? AND action='UPDATE' ORDER BY id DESC LIMIT 1", (eid,)
+    ).fetchone()[0]
+    assert 'bank_account_no' in payload
+    assert '1234567890' in payload and '9999999999' in payload
+    conn.close()
+
+
+def test_mig_075_employees_update_logs_national_id_change(tmp_db):
+    """PII material change must be audited."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cur = conn.execute(
+        """INSERT INTO employees
+             (emp_code, full_name, gender, company_id, start_date,
+              probation_days, sso_enrolled, diligence_allowance, is_active,
+              national_id)
+           VALUES ('T_NID','nid-target','M',1,'2026-01-01', 90, 0, 0, 1,
+                   '1234567890123')"""
+    )
+    eid = cur.lastrowid
+    conn.commit()
+    before = conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE table_name='employees' "
+        "AND row_id=? AND action='UPDATE'", (eid,)
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE employees SET national_id='9999999999999' WHERE id=?", (eid,)
+    )
+    conn.commit()
+    after = conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE table_name='employees' "
+        "AND row_id=? AND action='UPDATE'", (eid,)
+    ).fetchone()[0]
+    assert after > before
+    conn.close()
+
+
+def test_mig_075_rollback_round_trip(tmp_db):
+    """Rollback 075 restores mig 071's narrower trigger (no bank fields).
+    Re-apply restores the expanded version."""
+    conn = sqlite3.connect(tmp_db)
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' "
+        "AND name='audit_employees_update'"
+    ).fetchone()[0]
+    assert 'bank_account_no' in sql, "075 baseline"
+    _apply(conn, ROLLBACK_075)
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' "
+        "AND name='audit_employees_update'"
+    ).fetchone()[0]
+    assert 'bank_account_no' not in sql, "rollback should restore mig 071 version"
+    _apply(conn, MIG_075)
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' "
+        "AND name='audit_employees_update'"
+    ).fetchone()[0]
+    assert 'bank_account_no' in sql
+    conn.close()
+
+
 def test_mig_074_rollback_round_trip(tmp_db):
     """Rollback 074 restores mig 071/072 payloads. Re-apply 074 brings the
     full payloads back."""
