@@ -136,7 +136,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="14" class="text-center text-muted py-4">ไม่มีรายการพนักงาน</td>
+          <td colspan="{% if session.role == 'admin' and run.status == 'draft' %}14{% else %}13{% endif %}" class="text-center text-muted py-4">ไม่มีรายการพนักงาน</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -153,7 +153,11 @@
           <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='salary_advance_deduction')) }}</td>
           <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='other_deductions')) }}</td>
           <td class="text-end fw-bold">{{ fmt_baht(items | sum(attribute='net_pay')) }}</td>
+          {% if session.role == 'admin' and run.status == 'draft' %}
           <td colspan="2"></td>
+          {% else %}
+          <td></td>
+          {% endif %}
         </tr>
       </tfoot>
       {% endif %}
