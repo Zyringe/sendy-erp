@@ -94,6 +94,32 @@ def tmp_db_conn(tmp_db):
 
 
 @pytest.fixture
+def tmp_db_conn_hr_clean(tmp_db):
+    """Like `tmp_db_conn` but wipes payroll/leave state from the copied live
+    DB so HR-engine tests can generate runs for any month without colliding
+    with real production data. Preserves employees, salary history,
+    leave_types, hr_config, entitlements (tests rely on the seeded EMP001/
+    EMP002 + 5 leave types + 4 hr_config rows from mig 054).
+    """
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    # FK order: payroll_items + salary_advances both reference payroll_runs.
+    # Delete dependents first, then runs.
+    conn.executescript("""
+        DELETE FROM payroll_items;
+        DELETE FROM salary_advances;
+        DELETE FROM payroll_runs;
+        DELETE FROM leave_requests;
+    """)
+    conn.commit()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@pytest.fixture
 def empty_db(tmp_path, monkeypatch):
     """
     A data-less DB carrying the FULL live schema (every table/index/trigger/
