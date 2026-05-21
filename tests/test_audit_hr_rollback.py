@@ -172,17 +172,37 @@ def test_mig_073_salary_advances_update_logs_employee_id_change(tmp_db):
     conn.close()
 
 
+def _seed_payroll_item(conn):
+    """Seed: 1 employee + 1 payroll_run + 1 payroll_item. Returns item id."""
+    cur = conn.execute(
+        """INSERT INTO employees
+             (emp_code, full_name, gender, company_id, start_date,
+              probation_days, sso_enrolled, diligence_allowance, is_active)
+           VALUES ('T_AUD','audit-target','M',1,'2026-01-01',
+                   90, 0, 0, 1)"""
+    )
+    eid = cur.lastrowid
+    cur = conn.execute(
+        """INSERT INTO payroll_runs
+             (year_month, company_id, status, run_date, created_by)
+           VALUES ('2026-09', 1, 'draft', '2026-09-30', 1)"""
+    )
+    rid = cur.lastrowid
+    cur = conn.execute(
+        """INSERT INTO payroll_items
+             (run_id, employee_id, salary_rate, base_amount, gross, net_pay)
+           VALUES (?, ?, 13000, 13000, 13000, 12350)""",
+        (rid, eid),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
 def test_mig_073_payroll_items_update_logs_note_fields(tmp_db):
     """Editing other_additions_note (the "why" for a bonus) must be audited."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
-    # Need an existing payroll_items row from the live DB
-    row = conn.execute("SELECT id FROM payroll_items LIMIT 1").fetchone()
-    if row is None:
-        conn.close()
-        import pytest
-        pytest.skip("No payroll_items in live DB clone")
-    pid = row[0]
+    pid = _seed_payroll_item(conn)
     before = conn.execute("SELECT COUNT(*) FROM audit_log WHERE table_name='payroll_items' AND row_id=? AND action='UPDATE'", (pid,)).fetchone()[0]
     conn.execute("UPDATE payroll_items SET other_additions_note='new reason' WHERE id=?", (pid,))
     conn.commit()
@@ -198,14 +218,23 @@ def test_mig_073_salary_history_update_trigger_exists(tmp_db):
     conn.execute("PRAGMA foreign_keys = ON")
     triggers = _trigger_names(conn)
     assert 'audit_employee_salary_history_update' in triggers
-    row = conn.execute("SELECT id, monthly_salary FROM employee_salary_history LIMIT 1").fetchone()
-    if row is None:
-        conn.close()
-        import pytest
-        pytest.skip("No salary_history rows in live DB clone")
-    sid, ms = row
+    # Seed our own row instead of depending on live DB clone state.
+    cur = conn.execute(
+        """INSERT INTO employees
+             (emp_code, full_name, gender, company_id, start_date,
+              probation_days, sso_enrolled, diligence_allowance, is_active)
+           VALUES ('T_SH','sh-target','M',1,'2026-01-01', 90, 0, 0, 1)"""
+    )
+    eid = cur.lastrowid
+    cur = conn.execute(
+        """INSERT INTO employee_salary_history
+             (employee_id, effective_date, monthly_salary, reason)
+           VALUES (?, '2026-01-01', 15000.0, 'initial')""", (eid,)
+    )
+    sid = cur.lastrowid
+    conn.commit()
     before = conn.execute("SELECT COUNT(*) FROM audit_log WHERE table_name='employee_salary_history' AND row_id=? AND action='UPDATE'", (sid,)).fetchone()[0]
-    conn.execute("UPDATE employee_salary_history SET monthly_salary=? WHERE id=?", (ms + 1, sid))
+    conn.execute("UPDATE employee_salary_history SET monthly_salary=15500 WHERE id=?", (sid,))
     conn.commit()
     after = conn.execute("SELECT COUNT(*) FROM audit_log WHERE table_name='employee_salary_history' AND row_id=? AND action='UPDATE'", (sid,)).fetchone()[0]
     assert after > before, "salary change must be audited"
@@ -217,12 +246,24 @@ def test_mig_073_leave_requests_update_logs_reason(tmp_db):
     diligence-forfeit math."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
-    row = conn.execute("SELECT id FROM leave_requests LIMIT 1").fetchone()
-    if row is None:
-        conn.close()
-        import pytest
-        pytest.skip("No leave_requests in live DB clone")
-    lid = row[0]
+    # Seed our own employee + leave row so we don't depend on live DB state.
+    cur = conn.execute(
+        """INSERT INTO employees
+             (emp_code, full_name, gender, company_id, start_date,
+              probation_days, sso_enrolled, diligence_allowance, is_active)
+           VALUES ('T_LV','lv-target','M',1,'2026-01-01', 90, 0, 0, 1)"""
+    )
+    eid = cur.lastrowid
+    # leave_types.id=1 is seeded by mig 054
+    cur = conn.execute(
+        """INSERT INTO leave_requests
+             (employee_id, leave_type_id, start_date, end_date, days,
+              reason, status)
+           VALUES (?, 1, '2026-09-01', '2026-09-02', 2, 'initial reason', 'approved')""",
+        (eid,)
+    )
+    lid = cur.lastrowid
+    conn.commit()
     before = conn.execute("SELECT COUNT(*) FROM audit_log WHERE table_name='leave_requests' AND row_id=? AND action='UPDATE'", (lid,)).fetchone()[0]
     conn.execute("UPDATE leave_requests SET reason='updated reason' WHERE id=?", (lid,))
     conn.commit()
@@ -250,4 +291,105 @@ def test_mig_073_rollback_round_trip(tmp_db):
     _apply(conn, MIG_073)
     triggers = _trigger_names(conn)
     assert 'audit_employee_salary_history_update' in triggers
+    conn.close()
+
+
+# ── Mig 074 — full-payload INSERT/DELETE triggers (codex pass 2) ─────────────
+
+MIG_074 = os.path.join(REPO, "data", "migrations",
+                       "074_audit_full_payload_insert_delete.sql")
+ROLLBACK_074 = os.path.join(REPO, "data", "migrations",
+                            "074_audit_full_payload_insert_delete.rollback.sql")
+
+
+def test_mig_074_payroll_items_insert_logs_full_payload(tmp_db):
+    """INSERT trigger must capture all 17 material columns (not just net-pay
+    summary). Verifies all the fields codex flagged as missing from mig 072
+    are now in the JSON payload."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    pid = _seed_payroll_item(conn)
+    payload = conn.execute(
+        "SELECT changed_fields FROM audit_log "
+        "WHERE table_name='payroll_items' AND row_id=? AND action='INSERT'",
+        (pid,),
+    ).fetchone()[0]
+    # Fields that mig 072 missed and mig 074 adds:
+    for required in ('unpaid_leave_days', 'unpaid_leave_deduction',
+                     'diligence_forfeit_reason', 'bonus',
+                     'other_additions', 'other_additions_note',
+                     'other_deductions', 'other_deductions_note',
+                     'sso_employer', 'commission_amount', 'note'):
+        assert required in payload, f"INSERT payload missing {required}"
+    conn.close()
+
+
+def test_mig_074_payroll_items_delete_logs_full_payload(tmp_db):
+    """DELETE trigger must capture the full row, not just gross/net_pay."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    pid = _seed_payroll_item(conn)
+    conn.execute("DELETE FROM payroll_items WHERE id=?", (pid,))
+    conn.commit()
+    payload = conn.execute(
+        "SELECT changed_fields FROM audit_log "
+        "WHERE table_name='payroll_items' AND row_id=? AND action='DELETE'",
+        (pid,),
+    ).fetchone()[0]
+    for required in ('unpaid_leave_deduction', 'bonus', 'other_additions',
+                     'other_deductions', 'sso_employer', 'commission_amount'):
+        assert required in payload, f"DELETE payload missing {required}"
+    conn.close()
+
+
+def test_mig_074_salary_advances_insert_logs_raw_name_and_source(tmp_db):
+    """INSERT trigger must capture raw_name + source_file + import_batch_id
+    so an unmatched-advance audit row identifies the import source."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cur = conn.execute(
+        """INSERT INTO salary_advances
+             (employee_id, advance_date, amount, raw_name, source_file,
+              import_batch_id)
+           VALUES (NULL, '2026-09-05', 500.0, 'unknown',
+                   'Salary_Sheet.xlsx', 'batch-2026-09')"""
+    )
+    aid = cur.lastrowid
+    conn.commit()
+    payload = conn.execute(
+        "SELECT changed_fields FROM audit_log "
+        "WHERE table_name='salary_advances' AND row_id=? AND action='INSERT'",
+        (aid,),
+    ).fetchone()[0]
+    assert 'raw_name' in payload, "INSERT payload missing raw_name"
+    assert 'source_file' in payload, "INSERT payload missing source_file"
+    assert 'import_batch_id' in payload, "INSERT payload missing import_batch_id"
+    conn.close()
+
+
+def test_mig_074_rollback_round_trip(tmp_db):
+    """Rollback 074 restores mig 071/072 payloads. Re-apply 074 brings the
+    full payloads back."""
+    conn = sqlite3.connect(tmp_db)
+    # Sanity: 074 applied state → INSERT trigger SQL references full payload
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' "
+        "AND name='audit_payroll_items_insert'"
+    ).fetchone()[0]
+    assert 'unpaid_leave_days' in sql, "074 baseline missing"
+
+    _apply(conn, ROLLBACK_074)
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' "
+        "AND name='audit_payroll_items_insert'"
+    ).fetchone()[0]
+    assert 'unpaid_leave_days' not in sql, \
+        "rollback should restore mig 072 (minimal) payload"
+
+    _apply(conn, MIG_074)
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' "
+        "AND name='audit_payroll_items_insert'"
+    ).fetchone()[0]
+    assert 'unpaid_leave_days' in sql
     conn.close()
