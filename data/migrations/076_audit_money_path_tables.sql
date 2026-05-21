@@ -149,28 +149,36 @@ END;
 CREATE TRIGGER IF NOT EXISTS audit_cashbook_transactions_update
 AFTER UPDATE ON cashbook_transactions
 WHEN (
-       OLD.account_id    IS NOT NEW.account_id
-    OR OLD.txn_date      IS NOT NEW.txn_date
-    OR OLD.direction     IS NOT NEW.direction
-    OR OLD.category      IS NOT NEW.category
-    OR OLD.user_category IS NOT NEW.user_category
-    OR OLD.amount        IS NOT NEW.amount
-    OR OLD.description   IS NOT NEW.description
-    OR OLD.note          IS NOT NEW.note
+       OLD.account_id      IS NOT NEW.account_id
+    OR OLD.txn_date        IS NOT NEW.txn_date
+    OR OLD.direction       IS NOT NEW.direction
+    OR OLD.category        IS NOT NEW.category
+    OR OLD.user_category   IS NOT NEW.user_category
+    OR OLD.amount          IS NOT NEW.amount
+    OR OLD.description     IS NOT NEW.description
+    OR OLD.note            IS NOT NEW.note
+    OR OLD.source_file     IS NOT NEW.source_file
+    OR OLD.source_sheet    IS NOT NEW.source_sheet
+    OR OLD.source_row      IS NOT NEW.source_row
+    OR OLD.import_batch_id IS NOT NEW.import_batch_id
 )
 BEGIN
     INSERT INTO audit_log (table_name, row_id, action, changed_fields)
     SELECT 'cashbook_transactions', NEW.id, 'UPDATE',
            json_group_object(field, json_array(old_v, new_v))
     FROM (
-        SELECT 'account_id'    AS field, OLD.account_id    AS old_v, NEW.account_id    AS new_v WHERE OLD.account_id    IS NOT NEW.account_id
-        UNION ALL SELECT 'txn_date',      OLD.txn_date,      NEW.txn_date      WHERE OLD.txn_date      IS NOT NEW.txn_date
-        UNION ALL SELECT 'direction',     OLD.direction,     NEW.direction     WHERE OLD.direction     IS NOT NEW.direction
-        UNION ALL SELECT 'category',      OLD.category,      NEW.category      WHERE OLD.category      IS NOT NEW.category
-        UNION ALL SELECT 'user_category', OLD.user_category, NEW.user_category WHERE OLD.user_category IS NOT NEW.user_category
-        UNION ALL SELECT 'amount',        OLD.amount,        NEW.amount        WHERE OLD.amount        IS NOT NEW.amount
-        UNION ALL SELECT 'description',   OLD.description,   NEW.description   WHERE OLD.description   IS NOT NEW.description
-        UNION ALL SELECT 'note',          OLD.note,          NEW.note          WHERE OLD.note          IS NOT NEW.note
+        SELECT 'account_id'      AS field, OLD.account_id      AS old_v, NEW.account_id      AS new_v WHERE OLD.account_id      IS NOT NEW.account_id
+        UNION ALL SELECT 'txn_date',        OLD.txn_date,        NEW.txn_date        WHERE OLD.txn_date        IS NOT NEW.txn_date
+        UNION ALL SELECT 'direction',       OLD.direction,       NEW.direction       WHERE OLD.direction       IS NOT NEW.direction
+        UNION ALL SELECT 'category',        OLD.category,        NEW.category        WHERE OLD.category        IS NOT NEW.category
+        UNION ALL SELECT 'user_category',   OLD.user_category,   NEW.user_category   WHERE OLD.user_category   IS NOT NEW.user_category
+        UNION ALL SELECT 'amount',          OLD.amount,          NEW.amount          WHERE OLD.amount          IS NOT NEW.amount
+        UNION ALL SELECT 'description',     OLD.description,     NEW.description     WHERE OLD.description     IS NOT NEW.description
+        UNION ALL SELECT 'note',            OLD.note,            NEW.note            WHERE OLD.note            IS NOT NEW.note
+        UNION ALL SELECT 'source_file',     OLD.source_file,     NEW.source_file     WHERE OLD.source_file     IS NOT NEW.source_file
+        UNION ALL SELECT 'source_sheet',    OLD.source_sheet,    NEW.source_sheet    WHERE OLD.source_sheet    IS NOT NEW.source_sheet
+        UNION ALL SELECT 'source_row',      OLD.source_row,      NEW.source_row      WHERE OLD.source_row      IS NOT NEW.source_row
+        UNION ALL SELECT 'import_batch_id', OLD.import_batch_id, NEW.import_batch_id WHERE OLD.import_batch_id IS NOT NEW.import_batch_id
     );
 END;
 
@@ -181,10 +189,18 @@ BEGIN
     VALUES (
         'cashbook_transactions', OLD.id, 'DELETE',
         json_object(
-            'account_id', OLD.account_id,
-            'txn_date',   OLD.txn_date,
-            'direction',  OLD.direction,
-            'amount',     OLD.amount
+            'account_id',      OLD.account_id,
+            'txn_date',        OLD.txn_date,
+            'direction',       OLD.direction,
+            'category',        OLD.category,
+            'user_category',   OLD.user_category,
+            'amount',          OLD.amount,
+            'description',     OLD.description,
+            'note',            OLD.note,
+            'source_file',     OLD.source_file,
+            'source_sheet',    OLD.source_sheet,
+            'source_row',      OLD.source_row,
+            'import_batch_id', OLD.import_batch_id
         )
     );
 END;

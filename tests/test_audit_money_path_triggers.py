@@ -204,13 +204,48 @@ def test_cashbook_transactions_update_logs_amount(tmp_db):
     conn.close()
 
 
-def test_cashbook_transactions_delete_logs_snapshot(tmp_db):
+def test_cashbook_transactions_update_logs_provenance_fields(tmp_db):
+    """source_file/sheet/row/import_batch_id changes must be audited too —
+    re-routing a row to a different import source is suspicious and was
+    silent before this fix (codex pass 1)."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = OFF")
     cur = conn.execute(
         "INSERT INTO cashbook_transactions "
-        "(account_id, txn_date, direction, category, amount, description) "
-        "VALUES (1, '2026-01-15', 'income', 'sale', 333.0, 'to-delete')"
+        "(account_id, txn_date, direction, category, amount, description, "
+        " source_file, source_sheet, source_row, import_batch_id) "
+        "VALUES (1, '2026-01-15', 'income', 'sale', 100.0, 'd', "
+        " 'orig.xlsx', 'Sheet1', 5, 'batch-A')"
+    )
+    cid = cur.lastrowid
+    conn.commit()
+    conn.execute(
+        "UPDATE cashbook_transactions SET source_file='tampered.xlsx' WHERE id=?",
+        (cid,),
+    )
+    conn.commit()
+    payload = conn.execute(
+        "SELECT changed_fields FROM audit_log "
+        "WHERE table_name='cashbook_transactions' AND row_id=? AND action='UPDATE'",
+        (cid,),
+    ).fetchone()[0]
+    assert 'source_file' in payload
+    assert 'orig.xlsx' in payload and 'tampered.xlsx' in payload
+    conn.close()
+
+
+def test_cashbook_transactions_delete_logs_snapshot(tmp_db):
+    """DELETE snapshot must include business + provenance context — for rows
+    with no prior INSERT audit (legacy), this is the only forensic trail."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    cur = conn.execute(
+        "INSERT INTO cashbook_transactions "
+        "(account_id, txn_date, direction, category, user_category, amount, "
+        " description, note, source_file, source_sheet, source_row, "
+        " import_batch_id) "
+        "VALUES (1, '2026-01-15', 'income', 'sale', 'wholesale', 333.0, "
+        " 'to-delete', 'extra note', 'src.xlsx', 'Sh1', 9, 'batch-Z')"
     )
     cid = cur.lastrowid
     conn.commit()
@@ -221,7 +256,13 @@ def test_cashbook_transactions_delete_logs_snapshot(tmp_db):
         "WHERE table_name='cashbook_transactions' AND row_id=? AND action='DELETE'",
         (cid,),
     ).fetchone()[0]
+    # Business context
     assert '333' in payload and 'income' in payload
+    assert 'sale' in payload and 'wholesale' in payload
+    assert 'to-delete' in payload and 'extra note' in payload
+    # Provenance
+    assert 'src.xlsx' in payload and 'Sh1' in payload
+    assert 'batch-Z' in payload
     conn.close()
 
 
