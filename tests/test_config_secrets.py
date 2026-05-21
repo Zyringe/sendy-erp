@@ -12,6 +12,9 @@ import pytest
 
 def _reload_config(monkeypatch, env):
     monkeypatch.setattr(os, 'environ', env)
+    # Stub load_dotenv so a real local .env can't repopulate the monkey-patched
+    # env mid-test — the assertion is about the *process* env, not about .env.
+    monkeypatch.setattr('dotenv.load_dotenv', lambda *a, **k: False)
     sys.modules.pop('config', None)
     return importlib.import_module('config')
 
