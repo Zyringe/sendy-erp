@@ -195,6 +195,9 @@ CREATE TABLE IF NOT EXISTS received_payments (
     imported_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+-- iv_no holds BOTH 'IV…' settlement refs AND 'SR…' credit-note netting refs
+-- (the latter with negative amount). payments_alloc.py:216-279 re-attributes
+-- SR rows to the original invoice; do NOT delete or filter SR rows in audits.
 CREATE TABLE IF NOT EXISTS paid_invoices (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     re_id      INTEGER NOT NULL REFERENCES received_payments(id),

@@ -467,6 +467,7 @@ def payroll_export(run_id: int):
         "วันลาไม่รับค่าจ้าง", "หักลา",
         "เบี้ยขยัน", "โบนัส", "รายการเพิ่มอื่น",
         "หักอื่น", "ประกันสังคม (ลูกจ้าง)",
+        "เบิกล่วงหน้า",
         "รวมก่อนหัก", "เงินสุทธิ",
         "หมายเหตุ",
     ])
@@ -478,6 +479,7 @@ def payroll_export(run_id: int):
             item["diligence_allowance"] if not item["diligence_forfeited"] else 0,
             item["bonus"], item["other_additions"],
             item["other_deductions"], item["sso_employee"],
+            item["salary_advance_deduction"],
             item["gross"], item["net_pay"],
             item["note"] or "",
         ])
