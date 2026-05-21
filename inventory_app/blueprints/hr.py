@@ -87,6 +87,13 @@ def dashboard():
     probation_ending = hrq.get_probation_ending(cutoff_iso, today_iso)
     payroll_runs = hrq.get_payroll_runs()
 
+    # Stale-draft alert: any draft run whose year_month is strictly before
+    # the current month. A draft for the current month is normal mid-prep;
+    # a draft for a past month means someone forgot to finalize/regenerate.
+    this_ym = today.strftime("%Y-%m")
+    stale_drafts = [r for r in payroll_runs
+                    if r["status"] == "draft" and r["year_month"] < this_ym]
+
     # Over-quota alerts: scan all active employees, current year
     year = today.year
     employees = hrq.get_employees(active_only=True)
@@ -111,6 +118,7 @@ def dashboard():
         on_leave=on_leave,
         probation_ending=probation_ending,
         payroll_runs=payroll_runs,
+        stale_drafts=stale_drafts,
         over_quota_alerts=over_quota_alerts,
         today_iso=today_iso,
         be_year=_be_year,
