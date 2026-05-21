@@ -1,7 +1,14 @@
 import os
 from datetime import timedelta
 
+from dotenv import load_dotenv
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Local dev: read SECRET_KEY / ADMIN_PASSWORD / etc. from sendy_erp/.env
+# (sibling of inventory_app/). Railway sets these via the env var dashboard
+# and ignores the missing file. override=False keeps real env vars authoritative.
+load_dotenv(os.path.join(BASE_DIR, '..', '.env'), override=False)
 
 # Railway provides a persistent volume — set DATA_DIR env var to that mount path.
 # Falls back to local instance/ folder for development.
