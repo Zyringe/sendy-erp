@@ -23,7 +23,7 @@ Shell shortcuts: `sendy-up` / `sendy-down` / `sendy-log` (logs ที่ `/tmp/s
 ## First-time setup (เครื่องใหม่)
 ```
 /usr/bin/python3 -m venv ~/.virtualenvs/erp
-~/.virtualenvs/erp/bin/pip install -r inventory_app/requirements.txt
+~/.virtualenvs/erp/bin/pip install -r requirements.txt
 ```
 
 ## Stack
