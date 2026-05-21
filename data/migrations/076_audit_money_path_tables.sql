@@ -23,8 +23,22 @@
 
 BEGIN;
 
+-- Drop any prior versions so re-applying this mig (manual dev re-run, etc.)
+-- always lands the latest trigger body. The runner is filename-keyed so it
+-- won't re-execute on its own, but a dev rolling back + re-running this SQL
+-- by hand must get the current shape, not whatever older copy was on disk.
+DROP TRIGGER IF EXISTS audit_paid_invoices_insert;
+DROP TRIGGER IF EXISTS audit_paid_invoices_update;
+DROP TRIGGER IF EXISTS audit_paid_invoices_delete;
+DROP TRIGGER IF EXISTS audit_credit_note_amounts_insert;
+DROP TRIGGER IF EXISTS audit_credit_note_amounts_update;
+DROP TRIGGER IF EXISTS audit_credit_note_amounts_delete;
+DROP TRIGGER IF EXISTS audit_cashbook_transactions_insert;
+DROP TRIGGER IF EXISTS audit_cashbook_transactions_update;
+DROP TRIGGER IF EXISTS audit_cashbook_transactions_delete;
+
 -- ── 1. paid_invoices ────────────────────────────────────────────────────────
-CREATE TRIGGER IF NOT EXISTS audit_paid_invoices_insert
+CREATE TRIGGER audit_paid_invoices_insert
 AFTER INSERT ON paid_invoices
 BEGIN
     INSERT INTO audit_log (table_name, row_id, action, changed_fields)
@@ -38,7 +52,7 @@ BEGIN
     );
 END;
 
-CREATE TRIGGER IF NOT EXISTS audit_paid_invoices_update
+CREATE TRIGGER audit_paid_invoices_update
 AFTER UPDATE ON paid_invoices
 WHEN (
        OLD.re_id  IS NOT NEW.re_id
@@ -56,7 +70,7 @@ BEGIN
     );
 END;
 
-CREATE TRIGGER IF NOT EXISTS audit_paid_invoices_delete
+CREATE TRIGGER audit_paid_invoices_delete
 BEFORE DELETE ON paid_invoices
 BEGIN
     INSERT INTO audit_log (table_name, row_id, action, changed_fields)
@@ -67,7 +81,7 @@ BEGIN
 END;
 
 -- ── 2. credit_note_amounts ──────────────────────────────────────────────────
-CREATE TRIGGER IF NOT EXISTS audit_credit_note_amounts_insert
+CREATE TRIGGER audit_credit_note_amounts_insert
 AFTER INSERT ON credit_note_amounts
 BEGIN
     INSERT INTO audit_log (table_name, row_id, action, changed_fields)
@@ -84,7 +98,7 @@ BEGIN
     );
 END;
 
-CREATE TRIGGER IF NOT EXISTS audit_credit_note_amounts_update
+CREATE TRIGGER audit_credit_note_amounts_update
 AFTER UPDATE ON credit_note_amounts
 WHEN (
        OLD.sr_doc_base     IS NOT NEW.sr_doc_base
@@ -108,7 +122,7 @@ BEGIN
     );
 END;
 
-CREATE TRIGGER IF NOT EXISTS audit_credit_note_amounts_delete
+CREATE TRIGGER audit_credit_note_amounts_delete
 BEFORE DELETE ON credit_note_amounts
 BEGIN
     INSERT INTO audit_log (table_name, row_id, action, changed_fields)
@@ -117,13 +131,16 @@ BEGIN
         json_object(
             'sr_doc_base',     OLD.sr_doc_base,
             'ref_invoice',     OLD.ref_invoice,
-            'credited_amount', OLD.credited_amount
+            'credited_amount', OLD.credited_amount,
+            'sr_date_iso',     OLD.sr_date_iso,
+            'customer',        OLD.customer,
+            'source',          OLD.source
         )
     );
 END;
 
 -- ── 3. cashbook_transactions ────────────────────────────────────────────────
-CREATE TRIGGER IF NOT EXISTS audit_cashbook_transactions_insert
+CREATE TRIGGER audit_cashbook_transactions_insert
 AFTER INSERT ON cashbook_transactions
 BEGIN
     INSERT INTO audit_log (table_name, row_id, action, changed_fields)
@@ -146,7 +163,7 @@ BEGIN
     );
 END;
 
-CREATE TRIGGER IF NOT EXISTS audit_cashbook_transactions_update
+CREATE TRIGGER audit_cashbook_transactions_update
 AFTER UPDATE ON cashbook_transactions
 WHEN (
        OLD.account_id      IS NOT NEW.account_id
@@ -182,7 +199,7 @@ BEGIN
     );
 END;
 
-CREATE TRIGGER IF NOT EXISTS audit_cashbook_transactions_delete
+CREATE TRIGGER audit_cashbook_transactions_delete
 BEFORE DELETE ON cashbook_transactions
 BEGIN
     INSERT INTO audit_log (table_name, row_id, action, changed_fields)

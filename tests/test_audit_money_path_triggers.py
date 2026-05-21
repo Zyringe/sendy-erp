@@ -115,12 +115,14 @@ def test_credit_note_amounts_insert_logs_payload(tmp_db):
     conn.close()
 
 
-def test_credit_note_amounts_delete_logs_snapshot(tmp_db):
+def test_credit_note_amounts_delete_logs_full_snapshot(tmp_db):
+    """DELETE snapshot must include all 6 mutable fields — for legacy rows
+    with no prior INSERT audit, this is the only forensic trail."""
     conn = sqlite3.connect(tmp_db)
     cur = conn.execute(
         "INSERT INTO credit_note_amounts "
         "(sr_doc_base, ref_invoice, credited_amount, sr_date_iso, customer, source) "
-        "VALUES ('SR-DEL', 'IV-Z', 175.0, '2026-01-15', 'C', 'csv')"
+        "VALUES ('SR-DEL', 'IV-Z', 175.0, '2026-01-15', 'Acme Co', 'csv')"
     )
     cnid = cur.lastrowid
     conn.commit()
@@ -131,7 +133,11 @@ def test_credit_note_amounts_delete_logs_snapshot(tmp_db):
         "WHERE table_name='credit_note_amounts' AND row_id=? AND action='DELETE'",
         (cnid,),
     ).fetchone()[0]
-    assert 'SR-DEL' in payload and '175' in payload
+    assert 'SR-DEL' in payload and 'IV-Z' in payload
+    assert '175' in payload
+    assert '2026-01-15' in payload
+    assert 'Acme Co' in payload
+    assert 'csv' in payload
     conn.close()
 
 
