@@ -115,6 +115,26 @@ def test_credit_note_amounts_insert_logs_payload(tmp_db):
     conn.close()
 
 
+def test_credit_note_amounts_delete_logs_snapshot(tmp_db):
+    conn = sqlite3.connect(tmp_db)
+    cur = conn.execute(
+        "INSERT INTO credit_note_amounts "
+        "(sr_doc_base, ref_invoice, credited_amount, sr_date_iso, customer, source) "
+        "VALUES ('SR-DEL', 'IV-Z', 175.0, '2026-01-15', 'C', 'csv')"
+    )
+    cnid = cur.lastrowid
+    conn.commit()
+    conn.execute("DELETE FROM credit_note_amounts WHERE id=?", (cnid,))
+    conn.commit()
+    payload = conn.execute(
+        "SELECT changed_fields FROM audit_log "
+        "WHERE table_name='credit_note_amounts' AND row_id=? AND action='DELETE'",
+        (cnid,),
+    ).fetchone()[0]
+    assert 'SR-DEL' in payload and '175' in payload
+    conn.close()
+
+
 def test_credit_note_amounts_update_logs_amount_drift(tmp_db):
     """Drift in credited_amount caused the ฿105k phantom-overpay bug
     (fixed by mig 062). Trigger captures the diff for future audits."""
@@ -181,6 +201,27 @@ def test_cashbook_transactions_update_logs_amount(tmp_db):
         (cid,),
     ).fetchone()[0]
     assert '100' in payload and '200' in payload
+    conn.close()
+
+
+def test_cashbook_transactions_delete_logs_snapshot(tmp_db):
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    cur = conn.execute(
+        "INSERT INTO cashbook_transactions "
+        "(account_id, txn_date, direction, category, amount, description) "
+        "VALUES (1, '2026-01-15', 'income', 'sale', 333.0, 'to-delete')"
+    )
+    cid = cur.lastrowid
+    conn.commit()
+    conn.execute("DELETE FROM cashbook_transactions WHERE id=?", (cid,))
+    conn.commit()
+    payload = conn.execute(
+        "SELECT changed_fields FROM audit_log "
+        "WHERE table_name='cashbook_transactions' AND row_id=? AND action='DELETE'",
+        (cid,),
+    ).fetchone()[0]
+    assert '333' in payload and 'income' in payload
     conn.close()
 
 
