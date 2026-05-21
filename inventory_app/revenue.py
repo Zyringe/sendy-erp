@@ -266,7 +266,8 @@ def unmapped_revenue_drilldown(date_from: Optional[str] = None,
                          '(no name) ' || COALESCE(st.bsn_code, '?')) AS display_name,
                 ROUND(SUM(st.net), 2) AS revenue,
                 COUNT(*)              AS line_count,
-                COUNT(DISTINCT st.customer_code) AS distinct_customers
+                COUNT(DISTINCT COALESCE(NULLIF(TRIM(st.customer_code), ''),
+                                        st.customer)) AS distinct_customers
               FROM sales_transactions st
               LEFT JOIN products p ON p.id = st.product_id
              WHERE {base_filter}
@@ -283,7 +284,8 @@ def unmapped_revenue_drilldown(date_from: Optional[str] = None,
                          '(product #' || p.id || ')') AS display_name,
                 ROUND(SUM(st.net), 2) AS revenue,
                 COUNT(*)              AS line_count,
-                COUNT(DISTINCT st.customer_code) AS distinct_customers
+                COUNT(DISTINCT COALESCE(NULLIF(TRIM(st.customer_code), ''),
+                                        st.customer)) AS distinct_customers
               FROM sales_transactions st
               JOIN products p ON p.id = st.product_id
              WHERE {base_filter}

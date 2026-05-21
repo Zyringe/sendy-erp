@@ -93,8 +93,11 @@
           <td class="text-end text-muted small">{{ r.distinct_customers }}</td>
           <td class="text-end">
             {% if r.source_type == 'unmapped_code' and r.bsn_code %}
-              <a href="{{ url_for('mapping') }}?q={{ r.bsn_code }}"
-                 class="btn btn-sm btn-outline-primary">
+              {# /mapping doesn't currently consume ?q=; link still lands #}
+              {# on the mapping page so user can locate the row manually. #}
+              <a href="{{ url_for('mapping') }}"
+                 class="btn btn-sm btn-outline-primary"
+                 title="Code: {{ r.bsn_code }}">
                 <i class="bi bi-link"></i> map
               </a>
             {% elif r.source_type == 'no_brand' and r.product_id %}

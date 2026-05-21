@@ -383,6 +383,49 @@ def test_drilldown_date_filter(empty_db_conn):
     assert rows[0]['revenue'] == 200.0
 
 
+def test_drilldown_distinct_customers_falls_back_to_name_when_code_missing(empty_db_conn):
+    """Mirror the rest of the dashboard's convention: when customer_code
+    is NULL or blank, fall back to customer (name) for the distinct count.
+    Otherwise we silently undercount unique customers."""
+    c = empty_db_conn
+    # Three sales for the same unmapped code, three different identities:
+    #   row 1: customer_code='C001'
+    #   row 2: customer_code='' (blank) → falls back to customer='WalkIn-A'
+    #   row 3: customer_code=None     → falls back to customer='WalkIn-B'
+    c.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net,
+            product_id, bsn_code, product_name_raw)
+           VALUES ('2026-01-10','IV001-1','IV001','Acme','C001',
+                   1,'ตัว',100,1,100,100, NULL, 'CODE-X', 'name')"""
+    )
+    c.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net,
+            product_id, bsn_code, product_name_raw)
+           VALUES ('2026-01-10','IV002-1','IV002','WalkIn-A','',
+                   1,'ตัว',100,1,100,100, NULL, 'CODE-X', 'name')"""
+    )
+    c.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net,
+            product_id, bsn_code, product_name_raw)
+           VALUES ('2026-01-10','IV003-1','IV003','WalkIn-B',NULL,
+                   1,'ตัว',100,1,100,100, NULL, 'CODE-X', 'name')"""
+    )
+    c.commit()
+
+    rows = rev.unmapped_revenue_drilldown(conn=c)
+    by_code = {r['bsn_code']: r for r in rows}
+    assert by_code['CODE-X']['distinct_customers'] == 3, (
+        "expected 3 distinct identities (C001 + WalkIn-A + WalkIn-B); got "
+        f"{by_code['CODE-X']['distinct_customers']}"
+    )
+
+
 def test_drilldown_covers_orphan_product_id_rows(empty_db_conn):
     """If sales_transactions.product_id points to a non-existent product
     row, top_brands LEFT JOIN puts it in the 'ไม่ระบุแบรนด์' bucket — the
