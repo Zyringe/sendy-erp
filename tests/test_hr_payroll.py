@@ -369,3 +369,73 @@ def test_start_on_first_day_is_full_month(tmp_db_conn):
     it = _item(tmp_db_conn, run['id'], eid)
     assert it['diligence_allowance'] == 500
 
+
+# ── 7. reopen_run — un-finalize a finalized payroll run ─────────────────────
+
+def _make_finalized_run(conn, year_month='2026-09'):
+    eid = _mk_employee(conn, 'T_REO', 'reopen-target', '2026-01-01',
+                       monthly_salary=15000.0)
+    run = hr.generate_run(year_month, 1, created_by=1, conn=conn)
+    hr.finalize_run(run['id'], conn=conn)
+    return run['id'], eid
+
+
+def test_reopen_run_un_finalizes(tmp_db_conn_hr_clean):
+    rid, _ = _make_finalized_run(tmp_db_conn_hr_clean)
+    row = hr.reopen_run(rid, reason='ทดสอบ', actor='admin',
+                       conn=tmp_db_conn_hr_clean)
+    assert row['status'] == 'draft'
+    assert row['finalized_at'] is None
+
+
+def test_reopen_run_writes_audit_log_with_actor_and_reason(tmp_db_conn_hr_clean):
+    rid, _ = _make_finalized_run(tmp_db_conn_hr_clean)
+    hr.reopen_run(rid, reason='แก้ไข bonus',
+                  actor='alice', conn=tmp_db_conn_hr_clean)
+    log = tmp_db_conn_hr_clean.execute(
+        """SELECT user, changed_fields FROM audit_log
+            WHERE table_name='payroll_runs' AND row_id=?
+              AND user IS NOT NULL
+            ORDER BY id DESC LIMIT 1""",
+        (rid,),
+    ).fetchone()
+    assert log is not None, 'reopen_run should write an explicit audit_log row'
+    assert log['user'] == 'alice'
+    assert 'แก้ไข bonus' in log['changed_fields']
+
+
+def test_reopen_run_requires_reason(tmp_db_conn_hr_clean):
+    rid, _ = _make_finalized_run(tmp_db_conn_hr_clean)
+    with pytest.raises(ValueError):
+        hr.reopen_run(rid, reason='', actor='a',
+                      conn=tmp_db_conn_hr_clean)
+    with pytest.raises(ValueError):
+        hr.reopen_run(rid, reason='   ', actor='a',
+                      conn=tmp_db_conn_hr_clean)
+
+
+def test_reopen_run_idempotent_on_draft(tmp_db_conn_hr_clean):
+    """Calling reopen on an already-draft run is a no-op (returns the row,
+    does NOT write another audit_log entry)."""
+    eid = _mk_employee(tmp_db_conn_hr_clean, 'T_REO2', 'draft-target',
+                       '2026-01-01', monthly_salary=15000.0)
+    run = hr.generate_run('2026-09', 1, created_by=1, conn=tmp_db_conn_hr_clean)
+    assert run['status'] == 'draft'
+    before = tmp_db_conn_hr_clean.execute(
+        """SELECT COUNT(*) FROM audit_log WHERE table_name='payroll_runs'
+            AND row_id=? AND user IS NOT NULL""", (run['id'],),
+    ).fetchone()[0]
+    row = hr.reopen_run(run['id'], reason='try', actor='a',
+                       conn=tmp_db_conn_hr_clean)
+    assert row['status'] == 'draft'
+    after = tmp_db_conn_hr_clean.execute(
+        """SELECT COUNT(*) FROM audit_log WHERE table_name='payroll_runs'
+            AND row_id=? AND user IS NOT NULL""", (run['id'],),
+    ).fetchone()[0]
+    assert after == before
+
+
+def test_reopen_run_missing_id_returns_none(tmp_db_conn_hr_clean):
+    assert hr.reopen_run(99999, reason='x', actor='a',
+                         conn=tmp_db_conn_hr_clean) is None
+

@@ -691,7 +691,9 @@ def reopen_run(run_id: int, reason: str, actor: str,
         c.execute(
             """INSERT INTO audit_log (table_name, row_id, action, changed_fields, user)
                  VALUES ('payroll_runs', ?, 'UPDATE', ?, ?)""",
-            (run_id, json.dumps({"reopen_reason": reason.strip()}), actor),
+            (run_id,
+             json.dumps({"reopen_reason": reason.strip()}, ensure_ascii=False),
+             actor),
         )
         c.commit()
         return c.execute(

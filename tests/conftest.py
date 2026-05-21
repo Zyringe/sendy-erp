@@ -74,9 +74,13 @@ def tmp_db(tmp_path, monkeypatch):
 
     import config
     monkeypatch.setattr(config, 'DATABASE_PATH', str(dst))
-    # database.py imports DATABASE_PATH at module load time — patch there too.
+    # database.py + hr.py both `from config import DATABASE_PATH` (snapshot at
+    # module load); patch their snapshots too so routes that open their own
+    # connections (e.g. `payroll_reopen` → `hr._connect(None)`) hit the temp DB.
     import database
     monkeypatch.setattr(database, 'DATABASE_PATH', str(dst))
+    import hr
+    monkeypatch.setattr(hr, 'DATABASE_PATH', str(dst))
 
     return str(dst)
 
