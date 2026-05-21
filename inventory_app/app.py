@@ -3414,8 +3414,11 @@ def revenue_unmapped_drilldown():
 
     import calendar as _cal
     def _month_end(ym):
-        y, m = int(ym[:4]), int(ym[5:7])
-        return f'{y:04d}-{m:02d}-{_cal.monthrange(y, m)[1]:02d}'
+        try:
+            y, m = int(ym[:4]), int(ym[5:7])
+            return f'{y:04d}-{m:02d}-{_cal.monthrange(y, m)[1]:02d}'
+        except (ValueError, IndexError):
+            return ym + '-31'
 
     date_from = from_month + '-01'
     date_to   = _month_end(to_month)

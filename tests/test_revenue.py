@@ -383,6 +383,36 @@ def test_drilldown_date_filter(empty_db_conn):
     assert rows[0]['revenue'] == 200.0
 
 
+def test_drilldown_covers_orphan_product_id_rows(empty_db_conn):
+    """If sales_transactions.product_id points to a non-existent product
+    row, top_brands LEFT JOIN puts it in the 'ไม่ระบุแบรนด์' bucket — the
+    drill-down must capture it too or the reconciliation invariant breaks.
+    Case A is now LEFT JOIN + p.id IS NULL → covers both NULL and orphan."""
+    c = empty_db_conn
+    # Insert with PRAGMA off so the FK doesn't reject the orphan row.
+    c.execute("PRAGMA foreign_keys = OFF")
+    c.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net,
+            product_id, bsn_code, product_name_raw)
+           VALUES ('2026-01-10','IV001-1','IV001','cust','C001',
+                   1,'ตัว',999.0,1,999.0,999.0, 88888, 'ORPH', 'orphan name')"""
+    )
+    c.commit()
+
+    rows = rev.unmapped_revenue_drilldown(conn=c)
+    drill_total = sum(r['revenue'] for r in rows)
+    brand_rows = rev.top_brands_by_revenue(conn=c, limit=999)
+    unbranded = next((r for r in brand_rows
+                      if r['brand_display'] == 'ไม่ระบุแบรนด์'), None)
+    assert unbranded is not None, "orphan row must collapse into unbranded bucket"
+    assert abs(drill_total - unbranded['revenue']) < 0.01, (
+        f"orphan row missing from drilldown: drill={drill_total}, "
+        f"bucket={unbranded['revenue']}"
+    )
+
+
 def test_drilldown_sum_matches_unbranded_bucket(empty_db_conn):
     """Σ unmapped_revenue_drilldown.revenue == top_brands 'ไม่ระบุแบรนด์' bucket."""
     c = empty_db_conn

@@ -250,6 +250,12 @@ def unmapped_revenue_drilldown(date_from: Optional[str] = None,
     base_filter = _SALES_FILTER.replace('doc_base', 'st.doc_base')
     date_filter = date_where.replace('date_iso', 'st.date_iso')
 
+    # Case A covers BOTH `product_id IS NULL` AND orphan rows where
+    # `product_id` points to a row that no longer exists in `products`.
+    # That mirrors `top_brands_by_revenue`'s LEFT JOIN bucketing exactly,
+    # so the reconciliation invariant
+    #   Σ drilldown.revenue == top_brands['ไม่ระบุแบรนด์'].revenue
+    # holds even in the (theoretical) presence of FK orphans.
     sql = f"""
         WITH unmapped_code AS (
             SELECT
@@ -262,8 +268,9 @@ def unmapped_revenue_drilldown(date_from: Optional[str] = None,
                 COUNT(*)              AS line_count,
                 COUNT(DISTINCT st.customer_code) AS distinct_customers
               FROM sales_transactions st
+              LEFT JOIN products p ON p.id = st.product_id
              WHERE {base_filter}
-               AND st.product_id IS NULL
+               AND p.id IS NULL
                {date_filter}
              GROUP BY st.bsn_code, st.product_name_raw
         ),

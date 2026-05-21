@@ -101,3 +101,14 @@ def test_revenue_unmapped_respects_limit_param(route_db):
     assert r.status_code == 200
     body = r.data.decode('utf-8', errors='replace')
     assert 'value="5"' in body  # limit input prepopulated
+
+
+def test_revenue_unmapped_tolerates_malformed_to_param(route_db):
+    """A malformed ?to= param must NOT 500 — same defensive behavior as
+    /revenue. _month_end() now falls back instead of raising ValueError."""
+    c = _client_as_admin()
+    for bad in ('foobar', '2026-13', 'NaN-99', ''):
+        r = c.get(f'/revenue/unmapped?from=2026-01&to={bad}')
+        assert r.status_code == 200, (
+            f"to={bad!r} returned {r.status_code} — should not 500"
+        )
