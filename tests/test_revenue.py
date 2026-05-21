@@ -426,6 +426,39 @@ def test_drilldown_distinct_customers_falls_back_to_name_when_code_missing(empty
     )
 
 
+def test_drilldown_covers_orphan_brand_id_rows(empty_db_conn):
+    """Symmetric to orphan product_id: a product whose brand_id points at
+    a non-existent brand row still lands in the 'ไม่ระบุแบรนด์' bucket on
+    /revenue (LEFT JOIN brands). The drill-down must capture it too."""
+    c = empty_db_conn
+    c.execute("PRAGMA foreign_keys = OFF")
+    # product with brand_id pointing at a non-existent brand (id=88888)
+    pid = c.execute(
+        """INSERT INTO products (sku, product_name, brand_id, unit_type)
+           VALUES (99999, 'orphan-brand product', 88888, 'ตัว')"""
+    ).lastrowid
+    c.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net,
+            product_id)
+           VALUES ('2026-01-10','IV001-1','IV001','cust','C001',
+                   1,'ตัว',777.0,1,777.0,777.0, ?)""", (pid,)
+    )
+    c.commit()
+
+    rows = rev.unmapped_revenue_drilldown(conn=c)
+    drill_total = sum(r['revenue'] for r in rows)
+    brand_rows = rev.top_brands_by_revenue(conn=c, limit=999)
+    unbranded = next((r for r in brand_rows
+                      if r['brand_display'] == 'ไม่ระบุแบรนด์'), None)
+    assert unbranded is not None
+    assert abs(drill_total - unbranded['revenue']) < 0.01, (
+        f"orphan brand_id row missing from drilldown: drill={drill_total}, "
+        f"bucket={unbranded['revenue']}"
+    )
+
+
 def test_drilldown_covers_orphan_product_id_rows(empty_db_conn):
     """If sales_transactions.product_id points to a non-existent product
     row, top_brands LEFT JOIN puts it in the 'ไม่ระบุแบรนด์' bucket — the

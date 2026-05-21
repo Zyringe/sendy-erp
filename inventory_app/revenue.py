@@ -276,6 +276,9 @@ def unmapped_revenue_drilldown(date_from: Optional[str] = None,
              GROUP BY st.bsn_code, st.product_name_raw
         ),
         no_brand AS (
+            -- LEFT JOIN brands so a product pointing at a no-longer-existing
+            -- brand row (FK orphan) still falls into this bucket — same
+            -- bucket-equivalence rule top_brands_by_revenue uses.
             SELECT
                 'no_brand'      AS source_type,
                 NULL            AS bsn_code,
@@ -288,8 +291,9 @@ def unmapped_revenue_drilldown(date_from: Optional[str] = None,
                                         st.customer)) AS distinct_customers
               FROM sales_transactions st
               JOIN products p ON p.id = st.product_id
+              LEFT JOIN brands b ON b.id = p.brand_id
              WHERE {base_filter}
-               AND p.brand_id IS NULL
+               AND b.id IS NULL
                {date_filter}
              GROUP BY p.id, p.product_name
         )
