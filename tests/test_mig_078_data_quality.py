@@ -85,6 +85,24 @@ def _apply(conn, path):
         conn.executescript(f.read())
 
 
+def _reset_to_pre_mig(conn):
+    """If the live DB clone already has mig 078 applied, run its rollback
+    so the test starts from pre-mig state. The rollback restores from the
+    3 migration_078_snapshot_* tables if any exist, then drops them. Absent
+    those snapshot tables, this helper is a no-op."""
+    snap = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='migration_078_snapshot_products'"
+    ).fetchone()
+    if snap is not None:
+        _apply(conn, ROLLBACK_078)
+        conn.execute(
+            "DELETE FROM applied_migrations "
+            "WHERE filename='078_data_quality_mapping_uc_cleanup.sql'"
+        )
+        conn.commit()
+
+
 def _snapshot_uc(conn, pids):
     placeholders = ",".join("?" * len(pids))
     return {
@@ -291,6 +309,7 @@ def test_mig_078_adds_pid_771_stock_adjustment(tmp_db):
     stock reconciliation entry so stock_levels(771) goes 4 → 48 (4×12)."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    _reset_to_pre_mig(conn)
 
     before_stock = conn.execute(
         "SELECT quantity FROM stock_levels WHERE product_id = 771"
@@ -320,6 +339,7 @@ def test_mig_078_stock_levels_unchanged_except_pid_771(tmp_db):
     placeholders = ",".join("?" * len(affected))
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    _reset_to_pre_mig(conn)
 
     before = {r[0]: r[1] for r in conn.execute(
         f"SELECT product_id, quantity FROM stock_levels WHERE product_id IN ({placeholders})",
@@ -422,6 +442,7 @@ def test_mig_078_idempotent_rerun(tmp_db):
 def test_mig_078_rollback_restores_unit_types(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    _reset_to_pre_mig(conn)
 
     affected = sum(UT_CHANGES.values(), [])
     before = _snapshot_products(conn, affected)
@@ -434,6 +455,7 @@ def test_mig_078_rollback_restores_unit_types(tmp_db):
 def test_mig_078_rollback_restores_mapping_rows(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    _reset_to_pre_mig(conn)
 
     affected_ids = list(MAPPING_UPDATES.keys()) + MAPPING_DELETES
     before = _snapshot_mapping(conn, affected_ids)
@@ -446,6 +468,7 @@ def test_mig_078_rollback_restores_mapping_rows(tmp_db):
 def test_mig_078_rollback_restores_uc_rows(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    _reset_to_pre_mig(conn)
 
     affected_pids = sorted({pid for pid, _ in UC_DELETES} | {771})
     before = _snapshot_uc(conn, affected_pids)
@@ -461,6 +484,7 @@ def test_mig_078_rollback_reverses_pid_771_stock_adjustment(tmp_db):
     so the rollback file hand-decrements)."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    _reset_to_pre_mig(conn)
 
     before_stock = conn.execute(
         "SELECT quantity FROM stock_levels WHERE product_id = 771"

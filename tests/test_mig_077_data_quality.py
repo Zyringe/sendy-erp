@@ -53,6 +53,28 @@ def _apply(conn, path):
         conn.executescript(f.read())
 
 
+def _reset_to_pre_mig(conn):
+    """If the live DB clone already has mig 077 applied, run its rollback
+    so the test starts from pre-mig state. The rollback restores from
+    migration_077_snapshot if it exists, then drops the table; absent the
+    snapshot table, this is a no-op."""
+    snap = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='migration_077_snapshot'"
+    ).fetchone()
+    if snap is not None:
+        _apply(conn, ROLLBACK_077)
+        # Drop the applied_migrations bookkeeping row too so a subsequent
+        # in-test _apply(MIG_077) is still treated as a first apply by any
+        # idempotency assertions. (Tests bypass the runner, but keep the
+        # state coherent.)
+        conn.execute(
+            "DELETE FROM applied_migrations "
+            "WHERE filename='077_data_quality_brand_kg_rename.sql'"
+        )
+        conn.commit()
+
+
 def _snapshot_state(conn, pids):
     """Capture {pid: (brand_id, unit_type)} for the given pids."""
     placeholders = ",".join("?" * len(pids))
@@ -229,6 +251,7 @@ def test_mig_077_renames_unit_type_to_kilogram(tmp_db):
     """All 17 D3 pids that started as 'กก.' end as 'กิโลกรัม'."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    _reset_to_pre_mig(conn)
 
     placeholders = ",".join("?" * len(KG_RENAME_PIDS))
     before = {r[0]: r[1] for r in conn.execute(
@@ -285,6 +308,7 @@ def test_mig_077_snapshot_captures_pre_state(tmp_db):
     brand_id and unit_type."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    _reset_to_pre_mig(conn)
 
     affected = sorted(set(ALL_D5_PIDS + KG_RENAME_PIDS))
     pre = _snapshot_state(conn, affected)
@@ -326,6 +350,7 @@ def test_mig_077_rollback_restores_prior_state(tmp_db):
     """Apply mig 077 then rollback → products row state matches pre-migration."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    _reset_to_pre_mig(conn)
 
     affected = sorted(set(ALL_D5_PIDS + KG_RENAME_PIDS))
     pre = _snapshot_state(conn, affected)
