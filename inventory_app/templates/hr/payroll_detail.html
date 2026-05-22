@@ -20,6 +20,12 @@
     </button>
   </form>
   {% endif %}
+  {% if session.role == 'admin' and run.status == 'finalized' %}
+  <button type="button" class="btn btn-sm btn-outline-danger ms-1"
+          data-bs-toggle="modal" data-bs-target="#reopenRunModal">
+    <i class="bi bi-unlock me-1"></i>Reopen
+  </button>
+  {% endif %}
 {% endblock %}
 
 {% block content %}
@@ -71,6 +77,7 @@
           <th class="text-end">รายการเพิ่ม</th>
           <th class="text-end">หักลา</th>
           <th class="text-end">ประกันสังคม</th>
+          <th class="text-end">เบิกล่วงหน้า</th>
           <th class="text-end">รายการหัก</th>
           <th class="text-end fw-bold">เงินสุทธิ</th>
           <th>หมายเหตุ</th>
@@ -107,6 +114,9 @@
             {% else %}–{% endif %}
           </td>
           <td class="text-end small text-danger">{{ fmt_baht(item.sso_employee) }}</td>
+          <td class="text-end small {% if item.salary_advance_deduction > 0 %}text-danger{% endif %}">
+            {% if item.salary_advance_deduction > 0 %}-{{ fmt_baht(item.salary_advance_deduction) }}{% else %}–{% endif %}
+          </td>
           <td class="text-end small {% if item.other_deductions > 0 %}text-danger{% endif %}">
             {% if item.other_deductions > 0 %}-{{ fmt_baht(item.other_deductions) }}{% else %}–{% endif %}
           </td>
@@ -126,7 +136,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="13" class="text-center text-muted py-4">ไม่มีรายการพนักงาน</td>
+          <td colspan="{% if session.role == 'admin' and run.status == 'draft' %}14{% else %}13{% endif %}" class="text-center text-muted py-4">ไม่มีรายการพนักงาน</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -140,9 +150,14 @@
           <td class="text-end small">{{ fmt_baht(items | sum(attribute='other_additions')) }}</td>
           <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='unpaid_leave_deduction')) }}</td>
           <td class="text-end small text-danger">{{ fmt_baht(items | sum(attribute='sso_employee')) }}</td>
+          <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='salary_advance_deduction')) }}</td>
           <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='other_deductions')) }}</td>
           <td class="text-end fw-bold">{{ fmt_baht(items | sum(attribute='net_pay')) }}</td>
+          {% if session.role == 'admin' and run.status == 'draft' %}
           <td colspan="2"></td>
+          {% else %}
+          <td></td>
+          {% endif %}
         </tr>
       </tfoot>
       {% endif %}
@@ -216,5 +231,37 @@
   </div>
 </div>
 {% endfor %}
+{% endif %}
+
+{# ── Reopen run modal (admin, finalized only) ────────────────────────────── #}
+{% if session.role == 'admin' and run.status == 'finalized' %}
+<div class="modal fade" id="reopenRunModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('hr.payroll_reopen', run_id=run.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Reopen Run #{{ run.id }} — {{ run.year_month }}</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="alert alert-warning small mb-3">
+            <i class="bi bi-exclamation-triangle me-1"></i>
+            <strong>Reopen จะปลดสถานะกลับเป็น draft</strong> เพื่อให้แก้ไข items หรือ regenerate ได้.
+            Advance stamps จะคงอยู่ — กด <strong>Finalize ใหม่</strong> เมื่อแก้เสร็จเพื่อ lock อีกครั้ง.
+          </div>
+          <label class="form-label small">เหตุผล (จำเป็น) <span class="text-danger">*</span></label>
+          <textarea name="reason" class="form-control" rows="3" required
+                    placeholder="เช่น: แก้ไขเบี้ยขยันของบอลที่ลืมหัก / เพิ่ม advance ที่ตกหล่น"></textarea>
+          <div class="form-text">บันทึกใน audit_log พร้อม username</div>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-danger btn-sm">Reopen Run</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 {% endif %}
 {% endblock %}

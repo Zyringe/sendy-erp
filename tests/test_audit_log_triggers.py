@@ -45,7 +45,8 @@ def _apply_chain(conn):
         _apply(conn, MIG_068)
     if "069_products_units_not_null.sql" not in applied:
         _apply(conn, MIG_069)
-    _apply(conn, MIG_070)
+    if "070_audit_log_triggers.sql" not in applied:
+        _apply(conn, MIG_070)
 
 
 # ── transactions ─────────────────────────────────────────────────────────────

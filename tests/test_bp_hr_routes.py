@@ -61,3 +61,62 @@ def test_hr_leave_list_renders(admin_client):
     """Leave-request list with employee/month/type filter dropdowns."""
     resp = admin_client.get('/hr/leave')
     assert resp.status_code == 200, resp.data[:500]
+
+
+# ── /hr/payroll/<id>/reopen — POST route on a finalized run ───────────────
+
+def _make_finalized_run(tmp_db) -> int:
+    """Create a fresh finalized run in the live-DB clone and return its id."""
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        import hr as hr_mod
+        eid = conn.execute(
+            """INSERT INTO employees
+                 (emp_code, full_name, gender, company_id, start_date,
+                  probation_days, sso_enrolled, diligence_allowance, is_active)
+               VALUES ('T_RREO','reopen-route','M',1,'2026-01-01',
+                       90, 0, 0, 1)"""
+        ).lastrowid
+        conn.execute(
+            """INSERT INTO employee_salary_history
+                 (employee_id, effective_date, monthly_salary, reason)
+               VALUES (?, '2026-01-01', 15000.0, 'initial')""", (eid,)
+        )
+        conn.commit()
+        run = hr_mod.generate_run('2026-09', 1, created_by=1, conn=conn)
+        hr_mod.finalize_run(run['id'], conn=conn)
+        return run['id']
+    finally:
+        conn.close()
+
+
+def test_hr_payroll_reopen_admin_with_reason_un_finalizes(admin_client, tmp_db):
+    rid = _make_finalized_run(tmp_db)
+    resp = admin_client.post(f'/hr/payroll/{rid}/reopen',
+                             data={'reason': 'แก้ไข bonus'},
+                             follow_redirects=False)
+    assert resp.status_code in (302, 303), resp.data[:500]
+    status = sqlite3.connect(tmp_db).execute(
+        "SELECT status FROM payroll_runs WHERE id=?", (rid,)
+    ).fetchone()[0]
+    assert status == 'draft'
+
+
+def test_hr_payroll_reopen_admin_without_reason_no_mutation(admin_client, tmp_db):
+    rid = _make_finalized_run(tmp_db)
+    resp = admin_client.post(f'/hr/payroll/{rid}/reopen',
+                             data={'reason': '   '},
+                             follow_redirects=False)
+    assert resp.status_code in (302, 303), resp.data[:500]
+    status = sqlite3.connect(tmp_db).execute(
+        "SELECT status FROM payroll_runs WHERE id=?", (rid,)
+    ).fetchone()[0]
+    assert status == 'finalized'  # unchanged
+
+
+def test_hr_payroll_reopen_missing_id_404(admin_client):
+    resp = admin_client.post('/hr/payroll/999999/reopen',
+                             data={'reason': 'x'})
+    assert resp.status_code == 404
