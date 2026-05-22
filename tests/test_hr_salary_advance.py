@@ -145,7 +145,12 @@ def test_generate_run_idempotent_no_double(tmp_db_conn):
 
 # ── 5. finalize_run stamps + next month does not re-deduct + re-finalize ────
 
-def test_finalize_stamps_and_blocks_next_month(tmp_db_conn):
+def test_finalize_stamps_and_blocks_next_month(tmp_db_conn_hr_clean):
+    # Uses tmp_db_conn_hr_clean: payroll_runs/items/salary_advances are
+    # wiped from the live-DB copy so generate_run('2026-03'/'2026-04') is
+    # guaranteed to create fresh runs (won't silently hit a UNIQUE-constraint
+    # collision with a real production run).
+    tmp_db_conn = tmp_db_conn_hr_clean
     eid = _mk_employee(tmp_db_conn, 'T_ADV4', 'adv final', '2026-01-01',
                        monthly_salary=15000.0)
     _add_advance(tmp_db_conn, eid, '2026-03-05', 1300.0)

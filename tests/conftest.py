@@ -74,9 +74,13 @@ def tmp_db(tmp_path, monkeypatch):
 
     import config
     monkeypatch.setattr(config, 'DATABASE_PATH', str(dst))
-    # database.py imports DATABASE_PATH at module load time — patch there too.
+    # database.py + hr.py both `from config import DATABASE_PATH` (snapshot at
+    # module load); patch their snapshots too so routes that open their own
+    # connections (e.g. `payroll_reopen` → `hr._connect(None)`) hit the temp DB.
     import database
     monkeypatch.setattr(database, 'DATABASE_PATH', str(dst))
+    import hr
+    monkeypatch.setattr(hr, 'DATABASE_PATH', str(dst))
 
     return str(dst)
 
@@ -87,6 +91,32 @@ def tmp_db_conn(tmp_db):
     conn = sqlite3.connect(tmp_db, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def tmp_db_conn_hr_clean(tmp_db):
+    """Like `tmp_db_conn` but wipes payroll/leave state from the copied live
+    DB so HR-engine tests can generate runs for any month without colliding
+    with real production data. Preserves employees, salary history,
+    leave_types, hr_config, entitlements (tests rely on the seeded EMP001/
+    EMP002 + 5 leave types + 4 hr_config rows from mig 054).
+    """
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    # FK order: payroll_items + salary_advances both reference payroll_runs.
+    # Delete dependents first, then runs.
+    conn.executescript("""
+        DELETE FROM payroll_items;
+        DELETE FROM salary_advances;
+        DELETE FROM payroll_runs;
+        DELETE FROM leave_requests;
+    """)
+    conn.commit()
     try:
         yield conn
     finally:

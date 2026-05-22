@@ -287,3 +287,219 @@ def test_sum_top_customers_matches_total_revenue(empty_db_conn):
     summary = rev.revenue_summary(conn=c)
     cust_rows = rev.top_customers_by_revenue(conn=c, limit=999)
     assert abs(sum(r['revenue'] for r in cust_rows) - summary['total_revenue']) < 0.01
+
+
+# ── unmapped_revenue_drilldown ───────────────────────────────────────────────
+
+def _ins_sale_unmapped(conn, doc_base, customer_code, date_iso, net,
+                       bsn_code, product_name_raw):
+    """Sale with product_id NULL — the 'unmapped BSN code' case."""
+    conn.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net,
+            product_id, bsn_code, product_name_raw)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (date_iso, f"{doc_base}-1", doc_base, 'cust', customer_code,
+         1, 'ตัว', net, 1, net, net,
+         None, bsn_code, product_name_raw),
+    )
+
+
+def test_drilldown_groups_unmapped_codes_by_bsn_and_raw_name(empty_db_conn):
+    c = empty_db_conn
+    # 2 unmapped sales for the same BSN code (same raw name) → 1 grouped row
+    _ins_sale_unmapped(c, 'IV001', 'A', '2026-01-10', 100, '603ต2503-34', 'รีเวท')
+    _ins_sale_unmapped(c, 'IV002', 'B', '2026-01-11', 250, '603ต2503-34', 'รีเวท')
+    # different BSN code → separate row
+    _ins_sale_unmapped(c, 'IV003', 'A', '2026-01-12', 50, '603ต2503-22', 'รีเวท สีน้ำตาล')
+    c.commit()
+
+    rows = rev.unmapped_revenue_drilldown(conn=c)
+    by_code = {r['bsn_code']: r for r in rows}
+    assert by_code['603ต2503-34']['revenue']            == 350.0
+    assert by_code['603ต2503-34']['line_count']         == 2
+    assert by_code['603ต2503-34']['distinct_customers'] == 2
+    assert by_code['603ต2503-22']['revenue']            == 50.0
+
+
+def test_drilldown_includes_no_brand_products(empty_db_conn):
+    c = empty_db_conn
+    p_nobrand = _ins_product(c, 90001, 'สินค้ายังไม่ระบุยี่ห้อ', brand_id=None)
+    _ins_sale(c, 'IV001', 'A', 'C001', '2026-01-10', 300, product_id=p_nobrand)
+    _ins_sale(c, 'IV002', 'B', 'C002', '2026-01-11', 500, product_id=p_nobrand)
+    c.commit()
+
+    rows = rev.unmapped_revenue_drilldown(conn=c)
+    by_pid = {r['product_id']: r for r in rows if r['product_id'] is not None}
+    assert by_pid[p_nobrand]['revenue']     == 800.0
+    assert by_pid[p_nobrand]['line_count']  == 2
+    assert by_pid[p_nobrand]['source_type'] == 'no_brand'
+
+
+def test_drilldown_excludes_branded_products(empty_db_conn):
+    c = empty_db_conn
+    bid = _ins_brand(c, 'sd', 'Sendai', name_th='เซ็นได')
+    p_branded = _ins_product(c, 90001, 'P', brand_id=bid)
+    _ins_sale(c, 'IV001', 'A', 'C001', '2026-01-10', 999, product_id=p_branded)
+    c.commit()
+
+    rows = rev.unmapped_revenue_drilldown(conn=c)
+    assert rows == []
+
+
+def test_drilldown_ordered_by_revenue_desc_capped_at_limit(empty_db_conn):
+    c = empty_db_conn
+    # 3 different unmapped codes with revenues 100, 300, 200
+    _ins_sale_unmapped(c, 'IV001', 'A', '2026-01-10', 100, 'CODE-A', 'A')
+    _ins_sale_unmapped(c, 'IV002', 'A', '2026-01-10', 300, 'CODE-B', 'B')
+    _ins_sale_unmapped(c, 'IV003', 'A', '2026-01-10', 200, 'CODE-C', 'C')
+    c.commit()
+
+    rows = rev.unmapped_revenue_drilldown(conn=c, limit=2)
+    assert len(rows) == 2
+    assert [r['revenue'] for r in rows] == [300.0, 200.0]
+    assert rows[0]['bsn_code'] == 'CODE-B'
+
+
+def test_drilldown_excludes_sr_hs(empty_db_conn):
+    c = empty_db_conn
+    _ins_sale_unmapped(c, 'IV001', 'A', '2026-01-10', 100, 'CODE-A', 'name')
+    _ins_sale_unmapped(c, 'SR001', 'A', '2026-01-11', -50, 'CODE-A', 'name')  # CN
+    _ins_sale_unmapped(c, 'HS001', 'A', '2026-01-12', 999, 'CODE-A', 'name')  # opening
+    c.commit()
+    rows = rev.unmapped_revenue_drilldown(conn=c)
+    assert rows[0]['revenue'] == 100.0  # SR + HS filtered out
+
+
+def test_drilldown_date_filter(empty_db_conn):
+    c = empty_db_conn
+    _ins_sale_unmapped(c, 'IV001', 'A', '2025-12-31', 100, 'CODE-A', 'name')
+    _ins_sale_unmapped(c, 'IV002', 'A', '2026-01-15', 200, 'CODE-A', 'name')
+    _ins_sale_unmapped(c, 'IV003', 'A', '2026-02-01', 300, 'CODE-A', 'name')
+    c.commit()
+    rows = rev.unmapped_revenue_drilldown(
+        date_from='2026-01-01', date_to='2026-01-31', conn=c)
+    assert rows[0]['revenue'] == 200.0
+
+
+def test_drilldown_distinct_customers_falls_back_to_name_when_code_missing(empty_db_conn):
+    """Mirror the rest of the dashboard's convention: when customer_code
+    is NULL or blank, fall back to customer (name) for the distinct count.
+    Otherwise we silently undercount unique customers."""
+    c = empty_db_conn
+    # Three sales for the same unmapped code, three different identities:
+    #   row 1: customer_code='C001'
+    #   row 2: customer_code='' (blank) → falls back to customer='WalkIn-A'
+    #   row 3: customer_code=None     → falls back to customer='WalkIn-B'
+    c.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net,
+            product_id, bsn_code, product_name_raw)
+           VALUES ('2026-01-10','IV001-1','IV001','Acme','C001',
+                   1,'ตัว',100,1,100,100, NULL, 'CODE-X', 'name')"""
+    )
+    c.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net,
+            product_id, bsn_code, product_name_raw)
+           VALUES ('2026-01-10','IV002-1','IV002','WalkIn-A','',
+                   1,'ตัว',100,1,100,100, NULL, 'CODE-X', 'name')"""
+    )
+    c.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net,
+            product_id, bsn_code, product_name_raw)
+           VALUES ('2026-01-10','IV003-1','IV003','WalkIn-B',NULL,
+                   1,'ตัว',100,1,100,100, NULL, 'CODE-X', 'name')"""
+    )
+    c.commit()
+
+    rows = rev.unmapped_revenue_drilldown(conn=c)
+    by_code = {r['bsn_code']: r for r in rows}
+    assert by_code['CODE-X']['distinct_customers'] == 3, (
+        "expected 3 distinct identities (C001 + WalkIn-A + WalkIn-B); got "
+        f"{by_code['CODE-X']['distinct_customers']}"
+    )
+
+
+def test_drilldown_covers_orphan_brand_id_rows(empty_db_conn):
+    """Symmetric to orphan product_id: a product whose brand_id points at
+    a non-existent brand row still lands in the 'ไม่ระบุแบรนด์' bucket on
+    /revenue (LEFT JOIN brands). The drill-down must capture it too."""
+    c = empty_db_conn
+    c.execute("PRAGMA foreign_keys = OFF")
+    # product with brand_id pointing at a non-existent brand (id=88888)
+    pid = c.execute(
+        """INSERT INTO products (sku, product_name, brand_id, unit_type)
+           VALUES (99999, 'orphan-brand product', 88888, 'ตัว')"""
+    ).lastrowid
+    c.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net,
+            product_id)
+           VALUES ('2026-01-10','IV001-1','IV001','cust','C001',
+                   1,'ตัว',777.0,1,777.0,777.0, ?)""", (pid,)
+    )
+    c.commit()
+
+    rows = rev.unmapped_revenue_drilldown(conn=c)
+    drill_total = sum(r['revenue'] for r in rows)
+    brand_rows = rev.top_brands_by_revenue(conn=c, limit=999)
+    unbranded = next((r for r in brand_rows
+                      if r['brand_display'] == 'ไม่ระบุแบรนด์'), None)
+    assert unbranded is not None
+    assert abs(drill_total - unbranded['revenue']) < 0.01, (
+        f"orphan brand_id row missing from drilldown: drill={drill_total}, "
+        f"bucket={unbranded['revenue']}"
+    )
+
+
+def test_drilldown_covers_orphan_product_id_rows(empty_db_conn):
+    """If sales_transactions.product_id points to a non-existent product
+    row, top_brands LEFT JOIN puts it in the 'ไม่ระบุแบรนด์' bucket — the
+    drill-down must capture it too or the reconciliation invariant breaks.
+    Case A is now LEFT JOIN + p.id IS NULL → covers both NULL and orphan."""
+    c = empty_db_conn
+    # Insert with PRAGMA off so the FK doesn't reject the orphan row.
+    c.execute("PRAGMA foreign_keys = OFF")
+    c.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net,
+            product_id, bsn_code, product_name_raw)
+           VALUES ('2026-01-10','IV001-1','IV001','cust','C001',
+                   1,'ตัว',999.0,1,999.0,999.0, 88888, 'ORPH', 'orphan name')"""
+    )
+    c.commit()
+
+    rows = rev.unmapped_revenue_drilldown(conn=c)
+    drill_total = sum(r['revenue'] for r in rows)
+    brand_rows = rev.top_brands_by_revenue(conn=c, limit=999)
+    unbranded = next((r for r in brand_rows
+                      if r['brand_display'] == 'ไม่ระบุแบรนด์'), None)
+    assert unbranded is not None, "orphan row must collapse into unbranded bucket"
+    assert abs(drill_total - unbranded['revenue']) < 0.01, (
+        f"orphan row missing from drilldown: drill={drill_total}, "
+        f"bucket={unbranded['revenue']}"
+    )
+
+
+def test_drilldown_sum_matches_unbranded_bucket(empty_db_conn):
+    """Σ unmapped_revenue_drilldown.revenue == top_brands 'ไม่ระบุแบรนด์' bucket."""
+    c = empty_db_conn
+    # mix of unmapped codes + no-brand products
+    _ins_sale_unmapped(c, 'IV001', 'A', '2026-01-10', 100, 'CODE-A', 'A')
+    _ins_sale_unmapped(c, 'IV002', 'A', '2026-01-11', 200, 'CODE-B', 'B')
+    p_nb = _ins_product(c, 90001, 'P', brand_id=None)
+    _ins_sale(c, 'IV003', 'A', 'C', '2026-01-12', 300, product_id=p_nb)
+    c.commit()
+
+    drill_total = sum(r['revenue'] for r in rev.unmapped_revenue_drilldown(conn=c))
+    brand_rows = rev.top_brands_by_revenue(conn=c, limit=999)
+    unbranded = next(r for r in brand_rows if r['brand_display'] == 'ไม่ระบุแบรนด์')
+    assert abs(drill_total - unbranded['revenue']) < 0.01
