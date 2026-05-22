@@ -208,6 +208,16 @@ def test_mig_077_renames_unit_type_to_kilogram(tmp_db):
         KG_RENAME_PIDS,
     )}
 
+    # Premise check: at least one pid must actually be 'กก.' pre-migration,
+    # else the loop below asserts nothing and the test passes vacuously
+    # (e.g., mig already applied, or someone fixed them manually).
+    pre_kg_count = sum(1 for pid in KG_RENAME_PIDS if before.get(pid) == "กก.")
+    assert pre_kg_count > 0, (
+        "Test premise broken: none of the 17 kg-rename pids start as 'กก.' "
+        "in the test DB. The migration's rename UPDATE has nothing to do. "
+        f"Current unit_types: {before!r}"
+    )
+
     _apply(conn, MIG_077)
 
     after = {r[0]: r[1] for r in conn.execute(
@@ -327,3 +337,40 @@ def test_mig_077_rollback_drops_snapshot_table(tmp_db):
         "SELECT name FROM sqlite_master WHERE type='table' AND name='migration_077_snapshot'"
     ).fetchall()
     assert rows == []
+
+
+def test_mig_077_rollback_skips_brand_delete_when_still_referenced(tmp_db):
+    """If another product is manually pointed at a new brand between forward
+    and rollback, the NOT EXISTS guard skips that DELETE rather than blowing
+    up the whole rollback with a FK error."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    _apply(conn, MIG_077)
+
+    # Simulate Put manually assigning ANOTHER (unrelated) product to four_stars
+    # after the forward mig.
+    four_stars_id = conn.execute(
+        "SELECT id FROM brands WHERE code='four_stars'"
+    ).fetchone()[0]
+    bystander_pid = conn.execute(
+        "SELECT id FROM products WHERE id NOT IN (406, 407) AND brand_id IS NULL LIMIT 1"
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE products SET brand_id = ? WHERE id = ?",
+        (four_stars_id, bystander_pid),
+    )
+    conn.commit()
+
+    # Rollback should NOT raise (FK error on FOUR STARS DELETE without the
+    # NOT EXISTS guard).
+    _apply(conn, ROLLBACK_077)
+
+    # four_stars survives (still referenced by bystander_pid). beyond / alteco
+    # are deleted normally (no surviving references).
+    survived = {r[0] for r in conn.execute(
+        "SELECT code FROM brands WHERE code IN ('four_stars','beyond','alteco')"
+    )}
+    assert survived == {"four_stars"}, (
+        f"Expected only four_stars to survive (bystander reference), got: {survived}"
+    )

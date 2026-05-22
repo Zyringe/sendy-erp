@@ -28,7 +28,13 @@ WHERE id IN (SELECT id FROM migration_077_snapshot);
 -- 3. Drop the 3 new brand rows. Must happen AFTER products.brand_id has been
 --    restored to prior values (NULL or existing IDs) — the FK from
 --    products.brand_id → brands.id would otherwise block the DELETE.
-DELETE FROM brands WHERE code IN ('four_stars', 'beyond', 'alteco');
+--    NOT EXISTS guard: skip the DELETE for any brand still referenced by a
+--    product (e.g., if Put manually assigned another product to FOUR STARS
+--    between forward-mig and rollback). Without this, the DELETE would
+--    error out and leave brand_id UPDATEs from steps 1-2 already committed.
+DELETE FROM brands
+WHERE code IN ('four_stars', 'beyond', 'alteco')
+  AND NOT EXISTS (SELECT 1 FROM products WHERE brand_id = brands.id);
 
 -- 4. Snapshot table is no longer needed after rollback.
 DROP TABLE IF EXISTS migration_077_snapshot;
