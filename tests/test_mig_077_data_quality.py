@@ -96,6 +96,34 @@ def test_mig_077_creates_3_new_brands(tmp_db):
     assert flags == {0}
 
 
+def test_mig_077_new_brands_have_short_codes(tmp_db):
+    """Codex finding 2026-05-23: brands.short_code must be populated.
+    sku_code generation drops the brand segment when short_code is NULL,
+    which would corrupt SKU codes of unlocked products assigned to these
+    brands by this migration."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    _apply(conn, MIG_077)
+
+    rows = dict(conn.execute(
+        "SELECT code, short_code FROM brands "
+        "WHERE code IN ('four_stars', 'beyond', 'alteco')"
+    ).fetchall())
+    assert rows == {
+        'four_stars': '4STAR',
+        'beyond':     'BYND',
+        'alteco':     'ALTECO',
+    }
+
+    # short_codes must be unique across all brands
+    dupes = list(conn.execute(
+        "SELECT short_code, COUNT(*) n FROM brands "
+        "WHERE short_code IS NOT NULL "
+        "GROUP BY short_code HAVING n > 1"
+    ))
+    assert dupes == [], f"duplicate brand short_codes: {dupes}"
+
+
 def test_mig_077_brand_inserts_idempotent(tmp_db):
     """Re-applying mig 077 does not create duplicate brand rows."""
     conn = sqlite3.connect(tmp_db)

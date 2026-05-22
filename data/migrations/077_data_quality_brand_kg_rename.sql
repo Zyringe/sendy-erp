@@ -89,10 +89,14 @@ WHERE id IN (
 );
 
 -- ── 2. New 3rd-party brands ─────────────────────────────────────────────────
-INSERT OR IGNORE INTO brands (code, name, is_own_brand, sort_order) VALUES
-    ('four_stars', 'FOUR STARS', 0, 200),
-    ('beyond',     'BEYOND',     0, 200),
-    ('alteco',     'ALTECO',     0, 200);
+-- short_code matters: sku_code generation drops the brand segment when
+-- brands.short_code IS NULL. Without it, unlocked products freshly assigned
+-- to these brands would lose their brand component on next SKU regen (Codex
+-- adversarial review 2026-05-23). Pattern matches mig 045 / 050 / 052.
+INSERT OR IGNORE INTO brands (code, name, is_own_brand, sort_order, short_code) VALUES
+    ('four_stars', 'FOUR STARS', 0, 200, '4STAR'),
+    ('beyond',     'BEYOND',     0, 200, 'BYND'),
+    ('alteco',     'ALTECO',     0, 200, 'ALTECO');
 
 -- ── 3. D5 — Brand assignments (98 pids) ─────────────────────────────────────
 
