@@ -41,7 +41,16 @@ SELECT id, prior_bsn_code, prior_bsn_name, prior_product_id, prior_bsn_unit
 FROM migration_078_snapshot_mapping
 WHERE id IN (59, 150);
 
--- 4. Drop snapshot tables.
+-- 4. Reverse pid 771 stock reconciliation entry from section 5 of the forward
+--    mig. DELETE FROM transactions does NOT fire after_transaction_insert, so
+--    stock_levels must be hand-decremented to undo the trigger's +44 effect.
+UPDATE stock_levels SET quantity = quantity - 44
+WHERE product_id = 771
+  AND EXISTS (SELECT 1 FROM transactions
+              WHERE product_id = 771 AND reference_no = 'MIG_078');
+DELETE FROM transactions WHERE product_id = 771 AND reference_no = 'MIG_078';
+
+-- 5. Drop snapshot tables.
 DROP TABLE IF EXISTS migration_078_snapshot_products;
 DROP TABLE IF EXISTS migration_078_snapshot_uc;
 DROP TABLE IF EXISTS migration_078_snapshot_mapping;

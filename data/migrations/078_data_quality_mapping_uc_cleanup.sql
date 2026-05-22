@@ -237,4 +237,27 @@ WHERE id IN (1369, 1372, 1374) AND unit_type = 'กิโลกรัม';
 UPDATE products SET unit_type = 'อัน'
 WHERE id = 771 AND unit_type = 'โหล';
 
+-- ── 5. Stock reconciliation for pid 771 ─────────────────────────────────────
+-- Codex adversarial review 2026-05-23: when ut changes from 'โหล' to 'อัน' AND
+-- UC ratio for 'โหล' jumps from 1.0 to 12.0, the existing stock_levels.quantity
+-- (recorded in the old 'โหล' base) becomes wrong if interpreted as the new
+-- 'อัน' base. pid 771 currently has stock=4 'โหล' which physically = 48 'อัน'.
+-- Without a reconciliation entry, displays would show "4 อัน" indefinitely.
+--
+-- Insert an ADJUST transaction for +44 'อัน' (= 48 target - 4 current). The
+-- after_transaction_insert trigger will push stock_levels(771) to 48.
+-- Rollback removes this row and reverses the stock_levels delta.
+--
+-- Other ut-change pids: 16 have stock_levels=0 (no drift), and pid 1370
+-- (stock=25) keeps ratio=1.0 (relabel), so 25 'ตัว' = 25 'แพ็ค' under the
+-- new semantics — no reconciliation needed.
+INSERT INTO transactions
+    (product_id, txn_type, quantity_change, unit_mode, reference_no, note, created_at)
+SELECT 771, 'ADJUST', 44, 'unit', 'MIG_078',
+       'mig 078: ปรับสต๊อก 4 โหล (เก่า) = 48 อัน (ใหม่) หลัง ut/ratio change',
+       datetime('now','localtime')
+WHERE NOT EXISTS (
+    SELECT 1 FROM transactions WHERE product_id = 771 AND reference_no = 'MIG_078'
+);
+
 COMMIT;

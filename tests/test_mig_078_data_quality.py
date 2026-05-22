@@ -259,8 +259,10 @@ def test_mig_078_keeps_relabel_ucs_for_future_bsn_imports(tmp_db):
 
 # ── No-touch invariants ──────────────────────────────────────────────────────
 
-def test_mig_078_does_not_touch_transactions(tmp_db):
-    """Schema-only cleanup — historical transactions are NOT modified."""
+def test_mig_078_does_not_touch_bsn_transactions(tmp_db):
+    """BSN-derived transactions (note LIKE 'BSN%') are NOT modified.
+    Mig 078 adds exactly one ADJUST row for pid 771 (note 'mig 078: ...').
+    """
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
 
@@ -284,8 +286,36 @@ def test_mig_078_does_not_touch_transactions(tmp_db):
     assert before_sum == after_sum
 
 
-def test_mig_078_does_not_touch_stock_levels(tmp_db):
-    """stock_levels for affected pids must NOT change."""
+def test_mig_078_adds_pid_771_stock_adjustment(tmp_db):
+    """Codex blocker fix: pid 771 ut โหล→อัน + UC ratio 1.0→12.0 needs a
+    stock reconciliation entry so stock_levels(771) goes 4 → 48 (4×12)."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    before_stock = conn.execute(
+        "SELECT quantity FROM stock_levels WHERE product_id = 771"
+    ).fetchone()[0]
+    assert before_stock == 4, f"premise: pid 771 stock should be 4 pre-mig, got {before_stock}"
+
+    _apply(conn, MIG_078)
+
+    after_stock = conn.execute(
+        "SELECT quantity FROM stock_levels WHERE product_id = 771"
+    ).fetchone()[0]
+    assert after_stock == 48, f"pid 771 stock should be 48 post-mig (4 + 44), got {after_stock}"
+
+    # ADJUST row exists exactly once
+    adjust_rows = conn.execute(
+        "SELECT quantity_change, txn_type FROM transactions "
+        "WHERE product_id = 771 AND reference_no = 'MIG_078'"
+    ).fetchall()
+    assert len(adjust_rows) == 1, f"expected exactly 1 ADJUST row, got {len(adjust_rows)}"
+    assert adjust_rows[0][0] == 44
+    assert adjust_rows[0][1] == 'ADJUST'
+
+
+def test_mig_078_stock_levels_unchanged_except_pid_771(tmp_db):
+    """stock_levels for affected pids stays put — except pid 771 which gets +44."""
     affected = sum(UT_CHANGES.values(), []) + UT_UNCHANGED
     placeholders = ",".join("?" * len(affected))
     conn = sqlite3.connect(tmp_db)
@@ -300,7 +330,16 @@ def test_mig_078_does_not_touch_stock_levels(tmp_db):
         f"SELECT product_id, quantity FROM stock_levels WHERE product_id IN ({placeholders})",
         affected
     )}
-    assert before == after
+
+    for pid in affected:
+        if pid == 771:
+            assert after[pid] == before[pid] + 44, (
+                f"pid 771 expected +44, got before={before[pid]} after={after[pid]}"
+            )
+        else:
+            assert after.get(pid) == before.get(pid), (
+                f"pid {pid} drifted: before={before.get(pid)} after={after.get(pid)}"
+            )
 
 
 def test_mig_078_does_not_touch_platform_skus(tmp_db):
@@ -414,6 +453,35 @@ def test_mig_078_rollback_restores_uc_rows(tmp_db):
     _apply(conn, ROLLBACK_078)
     after = _snapshot_uc(conn, affected_pids)
     assert before == after
+
+
+def test_mig_078_rollback_reverses_pid_771_stock_adjustment(tmp_db):
+    """Rollback must remove the ADJUST transaction AND decrement stock_levels
+    back to its pre-mig value (DELETE doesn't fire after_transaction_insert,
+    so the rollback file hand-decrements)."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    before_stock = conn.execute(
+        "SELECT quantity FROM stock_levels WHERE product_id = 771"
+    ).fetchone()[0]
+
+    _apply(conn, MIG_078)
+    _apply(conn, ROLLBACK_078)
+
+    after_stock = conn.execute(
+        "SELECT quantity FROM stock_levels WHERE product_id = 771"
+    ).fetchone()[0]
+    assert after_stock == before_stock, (
+        f"rollback didn't restore pid 771 stock: before={before_stock}, after={after_stock}"
+    )
+
+    # ADJUST row gone
+    adjust = conn.execute(
+        "SELECT COUNT(*) FROM transactions "
+        "WHERE product_id = 771 AND reference_no = 'MIG_078'"
+    ).fetchone()[0]
+    assert adjust == 0
 
 
 def test_mig_078_rollback_drops_snapshot_tables(tmp_db):
