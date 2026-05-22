@@ -3,6 +3,26 @@
 {% block page_title %}บุคลากร (HR){% endblock %}
 
 {% block content %}
+{% if stale_drafts %}
+<div class="alert alert-warning d-flex align-items-start mb-3" role="alert">
+  <i class="bi bi-exclamation-triangle-fill me-2 mt-1"></i>
+  <div class="flex-grow-1">
+    <strong>มี payroll run ค้าง draft สำหรับเดือนที่ผ่านมา</strong> —
+    เปิดดู finalize ให้เรียบร้อย ก่อนเดือนถัดไป (advance อาจคงค้างจน bleed เข้าเดือนใหม่):
+    <ul class="mb-0 mt-1 small">
+      {% for r in stale_drafts %}
+      <li>
+        <a href="{{ url_for('hr.payroll_detail', run_id=r.id) }}"
+           class="alert-link">
+          {{ r.year_month }} (บริษัท {{ r.company_name or r.company_id }})
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
 <div class="row g-3 mb-4">
   {# ── Stat cards ─────────────────────────────────────────────────────── #}
   <div class="col-6 col-md-3">

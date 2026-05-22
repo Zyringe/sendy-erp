@@ -63,6 +63,46 @@ def test_hr_leave_list_renders(admin_client):
     assert resp.status_code == 200, resp.data[:500]
 
 
+# ── stale-draft banner on /hr/ dashboard ─────────────────────────────────
+
+def test_hr_dashboard_shows_stale_draft_banner(admin_client, tmp_db):
+    """Insert a draft payroll run for a past month → banner copy renders.
+    Use a year_month that is unambiguously past (2024-01) regardless of
+    when the test runs."""
+    sqlite3.connect(tmp_db).execute(
+        """INSERT INTO payroll_runs
+             (year_month, company_id, status, run_date, created_by)
+           VALUES ('2024-01', 1, 'draft', '2024-01-31', 1)"""
+    ).connection.commit()
+    resp = admin_client.get('/hr/')
+    assert resp.status_code == 200
+    assert b'payroll run' in resp.data and 'draft' in resp.data.decode('utf-8')
+    # Banner-specific copy
+    assert 'ค้าง draft' in resp.data.decode('utf-8'), \
+        "stale-draft banner copy missing from dashboard"
+
+
+def test_hr_dashboard_no_banner_when_only_current_month_draft(admin_client, tmp_db):
+    """A draft for the CURRENT month is normal mid-prep, must NOT trigger
+    the banner. Use a date-derived year_month so the test is date-stable."""
+    from datetime import date
+    this_ym = date.today().strftime("%Y-%m")
+    # Clean slate first so live-DB clone state can't pollute
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM payroll_runs")
+    conn.execute(
+        """INSERT INTO payroll_runs
+             (year_month, company_id, status, run_date, created_by)
+           VALUES (?, 1, 'draft', date('now'), 1)""", (this_ym,)
+    )
+    conn.commit()
+    conn.close()
+    resp = admin_client.get('/hr/')
+    assert resp.status_code == 200
+    assert 'ค้าง draft' not in resp.data.decode('utf-8'), \
+        "current-month draft should NOT trigger stale-banner"
+
+
 # ── /hr/payroll/<id>/reopen — POST route on a finalized run ───────────────
 
 def _make_finalized_run(tmp_db) -> int:
