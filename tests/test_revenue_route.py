@@ -73,3 +73,42 @@ def test_revenue_route_blocks_non_admin_manager(route_db):
     r = c.get('/revenue', follow_redirects=False)
     # Same gating as /cashflow — bounce to dashboard (302)
     assert r.status_code in (302, 303)
+
+
+# ── /revenue/unmapped drill-down ─────────────────────────────────────────────
+
+def test_revenue_unmapped_route_renders(route_db):
+    c = _client_as_admin()
+    r = c.get('/revenue/unmapped')
+    assert r.status_code == 200
+    body = r.data.decode('utf-8', errors='replace')
+    assert 'ไม่ระบุแบรนด์' in body or 'ยังไม่ได้ map' in body
+    assert 'unmapped' in body or 'no brand' in body  # source badges
+
+
+def test_revenue_unmapped_blocks_non_admin_manager(route_db):
+    from app import app
+    c = app.test_client()
+    with c.session_transaction() as s:
+        s['role'] = 'staff'
+    r = c.get('/revenue/unmapped', follow_redirects=False)
+    assert r.status_code in (302, 303)
+
+
+def test_revenue_unmapped_respects_limit_param(route_db):
+    c = _client_as_admin()
+    r = c.get('/revenue/unmapped?limit=5')
+    assert r.status_code == 200
+    body = r.data.decode('utf-8', errors='replace')
+    assert 'value="5"' in body  # limit input prepopulated
+
+
+def test_revenue_unmapped_tolerates_malformed_to_param(route_db):
+    """A malformed ?to= param must NOT 500 — same defensive behavior as
+    /revenue. _month_end() now falls back instead of raising ValueError."""
+    c = _client_as_admin()
+    for bad in ('foobar', '2026-13', 'NaN-99', ''):
+        r = c.get(f'/revenue/unmapped?from=2026-01&to={bad}')
+        assert r.status_code == 200, (
+            f"to={bad!r} returned {r.status_code} — should not 500"
+        )

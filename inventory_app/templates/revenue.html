@@ -309,9 +309,15 @@
         <tr {% if row.brand_display == 'ไม่ระบุแบรนด์' %}class="table-warning"{% endif %}>
           <td class="text-subtle">{{ loop.index }}</td>
           <td>
-            {{ row.brand_display }}
             {% if row.brand_display == 'ไม่ระบุแบรนด์' %}
+            <a href="{{ url_for('revenue_unmapped_drilldown', **{'from': from_month, 'to': to_month}) }}"
+               class="text-decoration-none">
+              {{ row.brand_display }}
+              <i class="bi bi-arrow-right-circle small"></i>
+            </a>
             <span class="badge bg-warning text-dark ms-1">ยังไม่ map</span>
+            {% else %}
+              {{ row.brand_display }}
             {% endif %}
           </td>
           <td class="text-subtle small">{{ row.brand_code or '—' }}</td>
