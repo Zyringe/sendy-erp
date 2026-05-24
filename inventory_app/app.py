@@ -960,6 +960,16 @@ def stock_adjust(product_id):
         flash('ไม่พบสินค้า', 'danger')
         return redirect(url_for('products.product_list'))
 
+    # Pages that send the user here can pass ?next=/some/path (or hidden form
+    # field) to return them to where they came from (e.g. /alerts inline
+    # adjust). url_for guards prevent open-redirect; we only honour an
+    # internal path (starts with '/').
+    def _safe_next(default_endpoint, **kw):
+        nxt = request.values.get('next') or ''
+        if nxt.startswith('/') and not nxt.startswith('//'):
+            return nxt
+        return url_for(default_endpoint, **kw)
+
     if request.method == 'POST':
         f = request.form
         try:
@@ -968,22 +978,22 @@ def stock_adjust(product_id):
                 raise ValueError('จำนวนต้องไม่ติดลบ')
         except ValueError as e:
             flash(str(e), 'danger')
-            return render_template('transactions/adjust_form.html', product=product)
+            return redirect(_safe_next('products.product_detail', product_id=product_id))
 
         note = f.get('note', '').strip()
         if not note:
             flash('กรุณาระบุหมายเหตุสำหรับการปรับยอด', 'danger')
-            return render_template('transactions/adjust_form.html', product=product)
+            return redirect(_safe_next('products.product_detail', product_id=product_id))
 
         current = models.get_current_stock(product_id)
         diff = new_qty - current
         if diff == 0:
             flash('จำนวนเท่าเดิม ไม่มีการเปลี่ยนแปลง', 'info')
-            return redirect(url_for('products.product_detail', product_id=product_id))
+            return redirect(_safe_next('products.product_detail', product_id=product_id))
 
         models.add_transaction(product_id, 'ADJUST', diff, 'unit', note=note)
         flash(f'ปรับยอดสต็อกเป็น {new_qty} {product["unit_type"]} เรียบร้อย', 'success')
-        return redirect(url_for('products.product_detail', product_id=product_id))
+        return redirect(_safe_next('products.product_detail', product_id=product_id))
 
     return render_template('transactions/adjust_form.html', product=product)
 
