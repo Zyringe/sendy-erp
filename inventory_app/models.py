@@ -916,6 +916,7 @@ def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
     every existing caller keeps writing/updating exactly that row (unchanged
     behavior). A non-empty bsn_unit creates/updates a per-unit override."""
     conn = get_connection()
+    bsn_unit = bsn_unit or ''
     conn.execute("""
         INSERT INTO product_code_mapping
             (bsn_code, bsn_name, product_id, is_ignored, ignore_reason, bsn_unit)
@@ -925,8 +926,20 @@ def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
             product_id    = excluded.product_id,
             is_ignored    = excluded.is_ignored,
             ignore_reason = excluded.ignore_reason
-    """, (bsn_code, bsn_name, product_id, is_ignored, ignore_reason,
-          bsn_unit or ''))
+    """, (bsn_code, bsn_name, product_id, is_ignored, ignore_reason, bsn_unit))
+    # When we just resolved a scoped (non-empty bsn_unit) mapping, drop the
+    # import-created catch-all placeholder for this bsn_code — that row
+    # (bsn_unit='', product_id=NULL, is_ignored=0) is the "pending" marker
+    # and would otherwise keep the bsn_code in get_pending_mappings() forever.
+    # Legacy catch-alls with a real product_id are left alone. Ignored rows
+    # (is_ignored=1) are also preserved so their ignore_reason audit trail
+    # survives a subsequent un-ignore/remap by the user.
+    if bsn_unit and product_id is not None:
+        conn.execute("""
+            DELETE FROM product_code_mapping
+            WHERE bsn_code = ? AND bsn_unit = ''
+              AND product_id IS NULL AND is_ignored = 0
+        """, (bsn_code,))
     conn.commit()
     conn.close()
 
@@ -4179,8 +4192,8 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
             d.get('size') or None,
             d.get('condition') or None,
             d.get('pack_variant') or None,
-            d.get('units_per_carton'),
-            d.get('units_per_box'),
+            d.get('units_per_carton') or 1,
+            d.get('units_per_box') or 1,
         ))
         new_pid = cur.lastrowid
 
@@ -4190,16 +4203,31 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
             (new_pid,)
         )
 
-        # Upsert mapping (bsn_code → new product). mig 061: write the
-        # bsn_unit='' catch-all (per-unit overrides managed elsewhere).
+        # Upsert mapping (bsn_code → new product). Strict mode: scope the
+        # mapping by sug.bsn_unit (the unit captured when staging). If a new
+        # unit shows up later for the same bsn_code, the row stays unsynced
+        # and the user re-maps via Suggest → creates a separate scoped row.
+        # Falls back to catch-all ('') only when bsn_unit was never captured.
+        mapping_bsn_unit = (d.get('bsn_unit') or '').strip()
         conn.execute("""
             INSERT INTO product_code_mapping
                 (bsn_code, bsn_name, product_id, is_ignored, bsn_unit)
-            VALUES (?, ?, ?, 0, '')
+            VALUES (?, ?, ?, 0, ?)
             ON CONFLICT(bsn_code, bsn_unit) DO UPDATE SET
                 product_id = excluded.product_id,
                 is_ignored = 0
-        """, (sug['bsn_code'], sug['bsn_name'], new_pid))
+        """, (sug['bsn_code'], sug['bsn_name'], new_pid, mapping_bsn_unit))
+        # Drop the import-created catch-all placeholder for this bsn_code so
+        # the bsn_code disappears from the pending-mapping list now that a
+        # scoped mapping exists. Preserves ignored rows (is_ignored=1) so
+        # the ignore_reason audit trail survives. See upsert_mapping() for
+        # the same logic.
+        if mapping_bsn_unit:
+            conn.execute("""
+                DELETE FROM product_code_mapping
+                WHERE bsn_code = ? AND bsn_unit = ''
+                  AND product_id IS NULL AND is_ignored = 0
+            """, (sug['bsn_code'],))
 
         # Mark suggestion approved
         conn.execute("""
