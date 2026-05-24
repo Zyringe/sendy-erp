@@ -45,10 +45,15 @@
           <td class="text-end fw-700 text-danger">+{{ a.excess | fmt_qty }}</td>
           <td>
             {% if is_admin %}
-            <a href="{{ url_for('products.product_edit', product_id=a.id) }}"
-               class="btn btn-xs" style="background:#f1f5f9;color:#475569;border:none" title="แก้ไข">
-              <i class="bi bi-pencil"></i>
-            </a>
+            <button type="button" class="btn btn-xs btn-primary adjust-btn"
+                    title="ปรับสต็อก"
+                    data-pid="{{ a.id }}"
+                    data-sku="{{ a.sku }}"
+                    data-name="{{ a.product_name }}"
+                    data-qty="{{ a.quantity }}"
+                    data-unit="{{ a.unit_type }}">
+              <i class="bi bi-sliders"></i> ปรับสต็อก
+            </button>
             {% endif %}
           </td>
         </tr>
@@ -67,4 +72,74 @@
   </div>
 </div>
 {% endif %}
+
+{# ── Adjust modal (admin) ──────────────────────────────────────── #}
+{% if is_admin %}
+<div class="modal fade" id="adjustModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" id="adjustForm">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="next" value="{{ url_for('alerts_view') }}">
+        <div class="modal-header">
+          <h5 class="modal-title">
+            <i class="bi bi-sliders me-2"></i>ปรับสต็อก —
+            <span id="adj-sku" class="font-mono badge badge-gray"></span>
+            <span id="adj-name" class="ms-2 text-subtle small"></span>
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3 small text-subtle">
+            สต็อกปัจจุบัน: <strong id="adj-current" class="text-main"></strong>
+            <span id="adj-unit"></span>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small mb-1">จำนวนใหม่</label>
+            <input type="number" min="0" step="1" class="form-control" name="new_quantity"
+                   id="adj-new-qty" required autofocus>
+            <div class="form-text small text-subtle">
+              ระบบจะคำนวณ ADJUST diff = ใหม่ − ปัจจุบัน แล้วบันทึก transaction
+            </div>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small mb-1">หมายเหตุ <span class="text-danger">*</span></label>
+            <input type="text" class="form-control" name="note"
+                   placeholder="เช่น เคาท์สต็อกหน้าร้าน, นำเข้าค้าง, แก้ตามจริง" required>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i class="bi bi-check-lg me-1"></i>บันทึก
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+// Wire all .adjust-btn buttons via data attributes (avoids quoting issues
+// with Thai product names in inline onclick handlers).
+document.querySelectorAll('.adjust-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const d = btn.dataset;
+    const currentQty = parseFloat(d.qty) || 0;
+    document.getElementById('adjustForm').action = '/products/' + d.pid + '/adjust';
+    document.getElementById('adj-sku').textContent = d.sku;
+    document.getElementById('adj-name').textContent = d.name;
+    document.getElementById('adj-current').textContent = currentQty;
+    document.getElementById('adj-unit').textContent = d.unit;
+    // Pre-fill new_quantity with max(current, 0) so negative-stock rows
+    // default to 0 instead of loading an invalid negative value.
+    const qtyInput = document.getElementById('adj-new-qty');
+    qtyInput.value = Math.max(currentQty, 0);
+    qtyInput.select();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('adjustModal')).show();
+  });
+});
+</script>
+{% endif %}
+
 {% endblock %}
