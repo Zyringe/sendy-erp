@@ -54,6 +54,13 @@
         <div class="d-flex flex-column flex-md-row align-items-md-center gap-2 w-100 me-3">
           <span class="badge badge-gray font-mono">{{ s.bsn_code }}</span>
           <span class="fw-600">{{ s.suggested_name or s.bsn_name }}</span>
+          {% if not s.bsn_unit %}
+          {# Strict-mode gap: no bsn_unit was captured at stage time → approve
+             will create a catch-all mapping. Warn manager before they click. #}
+          <span class="badge bg-warning text-dark" title="ไม่มี bsn_unit — mapping จะเป็น catch-all (ทุกหน่วย)">
+            <i class="bi bi-exclamation-triangle me-1"></i>ไม่มีหน่วย BSN
+          </span>
+          {% endif %}
           <span class="text-subtle small ms-md-auto">
             โดย {{ s.suggested_by_name or 'ระบบ' }} · {{ s.created_at }}
           </span>
@@ -293,7 +300,11 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
   <div class="modal-dialog modal-lg">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title"><i class="bi bi-stars me-2"></i>Smart Suggest — <span id="sm-bsn-code" class="font-mono"></span></h5>
+        <h5 class="modal-title">
+          <i class="bi bi-stars me-2"></i>Smart Suggest —
+          <span id="sm-bsn-code" class="font-mono"></span>
+          <span class="text-subtle ms-2" id="sm-bsn-name-header"></span>
+        </h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
@@ -329,11 +340,14 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                 <div class="ac-drop" id="sm-product-drop"></div>
               </div>
 
-              {# Unit conversion at map-time — always shown when product picked. #}
+              {# Mapping scope + conversion ratio (strict mode — mig 061+):
+                 หน่วย BSN ที่ใส่ไว้นี่ scope mapping ให้แค่หน่วยนั้น.
+                 ถ้า BSN ส่งหน่วยใหม่มา → row ค้าง → user ผูกใหม่ใน Suggest. #}
               <div id="sm-mapconv" class="mt-2" style="display:none">
                 <label class="form-label small mb-1">
                   <i class="bi bi-arrow-left-right me-1"></i>
-                  Unit conversion (ระบุถ้าหน่วย BSN ต่างจากหน่วยสินค้าเดิม)
+                  หน่วย BSN + Conversion
+                  <span class="text-subtle">— mapping จะ scope เฉพาะหน่วยนี้</span>
                 </label>
                 <div class="input-group input-group-sm">
                   <span class="input-group-text">1</span>
@@ -341,28 +355,11 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                          style="max-width:110px" placeholder="หน่วย BSN">
                   <span class="input-group-text">=</span>
                   <input type="number" step="0.01" class="form-control" id="sm-mapconv-ratio"
-                         placeholder="ratio (เช่น 50)">
+                         placeholder="ratio (เว้นว่าง = 1:1)">
                   <span class="input-group-text" id="sm-mapconv-prod-unit">หน่วยสินค้า</span>
                 </div>
                 <div class="form-text small" id="sm-mapconv-hint">
                   <!-- populated dynamically: source of bsn_unit value -->
-                </div>
-              </div>
-
-              {# mig 061: optional per-unit override. เว้นว่าง = ทุกหน่วย
-                 (catch-all, พฤติกรรมเดิม). ใส่หน่วย = bsn_code นี้เมื่อขาย
-                 หน่วยนี้ → สินค้าตัวนี้เท่านั้น (ตัว/แผง แยก SKU) #}
-              <div class="mt-2">
-                <label class="form-label small mb-1">
-                  <i class="bi bi-funnel me-1"></i>
-                  หน่วย BSN ที่ override
-                  <span class="text-subtle">(เว้นว่าง = ทุกหน่วย)</span>
-                </label>
-                <input type="text" class="form-control form-control-sm"
-                       id="sm-map-bsn-unit" style="max-width:160px"
-                       placeholder="เช่น แผง (เว้นว่างได้)">
-                <div class="form-text small text-subtle">
-                  ใส่เฉพาะกรณีรหัสนี้ขายหลายหน่วยและแต่ละหน่วยเป็นคนละ SKU
                 </div>
               </div>
 
@@ -438,7 +435,12 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                   <input type="number" step="0.01" class="form-control form-control-sm" id="sm-cost"></div>
 
                 <div class="col-md-3"><label class="form-label mb-0">Unit type (base/finest)</label>
-                  <input class="form-control form-control-sm" id="sm-unit" placeholder="เช่น ตัว"></div>
+                  <input class="form-control form-control-sm" id="sm-unit" placeholder="เช่น ตัว">
+                  <div class="form-text small text-subtle" id="sm-unit-hint" style="display:none">
+                    <i class="bi bi-info-circle me-1"></i>หน่วยนี้คือหน่วยที่จะเก็บสต็อก —
+                    เปลี่ยนเป็น 'ตัว' ถ้าจะแยกขายปลีกย่อยได้
+                  </div>
+                </div>
                 <div class="col-md-9" id="sm-bunit-row"><label class="form-label mb-0 text-warning">
                   <i class="bi bi-info-circle"></i> หน่วยจาก BSN ≠ Unit type — ระบุ ratio:
                 </label>
@@ -518,6 +520,7 @@ function openSuggest(idx, bsnCode) {
   _smCurrentName = row.dataset.name;
   document.getElementById('sm-bsn-code').textContent = bsnCode;
   document.getElementById('sm-bsn-name').textContent = _smCurrentName;
+  document.getElementById('sm-bsn-name-header').textContent = _smCurrentName;
   document.getElementById('sm-loading').style.display = 'block';
   document.getElementById('sm-content').style.display = 'none';
 
@@ -532,14 +535,81 @@ function openSuggest(idx, bsnCode) {
     if (o) { o.value = ''; o.style.display = 'none'; }
   });
 
-  const modal = new bootstrap.Modal(document.getElementById('suggestModal'));
+  // getOrCreateInstance avoids stacking orphaned Modal instances on the
+  // element across repeated openSuggest() calls.
+  const modalEl = document.getElementById('suggestModal');
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
   modal.show();
+  // Force focus into the modal AFTER the click event finishes. Bootstrap's
+  // Escape-key handler is attached to the modal element; if focus stays on
+  // the Suggest button (which the browser does by default after a click),
+  // Escape during the 150ms show-transition never reaches the modal → modal
+  // gets stuck open with the backdrop blocking subsequent Suggest clicks.
+  setTimeout(() => modalEl.focus(), 0);
 
   fetch('/mapping/suggest/' + encodeURIComponent(bsnCode))
     .then(r => r.json())
     .then(data => populateSuggestModal(data))
     .catch(e => alert('Suggest failed: ' + e));
 }
+
+// Dismiss helpers: Bootstrap's hide() is a no-op while _isTransitioning, so
+// dismissing during the 150ms show-transition silently fails — the user
+// clicks outside / hits Escape, modal stays open, and the next button click
+// is intercepted by the modal element overlay. Cover all dismiss paths
+// (Escape regardless of focus + backdrop click during transition) and queue
+// the dismiss until shown.bs.modal fires.
+let _smPendingDismiss = false;
+function _smTryDismiss(inst) {
+  if (!inst || !inst._isShown) return;
+  if (inst._isTransitioning) _smPendingDismiss = true;
+  else inst.hide();
+}
+document.getElementById('suggestModal').addEventListener('shown.bs.modal', () => {
+  if (_smPendingDismiss) {
+    _smPendingDismiss = false;
+    bootstrap.Modal.getInstance(document.getElementById('suggestModal')).hide();
+  }
+});
+document.getElementById('suggestModal').addEventListener('hide.bs.modal', () => {
+  _smPendingDismiss = false;
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  _smTryDismiss(bootstrap.Modal.getInstance(document.getElementById('suggestModal')));
+});
+// Backdrop click during transition: Bootstrap creates .modal-backdrop as a
+// SIBLING of the modal, not a descendant. Bootstrap's own listener on the
+// backdrop calls hide(), which no-ops while transitioning. We delegate on
+// document so we catch backdrop clicks regardless of when the backdrop was
+// added — and queue the dismiss until shown.bs.modal fires.
+document.addEventListener('click', e => {
+  if (!e.target.classList || !e.target.classList.contains('modal-backdrop')) return;
+  _smTryDismiss(bootstrap.Modal.getInstance(document.getElementById('suggestModal')));
+});
+
+// Defensive: on bfcache restore (browser back/forward) clear any leftover
+// suggestModal state in case the previous session left it mid-transition.
+// Scope is page-local — only touches state we know belongs to suggestModal.
+window.addEventListener('pageshow', (e) => {
+  if (!e.persisted) return;
+  const modalEl = document.getElementById('suggestModal');
+  if (!modalEl) return;
+  const inst = bootstrap.Modal.getInstance(modalEl);
+  if (inst) inst.dispose();
+  modalEl.classList.remove('show');
+  modalEl.style.display = 'none';
+  modalEl.removeAttribute('aria-modal');
+  modalEl.setAttribute('aria-hidden', 'true');
+  // The mapping page has only one modal; if no other modal is currently
+  // shown (no .modal.show), it's safe to clear modal-open + backdrop too.
+  if (!document.querySelector('.modal.show')) {
+    document.body.classList.remove('modal-open');
+    document.body.style.removeProperty('overflow');
+    document.body.style.removeProperty('padding-right');
+    document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+  }
+});
 
 function populateSuggestModal(data) {
   document.getElementById('sm-loading').style.display = 'none';
@@ -623,9 +693,17 @@ function populateSuggestModal(data) {
   document.getElementById('sm-cond').value     = p.condition || '';
   document.getElementById('sm-pv').value       = p.pack_variant || '';
   document.getElementById('sm-cost').value     = lp.cost_price || 0;
-  document.getElementById('sm-unit').value     = 'ตัว';  // default base unit
+  // Default new-SKU base unit to BSN unit (issue #4) — most often they match
+  // and no conversion is needed. User can edit if product is sold in smaller pcs.
+  const defaultBaseUnit = _smBsnUnit || 'ตัว';
+  document.getElementById('sm-unit').value     = defaultBaseUnit;
   document.getElementById('sm-bunit').textContent = _smBsnUnit || '?';
-  document.getElementById('sm-base-unit-display').textContent = 'ตัว';
+  document.getElementById('sm-base-unit-display').textContent = defaultBaseUnit;
+  // Show stock-unit warning when BSN unit isn't the finest (ตัว). Defaulting
+  // here locks the product to stock-by-{BSN unit}; later splitting needs a
+  // unit-type change which is a painful operation.
+  const unitHint = document.getElementById('sm-unit-hint');
+  if (unitHint) unitHint.style.display = (_smBsnUnit && _smBsnUnit !== 'ตัว') ? '' : 'none';
   document.getElementById('sm-ignore-reason').value = '';
 
   // Auto-prefill ratio in Card B if parser detected packaging-with-count
@@ -754,22 +832,22 @@ function toggleOther(prefix) {
 function confirmExistingMap() {
   const pid = document.getElementById('sm-product-id').value;
   if (!pid) { alert('กรุณาเลือกสินค้าก่อน'); return; }
+  const bsnUnitInput = document.getElementById('sm-mapconv-bsn-unit').value.trim();
+  const ratio = document.getElementById('sm-mapconv-ratio').value;
   const entry = {
     bsn_code: _smCurrentBsn,
     bsn_name: _smCurrentName,
     action: 'map',
     product_id: pid,
+    // Strict mode: the bsn_unit here scopes the mapping to that unit only.
+    // BSN sending a different unit later → row stays unsynced → user re-maps.
+    map_bsn_unit: bsnUnitInput,
   };
-  // Capture unit_conversion if user filled BOTH bsn_unit + ratio
-  const bsnUnitInput = document.getElementById('sm-mapconv-bsn-unit').value.trim();
-  const ratio = document.getElementById('sm-mapconv-ratio').value;
+  // unit_conversion is created only when ratio is also filled
   if (bsnUnitInput && ratio && parseFloat(ratio) > 0) {
     entry.bsn_unit = bsnUnitInput;
     entry.unit_conversion_ratio = ratio;
   }
-  // mig 061: optional per-unit mapping override (blank = catch-all)
-  const mapUnit = document.getElementById('sm-map-bsn-unit').value.trim();
-  if (mapUnit) { entry.map_bsn_unit = mapUnit; }
   saveSingle(entry);
 }
 
