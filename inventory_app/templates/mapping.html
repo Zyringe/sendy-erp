@@ -217,6 +217,7 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
       <thead>
         <tr>
           <th style="width:130px">รหัส BSN</th>
+          <th>ชื่อ BSN</th>
           <th style="width:100px" class="text-center">หน่วย BSN</th>
           <th class="text-center" style="width:80px">SKU</th>
           <th>สินค้า</th>
@@ -227,6 +228,7 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
         {% for o in overrides %}
         <tr>
           <td><span class="badge badge-gray font-mono">{{ o.bsn_code }}</span></td>
+          <td class="small">{{ o.bsn_name }}</td>
           <td class="text-center"><span class="badge badge-warning font-mono">{{ o.bsn_unit }}</span></td>
           <td class="text-center"><span class="badge badge-info">{{ o.sku }}</span></td>
           <td class="small">{{ o.product_name }}</td>
@@ -299,9 +301,15 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
           <span class="spinner-border spinner-border-sm me-2"></span>กำลังประมวลผล...
         </div>
         <div id="sm-content" style="display:none">
-          <div class="text-subtle small mb-2">
-            BSN: <span id="sm-bsn-name" class="fw-500"></span>
-            <span id="sm-bsn-unit-info" class="ms-2 text-muted"></span>
+          {# ── Prominent BSN context banner ─────────────────── #}
+          <div id="sm-bsn-banner" class="alert alert-info py-2 px-3 mb-3 small">
+            <div class="fw-600 d-flex align-items-center gap-2">
+              <i class="bi bi-box-seam"></i>
+              <span>BSN: <span id="sm-bsn-name"></span></span>
+            </div>
+            <div id="sm-bsn-unit-info" class="mt-1">
+              <!-- populated dynamically: หน่วย BSN ปกติ + purchase ล่าสุด -->
+            </div>
           </div>
 
           {# ── Card A — match existing ─────────────────────── #}
@@ -538,9 +546,48 @@ function populateSuggestModal(data) {
   document.getElementById('sm-content').style.display = 'block';
 
   const lp = data.latest_purchase || {};
-  _smBsnUnit = lp.unit_type || null;
-  document.getElementById('sm-bsn-unit-info').textContent =
-    _smBsnUnit ? '(BSN unit: ' + _smBsnUnit + ', last cost: ฿' + (lp.cost_price || 0) + ')' : '';
+  const lu = data.latest_unit || {};
+  const allUnits = data.units_seen || [];
+  _smBsnUnit = lu.unit || null;
+
+  // Banner: prominent display of BSN unit context + provenance
+  const banner = document.getElementById('sm-bsn-banner');
+  const info   = document.getElementById('sm-bsn-unit-info');
+  banner.classList.remove('alert-info', 'alert-warning');
+  if (lu.unit) {
+    banner.classList.add('alert-info');
+    let html = '📦 หน่วย BSN ปกติ: <strong class="font-mono">' + lu.unit + '</strong>';
+    // Source-aware provenance label. Only show cost when it relates to this unit
+    // (avoid "@ ฿X" when X is from an older purchase in a different unit).
+    if (lu.source === 'purchase') {
+      let line = ' <span class="text-subtle ms-2">· purchase ล่าสุด ' + lu.last_date;
+      if (lp.cost_price && lp.unit_type === lu.unit) {
+        line += ' @ ฿' + lp.cost_price + '/หน่วย';
+      }
+      html += line + '</span>';
+    } else {
+      html += ' <span class="text-subtle ms-2">· จาก sale ล่าสุด ' + lu.last_date +
+              ' (ยังไม่มี purchase row)</span>';
+    }
+    // Split-unit warning: code seen in multiple units → likely override candidate
+    if (allUnits.length > 1) {
+      const list = allUnits.map(u =>
+        '<code>' + u.unit + '</code> <span class="text-subtle">(' + u.last_date + ')</span>'
+      ).join(', ');
+      html += '<div class="mt-1 small">' +
+        '<i class="bi bi-info-circle me-1"></i>' +
+        'รหัสนี้เห็นในหลายหน่วย: ' + list +
+        ' — พิจารณาใส่ <strong>override</strong> ที่ช่องด้านล่าง' +
+      '</div>';
+    }
+    info.innerHTML = html;
+  } else {
+    banner.classList.add('alert-warning');
+    info.innerHTML =
+      '<i class="bi bi-exclamation-triangle me-1"></i>' +
+      'ยังไม่เคยมี purchase หรือ sale row สำหรับรหัสนี้ — ระบบเดาหน่วย BSN ไม่ได้ ' +
+      '(โปรดระบุเองที่ช่อง unit conversion)';
+  }
 
   // Card A — top fuzzy matches
   const matchesEl = document.getElementById('sm-matches');

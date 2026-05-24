@@ -1181,7 +1181,7 @@ def mapping():
     # mig 061: per-unit override rows (bsn_unit<>'') — shown read-only so
     # Put can see which codes are split by unit.
     overrides = conn.execute("""
-        SELECT m.bsn_code, m.bsn_unit, m.product_id,
+        SELECT m.bsn_code, m.bsn_name, m.bsn_unit, m.product_id,
                p.sku, p.product_name, p.unit_type
           FROM product_code_mapping m
           JOIN products p ON p.id = m.product_id

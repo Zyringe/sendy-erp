@@ -95,7 +95,9 @@ def _fuzzy_match(bsn_name: str, products: list) -> list:
 
 def _latest_purchase(conn, bsn_code: str) -> dict:
     """Pull latest purchase_transactions row for this BSN code.
-    Returns cost, unit, qty for prefilling new-SKU form. None on no match."""
+    Returns cost, unit, qty for prefilling new-SKU form. None on no match.
+    Caller uses cost_price only — for the *unit* the BSN normally bills in,
+    use _latest_bsn_unit() (which falls back to sales for sale-only codes)."""
     row = conn.execute(
         """SELECT unit_price, unit, qty, date_iso
              FROM purchase_transactions
@@ -112,6 +114,51 @@ def _latest_purchase(conn, bsn_code: str) -> dict:
         'last_qty':   row['qty'] or 0,
         'last_date':  row['date_iso'],
     }
+
+
+def _latest_bsn_unit(conn, bsn_code: str) -> dict:
+    """Latest unit BSN billed this code in, across purchase ∪ sales.
+    Returns {unit, source, last_date} or {} if no transactions exist.
+    Used for prominent banner display + unit_conversion autofill —
+    cost_price is intentionally NOT included (use _latest_purchase for that)."""
+    row = conn.execute(
+        """SELECT unit, date_iso, src AS source FROM (
+             SELECT unit, date_iso, 'purchase' AS src
+               FROM purchase_transactions WHERE bsn_code = ?
+             UNION ALL
+             SELECT unit, date_iso, 'sale' AS src
+               FROM sales_transactions WHERE bsn_code = ?
+           )
+           WHERE unit IS NOT NULL AND unit <> ''
+           ORDER BY date_iso DESC, source DESC
+           LIMIT 1""",
+        (bsn_code, bsn_code),
+    ).fetchone()
+    if not row:
+        return {}
+    return {
+        'unit':      row['unit'],
+        'source':    row['source'],
+        'last_date': row['date_iso'],
+    }
+
+
+def _all_units_seen(conn, bsn_code: str) -> list:
+    """Distinct units this BSN code has ever billed in (purchase ∪ sales).
+    Returns list of {unit, last_date}, ordered by last_date DESC.
+    Length > 1 signals split-unit code (override candidate)."""
+    rows = conn.execute(
+        """SELECT unit, MAX(date_iso) AS last_date FROM (
+             SELECT unit, date_iso FROM purchase_transactions WHERE bsn_code = ?
+             UNION ALL
+             SELECT unit, date_iso FROM sales_transactions WHERE bsn_code = ?
+           )
+           WHERE unit IS NOT NULL AND unit <> ''
+           GROUP BY unit
+           ORDER BY last_date DESC""",
+        (bsn_code, bsn_code),
+    ).fetchall()
+    return [{'unit': r['unit'], 'last_date': r['last_date']} for r in rows]
 
 
 def _load_parser_context(conn) -> dict:
@@ -177,6 +224,8 @@ def suggest_for_bsn(conn, bsn_code: str, bsn_name: str) -> dict:
                      color_code, packaging, condition, pack_variant },
         'proposed_name': str,
         'latest_purchase': { cost_price, unit_type, last_qty, last_date },
+        'latest_unit':    { unit, source, last_date },     # purchase ∪ sales
+        'units_seen':     [ {unit, last_date}, ... ],      # distinct, latest first
         'brand_id_suggested': int|None,
       }
     """
@@ -205,8 +254,12 @@ def suggest_for_bsn(conn, bsn_code: str, bsn_name: str) -> dict:
                 brand_id = bid
                 break
 
-    # Cost/unit from latest purchase
+    # Cost from latest purchase (intentionally NOT for unit display)
     latest = _latest_purchase(conn, bsn_code)
+    # Unit context: latest unit across both purchase and sales (sale-only codes)
+    latest_unit = _latest_bsn_unit(conn, bsn_code)
+    # Split-unit awareness (length > 1 → override candidate)
+    units_seen = _all_units_seen(conn, bsn_code)
 
     return {
         'bsn_code': bsn_code,
@@ -215,5 +268,7 @@ def suggest_for_bsn(conn, bsn_code: str, bsn_name: str) -> dict:
         'parsed': parsed,
         'proposed_name': proposed,
         'latest_purchase': latest,
+        'latest_unit': latest_unit,
+        'units_seen': units_seen,
         'brand_id_suggested': brand_id,
     }
