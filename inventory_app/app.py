@@ -978,12 +978,12 @@ def stock_adjust(product_id):
                 raise ValueError('จำนวนต้องไม่ติดลบ')
         except ValueError as e:
             flash(str(e), 'danger')
-            return render_template('transactions/adjust_form.html', product=product)
+            return redirect(_safe_next('products.product_detail', product_id=product_id))
 
         note = f.get('note', '').strip()
         if not note:
             flash('กรุณาระบุหมายเหตุสำหรับการปรับยอด', 'danger')
-            return render_template('transactions/adjust_form.html', product=product)
+            return redirect(_safe_next('products.product_detail', product_id=product_id))
 
         current = models.get_current_stock(product_id)
         diff = new_qty - current
