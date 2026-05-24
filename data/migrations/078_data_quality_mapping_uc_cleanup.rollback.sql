@@ -42,12 +42,12 @@ FROM migration_078_snapshot_mapping
 WHERE id IN (59, 150);
 
 -- 4. Reverse pid 771 stock reconciliation entry from section 5 of the forward
---    mig. DELETE FROM transactions does NOT fire after_transaction_insert, so
---    stock_levels must be hand-decremented to undo the trigger's +44 effect.
-UPDATE stock_levels SET quantity = quantity - 44
-WHERE product_id = 771
-  AND EXISTS (SELECT 1 FROM transactions
-              WHERE product_id = 771 AND reference_no = 'MIG_078');
+--    mig. As of mig 080 (2026-05-25, `after_transaction_delete` trigger),
+--    DELETE FROM transactions automatically decrements stock_levels by
+--    OLD.quantity_change. So this rollback now just DELETEs and lets the
+--    business trigger handle the -44 reversal.
+--    (Before mig 080 this block hand-decremented stock_levels FIRST; that
+--    manual UPDATE has been removed to avoid double-counting.)
 DELETE FROM transactions WHERE product_id = 771 AND reference_no = 'MIG_078';
 
 -- 5. Drop snapshot tables.

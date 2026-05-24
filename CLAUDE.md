@@ -252,16 +252,21 @@ Two tables hold derived values that the app must keep in sync with their source 
 - **Python 3.9**: ไม่รองรับ `int | None` syntax → ใช้ `Optional[int]` หรือไม่ใส่ annotation
 - **วันที่ BSN**: Buddhist Era (พ.ศ.) ต้องแปลงก่อนบันทึก
 - **ปรับสต็อกหน่วย**: ถ้าเปลี่ยน unit_type → ต้อง multiply quantity_change ใน transactions + stock_levels ด้วย ratio
-- **ลบ BSN sync**: (1) ลบ transactions ที่ note LIKE 'BSN%' (2) reset synced_to_stock=0 (3) recalculate stock_levels
-- **recalculate stock**: `DELETE FROM stock_levels WHERE product_id=?` แล้ว `INSERT` ใหม่จาก `SUM(quantity_change)`
-- **merge product**: UPDATE transactions/mapping/sales/purchase/unit_conversions SET product_id=NEW → recalc stock NEW → DELETE stock_levels OLD → is_active=0 OLD
+- **ลบ BSN sync**: (1) ลบ transactions ที่ note LIKE 'BSN%' (2) reset synced_to_stock=0
+  - ⚠️ ก่อน mig 080 ต้อง recalculate stock_levels ใน step 3 ด้วย — ตอนนี้ trigger `after_transaction_delete` ทำให้อัตโนมัติ (ห้ามทำซ้ำ จะ double-decrement)
+- **recalculate stock (drift recovery เท่านั้น)**: `DELETE FROM stock_levels WHERE product_id=?` แล้ว `INSERT` ใหม่จาก `SUM(quantity_change)`
+  - ใช้เมื่อ stock_levels drift จาก ledger (e.g., legacy ก่อน mig 080 หรือ direct sqlite3 cleanup ที่ปิด trigger). **ไม่ใช่** steady-state operation
+- **merge product**: UPDATE transactions/mapping/sales/purchase/unit_conversions SET product_id=NEW → DELETE stock_levels OLD → is_active=0 OLD
+  - ⚠️ ก่อน mig 080 ต้อง "recalc stock NEW" ระหว่างกลาง — ตอนนี้ trigger `after_transaction_update` decrement OLD's stock + increment NEW's stock ทีละ row อัตโนมัติ (ห้าม recalc ซ้ำ)
+  - **ลำดับสำคัญ:** UPDATE transactions ก่อนเสมอ (ให้ trigger จัดการ stock_levels) แล้วค่อย DELETE stock_levels OLD. ถ้า DELETE ก่อน → trigger ที่ตามมาเจอ row ว่าง → silent miss → drift
+- **stock_levels auto-maintenance (mig 080 onwards)**: INSERT/UPDATE/DELETE บน transactions ทำให้ stock_levels sync ผ่าน 3 business triggers (`after_transaction_{insert,update,delete}`). Manual `UPDATE stock_levels` ใน migration / one-off SQL = double-count ⛔ — ใช้เฉพาะ drift-recovery flow ข้างต้น
 - **products_full VIEW**: ใช้ในงาน reporting — ห้าม INSERT/UPDATE ผ่าน VIEW
 - **Blueprint endpoint naming**: routes ใน blueprint ต้องเรียกด้วย `<bp>.<func>` ทั้งใน `_STAFF_POST_OK` และ `url_for()`
 - **werkzeug BuildError** หลังเพิ่ม route ใหม่: restart server ด้วยมือทุกครั้ง — auto-reloader reload template ได้ แต่ URL map ใน memory ยังเก่า
 - **Auto-reloader double-startup**: ใช้ `use_reloader=False` ใน dev server config
 - **CSRF protection**: ทุก POST form template ต้องมี `<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">` หลัง `<form method="post">`. flask-wtf `CSRFProtect(app)` ปฏิเสธ POST ที่ไม่มี token (HTTP 400 → จัด redirect+flash โดย global handler). Production = on by default; tests รันด้วย `WTF_CSRF_ENABLED=False` (set ใน `tests/conftest.py`). Route ใหม่ POST ไม่ต้องเพิ่ม decorator — ป้องกันอัตโนมัติ. Exempt เฉพาะ `/bootstrap/upload-db` (gated ด้วย BOOTSTRAP_TOKEN, ไม่มี session).
 
-## Migrations (latest: 070 — see `data/migrations/` for canonical files)
+## Migrations (latest: 080 — see `data/migrations/` for canonical files)
 
 | Mig | Date | What |
 |-----|------|------|
@@ -304,6 +309,11 @@ Two tables hold derived values that the app must keep in sync with their source 
 | 068 | 2026-05-21 | drop express_sales.brand_kind (write-only cache removal, PR #44 merged) |
 | **069** | 2026-05-21 | **products.units_per_carton/box NOT NULL DEFAULT 1** (this PR) |
 | **070** | 2026-05-21 | **audit_log triggers on transactions + received_payments** (this PR) |
+| 071–076 | 2026-05-21 | HR audit migs (reopen + draft banner + image coverage + money-path audit) |
+| 077 | 2026-05-23 | data-quality brand+kg-rename from tracker XLSX |
+| 078 | 2026-05-23 | data-quality mapping+UC cleanup + pid 771 stock ADJUST (rollback updated 2026-05-25 post-mig-080) |
+| **079** | 2026-05-25 | **audit_log UPDATE/DELETE triggers on transactions** (closes mig 070's append-only-only gap) |
+| **080** | 2026-05-25 | **stock_levels integrity on transactions UPDATE/DELETE** (`after_transaction_update` + `after_transaction_delete` — mirrors INSERT trigger; auto-reconciles stock on mutations) |
 
 > Migration runner: `database.py::init_db()` reads `data/migrations/NNN_*.sql` + `.rollback.sql`. SHA256 + duration_ms recorded in `applied_migrations`. เพิ่ม migration ใหม่: เลข NNN ถัดไป → restart → รันอัตโนมัติ. Rollback: รัน `.rollback.sql` + DELETE จาก `applied_migrations` ด้วยมือ.
 >
