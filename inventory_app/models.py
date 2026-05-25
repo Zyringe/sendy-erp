@@ -514,11 +514,44 @@ def effective_price(product) -> float:
 
 
 def create_promotion(data: dict) -> int:
+    """Insert a promotions row. Accepts any subset of the extended fields
+    introduced in mig 086 (bundle_*, gift_*). Missing keys default to None
+    so the DB's CHECK constraint enforces shape per promo_type.
+
+    Required keys: product_id, promo_name, promo_type.
+    Optional: discount_value, date_start, date_end, bundle_buy, bundle_free,
+              bundle_unit, bundle_condition, bundle_tiers_json,
+              gift_desc, gift_qty.
+    """
+    full = {
+        "product_id":        data["product_id"],
+        "promo_name":        data["promo_name"],
+        "promo_type":        data["promo_type"],
+        "discount_value":    data.get("discount_value"),
+        "date_start":        data.get("date_start"),
+        "date_end":          data.get("date_end"),
+        "bundle_buy":        data.get("bundle_buy"),
+        "bundle_free":       data.get("bundle_free"),
+        "bundle_unit":       data.get("bundle_unit"),
+        "bundle_condition":  data.get("bundle_condition"),
+        "bundle_tiers_json": data.get("bundle_tiers_json"),
+        "gift_desc":         data.get("gift_desc"),
+        "gift_qty":          data.get("gift_qty"),
+    }
     conn = get_connection()
     cur = conn.execute("""
-        INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, date_start, date_end)
-        VALUES (:product_id, :promo_name, :promo_type, :discount_value, :date_start, :date_end)
-    """, data)
+        INSERT INTO promotions (
+            product_id, promo_name, promo_type, discount_value,
+            date_start, date_end,
+            bundle_buy, bundle_free, bundle_unit, bundle_condition,
+            bundle_tiers_json, gift_desc, gift_qty
+        ) VALUES (
+            :product_id, :promo_name, :promo_type, :discount_value,
+            :date_start, :date_end,
+            :bundle_buy, :bundle_free, :bundle_unit, :bundle_condition,
+            :bundle_tiers_json, :gift_desc, :gift_qty
+        )
+    """, full)
     conn.commit()
     pid = cur.lastrowid
     conn.close()
@@ -530,6 +563,20 @@ def deactivate_promotion(promo_id: int):
     conn.execute("UPDATE promotions SET is_active = 0 WHERE id = ?", (promo_id,))
     conn.commit()
     conn.close()
+
+
+def get_product_price_tiers(product_id: int):
+    """Return all tier rows for this product, ordered by sort_order then price."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, qty_label, price, note, sort_order "
+        "FROM product_price_tiers "
+        "WHERE product_id = ? "
+        "ORDER BY sort_order, price",
+        (product_id,)
+    ).fetchall()
+    conn.close()
+    return rows
 
 
 # ── CSV Import ────────────────────────────────────────────────────────────────
