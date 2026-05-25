@@ -488,12 +488,29 @@ def get_active_promotion(product_id: int):
 
 
 def effective_price(product) -> float:
+    """Return the effective per-unit selling price for this product.
+
+    Behavior per promo_type:
+      - None / no active promo → base_sell_price
+      - 'percent' → base_sell_price × (1 − discount_value/100), rounded 2dp
+      - 'fixed'   → discount_value (treated as the FINAL selling price,
+                    not a discount amount — see templates/promotions/form.html)
+      - 'bundle' / 'gift' / 'mixed' → base_sell_price UNCHANGED
+                    These types don't alter per-unit price. They define deal
+                    terms (extra free units, free-gift items, bulk conditions)
+                    that the cart/quote layer applies separately when summing
+                    the order total. Per-unit display price is the catalog
+                    price. Cart-level bundle resolution is out of scope here.
+    """
     promo = get_active_promotion(product['id'])
     if promo is None:
         return product['base_sell_price']
     if promo['promo_type'] == 'percent':
         return round(product['base_sell_price'] * (1 - promo['discount_value'] / 100), 2)
-    return promo['discount_value']  # fixed price
+    if promo['promo_type'] == 'fixed':
+        return promo['discount_value']
+    # bundle / mixed / gift — per-unit price unchanged
+    return product['base_sell_price']
 
 
 def create_promotion(data: dict) -> int:
