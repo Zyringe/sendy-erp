@@ -1,5 +1,6 @@
 import csv
 import io
+import sqlite3
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort, current_app)
@@ -208,6 +209,7 @@ def product_detail(product_id):
         return redirect(url_for('products.product_list'))
     promotions = models.get_promotions(product_id)
     active_promo = models.get_active_promotion(product_id)
+    price_tiers = models.get_product_price_tiers(product_id)
     sell_price = models.effective_price(product)
     txn_page = int(request.args.get('txn_page', 1))
     per_page = 20
@@ -221,6 +223,7 @@ def product_detail(product_id):
                            product=product,
                            promotions=promotions,
                            active_promo=active_promo,
+                           price_tiers=price_tiers,
                            sell_price=sell_price,
                            txns=txns,
                            txn_page=txn_page,
@@ -447,24 +450,72 @@ def promotion_new(product_id):
 
     if request.method == 'POST':
         f = request.form
+
+        def _opt_float(v):
+            v = (v or '').strip()
+            return float(v) if v else None
+
+        def _opt_int(v):
+            v = (v or '').strip()
+            return int(v) if v else None
+
+        def _opt_str(v):
+            v = (v or '').strip()
+            return v or None
+
         try:
             data = {
-                'product_id': product_id,
-                'promo_name': f['promo_name'].strip(),
-                'promo_type': f['promo_type'],
-                'discount_value': float(f['discount_value']),
-                'date_start': f.get('date_start') or None,
-                'date_end': f.get('date_end') or None,
+                'product_id':       product_id,
+                'promo_name':       f['promo_name'].strip(),
+                'promo_type':       f['promo_type'],
+                'discount_value':   _opt_float(f.get('discount_value')),
+                'date_start':       f.get('date_start') or None,
+                'date_end':         f.get('date_end') or None,
+                'bundle_buy':       _opt_int(f.get('bundle_buy')),
+                'bundle_free':      _opt_int(f.get('bundle_free')),
+                'bundle_unit':      _opt_str(f.get('bundle_unit')),
+                'bundle_condition': _opt_str(f.get('bundle_condition')),
+                'gift_desc':        _opt_str(f.get('gift_desc')),
+                'gift_qty':         _opt_str(f.get('gift_qty')),
             }
         except ValueError as e:
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
             return render_template('promotions/form.html', product=product)
 
-        if data['promo_type'] == 'percent' and not (0 < data['discount_value'] <= 100):
-            flash('ส่วนลด % ต้องอยู่ระหว่าง 1–100', 'danger')
+        # Validate per-type required fields (DB CHECK is the final gate; this
+        # gives a friendlier error before hitting it)
+        t = data['promo_type']
+        if t == 'percent':
+            if data['discount_value'] is None or not (0 < data['discount_value'] <= 100):
+                flash('ส่วนลด % ต้องอยู่ระหว่าง 1–100', 'danger')
+                return render_template('promotions/form.html', product=product)
+        elif t == 'fixed':
+            if not data['discount_value'] or data['discount_value'] <= 0:
+                flash('ราคาตายตัวต้องมากกว่า 0', 'danger')
+                return render_template('promotions/form.html', product=product)
+        elif t == 'bundle':
+            if data['bundle_buy'] is None or data['bundle_free'] is None:
+                flash('โปรโมชันแถมของต้องระบุทั้ง "ซื้อ" และ "แถม"', 'danger')
+                return render_template('promotions/form.html', product=product)
+        elif t == 'gift':
+            if not data['gift_desc'] or not data['gift_qty']:
+                flash('โปรโมชันของแถมต้องระบุชื่อและจำนวน', 'danger')
+                return render_template('promotions/form.html', product=product)
+        elif t == 'mixed':
+            if (data['discount_value'] is None
+                and data['bundle_buy'] is None
+                and not data['gift_desc']):
+                flash('โปรโมชันแบบผสมต้องระบุอย่างน้อย 1 อย่าง (ส่วนลด / แถม / ของแถม)', 'danger')
+                return render_template('promotions/form.html', product=product)
+        else:
+            flash(f'ไม่รองรับ promo_type {t!r}', 'danger')
             return render_template('promotions/form.html', product=product)
 
-        models.create_promotion(data)
+        try:
+            models.create_promotion(data)
+        except sqlite3.IntegrityError as e:
+            flash(f'บันทึกไม่สำเร็จ (CHECK constraint): {e}', 'danger')
+            return render_template('promotions/form.html', product=product)
         flash('เพิ่มโปรโมชันเรียบร้อย', 'success')
         return redirect(url_for('products.product_detail', product_id=product_id))
 

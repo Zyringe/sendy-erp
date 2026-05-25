@@ -12,7 +12,7 @@
 </nav>
 
 <div class="row justify-content-center">
-  <div class="col-lg-5">
+  <div class="col-lg-6">
     <div class="card">
       <div class="card-header"><i class="bi bi-percent me-2 text-accent"></i>เพิ่มโปรโมชัน</div>
       <div class="card-body">
@@ -29,28 +29,83 @@
         </div>
 
         <form method="post">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
           <div class="mb-3">
             <label class="form-label">ชื่อโปรโมชัน <span class="text-danger">*</span></label>
             <input type="text" name="promo_name" class="form-control" required
                    placeholder="เช่น ลดราคาต้อนรับปีใหม่">
           </div>
+
           <div class="mb-3">
             <label class="form-label">ประเภท <span class="text-danger">*</span></label>
             <select name="promo_type" id="promoType" class="form-select" onchange="togglePromoType()">
               <option value="percent">ส่วนลด % จากราคาปกติ</option>
               <option value="fixed">ราคาตายตัว (Fixed Price)</option>
+              <option value="bundle">แถมของ (Buy X Get Y)</option>
+              <option value="gift">ของแถม (Free Gift Item)</option>
+              <option value="mixed">ผสม (% + แถม / + ของแถม)</option>
             </select>
           </div>
-          <div class="mb-3">
+
+          <!-- discount_value group — for percent / fixed / mixed -->
+          <div class="mb-3" id="discountValueGroup">
             <label class="form-label" id="valueLabel">ส่วนลด (%) <span class="text-danger">*</span></label>
             <div class="input-group">
               <input type="number" name="discount_value" id="discountValue"
-                     class="form-control" step="0.01" min="0" required placeholder="0">
+                     class="form-control" step="0.01" min="0" placeholder="0">
               <span class="input-group-text" id="valueSuffix">%</span>
             </div>
             <div id="pricePreview" class="form-text text-success fw-500 mt-1"></div>
           </div>
+
+          <!-- bundle group — for bundle / mixed -->
+          <div class="mb-3 border rounded p-3 bg-light" id="bundleGroup" style="display:none">
+            <div class="text-subtle small mb-2"><i class="bi bi-gift me-1"></i>รายละเอียดแถมของ</div>
+            <div class="row g-2">
+              <div class="col">
+                <label class="form-label small">ซื้อ (จำนวน)</label>
+                <input type="number" name="bundle_buy" id="bundleBuy" class="form-control" min="1" placeholder="12">
+              </div>
+              <div class="col">
+                <label class="form-label small">แถม (จำนวน)</label>
+                <input type="number" name="bundle_free" id="bundleFree" class="form-control" min="0" placeholder="1">
+              </div>
+              <div class="col">
+                <label class="form-label small">หน่วย (optional)</label>
+                <input type="text" name="bundle_unit" id="bundleUnit" class="form-control" placeholder="ดอก / ตัว / ใบ">
+              </div>
+            </div>
+            <div class="form-text mt-2">ตัวอย่าง: ซื้อ 12 แถม 1 ตัว · ซื้อ 120 ดอก แถม 12 ดอก</div>
+          </div>
+
+          <!-- gift group — for gift / mixed -->
+          <div class="mb-3 border rounded p-3 bg-light" id="giftGroup" style="display:none">
+            <div class="text-subtle small mb-2"><i class="bi bi-bag-heart me-1"></i>ของแถม (สินค้าคนละชนิด)</div>
+            <div class="row g-2">
+              <div class="col-7">
+                <label class="form-label small">ชื่อของแถม</label>
+                <input type="text" name="gift_desc" id="giftDesc" class="form-control" placeholder="เช่น ดจ.สแตนเลส">
+              </div>
+              <div class="col-5">
+                <label class="form-label small">จำนวน + หน่วย</label>
+                <input type="text" name="gift_qty" id="giftQty" class="form-control" placeholder="20 ดอก">
+              </div>
+            </div>
+            <div class="form-text mt-2">สำหรับสินค้าที่แถมเป็นของคนละชนิดกับสินค้าหลัก</div>
+          </div>
+
+          <!-- bundle_condition — applies to any type -->
+          <div class="mb-3">
+            <label class="form-label small">เงื่อนไขซื้อขั้นต่ำ (optional)</label>
+            <select name="bundle_condition" class="form-select form-select-sm">
+              <option value="">— ไม่มี —</option>
+              <option value="ยกลัง">ต้องซื้อยกลัง</option>
+              <option value="ยกล่อง">ต้องซื้อยกล่อง</option>
+            </select>
+            <div class="form-text">โปรโมชันจะใช้ได้เมื่อลูกค้าซื้อตามเงื่อนไขนี้เท่านั้น</div>
+          </div>
+
           <div class="row g-3 mb-4">
             <div class="col">
               <label class="form-label">วันเริ่มต้น</label>
@@ -84,14 +139,49 @@ function togglePromoType() {
   const t = document.getElementById('promoType').value;
   const lbl = document.getElementById('valueLabel');
   const sfx = document.getElementById('valueSuffix');
+  const dv = document.getElementById('discountValue');
+  const dvGroup = document.getElementById('discountValueGroup');
+  const bundleGroup = document.getElementById('bundleGroup');
+  const giftGroup = document.getElementById('giftGroup');
+
+  // Reset visibility + required flags
+  dvGroup.style.display = '';
+  bundleGroup.style.display = 'none';
+  giftGroup.style.display = 'none';
+  dv.required = false;
+  document.getElementById('bundleBuy').required = false;
+  document.getElementById('bundleFree').required = false;
+  document.getElementById('giftDesc').required = false;
+  document.getElementById('giftQty').required = false;
+
   if (t === 'percent') {
     lbl.innerHTML = 'ส่วนลด (%) <span class="text-danger">*</span>';
     sfx.textContent = '%';
-    document.getElementById('discountValue').max = 100;
-  } else {
+    dv.max = 100;
+    dv.required = true;
+  } else if (t === 'fixed') {
     lbl.innerHTML = 'ราคาขาย (฿) <span class="text-danger">*</span>';
     sfx.textContent = '฿';
-    document.getElementById('discountValue').removeAttribute('max');
+    dv.removeAttribute('max');
+    dv.required = true;
+  } else if (t === 'bundle') {
+    dvGroup.style.display = 'none';
+    bundleGroup.style.display = '';
+    document.getElementById('bundleBuy').required = true;
+    document.getElementById('bundleFree').required = true;
+  } else if (t === 'gift') {
+    dvGroup.style.display = 'none';
+    giftGroup.style.display = '';
+    document.getElementById('giftDesc').required = true;
+    document.getElementById('giftQty').required = true;
+  } else if (t === 'mixed') {
+    // mixed: any combination → all groups visible, none individually required
+    // (DB CHECK requires at least one of discount_value / bundle_buy / gift_desc)
+    bundleGroup.style.display = '';
+    giftGroup.style.display = '';
+    lbl.innerHTML = 'ส่วนลด (%, optional)';
+    sfx.textContent = '%';
+    dv.removeAttribute('max');
   }
   updatePreview();
 }
@@ -100,13 +190,16 @@ function updatePreview() {
   const v = parseFloat(document.getElementById('discountValue').value) || 0;
   const el = document.getElementById('pricePreview');
   if (!v) { el.textContent = ''; return; }
-  if (t === 'percent') {
+  if (t === 'percent' || t === 'mixed') {
     el.textContent = `ราคาขายจริง: ฿${(basePrice*(1-v/100)).toLocaleString('th-TH',{minimumFractionDigits:2})}`;
-  } else {
+  } else if (t === 'fixed') {
     const s = basePrice - v;
     el.textContent = s > 0 ? `ประหยัด: ฿${s.toLocaleString('th-TH',{minimumFractionDigits:2})}` : '';
+  } else {
+    el.textContent = '';
   }
 }
 document.getElementById('discountValue').addEventListener('input', updatePreview);
+togglePromoType();  // initial setup
 </script>
 {% endblock %}
