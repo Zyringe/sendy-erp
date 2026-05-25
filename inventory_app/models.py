@@ -2711,7 +2711,7 @@ def get_product_pricing(product_id):
         ORDER BY unit_price, last_sale DESC
     """, [product_id]).fetchall()
 
-    # ── ราคาจริงเฉลี่ยต่อร้าน ────────────────────────────────────────────────
+    # ── ราคาเฉลี่ยต่อร้าน (actual customer-paid, after discount + VAT) ──────
     eff_rows = conn.execute("""
         SELECT
             customer,
