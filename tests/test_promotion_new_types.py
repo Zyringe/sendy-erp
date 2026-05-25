@@ -219,28 +219,41 @@ class TestPromotionNewRoute:
 
 class TestProductDetailRendersAllTypes:
     def _seed(self, tmp_db, pid):
-        """Insert one of each promo type + 2 tiers for the given product."""
+        """Insert one of each promo type + 2 tiers for the given product.
+
+        Each promo gets an explicit, monotonically-increasing created_at so
+        `get_active_promotion`'s `ORDER BY created_at DESC LIMIT 1` is
+        deterministic (otherwise rapid-fire inserts can tie on the second).
+        The 'render-mixed-ยกลัง' row is intentionally LAST (latest timestamp)
+        so it becomes the active promo for `test_active_promo_badge_*`.
+        """
         conn = sqlite3.connect(tmp_db)
         conn.execute("PRAGMA foreign_keys = ON")
         # Clear any existing promos/tiers for this product (test isolation)
         conn.execute("DELETE FROM promotions WHERE product_id = ?", (pid,))
         conn.execute("DELETE FROM product_price_tiers WHERE product_id = ?", (pid,))
 
-        conn.execute(
-            "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value) "
-            "VALUES (?, 'render-pct', 'percent', 10)", (pid,))
-        conn.execute(
-            "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value) "
-            "VALUES (?, 'render-fixed', 'fixed', 75)", (pid,))
-        conn.execute(
-            "INSERT INTO promotions (product_id, promo_name, promo_type, bundle_buy, bundle_free, bundle_unit) "
-            "VALUES (?, 'render-bundle', 'bundle', 12, 1, 'ดอก')", (pid,))
-        conn.execute(
-            "INSERT INTO promotions (product_id, promo_name, promo_type, gift_desc, gift_qty) "
-            "VALUES (?, 'render-gift', 'gift', 'ดจ.สแตนเลส', '20 ดอก')", (pid,))
-        conn.execute(
-            "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, bundle_condition) "
-            "VALUES (?, 'render-mixed-ยกลัง', 'mixed', 5, 'ยกลัง')", (pid,))
+        seeds = [
+            # (created_at, sql, params)
+            ('2026-01-01 09:00:01',
+             "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, created_at) "
+             "VALUES (?, 'render-pct', 'percent', 10, ?)"),
+            ('2026-01-01 09:00:02',
+             "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, created_at) "
+             "VALUES (?, 'render-fixed', 'fixed', 75, ?)"),
+            ('2026-01-01 09:00:03',
+             "INSERT INTO promotions (product_id, promo_name, promo_type, bundle_buy, bundle_free, bundle_unit, created_at) "
+             "VALUES (?, 'render-bundle', 'bundle', 12, 1, 'ดอก', ?)"),
+            ('2026-01-01 09:00:04',
+             "INSERT INTO promotions (product_id, promo_name, promo_type, gift_desc, gift_qty, created_at) "
+             "VALUES (?, 'render-gift', 'gift', 'ดจ.สแตนเลส', '20 ดอก', ?)"),
+            ('2026-01-01 09:00:05',
+             "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, bundle_condition, created_at) "
+             "VALUES (?, 'render-mixed-ยกลัง', 'mixed', 5, 'ยกลัง', ?)"),
+        ]
+        for ts, sql in seeds:
+            # Each SQL has placeholders for (pid, ts)
+            conn.execute(sql, (pid, ts))
         conn.execute(
             "INSERT INTO product_price_tiers (product_id, qty_label, price) "
             "VALUES (?, '1 โหล', 230)", (pid,))
@@ -250,18 +263,95 @@ class TestProductDetailRendersAllTypes:
         conn.commit()
         conn.close()
 
-    def test_detail_page_renders_all_promo_types(self, admin_client, tmp_db):
+    def _split_body(self, body: str):
+        """Split rendered detail page into (info_section, promotions_section)
+        by the unique `bi-percent` marker on the promotions card-header icon.
+        Active-promo badge lives in info_section (top-of-page product info card);
+        promotion list lives in promotions_section.
+        """
+        marker = 'bi-percent'
+        parts = body.split(marker)
+        assert len(parts) == 2, (
+            f"expected exactly one {marker!r} marker, found {len(parts) - 1}")
+        return parts[0], parts[1]
+
+    def test_promotion_list_renders_all_5_types(self, admin_client, tmp_db):
+        """The promotions table (lower card) must render every type fully."""
         pid = _first_active_product_id(tmp_db)
         self._seed(tmp_db, pid)
         r = admin_client.get(f'/products/{pid}')
         assert r.status_code == 200
-        body = r.data.decode('utf-8')
-        # Promo name + type label + value rendering
-        assert 'render-pct' in body and 'ลด 10' in body
-        assert 'render-fixed' in body and 'ราคาตายตัว' in body
-        assert 'render-bundle' in body and 'ซื้อ 12 แถม 1' in body
-        assert 'render-gift' in body and 'ดจ.สแตนเลส' in body
-        assert 'render-mixed-ยกลัง' in body and 'ต้องซื้อยกลัง' in body
+        _, promo_list = self._split_body(r.data.decode('utf-8'))
+
+        # Each seeded promo must appear in the list section
+        assert 'render-pct' in promo_list and 'ลด 10' in promo_list
+        assert 'render-fixed' in promo_list and 'ราคาตายตัว' in promo_list
+        assert 'render-bundle' in promo_list and 'ซื้อ 12 แถม 1' in promo_list
+        assert 'render-gift' in promo_list and 'ดจ.สแตนเลส' in promo_list
+        assert 'render-mixed-ยกลัง' in promo_list and 'ต้องซื้อยกลัง' in promo_list
+
+    def test_active_promo_badge_renders_most_recent(self, admin_client, tmp_db):
+        """Active-promo badge (info-card row) must show ONLY the most-recent
+        promo (here: render-mixed-ยกลัง, inserted last)."""
+        pid = _first_active_product_id(tmp_db)
+        self._seed(tmp_db, pid)
+        r = admin_client.get(f'/products/{pid}')
+        assert r.status_code == 200
+        info_section, _ = self._split_body(r.data.decode('utf-8'))
+
+        # Active badge MUST show the latest promo (render-mixed-ยกลัง)
+        assert 'render-mixed-ยกลัง' in info_section
+        # Its value rendering (5% + condition). discount_value is a Python
+        # float so renders as "5.0" — substring "ลด 5.0%" is the literal output.
+        assert 'ลด 5.0%' in info_section
+        assert 'ต้องซื้อยกลัง' in info_section
+        # The OTHER promos must NOT leak into the info section
+        # (only the active row is shown there, not the full list)
+        assert 'render-bundle' not in info_section
+        assert 'render-gift' not in info_section
+
+    def test_active_promo_badge_bundle_with_unit(self, admin_client, tmp_db):
+        """Bundle-type active promo renders buy/free/unit correctly."""
+        pid = _first_active_product_id(tmp_db)
+        # Seed ONLY a bundle promo so it becomes active
+        conn = sqlite3.connect(tmp_db)
+        conn.execute("DELETE FROM promotions WHERE product_id = ?", (pid,))
+        conn.execute(
+            "INSERT INTO promotions (product_id, promo_name, promo_type, "
+            "                        bundle_buy, bundle_free, bundle_unit) "
+            "VALUES (?, 'badge-bundle', 'bundle', 24, 3, 'ใบ')", (pid,))
+        conn.commit()
+        conn.close()
+        r = admin_client.get(f'/products/{pid}')
+        info_section, _ = self._split_body(r.data.decode('utf-8'))
+        assert 'badge-bundle' in info_section
+        assert 'ซื้อ 24 แถม 3' in info_section
+        assert 'ใบ' in info_section  # unit displayed
+
+    def test_bundle_tiers_json_rendered_as_thai_not_raw(self, admin_client, tmp_db):
+        """F1 fix: bundle_tiers_json must be parsed by the from_json filter
+        and rendered as readable Thai, not as literal JSON."""
+        pid = _first_active_product_id(tmp_db)
+        conn = sqlite3.connect(tmp_db)
+        conn.execute("DELETE FROM promotions WHERE product_id = ?", (pid,))
+        tiers_json = '[{"buy": 12, "free": 1}, {"buy": 24, "free": 3}, {"buy": 50, "free": 10}]'
+        conn.execute(
+            "INSERT INTO promotions (product_id, promo_name, promo_type, "
+            "                        discount_value, bundle_buy, bundle_free, bundle_tiers_json) "
+            "VALUES (?, 'tier-json-test', 'mixed', 10, 12, 1, ?)",
+            (pid, tiers_json))
+        conn.commit()
+        conn.close()
+        r = admin_client.get(f'/products/{pid}')
+        _, promo_list = self._split_body(r.data.decode('utf-8'))
+        # Readable Thai rendering present
+        assert 'ซื้อ 12 แถม 1' in promo_list
+        assert 'ซื้อ 24 แถม 3' in promo_list
+        assert 'ซื้อ 50 แถม 10' in promo_list
+        # Raw JSON brackets must NOT appear in the rendered text
+        # (Jinja auto-escapes &quot;, so the literal `{"buy"` would appear if rendered raw)
+        assert '{&quot;buy&quot;' not in promo_list
+        assert '{"buy"' not in promo_list
 
     def test_detail_page_renders_tier_prices(self, admin_client, tmp_db):
         pid = _first_active_product_id(tmp_db)

@@ -23,6 +23,7 @@ Permission model (see `_STAFF_POST_OK` / `_MANAGER_POST_OK` near the top):
     no cashbook.*, no supplier_catalogue.*)
 """
 import io
+import json
 import os
 import sys
 import sqlite3
@@ -1891,6 +1892,21 @@ def fmt_qty(v):
     if v is None:
         return '-'
     return f'{v:,}'
+
+
+@app.template_filter('from_json')
+def from_json(v):
+    """Parse a JSON string into a Python value for in-template iteration.
+
+    Returns None for empty input or invalid JSON, so templates can use
+    `{% if … %}` guards naturally.
+    """
+    if not v:
+        return None
+    try:
+        return json.loads(v)
+    except (TypeError, ValueError):
+        return None
 
 
 # ── E-commerce ────────────────────────────────────────────────────────────────
