@@ -190,15 +190,24 @@
             <tr>
               <td class="text-subtle">ราคาขายปกติ</td>
               <td class="fw-500">
-                {% if bsn_pricing.avg_list_price %}
-                <a href="{{ url_for('products.product_pricing', product_id=product.id) }}" class="text-decoration-none">
-                  ฿{{ bsn_pricing.avg_list_price | fmt_price }}
-                  {% if bsn_pricing.price_variants > 1 %}
-                  <span class="text-subtle small">({{ bsn_pricing.price_variants }} แบบ)</span>
+                {% if product.base_sell_price and product.base_sell_price > 0 %}
+                  ฿{{ product.base_sell_price | fmt_price }}
+                  <span class="text-subtle small">/ {{ product.unit_type }}</span>
+                  {% if is_admin or is_manager %}
+                  <a href="{{ url_for('products.product_edit', product_id=product.id) }}"
+                     class="btn btn-link btn-sm p-0 ms-1" title="แก้ไขราคา">
+                    <i class="bi bi-pencil-square small"></i>
+                  </a>
                   {% endif %}
-                  <i class="bi bi-arrow-right-short"></i>
-                </a>
-                {% else %}–{% endif %}
+                {% else %}
+                  <span class="text-subtle">–</span>
+                  {% if is_admin or is_manager %}
+                  <a href="{{ url_for('products.product_edit', product_id=product.id) }}"
+                     class="btn btn-link btn-sm p-0 ms-1" title="ตั้งราคา">
+                    <i class="bi bi-pencil-square small"></i>
+                  </a>
+                  {% endif %}
+                {% endif %}
               </td>
             </tr>
             <tr>
