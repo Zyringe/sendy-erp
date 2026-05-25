@@ -305,32 +305,13 @@ def test_mig_078_does_not_touch_bsn_transactions(tmp_db):
 
 
 def test_mig_078_adds_pid_771_stock_adjustment(tmp_db):
-    """Codex blocker fix: pid 771 ut โหล→อัน + UC ratio 1.0→12.0 needs a
-    stock reconciliation entry so stock_levels(771) goes 4 → 48 (4×12)."""
-    conn = sqlite3.connect(tmp_db)
-    conn.execute("PRAGMA foreign_keys = ON")
-    _reset_to_pre_mig(conn)
-
-    before_stock = conn.execute(
-        "SELECT quantity FROM stock_levels WHERE product_id = 771"
-    ).fetchone()[0]
-    assert before_stock == 4, f"premise: pid 771 stock should be 4 pre-mig, got {before_stock}"
-
-    _apply(conn, MIG_078)
-
-    after_stock = conn.execute(
-        "SELECT quantity FROM stock_levels WHERE product_id = 771"
-    ).fetchone()[0]
-    assert after_stock == 48, f"pid 771 stock should be 48 post-mig (4 + 44), got {after_stock}"
-
-    # ADJUST row exists exactly once
-    adjust_rows = conn.execute(
-        "SELECT quantity_change, txn_type FROM transactions "
-        "WHERE product_id = 771 AND reference_no = 'MIG_078'"
-    ).fetchall()
-    assert len(adjust_rows) == 1, f"expected exactly 1 ADJUST row, got {len(adjust_rows)}"
-    assert adjust_rows[0][0] == 44
-    assert adjust_rows[0][1] == 'ADJUST'
+    """Superseded by mig 081 (2026-05-25): pid 771's ledger was rewritten
+    ×12 in อัน scale and the MIG_078 +44 ADJUST row was deleted as part of
+    that cleanup. The pre-mig-078 invariant `stock_levels(771)=4` is no
+    longer reproducible against post-mig-081 DB state, and re-applying
+    mig 078 against the current ×12 ledger would double-adjust.
+    """
+    pytest.skip("Superseded by mig 081 — see docstring")
 
 
 def test_mig_078_stock_levels_unchanged_except_pid_771(tmp_db):
