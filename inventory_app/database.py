@@ -74,15 +74,56 @@ CREATE TABLE IF NOT EXISTS transactions (
 );
 
 CREATE TABLE IF NOT EXISTS promotions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    product_id      INTEGER NOT NULL REFERENCES products(id),
-    promo_name      TEXT    NOT NULL,
-    promo_type      TEXT    NOT NULL CHECK(promo_type IN ('percent','fixed')),
-    discount_value  REAL    NOT NULL,
-    date_start      TEXT,
-    date_end        TEXT,
-    is_active       INTEGER NOT NULL DEFAULT 1,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id        INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    promo_name        TEXT    NOT NULL,
+    promo_type        TEXT    NOT NULL,
+    discount_value    REAL,
+    date_start        TEXT,
+    date_end          TEXT,
+    is_active         INTEGER NOT NULL DEFAULT 1,
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    -- Extended promo dimensions (mig 086): bundle / gift / mixed support.
+    -- CHECK enforces shape integrity per promo_type. Migration 086 contains the
+    -- canonical CHECK; reproduced here so fresh DBs match the post-086 schema.
+    bundle_buy        INTEGER,
+    bundle_free       INTEGER,
+    bundle_unit       TEXT,
+    bundle_condition  TEXT,
+    bundle_tiers_json TEXT,
+    gift_desc         TEXT,
+    gift_qty          TEXT,
+    CHECK (
+        promo_type IN ('percent','fixed','bundle','mixed','gift')
+        AND (bundle_condition IS NULL OR bundle_condition IN ('ยกลัง','ยกล่อง'))
+        AND CASE promo_type
+            WHEN 'percent' THEN
+                discount_value IS NOT NULL
+                AND discount_value BETWEEN 0 AND 100
+                AND bundle_buy IS NULL AND bundle_free IS NULL
+                AND bundle_tiers_json IS NULL
+                AND gift_desc IS NULL AND gift_qty IS NULL
+            WHEN 'fixed' THEN
+                discount_value IS NOT NULL
+                AND discount_value > 0
+                AND bundle_buy IS NULL AND bundle_free IS NULL
+                AND bundle_tiers_json IS NULL
+                AND gift_desc IS NULL AND gift_qty IS NULL
+            WHEN 'bundle' THEN
+                bundle_buy IS NOT NULL AND bundle_free IS NOT NULL
+                AND gift_desc IS NULL AND gift_qty IS NULL
+                AND discount_value IS NULL
+            WHEN 'gift' THEN
+                gift_desc IS NOT NULL AND gift_qty IS NOT NULL
+                AND bundle_buy IS NULL AND bundle_free IS NULL
+                AND bundle_tiers_json IS NULL
+                AND discount_value IS NULL
+            WHEN 'mixed' THEN
+                (discount_value IS NOT NULL
+                 OR bundle_buy IS NOT NULL
+                 OR gift_desc IS NOT NULL)
+        END
+    )
 );
 
 CREATE TABLE IF NOT EXISTS import_log (
