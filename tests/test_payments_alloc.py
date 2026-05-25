@@ -37,9 +37,13 @@ def _ins_receipt(conn, re_no, customer, date_iso, cancelled=0, total=None):
 
 
 def _ins_paid(conn, re_id, iv_no, amount):
+    # iv_no kept as the local parameter name for legibility (test fixtures
+    # speak in terms of "the invoice number being settled"); the DB column
+    # was renamed to doc_no in mig 082. doc_kind derived from the prefix.
+    doc_kind = 'SR' if iv_no.startswith('SR') else 'IV'
     conn.execute(
-        "INSERT INTO paid_invoices (re_id, iv_no, amount) VALUES (?,?,?)",
-        (re_id, iv_no, amount),
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?,?,?,?)",
+        (re_id, iv_no, doc_kind, amount),
     )
 
 

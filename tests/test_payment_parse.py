@@ -217,13 +217,13 @@ def test_import_amounts_stored(tmp_path, tmp_db_conn):
 
     # paid_invoices amounts
     ivs = conn.execute(
-        """SELECT pi.iv_no, pi.amount
+        """SELECT pi.doc_no, pi.amount
            FROM paid_invoices pi
            JOIN received_payments rp ON rp.id = pi.re_id
            WHERE rp.re_no IN ('RE6799001','RE6799002')
-           ORDER BY pi.iv_no"""
+           ORDER BY pi.doc_no"""
     ).fetchall()
-    iv_map = {r["iv_no"]: r["amount"] for r in ivs}
+    iv_map = {r["doc_no"]: r["amount"] for r in ivs}
     assert iv_map["IV6799001"] == pytest.approx(1500.00)
     assert iv_map["IV6799002"] == pytest.approx(1500.00)
     assert iv_map["IV6799003"] == pytest.approx(2000.00)
@@ -291,7 +291,7 @@ def test_import_upsert_updates_changed_amount(tmp_path, tmp_db_conn):
     row = conn.execute(
         """SELECT pi.amount FROM paid_invoices pi
            JOIN received_payments rp ON rp.id = pi.re_id
-           WHERE rp.re_no = 'RE6799001' AND pi.iv_no = 'IV6799001'"""
+           WHERE rp.re_no = 'RE6799001' AND pi.doc_no = 'IV6799001'"""
     ).fetchone()
     assert row["amount"] == pytest.approx(1750.00)
 
@@ -299,7 +299,7 @@ def test_import_upsert_updates_changed_amount(tmp_path, tmp_db_conn):
     row2 = conn.execute(
         """SELECT pi.amount FROM paid_invoices pi
            JOIN received_payments rp ON rp.id = pi.re_id
-           WHERE rp.re_no = 'RE6799001' AND pi.iv_no = 'IV6799002'"""
+           WHERE rp.re_no = 'RE6799001' AND pi.doc_no = 'IV6799002'"""
     ).fetchone()
     assert row2["amount"] == pytest.approx(1500.00)
 
@@ -341,11 +341,11 @@ def _seed_legacy_rows(conn):
     ).fetchone()[0]
 
     conn.execute(
-        "INSERT INTO paid_invoices (re_id, iv_no, amount) VALUES (?, 'IV6788801', NULL)",
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?, 'IV6788801', 'IV', NULL)",
         (id_8801,)
     )
     conn.execute(
-        "INSERT INTO paid_invoices (re_id, iv_no, amount) VALUES (?, 'IV6788802', NULL)",
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?, 'IV6788802', 'IV', NULL)",
         (id_8801,)
     )
 
@@ -357,7 +357,7 @@ def _seed_legacy_rows(conn):
         "SELECT id FROM received_payments WHERE re_no='RE6788802'"
     ).fetchone()[0]
     conn.execute(
-        "INSERT INTO paid_invoices (re_id, iv_no, amount) VALUES (?, 'IV6788803', NULL)",
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?, 'IV6788803', 'IV', NULL)",
         (id_8802,)
     )
     conn.commit()
@@ -436,23 +436,23 @@ def test_existing_re_reimport_idempotency(tmp_path, tmp_db_conn, regression_paym
 
     # RE6788801: paid_invoices must be linked to id_8801 (NOT a stale lastrowid)
     pi_rows = conn.execute(
-        """SELECT pi.re_id, pi.iv_no, pi.amount
+        """SELECT pi.re_id, pi.doc_no, pi.amount
            FROM paid_invoices pi
-           WHERE pi.iv_no IN ('IV6788801','IV6788802')
-           ORDER BY pi.iv_no"""
+           WHERE pi.doc_no IN ('IV6788801','IV6788802')
+           ORDER BY pi.doc_no"""
     ).fetchall()
     for row in pi_rows:
         assert row["re_id"] == id_8801, (
-            f"IV {row['iv_no']}: re_id={row['re_id']} but expected {id_8801} "
+            f"IV {row['doc_no']}: re_id={row['re_id']} but expected {id_8801} "
             f"(stale lastrowid bug — re_id points to wrong RE)"
         )
-    amounts_8801 = {r["iv_no"]: r["amount"] for r in pi_rows}
+    amounts_8801 = {r["doc_no"]: r["amount"] for r in pi_rows}
     assert amounts_8801["IV6788801"] == pytest.approx(2000.00)
     assert amounts_8801["IV6788802"] == pytest.approx(1700.00)
 
     # RE6788802: IV6788803 linked to id_8802
     pi_8802 = conn.execute(
-        "SELECT re_id, amount FROM paid_invoices WHERE iv_no='IV6788803'"
+        "SELECT re_id, amount FROM paid_invoices WHERE doc_no='IV6788803'"
     ).fetchone()
     assert pi_8802["re_id"] == id_8802, (
         f"IV6788803: re_id={pi_8802['re_id']} but expected {id_8802}"
@@ -482,8 +482,8 @@ def test_existing_re_reimport_idempotency(tmp_path, tmp_db_conn, regression_paym
         ).fetchone()[0]
         # re_id linkages: each (iv_no, re_id) pair
         links = c.execute(
-            """SELECT pi.iv_no, pi.re_id, pi.amount
-               FROM paid_invoices pi ORDER BY pi.iv_no"""
+            """SELECT pi.doc_no, pi.re_id, pi.amount
+               FROM paid_invoices pi ORDER BY pi.doc_no"""
         ).fetchall()
         return {
             "rp_count": rp_count,
@@ -491,7 +491,7 @@ def test_existing_re_reimport_idempotency(tmp_path, tmp_db_conn, regression_paym
             "pi_amt_count": pi_amt_count,
             "pi_sum": round(pi_sum, 2),
             "rp_total_sum": round(rp_total_sum, 2),
-            "links": [(r["iv_no"], r["re_id"], r["amount"]) for r in links],
+            "links": [(r["doc_no"], r["re_id"], r["amount"]) for r in links],
         }
 
     snap1 = snapshot(conn)
@@ -531,15 +531,15 @@ def test_wrong_reid_cross_contamination(tmp_path, tmp_db_conn):
         "SELECT id FROM received_payments WHERE re_no='RE6755001'"
     ).fetchone()[0]
     conn.execute(
-        "INSERT INTO paid_invoices (re_id, iv_no, amount) VALUES (?, 'IV6755001', NULL)",
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?, 'IV6755001', 'IV', NULL)",
         (existing_id,)
     )
     conn.execute(
-        "INSERT INTO paid_invoices (re_id, iv_no, amount) VALUES (?, 'IV6755002', NULL)",
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?, 'IV6755002', 'IV', NULL)",
         (existing_id,)
     )
     conn.execute(
-        "INSERT INTO paid_invoices (re_id, iv_no, amount) VALUES (?, 'IV6755003', NULL)",
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?, 'IV6755003', 'IV', NULL)",
         (existing_id,)
     )
     conn.commit()
@@ -572,10 +572,10 @@ def test_wrong_reid_cross_contamination(tmp_path, tmp_db_conn):
 
     # Every paid_invoices row for RE6755001's IVs must point to existing_id
     contaminated = conn.execute(
-        """SELECT pi.iv_no, pi.re_id, rp.re_no
+        """SELECT pi.doc_no, pi.re_id, rp.re_no
            FROM paid_invoices pi
            JOIN received_payments rp ON rp.id = pi.re_id
-           WHERE pi.iv_no IN ('IV6755001','IV6755002','IV6755003')"""
+           WHERE pi.doc_no IN ('IV6755001','IV6755002','IV6755003')"""
     ).fetchall()
 
     assert len(contaminated) == 3, f"Expected 3 IV rows, got {len(contaminated)}"
@@ -587,16 +587,16 @@ def test_wrong_reid_cross_contamination(tmp_path, tmp_db_conn):
 
     for row in contaminated:
         assert row["re_id"] == existing_id, (
-            f"CROSS-CONTAMINATION: {row['iv_no']} has re_id={row['re_id']} "
+            f"CROSS-CONTAMINATION: {row['doc_no']} has re_id={row['re_id']} "
             f"(RE '{row['re_no']}') but should be {existing_id} (RE6755001). "
             f"Stale lastrowid pointed to new RE id={new_re_id}."
         )
         assert row["re_no"] == "RE6755001"
 
     # Amounts set correctly
-    iv_amounts = {r["iv_no"]: conn.execute(
-        "SELECT amount FROM paid_invoices WHERE iv_no=? AND re_id=?",
-        (r["iv_no"], existing_id)
+    iv_amounts = {r["doc_no"]: conn.execute(
+        "SELECT amount FROM paid_invoices WHERE doc_no=? AND re_id=?",
+        (r["doc_no"], existing_id)
     ).fetchone()["amount"] for r in contaminated}
     for iv_no in ("IV6755001", "IV6755002", "IV6755003"):
         assert iv_amounts[iv_no] == pytest.approx(2500.00), (
@@ -717,13 +717,13 @@ def test_import_sr_receipt_link_persisted(tmp_path, tmp_db_conn):
     assert rp_total == pytest.approx(5242.02)
 
     links = conn.execute(
-        """SELECT pi.iv_no, pi.amount
+        """SELECT pi.doc_no, pi.amount
            FROM paid_invoices pi
            JOIN received_payments rp ON rp.id = pi.re_id
            WHERE rp.re_no = 'RE6900208'
-           ORDER BY pi.iv_no"""
+           ORDER BY pi.doc_no"""
     ).fetchall()
-    by_no = {r["iv_no"]: r["amount"] for r in links}
+    by_no = {r["doc_no"]: r["amount"] for r in links}
     assert by_no["IV6802996"] == pytest.approx(5242.02)
     assert by_no["SR6900009"] == pytest.approx(-2293.20)
 
@@ -745,6 +745,6 @@ def test_import_sr_receipt_link_idempotent(tmp_path, tmp_db_conn):
     sr = conn.execute(
         """SELECT pi.amount FROM paid_invoices pi
            JOIN received_payments rp ON rp.id = pi.re_id
-           WHERE rp.re_no='RE6900208' AND pi.iv_no='SR6900009'"""
+           WHERE rp.re_no='RE6900208' AND pi.doc_no='SR6900009'"""
     ).fetchone()["amount"]
     assert sr == pytest.approx(-2293.20)

@@ -195,9 +195,14 @@ CREATE TABLE IF NOT EXISTS received_payments (
     imported_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
--- iv_no holds BOTH 'IV…' settlement refs AND 'SR…' credit-note netting refs
--- (the latter with negative amount). payments_alloc.py:216-279 re-attributes
--- SR rows to the original invoice; do NOT delete or filter SR rows in audits.
+-- INITIAL shape — mig 082 (2026-05-25) renames iv_no → doc_no and adds
+-- doc_kind ('IV' | 'SR') to make the polymorphic-doc semantics explicit.
+-- SR rows (negative amount, credit-note netting) are LOAD-BEARING —
+-- payments_alloc re-attributes them to the original invoice; do NOT delete
+-- or filter SR rows in audits.
+-- See [[project_2026_05_21_paid_invoices_sr_load_bearing]].
+-- ⚠ audit_log key for paid_invoices changed at mig 082: pre-mig rows have
+-- `iv_no` JSON key, post-mig rows have `doc_no` + `doc_kind` keys.
 CREATE TABLE IF NOT EXISTS paid_invoices (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     re_id      INTEGER NOT NULL REFERENCES received_payments(id),
@@ -438,7 +443,14 @@ def init_db():
             SET doc_base = SUBSTR(doc_no, 1, INSTR(doc_no || '-', '-') - 1)
         """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_st_doc_base ON sales_transactions(doc_base)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_iv_no ON paid_invoices(iv_no)")
+    # paid_invoices: column was renamed iv_no → doc_no in mig 082 (2026-05-25).
+    # init_db() runs on every boot, so the index name+target depend on whether
+    # mig 082 has been applied yet. Mig 082's own SQL creates `idx_pi_doc_no`,
+    # so this only ensures a pre-mig DB also has a perf index.
+    _pi_cols = [r[1] for r in conn.execute("PRAGMA table_info(paid_invoices)").fetchall()]
+    if 'iv_no' in _pi_cols:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_iv_no ON paid_invoices(iv_no)")
+    # Post-mig 082: index already exists from the migration itself; nothing to do.
     # Migration: ref_invoice column on sales_transactions (only populated on SR/credit-note rows)
     if 'ref_invoice' not in cols:
         conn.execute("ALTER TABLE sales_transactions ADD COLUMN ref_invoice TEXT")

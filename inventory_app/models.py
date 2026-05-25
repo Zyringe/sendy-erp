@@ -2236,7 +2236,21 @@ def parse_payment_csv(filepath):
                 doc_no = m2.group(1)
                 sign = -1.0 if m2.group(2) == '-' else 1.0
                 amount = sign * float(m2.group(3).replace(',', ''))
-                kind = 'SR' if doc_no.startswith('SR') else 'IV'
+                # Fail-loud on unknown prefixes. The regex above limits matches
+                # to IV|SR, so the else branch is dead code today — but if the
+                # regex is ever widened (new BSN doc kind), this catches the
+                # parser/CHECK-constraint coordination gap before paid_invoices
+                # receives a misclassified row.
+                if doc_no.startswith('SR'):
+                    kind = 'SR'
+                elif doc_no.startswith('IV'):
+                    kind = 'IV'
+                else:
+                    raise ValueError(
+                        f"parse_payment_csv: unexpected doc prefix in {doc_no!r} "
+                        f"(supported: IV, SR). Update the regex AND the "
+                        f"paid_invoices.doc_kind CHECK constraint together."
+                    )
                 current['iv_list'].append(
                     {'iv_no': doc_no, 'amount': amount, 'kind': kind})
     if current:
@@ -2328,11 +2342,12 @@ def import_payments(filepath):
 
             for iv in r['iv_list']:
                 conn.execute(
-                    """INSERT INTO paid_invoices (re_id, iv_no, amount)
-                       VALUES (?,?,?)
-                       ON CONFLICT(re_id, iv_no) DO UPDATE SET
+                    """INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount)
+                       VALUES (?,?,?,?)
+                       ON CONFLICT(re_id, doc_no) DO UPDATE SET
+                           doc_kind=excluded.doc_kind,
                            amount=excluded.amount""",
-                    (re_id, iv['iv_no'], iv['amount'])
+                    (re_id, iv['iv_no'], iv['kind'], iv['amount'])
                 )
 
             conn.execute(f"RELEASE SAVEPOINT {sp}")
@@ -2393,11 +2408,11 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
             MIN(st.date_iso) AS bill_date,
             st.customer,
             SUM(CASE WHEN st.vat_type = 2 THEN st.net * 1.07 ELSE st.net END) AS total_net,
-            MAX(CASE WHEN pi.iv_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
+            MAX(CASE WHEN pi.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
             MAX(rp.date_iso) AS paid_date,
             MAX(rp.re_no) AS re_no
         FROM sales_transactions st
-        LEFT JOIN paid_invoices pi ON pi.iv_no = st.doc_base
+        LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
         LEFT JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
         WHERE {where}
         GROUP BY st.doc_base
@@ -2410,10 +2425,10 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
     count_sql = f"""
         SELECT COUNT(*) FROM (
             SELECT st.doc_base,
-                MAX(CASE WHEN pi.iv_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
+                MAX(CASE WHEN pi.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
                 SUM(CASE WHEN st.vat_type = 2 THEN st.net * 1.07 ELSE st.net END) AS total_net
             FROM sales_transactions st
-            LEFT JOIN paid_invoices pi ON pi.iv_no = st.doc_base
+            LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
             LEFT JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
             WHERE {where}
             GROUP BY st.doc_base
@@ -2431,10 +2446,10 @@ def get_payment_summary():
     row = conn.execute("""
         SELECT
             COUNT(DISTINCT st.doc_base) AS total_bills,
-            SUM(CASE WHEN pi.iv_no IS NOT NULL THEN 1 ELSE 0 END) AS paid_count,
-            SUM(CASE WHEN pi.iv_no IS NULL THEN 1 ELSE 0 END) AS unpaid_count,
-            SUM(CASE WHEN pi.iv_no IS NOT NULL THEN st.net ELSE 0 END) AS paid_amount,
-            SUM(CASE WHEN pi.iv_no IS NULL THEN st.net ELSE 0 END) AS unpaid_amount
+            SUM(CASE WHEN pi.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS paid_count,
+            SUM(CASE WHEN pi.doc_no IS NULL THEN 1 ELSE 0 END) AS unpaid_count,
+            SUM(CASE WHEN pi.doc_no IS NOT NULL THEN st.net ELSE 0 END) AS paid_amount,
+            SUM(CASE WHEN pi.doc_no IS NULL THEN st.net ELSE 0 END) AS unpaid_amount
         FROM (
             SELECT doc_base,
                    SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) AS net
@@ -2443,7 +2458,7 @@ def get_payment_summary():
             GROUP BY doc_base
             HAVING SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) > 0
         ) st
-        LEFT JOIN paid_invoices pi ON pi.iv_no = st.doc_base
+        LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
         LEFT JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
     """).fetchone()
     conn.close()
@@ -2500,10 +2515,10 @@ def find_payment_candidates(amount, tolerance_pct=5):
                SUM(CASE WHEN st.vat_type=2 THEN st.net*1.07 ELSE st.net END) AS bill_net,
                MAX(st.vat_type) AS vat_type
         FROM sales_transactions st
-        LEFT JOIN paid_invoices pi ON pi.iv_no = st.doc_base
+        LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
         WHERE st.doc_base IS NOT NULL
           AND st.doc_base NOT LIKE 'SR%' AND st.doc_base NOT LIKE 'HS%'
-          AND pi.iv_no IS NULL
+          AND pi.doc_no IS NULL
         GROUP BY st.customer, st.customer_code, st.doc_base
         HAVING bill_net > 0
         ORDER BY st.customer, st.doc_base

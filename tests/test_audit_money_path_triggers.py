@@ -41,7 +41,8 @@ def test_paid_invoices_insert_logs_payload(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = OFF")  # avoid re_id FK requirement
     cur = conn.execute(
-        "INSERT INTO paid_invoices (re_id, iv_no, amount) VALUES (99999, 'IV-T1', 1500.0)"
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) "
+        "VALUES (99999, 'IV-T1', 'IV', 1500.0)"
     )
     pid = cur.lastrowid
     conn.commit()
@@ -51,27 +52,29 @@ def test_paid_invoices_insert_logs_payload(tmp_db):
         (pid,),
     ).fetchone()[0]
     assert 'IV-T1' in payload and '1500' in payload
+    assert 'doc_no' in payload and 'doc_kind' in payload
     conn.close()
 
 
 def test_paid_invoices_update_logs_iv_change(tmp_db):
-    """Re-routing iv_no must be audited (money path — credits a different
+    """Re-routing doc_no must be audited (money path — credits a different
     invoice)."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = OFF")
     cur = conn.execute(
-        "INSERT INTO paid_invoices (re_id, iv_no, amount) VALUES (99999, 'IV-A', 500.0)"
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) "
+        "VALUES (99999, 'IV-A', 'IV', 500.0)"
     )
     pid = cur.lastrowid
     conn.commit()
-    conn.execute("UPDATE paid_invoices SET iv_no='IV-B' WHERE id=?", (pid,))
+    conn.execute("UPDATE paid_invoices SET doc_no='IV-B' WHERE id=?", (pid,))
     conn.commit()
     payload = conn.execute(
         "SELECT changed_fields FROM audit_log "
         "WHERE table_name='paid_invoices' AND row_id=? AND action='UPDATE' "
         "ORDER BY id DESC LIMIT 1", (pid,),
     ).fetchone()[0]
-    assert 'iv_no' in payload
+    assert 'doc_no' in payload
     assert 'IV-A' in payload and 'IV-B' in payload
     conn.close()
 
@@ -80,7 +83,8 @@ def test_paid_invoices_delete_logs_snapshot(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = OFF")
     cur = conn.execute(
-        "INSERT INTO paid_invoices (re_id, iv_no, amount) VALUES (99999, 'IV-DEL', 222.0)"
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) "
+        "VALUES (99999, 'IV-DEL', 'IV', 222.0)"
     )
     pid = cur.lastrowid
     conn.commit()
@@ -92,6 +96,7 @@ def test_paid_invoices_delete_logs_snapshot(tmp_db):
         (pid,),
     ).fetchone()[0]
     assert 'IV-DEL' in payload and '222' in payload
+    assert 'doc_no' in payload and 'doc_kind' in payload
     conn.close()
 
 
