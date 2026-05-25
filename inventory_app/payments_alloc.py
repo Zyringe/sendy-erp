@@ -9,9 +9,10 @@ supplied `conn` (used, not closed) else opens/owns one.
 
 Established join idiom (do NOT diverge — see models.get_payment_status /
 get_payment_summary ≈ line 2183-2245):
-    paid_invoices.iv_no  = sales_transactions.doc_base
+    paid_invoices.doc_no = sales_transactions.doc_base
+    paid_invoices.doc_kind in ('IV','SR')   ← 'IV'=settlement, 'SR'=CN netting
     received_payments.id = paid_invoices.re_id
-    received_payments.cancelled = 0     (cancelled receipts ignored)
+    received_payments.cancelled = 0         (cancelled receipts ignored)
 
 LEGACY-NULL-AMOUNT RULE (real amounts win over legacy NULLs):
   `received_payments.total` and `paid_invoices.amount` were added in
@@ -56,9 +57,9 @@ CREDIT-NOTE (SR) NETTING — AUTHORITATIVE AMOUNT (migration 062):
       net_owed = round(billed - credit_notes, 2)
 
   collected NETS the SR(-) receipt links: a receipt that applied a credit
-  note carries an SR row in paid_invoices with a NEGATIVE amount and
-  iv_no = SR doc_base. Those are re-attributed to the original invoice via
-  credit_note_amounts.ref_invoice, so:
+  note carries an SR row in paid_invoices with a NEGATIVE amount,
+  doc_kind='SR' and doc_no = the SR doc_base. Those are re-attributed to
+  the original invoice via credit_note_amounts.ref_invoice, so:
 
       collected = Σ IV(+) receipt links  −  Σ SR(-) receipt links
 
@@ -217,7 +218,7 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
         pay AS (
             -- collected nets the SR(-) receipt links: a receipt that applied
             -- a credit note carries an SR row in paid_invoices with a
-            -- NEGATIVE amount and iv_no = SR doc_base. Re-attributed to the
+            -- NEGATIVE amount and doc_kind='SR'. Re-attributed to the
             -- ORIGINAL invoice via credit_note_amounts.ref_invoice so it
             -- reduces that invoice's collected, symmetrically with how `cn`
             -- reduces its net_owed (no double count).
@@ -227,7 +228,7 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
                    MAX(has_legacy)                      AS has_legacy,
                    MAX(last_pay)                        AS last_pay
             FROM (
-                SELECT pi.iv_no                                  AS iv_no,
+                SELECT pi.doc_no                                  AS iv_no,
                        CASE WHEN pi.amount IS NOT NULL
                             THEN pi.amount ELSE 0 END             AS real_amt,
                        CASE WHEN pi.amount IS NOT NULL
@@ -238,7 +239,7 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
                 FROM paid_invoices pi
                 JOIN received_payments rp
                   ON rp.id = pi.re_id AND rp.cancelled = 0 {pay_date_cap}
-                WHERE pi.iv_no NOT LIKE 'SR%'
+                WHERE pi.doc_kind = 'IV'
 
                 UNION ALL
 
@@ -272,8 +273,8 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
                       AND st.doc_base NOT IN
                           (SELECT sr_doc_base FROM credit_note_amounts)
                 ) srref
-                  ON srref.sr_doc_base = pi.iv_no
-                WHERE pi.iv_no LIKE 'SR%'
+                  ON srref.sr_doc_base = pi.doc_no
+                WHERE pi.doc_kind = 'SR'
             )
             GROUP BY iv_no
         )"""
@@ -292,7 +293,7 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
         ),"""
         pay_cte = f"""
         pay AS (
-            SELECT pi.iv_no                                  AS iv_no,
+            SELECT pi.doc_no                                  AS iv_no,
                    SUM(CASE WHEN pi.amount IS NOT NULL
                             THEN pi.amount ELSE 0 END)        AS real_collected,
                    MAX(CASE WHEN pi.amount IS NOT NULL
@@ -303,7 +304,7 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
             FROM paid_invoices pi
             JOIN received_payments rp
               ON rp.id = pi.re_id AND rp.cancelled = 0 {pay_date_cap}
-            GROUP BY pi.iv_no
+            GROUP BY pi.doc_no
         )"""
 
     sql = f"""
@@ -451,17 +452,17 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
     # Billable-invoice gate: iv_no must have ≥1 billable sales line, exactly
     # like invoice_settlement's `inv` CTE. Keeps the reconciliation exact.
     billable = (f"EXISTS (SELECT 1 FROM sales_transactions st2 "
-                f"WHERE st2.doc_base = pi.iv_no AND {sale_filter})")
+                f"WHERE st2.doc_base = pi.doc_no AND {sale_filter})")
 
     # has_real per iv_no over the (date-filtered) non-cancelled link set.
     has_real_sql = f"""
-        SELECT pi.iv_no AS iv_no,
+        SELECT pi.doc_no AS iv_no,
                MAX(CASE WHEN pi.amount IS NOT NULL THEN 1 ELSE 0 END)
                                                    AS has_real
         FROM received_payments rp
         JOIN paid_invoices pi ON pi.re_id = rp.id
         WHERE {where}
-        GROUP BY pi.iv_no
+        GROUP BY pi.doc_no
     """
 
     # Real links: one emitted row each, in their own receipt month.
@@ -475,7 +476,7 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
         JOIN paid_invoices pi ON pi.re_id = rp.id
              AND pi.amount IS NOT NULL
         WHERE {where} AND {billable}
-          AND pi.iv_no NOT LIKE 'SR%'
+          AND pi.doc_kind = 'IV'
     """
 
     # SR(-) receipt links re-attributed to the ORIGINAL invoice via
@@ -492,7 +493,7 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
         FROM received_payments rp
         JOIN paid_invoices pi ON pi.re_id = rp.id
              AND pi.amount IS NOT NULL
-             AND pi.iv_no LIKE 'SR%'
+             AND pi.doc_kind = 'SR'
         JOIN (
             SELECT sr_doc_base AS sr_doc_base, ref_invoice AS ref_invoice
             FROM credit_note_amounts
@@ -504,7 +505,7 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
               AND st.ref_invoice IS NOT NULL
               AND st.ref_invoice <> ''
               AND st.doc_base NOT IN (SELECT sr_doc_base FROM credit_note_amounts)
-        ) srref ON srref.sr_doc_base = pi.iv_no
+        ) srref ON srref.sr_doc_base = pi.doc_no
         WHERE {where}
           AND {sr_billable}
     """
@@ -513,21 +514,21 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
     # link. Whether they're really pure-legacy is decided in Python using
     # has_real (a real link anywhere ⇒ NOT pure-legacy).
     legacy_sql = f"""
-        SELECT pi.iv_no                            AS iv_no,
+        SELECT pi.doc_no                            AS iv_no,
                SUBSTR(MAX(rp.date_iso), 1, 7)      AS month,
                MAX(rp.id)                          AS re_id,
                ROUND(COALESCE(
                    (SELECT SUM(CASE WHEN st2.vat_type = 2
                                     THEN st2.net * 1.07 ELSE st2.net END)
                     FROM sales_transactions st2
-                    WHERE st2.doc_base = pi.iv_no
+                    WHERE st2.doc_base = pi.doc_no
                       AND {sale_filter}
                    ), 0.0), 2)                     AS billed
         FROM received_payments rp
         JOIN paid_invoices pi ON pi.re_id = rp.id
              AND pi.amount IS NULL
         WHERE {where} AND {billable}
-        GROUP BY pi.iv_no
+        GROUP BY pi.doc_no
     """
 
     with _ConnCtx(conn, db_path) as c:

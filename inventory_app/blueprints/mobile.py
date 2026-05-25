@@ -193,12 +193,12 @@ def sales_trip():
                (SELECT MAX(date_iso) FROM sales_transactions s WHERE s.customer = c.name) AS last_sale,
                (SELECT ROUND(SUM(CASE WHEN s.vat_type = 2 THEN s.net * 1.07 ELSE s.net END), 2)
                   FROM sales_transactions s
-                  LEFT JOIN paid_invoices pi ON pi.iv_no = s.doc_base
+                  LEFT JOIN paid_invoices pi ON pi.doc_no = s.doc_base
                   WHERE s.customer = c.name
                     AND s.doc_base IS NOT NULL
                     AND s.doc_base NOT LIKE 'SR%'
                     AND s.doc_base NOT LIKE 'HS%'
-                    AND pi.iv_no IS NULL
+                    AND pi.doc_no IS NULL
                ) AS outstanding
           FROM customers c
      LEFT JOIN salespersons sp ON sp.code = c.salesperson
