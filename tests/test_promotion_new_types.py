@@ -353,6 +353,45 @@ class TestProductDetailRendersAllTypes:
         assert '{&quot;buy&quot;' not in promo_list
         assert '{"buy"' not in promo_list
 
+    def test_detail_page_shows_base_sell_price(self, admin_client, tmp_db):
+        """The "ราคาขายปกติ" row should render `products.base_sell_price`
+        directly (NOT the BSN-derived average) with the unit type suffix.
+        """
+        # Pick a product that already has base_sell_price > 0 from the
+        # 2026-05-25 catalog import, or set one explicitly.
+        pid = _first_active_product_id(tmp_db)
+        conn = sqlite3.connect(tmp_db)
+        conn.execute("UPDATE products SET base_sell_price = 123.45, unit_type = 'ตัว' "
+                     "WHERE id = ?", (pid,))
+        conn.commit()
+        conn.close()
+
+        r = admin_client.get(f'/products/{pid}')
+        assert r.status_code == 200
+        body = r.data.decode('utf-8')
+        # The "ราคาขายปกติ" row should now show the catalog price + unit_type
+        assert 'ราคาขายปกติ' in body
+        assert '฿123.45' in body
+        assert '/ ตัว' in body
+
+    def test_detail_page_shows_dash_when_base_sell_price_zero(self, admin_client, tmp_db):
+        """Products without catalog pricing (base_sell_price = 0) show "–"."""
+        pid = _first_active_product_id(tmp_db)
+        conn = sqlite3.connect(tmp_db)
+        conn.execute("UPDATE products SET base_sell_price = 0 WHERE id = ?", (pid,))
+        conn.commit()
+        conn.close()
+
+        r = admin_client.get(f'/products/{pid}')
+        assert r.status_code == 200
+        body = r.data.decode('utf-8')
+        # Find the ราคาขายปกติ section and verify it contains the dash placeholder
+        marker = 'ราคาขายปกติ'
+        assert marker in body
+        section = body[body.find(marker):body.find(marker) + 400]
+        assert '–' in section
+        assert '฿0.00' not in section  # don't render 0 as a real price
+
     def test_detail_page_renders_tier_prices(self, admin_client, tmp_db):
         pid = _first_active_product_id(tmp_db)
         self._seed(tmp_db, pid)
