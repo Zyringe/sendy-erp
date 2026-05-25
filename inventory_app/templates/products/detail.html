@@ -541,7 +541,14 @@
                   {% if promo.gift_desc %}<br>+ {{ promo.gift_desc }} ({{ promo.gift_qty }}){% endif %}
                 {% endif %}
                 {% if promo.bundle_condition %}<br><span class="text-subtle">(ต้องซื้อ{{ promo.bundle_condition }})</span>{% endif %}
-                {% if promo.bundle_tiers_json %}<br><span class="text-subtle small">หลายระดับ: {{ promo.bundle_tiers_json }}</span>{% endif %}
+                {% if promo.bundle_tiers_json %}
+                  {% set tiers = promo.bundle_tiers_json | from_json %}
+                  {% if tiers %}
+                    <br><span class="text-subtle small">หลายระดับ:
+                      {% for t in tiers %}ซื้อ {{ t.buy }} แถม {{ t.free }}{% if not loop.last %} / {% endif %}{% endfor %}
+                    </span>
+                  {% endif %}
+                {% endif %}
               </td>
               <td class="text-subtle small">{{ promo.date_start or '∞' }} – {{ promo.date_end or '∞' }}</td>
               <td class="text-center">

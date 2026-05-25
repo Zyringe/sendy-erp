@@ -463,28 +463,32 @@ def get_recent_transactions(limit=10):
 
 def get_promotions(product_id: int, active_only=False):
     conn = get_connection()
-    cond = "WHERE product_id = ?"
-    params = [product_id]
-    if active_only:
-        cond += " AND is_active = 1"
-    rows = conn.execute(f"SELECT * FROM promotions {cond} ORDER BY created_at DESC", params).fetchall()
-    conn.close()
-    return rows
+    try:
+        cond = "WHERE product_id = ?"
+        params = [product_id]
+        if active_only:
+            cond += " AND is_active = 1"
+        return conn.execute(
+            f"SELECT * FROM promotions {cond} ORDER BY created_at DESC", params
+        ).fetchall()
+    finally:
+        conn.close()
 
 
 def get_active_promotion(product_id: int):
     today = date.today().isoformat()
     conn = get_connection()
-    row = conn.execute("""
-        SELECT * FROM promotions
-        WHERE product_id = ? AND is_active = 1
-          AND (date_start IS NULL OR date_start <= ?)
-          AND (date_end IS NULL OR date_end >= ?)
-        ORDER BY created_at DESC
-        LIMIT 1
-    """, (product_id, today, today)).fetchone()
-    conn.close()
-    return row
+    try:
+        return conn.execute("""
+            SELECT * FROM promotions
+            WHERE product_id = ? AND is_active = 1
+              AND (date_start IS NULL OR date_start <= ?)
+              AND (date_end IS NULL OR date_end >= ?)
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (product_id, today, today)).fetchone()
+    finally:
+        conn.close()
 
 
 def effective_price(product) -> float:
@@ -539,44 +543,48 @@ def create_promotion(data: dict) -> int:
         "gift_qty":          data.get("gift_qty"),
     }
     conn = get_connection()
-    cur = conn.execute("""
-        INSERT INTO promotions (
-            product_id, promo_name, promo_type, discount_value,
-            date_start, date_end,
-            bundle_buy, bundle_free, bundle_unit, bundle_condition,
-            bundle_tiers_json, gift_desc, gift_qty
-        ) VALUES (
-            :product_id, :promo_name, :promo_type, :discount_value,
-            :date_start, :date_end,
-            :bundle_buy, :bundle_free, :bundle_unit, :bundle_condition,
-            :bundle_tiers_json, :gift_desc, :gift_qty
-        )
-    """, full)
-    conn.commit()
-    pid = cur.lastrowid
-    conn.close()
-    return pid
+    try:
+        cur = conn.execute("""
+            INSERT INTO promotions (
+                product_id, promo_name, promo_type, discount_value,
+                date_start, date_end,
+                bundle_buy, bundle_free, bundle_unit, bundle_condition,
+                bundle_tiers_json, gift_desc, gift_qty
+            ) VALUES (
+                :product_id, :promo_name, :promo_type, :discount_value,
+                :date_start, :date_end,
+                :bundle_buy, :bundle_free, :bundle_unit, :bundle_condition,
+                :bundle_tiers_json, :gift_desc, :gift_qty
+            )
+        """, full)
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
 
 
 def deactivate_promotion(promo_id: int):
     conn = get_connection()
-    conn.execute("UPDATE promotions SET is_active = 0 WHERE id = ?", (promo_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("UPDATE promotions SET is_active = 0 WHERE id = ?", (promo_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_product_price_tiers(product_id: int):
     """Return all tier rows for this product, ordered by sort_order then price."""
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT id, qty_label, price, note, sort_order "
-        "FROM product_price_tiers "
-        "WHERE product_id = ? "
-        "ORDER BY sort_order, price",
-        (product_id,)
-    ).fetchall()
-    conn.close()
-    return rows
+    try:
+        return conn.execute(
+            "SELECT id, qty_label, price, note, sort_order "
+            "FROM product_price_tiers "
+            "WHERE product_id = ? "
+            "ORDER BY sort_order, price",
+            (product_id,)
+        ).fetchall()
+    finally:
+        conn.close()
 
 
 # ── CSV Import ────────────────────────────────────────────────────────────────
