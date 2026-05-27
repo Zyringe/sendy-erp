@@ -256,7 +256,6 @@ _ENDPOINT_MODULE = {
     'conversion_activate': 'operation',
     'conversion_history': 'operation',
     'labels_view': 'operation',
-    'catalog_view': 'operation',
     # accounting
     'accounting_summary': 'accounting',
     'cashflow_dashboard': 'accounting',
@@ -1546,58 +1545,6 @@ def serve_catalog_photo(filepath):
     if not os.path.isfile(full):
         abort(404)
     return send_file(full)
-
-
-@app.route('/catalog')
-def catalog_view():
-    """Catalog page — print-friendly, group by category, family-aware layout.
-    Filters via query string:
-      ?own_brand=1     own-brand only (Sendai/Golden Lion/A-SPEC)
-      ?in_stock=1      in-stock only
-      ?brand=1,3       comma-separated brand IDs
-      ?category=hinge  comma-separated category codes
-      ?print=1         print-friendly mode (no nav, full-bleed cards)
-    """
-    own_brand = request.args.get('own_brand', '0') == '1'
-    in_stock = request.args.get('in_stock', '0') == '1'
-    print_mode = request.args.get('print', '0') == '1'
-    brand_arg = request.args.get('brand', '').strip()
-    cat_arg = request.args.get('category', '').strip()
-    brand_filter = [int(x) for x in brand_arg.split(',') if x.isdigit()] or None
-    category_filter = [x.strip() for x in cat_arg.split(',') if x.strip()] or None
-
-    cards_by_cat = models.get_catalog_data(
-        brand_filter=brand_filter,
-        category_filter=category_filter,
-        own_brand_only=own_brand,
-        in_stock_only=in_stock,
-    )
-
-    # For sidebar filters
-    conn = get_connection()
-    brands = conn.execute(
-        "SELECT id, name, name_th, is_own_brand, sort_order"
-        " FROM brands ORDER BY is_own_brand DESC, sort_order, name"
-    ).fetchall()
-    cats = conn.execute(
-        "SELECT code, name_th, short_code FROM categories"
-        " WHERE id IN (SELECT DISTINCT category_id FROM products WHERE is_active=1)"
-        " ORDER BY sort_order, name_th"
-    ).fetchall()
-    conn.close()
-
-    total_cards = sum(len(v) for v in cards_by_cat.values())
-    total_skus  = sum(len(c['skus']) for v in cards_by_cat.values() for c in v)
-
-    return render_template(
-        'catalog.html',
-        cards_by_cat=cards_by_cat,
-        brands=brands, cats=cats,
-        total_cards=total_cards, total_skus=total_skus,
-        own_brand=own_brand, in_stock=in_stock, print_mode=print_mode,
-        brand_filter=brand_filter or [],
-        category_filter=category_filter or [],
-    )
 
 
 @app.route('/sales')
