@@ -168,8 +168,10 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'import_payments', 'products.product_online_stock',
     'customer_reassign', 'customer_bulk_reassign',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
+    'products.product_packaging_save',
     'mapping_suggestion_approve',
     'import_credit_notes_preview', 'import_credit_notes_commit',
+    'photos_review_assign', 'photos_review_delete',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
 # the route. Other admin-only writes use _require_admin().
@@ -1524,14 +1526,15 @@ def supplier_summary(supplier_name):
 
 @app.route('/photos/<path:filepath>')
 def serve_catalog_photo(filepath):
-    """Serve product photos from Design/Catalog/photos/.
-    Files live outside inventory_app/static so they're available to /catalog
-    without bloating the static dir or duplicating files.
+    """Serve product photos from Design/photos/ (new layout 2026-05-25).
+
+    Old layout was Design/Catalog/photos/products/<category>/<bucket>/...; rebuilt
+    by Design/Catalog/scripts/rebuild_photo_index.py into Design/photos/<family_code>/.
     """
     if not session.get('role'):
         abort(403)
     photos_root = os.path.abspath(os.path.join(
-        os.path.dirname(__file__), '..', '..', 'Design', 'Catalog', 'photos'
+        os.path.dirname(__file__), '..', '..', 'Design', 'photos'
     ))
     full = os.path.normpath(os.path.join(photos_root, filepath))
     # Separator-aware containment: a bare startswith would also admit sibling
@@ -1545,6 +1548,229 @@ def serve_catalog_photo(filepath):
     if not os.path.isfile(full):
         abort(404)
     return send_file(full)
+
+
+# ── Photo reviewer (clears Design/photos/_review/ queue) ─────────────────────
+# One photo at a time + keyboard shortcuts. Atomic: move file + INSERT product_images.
+_REVIEW_ROOT_REL = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', '..', 'Design', 'photos', '_review'))
+_PHOTOS_ROOT_REL = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', '..', 'Design', 'photos'))
+_IMG_EXTS_REV = ('.png', '.jpg', '.jpeg', '.webp')
+_SINGLETON_NOTE = 'auto-singleton-from-photo-import-2026-05-25'
+
+
+def _walk_review_files():
+    """Return sorted list of (rel_path_from__review, abs_path) for unprocessed photos."""
+    out = []
+    if not os.path.isdir(_REVIEW_ROOT_REL):
+        return out
+    for root, _dirs, files in os.walk(_REVIEW_ROOT_REL):
+        for fn in files:
+            if fn.lower().endswith(_IMG_EXTS_REV):
+                ab = os.path.join(root, fn)
+                rel = os.path.relpath(ab, _REVIEW_ROOT_REL)
+                out.append((rel, ab))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+@app.route('/photos/review')
+def photos_review():
+    if session.get('role') not in ('admin', 'manager'):
+        abort(403)
+    files = _walk_review_files()
+    after = request.args.get('after') or ''
+    current = None
+    if after:
+        for rel, ab in files:
+            if rel > after:
+                current = (rel, ab)
+                break
+    else:
+        current = files[0] if files else None
+    remaining = len(files)
+    return render_template('photos_review.html',
+                           current=current, remaining=remaining, after=after)
+
+
+def _safe_under(root, candidate):
+    """Reject path traversal: candidate must resolve inside root."""
+    full = os.path.normpath(os.path.join(root, candidate))
+    try:
+        if os.path.commonpath((full, root)) != root:
+            return None
+    except ValueError:
+        return None
+    return full
+
+
+@app.route('/photos/review/assign', methods=['POST'])
+def photos_review_assign():
+    if session.get('role') not in ('admin', 'manager'):
+        abort(403)
+    src_rel = (request.form.get('src') or '').strip()
+    sku_id = request.form.get('sku_id', type=int)
+    role = (request.form.get('role') or 'extra').strip()
+    if role not in ('single', 'pack', 'family', 'extra'):
+        role = 'extra'
+    if not src_rel or not sku_id:
+        return jsonify({'ok': False, 'error': 'missing src or sku_id'}), 400
+    src_abs = _safe_under(_REVIEW_ROOT_REL, src_rel)
+    if not src_abs or not os.path.isfile(src_abs):
+        return jsonify({'ok': False, 'error': 'source file not found'}), 404
+
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT id, sku_code, product_name, brand_id, family_id "
+            "FROM products WHERE id=?", (sku_id,)
+        )
+        prod = cur.fetchone()
+        if not prod:
+            return jsonify({'ok': False, 'error': 'sku not in db'}), 404
+
+        # If product has no family, auto-create singleton (mirror rebuild_photo_index logic)
+        family_id = prod['family_id']
+        if not family_id:
+            fam_code = prod['sku_code']
+            existing = conn.execute(
+                "SELECT id FROM product_families WHERE family_code=?", (fam_code,)
+            ).fetchone()
+            if existing:
+                family_id = existing['id']
+            else:
+                ins = conn.execute(
+                    "INSERT INTO product_families "
+                    "(family_code, display_name, brand_id, note) VALUES (?,?,?,?)",
+                    (fam_code, prod['product_name'], prod['brand_id'], _SINGLETON_NOTE)
+                )
+                family_id = ins.lastrowid
+            conn.execute(
+                "UPDATE products SET family_id=? WHERE id=? AND family_id IS NULL",
+                (family_id, prod['id'])
+            )
+
+        fam = conn.execute(
+            "SELECT family_code FROM product_families WHERE id=?", (family_id,)
+        ).fetchone()
+        family_code = fam['family_code']
+
+        # Construct target filename: sku_<code>_<role>_<orig>  (preserves original for uniqueness)
+        orig_name = os.path.basename(src_rel)
+        target_name = f"sku_{prod['sku_code']}_{role}_{orig_name}"
+        target_dir = os.path.join(_PHOTOS_ROOT_REL, family_code)
+        os.makedirs(target_dir, exist_ok=True)
+        target_abs = os.path.join(target_dir, target_name)
+        # Avoid collision
+        if os.path.exists(target_abs):
+            base, ext = os.path.splitext(target_name)
+            i = 2
+            while os.path.exists(os.path.join(target_dir, f"{base}_{i}{ext}")):
+                i += 1
+            target_name = f"{base}_{i}{ext}"
+            target_abs = os.path.join(target_dir, target_name)
+
+        # image_path stored relative to Design/photos/ (matches Flask /photos/ route)
+        image_path = f"{family_code}/{target_name}"
+        sort_order = {'single': 10, 'pack': 20, 'family': 50, 'extra': 30}[role]
+        store_sku_id = None if role == 'family' else prod['id']
+        conn.execute(
+            "INSERT INTO product_images "
+            "(family_id, sku_id, image_path, presentation_tag, sort_order) "
+            "VALUES (?,?,?,?,?)",
+            (family_id, store_sku_id, image_path, role, sort_order)
+        )
+        # Move file last so DB write rolls back if file move fails
+        shutil.move(src_abs, target_abs)
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({'ok': True, 'next_url': url_for('photos_review')})
+
+
+@app.route('/photos/review/delete', methods=['POST'])
+def photos_review_delete():
+    if session.get('role') not in ('admin', 'manager'):
+        abort(403)
+    src_rel = (request.form.get('src') or '').strip()
+    if not src_rel:
+        return jsonify({'ok': False, 'error': 'missing src'}), 400
+    src_abs = _safe_under(_REVIEW_ROOT_REL, src_rel)
+    if not src_abs or not os.path.isfile(src_abs):
+        return jsonify({'ok': False, 'error': 'source file not found'}), 404
+    os.remove(src_abs)
+    return jsonify({'ok': True, 'next_url': url_for('photos_review')})
+
+
+# ── Product walkthrough (catalog-building review) ────────────────────────────
+# Paginates active products by sku_code; each page shows 2-4 products with current
+# photo + assign-from-_review/ + edit link. Phase 1: no persistent skip state.
+
+@app.route('/products/walkthrough')
+def products_walkthrough():
+    if session.get('role') not in ('admin', 'manager'):
+        abort(403)
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = request.args.get('per_page', 4, type=int)
+    per_page = max(2, min(per_page, 4))  # clamp 2-4
+
+    conn = get_connection()
+    total = conn.execute(
+        "SELECT COUNT(*) AS c FROM products WHERE is_active=1"
+    ).fetchone()['c']
+    rows = conn.execute(
+        """
+        SELECT p.id, p.sku, p.sku_code, p.product_name, p.base_sell_price,
+               p.unit_type, p.family_id,
+               b.short_code AS brand_short, b.name AS brand_name,
+               COALESCE(s.quantity, 0) AS stock,
+               f.family_code, f.display_name AS family_name,
+               -- Prefer SKU-specific photo; fall back to family-level (sku_id NULL).
+               -- Without this, families with multiple SKUs all render with the
+               -- same (often wrong) photo on every card.
+               COALESCE(
+                 (SELECT image_path FROM product_images
+                   WHERE sku_id = p.id
+                   ORDER BY COALESCE(sort_order, 999), id LIMIT 1),
+                 (SELECT image_path FROM product_images
+                   WHERE family_id = p.family_id AND sku_id IS NULL
+                   ORDER BY COALESCE(sort_order, 999), id LIMIT 1)
+               ) AS image_path
+          FROM products p
+          LEFT JOIN brands b ON b.id = p.brand_id
+          LEFT JOIN product_families f ON f.id = p.family_id
+          LEFT JOIN stock_levels s ON s.product_id = p.id
+         WHERE p.is_active = 1
+         ORDER BY p.sku_code IS NULL, p.sku_code
+         LIMIT ? OFFSET ?
+        """,
+        (per_page, (page - 1) * per_page),
+    ).fetchall()
+    conn.close()
+
+    total_pages = (total + per_page - 1) // per_page
+    return render_template('products_walkthrough.html',
+                           products=[dict(r) for r in rows],
+                           page=page, per_page=per_page,
+                           total=total, total_pages=total_pages)
+
+
+@app.route('/api/photos/review-queue')
+def api_photos_review_queue():
+    """JSON list of _review/ photo URLs for the picker modal."""
+    if session.get('role') not in ('admin', 'manager'):
+        abort(403)
+    files = _walk_review_files()
+    limit = min(request.args.get('limit', 60, type=int), 200)
+    offset = max(0, request.args.get('offset', 0, type=int))
+    out = []
+    for rel, _ab in files[offset:offset + limit]:
+        out.append({
+            'rel': rel,
+            'url': url_for('serve_catalog_photo', filepath='_review/' + rel),
+        })
+    return jsonify({'total': len(files), 'items': out})
 
 
 @app.route('/sales')

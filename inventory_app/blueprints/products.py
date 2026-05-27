@@ -338,6 +338,40 @@ def product_location_save(product_id):
     return redirect(url_for('products.product_detail', product_id=product_id))
 
 
+@bp_products.route('/products/<int:product_id>/packaging', methods=['POST'])
+def product_packaging_save(product_id):
+    if session.get('role') not in ('admin', 'manager'):
+        abort(403)
+    if not models.get_product(product_id):
+        abort(404)
+
+    def _parse(field):
+        raw = (request.form.get(field) or '').strip()
+        if not raw:
+            return 1
+        try:
+            val = int(raw)
+        except ValueError:
+            return None
+        return val if val >= 1 else None
+
+    carton = _parse('units_per_carton')
+    box = _parse('units_per_box')
+    if carton is None or box is None:
+        flash('ค่าบรรจุต้องเป็นจำนวนเต็มตั้งแต่ 1 ขึ้นไป', 'danger')
+        return redirect(url_for('products.product_detail', product_id=product_id))
+
+    conn = get_connection()
+    conn.execute(
+        'UPDATE products SET units_per_carton=?, units_per_box=? WHERE id=?',
+        (carton, box, product_id),
+    )
+    conn.commit()
+    conn.close()
+    flash(f'บันทึกบรรจุ: ลัง={carton} · กล่อง={box}', 'success')
+    return redirect(url_for('products.product_detail', product_id=product_id))
+
+
 @bp_products.route('/products/<int:product_id>/online-stock', methods=['POST'])
 def product_online_stock(product_id):
     platform = request.form.get('platform')
