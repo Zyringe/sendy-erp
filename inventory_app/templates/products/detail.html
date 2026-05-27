@@ -168,8 +168,26 @@
               </td>
             </tr>
             <tr><td class="text-subtle">หน่วย</td><td>{{ product.unit_type }}</td></tr>
-            <tr><td class="text-subtle">บรรจุ/ลัง</td><td>{{ product.units_per_carton or '–' }}</td></tr>
-            <tr><td class="text-subtle">บรรจุ/กล่อง</td><td>{{ product.units_per_box or '–' }}</td></tr>
+            <tr><td class="text-subtle">บรรจุ/ลัง</td>
+                <td>
+                  {{ product.units_per_carton or '–' }}
+                  {% if is_admin or is_manager %}
+                  <button type="button" class="btn btn-link btn-sm p-0 ms-1"
+                          data-bs-toggle="modal" data-bs-target="#packagingModal" title="แก้ไขบรรจุ">
+                    <i class="bi bi-pencil-square small"></i>
+                  </button>
+                  {% endif %}
+                </td></tr>
+            <tr><td class="text-subtle">บรรจุ/กล่อง</td>
+                <td>
+                  {{ product.units_per_box or '–' }}
+                  {% if is_admin or is_manager %}
+                  <button type="button" class="btn btn-link btn-sm p-0 ms-1"
+                          data-bs-toggle="modal" data-bs-target="#packagingModal" title="แก้ไขบรรจุ">
+                    <i class="bi bi-pencil-square small"></i>
+                  </button>
+                  {% endif %}
+                </td></tr>
             <tr><td class="text-subtle">บาร์โค้ด</td>
                 <td>
                   <span id="bc-list" class="font-mono small text-subtle">…</span>
@@ -370,6 +388,37 @@
           </div>
         </div>
       </div>
+
+      {% if is_admin or is_manager %}
+      <div class="modal fade" id="packagingModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-sm">
+          <form method="post" action="{{ url_for('products.product_packaging_save', product_id=product.id) }}" class="modal-content">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="modal-header py-2 px-3">
+              <h6 class="modal-title mb-0"><i class="bi bi-box-seam me-1"></i>แก้ไขจำนวนบรรจุ</h6>
+              <button type="button" class="btn-close btn-sm" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body py-2 px-3">
+              <div class="mb-2">
+                <label class="form-label small mb-1">บรรจุ/ลัง</label>
+                <input type="number" name="units_per_carton" class="form-control form-control-sm"
+                       value="{{ product.units_per_carton or '' }}" min="1" placeholder="–">
+              </div>
+              <div class="mb-2">
+                <label class="form-label small mb-1">บรรจุ/กล่อง</label>
+                <input type="number" name="units_per_box" class="form-control form-control-sm"
+                       value="{{ product.units_per_box or '' }}" min="1" placeholder="–">
+              </div>
+              <div class="form-text small">เว้นว่าง = ไม่ระบุ (จะตั้งเป็น 1)</div>
+            </div>
+            <div class="modal-footer py-2 px-3">
+              <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">ยกเลิก</button>
+              <button type="submit" class="btn btn-sm btn-primary">บันทึก</button>
+            </div>
+          </form>
+        </div>
+      </div>
+      {% endif %}
 
       <div class="modal fade" id="locationModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered modal-sm">
