@@ -199,6 +199,39 @@ def test_apply_skips_when_proposed_subcat_blank(tmp_db, tmp_path):
     assert after == before
 
 
+def test_apply_rejects_invalid_subcat_format(tmp_db, tmp_path):
+    """Per naming rule: subcat = [A-Z0-9]{2,15}. Lowercase / dashes /
+    whitespace / single-char must be rejected, NOT silently written."""
+    conn = sqlite3.connect(tmp_db)
+    target = conn.execute(
+        "SELECT id, sub_category_short_code FROM products "
+        "WHERE sub_category_short_code IS NULL AND category_id IS NOT NULL "
+        "AND is_active = 1 AND sku_code_locked = 0 LIMIT 1"
+    ).fetchone()
+    pid, before = target[0], target[1]
+    conn.close()
+
+    csv_path = tmp_path / "approved.csv"
+    _write_apply_csv(csv_path, [{
+        "product_id": str(pid),
+        "proposed_subcat": "bad-code",  # lowercase + dash
+        "approve": "Y",
+    }])
+    r = subprocess.run(
+        [sys.executable, APPLY, "--csv", str(csv_path), "--db", tmp_db, "--commit"],
+        capture_output=True, text=True, env=_env(tmp_db), cwd=REPO,
+    )
+    assert "invalid-format: 1" in r.stdout
+    assert "invalid subcat format" in r.stdout
+
+    conn = sqlite3.connect(tmp_db)
+    after = conn.execute(
+        "SELECT sub_category_short_code FROM products WHERE id = ?", (pid,)
+    ).fetchone()[0]
+    conn.close()
+    assert after == before, "invalid format must not write"
+
+
 def test_apply_skips_locked(tmp_db, tmp_path):
     conn = sqlite3.connect(tmp_db)
     target = conn.execute(
