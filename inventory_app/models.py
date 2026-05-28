@@ -112,7 +112,7 @@ def get_product(product_id):
                p.unit_type, p.hard_to_sell, p.cost_price, p.base_sell_price,
                p.low_stock_threshold, p.is_active, p.brand_id, p.category_id,
                p.sub_category, p.series, p.model, p.size,
-               p.color_code, p.packaging, p.condition, p.pack_variant,
+               p.color_code, p.packaging_th, p.packaging_short, p.condition, p.pack_variant,
                p.created_at, p.updated_at,
                COALESCE(s.quantity, 0) AS quantity,
                CASE WHEN COALESCE(s.quantity, 0) <= p.low_stock_threshold THEN 1 ELSE 0 END AS is_low,
@@ -4255,17 +4255,20 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         ).fetchone()[0]
 
         # Insert product with structured fields
+        from sku_code_utils import PACKAGING_SHORT
+        pkg_th = d.get('packaging') or None
+        pkg_short = PACKAGING_SHORT.get(pkg_th) if pkg_th else None
         cur = conn.execute("""
             INSERT INTO products
               (sku, product_name, unit_type, hard_to_sell,
                cost_price, base_sell_price, low_stock_threshold,
                shopee_stock, lazada_stock,
-               brand_id, color_code, packaging,
+               brand_id, color_code, packaging_th, packaging_short,
                series, model, size, condition, pack_variant,
                units_per_carton, units_per_box)
             VALUES
               (?, ?, ?, 0, ?, 0.0, 10, 0, 0,
-               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             next_sku,
             d.get('suggested_name') or d.get('bsn_name'),
@@ -4273,7 +4276,8 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
             d.get('suggested_cost') or 0.0,
             d.get('brand_id'),
             d.get('color_code') or None,
-            d.get('packaging') or None,
+            pkg_th,
+            pkg_short,
             d.get('series') or None,
             d.get('model') or None,
             d.get('size') or None,

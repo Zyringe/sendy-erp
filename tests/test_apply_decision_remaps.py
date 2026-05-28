@@ -22,9 +22,12 @@ COLS = ["product_id", "sku", "sku_code", "product_name", "unit",
 
 
 def _p(c, pid, name, sku_code=None, pkg="แผง"):
+    from sku_code_utils import PACKAGING_SHORT
+    pkg_short = PACKAGING_SHORT.get(pkg) if pkg else None
     c.execute("INSERT INTO products (id,sku,product_name,unit_type,"
-              "packaging,sku_code,is_active) VALUES (?,?,?,'ตัว',?,?,1)",
-              (pid, pid, name, pkg, sku_code or f"SC-{pid}"))
+              "packaging_th,packaging_short,sku_code,is_active) "
+              "VALUES (?,?,?,'ตัว',?,?,?,1)",
+              (pid, pid, name, pkg, pkg_short, sku_code or f"SC-{pid}"))
 
 
 def _s(c, pid, code):
@@ -86,7 +89,7 @@ def test_remaps(tmp_db, tmp_path):
     nid = one("SELECT id FROM products WHERE product_name='มือจับ ZZ (ตัว)'")
     assert nid is not None
     nid = nid[0]
-    sc = one("SELECT sku_code,packaging FROM products WHERE id=?", nid)
+    sc = one("SELECT sku_code,packaging_th FROM products WHERE id=?", nid)
     assert sc[0] == "HDL-ZZ-UN" and sc[1] == "ตัว"     # suffix swapped
     assert one("SELECT product_id FROM product_code_mapping WHERE "
                "bsn_code='C2NEW'")[0] == nid

@@ -137,13 +137,17 @@ def main(argv=None):
 
     conn.execute("BEGIN")
     try:
+        # mig 087: packaging → packaging_th + packaging_short
+        from sku_code_utils import PACKAGING_SHORT
         made = {}
         for code, unit, tname, srow, ut, scode, nid, nsku in new_rows:
+            pkg_short = PACKAGING_SHORT.get(ut) if ut else None
             if srow is not None:
                 cols = [c for c in pcols]
                 vals = {c: srow[c] for c in cols}
                 vals.update(id=nid, sku=nsku, product_name=tname,
-                            packaging=ut, sku_code=scode, is_active=1)
+                            packaging_th=ut, packaging_short=pkg_short,
+                            sku_code=scode, is_active=1)
                 conn.execute(
                     f"INSERT INTO products ({','.join(cols)}) VALUES "
                     f"({','.join('?' * len(cols))})",
@@ -151,8 +155,9 @@ def main(argv=None):
             else:
                 conn.execute(
                     "INSERT INTO products (id,sku,product_name,unit_type,"
-                    "packaging,sku_code,is_active) VALUES (?,?,?,?,?,?,1)",
-                    (nid, nsku, tname, ut, ut, f"NEW-REVIEW-{nid}"))
+                    "packaging_th,packaging_short,sku_code,is_active) "
+                    "VALUES (?,?,?,?,?,?,?,1)",
+                    (nid, nsku, tname, ut, ut, pkg_short, f"NEW-REVIEW-{nid}"))
             made[tname] = nid
         # resolve every action to a target pid
         for code, unit, tname, mode, sib in actions:

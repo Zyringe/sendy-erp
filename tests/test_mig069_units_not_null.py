@@ -37,13 +37,18 @@ def _apply(conn, path):
 
 
 def _apply_chain(conn):
-    """Apply mig 068 (if not yet applied) then mig 069."""
-    # 068 may or may not already be applied to the live snapshot.
+    """Apply mig 068 + 069 if not yet applied.
+
+    Once mig 087 lands on live, the products table has packaging_th instead
+    of packaging — re-applying mig 069 (which hardcodes `packaging`) would
+    crash. Skip both if already applied (the live snapshot has them).
+    """
     applied = {r[0] for r in conn.execute(
         "SELECT filename FROM applied_migrations").fetchall()}
     if "068_drop_express_sales_brand_kind.sql" not in applied:
         _apply(conn, MIG_068)
-    _apply(conn, MIG_069)
+    if "069_products_units_not_null.sql" not in applied:
+        _apply(conn, MIG_069)
 
 
 def _cols(conn):
@@ -110,7 +115,7 @@ def test_dependent_view_and_triggers_recreated(tmp_db):
       - update_product_timestamp (timestamp maintenance)
       - audit_products_insert / update / delete (audit_log writes)
       - product_price_history_update (price history)
-      - products_packaging_check_insert / update (CHECK guard on packaging)
+      - products_packaging_th_check_insert / update (CHECK guard on packaging_th, renamed by mig 087)
     """
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
@@ -123,8 +128,8 @@ def test_dependent_view_and_triggers_recreated(tmp_db):
         "'audit_products_insert', 'audit_products_update', "
         "'audit_products_delete', "
         "'product_price_history_update', "
-        "'products_packaging_check_insert', "
-        "'products_packaging_check_update')"
+        "'products_packaging_th_check_insert', "
+        "'products_packaging_th_check_update')"
     ).fetchall()}
     assert objs.get("products_full") == "view", "products_full VIEW missing"
     assert objs.get("update_product_timestamp") == "trigger"
@@ -132,18 +137,18 @@ def test_dependent_view_and_triggers_recreated(tmp_db):
     assert objs.get("audit_products_update") == "trigger"
     assert objs.get("audit_products_delete") == "trigger"
     assert objs.get("product_price_history_update") == "trigger"
-    assert objs.get("products_packaging_check_insert") == "trigger"
-    assert objs.get("products_packaging_check_update") == "trigger"
+    assert objs.get("products_packaging_th_check_insert") == "trigger"
+    assert objs.get("products_packaging_th_check_update") == "trigger"
 
     # View must be queryable (not just present-but-broken)
     n = conn.execute("SELECT COUNT(*) FROM products_full").fetchone()[0]
     assert n > 0, "products_full view returned 0 rows — likely broken"
 
-    # packaging CHECK trigger still enforces values
+    # packaging_th CHECK trigger still enforces values
     conn.execute("DELETE FROM products WHERE sku = 999998")
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
-            "INSERT INTO products (sku, product_name, packaging) "
+            "INSERT INTO products (sku, product_name, packaging_th) "
             "VALUES (999998, 'bad_packaging_probe', 'bogus_value')"
         )
     conn.rollback()
@@ -166,7 +171,7 @@ def test_indexes_recreated(tmp_db):
         "idx_products_category",
         "idx_products_family",
         "idx_products_color_code",
-        "idx_products_packaging",
+        "idx_products_packaging_th",
         "idx_products_sub_category",
         "idx_products_sku_code",
     }
@@ -176,9 +181,20 @@ def test_indexes_recreated(tmp_db):
 
 
 def test_rollback_restores_nullable(tmp_db):
-    """Rollback recreates the table with units_per_* columns nullable again."""
+    """Rollback recreates the table with units_per_* columns nullable again.
+
+    Mig 087 renamed `packaging` → `packaging_th`; the 069 rollback SQL
+    references the old `packaging` column. Roll back mig 087 first (if
+    applied) to restore the column name so 069's rollback can run.
+    """
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
+    applied = {r[0] for r in conn.execute(
+        "SELECT filename FROM applied_migrations").fetchall()}
+    if "087_drop_material_split_packaging.sql" in applied:
+        rb_087 = os.path.join(REPO, "data", "migrations",
+                              "087_drop_material_split_packaging.rollback.sql")
+        _apply(conn, rb_087)
     _apply_chain(conn)
     # Record applied_migrations so rollback can clean it up if needed.
     conn.execute(
