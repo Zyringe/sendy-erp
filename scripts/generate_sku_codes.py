@@ -16,12 +16,13 @@ By default only writes sku_code where it's currently NULL.
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "inventory_app" / "instance" / "inventory.db"
+DEFAULT_DB = ROOT / "inventory_app" / "instance" / "inventory.db"
 
 # Use the canonical generator from inventory_app — keeps the 10-slot rule
 # (subcat, condition, pack_variant=1 suppression) in lockstep with the
@@ -35,9 +36,12 @@ def main():
     p.add_argument("--apply", action="store_true")
     p.add_argument("--regen", action="store_true",
                    help="Regenerate sku_code on unlocked rows (default: only fill NULL)")
+    p.add_argument("--db", type=Path,
+                   default=Path(os.environ.get("NORMALIZE_DB_PATH",
+                                                str(DEFAULT_DB))))
     args = p.parse_args()
 
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(args.db))
     conn.row_factory = sqlite3.Row
 
     rows = conn.execute("""
@@ -114,6 +118,19 @@ def main():
     cur = conn.cursor()
     for x in proposed:
         cur.execute("UPDATE products SET sku_code = ? WHERE id = ?", (x["new"], x["id"]))
+    # Per scrutinize Finding 3 (PR #82): record a single batch event so the
+    # bulk regen is findable in import_log without grepping audit_log per row.
+    mode = "--regen" if args.regen else "--fill-null"
+    cur.execute(
+        "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes) "
+        "VALUES (?, ?, ?, ?)",
+        (
+            f"generate_sku_codes:{mode}",
+            len(proposed),
+            n_skip_locked + n_skip_existing,
+            f"collisions_resolved={n_collide}",
+        )
+    )
     conn.commit()
     print(f"\nApplied {len(proposed)} updates")
 
