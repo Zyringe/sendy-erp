@@ -67,12 +67,14 @@ def build_sku_code(p: dict) -> str:
             parts.append(seg)
     if p.get("color_code"):
         parts.append(p["color_code"])
-    if p.get("packaging"):
-        pkg_code = PACKAGING_SHORT.get(p["packaging"])
-        if pkg_code:
-            parts.append(pkg_code)
-    if p.get("pack_variant"):
-        parts.append(str(p["pack_variant"]))
+    pkg_short = p.get("packaging_short")
+    if not pkg_short and p.get("packaging_th"):
+        pkg_short = PACKAGING_SHORT.get(p["packaging_th"])
+    if pkg_short:
+        parts.append(pkg_short)
+    pv = p.get("pack_variant")
+    if pv and str(pv) != "1":
+        parts.append(str(pv))
 
     if not parts:
         return f"INT-{p['sku']}"
@@ -91,7 +93,7 @@ def main():
 
     rows = conn.execute("""
         SELECT p.id, p.sku, p.sku_code, p.sku_code_locked, p.model, p.size,
-               p.series, p.color_code, p.packaging, p.pack_variant,
+               p.series, p.color_code, p.packaging_th, p.packaging_short, p.pack_variant,
                b.short_code AS brand_short_code,
                c.short_code AS cat_short_code
           FROM products p

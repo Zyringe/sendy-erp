@@ -9,10 +9,12 @@ import hashlib
 import re
 
 
-# Packaging Thai → 2-3 char English code (Option D, 2026-05-08).
-# Hardcoded here since packaging is a TEXT column on products (no FK table).
-# Add new mappings here as packaging values are added (must align with
-# the products_packaging_check_* CHECK trigger in DB).
+# Packaging Thai → 2-3 char English code mapping. After mig 087 the products
+# table stores packaging_short as its own column (populated at write time), so
+# build_sku_code reads it directly without dict lookup. This dict is kept for
+# callers that derive packaging_short from a Thai value at insert time
+# (normalize_products_round1.py, parse_sku_names.py output).
+# Must align with the products_packaging_short_check_* CHECK trigger in DB.
 PACKAGING_SHORT = {
     "ตัว":         "UN",   # Unit
     "แผง":         "PN",   # Panel
@@ -28,11 +30,47 @@ PACKAGING_SHORT = {
 }
 
 
+# Condition Thai → 3-letter code (sku_code_naming_rule.md table).
+# `EXP:MM/YYYY` is handled separately by _condition_segment (formats to EXP{MMYY}).
+CONDITION_SHORT = {
+    "ไม่สวย":       "BLM",   # cosmetic blemish
+    "ตำหนิ":        "DEF",   # defective
+    "กล่องไม่สวย":  "BXD",   # box damaged
+    "เก่า":         "OLD",   # old stock
+    "รีแพ็ค":       "RPK",   # repacked
+    "ไม่มีน็อต":     "NPT",   # missing parts
+    "แผงอ่อน":      "WBP",   # weak blister panel
+    "ไม่สกรีน":      "NSP",   # no screen print
+    "แบบเก่า":      "OMD",   # old model
+    "หมดอายุ":      "EXP",   # expired (undated)
+}
+
+_EXP_DATE = re.compile(r"^EXP[:\s]*(\d{2})/(\d{4})$")
+
+
+def _condition_segment(c: str) -> str:
+    """Map Thai condition text to its 3-letter code. EXP:MM/YYYY → EXP{MM}{YY}.
+    Returns "" when no mapping exists (silently drops free-form conditions
+    rather than embedding Thai in sku_code, which would violate the
+    'English/ASCII only' rule).
+    """
+    if not c:
+        return ""
+    c = c.strip()
+    if c in CONDITION_SHORT:
+        return CONDITION_SHORT[c]
+    m = _EXP_DATE.match(c)
+    if m:
+        mm, yyyy = m.group(1), m.group(2)
+        return f"EXP{mm}{yyyy[-2:]}"
+    return ""
+
+
 def _norm_segment(s: str) -> str:
-    """Strip leading '#', whitespace; collapse internal spaces."""
+    """Strip whitespace; collapse internal spaces. Keeps leading '#' (model marker)."""
     if not s:
         return ""
-    s = s.strip().lstrip("#").strip()
+    s = s.strip()
     s = re.sub(r"\s+", "", s)
     return s
 
@@ -51,34 +89,51 @@ def _series_segment(s: str) -> str:
 
 
 def build_sku_code(p: dict) -> str:
-    """Build sku_code from a dict-like row.
+    """Build sku_code from a dict-like row per the locked 10-slot rule
+    (`sku_code_naming_rule.md`): cat-subcat?-brand-series?-model?-size?-color?-pkg?-condition?-pack_variant?.
+
     Required keys: sku
     Optional keys (segments included when truthy):
-      cat_short_code, brand_short_code, model, size, series,
-      color_code, packaging (Thai value, looked up via PACKAGING_SHORT),
-      pack_variant
+      cat_short_code, sub_category_short_code, brand_short_code,
+      series, model, size, color_code, packaging_short
+      (2-3 char code, e.g. UN/PN/BG), condition,
+      pack_variant (suppressed when value is 1 — default variant has no suffix)
+
+    For back-compat the function also accepts `packaging` (Thai value, looked
+    up via PACKAGING_SHORT) when `packaging_short` is absent — this lets
+    callers that parse a Thai name pass the Thai value directly.
     """
     parts = []
     if p.get("cat_short_code"):
         parts.append(p["cat_short_code"])
+    if p.get("sub_category_short_code"):
+        parts.append(p["sub_category_short_code"])
     if p.get("brand_short_code"):
         parts.append(p["brand_short_code"])
-    if p.get("model"):
-        parts.append(_norm_segment(p["model"]))
-    if p.get("size"):
-        parts.append(_norm_segment(p["size"]))
     if p.get("series"):
         seg = _series_segment(p["series"])
         if seg:
             parts.append(seg)
+    if p.get("model"):
+        parts.append(_norm_segment(p["model"]))
+    if p.get("size"):
+        parts.append(_norm_segment(p["size"]))
     if p.get("color_code"):
         parts.append(p["color_code"])
-    if p.get("packaging"):
-        pkg_code = PACKAGING_SHORT.get(p["packaging"])
-        if pkg_code:
-            parts.append(pkg_code)
-    if p.get("pack_variant"):
-        parts.append(str(p["pack_variant"]))
+    pkg_short = p.get("packaging_short")
+    if not pkg_short and p.get("packaging_th"):
+        pkg_short = PACKAGING_SHORT.get(p["packaging_th"])
+    if not pkg_short and p.get("packaging"):
+        # Legacy callers that still pass Thai value under "packaging" key
+        pkg_short = PACKAGING_SHORT.get(p["packaging"])
+    if pkg_short:
+        parts.append(pkg_short)
+    cond_seg = _condition_segment(p.get("condition") or "")
+    if cond_seg:
+        parts.append(cond_seg)
+    pv = p.get("pack_variant")
+    if pv and str(pv) != "1":
+        parts.append(str(pv))
 
     if not parts:
         return f"INT-{p['sku']}"
@@ -92,7 +147,8 @@ def regenerate_for_product(conn, product_id: int) -> tuple:
     """
     row = conn.execute("""
         SELECT p.id, p.sku, p.sku_code, p.model, p.size, p.series,
-               p.color_code, p.packaging, p.pack_variant,
+               p.color_code, p.packaging_th, p.packaging_short, p.condition,
+               p.pack_variant, p.sub_category_short_code,
                b.short_code AS brand_short_code,
                c.short_code AS cat_short_code
           FROM products p
