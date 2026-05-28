@@ -16,69 +16,18 @@ By default only writes sku_code where it's currently NULL.
 from __future__ import annotations
 
 import argparse
-import re
 import sqlite3
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "inventory_app" / "instance" / "inventory.db"
 
-
-def _norm_segment(s: str) -> str:
-    """Strip leading '#', whitespace; uppercase ASCII; collapse internal spaces."""
-    if not s:
-        return ""
-    s = s.strip().lstrip("#").strip()
-    s = re.sub(r"\s+", "", s)
-    return s
-
-
-PACKAGING_SHORT = {
-    "ตัว": "UN", "แผง": "PN", "ถุง": "BG", "ซอง": "SC", "แพ็ค": "PK",
-    "โหล": "DZ", "แพ็คหัว": "HP", "แพ็คถุง": "PP", "แบบหลอด": "TB",
-    "อัดแผง": "SP", "1กลมี60ใบ": "C60",
-}
-
-
-def _series_segment(s: str) -> str:
-    """ASCII: cleaned uppercase. Thai/mixed: S + 4-hex hash."""
-    if not s:
-        return ""
-    import hashlib
-    s = s.strip()
-    if s.isascii():
-        return re.sub(r"\s+", "", s).upper()
-    return "S" + hashlib.md5(s.encode("utf-8")).hexdigest()[:4].upper()
-
-
-def build_sku_code(p: dict) -> str:
-    parts = []
-    if p.get("cat_short_code"):
-        parts.append(p["cat_short_code"])
-    if p.get("brand_short_code"):
-        parts.append(p["brand_short_code"])
-    if p.get("model"):
-        parts.append(_norm_segment(p["model"]))
-    if p.get("size"):
-        parts.append(_norm_segment(p["size"]))
-    if p.get("series"):
-        seg = _series_segment(p["series"])
-        if seg:
-            parts.append(seg)
-    if p.get("color_code"):
-        parts.append(p["color_code"])
-    pkg_short = p.get("packaging_short")
-    if not pkg_short and p.get("packaging_th"):
-        pkg_short = PACKAGING_SHORT.get(p["packaging_th"])
-    if pkg_short:
-        parts.append(pkg_short)
-    pv = p.get("pack_variant")
-    if pv and str(pv) != "1":
-        parts.append(str(pv))
-
-    if not parts:
-        return f"INT-{p['sku']}"
-    return "-".join(parts)
+# Use the canonical generator from inventory_app — keeps the 10-slot rule
+# (subcat, condition, pack_variant=1 suppression) in lockstep with the
+# Flask app + normalize/apply scripts. Local duplicate dropped 2026-05-28.
+sys.path.insert(0, str(ROOT / "inventory_app"))
+from sku_code_utils import build_sku_code  # noqa: E402
 
 
 def main():
@@ -93,7 +42,8 @@ def main():
 
     rows = conn.execute("""
         SELECT p.id, p.sku, p.sku_code, p.sku_code_locked, p.model, p.size,
-               p.series, p.color_code, p.packaging_th, p.packaging_short, p.pack_variant,
+               p.series, p.color_code, p.packaging_th, p.packaging_short,
+               p.condition, p.pack_variant, p.sub_category_short_code,
                b.short_code AS brand_short_code,
                c.short_code AS cat_short_code
           FROM products p
