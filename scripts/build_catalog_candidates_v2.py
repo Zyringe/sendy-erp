@@ -57,7 +57,7 @@ def main():
     # 2) Singleton cards: products with NO family + matching filter
     singletons = conn.execute("""
         SELECT p.id AS product_id, p.sku, p.sku_code, p.product_name,
-               p.sub_category, p.series, p.size, p.color_code, p.packaging,
+               p.sub_category, p.series, p.size, p.color_code, p.packaging_th AS packaging,
                p.base_sell_price, COALESCE(s.quantity, 0) AS stock,
                b.name AS brand_name, b.short_code AS brand_short,
                b.is_own_brand AS is_own,

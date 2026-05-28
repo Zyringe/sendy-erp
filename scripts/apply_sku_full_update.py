@@ -63,7 +63,8 @@ def main():
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     db_rows = conn.execute("""
-        SELECT id, sku, product_name, color_code, packaging,
+        SELECT id, sku, product_name, color_code,
+               packaging_th AS packaging,
                series, model, size, condition, pack_variant
           FROM products
     """).fetchall()
@@ -107,7 +108,7 @@ def main():
                 reason = f"color_code {csv_v!r} not in color_finish_codes"
             elif c == "packaging" and csv_v not in ALLOWED_PACKAGING:
                 valid = False
-                reason = f"packaging {csv_v!r} not allowed (CHECK trigger)"
+                reason = f"packaging_th {csv_v!r} not in allowed values (mig 087 CHECK trigger)"
             if valid:
                 new_vals[c] = csv_v
             else:
@@ -199,23 +200,29 @@ def main():
     print()
     print(f"Applying {len(changes)} updates...")
     conn.execute("PRAGMA foreign_keys = ON")
+    # mig 087: packaging → packaging_th + packaging_short pair
+    sys.path.insert(0, str(ROOT / "inventory_app"))
+    from sku_code_utils import PACKAGING_SHORT
     cur = conn.cursor()
     for c in changes:
         v = c["vals"]
+        pkg_th = v["packaging"]
+        pkg_short = PACKAGING_SHORT.get(pkg_th) if pkg_th else None
         cur.execute("""
             UPDATE products SET
-                product_name = ?,
-                series       = ?,
-                model        = ?,
-                size         = ?,
-                condition    = ?,
-                pack_variant = ?,
-                color_code   = ?,
-                packaging    = ?
+                product_name    = ?,
+                series          = ?,
+                model           = ?,
+                size            = ?,
+                condition       = ?,
+                pack_variant    = ?,
+                color_code      = ?,
+                packaging_th    = ?,
+                packaging_short = ?
               WHERE id = ?
         """, (
             v["product_name"], v["series"], v["model"], v["size"],
-            v["condition"], v["pack_variant"], v["color_code"], v["packaging"],
+            v["condition"], v["pack_variant"], v["color_code"], pkg_th, pkg_short,
             c["id"],
         ))
     conn.commit()

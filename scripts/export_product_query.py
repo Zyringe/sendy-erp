@@ -81,7 +81,7 @@ def main():
                b.short_code AS brand_short, b.name AS brand,
                p.series, p.model, p.size,
                p.color_code, cf.name_th AS color_th,
-               p.packaging, p.condition, p.pack_variant
+               p.packaging_th AS packaging, p.condition, p.pack_variant
           FROM products p
           LEFT JOIN categories c ON c.id = p.category_id
           LEFT JOIN brands b ON b.id = p.brand_id
