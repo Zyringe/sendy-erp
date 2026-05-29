@@ -1,7 +1,7 @@
 """TDD tests for inventory_app/cashflow.py — Cash Flow dashboard logic.
 
 Synthetic data only (built on empty_db_conn schema clone). All helpers mirror
-the style used in test_payments_alloc.py (which passes 228 green).
+the style used in test_payments_alloc.py.
 
 Key semantic rules under test
 ──────────────────────────────
@@ -12,10 +12,12 @@ cash_in_by_month:
     counts as the invoice's full billed amount (Σ net of its doc_base).
   - Must reconcile with payments_alloc.invoice_settlement Σ collected.
 
-ar_aging:
-  - Buckets unpaid/partial invoices by (as_of – invoice_date).days.
-  - Paid invoices are excluded.
-  - Reconcile identity: total_billed == total_collected + total_outstanding.
+ar_aging (Express-sourced, 2026-05-30):
+  - Sources from express_ar_outstanding WHERE entity='BSN' at latest snapshot.
+  - Buckets each doc's outstanding_amount by (snapshot_date − doc_date_iso).
+  - Includes ALL rows (negatives from credit notes net correctly per bucket).
+  - Snapshot total must equal ฿1,299,335.94 / 200 docs (live-DB tests).
+  - จึงเจริญ (฿349,596.08 net) must appear in aging total.
 
 revenue_by_month:
   - Groups by sale date (sales_transactions.date_iso), NOT RE date.
@@ -170,24 +172,57 @@ def test_date_filter_respected(empty_db_conn):
     assert rows['2026-02']['cash_in'] == 300.0
 
 
-# ── ar_aging ──────────────────────────────────────────────────────────────────
+# ── ar_aging — Express-snapshot-based tests ───────────────────────────────────
+
+def _ensure_express_batch(conn, snap_date):
+    """Return a batch_id for snap_date, inserting an express_import_log row if needed."""
+    row = conn.execute(
+        "SELECT id FROM express_import_log"
+        " WHERE file_type='ar_snapshot' AND snapshot_date_iso=? LIMIT 1",
+        (snap_date,),
+    ).fetchone()
+    if row:
+        return row['id']
+    cur = conn.execute(
+        """INSERT INTO express_import_log
+           (file_type, snapshot_date_iso, record_count, line_count, status)
+           VALUES ('ar_snapshot', ?, 0, 0, 'imported')""",
+        (snap_date,),
+    )
+    return cur.lastrowid
+
+
+def _ins_express_snap(conn, snap_date, customer_code, customer_name,
+                      doc_no, doc_date_iso, bill, paid, outstanding,
+                      entity='BSN'):
+    """Insert one express_ar_outstanding row for ar_aging synthetic tests."""
+    batch_id = _ensure_express_batch(conn, snap_date)
+    conn.execute(
+        """INSERT INTO express_ar_outstanding
+           (batch_id, snapshot_date_iso, customer_code, customer_name, doc_no,
+            doc_date_iso, bill_amount, paid_amount, outstanding_amount, entity)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (batch_id, snap_date, customer_code, customer_name, doc_no,
+         doc_date_iso, bill, paid, outstanding, entity),
+    )
+
 
 def test_ar_aging_buckets(empty_db_conn):
-    """Four invoices aged 10, 45, 75, 200 days land in the right buckets."""
+    """Four docs aged 10, 45, 75, 200 days from snapshot land in right buckets."""
     c = empty_db_conn
-    as_of = date(2026, 5, 18)
+    snap = '2026-05-18'
 
     def inv_date(days_ago):
-        return (as_of - timedelta(days=days_ago)).isoformat()
+        return (date(2026, 5, 18) - timedelta(days=days_ago)).isoformat()
 
-    # All unpaid
-    _ins_sale(c, 'IVA001', 'SHOP', 'C10', inv_date(10),  1000)  # 0-30
-    _ins_sale(c, 'IVA002', 'SHOP', 'C10', inv_date(45),  2000)  # 31-60
-    _ins_sale(c, 'IVA003', 'SHOP', 'C10', inv_date(75),  3000)  # 61-90
-    _ins_sale(c, 'IVA004', 'SHOP', 'C10', inv_date(200), 4000)  # 90+
+    _ins_express_snap(c, snap, 'C10', 'SHOP', 'IV-A01', inv_date(10),  1000, 0, 1000)  # 0-30
+    _ins_express_snap(c, snap, 'C10', 'SHOP', 'IV-A02', inv_date(45),  2000, 0, 2000)  # 31-60
+    _ins_express_snap(c, snap, 'C10', 'SHOP', 'IV-A03', inv_date(75),  3000, 0, 3000)  # 61-90
+    _ins_express_snap(c, snap, 'C10', 'SHOP', 'IV-A04', inv_date(200), 4000, 0, 4000)  # 90+
     c.commit()
 
-    result = cf.ar_aging(as_of=as_of.isoformat(), conn=c)
+    result = cf.ar_aging(conn=c)
+    assert result['as_of'] == snap
     by_label = {b['label']: b for b in result['buckets']}
 
     assert by_label['0-30']['amount']  == pytest.approx(1000.0)
@@ -200,66 +235,101 @@ def test_ar_aging_buckets(empty_db_conn):
     assert by_label['90+']['count']    == 1
 
 
-def test_ar_aging_paid_invoices_excluded(empty_db_conn):
-    """Fully paid invoices must not appear in aging buckets."""
+def test_ar_aging_negative_row_nets_in_bucket(empty_db_conn):
+    """Negative outstanding (credit note) should reduce its bucket amount."""
     c = empty_db_conn
-    as_of = '2026-05-18'
-    _ins_sale(c, 'IVB001', 'SHOP', 'C10', '2026-04-01', 1000)
-    _ins_sale(c, 'IVB002', 'SHOP', 'C10', '2026-04-01', 500)
-    # Pay IVB001 fully
-    r = _ins_receipt(c, 'REB001', 'SHOP', '2026-05-01', total=1000)
-    _ins_paid(c, r, 'IVB001', 1000)
+    snap = '2026-05-18'
+    # Positive invoice: 1000 outstanding, 200 days old → 90+
+    _ins_express_snap(c, snap, 'C10', 'SHOP', 'IV-B01', '2025-11-01', 1000, 0, 1000)
+    # Negative CN: -300 outstanding, 200 days old → 90+
+    _ins_express_snap(c, snap, 'C10', 'SHOP', 'SR-B01', '2025-11-01', 0, 0, -300)
     c.commit()
 
-    result = cf.ar_aging(as_of=as_of, conn=c)
-    # Only IVB002 (500) should be outstanding
-    assert result['total_outstanding'] == pytest.approx(500.0)
-    total_in_buckets = sum(b['amount'] for b in result['buckets'])
-    assert total_in_buckets == pytest.approx(500.0)
+    result = cf.ar_aging(conn=c)
+    by_label = {b['label']: b for b in result['buckets']}
+    # Net in 90+ = 1000 - 300 = 700
+    assert by_label['90+']['amount'] == pytest.approx(700.0)
+    assert by_label['90+']['count']  == 2
+    assert result['total_outstanding'] == pytest.approx(700.0)
 
 
 def test_ar_aging_reconcile_identity(empty_db_conn):
-    """total_billed == total_collected + total_outstanding (accounting identity)."""
+    """total_billed - total_collected == total_outstanding (accounting identity)."""
     c = empty_db_conn
-    as_of = '2026-05-18'
-    _ins_sale(c, 'IVC001', 'SHOP', 'C10', '2026-03-01', 1000)
-    _ins_sale(c, 'IVC002', 'SHOP', 'C10', '2026-04-01', 800)
-    r = _ins_receipt(c, 'REC001', 'SHOP', '2026-04-15', total=1000)
-    _ins_paid(c, r, 'IVC001', 1000)
+    snap = '2026-05-18'
+    _ins_express_snap(c, snap, 'C10', 'SHOP', 'IV-C01', '2026-03-01', 1000, 1000, 0)
+    _ins_express_snap(c, snap, 'C10', 'SHOP', 'IV-C02', '2026-04-01', 800,  0,    800)
     c.commit()
 
-    result = cf.ar_aging(as_of=as_of, conn=c)
+    result = cf.ar_aging(conn=c)
     assert result['total_billed'] == pytest.approx(
         result['total_collected'] + result['total_outstanding']
     )
     assert result['total_outstanding'] == pytest.approx(800.0)
+    assert result['total_credit_notes'] == pytest.approx(0.0)
 
 
-def test_ar_aging_default_as_of_is_today(empty_db_conn):
-    """ar_aging with no as_of runs without error and returns valid structure."""
+def test_ar_aging_no_snapshot_returns_zeros(empty_db_conn):
+    """No Express snapshot rows → graceful zero return, valid structure."""
     c = empty_db_conn
-    _ins_sale(c, 'IVD001', 'SHOP', 'C10', '2026-01-01', 100)
-    c.commit()
-
+    # No rows inserted — table is empty
     result = cf.ar_aging(conn=c)
     assert 'as_of' in result
     assert 'buckets' in result
     assert len(result['buckets']) == 4
     labels = [b['label'] for b in result['buckets']]
     assert labels == ['0-30', '31-60', '61-90', '90+']
+    assert result['total_outstanding'] == pytest.approx(0.0)
 
 
-def test_ar_aging_legacy_null_treated_as_paid(empty_db_conn):
-    """Legacy NULL-amount link means fully settled — should not appear in aging."""
+def test_ar_aging_non_bsn_entity_excluded(empty_db_conn):
+    """Only BSN rows are included; SD or other-entity rows are ignored."""
     c = empty_db_conn
-    as_of = '2026-05-18'
-    _ins_sale(c, 'IVE001', 'SHOP', 'C10', '2026-03-01', 2000)
-    r = _ins_receipt(c, 'REE001', 'SHOP', '2026-04-01', total=None)
-    _ins_paid(c, r, 'IVE001', None)
+    snap = '2026-05-18'
+    _ins_express_snap(c, snap, 'C10', 'SHOP', 'IV-D01', '2026-04-01',
+                      500, 0, 500, entity='BSN')
+    _ins_express_snap(c, snap, 'C10', 'SHOP', 'IV-D02', '2026-04-01',
+                      9000, 0, 9000, entity='SD')
     c.commit()
 
-    result = cf.ar_aging(as_of=as_of, conn=c)
-    assert result['total_outstanding'] == pytest.approx(0.0)
+    result = cf.ar_aging(conn=c)
+    # Only the BSN row (500) should appear
+    assert result['total_outstanding'] == pytest.approx(500.0)
+
+
+# ── live-DB ar_aging tests (against real Express snapshot) ───────────────────
+
+def test_ar_aging_live_total_matches_express_snapshot(tmp_db_conn):
+    """ar_aging total must equal Express BSN snapshot net ฿1,299,335.94."""
+    result = cf.ar_aging(conn=tmp_db_conn)
+    assert result['total_outstanding'] == pytest.approx(1_299_335.94, abs=0.01), (
+        f"Expected ฿1,299,335.94 from Express snapshot; got {result['total_outstanding']:.2f}"
+    )
+    total_in_buckets = round(sum(b['amount'] for b in result['buckets']), 2)
+    assert total_in_buckets == pytest.approx(1_299_335.94, abs=0.01)
+    total_count = sum(b['count'] for b in result['buckets'])
+    assert total_count == 200, f"Expected 200 docs; got {total_count}"
+
+
+def test_ar_aging_live_jungjaroen_appears(tmp_db_conn):
+    """จึงเจริญ (฿349,596.08 net) must appear in the aging total.
+
+    This customer was ABSENT from the old derived-engine ar_aging (missed by
+    invoice_settlement) and is the canonical regression guard for this change.
+    The customer's net comes from summing their 11 Express rows
+    (including one negative CN row of −฿52,596 and one of −฿9,151).
+    """
+    result = cf.ar_aging(conn=tmp_db_conn)
+    assert result['total_outstanding'] == pytest.approx(1_299_335.94, abs=0.01), (
+        "Precondition: total must be ฿1,299,335.94 — check if snapshot changed"
+    )
+    # จึงเจริญ rows all land in 90+ (oldest doc 2005-01-06 → >7000 days)
+    by_label = {b['label']: b for b in result['buckets']}
+    # Their net ฿349,596.08 is entirely in 90+ bucket; verify 90+ >= their amount
+    assert by_label['90+']['amount'] >= 349_596.08 - 0.01, (
+        f"90+ bucket {by_label['90+']['amount']:.2f} < จึงเจริญ net ฿349,596.08 — "
+        "customer likely still absent from aging"
+    )
 
 
 # ── revenue_by_month ──────────────────────────────────────────────────────────
@@ -493,11 +563,13 @@ def test_credit_note_aware_identity_and_cash_unaffected_by_sr(empty_db_conn):
     assert total_cash_in == pytest.approx(700.0)
     assert abs(total_cash_in - total_collected) < 0.01
 
-    # ar_aging exposes total_credit_notes and stays consistent
-    ag = cf.ar_aging(as_of='2026-12-31', conn=c)
-    assert ag['total_credit_notes'] == pytest.approx(1100.0)
-    assert ag['total_billed'] == pytest.approx(2300.0)
-    assert ag['total_collected'] == pytest.approx(700.0)
-    assert ag['total_outstanding'] == pytest.approx(500.0)
-    assert abs(ag['total_billed'] - ag['total_credit_notes']
-               - ag['total_collected'] - ag['total_outstanding']) < 0.01
+    # ar_aging now sources from Express snapshot, not invoice_settlement.
+    # With no Express rows in this synthetic fixture, ar_aging returns zeros —
+    # that is correct behaviour (Express is the authoritative source).
+    # The credit-note accounting identity is covered by the Express-snapshot
+    # tests above (test_ar_aging_negative_row_nets_in_bucket,
+    # test_ar_aging_reconcile_identity).
+    ag = cf.ar_aging(conn=c)
+    assert ag['total_outstanding'] == pytest.approx(0.0)
+    assert ag['total_billed'] == pytest.approx(0.0)
+    assert ag['total_collected'] == pytest.approx(0.0)

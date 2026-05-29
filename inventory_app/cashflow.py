@@ -6,10 +6,15 @@ Connection style mirrors commission.py / payments_alloc.py: own _connect()
 reading config.DATABASE_PATH; every public function accepts an optional
 caller-supplied conn (used, not closed) else opens/owns one.
 
+AR SOURCE (ar_aging, 2026-05-30):
+  ar_aging() now reads from express_ar_outstanding WHERE entity='BSN' at
+  the latest snapshot_date_iso. Express is the authoritative BSN AR source;
+  the old derived engine (invoice_settlement) is kept as a DIAGNOSTIC only.
+
 REUSE RULE — do NOT re-implement reconciliation here:
   - payments_alloc.py owns invoice_settlement() and the legacy-NULL-amount
-    rule. ar_aging() calls invoice_settlement() directly so it always stays
-    in sync with the rule.
+    rule. invoice_settlement() is kept importable for diagnostic/reconcile
+    tooling but is no longer called by ar_aging().
   - cash_in_by_month() aggregates payments_alloc.cash_in_rows() by month
     so it shares the exact same per-invoice attribution rule. This keeps
     Σ cash_in == Σ invoice_settlement().collected (within float noise).
@@ -139,45 +144,39 @@ def ar_aging(as_of: Optional[str] = None,
              db_path: Optional[str] = None) -> dict:
     """Point-in-time AR aging bucketed by days outstanding.
 
-    Delegates settlement logic entirely to payments_alloc.invoice_settlement
-    so the legacy-NULL-amount rule is applied identically.
+    Source: Express BSN snapshot (express_ar_outstanding WHERE entity='BSN'
+    at the latest snapshot_date_iso). This is the authoritative AR source —
+    it captures RE-doc receivables and legacy IV4* rows that the old derived
+    engine (invoice_settlement) missed.
+
+    `as_of` is accepted for API compatibility but ignored: the snapshot date
+    is always used as the reference point so bucket ages match what Express
+    published on that date (same convention as ar_followup.customer_ranking).
 
     Returns:
       {
-        'as_of': 'YYYY-MM-DD',
+        'as_of': 'YYYY-MM-DD',          # snapshot_date_iso
         'buckets': [
             {'label':'0-30',  'from':0,  'to':30,  'amount':float, 'count':int},
             {'label':'31-60', 'from':31, 'to':60,  'amount':float, 'count':int},
             {'label':'61-90', 'from':61, 'to':90,  'amount':float, 'count':int},
             {'label':'90+',   'from':91, 'to':None, 'amount':float, 'count':int},
         ],
-        'total_outstanding':   float,
-        'total_billed':        float,
-        'total_credit_notes':  float,
-        'total_collected':     float,
+        'total_outstanding':   float,   # SUM(outstanding_amount) — includes negatives
+        'total_billed':        float,   # SUM(bill_amount)
+        'total_credit_notes':  float,   # always 0 (Express pre-nets CNs)
+        'total_collected':     float,   # SUM(paid_amount)
       }
 
-    RECONCILE IDENTITY (credit-note-aware):
-      total_billed - total_credit_notes - total_collected
-          == total_outstanding   (within ฿0.01).
-      With no SR rows total_credit_notes == 0 and this collapses to the
-      legacy form total_billed == total_collected + total_outstanding.
+    RECONCILE IDENTITY:
+      total_billed - total_collected == total_outstanding  (within ฿0.01).
+      (total_credit_notes is always 0 here — Express already netted CNs into
+      outstanding_amount and paid_amount, so the old three-term identity
+      collapses to the two-term form.)
+
+    NOTE: invoice_settlement() is preserved as a diagnostic. It is no longer
+    called by ar_aging() but remains importable for reconciliation tooling.
     """
-    _EPS = 0.005
-    as_of_str = as_of or _today_iso()
-    as_of_date = date.fromisoformat(as_of_str)
-
-    # Use caller conn if provided; pa.invoice_settlement accepts conn too
-    rows = pa.invoice_settlement(conn=conn, db_path=db_path)
-
-    # Point-in-time: only invoices with invoice_date <= as_of
-    # (payments_alloc._settlement_rows uses as_of param for this, but here
-    #  we call the simpler invoice_settlement; filter in Python)
-    rows = [r for r in rows if r['invoice_date'] and r['invoice_date'] <= as_of_str]
-
-    # Only keep outstanding invoices for aging
-    outstanding_rows = [r for r in rows if r['outstanding'] > _EPS]
-
     buckets = [
         {'label': '0-30',  'from': 0,  'to': 30,  'amount': 0.0, 'count': 0},
         {'label': '31-60', 'from': 31, 'to': 60,  'amount': 0.0, 'count': 0},
@@ -185,9 +184,53 @@ def ar_aging(as_of: Optional[str] = None,
         {'label': '90+',   'from': 91, 'to': None, 'amount': 0.0, 'count': 0},
     ]
 
-    for inv in outstanding_rows:
-        inv_date = date.fromisoformat(inv['invoice_date'])
-        age = (as_of_date - inv_date).days
+    with _ConnCtx(conn, db_path) as c:
+        snap = c.execute(
+            "SELECT MAX(snapshot_date_iso) AS snap"
+            " FROM express_ar_outstanding WHERE entity='BSN'"
+        ).fetchone()['snap']
+
+        if not snap:
+            # No snapshot yet — return empty structure so the dashboard
+            # renders gracefully (AR Aging section shows zeros).
+            return {
+                'as_of':              as_of or _today_iso(),
+                'buckets':            buckets,
+                'total_outstanding':  0.0,
+                'total_billed':       0.0,
+                'total_credit_notes': 0.0,
+                'total_collected':    0.0,
+            }
+
+        snap_date = date.fromisoformat(snap)
+
+        rows = c.execute(
+            """SELECT doc_date_iso, outstanding_amount, bill_amount, paid_amount
+               FROM express_ar_outstanding
+               WHERE entity = 'BSN' AND snapshot_date_iso = ?""",
+            (snap,),
+        ).fetchall()
+
+    total_billed    = 0.0
+    total_collected = 0.0
+    total_outstanding = 0.0
+
+    for r in rows:
+        amt = float(r['outstanding_amount'] or 0)
+        total_billed    = round(total_billed    + float(r['bill_amount'] or 0), 2)
+        total_collected = round(total_collected + float(r['paid_amount'] or 0), 2)
+        total_outstanding = round(total_outstanding + amt, 2)
+
+        doc_d = r['doc_date_iso']
+        if doc_d:
+            try:
+                age = (snap_date - date.fromisoformat(doc_d)).days
+            except (ValueError, TypeError):
+                age = 9999
+        else:
+            age = 9999
+        age = max(age, 0)
+
         if age <= 30:
             b = buckets[0]
         elif age <= 60:
@@ -196,21 +239,16 @@ def ar_aging(as_of: Optional[str] = None,
             b = buckets[2]
         else:
             b = buckets[3]
-        b['amount'] = round(b['amount'] + inv['outstanding'], 2)
+        b['amount'] = round(b['amount'] + amt, 2)
         b['count'] += 1
 
-    total_outstanding   = round(sum(b['amount'] for b in buckets), 2)
-    total_billed        = round(sum(r['billed']       for r in rows), 2)
-    total_credit_notes  = round(sum(r['credit_notes'] for r in rows), 2)
-    total_collected     = round(sum(r['collected']    for r in rows), 2)
-
     return {
-        'as_of':              as_of_str,
+        'as_of':              snap,
         'buckets':            buckets,
-        'total_outstanding':  total_outstanding,
-        'total_billed':       total_billed,
-        'total_credit_notes': total_credit_notes,
-        'total_collected':    total_collected,
+        'total_outstanding':  round(total_outstanding, 2),
+        'total_billed':       round(total_billed, 2),
+        'total_credit_notes': 0.0,
+        'total_collected':    round(total_collected, 2),
     }
 
 
