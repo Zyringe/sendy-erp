@@ -57,7 +57,7 @@ def main():
 
     products = conn.execute("""
         SELECT p.id, p.sku, p.product_name, p.brand_id, p.model, p.size,
-               p.color_code, p.packaging, p.series, p.sub_category, p.family_id,
+               p.color_code, p.packaging_th AS packaging, p.series, p.sub_category, p.family_id,
                b.short_code AS brand_short_code, b.name AS brand_name
           FROM products p
           LEFT JOIN brands b ON b.id = p.brand_id

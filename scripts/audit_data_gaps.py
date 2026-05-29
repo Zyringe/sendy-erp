@@ -36,7 +36,7 @@ def main():
 
     products = conn.execute("""
         SELECT p.id, p.sku, p.sku_code, p.product_name, p.sub_category,
-               p.brand_id, p.model, p.size, p.color_code, p.packaging,
+               p.brand_id, p.model, p.size, p.color_code, p.packaging_th AS packaging,
                p.series, p.pack_variant,
                b.name AS brand_name
           FROM products p
