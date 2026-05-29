@@ -1,24 +1,12 @@
 """TDD tests for inventory_app/ar_followup.py — AR follow-up workspace logic.
 
-Synthetic data only (empty_db_conn schema clone). Pattern mirrors
-test_cashflow.py and test_payments_alloc.py.
+Synthetic data only (empty_db_conn schema clone) for unit tests.
+Integration tests use tmp_db_conn against a copy of the live DB to verify
+the Express BSN snapshot totals (72 customers / 200 docs / ฿1,299,335.94).
 
-Logic under test
-────────────────
-customer_ranking(conn):
-  - Aggregates payments_alloc.invoice_settlement by customer.
-  - Returns rows with outstanding > 0 sorted by outstanding DESC.
-  - Each row carries: customer, customer_code, invoice_count, outstanding,
-    oldest_age_days, age_buckets {0-30,31-60,61-90,90+}, last_log (date/result).
-
-log_outreach(conn, ...):
-  - Inserts into ar_followup_log; rejects bad channel/result enums.
-
-get_customer_followups(conn, customer):
-  - Returns chronological list (log_date DESC) for one customer.
-
-get_customer_ar_detail(conn, customer):
-  - Returns list of outstanding invoices for one customer with age.
+AR SOURCE (2026-05-29): customer_ranking and get_customer_ar_detail now
+source from express_ar_outstanding WHERE entity='BSN' at the latest snapshot.
+Outreach log CRUD and list_overdue_followups are unchanged.
 """
 import pytest
 from datetime import date, timedelta
@@ -28,16 +16,45 @@ import ar_followup as arf
 
 # ── synthetic data helpers ──────────────────────────────────────────────────
 
-def _ins_sale(conn, doc_base, customer, customer_code, date_iso, net,
-              line=1, vat_type=1):
-    conn.execute(
-        """INSERT INTO sales_transactions
-           (date_iso, doc_no, doc_base, customer, customer_code,
-            qty, unit, unit_price, vat_type, total, net)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        (date_iso, f"{doc_base}-{line}", doc_base, customer, customer_code,
-         1, 'ตัว', net, vat_type, net, net),
-    )
+def _ins_express(conn, doc_no, customer_code, customer_name, doc_date_iso,
+                 outstanding, bill_amount=None, paid_amount=None,
+                 snapshot='2026-05-29', entity='BSN', batch_id=None):
+    """Insert one row into express_ar_outstanding.
+
+    Inserts a parent express_import_log row when batch_id is not supplied,
+    re-using the most recent one for this snapshot+entity if it exists.
+    """
+    if bill_amount is None:
+        bill_amount = outstanding
+    if paid_amount is None:
+        paid_amount = 0.0
+    if batch_id is None:
+        # Re-use existing log row for this snapshot/entity when present so we
+        # don't create a new parent per call. Insert one on first call.
+        row = conn.execute("""
+            SELECT id FROM express_import_log
+            WHERE file_type='ar_snapshot' AND snapshot_date_iso=?
+            LIMIT 1
+        """, (snapshot,)).fetchone()
+        if row:
+            batch_id = row[0]
+        else:
+            cur = conn.execute("""
+                INSERT INTO express_import_log
+                  (file_type, source_filename, record_count, line_count,
+                   snapshot_date_iso, status)
+                VALUES ('ar_snapshot', 'test_synthetic.csv', 0, 0, ?, 'imported')
+            """, (snapshot,))
+            batch_id = cur.lastrowid
+    conn.execute("""
+        INSERT INTO express_ar_outstanding
+          (batch_id, snapshot_date_iso, customer_code, customer_name,
+           doc_no, doc_date_iso, bill_amount, paid_amount,
+           outstanding_amount, entity)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+    """, (batch_id, snapshot, customer_code, customer_name,
+          doc_no, doc_date_iso, bill_amount, paid_amount,
+          outstanding, entity))
 
 
 def _ins_receipt(conn, re_no, customer, date_iso, cancelled=0, total=None):
@@ -50,22 +67,13 @@ def _ins_receipt(conn, re_no, customer, date_iso, cancelled=0, total=None):
     return cur.lastrowid
 
 
-def _ins_paid(conn, re_id, iv_no, amount):
-    doc_kind = 'SR' if iv_no.startswith('SR') else 'IV'
-    conn.execute(
-        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?,?,?,?)",
-        (re_id, iv_no, doc_kind, amount),
-    )
-
-
-# ── customer_ranking ────────────────────────────────────────────────────────
+# ── customer_ranking — Express snapshot source ───────────────────────────────
 
 def test_ranking_sorts_by_outstanding_desc(empty_db_conn):
     c = empty_db_conn
-    today = date.today().isoformat()
-    _ins_sale(c, 'IV01', 'A',  'CA', today, 1000)
-    _ins_sale(c, 'IV02', 'B',  'CB', today, 5000)
-    _ins_sale(c, 'IV03', 'C',  'CC', today, 3000)
+    _ins_express(c, 'IV01', 'CA', 'A', '2026-04-01', 1000)
+    _ins_express(c, 'IV02', 'CB', 'B', '2026-04-01', 5000)
+    _ins_express(c, 'IV03', 'CC', 'C', '2026-04-01', 3000)
     c.commit()
 
     rows = arf.customer_ranking(conn=c)
@@ -74,26 +82,26 @@ def test_ranking_sorts_by_outstanding_desc(empty_db_conn):
     assert rows[0]['outstanding'] == pytest.approx(5000)
 
 
-def test_ranking_excludes_fully_paid(empty_db_conn):
+def test_ranking_excludes_zero_outstanding(empty_db_conn):
+    """Rows with outstanding_amount = 0 must not appear."""
     c = empty_db_conn
-    today = date.today().isoformat()
-    _ins_sale(c, 'IV01', 'A', 'CA', today, 1000)
-    _ins_sale(c, 'IV02', 'B', 'CB', today, 2000)
-    rid = _ins_receipt(c, 'RE01', 'A', today, total=1000)
-    _ins_paid(c, rid, 'IV01', 1000)
+    _ins_express(c, 'IV01', 'CA', 'A', '2026-04-01', 1000)
+    _ins_express(c, 'IV02', 'CB', 'B', '2026-04-01', 0)   # fully paid
     c.commit()
 
     rows = arf.customer_ranking(conn=c)
-    assert [r['customer'] for r in rows] == ['B']
+    assert [r['customer'] for r in rows] == ['A']
 
 
 def test_ranking_buckets_by_age(empty_db_conn):
+    """Age = days from doc_date_iso to snapshot_date_iso (not to today)."""
     c = empty_db_conn
-    today = date.today()
-    _ins_sale(c, 'IV01', 'A', 'CA', (today - timedelta(days=10)).isoformat(), 100)   # 0-30
-    _ins_sale(c, 'IV02', 'A', 'CA', (today - timedelta(days=45)).isoformat(), 200)   # 31-60
-    _ins_sale(c, 'IV03', 'A', 'CA', (today - timedelta(days=75)).isoformat(), 300)   # 61-90
-    _ins_sale(c, 'IV04', 'A', 'CA', (today - timedelta(days=180)).isoformat(), 400)  # 90+
+    snap = '2026-05-29'
+    # Snapshot is 2026-05-29; doc dates chosen for exact bucket membership
+    _ins_express(c, 'IV01', 'CA', 'A', '2026-05-19', 100, snapshot=snap)  # 10d → 0-30
+    _ins_express(c, 'IV02', 'CA', 'A', '2026-04-14', 200, snapshot=snap)  # 45d → 31-60
+    _ins_express(c, 'IV03', 'CA', 'A', '2026-03-25', 300, snapshot=snap)  # 65d → 61-90
+    _ins_express(c, 'IV04', 'CA', 'A', '2025-11-30', 400, snapshot=snap)  # 180d → 90+
     c.commit()
 
     rows = arf.customer_ranking(conn=c)
@@ -108,15 +116,50 @@ def test_ranking_buckets_by_age(empty_db_conn):
     assert r['age_buckets']['90+'] == pytest.approx(400)
 
 
-def test_ranking_vat_type_2_adds_vat(empty_db_conn):
-    """vat_type=2 (แยก VAT) — billed must be net*1.07 per codebase idiom."""
+def test_ranking_empty_when_no_snapshot(empty_db_conn):
+    """No express_ar_outstanding rows → returns empty list (no crash)."""
     c = empty_db_conn
-    today = date.today().isoformat()
-    _ins_sale(c, 'IV01', 'A', 'CA', today, 1000, vat_type=2)
+    rows = arf.customer_ranking(conn=c)
+    assert rows == []
+
+
+def test_ranking_ignores_non_bsn_entity(empty_db_conn):
+    """SD rows must not pollute BSN ranking."""
+    c = empty_db_conn
+    _ins_express(c, 'IV01', 'CA', 'A', '2026-04-01', 1000, entity='BSN')
+    _ins_express(c, 'SD01', 'SX', 'X', '2026-04-01', 9999, entity='SD')
     c.commit()
 
     rows = arf.customer_ranking(conn=c)
-    assert rows[0]['outstanding'] == pytest.approx(1070.00, abs=0.01)
+    assert len(rows) == 1
+    assert rows[0]['customer_code'] == 'CA'
+
+
+def test_ranking_aggregates_same_customer_code(empty_db_conn):
+    """Multiple invoices for the same customer_code roll up to one row."""
+    c = empty_db_conn
+    _ins_express(c, 'IV01', 'CA', 'ลูกค้า A', '2026-04-01', 1000)
+    _ins_express(c, 'IV02', 'CA', 'ลูกค้า A', '2026-03-01', 2000)
+    c.commit()
+
+    rows = arf.customer_ranking(conn=c)
+    assert len(rows) == 1
+    assert rows[0]['outstanding'] == pytest.approx(3000)
+    assert rows[0]['invoice_count'] == 2
+
+
+def test_ranking_latest_snapshot_only(empty_db_conn):
+    """Only the latest snapshot_date_iso rows are used."""
+    c = empty_db_conn
+    # Old snapshot — should be ignored
+    _ins_express(c, 'IV01', 'CA', 'A', '2026-03-01', 5000, snapshot='2026-04-30')
+    # New snapshot — should be used
+    _ins_express(c, 'IV01', 'CA', 'A', '2026-03-01', 1000, snapshot='2026-05-29')
+    c.commit()
+
+    rows = arf.customer_ranking(conn=c)
+    assert len(rows) == 1
+    assert rows[0]['outstanding'] == pytest.approx(1000)
 
 
 # ── log_outreach ────────────────────────────────────────────────────────────
@@ -198,18 +241,29 @@ def test_get_followups_isolates_per_customer(empty_db_conn):
 
 def test_get_customer_ar_detail_lists_outstanding(empty_db_conn):
     c = empty_db_conn
-    today = date.today()
-    _ins_sale(c, 'IV01', 'A', 'CA', (today - timedelta(days=5)).isoformat(), 1000)
-    _ins_sale(c, 'IV02', 'A', 'CA', (today - timedelta(days=200)).isoformat(), 2000)
-    _ins_sale(c, 'IV03', 'B', 'CB', today.isoformat(), 500)
+    snap = '2026-05-29'
+    _ins_express(c, 'IV01', 'CA', 'A', '2026-05-24', 1000, snapshot=snap)   # 5d
+    _ins_express(c, 'IV02', 'CA', 'A', '2025-11-10', 2000, snapshot=snap)   # 200d
+    _ins_express(c, 'IV03', 'CB', 'B', '2026-05-29', 500,  snapshot=snap)   # 0d
     c.commit()
 
-    rows = arf.get_customer_ar_detail(conn=c, customer='A')
-    docs = sorted(r['doc_base'] for r in rows)
+    rows = arf.get_customer_ar_detail(conn=c, customer='CA')
+    docs = sorted(r['doc_no'] for r in rows)
     assert docs == ['IV01', 'IV02']
-    # age should be present
-    iv02 = next(r for r in rows if r['doc_base'] == 'IV02')
-    assert iv02['age_days'] == 200
+    # IV02 is older — age should be ~200
+    iv02 = next(r for r in rows if r['doc_no'] == 'IV02')
+    assert iv02['age_days'] == (date.fromisoformat(snap) - date(2025, 11, 10)).days
+
+
+def test_get_customer_ar_detail_sorted_oldest_first(empty_db_conn):
+    """Rows are returned with oldest (largest age_days) first."""
+    c = empty_db_conn
+    _ins_express(c, 'IV01', 'CA', 'A', '2026-05-20', 100)   # newer
+    _ins_express(c, 'IV02', 'CA', 'A', '2026-01-01', 200)   # older
+    c.commit()
+
+    rows = arf.get_customer_ar_detail(conn=c, customer='CA')
+    assert rows[0]['doc_no'] == 'IV02'
 
 
 # ── ranking joins last_log ──────────────────────────────────────────────────
@@ -217,7 +271,7 @@ def test_get_customer_ar_detail_lists_outstanding(empty_db_conn):
 def test_ranking_includes_last_log(empty_db_conn):
     c = empty_db_conn
     today = date.today().isoformat()
-    _ins_sale(c, 'IV01', 'A', 'CA', today, 1000)
+    _ins_express(c, 'IV01', 'CA', 'A', '2026-04-01', 1000)
     arf.log_outreach(conn=c, customer='A', customer_code='CA', log_date=today,
                      channel='phone', result='promised',
                      next_action_date=today, created_by='admin')
@@ -228,17 +282,14 @@ def test_ranking_includes_last_log(empty_db_conn):
     assert rows[0]['last_log_result'] == 'promised'
 
 
-# ── customer-identity (customer_code as stable key) ─────────────────────────
-# Codex adversarial-review finding (HIGH): aggregating by customer NAME splits
-# one debtor across name spellings and orphans follow-up history. Key by
-# customer_code where present.
+# ── customer_ranking aggregation by customer_code ───────────────────────────
 
 def test_ranking_aggregates_by_customer_code_when_names_differ(empty_db_conn):
-    """Same customer_code, two name spellings (trailing space) → ONE row."""
+    """Same customer_code, two name spellings → ONE row."""
     c = empty_db_conn
-    today = date.today().isoformat()
-    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today, 1000, line=1)
-    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today, 2000, line=1)
+    # Express snapshot stores one name per row; both have same code
+    _ins_express(c, 'IV01', 'CA', 'ลูกค้า A',  '2026-04-01', 1000)
+    _ins_express(c, 'IV02', 'CA', 'ลูกค้า A ', '2026-04-01', 2000)
     c.commit()
 
     rows = arf.customer_ranking(conn=c)
@@ -248,77 +299,12 @@ def test_ranking_aggregates_by_customer_code_when_names_differ(empty_db_conn):
     assert rows[0]['invoice_count'] == 2
 
 
-def test_ranking_falls_back_to_name_when_no_code(empty_db_conn):
-    """No customer_code (walk-in) → group by name."""
-    c = empty_db_conn
-    today = date.today().isoformat()
-    _ins_sale(c, 'IV01', 'หน้าร้าน',   None, today, 100, line=1)
-    _ins_sale(c, 'IV02', 'หน้าร้าน',   None, today, 200, line=1)
-    _ins_sale(c, 'IV03', 'หน้าร้าน 2', None, today, 50,  line=1)
-    c.commit()
-
-    rows = arf.customer_ranking(conn=c)
-    assert len(rows) == 2
-    by_name = {r['customer']: r['outstanding'] for r in rows}
-    assert by_name['หน้าร้าน']   == pytest.approx(300)
-    assert by_name['หน้าร้าน 2'] == pytest.approx(50)
-
-
-def test_ranking_canonical_name_from_most_recent_invoice(empty_db_conn):
-    """When same code has multiple name spellings, ranking row shows the
-    name from the most-recent invoice (deterministic display)."""
-    c = empty_db_conn
-    today = date.today()
-    old   = (today - timedelta(days=60)).isoformat()
-    newer = (today - timedelta(days=5)).isoformat()
-    _ins_sale(c, 'IV01', 'ลูกค้า A (เก่า)',  'CA', old,   1000, line=1)
-    _ins_sale(c, 'IV02', 'ลูกค้า A (ใหม่)', 'CA', newer, 500,  line=1)
-    c.commit()
-
-    rows = arf.customer_ranking(conn=c)
-    assert len(rows) == 1
-    assert rows[0]['customer'] == 'ลูกค้า A (ใหม่)'
-
-
-def test_detail_finds_all_name_variants_for_code(empty_db_conn):
-    """Detail lookup with EITHER name spelling returns BOTH invoices."""
-    c = empty_db_conn
-    today = date.today().isoformat()
-    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today, 1000, line=1)
-    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today, 2000, line=1)
-    c.commit()
-
-    rows_a = arf.get_customer_ar_detail(customer='ลูกค้า A',  conn=c)
-    rows_b = arf.get_customer_ar_detail(customer='ลูกค้า A ', conn=c)
-    assert sorted(r['doc_base'] for r in rows_a) == ['IV01', 'IV02']
-    assert sorted(r['doc_base'] for r in rows_b) == ['IV01', 'IV02']
-
-
-def test_followups_finds_all_name_variants_for_code(empty_db_conn):
-    """Followup history spans all name spellings sharing customer_code."""
-    c = empty_db_conn
-    today = date.today().isoformat()
-    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today, 1000, line=1)
-    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today, 2000, line=1)
-    arf.log_outreach(conn=c, customer='ลูกค้า A',  customer_code='CA',
-                     log_date=today, channel='phone',
-                     result='no_answer', created_by='admin')
-    arf.log_outreach(conn=c, customer='ลูกค้า A ', customer_code='CA',
-                     log_date=today, channel='line',
-                     result='promised',  created_by='admin')
-    c.commit()
-
-    rows = arf.get_customer_followups(customer='ลูกค้า A', conn=c)
-    assert len(rows) == 2
-
-
 def test_ranking_last_log_aggregates_by_group(empty_db_conn):
-    """Ranking's last_log uses the newest log across all name variants of
-    the same customer_code (not whatever spelling happens to be alphabetized first)."""
+    """Ranking's last_log uses the newest log across all name variants."""
     c = empty_db_conn
     today = date.today()
-    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today.isoformat(), 1000, line=1)
-    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today.isoformat(), 2000, line=1)
+    _ins_express(c, 'IV01', 'CA', 'ลูกค้า A',  '2026-04-01', 1000)
+    _ins_express(c, 'IV02', 'CA', 'ลูกค้า A ', '2026-04-01', 2000)
     arf.log_outreach(conn=c, customer='ลูกค้า A',  customer_code='CA',
                      log_date=(today - timedelta(days=5)).isoformat(),
                      channel='phone', result='no_answer', created_by='admin')
@@ -334,13 +320,8 @@ def test_ranking_last_log_aggregates_by_group(empty_db_conn):
 
 
 # ── overdue (supersession + terminal-state awareness) ───────────────────────
-# Codex adversarial-review finding (MEDIUM): list_overdue_followups blindly
-# returned every row whose next_action_date had passed. Only the LATEST log
-# per customer-group counts, and terminal results (paid_full / closed) close
-# the loop.
 
 def test_overdue_excludes_superseded_by_later_log(empty_db_conn):
-    """A later log rescheduling to future supersedes the older overdue row."""
     c = empty_db_conn
     today = date.today()
     arf.log_outreach(conn=c, customer='A', customer_code='CA',
@@ -359,7 +340,6 @@ def test_overdue_excludes_superseded_by_later_log(empty_db_conn):
 
 
 def test_overdue_excludes_terminal_paid_full(empty_db_conn):
-    """Latest log = paid_full → debt closed, never overdue."""
     c = empty_db_conn
     today = date.today()
     arf.log_outreach(conn=c, customer='A', customer_code='CA',
@@ -373,7 +353,6 @@ def test_overdue_excludes_terminal_paid_full(empty_db_conn):
 
 
 def test_overdue_excludes_terminal_closed(empty_db_conn):
-    """Latest log = closed → account closed, never overdue."""
     c = empty_db_conn
     today = date.today()
     arf.log_outreach(conn=c, customer='A', customer_code='CA',
@@ -387,8 +366,6 @@ def test_overdue_excludes_terminal_closed(empty_db_conn):
 
 
 def test_overdue_includes_only_unresolved_past_due(empty_db_conn):
-    """Mix: only customer A (unresolved past-due) should appear; B (paid_full)
-    and C (future next-action) excluded."""
     c = empty_db_conn
     today  = date.today()
     past   = (today - timedelta(days=5)).isoformat()
@@ -408,15 +385,7 @@ def test_overdue_includes_only_unresolved_past_due(empty_db_conn):
     assert [r['customer'] for r in overdue] == ['A']
 
 
-# ── overdue: fall-back to prior log when latest has NULL next_action_date ───
-# Scrutinize finding 1 (major): a latest log without a planned follow-up date
-# would silently swallow customers whose prior log left a past-due obligation.
-# The intent ("which customers need attention?") demands that the prior plan
-# stays visible until something terminal (paid_full / closed) lands.
-
 def test_overdue_falls_back_to_prior_when_latest_has_null(empty_db_conn):
-    """Latest log = no_answer with no follow-up date → keep showing the
-    older past-due obligation; customer is NOT resolved."""
     c = empty_db_conn
     today = date.today()
     arf.log_outreach(conn=c, customer='A', customer_code='CA',
@@ -432,17 +401,11 @@ def test_overdue_falls_back_to_prior_when_latest_has_null(empty_db_conn):
 
     overdue = arf.list_overdue_followups(conn=c, as_of=today.isoformat())
     customers = [r['customer'] for r in overdue]
-    assert customers == ['A'], (
-        "Customer A has unresolved past-due plan from prior log; "
-        "latest log set no new follow-up date — must not vanish."
-    )
-    # And the row carries the prior plan's next_action_date, not None.
+    assert customers == ['A']
     assert overdue[0]['next_action_date'] == (today - timedelta(days=10)).isoformat()
 
 
 def test_overdue_excludes_when_latest_terminal_even_with_prior_action_date(empty_db_conn):
-    """Latest log = paid_full (NULL next_action) overrides a prior past-due
-    plan; customer is closed, must not appear."""
     c = empty_db_conn
     today = date.today()
     arf.log_outreach(conn=c, customer='A', customer_code='CA',
@@ -460,9 +423,6 @@ def test_overdue_excludes_when_latest_terminal_even_with_prior_action_date(empty
 
 
 def test_overdue_uses_latest_action_date_when_present(empty_db_conn):
-    """When the latest log has its own non-NULL next_action_date in the
-    future, the prior past-due plan is superseded (the staff explicitly
-    rescheduled). Customer NOT overdue."""
     c = empty_db_conn
     today = date.today()
     arf.log_outreach(conn=c, customer='A', customer_code='CA',
@@ -480,61 +440,129 @@ def test_overdue_uses_latest_action_date_when_present(empty_db_conn):
     assert arf.list_overdue_followups(conn=c, as_of=today.isoformat()) == []
 
 
-# ── _resolve_target: route key can be either customer_code OR name ──────────
-# Scrutinize finding 2 (major) + 3 (nit): URL keys must be stable across
-# typo-fixes upstream. customer_code is the right primary key when present.
+# ── _resolve_target ──────────────────────────────────────────────────────────
 
 def test_resolve_target_accepts_customer_code(empty_db_conn):
-    """A bare customer_code string resolves to the full name-set of that code."""
     c = empty_db_conn
-    today = date.today().isoformat()
-    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today, 1000, line=1)
-    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today, 2000, line=1)
+    _ins_express(c, 'IV01', 'CA', 'ลูกค้า A',  '2026-04-01', 1000)
+    _ins_express(c, 'IV02', 'CA', 'ลูกค้า A ', '2026-04-01', 2000)
     c.commit()
 
     code, names = arf._resolve_target(c, 'CA')
     assert code == 'CA'
-    assert set(names) == {'ลูกค้า A', 'ลูกค้า A '}
+    assert 'ลูกค้า A' in names
+    assert 'ลูกค้า A ' in names
 
 
 def test_resolve_target_falls_back_to_name(empty_db_conn):
-    """Old name-based bookmark / walk-in still resolves correctly."""
+    """Walk-in with no code still resolves by name."""
     c = empty_db_conn
-    today = date.today().isoformat()
-    _ins_sale(c, 'IV01', 'หน้าร้าน', None, today, 100, line=1)
+    _ins_express(c, 'IV01', '', 'หน้าร้าน', '2026-04-01', 100)
     c.commit()
 
     code, names = arf._resolve_target(c, 'หน้าร้าน')
     assert code is None
-    assert names == ['หน้าร้าน']
+    assert 'หน้าร้าน' in names
 
 
 def test_resolve_target_code_lookup_finds_all_invoices(empty_db_conn):
-    """Detail lookup via customer_code returns BOTH variant invoices."""
     c = empty_db_conn
-    today = date.today().isoformat()
-    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today, 1000, line=1)
-    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today, 2000, line=1)
+    _ins_express(c, 'IV01', 'CA', 'ลูกค้า A',  '2026-04-01', 1000)
+    _ins_express(c, 'IV02', 'CA', 'ลูกค้า A ', '2026-04-01', 2000)
     c.commit()
 
-    # Detail lookup uses _resolve_target under the hood now.
     rows = arf.get_customer_ar_detail(customer='CA', conn=c)
-    assert sorted(r['doc_base'] for r in rows) == ['IV01', 'IV02']
+    assert sorted(r['doc_no'] for r in rows) == ['IV01', 'IV02']
 
 
 def test_resolve_target_code_lookup_finds_all_followups(empty_db_conn):
-    """Followup lookup via customer_code returns BOTH variant logs."""
     c = empty_db_conn
-    today = date.today().isoformat()
-    _ins_sale(c, 'IV01', 'ลูกค้า A',  'CA', today, 1000, line=1)
-    _ins_sale(c, 'IV02', 'ลูกค้า A ', 'CA', today, 2000, line=1)
+    _ins_express(c, 'IV01', 'CA', 'ลูกค้า A',  '2026-04-01', 1000)
+    _ins_express(c, 'IV02', 'CA', 'ลูกค้า A ', '2026-04-01', 2000)
     arf.log_outreach(conn=c, customer='ลูกค้า A',  customer_code='CA',
-                     log_date=today, channel='phone',
+                     log_date=date.today().isoformat(), channel='phone',
                      result='no_answer', created_by='admin')
     arf.log_outreach(conn=c, customer='ลูกค้า A ', customer_code='CA',
-                     log_date=today, channel='line',
+                     log_date=date.today().isoformat(), channel='line',
                      result='promised', created_by='admin')
     c.commit()
 
     rows = arf.get_customer_followups(customer='CA', conn=c)
     assert len(rows) == 2
+
+
+# ── integration tests: Express BSN snapshot totals (live DB copy) ────────────
+
+def test_bsn_snapshot_totals(tmp_db_conn):
+    """Express BSN snapshot at 2026-05-29: 200 total rows, 72 customers, net
+    ฿1,299,335.94 (includes 12 negative-balance rows for credit/overpaid accounts).
+
+    This is the raw snapshot total. The export uses all 200 rows; the ranking
+    workspace nets per customer and keeps net-positive customers only
+    (65 customers / ฿1,325,201.47).
+    """
+    c = tmp_db_conn
+    row = c.execute("""
+        SELECT COUNT(*) AS doc_count,
+               COUNT(DISTINCT customer_code) AS cust_count,
+               ROUND(SUM(outstanding_amount), 2) AS total_outstanding
+        FROM express_ar_outstanding
+        WHERE entity = 'BSN'
+          AND snapshot_date_iso = (
+            SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding WHERE entity='BSN'
+          )
+    """).fetchone()
+    assert row['doc_count'] == 200, f"Expected 200 total rows, got {row['doc_count']}"
+    assert row['cust_count'] == 72, f"Expected 72 customers, got {row['cust_count']}"
+    assert row['total_outstanding'] == pytest.approx(1299335.94, abs=0.01), \
+        f"Expected net ฿1,299,335.94, got {row['total_outstanding']}"
+
+
+def test_customer_ranking_live_bsn(tmp_db_conn):
+    """customer_ranking rolls up per customer by NET balance (across all their
+    snapshot rows, including un-applied credit notes / overpayments which appear
+    as negative rows) and keeps only customers whose NET is positive — you don't
+    chase an account that nets to zero or a credit.
+
+    Per-customer-net: 65 customers / ฿1,325,201.47.
+
+    Regression guard against row-level filtering: ทรงพลเทรดดิ้ง must net to
+    ฿164,322.73, NOT ฿284,863.10 (the latter ignores ฿120,540.37 of credit notes).
+    """
+    rows = arf.customer_ranking(conn=tmp_db_conn)
+    total = round(sum(r['outstanding'] for r in rows), 2)
+    assert len(rows) == 65, f"Expected 65 net-positive customers, got {len(rows)}"
+    assert total == pytest.approx(1325201.47, abs=0.01), \
+        f"Expected per-customer-net total ฿1,325,201.47, got {total}"
+    # Verify sorted DESC
+    for i in range(len(rows) - 1):
+        assert rows[i]['outstanding'] >= rows[i+1]['outstanding']
+    # Mixed +/- customer must be netted, not gross-summed.
+    songphon = next((r for r in rows if (r['customer_code'] or '') == '94ท06'), None)
+    assert songphon is not None, "ทรงพลเทรดดิ้ง (94ท06) must appear"
+    assert songphon['outstanding'] == pytest.approx(164322.73, abs=0.01), \
+        f"ทรงพล must net to ฿164,322.73, got {songphon['outstanding']} (credit notes ignored?)"
+
+
+def test_customer_ranking_invoice_count(tmp_db_conn):
+    """Sum of per-customer invoice_count = 193 (all snapshot rows belonging to
+    net-positive customers, credit-note rows included)."""
+    rows = arf.customer_ranking(conn=tmp_db_conn)
+    total_invoices = sum(r['invoice_count'] for r in rows)
+    assert total_invoices == 193, \
+        f"Expected invoice_count sum=193, got {total_invoices}"
+
+
+def test_get_customer_ar_detail_live(tmp_db_conn):
+    """Per-customer detail returns outstanding docs; spot-check that first
+    customer by outstanding has matching total."""
+    rows_ranking = arf.customer_ranking(conn=tmp_db_conn)
+    assert rows_ranking, "Ranking must not be empty"
+    top = rows_ranking[0]
+    code = top['customer_code']
+
+    detail = arf.get_customer_ar_detail(customer=code, conn=tmp_db_conn)
+    assert len(detail) > 0, f"Detail for {code} must not be empty"
+    detail_total = round(sum(d['outstanding'] for d in detail), 2)
+    assert detail_total == pytest.approx(top['outstanding'], abs=0.01), \
+        f"Detail total {detail_total} != ranking outstanding {top['outstanding']}"

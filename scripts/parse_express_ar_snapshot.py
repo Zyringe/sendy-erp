@@ -37,6 +37,62 @@ def thai_date_to_iso(s):
     return f'{year:04d}-{int(mm):02d}-{int(dd):02d}'
 
 
+# Report "as of" date from the header line, e.g. "ณ วันที่ 29 พ.ค. 2569 ... วันที่ : 29/05/69".
+# This is the TRUE snapshot date (คงค้าง ณ วันที่ X), independent of the latest
+# document date in the body — use it so weekly re-imports supersede correctly.
+_ASOF_RE = re.compile(r'วันที่\s*:\s*(\d{2}/\d{2}/\d{2})')
+
+
+def report_asof_date(path):
+    """Return the report's as-of date (ISO) parsed from its header, or None."""
+    with open(path, encoding='cp874', errors='replace') as f:
+        for _ in range(15):  # header sits in the first few lines
+            line = f.readline()
+            if not line:
+                break
+            m = _ASOF_RE.search(line)
+            if m:
+                return thai_date_to_iso(m.group(1))
+    return None
+
+
+# Grand-total footer: "รวมทั้งสิ้น   ลูกค้า  72 ราย   200 ใบ   1299335.94"
+_FOOTER_RE = re.compile(r'รวมทั้งสิ้น.*?(\d+)\s*ราย\s+(\d+)\s*ใบ\s+([\d,]+\.\d{2})')
+
+
+def footer_totals(path):
+    """Return (n_customers, n_docs, grand_total) from the report footer, or None."""
+    with open(path, encoding='cp874', errors='replace') as f:
+        for line in f:
+            m = _FOOTER_RE.search(line)
+            if m:
+                return (int(m.group(1)), int(m.group(2)),
+                        float(m.group(3).replace(',', '')))
+    return None
+
+
+def validate(records, path):
+    """Abort the import if parsed rows don't reconcile to the report footer.
+
+    Guards against silent partial imports: the parser skips unrecognized lines,
+    so an Express format drift could otherwise import a partial snapshot that
+    still becomes authoritative. We assert on doc count + outstanding total
+    (the unambiguous invariants); customer count is intentionally not checked
+    because empty-code walk-in rows make it ambiguous.
+    """
+    ft = footer_totals(path)
+    if ft is None:
+        raise ValueError('AR snapshot: footer (รวมทั้งสิ้น) not found — cannot validate')
+    _n_cust, n_docs, grand = ft
+    got_docs = len(records)
+    got_total = round(sum(r.outstanding_amount for r in records), 2)
+    if got_docs != n_docs or abs(got_total - grand) > 0.01:
+        raise ValueError(
+            f'AR snapshot parse mismatch: parsed {got_docs} docs / '
+            f'฿{got_total:,.2f} vs footer {n_docs} docs / ฿{grand:,.2f}')
+    return ft
+
+
 # ── Patterns ─────────────────────────────────────────────────────────────────
 _SKIP_RE = re.compile(
     r'^\s*$'
