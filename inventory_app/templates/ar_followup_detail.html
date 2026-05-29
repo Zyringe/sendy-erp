@@ -120,13 +120,10 @@
           <tr>
             <th>วันที่</th>
             <th>เลขที่</th>
-            <th>VAT</th>
             <th class="text-end">เรียกเก็บ</th>
-            <th class="text-end">CN</th>
             <th class="text-end">รับแล้ว</th>
             <th class="text-end">ค้าง</th>
             <th class="text-end">อายุ</th>
-            <th>สถานะ</th>
           </tr>
         </thead>
         <tbody>
@@ -134,24 +131,17 @@
           <tr>
             <td class="small">{{ inv.invoice_date or '—' }}</td>
             <td><a href="{{ url_for('sales_doc', doc_base=inv.doc_base) }}">{{ inv.doc_base }}</a></td>
-            <td class="small">
-              {% if inv.vat_type == 2 %}<span class="badge bg-warning text-dark">แยก VAT</span>
-              {% elif inv.vat_type == 0 %}<span class="badge bg-secondary">ยกเว้น</span>
-              {% else %}<span class="text-subtle">รวม</span>{% endif %}
-            </td>
-            <td class="text-end">฿{{ '{:,.2f}'.format(inv.billed) }}</td>
-            <td class="text-end">{% if inv.credit_notes %}฿{{ '{:,.2f}'.format(inv.credit_notes) }}{% else %}<span class="text-subtle">–</span>{% endif %}</td>
-            <td class="text-end">{% if inv.collected %}฿{{ '{:,.2f}'.format(inv.collected) }}{% else %}<span class="text-subtle">–</span>{% endif %}</td>
+            <td class="text-end">฿{{ '{:,.2f}'.format(inv.bill_amount) }}</td>
+            <td class="text-end">{% if inv.paid_amount %}฿{{ '{:,.2f}'.format(inv.paid_amount) }}{% else %}<span class="text-subtle">–</span>{% endif %}</td>
             <td class="text-end fw-bold">฿{{ '{:,.2f}'.format(inv.outstanding) }}</td>
             <td class="text-end">
               {% if inv.age_days and inv.age_days > 90 %}<span class="badge bg-danger">{{ inv.age_days }}d</span>
               {% elif inv.age_days and inv.age_days > 60 %}<span class="badge bg-warning text-dark">{{ inv.age_days }}d</span>
               {% else %}{{ inv.age_days or '—' }}d{% endif %}
             </td>
-            <td class="small">{{ inv.status }}</td>
           </tr>
           {% else %}
-          <tr><td colspan="9" class="text-center text-subtle py-4">ไม่มีบิลค้าง</td></tr>
+          <tr><td colspan="6" class="text-center text-subtle py-4">ไม่มีบิลค้าง</td></tr>
           {% endfor %}
         </tbody>
       </table>

@@ -35,6 +35,7 @@ sys.path.insert(0, str(_HERE.parent / 'inventory_app'))  # for bsn_units
 import parse_express_credit_notes as p_cn        # noqa: E402
 import parse_express_payments_in as p_pin        # noqa: E402
 import parse_express_ar_snapshot as p_ar          # noqa: E402
+import parse_express_ap_snapshot as p_ap          # noqa: E402
 import parse_express_payments_out as p_pout       # noqa: E402
 import parse_express_sales as p_sales             # noqa: E402
 import bsn_units                                   # noqa: E402
@@ -174,15 +175,28 @@ def _import_payments_in(conn, path, batch_id, company_id, incremental=True):
     return len(records) - skipped, line_count
 
 
-def _import_ar_snapshot(conn, path, batch_id, company_id, incremental=True):
+def _import_ar_snapshot(conn, path, batch_id, company_id, incremental=True,
+                        entity='SD'):
     """ar_snapshot is always a full snapshot — incremental flag ignored.
     Each call inserts the latest snapshot under a new batch (the engine
-    queries MAX(snapshot_date_iso) so old batches are naturally
-    superseded for display)."""
+    queries MAX(snapshot_date_iso) per entity so old batches are naturally
+    superseded for display).
+
+    entity: 'SD' (Sendai Trading, default) or 'BSN' (Boonsawat).
+    """
     records = list(p_ar.parse_ar_snapshot(path))
-    # Snapshot date is the latest doc_date_iso in the batch (reasonable default).
-    # If empty, use today.
-    snapshot_date = max((r.doc_date_iso for r in records if r.doc_date_iso), default='')
+    # Reconcile parsed rows to the report footer BEFORE writing — a format drift
+    # that drops detail rows must abort, not become authoritative. (run_import
+    # wraps this in a transaction that rolls back on any exception.)
+    p_ar.validate(records, path)
+    # Snapshot date = the report's "as of" header date (true คงค้าง date). Fall
+    # back to the latest doc_date_iso only if the header can't be parsed.
+    snapshot_date = (p_ar.report_asof_date(path)
+                     or max((r.doc_date_iso for r in records if r.doc_date_iso), default=''))
+    # Idempotent: replace any prior rows for the same (entity, snapshot_date) so
+    # re-uploading the same report can't double-count (reader sums MAX-date rows).
+    conn.execute("DELETE FROM express_ar_outstanding WHERE entity = ? AND snapshot_date_iso = ?",
+                 (entity, snapshot_date))
     for r in records:
         customer_code = (r.customer_code or '').strip()
         # Some customer headers carry codes that don't match customers.code (legacy);
@@ -195,17 +209,52 @@ def _import_ar_snapshot(conn, path, batch_id, company_id, incremental=True):
             cust_id = _customer_code_by_name(conn, r.customer_name)
         conn.execute("""
             INSERT INTO express_ar_outstanding
-                (batch_id, snapshot_date_iso, customer_code, customer_name, customer_id,
-                 customer_type, doc_date_iso, doc_no, is_anomalous,
+                (batch_id, entity, snapshot_date_iso, customer_code, customer_name,
+                 customer_id, customer_type, doc_date_iso, doc_no, is_anomalous,
                  salesperson_code, bill_amount, paid_amount, outstanding_amount, has_warning)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            batch_id, snapshot_date, customer_code, r.customer_name, cust_id,
+            batch_id, entity, snapshot_date, customer_code, r.customer_name, cust_id,
             r.customer_type, r.doc_date_iso, r.doc_no, int(r.is_anomalous),
             r.salesperson_code, r.bill_amount, r.paid_amount, r.outstanding_amount,
             int(r.has_warning),
         ))
     # Also stamp snapshot_date back onto the batch row for visibility
+    conn.execute('UPDATE express_import_log SET snapshot_date_iso = ? WHERE id = ?',
+                 (snapshot_date, batch_id))
+    return len(records), 0
+
+
+def _import_ap_snapshot(conn, path, batch_id, company_id, incremental=True,
+                        entity='BSN'):
+    """ap_snapshot is always a full snapshot — incremental flag ignored.
+    Each call inserts under a new batch; MAX(snapshot_date_iso) per entity
+    determines the current snapshot for display.
+
+    entity: 'BSN' (default, Boonsawat).
+    """
+    records, grand_total, subtotals = p_ap.parse_ap_snapshot(path)
+    # Reconcile parsed rows to the report footer + per-supplier subtotals BEFORE
+    # writing — abort on any format-drift mismatch (run_import rolls back).
+    p_ap._validate(records, grand_total, subtotals)
+    snapshot_date = (p_ap.report_asof_date(path)
+                     or max((r.doc_date_iso for r in records if r.doc_date_iso), default=''))
+    # Idempotent: replace any prior rows for the same (entity, snapshot_date).
+    conn.execute("DELETE FROM express_ap_outstanding WHERE entity = ? AND snapshot_date_iso = ?",
+                 (entity, snapshot_date))
+    for r in records:
+        supplier_id = _supplier_id_by_name(conn, r.supplier_name)
+        conn.execute("""
+            INSERT INTO express_ap_outstanding
+                (batch_id, entity, snapshot_date_iso, supplier_type, supplier_name,
+                 supplier_code, supplier_id, doc_no, supplier_invoice_no,
+                 doc_date_iso, bill_amount, paid_amount, outstanding_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            batch_id, entity, snapshot_date, r.supplier_type, r.supplier_name,
+            r.supplier_code, supplier_id, r.doc_no, r.supplier_invoice_no,
+            r.doc_date_iso, r.bill_amount, r.paid_amount, r.outstanding_amount,
+        ))
     conn.execute('UPDATE express_import_log SET snapshot_date_iso = ? WHERE id = ?',
                  (snapshot_date, batch_id))
     return len(records), 0
@@ -299,12 +348,19 @@ _IMPORTERS = {
     'credit_notes':  _import_credit_notes,
     'payments_in':   _import_payments_in,
     'ar_snapshot':   _import_ar_snapshot,
+    'ap_snapshot':   _import_ap_snapshot,
     'payments_out':  _import_payments_out,
     'sales':         _import_sales,
 }
 
 
 # ── orchestration ────────────────────────────────────────────────────────────
+
+# Snapshot importers receive an explicit entity tag (company_code used directly).
+# For ar_snapshot the legacy default is 'SD'; for ap_snapshot it is 'BSN'.
+_SNAPSHOT_IMPORTERS = {'ar_snapshot', 'ap_snapshot'}
+
+
 def run_import(file_type, path, company_code='BSN', dry_run=False, incremental=True):
     if file_type not in _IMPORTERS:
         raise SystemExit(f'unknown file_type {file_type!r} — pick from {sorted(_IMPORTERS)}')
@@ -324,6 +380,9 @@ def run_import(file_type, path, company_code='BSN', dry_run=False, incremental=T
         elif file_type == 'ar_snapshot':
             records = list(p_ar.parse_ar_snapshot(path))
             print(f'[dry-run] ar_snapshot: {len(records)} records')
+        elif file_type == 'ap_snapshot':
+            records, _, _ = p_ap.parse_ap_snapshot(path)
+            print(f'[dry-run] ap_snapshot: {len(records)} records')
         elif file_type == 'payments_out':
             records = list(p_pout.parse_payments_out(path))
             print(f'[dry-run] payments_out: {len(records)} records')
@@ -341,8 +400,13 @@ def run_import(file_type, path, company_code='BSN', dry_run=False, incremental=T
     batch_id = cur.lastrowid
 
     try:
-        record_count, line_count = _IMPORTERS[file_type](
-            conn, path, batch_id, company_id, incremental=incremental)
+        if file_type in _SNAPSHOT_IMPORTERS:
+            record_count, line_count = _IMPORTERS[file_type](
+                conn, path, batch_id, company_id,
+                incremental=incremental, entity=company_code)
+        else:
+            record_count, line_count = _IMPORTERS[file_type](
+                conn, path, batch_id, company_id, incremental=incremental)
         conn.execute("""
             UPDATE express_import_log
             SET record_count = ?, line_count = ?

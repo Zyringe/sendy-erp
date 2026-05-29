@@ -3173,7 +3173,7 @@ def express_import():
         upload = request.files.get('file')
 
         if file_type not in ('credit_notes', 'payments_in', 'ar_snapshot',
-                             'payments_out', 'sales'):
+                             'ap_snapshot', 'payments_out', 'sales'):
             flash('เลือกประเภทไฟล์ไม่ถูก', 'danger')
             return redirect(url_for('express_import'))
         if not upload or not upload.filename:
@@ -3338,7 +3338,7 @@ def express_ar_customer(customer_code):
 
 @app.route('/express/ap')
 def express_ap_dashboard():
-    """AP supplier-payment view from express_payments_out."""
+    """AP supplier-payment view from express_payments_out + AP outstanding snapshot."""
     conn = get_connection()
     date_from = request.args.get('from') or '2024-01-01'
     date_to   = request.args.get('to')   or date.today().isoformat()
@@ -3374,12 +3374,15 @@ def express_ap_dashboard():
          LIMIT 50
     """, (date_from, date_to)).fetchall()
 
+    ap_outstanding = models.get_ap_outstanding(conn)
     conn.close()
+
     return render_template('express_ap.html',
                            rows=[dict(r) for r in rows],
                            recent=[dict(r) for r in recent],
                            summary=dict(summary) if summary else {},
-                           date_from=date_from, date_to=date_to)
+                           date_from=date_from, date_to=date_to,
+                           ap=ap_outstanding)
 
 
 # ── Accounting Summary ────────────────────────────────────────────────────────

@@ -1,10 +1,25 @@
 """AR follow-up workspace logic for Sendy ERP.
 
 Drives /accounting/ar-followup — a ranked workspace for chasing unpaid
-invoices. Settlement truth comes from `payments_alloc.invoice_settlement`
-(the authoritative engine — VAT-aware billed, credit-note-netted,
-legacy-NULL-rule-applied). Outreach attempts persist to `ar_followup_log`
-(migration 065).
+invoices.
+
+AR SOURCE (Express-authoritative, 2026-05-29):
+  BSN AR outstanding numbers come from `express_ar_outstanding` filtered to
+  entity='BSN' at the latest snapshot_date_iso. Express is the system of
+  record; Sendy's derived engine (payments_alloc.invoice_settlement) is kept
+  as a DIAGNOSTIC only — do not call it for ranking or detail reads.
+
+  Aging = days from doc_date_iso to the snapshot date (point-in-time; not
+  from today, so the numbers match what Express published on that date).
+
+  JOIN to `customers` by customer_code for contact/zone/phone display. When
+  a snapshot customer_code has no customers row, fall back to the snapshot's
+  customer_name — the row is NOT dropped.
+
+Outreach workspace:
+  Outreach attempts persist to `ar_followup_log` (migration 065). Keyed by
+  customer_code (stable) where available, else by name. Unchanged by the
+  source switch.
 
 Public surface
 ──────────────
@@ -24,7 +39,7 @@ from typing import Optional, List
 import sqlite3
 
 import config
-import payments_alloc as pa
+import payments_alloc as pa   # kept as diagnostic — do not remove
 
 
 _AGE_BUCKETS = ('0-30', '31-60', '61-90', '90+')
@@ -68,12 +83,24 @@ def _bucket_of(age: int) -> str:
     return '90+'
 
 
+def _bsn_snapshot_date(conn) -> Optional[str]:
+    """Return the latest snapshot_date_iso for BSN, or None if table is empty."""
+    row = conn.execute(
+        "SELECT MAX(snapshot_date_iso) AS snap FROM express_ar_outstanding"
+        " WHERE entity='BSN'"
+    ).fetchone()
+    return row['snap'] if row else None
+
+
 # ── ranking ─────────────────────────────────────────────────────────────────
 
 def customer_ranking(conn: Optional[sqlite3.Connection] = None,
                      db_path: Optional[str] = None,
                      min_outstanding: float = 0.0) -> List[dict]:
-    """Per-customer outstanding roll-up sorted by outstanding DESC.
+    """Per-customer outstanding roll-up sourced from Express BSN snapshot.
+
+    Aging is computed from doc_date_iso to the snapshot date (point-in-time,
+    matches Express's own published date — not from today).
 
     Each row:
       {
@@ -88,19 +115,34 @@ def customer_ranking(conn: Optional[sqlite3.Connection] = None,
       }
     """
     with _ConnCtx(conn, db_path) as c:
-        today = date.today()
-        rows = pa.invoice_settlement(conn=c)
-        # Aggregate per customer using customer_code as the stable key (falling
-        # back to customer name when no code exists, e.g. walk-in / หน้าร้าน).
-        # Keying by mutable name would split one debtor across spellings and
-        # orphan follow-up history; see Codex review 2026-05-20.
-        agg: dict = {}
-        canonical_invoice_date: dict = {}  # group_key -> ISO date of row that set 'customer'
+        snap = _bsn_snapshot_date(c)
+        if not snap:
+            return []
+
+        snap_date = date.fromisoformat(snap)
+
+        rows = c.execute("""
+            SELECT
+                ao.customer_code,
+                COALESCE(cust.name, ao.customer_name) AS customer_name,
+                ao.doc_date_iso,
+                ao.outstanding_amount
+            FROM express_ar_outstanding ao
+            LEFT JOIN customers cust ON cust.code = ao.customer_code
+            WHERE ao.entity = 'BSN'
+              AND ao.snapshot_date_iso = ?
+        """, (snap,)).fetchall()
+        # NB: do NOT filter `outstanding_amount > 0` at the row level. Express
+        # lists un-applied credit notes / overpayments as separate NEGATIVE
+        # rows; a customer's true chaseable balance is the NET across all their
+        # rows (matches Express's own per-customer subtotal). Filtering rows
+        # would overstate mixed customers — e.g. ทรงพลเทรดดิ้ง would show
+        # ฿284,863 gross instead of ฿164,323 net (฿120,540 of credits ignored).
+
+        agg = {}
         for r in rows:
-            if r['outstanding'] <= 0.005:
-                continue
-            code = (r.get('customer_code') or '').strip()
-            name = r['customer'] or ''
+            code = (r['customer_code'] or '').strip()
+            name = r['customer_name'] or ''
             key = code or name
             entry = agg.setdefault(key, {
                 'customer': name,
@@ -111,23 +153,23 @@ def customer_ranking(conn: Optional[sqlite3.Connection] = None,
                 'age_buckets': {b: 0.0 for b in _AGE_BUCKETS},
             })
             entry['invoice_count'] += 1
-            entry['outstanding'] = round(entry['outstanding'] + r['outstanding'], 2)
-            if r['invoice_date']:
-                age = (today - date.fromisoformat(r['invoice_date'])).days
+            amt = round(float(r['outstanding_amount'] or 0), 2)
+            entry['outstanding'] = round(entry['outstanding'] + amt, 2)
+
+            if r['doc_date_iso']:
+                try:
+                    age = (snap_date - date.fromisoformat(r['doc_date_iso'])).days
+                except (ValueError, TypeError):
+                    age = 0
+                age = max(age, 0)
                 if age > entry['oldest_age_days']:
                     entry['oldest_age_days'] = age
-                entry['age_buckets'][_bucket_of(age)] = round(
-                    entry['age_buckets'][_bucket_of(age)] + r['outstanding'], 2
+                bucket = _bucket_of(age)
+                entry['age_buckets'][bucket] = round(
+                    entry['age_buckets'][bucket] + amt, 2
                 )
-                # Canonical display name = name from the most recent invoice.
-                prev = canonical_invoice_date.get(key, '')
-                if r['invoice_date'] > prev:
-                    canonical_invoice_date[key] = r['invoice_date']
-                    entry['customer'] = name
 
         # Attach last outreach (newest per group) if the log table exists.
-        # Group key matches the ranking aggregation so name-spelling variants
-        # roll up together.
         if _has_log_table(c):
             log_rows = c.execute("""
                 SELECT
@@ -150,12 +192,16 @@ def customer_ranking(conn: Optional[sqlite3.Connection] = None,
                 agg[key]['last_log_date'] = lr['last_log_date']
                 agg[key]['last_log_result'] = detail['result'] if detail else None
                 agg[key]['next_action_date'] = detail['next_action_date'] if detail else None
+
         for entry in agg.values():
             entry.setdefault('last_log_date', None)
             entry.setdefault('last_log_result', None)
             entry.setdefault('next_action_date', None)
 
-        out = [e for e in agg.values() if e['outstanding'] >= min_outstanding]
+        # Only customers whose NET balance is positive owe us money (net-zero
+        # or net-credit customers are not chased).
+        out = [e for e in agg.values()
+               if e['outstanding'] > 0.005 and e['outstanding'] >= min_outstanding]
         out.sort(key=lambda e: -e['outstanding'])
         return out
 
@@ -184,6 +230,15 @@ def _customer_group(conn, customer: str) -> tuple:
         """, (customer,)).fetchone()
         code = (row['customer_code'].strip() if row and row['customer_code'] else None)
     if not code:
+        # Try to find code from express_ar_outstanding snapshot
+        row = conn.execute("""
+            SELECT customer_code FROM express_ar_outstanding
+            WHERE customer_name = ? AND customer_code IS NOT NULL
+              AND TRIM(customer_code) != ''
+            LIMIT 1
+        """, (customer,)).fetchone()
+        code = (row['customer_code'].strip() if row and row['customer_code'] else None)
+    if not code:
         return (None, [customer])
     name_rows = conn.execute("""
         SELECT DISTINCT customer FROM sales_transactions
@@ -191,7 +246,10 @@ def _customer_group(conn, customer: str) -> tuple:
         UNION
         SELECT DISTINCT customer FROM ar_followup_log
         WHERE TRIM(customer_code) = ? AND customer IS NOT NULL AND customer != ''
-    """, (code, code)).fetchall()
+        UNION
+        SELECT DISTINCT customer_name FROM express_ar_outstanding
+        WHERE TRIM(customer_code) = ? AND customer_name IS NOT NULL AND customer_name != ''
+    """, (code, code, code)).fetchall()
     names = [r[0] for r in name_rows]
     if customer not in names:
         names.append(customer)
@@ -221,7 +279,11 @@ def _resolve_target(conn, target: str) -> tuple:
         UNION
         SELECT DISTINCT customer FROM ar_followup_log
         WHERE TRIM(customer_code) = ? AND customer IS NOT NULL AND customer != ''
-    """, (target, target)).fetchall()
+        UNION
+        SELECT DISTINCT customer_name FROM express_ar_outstanding
+        WHERE TRIM(customer_code) = ? AND customer_name IS NOT NULL
+          AND customer_name != ''
+    """, (target, target, target)).fetchall()
     if name_rows:
         return (target, [r[0] for r in name_rows])
     # Fall back to name-based resolution (legacy bookmarks / orphan customers).
@@ -231,38 +293,78 @@ def _resolve_target(conn, target: str) -> tuple:
 def get_customer_ar_detail(customer: str,
                             conn: Optional[sqlite3.Connection] = None,
                             db_path: Optional[str] = None) -> List[dict]:
-    """Outstanding invoices for one customer with age_days, sorted by age DESC.
+    """Outstanding invoices for one customer from the Express BSN snapshot.
 
-    Each row carries everything `invoice_settlement` returns + age_days + vat_type.
+    Returns per-invoice rows sorted by age DESC (oldest first). Each row:
+      doc_no, doc_date_iso (= invoice_date), customer, customer_code,
+      outstanding, bill_amount, paid_amount, age_days, salesperson_code.
+
     `customer` may be a customer_code OR a name — `_resolve_target` figures
     it out and pulls invoices across every name in the customer group.
     """
     with _ConnCtx(conn, db_path) as c:
-        today = date.today()
-        _, names = _resolve_target(c, customer)
-        all_rows = []
-        seen_docs = set()
-        for n in names:
-            for r in pa.invoice_settlement(customer=n, conn=c):
-                if r['doc_base'] in seen_docs:
-                    continue
-                seen_docs.add(r['doc_base'])
-                all_rows.append(r)
+        snap = _bsn_snapshot_date(c)
+        if not snap:
+            return []
+        snap_date = date.fromisoformat(snap)
+        code, _names = _resolve_target(c, customer)
+
+        if code:
+            rows = c.execute("""
+                SELECT
+                    ao.doc_no,
+                    ao.doc_date_iso,
+                    COALESCE(cust.name, ao.customer_name) AS customer,
+                    ao.customer_code,
+                    ao.bill_amount,
+                    ao.paid_amount,
+                    ao.outstanding_amount AS outstanding,
+                    ao.salesperson_code
+                FROM express_ar_outstanding ao
+                LEFT JOIN customers cust ON cust.code = ao.customer_code
+                WHERE ao.entity = 'BSN'
+                  AND ao.snapshot_date_iso = ?
+                  AND TRIM(ao.customer_code) = ?
+            """, (snap, code)).fetchall()
+        else:
+            # Orphan / walk-in: match by customer_name
+            target_name = customer.strip()
+            rows = c.execute("""
+                SELECT
+                    ao.doc_no,
+                    ao.doc_date_iso,
+                    ao.customer_name AS customer,
+                    ao.customer_code,
+                    ao.bill_amount,
+                    ao.paid_amount,
+                    ao.outstanding_amount AS outstanding,
+                    ao.salesperson_code
+                FROM express_ar_outstanding ao
+                WHERE ao.entity = 'BSN'
+                  AND ao.snapshot_date_iso = ?
+                  AND ao.customer_name = ?
+            """, (snap, target_name)).fetchall()
+
         out = []
-        for r in all_rows:
-            if r['outstanding'] <= 0.005:
-                continue
+        for r in rows:
             age = None
-            if r['invoice_date']:
-                age = (today - date.fromisoformat(r['invoice_date'])).days
-            vt_row = c.execute(
-                "SELECT vat_type FROM sales_transactions WHERE doc_base=? LIMIT 1",
-                (r['doc_base'],)
-            ).fetchone()
+            if r['doc_date_iso']:
+                try:
+                    age = (snap_date - date.fromisoformat(r['doc_date_iso'])).days
+                    age = max(age, 0)
+                except (ValueError, TypeError):
+                    age = None
             out.append({
-                **dict(r),
+                'doc_no': r['doc_no'],
+                'doc_base': r['doc_no'],        # alias kept for template compat
+                'invoice_date': r['doc_date_iso'],
+                'customer': r['customer'],
+                'customer_code': r['customer_code'],
+                'bill_amount': round(float(r['bill_amount'] or 0), 2),
+                'paid_amount': round(float(r['paid_amount'] or 0), 2),
+                'outstanding': round(float(r['outstanding'] or 0), 2),
                 'age_days': age,
-                'vat_type': vt_row['vat_type'] if vt_row else None,
+                'salesperson_code': r['salesperson_code'],
             })
         out.sort(key=lambda x: -(x['age_days'] or 0))
         return out

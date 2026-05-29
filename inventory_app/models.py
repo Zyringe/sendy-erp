@@ -2828,6 +2828,99 @@ def get_customer_unpaid_bills(customer_name):
     return rows
 
 
+# ── Express AP Outstanding ────────────────────────────────────────────────────
+
+def get_ap_outstanding(conn=None):
+    """เจ้าหนี้คงค้าง from the latest BSN AP snapshot.
+
+    Returns a dict:
+      {
+        'snapshot_date': str | None,
+        'invoices': [dict, ...],       -- all 7 (or N) invoice rows
+        'suppliers': [                 -- grouped by supplier_name
+            {
+              'supplier_name': str,
+              'supplier_type': str,
+              'is_intercompany': bool, -- True if supplier_name contains 'เซ็นไดเทรดดิ้ง'
+              'subtotal': float,
+              'invoices': [dict, ...],
+            }, ...
+        ],
+        'grand_total': float,
+        'n_invoices': int,
+        'n_suppliers': int,
+      }
+
+    Pass an open sqlite3 connection to reuse an existing one (caller must close).
+    When conn=None a new connection is opened and closed internally.
+    """
+    close_after = conn is None
+    if close_after:
+        conn = get_connection()
+
+    try:
+        snap = conn.execute(
+            "SELECT MAX(snapshot_date_iso) AS d "
+            "FROM express_ap_outstanding WHERE entity='BSN'"
+        ).fetchone()
+        snapshot_date = snap['d'] if snap else None
+
+        if not snapshot_date:
+            return {
+                'snapshot_date': None,
+                'invoices': [],
+                'suppliers': [],
+                'grand_total': 0.0,
+                'n_invoices': 0,
+                'n_suppliers': 0,
+            }
+
+        rows = conn.execute("""
+            SELECT supplier_name, supplier_type, supplier_code,
+                   doc_no, supplier_invoice_no, doc_date_iso,
+                   bill_amount, paid_amount, outstanding_amount,
+                   CAST(julianday('now') - julianday(doc_date_iso) AS INTEGER) AS age_days
+              FROM express_ap_outstanding
+             WHERE entity = 'BSN'
+               AND snapshot_date_iso = ?
+             ORDER BY supplier_name, doc_date_iso
+        """, (snapshot_date,)).fetchall()
+
+        invoices = [dict(r) for r in rows]
+
+        # Group by supplier_name (preserving first-seen order)
+        seen = {}
+        for inv in invoices:
+            name = inv['supplier_name']
+            if name not in seen:
+                seen[name] = {
+                    'supplier_name': name,
+                    'supplier_type': inv['supplier_type'],
+                    'is_intercompany': 'เซ็นไดเทรดดิ้ง' in name,
+                    'subtotal': 0.0,
+                    'invoices': [],
+                }
+            seen[name]['invoices'].append(inv)
+            seen[name]['subtotal'] = round(
+                seen[name]['subtotal'] + (inv['outstanding_amount'] or 0), 2
+            )
+
+        suppliers = list(seen.values())
+        grand_total = round(sum(s['subtotal'] for s in suppliers), 2)
+
+        return {
+            'snapshot_date': snapshot_date,
+            'invoices': invoices,
+            'suppliers': suppliers,
+            'grand_total': grand_total,
+            'n_invoices': len(invoices),
+            'n_suppliers': len(suppliers),
+        }
+    finally:
+        if close_after:
+            conn.close()
+
+
 # ── E-commerce Platform SKUs ──────────────────────────────────────────────────
 
 def import_platform_skus(platform, records):
