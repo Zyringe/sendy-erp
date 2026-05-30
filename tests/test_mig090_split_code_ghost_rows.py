@@ -137,6 +137,81 @@ def _reset_to_pre_mig(conn):
         conn.commit()
 
 
+def _seed_ghost_rows(conn):
+    """Insert the 3 ghost ST rows + 3 ghost transaction rows + the 2 canonical
+    transaction rows that the rebuilt DB no longer holds (product 148/-24 and
+    436/-30).  Idempotent: uses INSERT OR IGNORE on the ST ids and inserts
+    transactions only when absent.
+
+    This makes tests self-contained against the 2026-05-30 ledger rebuild which
+    regenerated transactions from the already-cleaned sales_transactions, so the
+    ghost rows no longer exist and the canonical txn state differs from pre-rebuild.
+    """
+    conn.execute("PRAGMA foreign_keys = OFF")
+
+    # ── Ghost sales_transactions rows ────────────────────────────────────────
+    # Use hard-coded ids (73, 295, 313) matching what the rollback SQL would
+    # re-insert, so the test is consistent with the rollback script.
+    conn.executescript("""
+        INSERT OR IGNORE INTO sales_transactions
+            (id, batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,
+             qty, unit, unit_price, vat_type, total, net, synced_to_stock)
+        VALUES
+            (73,  1, '2026-03-10', 'IV6900394-7', 'IV6900394', 128, '041ม2761',
+             24, 'ตัว', 46.75, 0, 1122.0, 1122.0, 1),
+            (295, 1, '2026-03-09', 'IV6900391-2', 'IV6900391', 815, '556ห7000',
+              1, 'ตัว', 25.0,  0,   25.0,   25.0, 1),
+            (313, 1, '2026-03-10', 'IV6900392-1', 'IV6900392', 436, '999อ1501',
+              5, 'ตัว', 20.2,  0,  101.0,  101.0, 1);
+    """)
+
+    # ── Ghost transaction rows ─────────────────────────────────────────────────
+    # Delete then re-insert to ensure exactly one copy of each ghost txn row.
+    # Without this, _reset_to_pre_mig's rollback SQL (which uses bare INSERT, no
+    # ON CONFLICT) may have already inserted a second copy if the row existed in
+    # the rebuilt live DB, resulting in count > 3.
+    for ref_no, pid, qty in [
+        ("IV6900394-7", 128, -24),
+        ("IV6900391-2", 815, -1),
+        ("IV6900392-1", 436, -5),
+    ]:
+        conn.execute(
+            "DELETE FROM transactions WHERE reference_no=? AND product_id=? "
+            "AND txn_type='OUT' AND quantity_change=?",
+            (ref_no, pid, qty)
+        )
+        conn.execute(
+            "INSERT INTO transactions "
+            "(product_id, txn_type, quantity_change, unit_mode, reference_no, note) "
+            "VALUES (?, 'OUT', ?, 'unit', ?, 'BSN ขาย (ghost)')",
+            (pid, qty, ref_no)
+        )
+
+    # ── Canonical transaction rows missing from rebuilt DB ────────────────────
+    # product 148 / IV6900394-7 / qty=-24 (canonical; absent because the ST row
+    # has product_id=128 in the rebuilt DB due to stale BSN mapping)
+    # product 436 / IV6900392-1 / qty=-30 (canonical; absent post-rebuild)
+    for ref_no, pid, qty in [
+        ("IV6900394-7", 148, -24),
+        ("IV6900392-1", 436, -30),
+    ]:
+        exists = conn.execute(
+            "SELECT 1 FROM transactions WHERE reference_no=? AND product_id=? "
+            "AND txn_type='OUT' AND quantity_change=?",
+            (ref_no, pid, qty)
+        ).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO transactions "
+                "(product_id, txn_type, quantity_change, unit_mode, reference_no, note) "
+                "VALUES (?, 'OUT', ?, 'unit', ?, 'BSN ขาย (canonical)')",
+                (pid, qty, ref_no)
+            )
+
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.commit()
+
+
 @pytest.fixture
 def conn(tmp_db):
     c = sqlite3.connect(tmp_db)
@@ -146,18 +221,30 @@ def conn(tmp_db):
     c.close()
 
 
+@pytest.fixture
+def conn_seeded(tmp_db):
+    """Like `conn` but also seeds the ghost rows and missing canonical rows so
+    tests are self-contained against the 2026-05-30 full ledger rebuild."""
+    c = sqlite3.connect(tmp_db)
+    c.execute("PRAGMA foreign_keys = ON")
+    _reset_to_pre_mig(c)
+    _seed_ghost_rows(c)
+    yield c
+    c.close()
+
+
 # ── Pre-state guards ──────────────────────────────────────────────────────────
 
-def test_pre_state_ghost_rows_exist(conn):
+def test_pre_state_ghost_rows_exist(conn_seeded):
     """All 3 ghost ST rows and 3 ghost transaction rows must exist pre-mig."""
-    assert _ghost_st_count(conn) == 3, "Expected 3 ghost ST rows pre-mig"
-    assert _ghost_txn_count(conn) == 3, "Expected 3 ghost transaction rows pre-mig"
+    assert _ghost_st_count(conn_seeded) == 3, "Expected 3 ghost ST rows pre-mig"
+    assert _ghost_txn_count(conn_seeded) == 3, "Expected 3 ghost transaction rows pre-mig"
 
 
-def test_pre_state_canonical_rows_exist(conn):
+def test_pre_state_canonical_rows_exist(conn_seeded):
     """All 3 canonical ST rows and 3 canonical transaction rows exist pre-mig."""
-    assert _canonical_st_count(conn) == 3, "Expected 3 canonical ST rows pre-mig"
-    assert _canonical_txn_count(conn) == 3, "Expected 3 canonical transaction rows pre-mig"
+    assert _canonical_st_count(conn_seeded) == 3, "Expected 3 canonical ST rows pre-mig"
+    assert _canonical_txn_count(conn_seeded) == 3, "Expected 3 canonical transaction rows pre-mig"
 
 
 # ── Forward migration ─────────────────────────────────────────────────────────
@@ -180,16 +267,16 @@ def test_canonical_st_rows_intact(conn):
     assert _canonical_st_count(conn) == 3, "Canonical ST rows must all survive mig 090"
 
 
-def test_canonical_txn_rows_intact(conn):
+def test_canonical_txn_rows_intact(conn_seeded):
     """Canonical transaction rows survive mig 090 — especially product 436's -30 row."""
-    _apply(conn, MIG_090)
-    assert _canonical_txn_count(conn) == 3, "Canonical txn rows must all survive mig 090"
+    _apply(conn_seeded, MIG_090)
+    assert _canonical_txn_count(conn_seeded) == 3, "Canonical txn rows must all survive mig 090"
 
 
-def test_product_436_canonical_txn_qty_unchanged(conn):
+def test_product_436_canonical_txn_qty_unchanged(conn_seeded):
     """product 436 / IV6900392-1: canonical row with quantity_change=-30 must survive."""
-    _apply(conn, MIG_090)
-    row = conn.execute(
+    _apply(conn_seeded, MIG_090)
+    row = conn_seeded.execute(
         """SELECT quantity_change FROM transactions
            WHERE reference_no='IV6900392-1' AND product_id=436 AND quantity_change=-30""",
     ).fetchone()
@@ -197,13 +284,13 @@ def test_product_436_canonical_txn_qty_unchanged(conn):
     assert row[0] == -30
 
 
-def test_stock_increases_after_ghost_delete(conn):
+def test_stock_increases_after_ghost_delete(conn_seeded):
     """stock_levels for products 128, 815, 436 each increase by the reversed
     ghost OUT quantity (trigger mig 080 fires on each DELETE).
     """
-    before = {pid: _stock(conn, pid) for pid in STOCK_DELTAS}
-    _apply(conn, MIG_090)
-    after = {pid: _stock(conn, pid) for pid in STOCK_DELTAS}
+    before = {pid: _stock(conn_seeded, pid) for pid in STOCK_DELTAS}
+    _apply(conn_seeded, MIG_090)
+    after = {pid: _stock(conn_seeded, pid) for pid in STOCK_DELTAS}
 
     for pid, delta in STOCK_DELTAS.items():
         expected = before[pid] + delta
@@ -237,30 +324,30 @@ def test_other_products_stock_unchanged(conn):
 
 # ── Idempotency ───────────────────────────────────────────────────────────────
 
-def test_rerun_is_noop(conn):
+def test_rerun_is_noop(conn_seeded):
     """Applying mig 090 twice is a no-op on the second run.
 
     The EXISTS guard in each DELETE prevents any double-effect: once the ghost
     ST row is gone, the EXISTS sub-query returns false and nothing is deleted.
     """
-    _apply(conn, MIG_090)
+    _apply(conn_seeded, MIG_090)
 
     # Snapshot stock after first run
-    stock_after_first = {pid: _stock(conn, pid) for pid in STOCK_DELTAS}
+    stock_after_first = {pid: _stock(conn_seeded, pid) for pid in STOCK_DELTAS}
 
-    _apply(conn, MIG_090)  # second run
+    _apply(conn_seeded, MIG_090)  # second run
 
     # Ghost rows still absent
-    assert _ghost_st_count(conn) == 0
-    assert _ghost_txn_count(conn) == 0
+    assert _ghost_st_count(conn_seeded) == 0
+    assert _ghost_txn_count(conn_seeded) == 0
 
     # Canonical rows still present
-    assert _canonical_st_count(conn) == 3
-    assert _canonical_txn_count(conn) == 3
+    assert _canonical_st_count(conn_seeded) == 3
+    assert _canonical_txn_count(conn_seeded) == 3
 
     # Stock unchanged from after-first-run state (no double-add)
     for pid in STOCK_DELTAS:
-        assert _stock(conn, pid) == stock_after_first[pid], (
+        assert _stock(conn_seeded, pid) == stock_after_first[pid], (
             f"product {pid}: stock drifted on second run of mig 090"
         )
 

@@ -2,6 +2,7 @@
 Parser for BSN weekly sales (ขาย) and purchase (ซื้อ) fixed-width report files.
 Encoding: cp874  |  Lines are CSV-quoted  |  Non-breaking spaces (\xa0) used as padding
 """
+import datetime
 import re
 
 
@@ -153,6 +154,117 @@ def detect_file_type(filepath: str) -> str:
             if 'ซื้อ' in c:
                 return 'purchase'
     return 'unknown'
+
+
+# Thai month abbreviations (trailing dot included) → month number.
+_THAI_MONTH_ABBR = {
+    'ม.ค.': 1, 'ก.พ.': 2, 'มี.ค.': 3, 'เม.ย.': 4,
+    'พ.ค.': 5, 'มิ.ย.': 6, 'ก.ค.': 7, 'ส.ค.': 8,
+    'ก.ย.': 9, 'ต.ค.': 10, 'พ.ย.': 11, 'ธ.ค.': 12,
+}
+
+# "วันที่จาก  1 มี.ค. 2569  ถึง  19 เม.ย. 2569"
+#   → (start_day, start_month, start_BEyear, end_day, end_month, end_BEyear)
+_DATE_FROM_RE = re.compile(
+    r'วันที่จาก\s+(\d{1,2})\s+(\S+?)\s+(25\d\d)\s+ถึง\s+(\d{1,2})\s+(\S+?)\s+(25\d\d)'
+)
+
+# "วันที่ : 20/04/69"  → the export (report-run) date, DD/MM/YY Buddhist short year.
+# The negative lookahead avoids matching the "วันที่จาก" line (no colon there).
+_REPORT_DATE_RE = re.compile(r'วันที่\s*:\s*(\d{2})/(\d{2})/(\d{2})')
+
+# A normal weekly import reaches back only a handful of days; a full-history
+# export reaches back to the start of the data (months–years). Treat anything
+# that reaches back further than this as a history dump. The asymmetry is
+# deliberate: wrongly rejecting a wide weekly is a harmless flash + re-check,
+# while wrongly accepting a history dump silently re-corrupts stock.
+_HISTORY_REACH_BACK_DAYS = 31
+
+
+def _thai_be_date(day, thai_month, be_year):
+    """(day, 'มี.ค.', BE-year) → datetime.date (Gregorian), or None if unparseable."""
+    month = _THAI_MONTH_ABBR.get(thai_month)
+    if not month:
+        return None
+    try:
+        return datetime.date(int(be_year) - 543, month, int(day))
+    except (ValueError, TypeError):
+        return None
+
+
+def is_history_export(filepath: str) -> bool:
+    """
+    Return True when the file is a full-history Express export
+    (ประวัติการขาย_แยกตามลูกค้า / ประวัติการซื้อ_…) rather than a
+    normal weekly BSN file.
+
+    Weekly and history files are the SAME Express report ("รายงานประวัติ…
+    แยกตาม…"), so the title alone cannot tell them apart. The real difference
+    is how far back the export reaches:
+
+    Signal 1 (gate) — title line contains both "ประวัติ" and "แยกตาม".
+
+    Signal 2 — the "วันที่จาก" filter START is far before the export's report
+               date ("วันที่ :"). filter-start is the earliest data the export
+               includes, so a large (report_date − filter_start) means the file
+               carries old data = a history dump. A weekly increment starts a
+               few days before it was run. We measure start-vs-report, NOT the
+               filter span, because Express defaults the "ถึง" end to 31 ธ.ค.
+               even on weekly exports (so the end is meaningless). A multi-year
+               filter span is history outright (it necessarily pulls old data).
+
+    Requires the title gate AND Signal 2 so a valid weekly file is never
+    rejected. If the header dates can't be parsed, errs toward allowing the
+    import (returns False) — the danger is silent acceptance, and an
+    unparseable header is not the known history shape.
+
+    Only the first ~15 lines are read (the header section).
+    """
+    title_match = False
+    filter_start = report_date = None
+    filter_year_span = None  # end_BEyear − start_BEyear (set even if a month is unparseable)
+
+    try:
+        with open(filepath, encoding='cp874') as f:
+            for i, raw in enumerate(f):
+                if i >= 15:
+                    break
+                c = _clean(raw)
+                if 'ประวัติ' in c and 'แยกตาม' in c:
+                    title_match = True
+                if report_date is None:
+                    rm = _REPORT_DATE_RE.search(c)
+                    if rm:
+                        dd, mm, by = rm.groups()
+                        try:
+                            report_date = datetime.date(
+                                2500 + int(by) - 543, int(mm), int(dd))
+                        except (ValueError, TypeError):
+                            report_date = None
+                if filter_year_span is None and 'วันที่จาก' in c:
+                    dm = _DATE_FROM_RE.search(c)
+                    if dm:
+                        sd, smon, sy, ed, emon, ey = dm.groups()
+                        filter_start = _thai_be_date(sd, smon, sy)
+                        # Year span is robust even when a Thai month abbreviation
+                        # is not in the map (so a multi-year dump is still caught).
+                        filter_year_span = int(ey) - int(sy)
+    except (OSError, UnicodeDecodeError):
+        return False
+
+    if not title_match:
+        return False
+
+    # Multi-year filter span → pulls data across >1 year → history.
+    if filter_year_span is not None and filter_year_span > 0:
+        return True
+
+    # Reach-back: filter starts well before the export was run → history.
+    if filter_start and report_date:
+        if (report_date - filter_start).days > _HISTORY_REACH_BACK_DAYS:
+            return True
+
+    return False
 
 
 # ── Credit-note (ใบลดหนี้ / SR) parser ───────────────────────────────────────
