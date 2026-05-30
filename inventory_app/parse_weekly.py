@@ -17,12 +17,16 @@ def _be_to_iso(d: str) -> str:
     return f"{(2500 + by) - 543:04d}-{month:02d}-{day:02d}"
 
 
-# BSN's discount columns accept: empty | percent (5%, 25+5%) | decimal baht (32.00, 14.00).
-# Both the line-discount column ("ส่วนลด") and the doc-level discount column ("ส่วนลดรวม")
-# share this format. The `.` and `%` are both essential — without them the regex shifts
-# columns and either (a) absorbs the discount into total, or (b) truncates net at the
-# percent sign. See test_parse_sales_decimal_baht_discount + test_parse_sales_doc_level_discount_percent.
-_DISCOUNT_COL = r'[\d+%.]*'
+# BSN's discount columns accept: empty | percent (5%, 25+5%) | decimal baht (32.00, 14.00)
+# | comma-thousands baht (1,800.00). Both the line-discount column ("ส่วนลด") and the
+# doc-level discount column ("ส่วนลดรวม") share this format. The `.`, `%` and `,` are all
+# essential — without them the regex shifts columns and either (a) absorbs the discount
+# into total, (b) truncates net at the percent sign, or (c) — when the doc-discount column
+# is a comma'd value like '1,800.00' — fails to consume it, so `net` grabs the discount
+# column instead of the true last column (RR6700192: net read as 1,800.00 not 4358.93).
+# See test_parse_sales_decimal_baht_discount + test_parse_sales_doc_level_discount_percent
+# + test_purchase_net_with_comma_doc_discount.
+_DISCOUNT_COL = r'[\d,+%.]*'
 
 # BSN occasionally glues qty and unit with '!' instead of whitespace (e.g. "2.00!หล").
 # `.replace('!', '')` on the captured groups strips the artifact at extract time.

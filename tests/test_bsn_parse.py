@@ -150,6 +150,36 @@ def test_parse_sales_qty_unit_bang_separator(sample_sales_file):
     assert e['net']        == 2372.02
 
 
+def test_purchase_net_with_comma_doc_discount():
+    """Regression (RR6700192): when the doc-level discount column carries a
+    comma-thousands value (e.g. '1,800.00'), the old _DISCOUNT_COL class
+    `[\\d+%.]*` could not match the comma, so it matched empty and `net`
+    (the last group) grabbed the doc-discount column instead of the true
+    final column. Real net is 4358.93 (last col), NOT 1,800.00.
+
+    Stock was unaffected (qty correct) but WACC would be corrupted on
+    re-import. Found via read-only preview of the full purchase history."""
+    from parse_weekly import _TX_PURCH, _clean
+    line = _clean('"        16/05/67   RR6700192        1000.00 มน            '
+                  '9.50  1      50+5%       4512.50   1,800.00       4358.93"')
+    m = _TX_PURCH.search(line)
+    assert m is not None
+    assert m.group(8) == '4512.50'                      # total
+    assert m.group(9).replace(',', '') == '4358.93'     # net = last col
+
+
+def test_purchase_net_with_plain_doc_discount_still_ok():
+    """Control: a no-comma doc-discount middle column (RR6700256) already
+    parsed correctly and must keep doing so after the comma fix."""
+    from parse_weekly import _TX_PURCH, _clean
+    line = _clean('"        21/06/67   RR6700256         300.00 มน           '
+                  '14.00  1      50+5%       1995.00     540.00       1917.86"')
+    m = _TX_PURCH.search(line)
+    assert m is not None
+    assert m.group(8) == '1995.00'                      # total
+    assert m.group(9) == '1917.86'                      # net = last col
+
+
 # ── detect_file_type ─────────────────────────────────────────────────────────
 
 def test_detect_file_type_purchase(sample_purchase_file):
