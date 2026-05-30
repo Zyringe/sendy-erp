@@ -1,12 +1,15 @@
 """Regression: models.import_weekly overwrite branch must not create a
 NULL/orphan stock_levels row (and must not FK-fail under
-PRAGMA foreign_keys=ON) when re-importing a doc whose product's only
+PRAGMA foreign_keys=ON) when re-importing a CHANGED doc whose product's only
 transaction is the one being deleted.
 
-Before the fix, "INSERT INTO stock_levels SELECT product_id, SUM(...)
-FROM transactions WHERE product_id=?" returned (NULL,0) on an empty set
-→ INTEGER-PK auto-rowid → orphan row (silent, FK off) / FK-fail (FK on,
-as get_connection sets). This was the source of 130 orphan stock_levels.
+History: the old per-row overwrite did "INSERT INTO stock_levels SELECT
+product_id, SUM(...)" which returned (NULL,0) on an empty set → orphan row
+(source of 130 orphans). PR2 replaced that with a diff-based 2-pass that
+relies on the mig-080 triggers for stock_levels (no manual stock surgery), so
+the orphan path is gone — but this test still guards that the new overwrite
+(triggered only by a REAL change; an identical re-import is now a no-op) leaves
+no orphan and re-syncs to the corrected quantity.
 """
 import os
 import sqlite3
@@ -23,12 +26,14 @@ PRICE = 55.0
 
 
 def _entry():
+    # qty 3 (the seeded row is qty 2) → a REAL change that triggers the
+    # overwrite path (an identical re-import is now a no-op).
     return {
-        "date_iso": "2026-05-09", "doc_no": DOC,
+        "date_iso": "2026-05-09", "doc_no": DOC, "line_seq": 1,
         "product_code_raw": CODE, "product_name_raw": "TEST PRODUCT",
-        "party": "S", "party_code": "S1", "qty": 2.0, "unit": "อัน",
+        "party": "S", "party_code": "S1", "qty": 3.0, "unit": "อัน",
         "unit_price": PRICE, "vat_type": 0, "discount": 0,
-        "total": 110.0, "net": 110.0,
+        "total": 165.0, "net": 165.0,
     }
 
 
@@ -84,7 +89,7 @@ def test_overwrite_no_orphan_no_fkfail(tmp_db, monkeypatch):
                       (PID,)).fetchone() is not None
     sl = c2.execute("SELECT quantity FROM stock_levels WHERE product_id=?",
                     (PID,)).fetchone()
-    # old lone txn deleted then the re-imported entry re-synced → qty 2
+    # old lone txn deleted then the re-imported (changed) entry re-synced → qty 3
     # (the point: a real product_id row, never NULL/orphan)
-    assert sl is not None and sl[0] == 2
+    assert sl is not None and sl[0] == 3
     c2.close()
