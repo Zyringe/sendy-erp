@@ -18,6 +18,8 @@ import sqlite3
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MIG_080 = os.path.join(REPO, "data", "migrations",
                        "080_stock_integrity_on_transactions_change.sql")
+MIG_092 = os.path.join(REPO, "data", "migrations",
+                       "092_round_stock_levels_quantity.sql")
 
 
 def _ensure_mig_080(conn):
@@ -26,6 +28,13 @@ def _ensure_mig_080(conn):
     if "080_stock_integrity_on_transactions_change.sql" not in applied:
         with open(MIG_080, encoding="utf-8") as f:
             conn.executescript(f.read())
+
+
+def _apply_mig_092(conn):
+    """Apply the rounding triggers (idempotent — DROP IF EXISTS + recreate)."""
+    with open(MIG_092, encoding="utf-8") as f:
+        conn.executescript(f.read())
+    conn.commit()
 
 
 def _stock_of(conn, pid):
@@ -209,3 +218,45 @@ def test_stock_levels_invariant_under_combined_mutations(tmp_db):
     conn.execute("DELETE FROM transactions WHERE id=?", (txn_id,))
     conn.commit()
     assert_invariant()
+
+
+def test_mig092_fractional_movements_do_not_accumulate_float_noise(tmp_db):
+    """Mig 092 — summing 0.1-aligned REAL movements must not leave IEEE-754
+    noise in stock_levels (the 23.399999999999984-instead-of-23.4 bug)."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    _apply_mig_092(conn)
+
+    pid = conn.execute("SELECT id FROM products LIMIT 1").fetchone()[0]
+    before = _stock_of(conn, pid)
+    for i in range(10):                       # 10 × -0.1 = exactly -1.0
+        _new_txn(conn, pid, -0.1, ref=f"FLT{i}")
+    got = _stock_of(conn, pid)
+    assert got == round(got, 4), f"stock carries float noise: {got!r}"
+    assert got == round(before - 1.0, 4), f"expected {before-1.0}, got {got!r}"
+
+
+def test_mig092_reconciles_existing_noisy_rows(tmp_db):
+    """The one-time reconcile in mig 092 rounds rows that are already noisy."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    pid = conn.execute("SELECT id FROM products LIMIT 1").fetchone()[0]
+    # Force a noisy value on the pre-092 (non-rounding) triggers.
+    conn.execute("UPDATE stock_levels SET quantity = 23.399999999999984 WHERE product_id=?", (pid,))
+    conn.commit()
+    _apply_mig_092(conn)                      # reconcile UPDATE runs
+    got = _stock_of(conn, pid)
+    assert got == 23.4, f"reconcile should clean to 23.4, got {got!r}"
+
+
+def test_mig092_get_base_qty_rounds(tmp_db):
+    """_get_base_qty(qty × fractional ratio) must not return float noise."""
+    import models
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    pid = conn.execute("SELECT id FROM products LIMIT 1").fetchone()[0]
+    conn.execute("INSERT INTO unit_conversions(product_id,bsn_unit,ratio) VALUES (?,?,0.1) "
+                 "ON CONFLICT(product_id,bsn_unit) DO UPDATE SET ratio=0.1", (pid, 'ZZTEST'))
+    conn.commit()
+    q = models._get_base_qty(conn, pid, 'กิโลกรัม', 'ZZTEST', 6)   # 6 × 0.1
+    assert q == 0.6 and q == round(q, 4), f"got {q!r}"
