@@ -667,17 +667,37 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str):
             continue
 
         if base_qty > 0:
-            change = base_qty if txn_type == 'IN' else -base_qty
-            label  = 'ซื้อ' if file_type == 'purchase' else 'ขาย'
+            # Purchase returns (GR = ใบลดหนี้ / goods returned to supplier)
+            # REDUCE stock — they must post OUT, not IN, and must NOT be
+            # averaged into WACC as a purchase lot. Express prints GR qty as a
+            # positive number but the GR doc-type is always a credit/return
+            # (the purchase-history parser's validate() subtracts every GR row
+            # from the grand total). We detect it by the GR doc-no prefix —
+            # the only signal preserved on the stored row — and tag the txn
+            # 'BSN ซื้อ-คืน' so recalculate_product_wacc's purchase branch
+            # (note == 'BSN ซื้อ') skips it; the generic OUT path then lowers
+            # stock at the current average cost, the correct treatment.
+            is_purchase_return = (
+                file_type == 'purchase' and (row['doc_no'] or '').startswith('GR')
+            )
+            if is_purchase_return:
+                row_txn_type = 'OUT'
+                change = -base_qty
+                note = 'BSN ซื้อ-คืน'
+            else:
+                row_txn_type = txn_type
+                change = base_qty if txn_type == 'IN' else -base_qty
+                label = 'ซื้อ' if file_type == 'purchase' else 'ขาย'
+                note = f'BSN {label}'
             conn.execute("""
                 INSERT INTO transactions
                     (product_id, txn_type, quantity_change, unit_mode,
                      reference_no, note, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
-                row['product_id'], txn_type, change, 'unit',
+                row['product_id'], row_txn_type, change, 'unit',
                 row['doc_no'],
-                f'BSN {label}',
+                note,
                 row['date_iso'] + ' 00:00:00',
             ))
 

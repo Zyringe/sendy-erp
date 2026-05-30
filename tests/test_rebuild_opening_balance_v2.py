@@ -82,9 +82,11 @@ def _seed(conn):
         "superseded by 2026-05-30 full ledger rebuild — script is deprecated "
         "('one-off from 2026-05-18'); running it on a post-rebuild DB clone "
         "produces float-precision cutoff mismatches (near-zero residuals from "
-        "back-solved opening rows) and 1198 negative-stock products, causing "
-        "the script to return exit-code 1; the opening-balance state the script "
-        "targeted is now baked into the rebuilt baseline"
+        "back-solved opening rows) plus post-rebuild negative-stock products, "
+        "causing the script to return exit-code 1 (the exact negative count is "
+        "snapshot-dependent and volatile, so it is intentionally not quoted "
+        "here); the opening-balance state the script targeted is now baked into "
+        "the rebuilt baseline"
     )
 )
 def test_rebuild_v2_buckets_and_defer(tmp_db, tmp_path, monkeypatch):

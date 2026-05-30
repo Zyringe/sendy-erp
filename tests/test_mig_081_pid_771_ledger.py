@@ -176,6 +176,15 @@ def test_pre_state_doze_sums(conn):
 
 # ── Apply forward migration ─────────────────────────────────────────────────
 
+@pytest.mark.skip(
+    reason=(
+        "superseded by 2026-05-30 full ledger rebuild — and degenerate on the "
+        "rebuilt DB: pid 771's purchase rows now carry unit 'หล' (alias), not "
+        "'โหล', so _doze_in_ids() returns 0 rows and the IN-side ×12 loop "
+        "iterates over an empty dict (vacuous pass). The migration's 5-โหล-IN "
+        "premise no longer holds (same reason the pre_state tests are skipped)"
+    )
+)
 def test_forward_mig_multiplies_19_rows(conn):
     doze_out_before = {r[0]: r[1] for r in conn.execute(
         "SELECT id, quantity_change FROM transactions "

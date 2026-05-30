@@ -42,6 +42,28 @@ _HISTORY_SALES_LINES = [
     '"      04/07/68   IV6801757-  1        50.00 ใบ          149.54  2                  7477.00                  7477.00"',
 ]
 
+# History export header — SINGLE Buddhist year (the real-world re-export shape
+# that the year-crossing heuristic missed). Modeled byte-for-byte on the real
+# file data/source/new_source/bsn_ประวัติขาย_1.3.69-19.4.69.csv:
+#   report date  วันที่ : 20/04/69   (export run 20 เม.ย. 2569)
+#   filter       วันที่จาก 1 มี.ค. 2569 ถึง 19 เม.ย. 2569  (same BE year)
+# Reach-back = report(2026-04-20) − filter_start(2026-03-01) = 50 days → history.
+_HISTORY_SALES_SINGLE_YEAR_LINES = [
+    '"(BSN)บจก.บุญสวัสดิ์นำชัย                                                                                             หน้า   :        1"',
+    '"  รายงานประวัติการขาย\xa0แยกตามลูกค้า"',
+    '"รหัสลูกค้า                       ถึง  Zหน้าร้าน                                                                      วันที่ : 20/04/69"',
+    '"วันที่จาก   1\xa0มี.ค.\xa02569         ถึง  19\xa0เม.ย.\xa02569"',
+    '"รหัสสินค้า  000ก4001             ถึง  แบบ"',
+    '"พนักงานขาย                       ถึง  S02                เลือกแผนก  *"',
+    '"--------------------------------------------------------------------------------------------------------------------------------------"',
+    '"  สินค้า วันที่ เลขที่เอกสาร          จำนวน   คืน   ราคาต่อหน่วย\xa0VAT   ส่วนลด       รวมเงิน  ส่วนลดรวม  ยอดขายสุทธิ  อ้างอิง  หมายเหตุ"',
+    '"--------------------------------------------------------------------------------------------------------------------------------------"',
+    '"  เกียรติทวีฮาร์ดแวร์ /01ก11"',
+    '"   ใบตัดเพชร 4" #GL-888(แดง) /031บ4120"',
+    '"      02/03/69   IV6900100-  1        10.00 ใบ          149.54  2                  1495.40                  1495.40"',
+    '"      18/04/69   IV6900200-  1        20.00 ใบ          149.54  2                  2990.80                  2990.80"',
+]
+
 # History export header for purchases (ซื้อ variant, multi-year).
 _HISTORY_PURCH_LINES = [
     '"(BSN)บจก.บุญสวัสดิ์นำชัย                                                                                            หน้า   :        1"',
@@ -82,6 +104,13 @@ def history_sales_file(tmp_path):
 
 
 @pytest.fixture
+def history_sales_single_year_file(tmp_path):
+    p = tmp_path / "ประวัติการขาย_แยกตามลูกค้า_1.3.69-19.4.69.csv"
+    p.write_text("\n".join(_HISTORY_SALES_SINGLE_YEAR_LINES) + "\n", encoding="cp874")
+    return str(p)
+
+
+@pytest.fixture
 def history_purch_file(tmp_path):
     p = tmp_path / "ประวัติการซื้อ_full.csv"
     p.write_text("\n".join(_HISTORY_PURCH_LINES) + "\n", encoding="cp874")
@@ -105,6 +134,17 @@ def test_history_sales_detected(history_sales_file):
 def test_history_purch_detected(history_purch_file):
     """History purchase export (start 2567 < end 2569) must return True."""
     assert parse_weekly.is_history_export(history_purch_file) is True
+
+
+def test_history_sales_single_year_detected(history_sales_single_year_file):
+    """A full-history export confined to ONE Buddhist year (filter start far
+    before the report date) must still be detected as history.
+
+    Regression for the blocker: the old year-crossing heuristic returned False
+    for single-year history dumps, letting them through /import-weekly and
+    re-corrupting stock. Reach-back = 50 days (2026-03-01 → 2026-04-20).
+    """
+    assert parse_weekly.is_history_export(history_sales_single_year_file) is True
 
 
 def test_weekly_sales_not_history(sample_sales_file):
@@ -179,12 +219,46 @@ def test_route_rejects_history_file_no_insert(admin_client, tmp_db, tmp_path):
     )
 
 
+def test_route_rejects_single_year_history_no_insert(admin_client, tmp_db):
+    """
+    POST a SINGLE-Buddhist-year history file (the shape the old heuristic
+    missed). Expect: rejected with the history flash and 0 rows inserted.
+    """
+    before = _count_rows(tmp_db, 'sales_transactions')
+
+    file_content = ("\n".join(_HISTORY_SALES_SINGLE_YEAR_LINES) + "\n").encode('cp874')
+    data = {
+        'weekly_file': (io.BytesIO(file_content),
+                        'ประวัติการขาย_1.3.69-19.4.69.csv',
+                        'text/csv'),
+    }
+    resp = admin_client.post(
+        '/import-weekly',
+        data=data,
+        content_type='multipart/form-data',
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302, f"Expected redirect, got {resp.status_code}"
+
+    after = _count_rows(tmp_db, 'sales_transactions')
+    assert after == before, (
+        f"Single-year history file inserted {after - before} rows; expected 0"
+    )
+
+    with admin_client.session_transaction() as sess:
+        flashes = sess.get('_flashes', [])
+    messages = [msg for (cat, msg) in flashes]
+    assert any('รายงานประวัติเต็ม' in m for m in messages), (
+        f"Expected history-guard flash not found. Got flashes: {messages}"
+    )
+
+
 def test_route_accepts_weekly_file(admin_client, tmp_db, sample_purchase_file):
     """
-    POST a normal weekly purchase file. Expect: no rejection redirect
-    (any redirect is fine — route redirects to mapping or purchases
-    depending on state). Most importantly: no 400/500 and no history-
-    guard flash.
+    POST a normal weekly purchase file. Expect: the import path actually
+    runs (success flash "นำเข้าสำเร็จ …"), not just any 302 — a 302 alone
+    also fires on the empty-file / unknown-type early-outs, so asserting it
+    is too weak to prove "weekly still imports" (finding #10).
     """
     file_content = open(sample_purchase_file, 'rb').read()
     data = {
@@ -201,10 +275,15 @@ def test_route_accepts_weekly_file(admin_client, tmp_db, sample_purchase_file):
     # Must redirect (not fail with 4xx/5xx)
     assert resp.status_code == 302, f"Expected redirect, got {resp.status_code}: {resp.data[:300]}"
 
-    # The history-guard flash must NOT appear
     with admin_client.session_transaction() as sess:
         flashes = sess.get('_flashes', [])
     messages = [msg for (cat, msg) in flashes]
+    # The history-guard flash must NOT appear …
     assert not any('รายงานประวัติเต็ม' in m for m in messages), (
         f"History-guard flash wrongly triggered on weekly file: {messages}"
+    )
+    # … and the weekly import must have actually run (parse found rows +
+    # models.import_weekly executed), proven by the success flash.
+    assert any('นำเข้าสำเร็จ' in m for m in messages), (
+        f"Weekly import did not run (no success flash). Got flashes: {messages}"
     )
