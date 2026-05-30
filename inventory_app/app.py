@@ -158,7 +158,7 @@ def bootstrap_upload_db():
 # POST whitelist by role
 _STAFF_POST_OK = frozenset([
     'login', 'logout',
-    'import_weekly', 'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
+    'import_weekly', 'import_weekly_confirm', 'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
     'products.product_location_save',
     'admin_exit_simulate',
     'conversion_new', 'conversion_edit', 'conversion_run', 'conversion_delete',
@@ -321,6 +321,7 @@ _ENDPOINT_MODULE = {
     'hr.payslip': 'hr',
     # data
     'import_weekly': 'data',
+    'import_weekly_confirm': 'data',
     'mapping': 'data',
     'mapping_save': 'data',
     'mapping_suggest': 'data',
@@ -1037,47 +1038,93 @@ def import_weekly():
             flash('กรุณาเลือกไฟล์ .csv', 'danger')
             return redirect(url_for('import_weekly'))
 
-        # Save temp file
-        tmp_path = os.path.join(config.UPLOAD_FOLDER, f.filename)
+        # Save to a pending location so the confirm step can re-parse the exact
+        # same file without a re-upload (mirrors /admin/upload-db's flow).
+        pending_dir = os.path.join(config.UPLOAD_FOLDER, 'pending_imports')
+        os.makedirs(pending_dir, exist_ok=True)
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_name = os.path.basename(f.filename)
+        tmp_path = os.path.join(pending_dir, f'{ts}__{safe_name}')
         f.save(tmp_path)
 
-        if is_history_export(tmp_path):
-            flash(
-                'ไฟล์นี้เป็นรายงานประวัติเต็ม (ประวัติการขาย/ซื้อ) '
-                'ไม่ใช่ไฟล์รายสัปดาห์ — '
-                'ใช้เครื่องมือ rebuild/express import แทน อย่านำเข้าทางนี้',
-                'danger',
-            )
-            return redirect(url_for('import_weekly'))
-
         file_type = detect_file_type(tmp_path)
-        if file_type == 'unknown':
+        if file_type not in ('sales', 'purchase'):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
             flash('ไม่สามารถระบุประเภทไฟล์ (ขาย/ซื้อ)', 'danger')
             return redirect(url_for('import_weekly'))
 
         entries = parse_sales(tmp_path) if file_type == 'sales' else parse_purchases(tmp_path)
         if not entries:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
             flash('ไม่พบข้อมูลในไฟล์', 'warning')
             return redirect(url_for('import_weekly'))
 
-        stats = models.import_weekly(entries, file_type, f.filename)
-
-        parts = [f'นำเข้าสำเร็จ {stats["imported"]} รายการ']
-        if stats['overwritten']:
-            parts.append(f'อัพเดทข้อมูลเก่า {stats["overwritten"]} รายการ')
-        if stats['skipped_dup']:
-            parts.append(f'ข้าม {stats["skipped_dup"]} รายการ')
-        if stats['new_unmapped']:
-            parts.append(f'สินค้าไม่มีในระบบ {stats["new_unmapped"]} รายการ')
-        flash('  |  '.join(parts), 'success' if stats['new_unmapped'] == 0 else 'warning')
-        if models.get_pending_unit_conversions():
-            return redirect(url_for('unit_conversions'))
-        if stats['new_unmapped'] > 0:
-            return redirect(url_for('mapping'))
-        return redirect(url_for('sales_view') if file_type == 'sales' else url_for('purchases_view'))
+        # DRY-RUN: show exactly what will change (full OR partial file) and let
+        # the user confirm. A full-history re-upload shows ~0 changes (safe
+        # idempotent no-op); a wrong/corrupt file shows many changes → cancel.
+        # The preview replaces the old hard history-block — is_history_export is
+        # now just an informational flag.
+        plan = models.preview_import(entries, file_type)
+        session['pending_import'] = {
+            'path': tmp_path, 'file_type': file_type, 'filename': safe_name,
+        }
+        return render_template(
+            'import_preview.html', plan=plan, file_type=file_type,
+            filename=safe_name, n_rows=len(entries),
+            is_full=is_history_export(tmp_path),
+        )
 
     recent_imports = models.get_recent_imports(limit=5)
     return render_template('import_weekly.html', recent_imports=recent_imports)
+
+
+@app.route('/import-weekly/confirm', methods=['POST'])
+def import_weekly_confirm():
+    """Step 2: apply the import the user previewed (or cancel)."""
+    pend = session.pop('pending_import', None)
+    if not pend or not os.path.exists(pend['path']):
+        flash('ไม่พบไฟล์ที่รอยืนยัน — กรุณาอัปโหลดใหม่', 'danger')
+        return redirect(url_for('import_weekly'))
+
+    if request.form.get('action') == 'cancel':
+        try:
+            os.remove(pend['path'])
+        except OSError:
+            pass
+        flash('ยกเลิกการนำเข้าแล้ว', 'info')
+        return redirect(url_for('import_weekly'))
+
+    file_type = pend['file_type']
+    entries = (parse_sales(pend['path']) if file_type == 'sales'
+               else parse_purchases(pend['path']))
+    stats = models.import_weekly(entries, file_type, pend['filename'])
+    try:
+        os.remove(pend['path'])
+    except OSError:
+        pass
+
+    parts = []
+    if stats['imported']:
+        parts.append(f'นำเข้า/อัพเดท {stats["imported"]} รายการ')
+    if stats['unchanged']:
+        parts.append(f'เหมือนเดิม {stats["unchanged"]} รายการ')
+    if stats['skipped_dup']:
+        parts.append(f'ข้าม {stats["skipped_dup"]} รายการ')
+    if stats['new_unmapped']:
+        parts.append(f'สินค้าใหม่ไม่มีในระบบ {stats["new_unmapped"]} รายการ')
+    flash('  |  '.join(parts) or 'ไม่มีการเปลี่ยนแปลง',
+          'success' if stats['new_unmapped'] == 0 else 'warning')
+    if models.get_pending_unit_conversions():
+        return redirect(url_for('unit_conversions'))
+    if stats['new_unmapped'] > 0:
+        return redirect(url_for('mapping'))
+    return redirect(url_for('sales_view') if file_type == 'sales' else url_for('purchases_view'))
 
 
 # ── Unit Conversions ──────────────────────────────────────────────────────────

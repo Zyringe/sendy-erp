@@ -1,0 +1,106 @@
+{% extends 'base.html' %}
+{% block title %}ตรวจก่อนนำเข้า – ERP{% endblock %}
+{% block page_title %}ตรวจก่อนนำเข้า{% endblock %}
+
+{% block content %}
+<div class="row g-3 justify-content-center">
+  <div class="col-lg-10">
+
+    <div class="card mb-3">
+      <div class="card-header">
+        <i class="bi bi-search me-2 text-accent"></i>
+        ตรวจการเปลี่ยนแปลงก่อนยืนยัน — <strong>{{ 'ขาย' if file_type == 'sales' else 'ซื้อ' }}</strong>
+        <span class="text-subtle small ms-2">{{ filename }} · {{ n_rows }} แถว</span>
+      </div>
+      <div class="card-body">
+        {% if is_full %}
+        <div class="alert alert-info py-2 mb-3">
+          <i class="bi bi-info-circle me-1"></i>
+          ไฟล์นี้ดูเหมือน <strong>ประวัติเต็ม</strong> (ช่วงวันที่กว้าง) — ปกติแล้วถ้าข้อมูลเดิมถูกต้อง
+          ตัวเลข “เหมือนเดิม” ควรเกือบทั้งหมด. ถ้า “เปลี่ยน” เยอะผิดปกติ ให้ตรวจก่อนยืนยัน
+        </div>
+        {% endif %}
+
+        <div class="row text-center g-2 mb-3">
+          <div class="col"><div class="border rounded py-2">
+            <div class="h4 mb-0 text-success">{{ plan.unchanged }}</div><small class="text-subtle">เหมือนเดิม</small></div></div>
+          <div class="col"><div class="border rounded py-2">
+            <div class="h4 mb-0 text-primary">{{ plan.new }}</div><small class="text-subtle">ใหม่</small></div></div>
+          <div class="col"><div class="border rounded py-2">
+            <div class="h4 mb-0 text-warning">{{ plan.changed }}</div><small class="text-subtle">เปลี่ยน</small></div></div>
+          <div class="col"><div class="border rounded py-2">
+            <div class="h4 mb-0 text-danger">{{ plan.unmapped }}</div><small class="text-subtle">ยังไม่ผูกรหัส</small></div></div>
+          <div class="col"><div class="border rounded py-2">
+            <div class="h4 mb-0 text-subtle">{{ plan.ignored }}</div><small class="text-subtle">ข้าม</small></div></div>
+        </div>
+
+        <div class="d-flex gap-2">
+          <form method="post" action="{{ url_for('import_weekly_confirm') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="confirm">
+            <button type="submit" class="btn btn-primary">
+              <i class="bi bi-check2-circle me-1"></i>ยืนยันนำเข้า
+              ({{ plan.new + plan.changed }} แถว{% if plan.changed %} · แก้ {{ plan.changed }}{% endif %})
+            </button>
+          </form>
+          <form method="post" action="{{ url_for('import_weekly_confirm') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="cancel">
+            <button type="submit" class="btn btn-outline-secondary">
+              <i class="bi bi-x-lg me-1"></i>ยกเลิก
+            </button>
+          </form>
+        </div>
+        {% if plan.changed == 0 and plan.new == 0 and plan.unmapped == 0 %}
+        <div class="text-success small mt-2"><i class="bi bi-check2-all me-1"></i>
+          ไม่มีอะไรเปลี่ยน — กดยืนยันได้อย่างปลอดภัย (no-op)</div>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if plan.changes %}
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-pencil-square me-2 text-warning"></i>
+        รายการที่ “เปลี่ยน” ({{ plan.changed }}{% if plan.changes|length < plan.changed %} · แสดง {{ plan.changes|length }} แรก{% endif %})</div>
+      <div class="card-body p-0">
+        <table class="table table-sm small mb-0">
+          <thead class="table-light"><tr>
+            <th class="ps-3">เอกสาร</th><th>รหัส</th><th>ชื่อ</th><th>สิ่งที่เปลี่ยน</th></tr></thead>
+          <tbody>
+            {% for c in plan.changes %}
+            <tr>
+              <td class="ps-3">{{ c.doc_no }}</td>
+              <td>{{ c.bsn_code }}</td>
+              <td class="text-truncate" style="max-width:240px">{{ c.name }}</td>
+              <td>
+                {% for d in c.diffs %}
+                <span class="badge bg-light text-dark border me-1">
+                  {{ d[0] }}: <span class="text-danger">{{ d[1] }}</span> → <span class="text-success">{{ d[2] }}</span>
+                </span>
+                {% endfor %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if plan.new_codes %}
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-link-45deg me-2 text-danger"></i>
+        รหัสที่ยังไม่ผูก ({{ plan.new_codes|length }}) — จะยังไม่ตัดสต็อกจนกว่าจะผูกรหัส</div>
+      <div class="card-body small">
+        {% for code in plan.new_codes %}
+        <span class="badge bg-light text-dark border me-1 mb-1">{{ code }}
+          {% if plan.new_code_names[code] %}<span class="text-subtle">— {{ plan.new_code_names[code] }}</span>{% endif %}
+        </span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+{% endblock %}

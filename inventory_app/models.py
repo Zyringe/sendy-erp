@@ -1113,6 +1113,86 @@ def resolve_pending_mappings(conn):
 
 # ── Weekly Import ─────────────────────────────────────────────────────────────
 
+def _resolve_mapping(conn, code, unit):
+    """(product_id, is_ignored, mapped?) via the unit-aware mapping (mig 061):
+    an exact (bsn_code, unit) override beats the bsn_unit='' catch-all."""
+    m = conn.execute(
+        """SELECT product_id, is_ignored FROM product_code_mapping
+            WHERE bsn_code = ? AND bsn_unit IN (?, '')
+            ORDER BY (bsn_unit = '') LIMIT 1""",
+        (code, unit or '')
+    ).fetchone()
+    return (m['product_id'] if m else None, m['is_ignored'] if m else 0, bool(m))
+
+
+def preview_import(entries: list, file_type: str) -> dict:
+    """Read-only DRY-RUN of import_weekly — the diff shown on the confirm page.
+
+    Classifies each line against the stored row using the SAME line-identity
+    keys and change comparison as import_weekly, but writes NOTHING. Lets the
+    user see (and confirm) exactly what a full/partial re-upload will change
+    before it touches the ledger.
+
+    Returns counts (new/changed/unchanged/ignored/unmapped) + the per-row diffs
+    for changed lines + the unmapped bsn_codes.
+    """
+    assert file_type in ('sales', 'purchase')
+    table = 'sales_transactions' if file_type == 'sales' else 'purchase_transactions'
+    conn = get_connection()
+    counts = {'new': 0, 'changed': 0, 'unchanged': 0, 'ignored': 0, 'unmapped': 0}
+    new_codes = {}
+    changes = []
+    try:
+        for e in entries:
+            unit = bsn_units.normalize_unit(e.get('unit'))
+            doc_no = e['doc_no']
+            line_seq = e.get('line_seq', 1)
+            pid, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'], unit)
+            if is_ignored:
+                counts['ignored'] += 1
+                continue
+            if not mapped:
+                counts['unmapped'] += 1
+                if e['product_code_raw']:
+                    new_codes[e['product_code_raw']] = e['product_name_raw']
+                continue
+            if file_type == 'purchase':
+                old = conn.execute(
+                    f"SELECT * FROM {table} WHERE doc_no=? AND bsn_code=? AND line_seq=?",
+                    (doc_no, e['product_code_raw'], line_seq)).fetchone()
+            else:
+                old = conn.execute(
+                    f"SELECT * FROM {table} WHERE doc_no=? AND bsn_code=?",
+                    (doc_no, e['product_code_raw'])).fetchone()
+            if old is None:
+                counts['new'] += 1
+                continue
+            diffs = []
+            if abs((old['qty'] or 0) - (e['qty'] or 0)) >= 1e-9:
+                diffs.append(('qty', old['qty'], e['qty']))
+            if bsn_units.normalize_unit(old['unit'] or '') != (unit or ''):
+                diffs.append(('unit', old['unit'], unit))
+            if abs((old['unit_price'] or 0) - (e['unit_price'] or 0)) >= 1e-9:
+                diffs.append(('unit_price', old['unit_price'], e['unit_price']))
+            if abs((old['net'] or 0) - (e['net'] or 0)) >= 1e-9:
+                diffs.append(('net', old['net'], e['net']))
+            if (old['product_id'] or 0) != (pid or 0):
+                diffs.append(('product_id', old['product_id'], pid))
+            if not diffs:
+                counts['unchanged'] += 1
+            else:
+                counts['changed'] += 1
+                if len(changes) < 500:
+                    changes.append({
+                        'doc_no': doc_no, 'bsn_code': e['product_code_raw'],
+                        'name': e['product_name_raw'], 'diffs': diffs,
+                    })
+    finally:
+        conn.close()
+    return {**counts, 'new_codes': sorted(new_codes.keys()),
+            'new_code_names': new_codes, 'changes': changes}
+
+
 def import_weekly(entries: list, file_type: str, filename: str) -> dict:
     """
     Insert sales or purchase entries; skip duplicates by doc_no.
@@ -1142,16 +1222,6 @@ def import_weekly(entries: list, file_type: str, filename: str) -> dict:
     bsn_notes = (('BSN ขาย', 'BSN ขาย-คืน') if file_type == 'sales'
                  else ('BSN ซื้อ', 'BSN ซื้อ-คืน'))
 
-    def _resolve(code, unit):
-        """(product_id, is_ignored, mapped?) via unit-aware mapping (mig 061)."""
-        m = conn.execute(
-            """SELECT product_id, is_ignored FROM product_code_mapping
-                WHERE bsn_code = ? AND bsn_unit IN (?, '')
-                ORDER BY (bsn_unit = '') LIMIT 1""",
-            (code, unit or '')
-        ).fetchone()
-        return (m['product_id'] if m else None, m['is_ignored'] if m else 0, bool(m))
-
     # ── Pass 1: diff each line vs the stored row; upsert only REAL changes ──
     # Line identity: sales doc_no already carries the printed "-N" line suffix
     # (line-unique), so (doc_no, bsn_code) is enough. Purchase doc_no has no
@@ -1166,7 +1236,7 @@ def import_weekly(entries: list, file_type: str, filename: str) -> dict:
         doc_base = doc_no.rsplit('-', 1)[0] if '-' in doc_no else doc_no
         line_seq = e.get('line_seq', 1)
 
-        product_id, is_ignored, mapped = _resolve(e['product_code_raw'], e.get('unit'))
+        product_id, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'], e.get('unit'))
         if is_ignored:
             skipped_dup += 1
             continue

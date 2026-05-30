@@ -151,6 +151,37 @@ def test_reimport_raw_stored_unit_is_noop(empty_db):
     assert _stock(empty_db, pid) == 5, "raw-unit re-import must not churn stock"
 
 
+def test_preview_is_readonly_and_reconciles_with_apply(empty_db):
+    """preview_import writes nothing and its counts match what import_weekly does."""
+    import models
+    pids = {c: _seed(empty_db, 90600 + i, c) for i, c in enumerate(['G1', 'G2'])}
+    models.import_weekly([_entry('HP1', 'G1', 10), _entry('HP2', 'G2', 10)], 'purchase', 'a')
+
+    entries = [
+        _entry('HP1', 'G1', 10),   # unchanged
+        _entry('HP2', 'G2', 20),   # changed qty 10→20
+        _entry('HP9', 'G9', 5),    # unmapped (no mapping for G9)
+    ]
+    before = {pid: _stock(empty_db, pid) for pid in pids.values()}
+    prev = models.preview_import(entries, 'purchase')
+
+    # read-only
+    for pid in pids.values():
+        assert _stock(empty_db, pid) == before[pid], "preview must not change stock"
+    assert prev['unchanged'] == 1
+    assert prev['changed'] == 1
+    assert prev['unmapped'] == 1
+    assert len(prev['changes']) == 1 and prev['changes'][0]['bsn_code'] == 'G2'
+
+    # apply → stats reconcile with the preview
+    st = models.import_weekly(entries, 'purchase', 'b')
+    assert st['unchanged'] == prev['unchanged']
+    assert st['overwritten'] == prev['changed']
+    assert st['new_unmapped'] == len(prev['new_codes'])
+    assert st['imported'] == prev['new'] + prev['changed'] + prev['unmapped']
+    assert _stock(empty_db, pids['G2']) == 20   # the confirmed change applied
+
+
 def test_corrected_price_overwrites_not_doubles(empty_db):
     """Re-uploading a line with a corrected price overwrites (the old unit_price
     key would have inserted a 2nd row, double-counting stock)."""
