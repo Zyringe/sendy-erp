@@ -634,7 +634,12 @@ def _get_base_qty(conn, product_id: int, product_unit_type: str, bsn_unit: str, 
         (product_id, bsn_unit)
     ).fetchone()
     if row:
-        return qty * row['ratio']
+        # Round to 4 dp: qty × a fractional ratio (e.g. 6 × 0.1) yields IEEE-754
+        # noise (0.6000000000000001) that the stock triggers then accumulate.
+        # Finest real movement is 0.1, so 4 dp is lossless. Mirrors mig 092's
+        # trigger-level ROUND (belt-and-suspenders — keeps the ledger rows clean
+        # too, so direct SUM(quantity_change) audits don't drift either).
+        return round(qty * row['ratio'], 4)
     return None  # ratio not defined yet
 
 
