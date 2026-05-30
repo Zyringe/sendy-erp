@@ -6,13 +6,14 @@
 <div class="row g-3 justify-content-center">
   <div class="col-lg-5">
     <div class="card">
-      <div class="card-header"><i class="bi bi-upload me-2 text-accent"></i>อัปโหลดไฟล์ขาย / ซื้อ</div>
+      <div class="card-header"><i class="bi bi-upload me-2 text-accent"></i>อัปโหลดไฟล์ Express (ที่เดียว)</div>
       <div class="card-body">
         <div class="alert alert-info mb-3">
           <i class="bi bi-box-arrow-up me-2"></i>
-          ดึงไฟล์ CSV จากโปรแกรม <strong>Express</strong> แล้วอัปโหลดที่นี่<br>
-          รองรับทั้งรายการ <strong>ขาย</strong> และ <strong>ซื้อ</strong><br>
-          <small class="text-subtle">หากมีข้อมูลเดิมอยู่แล้ว ระบบจะอัพเดทด้วยข้อมูลใหม่โดยอัตโนมัติ</small>
+          ดึงไฟล์ CSV จากโปรแกรม <strong>Express</strong> แล้วอัปโหลดที่นี่ — ระบบ<strong>ตรวจชนิดไฟล์เอง</strong><br>
+          รองรับ <strong>ขาย</strong> · <strong>ซื้อ</strong> · <strong>ลูกหนี้คงค้าง</strong> · <strong>เจ้าหนี้คงค้าง</strong>
+          (เต็มหรือบางส่วนก็ได้)<br>
+          <small class="text-subtle">มี<strong>หน้าตรวจก่อนยืนยัน</strong>เสมอ — โชว์ว่าจะเพิ่ม/แก้/เหมือนเดิมอะไรบ้าง ยังไม่บันทึกจนกว่าจะกดยืนยัน</small>
         </div>
         <form method="post" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

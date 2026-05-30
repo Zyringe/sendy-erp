@@ -1030,6 +1030,53 @@ def transaction_history():
 
 ALLOWED_WEEKLY = {'cp874'}
 
+def _detect_express_kind(path):
+    """Auto-classify an uploaded Express file so one upload box handles them all:
+    'sales' / 'purchase' (transaction files → diff-confirm) or
+    'ar_snapshot' / 'ap_snapshot' (outstanding snapshots → snapshot-replace) or
+    'unknown'. AR/AP are detected first by their distinctive header markers."""
+    try:
+        with open(path, encoding='cp874') as f:
+            head = ''.join([next(f, '') for _ in range(8)]).replace('\xa0', ' ')
+    except (OSError, UnicodeDecodeError):
+        return 'unknown'
+    if 'ลูกหนี้คงค้าง' in head or 'รายงานลูกหนี้' in head:
+        return 'ar_snapshot'
+    if 'เจ้าหนี้คงค้าง' in head or 'รายงานเจ้าหนี้' in head:
+        return 'ap_snapshot'
+    return detect_file_type(path)
+
+
+def _express_snapshot_summary(path, kind, company='BSN'):
+    """Read-only summary of an AR/AP outstanding snapshot for the preview page.
+    Snapshots REPLACE the prior (entity, as-of date) — there is no per-doc diff
+    (a newer snapshot is the new truth), so we show as-of date, doc count, total,
+    and the delta vs the snapshot currently in the DB."""
+    if kind == 'ar_snapshot':
+        recs = list(express_importer.p_ar.parse_ar_snapshot(path))
+        as_of = express_importer.p_ar.report_asof_date(path)
+        table = 'express_ar_outstanding'
+    else:
+        recs = list(express_importer.p_ap.parse_ap_snapshot(path))
+        as_of = express_importer.p_ap.report_asof_date(path)
+        table = 'express_ap_outstanding'
+    total = round(sum((r.outstanding_amount or 0) for r in recs), 2)
+    conn = get_connection()
+    prior = conn.execute(
+        f"SELECT snapshot_date_iso, ROUND(SUM(outstanding_amount),2) FROM {table} "
+        f"WHERE entity=? AND snapshot_date_iso=("
+        f"  SELECT MAX(snapshot_date_iso) FROM {table} WHERE entity=?) "
+        f"GROUP BY snapshot_date_iso", (company, company)).fetchone()
+    conn.close()
+    return {
+        'kind': kind, 'entity': company, 'as_of': as_of, 'n_docs': len(recs),
+        'total': total,
+        'prior_date': prior[0] if prior else None,
+        'prior_total': prior[1] if prior else None,
+        'replaces_same_date': bool(prior and prior[0] == as_of),
+    }
+
+
 @app.route('/import-weekly', methods=['GET', 'POST'])
 def import_weekly():
     if request.method == 'POST':
@@ -1047,38 +1094,51 @@ def import_weekly():
         tmp_path = os.path.join(pending_dir, f'{ts}__{safe_name}')
         f.save(tmp_path)
 
-        file_type = detect_file_type(tmp_path)
-        if file_type not in ('sales', 'purchase'):
+        def _discard():
             try:
                 os.remove(tmp_path)
             except OSError:
                 pass
-            flash('ไม่สามารถระบุประเภทไฟล์ (ขาย/ซื้อ)', 'danger')
-            return redirect(url_for('import_weekly'))
 
-        entries = parse_sales(tmp_path) if file_type == 'sales' else parse_purchases(tmp_path)
-        if not entries:
+        # One upload box, auto-detected: ขาย/ซื้อ transaction files go through
+        # the per-doc diff-confirm; AR/AP outstanding snapshots go through the
+        # snapshot-replace preview (different data shapes → different handling).
+        kind = _detect_express_kind(tmp_path)
+
+        if kind in ('sales', 'purchase'):
+            entries = parse_sales(tmp_path) if kind == 'sales' else parse_purchases(tmp_path)
+            if not entries:
+                _discard()
+                flash('ไม่พบข้อมูลในไฟล์', 'warning')
+                return redirect(url_for('import_weekly'))
+            # DRY-RUN: show exactly what will change (full OR partial file). A
+            # full re-upload of unchanged data shows ~0 changes (safe no-op); a
+            # wrong/corrupt file shows many changes → cancel. The preview
+            # replaces the old hard history-block (is_history_export = info flag).
+            plan = models.preview_import(entries, kind)
+            session['pending_import'] = {'path': tmp_path, 'kind': kind, 'filename': safe_name}
+            return render_template(
+                'import_preview.html', plan=plan, file_type=kind,
+                filename=safe_name, n_rows=len(entries),
+                is_full=is_history_export(tmp_path),
+            )
+
+        if kind in ('ar_snapshot', 'ap_snapshot'):
             try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
-            flash('ไม่พบข้อมูลในไฟล์', 'warning')
-            return redirect(url_for('import_weekly'))
+                summary = _express_snapshot_summary(tmp_path, kind)
+            except Exception as e:
+                _discard()
+                flash(f'อ่านไฟล์ AR/AP ไม่สำเร็จ: {e}', 'danger')
+                return redirect(url_for('import_weekly'))
+            session['pending_import'] = {
+                'path': tmp_path, 'kind': kind, 'filename': safe_name, 'company': 'BSN',
+            }
+            return render_template('import_snapshot_preview.html',
+                                   summary=summary, filename=safe_name)
 
-        # DRY-RUN: show exactly what will change (full OR partial file) and let
-        # the user confirm. A full-history re-upload shows ~0 changes (safe
-        # idempotent no-op); a wrong/corrupt file shows many changes → cancel.
-        # The preview replaces the old hard history-block — is_history_export is
-        # now just an informational flag.
-        plan = models.preview_import(entries, file_type)
-        session['pending_import'] = {
-            'path': tmp_path, 'file_type': file_type, 'filename': safe_name,
-        }
-        return render_template(
-            'import_preview.html', plan=plan, file_type=file_type,
-            filename=safe_name, n_rows=len(entries),
-            is_full=is_history_export(tmp_path),
-        )
+        _discard()
+        flash('ไม่รู้จักชนิดไฟล์ (รองรับ: ขาย / ซื้อ / ลูกหนี้คงค้าง / เจ้าหนี้คงค้าง)', 'danger')
+        return redirect(url_for('import_weekly'))
 
     recent_imports = models.get_recent_imports(limit=5)
     return render_template('import_weekly.html', recent_imports=recent_imports)
@@ -1100,10 +1160,29 @@ def import_weekly_confirm():
         flash('ยกเลิกการนำเข้าแล้ว', 'info')
         return redirect(url_for('import_weekly'))
 
-    file_type = pend['file_type']
-    entries = (parse_sales(pend['path']) if file_type == 'sales'
+    kind = pend.get('kind')
+
+    # AR/AP snapshot → idempotent snapshot-replace via the Express importer.
+    if kind in ('ar_snapshot', 'ap_snapshot'):
+        try:
+            express_importer.run_import(kind, pend['path'],
+                                        company_code=pend.get('company', 'BSN'),
+                                        dry_run=False, incremental=False)
+            flash(f'นำเข้า {"ลูกหนี้คงค้าง" if kind == "ar_snapshot" else "เจ้าหนี้คงค้าง"} '
+                  f'({pend.get("company", "BSN")}) สำเร็จ', 'success')
+        except Exception as e:
+            flash(f'นำเข้าไม่สำเร็จ: {e}', 'danger')
+        try:
+            os.remove(pend['path'])
+        except OSError:
+            pass
+        return redirect(url_for('express_ar_dashboard' if kind == 'ar_snapshot'
+                                else 'express_ap_dashboard'))
+
+    # ขาย/ซื้อ transaction file → per-doc idempotent diff import.
+    entries = (parse_sales(pend['path']) if kind == 'sales'
                else parse_purchases(pend['path']))
-    stats = models.import_weekly(entries, file_type, pend['filename'])
+    stats = models.import_weekly(entries, kind, pend['filename'])
     try:
         os.remove(pend['path'])
     except OSError:
@@ -1124,7 +1203,7 @@ def import_weekly_confirm():
         return redirect(url_for('unit_conversions'))
     if stats['new_unmapped'] > 0:
         return redirect(url_for('mapping'))
-    return redirect(url_for('sales_view') if file_type == 'sales' else url_for('purchases_view'))
+    return redirect(url_for('sales_view') if kind == 'sales' else url_for('purchases_view'))
 
 
 # ── Unit Conversions ──────────────────────────────────────────────────────────
