@@ -158,7 +158,7 @@ def bootstrap_upload_db():
 # POST whitelist by role
 _STAFF_POST_OK = frozenset([
     'login', 'logout',
-    'import_weekly', 'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
+    'import_weekly', 'import_weekly_confirm', 'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
     'products.product_location_save',
     'admin_exit_simulate',
     'conversion_new', 'conversion_edit', 'conversion_run', 'conversion_delete',
@@ -321,6 +321,7 @@ _ENDPOINT_MODULE = {
     'hr.payslip': 'hr',
     # data
     'import_weekly': 'data',
+    'import_weekly_confirm': 'data',
     'mapping': 'data',
     'mapping_save': 'data',
     'mapping_suggest': 'data',
@@ -1029,6 +1030,53 @@ def transaction_history():
 
 ALLOWED_WEEKLY = {'cp874'}
 
+def _detect_express_kind(path):
+    """Auto-classify an uploaded Express file so one upload box handles them all:
+    'sales' / 'purchase' (transaction files → diff-confirm) or
+    'ar_snapshot' / 'ap_snapshot' (outstanding snapshots → snapshot-replace) or
+    'unknown'. AR/AP are detected first by their distinctive header markers."""
+    try:
+        with open(path, encoding='cp874') as f:
+            head = ''.join([next(f, '') for _ in range(8)]).replace('\xa0', ' ')
+    except (OSError, UnicodeDecodeError):
+        return 'unknown'
+    if 'ลูกหนี้คงค้าง' in head or 'รายงานลูกหนี้' in head:
+        return 'ar_snapshot'
+    if 'เจ้าหนี้คงค้าง' in head or 'รายงานเจ้าหนี้' in head:
+        return 'ap_snapshot'
+    return detect_file_type(path)
+
+
+def _express_snapshot_summary(path, kind, company='BSN'):
+    """Read-only summary of an AR/AP outstanding snapshot for the preview page.
+    Snapshots REPLACE the prior (entity, as-of date) — there is no per-doc diff
+    (a newer snapshot is the new truth), so we show as-of date, doc count, total,
+    and the delta vs the snapshot currently in the DB."""
+    if kind == 'ar_snapshot':
+        recs = list(express_importer.p_ar.parse_ar_snapshot(path))
+        as_of = express_importer.p_ar.report_asof_date(path)
+        table = 'express_ar_outstanding'
+    else:
+        recs = list(express_importer.p_ap.parse_ap_snapshot(path))
+        as_of = express_importer.p_ap.report_asof_date(path)
+        table = 'express_ap_outstanding'
+    total = round(sum((r.outstanding_amount or 0) for r in recs), 2)
+    conn = get_connection()
+    prior = conn.execute(
+        f"SELECT snapshot_date_iso, ROUND(SUM(outstanding_amount),2) FROM {table} "
+        f"WHERE entity=? AND snapshot_date_iso=("
+        f"  SELECT MAX(snapshot_date_iso) FROM {table} WHERE entity=?) "
+        f"GROUP BY snapshot_date_iso", (company, company)).fetchone()
+    conn.close()
+    return {
+        'kind': kind, 'entity': company, 'as_of': as_of, 'n_docs': len(recs),
+        'total': total,
+        'prior_date': prior[0] if prior else None,
+        'prior_total': prior[1] if prior else None,
+        'replaces_same_date': bool(prior and prior[0] == as_of),
+    }
+
+
 @app.route('/import-weekly', methods=['GET', 'POST'])
 def import_weekly():
     if request.method == 'POST':
@@ -1037,47 +1085,135 @@ def import_weekly():
             flash('กรุณาเลือกไฟล์ .csv', 'danger')
             return redirect(url_for('import_weekly'))
 
-        # Save temp file
-        tmp_path = os.path.join(config.UPLOAD_FOLDER, f.filename)
+        # Drop any previously-staged-but-unconfirmed file so re-previewing
+        # (preview A, then preview B without confirm/cancel) never orphans a
+        # temp file in pending_imports/.
+        _prev = session.pop('pending_import', None)
+        if _prev and _prev.get('path'):
+            try:
+                os.remove(_prev['path'])
+            except OSError:
+                pass
+
+        # Save to a pending location so the confirm step can re-parse the exact
+        # same file without a re-upload (mirrors /admin/upload-db's flow).
+        pending_dir = os.path.join(config.UPLOAD_FOLDER, 'pending_imports')
+        os.makedirs(pending_dir, exist_ok=True)
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_name = os.path.basename(f.filename)
+        tmp_path = os.path.join(pending_dir, f'{ts}__{safe_name}')
         f.save(tmp_path)
 
-        if is_history_export(tmp_path):
-            flash(
-                'ไฟล์นี้เป็นรายงานประวัติเต็ม (ประวัติการขาย/ซื้อ) '
-                'ไม่ใช่ไฟล์รายสัปดาห์ — '
-                'ใช้เครื่องมือ rebuild/express import แทน อย่านำเข้าทางนี้',
-                'danger',
+        def _discard():
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+        # One upload box, auto-detected: ขาย/ซื้อ transaction files go through
+        # the per-doc diff-confirm; AR/AP outstanding snapshots go through the
+        # snapshot-replace preview (different data shapes → different handling).
+        kind = _detect_express_kind(tmp_path)
+
+        if kind in ('sales', 'purchase'):
+            entries = parse_sales(tmp_path) if kind == 'sales' else parse_purchases(tmp_path)
+            if not entries:
+                _discard()
+                flash('ไม่พบข้อมูลในไฟล์', 'warning')
+                return redirect(url_for('import_weekly'))
+            # DRY-RUN: show exactly what will change (full OR partial file). A
+            # full re-upload of unchanged data shows ~0 changes (safe no-op); a
+            # wrong/corrupt file shows many changes → cancel. The preview
+            # replaces the old hard history-block (is_history_export = info flag).
+            plan = models.preview_import(entries, kind)
+            session['pending_import'] = {'path': tmp_path, 'kind': kind, 'filename': safe_name}
+            return render_template(
+                'import_preview.html', plan=plan, file_type=kind,
+                filename=safe_name, n_rows=len(entries),
+                is_full=is_history_export(tmp_path),
             )
-            return redirect(url_for('import_weekly'))
 
-        file_type = detect_file_type(tmp_path)
-        if file_type == 'unknown':
-            flash('ไม่สามารถระบุประเภทไฟล์ (ขาย/ซื้อ)', 'danger')
-            return redirect(url_for('import_weekly'))
+        if kind in ('ar_snapshot', 'ap_snapshot'):
+            try:
+                summary = _express_snapshot_summary(tmp_path, kind)
+            except Exception as e:
+                _discard()
+                flash(f'อ่านไฟล์ AR/AP ไม่สำเร็จ: {e}', 'danger')
+                return redirect(url_for('import_weekly'))
+            session['pending_import'] = {
+                'path': tmp_path, 'kind': kind, 'filename': safe_name, 'company': 'BSN',
+            }
+            return render_template('import_snapshot_preview.html',
+                                   summary=summary, filename=safe_name)
 
-        entries = parse_sales(tmp_path) if file_type == 'sales' else parse_purchases(tmp_path)
-        if not entries:
-            flash('ไม่พบข้อมูลในไฟล์', 'warning')
-            return redirect(url_for('import_weekly'))
-
-        stats = models.import_weekly(entries, file_type, f.filename)
-
-        parts = [f'นำเข้าสำเร็จ {stats["imported"]} รายการ']
-        if stats['overwritten']:
-            parts.append(f'อัพเดทข้อมูลเก่า {stats["overwritten"]} รายการ')
-        if stats['skipped_dup']:
-            parts.append(f'ข้าม {stats["skipped_dup"]} รายการ')
-        if stats['new_unmapped']:
-            parts.append(f'สินค้าไม่มีในระบบ {stats["new_unmapped"]} รายการ')
-        flash('  |  '.join(parts), 'success' if stats['new_unmapped'] == 0 else 'warning')
-        if models.get_pending_unit_conversions():
-            return redirect(url_for('unit_conversions'))
-        if stats['new_unmapped'] > 0:
-            return redirect(url_for('mapping'))
-        return redirect(url_for('sales_view') if file_type == 'sales' else url_for('purchases_view'))
+        _discard()
+        flash('ไม่รู้จักชนิดไฟล์ (รองรับ: ขาย / ซื้อ / ลูกหนี้คงค้าง / เจ้าหนี้คงค้าง)', 'danger')
+        return redirect(url_for('import_weekly'))
 
     recent_imports = models.get_recent_imports(limit=5)
     return render_template('import_weekly.html', recent_imports=recent_imports)
+
+
+@app.route('/import-weekly/confirm', methods=['POST'])
+def import_weekly_confirm():
+    """Step 2: apply the import the user previewed (or cancel)."""
+    pend = session.pop('pending_import', None)
+    if not pend or not os.path.exists(pend['path']):
+        flash('ไม่พบไฟล์ที่รอยืนยัน — กรุณาอัปโหลดใหม่', 'danger')
+        return redirect(url_for('import_weekly'))
+
+    if request.form.get('action') == 'cancel':
+        try:
+            os.remove(pend['path'])
+        except OSError:
+            pass
+        flash('ยกเลิกการนำเข้าแล้ว', 'info')
+        return redirect(url_for('import_weekly'))
+
+    kind = pend.get('kind')
+
+    # AR/AP snapshot → idempotent snapshot-replace via the Express importer.
+    if kind in ('ar_snapshot', 'ap_snapshot'):
+        try:
+            express_importer.run_import(kind, pend['path'],
+                                        company_code=pend.get('company', 'BSN'),
+                                        dry_run=False, incremental=False)
+            flash(f'นำเข้า {"ลูกหนี้คงค้าง" if kind == "ar_snapshot" else "เจ้าหนี้คงค้าง"} '
+                  f'({pend.get("company", "BSN")}) สำเร็จ', 'success')
+        except Exception as e:
+            flash(f'นำเข้าไม่สำเร็จ: {e}', 'danger')
+        try:
+            os.remove(pend['path'])
+        except OSError:
+            pass
+        return redirect(url_for('express_ar_dashboard' if kind == 'ar_snapshot'
+                                else 'express_ap_dashboard'))
+
+    # ขาย/ซื้อ transaction file → per-doc idempotent diff import.
+    entries = (parse_sales(pend['path']) if kind == 'sales'
+               else parse_purchases(pend['path']))
+    stats = models.import_weekly(entries, kind, pend['filename'])
+    try:
+        os.remove(pend['path'])
+    except OSError:
+        pass
+
+    parts = []
+    if stats['imported']:
+        parts.append(f'นำเข้า/อัพเดท {stats["imported"]} รายการ')
+    if stats['unchanged']:
+        parts.append(f'เหมือนเดิม {stats["unchanged"]} รายการ')
+    if stats['skipped_dup']:
+        parts.append(f'ข้าม {stats["skipped_dup"]} รายการ')
+    if stats['new_unmapped']:
+        parts.append(f'สินค้าใหม่ไม่มีในระบบ {stats["new_unmapped"]} รายการ')
+    flash('  |  '.join(parts) or 'ไม่มีการเปลี่ยนแปลง',
+          'success' if stats['new_unmapped'] == 0 else 'warning')
+    if models.get_pending_unit_conversions():
+        return redirect(url_for('unit_conversions'))
+    if stats['new_unmapped'] > 0:
+        return redirect(url_for('mapping'))
+    return redirect(url_for('sales_view') if kind == 'sales' else url_for('purchases_view'))
 
 
 # ── Unit Conversions ──────────────────────────────────────────────────────────
@@ -3227,7 +3363,7 @@ def express_ar_dashboard():
     """AR outstanding view from the latest express_ar_outstanding snapshot."""
     conn = get_connection()
     snapshot = conn.execute(
-        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding"
+        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding WHERE entity = 'BSN'"
     ).fetchone()
     snapshot_date = snapshot['d'] if snapshot else None
 
@@ -3239,7 +3375,7 @@ def express_ar_dashboard():
     # "RE ไม่ควรอยู่ในหน้า ar เพราะลูกหนี้จ่ายแล้ว"). These are legacy
     # 2005-2019 receipts that Express marks with is_anomalous=1; they
     # are not real outstanding debt.
-    where = ['snapshot_date_iso = ?', 'is_anomalous = 0']
+    where = ["entity = 'BSN'", 'snapshot_date_iso = ?', 'is_anomalous = 0']
     params = [snapshot_date]
     if search:
         where.append("(customer_name LIKE ? OR customer_code LIKE ?)")
@@ -3292,7 +3428,7 @@ def express_ar_customer(customer_code):
     """Per-customer AR drill-down — all unpaid invoices in the latest snapshot."""
     conn = get_connection()
     snapshot = conn.execute(
-        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding"
+        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding WHERE entity = 'BSN'"
     ).fetchone()
     snapshot_date = snapshot['d'] if snapshot else None
 
@@ -3302,7 +3438,8 @@ def express_ar_customer(customer_code):
                is_anomalous, has_warning,
                CAST(julianday('now') - julianday(doc_date_iso) AS INTEGER) AS age_days
           FROM express_ar_outstanding
-         WHERE snapshot_date_iso = ?
+         WHERE entity = 'BSN'
+           AND snapshot_date_iso = ?
            AND customer_code = ?
            AND is_anomalous = 0
          ORDER BY doc_date_iso ASC

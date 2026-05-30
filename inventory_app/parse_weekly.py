@@ -86,6 +86,11 @@ def _parse(filepath: str, tx_pat, file_type: str) -> list:
     entries = []
     current_party = current_party_code = None
     current_prod_name = current_prod_code = None
+    # 1-based counter per (doc_no, product_code) so duplicate lines of the same
+    # product within one document (e.g. split-price purchase rows, or a product
+    # appearing twice on one invoice) get a stable identity for the idempotent
+    # upsert key. Mirrors scripts/parse_express_purchase_history.py's line_seq.
+    _line_seq: dict = {}
 
     with open(filepath, encoding='cp874') as f:
         lines = [_clean(l) for l in f.readlines()]
@@ -120,9 +125,14 @@ def _parse(filepath: str, tx_pat, file_type: str) -> list:
             m = tx_pat.search(line)
             if m:
                 try:
+                    doc_no = re.sub(r'\s+', '', m.group(2))
+                    seq_key = (doc_no, current_prod_code)
+                    seq = _line_seq.get(seq_key, 0) + 1
+                    _line_seq[seq_key] = seq
                     entry = {
                         'date_iso':         _be_to_iso(m.group(1)),
-                        'doc_no':           re.sub(r'\s+', '', m.group(2)),
+                        'doc_no':           doc_no,
+                        'line_seq':         seq,
                         'qty':              float(m.group(3).replace(',', '').replace('!', '')),
                         'unit':             m.group(4).replace('!', ''),
                         'unit_price':       float(m.group(5).replace(',', '')),

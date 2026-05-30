@@ -183,107 +183,73 @@ def _count_rows(db_path, table):
     ).fetchone()[0]
 
 
-def test_route_rejects_history_file_no_insert(admin_client, tmp_db, tmp_path):
-    """
-    POST a history-format file to /import-weekly.
-    Expect: redirect back (302), flash contains the Thai error phrase,
-    and zero rows inserted into sales_transactions.
-    """
+# ── Two-step preview/confirm flow ────────────────────────────────────────────
+# The hard history-block was replaced by a read-only DRY-RUN preview: ANY file
+# (full or partial) lands on the preview first and inserts NOTHING until the
+# user confirms. The preview is the safety (it shows the diff); is_history_export
+# is now an informational flag, not a blocker.
+
+def _post_import(admin_client, lines, filename):
+    content = ("\n".join(lines) + "\n").encode('cp874')
+    return admin_client.post(
+        '/import-weekly',
+        data={'weekly_file': (io.BytesIO(content), filename, 'text/csv')},
+        content_type='multipart/form-data', follow_redirects=False)
+
+
+def test_route_history_goes_to_preview_no_insert(admin_client, tmp_db):
+    """A full-history file lands on the preview (200), inserts 0 rows, and
+    stages a pending_import for confirmation — no silent corruption."""
     before = _count_rows(tmp_db, 'sales_transactions')
+    resp = _post_import(admin_client, _HISTORY_SALES_LINES, 'ประวัติการขาย_full.csv')
 
-    file_content = ("\n".join(_HISTORY_SALES_LINES) + "\n").encode('cp874')
-    data = {
-        'weekly_file': (io.BytesIO(file_content),
-                        'ประวัติการขาย_full.csv',
-                        'text/csv'),
-    }
-    resp = admin_client.post(
-        '/import-weekly',
-        data=data,
-        content_type='multipart/form-data',
-        follow_redirects=False,
-    )
-    assert resp.status_code == 302, f"Expected redirect, got {resp.status_code}"
-
-    after = _count_rows(tmp_db, 'sales_transactions')
-    assert after == before, (
-        f"History file inserted {after - before} rows into sales_transactions; expected 0"
-    )
-
-    # Flash message must contain the key Thai phrase
+    assert resp.status_code == 200, "history file should render the preview, not redirect-reject"
+    assert 'ตรวจการเปลี่ยนแปลง'.encode() in resp.data, "preview page not rendered"
+    assert _count_rows(tmp_db, 'sales_transactions') == before, "preview must insert 0 rows"
     with admin_client.session_transaction() as sess:
-        flashes = sess.get('_flashes', [])
-    messages = [msg for (cat, msg) in flashes]
-    assert any('รายงานประวัติเต็ม' in m for m in messages), (
-        f"Expected Thai error flash not found. Got flashes: {messages}"
-    )
+        assert sess.get('pending_import'), "a pending import should be staged"
 
 
-def test_route_rejects_single_year_history_no_insert(admin_client, tmp_db):
-    """
-    POST a SINGLE-Buddhist-year history file (the shape the old heuristic
-    missed). Expect: rejected with the history flash and 0 rows inserted.
-    """
+def test_route_single_year_history_goes_to_preview_no_insert(admin_client, tmp_db):
+    """Single-Buddhist-year history file → preview, 0 rows inserted."""
     before = _count_rows(tmp_db, 'sales_transactions')
+    resp = _post_import(admin_client, _HISTORY_SALES_SINGLE_YEAR_LINES,
+                        'ประวัติการขาย_1.3.69-19.4.69.csv')
+    assert resp.status_code == 200
+    assert _count_rows(tmp_db, 'sales_transactions') == before, "preview must insert 0 rows"
 
-    file_content = ("\n".join(_HISTORY_SALES_SINGLE_YEAR_LINES) + "\n").encode('cp874')
-    data = {
-        'weekly_file': (io.BytesIO(file_content),
-                        'ประวัติการขาย_1.3.69-19.4.69.csv',
-                        'text/csv'),
-    }
+
+def test_route_weekly_preview_then_confirm_imports(admin_client, tmp_db, sample_purchase_file):
+    """A weekly file previews first (0 insert), then /import-weekly/confirm
+    actually runs the import (proven by the result flash)."""
+    content = open(sample_purchase_file, 'rb').read()
+    before = _count_rows(tmp_db, 'purchase_transactions')
     resp = admin_client.post(
         '/import-weekly',
-        data=data,
-        content_type='multipart/form-data',
-        follow_redirects=False,
-    )
-    assert resp.status_code == 302, f"Expected redirect, got {resp.status_code}"
+        data={'weekly_file': (io.BytesIO(content), 'ซื้อ_sample.csv', 'text/csv')},
+        content_type='multipart/form-data', follow_redirects=False)
+    assert resp.status_code == 200, "preview should render"
+    assert _count_rows(tmp_db, 'purchase_transactions') == before, "preview must not insert yet"
 
-    after = _count_rows(tmp_db, 'sales_transactions')
-    assert after == before, (
-        f"Single-year history file inserted {after - before} rows; expected 0"
-    )
-
+    # confirm → apply
+    resp2 = admin_client.post('/import-weekly/confirm', data={'action': 'confirm'},
+                              follow_redirects=False)
+    assert resp2.status_code == 302, f"confirm should redirect, got {resp2.status_code}"
     with admin_client.session_transaction() as sess:
-        flashes = sess.get('_flashes', [])
-    messages = [msg for (cat, msg) in flashes]
-    assert any('รายงานประวัติเต็ม' in m for m in messages), (
-        f"Expected history-guard flash not found. Got flashes: {messages}"
-    )
+        flashes = [m for (_c, m) in sess.get('_flashes', [])]
+        assert sess.get('pending_import') is None, "pending import should be cleared after confirm"
+    # the import ran (result flash mentions นำเข้า/เหมือนเดิม/ข้าม, not the no-file error)
+    assert any(('นำเข้า' in m or 'เหมือนเดิม' in m or 'สินค้าใหม่' in m) for m in flashes), \
+        f"confirm did not run the import. flashes={flashes}"
 
 
-def test_route_accepts_weekly_file(admin_client, tmp_db, sample_purchase_file):
-    """
-    POST a normal weekly purchase file. Expect: the import path actually
-    runs (success flash "นำเข้าสำเร็จ …"), not just any 302 — a 302 alone
-    also fires on the empty-file / unknown-type early-outs, so asserting it
-    is too weak to prove "weekly still imports" (finding #10).
-    """
-    file_content = open(sample_purchase_file, 'rb').read()
-    data = {
-        'weekly_file': (io.BytesIO(file_content),
-                        'ซื้อ_sample.csv',
-                        'text/csv'),
-    }
-    resp = admin_client.post(
-        '/import-weekly',
-        data=data,
-        content_type='multipart/form-data',
-        follow_redirects=False,
-    )
-    # Must redirect (not fail with 4xx/5xx)
-    assert resp.status_code == 302, f"Expected redirect, got {resp.status_code}: {resp.data[:300]}"
-
+def test_route_confirm_cancel_inserts_nothing(admin_client, tmp_db):
+    """Cancel on the preview discards the staged import without inserting."""
+    before = _count_rows(tmp_db, 'sales_transactions')
+    _post_import(admin_client, _HISTORY_SALES_LINES, 'ประวัติการขาย_full.csv')
+    resp = admin_client.post('/import-weekly/confirm', data={'action': 'cancel'},
+                             follow_redirects=False)
+    assert resp.status_code == 302
+    assert _count_rows(tmp_db, 'sales_transactions') == before
     with admin_client.session_transaction() as sess:
-        flashes = sess.get('_flashes', [])
-    messages = [msg for (cat, msg) in flashes]
-    # The history-guard flash must NOT appear …
-    assert not any('รายงานประวัติเต็ม' in m for m in messages), (
-        f"History-guard flash wrongly triggered on weekly file: {messages}"
-    )
-    # … and the weekly import must have actually run (parse found rows +
-    # models.import_weekly executed), proven by the success flash.
-    assert any('นำเข้าสำเร็จ' in m for m in messages), (
-        f"Weekly import did not run (no success flash). Got flashes: {messages}"
-    )
+        assert sess.get('pending_import') is None
