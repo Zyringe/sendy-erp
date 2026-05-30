@@ -140,29 +140,12 @@ def main():
                 ratio_val = row["ratio"] if row else "MISSING"
                 print(f"  [0a] pid={pid} กล่อง ratio={ratio_val} — unexpected, check manually")
 
-    # 0b. Remap pid=96 rows (batches 19,22) to pid=106 for bsn_code=030บ4000 (idempotent)
-    with conn:
-        affected = conn.execute(
-            "SELECT id, batch_id, doc_no FROM purchase_transactions "
-            "WHERE bsn_code='030บ4000' AND product_id=96",
-        ).fetchall()
-        if affected:
-            conn.execute(
-                "UPDATE purchase_transactions SET product_id=106 "
-                "WHERE bsn_code='030บ4000' AND product_id=96",
-            )
-            for r in affected:
-                reversible_rows.append({
-                    "step": "0b",
-                    "action": "UPDATE purchase_transactions",
-                    "key": f"id={r['id']} batch_id={r['batch_id']} doc_no={r['doc_no']}",
-                    "old_val": "product_id=96",
-                    "new_val": "product_id=106",
-                    "reverse_sql": f"UPDATE purchase_transactions SET product_id=96 WHERE id={r['id']};",
-                })
-            print(f"  [0b] Remapped {len(affected)} rows: pid 96→106")
-        else:
-            print("  [0b] No pid=96 rows for 030บ4000 — already clean")
+    # 0b. (OBSOLETE — removed 2026-05-30) The old hardcoded 96→106 remap for
+    # bsn_code=030บ4000 is gone: Put confirmed via the mapping-conflict worksheet
+    # that 030บ4000 = pid 96 (บานพับผีเสื้อ), NOT 106 (ไม่มีแหวน). The authoritative
+    # product_code_mapping + the repoint now own this; a hardcoded remap here
+    # would silently override that business decision. No-op.
+    print("  [0b] skipped (obsolete — 030บ4000 owned by mapping, Put confirmed pid 96)")
 
     # =========================================================
     # STEP 2 — DE-DUP purchase_transactions (keep batch 37)
