@@ -1085,6 +1085,16 @@ def import_weekly():
             flash('กรุณาเลือกไฟล์ .csv', 'danger')
             return redirect(url_for('import_weekly'))
 
+        # Drop any previously-staged-but-unconfirmed file so re-previewing
+        # (preview A, then preview B without confirm/cancel) never orphans a
+        # temp file in pending_imports/.
+        _prev = session.pop('pending_import', None)
+        if _prev and _prev.get('path'):
+            try:
+                os.remove(_prev['path'])
+            except OSError:
+                pass
+
         # Save to a pending location so the confirm step can re-parse the exact
         # same file without a re-upload (mirrors /admin/upload-db's flow).
         pending_dir = os.path.join(config.UPLOAD_FOLDER, 'pending_imports')
@@ -3353,7 +3363,7 @@ def express_ar_dashboard():
     """AR outstanding view from the latest express_ar_outstanding snapshot."""
     conn = get_connection()
     snapshot = conn.execute(
-        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding"
+        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding WHERE entity = 'BSN'"
     ).fetchone()
     snapshot_date = snapshot['d'] if snapshot else None
 
@@ -3365,7 +3375,7 @@ def express_ar_dashboard():
     # "RE ไม่ควรอยู่ในหน้า ar เพราะลูกหนี้จ่ายแล้ว"). These are legacy
     # 2005-2019 receipts that Express marks with is_anomalous=1; they
     # are not real outstanding debt.
-    where = ['snapshot_date_iso = ?', 'is_anomalous = 0']
+    where = ["entity = 'BSN'", 'snapshot_date_iso = ?', 'is_anomalous = 0']
     params = [snapshot_date]
     if search:
         where.append("(customer_name LIKE ? OR customer_code LIKE ?)")
@@ -3418,7 +3428,7 @@ def express_ar_customer(customer_code):
     """Per-customer AR drill-down — all unpaid invoices in the latest snapshot."""
     conn = get_connection()
     snapshot = conn.execute(
-        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding"
+        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding WHERE entity = 'BSN'"
     ).fetchone()
     snapshot_date = snapshot['d'] if snapshot else None
 
@@ -3428,7 +3438,8 @@ def express_ar_customer(customer_code):
                is_anomalous, has_warning,
                CAST(julianday('now') - julianday(doc_date_iso) AS INTEGER) AS age_days
           FROM express_ar_outstanding
-         WHERE snapshot_date_iso = ?
+         WHERE entity = 'BSN'
+           AND snapshot_date_iso = ?
            AND customer_code = ?
            AND is_anomalous = 0
          ORDER BY doc_date_iso ASC

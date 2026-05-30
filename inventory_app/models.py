@@ -1151,11 +1151,6 @@ def preview_import(entries: list, file_type: str) -> dict:
             if is_ignored:
                 counts['ignored'] += 1
                 continue
-            if not mapped:
-                counts['unmapped'] += 1
-                if e['product_code_raw']:
-                    new_codes[e['product_code_raw']] = e['product_name_raw']
-                continue
             if file_type == 'purchase':
                 old = conn.execute(
                     f"SELECT * FROM {table} WHERE doc_no=? AND bsn_code=? AND line_seq=?",
@@ -1164,6 +1159,17 @@ def preview_import(entries: list, file_type: str) -> dict:
                 old = conn.execute(
                     f"SELECT * FROM {table} WHERE doc_no=? AND bsn_code=?",
                     (doc_no, e['product_code_raw'])).fetchone()
+            # Mirror import_weekly: an unmapped code whose stored row is already
+            # linked keeps that link (so it is NOT a benign "won't affect stock"
+            # unmapped row — it stays mapped and is compared normally).
+            if pid is None and old is not None and old['product_id']:
+                pid = old['product_id']
+                mapped = True
+            if not mapped:
+                counts['unmapped'] += 1
+                if e['product_code_raw']:
+                    new_codes[e['product_code_raw']] = e['product_name_raw']
+                continue
             if old is None:
                 counts['new'] += 1
                 continue
@@ -1240,8 +1246,6 @@ def import_weekly(entries: list, file_type: str, filename: str) -> dict:
         if is_ignored:
             skipped_dup += 1
             continue
-        if not mapped and e['product_code_raw']:
-            new_bsn_codes[e['product_code_raw']] = e['product_name_raw']
 
         if file_type == 'purchase':
             old = conn.execute(
@@ -1253,6 +1257,19 @@ def import_weekly(entries: list, file_type: str, filename: str) -> dict:
                 f"SELECT * FROM {table} WHERE doc_no=? AND bsn_code=?",
                 (doc_no, e['product_code_raw'])
             ).fetchone()
+
+        # Preserve an existing product link: if this code is no longer in the
+        # mapping but the stored row was already linked to a product, KEEP that
+        # product_id instead of nulling it. Nulling would orphan the row's stock
+        # movement (_sync only posts non-null product_id) and float stock UP —
+        # the opposite of the "won't affect stock" the preview shows for a truly
+        # unmapped code.
+        if product_id is None and old is not None and old['product_id']:
+            product_id = old['product_id']
+            mapped = True
+
+        if not mapped and e['product_code_raw']:
+            new_bsn_codes[e['product_code_raw']] = e['product_name_raw']
 
         if old is not None:
             # Normalise the STORED unit before comparing: legacy/rebuild rows
@@ -2701,7 +2718,8 @@ def get_customer_debt_summary(search=''):
             ROUND(SUM(ao.outstanding_amount), 2) AS outstanding_amount
         FROM express_ar_outstanding ao
         LEFT JOIN customers c ON c.code = ao.customer_code
-        WHERE ao.snapshot_date_iso = (SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding)
+        WHERE ao.entity = 'BSN'
+          AND ao.snapshot_date_iso = (SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding WHERE entity = 'BSN')
           AND ao.doc_date_iso >= '2024-01-01'
           {cond}
         GROUP BY ao.customer_code
@@ -2955,7 +2973,8 @@ def get_customer_unpaid_bills(customer_name):
             ao.has_warning
         FROM express_ar_outstanding ao
         LEFT JOIN customers c ON c.code = ao.customer_code
-        WHERE ao.snapshot_date_iso = (SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding)
+        WHERE ao.entity = 'BSN'
+          AND ao.snapshot_date_iso = (SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding WHERE entity = 'BSN')
           AND ao.doc_date_iso >= '2024-01-01'
           AND (
                 COALESCE(c.name, '') = ?

@@ -151,6 +151,45 @@ def test_reimport_raw_stored_unit_is_noop(empty_db):
     assert _stock(empty_db, pid) == 5, "raw-unit re-import must not churn stock"
 
 
+def test_unmapped_code_preserves_existing_product_link(empty_db):
+    """A bsn_code dropped from product_code_mapping but whose stored row is still
+    linked to a product must KEEP that product_id on re-import — nulling it would
+    orphan the row's stock movement and float stock UP, contradicting the
+    preview's "won't affect stock" for a truly-unmapped code (scrutiny major)."""
+    import models
+    c = _conn(empty_db)
+    cur = c.execute("INSERT INTO products (sku, product_name, unit_type, cost_price) "
+                    "VALUES (90701, 'Linked', 'ตัว', 0)")
+    pid = cur.lastrowid
+    c.execute("INSERT INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
+    bid = c.execute("INSERT INTO import_log (filename, rows_imported, rows_skipped, notes) "
+                    "VALUES ('seed', 0, 0, 'purchase')").lastrowid
+    # stored purchase row LINKED to pid, but there is NO mapping row for 'NOMAP'
+    c.execute(
+        "INSERT INTO purchase_transactions (batch_id, date_iso, doc_no, doc_base, "
+        "product_id, bsn_code, product_name_raw, supplier, supplier_code, qty, unit, "
+        "unit_price, vat_type, discount, total, net, synced_to_stock, line_seq) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,1)",
+        (bid, '2026-04-24', 'HP701', 'HP701', pid, 'NOMAP', 'n', 's', 'sc',
+         10, 'ตัว', 5.0, 0, '', 50.0, 50.0))
+    c.execute("INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode, "
+              "reference_no, note, created_at) VALUES (?, 'IN', 10, 'unit', 'HP701', "
+              "'BSN ซื้อ', '2026-04-24 00:00:00')", (pid,))
+    c.commit()
+    c.close()
+
+    entry = _entry('HP701', 'NOMAP', 10, price=5.0, net=50.0, line_seq=1)
+    prev = models.preview_import([dict(entry)], 'purchase')
+    assert prev['unmapped'] == 0, "a linked row must not be shown as harmless 'unmapped'"
+
+    models.import_weekly([dict(entry)], 'purchase', 'reimport')
+    c = _conn(empty_db)
+    row = c.execute("SELECT product_id FROM purchase_transactions WHERE doc_no='HP701'").fetchone()
+    c.close()
+    assert row['product_id'] == pid, "product link must be preserved, not nulled"
+    assert _stock(empty_db, pid) == 10, "stock must not float up when a link is preserved"
+
+
 def test_preview_is_readonly_and_reconciles_with_apply(empty_db):
     """preview_import writes nothing and its counts match what import_weekly does."""
     import models

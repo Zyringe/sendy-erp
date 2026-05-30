@@ -564,7 +564,8 @@ def get_invoices_for_salesperson(year_month, salesperson_code, db_path=None):
     open_ar = {r['doc_no']: dict(r) for r in conn.execute("""
         SELECT doc_no, salesperson_code, outstanding_amount
           FROM express_ar_outstanding
-         WHERE snapshot_date_iso = (SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding)
+         WHERE entity = 'BSN'
+           AND snapshot_date_iso = (SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding WHERE entity = 'BSN')
     """).fetchall()}
 
     out = []
