@@ -42,7 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 import models
 from database import init_db, get_connection
-from parse_weekly import parse_sales, parse_purchases, detect_file_type
+from parse_weekly import parse_sales, parse_purchases, detect_file_type, is_history_export
 from parse_platform import (parse_shopee, parse_lazada, export_shopee, export_lazada,
                             export_mapping, parse_mapping,
                             parse_shopee_orders, parse_lazada_orders,
@@ -1040,6 +1040,15 @@ def import_weekly():
         # Save temp file
         tmp_path = os.path.join(config.UPLOAD_FOLDER, f.filename)
         f.save(tmp_path)
+
+        if is_history_export(tmp_path):
+            flash(
+                'ไฟล์นี้เป็นรายงานประวัติเต็ม (ประวัติการขาย/ซื้อ) '
+                'ไม่ใช่ไฟล์รายสัปดาห์ — '
+                'ใช้เครื่องมือ rebuild/express import แทน อย่านำเข้าทางนี้',
+                'danger',
+            )
+            return redirect(url_for('import_weekly'))
 
         file_type = detect_file_type(tmp_path)
         if file_type == 'unknown':

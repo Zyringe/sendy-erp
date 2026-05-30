@@ -155,6 +155,59 @@ def detect_file_type(filepath: str) -> str:
     return 'unknown'
 
 
+# Two 4-digit Buddhist-era years (e.g. "2567" and "2569") anywhere on a line.
+_TWO_THAI_YEARS_RE = re.compile(r'(25\d\d).*?(25\d\d)')
+
+
+def is_history_export(filepath: str) -> bool:
+    """
+    Return True when the file is a full-history Express export
+    (ประวัติการขาย_แยกตามลูกค้า / ประวัติการซื้อ_…) rather than a
+    normal weekly BSN file.
+
+    Two independent signals must BOTH be true:
+
+    Signal 1 — title line contains both "ประวัติ" (history) and "แยกตาม"
+               (grouped-by). Weekly files share this title; the signal
+               alone is not sufficient.
+
+    Signal 2 — the "วันที่จาก" (date-from) header line contains two
+               Buddhist-era 4-digit years and the start year is strictly
+               less than the end year.  Weekly files always have
+               start_year == end_year (same calendar year); a full-history
+               export starts 1–3 years earlier.
+
+    Requires BOTH signals to be true so a valid weekly file is never
+    rejected (conservative / no false-positives).
+
+    Only the first ~15 lines are read (the header section).
+    """
+    title_match = False
+    date_range_match = False
+
+    try:
+        with open(filepath, encoding='cp874') as f:
+            for i, raw in enumerate(f):
+                if i >= 15:
+                    break
+                c = _clean(raw)
+                # Signal 1: report title line
+                if 'ประวัติ' in c and 'แยกตาม' in c:
+                    title_match = True
+                # Signal 2: วันที่จาก line with multi-year span
+                if 'วันที่จาก' in c:
+                    m = _TWO_THAI_YEARS_RE.search(c)
+                    if m:
+                        start_year = int(m.group(1))
+                        end_year = int(m.group(2))
+                        if start_year < end_year:
+                            date_range_match = True
+    except (OSError, UnicodeDecodeError):
+        return False
+
+    return title_match and date_range_match
+
+
 # ── Credit-note (ใบลดหนี้ / SR) parser ───────────────────────────────────────
 #
 # Source: Express export "ใบลดหนี้-DD.M.YY.csv" (cp874)
