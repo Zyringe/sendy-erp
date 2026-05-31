@@ -730,3 +730,32 @@ body {
 
 /* pid chip — compact identifier badge for tables */
 .pid { display: inline-block; background: #edeae4; color: #5a534b; font-weight: 600; font-size: .74rem; padding: 2px 8px; border-radius: 6px; font-variant-numeric: tabular-nums; }
+
+/* Topbar breadcrumb (module context) + spacer (replaces old topbar-title) */
+.topbar-spacer { flex: 1; }
+.topbar-crumb { display: inline-flex; align-items: center; font-size: .8rem; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+.topbar-crumb i { color: var(--bsn-gold); }
+
+/* page-head actions slot + mobile stacking */
+.page-head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+@media (max-width: 575.98px) {
+  .page-head { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .page-head .page-title { font-size: 1.25rem; }
+}
+
+/* Nav tabs — quiet underline style */
+.nav-tabs { border-bottom: 1px solid var(--border); gap: 2px; }
+.nav-tabs .nav-link { border: none; color: var(--text-muted); font-weight: 600; font-size: .875rem; padding: .5rem .9rem; border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+.nav-tabs .nav-link:hover { background: #f5f2ed; color: var(--text-main); }
+.nav-tabs .nav-link.active { color: var(--bsn-red); background: transparent; border-bottom: 2px solid var(--bsn-red); }
+
+/* List group — soften inner rules */
+.list-group-item { border-color: var(--line-soft); }
+
+/* Dropdown menu — soft elevation, brand active */
+.dropdown-menu { border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--sh-md); font-size: .875rem; }
+.dropdown-item:active { background: var(--bsn-red); }
+
+/* Modal — rounded + soft lift */
+.modal-content { border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 16px 40px -12px rgba(34,30,27,.28); }
+.modal-header, .modal-footer { border-color: var(--border); }

@@ -293,7 +293,10 @@
             onclick="toggleSidebar()" aria-label="เมนู">
       <i class="bi bi-list"></i>
     </button>
-    <span class="topbar-title">{% block page_title %}{% endblock %}</span>
+    {% if current_role %}
+    <span class="topbar-crumb"><i class="bi {{ cur_mod.icon }} me-1"></i>{{ cur_mod.name }}</span>
+    {% endif %}
+    <div class="topbar-spacer"></div>
     <div class="topbar-actions">
       {% block topbar_actions %}{% endblock %}
       <span class="text-muted small me-2 d-none d-lg-inline" id="today-date"></span>
@@ -360,6 +363,18 @@
 
   <!-- Page content -->
   <main class="page-content">
+    {% block page_head %}
+      {%- set _page_title %}{% block page_title %}{% endblock %}{% endset -%}
+      {% if _page_title|trim %}
+      <div class="page-head">
+        <div>
+          <h1 class="page-title">{{ _page_title }}</h1>
+          {% block page_desc %}{% endblock %}
+        </div>
+        {% block page_actions %}{% endblock %}
+      </div>
+      {% endif %}
+    {% endblock %}
     {% block content %}{% endblock %}
   </main>
 </div>
