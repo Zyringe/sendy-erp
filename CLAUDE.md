@@ -4,8 +4,6 @@
 > เมื่อ user พูดถึง "Sendy", "Sendy app", "เปิด Sendy" → หมายถึง Flask ERP นี้ (folder `inventory_app/`).
 > Folder name `inventory_app/` คงเดิม (internal, ไม่ rename เพื่อหลีกเลี่ยง deployment risk).
 
-> **Skill mirrors:** `/erp-context` (schema/routes/session log), `/erp-formats` (file formats), `/erp-deploy` (Railway), `/erp-permissions` (role/POST whitelist) — ของอ่านจาก workspace root `.claude/commands/`.
-
 ## Dev Server
 ```
 runtimeExecutable: /Users/putty/.virtualenvs/erp/bin/python
@@ -217,7 +215,7 @@ Two tables hold derived values that the app must keep in sync with their source 
 
 ## Routes (กลุ่มหลัก)
 
-ดู `/erp-context` สำหรับ list ครบ. กลุ่มที่ใช้บ่อย:
+List ครบดูได้จาก `git grep -nE "@.*\.route" inventory_app/` หรือ `flask routes` ภายใน app context. กลุ่มที่ใช้บ่อย:
 
 **Core/admin**: `/`, `/healthz`, `/login`, `/logout`, `/users`, `/admin/simulate-role`, `/admin/exit-simulate`, `/admin/toggle-db-routes`, `/admin/upload-db`, `/admin/upload-db/confirm` (selective), `/admin/download-db`, `/bootstrap/upload-db` (token-gated)
 
@@ -322,4 +320,6 @@ Two tables hold derived values that the app must keep in sync with their source 
 > **Escape hatch (rare):** runner is filename-keyed and does NOT re-check sha256, so in-place editing an already-applied mig is *technically possible* without bumping the number. Only acceptable when **all** of these hold: (1) edit is rerun-safe (idempotent), (2) the change hasn't been deployed to Railway yet, (3) no other dev/restore DB has the old filename in `applied_migrations`. Otherwise prod will silently keep the old SQL while fresh environments run the new SQL → schema drift. When in doubt, write a new mig.
 
 ## Auth + Deploy
-ดู `/erp-permissions` (role/POST whitelist) และ `/erp-deploy` (Railway env, DB sync flow). Production env vars: `SECRET_KEY` (rotated 2026-05-05), `ADMIN_PASSWORD`, `DATA_DIR=/data`. Bootstrap-only: `SKIP_DB_INIT`, `BOOTSTRAP_TOKEN` (unset หลัง first seed).
+- **Auth/permissions**: role enum + POST whitelist live in `inventory_app/auth.py` + `inventory_app/permissions.py`. Read those for the source of truth.
+- **Deploy**: Railway project linked to `Zyringe/sendy-erp` main; PR-merge auto-deploys. DB sync flow via `/admin/upload-db` (selective master tables only) — never push full DB over friend's rows.
+- **Production env vars**: `SECRET_KEY` (rotated 2026-05-05), `ADMIN_PASSWORD`, `DATA_DIR=/data`. Bootstrap-only: `SKIP_DB_INIT`, `BOOTSTRAP_TOKEN` (unset หลัง first seed).
