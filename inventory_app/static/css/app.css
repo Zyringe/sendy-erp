@@ -39,8 +39,9 @@
   --shadow-sm: 0 1px 3px rgba(26,26,26,.06), 0 1px 2px rgba(26,26,26,.04);
   --shadow: 0 4px 6px -1px rgba(26,26,26,.07), 0 2px 4px -1px rgba(26,26,26,.04);
   --shadow-lg: 0 10px 15px -3px rgba(26,26,26,.08), 0 4px 6px -2px rgba(26,26,26,.04);
-  --radius: 12px;
+  --radius: 14px;
   --radius-sm: 8px;
+  --line-soft: #f0ece4;   /* lighter inner row border (refinement layer) */
 }
 
 /* ── Reset / Base ── */
@@ -652,3 +653,80 @@ body {
   table.table-mobile-cards td.td-actions::before { content: none; }
   table.table-mobile-cards td.td-hide-mobile { display: none; }
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   REFINEMENT LAYER — 2026-05 "tasteful polish" (approved by Put)
+   Additive: refines shared primitives + adds dashboard-level classes.
+   Keeps Sarabun + BSN red/gold/charcoal. Numbers use tabular figures so
+   columns align. Applied app-wide via shared classes for consistency.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Softer, layered elevation tokens used below */
+:root {
+  --sh-md: 0 8px 20px -6px rgba(34,30,27,.12), 0 2px 6px -2px rgba(34,30,27,.07);
+}
+
+/* Tabular figures wherever numbers matter (digits only — Thai text unaffected) */
+.font-mono,
+.stat-card-value,
+.table td, .table th,
+.num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+
+/* Sidebar — subtle vertical gradient + faint gold sheen + warmer active glow */
+.sidebar { background: linear-gradient(180deg, #202020 0%, #161616 100%); }
+.sidebar::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(245,168,0,.5), transparent);
+}
+.sidebar-link.active {
+  background: linear-gradient(135deg, var(--bsn-red), var(--bsn-red-dark));
+}
+.sidebar-link.active::before {
+  content: ""; position: absolute; left: -10px; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 18px; border-radius: 0 3px 3px 0; background: var(--bsn-gold);
+}
+
+/* Top bar — frosted glass */
+.topbar { background: rgba(255,255,255,.85); backdrop-filter: saturate(1.4) blur(8px); }
+
+/* Primary button — confident gradient + gentle hover lift */
+.btn-primary { background: linear-gradient(135deg, var(--bsn-red), var(--bsn-red-dark)); border: none; }
+.btn-primary:hover { transform: translateY(-1px); }
+
+/* Badges → pill */
+.badge { border-radius: 999px; }
+
+/* Tables — lighter inner rule, a touch more tracking on the head */
+.table td { border-bottom-color: var(--line-soft); }
+.table th { letter-spacing: .06em; }
+
+/* Stat cards — hover lift + optional meaning-accent top rule (opt-in via s-*) */
+.stat-card { position: relative; overflow: hidden; }
+.stat-card:hover { transform: translateY(-3px); box-shadow: var(--sh-md); }
+.stat-card.s-red::before,
+.stat-card.s-green::before,
+.stat-card.s-gold::before,
+.stat-card.s-ink::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--accent-bar);
+}
+.stat-card.s-red   { --accent-bar: var(--bsn-red); }
+.stat-card.s-green { --accent-bar: var(--success); }
+.stat-card.s-gold  { --accent-bar: var(--bsn-gold); }
+.stat-card.s-ink   { --accent-bar: var(--bsn-charcoal); }
+
+/* Page header (title + description + optional action) */
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+.page-head .page-title { font-size: 1.4rem; font-weight: 800; letter-spacing: -.01em; margin: 0; line-height: 1.1; }
+.page-head .page-desc { color: var(--text-muted); font-size: .875rem; margin-top: 4px; }
+
+/* Stat-card footer: status chip (left) + quiet action link (right) */
+.stat-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; gap: 8px; }
+.delta { display: inline-flex; align-items: center; gap: 4px; font-size: .74rem; font-weight: 600; padding: 2px 9px; border-radius: 999px; }
+.delta.up   { background: #e6f4e9; color: var(--success); }
+.delta.down { background: var(--accent-light); color: var(--bsn-red); }
+.delta.flat { background: #edeae4; color: var(--text-muted); }
+.stat-link { font-size: .78rem; font-weight: 600; color: var(--text-muted); text-decoration: none; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.stat-link:hover { color: var(--bsn-red); }
+
+/* pid chip — compact identifier badge for tables */
+.pid { display: inline-block; background: #edeae4; color: #5a534b; font-weight: 600; font-size: .74rem; padding: 2px 8px; border-radius: 6px; font-variant-numeric: tabular-nums; }

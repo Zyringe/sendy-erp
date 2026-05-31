@@ -3,10 +3,17 @@
 {% block page_title %}Dashboard{% endblock %}
 
 {% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">ภาพรวมร้าน</h1>
+    <div class="page-desc">สรุปสต็อกและความเคลื่อนไหวล่าสุด</div>
+  </div>
+</div>
+
 <div class="row g-3 mb-4">
   <!-- Low stock -->
   <div class="col-sm-6 col-xl-3">
-    <div class="stat-card">
+    <div class="stat-card s-red">
       <div class="d-flex align-items-center gap-3">
         <div class="stat-card-icon" style="background:#fdecee">
           <i class="bi bi-exclamation-triangle" style="color:#c41e2a"></i>
@@ -14,21 +21,24 @@
         <div>
           <div class="stat-card-label">สต็อกต่ำกว่าเกณฑ์</div>
           <div class="stat-card-value {% if low_stock_count > 0 %}text-danger{% else %}text-success{% endif %}">
-            {{ low_stock_count }}
+            {{ low_stock_count | fmt_qty }}
           </div>
         </div>
       </div>
-      <a href="{{ url_for('products.product_list', low_stock=1) }}"
-         class="btn btn-sm w-100 mt-3"
-         style="background:#fdecee;color:#c41e2a;border:none;font-weight:500">
-        ดูรายการ →
-      </a>
+      <div class="stat-foot">
+        {% if low_stock_count > 0 %}
+        <span class="delta down"><i class="bi bi-box-seam"></i> ต้องเติม</span>
+        {% else %}
+        <span class="delta flat"><i class="bi bi-check2"></i> ปกติ</span>
+        {% endif %}
+        <a class="stat-link" href="{{ url_for('products.product_list', low_stock=1) }}">ดูรายการ <i class="bi bi-chevron-right"></i></a>
+      </div>
     </div>
   </div>
 
-  <!-- Today IN -->
+  <!-- Recent IN -->
   <div class="col-sm-6 col-xl-3">
-    <div class="stat-card">
+    <div class="stat-card s-green">
       <div class="d-flex align-items-center gap-3">
         <div class="stat-card-icon" style="background:#dcf2e0">
           <i class="bi bi-arrow-down-circle" style="color:#2e7d3a"></i>
@@ -40,17 +50,16 @@
           </div>
         </div>
       </div>
-      <a href="{{ url_for('transaction_history', type='IN') }}"
-         class="btn btn-sm w-100 mt-3"
-         style="background:#dcf2e0;color:#2e7d3a;border:none;font-weight:500">
-        ดูประวัติ →
-      </a>
+      <div class="stat-foot">
+        <span class="delta flat"><i class="bi bi-clock-history"></i> จาก 10 ล่าสุด</span>
+        <a class="stat-link" href="{{ url_for('transaction_history', type='IN') }}">ดูประวัติ <i class="bi bi-chevron-right"></i></a>
+      </div>
     </div>
   </div>
 
-  <!-- Today OUT -->
+  <!-- Recent OUT -->
   <div class="col-sm-6 col-xl-3">
-    <div class="stat-card">
+    <div class="stat-card s-gold">
       <div class="d-flex align-items-center gap-3">
         <div class="stat-card-icon" style="background:#fdf3dd">
           <i class="bi bi-arrow-up-circle" style="color:#f5a800"></i>
@@ -62,31 +71,29 @@
           </div>
         </div>
       </div>
-      <a href="{{ url_for('transaction_history', type='OUT') }}"
-         class="btn btn-sm w-100 mt-3"
-         style="background:#fdf3dd;color:#8a5d00;border:none;font-weight:500">
-        ดูประวัติ →
-      </a>
+      <div class="stat-foot">
+        <span class="delta flat"><i class="bi bi-clock-history"></i> จาก 10 ล่าสุด</span>
+        <a class="stat-link" href="{{ url_for('transaction_history', type='OUT') }}">ดูประวัติ <i class="bi bi-chevron-right"></i></a>
+      </div>
     </div>
   </div>
 
   <!-- Products -->
   <div class="col-sm-6 col-xl-3">
-    <div class="stat-card">
+    <div class="stat-card s-ink">
       <div class="d-flex align-items-center gap-3">
         <div class="stat-card-icon" style="background:#ede9e2">
           <i class="bi bi-grid-3x3-gap" style="color:#1a1a1a"></i>
         </div>
         <div>
-          <div class="stat-card-label">จัดการสินค้า</div>
-          <div class="stat-card-value" style="color:#1a1a1a">—</div>
+          <div class="stat-card-label">สินค้าทั้งหมด</div>
+          <div class="stat-card-value" style="color:#1a1a1a">{{ total_products | fmt_qty }}</div>
         </div>
       </div>
-      <a href="{{ url_for('products.product_list') }}"
-         class="btn btn-sm w-100 mt-3"
-         style="background:#ede9e2;color:#1a1a1a;border:none;font-weight:500">
-        รายการสินค้า →
-      </a>
+      <div class="stat-foot">
+        <span class="delta flat"><i class="bi bi-box-seam"></i> {{ in_stock_count | fmt_qty }} มีสต็อก</span>
+        <a class="stat-link" href="{{ url_for('products.product_list') }}">รายการสินค้า <i class="bi bi-chevron-right"></i></a>
+      </div>
     </div>
   </div>
 </div>
@@ -102,7 +109,7 @@
       <thead>
         <tr>
           <th>เวลา</th>
-          <th>SKU</th>
+          <th class="text-center">ID</th>
           <th>ชื่อสินค้า</th>
           <th class="text-center">ประเภท</th>
           <th class="text-end">จำนวน</th>
@@ -113,7 +120,7 @@
         {% for t in recent_txns %}
         <tr>
           <td class="text-subtle font-mono">{{ t.created_at[:16] }}</td>
-          <td><span class="badge badge-gray">{{ t.sku }}</span></td>
+          <td class="text-center"><span class="pid">{{ t.product_id }}</span></td>
           <td>
             <a href="{{ url_for('products.product_detail', product_id=t.product_id) }}"
                class="text-decoration-none fw-500 text-main">{{ t.product_name }}</a>
