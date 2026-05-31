@@ -52,7 +52,7 @@ def get_products(search=None, low_stock=False, hard_to_sell=False,
     conditions = ["p.is_active = 1"]
     params = []
     if search:
-        conditions.append("(p.product_name LIKE ? OR CAST(p.sku AS TEXT) LIKE ? OR p.sku_code LIKE ?)")
+        conditions.append("(p.product_name LIKE ? OR CAST(p.id AS TEXT) LIKE ? OR p.sku_code LIKE ?)")
         params += [f"%{search}%", f"%{search}%", f"%{search}%"]
     if hard_to_sell:
         conditions.append("p.hard_to_sell = 1")
@@ -87,7 +87,7 @@ def get_products(search=None, low_stock=False, hard_to_sell=False,
         WHERE {where}
         GROUP BY p.id
         {having}
-        ORDER BY p.sku
+        ORDER BY p.id
         LIMIT ? OFFSET ?
     """
     params += [per_page, (page - 1) * per_page]
