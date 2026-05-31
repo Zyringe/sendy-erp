@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sendy — Dashboard (refined prototype)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<style>
+/* ════════════════════════════════════════════════════════════
+   REFINED TOKENS — tasteful polish over current Sendy/BSN system
+   Keeps Sarabun + BSN red/gold/charcoal. Adds rhythm, depth, tabular numbers.
+   ════════════════════════════════════════════════════════════ */
+:root{
+  --sidebar-w:248px;
+
+  /* BSN brand (unchanged) */
+  --bsn-red:#c41e2a; --bsn-red-dark:#a8181f;
+  --bsn-gold:#f5a800; --bsn-gold-deep:#b97e00;
+  --charcoal:#1a1a1a;
+
+  /* Refined neutrals — warmer, cleaner hierarchy */
+  --ink:#221e1b;          /* primary text */
+  --muted:#736c63;        /* secondary text */
+  --faint:#a39a8e;        /* tertiary / hints */
+  --page:#f5f2ec;         /* app background */
+  --surface:#ffffff;      /* cards */
+  --surface-2:#f3efe8;    /* table head / chips */
+  --line:#e8e2d8;         /* hairline borders */
+  --line-soft:#f0ece4;    /* inner row borders */
+
+  /* Status tints */
+  --green:#2e7d3a; --green-bg:#e6f4e9;
+  --red-bg:#fdecee;
+  --gold-bg:#fdf3dd; --gold-ink:#8a5d00;
+  --slate-bg:#edeae4;
+
+  /* Elevation — soft, layered */
+  --sh-xs:0 1px 2px rgba(34,30,27,.05);
+  --sh-sm:0 1px 3px rgba(34,30,27,.06), 0 1px 2px rgba(34,30,27,.04);
+  --sh-md:0 8px 20px -6px rgba(34,30,27,.12), 0 2px 6px -2px rgba(34,30,27,.07);
+  --sh-lift:0 16px 32px -10px rgba(34,30,27,.18);
+  --ring:0 0 0 3px rgba(196,30,42,.12);
+
+  --r-lg:16px; --r:12px; --r-sm:9px; --r-pill:999px;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{ -webkit-text-size-adjust:100%}
+body{
+  margin:0; min-height:100vh; display:flex;
+  font-family:'Sarabun',sans-serif;
+  font-size:.925rem; line-height:1.5;
+  color:var(--ink);
+  background:var(--page);
+  -webkit-font-smoothing:antialiased;
+}
+/* tabular figures everywhere numbers matter */
+.num,.stat-value,.data-table td.n,.data-table th.n,.mono{
+  font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1;
+}
+a{color:inherit}
+
+/* ─────────── SIDEBAR ─────────── */
+.sidebar{
+  width:var(--sidebar-w); height:100vh; position:fixed; top:0; left:0; z-index:100;
+  display:flex; flex-direction:column;
+  background:linear-gradient(180deg,#202020 0%, #161616 100%);
+  border-right:1px solid #000;
+}
+.sidebar::before{ /* faint gold sheen at very top */
+  content:""; position:absolute; top:0; left:0; right:0; height:2px;
+  background:linear-gradient(90deg,transparent, rgba(245,168,0,.55), transparent);
+}
+.brand{
+  display:flex; align-items:center; gap:11px;
+  padding:18px 18px 16px; border-bottom:1px solid rgba(255,255,255,.06);
+}
+.brand-mark{
+  width:38px; height:38px; border-radius:11px; flex-shrink:0;
+  display:grid; place-items:center;
+  background:linear-gradient(145deg,var(--bsn-red),var(--bsn-red-dark));
+  color:#fff; font-weight:800; font-size:1.05rem;
+  box-shadow:0 4px 12px rgba(196,30,42,.4), inset 0 1px 0 rgba(255,255,255,.18);
+}
+.brand-name{color:#fff; font-weight:700; font-size:.98rem; line-height:1.1; letter-spacing:.01em}
+.brand-sub{color:var(--bsn-gold); font-size:.62rem; font-weight:600; letter-spacing:.16em; text-transform:uppercase; margin-top:3px}
+.nav{flex:1; padding:14px 12px; overflow-y:auto}
+.nav-section{font-size:.63rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:rgba(255,255,255,.32); padding:16px 10px 7px}
+.nav-link{
+  display:flex; align-items:center; gap:11px; padding:9px 12px; margin-bottom:3px;
+  border-radius:var(--r-sm); color:rgba(255,255,255,.62);
+  text-decoration:none; font-size:.875rem; font-weight:500;
+  position:relative; transition:background .15s,color .15s;
+}
+.nav-link i{font-size:1.02rem; width:18px; text-align:center}
+.nav-link:hover{background:rgba(255,255,255,.06); color:#fff}
+.nav-link.active{
+  background:linear-gradient(135deg,var(--bsn-red),var(--bsn-red-dark));
+  color:#fff; box-shadow:0 6px 16px -4px rgba(196,30,42,.5);
+}
+.nav-link.active::before{ /* gold tick */
+  content:""; position:absolute; left:-12px; top:50%; transform:translateY(-50%);
+  width:3px; height:20px; border-radius:0 3px 3px 0; background:var(--bsn-gold);
+}
+.nav-link .pill{margin-left:auto; background:rgba(255,255,255,.16); color:#fff; font-size:.65rem; font-weight:600; padding:1px 8px; border-radius:var(--r-pill)}
+
+/* ─────────── MAIN ─────────── */
+.main{margin-left:var(--sidebar-w); flex:1; display:flex; flex-direction:column; min-height:100vh}
+.topbar{
+  height:62px; background:rgba(255,255,255,.86); backdrop-filter:saturate(1.4) blur(8px);
+  border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px;
+  padding:0 26px; position:sticky; top:0; z-index:50;
+}
+.topbar .crumb{font-size:.8rem; color:var(--faint)}
+.topbar .crumb b{color:var(--ink); font-weight:600}
+.topbar .spacer{flex:1}
+.chip-role{font-size:.7rem; font-weight:700; letter-spacing:.04em; color:#fff; background:var(--bsn-red); padding:3px 10px; border-radius:var(--r-pill)}
+.who{font-size:.82rem; color:var(--muted)}
+
+.content{padding:26px; flex:1; max-width:1320px; width:100%}
+
+/* page header */
+.page-head{display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:22px}
+.page-title{font-size:1.4rem; font-weight:800; letter-spacing:-.01em; margin:0; line-height:1.1}
+.page-desc{color:var(--muted); font-size:.875rem; margin-top:4px}
+.btn{
+  font-family:inherit; font-weight:600; font-size:.85rem; border:none; cursor:pointer;
+  border-radius:var(--r-sm); padding:.5rem .9rem; display:inline-flex; align-items:center; gap:7px;
+  transition:transform .12s, box-shadow .15s, background .15s;
+}
+.btn-primary{background:linear-gradient(135deg,var(--bsn-red),var(--bsn-red-dark)); color:#fff; box-shadow:0 6px 16px -5px rgba(196,30,42,.5)}
+.btn-primary:hover{transform:translateY(-1px); box-shadow:0 10px 22px -6px rgba(196,30,42,.55)}
+.btn-ghost{background:var(--surface); color:var(--muted); border:1px solid var(--line)}
+.btn-ghost:hover{background:var(--surface-2); color:var(--ink)}
+.btn-sm{padding:.32rem .6rem; font-size:.78rem}
+
+/* ─────────── STAT CARDS ─────────── */
+.stat-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:24px}
+.stat{
+  position:relative; background:var(--surface); border:1px solid var(--line);
+  border-radius:var(--r-lg); padding:18px 18px 16px; overflow:hidden;
+  box-shadow:var(--sh-sm); transition:transform .16s, box-shadow .16s;
+}
+.stat::before{ /* top accent rule, color = meaning */
+  content:""; position:absolute; inset:0 0 auto 0; height:3px;
+  background:var(--accent,var(--bsn-red)); opacity:.9;
+}
+.stat:hover{transform:translateY(-3px); box-shadow:var(--sh-md)}
+.stat-top{display:flex; align-items:center; gap:11px; margin-bottom:14px}
+.stat-ic{width:40px; height:40px; border-radius:11px; display:grid; place-items:center; font-size:1.12rem; flex-shrink:0}
+.stat-label{font-size:.76rem; color:var(--muted); font-weight:600}
+.stat-value{font-size:2rem; font-weight:800; line-height:1; letter-spacing:-.02em}
+.stat-foot{display:flex; align-items:center; justify-content:space-between; margin-top:12px}
+.delta{display:inline-flex; align-items:center; gap:4px; font-size:.74rem; font-weight:600; padding:2px 8px; border-radius:var(--r-pill)}
+.delta.up{background:var(--green-bg); color:var(--green)}
+.delta.down{background:var(--red-bg); color:var(--bsn-red)}
+.delta.flat{background:var(--slate-bg); color:var(--muted)}
+.stat-link{font-size:.78rem; font-weight:600; color:var(--muted); text-decoration:none; display:inline-flex; align-items:center; gap:3px}
+.stat-link:hover{color:var(--bsn-red)}
+
+/* per-card accents */
+.s-red{--accent:var(--bsn-red)}    .s-red .stat-ic{background:var(--red-bg); color:var(--bsn-red)}    .s-red .stat-value{color:var(--bsn-red)}
+.s-green{--accent:var(--green)}     .s-green .stat-ic{background:var(--green-bg); color:var(--green)}    .s-green .stat-value{color:var(--green)}
+.s-gold{--accent:var(--bsn-gold)}   .s-gold .stat-ic{background:var(--gold-bg); color:var(--gold-deep,var(--gold-ink))}  .s-gold .stat-value{color:var(--gold-ink)}
+.s-ink{--accent:var(--charcoal)}    .s-ink .stat-ic{background:var(--slate-bg); color:var(--charcoal)}   .s-ink .stat-value{color:var(--ink)}
+
+/* ─────────── CARD + DATA TABLE ─────────── */
+.card{background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg); box-shadow:var(--sh-sm); overflow:hidden}
+.card-head{display:flex; align-items:center; justify-content:space-between; padding:15px 18px; border-bottom:1px solid var(--line)}
+.card-head .t{font-weight:700; font-size:.95rem; display:flex; align-items:center; gap:9px}
+.card-head .t i{color:var(--bsn-red)}
+.tbl-wrap{overflow-x:auto}
+.data-table{width:100%; border-collapse:collapse; font-size:.875rem}
+.data-table thead th{
+  position:sticky; top:0; background:var(--surface-2);
+  font-size:.7rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--muted);
+  text-align:left; padding:11px 16px; white-space:nowrap; border-bottom:1px solid var(--line);
+}
+.data-table th.n,.data-table td.n{text-align:right}
+.data-table th.c,.data-table td.c{text-align:center}
+.data-table td{padding:13px 16px; border-bottom:1px solid var(--line-soft); vertical-align:middle}
+.data-table tbody tr{transition:background .12s}
+.data-table tbody tr:hover{background:#fbf7f1}
+.data-table tbody tr:last-child td{border-bottom:none}
+.prod{font-weight:600; color:var(--ink); text-decoration:none}
+.prod:hover{color:var(--bsn-red)}
+.mono{font-family:'SF Mono',ui-monospace,'Fira Code',monospace; font-size:.78rem}
+.pid{display:inline-block; background:var(--slate-bg); color:#5a534b; font-weight:600; font-size:.74rem; padding:2px 8px; border-radius:6px; font-variant-numeric:tabular-nums}
+.t-dim{color:var(--faint); font-variant-numeric:tabular-nums}
+.badge{display:inline-flex; align-items:center; gap:4px; font-size:.72rem; font-weight:600; padding:3px 10px; border-radius:var(--r-pill)}
+.b-in{background:var(--green-bg); color:var(--green)}
+.b-out{background:var(--red-bg); color:var(--bsn-red)}
+.b-adj{background:var(--slate-bg); color:#5a534b}
+.qty-up{color:var(--green); font-weight:700}
+.qty-dn{color:var(--bsn-red); font-weight:700}
+
+.note-bar{margin-top:18px; font-size:.78rem; color:var(--faint); text-align:center}
+
+@media (max-width:1100px){ .stat-grid{grid-template-columns:repeat(2,1fr)} }
+@media (max-width:720px){
+  .sidebar{display:none} .main{margin-left:0}
+  .stat-grid{grid-template-columns:1fr 1fr; gap:12px}
+  .content{padding:16px}
+}
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-mark">S</div>
+    <div>
+      <div class="brand-name">Sendy</div>
+      <div class="brand-sub">by Sendai</div>
+    </div>
+  </div>
+  <nav class="nav">
+    <div class="nav-section">ภาพรวม</div>
+    <a class="nav-link active" href="#"><i class="bi bi-speedometer2"></i> Dashboard</a>
+    <a class="nav-link" href="#"><i class="bi bi-exclamation-triangle"></i> แจ้งเตือน <span class="pill">12</span></a>
+    <div class="nav-section">คลังสินค้า</div>
+    <a class="nav-link" href="#"><i class="bi bi-grid-3x3-gap"></i> สินค้า</a>
+    <a class="nav-link" href="#"><i class="bi bi-arrow-left-right"></i> ประวัติสต็อก</a>
+    <a class="nav-link" href="#"><i class="bi bi-scissors"></i> แปลงสินค้า</a>
+    <a class="nav-link" href="#"><i class="bi bi-upc-scan"></i> พิมพ์ป้าย/บาร์โค้ด</a>
+    <div class="nav-section">การค้า</div>
+    <a class="nav-link" href="#"><i class="bi bi-graph-up-arrow"></i> ยอดขาย</a>
+    <a class="nav-link" href="#"><i class="bi bi-people"></i> ลูกค้า</a>
+  </nav>
+</aside>
+
+<!-- MAIN -->
+<div class="main">
+  <header class="topbar">
+    <span class="crumb"><b>Dashboard</b></span>
+    <span class="spacer"></span>
+    <span class="who">วันศุกร์ 31 พ.ค. 2569</span>
+    <span class="chip-role">Admin</span>
+    <span class="who">put</span>
+  </header>
+
+  <main class="content">
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">ภาพรวมร้าน</h1>
+        <div class="page-desc">สรุปสต็อกและความเคลื่อนไหวล่าสุด</div>
+      </div>
+      <button class="btn btn-primary"><i class="bi bi-plus-lg"></i> เพิ่มสินค้า</button>
+    </div>
+
+    <!-- STAT CARDS -->
+    <div class="stat-grid">
+      <div class="stat s-red">
+        <div class="stat-top">
+          <div class="stat-ic"><i class="bi bi-exclamation-triangle"></i></div>
+          <div class="stat-label">สต็อกต่ำกว่าเกณฑ์</div>
+        </div>
+        <div class="stat-value num">12</div>
+        <div class="stat-foot">
+          <span class="delta up"><i class="bi bi-arrow-down-short"></i> 3 จากเมื่อวาน</span>
+          <a class="stat-link" href="#">ดูรายการ <i class="bi bi-chevron-right"></i></a>
+        </div>
+      </div>
+
+      <div class="stat s-green">
+        <div class="stat-top">
+          <div class="stat-ic"><i class="bi bi-arrow-down-circle"></i></div>
+          <div class="stat-label">รับเข้าวันนี้</div>
+        </div>
+        <div class="stat-value num">8</div>
+        <div class="stat-foot">
+          <span class="delta up"><i class="bi bi-arrow-up-short"></i> +2</span>
+          <a class="stat-link" href="#">ดูประวัติ <i class="bi bi-chevron-right"></i></a>
+        </div>
+      </div>
+
+      <div class="stat s-gold">
+        <div class="stat-top">
+          <div class="stat-ic"><i class="bi bi-arrow-up-circle"></i></div>
+          <div class="stat-label">จ่ายออกวันนี้</div>
+        </div>
+        <div class="stat-value num">23</div>
+        <div class="stat-foot">
+          <span class="delta flat"><i class="bi bi-dash"></i> เท่าเดิม</span>
+          <a class="stat-link" href="#">ดูประวัติ <i class="bi bi-chevron-right"></i></a>
+        </div>
+      </div>
+
+      <div class="stat s-ink">
+        <div class="stat-top">
+          <div class="stat-ic"><i class="bi bi-grid-3x3-gap"></i></div>
+          <div class="stat-label">สินค้าทั้งหมด</div>
+        </div>
+        <div class="stat-value num">1,961</div>
+        <div class="stat-foot">
+          <span class="delta flat"><i class="bi bi-box-seam"></i> 487 มีสต็อก</span>
+          <a class="stat-link" href="#">รายการสินค้า <i class="bi bi-chevron-right"></i></a>
+        </div>
+      </div>
+    </div>
+
+    <!-- RECENT TXNS -->
+    <div class="card">
+      <div class="card-head">
+        <span class="t"><i class="bi bi-clock-history"></i> รายการล่าสุด</span>
+        <button class="btn btn-ghost btn-sm">ดูทั้งหมด <i class="bi bi-chevron-right"></i></button>
+      </div>
+      <div class="tbl-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>เวลา</th>
+              <th class="c">ID</th>
+              <th>ชื่อสินค้า</th>
+              <th class="c">ประเภท</th>
+              <th class="n">จำนวน</th>
+              <th>หมายเหตุ</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="t-dim mono">31/05 14:22</td>
+              <td class="c"><span class="pid">284</span></td>
+              <td><a class="prod" href="#">กลอนประตูทองเหลือง Sendai #230 4นิ้ว สีรมดำ</a></td>
+              <td class="c"><span class="badge b-out">จ่ายออก</span></td>
+              <td class="n"><span class="qty-dn">−12 ตัว</span></td>
+              <td class="t-dim">ขายหน้าร้าน</td>
+            </tr>
+            <tr>
+              <td class="t-dim mono">31/05 13:05</td>
+              <td class="c"><span class="pid">1041</span></td>
+              <td><a class="prod" href="#">ใบตัดเพชร Golden Lion 4นิ้ว (กล่อง 10 ใบ)</a></td>
+              <td class="c"><span class="badge b-in">รับเข้า</span></td>
+              <td class="n"><span class="qty-up">+50 กล่อง</span></td>
+              <td class="t-dim">รับจากซัพพลายเออร์</td>
+            </tr>
+            <tr>
+              <td class="t-dim mono">31/05 11:48</td>
+              <td class="c"><span class="pid">662</span></td>
+              <td><a class="prod" href="#">บานพับสแตนเลส A-SPEC 3นิ้ว</a></td>
+              <td class="c"><span class="badge b-out">จ่ายออก</span></td>
+              <td class="n"><span class="qty-dn">−6 โหล</span></td>
+              <td class="t-dim">วรสวัสดิ์ ฮาร์ดแวร์</td>
+            </tr>
+            <tr>
+              <td class="t-dim mono">31/05 10:30</td>
+              <td class="c"><span class="pid">88</span></td>
+              <td><a class="prod" href="#">ค้อนหงอน ด้ามไฟเบอร์ Sendai 8 oz</a></td>
+              <td class="c"><span class="badge b-adj">ปรับยอด</span></td>
+              <td class="n"><span class="t-dim">+2 ตัว</span></td>
+              <td class="t-dim">นับสต็อกประจำเดือน</td>
+            </tr>
+            <tr>
+              <td class="t-dim mono">31/05 09:14</td>
+              <td class="c"><span class="pid">1393</span></td>
+              <td><a class="prod" href="#">กุญแจลูกปืน Golden Lion 50 มม. ทองเหลือง</a></td>
+              <td class="c"><span class="badge b-in">รับเข้า</span></td>
+              <td class="n"><span class="qty-up">+24 ตัว</span></td>
+              <td class="t-dim">โอนจากคลัง A1</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="note-bar">prototype — ขัดเงาแบบรสนิยม · Sarabun + BSN palette · เลขแบบ tabular · เงานุ่ม · ตารางสแกนง่าย</div>
+  </main>
+</div>
+
+</body>
+</html>

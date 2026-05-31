@@ -394,6 +394,24 @@ def count_low_stock():
     return n
 
 
+def count_active_products():
+    conn = get_connection()
+    n = conn.execute("SELECT COUNT(*) FROM products WHERE is_active = 1").fetchone()[0]
+    conn.close()
+    return n
+
+
+def count_in_stock():
+    conn = get_connection()
+    n = conn.execute("""
+        SELECT COUNT(*) FROM products p
+        JOIN stock_levels s ON s.product_id = p.id
+        WHERE p.is_active = 1 AND s.quantity > 0
+    """).fetchone()[0]
+    conn.close()
+    return n
+
+
 # ── Transactions ─────────────────────────────────────────────────────────────
 
 def add_transaction(product_id: int, txn_type: str, quantity_change: int,
