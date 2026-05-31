@@ -22,7 +22,7 @@
         <div class="input-group input-group-sm">
           <span class="input-group-text"><i class="bi bi-search"></i></span>
           <input type="text" name="q" class="form-control"
-                 placeholder="ค้นหาชื่อสินค้า หรือ SKU..." value="{{ search }}">
+                 placeholder="ค้นหาชื่อสินค้า หรือ ID..." value="{{ search }}">
         </div>
       </div>
       <div class="col-auto" style="min-width:180px">
@@ -59,7 +59,7 @@
     <table class="table table-mobile-cards mb-0">
       <thead>
         <tr>
-          <th style="width:200px; white-space:nowrap">SKU</th>
+          <th style="width:200px; white-space:nowrap">ID</th>
           <th>ชื่อสินค้า</th>
           <th class="text-center">หน่วย</th>
           <th class="text-end">ราคาขาย</th>
@@ -73,8 +73,8 @@
       <tbody>
         {% for p in products %}
         <tr {% if p.is_low %}class="row-low-stock"{% endif %}>
-          <td data-label="SKU" class="td-hide-mobile" style="white-space:nowrap">
-            <span class="badge badge-gray font-mono">{{ p.sku }}</span>
+          <td data-label="ID" class="td-hide-mobile" style="white-space:nowrap">
+            <span class="badge badge-gray font-mono">{{ p.id }}</span>
             {% if p.sku_code %}
             <div class="font-mono text-subtle small mt-1" style="font-size:.7rem; white-space:nowrap">{{ p.sku_code }}</div>
             {% endif %}
@@ -85,7 +85,7 @@
             {% if p.is_low %}
               <span class="badge badge-danger ms-1">สต็อกต่ำ</span>
             {% endif %}
-            <span class="d-mobile-only badge badge-gray font-mono ms-2">SKU {{ p.sku }}{% if p.sku_code %} · {{ p.sku_code }}{% endif %}</span>
+            <span class="d-mobile-only badge badge-gray font-mono ms-2">ID {{ p.id }}{% if p.sku_code %} · {{ p.sku_code }}{% endif %}</span>
           </td>
           <td data-label="หน่วย" class="text-center text-subtle">{{ p.unit_type }}</td>
           <td data-label="ราคาขาย" class="text-end text-subtle">{{ p.base_sell_price | fmt_price }}</td>
