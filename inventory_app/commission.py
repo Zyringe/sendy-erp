@@ -1,15 +1,17 @@
 """Commission engine — computes per-salesperson commission for a given month.
 
-Inputs (read from DB):
-  express_payments_in     — receipts that arrived in the target month
-  express_payment_in_invoice_refs — links receipt → invoice (IV doc_no)
-  express_sales           — line items per invoice (carries product_name)
+Inputs (read from DB — CANONICAL tables, re-pointed off the frozen express_*
+mirror 2026-06 so May-onward commission computes):
+  received_payments       — receipts that arrived in the target month
+  paid_invoices           — links receipt → invoice (doc_kind IN 'IV'/'SR')
+  sales_transactions      — line items per invoice (doc_base = bare doc_no)
   commission_tiers        — rate definitions (own/third + threshold)
   commission_assignments  — which tier each salesperson uses
 
 Algorithm:
-  1. For target year_month, load receipts (excluding void) joined to their
-     invoice refs and on to express_sales lines that share doc_no.
+  1. For target year_month, load receipts (excluding cancelled) joined to their
+     paid_invoices (IV only, non-NULL amount) and on to sales_transactions lines
+     where sales_transactions.doc_base = paid_invoices.doc_no.
   2. Each sales line is classified as own-brand or third-party from its
      product_name (regex similar to migration 004 brand backfill).
   3. Aggregate net amount by (salesperson_code, brand_kind).
@@ -130,11 +132,12 @@ _BASE_QUERY = """
            rcv.customer_name,
            rcv.invoice_no,
            rcv.ref_amount,
-           es.product_code,
+           es.bsn_code           AS product_code,
            es.product_name_raw,
            -- Derive brand_kind from the resolved product's brand at read
-           -- time. (The express_sales.brand_kind cache was removed in
-           -- mig 068; this is now the only source of truth.)
+           -- time. sales_transactions.product_id is resolved at import (no
+           -- unit-aware mapping subquery needed — that was an express_sales
+           -- workaround; express_sales.product_id is always NULL).
            CASE WHEN b.is_own_brand = 1 THEN 'own'
                 WHEN b.is_own_brand = 0 THEN 'third_party'
                 ELSE NULL END    AS brand_kind,
@@ -147,36 +150,35 @@ _BASE_QUERY = """
            b.code                AS sendy_brand_code,
            b.name                AS sendy_brand_name
       FROM (
-          SELECT pin.salesperson_code,
-                 ref.invoice_no,
+          SELECT rp.salesperson         AS salesperson_code,
+                 pi.doc_no              AS invoice_no,
                  -- when multiple receipts pay the same invoice (split payment),
                  -- collapse to one row to avoid Cartesian-multiplying the sales lines
-                 MIN(pin.doc_no)        AS receipt_no,
-                 MIN(pin.date_iso)      AS receipt_date,
-                 MIN(pin.customer_name) AS customer_name,
-                 SUM(ref.amount)        AS ref_amount
-            FROM express_payments_in pin
-            JOIN express_payment_in_invoice_refs ref ON ref.payment_in_id = pin.id
-           WHERE pin.is_void = 0
-             AND pin.date_iso BETWEEN ? AND ?
-             AND pin.salesperson_code <> ''
-           GROUP BY pin.salesperson_code, ref.invoice_no
+                 MIN(rp.re_no)          AS receipt_no,
+                 MIN(rp.date_iso)       AS receipt_date,
+                 MIN(rp.customer)       AS customer_name,
+                 SUM(pi.amount)         AS ref_amount
+            FROM received_payments rp
+            JOIN paid_invoices    pi ON pi.re_id = rp.id
+           WHERE rp.cancelled = 0
+             -- IV only: paid_invoices also carries SR (credit-note) links the
+             -- express refs table never had; SR rows would pull the credited
+             -- invoice's sales lines into the commission base. Mirror express.
+             AND pi.doc_kind = 'IV'
+             -- Load-bearing: paid_invoices carries NULL/zero-amount rows for
+             -- invoices LISTED on a receipt header but allocated 0 to it (paid
+             -- by a different receipt). The express refs table never had these.
+             -- Without this filter a phantom (sp, invoice) link pulls the whole
+             -- invoice's lines into the wrong salesperson.
+             AND pi.amount IS NOT NULL AND pi.amount <> 0
+             AND rp.date_iso BETWEEN ? AND ?
+             AND COALESCE(rp.salesperson, '') <> ''
+           GROUP BY rp.salesperson, pi.doc_no
       ) rcv
-      JOIN express_sales          es   ON es.doc_no = rcv.invoice_no
-      -- Unit-aware product resolution (mirrors mig 063/064 resolver). Joining
-      -- product_code_mapping by bsn_code alone duplicates each sales line by
-      -- the number of mapping rows (post-mig 061 a code can have multiple
-      -- bsn_unit variants). The scalar subquery picks the single winning
-      -- product_id: exact (bsn_code, unit) beats the bsn_unit='' catch-all.
-      LEFT JOIN products          p    ON p.id = (
-          SELECT m.product_id
-            FROM product_code_mapping m
-           WHERE m.bsn_code = es.product_code
-             AND m.bsn_unit IN (COALESCE(es.unit, ''), '')
-             AND m.product_id IS NOT NULL
-           ORDER BY (m.bsn_unit = '')   -- exact (0) before catch-all (1)
-           LIMIT 1
-      )
+      -- Bare-doc join: sales_transactions.doc_no carries the '-N' line suffix
+      -- (IV6900437-2); doc_base is the bare invoice (IV6900437) = paid_invoices.doc_no.
+      JOIN sales_transactions     es   ON es.doc_base = rcv.invoice_no
+      LEFT JOIN products          p    ON p.id = es.product_id
       LEFT JOIN brands            b    ON b.id = p.brand_id
      WHERE 1=1
 """
@@ -484,7 +486,7 @@ def get_invoice_payouts_for_sp(year_month, salesperson_code, db_path=None):
 
 def get_payout_history(year_month=None, salesperson_code=None, db_path=None):
     """Return commission_payouts rows joined with the underlying invoice's
-    issue date from express_sales. Sorted newest-first by year_month."""
+    issue date from sales_transactions. Sorted newest-first by year_month."""
     conn = _connect(db_path)
     where = []
     params = []
@@ -499,7 +501,7 @@ def get_payout_history(year_month=None, salesperson_code=None, db_path=None):
         SELECT cp.id, cp.year_month, cp.salesperson_code, cp.amount_paid,
                cp.paid_date, cp.paid_method, cp.note, cp.paid_by, cp.created_at,
                cp.invoice_no,
-               (SELECT MIN(date_iso) FROM express_sales es WHERE es.doc_no = cp.invoice_no)
+               (SELECT MIN(date_iso) FROM sales_transactions es WHERE es.doc_base = cp.invoice_no)
                                           AS invoice_date
           FROM commission_payouts cp
           {where_sql}
@@ -545,29 +547,33 @@ def get_invoices_for_salesperson(year_month, salesperson_code, db_path=None):
     conn = _connect(db_path)
     start, end = _month_bounds(year_month)
 
-    # Aggregate sales lines per invoice in target month
+    # Aggregate sales lines per invoice in target month (canonical: group by
+    # the bare doc_base since sales_transactions splits each invoice into -N
+    # line rows; derive doc_type from the doc prefix).
     invoice_rows = conn.execute("""
-        SELECT s.doc_no,
-               s.doc_type,
-               s.date_iso,
+        SELECT s.doc_base                                       AS doc_no,
+               CASE WHEN s.doc_base LIKE 'HS%' THEN 'HS' ELSE 'IV' END AS doc_type,
+               MIN(s.date_iso)                                  AS date_iso,
                s.customer_code,
-               s.customer_name,
+               s.customer                                       AS customer_name,
                ROUND(SUM(s.net), 2)   AS total_net,
                ROUND(SUM(s.total), 2) AS total_gross,
                COUNT(*)               AS lines
-          FROM express_sales s
+          FROM sales_transactions s
          WHERE s.date_iso BETWEEN ? AND ?
-           AND s.doc_type IN ('IV','HS')
-         GROUP BY s.doc_no
+           AND (s.doc_base LIKE 'IV%' OR s.doc_base LIKE 'HS%')
+         GROUP BY s.doc_base
     """, (start, end)).fetchall()
 
     # Map invoice_no → who paid it (receipt collector)
     paid_by_sp = {r['invoice_no']: (r['salesperson_code'], r['receipt_no'], r['amount'])
                   for r in conn.execute("""
-        SELECT ref.invoice_no, pin.salesperson_code, pin.doc_no AS receipt_no, ref.amount
-          FROM express_payment_in_invoice_refs ref
-          JOIN express_payments_in pin ON pin.id = ref.payment_in_id
-         WHERE pin.is_void = 0
+        SELECT pi.doc_no AS invoice_no, rp.salesperson AS salesperson_code,
+               rp.re_no AS receipt_no, pi.amount
+          FROM paid_invoices pi
+          JOIN received_payments rp ON rp.id = pi.re_id
+         WHERE rp.cancelled = 0 AND pi.doc_kind = 'IV'
+           AND pi.amount IS NOT NULL AND pi.amount <> 0
     """).fetchall()}
 
     # Map invoice_no → outstanding info (currently unpaid)
@@ -642,22 +648,18 @@ def get_invoice_line_breakdown(year_month, salesperson_code, invoice_no, db_path
     # globally unique, and an invoice paid in month X may have been
     # issued months earlier. The receipt's date is the month-bound
     # axis; the invoice's lines are wherever they live in time.
-    # Look up Sendy product_id via product_code_mapping (BSN/Express share
-    # the same product code system — 99.9% of Express codes are already
-    # mapped). Falls back to NULL only for genuinely unmapped codes.
-    # Also peek for any product-level commission override and the
-    # canonical Sendy product name (preferred over the Express raw name).
-    # Unit-aware resolver — see _BASE_QUERY for the same predicate / rationale.
+    # sales_transactions.product_id is resolved at import, so brand resolves
+    # via a direct products/brands join (no product_code_mapping resolver —
+    # that was an express_sales-only workaround). Also peek for any
+    # product-level commission override and the canonical Sendy product name.
     rows = conn.execute("""
-        SELECT es.product_code,
+        SELECT es.bsn_code           AS product_code,
                es.product_name_raw,
                p.product_name       AS sendy_product_name,
                es.qty,
                es.unit,
                es.unit_price,
                es.net               AS line_net,
-               -- See _BASE_QUERY for rationale: derive from resolved
-               -- product's brand (the brand_kind cache is gone per mig 068).
                CASE WHEN b.is_own_brand = 1 THEN 'own'
                     WHEN b.is_own_brand = 0 THEN 'third_party'
                     ELSE NULL END   AS brand_kind,
@@ -665,19 +667,11 @@ def get_invoice_line_breakdown(year_month, salesperson_code, invoice_no, db_path
                p.brand_id           AS sendy_brand_id,
                b.code               AS sendy_brand_code,
                b.name               AS sendy_brand_name
-          FROM express_sales es
-          LEFT JOIN products p ON p.id = (
-              SELECT m.product_id
-                FROM product_code_mapping m
-               WHERE m.bsn_code = es.product_code
-                 AND m.bsn_unit IN (COALESCE(es.unit, ''), '')
-                 AND m.product_id IS NOT NULL
-               ORDER BY (m.bsn_unit = '')
-               LIMIT 1
-          )
+          FROM sales_transactions es
+          LEFT JOIN products p ON p.id = es.product_id
           LEFT JOIN brands   b ON b.id = p.brand_id
-         WHERE es.doc_no = ?
-         ORDER BY es.line_no
+         WHERE es.doc_base = ?
+         ORDER BY es.id
     """, (invoice_no,)).fetchall()
 
     # Tier rates
@@ -689,13 +683,14 @@ def get_invoice_line_breakdown(year_month, salesperson_code, invoice_no, db_path
          WHERE a.salesperson_code = ?
     """, (salesperson_code,)).fetchone()
 
-    # Receipt info
+    # Receipt info (canonical: received_payments has no cash/cheque/discount
+    # split — only the header fields the drill-down actually displays).
     rcpt = conn.execute("""
-        SELECT pin.doc_no, pin.date_iso, pin.customer_name, pin.cash_amount,
-               pin.cheque_amount, pin.discount_amount
-          FROM express_payment_in_invoice_refs ref
-          JOIN express_payments_in pin ON pin.id = ref.payment_in_id
-         WHERE pin.salesperson_code = ? AND ref.invoice_no = ?
+        SELECT rp.re_no AS doc_no, rp.date_iso, rp.customer AS customer_name
+          FROM paid_invoices pi
+          JOIN received_payments rp ON rp.id = pi.re_id
+         WHERE rp.salesperson = ? AND pi.doc_no = ?
+           AND pi.doc_kind = 'IV' AND pi.amount IS NOT NULL
          LIMIT 1
     """, (salesperson_code, invoice_no)).fetchone()
 
@@ -841,15 +836,15 @@ def get_invoice_commission_for_sp(year_month, salesperson_code, db_path=None,
         else:
             v['_tier_third'] += net
 
-    # Fetch invoice issue dates from express_sales (any line of the invoice carries date_iso)
+    # Fetch invoice issue dates from sales_transactions (any line of the invoice carries date_iso)
     if inv:
         conn = _connect(db_path)
         placeholders = ','.join('?' * len(inv))
         date_rows = conn.execute(f"""
-            SELECT doc_no, MIN(date_iso) AS d
-              FROM express_sales
-             WHERE doc_no IN ({placeholders})
-             GROUP BY doc_no
+            SELECT doc_base AS doc_no, MIN(date_iso) AS d
+              FROM sales_transactions
+             WHERE doc_base IN ({placeholders})
+             GROUP BY doc_base
         """, list(inv.keys())).fetchall()
         for r in date_rows:
             if r['doc_no'] in inv:

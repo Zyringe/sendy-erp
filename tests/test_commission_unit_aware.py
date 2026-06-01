@@ -1,28 +1,24 @@
-"""Commission engine — unit-aware product resolution (GH issue #30).
+"""Commission line-attribution guarantees on the CANONICAL path.
 
-Locks the 2 high findings from Codex adversarial review of PR #29 (2026-05-20):
+History: GH issue #30 / PR #29 fixed a duplication bug where commission._BASE_QUERY
+joined product_code_mapping by bsn_code alone and multiplied each express_sales
+line by the number of mapping rows. That fix used a unit-aware scalar-subquery
+resolver against express_sales (whose product_id is always NULL).
 
-  1. commission._BASE_QUERY joins product_code_mapping by bsn_code alone.
-     After mig 061 a bsn_code can map to multiple product_ids via different
-     bsn_units → each express_sales row gets multiplied by the number of
-     mapping rows → line_net summed multiple times → overstated commission.
-     Fix: replace by-code JOIN with the unit-aware scalar resolver
-     (mirrors mig 063/064 predicate).
+The commission engine was re-pointed to canonical tables (sales_transactions +
+received_payments + paid_invoices). sales_transactions.product_id is resolved at
+import, so the engine joins products/brands directly — the by-code resolver (and
+its duplication failure mode) is gone. These tests now lock the equivalent
+guarantees on the canonical path:
+  1. one sales line -> exactly one commission attribution row (no blow-up),
+  2. brand_kind derived from sales_transactions.product_id,
+  3. commission computed once on the real net, not doubled.
 
-  2. scripts/import_express.py _import_sales INSERT omits brand_kind, and
-     _product_id_by_code() always returns None. New sales rows after deploy
-     keep brand_kind NULL → commission falls back to regex classification →
-     split-code lines may pay the wrong own/third-party rate.
-     Fix: resolve product_id from (product_code, unit) at INSERT time and
-     populate brand_kind from that product's brand.
+(The strongest guard against regressions is the live-data parity check in
+test_commission_canonical.py — April canonical total must equal the old express
+engine to the baht. These synthetic tests pin the mechanics independently.)
 
-Both fixes share the canonical resolver predicate:
-    WHERE bsn_code = ? AND bsn_unit IN (COALESCE(unit, ''), '')
-      AND product_id IS NOT NULL
-    ORDER BY (bsn_unit = '')   -- exact unit (0) before catch-all (1)
-    LIMIT 1
-
-tmp_db copies the live DB so mig 061/063/064 are already applied.
+tmp_db copies the live DB so all migrations/tiers are present.
 """
 from __future__ import annotations
 
@@ -30,63 +26,31 @@ import os
 import sqlite3
 import sys
 
-import pytest
-
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 sys.path.insert(0, os.path.join(REPO, "inventory_app"))
 
-
-# ── Setup helpers ───────────────────────────────────────────────────────────
-TEST_DATE = "2099-01-15"   # future date — won't collide with real receipts
+TEST_DATE = "2099-01-15"   # future — never collides with real data or the cutoff
 TEST_BSN_CODE = "TEST-UA-30"
-TEST_SP = "TS"            # "TestSp"; we'll create + assign Tier A
+TEST_SP = "TS"             # assigned Tier A below
 
 
-def _two_products_diff_brands(conn):
-    """Two products with DIFFERENT brand_kind (one own-brand, one third-party)."""
-    own_brand = conn.execute(
-        "SELECT id FROM brands WHERE is_own_brand=1 LIMIT 1"
-    ).fetchone()[0]
-    third_brand = conn.execute(
-        "SELECT id FROM brands WHERE is_own_brand=0 LIMIT 1"
-    ).fetchone()[0]
+def _own_and_third_products(conn):
+    own_brand = conn.execute("SELECT id FROM brands WHERE is_own_brand=1 LIMIT 1").fetchone()[0]
+    third_brand = conn.execute("SELECT id FROM brands WHERE is_own_brand=0 LIMIT 1").fetchone()[0]
     p_own = conn.execute(
-        "SELECT id FROM products WHERE brand_id=? AND is_active=1 LIMIT 1",
-        (own_brand,),
+        "SELECT id FROM products WHERE brand_id=? AND is_active=1 LIMIT 1", (own_brand,)
     ).fetchone()[0]
     p_third = conn.execute(
-        "SELECT id FROM products WHERE brand_id=? AND is_active=1 LIMIT 1",
-        (third_brand,),
+        "SELECT id FROM products WHERE brand_id=? AND is_active=1 LIMIT 1", (third_brand,)
     ).fetchone()[0]
     return p_own, p_third
 
 
-def _setup_split_mapping(conn, p_exact, p_catchall):
-    """Create unit-split mapping: bsn_unit='ตัว' → p_exact, bsn_unit='' → p_catchall."""
-    conn.execute("DELETE FROM product_code_mapping WHERE bsn_code=?", (TEST_BSN_CODE,))
-    conn.execute(
-        "INSERT INTO product_code_mapping (bsn_code, bsn_name, bsn_unit, product_id) "
-        "VALUES (?, 'test-name', 'ตัว', ?)",
-        (TEST_BSN_CODE, p_exact),
-    )
-    conn.execute(
-        "INSERT INTO product_code_mapping (bsn_code, bsn_name, bsn_unit, product_id) "
-        "VALUES (?, 'test-name', '', ?)",
-        (TEST_BSN_CODE, p_catchall),
-    )
-    conn.commit()
-
-
 def _setup_salesperson(conn):
-    """Create test salesperson assigned to Tier A (10% own / 5% third)."""
-    conn.execute(
-        "INSERT OR IGNORE INTO salespersons (code, name) VALUES (?, 'Test SP')",
-        (TEST_SP,),
-    )
-    tier_a = conn.execute(
-        "SELECT id FROM commission_tiers WHERE code='A'"
-    ).fetchone()[0]
+    """Create TEST_SP assigned to Tier A (10% own / 5% third)."""
+    conn.execute("INSERT OR IGNORE INTO salespersons (code, name) VALUES (?, 'Test SP')", (TEST_SP,))
+    tier_a = conn.execute("SELECT id FROM commission_tiers WHERE code='A'").fetchone()[0]
     conn.execute("DELETE FROM commission_assignments WHERE salesperson_code=?", (TEST_SP,))
     conn.execute(
         "INSERT INTO commission_assignments (salesperson_code, tier_id, effective_from) "
@@ -96,113 +60,78 @@ def _setup_salesperson(conn):
     conn.commit()
 
 
-def _insert_sale_and_receipt(conn, unit, line_net, doc_no="IVTEST001"):
-    """Insert 1 express_sales line + 1 receipt that pays it."""
-    conn.execute("DELETE FROM express_sales WHERE doc_no=?", (doc_no,))
-    conn.execute("DELETE FROM express_payment_in_invoice_refs WHERE invoice_no=?", (doc_no,))
-    conn.execute("DELETE FROM express_payments_in WHERE doc_no LIKE 'TESTPI%'")
+def _insert_canonical_sale_and_receipt(conn, pid, line_net=100.0, doc_no="IVTEST001"):
+    """One sales_transactions line (product_id=pid) + a received_payments receipt
+    (paid_invoices IV link) that pays it. No commission_payouts row -> paid=0."""
+    conn.execute("DELETE FROM sales_transactions WHERE doc_base=?", (doc_no,))
+    conn.execute("DELETE FROM received_payments WHERE re_no=?", (f"RE-{doc_no}",))
     conn.execute(
-        """
-        INSERT INTO express_sales
-            (batch_id, doc_no, line_no, doc_type, date_iso, company_id,
-             product_code, product_name_raw, qty, unit, unit_price, net, total)
-        VALUES (1, ?, 1, 'IV', ?, 1, ?, 'test product', 1, ?, ?, ?, ?)
-        """,
-        (doc_no, TEST_DATE, TEST_BSN_CODE, unit, line_net, line_net, line_net),
+        """INSERT INTO sales_transactions
+               (date_iso, doc_no, doc_base, product_id, bsn_code, product_name_raw,
+                customer, qty, unit, unit_price, vat_type, discount, total, net)
+           VALUES (?, ?, ?, ?, ?, 'test product', 'test cust', 1, 'ตัว', ?, 0, 0, ?, ?)""",
+        (TEST_DATE, f"{doc_no}-1", doc_no, pid, TEST_BSN_CODE, line_net, line_net, line_net),
     )
     cur = conn.execute(
-        """
-        INSERT INTO express_payments_in
-            (batch_id, doc_no, date_iso, company_id, customer_name,
-             salesperson_code, is_void, cash_amount)
-        VALUES (1, 'TESTPI001', ?, 1, 'test cust', ?, 0, ?)
-        """,
-        (TEST_DATE, TEST_SP, line_net),
+        """INSERT INTO received_payments
+               (re_no, date_iso, customer, salesperson, cancelled, total)
+           VALUES (?, ?, 'test cust', ?, 0, ?)""",
+        (f"RE-{doc_no}", TEST_DATE, TEST_SP, line_net),
     )
-    pid = cur.lastrowid
     conn.execute(
-        """
-        INSERT INTO express_payment_in_invoice_refs
-            (payment_in_id, invoice_no, invoice_date_iso, amount)
-        VALUES (?, ?, ?, ?)
-        """,
-        (pid, doc_no, TEST_DATE, line_net),
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?, ?, 'IV', ?)",
+        (cur.lastrowid, doc_no, line_net),
     )
     conn.commit()
 
 
-# ── Tests: commission._BASE_QUERY duplication ──────────────────────────────
-def test_base_query_returns_one_row_per_sales_line_on_split_code(tmp_db):
-    """REGRESSION: pre-fix, by-code JOIN multiplies 1 sale line into 2 rows
-    (one per mapping). After fix, unit-aware resolver returns 1 row."""
+def test_one_commission_row_per_sales_line(tmp_db):
+    """Canonical 1:1: one sales_transactions line → exactly one attribution row
+    (the receipt→invoice→line join must not Cartesian-multiply)."""
     import commission
 
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
-    p_exact, p_catchall = _two_products_diff_brands(conn)
-    _setup_split_mapping(conn, p_exact, p_catchall)
+    p_own, _ = _own_and_third_products(conn)
     _setup_salesperson(conn)
-    _insert_sale_and_receipt(conn, unit="ตัว", line_net=100.0)
+    _insert_canonical_sale_and_receipt(conn, p_own, 100.0)
     conn.close()
 
     lines = commission.get_lines_for_salesperson("2099-01", TEST_SP, db_path=tmp_db)
-    assert len(lines) == 1, (
-        f"expected 1 row (one sales line), got {len(lines)} — by-code join "
-        f"is duplicating across mapping rows"
-    )
+    assert len(lines) == 1, f"expected 1 row per sales line, got {len(lines)}"
 
 
-def test_base_query_resolves_to_unit_specific_product(tmp_db):
-    """Unit 'ตัว' must resolve to the unit-specific mapping (p_exact),
-    NOT the catch-all (p_catchall)."""
+def test_brand_kind_resolved_from_sales_line_product_id(tmp_db):
+    """brand_kind comes from sales_transactions.product_id → products → brands,
+    not a by-code mapping resolver."""
     import commission
 
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
-    p_exact, p_catchall = _two_products_diff_brands(conn)
-    _setup_split_mapping(conn, p_exact, p_catchall)
+    p_own, _ = _own_and_third_products(conn)
     _setup_salesperson(conn)
-    _insert_sale_and_receipt(conn, unit="ตัว", line_net=100.0)
+    _insert_canonical_sale_and_receipt(conn, p_own, 100.0)
     conn.close()
 
     lines = commission.get_lines_for_salesperson("2099-01", TEST_SP, db_path=tmp_db)
-    assert lines[0]["sendy_product_id"] == p_exact, (
-        f"sale with unit 'ตัว' should resolve to p_exact={p_exact}, "
-        f"got {lines[0]['sendy_product_id']}"
-    )
+    assert lines[0]["sendy_product_id"] == p_own
+    assert lines[0]["brand_kind"] == "own"
 
 
-def test_commission_total_not_doubled_on_split_code(tmp_db):
-    """End-to-end: net=100 sale at Tier A → 10% own = 10 baht.
-    Pre-fix the duplicated rows would compute commission on 200 baht (= 20).
-    brand_kind is derived at read-time from the resolved product's brand."""
+def test_commission_total_not_doubled(tmp_db):
+    """End-to-end: net=100 own-brand at Tier A → 10% = 10 baht (computed once)."""
     import commission
 
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
-    p_exact, p_catchall = _two_products_diff_brands(conn)
-    own_brand_id = conn.execute(
-        "SELECT id FROM brands WHERE is_own_brand=1 LIMIT 1"
-    ).fetchone()[0]
-    conn.execute("UPDATE products SET brand_id=? WHERE id=?", (own_brand_id, p_exact))
-    _setup_split_mapping(conn, p_exact, p_catchall)
+    p_own, _ = _own_and_third_products(conn)
     _setup_salesperson(conn)
-    _insert_sale_and_receipt(conn, unit="ตัว", line_net=100.0)
-    conn.commit()
+    _insert_canonical_sale_and_receipt(conn, p_own, 100.0)
     conn.close()
 
-    result = commission.get_commission_for_month(
-        "2099-01", salesperson_code=TEST_SP, db_path=tmp_db
-    )
+    result = commission.get_commission_for_month("2099-01", salesperson_code=TEST_SP, db_path=tmp_db)
     assert len(result) == 1
-    row = result[0]
-    # net should be 100 (the one sale), not 200 (duplicated)
-    assert row["total_net"] == 100.0, (
-        f"total_net should be 100 (one sale), got {row['total_net']}"
+    assert result[0]["total_net"] == 100.0, f"total_net should be 100, got {result[0]['total_net']}"
+    assert result[0]["total_commission"] == 10.0, (
+        f"commission should be 10 (10% own of 100), got {result[0]['total_commission']}"
     )
-    # commission at 10% own = 10
-    assert row["total_commission"] == 10.0, (
-        f"commission should be 10 (10% of 100), got {row['total_commission']}"
-    )
-
-
