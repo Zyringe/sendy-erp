@@ -2856,11 +2856,14 @@ import import_express as express_importer  # noqa: E402
 
 
 def _months_with_payment_activity():
-    """Distinct YYYY-MM strings present in express_payments_in (non-void)."""
+    """Distinct YYYY-MM strings present in received_payments (non-cancelled).
+
+    Reads the canonical receipts table (not the frozen express_payments_in
+    mirror) so the /commission month dropdown surfaces May-2026 onward."""
     conn = get_connection()
     rows = conn.execute(
         "SELECT DISTINCT substr(date_iso, 1, 7) AS ym "
-        "FROM express_payments_in WHERE is_void=0 ORDER BY ym DESC"
+        "FROM received_payments WHERE cancelled=0 ORDER BY ym DESC"
     ).fetchall()
     conn.close()
     return [r['ym'] for r in rows]
