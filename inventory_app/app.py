@@ -167,6 +167,7 @@ _STAFF_POST_OK = frozenset([
     'api_product_barcodes',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
+    'unified_import', 'unified_import_confirm',
     'import_payments', 'products.product_online_stock',
     'customer_reassign', 'customer_bulk_reassign',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
@@ -326,6 +327,8 @@ _ENDPOINT_MODULE = {
     'hr.payroll_detail': 'hr',
     'hr.payslip': 'hr',
     # data
+    'unified_import': 'data',
+    'unified_import_confirm': 'data',
     'import_weekly': 'data',
     'import_weekly_confirm': 'data',
     'mapping': 'data',
@@ -2853,6 +2856,109 @@ import hr as hr_mod  # noqa: E402  (referenced by blueprints/hr.py via direct im
 # semantics (lights-on FK off etc).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 import import_express as express_importer  # noqa: E402
+import import_router  # noqa: E402  (unified /import box: detect + preview + commit dispatch)
+
+
+# ── Unified import box (/import) — one drop zone for all weekly Express files ──
+_IMPORT_STAGE_DIR = 'import-stage'   # under UPLOAD_FOLDER
+
+_REPORT_LABELS = {
+    'sales': 'ขาย',
+    'purchase': 'ซื้อ',
+    'payments_in': 'การรับชำระหนี้ (ลูกหนี้)',
+    'payments_out': 'การจ่ายชำระหนี้ (เจ้าหนี้)',
+    'credit_notes_ar': 'ใบลดหนี้ — รับคืน (ลูกค้า)',
+    'credit_notes_ap': 'ใบลดหนี้ — ส่งคืน (ผู้ขาย)',
+    'ar_snapshot': 'ลูกหนี้คงค้าง',
+    'ap_snapshot': 'เจ้าหนี้คงค้าง',
+    'unknown': '— ไม่รู้จัก (เลือกเอง) —',
+}
+
+
+@app.route('/import-data', methods=['GET', 'POST'])
+def unified_import():
+    if session.get('role') not in ('admin', 'manager'):
+        flash('ต้องเป็น Admin หรือ Manager', 'danger')
+        return redirect(url_for('dashboard'))
+    if request.method == 'POST':
+        import time
+        import uuid
+        files = [f for f in request.files.getlist('files') if f and f.filename]
+        if not files:
+            flash('ยังไม่ได้เลือกไฟล์', 'danger')
+            return redirect(url_for('unified_import'))
+        # Prune abandoned staged dirs (a GET-cancel or re-upload never reaches
+        # /confirm's cleanup, so they would otherwise leak on disk).
+        stage_root = os.path.join(app.config['UPLOAD_FOLDER'], _IMPORT_STAGE_DIR)
+        if os.path.isdir(stage_root):
+            cutoff = time.time() - 3600
+            for d in os.listdir(stage_root):
+                old = os.path.join(stage_root, d)
+                try:
+                    if os.path.isdir(old) and os.path.getmtime(old) < cutoff:
+                        shutil.rmtree(old, ignore_errors=True)
+                except OSError:
+                    pass
+        token = uuid.uuid4().hex
+        stage = os.path.join(stage_root, token)
+        os.makedirs(stage, exist_ok=True)
+        rows = []
+        for i, f in enumerate(files):
+            saved = f'{i}_{os.path.basename(f.filename)}'
+            path = os.path.join(stage, saved)
+            f.save(path)
+            rtype = import_router.detect_express_report(path)
+            row = {'idx': i, 'filename': f.filename, 'saved': saved,
+                   'detected': rtype, 'label': _REPORT_LABELS.get(rtype, rtype),
+                   'count': None, 'detail': {}, 'error': None}
+            if rtype != 'unknown':
+                try:
+                    prev = import_router.preview_file(path, rtype)
+                    row['count'] = prev.get('count')
+                    row['detail'] = prev.get('detail') or {}
+                except Exception as exc:   # preview failure isolates to this file
+                    row['error'] = str(exc)
+            rows.append(row)
+        session['import_stage'] = {'token': token, 'rows': rows}
+        return render_template('import_box.html', staged=True, rows=rows, token=token,
+                               report_labels=_REPORT_LABELS, results=None)
+    return render_template('import_box.html', staged=False, rows=None,
+                           report_labels=_REPORT_LABELS, results=None)
+
+
+@app.route('/import-data/confirm', methods=['POST'])
+def unified_import_confirm():
+    if session.get('role') not in ('admin', 'manager'):
+        flash('ต้องเป็น Admin หรือ Manager', 'danger')
+        return redirect(url_for('dashboard'))
+    stage = session.get('import_stage') or {}
+    token = stage.get('token')
+    rows = stage.get('rows') or []
+    if not token or request.form.get('token') != token:
+        flash('เซสชันหมดอายุ กรุณาอัปโหลดใหม่', 'warning')
+        return redirect(url_for('unified_import'))
+    base = os.path.join(app.config['UPLOAD_FOLDER'], _IMPORT_STAGE_DIR, token)
+    results = []
+    for row in rows:
+        i = row['idx']
+        # Put can override a detected/unknown type via the per-row dropdown.
+        rtype = request.form.get(f'type_{i}', row['detected'])
+        path = os.path.join(base, row['saved'])
+        if rtype == 'unknown' or not os.path.isfile(path):
+            results.append({'filename': row['filename'], 'ok': False,
+                            'msg': 'ข้าม — ไม่ได้เลือกประเภท'})
+            continue
+        try:
+            out = import_router.commit_file(path, rtype, filename=row['filename'])
+            results.append({'filename': row['filename'], 'ok': True,
+                            'label': _REPORT_LABELS.get(rtype, rtype),
+                            'summary': out.get('summary')})
+        except Exception as exc:   # per-file isolation — one bad file doesn't sink the batch
+            results.append({'filename': row['filename'], 'ok': False, 'msg': str(exc)})
+    session.pop('import_stage', None)
+    shutil.rmtree(base, ignore_errors=True)
+    return render_template('import_box.html', staged=False, rows=None,
+                           report_labels=_REPORT_LABELS, results=results)
 
 
 def _months_with_payment_activity():

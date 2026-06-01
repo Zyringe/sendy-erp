@@ -17,7 +17,7 @@ Decisions (Put, 2026-06-02): **Full consolidation** (write canonical only; retir
 ## Scope
 
 ### In (this spec — sub-project A)
-- New `/import` (GET drop zone + POST preview) and `/import/confirm` routes.
+- New routes (GET drop zone + POST preview) and a confirm POST. **Implemented at `/import-data` and `/import-data/confirm`** — `/import` was already taken by `bp_products` (Product-Master CSV import). Spec text below says `/import` generically; the live paths are `/import-data*`. Endpoints: `unified_import`, `unified_import_confirm`.
 - `detect_express_report(path)` — report-type detection.
 - Multi-file preview table + per-file confirm, dispatching to canonical importers.
 - Nav points to `/import`; old import pages remain reachable (not yet removed).

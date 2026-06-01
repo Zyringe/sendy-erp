@@ -74,3 +74,56 @@ def test_unknown_type_raises(monkeypatch):
     import import_router
     with pytest.raises(ValueError):
         import_router.commit_file(PATH, "unknown")
+
+
+# ── preview_file (read-only) ──────────────────────────────────────────────
+def test_preview_payments_in_counts_new_vs_existing_and_is_readonly(tmp_db, monkeypatch):
+    import import_router, models, sqlite3
+    conn = sqlite3.connect(tmp_db)
+    existing_re = conn.execute("SELECT re_no FROM received_payments LIMIT 1").fetchone()[0]
+    before = conn.execute("SELECT COUNT(*) FROM received_payments").fetchone()[0]
+    conn.close()
+    monkeypatch.setattr(models, "parse_payment_csv",
+                        lambda p: [{"re_no": existing_re}, {"re_no": "RE-NEW-9999"}])
+    out = import_router.preview_file(PATH, "payments_in", db_path=tmp_db)
+    assert out["count"] == 2
+    assert out["detail"] == {"new": 1, "existing": 1}
+    conn = sqlite3.connect(tmp_db)
+    after = conn.execute("SELECT COUNT(*) FROM received_payments").fetchone()[0]
+    conn.close()
+    assert after == before, "preview must not write"
+
+
+def test_preview_sales_uses_preview_import(monkeypatch):
+    import import_router, models
+    import parse_weekly
+    seen = {}
+    monkeypatch.setattr(parse_weekly, "parse_sales", lambda p: ["e1", "e2", "e3"])
+    monkeypatch.setattr(models, "preview_import",
+                        lambda entries, ft: seen.update(ft=ft, n=len(entries)) or {"new": 3})
+    out = import_router.preview_file(PATH, "sales")
+    assert seen == {"ft": "sales", "n": 3} and out["count"] == 3
+
+
+def test_preview_unknown_raises():
+    import import_router
+    with pytest.raises(ValueError):
+        import_router.preview_file(PATH, "unknown")
+
+
+def test_preview_credit_notes_ar_uses_readonly_preview(monkeypatch):
+    """Regression: preview must route to the read-only preview_credit_notes_import
+    (own conn + ROLLBACK), NOT the writing import_credit_notes — whose internal
+    SAVEPOINT/RELEASE survives a manual rollback and leaks rows."""
+    import import_router
+    import import_credit_notes as icn
+    seen = {}
+    monkeypatch.setattr(icn, "preview_credit_notes_import",
+                        lambda p, db_path=None: seen.update(called=True) or {"parsed": 4})
+
+    def _boom(*a, **k):
+        raise AssertionError("preview must not call the writing import_credit_notes")
+    monkeypatch.setattr(icn, "import_credit_notes", _boom)
+
+    out = import_router.preview_file(PATH, "credit_notes_ar")
+    assert seen.get("called") is True and out["count"] == 4
