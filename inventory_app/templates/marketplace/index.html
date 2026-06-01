@@ -1,0 +1,131 @@
+{% extends 'base.html' %}
+{% block title %}คำสั่งซื้อ Marketplace – ERP{% endblock %}
+{% block page_title %}คำสั่งซื้อ Marketplace (Shopee / Lazada){% endblock %}
+
+{% block content %}
+
+{% set sp = summary.get('shopee', {}) %}
+{% set lz = summary.get('lazada', {}) %}
+{% set unmapped = summary.get('_unmapped_lines', 0) %}
+
+{# ── Summary cards ── #}
+<div class="row g-3 mb-4">
+  <div class="col-sm-6 col-md-3">
+    <div class="stat-card" style="border-left:4px solid #ee4d2d">
+      <div class="stat-card-label"><i class="bi bi-bag-heart me-1"></i>Shopee</div>
+      <div class="stat-card-value text-danger mt-1">{{ sp.get('orders', 0) | fmt_qty }}</div>
+      <div class="stat-card-sub">ออเดอร์ · ยอดรวม ฿{{ sp.get('gmv', 0) | fmt_price }}</div>
+      <div class="stat-card-sub text-muted">
+        {% if sp.get('last_import') %}นำเข้าล่าสุด {{ sp.last_import[:16] }}{% else %}ยังไม่มีข้อมูล{% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-md-3">
+    <div class="stat-card" style="border-left:4px solid #003087">
+      <div class="stat-card-label"><i class="bi bi-shop me-1"></i>Lazada</div>
+      <div class="stat-card-value text-primary mt-1">{{ lz.get('orders', 0) | fmt_qty }}</div>
+      <div class="stat-card-sub">ออเดอร์ · ยอดรวม ฿{{ lz.get('gmv', 0) | fmt_price }}</div>
+      <div class="stat-card-sub text-muted">
+        {% if lz.get('last_import') %}นำเข้าล่าสุด {{ lz.last_import[:16] }}{% else %}ยังไม่มีข้อมูล{% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-md-3">
+    <div class="stat-card" style="border-left:4px solid #10b981">
+      <div class="stat-card-label"><i class="bi bi-receipt me-1"></i>ออเดอร์ทั้งหมด</div>
+      <div class="stat-card-value mt-1">{{ (sp.get('orders', 0) + lz.get('orders', 0)) | fmt_qty }}</div>
+      <div class="stat-card-sub text-muted">Shopee + Lazada</div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-md-3">
+    <a href="{{ url_for('marketplace.unmapped') }}" class="text-decoration-none">
+      <div class="stat-card" style="border-left:4px solid {% if unmapped %}#f59e0b{% else %}#10b981{% endif %}">
+        <div class="stat-card-label"><i class="bi bi-link-45deg me-1"></i>รายการยังไม่จับคู่</div>
+        <div class="stat-card-value {% if unmapped %}text-warning{% else %}text-success{% endif %} mt-1">{{ unmapped | fmt_qty }}</div>
+        <div class="stat-card-sub text-muted">คลิกเพื่อจับคู่สินค้า</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+{# ── Import box ── #}
+<div class="card mb-4">
+  <div class="card-body">
+    <form method="post" action="{{ url_for('marketplace.import_orders') }}" enctype="multipart/form-data"
+          class="d-flex flex-wrap gap-2 align-items-center">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label class="fw-semibold mb-0"><i class="bi bi-cloud-upload me-1"></i>อัปโหลดไฟล์ order export</label>
+      <input type="file" name="order_file" accept=".xlsx" class="form-control form-control-sm" style="max-width:340px" required>
+      <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-upload me-1"></i>นำเข้า</button>
+      <span class="text-muted small">รองรับไฟล์ Shopee &amp; Lazada (ตรวจชนิดอัตโนมัติ) · นำเข้าซ้ำได้ ไม่เกิดรายการซ้ำ</span>
+    </form>
+  </div>
+</div>
+
+{# ── Fee/payout caveat ── #}
+<div class="alert alert-light border small text-muted mb-3">
+  <i class="bi bi-info-circle me-1"></i>
+  <strong>ค่าธรรมเนียม / ยอดที่ได้รับ:</strong> Shopee แสดงค่าคอม+ค่าบริการจากไฟล์ (ยอดที่ได้รับจริงต้องกระทบกับ settlement report อีกที) ·
+  Lazada ไฟล์ order ไม่มีค่าคอม จึงแสดง "-" จนกว่าจะดึง finance statement
+</div>
+
+{# ── Filter ── #}
+<div class="btn-group btn-group-sm mb-3" role="group">
+  <a href="{{ url_for('marketplace.dashboard') }}"
+     class="btn btn-outline-secondary {% if not platform %}active{% endif %}">ทั้งหมด</a>
+  <a href="{{ url_for('marketplace.dashboard', platform='shopee') }}"
+     class="btn btn-outline-danger {% if platform == 'shopee' %}active{% endif %}">Shopee</a>
+  <a href="{{ url_for('marketplace.dashboard', platform='lazada') }}"
+     class="btn btn-outline-primary {% if platform == 'lazada' %}active{% endif %}">Lazada</a>
+</div>
+
+{# ── Orders table ── #}
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>วันที่</th><th>ช่องทาง</th><th>เลขออเดอร์</th><th>สถานะ</th>
+          <th class="text-end">รายการ</th><th class="text-end">จำนวน</th>
+          <th class="text-end">ยอดสินค้า</th><th class="text-end">ค่าธรรมเนียม</th>
+          <th class="text-end">ยอดรับ</th><th>ผู้รับ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in orders %}
+        <tr>
+          <td class="text-nowrap small">{{ o.order_date or '-' }}</td>
+          <td>
+            {% if o.platform == 'shopee' %}<span class="badge" style="background:#ee4d2d">Shopee</span>
+            {% else %}<span class="badge" style="background:#003087">Lazada</span>{% endif %}
+          </td>
+          <td class="small">{{ o.order_sn }}</td>
+          <td class="small">{{ o.status or '-' }}</td>
+          <td class="text-end">
+            {{ o.n_items | fmt_qty }}
+            {% if o.n_unmapped %}<span class="badge bg-warning text-dark" title="ยังไม่จับคู่สินค้า">{{ o.n_unmapped }}</span>{% endif %}
+          </td>
+          <td class="text-end">{{ o.total_qty | fmt_qty }}</td>
+          <td class="text-end">{{ o.item_total | fmt_price }}</td>
+          <td class="text-end text-muted">{{ o.marketplace_fee | fmt_price }}</td>
+          <td class="text-end">{{ o.payout | fmt_price }}</td>
+          <td class="small">{{ o.buyer_name or '-' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" class="text-center text-muted py-4">
+          ยังไม่มีออเดอร์ — อัปโหลดไฟล์ order export ด้านบนเพื่อเริ่ม
+        </td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="text-muted small mt-2">
+  แสดง {{ orders | length | fmt_qty }} ออเดอร์
+  {% if orders | length >= row_limit %}
+    <span class="text-warning">(จำกัด {{ row_limit | fmt_qty }} ล่าสุด — มีมากกว่านี้ ใช้ตัวกรอง Shopee/Lazada ดูแยก)</span>
+  {% endif %}
+</div>
+
+{% endblock %}

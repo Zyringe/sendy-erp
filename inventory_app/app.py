@@ -52,6 +52,7 @@ from blueprints.supplier_catalogue import bp_supplier_catalogue
 from blueprints.mobile import bp_mobile
 from blueprints.hr import bp_hr
 from blueprints.cashbook import bp_cashbook
+from blueprints.marketplace import bp_marketplace
 import cashflow as cf_mod
 import revenue as rev_mod
 import ar_followup as arf_mod
@@ -93,6 +94,7 @@ app.register_blueprint(bp_supplier_catalogue)
 app.register_blueprint(bp_mobile)
 app.register_blueprint(bp_hr)
 app.register_blueprint(bp_cashbook)
+app.register_blueprint(bp_marketplace)
 
 with app.app_context():
     # SKIP_DB_INIT=1 lets the app boot without touching the database. Used
@@ -172,6 +174,7 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'mapping_suggestion_approve',
     'import_credit_notes_preview', 'import_credit_notes_commit',
     'photos_review_assign', 'photos_review_delete',
+    'marketplace.import_orders',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
 # the route. Other admin-only writes use _require_admin().
@@ -308,6 +311,9 @@ _ENDPOINT_MODULE = {
     'ecommerce_listings_import': 'accounting',
     'ecommerce_listings_mapping_export': 'accounting',
     'ecommerce_listings_mapping_import': 'accounting',
+    'marketplace.dashboard': 'accounting',
+    'marketplace.import_orders': 'accounting',
+    'marketplace.unmapped': 'accounting',
     # hr
     'hr.dashboard': 'hr',
     'hr.employee_list': 'hr',

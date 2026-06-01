@@ -186,6 +186,10 @@
        class="sidebar-link {% if request.endpoint == 'ecommerce' and request.args.get('tab') == 'lazada' %}active{% endif %}">
       <i class="bi bi-shop" style="color:#003087"></i> Lazada
     </a>
+    <a href="{{ url_for('marketplace.dashboard') }}"
+       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('marketplace.') %}active{% endif %}">
+      <i class="bi bi-receipt"></i> คำสั่งซื้อ Marketplace
+    </a>
     {% endif %}
 
     {# ── บุคลากร (HR) — admin/manager only ── #}
