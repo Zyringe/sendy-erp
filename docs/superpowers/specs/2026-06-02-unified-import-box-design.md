@@ -42,16 +42,22 @@ Reads the file's Thai title line (Express prints a distinct report title in the 
 - Pure function, unit-testable with header fixtures. No DB, no writes.
 
 ### 2. Routing map (report → importer → canonical table)
-| Detected type | Existing importer reused | Canonical table |
-|---|---|---|
-| `sales` | `import_weekly` (parse_weekly) | `sales_transactions` |
-| `purchase` | `import_weekly` (parse_weekly) | `purchase_transactions` |
-| `payments_in` | `models.import_payments` | `received_payments` + `paid_invoices` |
-| `credit_notes` | `import_credit_notes` | `credit_note_amounts` |
-| `ar_snapshot` | `express_importer.run_import('ar_snapshot')` | `express_ar_outstanding` |
-| `ap_snapshot` | `express_importer.run_import('ap_snapshot')` | `express_ap_outstanding` |
+Detection found 8 distinguishable report types (the two ใบลดหนี้ differ by รับคืน=AR vs ส่งคืน=AP). All have a clear canonical importer:
 
-The box **never** routes to `parse_express_sales`/`express_sales` or the `express_payments_in` writer (canonical-only).
+| Detected type | Header marker | Existing importer reused | Canonical table |
+|---|---|---|---|
+| `sales` | ประวัติการขาย | `import_weekly` (parse_weekly) | `sales_transactions` |
+| `purchase` | ประวัติการซื้อ | `import_weekly` (parse_weekly) | `purchase_transactions` |
+| `payments_in` | การรับชำระหนี้ | `models.import_payments` | `received_payments` + `paid_invoices` |
+| `payments_out` | การจ่ายชำระหนี้ | `express_importer payments_out` | `express_payments_out` *(kept)* |
+| `credit_notes_ar` | ใบลดหนี้/รับคืนสินค้า | `import_credit_notes` | `credit_note_amounts` *(kept)* |
+| `credit_notes_ap` | ใบลดหนี้/ส่งคืนสินค้า | `express_importer credit_notes` | `express_credit_notes` *(kept)* |
+| `ar_snapshot` | ลูกหนี้คงค้าง | `import_weekly` (express snapshot) | `express_ar_outstanding` *(kept)* |
+| `ap_snapshot` | เจ้าหนี้คงค้าง | `import_weekly` (express snapshot) | `express_ap_outstanding` *(kept)* |
+
+The box **never** routes to `parse_express_sales`/`express_sales` or the `express_payments_in` writer — `sales` and `payments_in` go to their canonical homes (`sales_transactions`, `received_payments`). The other 6 express_* tables are single-source (not twins) and are kept. So the only twins retired (sub-project B) are `express_sales` + `express_payments_in` (+ refs).
+
+Detection keys on specific titles (`ประวัติการขาย`, not bare `ขาย`) so the wrong `ขายเงินเชื่อ เรียงตามเลขที่` report stays `unknown` → operator picks. Implemented in `import_router.detect_express_report` (10 TDD tests).
 
 ### 3. `/import` flow (multi-file, preview → confirm)
 1. **GET `/import`** — drop zone (multiple files) + recent-imports list.
