@@ -13,6 +13,8 @@ Returns one of:
 """
 from __future__ import annotations
 
+import os
+
 REPORT_TYPES = (
     "sales", "purchase", "payments_in", "payments_out",
     "credit_notes_ar", "credit_notes_ap", "ar_snapshot", "ap_snapshot",
@@ -50,3 +52,45 @@ def detect_express_report(path):
     if "ประวัติการซื้อ" in head or "รายงานการซื้อ" in head:
         return "purchase"
     return "unknown"
+
+
+# report_type → express_importer file_type (the express-family share one path).
+# credit_notes_ap is the supplier-side ใบลดหนี้; express_importer's 'credit_notes'
+# parser is supplier-keyed → express_credit_notes (a kept, single-source table).
+_EXPRESS_KIND = {
+    "payments_out": "payments_out",
+    "credit_notes_ap": "credit_notes",
+    "ar_snapshot": "ar_snapshot",
+    "ap_snapshot": "ap_snapshot",
+}
+
+
+def commit_file(path, report_type, filename=None, db_path=None):
+    """Dispatch one detected file to its CANONICAL importer and commit.
+
+    Returns a uniform summary: {type, ok, summary}. Raises ValueError for an
+    unknown report_type (a programmer/detection error); importer runtime errors
+    propagate so the caller can isolate per-file. Importers are reused as-is —
+    sales/payments_in go to their canonical homes, never the express twins.
+    """
+    if report_type == "payments_in":
+        import models
+        return {"type": report_type, "ok": True, "summary": models.import_payments(path)}
+
+    if report_type == "credit_notes_ar":
+        from import_credit_notes import import_credit_notes as _icn
+        return {"type": report_type, "ok": True, "summary": _icn(path, db_path=db_path)}
+
+    if report_type in ("sales", "purchase"):
+        import models
+        from parse_weekly import parse_sales, parse_purchases
+        entries = parse_sales(path) if report_type == "sales" else parse_purchases(path)
+        stats = models.import_weekly(entries, report_type, filename or os.path.basename(path))
+        return {"type": report_type, "ok": True, "summary": stats}
+
+    if report_type in _EXPRESS_KIND:
+        import import_express
+        import_express.run_import(_EXPRESS_KIND[report_type], path, dry_run=False)
+        return {"type": report_type, "ok": True, "summary": {"imported": True}}
+
+    raise ValueError(f"unknown report_type: {report_type!r}")
