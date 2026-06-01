@@ -25,6 +25,7 @@ Future split: this file is a candidate for domain-based extraction
 (models_products.py / models_transactions.py / models_commission.py /
 models_hr.py) when next major touch arrives — opportunistic, not big-bang.
 """
+import json
 import re
 import sqlite3
 
@@ -4625,6 +4626,166 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Marketplace orders (Shopee/Lazada order-export import)
+#
+# Operational tracking only — kept SEPARATE from sales_transactions (marketplace
+# revenue already enters the ledger via the weekly Express import as หน้าร้านS/B/L,
+# so writing it here too would double-count). See migration 093 + parse_orders.py.
+# ---------------------------------------------------------------------------
+
+def resolve_marketplace_product_id(conn, platform, item):
+    """Resolve one parsed order line -> internal products.id via platform_skus.
+
+    Tries, in order: variation_id (Lazada lazadaSku), seller_sku, then
+    (product_name, variation_name) (Shopee, which exports no SKU/variation id).
+    Returns the product id or None (None => surfaced on /marketplace/unmapped).
+    """
+    vid = item.get('variation_id')
+    if vid:
+        r = conn.execute(
+            "SELECT internal_product_id FROM platform_skus "
+            "WHERE platform=? AND variation_id=? AND internal_product_id IS NOT NULL "
+            "LIMIT 1", (platform, vid)).fetchone()
+        if r:
+            return r[0]
+    ssku = item.get('seller_sku')
+    if ssku:
+        r = conn.execute(
+            "SELECT internal_product_id FROM platform_skus "
+            "WHERE platform=? AND seller_sku=? AND internal_product_id IS NOT NULL "
+            "LIMIT 1", (platform, ssku)).fetchone()
+        if r:
+            return r[0]
+    name = item.get('item_name')
+    if name:
+        r = conn.execute(
+            "SELECT internal_product_id FROM platform_skus "
+            "WHERE platform=? AND product_name=? AND IFNULL(variation_name,'')=? "
+            "AND internal_product_id IS NOT NULL LIMIT 1",
+            (platform, name, item.get('variation_name') or '')).fetchone()
+        if r:
+            return r[0]
+    return None
+
+
+def import_marketplace_orders(conn, orders, source_file=None):
+    """Upsert parsed marketplace orders (from parse_orders.py) into
+    marketplace_orders / marketplace_order_items. Idempotent: re-importing the
+    same order updates the header and rebuilds its lines (handles edits/removals).
+    Returns stats dict. Caller owns the connection (commits here)."""
+    stats = {'orders': 0, 'items': 0, 'unmapped': 0, 'lines_resolved': 0}
+    for o in orders:
+        conn.execute(
+            """INSERT INTO marketplace_orders
+                   (platform, order_sn, status, buyer_name, buyer_phone, ship_address,
+                    order_date, paid_date, item_total, marketplace_fee, payout,
+                    currency, source_file, raw_json, last_synced_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now','localtime'))
+               ON CONFLICT(platform, order_sn) DO UPDATE SET
+                   status=excluded.status, buyer_name=excluded.buyer_name,
+                   buyer_phone=excluded.buyer_phone, ship_address=excluded.ship_address,
+                   order_date=excluded.order_date, paid_date=excluded.paid_date,
+                   item_total=excluded.item_total, marketplace_fee=excluded.marketplace_fee,
+                   payout=excluded.payout, currency=excluded.currency,
+                   source_file=excluded.source_file, raw_json=excluded.raw_json,
+                   last_synced_at=datetime('now','localtime')""",
+            (o['platform'], o['order_sn'], o.get('status'), o.get('buyer_name'),
+             o.get('buyer_phone'), o.get('ship_address'), o.get('order_date'),
+             o.get('paid_date'), o.get('item_total'), o.get('marketplace_fee'),
+             o.get('payout'), o.get('currency', 'THB'), source_file,
+             json.dumps(o, ensure_ascii=False)))
+
+        oid = conn.execute(
+            "SELECT id FROM marketplace_orders WHERE platform=? AND order_sn=?",
+            (o['platform'], o['order_sn'])).fetchone()[0]
+
+        # Rebuild this order's lines so re-import reflects the latest export.
+        conn.execute("DELETE FROM marketplace_order_items WHERE order_id=?", (oid,))
+        for it in o.get('items', []):
+            pid = resolve_marketplace_product_id(conn, o['platform'], it)
+            if pid is None:
+                stats['unmapped'] += 1
+            else:
+                stats['lines_resolved'] += 1
+            conn.execute(
+                """INSERT INTO marketplace_order_items
+                       (order_id, platform, order_sn, line_key, seller_sku, variation_id,
+                        item_name, variation_name, internal_product_id, qty, unit_price,
+                        item_subtotal)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (oid, o['platform'], o['order_sn'], it['line_key'], it.get('seller_sku'),
+                 it.get('variation_id'), it.get('item_name'), it.get('variation_name'),
+                 pid, it.get('qty'), it.get('unit_price'), it.get('item_subtotal')))
+            stats['items'] += 1
+        stats['orders'] += 1
+
+    conn.commit()
+    return stats
+
+
+def get_marketplace_summary():
+    """Per-platform counts for the dashboard cards."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT platform,
+                      COUNT(*)                           AS orders,
+                      COALESCE(SUM(item_total), 0)       AS gmv,
+                      MAX(last_synced_at)                AS last_import
+                 FROM marketplace_orders GROUP BY platform""").fetchall()
+        summary = {r['platform']: dict(r) for r in rows}
+        unmapped = conn.execute(
+            """SELECT COUNT(*) FROM marketplace_order_items
+                WHERE internal_product_id IS NULL""").fetchone()[0]
+        summary['_unmapped_lines'] = unmapped
+        return summary
+    finally:
+        conn.close()
+
+
+def get_marketplace_orders(platform=None, limit=500):
+    """Order headers (newest first) with per-order line rollups, for the table."""
+    conn = get_connection()
+    try:
+        sql = """
+            SELECT o.*,
+                   (SELECT COUNT(*) FROM marketplace_order_items i WHERE i.order_id=o.id) AS n_items,
+                   (SELECT COALESCE(SUM(qty),0) FROM marketplace_order_items i WHERE i.order_id=o.id) AS total_qty,
+                   (SELECT COUNT(*) FROM marketplace_order_items i
+                     WHERE i.order_id=o.id AND i.internal_product_id IS NULL) AS n_unmapped
+              FROM marketplace_orders o"""
+        params = []
+        if platform in ('shopee', 'lazada'):
+            sql += " WHERE o.platform = ?"
+            params.append(platform)
+        sql += " ORDER BY o.order_date DESC, o.id DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
+
+
+def get_marketplace_unmapped():
+    """Distinct unmapped order lines (need a platform_skus mapping), with how
+    many order lines each represents."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT platform, item_name, variation_name,
+                      MAX(seller_sku)    AS seller_sku,
+                      MAX(variation_id)  AS variation_id,
+                      COUNT(*)           AS line_count,
+                      COALESCE(SUM(qty), 0) AS total_qty
+                 FROM marketplace_order_items
+                WHERE internal_product_id IS NULL
+                GROUP BY platform, item_name, variation_name
+                ORDER BY line_count DESC""").fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 

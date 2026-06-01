@@ -1,0 +1,54 @@
+{% extends 'base.html' %}
+{% block title %}รายการยังไม่จับคู่ – Marketplace{% endblock %}
+{% block page_title %}รายการที่ยังจับคู่สินค้าไม่ได้{% endblock %}
+
+{% block topbar_actions %}
+<a href="{{ url_for('marketplace.dashboard') }}" class="btn btn-sm btn-outline-secondary">
+  <i class="bi bi-arrow-left me-1"></i>กลับ
+</a>
+{% endblock %}
+
+{% block content %}
+
+<div class="alert alert-light border small text-muted mb-3">
+  <i class="bi bi-info-circle me-1"></i>
+  รายการเหล่านี้ยังจับคู่กับสินค้าในระบบไม่ได้ (ชื่อ/SKU ไม่ตรงกับ
+  <code>platform_skus</code>). วิธีแก้: ไปที่หน้า E-commerce → จับคู่ SKU ของ Shopee/Lazada
+  กับสินค้าให้ครบ แล้วนำเข้าไฟล์ order ใหม่ — ระบบจะจับคู่ให้อัตโนมัติ
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>ช่องทาง</th><th>ชื่อสินค้า</th><th>ตัวเลือก</th>
+          <th>Seller SKU</th><th>Variation ID</th>
+          <th class="text-end">จำนวนบรรทัด</th><th class="text-end">จำนวนรวม</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>
+            {% if r.platform == 'shopee' %}<span class="badge" style="background:#ee4d2d">Shopee</span>
+            {% else %}<span class="badge" style="background:#003087">Lazada</span>{% endif %}
+          </td>
+          <td class="small">{{ r.item_name or '-' }}</td>
+          <td class="small">{{ r.variation_name or '-' }}</td>
+          <td class="small">{{ r.seller_sku or '-' }}</td>
+          <td class="small text-muted">{{ r.variation_id or '-' }}</td>
+          <td class="text-end">{{ r.line_count | fmt_qty }}</td>
+          <td class="text-end">{{ r.total_qty | fmt_qty }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-success py-4">
+          <i class="bi bi-check-circle me-1"></i>จับคู่สินค้าครบทุกรายการแล้ว
+        </td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}
