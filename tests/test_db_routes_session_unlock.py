@@ -102,3 +102,30 @@ def test_non_admin_cannot_arm_or_download(client):
     with client.session_transaction() as sess:
         assert not sess.get('db_routes_enabled')
     assert client.get('/admin/download-db').status_code == 403
+
+
+def test_disable_from_db_page_does_not_bounce_to_403(client):
+    """UX guard: clicking ปิด while sitting ON a gated DB page must not redirect
+    back to that now-locked page (a 403). The referrer is the page we just
+    locked, so toggle-off goes to the dashboard instead."""
+    _login_as(client, 'admin')
+    _arm(client)
+    assert client.get('/admin/upload-db').status_code == 200
+    # disable from the upload page — Referer is the page we just locked
+    resp = client.post('/admin/toggle-db-routes', headers={'Referer': '/admin/upload-db'})
+    assert resp.status_code == 302
+    loc = resp.headers.get('Location', '')
+    assert '/admin/upload-db' not in loc and '/admin/download-db' not in loc, (
+        f"toggle-off bounced back to the locked DB page: {loc}"
+    )
+    # and following the redirect must NOT be a 403
+    assert client.get(loc).status_code != 403
+
+
+def test_enable_returns_to_referrer(client):
+    """Enabling keeps you on the page you were on (so the sidebar Upload/Download
+    links appear in place) — only disabling diverts to the dashboard."""
+    _login_as(client, 'admin')
+    resp = client.post('/admin/toggle-db-routes', headers={'Referer': '/customers'})
+    assert resp.status_code == 302
+    assert resp.headers.get('Location', '').endswith('/customers')

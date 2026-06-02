@@ -570,9 +570,14 @@ def admin_exit_simulate():
 def toggle_db_routes():
     if session.get('role') != 'admin':
         abort(403)
-    session['db_routes_enabled'] = not session.get('db_routes_enabled', False)
-    state = 'เปิด' if session['db_routes_enabled'] else 'ปิด'
+    session['db_routes_enabled'] = enabled = not session.get('db_routes_enabled', False)
+    state = 'เปิด' if enabled else 'ปิด'
     flash(f'{state}การเข้าถึง Upload/Download Database แล้ว', 'success')
+    # When DISABLING, request.referrer is usually the Upload/Download page we
+    # just locked — bouncing back there would 403. Go to the dashboard instead.
+    # When enabling, stay on the referring page so the sidebar links appear.
+    if not enabled:
+        return redirect(url_for('dashboard'))
     return redirect(request.referrer or url_for('dashboard'))
 
 
