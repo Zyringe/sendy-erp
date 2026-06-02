@@ -2149,8 +2149,9 @@ def get_customers_master(search=None, salesperson=None, region_id=None,
 # > generic.
 #
 # Audit triggers (migration 023) capture every INSERT/UPDATE/DELETE.
-# Callers writing to this table MUST call commission.clear_override_cache()
-# after a successful write so the engine reloads.
+# The engine reads commission_overrides fresh on every computation
+# (commission._load_overrides has no cache), so a write here is picked up
+# automatically — no cache-invalidation call is required for correctness.
 
 def _normalise_override_payload(data):
     """Coerce form values into the shape stored in DB. Returns
