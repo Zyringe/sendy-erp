@@ -65,6 +65,14 @@ from config import DATABASE_PATH
 # historical lines. Only receipts collected from May 2026 onward are open.
 SETTLED_THROUGH = '2026-04-30'
 
+# Commission on any order SOLD (invoiced) before this date is also considered
+# paid in full by business rule (Put 2026-06-02): the pre-February work is the
+# employee era, settled regardless of when the customer eventually pays. This is
+# ADDITIVE to SETTLED_THROUGH — an invoice is settled if it was sold before this
+# OR collected on/before SETTLED_THROUGH. It can only mark MORE as paid, never
+# revive a settled item, so it cannot inflate what a rep is owed.
+SOLD_SETTLED_BEFORE = '2026-02-01'
+
 
 def _fmt_rate_pct(rate):
     """'2.0' → '2%', '2.5' → '2.5%', '10.0' → '10%'."""
@@ -913,10 +921,14 @@ def get_invoice_commission_for_sp(year_month, salesperson_code, db_path=None,
             status = 'partial'
         else:
             status = 'pending'
-        # Settled-through cutoff: receipts collected on/before SETTLED_THROUGH
-        # are paid in full by business rule (see constant). Override last so it
-        # wins over the stale-payout-derived remaining/status.
-        if v['receipt_date'] and v['receipt_date'] <= SETTLED_THROUGH:
+        # Settled by business rule (see constants), applied last so it wins over
+        # the stale-payout-derived remaining/status. An invoice is settled if it
+        # was COLLECTED on/before SETTLED_THROUGH, OR SOLD before
+        # SOLD_SETTLED_BEFORE (the pre-February employee era, paid regardless of
+        # when collected).
+        collected_settled = bool(v['receipt_date']) and v['receipt_date'] <= SETTLED_THROUGH
+        sold_settled = bool(v['invoice_date']) and v['invoice_date'] < SOLD_SETTLED_BEFORE
+        if collected_settled or sold_settled:
             remaining = 0.0
             status = 'settled'
         out.append({
