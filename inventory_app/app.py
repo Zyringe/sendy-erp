@@ -3436,8 +3436,16 @@ def express_import():
         incremental = bool(request.form.get('incremental'))
         upload = request.files.get('file')
 
-        if file_type not in ('credit_notes', 'payments_in', 'ar_snapshot',
-                             'ap_snapshot', 'payments_out', 'sales'):
+        # sales / payments_in are RETIRED here — they wrote the express_sales /
+        # express_payments_in "twins" that duplicate the canonical
+        # sales_transactions / received_payments. Route the operator to the
+        # unified box which writes the canonical tables only.
+        if file_type in ('sales', 'payments_in'):
+            flash('ไฟล์ขาย / การรับชำระหนี้ ให้ใช้หน้า "นำเข้า (รวมทุกไฟล์)" แทน '
+                  '— ระบบจะบันทึกลงตารางหลักโดยตรง (เลิกใช้ตารางสำรอง express แล้ว)', 'warning')
+            return redirect(url_for('unified_import'))
+        if file_type not in ('credit_notes', 'ar_snapshot',
+                             'ap_snapshot', 'payments_out'):
             flash('เลือกประเภทไฟล์ไม่ถูก', 'danger')
             return redirect(url_for('express_import'))
         if not upload or not upload.filename:
@@ -3575,17 +3583,21 @@ def express_ar_customer(customer_code):
     total_billed = sum((r['bill_amount'] or 0) for r in rows)
     oldest = min((r['doc_date_iso'] or '9999-12-31') for r in rows)
 
-    # Pull recent payment history (เฉพาะลูกค้านี้)
+    # Pull recent payment history from the CANONICAL received_payments table
+    # (the express_payments_in twin is frozen / being retired). received_payments
+    # has no customer_code FK, so match by name; it carries a single `total`
+    # rather than a cash/cheque/discount split.
     recent_payments = conn.execute("""
-        SELECT pin.doc_no, pin.date_iso,
-               pin.cash_amount, pin.cheque_amount, pin.discount_amount,
-               pin.salesperson_code, pin.note
-          FROM express_payments_in pin
-         WHERE pin.is_void = 0
-           AND pin.customer_id = ?
-         ORDER BY pin.date_iso DESC
+        SELECT rp.re_no       AS doc_no,
+               rp.date_iso,
+               rp.total,
+               rp.salesperson AS salesperson_code
+          FROM received_payments rp
+         WHERE rp.cancelled = 0
+           AND rp.customer = ?
+         ORDER BY rp.date_iso DESC
          LIMIT 20
-    """, (customer_code,)).fetchall()
+    """, (customer_name,)).fetchall()
     conn.close()
 
     return render_template('express_ar_customer.html',

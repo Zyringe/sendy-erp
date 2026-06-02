@@ -96,11 +96,8 @@
         <tr>
           <th>เลขที่ใบเสร็จ</th>
           <th class="text-center">วันที่</th>
-          <th class="text-end">เงินสด</th>
-          <th class="text-end">เช็ค</th>
-          <th class="text-end">ส่วนลด</th>
+          <th class="text-end">จำนวนเงิน</th>
           <th class="text-center">เซลส์</th>
-          <th>หมายเหตุ</th>
         </tr>
       </thead>
       <tbody>
@@ -108,11 +105,8 @@
         <tr>
           <td data-label="เลขที่" class="font-mono">{{ p.doc_no }}</td>
           <td data-label="วันที่" class="text-center font-mono small">{{ p.date_iso }}</td>
-          <td data-label="เงินสด" class="text-end font-mono">{{ '{:,.2f}'.format(p.cash_amount or 0) }}</td>
-          <td data-label="เช็ค" class="text-end font-mono">{{ '{:,.2f}'.format(p.cheque_amount or 0) }}</td>
-          <td data-label="ส่วนลด" class="text-end font-mono small text-success">{{ '{:,.2f}'.format(p.discount_amount or 0) }}</td>
+          <td data-label="จำนวนเงิน" class="text-end font-mono">{{ '{:,.2f}'.format(p.total or 0) }}</td>
           <td data-label="เซลส์" class="text-center"><span class="badge badge-gray font-mono">{{ p.salesperson_code or '—' }}</span></td>
-          <td data-label="หมายเหตุ" class="small text-subtle" style="white-space:pre-wrap">{{ p.note or '' }}</td>
         </tr>
         {% endfor %}
       </tbody>
