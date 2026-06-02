@@ -66,7 +66,10 @@ app.config['SECRET_KEY'] = config.SECRET_KEY
 app.config['JSON_AS_ASCII'] = False
 app.config['UPLOAD_FOLDER'] = config.UPLOAD_FOLDER
 app.config['ITEMS_PER_PAGE'] = config.ITEMS_PER_PAGE
-app.config['DB_ROUTES_ENABLED'] = False
+# Upload/Download DB unlock is stored per-session (see toggle_db_routes), NOT
+# in a process-global app.config flag. app.config is per gunicorn worker, so a
+# per-worker flag armed only one worker and the routes 403'd ~50% of the time
+# on Railway (-w 2). The signed-cookie session travels with every request.
 app.config['PERMANENT_SESSION_LIFETIME'] = config.PERMANENT_SESSION_LIFETIME
 app.config['SESSION_COOKIE_HTTPONLY']    = config.SESSION_COOKIE_HTTPONLY
 app.config['SESSION_COOKIE_SAMESITE']    = config.SESSION_COOKIE_SAMESITE
@@ -384,7 +387,7 @@ def inject_auth():
         'simulating_as': role if real_role else None,
         'real_role':     real_role,
         'alert_count':   models.count_stock_alerts(),
-        'db_routes_enabled': app.config['DB_ROUTES_ENABLED'],
+        'db_routes_enabled': session.get('db_routes_enabled', False),
         'pending_suggestions_count': models.count_pending_suggestions(),
         'active_module': active_module,
         'visible_modules': visible_modules,
@@ -567,8 +570,8 @@ def admin_exit_simulate():
 def toggle_db_routes():
     if session.get('role') != 'admin':
         abort(403)
-    app.config['DB_ROUTES_ENABLED'] = not app.config['DB_ROUTES_ENABLED']
-    state = 'เปิด' if app.config['DB_ROUTES_ENABLED'] else 'ปิด'
+    session['db_routes_enabled'] = not session.get('db_routes_enabled', False)
+    state = 'เปิด' if session['db_routes_enabled'] else 'ปิด'
     flash(f'{state}การเข้าถึง Upload/Download Database แล้ว', 'success')
     return redirect(request.referrer or url_for('dashboard'))
 
@@ -577,7 +580,7 @@ def toggle_db_routes():
 def download_db():
     if session.get('role') != 'admin':
         abort(403)
-    if not app.config['DB_ROUTES_ENABLED']:
+    if not session.get('db_routes_enabled'):
         abort(403)
     return send_file(config.DATABASE_PATH, as_attachment=True, download_name='inventory.db')
 
@@ -746,7 +749,7 @@ def _replace_master_tables(current_path, uploaded_path):
 def upload_db():
     if session.get('role') != 'admin':
         abort(403)
-    if not app.config['DB_ROUTES_ENABLED']:
+    if not session.get('db_routes_enabled'):
         abort(403)
     if request.method == 'POST':
         f = request.files.get('db_file')
@@ -843,7 +846,7 @@ def upload_db_confirm():
     """Second step after warning page: actually apply the held upload."""
     if session.get('role') != 'admin':
         abort(403)
-    if not app.config['DB_ROUTES_ENABLED']:
+    if not session.get('db_routes_enabled'):
         abort(403)
 
     hold_path = session.pop('pending_upload_path', None)
@@ -3326,9 +3329,9 @@ def regions_admin():
 
 
 # ── Commission Overrides (admin-only CRUD) ───────────────────────────────────
-# Rules sit in commission_overrides; the engine caches them in-process
-# (commission._OVERRIDES_CACHE), so every successful write here calls
-# clear_override_cache() so /commission picks up the change without restart.
+# Rules sit in commission_overrides; the engine reads them fresh per computation
+# (commission._load_overrides has no cache), so writes here are picked up
+# automatically (multi-worker safe). clear_override_cache() is a retained no-op.
 
 def _require_admin():
     if session.get('role') != 'admin':
@@ -3336,9 +3339,9 @@ def _require_admin():
 
 
 def _safe_clear_override_cache():
-    """Refresh the in-process override cache after a write. Must not raise:
-    a stale cache is recoverable on next process restart, a 500 after a
-    successful DB write isn't."""
+    """Best-effort clear_override_cache() after a write. Now a no-op (the engine
+    reads overrides fresh per computation), kept so the write paths stay
+    unchanged. Must not raise — a 500 after a successful DB write isn't OK."""
     try:
         commission_mod.clear_override_cache()
     except Exception as e:

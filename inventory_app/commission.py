@@ -192,15 +192,20 @@ _BASE_QUERY = """
 """
 
 
-_OVERRIDES_CACHE = None
-
-
 def _load_overrides(db_path=None):
-    """All active overrides as a list of dicts. Cached per process — call
-    _clear_override_cache() if rules change at runtime."""
-    global _OVERRIDES_CACHE
-    if _OVERRIDES_CACHE is None:
-        conn = _connect(db_path)
+    """All active commission overrides as a list of dicts, read FRESH from the
+    DB on every call (no process-global cache).
+
+    A module-level cache here was the source of a cross-worker money bug: under
+    gunicorn -w 2, clear_override_cache() only reset the worker that handled an
+    override edit, so sibling workers kept serving stale rules (~50% of Railway
+    commission calcs wrong after any edit -> wrong payroll). Reading fresh is
+    multi-worker-correct by construction. It is cheap because commission_overrides
+    is a tiny admin-managed table AND callers hoist this OUT of per-line loops
+    (see _override_commission + get_commission_for_month /
+    get_invoice_commission_for_sp), so it runs once per computation, not per line."""
+    conn = _connect(db_path)
+    try:
         rows = conn.execute("""
             SELECT id, product_id, brand_id, salesperson_code,
                    fixed_per_unit, custom_rate_pct,
@@ -208,14 +213,16 @@ def _load_overrides(db_path=None):
               FROM commission_overrides
              WHERE is_active = 1
         """).fetchall()
+    finally:
         conn.close()
-        _OVERRIDES_CACHE = [dict(r) for r in rows]
-    return _OVERRIDES_CACHE
+    return [dict(r) for r in rows]
 
 
 def clear_override_cache():
-    global _OVERRIDES_CACHE
-    _OVERRIDES_CACHE = None
+    """No-op, kept for call-site compatibility. The in-process override cache
+    was removed (see _load_overrides), so there is nothing to clear — reads are
+    always fresh. Existing write paths can keep calling this harmlessly."""
+    return None
 
 
 def _resolve_override(line, overrides):
@@ -275,9 +282,11 @@ def _override_commission_from_rule(line, rule):
     return None
 
 
-def _override_commission(line):
-    """Backward-compat shim: just the commission amount (no label)."""
-    rule = _resolve_override(line, _load_overrides())
+def _override_commission(line, overrides=None):
+    """Backward-compat shim: just the commission amount (no label). Pass
+    `overrides` (from _load_overrides) when calling inside a per-line loop so
+    the cache signature is checked once per computation, not once per line."""
+    rule = _resolve_override(line, _load_overrides() if overrides is None else overrides)
     if rule is None:
         return None
     return _override_commission_from_rule(line, rule)
@@ -352,13 +361,14 @@ def get_commission_for_month(year_month, salesperson_code=None, db_path=None):
     invoices = defaultdict(set)
     line_count = defaultdict(int)
 
+    overrides = _load_overrides(db_path)
     for r in rows:
         sp = r['salesperson_code']
         inv_no = r['invoice_no']
         kind = r['brand_kind'] or classify_brand_kind(r['product_name_raw'] or '')
         net = r['line_net'] or 0.0
         line = dict(r)
-        ov = _override_commission(line)
+        ov = _override_commission(line, overrides)
         if ov is not None:
             override_inv[sp][inv_no] += ov
             # Net still counted (for monthly threshold) but kind goes to
@@ -814,6 +824,7 @@ def get_invoice_commission_for_sp(year_month, salesperson_code, db_path=None,
     #             Used in the UI columns "Own" / "3rd" so Put sees the
     #             real revenue split (e.g. แผ่นตัด สิงห์ทอง override
     #             still IS own-brand revenue, just paid via override).
+    overrides = _load_overrides(db_path)
     inv = {}
     for ln in lines:
         v = inv.setdefault(ln['invoice_no'], {
@@ -829,7 +840,7 @@ def get_invoice_commission_for_sp(year_month, salesperson_code, db_path=None,
             'override_commission': 0.0,
             'display_net':   0.0,
         })
-        ov = _override_commission(ln)
+        ov = _override_commission(ln, overrides)
         net = ln['line_net'] or 0
         v['display_net'] += net
         if ln['brand_kind'] == 'own':
