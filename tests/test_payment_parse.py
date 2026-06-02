@@ -731,6 +731,16 @@ def test_import_sr_receipt_link_persisted(tmp_path, tmp_db_conn):
 def test_import_sr_receipt_link_idempotent(tmp_path, tmp_db_conn):
     """Re-importing the SR file twice: no duplicate links, amounts identical."""
     import models as m
+    # Isolation: these RE numbers also exist as REAL receipts in the live DB
+    # the tmp_db is cloned from (e.g. RE6900300 was imported 2026-06-01). Purge
+    # them first so the test counts only its own rows, not real + test rows.
+    _re_nos = ('RE6900208', 'RE6900300', 'RE6900301')
+    tmp_db_conn.execute(
+        "DELETE FROM paid_invoices WHERE re_id IN "
+        "(SELECT id FROM received_payments WHERE re_no IN (?,?,?))", _re_nos)
+    tmp_db_conn.execute(
+        "DELETE FROM received_payments WHERE re_no IN (?,?,?)", _re_nos)
+    tmp_db_conn.commit()
     path = _build_payment_file(tmp_path, PAYMENT_SR_LINES, "pay_sr2.csv")
     m.import_payments(path)
     m.import_payments(path)
