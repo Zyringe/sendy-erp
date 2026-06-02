@@ -51,10 +51,11 @@ def _setup_sp_tier_a(conn):
     )
 
 
-def _insert_own_sale_and_receipt(conn, pid, doc_no, receipt_date, net=OWN_NET):
+def _insert_own_sale_and_receipt(conn, pid, doc_no, receipt_date, net=OWN_NET, sale_date=None):
     """One own-brand sales_transactions line + a received_payments receipt that
     pays it (paid_invoices IV link). Canonical tables — mirrors the re-pointed
     commission engine. No commission_payouts row -> paid=0."""
+    sale_date = sale_date or receipt_date
     conn.execute("DELETE FROM sales_transactions WHERE doc_base=?", (doc_no,))
     conn.execute("DELETE FROM received_payments WHERE re_no=?", (f"RE-{doc_no}",))
     conn.execute(
@@ -63,7 +64,7 @@ def _insert_own_sale_and_receipt(conn, pid, doc_no, receipt_date, net=OWN_NET):
                 product_name_raw, customer, qty, unit, unit_price,
                 vat_type, discount, total, net)
            VALUES (?, ?, ?, ?, ?, 'test product', 'test cust', 1, 'ตัว', ?, 0, 0, ?, ?)""",
-        (receipt_date, f"{doc_no}-1", doc_no, pid, TEST_BSN_CODE, net, net, net),
+        (sale_date, f"{doc_no}-1", doc_no, pid, TEST_BSN_CODE, net, net, net),
     )
     cur = conn.execute(
         """INSERT INTO received_payments
@@ -123,5 +124,52 @@ def test_receipt_after_settled_through_stays_open(tmp_db):
     assert row["commission_due"] == 100.0
     assert row["remaining"] == 100.0, (
         f"May receipt must remain open, got remaining={row['remaining']}"
+    )
+    assert row["paid_status"] == "pending"
+
+
+def test_order_sold_before_feb_is_settled_even_if_collected_later(tmp_db):
+    """Order SOLD 2026-01-15 (pre-Feb employee era) but COLLECTED 2026-05-20
+    (after the Apr cutoff). The sold-before-Feb rule must settle it → remaining 0,
+    even though the receipt date is past SETTLED_THROUGH."""
+    import commission
+
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    pid = _own_product(conn)
+    _setup_sp_tier_a(conn)
+    _insert_own_sale_and_receipt(conn, pid, "IVPREFEB", "2026-05-20", sale_date="2026-01-15")
+    conn.close()
+
+    rows = commission.get_invoice_commission_for_sp(
+        "2026-05", TEST_SP, db_path=tmp_db, through_month=True)
+    row = next(r for r in rows if r["invoice_no"] == "IVPREFEB")
+
+    assert row["commission_due"] == 100.0
+    assert row["remaining"] == 0.0, (
+        f"order sold before Feb must be settled regardless of collection date, "
+        f"got remaining={row['remaining']} status={row['paid_status']}"
+    )
+    assert row["paid_status"] == "settled"
+
+
+def test_order_sold_in_feb_or_later_collected_after_cutoff_stays_open(tmp_db):
+    """Order SOLD 2026-03-10 (freelance era) and COLLECTED 2026-05-20: neither
+    rule settles it → open commission (the real new work to pay)."""
+    import commission
+
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    pid = _own_product(conn)
+    _setup_sp_tier_a(conn)
+    _insert_own_sale_and_receipt(conn, pid, "IVMAR", "2026-05-20", sale_date="2026-03-10")
+    conn.close()
+
+    rows = commission.get_invoice_commission_for_sp(
+        "2026-05", TEST_SP, db_path=tmp_db, through_month=True)
+    row = next(r for r in rows if r["invoice_no"] == "IVMAR")
+
+    assert row["remaining"] == 100.0, (
+        f"post-Feb order collected after cutoff must stay open, got {row['remaining']}"
     )
     assert row["paid_status"] == "pending"
