@@ -1,0 +1,107 @@
+{% extends 'base.html' %}
+{% block title %}นำเข้าข้อมูล – ERP{% endblock %}
+{% block page_title %}นำเข้าข้อมูล{% endblock %}
+
+{% block content %}
+
+{% if results %}
+  <div class="card mb-3">
+    <div class="card-header"><i class="bi bi-check2-circle me-2 text-accent"></i>ผลการนำเข้า</div>
+    <div class="card-body">
+      <table class="table">
+        <thead><tr><th>ไฟล์</th><th>ผล</th></tr></thead>
+        <tbody>
+        {% for r in results %}
+          <tr>
+            <td class="small">{{ r.filename }}</td>
+            <td>
+              {% if r.ok %}
+                <span class="text-success fw-600"><i class="bi bi-check-lg"></i> {{ r.label }}</span>
+                <span class="text-subtle small font-mono">{{ r.summary }}</span>
+              {% else %}
+                <span class="text-danger"><i class="bi bi-x-lg"></i> {{ r.msg }}</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <a href="{{ url_for('unified_import') }}" class="btn btn-outline-primary"><i class="bi bi-arrow-repeat me-1"></i>นำเข้าไฟล์ชุดใหม่</a>
+    </div>
+  </div>
+
+{% elif staged %}
+  <div class="card">
+    <div class="card-header"><i class="bi bi-eye me-2 text-accent"></i>ตรวจสอบก่อนยืนยัน ({{ rows|length }} ไฟล์)</div>
+    <div class="card-body">
+      <form method="post" action="{{ url_for('unified_import_confirm') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="token" value="{{ token }}">
+        <table class="table align-middle">
+          <thead><tr><th>ไฟล์</th><th>ประเภท (แก้ได้)</th><th class="text-end">รายการ</th><th>หมายเหตุ</th></tr></thead>
+          <tbody>
+          {% for row in rows %}
+            <tr>
+              <td class="small">{{ row.filename }}</td>
+              <td style="min-width:14rem">
+                <select name="type_{{ row.idx }}" class="form-select form-select-sm{% if row.detected == 'unknown' %} border-warning{% endif %}">
+                  {% for key, label in report_labels.items() %}
+                    {% if key != 'unknown' %}
+                    <option value="{{ key }}" {% if key == row.detected %}selected{% endif %}>{{ label }}</option>
+                    {% endif %}
+                  {% endfor %}
+                  <option value="unknown" {% if row.detected == 'unknown' %}selected{% endif %}>— ข้ามไฟล์นี้ —</option>
+                </select>
+              </td>
+              <td class="text-end font-mono">
+                {% if row.error %}
+                  <span class="text-danger small">อ่านไม่ได้</span>
+                {% elif row.count is not none %}
+                  {{ row.count }}
+                  {% set d = row.detail or {} %}
+                  {% if d.new is defined or d.changed is defined or d.existing is defined or d.unmapped %}
+                    <div class="text-subtle small">
+                      {%- if d.new is defined %}ใหม่ {{ d.new }}{% endif -%}
+                      {%- if d.changed is defined %} · แก้ {{ d.changed }}{% endif -%}
+                      {%- if d.existing is defined %} · เดิม {{ d.existing }}{% endif -%}
+                      {%- if d.unmapped %} · <span class="text-warning">ยังไม่ผูกรหัส {{ d.unmapped }}</span>{% endif -%}
+                    </div>
+                  {% endif %}
+                {% else %}—{% endif %}
+              </td>
+              <td class="small text-subtle">
+                {% if row.detected == 'unknown' %}<span class="text-warning">⚠ ตรวจไม่พบชนิด — เลือกเอง หรือข้าม</span>
+                {% elif row.error %}{{ row.error }}{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <button type="submit" class="btn btn-primary"><i class="bi bi-cloud-upload me-1"></i>ยืนยันนำเข้าทั้งหมด</button>
+        <a href="{{ url_for('unified_import') }}" class="btn btn-outline-secondary">ยกเลิก</a>
+      </form>
+    </div>
+  </div>
+
+{% else %}
+  <div class="row g-3 justify-content-center">
+    <div class="col-lg-7">
+      <div class="card">
+        <div class="card-header"><i class="bi bi-upload me-2 text-accent"></i>ลากไฟล์ Express รายสัปดาห์มาที่นี่ (หลายไฟล์พร้อมกันได้)</div>
+        <div class="card-body">
+          <div class="alert alert-info mb-3">
+            <i class="bi bi-magic me-1"></i>ระบบตรวจชนิดรายงานให้อัตโนมัติ — ขาย · ซื้อ · การรับชำระหนี้ · การจ่ายชำระหนี้ ·
+            ใบลดหนี้ (รับคืน/ส่งคืน) · ลูกหนี้/เจ้าหนี้คงค้าง — แล้วให้ดูตัวอย่างก่อนยืนยัน
+          </div>
+          <form method="post" action="{{ url_for('unified_import') }}" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="file" name="files" multiple accept=".csv" class="form-control mb-3" required>
+            <button type="submit" class="btn btn-primary"><i class="bi bi-search me-1"></i>ตรวจสอบไฟล์</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
+{% endblock %}
