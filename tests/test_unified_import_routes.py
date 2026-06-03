@@ -99,10 +99,28 @@ def test_manager_can_post_and_confirm(tmp_db):
     assert resp2.status_code == 200, 'manager confirm POST must reach the route'
 
 
-def test_import_requires_manager(tmp_db):
+def test_staff_can_access_and_post(tmp_db):
+    """Staff may now use the unified import (Put enabled it 2026-06-03):
+    GET renders the drop zone and POST reaches the preview, not a 302 to /."""
     from app import app as flask_app
+    flask_app.config['TESTING'] = True
     c = flask_app.test_client()
     with c.session_transaction() as sess:
+        sess['user_id'] = 3
+        sess['username'] = 'staffer'
         sess['role'] = 'staff'
     resp = c.get('/import-data')
-    assert resp.status_code in (302, 403)   # gated; not the page
+    assert resp.status_code == 200
+    assert 'ลากไฟล์' in resp.data.decode('utf-8')
+    resp2 = c.post('/import-data',
+                   data={'files': (_payments_in_file(), 'การรับชำระหนี้_x.csv')},
+                   content_type='multipart/form-data')
+    assert resp2.status_code == 200, 'staff POST must reach the route, not 302 to /'
+    assert 'ตรวจสอบก่อนยืนยัน' in resp2.data.decode('utf-8')
+    # Option B (Put, 2026-06-03): staff confirms/commits themselves; review is
+    # done after the fact by manager/admin, not gated before commit.
+    with c.session_transaction() as sess:
+        token = sess['import_stage']['token']
+    resp3 = c.post('/import-data/confirm', data={'token': token, 'type_0': 'payments_in'})
+    assert resp3.status_code == 200, 'staff confirm POST must reach the route, not 302 to /'
+    assert 'ผลการนำเข้า' in resp3.data.decode('utf-8')
