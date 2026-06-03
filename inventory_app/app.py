@@ -179,7 +179,6 @@ _STAFF_POST_OK = frozenset([
     'api_product_barcodes',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
-    'products.product_online_stock',
     'customer_reassign', 'customer_bulk_reassign',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
     'products.product_packaging_save',
@@ -271,6 +270,7 @@ _ENDPOINT_MODULE = {
     'conversion_activate': 'operation',
     'conversion_history': 'operation',
     'labels_view': 'operation',
+    'products_walkthrough': 'operation',
     # accounting
     'accounting_summary': 'accounting',
     'cashflow_dashboard': 'accounting',

@@ -372,24 +372,6 @@ def product_packaging_save(product_id):
     return redirect(url_for('products.product_detail', product_id=product_id))
 
 
-@bp_products.route('/products/<int:product_id>/online-stock', methods=['POST'])
-def product_online_stock(product_id):
-    platform = request.form.get('platform')
-    try:
-        qty = float(request.form.get('quantity', 0))
-    except ValueError:
-        qty = 0
-    conn = get_connection()
-    if platform == 'shopee':
-        conn.execute('UPDATE products SET shopee_stock=? WHERE id=?', (qty, product_id))
-    elif platform == 'lazada':
-        conn.execute('UPDATE products SET lazada_stock=? WHERE id=?', (qty, product_id))
-    conn.commit()
-    conn.close()
-    flash(f'อัปเดตสต็อก {"Shopee" if platform=="shopee" else "Lazada"} เรียบร้อย', 'success')
-    return redirect(url_for('products.product_detail', product_id=product_id))
-
-
 @bp_products.route('/products/<int:product_id>/deactivate', methods=['POST'])
 def product_deactivate(product_id):
     models.deactivate_product(product_id)

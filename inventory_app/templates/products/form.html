@@ -76,18 +76,6 @@
                 <span class="input-group-text">{{ product.unit_type or 'หน่วย' }}</span>
               </div>
             </div>
-            <div class="col-12"><hr class="my-1"></div>
-
-            <div class="col-md-6">
-              <label class="form-label"><i class="bi bi-bag me-1"></i>สต็อก Shopee</label>
-              <input type="number" name="shopee_stock" class="form-control"
-                     value="{{ product.shopee_stock or 0 }}" min="0">
-            </div>
-            <div class="col-md-6">
-              <label class="form-label"><i class="bi bi-bag me-1"></i>สต็อก Lazada</label>
-              <input type="number" name="lazada_stock" class="form-control"
-                     value="{{ product.lazada_stock or 0 }}" min="0">
-            </div>
           </div>
 
             <div class="col-12"><hr class="my-1"></div>
