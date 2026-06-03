@@ -902,7 +902,8 @@ def backups_list():
     for r in rows:
         r['reason_label'] = _BACKUP_REASON_LABELS.get(r['reason'], r['reason'])
         r['size_mb'] = round(r['size'] / (1024 * 1024), 1)
-    return render_template('admin_backups.html', backups=rows,
+    disk = db_backup.disk_usage_mb(os.path.dirname(config.DATABASE_PATH))
+    return render_template('admin_backups.html', backups=rows, disk=disk,
                            db_routes_enabled=session.get('db_routes_enabled'))
 
 
