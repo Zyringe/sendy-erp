@@ -283,3 +283,25 @@ def test_marketplace_dashboard_renders(mp_client):
 def test_marketplace_unmapped_renders(mp_client):
     resp = mp_client.get('/marketplace/unmapped')
     assert resp.status_code == 200, resp.data[:600]
+
+
+def test_staff_allowed_to_import_orders(tmp_db):
+    """Staff may import marketplace orders (Put enabled it 2026-06-03).
+
+    POST with no file flashes 'choose a file' and redirects to the marketplace
+    dashboard (/marketplace). If the permission gate still blocked staff, the
+    before_request middleware would instead redirect to the main dashboard (/).
+    """
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 4
+        sess['username'] = 'staffer'
+        sess['role'] = 'staff'
+    resp = c.post('/marketplace/import', data={}, follow_redirects=False)
+    loc = resp.headers.get('Location') or ''
+    assert resp.status_code == 302
+    assert loc.endswith('/marketplace'), (
+        f"staff should reach the import route (→ /marketplace), got {loc!r}"
+    )

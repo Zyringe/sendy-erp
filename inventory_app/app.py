@@ -158,19 +158,20 @@ def bootstrap_upload_db():
 # Roles: admin > manager > staff
 #   admin   – full access + user management
 #   manager – see cost/GP/payments; cannot edit products/users
-#   staff   – import weekly flow + read-only views (no cost/GP)
+#   staff   – import flows (weekly, unified /import-data, marketplace orders) + read-only views (no cost/GP)
 #
 # POST whitelist by role
 _STAFF_POST_OK = frozenset([
     'login', 'logout',
     'import_weekly', 'import_weekly_confirm', 'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
+    'unified_import', 'unified_import_confirm',
+    'marketplace.import_orders',
     'products.product_location_save',
     'admin_exit_simulate',
     'conversion_new', 'conversion_edit', 'conversion_run', 'conversion_delete',
     'api_product_barcodes',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
-    'unified_import', 'unified_import_confirm',
     'import_payments', 'products.product_online_stock',
     'customer_reassign', 'customer_bulk_reassign',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
@@ -178,7 +179,6 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'mapping_suggestion_approve',
     'import_credit_notes_preview', 'import_credit_notes_commit',
     'photos_review_assign', 'photos_review_delete',
-    'marketplace.import_orders',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
 # the route. Other admin-only writes use _require_admin().
@@ -2885,9 +2885,8 @@ _REPORT_LABELS = {
 
 @app.route('/import-data', methods=['GET', 'POST'])
 def unified_import():
-    if session.get('role') not in ('admin', 'manager'):
-        flash('ต้องเป็น Admin หรือ Manager', 'danger')
-        return redirect(url_for('dashboard'))
+    # POST is gated by the _STAFF_POST_OK whitelist in before_request; GET is
+    # open to any logged-in role (same as /import-weekly). Staff can run imports.
     if request.method == 'POST':
         import time
         import uuid
@@ -2936,9 +2935,7 @@ def unified_import():
 
 @app.route('/import-data/confirm', methods=['POST'])
 def unified_import_confirm():
-    if session.get('role') not in ('admin', 'manager'):
-        flash('ต้องเป็น Admin หรือ Manager', 'danger')
-        return redirect(url_for('dashboard'))
+    # Gated by the _STAFF_POST_OK whitelist in before_request (staff-allowed).
     stage = session.get('import_stage') or {}
     token = stage.get('token')
     rows = stage.get('rows') or []
