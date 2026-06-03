@@ -65,7 +65,9 @@
     </div>
   </div>
 
-  {# กำไรขั้นต้น #}
+  {# ส่วนต่างซื้อ-ขาย (ขาย − ซื้อ) — NOT the COGS-based gross profit shown on
+     /accounting. Different definition, so use a different label to avoid two
+     numbers under one name. #}
   <div class="col-sm-6 col-xl-3">
     <div class="stat-card">
       <div class="d-flex align-items-center gap-3">
@@ -73,7 +75,7 @@
           <i class="bi bi-currency-exchange" style="color:{% if stats.gross_profit >= 0 %}#8a5d00{% else %}#c41e2a{% endif %}"></i>
         </div>
         <div>
-          <div class="stat-card-label">กำไรขั้นต้น</div>
+          <div class="stat-card-label">ส่วนต่างซื้อ-ขาย (ขาย − ซื้อ)</div>
           <div class="stat-card-value {% if stats.gross_profit >= 0 %}text-purple{% else %}text-danger{% endif %}"
                style="{% if stats.gross_profit >= 0 %}color:#8a5d00{% endif %}">
             {{ stats.gross_profit | fmt_price }}

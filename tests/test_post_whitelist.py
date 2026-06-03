@@ -149,3 +149,14 @@ def test_whitelist_endpoints_all_exist(whitelist_consts):
     missing_mgr   = manager - endpoints
     assert not missing_staff, f"_STAFF_POST_OK references unknown endpoints: {missing_staff}"
     assert not missing_mgr,   f"_MANAGER_POST_OK references unknown endpoints: {missing_mgr}"
+
+
+def test_endpoint_module_keys_all_exist():
+    """Every key in _ENDPOINT_MODULE must be a real endpoint. A stale key (e.g.
+    'commission_overrides' when the endpoint is 'commission_overrides_list', or
+    'audit_log' which has no route) makes the sidebar module-switcher silently
+    fall back to the 'overview' highlight on that page. Guards against drift."""
+    from app import app as flask_app, _ENDPOINT_MODULE
+    endpoints = {rule.endpoint for rule in flask_app.url_map.iter_rules()}
+    missing = sorted(k for k in _ENDPOINT_MODULE if k not in endpoints)
+    assert not missing, f"_ENDPOINT_MODULE references unknown endpoints: {missing}"

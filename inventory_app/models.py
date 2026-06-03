@@ -972,33 +972,6 @@ def get_all_unit_conversions(search=None, page=1, per_page=50):
     return rows, total
 
 
-def get_uncertain_no_ref_transactions():
-    """ดึง transactions ที่ไม่มี reference_no จาก 2026-03-04 ที่ไม่มีคู่ซ้ำ (ที่มี ref_no)"""
-    conn = get_connection()
-    rows = conn.execute("""
-        SELECT t.id, t.product_id, t.txn_type, t.quantity_change,
-               t.unit_mode, t.created_at,
-               p.product_name, p.sku, p.unit_type
-        FROM transactions t
-        JOIN products p ON t.product_id=p.id
-        WHERE (t.reference_no IS NULL OR t.reference_no='')
-          AND t.created_at >= '2026-03-04'
-          AND t.txn_type = 'OUT'
-          AND t.note IS NULL
-          AND NOT EXISTS (
-              SELECT 1 FROM transactions t2
-              WHERE t2.product_id = t.product_id
-                AND t2.quantity_change = t.quantity_change
-                AND date(t2.created_at) = date(t.created_at)
-                AND t2.txn_type = 'OUT'
-                AND t2.reference_no IS NOT NULL AND t2.reference_no != ''
-          )
-        ORDER BY t.created_at, p.product_name
-    """).fetchall()
-    conn.close()
-    return rows
-
-
 def delete_transactions_by_ids(ids):
     if not ids:
         return

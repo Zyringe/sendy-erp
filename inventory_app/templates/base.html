@@ -155,7 +155,7 @@
     </a>
     {% endif %}
     <a href="{{ url_for('payment_customers') }}"
-       class="sidebar-link {% if request.endpoint in ('payment_status','payment_customers','payment_customer_detail') %}active{% endif %}">
+       class="sidebar-link {% if request.endpoint in ('payment_status','payment_customers') %}active{% endif %}">
       <i class="bi bi-receipt"></i> สถานะชำระหนี้
     </a>
 
