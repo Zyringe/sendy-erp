@@ -3,6 +3,15 @@
 {% block page_title %}AR / ลูกหนี้คงค้าง (Express snapshot){% endblock %}
 
 {% block content %}
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3 small">
+  <span class="text-subtle">ยอด AR อ้างอิงหลักของ BSN ·</span>
+  <a href="{{ url_for('ar_followup') }}" class="btn btn-sm btn-outline-primary">
+    <i class="bi bi-telephone-forward me-1"></i>ตามทวงหนี้
+  </a>
+  <a href="{{ url_for('payment_customers') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-receipt me-1"></i>สถานะชำระ (ledger ภายใน)
+  </a>
+</div>
 <div class="card mb-3">
   <div class="card-body py-2">
     <form method="get" class="row g-2 align-items-end">
