@@ -11,6 +11,8 @@ import pandas as pd
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash)
 
+import config
+import db_backup
 import models
 from database import get_connection
 from parse_orders import parse_shopee_orders, parse_lazada_orders
@@ -60,6 +62,13 @@ def import_orders():
     if platform is None:
         flash('ไม่รู้จักรูปแบบไฟล์ — ต้องเป็น order export จาก Shopee หรือ Lazada', 'danger')
         return redirect(url_for('marketplace.dashboard'))
+
+    # Rollback point before the upsert overwrites existing orders' status etc.
+    _info, _err = db_backup.safe_create_backup(
+        'marketplace', db_path=config.DATABASE_PATH,
+        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
+    if _err:
+        flash(f'⚠️ สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ ({_err}) — นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
 
     try:
         orders = (parse_shopee_orders(df) if platform == 'shopee'

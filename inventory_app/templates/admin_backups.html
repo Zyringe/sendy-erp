@@ -1,0 +1,72 @@
+{% extends 'base.html' %}
+{% block page_title %}สำรอง / กู้คืนข้อมูล{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4" style="max-width:920px">
+  <h4 class="mb-2"><i class="bi bi-clock-history me-2"></i>สำรอง / กู้คืนข้อมูล</h4>
+  <p class="text-muted">
+    ระบบสำรองฐานข้อมูลทั้งก้อน <strong>อัตโนมัติก่อนการนำเข้าทุกครั้ง</strong>
+    (นำเข้ารวมทุกไฟล์ · รายสัปดาห์ · คำสั่งซื้อ Marketplace) เก็บไว้บน volume ถาวร
+    และลบของเก่าอัตโนมัติ. ถ้านำเข้าไฟล์ผิด สามารถกู้คืนกลับไปจุดก่อนหน้าได้.
+  </p>
+
+  <div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle-fill me-1"></i>
+    การกู้คืน <strong>ย้อนทั้งฐานข้อมูล</strong> กลับไปจุดนั้น (ไม่ใช่แค่ไฟล์ที่นำเข้าผิด) —
+    ข้อมูลทุกอย่างที่เปลี่ยนหลังจุดนั้นจะหายไปด้วย. ทำตอนไม่มีคนกำลังคีย์ข้อมูล
+    แล้ว restart แอปหลังกู้คืน. ระบบจะสำรองสถานะปัจจุบันไว้ก่อนกู้คืนเสมอ จึงย้อนกลับได้อีกชั้น.
+  </div>
+
+  {% if not db_routes_enabled %}
+    <div class="alert alert-secondary d-flex align-items-center justify-content-between">
+      <span><i class="bi bi-lock me-1"></i>ดาวน์โหลด/กู้คืน ถูกล็อกไว้ — กด “เปิด Upload/Download DB” ที่เมนูซ้ายก่อน</span>
+    </div>
+  {% endif %}
+
+  {% if not backups %}
+    <div class="alert alert-info"><i class="bi bi-info-circle me-1"></i>ยังไม่มี backup — จะถูกสร้างอัตโนมัติเมื่อมีการนำเข้าครั้งถัดไป</div>
+  {% else %}
+    <div class="card">
+      <div class="card-header d-flex justify-content-between">
+        <span>backup ที่มี ({{ backups|length }})</span>
+        <span class="text-muted small">เรียงใหม่→เก่า</span>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead><tr>
+            <th>เวลา</th><th>ก่อนทำรายการ</th><th class="text-end">ขนาด</th><th class="text-end">จัดการ</th>
+          </tr></thead>
+          <tbody>
+            {% for b in backups %}
+              <tr>
+                <td><code>{{ b.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</code></td>
+                <td>{{ b.reason_label }}</td>
+                <td class="text-end">{{ b.size_mb }} MB</td>
+                <td class="text-end text-nowrap">
+                  {% if db_routes_enabled %}
+                    <a class="btn btn-sm btn-outline-secondary"
+                       href="{{ url_for('backup_download', name=b.name) }}">
+                      <i class="bi bi-download"></i>
+                    </a>
+                    <form method="post" action="{{ url_for('backup_restore') }}" class="d-inline">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <input type="hidden" name="name" value="{{ b.name }}">
+                      <input type="hidden" name="confirm" value="yes">
+                      <button type="submit" class="btn btn-sm btn-danger"
+                              onclick="return confirm('กู้คืน DB กลับไป {{ b.created_at.strftime('%Y-%m-%d %H:%M:%S') }}?\nข้อมูลทุกอย่างที่เปลี่ยนหลังจากนั้นจะหาย (ระบบสำรองสถานะปัจจุบันไว้ให้ก่อน).');">
+                        <i class="bi bi-arrow-counterclockwise me-1"></i>กู้คืน
+                      </button>
+                    </form>
+                  {% else %}
+                    <span class="text-muted small">ล็อก</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
