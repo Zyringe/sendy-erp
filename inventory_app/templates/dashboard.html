@@ -5,27 +5,27 @@
 
 {% block content %}
 <div class="row g-3 mb-4">
-  <!-- Low stock -->
+  <!-- Restock needed: out of stock but sold in the last 30 days -->
   <div class="col-sm-6 col-xl-3">
     <div class="stat-card s-red">
       <div class="d-flex align-items-center gap-3">
         <div class="stat-card-icon" style="background:#fdecee">
-          <i class="bi bi-exclamation-triangle" style="color:#c41e2a"></i>
+          <i class="bi bi-cart-x" style="color:#c41e2a"></i>
         </div>
         <div>
-          <div class="stat-card-label">สต็อกต่ำกว่าเกณฑ์</div>
-          <div class="stat-card-value {% if low_stock_count > 0 %}text-danger{% else %}text-success{% endif %}">
-            {{ low_stock_count | fmt_qty }}
+          <div class="stat-card-label">ควรสั่งเพิ่ม (หมด+เพิ่งขาย)</div>
+          <div class="stat-card-value {% if restock_count > 0 %}text-danger{% else %}text-success{% endif %}">
+            {{ restock_count | fmt_qty }}
           </div>
         </div>
       </div>
       <div class="stat-foot">
-        {% if low_stock_count > 0 %}
-        <span class="delta down"><i class="bi bi-box-seam"></i> ต้องเติม</span>
+        {% if restock_count > 0 %}
+        <span class="delta down"><i class="bi bi-box-seam"></i> หมดแต่มีดีมานด์</span>
         {% else %}
-        <span class="delta flat"><i class="bi bi-check2"></i> ปกติ</span>
+        <span class="delta flat"><i class="bi bi-check2"></i> ครบ</span>
         {% endif %}
-        <a class="stat-link" href="{{ url_for('products.product_list', low_stock=1) }}">ดูรายการ <i class="bi bi-chevron-right"></i></a>
+        <a class="stat-link" href="{{ url_for('products.product_list', restock=1) }}">ดูรายการ <i class="bi bi-chevron-right"></i></a>
       </div>
     </div>
   </div>

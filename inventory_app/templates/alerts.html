@@ -5,15 +5,15 @@
 {% block content %}
 <div class="mb-3 d-flex align-items-center gap-2">
   <i class="bi bi-exclamation-triangle-fill text-warning" style="font-size:1.3rem"></i>
-  <span class="fw-600">พบ <strong class="text-danger">{{ alerts | length }}</strong> รายการที่ต้องแก้ไข</span>
+  <span class="fw-600">พบ <strong class="text-danger">{{ alerts | length }}</strong> รายการสต็อกติดลบ</span>
 </div>
 
 {% if alerts %}
-<!-- Shopee + Lazada เกิน warehouse -->
+<!-- Negative warehouse stock — data-integrity red flag -->
 <div class="card mb-4">
   <div class="card-header d-flex align-items-center gap-2">
-    <i class="bi bi-bag-x-fill text-danger"></i>
-    <span class="fw-600">สต็อก Online เกินสต็อกคลัง</span>
+    <i class="bi bi-database-exclamation text-danger"></i>
+    <span class="fw-600">สต็อกติดลบ — ควรตรวจสอบ (จ่ายออก/ปรับเกินยอดรับเข้า)</span>
     <span class="badge badge-danger ms-1">{{ alerts | length }}</span>
   </div>
   <div class="table-responsive">
@@ -22,11 +22,7 @@
         <tr>
           <th style="width:70px">SKU</th>
           <th>ชื่อสินค้า</th>
-          <th class="text-end">คลัง</th>
-          <th class="text-end">Shopee</th>
-          <th class="text-end">Lazada</th>
-          <th class="text-end">Online รวม</th>
-          <th class="text-end text-danger">เกิน</th>
+          <th class="text-end text-danger">สต็อกคลัง</th>
           <th></th>
         </tr>
       </thead>
@@ -38,11 +34,7 @@
             <a href="{{ url_for('products.product_detail', product_id=a.id) }}"
                class="text-decoration-none fw-500 text-main">{{ a.product_name }}</a>
           </td>
-          <td class="text-end fw-600">{{ a.quantity | fmt_qty }} <span class="text-subtle small">{{ a.unit_type }}</span></td>
-          <td class="text-end">{{ a.shopee_stock | fmt_qty }}</td>
-          <td class="text-end">{{ a.lazada_stock | fmt_qty }}</td>
-          <td class="text-end fw-600">{{ a.online_total | fmt_qty }}</td>
-          <td class="text-end fw-700 text-danger">+{{ a.excess | fmt_qty }}</td>
+          <td class="text-end fw-700 text-danger">{{ a.quantity | fmt_qty }} <span class="text-subtle small">{{ a.unit_type }}</span></td>
           <td>
             {% if is_admin %}
             <button type="button" class="btn btn-xs btn-primary adjust-btn"
@@ -67,8 +59,8 @@
 <div class="card">
   <div class="card-body text-center py-5 text-subtle">
     <i class="bi bi-check-circle-fill text-success" style="font-size:2.5rem"></i>
-    <div class="mt-2 fw-500">ไม่มีการแจ้งเตือน</div>
-    <div class="small mt-1">สต็อก Shopee + Lazada ไม่เกินสต็อกคลังทุกรายการ</div>
+    <div class="mt-2 fw-500">ไม่มีสต็อกติดลบ</div>
+    <div class="small mt-1">ยอดสต็อกในคลังทุกรายการ ≥ 0 — ledger ปกติ</div>
   </div>
 </div>
 {% endif %}

@@ -974,12 +974,12 @@ def backup_restore():
 
 @app.route('/')
 def dashboard():
-    low_stock_count = models.count_low_stock()
+    restock_count = models.count_restock_needed()
     recent_txns = models.get_recent_transactions(10)
     total_products = models.count_active_products()
     in_stock_count = models.count_in_stock()
     return render_template('dashboard.html',
-                           low_stock_count=low_stock_count,
+                           restock_count=restock_count,
                            recent_txns=recent_txns,
                            total_products=total_products,
                            in_stock_count=in_stock_count)

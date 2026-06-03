@@ -48,7 +48,7 @@ def to_base_units(quantity: int, mode: str, product) -> int:
 # ── Products ─────────────────────────────────────────────────────────────────
 
 def get_products(search=None, low_stock=False, hard_to_sell=False,
-                 location=None, in_stock=False, page=1, per_page=50):
+                 location=None, in_stock=False, restock=False, page=1, per_page=50):
     conn = get_connection()
     conditions = ["p.is_active = 1"]
     params = []
@@ -70,6 +70,12 @@ def get_products(search=None, low_stock=False, hard_to_sell=False,
         having_clauses.append("COALESCE(s.quantity, 0) <= p.low_stock_threshold")
     if in_stock:
         having_clauses.append("COALESCE(s.quantity, 0) > 0")
+    if restock:
+        # out of stock but sold in the last 30 days → reorder candidates
+        having_clauses.append("COALESCE(s.quantity, 0) <= 0")
+        having_clauses.append(
+            "EXISTS (SELECT 1 FROM sales_transactions st WHERE st.product_id = p.id"
+            " AND st.net <> 0 AND st.date_iso >= date('now', '-30 days'))")
     having = ("HAVING " + " AND ".join(having_clauses)) if having_clauses else ""
 
     sql = f"""
@@ -327,20 +333,17 @@ def create_brand(name, name_th=None, is_own=False):
 # ── Alerts ───────────────────────────────────────────────────────────────────
 
 def get_stock_alerts():
-    """Return products where shopee_stock + lazada_stock > warehouse quantity."""
+    """Active products whose ledger stock is negative — a data-integrity red flag
+    (sold/adjusted below zero). The -0.001 tolerance keeps IEEE-754 float noise
+    on the REAL quantity column (e.g. -1e-14) from firing a false alert."""
     conn = get_connection()
     rows = conn.execute("""
         SELECT p.id, p.sku, p.product_name, p.unit_type,
-               COALESCE(s.quantity, 0)   AS quantity,
-               p.shopee_stock,
-               p.lazada_stock,
-               (p.shopee_stock + p.lazada_stock) AS online_total,
-               (p.shopee_stock + p.lazada_stock - COALESCE(s.quantity, 0)) AS excess
+               COALESCE(s.quantity, 0) AS quantity
         FROM products p
-        LEFT JOIN stock_levels s ON s.product_id = p.id
-        WHERE p.is_active = 1
-          AND (p.shopee_stock + p.lazada_stock) > COALESCE(s.quantity, 0)
-        ORDER BY excess DESC
+        JOIN stock_levels s ON s.product_id = p.id
+        WHERE p.is_active = 1 AND s.quantity < -0.001
+        ORDER BY s.quantity ASC
     """).fetchall()
     conn.close()
     return rows
@@ -350,9 +353,8 @@ def count_stock_alerts():
     conn = get_connection()
     n = conn.execute("""
         SELECT COUNT(*) FROM products p
-        LEFT JOIN stock_levels s ON s.product_id = p.id
-        WHERE p.is_active = 1
-          AND (p.shopee_stock + p.lazada_stock) > COALESCE(s.quantity, 0)
+        JOIN stock_levels s ON s.product_id = p.id
+        WHERE p.is_active = 1 AND s.quantity < -0.001
     """).fetchone()[0]
     conn.close()
     return n
@@ -384,13 +386,21 @@ def save_product_locations(product_id: int, locations: list):
     conn.close()
 
 
-def count_low_stock():
+def count_restock_needed(days=30):
+    """Active products at/below zero stock that still sold within the last
+    `days` — empty but in demand, i.e. should be reordered. Far more actionable
+    than the flat low-stock threshold (which flags most of the catalog)."""
     conn = get_connection()
     n = conn.execute("""
-        SELECT COUNT(*) FROM products p
+        SELECT COUNT(DISTINCT p.id)
+        FROM products p
         JOIN stock_levels s ON s.product_id = p.id
-        WHERE p.is_active = 1 AND s.quantity <= p.low_stock_threshold
-    """).fetchone()[0]
+        WHERE p.is_active = 1 AND s.quantity <= 0
+          AND EXISTS (SELECT 1 FROM sales_transactions st
+                       WHERE st.product_id = p.id
+                         AND st.net <> 0
+                         AND st.date_iso >= date('now', ?))
+    """, (f'-{days} days',)).fetchone()[0]
     conn.close()
     return n
 
