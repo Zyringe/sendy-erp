@@ -269,6 +269,10 @@
        class="sidebar-link {% if request.endpoint in ['user_list','user_new','user_edit'] %}active{% endif %}">
       <i class="bi bi-people"></i> จัดการผู้ใช้
     </a>
+    <a href="{{ url_for('backups_list') }}"
+       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('backup') %}active{% endif %}">
+      <i class="bi bi-clock-history"></i> สำรอง/กู้คืนข้อมูล
+    </a>
     <form method="post" action="{{ url_for('toggle_db_routes') }}" class="d-grid px-2 mt-1">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-sm {% if db_routes_enabled %}btn-warning{% else %}btn-outline-secondary{% endif %}">
