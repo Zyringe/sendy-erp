@@ -222,3 +222,90 @@ def test_restore_rejects_unknown_or_foreign_name(tmp_path):
     with pytest.raises(ValueError):
         db_backup.restore_backup("auto-unified-20260601_100000.db.gz",
                                  db_path=str(db), backup_dir=str(bdir))  # missing
+
+
+# ── regression: restore ordering under gunicorn -w 2 (BUG-1) ──────────────────
+
+def test_restore_clears_wal_sidecars_before_swap(tmp_path, monkeypatch):
+    """Under gunicorn -w 2 the stale -wal/-shm MUST be cleared BEFORE os.replace
+    swaps in the restored file. If they linger past the swap, a fresh connection
+    pairs the new main file with the old WAL and silently re-applies pre-restore
+    frames (integrity_check still returns 'ok' — silent data loss).
+
+    Deterministic single-process check: spy on os.replace and assert that, at the
+    moment the live DB file is swapped, no -wal/-shm remain at the path. The old
+    replace-then-unlink order leaves them present at swap time → this fails."""
+    db = tmp_path / "inventory.db"
+    bdir = tmp_path / "backups"
+    _make_db(str(db), ["a"])
+    snap = db_backup.create_backup("unified", db_path=str(db), backup_dir=str(bdir))
+    # stale sidecars sitting at the db path at restore time
+    (tmp_path / "inventory.db-wal").write_bytes(b"stalewal")
+    (tmp_path / "inventory.db-shm").write_bytes(b"staleshm")
+
+    seen = {}
+    real_replace = os.replace
+
+    def spy_replace(src, dst):
+        # record sidecar presence only for the main-DB swap (not the
+        # pre-restore .part→final publish, whose dst is inside backup_dir)
+        if os.path.abspath(str(dst)) == os.path.abspath(str(db)):
+            seen["wal"] = os.path.exists(str(db) + "-wal")
+            seen["shm"] = os.path.exists(str(db) + "-shm")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(db_backup.os, "replace", spy_replace)
+    db_backup.restore_backup(snap["name"], db_path=str(db), backup_dir=str(bdir))
+
+    assert seen.get("wal") is False, "stale -wal still present when DB file was swapped in"
+    assert seen.get("shm") is False, "stale -shm still present when DB file was swapped in"
+    assert _count(str(db)) == 1
+
+
+# ── regression: failed backup must not leave a corrupt snapshot (BUG-2) ───────
+
+def test_create_backup_failed_write_leaves_no_corrupt_snapshot(tmp_path, monkeypatch):
+    """A gzip write that fails mid-way (disk full, OOM/SIGTERM on a Railway
+    redeploy) must not leave a corrupt auto-*.db.gz that counts toward max_keep,
+    is downloadable, or can be selected for restore."""
+    import glob
+    db = tmp_path / "inventory.db"
+    bdir = tmp_path / "backups"
+    _make_db(str(db), ["a"])
+    good = db_backup.create_backup("unified", db_path=str(db), backup_dir=str(bdir))
+    assert len(db_backup.list_backups(backup_dir=str(bdir))) == 1
+
+    def boom(*a, **k):
+        raise IOError("disk full mid-write")
+
+    monkeypatch.setattr(db_backup.shutil, "copyfileobj", boom)
+    with pytest.raises(Exception):
+        db_backup.create_backup("weekly", db_path=str(db), backup_dir=str(bdir))
+
+    # only the good snapshot is visible; no corrupt partial counts or lingers
+    assert [b["name"] for b in db_backup.list_backups(backup_dir=str(bdir))] == [good["name"]]
+    assert sorted(os.path.basename(p) for p in glob.glob(str(bdir / "auto-*.db.gz"))) == [good["name"]]
+    assert glob.glob(str(bdir / "*.part")) == []   # in-progress temp cleaned up
+
+
+def test_repeated_failed_backups_do_not_evict_good_snapshot(tmp_path, monkeypatch):
+    """Reproduced failure mode: corrupt partials counting toward max_keep evict
+    the last GOOD snapshot, leaving zero restorable backups."""
+    db = tmp_path / "inventory.db"
+    bdir = tmp_path / "backups"
+    _make_db(str(db), ["a"])
+    good = db_backup.create_backup("unified", db_path=str(db), backup_dir=str(bdir))
+
+    def boom(*a, **k):
+        raise IOError("kill mid-write")
+
+    monkeypatch.setattr(db_backup.shutil, "copyfileobj", boom)
+    base = datetime(2026, 6, 10, 12, 0, 0)
+    for i in range(db_backup.DEFAULT_MAX_KEEP + 2):   # more failures than the cap
+        info, err = db_backup.safe_create_backup(
+            "weekly", db_path=str(db), backup_dir=str(bdir),
+            now=base + timedelta(minutes=i))
+        assert info is None and err   # each one fails
+
+    names = [b["name"] for b in db_backup.list_backups(backup_dir=str(bdir))]
+    assert names == [good["name"]], f"good snapshot was evicted by failed partials: {names}"

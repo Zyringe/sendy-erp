@@ -76,6 +76,12 @@ def create_backup(reason, *, db_path, backup_dir,
     # temp dir — NOT the small data volume — so only the gzip lands on the volume.
     fd, tmp_db = tempfile.mkstemp(suffix=".db")
     os.close(fd)
+    # Compress to a unique .part temp INSIDE backup_dir, then atomically publish
+    # to `final`. A crash/kill/IOError mid-write leaves only a .part — which never
+    # matches _NAME_RE, so list_backups/prune ignore it — never a corrupt snapshot
+    # that counts toward max_keep, is downloadable, or could be restored.
+    pfd, part = tempfile.mkstemp(suffix=SUFFIX + ".part", dir=backup_dir)
+    os.close(pfd)
     try:
         src = sqlite3.connect(db_path)
         try:
@@ -86,14 +92,17 @@ def create_backup(reason, *, db_path, backup_dir,
                 dst.close()
         finally:
             src.close()
-        with open(tmp_db, "rb") as fi, gzip.open(final, "wb") as fo:
+        with open(tmp_db, "rb") as fi, gzip.open(part, "wb") as fo:
             shutil.copyfileobj(fi, fo)
+        os.replace(part, final)          # atomic publish on the same filesystem
+        part = None
     finally:
-        if os.path.exists(tmp_db):
-            try:
-                os.remove(tmp_db)
-            except OSError:
-                pass
+        for leftover in (tmp_db, part):
+            if leftover and os.path.exists(leftover):
+                try:
+                    os.remove(leftover)
+                except OSError:
+                    pass
 
     info = {"path": final, "name": name, "reason": reason,
             "size": os.path.getsize(final)}
@@ -152,6 +161,17 @@ def prune_backups(*, backup_dir, keep_days=DEFAULT_KEEP_DAYS,
     return deleted
 
 
+def _remove_sidecars(db_path):
+    """Delete the WAL/SHM sidecar files for ``db_path`` (if present)."""
+    for side in ("-wal", "-shm"):
+        p = db_path + side
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
 def restore_backup(name, *, db_path, backup_dir):
     """Replace the live DB with snapshot ``name``. Snapshots the current state
     first (reason='pre-restore') so a wrong restore is itself reversible, then
@@ -188,6 +208,12 @@ def restore_backup(name, *, db_path, backup_dir):
             probe.execute("PRAGMA schema_version")
         finally:
             probe.close()
+        # Clear the OLD db's WAL/SHM sidecars BEFORE the swap. Under gunicorn -w 2
+        # a fresh connection arriving between the swap and a later unlink would
+        # pair the NEW (restored) main file with the stale OLD -wal still at the
+        # path and silently re-apply pre-restore frames over the restore
+        # (integrity_check still returns 'ok'). Removing them first closes that hole.
+        _remove_sidecars(db_path)
         os.replace(tmp_db, db_path)                # atomic on same filesystem
         tmp_db = None
     finally:
@@ -197,11 +223,5 @@ def restore_backup(name, *, db_path, backup_dir):
             except OSError:
                 pass
 
-    for side in ("-wal", "-shm"):                  # drop sidecars of the OLD db
-        p = db_path + side
-        if os.path.exists(p):
-            try:
-                os.remove(p)
-            except OSError:
-                pass
+    _remove_sidecars(db_path)                      # belt-and-braces after the swap
     return {"restored": name}
