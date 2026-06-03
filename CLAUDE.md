@@ -209,7 +209,7 @@ Two tables hold derived values that the app must keep in sync with their source 
 
 - **HR (Phase 1)** — `bp_hr` blueprint. SSO 5%, probation-raise next-full-month, เบี้ยขยัน auto-forfeit, manager=read-all/admin=write. Phase 4 `/accounting` NOT started.
 - **Cashbook** — `import_cashbook` (`/cashbook/import`, vat flag). Excel round-trip; NoVat imported, Vat workbook pending. Transfer-acct auto-detect via `is_transfer`. Re-importing Salary_Sheet overwrites employee nicknames → add override before frequent re-imports.
-- **Cash Flow + payments allocation** — `/cashflow` dashboard. `payments_alloc.py::allocate_fifo()` allocates received_payments oldest-first; legacy NULL allocations = fully-paid. Hook `cashflow.revenue_by_month` ready for Phase 3 Revenue dashboard (not yet built).
+- **Cash Flow + payments allocation** — `/cashflow` dashboard. `payments_alloc.py::allocate_fifo()` allocates received_payments oldest-first; legacy NULL allocations = fully-paid. Hook `cashflow.revenue_by_month` feeds the Revenue dashboard (`/revenue`, shipped — `revenue_dashboard` route).
 - **Credit-note math** — `credit_note_amounts` is **authoritative**. Don't compute credit from `sales_transactions` SR rows (gross ≠ ใบลดหนี้ master). `collected = ΣIV(+) − ΣSR(−)` using authoritative CN amounts. `import_credit_notes.py` exists but UI route not wired (gap).
 - **Brand-kind unit-aware resolver** (mig 061–064, PR #29 merged) — product resolution must consider `brand_kind` + unit; pure `bsn_code` join overstates split-code lines. **Open: commission engine `_BASE_QUERY` still joins by `bsn_code` only** (GitHub issue #30 — money path, validate before merging).
 

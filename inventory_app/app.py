@@ -258,9 +258,9 @@ _ENDPOINT_MODULE = {
     'products.product_detail': 'operation',
     'products.product_new': 'operation',
     'products.product_edit': 'operation',
-    'products.stock_in': 'operation',
-    'products.stock_out': 'operation',
-    'products.stock_adjust': 'operation',
+    'stock_in': 'operation',
+    'stock_out': 'operation',
+    'stock_adjust': 'operation',
     'transaction_history': 'operation',
     'conversion_list': 'operation',
     'conversion_new': 'operation',
@@ -279,7 +279,6 @@ _ENDPOINT_MODULE = {
     'ar_followup': 'accounting',
     'ar_followup_customer': 'accounting',
     'ar_followup_log_new': 'accounting',
-    'ar_followup_log_edit': 'accounting',
     'ar_followup_log_delete': 'accounting',
     'ar_followup_export': 'accounting',
     'trade_dashboard': 'accounting',
@@ -294,20 +293,21 @@ _ENDPOINT_MODULE = {
     'supplier_summary': 'accounting',
     'payment_status': 'accounting',
     'payment_customers': 'accounting',
-    'payment_customer_detail': 'accounting',
     'import_payments': 'accounting',
     'import_credit_notes_preview': 'accounting',
     'import_credit_notes_commit': 'accounting',
     'commission_dashboard': 'accounting',
-    'commission_payouts': 'accounting',
-    'commission_sp': 'accounting',
-    'commission_sp_invoice': 'accounting',
+    'commission_record_payout': 'accounting',
+    'commission_delete_payout': 'accounting',
+    'commission_payouts_list': 'accounting',
+    'commission_drilldown': 'accounting',
+    'commission_invoice_detail': 'accounting',
     'commission_export': 'accounting',
-    'commission_overrides': 'accounting',
-    'commission_override_new': 'accounting',
-    'commission_override_edit': 'accounting',
-    'commission_override_toggle': 'accounting',
-    'commission_override_delete': 'accounting',
+    'commission_overrides_list': 'accounting',
+    'commission_overrides_new': 'accounting',
+    'commission_overrides_edit': 'accounting',
+    'commission_overrides_toggle': 'accounting',
+    'commission_overrides_delete': 'accounting',
     'express_ar_dashboard': 'accounting',
     'express_ar_customer': 'accounting',
     'express_ap_dashboard': 'accounting',
@@ -347,14 +347,12 @@ _ENDPOINT_MODULE = {
     'unit_conversions': 'data',
     'unit_conversions_save': 'data',
     'unit_conversions_edit': 'data',
-    'review_transactions': 'data',
     'supplier_catalogue.supplier_catalogue_list': 'data',
-    'supplier_catalogue.supplier_catalogue_detail': 'data',
-    'supplier_catalogue.supplier_catalogue_new': 'data',
-    'supplier_catalogue.supplier_catalogue_edit': 'data',
-    'supplier_catalogue.supplier_catalogue_compare': 'data',
-    'supplier_catalogue.supplier_catalogue_map': 'data',
-    'supplier_catalogue.supplier_quick_update': 'data',
+    'supplier_catalogue.supplier_catalogue_purchased': 'data',
+    'supplier_catalogue.supplier_catalogue_match': 'data',
+    'supplier_catalogue.supplier_catalogue_suggest': 'data',
+    'supplier_catalogue.supplier_catalogue_mapping_save': 'data',
+    'supplier_catalogue.supplier_catalogue_mapping_delete': 'data',
     # cashbook
     'cashbook.dashboard':     'cashbook',
     'cashbook.account_ledger': 'cashbook',
@@ -373,7 +371,6 @@ _ENDPOINT_MODULE = {
     'backup_restore': 'admin_module',
     'admin_simulate_role': 'admin_module',
     'admin_exit_simulate': 'admin_module',
-    'audit_log': 'admin_module',
 }
 
 
@@ -1405,31 +1402,6 @@ def unit_conversions_edit():
     return redirect(url_for('unit_conversions'))
 
 
-# ── Review uncertain no-ref transactions ──────────────────────────────────────
-
-@app.route('/review-transactions')
-def review_transactions():
-    rows = models.get_uncertain_no_ref_transactions()
-    return render_template('review_transactions.html', rows=rows)
-
-
-@app.route('/review-transactions/delete', methods=['POST'])
-def review_transactions_delete():
-    ids_str = request.form.getlist('delete_ids')
-    ids = []
-    for v in ids_str:
-        try:
-            ids.append(int(v))
-        except ValueError:
-            pass
-    if ids:
-        models.delete_transactions_by_ids(ids)
-        flash(f'ลบ {len(ids)} รายการเรียบร้อย', 'success')
-    else:
-        flash('ไม่ได้เลือกรายการที่จะลบ', 'info')
-    return redirect(url_for('review_transactions'))
-
-
 # ── Product Code Mapping ──────────────────────────────────────────────────────
 
 @app.route('/mapping')
@@ -2177,18 +2149,6 @@ def payment_customers():
     )
 
 
-@app.route('/payment-status/customer/<path:customer_name>')
-def payment_customer_detail(customer_name):
-    bills = models.get_customer_unpaid_bills(customer_name)
-    total = sum(b['total_net'] or 0 for b in bills)
-    return render_template(
-        'payment_customer_detail.html',
-        customer_name=customer_name,
-        bills=bills,
-        total=total,
-    )
-
-
 @app.route('/import-payments', methods=['POST'])
 def import_payments():
     # Open to staff (Decision B); the whitelist gate in before_request applies.
@@ -2844,22 +2804,6 @@ def customer_geocode(code):
         return jsonify({'ok': False, 'reason': 'no result'})
     except Exception as e:
         return jsonify({'ok': False, 'reason': str(e)}), 500
-
-
-@app.route('/api/customers/geojson')
-def customer_geojson():
-    zone  = request.args.get('zone') or None
-    ctype = request.args.get('type') or None
-    rows  = models.get_customers_for_map(zone=zone, customer_type=ctype, geocoded_only=True)
-    features = []
-    for r in rows:
-        features.append({
-            'type': 'Feature',
-            'geometry': {'type': 'Point', 'coordinates': [r['lng'], r['lat']]},
-            'properties': {k: r[k] for k in ('code','name','zone','customer_type',
-                                              'address','phone','salesperson','credit_days')}
-        })
-    return jsonify({'type': 'FeatureCollection', 'features': features})
 
 
 # ── Labels (Q3 — print price tag / shelf label) ──────────────────────────────
@@ -4180,44 +4124,6 @@ def ar_followup_log_new():
         flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
 
     return redirect(url_for('ar_followup_customer', customer_key=customer_key))
-
-
-@app.route('/accounting/ar-followup/log/<int:log_id>/edit', methods=['POST'])
-def ar_followup_log_edit(log_id):
-    redirect_ = _arf_require_admin()
-    if redirect_:
-        return redirect_
-
-    customer_key = (request.form.get('customer_key') or '').strip()
-    def _f(name):
-        v = request.form.get(name, '').strip()
-        return v or None
-
-    promised_amount = _f('promised_amount')
-    try:
-        promised_amount = float(promised_amount.replace(',', '')) if promised_amount else None
-    except ValueError:
-        promised_amount = None
-
-    try:
-        arf_mod.update_outreach(
-            log_id=log_id,
-            log_date=_f('log_date'),
-            channel=_f('channel'),
-            contact_person=_f('contact_person'),
-            result=_f('result'),
-            promised_amount=promised_amount,
-            promised_date=_f('promised_date'),
-            next_action_date=_f('next_action_date'),
-            notes=_f('notes'),
-        )
-        flash('อัปเดตแล้ว', 'success')
-    except sqlite3.IntegrityError as e:
-        flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
-
-    if customer_key:
-        return redirect(url_for('ar_followup_customer', customer_key=customer_key))
-    return redirect(url_for('ar_followup'))
 
 
 @app.route('/accounting/ar-followup/log/<int:log_id>/delete', methods=['POST'])

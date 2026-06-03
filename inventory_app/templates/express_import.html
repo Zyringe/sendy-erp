@@ -55,8 +55,9 @@
         <label class="form-label small">ประเภทไฟล์</label>
         <select name="file_type" class="form-select form-select-sm" required>
           <option value="">— เลือก —</option>
-          <option value="payments_in">payments_in (การรับชำระหนี้)</option>
-          <option value="sales">sales (ขาย)</option>
+          {# payments_in / sales options removed: those Express "twins" are
+             retired (the handler bounces them). Import ขาย/การรับชำระ ผ่านหน้า
+             "นำเข้า (รวมทุกไฟล์)" แทน #}
           <option value="ar_snapshot">ar_snapshot (ลูกหนี้คงค้าง)</option>
           <option value="ap_snapshot">ap_snapshot (เจ้าหนี้คงค้าง)</option>
           <option value="payments_out">payments_out (จ่ายชำระหนี้)</option>
