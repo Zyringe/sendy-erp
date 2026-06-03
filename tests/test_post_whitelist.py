@@ -151,6 +151,20 @@ def test_whitelist_endpoints_all_exist(whitelist_consts):
     assert not missing_mgr,   f"_MANAGER_POST_OK references unknown endpoints: {missing_mgr}"
 
 
+def test_module_first_endpoints_valid_and_data_uses_unified_import():
+    """Every module-switcher first_endpoint must be a real endpoint, and the
+    'data' module must open /import-data (unified_import) — NOT the retired
+    /import-weekly (which the dropdown used to land on)."""
+    from app import app as flask_app, _MODULE_DEFS
+    endpoints = {r.endpoint for r in flask_app.url_map.iter_rules()}
+    for m in _MODULE_DEFS:
+        assert m['first_endpoint'] in endpoints, \
+            f"module '{m['key']}' first_endpoint {m['first_endpoint']} is not a real endpoint"
+    data = next(m for m in _MODULE_DEFS if m['key'] == 'data')
+    assert data['first_endpoint'] == 'unified_import', \
+        "data module switcher must open /import-data, not the retired /import-weekly"
+
+
 def test_endpoint_module_keys_all_exist():
     """Every key in _ENDPOINT_MODULE must be a real endpoint. A stale key (e.g.
     'commission_overrides' when the endpoint is 'commission_overrides_list', or
