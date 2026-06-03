@@ -15,9 +15,12 @@ cash_in_by_month:
 ar_aging (Express-sourced, 2026-05-30):
   - Sources from express_ar_outstanding WHERE entity='BSN' at latest snapshot.
   - Buckets each doc's outstanding_amount by (snapshot_date − doc_date_iso).
-  - Includes ALL rows (negatives from credit notes net correctly per bucket).
-  - Snapshot total must equal ฿1,299,335.94 / 200 docs (live-DB tests).
-  - จึงเจริญ (฿349,596.08 net) must appear in aging total.
+  - Negatives from credit notes net correctly per bucket.
+  - ar_aging totals CANONICAL collectable AR (excl RE + pre-2024 legacy) =
+    ฿732,357.86 / 145 docs (Put 2026-06-04). The raw snapshot is ฿1,299,335.94 /
+    200 docs (see test_bsn_snapshot_totals in test_ar_followup).
+  - จึงเจริญ (all RE) is EXCLUDED from the collectable total and tracked in the
+    not-collectable list (cashflow.bsn_ar_excluded_by_customer).
 
 revenue_by_month:
   - Groups by sale date (sales_transactions.date_iso), NOT RE date.
@@ -299,37 +302,30 @@ def test_ar_aging_non_bsn_entity_excluded(empty_db_conn):
 
 # ── live-DB ar_aging tests (against real Express snapshot) ───────────────────
 
-def test_ar_aging_live_total_matches_express_snapshot(tmp_db_conn):
-    """ar_aging total must equal Express BSN snapshot net ฿1,299,335.94."""
+def test_ar_aging_live_total_is_canonical_collectable(tmp_db_conn):
+    """ar_aging now totals the CANONICAL collectable BSN AR — the latest Express
+    snapshot EXCLUDING RE/anomalous receipts and pre-2024 legacy debt
+    (Put 2026-06-04) = ฿732,357.86 across 145 docs."""
     result = cf.ar_aging(conn=tmp_db_conn)
-    assert result['total_outstanding'] == pytest.approx(1_299_335.94, abs=0.01), (
-        f"Expected ฿1,299,335.94 from Express snapshot; got {result['total_outstanding']:.2f}"
+    assert result['total_outstanding'] == pytest.approx(732_357.86, abs=0.01), (
+        f"Expected canonical ฿732,357.86; got {result['total_outstanding']:.2f}"
     )
     total_in_buckets = round(sum(b['amount'] for b in result['buckets']), 2)
-    assert total_in_buckets == pytest.approx(1_299_335.94, abs=0.01)
+    assert total_in_buckets == pytest.approx(732_357.86, abs=0.01)
     total_count = sum(b['count'] for b in result['buckets'])
-    assert total_count == 200, f"Expected 200 docs; got {total_count}"
+    assert total_count == 145, f"Expected 145 docs; got {total_count}"
 
 
-def test_ar_aging_live_jungjaroen_appears(tmp_db_conn):
-    """จึงเจริญ (฿349,596.08 net) must appear in the aging total.
-
-    This customer was ABSENT from the old derived-engine ar_aging (missed by
-    invoice_settlement) and is the canonical regression guard for this change.
-    The customer's net comes from summing their 11 Express rows
-    (including one negative CN row of −฿52,596 and one of −฿9,151).
-    """
-    result = cf.ar_aging(conn=tmp_db_conn)
-    assert result['total_outstanding'] == pytest.approx(1_299_335.94, abs=0.01), (
-        "Precondition: total must be ฿1,299,335.94 — check if snapshot changed"
-    )
-    # จึงเจริญ rows all land in 90+ (oldest doc 2005-01-06 → >7000 days)
-    by_label = {b['label']: b for b in result['buckets']}
-    # Their net ฿349,596.08 is entirely in 90+ bucket; verify 90+ >= their amount
-    assert by_label['90+']['amount'] >= 349_596.08 - 0.01, (
-        f"90+ bucket {by_label['90+']['amount']:.2f} < จึงเจริญ net ฿349,596.08 — "
-        "customer likely still absent from aging"
-    )
+def test_re_jungjaroen_excluded_from_collectable_but_shown_separately(tmp_db_conn):
+    """จึงเจริญ is entirely RE (2005-2017, ฿349,596.08 net) → EXCLUDED from the
+    collectable aging total (locked by the test above), but must still surface
+    in the not-collectable (RE / pre-2024) list so it stays trackable for the
+    write-off process."""
+    exc = cf.bsn_ar_excluded_by_customer(conn=tmp_db_conn)
+    jung = [r for r in exc if 'จึงเจริญ' in (r['customer_name'] or '')]
+    assert jung, "จึงเจริญ must appear in the not-collectable (RE) list"
+    assert jung[0]['has_re'] == 1
+    assert jung[0]['outstanding'] == pytest.approx(349_596.08, abs=0.01)
 
 
 # ── revenue_by_month ──────────────────────────────────────────────────────────

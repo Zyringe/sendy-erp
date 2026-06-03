@@ -3556,7 +3556,9 @@ def express_ar_dashboard():
     # "RE ไม่ควรอยู่ในหน้า ar เพราะลูกหนี้จ่ายแล้ว"). These are legacy
     # 2005-2019 receipts that Express marks with is_anomalous=1; they
     # are not real outstanding debt.
-    where = ["entity = 'BSN'", 'snapshot_date_iso = ?', 'is_anomalous = 0']
+    # Canonical BSN AR filter (excludes RE + pre-2024 legacy) — shared with
+    # ar_aging / customer_ranking / get_customer_debt_summary so all totals agree.
+    where = ["entity = 'BSN'", 'snapshot_date_iso = ?', cf_mod.BSN_AR_PREDICATE]
     params = [snapshot_date]
     if search:
         where.append("(customer_name LIKE ? OR customer_code LIKE ?)")
@@ -3595,10 +3597,12 @@ def express_ar_dashboard():
         "ORDER BY salesperson_code", (snapshot_date,)
     ).fetchall()]
     conn.close()
+    excluded = cf_mod.bsn_ar_excluded()
 
     return render_template('express_ar.html',
                            rows=[dict(r) for r in rows],
                            summary=dict(summary) if summary else {},
+                           excluded=excluded,
                            snapshot_date=snapshot_date,
                            sps=sps, sp_filter=sp_filter,
                            search=search, sort=sort)
@@ -4027,12 +4031,16 @@ def ar_followup():
 
     aging = cf_mod.ar_aging()
     overdue = arf_mod.list_overdue_followups()
+    excluded = cf_mod.bsn_ar_excluded()
+    excluded_rows = cf_mod.bsn_ar_excluded_by_customer()
 
     return render_template(
         'ar_followup.html',
         rows=rows,
         aging=aging,
         overdue=overdue,
+        excluded=excluded,
+        excluded_rows=excluded_rows,
         bucket=bucket,
         min_str=min_str,
         search=search,

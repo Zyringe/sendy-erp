@@ -40,6 +40,7 @@ import sqlite3
 
 import config
 import payments_alloc as pa   # kept as diagnostic — do not remove
+from cashflow import BSN_AR_PREDICATE
 
 
 _AGE_BUCKETS = ('0-30', '31-60', '61-90', '90+')
@@ -121,7 +122,7 @@ def customer_ranking(conn: Optional[sqlite3.Connection] = None,
 
         snap_date = date.fromisoformat(snap)
 
-        rows = c.execute("""
+        rows = c.execute(f"""
             SELECT
                 ao.customer_code,
                 COALESCE(cust.name, ao.customer_name) AS customer_name,
@@ -131,6 +132,7 @@ def customer_ranking(conn: Optional[sqlite3.Connection] = None,
             LEFT JOIN customers cust ON cust.code = ao.customer_code
             WHERE ao.entity = 'BSN'
               AND ao.snapshot_date_iso = ?
+              AND {BSN_AR_PREDICATE}
         """, (snap,)).fetchall()
         # NB: do NOT filter `outstanding_amount > 0` at the row level. Express
         # lists un-applied credit notes / overpayments as separate NEGATIVE
