@@ -25,6 +25,7 @@ Permission model (see `_STAFF_POST_OK` / `_MANAGER_POST_OK` near the top):
 import io
 import json
 import os
+import signal
 import sys
 import sqlite3
 import shutil
@@ -159,7 +160,9 @@ def bootstrap_upload_db():
 # Roles: admin > manager > staff
 #   admin   – full access + user management
 #   manager – see cost/GP/payments; cannot edit products/users
-#   staff   – import flows (weekly, unified /import-data, marketplace orders) + read-only views (no cost/GP)
+#   staff   – all import flows (Decision B: staff does data entry; every import
+#             snapshots the DB first so a wrong import is recoverable) + read-only
+#             views (no cost/GP)
 #
 # POST whitelist by role
 _STAFF_POST_OK = frozenset([
@@ -167,18 +170,20 @@ _STAFF_POST_OK = frozenset([
     'import_weekly', 'import_weekly_confirm', 'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
     'unified_import', 'unified_import_confirm',
     'marketplace.import_orders',
+    # Decision B — staff may import everything; each of these snapshots the DB
+    # before writing (see _snapshot_before_import call sites).
+    'import_payments', 'import_credit_notes_preview', 'import_credit_notes_commit',
     'products.product_location_save',
     'admin_exit_simulate',
     'conversion_new', 'conversion_edit', 'conversion_run', 'conversion_delete',
     'api_product_barcodes',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
-    'import_payments', 'products.product_online_stock',
+    'products.product_online_stock',
     'customer_reassign', 'customer_bulk_reassign',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
     'products.product_packaging_save',
     'mapping_suggestion_approve',
-    'import_credit_notes_preview', 'import_credit_notes_commit',
     'photos_review_assign', 'photos_review_delete',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
@@ -888,9 +893,30 @@ def _backups_dir():
     return db_backup.default_backup_dir(config.DATABASE_PATH)
 
 
+def _reload_workers_after_restore():
+    """After a DB restore, ask the gunicorn master to gracefully reload ALL
+    workers (SIGHUP) so no worker keeps a connection to the pre-restore DB file.
+
+    Railway runs `gunicorn -w 2`; get_connection() opens a fresh connection per
+    request, so NEW requests already pick up the restored file — but an in-flight
+    request on the sibling worker can still read pre-restore data or lose a write.
+    A graceful reload guarantees both workers turn over. No-op off gunicorn (the
+    Flask dev server / tests), where there is no master to signal and a single
+    process self-heals on its next per-request connection. Returns True if a
+    reload was signalled."""
+    if 'gunicorn' not in request.environ.get('SERVER_SOFTWARE', '').lower():
+        return False
+    try:
+        os.kill(os.getppid(), signal.SIGHUP)   # graceful reload of all workers
+        return True
+    except OSError:
+        return False
+
+
 _BACKUP_REASON_LABELS = {
     'unified': 'นำเข้า (รวมทุกไฟล์)', 'weekly': 'นำเข้ารายสัปดาห์',
     'marketplace': 'คำสั่งซื้อ Marketplace', 'pre-restore': 'ก่อนกู้คืน',
+    'payments': 'นำเข้าการรับชำระ', 'credit-notes': 'นำเข้าใบลดหนี้',
 }
 
 
@@ -938,8 +964,12 @@ def backup_restore():
     except Exception as e:
         flash(f'กู้คืนไม่สำเร็จ: {e}', 'danger')
         return redirect(url_for('backups_list'))
-    flash(f'กู้คืนฐานข้อมูลจาก {name} สำเร็จ — ระบบสำรองสถานะก่อนกู้คืนไว้แล้ว. '
-          f'แนะนำให้ปิด-เปิดแอป (restart) แล้วตรวจข้อมูลอีกครั้ง', 'success')
+    flash(f'กู้คืนฐานข้อมูลจาก {name} สำเร็จ — ระบบสำรองสถานะก่อนกู้คืนไว้แล้ว.', 'success')
+    if _reload_workers_after_restore():
+        flash('ระบบกำลังรีโหลดอัตโนมัติเพื่อให้ทุกตัวใช้ข้อมูลที่กู้คืน (~ไม่กี่วินาที) '
+              'แล้วตรวจข้อมูลอีกครั้ง', 'info')
+    else:
+        flash('แนะนำให้ปิด-เปิดแอป (restart) แล้วตรวจข้อมูลอีกครั้ง', 'warning')
     return redirect(url_for('dashboard'))
 
 
@@ -2161,15 +2191,14 @@ def payment_customer_detail(customer_name):
 
 @app.route('/import-payments', methods=['POST'])
 def import_payments():
-    if session.get('role') not in ('admin', 'manager'):
-        flash('ต้องเป็น Admin หรือ Manager', 'danger')
-        return redirect(url_for('payment_status'))
+    # Open to staff (Decision B); the whitelist gate in before_request applies.
     f = request.files.get('payment_file')
     if not f or not f.filename.endswith('.csv'):
         flash('กรุณาเลือกไฟล์ .csv', 'danger')
         return redirect(url_for('payment_status'))
     tmp_path = os.path.join(config.UPLOAD_FOLDER, f.filename)
     f.save(tmp_path)
+    _snapshot_before_import('payments')   # rollback point before received_payments writes
     result = models.import_payments(tmp_path)
     flash(
         f'นำเข้าสำเร็จ {result["imported"]} ใบเสร็จใหม่  |  อัปเดต {result["updated"]} ใบเสร็จเดิม  |  ข้ามซ้ำ {result["skipped"]} รายการ',
@@ -2214,9 +2243,7 @@ def _cn_preview_path(token):
 
 @app.route('/import-credit-notes/preview', methods=['POST'])
 def import_credit_notes_preview():
-    if session.get('role') not in ('admin', 'manager'):
-        flash('ต้องเป็น Admin หรือ Manager', 'danger')
-        return redirect(url_for('payment_status'))
+    # Open to staff (Decision B); preview only reads (rolls back), no snapshot needed.
     f = request.files.get('cn_file')
     if not f or not f.filename.endswith('.csv'):
         flash('กรุณาเลือกไฟล์ .csv', 'danger')
@@ -2249,9 +2276,7 @@ def import_credit_notes_preview():
 
 @app.route('/import-credit-notes/commit', methods=['POST'])
 def import_credit_notes_commit():
-    if session.get('role') not in ('admin', 'manager'):
-        flash('ต้องเป็น Admin หรือ Manager', 'danger')
-        return redirect(url_for('payment_status'))
+    # Open to staff (Decision B); the whitelist gate in before_request applies.
     token = (request.form.get('token') or '').strip()
     path = _cn_preview_path(token)
     if path is None:
@@ -2260,6 +2285,7 @@ def import_credit_notes_commit():
 
     from import_credit_notes import import_credit_notes as _do_import
 
+    _snapshot_before_import('credit-notes')   # rollback point before credit_note_amounts writes
     try:
         result = _do_import(path)
     except Exception as exc:
