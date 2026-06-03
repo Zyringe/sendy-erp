@@ -234,7 +234,7 @@ _MODULE_DEFS = [
         'key': 'data',
         'name': 'นำเข้าข้อมูล',
         'icon': 'bi-upload',
-        'first_endpoint': 'import_weekly',
+        'first_endpoint': 'unified_import',   # /import-data (the consolidated box)
         'roles': None,
     },
     {
