@@ -6,9 +6,15 @@
 
 <div class="alert alert-secondary py-2 mb-3 small">
   <i class="bi bi-info-circle me-1"></i>
-  ข้อมูลจาก settlement engine (VAT-aware, credit-note-netted) ของ BSN
+  ยอดจาก Express snapshot ของ BSN (credit-note-netted)
   &nbsp;·&nbsp; เรียงตามยอดค้างมากสุด &nbsp;·&nbsp; <a href="{{ url_for('ar_followup_export') }}">ดาวน์โหลด CSV</a>
-  &nbsp;·&nbsp; <a href="{{ url_for('express_ar_dashboard') }}">ยอด AR (Express snapshot)</a>
+  &nbsp;·&nbsp; <a href="{{ url_for('express_ar_dashboard') }}">หน้า AR / ลูกหนี้</a>
+  {% if excluded and (excluded.legacy_count or excluded.re_count) %}
+  <div class="mt-1 text-subtle">
+    <i class="bi bi-funnel me-1"></i>ไม่รวม: หนี้ก่อนปี 2024 (legacy) ฿{{ '{:,.0f}'.format(excluded.legacy_amount) }} ({{ excluded.legacy_count }} ใบ)
+    · เอกสาร RE ที่รับชำระแล้ว ฿{{ '{:,.0f}'.format(excluded.re_amount) }} ({{ excluded.re_count }} ใบ)
+  </div>
+  {% endif %}
 </div>
 
 {# ── KPI: aging bucket cards ────────────────────────────────────────────── #}
@@ -151,5 +157,46 @@
     </div>
   </div>
 </div>
+
+{# ── Not-collectable: RE (รอตัดหนี้สูญ) + pre-2024 legacy — shown separately so
+   they stay trackable but do NOT inflate the collection target above ── #}
+{% if excluded_rows %}
+<div class="card mt-4">
+  <div class="card-header d-flex align-items-center gap-2 bg-light">
+    <i class="bi bi-archive text-secondary"></i>
+    <span class="fw-600">นอกยอดเก็บ — RE (รอตัดหนี้สูญ) + หนี้ก่อนปี 2024</span>
+    <span class="badge bg-secondary ms-1">฿{{ '{:,.0f}'.format(excluded_rows | sum(attribute='outstanding')) }}</span>
+    <span class="text-subtle small ms-auto">ไม่นับในยอดเก็บ {{ '{:,.0f}'.format(aging.total_outstanding) }}</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0 small">
+      <thead class="table-light">
+        <tr>
+          <th>ลูกค้า</th>
+          <th class="text-end">ยอด (net)</th>
+          <th class="text-end">#ใบ</th>
+          <th>ประเภท</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in excluded_rows %}
+        <tr>
+          <td>
+            <a href="{{ url_for('express_ar_customer', customer_code=r.customer_code) }}">{{ r.customer_name }}</a>
+            {% if r.customer_code %}<span class="text-subtle small">[{{ r.customer_code }}]</span>{% endif %}
+          </td>
+          <td class="text-end fw-600">฿{{ '{:,.0f}'.format(r.outstanding) }}</td>
+          <td class="text-end">{{ r.doc_count }}</td>
+          <td>
+            {% if r.has_re %}<span class="badge bg-warning text-dark">RE</span>{% endif %}
+            {% if r.has_legacy %}<span class="badge bg-secondary">ก่อน 2024</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 
 {% endblock %}

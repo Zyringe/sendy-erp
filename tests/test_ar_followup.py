@@ -519,38 +519,40 @@ def test_bsn_snapshot_totals(tmp_db_conn):
 
 
 def test_customer_ranking_live_bsn(tmp_db_conn):
-    """customer_ranking rolls up per customer by NET balance (across all their
-    snapshot rows, including un-applied credit notes / overpayments which appear
-    as negative rows) and keeps only customers whose NET is positive — you don't
-    chase an account that nets to zero or a credit.
+    """customer_ranking rolls up CANONICAL collectable AR per customer (latest
+    snapshot, EXCLUDING RE + pre-2024 legacy; Put 2026-06-04), net-positive only.
+    = 42 customers / ฿732,357.86.
 
-    Per-customer-net: 65 customers / ฿1,325,201.47.
-
-    Regression guard against row-level filtering: ทรงพลเทรดดิ้ง must net to
-    ฿164,322.73, NOT ฿284,863.10 (the latter ignores ฿120,540.37 of credit notes).
-    """
+    ทรงพลเทรดดิ้ง is entirely 2014 legacy → it drops out of the collectable
+    ranking and is tracked in the not-collectable list instead (where the
+    credit-note netting guard now lives: net ฿164,322.73, NOT ฿284,863.10)."""
+    import cashflow as cf
     rows = arf.customer_ranking(conn=tmp_db_conn)
     total = round(sum(r['outstanding'] for r in rows), 2)
-    assert len(rows) == 65, f"Expected 65 net-positive customers, got {len(rows)}"
-    assert total == pytest.approx(1325201.47, abs=0.01), \
-        f"Expected per-customer-net total ฿1,325,201.47, got {total}"
+    assert len(rows) == 42, f"Expected 42 collectable net-positive customers, got {len(rows)}"
+    assert total == pytest.approx(732357.86, abs=0.01), \
+        f"Expected canonical collectable total ฿732,357.86, got {total}"
     # Verify sorted DESC
     for i in range(len(rows) - 1):
         assert rows[i]['outstanding'] >= rows[i+1]['outstanding']
-    # Mixed +/- customer must be netted, not gross-summed.
-    songphon = next((r for r in rows if (r['customer_code'] or '') == '94ท06'), None)
-    assert songphon is not None, "ทรงพลเทรดดิ้ง (94ท06) must appear"
+    # ทรงพล (94ท06) is pre-2024 legacy → excluded from collectable ranking …
+    assert not any((r['customer_code'] or '') == '94ท06' for r in rows), \
+        "ทรงพล (all 2014 legacy) must be excluded from collectable ranking"
+    # … but tracked in the not-collectable list, netted (credit notes applied).
+    exc = cf.bsn_ar_excluded_by_customer(conn=tmp_db_conn)
+    songphon = next((r for r in exc if (r['customer_code'] or '') == '94ท06'), None)
+    assert songphon is not None and songphon['has_legacy'] == 1, "ทรงพล must appear as legacy"
     assert songphon['outstanding'] == pytest.approx(164322.73, abs=0.01), \
         f"ทรงพล must net to ฿164,322.73, got {songphon['outstanding']} (credit notes ignored?)"
 
 
 def test_customer_ranking_invoice_count(tmp_db_conn):
-    """Sum of per-customer invoice_count = 193 (all snapshot rows belonging to
-    net-positive customers, credit-note rows included)."""
+    """Sum of per-customer invoice_count = 145 (collectable snapshot rows of
+    net-positive customers, after excluding RE + pre-2024 legacy)."""
     rows = arf.customer_ranking(conn=tmp_db_conn)
     total_invoices = sum(r['invoice_count'] for r in rows)
-    assert total_invoices == 193, \
-        f"Expected invoice_count sum=193, got {total_invoices}"
+    assert total_invoices == 145, \
+        f"Expected invoice_count sum=145, got {total_invoices}"
 
 
 def test_get_customer_ar_detail_live(tmp_db_conn):

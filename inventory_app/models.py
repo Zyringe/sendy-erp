@@ -31,6 +31,7 @@ import sqlite3
 
 from database import get_connection
 import bsn_units
+from cashflow import BSN_AR_PREDICATE
 from collections import defaultdict
 from datetime import date
 
@@ -2728,7 +2729,7 @@ def get_customer_debt_summary(search=''):
         LEFT JOIN customers c ON c.code = ao.customer_code
         WHERE ao.entity = 'BSN'
           AND ao.snapshot_date_iso = (SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding WHERE entity = 'BSN')
-          AND ao.doc_date_iso >= '2024-01-01'
+          AND {BSN_AR_PREDICATE}
           {cond}
         GROUP BY ao.customer_code
         HAVING outstanding_amount > 0

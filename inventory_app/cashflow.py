@@ -54,6 +54,16 @@ from config import DATABASE_PATH
 import payments_alloc as pa
 
 
+# ── Canonical BSN AR filter ──────────────────────────────────────────────────
+# Every page that totals BSN AR must apply this to the latest snapshot so the
+# numbers agree (enforced by tests/test_ar_reconcile.py). Excludes:
+#   - RE / is_anomalous receipts — Put: "ลูกหนี้จ่ายแล้ว" (already paid), and
+#   - pre-2024 legacy debt — before the Sendy era (Put 2026-06-04).
+# Bare column names (no table alias) — unambiguous since only express_ar_outstanding
+# has these columns, even in queries that JOIN customers.
+BSN_AR_PREDICATE = "is_anomalous = 0 AND doc_date_iso >= '2024-01-01'"
+
+
 # ── DB helpers (mirrors payments_alloc._ConnCtx) ──────────────────────────────
 
 def _connect(db_path: Optional[str] = None) -> sqlite3.Connection:
@@ -205,9 +215,10 @@ def ar_aging(as_of: Optional[str] = None,
         snap_date = date.fromisoformat(snap)
 
         rows = c.execute(
-            """SELECT doc_date_iso, outstanding_amount, bill_amount, paid_amount
+            f"""SELECT doc_date_iso, outstanding_amount, bill_amount, paid_amount
                FROM express_ar_outstanding
-               WHERE entity = 'BSN' AND snapshot_date_iso = ?""",
+               WHERE entity = 'BSN' AND snapshot_date_iso = ?
+                 AND {BSN_AR_PREDICATE}""",
             (snap,),
         ).fetchall()
 
@@ -295,3 +306,57 @@ def revenue_by_month(date_from: Optional[str] = None,
 
     return [{'month': r['month'], 'revenue': round(r['revenue'] or 0.0, 2)}
             for r in rows]
+
+
+def bsn_ar_excluded(conn: Optional[sqlite3.Connection] = None,
+                    db_path: Optional[str] = None) -> dict:
+    """Amounts EXCLUDED from canonical BSN AR (see BSN_AR_PREDICATE), for
+    disclosure on the AR pages so the ~฿567k removed from the gross snapshot
+    isn't hidden: pre-2024 legacy debt + RE/anomalous receipts."""
+    empty = {'legacy_amount': 0.0, 'legacy_count': 0, 're_amount': 0.0, 're_count': 0}
+    with _ConnCtx(conn, db_path) as c:
+        snap = c.execute("SELECT MAX(snapshot_date_iso) AS d FROM "
+                         "express_ar_outstanding WHERE entity='BSN'").fetchone()['d']
+        if not snap:
+            return empty
+        legacy = c.execute(
+            "SELECT ROUND(SUM(outstanding_amount),2) a, COUNT(*) n "
+            "FROM express_ar_outstanding WHERE entity='BSN' AND snapshot_date_iso=? "
+            "AND is_anomalous=0 AND doc_date_iso < '2024-01-01'", (snap,)).fetchone()
+        re = c.execute(
+            "SELECT ROUND(SUM(outstanding_amount),2) a, COUNT(*) n "
+            "FROM express_ar_outstanding WHERE entity='BSN' AND snapshot_date_iso=? "
+            "AND is_anomalous=1", (snap,)).fetchone()
+    return {'legacy_amount': legacy['a'] or 0.0, 'legacy_count': legacy['n'] or 0,
+            're_amount': re['a'] or 0.0, 're_count': re['n'] or 0}
+
+
+def bsn_ar_excluded_by_customer(conn: Optional[sqlite3.Connection] = None,
+                                db_path: Optional[str] = None) -> List[dict]:
+    """Per-customer debt EXCLUDED from collectable AR (the complement of
+    BSN_AR_PREDICATE): RE/anomalous receipts (e.g. จึงเจริญ, a write-off review)
+    and pre-2024 legacy debt (e.g. ทรงพลเทรดดิ้ง 2014). Shown as a separate
+    'not collectable' section on the dunning page so it stays trackable without
+    inflating the collection target. Net per customer, largest first."""
+    with _ConnCtx(conn, db_path) as c:
+        snap = c.execute("SELECT MAX(snapshot_date_iso) AS d FROM "
+                         "express_ar_outstanding WHERE entity='BSN'").fetchone()['d']
+        if not snap:
+            return []
+        rows = c.execute("""
+            SELECT ao.customer_code,
+                   COALESCE(cust.name, ao.customer_name) AS customer_name,
+                   ROUND(SUM(ao.outstanding_amount), 2)  AS outstanding,
+                   COUNT(*)                              AS doc_count,
+                   MAX(CASE WHEN ao.is_anomalous = 1 THEN 1 ELSE 0 END) AS has_re,
+                   MAX(CASE WHEN ao.is_anomalous = 0 AND ao.doc_date_iso < '2024-01-01'
+                            THEN 1 ELSE 0 END) AS has_legacy
+            FROM express_ar_outstanding ao
+            LEFT JOIN customers cust ON cust.code = ao.customer_code
+            WHERE ao.entity = 'BSN' AND ao.snapshot_date_iso = ?
+              AND NOT (ao.is_anomalous = 0 AND ao.doc_date_iso >= '2024-01-01')
+            GROUP BY ao.customer_code
+            HAVING ROUND(SUM(ao.outstanding_amount), 2) > 0
+            ORDER BY outstanding DESC
+        """, (snap,)).fetchall()
+    return [dict(r) for r in rows]
