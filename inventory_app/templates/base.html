@@ -98,6 +98,12 @@
        class="sidebar-link {% if (request.endpoint or '').startswith('conversion_') or request.endpoint == 'conversion_list' %}active{% endif %}">
       <i class="bi bi-scissors"></i> แปลงสินค้า
     </a>
+    {% if is_manager %}
+    <a href="{{ url_for('products_walkthrough') }}"
+       class="sidebar-link {% if request.endpoint == 'products_walkthrough' %}active{% endif %}">
+      <i class="bi bi-images"></i> รูปสินค้า
+    </a>
+    {% endif %}
     {% if is_admin %}
     <a href="{{ url_for('labels_view') }}"
        class="sidebar-link {% if request.endpoint == 'labels_view' %}active{% endif %}">
@@ -235,15 +241,11 @@
     {# ── นำเข้าข้อมูล ── #}
     {% if active_module == 'data' %}
     <div class="sidebar-section">นำเข้าข้อมูล</div>
-    {% if is_manager %}
+    {# Single import entry — /import-data handles ขาย/ซื้อ/AR/AP/payments/CN
+       (superset of the old /import-weekly). Visible to staff too (they can import). #}
     <a href="{{ url_for('unified_import') }}"
        class="sidebar-link {% if request.endpoint and request.endpoint.startswith('unified_import') %}active{% endif %}">
-      <i class="bi bi-box-arrow-in-down"></i> นำเข้า (รวมทุกไฟล์)
-    </a>
-    {% endif %}
-    <a href="{{ url_for('import_weekly') }}"
-       class="sidebar-link {% if request.endpoint == 'import_weekly' %}active{% endif %}">
-      <i class="bi bi-calendar-week"></i> อัพเดทข้อมูล
+      <i class="bi bi-box-arrow-in-down"></i> นำเข้าข้อมูล
     </a>
     <a href="{{ url_for('mapping') }}"
        class="sidebar-link {% if request.endpoint == 'mapping' %}active{% endif %}">

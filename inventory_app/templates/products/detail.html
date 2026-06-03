@@ -86,37 +86,9 @@
         </a>
       </div>
 
-      {# ── Online stock edit tabs ── #}
-      <div class="card-footer pt-0 border-top-0">
-        <div class="d-flex gap-1 mb-2">
-          <button class="btn btn-sm fw-600 flex-fill online-tab active"
-                  data-platform="shopee"
-                  style="background:#fff7ed;color:#ea580c;border:1px solid #fed7aa"
-                  onclick="switchOnlineTab('shopee', this)">
-            <i class="bi bi-bag-fill me-1"></i>Shopee
-          </button>
-          <button class="btn btn-sm fw-600 flex-fill online-tab"
-                  data-platform="lazada"
-                  style="background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0"
-                  onclick="switchOnlineTab('lazada', this)">
-            <i class="bi bi-cart-fill me-1"></i>Lazada
-          </button>
-        </div>
-        <form method="post"
-              action="{{ url_for('products.product_online_stock', product_id=product.id) }}"
-              class="d-flex gap-2 align-items-center">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <input type="hidden" name="platform" id="onlinePlatform" value="shopee">
-          <input type="number" name="quantity" id="onlineQty" step="0.5" min="0"
-                 value="{{ product.shopee_stock }}"
-                 class="form-control form-control-sm"
-                 style="border-color:#fed7aa">
-          <button type="submit" class="btn btn-sm fw-600 px-3" id="onlineConfirmBtn"
-                  style="background:#ea580c;color:#fff;border:none;white-space:nowrap">
-            ยืนยัน
-          </button>
-        </form>
-      </div>
+      {# Online stock (Shopee/Lazada) is shown above from platform_skus and is
+         maintained in the E-commerce/Marketplace module — no per-product editor
+         here (the old editor wrote a legacy column nothing reads). #}
       {% endif %}
     </div>
 
@@ -705,37 +677,6 @@
 
 {% block scripts %}
 <script>
-const shopeeStock = {{ product.shopee_stock }};
-const lazadaStock = {{ product.lazada_stock }};
-
-function switchOnlineTab(platform, btn) {
-  document.querySelectorAll('.online-tab').forEach(b => {
-    b.style.background = '#f1f5f9';
-    b.style.color      = '#64748b';
-    b.style.border     = '1px solid #e2e8f0';
-  });
-
-  const inp        = document.getElementById('onlineQty');
-  const confirmBtn = document.getElementById('onlineConfirmBtn');
-  document.getElementById('onlinePlatform').value = platform;
-
-  if (platform === 'shopee') {
-    btn.style.background  = '#fff7ed';
-    btn.style.color       = '#ea580c';
-    btn.style.border      = '1px solid #fed7aa';
-    inp.style.borderColor = '#fed7aa';
-    inp.value             = shopeeStock;
-    confirmBtn.style.background = '#ea580c';
-  } else {
-    btn.style.background  = '#eff6ff';
-    btn.style.color       = '#2563eb';
-    btn.style.border      = '1px solid #bfdbfe';
-    inp.style.borderColor = '#bfdbfe';
-    inp.value             = lazadaStock;
-    confirmBtn.style.background = '#2563eb';
-  }
-}
-
 function addLocation() {
   const row = document.createElement('div');
   row.className = 'd-flex gap-1 mb-1 location-row';
