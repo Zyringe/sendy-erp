@@ -160,7 +160,9 @@ def bootstrap_upload_db():
 # Roles: admin > manager > staff
 #   admin   – full access + user management
 #   manager – see cost/GP/payments; cannot edit products/users
-#   staff   – import flows (weekly, unified /import-data, marketplace orders) + read-only views (no cost/GP)
+#   staff   – all import flows (Decision B: staff does data entry; every import
+#             snapshots the DB first so a wrong import is recoverable) + read-only
+#             views (no cost/GP)
 #
 # POST whitelist by role
 _STAFF_POST_OK = frozenset([
@@ -168,18 +170,20 @@ _STAFF_POST_OK = frozenset([
     'import_weekly', 'import_weekly_confirm', 'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
     'unified_import', 'unified_import_confirm',
     'marketplace.import_orders',
+    # Decision B — staff may import everything; each of these snapshots the DB
+    # before writing (see _snapshot_before_import call sites).
+    'import_payments', 'import_credit_notes_preview', 'import_credit_notes_commit',
     'products.product_location_save',
     'admin_exit_simulate',
     'conversion_new', 'conversion_edit', 'conversion_run', 'conversion_delete',
     'api_product_barcodes',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
-    'import_payments', 'products.product_online_stock',
+    'products.product_online_stock',
     'customer_reassign', 'customer_bulk_reassign',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
     'products.product_packaging_save',
     'mapping_suggestion_approve',
-    'import_credit_notes_preview', 'import_credit_notes_commit',
     'photos_review_assign', 'photos_review_delete',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
@@ -912,6 +916,7 @@ def _reload_workers_after_restore():
 _BACKUP_REASON_LABELS = {
     'unified': 'นำเข้า (รวมทุกไฟล์)', 'weekly': 'นำเข้ารายสัปดาห์',
     'marketplace': 'คำสั่งซื้อ Marketplace', 'pre-restore': 'ก่อนกู้คืน',
+    'payments': 'นำเข้าการรับชำระ', 'credit-notes': 'นำเข้าใบลดหนี้',
 }
 
 
@@ -2186,15 +2191,14 @@ def payment_customer_detail(customer_name):
 
 @app.route('/import-payments', methods=['POST'])
 def import_payments():
-    if session.get('role') not in ('admin', 'manager'):
-        flash('ต้องเป็น Admin หรือ Manager', 'danger')
-        return redirect(url_for('payment_status'))
+    # Open to staff (Decision B); the whitelist gate in before_request applies.
     f = request.files.get('payment_file')
     if not f or not f.filename.endswith('.csv'):
         flash('กรุณาเลือกไฟล์ .csv', 'danger')
         return redirect(url_for('payment_status'))
     tmp_path = os.path.join(config.UPLOAD_FOLDER, f.filename)
     f.save(tmp_path)
+    _snapshot_before_import('payments')   # rollback point before received_payments writes
     result = models.import_payments(tmp_path)
     flash(
         f'นำเข้าสำเร็จ {result["imported"]} ใบเสร็จใหม่  |  อัปเดต {result["updated"]} ใบเสร็จเดิม  |  ข้ามซ้ำ {result["skipped"]} รายการ',
@@ -2239,9 +2243,7 @@ def _cn_preview_path(token):
 
 @app.route('/import-credit-notes/preview', methods=['POST'])
 def import_credit_notes_preview():
-    if session.get('role') not in ('admin', 'manager'):
-        flash('ต้องเป็น Admin หรือ Manager', 'danger')
-        return redirect(url_for('payment_status'))
+    # Open to staff (Decision B); preview only reads (rolls back), no snapshot needed.
     f = request.files.get('cn_file')
     if not f or not f.filename.endswith('.csv'):
         flash('กรุณาเลือกไฟล์ .csv', 'danger')
@@ -2274,9 +2276,7 @@ def import_credit_notes_preview():
 
 @app.route('/import-credit-notes/commit', methods=['POST'])
 def import_credit_notes_commit():
-    if session.get('role') not in ('admin', 'manager'):
-        flash('ต้องเป็น Admin หรือ Manager', 'danger')
-        return redirect(url_for('payment_status'))
+    # Open to staff (Decision B); the whitelist gate in before_request applies.
     token = (request.form.get('token') or '').strip()
     path = _cn_preview_path(token)
     if path is None:
@@ -2285,6 +2285,7 @@ def import_credit_notes_commit():
 
     from import_credit_notes import import_credit_notes as _do_import
 
+    _snapshot_before_import('credit-notes')   # rollback point before credit_note_amounts writes
     try:
         result = _do_import(path)
     except Exception as exc:
