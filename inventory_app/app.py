@@ -25,6 +25,7 @@ Permission model (see `_STAFF_POST_OK` / `_MANAGER_POST_OK` near the top):
 import io
 import json
 import os
+import signal
 import sys
 import sqlite3
 import shutil
@@ -888,6 +889,26 @@ def _backups_dir():
     return db_backup.default_backup_dir(config.DATABASE_PATH)
 
 
+def _reload_workers_after_restore():
+    """After a DB restore, ask the gunicorn master to gracefully reload ALL
+    workers (SIGHUP) so no worker keeps a connection to the pre-restore DB file.
+
+    Railway runs `gunicorn -w 2`; get_connection() opens a fresh connection per
+    request, so NEW requests already pick up the restored file — but an in-flight
+    request on the sibling worker can still read pre-restore data or lose a write.
+    A graceful reload guarantees both workers turn over. No-op off gunicorn (the
+    Flask dev server / tests), where there is no master to signal and a single
+    process self-heals on its next per-request connection. Returns True if a
+    reload was signalled."""
+    if 'gunicorn' not in request.environ.get('SERVER_SOFTWARE', '').lower():
+        return False
+    try:
+        os.kill(os.getppid(), signal.SIGHUP)   # graceful reload of all workers
+        return True
+    except OSError:
+        return False
+
+
 _BACKUP_REASON_LABELS = {
     'unified': 'นำเข้า (รวมทุกไฟล์)', 'weekly': 'นำเข้ารายสัปดาห์',
     'marketplace': 'คำสั่งซื้อ Marketplace', 'pre-restore': 'ก่อนกู้คืน',
@@ -938,8 +959,12 @@ def backup_restore():
     except Exception as e:
         flash(f'กู้คืนไม่สำเร็จ: {e}', 'danger')
         return redirect(url_for('backups_list'))
-    flash(f'กู้คืนฐานข้อมูลจาก {name} สำเร็จ — ระบบสำรองสถานะก่อนกู้คืนไว้แล้ว. '
-          f'แนะนำให้ปิด-เปิดแอป (restart) แล้วตรวจข้อมูลอีกครั้ง', 'success')
+    flash(f'กู้คืนฐานข้อมูลจาก {name} สำเร็จ — ระบบสำรองสถานะก่อนกู้คืนไว้แล้ว.', 'success')
+    if _reload_workers_after_restore():
+        flash('ระบบกำลังรีโหลดอัตโนมัติเพื่อให้ทุกตัวใช้ข้อมูลที่กู้คืน (~ไม่กี่วินาที) '
+              'แล้วตรวจข้อมูลอีกครั้ง', 'info')
+    else:
+        flash('แนะนำให้ปิด-เปิดแอป (restart) แล้วตรวจข้อมูลอีกครั้ง', 'warning')
     return redirect(url_for('dashboard'))
 
 

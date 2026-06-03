@@ -86,3 +86,46 @@ def test_restore_rejects_unknown_name(tmp_db):
                   data={'name': 'auto-unified-20990101_000000.db.gz', 'confirm': 'yes'},
                   follow_redirects=False)
     assert resp.status_code == 302            # flashed + redirected, no 500
+
+
+# ── force a worker reload after restore (so both gunicorn -w 2 workers drop
+#    any pre-restore connections) ───────────────────────────────────────────
+
+def test_restore_signals_gunicorn_reload(tmp_db, monkeypatch):
+    """Under gunicorn, a successful restore must SIGHUP the master so ALL workers
+    gracefully reload and stop serving the pre-restore DB."""
+    import signal as _signal
+    bdir = db_backup.default_backup_dir(tmp_db)
+    snap = db_backup.create_backup('unified', db_path=tmp_db, backup_dir=bdir)
+    _add_marker(tmp_db)
+
+    calls = []
+    monkeypatch.setattr(os, 'kill', lambda pid, sig: calls.append((pid, sig)))
+    monkeypatch.setattr(os, 'getppid', lambda: 4242)
+
+    c = _client('admin', db_routes=True)
+    resp = c.post('/admin/backups/restore',
+                  data={'name': snap['name'], 'confirm': 'yes'},
+                  environ_overrides={'SERVER_SOFTWARE': 'gunicorn/21.2.0'})
+    assert resp.status_code == 302
+    assert _marker_count(tmp_db) == 0                 # restore happened
+    assert calls == [(4242, _signal.SIGHUP)]          # graceful all-worker reload
+
+
+def test_restore_no_reload_signal_off_gunicorn(tmp_db, monkeypatch):
+    """Off gunicorn (Flask dev server / tests) there is no master to signal —
+    a single process picks up the restored file on its next per-request
+    connection, so we must NOT send a stray signal."""
+    bdir = db_backup.default_backup_dir(tmp_db)
+    snap = db_backup.create_backup('unified', db_path=tmp_db, backup_dir=bdir)
+    _add_marker(tmp_db)
+
+    calls = []
+    monkeypatch.setattr(os, 'kill', lambda pid, sig: calls.append((pid, sig)))
+
+    c = _client('admin', db_routes=True)
+    resp = c.post('/admin/backups/restore',
+                  data={'name': snap['name'], 'confirm': 'yes'})
+    assert resp.status_code == 302
+    assert _marker_count(tmp_db) == 0                 # restore still happened
+    assert calls == []                                # no stray signal
