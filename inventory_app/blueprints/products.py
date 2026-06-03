@@ -145,6 +145,7 @@ def product_list():
     low_stock = request.args.get('low_stock') == '1'
     hard_to_sell = request.args.get('hard_to_sell') == '1'
     in_stock = request.args.get('in_stock') == '1'
+    restock = request.args.get('restock') == '1'
     page = int(request.args.get('page', 1))
     per_page = current_app.config['ITEMS_PER_PAGE']
 
@@ -154,6 +155,7 @@ def product_list():
         hard_to_sell=hard_to_sell,
         location=location or None,
         in_stock=in_stock,
+        restock=restock,
         page=page,
         per_page=per_page,
     )
@@ -163,7 +165,8 @@ def product_list():
                            page=page, pages=pages,
                            search=search, low_stock=low_stock,
                            hard_to_sell=hard_to_sell,
-                           location=location, in_stock=in_stock)
+                           location=location, in_stock=in_stock,
+                           restock=restock)
 
 
 @bp_products.route('/products/new', methods=['GET', 'POST'])
