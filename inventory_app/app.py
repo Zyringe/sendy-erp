@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 import models
+import db_backup
 from database import init_db, get_connection
 from parse_weekly import parse_sales, parse_purchases, detect_file_type, is_history_export
 from parse_platform import (parse_shopee, parse_lazada, export_shopee, export_lazada,
@@ -362,6 +363,9 @@ _ENDPOINT_MODULE = {
     'upload_db': 'admin_module',
     'upload_db_confirm': 'admin_module',
     'download_db': 'admin_module',
+    'backups_list': 'admin_module',
+    'backup_download': 'admin_module',
+    'backup_restore': 'admin_module',
     'admin_simulate_role': 'admin_module',
     'admin_exit_simulate': 'admin_module',
     'audit_log': 'admin_module',
@@ -878,6 +882,67 @@ def upload_db_confirm():
     flash(f'อัปโหลด DB สำเร็จ. Backup เก็บไว้ที่ {os.path.basename(backup_path)}', 'success')
     return redirect(url_for('dashboard'))
 
+
+# ── Auto-backup / restore (snapshots taken before every import) ───────────────
+def _backups_dir():
+    return db_backup.default_backup_dir(config.DATABASE_PATH)
+
+
+_BACKUP_REASON_LABELS = {
+    'unified': 'นำเข้า (รวมทุกไฟล์)', 'weekly': 'นำเข้ารายสัปดาห์',
+    'marketplace': 'คำสั่งซื้อ Marketplace', 'pre-restore': 'ก่อนกู้คืน',
+}
+
+
+@app.route('/admin/backups')
+def backups_list():
+    if session.get('role') != 'admin':
+        abort(403)
+    rows = db_backup.list_backups(backup_dir=_backups_dir())
+    for r in rows:
+        r['reason_label'] = _BACKUP_REASON_LABELS.get(r['reason'], r['reason'])
+        r['size_mb'] = round(r['size'] / (1024 * 1024), 1)
+    disk = db_backup.disk_usage_mb(os.path.dirname(config.DATABASE_PATH))
+    return render_template('admin_backups.html', backups=rows, disk=disk,
+                           db_routes_enabled=session.get('db_routes_enabled'))
+
+
+@app.route('/admin/backups/download/<name>')
+def backup_download(name):
+    if session.get('role') != 'admin':
+        abort(403)
+    if not session.get('db_routes_enabled'):
+        abort(403)
+    # only serve a real auto-* snapshot from the backup dir (list_backups
+    # validates the name pattern + presence; reject anything else)
+    if name not in {b['name'] for b in db_backup.list_backups(backup_dir=_backups_dir())}:
+        abort(404)
+    return send_file(os.path.join(_backups_dir(), name),
+                     as_attachment=True, download_name=name)
+
+
+@app.route('/admin/backups/restore', methods=['POST'])
+def backup_restore():
+    if session.get('role') != 'admin':
+        abort(403)
+    if not session.get('db_routes_enabled'):
+        flash('เปิด "DB routes" ก่อน (ปุ่มในเมนูผู้ดูแล) เพื่อกู้คืนข้อมูล', 'danger')
+        return redirect(url_for('backups_list'))
+    name = request.form.get('name', '')
+    if request.form.get('confirm') != 'yes':
+        flash('ต้องยืนยันก่อนกู้คืน', 'warning')
+        return redirect(url_for('backups_list'))
+    try:
+        db_backup.restore_backup(name, db_path=config.DATABASE_PATH,
+                                 backup_dir=_backups_dir())
+    except Exception as e:
+        flash(f'กู้คืนไม่สำเร็จ: {e}', 'danger')
+        return redirect(url_for('backups_list'))
+    flash(f'กู้คืนฐานข้อมูลจาก {name} สำเร็จ — ระบบสำรองสถานะก่อนกู้คืนไว้แล้ว. '
+          f'แนะนำให้ปิด-เปิดแอป (restart) แล้วตรวจข้อมูลอีกครั้ง', 'success')
+    return redirect(url_for('dashboard'))
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 @app.route('/')
@@ -1191,6 +1256,7 @@ def import_weekly_confirm():
         flash('ยกเลิกการนำเข้าแล้ว', 'info')
         return redirect(url_for('import_weekly'))
 
+    _snapshot_before_import('weekly')   # rollback point before the ledger writes
     kind = pend.get('kind')
 
     # AR/AP snapshot → idempotent snapshot-replace via the Express importer.
@@ -2870,6 +2936,18 @@ import import_router  # noqa: E402  (unified /import box: detect + preview + com
 # ── Unified import box (/import) — one drop zone for all weekly Express files ──
 _IMPORT_STAGE_DIR = 'import-stage'   # under UPLOAD_FOLDER
 
+
+def _snapshot_before_import(reason):
+    """Best-effort full-DB snapshot right before an import commits, so an admin
+    can roll the whole DB back (see /admin/backups). Never blocks the import —
+    a backup-infra failure (e.g. disk full) is flashed as a warning, not fatal."""
+    info, err = db_backup.safe_create_backup(
+        reason, db_path=config.DATABASE_PATH,
+        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
+    if err:
+        flash(f'⚠️ สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ ({err}) — นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
+    return info
+
 _REPORT_LABELS = {
     'sales': 'ขาย',
     'purchase': 'ซื้อ',
@@ -2942,6 +3020,7 @@ def unified_import_confirm():
     if not token or request.form.get('token') != token:
         flash('เซสชันหมดอายุ กรุณาอัปโหลดใหม่', 'warning')
         return redirect(url_for('unified_import'))
+    _snapshot_before_import('unified')   # rollback point before the ledger writes
     base = os.path.join(app.config['UPLOAD_FOLDER'], _IMPORT_STAGE_DIR, token)
     results = []
     for row in rows:
