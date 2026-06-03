@@ -76,6 +76,24 @@ def test_create_backup_missing_db_returns_none(tmp_path):
     assert info is None   # nothing to back up; import must still proceed
 
 
+def test_create_backup_refuses_when_disk_low(tmp_path, monkeypatch):
+    """A backup must never fill the disk: below MIN_FREE_BYTES it raises (the
+    caller turns that into a warning and lets the import proceed)."""
+    db = tmp_path / "inventory.db"
+    bdir = tmp_path / "backups"
+    _make_db(str(db), ["a"])
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        db_backup.shutil, "disk_usage",
+        lambda p: SimpleNamespace(total=100, used=95, free=5 * 1024 * 1024))  # 5MB free
+    with pytest.raises(RuntimeError):
+        db_backup.create_backup("unified", db_path=str(db), backup_dir=str(bdir))
+    # safe wrapper swallows it into (None, error)
+    info, err = db_backup.safe_create_backup("unified", db_path=str(db),
+                                             backup_dir=str(bdir))
+    assert info is None and err
+
+
 # ── list_backups ─────────────────────────────────────────────────────────────
 
 def test_list_backups_newest_first_with_metadata(tmp_path):

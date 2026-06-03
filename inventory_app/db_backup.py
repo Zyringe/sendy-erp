@@ -29,13 +29,25 @@ SUFFIX = ".db.gz"
 _NAME_RE = re.compile(r"^auto-(?P<reason>[a-z0-9-]+)-(?P<ts>\d{8}_\d{6})\.db\.gz$")
 
 DEFAULT_KEEP_DAYS = 7
-DEFAULT_MAX_KEEP = 10
+# 500MB Railway volume + ~17MB/gzipped-snapshot → keep ~5 (~85MB) and still
+# leave room for the live DB (140MB) + the restore temp. Raise if the volume grows.
+DEFAULT_MAX_KEEP = 5
+# Never write a snapshot when the volume is this close to full — a backup must
+# not be the thing that fills the disk and breaks the app.
+MIN_FREE_BYTES = 60 * 1024 * 1024
 
 
 def default_backup_dir(db_path):
     """Backups live next to the live DB → on Railway that's the persistent
     volume (DATA_DIR), so they survive redeploys."""
     return os.path.join(os.path.dirname(db_path), "backups")
+
+
+def disk_usage_mb(path):
+    """(total, used, free) in MB for the filesystem holding ``path``."""
+    u = shutil.disk_usage(path)
+    mb = 1024 * 1024
+    return {"total": u.total // mb, "used": u.used // mb, "free": u.free // mb}
 
 
 def create_backup(reason, *, db_path, backup_dir,
@@ -47,11 +59,22 @@ def create_backup(reason, *, db_path, backup_dir,
     if not os.path.exists(db_path):
         return None
     os.makedirs(backup_dir, exist_ok=True)
+    # Reclaim space from old snapshots first, then refuse if the volume is still
+    # too full (caught by the caller → warned, import proceeds without a point).
+    prune_backups(backup_dir=backup_dir, keep_days=keep_days,
+                  max_keep=max_keep, now=now)
+    free = shutil.disk_usage(backup_dir).free
+    if free < MIN_FREE_BYTES:
+        raise RuntimeError(
+            f"พื้นที่ดิสก์เหลือน้อย ({free // (1024 * 1024)}MB) — ข้ามการสำรอง")
+
     ts = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
     name = f"{PREFIX}{reason}-{ts}{SUFFIX}"
     final = os.path.join(backup_dir, name)
 
-    fd, tmp_db = tempfile.mkstemp(suffix=".db", dir=backup_dir)
+    # The uncompressed .backup temp (~size of the live DB) goes to the system
+    # temp dir — NOT the small data volume — so only the gzip lands on the volume.
+    fd, tmp_db = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:
         src = sqlite3.connect(db_path)
@@ -75,7 +98,7 @@ def create_backup(reason, *, db_path, backup_dir,
     info = {"path": final, "name": name, "reason": reason,
             "size": os.path.getsize(final)}
     prune_backups(backup_dir=backup_dir, keep_days=keep_days,
-                  max_keep=max_keep, now=now)
+                  max_keep=max_keep, now=now)   # enforce cap incl. the new one
     return info
 
 
@@ -145,10 +168,16 @@ def restore_backup(name, *, db_path, backup_dir):
     if not os.path.exists(src_gz):
         raise ValueError(f"backup not found: {name}")
 
+    dst_dir = os.path.dirname(os.path.abspath(db_path)) or "."
+    # restore decompresses to a full-size temp next to the live DB (needed for an
+    # atomic swap) — make sure the volume can hold it before we start.
     if os.path.exists(db_path):
+        needed = os.path.getsize(db_path) + 40 * 1024 * 1024
+        if shutil.disk_usage(dst_dir).free < needed:
+            raise RuntimeError(
+                "พื้นที่ดิสก์ไม่พอสำหรับการกู้คืน — ต้องการพื้นที่ชั่วคราวเท่าขนาดฐานข้อมูล")
         create_backup("pre-restore", db_path=db_path, backup_dir=backup_dir)
 
-    dst_dir = os.path.dirname(os.path.abspath(db_path)) or "."
     fd, tmp_db = tempfile.mkstemp(suffix=".db", dir=dst_dir)
     os.close(fd)
     try:

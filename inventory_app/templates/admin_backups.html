@@ -10,6 +10,25 @@
     และลบของเก่าอัตโนมัติ. ถ้านำเข้าไฟล์ผิด สามารถกู้คืนกลับไปจุดก่อนหน้าได้.
   </p>
 
+  {% if disk %}
+    {% set pct = (disk.used * 100 // disk.total) if disk.total else 0 %}
+    <div class="card mb-3">
+      <div class="card-body py-2">
+        <div class="d-flex justify-content-between small mb-1">
+          <span><i class="bi bi-hdd me-1"></i>พื้นที่ดิสก์ (volume)</span>
+          <span class="text-muted">ใช้ {{ disk.used }}MB / {{ disk.total }}MB · ว่าง {{ disk.free }}MB</span>
+        </div>
+        <div class="progress" style="height:8px">
+          <div class="progress-bar {% if pct >= 85 %}bg-danger{% elif pct >= 70 %}bg-warning{% else %}bg-success{% endif %}"
+               style="width:{{ pct }}%"></div>
+        </div>
+        {% if disk.free < 80 %}
+          <div class="small text-danger mt-1"><i class="bi bi-exclamation-triangle me-1"></i>พื้นที่เหลือน้อย — ระบบจะข้ามการสำรองอัตโนมัติถ้าต่ำกว่า 60MB</div>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
   <div class="alert alert-warning">
     <i class="bi bi-exclamation-triangle-fill me-1"></i>
     การกู้คืน <strong>ย้อนทั้งฐานข้อมูล</strong> กลับไปจุดนั้น (ไม่ใช่แค่ไฟล์ที่นำเข้าผิด) —
