@@ -10,8 +10,11 @@ Reads the 5 product-info xlsx files from the canonical source folders:
   Shopee: E-Commerce/Shopee/sendaibyboonsawat/01_product-info/
   Lazada: E-Commerce/Lazada/01_product-info/
 
-Runs the safe UPSERT import (no DELETE, mappings preserved) in a single
-transaction.  See marketplace-product-import-spec.md §3 for the contract.
+Runs the safe UPSERT import (no DELETE, mappings preserved). The product-grain
+and variation-grain upserts each run in their own transaction (two commits, not
+one); the import is idempotent and re-runnable, so a mid-run failure is fixed by
+re-running and no partial state can drop a mapping. See
+marketplace-product-import-spec.md §3 for the contract.
 
 UI wiring (/ecommerce/import multi-file) is a separate future task.
 """

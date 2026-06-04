@@ -328,10 +328,6 @@ def parse_shopee_product_files(folder):
             p['dts_info'] = dts
         p['_raw_parts'].append(r)
 
-    # Shopee media: per-option images are stored in 'รูปภาพตัวเลือก N' columns
-    # Build a map from option-label (e.g. "สีน้ำเงิน") to image URL for later use
-    option_images = {}  # product_id -> {option_label -> url}
-
     for _, row in df_media.iterrows():
         r = _raw(row)
         pid = r.get('รหัสสินค้า')
@@ -365,17 +361,6 @@ def parse_shopee_product_files(folder):
         if not p['category_name']:
             p['category_name'] = r.get('หมวดหมู่')
         p['_raw_parts'].append(r)
-
-        # Per-option images: 'รูปภาพตัวเลือก 1' … up to 18
-        pid_opts = {}
-        for i in range(1, 19):
-            col = f'รูปภาพตัวเลือก {i}'
-            v = r.get(col)
-            if v and str(v).startswith('http'):
-                # Key them by column index; we'll map to variation names in variation loop
-                pid_opts[i] = v
-        if pid_opts:
-            option_images[pid] = pid_opts
 
     # Finalize product records
     product_records = []
@@ -424,9 +409,8 @@ def parse_shopee_product_files(folder):
         pid = r.get('รหัสสินค้า')
         ship = shipping_by_vid.get(vid, {})
 
-        # Best-effort variation_image_url from media per-option images
-        # The option images are indexed by column position; we attempt to map by
-        # the variation's index among siblings (approximate — acceptable per spec)
+        # Shopee per-variation images are not provided in a usable form in the
+        # mass-export, so variation_image_url is left NULL for Shopee.
         variation_image_url = None
 
         raw_merge = dict(r)
