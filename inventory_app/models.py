@@ -3092,40 +3092,120 @@ def get_ap_outstanding(conn=None):
 # ── E-commerce Platform SKUs ──────────────────────────────────────────────────
 
 def import_platform_skus(platform, records):
-    """Replace all SKUs for a platform with new records. Returns count inserted."""
+    """Upsert platform SKU records keyed on (platform, variation_id).
+
+    SAFE UPSERT CONTRACT (spec §3.1):
+    - Never DELETEs any row.
+    - Never touches internal_product_id or qty_per_sale in the UPDATE SET.
+    - Enrichment columns (weight/dims/gtin/special_price dates/variation_image_url)
+      use COALESCE(excluded.col, col) so a partial import never nulls existing data.
+    - price/stock/name/variation_name/raw_json overwrite normally.
+
+    Returns (count_upserted, propagated_count).
+    """
     conn = get_connection()
-    conn.execute("DELETE FROM platform_skus WHERE platform = ?", (platform,))
+    # NO DELETE — that is the whole point of this rewrite.
     count = 0
     for r in records:
         conn.execute("""
             INSERT INTO platform_skus
-              (platform, product_id_str, product_name, variation_id, variation_name,
-               parent_sku, seller_sku, price, special_price, stock, qty_per_sale, raw_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,1,?)
+              (platform, variation_id, product_id_str, product_name, variation_name,
+               parent_sku, seller_sku, price, special_price, stock, raw_json,
+               weight_kg, length_cm, width_cm, height_cm, gtin,
+               special_price_start, special_price_end, variation_image_url)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(platform, variation_id) DO UPDATE SET
-              product_name  = excluded.product_name,
-              product_id_str= excluded.product_id_str,
-              variation_name= excluded.variation_name,
-              parent_sku    = excluded.parent_sku,
-              seller_sku    = excluded.seller_sku,
-              price         = excluded.price,
-              special_price = excluded.special_price,
-              stock         = excluded.stock,
-              raw_json      = excluded.raw_json,
-              imported_at   = datetime('now','localtime')
+              product_id_str      = excluded.product_id_str,
+              product_name        = excluded.product_name,
+              variation_name      = excluded.variation_name,
+              parent_sku          = excluded.parent_sku,
+              seller_sku          = excluded.seller_sku,
+              price               = excluded.price,
+              special_price       = excluded.special_price,
+              stock               = excluded.stock,
+              raw_json            = excluded.raw_json,
+              weight_kg           = COALESCE(excluded.weight_kg, weight_kg),
+              length_cm           = COALESCE(excluded.length_cm, length_cm),
+              width_cm            = COALESCE(excluded.width_cm, width_cm),
+              height_cm           = COALESCE(excluded.height_cm, height_cm),
+              gtin                = COALESCE(excluded.gtin, gtin),
+              special_price_start = COALESCE(excluded.special_price_start, special_price_start),
+              special_price_end   = COALESCE(excluded.special_price_end, special_price_end),
+              variation_image_url = COALESCE(excluded.variation_image_url, variation_image_url),
+              imported_at         = datetime('now','localtime')
+              -- internal_product_id and qty_per_sale are DELIBERATELY ABSENT from UPDATE SET
         """, (
             platform,
-            r.get('product_id_str'), r.get('product_name', ''),
-            r.get('variation_id'),   r.get('variation_name'),
+            r.get('variation_id'),   r.get('product_id_str'),
+            r.get('product_name', ''), r.get('variation_name'),
             r.get('parent_sku'),     r.get('seller_sku'),
             r.get('price'),          r.get('special_price'),
             r.get('stock'),          r.get('raw_json'),
+            r.get('weight_kg'),      r.get('length_cm'),
+            r.get('width_cm'),       r.get('height_cm'),
+            r.get('gtin'),
+            r.get('special_price_start'), r.get('special_price_end'),
+            r.get('variation_image_url'),
         ))
         count += 1
     propagated = _propagate_listings_to_platform_skus(conn, platform)
     conn.commit()
     conn.close()
     return count, propagated
+
+
+def import_platform_products(platform, records):
+    """Upsert product-grain records into platform_products.
+
+    Keyed on (platform, product_id_str). All columns overwrite on conflict
+    (no internal mapping to preserve at the product grain — spec §3.2).
+
+    Returns count of records processed.
+    """
+    conn = get_connection()
+    count = 0
+    for r in records:
+        conn.execute("""
+            INSERT INTO platform_products
+              (platform, product_id_str, parent_sku, product_name, name_en,
+               description, category_id_str, category_name, brand,
+               place_of_origin, material, warranty_policy, warranty_period,
+               status, cover_image_url, image_urls, dts_info, raw_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(platform, product_id_str) DO UPDATE SET
+              parent_sku      = excluded.parent_sku,
+              product_name    = excluded.product_name,
+              name_en         = excluded.name_en,
+              description     = COALESCE(excluded.description, description),
+              category_id_str = COALESCE(excluded.category_id_str, category_id_str),
+              category_name   = COALESCE(excluded.category_name, category_name),
+              brand           = COALESCE(excluded.brand, brand),
+              place_of_origin = COALESCE(excluded.place_of_origin, place_of_origin),
+              material        = COALESCE(excluded.material, material),
+              warranty_policy = COALESCE(excluded.warranty_policy, warranty_policy),
+              warranty_period = COALESCE(excluded.warranty_period, warranty_period),
+              status          = excluded.status,
+              cover_image_url = COALESCE(excluded.cover_image_url, cover_image_url),
+              image_urls      = excluded.image_urls,
+              dts_info        = COALESCE(excluded.dts_info, dts_info),
+              raw_json        = excluded.raw_json,
+              imported_at     = datetime('now','localtime')
+        """, (
+            platform,
+            r.get('product_id_str'),  r.get('parent_sku'),
+            r.get('product_name', ''), r.get('name_en'),
+            r.get('description'),     r.get('category_id_str'),
+            r.get('category_name'),   r.get('brand'),
+            r.get('place_of_origin'), r.get('material'),
+            r.get('warranty_policy'), r.get('warranty_period'),
+            r.get('status'),
+            r.get('cover_image_url'), r.get('image_urls', '[]'),
+            r.get('dts_info'),        r.get('raw_json'),
+        ))
+        count += 1
+    conn.commit()
+    conn.close()
+    return count
 
 
 def _propagate_listings_to_platform_skus(conn, platform):
@@ -3158,6 +3238,7 @@ def _propagate_listings_to_platform_skus(conn, platform):
         UPDATE platform_skus
            SET internal_product_id = ?, qty_per_sale = ?
          WHERE platform = ?
+           AND internal_product_id IS NULL
            AND product_name = ?
            AND CASE WHEN LOWER(COALESCE(variation_name,'')) IN ('','nan')
                     THEN '' ELSE variation_name END = ?

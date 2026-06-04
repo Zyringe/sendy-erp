@@ -129,51 +129,496 @@ def export_shopee(rows):
 
 # ── Lazada ────────────────────────────────────────────────────────────────────
 
-LAZADA_SKIP_ROWS  = 3   # rows 0-2 are instructions; row 3 = first data
+# Column header aliases: (English current, Thai legacy).  _pick() tries each in order.
+_LAZADA_FIELD_ALIASES = {
+    'product_name':        ('Product Name',        'ชื่อสินค้า'),
+    'variation_id':        ('Shop SKU',             'ร้าน sku'),
+    'variation_name':      ('Variations Combo',     'Variations Combo'),
+    'price':               ('Price',                'ราคา'),
+    'special_price':       ('SpecialPrice',         'SpecialPrice'),
+    'special_price_start': ('SpecialPrice Start',   'SpecialPrice Start'),
+    'special_price_end':   ('SpecialPrice End',     'SpecialPrice End'),
+    'seller_sku':          ('SellerSKU',            'SellerSKU'),
+    'sku_id':              ('sku.skuId',            'sku.skuId'),
+    'category_id':         ('catId',               'catId'),
+}
+
+
+def _pick(raw, *aliases):
+    """Return first non-blank value from raw dict matching any alias key."""
+    for a in aliases:
+        v = raw.get(a)
+        if v is not None and str(v) not in ('', 'nan', 'None'):
+            return v
+    return None
 
 
 def parse_lazada(file_obj):
     """
     Parse Lazada Price/Stock Export xlsx.
+    Handles both English headers (current export) and Thai headers (legacy).
     Returns list of dicts.
     """
-    df = pd.read_excel(file_obj, dtype=str)
-    df = df.iloc[LAZADA_SKIP_ROWS:].reset_index(drop=True)
-    # Keep rows with numeric Product ID
+    # explicit sheet_name='template'; header on row 0
+    df = pd.read_excel(file_obj, sheet_name='template', header=0, dtype=str)
+    # Keep only rows where Product ID is all-digits (drops the 3 instruction rows)
     df = df[df['Product ID'].str.match(r'^\d+$', na=False)].copy()
 
-    # The stock column header is the store name ("บุญสวัสดิ์นำชัย")
     stock_col = _find_stock_col(df)
 
     records = []
     for _, row in df.iterrows():
-        raw = {k: (None if pd.isna(v) else v) for k, v in row.items()}
+        raw = {k: (None if pd.isna(v) else str(v)) for k, v in row.items()}
         records.append({
-            'product_id_str': raw.get('Product ID'),
-            'product_name':   raw.get('ชื่อสินค้า') or '',
-            'variation_id':   raw.get('ร้าน sku'),
-            'variation_name': raw.get('Variations Combo'),
-            'parent_sku':     None,
-            'seller_sku':     raw.get('SellerSKU'),
-            'price':          _to_float(raw.get('ราคา')),
-            'special_price':  _to_float(raw.get('SpecialPrice')),
-            'stock':          _to_int(raw.get(stock_col)),
-            'raw_json':       json.dumps(raw, ensure_ascii=False),
+            'product_id_str':    raw.get('Product ID'),
+            'product_name':      _pick(raw, 'Product Name', 'ชื่อสินค้า') or '',
+            'variation_id':      _pick(raw, 'Shop SKU', 'ร้าน sku'),
+            'variation_name':    _pick(raw, 'Variations Combo'),
+            'parent_sku':        None,
+            'seller_sku':        _pick(raw, 'SellerSKU'),
+            'price':             _to_float(_pick(raw, 'Price', 'ราคา')),
+            'special_price':     _to_float(_pick(raw, 'SpecialPrice')),
+            'special_price_start': _pick(raw, 'SpecialPrice Start'),
+            'special_price_end':   _pick(raw, 'SpecialPrice End'),
+            'stock':             _to_int(raw.get(stock_col)),
+            'raw_json':          json.dumps(raw, ensure_ascii=False),
         })
     return records
 
 
 def _find_stock_col(df):
-    """Find the stock column — it's the store-name column between SellerSKU and Variations Combo."""
-    # Columns that are NOT these known ones, but come after 'ราคา' → is the stock col
-    known = {'Product ID', 'catId', 'ชื่อสินค้า', 'currencyCode', 'sku.skuId',
-             'status', 'ร้าน sku', 'SpecialPrice', 'SpecialPrice Start',
-             'SpecialPrice End', 'ราคา', 'SellerSKU', 'Variations Combo',
-             'tr(s-wb-product@md5key)'}
+    """Find the store-stock column (the store-name column, e.g. 'บุญสวัสดิ์นำชัย').
+
+    Extended known-set includes English export headers so Price/Product Name/etc.
+    are never mistaken for the stock column.
+    """
+    known = {
+        # Thai (legacy)
+        'Product ID', 'catId', 'ชื่อสินค้า', 'currencyCode', 'sku.skuId',
+        'status', 'ร้าน sku', 'SpecialPrice', 'SpecialPrice Start',
+        'SpecialPrice End', 'ราคา', 'SellerSKU', 'Variations Combo',
+        'tr(s-wb-product@md5key)',
+        # English (current)
+        'Product Name', 'Shop SKU', 'Price',
+        'SpecialPrice Start', 'SpecialPrice End',
+        # freight / skuimg extras
+        'sku.auditStatus', 'sku.skuStatus',
+        'Package Weight (kg)', 'Package Length (cm)', 'Package Width (cm)',
+        'Package Height (cm)', 'Dangerous Goods', 'Standard',
+        'Pre-Order(by Days) Enable', 'Pre-Order(by Days) ShipDays',
+        'Images1', 'Images2', 'Images3', 'Images4', 'Images5',
+        'Images6', 'Images7', 'Images8',
+        'Product Images1', 'White Background Image', 'originalLocalName',
+        'Product Name in EN', 'Status', 'Warranty Policy', 'Warranty Period',
+        'Warranty Type', 'Main Description', 'Product Highlights',
+        'TH_TISI License - License Document1', 'TH_TISI License - License Document2',
+        'TH_TISI License - License Document3', 'TH_TISI License - License Code',
+        'TH_MANUFACTURER_NAME License - License Code',
+        'TH_IMPORTER_NAME License - License Code', 'Size Chart',
+        'Brand', 'Place of Origin', 'Material', 'Model',
+    }
     for col in df.columns:
         if col not in known:
             return col
     return 'บุญสวัสดิ์นำชัย'  # fallback
+
+
+# ── Shopee multi-file product parser ─────────────────────────────────────────
+
+def _shopee_find_header_row(file_obj, seek_col='รหัสสินค้า'):
+    """Return (header_row_index, df) for a Shopee xlsx by finding the first
+    row whose first cell equals seek_col.  Handles the shipping_info extra blank row."""
+    raw = pd.read_excel(file_obj, header=None, dtype=str)
+    for idx, row in raw.iterrows():
+        if str(row.iloc[0]).strip() == seek_col:
+            return idx, raw
+    # Fallback: try first cell of every row
+    for idx, row in raw.iterrows():
+        for cell in row:
+            if str(cell).strip() == seek_col:
+                return idx, raw
+    return 2, raw  # last-resort: original constant
+
+
+def _read_shopee_file(path_or_bytes, seek_col='รหัสสินค้า', skip_after=3):
+    """Read a Shopee xlsx, locate Thai header row, drop instruction rows, return DataFrame."""
+    hdr_idx, raw = _shopee_find_header_row(path_or_bytes, seek_col)
+    # Re-read with the correct header row
+    if hasattr(path_or_bytes, 'seek'):
+        path_or_bytes.seek(0)
+    df = pd.read_excel(path_or_bytes, header=hdr_idx, dtype=str)
+    # Drop the 3 instruction rows that follow the header
+    df = df.iloc[skip_after:].reset_index(drop=True)
+    # Keep rows with numeric product ID
+    df = df[df['รหัสสินค้า'].str.match(r'^\d+$', na=False)].copy()
+    return df
+
+
+def parse_shopee_product_files(folder):
+    """
+    Parse all 5 Shopee product-info xlsx files from folder.
+
+    Returns (product_records, variation_records) where:
+      product_records: list of dicts for platform_products (product grain)
+      variation_records: list of dicts for platform_skus (variation grain),
+                         enriched with weight/dims from shipping_info and
+                         variation_image_url from media_info (best-effort).
+    """
+    import glob
+    import os
+
+    def _find(pattern):
+        matches = glob.glob(os.path.join(folder, pattern))
+        if not matches:
+            raise FileNotFoundError(f"No file matching {pattern} in {folder}")
+        return matches[0]
+
+    basic_path    = _find('mass_update_basic_info*.xlsx')
+    dts_path      = _find('mass_update_dts_info*.xlsx')
+    media_path    = _find('mass_update_media_info*.xlsx')
+    sales_path    = _find('mass_update_sales_info*.xlsx')
+    shipping_path = _find('mass_update_shipping_info*.xlsx')
+
+    # ── Product-grain files ──────────────────────────────────────────────────
+    df_basic   = _read_shopee_file(basic_path)
+    df_dts     = _read_shopee_file(dts_path)
+    df_media   = _read_shopee_file(media_path)
+
+    # Build product dict keyed by product_id_str
+    products = {}
+
+    def _raw(row):
+        return {k: (None if pd.isna(v) else str(v)) for k, v in row.items()}
+
+    for _, row in df_basic.iterrows():
+        r = _raw(row)
+        pid = r.get('รหัสสินค้า')
+        if not pid:
+            continue
+        products[pid] = {
+            'product_id_str': pid,
+            'parent_sku':     r.get('Parent SKU'),
+            'product_name':   r.get('ชื่อสินค้า') or '',
+            'name_en':        None,
+            'description':    r.get('รายละเอียดสินค้า'),
+            'category_id_str': None,
+            'category_name':  None,
+            'brand':          None,
+            'place_of_origin': None,
+            'material':       None,
+            'warranty_policy': None,
+            'warranty_period': None,
+            'status':         None,
+            'cover_image_url': None,
+            'image_urls':     '[]',
+            'dts_info':       None,
+            '_raw_parts':     [r],
+        }
+
+    for _, row in df_dts.iterrows():
+        r = _raw(row)
+        pid = r.get('รหัสสินค้า')
+        if not pid or pid not in products:
+            continue
+        p = products[pid]
+        if not p['category_name']:
+            p['category_name'] = r.get('หมวดหมู่')
+        dts = r.get('ระยะเวลาเตรียมพัสดุ') or r.get('ระยะเวลาเตรียมพัสดุสำหรับสินค้าทั่วไป')
+        if not p['dts_info'] and dts:
+            p['dts_info'] = dts
+        p['_raw_parts'].append(r)
+
+    for _, row in df_media.iterrows():
+        r = _raw(row)
+        pid = r.get('รหัสสินค้า')
+        if not pid:
+            continue
+        if pid not in products:
+            products[pid] = {
+                'product_id_str': pid,
+                'parent_sku': r.get('Parent SKU'),
+                'product_name': r.get('ชื่อสินค้า') or '',
+                'name_en': None, 'description': None, 'category_id_str': None,
+                'category_name': r.get('หมวดหมู่'),
+                'brand': None, 'place_of_origin': None, 'material': None,
+                'warranty_policy': None, 'warranty_period': None, 'status': None,
+                'cover_image_url': None, 'image_urls': '[]', 'dts_info': None,
+                '_raw_parts': [],
+            }
+        p = products[pid]
+        # Cover image
+        if not p['cover_image_url']:
+            p['cover_image_url'] = r.get('ภาพปก') or None
+        # Gallery images (รูปภาพ 1 … รูปภาพ 8)
+        gallery = []
+        for i in range(1, 9):
+            v = r.get(f'รูปภาพ {i}')
+            if v and str(v).startswith('http'):
+                gallery.append(v)
+        if gallery:
+            p['image_urls'] = json.dumps(gallery, ensure_ascii=False)
+        # Category
+        if not p['category_name']:
+            p['category_name'] = r.get('หมวดหมู่')
+        p['_raw_parts'].append(r)
+
+    # Finalize product records
+    product_records = []
+    for pid, p in products.items():
+        raw_merge = {}
+        for part in p.get('_raw_parts', []):
+            raw_merge.update(part)
+        product_records.append({
+            'product_id_str':  p['product_id_str'],
+            'parent_sku':      p['parent_sku'],
+            'product_name':    p['product_name'],
+            'name_en':         p['name_en'],
+            'description':     p['description'],
+            'category_id_str': p['category_id_str'],
+            'category_name':   p['category_name'],
+            'brand':           p['brand'],
+            'place_of_origin': p['place_of_origin'],
+            'material':        p['material'],
+            'warranty_policy': p['warranty_policy'],
+            'warranty_period': p['warranty_period'],
+            'status':          p['status'],
+            'cover_image_url': p['cover_image_url'],
+            'image_urls':      p['image_urls'],
+            'dts_info':        p['dts_info'],
+            'raw_json':        json.dumps(raw_merge, ensure_ascii=False),
+        })
+
+    # ── Variation-grain files ────────────────────────────────────────────────
+    df_sales    = _read_shopee_file(sales_path)
+    df_shipping = _read_shopee_file(shipping_path)
+
+    # Shipping keyed by variation_id
+    shipping_by_vid = {}
+    for _, row in df_shipping.iterrows():
+        r = _raw(row)
+        vid = r.get('รหัสตัวเลือกสินค้า')
+        if vid:
+            shipping_by_vid[vid] = r
+
+    variation_records = []
+    for _, row in df_sales.iterrows():
+        r = _raw(row)
+        vid = r.get('รหัสตัวเลือกสินค้า')
+        if not vid:
+            continue
+        pid = r.get('รหัสสินค้า')
+        ship = shipping_by_vid.get(vid, {})
+
+        # Shopee per-variation images are not provided in a usable form in the
+        # mass-export, so variation_image_url is left NULL for Shopee.
+        variation_image_url = None
+
+        raw_merge = dict(r)
+        raw_merge.update(ship)
+        variation_records.append({
+            'product_id_str':      pid,
+            'product_name':        r.get('ชื่อสินค้า') or '',
+            'variation_id':        vid,
+            'variation_name':      r.get('ชื่อตัวเลือกสินค้า'),
+            'parent_sku':          r.get('Parent SKU'),
+            'seller_sku':          r.get('เลข SKU'),
+            'price':               _to_float(r.get('ราคา')),
+            'special_price':       None,
+            'special_price_start': None,
+            'special_price_end':   None,
+            'stock':               _to_int(r.get('คลัง')),
+            'gtin':                r.get('GTIN') if r.get('GTIN') and str(r.get('GTIN', '')) not in ('', 'None') else None,
+            'weight_kg':           _to_float(ship.get('น้ำหนัก')),
+            'length_cm':           _to_float(ship.get('ยาว')),
+            'width_cm':            _to_float(ship.get('กว้าง')),
+            'height_cm':           _to_float(ship.get('สูง')),
+            'variation_image_url': variation_image_url,
+            'raw_json':            json.dumps(raw_merge, ensure_ascii=False),
+        })
+
+    return product_records, variation_records
+
+
+# ── Lazada multi-file product parser ─────────────────────────────────────────
+
+def _read_lazada_file(path, sheet='template'):
+    """Read a Lazada xlsx file from path, returning DataFrame of data rows only.
+
+    Header is on row 0 (English); rows 1-3 are instruction rows with non-digit
+    Product IDs that the all-digits filter removes.
+    """
+    df = pd.read_excel(path, sheet_name=sheet, header=0, dtype=str)
+    df = df[df['Product ID'].str.match(r'^\d+$', na=False)].copy()
+    return df
+
+
+def parse_lazada_product_files(folder):
+    """
+    Parse all 5 Lazada product-info xlsx files from folder.
+
+    Returns (product_records, variation_records).
+    """
+    import glob
+    import os
+
+    def _find(pattern):
+        matches = glob.glob(os.path.join(folder, pattern))
+        if not matches:
+            raise FileNotFoundError(f"No file matching {pattern} in {folder}")
+        return matches[0]
+
+    basic_path     = _find('basic*.xlsx')
+    pricestock_path = _find('pricestock*.xlsx')
+    skuimg_path    = _find('skuimg*.xlsx')
+    freight_path   = _find('freight*.xlsx')
+    attribute_path = _find('attribute*.xlsx')
+
+    def _raw(row):
+        return {k: (None if pd.isna(v) else str(v)) for k, v in row.items()}
+
+    # ── Attribute file: iterate per-category sheets ──────────────────────────
+    import openpyxl
+    wb_attr = openpyxl.load_workbook(attribute_path, read_only=True)
+    attr_sheets = [
+        s for s in wb_attr.sheetnames
+        if not s.endswith('_hide') and s not in ('INDEX', 'ProcessResult', 'global_hide')
+    ]
+    wb_attr.close()
+
+    # product_id → {brand, place_of_origin, material, category_name}
+    attr_by_pid = {}
+    for sheet_name in attr_sheets:
+        try:
+            df_a = pd.read_excel(attribute_path, sheet_name=sheet_name, header=0, dtype=str)
+            data_a = df_a[df_a['Product ID'].str.match(r'^\d+$', na=False)].copy()
+        except Exception:
+            continue
+        for _, row in data_a.iterrows():
+            r = _raw(row)
+            pid = r.get('Product ID')
+            if not pid:
+                continue
+            if pid not in attr_by_pid:
+                attr_by_pid[pid] = {
+                    'brand': None, 'place_of_origin': None,
+                    'material': None, 'category_name': sheet_name,
+                }
+            a = attr_by_pid[pid]
+            if not a['brand']:
+                a['brand'] = r.get('Brand')
+            if not a['place_of_origin']:
+                a['place_of_origin'] = r.get('Place of Origin')
+            if not a['material']:
+                a['material'] = r.get('Material')
+
+    # ── Basic file → product grain ───────────────────────────────────────────
+    df_basic = _read_lazada_file(basic_path)
+
+    products = {}
+    for _, row in df_basic.iterrows():
+        r = _raw(row)
+        pid = r.get('Product ID')
+        if not pid:
+            continue
+
+        # Collapse gallery images (Product Images1..8)
+        gallery = []
+        for i in range(1, 9):
+            v = r.get(f'Product Images{i}')
+            if v and str(v).startswith('http'):
+                gallery.append(v)
+
+        attr = attr_by_pid.get(pid, {})
+        description = r.get('Main Description') or r.get('Product Highlights')
+
+        products[pid] = {
+            'product_id_str':  pid,
+            'parent_sku':      None,
+            'product_name':    _pick(r, 'Product Name', 'ชื่อสินค้า') or '',
+            'name_en':         r.get('Product Name in EN'),
+            'description':     description,
+            'category_id_str': r.get('catId'),
+            'category_name':   attr.get('category_name'),
+            'brand':           attr.get('brand'),
+            'place_of_origin': attr.get('place_of_origin'),
+            'material':        attr.get('material'),
+            'warranty_policy': r.get('Warranty Policy'),
+            'warranty_period': r.get('Warranty Period'),
+            'status':          r.get('Status'),
+            'cover_image_url': gallery[0] if gallery else None,
+            'image_urls':      json.dumps(gallery, ensure_ascii=False),
+            'dts_info':        None,
+            'raw_json':        json.dumps(r, ensure_ascii=False),
+        }
+
+    product_records = list(products.values())
+
+    # ── Variation-grain files ────────────────────────────────────────────────
+    df_pricestock = _read_lazada_file(pricestock_path)
+    df_skuimg     = _read_lazada_file(skuimg_path)
+    df_freight    = _read_lazada_file(freight_path)
+
+    # skuimg keyed by Shop SKU
+    skuimg_by_vid = {}
+    for _, row in df_skuimg.iterrows():
+        r = _raw(row)
+        vid = _pick(r, 'Shop SKU', 'ร้าน sku')
+        if vid:
+            skuimg_by_vid[vid] = r
+
+    # freight keyed by synth key: "{Product ID}_TH-{sku.skuId}"
+    freight_by_vid = {}
+    for _, row in df_freight.iterrows():
+        r = _raw(row)
+        pid_f = r.get('Product ID')
+        sku_id = r.get('sku.skuId')
+        if pid_f and sku_id:
+            synth = f"{pid_f}_TH-{sku_id}"
+            freight_by_vid[synth] = r
+
+    # Find stock column from pricestock df
+    stock_col = _find_stock_col(df_pricestock)
+
+    variation_records = []
+    for _, row in df_pricestock.iterrows():
+        r = _raw(row)
+        vid = _pick(r, 'Shop SKU', 'ร้าน sku')
+        if not vid:
+            continue
+        skuimg = skuimg_by_vid.get(vid, {})
+        freight = freight_by_vid.get(vid, {})
+
+        # variation_image_url from skuimg Images1
+        var_img = skuimg.get('Images1') or None
+        if var_img and not str(var_img).startswith('http'):
+            var_img = None
+
+        raw_merge = dict(r)
+        raw_merge.update(skuimg)
+        raw_merge.update(freight)
+
+        variation_records.append({
+            'product_id_str':      r.get('Product ID'),
+            'product_name':        _pick(r, 'Product Name', 'ชื่อสินค้า') or '',
+            'variation_id':        vid,
+            'variation_name':      _pick(r, 'Variations Combo'),
+            'parent_sku':          None,
+            'seller_sku':          _pick(r, 'SellerSKU'),
+            'price':               _to_float(_pick(r, 'Price', 'ราคา')),
+            'special_price':       _to_float(_pick(r, 'SpecialPrice')),
+            'special_price_start': _pick(r, 'SpecialPrice Start'),
+            'special_price_end':   _pick(r, 'SpecialPrice End'),
+            'stock':               _to_int(r.get(stock_col)),
+            'gtin':                None,
+            'weight_kg':           _to_float(freight.get('Package Weight (kg)')),
+            'length_cm':           _to_float(freight.get('Package Length (cm)')),
+            'width_cm':            _to_float(freight.get('Package Width (cm)')),
+            'height_cm':           _to_float(freight.get('Package Height (cm)')),
+            'variation_image_url': var_img,
+            'raw_json':            json.dumps(raw_merge, ensure_ascii=False),
+        })
+
+    return product_records, variation_records
 
 
 def export_lazada(rows):

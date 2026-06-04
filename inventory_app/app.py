@@ -632,7 +632,7 @@ _MASTER_TABLES = (
     # Operations master
     'regions', 'customer_regions',
     'expense_categories', 'promotions',
-    'platform_skus', 'ecommerce_listings', 'listing_bundles',
+    'platform_skus', 'platform_products', 'ecommerce_listings', 'listing_bundles',
     'po_sequences', 'salespersons',
     'commission_tiers', 'commission_assignments', 'commission_overrides',
     # Supplier master
