@@ -68,13 +68,14 @@
   </div>
 </div>
 
-{% if excluded and (excluded.legacy_count or excluded.re_count) %}
+{% if excluded and (excluded.legacy_count or excluded.re_count or excluded.writeoff_count) %}
 <div class="alert alert-secondary py-2 mb-3 small d-flex align-items-start gap-2">
   <i class="bi bi-funnel mt-1"></i>
   <span>ยอด AR นี้ <strong>ไม่รวม</strong> (ตามนโยบาย):
     หนี้ก่อนปี 2024 (legacy) <strong>{{ '{:,.0f}'.format(excluded.legacy_amount) }}</strong> ({{ excluded.legacy_count }} ใบ)
-    · เอกสาร RE ที่รับชำระแล้ว <strong>{{ '{:,.0f}'.format(excluded.re_amount) }}</strong> ({{ excluded.re_count }} ใบ).
-    รวมยอดก่อนกรอง (gross) ≈ ฿{{ '{:,.0f}'.format((summary.total or 0) + excluded.legacy_amount + excluded.re_amount) }}.</span>
+    · เอกสาร RE ที่รับชำระแล้ว <strong>{{ '{:,.0f}'.format(excluded.re_amount) }}</strong> ({{ excluded.re_count }} ใบ){% if excluded.writeoff_count %}
+    · หนี้สูญที่ตัดแล้ว <strong>{{ '{:,.0f}'.format(excluded.writeoff_amount) }}</strong> ({{ excluded.writeoff_count }} ใบ){% endif %}.
+    รวมยอดก่อนกรอง (gross) ≈ ฿{{ '{:,.0f}'.format((summary.total or 0) + excluded.legacy_amount + excluded.re_amount + (excluded.writeoff_amount or 0)) }}.</span>
 </div>
 {% endif %}
 
