@@ -61,7 +61,19 @@ import payments_alloc as pa
 #   - pre-2024 legacy debt — before the Sendy era (Put 2026-06-04).
 # Bare column names (no table alias) — unambiguous since only express_ar_outstanding
 # has these columns, even in queries that JOIN customers.
-BSN_AR_PREDICATE = "is_anomalous = 0 AND doc_date_iso >= '2024-01-01'"
+#
+# The `doc_no NOT IN (SELECT ... ar_writeoffs)` clause makes accountant-decided
+# write-offs / write-backs drop from the collectable figure PERMANENTLY, even
+# after the next ลูกหนี้คงค้าง import replaces express_ar_outstanding (the snapshot
+# is DELETE+INSERTed per import; ar_writeoffs is keyed on doc_no and survives).
+# `doc_no` is unambiguous here for the same reason as the bare columns above.
+# LOAD-BEARING: ar_writeoffs.doc_no must stay NOT NULL (mig 095). A NULL in the
+# subquery makes `doc_no NOT IN (SELECT doc_no FROM ar_writeoffs)` evaluate to
+# NULL (never true) for every row → collectable AR collapses to 0.
+BSN_AR_PREDICATE = (
+    "is_anomalous = 0 AND doc_date_iso >= '2024-01-01' "
+    "AND doc_no NOT IN (SELECT doc_no FROM ar_writeoffs)"
+)
 
 
 # ── DB helpers (mirrors payments_alloc._ConnCtx) ──────────────────────────────
@@ -311,9 +323,20 @@ def revenue_by_month(date_from: Optional[str] = None,
 def bsn_ar_excluded(conn: Optional[sqlite3.Connection] = None,
                     db_path: Optional[str] = None) -> dict:
     """Amounts EXCLUDED from canonical BSN AR (see BSN_AR_PREDICATE), for
-    disclosure on the AR pages so the ~฿567k removed from the gross snapshot
-    isn't hidden: pre-2024 legacy debt + RE/anomalous receipts."""
-    empty = {'legacy_amount': 0.0, 'legacy_count': 0, 're_amount': 0.0, 're_count': 0}
+    disclosure on the AR pages so the amount removed from the gross snapshot
+    isn't hidden: pre-2024 legacy debt + RE/anomalous receipts + write-offs.
+
+    The three buckets are DISJOINT and together are the exact complement of
+    BSN_AR_PREDICATE, so collectable + legacy + re + writeoff == gross snapshot:
+      - re      = is_anomalous=1                                  (any date)
+      - legacy  = is_anomalous=0 AND doc < 2024                   (non-anomalous old)
+      - writeoff= is_anomalous=0 AND doc >= 2024 AND in ar_writeoffs
+                  (would-be-collectable, removed by an accountant decision)
+    A write-off that is itself RE/legacy stays in its re/legacy bucket (the
+    writeoff bucket is scoped to the collectable date/anomaly window), so a
+    written-off doc is counted in exactly one bucket — no double-count."""
+    empty = {'legacy_amount': 0.0, 'legacy_count': 0, 're_amount': 0.0, 're_count': 0,
+             'writeoff_amount': 0.0, 'writeoff_count': 0}
     with _ConnCtx(conn, db_path) as c:
         snap = c.execute("SELECT MAX(snapshot_date_iso) AS d FROM "
                          "express_ar_outstanding WHERE entity='BSN'").fetchone()['d']
@@ -327,8 +350,14 @@ def bsn_ar_excluded(conn: Optional[sqlite3.Connection] = None,
             "SELECT ROUND(SUM(outstanding_amount),2) a, COUNT(*) n "
             "FROM express_ar_outstanding WHERE entity='BSN' AND snapshot_date_iso=? "
             "AND is_anomalous=1", (snap,)).fetchone()
+        writeoff = c.execute(
+            "SELECT ROUND(SUM(outstanding_amount),2) a, COUNT(*) n "
+            "FROM express_ar_outstanding WHERE entity='BSN' AND snapshot_date_iso=? "
+            "AND is_anomalous=0 AND doc_date_iso >= '2024-01-01' "
+            "AND doc_no IN (SELECT doc_no FROM ar_writeoffs)", (snap,)).fetchone()
     return {'legacy_amount': legacy['a'] or 0.0, 'legacy_count': legacy['n'] or 0,
-            're_amount': re['a'] or 0.0, 're_count': re['n'] or 0}
+            're_amount': re['a'] or 0.0, 're_count': re['n'] or 0,
+            'writeoff_amount': writeoff['a'] or 0.0, 'writeoff_count': writeoff['n'] or 0}
 
 
 def bsn_ar_excluded_by_customer(conn: Optional[sqlite3.Connection] = None,
@@ -343,6 +372,11 @@ def bsn_ar_excluded_by_customer(conn: Optional[sqlite3.Connection] = None,
                          "express_ar_outstanding WHERE entity='BSN'").fetchone()['d']
         if not snap:
             return []
+        # WHERE = exact complement of BSN_AR_PREDICATE so every excluded doc
+        # (RE, pre-2024 legacy, OR a written-off would-be-collectable) appears
+        # exactly once. The collectable set is
+        #   (is_anomalous=0 AND doc>=2024 AND doc_no NOT IN ar_writeoffs);
+        # its NOT(...) pulls the written-off recents into this excluded section.
         rows = c.execute("""
             SELECT ao.customer_code,
                    COALESCE(cust.name, ao.customer_name) AS customer_name,
@@ -350,11 +384,15 @@ def bsn_ar_excluded_by_customer(conn: Optional[sqlite3.Connection] = None,
                    COUNT(*)                              AS doc_count,
                    MAX(CASE WHEN ao.is_anomalous = 1 THEN 1 ELSE 0 END) AS has_re,
                    MAX(CASE WHEN ao.is_anomalous = 0 AND ao.doc_date_iso < '2024-01-01'
-                            THEN 1 ELSE 0 END) AS has_legacy
+                            THEN 1 ELSE 0 END) AS has_legacy,
+                   MAX(CASE WHEN ao.is_anomalous = 0 AND ao.doc_date_iso >= '2024-01-01'
+                             AND ao.doc_no IN (SELECT doc_no FROM ar_writeoffs)
+                            THEN 1 ELSE 0 END) AS has_writeoff
             FROM express_ar_outstanding ao
             LEFT JOIN customers cust ON cust.code = ao.customer_code
             WHERE ao.entity = 'BSN' AND ao.snapshot_date_iso = ?
-              AND NOT (ao.is_anomalous = 0 AND ao.doc_date_iso >= '2024-01-01')
+              AND NOT (ao.is_anomalous = 0 AND ao.doc_date_iso >= '2024-01-01'
+                       AND ao.doc_no NOT IN (SELECT doc_no FROM ar_writeoffs))
             GROUP BY ao.customer_code
             HAVING ROUND(SUM(ao.outstanding_amount), 2) > 0
             ORDER BY outstanding DESC
