@@ -19,6 +19,9 @@ import ar_followup
 
 
 def _canonical_total(db_path):
+    # Mirror the FULL BSN_AR_PREDICATE — including the write-off exclusion
+    # (ar_writeoffs). If this drifts from the real predicate the "all surfaces
+    # agree" guard would compare against a wrong oracle and pass/fail falsely.
     conn = sqlite3.connect(db_path)
     try:
         n = conn.execute("""
@@ -30,6 +33,7 @@ def _canonical_total(db_path):
               AND snapshot_date_iso=(SELECT d FROM latest)
               AND is_anomalous=0
               AND doc_date_iso >= '2024-01-01'
+              AND doc_no NOT IN (SELECT doc_no FROM ar_writeoffs)
         """).fetchone()[0]
         return round(n or 0, 2)
     finally:
@@ -68,8 +72,9 @@ def test_canonical_excludes_re_and_pre2024(tmp_db):
 
 
 def test_excluded_disclosure_reconciles_to_gross(tmp_db):
-    """canonical + legacy + RE must equal the gross snapshot — so the disclosure
-    note on the AR pages is accurate."""
+    """canonical + legacy + RE + writeoff must equal the gross snapshot — so the
+    disclosure note on the AR pages is accurate (the four buckets are the exact
+    disjoint complement of the collectable predicate)."""
     import cashflow
     conn = sqlite3.connect(tmp_db)
     try:
@@ -82,5 +87,6 @@ def test_excluded_disclosure_reconciles_to_gross(tmp_db):
     finally:
         conn.close()
     exc = cashflow.bsn_ar_excluded(db_path=tmp_db)
-    recombined = round(_canonical_total(tmp_db) + exc['legacy_amount'] + exc['re_amount'], 2)
+    recombined = round(_canonical_total(tmp_db) + exc['legacy_amount']
+                       + exc['re_amount'] + exc['writeoff_amount'], 2)
     assert abs(recombined - round(gross, 2)) < 0.01

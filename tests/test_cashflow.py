@@ -303,17 +303,20 @@ def test_ar_aging_non_bsn_entity_excluded(empty_db_conn):
 # ── live-DB ar_aging tests (against real Express snapshot) ───────────────────
 
 def test_ar_aging_live_total_is_canonical_collectable(tmp_db_conn):
-    """ar_aging now totals the CANONICAL collectable BSN AR — the latest Express
-    snapshot EXCLUDING RE/anomalous receipts and pre-2024 legacy debt
-    (Put 2026-06-04) = ฿732,357.86 across 145 docs."""
+    """ar_aging totals the CANONICAL collectable BSN AR — latest Express snapshot
+    EXCLUDING RE/anomalous + pre-2024 legacy + write-offs (ar_writeoffs).
+    As of the 2026-06-05 snapshot (169 docs ฿1,103,016.68) with the 58 write-off
+    decisions loaded: ฿496,018.48 across 110 docs.
+    NB: this is a LIVE-DATA anchor — it shifts on every Express import or new
+    write-off. Recompute against the live DB when it breaks (don't guess)."""
     result = cf.ar_aging(conn=tmp_db_conn)
-    assert result['total_outstanding'] == pytest.approx(732_357.86, abs=0.01), (
-        f"Expected canonical ฿732,357.86; got {result['total_outstanding']:.2f}"
+    assert result['total_outstanding'] == pytest.approx(496_018.48, abs=0.01), (
+        f"Expected canonical ฿496,018.48; got {result['total_outstanding']:.2f}"
     )
     total_in_buckets = round(sum(b['amount'] for b in result['buckets']), 2)
-    assert total_in_buckets == pytest.approx(732_357.86, abs=0.01)
+    assert total_in_buckets == pytest.approx(496_018.48, abs=0.01)
     total_count = sum(b['count'] for b in result['buckets'])
-    assert total_count == 145, f"Expected 145 docs; got {total_count}"
+    assert total_count == 110, f"Expected 110 docs; got {total_count}"
 
 
 def test_re_jungjaroen_excluded_from_collectable_but_shown_separately(tmp_db_conn):

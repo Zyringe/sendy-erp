@@ -635,6 +635,11 @@ _MASTER_TABLES = (
     'platform_skus', 'platform_products', 'ecommerce_listings', 'listing_bundles',
     'po_sequences', 'salespersons',
     'commission_tiers', 'commission_assignments', 'commission_overrides',
+    # AR write-off decisions (Put-owned; excluded from collectable AR). Standalone
+    # table (no FKs, keyed by doc_no) so load order is free. Must be here or the
+    # 58 write-off rows never reach Railway in master-only mode → prod collectable
+    # stays wrong while the table sits empty.
+    'ar_writeoffs',
     # Supplier master
     'suppliers',
     'supplier_catalogue_items', 'supplier_catalogue_versions',
