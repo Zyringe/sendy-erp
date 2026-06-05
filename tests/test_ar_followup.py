@@ -494,12 +494,14 @@ def test_resolve_target_code_lookup_finds_all_followups(empty_db_conn):
 # ── integration tests: Express BSN snapshot totals (live DB copy) ────────────
 
 def test_bsn_snapshot_totals(tmp_db_conn):
-    """Express BSN snapshot at 2026-05-29: 200 total rows, 72 customers, net
-    ฿1,299,335.94 (includes 12 negative-balance rows for credit/overpaid accounts).
+    """Express BSN snapshot at 2026-06-05: 169 total rows, 67 customers, net
+    ฿1,103,016.68 (includes negative-balance rows for credit/overpaid accounts).
 
-    This is the raw snapshot total. The export uses all 200 rows; the ranking
-    workspace nets per customer and keeps net-positive customers only
-    (65 customers / ฿1,325,201.47).
+    This is the RAW import-level snapshot — NOT affected by write-offs
+    (ar_writeoffs only excludes docs from the *collectable* figure; it does not
+    delete express_ar_outstanding rows). So these are pure import counts.
+    NB: LIVE-DATA anchor — recompute against the live DB on the next ลูกหนี้คงค้าง
+    import (don't guess).
     """
     c = tmp_db_conn
     row = c.execute("""
@@ -512,26 +514,29 @@ def test_bsn_snapshot_totals(tmp_db_conn):
             SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding WHERE entity='BSN'
           )
     """).fetchone()
-    assert row['doc_count'] == 200, f"Expected 200 total rows, got {row['doc_count']}"
-    assert row['cust_count'] == 72, f"Expected 72 customers, got {row['cust_count']}"
-    assert row['total_outstanding'] == pytest.approx(1299335.94, abs=0.01), \
-        f"Expected net ฿1,299,335.94, got {row['total_outstanding']}"
+    assert row['doc_count'] == 169, f"Expected 169 total rows, got {row['doc_count']}"
+    assert row['cust_count'] == 67, f"Expected 67 customers, got {row['cust_count']}"
+    assert row['total_outstanding'] == pytest.approx(1103016.68, abs=0.01), \
+        f"Expected net ฿1,103,016.68, got {row['total_outstanding']}"
 
 
 def test_customer_ranking_live_bsn(tmp_db_conn):
     """customer_ranking rolls up CANONICAL collectable AR per customer (latest
-    snapshot, EXCLUDING RE + pre-2024 legacy; Put 2026-06-04), net-positive only.
-    = 42 customers / ฿732,357.86.
+    snapshot, EXCLUDING RE + pre-2024 legacy + write-offs), net-positive only.
+    As of the 2026-06-05 snapshot with the 58 write-off decisions loaded:
+    = 34 customers / ฿496,018.48.
 
     ทรงพลเทรดดิ้ง is entirely 2014 legacy → it drops out of the collectable
-    ranking and is tracked in the not-collectable list instead (where the
-    credit-note netting guard now lives: net ฿164,322.73, NOT ฿284,863.10)."""
+    ranking and is tracked in the not-collectable list instead (net ฿164,322.73,
+    NOT ฿284,863.10 — credit-note netting guard).
+    NB: LIVE-DATA anchor — recompute against the live DB on the next import or
+    write-off (don't guess)."""
     import cashflow as cf
     rows = arf.customer_ranking(conn=tmp_db_conn)
     total = round(sum(r['outstanding'] for r in rows), 2)
-    assert len(rows) == 42, f"Expected 42 collectable net-positive customers, got {len(rows)}"
-    assert total == pytest.approx(732357.86, abs=0.01), \
-        f"Expected canonical collectable total ฿732,357.86, got {total}"
+    assert len(rows) == 34, f"Expected 34 collectable net-positive customers, got {len(rows)}"
+    assert total == pytest.approx(496018.48, abs=0.01), \
+        f"Expected canonical collectable total ฿496,018.48, got {total}"
     # Verify sorted DESC
     for i in range(len(rows) - 1):
         assert rows[i]['outstanding'] >= rows[i+1]['outstanding']
@@ -547,12 +552,14 @@ def test_customer_ranking_live_bsn(tmp_db_conn):
 
 
 def test_customer_ranking_invoice_count(tmp_db_conn):
-    """Sum of per-customer invoice_count = 145 (collectable snapshot rows of
-    net-positive customers, after excluding RE + pre-2024 legacy)."""
+    """Sum of per-customer invoice_count = 110 (collectable snapshot rows of
+    net-positive customers, after excluding RE + pre-2024 legacy + write-offs).
+    NB: LIVE-DATA anchor — recompute against the live DB on the next import or
+    write-off (don't guess)."""
     rows = arf.customer_ranking(conn=tmp_db_conn)
     total_invoices = sum(r['invoice_count'] for r in rows)
-    assert total_invoices == 145, \
-        f"Expected invoice_count sum=145, got {total_invoices}"
+    assert total_invoices == 110, \
+        f"Expected invoice_count sum=110, got {total_invoices}"
 
 
 def test_get_customer_ar_detail_live(tmp_db_conn):
