@@ -85,9 +85,31 @@
             <input type="text" name="reference_no" class="form-control"
                    placeholder="เลขใบผลิต, อ้างอิง...">
           </div>
-          <div class="mb-4">
+          <div class="mb-3">
             <label class="form-label">หมายเหตุเพิ่มเติม</label>
             <textarea name="note" class="form-control" rows="2"></textarea>
+          </div>
+
+          {# ── ของเสีย / ตัดทิ้งระหว่างแปลง ── #}
+          <div class="mb-4 border rounded p-3" style="background:#fffbeb">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="hasWriteoff" onchange="toggleWriteoff()">
+              <label class="form-check-label fw-500" for="hasWriteoff">มีของเสีย / ตัดทิ้งระหว่างแปลง</label>
+            </div>
+            <div id="writeoffBox" class="d-none row g-2 mt-1">
+              <div class="col-sm-5">
+                <label class="form-label small mb-1">จำนวนที่เสีย (ตัด)</label>
+                <input type="number" name="writeoff_qty" id="writeoffQty" class="form-control"
+                       min="0" value="0" oninput="updatePreview()">
+              </div>
+              <div class="col-sm-7">
+                <label class="form-label small mb-1">เหตุผล (ไม่บังคับ)</label>
+                <input type="text" name="writeoff_reason" class="form-control" placeholder="เช่น ของแตก, ชำรุด">
+              </div>
+              <div class="form-text text-subtle col-12">
+                ตัดเฉพาะ "ผลลัพธ์ที่ได้" ที่เสีย — วัตถุดิบถูกใช้เต็มจำนวน, ของดีที่เหลือเข้าสต็อก
+              </div>
+            </div>
           </div>
 
           <div id="stockWarning" class="alert alert-danger d-none mb-3">
@@ -122,6 +144,14 @@ const outputName     = {{ formula.output_product_name | tojson }};
 
 function fmt(n) { return n.toLocaleString('th-TH'); }
 
+function toggleWriteoff() {
+  const box = document.getElementById('writeoffBox');
+  const on  = document.getElementById('hasWriteoff').checked;
+  box.classList.toggle('d-none', !on);
+  if (!on) document.getElementById('writeoffQty').value = 0;
+  updatePreview();
+}
+
 function updatePreview() {
   const m = parseInt(document.getElementById('multiplier').value) || 1;
   let warnings = [];
@@ -141,12 +171,25 @@ function updatePreview() {
   });
 
   const totalOut = outputQtyBase * m;
-  document.getElementById('outputQty').textContent = fmt(totalOut) + ' ' + outputUnit;
+  // write-off (ของเสีย): only good units enter stock
+  const woBox = document.getElementById('writeoffBox');
+  const woVisible = woBox && !woBox.classList.contains('d-none');
+  let writeoff = woVisible ? (parseInt(document.getElementById('writeoffQty').value) || 0) : 0;
+  if (writeoff < 0) writeoff = 0;
+  if (writeoff > totalOut) {
+    warnings.push(`ตัดของเสีย ${fmt(writeoff)} เกินจำนวนที่ผลิต ${fmt(totalOut)}`);
+  }
+  const good = Math.max(0, totalOut - writeoff);
+  document.getElementById('outputQty').textContent = fmt(good) + ' ' + outputUnit;
 
   const preview = document.getElementById('multiPreview');
-  preview.textContent = m > 1
-    ? `แปลง ${m} รอบ → ได้ ${fmt(totalOut)} ${outputUnit} ${outputName}`
-    : `แปลง 1 รอบ → ได้ ${fmt(outputQtyBase)} ${outputUnit} ${outputName}`;
+  if (writeoff > 0) {
+    preview.textContent = `แปลง ${m} รอบ → ผลิต ${fmt(totalOut)} − เสีย ${fmt(writeoff)} = ได้ ${fmt(good)} ${outputUnit} ${outputName}`;
+  } else {
+    preview.textContent = m > 1
+      ? `แปลง ${m} รอบ → ได้ ${fmt(totalOut)} ${outputUnit} ${outputName}`
+      : `แปลง 1 รอบ → ได้ ${fmt(outputQtyBase)} ${outputUnit} ${outputName}`;
+  }
 
   const warnBox  = document.getElementById('stockWarning');
   const warnText = document.getElementById('stockWarningText');

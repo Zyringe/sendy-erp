@@ -175,7 +175,7 @@ _STAFF_POST_OK = frozenset([
     'import_payments', 'import_credit_notes_preview', 'import_credit_notes_commit',
     'products.product_location_save',
     'admin_exit_simulate',
-    'conversion_new', 'conversion_edit', 'conversion_run', 'conversion_delete',
+    'conversion_new', 'conversion_pair', 'conversion_edit', 'conversion_run', 'conversion_delete',
     'api_product_barcodes',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
@@ -2565,8 +2565,11 @@ def ecommerce_listings_mapping_import():
 def conversion_list():
     formulas = models.get_conversion_formulas()
     recent_runs = models.get_recent_conversion_runs(limit=5)
+    # "buildable now" per formula: units each formula could produce from current input stock
+    _b = models.get_buildable()
+    buildable = {src['formula_id']: src['qty'] for e in _b.values() for src in e['sources']}
     return render_template('conversions/list.html',
-                           formulas=formulas, recent_runs=recent_runs)
+                           formulas=formulas, recent_runs=recent_runs, buildable=buildable)
 
 
 @app.route('/conversions/history')
@@ -2610,6 +2613,41 @@ def conversion_new():
         return redirect(url_for('conversion_list'))
 
     return render_template('conversions/form.html', products=products, formula=None, inputs=[])
+
+
+@app.route('/conversions/pair', methods=['GET', 'POST'])
+def conversion_pair():
+    """Pack↔loose pair mode: create/update both formulas in one step (vs the
+    case-by-case advanced builder). Idempotent via models.upsert_pack_unpack_pair."""
+    if not session.get('role'):
+        abort(403)
+    products = _get_active_products()
+    if request.method == 'POST':
+        pack_id   = request.form.get('pack_id', '').strip()
+        loose_id  = request.form.get('loose_id', '').strip()
+        ratio     = request.form.get('ratio', '').strip()
+        direction = request.form.get('direction', 'both').strip()
+        note      = request.form.get('note', '').strip()
+        if not pack_id or not loose_id or not ratio:
+            flash('กรุณาเลือกสินค้าแพ็ค สินค้าตัวหลวม และจำนวนตัวต่อแพ็ค', 'danger')
+            return render_template('conversions/pair_form.html', products=products)
+        if pack_id == loose_id:
+            flash('สินค้าแพ็คและตัวหลวมต้องไม่ใช่ตัวเดียวกัน', 'danger')
+            return render_template('conversions/pair_form.html', products=products)
+        try:
+            ratio_i = int(ratio)
+            if ratio_i < 1:
+                raise ValueError
+        except ValueError:
+            flash('จำนวนตัวต่อแพ็คต้องเป็นจำนวนเต็มตั้งแต่ 1 ขึ้นไป', 'danger')
+            return render_template('conversions/pair_form.html', products=products)
+        if direction not in ('both', 'pack', 'unpack'):
+            direction = 'both'
+        res = models.upsert_pack_unpack_pair(int(pack_id), int(loose_id), ratio_i, direction, note)
+        flash(f'บันทึกคู่แพ็ค-ตัวหลวมแล้ว (สร้าง {res["created"]} · อัปเดต {res["updated"]} สูตร)', 'success')
+        return redirect(url_for('conversion_list'))
+
+    return render_template('conversions/pair_form.html', products=products)
 
 
 @app.route('/conversions/<int:formula_id>/edit', methods=['GET', 'POST'])
@@ -2657,8 +2695,16 @@ def conversion_run(formula_id):
             multiplier   = 1
         reference_no = request.form.get('reference_no', '').strip()
         extra_note   = request.form.get('note', '').strip()
+        try:
+            writeoff_qty = max(0, int(request.form.get('writeoff_qty') or 0))
+        except (ValueError, TypeError):
+            writeoff_qty = 0
+        # fold a write-off reason into the note for the audit trail
+        wo_reason = request.form.get('writeoff_reason', '').strip()
+        if writeoff_qty and wo_reason:
+            extra_note = (extra_note + ' | ' if extra_note else '') + f'ของเสีย: {wo_reason}'
 
-        success, message, _ = models.run_conversion(formula_id, multiplier, reference_no, extra_note)
+        success, message, _ = models.run_conversion(formula_id, multiplier, reference_no, extra_note, writeoff_qty)
         flash(message, 'success' if success else 'danger')
         if success:
             return redirect(url_for('conversion_list'))
