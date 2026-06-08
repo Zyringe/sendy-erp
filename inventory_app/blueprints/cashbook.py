@@ -42,13 +42,26 @@ def _fmt_baht(val) -> str:
         return "฿0.00"
 
 
+# Categories that are capital / inter-account movements, NOT operating income or
+# expense. Excluded from the headline P&L, category summary, monthly chart and the
+# by-tag report. They are still real money (so they DO count toward account balance)
+# and remain visible in the per-account ledger.
+TRANSFER_CATEGORIES = ("เงินทุน/เงินโอน",)
+
+
+def _tcat_ph():
+    """Placeholder string + params for the transfer-category list."""
+    return ",".join("?" * len(TRANSFER_CATEGORIES)), list(TRANSFER_CATEGORIES)
+
+
 def _get_accounts_with_totals(conn):
     """
-    Return list of dicts: one per account with income/expense/balance sums
-    and transaction count.  Transfer accounts are included but flagged.
-    Totals for non-transfer accounts are summed separately for the headline P&L.
+    One dict per active account. `income`/`expense` are OPERATING totals (transfer
+    categories excluded) so they sum to the headline P&L. `transfer_in`/`transfer_out`
+    hold the excluded capital movements. `balance` is true cash = operating + transfers.
     """
-    rows = conn.execute("""
+    ph, params = _tcat_ph()
+    rows = conn.execute(f"""
         SELECT
             a.id,
             a.code,
@@ -58,27 +71,31 @@ def _get_accounts_with_totals(conn):
             a.bank_account_no,
             a.note AS account_note,
             a.is_transfer,
-            COALESCE(SUM(CASE WHEN t.direction='income'  THEN t.amount ELSE 0 END), 0) AS income,
-            COALESCE(SUM(CASE WHEN t.direction='expense' THEN t.amount ELSE 0 END), 0) AS expense,
+            COALESCE(SUM(CASE WHEN t.direction='income'  AND COALESCE(t.category,'') NOT IN ({ph}) THEN t.amount ELSE 0 END), 0) AS income,
+            COALESCE(SUM(CASE WHEN t.direction='expense' AND COALESCE(t.category,'') NOT IN ({ph}) THEN t.amount ELSE 0 END), 0) AS expense,
+            COALESCE(SUM(CASE WHEN t.direction='income'  AND COALESCE(t.category,'') IN ({ph}) THEN t.amount ELSE 0 END), 0) AS transfer_in,
+            COALESCE(SUM(CASE WHEN t.direction='expense' AND COALESCE(t.category,'') IN ({ph}) THEN t.amount ELSE 0 END), 0) AS transfer_out,
             COUNT(t.id) AS txn_count
         FROM cashbook_accounts a
         LEFT JOIN cashbook_transactions t ON t.account_id = a.id
         WHERE a.is_active = 1
         GROUP BY a.id
         ORDER BY a.is_transfer ASC, a.sort_order ASC, a.id ASC
-    """).fetchall()
+    """, params * 4).fetchall()
 
     result = []
     for r in rows:
         d = dict(r)
-        d["balance"] = d["income"] - d["expense"]
+        d["balance"] = (d["income"] + d["transfer_in"]) - (d["expense"] + d["transfer_out"])
         result.append(d)
     return result
 
 
 def _get_monthly_summary(conn, exclude_transfer: bool = True):
-    """Monthly income/expense totals, optionally excluding transfer accounts."""
-    transfer_clause = "WHERE a.is_transfer = 0" if exclude_transfer else ""
+    """Monthly operating income/expense (transfer categories always excluded;
+    transfer accounts excluded when exclude_transfer)."""
+    ph, params = _tcat_ph()
+    acct_clause = "AND a.is_transfer = 0" if exclude_transfer else ""
     rows = conn.execute(f"""
         SELECT
             strftime('%Y-%m', t.txn_date) AS month,
@@ -86,29 +103,76 @@ def _get_monthly_summary(conn, exclude_transfer: bool = True):
             SUM(CASE WHEN t.direction='expense' THEN t.amount ELSE 0 END) AS expense
         FROM cashbook_transactions t
         JOIN cashbook_accounts a ON a.id = t.account_id
-        {transfer_clause}
+        WHERE COALESCE(t.category,'') NOT IN ({ph}) {acct_clause}
         GROUP BY month
         ORDER BY month ASC
-    """).fetchall()
+    """, params).fetchall()
     return [dict(r) for r in rows]
 
 
 def _get_category_summary(conn):
-    """Income and expense totals by category, excluding transfer accounts."""
-    rows = conn.execute("""
+    """Income and expense totals by category, excluding transfer accounts AND
+    transfer categories."""
+    ph, params = _tcat_ph()
+    rows = conn.execute(f"""
         SELECT
             t.direction,
             COALESCE(t.category, '(ไม่ระบุ)') AS category,
             SUM(t.amount) AS total
         FROM cashbook_transactions t
         JOIN cashbook_accounts a ON a.id = t.account_id
-        WHERE a.is_transfer = 0
+        WHERE a.is_transfer = 0 AND COALESCE(t.category,'') NOT IN ({ph})
         GROUP BY t.direction, category
         ORDER BY t.direction DESC, total DESC
-    """).fetchall()
+    """, params).fetchall()
     income_cats = [dict(r) for r in rows if r["direction"] == "income"]
     expense_cats = [dict(r) for r in rows if r["direction"] == "expense"]
     return income_cats, expense_cats
+
+
+def _get_tag_summary(conn):
+    """Operating EXPENSE grouped by ผู้ใช้ tag (user_category). Excludes transfer
+    accounts, transfer categories and untagged rows."""
+    ph, params = _tcat_ph()
+    rows = conn.execute(f"""
+        SELECT
+            t.user_category AS tag,
+            SUM(t.amount)    AS total,
+            COUNT(*)         AS n
+        FROM cashbook_transactions t
+        JOIN cashbook_accounts a ON a.id = t.account_id
+        WHERE a.is_transfer = 0
+          AND t.direction = 'expense'
+          AND COALESCE(t.category,'') NOT IN ({ph})
+          AND t.user_category IS NOT NULL AND t.user_category != ''
+        GROUP BY t.user_category
+        ORDER BY total DESC
+    """, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _get_biz_personal(conn):
+    """Operating expense split into business / personal (บ้าน* tag) / unclassified."""
+    ph, params = _tcat_ph()
+    rows = conn.execute(f"""
+        SELECT
+            CASE
+                WHEN t.user_category LIKE 'บ้าน%' THEN 'personal'
+                WHEN t.user_category IS NULL OR t.user_category = '' THEN 'unclassified'
+                ELSE 'business'
+            END AS bucket,
+            SUM(t.amount) AS total
+        FROM cashbook_transactions t
+        JOIN cashbook_accounts a ON a.id = t.account_id
+        WHERE a.is_transfer = 0
+          AND t.direction = 'expense'
+          AND COALESCE(t.category,'') NOT IN ({ph})
+        GROUP BY bucket
+    """, params).fetchall()
+    out = {"business": 0.0, "personal": 0.0, "unclassified": 0.0}
+    for r in rows:
+        out[r["bucket"]] = r["total"]
+    return out
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -117,24 +181,27 @@ def _get_category_summary(conn):
 def dashboard():
     conn = database.get_connection()
     try:
-        accounts = _get_accounts_with_totals(conn)
+        accounts      = _get_accounts_with_totals(conn)
+        monthly       = _get_monthly_summary(conn, exclude_transfer=True)
+        income_cats, expense_cats = _get_category_summary(conn)
+        tag_summary   = _get_tag_summary(conn)
+        biz_personal  = _get_biz_personal(conn)
     finally:
         conn.close()
 
-    # Headline P&L excludes transfer accounts
+    # Headline P&L excludes transfer accounts AND transfer categories (income/expense
+    # are already operating-only from _get_accounts_with_totals).
     op_accounts = [a for a in accounts if not a["is_transfer"]]
     tr_accounts  = [a for a in accounts if a["is_transfer"]]
 
     total_income  = sum(a["income"]  for a in op_accounts)
     total_expense = sum(a["expense"] for a in op_accounts)
-    total_balance = total_income - total_expense
-
-    conn = database.get_connection()
-    try:
-        monthly = _get_monthly_summary(conn, exclude_transfer=True)
-        income_cats, expense_cats = _get_category_summary(conn)
-    finally:
-        conn.close()
+    # คงเหลือ = actual cash on hand = sum of true-cash account balances (which include
+    # capital transfers). This reconciles with the per-account balance column. It is
+    # deliberately NOT income − expense: transfers fund the gap (see disclosure note).
+    total_balance = sum(a["balance"] for a in op_accounts)
+    # Capital/inter-account movements excluded from the P&L (disclosure figure)
+    transfer_total = sum(a["transfer_in"] + a["transfer_out"] for a in op_accounts)
 
     return render_template(
         "cashbook/dashboard.html",
@@ -144,9 +211,12 @@ def dashboard():
         total_income=total_income,
         total_expense=total_expense,
         total_balance=total_balance,
+        transfer_total=transfer_total,
         monthly=monthly,
         income_cats=income_cats,
         expense_cats=expense_cats,
+        tag_summary=tag_summary,
+        biz_personal=biz_personal,
     )
 
 
