@@ -231,8 +231,11 @@ def product_detail(product_id):
     bsn_pricing = models.get_product_pricing_summary(product_id)
     brands = models.get_brands()
     current_brand = models.get_brand(product['brand_id']) if product['brand_id'] else None
+    # pack/unpack true-availability: extra units obtainable by running a conversion
+    buildable = models.get_buildable([product_id]).get(product_id)
     return render_template('products/detail.html',
                            product=product,
+                           buildable=buildable,
                            promotions=promotions,
                            active_promo=active_promo,
                            price_tiers=price_tiers,
