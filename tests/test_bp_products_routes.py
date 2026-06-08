@@ -88,3 +88,34 @@ def test_product_detail_unknown_id_redirects_to_list(admin_client):
     assert location.endswith('/products') or '/products' in location, (
         f"Expected redirect to /products, got Location={location!r}"
     )
+
+
+def test_products_show_alt_renders(admin_client):
+    """The 'เติมได้จากแพ็ค' tick (show_alt) must render without error."""
+    resp = admin_client.get('/products?show_alt=1')
+    assert resp.status_code == 200, resp.data[:500]
+
+
+def test_products_show_alt_shows_buildable_marker(admin_client, tmp_db):
+    """A product with buildable>0 shows the (+y) alternative-stock marker
+    in the stock column only when show_alt is on."""
+    import models
+    res = models.get_buildable()  # uses the monkeypatched tmp_db clone
+    name = None
+    conn = sqlite3.connect(tmp_db)
+    for pid, info in res.items():
+        if info['buildable'] > 0:
+            r = conn.execute(
+                "SELECT product_name FROM products WHERE id=? AND is_active=1", (pid,)
+            ).fetchone()
+            if r:
+                name = r[0]
+                break
+    if not name:
+        pytest.skip("no active buildable product in the live clone")
+    frag = name[:8]
+    with_alt = admin_client.get('/products', query_string={'show_alt': '1', 'q': frag})
+    without = admin_client.get('/products', query_string={'q': frag})
+    assert with_alt.status_code == 200 and without.status_code == 200
+    assert b'(+' in with_alt.data           # marker shown when ticked
+    assert b'(+' not in without.data        # and absent when not ticked
