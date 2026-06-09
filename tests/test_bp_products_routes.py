@@ -119,3 +119,22 @@ def test_products_show_alt_shows_buildable_marker(admin_client, tmp_db):
     assert with_alt.status_code == 200 and without.status_code == 200
     assert b'(+' in with_alt.data           # marker shown when ticked
     assert b'(+' not in without.data        # and absent when not ticked
+
+
+def test_product_detail_shows_buildable(admin_client, tmp_db):
+    """A product that is a conversion output shows the 'แกะ/แพ็คเพิ่มได้' true-
+    availability block on its detail page (Phase 4, display-only)."""
+    import models
+    target = None
+    for pid, info in models.get_buildable().items():
+        if info['buildable'] > 0:
+            r = sqlite3.connect(tmp_db).execute(
+                "SELECT 1 FROM products WHERE id=? AND is_active=1", (pid,)).fetchone()
+            if r:
+                target = pid
+                break
+    if target is None:
+        pytest.skip("no active buildable product in clone")
+    resp = admin_client.get(f'/products/{target}')
+    assert resp.status_code == 200, resp.data[:500]
+    assert 'แกะ/แพ็คเพิ่มได้'.encode() in resp.data

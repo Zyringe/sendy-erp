@@ -3,8 +3,11 @@
 {% block page_title %}สูตรแปลงสินค้า{% endblock %}
 
 {% block topbar_actions %}
-<a href="{{ url_for('conversion_new') }}" class="btn btn-primary btn-sm">
-  <i class="bi bi-plus-lg me-1"></i>สูตรใหม่
+<a href="{{ url_for('conversion_pair') }}" class="btn btn-primary btn-sm">
+  <i class="bi bi-link-45deg me-1"></i>จับคู่แพ็ค-ตัวหลวม
+</a>
+<a href="{{ url_for('conversion_new') }}" class="btn btn-outline-secondary btn-sm">
+  <i class="bi bi-plus-lg me-1"></i>สูตรขั้นสูง
 </a>
 {% endblock %}
 
@@ -53,8 +56,8 @@
 <div class="text-center py-5 text-subtle">
   <i class="bi bi-scissors" style="font-size:2.5rem;opacity:.3"></i>
   <div class="mt-2">ยังไม่มีสูตรแปลงสินค้า</div>
-  <a href="{{ url_for('conversion_new') }}" class="btn btn-primary btn-sm mt-3">
-    <i class="bi bi-plus-lg me-1"></i>สร้างสูตรแรก
+  <a href="{{ url_for('conversion_pair') }}" class="btn btn-primary btn-sm mt-3">
+    <i class="bi bi-link-45deg me-1"></i>จับคู่แพ็ค-ตัวหลวม
   </a>
 </div>
 {% else %}
@@ -66,6 +69,7 @@
           <th>ชื่อสูตร</th>
           <th>วัตถุดิบ (inputs)</th>
           <th class="text-end">ผลลัพธ์ที่ได้</th>
+          <th class="text-end" title="จำนวนที่แปลงได้ตอนนี้จากสต็อกวัตถุดิบปัจจุบัน">แปลงได้ตอนนี้</th>
           <th class="text-center">สถานะ</th>
           <th></th>
         </tr>
@@ -81,6 +85,10 @@
           <td class="text-end">
             <span class="fw-500">{{ f.output_qty | fmt_qty }}</span>
             <span class="text-subtle small ms-1">{{ f.output_unit_type }} {{ f.output_product_name }}</span>
+          </td>
+          <td class="text-end">
+            {% set b = buildable.get(f.id, 0) %}
+            {% if b > 0 %}<span class="text-success fw-500">{{ b | fmt_qty }}</span>{% else %}<span class="text-subtle">0</span>{% endif %}
           </td>
           <td class="text-center">
             {% if f.is_active %}

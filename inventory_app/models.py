@@ -3587,6 +3587,73 @@ def get_buildable(product_ids=None, conn=None):
     return result
 
 
+def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='', conn=None):
+    """Create or update the conversion formula(s) for a pack↔loose pair, in one
+    call (the /conversions pair-mode form). Idempotent — re-running updates the
+    matching formula instead of duplicating.
+
+        PACK   : output=pack_id,  output_qty=1,     inputs=[(loose_id, ratio)]
+        UNPACK : output=loose_id, output_qty=ratio, inputs=[(pack_id, 1)]
+
+    direction: 'both' | 'pack' | 'unpack'. Dedup key = (output_product_id,
+    frozenset(input_product_ids)) over ACTIVE formulas. Returns
+    {'created': int, 'updated': int, 'formula_ids': [...]}.
+    """
+    ratio = int(ratio)
+    own = conn is None
+    if own:
+        conn = get_connection()
+    try:
+        def _pinfo(pid):
+            r = conn.execute("SELECT product_name, unit_type FROM products WHERE id=?", (pid,)).fetchone()
+            return (r["product_name"], r["unit_type"]) if r else (str(pid), "")
+        pack_name, _pack_unit = _pinfo(pack_id)
+        _loose_name, loose_unit = _pinfo(loose_id)
+
+        specs = []
+        if direction in ('both', 'pack'):
+            specs.append(dict(name=f"[แพ็ค] {pack_name} ⟵ {ratio} {loose_unit}",
+                              output_pid=pack_id, output_qty=1, inputs=[(loose_id, ratio)]))
+        if direction in ('both', 'unpack'):
+            specs.append(dict(name=f"[แกะ] {pack_name} ⟶ {ratio} {loose_unit}",
+                              output_pid=loose_id, output_qty=ratio, inputs=[(pack_id, 1)]))
+
+        created = updated = 0
+        formula_ids = []
+        for spec in specs:
+            want_inputs = frozenset(p for p, _ in spec['inputs'])
+            existing = None
+            for f in conn.execute("SELECT id FROM conversion_formulas WHERE output_product_id=? AND is_active=1",
+                                  (spec['output_pid'],)).fetchall():
+                ins = frozenset(r[0] for r in conn.execute(
+                    "SELECT product_id FROM conversion_formula_inputs WHERE formula_id=?", (f["id"],)))
+                if ins == want_inputs:
+                    existing = f["id"]
+                    break
+            if existing is not None:
+                conn.execute("UPDATE conversion_formulas SET name=?, output_qty=?, note=? WHERE id=?",
+                             (spec['name'], spec['output_qty'], note or None, existing))
+                conn.execute("DELETE FROM conversion_formula_inputs WHERE formula_id=?", (existing,))
+                fid = existing
+                updated += 1
+            else:
+                cur = conn.execute(
+                    "INSERT INTO conversion_formulas(name, output_product_id, output_qty, note) VALUES (?,?,?,?)",
+                    (spec['name'], spec['output_pid'], spec['output_qty'], note or None))
+                fid = cur.lastrowid
+                created += 1
+            for ipid, iqty in spec['inputs']:
+                conn.execute("INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity) VALUES (?,?,?)",
+                             (fid, ipid, iqty))
+            formula_ids.append(fid)
+        if own:
+            conn.commit()
+        return {'created': created, 'updated': updated, 'formula_ids': formula_ids}
+    finally:
+        if own:
+            conn.close()
+
+
 def create_conversion_formula(name, output_product_id, output_qty, inputs, note=''):
     conn = get_connection()
     cur = conn.execute(
@@ -3644,7 +3711,12 @@ def get_recent_conversion_runs(limit=5):
     return rows
 
 
-def run_conversion(formula_id, multiplier, reference_no='', extra_note=''):
+def run_conversion(formula_id, multiplier, reference_no='', extra_note='', writeoff_qty=0):
+    """Run a conversion. `writeoff_qty` = output units scrapped during the run
+    (ของเสีย, e.g. 10 แผง → 20 ตัว but 1 broke). Inputs are still fully consumed;
+    only GOOD units (expected − writeoff) enter stock; input cost spreads over
+    the good units (scrap raises good-unit cost). Broken units never enter stock.
+    """
     from datetime import datetime as _dt
     conn = get_connection()
     formula = conn.execute("""
@@ -3656,6 +3728,17 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note=''):
     if not formula:
         conn.close()
         return False, 'ไม่พบสูตรการแปลง', {}
+
+    # write-off (ของเสีย) — output units scrapped this run
+    try:
+        writeoff_qty = max(0, int(writeoff_qty or 0))
+    except (ValueError, TypeError):
+        writeoff_qty = 0
+    expected_qty = formula['output_qty'] * multiplier
+    if writeoff_qty > expected_qty:
+        conn.close()
+        return False, f'ตัดของเสียได้ไม่เกินจำนวนที่ผลิต ({expected_qty:,})', {}
+    good_qty = expected_qty - writeoff_qty
 
     inputs = conn.execute("""
         SELECT cfi.*, p.product_name, p.unit_type,
@@ -3684,8 +3767,8 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note=''):
         inp_wacc = get_current_wacc(inp['product_id'], conn)
         total_input_cost += needed * inp_wacc
 
-    output_qty       = formula['output_qty'] * multiplier
-    output_unit_cost = total_input_cost / output_qty if output_qty > 0 else 0.0
+    # cost spreads over GOOD output only (scrap loss raises good-unit cost)
+    output_unit_cost = total_input_cost / good_qty if good_qty > 0 else 0.0
 
     # ใช้ reference_no ที่ user ส่งมา หรือ generate ใหม่
     conv_ref = reference_no or f'CONV{formula_id}-{_dt.now().strftime("%Y%m%d%H%M%S")}'
@@ -3693,6 +3776,8 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note=''):
     note_text = f'แปลง: {formula["name"]}'
     if extra_note:
         note_text += f' | {extra_note}'
+    if writeoff_qty:
+        note_text += f' | ตัดของเสีย {writeoff_qty:,}'
 
     for inp in inputs:
         needed = inp['quantity'] * multiplier
@@ -3702,18 +3787,20 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note=''):
             (inp['product_id'], 'OUT', -needed, 'unit', conv_ref, note_text)
         )
 
-    conn.execute(
-        "INSERT INTO transactions(product_id, txn_type, quantity_change, unit_mode, reference_no, note)"
-        " VALUES (?,?,?,?,?,?)",
-        (formula['output_product_id'], 'IN', output_qty, 'unit', conv_ref, note_text)
-    )
+    # only GOOD units enter stock; a total loss (good_qty=0) adds nothing
+    if good_qty > 0:
+        conn.execute(
+            "INSERT INTO transactions(product_id, txn_type, quantity_change, unit_mode, reference_no, note)"
+            " VALUES (?,?,?,?,?,?)",
+            (formula['output_product_id'], 'IN', good_qty, 'unit', conv_ref, note_text)
+        )
 
     # บันทึก conversion cost log (ใช้ตอน recalculate WACC output)
     conn.execute(
         "INSERT INTO conversion_cost_log"
-        " (output_product_id, reference_no, event_date, output_qty, total_input_cost, unit_cost)"
-        " VALUES (?,?,date('now'),?,?,?)",
-        (formula['output_product_id'], conv_ref, output_qty, total_input_cost, output_unit_cost)
+        " (output_product_id, reference_no, event_date, output_qty, total_input_cost, unit_cost, writeoff_qty)"
+        " VALUES (?,?,date('now'),?,?,?,?)",
+        (formula['output_product_id'], conv_ref, good_qty, total_input_cost, output_unit_cost, writeoff_qty)
     )
 
     conn.commit()
@@ -3723,8 +3810,12 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note=''):
     recalculate_waccs_for_products(involved)
 
     conn.close()
-    return True, f'แปลงสำเร็จ: ได้ {output_qty:,} {formula["output_product_name"]}', {
-        'output_qty': output_qty,
+    msg = f'แปลงสำเร็จ: ได้ {good_qty:,} {formula["output_product_name"]}'
+    if writeoff_qty:
+        msg += f' (ตัดของเสีย {writeoff_qty:,})'
+    return True, msg, {
+        'output_qty': good_qty,
+        'writeoff_qty': writeoff_qty,
         'output_name': formula['output_product_name'],
     }
 

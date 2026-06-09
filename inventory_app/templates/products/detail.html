@@ -42,6 +42,21 @@
         </div>
         {% endif %}
 
+        {# ── pack/unpack true availability ── #}
+        {% if buildable and buildable.buildable > 0 %}
+        <div class="alert alert-info py-2 mt-2 mb-0 small text-start">
+          <i class="bi bi-arrow-repeat me-1"></i>
+          แกะ/แพ็คเพิ่มได้อีก <strong>+{{ buildable.buildable | fmt_qty }}</strong> {{ product.unit_type }}
+          → รวมพร้อมขายจริง <strong>{{ buildable.true_available | fmt_qty }}</strong> {{ product.unit_type }}
+          {% set plat = (product.shopee_stock or 0) + (product.lazada_stock or 0) %}
+          {% if plat > product.quantity and buildable.true_available >= plat %}
+          <div class="mt-1 text-success">
+            <i class="bi bi-check-circle me-1"></i>ลิสต์ออนไลน์ {{ plat | fmt_qty }} ชิ้น — สต็อกจริงไม่พอ แต่แกะแพ็คเติมได้ทัน
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
+
         {# ── Online platform stock ── #}
         <div class="d-flex gap-2 mt-3">
           <div class="flex-fill rounded-2 py-2 px-3 text-start"
