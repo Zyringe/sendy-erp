@@ -42,3 +42,23 @@ def test_expense_topn_preserves_grand_total():
 
 def test_expense_topn_empty():
     assert _expense_topn([], n=7) == []
+
+
+@pytest.fixture
+def admin_client(tmp_db):
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 1
+        sess['username'] = 'test-admin'
+        sess['role'] = 'admin'
+    return c
+
+
+def test_dashboard_has_charts(admin_client):
+    html = admin_client.get('/cashbook/').data.decode('utf-8')
+    assert 'id="cbTrendChart"' in html
+    assert 'id="cbExpenseChart"' in html
+    assert 'chart.umd.min.js' in html
+    assert 'openCbDetail' in html   # refactor kept the modal opener
