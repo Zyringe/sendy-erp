@@ -3515,6 +3515,78 @@ def get_conversion_formula(formula_id):
     return formula, inputs
 
 
+def get_buildable(product_ids=None, conn=None):
+    """Pack/unpack 'true availability'. For each product that is the OUTPUT of
+    one or more ACTIVE conversion formulas, compute how many EXTRA output units
+    could be produced from CURRENT input stock — one level deep, no recursion:
+
+        buildable(P) = Σ over active formulas f with output=P of
+                       (min over inputs i of floor(stock(i) / i.quantity)) * f.output_qty
+
+    Returns {product_id: {'buildable': int, 'output_stock': num,
+             'true_available': num (= output_stock + buildable),
+             'sources': [{'formula_id', 'name', 'output_qty', 'qty'}]}}
+    for every product that is such an output (buildable may be 0). When
+    product_ids is given, the result is restricted to that set. A tiny epsilon
+    absorbs IEEE noise in trigger-maintained stock (verification-discipline).
+    """
+    own = conn is None
+    if own:
+        conn = get_connection()
+    try:
+        params = []
+        filt = ""
+        if product_ids is not None:
+            ids = list(product_ids)
+            if not ids:
+                return {}
+            filt = " AND cf.output_product_id IN (%s)" % ",".join("?" * len(ids))
+            params = ids
+        rows = conn.execute(f"""
+            SELECT cf.id AS formula_id, cf.name, cf.output_product_id AS out_pid,
+                   cf.output_qty,
+                   COALESCE(slo.quantity, 0) AS output_stock,
+                   cfi.quantity AS input_qty,
+                   COALESCE(sli.quantity, 0) AS input_stock
+              FROM conversion_formulas cf
+              JOIN conversion_formula_inputs cfi ON cfi.formula_id = cf.id
+              LEFT JOIN stock_levels slo ON slo.product_id = cf.output_product_id
+              LEFT JOIN stock_levels sli ON sli.product_id = cfi.product_id
+             WHERE cf.is_active = 1{filt}
+        """, params).fetchall()
+    finally:
+        if own:
+            conn.close()
+
+    per_formula = {}
+    for r in rows:
+        f = per_formula.setdefault(r["formula_id"], {
+            "name": r["name"], "out_pid": r["out_pid"],
+            "output_qty": r["output_qty"], "output_stock": r["output_stock"],
+            "factors": [],
+        })
+        iq = r["input_qty"]
+        # floor(input_stock / input_qty); +1e-9 absorbs IEEE noise (e.g. 5.9999999999999 → 6)
+        factor = int((r["input_stock"] + 1e-9) // iq) if iq and iq > 0 else 0
+        f["factors"].append(factor)
+
+    result = {}
+    for fid, f in per_formula.items():
+        qty = (min(f["factors"]) if f["factors"] else 0) * f["output_qty"]
+        entry = result.setdefault(f["out_pid"], {
+            "buildable": 0, "output_stock": f["output_stock"],
+            "true_available": 0, "sources": [],
+        })
+        entry["buildable"] += qty
+        entry["sources"].append({
+            "formula_id": fid, "name": f["name"],
+            "output_qty": f["output_qty"], "qty": qty,
+        })
+    for e in result.values():
+        e["true_available"] = e["output_stock"] + e["buildable"]
+    return result
+
+
 def create_conversion_formula(name, output_product_id, output_qty, inputs, note=''):
     conn = get_connection()
     cur = conn.execute(

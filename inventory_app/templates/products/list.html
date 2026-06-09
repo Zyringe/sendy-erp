@@ -43,6 +43,12 @@
                  id="chkInStock" {% if in_stock %}checked{% endif %}>
           <label class="form-check-label small" for="chkInStock">มีสต็อก &gt; 0</label>
         </div>
+        <div class="form-check mb-0">
+          <input class="form-check-input" type="checkbox" name="show_alt" value="1"
+                 id="chkShowAlt" {% if show_alt %}checked{% endif %}>
+          <label class="form-check-label small" for="chkShowAlt"
+                 title="แสดงจำนวนที่เติมได้จากการแกะแพ็ค/แพ็คตัวหลวม (ทางเลือก)">เติมได้จากแพ็ค</label>
+        </div>
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
         <a href="{{ url_for('products.product_list') }}" class="btn btn-sm btn-outline-secondary">ล้าง</a>
       </div>
@@ -90,7 +96,7 @@
           <td data-label="หน่วย" class="text-center text-subtle">{{ p.unit_type }}</td>
           <td data-label="ราคาขาย" class="text-end text-subtle">{{ p.base_sell_price | fmt_price }}</td>
           <td data-label="สต็อก" class="text-end fw-600 {% if p.is_low %}text-danger{% else %}text-main{% endif %}">
-            {{ p.quantity | fmt_qty }}
+            {{ p.quantity | fmt_qty }}{% if show_alt and buildable.get(p.id) %} <span class="text-subtle fw-500" title="เติมได้อีก {{ buildable.get(p.id) | fmt_qty }} จากการแกะ/แพ็ค (ตัวหลวม↔แผง) — ทางเลือก ไม่ใช่สต๊อกจริง">(+{{ buildable.get(p.id) | fmt_qty }})</span>{% endif %}
           </td>
           <td data-label="ต้นทุน" class="text-end text-subtle">{% if is_manager %}{{ p.cost_price | fmt_price }}{% else %}—{% endif %}</td>
           <td data-label="Shopee" class="text-end text-subtle">{{ p.shopee_stock | fmt_qty }}</td>
