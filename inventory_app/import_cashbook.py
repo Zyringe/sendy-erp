@@ -200,15 +200,58 @@ def _upsert_category(conn, name, direction, source):
 
 # ── Salary-advance helpers ────────────────────────────────────────────────────
 
-def _build_nickname_map(conn):
+def _build_employee_resolver(conn):
     """
-    Build a dict {nickname_lower: employee_id} from the employees table.
-    Skips rows with NULL/blank nickname.
+    Multi-key employee lookup. Returns four {key_lower: employee_id} dicts —
+    emp_code, FIRST NAME (first token of full_name), nickname, full name — each
+    with ambiguous keys (same key → 2+ employees) dropped so they never match the
+    wrong person. _resolve_employee_id tries them in that precedence order.
+
+    First name is the everyday key (Put's standard) and is what fixes employees
+    with a blank nickname (e.g. วฤทธิ์ EMP001, สันติ EMP003), whose advances the
+    old nickname-only map could never match.
     """
     rows = conn.execute(
-        "SELECT id, nickname FROM employees WHERE nickname IS NOT NULL AND nickname != ''"
+        "SELECT id, emp_code, full_name, nickname FROM employees"
     ).fetchall()
-    return {r[1].strip().lower(): r[0] for r in rows}
+
+    def _index(pairs):
+        seen = {}
+        for k, eid in pairs:
+            if not k:
+                continue
+            if k in seen and seen[k] != eid:
+                seen[k] = None          # ambiguous → unmatchable
+            elif k not in seen:
+                seen[k] = eid
+        return {k: v for k, v in seen.items() if v is not None}
+
+    def _norm(s):
+        return (s or "").strip().lower()
+
+    code_p, first_p, nick_p, full_p = [], [], [], []
+    for r in rows:
+        eid, code, full, nick = r[0], r[1], r[2], r[3]
+        full_s = (full or "").strip()
+        code_p.append((_norm(code), eid))
+        first_p.append((full_s.split()[0].lower() if full_s else "", eid))
+        nick_p.append((_norm(nick), eid))
+        full_p.append((_norm(full), eid))
+    # order = precedence: emp_code → first name → nickname → full name
+    return [_index(code_p), _index(first_p), _index(nick_p), _index(full_p)]
+
+
+def _resolve_employee_id(resolver, raw):
+    """Resolve a free-text name or code to an employee_id using the resolver
+    (emp_code → first name → nickname → full name). Returns None if nothing
+    matches unambiguously."""
+    k = (raw or "").strip().lower()
+    if not k:
+        return None
+    for idx in resolver:
+        if k in idx:
+            return idx[k]
+    return None
 
 
 # ── Employee sync ─────────────────────────────────────────────────────────────
@@ -566,9 +609,11 @@ def _do_import(path, conn):
     sync_result = sync_salary_sheet(parsed, conn)
     all_warnings.extend(sync_result.get("warnings", []))
 
-    # ── Step 9: insert advances with nickname matching ───────────────────────
-    # Rebuild nickname map now that new employees have been created
-    nickname_map = _build_nickname_map(conn)
+    # ── Step 9: insert advances with multi-key matching ──────────────────────
+    # Build the resolver now that new employees have been created. Matches by
+    # emp_code → first name → nickname → full name (first hit wins), so an advance
+    # for a blank-nickname employee (วฤทธิ์/สันติ) now matches by first name.
+    resolver = _build_employee_resolver(conn)
 
     adv_inserted  = 0
     adv_matched   = 0
@@ -576,9 +621,7 @@ def _do_import(path, conn):
 
     for adv in parsed.get("advances", []):
         raw_name = adv.get("raw_name")
-        emp_id   = None
-        if raw_name:
-            emp_id = nickname_map.get(raw_name.strip().lower())
+        emp_id   = _resolve_employee_id(resolver, raw_name)
 
         if emp_id is not None:
             adv_matched += 1

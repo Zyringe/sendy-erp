@@ -563,6 +563,10 @@ class TestSalaryAdvances:
         This is the same operator step Put performs in HR UI in production.
         """
         _ensure_mig056(tmp_db_conn)
+        # The live-DB clone already nicknames EMP005 (วุฒิพงษ์) 'บอล'. The multi-key
+        # resolver refuses to guess between two employees sharing a nickname, so
+        # clear the collision first — then 'บอล' uniquely identifies EMP001.
+        tmp_db_conn.execute("UPDATE employees SET nickname=NULL WHERE nickname='บอล'")
         tmp_db_conn.execute(
             "UPDATE employees SET nickname='บอล' WHERE emp_code='EMP001'"
         )
