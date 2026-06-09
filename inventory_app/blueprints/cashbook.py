@@ -130,6 +130,16 @@ def _get_category_summary(conn):
     return income_cats, expense_cats
 
 
+def _expense_topn(expense_cats, n=7):
+    """Top-n expense categories by total (input already sorted desc); the rest
+    folded into a single 'อื่นๆ' row. Grand total preserved. Pure/testable."""
+    out = [{"category": c["category"], "total": c["total"]} for c in expense_cats[:n]]
+    rest = expense_cats[n:]
+    if rest:
+        out.append({"category": "อื่นๆ", "total": sum(c["total"] for c in rest)})
+    return out
+
+
 def _get_tag_summary(conn):
     """Operating EXPENSE grouped by ผู้ใช้ tag (user_category). Excludes transfer
     accounts, transfer categories and untagged rows."""
@@ -250,6 +260,7 @@ def dashboard():
         monthly=monthly,
         income_cats=income_cats,
         expense_cats=expense_cats,
+        expense_chart=_expense_topn(expense_cats),
         tag_summary=tag_summary,
     )
 
