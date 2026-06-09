@@ -81,3 +81,82 @@ def test_conversion_pair_post_rejects_same_product(admin_client, tmp_db):
     }, follow_redirects=True)
     assert resp.status_code == 200
     assert 'ต้องไม่ใช่ตัวเดียวกัน'.encode() in resp.data
+
+
+# ── pair-aware delete: deleting one half must not silently orphan the other ────
+
+def _seed_pair(tmp_db, pack_pid, loose_pid, direction='both'):
+    """Insert two fresh products + a pack/unpack pair on the temp DB; return the
+    (pack_formula_id, loose_formula_id) — loose_formula_id is None for one-way."""
+    import models
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("INSERT INTO products (id, product_name, unit_type, is_active) VALUES (?,?,?,1)",
+                 (pack_pid, f"TESTPACK{pack_pid}", "แผง"))
+    conn.execute("INSERT INTO products (id, product_name, unit_type, is_active) VALUES (?,?,?,1)",
+                 (loose_pid, f"TESTLOOSE{loose_pid}", "ตัว"))
+    conn.commit(); conn.close()
+    models.upsert_pack_unpack_pair(pack_pid, loose_pid, 2, direction)
+    conn = sqlite3.connect(tmp_db)
+    rows = conn.execute(
+        "SELECT id, output_product_id FROM conversion_formulas "
+        "WHERE output_product_id IN (?,?) AND is_active=1", (pack_pid, loose_pid)).fetchall()
+    conn.close()
+    pack_fid  = next((r[0] for r in rows if r[1] == pack_pid), None)
+    loose_fid = next((r[0] for r in rows if r[1] == loose_pid), None)
+    return pack_fid, loose_fid
+
+
+def test_delete_both_removes_pair(admin_client, tmp_db):
+    pack_fid, unpack_fid = _seed_pair(tmp_db, 900001, 900002)
+    resp = admin_client.post(f'/conversions/{unpack_fid}/delete',
+                             data={'delete_partner': '1'}, follow_redirects=False)
+    assert resp.status_code == 302
+    conn = sqlite3.connect(tmp_db)
+    n  = conn.execute("SELECT COUNT(*) FROM conversion_formulas WHERE id IN (?,?)",
+                      (pack_fid, unpack_fid)).fetchone()[0]
+    ni = conn.execute("SELECT COUNT(*) FROM conversion_formula_inputs WHERE formula_id IN (?,?)",
+                      (pack_fid, unpack_fid)).fetchone()[0]
+    conn.close()
+    assert n == 0 and ni == 0                                # both formulas + inputs gone
+
+
+def test_delete_only_this_keeps_partner(admin_client, tmp_db):
+    pack_fid, unpack_fid = _seed_pair(tmp_db, 900011, 900012)
+    resp = admin_client.post(f'/conversions/{unpack_fid}/delete', data={}, follow_redirects=False)
+    assert resp.status_code == 302
+    conn = sqlite3.connect(tmp_db)
+    has_unpack = conn.execute("SELECT COUNT(*) FROM conversion_formulas WHERE id=?", (unpack_fid,)).fetchone()[0]
+    has_pack   = conn.execute("SELECT COUNT(*) FROM conversion_formulas WHERE id=?", (pack_fid,)).fetchone()[0]
+    conn.close()
+    assert has_unpack == 0 and has_pack == 1                 # partner survives when flag omitted
+
+
+def test_delete_no_partner_unchanged(admin_client, tmp_db):
+    pack_fid, none_fid = _seed_pair(tmp_db, 900021, 900022, direction='pack')
+    assert none_fid is None                                  # one-way: no loose formula
+    resp = admin_client.post(f'/conversions/{pack_fid}/delete',
+                             data={'delete_partner': '1'}, follow_redirects=False)
+    assert resp.status_code == 302
+    conn = sqlite3.connect(tmp_db)
+    n = conn.execute("SELECT COUNT(*) FROM conversion_formulas WHERE id=?", (pack_fid,)).fetchone()[0]
+    conn.close()
+    assert n == 0                                            # deletes fine, no error
+
+
+def test_delete_both_atomic(admin_client, tmp_db):
+    pack_fid, unpack_fid = _seed_pair(tmp_db, 900031, 900032)
+    conn = sqlite3.connect(tmp_db)
+    before = conn.execute("SELECT COUNT(*) FROM conversion_formulas").fetchone()[0]
+    conn.close()
+    admin_client.post(f'/conversions/{pack_fid}/delete', data={'delete_partner': '1'})
+    conn = sqlite3.connect(tmp_db)
+    after = conn.execute("SELECT COUNT(*) FROM conversion_formulas").fetchone()[0]
+    conn.close()
+    assert before - after == 2                               # exactly two rows, one request
+
+
+def test_list_shows_oneway_badge(admin_client, tmp_db):
+    _seed_pair(tmp_db, 900041, 900042, direction='unpack')   # one-way [แกะ] only
+    resp = admin_client.get('/conversions')
+    assert resp.status_code == 200
+    assert 'ทิศเดียว'.encode() in resp.data                  # one-way indicator renders

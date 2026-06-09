@@ -3677,12 +3677,72 @@ def update_conversion_formula(formula_id, name, output_product_id, output_qty, i
     conn.close()
 
 
-def delete_conversion_formula(formula_id):
+def delete_conversion_formula(formula_id, also_delete_id=None):
+    """Delete a formula (+ its inputs via the explicit DELETE). When
+    `also_delete_id` is given (the reciprocal pack/unpack partner), delete both
+    in ONE transaction so a pair is never left half-deleted."""
     conn = get_connection()
-    conn.execute("DELETE FROM conversion_formula_inputs WHERE formula_id=?", (formula_id,))
-    conn.execute("DELETE FROM conversion_formulas WHERE id=?", (formula_id,))
+    ids = [formula_id]
+    if also_delete_id is not None and also_delete_id != formula_id:
+        ids.append(also_delete_id)
+    for fid in ids:
+        conn.execute("DELETE FROM conversion_formula_inputs WHERE formula_id=?", (fid,))
+        conn.execute("DELETE FROM conversion_formulas WHERE id=?", (fid,))
     conn.commit()
     conn.close()
+
+
+def find_pair_partner(formula_id, conn=None):
+    """Return the reciprocal pack/unpack partner row of `formula_id`, or None.
+
+    A pair-half has exactly ONE output and ONE input. The partner P satisfies the
+    FULL reciprocal: P.output_product_id == this formula's single input product,
+    AND this formula's output_product_id is P's single input product; P active,
+    single-input, P != self. Multi-input (general) formulas have no partner.
+    Matching the full reciprocal (not output alone) disambiguates a loose product
+    shared by several packs. Used so deleting one half of a [แพ็ค]/[แกะ] pair can
+    offer to take the other half with it instead of silently orphaning it.
+    """
+    own = conn is None
+    if own:
+        conn = get_connection()
+    try:
+        f = conn.execute(
+            "SELECT name, output_product_id FROM conversion_formulas WHERE id=?",
+            (formula_id,)).fetchone()
+        if f is None:
+            return None
+        # Only [แพ็ค]/[แกะ] pack-unpack formulas form a pair. A generic reciprocal
+        # conversion from the advanced editor is NOT a deletable pair — gate on the
+        # prefix so this stays consistent with the list's one-way detector.
+        if not (f["name"].startswith('[แพ็ค]') or f["name"].startswith('[แกะ]')):
+            return None
+        ins = [r["product_id"] for r in conn.execute(
+            "SELECT product_id FROM conversion_formula_inputs WHERE formula_id=?",
+            (formula_id,)).fetchall()]
+        if len(ins) != 1:                       # not a clean 1-input pair half
+            return None
+        my_input, my_output = ins[0], f["output_product_id"]
+        for cand in conn.execute("""
+            SELECT cf.id, cf.name, cf.output_product_id, cf.output_qty,
+                   p.product_name AS output_product_name,
+                   p.unit_type    AS output_unit_type
+              FROM conversion_formulas cf
+              JOIN products p ON p.id = cf.output_product_id
+             WHERE cf.is_active=1 AND cf.output_product_id=? AND cf.id<>?
+               AND (cf.name LIKE '[แพ็ค]%' OR cf.name LIKE '[แกะ]%')
+        """, (my_input, formula_id)).fetchall():
+            cins = [r["product_id"] for r in conn.execute(
+                "SELECT product_id FROM conversion_formula_inputs WHERE formula_id=?",
+                (cand["id"],)).fetchall()]
+            # dedup key (output, single-input set) is unique among active formulas,
+            # so the first full-reciprocal match is the only one.
+            if len(cins) == 1 and cins[0] == my_output:
+                return cand                     # full reciprocal match
+        return None
+    finally:
+        if own:
+            conn.close()
 
 
 def get_recent_conversion_runs(limit=5):
