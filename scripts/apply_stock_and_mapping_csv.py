@@ -159,7 +159,7 @@ def main(argv=None):
             (pid,),
         ).fetchone()
         if not prod:
-            unresolved_acr.append(f"pid {pid} not found (row sku {r.get('sku')})")
+            unresolved_acr.append(f"product_id {pid} not found")
             continue
         base_unit = (prod["unit_type"] or "").strip()
         name_sku[pid] = ((r.get("sku_code") or "").strip(),

@@ -46,8 +46,10 @@ def main():
         )
     }
 
+    # CSV "skus" column holds product_id values (build_family_review.py emits
+    # product_id end-to-end now that products.sku was dropped in mig 097).
     n_skip = n_apply = n_already = n_invalid_format = 0
-    sku_updates = []  # list of (sku, family_id) tuples to apply
+    pid_updates = []  # list of (product_id, family_id) tuples to apply
 
     for r in rows:
         if (r.get("skip") or "").strip().upper() == "Y":
@@ -96,20 +98,20 @@ def main():
             else:
                 family_id = None
 
-        # Queue SKU updates
-        skus = [s.strip() for s in (r.get("skus") or "").split(",") if s.strip()]
-        for sku in skus:
-            sku_updates.append((int(sku), family_id))
+        # Queue product updates (the "skus" column carries product_id values)
+        pids = [s.strip() for s in (r.get("skus") or "").split(",") if s.strip()]
+        for pid in pids:
+            pid_updates.append((int(pid), family_id))
 
-    # Apply SKU → family_id updates
+    # Apply product_id → family_id updates
     n_sku_updated = 0
     if args.apply:
-        for sku, family_id in sku_updates:
+        for pid, family_id in pid_updates:
             if family_id is None:
                 continue
             cur.execute(
-                "UPDATE products SET family_id = ? WHERE sku = ?",
-                (family_id, sku)
+                "UPDATE products SET family_id = ? WHERE id = ?",
+                (family_id, pid)
             )
             n_sku_updated += cur.rowcount
         conn.commit()
@@ -119,7 +121,7 @@ def main():
     print(f"  invalid display_format:     {n_invalid_format}")
     print(f"  family already exists:      {n_already}")
     print(f"  → would INSERT new family:  {n_apply}")
-    print(f"  → SKU→family_id updates:    {len(sku_updates)}")
+    print(f"  → SKU→family_id updates:    {len(pid_updates)}")
     if args.apply:
         print()
         print(f"Applied: {n_sku_updated} SKUs linked to families")

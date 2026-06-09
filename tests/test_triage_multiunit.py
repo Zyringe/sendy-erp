@@ -35,15 +35,9 @@ def _sale(c, code, unit, qty, n=1, pid=PA):
 
 def test_triage_classifies(tmp_db):
     c = sqlite3.connect(tmp_db)
-    c.execute("INSERT INTO products (id,sku,product_name,unit_type,sku_code,"
-              "is_active) VALUES (?,?,?,'แผง',?,1)",
-              (PA, PA, "ของทดสอบ รุ่นA (แผง)", f"S{PA}"))
-    c.execute("INSERT INTO products (id,sku,product_name,unit_type,sku_code,"
-              "is_active) VALUES (?,?,?,'ตัว',?,1)",
-              (PB, PB, "ของทดสอบ รุ่นA (ตัว)", f"S{PB}"))
-    c.execute("INSERT INTO products (id,sku,product_name,unit_type,sku_code,"
-              "is_active) VALUES (?,?,?,'แผง',?,1)",
-              (PN, PN, "เฉพาะกิจไม่มีพี่น้อง (แผง)", f"S{PN}"))
+    c.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'แผง', ?, 1)", (PA, "ของทดสอบ รุ่นA (แผง)", f"S{PA}"))
+    c.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (PB, "ของทดสอบ รุ่นA (ตัว)", f"S{PB}"))
+    c.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'แผง', ?, 1)", (PN, "เฉพาะกิจไม่มีพี่น้อง (แผง)", f"S{PN}"))
     for code, pid in ((RA, PA), (BU, PA), (NO, PN)):
         c.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
                   "product_id,bsn_unit) VALUES (?,?,?,'')",

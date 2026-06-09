@@ -20,7 +20,7 @@
     <table class="table table-sm mb-0">
       <thead>
         <tr>
-          <th style="width:70px">SKU</th>
+          <th style="width:70px">ID</th>
           <th>ชื่อสินค้า</th>
           <th class="text-end text-danger">สต็อกคลัง</th>
           <th></th>
@@ -29,7 +29,7 @@
       <tbody>
         {% for a in alerts %}
         <tr>
-          <td><span class="badge badge-gray font-mono">{{ a.sku }}</span></td>
+          <td><span class="badge badge-gray font-mono">{{ a.id }}</span></td>
           <td>
             <a href="{{ url_for('products.product_detail', product_id=a.id) }}"
                class="text-decoration-none fw-500 text-main">{{ a.product_name }}</a>
@@ -40,7 +40,7 @@
             <button type="button" class="btn btn-xs btn-primary adjust-btn"
                     title="ปรับสต็อก"
                     data-pid="{{ a.id }}"
-                    data-sku="{{ a.sku }}"
+                    data-id="{{ a.id }}"
                     data-name="{{ a.product_name }}"
                     data-qty="{{ a.quantity }}"
                     data-unit="{{ a.unit_type }}">
@@ -119,7 +119,7 @@ document.querySelectorAll('.adjust-btn').forEach(btn => {
     const d = btn.dataset;
     const currentQty = parseFloat(d.qty) || 0;
     document.getElementById('adjustForm').action = '/products/' + d.pid + '/adjust';
-    document.getElementById('adj-sku').textContent = d.sku;
+    document.getElementById('adj-sku').textContent = d.id;
     document.getElementById('adj-name').textContent = d.name;
     document.getElementById('adj-current').textContent = currentQty;
     document.getElementById('adj-unit').textContent = d.unit;

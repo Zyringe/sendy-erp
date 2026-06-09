@@ -4,7 +4,7 @@ sendy_erp/docs/product_name_naming_rule.md (locked 2026-05-05).
 Reports each SKU that violates one or more rules. Output is written to
 sendy_erp/data/exports/sku_naming_audit.csv with columns:
 
-    sku, product_name, brand, issues
+    product_id, product_name, brand, issues
 
 `issues` is a semicolon-separated list of issue codes:
 
@@ -225,10 +225,10 @@ def main():
             if v:
                 brand_tokens.add(v.upper())
 
-    sql = "SELECT id, sku, product_name, brand_id, is_active FROM products"
+    sql = "SELECT id, product_name, brand_id, is_active FROM products"
     if args.only_active:
         sql += " WHERE is_active = 1"
-    sql += " ORDER BY sku"
+    sql += " ORDER BY id"
     rows = conn.execute(sql).fetchall()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -238,7 +238,7 @@ def main():
 
     with open(args.output, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["sku", "product_name", "brand", "is_active", "issues"])
+        w.writerow(["product_id", "product_name", "brand", "is_active", "issues"])
         for r in rows:
             total += 1
             brand_rec = brand_names.get(r["brand_id"]) if r["brand_id"] else None
@@ -250,7 +250,7 @@ def main():
                     key = i.split(":")[0]
                     issue_counts[key] = issue_counts.get(key, 0) + 1
                 w.writerow([
-                    r["sku"], r["product_name"],
+                    r["id"], r["product_name"],
                     (brand_rec["name"] if brand_rec else "(none)"),
                     r["is_active"], ";".join(issues),
                 ])

@@ -436,10 +436,15 @@ def main():
                 all_brand_tokens.append(v)
                 token_to_brand[v] = r["name"]
 
-    sql = "SELECT id, sku, product_name, brand_id FROM products"
+    # products.sku was dropped (mig 097); the parse worklist's "sku" column
+    # carries the OLD integer sku (via the forensic legacy map) so the
+    # downstream apply_* consumers still resolve it back to a product_id.
+    sql = ("SELECT p.id, m.sku, p.product_name, p.brand_id "
+           "FROM products p "
+           "LEFT JOIN legacy_product_sku_map m ON m.product_id = p.id")
     if not args.all:
-        sql += " WHERE is_active = 1"
-    sql += " ORDER BY sku"
+        sql += " WHERE p.is_active = 1"
+    sql += " ORDER BY p.id"
     rows = conn.execute(sql).fetchall()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

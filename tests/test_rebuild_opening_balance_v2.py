@@ -25,9 +25,10 @@ A, B1, B3, D = 900301, 900302, 900303, 900304
 
 
 def _prod(c, pid):
-    c.execute("INSERT INTO products (id,sku,product_name,unit_type,sku_code,"
-              "is_active) VALUES (?,?,?,?,?,1)",
-              (pid, pid, f"P{pid}", "ตัว", f"SK-{pid}"))
+    c.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, ?, ?, 1)", (pid, f"P{pid}", "ตัว", f"SK-{pid}"))
+    # products.sku was dropped (mig 097); the CSV is keyed by the OLD integer
+    # sku (== pid here) → seed the forensic map so sku→product_id resolves.
+    c.execute("INSERT INTO legacy_product_sku_map (product_id, sku) VALUES (?, ?)", (pid, pid))
 
 
 def _txn(c, pid, t, qty, note, when):

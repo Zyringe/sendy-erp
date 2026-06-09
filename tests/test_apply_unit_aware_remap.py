@@ -23,12 +23,9 @@ CODE, CTRL = "ZAP100", "ZCTRL9"
 
 def _setup(tmp_db):
     c = sqlite3.connect(tmp_db)
-    c.execute("INSERT INTO products (id,sku,product_name,unit_type,sku_code,"
-              "is_active) VALUES (?,?,?,'แผง',?,1)", (PA, PA, "PA", f"S{PA}"))
-    c.execute("INSERT INTO products (id,sku,product_name,unit_type,sku_code,"
-              "is_active) VALUES (?,?,?,'ตัว',?,1)", (PB, PB, "PB", f"S{PB}"))
-    c.execute("INSERT INTO products (id,sku,product_name,unit_type,sku_code,"
-              "is_active) VALUES (?,?,?,'ตัว',?,1)", (PC, PC, "PC", f"S{PC}"))
+    c.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'แผง', ?, 1)", (PA, "PA", f"S{PA}"))
+    c.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (PB, "PB", f"S{PB}"))
+    c.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (PC, "PC", f"S{PC}"))
     c.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
               "product_id,bsn_unit) VALUES (?,?,?,'')", (CODE, "n", PA))
     c.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"

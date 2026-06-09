@@ -19,6 +19,8 @@ def _seed(conn, rows):
     """Insert minimal product rows for sku_code regen testing.
     Each row: (id, sku, name, brand_short, cat_short, subcat, model, size,
               color_code, packaging_th, packaging_short, condition, pack_variant)
+    The legacy `sku` slot (r[1]) is no longer a products column (dropped in
+    mig 097); kept in the tuple only so the existing seed data still lines up.
     """
     conn.execute("PRAGMA foreign_keys = OFF")
     for r in rows:
@@ -30,12 +32,12 @@ def _seed(conn, rows):
         ).fetchone()
         conn.execute(
             """INSERT INTO products
-               (id, sku, product_name, unit_type, brand_id, category_id,
+               (id, product_name, unit_type, brand_id, category_id,
                 sub_category_short_code, model, size, color_code,
                 packaging_th, packaging_short, condition, pack_variant,
                 sku_code, sku_code_locked, is_active)
-               VALUES (?,?,?,'ตัว',?,?,?,?,?,?,?,?,?,?,NULL,0,1)""",
-            (r[0], r[1], r[2],
+               VALUES (?,?,'ตัว',?,?,?,?,?,?,?,?,?,?,NULL,0,1)""",
+            (r[0], r[2],
              brand_id[0] if brand_id else None,
              cat_id[0] if cat_id else None,
              r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12])

@@ -72,12 +72,15 @@ def main():
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
 
-    # Product master
+    # Product master. The opening CSV is keyed by the OLD integer sku
+    # (products.sku dropped in mig 097); pull sku from the forensic legacy map
+    # so the CSV's "SKU (Order)" column still resolves to a product row.
     prod_rows = conn.execute("""
-        SELECT p.id, p.sku, p.product_name, p.unit_type,
+        SELECT p.id, m.sku, p.product_name, p.unit_type,
                p.cost_price, p.base_sell_price,
                COALESCE(s.quantity, 0) AS current_qty
           FROM products p
+          JOIN legacy_product_sku_map m ON m.product_id = p.id
           LEFT JOIN stock_levels s ON s.product_id = p.id
          WHERE p.is_active = 1
     """).fetchall()

@@ -4,7 +4,7 @@
 Run BEFORE deploying mig 087 (the runner auto-applies on next sendy-up):
     python sendy_erp/scripts/backup_material_pre_mig087.py
 
-Writes a timestamped CSV to sendy_erp/data/backups/ with (id, sku,
+Writes a timestamped CSV to sendy_erp/data/backups/ with (id,
 product_name, material) for every row where material IS NOT NULL.
 
 Idempotent: re-runs append a new timestamped file. Skips with a clear
@@ -40,7 +40,7 @@ def main():
         sys.exit(0)
 
     rows = conn.execute(
-        "SELECT id, sku, product_name, material FROM products "
+        "SELECT id, product_name, material FROM products "
         "WHERE material IS NOT NULL AND material != '' "
         "ORDER BY id"
     ).fetchall()
@@ -49,9 +49,9 @@ def main():
     out = os.path.join(BACKUP_DIR, f"material_values_pre_mig087_{ts}.csv")
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["id", "sku", "product_name", "material"])
+        w.writerow(["id", "product_name", "material"])
         for r in rows:
-            w.writerow([r["id"], r["sku"], r["product_name"], r["material"]])
+            w.writerow([r["id"], r["product_name"], r["material"]])
 
     print(f"Backed up {len(rows)} material values → {out}")
     conn.close()

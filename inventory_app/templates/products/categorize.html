@@ -45,7 +45,7 @@
       <table class="table mb-0 table-hover">
         <thead>
           <tr>
-            <th style="width:70px">SKU</th>
+            <th style="width:70px">รหัส (ID)</th>
             <th>ชื่อสินค้า</th>
             <th style="width:280px">หมวดหมู่</th>
           </tr>
@@ -53,7 +53,7 @@
         <tbody>
         {% for s in suggestions %}
           <tr>
-            <td><span class="badge badge-gray font-mono">{{ s.sku }}</span></td>
+            <td><span class="badge badge-gray font-mono">{{ s.id }}</span></td>
             <td>
               <a href="{{ url_for('products.product_detail', product_id=s.id) }}"
                  class="text-decoration-none text-main" target="_blank">{{ s.name }}</a>

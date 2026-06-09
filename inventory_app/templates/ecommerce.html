@@ -210,7 +210,7 @@
               {% if r.product_id %}
               <a href="{{ url_for('products.product_detail', product_id=r.product_id) }}"
                  class="text-success text-decoration-none fw-semibold">
-                <i class="bi bi-check-circle me-1"></i>SKU {{ r.sku }} — {{ r.product_name | truncate(40) }}
+                <i class="bi bi-check-circle me-1"></i>รหัส {{ r.product_id }} — {{ r.product_name | truncate(40) }}
               </a>
               {% else %}
               <span class="text-danger"><i class="bi bi-x-circle me-1"></i>ยังไม่ผูก</span>
@@ -419,7 +419,7 @@
     <p class="mb-1 small text-muted">
       <strong>วิธีใช้:</strong>
       ① ดาวน์โหลดไฟล์ Mapping (Excel) →
-      ② ใส่ <code>internal_sku</code> (SKU ของสินค้าในระบบ) และ <code>qty_per_sale</code> →
+      ② ใส่ <code>product_id</code> (รหัสสินค้าในระบบ) และ <code>qty_per_sale</code> →
       ③ อัพโหลดกลับเข้าระบบ
     </p>
     <p class="mb-0 small text-muted">
@@ -551,14 +551,14 @@
         </div>
         <div class="modal-body">
           <p class="text-muted small">
-            อัพโหลดไฟล์ที่กรอก <strong>internal_sku</strong> แล้ว
+            อัพโหลดไฟล์ที่กรอก <strong>product_id</strong> (รหัสสินค้าในระบบ) แล้ว
           </p>
           <div class="mb-3">
             <input type="file" class="form-control" name="listing_mapping_file" accept=".xlsx" required>
           </div>
           <div class="alert alert-info py-2 small">
             <i class="bi bi-info-circle me-1"></i>
-            ระบบจะอัพเดทเฉพาะแถวที่กรอก internal_sku — แถวที่ว่างจะไม่เปลี่ยน
+            ระบบจะอัพเดทเฉพาะแถวที่กรอก product_id — แถวที่ว่างจะไม่เปลี่ยน
           </div>
         </div>
         <div class="modal-footer">
@@ -584,7 +584,7 @@
         </div>
         <div class="modal-body">
           <p class="text-muted small">
-            อัพโหลดไฟล์ที่กรอก <strong>internal_sku</strong> และ <strong>qty_per_sale</strong> แล้ว
+            อัพโหลดไฟล์ที่กรอก <strong>product_id</strong> (รหัสสินค้าในระบบ) และ <strong>qty_per_sale</strong> แล้ว
           </p>
           <div class="mb-3">
             <label class="form-label">เลือกไฟล์ .xlsx (Mapping file)</label>
@@ -592,7 +592,7 @@
           </div>
           <div class="alert alert-info py-2 small">
             <i class="bi bi-info-circle me-1"></i>
-            ระบบจะอัพเดทเฉพาะแถวที่กรอก internal_sku ไว้ — แถวที่ว่างจะไม่เปลี่ยนแปลง
+            ระบบจะอัพเดทเฉพาะแถวที่กรอก product_id ไว้ — แถวที่ว่างจะไม่เปลี่ยนแปลง
           </div>
         </div>
         <div class="modal-footer">

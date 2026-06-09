@@ -13,10 +13,7 @@ import pytest
 
 
 def _seed_product(conn, sku, name, unit_type='ตัว'):
-    cur = conn.execute(
-        "INSERT INTO products (sku, product_name, unit_type) VALUES (?, ?, ?)",
-        (sku, name, unit_type),
-    )
+    cur = conn.execute("INSERT INTO products (product_name, unit_type) VALUES (?, ?)", (name, unit_type))
     pid = cur.lastrowid
     conn.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
     return pid

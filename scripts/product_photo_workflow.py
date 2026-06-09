@@ -102,7 +102,6 @@ BUCKETS = {"single", "pack", "family", "_pending", "_pending_typecheck", "_unmat
 @dataclass(frozen=True)
 class Product:
     id: int
-    sku: str
     sku_code: str
     product_name: str
     model: str
@@ -223,7 +222,7 @@ def load_products() -> tuple[list[Product], set[str]]:
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
-        SELECT p.id, p.sku, p.sku_code, p.product_name, p.model, p.size,
+        SELECT p.id, p.sku_code, p.product_name, p.model, p.size,
                p.color_code,
                c.code AS cat_code, c.short_code AS cat_short,
                b.short_code AS brand_short,
@@ -237,7 +236,6 @@ def load_products() -> tuple[list[Product], set[str]]:
     products = [
         Product(
             id=r["id"],
-            sku=str(r["sku"] or ""),
             sku_code=str(r["sku_code"] or ""),
             product_name=str(r["product_name"] or ""),
             model=str(r["model"] or ""),
@@ -388,7 +386,7 @@ def match(args: argparse.Namespace) -> None:
         if read_error or any(f.startswith("duplicate_of:") for f in flags):
             status = "typecheck"
 
-        target_family = best.family_code or best.sku_code or f"INT-{best.sku}"
+        target_family = best.family_code or best.sku_code or f"INT-{best.id}"
         review_file = stable_review_key(path)
         matched.append({
             "review_file": review_file,
@@ -402,14 +400,14 @@ def match(args: argparse.Namespace) -> None:
             "status": status,
             "best_score": best_score,
             "category_code": best.cat_code,
-            "target_sku": best.sku_code or f"INT-{best.sku}",
+            "target_sku": best.sku_code or f"INT-{best.id}",
             "target_family": target_family,
             "product_name": best.product_name,
             "brand": best.brand_short,
             "size": best.size,
             "color": best.color_code,
             "folder_hint": tokens["folder_hint"],
-            "alternatives": ",".join((p.sku_code or p.sku) for _, p in top[:5]),
+            "alternatives": ",".join((p.sku_code or f"INT-{p.id}") for _, p in top[:5]),
             "suggested_decision": "family" if status == "family_candidate" else "single",
         })
 
@@ -443,7 +441,7 @@ def unmatched_row(
         "folder_hint": tokens["folder_hint"],
         "tokens": json.dumps(tokens, ensure_ascii=False),
         "best_score": best_score,
-        "best_match_sku": (best.sku_code or best.sku) if best else "",
+        "best_match_sku": (best.sku_code or f"INT-{best.id}") if best else "",
     }
 
 

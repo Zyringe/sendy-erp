@@ -47,7 +47,7 @@ SUFFIX = re.compile(r"\s*\(([^)]{1,10})\)\s*\d*\s*$")
 COLS = ["bsn_code", "bsn_name", "category", "reason",
         "all_units", "per_unit_counts", "current_pid",
         "current_unit_type", "current_name",
-        "override_unit", "override_product_id", "override_sku",
+        "override_unit", "override_product_id",
         "override_name"]
 
 
@@ -102,7 +102,7 @@ def classify(conn):
                 "current_pid": cur_pid if cur_pid is not None else "",
                 "current_unit_type": cur_ut, "current_name": cur_nm or "",
                 "override_unit": "", "override_product_id": "",
-                "override_sku": "", "override_name": "",
+                "override_name": "",
             }
             if u in BULK:
                 cat, reason = "RATIO", f"{u} = bulk/packaging of same product"
@@ -110,7 +110,7 @@ def classify(conn):
                 sib = None
                 if base:
                     for s in conn.execute(
-                        "SELECT id,sku,product_name,unit_type FROM products "
+                        "SELECT id,product_name,unit_type FROM products "
                         "WHERE unit_type=? AND is_active=1 AND id<>?",
                             (u, cur_pid or -1)):
                         if _desuffix(s["product_name"]) == base:
@@ -120,7 +120,6 @@ def classify(conn):
                     cat, reason = "SUGGEST", "same-name sibling in this unit"
                     base_row.update(
                         override_unit=u, override_product_id=sib["id"],
-                        override_sku=sib["sku"],
                         override_name=sib["product_name"])
                 elif counts[u] <= 2 and dominant >= 5 * max(counts[u], 1):
                     cat, reason = "NOISE", f"{u}:{counts[u]} vs dominant {dominant}"

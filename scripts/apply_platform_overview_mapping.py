@@ -17,8 +17,8 @@ Behavior
 2. Skip rows where internal_sku is empty, OR equals 'new_sku' with empty
    Suggested name.
 3. internal_sku == 'new_sku' (with Suggested name) → create stub product
-   (sku=MAX+1, base_sell_price=0, cost_price=0, unit_type='ตัว', is_active=1,
-   product_name=Suggested name).
+   (auto-increment id, no sku, base_sell_price=0, cost_price=0,
+   unit_type='ตัว', is_active=1, product_name=Suggested name).
 4. UPDATE platform_skus by id:
      internal_product_id ← resolved
      qty_per_sale         ← from CSV (default 1)
@@ -108,20 +108,25 @@ def parse_qty(value, default=1.0):
         return default
 
 
-def next_sku(conn):
-    return int(conn.execute(
-        'SELECT COALESCE(MAX(sku),0)+1 FROM products').fetchone()[0])
+def resolve_legacy_sku(conn, sku_int):
+    """Translate an OLD integer products.sku (the xlsx key column) to a
+    product_id via the forensic legacy_product_sku_map (products.sku dropped
+    in mig 097)."""
+    return conn.execute(
+        'SELECT product_id FROM legacy_product_sku_map WHERE sku = ?', (sku_int,)
+    ).fetchone()
 
 
 def create_stub_product(conn, name):
-    sku = next_sku(conn)
+    # products.sku was dropped (mig 097) — new products get an auto-increment
+    # id and no sku.
     cur = conn.execute(
-        '''INSERT INTO products (sku, product_name, unit_type, cost_price,
+        '''INSERT INTO products (product_name, unit_type, cost_price,
                                  base_sell_price, is_active)
-           VALUES (?, ?, 'ตัว', 0, 0, 1)''',
-        (sku, name)
+           VALUES (?, 'ตัว', 0, 0, 1)''',
+        (name,)
     )
-    return cur.lastrowid, sku
+    return cur.lastrowid
 
 
 def get_stock(conn, product_id):
@@ -177,7 +182,7 @@ def main():
 
     # collect rows that we will export at the end (post-update)
     affected_pids = []
-    stub_products_created = []  # [(sku, id, name)]
+    stub_products_created = []  # [(id, name)]
 
     for r in rows:
         if r.get('checked', '').strip().upper() != 'TRUE':
@@ -219,14 +224,14 @@ def main():
             existing = ps_row['internal_product_id']
             if existing is not None:
                 existing_row = conn.execute(
-                    '''SELECT id, sku, product_name FROM products
+                    '''SELECT id, product_name FROM products
                        WHERE id = ? AND product_name = ?''',
                     (existing, suggested_name)
                 ).fetchone()
                 if existing_row:
                     internal_pid = existing_row['id']
                     stats['stub_reused'] = stats.get('stub_reused', 0) + 1
-                    print(f'  reuse stub: sku={existing_row["sku"]} id={internal_pid} '
+                    print(f'  reuse stub: id={internal_pid} '
                           f'(pid={platform_sku_id})')
                 else:
                     internal_pid = None
@@ -234,10 +239,10 @@ def main():
                 internal_pid = None
 
             if internal_pid is None:
-                internal_pid, new_sku_val = create_stub_product(conn, suggested_name)
-                stub_products_created.append((new_sku_val, internal_pid, suggested_name))
+                internal_pid = create_stub_product(conn, suggested_name)
+                stub_products_created.append((internal_pid, suggested_name))
                 stats['created_stubs'] += 1
-                print(f'  stub: sku={new_sku_val} id={internal_pid} '
+                print(f'  stub: id={internal_pid} '
                       f'"{suggested_name[:60]}" (pid={platform_sku_id})')
         else:
             sku_int = parse_int(token)
@@ -245,15 +250,14 @@ def main():
                 print(f'  skip: pid={platform_sku_id} non-numeric internal_sku={token!r}')
                 stats['sku_not_found'] += 1
                 continue
-            row = conn.execute(
-                'SELECT id FROM products WHERE sku = ?', (sku_int,)
-            ).fetchone()
+            # internal_sku is the OLD integer sku — translate to product_id.
+            row = resolve_legacy_sku(conn, sku_int)
             if not row:
                 stats['sku_not_found'] += 1
                 sku_not_found_list.append((platform_sku_id, sku_int))
                 print(f'  skip: pid={platform_sku_id} internal_sku={sku_int} not in products')
                 continue
-            internal_pid = row['id']
+            internal_pid = row['product_id']
 
         qty_per_sale = parse_qty(r[COL_QTY_PER_SALE], default=1.0)
 
@@ -275,11 +279,10 @@ def main():
         component_qty = None
         freebie_sku = parse_int(r[COL_FREEBIE_SKU])
         if freebie_sku is not None:
-            crow = conn.execute(
-                'SELECT id FROM products WHERE sku = ?', (freebie_sku,)
-            ).fetchone()
+            # freebie_sku is the OLD integer sku — translate to product_id.
+            crow = resolve_legacy_sku(conn, freebie_sku)
             if crow:
-                component_pid = crow['id']
+                component_pid = crow['product_id']
                 component_qty = parse_qty(r[COL_FREEBIE_QTY], default=1.0)
                 stats['bundles_applied'] += 1
             else:
@@ -360,8 +363,8 @@ def main():
 
     if stub_products_created:
         print('\nNew stub products:')
-        for sku, pid, name in stub_products_created:
-            print(f'  sku={sku} id={pid} "{name}"')
+        for pid, name in stub_products_created:
+            print(f'  id={pid} "{name}"')
 
     if qty_corrections:
         print(f'\nAuto-corrected qty_per_sale ({len(qty_corrections)} rows):')

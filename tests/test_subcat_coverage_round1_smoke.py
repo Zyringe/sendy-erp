@@ -19,7 +19,7 @@ APPLY = os.path.join(REPO, "scripts", "apply_subcat_coverage.py")
 
 
 EXPECTED_GEN_COLUMNS = {
-    "product_id", "sku_int", "category_short", "current_subcat",
+    "product_id", "category_short", "current_subcat",
     "product_name",
     "proposed_subcat", "proposed_score", "proposed_confidence",
     "matched_sibling_pid", "matched_sibling_name",
@@ -92,7 +92,7 @@ def test_gen_confidence_tier_in_expected_set(tmp_db, tmp_path):
 
 def _write_apply_csv(path, rows):
     cols = [
-        "product_id", "sku_int", "category_short", "current_subcat",
+        "product_id", "category_short", "current_subcat",
         "product_name", "proposed_subcat", "proposed_score",
         "proposed_confidence", "matched_sibling_pid",
         "matched_sibling_name", "alternate_subcat", "alternate_score",

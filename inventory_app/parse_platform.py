@@ -721,7 +721,7 @@ MAPPING_COLS = [
     'ชื่อสินค้า (platform)', 'variation_id', 'ชื่อ variation', 'seller_sku',
     'ราคา (platform)', 'ราคาพิเศษ (platform, Lazada)', 'คลัง (platform)',
     # AI suggestion (col 11-13, pre-filled but editable)
-    'internal_sku', 'ชื่อสินค้า (ระบบ) — อ่านอย่างเดียว', 'confidence_%',
+    'product_id', 'ชื่อสินค้า (ระบบ) — อ่านอย่างเดียว', 'confidence_%',
     # User adjusts (col 14)
     'qty_per_sale',
     # Hint (col 15)
@@ -736,7 +736,7 @@ def export_mapping(rows, suggestions=None):
     """
     Generate mapping xlsx for user to fill in.
     rows:        list of sqlite3.Row from get_platform_mapping_data()
-    suggestions: dict {sku_id -> {suggested_sku, suggested_name, confidence}}
+    suggestions: dict {sku_id -> {suggested_pid, suggested_name, confidence}}
     Returns BytesIO.
     """
     import openpyxl
@@ -795,9 +795,9 @@ def export_mapping(rows, suggestions=None):
             row_fill = fill_vlo
 
         # Use existing mapping first, fall back to suggestion
-        int_sku  = r.get('internal_sku') or (sg.get('suggested_sku', '') if sg else '')
+        int_pid  = r.get('internal_pid') or (sg.get('suggested_pid', '') if sg else '')
         int_name = r.get('internal_product_name') or (sg.get('suggested_name', '') if sg else '')
-        conf_val = 100 if r.get('internal_sku') else (sg.get('confidence', '') if sg else '')
+        conf_val = 100 if r.get('internal_pid') else (sg.get('confidence', '') if sg else '')
 
         vals = [
             r['id'],
@@ -811,7 +811,7 @@ def export_mapping(rows, suggestions=None):
             r['special_price'],
             r['stock'],
             # AI / existing suggestion (editable)
-            int_sku,
+            int_pid,
             int_name,
             conf_val,
             # User edits
@@ -862,9 +862,9 @@ def export_mapping(rows, suggestions=None):
         ('สีเขียวอ่อน (80-99%)', 'AI มั่นใจสูง — น่าจะถูกต้อง'),
         ('สีเหลือง (60-79%)', 'AI คิดว่าน่าจะใช่ — ตรวจสอบด้วย'),
         ('สีส้ม (40-59%)', 'AI ไม่แน่ใจ — ต้องแก้ไขเอง'),
-        ('สีแดงอ่อน (<40%)', 'AI ไม่มั่นใจ — กรุณากรอก internal_sku เอง'),
+        ('สีแดงอ่อน (<40%)', 'AI ไม่มั่นใจ — กรุณากรอก product_id เอง'),
         ('', ''),
-        ('internal_sku', 'ใส่ตัวเลข SKU ของสินค้าในระบบ ERP'),
+        ('product_id', 'ใส่ product_id (รหัสสินค้าในระบบ ERP)'),
         ('qty_per_sale', 'จำนวนหน่วยในระบบที่ลดเมื่อขาย 1 ชิ้นบน platform'),
         ('ตัวอย่าง qty_per_sale', 'ปุ๊ก #7 (500 กรัม) = 0.5 | สายเอ็น 6 ม้วน = 6 | ลูกรีเวท 100 ตัว = 100'),
     ]
@@ -887,7 +887,7 @@ def export_mapping(rows, suggestions=None):
 def parse_mapping(file_obj):
     """
     Parse a filled mapping xlsx.
-    Returns list of dicts: {platform_sku_id, internal_sku, qty_per_sale}
+    Returns list of dicts: {platform_sku_id, product_id, qty_per_sale}
     """
     df = pd.read_excel(file_obj, dtype=str)
     results = []
@@ -898,7 +898,7 @@ def parse_mapping(file_obj):
             continue
         results.append({
             'platform_sku_id': sku_id,
-            'internal_sku':    raw.get('internal_sku') or None,
+            'product_id':      raw.get('product_id') or None,
             'qty_per_sale':    _to_float(raw.get('qty_per_sale')) or 1.0,
         })
     return results
@@ -989,16 +989,16 @@ def parse_lazada_orders(file_obj):
 LISTING_MAPPING_COLS = [
     'listing_id', 'platform', 'ชื่อสินค้า (platform)', 'ตัวเลือก (platform)',
     'seller_sku', 'ราคาตัวอย่าง (฿)',
-    'internal_sku', 'ชื่อสินค้า (ERP) — อ่านอย่างเดียว', 'confidence_%',
+    'product_id', 'ชื่อสินค้า (ERP) — อ่านอย่างเดียว', 'confidence_%',
     'qty_per_sale', 'คำอธิบาย qty_per_sale',
 ]
 
 
 def export_listing_mapping(rows, suggestions=None, unmatched_only=False):
     """
-    Generate mapping xlsx for user to fill in internal_sku.
+    Generate mapping xlsx for user to fill in product_id.
     rows: list of ecommerce_listings rows (dicts or sqlite3.Row)
-    suggestions: dict {listing_id -> {suggested_sku, suggested_name, confidence}}
+    suggestions: dict {listing_id -> {suggested_pid, suggested_name, confidence}}
     unmatched_only: True → only export rows without product_id
     """
     import openpyxl
@@ -1023,7 +1023,7 @@ def export_listing_mapping(rows, suggestions=None, unmatched_only=False):
         cell = ws.cell(row=1, column=ci, value=col)
         cell.font = hdr_font
         cell.alignment = Alignment(horizontal='center', wrap_text=True)
-        if col in ('internal_sku',):
+        if col in ('product_id',):
             cell.fill = fill_edit
         elif 'ERP' in col or 'confidence' in col:
             cell.fill = fill_ai
@@ -1041,7 +1041,7 @@ def export_listing_mapping(rows, suggestions=None, unmatched_only=False):
         sg   = suggestions.get(r['id'], {})
         conf = sg.get('confidence', 0)
 
-        int_sku  = r.get('sku') or (sg.get('suggested_sku', '') if sg else '')
+        int_pid  = r.get('product_id') or (sg.get('suggested_pid', '') if sg else '')
         int_name = r.get('product_name') or (sg.get('suggested_name', '') if sg else '')
         conf_val = 100 if r.get('product_id') else (sg.get('confidence', '') if sg else '')
 
@@ -1061,7 +1061,7 @@ def export_listing_mapping(rows, suggestions=None, unmatched_only=False):
         vals = [
             r['id'], r['platform'], r['item_name'], r.get('variation') or '',
             r.get('seller_sku') or '', r.get('sample_price'),
-            int_sku, int_name, conf_val,
+            int_pid, int_name, conf_val,
             qty_per_sale,
             'จำนวนหน่วยในระบบที่ลดเมื่อขาย 1 ชิ้น เช่น ลูกรีเวท 25 ดอก/ถุง → ใส่ 25',
         ]
@@ -1069,7 +1069,7 @@ def export_listing_mapping(rows, suggestions=None, unmatched_only=False):
             cell = ws.cell(row=ri, column=ci, value=val)
             cell.font = Font(size=9)
             col_name = LISTING_MAPPING_COLS[ci - 1]
-            if col_name in ('internal_sku', 'qty_per_sale'):
+            if col_name in ('product_id', 'qty_per_sale'):
                 cell.fill = fill_edit
             elif 'ERP' in col_name:
                 cell.fill = PatternFill('solid', start_color='EBF5FB')
@@ -1109,7 +1109,7 @@ def export_listing_mapping(rows, suggestions=None, unmatched_only=False):
 def parse_listing_mapping(file_obj):
     """
     Parse filled listing mapping xlsx.
-    Returns list of dicts: {listing_id, internal_sku, qty_per_sale}
+    Returns list of dicts: {listing_id, product_id, qty_per_sale}
     """
     df = pd.read_excel(file_obj, dtype=str)
     results = []
@@ -1120,7 +1120,7 @@ def parse_listing_mapping(file_obj):
             continue
         results.append({
             'listing_id':    lid,
-            'internal_sku':  raw.get('internal_sku') or None,
+            'product_id':    raw.get('product_id') or None,
             'qty_per_sale':  _to_float(raw.get('qty_per_sale')) or 1.0,
         })
     return results

@@ -36,7 +36,7 @@
       {% for p in products %}
       <option value="{{ p.id }}"
         {% if (v.product_id and v.product_id|string == p.id|string) %}selected{% endif %}>
-        #{{ p.sku }} — {{ p.product_name }}
+        #{{ p.id }} — {{ p.product_name }}
       </option>
       {% endfor %}
     </select>

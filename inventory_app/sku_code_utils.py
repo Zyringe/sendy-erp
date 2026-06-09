@@ -1,7 +1,7 @@
 """sku_code generation logic — shared between bulk script and Flask routes.
 
 Format: <CAT>-<BRAND>-<MODEL>-<SIZE>[-<SERIES>]-<COLOR>-<PKG>[-<pack_variant>]
-        Fallback: INT-<sku> when nothing structured is available
+        Fallback: INT-<id> when nothing structured is available
 """
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ def build_sku_code(p: dict) -> str:
     """Build sku_code from a dict-like row per the locked 10-slot rule
     (`sku_code_naming_rule.md`): cat-subcat?-brand-series?-model?-size?-color?-pkg?-condition?-pack_variant?.
 
-    Required keys: sku
+    Required keys: id
     Optional keys (segments included when truthy):
       cat_short_code, sub_category_short_code, brand_short_code,
       series, model, size, color_code, packaging_short
@@ -136,7 +136,7 @@ def build_sku_code(p: dict) -> str:
         parts.append(str(pv))
 
     if not parts:
-        return f"INT-{p['sku']}"
+        return f"INT-{p['id']}"
     return "-".join(parts)
 
 
@@ -146,7 +146,7 @@ def regenerate_for_product(conn, product_id: int) -> tuple:
     (this helper does NOT check the lock — invoke at higher level).
     """
     row = conn.execute("""
-        SELECT p.id, p.sku, p.sku_code, p.model, p.size, p.series,
+        SELECT p.id, p.sku_code, p.model, p.size, p.series,
                p.color_code, p.packaging_th, p.packaging_short, p.condition,
                p.pack_variant, p.sub_category_short_code,
                b.short_code AS brand_short_code,
@@ -162,13 +162,13 @@ def regenerate_for_product(conn, product_id: int) -> tuple:
     old_code = row["sku_code"] if "sku_code" in row.keys() else row[2]
     new_code = build_sku_code(dict(row))
 
-    # Collision check — append -<sku> if collision (unless same product)
+    # Collision check — append -<id> if collision (unless same product)
     collision = conn.execute(
         "SELECT id FROM products WHERE sku_code = ? AND id != ?",
         (new_code, product_id),
     ).fetchone()
     if collision:
-        new_code = f"{new_code}-{row['sku']}"
+        new_code = f"{new_code}-{row['id']}"
 
     if new_code != old_code:
         conn.execute(

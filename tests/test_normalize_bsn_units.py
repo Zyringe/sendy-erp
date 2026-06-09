@@ -21,9 +21,7 @@ P1, P2, P3, P5 = 900701, 900702, 900703, 900705
 
 
 def _prod(c, pid):
-    c.execute("INSERT INTO products (id,sku,product_name,unit_type,sku_code,"
-              "is_active) VALUES (?,?,?,'แผง',?,1)", (pid, pid, f"P{pid}",
-                                                      f"SK-{pid}"))
+    c.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'แผง', ?, 1)", (pid, f"P{pid}", f"SK-{pid}"))
 
 
 def _uc(c, pid, unit, ratio):

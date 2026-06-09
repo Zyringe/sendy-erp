@@ -83,7 +83,7 @@
       <a href="/products/${p.id}" class="stock-result ${p.low ? 'is-low' : ''}">
         <div class="stock-result-name">${escapeHtml(p.name)}</div>
         <div class="stock-result-meta">
-          <span class="stock-result-sku">SKU ${p.sku}</span>
+          <span class="stock-result-sku">รหัส (ID) ${p.id}</span>
           <span class="stock-result-qty ${p.low ? 'low' : ''}">${formatNum(p.qty)} ${escapeHtml(p.unit || '')}</span>
           ${p.price ? `<span class="text-subtle small">฿${formatPrice(p.price)}</span>` : ''}
           ${p.location ? `<span class="text-subtle small"><i class="bi bi-geo-alt"></i> ${escapeHtml(p.location)}</span>` : ''}

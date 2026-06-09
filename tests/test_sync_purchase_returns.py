@@ -12,11 +12,7 @@ return_flag is not persisted on the stored purchase_transactions row.
 
 
 def _seed_product(conn, sku, name, unit_type='ตัว', cost_price=0.0):
-    cur = conn.execute(
-        "INSERT INTO products (sku, product_name, unit_type, cost_price) "
-        "VALUES (?, ?, ?, ?)",
-        (sku, name, unit_type, cost_price),
-    )
+    cur = conn.execute("INSERT INTO products (product_name, unit_type, cost_price) VALUES (?, ?, ?)", (name, unit_type, cost_price))
     pid = cur.lastrowid
     conn.execute(
         "INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)",

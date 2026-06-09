@@ -103,7 +103,7 @@ def _confidence(score: float, category_has_subcats: bool) -> str:
 
 
 CSV_COLUMNS = [
-    "product_id", "sku_int", "category_short", "current_subcat",
+    "product_id", "category_short", "current_subcat",
     "product_name",
     "proposed_subcat", "proposed_score", "proposed_confidence",
     "matched_sibling_pid", "matched_sibling_name",
@@ -132,7 +132,7 @@ def main():
     # Load ALL products with category (siblings + targets) — limit by active flag
     active_filter = "" if args.include_inactive else "AND p.is_active = 1"
     rows = conn.execute(f"""
-        SELECT p.id, p.sku, p.product_name,
+        SELECT p.id, p.product_name,
                p.sub_category_short_code AS subcat,
                p.category_id,
                c.short_code AS cat_short
@@ -186,7 +186,6 @@ def main():
 
             w.writerow({
                 "product_id": t["id"],
-                "sku_int": t["sku"],
                 "category_short": cat_short,
                 "current_subcat": "",
                 "product_name": t["product_name"],

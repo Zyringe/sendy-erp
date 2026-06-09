@@ -16,9 +16,7 @@ ML, MN, CO, NH, NN, GAP = (902001, 902002, 902003, 902004, 902005, 902006)
 
 
 def _p(c, pid, base="แผง"):
-    c.execute("INSERT INTO products (id,sku,product_name,unit_type,sku_code,"
-              "is_active) VALUES (?,?,?,?,?,1)", (pid, pid, f"P{pid}", base,
-                                                  f"S{pid}"))
+    c.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, ?, ?, 1)", (pid, f"P{pid}", base, f"S{pid}"))
 
 
 def _m(c, pid, code):

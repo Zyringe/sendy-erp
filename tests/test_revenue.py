@@ -55,11 +55,7 @@ def _ins_brand(conn, code, name, name_th=None, is_own_brand=0):
 
 
 def _ins_product(conn, sku, product_name, brand_id=None, unit_type='ตัว'):
-    cur = conn.execute(
-        """INSERT INTO products (sku, product_name, brand_id, unit_type)
-           VALUES (?,?,?,?)""",
-        (sku, product_name, brand_id, unit_type),
-    )
+    cur = conn.execute("INSERT INTO products (product_name, brand_id, unit_type) VALUES (?, ?, ?)", (product_name, brand_id, unit_type))
     return cur.lastrowid
 
 
@@ -433,10 +429,7 @@ def test_drilldown_covers_orphan_brand_id_rows(empty_db_conn):
     c = empty_db_conn
     c.execute("PRAGMA foreign_keys = OFF")
     # product with brand_id pointing at a non-existent brand (id=88888)
-    pid = c.execute(
-        """INSERT INTO products (sku, product_name, brand_id, unit_type)
-           VALUES (99999, 'orphan-brand product', 88888, 'ตัว')"""
-    ).lastrowid
+    pid = c.execute("INSERT INTO products (product_name, brand_id, unit_type) VALUES ('orphan-brand product', 88888, 'ตัว')").lastrowid
     c.execute(
         """INSERT INTO sales_transactions
            (date_iso, doc_no, doc_base, customer, customer_code,

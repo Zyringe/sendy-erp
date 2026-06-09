@@ -113,38 +113,26 @@ def test_post_mig_packaging_th_trigger_rejects_invalid_insert(tmp_db_conn):
     _apply_if_not_applied(tmp_db_conn)
     tmp_db_conn.execute("PRAGMA foreign_keys = OFF")
     with pytest.raises(sqlite3.IntegrityError):
-        tmp_db_conn.execute(
-            "INSERT INTO products (sku, product_name, packaging_th) "
-            "VALUES (999991, 'mig087-test', 'INVALID_VALUE')"
-        )
+        tmp_db_conn.execute("INSERT INTO products (product_name, packaging_th) VALUES ('mig087-test', 'INVALID_VALUE')")
 
 
 def test_post_mig_packaging_th_trigger_accepts_valid(tmp_db_conn):
     _apply_if_not_applied(tmp_db_conn)
     tmp_db_conn.execute("PRAGMA foreign_keys = OFF")
-    tmp_db_conn.execute(
-        "INSERT INTO products (sku, product_name, packaging_th) "
-        "VALUES (999992, 'mig087-test', 'ตัว')"
-    )
+    tmp_db_conn.execute("INSERT INTO products (product_name, packaging_th) VALUES ('mig087-test', 'ตัว')")
 
 
 def test_post_mig_packaging_short_trigger_rejects_invalid(tmp_db_conn):
     _apply_if_not_applied(tmp_db_conn)
     tmp_db_conn.execute("PRAGMA foreign_keys = OFF")
     with pytest.raises(sqlite3.IntegrityError):
-        tmp_db_conn.execute(
-            "INSERT INTO products (sku, product_name, packaging_short) "
-            "VALUES (999993, 'mig087-test', 'XYZ')"
-        )
+        tmp_db_conn.execute("INSERT INTO products (product_name, packaging_short) VALUES ('mig087-test', 'XYZ')")
 
 
 def test_post_mig_packaging_short_trigger_accepts_valid(tmp_db_conn):
     _apply_if_not_applied(tmp_db_conn)
     tmp_db_conn.execute("PRAGMA foreign_keys = OFF")
-    tmp_db_conn.execute(
-        "INSERT INTO products (sku, product_name, packaging_short) "
-        "VALUES (999994, 'mig087-test', 'PN')"
-    )
+    tmp_db_conn.execute("INSERT INTO products (product_name, packaging_short) VALUES ('mig087-test', 'PN')")
 
 
 def test_post_mig_old_packaging_triggers_removed(tmp_db_conn):
@@ -173,7 +161,7 @@ def test_post_mig_view_exposes_packaging_th_and_short(tmp_db_conn):
 def test_post_mig_view_returns_rows(tmp_db_conn):
     _apply_if_not_applied(tmp_db_conn)
     row = tmp_db_conn.execute(
-        "SELECT id, sku, packaging_th, packaging_short FROM products_full LIMIT 1"
+        "SELECT id, packaging_th, packaging_short FROM products_full LIMIT 1"
     ).fetchone()
     assert row is not None
 
@@ -210,11 +198,11 @@ def test_post_mig_packaging_th_has_data(tmp_db_conn):
     """At least one product retains its packaging value as packaging_th."""
     _apply_if_not_applied(tmp_db_conn)
     row = tmp_db_conn.execute(
-        "SELECT id, sku, product_name, packaging_th FROM products "
+        "SELECT id, product_name, packaging_th FROM products "
         "WHERE packaging_th IS NOT NULL LIMIT 1"
     ).fetchone()
     assert row is not None
-    assert row[3] in (
+    assert row[2] in (
         "แผง", "ตัว", "ถุง", "แพ็คหัว", "แพ็คถุง",
         "ซอง", "อัดแผง", "แพ็ค", "แบบหลอด", "โหล", "1กลมี60ใบ"
     )
@@ -258,14 +246,11 @@ def test_rollback_preserves_post_mig_inserts(tmp_db_conn):
     """Per feedback_rename_migration_safety: rollback reads CURRENT table."""
     _apply_if_not_applied(tmp_db_conn)
     tmp_db_conn.execute("PRAGMA foreign_keys = OFF")
-    tmp_db_conn.execute(
-        "INSERT INTO products (sku, product_name, packaging_th, packaging_short) "
-        "VALUES (999996, 'post_mig_insert', 'ตัว', 'UN')"
-    )
+    tmp_db_conn.execute("INSERT INTO products (product_name, packaging_th, packaging_short) VALUES ('post_mig_insert', 'ตัว', 'UN')")
     tmp_db_conn.commit()
     _apply(tmp_db_conn, ROLLBACK_087)
     row = tmp_db_conn.execute(
-        "SELECT sku, packaging FROM products WHERE sku = 999996"
+        "SELECT id, packaging FROM products WHERE product_name = 'post_mig_insert'"
     ).fetchone()
     assert row is not None
     assert row[1] == "ตัว"  # packaging_th value carried into packaging column

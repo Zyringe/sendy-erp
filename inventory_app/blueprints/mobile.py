@@ -25,7 +25,7 @@ def stock_search():
 
 @bp_mobile.route('/stock/api')
 def stock_search_api():
-    """JSON live-search across products. Returns name/sku/qty/price/unit so
+    """JSON live-search across products. Returns name/qty/price/unit so
     the card list can render without further fetches."""
     q = (request.args.get('q') or '').strip()
     if len(q) < 1:
@@ -35,7 +35,7 @@ def stock_search_api():
     conn = get_connection()
     rows = conn.execute(
         """
-        SELECT p.id, p.sku, p.product_name, p.unit_type, p.base_sell_price,
+        SELECT p.id, p.product_name, p.unit_type, p.base_sell_price,
                COALESCE(sl.quantity, 0) AS qty,
                p.low_stock_threshold,
                (SELECT floor_no FROM product_locations
@@ -44,11 +44,11 @@ def stock_search_api():
      LEFT JOIN stock_levels sl ON sl.product_id = p.id
          WHERE p.is_active = 1
            AND (p.product_name LIKE :anywhere
-                OR CAST(p.sku AS TEXT) LIKE :anywhere
+                OR CAST(p.id AS TEXT) LIKE :anywhere
                 OR EXISTS (SELECT 1 FROM product_barcodes pb
                             WHERE pb.product_id = p.id AND pb.barcode LIKE :anywhere))
          ORDER BY
-             CASE WHEN CAST(p.sku AS TEXT) = :exact THEN 0
+             CASE WHEN CAST(p.id AS TEXT) = :exact THEN 0
                   WHEN p.product_name LIKE :starts THEN 1
                   ELSE 2 END,
              p.product_name
@@ -60,7 +60,6 @@ def stock_search_api():
     items = [
         {
             'id':       r['id'],
-            'sku':      r['sku'],
             'name':     r['product_name'],
             'unit':     r['unit_type'],
             'price':    r['base_sell_price'] or 0,

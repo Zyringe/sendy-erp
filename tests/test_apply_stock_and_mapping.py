@@ -18,10 +18,7 @@ import apply_stock_and_mapping_csv as app  # noqa: E402
 
 
 def _seed(conn, pid, sku, base_unit):
-    conn.execute(
-        "INSERT INTO products (id,sku,product_name,unit_type,sku_code,is_active) "
-        "VALUES (?,?,?,?,?,1)",
-        (pid, sku, f"OLD NAME {pid}", base_unit, f"OLD-{pid}"))
+    conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, ?, ?, 1)", (pid, f"OLD NAME {pid}", base_unit, f"OLD-{pid}"))
     conn.execute("INSERT INTO stock_levels(product_id,quantity) VALUES(?,0)", (pid,))
 
 

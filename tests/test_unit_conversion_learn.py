@@ -44,9 +44,7 @@ def test_helpers_roundtrip(tmp_path, monkeypatch):
 def test_pending_is_acronym_flag(tmp_db, tmp_path, monkeypatch):
     _tmp_json(tmp_path, monkeypatch)
     conn = sqlite3.connect(tmp_db)
-    conn.execute("INSERT INTO products (id,sku,product_name,unit_type,"
-                 "sku_code,is_active) VALUES (?,?,?,'ตัว',?,1)",
-                 (PID, PID, "P", f"SK{PID}"))
+    conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (PID, "P", f"SK{PID}"))
     for u in ("Zx9", "โหล"):                 # unknown acronym vs known full
         conn.execute(
             "INSERT INTO sales_transactions (batch_id,date_iso,doc_no,"
@@ -69,9 +67,7 @@ def test_pending_is_acronym_flag(tmp_db, tmp_path, monkeypatch):
 def test_learn_acronyms_normalize(tmp_db, tmp_path, monkeypatch):
     _tmp_json(tmp_path, monkeypatch)
     conn = sqlite3.connect(tmp_db)
-    conn.execute("INSERT INTO products (id,sku,product_name,unit_type,"
-                 "sku_code,is_active) VALUES (?,?,?,'ตัว',?,1)",
-                 (PID + 1, PID + 1, "P", f"SK{PID+1}"))
+    conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (PID + 1, "P", f"SK{PID+1}"))
     for t in ("sales_transactions", "purchase_transactions"):
         party = "customer" if t == "sales_transactions" else "supplier"
         pc = "customer_code" if t == "sales_transactions" else "supplier_code"

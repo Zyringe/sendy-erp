@@ -8,7 +8,7 @@ unit_conversions ratio = 1. Both products stay active (split preserved).
 If the target product_name does not exist:
   - clone the sibling row (same name with the packaging suffix swapped,
     e.g. (แผง)↔(ตัว)) — all columns copied, then product_name / packaging /
-    sku_code-suffix / id / sku overridden;
+    sku_code-suffix / id overridden;
   - if no sibling either → minimal new row (name + unit_type guessed from
     the "(...)" suffix) and FLAG it for Put to complete.
 
@@ -96,7 +96,6 @@ def main(argv=None):
 
     print(f"=== Bucket C+E remap | {len(actions)} (code,unit) ===")
     nextid = conn.execute("SELECT MAX(id)+1 FROM products").fetchone()[0]
-    nextsku = conn.execute("SELECT MAX(sku)+1 FROM products").fetchone()[0]
     new_rows = []
     for code, unit, tname, mode, sib in actions:
         if mode == "existing":
@@ -114,20 +113,19 @@ def main(argv=None):
             elif ut == "แผง":
                 new_sku_code = re.sub(r"-UN(-|$)", r"-PN\1", base_sku)
             print(f"  {code} {unit} → CREATE (clone pid {srow['id']}) "
-                  f"id={nextid} sku={nextsku}\n"
+                  f"id={nextid}\n"
                   f"      name='{tname}'  unit_type={srow['unit_type']} "
                   f"packaging={ut} sku_code={new_sku_code}")
             new_rows.append((code, unit, tname, srow, ut, new_sku_code,
-                             nextid, nextsku))
+                             nextid))
         else:
             print(f"  {code} {unit} → CREATE MINIMAL (no sibling) "
-                  f"id={nextid} sku={nextsku}\n"
+                  f"id={nextid}\n"
                   f"      name='{tname}'  unit_type={ut} "
                   f"sku_code=(FLAG: derive manually)  ⚠ review")
             new_rows.append((code, unit, tname, None, ut, None,
-                             nextid, nextsku))
+                             nextid))
         nextid += 1
-        nextsku += 1
 
     if not a.apply:
         print("\nDRY-RUN — review the CREATE rows above, then --apply "
@@ -140,12 +138,12 @@ def main(argv=None):
         # mig 087: packaging → packaging_th + packaging_short
         from sku_code_utils import PACKAGING_SHORT
         made = {}
-        for code, unit, tname, srow, ut, scode, nid, nsku in new_rows:
+        for code, unit, tname, srow, ut, scode, nid in new_rows:
             pkg_short = PACKAGING_SHORT.get(ut) if ut else None
             if srow is not None:
                 cols = [c for c in pcols]
                 vals = {c: srow[c] for c in cols}
-                vals.update(id=nid, sku=nsku, product_name=tname,
+                vals.update(id=nid, product_name=tname,
                             packaging_th=ut, packaging_short=pkg_short,
                             sku_code=scode, is_active=1)
                 conn.execute(
@@ -154,10 +152,10 @@ def main(argv=None):
                     [vals[c] for c in cols])
             else:
                 conn.execute(
-                    "INSERT INTO products (id,sku,product_name,unit_type,"
+                    "INSERT INTO products (id,product_name,unit_type,"
                     "packaging_th,packaging_short,sku_code,is_active) "
-                    "VALUES (?,?,?,?,?,?,?,1)",
-                    (nid, nsku, tname, ut, ut, pkg_short, f"NEW-REVIEW-{nid}"))
+                    "VALUES (?,?,?,?,?,?,1)",
+                    (nid, tname, ut, ut, pkg_short, f"NEW-REVIEW-{nid}"))
             made[tname] = nid
         # resolve every action to a target pid
         for code, unit, tname, mode, sib in actions:

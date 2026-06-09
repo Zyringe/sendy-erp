@@ -40,7 +40,7 @@
     <table class="table table-mobile-cards mb-0">
       <thead>
         <tr>
-          <th>วันที่/เวลา</th><th>SKU</th><th>ชื่อสินค้า</th>
+          <th>วันที่/เวลา</th><th>รหัส (ID)</th><th>ชื่อสินค้า</th>
           <th class="text-center">ประเภท</th><th class="text-end">จำนวน</th>
           <th>หน่วย</th><th>เลขที่เอกสาร</th><th>หมายเหตุ</th>
         </tr>
@@ -49,11 +49,11 @@
         {% for t in txns %}
         <tr>
           <td data-label="วันที่" class="font-mono text-subtle">{{ t.created_at[:16] }}</td>
-          <td data-label="SKU" class="td-hide-mobile"><span class="badge badge-gray">{{ t.sku }}</span></td>
+          <td data-label="รหัส (ID)" class="td-hide-mobile"><span class="badge badge-gray">{{ t.product_id }}</span></td>
           <td class="td-primary">
             <a href="{{ url_for('products.product_detail', product_id=t.product_id) }}"
                class="text-decoration-none text-main">{{ t.product_name }}</a>
-            <span class="d-mobile-only badge badge-gray ms-1">{{ t.sku }}</span>
+            <span class="d-mobile-only badge badge-gray ms-1">{{ t.product_id }}</span>
           </td>
           <td data-label="ประเภท" class="text-center">
             {% if t.txn_type == 'IN' %}<span class="badge badge-in">รับเข้า</span>

@@ -8,8 +8,7 @@ import models
 
 
 def _seed_product(conn, pid, name, unit="ตัว"):
-    conn.execute("INSERT INTO products(id, sku, product_name, unit_type) VALUES (?,?,?,?)",
-                 (pid, pid, name, unit))
+    conn.execute("INSERT INTO products (id, product_name, unit_type) VALUES (?, ?, ?)", (pid, name, unit))
 
 
 def _stock_in(conn, pid, qty):

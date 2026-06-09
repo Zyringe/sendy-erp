@@ -21,9 +21,7 @@ CODE = "ZRES100"
 def _seed(conn):
     conn.row_factory = sqlite3.Row    # _sync_bsn_to_stock uses row['col']
     for pid in (PA, PB):
-        conn.execute("INSERT INTO products (id,sku,product_name,unit_type,"
-                     "sku_code,is_active) VALUES (?,?,?,'ตัว',?,1)",
-                     (pid, pid, f"P{pid}", f"SK{pid}"))
+        conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (pid, f"P{pid}", f"SK{pid}"))
 
 
 def _sale(conn, unit, did):

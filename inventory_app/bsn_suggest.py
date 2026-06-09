@@ -81,7 +81,6 @@ def _fuzzy_match(bsn_name: str, products: list) -> list:
         if score > 0:
             scored.append({
                 'product_id':   p['id'],
-                'sku':          p['sku'],
                 'product_name': name,
                 'unit_type':    p['unit_type'] if 'unit_type' in p.keys() else 'ตัว',
                 'stock':        p['stock'] if 'stock' in p.keys() else 0,
@@ -219,7 +218,7 @@ def suggest_for_bsn(conn, bsn_code: str, bsn_name: str) -> dict:
       {
         'bsn_code': ...,
         'bsn_name': ...,
-        'matches': [ { product_id, sku, product_name, score, is_likely }, ... ],
+        'matches': [ { product_id, product_name, score, is_likely }, ... ],
         'parsed':  { category, series, brand, model, size, color_th,
                      color_code, packaging, condition, pack_variant },
         'proposed_name': str,
@@ -234,7 +233,7 @@ def suggest_for_bsn(conn, bsn_code: str, bsn_name: str) -> dict:
     # Fuzzy match existing — include unit_type + stock so modal can show
     # unit mismatch warning + current stock per candidate
     products = conn.execute("""
-        SELECT p.id, p.sku, p.product_name, p.unit_type,
+        SELECT p.id, p.product_name, p.unit_type,
                COALESCE(s.quantity, 0) AS stock
           FROM products p
           LEFT JOIN stock_levels s ON s.product_id = p.id

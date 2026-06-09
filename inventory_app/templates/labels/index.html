@@ -185,7 +185,7 @@
     <table class="table mb-0">
       <thead>
         <tr>
-          <th style="width:72px">SKU</th>
+          <th style="width:72px">รหัส (ID)</th>
           <th>ชื่อสินค้า</th>
           <th class="text-end">ราคา</th>
           <th>บาร์โค้ด</th>
@@ -266,7 +266,7 @@
     }
     searchResults.innerHTML = items.map(it => `
       <div class="label-search-item" data-id="${it.id}">
-        <span class="sku">#${it.sku}</span>
+        <span class="sku">#${it.id}</span>
         <span class="pname">${escapeHTML(it.name)}</span>
         <span class="price">฿${fmtPrice(it.price)}</span>
         <span class="${it.barcode ? 'has-bc' : 'no-bc'}">
@@ -326,7 +326,7 @@
     queueEmpty.style.display = 'none';
     queueBody.innerHTML = queue.map(it => `
       <tr data-id="${it.id}">
-        <td><span class="badge badge-gray font-mono">${it.sku}</span></td>
+        <td><span class="badge badge-gray font-mono">${it.id}</span></td>
         <td>${escapeHTML(it.name)}</td>
         <td class="text-end">฿${fmtPrice(it.price)}</td>
         <td><span class="font-mono small ${it.barcode ? '' : 'text-subtle'}">${it.barcode || '— สร้างจาก SKU —'}</span></td>
@@ -370,7 +370,7 @@
     previewCount.textContent = `${labels.length} ดวง`;
 
     grid.innerHTML = labels.map((it, idx) => {
-      const bcVal = it.barcode || (fallback ? String(it.sku) : '');
+      const bcVal = it.barcode || (fallback ? String(it.id) : '');
       const bcId  = `bc-${idx}-${it.id}`;
       return `
         <div class="sticker">
@@ -380,7 +380,7 @@
           </div>
           ${showBC && bcVal ? `<div class="sticker-bc"><svg id="${bcId}" data-bc="${bcVal}"></svg></div>` : ''}
           <div class="d-flex justify-content-between align-items-end">
-            ${showSKU ? `<span class="sticker-sku">#${it.sku}</span>` : '<span></span>'}
+            ${showSKU ? `<span class="sticker-sku">#${it.id}</span>` : '<span></span>'}
             ${showPrice ? `<span class="sticker-price">฿${fmtPrice(it.price)}<small> /${escapeHTML(it.unit||'')}</small></span>` : ''}
           </div>
         </div>

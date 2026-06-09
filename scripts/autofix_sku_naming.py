@@ -120,10 +120,10 @@ def main():
 
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
-    sql = "SELECT id, sku, product_name FROM products"
+    sql = "SELECT id, product_name FROM products"
     if not args.all:
         sql += " WHERE is_active = 1"
-    sql += " ORDER BY sku"
+    sql += " ORDER BY id"
     rows = conn.execute(sql).fetchall()
 
     changes = []
@@ -131,12 +131,12 @@ def main():
         before = r["product_name"]
         after = autofix(before)
         if before != after:
-            changes.append((r["id"], r["sku"], before, after))
+            changes.append((r["id"], before, after))
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["id", "sku", "before", "after"])
+        w.writerow(["product_id", "before", "after"])
         for row in changes:
             w.writerow(row)
 
@@ -150,8 +150,8 @@ def main():
         return
 
     print("First 10 changes:")
-    for _, sku, before, after in changes[:10]:
-        print(f"  [{sku}]")
+    for pid, before, after in changes[:10]:
+        print(f"  [{pid}]")
         print(f"    - {before}")
         print(f"    + {after}")
 
@@ -162,7 +162,7 @@ def main():
         # an UPDATE that doesn't touch FK columns, but enable for safety.
         conn.execute("PRAGMA foreign_keys = ON")
         cur = conn.cursor()
-        for pid, _sku, _before, after in changes:
+        for pid, _before, after in changes:
             cur.execute(
                 "UPDATE products SET product_name = ? WHERE id = ?",
                 (after, pid),

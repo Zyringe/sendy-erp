@@ -27,8 +27,8 @@ DEFAULT = EXPORTS / f'product_platform_overview_{datetime.date.today().strftime(
 
 EXPECTED_HEADERS = [
     'Platform', 'platform_sku_id', 'Parent ID', 'Variation ID', 'Listing name',
-    'Variation', 'Seller SKU', 'Stock', 'Suggested SKU', 'Suggested name',
-    'Confidence', '→ internal_sku (fill in)', '→ qty_per_sale (default 1)',
+    'Variation', 'Seller SKU', 'Stock', 'Suggested product_id', 'Suggested name',
+    'Confidence', '→ product_id (fill in)', '→ qty_per_sale (default 1)',
 ]
 
 
@@ -65,7 +65,7 @@ def main():
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
 
-    stats = dict(scanned=0, applied=0, skipped_empty=0, sku_not_found=0,
+    stats = dict(scanned=0, applied=0, skipped_empty=0, pid_not_found=0,
                  ps_updated=0, listing_inserted=0, listing_updated=0)
 
     for raw in rows[1:]:
@@ -74,27 +74,28 @@ def main():
         stats['scanned'] += 1
 
         (platform, ps_id, parent_id, variation_id, item_name, variation_name,
-         seller_sku, stock, sug_sku, sug_name, conf, fill_sku, fill_qty) = raw[:13]
+         seller_sku, stock, sug_pid, sug_name, conf, fill_pid, fill_qty) = raw[:13]
 
-        if fill_sku in (None, '') or str(fill_sku).strip() == '':
+        if fill_pid in (None, '') or str(fill_pid).strip() == '':
             stats['skipped_empty'] += 1
             continue
 
         try:
-            sku_int = int(str(fill_sku).strip())
+            product_id = int(str(fill_pid).strip())
         except ValueError:
-            print(f'  bad SKU "{fill_sku}" on platform_sku_id={ps_id} — skipped')
-            stats['sku_not_found'] += 1
+            print(f'  bad product_id "{fill_pid}" on platform_sku_id={ps_id} — skipped')
+            stats['pid_not_found'] += 1
             continue
 
+        # The "→ product_id (fill in)" column holds products.id directly
+        # (products.sku was dropped in mig 097).
         prod = conn.execute(
-            'SELECT id FROM products WHERE sku = ?', (sku_int,)
+            'SELECT id FROM products WHERE id = ?', (product_id,)
         ).fetchone()
         if not prod:
-            print(f'  SKU {sku_int} not in products — platform_sku_id={ps_id} skipped')
-            stats['sku_not_found'] += 1
+            print(f'  product_id {product_id} not in products — platform_sku_id={ps_id} skipped')
+            stats['pid_not_found'] += 1
             continue
-        product_id = prod['id']
 
         try:
             qps = float(fill_qty) if fill_qty not in (None, '') else 1.0

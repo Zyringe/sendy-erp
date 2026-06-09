@@ -72,7 +72,7 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        """SELECT p.id, p.sku, p.sku_code, p.product_name, p.brand_id,
+        """SELECT p.id, p.sku_code, p.product_name, p.brand_id,
                   b.short_code AS brand_code, c.code AS cat_code
              FROM products p
              LEFT JOIN brands b ON b.id = p.brand_id
@@ -93,7 +93,6 @@ def main():
         else:
             uncovered_rows.append({
                 "id": r["id"],
-                "sku": r["sku"],
                 "sku_code": sku_code or "",
                 "product_name": r["product_name"],
                 "brand_code": r["brand_code"] or "",
@@ -104,7 +103,7 @@ def main():
     out_uncov = EXPORTS / "image_coverage_uncovered.csv"
     with open(out_uncov, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=[
-            "id", "sku", "sku_code", "product_name", "brand_code", "cat_code",
+            "id", "sku_code", "product_name", "brand_code", "cat_code",
         ])
         w.writeheader()
         w.writerows(uncovered_rows)

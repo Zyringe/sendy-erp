@@ -146,7 +146,7 @@
             <tr>
               <td class="text-subtle">{{ loop.index }}</td>
               <td>
-                {% if r.sku %}<span class="badge badge-gray me-1">{{ r.sku }}</span>{% endif %}
+                {% if r.product_id %}<span class="badge badge-gray me-1">{{ r.product_id }}</span>{% endif %}
                 {% if r.product_id %}
                   <a href="{{ url_for('products.product_detail', product_id=r.product_id) }}"
                      class="text-decoration-none text-main">{{ r.name }}</a>

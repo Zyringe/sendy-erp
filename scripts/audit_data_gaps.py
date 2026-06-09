@@ -13,7 +13,7 @@ Severity heuristic (worst first):
 
 Output: sendy_erp/data/exports/data_gaps_audit.csv
 Columns:
-  sku, sku_code, product_name, sub_category, severity, gap_summary,
+  product_id, sku_code, product_name, sub_category, severity, gap_summary,
   suggested_brand, suggested_model, suggested_size, suggested_color,
   notes, action_taken (Put fills 'Y' after manual fix)
 """
@@ -35,14 +35,14 @@ def main():
     conn.row_factory = sqlite3.Row
 
     products = conn.execute("""
-        SELECT p.id, p.sku, p.sku_code, p.product_name, p.sub_category,
+        SELECT p.id, p.sku_code, p.product_name, p.sub_category,
                p.brand_id, p.model, p.size, p.color_code, p.packaging_th AS packaging,
                p.series, p.pack_variant,
                b.name AS brand_name
           FROM products p
           LEFT JOIN brands b ON b.id = p.brand_id
          WHERE p.is_active = 1
-         ORDER BY p.sku
+         ORDER BY p.id
     """).fetchall()
 
     # All brands (longest token first)
@@ -68,7 +68,7 @@ def main():
             (p['series'] or '').strip(),
             (p['pack_variant'] or '').strip(),
         )
-        fingerprint_groups[fp].append(p['sku'])
+        fingerprint_groups[fp].append(p['id'])
 
     rows = []
     for p in products:
@@ -133,7 +133,7 @@ def main():
         gap_summary = ', '.join(missing) if missing else 'duplicate-fingerprint'
 
         rows.append({
-            'sku':                p['sku'],
+            'product_id':         p['id'],
             'sku_code':           p['sku_code'],
             'severity':           severity,
             'gap_summary':        gap_summary,
@@ -153,7 +153,7 @@ def main():
 
     # Sort: CRITICAL → HIGH → MEDIUM → LOW
     sev_order = {'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3}
-    rows.sort(key=lambda r: (sev_order[r['severity']], r['sku']))
+    rows.sort(key=lambda r: (sev_order[r['severity']], r['product_id']))
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(rows[0].keys())
@@ -177,7 +177,7 @@ def main():
     print("Top 10 CRITICAL/HIGH (no brand, suggest from name):")
     sample = [r for r in rows if r['severity'] in ('CRITICAL', 'HIGH') and r['suggested_brand']][:10]
     for r in sample:
-        print(f"  sku={r['sku']:>5} {r['severity']:<10} suggest={r['suggested_brand']:<15} ← {r['product_name'][:50]}")
+        print(f"  product_id={r['product_id']:>5} {r['severity']:<10} suggest={r['suggested_brand']:<15} ← {r['product_name'][:50]}")
 
 
 if __name__ == '__main__':

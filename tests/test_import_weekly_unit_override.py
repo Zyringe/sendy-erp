@@ -30,9 +30,7 @@ def test_import_routes_overridden_unit_to_override_product(tmp_db,
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     for pid in (PA, PB):
-        conn.execute("INSERT INTO products (id,sku,product_name,unit_type,"
-                     "sku_code,is_active) VALUES (?,?,?,'ตัว',?,1)",
-                     (pid, pid, f"P{pid}", f"SK{pid}"))
+        conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (pid, f"P{pid}", f"SK{pid}"))
     conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
                  "product_id,bsn_unit) VALUES (?,?,?,'')", (CODE, "n", PA))
     conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
@@ -60,9 +58,7 @@ def test_import_routes_overridden_unit_to_override_product(tmp_db,
 
 def test_non_overridden_code_unchanged(tmp_db, monkeypatch):
     conn = sqlite3.connect(tmp_db)
-    conn.execute("INSERT INTO products (id,sku,product_name,unit_type,"
-                 "sku_code,is_active) VALUES (?,?,?,'ตัว',?,1)",
-                 (PA, PA, "P", f"SK{PA}"))
+    conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (PA, "P", f"SK{PA}"))
     conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
                  "product_id,bsn_unit) VALUES (?,?,?,'')", (CODE, "n", PA))
     conn.commit()
