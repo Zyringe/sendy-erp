@@ -192,8 +192,9 @@
         <table class="table table-sm mb-0">
           <tbody>
             {% for c in income_cats %}
-            <tr>
-              <td>{{ c.category }}</td>
+            <tr data-cb-dim="income_category" data-cb-key="{{ c.category }}"
+                data-cb-label="รายรับ: {{ c.category }}" role="button" style="cursor:pointer">
+              <td>{{ c.category }} <i class="bi bi-chevron-right text-muted small" aria-hidden="true"></i></td>
               <td class="text-end text-success small">฿{{ "{:,.2f}".format(c.total) }}</td>
             </tr>
             {% else %}
@@ -213,8 +214,9 @@
         <table class="table table-sm mb-0">
           <tbody>
             {% for c in expense_cats %}
-            <tr>
-              <td>{{ c.category }}</td>
+            <tr data-cb-dim="expense_category" data-cb-key="{{ c.category }}"
+                data-cb-label="รายจ่าย: {{ c.category }}" role="button" style="cursor:pointer">
+              <td>{{ c.category }} <i class="bi bi-chevron-right text-muted small" aria-hidden="true"></i></td>
               <td class="text-end text-danger small">฿{{ "{:,.2f}".format(c.total) }}</td>
             </tr>
             {% else %}
@@ -244,7 +246,8 @@
       <tbody>
         {% set tag_max = (tag_summary | map(attribute='total') | max) if tag_summary else 0 %}
         {% for t in tag_summary %}
-        <tr>
+        <tr data-cb-dim="user_tag" data-cb-key="{{ t.tag }}"
+            data-cb-label="ผู้ใช้/สถานที่: {{ t.tag }}" role="button" style="cursor:pointer">
           <td style="min-width:160px;">
             <div>{{ t.tag }}</div>
             {% if tag_max > 0 %}
@@ -283,8 +286,9 @@
       <tbody>
         {% for m in monthly %}
         {% set bal = m.income - m.expense %}
-        <tr>
-          <td class="small">{{ m.month }}</td>
+        <tr data-cb-dim="month" data-cb-key="{{ m.month }}"
+            data-cb-label="เดือน {{ m.month }}" role="button" style="cursor:pointer">
+          <td class="small">{{ m.month }} <i class="bi bi-chevron-right text-muted small" aria-hidden="true"></i></td>
           <td class="text-end text-success small">฿{{ "{:,.2f}".format(m.income) }}</td>
           <td class="text-end text-danger small">฿{{ "{:,.2f}".format(m.expense) }}</td>
           <td class="text-end fw-semibold small
@@ -299,4 +303,104 @@
 </div>
 {% endif %}
 
+{# ── Drill-down detail modal ───────────────────────────────────────────────── #}
+<div class="modal fade" id="cbDetailModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h2 class="modal-title h5 mb-0" id="cbDetailTitle">รายละเอียด</h2>
+          <div class="text-subtle small" id="cbDetailSummary"></div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="ปิด"></button>
+      </div>
+      <div class="modal-body">
+        <div id="cbDetailLoading" class="text-center text-muted py-4 d-none">
+          <div class="spinner-border spinner-border-sm" role="status"></div> กำลังโหลด...
+        </div>
+        <div id="cbDetailError" class="alert alert-danger d-none" role="alert"></div>
+        <div class="table-responsive">
+          <table class="table table-sm table-hover mb-0" id="cbDetailTable">
+            <thead class="table-light">
+              <tr>
+                <th>วันที่</th><th>บัญชี</th><th>รับ/จ่าย</th>
+                <th>หมวด</th><th>ป้าย</th>
+                <th class="text-end">จำนวน</th><th>โน้ต</th>
+              </tr>
+            </thead>
+            <tbody id="cbDetailBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const modalEl = document.getElementById('cbDetailModal');
+  if (!modalEl) return;
+  const modal   = new bootstrap.Modal(modalEl);
+  const titleEl = document.getElementById('cbDetailTitle');
+  const sumEl   = document.getElementById('cbDetailSummary');
+  const bodyEl  = document.getElementById('cbDetailBody');
+  const loadEl  = document.getElementById('cbDetailLoading');
+  const errEl   = document.getElementById('cbDetailError');
+  const tableEl = document.getElementById('cbDetailTable');
+
+  function esc(s) {
+    return (s == null ? '' : String(s)).replace(/[&<>"]/g, c => (
+      {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+
+  document.querySelectorAll('[data-cb-dim]').forEach(row => {
+    row.addEventListener('click', () => {
+      const dim   = row.getAttribute('data-cb-dim');
+      const key   = row.getAttribute('data-cb-key');
+      const label = row.getAttribute('data-cb-label') || key;
+      titleEl.textContent = label;
+      sumEl.textContent   = '';
+      bodyEl.innerHTML    = '';
+      errEl.classList.add('d-none');
+      tableEl.classList.add('d-none');
+      loadEl.classList.remove('d-none');
+      modal.show();
+
+      fetch('{{ url_for("cashbook.detail_api") }}?dim=' +
+            encodeURIComponent(dim) + '&key=' + encodeURIComponent(key))
+        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(data => {
+          loadEl.classList.add('d-none');
+          const s = data.summary;
+          sumEl.textContent = (dim === 'month')
+            ? 'รับ ' + s.income_display + ' · จ่าย ' + s.expense_display + ' · ' + s.count + ' รายการ'
+            : 'รวม ' + s.total_display + ' · ' + s.count + ' รายการ';
+          bodyEl.innerHTML = data.rows.map(r => {
+            const badge = r.direction === 'income'
+              ? '<span class="badge bg-success">รับ</span>'
+              : '<span class="badge bg-danger">จ่าย</span>';
+            return '<tr>' +
+              '<td class="small">' + esc(r.txn_date) + '</td>' +
+              '<td class="small">' + esc(r.account_code) + '</td>' +
+              '<td>' + badge + '</td>' +
+              '<td class="small">' + esc(r.category) + '</td>' +
+              '<td class="small">' + esc(r.user_category) + '</td>' +
+              '<td class="text-end small">' + esc(r.amount_display) + '</td>' +
+              '<td class="small text-muted">' + esc(r.note) + '</td>' +
+            '</tr>';
+          }).join('') || '<tr><td colspan="7" class="text-muted small">ไม่มีรายการ</td></tr>';
+          tableEl.classList.remove('d-none');
+        })
+        .catch(err => {
+          loadEl.classList.add('d-none');
+          errEl.textContent = 'โหลดข้อมูลไม่สำเร็จ: ' + err.message;
+          errEl.classList.remove('d-none');
+        });
+    });
+  });
+})();
+</script>
 {% endblock %}

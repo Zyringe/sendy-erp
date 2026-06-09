@@ -145,3 +145,12 @@ def test_detail_api_missing_key_400(admin_client):
 def test_detail_api_requires_login(anon_client):
     r = anon_client.get('/cashbook/api/detail?dim=month&key=2026-01')
     assert r.status_code in (301, 302)   # before_request redirects anon to login
+
+
+def test_dashboard_includes_drilldown_modal(admin_client):
+    """Full template renders (url_for(cashbook.detail_api) resolves, no BuildError)
+    and the clickable rows + modal are present."""
+    html = admin_client.get('/cashbook/').data.decode('utf-8')
+    assert 'id="cbDetailModal"' in html
+    assert 'data-cb-dim="month"' in html
+    assert 'data-cb-dim="expense_category"' in html
