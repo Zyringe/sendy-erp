@@ -80,63 +80,6 @@
   </div>
 </div>
 
-{# ── ค่าใช้จ่าย: ธุรกิจ vs ส่วนตัว (แยกจากป้าย ผู้ใช้/สถานที่) ───────────── #}
-{% set bp_total = biz_personal.business + biz_personal.personal + biz_personal.unclassified %}
-<h2 class="h6 text-muted fw-semibold mb-1">
-  <i class="bi bi-pie-chart me-1" aria-hidden="true"></i>แยกรายจ่าย: ธุรกิจ vs ส่วนตัว
-</h2>
-<p class="text-subtle small mb-3">สัดส่วนของรายจ่ายทั้งหมด (ไม่ใช่ยอดรวมใหม่)</p>
-<div class="row g-3 mb-4">
-  <div class="col-sm-4">
-    <div class="stat-card h-100">
-      <div class="d-flex align-items-center gap-3">
-        <div class="stat-card-icon" style="background:#e0f2fe">
-          <i class="bi bi-building" style="color:#0284c7" aria-hidden="true"></i>
-        </div>
-        <div>
-          <div class="stat-card-label">ค่าใช้จ่ายธุรกิจ</div>
-          <div class="stat-card-value text-primary">฿{{ "{:,.2f}".format(biz_personal.business) }}</div>
-          <div class="text-subtle small mt-1">
-            {{ "%.0f"|format(biz_personal.business / bp_total * 100) if bp_total > 0 else 0 }}% ของรายจ่าย
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div class="col-sm-4">
-    <div class="stat-card h-100">
-      <div class="d-flex align-items-center gap-3">
-        <div class="stat-card-icon" style="background:#fff1e6">
-          <i class="bi bi-house" style="color:#e8590c" aria-hidden="true"></i>
-        </div>
-        <div>
-          <div class="stat-card-label">ค่าใช้จ่ายส่วนตัว/ในบ้าน</div>
-          <div class="stat-card-value" style="color:#e8590c">฿{{ "{:,.2f}".format(biz_personal.personal) }}</div>
-          <div class="text-subtle small mt-1">
-            {{ "%.0f"|format(biz_personal.personal / bp_total * 100) if bp_total > 0 else 0 }}% ของรายจ่าย
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div class="col-sm-4">
-    <div class="stat-card h-100">
-      <div class="d-flex align-items-center gap-3">
-        <div class="stat-card-icon" style="background:#f1f3f5">
-          <i class="bi bi-question-circle" style="color:#6c757d" aria-hidden="true"></i>
-        </div>
-        <div>
-          <div class="stat-card-label">ยังไม่ระบุ (ไม่มีป้าย)</div>
-          <div class="stat-card-value text-muted">฿{{ "{:,.2f}".format(biz_personal.unclassified) }}</div>
-          <div class="text-subtle small mt-1">
-            {{ "%.0f"|format(biz_personal.unclassified / bp_total * 100) if bp_total > 0 else 0 }}% ของรายจ่าย
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
 {# ── Per-account table ─────────────────────────────────────────────────────── #}
 {% if op_accounts %}
 <div class="card mb-4">

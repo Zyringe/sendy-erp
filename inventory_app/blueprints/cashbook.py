@@ -151,30 +151,6 @@ def _get_tag_summary(conn):
     return [dict(r) for r in rows]
 
 
-def _get_biz_personal(conn):
-    """Operating expense split into business / personal (บ้าน* tag) / unclassified."""
-    ph, params = _tcat_ph()
-    rows = conn.execute(f"""
-        SELECT
-            CASE
-                WHEN t.user_category LIKE 'บ้าน%' THEN 'personal'
-                WHEN t.user_category IS NULL OR t.user_category = '' THEN 'unclassified'
-                ELSE 'business'
-            END AS bucket,
-            SUM(t.amount) AS total
-        FROM cashbook_transactions t
-        JOIN cashbook_accounts a ON a.id = t.account_id
-        WHERE a.is_transfer = 0
-          AND t.direction = 'expense'
-          AND COALESCE(t.category,'') NOT IN ({ph})
-        GROUP BY bucket
-    """, params).fetchall()
-    out = {"business": 0.0, "personal": 0.0, "unclassified": 0.0}
-    for r in rows:
-        out[r["bucket"]] = r["total"]
-    return out
-
-
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @bp_cashbook.route("/")
@@ -185,7 +161,6 @@ def dashboard():
         monthly       = _get_monthly_summary(conn, exclude_transfer=True)
         income_cats, expense_cats = _get_category_summary(conn)
         tag_summary   = _get_tag_summary(conn)
-        biz_personal  = _get_biz_personal(conn)
     finally:
         conn.close()
 
@@ -216,7 +191,6 @@ def dashboard():
         income_cats=income_cats,
         expense_cats=expense_cats,
         tag_summary=tag_summary,
-        biz_personal=biz_personal,
     )
 
 
