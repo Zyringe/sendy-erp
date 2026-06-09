@@ -2557,8 +2557,24 @@ def conversion_list():
     # "buildable now" per formula: units each formula could produce from current input stock
     _b = models.get_buildable()
     buildable = {src['formula_id']: src['qty'] for e in _b.values() for src in e['sources']}
+    # Pair awareness: which formulas have a reciprocal partner (for the delete
+    # confirm "delete both"), and which are pair-shaped-but-partnerless (flagged
+    # "ทิศเดียว" for review). One shared connection — no per-formula reconnect.
+    partners, oneway_ids = {}, set()
+    conn = get_connection()
+    try:
+        for f in formulas:
+            p = models.find_pair_partner(f['id'], conn=conn)
+            if p is not None:
+                partners[f['id']] = {'id': p['id'], 'name': p['name']}
+            elif (f['is_active'] and f['input_count'] == 1
+                  and (f['name'].startswith('[แพ็ค]') or f['name'].startswith('[แกะ]'))):
+                oneway_ids.add(f['id'])
+    finally:
+        conn.close()
     return render_template('conversions/list.html',
-                           formulas=formulas, recent_runs=recent_runs, buildable=buildable)
+                           formulas=formulas, recent_runs=recent_runs, buildable=buildable,
+                           partners=partners, oneway_ids=oneway_ids)
 
 
 @app.route('/conversions/history')
@@ -2705,8 +2721,17 @@ def conversion_run(formula_id):
 def conversion_delete(formula_id):
     if not session.get('role'):
         abort(403)
-    models.delete_conversion_formula(formula_id)
-    flash('ลบสูตรเรียบร้อยแล้ว', 'success')
+    # Re-derive the partner server-side (don't trust a client id) so deleting one
+    # half of a pack/unpack pair can take its reciprocal with it instead of
+    # silently orphaning it. No partner → behaves exactly as before.
+    also = None
+    if request.form.get('delete_partner') == '1':
+        partner = models.find_pair_partner(formula_id)
+        if partner is not None:
+            also = partner['id']
+    models.delete_conversion_formula(formula_id, also_delete_id=also)
+    flash('ลบสูตรทั้งคู่ (แพ็คและแกะ) เรียบร้อยแล้ว' if also is not None
+          else 'ลบสูตรเรียบร้อยแล้ว', 'success')
     return redirect(url_for('conversion_list'))
 
 

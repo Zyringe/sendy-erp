@@ -61,6 +61,13 @@
   </a>
 </div>
 {% else %}
+{% if oneway_ids %}
+<div class="alert alert-warning d-flex align-items-center py-2 small mb-3">
+  <i class="bi bi-exclamation-triangle me-2"></i>
+  <div>มี <strong>{{ oneway_ids|length }}</strong> สูตรที่เป็นทิศเดียว (มีแค่แพ็คหรือแกะอย่างเดียว ไม่มีคู่อีกด้าน)
+  — ตรวจสอบว่าตั้งใจหรือเผลอลบคู่ไป (สูตรที่ติดป้าย <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle">ทิศเดียว</span> ด้านล่าง)</div>
+</div>
+{% endif %}
 <div class="card">
   <div class="card-body p-0">
     <table class="table table-hover mb-0">
@@ -79,6 +86,12 @@
         <tr{% if not f.is_active %} class="text-muted"{% endif %}>
           <td class="fw-500">
             {{ f.name }}
+            {% if f.id in oneway_ids %}
+            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle ms-1"
+                  title="มีสูตรทิศเดียว — ไม่มีคู่แพ็ค/แกะอีกด้าน ตรวจสอบว่าตั้งใจหรือไม่">
+              <i class="bi bi-exclamation-triangle me-1"></i>ทิศเดียว
+            </span>
+            {% endif %}
             {% if f.note %}<div class="text-subtle small">{{ f.note }}</div>{% endif %}
           </td>
           <td class="text-subtle small">{{ f.input_count }} รายการ</td>
@@ -111,7 +124,8 @@
             </a>
             <button type="button" class="btn btn-sm btn-danger" title="ลบสูตร"
                     data-bs-toggle="modal" data-bs-target="#deleteFormulaModal"
-                    data-formula-id="{{ f.id }}" data-formula-name="{{ f.name }}">
+                    data-formula-id="{{ f.id }}" data-formula-name="{{ f.name }}"
+                    {% if partners.get(f.id) %}data-partner-name="{{ partners[f.id].name }}"{% endif %}>
               <i class="bi bi-trash"></i>
             </button>
             {% endif %}
@@ -157,6 +171,18 @@
       <div class="modal-body">
         <p class="mb-2">คุณกำลังจะลบสูตร <strong id="deleteFormulaName"></strong> ถาวร</p>
         <p class="text-subtle small mb-3">การลบจะไม่สามารถกู้คืนได้ และจะไม่กระทบการแปลงในประวัติที่ผ่านมา</p>
+        <div id="deletePartnerBlock" class="alert alert-warning small d-none">
+          <i class="bi bi-exclamation-triangle me-1"></i>
+          สูตรนี้จับคู่กับ <strong id="deletePartnerName"></strong> (อีกครึ่งหนึ่งของคู่แพ็ค-แกะ)
+          ถ้าลบเฉพาะสูตรนี้ การแปลงอีกทิศจะใช้งานไม่ได้
+          <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" id="deletePartnerChk"
+                   name="delete_partner" value="1" checked>
+            <label class="form-check-label" for="deletePartnerChk">
+              ลบทั้งคู่ (แนะนำ) — เอาออกทั้งสูตรแพ็คและแกะพร้อมกัน
+            </label>
+          </div>
+        </div>
         <label class="form-label small">พิมพ์ <code>ยืนยัน</code> เพื่อดำเนินการต่อ:</label>
         <input type="text" id="deleteConfirmInput" class="form-control" autocomplete="off">
       </div>
@@ -177,16 +203,28 @@
   var nameEl = document.getElementById('deleteFormulaName');
   var input = document.getElementById('deleteConfirmInput');
   var btn   = document.getElementById('deleteConfirmBtn');
+  var partnerBlock = document.getElementById('deletePartnerBlock');
+  var partnerName  = document.getElementById('deletePartnerName');
+  var partnerChk   = document.getElementById('deletePartnerChk');
   var deleteUrlBase = "{{ url_for('conversion_delete', formula_id=0) }}";
 
   modal.addEventListener('show.bs.modal', function(ev) {
     var trigger = ev.relatedTarget;
     var fid  = trigger.getAttribute('data-formula-id');
     var name = trigger.getAttribute('data-formula-name');
+    var pname = trigger.getAttribute('data-partner-name');
     nameEl.textContent = name;
     form.action = deleteUrlBase.replace(/\/0\/delete$/, '/' + fid + '/delete');
     input.value = '';
     btn.disabled = true;
+    if (pname) {
+      partnerName.textContent = pname;
+      partnerChk.checked = true;
+      partnerBlock.classList.remove('d-none');
+    } else {
+      partnerChk.checked = false;
+      partnerBlock.classList.add('d-none');
+    }
   });
   input.addEventListener('input', function() {
     btn.disabled = (input.value.trim() !== 'ยืนยัน');
