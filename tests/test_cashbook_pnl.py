@@ -18,7 +18,7 @@ os.environ.setdefault('SKIP_DB_INIT', '1')
 
 from blueprints.cashbook import (
     _get_accounts_with_totals, _get_category_summary, _get_tag_summary,
-    _get_biz_personal, _get_monthly_summary, TRANSFER_CATEGORIES,
+    _get_monthly_summary, TRANSFER_CATEGORIES,
 )
 
 TRANSFER = TRANSFER_CATEGORIES[0]
@@ -92,14 +92,6 @@ def test_tag_summary_excludes_transfers_and_untagged(empty_db_conn):
     assert tags == {'โกดัง Lion': 50.0, 'บ้านสุนทร': 30.0}
 
 
-def test_biz_personal_split(empty_db_conn):
-    _seed(empty_db_conn)
-    bp = _get_biz_personal(empty_db_conn)
-    assert bp['business'] == 50.0        # โกดัง Lion (non-บ้าน tag)
-    assert bp['personal'] == 30.0        # บ้านสุนทร
-    assert bp['unclassified'] == 20.0    # ซื้อสินค้า (untagged)
-
-
 def test_monthly_excludes_transfer(empty_db_conn):
     _seed(empty_db_conn)
     m = _get_monthly_summary(empty_db_conn, exclude_transfer=True)
@@ -124,10 +116,8 @@ def admin_client(tmp_db):
 
 
 def test_dashboard_renders_new_sections(admin_client):
-    """The full template renders (Jinja valid) with the new biz/personal,
-    by-tag, and transfer-disclosure sections present."""
+    """The full template renders (Jinja valid) with the by-tag and
+    transfer-disclosure sections present."""
     html = admin_client.get('/cashbook/').data.decode('utf-8')
-    assert 'ค่าใช้จ่ายธุรกิจ' in html
-    assert 'ค่าใช้จ่ายส่วนตัว/ในบ้าน' in html
     assert 'ค่าใช้จ่ายตามผู้ใช้/สถานที่' in html
     assert 'เงินสดจริงในบัญชี' in html          # คงเหลือ disclosure (true cash incl transfers)

@@ -18,7 +18,7 @@ import tempfile
 from typing import Optional
 
 import openpyxl
-from flask import (Blueprint, abort, flash, redirect, render_template,
+from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
                    request, session, url_for, make_response)
 
 import database
@@ -151,28 +151,64 @@ def _get_tag_summary(conn):
     return [dict(r) for r in rows]
 
 
-def _get_biz_personal(conn):
-    """Operating expense split into business / personal (บ้าน* tag) / unclassified."""
+# ── Drill-down detail ──────────────────────────────────────────────────────────
+
+_DETAIL_DIMS = ("income_category", "expense_category", "user_tag", "month")
+
+
+def _get_detail_rows(conn, dim, key):
+    """Transactions behind a dashboard summary figure, in the SAME operating
+    scope as the dashboard (transfer accounts + transfer categories excluded).
+
+    Returns (rows, summary). Raises ValueError on an unknown dim.
+    """
+    if dim not in _DETAIL_DIMS:
+        raise ValueError(f"unknown detail dim: {dim!r}")
+
     ph, params = _tcat_ph()
-    rows = conn.execute(f"""
-        SELECT
-            CASE
-                WHEN t.user_category LIKE 'บ้าน%' THEN 'personal'
-                WHEN t.user_category IS NULL OR t.user_category = '' THEN 'unclassified'
-                ELSE 'business'
-            END AS bucket,
-            SUM(t.amount) AS total
+    if dim == "income_category":
+        where = " AND t.direction='income' AND COALESCE(t.category,'(ไม่ระบุ)') = ?"
+        params = params + [key]
+    elif dim == "expense_category":
+        where = " AND t.direction='expense' AND COALESCE(t.category,'(ไม่ระบุ)') = ?"
+        params = params + [key]
+    elif dim == "user_tag":
+        where = " AND t.direction='expense' AND t.user_category = ?"
+        params = params + [key]
+    else:  # month
+        where = " AND strftime('%Y-%m', t.txn_date) = ?"
+        params = params + [key]
+
+    sql_rows = conn.execute(f"""
+        SELECT t.txn_date, a.code AS account_code, a.account_owner_name,
+               t.direction, t.category, t.user_category, t.amount, t.note
         FROM cashbook_transactions t
         JOIN cashbook_accounts a ON a.id = t.account_id
         WHERE a.is_transfer = 0
-          AND t.direction = 'expense'
           AND COALESCE(t.category,'') NOT IN ({ph})
-        GROUP BY bucket
+          {where}
+        ORDER BY t.txn_date DESC, t.id DESC
     """, params).fetchall()
-    out = {"business": 0.0, "personal": 0.0, "unclassified": 0.0}
-    for r in rows:
-        out[r["bucket"]] = r["total"]
-    return out
+
+    rows = []
+    for r in sql_rows:
+        d = dict(r)
+        d["amount_display"] = _fmt_baht(d["amount"])
+        rows.append(d)
+
+    if dim == "month":
+        income = sum(r["amount"] for r in rows if r["direction"] == "income")
+        expense = sum(r["amount"] for r in rows if r["direction"] == "expense")
+        summary = {
+            "count": len(rows),
+            "income": income, "income_display": _fmt_baht(income),
+            "expense": expense, "expense_display": _fmt_baht(expense),
+        }
+    else:
+        total = sum(r["amount"] for r in rows)
+        summary = {"count": len(rows), "total": total, "total_display": _fmt_baht(total)}
+
+    return rows, summary
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -185,7 +221,6 @@ def dashboard():
         monthly       = _get_monthly_summary(conn, exclude_transfer=True)
         income_cats, expense_cats = _get_category_summary(conn)
         tag_summary   = _get_tag_summary(conn)
-        biz_personal  = _get_biz_personal(conn)
     finally:
         conn.close()
 
@@ -216,8 +251,21 @@ def dashboard():
         income_cats=income_cats,
         expense_cats=expense_cats,
         tag_summary=tag_summary,
-        biz_personal=biz_personal,
     )
+
+
+@bp_cashbook.route("/api/detail")
+def detail_api():
+    dim = request.args.get("dim", "")
+    key = request.args.get("key", "")
+    if dim not in _DETAIL_DIMS or key == "":
+        abort(400)
+    conn = database.get_connection()
+    try:
+        rows, summary = _get_detail_rows(conn, dim, key)
+    finally:
+        conn.close()
+    return jsonify(rows=rows, summary=summary, dim=dim, key=key)
 
 
 @bp_cashbook.route("/account/<int:account_id>")
