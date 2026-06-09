@@ -151,6 +151,66 @@ def _get_tag_summary(conn):
     return [dict(r) for r in rows]
 
 
+# ── Drill-down detail ──────────────────────────────────────────────────────────
+
+_DETAIL_DIMS = ("income_category", "expense_category", "user_tag", "month")
+
+
+def _get_detail_rows(conn, dim, key):
+    """Transactions behind a dashboard summary figure, in the SAME operating
+    scope as the dashboard (transfer accounts + transfer categories excluded).
+
+    Returns (rows, summary). Raises ValueError on an unknown dim.
+    """
+    if dim not in _DETAIL_DIMS:
+        raise ValueError(f"unknown detail dim: {dim!r}")
+
+    ph, params = _tcat_ph()
+    if dim == "income_category":
+        where = " AND t.direction='income' AND COALESCE(t.category,'(ไม่ระบุ)') = ?"
+        params = params + [key]
+    elif dim == "expense_category":
+        where = " AND t.direction='expense' AND COALESCE(t.category,'(ไม่ระบุ)') = ?"
+        params = params + [key]
+    elif dim == "user_tag":
+        where = " AND t.direction='expense' AND t.user_category = ?"
+        params = params + [key]
+    else:  # month
+        where = " AND strftime('%Y-%m', t.txn_date) = ?"
+        params = params + [key]
+
+    sql_rows = conn.execute(f"""
+        SELECT t.txn_date, a.code AS account_code, a.account_owner_name,
+               t.direction, t.category, t.user_category, t.amount, t.note
+        FROM cashbook_transactions t
+        JOIN cashbook_accounts a ON a.id = t.account_id
+        WHERE a.is_transfer = 0
+          AND COALESCE(t.category,'') NOT IN ({ph})
+          {where}
+        ORDER BY t.txn_date DESC, t.id DESC
+    """, params).fetchall()
+
+    rows = []
+    for r in sql_rows:
+        d = dict(r)
+        d["amount_display"] = _fmt_baht(d["amount"])
+        rows.append(d)
+
+    if dim == "month":
+        income = sum(r["amount"] for r in rows if r["direction"] == "income")
+        expense = sum(r["amount"] for r in rows if r["direction"] == "expense")
+        summary = {
+            "count": len(rows),
+            "income": income, "income_display": _fmt_baht(income),
+            "expense": expense, "expense_display": _fmt_baht(expense),
+        }
+    else:
+        total = sum(r["amount"] for r in rows)
+        summary = {"count": len(rows), "total": total, "total_display": _fmt_baht(total)}
+
+    return rows, summary
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @bp_cashbook.route("/")
