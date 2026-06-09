@@ -18,7 +18,7 @@ import tempfile
 from typing import Optional
 
 import openpyxl
-from flask import (Blueprint, abort, flash, redirect, render_template,
+from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
                    request, session, url_for, make_response)
 
 import database
@@ -252,6 +252,20 @@ def dashboard():
         expense_cats=expense_cats,
         tag_summary=tag_summary,
     )
+
+
+@bp_cashbook.route("/api/detail")
+def detail_api():
+    dim = request.args.get("dim", "")
+    key = request.args.get("key", "")
+    if dim not in _DETAIL_DIMS or key == "":
+        abort(400)
+    conn = database.get_connection()
+    try:
+        rows, summary = _get_detail_rows(conn, dim, key)
+    finally:
+        conn.close()
+    return jsonify(rows=rows, summary=summary, dim=dim, key=key)
 
 
 @bp_cashbook.route("/account/<int:account_id>")

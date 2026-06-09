@@ -104,3 +104,44 @@ def test_unknown_dim_raises(empty_db_conn):
     _seed(empty_db_conn)
     with pytest.raises(ValueError):
         _get_detail_rows(empty_db_conn, 'bogus', 'x')
+
+
+@pytest.fixture
+def admin_client(tmp_db):
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 1
+        sess['username'] = 'test-admin'
+        sess['role'] = 'admin'
+    return c
+
+
+@pytest.fixture
+def anon_client(tmp_db):
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    return flask_app.test_client()
+
+
+def test_detail_api_valid_dim_returns_json(admin_client):
+    r = admin_client.get('/cashbook/api/detail?dim=expense_category&key=ค่าไฟ')
+    assert r.status_code == 200
+    data = r.get_json()
+    assert 'rows' in data and 'summary' in data
+    assert 'count' in data['summary']
+    assert data['dim'] == 'expense_category'
+
+
+def test_detail_api_unknown_dim_400(admin_client):
+    assert admin_client.get('/cashbook/api/detail?dim=bogus&key=x').status_code == 400
+
+
+def test_detail_api_missing_key_400(admin_client):
+    assert admin_client.get('/cashbook/api/detail?dim=month').status_code == 400
+
+
+def test_detail_api_requires_login(anon_client):
+    r = anon_client.get('/cashbook/api/detail?dim=month&key=2026-01')
+    assert r.status_code in (301, 302)   # before_request redirects anon to login
