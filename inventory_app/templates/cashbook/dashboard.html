@@ -80,6 +80,34 @@
   </div>
 </div>
 
+{# ── Charts ─────────────────────────────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header fw-semibold"><i class="bi bi-bar-chart me-1"></i>แนวโน้มรายเดือน</div>
+      <div class="card-body">
+        {% if monthly %}
+        <div style="height:260px;"><canvas id="cbTrendChart"></canvas></div>
+        {% else %}
+        <div class="text-muted small">ยังไม่มีข้อมูลรายเดือน</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header fw-semibold"><i class="bi bi-pie-chart me-1"></i>สัดส่วนรายจ่ายตามหมวด</div>
+      <div class="card-body">
+        {% if expense_chart %}
+        <div style="height:260px;"><canvas id="cbExpenseChart"></canvas></div>
+        {% else %}
+        <div class="text-muted small">ยังไม่มีข้อมูลรายจ่าย</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
 {# ── Per-account table ─────────────────────────────────────────────────────── #}
 {% if op_accounts %}
 <div class="card mb-4">
@@ -339,6 +367,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>
 (function () {
   const modalEl = document.getElementById('cbDetailModal');
@@ -356,51 +385,107 @@
       {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   }
 
-  document.querySelectorAll('[data-cb-dim]').forEach(row => {
-    row.addEventListener('click', () => {
-      const dim   = row.getAttribute('data-cb-dim');
-      const key   = row.getAttribute('data-cb-key');
-      const label = row.getAttribute('data-cb-label') || key;
-      titleEl.textContent = label;
-      sumEl.textContent   = '';
-      bodyEl.innerHTML    = '';
-      errEl.classList.add('d-none');
-      tableEl.classList.add('d-none');
-      loadEl.classList.remove('d-none');
-      modal.show();
+  function openCbDetail(dim, key, label) {
+    titleEl.textContent = label || key;
+    sumEl.textContent   = '';
+    bodyEl.innerHTML    = '';
+    errEl.classList.add('d-none');
+    tableEl.classList.add('d-none');
+    loadEl.classList.remove('d-none');
+    modal.show();
 
-      fetch('{{ url_for("cashbook.detail_api") }}?dim=' +
-            encodeURIComponent(dim) + '&key=' + encodeURIComponent(key))
-        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-        .then(data => {
-          loadEl.classList.add('d-none');
-          const s = data.summary;
-          sumEl.textContent = (dim === 'month')
-            ? 'รับ ' + s.income_display + ' · จ่าย ' + s.expense_display + ' · ' + s.count + ' รายการ'
-            : 'รวม ' + s.total_display + ' · ' + s.count + ' รายการ';
-          bodyEl.innerHTML = data.rows.map(r => {
-            const badge = r.direction === 'income'
-              ? '<span class="badge bg-success">รับ</span>'
-              : '<span class="badge bg-danger">จ่าย</span>';
-            return '<tr>' +
-              '<td class="small">' + esc(r.txn_date) + '</td>' +
-              '<td class="small">' + esc(r.account_code) + '</td>' +
-              '<td>' + badge + '</td>' +
-              '<td class="small">' + esc(r.category) + '</td>' +
-              '<td class="small">' + esc(r.user_category) + '</td>' +
-              '<td class="text-end small">' + esc(r.amount_display) + '</td>' +
-              '<td class="small text-muted">' + esc(r.note) + '</td>' +
-            '</tr>';
-          }).join('') || '<tr><td colspan="7" class="text-muted small">ไม่มีรายการ</td></tr>';
-          tableEl.classList.remove('d-none');
-        })
-        .catch(err => {
-          loadEl.classList.add('d-none');
-          errEl.textContent = 'โหลดข้อมูลไม่สำเร็จ: ' + err.message;
-          errEl.classList.remove('d-none');
-        });
-    });
+    fetch('{{ url_for("cashbook.detail_api") }}?dim=' +
+          encodeURIComponent(dim) + '&key=' + encodeURIComponent(key))
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(data => {
+        loadEl.classList.add('d-none');
+        const s = data.summary;
+        sumEl.textContent = (dim === 'month')
+          ? 'รับ ' + s.income_display + ' · จ่าย ' + s.expense_display + ' · ' + s.count + ' รายการ'
+          : 'รวม ' + s.total_display + ' · ' + s.count + ' รายการ';
+        bodyEl.innerHTML = data.rows.map(r => {
+          const badge = r.direction === 'income'
+            ? '<span class="badge bg-success">รับ</span>'
+            : '<span class="badge bg-danger">จ่าย</span>';
+          return '<tr>' +
+            '<td class="small">' + esc(r.txn_date) + '</td>' +
+            '<td class="small">' + esc(r.account_code) + '</td>' +
+            '<td>' + badge + '</td>' +
+            '<td class="small">' + esc(r.category) + '</td>' +
+            '<td class="small">' + esc(r.user_category) + '</td>' +
+            '<td class="text-end small">' + esc(r.amount_display) + '</td>' +
+            '<td class="small text-muted">' + esc(r.note) + '</td>' +
+          '</tr>';
+        }).join('') || '<tr><td colspan="7" class="text-muted small">ไม่มีรายการ</td></tr>';
+        tableEl.classList.remove('d-none');
+      })
+      .catch(err => {
+        loadEl.classList.add('d-none');
+        errEl.textContent = 'โหลดข้อมูลไม่สำเร็จ: ' + err.message;
+        errEl.classList.remove('d-none');
+      });
+  }
+
+  // Table rows
+  document.querySelectorAll('[data-cb-dim]').forEach(row => {
+    row.addEventListener('click', () => openCbDetail(
+      row.getAttribute('data-cb-dim'),
+      row.getAttribute('data-cb-key'),
+      row.getAttribute('data-cb-label')));
   });
+
+  // Charts
+  const monthly = {{ monthly|tojson }};
+  const expenseChart = {{ expense_chart|tojson }};
+
+  const trendEl = document.getElementById('cbTrendChart');
+  if (trendEl && monthly.length) {
+    new Chart(trendEl, {
+      data: {
+        labels: monthly.map(m => m.month),
+        datasets: [
+          { type: 'bar', label: 'รายรับ', backgroundColor: '#2e7d3a', data: monthly.map(m => m.income) },
+          { type: 'bar', label: 'รายจ่าย', backgroundColor: '#c41e2a', data: monthly.map(m => m.expense) },
+          { type: 'line', label: 'คงเหลือสุทธิ', borderColor: '#0284c7', backgroundColor: '#0284c7',
+            data: monthly.map(m => m.income - m.expense), tension: 0.3, fill: false }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom' } },
+        onClick: (e, els) => {
+          if (!els.length) return;
+          const m = monthly[els[0].index];
+          openCbDetail('month', m.month, 'เดือน ' + m.month);
+        }
+      }
+    });
+  }
+
+  const expEl = document.getElementById('cbExpenseChart');
+  if (expEl && expenseChart.length) {
+    const palette = ['#c41e2a','#e8590c','#f08c00','#e6a817','#2e7d3a','#0284c7','#6f42c1','#adb5bd'];
+    new Chart(expEl, {
+      type: 'doughnut',
+      data: {
+        labels: expenseChart.map(c => c.category),
+        datasets: [{
+          data: expenseChart.map(c => c.total),
+          backgroundColor: expenseChart.map((c, i) => c.category === 'อื่นๆ' ? '#adb5bd' : palette[i % palette.length])
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'right' } },
+        onClick: (e, els) => {
+          if (!els.length) return;
+          const cat = expenseChart[els[0].index].category;
+          if (cat === 'อื่นๆ') return;
+          openCbDetail('expense_category', cat, 'รายจ่าย: ' + cat);
+        }
+      }
+    });
+  }
 })();
 </script>
 {% endblock %}
