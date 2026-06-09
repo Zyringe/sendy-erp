@@ -68,7 +68,7 @@ def fetch_products(con, pids):
     """Pull current product master + brand + stock for these pids."""
     placeholders = ",".join("?" * len(pids))
     sql = f"""
-    SELECT p.id, p.sku, p.product_name, p.is_active, p.hard_to_sell,
+    SELECT p.id, p.product_name, p.is_active, p.hard_to_sell,
            p.base_sell_price, p.cost_price,
            COALESCE(b.name, '') AS brand,
            COALESCE(b.is_own_brand, 0) AS is_own,
@@ -133,7 +133,6 @@ def main():
         rows.append({
             "include": "",  # user fills Y / N / ?
             "product_id": pid,
-            "sku": p["sku"],
             "product_name": p["product_name"],
             "brand": p["brand"],
             "is_own_brand": p["is_own"],
@@ -151,8 +150,8 @@ def main():
             "notes": "",
         })
 
-    # Sort: rec_score desc, then brand, then sku
-    rows.sort(key=lambda r: (-r["rec_score"], r["brand"], r["sku"]))
+    # Sort: rec_score desc, then brand, then product_id
+    rows.sort(key=lambda r: (-r["rec_score"], r["brand"], r["product_id"]))
 
     fieldnames = list(rows[0].keys())
     with OUT.open("w", newline="") as f:

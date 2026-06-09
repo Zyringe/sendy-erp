@@ -157,9 +157,7 @@ def test_upsert_mapping_preserves_ignored_marker(empty_db_with_user):
             (bsn_code, bsn_name, product_id, bsn_unit, is_ignored, ignore_reason)
         VALUES ('TEST007', 'test 007', NULL, '', 1, 'ค่าขนส่ง')
     """)
-    cur = conn.execute(
-        "INSERT INTO products (sku, product_name, unit_type) VALUES (99998, 'existing', 'ตัว')"
-    )
+    cur = conn.execute("INSERT INTO products (product_name, unit_type) VALUES ('existing', 'ตัว')")
     pid = cur.lastrowid
     conn.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
     conn.commit()
@@ -198,9 +196,7 @@ def test_upsert_mapping_clears_pending_placeholder(empty_db_with_user):
         VALUES ('TEST006', 'test 006', NULL, '')
     """)
     # Need an existing product to map to
-    cur = conn.execute(
-        "INSERT INTO products (sku, product_name, unit_type) VALUES (99999, 'existing', 'ตัว')"
-    )
+    cur = conn.execute("INSERT INTO products (product_name, unit_type) VALUES ('existing', 'ตัว')")
     pid = cur.lastrowid
     conn.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
     conn.commit()

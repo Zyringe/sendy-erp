@@ -11,7 +11,7 @@
       <div class="card-body">
         <div class="alert alert-info mb-3 small">
           <i class="bi bi-info-circle me-2"></i>
-          ต้องมีคอลัมน์: <code>SKU, Product_Name, บรรจุ/ลัง, บรรจุ/กล่อง, หน่วย</code>
+          ต้องมีคอลัมน์: <code>product_id, Product_Name, บรรจุ/ลัง, บรรจุ/กล่อง, หน่วย</code>
         </div>
         <form method="post" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -38,14 +38,14 @@
     <table class="table table-sm mb-0">
       <thead>
         <tr>
-          <th>SKU</th><th>ชื่อสินค้า</th><th class="text-center">ลัง</th>
+          <th>รหัส (ID)</th><th>ชื่อสินค้า</th><th class="text-center">ลัง</th>
           <th class="text-center">กล่อง</th><th class="text-center">หน่วย</th>
         </tr>
       </thead>
       <tbody>
         {% for r in preview %}
         <tr>
-          <td><span class="badge badge-gray">{{ r.sku }}</span></td>
+          <td><span class="badge badge-gray">{{ r.product_id }}</span></td>
           <td>{{ r.product_name }}</td>
           <td class="text-center text-subtle">{{ r.units_per_carton or '–' }}</td>
           <td class="text-center text-subtle">{{ r.units_per_box or '–' }}</td>
@@ -68,10 +68,10 @@
             <div class="form-check">
               <input class="form-check-input" type="checkbox" name="overwrite" value="1" id="chkOverwrite">
               <label class="form-check-label" for="chkOverwrite">
-                อัปเดตสินค้าที่มี SKU ซ้ำ (ข้อมูลสินค้า ยกเว้นราคาและสต็อก)
+                อัปเดตสินค้าที่มี product_id (รหัสสินค้า) ซ้ำ (ข้อมูลสินค้า ยกเว้นราคาและสต็อก)
               </label>
             </div>
-            <div class="form-text">หากไม่เลือก สินค้าที่มี SKU ซ้ำจะถูกข้ามไป</div>
+            <div class="form-text">หากไม่เลือก สินค้าที่มี product_id (รหัสสินค้า) ซ้ำจะถูกข้ามไป</div>
           </div>
           <div class="d-flex gap-2">
             <a href="{{ url_for('products.csv_import') }}" class="btn btn-outline-secondary flex-fill">

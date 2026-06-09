@@ -58,7 +58,7 @@ def main():
 
     # Pull all products with NULL color_code
     rows = conn.execute("""
-        SELECT id, sku, product_name
+        SELECT id, product_name
           FROM products
          WHERE color_code IS NULL OR color_code = ''
     """).fetchall()
@@ -86,7 +86,7 @@ def main():
                 skipped_no_match += 1
                 continue
         proposed.append({
-            "id": r["id"], "sku": r["sku"],
+            "id": r["id"],
             "color_code": new_code,
             "product_name": r["product_name"],
         })
@@ -98,7 +98,7 @@ def main():
     print()
     print("First 10 proposals:")
     for x in proposed[:10]:
-        print(f"  sku={x['sku']:>5}  → color_code={x['color_code']:<5}  ({x['product_name'][:60]})")
+        print(f"  product_id={x['id']:>5}  → color_code={x['color_code']:<5}  ({x['product_name'][:60]})")
 
     if not args.apply:
         print("\nDRY-RUN. Re-run with --apply to commit.")

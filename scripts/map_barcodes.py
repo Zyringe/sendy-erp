@@ -141,7 +141,7 @@ def load_products():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT id, sku, product_name FROM products WHERE is_active=1"
+        "SELECT id, product_name FROM products WHERE is_active=1"
     ).fetchall()
     conn.close()
     products = []
@@ -149,7 +149,6 @@ def load_products():
         name = r["product_name"]
         products.append({
             "id":       r["id"],
-            "sku":      r["sku"],
             "name":     name,
             "norm":     normalize_name(name),
             "code":     extract_code(name),
@@ -255,7 +254,6 @@ def main():
             "match_reason": reason,
             "score":       round(score, 3),
             "product_id":  p["id"]   if p else "",
-            "product_sku": p["sku"]  if p else "",
             "product_name": p["name"] if p else "",
         }
         if status == "matched":
@@ -278,7 +276,7 @@ def main():
                 w.writerow(r)
 
     headers = ["barcode", "xls_name", "xls_brand", "match_reason", "score",
-               "product_id", "product_sku", "product_name"]
+               "product_id", "product_name"]
     write_csv(os.path.join(OUT_DIR, "barcode_mapping_matched.csv"), matched, headers)
     write_csv(os.path.join(OUT_DIR, "barcode_mapping_review.csv"),  review,  headers)
     write_csv(os.path.join(OUT_DIR, "barcode_mapping_unmatched.csv"), unmatched, headers)

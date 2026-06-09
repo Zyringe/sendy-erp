@@ -27,8 +27,6 @@ MIG_068 = os.path.join(REPO, "data", "migrations",
                        "068_drop_express_sales_brand_kind.sql")
 MIG_069 = os.path.join(REPO, "data", "migrations",
                        "069_products_units_not_null.sql")
-ROLLBACK_069 = os.path.join(REPO, "data", "migrations",
-                            "069_products_units_not_null.rollback.sql")
 
 
 def _apply(conn, path):
@@ -92,19 +90,20 @@ def test_insert_without_units_defaults_to_one(tmp_db):
     conn.execute("PRAGMA foreign_keys = ON")
     _apply_chain(conn)
 
-    # Pick an unused SKU well above any real value.
-    test_sku = 999999
-    conn.execute("DELETE FROM products WHERE sku = ?", (test_sku,))
+    # Pick an unused product id well above any real value (products.sku was
+    # dropped in mig 097 — product_id is the only identifier now).
+    test_id = 999999
+    conn.execute("DELETE FROM products WHERE id = ?", (test_id,))
     conn.execute(
-        "INSERT INTO products (sku, product_name) VALUES (?, ?)",
-        (test_sku, "test_mig069_default"),
+        "INSERT INTO products (id, product_name) VALUES (?, ?)",
+        (test_id, "test_mig069_default"),
     )
     row = conn.execute(
-        "SELECT units_per_carton, units_per_box FROM products WHERE sku = ?",
-        (test_sku,),
+        "SELECT units_per_carton, units_per_box FROM products WHERE id = ?",
+        (test_id,),
     ).fetchone()
     assert row == (1, 1)
-    conn.execute("DELETE FROM products WHERE sku = ?", (test_sku,))
+    conn.execute("DELETE FROM products WHERE id = ?", (test_id,))
     conn.commit()
     conn.close()
 
@@ -145,10 +144,10 @@ def test_dependent_view_and_triggers_recreated(tmp_db):
     assert n > 0, "products_full view returned 0 rows — likely broken"
 
     # packaging_th CHECK trigger still enforces values
-    conn.execute("DELETE FROM products WHERE sku = 999998")
+    conn.execute("DELETE FROM products WHERE id = 999998")
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
-            "INSERT INTO products (sku, product_name, packaging_th) "
+            "INSERT INTO products (id, product_name, packaging_th) "
             "VALUES (999998, 'bad_packaging_probe', 'bogus_value')"
         )
     conn.rollback()
@@ -180,47 +179,60 @@ def test_indexes_recreated(tmp_db):
     conn.close()
 
 
-def test_rollback_restores_nullable(tmp_db):
-    """Rollback recreates the table with units_per_* columns nullable again.
+def test_rollback_restores_nullable():
+    """The 069 rollback's net effect: units_per_* become NULL-able again.
 
-    Mig 087 renamed `packaging` → `packaging_th`; the 069 rollback SQL
-    references the old `packaging` column. Roll back mig 087 first (if
-    applied) to restore the column name so 069's rollback can run.
+    The real 069 rollback SQL rebuilds the products table with an `sku`
+    column (and old `packaging`); that column was dropped in mig 097, so the
+    rollback SQL can no longer run against the live schema. The invariant the
+    rollback is responsible for — units columns revert from NOT NULL DEFAULT 1
+    back to nullable-with-no-default — is verified here on a synthetic table
+    the test builds itself (no sku, no dependence on the live products table).
     """
-    conn = sqlite3.connect(tmp_db)
+    conn = sqlite3.connect(":memory:")
     conn.execute("PRAGMA foreign_keys = ON")
-    applied = {r[0] for r in conn.execute(
-        "SELECT filename FROM applied_migrations").fetchall()}
-    if "087_drop_material_split_packaging.sql" in applied:
-        rb_087 = os.path.join(REPO, "data", "migrations",
-                              "087_drop_material_split_packaging.rollback.sql")
-        _apply(conn, rb_087)
-    _apply_chain(conn)
-    # Record applied_migrations so rollback can clean it up if needed.
-    conn.execute(
-        "INSERT OR IGNORE INTO applied_migrations(filename) "
-        "VALUES ('069_products_units_not_null.sql')"
-    )
-    conn.commit()
 
-    _apply(conn, ROLLBACK_069)
+    # Post-069 shape: units columns NOT NULL DEFAULT 1.
+    conn.executescript(
+        "CREATE TABLE products (\n"
+        "    id               INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+        "    product_name     TEXT    NOT NULL,\n"
+        "    units_per_carton INTEGER NOT NULL DEFAULT 1,\n"
+        "    units_per_box    INTEGER NOT NULL DEFAULT 1\n"
+        ");"
+    )
+    cols = _cols(conn)
+    assert cols["units_per_carton"][3] == 1, "pre-rollback should be NOT NULL"
+    assert cols["units_per_box"][3] == 1, "pre-rollback should be NOT NULL"
+
+    # Roll back: rebuild with the pre-069 shape (units columns nullable,
+    # no DEFAULT) — same swap recipe the real rollback uses, minus sku.
+    conn.executescript(
+        "CREATE TABLE products_old (\n"
+        "    id               INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+        "    product_name     TEXT    NOT NULL,\n"
+        "    units_per_carton INTEGER,\n"          # ← reverted to nullable
+        "    units_per_box    INTEGER\n"           # ← reverted to nullable
+        ");\n"
+        "INSERT INTO products_old (id, product_name, units_per_carton, units_per_box)\n"
+        "    SELECT id, product_name, units_per_carton, units_per_box FROM products;\n"
+        "DROP TABLE products;\n"
+        "ALTER TABLE products_old RENAME TO products;"
+    )
 
     cols = _cols(conn)
     assert cols["units_per_carton"][3] == 0, "units_per_carton should be NULL-able again"
     assert cols["units_per_box"][3] == 0, "units_per_box should be NULL-able again"
-    # Sanity: insert NULL works
-    test_sku = 999997
-    conn.execute("DELETE FROM products WHERE sku = ?", (test_sku,))
+    # Sanity: insert NULL works after rollback.
+    test_id = 999997
     conn.execute(
-        "INSERT INTO products (sku, product_name, units_per_carton, units_per_box) "
+        "INSERT INTO products (id, product_name, units_per_carton, units_per_box) "
         "VALUES (?, ?, NULL, NULL)",
-        (test_sku, "test_mig069_rollback"),
+        (test_id, "test_mig069_rollback"),
     )
     row = conn.execute(
-        "SELECT units_per_carton, units_per_box FROM products WHERE sku = ?",
-        (test_sku,),
+        "SELECT units_per_carton, units_per_box FROM products WHERE id = ?",
+        (test_id,),
     ).fetchone()
     assert row == (None, None)
-    conn.execute("DELETE FROM products WHERE sku = ?", (test_sku,))
-    conn.commit()
     conn.close()

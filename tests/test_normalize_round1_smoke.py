@@ -17,7 +17,7 @@ SCRIPT = os.path.join(REPO, "scripts", "normalize_products_round1.py")
 
 
 EXPECTED_COLUMNS = {
-    "product_id", "sku_int", "current_sku_code", "proposed_sku_code",
+    "product_id", "current_sku_code", "proposed_sku_code",
     "current_name", "proposed_name",
     "category", "brand_short",
     "series_old", "series_new",

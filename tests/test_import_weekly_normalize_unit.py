@@ -29,9 +29,7 @@ def test_known_acronym_normalized_unknown_kept(tmp_db, monkeypatch):
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("INSERT INTO products (id,sku,product_name,unit_type,"
-                 "sku_code,is_active) VALUES (?,?,?,?,?,1)",
-                 (PID, PID, "P", "ตัว", f"SK{PID}"))
+    conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, ?, ?, 1)", (PID, "P", "ตัว", f"SK{PID}"))
     for code in ("CNORMK", "CNORMU"):
         conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
                      "product_id,is_ignored) VALUES (?,?,?,0)",

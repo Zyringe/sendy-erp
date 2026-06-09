@@ -55,7 +55,7 @@
           </td>
           <td>
             {% if r.product_id %}
-              <span class="font-mono small text-subtle">#{{ r.sku }}</span>
+              <span class="font-mono small text-subtle">#{{ r.product_id }}</span>
               {{ r.product_name or '(ไม่พบสินค้า)' }}
             {% else %}
               {{ r.brand_name or '(ไม่พบแบรนด์)' }}

@@ -113,8 +113,8 @@
       <div class="card-body p-0">
         <table class="table table-sm mb-0">
           <tbody>
-            <tr><td class="text-subtle" style="width:45%">SKU</td>
-                <td><span class="badge badge-gray font-mono">{{ product.sku }}</span></td></tr>
+            <tr><td class="text-subtle" style="width:45%">รหัสสินค้า (ID)</td>
+                <td><span class="badge badge-gray font-mono">{{ product.id }}</span></td></tr>
             <tr><td class="text-subtle">SKU code</td>
                 <td>
                   {% if product.sku_code %}
@@ -821,7 +821,7 @@ async function addToLabelQueue(_href) {
   const KEY = 'sendy.labels.queue.v1';
   const pid = {{ product.id }};
   try {
-    const res = await fetch(`/api/products/search?q={{ product.sku }}&limit=5`);
+    const res = await fetch(`/api/products/search?q={{ product.id }}&limit=5`);
     const data = await res.json();
     const item = (data.items || []).find(x => x.id === pid);
     if (!item) { window.location.href = '{{ url_for("labels_view") }}'; return; }

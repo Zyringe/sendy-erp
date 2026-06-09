@@ -1,12 +1,12 @@
 """Export product data for Google Sheet review — 2 sheets:
 
 Sheet 1 'stock_and_mapping' — one row per (product, bsn_code) pair:
-  sku, sku_code, product_name, old_product_name, base_unit, stock,
+  product_id, sku_code, product_name, old_product_name, base_unit, stock,
   bsn_code, bsn_name, bsn_unit, ratio_to_base
 
 Sheet 2 'sku_code_parts' — one row per product, structured columns
   composing sku_code:
-  sku, sku_code, category_short, category_th, brand_short, brand,
+  product_id, sku_code, category_short, category_th, brand_short, brand,
   series, model, size, color_code, color_th, packaging, condition, pack_variant
 
 Output: data/exports/product_review_2026-05-08.xlsx
@@ -60,7 +60,7 @@ def main():
 
     # Sheet 1: stock + BSN mapping (one row per product-bsn pair)
     sheet1 = conn.execute("""
-        SELECT p.id AS product_id, p.sku, p.sku_code, p.product_name,
+        SELECT p.id AS product_id, p.sku_code, p.product_name,
                p.unit_type AS base_unit,
                COALESCE(s.quantity, 0) AS stock,
                m.bsn_code, m.bsn_name,
@@ -70,12 +70,12 @@ def main():
           LEFT JOIN product_code_mapping m ON m.product_id = p.id AND COALESCE(m.is_ignored, 0) = 0
           LEFT JOIN unit_conversions uc ON uc.product_id = p.id AND uc.bsn_unit IS NOT NULL
          WHERE p.is_active = 1
-         ORDER BY p.sku, m.bsn_code, uc.bsn_unit
+         ORDER BY p.id, m.bsn_code, uc.bsn_unit
     """).fetchall()
 
     # Sheet 2: sku_code breakdown
     sheet2 = conn.execute("""
-        SELECT p.sku, p.sku_code, p.product_name,
+        SELECT p.id AS product_id, p.sku_code, p.product_name,
                c.short_code AS category_short, c.name_th AS category_th,
                p.sub_category,
                b.short_code AS brand_short, b.name AS brand,
@@ -87,7 +87,7 @@ def main():
           LEFT JOIN brands b ON b.id = p.brand_id
           LEFT JOIN color_finish_codes cf ON cf.code = p.color_code
          WHERE p.is_active = 1
-         ORDER BY p.sku
+         ORDER BY p.id
     """).fetchall()
 
     conn.close()
@@ -98,7 +98,7 @@ def main():
     ws1.title = "stock_and_mapping"
 
     # Sheet 1 headers
-    h1 = ["sku", "sku_code", "product_name", "old_product_name",
+    h1 = ["product_id", "sku_code", "product_name", "old_product_name",
           "base_unit", "stock",
           "bsn_code", "bsn_name", "bsn_unit", "ratio_to_base"]
     ws1.append(h1)
@@ -111,7 +111,7 @@ def main():
     for r in sheet1:
         old_name = old_names.get(r["product_id"], "")
         ws1.append([
-            r["sku"], r["sku_code"], r["product_name"], old_name,
+            r["product_id"], r["sku_code"], r["product_name"], old_name,
             r["base_unit"], r["stock"],
             r["bsn_code"] or "", r["bsn_name"] or "",
             r["bsn_unit"] or "", r["ratio"] or "",
@@ -127,7 +127,7 @@ def main():
 
     # Sheet 2
     ws2 = wb.create_sheet("sku_code_parts")
-    h2 = ["sku", "sku_code", "product_name",
+    h2 = ["product_id", "sku_code", "product_name",
           "category_short", "category_th", "sub_category",
           "brand_short", "brand", "series", "model", "size",
           "color_code", "color_th", "packaging", "condition", "pack_variant"]
@@ -139,7 +139,7 @@ def main():
 
     for r in sheet2:
         ws2.append([
-            r["sku"], r["sku_code"], r["product_name"],
+            r["product_id"], r["sku_code"], r["product_name"],
             r["category_short"] or "", r["category_th"] or "", r["sub_category"] or "",
             r["brand_short"] or "", r["brand"] or "",
             r["series"] or "", r["model"] or "", r["size"] or "",

@@ -62,11 +62,14 @@ def main():
     # Load current DB state for affected fields
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
+    # CSV is keyed by the OLD integer sku (products.sku dropped in mig 097);
+    # pull sku from the forensic legacy map so the CSV key resolves to a row.
     db_rows = conn.execute("""
-        SELECT id, sku, product_name, color_code,
-               packaging_th AS packaging,
-               series, model, size, condition, pack_variant
-          FROM products
+        SELECT p.id, m.sku, p.product_name, p.color_code,
+               p.packaging_th AS packaging,
+               p.series, p.model, p.size, p.condition, p.pack_variant
+          FROM products p
+          JOIN legacy_product_sku_map m ON m.product_id = p.id
     """).fetchall()
     by_sku = {str(r["sku"]): dict(r) for r in db_rows}
 

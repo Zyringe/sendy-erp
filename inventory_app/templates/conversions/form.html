@@ -63,7 +63,7 @@
                       {% for p in products %}
                       <option value="{{ p.id }}"
                         {% if p.id == inp.product_id %}selected{% endif %}>
-                        {{ p.product_name }} (SKU {{ p.sku }})
+                        {{ p.product_name }} (ID {{ p.id }})
                       </option>
                       {% endfor %}
                     </select>
@@ -89,7 +89,7 @@
                     <select name="input_product_id[]" class="form-select form-select-sm" required>
                       <option value="">-- เลือกสินค้า --</option>
                       {% for p in products %}
-                      <option value="{{ p.id }}">{{ p.product_name }} (SKU {{ p.sku }})</option>
+                      <option value="{{ p.id }}">{{ p.product_name }} (ID {{ p.id }})</option>
                       {% endfor %}
                     </select>
                   </td>
@@ -123,7 +123,7 @@
                 {% for p in products %}
                 <option value="{{ p.id }}"
                   {% if formula and formula.output_product_id == p.id %}selected{% endif %}>
-                  {{ p.product_name }} (SKU {{ p.sku }})
+                  {{ p.product_name }} (ID {{ p.id }})
                 </option>
                 {% endfor %}
               </select>
@@ -154,7 +154,7 @@
 <script>
 const productsData = [
   {% for p in products %}
-  { id: {{ p.id }}, name: {{ p.product_name | tojson }}, sku: {{ p.sku }}, unit: {{ p.unit_type | tojson }} }{% if not loop.last %},{% endif %}
+  { id: {{ p.id }}, name: {{ p.product_name | tojson }}, unit: {{ p.unit_type | tojson }} }{% if not loop.last %},{% endif %}
   {% endfor %}
 ];
 
@@ -162,7 +162,7 @@ function buildProductOptions(selectedId) {
   let opts = '<option value="">-- เลือกสินค้า --</option>';
   productsData.forEach(p => {
     const sel = (p.id === selectedId) ? ' selected' : '';
-    opts += `<option value="${p.id}"${sel}>${p.name} (SKU ${p.sku})</option>`;
+    opts += `<option value="${p.id}"${sel}>${p.name} (ID ${p.id})</option>`;
   });
   return opts;
 }

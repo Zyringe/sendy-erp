@@ -45,7 +45,7 @@ def main():
     matchers.sort(key=lambda m: -len(m[0]))
 
     products = conn.execute(
-        "SELECT id, sku, product_name FROM products WHERE brand_id IS NULL"
+        "SELECT id, product_name FROM products WHERE brand_id IS NULL"
     ).fetchall()
 
     proposed = []
@@ -56,11 +56,11 @@ def main():
             if tok.isascii():
                 pattern = rf"\b{re.escape(tok)}\b"
                 if re.search(pattern, name, re.IGNORECASE):
-                    proposed.append((p_row['id'], p_row['sku'], bid, tok))
+                    proposed.append((p_row['id'], bid, tok))
                     break
             else:
                 if tok in name:
-                    proposed.append((p_row['id'], p_row['sku'], bid, tok))
+                    proposed.append((p_row['id'], bid, tok))
                     break
 
     print(f"Products with brand_id NULL: {len(products)}")
@@ -68,7 +68,7 @@ def main():
     print()
     print("First 8 proposals:")
     by_brand = {}
-    for pid, sku, bid, tok in proposed:
+    for pid, bid, tok in proposed:
         by_brand[bid] = by_brand.get(bid, 0) + 1
     for bid, n in sorted(by_brand.items(), key=lambda kv: -kv[1])[:10]:
         bname = next((b['name'] for b in brands if b['id'] == bid), '?')
@@ -79,7 +79,7 @@ def main():
         return
 
     cur = conn.cursor()
-    for pid, sku, bid, tok in proposed:
+    for pid, bid, tok in proposed:
         cur.execute("UPDATE products SET brand_id = ? WHERE id = ?", (bid, pid))
     conn.commit()
     print(f"\nApplied {len(proposed)} updates")

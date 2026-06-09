@@ -14,7 +14,7 @@ Confidence levels:
   LOW    — short alias (2 chars) — needs manual review
 
 Output columns:
-    sku, product_name, suggested_brand_id, suggested_brand,
+    product_id, product_name, suggested_brand_id, suggested_brand,
     match_token, match_source, confidence
 
 CLI:
@@ -91,9 +91,9 @@ def main():
     candidates.sort(key=lambda x: (-len(x[0]), x[3]))
 
     rows = conn.execute(
-        "SELECT id, sku, product_name FROM products "
+        "SELECT id, product_name FROM products "
         "WHERE brand_id IS NULL AND is_active = 1 "
-        "ORDER BY sku"
+        "ORDER BY id"
     ).fetchall()
 
     suggestions = []
@@ -122,7 +122,7 @@ def main():
 
         token, brand_rec, source = matched
         suggestions.append({
-            "sku": r["sku"],
+            "product_id": r["id"],
             "product_name": name,
             "suggested_brand_id": brand_rec["id"],
             "suggested_brand": brand_rec["name"],
@@ -134,7 +134,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=[
-            "sku", "product_name", "suggested_brand_id",
+            "product_id", "product_name", "suggested_brand_id",
             "suggested_brand", "match_token", "match_source", "confidence",
         ])
         w.writeheader()
@@ -174,8 +174,8 @@ def main():
         cur = conn.cursor()
         for s in to_apply:
             cur.execute(
-                "UPDATE products SET brand_id = ? WHERE sku = ?",
-                (s["suggested_brand_id"], s["sku"]),
+                "UPDATE products SET brand_id = ? WHERE id = ?",
+                (s["suggested_brand_id"], s["product_id"]),
             )
         conn.commit()
         print(f"Done. {len(to_apply)} brand_id values backfilled. "

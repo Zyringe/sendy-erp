@@ -3,7 +3,7 @@ Export an Excel summarising every internal product that is mapped to at least
 one Shopee or Lazada listing.
 
 One row per internal product. Aggregated across variations:
-  - Sendy:  sku, name, internal stock
+  - Sendy:  product_id, name, internal stock
   - Shopee: variation count, names (joined), total stock, active flag
   - Lazada: variation count, names (joined), total stock, active flag
   - Mapping coverage flag (both / shopee_only / lazada_only / unmapped_listed)
@@ -63,12 +63,12 @@ def main():
     conn.row_factory = sqlite3.Row
 
     rows = conn.execute('''
-        SELECT p.id, p.sku, p.product_name, COALESCE(sl.quantity, 0) AS internal_stock
+        SELECT p.id, p.product_name, COALESCE(sl.quantity, 0) AS internal_stock
         FROM products p
         LEFT JOIN stock_levels sl ON sl.product_id = p.id
         WHERE p.is_active = 1
           AND EXISTS (SELECT 1 FROM platform_skus ps WHERE ps.internal_product_id = p.id)
-        ORDER BY p.sku
+        ORDER BY p.id
     ''').fetchall()
 
     # Unmapped Shopee parents (one row per distinct product_id_str)
@@ -143,7 +143,7 @@ def main():
             cov = '—'
 
         output.append({
-            'sku': p['sku'],
+            'product_id': p['id'],
             'sendy_name': p['product_name'],
             'internal_stock': p['internal_stock'],
             'mapping': cov,
@@ -173,7 +173,7 @@ def main():
         else:
             sp_status = 'listed' if stock > 0 else 'zero stock'
         output.append({
-            'sku': '', 'sendy_name': '(unmapped)', 'internal_stock': '',
+            'product_id': '', 'sendy_name': '(unmapped)', 'internal_stock': '',
             'mapping': 'shopee unmapped',
             'shopee_count': len(variations),
             'shopee_names': '\n'.join(
@@ -195,7 +195,7 @@ def main():
         lz_active = any(lazada_active(v['raw_json']) == 'active' for v in variations)
         lz_status = 'active' if lz_active else 'inactive'
         output.append({
-            'sku': '', 'sendy_name': '(unmapped)', 'internal_stock': '',
+            'product_id': '', 'sendy_name': '(unmapped)', 'internal_stock': '',
             'mapping': 'lazada unmapped',
             'shopee_count': 0, 'shopee_names': '', 'shopee_stock': '', 'shopee_status': '—',
             'lazada_count': len(variations),
@@ -213,7 +213,7 @@ def main():
     ws.title = 'Product × Platform'
 
     cols = [
-        ('SKU', 'sku', 8),
+        ('Product ID', 'product_id', 10),
         ('Sendy name', 'sendy_name', 38),
         ('Stock (Sendy)', 'internal_stock', 12),
         ('Mapping', 'mapping', 12),
@@ -288,7 +288,7 @@ def main():
             with sqlite3.connect(DB_PATH) as c3:
                 c3.row_factory = sqlite3.Row
                 products_all = c3.execute(
-                    'SELECT id, sku, product_name FROM products WHERE is_active=1'
+                    'SELECT id, product_name FROM products WHERE is_active=1'
                 ).fetchall()
             corpus = [mdl._clean_for_match(p['product_name']) for p in products_all]
             queries = [
@@ -305,7 +305,7 @@ def main():
                 if score < 35:
                     continue
                 p = products_all[best_idx[i]]
-                suggestions[r['id']] = (p['sku'], p['product_name'], score)
+                suggestions[r['id']] = (p['id'], p['product_name'], score)
         except Exception as e:
             print(f'  (fuzzy suggest skipped: {e})')
 
@@ -319,10 +319,10 @@ def main():
         ('Variation', 22),
         ('Seller SKU', 18),
         ('Stock', 8),
-        ('Suggested SKU', 12),
+        ('Suggested product_id', 16),
         ('Suggested name', 38),
         ('Confidence', 10),
-        ('→ internal_sku (fill in)', 18),
+        ('→ product_id (fill in)', 18),
         ('→ qty_per_sale (default 1)', 14),
     ]
     hdr_fill2 = PatternFill('solid', start_color='2e7d3a')

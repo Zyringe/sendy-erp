@@ -24,11 +24,6 @@
         <form method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="row g-3">
-            <div class="col-md-4">
-              <label class="form-label">SKU <span class="text-danger">*</span></label>
-              <input type="number" name="sku" class="form-control"
-                     value="{{ product.sku or '' }}" required min="1">
-            </div>
             <div class="col-md-8">
               <label class="form-label">ชื่อสินค้า <span class="text-danger">*</span></label>
               <input type="text" name="product_name" class="form-control"

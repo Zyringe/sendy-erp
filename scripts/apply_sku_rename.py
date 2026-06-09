@@ -64,12 +64,16 @@ def main():
         sys.exit(f"Column {args.column!r} not found in CSV. "
                  f"Available: {list(rows[0].keys())}")
 
-    # Load current names from DB
+    # Load current names from DB. The CSV is keyed by the OLD integer sku
+    # (products.sku dropped in mig 097); key by_sku off the forensic legacy map
+    # so an existing CSV's sku column still resolves to a product row.
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     db_rows = conn.execute(
-        "SELECT p.id, p.sku, p.product_name, p.brand_id, b.name AS brand_name "
-        "FROM products p LEFT JOIN brands b ON b.id = p.brand_id"
+        "SELECT p.id, m.sku, p.product_name, p.brand_id, b.name AS brand_name "
+        "FROM products p "
+        "JOIN legacy_product_sku_map m ON m.product_id = p.id "
+        "LEFT JOIN brands b ON b.id = p.brand_id"
     ).fetchall()
     by_sku = {str(r["sku"]): dict(r) for r in db_rows}
 

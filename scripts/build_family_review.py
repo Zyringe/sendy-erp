@@ -55,8 +55,11 @@ def main():
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
 
+    # products.sku was dropped (mig 097); product_id is the identifier. The
+    # "skus" worklist column now carries product_id end-to-end (consumed by
+    # apply_family_mapping.py as the product_id key).
     products = conn.execute("""
-        SELECT p.id, p.sku, p.product_name, p.brand_id, p.model, p.size,
+        SELECT p.id, p.product_name, p.brand_id, p.model, p.size,
                p.color_code, p.packaging_th AS packaging, p.series, p.sub_category, p.family_id,
                b.short_code AS brand_short_code, b.name AS brand_name
           FROM products p
@@ -142,7 +145,7 @@ def main():
             "cluster_key":           cluster_key,
             "series":                series,
             "sku_count":             len(members),
-            "skus":                  ",".join(str(m['sku']) for m in sorted(members, key=lambda x: x['sku'])),
+            "skus":                  ",".join(str(m['id']) for m in sorted(members, key=lambda x: x['id'])),
             "size_varies":           int(size_varies),
             "color_varies":          int(color_varies),
             "pack_varies":           int(pack_varies),

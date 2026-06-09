@@ -80,7 +80,7 @@ def get_products(search=None, low_stock=False, hard_to_sell=False,
     having = ("HAVING " + " AND ".join(having_clauses)) if having_clauses else ""
 
     sql = f"""
-        SELECT p.id, p.sku, p.sku_code, p.product_name, p.units_per_carton, p.units_per_box,
+        SELECT p.id, p.sku_code, p.product_name, p.units_per_carton, p.units_per_box,
                p.unit_type, p.hard_to_sell, p.cost_price, p.base_sell_price,
                p.low_stock_threshold, p.is_active, p.brand_id, p.category_id,
                p.created_at, p.updated_at,
@@ -115,7 +115,7 @@ def get_products(search=None, low_stock=False, hard_to_sell=False,
 def get_product(product_id):
     conn = get_connection()
     row = conn.execute("""
-        SELECT p.id, p.sku, p.sku_code, p.sku_code_locked,
+        SELECT p.id, p.sku_code, p.sku_code_locked,
                p.product_name, p.units_per_carton, p.units_per_box,
                p.unit_type, p.hard_to_sell, p.cost_price, p.base_sell_price,
                p.low_stock_threshold, p.is_active, p.brand_id, p.category_id,
@@ -136,20 +136,13 @@ def get_product(product_id):
     return row
 
 
-def get_product_by_sku(sku):
-    conn = get_connection()
-    row = conn.execute("SELECT * FROM products WHERE sku = ?", (sku,)).fetchone()
-    conn.close()
-    return row
-
-
 def create_product(data: dict) -> int:
     conn = get_connection()
     cur = conn.execute("""
-        INSERT INTO products (sku, product_name, units_per_carton, units_per_box,
+        INSERT INTO products (product_name, units_per_carton, units_per_box,
             unit_type, hard_to_sell, cost_price, base_sell_price, low_stock_threshold,
             shopee_stock, lazada_stock)
-        VALUES (:sku, :product_name, :units_per_carton, :units_per_box,
+        VALUES (:product_name, :units_per_carton, :units_per_box,
             :unit_type, :hard_to_sell, :cost_price, :base_sell_price, :low_stock_threshold,
             :shopee_stock, :lazada_stock)
     """, data)
@@ -165,7 +158,7 @@ def update_product(product_id: int, data: dict):
     conn = get_connection()
     conn.execute("""
         UPDATE products SET
-            sku=:sku, product_name=:product_name,
+            product_name=:product_name,
             units_per_carton=:units_per_carton, units_per_box=:units_per_box,
             unit_type=:unit_type, hard_to_sell=:hard_to_sell,
             cost_price=:cost_price, base_sell_price=:base_sell_price,
@@ -339,7 +332,7 @@ def get_stock_alerts():
     on the REAL quantity column (e.g. -1e-14) from firing a false alert."""
     conn = get_connection()
     rows = conn.execute("""
-        SELECT p.id, p.sku, p.product_name, p.unit_type,
+        SELECT p.id, p.product_name, p.unit_type,
                COALESCE(s.quantity, 0) AS quantity
         FROM products p
         JOIN stock_levels s ON s.product_id = p.id
@@ -463,7 +456,7 @@ def get_transactions(product_id=None, txn_type=None, date_from=None, date_to=Non
 
     where = " AND ".join(conditions)
     sql = f"""
-        SELECT t.*, p.product_name, p.sku, p.unit_type
+        SELECT t.*, p.product_name, p.unit_type
         FROM transactions t
         JOIN products p ON p.id = t.product_id
         WHERE {where}
@@ -479,7 +472,7 @@ def get_transactions(product_id=None, txn_type=None, date_from=None, date_to=Non
 def get_recent_transactions(limit=10):
     conn = get_connection()
     rows = conn.execute("""
-        SELECT t.*, p.product_name, p.sku, p.unit_type
+        SELECT t.*, p.product_name, p.unit_type
         FROM transactions t
         JOIN products p ON p.id = t.product_id
         ORDER BY t.created_at DESC
@@ -624,7 +617,10 @@ def bulk_import_products(rows: list, overwrite=False) -> tuple:
     conn = get_connection()
     imported = skipped = 0
     for r in rows:
-        existing = conn.execute("SELECT id FROM products WHERE sku = ?", (r['sku'],)).fetchone()
+        pid = r.get('product_id')
+        existing = None
+        if pid:
+            existing = conn.execute("SELECT id FROM products WHERE id = ?", (pid,)).fetchone()
         if existing and not overwrite:
             skipped += 1
             continue
@@ -632,15 +628,15 @@ def bulk_import_products(rows: list, overwrite=False) -> tuple:
             conn.execute("""
                 UPDATE products SET product_name=?, units_per_carton=?, units_per_box=?,
                     unit_type=?, hard_to_sell=?
-                WHERE sku=?
+                WHERE id=?
             """, (r['product_name'], r['units_per_carton'], r['units_per_box'],
-                  r['unit_type'], r['hard_to_sell'], r['sku']))
+                  r['unit_type'], r['hard_to_sell'], pid))
             skipped += 1
         else:
             cur = conn.execute("""
-                INSERT INTO products (sku, product_name, units_per_carton, units_per_box, unit_type, hard_to_sell)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (r['sku'], r['product_name'], r['units_per_carton'], r['units_per_box'],
+                INSERT INTO products (product_name, units_per_carton, units_per_box, unit_type, hard_to_sell)
+                VALUES (?, ?, ?, ?, ?)
+            """, (r['product_name'], r['units_per_carton'], r['units_per_box'],
                   r['unit_type'], r['hard_to_sell']))
             conn.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (cur.lastrowid,))
             imported += 1
@@ -843,7 +839,7 @@ def get_pending_unit_conversions(search=None):
     """
     params = []
     if search:
-        sql += " AND (p.product_name LIKE ? OR CAST(p.sku AS TEXT) LIKE ?)"
+        sql += " AND (p.product_name LIKE ? OR CAST(p.id AS TEXT) LIKE ?)"
         params += [f"%{search}%", f"%{search}%"]
     sql += " GROUP BY t.product_id, t.bsn_unit ORDER BY p.product_name"
     rows = conn.execute(sql, params).fetchall()
@@ -945,12 +941,12 @@ def get_all_unit_conversions(search=None, page=1, per_page=50):
     where = ""
     params = []
     if search:
-        where = "WHERE p.product_name LIKE ? OR CAST(p.sku AS TEXT) LIKE ?"
+        where = "WHERE p.product_name LIKE ? OR CAST(p.id AS TEXT) LIKE ?"
         params += [f"%{search}%", f"%{search}%"]
 
     sql = f"""
         SELECT uc.id, uc.product_id, uc.bsn_unit, uc.ratio,
-               p.product_name, p.unit_type, p.sku,
+               p.product_name, p.unit_type,
                COALESCE(s.cnt, 0) + COALESCE(pu.cnt, 0) AS row_count,
                COALESCE(s.bsn_raw_name, pu.bsn_raw_name) AS bsn_raw_name
         FROM unit_conversions uc
@@ -1414,8 +1410,7 @@ def get_sales(product_id=None, date_from=None, date_to=None,
     where = ' AND '.join(conds)
     sql = f"""
         SELECT s.*,
-               COALESCE(p.product_name, s.product_name_raw) AS display_name,
-               p.sku
+               COALESCE(p.product_name, s.product_name_raw) AS display_name
         FROM sales_transactions s
         LEFT JOIN products p ON p.id = s.product_id
         WHERE {where}
@@ -1435,8 +1430,7 @@ def get_purchases_by_doc(doc_base):
     conn = get_connection()
     rows = conn.execute("""
         SELECT p2.*,
-               COALESCE(p.product_name, p2.product_name_raw) AS display_name,
-               p.sku
+               COALESCE(p.product_name, p2.product_name_raw) AS display_name
         FROM purchase_transactions p2
         LEFT JOIN products p ON p.id = p2.product_id
         WHERE p2.doc_no LIKE ? OR p2.doc_no = ?
@@ -1474,8 +1468,7 @@ def get_sales_by_doc(doc_base):
     conn = get_connection()
     rows = conn.execute("""
         SELECT s.*,
-               COALESCE(p.product_name, s.product_name_raw) AS display_name,
-               p.sku
+               COALESCE(p.product_name, s.product_name_raw) AS display_name
         FROM sales_transactions s
         LEFT JOIN products p ON p.id = s.product_id
         WHERE s.doc_no LIKE ? OR s.doc_no = ?
@@ -1552,7 +1545,6 @@ def get_trade_dashboard(date_from=None, date_to=None):
     # ── Top 10 สินค้าขายดี (by net) ──────────────────────────────────────────
     top_products = conn.execute("""
         SELECT COALESCE(pr.product_name, s.product_name_raw) AS name,
-               COALESCE(pr.sku, 0) AS sku,
                s.product_id,
                SUM(s.qty)  AS total_qty,
                SUM(s.net)  AS total_net
@@ -1630,7 +1622,7 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None):
     where = ' AND '.join(conds)
 
     product = conn.execute(
-        'SELECT id, sku, product_name FROM products WHERE id = ?', (product_id,)
+        'SELECT id, product_name FROM products WHERE id = ?', (product_id,)
     ).fetchone()
 
     summary = conn.execute(f"""
@@ -1717,7 +1709,6 @@ def get_customer_summary(customer, date_from=None, date_to=None):
 
     top_products = conn.execute(f"""
         SELECT COALESCE(p.product_name, s.product_name_raw) AS name,
-               COALESCE(p.sku, 0) AS sku,
                p.id AS product_id,
                s.unit,
                SUM(s.qty)  AS total_qty,
@@ -2246,7 +2237,7 @@ def list_commission_overrides(active_only=False):
                co.apply_when_price_gt, co.apply_when_price_lte,
                co.is_active, co.effective_from, co.note,
                co.created_at, co.updated_at,
-               p.product_name, p.sku,
+               p.product_name,
                b.name AS brand_name, b.code AS brand_code, b.is_own_brand,
                s.name AS salesperson_name
           FROM commission_overrides co
@@ -2264,7 +2255,7 @@ def list_commission_overrides(active_only=False):
 def get_commission_override(override_id):
     conn = get_connection()
     row = conn.execute("""
-        SELECT co.*, p.product_name, p.sku,
+        SELECT co.*, p.product_name,
                b.name AS brand_name, b.code AS brand_code,
                s.name AS salesperson_name
           FROM commission_overrides co
@@ -2393,8 +2384,7 @@ def get_purchases(product_id=None, date_from=None, date_to=None, page=1, per_pag
     where = ' AND '.join(conds)
     sql = f"""
         SELECT p2.*,
-               COALESCE(p.product_name, p2.product_name_raw) AS display_name,
-               p.sku
+               COALESCE(p.product_name, p2.product_name_raw) AS display_name
         FROM purchase_transactions p2
         LEFT JOIN products p ON p.id = p2.product_id
         WHERE {where}
@@ -3333,7 +3323,7 @@ def get_platform_mapping_data():
             ps.variation_id, ps.variation_name, ps.seller_sku,
             ps.price, ps.special_price, ps.stock, ps.qty_per_sale,
             ps.internal_product_id,
-            p.sku AS internal_sku, p.product_name AS internal_product_name,
+            p.id AS internal_pid, p.product_name AS internal_product_name,
             p.unit_type
         FROM platform_skus ps
         LEFT JOIN products p ON p.id = ps.internal_product_id
@@ -3345,23 +3335,23 @@ def get_platform_mapping_data():
 
 def apply_platform_mapping(rows):
     """
-    rows: list of dicts with keys: platform_sku_id, internal_sku, qty_per_sale
+    rows: list of dicts with keys: platform_sku_id, product_id, qty_per_sale
     Returns (updated, not_found) counts.
     """
     conn = get_connection()
     updated, not_found = 0, 0
     for r in rows:
         sku_id      = r.get('platform_sku_id')
-        int_sku     = r.get('internal_sku')
+        int_pid     = r.get('product_id')
         qty_per_sale = r.get('qty_per_sale')
 
         if not sku_id:
             continue
 
-        if int_sku:
+        if int_pid:
             product = conn.execute(
-                "SELECT id FROM products WHERE sku = ? AND is_active = 1",
-                (int_sku,)
+                "SELECT id FROM products WHERE id = ? AND is_active = 1",
+                (int_pid,)
             ).fetchone()
             if not product:
                 not_found += 1
@@ -3386,7 +3376,7 @@ def apply_platform_mapping(rows):
 def suggest_platform_mapping():
     """
     For every platform_sku, suggest the best-matching internal product.
-    Returns dict: { platform_sku_id -> {suggested_sku, suggested_name, confidence} }
+    Returns dict: { platform_sku_id -> {suggested_pid, suggested_name, confidence} }
     """
     import re
     import numpy as np
@@ -3395,7 +3385,7 @@ def suggest_platform_mapping():
 
     conn = get_connection()
     product_list = list(conn.execute(
-        "SELECT id, sku, product_name FROM products WHERE is_active = 1"
+        "SELECT id, product_name FROM products WHERE is_active = 1"
     ).fetchall())
     psku_list = list(conn.execute(
         "SELECT id, product_name, variation_name, seller_sku, internal_product_id "
@@ -3427,7 +3417,7 @@ def suggest_platform_mapping():
             )
             if matched:
                 results[sku_id] = {
-                    'suggested_sku':  matched['sku'],
+                    'suggested_pid':  matched['id'],
                     'suggested_name': matched['product_name'],
                     'confidence':     100,
                 }
@@ -3438,7 +3428,7 @@ def suggest_platform_mapping():
             continue
         product = product_list[best_idx[i]]
         results[sku_id] = {
-            'suggested_sku':  product['sku'],
+            'suggested_pid':  product['id'],
             'suggested_name': product['product_name'],
             'confidence':     score,
         }
@@ -3959,7 +3949,6 @@ def get_supplier_summary(supplier, date_from=None, date_to=None):
 
     top_products = conn.execute(f"""
         SELECT COALESCE(p.product_name, pt.product_name_raw) AS name,
-               COALESCE(p.sku, 0) AS sku,
                p.id AS product_id,
                pt.unit,
                SUM(pt.qty)  AS total_qty,
@@ -4504,7 +4493,7 @@ def get_ecommerce_listings(platform=None, search=None, mapped=None, page=1, per_
         f"SELECT COUNT(*) FROM ecommerce_listings el {where}", params
     ).fetchone()[0]
     rows = conn.execute(f"""
-        SELECT el.*, p.sku, p.product_name
+        SELECT el.*, p.product_name
         FROM ecommerce_listings el
         LEFT JOIN products p ON p.id = el.product_id
         {where}
@@ -4520,7 +4509,7 @@ def get_listing_mapping_data(unmatched_only=False):
     conn = get_connection()
     cond = "AND el.product_id IS NULL" if unmatched_only else ""
     rows = conn.execute(f"""
-        SELECT el.*, p.sku, p.product_name
+        SELECT el.*, p.product_name
         FROM ecommerce_listings el
         LEFT JOIN products p ON p.id = el.product_id
         WHERE el.is_ignored = 0 {cond}
@@ -4532,19 +4521,19 @@ def get_listing_mapping_data(unmatched_only=False):
 
 def apply_listing_mapping(records):
     """
-    Apply internal_sku → product_id for ecommerce_listings.
-    records: list of {listing_id, internal_sku}
+    Apply product_id → product_id for ecommerce_listings.
+    records: list of {listing_id, product_id}
     Returns (updated, not_found).
     """
     conn = get_connection()
     updated = not_found = 0
     for r in records:
         lid = r.get('listing_id')
-        int_sku = r.get('internal_sku')
-        if not lid or not int_sku:
+        int_pid = r.get('product_id')
+        if not lid or not int_pid:
             continue
         product = conn.execute(
-            "SELECT id FROM products WHERE sku = ? AND is_active = 1", (int_sku,)
+            "SELECT id FROM products WHERE id = ? AND is_active = 1", (int_pid,)
         ).fetchone()
         if not product:
             not_found += 1
@@ -4563,7 +4552,7 @@ def apply_listing_mapping(records):
 def suggest_listing_mapping():
     """
     Fuzzy-match ecommerce_listings to ERP products.
-    Returns dict: {listing_id -> {suggested_sku, suggested_name, confidence}}
+    Returns dict: {listing_id -> {suggested_pid, suggested_name, confidence}}
     """
     import numpy as np
     from rapidfuzz import fuzz
@@ -4571,7 +4560,7 @@ def suggest_listing_mapping():
 
     conn = get_connection()
     product_list = list(conn.execute(
-        "SELECT id, sku, product_name FROM products WHERE is_active = 1"
+        "SELECT id, product_name FROM products WHERE is_active = 1"
     ).fetchall())
     listing_list = list(conn.execute(
         "SELECT id, item_name, variation, seller_sku, product_id FROM ecommerce_listings WHERE is_ignored = 0"
@@ -4597,13 +4586,13 @@ def suggest_listing_mapping():
         if listing['product_id']:
             matched = next((p for p in product_list if p['id'] == listing['product_id']), None)
             if matched:
-                results[lid] = {'suggested_sku': matched['sku'], 'suggested_name': matched['product_name'], 'confidence': 100}
+                results[lid] = {'suggested_pid': matched['id'], 'suggested_name': matched['product_name'], 'confidence': 100}
             continue
         score = int(best_score[i])
         if score < 25:
             continue
         product = product_list[best_idx[i]]
-        results[lid] = {'suggested_sku': product['sku'], 'suggested_name': product['product_name'], 'confidence': score}
+        results[lid] = {'suggested_pid': product['id'], 'suggested_name': product['product_name'], 'confidence': score}
     return results
 
 
@@ -4754,28 +4743,22 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         if not d.get('packaging') and d.get('packaging_other'):
             d['packaging'] = d['packaging_other'].strip()
 
-        # next sku
-        next_sku = conn.execute(
-            "SELECT COALESCE(MAX(sku),0)+1 FROM products"
-        ).fetchone()[0]
-
         # Insert product with structured fields
         from sku_code_utils import PACKAGING_SHORT
         pkg_th = d.get('packaging') or None
         pkg_short = PACKAGING_SHORT.get(pkg_th) if pkg_th else None
         cur = conn.execute("""
             INSERT INTO products
-              (sku, product_name, unit_type, hard_to_sell,
+              (product_name, unit_type, hard_to_sell,
                cost_price, base_sell_price, low_stock_threshold,
                shopee_stock, lazada_stock,
                brand_id, color_code, packaging_th, packaging_short,
                series, model, size, condition, pack_variant,
                units_per_carton, units_per_box)
             VALUES
-              (?, ?, ?, 0, ?, 0.0, 10, 0, 0,
+              (?, ?, 0, ?, 0.0, 10, 0, 0,
                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            next_sku,
             d.get('suggested_name') or d.get('bsn_name'),
             d.get('suggested_unit_type') or 'ตัว',
             d.get('suggested_cost') or 0.0,

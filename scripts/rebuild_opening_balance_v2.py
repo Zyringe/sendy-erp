@@ -110,8 +110,10 @@ def main(argv=None):
     import models  # noqa: E402
 
     csv_sku = load_csv(args.csv_path)
-    sku2pid = {r["sku"]: r["id"] for r in conn.execute(
-        "SELECT id, sku FROM products")}
+    # CSV is keyed by the OLD integer sku → translate to product_id via the
+    # forensic legacy map (products.sku was dropped in mig 097).
+    sku2pid = {r["sku"]: r["product_id"] for r in conn.execute(
+        "SELECT product_id, sku FROM legacy_product_sku_map")}
     all_pids = [r["id"] for r in conn.execute("SELECT id FROM products")]
     csv_pid = {}
     unmatched = []

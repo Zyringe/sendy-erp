@@ -57,7 +57,7 @@ WITH map AS (SELECT product_id,
      AND x.unit <> (SELECT unit_type FROM products WHERE id=x.product_id)
      AND NOT EXISTS (SELECT 1 FROM unit_conversions u
         WHERE u.product_id=x.product_id AND u.bsn_unit=x.unit))
-SELECT p.id product_id, p.sku, p.sku_code, p.product_name,
+SELECT p.id product_id, p.sku_code, p.product_name,
    p.unit_type base_unit, p.is_active,
    COALESCE(map.n,0) n_bsn_codes, COALESCE(map.codes,'') bsn_codes,
    COALESCE(conv.n,0) n_unit_conv, COALESCE(conv.uc,'') unit_conversions,

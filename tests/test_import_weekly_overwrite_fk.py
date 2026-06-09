@@ -41,9 +41,7 @@ def test_overwrite_no_orphan_no_fkfail(tmp_db, monkeypatch):
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("INSERT INTO products (id,sku,product_name,unit_type,"
-                 "sku_code,is_active) VALUES (?,?,?,?,?,1)",
-                 (PID, PID, "TEST", "อัน", f"SK{PID}"))
+    conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, ?, ?, 1)", (PID, "TEST", "อัน", f"SK{PID}"))
     conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
                  "product_id,is_ignored) VALUES (?,?,?,0)",
                  (CODE, "TEST", PID))

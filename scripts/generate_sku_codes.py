@@ -4,10 +4,10 @@ Format: <CAT>-<BRAND>-<MODEL>-<SIZE>-<COLOR>
         + optional pack-variant suffix (-N) for disambiguation
 
 Segments are omitted when missing. Fallback when nothing structured:
-  INT-<sku>  (uses the legacy integer SKU)
+  INT-<id>  (uses the product id)
 
 Skips products where sku_code_locked = 1 (user manually edited — preserve).
-On collision (rare), appends -<sku> as last-resort disambiguation.
+On collision (rare), appends -<id> as last-resort disambiguation.
 
 Default mode is dry-run. Use --apply to commit.
 Use --regen to also overwrite existing sku_code on unlocked rows.
@@ -45,7 +45,7 @@ def main():
     conn.row_factory = sqlite3.Row
 
     rows = conn.execute("""
-        SELECT p.id, p.sku, p.sku_code, p.sku_code_locked, p.model, p.size,
+        SELECT p.id, p.sku_code, p.sku_code_locked, p.model, p.size,
                p.series, p.color_code, p.packaging_th, p.packaging_short,
                p.condition, p.pack_variant, p.sub_category_short_code,
                b.short_code AS brand_short_code,
@@ -76,10 +76,10 @@ def main():
 
         new_code = build_sku_code(dict(r))
 
-        # Collision check — append -sku as disambiguator
+        # Collision check — append -id as disambiguator (matches sku_code_utils)
         original = new_code
         if new_code in used_codes and new_code != r["sku_code"]:
-            new_code = f"{original}-{r['sku']}"
+            new_code = f"{original}-{r['id']}"
             n_collide += 1
 
         # Don't update if same as existing
@@ -88,7 +88,6 @@ def main():
 
         proposed.append({
             "id": r["id"],
-            "sku": r["sku"],
             "old": r["sku_code"],
             "new": new_code,
         })
@@ -103,12 +102,12 @@ def main():
     print()
     print("First 8 proposals:")
     for x in proposed[:8]:
-        print(f"  sku={x['sku']:>5}  {x['old'] or '(NULL)':<40} → {x['new']}")
+        print(f"  id={x['id']:>5}  {x['old'] or '(NULL)':<40} → {x['new']}")
     print()
     print("Sample of fallback (no structured data):")
     for x in proposed:
         if x['new'].startswith('INT-'):
-            print(f"  sku={x['sku']:>5}  → {x['new']}")
+            print(f"  id={x['id']:>5}  → {x['new']}")
             break
 
     if not args.apply:
@@ -143,7 +142,7 @@ def main():
           FROM products
     """).fetchone()
     print(f"Coverage: {by_cov['with_code']}/{by_cov['total']} have sku_code "
-          f"({by_cov['fallback']} are INT-<sku> fallback)")
+          f"({by_cov['fallback']} are INT-<id> fallback)")
     conn.close()
 
 

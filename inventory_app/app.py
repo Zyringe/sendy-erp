@@ -1415,14 +1415,13 @@ def mapping():
     pending_suggestions = models.get_pending_suggestions()
     conn = get_connection()
     all_products = conn.execute("""
-        SELECT p.id, p.sku, p.product_name, p.unit_type,
+        SELECT p.id, p.product_name, p.unit_type,
                COALESCE(s.quantity, 0) AS stock
           FROM products p
           LEFT JOIN stock_levels s ON s.product_id = p.id
          WHERE p.is_active = 1
-         ORDER BY p.sku
+         ORDER BY p.id
     """).fetchall()
-    next_sku = conn.execute("SELECT COALESCE(MAX(sku),0)+1 FROM products").fetchone()[0]
     brands = conn.execute(
         "SELECT id, name, name_th FROM brands ORDER BY is_own_brand DESC, sort_order, name"
     ).fetchall()
@@ -1433,7 +1432,7 @@ def mapping():
     # Put can see which codes are split by unit.
     overrides = conn.execute("""
         SELECT m.bsn_code, m.bsn_name, m.bsn_unit, m.product_id,
-               p.sku, p.product_name, p.unit_type
+               p.product_name, p.unit_type
           FROM product_code_mapping m
           JOIN products p ON p.id = m.product_id
          WHERE m.bsn_unit <> ''
@@ -1446,7 +1445,6 @@ def mapping():
         pending=pending,
         pending_suggestions=pending_suggestions,
         all_products=all_products,
-        next_sku=next_sku,
         brands=brands,
         color_codes=color_codes,
         overrides=overrides,
@@ -1507,16 +1505,7 @@ def mapping_save():
             # smart-suggest flow uses 'stage' instead so manager review applies.
             if session.get('role') != 'admin':
                 continue
-            try:
-                sku_to_use = int(item.get('new_sku') or 0)
-            except (ValueError, TypeError):
-                sku_to_use = 0
-            if not sku_to_use:
-                sku_to_use = get_connection().execute(
-                    "SELECT COALESCE(MAX(sku),0)+1 FROM products"
-                ).fetchone()[0]
             pid = models.create_product({
-                'sku': sku_to_use,
                 'product_name': item.get('new_name') or item['bsn_name'],
                 'units_per_carton': None,
                 'units_per_box': None,
@@ -1867,7 +1856,7 @@ def photos_review_assign():
         )
         prod = cur.fetchone()
         if not prod:
-            return jsonify({'ok': False, 'error': 'sku not in db'}), 404
+            return jsonify({'ok': False, 'error': 'product not in db'}), 404
 
         # If product has no family, auto-create singleton (mirror rebuild_photo_index logic)
         family_id = prod['family_id']
@@ -1960,7 +1949,7 @@ def products_walkthrough():
     ).fetchone()['c']
     rows = conn.execute(
         """
-        SELECT p.id, p.sku, p.sku_code, p.product_name, p.base_sell_price,
+        SELECT p.id, p.sku_code, p.product_name, p.base_sell_price,
                p.unit_type, p.family_id,
                b.short_code AS brand_short, b.name AS brand_name,
                COALESCE(s.quantity, 0) AS stock,
@@ -2581,7 +2570,7 @@ def conversion_history():
 def _get_active_products():
     conn = get_connection()
     rows = conn.execute(
-        "SELECT id, sku, product_name, unit_type FROM products WHERE is_active=1 ORDER BY product_name"
+        "SELECT id, product_name, unit_type FROM products WHERE is_active=1 ORDER BY product_name"
     ).fetchall()
     conn.close()
     return rows
@@ -2875,18 +2864,18 @@ def api_products_search():
     conn = get_connection()
     rows = conn.execute(
         """
-        SELECT p.id, p.sku, p.product_name, p.base_sell_price, p.unit_type,
+        SELECT p.id, p.product_name, p.base_sell_price, p.unit_type,
                (SELECT barcode FROM product_barcodes pb
                   WHERE pb.product_id = p.id
                   ORDER BY pb.is_primary DESC, pb.id ASC LIMIT 1) AS barcode
           FROM products p
          WHERE p.is_active = 1
            AND (p.product_name LIKE :q
-                OR CAST(p.sku AS TEXT) LIKE :q
+                OR CAST(p.id AS TEXT) LIKE :q
                 OR EXISTS (SELECT 1 FROM product_barcodes pb
                             WHERE pb.product_id = p.id AND pb.barcode LIKE :q))
          ORDER BY
-             CASE WHEN CAST(p.sku AS TEXT) = :exact THEN 0
+             CASE WHEN CAST(p.id AS TEXT) = :exact THEN 0
                   WHEN p.product_name LIKE :starts THEN 1
                   ELSE 2 END,
              p.product_name
@@ -2897,7 +2886,6 @@ def api_products_search():
     conn.close()
     items = [{
         'id':         r['id'],
-        'sku':        r['sku'],
         'name':       r['product_name'],
         'price':      r['base_sell_price'],
         'unit':       r['unit_type'],

@@ -226,7 +226,7 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
           <th style="width:130px">รหัส BSN</th>
           <th>ชื่อ BSN</th>
           <th style="width:100px" class="text-center">หน่วย BSN</th>
-          <th class="text-center" style="width:80px">SKU</th>
+          <th class="text-center" style="width:80px">รหัส (ID)</th>
           <th>สินค้า</th>
           <th class="text-center" style="width:90px">หน่วยระบบ</th>
         </tr>
@@ -237,7 +237,7 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
           <td><span class="badge badge-gray font-mono">{{ o.bsn_code }}</span></td>
           <td class="small">{{ o.bsn_name }}</td>
           <td class="text-center"><span class="badge badge-warning font-mono">{{ o.bsn_unit }}</span></td>
-          <td class="text-center"><span class="badge badge-info">{{ o.sku }}</span></td>
+          <td class="text-center"><span class="badge badge-info">{{ o.product_id }}</span></td>
           <td class="small">{{ o.product_name }}</td>
           <td class="text-center text-subtle">{{ o.unit_type }}</td>
         </tr>
@@ -504,7 +504,7 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
 <script>
 const allProducts = [
   {% for p in all_products %}
-  { id: {{ p.id }}, sku: {{ p.sku }}, name: {{ p.product_name | tojson }},
+  { id: {{ p.id }}, name: {{ p.product_name | tojson }},
     unit_type: {{ (p.unit_type or 'ตัว') | tojson }},
     stock: {{ p.stock or 0 }} },
   {% endfor %}
@@ -668,7 +668,7 @@ function populateSuggestModal(data) {
       const pct = (m.score * 100).toFixed(0);
       const stockBadgeCls = m.stock > 0 ? 'bg-success' : 'bg-secondary';
       return `<div class="match-row ${cls}" data-pid="${m.product_id}" data-unit="${m.unit_type}" onclick="pickMatch(this)">
-        ${star}<span class="ac-sku">${m.sku}</span>
+        ${star}<span class="ac-sku">${m.product_id}</span>
         <span class="flex-fill">${m.product_name}</span>
         <span class="badge bg-info text-dark" title="หน่วยของสินค้า">⚖️ ${m.unit_type}</span>
         <span class="badge ${stockBadgeCls}" title="สต็อกปัจจุบัน">📦 ${m.stock}</span>
@@ -773,7 +773,7 @@ function showMapConv(productUnit) {
   if (!input) return;
   function render(q) {
     const hits = q
-      ? allProducts.filter(p => (String(p.sku) + ' ' + p.name).toLowerCase().includes(q.toLowerCase())).slice(0, 60)
+      ? allProducts.filter(p => (String(p.id) + ' ' + p.name).toLowerCase().includes(q.toLowerCase())).slice(0, 60)
       : allProducts.slice(0, 60);
     drop.innerHTML = hits.length
       ? hits.map(p => {
@@ -781,9 +781,9 @@ function showMapConv(productUnit) {
           div.className = 'ac-item';
           div.dataset.id    = p.id;
           div.dataset.unit  = p.unit_type || 'ตัว';
-          div.dataset.label = p.sku + ' — ' + p.name;
+          div.dataset.label = p.id + ' — ' + p.name;
           const stockBadgeCls = p.stock > 0 ? 'bg-success' : 'bg-secondary';
-          div.innerHTML = `<span class="ac-sku">${p.sku}</span>
+          div.innerHTML = `<span class="ac-sku">${p.id}</span>
             <span class="flex-fill">${p.name}</span>
             <span class="badge bg-info text-dark" title="หน่วยของสินค้า">⚖️ ${p.unit_type || 'ตัว'}</span>
             <span class="badge ${stockBadgeCls}" title="สต็อกปัจจุบัน">📦 ${p.stock}</span>`;

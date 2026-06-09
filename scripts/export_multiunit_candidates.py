@@ -73,12 +73,12 @@ def build_rows(conn):
         sib = []
         for u in units:
             cands = conn.execute(
-                "SELECT id, sku, product_name FROM products "
-                "WHERE unit_type=? AND is_active=1 ORDER BY sku LIMIT 6",
+                "SELECT id, product_name FROM products "
+                "WHERE unit_type=? AND is_active=1 ORDER BY id LIMIT 6",
                 (u,)).fetchall()
             if cands:
                 sib.append(f"[{u}] " + " | ".join(
-                    f"pid{c['id']}/sku{c['sku']}:{c['product_name']}"
+                    f"pid{c['id']}:{c['product_name']}"
                     for c in cands))
         rows.append({
             "bsn_code": code,

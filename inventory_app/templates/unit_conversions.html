@@ -113,7 +113,7 @@
     <table class="table mb-0 table-sm">
       <thead>
         <tr>
-          <th>SKU</th>
+          <th>รหัส (ID)</th>
           <th>ชื่อสินค้า</th>
           <th class="text-center">หน่วย BSN</th>
           <th class="text-center">หน่วยระบบ</th>
@@ -125,7 +125,7 @@
       <tbody>
         {% for uc in existing %}
         <tr id="row-{{ uc.id }}">
-          <td><span class="badge badge-gray">{{ uc.sku }}</span></td>
+          <td><span class="badge badge-gray">{{ uc.product_id }}</span></td>
           <td class="small">
             {{ uc.product_name }}
             {% if uc.bsn_raw_name and uc.bsn_raw_name != uc.product_name %}

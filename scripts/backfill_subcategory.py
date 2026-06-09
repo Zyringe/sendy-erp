@@ -30,7 +30,14 @@ def main():
         rows = list(csv.DictReader(f))
 
     conn = sqlite3.connect(str(DB_PATH))
-    by_sku = {r[0]: r[1] for r in conn.execute("SELECT sku, sub_category FROM products")}
+    # CSV is keyed by the OLD integer sku (products.sku dropped in mig 097);
+    # translate sku → product_id via the forensic legacy map.
+    pid_by_sku = {r[0]: r[1] for r in conn.execute(
+        "SELECT sku, product_id FROM legacy_product_sku_map")}
+    sub_by_pid = {r[0]: r[1] for r in conn.execute(
+        "SELECT id, sub_category FROM products")}
+    by_sku = {sku: sub_by_pid.get(pid)
+              for sku, pid in pid_by_sku.items() if pid in sub_by_pid}
 
     n_will = n_same = n_no_match = 0
     samples = []
@@ -67,7 +74,8 @@ def main():
         if sku not in by_sku:
             continue
         new_sub = (r["category"] or "").strip() or None
-        cur.execute("UPDATE products SET sub_category = ? WHERE sku = ?", (new_sub, sku))
+        cur.execute("UPDATE products SET sub_category = ? WHERE id = ?",
+                    (new_sub, pid_by_sku[sku]))
     conn.commit()
     print(f"\nApplied {n_will} updates")
     conn.close()

@@ -12,11 +12,7 @@ import sqlite3
 
 
 def _mk_product(conn, sku, name, cost_price=10.0, unit_type='ตัว'):
-    cur = conn.execute(
-        "INSERT INTO products (sku, product_name, unit_type, cost_price)"
-        " VALUES (?, ?, ?, ?)",
-        (sku, name, unit_type, cost_price),
-    )
+    cur = conn.execute("INSERT INTO products (product_name, unit_type, cost_price) VALUES (?, ?, ?)", (name, unit_type, cost_price))
     pid = cur.lastrowid
     conn.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
     return pid

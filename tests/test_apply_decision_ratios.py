@@ -21,9 +21,7 @@ COLS = ["product_id", "sku", "sku_code", "product_name", "unit",
 
 
 def _p(c, pid):
-    c.execute("INSERT INTO products (id,sku,product_name,unit_type,sku_code,"
-              "is_active) VALUES (?,?,?,'ตัว',?,1)", (pid, pid, f"P{pid}",
-                                                      f"S{pid}"))
+    c.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (pid, f"P{pid}", f"S{pid}"))
 
 
 def _u(c, pid, unit, r):

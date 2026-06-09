@@ -76,7 +76,7 @@ def product_categorize():
 
     rows = conn.execute(
         f"""
-        SELECT p.id, p.sku, p.product_name, p.category_id,
+        SELECT p.id, p.product_name, p.category_id,
                (SELECT name_th FROM categories WHERE id = p.category_id) AS current_cat
         FROM products p
         {where}
@@ -93,7 +93,6 @@ def product_categorize():
     suggestions = [
         {
             'id': r['id'],
-            'sku': r['sku'],
             'name': r['product_name'],
             'current_id': r['category_id'],
             'current_name': r['current_cat'],
@@ -184,7 +183,6 @@ def product_new():
         f = request.form
         try:
             data = {
-                'sku': int(f['sku']),
                 'product_name': f['product_name'].strip(),
                 'units_per_carton': int(f['units_per_carton']) if f.get('units_per_carton') else None,
                 'units_per_box': int(f['units_per_box']) if f.get('units_per_box') else None,
@@ -198,10 +196,6 @@ def product_new():
             }
         except ValueError as e:
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
-            return render_template('products/form.html', product=f, action='new')
-
-        if models.get_product_by_sku(data['sku']):
-            flash(f'SKU {data["sku"]} มีในระบบแล้ว', 'danger')
             return render_template('products/form.html', product=f, action='new')
 
         pid = models.create_product(data)
@@ -312,7 +306,6 @@ def product_edit(product_id):
         f = request.form
         try:
             data = {
-                'sku': int(f['sku']),
                 'product_name': f['product_name'].strip(),
                 'units_per_carton': int(f['units_per_carton']) if f.get('units_per_carton') else None,
                 'units_per_box': int(f['units_per_box']) if f.get('units_per_box') else None,
@@ -326,11 +319,6 @@ def product_edit(product_id):
             }
         except ValueError as e:
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
-            return render_template('products/form.html', product=f, action='edit', product_id=product_id)
-
-        existing = models.get_product_by_sku(data['sku'])
-        if existing and existing['id'] != product_id:
-            flash(f'SKU {data["sku"]} ถูกใช้งานโดยสินค้าอื่น', 'danger')
             return render_template('products/form.html', product=f, action='edit', product_id=product_id)
 
         models.update_product(product_id, data)
@@ -405,12 +393,12 @@ def product_sku_code_save(product_id):
     if new_code:
         # Collision check (excluding self)
         clash = conn.execute(
-            "SELECT id, sku FROM products WHERE sku_code = ? AND id != ?",
+            "SELECT id FROM products WHERE sku_code = ? AND id != ?",
             (new_code, product_id)
         ).fetchone()
         if clash:
             conn.close()
-            flash(f'sku_code "{new_code}" ถูกใช้แล้วโดย sku #{clash[1]}', 'danger')
+            flash(f'sku_code "{new_code}" ถูกใช้แล้วโดยรหัส (ID) #{clash[0]}', 'danger')
             return redirect(url_for('products.product_detail', product_id=product_id))
         conn.execute(
             "UPDATE products SET sku_code = ?, sku_code_locked = 1 WHERE id = ?",
@@ -570,20 +558,20 @@ def _parse_csv_content(text):
     reader = csv.DictReader(io.StringIO(text))
     rows = []
     for r in reader:
+        def parse_int(v):
+            v = str(v).strip()
+            return int(v) if v else None
+
         try:
-            sku = int(str(r.get('SKU', '')).strip())
+            product_id = parse_int(r.get('product_id', ''))
         except ValueError:
             continue
         name = r.get('Product_Name', '').strip()
         if not name:
             continue
 
-        def parse_int(v):
-            v = str(v).strip()
-            return int(v) if v else None
-
         rows.append({
-            'sku': sku,
+            'product_id': product_id,
             'product_name': name,
             'units_per_carton': parse_int(r.get('บรรจุ/ลัง', '')),
             'units_per_box': parse_int(r.get('บรรจุ/กล่อง', '')),

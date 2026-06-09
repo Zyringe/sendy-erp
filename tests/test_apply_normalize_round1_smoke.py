@@ -27,7 +27,7 @@ NORMALIZE = os.path.join(REPO, "scripts", "normalize_products_round1.py")
 # the `*_new` fields drive UPDATE; everything else is for display.
 def _write_csv(path: Path, rows: list[dict]):
     cols = [
-        "product_id", "sku_int", "current_sku_code", "proposed_sku_code",
+        "product_id", "current_sku_code", "proposed_sku_code",
         "current_name", "proposed_name",
         "category", "brand_short",
         "series_old", "series_new",
@@ -63,12 +63,12 @@ def _run_apply(csv_path: Path, db_path: str, commit: bool = False):
 def _pick_products(conn, n=3):
     """Pick N unlocked products from the live snapshot for mutation."""
     rows = conn.execute(
-        "SELECT id, sku, product_name, sku_code FROM products "
+        "SELECT id, product_name, sku_code FROM products "
         "WHERE sku_code_locked = 0 AND sku_code IS NOT NULL "
         "ORDER BY id LIMIT ?",
         (n,)
     ).fetchall()
-    return [dict(zip(["id", "sku", "name", "sku_code"], r)) for r in rows]
+    return [dict(zip(["id", "name", "sku_code"], r)) for r in rows]
 
 
 # ── --commit path actually mutates ──────────────────────────────────────────
@@ -83,7 +83,6 @@ def test_commit_updates_products_for_approved_rows(tmp_db, tmp_path):
     _write_csv(csv_path, [
         {
             "product_id": str(targets[0]["id"]),
-            "sku_int": str(targets[0]["sku"]),
             "current_sku_code": targets[0]["sku_code"],
             "proposed_sku_code": "TEST-APPLY-001",
             "current_name": targets[0]["name"],
@@ -95,7 +94,6 @@ def test_commit_updates_products_for_approved_rows(tmp_db, tmp_path):
         },
         {
             "product_id": str(targets[1]["id"]),
-            "sku_int": str(targets[1]["sku"]),
             "current_sku_code": targets[1]["sku_code"],
             "proposed_sku_code": "TEST-APPLY-002",
             "current_name": targets[1]["name"],

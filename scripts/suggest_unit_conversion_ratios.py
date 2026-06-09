@@ -123,7 +123,7 @@ def main(argv=None):
         return f"SUGGEST {sug}  (current {stored:g}) [{conf}]"
 
     rows = conn.execute("""
-        SELECT p.id pid,p.sku,p.sku_code,p.product_name,p.unit_type,
+        SELECT p.id pid,p.sku_code,p.product_name,p.unit_type,
                COALESCE(sl.quantity,0) stock,
                m.bsn_code,m.bsn_name,u.bsn_unit,u.ratio
         FROM products p
@@ -140,7 +140,7 @@ def main(argv=None):
     n_sug = 0
     with open(out, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["product_id", "sku", "sku_code", "product_name",
+        w.writerow(["product_id", "sku_code", "product_name",
                     "unit", "number_of_stock", "bsn_code", "bsn_name",
                     "bsn_unit", "stock_conversion_ratio",
                     "ratio_suggestion"])
@@ -152,7 +152,7 @@ def main(argv=None):
                              r["product_name"] or "")
                 if sg.startswith("SUGGEST") or sg.startswith("SET"):
                     n_sug += 1
-            w.writerow([r["pid"], r["sku"], r["sku_code"],
+            w.writerow([r["pid"], r["sku_code"],
                         r["product_name"], r["unit_type"], r["stock"],
                         r["bsn_code"] or "", r["bsn_name"] or "",
                         r["bsn_unit"] or "", r["ratio"]

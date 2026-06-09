@@ -86,7 +86,7 @@ sendy_erp/
 
 ### products
 ```
-id, sku(INT), product_name, units_per_carton, units_per_box,
+id, product_name, units_per_carton, units_per_box,
 unit_type(default 'ตัว'), hard_to_sell, cost_price, base_sell_price,
 low_stock_threshold, is_active, created_at, updated_at,
 shopee_stock, lazada_stock,
@@ -94,6 +94,7 @@ brand_id, category_id, family_id,                    -- FK (mig 025)
 series, model, size, color_code, packaging,          -- structured (mig 033)
 condition, pack_variant                              -- structured (mig 033)
 ```
+> ⚠️ The legacy integer `sku` column was **DROPPED in mig 097** (2026-06-09). `product_id` (`id`) is the only product identifier now; the descriptive `sku_code` (TEXT, UNIQUE) is the kept business code. The old id→sku map is archived in `legacy_product_sku_map(product_id, sku)` for tracing legacy printed labels / external CSVs keyed by the old sku. Do NOT reintroduce a `products.sku` column or reference it in queries.
 
 ### product_families *(mig 025)*
 `id, family_code, display_name, brand_id, sort_order, note, created_at, updated_at`
@@ -102,6 +103,7 @@ condition, pack_variant                              -- structured (mig 033)
 
 ### product_images *(mig 025)*
 `id, family_id, sku_id, image_path, presentation_tag, sort_order, note, ...`
+> Note: `sku_id` is a misnomer — it stores `products.id` (NOT the dropped integer `products.sku`). Joined as `product_images.sku_id = products.id`.
 
 ### brands *(+short_code mig 030/031)*
 `id, code, name, name_th, is_own_brand, sort_order, note, short_code, ...`
@@ -264,7 +266,7 @@ List ครบดูได้จาก `git grep -nE "@.*\.route" inventory_app/
 - **Auto-reloader double-startup**: ใช้ `use_reloader=False` ใน dev server config
 - **CSRF protection**: ทุก POST form template ต้องมี `<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">` หลัง `<form method="post">`. flask-wtf `CSRFProtect(app)` ปฏิเสธ POST ที่ไม่มี token (HTTP 400 → จัด redirect+flash โดย global handler). Production = on by default; tests รันด้วย `WTF_CSRF_ENABLED=False` (set ใน `tests/conftest.py`). Route ใหม่ POST ไม่ต้องเพิ่ม decorator — ป้องกันอัตโนมัติ. Exempt เฉพาะ `/bootstrap/upload-db` (gated ด้วย BOOTSTRAP_TOKEN, ไม่มี session).
 
-## Migrations (latest: 080 — see `data/migrations/` for canonical files)
+## Migrations (latest: 097 — see `data/migrations/` for canonical files)
 
 | Mig | Date | What |
 |-----|------|------|
@@ -312,6 +314,8 @@ List ครบดูได้จาก `git grep -nE "@.*\.route" inventory_app/
 | 078 | 2026-05-23 | data-quality mapping+UC cleanup + pid 771 stock ADJUST (rollback updated 2026-05-25 post-mig-080) |
 | **079** | 2026-05-25 | **audit_log UPDATE/DELETE triggers on transactions** (closes mig 070's append-only-only gap) |
 | **080** | 2026-05-25 | **stock_levels integrity on transactions UPDATE/DELETE** (`after_transaction_update` + `after_transaction_delete` — mirrors INSERT trigger; auto-reconciles stock on mutations) |
+| 081–096 | 2026-05-26..06-09 | (table behind — see `data/migrations/` for canonical 081–096: cashbook normalize, marketplace import mig 093/094, pack/unpack mig 096, etc.) |
+| **097** | 2026-06-09 | **drop legacy integer `products.sku`** (table rebuild minus sku; rebuilds `products_full` view + 9 triggers without sku; archives old id→sku into `legacy_product_sku_map`). product_id is the only identifier; `sku_code` kept. |
 
 > Migration runner: `database.py::init_db()` reads `data/migrations/NNN_*.sql` + `.rollback.sql`. SHA256 + duration_ms recorded in `applied_migrations`. เพิ่ม migration ใหม่: เลข NNN ถัดไป → restart → รันอัตโนมัติ. Rollback: รัน `.rollback.sql` + DELETE จาก `applied_migrations` ด้วยมือ.
 >

@@ -49,7 +49,7 @@ AUDIT_CSV = Path(os.path.expanduser(
 
 
 CSV_COLUMNS = [
-    "product_id", "sku_int", "current_sku_code", "proposed_sku_code",
+    "product_id", "current_sku_code", "proposed_sku_code",
     "current_name", "proposed_name",
     "category", "brand_short",
     "series_old", "series_new",
@@ -170,7 +170,7 @@ def main():
     audit_sugs = _load_audit_suggestions(args.audit_csv)
 
     rows = conn.execute("""
-        SELECT p.id, p.sku, p.product_name, p.brand_id,
+        SELECT p.id, p.product_name, p.brand_id,
                p.series, p.model, p.size, p.color_code,
                p.packaging_th, p.packaging_short,
                p.condition, p.pack_variant, p.sku_code,
@@ -181,7 +181,7 @@ def main():
           FROM products p
           LEFT JOIN brands b      ON b.id = p.brand_id
           LEFT JOIN categories c  ON c.id = p.category_id
-         ORDER BY p.sku
+         ORDER BY p.id
     """).fetchall()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -206,7 +206,6 @@ def main():
 
             # Proposed sku_code via build_sku_code with new schema
             proposed_sku_code = build_sku_code({
-                "sku": r["sku"],
                 "cat_short_code": r["cat_short_code"],
                 "sub_category_short_code": r["sub_category_short_code"],
                 "brand_short_code": r["brand_short_code"],
@@ -243,7 +242,6 @@ def main():
 
             w.writerow({
                 "product_id": r["id"],
-                "sku_int": r["sku"],
                 "current_sku_code": r["sku_code"] or "",
                 "proposed_sku_code": proposed_sku_code,
                 "current_name": r["product_name"] or "",

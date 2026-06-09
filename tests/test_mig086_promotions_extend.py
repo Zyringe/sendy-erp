@@ -404,8 +404,7 @@ def test_on_delete_cascade(tmp_db):
     _apply_086(conn)
 
     # Insert a throwaway product for the cascade test.
-    cur = conn.execute(
-        "INSERT INTO products (sku, product_name) VALUES (999998, 'cascade_test')")
+    cur = conn.execute("INSERT INTO products (product_name) VALUES ('cascade_test')")
     new_pid = cur.lastrowid
     conn.execute(
         "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value) "

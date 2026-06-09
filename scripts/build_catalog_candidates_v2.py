@@ -40,7 +40,7 @@ def main():
                SUM(COALESCE(s.quantity, 0)) AS total_stock,
                MAX(p.base_sell_price) AS max_price,
                MIN(p.base_sell_price) AS min_price,
-               GROUP_CONCAT(p.sku, ',') AS sku_list,
+               GROUP_CONCAT(p.id, ',') AS sku_list,
                GROUP_CONCAT(DISTINCT c.name_th) AS categories,
                GROUP_CONCAT(DISTINCT p.sub_category) AS sub_categories
           FROM product_families pf
@@ -56,7 +56,7 @@ def main():
 
     # 2) Singleton cards: products with NO family + matching filter
     singletons = conn.execute("""
-        SELECT p.id AS product_id, p.sku, p.sku_code, p.product_name,
+        SELECT p.id AS product_id, p.sku_code, p.product_name,
                p.sub_category, p.series, p.size, p.color_code, p.packaging_th AS packaging,
                p.base_sell_price, COALESCE(s.quantity, 0) AS stock,
                b.name AS brand_name, b.short_code AS brand_short,
@@ -70,7 +70,7 @@ def main():
            AND p.family_id IS NULL
            AND (COALESCE(s.quantity, 0) > 0 OR COALESCE(b.is_own_brand, 0) = 1)
            AND (c.code IS NULL OR c.code != 'other')
-         ORDER BY b.is_own_brand DESC, b.sort_order, p.sub_category, p.sku
+         ORDER BY b.is_own_brand DESC, b.sort_order, p.sub_category, p.id
     """).fetchall()
 
     rows = []
@@ -96,7 +96,7 @@ def main():
     for s in singletons:
         rows.append({
             "card_type":          "singleton",
-            "card_id":            f"sku-{s['sku']}",
+            "card_id":            f"product-{s['product_id']}",
             "include":            "",
             "family_code":        s["sku_code"] or "",
             "display_name":       s["product_name"],
@@ -110,7 +110,7 @@ def main():
             "total_stock":        s["stock"],
             "min_price":          s["base_sell_price"] or 0,
             "max_price":          s["base_sell_price"] or 0,
-            "sku_list":           str(s["sku"]),
+            "sku_list":           str(s["product_id"]),
         })
 
     # Sort: own-brand first, then by brand_name, then sub_category, then card_type
