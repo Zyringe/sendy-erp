@@ -1247,9 +1247,17 @@ def preview_import(entries: list, file_type: str) -> dict:
                              for r in removed[:500]]}
 
 
-def import_weekly(entries: list, file_type: str, filename: str) -> dict:
+def import_weekly(entries: list, file_type: str, filename: str,
+                  apply_removals: bool = True) -> dict:
     """
     Insert sales or purchase entries; skip duplicates by doc_no.
+
+    apply_removals: when True, lines that vanished from the source (for docs the
+    file mentions) are reversed (see _detect_removed_lines). The route defaults
+    this to the user's explicit opt-in checkbox — a product-code/salesperson
+    FILTERED Express export yields partial invoices, and blindly reversing the
+    filtered-out lines would mass-delete real stock. Detection always runs so we
+    can report the count either way.
     Returns stats dict.
     """
     assert file_type in ('sales', 'purchase')
@@ -1266,7 +1274,7 @@ def import_weekly(entries: list, file_type: str, filename: str) -> dict:
     )
     batch_id = cur.lastrowid
 
-    imported = skipped_dup = overwritten = unchanged = removed = 0
+    imported = skipped_dup = overwritten = unchanged = removed = removed_skipped = 0
     new_bsn_codes = {}        # code → name for codes not yet in mapping table
     affected_pids = set()     # products whose ledger must be rebuilt in pass 2
 
@@ -1376,11 +1384,18 @@ def import_weekly(entries: list, file_type: str, filename: str) -> dict:
     # in this file. Scoped to doc_base present in the file, so a PARTIAL slice
     # never reverses docs it doesn't mention. Drop the orphan source row and mark
     # its product affected — Pass 2's rebuild reverses the stock movement.
-    for r in _detect_removed_lines(conn, table, file_type, entries):
-        if r['product_id']:
-            affected_pids.add(r['product_id'])
-        conn.execute(f"DELETE FROM {table} WHERE id=?", (r['id'],))
-        removed += 1
+    # Gated by apply_removals: a FILTERED export (narrowed รหัสสินค้า/พนักงานขาย)
+    # produces partial invoices whose filtered-out lines look "deleted" — only
+    # reverse when the user explicitly opted in (the route's checkbox).
+    to_remove = _detect_removed_lines(conn, table, file_type, entries)
+    if apply_removals:
+        for r in to_remove:
+            if r['product_id']:
+                affected_pids.add(r['product_id'])
+            conn.execute(f"DELETE FROM {table} WHERE id=?", (r['id'],))
+            removed += 1
+    else:
+        removed_skipped = len(to_remove)
 
     # ── Pass 2: rebuild the ledger for affected products ONCE ──
     # Delete only this file_type's BSN movements for the affected products (the
@@ -1430,6 +1445,7 @@ def import_weekly(entries: list, file_type: str, filename: str) -> dict:
         'overwritten': overwritten,
         'unchanged': unchanged,
         'removed': removed,
+        'removed_skipped': removed_skipped,
         'new_unmapped': len(new_bsn_codes),
         'affected_products': len(affected_pids),
         'batch_id': batch_id,

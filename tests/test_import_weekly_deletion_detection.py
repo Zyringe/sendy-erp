@@ -112,6 +112,22 @@ def test_identical_reimport_no_phantom_removal(empty_db):
     assert s['removed'] == 0 and s['unchanged'] == 1, s
 
 
+# ── apply_removals=False (filtered-export guard): detect but DON'T reverse ──
+def test_removals_opt_out_keeps_orphan(empty_db):
+    import models
+    a = _seed(empty_db, 50501, 'G1')
+    b = _seed(empty_db, 50502, 'G2')
+    models.import_weekly([_entry('IV940-1', 'G1', 6), _entry('IV940-2', 'G2', 2)], 'sales', 'f1')
+    assert _stock(empty_db, a) == -6
+
+    # re-import with line -1 gone BUT opt-out → orphan kept, stock untouched,
+    # reported as skipped (this is the guard for product/salesperson-filtered files)
+    s = models.import_weekly([_entry('IV940-2', 'G2', 2)], 'sales', 'f2', apply_removals=False)
+    assert s['removed'] == 0 and s['removed_skipped'] == 1, s
+    assert _stock(empty_db, a) == -6, "opt-out must NOT reverse the missing line"
+    assert _rows(empty_db, 'sales_transactions', 'IV940') == 2, "orphan row must remain"
+
+
 # ── preview surfaces removals, read-only, and reconciles with apply ──
 def test_preview_lists_removals_readonly(empty_db):
     import models
