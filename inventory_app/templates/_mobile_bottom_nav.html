@@ -1,26 +1,18 @@
-{# Mobile bottom navigation — visible only <lg (≤991.98px). Slots locked Phase 1 / Q6=a.
+{# Mobile bottom navigation — visible only <lg (≤991.98px).
+   Slots = MODULE HEADERS (Put's decision 2026-06-11): สินค้า · การค้า · บุคลากร ·
+   บัญชี · เพิ่มเติม(drawer). The first four come from `mobile_nav_slots`
+   (role-filtered in app.py::build_mobile_nav_slots — staff see only
+   สินค้า/การค้า; a slot whose landing page would 403 is never rendered).
+   ตรวจบิล is NOT a slot here — it lives in the drawer + dashboard banner.
    Slot 5 opens the offcanvas drawer in _mobile_drawer.html. #}
 <nav class="bottom-nav d-lg-none" aria-label="เมนูหลักมือถือ">
-  <a href="{{ url_for('dashboard') }}"
-     class="bottom-nav-item {% if request.endpoint == 'dashboard' %}active{% endif %}">
-    <i class="bi bi-house-door{% if request.endpoint == 'dashboard' %}-fill{% endif %}"></i>
-    <span>หน้าแรก</span>
+  {% for slot in mobile_nav_slots %}
+  <a href="{{ url_for(slot.endpoint) }}"
+     class="bottom-nav-item {% if slot.active %}active{% endif %}">
+    <i class="bi {{ slot.icon }}"></i>
+    <span>{{ slot.label }}</span>
   </a>
-  <a href="{{ url_for('mobile.stock_search') }}"
-     class="bottom-nav-item {% if request.endpoint in ('mobile.stock_search', 'products.product_list', 'products.product_detail') %}active{% endif %}">
-    <i class="bi bi-search"></i>
-    <span>ค้นหา</span>
-  </a>
-  <a href="{{ url_for('customer_list') }}"
-     class="bottom-nav-item {% if request.endpoint in ['customer_list','customer_summary'] %}active{% endif %}">
-    <i class="bi bi-people{% if request.endpoint in ['customer_list','customer_summary'] %}-fill{% endif %}"></i>
-    <span>ลูกค้า</span>
-  </a>
-  <a href="{{ url_for('payment_customers') }}"
-     class="bottom-nav-item {% if request.endpoint in ('payment_status','payment_customers') %}active{% endif %}">
-    <i class="bi bi-cash-coin"></i>
-    <span>ค้างชำระ</span>
-  </a>
+  {% endfor %}
   <button type="button" class="bottom-nav-item"
           data-bs-toggle="offcanvas" data-bs-target="#mobileDrawer" aria-controls="mobileDrawer">
     <i class="bi bi-grid"></i>

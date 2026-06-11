@@ -379,13 +379,17 @@
   <main class="page-content">
     {% block page_head %}
       {%- set _page_title %}{% block page_title %}{% endblock %}{% endset -%}
-      {% if _page_title|trim %}
+      {%- set _page_actions %}{% block page_actions %}{% endblock %}{% endset -%}
+      {% if _page_title|trim or _page_actions|trim %}
       <div class="page-head">
         <div>
           <h1 class="page-title">{{ _page_title }}</h1>
           {% block page_desc %}{% endblock %}
         </div>
-        {% block page_actions %}{% endblock %}
+        {# Shared header-actions slot. Waves fill `page_actions` with buttons and
+           base wraps them in .page-actions (see docs/mobile-conventions.md — the
+           ⋯ collapse recipe lives inside the block, not here). #}
+        {% if _page_actions|trim %}<div class="page-actions">{{ _page_actions }}</div>{% endif %}
       </div>
       {% endif %}
     {% endblock %}
