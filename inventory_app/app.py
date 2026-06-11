@@ -56,6 +56,7 @@ from blueprints.mobile import bp_mobile
 from blueprints.hr import bp_hr
 from blueprints.cashbook import bp_cashbook
 from blueprints.marketplace import bp_marketplace
+from blueprints.review import bp_review
 import cashflow as cf_mod
 import revenue as rev_mod
 import ar_followup as arf_mod
@@ -101,6 +102,7 @@ app.register_blueprint(bp_mobile)
 app.register_blueprint(bp_hr)
 app.register_blueprint(bp_cashbook)
 app.register_blueprint(bp_marketplace)
+app.register_blueprint(bp_review)
 
 with app.app_context():
     # SKIP_DB_INIT=1 lets the app boot without touching the database. Used
@@ -194,6 +196,7 @@ _STAFF_POST_OK = frozenset([
     'admin_exit_simulate',
     'conversion_new', 'conversion_pair', 'conversion_edit', 'conversion_run', 'conversion_delete',
     'api_product_barcodes',
+    'review.mark_doc', 'review.rescan',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'customer_reassign', 'customer_bulk_reassign',

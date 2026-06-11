@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}ตรวจบิล — นำเข้า #{{ batch_id }}{% endblock %}
+{% block page_title %}ตรวจบิล{% endblock %}
+
+{% block page_actions %}
+  <form method="post"
+        action="{{ url_for('review.rescan', batch_id=batch_id) }}"
+        style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-outline-secondary btn-touch">
+      <i class="bi bi-arrow-repeat me-1"></i>สแกนใหม่
+    </button>
+  </form>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-2 px-lg-4 mt-3">
+
+  {# ── Header: batch selector + summary pills ── #}
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+    {# Batch dropdown #}
+    {% if batches %}
+    <select class="form-select form-select-sm w-100" style="max-width:360px"
+            onchange="location.href='{{ url_for('review.batch_view', batch_id=0) }}'.replace('/0','/'+this.value)">
+      {% for b in batches %}
+      <option value="{{ b.id }}" {% if b.id == batch_id %}selected{% endif %}>
+        {{ b.filename }} ({{ b.imported_at[:10] if b.imported_at else '—' }})
+      </option>
+      {% endfor %}
+    </select>
+    {% endif %}
+
+    {# Summary pills #}
+    <span class="badge bg-secondary">{{ auto_passed }} บิลผ่านอัตโนมัติ</span>
+    {% if pending > 0 %}
+      <span class="badge bg-warning text-dark">{{ pending }} ต้องตรวจ</span>
+    {% else %}
+      <span class="badge bg-success">ตรวจครบแล้ว</span>
+    {% endif %}
+    {% if reviewed > 0 %}
+      <span class="badge bg-light text-dark border">
+        ตรวจแล้ว {{ reviewed }} (ถูก {{ ok }} / ผิด {{ wrong }})
+      </span>
+    {% endif %}
+  </div>
+
+  {# ── No data state ── #}
+  {% if not review %}
+    <div class="alert alert-info">
+      <i class="bi bi-info-circle me-2"></i>
+      ยังไม่มีข้อมูลในชุดนี้ กด <strong>สแกนใหม่</strong> เพื่อวิเคราะห์บิล
+    </div>
+  {% else %}
+
+    {# ── Iterate by date ── #}
+    {% for date_iso, docs in review | dictsort %}
+
+      <div class="mb-2 mt-3">
+        <h6 class="text-muted mb-2">
+          <i class="bi bi-calendar3 me-1"></i>{{ date_iso }}
+        </h6>
+      </div>
+
+      {# ── Pending / flagged docs ── #}
+      {% set flagged_docs = docs | selectattr('review_status', 'equalto', 'pending') | list %}
+      {% for doc in flagged_docs %}
+      <div class="card mb-2 border-{% if doc.max_severity == 'high' %}danger{% elif doc.max_severity == 'medium' %}warning{% else %}secondary{% endif %}"
+           id="doc-{{ doc.id }}">
+        <div class="card-header d-flex justify-content-between align-items-center py-2">
+          <div>
+            <a href="{{ url_for('sales_doc', doc_base=doc.doc_base) }}"
+               class="fw-semibold text-decoration-none">{{ doc.doc_base }}</a>
+            <span class="text-muted small ms-2">{{ doc.customer or '—' }}</span>
+          </div>
+          <span class="badge bg-{% if doc.max_severity == 'high' %}danger{% elif doc.max_severity == 'medium' %}warning text-dark{% else %}secondary{% endif %}">
+            {% if doc.max_severity == 'high' %}สูง{% elif doc.max_severity == 'medium' %}กลาง{% else %}ต่ำ{% endif %}
+          </span>
+        </div>
+
+        <div class="card-body p-2 p-lg-3">
+          {# ── Flags list ── #}
+          {% for flag in doc.flags %}
+          <div class="d-flex align-items-start gap-2 mb-2">
+            <span class="badge bg-{% if flag.severity == 'high' %}danger{% elif flag.severity == 'medium' %}warning text-dark{% else %}secondary{% endif %} flex-shrink-0 mt-1">
+              {{ flag.rule_code }}
+            </span>
+            <div class="flex-grow-1">
+              <div class="small">{{ flag.message_th }}</div>
+              {# Rule-specific deep links #}
+              {% if flag.rule_code == 'R1_UNMAPPED' %}
+                <a href="{{ url_for('mapping') }}" class="small text-muted">→ ผูกรหัส BSN</a>
+              {% elif flag.rule_code in ('R2_BELOW_COST', 'R3_PRICE_DEVIATION', 'R5_PROMO_MISMATCH') %}
+                {# details_json has product_id only if R2/R5; R3 has none reliably — link to doc #}
+                <a href="{{ url_for('sales_doc', doc_base=doc.doc_base) }}" class="small text-muted">→ ดูบิล</a>
+              {% elif flag.rule_code == 'R4_UNUSUAL_UNIT' %}
+                <a href="{{ url_for('unit_conversions') }}" class="small text-muted">→ แปลงหน่วย</a>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+
+          {# ── Line table (collapsed by default) ── #}
+          {% if doc.line_count > 0 %}
+          <div>
+            <button class="btn btn-sm btn-outline-secondary mb-2"
+                    type="button"
+                    data-bs-toggle="collapse"
+                    data-bs-target="#lines-{{ doc.id }}"
+                    aria-expanded="false">
+              <i class="bi bi-list-ul me-1"></i>ดูรายการ ({{ doc.line_count }} บรรทัด)
+            </button>
+            <div class="collapse" id="lines-{{ doc.id }}">
+              <div class="table-responsive">
+                <table class="table table-sm table-bordered mb-0">
+                  <thead class="table-light">
+                    <tr>
+                      <th>เลขที่</th>
+                      <th>กฎ</th>
+                      <th>ข้อความ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for flag in doc.flags %}
+                    <tr>
+                      <td class="text-nowrap small">{{ flag.doc_no }}</td>
+                      <td><span class="badge bg-{% if flag.severity == 'high' %}danger{% elif flag.severity == 'medium' %}warning text-dark{% else %}secondary{% endif %}">{{ flag.rule_code }}</span></td>
+                      <td class="small">{{ flag.message_th }}</td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          {% endif %}
+
+          {# ── Mark buttons ── #}
+          <div class="d-flex gap-2 mt-3 flex-wrap">
+            {# ✓ ถูกต้อง #}
+            <form method="post"
+                  action="{{ url_for('review.mark_doc', doc_review_id=doc.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="batch_id" value="{{ batch_id }}">
+              <input type="hidden" name="status" value="ok">
+              <input type="hidden" name="note" value="">
+              <button type="submit"
+                      class="btn btn-success btn-touch px-4">
+                <i class="bi bi-check-lg me-1"></i>ถูกต้อง
+              </button>
+            </form>
+
+            {# ✗ ผิด — note required, uses Bootstrap collapse #}
+            <div>
+              <button class="btn btn-danger btn-touch px-4"
+                      type="button"
+                      data-bs-toggle="collapse"
+                      data-bs-target="#note-form-{{ doc.id }}"
+                      aria-expanded="false">
+                <i class="bi bi-x-lg me-1"></i>ผิด
+              </button>
+              <div class="collapse mt-2" id="note-form-{{ doc.id }}">
+                <form method="post"
+                      action="{{ url_for('review.mark_doc', doc_review_id=doc.id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="batch_id" value="{{ batch_id }}">
+                  <input type="hidden" name="status" value="wrong">
+                  <div class="mb-2">
+                    <textarea name="note"
+                              class="form-control"
+                              rows="2"
+                              placeholder="ระบุสิ่งที่ผิด เช่น ราคาผิด / หน่วยผิด"
+                              required></textarea>
+                  </div>
+                  <button type="submit" class="btn btn-danger btn-block-mobile">
+                    ยืนยัน — ผิด
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+      {% endfor %}{# end flagged_docs #}
+
+      {# ── Reviewed docs (collapsed section) ── #}
+      {% set reviewed_docs = docs | selectattr('review_status', 'ne', 'pending') | selectattr('review_status', 'ne', 'auto_passed') | list %}
+      {% if reviewed_docs %}
+      <div class="mb-2">
+        <button class="btn btn-sm btn-link text-muted p-0 mb-2"
+                type="button"
+                data-bs-toggle="collapse"
+                data-bs-target="#reviewed-{{ date_iso | replace('-','') }}">
+          <i class="bi bi-chevron-down me-1"></i>บิลที่ตรวจแล้ว {{ reviewed_docs | length }} ใบ
+        </button>
+        <div class="collapse" id="reviewed-{{ date_iso | replace('-','') }}">
+          {% for doc in reviewed_docs %}
+          <div class="card mb-2 border-{% if doc.review_status == 'ok' %}success{% else %}danger{% endif %} opacity-75"
+               id="doc-{{ doc.id }}">
+            <div class="card-body py-2 px-3 d-flex justify-content-between align-items-center">
+              <div>
+                <a href="{{ url_for('sales_doc', doc_base=doc.doc_base) }}"
+                   class="fw-semibold text-decoration-none">{{ doc.doc_base }}</a>
+                <span class="text-muted small ms-2">{{ doc.customer or '—' }}</span>
+                {% if doc.note %}
+                  <div class="small text-muted mt-1">{{ doc.note }}</div>
+                {% endif %}
+                <div class="small text-muted">
+                  โดย {{ doc.reviewed_by or '—' }}
+                  {% if doc.reviewed_at %} · {{ doc.reviewed_at[:16] }}{% endif %}
+                </div>
+              </div>
+              <span class="badge bg-{% if doc.review_status == 'ok' %}success{% else %}danger{% endif %}">
+                {% if doc.review_status == 'ok' %}ถูกต้อง{% else %}ผิด{% endif %}
+              </span>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      {# ── Auto-passed docs (one-line summary + collapse) ── #}
+      {% set clean_docs = docs | selectattr('review_status', 'equalto', 'auto_passed') | list %}
+      {% if clean_docs %}
+      <div class="mb-3">
+        <button class="btn btn-sm btn-link text-muted p-0"
+                type="button"
+                data-bs-toggle="collapse"
+                data-bs-target="#clean-{{ date_iso | replace('-','') }}">
+          <i class="bi bi-chevron-down me-1"></i>บิลผ่านอัตโนมัติ {{ clean_docs | length }} ใบ
+        </button>
+        <div class="collapse" id="clean-{{ date_iso | replace('-','') }}">
+          <div class="list-group list-group-flush mt-1">
+            {% for doc in clean_docs %}
+            <a href="{{ url_for('sales_doc', doc_base=doc.doc_base) }}"
+               class="list-group-item list-group-item-action py-1 px-2 small d-flex justify-content-between">
+              <span>{{ doc.doc_base }}</span>
+              <span class="text-muted">{{ doc.customer or '—' }}</span>
+            </a>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+    {% endfor %}{# end date loop #}
+  {% endif %}{# end if review #}
+
+</div>
+{% endblock %}
