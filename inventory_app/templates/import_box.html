@@ -18,10 +18,10 @@
               {% if r.ok %}
                 <span class="text-success fw-600"><i class="bi bi-check-lg"></i> {{ r.label }}</span>
                 <span class="text-subtle small font-mono">{{ r.summary }}</span>
-                {% if r.review_batch_id %}
-                <a href="{{ url_for('review.batch_view', batch_id=r.review_batch_id) }}"
+                {% if r.review_flagged %}
+                <a href="{{ url_for('review.index') }}"
                    class="btn btn-sm btn-outline-warning ms-2">
-                  <i class="bi bi-clipboard-check me-1"></i>ไปตรวจบิล{% if r.review_flagged %} ({{ r.review_flagged }} ใบ){% endif %}
+                  <i class="bi bi-clipboard-check me-1"></i>ไปตรวจบิล ({{ r.review_flagged }} ใบ)
                 </a>
                 {% endif %}
               {% else %}

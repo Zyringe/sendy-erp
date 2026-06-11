@@ -1,55 +1,91 @@
 {% extends "base.html" %}
-{% block title %}ตรวจบิล — รายการนำเข้า{% endblock %}
+{% block title %}ตรวจบิล — รายการน่าสงสัย{% endblock %}
 {% block page_title %}ตรวจบิล{% endblock %}
 
 {% block content %}
 <div class="container-fluid px-2 px-lg-4 mt-3">
 
-  {% if not batches %}
-    <div class="alert alert-info">
-      <i class="bi bi-info-circle me-2"></i>
-      ยังไม่มีข้อมูลนำเข้าบิล กรุณา
-      <a href="{{ url_for('unified_import') }}">นำเข้าข้อมูล</a> ก่อน
+  {# ── toolbar ── #}
+  <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+    <form method="post" action="{{ url_for('review.scan') }}" class="d-inline">
+      <button type="submit" class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-arrow-clockwise me-1"></i>สแกนใหม่
+      </button>
+    </form>
+    {% if show_all %}
+      <a href="{{ url_for('review.index') }}" class="btn btn-sm btn-link p-0 text-muted">
+        ดู 6 เดือนล่าสุด
+      </a>
+    {% else %}
+      <a href="{{ url_for('review.index', all=1) }}" class="btn btn-sm btn-link p-0 text-muted">
+        ดูทั้งหมด
+      </a>
+    {% endif %}
+    {% if feed %}
+      <span class="ms-auto text-muted small">{{ feed|length }} ใบน่าสงสัย</span>
+    {% endif %}
+  </div>
+
+  {# ── empty state ── #}
+  {% if not feed %}
+    <div class="alert alert-success d-flex align-items-center gap-2">
+      <i class="bi bi-check-circle-fill"></i>
+      <span>ไม่พบบิลน่าสงสัย{% if not show_all %} ใน 6 เดือนล่าสุด{% endif %}</span>
     </div>
   {% else %}
-    <table class="table table-mobile-cards">
-      <thead>
-        <tr>
-          <th>ไฟล์</th>
-          <th class="text-end d-none d-lg-table-cell">นำเข้าเมื่อ</th>
-          <th class="text-end">ความคืบหน้า</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for b in batches %}
-        <tr>
-          <td class="td-primary">{{ b.filename }}</td>
-          <td class="text-end d-none d-lg-table-cell" data-label="นำเข้าเมื่อ">
-            {{ b.imported_at[:10] if b.imported_at else '—' }}
-          </td>
-          <td class="text-end" data-label="ความคืบหน้า">
-            {% if b.docs_total == 0 %}
-              <span class="text-muted small">ยังไม่ได้สแกน</span>
-            {% else %}
-              {% set done = b.docs_ok + b.docs_wrong + b.docs_auto_passed %}
-              <span class="badge bg-secondary">{{ done }}/{{ b.docs_total }}</span>
-              {% if b.docs_pending > 0 %}
-                <span class="badge bg-warning text-dark ms-1">รอ {{ b.docs_pending }}</span>
-              {% endif %}
-              {% if b.docs_wrong > 0 %}
-                <span class="badge bg-danger ms-1">ผิด {{ b.docs_wrong }}</span>
-              {% endif %}
-            {% endif %}
-          </td>
-          <td class="td-actions">
-            <a href="{{ url_for('review.batch_view', batch_id=b.id) }}"
-               class="btn btn-sm btn-outline-primary">ตรวจ</a>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+
+  {# ── document list ── #}
+  {% for doc in feed %}
+    {% set sev = doc.max_severity %}
+    {% set sev_cls = 'danger' if sev == 'high' else ('warning' if sev == 'medium' else 'info') %}
+    <div class="card mb-2 border-{{ sev_cls }} border-start border-3 border-top-0 border-bottom-0 border-end-0">
+      <div class="card-body py-2 px-3">
+
+        {# header row #}
+        <div class="d-flex flex-wrap align-items-baseline gap-2 mb-1">
+          <span class="fw-semibold">{{ doc.doc_base }}</span>
+          <span class="text-muted small">{{ doc.date_iso }}</span>
+          {% if doc.customer %}
+            <span class="text-muted small">{{ doc.customer }}</span>
+          {% endif %}
+          <span class="ms-auto badge
+            {% if sev == 'high' %}bg-danger
+            {% elif sev == 'medium' %}bg-warning text-dark
+            {% else %}bg-info text-dark{% endif %}">
+            {{ 'สูง' if sev == 'high' else ('กลาง' if sev == 'medium' else 'ต่ำ') }}
+          </span>
+        </div>
+
+        {# flags #}
+        <ul class="list-unstyled mb-0 small">
+          {% for fl in doc.flags %}
+            <li class="d-flex align-items-start gap-1 mb-1">
+              <span class="badge flex-shrink-0
+                {% if fl.severity == 'high' %}bg-danger
+                {% elif fl.severity == 'medium' %}bg-warning text-dark
+                {% else %}bg-secondary{% endif %} mt-1">
+                {{ fl.rule_code }}
+              </span>
+              <span>
+                {{ fl.message_th }}
+                {% if fl.doc_no and fl.doc_no != doc.doc_base %}
+                  <span class="text-muted">({{ fl.doc_no }})</span>
+                {% endif %}
+              </span>
+            </li>
+          {% endfor %}
+        </ul>
+
+        {# free goods note #}
+        {% if doc.free_goods_note %}
+          <div class="text-muted small mt-1">
+            <i class="bi bi-gift me-1"></i>{{ doc.free_goods_note }}
+          </div>
+        {% endif %}
+
+      </div>
+    </div>
+  {% endfor %}
   {% endif %}
 
 </div>

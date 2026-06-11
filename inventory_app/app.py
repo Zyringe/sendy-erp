@@ -197,7 +197,7 @@ _STAFF_POST_OK = frozenset([
     'admin_exit_simulate',
     'conversion_new', 'conversion_pair', 'conversion_edit', 'conversion_run', 'conversion_delete',
     'api_product_barcodes',
-    'review.mark_doc', 'review.rescan',
+    'review.scan',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'customer_reassign', 'customer_bulk_reassign',
@@ -469,7 +469,7 @@ def inject_auth():
         'simulating_as': role if real_role else None,
         'real_role':     real_role,
         'alert_count':   models.count_stock_alerts(),
-        'pending_review_count': rr.pending_review_count(),
+        'suspicious_count': rr.suspicious_count(since_date=rr.default_since()),
         'db_routes_enabled': session.get('db_routes_enabled', False),
         'pending_suggestions_count': models.count_pending_suggestions(),
         'active_module': active_module,
@@ -1399,7 +1399,7 @@ def import_weekly_confirm():
     _review_flagged = 0
     if kind == 'sales' and stats.get('batch_id'):
         try:
-            scan = rr.scan_batch(stats['batch_id'])
+            scan = rr.scan_after_import(stats['batch_id'])
             _review_flagged = scan.get('docs_flagged', 0)
         except Exception as _scan_exc:
             flash(f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}', 'warning')
@@ -3172,8 +3172,7 @@ def unified_import_confirm():
                 bid = (out.get('summary') or {}).get('batch_id')
                 if bid:
                     try:
-                        scan = rr.scan_batch(bid)
-                        result_row['review_batch_id'] = bid
+                        scan = rr.scan_after_import(bid)
                         result_row['review_flagged'] = scan.get('docs_flagged', 0)
                     except Exception as _scan_exc:
                         flash(f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}', 'warning')

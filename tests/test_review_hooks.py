@@ -1,13 +1,14 @@
-"""P5 review-hooks end-to-end test.
+"""Review-hooks end-to-end tests (v2 — scan_after_import API).
 
-Synthesizes a minimal sales fixture (not real data) → scan_batch → asserts
-flags exist + pending_review_count > 0.  No Flask client needed here — the
-hook is tested at the module layer; import_box/dashboard are template-level
-and covered by the existing bp_review route tests.
+Synthesizes a minimal sales fixture → scan_after_import → asserts
+flags exist + suspicious_count > 0.  Also exercises the unified_import_confirm
+wiring to verify the scan hook fires and the result page shows the review link.
 """
+import os
+os.environ.setdefault('SKIP_DB_INIT', '1')
+
 import sqlite3
 import sys
-import os
 
 import pytest
 
@@ -76,36 +77,29 @@ def _make_db(tmp_path):
             qty_label TEXT,
             price REAL
         );
+        -- v2 schema: doc_base PK, no review_status, no batch_id
         CREATE TABLE txn_review_docs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_id INTEGER NOT NULL,
-            doc_base TEXT NOT NULL,
-            date_iso TEXT NOT NULL,
-            customer TEXT, customer_code TEXT,
-            line_count INTEGER NOT NULL DEFAULT 0,
-            flag_count INTEGER NOT NULL DEFAULT 0,
-            max_severity TEXT,
-            flags_fingerprint TEXT,
-            review_status TEXT NOT NULL DEFAULT 'pending'
-                CHECK (review_status IN ('pending','ok','wrong','auto_passed')),
-            reviewed_by TEXT, reviewed_at TEXT, note TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-            UNIQUE(batch_id, doc_base)
+            doc_base        TEXT PRIMARY KEY,
+            date_iso        TEXT NOT NULL,
+            customer        TEXT,
+            customer_code   TEXT,
+            line_count      INTEGER NOT NULL DEFAULT 0,
+            flag_count      INTEGER NOT NULL DEFAULT 0,
+            max_severity    TEXT,
+            free_goods_note TEXT,
+            scanned_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
         CREATE TABLE txn_review_flags (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            doc_review_id INTEGER NOT NULL,
-            batch_id INTEGER NOT NULL,
+            doc_base TEXT NOT NULL REFERENCES txn_review_docs(doc_base) ON DELETE CASCADE,
             txn_id INTEGER,
             doc_no TEXT NOT NULL,
             rule_code TEXT NOT NULL,
-            severity TEXT NOT NULL,
+            severity TEXT NOT NULL CHECK (severity IN ('high','medium','low')),
             message_th TEXT NOT NULL,
             details_json TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
-        CREATE INDEX idx_txn_review_docs_batch ON txn_review_docs(batch_id, review_status);
-        CREATE INDEX idx_txn_review_flags_doc ON txn_review_flags(doc_review_id);
     """)
     conn.commit()
     conn.close()
@@ -133,10 +127,10 @@ def _seed_sales_batch(db_path):
     return 1  # batch_id
 
 
-# ── tests ─────────────────────────────────────────────────────────────────────
+# ── engine-layer tests ────────────────────────────────────────────────────────
 
-def test_scan_batch_flags_unmapped(tmp_path, monkeypatch):
-    """scan_batch on a batch with an unmapped line produces docs_flagged >= 1."""
+def test_scan_after_import_flags_unmapped(tmp_path, monkeypatch):
+    """scan_after_import on a batch with an unmapped line produces docs_flagged >= 1."""
     db_path = _make_db(tmp_path)
     batch_id = _seed_sales_batch(db_path)
 
@@ -144,14 +138,14 @@ def test_scan_batch_flags_unmapped(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'DATABASE_PATH', db_path)
     import review_rules as rr
 
-    result = rr.scan_batch(batch_id, db_path=db_path)
+    result = rr.scan_after_import(batch_id, db_path=db_path)
 
     assert result['docs_flagged'] >= 1
-    assert result['docs_total'] >= 1
+    assert result['docs_scanned'] >= 1
 
 
-def test_pending_review_count_after_scan(tmp_path, monkeypatch):
-    """pending_review_count() > 0 after a batch with flagged docs is scanned."""
+def test_suspicious_count_after_scan(tmp_path, monkeypatch):
+    """suspicious_count() > 0 after a batch with flagged docs is scanned."""
     db_path = _make_db(tmp_path)
     batch_id = _seed_sales_batch(db_path)
 
@@ -159,14 +153,14 @@ def test_pending_review_count_after_scan(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'DATABASE_PATH', db_path)
     import review_rules as rr
 
-    rr.scan_batch(batch_id, db_path=db_path)
-    count = rr.pending_review_count(db_path=db_path)
+    rr.scan_after_import(batch_id, db_path=db_path)
+    count = rr.suspicious_count(db_path=db_path)
 
     assert count > 0
 
 
-def test_scan_batch_never_raises_on_empty_batch(tmp_path, monkeypatch):
-    """scan_batch on a batch with no lines returns zeros (no crash)."""
+def test_scan_after_import_never_raises_on_empty_batch(tmp_path, monkeypatch):
+    """scan_after_import on a batch with no lines returns zeros (no crash)."""
     db_path = _make_db(tmp_path)
     conn = sqlite3.connect(db_path)
     conn.execute("INSERT INTO import_log (id, filename, notes) VALUES (99,'empty.csv','sales')")
@@ -177,23 +171,17 @@ def test_scan_batch_never_raises_on_empty_batch(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'DATABASE_PATH', db_path)
     import review_rules as rr
 
-    result = rr.scan_batch(99, db_path=db_path)
-    assert result['docs_total'] == 0
+    result = rr.scan_after_import(99, db_path=db_path)
+    assert result['docs_scanned'] == 0
     assert result['docs_flagged'] == 0
 
 
 # ── route-level hook tests ────────────────────────────────────────────────────
-# These exercise the actual unified_import_confirm wiring (the part P5 added),
-# not just the rr functions. commit_file + scan_batch are monkeypatched so the
-# test targets the hook logic without depending on the BSN parser. The key
-# property — a scan failure must NOT turn a committed sales import into a failed
-# one (it's caught as a warning, after commit) — is otherwise untested.
 from io import BytesIO
 
 
 def _payments_in_file():
-    """Header-only cp874 report so /import-data detects + stages a file. The
-    confirm step forces type_0='sales' to drive the sales hook regardless."""
+    """Header-only cp874 report so /import-data detects + stages a file."""
     body = (
         '"(BSN)บจก.บุญสวัสดิ์นำชัย                หน้า   :        1"\n'
         '"  รายงานการรับชำระหนี้ เรียงตามวันที่ของใบเสร็จ"\n'
@@ -204,7 +192,9 @@ def _payments_in_file():
 
 
 @pytest.fixture
-def admin_client(tmp_db):
+def admin_client(tmp_db, monkeypatch):
+    import models as _models
+    monkeypatch.setattr(_models, 'count_pending_suggestions', lambda: 0)
     from app import app as flask_app
     flask_app.config['TESTING'] = True
     c = flask_app.test_client()
@@ -224,16 +214,16 @@ def _stage_and_token(client):
 
 
 def test_sales_import_triggers_scan_and_links(admin_client, monkeypatch):
-    """A committed sales import calls scan_batch with its batch_id and renders
-    the 'ไปตรวจบิล' link with the flagged count."""
+    """A committed sales import calls scan_after_import with its batch_id and
+    renders the 'ไปตรวจบิล' link with the flagged count."""
     import import_router
     import review_rules
     monkeypatch.setattr(import_router, 'commit_file',
                         lambda *a, **k: {'summary': {'batch_id': 777}})
     calls = []
-    monkeypatch.setattr(review_rules, 'scan_batch',
+    monkeypatch.setattr(review_rules, 'scan_after_import',
                         lambda bid, *a, **k: calls.append(bid) or
-                        {'docs_flagged': 2, 'docs_clean': 0, 'docs_total': 2})
+                        {'docs_flagged': 2, 'docs_scanned': 2})
 
     token = _stage_and_token(admin_client)
     resp = admin_client.post('/import-data/confirm',
@@ -241,14 +231,14 @@ def test_sales_import_triggers_scan_and_links(admin_client, monkeypatch):
     body = resp.data.decode('utf-8')
 
     assert resp.status_code == 200
-    assert calls == [777], 'scan_batch must be called once with the sales batch_id'
-    assert 'ไปตรวจบิล' in body            # the result-row button rendered
-    assert '(2 ใบ)' in body               # the flagged count surfaced
+    assert calls == [777], 'scan_after_import must be called once with the sales batch_id'
+    assert 'ไปตรวจบิล' in body
+    assert '2 ใบ' in body
 
 
 def test_scan_failure_does_not_fail_the_import(admin_client, monkeypatch):
-    """If scan_batch raises, the sales import still succeeds (it committed before
-    the scan) — the error is an inner warning, NOT a per-file failure."""
+    """If scan_after_import raises, the sales import still succeeds — the error
+    is caught as an inner warning, NOT a per-file failure."""
     import import_router
     import review_rules
     monkeypatch.setattr(import_router, 'commit_file',
@@ -256,7 +246,7 @@ def test_scan_failure_does_not_fail_the_import(admin_client, monkeypatch):
 
     def _boom(*a, **k):
         raise RuntimeError('BOOM_SCAN_FAIL')
-    monkeypatch.setattr(review_rules, 'scan_batch', _boom)
+    monkeypatch.setattr(review_rules, 'scan_after_import', _boom)
 
     token = _stage_and_token(admin_client)
     resp = admin_client.post('/import-data/confirm',
@@ -265,7 +255,4 @@ def test_scan_failure_does_not_fail_the_import(admin_client, monkeypatch):
 
     assert resp.status_code == 200
     assert 'ผลการนำเข้า' in body
-    # The warning flash carries the prefix → proves the INNER except caught it.
-    # If the OUTER per-file except had caught it, the row would show the bare
-    # 'BOOM_SCAN_FAIL' as a file error and the import would read as failed.
     assert 'สแกนตรวจบิลไม่สำเร็จ: BOOM_SCAN_FAIL' in body

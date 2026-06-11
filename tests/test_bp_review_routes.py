@@ -1,15 +1,12 @@
-"""Route-level integration tests for bp_review (ตรวจบิล review UI).
+"""Route-level integration tests for bp_review v2 (ตรวจบิล read-only feed).
 
 Covers:
-  - Anonymous → login redirect (GET and POST)
-  - GET /review → redirect to latest batch or batches list
-  - GET /review/batches → 200
-  - GET /review/batch/<id> with seeded data → 200, shows doc_base
-  - Staff POST mark_doc → in _STAFF_POST_OK (passes whitelist)
-  - POST status=wrong without note → rejected with Thai message
-  - POST status=wrong with note → OK
-  - POST status=ok → OK
-  - POST rescan → staff-allowed, runs scan_batch
+  - Anonymous GET /review → login redirect
+  - Anonymous POST /review/scan → login redirect
+  - GET /review → 200, shows seeded flagged doc_base
+  - GET /review?all=1 → 200
+  - Staff POST /review/scan → allowed (whitelist); redirects to /review
+  - Admin POST /review/scan → allowed; redirects to /review
 
 Pattern mirrors tests/test_bp_mobile_routes.py.
 """
@@ -23,31 +20,34 @@ import pytest
 # ── Seed helpers ─────────────────────────────────────────────────────────────
 
 def _seed_review_data(db_path):
-    """Insert minimal import_log + txn_review_docs + txn_review_flags rows.
+    """Upgrade review tables to v2 schema (mig 099) and insert one flagged doc.
 
-    No real sales_transactions are inserted — the review GET routes only read
-    from txn_review_docs/txn_review_flags (scan_batch reads sales_transactions,
-    but the rescan test just verifies it runs without crashing on an empty batch).
+    The live DB the test fixtures copy has the v1 schema (098), so we apply
+    migration 099 first to get the v2 doc_base-PK tables before seeding.
     """
+    mig_path = os.path.join(
+        os.path.dirname(__file__), '..', 'data', 'migrations',
+        '099_txn_review_v2.sql',
+    )
     conn = sqlite3.connect(db_path, timeout=10)
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("""
-        INSERT OR IGNORE INTO import_log
-            (id, filename, rows_imported, rows_skipped, notes, imported_at)
-        VALUES (9999, 'test_sales.csv', 5, 0, 'sales', '2026-06-01 10:00:00')
-    """)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DROP TABLE IF EXISTS txn_review_flags")
+    conn.execute("DROP TABLE IF EXISTS txn_review_docs")
+    conn.commit()
+    with open(mig_path, 'r', encoding='utf-8') as f:
+        conn.executescript(f.read())
+    conn.execute("PRAGMA foreign_keys = OFF")  # executescript re-enables FK; turn off again
     conn.execute("""
         INSERT OR IGNORE INTO txn_review_docs
-            (id, batch_id, doc_base, date_iso, customer, customer_code,
-             line_count, flag_count, max_severity, review_status)
-        VALUES (8888, 9999, 'IV9900001', '2026-06-01', 'ร้านทดสอบ', 'T001',
-                3, 1, 'high', 'pending')
+            (doc_base, date_iso, customer, customer_code,
+             line_count, flag_count, max_severity)
+        VALUES ('IV9900001', '2026-06-01', 'ร้านทดสอบ', 'T001', 3, 1, 'high')
     """)
     conn.execute("""
         INSERT OR IGNORE INTO txn_review_flags
-            (id, doc_review_id, batch_id, doc_no, rule_code, severity, message_th)
-        VALUES (7777, 8888, 9999, 'IV9900001-1', 'R1_UNMAPPED', 'high',
-                'ยังไม่ได้ผูกสินค้า — รหัส BSN TEST123 (ทดสอบ)')
+            (doc_base, doc_no, rule_code, severity, message_th)
+        VALUES ('IV9900001', 'IV9900001-1', 'R1_UNMAPPED', 'high',
+                'ยังไม่ได้ผูกสินค้า — รหัส BSN TEST123')
     """)
     conn.commit()
     conn.close()
@@ -55,41 +55,43 @@ def _seed_review_data(db_path):
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
+def _make_client(tmp_db, monkeypatch, role=None):
+    """Create a Flask test client with seeded review data and optional session role.
+
+    Monkeypatches models.count_pending_suggestions to return 0 so the context
+    processor doesn't trip on a table that may not exist in the schema-cloned
+    test DB (it's unrelated to what these route tests exercise).
+    """
+    _seed_review_data(tmp_db)
+    import models as _models
+    monkeypatch.setattr(_models, 'count_pending_suggestions', lambda: 0)
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    if role:
+        with c.session_transaction() as sess:
+            sess['user_id']  = 1 if role == 'admin' else 2
+            sess['username'] = f'test-{role}'
+            sess['role']     = role
+    return c
+
+
 @pytest.fixture
-def review_client(tmp_db):
+def review_client(tmp_db, monkeypatch):
     """Admin test client with seeded review data."""
-    _seed_review_data(tmp_db)
-    from app import app as flask_app
-    flask_app.config['TESTING'] = True
-    c = flask_app.test_client()
-    with c.session_transaction() as sess:
-        sess['user_id']  = 1
-        sess['username'] = 'test-admin'
-        sess['role']     = 'admin'
-    return c
+    return _make_client(tmp_db, monkeypatch, role='admin')
 
 
 @pytest.fixture
-def staff_client(tmp_db):
+def staff_client(tmp_db, monkeypatch):
     """Staff-role test client with seeded review data."""
-    _seed_review_data(tmp_db)
-    from app import app as flask_app
-    flask_app.config['TESTING'] = True
-    c = flask_app.test_client()
-    with c.session_transaction() as sess:
-        sess['user_id']  = 2
-        sess['username'] = 'test-staff'
-        sess['role']     = 'staff'
-    return c
+    return _make_client(tmp_db, monkeypatch, role='staff')
 
 
 @pytest.fixture
-def anon_client(tmp_db):
-    """Unauthenticated test client with seeded data."""
-    _seed_review_data(tmp_db)
-    from app import app as flask_app
-    flask_app.config['TESTING'] = True
-    return flask_app.test_client()
+def anon_client(tmp_db, monkeypatch):
+    """Unauthenticated test client."""
+    return _make_client(tmp_db, monkeypatch, role=None)
 
 
 # ── GET route tests ──────────────────────────────────────────────────────────
@@ -101,98 +103,36 @@ def test_review_index_anon_redirects_to_login(anon_client):
     assert '/login' in resp.headers['Location']
 
 
-def test_review_index_redirects_to_batch_or_list(review_client):
-    """/review redirect to either latest batch or /review/batches."""
-    resp = review_client.get('/review', follow_redirects=False)
-    assert resp.status_code == 302
-    loc = resp.headers['Location']
-    assert '/review' in loc  # /review/batch/... or /review/batches
-
-
-def test_review_batches_renders(review_client):
-    """/review/batches returns 200."""
-    resp = review_client.get('/review/batches')
-    assert resp.status_code == 200, resp.data[:500]
-
-
-def test_review_batch_renders_flagged_doc(review_client):
-    """/review/batch/<id> renders and shows the seeded flagged doc."""
-    resp = review_client.get('/review/batch/9999')
+def test_review_index_renders_feed(review_client):
+    """GET /review → 200, shows the seeded flagged doc."""
+    resp = review_client.get('/review')
     assert resp.status_code == 200, resp.data[:500]
     assert b'IV9900001' in resp.data
 
 
-def test_review_batch_not_found_returns_200(review_client):
-    """/review/batch for an unknown batch still renders (empty state)."""
-    resp = review_client.get('/review/batch/1')
+def test_review_index_all_renders(review_client):
+    """GET /review?all=1 → 200."""
+    resp = review_client.get('/review?all=1')
     assert resp.status_code == 200, resp.data[:500]
 
 
-# ── POST whitelist / auth tests ──────────────────────────────────────────────
+# ── POST scan tests ──────────────────────────────────────────────────────────
 
-def test_mark_doc_anon_redirects_to_login(anon_client):
-    """Anonymous POST mark_doc → login redirect."""
-    resp = anon_client.post('/review/doc/8888',
-                            data={'status': 'ok'},
-                            follow_redirects=False)
+def test_review_scan_anon_redirects_to_login(anon_client):
+    """Anonymous POST /review/scan → login redirect."""
+    resp = anon_client.post('/review/scan', follow_redirects=False)
     assert resp.status_code == 302
     assert '/login' in resp.headers['Location']
 
 
-def test_rescan_anon_redirects_to_login(anon_client):
-    """Anonymous POST rescan → login redirect."""
-    resp = anon_client.post('/review/batch/9999/rescan',
-                            follow_redirects=False)
+def test_review_scan_staff_is_allowed(staff_client):
+    """Staff can POST /review/scan (endpoint is in _STAFF_POST_OK)."""
+    resp = staff_client.post('/review/scan', follow_redirects=True)
+    assert resp.status_code == 200
+
+
+def test_review_scan_redirects_to_index(review_client):
+    """POST /review/scan → 302 to /review."""
+    resp = review_client.post('/review/scan', follow_redirects=False)
     assert resp.status_code == 302
-    assert '/login' in resp.headers['Location']
-
-
-def test_mark_doc_staff_is_allowed(staff_client):
-    """Staff can POST mark_doc (endpoint is in _STAFF_POST_OK)."""
-    resp = staff_client.post('/review/doc/8888',
-                             data={'status': 'ok', 'note': '', 'batch_id': '9999'},
-                             follow_redirects=True)
-    assert resp.status_code == 200
-
-
-def test_rescan_staff_is_allowed(staff_client):
-    """Staff can POST rescan (endpoint is in _STAFF_POST_OK).
-
-    scan_batch on batch 9999 has no sales_transactions rows so it runs
-    cleanly and produces 0 docs — the rescan route flash + redirect = 200.
-    """
-    resp = staff_client.post('/review/batch/9999/rescan',
-                             follow_redirects=True)
-    assert resp.status_code == 200
-
-
-# ── mark_doc validation tests ────────────────────────────────────────────────
-
-def test_mark_doc_wrong_without_note_rejected(review_client):
-    """POST status=wrong with empty note is rejected with Thai message."""
-    resp = review_client.post('/review/doc/8888',
-                              data={'status': 'wrong', 'note': '',
-                                    'batch_id': '9999'},
-                              follow_redirects=True)
-    assert resp.status_code == 200
-    assert 'กรุณาระบุหมายเหตุ' in resp.data.decode('utf-8')
-
-
-def test_mark_doc_wrong_with_note_accepted(review_client):
-    """POST status=wrong with a non-empty note succeeds."""
-    resp = review_client.post('/review/doc/8888',
-                              data={'status': 'wrong', 'note': 'ราคาผิด',
-                                    'batch_id': '9999'},
-                              follow_redirects=True)
-    assert resp.status_code == 200
-    assert 'กรุณาระบุหมายเหตุ' not in resp.data.decode('utf-8')
-
-
-def test_mark_doc_ok_no_note_accepted(review_client):
-    """POST status=ok without note is valid."""
-    resp = review_client.post('/review/doc/8888',
-                              data={'status': 'ok', 'note': '',
-                                    'batch_id': '9999'},
-                              follow_redirects=True)
-    assert resp.status_code == 200
-    assert 'กรุณาระบุหมายเหตุ' not in resp.data.decode('utf-8')
+    assert '/review' in resp.headers['Location']
