@@ -11,6 +11,9 @@ This module parses the "Income" sheet and returns a list of settlement dicts:
 
 These are the confirmed transferred amounts per order.
 """
+import pandas as pd
+
+from parse_platform import _to_float
 
 
 class IncomeTransferError(ValueError):
@@ -42,14 +45,15 @@ def parse_shopee_income(df):
 
     result = []
     for _, row in df.iterrows():
-        order_sn = str(row[_COL_ORDER_SN]).strip()
-        if not order_sn or order_sn == 'nan':
+        order_sn_raw = row[_COL_ORDER_SN]
+        if pd.isna(order_sn_raw):
             continue
-        try:
-            actual_payout = float(str(row[_COL_PAYOUT]).replace(',', '') or 0)
-        except (ValueError, TypeError):
-            actual_payout = 0.0
-        settled_at = str(row[_COL_SETTLED_AT]).strip() if row[_COL_SETTLED_AT] else ''
+        order_sn = str(order_sn_raw).strip()
+        if not order_sn:
+            continue
+        payout_raw = row[_COL_PAYOUT]
+        actual_payout = 0.0 if pd.isna(payout_raw) else (_to_float(payout_raw) or 0.0)
+        settled_at = '' if pd.isna(row[_COL_SETTLED_AT]) else str(row[_COL_SETTLED_AT]).strip()
         result.append({
             'order_sn':      order_sn,
             'actual_payout': actual_payout,
