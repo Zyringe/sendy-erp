@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}ตรวจบิล — รายการนำเข้า{% endblock %}
+{% block page_title %}ตรวจบิล{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-2 px-lg-4 mt-3">
+
+  {% if not batches %}
+    <div class="alert alert-info">
+      <i class="bi bi-info-circle me-2"></i>
+      ยังไม่มีข้อมูลนำเข้าบิล กรุณา
+      <a href="{{ url_for('unified_import') }}">นำเข้าข้อมูล</a> ก่อน
+    </div>
+  {% else %}
+    <table class="table table-mobile-cards">
+      <thead>
+        <tr>
+          <th>ไฟล์</th>
+          <th class="text-end d-none d-lg-table-cell">นำเข้าเมื่อ</th>
+          <th class="text-end">ความคืบหน้า</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in batches %}
+        <tr>
+          <td class="td-primary">{{ b.filename }}</td>
+          <td class="text-end d-none d-lg-table-cell" data-label="นำเข้าเมื่อ">
+            {{ b.imported_at[:10] if b.imported_at else '—' }}
+          </td>
+          <td class="text-end" data-label="ความคืบหน้า">
+            {% if b.docs_total == 0 %}
+              <span class="text-muted small">ยังไม่ได้สแกน</span>
+            {% else %}
+              {% set done = b.docs_ok + b.docs_wrong + b.docs_auto_passed %}
+              <span class="badge bg-secondary">{{ done }}/{{ b.docs_total }}</span>
+              {% if b.docs_pending > 0 %}
+                <span class="badge bg-warning text-dark ms-1">รอ {{ b.docs_pending }}</span>
+              {% endif %}
+              {% if b.docs_wrong > 0 %}
+                <span class="badge bg-danger ms-1">ผิด {{ b.docs_wrong }}</span>
+              {% endif %}
+            {% endif %}
+          </td>
+          <td class="td-actions">
+            <a href="{{ url_for('review.batch_view', batch_id=b.id) }}"
+               class="btn btn-sm btn-outline-primary">ตรวจ</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+</div>
+{% endblock %}
