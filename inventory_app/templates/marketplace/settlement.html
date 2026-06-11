@@ -1,0 +1,96 @@
+{% extends 'base.html' %}
+{% block title %}Settlement Report — Shopee{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h4>Settlement Report — {{ platform | capitalize }}</h4>
+    <form method="post" action="{{ url_for('marketplace.settlement_import') }}"
+          enctype="multipart/form-data" class="d-flex gap-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="file" name="settlement_file" accept=".xlsx" class="form-control form-control-sm" required>
+      <button type="submit" class="btn btn-sm btn-primary">นำเข้า Settlement</button>
+    </form>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="alert alert-{{ cat }} alert-dismissible fade show">{{ msg }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>
+    {% endfor %}
+  {% endwith %}
+
+  {# ---- Settled batches ---- #}
+  {% if report.batches %}
+    <h5 class="mt-4">ยอดโอนแต่ละวัน (ใช้สำหรับ รับชำระหนี้ ใน Express)</h5>
+    {% for batch in report.batches %}
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between">
+        <strong>วันโอน: {{ batch.settled_at }}</strong>
+        <span class="text-success fw-bold">฿{{ '{:,.2f}'.format(batch.total_payout) }} รวม {{ batch.order_count }} ออเดอร์</span>
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Order ID</th>
+              <th class="text-end">ราคาขาย (฿)</th>
+              <th class="text-end">ค่าธรรมเนียม (฿)</th>
+              <th class="text-end text-success">ยอดโอนจริง (฿)</th>
+              <th>สถานะ</th>
+              <th>วันสั่ง</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for o in batch.orders %}
+            <tr>
+              <td><code>{{ o.order_sn }}</code></td>
+              <td class="text-end">{{ '{:,.2f}'.format(o.item_total or 0) }}</td>
+              <td class="text-end text-danger">{{ '{:,.2f}'.format(o.fee_diff or 0) }}</td>
+              <td class="text-end text-success fw-bold">{{ '{:,.2f}'.format(o.actual_payout or 0) }}</td>
+              <td><span class="badge bg-success">{{ o.status }}</span></td>
+              <td>{{ o.order_date[:10] if o.order_date else '' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          <tfoot class="table-light">
+            <tr>
+              <th>รวม {{ batch.order_count }} ออเดอร์</th>
+              <th class="text-end">฿{{ '{:,.2f}'.format(batch.orders | sum(attribute='item_total') or 0) }}</th>
+              <th class="text-end text-danger">฿{{ '{:,.2f}'.format(batch.orders | sum(attribute='fee_diff') or 0) }}</th>
+              <th class="text-end text-success">฿{{ '{:,.2f}'.format(batch.total_payout) }}</th>
+              <th colspan="2"></th>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div class="card-footer text-muted small">
+        👉 ไป Express → หน้าร้าน{{ 'S' if platform == 'shopee' else 'L' }} →
+        รับชำระหนี้ <strong>฿{{ '{:,.2f}'.format(batch.total_payout) }}</strong>
+        วันที่ <strong>{{ batch.settled_at }}</strong>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="alert alert-info">ยังไม่มี settlement data — กรุณา upload ไฟล์ Income Transfer ค่ะ</div>
+  {% endif %}
+
+  {# ---- Pending (not yet settled) ---- #}
+  {% if report.pending %}
+  <h5 class="mt-4 text-warning">รอรับเงิน {{ report.pending | length }} ออเดอร์ (ยังไม่มี settlement)</h5>
+  <table class="table table-sm table-bordered">
+    <thead class="table-warning">
+      <tr><th>Order ID</th><th class="text-end">ราคาขาย (฿)</th><th>สถานะ</th><th>วันสั่ง</th></tr>
+    </thead>
+    <tbody>
+      {% for o in report.pending %}
+      <tr>
+        <td><code>{{ o.order_sn }}</code></td>
+        <td class="text-end">{{ '{:,.2f}'.format(o.item_total or 0) }}</td>
+        <td>{{ o.status }}</td>
+        <td>{{ o.order_date[:10] if o.order_date else '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}
