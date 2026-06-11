@@ -1388,7 +1388,12 @@ def import_weekly_confirm():
     # ขาย/ซื้อ transaction file → per-doc idempotent diff import.
     entries = (parse_sales(pend['path']) if kind == 'sales'
                else parse_purchases(pend['path']))
-    stats = models.import_weekly(entries, kind, pend['filename'])
+    # Reversing lines that vanished from the source is opt-in (default OFF): a
+    # product-code/salesperson-FILTERED export yields partial invoices whose
+    # filtered-out lines would otherwise be mass-reversed. User ticks the box on
+    # the preview only when the file is a FULL export.
+    apply_removals = request.form.get('apply_removals') == 'on'
+    stats = models.import_weekly(entries, kind, pend['filename'], apply_removals=apply_removals)
     _review_flagged = 0
     if kind == 'sales' and stats.get('batch_id'):
         try:
@@ -1406,6 +1411,10 @@ def import_weekly_confirm():
         parts.append(f'นำเข้า/อัพเดท {stats["imported"]} รายการ')
     if stats['unchanged']:
         parts.append(f'เหมือนเดิม {stats["unchanged"]} รายการ')
+    if stats.get('removed'):
+        parts.append(f'ลบออก {stats["removed"]} รายการ (คืนสต็อก)')
+    if stats.get('removed_skipped'):
+        parts.append(f'ไม่ได้ลบ {stats["removed_skipped"]} รายการที่หายจากไฟล์ (ไม่ได้ติ๊ก)')
     if stats['skipped_dup']:
         parts.append(f'ข้าม {stats["skipped_dup"]} รายการ')
     if stats['new_unmapped']:
