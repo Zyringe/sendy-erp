@@ -390,6 +390,73 @@ class TestScanBatch:
         assert result['docs_total'] == 0
         assert result['flags_total'] == 0
 
+    def test_rescan_prunes_docs_removed_from_batch(self, tmp_path):
+        """Diff re-import can move a doc's lines OUT of an old batch.
+
+        Rescan of the old batch must DELETE the stale txn_review_docs row —
+        otherwise it survives as a ghost 'pending' doc with stale flag_count
+        that inflates pending_review_count() and batch progress forever.
+        """
+        db_path, conn = _make_db(tmp_path)
+        batch_id = _add_batch(conn)
+        _add_sales_row(conn, batch_id, "IV001-1", product_id=None)  # doc A → R1 pending
+        _add_sales_row(conn, batch_id, "IV002-1", product_id=None)  # doc B → R1 pending
+        conn.close()
+        rr = _import_rr(db_path)
+        rr.scan_batch(batch_id, db_path=db_path)
+        assert rr.pending_review_count(db_path=db_path) == 2
+
+        # Simulate the diff importer: doc B's lines leave batch N
+        # (deleted here; they would re-enter under a new batch_id)
+        c = sqlite3.connect(db_path)
+        c.execute(
+            "DELETE FROM sales_transactions WHERE batch_id=? AND doc_base='IV002'",
+            (batch_id,)
+        )
+        c.commit()
+        c.close()
+
+        rr.scan_batch(batch_id, db_path=db_path)
+
+        c = sqlite3.connect(db_path)
+        doc_bases = [r[0] for r in c.execute(
+            "SELECT doc_base FROM txn_review_docs WHERE batch_id=?",
+            (batch_id,)
+        ).fetchall()]
+        orphan_flags = c.execute(
+            "SELECT COUNT(*) FROM txn_review_flags WHERE batch_id=? AND doc_no LIKE 'IV002%'",
+            (batch_id,)
+        ).fetchone()[0]
+        c.close()
+        assert doc_bases == ['IV001']   # B pruned, A intact
+        assert orphan_flags == 0
+        assert rr.pending_review_count(db_path=db_path) == 1
+
+    def test_rescan_prunes_all_docs_when_batch_emptied(self, tmp_path):
+        """Empty current doc set edge: every line left the batch → all doc rows pruned."""
+        db_path, conn = _make_db(tmp_path)
+        batch_id = _add_batch(conn)
+        _add_sales_row(conn, batch_id, "IV001-1", product_id=None)
+        conn.close()
+        rr = _import_rr(db_path)
+        rr.scan_batch(batch_id, db_path=db_path)
+        assert rr.pending_review_count(db_path=db_path) == 1
+
+        c = sqlite3.connect(db_path)
+        c.execute("DELETE FROM sales_transactions WHERE batch_id=?", (batch_id,))
+        c.commit()
+        c.close()
+
+        result = rr.scan_batch(batch_id, db_path=db_path)
+        assert result['docs_total'] == 0
+        c = sqlite3.connect(db_path)
+        doc_count = c.execute(
+            "SELECT COUNT(*) FROM txn_review_docs WHERE batch_id=?", (batch_id,)
+        ).fetchone()[0]
+        c.close()
+        assert doc_count == 0
+        assert rr.pending_review_count(db_path=db_path) == 0
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # mark_doc
@@ -486,6 +553,38 @@ class TestGetBatchReview:
         flagged = [d for d in all_docs if d['flag_count'] > 0]
         assert len(flagged) == 1
         assert len(flagged[0]['flags']) > 0
+
+    def test_flags_ordered_high_severity_first(self, tmp_path):
+        """One medium + one high flag in a doc → high renders first.
+
+        Regression: ORDER BY severity DESC sorts STRINGS
+        ('medium' > 'low' > 'high'), pushing high-severity flags last.
+        """
+        db_path, conn = _make_db(tmp_path)
+        hist_batch = _add_batch(conn)
+        batch_id = _add_batch(conn)
+        _add_product(conn, 1, cost_price=10.0, base_sell_price=100.0)
+        # Global R3 history: 3 lines across >=2 doc_bases, median 100
+        for i in range(3):
+            _add_sales_row(conn, hist_batch, f"IVH{i+1}-1", product_id=1,
+                           unit="ตัว", unit_price=100.0,
+                           customer_code=f"H{i}", date_iso="2026-05-01")
+        # Doc IV001 line 1: sell 150 vs median 100 (+50%, >=฿2) → R3 medium
+        _add_sales_row(conn, batch_id, "IV001-1", product_id=1,
+                       unit="ตัว", unit_price=150.0, customer_code="C001")
+        # Doc IV001 line 2: unmapped → R1 high
+        _add_sales_row(conn, batch_id, "IV001-2", product_id=None)
+        conn.close()
+        rr = _import_rr(db_path)
+        rr.scan_batch(batch_id, db_path=db_path)
+        result = rr.get_batch_review(batch_id, db_path=db_path)
+        all_docs = []
+        for docs in result.values():
+            all_docs.extend(docs)
+        doc = next(d for d in all_docs if d['doc_base'] == 'IV001')
+        sevs = [f['severity'] for f in doc['flags']]
+        assert set(sevs) == {'high', 'medium'}, f"expected R1+R3 flags, got {sevs}"
+        assert sevs[0] == 'high', f"high severity must come first, got {sevs}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

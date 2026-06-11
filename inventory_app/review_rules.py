@@ -581,6 +581,22 @@ def scan_batch(batch_id: int,
                 ))
                 total_flags += 1
 
+        # Prune docs no longer present in this batch. The diff-based importer
+        # DELETEs changed lines from an old batch (they re-enter under a new
+        # batch_id), so a doc can vanish from batch N — without this prune its
+        # stale txn_review_docs row would survive as a ghost 'pending' doc
+        # inflating pending_review_count() and batch progress.
+        # Subquery = current doc set; emptied batch → prunes everything.
+        # (Flags were already deleted above while the stale doc rows existed.)
+        c.execute("""
+            DELETE FROM txn_review_docs
+            WHERE batch_id = ?
+              AND doc_base NOT IN (
+                  SELECT DISTINCT doc_base FROM sales_transactions
+                  WHERE batch_id = ? AND doc_base IS NOT NULL
+              )
+        """, (batch_id, batch_id))
+
         if conn is None:
             c.commit()
 
@@ -618,7 +634,11 @@ def get_batch_review(batch_id: int,
                        details_json, created_at
                 FROM txn_review_flags
                 WHERE doc_review_id=?
-                ORDER BY severity DESC, id
+                ORDER BY CASE severity
+                             WHEN 'high'   THEN 3
+                             WHEN 'medium' THEN 2
+                             ELSE 1
+                         END DESC, id
             """, (d['id'],)).fetchall()
             doc_dict = dict(d)
             doc_dict['flags'] = [dict(f) for f in flags]
