@@ -214,3 +214,79 @@ class TestEvaluateDoc:
         assert ev['max_severity'] == 'high'
         codes = {fl['rule_code'] for _, fl in ev['flags']}
         assert 'R2_BELOW_COST' in codes
+
+
+# ── Task 5: scan_all / scan_docs / scan_after_import ─────────────────────────
+
+class TestScanAll:
+    def test_scan_all_persists_only_suspicious(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        rr = _import_rr(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        _add_product(conn, 1, cost_price=100.0, base_sell_price=150.0)
+        _add_sales_row(conn, bid, "IVCLEAN", product_id=1, qty=1, unit="ตัว",
+                       unit_price=150, net=150)
+        _add_sales_row(conn, bid, "IVBAD",   product_id=None, qty=1, unit="ตัว",
+                       unit_price=10, net=10)
+        conn.commit()
+        res = rr.scan_all(db_path=db_path)
+        rows = [r[0] for r in sqlite3.connect(db_path).execute(
+            "SELECT doc_base FROM txn_review_docs"
+        )]
+        assert "IVBAD" in rows
+        assert "IVCLEAN" not in rows
+        assert res['docs_flagged'] == 1
+
+    def test_scan_all_idempotent(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        rr = _import_rr(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        _add_sales_row(conn, bid, "IVX", product_id=None, qty=1, unit="ตัว",
+                       unit_price=5, net=5)
+        conn.commit()
+        r1 = rr.scan_all(db_path=db_path)
+        r2 = rr.scan_all(db_path=db_path)
+        assert r1 == r2
+        n = sqlite3.connect(db_path).execute(
+            "SELECT COUNT(*) FROM txn_review_docs"
+        ).fetchone()[0]
+        assert n == 1
+
+    def test_scan_docs_removes_row_when_doc_becomes_clean(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        rr = _import_rr(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        _add_sales_row(conn, bid, "IVY", product_id=None, qty=1, unit="ตัว",
+                       unit_price=5, net=5)
+        conn.commit()
+        rr.scan_all(db_path=db_path)
+        conn.execute("UPDATE sales_transactions SET product_id=1 WHERE doc_base='IVY'")
+        _add_product(conn, 1, cost_price=1.0, base_sell_price=4.0)
+        conn.commit()
+        rr.scan_docs(["IVY"], db_path=db_path)
+        n = sqlite3.connect(db_path).execute(
+            "SELECT COUNT(*) FROM txn_review_docs WHERE doc_base='IVY'"
+        ).fetchone()[0]
+        assert n == 0
+
+    def test_scan_after_import_rescans_docs_in_batch(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        rr = _import_rr(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        _add_sales_row(conn, bid, "IVZ", product_id=None, qty=1, unit="ตัว",
+                       unit_price=5, net=5)
+        conn.commit()
+        res = rr.scan_after_import(bid, db_path=db_path)
+        assert res['docs_scanned'] == 1
+        n = sqlite3.connect(db_path).execute(
+            "SELECT COUNT(*) FROM txn_review_docs WHERE doc_base='IVZ'"
+        ).fetchone()[0]
+        assert n == 1

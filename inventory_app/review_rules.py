@@ -246,6 +246,111 @@ def _evaluate_doc(conn, lines: List[dict]) -> dict:
     }
 
 
+# ── Scan / persist (doc-level writes) ─────────────────────────────────────────
+
+_SALES_COLS = """s.id, s.batch_id, s.date_iso, s.doc_no, s.doc_base,
+    s.product_id, s.bsn_code, s.product_name_raw, s.customer, s.customer_code,
+    s.qty, s.unit, s.unit_price, s.vat_type, s.net, s.ref_invoice"""
+
+
+def _persist_doc(c, doc_base: str, lines: List[dict]) -> Optional[int]:
+    """Upsert suspicious doc + flags; delete the row if doc is now clean.
+
+    Returns flag count when suspicious, None when clean.
+    """
+    ev = _evaluate_doc(c, lines)
+    if ev['real_flag_count'] == 0:
+        c.execute("DELETE FROM txn_review_docs WHERE doc_base=?", (doc_base,))
+        return None
+    head = lines[0]
+    c.execute("""
+        INSERT INTO txn_review_docs
+            (doc_base, date_iso, customer, customer_code, line_count,
+             flag_count, max_severity, free_goods_note, scanned_at)
+        VALUES (?,?,?,?,?,?,?,?,datetime('now','localtime'))
+        ON CONFLICT(doc_base) DO UPDATE SET
+            date_iso=excluded.date_iso, customer=excluded.customer,
+            customer_code=excluded.customer_code, line_count=excluded.line_count,
+            flag_count=excluded.flag_count, max_severity=excluded.max_severity,
+            free_goods_note=excluded.free_goods_note, scanned_at=excluded.scanned_at
+    """, (doc_base, head.get('date_iso') or '', head.get('customer'),
+          head.get('customer_code'), ev['line_count'], ev['real_flag_count'],
+          ev['max_severity'], ev['free_goods_note']))
+    c.execute("DELETE FROM txn_review_flags WHERE doc_base=?", (doc_base,))
+    for line, fl in ev['flags']:
+        c.execute("""INSERT INTO txn_review_flags
+            (doc_base, txn_id, doc_no, rule_code, severity, message_th, details_json)
+            VALUES (?,?,?,?,?,?,?)""",
+            (doc_base, line.get('id'), line.get('doc_no') or '', fl['rule_code'],
+             fl['severity'], fl['message_th'], fl.get('details_json')))
+    return ev['real_flag_count']
+
+
+def _group_by_docbase(rows) -> dict:
+    docs = {}
+    for r in rows:
+        d = dict(r)
+        docs.setdefault(d['doc_base'], []).append(d)
+    return docs
+
+
+def scan_all(conn=None, db_path=None) -> dict:
+    """Full re-scan of the whole dataset. Writes suspicious-only rows."""
+    with _ConnCtx(conn, db_path) as c:
+        rows = c.execute(
+            f"SELECT {_SALES_COLS} FROM sales_transactions s"
+            " WHERE s.doc_base IS NOT NULL ORDER BY s.doc_base"
+        ).fetchall()
+        docs = _group_by_docbase(rows)
+        c.execute("DELETE FROM txn_review_docs")
+        flagged = 0
+        flags_total = 0
+        for doc_base, lines in docs.items():
+            n = _persist_doc(c, doc_base, lines)
+            if n is not None:
+                flagged += 1
+                flags_total += n
+        if conn is None:
+            c.commit()
+        return {'docs_scanned': len(docs), 'docs_flagged': flagged, 'flags_total': flags_total}
+
+
+def scan_docs(doc_bases, conn=None, db_path=None) -> dict:
+    """Incremental re-scan of specific doc_bases (upsert or remove each)."""
+    doc_bases = [d for d in (doc_bases or []) if d]
+    with _ConnCtx(conn, db_path) as c:
+        flagged = 0
+        flags_total = 0
+        for doc_base in doc_bases:
+            rows = c.execute(
+                f"SELECT {_SALES_COLS} FROM sales_transactions s"
+                " WHERE s.doc_base=? ORDER BY s.doc_no", (doc_base,)
+            ).fetchall()
+            if not rows:
+                c.execute("DELETE FROM txn_review_docs WHERE doc_base=?", (doc_base,))
+                continue
+            n = _persist_doc(c, doc_base, [dict(r) for r in rows])
+            if n is not None:
+                flagged += 1
+                flags_total += n
+        if conn is None:
+            c.commit()
+        return {'docs_scanned': len(doc_bases), 'docs_flagged': flagged, 'flags_total': flags_total}
+
+
+def scan_after_import(batch_id: int, conn=None, db_path=None) -> dict:
+    """Re-scan documents touched by an import batch (used by the import hooks)."""
+    with _ConnCtx(conn, db_path) as c:
+        rows = c.execute(
+            "SELECT DISTINCT doc_base FROM sales_transactions"
+            " WHERE batch_id=? AND doc_base IS NOT NULL", (batch_id,)
+        ).fetchall()
+        result = scan_docs([r['doc_base'] for r in rows], conn=c)
+        if conn is None:
+            c.commit()
+        return result
+
+
 # ── Row-level rule checks ─────────────────────────────────────────────────────
 
 def _check_row_rules(conn, row: dict) -> List[dict]:
