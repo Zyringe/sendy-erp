@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}ติดตั้งแอป Sendy{% endblock %}
+{% block page_title %}ติดตั้งแอป Sendy บนมือถือ{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-12 col-lg-6">
+
+    <p class="text-muted mb-4">
+      ติดตั้ง Sendy ลงหน้าจอโฮมเพื่อเปิดแอปเร็วขึ้น เหมือนแอปปกติ ไม่ต้องพิมพ์ URL ใหม่ทุกครั้ง
+    </p>
+
+    {# ── Android Chrome ── #}
+    <div class="card mb-4">
+      <div class="card-header fw-bold">
+        <i class="bi bi-android2 me-2 text-success"></i>Android — Chrome
+      </div>
+      <div class="card-body">
+        <ol class="mb-0" style="line-height:2">
+          <li>เปิด Sendy ใน <strong>Chrome</strong> บน Android</li>
+          <li>แตะเมนู <strong>⋮</strong> (มุมบนขวา)</li>
+          <li>เลือก <strong>"ติดตั้งแอป"</strong> หรือ <strong>"เพิ่มไปยังหน้าจอโฮม"</strong></li>
+          <li>แตะ <strong>ติดตั้ง</strong> เพื่อยืนยัน</li>
+          <li>ไอคอน Sendy จะปรากฏบนหน้าจอโฮมทันที</li>
+        </ol>
+      </div>
+    </div>
+
+    {# ── iPhone Safari ── #}
+    <div class="card mb-4">
+      <div class="card-header fw-bold">
+        <i class="bi bi-apple me-2"></i>iPhone — Safari
+      </div>
+      <div class="card-body">
+        <ol class="mb-0" style="line-height:2">
+          <li>เปิด Sendy ใน <strong>Safari</strong> บน iPhone (ต้องใช้ Safari เท่านั้น)</li>
+          <li>แตะปุ่ม <strong>แชร์</strong> <i class="bi bi-box-arrow-up"></i> (กลางแถบด้านล่าง)</li>
+          <li>เลื่อนลงแล้วเลือก <strong>"เพิ่มไปยังหน้าจอโฮม"</strong></li>
+          <li>แก้ชื่อ (ถ้าต้องการ) แล้วแตะ <strong>เพิ่ม</strong></li>
+          <li>ไอคอน Sendy จะปรากฏบนหน้าจอโฮม — เปิดแบบ Standalone ไม่มี address bar</li>
+        </ol>
+        <div class="alert alert-info mt-3 mb-0 small">
+          <i class="bi bi-info-circle me-1"></i>
+          iPhone อาจขอ Login ใหม่ครั้งแรกหลังติดตั้ง เป็นเรื่องปกติ เกิดจาก cookie sandbox ของ Safari
+        </div>
+      </div>
+    </div>
+
+    <div class="text-center mt-2">
+      <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">
+        <i class="bi bi-house me-1"></i>กลับหน้าหลัก
+      </a>
+    </div>
+
+  </div>
+</div>
+{% endblock %}
