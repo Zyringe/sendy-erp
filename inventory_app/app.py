@@ -1406,6 +1406,8 @@ def import_weekly_confirm():
         parts.append(f'นำเข้า/อัพเดท {stats["imported"]} รายการ')
     if stats['unchanged']:
         parts.append(f'เหมือนเดิม {stats["unchanged"]} รายการ')
+    if stats.get('removed'):
+        parts.append(f'ลบออก {stats["removed"]} รายการ (คืนสต็อก)')
     if stats['skipped_dup']:
         parts.append(f'ข้าม {stats["skipped_dup"]} รายการ')
     if stats['new_unmapped']:
