@@ -46,7 +46,7 @@
               <td class="text-end">{{ '{:,.2f}'.format(o.item_total or 0) }}</td>
               <td class="text-end text-danger">{{ '{:,.2f}'.format(o.fee_diff or 0) }}</td>
               <td class="text-end text-success fw-bold">{{ '{:,.2f}'.format(o.actual_payout or 0) }}</td>
-              <td><span class="badge bg-success">{{ o.status }}</span></td>
+              <td>{% if o.status %}<span class="badge bg-success">{{ o.status }}</span>{% else %}<span class="text-muted">—</span>{% endif %}</td>
               <td>{{ o.order_date[:10] if o.order_date else '' }}</td>
             </tr>
             {% endfor %}

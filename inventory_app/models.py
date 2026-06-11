@@ -5145,8 +5145,9 @@ def get_settlement_report(conn, platform='shopee'):
     batches = []
     for batch in batch_rows:
         orders = conn.execute(
-            """SELECT order_sn, item_total, marketplace_fee, actual_payout,
-                      ROUND(item_total - actual_payout, 2) as fee_diff,
+            """SELECT order_sn, COALESCE(item_total, 0) as item_total,
+                      marketplace_fee, actual_payout,
+                      ROUND(COALESCE(item_total, 0) - actual_payout, 2) as fee_diff,
                       status, order_date, settlement_source
                FROM marketplace_orders
                WHERE platform = ? AND settled_at = ?
@@ -5165,7 +5166,7 @@ def get_settlement_report(conn, platform='shopee'):
 
     # Pending: settled orders not yet stamped
     pending_rows = conn.execute(
-        """SELECT order_sn, item_total, status, order_date
+        """SELECT order_sn, COALESCE(item_total, 0) as item_total, status, order_date
            FROM marketplace_orders
            WHERE platform = ? AND actual_payout IS NULL
              AND status NOT IN ('ยกเลิกแล้ว')

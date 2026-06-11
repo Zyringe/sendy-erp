@@ -160,6 +160,48 @@ def test_upsert_does_not_cross_platforms(conn):
     assert laz[0] is None and laz[1] is None   # lazada row untouched
 
 
+def test_settlement_report_handles_null_item_total(conn):
+    """A settled batch with a NULL item_total must not break the report.
+
+    item_total is `REAL` (nullable, no DEFAULT) in mig 093, so a settled order
+    can carry NULL. get_settlement_report COALESCEs it to 0 (and computes
+    fee_diff from the coalesced value) so neither per-row cells nor the tfoot
+    aggregate see a None — otherwise the footer's `sum(attribute='item_total')`
+    would raise TypeError and 500 the page.
+    """
+    conn.execute("""UPDATE marketplace_orders
+                    SET item_total=NULL, actual_payout=211.0, settled_at='2026-05-10'
+                    WHERE order_sn='ORDER001'""")
+    conn.commit()
+    report = models.get_settlement_report(conn)
+    order = next(o for b in report['batches'] for o in b['orders']
+                 if o['order_sn'] == 'ORDER001')
+    assert order['item_total'] == 0
+    assert order['fee_diff'] == pytest.approx(-211.0)  # 0 - 211.0
+
+
+def test_settlement_page_renders_with_null_item_total(conn):
+    """End-to-end: GET /marketplace/settlement renders 200 when a settled batch
+    has a NULL-item_total order (the case the tfoot sum would TypeError on).
+
+    `conn` is built on the tmp_db fixture, so config.DATABASE_PATH already points
+    at this seeded clone — the route's get_connection() hits the same DB.
+    """
+    conn.execute("""UPDATE marketplace_orders
+                    SET item_total=NULL, actual_payout=211.0, settled_at='2026-05-10'
+                    WHERE order_sn='ORDER001'""")
+    conn.commit()
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 4
+        sess['username'] = 'staffer'
+        sess['role'] = 'staff'
+    resp = c.get('/marketplace/settlement')
+    assert resp.status_code == 200, f"expected 200, got {resp.status_code}"
+
+
 # --- Route permission gate (mirrors test_staff_allowed_to_import_orders) ---
 
 def test_staff_allowed_to_settlement_import():
