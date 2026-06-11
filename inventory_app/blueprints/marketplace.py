@@ -16,7 +16,8 @@ import db_backup
 import models
 from database import get_connection
 from parse_orders import parse_shopee_orders, parse_lazada_orders
-from parse_income_transfer import parse_shopee_income, IncomeTransferError
+from parse_income_transfer import (parse_shopee_income, IncomeTransferError,
+                                   load_income_sheet)
 
 bp_marketplace = Blueprint('marketplace', __name__)
 
@@ -104,16 +105,16 @@ def settlement_import():
         return redirect(url_for('marketplace.settlement'))
 
     try:
-        # Income Transfer has 3 sheets; "Income" is index 1
-        df = pd.read_excel(io.BytesIO(f.read()), sheet_name='Income', header=0, dtype=str)
-    except Exception as e:
-        flash(f'อ่านไฟล์ไม่ได้: {e} — ต้องเป็นไฟล์ Income Transfer จาก Shopee ค่ะ', 'danger')
-        return redirect(url_for('marketplace.settlement'))
-
-    try:
+        # Real Income Transfer files prepend a multi-row metadata banner above
+        # the header row; load_income_sheet auto-detects it (header=0 would miss
+        # every column). See parse_income_transfer.load_income_sheet.
+        df = load_income_sheet(io.BytesIO(f.read()))
         settlements = parse_shopee_income(df)
     except IncomeTransferError as e:
         flash(str(e), 'danger')
+        return redirect(url_for('marketplace.settlement'))
+    except Exception as e:
+        flash(f'อ่านไฟล์ไม่ได้: {e} — ต้องเป็นไฟล์ Income Transfer จาก Shopee ค่ะ', 'danger')
         return redirect(url_for('marketplace.settlement'))
 
     _info, _err = db_backup.safe_create_backup(

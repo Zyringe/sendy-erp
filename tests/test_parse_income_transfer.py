@@ -2,7 +2,8 @@
 import numpy as np
 import pandas as pd
 import pytest
-from parse_income_transfer import parse_shopee_income, IncomeTransferError
+from parse_income_transfer import (parse_shopee_income, IncomeTransferError,
+                                   load_income_sheet, find_income_header_row)
 
 
 def _make_df(rows):
@@ -132,3 +133,62 @@ def test_handles_zero_payout():
     ])
     result = parse_shopee_income(df)
     assert result[0]['actual_payout'] == pytest.approx(0.0)
+
+
+# ── Header-banner handling ─────────────────────────────────────────────────
+# Real Shopee Income Transfer files carry a multi-row metadata banner (seller
+# name / date range / blank rows) ABOVE the real column-header row, so a plain
+# header=0 read misses every column. load_income_sheet must auto-detect it.
+
+def _write_income_xlsx(path, data_rows, banner_lines=5):
+    """Write a tmp xlsx whose 'Income' sheet mirrors a REAL Shopee export:
+    a `banner_lines`-row metadata banner, THEN the 37-col header row, THEN data.
+    """
+    header = list(_make_df([]).columns)          # the 37 real Thai headers
+    width = len(header)
+    banner = [
+        ['รายงานรายรับ'] + [np.nan] * (width - 1),
+        ['ชื่อร้าน: sendaibyboonsawat'] + [np.nan] * (width - 1),
+        ['ช่วงเวลา: 2026-06-01 - 2026-06-09'] + [np.nan] * (width - 1),
+        [np.nan] * width,
+        [np.nan] * width,
+    ][:banner_lines]
+    rows = list(banner)
+    rows.append(header)                          # real header at index == banner_lines
+    for r in data_rows:
+        row = [np.nan] * width
+        row[1] = r['order_sn']
+        row[10] = r['settled_at']
+        row[36] = r['actual_payout']
+        rows.append(row)
+    pd.DataFrame(rows).to_excel(str(path), sheet_name='Income', header=False, index=False)
+
+
+def test_find_income_header_row_locates_header_past_banner(tmp_path):
+    p = tmp_path / 'inc.xlsx'
+    _write_income_xlsx(p, [{'order_sn': 'X', 'settled_at': '2026-06-01', 'actual_payout': '1'}],
+                       banner_lines=5)
+    raw = pd.read_excel(str(p), sheet_name='Income', header=None, dtype=str)
+    assert find_income_header_row(raw) == 5
+
+
+def test_load_income_sheet_skips_metadata_banner(tmp_path):
+    p = tmp_path / 'Income.test.xlsx'
+    _write_income_xlsx(p, [
+        {'order_sn': '26050192H4FY9X', 'settled_at': '2026-06-01', 'actual_payout': '211.00'},
+        {'order_sn': 'A002',           'settled_at': '2026-06-02', 'actual_payout': '88.50'},
+    ])
+    df = load_income_sheet(str(p))
+    result = parse_shopee_income(df)          # the real failure mode: header=0 finds 0 columns
+    assert len(result) == 2
+    assert result[0]['order_sn'] == '26050192H4FY9X'
+    assert result[0]['actual_payout'] == pytest.approx(211.0)
+    assert result[1]['settled_at'] == '2026-06-02'
+
+
+def test_load_income_sheet_raises_when_header_absent(tmp_path):
+    p = tmp_path / 'bad.xlsx'
+    pd.DataFrame([['just', 'some'], ['random', 'rows']]).to_excel(
+        str(p), sheet_name='Income', header=False, index=False)
+    with pytest.raises(IncomeTransferError):
+        load_income_sheet(str(p))

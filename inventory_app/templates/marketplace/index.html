@@ -62,10 +62,18 @@
   </div>
 </div>
 
+{# ── Settlement link ── #}
+<div class="mb-3">
+  <a href="{{ url_for('marketplace.settlement') }}" class="btn btn-sm btn-outline-success">
+    <i class="bi bi-cash-coin me-1"></i>ยอดโอนจริง / Settlement (สำหรับรับชำระหนี้ใน Express)
+  </a>
+</div>
+
 {# ── Fee/payout caveat ── #}
 <div class="alert alert-light border small text-muted mb-3">
   <i class="bi bi-info-circle me-1"></i>
-  <strong>ค่าธรรมเนียม / ยอดที่ได้รับ:</strong> Shopee แสดงค่าคอม+ค่าบริการจากไฟล์ (ยอดที่ได้รับจริงต้องกระทบกับ settlement report อีกที) ·
+  <strong>ค่าธรรมเนียม / ยอดที่ได้รับ:</strong> Shopee แสดงค่าคอม+ค่าบริการจากไฟล์ (ยอดที่ได้รับจริงต้องกระทบกับ
+  <a href="{{ url_for('marketplace.settlement') }}">settlement report</a> อีกที) ·
   Lazada ไฟล์ order ไม่มีค่าคอม จึงแสดง "-" จนกว่าจะดึง finance statement
 </div>
 
