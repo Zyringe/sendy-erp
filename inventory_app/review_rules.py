@@ -141,13 +141,13 @@ def _median(values: List[float]) -> float:
     return sorted_v[mid]
 
 
-def _r3_history(conn, batch_id: int, product_id: int, unit: str,
+def _r3_history(conn, doc_base: str, product_id: int, unit: str,
                 customer_code: Optional[str], date_iso: str):
     """Return (median, source_label) for R3, or (None, None) if insufficient history.
 
     Customer-specific first: >= 2 prior lines for this customer_code.
     Global fallback: >= 3 prior lines across >= 2 distinct doc_bases.
-    History excludes the current batch_id and uses LOOKBACK_DAYS from date_iso.
+    History excludes the current doc_base and uses LOOKBACK_DAYS from date_iso.
     """
     from_date = _subtract_days(date_iso, LOOKBACK_DAYS)
 
@@ -156,11 +156,11 @@ def _r3_history(conn, batch_id: int, product_id: int, unit: str,
             SELECT unit_price
             FROM sales_transactions
             WHERE product_id=? AND unit=? AND customer_code=?
-              AND batch_id != ?
+              AND doc_base != ?
               AND date_iso >= ? AND date_iso <= ?
               AND (ref_invoice IS NULL OR ref_invoice = '')
               AND qty > 0
-        """, (product_id, unit, customer_code, batch_id, from_date, date_iso)).fetchall()
+        """, (product_id, unit, customer_code, doc_base, from_date, date_iso)).fetchall()
         prices_cust = [float(r['unit_price']) for r in rows if r['unit_price'] is not None]
         if len(prices_cust) >= 2:
             return _median(prices_cust), 'ร้านนี้'
@@ -170,11 +170,11 @@ def _r3_history(conn, batch_id: int, product_id: int, unit: str,
         SELECT unit_price, doc_base
         FROM sales_transactions
         WHERE product_id=? AND unit=?
-          AND batch_id != ?
+          AND doc_base != ?
           AND date_iso >= ? AND date_iso <= ?
           AND (ref_invoice IS NULL OR ref_invoice = '')
           AND qty > 0
-    """, (product_id, unit, batch_id, from_date, date_iso)).fetchall()
+    """, (product_id, unit, doc_base, from_date, date_iso)).fetchall()
     prices_global = [float(r['unit_price']) for r in rows if r['unit_price'] is not None]
     doc_bases = {r['doc_base'] for r in rows}
     if len(prices_global) >= 3 and len(doc_bases) >= 2:
@@ -211,7 +211,7 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
     date_iso = row.get('date_iso') or ''
     customer_code = row.get('customer_code') or ''
     doc_no = row.get('doc_no') or ''
-    batch_id = row.get('batch_id', 0)
+    doc_base = row.get('doc_base') or ''
 
     # Determine if this is an SR / return row (skip price rules)
     is_sr = bool(ref_invoice.strip()) or qty <= 0
@@ -265,7 +265,7 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
         # No ratio → R2/R5 cannot compute accurate per-base-unit price
         # Still run R3 (uses unit_price directly, no ratio)
         if not skip_price:
-            med, src = _r3_history(conn, batch_id, product_id, unit,
+            med, src = _r3_history(conn, doc_base, product_id, unit,
                                    customer_code or None, date_iso)
             if med is not None and med > 0:
                 pct_dev = abs(unit_price - med) / med
@@ -323,7 +323,7 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
 
     # ── R3_PRICE_DEVIATION ───────────────────────────────────────────────────
     if not skip_price:
-        med, src = _r3_history(conn, batch_id, product_id, unit,
+        med, src = _r3_history(conn, doc_base, product_id, unit,
                                customer_code or None, date_iso)
         if med is not None and med > 0:
             pct_dev = abs(unit_price - med) / med
