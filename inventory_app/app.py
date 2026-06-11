@@ -391,6 +391,59 @@ _ENDPOINT_MODULE = {
 }
 
 
+# ── Mobile bottom-nav slots (module headers) ─────────────────────────────────
+# Put's decision (2026-06-11): the mobile bottom nav shows module headers, not
+# individual pages — สินค้า · การค้า · บุคลากร · บัญชี + เพิ่มเติม(drawer, rendered
+# separately in the template). Each slot lands on a module's landing route.
+# `manager_only` slots are hidden for staff because their landing 403s/redirects
+# (hr.dashboard + accounting_summary are admin/manager only) — never show a slot
+# a role can't open. ตรวจบิล is NOT here (drawer + dashboard banner instead).
+_MOBILE_NAV_SLOTS = [
+    {'key': 'products',   'label': 'สินค้า',  'icon': 'bi-box-seam',       'endpoint': 'products.product_list', 'manager_only': False},
+    {'key': 'trade',      'label': 'การค้า',  'icon': 'bi-bar-chart-line', 'endpoint': 'trade_dashboard',       'manager_only': False},
+    {'key': 'hr',         'label': 'บุคลากร', 'icon': 'bi-people',         'endpoint': 'hr.dashboard',          'manager_only': True},
+    {'key': 'accounting', 'label': 'บัญชี',   'icon': 'bi-calculator',     'endpoint': 'accounting_summary',    'manager_only': True},
+]
+
+# The 'accounting' module ('การค้า & บัญชี') splits across two bottom-nav slots:
+# การค้า (trade) and บัญชี (finance). These endpoints belong to the บัญชี side;
+# every other 'accounting'-module endpoint highlights การค้า. Keeps the two
+# slots mutually exclusive so the nav never lights up both at once.
+_ACCT_FINANCE_ENDPOINTS = frozenset({
+    'accounting_summary', 'cashflow_dashboard', 'revenue_dashboard',
+    'revenue_unmapped_drilldown', 'ar_followup', 'ar_followup_customer',
+    'ar_followup_log_new', 'ar_followup_log_delete', 'ar_followup_export',
+})
+
+
+def _mobile_active_slot(endpoint):
+    """Which bottom-nav slot key (if any) the current endpoint should highlight."""
+    if endpoint in _ACCT_FINANCE_ENDPOINTS:
+        return 'accounting'
+    module = _ENDPOINT_MODULE.get(endpoint, 'overview')
+    return {'operation': 'products', 'accounting': 'trade', 'hr': 'hr'}.get(module)
+
+
+def build_mobile_nav_slots(role, endpoint=''):
+    """Role-filtered bottom-nav slots with the active one flagged.
+
+    Returns the list of visible slots (each a dict with key/label/icon/endpoint/
+    active). Any role that is not admin/manager — including '' or an unexpected
+    value — gets only the always-visible slots, so a staff/unknown session can
+    never be shown a slot whose landing page would 403."""
+    is_manager = role in ('admin', 'manager')
+    active = _mobile_active_slot(endpoint)
+    slots = []
+    for s in _MOBILE_NAV_SLOTS:
+        if s['manager_only'] and not is_manager:
+            continue
+        slots.append({
+            'key': s['key'], 'label': s['label'], 'icon': s['icon'],
+            'endpoint': s['endpoint'], 'active': s['key'] == active,
+        })
+    return slots
+
+
 @app.context_processor
 def inject_auth():
     role = session.get('role', '')
@@ -414,6 +467,7 @@ def inject_auth():
         'pending_suggestions_count': models.count_pending_suggestions(),
         'active_module': active_module,
         'visible_modules': visible_modules,
+        'mobile_nav_slots': build_mobile_nav_slots(role, endpoint),
     }
 
 

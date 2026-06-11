@@ -759,3 +759,49 @@ body {
 /* Modal — rounded + soft lift */
 .modal-content { border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 16px 40px -12px rgba(34,30,27,.28); }
 .modal-header, .modal-footer { border-color: var(--border); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   === mobile framework ===  (Phase P2, 2026-06-11)
+   The shared mobile contract for every wave template pass. The recipes and
+   per-page checklist live in docs/mobile-conventions.md — read that first.
+   Breakpoint is Bootstrap's lg = 992px (mobile = max-width:991.98px), matching
+   the sidebar/bottom-nav rules already in this file. This section adds ONLY
+   what those earlier blocks don't: page-actions, touch targets, mobile form
+   sizing, and hide-mobile/hide-desktop utilities. Do NOT redefine .bottom-nav,
+   .table-mobile-cards, or the 575.98px .page-head stacking — they exist above.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Header actions slot — base.html wraps {% block page_actions %} in this.
+   Desktop: inline row, right-aligned by .page-head's space-between. Mobile:
+   wraps so a row of buttons never forces horizontal body scroll. The ≥3-button
+   "collapse to ⋯ dropdown" recipe is markup-driven (inline group .d-none
+   .d-lg-flex + a .d-lg-none Bootstrap dropdown) — see the conventions doc. */
+.page-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+
+@media (max-width: 991.98px) {
+  /* Touch targets ≥44px for primary mobile actions. .btn-sm is banned for
+     these (see conventions doc); header-action and explicitly-touch buttons
+     get a comfortable thumb target regardless of Bootstrap sizing. */
+  .page-actions .btn,
+  .btn-touch {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Prevent iOS Safari's auto-zoom on focus: any input <16px triggers it.
+     Force the 16px floor on mobile even for Bootstrap's -sm controls. */
+  .form-control, .form-select,
+  .form-control-sm, .form-select-sm,
+  .input-group-sm > .form-control, .input-group-sm > .form-select { font-size: 16px; }
+
+  /* Full-width submit on mobile (pair with the desktop width via markup). */
+  .btn-block-mobile { width: 100%; }
+}
+
+/* Visibility utilities (documented names; complement Bootstrap d-lg-* idioms).
+   .hide-mobile → gone <992px; .hide-desktop → gone ≥992px. !important to win
+   over component display like Bootstrap's own display utilities. */
+@media (max-width: 991.98px) { .hide-mobile  { display: none !important; } }
+@media (min-width: 992px)    { .hide-desktop { display: none !important; } }
