@@ -290,3 +290,49 @@ class TestScanAll:
             "SELECT COUNT(*) FROM txn_review_docs WHERE doc_base='IVZ'"
         ).fetchone()[0]
         assert n == 1
+
+
+# ── Task 6: get_review_feed + suspicious_count + default_since ───────────────
+
+class TestReviewFeed:
+    def test_feed_newest_first_with_flags(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        rr = _import_rr(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        _add_sales_row(conn, bid, "IVA", product_id=None, qty=1, unit="ตัว",
+                       unit_price=5, net=5, date_iso="2026-01-01")
+        _add_sales_row(conn, bid, "IVB", product_id=None, qty=1, unit="ตัว",
+                       unit_price=5, net=5, date_iso="2026-06-01")
+        conn.commit()
+        rr.scan_all(db_path=db_path)
+        feed = rr.get_review_feed(db_path=db_path)
+        assert [d['doc_base'] for d in feed] == ["IVB", "IVA"]
+        assert feed[0]['flags'][0]['rule_code'] == 'R1_UNMAPPED'
+
+    def test_feed_since_filter_and_count(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        rr = _import_rr(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        _add_sales_row(conn, bid, "IVOLD", product_id=None, qty=1, unit="ตัว",
+                       unit_price=5, net=5, date_iso="2024-01-01")
+        _add_sales_row(conn, bid, "IVNEW", product_id=None, qty=1, unit="ตัว",
+                       unit_price=5, net=5, date_iso="2026-06-01")
+        conn.commit()
+        rr.scan_all(db_path=db_path)
+        assert [d['doc_base'] for d in rr.get_review_feed(
+            since_date="2026-01-01", db_path=db_path
+        )] == ["IVNEW"]
+        assert rr.suspicious_count(since_date="2026-01-01", db_path=db_path) == 1
+        assert rr.suspicious_count(db_path=db_path) == 2
+
+    def test_default_since_is_roughly_183_days_back(self, tmp_path):
+        from datetime import date, timedelta
+        db_path = _make_db(tmp_path)
+        rr = _import_rr(db_path)
+        ds = rr.default_since()
+        expected = (date.today() - timedelta(days=183)).isoformat()
+        assert ds == expected

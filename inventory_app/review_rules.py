@@ -294,6 +294,62 @@ def _group_by_docbase(rows) -> dict:
     return docs
 
 
+def default_since() -> str:
+    """ISO date ~6 months back — default feed window and dashboard badge window."""
+    from datetime import date, timedelta
+    return (date.today() - timedelta(days=183)).isoformat()
+
+
+def get_review_feed(since_date=None, limit=None, conn=None, db_path=None) -> List[dict]:
+    """Return suspicious docs newest-first, each with a 'flags' list attached."""
+    with _ConnCtx(conn, db_path) as c:
+        sql = (
+            "SELECT doc_base, date_iso, customer, customer_code, line_count,"
+            " flag_count, max_severity, free_goods_note, scanned_at"
+            " FROM txn_review_docs"
+        )
+        params: List = []
+        if since_date:
+            sql += " WHERE date_iso >= ?"
+            params.append(since_date)
+        sql += " ORDER BY date_iso DESC, doc_base DESC"
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        docs = c.execute(sql, params).fetchall()
+        out = []
+        for d in docs:
+            flags = c.execute("""
+                SELECT doc_no, rule_code, severity, message_th, details_json
+                FROM txn_review_flags WHERE doc_base=?
+                ORDER BY CASE severity
+                    WHEN 'high'   THEN 3
+                    WHEN 'medium' THEN 2
+                    ELSE 1
+                END DESC, id
+            """, (d['doc_base'],)).fetchall()
+            row = dict(d)
+            row['flags'] = [dict(f) for f in flags]
+            out.append(row)
+        return out
+
+
+def suspicious_count(since_date=None, conn=None, db_path=None) -> int:
+    """Count suspicious docs (read-fresh — safe under gunicorn -w 2)."""
+    with _ConnCtx(conn, db_path) as c:
+        try:
+            if since_date:
+                r = c.execute(
+                    "SELECT COUNT(*) FROM txn_review_docs WHERE date_iso >= ?",
+                    (since_date,)
+                ).fetchone()
+            else:
+                r = c.execute("SELECT COUNT(*) FROM txn_review_docs").fetchone()
+            return int(r[0]) if r else 0
+        except sqlite3.OperationalError:
+            return 0  # table missing (pre-migration)
+
+
 def scan_all(conn=None, db_path=None) -> dict:
     """Full re-scan of the whole dataset. Writes suspicious-only rows."""
     with _ConnCtx(conn, db_path) as c:
