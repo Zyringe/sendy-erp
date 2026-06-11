@@ -20,7 +20,7 @@
   <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
     {# Batch dropdown #}
     {% if batches %}
-    <select class="form-select form-select-sm w-auto"
+    <select class="form-select form-select-sm w-100" style="max-width:360px"
             onchange="location.href='{{ url_for('review.batch_view', batch_id=0) }}'.replace('/0','/'+this.value)">
       {% for b in batches %}
       <option value="{{ b.id }}" {% if b.id == batch_id %}selected{% endif %}>
