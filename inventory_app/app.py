@@ -33,7 +33,8 @@ import tempfile
 from datetime import date, datetime
 
 from flask import (Flask, render_template, request, redirect, url_for,
-                   flash, session, jsonify, abort, send_file)
+                   flash, session, jsonify, abort, send_file,
+                   send_from_directory)
 from flask_wtf.csrf import CSRFProtect, CSRFError
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -116,6 +117,22 @@ with app.app_context():
 @app.route('/healthz')
 def healthz():
     return 'ok', 200
+
+
+# PWA Service Worker — served from root so its scope covers the whole app.
+# A SW at /static/sw.js would only control /static/*, which is useless.
+# No auth required: the browser fetches this outside any user session.
+@app.route('/sw.js')
+def serve_sw():
+    return send_from_directory(app.static_folder, 'sw.js',
+                               mimetype='application/javascript')
+
+
+# PWA install instructions — Thai step-by-step for Android Chrome + iPhone Safari.
+# No auth required: reachable from the install prompt before login.
+@app.route('/help/install')
+def help_install():
+    return render_template('help/install.html')
 
 
 # Bootstrap-only DB upload. Separate from the admin /admin/upload-db route
@@ -405,7 +422,8 @@ def require_login():
     endpoint = request.endpoint
     # Allow static files, login page, healthcheck, and the bootstrap DB
     # upload (which is itself token-gated) without authentication.
-    if endpoint in ('login', 'static', 'healthz', 'bootstrap_upload_db'):
+    if endpoint in ('login', 'static', 'healthz', 'bootstrap_upload_db',
+                    'serve_sw', 'help_install'):
         return
     role = session.get('role', '')
     if not role:

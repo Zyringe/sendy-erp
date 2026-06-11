@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{% block title %}Sendy{% endblock %}</title>
   <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/logo_sendai.png') }}">
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/apple-touch-icon.png') }}">
   <meta name="theme-color" content="#1a1a1a">
   {# CSRF token for AJAX/fetch POST calls. Forms include csrf_token via
      a hidden input; JS calls read from this meta and send X-CSRFToken. #}
@@ -438,5 +440,10 @@
   })();
 </script>
 {% block scripts %}{% endblock %}
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js');
+  }
+</script>
 </body>
 </html>
