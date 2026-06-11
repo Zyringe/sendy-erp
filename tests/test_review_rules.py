@@ -950,3 +950,37 @@ class TestR5PromoMismatch:
             'ref_invoice': 'IV001',
         })
         assert 'R5_PROMO_MISMATCH' not in [f['rule_code'] for f in flags]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Free-goods guard (แถม lines)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFreeGoodsGuard:
+    def test_free_line_skips_r2_below_cost(self, tmp_path):
+        db_path, conn = _make_db(tmp_path)
+        bid = _add_batch(conn)
+        _add_product(conn, 1, unit_type="ตัว", cost_price=100.0)
+        # qty 25, net 0 → eff=0 < cost; must NOT flag R2 (it's แถม)
+        _add_sales_row(conn, bid, "IV001", product_id=1, qty=25, unit="ตัว",
+                       unit_price=0, net=0)
+        row = dict(conn.execute(
+            "SELECT * FROM sales_transactions WHERE doc_no='IV001'"
+        ).fetchone())
+        rr = _import_rr(db_path)
+        flags = rr._check_row_rules(conn, row)
+        codes = {f['rule_code'] for f in flags}
+        assert 'R2_BELOW_COST' not in codes
+        assert 'R3_PRICE_DEVIATION' not in codes
+
+    def test_free_line_still_flags_r1_unmapped(self, tmp_path):
+        db_path, conn = _make_db(tmp_path)
+        bid = _add_batch(conn)
+        _add_sales_row(conn, bid, "IV002", product_id=None, qty=25, unit="ตัว",
+                       unit_price=0, net=0)
+        row = dict(conn.execute(
+            "SELECT * FROM sales_transactions WHERE doc_no='IV002'"
+        ).fetchone())
+        rr = _import_rr(db_path)
+        codes = {f['rule_code'] for f in rr._check_row_rules(conn, row)}
+        assert 'R1_UNMAPPED' in codes

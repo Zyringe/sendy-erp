@@ -215,6 +215,8 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
 
     # Determine if this is an SR / return row (skip price rules)
     is_sr = bool(ref_invoice.strip()) or qty <= 0
+    is_free = qty > 0 and abs(net) < 0.005       # แถม — earned zero revenue
+    skip_price = is_sr or is_free
 
     # ── R1_UNMAPPED ──────────────────────────────────────────────────────────
     if product_id is None:
@@ -262,7 +264,7 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
         })
         # No ratio → R2/R5 cannot compute accurate per-base-unit price
         # Still run R3 (uses unit_price directly, no ratio)
-        if not is_sr:
+        if not skip_price:
             med, src = _r3_history(conn, batch_id, product_id, unit,
                                    customer_code or None, date_iso)
             if med is not None and med > 0:
@@ -296,7 +298,7 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
     per_base = unit_price / ratio if ratio else unit_price
 
     # ── R2_BELOW_COST ────────────────────────────────────────────────────────
-    if not is_sr and cost_price > 0:
+    if not skip_price and cost_price > 0:
         # eff per-base-unit should be >= cost_price * R2_TOLERANCE
         # But the test for R2 uses eff = net/qty (per sold unit = per derived unit)
         # and compares against cost * ratio
@@ -320,7 +322,7 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
             })
 
     # ── R3_PRICE_DEVIATION ───────────────────────────────────────────────────
-    if not is_sr:
+    if not skip_price:
         med, src = _r3_history(conn, batch_id, product_id, unit,
                                customer_code or None, date_iso)
         if med is not None and med > 0:
@@ -343,7 +345,7 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
                 })
 
     # ── R5_PROMO_MISMATCH ────────────────────────────────────────────────────
-    if not is_sr:
+    if not skip_price:
         promo = _get_active_promo_on_date(conn, product_id, date_iso)
         if promo is not None:
             expected_per_base = _promo_expected_per_base_unit(
