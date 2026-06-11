@@ -180,3 +180,92 @@ def test_scan_batch_never_raises_on_empty_batch(tmp_path, monkeypatch):
     result = rr.scan_batch(99, db_path=db_path)
     assert result['docs_total'] == 0
     assert result['docs_flagged'] == 0
+
+
+# ── route-level hook tests ────────────────────────────────────────────────────
+# These exercise the actual unified_import_confirm wiring (the part P5 added),
+# not just the rr functions. commit_file + scan_batch are monkeypatched so the
+# test targets the hook logic without depending on the BSN parser. The key
+# property — a scan failure must NOT turn a committed sales import into a failed
+# one (it's caught as a warning, after commit) — is otherwise untested.
+from io import BytesIO
+
+
+def _payments_in_file():
+    """Header-only cp874 report so /import-data detects + stages a file. The
+    confirm step forces type_0='sales' to drive the sales hook regardless."""
+    body = (
+        '"(BSN)บจก.บุญสวัสดิ์นำชัย                หน้า   :        1"\n'
+        '"  รายงานการรับชำระหนี้ เรียงตามวันที่ของใบเสร็จ"\n'
+        '"วันที่จาก   1 ม.ค. 2567  ถึง  31 ธ.ค. 2569"\n'
+        '">>>> จบรายงาน <<<<"\n'
+    ).encode('cp874')
+    return BytesIO(body)
+
+
+@pytest.fixture
+def admin_client(tmp_db):
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 1
+        sess['username'] = 'test-admin'
+        sess['role'] = 'admin'
+    return c
+
+
+def _stage_and_token(client):
+    client.post('/import-data',
+                data={'files': (_payments_in_file(), 'การรับชำระหนี้_x.csv')},
+                content_type='multipart/form-data')
+    with client.session_transaction() as sess:
+        return sess['import_stage']['token']
+
+
+def test_sales_import_triggers_scan_and_links(admin_client, monkeypatch):
+    """A committed sales import calls scan_batch with its batch_id and renders
+    the 'ไปตรวจบิล' link with the flagged count."""
+    import import_router
+    import review_rules
+    monkeypatch.setattr(import_router, 'commit_file',
+                        lambda *a, **k: {'summary': {'batch_id': 777}})
+    calls = []
+    monkeypatch.setattr(review_rules, 'scan_batch',
+                        lambda bid, *a, **k: calls.append(bid) or
+                        {'docs_flagged': 2, 'docs_clean': 0, 'docs_total': 2})
+
+    token = _stage_and_token(admin_client)
+    resp = admin_client.post('/import-data/confirm',
+                             data={'token': token, 'type_0': 'sales'})
+    body = resp.data.decode('utf-8')
+
+    assert resp.status_code == 200
+    assert calls == [777], 'scan_batch must be called once with the sales batch_id'
+    assert 'ไปตรวจบิล' in body            # the result-row button rendered
+    assert '(2 ใบ)' in body               # the flagged count surfaced
+
+
+def test_scan_failure_does_not_fail_the_import(admin_client, monkeypatch):
+    """If scan_batch raises, the sales import still succeeds (it committed before
+    the scan) — the error is an inner warning, NOT a per-file failure."""
+    import import_router
+    import review_rules
+    monkeypatch.setattr(import_router, 'commit_file',
+                        lambda *a, **k: {'summary': {'batch_id': 777}})
+
+    def _boom(*a, **k):
+        raise RuntimeError('BOOM_SCAN_FAIL')
+    monkeypatch.setattr(review_rules, 'scan_batch', _boom)
+
+    token = _stage_and_token(admin_client)
+    resp = admin_client.post('/import-data/confirm',
+                             data={'token': token, 'type_0': 'sales'})
+    body = resp.data.decode('utf-8')
+
+    assert resp.status_code == 200
+    assert 'ผลการนำเข้า' in body
+    # The warning flash carries the prefix → proves the INNER except caught it.
+    # If the OUTER per-file except had caught it, the row would show the bare
+    # 'BOOM_SCAN_FAIL' as a file error and the import would read as failed.
+    assert 'สแกนตรวจบิลไม่สำเร็จ: BOOM_SCAN_FAIL' in body
