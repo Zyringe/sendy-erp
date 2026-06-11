@@ -1,0 +1,216 @@
+"""Tests for _evaluate_doc, _persist_doc, scan_all/scan_docs, get_review_feed.
+
+TDD-first. Covers Tasks 4-6. Uses v2 schema (doc_base PK, free_goods_note).
+"""
+import sqlite3
+import sys
+import os
+import importlib
+import pytest
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def _make_db(tmp_path, name="test.db"):
+    """Return db_path with v2 schema (txn_review_docs has doc_base PK, free_goods_note)."""
+    db_path = str(tmp_path / name)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS import_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT,
+            rows_imported INTEGER DEFAULT 0,
+            rows_skipped INTEGER DEFAULT 0,
+            notes TEXT,
+            imported_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY,
+            product_name TEXT,
+            unit_type TEXT DEFAULT 'ตัว',
+            cost_price REAL DEFAULT 0.0,
+            base_sell_price REAL DEFAULT 0.0
+        );
+
+        CREATE TABLE IF NOT EXISTS unit_conversions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER,
+            bsn_unit TEXT,
+            ratio REAL,
+            UNIQUE(product_id, bsn_unit)
+        );
+
+        CREATE TABLE IF NOT EXISTS promotions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER,
+            promo_name TEXT,
+            promo_type TEXT,
+            discount_value REAL,
+            date_start TEXT,
+            date_end TEXT,
+            is_active INTEGER DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS product_price_tiers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER,
+            qty_label TEXT,
+            price REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS sales_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id INTEGER,
+            date_iso TEXT,
+            doc_no TEXT,
+            doc_base TEXT,
+            product_id INTEGER,
+            bsn_code TEXT,
+            product_name_raw TEXT,
+            customer TEXT,
+            customer_code TEXT,
+            qty REAL DEFAULT 1.0,
+            unit TEXT,
+            unit_price REAL,
+            vat_type INTEGER DEFAULT 1,
+            discount TEXT,
+            total REAL,
+            net REAL,
+            ref_invoice TEXT
+        );
+
+        -- v2 schema: doc_base PK, free_goods_note, no review_status
+        CREATE TABLE IF NOT EXISTS txn_review_docs (
+            doc_base        TEXT PRIMARY KEY,
+            date_iso        TEXT NOT NULL,
+            customer        TEXT,
+            customer_code   TEXT,
+            line_count      INTEGER NOT NULL DEFAULT 0,
+            flag_count      INTEGER NOT NULL DEFAULT 0,
+            max_severity    TEXT,
+            free_goods_note TEXT,
+            scanned_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+
+        CREATE TABLE IF NOT EXISTS txn_review_flags (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_base      TEXT NOT NULL REFERENCES txn_review_docs(doc_base) ON DELETE CASCADE,
+            txn_id        INTEGER,
+            doc_no        TEXT NOT NULL,
+            rule_code     TEXT NOT NULL,
+            severity      TEXT NOT NULL CHECK (severity IN ('high','medium','low')),
+            message_th    TEXT NOT NULL,
+            details_json  TEXT,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+    """)
+    conn.close()
+    return db_path
+
+
+def _import_rr(db_path):
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'inventory_app'))
+    os.environ['DATABASE_URL'] = f'sqlite:///{db_path}'
+    os.environ.setdefault('SECRET_KEY', 'test')
+    os.environ.setdefault('ADMIN_PASSWORD', 'test')
+    import review_rules as rr_mod
+    importlib.reload(rr_mod)
+    rr_mod.DB_PATH = db_path
+    return rr_mod
+
+
+def _add_batch(conn):
+    conn.execute("INSERT INTO import_log(filename) VALUES ('test.xls')")
+    conn.commit()
+    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def _add_product(conn, pid, unit_type='ตัว', cost_price=0.0, base_sell_price=0.0):
+    conn.execute("""
+        INSERT OR REPLACE INTO products(id, product_name, unit_type, cost_price, base_sell_price)
+        VALUES (?,?,?,?,?)
+    """, (pid, f'Product {pid}', unit_type, cost_price, base_sell_price))
+    conn.commit()
+
+
+def _add_sales_row(conn, batch_id, doc_base, product_id=1, qty=1.0, unit='ตัว',
+                   unit_price=100.0, net=100.0, ref_invoice=None,
+                   customer='ลูกค้าA', customer_code=None, date_iso='2026-06-01'):
+    doc_no = doc_base
+    conn.execute("""
+        INSERT INTO sales_transactions
+            (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,
+             product_name_raw, customer, customer_code, qty, unit,
+             unit_price, vat_type, discount, total, net, ref_invoice)
+        VALUES (?,?,?,?,?,'CODE','ชื่อดิบ',?,?,?,?,?,1,NULL,?,?,?)
+    """, (batch_id, date_iso, doc_no, doc_base, product_id,
+          customer, customer_code, qty, unit, unit_price, net, net, ref_invoice))
+    conn.commit()
+
+
+# ── Task 4: _evaluate_doc ─────────────────────────────────────────────────────
+
+class TestEvaluateDoc:
+    def test_paidplusfree_doc_good_prices_clean(self, tmp_path):
+        """Paid line priced fine + free line → real_flag_count=0; free_goods_note present."""
+        db_path = _make_db(tmp_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        _add_product(conn, 1, cost_price=100.0, base_sell_price=150.0)
+        _add_sales_row(conn, bid, "IV100", product_id=1, qty=100, unit="ตัว",
+                       unit_price=150, net=15000)
+        _add_sales_row(conn, bid, "IV100", product_id=1, qty=25,  unit="ตัว",
+                       unit_price=0, net=0)
+        conn.commit()
+        rr = _import_rr(db_path)
+        lines = [dict(r) for r in conn.execute(
+            "SELECT * FROM sales_transactions WHERE doc_base='IV100'"
+        )]
+        ev = rr._evaluate_doc(conn, lines)
+        assert ev['real_flag_count'] == 0
+        assert ev['free_goods_note'] is not None
+        assert 'แถม' in ev['free_goods_note']
+        assert '25' in ev['free_goods_note']
+
+    def test_all_free_doc_surfaces_r7(self, tmp_path):
+        """All lines are free → R7_ALL_FREE flag (low severity)."""
+        db_path = _make_db(tmp_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        _add_product(conn, 1, cost_price=100.0)
+        _add_sales_row(conn, bid, "IV200", product_id=1, qty=10, unit="ตัว",
+                       unit_price=0, net=0)
+        conn.commit()
+        rr = _import_rr(db_path)
+        lines = [dict(r) for r in conn.execute(
+            "SELECT * FROM sales_transactions WHERE doc_base='IV200'"
+        )]
+        ev = rr._evaluate_doc(conn, lines)
+        codes = {fl['rule_code'] for _, fl in ev['flags']}
+        assert 'R7_ALL_FREE' in codes
+        assert ev['max_severity'] == 'low'
+
+    def test_flagged_doc_has_correct_max_severity(self, tmp_path):
+        """High-severity flag dominates."""
+        db_path = _make_db(tmp_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        _add_product(conn, 1, cost_price=200.0, base_sell_price=300.0)
+        # sell below cost → R2 (high)
+        _add_sales_row(conn, bid, "IV300", product_id=1, qty=1, unit="ตัว",
+                       unit_price=50, net=50)
+        conn.commit()
+        rr = _import_rr(db_path)
+        lines = [dict(r) for r in conn.execute(
+            "SELECT * FROM sales_transactions WHERE doc_base='IV300'"
+        )]
+        ev = rr._evaluate_doc(conn, lines)
+        assert ev['max_severity'] == 'high'
+        codes = {fl['rule_code'] for _, fl in ev['flags']}
+        assert 'R2_BELOW_COST' in codes

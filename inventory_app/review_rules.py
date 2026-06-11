@@ -41,6 +41,8 @@ LOOKBACK_DAYS = 365    # how many days of history to consider for R3
 
 _SEVERITY_ORDER = {'high': 3, 'medium': 2, 'low': 1}
 
+R7_ALL_FREE = 'R7_ALL_FREE'
+
 
 # ── Connection helpers (mirror ar_followup.py) ────────────────────────────────
 
@@ -188,6 +190,60 @@ def _subtract_days(date_iso: str, days: int) -> str:
     from datetime import date, timedelta
     d = date.fromisoformat(date_iso)
     return (d - timedelta(days=days)).isoformat()
+
+
+# ── Doc-level helpers ────────────────────────────────────────────────────────
+
+def _fmt_qty(q) -> str:
+    return f'{float(q or 0):g}'   # 25.0→'25', 1.5→'1.5'
+
+
+def _evaluate_doc(conn, lines: List[dict]) -> dict:
+    """Evaluate one document (all sales_transactions rows sharing a doc_base).
+
+    Returns:
+      flags          — list of (line_dict, flag_dict) tuples (R1..R5 + R7)
+      free_goods_note — '; '-joined แถม descriptions, or None
+      max_severity   — 'high'/'medium'/'low'/None
+      line_count     — total lines
+      real_flag_count — len(flags)
+    """
+    real_flags = []
+    free_notes = []
+    paid_count = 0
+    free_count = 0
+    for line in lines:
+        qty = float(line.get('qty') or 0)
+        net = float(line.get('net') or 0)
+        is_sr = bool((line.get('ref_invoice') or '').strip()) or qty <= 0
+        is_free = qty > 0 and abs(net) < 0.005
+        if is_free:
+            free_count += 1
+            name = line.get('product_name_raw') or line.get('bsn_code') or ''
+            unit = line.get('unit') or ''
+            free_notes.append(f'แถม {_fmt_qty(qty)} {unit} {name}'.strip())
+        elif not is_sr:
+            paid_count += 1
+        for fl in _check_row_rules(conn, line):
+            real_flags.append((line, fl))
+    # All-free doc: free lines present, no paid lines → R7 (low)
+    if free_count > 0 and paid_count == 0:
+        real_flags.append((lines[0], {
+            'rule_code': R7_ALL_FREE, 'severity': 'low',
+            'message_th': 'ทั้งบิลไม่มีราคา — เช็คหน่อย', 'details_json': None,
+        }))
+    max_sev = None
+    for _, fl in real_flags:
+        s = fl['severity']
+        if max_sev is None or _SEVERITY_ORDER[s] > _SEVERITY_ORDER[max_sev]:
+            max_sev = s
+    return {
+        'flags': real_flags,
+        'free_goods_note': '; '.join(free_notes) if free_notes else None,
+        'max_severity': max_sev,
+        'line_count': len(lines),
+        'real_flag_count': len(real_flags),
+    }
 
 
 # ── Row-level rule checks ─────────────────────────────────────────────────────
