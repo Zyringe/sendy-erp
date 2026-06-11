@@ -5071,32 +5071,48 @@ def import_marketplace_orders(conn, orders, source_file=None):
     return stats
 
 
-def upsert_marketplace_settlements(conn, settlements, source_file=None):
+def upsert_marketplace_settlements(conn, settlements, source_file=None,
+                                   platform='shopee'):
     """Stamp actual_payout + settled_at on marketplace_orders matched by order_sn.
 
     Args:
         conn: DB connection.
         settlements: list of {order_sn, actual_payout, settled_at}.
         source_file: filename of the Income Transfer file (for traceability).
+        platform: marketplace this Income file belongs to. The table key is
+            UNIQUE(platform, order_sn), so we scope the UPDATE by platform too —
+            a bare order_sn match could stamp a different platform's row that
+            happens to share the same order number.
 
     Returns:
-        {'updated': int, 'not_found': int}
+        {'updated': int, 'not_found': int, 'skipped_no_date': int}
+
+    A settlement with a blank settled_at is NOT actually settled (the parser
+    emits '' for an empty transfer-date cell). Stamping it would both create a
+    phantom batch keyed on '' and set actual_payout, hiding the order from the
+    pending list. So we skip those rows entirely, leaving the order NULL/pending.
     """
     updated = 0
     not_found = 0
+    skipped_no_date = 0
     for s in settlements:
+        settled_at = (s.get('settled_at') or '').strip()
+        if not settled_at:
+            skipped_no_date += 1
+            continue
         cur = conn.execute(
             """UPDATE marketplace_orders
                SET actual_payout = ?, settled_at = ?, settlement_source = ?
-               WHERE order_sn = ?""",
-            (s['actual_payout'], s['settled_at'], source_file, s['order_sn']),
+               WHERE platform = ? AND order_sn = ?""",
+            (s['actual_payout'], settled_at, source_file, platform, s['order_sn']),
         )
         if cur.rowcount:
             updated += 1
         else:
             not_found += 1
     conn.commit()
-    return {'updated': updated, 'not_found': not_found}
+    return {'updated': updated, 'not_found': not_found,
+            'skipped_no_date': skipped_no_date}
 
 
 def get_settlement_report(conn, platform='shopee'):
