@@ -158,3 +158,29 @@ def test_upsert_does_not_cross_platforms(conn):
         "SELECT actual_payout, settled_at FROM marketplace_orders WHERE platform='lazada' AND order_sn='ORDER001'"
     ).fetchone()
     assert laz[0] is None and laz[1] is None   # lazada row untouched
+
+
+# --- Route permission gate (mirrors test_staff_allowed_to_import_orders) ---
+
+def test_staff_allowed_to_settlement_import():
+    """Staff may import marketplace settlements (same gate as order import).
+
+    POST with no file flashes 'choose a file' and redirects to the settlement
+    page (/marketplace/settlement). If the _STAFF_POST_OK gate did not include
+    marketplace.settlement_import, the before_request middleware would instead
+    redirect to the main dashboard (/). This verifies the whitelist entry added
+    in Task 4 actually gates the route for staff.
+    """
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 4
+        sess['username'] = 'staffer'
+        sess['role'] = 'staff'
+    resp = c.post('/marketplace/settlement-import', data={}, follow_redirects=False)
+    loc = resp.headers.get('Location') or ''
+    assert resp.status_code == 302
+    assert loc.endswith('/marketplace/settlement'), (
+        f"staff should reach the settlement-import route (→ /marketplace/settlement), got {loc!r}"
+    )

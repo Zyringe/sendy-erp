@@ -122,16 +122,22 @@ def settlement_import():
     if _err:
         flash(f'⚠️ สำรองข้อมูลไม่สำเร็จ ({_err}) — นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
 
-    conn = get_connection()
     try:
-        stats = models.upsert_marketplace_settlements(conn, settlements, f.filename)
-    finally:
-        conn.close()
+        conn = get_connection()
+        try:
+            stats = models.upsert_marketplace_settlements(conn, settlements, f.filename)
+        finally:
+            conn.close()
+    except Exception as e:
+        flash(f'นำเข้าไม่สำเร็จ: {e}', 'danger')
+        return redirect(url_for('marketplace.settlement'))
 
     flash(
         f'นำเข้าสำเร็จ: อัปเดต {stats["updated"]} ออเดอร์'
-        + (f', ไม่พบใน ERP {stats["not_found"]} รายการ' if stats['not_found'] else ''),
-        'success' if stats['not_found'] == 0 else 'warning'
+        + (f', ไม่พบใน ERP {stats["not_found"]} รายการ' if stats['not_found'] else '')
+        + (f', ข้ามรายการที่ยังไม่โอน (ไม่มีวันที่โอน) {stats["skipped_no_date"]} รายการ'
+           if stats['skipped_no_date'] else ''),
+        'success' if (stats['not_found'] == 0 and stats['skipped_no_date'] == 0) else 'warning'
     )
     return redirect(url_for('marketplace.settlement'))
 
