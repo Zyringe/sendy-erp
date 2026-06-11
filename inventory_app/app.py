@@ -61,6 +61,7 @@ import cashflow as cf_mod
 import revenue as rev_mod
 import ar_followup as arf_mod
 import payments_alloc as pa_mod
+import review_rules as rr
 
 app = Flask(__name__)
 # Honor X-Forwarded-Proto/Host from Railway's edge so url_for and post-login
@@ -466,6 +467,7 @@ def inject_auth():
         'simulating_as': role if real_role else None,
         'real_role':     real_role,
         'alert_count':   models.count_stock_alerts(),
+        'pending_review_count': rr.pending_review_count(),
         'db_routes_enabled': session.get('db_routes_enabled', False),
         'pending_suggestions_count': models.count_pending_suggestions(),
         'active_module': active_module,
@@ -1387,6 +1389,13 @@ def import_weekly_confirm():
     entries = (parse_sales(pend['path']) if kind == 'sales'
                else parse_purchases(pend['path']))
     stats = models.import_weekly(entries, kind, pend['filename'])
+    _review_flagged = 0
+    if kind == 'sales' and stats.get('batch_id'):
+        try:
+            scan = rr.scan_batch(stats['batch_id'])
+            _review_flagged = scan.get('docs_flagged', 0)
+        except Exception as _scan_exc:
+            flash(f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}', 'warning')
     try:
         os.remove(pend['path'])
     except OSError:
@@ -1401,6 +1410,8 @@ def import_weekly_confirm():
         parts.append(f'ข้าม {stats["skipped_dup"]} รายการ')
     if stats['new_unmapped']:
         parts.append(f'สินค้าใหม่ไม่มีในระบบ {stats["new_unmapped"]} รายการ')
+    if _review_flagged:
+        parts.append(f'พบ {_review_flagged} บิลต้องตรวจ')
     flash('  |  '.join(parts) or 'ไม่มีการเปลี่ยนแปลง',
           'success' if stats['new_unmapped'] == 0 else 'warning')
     if models.get_pending_unit_conversions():
@@ -3143,9 +3154,19 @@ def unified_import_confirm():
             continue
         try:
             out = import_router.commit_file(path, rtype, filename=row['filename'])
-            results.append({'filename': row['filename'], 'ok': True,
-                            'label': _REPORT_LABELS.get(rtype, rtype),
-                            'summary': out.get('summary')})
+            result_row = {'filename': row['filename'], 'ok': True,
+                          'label': _REPORT_LABELS.get(rtype, rtype),
+                          'summary': out.get('summary')}
+            if rtype == 'sales':
+                bid = (out.get('summary') or {}).get('batch_id')
+                if bid:
+                    try:
+                        scan = rr.scan_batch(bid)
+                        result_row['review_batch_id'] = bid
+                        result_row['review_flagged'] = scan.get('docs_flagged', 0)
+                    except Exception as _scan_exc:
+                        flash(f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}', 'warning')
+            results.append(result_row)
         except Exception as exc:   # per-file isolation — one bad file doesn't sink the batch
             results.append({'filename': row['filename'], 'ok': False, 'msg': str(exc)})
     session.pop('import_stage', None)
