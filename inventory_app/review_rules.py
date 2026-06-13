@@ -1,29 +1,30 @@
-"""ตรวจบิล detection engine for Sendy ERP.
+"""ตรวจบิล detection engine for Sendy ERP (v2 — whole-dataset, read-only).
 
 Pure module — no Flask routes, no UI, no module-global mutable state.
 All review state lives in DB tables txn_review_docs + txn_review_flags
-(migration 098).
+(migration 099 — doc-keyed, suspicious-only, no decision lifecycle).
 
-Detection rules (R1–R5; R6 deferred to v1.1):
-  R1_UNMAPPED    — product_id IS NULL
-  R2_BELOW_COST  — effective unit price < cost × ratio × R2_TOLERANCE
-  R3_PRICE_DEVIATION — unit_price deviates > R3_PCT from historical median
-                       AND absolute deviation >= R3_MIN_BAHT
-  R4_UNUSUAL_UNIT — mapped product, unit != unit_type, no unit_conversions row
-  R5_PROMO_MISMATCH — active promo on date_iso but price doesn't match
-                      (percent/fixed only; bundle/gift/mixed skipped)
+Detection rules (R1–R5, R7):
+  R1_UNMAPPED         — product_id IS NULL
+  R2_BELOW_COST       — effective unit price < cost × ratio × R2_TOLERANCE
+  R3_PRICE_DEVIATION  — unit_price deviates > R3_PCT from historical median
+                        AND absolute deviation >= R3_MIN_BAHT
+  R4_UNUSUAL_UNIT     — mapped product, unit != unit_type, no unit_conversions row
+  R5_PROMO_MISMATCH   — active promo on date_iso but price doesn't match
+  R7_ALL_FREE         — whole document has zero-revenue lines and no paid lines
 
-SR rows (ref_invoice non-empty OR qty <= 0) skip price rules R2/R3/R5.
-R1 still applies to SR rows.
+Free lines (qty > 0 AND abs(net) < 0.005) skip price rules R2/R3/R5.
+SR rows (ref_invoice non-empty OR qty <= 0) also skip price rules.
+R1/R4 apply to all rows.
 
-Public API (mirrors ar_followup.py connection style):
-  scan_batch(batch_id, conn=None, db_path=None)   → dict summary
-  get_batch_review(batch_id, conn=None, db_path=None) → {date_iso: [doc+flags]}
-  get_sales_batches(limit=20, conn=None, db_path=None) → list
-  mark_doc(doc_review_id, status, note, reviewed_by, conn=None, db_path=None)
-  pending_review_count(conn=None, db_path=None)   → int
+Public API:
+  default_since()                                     → ISO date ~183 days back
+  scan_all(conn=None, db_path=None)                   → dict summary
+  scan_docs(doc_bases, conn=None, db_path=None)       → dict summary
+  scan_after_import(batch_id, conn=None, db_path=None) → dict summary
+  get_review_feed(since_date=None, limit=None, conn=None, db_path=None) → list
+  suspicious_count(since_date=None, conn=None, db_path=None) → int
 """
-import hashlib
 import json
 import sqlite3
 import statistics
@@ -40,6 +41,8 @@ R5_TOLERANCE = 0.01    # promo expected price within 1% → pass
 LOOKBACK_DAYS = 365    # how many days of history to consider for R3
 
 _SEVERITY_ORDER = {'high': 3, 'medium': 2, 'low': 1}
+
+R7_ALL_FREE = 'R7_ALL_FREE'
 
 
 # ── Connection helpers (mirror ar_followup.py) ────────────────────────────────
@@ -141,13 +144,13 @@ def _median(values: List[float]) -> float:
     return sorted_v[mid]
 
 
-def _r3_history(conn, batch_id: int, product_id: int, unit: str,
+def _r3_history(conn, doc_base: str, product_id: int, unit: str,
                 customer_code: Optional[str], date_iso: str):
     """Return (median, source_label) for R3, or (None, None) if insufficient history.
 
     Customer-specific first: >= 2 prior lines for this customer_code.
     Global fallback: >= 3 prior lines across >= 2 distinct doc_bases.
-    History excludes the current batch_id and uses LOOKBACK_DAYS from date_iso.
+    History excludes the current doc_base and uses LOOKBACK_DAYS from date_iso.
     """
     from_date = _subtract_days(date_iso, LOOKBACK_DAYS)
 
@@ -156,11 +159,11 @@ def _r3_history(conn, batch_id: int, product_id: int, unit: str,
             SELECT unit_price
             FROM sales_transactions
             WHERE product_id=? AND unit=? AND customer_code=?
-              AND batch_id != ?
+              AND doc_base != ?
               AND date_iso >= ? AND date_iso <= ?
               AND (ref_invoice IS NULL OR ref_invoice = '')
               AND qty > 0
-        """, (product_id, unit, customer_code, batch_id, from_date, date_iso)).fetchall()
+        """, (product_id, unit, customer_code, doc_base, from_date, date_iso)).fetchall()
         prices_cust = [float(r['unit_price']) for r in rows if r['unit_price'] is not None]
         if len(prices_cust) >= 2:
             return _median(prices_cust), 'ร้านนี้'
@@ -170,11 +173,11 @@ def _r3_history(conn, batch_id: int, product_id: int, unit: str,
         SELECT unit_price, doc_base
         FROM sales_transactions
         WHERE product_id=? AND unit=?
-          AND batch_id != ?
+          AND doc_base != ?
           AND date_iso >= ? AND date_iso <= ?
           AND (ref_invoice IS NULL OR ref_invoice = '')
           AND qty > 0
-    """, (product_id, unit, batch_id, from_date, date_iso)).fetchall()
+    """, (product_id, unit, doc_base, from_date, date_iso)).fetchall()
     prices_global = [float(r['unit_price']) for r in rows if r['unit_price'] is not None]
     doc_bases = {r['doc_base'] for r in rows}
     if len(prices_global) >= 3 and len(doc_bases) >= 2:
@@ -188,6 +191,240 @@ def _subtract_days(date_iso: str, days: int) -> str:
     from datetime import date, timedelta
     d = date.fromisoformat(date_iso)
     return (d - timedelta(days=days)).isoformat()
+
+
+# ── Doc-level helpers ────────────────────────────────────────────────────────
+
+def _fmt_qty(q) -> str:
+    return f'{float(q or 0):g}'   # 25.0→'25', 1.5→'1.5'
+
+
+def _evaluate_doc(conn, lines: List[dict]) -> dict:
+    """Evaluate one document (all sales_transactions rows sharing a doc_base).
+
+    Returns:
+      flags          — list of (line_dict, flag_dict) tuples (R1..R5 + R7)
+      free_goods_note — '; '-joined แถม descriptions, or None
+      max_severity   — 'high'/'medium'/'low'/None
+      line_count     — total lines
+      real_flag_count — len(flags)
+    """
+    real_flags = []
+    free_notes = []
+    paid_count = 0
+    free_count = 0
+    for line in lines:
+        qty = float(line.get('qty') or 0)
+        net = float(line.get('net') or 0)
+        is_sr = bool((line.get('ref_invoice') or '').strip()) or qty <= 0
+        is_free = qty > 0 and abs(net) < 0.005
+        if is_free:
+            free_count += 1
+            name = line.get('product_name_raw') or line.get('bsn_code') or ''
+            unit = line.get('unit') or ''
+            free_notes.append(f'แถม {_fmt_qty(qty)} {unit} {name}'.strip())
+        elif not is_sr:
+            paid_count += 1
+        for fl in _check_row_rules(conn, line):
+            real_flags.append((line, fl))
+    # All-free doc: free lines present, no paid lines → R7 (low)
+    if free_count > 0 and paid_count == 0:
+        real_flags.append((lines[0], {
+            'rule_code': R7_ALL_FREE, 'severity': 'low',
+            'message_th': 'ทั้งบิลไม่มีราคา — เช็คหน่อย', 'details_json': None,
+        }))
+    max_sev = None
+    for _, fl in real_flags:
+        s = fl['severity']
+        if max_sev is None or _SEVERITY_ORDER[s] > _SEVERITY_ORDER[max_sev]:
+            max_sev = s
+    return {
+        'flags': real_flags,
+        'free_goods_note': '; '.join(free_notes) if free_notes else None,
+        'max_severity': max_sev,
+        'line_count': len(lines),
+        'real_flag_count': len(real_flags),
+    }
+
+
+# ── Scan / persist (doc-level writes) ─────────────────────────────────────────
+
+_SALES_COLS = """s.id, s.batch_id, s.date_iso, s.doc_no, s.doc_base,
+    s.product_id, s.bsn_code, s.product_name_raw, s.customer, s.customer_code,
+    s.qty, s.unit, s.unit_price, s.vat_type, s.net, s.ref_invoice"""
+
+
+def _persist_doc(c, doc_base: str, lines: List[dict]) -> Optional[int]:
+    """Upsert suspicious doc + flags; delete the row if doc is now clean.
+
+    Returns flag count when suspicious, None when clean.
+    """
+    ev = _evaluate_doc(c, lines)
+    if ev['real_flag_count'] == 0:
+        c.execute("DELETE FROM txn_review_docs WHERE doc_base=?", (doc_base,))
+        return None
+    head = lines[0]
+    c.execute("""
+        INSERT INTO txn_review_docs
+            (doc_base, date_iso, customer, customer_code, line_count,
+             flag_count, max_severity, free_goods_note, scanned_at)
+        VALUES (?,?,?,?,?,?,?,?,datetime('now','localtime'))
+        ON CONFLICT(doc_base) DO UPDATE SET
+            date_iso=excluded.date_iso, customer=excluded.customer,
+            customer_code=excluded.customer_code, line_count=excluded.line_count,
+            flag_count=excluded.flag_count, max_severity=excluded.max_severity,
+            free_goods_note=excluded.free_goods_note, scanned_at=excluded.scanned_at
+    """, (doc_base, head.get('date_iso') or '', head.get('customer'),
+          head.get('customer_code'), ev['line_count'], ev['real_flag_count'],
+          ev['max_severity'], ev['free_goods_note']))
+    c.execute("DELETE FROM txn_review_flags WHERE doc_base=?", (doc_base,))
+    for line, fl in ev['flags']:
+        c.execute("""INSERT INTO txn_review_flags
+            (doc_base, txn_id, doc_no, rule_code, severity, message_th, details_json)
+            VALUES (?,?,?,?,?,?,?)""",
+            (doc_base, line.get('id'), line.get('doc_no') or '', fl['rule_code'],
+             fl['severity'], fl['message_th'], fl.get('details_json')))
+    return ev['real_flag_count']
+
+
+def _group_by_docbase(rows) -> dict:
+    docs = {}
+    for r in rows:
+        d = dict(r)
+        docs.setdefault(d['doc_base'], []).append(d)
+    return docs
+
+
+def default_since() -> str:
+    """ISO date ~6 months back — default feed window and dashboard badge window."""
+    from datetime import date, timedelta
+    return (date.today() - timedelta(days=183)).isoformat()
+
+
+def get_review_feed(since_date=None, include_medium=False, limit=None,
+                    conn=None, db_path=None) -> List[dict]:
+    """Return suspicious docs newest-first, each with a 'flags' list attached.
+
+    By default hides docs whose worst issue is only 'medium' (R3 price-deviation /
+    R5 promo-mismatch) — those fire heavily on normal negotiated B2B prices and
+    bury the actionable 'high' bills. include_medium=True shows every severity.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        sql = (
+            "SELECT doc_base, date_iso, customer, customer_code, line_count,"
+            " flag_count, max_severity, free_goods_note, scanned_at"
+            " FROM txn_review_docs"
+        )
+        conds: List = []
+        params: List = []
+        if since_date:
+            conds.append("date_iso >= ?")
+            params.append(since_date)
+        if not include_medium:
+            conds.append("max_severity != 'medium'")
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY date_iso DESC, doc_base DESC"
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        docs = c.execute(sql, params).fetchall()
+        out = []
+        for d in docs:
+            flags = c.execute("""
+                SELECT doc_no, rule_code, severity, message_th, details_json
+                FROM txn_review_flags WHERE doc_base=?
+                ORDER BY CASE severity
+                    WHEN 'high'   THEN 3
+                    WHEN 'medium' THEN 2
+                    ELSE 1
+                END DESC, id
+            """, (d['doc_base'],)).fetchall()
+            row = dict(d)
+            row['flags'] = [dict(f) for f in flags]
+            out.append(row)
+        return out
+
+
+def suspicious_count(since_date=None, include_medium=False, conn=None, db_path=None) -> int:
+    """Count suspicious docs (read-fresh — safe under gunicorn -w 2).
+
+    Mirrors get_review_feed's default: hides 'medium'-only docs unless
+    include_medium=True, so the dashboard badge reflects actionable bills.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        try:
+            conds: List = []
+            params: List = []
+            if since_date:
+                conds.append("date_iso >= ?")
+                params.append(since_date)
+            if not include_medium:
+                conds.append("max_severity != 'medium'")
+            sql = "SELECT COUNT(*) FROM txn_review_docs"
+            if conds:
+                sql += " WHERE " + " AND ".join(conds)
+            r = c.execute(sql, params).fetchone()
+            return int(r[0]) if r else 0
+        except sqlite3.OperationalError:
+            return 0  # table missing (pre-migration) — degrade badge, never 500
+
+
+def scan_all(conn=None, db_path=None) -> dict:
+    """Full re-scan of the whole dataset. Writes suspicious-only rows."""
+    with _ConnCtx(conn, db_path) as c:
+        rows = c.execute(
+            f"SELECT {_SALES_COLS} FROM sales_transactions s"
+            " WHERE s.doc_base IS NOT NULL ORDER BY s.doc_base"
+        ).fetchall()
+        docs = _group_by_docbase(rows)
+        c.execute("DELETE FROM txn_review_docs")
+        flagged = 0
+        flags_total = 0
+        for doc_base, lines in docs.items():
+            n = _persist_doc(c, doc_base, lines)
+            if n is not None:
+                flagged += 1
+                flags_total += n
+        if conn is None:
+            c.commit()
+        return {'docs_scanned': len(docs), 'docs_flagged': flagged, 'flags_total': flags_total}
+
+
+def scan_docs(doc_bases, conn=None, db_path=None) -> dict:
+    """Incremental re-scan of specific doc_bases (upsert or remove each)."""
+    doc_bases = [d for d in (doc_bases or []) if d]
+    with _ConnCtx(conn, db_path) as c:
+        flagged = 0
+        flags_total = 0
+        for doc_base in doc_bases:
+            rows = c.execute(
+                f"SELECT {_SALES_COLS} FROM sales_transactions s"
+                " WHERE s.doc_base=? ORDER BY s.doc_no", (doc_base,)
+            ).fetchall()
+            if not rows:
+                c.execute("DELETE FROM txn_review_docs WHERE doc_base=?", (doc_base,))
+                continue
+            n = _persist_doc(c, doc_base, [dict(r) for r in rows])
+            if n is not None:
+                flagged += 1
+                flags_total += n
+        if conn is None:
+            c.commit()
+        return {'docs_scanned': len(doc_bases), 'docs_flagged': flagged, 'flags_total': flags_total}
+
+
+def scan_after_import(batch_id: int, conn=None, db_path=None) -> dict:
+    """Re-scan documents touched by an import batch (used by the import hooks)."""
+    with _ConnCtx(conn, db_path) as c:
+        rows = c.execute(
+            "SELECT DISTINCT doc_base FROM sales_transactions"
+            " WHERE batch_id=? AND doc_base IS NOT NULL", (batch_id,)
+        ).fetchall()
+        result = scan_docs([r['doc_base'] for r in rows], conn=c)
+        if conn is None:
+            c.commit()
+        return result
 
 
 # ── Row-level rule checks ─────────────────────────────────────────────────────
@@ -211,10 +448,12 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
     date_iso = row.get('date_iso') or ''
     customer_code = row.get('customer_code') or ''
     doc_no = row.get('doc_no') or ''
-    batch_id = row.get('batch_id', 0)
+    doc_base = row.get('doc_base') or ''
 
     # Determine if this is an SR / return row (skip price rules)
     is_sr = bool(ref_invoice.strip()) or qty <= 0
+    is_free = qty > 0 and abs(net) < 0.005       # แถม — earned zero revenue
+    skip_price = is_sr or is_free
 
     # ── R1_UNMAPPED ──────────────────────────────────────────────────────────
     if product_id is None:
@@ -262,8 +501,8 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
         })
         # No ratio → R2/R5 cannot compute accurate per-base-unit price
         # Still run R3 (uses unit_price directly, no ratio)
-        if not is_sr:
-            med, src = _r3_history(conn, batch_id, product_id, unit,
+        if not skip_price:
+            med, src = _r3_history(conn, doc_base, product_id, unit,
                                    customer_code or None, date_iso)
             if med is not None and med > 0:
                 pct_dev = abs(unit_price - med) / med
@@ -296,7 +535,7 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
     per_base = unit_price / ratio if ratio else unit_price
 
     # ── R2_BELOW_COST ────────────────────────────────────────────────────────
-    if not is_sr and cost_price > 0:
+    if not skip_price and cost_price > 0:
         # eff per-base-unit should be >= cost_price * R2_TOLERANCE
         # But the test for R2 uses eff = net/qty (per sold unit = per derived unit)
         # and compares against cost * ratio
@@ -320,8 +559,8 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
             })
 
     # ── R3_PRICE_DEVIATION ───────────────────────────────────────────────────
-    if not is_sr:
-        med, src = _r3_history(conn, batch_id, product_id, unit,
+    if not skip_price:
+        med, src = _r3_history(conn, doc_base, product_id, unit,
                                customer_code or None, date_iso)
         if med is not None and med > 0:
             pct_dev = abs(unit_price - med) / med
@@ -343,7 +582,7 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
                 })
 
     # ── R5_PROMO_MISMATCH ────────────────────────────────────────────────────
-    if not is_sr:
+    if not skip_price:
         promo = _get_active_promo_on_date(conn, product_id, date_iso)
         if promo is not None:
             expected_per_base = _promo_expected_per_base_unit(
@@ -406,324 +645,3 @@ def _pct_str(actual: float, median: float) -> str:
     sign = '+' if pct >= 0 else ''
     return f'{sign}{pct:.1f}%'
 
-
-# ── Fingerprint ───────────────────────────────────────────────────────────────
-
-def _make_fingerprint(flags_list: List[dict], doc_no_list: List[str],
-                      qty_list: List[float], price_list: List[float]) -> Optional[str]:
-    """SHA-1 of sorted (rule_code|doc_no|qty|unit_price) tuples."""
-    if not flags_list:
-        return None
-    parts = []
-    for f, doc_no, qty, price in zip(flags_list, doc_no_list, qty_list, price_list):
-        parts.append(f"{f['rule_code']}|{doc_no}|{qty}|{price}")
-    parts.sort()
-    return hashlib.sha1('\n'.join(parts).encode('utf-8')).hexdigest()
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def scan_batch(batch_id: int,
-               conn: Optional[sqlite3.Connection] = None,
-               db_path: Optional[str] = None) -> dict:
-    """Idempotent: delete & recompute all flags for batch_id in ONE transaction.
-
-    Review decisions (ok/wrong) survive if the flags_fingerprint is unchanged.
-    Changed or newly flagged docs reset to 'pending' (old note prefixed '[เดิม]').
-    Clean docs get review_status='auto_passed'.
-
-    Returns summary dict:
-      docs_total, docs_clean, docs_flagged, flags_total
-    """
-    with _ConnCtx(conn, db_path) as c:
-        # Load all sales rows for this batch
-        rows = c.execute("""
-            SELECT s.id, s.batch_id, s.date_iso, s.doc_no, s.doc_base,
-                   s.product_id, s.bsn_code, s.product_name_raw,
-                   s.customer, s.customer_code, s.qty, s.unit,
-                   s.unit_price, s.vat_type, s.net, s.ref_invoice
-            FROM sales_transactions s
-            WHERE s.batch_id = ?
-            ORDER BY s.doc_base, s.doc_no
-        """, (batch_id,)).fetchall()
-
-        # Group by doc_base
-        docs = {}
-        for r in rows:
-            db = r['doc_base']
-            if db not in docs:
-                docs[db] = {
-                    'date_iso': r['date_iso'],
-                    'customer': r['customer'],
-                    'customer_code': r['customer_code'],
-                    'lines': [],
-                }
-            docs[db]['lines'].append(dict(r))
-
-        # Snapshot existing decisions keyed by doc_base
-        old_docs = {}
-        for row in c.execute(
-            "SELECT doc_base, flags_fingerprint, review_status, reviewed_by, reviewed_at, note "
-            "FROM txn_review_docs WHERE batch_id=?", (batch_id,)
-        ).fetchall():
-            old_docs[row['doc_base']] = dict(row)
-
-        # Delete all existing flags for this batch (doc rows are UPSERTed below)
-        c.execute("""
-            DELETE FROM txn_review_flags
-            WHERE doc_review_id IN (
-                SELECT id FROM txn_review_docs WHERE batch_id=?
-            )
-        """, (batch_id,))
-
-        total_flags = 0
-        docs_clean = 0
-        docs_flagged = 0
-
-        for doc_base, doc_info in docs.items():
-            all_flags = []
-            doc_nos = []
-            qtys = []
-            prices = []
-
-            for line in doc_info['lines']:
-                line_flags = _check_row_rules(c, line)
-                for fl in line_flags:
-                    all_flags.append(fl)
-                    doc_nos.append(line['doc_no'])
-                    qtys.append(float(line['qty'] or 0))
-                    prices.append(float(line['unit_price'] or 0))
-
-            flag_count = len(all_flags)
-            new_fp = _make_fingerprint(all_flags, doc_nos, qtys, prices)
-
-            # Determine max severity
-            max_sev = None
-            for fl in all_flags:
-                sev = fl['severity']
-                if max_sev is None or _SEVERITY_ORDER[sev] > _SEVERITY_ORDER[max_sev]:
-                    max_sev = sev
-
-            # Decide review_status
-            old = old_docs.get(doc_base)
-            if flag_count == 0:
-                new_status = 'auto_passed'
-                docs_clean += 1
-            else:
-                docs_flagged += 1
-                if old and old['flags_fingerprint'] == new_fp and old['review_status'] in ('ok', 'wrong'):
-                    # Unchanged fingerprint → keep human decision
-                    new_status = old['review_status']
-                else:
-                    new_status = 'pending'
-
-            # Determine note carry-forward
-            carry_note = None
-            carry_by = None
-            carry_at = None
-            if old:
-                if new_status == 'pending' and old.get('note'):
-                    carry_note = f"[เดิม] {old['note']}"
-                elif new_status in ('ok', 'wrong'):
-                    carry_note = old.get('note')
-                    carry_by = old.get('reviewed_by')
-                    carry_at = old.get('reviewed_at')
-
-            # UPSERT doc row
-            c.execute("""
-                INSERT INTO txn_review_docs
-                    (batch_id, doc_base, date_iso, customer, customer_code,
-                     line_count, flag_count, max_severity, flags_fingerprint,
-                     review_status, reviewed_by, reviewed_at, note)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(batch_id, doc_base) DO UPDATE SET
-                    date_iso          = excluded.date_iso,
-                    customer          = excluded.customer,
-                    customer_code     = excluded.customer_code,
-                    line_count        = excluded.line_count,
-                    flag_count        = excluded.flag_count,
-                    max_severity      = excluded.max_severity,
-                    flags_fingerprint = excluded.flags_fingerprint,
-                    review_status     = excluded.review_status,
-                    reviewed_by       = excluded.reviewed_by,
-                    reviewed_at       = excluded.reviewed_at,
-                    note              = excluded.note
-            """, (
-                batch_id, doc_base, doc_info['date_iso'],
-                doc_info['customer'], doc_info['customer_code'],
-                len(doc_info['lines']), flag_count, max_sev, new_fp,
-                new_status, carry_by, carry_at, carry_note,
-            ))
-
-            # Get the doc_review_id
-            doc_review_id = c.execute(
-                "SELECT id FROM txn_review_docs WHERE batch_id=? AND doc_base=?",
-                (batch_id, doc_base)
-            ).fetchone()['id']
-
-            # Insert flags
-            for fl, doc_no, qty, price in zip(all_flags, doc_nos, qtys, prices):
-                # Find the txn_id for this doc_no
-                txn_row = c.execute(
-                    "SELECT id FROM sales_transactions WHERE batch_id=? AND doc_no=?",
-                    (batch_id, doc_no)
-                ).fetchone()
-                txn_id = txn_row['id'] if txn_row else None
-                c.execute("""
-                    INSERT INTO txn_review_flags
-                        (doc_review_id, batch_id, txn_id, doc_no,
-                         rule_code, severity, message_th, details_json)
-                    VALUES (?,?,?,?,?,?,?,?)
-                """, (
-                    doc_review_id, batch_id, txn_id, doc_no,
-                    fl['rule_code'], fl['severity'], fl['message_th'],
-                    fl.get('details_json'),
-                ))
-                total_flags += 1
-
-        # Prune docs no longer present in this batch. The diff-based importer
-        # DELETEs changed lines from an old batch (they re-enter under a new
-        # batch_id), so a doc can vanish from batch N — without this prune its
-        # stale txn_review_docs row would survive as a ghost 'pending' doc
-        # inflating pending_review_count() and batch progress.
-        # Subquery = current doc set; emptied batch → prunes everything.
-        # (Flags were already deleted above while the stale doc rows existed.)
-        c.execute("""
-            DELETE FROM txn_review_docs
-            WHERE batch_id = ?
-              AND doc_base NOT IN (
-                  SELECT DISTINCT doc_base FROM sales_transactions
-                  WHERE batch_id = ? AND doc_base IS NOT NULL
-              )
-        """, (batch_id, batch_id))
-
-        if conn is None:
-            c.commit()
-
-        return {
-            'batch_id': batch_id,
-            'docs_total': docs_clean + docs_flagged,
-            'docs_clean': docs_clean,
-            'docs_flagged': docs_flagged,
-            'flags_total': total_flags,
-        }
-
-
-def get_batch_review(batch_id: int,
-                     conn: Optional[sqlite3.Connection] = None,
-                     db_path: Optional[str] = None) -> dict:
-    """Return all docs + flags for batch_id, grouped by date_iso.
-
-    Returns {date_iso: [doc_dict_with_flags_list, ...]}
-    """
-    with _ConnCtx(conn, db_path) as c:
-        docs = c.execute("""
-            SELECT id, batch_id, doc_base, date_iso, customer, customer_code,
-                   line_count, flag_count, max_severity, flags_fingerprint,
-                   review_status, reviewed_by, reviewed_at, note, created_at
-            FROM txn_review_docs
-            WHERE batch_id=?
-            ORDER BY date_iso, doc_base
-        """, (batch_id,)).fetchall()
-
-        result = {}
-        for d in docs:
-            date_iso = d['date_iso'] or ''
-            flags = c.execute("""
-                SELECT id, txn_id, doc_no, rule_code, severity, message_th,
-                       details_json, created_at
-                FROM txn_review_flags
-                WHERE doc_review_id=?
-                ORDER BY CASE severity
-                             WHEN 'high'   THEN 3
-                             WHEN 'medium' THEN 2
-                             ELSE 1
-                         END DESC, id
-            """, (d['id'],)).fetchall()
-            doc_dict = dict(d)
-            doc_dict['flags'] = [dict(f) for f in flags]
-            result.setdefault(date_iso, []).append(doc_dict)
-
-        return result
-
-
-def get_sales_batches(limit: int = 20,
-                      conn: Optional[sqlite3.Connection] = None,
-                      db_path: Optional[str] = None) -> List[dict]:
-    """Return import_log rows where notes='sales', newest first, with review progress.
-
-    Each row includes: id, filename, rows_imported, rows_skipped, notes,
-    imported_at, docs_total, docs_auto_passed, docs_pending, docs_ok, docs_wrong.
-    """
-    with _ConnCtx(conn, db_path) as c:
-        batches = c.execute("""
-            SELECT id, filename, rows_imported, rows_skipped, notes, imported_at
-            FROM import_log
-            WHERE notes = 'sales'
-            ORDER BY id DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
-
-        result = []
-        for b in batches:
-            bid = b['id']
-            counts = c.execute("""
-                SELECT
-                    COUNT(*) as docs_total,
-                    SUM(CASE WHEN review_status='auto_passed' THEN 1 ELSE 0 END) as docs_auto_passed,
-                    SUM(CASE WHEN review_status='pending'     THEN 1 ELSE 0 END) as docs_pending,
-                    SUM(CASE WHEN review_status='ok'          THEN 1 ELSE 0 END) as docs_ok,
-                    SUM(CASE WHEN review_status='wrong'       THEN 1 ELSE 0 END) as docs_wrong
-                FROM txn_review_docs
-                WHERE batch_id=?
-            """, (bid,)).fetchone()
-            row = dict(b)
-            row['docs_total']       = counts['docs_total']       or 0
-            row['docs_auto_passed'] = counts['docs_auto_passed'] or 0
-            row['docs_pending']     = counts['docs_pending']     or 0
-            row['docs_ok']          = counts['docs_ok']          or 0
-            row['docs_wrong']       = counts['docs_wrong']       or 0
-            result.append(row)
-
-        return result
-
-
-def mark_doc(doc_review_id: int,
-             status: str,
-             note: Optional[str],
-             reviewed_by: str,
-             conn: Optional[sqlite3.Connection] = None,
-             db_path: Optional[str] = None) -> None:
-    """Update review decision on a txn_review_docs row.
-
-    status must be 'ok' or 'wrong'.
-    Raises ValueError for invalid status.
-    """
-    if status not in ('ok', 'wrong'):
-        raise ValueError(f"Invalid status '{status}'; must be 'ok' or 'wrong'")
-
-    with _ConnCtx(conn, db_path) as c:
-        c.execute("""
-            UPDATE txn_review_docs
-            SET review_status = ?,
-                reviewed_by   = ?,
-                reviewed_at   = datetime('now','localtime'),
-                note          = ?
-            WHERE id = ?
-        """, (status, reviewed_by, note, doc_review_id))
-        if conn is None:
-            c.commit()
-
-
-def pending_review_count(conn: Optional[sqlite3.Connection] = None,
-                         db_path: Optional[str] = None) -> int:
-    """Count txn_review_docs rows with review_status='pending'. Returns 0 on error."""
-    with _ConnCtx(conn, db_path) as c:
-        try:
-            row = c.execute(
-                "SELECT COUNT(*) FROM txn_review_docs WHERE review_status='pending'"
-            ).fetchone()
-            return int(row[0]) if row else 0
-        except sqlite3.OperationalError:
-            # Table doesn't exist yet (before migration applied)
-            return 0

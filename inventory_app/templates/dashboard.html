@@ -4,10 +4,10 @@
 {% block page_desc %}<div class="page-desc">สรุปสต็อกและความเคลื่อนไหวล่าสุด</div>{% endblock %}
 
 {% block content %}
-{% if pending_review_count > 0 %}
+{% if suspicious_count > 0 %}
 <div class="alert alert-warning d-flex align-items-center gap-2 mb-3" role="alert">
   <i class="bi bi-clipboard-check fs-5"></i>
-  <span class="flex-grow-1">มีบิลรอตรวจ <strong>{{ pending_review_count }}</strong> ใบ</span>
+  <span class="flex-grow-1">พบบิลน่าสงสัย <strong>{{ suspicious_count }}</strong> ใบ (6 เดือนล่าสุด)</span>
   <a href="{{ url_for('review.index') }}" class="btn btn-sm btn-warning">ไปตรวจบิล</a>
 </div>
 {% endif %}

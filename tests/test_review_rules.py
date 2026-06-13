@@ -538,32 +538,43 @@ class TestR3PriceDeviation:
         })
         assert 'R3_PRICE_DEVIATION' not in [f['rule_code'] for f in flags]
 
-    def test_current_batch_excluded_from_history(self, tmp_path):
-        """Rows from the CURRENT batch must not count as history."""
+    def test_current_doc_excluded_from_history(self, tmp_path):
+        """Rows sharing the CURRENT doc_base are excluded from its own history.
+
+        Uses the customer-specific path (≥2 rows triggers R3) to avoid the
+        ≥2-distinct-doc_bases global-fallback requirement masking the test.
+
+        Old code (batch exclusion): hist_batch rows NOT excluded → 2 customer-history
+        rows at 100 → median 100 → scanned 200 = +100% deviation → R3 fires → RED.
+
+        New code (doc_base exclusion): doc_base='IV002' rows excluded → 0 customer
+        history → insufficient → no R3 → GREEN.
+        """
         db_path, conn = _make_db(tmp_path)
-        batch_id = _add_batch(conn)   # only one batch — current scan batch
+        hist_batch = _add_batch(conn)   # different batch — old batch exclusion won't filter these
+        batch_id = _add_batch(conn)
         _add_product(conn, 1)
-        # Seed 3 rows in the SAME (current) batch
-        for i in range(3):
+        # 2 history rows: different batch but SAME doc_base='IV002', same customer_code
+        for i in range(2):
             conn.execute("""
                 INSERT INTO sales_transactions
                     (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,
                      product_name_raw, customer, customer_code, qty, unit,
                      unit_price, vat_type, discount, total, net, ref_invoice)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,NULL,?,?,NULL)
-            """, (batch_id, "2026-06-01", f"IV_CURR-{i+1}", "IV_CURR",
-                  1, 'ABC001', 'ชื่อดิบ', 'ลูกค้าA', None,
+            """, (hist_batch, "2026-06-01", f"IV002-{i+1}", "IV002",
+                  1, 'ABC001', 'ชื่อดิบ', 'ลูกค้าA', 'CUST01',
                   1.0, 'ตัว', 100.0, 100.0, 100.0))
         conn.commit()
         rr = _import_rr(db_path)
         flags = rr._check_row_rules(conn, {
-            'id': 99, 'batch_id': batch_id, 'doc_no': 'IV002-1', 'doc_base': 'IV002',
+            'id': 99, 'batch_id': batch_id, 'doc_no': 'IV002-3', 'doc_base': 'IV002',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 200.0,
-            'qty': 1.0, 'net': 200.0, 'customer': 'ลูกค้าใหม่', 'customer_code': 'C999',
+            'qty': 1.0, 'net': 200.0, 'customer': 'ลูกค้าA', 'customer_code': 'CUST01',
             'ref_invoice': None,
         })
-        # Current-batch rows must not serve as history: no R3 fire
+        # Own-doc rows must be excluded → insufficient customer history → no R3
         assert 'R3_PRICE_DEVIATION' not in [f['rule_code'] for f in flags]
 
     def test_customer_specific_history_preferred(self, tmp_path):
@@ -950,3 +961,37 @@ class TestR5PromoMismatch:
             'ref_invoice': 'IV001',
         })
         assert 'R5_PROMO_MISMATCH' not in [f['rule_code'] for f in flags]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Free-goods guard (แถม lines)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFreeGoodsGuard:
+    def test_free_line_skips_r2_below_cost(self, tmp_path):
+        db_path, conn = _make_db(tmp_path)
+        bid = _add_batch(conn)
+        _add_product(conn, 1, unit_type="ตัว", cost_price=100.0)
+        # qty 25, net 0 → eff=0 < cost; must NOT flag R2 (it's แถม)
+        _add_sales_row(conn, bid, "IV001", product_id=1, qty=25, unit="ตัว",
+                       unit_price=0, net=0)
+        row = dict(conn.execute(
+            "SELECT * FROM sales_transactions WHERE doc_no='IV001'"
+        ).fetchone())
+        rr = _import_rr(db_path)
+        flags = rr._check_row_rules(conn, row)
+        codes = {f['rule_code'] for f in flags}
+        assert 'R2_BELOW_COST' not in codes
+        assert 'R3_PRICE_DEVIATION' not in codes
+
+    def test_free_line_still_flags_r1_unmapped(self, tmp_path):
+        db_path, conn = _make_db(tmp_path)
+        bid = _add_batch(conn)
+        _add_sales_row(conn, bid, "IV002", product_id=None, qty=25, unit="ตัว",
+                       unit_price=0, net=0)
+        row = dict(conn.execute(
+            "SELECT * FROM sales_transactions WHERE doc_no='IV002'"
+        ).fetchone())
+        rr = _import_rr(db_path)
+        codes = {f['rule_code'] for f in rr._check_row_rules(conn, row)}
+        assert 'R1_UNMAPPED' in codes
