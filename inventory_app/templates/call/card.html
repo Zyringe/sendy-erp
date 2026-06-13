@@ -40,19 +40,21 @@
 .cc-arflag{background:var(--cc-red-bg);color:var(--cc-red);border-radius:8px;padding:8px 11px;font-size:12.5px;font-weight:600;margin-top:11px}
 
 .cc-addbox{display:flex;gap:8px;margin-bottom:12px}
-.cc-addbox input{flex:1;border:1px solid var(--cc-line);border-radius:8px;padding:9px 11px;font-family:inherit;font-size:14px;outline:0}
+.cc-addbox input[type=text]{flex:1;border:1px solid var(--cc-line);border-radius:8px;padding:9px 11px;font-family:inherit;font-size:14px;outline:0}
 .cc-addbox button{border:0;background:var(--cc-brand);color:#fff;font-family:inherit;font-weight:600;border-radius:8px;padding:0 17px;cursor:pointer}
 .cc-logitem{padding:9px 0;border-top:1px solid var(--cc-line);font-size:13px}
 .cc-logitem:first-of-type{border-top:0}
-.cc-logitem .meta{font-size:11px;color:var(--cc-muted);margin-top:3px}
+.cc-logitem .meta{font-size:11px;color:var(--cc-muted);margin-top:3px;display:flex;align-items:center;gap:8px}
 .cc-logitem .call{color:var(--cc-green);font-weight:600}
 .cc-logitem .flag{color:var(--cc-red)}
 .cc-tagrow{display:flex;gap:6px;flex-wrap:wrap;margin:13px 0 4px}
 .cc-t{font-size:12px;font-weight:600;padding:4px 11px;border-radius:999px;background:#eaf1fb;color:var(--cc-brand)}
 .cc-nextcall{font-size:12.5px;color:var(--cc-muted);margin-top:11px}
 .cc-nextcall b{color:var(--cc-ink)}
-.cc-miniflag{display:inline-block;font-size:11px;color:var(--cc-muted);border:1px solid var(--cc-line);border-radius:6px;padding:2px 8px;margin-left:6px;cursor:pointer}
+.cc-miniflag{display:inline-block;font-size:11px;color:var(--cc-muted);border:1px solid var(--cc-line);border-radius:6px;padding:2px 8px;margin-left:6px;cursor:pointer;background:none;font-family:inherit}
 .cc-srcnote{font-size:11.5px;color:var(--cc-muted);margin-top:13px}
+.cc-delbtn{border:0;background:none;color:var(--cc-muted);font-size:11px;cursor:pointer;padding:0 4px;font-family:inherit}
+.cc-delbtn:hover{color:var(--cc-red)}
 
 .cc-base{font-weight:600}
 .cc-promo{font-size:11px;color:var(--cc-green);font-weight:600;margin-top:2px}
@@ -65,6 +67,13 @@
 .cc-li .sub{font-size:11.5px;color:var(--cc-muted);margin-top:2px}
 .cc-pill{flex:0 0 auto;font-size:11px;font-weight:600;padding:3px 9px;border-radius:7px;height:fit-content;background:#eef1f5;color:var(--cc-muted)}
 
+.cc-section-sep{border:0;border-top:1px solid var(--cc-line);margin:13px 0}
+.cc-field-row{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.cc-field-row label{font-size:12px;color:var(--cc-muted);min-width:80px}
+.cc-field-row input[type=text],.cc-field-row input[type=date],.cc-field-row input[type=number]{
+  border:1px solid var(--cc-line);border-radius:7px;padding:5px 9px;font-family:inherit;font-size:13px;outline:0;flex:1;min-width:0}
+.cc-smsbtn{border:0;background:var(--cc-brand);color:#fff;font-family:inherit;font-size:12px;font-weight:600;border-radius:7px;padding:5px 13px;cursor:pointer}
+
 @media(max-width:900px){.cc-cols{grid-template-columns:1fr}}
 </style>
 {% endblock %}
@@ -75,6 +84,7 @@
 {% block content %}
 {% set m = d.master %}
 {% set cs, call_days = d.call_status %}
+{% set current_user = session.get('username') %}
 
 <div class="container-fluid px-4 py-3">
   <nav aria-label="breadcrumb" class="mb-2">
@@ -107,7 +117,6 @@
 
     <div class="right">
       <div class="badges">
-        {# Badges from get_card don't include AR at list level; check ar rows instead #}
         {% set ar_total = (d.ar | map(attribute='outstanding') | list | sum) if d.ar else 0 %}
         {% if ar_total > 0 %}<span class="cc-hb">⚠️ ค้าง {{ fmt_thb(ar_total) }}</span>{% endif %}
       </div>
@@ -134,8 +143,6 @@
       {# ── สรุปลูกค้า ── #}
       <div class="cc-panel">
         <h2>📊 สรุปลูกค้า</h2>
-        {# d.summary is the full dict from get_customer_summary();
-           actual aggregates are under d.summary['summary'] #}
         {% set s = d.summary %}
         {% set stats = (s.summary if s and s.summary is defined else {}) %}
         {% if s %}
@@ -159,7 +166,6 @@
       <div class="cc-panel">
         <h2>💰 ยอดค้าง / เครดิต</h2>
         {% set total_outstanding = (d.ar | map(attribute='outstanding') | list | sum) %}
-        {# overdue = rows with age_days > 30 (rough; Express is authoritative) #}
         {% set total_overdue_rows = d.ar | selectattr('age_days', 'gt', 30) | list %}
         {% set total_overdue = (total_overdue_rows | map(attribute='outstanding') | list | sum) %}
         <div class="cc-arbox"><span>ค้างชำระทั้งหมด</span><span class="v">{{ fmt_thb(total_outstanding) }}</span></div>
@@ -170,19 +176,96 @@
       </div>
       {% endif %}
 
+      {# ── ข้อมูลติดต่อ (editable) ── #}
+      <div class="cc-panel">
+        <h2>📋 ข้อมูลติดต่อ</h2>
+        <form method="post" action="{{ url_for('call.call_contact', customer_code=customer_code) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="cc-field-row">
+            <label>เบอร์โทร</label>
+            <input type="text" name="phone" value="{{ m.phone or '' }}" placeholder="0x-xxx-xxxx">
+          </div>
+          <div class="cc-field-row">
+            <label>ผู้ติดต่อ</label>
+            <input type="text" name="contact" value="{{ m.contact or '' }}" placeholder="ชื่อผู้ติดต่อ">
+          </div>
+          <div class="cc-field-row">
+            <label>ที่อยู่</label>
+            <input type="text" name="address" value="{{ m.address or '' }}" placeholder="ที่อยู่">
+          </div>
+          <div style="margin-top:10px">
+            <button type="submit" class="cc-smsbtn">บันทึกข้อมูลติดต่อ</button>
+          </div>
+        </form>
+      </div>
+
+      {# ── CRM: tags / next-call / call-target ── #}
+      <div class="cc-panel">
+        <h2>🏷 แท็ก / นัดหมาย / รอบโทร</h2>
+        {% set crm = d.crm %}
+
+        {# Current tags display #}
+        {% if crm and crm.tags %}
+        <div class="cc-tagrow">
+          {% for tag in crm.tags.split(',') %}
+          <span class="cc-t">{{ tag.strip() }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        {# Tags form #}
+        <form method="post" action="{{ url_for('call.call_crm', customer_code=customer_code) }}" style="margin-top:8px">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="cc-field-row">
+            <label>แท็ก</label>
+            <input type="text" name="tags" value="{{ (crm.tags or '') if crm else '' }}" placeholder="vip, ติดตาม, ลดราคา (คั่นด้วย ,)">
+            <button type="submit" class="cc-smsbtn">บันทึก</button>
+          </div>
+        </form>
+
+        <hr class="cc-section-sep">
+
+        {# Next-call date form #}
+        <form method="post" action="{{ url_for('call.call_crm', customer_code=customer_code) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="cc-field-row">
+            <label>นัดโทร</label>
+            <input type="date" name="next_call_date" value="{{ (crm.next_call_date or '') if crm else '' }}">
+            <button type="submit" class="cc-smsbtn">แก้</button>
+          </div>
+        </form>
+
+        {% if crm and crm.next_call_date %}
+        <div class="cc-nextcall">🔔 นัดโทรครั้งต่อไป: <b>{{ crm.next_call_date }}</b></div>
+        {% endif %}
+
+        <hr class="cc-section-sep">
+
+        {# Call-target-days form #}
+        <form method="post" action="{{ url_for('call.call_crm', customer_code=customer_code) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="cc-field-row">
+            <label>รอบโทร (วัน)</label>
+            <input type="number" name="call_target_days" min="1" max="9999"
+              value="{{ (crm.call_target_days or '') if crm else '' }}"
+              placeholder="365 (ค่าตั้งต้น)">
+            <button type="submit" class="cc-smsbtn">แก้</button>
+          </div>
+        </form>
+      </div>
+
       {# ── บันทึกการโทร / โน้ต ── #}
       <div class="cc-panel">
         <h2>📝 บันทึกการโทร / โน้ต</h2>
 
-        {# Note form — P5 wires this; action="#" avoids url_for BuildError #}
-        <div class="cc-addbox">
-          <form method="post" action="#" style="display:contents">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="hidden" name="customer_code" value="{{ customer_code }}">
+        {# Note form #}
+        <form method="post" action="{{ url_for('call.call_note', customer_code=customer_code) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="cc-addbox">
             <input type="text" name="body" placeholder="เพิ่มบันทึก… (พิมพ์อะไรก็ได้)">
-            <button type="submit" disabled title="จะเปิดใช้งานใน P5">เพิ่ม</button>
-          </form>
-        </div>
+            <button type="submit">เพิ่ม</button>
+          </div>
+        </form>
 
         {# Call log #}
         {% for entry in d.log %}
@@ -193,30 +276,31 @@
             {% else %}{{ entry.body or '' }}
             {% endif %}
           </div>
-          <div class="meta">{{ entry.created_by or '—' }} · {{ (entry.created_at or '')[:16] }}</div>
+          <div class="meta">
+            <span>{{ entry.created_by or '—' }} · {{ (entry.created_at or '')[:16] }}</span>
+            {# Soft-delete: only the author can delete their own entry #}
+            {% if entry.created_by and entry.created_by == current_user %}
+            <form method="post" action="{{ url_for('call.call_log_delete', log_id=entry.id) }}" style="display:inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="customer_code" value="{{ customer_code }}">
+              <button type="submit" class="cc-delbtn" onclick="return confirm('ลบบันทึกนี้?')">ลบ</button>
+            </form>
+            {% endif %}
+          </div>
         </div>
         {% else %}
         <p class="text-muted small mb-0">ยังไม่มีบันทึก</p>
         {% endfor %}
 
-        {# Tags (read-only for now; P5 adds the tag/next-call form) #}
-        {% set crm = d.crm %}
-        {% if crm and crm.tags %}
-        <div class="cc-tagrow">
-          {% for tag in crm.tags.split(',') %}
-          <span class="cc-t">{{ tag.strip() }}</span>
-          {% endfor %}
-        </div>
-        {% endif %}
-
-        {% if crm and crm.next_call_date %}
-        <div class="cc-nextcall">🔔 นัดโทรครั้งต่อไป: <b>{{ crm.next_call_date }}</b></div>
-        {% endif %}
-
+        {# Flag Express data as suspicious #}
         <div class="cc-srcnote">
           ตัวเลขยอดขาย/ราคา ดึงจาก Express — แก้ตรงนี้ไม่ได้
-          {# P5: <form method="post" action="{{ url_for('call.call_note') }}">…</form> #}
-          <span class="cc-miniflag" title="รายงานข้อมูลผิดพลาด (จะเปิดใน P5)">🚩 ตัวเลขนี้น่าจะผิด</span>
+          <form method="post" action="{{ url_for('call.call_note', customer_code=customer_code) }}" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="flag" value="1">
+            <input type="hidden" name="body" value="">
+            <button type="submit" class="cc-miniflag">🚩 ตัวเลขนี้น่าจะผิด</button>
+          </form>
         </div>
       </div>
 

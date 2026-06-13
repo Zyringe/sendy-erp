@@ -1,6 +1,6 @@
 """Call-card blueprint — /call worklist + /call/<customer_code> card.
 
-P3+P4: read-only UI.  P5 will add note/tag/contact/crm/log-delete POSTs.
+P3+P4: read-only UI.  P5: note/flag/tags/next-call/contact/log-delete POSTs.
 """
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session)
@@ -75,7 +75,8 @@ def call_list():
     )
 
 
-@bp_call.route('/call/<customer_code>')
+# P5: use <path:customer_code> so orphan canonical keys containing '/' don't 404
+@bp_call.route('/call/<path:customer_code>')
 def call_card(customer_code):
     conn = get_connection()
     data = cc.get_card(conn, customer_code)
@@ -92,10 +93,71 @@ def call_card(customer_code):
     )
 
 
-@bp_call.route('/call/<customer_code>/mark-called', methods=['POST'])
+@bp_call.route('/call/<path:customer_code>/mark-called', methods=['POST'])
 def call_mark_called(customer_code):
     conn = get_connection()
     cc.mark_called(conn, customer_code, session.get('username'))
     conn.close()
     flash('บันทึกว่าโทรแล้ววันนี้', 'success')
     return redirect(request.referrer or url_for('call.call_list'))
+
+
+# ── P5 write routes ────────────────────────────────────────────────────────────
+
+@bp_call.route('/call/<path:customer_code>/note', methods=['POST'])
+def call_note(customer_code):
+    conn = get_connection()
+    kind = 'data_flag' if request.form.get('flag') else 'note'
+    body = request.form.get('body', '').strip()
+    cc.add_log(conn, customer_code, kind, body, session.get('username'))
+    conn.close()
+    flash('บันทึกแล้ว', 'success')
+    return redirect(url_for('call.call_card', customer_code=customer_code))
+
+
+@bp_call.route('/call/<path:customer_code>/crm', methods=['POST'])
+def call_crm(customer_code):
+    conn = get_connection()
+    f = request.form
+    fields = {}
+    if 'tags' in f:
+        fields['tags'] = f.get('tags', '').strip()
+    if 'next_call_date' in f:
+        fields['next_call_date'] = f.get('next_call_date') or None
+    if 'call_target_days' in f:
+        raw = f.get('call_target_days', '').strip()
+        fields['call_target_days'] = int(raw) if raw else None
+    if fields:
+        cc.upsert_crm(conn, customer_code, session.get('username'), **fields)
+    conn.close()
+    flash('บันทึก CRM แล้ว', 'success')
+    return redirect(url_for('call.call_card', customer_code=customer_code))
+
+
+@bp_call.route('/call/<path:customer_code>/contact', methods=['POST'])
+def call_contact(customer_code):
+    conn = get_connection()
+    f = request.form
+    cur = conn.execute(
+        'UPDATE customers SET phone=?, contact=?, address=? WHERE code=?',
+        (f.get('phone', '').strip() or None,
+         f.get('contact', '').strip() or None,
+         f.get('address', '').strip() or None,
+         customer_code),
+    )
+    conn.commit()
+    conn.close()
+    if cur.rowcount == 0:
+        flash('ลูกค้านี้ไม่มีระเบียนหลัก แก้ข้อมูลติดต่อไม่ได้', 'warning')
+    else:
+        flash('แก้ข้อมูลติดต่อแล้ว', 'success')
+    return redirect(url_for('call.call_card', customer_code=customer_code))
+
+
+@bp_call.route('/call/log/<int:log_id>/delete', methods=['POST'])
+def call_log_delete(log_id):
+    conn = get_connection()
+    cc.soft_delete_log(conn, log_id, session.get('username'))
+    code = request.form.get('customer_code', '')
+    conn.close()
+    return redirect(url_for('call.call_card', customer_code=code))

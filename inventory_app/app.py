@@ -201,6 +201,10 @@ _STAFF_POST_OK = frozenset([
     'api_product_barcodes',
     'review.scan',
     'call.call_mark_called',
+    'call.call_note',
+    'call.call_crm',
+    'call.call_contact',
+    'call.call_log_delete',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'customer_reassign', 'customer_bulk_reassign',
