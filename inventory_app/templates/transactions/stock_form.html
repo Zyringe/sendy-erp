@@ -68,7 +68,7 @@
           <div class="d-flex gap-2">
             <a href="{{ url_for('products.product_detail', product_id=product.id) }}"
                class="btn btn-outline-secondary flex-fill">ยกเลิก</a>
-            <button type="submit" class="btn flex-fill fw-500"
+            <button type="submit" class="btn flex-fill fw-500 btn-touch"
                     style="{% if txn_type == 'IN' %}background:#2e7d3a;border-color:#2e7d3a{% else %}background:#c41e2a;border-color:#c41e2a{% endif %};color:#fff">
               <i class="bi bi-check-circle me-1"></i>ยืนยัน
             </button>

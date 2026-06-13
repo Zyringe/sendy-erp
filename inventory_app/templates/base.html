@@ -310,7 +310,7 @@
 
   <!-- Top bar -->
   <header class="topbar">
-    <button class="btn btn-sm btn-outline-secondary d-lg-none me-2"
+    <button class="btn btn-sm btn-outline-secondary d-lg-none me-2 btn-touch"
             onclick="toggleSidebar()" aria-label="เมนู">
       <i class="bi bi-list"></i>
     </button>
@@ -341,7 +341,7 @@
         {% endif %}
         <form method="post" action="{{ url_for('logout') }}" class="d-inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button type="submit" class="btn btn-sm btn-outline-secondary" aria-label="ออกจากระบบ">
+          <button type="submit" class="btn btn-sm btn-outline-secondary btn-touch" aria-label="ออกจากระบบ">
             <i class="bi bi-box-arrow-right"></i>
             <span class="d-none d-lg-inline ms-1">ออก</span>
           </button>
