@@ -273,6 +273,8 @@ _ENDPOINT_MODULE = {
     # overview
     'dashboard': 'overview',
     'alerts_view': 'overview',
+    'review.index': 'overview',
+    'review.scan': 'overview',
     # operation
     'products.product_list': 'operation',
     'products.product_detail': 'operation',

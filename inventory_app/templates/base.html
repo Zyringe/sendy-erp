@@ -83,6 +83,13 @@
       <span class="badge-count">{{ alert_count }}</span>
       {% endif %}
     </a>
+    <a href="{{ url_for('review.index') }}"
+       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('review.') %}active{% endif %}">
+      <i class="bi bi-clipboard-check"></i> ตรวจบิล
+      {% if suspicious_count > 0 %}
+      <span class="badge-count">{{ suspicious_count }}</span>
+      {% endif %}
+    </a>
     {% endif %}
 
     {# ── คลังสินค้า ── #}
