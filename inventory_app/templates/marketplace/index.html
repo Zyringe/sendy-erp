@@ -107,7 +107,7 @@
             {% if o.platform == 'shopee' %}<span class="badge" style="background:#ee4d2d">Shopee</span>
             {% else %}<span class="badge" style="background:#003087">Lazada</span>{% endif %}
           </td>
-          <td class="small">{{ o.order_sn }}</td>
+          <td class="small"><code class="js-order-detail" role="button" data-order-id="{{ o.id }}" title="ดูรายละเอียดออเดอร์">{{ o.order_sn }}</code></td>
           <td class="small">{{ o.status or '-' }}</td>
           <td class="text-end">
             {{ o.n_items | fmt_qty }}
@@ -136,4 +136,5 @@
   {% endif %}
 </div>
 
+{% include 'marketplace/_order_detail_modal.html' %}
 {% endblock %}
