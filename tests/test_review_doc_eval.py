@@ -391,3 +391,50 @@ class TestSeverityFilter:
         rr.scan_all(db_path=db_path)
         assert "IVHI" in [d['doc_base'] for d in rr.get_review_feed(db_path=db_path)]
         assert rr.suspicious_count(db_path=db_path) == 1
+
+
+class TestScanRecent:
+    """scan_recent windows the manual rescan to the last N days so the prod
+    button stays fast — the full scan_all timed out on Railway's worker."""
+
+    def test_scan_recent_only_scans_window(self, tmp_path):
+        from datetime import date, timedelta
+        db_path = _make_db(tmp_path)
+        rr = _import_rr(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        recent = (date.today() - timedelta(days=2)).isoformat()
+        old = (date.today() - timedelta(days=60)).isoformat()
+        _add_sales_row(conn, bid, "IVNEW", product_id=None, qty=1,
+                       unit_price=5, net=5, date_iso=recent)   # R1 high
+        _add_sales_row(conn, bid, "IVOLD", product_id=None, qty=1,
+                       unit_price=5, net=5, date_iso=old)       # R1 high
+        conn.commit()
+        summary = rr.scan_recent(days=14, db_path=db_path)
+        flagged = {d['doc_base'] for d in rr.get_review_feed(db_path=db_path)}
+        assert 'IVNEW' in flagged          # within window → scanned + flagged
+        assert 'IVOLD' not in flagged       # outside window → skipped
+        assert summary['docs_scanned'] == 1
+        assert summary['days'] == 14
+
+    def test_scan_recent_preserves_existing_backlog(self, tmp_path):
+        """Unlike scan_all, scan_recent must NOT wipe docs outside the window."""
+        from datetime import date, timedelta
+        db_path = _make_db(tmp_path)
+        rr = _import_rr(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        recent = (date.today() - timedelta(days=2)).isoformat()
+        _add_sales_row(conn, bid, "IVNEW", product_id=None, qty=1,
+                       unit_price=5, net=5, date_iso=recent)
+        conn.execute("""INSERT INTO txn_review_docs
+            (doc_base, date_iso, line_count, flag_count, max_severity)
+            VALUES ('IVHISTORIC', ?, 1, 1, 'high')""",
+            ((date.today() - timedelta(days=200)).isoformat(),))
+        conn.commit()
+        rr.scan_recent(days=14, db_path=db_path)
+        flagged = {d['doc_base'] for d in rr.get_review_feed(db_path=db_path)}
+        assert 'IVNEW' in flagged          # window doc added
+        assert 'IVHISTORIC' in flagged     # backlog preserved (not wiped)
