@@ -375,3 +375,85 @@ def test_call_list_spend_window(mig103_conn):
     all_spend = next(r['spend'] for r in all_rows if r['customer_code'] == 'C001')
     six_spend = next(r['spend'] for r in six_rows if r['customer_code'] == 'C001')
     assert all_spend > six_spend, "6m window should have lower spend than all-time"
+
+
+def test_call_list_universe_stable_across_windows(mig103_conn):
+    """Customers with ONLY old sales must appear in ALL spend_windows
+    (with spend=0 in the narrow window). Universe must not shrink.
+
+    This is the core correctness check: a win-back target (gone quiet)
+    must never disappear from the call list just because spend_window narrows.
+    """
+    conn = mig103_conn
+    # C001 has a recent sale, C002 has ONLY an old sale (>2y ago)
+    conn.execute(
+        "INSERT INTO customers(code, name, address) VALUES ('C001','ร้านใหม่','กรุงเทพมหานคร')"
+    )
+    conn.execute(
+        "INSERT INTO customers(code, name, address) VALUES ('C002','ร้านเก่า','กรุงเทพมหานคร')"
+    )
+    conn.executemany(
+        "INSERT INTO sales_transactions(date_iso, doc_no, customer, customer_code, qty, unit, "
+        "unit_price, vat_type, net, product_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [
+            ('2026-05-01', 'IV001', 'ร้านใหม่', 'C001', 1, 'ตัว', 100, 0, 500, 1),
+            ('2020-01-01', 'IV002', 'ร้านเก่า', 'C002', 1, 'ตัว', 100, 0, 1000, 1),
+        ]
+    )
+    conn.commit()
+
+    rows_all = cc.get_call_list(conn, spend_window='all')
+    rows_1y  = cc.get_call_list(conn, spend_window='1y')
+    rows_6m  = cc.get_call_list(conn, spend_window='6m')
+
+    codes_all = {r['customer_code'] for r in rows_all}
+    codes_1y  = {r['customer_code'] for r in rows_1y}
+    codes_6m  = {r['customer_code'] for r in rows_6m}
+
+    # Both customers must appear in every window
+    assert 'C002' in codes_all, "C002 missing from spend_window='all'"
+    assert 'C002' in codes_1y,  "C002 missing from spend_window='1y' (win-back target disappeared)"
+    assert 'C002' in codes_6m,  "C002 missing from spend_window='6m' (win-back target disappeared)"
+
+    # Universe size must be identical across windows (spend_window doesn't filter rows)
+    assert len(rows_all) == len(rows_1y) == len(rows_6m), (
+        f"Universe changed across windows: all={len(rows_all)} 1y={len(rows_1y)} 6m={len(rows_6m)}"
+    )
+
+    # C002's spend should be 0 for narrow windows, >0 for 'all'
+    c002_all = next(r for r in rows_all if r['customer_code'] == 'C002')
+    c002_6m  = next(r for r in rows_6m  if r['customer_code'] == 'C002')
+    assert c002_all['spend'] > 0, "C002 all-time spend should be >0"
+    assert c002_6m['spend'] == 0.0, "C002 6m spend should be 0 (no recent sales)"
+
+    # last_buy comes from all-time query, independent of window
+    assert c002_6m['last_buy'] == '2020-01-01', \
+        "last_buy must be all-time even in narrow spend_window"
+
+
+def test_call_list_excludes_marketplace_customers(mig103_conn):
+    """หน้าร้านS/B/L are NOT call targets and must be excluded from the universe."""
+    conn = mig103_conn
+    conn.execute(
+        "INSERT INTO customers(code, name, address) VALUES ('C001','ร้านจริง','กรุงเทพมหานคร')"
+    )
+    conn.executemany(
+        "INSERT INTO sales_transactions(date_iso, doc_no, customer, customer_code, qty, unit, "
+        "unit_price, vat_type, net, product_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [
+            ('2026-05-01', 'IV001', 'ร้านจริง',   'C001', 1, 'ตัว', 100, 0, 500, 1),
+            ('2026-05-01', 'IV002', 'หน้าร้านS',   '',    1, 'ตัว', 100, 0, 300, 1),
+            ('2026-05-01', 'IV003', 'หน้าร้านL',   '',    1, 'ตัว', 100, 0, 200, 1),
+            ('2026-05-01', 'IV004', 'หน้าร้านB',   '',    1, 'ตัว', 100, 0, 100, 1),
+        ]
+    )
+    conn.commit()
+
+    rows = cc.get_call_list(conn)
+    codes = {r['customer_code'] for r in rows}
+    names = {r['name'] for r in rows}
+
+    assert 'C001' in codes, "Real customer must appear"
+    for mkt in ('หน้าร้านS', 'หน้าร้านL', 'หน้าร้านB'):
+        assert mkt not in codes, f"Marketplace account {mkt} must be excluded"
+        assert mkt not in names, f"Marketplace account {mkt} must be excluded (name check)"

@@ -197,7 +197,8 @@ def get_call_list(conn, *, q=None, region=None, call=None,
     q            : search string matched against customer name/code (case-insensitive)
     region       : ภาค filter (matches customer_geo.region_of(address))
     call         : 'never'|'recent'|'due' — filter by call_status
-    spend_window : '6m'|'1y'|'2y'|'all' — window for spend aggregation
+    spend_window : '6m'|'1y'|'2y'|'all' — window for the displayed spend value ONLY.
+                   Does NOT affect which customers appear in the list.
     sort         : 'spend'|'last_buy'|'name'|'call'
     sp           : salesperson code filter
 
@@ -209,20 +210,18 @@ def get_call_list(conn, *, q=None, region=None, call=None,
       last_called, badges {ar, quiet, special}
 
     Design: NO N+1 queries.
-      - spend + last_buy: one GROUP BY aggregate over sales_transactions
-      - last_called: one GROUP BY aggregate over customer_call_log
+      - universe: ALL customers with >=1 sales row (excl. หน้าร้าน marketplace accounts)
+      - spend: one GROUP BY over spend_window (0 for customers outside window)
+      - last_buy: separate all-time MAX query (independent of spend_window)
+      - last_called: one GROUP BY over customer_call_log
       - customers master join for name/address/salesperson
       - all assembled in Python
     """
     cutoff = _spend_cutoff(spend_window)
 
-    # ── 1. Customer universe: customers with any sales_transactions row ───────
-    # Pull the canonical key: customers.code (via customer_code column) when
-    # available, else sales_transactions.customer (name for orphans).
-    # We need: canonical_code, display_name, address, salesperson
-    #
-    # Strategy: JOIN customers on customer_code so we get the master row.
-    # For orphans (no customers row) fall back to the NAME as the code.
+    # ── 1. Customer universe: ALL customers with any sales row ────────────────
+    # Marketplace pseudo-customers (หน้าร้านS/B/L) are NOT call targets — exclude them.
+    # Pull canonical key: customers.code when available, else name for orphans.
     customer_rows = conn.execute("""
         SELECT
             COALESCE(NULLIF(TRIM(st.customer_code),''), st.customer) AS canonical_code,
@@ -236,6 +235,7 @@ def get_call_list(conn, *, q=None, region=None, call=None,
                 customer_code
             FROM sales_transactions
             WHERE customer IS NOT NULL AND customer != ''
+              AND customer NOT LIKE 'หน้าร้าน%'
         ) st
         LEFT JOIN customers c ON c.code = TRIM(st.customer_code)
     """).fetchall()
@@ -254,33 +254,39 @@ def get_call_list(conn, *, q=None, region=None, call=None,
                 'salesperson_code': row['salesperson_code'],
             }
 
-    # ── 2. Spend + last_buy aggregate (one query) ─────────────────────────────
+    # ── 2. Spend aggregate — window-filtered (shows ฿0 for quiet customers) ──
     spend_params = []
-    spend_where = ""
+    spend_where = "WHERE customer NOT LIKE 'หน้าร้าน%'"
     if cutoff:
-        spend_where = "WHERE date_iso >= ?"
+        spend_where += " AND date_iso >= ?"
         spend_params.append(cutoff)
 
     spend_rows = conn.execute(f"""
         SELECT
             COALESCE(NULLIF(TRIM(customer_code),''), customer) AS canonical_code,
-            SUM(CASE WHEN vat_type=2 THEN net*1.07 ELSE net END) AS spend,
-            MAX(date_iso) AS last_buy
+            SUM(CASE WHEN vat_type=2 THEN net*1.07 ELSE net END) AS spend
         FROM sales_transactions
         {spend_where}
         GROUP BY canonical_code
     """, spend_params).fetchall()
 
-    spend_map = {}
-    for row in spend_rows:
-        code = row['canonical_code']
-        if code:
-            spend_map[code] = {
-                'spend': row['spend'] or 0.0,
-                'last_buy': row['last_buy'],
-            }
+    spend_map = {row['canonical_code']: row['spend'] or 0.0
+                 for row in spend_rows if row['canonical_code']}
 
-    # ── 3. last_called aggregate (one query) ──────────────────────────────────
+    # ── 3. last_buy — all-time MAX (independent of spend_window) ─────────────
+    last_buy_rows = conn.execute("""
+        SELECT
+            COALESCE(NULLIF(TRIM(customer_code),''), customer) AS canonical_code,
+            MAX(date_iso) AS last_buy
+        FROM sales_transactions
+        WHERE customer NOT LIKE 'หน้าร้าน%'
+        GROUP BY canonical_code
+    """).fetchall()
+
+    last_buy_map = {row['canonical_code']: row['last_buy']
+                    for row in last_buy_rows if row['canonical_code']}
+
+    # ── 4. last_called aggregate (one query) ──────────────────────────────────
     last_called_rows = conn.execute("""
         SELECT customer_code, MAX(created_at) AS last_called
         FROM customer_call_log
@@ -292,13 +298,13 @@ def get_call_list(conn, *, q=None, region=None, call=None,
     for row in last_called_rows:
         last_called_map[row['customer_code']] = row['last_called']
 
-    # ── 4. CRM target_days (one query) ───────────────────────────────────────
+    # ── 5. CRM target_days (one query) ───────────────────────────────────────
     crm_rows = conn.execute(
         "SELECT customer_code, call_target_days FROM customer_crm"
     ).fetchall()
     crm_target_map = {r['customer_code']: r['call_target_days'] for r in crm_rows}
 
-    # ── 5. Assemble + filter ──────────────────────────────────────────────────
+    # ── 6. Assemble + filter ──────────────────────────────────────────────────
     result = []
     for code, info in seen_codes.items():
         # Apply salesperson filter
@@ -320,14 +326,9 @@ def get_call_list(conn, *, q=None, region=None, call=None,
                     q_lower not in code.lower()):
                 continue
 
-        # Spend / last_buy
-        spend_info = spend_map.get(code, {})
-        spend = spend_info.get('spend', 0.0)
-        last_buy = spend_info.get('last_buy')
-
-        # Skip customers with zero spend in the window (inactive in window)
-        if spend == 0.0 and last_buy is None:
-            continue
+        # Spend (window-scoped, 0 if no sales in window) and all-time last_buy
+        spend = spend_map.get(code, 0.0)
+        last_buy = last_buy_map.get(code)
 
         # Call status
         last_called = last_called_map.get(code)
@@ -455,6 +456,44 @@ def get_card(conn, customer_code):
         peer_rows = pp.product_peer_prices(conn, canon_code)
         peer_map = {(r['product_id'], r['unit']): r for r in peer_rows}
 
+    # Batch-fetch unit_conversions for all product_ids (one query, no per-product churn)
+    if product_rows:
+        pid_list = list({row['product_id'] for row in product_rows if row['product_id']})
+        ph = ",".join("?" * len(pid_list))
+        uc_rows = conn.execute(
+            f"SELECT product_id, bsn_unit, ratio FROM unit_conversions WHERE product_id IN ({ph})",
+            pid_list,
+        ).fetchall()
+        uc_map = {(r['product_id'], r['bsn_unit']): float(r['ratio'])
+                  for r in uc_rows if r['ratio']}
+
+        # Batch-fetch active promotions for all product_ids (one query, no per-product
+        # connection open/close — models.get_active_promotion opens its own conn each call).
+        # We apply the same promo-price logic here (same 3-branch if/elif/else as
+        # models.effective_price) rather than calling effective_price, because
+        # effective_price also opens its own connection and expects a pre-fetched
+        # product dict with key 'id'. Reusing that function would still require N round-trips.
+        # The math is verbatim from models.effective_price so the two can't drift silently;
+        # any change to promo math in models must be mirrored here.
+        today_str = dt.date.today().isoformat()
+        promo_rows = conn.execute(f"""
+            SELECT p.*
+            FROM promotions p
+            INNER JOIN (
+                SELECT product_id, MAX(created_at) AS latest
+                FROM promotions
+                WHERE product_id IN ({ph})
+                  AND is_active = 1
+                  AND (date_start IS NULL OR date_start <= ?)
+                  AND (date_end IS NULL OR date_end >= ?)
+                GROUP BY product_id
+            ) sub ON p.product_id = sub.product_id AND p.created_at = sub.latest
+        """, pid_list + [today_str, today_str]).fetchall()
+        promo_map = {r['product_id']: r for r in promo_rows}
+    else:
+        uc_map = {}
+        promo_map = {}
+
     products = []
     for row in product_rows:
         pid = row['product_id']
@@ -464,15 +503,12 @@ def get_card(conn, customer_code):
 
         # Unit-aware base price: multiply base by ratio when unit != unit_type
         if unit and unit_type and unit != unit_type:
-            ratio_row = conn.execute(
-                "SELECT ratio FROM unit_conversions WHERE product_id=? AND bsn_unit=?",
-                (pid, unit),
-            ).fetchone()
-            if ratio_row and ratio_row['ratio']:
-                base = base * float(ratio_row['ratio'])
+            ratio = uc_map.get((pid, unit))
+            if ratio:
+                base = base * ratio
 
-        # Active promo (models.get_active_promotion opens its own conn — call it)
-        promo = models.get_active_promotion(pid)
+        # Promo-price from pre-fetched batch (same logic as models.effective_price)
+        promo = promo_map.get(pid)
         if promo:
             promo_label = f"{promo['promo_name']} ({promo['promo_type']})"
             if promo['promo_type'] == 'percent':
@@ -480,6 +516,7 @@ def get_card(conn, customer_code):
             elif promo['promo_type'] == 'fixed':
                 promo_price = promo['discount_value']
             else:
+                # bundle / gift / mixed — per-unit price unchanged (same as effective_price)
                 promo_price = base
         else:
             promo_label = None
