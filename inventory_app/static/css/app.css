@@ -232,6 +232,12 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  /* Flex children default to min-width:auto (won't shrink below content's
+     intrinsic size); a wide table/.table-responsive then forces this column
+     past the viewport and scrolls the page body on mobile. min-width:0 lets it
+     shrink to the viewport so .table-responsive scrolls internally instead.
+     No-op at >=992px (content is narrower than the column there). */
+  min-width: 0;
 }
 
 /* ── Top bar ── */
