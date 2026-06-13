@@ -5,10 +5,10 @@
 
 {% block content %}
 {% if suspicious_count > 0 %}
-<div class="alert alert-warning d-flex align-items-center gap-2 mb-3" role="alert">
+<div class="alert alert-warning d-flex flex-wrap align-items-center gap-2 mb-3" role="alert">
   <i class="bi bi-clipboard-check fs-5"></i>
-  <span class="flex-grow-1">พบบิลน่าสงสัย <strong>{{ suspicious_count }}</strong> ใบ (6 เดือนล่าสุด)</span>
-  <a href="{{ url_for('review.index') }}" class="btn btn-sm btn-warning">ไปตรวจบิล</a>
+  <span class="flex-grow-1" style="min-width:0">พบบิลน่าสงสัย <strong>{{ suspicious_count }}</strong> ใบ (6 เดือนล่าสุด)</span>
+  <a href="{{ url_for('review.index') }}" class="btn btn-sm btn-warning ms-auto">ไปตรวจบิล</a>
 </div>
 {% endif %}
 <div class="row g-3 mb-4">
@@ -19,7 +19,7 @@
         <div class="stat-card-icon" style="background:#fdecee">
           <i class="bi bi-cart-x" style="color:#c41e2a"></i>
         </div>
-        <div>
+        <div style="min-width:0">
           <div class="stat-card-label">ควรสั่งเพิ่ม (หมด+เพิ่งขาย)</div>
           <div class="stat-card-value {% if restock_count > 0 %}text-danger{% else %}text-success{% endif %}">
             {{ restock_count | fmt_qty }}
@@ -44,7 +44,7 @@
         <div class="stat-card-icon" style="background:#dcf2e0">
           <i class="bi bi-arrow-down-circle" style="color:#2e7d3a"></i>
         </div>
-        <div>
+        <div style="min-width:0">
           <div class="stat-card-label">รับเข้าล่าสุด</div>
           <div class="stat-card-value text-success">
             {{ recent_txns | selectattr('txn_type','eq','IN') | list | length }}
@@ -65,7 +65,7 @@
         <div class="stat-card-icon" style="background:#fdf3dd">
           <i class="bi bi-arrow-up-circle" style="color:#f5a800"></i>
         </div>
-        <div>
+        <div style="min-width:0">
           <div class="stat-card-label">จ่ายออกล่าสุด</div>
           <div class="stat-card-value text-warning">
             {{ recent_txns | selectattr('txn_type','eq','OUT') | list | length }}
@@ -86,7 +86,7 @@
         <div class="stat-card-icon" style="background:#ede9e2">
           <i class="bi bi-grid-3x3-gap" style="color:#1a1a1a"></i>
         </div>
-        <div>
+        <div style="min-width:0">
           <div class="stat-card-label">สินค้าทั้งหมด</div>
           <div class="stat-card-value" style="color:#1a1a1a">{{ total_products | fmt_qty }}</div>
         </div>
@@ -106,7 +106,7 @@
     <a href="{{ url_for('transaction_history') }}" class="btn btn-xs" style="background:var(--accent-light);color:var(--accent);border:none">ดูทั้งหมด →</a>
   </div>
   <div class="table-responsive">
-    <table class="table mb-0">
+    <table class="table table-mobile-cards mb-0">
       <thead>
         <tr>
           <th>เวลา</th>
@@ -120,21 +120,21 @@
       <tbody>
         {% for t in recent_txns %}
         <tr>
-          <td class="text-subtle font-mono">{{ t.created_at[:16] }}</td>
-          <td class="text-center"><span class="pid">{{ t.product_id }}</span></td>
-          <td>
+          <td class="text-subtle font-mono" data-label="เวลา">{{ t.created_at[:16] }}</td>
+          <td class="text-center td-hide-mobile"><span class="pid">{{ t.product_id }}</span></td>
+          <td class="td-primary">
             <a href="{{ url_for('products.product_detail', product_id=t.product_id) }}"
                class="text-decoration-none fw-500 text-main">{{ t.product_name }}</a>
           </td>
-          <td class="text-center">
+          <td class="text-center" data-label="ประเภท">
             {% if t.txn_type == 'IN' %}<span class="badge badge-in">รับเข้า</span>
             {% elif t.txn_type == 'OUT' %}<span class="badge badge-out">จ่ายออก</span>
             {% else %}<span class="badge badge-adjust">ปรับยอด</span>{% endif %}
           </td>
-          <td class="text-end fw-600 {% if t.quantity_change > 0 %}text-success{% else %}text-danger{% endif %}">
+          <td class="text-end fw-600 {% if t.quantity_change > 0 %}text-success{% else %}text-danger{% endif %}" data-label="จำนวน">
             {% if t.quantity_change > 0 %}+{% endif %}{{ t.quantity_change | fmt_qty }} {{ t.unit_type }}
           </td>
-          <td class="text-subtle">{{ t.note or '' }}</td>
+          <td class="text-subtle" data-label="หมายเหตุ">{{ t.note or '' }}</td>
         </tr>
         {% else %}
         <tr><td colspan="6" class="text-center text-subtle py-5">ยังไม่มีรายการ</td></tr>

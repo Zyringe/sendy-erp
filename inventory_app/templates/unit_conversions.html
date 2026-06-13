@@ -7,8 +7,8 @@
 {# ── Search (ครอบคลุมทั้ง pending และ existing) ─────────────────────────────── #}
 <div class="card mb-3">
   <div class="card-body py-2">
-    <form method="get" action="{{ url_for('unit_conversions') }}" class="d-flex gap-2 align-items-center">
-      <div class="input-group input-group-sm" style="max-width:380px">
+    <form method="get" action="{{ url_for('unit_conversions') }}" class="d-flex gap-2 align-items-center flex-wrap">
+      <div class="input-group input-group-sm flex-grow-1" style="max-width:380px;min-width:0">
         <span class="input-group-text"><i class="bi bi-search"></i></span>
         <input type="search" name="q" value="{{ search }}"
                placeholder="ค้นหาชื่อสินค้า / SKU…" class="form-control">
@@ -38,7 +38,7 @@
 <form method="post" action="{{ url_for('unit_conversions_save') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div class="card mb-4">
-    <div class="table-responsive">
+    <div class="table-responsive" style="min-width:0">
       <table class="table mb-0">
         <thead>
           <tr>
@@ -109,7 +109,7 @@
     <span class="text-subtle small">{{ total }} รายการ</span>
     {% endif %}
   </div>
-  <div class="table-responsive">
+  <div class="table-responsive" style="min-width:0">
     <table class="table mb-0 table-sm">
       <thead>
         <tr>

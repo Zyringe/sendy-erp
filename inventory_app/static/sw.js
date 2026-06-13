@@ -8,7 +8,7 @@
  * Cache version: bump CACHE on any static/ asset change so old entries expire.
  * Conventions doc: sendy_erp/docs/mobile-conventions.md (added in P2)
  */
-const CACHE = 'sendy-v1';
+const CACHE = 'sendy-v2';
 const STATIC_RE = /^\/static\//;
 
 // Install: skip waiting so the new SW takes over immediately.
