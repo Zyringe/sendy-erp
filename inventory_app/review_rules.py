@@ -39,6 +39,8 @@ R3_MIN_BAHT = 2.0      # abs deviation must also be >= ฿2
 R2_TOLERANCE = 0.99    # sell eff < cost * ratio * 0.99 → flag
 R5_TOLERANCE = 0.01    # promo expected price within 1% → pass
 LOOKBACK_DAYS = 365    # how many days of history to consider for R3
+RECENT_SCAN_DAYS = 14  # manual "สแกนใหม่" button window — keeps the scan fast
+                       # (full scan_all over 2+ yrs timed out gunicorn on Railway)
 
 _SEVERITY_ORDER = {'high': 3, 'medium': 2, 'low': 1}
 
@@ -389,6 +391,37 @@ def scan_all(conn=None, db_path=None) -> dict:
         if conn is None:
             c.commit()
         return {'docs_scanned': len(docs), 'docs_flagged': flagged, 'flags_total': flags_total}
+
+
+def scan_recent(days: int = RECENT_SCAN_DAYS, conn=None, db_path=None) -> dict:
+    """Re-scan only bills dated within the last `days` days.
+
+    Fast alternative to scan_all for the manual "สแกนใหม่" button: scan_all reads
+    every bill ever (2+ yrs) and exceeded the gunicorn worker timeout on Railway.
+    Each doc in the window is upserted/removed via _persist_doc — there is NO
+    whole-table DELETE, so already-flagged docs OUTSIDE the window are left
+    untouched (new imports keep flagging themselves via scan_after_import).
+    """
+    from datetime import date, timedelta
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    with _ConnCtx(conn, db_path) as c:
+        rows = c.execute(
+            f"SELECT {_SALES_COLS} FROM sales_transactions s"
+            " WHERE s.doc_base IS NOT NULL AND s.date_iso >= ?"
+            " ORDER BY s.doc_base", (cutoff,)
+        ).fetchall()
+        docs = _group_by_docbase(rows)
+        flagged = 0
+        flags_total = 0
+        for doc_base, lines in docs.items():
+            n = _persist_doc(c, doc_base, lines)
+            if n is not None:
+                flagged += 1
+                flags_total += n
+        if conn is None:
+            c.commit()
+        return {'docs_scanned': len(docs), 'docs_flagged': flagged,
+                'flags_total': flags_total, 'since': cutoff, 'days': days}
 
 
 def scan_docs(doc_bases, conn=None, db_path=None) -> dict:

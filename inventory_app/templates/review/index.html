@@ -12,7 +12,7 @@
     <form method="post" action="{{ url_for('review.scan') }}" class="d-inline">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-sm btn-outline-secondary">
-        <i class="bi bi-arrow-clockwise me-1"></i>สแกนใหม่
+        <i class="bi bi-arrow-clockwise me-1"></i>สแกนใหม่ ({{ recent_days }} วันล่าสุด)
       </button>
     </form>
 
