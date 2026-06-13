@@ -108,6 +108,8 @@ def test_review_index_renders_feed(review_client):
     resp = review_client.get('/review')
     assert resp.status_code == 200, resp.data[:500]
     assert b'IV9900001' in resp.data
+    # doc number links into the sales-doc detail page (click-through to the order)
+    assert b'/sales/doc/IV9900001' in resp.data
 
 
 def test_review_index_all_renders(review_client):
