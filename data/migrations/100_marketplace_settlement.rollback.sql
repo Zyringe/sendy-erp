@@ -1,4 +1,4 @@
--- Rollback 099 — drop the 3 settlement columns from marketplace_orders.
+-- Rollback 100 — drop the 3 settlement columns from marketplace_orders.
 --
 -- SQLite (this deploy targets <3.35) cannot ALTER TABLE DROP COLUMN, so we use
 -- the table-rebuild-preserving-current-rows pattern (house style — see mig 088).
@@ -12,7 +12,7 @@
 --      AUTOINCREMENT, NOT NULL/CHECK/DEFAULT/UNIQUE constraints AND the two
 --      indexes, and leaves marketplace_order_items' FK pointing at a table whose
 --      id is no longer a primary key (foreign_key_check mismatch). So we write
---      the EXACT pre-099 schema from mig 093, INSERT...SELECT, then recreate the
+--      the EXACT pre-100 schema from mig 093, INSERT...SELECT, then recreate the
 --      indexes.
 
 PRAGMA foreign_keys = OFF;
@@ -24,7 +24,7 @@ DROP INDEX IF EXISTS idx_marketplace_orders_status;
 DROP INDEX IF EXISTS idx_marketplace_orders_date;
 
 -- 2) Rebuild marketplace_orders without the 3 settlement columns, preserving
---    CURRENT rows. Schema below = the EXACT pre-099 shape from migration 093.
+--    CURRENT rows. Schema below = the EXACT pre-100 shape from migration 093.
 DROP TABLE IF EXISTS marketplace_orders_old;
 
 CREATE TABLE marketplace_orders_old (
@@ -67,8 +67,8 @@ CREATE INDEX idx_marketplace_orders_date
 CREATE INDEX idx_marketplace_orders_status
     ON marketplace_orders(status);
 
--- 4) Remove the applied_migrations record so the runner re-applies 099 if replayed.
-DELETE FROM applied_migrations WHERE filename = '099_marketplace_settlement.sql';
+-- 4) Remove the applied_migrations record so the runner re-applies it if replayed.
+DELETE FROM applied_migrations WHERE filename = '100_marketplace_settlement.sql';
 
 COMMIT;
 

@@ -1,4 +1,4 @@
--- 099_marketplace_settlement.sql
+-- 100_marketplace_settlement.sql
 -- Add settlement tracking columns to marketplace_orders.
 -- actual_payout = amount Shopee actually transferred (from Income Transfer file col 37).
 -- settled_at    = date Shopee transferred (col 11 in Income Transfer).
