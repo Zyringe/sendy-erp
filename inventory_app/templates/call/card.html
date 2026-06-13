@@ -1,0 +1,326 @@
+{% extends "base.html" %}
+{% block title %}{{ d.master.name or 'ลูกค้า' }} — โทรหาลูกค้า — Sendy{% endblock %}
+
+{% block head_extra %}
+<style>
+/* Call-card detail page — scoped; not in app.css */
+:root{
+  --cc-brand:#1f4e8c; --cc-brand-d:#163a69;
+  --cc-ink:#1f2733; --cc-muted:#6b7787; --cc-line:#e3e8ef; --cc-bg:#f1f4f8; --cc-panel:#fff;
+  --cc-gold:#b8860b; --cc-gold-bg:#fdf6e3;
+  --cc-amber:#b45309; --cc-amber-bg:#fff5e6;
+  --cc-red:#b91c1c; --cc-red-bg:#fdecec;
+  --cc-green:#15803d; --cc-green-bg:#ecfbf1;
+}
+.cc-panel{background:var(--cc-panel);border:1px solid var(--cc-line);border-radius:11px;padding:16px 18px;margin-bottom:14px}
+.cc-panel h2{font-size:13.5px;font-weight:700;margin:0 0 13px;display:flex;align-items:center;gap:8px}
+.cc-panel h2 .tag{margin-left:auto;font-size:11.5px;font-weight:500;color:var(--cc-muted)}
+
+.cc-hdr{background:linear-gradient(120deg,var(--cc-brand),var(--cc-brand-d));color:#fff;border:0;display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+.cc-hdr .nm{font-size:21px;font-weight:700}
+.cc-hdr .meta{font-size:13px;opacity:.92;margin-top:3px}
+.cc-hdr .who{font-size:12.5px;opacity:.88;margin-top:7px}
+.cc-hdr .callbtn{background:rgba(255,255,255,.16);border-radius:10px;padding:10px 16px;color:#fff;text-decoration:none;font-weight:700;font-size:17px;display:flex;align-items:center;gap:9px}
+.cc-hdr .callbtn small{display:block;font-size:11px;font-weight:500;opacity:.85}
+.cc-hdr .right{margin-left:auto;display:flex;flex-direction:column;gap:9px;align-items:flex-end}
+.cc-hdr .badges{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+.cc-hb{font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:6px;background:rgba(255,255,255,.18);color:#fff;display:inline-flex;gap:4px;align-items:center}
+.cc-marked{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.12);border-radius:9px;padding:8px 12px;font-size:12.5px;flex-wrap:wrap}
+.cc-mbtn{background:#fff;color:var(--cc-brand);font-weight:700;border:0;border-radius:7px;padding:7px 12px;font-family:inherit;font-size:12.5px;cursor:pointer}
+
+.cc-cols{display:grid;grid-template-columns:1fr 1.7fr;gap:14px;align-items:start}
+.cc-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px 16px}
+.cc-stat .k{font-size:11.5px;color:var(--cc-muted)}
+.cc-stat .v{font-size:17px;font-weight:700;margin-top:1px}
+.cc-stat .v small{font-size:11px;font-weight:500;color:var(--cc-muted)}
+
+.cc-arbox{display:flex;justify-content:space-between;align-items:center;font-size:13.5px}
+.cc-arbox .v{font-size:18px;font-weight:700}
+.cc-over{color:var(--cc-red)}
+.cc-arflag{background:var(--cc-red-bg);color:var(--cc-red);border-radius:8px;padding:8px 11px;font-size:12.5px;font-weight:600;margin-top:11px}
+
+.cc-addbox{display:flex;gap:8px;margin-bottom:12px}
+.cc-addbox input{flex:1;border:1px solid var(--cc-line);border-radius:8px;padding:9px 11px;font-family:inherit;font-size:14px;outline:0}
+.cc-addbox button{border:0;background:var(--cc-brand);color:#fff;font-family:inherit;font-weight:600;border-radius:8px;padding:0 17px;cursor:pointer}
+.cc-logitem{padding:9px 0;border-top:1px solid var(--cc-line);font-size:13px}
+.cc-logitem:first-of-type{border-top:0}
+.cc-logitem .meta{font-size:11px;color:var(--cc-muted);margin-top:3px}
+.cc-logitem .call{color:var(--cc-green);font-weight:600}
+.cc-logitem .flag{color:var(--cc-red)}
+.cc-tagrow{display:flex;gap:6px;flex-wrap:wrap;margin:13px 0 4px}
+.cc-t{font-size:12px;font-weight:600;padding:4px 11px;border-radius:999px;background:#eaf1fb;color:var(--cc-brand)}
+.cc-nextcall{font-size:12.5px;color:var(--cc-muted);margin-top:11px}
+.cc-nextcall b{color:var(--cc-ink)}
+.cc-miniflag{display:inline-block;font-size:11px;color:var(--cc-muted);border:1px solid var(--cc-line);border-radius:6px;padding:2px 8px;margin-left:6px;cursor:pointer}
+.cc-srcnote{font-size:11.5px;color:var(--cc-muted);margin-top:13px}
+
+.cc-base{font-weight:600}
+.cc-promo{font-size:11px;color:var(--cc-green);font-weight:600;margin-top:2px}
+.cc-promo.none{color:var(--cc-muted);font-weight:400}
+.cc-peer.cheap{color:var(--cc-green);font-weight:600}
+.cc-peer.same{color:var(--cc-muted)}
+.cc-peer.high{color:var(--cc-red);font-weight:600}
+.cc-li{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--cc-line);font-size:13.5px}
+.cc-li:first-of-type{border-top:0}
+.cc-li .sub{font-size:11.5px;color:var(--cc-muted);margin-top:2px}
+.cc-pill{flex:0 0 auto;font-size:11px;font-weight:600;padding:3px 9px;border-radius:7px;height:fit-content;background:#eef1f5;color:var(--cc-muted)}
+
+@media(max-width:900px){.cc-cols{grid-template-columns:1fr}}
+</style>
+{% endblock %}
+
+{% macro fmt_date(d) %}{% if d %}{{ d[:7] }}{% else %}—{% endif %}{% endmacro %}
+{% macro fmt_thb(v) %}{% if v %}฿{{ '{:,.0f}'.format(v) }}{% else %}—{% endif %}{% endmacro %}
+
+{% block content %}
+{% set m = d.master %}
+{% set cs, call_days = d.call_status %}
+
+<div class="container-fluid px-4 py-3">
+  <nav aria-label="breadcrumb" class="mb-2">
+    <span class="text-muted" style="font-size:12.5px">
+      <a href="{{ url_for('call.call_list') }}" class="text-muted text-decoration-none">โทรหาลูกค้า</a>
+       / <strong>{{ m.name or '—' }}</strong>
+    </span>
+  </nav>
+
+  {# ── Header ── #}
+  <div class="cc-panel cc-hdr">
+    <div>
+      <div class="nm">{{ m.name or '—' }}</div>
+      <div class="meta">
+        รหัส {{ m.code or '—' }}
+        {% if m.address %}· {{ m.address[:60] }}{% endif %}
+      </div>
+      <div class="who">
+        {% if m.contact %}ผู้ติดต่อ: {{ m.contact }} &nbsp;·&nbsp; {% endif %}
+        {% if m.salesperson %}เซลล์: {{ m.salesperson }}{% endif %}
+      </div>
+    </div>
+
+    {# Phone link — tel: so mobile taps dial directly #}
+    {% if m.phone %}
+    <a class="callbtn" href="tel:{{ m.phone }}">
+      📞 {{ m.phone }}<small>กดเพื่อโทร</small>
+    </a>
+    {% endif %}
+
+    <div class="right">
+      <div class="badges">
+        {# Badges from get_card don't include AR at list level; check ar rows instead #}
+        {% set ar_total = (d.ar | map(attribute='outstanding') | list | sum) if d.ar else 0 %}
+        {% if ar_total > 0 %}<span class="cc-hb">⚠️ ค้าง {{ fmt_thb(ar_total) }}</span>{% endif %}
+      </div>
+      <div class="cc-marked">
+        {% if cs == 'recent' and call_days is not none %}
+          โทรล่าสุด: <b>{{ elapsed_th(call_days) }}</b>
+        {% elif cs == 'due' and call_days is not none %}
+          <span style="color:#f97316">⏰ ถึงกำหนดโทรแล้ว ({{ elapsed_th(call_days) }})</span>
+        {% else %}
+          <span style="color:#f97316">ยังไม่เคยบันทึกการโทร</span>
+        {% endif %}
+        <form method="post" action="{{ url_for('call.call_mark_called', customer_code=customer_code) }}" style="display:inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="cc-mbtn">✓ บันทึกว่าโทรแล้ววันนี้</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="cc-cols">
+    {# ═══════ LEFT COLUMN ═══════ #}
+    <div>
+
+      {# ── สรุปลูกค้า ── #}
+      <div class="cc-panel">
+        <h2>📊 สรุปลูกค้า</h2>
+        {# d.summary is the full dict from get_customer_summary();
+           actual aggregates are under d.summary['summary'] #}
+        {% set s = d.summary %}
+        {% set stats = (s.summary if s and s.summary is defined else {}) %}
+        {% if s %}
+        <div class="cc-grid">
+          <div class="cc-stat"><div class="k">ยอดซื้อทั้งหมด</div><div class="v">{{ fmt_thb(stats.get('total_net')) }}</div></div>
+          <div class="cc-stat"><div class="k">จำนวนครั้งซื้อ</div><div class="v">{{ stats.get('doc_count','—') }} <small>ครั้ง</small></div></div>
+          <div class="cc-stat"><div class="k">แบรนด์เด่น</div><div class="v" style="font-size:14px">
+            {% if s.top_products and s.top_products[0] %}{{ s.top_products[0].name or '—' }}{% else %}—{% endif %}
+          </div></div>
+          <div class="cc-stat"><div class="k">เซลล์</div><div class="v" style="font-size:14px">{{ s.salesperson or '—' }}</div></div>
+          <div class="cc-stat"><div class="k">ซื้อครั้งแรก</div><div class="v" style="font-size:14px">{{ (stats.get('first_date') or '')[:7] or '—' }}</div></div>
+          <div class="cc-stat"><div class="k">ซื้อล่าสุด</div><div class="v" style="font-size:14px">{{ (stats.get('last_date') or '')[:7] or '—' }}</div></div>
+        </div>
+        {% else %}
+        <p class="text-muted small mb-0">ไม่พบข้อมูลยอดขาย</p>
+        {% endif %}
+      </div>
+
+      {# ── ยอดค้าง / AR ── #}
+      {% if d.ar %}
+      <div class="cc-panel">
+        <h2>💰 ยอดค้าง / เครดิต</h2>
+        {% set total_outstanding = (d.ar | map(attribute='outstanding') | list | sum) %}
+        {# overdue = rows with age_days > 30 (rough; Express is authoritative) #}
+        {% set total_overdue_rows = d.ar | selectattr('age_days', 'gt', 30) | list %}
+        {% set total_overdue = (total_overdue_rows | map(attribute='outstanding') | list | sum) %}
+        <div class="cc-arbox"><span>ค้างชำระทั้งหมด</span><span class="v">{{ fmt_thb(total_outstanding) }}</span></div>
+        {% if total_overdue > 0 %}
+        <div class="cc-arbox" style="margin-top:7px"><span>เกินกำหนด (&gt;30 วัน)</span><span class="v cc-over">{{ fmt_thb(total_overdue) }}</span></div>
+        <div class="cc-arflag">⚠️ มียอดเกินกำหนด — แนะนำเก็บเงินก่อนดันของเพิ่ม</div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {# ── บันทึกการโทร / โน้ต ── #}
+      <div class="cc-panel">
+        <h2>📝 บันทึกการโทร / โน้ต</h2>
+
+        {# Note form — P5 wires this; action="#" avoids url_for BuildError #}
+        <div class="cc-addbox">
+          <form method="post" action="#" style="display:contents">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="customer_code" value="{{ customer_code }}">
+            <input type="text" name="body" placeholder="เพิ่มบันทึก… (พิมพ์อะไรก็ได้)">
+            <button type="submit" disabled title="จะเปิดใช้งานใน P5">เพิ่ม</button>
+          </form>
+        </div>
+
+        {# Call log #}
+        {% for entry in d.log %}
+        <div class="cc-logitem">
+          <div>
+            {% if entry.kind == 'call' %}<span class="call">📞 โทรแล้ว</span>{% if entry.body %} — {{ entry.body }}{% endif %}
+            {% elif entry.kind == 'data_flag' %}<span class="flag">🚩 ข้อมูลน่าจะผิด</span>{% if entry.body %} — {{ entry.body }}{% endif %}
+            {% else %}{{ entry.body or '' }}
+            {% endif %}
+          </div>
+          <div class="meta">{{ entry.created_by or '—' }} · {{ (entry.created_at or '')[:16] }}</div>
+        </div>
+        {% else %}
+        <p class="text-muted small mb-0">ยังไม่มีบันทึก</p>
+        {% endfor %}
+
+        {# Tags (read-only for now; P5 adds the tag/next-call form) #}
+        {% set crm = d.crm %}
+        {% if crm and crm.tags %}
+        <div class="cc-tagrow">
+          {% for tag in crm.tags.split(',') %}
+          <span class="cc-t">{{ tag.strip() }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if crm and crm.next_call_date %}
+        <div class="cc-nextcall">🔔 นัดโทรครั้งต่อไป: <b>{{ crm.next_call_date }}</b></div>
+        {% endif %}
+
+        <div class="cc-srcnote">
+          ตัวเลขยอดขาย/ราคา ดึงจาก Express — แก้ตรงนี้ไม่ได้
+          {# P5: <form method="post" action="{{ url_for('call.call_note') }}">…</form> #}
+          <span class="cc-miniflag" title="รายงานข้อมูลผิดพลาด (จะเปิดใน P5)">🚩 ตัวเลขนี้น่าจะผิด</span>
+        </div>
+      </div>
+
+    </div>{# end left #}
+
+    {# ═══════ RIGHT COLUMN ═══════ #}
+    <div>
+
+      {# ── ซื้อประจำ ── #}
+      <div class="cc-panel">
+        <h2>🛒 ซื้อประจำ <span class="tag">ราคาตั้ง + โปร เทียบ ราคาที่ลูกค้าได้ + ราคาเพื่อน</span></h2>
+        {% if d.products %}
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse">
+            <thead>
+              <tr>
+                <th style="text-align:left;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">สินค้า</th>
+                <th style="text-align:right;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">ซื้อรวม</th>
+                <th style="text-align:left;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">ล่าสุด</th>
+                <th style="text-align:right;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">ราคาตั้ง / โปร</th>
+                <th style="text-align:right;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">ลูกค้าได้</th>
+                <th style="text-align:right;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">เพื่อน</th>
+                <th style="text-align:left;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">ส่วนต่าง</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for p in d.products %}
+              <tr>
+                <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;vertical-align:middle">
+                  {{ p.product_name or '—' }}
+                </td>
+                <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
+                  {% if p.total_qty %}{{ '{:,.0f}'.format(p.total_qty) }} {{ p.unit }}{% else %}—{% endif %}
+                </td>
+                <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;vertical-align:middle">
+                  {{ (p.last_buy or '')[:7] or '—' }}
+                </td>
+                <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
+                  <div class="cc-base">{% if p.base %}฿{{ '{:,.0f}'.format(p.base) }}{% else %}—{% endif %}</div>
+                  {% if p.promo_label %}
+                  <div class="cc-promo">{{ p.promo_label[:30] }}</div>
+                  {% else %}
+                  <div class="cc-promo none">— ไม่มีโปร</div>
+                  {% endif %}
+                </td>
+                <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
+                  {% if p.customer_price %}฿{{ '{:,.0f}'.format(p.customer_price) }}{% else %}—{% endif %}
+                </td>
+                <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
+                  {% if p.peer_median %}฿{{ '{:,.0f}'.format(p.peer_median) }}{% else %}—{% endif %}
+                </td>
+                <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;vertical-align:middle">
+                  {% if p.flag == 'cheaper' %}
+                  <span class="cc-peer cheap">⭐ ถูกกว่า{% if p.peer_median and p.customer_median %} ฿{{ '{:,.0f}'.format(p.peer_median - p.customer_median) }}{% endif %}</span>
+                  {% elif p.flag == 'higher' %}
+                  <span class="cc-peer high">▲ แพงกว่า{% if p.peer_median and p.customer_median %} ฿{{ '{:,.0f}'.format(p.customer_median - p.peer_median) }}{% endif %}</span>
+                  {% else %}
+                  <span class="cc-peer same">= เท่ากัน</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-muted small mb-0">ไม่พบสินค้าที่ซื้อ</p>
+        {% endif %}
+      </div>
+
+      {# ── Win-back ── #}
+      {% if d.winback %}
+      <div class="cc-panel">
+        <h2>⏰ ซื้อขาดช่วง — ชวนกลับมาซื้อ</h2>
+        {% for w in d.winback %}
+        <div class="cc-li">
+          <div>
+            <div>{{ w.product_name or '—' }}</div>
+            <div class="sub">
+              เคยซื้อทุก ~{{ w.median_gap_days }} วัน · ล่าสุด {{ elapsed_th(w.days_since) }}
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {# ── Clearance ── #}
+      {% if d.clearance %}
+      <div class="cc-panel">
+        <h2>🔻 ดันของช้า — เสนอเคลียร์สต็อก</h2>
+        {% for c in d.clearance %}
+        <div class="cc-li">
+          <div>
+            <div>{{ c.product_name or '—' }}</div>
+            <div class="sub">อยู่ในหมวดที่ลูกค้าซื้อบ่อย</div>
+          </div>
+          <span class="cc-pill">สต็อก {{ '{:,}'.format(c.quantity | int) }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+    </div>{# end right #}
+  </div>{# end cols #}
+</div>
+{% endblock %}
