@@ -5071,6 +5071,114 @@ def import_marketplace_orders(conn, orders, source_file=None):
     return stats
 
 
+def upsert_marketplace_settlements(conn, settlements, source_file=None,
+                                   platform='shopee'):
+    """Stamp actual_payout + settled_at on marketplace_orders matched by order_sn.
+
+    Args:
+        conn: DB connection.
+        settlements: list of {order_sn, actual_payout, settled_at}.
+        source_file: filename of the Income Transfer file (for traceability).
+        platform: marketplace this Income file belongs to. The table key is
+            UNIQUE(platform, order_sn), so we scope the UPDATE by platform too —
+            a bare order_sn match could stamp a different platform's row that
+            happens to share the same order number.
+
+    Returns:
+        {'updated': int, 'not_found': int, 'skipped_no_date': int}
+
+    A settlement with a blank settled_at is NOT actually settled (the parser
+    emits '' for an empty transfer-date cell). Stamping it would both create a
+    phantom batch keyed on '' and set actual_payout, hiding the order from the
+    pending list. So we skip those rows entirely, leaving the order NULL/pending.
+    """
+    updated = 0
+    not_found = 0
+    skipped_no_date = 0
+    for s in settlements:
+        settled_at = (s.get('settled_at') or '').strip()
+        if not settled_at:
+            skipped_no_date += 1
+            continue
+        cur = conn.execute(
+            """UPDATE marketplace_orders
+               SET actual_payout = ?, settled_at = ?, settlement_source = ?
+               WHERE platform = ? AND order_sn = ?""",
+            (s['actual_payout'], settled_at, source_file, platform, s['order_sn']),
+        )
+        if cur.rowcount:
+            updated += 1
+        else:
+            not_found += 1
+    conn.commit()
+    return {'updated': updated, 'not_found': not_found,
+            'skipped_no_date': skipped_no_date}
+
+
+def get_settlement_report(conn, platform='shopee'):
+    """Return settlement data grouped by payout date for the AR clearance report.
+
+    Returns:
+        {
+          'batches': [
+            {
+              'settled_at': '2026-06-01',
+              'order_count': 39,
+              'total_payout': 8149.0,
+              'orders': [{order_sn, item_total, actual_payout, fee_diff, status, ...}]
+            },
+            ...
+          ],
+          'pending': [{order_sn, item_total, status, order_date}]  # not yet settled
+        }
+    """
+    # Settled orders grouped by date
+    batch_rows = conn.execute(
+        """SELECT settled_at, COUNT(*) as order_count, SUM(actual_payout) as total_payout
+           FROM marketplace_orders
+           WHERE platform = ? AND settled_at IS NOT NULL
+           GROUP BY settled_at
+           ORDER BY settled_at DESC""",
+        (platform,)
+    ).fetchall()
+
+    batches = []
+    for batch in batch_rows:
+        orders = conn.execute(
+            """SELECT order_sn, COALESCE(item_total, 0) as item_total,
+                      marketplace_fee, actual_payout,
+                      ROUND(COALESCE(item_total, 0) - actual_payout, 2) as fee_diff,
+                      status, order_date, settlement_source
+               FROM marketplace_orders
+               WHERE platform = ? AND settled_at = ?
+               ORDER BY order_date""",
+            (platform, batch[0])
+        ).fetchall()
+        batches.append({
+            'settled_at':   batch[0],
+            'order_count':  batch[1],
+            'total_payout': round(batch[2] or 0, 2),
+            'orders': [dict(zip(
+                ['order_sn', 'item_total', 'marketplace_fee', 'actual_payout',
+                 'fee_diff', 'status', 'order_date', 'settlement_source'], o
+            )) for o in orders],
+        })
+
+    # Pending: settled orders not yet stamped
+    pending_rows = conn.execute(
+        """SELECT order_sn, COALESCE(item_total, 0) as item_total, status, order_date
+           FROM marketplace_orders
+           WHERE platform = ? AND actual_payout IS NULL
+             AND status NOT IN ('ยกเลิกแล้ว')
+           ORDER BY order_date DESC""",
+        (platform,)
+    ).fetchall()
+    pending = [dict(zip(['order_sn', 'item_total', 'status', 'order_date'], r))
+               for r in pending_rows]
+
+    return {'batches': batches, 'pending': pending}
+
+
 def get_marketplace_summary():
     """Per-platform counts for the dashboard cards."""
     conn = get_connection()

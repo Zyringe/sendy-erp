@@ -189,7 +189,7 @@ _STAFF_POST_OK = frozenset([
     'login', 'logout',
     'import_weekly', 'import_weekly_confirm', 'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
     'unified_import', 'unified_import_confirm',
-    'marketplace.import_orders',
+    'marketplace.import_orders', 'marketplace.settlement_import',
     # Decision B — staff may import everything; each of these snapshots the DB
     # before writing (see _snapshot_before_import call sites).
     'import_payments', 'import_credit_notes_preview', 'import_credit_notes_commit',
@@ -345,6 +345,8 @@ _ENDPOINT_MODULE = {
     'marketplace.dashboard': 'accounting',
     'marketplace.import_orders': 'accounting',
     'marketplace.unmapped': 'accounting',
+    'marketplace.settlement': 'accounting',
+    'marketplace.settlement_import': 'accounting',
     # hr
     'hr.dashboard': 'hr',
     'hr.employee_list': 'hr',

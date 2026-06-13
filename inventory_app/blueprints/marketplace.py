@@ -16,6 +16,8 @@ import db_backup
 import models
 from database import get_connection
 from parse_orders import parse_shopee_orders, parse_lazada_orders
+from parse_income_transfer import (parse_shopee_income, IncomeTransferError,
+                                   load_income_sheet)
 
 bp_marketplace = Blueprint('marketplace', __name__)
 
@@ -93,3 +95,61 @@ def import_orders():
 def unmapped():
     return render_template('marketplace/unmapped.html',
                            rows=models.get_marketplace_unmapped())
+
+
+@bp_marketplace.route('/marketplace/settlement-import', methods=['POST'])
+def settlement_import():
+    f = request.files.get('settlement_file')
+    if not f or f.filename == '':
+        flash('กรุณาเลือกไฟล์ Income Transfer (.xlsx)', 'warning')
+        return redirect(url_for('marketplace.settlement'))
+
+    try:
+        # Real Income Transfer files prepend a multi-row metadata banner above
+        # the header row; load_income_sheet auto-detects it (header=0 would miss
+        # every column). See parse_income_transfer.load_income_sheet.
+        df = load_income_sheet(io.BytesIO(f.read()))
+        settlements = parse_shopee_income(df)
+    except IncomeTransferError as e:
+        flash(str(e), 'danger')
+        return redirect(url_for('marketplace.settlement'))
+    except Exception as e:
+        flash(f'อ่านไฟล์ไม่ได้: {e} — ต้องเป็นไฟล์ Income Transfer จาก Shopee ค่ะ', 'danger')
+        return redirect(url_for('marketplace.settlement'))
+
+    _info, _err = db_backup.safe_create_backup(
+        'marketplace_settlement', db_path=config.DATABASE_PATH,
+        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
+    if _err:
+        flash(f'⚠️ สำรองข้อมูลไม่สำเร็จ ({_err}) — นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
+
+    try:
+        conn = get_connection()
+        try:
+            stats = models.upsert_marketplace_settlements(conn, settlements, f.filename)
+        finally:
+            conn.close()
+    except Exception as e:
+        flash(f'นำเข้าไม่สำเร็จ: {e}', 'danger')
+        return redirect(url_for('marketplace.settlement'))
+
+    flash(
+        f'นำเข้าสำเร็จ: อัปเดต {stats["updated"]} ออเดอร์'
+        + (f', ไม่พบใน ERP {stats["not_found"]} รายการ' if stats['not_found'] else '')
+        + (f', ข้ามรายการที่ยังไม่โอน (ไม่มีวันที่โอน) {stats["skipped_no_date"]} รายการ'
+           if stats['skipped_no_date'] else ''),
+        'success' if (stats['not_found'] == 0 and stats['skipped_no_date'] == 0) else 'warning'
+    )
+    return redirect(url_for('marketplace.settlement'))
+
+
+@bp_marketplace.route('/marketplace/settlement')
+def settlement():
+    platform = request.args.get('platform', 'shopee')
+    conn = get_connection()
+    try:
+        report = models.get_settlement_report(conn, platform=platform)
+    finally:
+        conn.close()
+    return render_template('marketplace/settlement.html',
+                           report=report, platform=platform)
