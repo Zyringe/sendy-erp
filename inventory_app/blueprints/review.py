@@ -17,9 +17,11 @@ bp_review = Blueprint('review', __name__, url_prefix='/review')
 @bp_review.route('')
 def index():
     show_all = request.args.get('all') == '1'
+    include_medium = request.args.get('lvl') == 'all'
     since = None if show_all else rr.default_since()
-    feed = rr.get_review_feed(since_date=since)
-    return render_template('review/index.html', feed=feed, show_all=show_all)
+    feed = rr.get_review_feed(since_date=since, include_medium=include_medium)
+    return render_template('review/index.html', feed=feed,
+                           show_all=show_all, include_medium=include_medium)
 
 
 @bp_review.route('/scan', methods=['POST'])

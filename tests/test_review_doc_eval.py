@@ -336,3 +336,58 @@ class TestReviewFeed:
         ds = rr.default_since()
         expected = (date.today() - timedelta(days=183)).isoformat()
         assert ds == expected
+
+
+# ── Option A: severity filter — hide 'medium'-only (R3/R5) docs by default ────
+
+class TestSeverityFilter:
+    """The feed and badge hide docs whose worst issue is only 'medium' (R3/R5),
+    which fire heavily on normal negotiated B2B prices. include_medium=True shows
+    them. High (R1/R2/R4) and low (R7) docs are always shown."""
+
+    def _seed_one_medium_doc(self, db_path):
+        """One R3 price-deviation doc (medium) + 3 clean history docs."""
+        rr = _import_rr(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        _add_product(conn, 1, cost_price=100.0, base_sell_price=150.0)
+        # 3 history docs @100 (global R3 baseline), earlier date so they
+        # themselves lack enough prior history to flag
+        for db in ("IVH1", "IVH2", "IVH3"):
+            _add_sales_row(conn, bid, db, product_id=1, qty=1, unit="ตัว",
+                           unit_price=100, net=100, date_iso="2026-05-01")
+        # target deviates +100% vs median 100 → R3 medium
+        _add_sales_row(conn, bid, "IVDEV", product_id=1, qty=1, unit="ตัว",
+                       unit_price=200, net=200, date_iso="2026-06-01")
+        conn.commit()
+        rr.scan_all(db_path=db_path)
+        return rr
+
+    def test_medium_doc_hidden_by_default_shown_with_toggle(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        rr = self._seed_one_medium_doc(db_path)
+        shown = rr.get_review_feed(include_medium=True, db_path=db_path)
+        assert "IVDEV" in [d['doc_base'] for d in shown]
+        assert all(d['max_severity'] == 'medium' for d in shown)
+        hidden = rr.get_review_feed(db_path=db_path)
+        assert "IVDEV" not in [d['doc_base'] for d in hidden]
+
+    def test_suspicious_count_respects_include_medium(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        rr = self._seed_one_medium_doc(db_path)
+        assert rr.suspicious_count(db_path=db_path) == 0
+        assert rr.suspicious_count(include_medium=True, db_path=db_path) == 1
+
+    def test_high_doc_always_shown(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        rr = _import_rr(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        bid = _add_batch(conn)
+        _add_sales_row(conn, bid, "IVHI", product_id=None, qty=1, unit="ตัว",
+                       unit_price=5, net=5, date_iso="2026-06-01")  # R1 high
+        conn.commit()
+        rr.scan_all(db_path=db_path)
+        assert "IVHI" in [d['doc_base'] for d in rr.get_review_feed(db_path=db_path)]
+        assert rr.suspicious_count(db_path=db_path) == 1

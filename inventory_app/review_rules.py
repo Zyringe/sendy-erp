@@ -301,18 +301,29 @@ def default_since() -> str:
     return (date.today() - timedelta(days=183)).isoformat()
 
 
-def get_review_feed(since_date=None, limit=None, conn=None, db_path=None) -> List[dict]:
-    """Return suspicious docs newest-first, each with a 'flags' list attached."""
+def get_review_feed(since_date=None, include_medium=False, limit=None,
+                    conn=None, db_path=None) -> List[dict]:
+    """Return suspicious docs newest-first, each with a 'flags' list attached.
+
+    By default hides docs whose worst issue is only 'medium' (R3 price-deviation /
+    R5 promo-mismatch) — those fire heavily on normal negotiated B2B prices and
+    bury the actionable 'high' bills. include_medium=True shows every severity.
+    """
     with _ConnCtx(conn, db_path) as c:
         sql = (
             "SELECT doc_base, date_iso, customer, customer_code, line_count,"
             " flag_count, max_severity, free_goods_note, scanned_at"
             " FROM txn_review_docs"
         )
+        conds: List = []
         params: List = []
         if since_date:
-            sql += " WHERE date_iso >= ?"
+            conds.append("date_iso >= ?")
             params.append(since_date)
+        if not include_medium:
+            conds.append("max_severity != 'medium'")
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY date_iso DESC, doc_base DESC"
         if limit:
             sql += " LIMIT ?"
@@ -335,20 +346,28 @@ def get_review_feed(since_date=None, limit=None, conn=None, db_path=None) -> Lis
         return out
 
 
-def suspicious_count(since_date=None, conn=None, db_path=None) -> int:
-    """Count suspicious docs (read-fresh — safe under gunicorn -w 2)."""
+def suspicious_count(since_date=None, include_medium=False, conn=None, db_path=None) -> int:
+    """Count suspicious docs (read-fresh — safe under gunicorn -w 2).
+
+    Mirrors get_review_feed's default: hides 'medium'-only docs unless
+    include_medium=True, so the dashboard badge reflects actionable bills.
+    """
     with _ConnCtx(conn, db_path) as c:
         try:
+            conds: List = []
+            params: List = []
             if since_date:
-                r = c.execute(
-                    "SELECT COUNT(*) FROM txn_review_docs WHERE date_iso >= ?",
-                    (since_date,)
-                ).fetchone()
-            else:
-                r = c.execute("SELECT COUNT(*) FROM txn_review_docs").fetchone()
+                conds.append("date_iso >= ?")
+                params.append(since_date)
+            if not include_medium:
+                conds.append("max_severity != 'medium'")
+            sql = "SELECT COUNT(*) FROM txn_review_docs"
+            if conds:
+                sql += " WHERE " + " AND ".join(conds)
+            r = c.execute(sql, params).fetchone()
             return int(r[0]) if r else 0
         except sqlite3.OperationalError:
-            return 0  # table missing (pre-migration)
+            return 0  # table missing (pre-migration) — degrade badge, never 500
 
 
 def scan_all(conn=None, db_path=None) -> dict:

@@ -116,6 +116,21 @@ def test_review_index_all_renders(review_client):
     assert resp.status_code == 200, resp.data[:500]
 
 
+def test_review_index_lvl_all_renders(review_client):
+    """GET /review?lvl=all (show medium too) → 200."""
+    resp = review_client.get('/review?lvl=all')
+    assert resp.status_code == 200, resp.data[:500]
+
+
+def test_review_scan_form_has_csrf_token(review_client):
+    """The scan form MUST carry a csrf_token hidden input — prod CSRF is on, so a
+    missing token 400s the scan and it never runs (tests run with CSRF off, hence
+    this asserts the input is present in the rendered HTML)."""
+    resp = review_client.get('/review')
+    assert resp.status_code == 200
+    assert b'name="csrf_token"' in resp.data
+
+
 # ── POST scan tests ──────────────────────────────────────────────────────────
 
 def test_review_scan_anon_redirects_to_login(anon_client):

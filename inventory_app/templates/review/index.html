@@ -5,22 +5,39 @@
 {% block content %}
 <div class="container-fluid px-2 px-lg-4 mt-3">
 
+  {% set keep_lvl = 'all' if include_medium else None %}
+  {% set keep_all = 1 if show_all else None %}
   {# ── toolbar ── #}
   <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
     <form method="post" action="{{ url_for('review.scan') }}" class="d-inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-sm btn-outline-secondary">
         <i class="bi bi-arrow-clockwise me-1"></i>สแกนใหม่
       </button>
     </form>
+
+    {# severity toggle: high+low by default, medium (R3/R5) opt-in #}
+    {% if include_medium %}
+      <a href="{{ url_for('review.index', all=keep_all) }}" class="btn btn-sm btn-link p-0 text-muted">
+        เฉพาะที่สำคัญ
+      </a>
+    {% else %}
+      <a href="{{ url_for('review.index', all=keep_all, lvl='all') }}" class="btn btn-sm btn-link p-0 text-muted">
+        ดูราคาผิดปกติด้วย
+      </a>
+    {% endif %}
+
+    {# time toggle: 6 months by default #}
     {% if show_all %}
-      <a href="{{ url_for('review.index') }}" class="btn btn-sm btn-link p-0 text-muted">
+      <a href="{{ url_for('review.index', lvl=keep_lvl) }}" class="btn btn-sm btn-link p-0 text-muted">
         ดู 6 เดือนล่าสุด
       </a>
     {% else %}
-      <a href="{{ url_for('review.index', all=1) }}" class="btn btn-sm btn-link p-0 text-muted">
+      <a href="{{ url_for('review.index', all=1, lvl=keep_lvl) }}" class="btn btn-sm btn-link p-0 text-muted">
         ดูทั้งหมด
       </a>
     {% endif %}
+
     {% if feed %}
       <span class="ms-auto text-muted small">{{ feed|length }} ใบน่าสงสัย</span>
     {% endif %}
