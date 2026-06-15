@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}ตรวจข้อมูลลูกค้า — Sendy{% endblock %}
+
+{% block head_extra %}
+<style>
+.cr-toolbar{display:flex;align-items:flex-end;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.cr-fld{display:flex;flex-direction:column;gap:3px}
+.cr-fld label{font-size:10.5px;color:#6b7787;font-weight:600;padding-left:2px}
+.cr-selbox{font-family:inherit;font-size:13.5px;border:1px solid #e3e8ef;border-radius:9px;padding:7px 11px;background:#fff;color:#1f2733}
+.cr-selbox.wide{min-width:180px}
+.cr-search-wrap{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e3e8ef;border-radius:9px;padding:7px 12px;min-width:220px;flex:1;max-width:340px}
+.cr-search-wrap input{border:0;outline:0;font-family:inherit;font-size:14px;width:100%}
+
+.cr-status-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.cr-scount{font-size:12.5px;font-weight:600;padding:5px 12px;border-radius:8px;text-decoration:none}
+.cr-scount.pending{background:#fff5e6;color:#b45309}
+.cr-scount.applied{background:#ecfbf1;color:#15803d}
+.cr-scount.confirmed{background:#eaf1fb;color:#1f4e8c}
+.cr-scount.skipped{background:#f1f4f8;color:#6b7787}
+.cr-scount.all{background:#f1f4f8;color:#1f2733}
+.cr-scount.active-filter{box-shadow:0 0 0 2px #1f4e8c}
+
+.cr-table-wrap{background:#fff;border:1px solid #e3e8ef;border-radius:11px;overflow:hidden;margin-bottom:14px}
+.cr-table-wrap table{width:100%;border-collapse:collapse}
+.cr-table-wrap thead th{text-align:left;font-size:12px;font-weight:600;color:#6b7787;padding:10px 12px;border-bottom:1px solid #e3e8ef;white-space:nowrap}
+.cr-table-wrap tbody td{padding:11px 12px;border-bottom:1px solid #e3e8ef;font-size:13.5px;vertical-align:middle}
+.cr-table-wrap tbody tr:last-child td{border-bottom:0}
+.cr-table-wrap tbody tr:hover{background:#f7f9fc}
+
+.cr-code{font-weight:600}
+.cr-name{font-size:11.5px;color:#6b7787}
+.cr-phone .orig{font-size:11px;color:#9ca3af;text-decoration:line-through}
+.cr-phone .prop{font-size:13px;font-weight:500}
+
+.cr-issue{display:inline-block;font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:5px;background:#fff5e6;color:#b45309;margin:1px 2px 1px 0;white-space:nowrap}
+.cr-issue.auto{background:#ecfbf1;color:#15803d}
+
+.cr-stat{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:6px}
+.cr-stat.pending{background:#fff5e6;color:#b45309}
+.cr-stat.applied{background:#ecfbf1;color:#15803d}
+.cr-stat.confirmed{background:#eaf1fb;color:#1f4e8c}
+.cr-stat.skipped{background:#f1f4f8;color:#6b7787}
+
+.cr-viewbtn{font-size:12.5px;font-weight:600;color:#1f4e8c;border:1px solid #b9d0ee;background:#eaf1fb;border-radius:7px;padding:5px 11px;text-decoration:none;white-space:nowrap}
+.cr-footer{font-size:12px;color:#6b7787;line-height:1.7;margin-top:4px}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-4 py-3">
+  <nav aria-label="breadcrumb" class="mb-2">
+    <span class="text-muted" style="font-size:12.5px">การค้า / <strong>ตรวจข้อมูลลูกค้า</strong></span>
+  </nav>
+
+  {# ── Status summary bar ── #}
+  <div class="cr-status-bar">
+    <a href="{{ url_for('customer_review.normalize_list', q=q, status='pending') }}"
+       class="cr-scount pending {% if status_filter == 'pending' %}active-filter{% endif %}">
+      รอตรวจ {{ counts.pending }}
+    </a>
+    <a href="{{ url_for('customer_review.normalize_list', q=q, status='applied') }}"
+       class="cr-scount applied {% if status_filter == 'applied' %}active-filter{% endif %}">
+      auto-ใช้แล้ว {{ counts.applied }}
+    </a>
+    <a href="{{ url_for('customer_review.normalize_list', q=q, status='confirmed') }}"
+       class="cr-scount confirmed {% if status_filter == 'confirmed' %}active-filter{% endif %}">
+      ยืนยันแล้ว {{ counts.confirmed }}
+    </a>
+    <a href="{{ url_for('customer_review.normalize_list', q=q, status='skipped') }}"
+       class="cr-scount skipped {% if status_filter == 'skipped' %}active-filter{% endif %}">
+      ข้ามไว้ {{ counts.skipped }}
+    </a>
+    <a href="{{ url_for('customer_review.normalize_list', q=q, status='all') }}"
+       class="cr-scount all {% if status_filter == 'all' %}active-filter{% endif %}">
+      ทั้งหมด {{ counts.pending + counts.applied + counts.confirmed + counts.skipped }}
+    </a>
+  </div>
+
+  {# ── Toolbar ── #}
+  <form method="get" action="{{ url_for('customer_review.normalize_list') }}" id="cr-filter-form">
+    <input type="hidden" name="status" value="{{ status_filter }}">
+    <div class="cr-toolbar">
+      <div class="cr-fld">
+        <label>ค้นหา</label>
+        <div class="cr-search-wrap cr-selbox wide">
+          <i class="bi bi-search text-muted" style="font-size:13px"></i>
+          <input type="text" name="q" value="{{ q }}" placeholder="รหัส / ชื่อ / ข้อมูลเดิม">
+        </div>
+      </div>
+      <div class="cr-fld">
+        <label>&nbsp;</label>
+        <div class="d-flex gap-2">
+          <button type="submit" class="btn btn-primary btn-sm px-3">ค้นหา</button>
+          <a href="{{ url_for('customer_review.normalize_list', status=status_filter) }}"
+             class="btn btn-outline-secondary btn-sm px-3">ล้าง</a>
+        </div>
+      </div>
+    </div>
+  </form>
+
+  {# ── Table ── #}
+  <div class="cr-table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>รหัสลูกค้า / ชื่อ</th>
+          <th>ปัญหาที่พบ</th>
+          <th>เบอร์โทรเดิม</th>
+          <th>เบอร์โทรที่แนะนำ</th>
+          <th>แฟกซ์ที่แนะนำ</th>
+          <th>สถานะ</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="cr-cust">
+            <div class="cr-code">{{ r.customer_code }}</div>
+            <div class="cr-name">{{ r.live_name or r.proposed_name or '—' }}</div>
+            {% if r.proposed_note %}<div style="font-size:11px;color:#6b7787;margin-top:2px">📝 {{ r.proposed_note }}</div>{% endif %}
+          </td>
+          <td>
+            {% if r.issues %}
+              {% for tag in r.issues %}
+              <span class="cr-issue{% if r.confidence == 'auto' %} auto{% endif %}">{{ tag }}</span>
+              {% endfor %}
+            {% else %}
+              <span class="text-muted" style="font-size:12px">—</span>
+            {% endif %}
+          </td>
+          <td class="cr-phone">
+            <div class="orig">{{ r.orig_phone or '—' }}</div>
+          </td>
+          <td class="cr-phone">
+            <div class="prop">{{ r.proposed_phone or '—' }}</div>
+          </td>
+          <td>
+            <div style="font-size:13px">{{ r.proposed_fax or '—' }}</div>
+          </td>
+          <td>
+            <span class="cr-stat {{ r.status }}">{{ r.status }}</span>
+            {% if r.reviewed_at %}
+            <div style="font-size:10.5px;color:#9ca3af;margin-top:2px">{{ r.reviewed_at[:10] }}</div>
+            {% endif %}
+          </td>
+          <td>
+            <a class="cr-viewbtn"
+               href="{{ url_for('customer_review.normalize_detail', customer_code=r.customer_code) }}">
+              ตรวจสอบ ›
+            </a>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="7" class="text-center text-muted py-4">ไม่พบรายการ</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="cr-footer">
+    แสดง {{ rows | length }} รายการ (สถานะ: <b>{{ status_filter }}</b>)
+    · ป้ายสีส้ม = ต้องตรวจ (review) · ป้ายสีเขียว = auto-ผ่าน
+  </div>
+</div>
+{% endblock %}
