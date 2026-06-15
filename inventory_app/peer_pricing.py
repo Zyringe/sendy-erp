@@ -154,8 +154,13 @@ def product_peer_prices(conn, customer_code: str) -> List[Dict[str, Any]]:
             peer_vals = sorted(pm for _, pm in peer_meds)
             peer_min = peer_vals[0]
             peer_max = peer_vals[-1]
-            n_more_exp = sum(1 for pm in peer_vals if pm > cust_latest)
-            peer_cheaper_pct = round(100 * n_more_exp / peer_n)
+            # Midpoint percentile rank (tie-aware): peers strictly more expensive
+            # count full, equal-priced peers count half. This keeps a customer
+            # priced EQUAL to the group at ~50 (mid) instead of mislabelling them
+            # as cheapest/most-expensive (ties are common with standardized pricing).
+            n_more = sum(1 for pm in peer_vals if pm > cust_latest)
+            n_equal = sum(1 for pm in peer_vals if pm == cust_latest)
+            peer_cheaper_pct = round(100 * (n_more + 0.5 * n_equal) / peer_n)
             peers = sorted(
                 ({'code': c, 'price': pm, 'is_repr': c == rep_cust} for c, pm in peer_meds),
                 key=lambda d: d['price'],

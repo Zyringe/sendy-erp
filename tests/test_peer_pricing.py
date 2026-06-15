@@ -245,3 +245,28 @@ def test_peer_position_none_without_peers():
     assert row['peer_max'] is None
     assert row['peer_cheaper_pct'] is None
     assert row['peers'] == []
+
+
+def test_peer_position_all_equal_is_midgroup_not_most_expensive():
+    """Ties must NOT read as 'most expensive': a customer priced EQUAL to every
+    peer sits mid-group (midpoint-rank = 50), not 0%. (Common with standardized
+    own-brand pricing.)"""
+    c = _db_disc([
+        (1, 'ตัว', 'T',  1, 100, 90, 0, '2025-01-01', '10%'),
+        (1, 'ตัว', 'P1', 1, 100, 90, 0, '2025-01-01', '10%'),
+        (1, 'ตัว', 'P2', 1, 100, 90, 0, '2025-01-01', '10%'),
+    ])
+    row = {r['product_id']: r for r in pp.product_peer_prices(c, customer_code='T')}[1]
+    assert row['peer_cheaper_pct'] == 50
+
+
+def test_peer_position_partial_tie_counts_equal_as_half():
+    """One equal peer + one more-expensive peer → midpoint rank counts the equal
+    peer as half: (1 + 0.5)/2 = 75%."""
+    c = _db_disc([
+        (1, 'ตัว', 'T',  1, 100, 90,  0, '2025-01-01', '10%'),
+        (1, 'ตัว', 'P1', 1, 100, 90,  0, '2025-01-01', '10%'),  # equal
+        (1, 'ตัว', 'P2', 1, 100, 100, 0, '2025-01-01', ''),     # more expensive
+    ])
+    row = {r['product_id']: r for r in pp.product_peer_prices(c, customer_code='T')}[1]
+    assert row['peer_cheaper_pct'] == 75

@@ -387,14 +387,16 @@
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;vertical-align:middle">
                   {% if p.peer_cheaper_pct is none %}
                   <span class="cc-peer same">—</span>
-                  {% elif p.peer_cheaper_pct == 100 %}
+                  {% elif p.customer_latest is not none and p.customer_latest < p.peer_min %}
                   <span class="cc-peer cheap">⭐ ถูกสุดในกลุ่ม</span>
-                  {% elif p.peer_cheaper_pct >= 50 %}
-                  <span class="cc-peer cheap">⭐ ถูกกว่า {{ p.peer_cheaper_pct }}% ของเพื่อน</span>
-                  {% elif p.peer_cheaper_pct == 0 %}
+                  {% elif p.customer_latest is not none and p.customer_latest > p.peer_max %}
                   <span class="cc-peer high">▲ แพงสุดในกลุ่ม</span>
-                  {% else %}
+                  {% elif p.peer_cheaper_pct >= 55 %}
+                  <span class="cc-peer cheap">⭐ ถูกกว่า {{ p.peer_cheaper_pct }}% ของเพื่อน</span>
+                  {% elif p.peer_cheaper_pct <= 45 %}
                   <span class="cc-peer high">▲ แพงกว่า {{ 100 - p.peer_cheaper_pct }}% ของเพื่อน</span>
+                  {% else %}
+                  <span class="cc-peer same">≈ พอๆ กับกลุ่ม</span>
                   {% endif %}
                   {% if p.peer_min is not none %}<div class="cc-px-net">กลุ่ม ฿{{ '{:,.0f}'.format(p.peer_min) }}–{{ '{:,.0f}'.format(p.peer_max) }}</div>{% endif %}
                 </td>
@@ -446,7 +448,7 @@
           </table>
           {% if p.customer_latest is not none %}
           <div class="text-muted small">ลูกค้ารายนี้จ่ายสุทธิ ฿{{ '{:,.2f}'.format(p.customer_latest) }} —
-            {% if p.peer_cheaper_pct >= 50 %}ถูกกว่า {{ p.peer_cheaper_pct }}% ของกลุ่ม{% else %}แพงกว่า {{ 100 - p.peer_cheaper_pct }}% ของกลุ่ม{% endif %}</div>
+            {% if p.peer_cheaper_pct >= 55 %}ถูกกว่า {{ p.peer_cheaper_pct }}% ของกลุ่ม{% elif p.peer_cheaper_pct <= 45 %}แพงกว่า {{ 100 - p.peer_cheaper_pct }}% ของกลุ่ม{% else %}พอๆ กับกลุ่ม{% endif %}</div>
           {% endif %}
           {% else %}
           <div class="text-muted">ยังไม่มีร้านอื่นซื้อสินค้านี้ (ไม่มีราคาเทียบ)</div>
