@@ -5470,3 +5470,350 @@ def get_marketplace_unmapped():
     finally:
         conn.close()
 
+
+# ── Payout batch functions (mig 105) ─────────────────────────────────────────
+
+def create_payout_batch(deposit_date, deposit_amount, bank_ref=None, note=None,
+                        created_by=None, conn=None):
+    """Insert a new payout_batches row and return its id.
+
+    Args:
+        deposit_date:   ISO date string, e.g. '2026-06-06'.
+        deposit_amount: The bank-transfer amount (฿).
+        bank_ref:       Optional bank reference string.
+        note:           Optional free-text note.
+        created_by:     Username of the creator.
+        conn:           DB connection (callers that manage their own connection
+                        pass it here; routes that don't pass None → opens one).
+    Returns:
+        int: the new batch id.
+    """
+    _own_conn = conn is None
+    if _own_conn:
+        from database import get_connection
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            """INSERT INTO payout_batches
+                   (deposit_date, deposit_amount, bank_ref, note, created_by)
+               VALUES (?, ?, ?, ?, ?)""",
+            (deposit_date, deposit_amount, bank_ref, note, created_by),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        if _own_conn:
+            conn.close()
+
+
+_BATCH_TOLERANCE = 0.005  # ฿ tolerance for floating-point prefix-sum comparison
+
+
+def match_orders_to_amount(deposit_amount, conn=None):
+    """Pure dry-run greedy prefix matcher — reads only, writes nothing.
+
+    Candidate set = Shopee marketplace_orders with
+        actual_payout IS NOT NULL AND payout_batch_id IS NULL
+    ordered by settled_at ASC, order_sn ASC (deterministic tiebreak).
+
+    Returns:
+        {'status':'matched', 'order_ids':[...], 'n':N, 'sum':S}
+        OR
+        {'status':'no_exact_match', 'candidates':[{order_sn,settled_at,
+            actual_payout,running_sum}], 'closest_n':N, 'closest_sum':S}
+
+    Callers that want to commit must create a batch row first, then call
+    assign_orders_to_batch (which reuses this logic with a write step), or
+    call this function and handle the result themselves.
+
+    Negative actual_payout (refund netting) is handled naturally.
+    closest_sum tracks the prefix with the smallest absolute distance to the
+    target (it may overshoot or undershoot — it is diagnostic only).
+    """
+    _own_conn = conn is None
+    if _own_conn:
+        from database import get_connection
+        conn = get_connection()
+    try:
+        candidates = conn.execute(
+            """SELECT id, order_sn, settled_at, actual_payout
+               FROM marketplace_orders
+               WHERE platform = 'shopee'
+                 AND actual_payout IS NOT NULL
+                 AND payout_batch_id IS NULL
+               ORDER BY settled_at ASC, order_sn ASC"""
+        ).fetchall()
+
+        target = round(deposit_amount, 2)
+        running = 0.0
+        match_ids = []
+        closest_n = 0
+        closest_sum = 0.0
+
+        for row in candidates:
+            running = round(running + (row[3] or 0), 2)
+            match_ids.append(row[0])
+
+            if abs(running - target) <= _BATCH_TOLERANCE:
+                return {
+                    'status': 'matched',
+                    'order_ids': list(match_ids),
+                    'n': len(match_ids),
+                    'sum': running,
+                }
+
+            # Track the prefix with smallest absolute distance to target
+            # (may overshoot or undershoot — diagnostic only).
+            if abs(running - target) < abs(closest_sum - target):
+                closest_n = len(match_ids)
+                closest_sum = running
+
+        # No exact prefix — build full candidate list with running sums.
+        running2 = 0.0
+        cand_list = []
+        for row in candidates:
+            running2 = round(running2 + (row[3] or 0), 2)
+            cand_list.append({
+                'order_sn':      row[1],
+                'settled_at':    row[2],
+                'actual_payout': row[3],
+                'running_sum':   running2,
+            })
+
+        return {
+            'status':       'no_exact_match',
+            'candidates':   cand_list,
+            'closest_n':    closest_n,
+            'closest_sum':  closest_sum,
+        }
+    finally:
+        if _own_conn:
+            conn.close()
+
+
+def assign_orders_to_batch(batch_id, deposit_amount, conn=None):
+    """Greedy prefix matcher that commits on an exact hit.
+
+    Delegates the pure matching logic to match_orders_to_amount, then writes
+    payout_batch_id to the matched rows if an exact prefix is found.
+
+    Returns the same dict shape as match_orders_to_amount so all existing
+    callers/tests continue to work unchanged.
+    """
+    _own_conn = conn is None
+    if _own_conn:
+        from database import get_connection
+        conn = get_connection()
+    try:
+        result = match_orders_to_amount(deposit_amount, conn=conn)
+        if result['status'] == 'matched':
+            ids = result['order_ids']
+            placeholders = ','.join('?' for _ in ids)
+            conn.execute(
+                f"UPDATE marketplace_orders SET payout_batch_id = ? WHERE id IN ({placeholders})",
+                [batch_id] + ids,
+            )
+            conn.commit()
+        return result
+    finally:
+        if _own_conn:
+            conn.close()
+
+
+def assign_orders_manual(batch_id, order_sns, conn=None):
+    """Assign an explicit list of order_sns to the batch (manual-adjust path).
+
+    Idempotent: re-running with the same order_sns simply sets payout_batch_id
+    again (no harm; no duplicate).  Only Shopee orders are targeted.
+    """
+    if not order_sns:
+        return
+    _own_conn = conn is None
+    if _own_conn:
+        from database import get_connection
+        conn = get_connection()
+    try:
+        placeholders = ','.join('?' for _ in order_sns)
+        conn.execute(
+            f"""UPDATE marketplace_orders
+                   SET payout_batch_id = ?
+                 WHERE platform = 'shopee' AND order_sn IN ({placeholders})""",
+            [batch_id] + list(order_sns),
+        )
+        conn.commit()
+    finally:
+        if _own_conn:
+            conn.close()
+
+
+def get_deposit_batch_report(conn=None):
+    """Return all payout batches with per-batch stats and an unbatched bucket.
+
+    Returns:
+        {
+          'batches': [
+            {
+              'id': int,
+              'deposit_date': str,
+              'deposit_amount': float,
+              'bank_ref': str | None,
+              'note': str | None,
+              'created_at': str,
+              'order_count': int,
+              'sum_payout': float,
+              'tied': bool,      # True when sum_payout == deposit_amount (±tolerance)
+              'orders': [{order_sn, settled_at, actual_payout}]
+            }, ...
+          ],
+          'unbatched': [{order_sn, settled_at, actual_payout}]
+              # Shopee orders with actual_payout NOT NULL but payout_batch_id IS NULL
+        }
+    """
+    _own_conn = conn is None
+    if _own_conn:
+        from database import get_connection
+        conn = get_connection()
+    try:
+        # Guard: mig 105 may not yet be applied on older DBs.
+        _has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='payout_batches'"
+        ).fetchone()
+        if not _has_table:
+            return {'batches': [], 'unbatched': []}
+
+        batch_rows = conn.execute(
+            """SELECT pb.id, pb.deposit_date, pb.deposit_amount, pb.bank_ref,
+                      pb.note, pb.created_at, pb.is_baseline,
+                      COUNT(mo.id)            AS order_count,
+                      COALESCE(SUM(mo.actual_payout), 0) AS sum_payout
+               FROM payout_batches pb
+               LEFT JOIN marketplace_orders mo
+                      ON mo.payout_batch_id = pb.id AND mo.platform = 'shopee'
+               GROUP BY pb.id
+               ORDER BY pb.deposit_date DESC, pb.id DESC"""
+        ).fetchall()
+
+        batches = []
+        for b in batch_rows:
+            bid, dep_date, dep_amt, bank_ref, note, created_at, is_baseline, cnt, s_pay = b
+            s_pay = round(s_pay or 0, 2)
+            dep_amt_r = round(dep_amt or 0, 2)
+            tied = abs(s_pay - dep_amt_r) <= _BATCH_TOLERANCE
+
+            orders = conn.execute(
+                """SELECT order_sn, settled_at, actual_payout
+                   FROM marketplace_orders
+                   WHERE payout_batch_id = ? AND platform = 'shopee'
+                   ORDER BY settled_at ASC, order_sn ASC""",
+                (bid,)
+            ).fetchall()
+
+            batches.append({
+                'id':             bid,
+                'deposit_date':   dep_date,
+                'deposit_amount': dep_amt,
+                'bank_ref':       bank_ref,
+                'note':           note,
+                'created_at':     created_at,
+                'is_baseline':    bool(is_baseline),
+                'order_count':    cnt,
+                'sum_payout':     s_pay,
+                'tied':           tied,
+                'orders':         [{'order_sn': r[0], 'settled_at': r[1],
+                                    'actual_payout': r[2]} for r in orders],
+            })
+
+        unbatched_rows = conn.execute(
+            """SELECT order_sn, settled_at, actual_payout
+               FROM marketplace_orders
+               WHERE platform = 'shopee'
+                 AND actual_payout IS NOT NULL
+                 AND payout_batch_id IS NULL
+               ORDER BY settled_at ASC, order_sn ASC"""
+        ).fetchall()
+        unbatched = [{'order_sn': r[0], 'settled_at': r[1], 'actual_payout': r[2]}
+                     for r in unbatched_rows]
+
+        return {'batches': batches, 'unbatched': unbatched}
+    finally:
+        if _own_conn:
+            conn.close()
+
+
+def create_baseline_batch(cutoff_date, created_by=None, conn=None):
+    """Absorb all pre-tracking settled orders into a single "ยอดยกมา" batch.
+
+    Inserts a payout_batches row with is_baseline=1 and deposit_amount equal to
+    the sum of the absorbed orders. Assigns payout_batch_id to every Shopee order
+    with actual_payout IS NOT NULL AND payout_batch_id IS NULL AND
+    settled_at <= cutoff_date.
+
+    This is a one-time operation to clear the historical backlog so the greedy
+    matcher only sees post-cutoff orders when matching real bank deposits.
+    Deleting the baseline (via unassign_batch) frees the orders back to unbatched.
+
+    Returns:
+        {'batch_id': int, 'n_absorbed': int, 'sum_absorbed': float}
+    """
+    _own_conn = conn is None
+    if _own_conn:
+        from database import get_connection
+        conn = get_connection()
+    try:
+        # Calculate sum and count of orders to absorb before inserting the batch.
+        agg = conn.execute(
+            """SELECT COUNT(*), COALESCE(SUM(actual_payout), 0)
+               FROM marketplace_orders
+               WHERE platform = 'shopee'
+                 AND actual_payout IS NOT NULL
+                 AND payout_batch_id IS NULL
+                 AND settled_at <= ?""",
+            (cutoff_date,)
+        ).fetchone()
+        n_absorbed = agg[0]
+        sum_absorbed = round(agg[1] or 0, 2)
+
+        cur = conn.execute(
+            """INSERT INTO payout_batches
+                   (deposit_date, deposit_amount, bank_ref, note, created_by, is_baseline)
+               VALUES (?, ?, NULL, 'ยอดยกมา (โอนเข้าบัญชีก่อนเริ่มบันทึก)', ?, 1)""",
+            (cutoff_date, sum_absorbed, created_by),
+        )
+        batch_id = cur.lastrowid
+
+        conn.execute(
+            """UPDATE marketplace_orders
+                  SET payout_batch_id = ?
+                WHERE platform = 'shopee'
+                  AND actual_payout IS NOT NULL
+                  AND payout_batch_id IS NULL
+                  AND settled_at <= ?""",
+            (batch_id, cutoff_date),
+        )
+        conn.commit()
+        return {'batch_id': batch_id, 'n_absorbed': n_absorbed, 'sum_absorbed': sum_absorbed}
+    finally:
+        if _own_conn:
+            conn.close()
+
+
+def unassign_batch(batch_id, conn=None):
+    """Clear payout_batch_id on all orders in the batch, then delete the batch.
+
+    Idempotent: if the batch_id doesn't exist, this is a no-op.
+    """
+    _own_conn = conn is None
+    if _own_conn:
+        from database import get_connection
+        conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE marketplace_orders SET payout_batch_id = NULL WHERE payout_batch_id = ?",
+            (batch_id,),
+        )
+        conn.execute("DELETE FROM payout_batches WHERE id = ?", (batch_id,))
+        conn.commit()
+    finally:
+        if _own_conn:
+            conn.close()
+
