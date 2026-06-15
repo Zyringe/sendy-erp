@@ -28,6 +28,23 @@
   {% endif %}
 </ul>
 
+{# Shared category picker source: type-to-search datalist + JS name→id map.
+   Used by BOTH the approve form (suggestions tab) and the Suggest modal so
+   Category is chosen from the 40 standardised categories instead of free
+   text (which silently created NULL-category SKUs). #}
+<datalist id="cat-datalist">
+  {% for c in categories %}
+  <option value="{{ c.name_th }}">{{ c.code }}</option>
+  {% endfor %}
+</datalist>
+<script>
+  const CAT_BY_NAME = { {% for c in categories %}{{ c.name_th | tojson }}: {{ c.id }}{% if not loop.last %}, {% endif %}{% endfor %} };
+  // Resolve a typed/selected category name to its id (null if no exact match).
+  function resolveCategoryId(name) {
+    return (name && CAT_BY_NAME[name.trim()]) || null;
+  }
+</script>
+
 {% if active_tab == 'suggestions' %}
 {# ── Tab 2: Pending suggestions for manager/admin review ────────────── #}
 
@@ -76,7 +93,9 @@
             <input class="form-control form-control-sm" id="sug-name-{{ s.id }}"
                    value="{{ s.suggested_name or s.bsn_name }}"></div>
           <div class="col-md-4"><label class="form-label mb-0">Category</label>
-            <input class="form-control form-control-sm" id="sug-cat-{{ s.id }}" value="{{ s.category or '' }}"></div>
+            <input class="form-control form-control-sm" id="sug-cat-{{ s.id }}"
+                   list="cat-datalist" value="{{ s.category or '' }}"
+                   placeholder="พิมพ์ค้นหาหมวด เช่น กาว, บานพับ"></div>
           <div class="col-md-4"><label class="form-label mb-0">Series</label>
             <input class="form-control form-control-sm" id="sug-series-{{ s.id }}" value="{{ s.series or '' }}"></div>
           <div class="col-md-4"><label class="form-label mb-0">Brand</label>
@@ -169,6 +188,7 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
   const payload = {
     suggested_name:      v('name'),
     category:            v('cat'),
+    category_id:         resolveCategoryId(v('cat')),
     series:              v('series'),
     brand_id:            v('brand') || null,
     brand_other_name:    hasBrandOther ? v('brand-other') : null,
@@ -380,7 +400,8 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                 <div class="col-12"><label class="form-label mb-0">ชื่อสินค้า (proposed)</label>
                   <input class="form-control form-control-sm" id="sm-name"></div>
                 <div class="col-md-4"><label class="form-label mb-0">Category</label>
-                  <input class="form-control form-control-sm" id="sm-cat"></div>
+                  <input class="form-control form-control-sm" id="sm-cat"
+                         list="cat-datalist" placeholder="พิมพ์ค้นหาหมวด"></div>
                 <div class="col-md-4"><label class="form-label mb-0">Series</label>
                   <input class="form-control form-control-sm" id="sm-series"></div>
                 <div class="col-md-4"><label class="form-label mb-0">

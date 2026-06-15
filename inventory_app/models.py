@@ -4874,6 +4874,20 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         if not d.get('packaging') and d.get('packaging_other'):
             d['packaging'] = d['packaging_other'].strip()
 
+        # category: the approve form's picker resolves to a category_id and
+        # sends it as an edit. When absent (e.g. the suggestion was staged with
+        # only the parser's free-text `category`), resolve that text against
+        # the categories master by name_th or code. Unmatched text → NULL (we
+        # never create a new category here — that's a deliberate migration).
+        category_id = d.get('category_id')
+        if not category_id and d.get('category'):
+            cat_txt = str(d['category']).strip()
+            crow = conn.execute(
+                "SELECT id FROM categories WHERE name_th = ? OR code = ? LIMIT 1",
+                (cat_txt, cat_txt),
+            ).fetchone()
+            category_id = crow[0] if crow else None
+
         # Insert product with structured fields
         from sku_code_utils import PACKAGING_SHORT
         pkg_th = d.get('packaging') or None
@@ -4883,17 +4897,18 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
               (product_name, unit_type, hard_to_sell,
                cost_price, base_sell_price, low_stock_threshold,
                shopee_stock, lazada_stock,
-               brand_id, color_code, packaging_th, packaging_short,
+               brand_id, category_id, color_code, packaging_th, packaging_short,
                series, model, size, condition, pack_variant,
                units_per_carton, units_per_box)
             VALUES
               (?, ?, 0, ?, 0.0, 10, 0, 0,
-               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             d.get('suggested_name') or d.get('bsn_name'),
             d.get('suggested_unit_type') or 'ตัว',
             d.get('suggested_cost') or 0.0,
             d.get('brand_id'),
+            category_id,
             d.get('color_code') or None,
             pkg_th,
             pkg_short,
