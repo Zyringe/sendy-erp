@@ -160,6 +160,9 @@
             {% if r.badges.quiet %}
             <span class="cc-b quiet">⏰ เงียบ</span>
             {% endif %}
+            {% if r.badges.special %}
+            <span class="cc-b star">⭐ ราคาพิเศษ</span>
+            {% endif %}
           </td>
           <td>
             <div class="cc-acts" onclick="event.stopPropagation()">

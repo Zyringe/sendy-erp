@@ -543,6 +543,46 @@ def test_assemble_products_no_promo_is_none_tiers_independent():
     assert p['price_tiers'][0]['qty_label'] == '1 โหล'
 
 
+def _special_db(rows):
+    """rows = (product_id, unit, customer, customer_code, qty, net, vat_type)."""
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute("CREATE TABLE sales_transactions("
+              "product_id INT, unit TEXT, customer TEXT, customer_code TEXT, "
+              "qty REAL, net REAL, vat_type INT)")
+    c.executemany("INSERT INTO sales_transactions VALUES (?,?,?,?,?,?,?)", rows)
+    c.commit()
+    return c
+
+
+def test_special_customers_flags_systematic_low_payer():
+    """'special' = below the product's overall median on a majority of the
+    products bought (≥2 buyers each), requiring ≥3 such products."""
+    rows = []
+    for pid in (1, 2, 3):
+        rows += [(pid, 'ตัว', 'ร้านLOW', 'LOW', 1, 80, 0),
+                 (pid, 'ตัว', 'ร้านMID', 'MID', 1, 90, 0),
+                 (pid, 'ตัว', 'ร้านHIGH', 'HIGH', 1, 100, 0)]
+    # SPARSE is below-price but on only 2 products → under the ≥3 threshold
+    rows += [(1, 'ตัว', 'ร้านSP', 'SPARSE', 1, 70, 0),
+             (2, 'ตัว', 'ร้านSP', 'SPARSE', 1, 70, 0)]
+    s = cc.special_customers(_special_db(rows))
+    assert 'LOW' in s
+    assert 'MID' not in s
+    assert 'HIGH' not in s
+    assert 'SPARSE' not in s
+
+
+def test_special_customers_excludes_marketplace_and_single_buyer():
+    rows = [
+        (1, 'ตัว', 'หน้าร้านS', '', 1, 10, 0),     # marketplace → excluded
+        (2, 'ตัว', 'ร้านSolo', 'SOLO', 1, 5, 0),   # single buyer (no peers) → not special
+    ]
+    s = cc.special_customers(_special_db(rows))
+    assert 'SOLO' not in s
+    assert 'หน้าร้านS' not in s
+
+
 def test_assemble_products_peer_position_names_and_orders():
     """v2: each product carries peer position (min/max/cheaper_pct), a per-peer
     breakdown enriched with customer NAMES, and this customer's order history."""
