@@ -137,13 +137,36 @@ def test_pb_continuation_paren_area():
     assert r["inferred"] == ["034-391887"]
 
 
-def test_pb_lone_undialable():
-    # No preceding landline to borrow an area code from → still undialable.
+def test_pb_lone_seven_digit_assumed_bangkok():
+    # A lone 7-digit local exists only in Bangkok (provincial locals are 6 digits) → assume 02.
     r = parse_phone_block("3794746")
-    assert r["undialable"] == ["3794746"]
+    assert r["phones"] == ["02-3794746"]
+    assert r["assumed"] == ["02-3794746"]
+    assert r["undialable"] == []
+
+
+def test_pb_seven_digit_with_range_assumed_bangkok():
+    r = parse_phone_block("3938045-6")
+    assert r["phones"] == ["02-3938045-6"]
+    assert r["assumed"] == ["02-3938045-6"]
+
+
+def test_pb_lone_six_digit_still_undialable():
+    # 6-digit local could be any province — not safely inferable → stays undialable.
+    r = parse_phone_block("512324")
+    assert r["undialable"] == ["512324"]
     assert r["phones"] == []
-    assert r["inferred"] == []
+    assert r["assumed"] == []
     assert r["clean"] is False
+
+
+def test_nc_assumed_bangkok_is_review():
+    # Recovered Bangkok number is shown but kept in review (the area is a guess).
+    r = normalize_customer(_row(name="ร้าน เค", phone="4373387,4377195"))
+    assert r["proposed"]["phone"] == "02-4373387,02-4377195"
+    assert r["confidence"] == "review"
+    assert "assumed_bangkok" in r["issues"]
+    assert lossless_ok(r)
 
 
 def test_pb_empty():

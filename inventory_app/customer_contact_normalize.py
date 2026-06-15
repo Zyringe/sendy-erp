@@ -120,11 +120,20 @@ def _expand_continuations(chunks):
     '02-2114322,2114125'       -> ['02-2114322','02-2114125']
     '043-519373,512324,525408' -> ['043-519373','043-512324','043-525408']
     Only PURE numeric comma-chunks are touched (anything with text is left for review).
-    Returns (new_chunks, set_of_inferred_full_numbers).
+
+    Two kinds of recovery, returned in separate sets:
+      inferred — a bare local number that inherits a SIBLING landline's area code (the area is
+                 explicitly present in the same field). High confidence.
+      assumed  — a lone bare 7-digit local with no area anywhere. A 7-digit local exists ONLY in
+                 Bangkok (provincial locals are 6 digits), so '02' is assumed. Lower confidence
+                 (the area isn't in the data) → caller keeps these in review.
+
+    Returns (new_chunks, inferred_set, assumed_set).
     """
     last_area = None
     new_chunks = []
     inferred = set()
+    assumed = set()
     for ch in chunks:
         c = ch.strip()
         if not c or not _PURE_NUM_RE.match(c):
@@ -132,10 +141,18 @@ def _expand_continuations(chunks):
             continue
         cd = re.sub(r"\D", "", c)
         if not c.lstrip("(").startswith("0"):
-            # bare local number (no leading 0) — a continuation candidate
+            # core = digits minus a trailing -N/-NN range (e.g. "3938045-6" -> core "3938045")
+            core = re.sub(r"\D", "", re.sub(r"-\d{1,2}$", "", c))
+            # 1) continuation — inherits a sibling landline's area code
             if last_area and 6 <= len(cd) <= 7 and len(last_area) + len(cd) == 9:
                 full = last_area + "-" + cd
                 inferred.add(full)
+                new_chunks.append(full)
+                continue
+            # 2) lone 7-digit local with no area -> Bangkok 02 (assumed; kept in review)
+            if len(core) == 7:
+                full = "02-" + c
+                assumed.add(full)
                 new_chunks.append(full)
                 continue
             new_chunks.append(ch)
@@ -145,7 +162,7 @@ def _expand_continuations(chunks):
         if area:
             last_area = area
         new_chunks.append(ch)
-    return new_chunks, inferred
+    return new_chunks, inferred, assumed
 
 
 def _is_number_token(tok):
@@ -250,7 +267,8 @@ def parse_phone_block(raw):
     """Parse one phone/contact field into typed buckets. See module docstring / contract."""
     out = {
         "phones": [], "faxes": [], "lines": [], "people": [],
-        "notes": [], "undialable": [], "leftovers": [], "inferred": [], "clean": False,
+        "notes": [], "undialable": [], "leftovers": [],
+        "inferred": [], "assumed": [], "clean": False,
     }
     if not raw or not str(raw).strip():
         return out
@@ -259,9 +277,10 @@ def parse_phone_block(raw):
     # Comma is the primary separator. Keep each comma-chunk and process individually so that
     # space-attached people/notes/labels stay glued to their neighbour where the spec wants.
     chunks = [c for c in text.split(",")]
-    # Thai shorthand: bare local numbers after a full landline inherit its area code.
-    chunks, inferred = _expand_continuations(chunks)
+    # Thai shorthand: bare local numbers inherit a sibling's area code, or (lone 7-digit) Bangkok.
+    chunks, inferred, assumed = _expand_continuations(chunks)
     out["inferred"] = sorted(inferred)
+    out["assumed"] = sorted(assumed)
 
     for chunk in chunks:
         _process_chunk(chunk, out)
@@ -270,6 +289,7 @@ def parse_phone_block(raw):
         (bool(out["phones"]) or bool(out["faxes"]))
         and not out["people"] and not out["lines"]
         and not out["notes"] and not out["undialable"] and not out["leftovers"]
+        and not out["assumed"]
     )
     return out
 
@@ -683,15 +703,19 @@ def normalize_customer(row):
     # human is needed for people (attribution), contact-borne phones/lines, undialable numbers,
     # name changes, or old-format mobiles (which may be dead).
     cb_people_have_number = any(re.search(r"\d", p) for p in cb["people"])
-    pb_auto = (not pb["people"] and not pb["lines"]
-               and not pb["undialable"] and not pb["leftovers"])
+    pb_auto = (not pb["people"] and not pb["lines"] and not pb["undialable"]
+               and not pb["leftovers"] and not pb["assumed"])
     cb_auto = (
-        not cb_people_have_number and not cb["lines"]
-        and not cb["undialable"] and not cb["phones"] and not cb["leftovers"]
+        not cb_people_have_number and not cb["lines"] and not cb["undialable"]
+        and not cb["phones"] and not cb["leftovers"] and not cb["assumed"]
     )
     inferred_any = bool(pb["inferred"]) or bool(cb["inferred"])
     if inferred_any:
         issues.append("inferred_area_code")
+    # An ASSUMED Bangkok prefix (lone 7-digit, no area in the data) is recovered for display but
+    # kept in review — the area is a guess, so a human confirms before it's trusted.
+    if pb["assumed"] or cb["assumed"]:
+        issues.append("assumed_bangkok")
 
     confidence = "auto" if (
         pb_auto and cb_auto and not nm["changed"] and not legacy_mobile
