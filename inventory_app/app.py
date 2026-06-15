@@ -1555,6 +1555,11 @@ def mapping():
          WHERE m.bsn_unit <> ''
          ORDER BY m.bsn_code, m.bsn_unit
     """).fetchall()
+    # Standardised category master for the type-to-search picker in both the
+    # approve form and the Suggest modal (replaces the old free-text field).
+    categories = conn.execute(
+        "SELECT id, code, name_th FROM categories ORDER BY sort_order, name_th"
+    ).fetchall()
     conn.close()
     tab = request.args.get('tab', 'mapping')
     return render_template(
@@ -1564,6 +1569,7 @@ def mapping():
         all_products=all_products,
         brands=brands,
         color_codes=color_codes,
+        categories=categories,
         overrides=overrides,
         active_tab=tab,
     )
@@ -1697,6 +1703,12 @@ def mapping_suggestion_approve(sid):
             edits['brand_id'] = int(edits['brand_id'])
         except (TypeError, ValueError):
             edits['brand_id'] = None
+    # cast category_id to int if present (picker resolves name → id client-side)
+    if edits.get('category_id'):
+        try:
+            edits['category_id'] = int(edits['category_id'])
+        except (TypeError, ValueError):
+            edits['category_id'] = None
     if edits.get('suggested_cost') is not None:
         try:
             edits['suggested_cost'] = float(edits['suggested_cost'])

@@ -207,6 +207,81 @@ def test_upsert_mapping_clears_pending_placeholder(empty_db_with_user):
     assert not any(r['bsn_code'] == 'TEST006' for r in models.get_pending_mappings())
 
 
+def test_approve_writes_category_id_from_edit(empty_db_with_user):
+    """The approve form's category picker resolves to a category_id and sends
+    it as an edit → the created product must carry that category_id.
+
+    Regression: approve_pending_suggestion never wrote category_id, so every
+    new SKU created through the mapping flow landed with category_id NULL
+    (the ทินเนอร์ pid 2020 bug, 2026-06-15)."""
+    empty_db, uid = empty_db_with_user
+    import models
+    conn = sqlite3.connect(empty_db)
+    conn.execute(
+        "INSERT INTO categories (code, name_th, sort_order) VALUES ('glue','กาว / ซิลิโคน',140)"
+    )
+    cat_id = conn.execute("SELECT id FROM categories WHERE code='glue'").fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    sid = _stage_minimal(_stage_payload('CAT001'), user_id=uid)
+    new_pid = models.approve_pending_suggestion(
+        sid, edits={'category_id': cat_id}, reviewer_id=uid
+    )
+
+    conn = sqlite3.connect(empty_db)
+    row = conn.execute(
+        "SELECT category_id FROM products WHERE id = ?", (new_pid,)
+    ).fetchone()
+    conn.close()
+    assert row[0] == cat_id
+
+
+def test_approve_resolves_staged_category_text_to_id(empty_db_with_user):
+    """The Suggest modal stages `category` as a Thai category name (the
+    datalist value). When the approver doesn't override it, approve must
+    resolve that text → categories.id so the product is still categorised."""
+    empty_db, uid = empty_db_with_user
+    import models
+    conn = sqlite3.connect(empty_db)
+    conn.execute(
+        "INSERT INTO categories (code, name_th, sort_order) VALUES ('hinge','บานพับ',30)"
+    )
+    cat_id = conn.execute("SELECT id FROM categories WHERE code='hinge'").fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    payload = _stage_payload('CAT002')
+    payload['category'] = 'บานพับ'
+    sid = _stage_minimal(payload, user_id=uid)
+    new_pid = models.approve_pending_suggestion(sid, edits={}, reviewer_id=uid)
+
+    conn = sqlite3.connect(empty_db)
+    row = conn.execute(
+        "SELECT category_id FROM products WHERE id = ?", (new_pid,)
+    ).fetchone()
+    conn.close()
+    assert row[0] == cat_id
+
+
+def test_approve_unmatched_category_text_leaves_null(empty_db_with_user):
+    """Staged category text matching no category row must not crash and must
+    leave category_id NULL (no silent bogus category, no new category row)."""
+    empty_db, uid = empty_db_with_user
+    import models
+    payload = _stage_payload('CAT003')
+    payload['category'] = 'ไม่มีหมวดนี้จริง'
+    sid = _stage_minimal(payload, user_id=uid)
+    new_pid = models.approve_pending_suggestion(sid, edits={}, reviewer_id=uid)
+
+    conn = sqlite3.connect(empty_db)
+    row = conn.execute(
+        "SELECT category_id FROM products WHERE id = ?", (new_pid,)
+    ).fetchone()
+    conn.close()
+    assert row[0] is None
+
+
 def test_approve_falls_back_to_catchall_when_bsn_unit_missing(empty_db_with_user):
     """When the suggestion has no bsn_unit (no purchase/sale history), the
     mapping falls back to the catch-all ''. Documented gap: such suggestions
