@@ -112,18 +112,37 @@ def test_pb_paren_areacode_phones_plus_paren_person():
     assert r["clean"] is False
 
 
-def test_pb_undialable_locals():
+def test_pb_continuation_locals_inherit_area():
+    # Bare local numbers after a full landline share its area code (Thai shorthand).
     r = parse_phone_block("043-519373,512324,525408,F:043-518198")
-    assert r["phones"] == ["043-519373"]
-    assert r["undialable"] == ["512324", "525408"]
+    assert r["phones"] == ["043-519373", "043-512324", "043-525408"]
+    assert r["undialable"] == []
+    assert r["inferred"] == ["043-512324", "043-525408"]
     assert r["faxes"] == ["043-518198"]
-    assert r["clean"] is False
+
+
+def test_pb_continuation_bangkok():
+    # The exact case Put flagged: 02-2114322,2114125 = two Bangkok numbers.
+    r = parse_phone_block("02-2114322,2114125")
+    assert r["phones"] == ["02-2114322", "02-2114125"]
+    assert r["inferred"] == ["02-2114125"]
+    assert r["undialable"] == []
+
+
+def test_pb_continuation_paren_area():
+    # Parenthesized provincial area code seeds the continuation too.
+    r = parse_phone_block("(034)234330,391887,081-9425977")
+    assert "034-391887" in r["phones"]
+    assert "391887" not in r["undialable"]
+    assert r["inferred"] == ["034-391887"]
 
 
 def test_pb_lone_undialable():
+    # No preceding landline to borrow an area code from → still undialable.
     r = parse_phone_block("3794746")
     assert r["undialable"] == ["3794746"]
     assert r["phones"] == []
+    assert r["inferred"] == []
     assert r["clean"] is False
 
 
@@ -259,16 +278,15 @@ def test_nc_review_note_in_phone():
     assert lossless_ok(r)
 
 
-def test_nc_review_undialable_in_phone():
+def test_nc_review_continuation_in_phone():
+    # Bare locals after a full landline inherit its area code → real dialable numbers,
+    # flagged inferred_area_code and kept in review for a human glance.
     r = normalize_customer(_row(name="ร้าน จี",
                                 phone="043-519373,512324,525408,F:043-518198"))
-    assert r["proposed"]["phone"] == "043-519373"
+    assert r["proposed"]["phone"] == "043-519373,043-512324,043-525408"
     assert r["proposed"]["fax"] == "043-518198"
     assert r["confidence"] == "review"
-    assert "undialable_phone" in r["issues"]
-    # undialable numbers preserved, never dropped
-    assert "512324" in r["proposed"]["contact"]
-    assert "525408" in r["proposed"]["contact"]
+    assert "inferred_area_code" in r["issues"]
     assert lossless_ok(r)
 
 
@@ -283,12 +301,11 @@ def test_nc_review_name_changed_pulls_phone():
 
 
 def test_nc_review_bare_local_after_areacode():
-    # 4471787 is a bare local number (no area code) -> undialable -> REVIEW
+    # 4471787 follows a Bangkok number → inherits '02' → '02-4471787' (review, inferred).
     r = normalize_customer(_row(name="ร้าน เอช", phone="02-4471527,4471787"))
-    assert r["proposed"]["phone"] == "02-4471527"
+    assert r["proposed"]["phone"] == "02-4471527,02-4471787"
     assert r["confidence"] == "review"
-    assert "undialable_phone" in r["issues"]
-    assert "4471787" in r["proposed"]["contact"]
+    assert "inferred_area_code" in r["issues"]
     assert lossless_ok(r)
 
 

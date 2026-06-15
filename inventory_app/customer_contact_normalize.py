@@ -71,6 +71,64 @@ def is_valid_thai_phone(token):
     return len(core) in (9, 10) and core.startswith("0")
 
 
+def _landline_core_digits(token):
+    """Digits of a landline after dropping a trailing -NN/-N extension (when that leaves a
+    valid 9/10-digit 0-led core); else the raw digits."""
+    s = (token or "").strip()
+    m = re.match(r"^(.*\d)-(\d{1,2})$", s)
+    if m:
+        core = re.sub(r"\D", "", m.group(1))
+        if len(core) in (9, 10) and core.startswith("0"):
+            return core
+    return re.sub(r"\D", "", s)
+
+
+def _landline_area(token):
+    """Area code of a 9-digit landline: '02' for Bangkok, else the 3-digit '0XX'. None if the
+    token isn't a 9-digit landline (mobiles return None — they don't seed continuations)."""
+    d = _landline_core_digits(token)
+    if len(d) == 9 and d.startswith("0"):
+        return "02" if d.startswith("02") else d[:3]
+    return None
+
+
+# A comma-chunk that is purely a number (digits, hyphens, and parens — e.g. "(034)234330").
+_PURE_NUM_RE = re.compile(r"^\(?\d[\d\-()]*\d$")
+
+
+def _expand_continuations(chunks):
+    """Thai shorthand: a bare local number listed after a full landline shares its area code.
+    '02-2114322,2114125'       -> ['02-2114322','02-2114125']
+    '043-519373,512324,525408' -> ['043-519373','043-512324','043-525408']
+    Only PURE numeric comma-chunks are touched (anything with text is left for review).
+    Returns (new_chunks, set_of_inferred_full_numbers).
+    """
+    last_area = None
+    new_chunks = []
+    inferred = set()
+    for ch in chunks:
+        c = ch.strip()
+        if not c or not _PURE_NUM_RE.match(c):
+            new_chunks.append(ch)
+            continue
+        cd = re.sub(r"\D", "", c)
+        if not c.lstrip("(").startswith("0"):
+            # bare local number (no leading 0) — a continuation candidate
+            if last_area and 6 <= len(cd) <= 7 and len(last_area) + len(cd) == 9:
+                full = last_area + "-" + cd
+                inferred.add(full)
+                new_chunks.append(full)
+                continue
+            new_chunks.append(ch)
+            continue
+        # full number with a leading 0 — update the running area code if it's a landline
+        area = _landline_area(c)
+        if area:
+            last_area = area
+        new_chunks.append(ch)
+    return new_chunks, inferred
+
+
 def _is_number_token(tok):
     """True if tok looks like a (possibly multi-part) number run >= 6 chars."""
     if not tok:
@@ -173,7 +231,7 @@ def parse_phone_block(raw):
     """Parse one phone/contact field into typed buckets. See module docstring / contract."""
     out = {
         "phones": [], "faxes": [], "lines": [], "people": [],
-        "notes": [], "undialable": [], "clean": False,
+        "notes": [], "undialable": [], "inferred": [], "clean": False,
     }
     if not raw or not str(raw).strip():
         return out
@@ -182,6 +240,9 @@ def parse_phone_block(raw):
     # Comma is the primary separator. Keep each comma-chunk and process individually so that
     # space-attached people/notes/labels stay glued to their neighbour where the spec wants.
     chunks = [c for c in text.split(",")]
+    # Thai shorthand: bare local numbers after a full landline inherit its area code.
+    chunks, inferred = _expand_continuations(chunks)
+    out["inferred"] = sorted(inferred)
 
     for chunk in chunks:
         _process_chunk(chunk, out)
@@ -586,9 +647,15 @@ def normalize_customer(row):
         not cb_people_have_number and not cb["lines"] and not cb["notes"]
         and not cb["undialable"] and not cb["phones"]
     )
+    # An inferred area code (continuation number like '02-2114322,2114125') is a high-confidence
+    # but still INFERRED change — surface it and keep the row in review so Put eyeballs it.
+    inferred_any = bool(pb["inferred"]) or bool(cb["inferred"])
+    if inferred_any:
+        issues.append("inferred_area_code")
+
     safe_change = (proposed != _proposed_mirror_of_original(original, ad))
     confidence = "auto" if (
-        pb["clean"] and contact_clean and not nm["changed"]
+        pb["clean"] and contact_clean and not nm["changed"] and not inferred_any
     ) else "review"
 
     # dedupe issues preserving order
