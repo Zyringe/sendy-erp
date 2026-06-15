@@ -428,7 +428,55 @@ def get_card(conn, customer_code):
     # ── 3. Sales summary (via models — uses customer NAME) ───────────────────
     summary = models.get_customer_summary(primary_name)
 
-    # ── 4. Top products with peer pricing + base price + promo ───────────────
+    # ── 4. Top products: peer pricing + unit-aware base + promo + price tiers ──
+    products = _assemble_products(conn, names, canon_code)
+
+    # ── 5. Win-back: products with ≥3 prior buys whose last buy > median interval
+    winback = _compute_winback(conn, names)
+
+    # ── 6. Clearance: hard_to_sell=1 products in stock that overlap customer's categories
+    clearance = _compute_clearance(conn, products)
+
+    # ── 7. AR detail ─────────────────────────────────────────────────────────
+    ar = []
+    try:
+        ar = arf_mod.get_customer_ar_detail(customer=customer_code, conn=conn)
+    except Exception:
+        pass  # AR data not critical for card rendering
+
+    # ── 8. CRM + log ─────────────────────────────────────────────────────────
+    crm = get_crm(conn, customer_code)
+    log = get_log(conn, customer_code)
+
+    # ── 9. Call status ────────────────────────────────────────────────────────
+    last_c = last_called_at(conn, customer_code)
+    target = target_days_for(crm)
+    cs, call_days = call_status(last_c[:10] if last_c else None, target)
+
+    return {
+        'master':       master,
+        'summary':      summary,
+        'products':     products,
+        'winback':      winback,
+        'clearance':    clearance,
+        'ar':           ar,
+        'crm':          crm,
+        'log':          log,
+        'call_status':  (cs, call_days),
+    }
+
+
+def _assemble_products(conn, names, canon_code):
+    """Build the 'ซื้อประจำ' product list: the customer's top-30 products by net
+    revenue, each enriched with unit-aware base price, the full active-promotion
+    dict, quantity price-tiers, and peer pricing (the customer's latest line + a
+    representative-peer line, both carrying gross list price + raw discount text).
+
+    Extracted from get_card so the pricing assembly is unit-testable without the
+    models.get_customer_summary dependency (which opens its own connection).
+    """
+    import peer_pricing as pp
+
     # Pull customer's top products by net revenue
     product_rows = conn.execute("""
         SELECT
@@ -455,6 +503,17 @@ def get_card(conn, customer_code):
     if canon_code:
         peer_rows = pp.product_peer_prices(conn, canon_code)
         peer_map = {(r['product_id'], r['unit']): r for r in peer_rows}
+        # Enrich each per-peer breakdown with the peer's customer NAME (one query)
+        # so the "where does this price come from" modal can name the peers.
+        peer_codes = {pe['code'] for r in peer_rows for pe in (r.get('peers') or [])}
+        if peer_codes:
+            nph = ",".join("?" * len(peer_codes))
+            name_map = {nr['code']: nr['name'] for nr in conn.execute(
+                f"SELECT code, name FROM customers WHERE code IN ({nph})", list(peer_codes)
+            ).fetchall()}
+            for r in peer_rows:
+                for pe in (r.get('peers') or []):
+                    pe['name'] = name_map.get(pe['code']) or pe['code']
 
     # Batch-fetch unit_conversions for all product_ids (one query, no per-product churn)
     if product_rows:
@@ -490,9 +549,34 @@ def get_card(conn, customer_code):
             ) sub ON p.product_id = sub.product_id AND p.created_at = sub.latest
         """, pid_list + [today_str, today_str]).fetchall()
         promo_map = {r['product_id']: r for r in promo_rows}
+
+        # Batch-fetch quantity price-tiers (one query) — shown in the click-through modal.
+        tier_rows = conn.execute(
+            f"SELECT product_id, qty_label, price, note FROM product_price_tiers "
+            f"WHERE product_id IN ({ph}) ORDER BY sort_order, price",
+            pid_list,
+        ).fetchall()
+        tiers_map = {}
+        for r in tier_rows:
+            tiers_map.setdefault(r['product_id'], []).append(dict(r))
+
+        # Batch-fetch this customer's full order history for the card's products
+        # (the product-name click modal). One query, grouped by product_id.
+        order_rows = conn.execute(
+            f"SELECT product_id, date_iso, doc_no, qty, unit, unit_price, discount, net, vat_type "
+            f"FROM sales_transactions "
+            f"WHERE customer IN ({','.join('?' * len(names))}) AND product_id IN ({ph}) "
+            f"ORDER BY product_id, date_iso DESC, doc_no DESC",
+            list(names) + pid_list,
+        ).fetchall()
+        orders_map = {}
+        for r in order_rows:
+            orders_map.setdefault(r['product_id'], []).append(dict(r))
     else:
         uc_map = {}
         promo_map = {}
+        tiers_map = {}
+        orders_map = {}
 
     products = []
     for row in product_rows:
@@ -549,47 +633,26 @@ def get_card(conn, customer_code):
             'last_buy':        row['last_buy'],
             'base':            round(base, 2),
             'promo_label':     promo_label,
+            'promo':           dict(promo) if promo else None,
+            'price_tiers':     tiers_map.get(pid, []),
             'customer_price':  round(promo_price, 2),
             'customer_median': peer.get('customer_median'),
             'customer_latest': cust_latest,
+            'customer_latest_list': peer.get('customer_latest_list'),
+            'customer_latest_disc': peer.get('customer_latest_disc'),
             'peer_median':     peer_med,
+            'peer_repr_list':  peer.get('peer_repr_list'),
+            'peer_repr_disc':  peer.get('peer_repr_disc'),
+            'peer_min':        peer.get('peer_min'),
+            'peer_max':        peer.get('peer_max'),
+            'peer_cheaper_pct': peer.get('peer_cheaper_pct'),
+            'peers':           peer.get('peers', []),
+            'orders':          orders_map.get(pid, []),
             'peer_n':          peer.get('peer_n', 0),
             'flag':            card_flag,
         })
 
-    # ── 5. Win-back: products with ≥3 prior buys whose last buy > median interval
-    winback = _compute_winback(conn, names)
-
-    # ── 6. Clearance: hard_to_sell=1 products in stock that overlap customer's categories
-    clearance = _compute_clearance(conn, products)
-
-    # ── 7. AR detail ─────────────────────────────────────────────────────────
-    ar = []
-    try:
-        ar = arf_mod.get_customer_ar_detail(customer=customer_code, conn=conn)
-    except Exception:
-        pass  # AR data not critical for card rendering
-
-    # ── 8. CRM + log ─────────────────────────────────────────────────────────
-    crm = get_crm(conn, customer_code)
-    log = get_log(conn, customer_code)
-
-    # ── 9. Call status ────────────────────────────────────────────────────────
-    last_c = last_called_at(conn, customer_code)
-    target = target_days_for(crm)
-    cs, call_days = call_status(last_c[:10] if last_c else None, target)
-
-    return {
-        'master':       master,
-        'summary':      summary,
-        'products':     products,
-        'winback':      winback,
-        'clearance':    clearance,
-        'ar':           ar,
-        'crm':          crm,
-        'log':          log,
-        'call_status':  (cs, call_days),
-    }
+    return products
 
 
 def _compute_winback(conn, names):

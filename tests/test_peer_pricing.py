@@ -16,14 +16,14 @@ def _db():
     c.execute(
         "CREATE TABLE sales_transactions("
         "product_id INT, unit TEXT, customer_code TEXT, "
-        "qty REAL, unit_price REAL, net REAL, vat_type INT, date_iso TEXT)"
+        "qty REAL, unit_price REAL, net REAL, vat_type INT, date_iso TEXT, discount TEXT)"
     )
     rows = [
-        (1, 'ตัว', 'A', 1, 90, 90, 0, '2025-01-01'),
-        (1, 'ตัว', 'B', 1, 95, 95, 0, '2025-01-01'),
-        (1, 'ตัว', 'C', 1, 100, 100, 0, '2025-01-01'),
+        (1, 'ตัว', 'A', 1, 90, 90, 0, '2025-01-01', ''),
+        (1, 'ตัว', 'B', 1, 95, 95, 0, '2025-01-01', ''),
+        (1, 'ตัว', 'C', 1, 100, 100, 0, '2025-01-01', ''),
     ]
-    c.executemany("INSERT INTO sales_transactions VALUES (?,?,?,?,?,?,?,?)", rows)
+    c.executemany("INSERT INTO sales_transactions VALUES (?,?,?,?,?,?,?,?,?)", rows)
     c.commit()
     return c
 
@@ -73,15 +73,15 @@ def test_customer_latest_is_most_recent_not_median():
     c.execute(
         "CREATE TABLE sales_transactions("
         "product_id INT, unit TEXT, customer_code TEXT, "
-        "qty REAL, unit_price REAL, net REAL, vat_type INT, date_iso TEXT)"
+        "qty REAL, unit_price REAL, net REAL, vat_type INT, date_iso TEXT, discount TEXT)"
     )
     # X buys product 1: 20, 20 (older), then 16 on the latest date (2025-05).
     #   median([20,20,16]) = 20   but   latest = 16
-    c.executemany("INSERT INTO sales_transactions VALUES (?,?,?,?,?,?,?,?)", [
-        (1, 'ตัว', 'X', 1, 20, 20, 0, '2024-01-01'),
-        (1, 'ตัว', 'X', 1, 20, 20, 0, '2024-06-01'),
-        (1, 'ตัว', 'X', 1, 16, 16, 0, '2025-05-01'),
-        (1, 'ตัว', 'Y', 1, 25, 25, 0, '2024-01-01'),  # a peer so peer_median is defined
+    c.executemany("INSERT INTO sales_transactions VALUES (?,?,?,?,?,?,?,?,?)", [
+        (1, 'ตัว', 'X', 1, 20, 20, 0, '2024-01-01', ''),
+        (1, 'ตัว', 'X', 1, 20, 20, 0, '2024-06-01', ''),
+        (1, 'ตัว', 'X', 1, 16, 16, 0, '2025-05-01', ''),
+        (1, 'ตัว', 'Y', 1, 25, 25, 0, '2024-01-01', ''),  # a peer so peer_median is defined
     ])
     c.commit()
     row = {r['product_id']: r for r in pp.product_peer_prices(c, customer_code='X')}[1]
@@ -96,9 +96,9 @@ def test_no_peers_flag_same():
     c.execute(
         "CREATE TABLE sales_transactions("
         "product_id INT, unit TEXT, customer_code TEXT, "
-        "qty REAL, unit_price REAL, net REAL, vat_type INT, date_iso TEXT)"
+        "qty REAL, unit_price REAL, net REAL, vat_type INT, date_iso TEXT, discount TEXT)"
     )
-    c.execute("INSERT INTO sales_transactions VALUES (1,'ตัว','SOLO',2,80,160,0,'2025-01-01')")
+    c.execute("INSERT INTO sales_transactions VALUES (1,'ตัว','SOLO',2,80,160,0,'2025-01-01','')")
     c.commit()
     res = pp.product_peer_prices(c, customer_code='SOLO')
     assert len(res) == 1
@@ -115,13 +115,13 @@ def test_vat_type2_included_in_peer_cash():
     c.execute(
         "CREATE TABLE sales_transactions("
         "product_id INT, unit TEXT, customer_code TEXT, "
-        "qty REAL, unit_price REAL, net REAL, vat_type INT, date_iso TEXT)"
+        "qty REAL, unit_price REAL, net REAL, vat_type INT, date_iso TEXT, discount TEXT)"
     )
     # A buys at net=100 vat_type=0 → cash=100
     # B buys at net=100 vat_type=2 → cash=107 (apples-to-apples)
-    c.executemany("INSERT INTO sales_transactions VALUES (?,?,?,?,?,?,?,?)", [
-        (1, 'ตัว', 'A', 1, 100, 100, 0, '2025-01-01'),
-        (1, 'ตัว', 'B', 1, 100, 100, 2, '2025-01-01'),
+    c.executemany("INSERT INTO sales_transactions VALUES (?,?,?,?,?,?,?,?,?)", [
+        (1, 'ตัว', 'A', 1, 100, 100, 0, '2025-01-01', ''),
+        (1, 'ตัว', 'B', 1, 100, 100, 2, '2025-01-01', ''),
     ])
     c.commit()
     res_a = pp.product_peer_prices(c, customer_code='A')
@@ -129,3 +129,144 @@ def test_vat_type2_included_in_peer_cash():
     # A's peer is B whose cash=107; peer_median should be ~107
     assert abs(row_a['peer_median'] - 107) < 0.5
     assert row_a['flag'] == 'cheaper'
+
+
+# ── New: gross list price + discount passthrough (call-card pricing upgrade) ──
+
+def _db_disc(rows):
+    """Fixture with the discount column. rows = list of
+    (product_id, unit, customer_code, qty, unit_price, net, vat_type, date_iso, discount)."""
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute(
+        "CREATE TABLE sales_transactions("
+        "product_id INT, unit TEXT, customer_code TEXT, "
+        "qty REAL, unit_price REAL, net REAL, vat_type INT, date_iso TEXT, discount TEXT)"
+    )
+    c.executemany("INSERT INTO sales_transactions VALUES (?,?,?,?,?,?,?,?,?)", rows)
+    c.commit()
+    return c
+
+
+def test_customer_latest_list_and_discount():
+    """customer_latest_list/disc come from the customer's most-recent-dated line:
+    gross unit_price (20) + its discount string ('20%'), distinct from the net cash (16)."""
+    c = _db_disc([
+        (1, 'ตัว', 'X', 1, 20, 20, 0, '2024-01-01', ''),     # older, no discount
+        (1, 'ตัว', 'X', 1, 20, 16, 0, '2025-05-01', '20%'),  # latest: 20 gross, -20% → 16 net
+        (1, 'ตัว', 'Y', 1, 25, 25, 0, '2024-01-01', ''),     # a peer so peer_median is defined
+    ])
+    row = {r['product_id']: r for r in pp.product_peer_prices(c, customer_code='X')}[1]
+    assert row['customer_latest'] == 16
+    assert row['customer_latest_list'] == 20
+    assert row['customer_latest_disc'] == '20%'
+
+
+def test_peer_representative_is_median_peer_odd():
+    """With 3 peers (cash 90/95/100) the representative is the median peer (95),
+    so peer_repr_list/disc come from THAT peer's line (100 gross, '5%')."""
+    c = _db_disc([
+        (1, 'ตัว', 'T',  1, 100, 92,  0, '2025-01-01', '8%'),   # target
+        (1, 'ตัว', 'P1', 1, 100, 90,  0, '2025-01-01', '10%'),  # peer cash 90
+        (1, 'ตัว', 'P2', 1, 100, 95,  0, '2025-01-01', '5%'),   # peer cash 95 (median)
+        (1, 'ตัว', 'P3', 1, 100, 100, 0, '2025-01-01', ''),     # peer cash 100
+    ])
+    row = {r['product_id']: r for r in pp.product_peer_prices(c, customer_code='T')}[1]
+    assert abs(row['peer_median'] - 95) < 0.01
+    assert row['peer_repr_list'] == 100
+    assert row['peer_repr_disc'] == '5%'
+
+
+def test_peer_representative_tie_picks_lower():
+    """Even peer count: peer_median=95 sits between peers 90 and 100 (both 5 away).
+    Tie → pick the LOWER-median peer (90), so its discount ('10%') is shown."""
+    c = _db_disc([
+        (1, 'ตัว', 'T',  1, 100, 93,  0, '2025-01-01', '7%'),
+        (1, 'ตัว', 'P1', 1, 100, 90,  0, '2025-01-01', '10%'),  # lower peer
+        (1, 'ตัว', 'P2', 1, 100, 100, 0, '2025-01-01', ''),     # higher peer
+    ])
+    row = {r['product_id']: r for r in pp.product_peer_prices(c, customer_code='T')}[1]
+    assert abs(row['peer_median'] - 95) < 0.01
+    assert row['peer_repr_list'] == 100
+    assert row['peer_repr_disc'] == '10%'
+
+
+def test_discount_string_passthrough_compound():
+    """Compound discount text ('15+5%') is returned verbatim, not parsed."""
+    c = _db_disc([
+        # 215 gross, 15+5% cascade → 215*0.85*0.95 = 173.6125 net
+        (1, 'ม้วน', 'X', 1, 215, 173.6125, 0, '2025-05-01', '15+5%'),
+        (1, 'ม้วน', 'Y', 1, 200, 200, 0, '2025-01-01', ''),
+    ])
+    row = {r['product_id']: r for r in pp.product_peer_prices(c, customer_code='X')}[1]
+    assert row['customer_latest_list'] == 215
+    assert row['customer_latest_disc'] == '15+5%'
+
+
+def test_new_fields_present_and_none_without_peers():
+    """All four new keys exist; peer_repr_* are None when there are no peers."""
+    c = _db_disc([
+        (1, 'ตัว', 'SOLO', 2, 80, 160, 0, '2025-01-01', ''),
+    ])
+    row = pp.product_peer_prices(c, customer_code='SOLO')[0]
+    for k in ('customer_latest_list', 'customer_latest_disc', 'peer_repr_list', 'peer_repr_disc'):
+        assert k in dict(row), f"missing key: {k}"
+    assert row['peer_repr_list'] is None
+    assert row['peer_repr_disc'] is None
+
+
+# ── Peer position-in-group + per-peer breakdown (call-card v2) ────────────────
+
+def test_peer_position_range_and_breakdown():
+    """peer_min/max span the peer prices; peer_cheaper_pct = % of peers the
+    customer is cheaper than; peers = the per-peer list (sorted, repr flagged)."""
+    c = _db_disc([
+        (1, 'ตัว', 'T',  1, 100, 92,  0, '2025-01-01', '8%'),   # target cash 92
+        (1, 'ตัว', 'P1', 1, 100, 90,  0, '2025-01-01', '10%'),  # peer 90
+        (1, 'ตัว', 'P2', 1, 100, 95,  0, '2025-01-01', '5%'),   # peer 95 (median = repr)
+        (1, 'ตัว', 'P3', 1, 100, 100, 0, '2025-01-01', ''),     # peer 100
+    ])
+    row = {r['product_id']: r for r in pp.product_peer_prices(c, customer_code='T')}[1]
+    assert row['peer_min'] == 90
+    assert row['peer_max'] == 100
+    # 92 is cheaper than P2(95) and P3(100) → 2 of 3 → 67%
+    assert row['peer_cheaper_pct'] == 67
+    peers = row['peers']
+    assert [p['code'] for p in peers] == ['P1', 'P2', 'P3']   # sorted by price
+    assert [p['price'] for p in peers] == [90, 95, 100]
+    assert sum(1 for p in peers if p.get('is_repr')) == 1
+    assert next(p for p in peers if p['is_repr'])['code'] == 'P2'
+
+
+def test_peer_position_none_without_peers():
+    c = _db_disc([(1, 'ตัว', 'SOLO', 2, 80, 160, 0, '2025-01-01', '')])
+    row = pp.product_peer_prices(c, customer_code='SOLO')[0]
+    assert row['peer_min'] is None
+    assert row['peer_max'] is None
+    assert row['peer_cheaper_pct'] is None
+    assert row['peers'] == []
+
+
+def test_peer_position_all_equal_is_midgroup_not_most_expensive():
+    """Ties must NOT read as 'most expensive': a customer priced EQUAL to every
+    peer sits mid-group (midpoint-rank = 50), not 0%. (Common with standardized
+    own-brand pricing.)"""
+    c = _db_disc([
+        (1, 'ตัว', 'T',  1, 100, 90, 0, '2025-01-01', '10%'),
+        (1, 'ตัว', 'P1', 1, 100, 90, 0, '2025-01-01', '10%'),
+        (1, 'ตัว', 'P2', 1, 100, 90, 0, '2025-01-01', '10%'),
+    ])
+    row = {r['product_id']: r for r in pp.product_peer_prices(c, customer_code='T')}[1]
+    assert row['peer_cheaper_pct'] == 50
+
+
+def test_peer_position_partial_tie_counts_equal_as_half():
+    """One equal peer + one more-expensive peer → midpoint rank counts the equal
+    peer as half: (1 + 0.5)/2 = 75%."""
+    c = _db_disc([
+        (1, 'ตัว', 'T',  1, 100, 90,  0, '2025-01-01', '10%'),
+        (1, 'ตัว', 'P1', 1, 100, 90,  0, '2025-01-01', '10%'),  # equal
+        (1, 'ตัว', 'P2', 1, 100, 100, 0, '2025-01-01', ''),     # more expensive
+    ])
+    row = {r['product_id']: r for r in pp.product_peer_prices(c, customer_code='T')}[1]
+    assert row['peer_cheaper_pct'] == 75
