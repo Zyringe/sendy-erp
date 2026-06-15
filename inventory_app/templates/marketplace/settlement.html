@@ -3,7 +3,10 @@
 {% block content %}
 <div class="container-fluid py-3">
   <div class="d-flex justify-content-between align-items-center mb-3">
-    <h4>Settlement Report — {{ platform | capitalize }}</h4>
+    <div class="d-flex align-items-center gap-3">
+      <h4 class="mb-0">Settlement Report — {{ platform | capitalize }}</h4>
+      <a href="{{ url_for('marketplace.reconciliation', platform=platform) }}" class="btn btn-sm btn-outline-primary">กระทบยอด ↔ รับชำระหนี้</a>
+    </div>
     <form method="post" action="{{ url_for('marketplace.settlement_import') }}"
           enctype="multipart/form-data" class="d-flex gap-2">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -31,7 +34,8 @@
         <table class="table table-sm table-hover mb-0">
           <thead class="table-light">
             <tr>
-              <th>Order ID</th>
+              <th>เลขออเดอร์</th>
+              <th>ใบกำกับ (IV)</th>
               <th class="text-end">ราคาขาย (฿)</th>
               <th class="text-end">ค่าธรรมเนียม (฿)</th>
               <th class="text-end text-success">ยอดโอนจริง (฿)</th>
@@ -42,7 +46,21 @@
           <tbody>
             {% for o in batch.orders %}
             <tr>
-              <td><code>{{ o.order_sn }}</code></td>
+              <td><code class="js-order-detail" role="button" data-order-id="{{ o.id }}" title="ดูรายละเอียดออเดอร์">{{ o.order_sn }}</code></td>
+              <td>
+                {% if o.matched_iv %}
+                  <a href="{{ url_for('sales_doc', doc_base=o.matched_iv) }}" target="_blank" title="เปิดใบกำกับใน Express"><code>{{ o.matched_iv }}</code></a>
+                  {% if o.iv_confidence == 'confident' %}<span class="badge bg-success" title="ยอดตรง และมีใบเดียวในช่วงวันโอน">✓</span>
+                  {% elif o.iv_confidence == 'probable' %}<span class="badge bg-warning text-dark" title="ยอดตรง แต่มีหลายใบยอดเท่ากันในช่วงวันโอน อาจสลับใบ — กดแก้เพื่อยืนยัน">~</span>
+                  {% elif o.iv_confidence == 'review' %}<span class="badge bg-info text-dark" title="ยอดในบิลไม่ตรงยอดที่ Shopee โอนจริง — กดดู/แก้ในหน้ากระทบยอด">⚠ ยอดต่าง</span>
+                  {% elif o.iv_confidence == 'manual' %}<span class="badge bg-primary" title="ยืนยันเอง">★</span>{% endif %}
+                  <button type="button" class="btn btn-link btn-sm p-0 ms-1 js-iv-pick"
+                          data-order-id="{{ o.id }}" data-order-sn="{{ o.order_sn }}">แก้</button>
+                {% else %}
+                  <button type="button" class="btn btn-sm btn-outline-secondary py-0 js-iv-pick"
+                          data-order-id="{{ o.id }}" data-order-sn="{{ o.order_sn }}">เลือก</button>
+                {% endif %}
+              </td>
               <td class="text-end">{{ '{:,.2f}'.format(o.item_total or 0) }}</td>
               <td class="text-end text-danger">{{ '{:,.2f}'.format(o.fee_diff or 0) }}</td>
               <td class="text-end text-success fw-bold">{{ '{:,.2f}'.format(o.actual_payout or 0) }}</td>
@@ -53,7 +71,7 @@
           </tbody>
           <tfoot class="table-light">
             <tr>
-              <th>รวม {{ batch.order_count }} ออเดอร์</th>
+              <th colspan="2">รวม {{ batch.order_count }} ออเดอร์</th>
               <th class="text-end">฿{{ '{:,.2f}'.format(batch.orders | sum(attribute='item_total') or 0) }}</th>
               <th class="text-end text-danger">฿{{ '{:,.2f}'.format(batch.orders | sum(attribute='fee_diff') or 0) }}</th>
               <th class="text-end text-success">฿{{ '{:,.2f}'.format(batch.total_payout) }}</th>
@@ -78,12 +96,12 @@
   <h5 class="mt-4 text-warning">รอรับเงิน {{ report.pending | length }} ออเดอร์ (ยังไม่มี settlement)</h5>
   <table class="table table-sm table-bordered">
     <thead class="table-warning">
-      <tr><th>Order ID</th><th class="text-end">ราคาขาย (฿)</th><th>สถานะ</th><th>วันสั่ง</th></tr>
+      <tr><th>เลขออเดอร์</th><th class="text-end">ราคาขาย (฿)</th><th>สถานะ</th><th>วันสั่ง</th></tr>
     </thead>
     <tbody>
       {% for o in report.pending %}
       <tr>
-        <td><code>{{ o.order_sn }}</code></td>
+        <td><code class="js-order-detail" role="button" data-order-id="{{ o.id }}" title="ดูรายละเอียดออเดอร์">{{ o.order_sn }}</code></td>
         <td class="text-end">{{ '{:,.2f}'.format(o.item_total or 0) }}</td>
         <td>{{ o.status }}</td>
         <td>{{ o.order_date[:10] if o.order_date else '' }}</td>
@@ -93,4 +111,88 @@
   </table>
   {% endif %}
 </div>
+
+{# ---- IV picker modal (confirm / override the invoice for an order) ---- #}
+<div class="modal fade" id="ivPickModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-scrollable">
+    <div class="modal-content">
+      <form method="post" id="ivPickForm">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="modal-header">
+          <h2 class="modal-title h5 mb-0">เลือกใบกำกับ (IV) — <code id="ivPickOrderSn"></code></h2>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="ปิด"></button>
+        </div>
+        <div class="modal-body">
+          <div id="ivPickLoading" class="text-center text-muted py-3 d-none">
+            <div class="spinner-border spinner-border-sm" role="status"></div> กำลังโหลด...
+          </div>
+          <p class="small text-muted mb-1">ใบที่ยอดสุทธิเท่ากับยอดโอนจริง เรียงตามวันใกล้วันโอนที่สุด</p>
+          <div id="ivPickList" class="list-group mb-3 small"></div>
+          <label class="form-label small mb-1">หรือพิมพ์เลข IV เอง</label>
+          <input type="text" class="form-control form-control-sm" name="doc_base_manual"
+                 id="ivPickManual" placeholder="เช่น IV6900827" autocomplete="off">
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary btn-sm">บันทึก</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% include 'marketplace/_order_detail_modal.html' %}
+
+<script>
+// DOMContentLoaded so bootstrap.bundle (loaded after the content block) exists.
+document.addEventListener('DOMContentLoaded', function () {
+  const fmt = n => (n == null ? '–' : Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}));
+  const platform = {{ platform | tojson }};
+
+  // ---- IV picker ----
+  const pickModal = new bootstrap.Modal(document.getElementById('ivPickModal'));
+  const pickForm  = document.getElementById('ivPickForm');
+  const pickList  = document.getElementById('ivPickList');
+  const pickLoad  = document.getElementById('ivPickLoading');
+  const pickManual = document.getElementById('ivPickManual');
+
+  function openPicker(orderId, orderSn) {
+    document.getElementById('ivPickOrderSn').textContent = orderSn;
+    pickForm.action = `/marketplace/order/${orderId}/link-iv?platform=${encodeURIComponent(platform)}`;
+    pickList.innerHTML = '';
+    pickManual.value = '';
+    pickLoad.classList.remove('d-none');
+    pickModal.show();
+    fetch(`/marketplace/api/order/${orderId}/iv-candidates`)
+      .then(r => r.json())
+      .then(data => {
+        pickLoad.classList.add('d-none');
+        if (!data.candidates.length) {
+          pickList.innerHTML = '<div class="text-muted">ไม่พบใบกำกับในช่วงวันโอน — พิมพ์เลข IV เองด้านล่างได้ค่ะ</div>';
+          return;
+        }
+        pickList.innerHTML = data.candidates.map((c, i) => {
+          const diff = c.amount_diff === 0 ? '<span class="badge bg-success">ยอดตรง</span>'
+            : `<span class="badge bg-warning text-dark">${c.amount_diff > 0 ? '+' : ''}${fmt(c.amount_diff)}฿</span>`;
+          const taken = (c.linked_to && c.linked_to !== orderSn)
+            ? ` <span class="text-danger small">⚠ ผูกกับ ${c.linked_to} อยู่ (จะย้ายมา)</span>` : '';
+          const prod = c.product_match ? ' <span class="badge bg-success">สินค้าตรง</span>' : '';
+          return `
+          <label class="list-group-item d-flex gap-2 align-items-center">
+            <input class="form-check-input m-0" type="radio" name="doc_base" value="${c.doc_base}" ${i === 0 ? 'checked' : ''}>
+            <span><code>${c.doc_base}</code>${prod} · ${c.date_iso} · ฿${fmt(c.iv_net)} ${diff} · หลังสั่ง ${c.date_gap} วัน${taken}</span>
+          </label>`;
+        }).join('');
+      })
+      .catch(() => { pickLoad.classList.add('d-none'); pickList.innerHTML = '<div class="text-danger">โหลดไม่สำเร็จ</div>'; });
+  }
+  // typing a manual IV clears any radio selection (manual wins server-side anyway)
+  pickManual.addEventListener('input', () => {
+    if (pickManual.value.trim()) pickList.querySelectorAll('input[type=radio]').forEach(r => r.checked = false);
+  });
+
+  document.querySelectorAll('.js-iv-pick').forEach(b =>
+    b.addEventListener('click', () => openPicker(b.dataset.orderId, b.dataset.orderSn)));
+});
+</script>
 {% endblock %}

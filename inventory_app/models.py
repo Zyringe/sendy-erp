@@ -5145,13 +5145,16 @@ def get_settlement_report(conn, platform='shopee'):
     batches = []
     for batch in batch_rows:
         orders = conn.execute(
-            """SELECT order_sn, COALESCE(item_total, 0) as item_total,
-                      marketplace_fee, actual_payout,
-                      ROUND(COALESCE(item_total, 0) - actual_payout, 2) as fee_diff,
-                      status, order_date, settlement_source
-               FROM marketplace_orders
-               WHERE platform = ? AND settled_at = ?
-               ORDER BY order_date""",
+            """SELECT mo.id, mo.order_sn, COALESCE(mo.item_total, 0) as item_total,
+                      mo.marketplace_fee, mo.actual_payout,
+                      ROUND(COALESCE(mo.item_total, 0) - mo.actual_payout, 2) as fee_diff,
+                      mo.status, mo.order_date, mo.settlement_source,
+                      moi.doc_base AS matched_iv, moi.confidence AS iv_confidence
+               FROM marketplace_orders mo
+               LEFT JOIN marketplace_order_invoice moi
+                      ON moi.platform = mo.platform AND moi.order_sn = mo.order_sn
+               WHERE mo.platform = ? AND mo.settled_at = ?
+               ORDER BY mo.order_date""",
             (platform, batch[0])
         ).fetchall()
         batches.append({
@@ -5159,24 +5162,236 @@ def get_settlement_report(conn, platform='shopee'):
             'order_count':  batch[1],
             'total_payout': round(batch[2] or 0, 2),
             'orders': [dict(zip(
-                ['order_sn', 'item_total', 'marketplace_fee', 'actual_payout',
-                 'fee_diff', 'status', 'order_date', 'settlement_source'], o
+                ['id', 'order_sn', 'item_total', 'marketplace_fee', 'actual_payout',
+                 'fee_diff', 'status', 'order_date', 'settlement_source',
+                 'matched_iv', 'iv_confidence'], o
             )) for o in orders],
         })
 
     # Pending: settled orders not yet stamped
     pending_rows = conn.execute(
-        """SELECT order_sn, COALESCE(item_total, 0) as item_total, status, order_date
+        """SELECT id, order_sn, COALESCE(item_total, 0) as item_total, status, order_date
            FROM marketplace_orders
            WHERE platform = ? AND actual_payout IS NULL
              AND status NOT IN ('ยกเลิกแล้ว')
            ORDER BY order_date DESC""",
         (platform,)
     ).fetchall()
-    pending = [dict(zip(['order_sn', 'item_total', 'status', 'order_date'], r))
+    pending = [dict(zip(['id', 'order_sn', 'item_total', 'status', 'order_date'], r))
                for r in pending_rows]
 
     return {'batches': batches, 'pending': pending}
+
+
+def get_marketplace_order(conn, order_id):
+    """One marketplace order row (needed by the IV picker / matcher)."""
+    return conn.execute(
+        "SELECT * FROM marketplace_orders WHERE id = ?", (order_id,)
+    ).fetchone()
+
+
+def get_marketplace_order_detail(conn, order_id):
+    """Order header + line items + matched IV, for the drill-down modal.
+    Returns None if the order id doesn't exist."""
+    o = conn.execute(
+        """SELECT mo.id, mo.platform, mo.order_sn, mo.status, mo.buyer_name,
+                  mo.order_date, mo.settled_at, mo.item_total, mo.marketplace_fee,
+                  mo.payout, mo.actual_payout, mo.settlement_source,
+                  moi.doc_base AS matched_iv, moi.confidence AS iv_confidence,
+                  moi.match_method AS iv_method
+           FROM marketplace_orders mo
+           LEFT JOIN marketplace_order_invoice moi
+                  ON moi.platform = mo.platform AND moi.order_sn = mo.order_sn
+           WHERE mo.id = ?""",
+        (order_id,)
+    ).fetchone()
+    if o is None:
+        return None
+    items = conn.execute(
+        """SELECT it.item_name, it.variation_name, it.seller_sku, it.qty,
+                  it.unit_price, it.item_subtotal, it.internal_product_id,
+                  p.product_name AS resolved_name
+           FROM marketplace_order_items it
+           LEFT JOIN products p ON p.id = it.internal_product_id
+           WHERE it.order_id = ?
+           ORDER BY it.id""",
+        (order_id,)
+    ).fetchall()
+    return {'order': dict(o), 'items': [dict(r) for r in items]}
+
+
+# Customer NAME (not code) per platform, for the payments-received lookup.
+_RECON_CUSTOMER = {'shopee': 'หน้าร้านS', 'lazada': 'หน้าร้านL'}
+
+
+def get_marketplace_reconciliation(conn, platform='shopee'):
+    """Reconcile, per settlement month, three numbers for the หน้าร้าน B2C books:
+
+        Shopee payout (actual_payout)  ↔  matched IV billed  ↔  รับชำระหนี้ (collected)
+
+    The team books each order as one IV at the net payout, then records รับชำระหนี้
+    when the marketplace settles — so ideally payout == billed == collected. This
+    surfaces where they diverge (timing across months, cancellations, fee gaps) and
+    lists orders with no IV link and IVs with no order link.
+
+    Returns {months, unmatched_orders, unmatched_ivs, summary}.
+    """
+    import payments_alloc
+    from collections import OrderedDict
+
+    cust_name = _RECON_CUSTOMER.get(platform, 'หน้าร้านS')
+    settle = {r['doc_base']: r
+              for r in payments_alloc.invoice_settlement(customer=cust_name, conn=conn)}
+    # Manager acknowledgements of billed≠payout discrepancies (survive re-matching).
+    reviews = {r['order_sn']: r for r in conn.execute(
+        "SELECT order_sn, doc_base, d_bill, reviewed_by FROM marketplace_amount_review WHERE platform=?",
+        (platform,))}
+
+    rows = conn.execute(
+        """SELECT mo.id, mo.order_sn, mo.settled_at, mo.actual_payout,
+                  moi.doc_base AS iv, moi.confidence AS iv_confidence
+           FROM marketplace_orders mo
+           LEFT JOIN marketplace_order_invoice moi
+                  ON moi.platform = mo.platform AND moi.order_sn = mo.order_sn
+           WHERE mo.platform = ? AND mo.settled_at IS NOT NULL
+           ORDER BY mo.settled_at DESC, mo.order_date""",
+        (platform,)
+    ).fetchall()
+
+    months = OrderedDict()
+    matched_ivs = set()
+    unmatched_orders = []
+    s_payout = s_billed = s_collected = 0.0
+    n_amount_mismatch = 0
+    n_reviewed = 0
+    amount_mismatch_total = 0.0
+
+    for r in rows:
+        ym = (r['settled_at'] or '')[:7]
+        payout = round(r['actual_payout'] or 0, 2)
+        iv = r['iv']
+        s = settle.get(iv) if iv else None
+        billed = round(s['billed'], 2) if s else None
+        collected = round(s['collected'], 2) if s else None
+        if iv:
+            matched_ivs.add(iv)
+        # billed − payout: the team keyed a different amount than Shopee paid
+        # (Shopee adjusted the payout) → a discrepancy to correct in Express.
+        d_bill = round(billed - payout, 2) if billed is not None else None
+        amount_mismatch = d_bill is not None and abs(d_bill) >= 0.01
+        # A manager acknowledgement only counts if it still matches this exact
+        # invoice + discrepancy (else the situation changed → re-flag).
+        rv = reviews.get(r['order_sn'])
+        reviewed = bool(amount_mismatch and rv and rv['doc_base'] == iv
+                        and abs((rv['d_bill'] or 0) - (d_bill or 0)) < 0.01)
+        if amount_mismatch:
+            n_amount_mismatch += 1
+            amount_mismatch_total += abs(d_bill)
+            if reviewed:
+                n_reviewed += 1
+        row = {
+            'order_id': r['id'], 'order_sn': r['order_sn'], 'settled_at': r['settled_at'],
+            'payout': payout, 'iv': iv, 'iv_confidence': r['iv_confidence'],
+            'billed': billed, 'collected': collected,
+            'd_bill': d_bill,
+            'amount_mismatch': amount_mismatch,
+            'reviewed': reviewed,
+            'reviewed_by': rv['reviewed_by'] if reviewed else None,
+            'd_coll': round(payout - collected, 2) if collected is not None else None,
+            'ok': (billed is not None and collected is not None
+                   and abs(payout - billed) < 0.01 and abs(payout - collected) < 0.01),
+        }
+        m = months.setdefault(ym, {'ym': ym, 'orders': [], 'payout': 0.0,
+                                   'billed': 0.0, 'collected': 0.0, 'n_unmatched': 0})
+        m['orders'].append(row)
+        m['payout'] += payout
+        if billed is not None:
+            m['billed'] += billed
+        if collected is not None:
+            m['collected'] += collected
+        if iv is None:
+            m['n_unmatched'] += 1
+            unmatched_orders.append(row)
+        s_payout += payout
+        if billed is not None:
+            s_billed += billed
+        if collected is not None:
+            s_collected += collected
+
+    # IVs booked in the same months as our settled orders but linked to no order.
+    order_months = set(months.keys())
+    unmatched_ivs = [
+        {'doc_base': doc, 'invoice_date': s['invoice_date'],
+         'billed': round(s['billed'], 2), 'collected': round(s['collected'], 2)}
+        for doc, s in settle.items()
+        if doc not in matched_ivs and (s['invoice_date'] or '')[:7] in order_months
+    ]
+    unmatched_ivs.sort(key=lambda x: (x['invoice_date'] or ''), reverse=True)
+
+    for m in months.values():
+        m['payout'] = round(m['payout'], 2)
+        m['billed'] = round(m['billed'], 2)
+        m['collected'] = round(m['collected'], 2)
+
+    return {
+        'months': list(months.values()),
+        'unmatched_orders': unmatched_orders,
+        'unmatched_ivs': unmatched_ivs,
+        'summary': {
+            'orders': len(rows),
+            'matched': len(rows) - len(unmatched_orders),
+            'unmatched_orders': len(unmatched_orders),
+            'unmatched_ivs': len(unmatched_ivs),
+            'payout': round(s_payout, 2),
+            'billed': round(s_billed, 2),
+            'collected': round(s_collected, 2),
+            'amount_mismatch': n_amount_mismatch,
+            'amount_mismatch_total': round(amount_mismatch_total, 2),
+            'amount_mismatch_reviewed': n_reviewed,
+            'amount_mismatch_open': n_amount_mismatch - n_reviewed,
+        },
+    }
+
+
+def set_amount_review(conn, order_id, accept, reviewed_by=None):
+    """Manager acknowledges (accept=True) or un-acknowledges (False) an order's
+    billed≠payout discrepancy. Stores the current invoice + d_bill so the
+    acknowledgement auto-invalidates if the match or amount later changes.
+    Returns {'accepted': True} / {'cleared': True} / None if the order has no match."""
+    o = conn.execute(
+        """SELECT mo.order_sn, mo.platform, mo.actual_payout, moi.doc_base
+           FROM marketplace_orders mo
+           JOIN marketplace_order_invoice moi
+             ON moi.platform = mo.platform AND moi.order_sn = mo.order_sn
+           WHERE mo.id = ?""",
+        (order_id,)
+    ).fetchone()
+    if o is None:
+        return None
+    if not accept:
+        conn.execute(
+            "DELETE FROM marketplace_amount_review WHERE platform=? AND order_sn=?",
+            (o['platform'], o['order_sn']))
+        conn.commit()
+        return {'cleared': True}
+    billed = conn.execute(
+        """SELECT ROUND(SUM(CASE WHEN vat_type=2 THEN net*1.07 ELSE net END), 2) AS b
+           FROM sales_transactions WHERE doc_base = ?""",
+        (o['doc_base'],)
+    ).fetchone()['b'] or 0.0
+    d_bill = round(billed - round(o['actual_payout'] or 0, 2), 2)
+    conn.execute(
+        """INSERT INTO marketplace_amount_review
+               (platform, order_sn, doc_base, d_bill, reviewed_by)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(platform, order_sn) DO UPDATE SET
+               doc_base    = excluded.doc_base,
+               d_bill      = excluded.d_bill,
+               reviewed_by = excluded.reviewed_by,
+               reviewed_at = datetime('now','localtime')""",
+        (o['platform'], o['order_sn'], o['doc_base'], d_bill, reviewed_by))
+    conn.commit()
+    return {'accepted': True, 'd_bill': d_bill}
 
 
 def get_marketplace_summary():

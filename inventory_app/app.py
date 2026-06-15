@@ -191,7 +191,7 @@ _STAFF_POST_OK = frozenset([
     'login', 'logout',
     'import_weekly', 'import_weekly_confirm', 'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
     'unified_import', 'unified_import_confirm',
-    'marketplace.import_orders', 'marketplace.settlement_import',
+    'marketplace.import_orders', 'marketplace.settlement_import', 'marketplace.link_iv',
     # Decision B — staff may import everything; each of these snapshots the DB
     # before writing (see _snapshot_before_import call sites).
     'import_payments', 'import_credit_notes_preview', 'import_credit_notes_commit',
@@ -212,6 +212,8 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'products.product_packaging_save',
     'mapping_suggestion_approve',
     'photos_review_assign', 'photos_review_delete',
+    # Acknowledging a billed≠payout discrepancy is a manager+ action (not staff).
+    'marketplace.review_amount',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
 # the route. Other admin-only writes use _require_admin().
@@ -356,6 +358,11 @@ _ENDPOINT_MODULE = {
     'marketplace.unmapped': 'accounting',
     'marketplace.settlement': 'accounting',
     'marketplace.settlement_import': 'accounting',
+    'marketplace.link_iv': 'accounting',
+    'marketplace.api_iv_candidates': 'accounting',
+    'marketplace.api_order_detail': 'accounting',
+    'marketplace.reconciliation': 'accounting',
+    'marketplace.review_amount': 'accounting',
     # hr
     'hr.dashboard': 'hr',
     'hr.employee_list': 'hr',

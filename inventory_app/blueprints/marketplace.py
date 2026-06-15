@@ -9,11 +9,12 @@ import io
 
 import pandas as pd
 from flask import (Blueprint, render_template, request, redirect, url_for,
-                   flash)
+                   flash, jsonify, session, abort)
 
 import config
 import db_backup
 import models
+import marketplace_match
 from database import get_connection
 from parse_orders import parse_shopee_orders, parse_lazada_orders
 from parse_income_transfer import (parse_shopee_income, IncomeTransferError,
@@ -127,6 +128,10 @@ def settlement_import():
         conn = get_connection()
         try:
             stats = models.upsert_marketplace_settlements(conn, settlements, f.filename)
+            # Settling an order sets its actual_payout — the key the IV matcher
+            # needs — so auto-link orders↔Express IVs right after (idempotent,
+            # never clobbers a manual confirm).
+            match = marketplace_match.run_automatch(conn, 'shopee')
         finally:
             conn.close()
     except Exception as e:
@@ -137,7 +142,10 @@ def settlement_import():
         f'นำเข้าสำเร็จ: อัปเดต {stats["updated"]} ออเดอร์'
         + (f', ไม่พบใน ERP {stats["not_found"]} รายการ' if stats['not_found'] else '')
         + (f', ข้ามรายการที่ยังไม่โอน (ไม่มีวันที่โอน) {stats["skipped_no_date"]} รายการ'
-           if stats['skipped_no_date'] else ''),
+           if stats['skipped_no_date'] else '')
+        + f' · จับคู่ใบกำกับ {match["matched"]} ใบ'
+        + (f', เดายอดใกล้เคียง {match["review"]} ใบ' if match.get('review') else '')
+        + (f', ยังไม่จับคู่ {match["unmatched"]} ใบ' if match['unmatched'] else ''),
         'success' if (stats['not_found'] == 0 and stats['skipped_no_date'] == 0) else 'warning'
     )
     return redirect(url_for('marketplace.settlement'))
@@ -153,3 +161,90 @@ def settlement():
         conn.close()
     return render_template('marketplace/settlement.html',
                            report=report, platform=platform)
+
+
+@bp_marketplace.route('/marketplace/reconciliation')
+def reconciliation():
+    """Per-month reconciliation: Shopee payout ↔ matched IV billed ↔ รับชำระหนี้."""
+    platform = request.args.get('platform', 'shopee')
+    conn = get_connection()
+    try:
+        report = models.get_marketplace_reconciliation(conn, platform=platform)
+    finally:
+        conn.close()
+    return render_template('marketplace/reconciliation.html',
+                           report=report, platform=platform)
+
+
+@bp_marketplace.route('/marketplace/api/order/<int:order_id>')
+def api_order_detail(order_id):
+    """JSON: order header + line items + matched IV, for the drill-down modal."""
+    conn = get_connection()
+    try:
+        detail = models.get_marketplace_order_detail(conn, order_id)
+    finally:
+        conn.close()
+    if detail is None:
+        abort(404)
+    return jsonify(detail)
+
+
+@bp_marketplace.route('/marketplace/api/order/<int:order_id>/iv-candidates')
+def api_iv_candidates(order_id):
+    """JSON: candidate Express IVs (same payout, near settlement date) for the picker."""
+    conn = get_connection()
+    try:
+        order = models.get_marketplace_order(conn, order_id)
+        if order is None:
+            abort(404)
+        cands = marketplace_match.iv_candidates(conn, order)
+    finally:
+        conn.close()
+    return jsonify(order_sn=order['order_sn'], candidates=cands)
+
+
+@bp_marketplace.route('/marketplace/order/<int:order_id>/review-amount', methods=['POST'])
+def review_amount(order_id):
+    """Manager+ acknowledges (or clears) an order's billed≠payout discrepancy so it
+    stops showing yellow. Gated to manager/admin via _MANAGER_POST_OK."""
+    accept = request.form.get('action', 'accept') != 'clear'
+    conn = get_connection()
+    try:
+        res = models.set_amount_review(conn, order_id, accept,
+                                       reviewed_by=session.get('username'))
+    finally:
+        conn.close()
+    if res is None:
+        flash('ออเดอร์นี้ยังไม่ได้ผูกใบกำกับ', 'warning')
+    elif res.get('cleared'):
+        flash('ยกเลิกการตรวจแล้ว', 'success')
+    else:
+        flash('บันทึกว่าตรวจแล้ว (ยอดต่างนี้โอเค)', 'success')
+    return redirect(url_for('marketplace.reconciliation',
+                            platform=request.args.get('platform', 'shopee')))
+
+
+@bp_marketplace.route('/marketplace/order/<int:order_id>/link-iv', methods=['POST'])
+def link_iv(order_id):
+    """Human confirms (or overrides) the IV for one order. doc_base from the picker."""
+    # The picker radios POST `doc_base`; the free-text fallback POSTs `doc_base_manual`.
+    doc_base = (request.form.get('doc_base_manual') or request.form.get('doc_base') or '').strip()
+    conn = get_connection()
+    try:
+        order = models.get_marketplace_order(conn, order_id)
+        if order is None:
+            abort(404)
+        if not doc_base:
+            flash('กรุณาเลือกหรือพิมพ์เลขใบกำกับ (IV) ค่ะ', 'warning')
+        else:
+            stolen = marketplace_match.link_manual(
+                conn, order['platform'], order['order_sn'], doc_base,
+                confirmed_by=session.get('username'))
+            msg = f'ผูกออเดอร์ {order["order_sn"]} กับ {doc_base} แล้วค่ะ'
+            if stolen:
+                msg += f' (ปลด {doc_base} ออกจากออเดอร์ {", ".join(stolen)} — ต้องเลือกใบกำกับใหม่ให้ออเดอร์นั้น)'
+            flash(msg, 'success')
+    finally:
+        conn.close()
+    return redirect(url_for('marketplace.settlement',
+                            platform=request.args.get('platform', 'shopee')))
