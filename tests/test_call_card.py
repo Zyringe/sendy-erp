@@ -457,3 +457,85 @@ def test_call_list_excludes_marketplace_customers(mig103_conn):
     for mkt in ('หน้าร้านS', 'หน้าร้านL', 'หน้าร้านB'):
         assert mkt not in codes, f"Marketplace account {mkt} must be excluded"
         assert mkt not in names, f"Marketplace account {mkt} must be excluded (name check)"
+
+
+# ── _assemble_products: promo dict + price tiers + peer list/disc ─────────────
+
+def _assemble_db():
+    """Minimal DB to exercise call_card._assemble_products in isolation:
+    products + a bundle promotion + a price tier + sales for a target (C001)
+    and a peer (C002)."""
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.executescript("""
+        CREATE TABLE products (
+            id INTEGER PRIMARY KEY, product_name TEXT, base_sell_price REAL, unit_type TEXT
+        );
+        CREATE TABLE promotions (
+            id INTEGER PRIMARY KEY, product_id INTEGER, promo_name TEXT, promo_type TEXT,
+            discount_value REAL, date_start TEXT, date_end TEXT, is_active INTEGER, created_at TEXT,
+            bundle_buy INTEGER, bundle_free INTEGER, bundle_unit TEXT, bundle_condition TEXT,
+            bundle_tiers_json TEXT, gift_desc TEXT, gift_qty TEXT
+        );
+        CREATE TABLE product_price_tiers (
+            id INTEGER PRIMARY KEY, product_id INTEGER, qty_label TEXT, price REAL,
+            note TEXT, sort_order INTEGER
+        );
+        CREATE TABLE unit_conversions (
+            id INTEGER PRIMARY KEY, product_id INTEGER, bsn_unit TEXT, ratio REAL
+        );
+        CREATE TABLE sales_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, product_name_raw TEXT,
+            unit TEXT, customer TEXT, customer_code TEXT, qty REAL, unit_price REAL,
+            net REAL, vat_type INTEGER, discount TEXT, doc_no TEXT, date_iso TEXT
+        );
+    """)
+    c.execute("INSERT INTO products VALUES (1,'ดอกสว่าน',100,'ตัว')")
+    c.execute(
+        "INSERT INTO promotions (id,product_id,promo_name,promo_type,is_active,created_at,"
+        "bundle_buy,bundle_free) VALUES (1,1,'โปรลัง','bundle',1,'2026-06-01 00:00:00',10,1)"
+    )
+    c.execute(
+        "INSERT INTO product_price_tiers (id,product_id,qty_label,price,sort_order) "
+        "VALUES (1,1,'1 โหล',1000,100)"
+    )
+    c.executemany(
+        "INSERT INTO sales_transactions (product_id,product_name_raw,unit,customer,customer_code,"
+        "qty,unit_price,net,vat_type,discount,doc_no,date_iso) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (1, 'ดอกสว่าน', 'ตัว', 'ร้าน A', 'C001', 1, 100, 90, 0, '10%', 'IV1', '2026-05-01'),
+            (1, 'ดอกสว่าน', 'ตัว', 'ร้าน B', 'C002', 1, 100, 95, 0, '5%',  'IV2', '2026-04-01'),
+        ],
+    )
+    c.commit()
+    return c
+
+
+def test_assemble_products_attaches_promo_tiers_and_peer_fields():
+    c = _assemble_db()
+    products = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001')
+    assert len(products) == 1
+    p = products[0]
+    # Full promo dict passes through (not just a truncated label)
+    assert p['promo'] is not None
+    assert p['promo']['promo_type'] == 'bundle'
+    assert p['promo']['bundle_buy'] == 10 and p['promo']['bundle_free'] == 1
+    # Quantity price tiers attached
+    assert len(p['price_tiers']) == 1
+    assert p['price_tiers'][0]['qty_label'] == '1 โหล'
+    # Customer's latest line: gross 100, -10%
+    assert p['customer_latest_list'] == 100
+    assert p['customer_latest_disc'] == '10%'
+    # Representative peer (C002): gross 100, -5%
+    assert p['peer_repr_list'] == 100
+    assert p['peer_repr_disc'] == '5%'
+
+
+def test_assemble_products_no_promo_is_none_tiers_independent():
+    c = _assemble_db()
+    c.execute("DELETE FROM promotions")
+    c.commit()
+    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001')[0]
+    assert p['promo'] is None
+    # price tiers are independent of promo
+    assert p['price_tiers'][0]['qty_label'] == '1 โหล'

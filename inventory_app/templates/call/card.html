@@ -67,6 +67,14 @@
 .cc-li .sub{font-size:11.5px;color:var(--cc-muted);margin-top:2px}
 .cc-pill{flex:0 0 auto;font-size:11px;font-weight:600;padding:3px 9px;border-radius:7px;height:fit-content;background:#eef1f5;color:var(--cc-muted)}
 
+.cc-clickcell{cursor:pointer}
+.cc-clickcell:hover{background:#f7f9fc}
+.cc-clickhint{font-size:10px;color:var(--cc-brand);margin-top:2px;opacity:.7}
+.cc-px-list{font-weight:700}
+.cc-px-disc{font-size:11px;color:var(--cc-red);font-weight:600;margin-top:1px}
+.cc-px-net{font-size:11px;color:var(--cc-muted);margin-top:1px}
+.cc-freebie{display:inline-block;font-size:10px;font-weight:600;background:var(--cc-gold-bg);color:var(--cc-gold);border-radius:6px;padding:1px 6px;margin-left:4px}
+
 .cc-section-sep{border:0;border-top:1px solid var(--cc-line);margin:13px 0}
 .cc-field-row{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
 .cc-field-row label{font-size:12px;color:var(--cc-muted);min-width:80px}
@@ -82,6 +90,10 @@
 {% macro fmt_thb(v) %}{% if v %}฿{{ '{:,.0f}'.format(v) }}{% else %}—{% endif %}{% endmacro %}
 
 {% block content %}
+{# macros imported inside the block (alias `mac` — NOT `m`, which is master below):
+   a top-level {% import %} in an extending child template is not visible inside
+   {% block %} overrides (Jinja scoping). #}
+{% import "macros.html" as mac %}
 {% set m = d.master %}
 {% set cs, call_days = d.call_status %}
 {% set current_user = session.get('username') %}
@@ -338,19 +350,32 @@
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;vertical-align:middle">
                   {{ (p.last_buy or '')[:7] or '—' }}
                 </td>
-                <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
+                <td class="cc-clickcell" style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle"
+                    data-bs-toggle="modal" data-bs-target="#pricePromoModal"
+                    data-pm="pm-{{ loop.index }}" data-name="{{ p.product_name }}">
                   <div class="cc-base">{% if p.base %}฿{{ '{:,.0f}'.format(p.base) }}{% else %}—{% endif %}</div>
-                  {% if p.promo_label %}
-                  <div class="cc-promo">{{ p.promo_label[:30] }}</div>
+                  {% if p.promo %}
+                  <div class="cc-promo">{{ mac.promo_summary(p.promo) }}</div>
                   {% else %}
                   <div class="cc-promo none">— ไม่มีโปร</div>
                   {% endif %}
+                  <div class="cc-clickhint">ดูราคา ›</div>
                 </td>
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
-                  {% if p.customer_latest is not none %}฿{{ '{:,.0f}'.format(p.customer_latest) }}{% else %}—{% endif %}
+                  {% if p.customer_latest_list is not none %}
+                  <div class="cc-px-list">฿{{ '{:,.0f}'.format(p.customer_latest_list) }}</div>
+                  {% set dl = mac.disc_label(p.customer_latest_disc) | trim %}
+                  {% if dl %}<div class="cc-px-disc">{{ dl }}</div>{% endif %}
+                  {% if p.customer_latest is not none %}<div class="cc-px-net">สุทธิ ฿{{ '{:,.0f}'.format(p.customer_latest) }}</div>{% endif %}
+                  {% elif p.customer_latest is not none %}฿{{ '{:,.0f}'.format(p.customer_latest) }}{% else %}—{% endif %}
                 </td>
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
-                  {% if p.peer_median %}฿{{ '{:,.0f}'.format(p.peer_median) }}{% else %}—{% endif %}
+                  {% if p.peer_repr_list is not none %}
+                  <div class="cc-px-list">฿{{ '{:,.0f}'.format(p.peer_repr_list) }}</div>
+                  {% set pdl = mac.disc_label(p.peer_repr_disc) | trim %}
+                  {% if pdl %}<div class="cc-px-disc">{{ pdl }}</div>{% endif %}
+                  {% if p.peer_median is not none %}<div class="cc-px-net">สุทธิ ฿{{ '{:,.0f}'.format(p.peer_median) }}</div>{% endif %}
+                  {% elif p.peer_median %}฿{{ '{:,.0f}'.format(p.peer_median) }}{% else %}—{% endif %}
                 </td>
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;vertical-align:middle">
                   {% if p.flag == 'cheaper' %}
@@ -366,6 +391,31 @@
             </tbody>
           </table>
         </div>
+        {# hidden modal bodies — one per product row; loop.index matches the trigger's data-pm #}
+        {% for p in d.products %}
+        <template id="pm-{{ loop.index }}">
+          <div class="mb-2">
+            <div class="text-muted small">ราคาตั้ง ({{ p.unit or '—' }})</div>
+            <div class="fs-5 fw-bold">{% if p.base %}฿{{ '{:,.2f}'.format(p.base) }}{% else %}—{% endif %}</div>
+          </div>
+          {% if p.price_tiers %}
+          <div class="mb-2">
+            <div class="text-muted small mb-1">ราคาตามแพ็ค</div>
+            <table class="table table-sm mb-0">
+              <tbody>
+                {% for t in p.price_tiers %}
+                <tr><td>{{ t.qty_label }}</td><td class="text-end fw-bold">฿{{ '{:,.0f}'.format(t.price) }}</td><td class="text-muted small">{{ t.note or '' }}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% endif %}
+          <div>
+            <div class="text-muted small mb-1">โปรโมชัน</div>
+            {{ mac.promo_detail(p.promo) }}
+          </div>
+        </template>
+        {% endfor %}
         {% else %}
         <p class="text-muted small mb-0">ไม่พบสินค้าที่ซื้อ</p>
         {% endif %}
@@ -407,4 +457,41 @@
     </div>{# end right #}
   </div>{# end cols #}
 </div>
+{% endblock %}
+
+{% block scripts %}
+{# Price/promo detail modal — clones the per-row <template> body on open
+   (server-rendered via macros, so no API round-trip / no promo logic in JS). #}
+<div class="modal fade" id="pricePromoModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="ppm-title">ราคาและโปรโมชัน</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="ปิด"></button>
+      </div>
+      <div class="modal-body" id="ppm-body"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ปิด</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var modal = document.getElementById('pricePromoModal');
+  if(!modal) return;
+  modal.addEventListener('show.bs.modal', function(ev){
+    var trigger = ev.relatedTarget;
+    if(!trigger) return;
+    var name = trigger.getAttribute('data-name') || '';
+    var pmId = trigger.getAttribute('data-pm');
+    document.getElementById('ppm-title').textContent = (name ? name + ' — ' : '') + 'ราคาและโปรโมชัน';
+    var body = document.getElementById('ppm-body');
+    body.innerHTML = '';
+    var tpl = pmId ? document.getElementById(pmId) : null;
+    if(tpl && tpl.content){ body.appendChild(tpl.content.cloneNode(true)); }
+    else { body.innerHTML = '<div class="text-muted">ไม่มีข้อมูล</div>'; }
+  });
+})();
+</script>
 {% endblock %}

@@ -13,3 +13,57 @@
   <span class="text-subtle">–</span>
 {%- endif %}
 {% endmacro %}
+
+
+{# Render a sales_transactions.discount string as a label.
+   discount is polymorphic TEXT: '20%' / '15+5%' (percent, shown as-is) or
+   '28.00' (baht amount, shown with ฿). Empty/None renders nothing. #}
+{% macro disc_label(disc) %}
+{%- if disc is not none and (disc | string | trim) -%}
+  {%- set s = disc | string | trim -%}
+  {%- if s.endswith('%') -%}−{{ s }}{%- else -%}−฿{{ s }}{%- endif -%}
+{%- endif -%}
+{% endmacro %}
+
+
+{# One-line promotion summary for a table cell: discount and/or freebie, plus a
+   "🎁 N ระดับ" pill when a bundle has multiple tiers. Covers all promo_types. #}
+{% macro promo_summary(promo) %}
+{%- if promo -%}
+  {%- if promo.promo_type == 'percent' -%}ลด {{ '%g' | format(promo.discount_value) }}%
+  {%- elif promo.promo_type == 'fixed' -%}เหลือ ฿{{ '{:,.0f}'.format(promo.discount_value) }}
+  {%- elif promo.promo_type == 'bundle' -%}🎁 ซื้อ {{ promo.bundle_buy }} แถม {{ promo.bundle_free }}{% if promo.bundle_unit %} {{ promo.bundle_unit }}{% endif %}
+  {%- elif promo.promo_type == 'gift' -%}🎁 แถม {{ promo.gift_desc }}{% if promo.gift_qty %} ({{ promo.gift_qty }}){% endif %}
+  {%- elif promo.promo_type == 'mixed' -%}{% if promo.discount_value %}ลด {{ '%g' | format(promo.discount_value) }}%{% endif %}{% if promo.bundle_buy %} · 🎁 ซื้อ {{ promo.bundle_buy }} แถม {{ promo.bundle_free }}{% endif %}{% if promo.gift_desc %} · 🎁 {{ promo.gift_desc }}{% endif %}
+  {%- endif -%}
+  {%- if promo.bundle_tiers_json -%}{%- set tiers = promo.bundle_tiers_json | from_json -%}{%- if tiers and tiers | length > 1 %} <span class="cc-freebie">🎁 {{ tiers | length }} ระดับ</span>{%- endif -%}{%- endif -%}
+{%- endif -%}
+{% endmacro %}
+
+
+{# Full promotion detail block for the modal: name + terms + all freebie tiers +
+   bundle condition (ยกลัง/ยกล่อง) + date range. #}
+{% macro promo_detail(promo) %}
+{%- if promo -%}
+  <div class="mb-1"><span class="badge bg-danger">{{ promo.promo_name }}</span></div>
+  <div>
+    {%- if promo.promo_type == 'percent' -%}ส่วนลด {{ '%g' | format(promo.discount_value) }}%
+    {%- elif promo.promo_type == 'fixed' -%}ราคาพิเศษ ฿{{ '{:,.0f}'.format(promo.discount_value) }}
+    {%- elif promo.promo_type == 'bundle' -%}ซื้อ {{ promo.bundle_buy }} แถม {{ promo.bundle_free }}{% if promo.bundle_unit %} {{ promo.bundle_unit }}{% endif %}
+    {%- elif promo.promo_type == 'gift' -%}แถม {{ promo.gift_desc }}{% if promo.gift_qty %} ({{ promo.gift_qty }}){% endif %}
+    {%- elif promo.promo_type == 'mixed' -%}{% if promo.discount_value %}ลด {{ '%g' | format(promo.discount_value) }}%{% endif %}{% if promo.bundle_buy %} · ซื้อ {{ promo.bundle_buy }} แถม {{ promo.bundle_free }}{% endif %}{% if promo.gift_desc %} · แถม {{ promo.gift_desc }}{% endif %}
+    {%- endif -%}
+  </div>
+  {%- if promo.bundle_condition %}<div class="text-muted small">ต้องซื้อ{{ promo.bundle_condition }}</div>{% endif -%}
+  {%- if promo.bundle_tiers_json -%}{%- set tiers = promo.bundle_tiers_json | from_json -%}
+    {%- if tiers and tiers | length > 0 -%}
+      <div class="small mt-1">หลายระดับ:
+        <ul class="mb-0">{% for t in tiers %}<li>ซื้อ {{ t.buy }} แถม {{ t.free }}{% if t.condition %} ({{ t.condition }}){% endif %}</li>{% endfor %}</ul>
+      </div>
+    {%- endif -%}
+  {%- endif -%}
+  {%- if promo.date_start or promo.date_end %}<div class="text-muted small mt-1">ช่วงโปร: {{ promo.date_start or '—' }} ถึง {{ promo.date_end or '—' }}</div>{% endif -%}
+{%- else -%}
+  <span class="text-muted">— ไม่มีโปรโมชัน</span>
+{%- endif -%}
+{% endmacro %}
