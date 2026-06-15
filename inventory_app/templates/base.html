@@ -169,6 +169,10 @@
        class="sidebar-link {% if request.endpoint in ('payment_status','payment_customers') %}active{% endif %}">
       <i class="bi bi-receipt"></i> สถานะชำระหนี้
     </a>
+    <a href="{{ url_for('call.call_list') }}"
+       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('call.') %}active{% endif %}">
+      <i class="bi bi-telephone-outbound"></i> โทรหาลูกค้า
+    </a>
 
     <div class="sidebar-section">การเงิน (Express)</div>
     <a href="{{ url_for('commission_dashboard') }}"

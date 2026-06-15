@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block title %}โทรหาลูกค้า — Sendy{% endblock %}
+
+{% block head_extra %}
+<style>
+/* Call-card list page — scoped styles (not in app.css to avoid PWA cache bump) */
+.cc-toolbar{display:flex;align-items:flex-end;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.cc-fld{display:flex;flex-direction:column;gap:3px}
+.cc-fld label{font-size:10.5px;color:#6b7787;font-weight:600;padding-left:2px}
+.cc-selbox{font-family:inherit;font-size:13.5px;border:1px solid #e3e8ef;border-radius:9px;padding:7px 11px;background:#fff;color:#1f2733}
+.cc-selbox.wide{min-width:200px}
+.cc-search-wrap{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e3e8ef;border-radius:9px;padding:7px 12px;min-width:220px;flex:1;max-width:340px}
+.cc-search-wrap input{border:0;outline:0;font-family:inherit;font-size:14px;width:100%}
+
+.cc-table-wrap{background:#fff;border:1px solid #e3e8ef;border-radius:11px;overflow:hidden;margin-bottom:14px}
+.cc-table-wrap table{width:100%;border-collapse:collapse}
+.cc-table-wrap thead th{text-align:left;font-size:12px;font-weight:600;color:#6b7787;padding:10px 12px;border-bottom:1px solid #e3e8ef;white-space:nowrap}
+.cc-table-wrap thead th.num,.cc-table-wrap tbody td.num{text-align:right}
+.cc-table-wrap tbody td{padding:11px 12px;border-bottom:1px solid #e3e8ef;font-size:13.5px;vertical-align:middle}
+.cc-table-wrap tbody tr:last-child td{border-bottom:0}
+.cc-table-wrap tbody tr:hover{background:#f7f9fc;cursor:pointer}
+
+.cc-cust .nm{font-weight:600}
+.cc-cust .cd{font-size:11.5px;color:#6b7787}
+.cc-geo .pv{font-weight:500}
+.cc-geo .rg{font-size:11.5px;color:#6b7787}
+.cc-spend{font-weight:700}
+
+.cc-hsel{font-family:inherit;font-size:11px;font-weight:600;color:#1f4e8c;border:1px solid #b9d0ee;background:#eaf1fb;border-radius:6px;padding:2px 5px;margin-left:6px}
+
+.cc-cstat{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding:3px 9px;border-radius:7px;white-space:nowrap}
+.cc-cstat .dot{width:7px;height:7px;border-radius:50%}
+.cc-cstat.recent{background:#ecfbf1;color:#15803d} .cc-cstat.recent .dot{background:#15803d}
+.cc-cstat.due{background:#fff5e6;color:#b45309} .cc-cstat.due .dot{background:#b45309}
+.cc-cstat.never{background:#fdecec;color:#b91c1c} .cc-cstat.never .dot{background:#b91c1c}
+.cc-callsub{font-size:11px;color:#6b7787;margin-top:3px}
+
+.cc-b{font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:6px;display:inline-flex;gap:4px;align-items:center;white-space:nowrap;margin-right:4px}
+.cc-b.star{background:#fdf6e3;color:#b8860b}
+.cc-b.quiet{background:#fff5e6;color:#b45309}
+.cc-b.ar{background:#fdecec;color:#b91c1c}
+
+.cc-acts{display:flex;gap:6px;white-space:nowrap;align-items:center}
+.cc-tick{font-size:12.5px;font-weight:600;color:#15803d;border:1px solid #b6e0c4;background:#ecfbf1;border-radius:7px;padding:5px 9px;cursor:pointer;font-family:inherit}
+.cc-viewbtn{font-size:12.5px;font-weight:600;color:#1f4e8c;border:1px solid #b9d0ee;background:#eaf1fb;border-radius:7px;padding:5px 11px;text-decoration:none;white-space:nowrap}
+
+.cc-footer{font-size:12px;color:#6b7787;line-height:1.7;margin-top:4px}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-4 py-3">
+  <nav aria-label="breadcrumb" class="mb-2">
+    <span class="text-muted" style="font-size:12.5px">การค้า / <strong>โทรหาลูกค้า</strong></span>
+  </nav>
+
+  {# ── Toolbar ── #}
+  <form method="get" action="{{ url_for('call.call_list') }}" id="cc-filter-form">
+    <div class="cc-toolbar">
+      {# Search #}
+      <div class="cc-fld">
+        <label>ค้นหา</label>
+        <div class="cc-search-wrap cc-selbox wide">
+          <i class="bi bi-search text-muted" style="font-size:13px"></i>
+          <input type="text" name="q" value="{{ args.get('q','') }}" placeholder="ชื่อ / รหัสลูกค้า">
+        </div>
+      </div>
+      {# ภาค #}
+      <div class="cc-fld">
+        <label>ภาค</label>
+        <select name="region" class="cc-selbox" onchange="this.form.submit()">
+          <option value="">ทุกภาค</option>
+          {% for r in regions %}
+          <option value="{{ r }}" {% if args.get('region') == r %}selected{% endif %}>{{ r }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {# สถานะการโทร #}
+      <div class="cc-fld">
+        <label>สถานะการโทร</label>
+        <select name="call" class="cc-selbox" onchange="this.form.submit()">
+          <option value="">ทั้งหมด</option>
+          <option value="never" {% if args.get('call') == 'never' %}selected{% endif %}>🔴 ยังไม่เคยโทร</option>
+          <option value="due" {% if args.get('call') == 'due' %}selected{% endif %}>🟠 ถึงกำหนดโทร</option>
+          <option value="recent" {% if args.get('call') == 'recent' %}selected{% endif %}>🟢 ยังไม่ถึงกำหนด</option>
+        </select>
+      </div>
+      {# เรียงตาม #}
+      <div class="cc-fld">
+        <label>เรียงตาม</label>
+        <select name="sort" class="cc-selbox" onchange="this.form.submit()">
+          <option value="spend" {% if args.get('sort','spend') == 'spend' %}selected{% endif %}>ยอดซื้อสูงสุด</option>
+          <option value="call" {% if args.get('sort') == 'call' %}selected{% endif %}>ถึงกำหนดโทรก่อน</option>
+          <option value="last_buy" {% if args.get('sort') == 'last_buy' %}selected{% endif %}>ซื้อล่าสุด</option>
+          <option value="name" {% if args.get('sort') == 'name' %}selected{% endif %}>ชื่อ A→Z</option>
+        </select>
+      </div>
+      {# Submit / clear #}
+      <div class="cc-fld">
+        <label>&nbsp;</label>
+        <div class="d-flex gap-2">
+          <button type="submit" class="btn btn-primary btn-sm px-3">กรอง</button>
+          <a href="{{ url_for('call.call_list') }}" class="btn btn-outline-secondary btn-sm px-3">ล้าง</a>
+        </div>
+      </div>
+      {# Hidden: spend_window is submitted by the table header select below #}
+      <input type="hidden" name="spend_window" id="spend_window_hidden" value="{{ args.get('spend_window','1y') }}">
+    </div>
+  </form>
+
+  {# ── Table ── #}
+  <div class="cc-table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ลูกค้า</th>
+          <th>จังหวัด / ภาค</th>
+          <th>ซื้อล่าสุด</th>
+          <th class="num">
+            ยอดซื้อ
+            <select class="cc-hsel" onchange="document.getElementById('spend_window_hidden').value=this.value; document.getElementById('cc-filter-form').submit()">
+              <option value="6m" {% if args.get('spend_window') == '6m' %}selected{% endif %}>6 เดือน</option>
+              <option value="1y" {% if args.get('spend_window','1y') == '1y' %}selected{% endif %}>1 ปี</option>
+              <option value="2y" {% if args.get('spend_window') == '2y' %}selected{% endif %}>2 ปี</option>
+              <option value="all" {% if args.get('spend_window') == 'all' %}selected{% endif %}>ทั้งหมด</option>
+            </select>
+          </th>
+          <th>สถานะการโทร</th>
+          <th>ป้ายเตือน</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr onclick="window.location='{{ url_for('call.call_card', customer_code=r.customer_code) }}'">
+          <td class="cc-cust">
+            <div class="nm">{{ r.name }}</div>
+            <div class="cd">{{ r.customer_code }}</div>
+          </td>
+          <td class="cc-geo">
+            <div class="pv">{{ r.province or '—' }}</div>
+            <div class="rg">{{ r.region }}</div>
+          </td>
+          <td>{{ r.last_buy or '—' }}</td>
+          <td class="num cc-spend">
+            {% if r.spend %}฿{{ '{:,.0f}'.format(r.spend) }}{% else %}—{% endif %}
+          </td>
+          <td>
+            <span class="cc-cstat {{ r.call_status }}">
+              <span class="dot"></span>{{ status_label[r.call_status] }}
+            </span>
+            {% if r.last_called and r.call_days is not none %}
+            <div class="cc-callsub">โทร {{ r.last_called }} · {{ elapsed_th(r.call_days) }}</div>
+            {% endif %}
+          </td>
+          <td>
+            {% if r.badges.ar %}
+            <span class="cc-b ar">⚠️ ฿{{ '{:,.0f}'.format(r.badges.ar) }}</span>
+            {% endif %}
+            {% if r.badges.quiet %}
+            <span class="cc-b quiet">⏰ เงียบ</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="cc-acts" onclick="event.stopPropagation()">
+              <form method="post" action="{{ url_for('call.call_mark_called', customer_code=r.customer_code) }}" style="display:inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="cc-tick">✓ โทรแล้ว</button>
+              </form>
+              <a class="cc-viewbtn" href="{{ url_for('call.call_card', customer_code=r.customer_code) }}">ดู ›</a>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="7" class="text-center text-muted py-4">ไม่พบลูกค้า</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="cc-footer">
+    แสดง {{ rows | length }} ลูกค้า{% if args.get('region') %} — กรอง: {{ args.get('region') }}{% endif %}<br>
+    <b>สถานะการโทร</b> = นับจากครั้งล่าสุดที่โทร เทียบกับรอบที่ตั้งไว้ (ค่าเริ่มต้น <b>1 ปี</b> · ปรับรายลูกค้าได้):
+    🟢 ยังไม่ถึงกำหนด · 🟠 ถึงกำหนดโทร · 🔴 ยังไม่เคยโทร<br>
+    ปุ่ม <b>✓ โทรแล้ว</b> = ติ๊กบันทึกว่าโทรวันนี้ (ไม่ต้องเปิดการ์ด) ·
+    <b>ยอดซื้อ</b> เปลี่ยนช่วงเวลาได้ที่หัวคอลัมน์
+  </div>
+</div>
+{% endblock %}
