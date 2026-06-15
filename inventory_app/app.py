@@ -1568,7 +1568,16 @@ def mapping():
     categories = conn.execute(
         "SELECT id, code, name_th FROM categories ORDER BY sort_order, name_th"
     ).fetchall()
+    # Suggestion sources for the free-text combo fields (unit_type / condition):
+    # these stay free-text (any value allowed) but the dropdown offers the
+    # values already in use so they stay consistent.
+    unit_suggestions = [r[0] for r in conn.execute(
+        "SELECT unit_type FROM products WHERE unit_type IS NOT NULL AND unit_type <> '' "
+        "GROUP BY unit_type ORDER BY COUNT(*) DESC"
+    ).fetchall()]
     conn.close()
+    from sku_code_utils import CONDITION_SHORT
+    condition_suggestions = list(CONDITION_SHORT.keys())
     tab = request.args.get('tab', 'mapping')
     return render_template(
         'mapping.html',
@@ -1578,6 +1587,8 @@ def mapping():
         brands=brands,
         color_codes=color_codes,
         categories=categories,
+        unit_suggestions=unit_suggestions,
+        condition_suggestions=condition_suggestions,
         overrides=overrides,
         active_tab=tab,
     )

@@ -28,21 +28,133 @@
   {% endif %}
 </ul>
 
-{# Shared category picker source: type-to-search datalist + JS name→id map.
-   Used by BOTH the approve form (suggestions tab) and the Suggest modal so
-   Category is chosen from the 40 standardised categories instead of free
-   text (which silently created NULL-category SKUs). #}
-<datalist id="cat-datalist">
-  {% for c in categories %}
-  <option value="{{ c.name_th }}">{{ c.code }}</option>
-  {% endfor %}
-</datalist>
+{# ── Shared searchable-dropdown (combo) component ─────────────────────────
+   One reusable type-to-search dropdown used by EVERY pick-list field on both
+   the approve form and the Suggest modal (Category, Brand, Color, Packaging,
+   Unit type, Condition) so they all behave identically. A combo is:
+     <div class="combo" data-opts="<key>" [data-allow-new="1"]>
+       <input class="combo-input ...">          visible text box (type to filter)
+       <input type="hidden" class="combo-value" id="<legacy id>">   canonical value
+       <input type="hidden" class="combo-other" id="...">   (allow-new only) free text
+       <div class="ac-drop"></div>
+     </div>
+   Behaviour: focus → full list; type → substring filter; pick → fills value.
+   allow-new (brand/color/unit/condition): an unmatched typed value is kept
+   (→ combo-other when present, else → combo-value). pick-only (category/
+   packaging): an unmatched value resolves to empty. #}
+<style>
+  .combo { position: relative; }
+  .combo .ac-drop { min-width: 220px; }
+  .combo-input.combo-open { border-color: var(--accent); }
+</style>
 <script>
-  const CAT_BY_NAME = { {% for c in categories %}{{ c.name_th | tojson }}: {{ c.id }}{% if not loop.last %}, {% endif %}{% endfor %} };
-  // Resolve a typed/selected category name to its id (null if no exact match).
-  function resolveCategoryId(name) {
-    return (name && CAT_BY_NAME[name.trim()]) || null;
+  // Option sets: {v: canonical value, label: shown/typed text, hint: muted suffix}
+  const COMBO_OPTS = {
+    categories: [{% for c in categories %}{v:{{ c.id }},label:{{ c.name_th|tojson }},hint:{{ c.code|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+    brands:     [{% for b in brands %}{v:"{{ b.id }}",label:{{ (b.name ~ (' / ' ~ b.name_th if b.name_th else ''))|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
+    colorcodes: [{% for c in color_codes %}{v:{{ c.code|tojson }},label:{{ (c.code ~ ' — ' ~ c.name_th)|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
+    packaging:  [{% for p in ['แผง','ตัว','ถุง','แพ็คหัว','แพ็คถุง','ซอง','อัดแผง','แพ็ค','แบบหลอด','โหล','1กลมี60ใบ'] %}{v:{{ p|tojson }},label:{{ p|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
+    units:      [{% for u in unit_suggestions %}{v:{{ u|tojson }},label:{{ u|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
+    conditions: [{% for c in condition_suggestions %}{v:{{ c|tojson }},label:{{ c|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
+  };
+
+  // Resolve the combo's hidden value(s) from the current input text.
+  function comboCommit(div) {
+    const opts  = COMBO_OPTS[div.dataset.opts] || [];
+    const input = div.querySelector('.combo-input');
+    const valEl = div.querySelector('.combo-value');
+    const othEl = div.querySelector('.combo-other');
+    const allowNew = div.dataset.allowNew === '1';
+    const text = (input.value || '').trim();
+    const opt = opts.find(o => o.label === text) ||
+                opts.find(o => String(o.v) === text);   // also match by raw value
+    if (opt) {
+      input.value = opt.label;
+      if (valEl) valEl.value = opt.v;
+      if (othEl) othEl.value = '';
+    } else if (allowNew) {
+      if (othEl) { if (valEl) valEl.value = ''; othEl.value = text; }
+      else if (valEl) valEl.value = text;          // free-text combo (unit/condition)
+    } else {                                        // pick-only, no match → empty
+      if (valEl) valEl.value = '';
+      if (othEl) othEl.value = '';
+    }
+    // notify dependents (e.g. sm-unit → unit-conversion row visibility)
+    if (valEl) valEl.dispatchEvent(new Event('change', { bubbles: true }));
   }
+
+  // Sync a combo's VISIBLE input from its hidden value/other (used on load and
+  // after the modal prefills the hidden fields programmatically).
+  function comboSyncLabel(div) {
+    const opts  = COMBO_OPTS[div.dataset.opts] || [];
+    const input = div.querySelector('.combo-input');
+    const valEl = div.querySelector('.combo-value');
+    const othEl = div.querySelector('.combo-other');
+    if (valEl && valEl.value !== '') {
+      const opt = opts.find(o => String(o.v) === String(valEl.value));
+      input.value = opt ? opt.label : valEl.value;
+    } else if (othEl && othEl.value) {
+      input.value = othEl.value;
+    } else if (input.value) {
+      comboCommit(div);   // input pre-filled (e.g. staged category text) → resolve
+    }
+  }
+
+  function comboRender(div, q) {
+    const opts = COMBO_OPTS[div.dataset.opts] || [];
+    const drop = div.querySelector('.ac-drop');
+    const ql = (q || '').toLowerCase();
+    const hits = (ql ? opts.filter(o => o.label.toLowerCase().includes(ql)) : opts).slice(0, 80);
+    drop.innerHTML = hits.length
+      ? hits.map(o =>
+          `<div class="ac-item" data-v="${String(o.v).replace(/"/g,'&quot;')}">` +
+          `<span class="flex-fill">${o.label}</span>` +
+          (o.hint ? `<span class="ac-sku">${o.hint}</span>` : '') + `</div>`).join('')
+      : '<div class="ac-item text-subtle">ไม่พบ — ' +
+        (div.dataset.allowNew === '1' ? 'พิมพ์เพื่อใช้ค่าใหม่ได้' : 'เลือกจากรายการ') + '</div>';
+  }
+  function comboOpen(div) {
+    const input = div.querySelector('.combo-input');
+    const drop  = div.querySelector('.ac-drop');
+    const rect = input.getBoundingClientRect();
+    drop.style.left = rect.left + 'px';
+    drop.style.top = (rect.bottom + 2) + 'px';
+    drop.style.width = Math.max(rect.width, 220) + 'px';
+    drop.classList.add('open');
+    input.classList.add('combo-open');
+  }
+  function comboClose(div) {
+    div.querySelector('.ac-drop').classList.remove('open');
+    div.querySelector('.combo-input').classList.remove('combo-open');
+  }
+
+  function initCombo(div) {
+    if (div._comboInit) return;
+    div._comboInit = true;
+    const input = div.querySelector('.combo-input');
+    const drop  = div.querySelector('.ac-drop');
+    comboSyncLabel(div);
+    input.addEventListener('focus', () => { comboRender(div, ''); comboOpen(div); });
+    input.addEventListener('input', () => { comboRender(div, input.value); comboOpen(div); });
+    input.addEventListener('blur', () => { setTimeout(() => { comboClose(div); comboCommit(div); }, 180); });
+    drop.addEventListener('mousedown', e => {
+      const item = e.target.closest('.ac-item[data-v]');
+      if (!item) return;
+      e.preventDefault();
+      const opt = (COMBO_OPTS[div.dataset.opts] || []).find(o => String(o.v) === item.dataset.v);
+      input.value = opt ? opt.label : item.dataset.v;
+      comboCommit(div);
+      comboClose(div);
+    });
+  }
+  function initAllCombos(root) {
+    (root || document).querySelectorAll('.combo').forEach(initCombo);
+  }
+  // Repaint visible labels from the hidden values (after programmatic prefill).
+  function syncCombos(root) {
+    (root || document).querySelectorAll('.combo').forEach(comboSyncLabel);
+  }
+  document.addEventListener('DOMContentLoaded', () => initAllCombos(document));
 </script>
 
 {% if active_tab == 'suggestions' %}
@@ -93,22 +205,23 @@
             <input class="form-control form-control-sm" id="sug-name-{{ s.id }}"
                    value="{{ s.suggested_name or s.bsn_name }}"></div>
           <div class="col-md-4"><label class="form-label mb-0">Category</label>
-            <input class="form-control form-control-sm" id="sug-cat-{{ s.id }}"
-                   list="cat-datalist" value="{{ s.category or '' }}"
-                   placeholder="พิมพ์ค้นหาหมวด เช่น กาว, บานพับ"></div>
+            <div class="combo" data-opts="categories">
+              <input class="form-control form-control-sm combo-input" id="sug-cat-{{ s.id }}"
+                     autocomplete="off" value="{{ s.category or '' }}"
+                     placeholder="พิมพ์ค้นหาหมวด เช่น กาว, บานพับ">
+              <input type="hidden" class="combo-value" id="sug-cat-id-{{ s.id }}">
+              <div class="ac-drop"></div>
+            </div></div>
           <div class="col-md-4"><label class="form-label mb-0">Series</label>
             <input class="form-control form-control-sm" id="sug-series-{{ s.id }}" value="{{ s.series or '' }}"></div>
           <div class="col-md-4"><label class="form-label mb-0">Brand</label>
-            <select class="form-select form-select-sm" id="sug-brand-{{ s.id }}">
-              <option value="">— ไม่ระบุ —</option>
-              {% for b in brands %}
-              <option value="{{ b.id }}" {% if b.id == s.brand_id %}selected{% endif %}>{{ b.name }}{% if b.name_th %} / {{ b.name_th }}{% endif %}</option>
-              {% endfor %}
-            </select>
-            {% if s.brand_other_name %}
-            <input class="form-control form-control-sm mt-1" id="sug-brand-other-{{ s.id }}"
-                   value="{{ s.brand_other_name }}" placeholder="ชื่อแบรนด์ใหม่ (จะสร้างเมื่อ approve)">
-            {% endif %}
+            <div class="combo" data-opts="brands" data-allow-new="1">
+              <input class="form-control form-control-sm combo-input" autocomplete="off"
+                     placeholder="พิมพ์ค้นหา / เพิ่มแบรนด์ใหม่">
+              <input type="hidden" class="combo-value" id="sug-brand-{{ s.id }}" value="{{ s.brand_id or '' }}">
+              <input type="hidden" class="combo-other" id="sug-brand-other-{{ s.id }}" value="{{ s.brand_other_name or '' }}">
+              <div class="ac-drop"></div>
+            </div>
           </div>
           <div class="col-md-3"><label class="form-label mb-0">Model</label>
             <input class="form-control form-control-sm" id="sug-model-{{ s.id }}" value="{{ s.model or '' }}"></div>
@@ -117,37 +230,41 @@
           <div class="col-md-3"><label class="form-label mb-0">สี (Thai)</label>
             <input class="form-control form-control-sm" id="sug-colorth-{{ s.id }}" value="{{ s.color_th or '' }}"></div>
           <div class="col-md-3"><label class="form-label mb-0">Color code</label>
-            <select class="form-select form-select-sm" id="sug-colorcode-{{ s.id }}">
-              <option value="">—</option>
-              {% for c in color_codes %}
-              <option value="{{ c.code }}" {% if c.code == s.color_code %}selected{% endif %}>{{ c.code }} — {{ c.name_th }}</option>
-              {% endfor %}
-            </select>
-            {% if s.color_code_other %}
-            <input class="form-control form-control-sm mt-1" id="sug-colorcode-other-{{ s.id }}"
-                   value="{{ s.color_code_other }}" placeholder="color code ใหม่ (จะสร้างเมื่อ approve)">
-            {% endif %}
+            <div class="combo" data-opts="colorcodes" data-allow-new="1">
+              <input class="form-control form-control-sm combo-input" autocomplete="off"
+                     placeholder="พิมพ์ค้นหา / เพิ่มรหัสสีใหม่">
+              <input type="hidden" class="combo-value" id="sug-colorcode-{{ s.id }}" value="{{ s.color_code or '' }}">
+              <input type="hidden" class="combo-other" id="sug-colorcode-other-{{ s.id }}" value="{{ s.color_code_other or '' }}">
+              <div class="ac-drop"></div>
+            </div>
           </div>
           <div class="col-md-3"><label class="form-label mb-0">Packaging</label>
-            <select class="form-select form-select-sm" id="sug-pkg-{{ s.id }}">
-              <option value="">—</option>
-              {% for p in ['แผง','ตัว','ถุง','แพ็คหัว','แพ็คถุง','ซอง','อัดแผง','แพ็ค','แบบหลอด','โหล','1กลมี60ใบ'] %}
-              <option value="{{ p }}" {% if p == s.packaging %}selected{% endif %}>{{ p }}</option>
-              {% endfor %}
-            </select>
-            {% if s.packaging_other %}
-            <input class="form-control form-control-sm mt-1" id="sug-pkg-other-{{ s.id }}"
-                   value="{{ s.packaging_other }}" placeholder="packaging อื่น ๆ">
-            {% endif %}
+            <div class="combo" data-opts="packaging">
+              <input class="form-control form-control-sm combo-input" autocomplete="off"
+                     placeholder="เลือกบรรจุภัณฑ์">
+              <input type="hidden" class="combo-value" id="sug-pkg-{{ s.id }}" value="{{ s.packaging or '' }}">
+              <div class="ac-drop"></div>
+            </div>
           </div>
           <div class="col-md-3"><label class="form-label mb-0">Condition</label>
-            <input class="form-control form-control-sm" id="sug-cond-{{ s.id }}" value="{{ s.condition or '' }}"></div>
+            <div class="combo" data-opts="conditions" data-allow-new="1">
+              <input class="form-control form-control-sm combo-input" autocomplete="off"
+                     placeholder="สภาพสินค้า (ถ้ามี)">
+              <input type="hidden" class="combo-value" id="sug-cond-{{ s.id }}" value="{{ s.condition or '' }}">
+              <div class="ac-drop"></div>
+            </div>
+          </div>
           <div class="col-md-3"><label class="form-label mb-0">Pack variant</label>
             <input class="form-control form-control-sm" id="sug-pv-{{ s.id }}" value="{{ s.pack_variant or '' }}"></div>
           <div class="col-md-3"><label class="form-label mb-0">Cost (initial WACC)</label>
             <input type="number" step="0.01" class="form-control form-control-sm" id="sug-cost-{{ s.id }}" value="{{ s.suggested_cost or 0 }}"></div>
           <div class="col-md-3"><label class="form-label mb-0">Unit type (base)</label>
-            <input class="form-control form-control-sm" id="sug-unit-{{ s.id }}" value="{{ s.suggested_unit_type or 'ตัว' }}"></div>
+            <div class="combo" data-opts="units" data-allow-new="1">
+              <input class="form-control form-control-sm combo-input" autocomplete="off" placeholder="เช่น ตัว">
+              <input type="hidden" class="combo-value" id="sug-unit-{{ s.id }}" value="{{ s.suggested_unit_type or 'ตัว' }}">
+              <div class="ac-drop"></div>
+            </div>
+          </div>
           {% if s.bsn_unit %}
           <div class="col-md-6"><label class="form-label mb-0">
             Unit conversion: 1 <code>{{ s.bsn_unit }}</code> (BSN) =
@@ -188,17 +305,17 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
   const payload = {
     suggested_name:      v('name'),
     category:            v('cat'),
-    category_id:         resolveCategoryId(v('cat')),
+    category_id:         v('cat-id') || null,
     series:              v('series'),
     brand_id:            v('brand') || null,
-    brand_other_name:    hasBrandOther ? v('brand-other') : null,
+    brand_other_name:    v('brand-other') || null,
     model:               v('model'),
     size:                v('size'),
     color_th:            v('colorth'),
     color_code:          v('colorcode') || null,
-    color_code_other:    hasColorOther ? v('colorcode-other') : null,
+    color_code_other:    v('colorcode-other') || null,
     packaging:           v('pkg') || null,
-    packaging_other:     hasPkgOther ? v('pkg-other') : null,
+    packaging_other:     null,
     condition:           v('cond'),
     pack_variant:        v('pv'),
     suggested_cost:      v('cost'),
@@ -400,22 +517,22 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                 <div class="col-12"><label class="form-label mb-0">ชื่อสินค้า (proposed)</label>
                   <input class="form-control form-control-sm" id="sm-name"></div>
                 <div class="col-md-4"><label class="form-label mb-0">Category</label>
-                  <input class="form-control form-control-sm" id="sm-cat"
-                         list="cat-datalist" placeholder="พิมพ์ค้นหาหมวด"></div>
+                  <div class="combo" data-opts="categories">
+                    <input class="form-control form-control-sm combo-input" id="sm-cat"
+                           autocomplete="off" placeholder="พิมพ์ค้นหาหมวด">
+                    <input type="hidden" class="combo-value" id="sm-cat-id">
+                    <div class="ac-drop"></div>
+                  </div></div>
                 <div class="col-md-4"><label class="form-label mb-0">Series</label>
                   <input class="form-control form-control-sm" id="sm-series"></div>
-                <div class="col-md-4"><label class="form-label mb-0">
-                  Brand
-                  <a href="#" class="ms-1 small" onclick="toggleOther('brand'); return false;">[+ พิมพ์เอง]</a>
-                </label>
-                  <select class="form-select form-select-sm" id="sm-brand">
-                    <option value="">— ไม่ระบุ —</option>
-                    {% for b in brands %}
-                    <option value="{{ b.id }}">{{ b.name }}{% if b.name_th %} / {{ b.name_th }}{% endif %}</option>
-                    {% endfor %}
-                  </select>
-                  <input class="form-control form-control-sm mt-1" id="sm-brand-other"
-                         placeholder="ชื่อแบรนด์ใหม่" style="display:none"></div>
+                <div class="col-md-4"><label class="form-label mb-0">Brand</label>
+                  <div class="combo" data-opts="brands" data-allow-new="1">
+                    <input class="form-control form-control-sm combo-input" autocomplete="off"
+                           placeholder="พิมพ์ค้นหา / เพิ่มแบรนด์ใหม่">
+                    <input type="hidden" class="combo-value" id="sm-brand">
+                    <input type="hidden" class="combo-other" id="sm-brand-other">
+                    <div class="ac-drop"></div>
+                  </div></div>
 
                 <div class="col-md-3"><label class="form-label mb-0">Model</label>
                   <input class="form-control form-control-sm" id="sm-model"></div>
@@ -423,40 +540,40 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                   <input class="form-control form-control-sm" id="sm-size"></div>
                 <div class="col-md-3"><label class="form-label mb-0">สี (Thai)</label>
                   <input class="form-control form-control-sm" id="sm-colorth"></div>
-                <div class="col-md-3"><label class="form-label mb-0">
-                  Color code
-                  <a href="#" class="ms-1 small" onclick="toggleOther('colorcode'); return false;">[+ พิมพ์เอง]</a>
-                </label>
-                  <select class="form-select form-select-sm" id="sm-colorcode">
-                    <option value="">—</option>
-                    {% for c in color_codes %}
-                    <option value="{{ c.code }}">{{ c.code }} — {{ c.name_th }}</option>
-                    {% endfor %}
-                  </select>
-                  <input class="form-control form-control-sm mt-1" id="sm-colorcode-other"
-                         placeholder="color code ใหม่" style="display:none"></div>
+                <div class="col-md-3"><label class="form-label mb-0">Color code</label>
+                  <div class="combo" data-opts="colorcodes" data-allow-new="1">
+                    <input class="form-control form-control-sm combo-input" autocomplete="off"
+                           placeholder="พิมพ์ค้นหา / เพิ่มรหัสสีใหม่">
+                    <input type="hidden" class="combo-value" id="sm-colorcode">
+                    <input type="hidden" class="combo-other" id="sm-colorcode-other">
+                    <div class="ac-drop"></div>
+                  </div></div>
 
-                <div class="col-md-3"><label class="form-label mb-0">
-                  Packaging
-                  <a href="#" class="ms-1 small" onclick="toggleOther('pkg'); return false;">[+ พิมพ์เอง]</a>
-                </label>
-                  <select class="form-select form-select-sm" id="sm-pkg">
-                    <option value="">—</option>
-                    {% for p in ['แผง','ตัว','ถุง','แพ็คหัว','แพ็คถุง','ซอง','อัดแผง','แพ็ค','แบบหลอด','โหล','1กลมี60ใบ'] %}
-                    <option value="{{ p }}">{{ p }}</option>
-                    {% endfor %}
-                  </select>
-                  <input class="form-control form-control-sm mt-1" id="sm-pkg-other"
-                         placeholder="packaging อื่น ๆ" style="display:none"></div>
+                <div class="col-md-3"><label class="form-label mb-0">Packaging</label>
+                  <div class="combo" data-opts="packaging">
+                    <input class="form-control form-control-sm combo-input" autocomplete="off"
+                           placeholder="เลือกบรรจุภัณฑ์">
+                    <input type="hidden" class="combo-value" id="sm-pkg">
+                    <div class="ac-drop"></div>
+                  </div></div>
                 <div class="col-md-3"><label class="form-label mb-0">Condition</label>
-                  <input class="form-control form-control-sm" id="sm-cond"></div>
+                  <div class="combo" data-opts="conditions" data-allow-new="1">
+                    <input class="form-control form-control-sm combo-input" autocomplete="off"
+                           placeholder="สภาพสินค้า (ถ้ามี)">
+                    <input type="hidden" class="combo-value" id="sm-cond">
+                    <div class="ac-drop"></div>
+                  </div></div>
                 <div class="col-md-3"><label class="form-label mb-0">Pack variant</label>
                   <input class="form-control form-control-sm" id="sm-pv"></div>
                 <div class="col-md-3"><label class="form-label mb-0">Cost (initial WACC)</label>
                   <input type="number" step="0.01" class="form-control form-control-sm" id="sm-cost"></div>
 
                 <div class="col-md-3"><label class="form-label mb-0">Unit type (base/finest)</label>
-                  <input class="form-control form-control-sm" id="sm-unit" placeholder="เช่น ตัว">
+                  <div class="combo" data-opts="units" data-allow-new="1">
+                    <input class="form-control form-control-sm combo-input" autocomplete="off" placeholder="เช่น ตัว">
+                    <input type="hidden" class="combo-value" id="sm-unit">
+                    <div class="ac-drop"></div>
+                  </div>
                   <div class="form-text small text-subtle" id="sm-unit-hint" style="display:none">
                     <i class="bi bi-info-circle me-1"></i>หน่วยนี้คือหน่วยที่จะเก็บสต็อก —
                     เปลี่ยนเป็น 'ตัว' ถ้าจะแยกขายปลีกย่อยได้
@@ -700,24 +817,31 @@ function populateSuggestModal(data) {
     matchesEl.innerHTML = '<div class="text-subtle small">ไม่พบสินค้าที่คล้ายในระบบ</div>';
   }
 
-  // Card B — prefill
+  // Card B — prefill. Combo fields: set the hidden canonical value(s) +
+  // reset stale "other"/"id" hiddens, then syncCombos() repaints the visible
+  // text boxes from those values.
   const p = data.parsed || {};
+  const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
   document.getElementById('sm-name').value     = data.proposed_name || data.bsn_name || '';
-  document.getElementById('sm-cat').value      = p.category || '';
+  setVal('sm-cat', p.category || '');          // visible combo-input (text) → resolves to sm-cat-id
+  setVal('sm-cat-id', '');
   document.getElementById('sm-series').value   = p.series || '';
-  document.getElementById('sm-brand').value    = data.brand_id_suggested || '';
+  setVal('sm-brand', data.brand_id_suggested || '');     // hidden combo-value (brand_id)
+  setVal('sm-brand-other', '');
   document.getElementById('sm-model').value    = p.model || '';
   document.getElementById('sm-size').value     = p.size || '';
   document.getElementById('sm-colorth').value  = p.color_th || '';
-  document.getElementById('sm-colorcode').value = p.color_code || '';
-  document.getElementById('sm-pkg').value      = p.packaging || '';
-  document.getElementById('sm-cond').value     = p.condition || '';
+  setVal('sm-colorcode', p.color_code || '');
+  setVal('sm-colorcode-other', '');
+  setVal('sm-pkg', p.packaging || '');
+  setVal('sm-cond', p.condition || '');
   document.getElementById('sm-pv').value       = p.pack_variant || '';
   document.getElementById('sm-cost').value     = lp.cost_price || 0;
   // Default new-SKU base unit to BSN unit (issue #4) — most often they match
   // and no conversion is needed. User can edit if product is sold in smaller pcs.
   const defaultBaseUnit = _smBsnUnit || 'ตัว';
-  document.getElementById('sm-unit').value     = defaultBaseUnit;
+  setVal('sm-unit', defaultBaseUnit);
+  syncCombos(document.getElementById('suggestModal'));   // repaint combo labels
   document.getElementById('sm-bunit').textContent = _smBsnUnit || '?';
   document.getElementById('sm-base-unit-display').textContent = defaultBaseUnit;
   // Show stock-unit warning when BSN unit isn't the finest (ตัว). Defaulting
@@ -749,7 +873,7 @@ function refreshUnitConvVisibility() {
   if (_smBsnUnit && _smBsnUnit !== baseUnit) row.style.display = '';
   else row.style.display = 'none';
 }
-document.addEventListener('input', e => {
+document.addEventListener('change', e => {
   if (e.target.id === 'sm-unit') refreshUnitConvVisibility();
 });
 
@@ -838,18 +962,6 @@ function showMapConv(productUnit) {
   input.addEventListener('blur', () => { setTimeout(() => drop.classList.remove('open'), 200); });
 })();
 
-function toggleOther(prefix) {
-  const sel = document.getElementById('sm-' + prefix);
-  const inp = document.getElementById('sm-' + prefix + '-other');
-  if (inp.style.display === 'none') {
-    inp.style.display = '';
-    sel.value = '';
-  } else {
-    inp.style.display = 'none';
-    inp.value = '';
-  }
-}
-
 function confirmExistingMap() {
   const pid = document.getElementById('sm-product-id').value;
   if (!pid) { alert('กรุณาเลือกสินค้าก่อน'); return; }
@@ -873,27 +985,24 @@ function confirmExistingMap() {
 }
 
 function confirmStageNew() {
-  const v = (id) => document.getElementById('sm-' + id).value;
-  const isVisible = (id) => {
-    const el = document.getElementById('sm-' + id);
-    return el && el.style.display !== 'none';
-  };
+  const v = (id) => { const el = document.getElementById('sm-' + id); return el ? el.value : null; };
   const payload = {
     bsn_code: _smCurrentBsn,
     bsn_name: _smCurrentName,
     action: 'stage',
     suggested_name: v('name'),
-    category: v('cat'),
+    category: v('cat'),                 // combo-input text (staged as-is)
+    category_id: v('cat-id') || null,   // resolved category id from the combo
     series: v('series'),
     brand_id: v('brand') || null,
-    brand_other_name: isVisible('brand-other') ? v('brand-other') : null,
+    brand_other_name: v('brand-other') || null,
     model: v('model'),
     size: v('size'),
     color_th: v('colorth'),
     color_code: v('colorcode') || null,
-    color_code_other: isVisible('colorcode-other') ? v('colorcode-other') : null,
+    color_code_other: v('colorcode-other') || null,
     packaging: v('pkg') || null,
-    packaging_other: isVisible('pkg-other') ? v('pkg-other') : null,
+    packaging_other: null,
     condition: v('cond'),
     pack_variant: v('pv'),
     suggested_cost: parseFloat(v('cost') || 0),
@@ -935,7 +1044,7 @@ function saveSingle(entry) {
 }
 
 document.addEventListener('click', function(e) {
-  if (!e.target.closest('.ac-wrap')) {
+  if (!e.target.closest('.ac-wrap') && !e.target.closest('.combo')) {
     document.querySelectorAll('.ac-drop').forEach(d => d.classList.remove('open'));
   }
 });
