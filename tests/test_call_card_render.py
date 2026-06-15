@@ -92,7 +92,8 @@ def test_call_list_and_sample_cards_render(tmp_db_conn):
     assert rows, "live clone has no customers"
 
     saw_cell = False
-    saw_promo = False
+    saw_orders = False
+    saw_position = False
     for row in rows[:15]:
         code = row['customer_code']
         if not code:
@@ -101,10 +102,13 @@ def test_call_list_and_sample_cards_render(tmp_db_conn):
         assert resp.status_code in (200, 404), f"/call/{code} -> {resp.status_code}"
         if resp.status_code == 200:
             html = resp.get_data(as_text=True)
-            assert 'pricePromoModal' in html, f"modal markup missing on /call/{code}"
+            assert 'detailModal' in html, f"modal markup missing on /call/{code}"
             if 'cc-px-list' in html:
                 saw_cell = True
-            if 'cc-freebie' in html or 'cc-promo' in html:
-                saw_promo = True
+            if 'tpl-orders-1' in html and 'tpl-peer-1' in html:
+                saw_orders = True
+            if 'ของเพื่อน' in html or 'ในกลุ่ม' in html:
+                saw_position = True
     assert saw_cell, "no sampled card rendered the new price-cell markup"
-    assert saw_promo, "no sampled card rendered the promo cell"
+    assert saw_orders, "no sampled card rendered the peer + orders modal templates"
+    assert saw_position, "no sampled card rendered the peer-position (ส่วนต่าง) text"

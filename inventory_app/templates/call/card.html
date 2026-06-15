@@ -74,6 +74,7 @@
 .cc-px-disc{font-size:11px;color:var(--cc-red);font-weight:600;margin-top:1px}
 .cc-px-net{font-size:11px;color:var(--cc-muted);margin-top:1px}
 .cc-freebie{display:inline-block;font-size:10px;font-weight:600;background:var(--cc-gold-bg);color:var(--cc-gold);border-radius:6px;padding:1px 6px;margin-left:4px}
+.cc-namelink{color:var(--cc-brand);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px}
 
 .cc-section-sep{border:0;border-top:1px solid var(--cc-line);margin:13px 0}
 .cc-field-row{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
@@ -341,8 +342,11 @@
             <tbody>
               {% for p in d.products %}
               <tr>
-                <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;vertical-align:middle">
-                  {{ p.product_name or '—' }}
+                <td class="cc-clickcell" style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;vertical-align:middle"
+                    data-bs-toggle="modal" data-bs-target="#detailModal"
+                    data-tpl="tpl-orders-{{ loop.index }}" data-title="ประวัติซื้อ — {{ p.product_name }}">
+                  <span class="cc-namelink">{{ p.product_name or '—' }}</span>
+                  <div class="cc-clickhint">ดูประวัติซื้อ ›</div>
                 </td>
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
                   {% if p.total_qty %}{{ '{:,.0f}'.format(p.total_qty) }} {{ p.unit }}{% else %}—{% endif %}
@@ -351,9 +355,9 @@
                   {{ (p.last_buy or '')[:7] or '—' }}
                 </td>
                 <td class="cc-clickcell" style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle"
-                    data-bs-toggle="modal" data-bs-target="#pricePromoModal"
-                    data-pm="pm-{{ loop.index }}" data-name="{{ p.product_name }}">
-                  <div class="cc-base">{% if p.base %}฿{{ '{:,.0f}'.format(p.base) }}{% else %}—{% endif %}</div>
+                    data-bs-toggle="modal" data-bs-target="#detailModal"
+                    data-tpl="tpl-promo-{{ loop.index }}" data-title="ราคาและโปรโมชัน — {{ p.product_name }}">
+                  <div class="cc-base">{% if p.base %}฿{{ '{:,.2f}'.format(p.base) }}{% else %}—{% endif %}</div>
                   {% if p.promo %}
                   <div class="cc-promo">{{ mac.promo_summary(p.promo) }}</div>
                   {% else %}
@@ -363,37 +367,46 @@
                 </td>
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
                   {% if p.customer_latest_list is not none %}
-                  <div class="cc-px-list">฿{{ '{:,.0f}'.format(p.customer_latest_list) }}</div>
+                  <div class="cc-px-list">฿{{ '{:,.2f}'.format(p.customer_latest_list) }}</div>
                   {% set dl = mac.disc_label(p.customer_latest_disc) | trim %}
                   {% if dl %}<div class="cc-px-disc">{{ dl }}</div>{% endif %}
-                  {% if p.customer_latest is not none %}<div class="cc-px-net">สุทธิ ฿{{ '{:,.0f}'.format(p.customer_latest) }}</div>{% endif %}
-                  {% elif p.customer_latest is not none %}฿{{ '{:,.0f}'.format(p.customer_latest) }}{% else %}—{% endif %}
+                  {% if p.customer_latest is not none %}<div class="cc-px-net">สุทธิ ฿{{ '{:,.2f}'.format(p.customer_latest) }}</div>{% endif %}
+                  {% elif p.customer_latest is not none %}฿{{ '{:,.2f}'.format(p.customer_latest) }}{% else %}—{% endif %}
                 </td>
-                <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
+                <td class="cc-clickcell" style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle"
+                    data-bs-toggle="modal" data-bs-target="#detailModal"
+                    data-tpl="tpl-peer-{{ loop.index }}" data-title="ราคาเพื่อน — {{ p.product_name }}">
                   {% if p.peer_repr_list is not none %}
-                  <div class="cc-px-list">฿{{ '{:,.0f}'.format(p.peer_repr_list) }}</div>
+                  <div class="cc-px-list">฿{{ '{:,.2f}'.format(p.peer_repr_list) }}</div>
                   {% set pdl = mac.disc_label(p.peer_repr_disc) | trim %}
                   {% if pdl %}<div class="cc-px-disc">{{ pdl }}</div>{% endif %}
-                  {% if p.peer_median is not none %}<div class="cc-px-net">สุทธิ ฿{{ '{:,.0f}'.format(p.peer_median) }}</div>{% endif %}
-                  {% elif p.peer_median %}฿{{ '{:,.0f}'.format(p.peer_median) }}{% else %}—{% endif %}
+                  {% if p.peer_median is not none %}<div class="cc-px-net">สุทธิ ฿{{ '{:,.2f}'.format(p.peer_median) }}</div>{% endif %}
+                  <div class="cc-clickhint">ดูที่มา ›</div>
+                  {% elif p.peer_median %}฿{{ '{:,.2f}'.format(p.peer_median) }}{% else %}—{% endif %}
                 </td>
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;vertical-align:middle">
-                  {% if p.flag == 'cheaper' %}
-                  <span class="cc-peer cheap">⭐ ถูกกว่า{% if p.peer_median is not none and p.customer_latest is not none %} ฿{{ '{:,.0f}'.format(p.peer_median - p.customer_latest) }}{% endif %}</span>
-                  {% elif p.flag == 'higher' %}
-                  <span class="cc-peer high">▲ แพงกว่า{% if p.peer_median is not none and p.customer_latest is not none %} ฿{{ '{:,.0f}'.format(p.customer_latest - p.peer_median) }}{% endif %}</span>
+                  {% if p.peer_cheaper_pct is none %}
+                  <span class="cc-peer same">—</span>
+                  {% elif p.peer_cheaper_pct == 100 %}
+                  <span class="cc-peer cheap">⭐ ถูกสุดในกลุ่ม</span>
+                  {% elif p.peer_cheaper_pct >= 50 %}
+                  <span class="cc-peer cheap">⭐ ถูกกว่า {{ p.peer_cheaper_pct }}% ของเพื่อน</span>
+                  {% elif p.peer_cheaper_pct == 0 %}
+                  <span class="cc-peer high">▲ แพงสุดในกลุ่ม</span>
                   {% else %}
-                  <span class="cc-peer same">= เท่ากัน</span>
+                  <span class="cc-peer high">▲ แพงกว่า {{ 100 - p.peer_cheaper_pct }}% ของเพื่อน</span>
                   {% endif %}
+                  {% if p.peer_min is not none %}<div class="cc-px-net">กลุ่ม ฿{{ '{:,.0f}'.format(p.peer_min) }}–{{ '{:,.0f}'.format(p.peer_max) }}</div>{% endif %}
                 </td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
-        {# hidden modal bodies — one per product row; loop.index matches the trigger's data-pm #}
+        {# hidden modal bodies — one set per product row; loop.index matches each trigger's data-tpl #}
         {% for p in d.products %}
-        <template id="pm-{{ loop.index }}">
+        {# (1) ราคาตั้ง + ราคาตามแพ็ค + โปรโมชัน #}
+        <template id="tpl-promo-{{ loop.index }}">
           <div class="mb-2">
             <div class="text-muted small">ราคาตั้ง ({{ p.unit or '—' }})</div>
             <div class="fs-5 fw-bold">{% if p.base %}฿{{ '{:,.2f}'.format(p.base) }}{% else %}—{% endif %}</div>
@@ -404,7 +417,7 @@
             <table class="table table-sm mb-0">
               <tbody>
                 {% for t in p.price_tiers %}
-                <tr><td>{{ t.qty_label }}</td><td class="text-end fw-bold">฿{{ '{:,.0f}'.format(t.price) }}</td><td class="text-muted small">{{ t.note or '' }}</td></tr>
+                <tr><td>{{ t.qty_label }}</td><td class="text-end fw-bold">฿{{ '{:,.2f}'.format(t.price) }}</td><td class="text-muted small">{{ t.note or '' }}</td></tr>
                 {% endfor %}
               </tbody>
             </table>
@@ -414,6 +427,52 @@
             <div class="text-muted small mb-1">โปรโมชัน</div>
             {{ mac.promo_detail(p.promo) }}
           </div>
+        </template>
+        {# (2) ที่มาของราคาเพื่อน #}
+        <template id="tpl-peer-{{ loop.index }}">
+          {% if p.peers %}
+          <div class="mb-2 small">ราคาเพื่อน median <b>฿{{ '{:,.2f}'.format(p.peer_median) }}</b>
+            จาก {{ p.peer_n }} ร้าน · ช่วง ฿{{ '{:,.0f}'.format(p.peer_min) }}–{{ '{:,.0f}'.format(p.peer_max) }}</div>
+          <table class="table table-sm mb-2">
+            <thead><tr><th>ร้าน</th><th class="text-end">ราคาที่ได้ (สุทธิ/หน่วย)</th></tr></thead>
+            <tbody>
+              {% for pe in p.peers %}
+              <tr{% if pe.is_repr %} class="table-warning"{% endif %}>
+                <td>{{ pe.name }}{% if pe.is_repr %} <span class="text-muted small">· ตัวแทนกลุ่ม</span>{% endif %}</td>
+                <td class="text-end">฿{{ '{:,.2f}'.format(pe.price) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% if p.customer_latest is not none %}
+          <div class="text-muted small">ลูกค้ารายนี้จ่ายสุทธิ ฿{{ '{:,.2f}'.format(p.customer_latest) }} —
+            {% if p.peer_cheaper_pct >= 50 %}ถูกกว่า {{ p.peer_cheaper_pct }}% ของกลุ่ม{% else %}แพงกว่า {{ 100 - p.peer_cheaper_pct }}% ของกลุ่ม{% endif %}</div>
+          {% endif %}
+          {% else %}
+          <div class="text-muted">ยังไม่มีร้านอื่นซื้อสินค้านี้ (ไม่มีราคาเทียบ)</div>
+          {% endif %}
+        </template>
+        {# (3) ประวัติออเดอร์ของลูกค้ารายนี้ #}
+        <template id="tpl-orders-{{ loop.index }}">
+          {% if p.orders %}
+          <table class="table table-sm mb-0">
+            <thead><tr><th>วันที่</th><th>บิล</th><th class="text-end">จำนวน</th><th class="text-end">ราคา/หน่วย</th><th class="text-end">ส่วนลด</th><th class="text-end">สุทธิ</th></tr></thead>
+            <tbody>
+              {% for o in p.orders %}
+              <tr>
+                <td class="small">{{ o.date_iso }}</td>
+                <td class="small">{{ o.doc_no }}</td>
+                <td class="text-end">{% if o.qty is not none %}{{ '{:,.0f}'.format(o.qty) }}{% endif %} {{ o.unit }}</td>
+                <td class="text-end">{% if o.unit_price is not none %}฿{{ '{:,.2f}'.format(o.unit_price) }}{% else %}—{% endif %}</td>
+                <td class="text-end">{{ mac.disc_label(o.discount) | trim or '—' }}</td>
+                <td class="text-end">{% if o.net is not none %}฿{{ '{:,.2f}'.format(o.net) }}{% else %}—{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% else %}
+          <div class="text-muted">ไม่พบประวัติออเดอร์</div>
+          {% endif %}
         </template>
         {% endfor %}
         {% else %}
@@ -460,16 +519,17 @@
 {% endblock %}
 
 {% block scripts %}
-{# Price/promo detail modal — clones the per-row <template> body on open
-   (server-rendered via macros, so no API round-trip / no promo logic in JS). #}
-<div class="modal fade" id="pricePromoModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
+{# Generic detail modal — clones the per-row <template> named by the trigger's
+   data-tpl (promo / peer / orders). Server-rendered via macros, so no API
+   round-trip and no rendering logic duplicated in JS. #}
+<div class="modal fade" id="detailModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="ppm-title">ราคาและโปรโมชัน</h5>
+        <h5 class="modal-title" id="dm-title">รายละเอียด</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="ปิด"></button>
       </div>
-      <div class="modal-body" id="ppm-body"></div>
+      <div class="modal-body" id="dm-body"></div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ปิด</button>
       </div>
@@ -478,17 +538,17 @@
 </div>
 <script>
 (function(){
-  var modal = document.getElementById('pricePromoModal');
+  var modal = document.getElementById('detailModal');
   if(!modal) return;
   modal.addEventListener('show.bs.modal', function(ev){
     var trigger = ev.relatedTarget;
     if(!trigger) return;
-    var name = trigger.getAttribute('data-name') || '';
-    var pmId = trigger.getAttribute('data-pm');
-    document.getElementById('ppm-title').textContent = (name ? name + ' — ' : '') + 'ราคาและโปรโมชัน';
-    var body = document.getElementById('ppm-body');
+    var title = trigger.getAttribute('data-title') || 'รายละเอียด';
+    var tplId = trigger.getAttribute('data-tpl');
+    document.getElementById('dm-title').textContent = title;
+    var body = document.getElementById('dm-body');
     body.innerHTML = '';
-    var tpl = pmId ? document.getElementById(pmId) : null;
+    var tpl = tplId ? document.getElementById(tplId) : null;
     if(tpl && tpl.content){ body.appendChild(tpl.content.cloneNode(true)); }
     else { body.innerHTML = '<div class="text-muted">ไม่มีข้อมูล</div>'; }
   });

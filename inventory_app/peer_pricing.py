@@ -125,6 +125,10 @@ def product_peer_prices(conn, customer_code: str) -> List[Dict[str, Any]]:
             flag = 'same'
             peer_repr_list = None
             peer_repr_disc = None
+            peer_min = None
+            peer_max = None
+            peer_cheaper_pct = None
+            peers = []
         else:
             peer_med = statistics.median([pm for _, pm in peer_meds])
             diff = cust_med - peer_med
@@ -143,6 +147,20 @@ def product_peer_prices(conn, customer_code: str) -> List[Dict[str, Any]]:
             peer_repr_list = rep_peer_line[1]
             peer_repr_disc = rep_peer_line[2]
 
+            # Position in the peer group: range + the % of peers the customer is
+            # cheaper than (their median > the customer's latest cash), plus the
+            # per-peer breakdown (sorted by price, representative flagged) for the
+            # "where does this price come from" modal.
+            peer_vals = sorted(pm for _, pm in peer_meds)
+            peer_min = peer_vals[0]
+            peer_max = peer_vals[-1]
+            n_more_exp = sum(1 for pm in peer_vals if pm > cust_latest)
+            peer_cheaper_pct = round(100 * n_more_exp / peer_n)
+            peers = sorted(
+                ({'code': c, 'price': pm, 'is_repr': c == rep_cust} for c, pm in peer_meds),
+                key=lambda d: d['price'],
+            )
+
         result.append({
             'product_id': pid,
             'unit': unit,
@@ -153,6 +171,10 @@ def product_peer_prices(conn, customer_code: str) -> List[Dict[str, Any]]:
             'peer_median': peer_med,
             'peer_repr_list': peer_repr_list,
             'peer_repr_disc': peer_repr_disc,
+            'peer_min': peer_min,
+            'peer_max': peer_max,
+            'peer_cheaper_pct': peer_cheaper_pct,
+            'peers': peers,
             'peer_n': peer_n,
             'diff': diff,
             'flag': flag,

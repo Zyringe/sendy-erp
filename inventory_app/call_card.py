@@ -503,6 +503,17 @@ def _assemble_products(conn, names, canon_code):
     if canon_code:
         peer_rows = pp.product_peer_prices(conn, canon_code)
         peer_map = {(r['product_id'], r['unit']): r for r in peer_rows}
+        # Enrich each per-peer breakdown with the peer's customer NAME (one query)
+        # so the "where does this price come from" modal can name the peers.
+        peer_codes = {pe['code'] for r in peer_rows for pe in (r.get('peers') or [])}
+        if peer_codes:
+            nph = ",".join("?" * len(peer_codes))
+            name_map = {nr['code']: nr['name'] for nr in conn.execute(
+                f"SELECT code, name FROM customers WHERE code IN ({nph})", list(peer_codes)
+            ).fetchall()}
+            for r in peer_rows:
+                for pe in (r.get('peers') or []):
+                    pe['name'] = name_map.get(pe['code']) or pe['code']
 
     # Batch-fetch unit_conversions for all product_ids (one query, no per-product churn)
     if product_rows:
@@ -548,10 +559,24 @@ def _assemble_products(conn, names, canon_code):
         tiers_map = {}
         for r in tier_rows:
             tiers_map.setdefault(r['product_id'], []).append(dict(r))
+
+        # Batch-fetch this customer's full order history for the card's products
+        # (the product-name click modal). One query, grouped by product_id.
+        order_rows = conn.execute(
+            f"SELECT product_id, date_iso, doc_no, qty, unit, unit_price, discount, net, vat_type "
+            f"FROM sales_transactions "
+            f"WHERE customer IN ({','.join('?' * len(names))}) AND product_id IN ({ph}) "
+            f"ORDER BY product_id, date_iso DESC, doc_no DESC",
+            list(names) + pid_list,
+        ).fetchall()
+        orders_map = {}
+        for r in order_rows:
+            orders_map.setdefault(r['product_id'], []).append(dict(r))
     else:
         uc_map = {}
         promo_map = {}
         tiers_map = {}
+        orders_map = {}
 
     products = []
     for row in product_rows:
@@ -618,6 +643,11 @@ def _assemble_products(conn, names, canon_code):
             'peer_median':     peer_med,
             'peer_repr_list':  peer.get('peer_repr_list'),
             'peer_repr_disc':  peer.get('peer_repr_disc'),
+            'peer_min':        peer.get('peer_min'),
+            'peer_max':        peer.get('peer_max'),
+            'peer_cheaper_pct': peer.get('peer_cheaper_pct'),
+            'peers':           peer.get('peers', []),
+            'orders':          orders_map.get(pid, []),
             'peer_n':          peer.get('peer_n', 0),
             'flag':            card_flag,
         })

@@ -468,6 +468,7 @@ def _assemble_db():
     c = sqlite3.connect(":memory:")
     c.row_factory = sqlite3.Row
     c.executescript("""
+        CREATE TABLE customers (code TEXT PRIMARY KEY, name TEXT);
         CREATE TABLE products (
             id INTEGER PRIMARY KEY, product_name TEXT, base_sell_price REAL, unit_type TEXT
         );
@@ -490,6 +491,7 @@ def _assemble_db():
             net REAL, vat_type INTEGER, discount TEXT, doc_no TEXT, date_iso TEXT
         );
     """)
+    c.execute("INSERT INTO customers VALUES ('C001','ร้าน A'),('C002','ร้าน B')")
     c.execute("INSERT INTO products VALUES (1,'ดอกสว่าน',100,'ตัว')")
     c.execute(
         "INSERT INTO promotions (id,product_id,promo_name,promo_type,is_active,created_at,"
@@ -539,3 +541,21 @@ def test_assemble_products_no_promo_is_none_tiers_independent():
     assert p['promo'] is None
     # price tiers are independent of promo
     assert p['price_tiers'][0]['qty_label'] == '1 โหล'
+
+
+def test_assemble_products_peer_position_names_and_orders():
+    """v2: each product carries peer position (min/max/cheaper_pct), a per-peer
+    breakdown enriched with customer NAMES, and this customer's order history."""
+    c = _assemble_db()
+    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001')[0]
+    # Peer position: one peer (C002 @ 95); customer @ 90 → cheaper than 100%
+    assert p['peer_min'] == 95 and p['peer_max'] == 95
+    assert p['peer_cheaper_pct'] == 100
+    # Per-peer breakdown carries the resolved customer NAME (not just the code)
+    assert len(p['peers']) == 1
+    assert p['peers'][0]['name'] == 'ร้าน B'
+    assert p['peers'][0]['price'] == 95
+    # Order history = this customer's lines for this product
+    assert len(p['orders']) == 1
+    assert p['orders'][0]['discount'] == '10%'
+    assert p['orders'][0]['unit_price'] == 100

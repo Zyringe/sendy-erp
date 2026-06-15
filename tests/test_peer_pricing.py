@@ -213,3 +213,35 @@ def test_new_fields_present_and_none_without_peers():
         assert k in dict(row), f"missing key: {k}"
     assert row['peer_repr_list'] is None
     assert row['peer_repr_disc'] is None
+
+
+# ── Peer position-in-group + per-peer breakdown (call-card v2) ────────────────
+
+def test_peer_position_range_and_breakdown():
+    """peer_min/max span the peer prices; peer_cheaper_pct = % of peers the
+    customer is cheaper than; peers = the per-peer list (sorted, repr flagged)."""
+    c = _db_disc([
+        (1, 'ตัว', 'T',  1, 100, 92,  0, '2025-01-01', '8%'),   # target cash 92
+        (1, 'ตัว', 'P1', 1, 100, 90,  0, '2025-01-01', '10%'),  # peer 90
+        (1, 'ตัว', 'P2', 1, 100, 95,  0, '2025-01-01', '5%'),   # peer 95 (median = repr)
+        (1, 'ตัว', 'P3', 1, 100, 100, 0, '2025-01-01', ''),     # peer 100
+    ])
+    row = {r['product_id']: r for r in pp.product_peer_prices(c, customer_code='T')}[1]
+    assert row['peer_min'] == 90
+    assert row['peer_max'] == 100
+    # 92 is cheaper than P2(95) and P3(100) → 2 of 3 → 67%
+    assert row['peer_cheaper_pct'] == 67
+    peers = row['peers']
+    assert [p['code'] for p in peers] == ['P1', 'P2', 'P3']   # sorted by price
+    assert [p['price'] for p in peers] == [90, 95, 100]
+    assert sum(1 for p in peers if p.get('is_repr')) == 1
+    assert next(p for p in peers if p['is_repr'])['code'] == 'P2'
+
+
+def test_peer_position_none_without_peers():
+    c = _db_disc([(1, 'ตัว', 'SOLO', 2, 80, 160, 0, '2025-01-01', '')])
+    row = pp.product_peer_prices(c, customer_code='SOLO')[0]
+    assert row['peer_min'] is None
+    assert row['peer_max'] is None
+    assert row['peer_cheaper_pct'] is None
+    assert row['peers'] == []
