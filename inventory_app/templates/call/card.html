@@ -347,7 +347,7 @@
                   {% endif %}
                 </td>
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
-                  {% if p.customer_price %}฿{{ '{:,.0f}'.format(p.customer_price) }}{% else %}—{% endif %}
+                  {% if p.customer_median is not none %}฿{{ '{:,.0f}'.format(p.customer_median) }}{% else %}—{% endif %}
                 </td>
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
                   {% if p.peer_median %}฿{{ '{:,.0f}'.format(p.peer_median) }}{% else %}—{% endif %}
