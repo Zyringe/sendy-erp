@@ -525,6 +525,20 @@ def get_card(conn, customer_code):
         peer_key = (pid, unit)
         peer = peer_map.get(peer_key, {})
 
+        # The card's "ราคาล่าสุดที่ลูกค้าได้" column shows the customer's MOST-RECENT
+        # price, so the ส่วนต่าง flag must compare THAT (not the median) vs the peer
+        # median — otherwise the shown price and the cheaper/higher flag would disagree.
+        cust_latest = peer.get('customer_latest')
+        peer_med = peer.get('peer_median')
+        if cust_latest is None or peer_med is None:
+            card_flag = 'same'
+        elif cust_latest < peer_med:
+            card_flag = 'cheaper'
+        elif cust_latest > peer_med:
+            card_flag = 'higher'
+        else:
+            card_flag = 'same'
+
         products.append({
             'product_id':      pid,
             'product_name':    row['product_name'],
@@ -537,9 +551,10 @@ def get_card(conn, customer_code):
             'promo_label':     promo_label,
             'customer_price':  round(promo_price, 2),
             'customer_median': peer.get('customer_median'),
-            'peer_median':     peer.get('peer_median'),
+            'customer_latest': cust_latest,
+            'peer_median':     peer_med,
             'peer_n':          peer.get('peer_n', 0),
-            'flag':            peer.get('flag', 'same'),
+            'flag':            card_flag,
         })
 
     # ── 5. Win-back: products with ≥3 prior buys whose last buy > median interval

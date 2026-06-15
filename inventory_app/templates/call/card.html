@@ -311,7 +311,7 @@
 
       {# ── ซื้อประจำ ── #}
       <div class="cc-panel">
-        <h2>🛒 ซื้อประจำ <span class="tag">ราคาตั้ง + โปร เทียบ ราคาที่ลูกค้าได้ + ราคาเพื่อน</span></h2>
+        <h2>🛒 ซื้อประจำ <span class="tag">ราคาตั้ง + โปร เทียบ ราคาล่าสุดที่ลูกค้าได้ + ราคาเพื่อน</span></h2>
         {% if d.products %}
         <div style="overflow-x:auto">
           <table style="width:100%;border-collapse:collapse">
@@ -321,7 +321,7 @@
                 <th style="text-align:right;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">ซื้อรวม</th>
                 <th style="text-align:left;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">ล่าสุด</th>
                 <th style="text-align:right;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">ราคาตั้ง / โปร</th>
-                <th style="text-align:right;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">ลูกค้าได้</th>
+                <th style="text-align:right;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef">ราคาล่าสุด<br>ที่ลูกค้าได้</th>
                 <th style="text-align:right;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">เพื่อน</th>
                 <th style="text-align:left;font-size:12px;font-weight:600;color:#6b7787;padding:8px 10px;border-bottom:1px solid #e3e8ef;white-space:nowrap">ส่วนต่าง</th>
               </tr>
@@ -347,16 +347,16 @@
                   {% endif %}
                 </td>
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
-                  {% if p.customer_median is not none %}฿{{ '{:,.0f}'.format(p.customer_median) }}{% else %}—{% endif %}
+                  {% if p.customer_latest is not none %}฿{{ '{:,.0f}'.format(p.customer_latest) }}{% else %}—{% endif %}
                 </td>
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle">
                   {% if p.peer_median %}฿{{ '{:,.0f}'.format(p.peer_median) }}{% else %}—{% endif %}
                 </td>
                 <td style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;vertical-align:middle">
                   {% if p.flag == 'cheaper' %}
-                  <span class="cc-peer cheap">⭐ ถูกกว่า{% if p.peer_median and p.customer_median %} ฿{{ '{:,.0f}'.format(p.peer_median - p.customer_median) }}{% endif %}</span>
+                  <span class="cc-peer cheap">⭐ ถูกกว่า{% if p.peer_median is not none and p.customer_latest is not none %} ฿{{ '{:,.0f}'.format(p.peer_median - p.customer_latest) }}{% endif %}</span>
                   {% elif p.flag == 'higher' %}
-                  <span class="cc-peer high">▲ แพงกว่า{% if p.peer_median and p.customer_median %} ฿{{ '{:,.0f}'.format(p.customer_median - p.peer_median) }}{% endif %}</span>
+                  <span class="cc-peer high">▲ แพงกว่า{% if p.peer_median is not none and p.customer_latest is not none %} ฿{{ '{:,.0f}'.format(p.customer_latest - p.peer_median) }}{% endif %}</span>
                   {% else %}
                   <span class="cc-peer same">= เท่ากัน</span>
                   {% endif %}

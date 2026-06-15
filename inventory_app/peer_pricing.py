@@ -36,14 +36,15 @@ def product_peer_prices(conn, customer_code: str) -> List[Dict[str, Any]]:
         List of dicts, one per (product_id, unit) pair the customer bought, each with:
           product_id     - int
           unit           - str
-          customer_median - float (rounded int)
+          customer_median - float (rounded int) — median cash across all the customer's buys
+          customer_latest - float (rounded int) — cash from the customer's most-recent buy
           peer_median    - float or None
           peer_n         - int (distinct peer customers)
           diff           - float or None  (customer_median - peer_median)
           flag           - 'cheaper' | 'same' | 'higher'
     """
     rows = conn.execute(
-        "SELECT product_id, unit, customer_code, qty, net, vat_type "
+        "SELECT product_id, unit, customer_code, qty, net, vat_type, date_iso "
         "FROM sales_transactions "
         "WHERE product_id IS NOT NULL AND qty > 0 AND net > 0",
     ).fetchall()
@@ -51,6 +52,9 @@ def product_peer_prices(conn, customer_code: str) -> List[Dict[str, Any]]:
     # Build per-(product_id, unit) per-customer cash lists
     # Structure: data[(pid, unit)][cust_code] = [cash, ...]
     data = defaultdict(lambda: defaultdict(list))
+    # For the TARGET customer only: (date_iso, cash) per (pid, unit), used to derive
+    # the most-recent price the customer actually paid (customer_latest).
+    target_dated = defaultdict(list)
 
     for row in rows:
         pid = row[0]
@@ -61,12 +65,15 @@ def product_peer_prices(conn, customer_code: str) -> List[Dict[str, Any]]:
         qty = float(row[3])
         net = float(row[4])
         vat_type = int(row[5]) if row[5] is not None else 0
+        date_iso = row[6]
 
         cash = net / qty
         if vat_type == 2:
             cash = cash * 1.07
         cash = round(cash)  # round to int before counting (quoting rule)
         data[(pid, unit)][cust].append(cash)
+        if cust == customer_code:
+            target_dated[(pid, unit)].append((date_iso, cash))
 
     result = []
     for (pid, unit), cust_map in data.items():
@@ -76,6 +83,17 @@ def product_peer_prices(conn, customer_code: str) -> List[Dict[str, Any]]:
         # Customer's own cash list -> median
         cust_vals = cust_map[customer_code]
         cust_med = statistics.median(cust_vals)
+
+        # Most-recent price the customer paid for this (product, unit). If several
+        # rows share the latest date, take their median. Falls back to the overall
+        # median when no usable date is present.
+        dated = target_dated.get((pid, unit), [])
+        dates = [d for d, c in dated if d]
+        if dates:
+            latest_date = max(dates)
+            cust_latest = statistics.median([c for d, c in dated if d == latest_date])
+        else:
+            cust_latest = cust_med
 
         # Peer set: all OTHER customer_codes
         peer_meds = []
@@ -104,6 +122,7 @@ def product_peer_prices(conn, customer_code: str) -> List[Dict[str, Any]]:
             'product_id': pid,
             'unit': unit,
             'customer_median': cust_med,
+            'customer_latest': cust_latest,
             'peer_median': peer_med,
             'peer_n': peer_n,
             'diff': diff,

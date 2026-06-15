@@ -62,8 +62,31 @@ def test_return_keys():
     res = pp.product_peer_prices(_db(), customer_code='A')
     assert len(res) == 1
     row = res[0]
-    for k in ('product_id', 'unit', 'customer_median', 'peer_median', 'peer_n', 'diff', 'flag'):
+    for k in ('product_id', 'unit', 'customer_median', 'customer_latest', 'peer_median', 'peer_n', 'diff', 'flag'):
         assert k in dict(row), f"missing key: {k}"
+
+
+def test_customer_latest_is_most_recent_not_median():
+    """customer_latest = cash from the most-recent-dated buy, distinct from the median."""
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute(
+        "CREATE TABLE sales_transactions("
+        "product_id INT, unit TEXT, customer_code TEXT, "
+        "qty REAL, unit_price REAL, net REAL, vat_type INT, date_iso TEXT)"
+    )
+    # X buys product 1: 20, 20 (older), then 16 on the latest date (2025-05).
+    #   median([20,20,16]) = 20   but   latest = 16
+    c.executemany("INSERT INTO sales_transactions VALUES (?,?,?,?,?,?,?,?)", [
+        (1, 'ตัว', 'X', 1, 20, 20, 0, '2024-01-01'),
+        (1, 'ตัว', 'X', 1, 20, 20, 0, '2024-06-01'),
+        (1, 'ตัว', 'X', 1, 16, 16, 0, '2025-05-01'),
+        (1, 'ตัว', 'Y', 1, 25, 25, 0, '2024-01-01'),  # a peer so peer_median is defined
+    ])
+    c.commit()
+    row = {r['product_id']: r for r in pp.product_peer_prices(c, customer_code='X')}[1]
+    assert row['customer_median'] == 20
+    assert row['customer_latest'] == 16
 
 
 def test_no_peers_flag_same():
