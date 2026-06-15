@@ -3944,31 +3944,135 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='', write
 # ── Customer Master (BSN import) ───────────────────────────────────────────────
 
 def import_customers_from_bsn(customers):
+    """Import BSN customer master rows with contact-protection and auto-sanitization.
+
+    Returns (inserted, updated, protected):
+      - inserted: new rows created
+      - updated:  existing un-normalized rows refreshed (contact fields may be sanitized)
+      - protected: existing rows with contact_normalized_at IS NOT NULL — only
+                   operational fields (salesperson, zone, customer_type, credit_days,
+                   tax_id, imported_at) are updated; all contact fields are preserved.
+    """
+    from customer_contact_normalize import normalize_customer
+
     conn = get_connection()
-    inserted = updated = 0
+    inserted = updated = protected = 0
+
     for c in customers:
-        existing = conn.execute("SELECT code FROM customers WHERE code=?", (c['code'],)).fetchone()
-        if existing:
+        existing = conn.execute(
+            "SELECT code, contact_normalized_at FROM customers WHERE code=?",
+            (c['code'],)
+        ).fetchone()
+
+        if existing and existing['contact_normalized_at'] is not None:
+            # ── PROTECTED branch: row has been cleaned — touch only operational cols ──
             conn.execute("""
-                UPDATE customers SET name=?, salesperson=?, zone=?, customer_type=?,
-                    address=?, phone=?, tax_id=?, credit_days=?, contact=?,
-                    imported_at=datetime('now','localtime')
-                WHERE code=?
-            """, (c['name'], c['salesperson'], c['zone'], c['customer_type'],
-                  c['address'], c['phone'], c['tax_id'], c['credit_days'],
-                  c['contact'], c['code']))
-            updated += 1
+                UPDATE customers
+                   SET salesperson=?, zone=?, customer_type=?,
+                       credit_days=?, tax_id=?,
+                       imported_at=datetime('now','localtime')
+                 WHERE code=?
+            """, (c['salesperson'], c['zone'], c['customer_type'],
+                  c['credit_days'], c['tax_id'], c['code']))
+            protected += 1
+
         else:
-            conn.execute("""
-                INSERT INTO customers(code, name, salesperson, zone, customer_type,
-                    address, phone, tax_id, credit_days, contact)
-                VALUES (?,?,?,?,?,?,?,?,?,?)
-            """, (c['code'], c['name'], c['salesperson'], c['zone'], c['customer_type'],
-                  c['address'], c['phone'], c['tax_id'], c['credit_days'], c['contact']))
-            inserted += 1
+            # ── UN-NORMALIZED / NEW branch: sanitize via normalizer ──
+            res = normalize_customer({
+                'name':    c['name'],
+                'phone':   c.get('phone') or '',
+                'contact': c.get('contact') or '',
+                'address': c.get('address') or '',
+            })
+
+            prop = res['proposed']
+            imp_phone   = c.get('phone') or ''
+            imp_fax     = ''
+            imp_contact = c.get('contact') or ''
+
+            # Determine whether the normalizer found a meaningful, lossless change
+            auto_changed = (
+                res['confidence'] == 'auto'
+                and (
+                    prop['phone'] != imp_phone
+                    or prop['fax']   # non-empty fax extracted
+                    or prop['contact'] != imp_contact
+                )
+            )
+
+            if auto_changed:
+                out_phone   = prop['phone'] or None
+                out_fax     = prop['fax'] or None
+                out_contact = prop['contact'] or None
+                orig_json   = json.dumps({
+                    'name':    c['name'],
+                    'phone':   imp_phone,
+                    'contact': imp_contact,
+                    'address': c.get('address') or '',
+                }, ensure_ascii=False)
+                normalized_at  = "datetime('now','localtime')"
+                normalized_by  = 'bsn_import'
+            else:
+                out_phone   = imp_phone or None
+                out_fax     = None
+                out_contact = imp_contact or None
+                orig_json   = None
+                normalized_at  = None
+                normalized_by  = None
+
+            if existing:
+                if auto_changed:
+                    conn.execute("""
+                        UPDATE customers
+                           SET name=?, salesperson=?, zone=?, customer_type=?,
+                               address=?, phone=?, fax=?, tax_id=?, credit_days=?,
+                               contact=?, contact_orig_json=?,
+                               contact_normalized_at=datetime('now','localtime'),
+                               contact_normalized_by=?,
+                               imported_at=datetime('now','localtime')
+                         WHERE code=?
+                    """, (c['name'], c['salesperson'], c['zone'], c['customer_type'],
+                          c.get('address'), out_phone, out_fax,
+                          c['tax_id'], c['credit_days'],
+                          out_contact, orig_json, normalized_by, c['code']))
+                else:
+                    conn.execute("""
+                        UPDATE customers
+                           SET name=?, salesperson=?, zone=?, customer_type=?,
+                               address=?, phone=?, tax_id=?, credit_days=?,
+                               contact=?, imported_at=datetime('now','localtime')
+                         WHERE code=?
+                    """, (c['name'], c['salesperson'], c['zone'], c['customer_type'],
+                          c.get('address'), out_phone, c['tax_id'], c['credit_days'],
+                          out_contact, c['code']))
+                updated += 1
+            else:
+                if auto_changed:
+                    conn.execute("""
+                        INSERT INTO customers
+                            (code, name, salesperson, zone, customer_type,
+                             address, phone, fax, tax_id, credit_days, contact,
+                             contact_orig_json, contact_normalized_at,
+                             contact_normalized_by)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'),?)
+                    """, (c['code'], c['name'], c['salesperson'], c['zone'],
+                          c['customer_type'], c.get('address'),
+                          out_phone, out_fax, c['tax_id'], c['credit_days'],
+                          out_contact, orig_json, normalized_by))
+                else:
+                    conn.execute("""
+                        INSERT INTO customers
+                            (code, name, salesperson, zone, customer_type,
+                             address, phone, tax_id, credit_days, contact)
+                        VALUES (?,?,?,?,?,?,?,?,?,?)
+                    """, (c['code'], c['name'], c['salesperson'], c['zone'],
+                          c['customer_type'], c.get('address'),
+                          out_phone, c['tax_id'], c['credit_days'], out_contact))
+                inserted += 1
+
     conn.commit()
     conn.close()
-    return inserted, updated
+    return inserted, updated, protected
 
 
 def get_customers_for_map(zone=None, customer_type=None, geocoded_only=False):

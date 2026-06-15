@@ -173,6 +173,10 @@
        class="sidebar-link {% if request.endpoint and request.endpoint.startswith('call.') %}active{% endif %}">
       <i class="bi bi-telephone-outbound"></i> โทรหาลูกค้า
     </a>
+    <a href="{{ url_for('customer_review.normalize_list') }}"
+       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('customer_review.') %}active{% endif %}">
+      <i class="bi bi-person-check"></i> ตรวจข้อมูลลูกค้า
+    </a>
 
     <div class="sidebar-section">การเงิน (Express)</div>
     <a href="{{ url_for('commission_dashboard') }}"

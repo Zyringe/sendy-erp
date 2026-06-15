@@ -116,7 +116,9 @@
         {% if m.address %}· {{ m.address[:60] }}{% endif %}
       </div>
       <div class="who">
+        {% if m.get('nickname') %}({{ m.get('nickname') }}) &nbsp;·&nbsp; {% endif %}
         {% if m.contact %}ผู้ติดต่อ: {{ m.contact }} &nbsp;·&nbsp; {% endif %}
+        {% if m.get('fax') %}แฟกซ์: {{ m.get('fax') }} &nbsp;·&nbsp; {% endif %}
         {% if m.salesperson %}เซลล์: {{ m.salesperson }}{% endif %}
       </div>
     </div>
@@ -195,8 +197,16 @@
         <form method="post" action="{{ url_for('call.call_contact', customer_code=customer_code) }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="cc-field-row">
+            <label>ชื่อเล่น</label>
+            <input type="text" name="nickname" value="{{ m.get('nickname') or '' }}" placeholder="ชื่อเล่น / ชื่อเรียก">
+          </div>
+          <div class="cc-field-row">
             <label>เบอร์โทร</label>
             <input type="text" name="phone" value="{{ m.phone or '' }}" placeholder="0x-xxx-xxxx">
+          </div>
+          <div class="cc-field-row">
+            <label>แฟกซ์</label>
+            <input type="text" name="fax" value="{{ m.get('fax') or '' }}" placeholder="เบอร์แฟกซ์">
           </div>
           <div class="cc-field-row">
             <label>ผู้ติดต่อ</label>

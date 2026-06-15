@@ -421,9 +421,16 @@ def get_card(conn, customer_code):
         master_row = conn.execute(
             "SELECT * FROM customers WHERE code=?", (canon_code,)
         ).fetchone()
-        master = dict(master_row) if master_row else {'code': canon_code, 'name': primary_name}
+        if master_row:
+            master = dict(master_row)
+            # Ensure fax and nickname keys are always present (mig 104 added them;
+            # older rows may not have them in dict() if sqlite3.Row doesn't include them).
+            master.setdefault('fax', None)
+            master.setdefault('nickname', None)
+        else:
+            master = {'code': canon_code, 'name': primary_name, 'fax': None, 'nickname': None}
     else:
-        master = {'code': customer_code, 'name': primary_name}
+        master = {'code': customer_code, 'name': primary_name, 'fax': None, 'nickname': None}
 
     # ── 3. Sales summary (via models — uses customer NAME) ───────────────────
     summary = models.get_customer_summary(primary_name)

@@ -58,6 +58,7 @@ from blueprints.cashbook import bp_cashbook
 from blueprints.marketplace import bp_marketplace
 from blueprints.review import bp_review
 from blueprints.call import bp_call
+from blueprints.customer_review import bp_customer_review
 import cashflow as cf_mod
 import revenue as rev_mod
 import ar_followup as arf_mod
@@ -106,6 +107,7 @@ app.register_blueprint(bp_cashbook)
 app.register_blueprint(bp_marketplace)
 app.register_blueprint(bp_review)
 app.register_blueprint(bp_call)
+app.register_blueprint(bp_customer_review)
 
 with app.app_context():
     # SKIP_DB_INIT=1 lets the app boot without touching the database. Used
@@ -208,6 +210,8 @@ _STAFF_POST_OK = frozenset([
     'call.call_crm',
     'call.call_contact',
     'call.call_log_delete',
+    'customer_review.normalize_confirm',
+    'customer_review.normalize_skip',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'customer_reassign', 'customer_bulk_reassign',
@@ -422,6 +426,11 @@ _ENDPOINT_MODULE = {
     'call.call_list': 'accounting',
     'call.call_card': 'accounting',
     'call.call_mark_called': 'accounting',
+    # customer contact review
+    'customer_review.normalize_list':    'accounting',
+    'customer_review.normalize_detail':  'accounting',
+    'customer_review.normalize_confirm': 'accounting',
+    'customer_review.normalize_skip':    'accounting',
 }
 
 
@@ -2978,8 +2987,12 @@ def customer_import_bsn():
     if session.get('role') != 'admin':
         abort(403)
     customers = _parse_bsn_customers()
-    inserted, updated = models.import_customers_from_bsn(customers)
-    flash(f'นำเข้าสำเร็จ: เพิ่มใหม่ {inserted} รายการ, อัปเดต {updated} รายการ', 'success')
+    inserted, updated, protected = models.import_customers_from_bsn(customers)
+    flash(
+        f'นำเข้าสำเร็จ: เพิ่มใหม่ {inserted} รายการ, อัปเดต {updated} รายการ'
+        + (f', ป้องกัน {protected} รายการ (ข้อมูลติดต่อถูกทำความสะอาดแล้ว)' if protected else ''),
+        'success'
+    )
     return redirect(url_for('customer_map'))
 
 
