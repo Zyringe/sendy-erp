@@ -92,6 +92,25 @@ def _landline_area(token):
     return None
 
 
+def _modernize_digits(d):
+    """The 2006 mobile renumbering inserted '8' after the leading 0: 9-digit 0[1/6/8/9]-XXXXXXX
+    old mobiles -> 10-digit 08X-XXXXXXX. Landline areas (02, 03X, 04X, 05X, 07X) are NOT touched.
+    Returns the modernized digit string, or None if `d` isn't an old mobile."""
+    if len(d) == 9 and d.startswith("0") and d[1] in "1689":
+        return "0" + "8" + d[1:]
+    return None
+
+
+def _modernize_mobile(num):
+    """Return (display_number, was_old). Converts an old 9-digit mobile to the modern 08X format
+    (kept hyphenated 0XX-XXXXXXX); leaves anything else untouched."""
+    d = re.sub(r"\D", "", num or "")
+    md = _modernize_digits(d)
+    if md:
+        return md[:3] + "-" + md[3:], True
+    return num, False
+
+
 # A comma-chunk that is purely a number (digits, hyphens, and parens — e.g. "(034)234330").
 _PURE_NUM_RE = re.compile(r"^\(?\d[\d\-()]*\d$")
 
@@ -231,7 +250,7 @@ def parse_phone_block(raw):
     """Parse one phone/contact field into typed buckets. See module docstring / contract."""
     out = {
         "phones": [], "faxes": [], "lines": [], "people": [],
-        "notes": [], "undialable": [], "inferred": [], "clean": False,
+        "notes": [], "undialable": [], "leftovers": [], "inferred": [], "clean": False,
     }
     if not raw or not str(raw).strip():
         return out
@@ -250,7 +269,7 @@ def parse_phone_block(raw):
     out["clean"] = (
         (bool(out["phones"]) or bool(out["faxes"]))
         and not out["people"] and not out["lines"]
-        and not out["notes"] and not out["undialable"]
+        and not out["notes"] and not out["undialable"] and not out["leftovers"]
     )
     return out
 
@@ -444,8 +463,10 @@ def _emit_subtokens(text, out, fax=False):
             i += 1
             continue
 
-        # leftover (digit-bearing but not a clean number) -> note, preserve, never drop
-        out["notes"].append(p)
+        # digit-bearing but not a clean number (e.g. "090-1402002(เจ)", "บ/ช088-9294811",
+        # ";035-620243") -> leftover. Preserved, never dropped, and (unlike a true schedule
+        # note) NOT auto-filed — it likely hides a real phone, so it forces review.
+        out["leftovers"].append(p)
         i += 1
 
 
@@ -566,8 +587,14 @@ def normalize_customer(row):
 
     issues = []
 
-    # ----- proposed.phone : untagged dialable phones from the PHONE field, verbatim -----
-    proposed_phone = _join_nonempty(pb["phones"])
+    # ----- proposed.phone : untagged dialable phones; old 01/06/08/09 mobiles modernized -----
+    phones_out = []
+    legacy_mobile = False
+    for ph in pb["phones"]:
+        mod, was_old = _modernize_mobile(ph)
+        phones_out.append(mod)
+        legacy_mobile = legacy_mobile or was_old
+    proposed_phone = _join_nonempty(phones_out)
 
     # ----- proposed.fax : faxes from phone + faxes from contact -----
     proposed_fax = _join_nonempty(pb["faxes"] + cb["faxes"])
@@ -598,8 +625,10 @@ def normalize_customer(row):
         issues.append("note_in_contact")
     if cb["undialable"]:
         issues.append("undialable_contact")
+    if cb["leftovers"]:
+        issues.append("leftover_in_contact")  # already inside contact_self; just flag
 
-    # people/lines/notes/undialable pulled out of the PHONE field
+    # people/lines/undialable/leftovers pulled out of the PHONE field (notes -> note field)
     if pb["people"]:
         issues.append("person_in_phone")
         contact_bits.extend(pb["people"])
@@ -607,11 +636,13 @@ def normalize_customer(row):
         issues.append("line_in_phone")
         contact_bits.extend("Line:" + x for x in pb["lines"])
     if pb["notes"]:
-        issues.append("note_in_phone")
-        contact_bits.extend(pb["notes"])
+        issues.append("note_in_phone")  # notes go to proposed.note, not contact
     if pb["undialable"]:
         issues.append("undialable_phone")
         contact_bits.extend(pb["undialable"])
+    if pb["leftovers"]:
+        issues.append("leftover_in_phone")  # digit-bearing junk that may hide a real phone
+        contact_bits.extend(pb["leftovers"])
 
     # phone pulled out of the NAME field
     if nm["phone"]:
@@ -626,8 +657,14 @@ def normalize_customer(row):
 
     proposed_contact = " ".join(b for b in contact_bits if b).strip()
 
+    # ----- note (billing/delivery schedules etc.) — its own field, kept out of contact -----
+    proposed_note = " ".join(n for n in (pb["notes"] + cb["notes"]) if n).strip()
+
     # ----- nickname (advisory): first clear honorific token -----
     nickname = _first_nickname(pb["people"] + cb["people"])
+
+    if legacy_mobile:
+        issues.append("legacy_mobile")
 
     proposed = {
         "name": nm["cleaned_name"],
@@ -635,27 +672,29 @@ def normalize_customer(row):
         "phone": proposed_phone,
         "fax": proposed_fax,
         "contact": proposed_contact,
+        "note": proposed_note,
         "address": ad["address"],
         "region": ad["region"],
     }
 
     # ----- confidence -----
-    # A "plain name" in the contact field (people entries that carry no digits) is auto-safe;
-    # anything number-bearing or a line/note/undialable/phone makes the contact ambiguous.
+    # Auto-safe = deterministic, lossless transforms only: dialable phones (incl. modern-format),
+    # fax split out, inferred area-code continuations, and notes filed to the note field. A
+    # human is needed for people (attribution), contact-borne phones/lines, undialable numbers,
+    # name changes, or old-format mobiles (which may be dead).
     cb_people_have_number = any(re.search(r"\d", p) for p in cb["people"])
-    contact_clean = (
-        not cb_people_have_number and not cb["lines"] and not cb["notes"]
-        and not cb["undialable"] and not cb["phones"]
+    pb_auto = (not pb["people"] and not pb["lines"]
+               and not pb["undialable"] and not pb["leftovers"])
+    cb_auto = (
+        not cb_people_have_number and not cb["lines"]
+        and not cb["undialable"] and not cb["phones"] and not cb["leftovers"]
     )
-    # An inferred area code (continuation number like '02-2114322,2114125') is a high-confidence
-    # but still INFERRED change — surface it and keep the row in review so Put eyeballs it.
     inferred_any = bool(pb["inferred"]) or bool(cb["inferred"])
     if inferred_any:
         issues.append("inferred_area_code")
 
-    safe_change = (proposed != _proposed_mirror_of_original(original, ad))
     confidence = "auto" if (
-        pb["clean"] and contact_clean and not nm["changed"] and not inferred_any
+        pb_auto and cb_auto and not nm["changed"] and not legacy_mobile
     ) else "review"
 
     # dedupe issues preserving order
@@ -678,31 +717,16 @@ def normalize_customer(row):
     return result
 
 
-def _proposed_mirror_of_original(original, ad):
-    """A 'no-op' proposal: what proposed would look like if nothing changed. Used only to decide
-    whether there's an actual safe change. Not part of the contract."""
-    return {
-        "name": original["name"],
-        "nickname": None,
-        "phone": original["phone"],
-        "fax": "",
-        "contact": original["contact"],
-        "address": ad["address"],
-        "region": ad["region"],
-    }
-
-
 def _contact_residual(contact_raw, cb):
-    """Return the contact field's OWN text, minus any fax that was split into proposed.fax.
-
-    Lossless and dup-safe: if no fax was extracted, the contact is unchanged → return it
-    verbatim (only outer-trimmed). If a fax was extracted, strip just the fax marker+number
-    and keep everything else (names, people, phones, notes) exactly as written.
-    """
-    raw = (contact_raw or "").strip()
-    if not cb["faxes"]:
-        return raw
-    return _strip_fax_text(contact_raw, cb["faxes"])
+    """Return the contact field's OWN text, minus any fax (split into proposed.fax) and any note
+    (filed into proposed.note). Keeps names/people/phones exactly as written. Lossless + dup-safe:
+    targets only the fax/note spans, so a number that is also a real phone is preserved."""
+    s = _strip_fax_text(contact_raw, cb["faxes"]) if cb["faxes"] else (contact_raw or "").strip()
+    for note in cb["notes"]:
+        s = s.replace(note, " ", 1)
+    if cb["notes"]:
+        s = re.sub(r"\s{2,}", " ", s).strip(" ,")
+    return s.strip()
 
 
 def _strip_fax_text(contact_raw, faxes):
@@ -783,8 +807,10 @@ def _digit_runs(text, min_len=7):
 
 
 def lossless_ok(result):
-    """Every digit-run of length >= 7 in the ORIGINAL (name+phone+contact) must appear somewhere
-    in the proposal (phone+fax+contact+nickname+name)."""
+    """Every digit-run of length >= 7 in the ORIGINAL (name+phone+contact) must survive in the
+    proposal (phone+fax+contact+note+nickname+name). Tolerant of two intentional transforms:
+    an inferred area-code prepend (original is a substring of the enriched number) and an old
+    mobile modernized to 08X (the '8'-inserted form appears instead)."""
     orig = result["original"]
     prop = result["proposed"]
     orig_text = " ".join([
@@ -793,18 +819,20 @@ def lossless_ok(result):
     ])
     prop_text = " ".join([
         prop.get("phone") or "", prop.get("fax") or "",
-        prop.get("contact") or "", prop.get("nickname") or "",
-        prop.get("name") or "",
+        prop.get("contact") or "", prop.get("note") or "",
+        prop.get("nickname") or "", prop.get("name") or "",
     ])
     prop_digits_concat = re.sub(r"\D", "", prop_text)
     prop_runs = _digit_runs(prop_text, 7)
 
     for run in _digit_runs(orig_text, 7):
-        # present if the exact run appears as a run in the proposal, OR the run's digits appear
-        # as a contiguous digit subsequence somewhere (handles formatting changes)
         if run in prop_runs:
             continue
         if run in prop_digits_concat:
+            continue
+        # an old mobile that was modernized: its '8'-inserted form is what survives
+        modern = _modernize_digits(run)
+        if modern and modern in prop_digits_concat:
             continue
         return False
     return True

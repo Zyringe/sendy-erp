@@ -270,23 +270,44 @@ def test_nc_review_line_in_phone():
     assert lossless_ok(r)
 
 
-def test_nc_review_note_in_phone():
+def test_nc_note_in_phone_to_note_field():
+    # A delivery-schedule note in the phone field → its own note field; phone cleaned → auto.
     r = normalize_customer(_row(name="ร้าน เอฟ", phone="02-5262280  วางจัน,อัง,พฤ,ศุกร"))
     assert r["proposed"]["phone"] == "02-5262280"
-    assert r["confidence"] == "review"
+    assert "วางจัน" in r["proposed"]["note"]
+    assert "วางจัน" not in r["proposed"]["contact"]
     assert "note_in_phone" in r["issues"]
+    assert r["confidence"] == "auto"
     assert lossless_ok(r)
 
 
-def test_nc_review_continuation_in_phone():
-    # Bare locals after a full landline inherit its area code → real dialable numbers,
-    # flagged inferred_area_code and kept in review for a human glance.
+def test_nc_continuation_in_phone_auto():
+    # Continuation numbers inherit the area code and are auto-applied (Put 2026-06-15);
+    # still flagged inferred_area_code so the change is traceable.
     r = normalize_customer(_row(name="ร้าน จี",
                                 phone="043-519373,512324,525408,F:043-518198"))
     assert r["proposed"]["phone"] == "043-519373,043-512324,043-525408"
     assert r["proposed"]["fax"] == "043-518198"
-    assert r["confidence"] == "review"
+    assert r["confidence"] == "auto"
     assert "inferred_area_code" in r["issues"]
+    assert lossless_ok(r)
+
+
+def test_nc_old_mobile_modernized_review():
+    # Old 9-digit mobile → modern 08X format, flagged legacy_mobile, kept in review (may be dead).
+    r = normalize_customer(_row(name="ร้าน ไอ", phone="01-4862090"))
+    assert r["proposed"]["phone"] == "081-4862090"
+    assert "legacy_mobile" in r["issues"]
+    assert r["confidence"] == "review"
+    assert lossless_ok(r)
+
+
+def test_nc_note_in_contact_to_note_field():
+    # Billing note in the contact field → note field; contact no longer carries it.
+    r = normalize_customer(_row(name="ร้าน เจ", phone="02-5101049,02-5103227",
+                                contact="วางบิล 1-10"))
+    assert "วางบิล 1-10" in r["proposed"]["note"]
+    assert "วางบิล" not in r["proposed"]["contact"]
     assert lossless_ok(r)
 
 
@@ -300,11 +321,11 @@ def test_nc_review_name_changed_pulls_phone():
     assert lossless_ok(r)
 
 
-def test_nc_review_bare_local_after_areacode():
-    # 4471787 follows a Bangkok number → inherits '02' → '02-4471787' (review, inferred).
+def test_nc_bare_local_after_areacode_auto():
+    # 4471787 follows a Bangkok number → inherits '02' → '02-4471787', auto-applied.
     r = normalize_customer(_row(name="ร้าน เอช", phone="02-4471527,4471787"))
     assert r["proposed"]["phone"] == "02-4471527,02-4471787"
-    assert r["confidence"] == "review"
+    assert r["confidence"] == "auto"
     assert "inferred_area_code" in r["issues"]
     assert lossless_ok(r)
 

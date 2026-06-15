@@ -30,7 +30,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, '..', 'inventory_app')
 sys.path.insert(0, APP)
-from customer_contact_normalize import normalize_customer  # noqa: E402
+from customer_contact_normalize import normalize_customer, _modernize_digits  # noqa: E402
 
 DEFAULT_DB = os.path.join(APP, 'instance', 'inventory.db')
 ORIG_KEYS = ('name', 'phone', 'contact', 'address')
@@ -56,6 +56,7 @@ def _auto_has_change(orig, prop):
         _norm_ws(prop['phone']) != _norm_ws(orig['phone'])
         or _norm_ws(prop['fax']) != ''
         or _norm_ws(prop['contact']) != _norm_ws(orig['contact'])
+        or _norm_ws(prop.get('note', '')) != ''
     )
 
 
@@ -68,15 +69,22 @@ def _digit_runs(text, minlen=7):
     return runs
 
 
-def _lossless_survives(orig, new_phone, new_fax, new_contact, new_name, new_nick):
-    """Every >=7-digit number in the frozen original must survive in the new customer row."""
-    from collections import Counter
-    have = (Counter(_digit_runs(orig.get('name'))) + Counter(_digit_runs(orig.get('phone')))
-            + Counter(_digit_runs(orig.get('contact'))))
-    got = (Counter(_digit_runs(new_phone)) + Counter(_digit_runs(new_fax))
-           + Counter(_digit_runs(new_contact)) + Counter(_digit_runs(new_name))
-           + Counter(_digit_runs(new_nick)))
-    return not (have - got)
+def _lossless_survives(orig, new_phone, new_fax, new_contact, new_name, new_nick, new_note=''):
+    """Every >=7-digit number in the frozen original must survive in the new customer row.
+    Tolerant of the two intentional transforms: an inferred area-code prepend (original is a
+    substring of the enriched number) and an old mobile modernized to 08X."""
+    prop_concat = re.sub(r'\D', '', ' '.join([
+        new_phone or '', new_fax or '', new_contact or '',
+        new_note or '', new_name or '', new_nick or '']))
+    for run in (_digit_runs(orig.get('name')) + _digit_runs(orig.get('phone'))
+                + _digit_runs(orig.get('contact'))):
+        if run in prop_concat:
+            continue
+        m = _modernize_digits(run)
+        if m and m in prop_concat:
+            continue
+        return False
+    return True
 
 
 def run(db_path, apply, user):
@@ -112,7 +120,8 @@ def run(db_path, apply, user):
                 continue
             # lossless self-check on the exact values we will write
             if not _lossless_survives(orig, prop['phone'], prop['fax'],
-                                      prop['contact'], orig['name'], prop['nickname'] or ''):
+                                      prop['contact'], orig['name'], prop['nickname'] or '',
+                                      prop.get('note') or ''):
                 plan['lossless_fail'].append(code)
                 conf, issues = 'review', issues + ['lossless_risk']
                 review_rows.append((code, orig, prop, conf, issues, 'pending'))
@@ -138,14 +147,26 @@ def run(db_path, apply, user):
     # ---- WRITE (single transaction) ----
     try:
         conn.execute('BEGIN IMMEDIATE')
+        # Drop stale PENDING review rows for customers no longer staged (a re-run with improved
+        # parsing can reclassify a row to clean/noop). Never touch confirmed/skipped (human
+        # decisions) or applied rows.
+        keep_codes = [row[0] for row in review_rows]
+        if keep_codes:
+            ph = ",".join("?" * len(keep_codes))
+            conn.execute(
+                "DELETE FROM customer_contact_review WHERE status='pending' "
+                "AND customer_code NOT IN (%s)" % ph, keep_codes)
+        else:
+            conn.execute("DELETE FROM customer_contact_review WHERE status='pending'")
         for code, orig, prop, conf, issues, status in review_rows:
             reviewed = (status == 'applied')
             conn.execute(
                 """INSERT INTO customer_contact_review
                      (customer_code, original_json, proposed_name, proposed_nickname,
-                      proposed_phone, proposed_fax, proposed_contact, proposed_address,
-                      proposed_region, confidence, issues_json, status, reviewed_by, reviewed_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,
+                      proposed_phone, proposed_fax, proposed_contact, proposed_note,
+                      proposed_address, proposed_region, confidence, issues_json, status,
+                      reviewed_by, reviewed_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                            CASE WHEN ? THEN datetime('now','localtime') ELSE NULL END)
                    ON CONFLICT(customer_code) DO UPDATE SET
                       original_json=excluded.original_json,
@@ -154,6 +175,7 @@ def run(db_path, apply, user):
                       proposed_phone=excluded.proposed_phone,
                       proposed_fax=excluded.proposed_fax,
                       proposed_contact=excluded.proposed_contact,
+                      proposed_note=excluded.proposed_note,
                       proposed_address=excluded.proposed_address,
                       proposed_region=excluded.proposed_region,
                       confidence=excluded.confidence,
@@ -163,32 +185,33 @@ def run(db_path, apply, user):
                       reviewed_at=excluded.reviewed_at
                    WHERE customer_contact_review.status NOT IN ('confirmed','skipped')""",
                 (code, json.dumps(orig, ensure_ascii=False), prop['name'], prop['nickname'],
-                 prop['phone'], prop['fax'], prop['contact'], prop['address'],
-                 prop['region'], conf, json.dumps(issues, ensure_ascii=False), status,
+                 prop['phone'], prop['fax'], prop['contact'], prop.get('note'),
+                 prop['address'], prop['region'], conf,
+                 json.dumps(issues, ensure_ascii=False), status,
                  user if reviewed else None, reviewed),
             )
         for code, orig, prop in apply_rows:
             # NOTE: nickname is intentionally NOT written here (advisory only — confirmed in P3).
             conn.execute(
                 """UPDATE customers SET
-                      phone=?, fax=?, contact=?,
+                      phone=?, fax=?, contact=?, contact_note=?,
                       contact_orig_json=COALESCE(contact_orig_json, ?),
                       contact_normalized_at=datetime('now','localtime'),
                       contact_normalized_by=?
                    WHERE code=?""",
                 (prop['phone'] or None, prop['fax'] or None, prop['contact'] or None,
-                 json.dumps(orig, ensure_ascii=False), user, code),
+                 prop.get('note') or None, json.dumps(orig, ensure_ascii=False), user, code),
             )
 
         # ---- in-transaction invariant re-check (independent: read back from customers) ----
         bad = []
         for code, orig, prop in apply_rows:
             row = conn.execute(
-                "SELECT name, phone, fax, contact, nickname FROM customers WHERE code=?",
+                "SELECT name, phone, fax, contact, contact_note, nickname FROM customers WHERE code=?",
                 (code,)).fetchone()
             if not _lossless_survives(orig, row['phone'] or '', row['fax'] or '',
                                       row['contact'] or '', row['name'] or '',
-                                      row['nickname'] or ''):
+                                      row['nickname'] or '', row['contact_note'] or ''):
                 bad.append(code)
         if bad:
             conn.execute('ROLLBACK')

@@ -4004,6 +4004,7 @@ def import_customers_from_bsn(customers):
                 out_phone   = prop['phone'] or None
                 out_fax     = prop['fax'] or None
                 out_contact = prop['contact'] or None
+                out_note    = prop.get('note') or None
                 orig_json   = json.dumps({
                     'name':    c['name'],
                     'phone':   imp_phone,
@@ -4026,7 +4027,7 @@ def import_customers_from_bsn(customers):
                         UPDATE customers
                            SET name=?, salesperson=?, zone=?, customer_type=?,
                                address=?, phone=?, fax=?, tax_id=?, credit_days=?,
-                               contact=?, contact_orig_json=?,
+                               contact=?, contact_note=?, contact_orig_json=?,
                                contact_normalized_at=datetime('now','localtime'),
                                contact_normalized_by=?,
                                imported_at=datetime('now','localtime')
@@ -4034,7 +4035,7 @@ def import_customers_from_bsn(customers):
                     """, (c['name'], c['salesperson'], c['zone'], c['customer_type'],
                           c.get('address'), out_phone, out_fax,
                           c['tax_id'], c['credit_days'],
-                          out_contact, orig_json, normalized_by, c['code']))
+                          out_contact, out_note, orig_json, normalized_by, c['code']))
                 else:
                     conn.execute("""
                         UPDATE customers
@@ -4052,13 +4053,13 @@ def import_customers_from_bsn(customers):
                         INSERT INTO customers
                             (code, name, salesperson, zone, customer_type,
                              address, phone, fax, tax_id, credit_days, contact,
-                             contact_orig_json, contact_normalized_at,
+                             contact_note, contact_orig_json, contact_normalized_at,
                              contact_normalized_by)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'),?)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'),?)
                     """, (c['code'], c['name'], c['salesperson'], c['zone'],
                           c['customer_type'], c.get('address'),
                           out_phone, out_fax, c['tax_id'], c['credit_days'],
-                          out_contact, orig_json, normalized_by))
+                          out_contact, out_note, orig_json, normalized_by))
                 else:
                     conn.execute("""
                         INSERT INTO customers
