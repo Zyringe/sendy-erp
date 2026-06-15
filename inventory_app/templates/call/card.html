@@ -216,10 +216,19 @@
             <label>ที่อยู่</label>
             <input type="text" name="address" value="{{ m.address or '' }}" placeholder="ที่อยู่">
           </div>
+          <div class="cc-field-row">
+            <label>หมายเหตุ</label>
+            <input type="text" name="contact_note" value="{{ m.get('contact_note') or '' }}" placeholder="เช่น วางบิลทุกวันที่ 5">
+          </div>
           <div style="margin-top:10px">
             <button type="submit" class="cc-smsbtn">บันทึกข้อมูลติดต่อ</button>
           </div>
         </form>
+        {% if m.get('contact_note') %}
+        <div style="font-size:12px;color:#6b7787;margin-top:10px;border-top:1px solid var(--cc-line);padding-top:8px">
+          📝 <b>หมายเหตุ:</b> {{ m.get('contact_note') }}
+        </div>
+        {% endif %}
       </div>
 
       {# ── CRM: tags / next-call / call-target ── #}

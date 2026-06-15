@@ -71,6 +71,7 @@ def test_confirm_writes_to_customers_and_freezes_original(admin_client, tmp_db):
         'proposed_fax': '02-1111111',
         'proposed_contact': 'คุณทดสอบ',
         'proposed_address': '123 ถนนทดสอบ กรุงเทพมหานคร',
+        'proposed_note': 'วางบิลทุกวันที่ 5',
     })
     assert resp.status_code == 302
 
@@ -86,6 +87,7 @@ def test_confirm_writes_to_customers_and_freezes_original(admin_client, tmp_db):
     assert cust['nickname'] == 'เจ๊ทดสอบ'
     assert cust['contact'] == 'คุณทดสอบ'
     assert cust['name'] == 'ทดสอบ บริษัท'
+    assert cust['contact_note'] == 'วางบิลทุกวันที่ 5'
     assert cust['contact_normalized_at'] is not None
     assert cust['contact_normalized_by'] == 'test-admin'
     # original snapshot frozen to the review's original_json (lossless guarantee)
@@ -94,6 +96,7 @@ def test_confirm_writes_to_customers_and_freezes_original(admin_client, tmp_db):
     assert review['status'] == 'confirmed'
     assert review['reviewed_by'] == 'test-admin'
     assert review['proposed_phone'] == '099-9999999'
+    assert review['proposed_note'] == 'วางบิลทุกวันที่ 5'
 
 
 def test_confirm_blank_name_falls_back_to_existing(admin_client, tmp_db):

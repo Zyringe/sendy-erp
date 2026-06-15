@@ -74,6 +74,8 @@
         <div class="cr-val{% if not orig.get('contact') %} empty{% endif %}">{{ orig.get('contact') or '—' }}</div></div>
       <div class="cr-row"><div class="cr-label">ที่อยู่</div>
         <div class="cr-val{% if not orig.get('address') %} empty{% endif %}">{{ orig.get('address') or '—' }}</div></div>
+      <div class="cr-row"><div class="cr-label">หมายเหตุ (โน้ต)</div>
+        <div class="cr-val empty">—</div></div>
 
       {% if live %}
       <hr style="border:0;border-top:1px solid #e3e8ef;margin:12px 0">
@@ -137,6 +139,12 @@
           <input type="text" name="proposed_address"
                  value="{{ review.proposed_address or '' }}"
                  placeholder="ที่อยู่">
+        </div>
+        <div class="cr-field-row">
+          <label>หมายเหตุ (โน้ต)</label>
+          <input type="text" name="proposed_note"
+                 value="{{ review.proposed_note or '' }}"
+                 placeholder="เช่น วางบิลทุกวันที่ 5">
         </div>
 
         {% if review.proposed_region %}

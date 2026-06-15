@@ -87,6 +87,7 @@ def normalize_list():
             ccr.proposed_name,
             ccr.proposed_phone,
             ccr.proposed_fax,
+            ccr.proposed_note,
             ccr.original_json,
             ccr.issues_json,
             ccr.confidence,
@@ -116,6 +117,7 @@ def normalize_list():
             'proposed_name': row['proposed_name'],
             'proposed_phone': row['proposed_phone'],
             'proposed_fax': row['proposed_fax'],
+            'proposed_note': row['proposed_note'],
             'orig_phone': orig.get('phone', ''),
             'issues': _parse_issues(row['issues_json']),
             'confidence': row['confidence'],
@@ -194,6 +196,7 @@ def normalize_confirm(customer_code):
     proposed_fax     = f.get('proposed_fax', '').strip() or None
     proposed_contact = f.get('proposed_contact', '').strip() or None
     proposed_address = f.get('proposed_address', '').strip() or None
+    proposed_note    = f.get('proposed_note', '').strip() or None
 
     # name must not be NULL — fall back to existing name if blank
     if proposed_name is None:
@@ -217,6 +220,7 @@ def normalize_confirm(customer_code):
             fax                    = ?,
             contact                = ?,
             address                = ?,
+            contact_note           = ?,
             contact_orig_json      = COALESCE(contact_orig_json, ?),
             contact_normalized_at  = datetime('now','localtime'),
             contact_normalized_by  = ?
@@ -228,6 +232,7 @@ def normalize_confirm(customer_code):
         proposed_fax,
         proposed_contact,
         proposed_address,
+        proposed_note,
         orig_json,
         user,
         customer_code,
@@ -248,7 +253,8 @@ def normalize_confirm(customer_code):
                 proposed_phone   = ?,
                 proposed_fax     = ?,
                 proposed_contact = ?,
-                proposed_address = ?
+                proposed_address = ?,
+                proposed_note    = ?
             WHERE customer_code = ?
         """, (
             user,
@@ -258,6 +264,7 @@ def normalize_confirm(customer_code):
             proposed_fax,
             proposed_contact,
             proposed_address,
+            proposed_note,
             customer_code,
         ))
         flash(f'บันทึกข้อมูลติดต่อสำหรับ {proposed_name} แล้ว', 'success')

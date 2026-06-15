@@ -118,6 +118,7 @@
           <td class="cr-cust">
             <div class="cr-code">{{ r.customer_code }}</div>
             <div class="cr-name">{{ r.live_name or r.proposed_name or '—' }}</div>
+            {% if r.proposed_note %}<div style="font-size:11px;color:#6b7787;margin-top:2px">📝 {{ r.proposed_note }}</div>{% endif %}
           </td>
           <td>
             {% if r.issues %}

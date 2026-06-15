@@ -139,12 +139,13 @@ def call_contact(customer_code):
     conn = get_connection()
     f = request.form
     cur = conn.execute(
-        'UPDATE customers SET phone=?, contact=?, address=?, fax=?, nickname=? WHERE code=?',
+        'UPDATE customers SET phone=?, contact=?, address=?, fax=?, nickname=?, contact_note=? WHERE code=?',
         (f.get('phone', '').strip() or None,
          f.get('contact', '').strip() or None,
          f.get('address', '').strip() or None,
          f.get('fax', '').strip() or None,
          f.get('nickname', '').strip() or None,
+         f.get('contact_note', '').strip() or None,
          customer_code),
     )
     conn.commit()

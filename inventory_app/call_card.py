@@ -423,14 +423,17 @@ def get_card(conn, customer_code):
         ).fetchone()
         if master_row:
             master = dict(master_row)
-            # Ensure fax and nickname keys are always present (mig 104 added them;
-            # older rows may not have them in dict() if sqlite3.Row doesn't include them).
+            # Ensure fax, nickname, and contact_note keys are always present (added
+            # across various migrations; older rows may lack them in sqlite3.Row).
             master.setdefault('fax', None)
             master.setdefault('nickname', None)
+            master.setdefault('contact_note', None)
         else:
-            master = {'code': canon_code, 'name': primary_name, 'fax': None, 'nickname': None}
+            master = {'code': canon_code, 'name': primary_name, 'fax': None, 'nickname': None,
+                      'contact_note': None}
     else:
-        master = {'code': customer_code, 'name': primary_name, 'fax': None, 'nickname': None}
+        master = {'code': customer_code, 'name': primary_name, 'fax': None, 'nickname': None,
+                  'contact_note': None}
 
     # ── 3. Sales summary (via models — uses customer NAME) ───────────────────
     summary = models.get_customer_summary(primary_name)
