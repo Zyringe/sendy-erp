@@ -529,6 +529,37 @@ def get_payout_history(year_month=None, salesperson_code=None, db_path=None):
     return [dict(r) for r in rows]
 
 
+def get_invoice_cycle_month(salesperson_code, invoice_no, db_path=None):
+    """Return the YYYY-MM commission cycle for one (salesperson, invoice).
+
+    The cycle = the month of the EARLIEST receipt this salesperson collected
+    against the invoice (IV, non-cancelled, non-NULL amount). This mirrors how
+    the dashboard bins commission — by receipt date (_BASE_QUERY groups
+    receipts by date) — so a per-invoice payout lands in the same month the
+    engine shows the commission as owed, no matter which month page the user
+    ticked it from.
+
+    Returns None when no qualifying receipt exists; the caller should fall back
+    to its own year_month in that case.
+    """
+    conn = _connect(db_path)
+    try:
+        row = conn.execute("""
+            SELECT MIN(rp.date_iso) AS d
+              FROM paid_invoices pi
+              JOIN received_payments rp ON rp.id = pi.re_id
+             WHERE pi.doc_no = ?
+               AND rp.salesperson = ?
+               AND pi.doc_kind = 'IV'
+               AND pi.amount IS NOT NULL AND pi.amount <> 0
+               AND rp.cancelled = 0
+        """, (invoice_no, salesperson_code)).fetchone()
+    finally:
+        conn.close()
+    d = row['d'] if row else None
+    return d[:7] if d else None
+
+
 def record_payout(year_month, salesperson_code, amount_paid,
                   paid_date, paid_method='', note='', paid_by='',
                   invoice_no=None, db_path=None):

@@ -81,6 +81,12 @@ def tmp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'DATABASE_PATH', str(dst))
     import hr
     monkeypatch.setattr(hr, 'DATABASE_PATH', str(dst))
+    # commission.py also `from config import DATABASE_PATH` at module load, so
+    # its helpers called WITHOUT an explicit db_path (e.g. record_payout via the
+    # /commission/payout route) would otherwise write to the LIVE DB. Patch its
+    # snapshot too — same reason as database/hr above.
+    import commission
+    monkeypatch.setattr(commission, 'DATABASE_PATH', str(dst))
 
     return str(dst)
 

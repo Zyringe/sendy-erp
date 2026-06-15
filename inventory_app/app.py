@@ -3358,8 +3358,15 @@ def commission_record_payout():
                 continue
             if amt <= 0:
                 continue
+            # Stamp the payout with the invoice's commission cycle (= month of
+            # the receipt that earned it), NOT the page the user ticked from.
+            # Paying May commission from the June drill-down must still land in
+            # May, or the May page shows phantom รอจ่าย (the per-invoice paid
+            # lookup only counts year_month <= the selected month).
+            cycle_ym = commission_mod.get_invoice_cycle_month(sp_code, inv) \
+                or year_month
             commission_mod.record_payout(
-                year_month=year_month, salesperson_code=sp_code,
+                year_month=cycle_ym, salesperson_code=sp_code,
                 amount_paid=amt, paid_date=paid_date,
                 paid_method=paid_method, note=note, paid_by=paid_by,
                 invoice_no=inv,
