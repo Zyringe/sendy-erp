@@ -86,7 +86,10 @@ def test_call_list_and_sample_cards_render(tmp_db_conn):
     price-cell + modal markup. Uses a tmp clone of the live DB (skips if absent)."""
     app = _app()
     client = _client(app)
-    assert client.get('/call').status_code == 200
+    list_resp = client.get('/call')
+    assert list_resp.status_code == 200
+    # the restored ⭐ special-price badge renders on the list (live data flags ~18%)
+    assert 'ราคาพิเศษ' in list_resp.get_data(as_text=True)
 
     rows = cc.get_call_list(tmp_db_conn)
     assert rows, "live clone has no customers"

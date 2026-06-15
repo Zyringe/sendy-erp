@@ -304,6 +304,9 @@ def get_call_list(conn, *, q=None, region=None, call=None,
     ).fetchall()
     crm_target_map = {r['customer_code']: r['call_target_days'] for r in crm_rows}
 
+    # ── 5b. Special-price customers (one-pass batch; see special_customers) ────
+    special_set = special_customers(conn)
+
     # ── 6. Assemble + filter ──────────────────────────────────────────────────
     result = []
     for code, info in seen_codes.items():
@@ -342,8 +345,8 @@ def get_call_list(conn, *, q=None, region=None, call=None,
         if call and cs != call:
             continue
 
-        # Badges — ar and quiet are cheap; special is expensive so OMITTED from list
-        # (kept on the card). See deviations.
+        # Badges — ar populated in route; quiet + special computed here (special via
+        # the one-pass special_customers batch above, so no per-customer N+1).
         quiet_badge = False
         if last_buy:
             days_since_buy = (dt.date.today() - dt.date.fromisoformat(last_buy)).days
@@ -362,7 +365,7 @@ def get_call_list(conn, *, q=None, region=None, call=None,
             'badges': {
                 'ar':      False,   # populated cheaply in route via cf_mod.ar_aging when needed
                 'quiet':   quiet_badge,
-                'special': False,   # omitted from list — see deviations in call_card docstring
+                'special': code in special_set,
             },
         })
 
@@ -379,6 +382,51 @@ def get_call_list(conn, *, q=None, region=None, call=None,
         result.sort(key=lambda r: _order.get(r['call_status'], 9))
 
     return result
+
+
+def special_customers(conn):
+    """Customer keys (customer_code, or name for orphans — same canonical key as
+    get_call_list) who systematically get below-typical pricing: below the
+    product's OVERALL median cash on a MAJORITY of the products they buy (among
+    products with ≥2 buyers), requiring ≥3 such products.
+
+    One pass over sales_transactions — no per-customer N+1 (that cost is why the
+    list ⭐ badge was originally omitted). The ≥3-product majority threshold was
+    tuned on live data to flag ≈18% of customers (a meaningful "gets special
+    pricing" signal), not the ~71% that a naive "below median on any product"
+    rule would light up.
+    """
+    from collections import defaultdict
+    rows = conn.execute(
+        "SELECT product_id, unit, "
+        "COALESCE(NULLIF(TRIM(customer_code),''), customer) AS ckey, "
+        "qty, net, vat_type "
+        "FROM sales_transactions "
+        "WHERE product_id IS NOT NULL AND qty > 0 AND net > 0 "
+        "AND customer NOT LIKE 'หน้าร้าน%'"
+    ).fetchall()
+
+    by_prod = defaultdict(lambda: defaultdict(list))   # (pid,unit) -> {ckey: [cash]}
+    for r in rows:
+        ck = r['ckey']
+        if not ck:
+            continue
+        cash = r['net'] / r['qty']
+        if (r['vat_type'] or 0) == 2:
+            cash *= 1.07
+        by_prod[(r['product_id'], r['unit'])][ck].append(round(cash))
+
+    below_flags = defaultdict(list)   # ckey -> [bool: below this product's overall median]
+    for cust_cash in by_prod.values():
+        cust_med = {c: statistics.median(v) for c, v in cust_cash.items()}
+        if len(cust_med) < 2:
+            continue
+        overall = statistics.median(cust_med.values())
+        for c, m in cust_med.items():
+            below_flags[c].append(m < overall)
+
+    return {c for c, flags in below_flags.items()
+            if len(flags) >= 3 and sum(flags) / len(flags) >= 0.5}
 
 
 # ── get_card ──────────────────────────────────────────────────────────────────
