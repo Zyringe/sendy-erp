@@ -19,3 +19,27 @@ def test_payout_report_groups_orders_with_fees(tmp_db_conn):
     assert d['amount'] == 75.0 and d['n_orders'] == 2
     assert round(d['fee_total'], 2) == 15.0
     assert {o['order_sn'] for o in d['orders']} == {'A','B'}
+
+
+def test_payout_report_year_filter(tmp_db_conn):
+    # Deposits across 2025 + 2026 must all be reachable — no silent cap. The
+    # year filter scopes the view; get_payout_years lists the available years.
+    c = tmp_db_conn
+    c.execute("DELETE FROM marketplace_wallet_txns WHERE platform='shopee'")
+    c.execute("DELETE FROM marketplace_payouts WHERE platform='shopee'")
+    c.execute("UPDATE marketplace_orders SET payout_id=NULL WHERE platform='shopee'")
+    c.commit()
+    models.import_wallet_txns(c, [
+      {'txn_time':'2025-03-01 10:00','txn_type':'income','order_sn':None,'amount':500.0,'running_balance':500.0,'description':''},
+      {'txn_time':'2025-03-07 01:00','txn_type':'withdrawal','order_sn':None,'amount':-500.0,'running_balance':0.0,'description':'w25'},
+      {'txn_time':'2026-03-01 10:00','txn_type':'income','order_sn':None,'amount':300.0,'running_balance':300.0,'description':''},
+      {'txn_time':'2026-03-07 01:00','txn_type':'withdrawal','order_sn':None,'amount':-300.0,'running_balance':0.0,'description':'w26'},
+    ], 'b.xlsx')
+    marketplace_reconcile.reconcile_payouts(c, 'shopee')
+
+    assert models.get_payout_years(c, 'shopee') == ['2026', '2025']          # newest first
+    assert len(models.get_payout_report(c, 'shopee')) == 2                    # all years
+    only25 = models.get_payout_report(c, 'shopee', year='2025')
+    assert len(only25) == 1 and only25[0]['amount'] == 500.0                  # 2025 reachable
+    only26 = models.get_payout_report(c, 'shopee', year='2026')
+    assert len(only26) == 1 and only26[0]['amount'] == 300.0

@@ -5285,14 +5285,30 @@ def import_wallet_txns(conn, wallet_rows, source_file=None, platform='shopee'):
     return n
 
 
-def get_payout_report(conn, platform='shopee', limit=24):
-    """Bank deposits (newest first) with their orders + fee join.
-    Each deposit: id, deposit_date, amount, n_orders, fee_total (Σ order fees),
-    orders:[{order_sn, settled_at, item_value, fee_total, net_payout, fee_pct}]."""
-    payouts = conn.execute(
-        """SELECT id, deposit_date, amount, n_orders, status
+def get_payout_years(conn, platform='shopee'):
+    """Distinct years that have bank deposits, newest first (for the year filter)."""
+    return [r[0] for r in conn.execute(
+        """SELECT DISTINCT substr(deposit_date, 1, 4) AS y
            FROM marketplace_payouts WHERE platform = ?
-           ORDER BY deposit_date DESC, id DESC LIMIT ?""", (platform, limit)).fetchall()
+           ORDER BY y DESC""", (platform,)).fetchall()]
+
+
+def get_payout_report(conn, platform='shopee', year=None, limit=1000):
+    """Bank deposits (newest first) with their orders + fee join.
+    Each deposit: id, deposit_date, amount, n_orders, status, fee_total (Σ order
+    fees), orders:[{order_sn, settled_at, item_value, fee_total, net_payout, fee_pct}].
+    year=None returns all years; pass a 'YYYY' string to scope to one year.
+    (limit is a high backstop only — deposits accumulate over years, so the view
+    is scoped by year, never silently truncated to a small N.)"""
+    where = "WHERE platform = ?"
+    params = [platform]
+    if year:
+        where += " AND substr(deposit_date, 1, 4) = ?"
+        params.append(str(year))
+    payouts = conn.execute(
+        f"""SELECT id, deposit_date, amount, n_orders, status
+            FROM marketplace_payouts {where}
+            ORDER BY deposit_date DESC, id DESC LIMIT ?""", (*params, limit)).fetchall()
     out = []
     for p in payouts:
         orders = conn.execute(

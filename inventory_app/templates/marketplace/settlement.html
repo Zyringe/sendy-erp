@@ -48,6 +48,17 @@
 
   {# ══════════════════ TAB: deposits ═══════════════════════════════════════ #}
   {% if tab == 'deposits' %}
+  {% if payout_years %}
+  <div class="mb-3 d-flex align-items-center gap-2 flex-wrap">
+    <span class="text-muted small">ปี:</span>
+    <a class="btn btn-sm {{ 'btn-primary' if selected_year == 'all' else 'btn-outline-secondary' }}"
+       href="{{ url_for('marketplace.settlement', platform=platform, tab='deposits', year='all') }}">ทั้งหมด</a>
+    {% for y in payout_years %}
+    <a class="btn btn-sm {{ 'btn-primary' if selected_year == y else 'btn-outline-secondary' }}"
+       href="{{ url_for('marketplace.settlement', platform=platform, tab='deposits', year=y) }}">{{ y }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% if payout_report %}
     {% for d in payout_report %}
     <div class="card mb-3">
