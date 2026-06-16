@@ -76,6 +76,15 @@
                         <i class="bi bi-arrow-counterclockwise me-1"></i>กู้คืน
                       </button>
                     </form>
+                    <form method="post" action="{{ url_for('backup_delete') }}" class="d-inline">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <input type="hidden" name="name" value="{{ b.name }}">
+                      <input type="hidden" name="confirm" value="yes">
+                      <button type="submit" class="btn btn-sm btn-outline-danger"
+                              onclick="return confirm('ลบไฟล์สำรองนี้ ({{ b.created_at.strftime('%Y-%m-%d %H:%M:%S') }}, {{ b.size_mb }}MB)?\nใช้เพื่อคืนพื้นที่ดิสก์ — ลบแล้วกู้จากไฟล์นี้ไม่ได้อีก.');">
+                        <i class="bi bi-trash me-1"></i>ลบ
+                      </button>
+                    </form>
                   {% else %}
                     <span class="text-muted small">ล็อก</span>
                   {% endif %}
