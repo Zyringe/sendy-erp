@@ -481,7 +481,9 @@ def balance_import():
     finally:
         conn.close()
     flash(f'นำเข้า Balance สำเร็จ: เพิ่ม {ins} รายการ · ยอดโอนเข้าบัญชี '
-          f'{rec["payouts"]} ก้อน ({rec["orders_linked"]} ออเดอร์)', 'success')
+          f'{rec["payouts"]} ก้อน ({rec["orders_linked"]} ออเดอร์)'
+          + (f' · ⚠ {rec["unbalanced"]} ก้อนยอดไม่ตรง รอตรวจ' if rec.get('unbalanced') else ''),
+          'success')
     return redirect(url_for('marketplace.settlement'))
 
 
@@ -524,7 +526,8 @@ def upload():
         if need_reconcile:
             try:
                 rec = marketplace_reconcile.reconcile_payouts(conn, 'shopee')
-                msgs.append(f'↔ กระทบยอดโอน {rec["payouts"]} ก้อน ({rec["orders_linked"]} ออเดอร์)')
+                msgs.append(f'↔ กระทบยอดโอน {rec["payouts"]} ก้อน ({rec["orders_linked"]} ออเดอร์)'
+                            + (f', ⚠ {rec["unbalanced"]} ก้อนยอดไม่ตรง' if rec.get('unbalanced') else ''))
             except marketplace_reconcile.ReconcileError as e:
                 msgs.append(f'⚠️ กระทบยอดไม่ลงตัว: {e}')
     except Exception as e:

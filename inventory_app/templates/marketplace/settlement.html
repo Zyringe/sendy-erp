@@ -54,6 +54,7 @@
       <div class="card-header d-flex justify-content-between align-items-center"
            role="button" data-bs-toggle="collapse" data-bs-target="#dep{{ d.id }}">
         <strong>เงินเข้าบัญชี {{ d.deposit_date }}</strong>
+        {% if d.status == 'unbalanced' %}<span class="badge bg-warning text-dark ms-2" title="ยอดออเดอร์ที่จับได้ไม่ตรงกับยอดโอน (เช่น ไฟล์เริ่มกลางรอบ หรือมีรายการคาบเกี่ยว) — รายการออเดอร์อาจไม่ครบ">⚠ ยอดไม่ตรง</span>{% endif %}
         <span>
           <span class="text-muted small me-3">ค่าธรรมเนียมรวม ฿{{ '{:,.2f}'.format(d.fee_total) }}</span>
           <span class="text-success fw-bold">฿{{ '{:,.2f}'.format(d.amount) }}</span>
