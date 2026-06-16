@@ -19,7 +19,7 @@ import marketplace_match
 from database import get_connection
 from parse_orders import parse_shopee_orders, parse_lazada_orders
 from parse_income_transfer import (parse_shopee_income, IncomeTransferError,
-                                   load_income_sheet)
+                                   load_income_sheet, parse_shopee_income_fees)
 
 bp_marketplace = Blueprint('marketplace', __name__)
 
@@ -110,8 +110,10 @@ def settlement_import():
         # Real Income Transfer files prepend a multi-row metadata banner above
         # the header row; load_income_sheet auto-detects it (header=0 would miss
         # every column). See parse_income_transfer.load_income_sheet.
-        df = load_income_sheet(io.BytesIO(f.read()))
+        raw = f.read()
+        df = load_income_sheet(io.BytesIO(raw))
         settlements = parse_shopee_income(df)
+        fee_rows = parse_shopee_income_fees(df)
     except IncomeTransferError as e:
         flash(str(e), 'danger')
         return redirect(url_for('marketplace.settlement'))
@@ -129,6 +131,7 @@ def settlement_import():
         conn = get_connection()
         try:
             stats = models.upsert_marketplace_settlements(conn, settlements, f.filename)
+            fee_n = models.upsert_marketplace_fees(conn, fee_rows, f.filename)
             # Settling an order sets its actual_payout — the key the IV matcher
             # needs — so auto-link orders↔Express IVs right after (idempotent,
             # never clobbers a manual confirm).
@@ -144,6 +147,7 @@ def settlement_import():
         + (f', ไม่พบใน ERP {stats["not_found"]} รายการ' if stats['not_found'] else '')
         + (f', ข้ามรายการที่ยังไม่โอน (ไม่มีวันที่โอน) {stats["skipped_no_date"]} รายการ'
            if stats['skipped_no_date'] else '')
+        + f' · ค่าธรรมเนียม {fee_n} ออเดอร์'
         + f' · จับคู่ใบกำกับ {match["matched"]} ใบ'
         + (f', เดายอดใกล้เคียง {match["review"]} ใบ' if match.get('review') else '')
         + (f', ยังไม่จับคู่ {match["unmatched"]} ใบ' if match['unmatched'] else ''),
