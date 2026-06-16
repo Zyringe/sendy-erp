@@ -23,6 +23,7 @@
             <dt class="col-4 col-sm-3">ยอดสินค้า / ค่าธรรมเนียม / ยอดโอน</dt><dd class="col-8 col-sm-9" id="odMoney"></dd>
             <dt class="col-4 col-sm-3">ใบกำกับ (IV)</dt><dd class="col-8 col-sm-9" id="odIv"></dd>
           </dl>
+          <div id="odFees" class="mb-2"></div>
           <table class="table table-sm table-bordered mb-0">
             <thead class="table-light"><tr>
               <th>สินค้า</th><th>SKU</th><th class="text-end">จำนวน</th>
@@ -74,6 +75,20 @@ document.addEventListener('DOMContentLoaded', function () {
             <td class="text-end">${fmt(it.unit_price)}</td>
             <td class="text-end">${fmt(it.item_subtotal)}</td>
           </tr>`).join('') : '<tr><td colspan="5" class="text-muted text-center">ไม่มีรายการสินค้า</td></tr>');
+        const ff = d.fees;
+        const fl = (lbl, v) => (v == null || Math.abs(v) < 0.005) ? '' :
+          `<div class="d-flex justify-content-between"><span class="text-muted">${lbl}</span><span class="${v<0?'text-danger':''}">${v<0?'−':''}฿${fmt(Math.abs(v))}</span></div>`;
+        document.getElementById('odFees').innerHTML = !ff ? '' : `
+          <div class="border rounded p-2 bg-light small">
+            <div class="fw-bold mb-1" style="color:#c41e2a"><i class="bi bi-cash-stack"></i> ค่าธรรมเนียม & เงินโอน</div>
+            <div class="d-flex justify-content-between"><span class="text-muted">มูลค่าสินค้า</span><span>฿${fmt(ff.item_value)}</span></div>
+            ${fl('ค่าคอมมิชชั่น', ff.fee_commission)}${fl('ค่าบริการ', ff.fee_service)}
+            ${fl('ค่าธุรกรรมการชำระเงิน', ff.fee_transaction)}${fl('ค่าธรรมเนียมแพลตฟอร์ม', ff.fee_platform)}
+            ${fl('ค่าโฆษณา (Escrow)', ff.fee_ads_escrow)}${fl('ภาษี', ff.fee_tax)}
+            ${fl('ค่าจัดส่ง (สุทธิ)', ff.shipping_net)}${fl('ค่าประหยัดค่าส่ง', ff.fee_saver)}
+            <div class="d-flex justify-content-between border-top mt-1 pt-1 fw-bold"><span>ยอดสุทธิที่ได้รับ</span><span class="text-success">฿${fmt(ff.net_payout)}</span></div>
+            ${d.payout ? `<div class="text-muted mt-1"><i class="bi bi-bank"></i> เข้าบัญชีในยอดโอน ${d.payout.deposit_date} (฿${fmt(d.payout.amount)})</div>` : ''}
+          </div>`;
       })
       .catch(e => { load.classList.add('d-none'); err.textContent = 'โหลดไม่สำเร็จ: ' + e.message; err.classList.remove('d-none'); });
   }

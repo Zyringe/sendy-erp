@@ -5414,7 +5414,20 @@ def get_marketplace_order_detail(conn, order_id):
            ORDER BY it.id""",
         (order_id,)
     ).fetchall()
-    return {'order': dict(o), 'items': [dict(r) for r in items]}
+    fees = conn.execute(
+        """SELECT item_value, fee_commission, fee_service, fee_transaction,
+                  fee_platform, fee_ads_escrow, fee_tax, shipping_net, fee_saver,
+                  fee_total, net_payout, fee_pct
+           FROM marketplace_order_fees
+           WHERE platform = ? AND order_sn = ?""",
+        (o['platform'], o['order_sn'])).fetchone()
+    payout = conn.execute(
+        """SELECT p.deposit_date, p.amount FROM marketplace_payouts p
+           JOIN marketplace_orders mo ON mo.payout_id = p.id
+           WHERE mo.id = ?""", (order_id,)).fetchone()
+    return {'order': dict(o), 'items': [dict(r) for r in items],
+            'fees': dict(fees) if fees else None,
+            'payout': dict(payout) if payout else None}
 
 
 # Customer NAME (not code) per platform, for the payments-received lookup.
