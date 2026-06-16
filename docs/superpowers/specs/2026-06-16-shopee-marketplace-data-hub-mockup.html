@@ -1,0 +1,448 @@
+<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sendy · Marketplace Data Hub (mockup)</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<style>
+:root{--red:#c41e2a;--red-dark:#a8181f;--gold:#f5a800;--gold-soft:rgba(245,168,0,.12);--charcoal:#1a1a1a;--cream:#FAF8F5;--border:#e0ddd8;--muted:#6a6a6a;--success:#2e7d3a;--radius:14px;}
+*{font-family:'IBM Plex Sans Thai','Segoe UI',sans-serif;}
+body{background:var(--cream);color:#1a1a1a;margin:0;}
+.layout{display:flex;min-height:100vh;}
+.sidebar{width:240px;background:var(--charcoal);color:#fff;flex:0 0 240px;padding:0;}
+.sb-brand{display:flex;align-items:center;gap:10px;padding:18px 16px;border-bottom:1px solid #2a2a2a;}
+.sb-ico{width:34px;height:34px;border-radius:9px;background:var(--red);display:flex;align-items:center;justify-content:center;font-weight:700;}
+.sb-brand small{color:#9a9a9a;}
+.sb-sec{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:#7a7a7a;padding:14px 18px 6px;}
+.sb-link{display:flex;align-items:center;gap:10px;padding:9px 18px;color:#cfcfcf;text-decoration:none;font-size:.92rem;}
+.sb-link:hover{background:#2a2a2a;color:#fff;}
+.sb-link.active{background:var(--red);color:#fff;font-weight:600;border-left:3px solid var(--gold);}
+.main{flex:1;padding:22px 26px;max-width:1180px;}
+.card{border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 1px 3px rgba(26,26,26,.06);}
+.btn-primary{background:var(--red);border-color:var(--red);}.btn-primary:hover{background:var(--red-dark);border-color:var(--red-dark);}
+.btn-outline-primary{color:var(--red);border-color:var(--red);}.btn-outline-primary:hover{background:var(--red);}
+.nav-tabs .nav-link{color:#6a6a6a;}.nav-tabs .nav-link.active{color:var(--red);font-weight:600;border-bottom:2px solid var(--red);}
+.table thead th{background:#f5f2ed;color:#444;font-size:.82rem;text-transform:none;border-bottom:2px solid #ede9e2;}
+.table tbody tr:hover td{background:#fdf9f3;}
+.badge-success{background:#dcf2e0;color:#2e7d3a;}.badge-warn{background:var(--gold-soft);color:#8a5d00;}.badge-info{background:#e0f2fe;color:#0369a1;}.badge-red{background:#fdecee;color:var(--red);}
+.dropzone{border:2px dashed #cdbfae;border-radius:var(--radius);background:#fffdf9;padding:38px;text-align:center;color:#8a7a63;}
+.kpi{background:#fff;border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;}
+.kpi .v{font-size:1.5rem;font-weight:700;}.kpi .l{color:var(--muted);font-size:.82rem;}
+.feeline{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed #eee4d4;}
+.feeline.neg .amt{color:var(--red);}.feeline.tot{border-top:2px solid #1a1a1a;border-bottom:none;font-weight:700;font-size:1.05rem;margin-top:6px;padding-top:10px;}
+.mock-note{background:var(--gold-soft);border:1px solid #f0d9a0;border-radius:10px;padding:10px 14px;font-size:.86rem;color:#6b4e00;}
+.deposit-row{cursor:pointer;}
+details>summary{list-style:none;}details>summary::-webkit-details-marker{display:none;}
+</style></head><body><div class="layout">
+<aside class="sidebar">
+ <div class="sb-brand"><div class="sb-ico">S</div><div><div style="font-weight:700">Sendy</div><small>by Sendai</small></div></div>
+ <div class="sb-sec">Marketplace</div>
+ <a class="sb-link" href="#"><i class="bi bi-grid"></i> ภาพรวม Marketplace</a>
+ <a class="sb-link active" href="#"><i class="bi bi-bank"></i> เงินเข้า & ค่าธรรมเนียม</a>
+ <a class="sb-link" href="#"><i class="bi bi-link-45deg"></i> จับคู่สินค้า</a>
+ <a class="sb-link" href="#"><i class="bi bi-box-seam"></i> ออเดอร์</a>
+ <div class="sb-sec">อื่นๆ</div>
+ <a class="sb-link" href="#"><i class="bi bi-cart"></i> ขาย / ซื้อ</a>
+ <a class="sb-link" href="#"><i class="bi bi-upload"></i> นำเข้าข้อมูล</a>
+</aside>
+<main class="main">
+<div class="mock-note mb-3"><i class="bi bi-eye"></i> <b>ตัวอย่าง (mockup) เพื่อรีวิว</b> — ข้อมูลจริงจากไฟล์ Shopee ของพี่ (Order / การเงิน / Balance). ปุ่มยังกดไม่ได้จริง ใช้ดู layout อย่างเดียวค่ะ</div>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0">ข้อมูล Marketplace — Shopee</h4>
+  <span class="text-muted small">sendaibyboonsawat · 2026-01-01 → 2026-06-16</span>
+</div>
+<ul class="nav nav-tabs mb-3" role="tablist">
+ <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-up">① อัปโหลดไฟล์</button></li>
+ <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#t-dep">② เงินเข้าบัญชี (ยอดโอน)</button></li>
+ <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t-fee">③ ค่าธรรมเนียมรายออเดอร์</button></li>
+</ul>
+<div class="tab-content">
+
+<div class="tab-pane fade" id="t-up">
+<div class="card p-4 mb-3">
+ <div class="dropzone mb-3"><i class="bi bi-cloud-arrow-up" style="font-size:2rem"></i><div class="mt-2">ลากไฟล์ Shopee/Lazada มาวางที่นี่ หรือ <b>เลือกไฟล์</b> (อัปโหลดหลายไฟล์พร้อมกันได้)</div>
+   <div class="small mt-1" style="color:#a99">รองรับ: Order · การเงิน (Income) · Balance &nbsp;—&nbsp; ระบบจะตรวจชนิดไฟล์ให้อัตโนมัติ</div></div>
+ <div class="small text-muted mb-2">ตรวจพบไฟล์ (preview ก่อนยืนยัน):</div>
+ <table class="table table-sm align-middle"><thead><tr><th>ไฟล์</th><th>ตรวจพบชนิด</th><th>แพลตฟอร์ม</th><th>ช่วงวันที่</th><th>แถว</th><th>สถานะ</th></tr></thead><tbody>
+  <tr><td><i class="bi bi-file-earmark-excel text-success"></i> Order.all.20260601_20260613.xlsx</td><td><span class="badge badge-info">ออเดอร์</span></td><td>Shopee</td><td>06-01→06-13</td><td>77</td><td><span class="badge badge-success">ใหม่ 12 · เดิม 65</span></td></tr>
+  <tr><td><i class="bi bi-file-earmark-excel text-success"></i> Income.โอนเงินสำเร็จ...20260601_20260616.xlsx</td><td><span class="badge badge-warn">การเงิน (ค่าธรรมเนียม+ยอดโอน)</span></td><td>Shopee</td><td>06-01→06-16</td><td>77</td><td><span class="badge badge-success">อัปเดตค่าธรรมเนียม 77</span></td></tr>
+  <tr><td><i class="bi bi-file-earmark-excel text-success"></i> my_balance_transaction_report...xlsx</td><td><span class="badge badge-red">Balance (เงินเข้าบัญชี)</span></td><td>Shopee</td><td>01-01→06-16</td><td>443</td><td><span class="badge badge-success">ยอดโอนใหม่ 2 · กระทบยอดอัตโนมัติ</span></td></tr>
+ </tbody></table>
+ <div class="d-flex justify-content-end gap-2"><button class="btn btn-outline-secondary btn-sm">ยกเลิก</button><button class="btn btn-primary btn-sm">ยืนยันนำเข้าทั้งหมด</button></div>
+</div>
+<div class="mock-note">กล่องเดียวรับทุกไฟล์ เหมือนหน้า <b>นำเข้าข้อมูล (ขาย/ซื้อ)</b> — ตรวจชนิด+แพลตฟอร์มอัตโนมัติ, กันนำเข้าซ้ำ (idempotent), แสดง preview ก่อนยืนยัน</div>
+</div>
+<div class="tab-pane fade show active" id="t-dep">
+<div class="row g-2 mb-3">
+<div class="col"><div class="kpi"><div class="v">฿7,689</div><div class="l">ยอดโอนล่าสุด · 2026-06-16</div></div></div>
+<div class="col"><div class="kpi"><div class="v">39</div><div class="l">ออเดอร์ในยอดโอนล่าสุด</div></div></div>
+<div class="col"><div class="kpi"><div class="v">24</div><div class="l">ครั้งที่โอนเข้าบัญชี (ทั้งหมด)</div></div></div>
+<div class="col"><div class="kpi"><div class="v">฿102,581</div><div class="l">รวมเงินเข้าบัญชี ปีนี้</div></div></div>
+</div>
+<div class="card"><div class="card-body p-0"><table class="table mb-0 align-middle"><thead><tr><th>วันเงินเข้าบัญชี</th><th>ประเภท</th><th class="text-end">ยอดโอน</th><th class="text-center">จำนวนออเดอร์</th><th>สถานะ</th><th></th></tr></thead><tbody>
+<tr class="deposit-row" onclick="this.nextElementSibling.querySelector('details').open=!this.nextElementSibling.querySelector('details').open">
+      <td><b>2026-06-16</b> <span class="text-muted small">โอนอัตโนมัติ ~01:1x</span></td>
+      <td><span class="badge badge-red">การถอนเงิน</span></td>
+      <td class="text-end fw-bold text-success">฿7,689.00</td>
+      <td class="text-center">39</td>
+      <td><span class="badge badge-success">กระทบยอดครบ ✓</span></td>
+      <td class="text-end"><i class="bi bi-chevron-down text-muted"></i></td></tr>
+<tr><td colspan="6" style="padding:0;border:0;"><details open><summary></summary><div style="background:#fbf8f2;padding:12px 18px;">
+<div class="small text-muted mb-2">ออเดอร์ 39 รายการ ที่รวมเป็นยอดโอน ฿7,689.00 (เรียงตามเวลาเงินเข้ากระเป๋า)</div>
+<table class="table table-sm mb-0"><thead><tr><th>เลขออเดอร์</th><th>เงินเข้ากระเป๋า</th><th class="text-end">มูลค่าสินค้า</th><th class="text-end">ค่าธรรมเนียมรวม</th><th class="text-end">ยอดสุทธิ</th><th class="text-end">% ค่าธรรมเนียม</th></tr></thead><tbody>
+<tr><td><code>260603590D75N7</code></td><td class="small text-muted">2026-06-09 14:02</td><td class="text-end">฿35.00</td><td class="text-end text-danger">-฿10.00</td><td class="text-end fw-bold">฿25.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260605ACBWDBT1</code></td><td class="small text-muted">2026-06-09 16:30</td><td class="text-end">฿329.00</td><td class="text-end text-danger">-฿93.00</td><td class="text-end fw-bold">฿236.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260607F821YMTP</code></td><td class="small text-muted">2026-06-09 17:22</td><td class="text-end">฿55.00</td><td class="text-end text-danger">-฿17.00</td><td class="text-end fw-bold">฿38.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260605A5WUQU51</code></td><td class="small text-muted">2026-06-09 17:53</td><td class="text-end">฿80.00</td><td class="text-end text-danger">-฿23.00</td><td class="text-end fw-bold">฿57.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260606BUX0D380</code></td><td class="small text-muted">2026-06-09 22:31</td><td class="text-end">฿375.00</td><td class="text-end text-danger">-฿105.00</td><td class="text-end fw-bold">฿270.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260608G377X81K</code></td><td class="small text-muted">2026-06-10 00:56</td><td class="text-end">฿80.00</td><td class="text-end text-danger">-฿23.00</td><td class="text-end fw-bold">฿57.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260606CXGFH9EY</code></td><td class="small text-muted">2026-06-10 14:19</td><td class="text-end">฿30.00</td><td class="text-end text-danger">-฿10.00</td><td class="text-end fw-bold">฿20.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260604856JEK2B</code></td><td class="small text-muted">2026-06-10 14:44</td><td class="text-end">฿318.00</td><td class="text-end text-danger">-฿94.00</td><td class="text-end fw-bold">฿224.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606045X7WY0TU</code></td><td class="small text-muted">2026-06-10 14:59</td><td class="text-end">฿50.00</td><td class="text-end text-danger">-฿15.00</td><td class="text-end fw-bold">฿35.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260609KHSD4H4H</code></td><td class="small text-muted">2026-06-10 15:32</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿35.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26060477V527AT</code></td><td class="small text-muted">2026-06-10 16:50</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿35.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606059QNTK48F</code></td><td class="small text-muted">2026-06-10 17:52</td><td class="text-end">฿55.00</td><td class="text-end text-danger">-฿17.00</td><td class="text-end fw-bold">฿38.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260608HFDU146R</code></td><td class="small text-muted">2026-06-10 21:30</td><td class="text-end">฿150.00</td><td class="text-end text-danger">-฿43.00</td><td class="text-end fw-bold">฿107.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260608HF7UC8U4</code></td><td class="small text-muted">2026-06-10 21:30</td><td class="text-end">฿1,800.00</td><td class="text-end text-danger">-฿502.00</td><td class="text-end fw-bold">฿1,298.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260608GTAW5T88</code></td><td class="small text-muted">2026-06-11 09:02</td><td class="text-end">฿90.00</td><td class="text-end text-danger">-฿27.00</td><td class="text-end fw-bold">฿63.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260609MHC7SC15</code></td><td class="small text-muted">2026-06-11 11:52</td><td class="text-end">฿20.00</td><td class="text-end text-danger">-฿8.00</td><td class="text-end fw-bold">฿12.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260606CBFRND0B</code></td><td class="small text-muted">2026-06-11 13:01</td><td class="text-end">฿2,760.00</td><td class="text-end text-danger">-฿769.00</td><td class="text-end fw-bold">฿1,991.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260606BTR4BFPR</code></td><td class="small text-muted">2026-06-11 13:32</td><td class="text-end">฿290.00</td><td class="text-end text-danger">-฿82.00</td><td class="text-end fw-bold">฿208.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260609JM4H3T3A</code></td><td class="small text-muted">2026-06-11 16:52</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿35.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260609KABSDQ5U</code></td><td class="small text-muted">2026-06-12 10:54</td><td class="text-end">฿290.00</td><td class="text-end text-danger">-฿82.00</td><td class="text-end fw-bold">฿208.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260607F3WNRSM6</code></td><td class="small text-muted">2026-06-12 14:00</td><td class="text-end">฿90.00</td><td class="text-end text-danger">-฿27.00</td><td class="text-end fw-bold">฿63.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260607FRWGFUDR</code></td><td class="small text-muted">2026-06-12 16:49</td><td class="text-end">฿98.00</td><td class="text-end text-danger">-฿28.00</td><td class="text-end fw-bold">฿70.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260609M8452H22</code></td><td class="small text-muted">2026-06-12 17:04</td><td class="text-end">฿150.00</td><td class="text-end text-danger">-฿43.00</td><td class="text-end fw-bold">฿107.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260611RPR3R69A</code></td><td class="small text-muted">2026-06-12 19:27</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿35.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260608JAQVBW43</code></td><td class="small text-muted">2026-06-13 12:39</td><td class="text-end">฿441.00</td><td class="text-end text-danger">-฿124.00</td><td class="text-end fw-bold">฿317.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260611SMD7AW83</code></td><td class="small text-muted">2026-06-13 13:28</td><td class="text-end">฿80.00</td><td class="text-end text-danger">-฿23.00</td><td class="text-end fw-bold">฿57.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260608H98KJT45</code></td><td class="small text-muted">2026-06-13 13:59</td><td class="text-end">฿150.00</td><td class="text-end text-danger">-฿43.00</td><td class="text-end fw-bold">฿107.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260611R9Q2WCEP</code></td><td class="small text-muted">2026-06-13 14:48</td><td class="text-end">฿290.00</td><td class="text-end text-danger">-฿82.00</td><td class="text-end fw-bold">฿208.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260607FA6KEPN8</code></td><td class="small text-muted">2026-06-13 20:00</td><td class="text-end">฿15.00</td><td class="text-end text-danger">-฿4.00</td><td class="text-end fw-bold">฿11.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260610Q2AVTC5X</code></td><td class="small text-muted">2026-06-14 01:03</td><td class="text-end">฿27.00</td><td class="text-end text-danger">-฿7.00</td><td class="text-end fw-bold">฿20.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260610PDT4PQ8F</code></td><td class="small text-muted">2026-06-14 09:38</td><td class="text-end">฿160.00</td><td class="text-end text-danger">-฿46.00</td><td class="text-end fw-bold">฿114.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260612T4NFNFY8</code></td><td class="small text-muted">2026-06-14 10:50</td><td class="text-end">฿55.00</td><td class="text-end text-danger">-฿17.00</td><td class="text-end fw-bold">฿38.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260610PYX276HT</code></td><td class="small text-muted">2026-06-14 12:01</td><td class="text-end">฿177.00</td><td class="text-end text-danger">-฿50.00</td><td class="text-end fw-bold">฿127.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260608HRNCMPEY</code></td><td class="small text-muted">2026-06-14 14:37</td><td class="text-end">฿294.00</td><td class="text-end text-danger">-฿83.00</td><td class="text-end fw-bold">฿211.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260606CXW9MD16</code></td><td class="small text-muted">2026-06-14 18:04</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿44.00</td><td class="text-end fw-bold">฿105.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260611SFGG0B2H</code></td><td class="small text-muted">2026-06-15 07:40</td><td class="text-end">฿1,260.00</td><td class="text-end text-danger">-฿352.00</td><td class="text-end fw-bold">฿908.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260610P3NVQRXV</code></td><td class="small text-muted">2026-06-15 13:00</td><td class="text-end">฿150.00</td><td class="text-end text-danger">-฿43.00</td><td class="text-end fw-bold">฿107.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260610Q1HAJGTG</code></td><td class="small text-muted">2026-06-15 13:46</td><td class="text-end">฿80.00</td><td class="text-end text-danger">-฿23.00</td><td class="text-end fw-bold">฿57.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260610Q41E2471</code></td><td class="small text-muted">2026-06-15 13:55</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿35.00</td><td class="text-end">3.21%</td></tr>
+<tr style="background:#f2ede4"><td colspan="4" class="text-end fw-bold">รวมยอดโอนเข้าบัญชี</td><td class="text-end fw-bold text-success">฿7,689.00</td><td></td></tr>
+</tbody></table></div></details></td></tr>
+<tr class="deposit-row" onclick="this.nextElementSibling.querySelector('details').open=!this.nextElementSibling.querySelector('details').open">
+      <td><b>2026-06-09</b> <span class="text-muted small">โอนอัตโนมัติ ~01:1x</span></td>
+      <td><span class="badge badge-red">การถอนเงิน</span></td>
+      <td class="text-end fw-bold text-success">฿5,890.00</td>
+      <td class="text-center">32</td>
+      <td><span class="badge badge-success">กระทบยอดครบ ✓</span></td>
+      <td class="text-end"><i class="bi bi-chevron-down text-muted"></i></td></tr>
+<tr><td colspan="6" style="padding:0;border:0;"><details ><summary></summary><div style="background:#fbf8f2;padding:12px 18px;">
+<div class="small text-muted mb-2">ออเดอร์ 32 รายการ ที่รวมเป็นยอดโอน ฿5,890.00 (เรียงตามเวลาเงินเข้ากระเป๋า)</div>
+<table class="table table-sm mb-0"><thead><tr><th>เลขออเดอร์</th><th>เงินเข้ากระเป๋า</th><th class="text-end">มูลค่าสินค้า</th><th class="text-end">ค่าธรรมเนียมรวม</th><th class="text-end">ยอดสุทธิ</th><th class="text-end">% ค่าธรรมเนียม</th></tr></thead><tbody>
+<tr><td><code>260528JV9HCAK9</code></td><td class="small text-muted">2026-06-02 18:45</td><td class="text-end">฿150.00</td><td class="text-end text-danger">-฿38.00</td><td class="text-end fw-bold">฿112.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260528KDWCU44H</code></td><td class="small text-muted">2026-06-03 12:33</td><td class="text-end">฿329.00</td><td class="text-end text-danger">-฿83.00</td><td class="text-end fw-bold">฿246.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260528JP1QV52P</code></td><td class="small text-muted">2026-06-03 12:34</td><td class="text-end">฿329.00</td><td class="text-end text-danger">-฿83.00</td><td class="text-end fw-bold">฿246.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26060103D2MM77</code></td><td class="small text-muted">2026-06-03 17:54</td><td class="text-end">฿35.00</td><td class="text-end text-danger">-฿10.00</td><td class="text-end fw-bold">฿25.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260531TTUXAC24</code></td><td class="small text-muted">2026-06-03 23:14</td><td class="text-end">฿98.00</td><td class="text-end text-danger">-฿24.00</td><td class="text-end fw-bold">฿74.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260531TFFSBR7D</code></td><td class="small text-muted">2026-06-04 14:02</td><td class="text-end">฿46.00</td><td class="text-end text-danger">-฿11.00</td><td class="text-end fw-bold">฿35.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606022V1NCV42</code></td><td class="small text-muted">2026-06-04 14:25</td><td class="text-end">฿19.00</td><td class="text-end text-danger">-฿7.00</td><td class="text-end fw-bold">฿12.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260529NDFUEP97</code></td><td class="small text-muted">2026-06-04 14:42</td><td class="text-end">฿1,560.00</td><td class="text-end text-danger">-฿393.00</td><td class="text-end fw-bold">฿1,167.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606010MDTWRKM</code></td><td class="small text-muted">2026-06-04 15:58</td><td class="text-end">฿39.00</td><td class="text-end text-danger">-฿11.00</td><td class="text-end fw-bold">฿28.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260601UGD5Y6YH</code></td><td class="small text-muted">2026-06-04 19:50</td><td class="text-end">฿559.00</td><td class="text-end text-danger">-฿141.00</td><td class="text-end fw-bold">฿418.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260530RQ2UXGER</code></td><td class="small text-muted">2026-06-05 00:15</td><td class="text-end">฿23.00</td><td class="text-end text-danger">-฿6.00</td><td class="text-end fw-bold">฿17.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260601VW9AJQAW</code></td><td class="small text-muted">2026-06-05 11:51</td><td class="text-end">฿30.00</td><td class="text-end text-danger">-฿11.00</td><td class="text-end fw-bold">฿19.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260530QUXT8XAE</code></td><td class="small text-muted">2026-06-05 12:40</td><td class="text-end">฿30.00</td><td class="text-end text-danger">-฿8.00</td><td class="text-end fw-bold">฿22.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260531TDW7VWU9</code></td><td class="small text-muted">2026-06-05 15:02</td><td class="text-end">฿1,228.00</td><td class="text-end text-danger">-฿309.00</td><td class="text-end fw-bold">฿919.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260531SY8JFKNV</code></td><td class="small text-muted">2026-06-06 13:38</td><td class="text-end">฿23.00</td><td class="text-end text-danger">-฿6.00</td><td class="text-end fw-bold">฿17.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260531TPNN27W8</code></td><td class="small text-muted">2026-06-06 13:38</td><td class="text-end">฿55.00</td><td class="text-end text-danger">-฿15.00</td><td class="text-end fw-bold">฿40.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606034NPMF9JE</code></td><td class="small text-muted">2026-06-06 13:55</td><td class="text-end">฿98.00</td><td class="text-end text-danger">-฿28.00</td><td class="text-end fw-bold">฿70.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26060462E2FEDE</code></td><td class="small text-muted">2026-06-06 15:13</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿44.00</td><td class="text-end fw-bold">฿105.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260530R46WR25G</code></td><td class="small text-muted">2026-06-06 16:31</td><td class="text-end">฿9.00</td><td class="text-end text-danger">-฿2.00</td><td class="text-end fw-bold">฿7.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606046MA393VD</code></td><td class="small text-muted">2026-06-07 06:05</td><td class="text-end">฿184.00</td><td class="text-end text-danger">-฿53.00</td><td class="text-end fw-bold">฿131.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606010KW02202</code></td><td class="small text-muted">2026-06-07 12:48</td><td class="text-end">฿35.00</td><td class="text-end text-danger">-฿10.00</td><td class="text-end fw-bold">฿25.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606022857PPXU</code></td><td class="small text-muted">2026-06-07 13:50</td><td class="text-end">฿70.00</td><td class="text-end text-danger">-฿20.00</td><td class="text-end fw-bold">฿50.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260605A2FTRGT1</code></td><td class="small text-muted">2026-06-07 20:00</td><td class="text-end">฿150.00</td><td class="text-end text-danger">-฿43.00</td><td class="text-end fw-bold">฿107.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260605A210RWQG</code></td><td class="small text-muted">2026-06-07 20:00</td><td class="text-end">฿150.00</td><td class="text-end text-danger">-฿43.00</td><td class="text-end fw-bold">฿107.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260605AUB1MFRC</code></td><td class="small text-muted">2026-06-07 20:42</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿44.00</td><td class="text-end fw-bold">฿105.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260606CDAN4B8J</code></td><td class="small text-muted">2026-06-08 07:01</td><td class="text-end">฿165.00</td><td class="text-end text-danger">-฿46.00</td><td class="text-end fw-bold">฿119.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606035021BQ0W</code></td><td class="small text-muted">2026-06-08 10:45</td><td class="text-end">฿329.00</td><td class="text-end text-danger">-฿93.00</td><td class="text-end fw-bold">฿236.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606034R0U6372</code></td><td class="small text-muted">2026-06-08 13:41</td><td class="text-end">฿75.00</td><td class="text-end text-danger">-฿21.00</td><td class="text-end fw-bold">฿54.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606034XJM495G</code></td><td class="small text-muted">2026-06-08 15:51</td><td class="text-end">฿98.00</td><td class="text-end text-danger">-฿28.00</td><td class="text-end fw-bold">฿70.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26060356TE1FV7</code></td><td class="small text-muted">2026-06-08 17:49</td><td class="text-end">฿80.00</td><td class="text-end text-danger">-฿23.00</td><td class="text-end fw-bold">฿57.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606035HGM3AFB</code></td><td class="small text-muted">2026-06-08 19:54</td><td class="text-end">฿490.00</td><td class="text-end text-danger">-฿138.00</td><td class="text-end fw-bold">฿352.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2606048BVRDT4C</code></td><td class="small text-muted">2026-06-09 00:02</td><td class="text-end">฿1,250.00</td><td class="text-end text-danger">-฿352.00</td><td class="text-end fw-bold">฿898.00</td><td class="text-end">3.21%</td></tr>
+<tr style="background:#f2ede4"><td colspan="4" class="text-end fw-bold">รวมยอดโอนเข้าบัญชี</td><td class="text-end fw-bold text-success">฿5,890.00</td><td></td></tr>
+</tbody></table></div></details></td></tr>
+<tr class="deposit-row" onclick="this.nextElementSibling.querySelector('details').open=!this.nextElementSibling.querySelector('details').open">
+      <td><b>2026-06-02</b> <span class="text-muted small">โอนอัตโนมัติ ~01:1x</span></td>
+      <td><span class="badge badge-red">การถอนเงิน</span></td>
+      <td class="text-end fw-bold text-success">฿5,285.00</td>
+      <td class="text-center">26</td>
+      <td><span class="badge badge-success">กระทบยอดครบ ✓</span></td>
+      <td class="text-end"><i class="bi bi-chevron-down text-muted"></i></td></tr>
+<tr><td colspan="6" style="padding:0;border:0;"><details ><summary></summary><div style="background:#fbf8f2;padding:12px 18px;">
+<div class="small text-muted mb-2">ออเดอร์ 26 รายการ ที่รวมเป็นยอดโอน ฿5,285.00 (เรียงตามเวลาเงินเข้ากระเป๋า)</div>
+<table class="table table-sm mb-0"><thead><tr><th>เลขออเดอร์</th><th>เงินเข้ากระเป๋า</th><th class="text-end">มูลค่าสินค้า</th><th class="text-end">ค่าธรรมเนียมรวม</th><th class="text-end">ยอดสุทธิ</th><th class="text-end">% ค่าธรรมเนียม</th></tr></thead><tbody>
+<tr><td><code>2605235N5TVX39</code></td><td class="small text-muted">2026-05-26 08:21</td><td class="text-end">฿19.00</td><td class="text-end text-danger">-฿5.00</td><td class="text-end fw-bold">฿14.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26052362B4XG41</code></td><td class="small text-muted">2026-05-26 09:02</td><td class="text-end">฿46.00</td><td class="text-end text-danger">-฿10.00</td><td class="text-end fw-bold">฿36.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605211VKTWD4K</code></td><td class="small text-muted">2026-05-26 11:54</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿36.00</td><td class="text-end fw-bold">฿113.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605223Y9M1SBB</code></td><td class="small text-muted">2026-05-26 12:43</td><td class="text-end">฿23.00</td><td class="text-end text-danger">-฿6.00</td><td class="text-end fw-bold">฿17.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605223YQ24C4J</code></td><td class="small text-muted">2026-05-26 15:35</td><td class="text-end">฿23.00</td><td class="text-end text-danger">-฿6.00</td><td class="text-end fw-bold">฿17.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26052367259B97</code></td><td class="small text-muted">2026-05-27 15:48</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿36.00</td><td class="text-end fw-bold">฿113.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605224D6VW703</code></td><td class="small text-muted">2026-05-28 12:41</td><td class="text-end">฿23.00</td><td class="text-end text-danger">-฿5.00</td><td class="text-end fw-bold">฿18.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260525C3VW5XFF</code></td><td class="small text-muted">2026-05-28 15:45</td><td class="text-end">฿189.00</td><td class="text-end text-danger">-฿43.00</td><td class="text-end fw-bold">฿146.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260526EJ4JEXBN</code></td><td class="small text-muted">2026-05-28 20:42</td><td class="text-end">฿140.00</td><td class="text-end text-danger">-฿32.00</td><td class="text-end fw-bold">฿108.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260525A09E4WT1</code></td><td class="small text-muted">2026-05-29 15:55</td><td class="text-end">฿30.00</td><td class="text-end text-danger">-฿7.00</td><td class="text-end fw-bold">฿23.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260527G0GA2DKJ</code></td><td class="small text-muted">2026-05-29 18:13</td><td class="text-end">฿172.00</td><td class="text-end text-danger">-฿40.00</td><td class="text-end fw-bold">฿132.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26052497RAJXW3</code></td><td class="small text-muted">2026-05-29 18:37</td><td class="text-end">฿12.00</td><td class="text-end text-danger">-฿2.00</td><td class="text-end fw-bold">฿10.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260527G6WPR1GP</code></td><td class="small text-muted">2026-05-29 21:29</td><td class="text-end">฿745.00</td><td class="text-end text-danger">-฿179.00</td><td class="text-end fw-bold">฿566.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260527EVNJHP6Y</code></td><td class="small text-muted">2026-05-30 12:04</td><td class="text-end">฿196.00</td><td class="text-end text-danger">-฿45.00</td><td class="text-end fw-bold">฿151.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605249ARYCBC2</code></td><td class="small text-muted">2026-05-30 13:11</td><td class="text-end">฿46.00</td><td class="text-end text-danger">-฿10.00</td><td class="text-end fw-bold">฿36.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605248JHU8YD8</code></td><td class="small text-muted">2026-05-30 14:39</td><td class="text-end">฿196.00</td><td class="text-end text-danger">-฿45.00</td><td class="text-end fw-bold">฿151.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605236TPMCFBD</code></td><td class="small text-muted">2026-05-30 17:02</td><td class="text-end">฿165.00</td><td class="text-end text-danger">-฿38.00</td><td class="text-end fw-bold">฿127.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260526CF017GHN</code></td><td class="small text-muted">2026-05-31 03:01</td><td class="text-end">฿1,455.00</td><td class="text-end text-danger">-฿336.00</td><td class="text-end fw-bold">฿1,119.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260528KAVJBA3P</code></td><td class="small text-muted">2026-05-31 16:06</td><td class="text-end">฿55.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿41.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260526DR6ET31P</code></td><td class="small text-muted">2026-05-31 18:49</td><td class="text-end">฿147.00</td><td class="text-end text-danger">-฿34.00</td><td class="text-end fw-bold">฿113.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260527G50HT1H4</code></td><td class="small text-muted">2026-06-01 05:25</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿39.00</td><td class="text-end fw-bold">฿110.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260528JQJ7JMJA</code></td><td class="small text-muted">2026-06-01 11:39</td><td class="text-end">฿350.00</td><td class="text-end text-danger">-฿91.00</td><td class="text-end fw-bold">฿259.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260528K2FQ8937</code></td><td class="small text-muted">2026-06-01 14:32</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿39.00</td><td class="text-end fw-bold">฿110.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260527G9WFUURX</code></td><td class="small text-muted">2026-06-01 15:57</td><td class="text-end">฿196.00</td><td class="text-end text-danger">-฿49.00</td><td class="text-end fw-bold">฿147.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260526EGQXTFDA</code></td><td class="small text-muted">2026-06-01 16:42</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿13.00</td><td class="text-end fw-bold">฿36.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260528JV9HCAKA</code></td><td class="small text-muted">2026-06-01 17:49</td><td class="text-end">฿2,100.00</td><td class="text-end text-danger">-฿528.00</td><td class="text-end fw-bold">฿1,572.00</td><td class="text-end">3.21%</td></tr>
+<tr style="background:#f2ede4"><td colspan="4" class="text-end fw-bold">รวมยอดโอนเข้าบัญชี</td><td class="text-end fw-bold text-success">฿5,285.00</td><td></td></tr>
+</tbody></table></div></details></td></tr>
+<tr class="deposit-row" onclick="this.nextElementSibling.querySelector('details').open=!this.nextElementSibling.querySelector('details').open">
+      <td><b>2026-05-26</b> <span class="text-muted small">โอนอัตโนมัติ ~01:1x</span></td>
+      <td><span class="badge badge-red">การถอนเงิน</span></td>
+      <td class="text-end fw-bold text-success">฿3,334.00</td>
+      <td class="text-center">26</td>
+      <td><span class="badge badge-success">กระทบยอดครบ ✓</span></td>
+      <td class="text-end"><i class="bi bi-chevron-down text-muted"></i></td></tr>
+<tr><td colspan="6" style="padding:0;border:0;"><details ><summary></summary><div style="background:#fbf8f2;padding:12px 18px;">
+<div class="small text-muted mb-2">ออเดอร์ 26 รายการ ที่รวมเป็นยอดโอน ฿3,334.00 (เรียงตามเวลาเงินเข้ากระเป๋า)</div>
+<table class="table table-sm mb-0"><thead><tr><th>เลขออเดอร์</th><th>เงินเข้ากระเป๋า</th><th class="text-end">มูลค่าสินค้า</th><th class="text-end">ค่าธรรมเนียมรวม</th><th class="text-end">ยอดสุทธิ</th><th class="text-end">% ค่าธรรมเนียม</th></tr></thead><tbody>
+<tr><td><code>260515EY2C68QA</code></td><td class="small text-muted">2026-05-19 17:00</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿36.00</td><td class="text-end fw-bold">฿113.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260515FV4DG3U8</code></td><td class="small text-muted">2026-05-20 11:45</td><td class="text-end">฿55.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿41.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260515G1J7CH1Q</code></td><td class="small text-muted">2026-05-21 14:01</td><td class="text-end">฿35.00</td><td class="text-end text-danger">-฿8.00</td><td class="text-end fw-bold">฿27.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260517M3BP1W9J</code></td><td class="small text-muted">2026-05-21 14:06</td><td class="text-end">฿30.00</td><td class="text-end text-danger">-฿7.00</td><td class="text-end fw-bold">฿23.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260517M9NDFQ33</code></td><td class="small text-muted">2026-05-21 16:50</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿36.00</td><td class="text-end fw-bold">฿113.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260518PAJGSV5Y</code></td><td class="small text-muted">2026-05-21 19:46</td><td class="text-end">฿447.00</td><td class="text-end text-danger">-฿106.00</td><td class="text-end fw-bold">฿341.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260516J4WPT0FG</code></td><td class="small text-muted">2026-05-21 20:00</td><td class="text-end">฿550.00</td><td class="text-end text-danger">-฿127.00</td><td class="text-end fw-bold">฿423.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260516JREHHJK8</code></td><td class="small text-muted">2026-05-21 22:56</td><td class="text-end">฿105.00</td><td class="text-end text-danger">-฿25.00</td><td class="text-end fw-bold">฿80.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260517N6NMKP59</code></td><td class="small text-muted">2026-05-22 08:34</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿36.00</td><td class="text-end fw-bold">฿113.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26052106DX3PC6</code></td><td class="small text-muted">2026-05-22 12:49</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿36.00</td><td class="text-end fw-bold">฿113.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260519S7RKA0XH</code></td><td class="small text-muted">2026-05-22 14:58</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿11.00</td><td class="text-end fw-bold">฿38.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260518PU7J734N</code></td><td class="small text-muted">2026-05-22 18:06</td><td class="text-end">฿329.00</td><td class="text-end text-danger">-฿75.00</td><td class="text-end fw-bold">฿254.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260520UHF46S15</code></td><td class="small text-muted">2026-05-23 12:28</td><td class="text-end">฿150.00</td><td class="text-end text-danger">-฿35.00</td><td class="text-end fw-bold">฿115.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260517N910F7NR</code></td><td class="small text-muted">2026-05-23 13:32</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿36.00</td><td class="text-end fw-bold">฿113.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260519T537B1US</code></td><td class="small text-muted">2026-05-23 21:03</td><td class="text-end">฿35.00</td><td class="text-end text-danger">-฿8.00</td><td class="text-end fw-bold">฿27.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26052362EGR8YU</code></td><td class="small text-muted">2026-05-24 13:23</td><td class="text-end">฿329.00</td><td class="text-end text-danger">-฿75.00</td><td class="text-end fw-bold">฿254.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260520UTCS5W7J</code></td><td class="small text-muted">2026-05-24 13:36</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿11.00</td><td class="text-end fw-bold">฿38.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260517N4PMHDC0</code></td><td class="small text-muted">2026-05-24 14:31</td><td class="text-end">฿23.00</td><td class="text-end text-danger">-฿5.00</td><td class="text-end fw-bold">฿18.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605211YKK0U4V</code></td><td class="small text-muted">2026-05-24 17:03</td><td class="text-end">฿70.00</td><td class="text-end text-danger">-฿17.00</td><td class="text-end fw-bold">฿53.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26052362QU7XBD</code></td><td class="small text-muted">2026-05-24 17:07</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿11.00</td><td class="text-end fw-bold">฿38.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605211HGCEAXF</code></td><td class="small text-muted">2026-05-24 19:26</td><td class="text-end">฿161.00</td><td class="text-end text-danger">-฿37.00</td><td class="text-end fw-bold">฿124.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260518NWCSB83A</code></td><td class="small text-muted">2026-05-25 11:53</td><td class="text-end">฿159.00</td><td class="text-end text-danger">-฿39.00</td><td class="text-end fw-bold">฿120.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605210YYP086E</code></td><td class="small text-muted">2026-05-25 13:42</td><td class="text-end">฿320.00</td><td class="text-end text-danger">-฿73.00</td><td class="text-end fw-bold">฿247.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260519S75H0TP0</code></td><td class="small text-muted">2026-05-25 14:45</td><td class="text-end">฿312.00</td><td class="text-end text-danger">-฿72.00</td><td class="text-end fw-bold">฿240.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260519S0WGU8V7</code></td><td class="small text-muted">2026-05-25 14:56</td><td class="text-end">฿55.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿41.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605224C9XV1D7</code></td><td class="small text-muted">2026-05-25 17:41</td><td class="text-end">฿298.00</td><td class="text-end text-danger">-฿71.00</td><td class="text-end fw-bold">฿227.00</td><td class="text-end">3.21%</td></tr>
+<tr style="background:#f2ede4"><td colspan="4" class="text-end fw-bold">รวมยอดโอนเข้าบัญชี</td><td class="text-end fw-bold text-success">฿3,334.00</td><td></td></tr>
+</tbody></table></div></details></td></tr>
+<tr class="deposit-row" onclick="this.nextElementSibling.querySelector('details').open=!this.nextElementSibling.querySelector('details').open">
+      <td><b>2026-05-19</b> <span class="text-muted small">โอนอัตโนมัติ ~01:1x</span></td>
+      <td><span class="badge badge-red">การถอนเงิน</span></td>
+      <td class="text-end fw-bold text-success">฿3,974.00</td>
+      <td class="text-center">22</td>
+      <td><span class="badge badge-success">กระทบยอดครบ ✓</span></td>
+      <td class="text-end"><i class="bi bi-chevron-down text-muted"></i></td></tr>
+<tr><td colspan="6" style="padding:0;border:0;"><details ><summary></summary><div style="background:#fbf8f2;padding:12px 18px;">
+<div class="small text-muted mb-2">ออเดอร์ 22 รายการ ที่รวมเป็นยอดโอน ฿3,974.00 (เรียงตามเวลาเงินเข้ากระเป๋า)</div>
+<table class="table table-sm mb-0"><thead><tr><th>เลขออเดอร์</th><th>เงินเข้ากระเป๋า</th><th class="text-end">มูลค่าสินค้า</th><th class="text-end">ค่าธรรมเนียมรวม</th><th class="text-end">ยอดสุทธิ</th><th class="text-end">% ค่าธรรมเนียม</th></tr></thead><tbody>
+<tr><td><code>260508SPQUBG7X</code></td><td class="small text-muted">2026-05-12 10:36</td><td class="text-end">฿23.00</td><td class="text-end text-danger">-฿5.00</td><td class="text-end fw-bold">฿18.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605114X1FR4ME</code></td><td class="small text-muted">2026-05-13 09:23</td><td class="text-end">฿144.00</td><td class="text-end text-danger">-฿35.00</td><td class="text-end fw-bold">฿109.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605101B44VY45</code></td><td class="small text-muted">2026-05-13 11:33</td><td class="text-end">฿27.00</td><td class="text-end text-danger">-฿6.00</td><td class="text-end fw-bold">฿21.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260508UHC6NUBP</code></td><td class="small text-muted">2026-05-13 16:55</td><td class="text-end">฿546.00</td><td class="text-end text-danger">-฿126.00</td><td class="text-end fw-bold">฿420.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260507RUMDQCS7</code></td><td class="small text-muted">2026-05-13 17:43</td><td class="text-end">฿85.00</td><td class="text-end text-danger">-฿20.00</td><td class="text-end fw-bold">฿65.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260507RG5JX0GR</code></td><td class="small text-muted">2026-05-13 19:32</td><td class="text-end">฿675.00</td><td class="text-end text-danger">-฿156.00</td><td class="text-end fw-bold">฿519.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260508SFH05YPV</code></td><td class="small text-muted">2026-05-14 12:31</td><td class="text-end">฿140.00</td><td class="text-end text-danger">-฿32.00</td><td class="text-end fw-bold">฿108.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605127AFS5347</code></td><td class="small text-muted">2026-05-14 12:48</td><td class="text-end">฿559.00</td><td class="text-end text-danger">-฿129.00</td><td class="text-end fw-bold">฿430.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605115E5GJ00U</code></td><td class="small text-muted">2026-05-14 13:03</td><td class="text-end">฿900.00</td><td class="text-end text-danger">-฿209.00</td><td class="text-end fw-bold">฿691.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26050909YAUXS4</code></td><td class="small text-muted">2026-05-14 13:44</td><td class="text-end">฿110.00</td><td class="text-end text-danger">-฿25.00</td><td class="text-end fw-bold">฿85.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260508U7D4Q69W</code></td><td class="small text-muted">2026-05-14 17:45</td><td class="text-end">฿140.00</td><td class="text-end text-danger">-฿32.00</td><td class="text-end fw-bold">฿108.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605102BKRUP04</code></td><td class="small text-muted">2026-05-14 18:20</td><td class="text-end">฿64.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿50.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26051034FWBF05</code></td><td class="small text-muted">2026-05-14 19:34</td><td class="text-end">฿210.00</td><td class="text-end text-danger">-฿48.00</td><td class="text-end fw-bold">฿162.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26051027P0BX77</code></td><td class="small text-muted">2026-05-15 18:58</td><td class="text-end">฿70.00</td><td class="text-end text-danger">-฿16.00</td><td class="text-end fw-bold">฿54.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260512872YEUCW</code></td><td class="small text-muted">2026-05-15 21:14</td><td class="text-end">฿55.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿41.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605126VUTR8BC</code></td><td class="small text-muted">2026-05-16 10:38</td><td class="text-end">฿1,050.00</td><td class="text-end text-danger">-฿243.00</td><td class="text-end fw-bold">฿807.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260514BF1U3SKG</code></td><td class="small text-muted">2026-05-16 15:35</td><td class="text-end">฿59.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿45.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605127C581V6D</code></td><td class="small text-muted">2026-05-16 18:00</td><td class="text-end">฿96.00</td><td class="text-end text-danger">-฿22.00</td><td class="text-end fw-bold">฿74.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260514D6R8GBJK</code></td><td class="small text-muted">2026-05-17 05:41</td><td class="text-end">฿68.00</td><td class="text-end text-danger">-฿16.00</td><td class="text-end fw-bold">฿52.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605090G8AD7RE</code></td><td class="small text-muted">2026-05-17 12:54</td><td class="text-end">฿30.00</td><td class="text-end text-danger">-฿7.00</td><td class="text-end fw-bold">฿23.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26051279E4E2VH</code></td><td class="small text-muted">2026-05-17 17:00</td><td class="text-end">฿90.00</td><td class="text-end text-danger">-฿21.00</td><td class="text-end fw-bold">฿69.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260514DPN5DSJC</code></td><td class="small text-muted">2026-05-18 18:42</td><td class="text-end">฿30.00</td><td class="text-end text-danger">-฿7.00</td><td class="text-end fw-bold">฿23.00</td><td class="text-end">3.21%</td></tr>
+<tr style="background:#f2ede4"><td colspan="4" class="text-end fw-bold">รวมยอดโอนเข้าบัญชี</td><td class="text-end fw-bold text-success">฿3,974.00</td><td></td></tr>
+</tbody></table></div></details></td></tr>
+<tr class="deposit-row" onclick="this.nextElementSibling.querySelector('details').open=!this.nextElementSibling.querySelector('details').open">
+      <td><b>2026-05-12</b> <span class="text-muted small">โอนอัตโนมัติ ~01:1x</span></td>
+      <td><span class="badge badge-red">การถอนเงิน</span></td>
+      <td class="text-end fw-bold text-success">฿8,106.00</td>
+      <td class="text-center">31</td>
+      <td><span class="badge badge-success">กระทบยอดครบ ✓</span></td>
+      <td class="text-end"><i class="bi bi-chevron-down text-muted"></i></td></tr>
+<tr><td colspan="6" style="padding:0;border:0;"><details ><summary></summary><div style="background:#fbf8f2;padding:12px 18px;">
+<div class="small text-muted mb-2">ออเดอร์ 31 รายการ ที่รวมเป็นยอดโอน ฿8,106.00 (เรียงตามเวลาเงินเข้ากระเป๋า)</div>
+<table class="table table-sm mb-0"><thead><tr><th>เลขออเดอร์</th><th>เงินเข้ากระเป๋า</th><th class="text-end">มูลค่าสินค้า</th><th class="text-end">ค่าธรรมเนียมรวม</th><th class="text-end">ยอดสุทธิ</th><th class="text-end">% ค่าธรรมเนียม</th></tr></thead><tbody>
+<tr><td><code>26042943KY2DPR</code></td><td class="small text-muted">2026-05-05 11:37</td><td class="text-end">฿245.00</td><td class="text-end text-danger">-฿56.00</td><td class="text-end fw-bold">฿189.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260502B792UAYS</code></td><td class="small text-muted">2026-05-05 12:10</td><td class="text-end">฿196.00</td><td class="text-end text-danger">-฿45.00</td><td class="text-end fw-bold">฿151.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604306DQBTB4C</code></td><td class="small text-muted">2026-05-05 13:37</td><td class="text-end">฿175.00</td><td class="text-end text-danger">-฿41.00</td><td class="text-end fw-bold">฿134.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260503EBPHPM7A</code></td><td class="small text-muted">2026-05-05 20:55</td><td class="text-end">฿35.00</td><td class="text-end text-danger">-฿8.00</td><td class="text-end fw-bold">฿27.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260504G8YBQHJ9</code></td><td class="small text-muted">2026-05-06 07:37</td><td class="text-end">฿94.00</td><td class="text-end text-danger">-฿22.00</td><td class="text-end fw-bold">฿72.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604306F7E4CBX</code></td><td class="small text-muted">2026-05-06 14:56</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿12.00</td><td class="text-end fw-bold">฿37.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260430712R332R</code></td><td class="small text-muted">2026-05-06 17:47</td><td class="text-end">฿150.00</td><td class="text-end text-danger">-฿36.00</td><td class="text-end fw-bold">฿114.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26050192H4FY9X</code></td><td class="small text-muted">2026-05-06 21:53</td><td class="text-end">฿275.00</td><td class="text-end text-danger">-฿64.00</td><td class="text-end fw-bold">฿211.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260505JC6NP6QV</code></td><td class="small text-muted">2026-05-06 22:59</td><td class="text-end">฿490.00</td><td class="text-end text-danger">-฿113.00</td><td class="text-end fw-bold">฿377.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605019V9F2MEA</code></td><td class="small text-muted">2026-05-07 08:50</td><td class="text-end">฿170.00</td><td class="text-end text-danger">-฿39.00</td><td class="text-end fw-bold">฿131.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260502B257GF1F</code></td><td class="small text-muted">2026-05-07 10:11</td><td class="text-end">฿162.00</td><td class="text-end text-danger">-฿37.00</td><td class="text-end fw-bold">฿125.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604307B8MFMVW</code></td><td class="small text-muted">2026-05-07 14:33</td><td class="text-end">฿290.00</td><td class="text-end text-danger">-฿66.00</td><td class="text-end fw-bold">฿224.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605019CQRQR96</code></td><td class="small text-muted">2026-05-07 14:50</td><td class="text-end">฿936.00</td><td class="text-end text-danger">-฿215.00</td><td class="text-end fw-bold">฿721.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260506NM9C97RY</code></td><td class="small text-muted">2026-05-07 20:32</td><td class="text-end">฿175.00</td><td class="text-end text-danger">-฿41.00</td><td class="text-end fw-bold">฿134.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260505JMHJTDXC</code></td><td class="small text-muted">2026-05-08 07:56</td><td class="text-end">฿125.00</td><td class="text-end text-danger">-฿29.00</td><td class="text-end fw-bold">฿96.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260502BJRGNSTH</code></td><td class="small text-muted">2026-05-08 12:33</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿11.00</td><td class="text-end fw-bold">฿38.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260501A12K2H9F</code></td><td class="small text-muted">2026-05-08 13:00</td><td class="text-end">฿300.00</td><td class="text-end text-danger">-฿70.00</td><td class="text-end fw-bold">฿230.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260502B8U8REYH</code></td><td class="small text-muted">2026-05-08 14:47</td><td class="text-end">฿159.00</td><td class="text-end text-danger">-฿39.00</td><td class="text-end fw-bold">฿120.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260504H3FK8HTW</code></td><td class="small text-muted">2026-05-08 15:19</td><td class="text-end">฿1,248.00</td><td class="text-end text-danger">-฿287.00</td><td class="text-end fw-bold">฿961.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604307ARFKYB5</code></td><td class="small text-muted">2026-05-08 19:59</td><td class="text-end">฿329.00</td><td class="text-end text-danger">-฿75.00</td><td class="text-end fw-bold">฿254.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605019V7H440A</code></td><td class="small text-muted">2026-05-08 23:32</td><td class="text-end">฿85.00</td><td class="text-end text-danger">-฿20.00</td><td class="text-end fw-bold">฿65.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260503E46C2EG3</code></td><td class="small text-muted">2026-05-09 16:06</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿36.00</td><td class="text-end fw-bold">฿113.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260504HMP7A8V2</code></td><td class="small text-muted">2026-05-09 19:35</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿36.00</td><td class="text-end fw-bold">฿113.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260503F18CDUGK</code></td><td class="small text-muted">2026-05-09 19:57</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿36.00</td><td class="text-end fw-bold">฿113.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260502CFDH7T91</code></td><td class="small text-muted">2026-05-09 23:40</td><td class="text-end">฿184.00</td><td class="text-end text-danger">-฿43.00</td><td class="text-end fw-bold">฿141.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260505K5R5XEKH</code></td><td class="small text-muted">2026-05-10 12:34</td><td class="text-end">฿550.00</td><td class="text-end text-danger">-฿127.00</td><td class="text-end fw-bold">฿423.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260504HJ12NQ3D</code></td><td class="small text-muted">2026-05-10 15:34</td><td class="text-end">฿23.00</td><td class="text-end text-danger">-฿5.00</td><td class="text-end fw-bold">฿18.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605019CQRQR97</code></td><td class="small text-muted">2026-05-10 15:59</td><td class="text-end">฿2,574.00</td><td class="text-end text-danger">-฿593.00</td><td class="text-end fw-bold">฿1,981.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260505J8R4FGPV</code></td><td class="small text-muted">2026-05-10 21:54</td><td class="text-end">฿55.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿41.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260507S1JEB9AH</code></td><td class="small text-muted">2026-05-11 08:27</td><td class="text-end">฿28.00</td><td class="text-end text-danger">-฿6.00</td><td class="text-end fw-bold">฿22.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260505KWKP22VG</code></td><td class="small text-muted">2026-05-11 15:40</td><td class="text-end">฿950.00</td><td class="text-end text-danger">-฿220.00</td><td class="text-end fw-bold">฿730.00</td><td class="text-end">3.21%</td></tr>
+<tr style="background:#f2ede4"><td colspan="4" class="text-end fw-bold">รวมยอดโอนเข้าบัญชี</td><td class="text-end fw-bold text-success">฿8,106.00</td><td></td></tr>
+</tbody></table></div></details></td></tr>
+<tr class="deposit-row" onclick="this.nextElementSibling.querySelector('details').open=!this.nextElementSibling.querySelector('details').open">
+      <td><b>2026-05-05</b> <span class="text-muted small">โอนอัตโนมัติ ~01:1x</span></td>
+      <td><span class="badge badge-red">การถอนเงิน</span></td>
+      <td class="text-end fw-bold text-success">฿2,775.00</td>
+      <td class="text-center">12</td>
+      <td><span class="badge badge-success">กระทบยอดครบ ✓</span></td>
+      <td class="text-end"><i class="bi bi-chevron-down text-muted"></i></td></tr>
+<tr><td colspan="6" style="padding:0;border:0;"><details ><summary></summary><div style="background:#fbf8f2;padding:12px 18px;">
+<div class="small text-muted mb-2">ออเดอร์ 12 รายการ ที่รวมเป็นยอดโอน ฿2,775.00 (เรียงตามเวลาเงินเข้ากระเป๋า)</div>
+<table class="table table-sm mb-0"><thead><tr><th>เลขออเดอร์</th><th>เงินเข้ากระเป๋า</th><th class="text-end">มูลค่าสินค้า</th><th class="text-end">ค่าธรรมเนียมรวม</th><th class="text-end">ยอดสุทธิ</th><th class="text-end">% ค่าธรรมเนียม</th></tr></thead><tbody>
+<tr><td><code>260424MKJMCKWQ</code></td><td class="small text-muted">2026-04-28 16:51</td><td class="text-end">฿110.00</td><td class="text-end text-danger">-฿24.00</td><td class="text-end fw-bold">฿86.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260427VK6SVJF0</code></td><td class="small text-muted">2026-04-29 15:43</td><td class="text-end">฿1,250.00</td><td class="text-end text-danger">-฿274.00</td><td class="text-end fw-bold">฿976.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260425QYF8H6JC</code></td><td class="small text-muted">2026-04-30 16:00</td><td class="text-end">฿35.00</td><td class="text-end text-danger">-฿8.00</td><td class="text-end fw-bold">฿27.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260426SMJQSDC5</code></td><td class="small text-muted">2026-04-30 18:16</td><td class="text-end">฿660.00</td><td class="text-end text-danger">-฿144.00</td><td class="text-end fw-bold">฿516.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604292WG70AKX</code></td><td class="small text-muted">2026-04-30 19:36</td><td class="text-end">฿223.00</td><td class="text-end text-danger">-฿50.00</td><td class="text-end fw-bold">฿173.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604281STSBNWP</code></td><td class="small text-muted">2026-05-01 10:39</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿11.00</td><td class="text-end fw-bold">฿38.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260427V49SAWAU</code></td><td class="small text-muted">2026-05-01 15:49</td><td class="text-end">฿220.00</td><td class="text-end text-danger">-฿50.00</td><td class="text-end fw-bold">฿170.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260427V1QDDRMG</code></td><td class="small text-muted">2026-05-02 12:45</td><td class="text-end">฿55.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿41.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604281X1FW1SV</code></td><td class="small text-muted">2026-05-03 10:35</td><td class="text-end">฿485.00</td><td class="text-end text-danger">-฿112.00</td><td class="text-end fw-bold">฿373.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260429349WK3CG</code></td><td class="small text-muted">2026-05-03 13:58</td><td class="text-end">฿59.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿45.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604306SN0HR6G</code></td><td class="small text-muted">2026-05-04 14:24</td><td class="text-end">฿375.00</td><td class="text-end text-danger">-฿86.00</td><td class="text-end fw-bold">฿289.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2605019JKDYSMT</code></td><td class="small text-muted">2026-05-04 17:35</td><td class="text-end">฿55.00</td><td class="text-end text-danger">-฿14.00</td><td class="text-end fw-bold">฿41.00</td><td class="text-end">3.21%</td></tr>
+<tr style="background:#f2ede4"><td colspan="4" class="text-end fw-bold">รวมยอดโอนเข้าบัญชี</td><td class="text-end fw-bold text-success">฿2,775.00</td><td></td></tr>
+</tbody></table></div></details></td></tr>
+<tr class="deposit-row" onclick="this.nextElementSibling.querySelector('details').open=!this.nextElementSibling.querySelector('details').open">
+      <td><b>2026-04-28</b> <span class="text-muted small">โอนอัตโนมัติ ~01:1x</span></td>
+      <td><span class="badge badge-red">การถอนเงิน</span></td>
+      <td class="text-end fw-bold text-success">฿5,833.00</td>
+      <td class="text-center">21</td>
+      <td><span class="badge badge-success">กระทบยอดครบ ✓</span></td>
+      <td class="text-end"><i class="bi bi-chevron-down text-muted"></i></td></tr>
+<tr><td colspan="6" style="padding:0;border:0;"><details ><summary></summary><div style="background:#fbf8f2;padding:12px 18px;">
+<div class="small text-muted mb-2">ออเดอร์ 21 รายการ ที่รวมเป็นยอดโอน ฿5,833.00 (เรียงตามเวลาเงินเข้ากระเป๋า)</div>
+<table class="table table-sm mb-0"><thead><tr><th>เลขออเดอร์</th><th>เงินเข้ากระเป๋า</th><th class="text-end">มูลค่าสินค้า</th><th class="text-end">ค่าธรรมเนียมรวม</th><th class="text-end">ยอดสุทธิ</th><th class="text-end">% ค่าธรรมเนียม</th></tr></thead><tbody>
+<tr><td><code>2604160GKC8BC0</code></td><td class="small text-muted">2026-04-21 11:57</td><td class="text-end">฿270.00</td><td class="text-end text-danger">-฿59.00</td><td class="text-end fw-bold">฿211.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604197W0B0R49</code></td><td class="small text-muted">2026-04-21 14:04</td><td class="text-end">฿144.00</td><td class="text-end text-danger">-฿32.00</td><td class="text-end fw-bold">฿112.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604161AH5E37Q</code></td><td class="small text-muted">2026-04-22 16:37</td><td class="text-end">฿243.00</td><td class="text-end text-danger">-฿54.00</td><td class="text-end fw-bold">฿189.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260421DN0URF78</code></td><td class="small text-muted">2026-04-23 14:28</td><td class="text-end">฿298.00</td><td class="text-end text-danger">-฿69.00</td><td class="text-end fw-bold">฿229.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260421CRP36EMS</code></td><td class="small text-muted">2026-04-23 15:28</td><td class="text-end">฿210.00</td><td class="text-end text-danger">-฿46.00</td><td class="text-end fw-bold">฿164.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260420B36KK6T2</code></td><td class="small text-muted">2026-04-23 16:41</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿11.00</td><td class="text-end fw-bold">฿38.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260421CDTVWXTD</code></td><td class="small text-muted">2026-04-23 20:44</td><td class="text-end">฿39.00</td><td class="text-end text-danger">-฿8.00</td><td class="text-end fw-bold">฿31.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604198QDSS3QX</code></td><td class="small text-muted">2026-04-24 14:49</td><td class="text-end">฿59.00</td><td class="text-end text-danger">-฿13.00</td><td class="text-end fw-bold">฿46.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260423J8EGDSTV</code></td><td class="small text-muted">2026-04-24 16:16</td><td class="text-end">฿600.00</td><td class="text-end text-danger">-฿131.00</td><td class="text-end fw-bold">฿469.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260422FFQ3566X</code></td><td class="small text-muted">2026-04-24 17:11</td><td class="text-end">฿98.00</td><td class="text-end text-danger">-฿21.00</td><td class="text-end fw-bold">฿77.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604173XWSDE9G</code></td><td class="small text-muted">2026-04-24 17:59</td><td class="text-end">฿3,180.00</td><td class="text-end text-danger">-฿697.00</td><td class="text-end fw-bold">฿2,483.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26041978A872EW</code></td><td class="small text-muted">2026-04-24 21:28</td><td class="text-end">฿45.00</td><td class="text-end text-danger">-฿10.00</td><td class="text-end fw-bold">฿35.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260421CM5NNWP4</code></td><td class="small text-muted">2026-04-25 17:39</td><td class="text-end">฿390.00</td><td class="text-end text-danger">-฿86.00</td><td class="text-end fw-bold">฿304.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260423GS54UETK</code></td><td class="small text-muted">2026-04-25 18:58</td><td class="text-end">฿240.00</td><td class="text-end text-danger">-฿53.00</td><td class="text-end fw-bold">฿187.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260423JJ7RG3HN</code></td><td class="small text-muted">2026-04-25 19:10</td><td class="text-end">฿118.00</td><td class="text-end text-danger">-฿26.00</td><td class="text-end fw-bold">฿92.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26042097AH0G7E</code></td><td class="small text-muted">2026-04-25 21:52</td><td class="text-end">฿36.00</td><td class="text-end text-danger">-฿8.00</td><td class="text-end fw-bold">฿28.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260424MHY89DU0</code></td><td class="small text-muted">2026-04-26 10:35</td><td class="text-end">฿660.00</td><td class="text-end text-danger">-฿144.00</td><td class="text-end fw-bold">฿516.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260424MFK4MK7G</code></td><td class="small text-muted">2026-04-26 18:20</td><td class="text-end">฿150.00</td><td class="text-end text-danger">-฿33.00</td><td class="text-end fw-bold">฿117.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260421D6YXJ2Q3</code></td><td class="small text-muted">2026-04-26 19:47</td><td class="text-end">฿550.00</td><td class="text-end text-danger">-฿121.00</td><td class="text-end fw-bold">฿429.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260423HSG41Y58</code></td><td class="small text-muted">2026-04-27 11:49</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿11.00</td><td class="text-end fw-bold">฿38.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260424N32VYKUS</code></td><td class="small text-muted">2026-04-27 16:29</td><td class="text-end">฿49.00</td><td class="text-end text-danger">-฿11.00</td><td class="text-end fw-bold">฿38.00</td><td class="text-end">3.21%</td></tr>
+<tr style="background:#f2ede4"><td colspan="4" class="text-end fw-bold">รวมยอดโอนเข้าบัญชี</td><td class="text-end fw-bold text-success">฿5,833.00</td><td></td></tr>
+</tbody></table></div></details></td></tr>
+<tr class="deposit-row" onclick="this.nextElementSibling.querySelector('details').open=!this.nextElementSibling.querySelector('details').open">
+      <td><b>2026-04-21</b> <span class="text-muted small">โอนอัตโนมัติ ~01:1x</span></td>
+      <td><span class="badge badge-red">การถอนเงิน</span></td>
+      <td class="text-end fw-bold text-success">฿2,588.00</td>
+      <td class="text-center">7</td>
+      <td><span class="badge badge-success">กระทบยอดครบ ✓</span></td>
+      <td class="text-end"><i class="bi bi-chevron-down text-muted"></i></td></tr>
+<tr><td colspan="6" style="padding:0;border:0;"><details ><summary></summary><div style="background:#fbf8f2;padding:12px 18px;">
+<div class="small text-muted mb-2">ออเดอร์ 7 รายการ ที่รวมเป็นยอดโอน ฿2,588.00 (เรียงตามเวลาเงินเข้ากระเป๋า)</div>
+<table class="table table-sm mb-0"><thead><tr><th>เลขออเดอร์</th><th>เงินเข้ากระเป๋า</th><th class="text-end">มูลค่าสินค้า</th><th class="text-end">ค่าธรรมเนียมรวม</th><th class="text-end">ยอดสุทธิ</th><th class="text-end">% ค่าธรรมเนียม</th></tr></thead><tbody>
+<tr><td><code>260409BS0SC07M</code></td><td class="small text-muted">2026-04-15 21:40</td><td class="text-end">฿1,600.00</td><td class="text-end text-danger">-฿354.00</td><td class="text-end fw-bold">฿1,246.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260409CS116BAU</code></td><td class="small text-muted">2026-04-16 17:34</td><td class="text-end">฿225.00</td><td class="text-end text-danger">-฿50.00</td><td class="text-end fw-bold">฿175.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260409CRS8BR54</code></td><td class="small text-muted">2026-04-16 17:38</td><td class="text-end">฿165.00</td><td class="text-end text-danger">-฿38.00</td><td class="text-end fw-bold">฿127.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604184X8B1YTU</code></td><td class="small text-muted">2026-04-20 12:38</td><td class="text-end">฿430.00</td><td class="text-end text-danger">-฿95.00</td><td class="text-end fw-bold">฿335.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>26041607NU3H59</code></td><td class="small text-muted">2026-04-20 12:49</td><td class="text-end">฿150.00</td><td class="text-end text-danger">-฿34.00</td><td class="text-end fw-bold">฿116.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604185ERTKBKD</code></td><td class="small text-muted">2026-04-20 14:45</td><td class="text-end">฿610.00</td><td class="text-end text-danger">-฿134.00</td><td class="text-end fw-bold">฿476.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604160K92YBKV</code></td><td class="small text-muted">2026-04-20 15:38</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿36.00</td><td class="text-end fw-bold">฿113.00</td><td class="text-end">3.21%</td></tr>
+<tr style="background:#f2ede4"><td colspan="4" class="text-end fw-bold">รวมยอดโอนเข้าบัญชี</td><td class="text-end fw-bold text-success">฿2,588.00</td><td></td></tr>
+</tbody></table></div></details></td></tr>
+<tr class="deposit-row" onclick="this.nextElementSibling.querySelector('details').open=!this.nextElementSibling.querySelector('details').open">
+      <td><b>2026-04-14</b> <span class="text-muted small">โอนอัตโนมัติ ~01:1x</span></td>
+      <td><span class="badge badge-red">การถอนเงิน</span></td>
+      <td class="text-end fw-bold text-success">฿3,326.00</td>
+      <td class="text-center">10</td>
+      <td><span class="badge badge-success">กระทบยอดครบ ✓</span></td>
+      <td class="text-end"><i class="bi bi-chevron-down text-muted"></i></td></tr>
+<tr><td colspan="6" style="padding:0;border:0;"><details ><summary></summary><div style="background:#fbf8f2;padding:12px 18px;">
+<div class="small text-muted mb-2">ออเดอร์ 10 รายการ ที่รวมเป็นยอดโอน ฿3,326.00 (เรียงตามเวลาเงินเข้ากระเป๋า)</div>
+<table class="table table-sm mb-0"><thead><tr><th>เลขออเดอร์</th><th>เงินเข้ากระเป๋า</th><th class="text-end">มูลค่าสินค้า</th><th class="text-end">ค่าธรรมเนียมรวม</th><th class="text-end">ยอดสุทธิ</th><th class="text-end">% ค่าธรรมเนียม</th></tr></thead><tbody>
+<tr><td><code>260401NKYT5M93</code></td><td class="small text-muted">2026-04-07 11:36</td><td class="text-end">฿30.00</td><td class="text-end text-danger">-฿7.00</td><td class="text-end fw-bold">฿23.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260402RBB7W989</code></td><td class="small text-muted">2026-04-07 12:52</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿32.00</td><td class="text-end fw-bold">฿117.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260402QKDDB6SK</code></td><td class="small text-muted">2026-04-07 15:56</td><td class="text-end">฿135.00</td><td class="text-end text-danger">-฿27.00</td><td class="text-end fw-bold">฿108.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260403TTTWVX0G</code></td><td class="small text-muted">2026-04-08 12:45</td><td class="text-end">฿99.00</td><td class="text-end text-danger">-฿19.00</td><td class="text-end fw-bold">฿80.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260403SQ7H12VF</code></td><td class="small text-muted">2026-04-08 12:55</td><td class="text-end">฿1,495.00</td><td class="text-end text-danger">-฿290.00</td><td class="text-end fw-bold">฿1,205.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260402R5F92CWG</code></td><td class="small text-muted">2026-04-08 13:38</td><td class="text-end">฿149.00</td><td class="text-end text-danger">-฿32.00</td><td class="text-end fw-bold">฿117.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260403T2XDA27B</code></td><td class="small text-muted">2026-04-08 15:43</td><td class="text-end">฿485.00</td><td class="text-end text-danger">-฿95.00</td><td class="text-end fw-bold">฿390.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604051VREQW3N</code></td><td class="small text-muted">2026-04-08 17:34</td><td class="text-end">฿598.00</td><td class="text-end text-danger">-฿116.00</td><td class="text-end fw-bold">฿482.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>2604076NVTCH29</code></td><td class="small text-muted">2026-04-11 06:50</td><td class="text-end">฿50.00</td><td class="text-end text-danger">-฿12.00</td><td class="text-end fw-bold">฿38.00</td><td class="text-end">3.21%</td></tr>
+<tr><td><code>260406476PM91K</code></td><td class="small text-muted">2026-04-11 16:52</td><td class="text-end">฿950.00</td><td class="text-end text-danger">-฿184.00</td><td class="text-end fw-bold">฿766.00</td><td class="text-end">3.21%</td></tr>
+<tr style="background:#f2ede4"><td colspan="4" class="text-end fw-bold">รวมยอดโอนเข้าบัญชี</td><td class="text-end fw-bold text-success">฿3,326.00</td><td></td></tr>
+</tbody></table></div></details></td></tr>
+</tbody></table></div></div>
+<div class="mock-note mt-3"><i class="bi bi-check-circle"></i> นี่คือคำตอบของคำถามแรกเลยค่ะ: ยอด <b>฿7,689</b> วันที่ 2026-06-16 = <b>39 ออเดอร์</b> ด้านบนนี้ (กระทบยอดเป๊ะถึงสตางค์ จากไฟล์ Balance). หน้านี้มาแทนการพิมพ์ยอดเองแล้วเดา (ของเดิม PR #147)</div>
+</div>
+<div class="tab-pane fade" id="t-fee">
+<div class="card p-4" style="max-width:560px;">
+ <div class="d-flex justify-content-between align-items-start mb-1"><h5 class="mb-0">ออเดอร์ <code>260608HF7UC8U4</code></h5><span class="badge badge-info">Shopee</span></div>
+ <div class="text-muted small mb-3">ผู้ซื้อ sodademio · สั่งซื้อ 2026-06-08</div>
+ <div class="fw-bold mb-2" style="color:var(--red)"><i class="bi bi-cash-stack"></i> ค่าธรรมเนียม & เงินโอน</div>
+ <div class="feeline"><span>มูลค่าสินค้า (หลังส่วนลดผู้ขาย)</span><span class="amt">฿1,800.00</span></div>
+<div class="feeline neg"><span>ค่าคอมมิชชั่น</span><span class="amt">฿-231.00</span></div>
+<div class="feeline neg"><span>ค่าบริการ</span><span class="amt">฿-154.00</span></div>
+<div class="feeline neg"><span>ค่าธุรกรรมการชำระเงิน</span><span class="amt">฿-58.00</span></div>
+<div class="feeline neg"><span>ค่าธรรมเนียมโครงสร้างพื้นฐาน</span><span class="amt">฿-1.00</span></div>
+<div class="feeline neg"><span>ค่าธรรมเนียมเติมเงินโฆษณา (Escrow)</span><span class="amt">฿-58.00</span></div>
+<div class="feeline tot"><span>ยอดสุทธิที่ได้รับ</span><span class="amt text-success">฿1,298.00</span></div>
+ <div class="d-flex justify-content-between small text-muted mt-2"><span>% ค่าธรรมเนียมรวม</span><span>3.21% (฿502.00)</span></div>
+ <hr><div class="small"><i class="bi bi-bank"></i> เงินก้อนนี้เข้าบัญชีในยอดโอน <b>2026-06-16</b> รวม <b>฿7,689</b> (<a href="#" onclick="document.querySelector('[data-bs-target=\'#t-dep\']').click();return false;">ดูยอดโอน →</a>)</div>
+</div>
+<div class="mock-note mt-3" style="max-width:560px;">ทุกบรรทัดดึงจากไฟล์ <b>การเงิน</b> (Income sheet) ที่ตอนนี้ Sendy ทิ้งไป. เก็บเป็นช่องหลักๆ + raw JSON ของทั้งแถว เผื่อ Shopee เพิ่มค่าธรรมเนียมใหม่</div>
+</div>
+</div></main></div><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script></body></html>
