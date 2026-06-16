@@ -5290,7 +5290,7 @@ def get_payout_report(conn, platform='shopee', limit=24):
     Each deposit: id, deposit_date, amount, n_orders, fee_total (Σ order fees),
     orders:[{order_sn, settled_at, item_value, fee_total, net_payout, fee_pct}]."""
     payouts = conn.execute(
-        """SELECT id, deposit_date, amount, n_orders
+        """SELECT id, deposit_date, amount, n_orders, status
            FROM marketplace_payouts WHERE platform = ?
            ORDER BY deposit_date DESC, id DESC LIMIT ?""", (platform, limit)).fetchall()
     out = []
@@ -5305,7 +5305,7 @@ def get_payout_report(conn, platform='shopee', limit=24):
                ORDER BY o.settled_at, o.order_sn""", (platform, p['id'])).fetchall()
         out.append({
             'id': p['id'], 'deposit_date': p['deposit_date'], 'amount': p['amount'],
-            'n_orders': p['n_orders'],
+            'n_orders': p['n_orders'], 'status': p['status'],
             'fee_total': round(sum((o['fee_total'] or 0) for o in orders), 2),
             'orders': [dict(o) for o in orders],
         })

@@ -40,9 +40,9 @@ def test_idempotent_rerun(tmp_db_conn):
     marketplace_reconcile.reconcile_payouts(c, 'shopee')
     assert c.execute("SELECT COUNT(*) FROM marketplace_payouts").fetchone()[0] == 1
 
-def test_mismatch_raises_when_income_exceeds_withdrawal(tmp_db_conn):
-    # income > withdrawal is the genuine corruption case (duplicate rows etc.)
-    # income < withdrawal is valid partial-historical (pre-range carry-over) — not an error
+def test_imbalanced_cycle_is_flagged_not_raised(tmp_db_conn):
+    # Income != withdrawal (here income > withdrawal, a boundary straddle) must
+    # NOT abort the whole reconcile — the cycle is recorded status='unbalanced'.
     c = tmp_db_conn
     _seed_orders(c, ['A','B'])
     models.import_wallet_txns(c, [
@@ -50,6 +50,42 @@ def test_mismatch_raises_when_income_exceeds_withdrawal(tmp_db_conn):
       {'txn_time':'2026-06-02 11:00','txn_type':'income','order_sn':'B','amount':50.0,'running_balance':100.0,'description':''},
       {'txn_time':'2026-06-09 01:19','txn_type':'withdrawal','order_sn':None,'amount':-10.0,'running_balance':90.0,'description':'w'},
     ], 'b.xlsx')
-    import pytest
-    with pytest.raises(marketplace_reconcile.ReconcileError):
-        marketplace_reconcile.reconcile_payouts(c, 'shopee')
+    res = marketplace_reconcile.reconcile_payouts(c, 'shopee')   # no raise
+    assert res['payouts'] == 1 and res['unbalanced'] == 1
+    row = c.execute("SELECT amount, status FROM marketplace_payouts").fetchone()
+    assert (row['amount'], row['status']) == (10.0, 'unbalanced')
+
+
+def test_withdrawal_reversal_is_inflow_not_a_deposit(tmp_db_conn):
+    # A positive-amount 'withdrawal' = a reversed/failed transfer (money back).
+    # It must NOT create a deposit; its value rolls into the next real deposit.
+    c = tmp_db_conn
+    _seed_orders(c, ['A'])
+    models.import_wallet_txns(c, [
+      {'txn_time':'2026-06-02 10:00','txn_type':'income','order_sn':'A','amount':100.0,'running_balance':100.0,'description':''},
+      {'txn_time':'2026-06-03 01:00','txn_type':'withdrawal','order_sn':None,'amount':40.0,'running_balance':140.0,'description':'reversal'},
+      {'txn_time':'2026-06-09 01:19','txn_type':'withdrawal','order_sn':None,'amount':-140.0,'running_balance':0.0,'description':'real deposit'},
+    ], 'b.xlsx')
+    res = marketplace_reconcile.reconcile_payouts(c, 'shopee')
+    assert res['payouts'] == 1            # only the negative withdrawal is a deposit
+    row = c.execute("SELECT amount, n_orders, status FROM marketplace_payouts").fetchone()
+    assert (row['amount'], row['n_orders'], row['status']) == (140.0, 1, 'reconciled')
+
+
+def test_partial_leading_cycle_flagged_unbalanced(tmp_db_conn):
+    # File starts mid-cycle: the first deposit includes income from before the
+    # file (income < withdrawal). Recorded, flagged unbalanced, later clean
+    # cycles still reconcile.
+    c = tmp_db_conn
+    _seed_orders(c, ['A','B'])
+    models.import_wallet_txns(c, [
+      {'txn_time':'2026-01-03 10:00','txn_type':'income','order_sn':'A','amount':60.0,'running_balance':60.0,'description':''},
+      {'txn_time':'2026-01-07 01:00','txn_type':'withdrawal','order_sn':None,'amount':-100.0,'running_balance':0.0,'description':'partial'},
+      {'txn_time':'2026-01-10 10:00','txn_type':'income','order_sn':'B','amount':25.0,'running_balance':25.0,'description':''},
+      {'txn_time':'2026-01-14 01:00','txn_type':'withdrawal','order_sn':None,'amount':-25.0,'running_balance':0.0,'description':'clean'},
+    ], 'b.xlsx')
+    res = marketplace_reconcile.reconcile_payouts(c, 'shopee')
+    assert res['payouts'] == 2 and res['unbalanced'] == 1
+    statuses = {r['amount']: r['status'] for r in
+                c.execute("SELECT amount, status FROM marketplace_payouts")}
+    assert statuses == {100.0: 'unbalanced', 25.0: 'reconciled'}

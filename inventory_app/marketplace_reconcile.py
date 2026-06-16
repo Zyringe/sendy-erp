@@ -1,27 +1,43 @@
 """Segment the wallet ledger into bank-deposit cycles.
 
-Each 'withdrawal' row closes a cycle: it is a real bank deposit equal to the
-sum of every income + adjustment row since the previous withdrawal. We write
-one marketplace_payouts row per cycle and link its orders via
-marketplace_orders.payout_id. Rebuilds from scratch each run (idempotent).
+A bank deposit is a ``withdrawal`` row with a NEGATIVE amount (money leaving the
+wallet for the bank). It closes a cycle: the deposit equals the sum of every
+income + adjustment + withdrawal-reversal since the previous deposit. We write
+one ``marketplace_payouts`` row per deposit and link its orders via
+``marketplace_orders.payout_id``.
 
-Trailing open cycle (income rows after the last withdrawal) is silently skipped
-— the file was exported mid-cycle and the current period has not been withdrawn
-yet.
+Two real-world wrinkles this handles (both seen in 2025 prod data):
+
+  * **Withdrawal reversals.** Shopee sometimes reverses a failed transfer — a
+    ``withdrawal``-type row with a POSITIVE amount (money returning to the
+    wallet). That is an inflow, NOT a deposit, so it adds to the current cycle
+    and does not close it. Only a negative-amount withdrawal is a real deposit.
+  * **Imbalanced cycles.** A mid-history export can start partway through a cycle
+    (the first deposit includes income from before the file → the cycle is
+    short), and income credited right on a deposit boundary can land in the
+    adjacent cycle (a small over/under split). Such a cycle is still recorded but
+    flagged ``status='unbalanced'`` for review — it does NOT abort the whole
+    reconcile. A clean cycle is ``status='reconciled'``.
+
+Rebuilds from scratch each run (idempotent). A trailing open cycle (income after
+the last deposit, not withdrawn yet) is skipped.
 """
 _TOL = 0.01
 
 
 class ReconcileError(Exception):
+    """Kept for callers that still catch it; reconcile no longer raises it for
+    ordinary imbalance (those are flagged per-cycle instead)."""
     pass
 
 
 def reconcile_payouts(conn, platform='shopee'):
     """Rebuild marketplace_payouts + order links from marketplace_wallet_txns.
-    Returns {'payouts': int, 'orders_linked': int}. Raises ReconcileError if a
-    CLOSED cycle's order+adjustment sum != withdrawal amount (incomplete ledger).
-    A trailing open cycle (no closing withdrawal yet) is silently skipped."""
-    # clear prior links + payouts for this platform
+
+    Returns {'payouts': int, 'orders_linked': int, 'unbalanced': int}.
+    Resilient: an imbalanced cycle is flagged status='unbalanced', never raised,
+    so one odd cycle can't wipe out every other deposit's reconciliation.
+    """
     conn.execute("UPDATE marketplace_orders SET payout_id = NULL WHERE platform = ?", (platform,))
     conn.execute("DELETE FROM marketplace_payouts WHERE platform = ?", (platform,))
 
@@ -29,24 +45,24 @@ def reconcile_payouts(conn, platform='shopee'):
         """SELECT txn_time, txn_type, order_sn, amount FROM marketplace_wallet_txns
            WHERE platform = ? ORDER BY txn_time ASC, id ASC""", (platform,)).fetchall()
 
-    n_payouts = 0
-    n_linked = 0
-    cur_orders = []      # order_sns in the open cycle
-    cur_income = 0.0     # income + adjustment total in the open cycle
+    n_payouts = n_linked = n_unbalanced = 0
+    cur_orders = []      # order_sns accumulated in the open cycle
+    cur_income = 0.0     # income + adjustment + reversal total in the open cycle
     for r in rows:
-        if r['txn_type'] == 'withdrawal':
-            wd = round(-r['amount'], 2)   # withdrawal amount stored negative
-            inc = round(cur_income, 2)
-            if inc > wd + _TOL:
-                # income exceeds withdrawal — genuine data corruption (extra rows)
-                raise ReconcileError(
-                    f"cycle ending {r['txn_time']}: income {inc} "
-                    f"> withdrawal {wd} (excess income — ledger may have duplicates)")
+        amount = r['amount'] or 0
+        # A deposit (cycle close) is ONLY a withdrawal that takes money OUT.
+        # A positive-amount withdrawal is a reversal → treat as an inflow.
+        if r['txn_type'] == 'withdrawal' and amount < 0:
+            wd = round(-amount, 2)
+            diff = round(cur_income - wd, 2)
+            status = 'reconciled' if abs(diff) <= _TOL else 'unbalanced'
+            if status == 'unbalanced':
+                n_unbalanced += 1
             pid = conn.execute(
                 """INSERT INTO marketplace_payouts
                      (platform, deposit_date, amount, n_orders, status)
-                   VALUES (?,?,?,?, 'reconciled')""",
-                (platform, str(r['txn_time'])[:10], wd, len(cur_orders))).lastrowid
+                   VALUES (?,?,?,?,?)""",
+                (platform, str(r['txn_time'])[:10], wd, len(cur_orders), status)).lastrowid
             if cur_orders:
                 qs = ','.join('?' * len(cur_orders))
                 conn.execute(
@@ -56,11 +72,11 @@ def reconcile_payouts(conn, platform='shopee'):
                 n_linked += len(cur_orders)
             n_payouts += 1
             cur_orders, cur_income = [], 0.0
-        else:  # income | adjustment
-            cur_income += (r['amount'] or 0)
+        else:
+            # income | adjustment | withdrawal-reversal(+) → inflow into the cycle
+            cur_income += amount
             sn = r['order_sn']
-            if sn:   # '' stored for non-order rows (withdrawals); skip those
+            if sn:
                 cur_orders.append(sn)
-    # trailing open cycle: silently skip (mid-cycle export, no closing withdrawal yet)
     conn.commit()
-    return {'payouts': n_payouts, 'orders_linked': n_linked}
+    return {'payouts': n_payouts, 'orders_linked': n_linked, 'unbalanced': n_unbalanced}
