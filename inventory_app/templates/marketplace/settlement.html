@@ -7,11 +7,11 @@
       <h4 class="mb-0">Settlement Report — {{ platform | capitalize }}</h4>
       <a href="{{ url_for('marketplace.reconciliation', platform=platform) }}" class="btn btn-sm btn-outline-primary">กระทบยอด ↔ รับชำระหนี้</a>
     </div>
-    <form method="post" action="{{ url_for('marketplace.settlement_import') }}"
-          enctype="multipart/form-data" class="d-flex gap-2">
+    <form method="post" action="{{ url_for('marketplace.upload') }}"
+          enctype="multipart/form-data" class="d-flex gap-2 align-items-center">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="file" name="settlement_file" accept=".xlsx" class="form-control form-control-sm" required>
-      <button type="submit" class="btn btn-sm btn-primary">นำเข้า Settlement</button>
+      <input type="file" name="files" accept=".xlsx" multiple class="form-control form-control-sm">
+      <button type="submit" class="btn btn-sm btn-primary">นำเข้าไฟล์ (Order/การเงิน/Balance)</button>
     </form>
   </div>
 
@@ -23,6 +23,12 @@
 
   {# ── Tab switcher ── #}
   <ul class="nav nav-tabs mb-3">
+    <li class="nav-item">
+      <a class="nav-link {{ 'active' if tab == 'deposits' else '' }}"
+         href="{{ url_for('marketplace.settlement', platform=platform, tab='deposits') }}">
+        เงินเข้าบัญชี (ยอดโอน)
+      </a>
+    </li>
     <li class="nav-item">
       <a class="nav-link {{ 'active' if tab == 'daily' else '' }}"
          href="{{ url_for('marketplace.settlement', platform=platform, tab='daily') }}">
@@ -39,6 +45,52 @@
       </a>
     </li>
   </ul>
+
+  {# ══════════════════ TAB: deposits ═══════════════════════════════════════ #}
+  {% if tab == 'deposits' %}
+  {% if payout_report %}
+    {% for d in payout_report %}
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center"
+           role="button" data-bs-toggle="collapse" data-bs-target="#dep{{ d.id }}">
+        <strong>เงินเข้าบัญชี {{ d.deposit_date }}</strong>
+        <span>
+          <span class="text-muted small me-3">ค่าธรรมเนียมรวม ฿{{ '{:,.2f}'.format(d.fee_total) }}</span>
+          <span class="text-success fw-bold">฿{{ '{:,.2f}'.format(d.amount) }}</span>
+          <span class="text-muted">· {{ d.n_orders }} ออเดอร์</span>
+        </span>
+      </div>
+      <div class="collapse" id="dep{{ d.id }}">
+        <div class="card-body p-0">
+          <table class="table table-sm table-hover mb-0">
+            <thead class="table-light"><tr>
+              <th>เลขออเดอร์</th><th>วันโอน</th>
+              <th class="text-end">มูลค่าสินค้า</th>
+              <th class="text-end">ค่าธรรมเนียม</th>
+              <th class="text-end">ยอดสุทธิ</th>
+              <th class="text-end">%</th>
+            </tr></thead>
+            <tbody>
+              {% for o in d.orders %}
+              <tr>
+                <td><code>{{ o.order_sn }}</code></td>
+                <td class="small">{{ o.settled_at or '–' }}</td>
+                <td class="text-end">{{ '{:,.2f}'.format(o.item_value or 0) }}</td>
+                <td class="text-end text-danger">{{ '{:,.2f}'.format(o.fee_total or 0) }}</td>
+                <td class="text-end fw-bold">{{ '{:,.2f}'.format(o.net_payout or 0) }}</td>
+                <td class="text-end small">{{ o.fee_pct or '' }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="alert alert-info">ยังไม่มีข้อมูลยอดโอน — อัปโหลดไฟล์ Seller Balance ด้านบนค่ะ</div>
+  {% endif %}
+  {% endif %}
 
   {# ══════════════════ TAB: daily ════════════════════════════════════════════ #}
   {% if tab == 'daily' %}

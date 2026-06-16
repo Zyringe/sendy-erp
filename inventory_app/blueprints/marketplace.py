@@ -162,16 +162,18 @@ def settlement_import():
 @bp_marketplace.route('/marketplace/settlement')
 def settlement():
     platform = request.args.get('platform', 'shopee')
-    tab = request.args.get('tab', 'daily')  # 'daily' | 'batch'
+    tab = request.args.get('tab', 'deposits')  # 'deposits' | 'daily' | 'batch'
     conn = get_connection()
     try:
         report = models.get_settlement_report(conn, platform=platform)
         batch_report = models.get_deposit_batch_report(conn=conn)
+        payout_report = models.get_payout_report(conn, platform=platform)
     finally:
         conn.close()
     return render_template('marketplace/settlement.html',
                            report=report, platform=platform,
                            tab=tab, batch_report=batch_report,
+                           payout_report=payout_report,
                            no_match_batch_id=None,
                            no_match_candidates=None,
                            no_match_deposit_amount=None)

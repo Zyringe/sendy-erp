@@ -5285,6 +5285,33 @@ def import_wallet_txns(conn, wallet_rows, source_file=None, platform='shopee'):
     return n
 
 
+def get_payout_report(conn, platform='shopee', limit=24):
+    """Bank deposits (newest first) with their orders + fee join.
+    Each deposit: id, deposit_date, amount, n_orders, fee_total (Σ order fees),
+    orders:[{order_sn, settled_at, item_value, fee_total, net_payout, fee_pct}]."""
+    payouts = conn.execute(
+        """SELECT id, deposit_date, amount, n_orders
+           FROM marketplace_payouts WHERE platform = ?
+           ORDER BY deposit_date DESC, id DESC LIMIT ?""", (platform, limit)).fetchall()
+    out = []
+    for p in payouts:
+        orders = conn.execute(
+            """SELECT o.order_sn, o.settled_at,
+                      f.item_value, f.fee_total, f.net_payout, f.fee_pct
+               FROM marketplace_orders o
+               LEFT JOIN marketplace_order_fees f
+                      ON f.platform = o.platform AND f.order_sn = o.order_sn
+               WHERE o.platform = ? AND o.payout_id = ?
+               ORDER BY o.settled_at, o.order_sn""", (platform, p['id'])).fetchall()
+        out.append({
+            'id': p['id'], 'deposit_date': p['deposit_date'], 'amount': p['amount'],
+            'n_orders': p['n_orders'],
+            'fee_total': round(sum((o['fee_total'] or 0) for o in orders), 2),
+            'orders': [dict(o) for o in orders],
+        })
+    return out
+
+
 def get_settlement_report(conn, platform='shopee'):
     """Return settlement data grouped by payout date for the AR clearance report.
 
