@@ -8,6 +8,7 @@ def _rows():
 
 def test_insert_is_idempotent(tmp_db_conn):
     c = tmp_db_conn
+    c.execute("DELETE FROM marketplace_wallet_txns"); c.commit()
     a = models.import_wallet_txns(c, _rows(), 'bal.xlsx')
     b = models.import_wallet_txns(c, _rows(), 'bal.xlsx')   # re-import same file
     assert a == 2 and b == 0

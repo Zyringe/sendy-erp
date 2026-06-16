@@ -36,10 +36,12 @@ def reconcile_payouts(conn, platform='shopee'):
     for r in rows:
         if r['txn_type'] == 'withdrawal':
             wd = round(-r['amount'], 2)   # withdrawal amount stored negative
-            if abs(round(cur_income, 2) - wd) > _TOL:
+            inc = round(cur_income, 2)
+            if inc > wd + _TOL:
+                # income exceeds withdrawal — genuine data corruption (extra rows)
                 raise ReconcileError(
-                    f"cycle ending {r['txn_time']}: income {round(cur_income,2)} "
-                    f"!= withdrawal {wd}")
+                    f"cycle ending {r['txn_time']}: income {inc} "
+                    f"> withdrawal {wd} (excess income — ledger may have duplicates)")
             pid = conn.execute(
                 """INSERT INTO marketplace_payouts
                      (platform, deposit_date, amount, n_orders, status)

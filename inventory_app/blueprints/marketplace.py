@@ -16,7 +16,9 @@ import config
 import db_backup
 import models
 import marketplace_match
+import marketplace_reconcile
 from database import get_connection
+from parse_balance import parse_shopee_balance, load_balance_sheet, BalanceError
 from parse_orders import parse_shopee_orders, parse_lazada_orders
 from parse_income_transfer import (parse_shopee_income, IncomeTransferError,
                                    load_income_sheet, parse_shopee_income_fees)
@@ -444,3 +446,37 @@ def link_iv(order_id):
         conn.close()
     return redirect(url_for('marketplace.settlement',
                             platform=request.args.get('platform', 'shopee')))
+
+
+@bp_marketplace.route('/marketplace/balance-import', methods=['POST'])
+def balance_import():
+    f = request.files.get('balance_file')
+    if not f or f.filename == '':
+        flash('กรุณาเลือกไฟล์ Seller Balance (.xlsx)', 'warning')
+        return redirect(url_for('marketplace.settlement'))
+    try:
+        df = load_balance_sheet(io.BytesIO(f.read()))
+        wallet = parse_shopee_balance(df)
+    except BalanceError as e:
+        flash(str(e), 'danger')
+        return redirect(url_for('marketplace.settlement'))
+    except Exception as e:
+        flash(f'อ่านไฟล์ไม่ได้: {e}', 'danger')
+        return redirect(url_for('marketplace.settlement'))
+    _info, _err = db_backup.safe_create_backup(
+        'marketplace_balance', db_path=config.DATABASE_PATH,
+        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
+    conn = get_connection()
+    try:
+        ins = models.import_wallet_txns(conn, wallet, f.filename)
+        try:
+            rec = marketplace_reconcile.reconcile_payouts(conn, 'shopee')
+        except marketplace_reconcile.ReconcileError as e:
+            flash(f'นำเข้าแล้ว {ins} รายการ แต่กระทบยอดไม่ลงตัว: {e} '
+                  '(ไฟล์ Balance อาจไม่ครบช่วง) — ตรวจดูยอดโอนค่ะ', 'warning')
+            return redirect(url_for('marketplace.settlement'))
+    finally:
+        conn.close()
+    flash(f'นำเข้า Balance สำเร็จ: เพิ่ม {ins} รายการ · ยอดโอนเข้าบัญชี '
+          f'{rec["payouts"]} ก้อน ({rec["orders_linked"]} ออเดอร์)', 'success')
+    return redirect(url_for('marketplace.settlement'))
