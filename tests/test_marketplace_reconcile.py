@@ -72,6 +72,23 @@ def test_withdrawal_reversal_is_inflow_not_a_deposit(tmp_db_conn):
     assert (row['amount'], row['n_orders'], row['status']) == (140.0, 1, 'reconciled')
 
 
+def test_same_day_same_amount_deposits_both_recorded(tmp_db_conn):
+    # Two DISTINCT bank deposits on the same day with the same amount must both
+    # be recorded — no UNIQUE(date,amount) collision (prod 2025-04-01: 2× ฿3,596).
+    c = tmp_db_conn
+    _seed_orders(c, ['A','B'])
+    models.import_wallet_txns(c, [
+      {'txn_time':'2025-04-01 01:00','txn_type':'income','order_sn':'A','amount':50.0,'running_balance':50.0,'description':''},
+      {'txn_time':'2025-04-01 02:00','txn_type':'withdrawal','order_sn':None,'amount':-50.0,'running_balance':0.0,'description':'d1'},
+      {'txn_time':'2025-04-01 03:00','txn_type':'income','order_sn':'B','amount':50.0,'running_balance':50.0,'description':''},
+      {'txn_time':'2025-04-01 04:00','txn_type':'withdrawal','order_sn':None,'amount':-50.0,'running_balance':0.0,'description':'d2'},
+    ], 'b.xlsx')
+    res = marketplace_reconcile.reconcile_payouts(c, 'shopee')   # no UNIQUE error
+    assert res['payouts'] == 2
+    rows = c.execute("SELECT deposit_date, amount FROM marketplace_payouts").fetchall()
+    assert [(r['deposit_date'], r['amount']) for r in rows] == [('2025-04-01', 50.0), ('2025-04-01', 50.0)]
+
+
 def test_partial_leading_cycle_flagged_unbalanced(tmp_db_conn):
     # File starts mid-cycle: the first deposit includes income from before the
     # file (income < withdrawal). Recorded, flagged unbalanced, later clean
