@@ -19,6 +19,7 @@ import marketplace_match
 import marketplace_reconcile
 from database import get_connection
 from parse_balance import parse_shopee_balance, load_balance_sheet, BalanceError
+from marketplace_files import detect_file
 from parse_orders import parse_shopee_orders, parse_lazada_orders
 from parse_income_transfer import (parse_shopee_income, IncomeTransferError,
                                    load_income_sheet, parse_shopee_income_fees)
@@ -479,4 +480,55 @@ def balance_import():
         conn.close()
     flash(f'นำเข้า Balance สำเร็จ: เพิ่ม {ins} รายการ · ยอดโอนเข้าบัญชี '
           f'{rec["payouts"]} ก้อน ({rec["orders_linked"]} ออเดอร์)', 'success')
+    return redirect(url_for('marketplace.settlement'))
+
+
+@bp_marketplace.route('/marketplace/upload', methods=['POST'])
+def upload():
+    """One box for all marketplace files; detects kind+platform and routes."""
+    files = request.files.getlist('files')
+    files = [f for f in files if f and f.filename]
+    if not files:
+        flash('กรุณาเลือกไฟล์ค่ะ', 'warning')
+        return redirect(url_for('marketplace.settlement'))
+    _info, _err = db_backup.safe_create_backup(
+        'marketplace_upload', db_path=config.DATABASE_PATH,
+        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
+    msgs, need_reconcile = [], False
+    conn = get_connection()
+    try:
+        for f in files:
+            data = f.read()
+            kind, platform = detect_file(io.BytesIO(data))
+            if kind is None:
+                msgs.append(f'⚠️ {f.filename}: ไม่รู้จักชนิดไฟล์'); continue
+            if kind == 'order':
+                df = pd.read_excel(io.BytesIO(data), sheet_name=0, header=0, dtype=str)
+                orders = (parse_shopee_orders(df) if platform == 'shopee'
+                          else parse_lazada_orders(df))
+                s = models.import_marketplace_orders(conn, orders, f.filename)
+                msgs.append(f'📦 {f.filename}: ออเดอร์ {s["orders"]} (ใหม่), จับคู่ {s["lines_resolved"]}')
+            elif kind == 'income':
+                df = load_income_sheet(io.BytesIO(data))
+                models.upsert_marketplace_settlements(conn, parse_shopee_income(df), f.filename)
+                fn = models.upsert_marketplace_fees(conn, parse_shopee_income_fees(df), f.filename)
+                marketplace_match.run_automatch(conn, 'shopee')
+                msgs.append(f'💰 {f.filename}: ค่าธรรมเนียม+ยอดโอน {fn} ออเดอร์')
+            elif kind == 'balance':
+                ins = models.import_wallet_txns(
+                    conn, parse_shopee_balance(load_balance_sheet(io.BytesIO(data))), f.filename)
+                need_reconcile = True
+                msgs.append(f'🏦 {f.filename}: รายการกระเป๋าเงิน +{ins}')
+        if need_reconcile:
+            try:
+                rec = marketplace_reconcile.reconcile_payouts(conn, 'shopee')
+                msgs.append(f'↔ กระทบยอดโอน {rec["payouts"]} ก้อน ({rec["orders_linked"]} ออเดอร์)')
+            except marketplace_reconcile.ReconcileError as e:
+                msgs.append(f'⚠️ กระทบยอดไม่ลงตัว: {e}')
+    except Exception as e:
+        conn.close()
+        flash(f'นำเข้าไม่สำเร็จ: {e}', 'danger')
+        return redirect(url_for('marketplace.settlement'))
+    conn.close()
+    flash(' · '.join(msgs), 'success')
     return redirect(url_for('marketplace.settlement'))
