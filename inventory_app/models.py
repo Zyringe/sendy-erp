@@ -5267,15 +5267,18 @@ def upsert_marketplace_fees(conn, fee_rows, source_file=None, platform='shopee')
 
 def import_wallet_txns(conn, wallet_rows, source_file=None, platform='shopee'):
     """Insert wallet ledger rows. Idempotent via UNIQUE(platform,txn_time,
-    txn_type,order_sn,amount) + INSERT OR IGNORE. Returns count newly inserted."""
+    txn_type,order_sn,amount) + INSERT OR IGNORE. Returns count newly inserted.
+    order_sn is stored as '' (not NULL) so the UNIQUE index fires on re-import
+    (SQLite treats two NULLs as distinct in UNIQUE constraints)."""
     n = 0
     for r in wallet_rows:
+        sn = r.get('order_sn') or ''
         cur = conn.execute(
             """INSERT OR IGNORE INTO marketplace_wallet_txns
                  (platform, txn_time, txn_type, order_sn, amount, running_balance,
                   description, source_file)
                VALUES (?,?,?,?,?,?,?,?)""",
-            (platform, r['txn_time'], r['txn_type'], r.get('order_sn'),
+            (platform, r['txn_time'], r['txn_type'], sn,
              r['amount'], r.get('running_balance'), r.get('description'), source_file))
         n += cur.rowcount
     conn.commit()
