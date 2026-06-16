@@ -167,13 +167,20 @@ def settlement():
     try:
         report = models.get_settlement_report(conn, platform=platform)
         batch_report = models.get_deposit_batch_report(conn=conn)
-        payout_report = models.get_payout_report(conn, platform=platform)
+        payout_years = models.get_payout_years(conn, platform=platform)
+        # Default the deposits view to the latest year (lightest page); 'all'
+        # shows every year. Year chips in the template make 2025+ reachable.
+        selected_year = request.args.get('year') or (payout_years[0] if payout_years else None)
+        report_year = None if selected_year == 'all' else selected_year
+        payout_report = models.get_payout_report(conn, platform=platform, year=report_year)
     finally:
         conn.close()
     return render_template('marketplace/settlement.html',
                            report=report, platform=platform,
                            tab=tab, batch_report=batch_report,
                            payout_report=payout_report,
+                           payout_years=payout_years,
+                           selected_year=selected_year,
                            no_match_batch_id=None,
                            no_match_candidates=None,
                            no_match_deposit_amount=None)
