@@ -420,6 +420,7 @@ _ENDPOINT_MODULE = {
     'backups_list': 'admin_module',
     'backup_download': 'admin_module',
     'backup_restore': 'admin_module',
+    'backup_delete': 'admin_module',
     'admin_simulate_role': 'admin_module',
     'admin_exit_simulate': 'admin_module',
     # call-card
@@ -941,6 +942,22 @@ def upload_db():
             # Hold the uploaded file in a known spot so user can confirm without re-uploading.
             hold_dir = os.path.join(os.path.dirname(config.DATABASE_PATH), 'pending_uploads')
             os.makedirs(hold_dir, exist_ok=True)
+            # Stale held stashes from abandoned uploads accumulate on the small
+            # Railway volume and HAVE filled it (→ a 500 on upload). Sweep them
+            # first, then refuse to stash if there still isn't room — with a clear
+            # message pointing at /admin/backups, NOT a disk-full crash.
+            db_backup.sweep_pending_uploads(hold_dir)
+            need = os.path.getsize(tmp) + 20 * 1024 * 1024
+            free = shutil.disk_usage(hold_dir).free
+            if free < need:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                flash(f'พื้นที่ดิสก์ไม่พอสำหรับการอัปโหลด (เหลือ {free // (1024*1024)}MB '
+                      f'ต้องการ ~{need // (1024*1024)}MB) — ลบไฟล์สำรองเก่าที่หน้า "ไฟล์สำรอง" '
+                      f'ก่อน แล้วลองอัปโหลดใหม่', 'danger')
+                return redirect(url_for('backups_list'))
             ts = datetime.now().strftime('%Y%m%d_%H%M%S')
             hold_path = os.path.join(hold_dir, f'pending-{ts}.db')
             shutil.move(tmp, hold_path)
@@ -950,6 +967,7 @@ def upload_db():
                 diff_rows=diff_rows,
                 warnings=warnings,
                 pending=True,
+                disk=db_backup.disk_usage_mb(os.path.dirname(config.DATABASE_PATH)),
             )
 
         # Always backup the current DB before replacing.
@@ -970,7 +988,10 @@ def upload_db():
         else:
             flash('อัปโหลด DB สำเร็จ', 'success')
         return redirect(url_for('dashboard'))
-    return render_template('admin_upload_db.html')
+    return render_template(
+        'admin_upload_db.html',
+        disk=db_backup.disk_usage_mb(os.path.dirname(config.DATABASE_PATH)),
+    )
 
 
 @app.route('/admin/upload-db/confirm', methods=['POST'])
@@ -1089,6 +1110,29 @@ def backup_restore():
     else:
         flash('แนะนำให้ปิด-เปิดแอป (restart) แล้วตรวจข้อมูลอีกครั้ง', 'warning')
     return redirect(url_for('dashboard'))
+
+
+@app.route('/admin/backups/delete', methods=['POST'])
+def backup_delete():
+    """Manually delete one backup snapshot to free volume space. Same admin +
+    db-routes gate as restore; delete_backup() rejects any non-snapshot or
+    path-escaping name."""
+    if session.get('role') != 'admin':
+        abort(403)
+    if not session.get('db_routes_enabled'):
+        flash('เปิด "DB routes" ก่อน (ปุ่มในเมนูผู้ดูแล) เพื่อลบไฟล์สำรอง', 'danger')
+        return redirect(url_for('backups_list'))
+    name = request.form.get('name', '')
+    if request.form.get('confirm') != 'yes':
+        flash('ต้องยืนยันก่อนลบ', 'warning')
+        return redirect(url_for('backups_list'))
+    try:
+        freed = db_backup.delete_backup(name, backup_dir=_backups_dir())
+    except Exception as e:
+        flash(f'ลบไม่สำเร็จ: {e}', 'danger')
+        return redirect(url_for('backups_list'))
+    flash(f'ลบไฟล์สำรอง {name} แล้ว — คืนพื้นที่ {freed // (1024 * 1024)}MB', 'success')
+    return redirect(url_for('backups_list'))
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────

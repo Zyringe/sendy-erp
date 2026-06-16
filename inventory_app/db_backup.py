@@ -161,6 +161,53 @@ def prune_backups(*, backup_dir, keep_days=DEFAULT_KEEP_DAYS,
     return deleted
 
 
+# Held full-replace upload stashes written by /admin/upload-db onto the volume
+# (pending-<ts>.db). Same digit-only-timestamp shape as the backup names → a
+# foreign or path-traversing name can never match.
+_PENDING_RE = re.compile(r"^pending-\d{8}_\d{6}\.db$")
+
+
+def sweep_pending_uploads(pending_dir, *, keep_name=None):
+    """Delete stale held upload stashes in ``pending_dir`` (the uncompressed
+    'pending-<ts>.db' copies the full-replace warning step writes to the volume).
+    These linger when an upload is abandoned and have filled the volume before.
+    Keeps ``keep_name`` (the in-flight stash) if given. Only ever removes files
+    matching ``_PENDING_RE`` — never the live DB, backups, or anything else.
+    Returns (deleted_names, freed_bytes)."""
+    if not os.path.isdir(pending_dir):
+        return [], 0
+    deleted, freed = [], 0
+    for fn in os.listdir(pending_dir):
+        if not _PENDING_RE.match(fn) or fn == keep_name:
+            continue
+        p = os.path.join(pending_dir, fn)
+        try:
+            sz = os.path.getsize(p)
+            os.remove(p)
+            deleted.append(fn)
+            freed += sz
+        except OSError:
+            pass
+    return deleted, freed
+
+
+def delete_backup(name, *, backup_dir):
+    """Delete one auto-* snapshot by name (manual cleanup from /admin/backups).
+    Path-safe like restore_backup: ``name`` must match the snapshot pattern and
+    resolve to a file directly inside ``backup_dir`` (no '/', no '..' escape).
+    Returns freed bytes. Raises ValueError on a bad / escaping / missing name."""
+    if not _NAME_RE.match(name or ""):
+        raise ValueError(f"invalid backup name: {name!r}")
+    path = os.path.join(backup_dir, name)
+    if os.path.dirname(os.path.abspath(path)) != os.path.abspath(backup_dir):
+        raise ValueError("backup path escapes backup_dir")
+    if not os.path.exists(path):
+        raise ValueError(f"backup not found: {name}")
+    sz = os.path.getsize(path)
+    os.remove(path)
+    return sz
+
+
 def _remove_sidecars(db_path):
     """Delete the WAL/SHM sidecar files for ``db_path`` (if present)."""
     for side in ("-wal", "-shm"):

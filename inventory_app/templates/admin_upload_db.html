@@ -5,6 +5,25 @@
 <div class="container-fluid py-4" style="max-width:760px">
   <h4 class="mb-4"><i class="bi bi-cloud-upload me-2"></i>Upload Database</h4>
 
+  {% if disk %}
+    {% set pct = (disk.used * 100 // disk.total) if disk.total else 0 %}
+    <div class="card mb-3">
+      <div class="card-body py-2">
+        <div class="d-flex justify-content-between small mb-1">
+          <span><i class="bi bi-hdd me-1"></i>พื้นที่ดิสก์ (volume)</span>
+          <span class="text-muted">ใช้ {{ disk.used }}MB / {{ disk.total }}MB · ว่าง {{ disk.free }}MB</span>
+        </div>
+        <div class="progress" style="height:8px">
+          <div class="progress-bar {% if pct >= 85 %}bg-danger{% elif pct >= 70 %}bg-warning{% else %}bg-success{% endif %}"
+               style="width:{{ pct }}%"></div>
+        </div>
+        {% if disk.free < 200 %}
+          <div class="small text-danger mt-1"><i class="bi bi-exclamation-triangle me-1"></i>พื้นที่เหลือน้อย — ถ้าไม่พอ ระบบจะไม่อัปโหลดและบอกให้ลบไฟล์สำรองเก่าก่อน (<a href="{{ url_for('backups_list') }}">หน้าไฟล์สำรอง</a>)</div>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
   {% if pending %}
     <div class="alert alert-danger">
       <h5 class="mb-2"><i class="bi bi-exclamation-octagon-fill me-1"></i>หยุดก่อน — DB ปัจจุบันมีข้อมูลใหม่กว่าไฟล์ที่จะอัปโหลด</h5>
