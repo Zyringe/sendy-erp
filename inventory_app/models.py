@@ -5235,6 +5235,53 @@ def upsert_marketplace_settlements(conn, settlements, source_file=None,
             'skipped_no_date': skipped_no_date}
 
 
+def upsert_marketplace_fees(conn, fee_rows, source_file=None, platform='shopee'):
+    """Insert/replace per-order fee rows into marketplace_order_fees.
+    Keyed UNIQUE(platform, order_sn). Returns count upserted."""
+    n = 0
+    for f in fee_rows:
+        conn.execute(
+            """INSERT INTO marketplace_order_fees
+                 (platform, order_sn, item_value, fee_commission, fee_service,
+                  fee_transaction, fee_platform, fee_ads_escrow, fee_tax,
+                  shipping_net, fee_saver, fee_total, net_payout, fee_pct,
+                  fee_raw_json, source_file)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(platform, order_sn) DO UPDATE SET
+                  item_value=excluded.item_value, fee_commission=excluded.fee_commission,
+                  fee_service=excluded.fee_service, fee_transaction=excluded.fee_transaction,
+                  fee_platform=excluded.fee_platform, fee_ads_escrow=excluded.fee_ads_escrow,
+                  fee_tax=excluded.fee_tax, shipping_net=excluded.shipping_net,
+                  fee_saver=excluded.fee_saver, fee_total=excluded.fee_total,
+                  net_payout=excluded.net_payout, fee_pct=excluded.fee_pct,
+                  fee_raw_json=excluded.fee_raw_json, source_file=excluded.source_file""",
+            (platform, f['order_sn'], f.get('item_value'), f.get('fee_commission', 0),
+             f.get('fee_service', 0), f.get('fee_transaction', 0), f.get('fee_platform', 0),
+             f.get('fee_ads_escrow', 0), f.get('fee_tax', 0), f.get('shipping_net', 0),
+             f.get('fee_saver', 0), f.get('fee_total'), f.get('net_payout'),
+             f.get('fee_pct'), f.get('fee_raw_json'), source_file))
+        n += 1
+    conn.commit()
+    return n
+
+
+def import_wallet_txns(conn, wallet_rows, source_file=None, platform='shopee'):
+    """Insert wallet ledger rows. Idempotent via UNIQUE(platform,txn_time,
+    txn_type,order_sn,amount) + INSERT OR IGNORE. Returns count newly inserted."""
+    n = 0
+    for r in wallet_rows:
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO marketplace_wallet_txns
+                 (platform, txn_time, txn_type, order_sn, amount, running_balance,
+                  description, source_file)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (platform, r['txn_time'], r['txn_type'], r.get('order_sn'),
+             r['amount'], r.get('running_balance'), r.get('description'), source_file))
+        n += cur.rowcount
+    conn.commit()
+    return n
+
+
 def get_settlement_report(conn, platform='shopee'):
     """Return settlement data grouped by payout date for the AR clearance report.
 
