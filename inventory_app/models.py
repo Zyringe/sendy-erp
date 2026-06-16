@@ -5235,6 +5235,83 @@ def upsert_marketplace_settlements(conn, settlements, source_file=None,
             'skipped_no_date': skipped_no_date}
 
 
+def upsert_marketplace_fees(conn, fee_rows, source_file=None, platform='shopee'):
+    """Insert/replace per-order fee rows into marketplace_order_fees.
+    Keyed UNIQUE(platform, order_sn). Returns count upserted."""
+    n = 0
+    for f in fee_rows:
+        conn.execute(
+            """INSERT INTO marketplace_order_fees
+                 (platform, order_sn, item_value, fee_commission, fee_service,
+                  fee_transaction, fee_platform, fee_ads_escrow, fee_tax,
+                  shipping_net, fee_saver, fee_total, net_payout, fee_pct,
+                  fee_raw_json, source_file)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(platform, order_sn) DO UPDATE SET
+                  item_value=excluded.item_value, fee_commission=excluded.fee_commission,
+                  fee_service=excluded.fee_service, fee_transaction=excluded.fee_transaction,
+                  fee_platform=excluded.fee_platform, fee_ads_escrow=excluded.fee_ads_escrow,
+                  fee_tax=excluded.fee_tax, shipping_net=excluded.shipping_net,
+                  fee_saver=excluded.fee_saver, fee_total=excluded.fee_total,
+                  net_payout=excluded.net_payout, fee_pct=excluded.fee_pct,
+                  fee_raw_json=excluded.fee_raw_json, source_file=excluded.source_file""",
+            (platform, f['order_sn'], f.get('item_value'), f.get('fee_commission', 0),
+             f.get('fee_service', 0), f.get('fee_transaction', 0), f.get('fee_platform', 0),
+             f.get('fee_ads_escrow', 0), f.get('fee_tax', 0), f.get('shipping_net', 0),
+             f.get('fee_saver', 0), f.get('fee_total'), f.get('net_payout'),
+             f.get('fee_pct'), f.get('fee_raw_json'), source_file))
+        n += 1
+    conn.commit()
+    return n
+
+
+def import_wallet_txns(conn, wallet_rows, source_file=None, platform='shopee'):
+    """Insert wallet ledger rows. Idempotent via UNIQUE(platform,txn_time,
+    txn_type,order_sn,amount) + INSERT OR IGNORE. Returns count newly inserted.
+    order_sn is stored as '' (not NULL) so the UNIQUE index fires on re-import
+    (SQLite treats two NULLs as distinct in UNIQUE constraints)."""
+    n = 0
+    for r in wallet_rows:
+        sn = r.get('order_sn') or ''
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO marketplace_wallet_txns
+                 (platform, txn_time, txn_type, order_sn, amount, running_balance,
+                  description, source_file)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (platform, r['txn_time'], r['txn_type'], sn,
+             r['amount'], r.get('running_balance'), r.get('description'), source_file))
+        n += cur.rowcount
+    conn.commit()
+    return n
+
+
+def get_payout_report(conn, platform='shopee', limit=24):
+    """Bank deposits (newest first) with their orders + fee join.
+    Each deposit: id, deposit_date, amount, n_orders, fee_total (Σ order fees),
+    orders:[{order_sn, settled_at, item_value, fee_total, net_payout, fee_pct}]."""
+    payouts = conn.execute(
+        """SELECT id, deposit_date, amount, n_orders
+           FROM marketplace_payouts WHERE platform = ?
+           ORDER BY deposit_date DESC, id DESC LIMIT ?""", (platform, limit)).fetchall()
+    out = []
+    for p in payouts:
+        orders = conn.execute(
+            """SELECT o.order_sn, o.settled_at,
+                      f.item_value, f.fee_total, f.net_payout, f.fee_pct
+               FROM marketplace_orders o
+               LEFT JOIN marketplace_order_fees f
+                      ON f.platform = o.platform AND f.order_sn = o.order_sn
+               WHERE o.platform = ? AND o.payout_id = ?
+               ORDER BY o.settled_at, o.order_sn""", (platform, p['id'])).fetchall()
+        out.append({
+            'id': p['id'], 'deposit_date': p['deposit_date'], 'amount': p['amount'],
+            'n_orders': p['n_orders'],
+            'fee_total': round(sum((o['fee_total'] or 0) for o in orders), 2),
+            'orders': [dict(o) for o in orders],
+        })
+    return out
+
+
 def get_settlement_report(conn, platform='shopee'):
     """Return settlement data grouped by payout date for the AR clearance report.
 
@@ -5337,7 +5414,20 @@ def get_marketplace_order_detail(conn, order_id):
            ORDER BY it.id""",
         (order_id,)
     ).fetchall()
-    return {'order': dict(o), 'items': [dict(r) for r in items]}
+    fees = conn.execute(
+        """SELECT item_value, fee_commission, fee_service, fee_transaction,
+                  fee_platform, fee_ads_escrow, fee_tax, shipping_net, fee_saver,
+                  fee_total, net_payout, fee_pct
+           FROM marketplace_order_fees
+           WHERE platform = ? AND order_sn = ?""",
+        (o['platform'], o['order_sn'])).fetchone()
+    payout = conn.execute(
+        """SELECT p.deposit_date, p.amount FROM marketplace_payouts p
+           JOIN marketplace_orders mo ON mo.payout_id = p.id
+           WHERE mo.id = ?""", (order_id,)).fetchone()
+    return {'order': dict(o), 'items': [dict(r) for r in items],
+            'fees': dict(fees) if fees else None,
+            'payout': dict(payout) if payout else None}
 
 
 # Customer NAME (not code) per platform, for the payments-received lookup.

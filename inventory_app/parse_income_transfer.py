@@ -15,6 +15,8 @@ result. parse_shopee_income() returns a list of settlement dicts:
 
 These are the confirmed transferred amounts per order.
 """
+import json
+
 import pandas as pd
 
 from parse_platform import _to_float
@@ -77,6 +79,68 @@ def load_income_sheet(source):
     df = raw.iloc[hdr + 1:].copy()
     df.columns = [str(c).strip() for c in raw.iloc[hdr].tolist()]
     return df
+
+
+# Fee buckets → list of source column names summed into each bucket.
+_FEE_BUCKETS = {
+    'fee_commission':  ['ค่าคอมมิชชั่น AMS', 'ค่าคอมมิชชั่น'],
+    'fee_service':     ['ค่าบริการ'],
+    'fee_transaction': ['ค่าธุรกรรมการชำระเงิน'],
+    'fee_platform':    ['ค่าธรรมเนียมโครงสร้างพื้นฐานแพลตฟอร์ม'],
+    'fee_ads_escrow':  ['ค่าธรรมเนียมเติมเงินโฆษณาจากเงิน Escrow'],
+    'fee_tax':         ['ภาษี'],
+    'shipping_net':    ['ค่าจัดส่งที่ชำระโดยผู้ซื้อ', 'ค่าจัดส่งสินค้าที่ออกโดย Shopee',
+                        'ค่าจัดส่งที่ Shopee ชำระโดยชื่อของคุณ'],
+    'fee_saver':       ['ค่าธรรมเนียม ของโปรแกรมประหยัดค่าจัดส่ง'],
+}
+_ITEM_COLS = ['สินค้าราคาปกติ', 'ส่วนลดสินค้าจากผู้ขาย']
+_COL_FEE_PCT = 'ค่าธรรมเนียม (%)'
+
+
+def _sum_cols(row, cols):
+    total = 0.0
+    for c in cols:
+        v = _to_float(row.get(c)) if c in row else None
+        if v is not None:
+            total += v
+    return round(total, 2)
+
+
+def parse_shopee_income_fees(df):
+    """Per-order fee breakdown from the Income sheet (full columns).
+
+    Returns a list of dicts: order_sn, order_date, buyer, item_value, the
+    fee_* buckets, shipping_net, fee_total, net_payout, fee_pct, fee_raw_json.
+    Rows with a blank order id are skipped. Amounts keep Shopee's sign
+    (fees are negative). fee_total = item_value - net_payout (the satang-true
+    identity), independent of bucket completeness.
+    """
+    out = []
+    for _, row in df.iterrows():
+        sn = '' if pd.isna(row.get(_COL_ORDER_SN)) else str(row.get(_COL_ORDER_SN)).strip()
+        if not sn or sn.lower() == 'nan':
+            continue
+        item_value = _sum_cols(row, _ITEM_COLS)
+        net = _to_float(row.get(_COL_PAYOUT)) or 0.0
+        rec = {
+            'order_sn':   sn,
+            'order_date': ('' if pd.isna(row.get('วันที่ทำการสั่งซื้อ'))
+                           else str(row.get('วันที่ทำการสั่งซื้อ')).strip()[:10]),
+            'buyer':      ('' if pd.isna(row.get('ชื่อผู้ใช้ (ผู้ซื้อ)'))
+                           else str(row.get('ชื่อผู้ใช้ (ผู้ซื้อ)')).strip()),
+            'item_value': item_value,
+            'net_payout': round(net, 2),
+            'fee_pct':    ('' if pd.isna(row.get(_COL_FEE_PCT))
+                           else str(row.get(_COL_FEE_PCT)).strip()),
+            'fee_total':  round(item_value - net, 2),
+            'fee_raw_json': json.dumps(
+                {k: (None if pd.isna(v) else str(v)) for k, v in row.items()},
+                ensure_ascii=False),
+        }
+        for bucket, cols in _FEE_BUCKETS.items():
+            rec[bucket] = _sum_cols(row, cols)
+        out.append(rec)
+    return out
 
 
 def parse_shopee_income(df):
