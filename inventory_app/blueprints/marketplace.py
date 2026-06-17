@@ -161,50 +161,48 @@ def settlement_import():
 
 @bp_marketplace.route('/marketplace/settlement')
 def settlement():
+    """Two tabs:
+      deposits  — bank transfers (marketplace_payouts), each expandable to its
+                  orders with the matched ใบกำกับ (IV); the weekly รับชำระหนี้
+                  worksheet. Folds in what the old 'daily' tab did.
+      reconcile — per-month กระทบยอด: payout ↔ billed IV ↔ รับชำระ (Express).
+                  Was the standalone /marketplace/reconciliation page.
+    """
     platform = request.args.get('platform', 'shopee')
-    tab = request.args.get('tab', 'deposits')  # 'deposits' | 'daily' | 'batch'
+    tab = request.args.get('tab', 'deposits')
+    if tab not in ('deposits', 'reconcile'):
+        tab = 'deposits'
     conn = get_connection()
     try:
-        # batch_report feeds the nav badge (unbatched count) on every tab, so it
-        # always runs. The two heavy datasets are computed only for the tab that
-        # renders them — get_settlement_report does a full-history N+1 the
-        # deposits/batch tabs never display, so gating it off the deposits tab is
-        # the main page-speed win here.
-        batch_report = models.get_deposit_batch_report(conn=conn)
-        payout_years = models.get_payout_years(conn, platform=platform)
-        # Default the deposits view to the latest year (lightest page); 'all'
-        # shows every year. Year chips in the template make 2025+ reachable.
-        selected_year = request.args.get('year') or (payout_years[0] if payout_years else None)
-        report_year = None if selected_year == 'all' else selected_year
-        report = models.get_settlement_report(conn, platform=platform) if tab == 'daily' else None
-        # Deposits tab uses light summaries (no per-order rows); each card lazy-
-        # loads its orders from /marketplace/api/payout/<id>/orders on expand.
-        payout_report = (models.get_payout_summaries(conn, platform=platform, year=report_year)
-                         if tab == 'deposits' else None)
+        if tab == 'reconcile':
+            report = models.get_marketplace_reconciliation(conn, platform=platform)
+            payout_report = payout_years = selected_year = extras = None
+        else:
+            report = None
+            payout_years = models.get_payout_years(conn, platform=platform)
+            # Default to the latest year (lightest page); 'all' shows every year.
+            selected_year = request.args.get('year') or (payout_years[0] if payout_years else None)
+            report_year = None if selected_year == 'all' else selected_year
+            # Light summaries only; each card lazy-loads its order rows from
+            # /marketplace/api/payout/<id>/orders on expand.
+            payout_report = models.get_payout_summaries(conn, platform=platform, year=report_year)
+            extras = models.get_deposit_tab_extras(conn, platform=platform)
     finally:
         conn.close()
     return render_template('marketplace/settlement.html',
-                           report=report, platform=platform,
-                           tab=tab, batch_report=batch_report,
+                           report=report, platform=platform, tab=tab,
                            payout_report=payout_report,
                            payout_years=payout_years,
                            selected_year=selected_year,
-                           no_match_batch_id=None,
-                           no_match_candidates=None,
-                           no_match_deposit_amount=None)
+                           extras=extras)
 
 
 @bp_marketplace.route('/marketplace/reconciliation')
 def reconciliation():
-    """Per-month reconciliation: Shopee payout ↔ matched IV billed ↔ รับชำระหนี้."""
-    platform = request.args.get('platform', 'shopee')
-    conn = get_connection()
-    try:
-        report = models.get_marketplace_reconciliation(conn, platform=platform)
-    finally:
-        conn.close()
-    return render_template('marketplace/reconciliation.html',
-                           report=report, platform=platform)
+    """Reconciliation now lives as a tab inside Settlement; keep this URL as a
+    redirect so old bookmarks / links still land in the right place."""
+    return redirect(url_for('marketplace.settlement', tab='reconcile',
+                            platform=request.args.get('platform', 'shopee')))
 
 
 @bp_marketplace.route('/marketplace/api/order/<int:order_id>')
@@ -264,193 +262,8 @@ def review_amount(order_id):
         flash('ยกเลิกการตรวจแล้ว', 'success')
     else:
         flash('บันทึกว่าตรวจแล้ว (ยอดต่างนี้โอเค)', 'success')
-    return redirect(url_for('marketplace.reconciliation',
+    return redirect(url_for('marketplace.settlement', tab='reconcile',
                             platform=request.args.get('platform', 'shopee')))
-
-
-@bp_marketplace.route('/marketplace/settlement/batch', methods=['POST'])
-def settlement_batch_create():
-    """Dry-run greedy match then either create+assign (hit) or show tick UI (miss).
-
-    M1 fix: no batch row is created until we have an exact prefix match.
-    On no_exact_match the form fields are carried as hidden inputs into
-    /settlement/batch/manual so the operator can tick orders and create exactly
-    one batch row per submission.
-    """
-    deposit_date   = request.form.get('deposit_date', '').strip()
-    deposit_amount = request.form.get('deposit_amount', '').strip()
-    bank_ref       = request.form.get('bank_ref', '').strip() or None
-    note           = request.form.get('note', '').strip() or None
-
-    if not deposit_date or not deposit_amount:
-        flash('กรุณาระบุวันที่และจำนวนเงินที่โอนค่ะ', 'warning')
-        return redirect(url_for('marketplace.settlement', tab='batch'))
-
-    try:
-        amount = float(deposit_amount)
-    except ValueError:
-        flash('จำนวนเงินต้องเป็นตัวเลขค่ะ', 'warning')
-        return redirect(url_for('marketplace.settlement', tab='batch'))
-
-    # L3: reject non-positive / non-finite amounts
-    if not math.isfinite(amount) or amount <= 0:
-        flash('จำนวนเงินต้องเป็นตัวเลขบวกค่ะ', 'warning')
-        return redirect(url_for('marketplace.settlement', tab='batch'))
-
-    conn = get_connection()
-    try:
-        # Pure dry-run — no DB writes yet.
-        result = models.match_orders_to_amount(amount, conn=conn)
-
-        if result['status'] == 'matched':
-            # Exact hit — create batch and assign in one transaction.
-            batch_id = models.create_payout_batch(
-                deposit_date, amount,
-                bank_ref=bank_ref, note=note,
-                created_by=session.get('username'),
-                conn=conn,
-            )
-            models.assign_orders_to_batch(batch_id, amount, conn=conn)
-            flash(
-                f'จับคู่สำเร็จ: {result["n"]} ออเดอร์ รวม ฿{result["sum"]:,.2f} '
-                f'ตรงกับยอดโอน ฿{amount:,.2f} ค่ะ',
-                'success',
-            )
-            return redirect(url_for('marketplace.settlement', tab='batch'))
-
-        # no_exact_match — fetch page data and re-render with tick UI.
-        # NO batch row created; deposit fields passed as hidden inputs.
-        report = models.get_settlement_report(conn, platform='shopee')
-        batch_report = models.get_deposit_batch_report(conn=conn)
-    finally:
-        conn.close()
-
-    flash(
-        f'ไม่พบ prefix sum ที่ตรงพอดี (prefix แต่ละอันไม่ได้เรียงต่อเนื่องพอดีกับยอดโอน) '
-        f'— ติ๊กเลือก order เองด้านล่างได้เลยค่ะ ข้อมูลไม่ได้ผิด แค่ไม่มี prefix ที่ตรงพอดี '
-        f'(ใกล้สุด: {result["closest_n"]} ออเดอร์ รวม ฿{result["closest_sum"]:,.2f})',
-        'warning',
-    )
-    return render_template(
-        'marketplace/settlement.html',
-        report=report,
-        platform='shopee',
-        tab='batch',
-        batch_report=batch_report,
-        no_match_deposit_date=deposit_date,
-        no_match_deposit_amount=amount,
-        no_match_bank_ref=bank_ref or '',
-        no_match_note=note or '',
-        no_match_candidates=result['candidates'],
-    )
-
-
-@bp_marketplace.route('/marketplace/settlement/batch/manual', methods=['POST'])
-def settlement_batch_manual():
-    """Create-and-assign in one step from the manual-tick form.
-
-    Hidden fields carry the original deposit metadata (deposit_date,
-    deposit_amount, bank_ref, note) from the no_exact_match re-render.
-    The batch row is created HERE, after the operator has chosen order_sns,
-    so no orphan empty batch is ever committed.
-    """
-    deposit_date   = request.form.get('deposit_date', '').strip()
-    deposit_amount = request.form.get('deposit_amount', '').strip()
-    bank_ref       = request.form.get('bank_ref', '').strip() or None
-    note           = request.form.get('note', '').strip() or None
-    order_sns      = request.form.getlist('order_sns')
-
-    if not deposit_date or not deposit_amount:
-        flash('ข้อมูลก้อนเงินไม่ครบ กรุณากรอกฟอร์มใหม่ค่ะ', 'warning')
-        return redirect(url_for('marketplace.settlement', tab='batch'))
-    if not order_sns:
-        flash('กรุณาเลือก order อย่างน้อย 1 รายการค่ะ', 'warning')
-        return redirect(url_for('marketplace.settlement', tab='batch'))
-
-    try:
-        amount = float(deposit_amount)
-    except ValueError:
-        flash('จำนวนเงินไม่ถูกต้องค่ะ', 'warning')
-        return redirect(url_for('marketplace.settlement', tab='batch'))
-
-    conn = get_connection()
-    try:
-        batch_id = models.create_payout_batch(
-            deposit_date, amount,
-            bank_ref=bank_ref, note=note,
-            created_by=session.get('username'),
-            conn=conn,
-        )
-        models.assign_orders_manual(batch_id, order_sns, conn=conn)
-    finally:
-        conn.close()
-
-    flash(
-        f'บันทึก {len(order_sns)} ออเดอร์ เข้าก้อนเงินโอน #{batch_id} '
-        f'(฿{amount:,.2f} วันที่ {deposit_date}) แล้วค่ะ',
-        'success',
-    )
-    return redirect(url_for('marketplace.settlement', tab='batch'))
-
-
-@bp_marketplace.route('/marketplace/settlement/batch/<int:batch_id>/assign', methods=['POST'])
-def settlement_batch_assign(batch_id):
-    """Manual assign: the operator checks specific order_sns from the candidate list."""
-    order_sns = request.form.getlist('order_sns')
-    if not order_sns:
-        flash('กรุณาเลือก order อย่างน้อย 1 รายการค่ะ', 'warning')
-        return redirect(url_for('marketplace.settlement', tab='batch'))
-
-    conn = get_connection()
-    try:
-        models.assign_orders_manual(batch_id, order_sns, conn=conn)
-    finally:
-        conn.close()
-
-    flash(f'บันทึก {len(order_sns)} ออเดอร์ เข้าก้อนเงินโอน #{batch_id} แล้วค่ะ', 'success')
-    return redirect(url_for('marketplace.settlement', tab='batch'))
-
-
-@bp_marketplace.route('/marketplace/settlement/batch/<int:batch_id>/delete', methods=['POST'])
-def settlement_batch_delete(batch_id):
-    """Unassign all orders and delete the batch."""
-    conn = get_connection()
-    try:
-        models.unassign_batch(batch_id, conn=conn)
-    finally:
-        conn.close()
-    flash(f'ลบก้อนเงินโอน #{batch_id} แล้วค่ะ', 'success')
-    return redirect(url_for('marketplace.settlement', tab='batch'))
-
-
-@bp_marketplace.route('/marketplace/settlement/baseline', methods=['POST'])
-def settlement_baseline():
-    """Create a one-time "ยอดยกมา" baseline batch to absorb the historical backlog.
-
-    Field: cutoff_date (ISO date). All Shopee settled orders with
-    settled_at <= cutoff_date that are not yet in any batch are absorbed.
-    """
-    cutoff_date = request.form.get('cutoff_date', '').strip()
-    if not cutoff_date:
-        flash('กรุณาระบุวันที่ตัดยอดค่ะ', 'warning')
-        return redirect(url_for('marketplace.settlement', tab='batch'))
-
-    conn = get_connection()
-    try:
-        result = models.create_baseline_batch(
-            cutoff_date,
-            created_by=session.get('username'),
-            conn=conn,
-        )
-    finally:
-        conn.close()
-
-    flash(
-        f'ตั้งยอดยกมาสำเร็จ: ดูดซับ {result["n_absorbed"]} ออเดอร์ '
-        f'รวม ฿{result["sum_absorbed"]:,.2f} (ก่อน/ตรงวันที่ {cutoff_date}) ค่ะ',
-        'success',
-    )
-    return redirect(url_for('marketplace.settlement', tab='batch'))
 
 
 @bp_marketplace.route('/marketplace/order/<int:order_id>/link-iv', methods=['POST'])

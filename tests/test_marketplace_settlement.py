@@ -202,18 +202,26 @@ def test_settlement_page_renders_with_null_item_total(conn):
     assert resp.status_code == 200, f"expected 200, got {resp.status_code}"
 
 
-def test_settlement_report_computed_only_for_daily_tab(conn, monkeypatch):
-    """Page-speed gate: get_settlement_report runs a full-history N+1 that only
-    the 'daily' tab renders. The route must skip it on the deposits/batch tabs
-    (the deposits tab was paying for ~175 unused queries on every load)."""
-    calls = {'n': 0}
-    orig = models.get_settlement_report
+def test_settlement_tabs_render_without_settlement_report(conn, monkeypatch):
+    """The 'daily' (per-settled-date) tab was folded into the deposits tab, so
+    get_settlement_report — a full-history N+1 — is no longer used by the page at
+    all. Neither remaining tab may call it; the reconcile tab computes the
+    reconciliation report instead."""
+    settle_calls = {'n': 0}
+    recon_calls = {'n': 0}
+    orig_settle = models.get_settlement_report
+    orig_recon = models.get_marketplace_reconciliation
 
-    def spy(*a, **k):
-        calls['n'] += 1
-        return orig(*a, **k)
+    def settle_spy(*a, **k):
+        settle_calls['n'] += 1
+        return orig_settle(*a, **k)
 
-    monkeypatch.setattr(models, 'get_settlement_report', spy)
+    def recon_spy(*a, **k):
+        recon_calls['n'] += 1
+        return orig_recon(*a, **k)
+
+    monkeypatch.setattr(models, 'get_settlement_report', settle_spy)
+    monkeypatch.setattr(models, 'get_marketplace_reconciliation', recon_spy)
 
     from app import app as flask_app
     flask_app.config['TESTING'] = True
@@ -224,11 +232,9 @@ def test_settlement_report_computed_only_for_daily_tab(conn, monkeypatch):
         sess['role'] = 'staff'
 
     assert c.get('/marketplace/settlement?tab=deposits').status_code == 200
-    assert calls['n'] == 0, 'deposits tab must not compute the settlement report'
-    assert c.get('/marketplace/settlement?tab=batch').status_code == 200
-    assert calls['n'] == 0, 'batch tab must not compute the settlement report'
-    assert c.get('/marketplace/settlement?tab=daily').status_code == 200
-    assert calls['n'] == 1, 'daily tab must compute the settlement report'
+    assert c.get('/marketplace/settlement?tab=reconcile').status_code == 200
+    assert settle_calls['n'] == 0, 'settlement report must not be computed by either tab'
+    assert recon_calls['n'] == 1, 'reconcile tab computes the reconciliation report once'
 
 
 # --- Route permission gate (mirrors test_staff_allowed_to_import_orders) ---
