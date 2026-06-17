@@ -165,16 +165,22 @@ def settlement():
     tab = request.args.get('tab', 'deposits')  # 'deposits' | 'daily' | 'batch'
     conn = get_connection()
     try:
-        report = models.get_settlement_report(conn, platform=platform)
+        # batch_report feeds the nav badge (unbatched count) on every tab, so it
+        # always runs. The two heavy datasets are computed only for the tab that
+        # renders them — get_settlement_report does a full-history N+1 the
+        # deposits/batch tabs never display, so gating it off the deposits tab is
+        # the main page-speed win here.
         batch_report = models.get_deposit_batch_report(conn=conn)
         payout_years = models.get_payout_years(conn, platform=platform)
         # Default the deposits view to the latest year (lightest page); 'all'
         # shows every year. Year chips in the template make 2025+ reachable.
         selected_year = request.args.get('year') or (payout_years[0] if payout_years else None)
         report_year = None if selected_year == 'all' else selected_year
+        report = models.get_settlement_report(conn, platform=platform) if tab == 'daily' else None
         # Deposits tab uses light summaries (no per-order rows); each card lazy-
         # loads its orders from /marketplace/api/payout/<id>/orders on expand.
-        payout_report = models.get_payout_summaries(conn, platform=platform, year=report_year)
+        payout_report = (models.get_payout_summaries(conn, platform=platform, year=report_year)
+                         if tab == 'deposits' else None)
     finally:
         conn.close()
     return render_template('marketplace/settlement.html',
