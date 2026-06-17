@@ -5311,14 +5311,42 @@ def get_payout_report(conn, platform='shopee', year=None, limit=1000):
             ORDER BY deposit_date DESC, id DESC LIMIT ?""", (*params, limit)).fetchall()
     out = []
     for p in payouts:
+        # Fill the 3 columns (item_value / fee_total / net_payout) from the best
+        # source available, tagged via fee_source so the UI can badge it:
+        #   settled — has a marketplace_order_fees row (Income file, authoritative,
+        #             full fee breakdown).
+        #   wallet  — no Income, but the Seller-Balance ledger carries the true net
+        #             credit (w.wallet_net). item_value falls back to the Order
+        #             export's item_total; fee_total is the estimate item_total−net.
+        #   order   — only the Order export is present (no wallet, no Income).
+        # actual_payout / f.* both come from the same Income import, so f present
+        # ⇒ settled; the wallet net is the fallback when only Order+Balance loaded.
         orders = conn.execute(
-            """SELECT o.order_sn, o.settled_at,
-                      f.item_value, f.fee_total, f.net_payout, f.fee_pct
+            """SELECT o.id, o.order_sn, o.settled_at,
+                      COALESCE(f.item_value, o.item_total) AS item_value,
+                      COALESCE(f.fee_total,
+                               CASE WHEN o.item_total IS NOT NULL
+                                     AND COALESCE(w.wallet_net, o.actual_payout) IS NOT NULL
+                                    THEN ROUND(o.item_total
+                                               - COALESCE(w.wallet_net, o.actual_payout), 2)
+                               END) AS fee_total,
+                      COALESCE(f.net_payout, w.wallet_net, o.actual_payout) AS net_payout,
+                      f.fee_pct,
+                      CASE WHEN f.order_sn IS NOT NULL THEN 'settled'
+                           WHEN w.wallet_net IS NOT NULL OR o.actual_payout IS NOT NULL THEN 'wallet'
+                           WHEN o.item_total IS NOT NULL OR o.payout IS NOT NULL THEN 'order'
+                           ELSE 'none' END AS fee_source
                FROM marketplace_orders o
                LEFT JOIN marketplace_order_fees f
                       ON f.platform = o.platform AND f.order_sn = o.order_sn
+               LEFT JOIN (SELECT order_sn, SUM(amount) AS wallet_net
+                          FROM marketplace_wallet_txns
+                          WHERE platform = ? AND txn_type = 'income'
+                          GROUP BY order_sn) w
+                      ON w.order_sn = o.order_sn
                WHERE o.platform = ? AND o.payout_id = ?
-               ORDER BY o.settled_at, o.order_sn""", (platform, p['id'])).fetchall()
+               ORDER BY o.settled_at, o.order_sn""",
+            (platform, platform, p['id'])).fetchall()
         out.append({
             'id': p['id'], 'deposit_date': p['deposit_date'], 'amount': p['amount'],
             'n_orders': p['n_orders'], 'status': p['status'],

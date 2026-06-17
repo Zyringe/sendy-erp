@@ -60,6 +60,10 @@
   </div>
   {% endif %}
   {% if payout_report %}
+    <p class="text-muted small mb-2">
+      💡 คลิกที่<strong>เลขออเดอร์</strong>เพื่อดูค่าธรรมเนียมแยกรายการ ·
+      <span class="badge bg-secondary">~ ประมาณ</span> = ยังไม่ได้อัปโหลดไฟล์ Income (โอนเงินสำเร็จ) — ยอดสุทธิจริงจาก Seller Balance แต่ค่าธรรมเนียมเป็นค่าประมาณ
+    </p>
     {% for d in payout_report %}
     <div class="card mb-3">
       <div class="card-header d-flex justify-content-between align-items-center"
@@ -85,10 +89,20 @@
             <tbody>
               {% for o in d.orders %}
               <tr>
-                <td><code>{{ o.order_sn }}</code></td>
+                <td>
+                  <code class="js-order-detail" role="button" data-order-id="{{ o.id }}"
+                        title="ดูรายละเอียด + ค่าธรรมเนียมแยกรายการ">{{ o.order_sn }}</code>
+                  {% if o.fee_source == 'wallet' %}
+                    <span class="badge bg-secondary" title="ยอดสุทธิจริงจาก Seller Balance — ค่าธรรมเนียมเป็นค่าประมาณ (ยังไม่ได้อัปโหลดไฟล์ Income โอนเงินสำเร็จ)">~ ประมาณ</span>
+                  {% elif o.fee_source == 'order' %}
+                    <span class="badge bg-warning text-dark" title="จากไฟล์ Order เท่านั้น — ประมาณการ">~ order</span>
+                  {% elif o.fee_source == 'none' %}
+                    <span class="badge bg-light text-muted border" title="ไม่มีข้อมูลค่าธรรมเนียม">–</span>
+                  {% endif %}
+                </td>
                 <td class="small">{{ o.settled_at or '–' }}</td>
                 <td class="text-end">{{ '{:,.2f}'.format(o.item_value or 0) }}</td>
-                <td class="text-end text-danger">{{ '{:,.2f}'.format(o.fee_total or 0) }}</td>
+                <td class="text-end {{ 'text-danger' if o.fee_source == 'settled' else 'text-muted' }}">{{ '{:,.2f}'.format(o.fee_total or 0) }}</td>
                 <td class="text-end fw-bold">{{ '{:,.2f}'.format(o.net_payout or 0) }}</td>
                 <td class="text-end small">{{ o.fee_pct or '' }}</td>
               </tr>
