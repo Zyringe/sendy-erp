@@ -202,6 +202,35 @@ def test_settlement_page_renders_with_null_item_total(conn):
     assert resp.status_code == 200, f"expected 200, got {resp.status_code}"
 
 
+def test_settlement_report_computed_only_for_daily_tab(conn, monkeypatch):
+    """Page-speed gate: get_settlement_report runs a full-history N+1 that only
+    the 'daily' tab renders. The route must skip it on the deposits/batch tabs
+    (the deposits tab was paying for ~175 unused queries on every load)."""
+    calls = {'n': 0}
+    orig = models.get_settlement_report
+
+    def spy(*a, **k):
+        calls['n'] += 1
+        return orig(*a, **k)
+
+    monkeypatch.setattr(models, 'get_settlement_report', spy)
+
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 4
+        sess['username'] = 'staffer'
+        sess['role'] = 'staff'
+
+    assert c.get('/marketplace/settlement?tab=deposits').status_code == 200
+    assert calls['n'] == 0, 'deposits tab must not compute the settlement report'
+    assert c.get('/marketplace/settlement?tab=batch').status_code == 200
+    assert calls['n'] == 0, 'batch tab must not compute the settlement report'
+    assert c.get('/marketplace/settlement?tab=daily').status_code == 200
+    assert calls['n'] == 1, 'daily tab must compute the settlement report'
+
+
 # --- Route permission gate (mirrors test_staff_allowed_to_import_orders) ---
 
 def test_staff_allowed_to_settlement_import():
