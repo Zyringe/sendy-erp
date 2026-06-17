@@ -145,7 +145,11 @@ document.addEventListener('DOMContentLoaded', function () {
       .catch(e => { load.classList.add('d-none'); err.textContent = 'โหลดไม่สำเร็จ: ' + e.message; err.classList.remove('d-none'); });
   }
 
-  document.querySelectorAll('.js-order-detail').forEach(b =>
-    b.addEventListener('click', () => openDetail(b.dataset.orderId)));
+  // Event delegation so lazily-injected rows (deposits tab loads orders on
+  // expand) also open the modal — not just rows present at DOMContentLoaded.
+  document.addEventListener('click', function (e) {
+    const t = e.target.closest('.js-order-detail');
+    if (t) openDetail(t.dataset.orderId);
+  });
 });
 </script>

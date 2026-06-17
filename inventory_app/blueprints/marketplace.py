@@ -172,7 +172,9 @@ def settlement():
         # shows every year. Year chips in the template make 2025+ reachable.
         selected_year = request.args.get('year') or (payout_years[0] if payout_years else None)
         report_year = None if selected_year == 'all' else selected_year
-        payout_report = models.get_payout_report(conn, platform=platform, year=report_year)
+        # Deposits tab uses light summaries (no per-order rows); each card lazy-
+        # loads its orders from /marketplace/api/payout/<id>/orders on expand.
+        payout_report = models.get_payout_summaries(conn, platform=platform, year=report_year)
     finally:
         conn.close()
     return render_template('marketplace/settlement.html',
@@ -210,6 +212,19 @@ def api_order_detail(order_id):
     if detail is None:
         abort(404)
     return jsonify(detail)
+
+
+@bp_marketplace.route('/marketplace/api/payout/<int:payout_id>/orders')
+def api_payout_orders(payout_id):
+    """JSON: the order rows for one bank deposit, lazy-loaded when its card is
+    expanded on the deposits tab (keeps the initial page light)."""
+    platform = request.args.get('platform', 'shopee')
+    conn = get_connection()
+    try:
+        orders = models.get_payout_orders(conn, platform, payout_id)
+    finally:
+        conn.close()
+    return jsonify({'orders': orders})
 
 
 @bp_marketplace.route('/marketplace/api/order/<int:order_id>/iv-candidates')
