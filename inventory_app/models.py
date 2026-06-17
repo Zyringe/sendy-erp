@@ -5479,7 +5479,104 @@ def get_marketplace_order_detail(conn, order_id):
     return {'order': dict(o), 'items': [dict(r) for r in items],
             'fees': dict(fees) if fees else None,
             'payout': dict(payout) if payout else None,
-            'adjustments': [dict(a) for a in adjustments]}
+            'adjustments': [dict(a) for a in adjustments],
+            'margin': get_order_margin(conn, order_id)}
+
+
+def resolve_line_ratio(conn, platform, internal_product_id, variation_name=None):
+    """Resolve qty_per_sale (how many base product units = 1 marketplace sale unit)
+    for an order line. Order lines carry no variation_id, so we resolve from
+    platform_skus by product, then disambiguate by variation_name.
+
+    Returns (ratio, source):
+        ('single')      product sold at one ratio across its listings → use it
+        ('matched')     multi-ratio product, variation_name matched a listing
+        (None,'ambiguous')  multi-ratio, no variation_name match → DON'T guess
+        (None,'no_listing') product has no platform_skus row
+    """
+    rows = conn.execute(
+        """SELECT variation_name, qty_per_sale FROM platform_skus
+           WHERE platform = ? AND internal_product_id = ?""",
+        (platform, internal_product_id)).fetchall()
+    if not rows:
+        return (None, 'no_listing')
+    distinct = {r['qty_per_sale'] for r in rows}
+    if len(distinct) == 1:
+        return (rows[0]['qty_per_sale'], 'single')
+    if variation_name:
+        for r in rows:
+            if r['variation_name'] == variation_name:
+                return (r['qty_per_sale'], 'matched')
+    return (None, 'ambiguous')
+
+
+def get_order_margin(conn, order_id):
+    """Contribution margin for one marketplace order = net payout − COGS.
+
+    COGS = Σ over lines of cost_price × qty × ratio, with the per-line ratio
+    resolved via resolve_line_ratio (the pack/โหล multiplier). net is the true
+    received amount: settled net_payout (Income) else the wallet income credit
+    else actual_payout.
+
+    margin / margin_pct are None when ANY line's ratio is unresolved OR a line's
+    product has no cost_price — reporting a partial total as if complete would
+    mislead. The caller can still show the resolved `cogs` plus the `unresolved`
+    / `cost_gap` counts and badge it "ไม่ครบ".
+    """
+    net = conn.execute(
+        """SELECT COALESCE(
+                    f.net_payout,
+                    (SELECT SUM(w.amount) FROM marketplace_wallet_txns w
+                      WHERE w.platform = mo.platform AND w.order_sn = mo.order_sn
+                        AND w.txn_type = 'income'),
+                    mo.actual_payout) AS net
+           FROM marketplace_orders mo
+           LEFT JOIN marketplace_order_fees f
+                  ON f.platform = mo.platform AND f.order_sn = mo.order_sn
+           WHERE mo.id = ?""", (order_id,)).fetchone()
+    net_val = net['net'] if net else None
+
+    lines = conn.execute(
+        """SELECT it.internal_product_id, it.variation_name, it.qty, p.cost_price
+           FROM marketplace_order_items it
+           LEFT JOIN products p ON p.id = it.internal_product_id
+           WHERE it.order_id = ?""", (order_id,)).fetchall()
+
+    platform = conn.execute(
+        "SELECT platform FROM marketplace_orders WHERE id = ?", (order_id,)).fetchone()
+    platform = platform['platform'] if platform else 'shopee'
+
+    cogs = 0.0
+    unresolved = 0
+    cost_gap = 0
+    out_lines = []
+    for ln in lines:
+        pid = ln['internal_product_id']
+        ratio = source = None
+        line_cogs = None
+        if pid is None:
+            unresolved += 1                 # unmapped line: can't cost it
+            source = 'unmapped'
+        else:
+            ratio, source = resolve_line_ratio(conn, platform, pid, ln['variation_name'])
+            if ratio is None:
+                unresolved += 1
+            elif ln['cost_price'] is None or ln['cost_price'] == 0:
+                cost_gap += 1
+            else:
+                line_cogs = round(ln['cost_price'] * (ln['qty'] or 0) * ratio, 2)
+                cogs += line_cogs
+        out_lines.append({'product_id': pid, 'variation_name': ln['variation_name'],
+                          'qty': ln['qty'], 'cost_price': ln['cost_price'],
+                          'ratio': ratio, 'ratio_source': source, 'line_cogs': line_cogs})
+
+    cogs = round(cogs, 2)
+    complete = unresolved == 0 and cost_gap == 0 and net_val is not None
+    margin = round(net_val - cogs, 2) if complete else None
+    margin_pct = (round(margin / net_val * 100, 1)
+                  if complete and net_val else None)
+    return {'net': net_val, 'cogs': cogs, 'margin': margin, 'margin_pct': margin_pct,
+            'unresolved': unresolved, 'cost_gap': cost_gap, 'lines': out_lines}
 
 
 # Customer NAME (not code) per platform, for the payments-received lookup.
