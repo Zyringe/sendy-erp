@@ -29,9 +29,12 @@ SUFFIX = ".db.gz"
 _NAME_RE = re.compile(r"^auto-(?P<reason>[a-z0-9-]+)-(?P<ts>\d{8}_\d{6})\.db\.gz$")
 
 DEFAULT_KEEP_DAYS = 7
-# 500MB Railway volume + ~17MB/gzipped-snapshot → keep ~5 (~85MB) and still
-# leave room for the live DB (140MB) + the restore temp. Raise if the volume grows.
-DEFAULT_MAX_KEEP = 5
+# Hard count cap (the live driver of disk use). 434MB Railway volume; the live DB
+# has grown to ~174MB and each gzipped snapshot is ~20MB, so keep only the newest
+# 3 (~60MB) → DB + backups ≈ 54% of the volume, leaving headroom for the restore
+# temp. Frequent uploads created one snapshot each and the old keep=5 still let
+# them stack near-full; 3 is the sustainable steady state. Raise if the volume grows.
+DEFAULT_MAX_KEEP = 3
 # Never write a snapshot when the volume is this close to full — a backup must
 # not be the thing that fills the disk and breaks the app.
 MIN_FREE_BYTES = 60 * 1024 * 1024
