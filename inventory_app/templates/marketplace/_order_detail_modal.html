@@ -25,6 +25,7 @@
           </dl>
           <div id="odTimeline" class="mb-2"></div>
           <div id="odFees" class="mb-2"></div>
+          <div id="odMargin" class="mb-2"></div>
           <div id="odAdjust" class="mb-2"></div>
           <table class="table table-sm table-bordered mb-0">
             <thead class="table-light"><tr>
@@ -118,6 +119,28 @@ document.addEventListener('DOMContentLoaded', function () {
                 <span class="${a.amount<0?'text-danger':'text-success'}">${a.amount<0?'−':'+'}฿${fmt(Math.abs(a.amount))}</span>
               </div>`).join('')}
           </div>`;
+
+        // ---- Gross margin: net payout − COGS (ratio-aware) ----
+        const mg = d.margin;
+        const odMargin = document.getElementById('odMargin');
+        if (!mg) { odMargin.innerHTML = ''; }
+        else if (mg.margin == null) {
+          const why = mg.unresolved ? `${mg.unresolved} รายการจับคู่ ratio/สินค้าไม่ได้`
+                    : (mg.cost_gap ? `${mg.cost_gap} รายการยังไม่มีต้นทุน` : 'ข้อมูลไม่ครบ');
+          odMargin.innerHTML = `
+            <div class="border rounded p-2 small bg-light">
+              <span class="fw-bold">กำไรขั้นต้น</span> <span class="badge bg-secondary">ไม่ครบ</span>
+              <span class="text-muted">— ${why} · ต้นทุนที่คิดได้ ฿${fmt(mg.cogs)}</span>
+            </div>`;
+        } else {
+          const cls = mg.margin >= 0 ? 'text-success' : 'text-danger';
+          odMargin.innerHTML = `
+            <div class="border rounded p-2 small bg-light d-flex justify-content-between align-items-center">
+              <span class="fw-bold"><i class="bi bi-graph-up-arrow"></i> กำไรขั้นต้น (สุทธิ − ต้นทุน)</span>
+              <span><span class="text-muted">฿${fmt(mg.net)} − ฿${fmt(mg.cogs)} = </span>
+                <span class="${cls} fw-bold">฿${fmt(mg.margin)} (${mg.margin_pct}%)</span></span>
+            </div>`;
+        }
       })
       .catch(e => { load.classList.add('d-none'); err.textContent = 'โหลดไม่สำเร็จ: ' + e.message; err.classList.remove('d-none'); });
   }
