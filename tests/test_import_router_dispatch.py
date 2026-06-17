@@ -127,3 +127,25 @@ def test_preview_credit_notes_ar_uses_readonly_preview(monkeypatch):
 
     out = import_router.preview_file(PATH, "credit_notes_ar")
     assert seen.get("called") is True and out["count"] == 4
+
+
+# ── detect_express_report (title-line classifier) ──────────────────────────
+def test_detect_express_report_classifies(tmp_path):
+    """detect_express_report keys on the Express report title (cp874 header)."""
+    import import_router
+
+    def w(name, title):
+        p = tmp_path / name
+        p.write_text('"(BSN)บจก.บุญสวัสดิ์นำชัย"\n"  ' + title + '"\n', encoding='cp874')
+        return str(p)
+
+    d = import_router.detect_express_report
+    assert d(w('ar.csv',   'รายงานลูกหนี้คงค้างแบบละเอียด')) == 'ar_snapshot'
+    assert d(w('ap.csv',   'รายงานเจ้าหนี้คงค้างแบบละเอียด')) == 'ap_snapshot'
+    assert d(w('s.csv',    'รายงานประวัติการขาย แยกตามลูกค้า')) == 'sales'
+    assert d(w('p.csv',    'รายงานประวัติการซื้อ แยกตามผู้จำหน่าย')) == 'purchase'
+    assert d(w('pin.csv',  'รายงานการรับชำระหนี้ เรียงตามวันที่')) == 'payments_in'
+    assert d(w('pout.csv', 'รายงานการจ่ายชำระหนี้ เรียงตามวันที่')) == 'payments_out'
+    assert d(w('cnar.csv', 'ใบลดหนี้ รับคืนสินค้า')) == 'credit_notes_ar'
+    assert d(w('cnap.csv', 'ใบลดหนี้ ส่งคืนสินค้า')) == 'credit_notes_ap'
+    assert d(w('x.csv',    'ขายเงินเชื่อ เรียงตามเลขที่')) == 'unknown'

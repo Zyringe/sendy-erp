@@ -45,7 +45,6 @@ import config
 import models
 import db_backup
 from database import init_db, get_connection
-from parse_weekly import parse_sales, parse_purchases, detect_file_type, is_history_export
 from parse_platform import (parse_shopee, parse_lazada, export_shopee, export_lazada,
                             export_mapping, parse_mapping,
                             parse_shopee_orders, parse_lazada_orders,
@@ -191,12 +190,11 @@ def bootstrap_upload_db():
 # POST whitelist by role
 _STAFF_POST_OK = frozenset([
     'login', 'logout',
-    'import_weekly', 'import_weekly_confirm', 'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
+    'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
+    # Decision B — staff may import everything; the unified box (/import-data)
+    # snapshots the DB before writing (see _snapshot_before_import call sites).
     'unified_import', 'unified_import_confirm',
     'marketplace.import_orders', 'marketplace.settlement_import', 'marketplace.link_iv',
-    # Decision B — staff may import everything; each of these snapshots the DB
-    # before writing (see _snapshot_before_import call sites).
-    'import_payments', 'import_credit_notes_preview', 'import_credit_notes_commit',
     'products.product_location_save',
     'admin_exit_simulate',
     'conversion_new', 'conversion_pair', 'conversion_edit', 'conversion_run', 'conversion_delete',
@@ -329,9 +327,6 @@ _ENDPOINT_MODULE = {
     'supplier_summary': 'accounting',
     'payment_status': 'accounting',
     'payment_customers': 'accounting',
-    'import_payments': 'accounting',
-    'import_credit_notes_preview': 'accounting',
-    'import_credit_notes_commit': 'accounting',
     'commission_dashboard': 'accounting',
     'commission_record_payout': 'accounting',
     'commission_delete_payout': 'accounting',
@@ -347,7 +342,6 @@ _ENDPOINT_MODULE = {
     'express_ar_dashboard': 'accounting',
     'express_ar_customer': 'accounting',
     'express_ap_dashboard': 'accounting',
-    'express_import': 'accounting',
     'ecommerce': 'accounting',
     'ecommerce_import': 'accounting',
     'ecommerce_sku_edit': 'accounting',
@@ -381,8 +375,6 @@ _ENDPOINT_MODULE = {
     # data
     'unified_import': 'data',
     'unified_import_confirm': 'data',
-    'import_weekly': 'data',
-    'import_weekly_confirm': 'data',
     'mapping': 'data',
     'mapping_save': 'data',
     'mapping_suggest': 'data',
@@ -1296,213 +1288,14 @@ def transaction_history():
 # ── Promotions and CSV Import — moved to blueprints/products.py ───────────────
 
 
-# ── Weekly Import (ขาย / ซื้อ) ───────────────────────────────────────────────
+# ── Weekly Import (legacy) → consolidated into /import-data ──────────────────
 
-ALLOWED_WEEKLY = {'cp874'}
-
-def _detect_express_kind(path):
-    """Auto-classify an uploaded Express file so one upload box handles them all:
-    'sales' / 'purchase' (transaction files → diff-confirm) or
-    'ar_snapshot' / 'ap_snapshot' (outstanding snapshots → snapshot-replace) or
-    'unknown'. AR/AP are detected first by their distinctive header markers."""
-    try:
-        with open(path, encoding='cp874') as f:
-            head = ''.join([next(f, '') for _ in range(8)]).replace('\xa0', ' ')
-    except (OSError, UnicodeDecodeError):
-        return 'unknown'
-    if 'ลูกหนี้คงค้าง' in head or 'รายงานลูกหนี้' in head:
-        return 'ar_snapshot'
-    if 'เจ้าหนี้คงค้าง' in head or 'รายงานเจ้าหนี้' in head:
-        return 'ap_snapshot'
-    return detect_file_type(path)
-
-
-def _express_snapshot_summary(path, kind, company='BSN'):
-    """Read-only summary of an AR/AP outstanding snapshot for the preview page.
-    Snapshots REPLACE the prior (entity, as-of date) — there is no per-doc diff
-    (a newer snapshot is the new truth), so we show as-of date, doc count, total,
-    and the delta vs the snapshot currently in the DB."""
-    if kind == 'ar_snapshot':
-        recs = list(express_importer.p_ar.parse_ar_snapshot(path))
-        as_of = express_importer.p_ar.report_asof_date(path)
-        table = 'express_ar_outstanding'
-    else:
-        recs = list(express_importer.p_ap.parse_ap_snapshot(path))
-        as_of = express_importer.p_ap.report_asof_date(path)
-        table = 'express_ap_outstanding'
-    total = round(sum((r.outstanding_amount or 0) for r in recs), 2)
-    conn = get_connection()
-    prior = conn.execute(
-        f"SELECT snapshot_date_iso, ROUND(SUM(outstanding_amount),2) FROM {table} "
-        f"WHERE entity=? AND snapshot_date_iso=("
-        f"  SELECT MAX(snapshot_date_iso) FROM {table} WHERE entity=?) "
-        f"GROUP BY snapshot_date_iso", (company, company)).fetchone()
-    conn.close()
-    return {
-        'kind': kind, 'entity': company, 'as_of': as_of, 'n_docs': len(recs),
-        'total': total,
-        'prior_date': prior[0] if prior else None,
-        'prior_total': prior[1] if prior else None,
-        'replaces_same_date': bool(prior and prior[0] == as_of),
-    }
-
-
-@app.route('/import-weekly', methods=['GET', 'POST'])
+@app.route('/import-weekly')
 def import_weekly():
-    if request.method == 'POST':
-        f = request.files.get('weekly_file')
-        if not f or not f.filename.endswith('.csv'):
-            flash('กรุณาเลือกไฟล์ .csv', 'danger')
-            return redirect(url_for('import_weekly'))
-
-        # Drop any previously-staged-but-unconfirmed file so re-previewing
-        # (preview A, then preview B without confirm/cancel) never orphans a
-        # temp file in pending_imports/.
-        _prev = session.pop('pending_import', None)
-        if _prev and _prev.get('path'):
-            try:
-                os.remove(_prev['path'])
-            except OSError:
-                pass
-
-        # Save to a pending location so the confirm step can re-parse the exact
-        # same file without a re-upload (mirrors /admin/upload-db's flow).
-        pending_dir = os.path.join(config.UPLOAD_FOLDER, 'pending_imports')
-        os.makedirs(pending_dir, exist_ok=True)
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        safe_name = os.path.basename(f.filename)
-        tmp_path = os.path.join(pending_dir, f'{ts}__{safe_name}')
-        f.save(tmp_path)
-
-        def _discard():
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
-
-        # One upload box, auto-detected: ขาย/ซื้อ transaction files go through
-        # the per-doc diff-confirm; AR/AP outstanding snapshots go through the
-        # snapshot-replace preview (different data shapes → different handling).
-        kind = _detect_express_kind(tmp_path)
-
-        if kind in ('sales', 'purchase'):
-            entries = parse_sales(tmp_path) if kind == 'sales' else parse_purchases(tmp_path)
-            if not entries:
-                _discard()
-                flash('ไม่พบข้อมูลในไฟล์', 'warning')
-                return redirect(url_for('import_weekly'))
-            # DRY-RUN: show exactly what will change (full OR partial file). A
-            # full re-upload of unchanged data shows ~0 changes (safe no-op); a
-            # wrong/corrupt file shows many changes → cancel. The preview
-            # replaces the old hard history-block (is_history_export = info flag).
-            plan = models.preview_import(entries, kind)
-            session['pending_import'] = {'path': tmp_path, 'kind': kind, 'filename': safe_name}
-            return render_template(
-                'import_preview.html', plan=plan, file_type=kind,
-                filename=safe_name, n_rows=len(entries),
-                is_full=is_history_export(tmp_path),
-            )
-
-        if kind in ('ar_snapshot', 'ap_snapshot'):
-            try:
-                summary = _express_snapshot_summary(tmp_path, kind)
-            except Exception as e:
-                _discard()
-                flash(f'อ่านไฟล์ AR/AP ไม่สำเร็จ: {e}', 'danger')
-                return redirect(url_for('import_weekly'))
-            session['pending_import'] = {
-                'path': tmp_path, 'kind': kind, 'filename': safe_name, 'company': 'BSN',
-            }
-            return render_template('import_snapshot_preview.html',
-                                   summary=summary, filename=safe_name)
-
-        _discard()
-        flash('ไม่รู้จักชนิดไฟล์ (รองรับ: ขาย / ซื้อ / ลูกหนี้คงค้าง / เจ้าหนี้คงค้าง)', 'danger')
-        return redirect(url_for('import_weekly'))
-
-    recent_imports = models.get_recent_imports(limit=5)
-    return render_template('import_weekly.html', recent_imports=recent_imports)
-
-
-@app.route('/import-weekly/confirm', methods=['POST'])
-def import_weekly_confirm():
-    """Step 2: apply the import the user previewed (or cancel)."""
-    pend = session.pop('pending_import', None)
-    if not pend or not os.path.exists(pend['path']):
-        flash('ไม่พบไฟล์ที่รอยืนยัน — กรุณาอัปโหลดใหม่', 'danger')
-        return redirect(url_for('import_weekly'))
-
-    if request.form.get('action') == 'cancel':
-        try:
-            os.remove(pend['path'])
-        except OSError:
-            pass
-        flash('ยกเลิกการนำเข้าแล้ว', 'info')
-        return redirect(url_for('import_weekly'))
-
-    _snapshot_before_import('weekly')   # rollback point before the ledger writes
-    kind = pend.get('kind')
-
-    # AR/AP snapshot → idempotent snapshot-replace via the Express importer.
-    if kind in ('ar_snapshot', 'ap_snapshot'):
-        try:
-            express_importer.run_import(kind, pend['path'],
-                                        company_code=pend.get('company', 'BSN'),
-                                        dry_run=False, incremental=False)
-            flash(f'นำเข้า {"ลูกหนี้คงค้าง" if kind == "ar_snapshot" else "เจ้าหนี้คงค้าง"} '
-                  f'({pend.get("company", "BSN")}) สำเร็จ', 'success')
-        except Exception as e:
-            flash(f'นำเข้าไม่สำเร็จ: {e}', 'danger')
-        try:
-            os.remove(pend['path'])
-        except OSError:
-            pass
-        return redirect(url_for('express_ar_dashboard' if kind == 'ar_snapshot'
-                                else 'express_ap_dashboard'))
-
-    # ขาย/ซื้อ transaction file → per-doc idempotent diff import.
-    entries = (parse_sales(pend['path']) if kind == 'sales'
-               else parse_purchases(pend['path']))
-    # Reversing lines that vanished from the source is opt-in (default OFF): a
-    # product-code/salesperson-FILTERED export yields partial invoices whose
-    # filtered-out lines would otherwise be mass-reversed. User ticks the box on
-    # the preview only when the file is a FULL export.
-    apply_removals = request.form.get('apply_removals') == 'on'
-    stats = models.import_weekly(entries, kind, pend['filename'], apply_removals=apply_removals)
-    _review_flagged = 0
-    if kind == 'sales' and stats.get('batch_id'):
-        try:
-            scan = rr.scan_after_import(stats['batch_id'])
-            _review_flagged = scan.get('docs_flagged', 0)
-        except Exception as _scan_exc:
-            flash(f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}', 'warning')
-    try:
-        os.remove(pend['path'])
-    except OSError:
-        pass
-
-    parts = []
-    if stats['imported']:
-        parts.append(f'นำเข้า/อัพเดท {stats["imported"]} รายการ')
-    if stats['unchanged']:
-        parts.append(f'เหมือนเดิม {stats["unchanged"]} รายการ')
-    if stats.get('removed'):
-        parts.append(f'ลบออก {stats["removed"]} รายการ (คืนสต็อก)')
-    if stats.get('removed_skipped'):
-        parts.append(f'ไม่ได้ลบ {stats["removed_skipped"]} รายการที่หายจากไฟล์ (ไม่ได้ติ๊ก)')
-    if stats['skipped_dup']:
-        parts.append(f'ข้าม {stats["skipped_dup"]} รายการ')
-    if stats['new_unmapped']:
-        parts.append(f'สินค้าใหม่ไม่มีในระบบ {stats["new_unmapped"]} รายการ')
-    if _review_flagged:
-        parts.append(f'พบ {_review_flagged} บิลต้องตรวจ')
-    flash('  |  '.join(parts) or 'ไม่มีการเปลี่ยนแปลง',
-          'success' if stats['new_unmapped'] == 0 else 'warning')
-    if models.get_pending_unit_conversions():
-        return redirect(url_for('unit_conversions'))
-    if stats['new_unmapped'] > 0:
-        return redirect(url_for('mapping'))
-    return redirect(url_for('sales_view') if kind == 'sales' else url_for('purchases_view'))
+    # Legacy per-file ขาย/ซื้อ + AR/AP importer. The unified box (/import-data)
+    # is a superset (auto-detects every report type, preview/confirm, snapshots
+    # before writing). Kept as a redirect so old bookmarks don't 404.
+    return redirect(url_for('unified_import'))
 
 
 # ── Unit Conversions ──────────────────────────────────────────────────────────
@@ -2336,125 +2129,6 @@ def payment_customers():
     )
 
 
-@app.route('/import-payments', methods=['POST'])
-def import_payments():
-    # Open to staff (Decision B); the whitelist gate in before_request applies.
-    f = request.files.get('payment_file')
-    if not f or not f.filename.endswith('.csv'):
-        flash('กรุณาเลือกไฟล์ .csv', 'danger')
-        return redirect(url_for('payment_status'))
-    tmp_path = os.path.join(config.UPLOAD_FOLDER, f.filename)
-    f.save(tmp_path)
-    _snapshot_before_import('payments')   # rollback point before received_payments writes
-    result = models.import_payments(tmp_path)
-    flash(
-        f'นำเข้าสำเร็จ {result["imported"]} ใบเสร็จใหม่  |  อัปเดต {result["updated"]} ใบเสร็จเดิม  |  ข้ามซ้ำ {result["skipped"]} รายการ',
-        'success'
-    )
-    return redirect(url_for('payment_status'))
-
-
-# ── Credit-note import (ใบลดหนี้): preview + commit ───────────────────────────
-#
-# Two-stage flow because credit_note_amounts (mig 062) is the AUTHORITATIVE
-# per-SR credited amount used by payments_alloc.  Importing a stale file would
-# silently overwrite live values via ON CONFLICT.  The preview stage runs the
-# full importer in a transaction and rolls back, surfacing which credit_note_
-# amounts rows would CHANGE so Put can decide before committing.
-
-_CN_PREVIEW_DIR = 'cn-preview'  # subfolder under UPLOAD_FOLDER
-_CN_PREVIEW_TTL_SEC = 60 * 60   # 1 hour
-
-
-def _cn_preview_dir():
-    p = os.path.join(config.UPLOAD_FOLDER, _CN_PREVIEW_DIR)
-    os.makedirs(p, exist_ok=True)
-    return p
-
-
-def _cn_preview_path(token):
-    """Resolve a token to its preview file path.  Token is the saved filename
-    (uuid.csv).  Returns None if invalid, missing, or expired."""
-    # token must be a bare filename ending in .csv — reject anything with
-    # path separators or non-csv extensions
-    if not token or '/' in token or '\\' in token or not token.endswith('.csv'):
-        return None
-    path = os.path.join(_cn_preview_dir(), token)
-    if not os.path.isfile(path):
-        return None
-    age = datetime.now().timestamp() - os.path.getmtime(path)
-    if age > _CN_PREVIEW_TTL_SEC:
-        return None
-    return path
-
-
-@app.route('/import-credit-notes/preview', methods=['POST'])
-def import_credit_notes_preview():
-    # Open to staff (Decision B); preview only reads (rolls back), no snapshot needed.
-    f = request.files.get('cn_file')
-    if not f or not f.filename.endswith('.csv'):
-        flash('กรุณาเลือกไฟล์ .csv', 'danger')
-        return redirect(url_for('payment_status'))
-
-    import uuid
-    from import_credit_notes import preview_credit_notes_import
-
-    token = f'{uuid.uuid4().hex}.csv'
-    tmp_path = os.path.join(_cn_preview_dir(), token)
-    f.save(tmp_path)
-
-    try:
-        preview = preview_credit_notes_import(tmp_path)
-    except Exception as exc:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-        flash(f'อ่านไฟล์ไม่สำเร็จ: {exc}', 'danger')
-        return redirect(url_for('payment_status'))
-
-    return render_template(
-        'import_cn_preview.html',
-        preview=preview,
-        token=token,
-        original_filename=f.filename,
-    )
-
-
-@app.route('/import-credit-notes/commit', methods=['POST'])
-def import_credit_notes_commit():
-    # Open to staff (Decision B); the whitelist gate in before_request applies.
-    token = (request.form.get('token') or '').strip()
-    path = _cn_preview_path(token)
-    if path is None:
-        flash('ไฟล์ที่ตรวจสอบหมดอายุ — กรุณาอัปโหลดใหม่', 'warning')
-        return redirect(url_for('payment_status'))
-
-    from import_credit_notes import import_credit_notes as _do_import
-
-    _snapshot_before_import('credit-notes')   # rollback point before credit_note_amounts writes
-    try:
-        result = _do_import(path)
-    except Exception as exc:
-        flash(f'นำเข้าไม่สำเร็จ: {exc}', 'danger')
-        return redirect(url_for('payment_status'))
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-    cna = result.get('credit_note_amounts') or {}
-    flash(
-        f'นำเข้าใบลดหนี้สำเร็จ — '
-        f'backfilled ref {result.get("refs_backfilled", 0)} ใบ  |  '
-        f'credit_note_amounts upsert {cna.get("upserted", 0)} รายการ  |  '
-        f'ใหม่ {result.get("new_recorded", 0)} ใบ  |  '
-        f'ข้าม {result.get("already_new", 0) + result.get("skipped", 0)} ใบ',
-        'success'
-    )
-    return redirect(url_for('payment_status'))
-
 
 # ── Template filters ──────────────────────────────────────────────────────────
 
@@ -3235,7 +2909,14 @@ def unified_import():
                 except Exception as exc:   # preview failure isolates to this file
                     row['error'] = str(exc)
             rows.append(row)
-        session['import_stage'] = {'token': token, 'rows': rows}
+        # The signed-cookie session is ~4KB. A credit-note preview's `detail`
+        # carries per-row diff lists that can blow past that → the cookie is
+        # silently dropped and /confirm 'เซสชันหมดอายุ'. The staged preview is
+        # rendered from the in-memory `rows` (full detail) in THIS request;
+        # /confirm only needs idx/filename/saved/detected, so store slim rows.
+        slim = [{'idx': r['idx'], 'filename': r['filename'], 'saved': r['saved'],
+                 'detected': r['detected']} for r in rows]
+        session['import_stage'] = {'token': token, 'rows': slim}
         return render_template('import_box.html', staged=True, rows=rows, token=token,
                                report_labels=_REPORT_LABELS, results=None)
     return render_template('import_box.html', staged=False, rows=None,
@@ -3755,65 +3436,12 @@ def commission_overrides_delete(override_id):
     return redirect(url_for('commission_overrides_list'))
 
 
-@app.route('/express/import', methods=['GET', 'POST'])
+@app.route('/express/import')
 def express_import():
-    """Upload & import a weekly Express export."""
-    if request.method == 'POST':
-        file_type = request.form.get('file_type', '').strip()
-        company_code = request.form.get('company', 'BSN').strip()
-        # Default = incremental (skip doc_no already in DB) — safer for
-        # repeated weekly uploads. Uncheck to force full re-import (may
-        # create duplicates).
-        incremental = bool(request.form.get('incremental'))
-        upload = request.files.get('file')
-
-        # sales / payments_in are RETIRED here — they wrote the express_sales /
-        # express_payments_in "twins" that duplicate the canonical
-        # sales_transactions / received_payments. Route the operator to the
-        # unified box which writes the canonical tables only.
-        if file_type in ('sales', 'payments_in'):
-            flash('ไฟล์ขาย / การรับชำระหนี้ ให้ใช้หน้า "นำเข้า (รวมทุกไฟล์)" แทน '
-                  '— ระบบจะบันทึกลงตารางหลักโดยตรง (เลิกใช้ตารางสำรอง express แล้ว)', 'warning')
-            return redirect(url_for('unified_import'))
-        if file_type not in ('credit_notes', 'ar_snapshot',
-                             'ap_snapshot', 'payments_out'):
-            flash('เลือกประเภทไฟล์ไม่ถูก', 'danger')
-            return redirect(url_for('express_import'))
-        if not upload or not upload.filename:
-            flash('ไม่ได้แนบไฟล์', 'danger')
-            return redirect(url_for('express_import'))
-
-        upload_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'express')
-        os.makedirs(upload_dir, exist_ok=True)
-        from datetime import datetime as _dt
-        ts = _dt.now().strftime('%Y%m%d_%H%M%S')
-        safe_name = f'{ts}_{file_type}_{upload.filename}'
-        save_path = os.path.join(upload_dir, safe_name)
-        upload.save(save_path)
-
-        try:
-            express_importer.run_import(file_type, save_path,
-                                        company_code=company_code,
-                                        dry_run=False,
-                                        incremental=incremental)
-            mode = 'incremental (ข้ามรายการซ้ำ)' if incremental else 'full (รวมรายการซ้ำ)'
-            flash(f'นำเข้า {file_type} ({mode}) สำเร็จ — ไฟล์: {upload.filename}', 'success')
-        except Exception as e:
-            flash(f'นำเข้าไม่สำเร็จ: {e}', 'danger')
-        return redirect(url_for('express_import'))
-
-    # GET — list recent batches + show form
-    conn = get_connection()
-    batches = conn.execute("""
-        SELECT id, file_type, source_filename, record_count, line_count,
-               snapshot_date_iso, status, imported_at
-          FROM express_import_log
-         ORDER BY id DESC
-         LIMIT 20
-    """).fetchall()
-    conn.close()
-    return render_template('express_import.html',
-                           batches=[dict(r) for r in batches])
+    # Legacy single-file Express uploader (AR/AP snapshot, payments-out, credit
+    # notes). Superseded by the unified box (/import-data), which auto-detects
+    # and routes every Express report type. Kept as a redirect for old links.
+    return redirect(url_for('unified_import'))
 
 
 @app.route('/express/ar')

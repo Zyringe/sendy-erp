@@ -95,8 +95,8 @@ def test_manager_allowed_for_manager_endpoint(client, whitelist_consts):
     """
     _, _, _, dashboard_url = whitelist_consts
     _login_as(client, 'manager')
-    # /import-payments is in _MANAGER_POST_OK (endpoint name 'import_payments').
-    resp = client.post('/import-payments', data={}, follow_redirects=False)
+    # unified_import (/import-data) is in _STAFF_POST_OK ⊆ _MANAGER_POST_OK.
+    resp = client.post('/import-data', data={}, follow_redirects=False)
     if resp.status_code == 302:
         assert not _redirects_to_dashboard(resp, dashboard_url), (
             "Manager POST to whitelisted endpoint should not redirect to dashboard"

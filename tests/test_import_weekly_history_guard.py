@@ -1,21 +1,12 @@
-"""
-Tests for the history-export guard on /import-weekly.
+"""Unit tests for the history-export guard heuristic
+parse_weekly.is_history_export().
 
-Phase D of the stock-ledger-rebuild plan: /import-weekly must REJECT
-full-history Express exports (ประวัติการขาย_แยกตามลูกค้า / ประวัติการซื้อ)
-and redirect with a flash error, without inserting any rows.
-
-Coverage:
-  (a) is_history_export() returns True for a history-format cp874 fixture
-      and False for normal weekly fixtures.
-  (b) /import-weekly route rejects a history file: flashes the expected
-      Thai message, redirects back, and inserts 0 rows.
-  (c) /import-weekly route accepts a normal weekly sales file: returns
-      a redirect (not a 400/500), and inserts ≥ 1 row.
+A full-history Express export (ประวัติการขาย_แยกตามลูกค้า / ประวัติการซื้อ) must be
+flagged True so callers can warn before re-importing it; normal weekly files must
+be False. The route-level preview/confirm safety (no insert until confirm) is now
+exercised on the unified box — see test_unified_import_routes.py.
 """
-import io
 import os
-import sqlite3
 
 import pytest
 
@@ -160,96 +151,3 @@ def test_weekly_purch_not_history(sample_purchase_file):
 def test_weekly_purch_same_year_not_history(weekly_purch_file):
     """Weekly purchase with same-year วันที่จาก must return False."""
     assert parse_weekly.is_history_export(weekly_purch_file) is False
-
-
-# ── Route-level tests ────────────────────────────────────────────────────────
-
-@pytest.fixture
-def admin_client(tmp_db):
-    """Flask test client with an admin session, DATABASE_PATH already patched."""
-    from app import app as flask_app
-    flask_app.config['TESTING'] = True
-    c = flask_app.test_client()
-    with c.session_transaction() as sess:
-        sess['user_id']  = 1
-        sess['username'] = 'test-admin'
-        sess['role']     = 'admin'
-    return c
-
-
-def _count_rows(db_path, table):
-    return sqlite3.connect(db_path).execute(
-        f"SELECT COUNT(*) FROM {table}"
-    ).fetchone()[0]
-
-
-# ── Two-step preview/confirm flow ────────────────────────────────────────────
-# The hard history-block was replaced by a read-only DRY-RUN preview: ANY file
-# (full or partial) lands on the preview first and inserts NOTHING until the
-# user confirms. The preview is the safety (it shows the diff); is_history_export
-# is now an informational flag, not a blocker.
-
-def _post_import(admin_client, lines, filename):
-    content = ("\n".join(lines) + "\n").encode('cp874')
-    return admin_client.post(
-        '/import-weekly',
-        data={'weekly_file': (io.BytesIO(content), filename, 'text/csv')},
-        content_type='multipart/form-data', follow_redirects=False)
-
-
-def test_route_history_goes_to_preview_no_insert(admin_client, tmp_db):
-    """A full-history file lands on the preview (200), inserts 0 rows, and
-    stages a pending_import for confirmation — no silent corruption."""
-    before = _count_rows(tmp_db, 'sales_transactions')
-    resp = _post_import(admin_client, _HISTORY_SALES_LINES, 'ประวัติการขาย_full.csv')
-
-    assert resp.status_code == 200, "history file should render the preview, not redirect-reject"
-    assert 'ตรวจการเปลี่ยนแปลง'.encode() in resp.data, "preview page not rendered"
-    assert _count_rows(tmp_db, 'sales_transactions') == before, "preview must insert 0 rows"
-    with admin_client.session_transaction() as sess:
-        assert sess.get('pending_import'), "a pending import should be staged"
-
-
-def test_route_single_year_history_goes_to_preview_no_insert(admin_client, tmp_db):
-    """Single-Buddhist-year history file → preview, 0 rows inserted."""
-    before = _count_rows(tmp_db, 'sales_transactions')
-    resp = _post_import(admin_client, _HISTORY_SALES_SINGLE_YEAR_LINES,
-                        'ประวัติการขาย_1.3.69-19.4.69.csv')
-    assert resp.status_code == 200
-    assert _count_rows(tmp_db, 'sales_transactions') == before, "preview must insert 0 rows"
-
-
-def test_route_weekly_preview_then_confirm_imports(admin_client, tmp_db, sample_purchase_file):
-    """A weekly file previews first (0 insert), then /import-weekly/confirm
-    actually runs the import (proven by the result flash)."""
-    content = open(sample_purchase_file, 'rb').read()
-    before = _count_rows(tmp_db, 'purchase_transactions')
-    resp = admin_client.post(
-        '/import-weekly',
-        data={'weekly_file': (io.BytesIO(content), 'ซื้อ_sample.csv', 'text/csv')},
-        content_type='multipart/form-data', follow_redirects=False)
-    assert resp.status_code == 200, "preview should render"
-    assert _count_rows(tmp_db, 'purchase_transactions') == before, "preview must not insert yet"
-
-    # confirm → apply
-    resp2 = admin_client.post('/import-weekly/confirm', data={'action': 'confirm'},
-                              follow_redirects=False)
-    assert resp2.status_code == 302, f"confirm should redirect, got {resp2.status_code}"
-    with admin_client.session_transaction() as sess:
-        flashes = [m for (_c, m) in sess.get('_flashes', [])]
-        assert sess.get('pending_import') is None, "pending import should be cleared after confirm"
-    # the import ran (result flash mentions นำเข้า/เหมือนเดิม/ข้าม, not the no-file error)
-    assert any(('นำเข้า' in m or 'เหมือนเดิม' in m or 'สินค้าใหม่' in m) for m in flashes), \
-        f"confirm did not run the import. flashes={flashes}"
-
-
-def test_route_confirm_cancel_inserts_nothing(admin_client, tmp_db):
-    """Cancel on the preview discards the staged import without inserting."""
-    before = _count_rows(tmp_db, 'sales_transactions')
-    _post_import(admin_client, _HISTORY_SALES_LINES, 'ประวัติการขาย_full.csv')
-    resp = admin_client.post('/import-weekly/confirm', data={'action': 'cancel'},
-                             follow_redirects=False)
-    assert resp.status_code == 302
-    assert _count_rows(tmp_db, 'sales_transactions') == before
-    with admin_client.session_transaction() as sess:
-        assert sess.get('pending_import') is None
