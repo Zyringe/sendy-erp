@@ -5367,10 +5367,14 @@ def get_payout_orders(conn, platform, payout_id):
                   CASE WHEN f.order_sn IS NOT NULL THEN 'settled'
                        WHEN w.wallet_net IS NOT NULL OR o.actual_payout IS NOT NULL THEN 'wallet'
                        WHEN o.item_total IS NOT NULL OR o.payout IS NOT NULL THEN 'order'
-                       ELSE 'none' END AS fee_source
+                       ELSE 'none' END AS fee_source,
+                  moi.doc_base   AS matched_iv,
+                  moi.confidence AS iv_confidence
            FROM marketplace_orders o
            LEFT JOIN marketplace_order_fees f
                   ON f.platform = o.platform AND f.order_sn = o.order_sn
+           LEFT JOIN marketplace_order_invoice moi
+                  ON moi.platform = o.platform AND moi.order_sn = o.order_sn
            LEFT JOIN (SELECT order_sn, SUM(amount) AS wallet_net
                       FROM marketplace_wallet_txns
                       WHERE platform = ? AND txn_type = 'income'
@@ -5380,6 +5384,33 @@ def get_payout_orders(conn, platform, payout_id):
            ORDER BY o.settled_at, o.order_sn""",
         (platform, platform, payout_id)).fetchall()
     return [dict(o) for o in rows]
+
+
+def get_deposit_tab_extras(conn, platform='shopee'):
+    """Two light buckets shown under the deposit cards so no order is invisible
+    once the per-settled-date 'daily' view is gone:
+      'orphan'  — settled (actual_payout set) but not tied to any bank deposit
+                  (e.g. Income imported before the Seller-Balance file). These
+                  would otherwise show under NO deposit card.
+      'pending' — not yet settled (no actual_payout), excluding cancelled.
+    No per-order N+1; two flat queries."""
+    orphan = conn.execute(
+        """SELECT id, order_sn, settled_at, COALESCE(item_total, 0) AS item_total,
+                  actual_payout
+           FROM marketplace_orders
+           WHERE platform = ? AND actual_payout IS NOT NULL AND payout_id IS NULL
+           ORDER BY settled_at ASC, order_sn ASC""",
+        (platform,)).fetchall()
+    pending = conn.execute(
+        """SELECT id, order_sn, COALESCE(item_total, 0) AS item_total,
+                  status, order_date
+           FROM marketplace_orders
+           WHERE platform = ? AND actual_payout IS NULL
+             AND status NOT IN ('ยกเลิกแล้ว')
+           ORDER BY order_date DESC""",
+        (platform,)).fetchall()
+    return {'orphan': [dict(r) for r in orphan],
+            'pending': [dict(r) for r in pending]}
 
 
 def get_payout_report(conn, platform='shopee', year=None, limit=1000):

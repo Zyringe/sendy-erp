@@ -1,12 +1,9 @@
 {% extends 'base.html' %}
-{% block title %}Settlement Report — Shopee{% endblock %}
+{% block title %}Settlement — {{ platform | capitalize }}{% endblock %}
 {% block content %}
 <div class="container-fluid py-3">
-  <div class="d-flex justify-content-between align-items-center mb-3">
-    <div class="d-flex align-items-center gap-3">
-      <h4 class="mb-0">Settlement Report — {{ platform | capitalize }}</h4>
-      <a href="{{ url_for('marketplace.reconciliation', platform=platform) }}" class="btn btn-sm btn-outline-primary">กระทบยอด ↔ รับชำระหนี้</a>
-    </div>
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <h4 class="mb-0">Settlement — {{ platform | capitalize }}</h4>
     <form method="post" action="{{ url_for('marketplace.upload') }}"
           enctype="multipart/form-data" class="d-flex gap-2 align-items-center">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -26,22 +23,13 @@
     <li class="nav-item">
       <a class="nav-link {{ 'active' if tab == 'deposits' else '' }}"
          href="{{ url_for('marketplace.settlement', platform=platform, tab='deposits') }}">
-        เงินเข้าบัญชี (ยอดโอน)
+        เงินเข้าบัญชี (ยอดโอน + ใบกำกับ)
       </a>
     </li>
     <li class="nav-item">
-      <a class="nav-link {{ 'active' if tab == 'daily' else '' }}"
-         href="{{ url_for('marketplace.settlement', platform=platform, tab='daily') }}">
-        รายวัน (ตาม settled_at)
-      </a>
-    </li>
-    <li class="nav-item">
-      <a class="nav-link {{ 'active' if tab == 'batch' else '' }}"
-         href="{{ url_for('marketplace.settlement', platform=platform, tab='batch') }}">
-        ก้อนเงินเข้าบัญชี
-        {% if batch_report.unbatched %}
-          <span class="badge bg-warning text-dark ms-1">{{ batch_report.unbatched | length }} ยังไม่เข้าก้อน</span>
-        {% endif %}
+      <a class="nav-link {{ 'active' if tab == 'reconcile' else '' }}"
+         href="{{ url_for('marketplace.settlement', platform=platform, tab='reconcile') }}">
+        กระทบยอด ↔ รับชำระหนี้
       </a>
     </li>
   </ul>
@@ -61,7 +49,7 @@
   {% endif %}
   {% if payout_report %}
     <p class="text-muted small mb-2">
-      💡 คลิกที่<strong>เลขออเดอร์</strong>เพื่อดูค่าธรรมเนียมแยกรายการ ·
+      💡 กางการ์ดเพื่อดูออเดอร์ + ใบกำกับ (IV) ในก้อนโอนนั้น · คลิก<strong>เลขออเดอร์</strong>เพื่อดูค่าธรรมเนียมแยกรายการ ·
       <span class="badge bg-secondary">~ ประมาณ</span> = ยังไม่ได้อัปโหลดไฟล์ Income (โอนเงินสำเร็จ) — ยอดสุทธิจริงจาก Seller Balance แต่ค่าธรรมเนียมเป็นค่าประมาณ
     </p>
     {% for d in payout_report %}
@@ -81,109 +69,58 @@
         <div class="card-body p-0">
           <table class="table table-sm table-hover mb-0">
             <thead class="table-light"><tr>
-              <th>เลขออเดอร์</th><th>วันโอน</th>
+              <th>เลขออเดอร์</th><th>ใบกำกับ (IV)</th><th>วันโอน</th>
               <th class="text-end">มูลค่าสินค้า</th>
               <th class="text-end">ค่าธรรมเนียม</th>
               <th class="text-end">ยอดสุทธิ</th>
               <th class="text-end">%</th>
             </tr></thead>
             <tbody class="dep-orders">
-              <tr><td colspan="6" class="text-center text-muted py-3">
+              <tr><td colspan="7" class="text-center text-muted py-3">
                 <div class="spinner-border spinner-border-sm" role="status"></div> กำลังโหลด...
               </td></tr>
             </tbody>
           </table>
         </div>
       </div>
+      <div class="card-footer text-muted small">
+        👉 ไป Express → หน้าร้าน{{ 'S' if platform == 'shopee' else 'L' }} →
+        รับชำระหนี้ <strong>฿{{ '{:,.2f}'.format(d.amount) }}</strong>
+        วันที่ <strong>{{ d.deposit_date }}</strong>
+      </div>
     </div>
     {% endfor %}
   {% else %}
     <div class="alert alert-info">ยังไม่มีข้อมูลยอดโอน — อัปโหลดไฟล์ Seller Balance ด้านบนค่ะ</div>
   {% endif %}
-  {% endif %}
 
-  {# ══════════════════ TAB: daily ════════════════════════════════════════════ #}
-  {% if tab == 'daily' %}
-
-  {# ---- Settled batches ---- #}
-  {% if report.batches %}
-    <h5 class="mt-4">ยอดโอนแต่ละวัน (ใช้สำหรับ รับชำระหนี้ ใน Express)</h5>
-    {% for batch in report.batches %}
-    <div class="card mb-4">
-      <div class="card-header d-flex justify-content-between">
-        <strong>วันโอน: {{ batch.settled_at }}</strong>
-        <span class="text-success fw-bold">฿{{ '{:,.2f}'.format(batch.total_payout) }} รวม {{ batch.order_count }} ออเดอร์</span>
-      </div>
-      <div class="card-body p-0">
-        <table class="table table-sm table-hover mb-0">
-          <thead class="table-light">
-            <tr>
-              <th>เลขออเดอร์</th>
-              <th>ใบกำกับ (IV)</th>
-              <th class="text-end">ราคาขาย (฿)</th>
-              <th class="text-end">ค่าธรรมเนียม (฿)</th>
-              <th class="text-end text-success">ยอดโอนจริง (฿)</th>
-              <th>สถานะ</th>
-              <th>วันสั่ง</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for o in batch.orders %}
-            <tr>
-              <td><code class="js-order-detail" role="button" data-order-id="{{ o.id }}" title="ดูรายละเอียดออเดอร์">{{ o.order_sn }}</code></td>
-              <td>
-                {% if o.matched_iv %}
-                  <a href="{{ url_for('sales_doc', doc_base=o.matched_iv) }}" target="_blank" title="เปิดใบกำกับใน Express"><code>{{ o.matched_iv }}</code></a>
-                  {% if o.iv_confidence == 'confident' %}<span class="badge bg-success" title="ยอดตรง และมีใบเดียวในช่วงวันโอน">✓</span>
-                  {% elif o.iv_confidence == 'probable' %}<span class="badge bg-warning text-dark" title="ยอดตรง แต่มีหลายใบยอดเท่ากันในช่วงวันโอน อาจสลับใบ — กดแก้เพื่อยืนยัน">~</span>
-                  {% elif o.iv_confidence == 'review' %}<span class="badge bg-info text-dark" title="ยอดในบิลไม่ตรงยอดที่ Shopee โอนจริง — กดดู/แก้ในหน้ากระทบยอด">⚠ ยอดต่าง</span>
-                  {% elif o.iv_confidence == 'manual' %}<span class="badge bg-primary" title="ยืนยันเอง">★</span>{% endif %}
-                  <button type="button" class="btn btn-link btn-sm p-0 ms-1 js-iv-pick"
-                          data-order-id="{{ o.id }}" data-order-sn="{{ o.order_sn }}">แก้</button>
-                {% else %}
-                  <button type="button" class="btn btn-sm btn-outline-secondary py-0 js-iv-pick"
-                          data-order-id="{{ o.id }}" data-order-sn="{{ o.order_sn }}">เลือก</button>
-                {% endif %}
-              </td>
-              <td class="text-end">{{ '{:,.2f}'.format(o.item_total or 0) }}</td>
-              <td class="text-end text-danger">{{ '{:,.2f}'.format(o.fee_diff or 0) }}</td>
-              <td class="text-end text-success fw-bold">{{ '{:,.2f}'.format(o.actual_payout or 0) }}</td>
-              <td>{% if o.status %}<span class="badge bg-success">{{ o.status }}</span>{% else %}<span class="text-muted">—</span>{% endif %}</td>
-              <td>{{ o.order_date[:10] if o.order_date else '' }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-          <tfoot class="table-light">
-            <tr>
-              <th colspan="2">รวม {{ batch.order_count }} ออเดอร์</th>
-              <th class="text-end">฿{{ '{:,.2f}'.format(batch.orders | sum(attribute='item_total') or 0) }}</th>
-              <th class="text-end text-danger">฿{{ '{:,.2f}'.format(batch.orders | sum(attribute='fee_diff') or 0) }}</th>
-              <th class="text-end text-success">฿{{ '{:,.2f}'.format(batch.total_payout) }}</th>
-              <th colspan="2"></th>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-      <div class="card-footer text-muted small">
-        👉 ไป Express → หน้าร้าน{{ 'S' if platform == 'shopee' else 'L' }} →
-        รับชำระหนี้ <strong>฿{{ '{:,.2f}'.format(batch.total_payout) }}</strong>
-        วันที่ <strong>{{ batch.settled_at }}</strong>
-      </div>
-    </div>
-    {% endfor %}
-  {% else %}
-    <div class="alert alert-info">ยังไม่มี settlement data — กรุณา upload ไฟล์ Income Transfer ค่ะ</div>
+  {# ---- Settled but not tied to any bank deposit yet (would otherwise be hidden) ---- #}
+  {% if extras and extras.orphan %}
+  <h5 class="mt-4 text-warning">เคลียร์แล้วแต่ยังไม่เข้าก้อนโอน {{ extras.orphan | length }} ออเดอร์</h5>
+  <p class="small text-muted">มียอดโอนจริงแล้ว แต่ยังไม่ผูกกับก้อนเงินเข้าบัญชี (อาจอัปโหลดไฟล์ Income ก่อนไฟล์ Seller Balance) — อัปโหลด Balance ให้ครบช่วงแล้วจะเข้าก้อนเอง</p>
+  <table class="table table-sm table-bordered">
+    <thead class="table-warning"><tr><th>เลขออเดอร์</th><th>วันโอน</th><th class="text-end">ยอดโอนจริง (฿)</th></tr></thead>
+    <tbody>
+      {% for o in extras.orphan %}
+      <tr>
+        <td><code class="js-order-detail" role="button" data-order-id="{{ o.id }}" title="ดูรายละเอียดออเดอร์">{{ o.order_sn }}</code></td>
+        <td>{{ o.settled_at }}</td>
+        <td class="text-end {% if o.actual_payout < 0 %}text-danger{% endif %}">{{ '{:,.2f}'.format(o.actual_payout) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
   {% endif %}
 
   {# ---- Pending (not yet settled) ---- #}
-  {% if report.pending %}
-  <h5 class="mt-4 text-warning">รอรับเงิน {{ report.pending | length }} ออเดอร์ (ยังไม่มี settlement)</h5>
+  {% if extras and extras.pending %}
+  <h5 class="mt-4 text-muted">รอรับเงิน {{ extras.pending | length }} ออเดอร์ (ยังไม่มี settlement)</h5>
   <table class="table table-sm table-bordered">
-    <thead class="table-warning">
+    <thead class="table-light">
       <tr><th>เลขออเดอร์</th><th class="text-end">ราคาขาย (฿)</th><th>สถานะ</th><th>วันสั่ง</th></tr>
     </thead>
     <tbody>
-      {% for o in report.pending %}
+      {% for o in extras.pending %}
       <tr>
         <td><code class="js-order-detail" role="button" data-order-id="{{ o.id }}" title="ดูรายละเอียดออเดอร์">{{ o.order_sn }}</code></td>
         <td class="text-end">{{ '{:,.2f}'.format(o.item_total or 0) }}</td>
@@ -195,241 +132,137 @@
   </table>
   {% endif %}
 
-  {# ══════════════════ TAB: batch ════════════════════════════════════════════ #}
-  {% elif tab == 'batch' %}
+  {# ══════════════════ TAB: reconcile ════════════════════════════════════════ #}
+  {% elif tab == 'reconcile' %}
+  {% set s = report.summary %}
+  <p class="text-muted small">
+    เทียบ 3 ยอดต่อออเดอร์: <strong>ยอดโอนจริง</strong> (Shopee จ่าย) ↔ <strong>ใบกำกับ</strong> (ทีมลงบิล) ↔
+    <strong>รับชำระ</strong> (Express). ปกติควรเท่ากันทั้ง 3 — แถวที่ต่างจะถูกไฮไลต์
+  </p>
 
-  {# L2: defensive defaults so any render path that omits no_match_* can't 500 #}
-  {% set no_match_candidates = no_match_candidates | default(none) %}
-  {% set no_match_deposit_amount = no_match_deposit_amount | default(0) %}
-  {% set no_match_deposit_date = no_match_deposit_date | default('') %}
-  {% set no_match_bank_ref = no_match_bank_ref | default('') %}
-  {% set no_match_note = no_match_note | default('') %}
-
-  {# ---- Baseline / ยอดยกมา prompt (shown when large backlog + no baseline yet) ---- #}
-  {% set _has_baseline = batch_report.batches | selectattr('is_baseline') | list | length > 0 %}
-  {% if not _has_baseline and batch_report.unbatched | length > 10 %}
-  <div class="card mb-4 border-secondary">
-    <div class="card-header bg-light">
-      <strong>ตั้งยอดยกมา (ครั้งเดียวตอนเริ่มบันทึก)</strong>
+  {# ---- summary cards ---- #}
+  <div class="row g-2 mb-3">
+    <div class="col-6 col-md-3">
+      <div class="card"><div class="card-body py-2">
+        <div class="small text-muted">ยอดโอนจริง ({{ platform | capitalize }})</div>
+        <div class="h5 mb-0 text-success">฿{{ '{:,.2f}'.format(s.payout) }}</div>
+      </div></div>
     </div>
-    <div class="card-body">
-      <p class="mb-2 small">
-        ออเดอร์ที่โอนเข้าบัญชีก่อนวันที่นี้ถือว่ากระทบยอดแล้ว ระบบจะไม่เอามารวมในก้อนถัดไป<br>
-        <span class="text-muted">ถ้าก้อนแรกที่บันทึกยังไม่ตรงยอดแบงก์ ให้ปรับวันนี้ แล้วลองใหม่ (self-correcting)</span>
-      </p>
-      <form method="post" action="{{ url_for('marketplace.settlement_baseline') }}"
-            class="row g-2 align-items-end">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <div class="col-auto">
-          <label class="form-label small mb-1">วันตัดยอด (ออเดอร์ก่อน/ตรงวันนี้ = ยกมา)</label>
-          <input type="date" name="cutoff_date" class="form-control form-control-sm" required>
+    <div class="col-6 col-md-3">
+      <div class="card"><div class="card-body py-2">
+        <div class="small text-muted">ใบกำกับที่จับคู่ได้</div>
+        <div class="h5 mb-0">฿{{ '{:,.2f}'.format(s.billed) }}</div>
+      </div></div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card"><div class="card-body py-2">
+        <div class="small text-muted">รับชำระ (Express)</div>
+        <div class="h5 mb-0">฿{{ '{:,.2f}'.format(s.collected) }}</div>
+      </div></div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card border-warning"><div class="card-body py-2">
+        <div class="small text-muted">ยอดบิลไม่ตรง (ค้างตรวจ)</div>
+        <div class="h5 mb-0 {% if s.amount_mismatch_open %}text-danger{% endif %}">{{ s.amount_mismatch_open }} ใบ
+          {% if s.amount_mismatch_reviewed %}<span class="small text-muted">· ตรวจแล้ว {{ s.amount_mismatch_reviewed }}</span>{% endif %}
         </div>
-        <div class="col-auto">
-          <button type="submit" class="btn btn-secondary btn-sm"
-                  onclick="return confirm('ดูด order ทั้งหมดที่โอนก่อน/ตรงวันที่เลือก เข้า ยอดยกมา?')">
-            ตั้งยอดยกมา
-          </button>
-        </div>
-      </form>
-      <p class="text-muted small mt-2 mb-0">
-        ขณะนี้มี {{ batch_report.unbatched | length }} ออเดอร์ยังไม่มีก้อน
-        รวม ฿{{ '{:,.2f}'.format(batch_report.unbatched | sum(attribute='actual_payout')) }}
-      </p>
+      </div></div>
     </div>
   </div>
-  {% endif %}
+  <p class="small text-muted mb-3">
+    จับคู่ใบกำกับ {{ s.matched }}/{{ s.orders }} ออเดอร์{% if s.unmatched_orders %} · ยังไม่ผูก {{ s.unmatched_orders }}{% endif %}.
+    แถวสีเหลือง = <strong>ยอดในบิลไม่ตรงกับยอดที่ Shopee โอนจริง</strong> → ทีมคีย์ผิด/Shopee ปรับยอด ควรไปแก้บิลใน Express.
+    จับคู่ใบกำกับจาก <strong>สินค้า + วันสั่ง</strong> (ใบที่ออกหลังวันสั่ง) แล้วเทียบยอด — ป้าย
+    <span class="badge bg-info text-dark">⚠ ยอดต่าง</span> = ยอดบิลไม่ตรงยอดโอน (กดเลขออเดอร์เพื่อดู/แก้)
+  </p>
 
-  {# ---- Create batch form ---- #}
-  <div class="card mb-4">
-    <div class="card-header"><strong>สร้างก้อนเงินเข้า (บันทึกยอดโอนจากธนาคาร)</strong></div>
-    <div class="card-body">
-      <form method="post" action="{{ url_for('marketplace.settlement_batch_create') }}"
-            class="row g-2 align-items-end">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <div class="col-auto">
-          <label class="form-label small mb-1">วันที่เงินเข้าบัญชี</label>
-          <input type="date" name="deposit_date" class="form-control form-control-sm" required>
-        </div>
-        <div class="col-auto">
-          <label class="form-label small mb-1">ยอดโอน (฿)</label>
-          <input type="number" step="0.01" name="deposit_amount" class="form-control form-control-sm"
-                 placeholder="เช่น 5285.00" required>
-        </div>
-        <div class="col-auto">
-          <label class="form-label small mb-1">เลขอ้างอิงธนาคาร (ไม่บังคับ)</label>
-          <input type="text" name="bank_ref" class="form-control form-control-sm" placeholder="REF / เลขที่รายการ">
-        </div>
-        <div class="col-auto">
-          <label class="form-label small mb-1">หมายเหตุ</label>
-          <input type="text" name="note" class="form-control form-control-sm" placeholder="ไม่บังคับ">
-        </div>
-        <div class="col-auto">
-          <button type="submit" class="btn btn-primary btn-sm">จับคู่อัตโนมัติ</button>
-        </div>
-      </form>
-      <p class="text-muted small mt-2 mb-0">
-        ระบบจะลองจับ prefix sum ของ order ที่ยังไม่มีก้อน (เรียง settled_at ASC แล้ว order_sn ASC)
-        ถ้าหา prefix ที่ตรงพอดีไม่ได้ จะแสดง order ให้เลือกเองค่ะ
-        (ไม่ตรง = ให้ติ๊กเลือกเอง ไม่ได้แปลว่าข้อมูลผิด — บางครั้ง Shopee จัดก้อนไม่ตรงลำดับวันที่)
-      </p>
-    </div>
-  </div>
-
-  {# ---- no_exact_match manual-tick UI ---- #}
-  {% if no_match_candidates %}
-  <div class="card mb-4 border-warning">
-    <div class="card-header bg-warning text-dark">
-      <strong>เลือก order สำหรับก้อนเงินโอน ฿{{ '{:,.2f}'.format(no_match_deposit_amount) }} (วันที่ {{ no_match_deposit_date }})</strong>
-      — ไม่พบ prefix ที่ตรงพอดี กรุณาติ๊กเลือกเองให้ยอดรวมเท่ายอดโอนค่ะ
+  {# ---- per-month tables ---- #}
+  {% for m in report.months %}
+  <div class="card mb-3">
+    <div class="card-header d-flex justify-content-between flex-wrap">
+      <strong>เดือนโอน {{ m.ym }}</strong>
+      <span class="small">
+        โอน <span class="text-success">฿{{ '{:,.2f}'.format(m.payout) }}</span> ·
+        ใบกำกับ ฿{{ '{:,.2f}'.format(m.billed) }} ·
+        รับชำระ ฿{{ '{:,.2f}'.format(m.collected) }}
+        {% set dm = (m.payout - m.collected) | round(2) %}
+        {% if dm|abs > 0.01 %}<span class="badge bg-warning text-dark">ต่าง ฿{{ '{:,.2f}'.format(dm) }}</span>{% endif %}
+      </span>
     </div>
     <div class="card-body p-0">
-      <form method="post"
-            action="{{ url_for('marketplace.settlement_batch_manual') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="deposit_date" value="{{ no_match_deposit_date }}">
-        <input type="hidden" name="deposit_amount" value="{{ no_match_deposit_amount }}">
-        <input type="hidden" name="bank_ref" value="{{ no_match_bank_ref }}">
-        <input type="hidden" name="note" value="{{ no_match_note }}">
-        <table class="table table-sm table-hover mb-0">
-          <thead class="table-light">
-            <tr>
-              <th><input type="checkbox" id="selectAll" title="เลือกทั้งหมด"></th>
-              <th>เลขออเดอร์</th>
-              <th>วันที่โอน</th>
-              <th class="text-end">ยอดโอนจริง (฿)</th>
-              <th class="text-end">ยอดสะสม (฿)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for c in no_match_candidates %}
-            <tr>
-              <td><input type="checkbox" name="order_sns" value="{{ c.order_sn }}" class="cb-order"></td>
-              <td><code>{{ c.order_sn }}</code></td>
-              <td>{{ c.settled_at }}</td>
-              <td class="text-end {% if c.actual_payout < 0 %}text-danger{% endif %}">
-                {{ '{:,.2f}'.format(c.actual_payout) }}
-              </td>
-              <td class="text-end {% if c.running_sum > no_match_deposit_amount %}text-danger{% endif %}">
-                {{ '{:,.2f}'.format(c.running_sum) }}
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        <div class="p-2 d-flex gap-2 align-items-center">
-          <button type="submit" class="btn btn-warning btn-sm">บันทึก order ที่เลือก</button>
-          <span class="text-muted small">เลือก order ที่รวมกันได้ ฿{{ '{:,.2f}'.format(no_match_deposit_amount) }}</span>
-        </div>
-      </form>
-    </div>
-  </div>
-  {% endif %}
-
-  {# ---- Existing batches ---- #}
-  {% if batch_report.batches %}
-  <h5>ก้อนเงินเข้าที่บันทึกแล้ว</h5>
-  {% for b in batch_report.batches %}
-  <div class="card mb-3 {% if b.is_baseline %}border-secondary opacity-75{% endif %}">
-    <div class="card-header d-flex justify-content-between align-items-center
-                {% if b.is_baseline %}bg-light text-secondary{% endif %}">
-      <div>
-        {% if b.is_baseline %}
-          <span class="badge bg-secondary me-1">ยอดยกมา</span>
-          <strong>ตัดยอด ณ: {{ b.deposit_date }}</strong>
-        {% else %}
-          <strong>วันที่เงินเข้า: {{ b.deposit_date }}</strong>
-          {% if b.bank_ref %}<span class="text-muted small ms-2">{{ b.bank_ref }}</span>{% endif %}
-          {% if b.note %}<span class="text-muted small ms-2">— {{ b.note }}</span>{% endif %}
-        {% endif %}
-      </div>
-      <div class="d-flex align-items-center gap-3">
-        {% if b.is_baseline %}
-          {# No bank-tie check for baseline — it's not a real bank line #}
-          <span class="text-secondary">{{ b.order_count }} ออเดอร์ รวม ฿{{ '{:,.2f}'.format(b.sum_payout) }}</span>
-        {% else %}
-          <span class="fw-bold {% if b.tied %}text-success{% else %}text-danger{% endif %}">
-            Σ ฿{{ '{:,.2f}'.format(b.sum_payout) }} / ฿{{ '{:,.2f}'.format(b.deposit_amount) }}
-            {% if b.tied %}✓{% else %}✗{% endif %}
-          </span>
-          <span class="text-muted small">{{ b.order_count }} ออเดอร์</span>
-        {% endif %}
-        <form method="post"
-              action="{{ url_for('marketplace.settlement_batch_delete', batch_id=b.id) }}"
-              onsubmit="return confirm('ลบก้อน #{{ b.id }} และปลด order ทั้งหมดออก?')">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button type="submit" class="btn btn-outline-danger btn-sm py-0">ลบ</button>
-        </form>
-      </div>
-    </div>
-    {% if b.orders and not b.is_baseline %}
-    {# Baseline orders are collapsed — showing 415 rows inline would be noise #}
-    <div class="card-body p-0">
-      <table class="table table-sm mb-0">
+      <table class="table table-sm table-hover mb-0">
         <thead class="table-light">
-          <tr><th>เลขออเดอร์</th><th>วันที่โอน</th><th class="text-end">ยอดโอนจริง (฿)</th></tr>
+          <tr>
+            <th>เลขออเดอร์</th><th>ใบกำกับ (IV)</th>
+            <th class="text-end">ยอดโอนจริง</th><th class="text-end">ยอดในบิล</th>
+            <th class="text-end">ต่าง (บิล−โอน)</th><th class="text-end">รับชำระ</th><th>วันโอน</th><th>ตรวจ</th>
+          </tr>
         </thead>
         <tbody>
-          {% for o in b.orders %}
-          <tr>
-            <td><code>{{ o.order_sn }}</code></td>
-            <td>{{ o.settled_at }}</td>
-            <td class="text-end {% if o.actual_payout < 0 %}text-danger{% endif %}">
-              {{ '{:,.2f}'.format(o.actual_payout) }}
+          {% for o in m.orders %}
+          <tr class="{% if o.amount_mismatch and not o.reviewed %}table-warning{% elif not o.iv %}table-light text-muted{% endif %}">
+            <td><code class="js-order-detail" role="button" data-order-id="{{ o.order_id }}" title="ดูรายละเอียด">{{ o.order_sn }}</code></td>
+            <td>
+              {% if o.iv %}<a href="{{ url_for('sales_doc', doc_base=o.iv) }}" target="_blank" title="เปิดใบกำกับใน Express"><code>{{ o.iv }}</code></a>
+                {% if o.iv_confidence == 'probable' %}<span class="badge bg-warning text-dark" title="ยอดตรง อาจสลับใบยอดเท่ากัน">~</span>
+                {% elif o.iv_confidence == 'review' %}<span class="badge bg-info text-dark" title="ยอดในบิลไม่ตรงยอดโอน">⚠ ยอดต่าง</span>{% endif %}
+              {% else %}<span class="text-warning small">ยังไม่ผูก</span>{% endif %}
+            </td>
+            <td class="text-end text-success">{{ '{:,.2f}'.format(o.payout) }}</td>
+            <td class="text-end">{{ '{:,.2f}'.format(o.billed) if o.billed is not none else '–' }}</td>
+            <td class="text-end {% if o.amount_mismatch and not o.reviewed %}text-danger fw-bold{% endif %}">
+              {{ '{:+,.2f}'.format(o.d_bill) if o.d_bill is not none else '–' }}
+            </td>
+            <td class="text-end">{{ '{:,.2f}'.format(o.collected) if o.collected is not none else '–' }}</td>
+            <td class="small">{{ o.settled_at }}</td>
+            <td class="small">
+              {% if o.reviewed %}
+                <span class="text-success" title="ตรวจแล้วโดย {{ o.reviewed_by or '-' }}">✓ ตรวจแล้ว</span>
+                <form method="post" action="{{ url_for('marketplace.review_amount', order_id=o.order_id, platform=platform) }}" class="d-inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="action" value="clear">
+                  <button type="submit" class="btn btn-link btn-sm p-0 text-muted"
+                          {% if not is_manager %}disabled title="เฉพาะผู้จัดการขึ้นไป"{% endif %}>ยกเลิก</button>
+                </form>
+              {% elif o.amount_mismatch %}
+                <form method="post" action="{{ url_for('marketplace.review_amount', order_id=o.order_id, platform=platform) }}" class="d-inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn btn-sm btn-outline-success py-0"
+                          {% if not is_manager %}disabled title="เฉพาะผู้จัดการขึ้นไป"{% endif %}>ตรวจแล้ว</button>
+                </form>
+              {% endif %}
             </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
-    {% elif b.is_baseline %}
-    <div class="card-body py-1 px-3 small text-secondary">
-      {{ b.order_count }} ออเดอร์ก่อนเริ่มบันทึก (ถือว่ากระทบยอดแล้ว ไม่แสดงรายละเอียด)
-    </div>
-    {% endif %}
-    {% if not b.is_baseline %}
-    <div class="card-footer text-muted small">
-      👉 ไป Express → หน้าร้าน{{ 'S' if platform == 'shopee' else 'L' }} →
-      รับชำระหนี้ <strong>฿{{ '{:,.2f}'.format(b.deposit_amount) }}</strong>
-      วันที่ <strong>{{ b.deposit_date }}</strong>
-    </div>
-    {% endif %}
   </div>
-  {% endfor %}
   {% else %}
-    <div class="alert alert-info">ยังไม่มีก้อนเงินเข้า — กรอกฟอร์มด้านบนเพื่อสร้างค่ะ</div>
-  {% endif %}
+  <div class="alert alert-info">ยังไม่มี settlement — นำเข้าไฟล์ Income Transfer ด้านบนก่อนค่ะ</div>
+  {% endfor %}
 
-  {# ---- Unbatched bucket ---- #}
-  {% if batch_report.unbatched %}
-  <h5 class="mt-4 text-warning">ยังไม่เข้าก้อน {{ batch_report.unbatched | length }} ออเดอร์</h5>
+  {# ---- unmatched IVs (booked but no order linked) ---- #}
+  {% if report.unmatched_ivs %}
+  <h5 class="mt-4 text-muted">ใบกำกับหน้าร้านที่ยังไม่ผูกกับออเดอร์ ({{ report.unmatched_ivs | length }})</h5>
+  <p class="small text-muted">ใบที่ลงในเดือนเดียวกับที่มีออเดอร์ แต่จับคู่ไม่ได้ (อาจเป็นออเดอร์ข้ามเดือน, ยกเลิก, หรือขายหน้าร้านจริง)</p>
   <table class="table table-sm table-bordered">
-    <thead class="table-warning">
-      <tr><th>เลขออเดอร์</th><th>วันที่โอน</th><th class="text-end">ยอดโอนจริง (฿)</th></tr>
-    </thead>
+    <thead class="table-light"><tr><th>ใบกำกับ</th><th>วันที่</th><th class="text-end">ยอดบิล</th><th class="text-end">รับชำระ</th></tr></thead>
     <tbody>
-      {% for u in batch_report.unbatched %}
-      <tr>
-        <td><code>{{ u.order_sn }}</code></td>
-        <td>{{ u.settled_at }}</td>
-        <td class="text-end {% if u.actual_payout < 0 %}text-danger{% endif %}">
-          {{ '{:,.2f}'.format(u.actual_payout) }}
-        </td>
-      </tr>
+      {% for iv in report.unmatched_ivs[:50] %}
+      <tr><td><code>{{ iv.doc_base }}</code></td><td>{{ iv.invoice_date }}</td>
+          <td class="text-end">{{ '{:,.2f}'.format(iv.billed) }}</td>
+          <td class="text-end">{{ '{:,.2f}'.format(iv.collected) }}</td></tr>
       {% endfor %}
     </tbody>
-    <tfoot class="table-light">
-      <tr>
-        <th colspan="2">รวม {{ batch_report.unbatched | length }} ออเดอร์</th>
-        <th class="text-end">฿{{ '{:,.2f}'.format(batch_report.unbatched | sum(attribute='actual_payout')) }}</th>
-      </tr>
-    </tfoot>
   </table>
+  {% if report.unmatched_ivs | length > 50 %}<p class="small text-muted">แสดง 50 จาก {{ report.unmatched_ivs | length }} ใบ</p>{% endif %}
   {% endif %}
 
-  {% endif %}{# end tab == 'batch' #}
+  {% endif %}{# end tab #}
 </div>
 
-{# ---- IV picker modal (only needed on daily tab) ---- #}
+{# ---- IV picker modal (deposits tab) ---- #}
 <div class="modal fade" id="ivPickModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-scrollable">
     <div class="modal-content">
@@ -465,7 +298,7 @@ document.addEventListener('DOMContentLoaded', function () {
   const fmt = n => (n == null ? '–' : Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}));
   const platform = {{ platform | tojson }};
 
-  // ---- IV picker (daily tab) ----
+  // ---- IV picker ----
   const pickModalEl = document.getElementById('ivPickModal');
   if (pickModalEl) {
     const pickModal = new bootstrap.Modal(pickModalEl);
@@ -507,21 +340,27 @@ document.addEventListener('DOMContentLoaded', function () {
     pickManual.addEventListener('input', () => {
       if (pickManual.value.trim()) pickList.querySelectorAll('input[type=radio]').forEach(r => r.checked = false);
     });
-    document.querySelectorAll('.js-iv-pick').forEach(b =>
-      b.addEventListener('click', () => openPicker(b.dataset.orderId, b.dataset.orderSn)));
-  }
-
-  // ---- select-all checkbox (batch tab manual-tick UI) ----
-  const selectAll = document.getElementById('selectAll');
-  if (selectAll) {
-    selectAll.addEventListener('change', function () {
-      document.querySelectorAll('.cb-order').forEach(cb => cb.checked = selectAll.checked);
+    // Delegated: deposit order rows are injected lazily after load.
+    document.addEventListener('click', function (e) {
+      const b = e.target.closest('.js-iv-pick');
+      if (b) openPicker(b.dataset.orderId, b.dataset.orderSn);
     });
   }
 
   // ---- Lazy-load a deposit's order rows on expand (deposits tab) ----
-  // The page ships only deposit summaries; rows are fetched once per card.
   const fmtN = n => (n == null ? '0.00' : Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}));
+  function ivCell(o) {
+    if (o.matched_iv) {
+      let badge = '';
+      if (o.iv_confidence === 'confident') badge = ' <span class="badge bg-success" title="ยอดตรง ใบเดียวในช่วงวันโอน">✓</span>';
+      else if (o.iv_confidence === 'probable') badge = ' <span class="badge bg-warning text-dark" title="ยอดตรง แต่มีหลายใบยอดเท่ากัน อาจสลับใบ">~</span>';
+      else if (o.iv_confidence === 'review') badge = ' <span class="badge bg-info text-dark" title="ยอดบิลไม่ตรงยอดโอน">⚠</span>';
+      else if (o.iv_confidence === 'manual') badge = ' <span class="badge bg-primary" title="ยืนยันเอง">★</span>';
+      return `<a href="/sales/doc/${encodeURIComponent(o.matched_iv)}" target="_blank" title="เปิดใบกำกับใน Express"><code>${o.matched_iv}</code></a>${badge}`
+        + ` <button type="button" class="btn btn-link btn-sm p-0 ms-1 js-iv-pick" data-order-id="${o.id}" data-order-sn="${o.order_sn}">แก้</button>`;
+    }
+    return `<button type="button" class="btn btn-sm btn-outline-secondary py-0 js-iv-pick" data-order-id="${o.id}" data-order-sn="${o.order_sn}">เลือก</button>`;
+  }
   function depRowHtml(o) {
     let badge = '';
     if (o.fee_source === 'wallet') badge = ' <span class="badge bg-secondary" title="ยอดสุทธิจริงจาก Seller Balance — ค่าธรรมเนียมเป็นค่าประมาณ (ยังไม่ได้อัปโหลดไฟล์ Income โอนเงินสำเร็จ)">~ ประมาณ</span>';
@@ -530,6 +369,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const feeCls = o.fee_source === 'settled' ? 'text-danger' : 'text-muted';
     return `<tr>
       <td><code class="js-order-detail" role="button" data-order-id="${o.id}" title="ดูรายละเอียด + ค่าธรรมเนียมแยกรายการ">${o.order_sn}</code>${badge}</td>
+      <td>${ivCell(o)}</td>
       <td class="small">${o.settled_at || '–'}</td>
       <td class="text-end">${fmtN(o.item_value)}</td>
       <td class="text-end ${feeCls}">${fmtN(o.fee_total)}</td>
@@ -547,9 +387,9 @@ document.addEventListener('DOMContentLoaded', function () {
         .then(d => {
           tbody.innerHTML = d.orders.length
             ? d.orders.map(depRowHtml).join('')
-            : '<tr><td colspan="6" class="text-center text-muted py-3">ไม่มีออเดอร์</td></tr>';
+            : '<tr><td colspan="7" class="text-center text-muted py-3">ไม่มีออเดอร์</td></tr>';
         })
-        .catch(() => { col.dataset.loaded = '0'; tbody.innerHTML = '<tr><td colspan="6" class="text-danger text-center py-3">โหลดไม่สำเร็จ</td></tr>'; });
+        .catch(() => { col.dataset.loaded = '0'; tbody.innerHTML = '<tr><td colspan="7" class="text-danger text-center py-3">โหลดไม่สำเร็จ</td></tr>'; });
     });
   });
 });

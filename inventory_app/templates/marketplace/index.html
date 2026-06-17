@@ -48,24 +48,10 @@
   </div>
 </div>
 
-{# ── Import box ── #}
-<div class="card mb-4">
-  <div class="card-body">
-    <form method="post" action="{{ url_for('marketplace.import_orders') }}" enctype="multipart/form-data"
-          class="d-flex flex-wrap gap-2 align-items-center">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label class="fw-semibold mb-0"><i class="bi bi-cloud-upload me-1"></i>อัปโหลดไฟล์ order export</label>
-      <input type="file" name="order_file" accept=".xlsx" class="form-control form-control-sm" style="max-width:340px" required>
-      <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-upload me-1"></i>นำเข้า</button>
-      <span class="text-muted small">รองรับไฟล์ Shopee &amp; Lazada (ตรวจชนิดอัตโนมัติ) · นำเข้าซ้ำได้ ไม่เกิดรายการซ้ำ</span>
-    </form>
-  </div>
-</div>
-
-{# ── Settlement link ── #}
+{# ── Settlement link (single entry point — upload Order/การเงิน/Balance happens there) ── #}
 <div class="mb-3">
   <a href="{{ url_for('marketplace.settlement') }}" class="btn btn-sm btn-outline-success">
-    <i class="bi bi-cash-coin me-1"></i>ยอดโอนจริง / Settlement (สำหรับรับชำระหนี้ใน Express)
+    <i class="bi bi-cash-coin me-1"></i>นำเข้าไฟล์ + ยอดโอนจริง / Settlement (สำหรับรับชำระหนี้ใน Express)
   </a>
 </div>
 
@@ -73,7 +59,7 @@
 <div class="alert alert-light border small text-muted mb-3">
   <i class="bi bi-info-circle me-1"></i>
   <strong>ค่าธรรมเนียม / ยอดที่ได้รับ:</strong> Shopee แสดงค่าคอม+ค่าบริการจากไฟล์ (ยอดที่ได้รับจริงต้องกระทบกับ
-  <a href="{{ url_for('marketplace.settlement') }}">settlement report</a> อีกที) ·
+  <strong>settlement</strong> อีกที) ·
   Lazada ไฟล์ order ไม่มีค่าคอม จึงแสดง "-" จนกว่าจะดึง finance statement
 </div>
 
@@ -121,7 +107,7 @@
         </tr>
         {% else %}
         <tr><td colspan="10" class="text-center text-muted py-4">
-          ยังไม่มีออเดอร์ — อัปโหลดไฟล์ order export ด้านบนเพื่อเริ่ม
+          ยังไม่มีออเดอร์ — ไปหน้า <a href="{{ url_for('marketplace.settlement') }}">Settlement</a> เพื่ออัปโหลดไฟล์ order export
         </td></tr>
         {% endfor %}
       </tbody>

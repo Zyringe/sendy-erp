@@ -143,7 +143,8 @@ def test_reconciliation_page_renders(seeded):
     conn, _oid = seeded
     _link_and_pay(conn)
     c = _client()
-    resp = c.get('/marketplace/reconciliation')
+    # /marketplace/reconciliation now redirects into the settlement reconcile tab.
+    resp = c.get('/marketplace/reconciliation', follow_redirects=True)
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
     assert 'IVROUTE1' in html
@@ -198,13 +199,14 @@ def test_review_amount_manager_only():
         s.update(user_id=4, username='st', role='staff')
     r = cs.post('/marketplace/order/1/review-amount', data={}, follow_redirects=False)
     loc = r.headers.get('Location') or ''
-    assert r.status_code == 302 and 'reconciliation' not in loc   # blocked before the route
+    assert r.status_code == 302 and 'tab=reconcile' not in loc   # blocked before the route
 
     cm = flask_app.test_client()
     with cm.session_transaction() as s:
         s.update(user_id=2, username='mgr', role='manager')
     r = cm.post('/marketplace/order/99999999/review-amount', data={}, follow_redirects=False)
-    assert r.status_code == 302 and 'reconciliation' in (r.headers.get('Location') or '')
+    # review_amount now redirects into the settlement reconcile tab.
+    assert r.status_code == 302 and 'tab=reconcile' in (r.headers.get('Location') or '')
 
 
 def test_settlement_import_triggers_automatch(tmp_db_conn, tmp_path):
