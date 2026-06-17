@@ -86,6 +86,77 @@
           {% endfor %}
           </tbody>
         </table>
+
+        {# ── Credit-note money-path preview ──────────────────────────────────
+           For any staged ใบลดหนี้ file, surface the credit_note_amounts diff
+           (which amounts would CHANGE vs the DB). credit_note_amounts is the
+           AUTHORITATIVE outstanding figure (mig 062), so a stale/edited file
+           silently overwriting it is the ฿105k phantom-overpay class of bug.
+           Detail comes from preview_credit_notes_import via import_router. #}
+        {% for row in rows %}
+          {% set d = row.detail or {} %}
+          {% if d.cna_diff %}
+          <div class="card mb-3 border-warning">
+            <div class="card-header">
+              <i class="bi bi-coin me-2 text-accent"></i>
+              <strong>ใบลดหนี้: {{ row.filename }}</strong>
+              <span class="text-subtle small">— ตรวจ credit_note_amounts (ตารางที่ใช้นับ outstanding)</span>
+            </div>
+            <div class="card-body">
+              <div class="row text-center mb-1">
+                <div class="col-4">
+                  <div class="h4 mb-0 text-success">{{ d.cna_diff.new|length }}</div>
+                  <div class="small text-subtle">🟢 ใหม่ (จะเพิ่ม)</div>
+                </div>
+                <div class="col-4">
+                  <div class="h4 mb-0 text-secondary">{{ d.cna_diff.unchanged }}</div>
+                  <div class="small text-subtle">⚪ ตรงกับ DB</div>
+                </div>
+                <div class="col-4">
+                  <div class="h4 mb-0 {% if d.cna_diff.changed %}text-warning{% else %}text-secondary{% endif %}">{{ d.cna_diff.changed|length }}</div>
+                  <div class="small text-subtle">🟠 จะเปลี่ยน (ระวัง)</div>
+                </div>
+              </div>
+
+              {% if d.cna_diff.changed %}
+              <div class="alert alert-warning small mt-2 mb-2">
+                <i class="bi bi-exclamation-triangle me-1"></i>
+                <strong>มี {{ d.cna_diff.changed|length }} ใบที่ยอดในไฟล์ไม่ตรงกับในระบบ</strong>
+                — อาจเป็นไฟล์เก่ากว่า DB หรือยอด "รวมทั้งสิ้น" ถูกแก้.
+                ถ้าไม่แน่ใจ ให้ยกเลิก (หรือเปลี่ยนไฟล์นี้เป็น "ข้ามไฟล์นี้") แล้วเช็คก่อน
+              </div>
+              <div class="table-responsive">
+                <table class="table table-sm small mb-0">
+                  <thead class="table-light">
+                    <tr><th>SR doc_base</th><th>อ้าง IV</th><th class="text-end">ใน DB</th><th class="text-end">ในไฟล์</th><th class="text-end">ส่วนต่าง</th></tr>
+                  </thead>
+                  <tbody>
+                    {% for c in d.cna_diff.changed %}
+                    <tr>
+                      <td><code>{{ c.sr_doc_base }}</code></td>
+                      <td><code>{{ c.ref_invoice or '-' }}</code></td>
+                      <td class="text-end">{{ '{:,.2f}'.format(c.db_amount) }}</td>
+                      <td class="text-end">{{ '{:,.2f}'.format(c.file_amount) }}</td>
+                      <td class="text-end {% if c.diff > 0 %}text-success{% else %}text-danger{% endif %}">{{ '{:+,.2f}'.format(c.diff) }}</td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {% endif %}
+
+              {% if d.ref_conflicts %}
+              <div class="alert alert-warning small mt-2 mb-0">
+                <i class="bi bi-exclamation-triangle me-1"></i>
+                <strong>มี {{ d.ref_conflicts|length }} ใบที่ ref_invoice ใน DB ไม่ตรงกับไฟล์</strong>
+                — ระบบจะ <em>ไม่</em> ทับของเดิม (log อย่างเดียว)
+              </div>
+              {% endif %}
+            </div>
+          </div>
+          {% endif %}
+        {% endfor %}
+
         <button type="submit" class="btn btn-primary"><i class="bi bi-cloud-upload me-1"></i>ยืนยันนำเข้าทั้งหมด</button>
         <a href="{{ url_for('unified_import') }}" class="btn btn-outline-secondary">ยกเลิก</a>
       </form>

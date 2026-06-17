@@ -191,10 +191,6 @@
        class="sidebar-link {% if request.endpoint == 'express_ap_dashboard' %}active{% endif %}">
       <i class="bi bi-bank"></i> AP / ซัพพลายเออร์
     </a>
-    <a href="{{ url_for('express_import') }}"
-       class="sidebar-link {% if request.endpoint == 'express_import' %}active{% endif %}">
-      <i class="bi bi-cloud-upload"></i> อัพโหลด Express
-    </a>
 
     <div class="sidebar-section">E-commerce</div>
     <a href="{{ url_for('ecommerce', tab='shopee') }}"

@@ -1,6 +1,7 @@
 """Unified import entry point: one upload box auto-detects ขาย/ซื้อ vs AR/AP and
-routes each to the right handler (diff-confirm for transactions, snapshot-replace
-preview for outstanding balances)."""
+routes each to the right handler. Detection now lives in
+import_router.detect_express_report (see test_import_router_dispatch.py); these
+tests cover the AR-entity pin and the real-file route flow on /import-data."""
 import glob
 import io
 import os
@@ -8,36 +9,6 @@ import os
 import pytest
 
 os.environ.setdefault('SKIP_DB_INIT', '1')
-
-
-_AR_HEADER = [
-    '"(BSN)บจก.บุญสวัสดิ์นำชัย"',
-    '"  รายงานลูกหนี้คงค้างแบบละเอียด"',
-    '"รหัสลูกค้า  01ก01   ถึง  Zหน้าร้าน                         วันที่ : 29/05/69"',
-]
-_AP_HEADER = [
-    '"(BSN)บจก.บุญสวัสดิ์นำชัย"',
-    '"  รายงานเจ้าหนี้คงค้างแบบละเอียด"',
-    '"รหัสผู้จำหน่าย  AA01   ถึง  ZZ99                            วันที่ : 29/05/69"',
-]
-
-
-def _write(tmp_path, name, lines):
-    p = tmp_path / name
-    p.write_text("\n".join(lines) + "\n", encoding="cp874")
-    return str(p)
-
-
-def test_detect_kind_ar_ap(tmp_path):
-    import app
-    assert app._detect_express_kind(_write(tmp_path, 'ar.csv', _AR_HEADER)) == 'ar_snapshot'
-    assert app._detect_express_kind(_write(tmp_path, 'ap.csv', _AP_HEADER)) == 'ap_snapshot'
-
-
-def test_detect_kind_sales_purchase(sample_sales_file, sample_purchase_file):
-    import app
-    assert app._detect_express_kind(sample_sales_file) == 'sales'
-    assert app._detect_express_kind(sample_purchase_file) == 'purchase'
 
 
 def test_ar_readers_pin_bsn_entity(empty_db):
@@ -88,28 +59,28 @@ def _real_ar_file():
 
 
 def test_ar_file_routes_to_snapshot_preview_then_confirms(admin_client, tmp_db):
-    """A real AR outstanding file uploaded to the unified /import-weekly lands on
-    the snapshot preview (no write), and confirm runs the snapshot import."""
+    """A real AR outstanding file uploaded to the unified /import-data box stages
+    on the preview (no write), and confirm runs the snapshot import."""
     ar = _real_ar_file()
     if not ar:
         pytest.skip("AR snapshot file not mounted")
 
     content = open(ar, 'rb').read()
     resp = admin_client.post(
-        '/import-weekly',
-        data={'weekly_file': (io.BytesIO(content), 'ลูกหนี้คงค้าง_29.5.69.csv', 'text/csv')},
+        '/import-data',
+        data={'files': (io.BytesIO(content), 'ลูกหนี้คงค้าง_29.5.69.csv', 'text/csv')},
         content_type='multipart/form-data', follow_redirects=False)
-    assert resp.status_code == 200, "AR file should render the snapshot preview"
-    assert 'ยอดคงค้าง'.encode() in resp.data, "snapshot preview not rendered"
+    assert resp.status_code == 200, "AR file should render the staged preview"
+    assert 'ตรวจสอบก่อนยืนยัน'.encode() in resp.data, "preview page not rendered"
     with admin_client.session_transaction() as sess:
-        pend = sess.get('pending_import')
-        assert pend and pend['kind'] == 'ar_snapshot'
+        stage = sess.get('import_stage')
+        assert stage and stage['rows'][0]['detected'] == 'ar_snapshot'
+        token = stage['token']
 
-    resp2 = admin_client.post('/import-weekly/confirm', data={'action': 'confirm'},
+    resp2 = admin_client.post('/import-data/confirm',
+                              data={'token': token, 'type_0': 'ar_snapshot'},
                               follow_redirects=False)
-    assert resp2.status_code == 302
-    assert '/express/ar' in resp2.headers.get('Location', '')
+    assert resp2.status_code == 200
+    assert 'ผลการนำเข้า'.encode() in resp2.data
     with admin_client.session_transaction() as sess:
-        flashes = [m for (_c, m) in sess.get('_flashes', [])]
-        assert sess.get('pending_import') is None
-    assert any('สำเร็จ' in m or 'ลูกหนี้' in m for m in flashes), flashes
+        assert sess.get('import_stage') is None
