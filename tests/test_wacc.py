@@ -12,7 +12,10 @@ import sqlite3
 
 
 def _mk_product(conn, sku, name, cost_price=10.0, unit_type='ตัว'):
-    cur = conn.execute("INSERT INTO products (product_name, unit_type, cost_price) VALUES (?, ?, ?)", (name, unit_type, cost_price))
+    # opening_cost mirrors cost_price, the production invariant since mig 111: the
+    # ledger seeds from opening_cost, and create_product / the mig backfill always set
+    # it alongside cost_price. Tests needing a costless seed override opening_cost=0.
+    cur = conn.execute("INSERT INTO products (product_name, unit_type, cost_price, opening_cost) VALUES (?, ?, ?, ?)", (name, unit_type, cost_price, cost_price))
     pid = cur.lastrowid
     conn.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
     return pid
@@ -160,3 +163,62 @@ def test_wacc_against_live_db_smoke(tmp_db):
     conn.close()
     assert isinstance(wacc, (int, float))
     assert wacc >= 0
+
+
+# ── Option D: cost_price is the live WACC output, opening_cost is the seed ────
+
+def test_recompute_writes_cost_price_from_opening_cost_idempotently(empty_db_conn):
+    """recalculate_product_wacc must (1) seed the INITIAL entry from opening_cost,
+    (2) write the resulting live WACC back to products.cost_price (what margin/COGS/
+    quote readers consume), and (3) be IDEMPOTENT — re-running it must NOT compound.
+
+    Compounding was the latent bug from the 2026-06-17 bulk sync: when the seed and
+    the output are the same column, each recompute re-blends past purchases into the
+    seed and drifts the cost upward. opening_cost (immutable) fixes that.
+
+    Scenario: opening 10 units @ 10 (opening_cost), then buy 10 @ 12.
+              true WACC = (10*10 + 10*12) / 20 = 11.0
+    """
+    import models
+    c = empty_db_conn
+
+    pid = _mk_product(c, 95001, "D-core", cost_price=10.0)
+    c.execute("UPDATE products SET opening_cost=10.0 WHERE id=?", (pid,))
+    # opening stock: 10 units on INITIAL_DATE (non-purchase IN → seeds INITIAL stock)
+    c.execute("""INSERT INTO transactions
+                   (product_id, txn_type, quantity_change, unit_mode, reference_no, note, created_at)
+                 VALUES (?, 'IN', 10, 'unit', NULL, 'ยอดยกมา', '2026-03-03 00:00:00')""", (pid,))
+    _add_purchase_txn(c, pid, "HPD001", qty=10, net=120.0, date_iso='2026-03-10')  # 12/unit
+    c.commit()
+
+    w1 = models.recalculate_product_wacc(pid, c)
+    c.commit()
+    assert round(w1, 6) == 11.0
+    cp1 = c.execute("SELECT cost_price FROM products WHERE id=?", (pid,)).fetchone()[0]
+    assert round(cp1, 6) == 11.0, "recompute must write the live WACC to cost_price"
+
+    # Idempotency: opening_cost is the seed (still 10), so a re-run stays at 11.0,
+    # NOT 11.5 (which is what seeding from the just-written cost_price would give).
+    w2 = models.recalculate_product_wacc(pid, c)
+    c.commit()
+    assert round(w2, 6) == 11.0, "recompute must be idempotent (no compounding)"
+    cp2 = c.execute("SELECT cost_price FROM products WHERE id=?", (pid,)).fetchone()[0]
+    assert round(cp2, 6) == 11.0
+    opening = c.execute("SELECT opening_cost FROM products WHERE id=?", (pid,)).fetchone()[0]
+    assert round(opening, 6) == 10.0, "opening_cost must remain the immutable seed"
+
+
+def test_recompute_does_not_zero_a_costless_products_cost_price(empty_db_conn):
+    """A product with no derivable WACC (opening_cost 0, no purchases) must keep its
+    existing cost_price — recompute writes only when it has a real (>0) WACC, so a
+    manually-set cost on a not-yet-purchased product is never wiped to 0."""
+    import models
+    c = empty_db_conn
+    pid = _mk_product(c, 95002, "D-costless", cost_price=7.5)
+    c.execute("UPDATE products SET opening_cost=0.0 WHERE id=?", (pid,))
+    c.commit()
+
+    models.recalculate_product_wacc(pid, c)
+    c.commit()
+    cp = c.execute("SELECT cost_price FROM products WHERE id=?", (pid,)).fetchone()[0]
+    assert round(cp, 6) == 7.5, "cost_price must be preserved when WACC is 0"
