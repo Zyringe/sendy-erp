@@ -23,7 +23,9 @@
             <dt class="col-4 col-sm-3">ยอดสินค้า / ค่าธรรมเนียม / ยอดโอน</dt><dd class="col-8 col-sm-9" id="odMoney"></dd>
             <dt class="col-4 col-sm-3">ใบกำกับ (IV)</dt><dd class="col-8 col-sm-9" id="odIv"></dd>
           </dl>
+          <div id="odTimeline" class="mb-2"></div>
           <div id="odFees" class="mb-2"></div>
+          <div id="odAdjust" class="mb-2"></div>
           <table class="table table-sm table-bordered mb-0">
             <thead class="table-light"><tr>
               <th>สินค้า</th><th>SKU</th><th class="text-end">จำนวน</th>
@@ -88,6 +90,33 @@ document.addEventListener('DOMContentLoaded', function () {
             ${fl('ค่าจัดส่ง (สุทธิ)', ff.shipping_net)}${fl('ค่าประหยัดค่าส่ง', ff.fee_saver)}
             <div class="d-flex justify-content-between border-top mt-1 pt-1 fw-bold"><span>ยอดสุทธิที่ได้รับ</span><span class="text-success">฿${fmt(ff.net_payout)}</span></div>
             ${d.payout ? `<div class="text-muted mt-1"><i class="bi bi-bank"></i> เข้าบัญชีในยอดโอน ${d.payout.deposit_date} (฿${fmt(d.payout.amount)})</div>` : ''}
+          </div>`;
+
+        // ---- Timeline: order → Shopee released to wallet → bank deposit ----
+        const step = (lbl, val, cls) =>
+          `<div class="d-flex flex-column align-items-center text-center" style="flex:1">
+             <span class="badge ${val ? cls : 'bg-light text-muted border'}">${val || '—'}</span>
+             <span class="text-muted" style="font-size:.68rem">${lbl}</span>
+           </div>`;
+        const arrow = '<span class="text-muted px-1">→</span>';
+        document.getElementById('odTimeline').innerHTML = `
+          <div class="d-flex align-items-start justify-content-between border rounded p-2 bg-light small">
+            ${step('วันสั่งซื้อ', o.order_date ? o.order_date.slice(0,10) : '', 'bg-secondary')}
+            ${arrow}
+            ${step('Shopee โอนเข้า wallet', o.settled_at, 'bg-info text-dark')}
+            ${arrow}
+            ${step('เข้าบัญชีธนาคาร', d.payout ? d.payout.deposit_date : '', 'bg-success')}
+          </div>`;
+
+        // ---- Adjustments / refunds booked against this order ----
+        const adj = d.adjustments || [];
+        document.getElementById('odAdjust').innerHTML = !adj.length ? '' : `
+          <div class="border rounded p-2 small border-warning">
+            <div class="fw-bold mb-1 text-warning"><i class="bi bi-arrow-counterclockwise"></i> การปรับปรุง / คืนเงิน</div>
+            ${adj.map(a => `<div class="d-flex justify-content-between">
+                <span class="text-muted">${a.txn_time}${a.description ? ' · ' + a.description : ''}</span>
+                <span class="${a.amount<0?'text-danger':'text-success'}">${a.amount<0?'−':'+'}฿${fmt(Math.abs(a.amount))}</span>
+              </div>`).join('')}
           </div>`;
       })
       .catch(e => { load.classList.add('d-none'); err.textContent = 'โหลดไม่สำเร็จ: ' + e.message; err.classList.remove('d-none'); });
