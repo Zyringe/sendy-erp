@@ -267,13 +267,16 @@ def test_deposits_tab_wires_drilldown_and_estimate_badge(tmp_db_conn):
       {'txn_time':'2026-06-09 01:19','txn_type':'withdrawal','order_sn':None,'amount':-82.0,'running_balance':0.0,'description':'w'}], 'b.xlsx')
     marketplace_reconcile.reconcile_payouts(c, 'shopee')
     oid = c.execute("SELECT id FROM marketplace_orders WHERE order_sn='DEPWALLET1'").fetchone()['id']
+    pid = models.get_payout_summaries(c, 'shopee')[0]['id']
     cl = _client()
     resp = cl.get('/marketplace/settlement?platform=shopee&tab=deposits&year=all')
     assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert 'js-order-detail' in html
-    assert f'data-order-id="{oid}"' in html
-    assert '~ ประมาณ' in html
+    # Rows are lazy-loaded: the page carries the deposit card, the API the rows
+    # (with id + fee_source that the JS turns into the drill-down hook + badge).
+    assert f'data-payout-id="{pid}"' in resp.get_data(as_text=True)
+    api = cl.get(f'/marketplace/api/payout/{pid}/orders?platform=shopee').get_json()
+    o = next(x for x in api['orders'] if x['order_sn'] == 'DEPWALLET1')
+    assert o['id'] == oid and o['fee_source'] == 'wallet' and o['net_payout'] == 82.0
 
 
 def test_api_order_detail_returns_adjustments(tmp_db_conn):

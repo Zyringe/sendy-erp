@@ -76,7 +76,8 @@
           <span class="text-muted">· {{ d.n_orders }} ออเดอร์</span>
         </span>
       </div>
-      <div class="collapse" id="dep{{ d.id }}">
+      {# Orders lazy-load on expand (data-payout-id) — keeps the page light. #}
+      <div class="collapse" id="dep{{ d.id }}" data-payout-id="{{ d.id }}" data-loaded="0">
         <div class="card-body p-0">
           <table class="table table-sm table-hover mb-0">
             <thead class="table-light"><tr>
@@ -86,27 +87,10 @@
               <th class="text-end">ยอดสุทธิ</th>
               <th class="text-end">%</th>
             </tr></thead>
-            <tbody>
-              {% for o in d.orders %}
-              <tr>
-                <td>
-                  <code class="js-order-detail" role="button" data-order-id="{{ o.id }}"
-                        title="ดูรายละเอียด + ค่าธรรมเนียมแยกรายการ">{{ o.order_sn }}</code>
-                  {% if o.fee_source == 'wallet' %}
-                    <span class="badge bg-secondary" title="ยอดสุทธิจริงจาก Seller Balance — ค่าธรรมเนียมเป็นค่าประมาณ (ยังไม่ได้อัปโหลดไฟล์ Income โอนเงินสำเร็จ)">~ ประมาณ</span>
-                  {% elif o.fee_source == 'order' %}
-                    <span class="badge bg-warning text-dark" title="จากไฟล์ Order เท่านั้น — ประมาณการ">~ order</span>
-                  {% elif o.fee_source == 'none' %}
-                    <span class="badge bg-light text-muted border" title="ไม่มีข้อมูลค่าธรรมเนียม">–</span>
-                  {% endif %}
-                </td>
-                <td class="small">{{ o.settled_at or '–' }}</td>
-                <td class="text-end">{{ '{:,.2f}'.format(o.item_value or 0) }}</td>
-                <td class="text-end {{ 'text-danger' if o.fee_source == 'settled' else 'text-muted' }}">{{ '{:,.2f}'.format(o.fee_total or 0) }}</td>
-                <td class="text-end fw-bold">{{ '{:,.2f}'.format(o.net_payout or 0) }}</td>
-                <td class="text-end small">{{ o.fee_pct or '' }}</td>
-              </tr>
-              {% endfor %}
+            <tbody class="dep-orders">
+              <tr><td colspan="6" class="text-center text-muted py-3">
+                <div class="spinner-border spinner-border-sm" role="status"></div> กำลังโหลด...
+              </td></tr>
             </tbody>
           </table>
         </div>
@@ -534,6 +518,40 @@ document.addEventListener('DOMContentLoaded', function () {
       document.querySelectorAll('.cb-order').forEach(cb => cb.checked = selectAll.checked);
     });
   }
+
+  // ---- Lazy-load a deposit's order rows on expand (deposits tab) ----
+  // The page ships only deposit summaries; rows are fetched once per card.
+  const fmtN = n => (n == null ? '0.00' : Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}));
+  function depRowHtml(o) {
+    let badge = '';
+    if (o.fee_source === 'wallet') badge = ' <span class="badge bg-secondary" title="ยอดสุทธิจริงจาก Seller Balance — ค่าธรรมเนียมเป็นค่าประมาณ (ยังไม่ได้อัปโหลดไฟล์ Income โอนเงินสำเร็จ)">~ ประมาณ</span>';
+    else if (o.fee_source === 'order') badge = ' <span class="badge bg-warning text-dark" title="จากไฟล์ Order เท่านั้น — ประมาณการ">~ order</span>';
+    else if (o.fee_source === 'none') badge = ' <span class="badge bg-light text-muted border" title="ไม่มีข้อมูลค่าธรรมเนียม">–</span>';
+    const feeCls = o.fee_source === 'settled' ? 'text-danger' : 'text-muted';
+    return `<tr>
+      <td><code class="js-order-detail" role="button" data-order-id="${o.id}" title="ดูรายละเอียด + ค่าธรรมเนียมแยกรายการ">${o.order_sn}</code>${badge}</td>
+      <td class="small">${o.settled_at || '–'}</td>
+      <td class="text-end">${fmtN(o.item_value)}</td>
+      <td class="text-end ${feeCls}">${fmtN(o.fee_total)}</td>
+      <td class="text-end fw-bold">${fmtN(o.net_payout)}</td>
+      <td class="text-end small">${o.fee_pct || ''}</td>
+    </tr>`;
+  }
+  document.querySelectorAll('[data-payout-id]').forEach(col => {
+    col.addEventListener('show.bs.collapse', function () {
+      if (col.dataset.loaded === '1') return;
+      col.dataset.loaded = '1';
+      const tbody = col.querySelector('.dep-orders');
+      fetch(`/marketplace/api/payout/${col.dataset.payoutId}/orders?platform=${encodeURIComponent(platform)}`)
+        .then(r => r.json())
+        .then(d => {
+          tbody.innerHTML = d.orders.length
+            ? d.orders.map(depRowHtml).join('')
+            : '<tr><td colspan="6" class="text-center text-muted py-3">ไม่มีออเดอร์</td></tr>';
+        })
+        .catch(() => { col.dataset.loaded = '0'; tbody.innerHTML = '<tr><td colspan="6" class="text-danger text-center py-3">โหลดไม่สำเร็จ</td></tr>'; });
+    });
+  });
 });
 </script>
 {% endblock %}
