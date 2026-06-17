@@ -309,3 +309,17 @@ def test_repeated_failed_backups_do_not_evict_good_snapshot(tmp_path, monkeypatc
 
     names = [b["name"] for b in db_backup.list_backups(backup_dir=str(bdir))]
     assert names == [good["name"]], f"good snapshot was evicted by failed partials: {names}"
+
+
+def test_default_retention_keeps_newest_three(tmp_path):
+    """The shipped default keeps only the newest 3 snapshots, so frequent
+    uploads can't stack up and fill the Railway volume (the 11-deep pile that
+    pushed /data to 87% on 2026-06-17)."""
+    assert db_backup.DEFAULT_MAX_KEEP == 3
+    bdir = tmp_path / "backups"
+    now = datetime(2026, 6, 17, 12, 0, 0)
+    names = [_touch_backup(bdir, "upload", now - timedelta(hours=i)) for i in range(6)]  # all recent
+    db_backup.prune_backups(backup_dir=str(bdir), now=now)   # DEFAULT max_keep
+    remaining = sorted(p.name for p in bdir.iterdir())
+    assert len(remaining) == 3
+    assert names[0] in remaining and names[3] not in remaining   # newest 3 kept, rest gone
