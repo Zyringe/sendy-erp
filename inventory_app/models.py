@@ -140,10 +140,10 @@ def create_product(data: dict) -> int:
     conn = get_connection()
     cur = conn.execute("""
         INSERT INTO products (product_name, units_per_carton, units_per_box,
-            unit_type, hard_to_sell, cost_price, base_sell_price, low_stock_threshold,
+            unit_type, hard_to_sell, cost_price, opening_cost, base_sell_price, low_stock_threshold,
             shopee_stock, lazada_stock)
         VALUES (:product_name, :units_per_carton, :units_per_box,
-            :unit_type, :hard_to_sell, :cost_price, :base_sell_price, :low_stock_threshold,
+            :unit_type, :hard_to_sell, :cost_price, :cost_price, :base_sell_price, :low_stock_threshold,
             :shopee_stock, :lazada_stock)
     """, data)
     # ensure stock_levels row exists
@@ -4249,14 +4249,17 @@ def recalculate_product_wacc(product_id, conn=None):
         conn = get_connection()
 
     product = conn.execute(
-        "SELECT id, unit_type, cost_price FROM products WHERE id=?", (product_id,)
+        "SELECT id, unit_type, cost_price, opening_cost FROM products WHERE id=?", (product_id,)
     ).fetchone()
     if not product:
         if close_conn:
             conn.close()
         return 0.0
 
-    cost_price = product['cost_price'] or 0.0
+    # Seed the ledger's INITIAL ("ยอดยกมา") entry from opening_cost, the immutable cost
+    # basis — NOT from cost_price, which this function writes as the live WACC output.
+    # Seeding from the output would re-blend past purchases on every recompute (mig 111).
+    cost_price = product['opening_cost'] or 0.0
     unit_type  = product['unit_type'] or ''
 
     # Build purchase_transactions lookup: doc_no → ordered list
@@ -4417,6 +4420,16 @@ def recalculate_product_wacc(product_id, conn=None):
             (product_id, e['event_type'], e['event_date'], e['qty_change'],
              e['unit_cost'], e['stock_after'], e['wacc_after'],
              e['reference_no'], e['note'])
+        )
+
+    # cost_price is the LIVE WACC output that margin / COGS / quote readers consume.
+    # Writing it here makes a new purchase auto-update cost. Only write a real (>0)
+    # WACC so a costless product (no purchases yet) keeps its manually-set cost_price
+    # instead of being wiped to 0. opening_cost (the seed) is never touched here, which
+    # keeps repeated recomputes idempotent.
+    if current_wacc and current_wacc > 0:
+        conn.execute(
+            "UPDATE products SET cost_price=? WHERE id=?", (current_wacc, product_id)
         )
 
     if close_conn:
