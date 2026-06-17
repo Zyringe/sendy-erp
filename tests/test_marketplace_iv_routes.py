@@ -247,3 +247,30 @@ def test_settlement_import_triggers_automatch(tmp_db_conn, tmp_path):
     link = c.execute(
         "SELECT doc_base, match_method FROM marketplace_order_invoice WHERE order_sn='IVE2E1'").fetchone()
     assert link is not None and link['doc_base'] == 'IV9100777' and link['match_method'] == 'auto'
+
+
+def test_deposits_tab_wires_drilldown_and_estimate_badge(tmp_db_conn):
+    """Deposits tab: each order_sn is a drill-down trigger (data-order-id), and a
+    wallet-sourced order (Order+Balance only, no Income) shows the '~ ประมาณ'
+    estimate badge. Exercises the real authed render → catches Jinja/query bugs
+    that the model-level test can't (e.g. a template that drops the new fields)."""
+    import models, marketplace_reconcile
+    c = tmp_db_conn
+    c.execute("DELETE FROM marketplace_wallet_txns WHERE platform='shopee'")
+    c.execute("DELETE FROM marketplace_payouts WHERE platform='shopee'")
+    c.execute("DELETE FROM marketplace_order_fees WHERE platform='shopee'")
+    c.execute("UPDATE marketplace_orders SET payout_id=NULL WHERE platform='shopee'")
+    c.execute("DELETE FROM marketplace_orders WHERE order_sn='DEPWALLET1'")
+    c.execute("INSERT INTO marketplace_orders (platform, order_sn, item_total) VALUES ('shopee','DEPWALLET1', 100.0)")
+    models.import_wallet_txns(c, [
+      {'txn_time':'2026-06-02 10:00','txn_type':'income','order_sn':'DEPWALLET1','amount':82.0,'running_balance':82.0,'description':''},
+      {'txn_time':'2026-06-09 01:19','txn_type':'withdrawal','order_sn':None,'amount':-82.0,'running_balance':0.0,'description':'w'}], 'b.xlsx')
+    marketplace_reconcile.reconcile_payouts(c, 'shopee')
+    oid = c.execute("SELECT id FROM marketplace_orders WHERE order_sn='DEPWALLET1'").fetchone()['id']
+    cl = _client()
+    resp = cl.get('/marketplace/settlement?platform=shopee&tab=deposits&year=all')
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert 'js-order-detail' in html
+    assert f'data-order-id="{oid}"' in html
+    assert '~ ประมาณ' in html
