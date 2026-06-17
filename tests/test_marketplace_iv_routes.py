@@ -274,3 +274,19 @@ def test_deposits_tab_wires_drilldown_and_estimate_badge(tmp_db_conn):
     assert 'js-order-detail' in html
     assert f'data-order-id="{oid}"' in html
     assert '~ ประมาณ' in html
+
+
+def test_api_order_detail_returns_adjustments(tmp_db_conn):
+    """The order-detail JSON carries refund/adjustment rows so the modal can show
+    'การปรับปรุง / คืนเงิน'."""
+    import models
+    c = tmp_db_conn
+    c.execute("DELETE FROM marketplace_orders WHERE order_sn='APIADJ1'")
+    c.execute("INSERT INTO marketplace_orders (platform, order_sn) VALUES ('shopee','APIADJ1')")
+    oid = c.execute("SELECT id FROM marketplace_orders WHERE order_sn='APIADJ1'").fetchone()['id']
+    models.import_wallet_txns(c, [
+      {'txn_time':'2026-04-05 23:47','txn_type':'adjustment','order_sn':'APIADJ1','amount':-500.0,'running_balance':0.0,'description':'คืนเงิน'}], 'b.xlsx')
+    resp = _client().get(f'/marketplace/api/order/{oid}')
+    assert resp.status_code == 200
+    assert resp.get_json()['adjustments'] == [
+      {'txn_time':'2026-04-05 23:47','amount':-500.0,'description':'คืนเงิน'}]

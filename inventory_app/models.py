@@ -5469,9 +5469,17 @@ def get_marketplace_order_detail(conn, order_id):
         """SELECT p.deposit_date, p.amount FROM marketplace_payouts p
            JOIN marketplace_orders mo ON mo.payout_id = p.id
            WHERE mo.id = ?""", (order_id,)).fetchone()
+    # Refunds / Seller-Balance adjustments booked against this order (txn_type
+    # 'adjustment' only — income credits are the normal payout, not adjustments).
+    adjustments = conn.execute(
+        """SELECT txn_time, amount, description
+           FROM marketplace_wallet_txns
+           WHERE platform = ? AND order_sn = ? AND txn_type = 'adjustment'
+           ORDER BY txn_time""", (o['platform'], o['order_sn'])).fetchall()
     return {'order': dict(o), 'items': [dict(r) for r in items],
             'fees': dict(fees) if fees else None,
-            'payout': dict(payout) if payout else None}
+            'payout': dict(payout) if payout else None,
+            'adjustments': [dict(a) for a in adjustments]}
 
 
 # Customer NAME (not code) per platform, for the payments-received lookup.
