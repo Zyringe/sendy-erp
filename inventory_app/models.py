@@ -5582,6 +5582,7 @@ def get_marketplace_order_detail(conn, order_id):
     Returns None if the order id doesn't exist."""
     o = conn.execute(
         """SELECT mo.id, mo.platform, mo.order_sn, mo.status, mo.buyer_name,
+                  mo.buyer_phone, mo.ship_address,
                   mo.order_date, mo.settled_at, mo.item_total, mo.marketplace_fee,
                   mo.payout, mo.actual_payout, mo.settlement_source,
                   moi.doc_base AS matched_iv, moi.confidence AS iv_confidence,
