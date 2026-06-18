@@ -9,6 +9,21 @@ import pandas as pd
 
 
 def detect_file(source):
+    # Lazada exports are ';'-delimited CSV (not Excel) — sniff the header first.
+    try:
+        head = source.read(4096)
+        source.seek(0)
+        if isinstance(head, bytes):
+            head = head.decode('utf-8-sig', errors='ignore')
+        first = head.splitlines()[0] if head.strip() else ''
+        cols = {c.strip() for c in first.split(';')}
+        if {'Statement Number', 'Fee Name', 'Amount(Include Tax)'} <= cols:
+            return ('laz_statement', 'lazada')
+        if {'Transaction Number', 'Transaction Time', 'Type', 'Sub Type',
+            'Amount', 'Remarks'} <= cols:
+            return ('laz_wallet', 'lazada')
+    except Exception:
+        source.seek(0)
     try:
         xl = pd.ExcelFile(source)
     except Exception:

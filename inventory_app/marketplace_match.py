@@ -93,9 +93,11 @@ def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
     any) currently holds it.
     """
     code = _CUST_CODE.get(order['platform'])
-    if code is None or order['actual_payout'] is None or not order['order_date']:
+    d = dict(order)
+    basis = d.get('billed_basis', d.get('actual_payout'))
+    if code is None or basis is None or not order['order_date']:
         return []
-    payout = round(order['actual_payout'], 2)
+    payout = round(basis, 2)
     linked = {r['doc_base']: r['order_sn'] for r in conn.execute(
         "SELECT doc_base, order_sn FROM marketplace_order_invoice WHERE platform = ?",
         (order['platform'],)).fetchall()}
@@ -117,10 +119,15 @@ def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
 
 def _settled_orders(conn, platform):
     return conn.execute(
-        """SELECT id, order_sn, platform, actual_payout, settled_at, order_date
-           FROM marketplace_orders
-           WHERE platform = ? AND settled_at IS NOT NULL AND actual_payout IS NOT NULL
-           ORDER BY order_date""",
+        """SELECT o.id, o.order_sn, o.platform, o.actual_payout, o.settled_at, o.order_date,
+                  CASE WHEN o.platform='lazada'
+                       THEN COALESCE(f.item_value, o.item_total, o.actual_payout)
+                       ELSE o.actual_payout END AS billed_basis
+           FROM marketplace_orders o
+           LEFT JOIN marketplace_order_fees f
+                  ON f.platform=o.platform AND f.order_sn=o.order_sn
+           WHERE o.platform = ? AND o.settled_at IS NOT NULL AND o.actual_payout IS NOT NULL
+           ORDER BY o.order_date""",
         (platform,)
     ).fetchall()
 
@@ -152,7 +159,7 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
     for o in orders:
         if o['order_sn'] in manual_orders:
             continue
-        payout = round(o['actual_payout'], 2)
+        payout = round(o['billed_basis'], 2)
         my_prod = o_prod.get(o['order_sn'], set())
         best = None  # (cost_tuple, doc_base, amount_diff)
         for iv in ivs:

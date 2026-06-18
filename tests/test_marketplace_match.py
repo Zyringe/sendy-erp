@@ -231,3 +231,19 @@ def test_picker_ranks_product_match_first(mm_conn):
     order = c.execute("SELECT * FROM marketplace_orders WHERE order_sn='O-PK'").fetchone()
     cands = mm.iv_candidates(c, order)
     assert cands[0]['doc_base'] == 'IV_B' and cands[0]['product_match'] is True
+
+
+def test_lazada_matches_iv_on_gross_not_net(mm_conn):
+    c = mm_conn
+    # Lazada order: gross 100, net payout 80 (20% fee). Team keyed the IV at GROSS=100.
+    cur = c.execute("""INSERT INTO marketplace_orders
+        (platform, order_sn, status, actual_payout, settled_at, order_date, item_total, currency)
+        VALUES ('lazada','LZ1','สำเร็จ', 80, '2026-06-10', '2026-06-10 10:00', 100, 'THB')""")
+    c.execute("""INSERT INTO marketplace_order_fees (platform, order_sn, item_value, net_payout, fee_total)
+                 VALUES ('lazada','LZ1',100,80,20)""")
+    c.commit()
+    _add_iv(c, 'IV7000001', 100.0, '2026-06-11', customer_code='Lหน้าร้าน')
+    res = mm.run_automatch(c, 'lazada')
+    row = c.execute("SELECT doc_base, confidence FROM marketplace_order_invoice WHERE order_sn='LZ1'").fetchone()
+    assert row['doc_base'] == 'IV7000001'
+    assert row['confidence'] == 'confident'      # IV(100) == gross(100), not net(80)

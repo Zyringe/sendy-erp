@@ -23,6 +23,10 @@ from marketplace_files import detect_file
 from parse_orders import parse_shopee_orders, parse_lazada_orders
 from parse_income_transfer import (parse_shopee_income, IncomeTransferError,
                                    load_income_sheet, parse_shopee_income_fees)
+from parse_lazada_statement import (parse_lazada_statement, load_lazada_statement_csv,
+                                     LazadaStatementError)
+from parse_lazada_wallet import (parse_lazada_wallet, load_lazada_wallet_csv,
+                                  LazadaWalletError)
 
 bp_marketplace = Blueprint('marketplace', __name__)
 
@@ -339,7 +343,7 @@ def upload():
     _info, _err = db_backup.safe_create_backup(
         'marketplace_upload', db_path=config.DATABASE_PATH,
         backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
-    msgs, need_reconcile = [], False
+    msgs, reconcile_platforms = [], set()
     conn = get_connection()
     try:
         for f in files:
@@ -362,15 +366,38 @@ def upload():
             elif kind == 'balance':
                 ins = models.import_wallet_txns(
                     conn, parse_shopee_balance(load_balance_sheet(io.BytesIO(data))), f.filename)
-                need_reconcile = True
+                reconcile_platforms.add('shopee')
                 msgs.append(f'🏦 {f.filename}: รายการกระเป๋าเงิน +{ins}')
-        if need_reconcile:
+            elif kind == 'laz_statement':
+                df = load_lazada_statement_csv(io.BytesIO(data))
+                parsed = parse_lazada_statement(df)
+                ss = models.upsert_marketplace_settlements(
+                    conn, parsed['settlements'], f.filename, platform='lazada')
+                fn = models.upsert_marketplace_fees(
+                    conn, parsed['fee_rows'], f.filename, platform='lazada')
+                models.import_wallet_txns(
+                    conn, parsed['income_rows'], f.filename, platform='lazada')
+                marketplace_match.run_automatch(conn, 'lazada')
+                reconcile_platforms.add('lazada')
+                warn = (f' · ⚠ ค่าธรรมเนียมชื่อใหม่: {", ".join(parsed["unmapped_fee_names"])}'
+                        if parsed['unmapped_fee_names'] else '')
+                msgs.append(f'💰 {f.filename}: Lazada ยอดโอน+ค่าธรรมเนียม {fn} ออเดอร์ '
+                            f'(stamp {ss["updated"]}, ไม่พบออเดอร์ {ss["not_found"]}){warn}')
+            elif kind == 'laz_wallet':
+                parsed = parse_lazada_wallet(load_lazada_wallet_csv(io.BytesIO(data)))
+                ins = models.import_wallet_txns(
+                    conn, parsed['withdrawals'], f.filename, platform='lazada')
+                reconcile_platforms.add('lazada')
+                msgs.append(f'🏦 {f.filename}: Lazada เงินเข้าบัญชี +{ins} รายการ')
+        for plat in sorted(reconcile_platforms):
             try:
-                rec = marketplace_reconcile.reconcile_payouts(conn, 'shopee')
-                msgs.append(f'↔ กระทบยอดโอน {rec["payouts"]} ก้อน ({rec["orders_linked"]} ออเดอร์)'
-                            + (f', ⚠ {rec["unbalanced"]} ก้อนยอดไม่ตรง' if rec.get('unbalanced') else ''))
+                rec = marketplace_reconcile.reconcile_payouts(conn, plat)
+                msgs.append(f'↔ {plat}: กระทบยอดโอน {rec["payouts"]} ก้อน '
+                            f'({rec["orders_linked"]} ออเดอร์)'
+                            + (f', ⚠ {rec["unbalanced"]} ก้อนยอดไม่ตรง'
+                               if rec.get('unbalanced') else ''))
             except marketplace_reconcile.ReconcileError as e:
-                msgs.append(f'⚠️ กระทบยอดไม่ลงตัว: {e}')
+                msgs.append(f'⚠️ {plat}: กระทบยอดไม่ลงตัว: {e}')
     except Exception as e:
         conn.close()
         flash(f'นำเข้าไม่สำเร็จ: {e}', 'danger')
