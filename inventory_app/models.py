@@ -5495,7 +5495,15 @@ def get_settlement_report(conn, platform='shopee'):
 def get_marketplace_order(conn, order_id):
     """One marketplace order row (needed by the IV picker / matcher)."""
     return conn.execute(
-        "SELECT * FROM marketplace_orders WHERE id = ?", (order_id,)
+        """SELECT mo.*,
+                  CASE WHEN mo.platform='lazada'
+                       THEN COALESCE(f.item_value, mo.item_total, mo.actual_payout)
+                       ELSE mo.actual_payout END AS billed_basis
+           FROM marketplace_orders mo
+           LEFT JOIN marketplace_order_fees f
+                  ON f.platform=mo.platform AND f.order_sn=mo.order_sn
+           WHERE mo.id = ?""",
+        (order_id,)
     ).fetchone()
 
 
@@ -5676,8 +5684,13 @@ def get_marketplace_reconciliation(conn, platform='shopee'):
 
     rows = conn.execute(
         """SELECT mo.id, mo.order_sn, mo.settled_at, mo.actual_payout,
-                  moi.doc_base AS iv, moi.confidence AS iv_confidence
+                  moi.doc_base AS iv, moi.confidence AS iv_confidence,
+                  CASE WHEN mo.platform='lazada'
+                       THEN COALESCE(f.item_value, mo.item_total, mo.actual_payout)
+                       ELSE mo.actual_payout END AS billed_basis
            FROM marketplace_orders mo
+           LEFT JOIN marketplace_order_fees f
+                  ON f.platform=mo.platform AND f.order_sn=mo.order_sn
            LEFT JOIN marketplace_order_invoice moi
                   ON moi.platform = mo.platform AND moi.order_sn = mo.order_sn
            WHERE mo.platform = ? AND mo.settled_at IS NOT NULL
@@ -5695,16 +5708,16 @@ def get_marketplace_reconciliation(conn, platform='shopee'):
 
     for r in rows:
         ym = (r['settled_at'] or '')[:7]
-        payout = round(r['actual_payout'] or 0, 2)
+        payout = round(r['actual_payout'] or 0, 2)          # net — shown as "ยอดโอนจริง" (info)
+        basis  = round(r['billed_basis'] or 0, 2)           # what the IV should equal
         iv = r['iv']
         s = settle.get(iv) if iv else None
         billed = round(s['billed'], 2) if s else None
         collected = round(s['collected'], 2) if s else None
         if iv:
             matched_ivs.add(iv)
-        # billed − payout: the team keyed a different amount than Shopee paid
-        # (Shopee adjusted the payout) → a discrepancy to correct in Express.
-        d_bill = round(billed - payout, 2) if billed is not None else None
+        # billed − basis: IV amount vs what the team should have keyed (gross for Lazada, net for Shopee).
+        d_bill = round(billed - basis, 2) if billed is not None else None
         amount_mismatch = d_bill is not None and abs(d_bill) >= 0.01
         # A manager acknowledgement only counts if it still matches this exact
         # invoice + discrepancy (else the situation changed → re-flag).
@@ -5718,7 +5731,7 @@ def get_marketplace_reconciliation(conn, platform='shopee'):
                 n_reviewed += 1
         row = {
             'order_id': r['id'], 'order_sn': r['order_sn'], 'settled_at': r['settled_at'],
-            'payout': payout, 'iv': iv, 'iv_confidence': r['iv_confidence'],
+            'payout': payout, 'basis': basis, 'iv': iv, 'iv_confidence': r['iv_confidence'],
             'billed': billed, 'collected': collected,
             'd_bill': d_bill,
             'amount_mismatch': amount_mismatch,
@@ -5726,7 +5739,7 @@ def get_marketplace_reconciliation(conn, platform='shopee'):
             'reviewed_by': rv['reviewed_by'] if reviewed else None,
             'd_coll': round(payout - collected, 2) if collected is not None else None,
             'ok': (billed is not None and collected is not None
-                   and abs(payout - billed) < 0.01 and abs(payout - collected) < 0.01),
+                   and abs(basis - billed) < 0.01 and abs(payout - collected) < 0.01),
         }
         m = months.setdefault(ym, {'ym': ym, 'orders': [], 'payout': 0.0,
                                    'billed': 0.0, 'collected': 0.0, 'n_unmatched': 0})
