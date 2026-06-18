@@ -3561,9 +3561,11 @@ def ar_dashboard():
     VIEW open to any logged-in role (staff incl.); dunning WRITES stay manager+."""
     tab = request.args.get('tab', 'overview')
     is_ar_manager = session.get('role') in ('admin', 'manager')
+    is_ar_admin = session.get('role') == 'admin'   # dunning log writes are admin-only
     ctx = {'tab': tab,
            'snapshot_date': cf_mod.ar_aging().get('as_of'),
-           'is_ar_manager': is_ar_manager}
+           'is_ar_manager': is_ar_manager,
+           'is_ar_admin': is_ar_admin}
 
     if tab == 'overview':
         debt = models.get_customer_debt_summary()

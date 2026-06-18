@@ -226,8 +226,12 @@
         {% for r in customer_rows %}
         <tr>
           <td>
+            {% if is_ar_manager %}
             <a href="{{ url_for('ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}"
                class="text-decoration-none fw-bold">{{ r.customer }}</a>
+            {% else %}
+            <span class="fw-bold">{{ r.customer }}</span>
+            {% endif %}
             <span class="text-subtle small ms-1">{{ r.customer_code }}</span>
           </td>
           <td class="text-end fw-bold">฿{{ '{:,.2f}'.format(r.outstanding or r.get('outstanding_amount') or 0) }}</td>
@@ -245,8 +249,10 @@
             {% endif %}
           </td>
           <td>
+            {% if is_ar_manager %}
             <a href="{{ url_for('ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}"
                class="btn btn-sm btn-outline-secondary py-0">ดูบิล/ทวง</a>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -258,13 +264,17 @@
   </div>
 </div>
 
-{% if is_ar_manager %}
+{% if is_ar_admin %}
 <div class="mt-2 small text-subtle">
   <i class="bi bi-shield-lock me-1"></i>ดูรายละเอียด + <span class="fw-bold">บันทึกการทวง</span> → คลิก "ดูบิล/ทวง" ด้านบน
 </div>
+{% elif is_ar_manager %}
+<div class="mt-2 small text-subtle">
+  <i class="bi bi-shield-lock me-1"></i>ดูรายละเอียด/บิลได้ — <span class="fw-bold">บันทึกการทวง</span>ต้องสิทธิ์ Admin
+</div>
 {% else %}
 <div class="mt-2 small text-subtle">
-  <i class="bi bi-eye me-1"></i>คุณดูข้อมูลได้ — การจดบันทึกต้องการสิทธิ์ Manager
+  <i class="bi bi-eye me-1"></i>คุณดูยอดรวมรายลูกค้าได้ — รายละเอียด/บันทึกการทวงต้องสิทธิ์ Manager+
 </div>
 {% endif %}
 

@@ -71,8 +71,11 @@ def test_customers_tab_total_matches_and_staff_can_view(tmp_db):
         s['user_id'] = 3; s['username'] = 'staffer'; s['role'] = 'staff'
     r = c.get('/ar?tab=customers')
     assert r.status_code == 200, 'staff must VIEW the customers tab'
-    # manager-only dunning button must NOT render for staff
-    assert 'บันทึกการทวง' not in r.data.decode()
+    body = r.data.decode()
+    # staff sees the list (read) but NOT the dunning drill-down (manager-gated
+    # detail) — and is shown the view-only notice naming the right requirement.
+    assert 'ดูบิล/ทวง' not in body, 'staff must not get the manager-gated drill-down link'
+    assert 'ต้องสิทธิ์ Manager+' in body, 'staff should see the view-only notice'
 
 
 # ── Task 4 ────────────────────────────────────────────────────────────────────
