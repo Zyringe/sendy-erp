@@ -339,6 +339,7 @@ _ENDPOINT_MODULE = {
     'commission_overrides_edit': 'accounting',
     'commission_overrides_toggle': 'accounting',
     'commission_overrides_delete': 'accounting',
+    'ar_dashboard': 'accounting',
     'express_ar_dashboard': 'accounting',
     'express_ar_customer': 'accounting',
     'express_ap_dashboard': 'accounting',
@@ -3654,6 +3655,91 @@ def accounting_summary():
 
     summary = models.get_accounting_summary(date_from, date_to)
     return render_template('accounting.html', s=summary)
+
+
+# ── Unified AR page ───────────────────────────────────────────────────────────
+
+@app.route('/ar')
+def ar_dashboard():
+    """Unified receivables page. Tabs: overview | customers | invoices | reconcile.
+    VIEW open to any logged-in role (staff incl.); dunning WRITES stay manager+."""
+    tab = request.args.get('tab', 'overview')
+    is_ar_manager = session.get('role') in ('admin', 'manager')
+    ctx = {'tab': tab,
+           'snapshot_date': cf_mod.ar_aging().get('as_of'),
+           'is_ar_manager': is_ar_manager}
+
+    if tab == 'overview':
+        debt = models.get_customer_debt_summary()
+        summ = models.get_payment_summary()
+        snapshot_total = sum(r['outstanding_amount'] or 0 for r in debt)
+        ledger_unpaid = summ['unpaid_amount']
+        diff_amount = ledger_unpaid - snapshot_total
+        ctx.update(
+            snapshot_total=snapshot_total,
+            ledger_unpaid=ledger_unpaid,
+            unpaid_count=summ['unpaid_count'],
+            diff_amount=diff_amount,
+            aging=cf_mod.ar_aging(),
+            top_customers=debt[:8],
+        )
+    elif tab == 'customers':
+        bucket = request.args.get('bucket', '').strip()
+        min_str = request.args.get('min', '').strip()
+        search = request.args.get('q', '').strip()
+        sort = request.args.get('sort', 'outstanding')
+        try:
+            min_amt = float(min_str.replace(',', '')) if min_str else 0.0
+        except ValueError:
+            min_amt = 0.0
+        # customer_ranking() has per-customer age_buckets + oldest_age_days for filters/display
+        all_ranked = arf_mod.customer_ranking(min_outstanding=min_amt)
+        if bucket in ('0-30', '31-60', '61-90', '90+'):
+            all_ranked = [r for r in all_ranked if r['age_buckets'].get(bucket, 0) > 0]
+        if search:
+            s = search.lower()
+            all_ranked = [r for r in all_ranked
+                          if s in (r['customer'] or '').lower()
+                          or s in (r.get('customer_code') or '').lower()]
+        if sort == 'age':
+            all_ranked.sort(key=lambda r: -r['oldest_age_days'])
+        elif sort == 'count':
+            all_ranked.sort(key=lambda r: -r['invoice_count'])
+        # else already sorted by outstanding DESC from customer_ranking
+        ctx.update(
+            customer_rows=all_ranked,
+            bucket=bucket,
+            min_str=min_str,
+            search=search,
+            sort=sort,
+            customer_total=sum(r['outstanding'] or 0 for r in all_ranked),
+        )
+    elif tab == 'invoices':
+        inv_status = request.args.get('status', 'all')
+        inv_search = request.args.get('q', '').strip()
+        date_from = request.args.get('date_from', '').strip()
+        date_to = request.args.get('date_to', '').strip()
+        page = int(request.args.get('page', 1))
+        per_page = app.config['ITEMS_PER_PAGE']
+        rows, total = models.get_payment_status(
+            status=inv_status, search=inv_search,
+            date_from=date_from, date_to=date_to,
+            page=page, per_page=per_page,
+        )
+        summ = models.get_payment_summary()
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        ctx.update(
+            inv_rows=rows, inv_total=total,
+            summary=summ,
+            inv_status=inv_status, inv_search=inv_search,
+            date_from=date_from, date_to=date_to,
+            page=page, total_pages=total_pages,
+        )
+    elif tab == 'reconcile':
+        rec = models.get_ar_reconciliation()
+        ctx['reconcile'] = rec
+
+    return render_template('ar.html', **ctx)
 
 
 # ── Cash Flow Dashboard ────────────────────────────────────────────────────────

@@ -1,0 +1,525 @@
+{% extends 'base.html' %}
+{% block title %}ลูกหนี้ (AR) – Sendy{% endblock %}
+{% block page_title %}ลูกหนี้ (AR){% endblock %}
+
+{% block content %}
+
+{# ── Tab navigation ──────────────────────────────────────────────────────── #}
+<ul class="nav nav-tabs mb-4">
+  <li class="nav-item">
+    <a class="nav-link {% if tab == 'overview' %}active{% endif %}"
+       href="{{ url_for('ar_dashboard', tab='overview') }}">ภาพรวม</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if tab == 'customers' %}active{% endif %}"
+       href="{{ url_for('ar_dashboard', tab='customers') }}">รายลูกค้า</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if tab == 'invoices' %}active{% endif %}"
+       href="{{ url_for('ar_dashboard', tab='invoices') }}">รายบิล</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if tab == 'reconcile' %}active{% endif %}"
+       href="{{ url_for('ar_dashboard', tab='reconcile') }}">กระทบยอด</a>
+  </li>
+</ul>
+
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# TAB: ภาพรวม (overview)                                                     #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{% if tab == 'overview' %}
+
+<div class="row g-3 mb-4">
+  {# Snapshot card #}
+  <div class="col-sm-6">
+    <div class="card h-100 border-warning-subtle">
+      <div class="card-body">
+        <div class="text-subtle small mb-1">
+          <i class="bi bi-clipboard-data me-1 text-warning"></i>
+          Express snapshot (books) — ยอด AR หลัก
+        </div>
+        <div class="fs-3 fw-bold">฿{{ '{:,.0f}'.format(snapshot_total) }}</div>
+        <div class="text-subtle small mt-1">
+          34 ราย · ยอด ณ {{ snapshot_date or '—' }} (export จาก Express) · ใช้ทวงหนี้
+        </div>
+      </div>
+    </div>
+  </div>
+  {# Ledger card #}
+  <div class="col-sm-6">
+    <div class="card h-100 border-primary-subtle">
+      <div class="card-body">
+        <div class="text-subtle small mb-1">
+          <i class="bi bi-receipt me-1 text-primary"></i>
+          Ledger unpaid (Sendy transactions)
+        </div>
+        <div class="fs-3 fw-bold">฿{{ '{:,.0f}'.format(ledger_unpaid) }}</div>
+        <div class="text-subtle small mt-1">
+          {{ '{:,}'.format(unpaid_count) }} ใบค้าง · คำนวณสดจาก sales + การรับชำระ
+        </div>
+        {% if diff_amount != 0 %}
+        <div class="mt-2">
+          <span class="badge bg-warning text-dark">
+            {% if diff_amount > 0 %}
+            มากกว่า snapshot ฿{{ '{:,.0f}'.format(diff_amount) }}
+            {% else %}
+            น้อยกว่า snapshot ฿{{ '{:,.0f}'.format(-diff_amount) }}
+            {% endif %}
+            — ดูแท็บ "กระทบยอด"
+          </span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{# Aging bar #}
+<div class="card mb-4">
+  <div class="card-header">อายุหนี้ (aging) — จาก snapshot</div>
+  <div class="card-body">
+    {% if aging and aging.buckets %}
+    {% set total_ag = aging.total_outstanding or 1 %}
+    <div class="d-flex rounded overflow-hidden mb-3" style="height:30px">
+      {% for b in aging.buckets %}
+      {% set pct = ((b.amount / total_ag) * 100) | round(1) %}
+      {% if loop.index == 1 %}{% set col = '#5aa0e6' %}
+      {% elif loop.index == 2 %}{% set col = '#e0a13a' %}
+      {% elif loop.index == 3 %}{% set col = '#d8782e' %}
+      {% else %}{% set col = '#c0392b' %}{% endif %}
+      <div style="width:{{ pct }}%;background:{{ col }};display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:700">
+        {{ '{:,.0f}'.format(b.amount / 1000) }}k
+      </div>
+      {% endfor %}
+    </div>
+    <div class="d-flex gap-4 flex-wrap small text-subtle">
+      {% for b in aging.buckets %}
+      <span>
+        <strong>{{ b.label }} วัน</strong>
+        ฿{{ '{:,.0f}'.format(b.amount) }}
+        {% if b.label == '61-90' %}<span class="text-warning ms-1">⚠</span>{% endif %}
+        {% if b.label == '90+' %}<span class="text-danger ms-1">!</span>{% endif %}
+      </span>
+      {% endfor %}
+    </div>
+    {% if aging.buckets | selectattr('label', 'eq', '61-90') | list %}
+    {% set b6190 = aging.buckets | selectattr('label', 'eq', '61-90') | first %}
+    {% if b6190.amount > 0 %}
+    <div class="alert alert-warning py-2 small mt-2 mb-0">
+      ฿{{ '{:,.0f}'.format(b6190.amount) }} อยู่ช่วง 61–90 วัน (กำลังจะกลายเป็นหนี้เก่า) —
+      <a href="{{ url_for('ar_dashboard', tab='customers', bucket='61-90') }}">เร่งทวงก่อน</a>
+    </div>
+    {% endif %}
+    {% endif %}
+    {% endif %}
+  </div>
+</div>
+
+{# Top customers #}
+<div class="card mb-4">
+  <div class="card-header">ค้างหนักสุด (top overdue) — คลิกเพื่อไปทวง</div>
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>ลูกค้า</th>
+          <th class="text-end">ค้าง</th>
+          <th class="text-end">ใบ</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in top_customers %}
+        <tr>
+          <td>
+            {{ c.customer }}
+            <span class="text-subtle small">{{ c.customer_code }}</span>
+          </td>
+          <td class="text-end fw-bold">฿{{ '{:,.0f}'.format(c.outstanding_amount or 0) }}</td>
+          <td class="text-end">{{ c.unpaid_bills }}</td>
+          <td>
+            <a href="{{ url_for('ar_dashboard', tab='customers') }}" class="btn btn-sm btn-outline-primary py-0">ทวง →</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="alert alert-secondary py-2 small">
+  <i class="bi bi-info-circle me-1"></i>
+  กระแสเงินสด / รายได้ / เงินเข้ารายเดือน →
+  ยังอยู่ที่หน้า <a href="{{ url_for('cashflow_dashboard') }}">กระแสเงินสด (/cashflow)</a> แยกต่างหาก
+</div>
+
+{% endif %}{# end overview #}
+
+
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# TAB: รายลูกค้า (customers / collection)                                    #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{% if tab == 'customers' %}
+
+<div class="alert alert-secondary py-2 mb-3 small">
+  <i class="bi bi-info-circle me-1"></i>
+  ยอดจาก Express snapshot ของ BSN · เรียงตามยอดค้างมากสุด
+  {% if is_ar_manager %}
+  · <a href="{{ url_for('ar_followup_export') }}">ดาวน์โหลด CSV</a>
+  {% endif %}
+</div>
+
+{# Filters #}
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <form method="get" class="row g-2 align-items-end">
+      <input type="hidden" name="tab" value="customers">
+      <div class="col-auto">
+        <select name="bucket" class="form-select form-select-sm">
+          <option value="" {% if not bucket %}selected{% endif %}>ทุกช่วงอายุ</option>
+          <option value="0-30" {% if bucket == '0-30' %}selected{% endif %}>0–30 วัน</option>
+          <option value="31-60" {% if bucket == '31-60' %}selected{% endif %}>31–60 วัน</option>
+          <option value="61-90" {% if bucket == '61-90' %}selected{% endif %}>61–90 วัน</option>
+          <option value="90+" {% if bucket == '90+' %}selected{% endif %}>90+ วัน</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <input type="number" name="min" class="form-control form-control-sm" placeholder="ยอดขั้นต่ำ ฿"
+               value="{{ min_str or '' }}" style="width:120px">
+      </div>
+      <div class="col">
+        <input type="text" name="q" class="form-control form-control-sm" placeholder="ค้นชื่อลูกค้า"
+               value="{{ search or '' }}">
+      </div>
+      <div class="col-auto">
+        <select name="sort" class="form-select form-select-sm">
+          <option value="outstanding" {% if sort == 'outstanding' %}selected{% endif %}>ยอดมาก→น้อย</option>
+          <option value="age" {% if sort == 'age' %}selected{% endif %}>อายุหนี้</option>
+          <option value="count" {% if sort == 'count' %}selected{% endif %}>จำนวนใบ</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-sm btn-primary">กรอง</button>
+        <a href="{{ url_for('ar_dashboard', tab='customers') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>ลูกหนี้ {{ customer_rows | length }} ราย</span>
+    <span class="fw-bold">รวมค้าง ฿{{ '{:,.2f}'.format(customer_total) }}</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>ลูกค้า</th>
+          <th class="text-end">ค้าง (snapshot)</th>
+          <th class="text-end">ใบ</th>
+          <th>อายุสูงสุด</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in customer_rows %}
+        <tr>
+          <td>
+            <a href="{{ url_for('ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}"
+               class="text-decoration-none fw-bold">{{ r.customer }}</a>
+            <span class="text-subtle small ms-1">{{ r.customer_code }}</span>
+          </td>
+          <td class="text-end fw-bold">฿{{ '{:,.2f}'.format(r.outstanding or r.get('outstanding_amount') or 0) }}</td>
+          <td class="text-end">{{ r.invoice_count or r.get('unpaid_bills') }}</td>
+          <td>
+            {% set age = r.get('oldest_age_days', 0) or 0 %}
+            {% if age >= 90 %}
+            <span class="badge bg-danger">90+</span>
+            {% elif age >= 61 %}
+            <span class="badge bg-warning text-dark">61–90</span>
+            {% elif age >= 31 %}
+            <span class="badge bg-info text-dark">31–60</span>
+            {% else %}
+            <span class="badge bg-success">0–30</span>
+            {% endif %}
+          </td>
+          <td>
+            <a href="{{ url_for('ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}"
+               class="btn btn-sm btn-outline-secondary py-0">ดูบิล/ทวง</a>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not customer_rows %}
+        <tr><td colspan="5" class="text-center text-subtle py-3">ไม่พบข้อมูล</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if is_ar_manager %}
+<div class="mt-2 small text-subtle">
+  <i class="bi bi-shield-lock me-1"></i>ปุ่ม "บันทึกการทวง" อยู่ในหน้ารายละเอียดลูกค้า — คลิก "ดูบิล/ทวง" ด้านบน
+</div>
+{% else %}
+<div class="mt-2 small text-subtle">
+  <i class="bi bi-eye me-1"></i>คุณดูข้อมูลได้ — การบันทึกการทวงต้องการสิทธิ์ Manager
+</div>
+{% endif %}
+
+{% endif %}{# end customers #}
+
+
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# TAB: รายบิล (invoices)                                                     #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{% if tab == 'invoices' %}
+
+{# Summary cards #}
+{% if summary %}
+<div class="row g-3 mb-4">
+  <div class="col-sm-6 col-lg-3">
+    <div class="card text-center">
+      <div class="card-body py-3">
+        <div class="text-subtle small mb-1">บิลทั้งหมด</div>
+        <div class="fs-4 fw-bold">{{ '{:,}'.format(summary.total_bills or 0) }}</div>
+        <div class="text-subtle small">ใบ</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card text-center border-success">
+      <div class="card-body py-3">
+        <div class="text-success small mb-1"><i class="bi bi-check-circle me-1"></i>ชำระแล้ว</div>
+        <div class="fs-4 fw-bold text-success">{{ '{:,}'.format(summary.paid_count or 0) }}</div>
+        <div class="text-subtle small">{{ '{:,.0f}'.format(summary.paid_amount or 0) }} บาท</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card text-center border-danger">
+      <div class="card-body py-3">
+        <div class="text-danger small mb-1"><i class="bi bi-exclamation-circle me-1"></i>ยังไม่ชำระ</div>
+        <div class="fs-4 fw-bold text-danger">{{ '{:,}'.format(summary.unpaid_count or 0) }}</div>
+        <div class="text-subtle small">{{ '{:,.0f}'.format(summary.unpaid_amount or 0) }} บาท</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card text-center">
+      <div class="card-body py-3">
+        <div class="text-subtle small mb-1">อัตราชำระ</div>
+        {% if summary.total_bills %}
+        {% set pct = (summary.paid_count / summary.total_bills * 100) | round(1) %}
+        <div class="fs-4 fw-bold">{{ pct }}%</div>
+        {% else %}
+        <div class="fs-4 fw-bold">–</div>
+        {% endif %}
+        <div class="text-subtle small">ของบิลทั้งหมด</div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# Filters #}
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <form method="get" class="row g-2 align-items-end">
+      <input type="hidden" name="tab" value="invoices">
+      <div class="col-auto">
+        <div class="btn-group btn-group-sm" role="group">
+          <a href="?tab=invoices&status=all&q={{ inv_search }}&date_from={{ date_from }}&date_to={{ date_to }}"
+             class="btn {{ 'btn-dark' if inv_status == 'all' else 'btn-outline-secondary' }}">ทั้งหมด</a>
+          <a href="?tab=invoices&status=unpaid&q={{ inv_search }}&date_from={{ date_from }}&date_to={{ date_to }}"
+             class="btn {{ 'btn-danger' if inv_status == 'unpaid' else 'btn-outline-danger' }}">ยังไม่ชำระ</a>
+          <a href="?tab=invoices&status=paid&q={{ inv_search }}&date_from={{ date_from }}&date_to={{ date_to }}"
+             class="btn {{ 'btn-success' if inv_status == 'paid' else 'btn-outline-success' }}">ชำระแล้ว</a>
+        </div>
+      </div>
+      <div class="col-auto">
+        <input type="date" name="date_from" class="form-control form-control-sm" value="{{ date_from or '' }}">
+      </div>
+      <div class="col-auto">
+        <input type="date" name="date_to" class="form-control form-control-sm" value="{{ date_to or '' }}">
+      </div>
+      <div class="col">
+        <input type="text" name="q" class="form-control form-control-sm" placeholder="ค้นเลขบิล/ลูกค้า"
+               value="{{ inv_search or '' }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-sm btn-primary">กรอง</button>
+        <a href="{{ url_for('ar_dashboard', tab='invoices') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>บิลทั้งหมด {{ '{:,}'.format(inv_total) }} รายการ</span>
+    <span class="text-subtle small">หน้า {{ page }}/{{ total_pages }}</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>เลขที่บิล</th>
+          <th>วันที่</th>
+          <th>ลูกค้า</th>
+          <th class="text-end">ยอด</th>
+          <th>สถานะ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in inv_rows %}
+        <tr>
+          <td>
+            <a href="{{ url_for('sales_doc', doc_base=r.doc_base) }}" class="text-decoration-none">
+              {{ r.doc_base }}
+            </a>
+          </td>
+          <td class="text-subtle small">{{ r.bill_date }}</td>
+          <td>{{ r.customer }}</td>
+          <td class="text-end fw-bold">฿{{ '{:,.2f}'.format(r.total_net or 0) }}</td>
+          <td>
+            {% if r.is_paid %}
+            <span class="badge bg-success">จ่ายแล้ว</span>
+            {% else %}
+            <span class="badge bg-danger">ค้าง</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not inv_rows %}
+        <tr><td colspan="5" class="text-center text-subtle py-3">ไม่พบข้อมูล</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+  {# Pagination #}
+  {% if total_pages > 1 %}
+  <div class="card-footer d-flex justify-content-between align-items-center">
+    <div class="text-subtle small">หน้า {{ page }}/{{ total_pages }}</div>
+    <nav>
+      <ul class="pagination pagination-sm mb-0">
+        {% if page > 1 %}
+        <li class="page-item">
+          <a class="page-link" href="?tab=invoices&status={{ inv_status }}&q={{ inv_search }}&date_from={{ date_from }}&date_to={{ date_to }}&page={{ page - 1 }}">‹</a>
+        </li>
+        {% endif %}
+        {% if page < total_pages %}
+        <li class="page-item">
+          <a class="page-link" href="?tab=invoices&status={{ inv_status }}&q={{ inv_search }}&date_from={{ date_from }}&date_to={{ date_to }}&page={{ page + 1 }}">›</a>
+        </li>
+        {% endif %}
+      </ul>
+    </nav>
+  </div>
+  {% endif %}
+</div>
+
+{% endif %}{# end invoices #}
+
+
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# TAB: กระทบยอด (reconcile)                                                  #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{% if tab == 'reconcile' %}
+
+<div class="row g-3 mb-4">
+  <div class="col-sm-6">
+    <div class="card h-100 border-warning-subtle">
+      <div class="card-body">
+        <div class="text-subtle small mb-1">
+          <i class="bi bi-clipboard-data me-1 text-warning"></i>รวม Express (books)
+        </div>
+        <div class="fs-3 fw-bold">฿{{ '{:,.0f}'.format(reconcile.snapshot_total) }}</div>
+        <div class="text-subtle small">ของจริง ณ {{ snapshot_date or '—' }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6">
+    <div class="card h-100 border-primary-subtle">
+      <div class="card-body">
+        <div class="text-subtle small mb-1">
+          <i class="bi bi-receipt me-1 text-primary"></i>รวม Ledger unpaid (Sendy)
+        </div>
+        <div class="fs-3 fw-bold">฿{{ '{:,.0f}'.format(reconcile.ledger_total) }}</div>
+        <div class="text-subtle small">
+          คำนวณสด ·
+          {% if reconcile.diff_total > 0 %}
+          มากกว่า snapshot ฿{{ '{:,.0f}'.format(reconcile.diff_total) }}
+          {% elif reconcile.diff_total < 0 %}
+          น้อยกว่า snapshot ฿{{ '{:,.0f}'.format(-reconcile.diff_total) }}
+          {% else %}
+          ตรงกัน
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header">รายละเอียดส่วนต่างรายลูกค้า ({{ reconcile.rows | length }} ราย)</div>
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>ลูกค้า</th>
+          <th class="text-end">Express (books)</th>
+          <th class="text-end">Ledger (Sendy)</th>
+          <th class="text-end">ส่วนต่าง</th>
+          <th>สถานะ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in reconcile.rows %}
+        <tr {% if r.status != 'match' %}class="table-warning"{% endif %}>
+          <td>
+            {{ r.customer_name }}
+            <span class="text-subtle small ms-1">{{ r.customer_code }}</span>
+          </td>
+          <td class="text-end">
+            {% if r.snapshot_amount %}฿{{ '{:,.0f}'.format(r.snapshot_amount) }}{% else %}—{% endif %}
+          </td>
+          <td class="text-end">
+            {% if r.ledger_amount %}฿{{ '{:,.0f}'.format(r.ledger_amount) }}{% else %}—{% endif %}
+          </td>
+          <td class="text-end fw-bold {% if r.diff > 0 %}text-success{% elif r.diff < 0 %}text-danger{% endif %}">
+            {% if r.diff != 0 %}
+            {{ '+' if r.diff > 0 else '' }}฿{{ '{:,.0f}'.format(r.diff) }}
+            {% else %}฿0{% endif %}
+          </td>
+          <td>
+            {% if r.status == 'match' %}
+            <span class="badge bg-success">ตรง ✓</span>
+            {% elif r.status == 'diff' %}
+            <span class="badge bg-warning text-dark">ต่าง</span>
+            {% elif r.status == 'snapshot_only' %}
+            <span class="badge bg-secondary">เฉพาะ Express</span>
+            {% else %}
+            <span class="badge bg-info text-dark">เฉพาะ Ledger</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="alert alert-secondary py-2 small">
+  <i class="bi bi-info-circle me-1"></i>
+  Express snapshot = ยอด ณ วันที่ export ({{ snapshot_date or '—' }}) ·
+  Ledger = ยอดสดจากบิล/รับชำระใน Sendy.
+  <strong>ต่างกันเป็นเรื่องปกติ</strong>
+  (บิลที่ import หลัง snapshot หรือยังไม่ได้ลงใน Express books).
+  แท็บนี้ช่วยหาว่า "ต่างตรงไหน" เพื่อเช็คกับบัญชี
+</div>
+
+{% endif %}{# end reconcile #}
+
+{% endblock %}
