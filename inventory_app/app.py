@@ -2079,55 +2079,14 @@ def purchases_doc(doc_base):
 
 @app.route('/payment-status')
 def payment_status():
-    status   = request.args.get('status', 'all')   # all | paid | unpaid
-    search   = request.args.get('q', '').strip()
-    date_from = request.args.get('date_from', '').strip()
-    date_to   = request.args.get('date_to',   '').strip()
-    page      = int(request.args.get('page', 1))
-    per_page  = app.config['ITEMS_PER_PAGE']
-
-    rows, total = models.get_payment_status(
-        status=status, search=search,
-        date_from=date_from, date_to=date_to,
-        page=page, per_page=per_page
-    )
-    summary = models.get_payment_summary()
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    return render_template(
-        'payment_status.html',
-        rows=rows, total=total,
-        summary=summary,
-        status=status, search=search,
-        date_from=date_from, date_to=date_to,
-        page=page, total_pages=total_pages,
-    )
+    """Redirect stub — content moved to /ar?tab=invoices (AR consolidation)."""
+    return redirect(url_for('ar_dashboard', tab='invoices'))
 
 
 @app.route('/payment-status/customers')
 def payment_customers():
-    search       = request.args.get('q', '').strip()
-    match_str    = request.args.get('match', '').strip()
-    rows         = models.get_customer_debt_summary(search=search)
-    total_outstanding = sum(r['outstanding_amount'] or 0 for r in rows)
-
-    candidates = []
-    match_amount = None
-    if match_str:
-        try:
-            match_amount = float(match_str.replace(',', ''))
-            candidates = models.find_payment_candidates(match_amount)
-        except ValueError:
-            pass
-
-    return render_template(
-        'payment_customers.html',
-        rows=rows,
-        search=search,
-        total_outstanding=total_outstanding,
-        match_str=match_str,
-        match_amount=match_amount,
-        candidates=candidates,
-    )
+    """Redirect stub — content moved to /ar?tab=customers (AR consolidation)."""
+    return redirect(url_for('ar_dashboard', tab='customers'))
 
 
 
@@ -3447,71 +3406,8 @@ def express_import():
 
 @app.route('/express/ar')
 def express_ar_dashboard():
-    """AR outstanding view from the latest express_ar_outstanding snapshot."""
-    conn = get_connection()
-    snapshot = conn.execute(
-        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding WHERE entity = 'BSN'"
-    ).fetchone()
-    snapshot_date = snapshot['d'] if snapshot else None
-
-    search = (request.args.get('q') or '').strip()
-    sp_filter = (request.args.get('sp') or '').strip()
-    sort = request.args.get('sort', 'amount')
-
-    # Exclude !RE "ใบรับชำระไม่เรียบร้อย" anomalies (Put 2026-05-02:
-    # "RE ไม่ควรอยู่ในหน้า ar เพราะลูกหนี้จ่ายแล้ว"). These are legacy
-    # 2005-2019 receipts that Express marks with is_anomalous=1; they
-    # are not real outstanding debt.
-    # Canonical BSN AR filter (excludes RE + pre-2024 legacy) — shared with
-    # ar_aging / customer_ranking / get_customer_debt_summary so all totals agree.
-    where = ["entity = 'BSN'", 'snapshot_date_iso = ?', cf_mod.BSN_AR_PREDICATE]
-    params = [snapshot_date]
-    if search:
-        where.append("(customer_name LIKE ? OR customer_code LIKE ?)")
-        params += [f'%{search}%', f'%{search}%']
-    if sp_filter:
-        where.append('salesperson_code = ?')
-        params.append(sp_filter)
-
-    order = {
-        'amount': 'outstanding_amount DESC',
-        'date':   'doc_date_iso ASC',
-        'customer': 'customer_name ASC, doc_date_iso ASC',
-    }.get(sort, 'outstanding_amount DESC')
-
-    rows = conn.execute(f"""
-        SELECT customer_code, customer_name, customer_type, salesperson_code,
-               doc_no, doc_date_iso, bill_amount, paid_amount, outstanding_amount,
-               is_anomalous, has_warning,
-               CAST(julianday('now') - julianday(doc_date_iso) AS INTEGER) AS age_days
-          FROM express_ar_outstanding
-         WHERE {' AND '.join(where)}
-         ORDER BY {order}
-        LIMIT 1000
-    """, params).fetchall()
-
-    summary = conn.execute(
-        f"SELECT COUNT(*) AS n_docs, COUNT(DISTINCT customer_code) AS n_customers, "
-        f"ROUND(SUM(outstanding_amount), 2) AS total "
-        f"FROM express_ar_outstanding WHERE {' AND '.join(where)}",
-        params
-    ).fetchone()
-
-    sps = [r['salesperson_code'] for r in conn.execute(
-        "SELECT DISTINCT salesperson_code FROM express_ar_outstanding "
-        "WHERE snapshot_date_iso=? AND salesperson_code <> '' AND is_anomalous=0 "
-        "ORDER BY salesperson_code", (snapshot_date,)
-    ).fetchall()]
-    conn.close()
-    excluded = cf_mod.bsn_ar_excluded()
-
-    return render_template('express_ar.html',
-                           rows=[dict(r) for r in rows],
-                           summary=dict(summary) if summary else {},
-                           excluded=excluded,
-                           snapshot_date=snapshot_date,
-                           sps=sps, sp_filter=sp_filter,
-                           search=search, sort=sort)
+    """Redirect stub — content moved to /ar?tab=overview (AR consolidation)."""
+    return redirect(url_for('ar_dashboard', tab='overview'))
 
 
 @app.route('/express/ar/customer/<customer_code>')
@@ -3978,65 +3874,14 @@ def _arf_require_manager():
 def _arf_require_admin():
     if session.get('role') != 'admin':
         flash('ต้องใช้บัญชี Admin', 'danger')
-        return redirect(url_for('ar_followup'))
+        return redirect(url_for('ar_dashboard', tab='customers'))
     return None
 
 
 @app.route('/accounting/ar-followup')
 def ar_followup():
-    """Ranked AR follow-up workspace.
-
-    Filters (query params):
-      ?bucket=0-30|31-60|61-90|90+   — only show customers with $$ in that bucket
-      ?min=<฿>                       — min outstanding per customer
-      ?q=<text>                      — case-insensitive customer-name search
-      ?sort=outstanding|age|count    — default outstanding
-    """
-    redirect_ = _arf_require_manager()
-    if redirect_:
-        return redirect_
-
-    bucket   = request.args.get('bucket', '').strip()
-    min_str  = request.args.get('min', '').strip()
-    search   = request.args.get('q', '').strip()
-    sort     = request.args.get('sort', 'outstanding')
-
-    try:
-        min_amt = float(min_str.replace(',', '')) if min_str else 0.0
-    except ValueError:
-        min_amt = 0.0
-
-    rows = arf_mod.customer_ranking(min_outstanding=min_amt)
-
-    if bucket in ('0-30', '31-60', '61-90', '90+'):
-        rows = [r for r in rows if r['age_buckets'].get(bucket, 0) > 0]
-    if search:
-        s = search.lower()
-        rows = [r for r in rows if s in (r['customer'] or '').lower()
-                                or s in (r.get('customer_code') or '').lower()]
-    if sort == 'age':
-        rows.sort(key=lambda r: -r['oldest_age_days'])
-    elif sort == 'count':
-        rows.sort(key=lambda r: -r['invoice_count'])
-    # else: already sorted by outstanding DESC
-
-    aging = cf_mod.ar_aging()
-    overdue = arf_mod.list_overdue_followups()
-    excluded = cf_mod.bsn_ar_excluded()
-    excluded_rows = cf_mod.bsn_ar_excluded_by_customer()
-
-    return render_template(
-        'ar_followup.html',
-        rows=rows,
-        aging=aging,
-        overdue=overdue,
-        excluded=excluded,
-        excluded_rows=excluded_rows,
-        bucket=bucket,
-        min_str=min_str,
-        search=search,
-        sort=sort,
-    )
+    """Redirect stub — content moved to /ar?tab=customers (AR consolidation)."""
+    return redirect(url_for('ar_dashboard', tab='customers'))
 
 
 @app.route('/accounting/ar-followup/customer/<path:customer_key>')
@@ -4092,7 +3937,7 @@ def ar_followup_log_new():
                    or customer_code or customer
     if not customer:
         flash('ระบุชื่อลูกค้าไม่ถูกต้อง', 'danger')
-        return redirect(url_for('ar_followup'))
+        return redirect(url_for('ar_dashboard', tab='customers'))
 
     def _f(name):
         v = request.form.get(name, '').strip()
@@ -4136,7 +3981,7 @@ def ar_followup_log_delete(log_id):
     flash('ลบรายการแล้ว', 'success')
     if customer_key:
         return redirect(url_for('ar_followup_customer', customer_key=customer_key))
-    return redirect(url_for('ar_followup'))
+    return redirect(url_for('ar_dashboard', tab='customers'))
 
 
 @app.route('/accounting/ar-followup/export.csv')
