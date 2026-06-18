@@ -7,9 +7,17 @@
     <form method="post" action="{{ url_for('marketplace.upload') }}"
           enctype="multipart/form-data" class="d-flex gap-2 align-items-center">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="file" name="files" accept=".xlsx" multiple class="form-control form-control-sm">
+      <input type="file" name="files" accept=".xlsx,.csv" multiple class="form-control form-control-sm">
       <button type="submit" class="btn btn-sm btn-primary">นำเข้าไฟล์ (Order/การเงิน/Balance)</button>
     </form>
+  </div>
+
+  {# ── Platform switcher (Shopee / Lazada) — settlement data is per-platform ── #}
+  <div class="btn-group btn-group-sm mb-3" role="group" aria-label="เลือกแพลตฟอร์ม">
+    <a href="{{ url_for('marketplace.settlement', platform='shopee', tab=tab) }}"
+       class="btn btn-outline-danger {% if platform == 'shopee' %}active{% endif %}">Shopee</a>
+    <a href="{{ url_for('marketplace.settlement', platform='lazada', tab=tab) }}"
+       class="btn btn-outline-primary {% if platform == 'lazada' %}active{% endif %}">Lazada</a>
   </div>
 
   {% with messages = get_flashed_messages(with_categories=true) %}
