@@ -132,12 +132,50 @@ def _settled_orders(conn, platform):
     ).fetchall()
 
 
+def _pick_iv(o, ivs, claimed, iv_prod, o_prod, window_days, exact_only):
+    """Lowest-cost unclaimed valid IV for one order, or None.
+
+    exact_only=True  (pass 1): require BOTH a shared product AND an exact amount
+        (adiff < _AMOUNT_TOL). These get locked in before any fuzzy match runs, so
+        a product-only neighbour can't steal an invoice that is another order's
+        exact (amount+product) match — the greedy-oldest-first collision that put
+        a wrong IV on an order whose exact invoice a sibling had already grabbed.
+    exact_only=False (pass 2): the original rule — a shared product OR a near
+        amount (within FUZZY_AMOUNT_TOL).
+    """
+    payout = round(o['billed_basis'], 2)
+    my_prod = o_prod.get(o['order_sn'], set())
+    best = None  # (cost_tuple, doc_base, amount_diff)
+    for iv in ivs:
+        if iv['doc_base'] in claimed:
+            continue
+        gap = _signed_gap(iv['date_iso'], o['order_date'])
+        if gap is None or gap < 0 or gap > window_days:
+            continue
+        overlap = len(my_prod & iv_prod.get(iv['doc_base'], set()))
+        adiff = abs((iv['iv_net'] or 0) - payout)
+        if exact_only:
+            if overlap == 0 or adiff >= _AMOUNT_TOL:
+                continue
+        elif overlap == 0 and adiff > FUZZY_AMOUNT_TOL:
+            # A candidate must be confirmed by a shared product OR a near amount —
+            # otherwise an unrelated same-window invoice could be grabbed.
+            continue
+        cost = (0 if overlap else 1, gap, adiff)
+        if best is None or cost < best[0]:
+            best = (cost, iv['doc_base'], adiff)
+    return best
+
+
 def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
     """Auto-link settled ``platform`` orders to their Express IV by product + date
-    (after the order) + amount. Greedy oldest-order-first; each order takes its
-    lowest-cost unclaimed valid IV. Rebuilds all 'auto' rows; never touches 'manual'
-    rows nor reuses a manually-held IV. Labels 'confident' (amount == payout) or
-    'review' (amount differs). Returns {matched, confident, review, unmatched}.
+    (after the order) + amount. Two passes, each greedy oldest-order-first: pass 1
+    locks EXACT (shared-product AND exact-amount) matches, pass 2 fills the rest
+    with the fuzzy rule. The exact-first pass stops a product-only fuzzy match from
+    grabbing an invoice that is another order's exact match. Rebuilds all 'auto'
+    rows; never touches 'manual' rows nor reuses a manually-held IV. Labels
+    'confident' (amount == payout) or 'review' (amount differs).
+    Returns {matched, confident, review, unmatched}.
     """
     code = _CUST_CODE[platform]
     orders = _settled_orders(conn, platform)        # oldest order_date first
@@ -155,43 +193,33 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
         "DELETE FROM marketplace_order_invoice WHERE platform=? AND match_method='auto'",
         (platform,))
 
-    confident = review = unmatched = 0
-    for o in orders:
-        if o['order_sn'] in manual_orders:
-            continue
-        payout = round(o['billed_basis'], 2)
-        my_prod = o_prod.get(o['order_sn'], set())
-        best = None  # (cost_tuple, doc_base, amount_diff)
-        for iv in ivs:
-            if iv['doc_base'] in claimed:
+    results = {}  # order_sn -> (doc_base, adiff)
+    for exact_only in (True, False):
+        for o in orders:
+            sn = o['order_sn']
+            if sn in manual_orders or sn in results:
                 continue
-            gap = _signed_gap(iv['date_iso'], o['order_date'])
-            if gap is None or gap < 0 or gap > window_days:
+            best = _pick_iv(o, ivs, claimed, iv_prod, o_prod, window_days, exact_only)
+            if best is None:
                 continue
-            overlap = len(my_prod & iv_prod.get(iv['doc_base'], set()))
-            adiff = abs((iv['iv_net'] or 0) - payout)
-            # A candidate must be confirmed by a shared product OR a near amount —
-            # otherwise an unrelated same-window invoice could be grabbed.
-            if overlap == 0 and adiff > FUZZY_AMOUNT_TOL:
-                continue
-            cost = (0 if overlap else 1, gap, adiff)
-            if best is None or cost < best[0]:
-                best = (cost, iv['doc_base'], adiff)
-        if best is None:
-            unmatched += 1
-            continue
-        _cost, doc_base, adiff = best
-        claimed.add(doc_base)
+            _cost, doc_base, adiff = best
+            claimed.add(doc_base)
+            results[sn] = (doc_base, adiff)
+
+    confident = review = 0
+    for sn, (doc_base, adiff) in results.items():
         confidence = 'confident' if adiff < _AMOUNT_TOL else 'review'
         conn.execute(
             """INSERT INTO marketplace_order_invoice
                    (platform, order_sn, doc_base, customer_code, match_method, confidence)
                VALUES (?,?,?,?, 'auto', ?)""",
-            (platform, o['order_sn'], doc_base, code, confidence))
+            (platform, sn, doc_base, code, confidence))
         if confidence == 'confident':
             confident += 1
         else:
             review += 1
+    unmatched = sum(1 for o in orders
+                    if o['order_sn'] not in manual_orders and o['order_sn'] not in results)
 
     conn.commit()
     return {'matched': confident + review, 'confident': confident,
