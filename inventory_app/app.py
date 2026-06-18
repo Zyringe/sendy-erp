@@ -343,6 +343,7 @@ _ENDPOINT_MODULE = {
     'express_ar_dashboard': 'accounting',
     'express_ar_customer': 'accounting',
     'express_ap_dashboard': 'accounting',
+    'ap_dashboard': 'accounting',
     'ecommerce': 'accounting',
     'ecommerce_import': 'accounting',
     'ecommerce_sku_edit': 'accounting',
@@ -3475,51 +3476,63 @@ def express_ar_customer(customer_code):
 
 @app.route('/express/ap')
 def express_ap_dashboard():
-    """AP supplier-payment view from express_payments_out + AP outstanding snapshot."""
-    conn = get_connection()
+    """Redirect stub — keep bookmarks working."""
+    return redirect(url_for('ap_dashboard', tab='overview'))
+
+
+# ── Unified AP page ───────────────────────────────────────────────────────────
+
+@app.route('/ap')
+def ap_dashboard():
+    """Unified payables page. Tabs: overview | suppliers | payments.
+    VIEW open to any logged-in role (read-only; payments come from imports)."""
+    tab = request.args.get('tab', 'overview')
     date_from = request.args.get('from') or '2024-01-01'
     date_to   = request.args.get('to')   or date.today().isoformat()
-
-    rows = conn.execute("""
-        SELECT supplier_name,
-               COUNT(*) AS payments,
-               ROUND(SUM(invoice_amount), 2) AS invoice_total,
-               ROUND(SUM(cash_amount + cheque_amount), 2) AS paid_total,
-               ROUND(SUM(discount_amount), 2) AS discount_total,
-               MAX(date_iso) AS last_paid
-          FROM express_payments_out
-         WHERE is_void = 0
-           AND date_iso BETWEEN ? AND ?
-         GROUP BY supplier_name
-         ORDER BY paid_total DESC
-    """, (date_from, date_to)).fetchall()
-
+    conn = get_connection()
+    ap = models.get_ap_outstanding(conn)
     summary = conn.execute("""
-        SELECT COUNT(*) AS n_payments,
-               COUNT(DISTINCT supplier_name) AS n_suppliers,
+        SELECT COUNT(*) AS n_payments, COUNT(DISTINCT supplier_name) AS n_suppliers,
                ROUND(SUM(cash_amount + cheque_amount), 2) AS total_paid
           FROM express_payments_out
          WHERE is_void = 0 AND date_iso BETWEEN ? AND ?
     """, (date_from, date_to)).fetchone()
+    ctx = {'tab': tab, 'ap': ap, 'summary': dict(summary) if summary else {},
+           'date_from': date_from, 'date_to': date_to}
 
-    recent = conn.execute("""
-        SELECT doc_no, date_iso, supplier_name, invoice_amount,
-               (cash_amount + cheque_amount) AS paid, note
-          FROM express_payments_out
-         WHERE is_void = 0 AND date_iso BETWEEN ? AND ?
-         ORDER BY date_iso DESC, doc_no DESC
-         LIMIT 50
-    """, (date_from, date_to)).fetchall()
+    if tab in ('suppliers', 'payments'):
+        ctx['pay_rows'] = [dict(r) for r in conn.execute("""
+            SELECT supplier_name, COUNT(*) AS payments,
+                   ROUND(SUM(invoice_amount), 2) AS invoice_total,
+                   ROUND(SUM(cash_amount + cheque_amount), 2) AS paid_total,
+                   ROUND(SUM(discount_amount), 2) AS discount_total,
+                   MAX(date_iso) AS last_paid
+              FROM express_payments_out
+             WHERE is_void = 0 AND date_iso BETWEEN ? AND ?
+             GROUP BY supplier_name ORDER BY paid_total DESC
+        """, (date_from, date_to)).fetchall()]
 
-    ap_outstanding = models.get_ap_outstanding(conn)
+    if tab == 'suppliers':
+        owed = {s['supplier_name']: s['subtotal'] for s in ap['suppliers']}
+        paid = {p['supplier_name']: p for p in ctx['pay_rows']}
+        names = list(owed) + [n for n in paid if n not in owed]
+        ctx['supplier_rows'] = sorted(
+            [{'supplier_name': n, 'owed': owed.get(n, 0.0),
+              'paid': (paid.get(n) or {}).get('paid_total', 0.0),
+              'last_paid': (paid.get(n) or {}).get('last_paid')} for n in names],
+            key=lambda r: r['owed'], reverse=True)
+
+    if tab == 'payments':
+        ctx['recent'] = [dict(r) for r in conn.execute("""
+            SELECT doc_no, date_iso, supplier_name, invoice_amount,
+                   (cash_amount + cheque_amount) AS paid, note
+              FROM express_payments_out
+             WHERE is_void = 0 AND date_iso BETWEEN ? AND ?
+             ORDER BY date_iso DESC, doc_no DESC LIMIT 50
+        """, (date_from, date_to)).fetchall()]
+
     conn.close()
-
-    return render_template('express_ap.html',
-                           rows=[dict(r) for r in rows],
-                           recent=[dict(r) for r in recent],
-                           summary=dict(summary) if summary else {},
-                           date_from=date_from, date_to=date_to,
-                           ap=ap_outstanding)
+    return render_template('ap.html', **ctx)
 
 
 # ── Accounting Summary ────────────────────────────────────────────────────────
