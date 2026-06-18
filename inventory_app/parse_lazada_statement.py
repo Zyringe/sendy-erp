@@ -37,11 +37,18 @@ _BUCKET = {
     'Free Shipping Max Fee': 'shipping_net',
     'Shipping Fee Voucher Refund to Laz': 'shipping_net',
     'Wrong Shipping Fee Adjustment': 'shipping_net',
+    'Reversal of Free Shipping Max Fee': 'shipping_net',
     'LazCoins Discount': 'fee_ads_escrow',
     'LazCoins Discount Promotion Fee': 'fee_ads_escrow',
     'Reversal of LazCoins Discount': 'fee_ads_escrow',
     'Reversal of LazCoins Discount Promotion Fee': 'fee_ads_escrow',
     'Buyer Review Incentive': 'fee_ads_escrow',
+    'Campaign Fee': 'fee_ads_escrow',
+    'Promotional Charges Vouchers': 'fee_ads_escrow',
+    # Lost Claim = Lazada reimbursement for parcels lost by 3PL (a credit, not a
+    # fee); no dedicated bucket → parked in the platform catch-all, but mapped
+    # explicitly so it stops being reported as an "unknown fee" on every import.
+    'Lost Claim': 'fee_platform',
 }
 _BUCKETS = ('fee_commission', 'fee_service', 'fee_transaction', 'fee_platform',
             'fee_ads_escrow', 'fee_tax', 'shipping_net', 'fee_saver')

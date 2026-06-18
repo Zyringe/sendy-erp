@@ -62,3 +62,20 @@ def test_missing_required_column_raises():
     df = pd.DataFrame([{'Foo':'bar'}])
     with pytest.raises(LazadaStatementError):
         parse_lazada_statement(df)
+
+def test_extended_fee_names_bucketed():
+    # fee names that appear in the fuller statement export must map, not fall to catch-all
+    df = _df([
+        _row('S-1','Item Price Credit','200','O1'),
+        _row('S-1','Campaign Fee','-5','O1'),
+        _row('S-1','Promotional Charges Vouchers','-3','O1'),
+        _row('S-1','Reversal of Free Shipping Max Fee','-2','O1'),
+        _row('S-1','Lost Claim','4','O1'),
+    ])
+    out = parse_lazada_statement(df)
+    f = {x['order_sn']: x for x in out['fee_rows']}['O1']
+    assert f['fee_ads_escrow'] == -8.0          # Campaign Fee + Promotional Charges Vouchers
+    assert f['shipping_net'] == -2.0            # Reversal of Free Shipping Max Fee
+    assert f['fee_platform'] == 4.0             # Lost Claim → explicit catch-all
+    assert f['net_payout'] == 194.0             # 200 -5 -3 -2 +4
+    assert out['unmapped_fee_names'] == []      # all now known → no false "unknown fee" warning
