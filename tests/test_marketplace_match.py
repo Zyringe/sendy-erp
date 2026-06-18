@@ -247,3 +247,22 @@ def test_lazada_matches_iv_on_gross_not_net(mm_conn):
     row = c.execute("SELECT doc_base, confidence FROM marketplace_order_invoice WHERE order_sn='LZ1'").fetchone()
     assert row['doc_base'] == 'IV7000001'
     assert row['confidence'] == 'confident'      # IV(100) == gross(100), not net(80)
+
+
+def test_exact_match_not_stolen_by_fuzzy_neighbour(mm_conn):
+    """Greedy-oldest-first let an older order grab a sibling's EXACT invoice on a
+    shared-product signal (amount off by 56), stranding the order it exactly
+    matched. The exact-first pass must lock the exact pair first. (Real case:
+    order 1098207080807149 ฿32 should get IV6900807 ฿32, not a leftover.)"""
+    c = mm_conn
+    # OA (older): shares product 457 with IV_SHARED, but its real invoice is IV_A
+    # (amount-exact 88, a product OA does NOT carry). OB (newer): exactly IV_SHARED.
+    _add_order(c, 'OA', 88, '2026-05-29', product_id=457)
+    _add_order(c, 'OB', 32, '2026-05-30', product_id=457)
+    _add_iv(c, 'IV_A',      88.0, '2026-05-30', product_id=458)   # OA exact amount, product NOT shared
+    _add_iv(c, 'IV_SHARED', 32.0, '2026-05-30', product_id=457)   # OB exact (product+amount); also OA product-overlap
+    mm.run_automatch(c, 'shopee')
+    links = {r['order_sn']: (r['doc_base'], r['confidence']) for r in c.execute(
+        "SELECT order_sn, doc_base, confidence FROM marketplace_order_invoice WHERE platform='shopee'")}
+    assert links['OB'] == ('IV_SHARED', 'confident')   # exact match locked, not stolen by OA
+    assert links['OA'][0] == 'IV_A'                    # OA falls to its own amount-exact invoice
