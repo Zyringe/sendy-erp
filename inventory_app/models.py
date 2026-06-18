@@ -2801,6 +2801,76 @@ def get_customer_debt_summary(search=''):
     return rows
 
 
+def get_ar_reconciliation():
+    """Per-customer reconcile: Express snapshot (get_customer_debt_summary) vs
+    Sendy ledger unpaid (sales_transactions minus paid_invoices/received_payments).
+    Read-only. Snapshot is the canonical AR; ledger is the live cross-check.
+
+    Returns dict with keys:
+      rows: list of {customer_code, customer_name, snapshot_amount, ledger_amount,
+                     diff, status}  sorted by abs(diff) desc.
+      snapshot_total, ledger_total, diff_total (floats).
+    """
+    # Snapshot side (canonical) — reuse the existing helper so totals match exactly.
+    snap_rows = get_customer_debt_summary()
+    snap = {r['customer_code']: {'name': r['customer'],
+                                 'amount': r['outstanding_amount'] or 0.0}
+            for r in snap_rows}
+
+    # Ledger side — unpaid invoice balance per customer, mirroring get_payment_summary().
+    # get_payment_summary groups by doc_base, sums vat-aware net, then marks unpaid
+    # where paid_invoices has no matching row (rp.cancelled=0 check for received_payments).
+    conn = get_connection()
+    led_rows = conn.execute("""
+        SELECT st.customer_code AS code,
+               MAX(st.customer)  AS name,
+               ROUND(SUM(bill_net), 2) AS unpaid
+          FROM (
+              SELECT customer_code, customer, doc_base,
+                     SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) AS bill_net
+                FROM sales_transactions
+               WHERE doc_base IS NOT NULL
+                 AND doc_base NOT LIKE 'SR%'
+                 AND doc_base NOT LIKE 'HS%'
+               GROUP BY doc_base
+              HAVING bill_net > 0
+          ) st
+          LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
+          LEFT JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
+         WHERE pi.doc_no IS NULL
+         GROUP BY st.customer_code
+    """).fetchall()
+    conn.close()
+
+    led = {r['code']: {'name': r['name'], 'amount': r['unpaid'] or 0.0}
+           for r in led_rows if r['code']}
+
+    rows = []
+    for code in set(snap) | set(led):
+        s = snap.get(code, {}).get('amount', 0.0)
+        l = led.get(code, {}).get('amount', 0.0)
+        name = (snap.get(code, {}).get('name')
+                or led.get(code, {}).get('name')
+                or code)
+        if code not in snap:
+            status = 'ledger_only'
+        elif code not in led:
+            status = 'snapshot_only'
+        elif abs(l - s) < 0.01:
+            status = 'match'
+        else:
+            status = 'diff'
+        rows.append({'customer_code': code, 'customer_name': name,
+                     'snapshot_amount': round(s, 2), 'ledger_amount': round(l, 2),
+                     'diff': round(l - s, 2), 'status': status})
+    rows.sort(key=lambda r: abs(r['diff']), reverse=True)
+
+    snap_total = round(sum(v['amount'] for v in snap.values()), 2)
+    led_total = round(sum(v['amount'] for v in led.values()), 2)
+    return {'rows': rows, 'snapshot_total': snap_total, 'ledger_total': led_total,
+            'diff_total': round(led_total - snap_total, 2)}
+
+
 def find_payment_candidates(amount, tolerance_pct=5):
     """คาดคะเนลูกค้าที่น่าจะโอนเงิน amount บาท
     ลองทุก subset ของบิลที่ค้างชำระของแต่ละลูกค้า
