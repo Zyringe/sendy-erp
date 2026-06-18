@@ -1,0 +1,290 @@
+{% extends 'base.html' %}
+{% block title %}เจ้าหนี้ (AP) – Sendy{% endblock %}
+{% block page_title %}เจ้าหนี้ (AP){% endblock %}
+
+{% block content %}
+
+{# ── Tab navigation ──────────────────────────────────────────────────────── #}
+<ul class="nav nav-tabs mb-4">
+  <li class="nav-item">
+    <a class="nav-link {% if tab == 'overview' %}active{% endif %}"
+       href="{{ url_for('ap_dashboard', tab='overview') }}">ภาพรวม</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if tab == 'suppliers' %}active{% endif %}"
+       href="{{ url_for('ap_dashboard', tab='suppliers') }}">รายซัพพลายเออร์</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if tab == 'payments' %}active{% endif %}"
+       href="{{ url_for('ap_dashboard', tab='payments') }}">การจ่ายเงิน</a>
+  </li>
+</ul>
+
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# TAB: ภาพรวม (overview)                                                     #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{% if tab == 'overview' %}
+
+<div class="row g-3 mb-4">
+  {# AP Outstanding card #}
+  <div class="col-sm-6">
+    <div class="card h-100 border-warning-subtle">
+      <div class="card-body">
+        <div class="text-subtle small mb-1">
+          <i class="bi bi-bank me-1 text-warning"></i>
+          Express snapshot (books) — เจ้าหนี้คงค้าง
+        </div>
+        <div class="fs-3 fw-bold">฿{{ '{:,.0f}'.format(ap.grand_total or 0) }}</div>
+        <div class="text-subtle small mt-1">
+          {{ ap.n_suppliers or 0 }} ราย · {{ ap.n_invoices or 0 }} ใบ
+          · ยอด ณ {{ ap.snapshot_date or '—' }} (export จาก Express)
+        </div>
+      </div>
+    </div>
+  </div>
+  {# Payments summary card #}
+  <div class="col-sm-6">
+    <div class="card h-100 border-success-subtle">
+      <div class="card-body">
+        <div class="text-subtle small mb-1">
+          <i class="bi bi-check-circle me-1 text-success"></i>
+          จ่ายแล้ว ({{ date_from }} – {{ date_to }})
+        </div>
+        <div class="fs-3 fw-bold text-success">฿{{ '{:,.0f}'.format(summary.total_paid or 0) }}</div>
+        <div class="text-subtle small mt-1">
+          {{ summary.n_payments or 0 }} ครั้ง · {{ summary.n_suppliers or 0 }} ซัพพลายเออร์
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# Top suppliers owed #}
+<div class="card mb-4">
+  <div class="card-header">
+    ค้างจ่ายมากสุด (top owed) —
+    <a href="{{ url_for('ap_dashboard', tab='suppliers') }}" class="text-decoration-none">ดูทั้งหมด →</a>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>ซัพพลายเออร์</th>
+          <th class="text-end">ค้างจ่าย</th>
+          <th class="text-end">ใบ</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for sup in ap.suppliers[:8] %}
+        <tr>
+          <td>
+            {{ sup.supplier_name }}
+            {% if sup.is_intercompany %}
+            <span class="badge bg-info text-dark ms-1 small">intercompany</span>
+            {% endif %}
+          </td>
+          <td class="text-end fw-bold text-warning">฿{{ '{:,.0f}'.format(sup.subtotal or 0) }}</td>
+          <td class="text-end">{{ sup.invoices | length }}</td>
+          <td>
+            <a href="{{ url_for('ap_dashboard', tab='suppliers') }}"
+               class="btn btn-sm btn-outline-warning py-0">ดู →</a>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="text-center text-subtle py-3">ไม่มีเจ้าหนี้คงค้าง</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="alert alert-secondary py-2 small">
+  <i class="bi bi-info-circle me-1"></i>
+  ใบรับสินค้า / ประวัติซื้อ →
+  <a href="{{ url_for('purchases_view') }}">รายการซื้อ (/purchases)</a>
+</div>
+
+{% endif %}{# end overview #}
+
+
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# TAB: รายซัพพลายเออร์ (suppliers)                                           #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{% if tab == 'suppliers' %}
+
+<div class="alert alert-secondary py-2 mb-3 small">
+  <i class="bi bi-info-circle me-1"></i>
+  ยอดค้างจ่าย = Express snapshot ({{ ap.snapshot_date or '—' }}) ·
+  จ่ายแล้ว = ประวัติ {{ date_from }} – {{ date_to }} จาก express_payments_out
+</div>
+
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>ซัพพลายเออร์ {{ supplier_rows | length }} ราย</span>
+    <span class="fw-bold text-warning">คงค้างรวม ฿{{ '{:,.2f}'.format(ap.grand_total or 0) }}</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>ซัพพลายเออร์</th>
+          <th class="text-end">ค้างจ่าย</th>
+          <th class="text-end">จ่ายแล้ว</th>
+          <th class="text-center">จ่ายล่าสุด</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in supplier_rows %}
+        <tr>
+          <td class="fw-bold">{{ r.supplier_name }}</td>
+          <td class="text-end {% if r.owed > 0 %}text-warning fw-bold{% endif %}">
+            {% if r.owed %}฿{{ '{:,.2f}'.format(r.owed) }}{% else %}—{% endif %}
+          </td>
+          <td class="text-end">
+            {% if r.paid %}฿{{ '{:,.2f}'.format(r.paid) }}{% else %}—{% endif %}
+          </td>
+          <td class="text-center small">{{ r.last_paid or '—' }}</td>
+          <td>
+            <a href="{{ url_for('supplier_summary', supplier_name=r.supplier_name) }}"
+               class="btn btn-sm btn-outline-secondary py-0">ดูรายละเอียด</a>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-subtle py-3">ไม่พบข้อมูล</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endif %}{# end suppliers #}
+
+
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# TAB: การจ่ายเงิน (payments)                                                #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{% if tab == 'payments' %}
+
+{# Summary cards #}
+<div class="row g-3 mb-4">
+  <div class="col-sm-4">
+    <div class="card text-center">
+      <div class="card-body py-3">
+        <div class="text-subtle small mb-1">การจ่ายทั้งหมด</div>
+        <div class="fs-4 fw-bold">{{ summary.n_payments or 0 }}</div>
+        <div class="text-subtle small">ครั้ง</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="card text-center">
+      <div class="card-body py-3">
+        <div class="text-subtle small mb-1">ซัพพลายเออร์</div>
+        <div class="fs-4 fw-bold">{{ summary.n_suppliers or 0 }}</div>
+        <div class="text-subtle small">ราย</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="card text-center border-success">
+      <div class="card-body py-3">
+        <div class="text-success small mb-1"><i class="bi bi-check-circle me-1"></i>รวมจ่าย</div>
+        <div class="fs-4 fw-bold text-success">฿{{ '{:,.0f}'.format(summary.total_paid or 0) }}</div>
+        <div class="text-subtle small">บาท</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# Date filter #}
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <form method="get" class="row g-2 align-items-end">
+      <input type="hidden" name="tab" value="payments">
+      <div class="col-auto">
+        <label class="form-label small mb-1">ตั้งแต่</label>
+        <input type="date" name="from" value="{{ date_from }}" class="form-control form-control-sm">
+      </div>
+      <div class="col-auto">
+        <label class="form-label small mb-1">ถึง</label>
+        <input type="date" name="to" value="{{ date_to }}" class="form-control form-control-sm">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
+        <a href="{{ url_for('ap_dashboard', tab='payments') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# Per-supplier grouped #}
+<h6 class="mb-2 px-1">รายซัพพลายเออร์</h6>
+<div class="card mb-4">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>ซัพพลายเออร์</th>
+          <th class="text-center">ครั้ง</th>
+          <th class="text-end">ยอดในใบรับ</th>
+          <th class="text-end">จ่ายจริง</th>
+          <th class="text-end">ส่วนลด</th>
+          <th class="text-center">จ่ายล่าสุด</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in pay_rows %}
+        <tr>
+          <td class="fw-bold">{{ r.supplier_name }}</td>
+          <td class="text-center">{{ r.payments }}</td>
+          <td class="text-end font-mono">{{ '{:,.2f}'.format(r.invoice_total or 0) }}</td>
+          <td class="text-end font-mono fw-bold text-success">{{ '{:,.2f}'.format(r.paid_total or 0) }}</td>
+          <td class="text-end font-mono small">{{ '{:,.2f}'.format(r.discount_total or 0) }}</td>
+          <td class="text-center small">{{ r.last_paid or '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-subtle py-3">ไม่พบข้อมูล</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# Recent 50 #}
+<h6 class="mb-2 px-1">การจ่ายล่าสุด (50 รายการ)</h6>
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>เลขที่</th>
+          <th class="text-center">วันที่</th>
+          <th>ซัพพลายเออร์</th>
+          <th class="text-end">ในใบรับ</th>
+          <th class="text-end">จ่ายจริง</th>
+          <th class="text-subtle small">หมายเหตุ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in recent %}
+        <tr>
+          <td class="font-mono small">{{ r.doc_no }}</td>
+          <td class="text-center font-mono small">{{ r.date_iso }}</td>
+          <td>{{ r.supplier_name }}</td>
+          <td class="text-end font-mono">{{ '{:,.2f}'.format(r.invoice_amount or 0) }}</td>
+          <td class="text-end font-mono fw-bold">{{ '{:,.2f}'.format(r.paid or 0) }}</td>
+          <td class="small text-subtle" style="white-space:pre-wrap">{{ r.note or '' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-subtle py-3">ไม่พบข้อมูล</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endif %}{# end payments #}
+
+{% endblock %}
