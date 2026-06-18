@@ -25,3 +25,19 @@ def test_detect_shopee_order():
 def test_detect_unknown():
     df = pd.DataFrame([['foo','bar']])
     assert detect_file(_xlsx({'sheet1': df})) == (None, None)
+
+import io
+
+def _csv_bytes(header):
+    return io.BytesIO(('﻿' + header + '\r\n' + 'x'*0).encode('utf-8'))
+
+def test_detect_lazada_statement_csv():
+    h = ('Statement Period;Statement Number;Transaction Date;Fee Name;'
+         'Amount(Include Tax);VAT Amount;Release Status;Release Date;Comment;'
+         'Order Creation Date;Order Number;Order Line ID;Seller SKU;Lazada SKU;'
+         'WHT Amount;WHT included in Amount;Order Status;Product Name;Short Code')
+    assert detect_file(_csv_bytes(h)) == ('laz_statement', 'lazada')
+
+def test_detect_lazada_wallet_csv():
+    h = 'Transaction Number;Transaction Time;Type;Sub Type;Amount;Remarks'
+    assert detect_file(_csv_bytes(h)) == ('laz_wallet', 'lazada')
