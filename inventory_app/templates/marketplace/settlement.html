@@ -136,7 +136,7 @@
   {% elif tab == 'reconcile' %}
   {% set s = report.summary %}
   <p class="text-muted small">
-    เทียบ 3 ยอดต่อออเดอร์: <strong>ยอดโอนจริง</strong> (Shopee จ่าย) ↔ <strong>ใบกำกับ</strong> (ทีมลงบิล) ↔
+    เทียบ 3 ยอดต่อออเดอร์: <strong>ยอดโอนจริง</strong> ({{ platform | capitalize }} จ่าย) ↔ <strong>ใบกำกับ</strong> (ทีมลงบิล) ↔
     <strong>รับชำระ</strong> (Express). ปกติควรเท่ากันทั้ง 3 — แถวที่ต่างจะถูกไฮไลต์
   </p>
 
@@ -171,7 +171,7 @@
   </div>
   <p class="small text-muted mb-3">
     จับคู่ใบกำกับ {{ s.matched }}/{{ s.orders }} ออเดอร์{% if s.unmatched_orders %} · ยังไม่ผูก {{ s.unmatched_orders }}{% endif %}.
-    แถวสีเหลือง = <strong>ยอดในบิลไม่ตรงกับยอดที่ Shopee โอนจริง</strong> → ทีมคีย์ผิด/Shopee ปรับยอด ควรไปแก้บิลใน Express.
+    แถวสีเหลือง = <strong>ยอดในบิลไม่ตรงกับยอดที่ {{ platform | capitalize }} โอนจริง</strong> → ทีมคีย์ผิด/{{ platform | capitalize }} ปรับยอด ควรไปแก้บิลใน Express.
     จับคู่ใบกำกับจาก <strong>สินค้า + วันสั่ง</strong> (ใบที่ออกหลังวันสั่ง) แล้วเทียบยอด — ป้าย
     <span class="badge bg-info text-dark">⚠ ยอดต่าง</span> = ยอดบิลไม่ตรงยอดโอน (กดเลขออเดอร์เพื่อดู/แก้)
   </p>
@@ -185,7 +185,7 @@
         โอน <span class="text-success">฿{{ '{:,.2f}'.format(m.payout) }}</span> ·
         ใบกำกับ ฿{{ '{:,.2f}'.format(m.billed) }} ·
         รับชำระ ฿{{ '{:,.2f}'.format(m.collected) }}
-        {% set dm = (m.payout - m.collected) | round(2) %}
+        {% set dm = (m.billed - m.collected) | round(2) %}
         {% if dm|abs > 0.01 %}<span class="badge bg-warning text-dark">ต่าง ฿{{ '{:,.2f}'.format(dm) }}</span>{% endif %}
       </span>
     </div>
@@ -195,7 +195,7 @@
           <tr>
             <th>เลขออเดอร์</th><th>ใบกำกับ (IV)</th>
             <th class="text-end">ยอดโอนจริง</th><th class="text-end">ยอดในบิล</th>
-            <th class="text-end">ต่าง (บิล−โอน)</th><th class="text-end">รับชำระ</th><th>วันโอน</th><th>ตรวจ</th>
+            <th class="text-end">ต่าง (บิล−ยอดที่ควรเป็น)</th><th class="text-end">รับชำระ</th><th>วันโอน</th><th>ตรวจ</th>
           </tr>
         </thead>
         <tbody>
