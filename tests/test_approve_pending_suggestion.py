@@ -93,42 +93,18 @@ def test_approve_preserves_explicit_units(empty_db_with_user):
     assert row['units_per_box'] == 6
 
 
-def test_approve_scopes_mapping_by_bsn_unit(empty_db_with_user):
-    """Strict mode: the mapping row's bsn_unit must equal the suggestion's
-    bsn_unit (not hardcoded '')."""
-    empty_db, uid = empty_db_with_user
-    import models
-    sid = _stage_minimal(_stage_payload('TEST003', bsn_unit='แผง'), user_id=uid)
-
-    new_pid = models.approve_pending_suggestion(sid, edits={}, reviewer_id=uid)
-
-    conn = sqlite3.connect(empty_db)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT bsn_unit, product_id FROM product_code_mapping "
-        "WHERE bsn_code = ?",
-        ('TEST003',),
-    ).fetchone()
-    conn.close()
-
-    assert row['bsn_unit'] == 'แผง'
-    assert row['product_id'] == new_pid
-
-
 def test_approve_clears_pending_placeholder(empty_db_with_user):
-    """Regression: import flow created a catch-all placeholder
-    (bsn_unit='', product_id=NULL). When approve creates a SCOPED mapping
-    (bsn_unit='แผง'), the placeholder must be deleted so the bsn_code
-    disappears from get_pending_mappings() — otherwise the user still sees
-    the code in 'ผูกรหัส BSN' even after admin approval."""
+    """Regression: import creates a pending placeholder (product_id=NULL).
+    After approve maps the code, it must disappear from get_pending_mappings()
+    — otherwise the user still sees it in 'ผูกรหัส BSN' after approval."""
     empty_db, uid = empty_db_with_user
     import models
 
     # Simulate import-time placeholder
     conn = sqlite3.connect(empty_db)
     conn.execute("""
-        INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, bsn_unit)
-        VALUES ('TEST005', 'test 005', NULL, '')
+        INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id)
+        VALUES ('TEST005', 'test 005', NULL)
     """)
     conn.commit()
     conn.close()
@@ -279,9 +255,8 @@ def test_approve_unmatched_category_text_leaves_null(empty_db_with_user):
 
 
 def test_approve_falls_back_to_catchall_when_bsn_unit_missing(empty_db_with_user):
-    """When the suggestion has no bsn_unit (no purchase/sale history), the
-    mapping falls back to the catch-all ''. Documented gap: such suggestions
-    should ideally be flagged before approval."""
+    """A suggestion with no bsn_unit (no purchase/sale history) still maps the
+    code to its new product (mig 112: one row per bsn_code, no unit scoping)."""
     empty_db, uid = empty_db_with_user
     import models
     sid = _stage_minimal(_stage_payload('TEST004', bsn_unit=None), user_id=uid)
@@ -291,9 +266,9 @@ def test_approve_falls_back_to_catchall_when_bsn_unit_missing(empty_db_with_user
     conn = sqlite3.connect(empty_db)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT bsn_unit FROM product_code_mapping WHERE bsn_code = ?",
+        "SELECT product_id FROM product_code_mapping WHERE bsn_code = ?",
         ('TEST004',),
     ).fetchone()
     conn.close()
 
-    assert row['bsn_unit'] == ''
+    assert row['product_id'] == new_pid

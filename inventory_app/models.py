@@ -1005,17 +1005,6 @@ def delete_transactions_by_ids(ids):
 
 # ── Product Code Mapping (BSN ↔ internal SKU) ─────────────────────────────────
 
-def get_mapping(bsn_code: str):
-    """Resolve a BSN code's mapping: pure bsn_code → product_id (mig 112)."""
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT * FROM product_code_mapping WHERE bsn_code = ? LIMIT 1",
-        (bsn_code,)
-    ).fetchone()
-    conn.close()
-    return row
-
-
 def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
                    ignore_reason=None):
     """Upsert a mapping row by bsn_code (mig 112: no bsn_unit column).
@@ -5092,31 +5081,20 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
             (new_pid,)
         )
 
-        # Upsert mapping (bsn_code → new product). Strict mode: scope the
-        # mapping by sug.bsn_unit (the unit captured when staging). If a new
-        # unit shows up later for the same bsn_code, the row stays unsynced
-        # and the user re-maps via Suggest → creates a separate scoped row.
-        # Falls back to catch-all ('') only when bsn_unit was never captured.
-        mapping_bsn_unit = (d.get('bsn_unit') or '').strip()
-        conn.execute("""
-            INSERT INTO product_code_mapping
-                (bsn_code, bsn_name, product_id, is_ignored, bsn_unit)
-            VALUES (?, ?, ?, 0, ?)
-            ON CONFLICT(bsn_code, bsn_unit) DO UPDATE SET
-                product_id = excluded.product_id,
-                is_ignored = 0
-        """, (sug['bsn_code'], sug['bsn_name'], new_pid, mapping_bsn_unit))
-        # Drop the import-created catch-all placeholder for this bsn_code so
-        # the bsn_code disappears from the pending-mapping list now that a
-        # scoped mapping exists. Preserves ignored rows (is_ignored=1) so
-        # the ignore_reason audit trail survives. See upsert_mapping() for
-        # the same logic.
-        if mapping_bsn_unit:
-            conn.execute("""
-                DELETE FROM product_code_mapping
-                WHERE bsn_code = ? AND bsn_unit = ''
-                  AND product_id IS NULL AND is_ignored = 0
-            """, (sug['bsn_code'],))
+        # Upsert mapping (bsn_code → new product) — one row per code (mig 112).
+        # UPDATE-then-INSERT mirrors upsert_mapping() (boundary-safe; reuses the
+        # existing pending row, so no separate placeholder cleanup is needed).
+        updated = conn.execute(
+            "UPDATE product_code_mapping SET bsn_name=?, product_id=?, is_ignored=0 "
+            "WHERE bsn_code=?",
+            (sug['bsn_name'], new_pid, sug['bsn_code'])
+        ).rowcount
+        if not updated:
+            conn.execute(
+                "INSERT OR IGNORE INTO product_code_mapping "
+                "(bsn_code, bsn_name, product_id, is_ignored) VALUES (?, ?, ?, 0)",
+                (sug['bsn_code'], sug['bsn_name'], new_pid)
+            )
 
         # Mark suggestion approved
         conn.execute("""

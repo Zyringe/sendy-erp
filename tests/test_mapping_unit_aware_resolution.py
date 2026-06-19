@@ -96,16 +96,3 @@ def test_upsert_mapping_by_bsn_code(tmp_db):
     assert rows[0][0] == PB
     assert rows[0][1] == "n2"
     c.close()
-
-
-def test_get_mapping_returns_row(tmp_db):
-    """get_mapping(bsn_code) returns the mapping row."""
-    conn = sqlite3.connect(tmp_db)
-    _seed(conn)
-    conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id) "
-                 "VALUES (?,?,?)", (CODE, "test", PA))
-    conn.commit()
-    conn.close()
-    row = models.get_mapping(CODE)
-    assert row is not None
-    assert row["product_id"] == PA
