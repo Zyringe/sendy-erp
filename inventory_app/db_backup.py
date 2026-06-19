@@ -24,9 +24,10 @@ from datetime import datetime
 
 PREFIX = "auto-"
 SUFFIX = ".db.gz"
-# reason is [a-z0-9-]+ (no '/' or '.', so a name can't path-traverse); the
-# trailing <8digits>_<6digits> is the timestamp.
-_NAME_RE = re.compile(r"^auto-(?P<reason>[a-z0-9-]+)-(?P<ts>\d{8}_\d{6})\.db\.gz$")
+# reason is [a-z0-9_-]+ (no '/' or '.', so a name can't path-traverse); '_'
+# added to allow reasons like 'marketplace_upload'. The trailing
+# <8digits>_<6digits> is the timestamp.
+_NAME_RE = re.compile(r"^auto-(?P<reason>[a-z0-9_-]+)-(?P<ts>\d{8}_\d{6})\.db\.gz$")
 
 DEFAULT_KEEP_DAYS = 7
 # Hard count cap (the live driver of disk use). 434MB Railway volume; the live DB
