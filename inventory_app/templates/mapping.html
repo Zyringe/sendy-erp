@@ -931,9 +931,6 @@ function confirmExistingMap() {
     bsn_name: _smCurrentName,
     action: 'map',
     product_id: pid,
-    // Strict mode: the bsn_unit here scopes the mapping to that unit only.
-    // BSN sending a different unit later → row stays unsynced → user re-maps.
-    map_bsn_unit: bsnUnitInput,
   };
   // unit_conversion is created only when ratio is also filled
   if (bsnUnitInput && ratio && parseFloat(ratio) > 0) {
