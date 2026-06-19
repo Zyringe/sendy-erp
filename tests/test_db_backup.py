@@ -323,3 +323,54 @@ def test_default_retention_keeps_newest_three(tmp_path):
     remaining = sorted(p.name for p in bdir.iterdir())
     assert len(remaining) == 3
     assert names[0] in remaining and names[3] not in remaining   # newest 3 kept, rest gone
+
+
+# ── regression: underscore in reason causes orphan backups (BUG-3) ────────────
+
+def test_list_backups_recognises_underscore_reason(tmp_path):
+    """_NAME_RE must match reason strings that contain underscores.
+
+    Root cause: ``[a-z0-9-]+`` excluded ``_``, so filenames produced by
+    ``create_backup(reason='marketplace_upload', ...)`` — i.e.
+    ``auto-marketplace_upload-20260616_102956.db.gz`` — were invisible to
+    ``list_backups``, meaning ``prune_backups`` never saw them and they
+    accumulated on the Railway volume until the disk filled up.
+    """
+    bdir = tmp_path / "backups"
+    bdir.mkdir()
+    (bdir / "auto-marketplace_upload-20260616_102956.db.gz").write_bytes(b"x")
+
+    rows = db_backup.list_backups(backup_dir=str(bdir))
+    assert len(rows) == 1, "underscore-reason backup not found by list_backups"
+    assert rows[0]["reason"] == "marketplace_upload"
+    assert rows[0]["name"] == "auto-marketplace_upload-20260616_102956.db.gz"
+
+
+def test_prune_handles_mixed_underscore_and_dash_reasons(tmp_path):
+    """prune_backups must apply max_keep across BOTH underscore-reason and
+    dash-reason filenames together.  Before the fix the underscore ones were
+    invisible so they escaped pruning and stacked up indefinitely.
+
+    Setup: 6 recent files, 3 underscore-reason + 3 dash-reason, all within
+    keep_days.  With max_keep=3, prune must keep only the 3 newest (regardless
+    of reason) and delete the 3 oldest.
+    """
+    bdir = tmp_path / "backups"
+    now = datetime(2026, 6, 17, 12, 0, 0)
+    # 6 files, alternating reason, from newest (i=0) to oldest (i=5)
+    names = []
+    reasons = ["marketplace_upload", "unified", "marketplace_upload",
+               "unified", "marketplace_upload", "unified"]
+    for i, reason in enumerate(reasons):
+        names.append(_touch_backup(bdir, reason, now - timedelta(hours=i)))
+
+    deleted = db_backup.prune_backups(backup_dir=str(bdir), keep_days=7,
+                                      max_keep=3, now=now)
+    remaining = [p.name for p in bdir.iterdir()]
+    assert len(remaining) == 3, (
+        f"expected 3 remaining, got {len(remaining)}: {sorted(remaining)}")
+    # the 3 newest must survive, the 3 oldest must be gone
+    for i in range(3):
+        assert names[i] in remaining, f"newest backup #{i} was incorrectly deleted"
+    for i in range(3, 6):
+        assert names[i] in deleted, f"oldest backup #{i} should have been deleted"
