@@ -266,9 +266,7 @@ def _topup_pre_feb_for_product(product_id, commission_mod, cutoff='2026-02-01'):
                SELECT m.product_id
                  FROM product_code_mapping m
                 WHERE m.bsn_code = es.product_code
-                  AND m.bsn_unit IN (COALESCE(es.unit, ''), '')
                   AND m.product_id IS NOT NULL
-                ORDER BY (m.bsn_unit = '')
                 LIMIT 1
            )
     """, (cutoff, product_id)).fetchall()
@@ -1007,53 +1005,39 @@ def delete_transactions_by_ids(ids):
 
 # ── Product Code Mapping (BSN ↔ internal SKU) ─────────────────────────────────
 
-def get_mapping(bsn_code: str, bsn_unit: str = None):
-    """Resolve a BSN code's mapping. Unit-aware (mig 061): an exact
-    (bsn_code, bsn_unit) override row beats the bsn_unit='' catch-all.
-    bsn_unit=None (or '') → catch-all only = legacy single-mapping behavior.
-    """
+def get_mapping(bsn_code: str):
+    """Resolve a BSN code's mapping: pure bsn_code → product_id (mig 112)."""
     conn = get_connection()
     row = conn.execute(
-        """SELECT * FROM product_code_mapping
-            WHERE bsn_code = ? AND bsn_unit IN (?, '')
-            ORDER BY (bsn_unit = '')      -- exact unit (0) before catch-all (1)
-            LIMIT 1""",
-        (bsn_code, bsn_unit or '')
+        "SELECT * FROM product_code_mapping WHERE bsn_code = ? LIMIT 1",
+        (bsn_code,)
     ).fetchone()
     conn.close()
     return row
 
 
 def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
-                   ignore_reason=None, bsn_unit=''):
-    """Upsert a mapping row. bsn_unit='' (default) = the catch-all row, so
-    every existing caller keeps writing/updating exactly that row (unchanged
-    behavior). A non-empty bsn_unit creates/updates a per-unit override."""
+                   ignore_reason=None):
+    """Upsert a mapping row by bsn_code (mig 112: no bsn_unit column).
+
+    Uses UPDATE-then-INSERT to avoid dependency on which UNIQUE constraint is
+    currently active (compatible across the mig-112 boundary).
+    """
     conn = get_connection()
-    bsn_unit = bsn_unit or ''
-    conn.execute("""
-        INSERT INTO product_code_mapping
-            (bsn_code, bsn_name, product_id, is_ignored, ignore_reason, bsn_unit)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(bsn_code, bsn_unit) DO UPDATE SET
-            bsn_name      = excluded.bsn_name,
-            product_id    = excluded.product_id,
-            is_ignored    = excluded.is_ignored,
-            ignore_reason = excluded.ignore_reason
-    """, (bsn_code, bsn_name, product_id, is_ignored, ignore_reason, bsn_unit))
-    # When we just resolved a scoped (non-empty bsn_unit) mapping, drop the
-    # import-created catch-all placeholder for this bsn_code — that row
-    # (bsn_unit='', product_id=NULL, is_ignored=0) is the "pending" marker
-    # and would otherwise keep the bsn_code in get_pending_mappings() forever.
-    # Legacy catch-alls with a real product_id are left alone. Ignored rows
-    # (is_ignored=1) are also preserved so their ignore_reason audit trail
-    # survives a subsequent un-ignore/remap by the user.
-    if bsn_unit and product_id is not None:
+    updated = conn.execute("""
+        UPDATE product_code_mapping SET
+            bsn_name      = ?,
+            product_id    = ?,
+            is_ignored    = ?,
+            ignore_reason = ?
+        WHERE bsn_code = ?
+    """, (bsn_name, product_id, is_ignored, ignore_reason, bsn_code)).rowcount
+    if not updated:
         conn.execute("""
-            DELETE FROM product_code_mapping
-            WHERE bsn_code = ? AND bsn_unit = ''
-              AND product_id IS NULL AND is_ignored = 0
-        """, (bsn_code,))
+            INSERT OR IGNORE INTO product_code_mapping
+                (bsn_code, bsn_name, product_id, is_ignored, ignore_reason)
+            VALUES (?, ?, ?, ?, ?)
+        """, (bsn_code, bsn_name, product_id, is_ignored, ignore_reason))
     conn.commit()
     conn.close()
 
@@ -1094,18 +1078,12 @@ def resolve_pending_mappings(conn):
         ('sales_transactions',    'sales'),
         ('purchase_transactions', 'purchase'),
     ):
-        # Unit-aware (mig 061): an exact (bsn_code, unit) override row beats
-        # the bsn_unit='' catch-all. COALESCE so a NULL ledger unit still
-        # matches the catch-all. For codes with only a catch-all row this is
-        # identical to the pre-061 query (zero behavior change).
         conn.execute(f"""
             UPDATE {table}
             SET product_id = (
                 SELECT m.product_id FROM product_code_mapping m
                 WHERE m.bsn_code = {table}.bsn_code
-                  AND m.bsn_unit IN (COALESCE({table}.unit, ''), '')
                   AND m.product_id IS NOT NULL
-                ORDER BY (m.bsn_unit = '')
                 LIMIT 1
             )
             WHERE product_id IS NULL AND bsn_code IS NOT NULL
@@ -1117,14 +1095,12 @@ def resolve_pending_mappings(conn):
 
 # ── Weekly Import ─────────────────────────────────────────────────────────────
 
-def _resolve_mapping(conn, code, unit):
-    """(product_id, is_ignored, mapped?) via the unit-aware mapping (mig 061):
-    an exact (bsn_code, unit) override beats the bsn_unit='' catch-all."""
+def _resolve_mapping(conn, code):
+    """(product_id, is_ignored, mapped?) — pure bsn_code lookup (mig 112)."""
     m = conn.execute(
-        """SELECT product_id, is_ignored FROM product_code_mapping
-            WHERE bsn_code = ? AND bsn_unit IN (?, '')
-            ORDER BY (bsn_unit = '') LIMIT 1""",
-        (code, unit or '')
+        "SELECT product_id, is_ignored FROM product_code_mapping "
+        "WHERE bsn_code = ? LIMIT 1",
+        (code,)
     ).fetchone()
     return (m['product_id'] if m else None, m['is_ignored'] if m else 0, bool(m))
 
@@ -1190,7 +1166,7 @@ def preview_import(entries: list, file_type: str) -> dict:
             unit = bsn_units.normalize_unit(e.get('unit'))
             doc_no = e['doc_no']
             line_seq = e.get('line_seq', 1)
-            pid, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'], unit)
+            pid, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'])
             if is_ignored:
                 counts['ignored'] += 1
                 continue
@@ -1298,7 +1274,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
         doc_base = doc_no.rsplit('-', 1)[0] if '-' in doc_no else doc_no
         line_seq = e.get('line_seq', 1)
 
-        product_id, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'], e.get('unit'))
+        product_id, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'])
         if is_ignored:
             skipped_dup += 1
             continue

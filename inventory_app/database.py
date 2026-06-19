@@ -138,11 +138,13 @@ CREATE TABLE IF NOT EXISTS import_log (
 -- BSN system product code → internal product mapping
 CREATE TABLE IF NOT EXISTS product_code_mapping (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    bsn_code    TEXT UNIQUE NOT NULL,
+    bsn_code    TEXT NOT NULL,
     bsn_name    TEXT NOT NULL,
     product_id  INTEGER REFERENCES products(id),
     is_ignored  INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    ignore_reason TEXT,
+    UNIQUE(bsn_code)
 );
 
 -- Sales transactions (from ขาย files)

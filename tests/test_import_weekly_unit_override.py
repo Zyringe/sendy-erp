@@ -1,8 +1,7 @@
-"""Part: import_weekly resolves product_id unit-aware (mig 061).
+"""import_weekly resolves product_id via pure bsn_code mapping (post-mig-112).
 
-- a per-unit override row routes a matching-unit entry to the override
-  product; another unit with only a catch-all goes to the catch-all
-- a code with ONLY a catch-all row imports exactly like pre-061 (regression)
+After mig-112: one row per bsn_code, all units of a code route to the same
+product. Tests verify the simplified behavior (unit-override behavior is gone).
 """
 import os
 import sqlite3
@@ -24,17 +23,15 @@ def _entry(code, unit, doc):
             "total": 0.0, "net": 0.0}
 
 
-def test_import_routes_overridden_unit_to_override_product(tmp_db,
-                                                           monkeypatch):
+def test_import_routes_all_units_to_single_product(tmp_db, monkeypatch):
+    """All units of a bsn_code map to the single mapped product (no unit override)."""
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     for pid in (PA, PB):
         conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (pid, f"P{pid}", f"SK{pid}"))
-    conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
-                 "product_id,bsn_unit) VALUES (?,?,?,'')", (CODE, "n", PA))
-    conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
-                 "product_id,bsn_unit) VALUES (?,?,?,'แผง')", (CODE, "n", PB))
+    conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id) "
+                 "VALUES (?,?,?)", (CODE, "n", PA))
     conn.commit()
     conn.close()
 
@@ -51,16 +48,15 @@ def test_import_routes_overridden_unit_to_override_product(tmp_db,
     got = {r[0]: r[1] for r in c.execute(
         "SELECT doc_no, product_id FROM purchase_transactions "
         "WHERE bsn_code=?", (CODE,))}
-    assert got["RRO1"] == PB        # แผง → override product
-    assert got["RRO2"] == PA        # ตัว → catch-all
+    assert got["RRO1"] == PA        # แผง → single mapped product
+    assert got["RRO2"] == PA        # ตัว → same single mapped product
     c.close()
 
 
-def test_non_overridden_code_unchanged(tmp_db, monkeypatch):
+def test_non_mapped_code_stays_null(tmp_db, monkeypatch):
+    """A code with no mapping row results in NULL product_id."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (PA, "P", f"SK{PA}"))
-    conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
-                 "product_id,bsn_unit) VALUES (?,?,?,'')", (CODE, "n", PA))
     conn.commit()
     conn.close()
 
@@ -76,5 +72,5 @@ def test_non_overridden_code_unchanged(tmp_db, monkeypatch):
     pids = {r[0] for r in c.execute(
         "SELECT product_id FROM purchase_transactions WHERE bsn_code=?",
         (CODE,))}
-    assert pids == {PA}             # both → the single catch-all (legacy)
+    assert pids == {None}           # no mapping → NULL product_id
     c.close()
