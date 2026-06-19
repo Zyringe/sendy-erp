@@ -1393,16 +1393,6 @@ def mapping():
     color_codes = conn.execute(
         "SELECT code, name_th FROM color_finish_codes ORDER BY sort_order, code"
     ).fetchall()
-    # mig 061: per-unit override rows (bsn_unit<>'') — shown read-only so
-    # Put can see which codes are split by unit.
-    overrides = conn.execute("""
-        SELECT m.bsn_code, m.bsn_name, m.bsn_unit, m.product_id,
-               p.product_name, p.unit_type
-          FROM product_code_mapping m
-          JOIN products p ON p.id = m.product_id
-         WHERE m.bsn_unit <> ''
-         ORDER BY m.bsn_code, m.bsn_unit
-    """).fetchall()
     # Standardised category master for the type-to-search picker in both the
     # approve form and the Suggest modal (replaces the old free-text field).
     categories = conn.execute(
@@ -1429,7 +1419,6 @@ def mapping():
         categories=categories,
         unit_suggestions=unit_suggestions,
         condition_suggestions=condition_suggestions,
-        overrides=overrides,
         active_tab=tab,
     )
 
@@ -1441,11 +1430,9 @@ def mapping_suggest(bsn_code):
     if not session.get('role'):
         abort(403)
     conn = get_connection()
-    # mig 061: a code may now have multiple rows (catch-all + overrides).
-    # LIMIT 1 (catch-all preferred) keeps bsn_name stable for the modal.
     row = conn.execute(
         "SELECT bsn_code, bsn_name FROM product_code_mapping "
-        "WHERE bsn_code = ? ORDER BY (bsn_unit = '') DESC LIMIT 1",
+        "WHERE bsn_code = ? LIMIT 1",
         (bsn_code,),
     ).fetchone()
     if not row:
@@ -1466,12 +1453,7 @@ def mapping_save():
         action   = item.get('action')       # 'map', 'new', 'ignore', 'stage'
         if action == 'map':
             pid = int(item['product_id'])
-            # mig 061: optional per-unit override. map_bsn_unit='' (default)
-            # = the catch-all row → unchanged behavior. A non-empty value
-            # creates/updates a (bsn_code, unit) override → that product.
-            map_unit = (item.get('map_bsn_unit') or '').strip()
-            models.upsert_mapping(bsn_code, item['bsn_name'], product_id=pid,
-                                  bsn_unit=map_unit)
+            models.upsert_mapping(bsn_code, item['bsn_name'], product_id=pid)
             # Optional: capture unit_conversion at map time when BSN unit ≠ product unit
             bsn_unit = (item.get('bsn_unit') or '').strip()
             ratio = item.get('unit_conversion_ratio')

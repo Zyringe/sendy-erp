@@ -143,19 +143,20 @@ def test_approve_clears_pending_placeholder(empty_db_with_user):
     assert not any(r['bsn_code'] == 'TEST005' for r in models.get_pending_mappings())
 
 
-def test_upsert_mapping_preserves_ignored_marker(empty_db_with_user):
-    """When user previously chose '(C) ข้าม' (is_ignored=1, with reason),
-    later mapping the same code to a scoped SKU must NOT wipe the ignored
-    marker — its ignore_reason is the audit trail of the original decision.
-    Regression for an over-broad placeholder-cleanup DELETE."""
+def test_upsert_mapping_updates_ignored_row(empty_db_with_user):
+    """After mig-112 (one row per bsn_code, no bsn_unit override):
+    calling upsert_mapping on a previously-ignored code updates that single
+    row to mapped (product_id set, is_ignored cleared by ON CONFLICT update).
+    There is no separate 'scoped' row — the ignore is overridden by the remap.
+    """
     empty_db, uid = empty_db_with_user
     import models
 
     conn = sqlite3.connect(empty_db)
     conn.execute("""
         INSERT INTO product_code_mapping
-            (bsn_code, bsn_name, product_id, bsn_unit, is_ignored, ignore_reason)
-        VALUES ('TEST007', 'test 007', NULL, '', 1, 'ค่าขนส่ง')
+            (bsn_code, bsn_name, product_id, is_ignored, ignore_reason)
+        VALUES ('TEST007', 'test 007', NULL, 1, 'ค่าขนส่ง')
     """)
     cur = conn.execute("INSERT INTO products (product_name, unit_type) VALUES ('existing', 'ตัว')")
     pid = cur.lastrowid
@@ -163,37 +164,32 @@ def test_upsert_mapping_preserves_ignored_marker(empty_db_with_user):
     conn.commit()
     conn.close()
 
-    models.upsert_mapping('TEST007', 'test 007', product_id=pid, bsn_unit='แผง')
+    models.upsert_mapping('TEST007', 'test 007', product_id=pid)
 
     conn = sqlite3.connect(empty_db)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT bsn_unit, product_id, is_ignored, ignore_reason "
-        "FROM product_code_mapping WHERE bsn_code='TEST007' "
-        "ORDER BY bsn_unit"
+        "SELECT product_id, is_ignored FROM product_code_mapping WHERE bsn_code='TEST007'"
     ).fetchall()
     conn.close()
 
-    # Expect BOTH rows present: the ignored catch-all and the new scoped row
-    assert len(rows) == 2
-    catch_all = rows[0]  # bsn_unit='' sorts first
-    scoped    = rows[1]  # bsn_unit='แผง'
-    assert catch_all['bsn_unit'] == ''
-    assert catch_all['is_ignored'] == 1
-    assert catch_all['ignore_reason'] == 'ค่าขนส่ง'
-    assert scoped['bsn_unit'] == 'แผง'
-    assert scoped['product_id'] == pid
+    # Exactly one row; it is now mapped (product_id set)
+    assert len(rows) == 1
+    assert rows[0]['product_id'] == pid
+    assert rows[0]['is_ignored'] == 0
 
 
 def test_upsert_mapping_clears_pending_placeholder(empty_db_with_user):
-    """Same regression for the direct Card-A map flow (upsert_mapping)."""
+    """Mapping a pending (product_id=NULL) row via upsert_mapping removes it
+    from get_pending_mappings (the ON CONFLICT update sets product_id).
+    After mig-112: no bsn_unit column; upsert is by bsn_code only."""
     empty_db, uid = empty_db_with_user
     import models
 
     conn = sqlite3.connect(empty_db)
     conn.execute("""
-        INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, bsn_unit)
-        VALUES ('TEST006', 'test 006', NULL, '')
+        INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id)
+        VALUES ('TEST006', 'test 006', NULL)
     """)
     # Need an existing product to map to
     cur = conn.execute("INSERT INTO products (product_name, unit_type) VALUES ('existing', 'ตัว')")
@@ -202,7 +198,7 @@ def test_upsert_mapping_clears_pending_placeholder(empty_db_with_user):
     conn.commit()
     conn.close()
 
-    models.upsert_mapping('TEST006', 'test 006', product_id=pid, bsn_unit='แผง')
+    models.upsert_mapping('TEST006', 'test 006', product_id=pid)
 
     assert not any(r['bsn_code'] == 'TEST006' for r in models.get_pending_mappings())
 

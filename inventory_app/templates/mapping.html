@@ -347,47 +347,6 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
 {% else %}
 {# ── Tab 1: Pending mappings — Suggest button only (old dropdown removed) #}
 
-{# ─── Per-unit overrides (mig 061, read-only) — always shown on the
-   mapping tab so Put can review code↔unit splits regardless of pending #}
-{% if overrides %}
-<div class="card mb-3">
-  <div class="card-header py-2 d-flex align-items-center gap-2">
-    <i class="bi bi-funnel"></i>
-    <span class="fw-600">Overrides ที่ตั้งไว้ (รหัสเดียวกัน แยกตามหน่วย)</span>
-    <span class="text-subtle small">{{ overrides|length }} รายการ</span>
-  </div>
-  <div class="table-responsive">
-    <table class="table table-sm mb-0">
-      <thead>
-        <tr>
-          <th style="width:130px">รหัส BSN</th>
-          <th>ชื่อ BSN</th>
-          <th style="width:100px" class="text-center">หน่วย BSN</th>
-          <th class="text-center" style="width:80px">รหัส (ID)</th>
-          <th>สินค้า</th>
-          <th class="text-center" style="width:90px">หน่วยระบบ</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for o in overrides %}
-        <tr>
-          <td><span class="badge badge-gray font-mono">{{ o.bsn_code }}</span></td>
-          <td class="small">{{ o.bsn_name }}</td>
-          <td class="text-center"><span class="badge badge-warning font-mono">{{ o.bsn_unit }}</span></td>
-          <td class="text-center"><span class="badge badge-info">{{ o.product_id }}</span></td>
-          <td class="small">{{ o.product_name }}</td>
-          <td class="text-center text-subtle">{{ o.unit_type }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  <div class="card-footer small text-subtle">
-    เมื่อ import: ขายหน่วยที่ override → SKU ที่กำหนด · หน่วยอื่น → mapping ปกติ
-  </div>
-</div>
-{% endif %}
-
 {% if not pending %}
 <div class="card">
   <div class="card-body text-center py-5">
