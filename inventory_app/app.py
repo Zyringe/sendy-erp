@@ -207,6 +207,7 @@ _STAFF_POST_OK = frozenset([
     'call.call_log_delete',
     'customer_review.normalize_confirm',
     'customer_review.normalize_skip',
+    'stock_adjust',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'customer_reassign', 'customer_bulk_reassign',
@@ -1237,32 +1238,67 @@ def stock_adjust(product_id):
             return nxt
         return url_for(default_endpoint, **kw)
 
+    REASON_LABELS = {
+        'count': 'นับสต๊อก',
+        'damaged': 'ชำรุด / แตกหัก',
+        'lost': 'สูญหาย',
+        'sample': 'ของแถม / เบิกใช้เอง',
+        'correction': 'แก้ยอดผิด',
+    }
+
     if request.method == 'POST':
         f = request.form
+        # quantity
         try:
             new_qty = int(f['new_quantity'])
             if new_qty < 0:
                 raise ValueError('จำนวนต้องไม่ติดลบ')
-        except ValueError as e:
-            flash(str(e), 'danger')
+        except (KeyError, ValueError) as e:
+            flash(str(e) or 'จำนวนไม่ถูกต้อง', 'danger')
             return redirect(_safe_next('products.product_detail', product_id=product_id))
 
-        note = f.get('note', '').strip()
-        if not note:
-            flash('กรุณาระบุหมายเหตุสำหรับการปรับยอด', 'danger')
+        # reason -> note
+        reason = f.get('reason', '')
+        if reason == 'other':
+            note = f.get('note_other', '').strip()
+            if not note:
+                flash('กรุณาระบุเหตุผล', 'danger')
+                return redirect(_safe_next('products.product_detail', product_id=product_id))
+        elif reason in REASON_LABELS:
+            note = REASON_LABELS[reason]
+        else:
+            flash('กรุณาเลือกเหตุผลในการปรับยอด', 'danger')
             return redirect(_safe_next('products.product_detail', product_id=product_id))
 
+        # date / created_at
+        today = date.today().isoformat()
+        if reason == 'count':
+            created_at = None  # DB default = datetime('now','localtime')
+        else:
+            adj = f.get('adjust_date', '').strip()
+            try:
+                d = datetime.strptime(adj, '%Y-%m-%d').date()
+            except ValueError:
+                flash('วันที่ไม่ถูกต้อง', 'danger')
+                return redirect(_safe_next('products.product_detail', product_id=product_id))
+            if d > date.today():
+                flash('วันที่ปรับต้องไม่เกินวันนี้', 'danger')
+                return redirect(_safe_next('products.product_detail', product_id=product_id))
+            created_at = None if adj == today else f'{adj} 00:00:00'
+
+        # diff
         current = models.get_current_stock(product_id)
         diff = new_qty - current
         if diff == 0:
             flash('จำนวนเท่าเดิม ไม่มีการเปลี่ยนแปลง', 'info')
             return redirect(_safe_next('products.product_detail', product_id=product_id))
 
-        models.add_transaction(product_id, 'ADJUST', diff, 'unit', note=note)
+        models.add_transaction(product_id, 'ADJUST', diff, 'unit', note=note, created_at=created_at)
         flash(f'ปรับยอดสต็อกเป็น {new_qty} {product["unit_type"]} เรียบร้อย', 'success')
         return redirect(_safe_next('products.product_detail', product_id=product_id))
 
-    return render_template('transactions/adjust_form.html', product=product)
+    return render_template('transactions/adjust_form.html', product=product,
+                           today=date.today().isoformat())
 
 
 # ── Transaction History ───────────────────────────────────────────────────────

@@ -36,7 +36,6 @@
           </td>
           <td class="text-end fw-700 text-danger">{{ a.quantity | fmt_qty }} <span class="text-subtle small">{{ a.unit_type }}</span></td>
           <td>
-            {% if is_admin %}
             <button type="button" class="btn btn-xs btn-primary adjust-btn"
                     title="ปรับสต็อก"
                     data-pid="{{ a.id }}"
@@ -46,7 +45,6 @@
                     data-unit="{{ a.unit_type }}">
               <i class="bi bi-sliders"></i> ปรับสต็อก
             </button>
-            {% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -65,8 +63,7 @@
 </div>
 {% endif %}
 
-{# ── Adjust modal (admin) ──────────────────────────────────────── #}
-{% if is_admin %}
+{# ── Adjust modal (all logged-in roles) ── #}
 <div class="modal fade" id="adjustModal" tabindex="-1">
   <div class="modal-dialog">
     <div class="modal-content">
@@ -94,11 +91,7 @@
               ระบบจะคำนวณ ADJUST diff = ใหม่ − ปัจจุบัน แล้วบันทึก transaction
             </div>
           </div>
-          <div class="mb-2">
-            <label class="form-label small mb-1">หมายเหตุ <span class="text-danger">*</span></label>
-            <input type="text" class="form-control" name="note"
-                   placeholder="เช่น เคาท์สต็อกหน้าร้าน, นำเข้าค้าง, แก้ตามจริง" required>
-          </div>
+          {% include 'transactions/_adjust_fields.html' %}
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
@@ -132,6 +125,5 @@ document.querySelectorAll('.adjust-btn').forEach(btn => {
   });
 });
 </script>
-{% endif %}
 
 {% endblock %}

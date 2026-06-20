@@ -82,25 +82,22 @@
         </div>
       </div>
 
-      {% if is_admin %}
       <div class="card-footer d-flex gap-2">
+        {% if is_admin %}
         <a href="{{ url_for('stock_in', product_id=product.id) }}"
-           class="btn btn-sm flex-fill fw-500"
-           style="background:#dcf2e0;color:#2e7d3a;border:none">
-          <i class="bi bi-arrow-down-circle me-1"></i>รับเข้า
-        </a>
+           class="btn btn-sm flex-fill fw-500" style="background:#dcf2e0;color:#2e7d3a;border:none">
+          <i class="bi bi-arrow-down-circle me-1"></i>รับเข้า</a>
         <a href="{{ url_for('stock_out', product_id=product.id) }}"
-           class="btn btn-sm flex-fill fw-500"
-           style="background:#fdecee;color:#c41e2a;border:none">
-          <i class="bi bi-arrow-up-circle me-1"></i>จ่ายออก
-        </a>
-        <a href="{{ url_for('stock_adjust', product_id=product.id) }}"
-           class="btn btn-sm flex-fill fw-500"
-           style="background:#f1f5f9;color:#475569;border:none">
-          <i class="bi bi-sliders me-1"></i>ปรับ
-        </a>
+           class="btn btn-sm flex-fill fw-500" style="background:#fdecee;color:#c41e2a;border:none">
+          <i class="bi bi-arrow-up-circle me-1"></i>จ่ายออก</a>
+        {% endif %}
+        <button type="button" class="btn btn-sm flex-fill fw-500"
+                data-bs-toggle="modal" data-bs-target="#adjustModal"
+                style="background:#f1f5f9;color:#475569;border:none">
+          <i class="bi bi-sliders me-1"></i>ปรับ</button>
       </div>
 
+      {% if is_admin %}
       {# Online stock (Shopee/Lazada) is shown above from platform_skus and is
          maintained in the E-commerce/Marketplace module — no per-product editor
          here (the old editor wrote a legacy column nothing reads). #}
@@ -685,6 +682,39 @@
         </nav>
       </div>
       {% endif %}
+    </div>
+  </div>
+</div>
+
+{# ── Adjust modal (all logged-in roles) ── #}
+<div class="modal fade" id="adjustModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('stock_adjust', product_id=product.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="next" value="{{ url_for('products.product_detail', product_id=product.id) }}">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="bi bi-sliders me-2"></i>ปรับยอดสต็อก</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="ปิด"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3 small text-subtle">สต็อกปัจจุบัน:
+            <strong class="text-main">{{ product.quantity | fmt_qty }}</strong> {{ product.unit_type }}</div>
+          <div class="mb-3">
+            <label class="form-label small mb-1 fw-600">ยอดสต็อกที่ถูกต้อง <span class="text-danger">*</span></label>
+            <div class="input-group">
+              <input type="number" name="new_quantity" class="form-control form-control-lg" min="0" required placeholder="0">
+              <span class="input-group-text">{{ product.unit_type }}</span>
+            </div>
+          </div>
+          {% include 'transactions/_adjust_fields.html' %}
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">ยกเลิก</button>
+          <button type="submit" class="btn fw-500" style="background:#f5a800;border-color:#f5a800;color:#fff">
+            <i class="bi bi-check-circle me-1"></i>ยืนยันการปรับยอด</button>
+        </div>
+      </form>
     </div>
   </div>
 </div>

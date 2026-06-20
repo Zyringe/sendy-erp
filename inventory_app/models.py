@@ -418,12 +418,18 @@ def count_in_stock():
 # ── Transactions ─────────────────────────────────────────────────────────────
 
 def add_transaction(product_id: int, txn_type: str, quantity_change: int,
-                    unit_mode: str, reference_no=None, note=None):
+                    unit_mode: str, reference_no=None, note=None, created_at=None):
     conn = get_connection()
-    conn.execute("""
-        INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode, reference_no, note)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (product_id, txn_type, quantity_change, unit_mode, reference_no, note))
+    if created_at is None:
+        conn.execute("""
+            INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode, reference_no, note)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (product_id, txn_type, quantity_change, unit_mode, reference_no, note))
+    else:
+        conn.execute("""
+            INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode, reference_no, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (product_id, txn_type, quantity_change, unit_mode, reference_no, note, created_at))
     conn.commit()
     conn.close()
 

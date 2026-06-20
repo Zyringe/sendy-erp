@@ -1,0 +1,55 @@
+{# Shared reason-picker + date field for stock-adjust (modals + fallback page).
+   Included ONCE per page. Today's date/max set client-side. #}
+<div class="mb-3">
+  <label class="form-label small mb-1 fw-600">เหตุผลที่ปรับ <span class="text-danger">*</span></label>
+  <div class="d-grid gap-2" id="adj-reasons">
+    {% set _reasons = [
+      ('count','นับสต๊อก (เช็คของจริง)','ล็อกวันที่เป็นวันนี้'),
+      ('damaged','ชำรุด / แตกหัก',''),
+      ('lost','สูญหาย',''),
+      ('sample','ของแถม / เบิกใช้เอง',''),
+      ('correction','แก้ยอดผิด',''),
+      ('other','อื่นๆ','พิมพ์เพิ่ม') ] %}
+    {% for val, label, hint in _reasons %}
+    <label class="adj-reason d-flex align-items-center gap-2 border rounded-3 px-3 py-2 mb-0" style="cursor:pointer">
+      <input class="form-check-input mt-0" type="radio" name="reason" value="{{ val }}" {% if val == 'count' %}checked{% endif %}>
+      <span>{{ label }}</span>
+      {% if hint %}<span class="ms-auto text-subtle small">{{ hint }}</span>{% endif %}
+    </label>
+    {% endfor %}
+  </div>
+  <div class="mt-2 d-none" id="adj-other-box">
+    <input type="text" class="form-control" name="note_other" maxlength="200" placeholder="ระบุเหตุผล...">
+  </div>
+</div>
+<div class="mb-2">
+  <label class="form-label small mb-1 fw-600">วันที่ปรับ <span class="text-danger">*</span></label>
+  <input type="date" class="form-control" name="adjust_date" id="adj-date">
+  <div class="form-text small" id="adj-date-hint"></div>
+</div>
+<script>
+(function(){
+  var today = new Date().toLocaleDateString('en-CA');
+  var d = document.getElementById('adj-date');
+  var hint = document.getElementById('adj-date-hint');
+  var otherBox = document.getElementById('adj-other-box');
+  var group = document.getElementById('adj-reasons');
+  if (!d || !group) return;
+  d.max = today; if (!d.value) d.value = today;
+  function sel(){ var r = group.querySelector('input[name=reason]:checked'); return r ? r.value : ''; }
+  function refresh(){
+    var r = sel();
+    otherBox.classList.toggle('d-none', r !== 'other');
+    if (r === 'count'){ d.value = today; d.disabled = true;
+      hint.innerHTML = '🔒 ล็อกเป็นวันนี้ — บันทึกเป็นเวลาจริงที่กดยืนยัน'; }
+    else { d.disabled = false; hint.textContent = 'เลือกย้อนหลังได้ — ห้ามเกินวันนี้'; }
+    group.querySelectorAll('.adj-reason').forEach(function(el){
+      var on = el.querySelector('input').checked;
+      el.classList.toggle('border-warning', on);
+      el.classList.toggle('bg-warning-subtle', on);
+    });
+  }
+  group.addEventListener('change', refresh);
+  refresh();
+})();
+</script>
