@@ -75,6 +75,7 @@
       {# Orders lazy-load on expand (data-payout-id) — keeps the page light. #}
       <div class="collapse" id="dep{{ d.id }}" data-payout-id="{{ d.id }}" data-loaded="0">
         <div class="card-body p-0">
+          <div class="table-responsive">
           <table class="table table-sm table-hover mb-0">
             <thead class="table-light"><tr>
               <th>เลขออเดอร์</th><th>ใบกำกับ (IV)</th><th>วันโอน</th>
@@ -89,6 +90,7 @@
               </td></tr>
             </tbody>
           </table>
+          </div>
         </div>
       </div>
       <div class="card-footer text-muted small">
@@ -106,6 +108,7 @@
   {% if extras and extras.orphan %}
   <h5 class="mt-4 text-warning">เคลียร์แล้วแต่ยังไม่เข้าก้อนโอน {{ extras.orphan | length }} ออเดอร์</h5>
   <p class="small text-muted">มียอดโอนจริงแล้ว แต่ยังไม่ผูกกับก้อนเงินเข้าบัญชี (อาจอัปโหลดไฟล์ Income ก่อนไฟล์ Seller Balance) — อัปโหลด Balance ให้ครบช่วงแล้วจะเข้าก้อนเอง</p>
+  <div class="table-responsive">
   <table class="table table-sm table-bordered">
     <thead class="table-warning"><tr><th>เลขออเดอร์</th><th>วันโอน</th><th class="text-end">ยอดโอนจริง (฿)</th></tr></thead>
     <tbody>
@@ -118,11 +121,13 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% endif %}
 
   {# ---- Pending (not yet settled) ---- #}
   {% if extras and extras.pending %}
   <h5 class="mt-4 text-muted">รอรับเงิน {{ extras.pending | length }} ออเดอร์ (ยังไม่มี settlement)</h5>
+  <div class="table-responsive">
   <table class="table table-sm table-bordered">
     <thead class="table-light">
       <tr><th>เลขออเดอร์</th><th class="text-end">ราคาขาย (฿)</th><th>สถานะ</th><th>วันสั่ง</th></tr>
@@ -138,6 +143,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% endif %}
 
   {# ══════════════════ TAB: reconcile ════════════════════════════════════════ #}
@@ -198,6 +204,7 @@
       </span>
     </div>
     <div class="card-body p-0">
+      <div class="table-responsive">
       <table class="table table-sm table-hover mb-0">
         <thead class="table-light">
           <tr>
@@ -244,6 +251,7 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
     </div>
   </div>
   {% else %}
@@ -254,6 +262,7 @@
   {% if report.unmatched_ivs %}
   <h5 class="mt-4 text-muted">ใบกำกับหน้าร้านที่ยังไม่ผูกกับออเดอร์ ({{ report.unmatched_ivs | length }})</h5>
   <p class="small text-muted">ใบที่ลงในเดือนเดียวกับที่มีออเดอร์ แต่จับคู่ไม่ได้ (อาจเป็นออเดอร์ข้ามเดือน, ยกเลิก, หรือขายหน้าร้านจริง)</p>
+  <div class="table-responsive">
   <table class="table table-sm table-bordered">
     <thead class="table-light"><tr><th>ใบกำกับ</th><th>วันที่</th><th class="text-end">ยอดบิล</th><th class="text-end">รับชำระ</th></tr></thead>
     <tbody>
@@ -264,6 +273,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% if report.unmatched_ivs | length > 50 %}<p class="small text-muted">แสดง 50 จาก {{ report.unmatched_ivs | length }} ใบ</p>{% endif %}
   {% endif %}
 
