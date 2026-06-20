@@ -30,6 +30,19 @@ import sys
 import sqlite3
 import shutil
 import tempfile
+import time
+
+# Force the process timezone to Thailand (UTC+7) before anything reads a clock.
+# Railway/nixpacks containers default to UTC, which makes datetime.now(),
+# date.today() and SQLite datetime('now','localtime') read 7h behind Bangkok
+# (wrong calendar day between 00:00-07:00 local). Use the POSIX form, NOT
+# TZ='Asia/Bangkok': on this image TZDIR is unset so glibc cannot resolve the
+# named zone and silently falls back to UTC. Thailand has no DST and is fixed
+# at +7, so a static offset is exact and never needs adjustment. setdefault
+# lets an explicit TZ env var still win (e.g. for local testing).
+os.environ.setdefault('TZ', 'ICT-7')
+time.tzset()
+
 from datetime import date, datetime
 
 from flask import (Flask, render_template, request, redirect, url_for,
