@@ -235,6 +235,7 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     # Master Naming cascade — preview is read-only but POSTed (JSON body);
     # apply mutates product_name in bulk. Manager/admin only.
     'naming.dict_preview', 'naming.dict_apply',
+    'naming.product_preview_name', 'naming.product_save',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
 # the route. Other admin-only writes use _require_admin().
@@ -412,6 +413,8 @@ _ENDPOINT_MODULE = {
     'naming.index': 'data',
     'naming.dict_preview': 'data',
     'naming.dict_apply': 'data',
+    'naming.product_preview_name': 'data',
+    'naming.product_save': 'data',
     # cashbook
     'cashbook.dashboard':     'cashbook',
     'cashbook.account_ledger': 'cashbook',

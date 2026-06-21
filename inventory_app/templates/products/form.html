@@ -25,9 +25,19 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="row g-3">
             <div class="col-md-8">
-              <label class="form-label">ชื่อสินค้า <span class="text-danger">*</span></label>
+              <label class="form-label">ชื่อสินค้า {% if action != 'edit' %}<span class="text-danger">*</span>{% endif %}</label>
+              {% if action == 'edit' %}
+              <input type="text" name="product_name" class="form-control bg-light"
+                     value="{{ product.product_name or '' }}" readonly>
+              <div class="form-text">
+                แก้ชื่อได้ที่
+                <a href="{{ url_for('naming.index', tab='workbench') }}">หน้าตั้งชื่อสินค้า (Master Naming) →</a>
+                ระบบจะสร้างชื่อ + sku_code ใหม่ให้สอดคล้องกัน
+              </div>
+              {% else %}
               <input type="text" name="product_name" class="form-control"
                      value="{{ product.product_name or '' }}" required>
+              {% endif %}
             </div>
             <div class="col-md-4">
               <label class="form-label">หน่วย</label>

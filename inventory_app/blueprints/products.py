@@ -306,7 +306,10 @@ def product_edit(product_id):
         f = request.form
         try:
             data = {
-                'product_name': f['product_name'].strip(),
+                # Renaming is owned by the Master Naming page (/naming) — keep
+                # the existing name and ignore whatever the read-only field
+                # posts, so name + sku_code stay in sync there. (Phase 2)
+                'product_name': product['product_name'],
                 'units_per_carton': int(f['units_per_carton']) if f.get('units_per_carton') else None,
                 'units_per_box': int(f['units_per_box']) if f.get('units_per_box') else None,
                 'unit_type': f.get('unit_type', 'ตัว').strip() or 'ตัว',

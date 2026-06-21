@@ -84,17 +84,25 @@ def test_color_preview_scopes_by_code(manager_client):
     assert ids['b_word'] not in {a['id'] for a in d['affected']}
 
 
-# NOTE on apply-endpoint coverage: the apply *happy path* (200 + rows renamed)
-# is NOT asserted here. The cascade engine's apply() — correctness, sku_code
-# untouched, backup, rollback — is covered deterministically by the engine
-# tests in test_naming_cascade.py (they call apply() directly and pass in the
-# full suite). A route-level happy-path test proved flaky ONLY under full-suite
-# pollution: the apply request's DB connection intermittently could not see the
-# fixture's freshly-seeded rows (a test-environment data-visibility artifact —
-# it cannot occur in prod, where the DB path is static and there is no test
-# monkeypatching). The happy path was instead verified manually end-to-end
-# against a real-DB copy through the live route (AB → brass: 6 renamed, JBB
-# untouched). The route's error/contract branches below ARE asserted and robust.
+def test_color_apply_renames_through_route(manager_client, empty_db):
+    """End-to-end through the HTTP route: preview gives the count, apply renames
+    the scoped product. Robust now that the route reads database.DATABASE_PATH
+    (the same source get_connection uses) — see naming.py::_db_path."""
+    c, ids = manager_client
+    pv = c.post('/naming/dict/color/preview',
+                json={'key': 'ZZA', 'target': 'สีทดสอบใหม่'}).get_json()
+    n = len(pv['affected'])
+    assert n == 1
+    r = c.post('/naming/dict/color/apply',
+               json={'key': 'ZZA', 'target': 'สีทดสอบใหม่', 'expected_count': n})
+    assert r.status_code == 200, r.get_json()
+    assert r.get_json()['applied'] == 1
+
+    conn = sqlite3.connect(empty_db)
+    name_a = conn.execute("SELECT product_name FROM products WHERE id=?",
+                          (ids['a_word'],)).fetchone()[0]
+    conn.close()
+    assert name_a == "ทดสอบเอ สีทดสอบใหม่ (ZZA) (แผง)"
 
 
 def test_apply_count_mismatch_returns_409(manager_client):
@@ -109,6 +117,41 @@ def test_unknown_kind_returns_400(manager_client):
     c, _ = manager_client
     r = c.post('/naming/dict/banana/preview', json={'key': 'X', 'target': 'Y'})
     assert r.status_code == 400
+
+
+# ── Tab 1 inline editor ───────────────────────────────────────────────────────
+
+def test_workbench_renders_inline_editor(manager_client):
+    c, _ = manager_client
+    body = c.get('/naming?tab=workbench').get_data(as_text=True)
+    assert 'onclick="openEditor(this)"' in body   # per-row edit button
+    assert 'id="editModal"' in body               # editor modal
+    assert 'id="ed-color"' in body                # color dropdown present
+
+
+def test_product_preview_name_route(manager_client, empty_db):
+    conn = sqlite3.connect(empty_db)
+    conn.execute("PRAGMA foreign_keys=ON")
+    bid = conn.execute(
+        "INSERT INTO brands(code, name, name_th, short_code) "
+        "VALUES ('zb','ZB','แซด','ZB')"
+    ).lastrowid
+    conn.execute("INSERT INTO color_finish_codes(code, name_th) VALUES ('ZC','สีแซด')")
+    conn.commit()
+    conn.close()
+    c, _ = manager_client
+    r = c.post('/naming/product/preview-name',
+               json={'brand_id': bid, 'sub_category': 'กลอน', 'model': '#9',
+                     'color_code': 'ZC'})
+    assert r.status_code == 200
+    assert r.get_json()['name'] == 'กลอน ZB #9 สีแซด (ZC)'
+
+
+def test_product_save_missing_returns_404(manager_client):
+    c, _ = manager_client
+    r = c.post('/naming/product/999999/save', json={'color_code': None})
+    assert r.status_code == 404
+    assert r.get_json()['ok'] is False
 
 
 # ── auth gate ─────────────────────────────────────────────────────────────────

@@ -114,7 +114,7 @@
 <table class="table table-sm table-hover align-middle">
   <thead><tr>
     <th>#</th><th>ชื่อสินค้า</th><th>แบรนด์</th><th>ซีรีส์</th><th>รุ่น</th>
-    <th>ขนาด</th><th>สี</th><th>แพ็ค</th><th>สภาพ</th><th></th>
+    <th>ขนาด</th><th>สี</th><th>แพ็ค</th><th>สภาพ</th><th class="text-end">แก้ไข</th>
   </tr></thead>
   <tbody>
   {% for p in products %}
@@ -136,7 +136,18 @@
       </td>
       <td>{{ p.packaging_th or '' }}</td>
       <td>{{ p.condition or '' }}</td>
-      <td>{% if p.pack_variant %}<span class="text-muted">v{{ p.pack_variant }}</span>{% endif %}</td>
+      <td class="text-end text-nowrap">
+        {% if p.pack_variant %}<span class="text-muted me-1">v{{ p.pack_variant }}</span>{% endif %}
+        <button class="btn btn-sm btn-outline-secondary py-0" onclick="openEditor(this)"
+                data-pid="{{ p.id }}" data-name="{{ p.product_name }}"
+                data-brand="{{ p.brand_id or '' }}" data-subcat="{{ p.sub_category or '' }}"
+                data-series="{{ p.series or '' }}" data-model="{{ p.model or '' }}"
+                data-size="{{ p.size or '' }}" data-color="{{ p.color_code or '' }}"
+                data-packaging="{{ p.packaging_th or '' }}" data-condition="{{ p.condition or '' }}"
+                data-variant="{{ p.pack_variant or '' }}" data-locked="{{ p.sku_code_locked }}">
+          แก้ไข
+        </button>
+      </td>
     </tr>
   {% endfor %}
   </tbody>
@@ -158,9 +169,64 @@
 {% endif %}
 
 <p class="text-muted small">
-  หน้านี้แสดงข้อมูลแยกส่วนของทุกสินค้า (อ่านอย่างเดียวในเฟสนี้)
-  การแก้ชื่อรายตัว + เลิกใช้ช่องแก้ชื่อเดิม จะมาในเฟสถัดไป
+  กด “แก้ไข” เพื่อปรับส่วนประกอบของสินค้าทีละตัว ระบบจะสร้างชื่อ + sku_code ใหม่ให้อัตโนมัติ
+  (นี่คือที่เดียวสำหรับแก้ชื่อสินค้า — ช่องแก้ชื่อเดิมในหน้าสินค้าถูกปิดแล้ว)
 </p>
+
+{# ── Single-product inline editor modal (workbench only) ──────────────────── #}
+<div class="modal fade" id="editModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">แก้ไขสินค้า <span id="edit-pid" class="text-muted"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row g-2">
+          <div class="col-md-4"><label class="form-label small mb-0">หมวด</label>
+            <input class="form-control form-control-sm" id="ed-subcat"></div>
+          <div class="col-md-4"><label class="form-label small mb-0">แบรนด์</label>
+            <select class="form-select form-select-sm" id="ed-brand">
+              <option value="">—</option>
+              {% for b in brand_opts %}<option value="{{ b.id }}">{{ b.name or b.name_th }}</option>{% endfor %}
+            </select></div>
+          <div class="col-md-4"><label class="form-label small mb-0">ซีรีส์</label>
+            <input class="form-control form-control-sm" id="ed-series"></div>
+          <div class="col-md-4"><label class="form-label small mb-0">รุ่น</label>
+            <input class="form-control form-control-sm" id="ed-model"></div>
+          <div class="col-md-4"><label class="form-label small mb-0">ขนาด</label>
+            <input class="form-control form-control-sm" id="ed-size"></div>
+          <div class="col-md-4"><label class="form-label small mb-0">สี</label>
+            <select class="form-select form-select-sm" id="ed-color">
+              <option value="">—</option>
+              {% for c in color_opts %}<option value="{{ c.code }}">{{ c.code }} — {{ c.name_th }}</option>{% endfor %}
+            </select></div>
+          <div class="col-md-4"><label class="form-label small mb-0">แพ็ค</label>
+            <select class="form-select form-select-sm" id="ed-packaging">
+              <option value="">—</option>
+              {% for pk in packaging_opts %}<option value="{{ pk }}">{{ pk }}</option>{% endfor %}
+            </select></div>
+          <div class="col-md-4"><label class="form-label small mb-0">สภาพ</label>
+            <select class="form-select form-select-sm" id="ed-condition">
+              <option value="">—</option>
+              {% for cd in condition_opts %}<option value="{{ cd }}">{{ cd }}</option>{% endfor %}
+            </select></div>
+          <div class="col-md-4"><label class="form-label small mb-0">variant</label>
+            <input class="form-control form-control-sm" id="ed-variant"></div>
+        </div>
+        <hr class="my-2">
+        <div class="small text-muted">ชื่อใหม่:</div>
+        <div id="ed-preview" class="fw-bold">—</div>
+        <div id="ed-locked-warn" class="small text-warning mt-1 d-none">
+          ⚠ sku_code ถูกล็อกไว้ — จะแก้เฉพาะชื่อ ไม่สร้าง sku ใหม่</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">ยกเลิก</button>
+        <button type="button" class="btn btn-primary" id="ed-save" onclick="saveProduct()">บันทึก</button>
+      </div>
+    </div>
+  </div>
+</div>
 {% endif %}
 
 {# ── Shared cascade preview/confirm modal ──────────────────────────────────── #}
@@ -257,6 +323,59 @@ async function confirmApply() {
     alert(data.error || 'เกิดข้อผิดพลาด');
     btn.disabled = false;
   }
+}
+
+// ── Tab 1 single-product inline editor ──────────────────────────────────────
+let _edPid = null;
+const _edIds = ['ed-subcat','ed-brand','ed-series','ed-model','ed-size',
+                'ed-color','ed-packaging','ed-condition','ed-variant'];
+
+function _edFields() {
+  const v = id => document.getElementById(id).value.trim();
+  return {
+    sub_category: v('ed-subcat'), brand_id: v('ed-brand') || null,
+    series: v('ed-series'), model: v('ed-model'), size: v('ed-size'),
+    color_code: v('ed-color') || null, packaging_th: v('ed-packaging') || null,
+    condition: v('ed-condition') || null, pack_variant: v('ed-variant'),
+  };
+}
+
+function openEditor(btn) {
+  const d = btn.dataset;
+  _edPid = d.pid;
+  document.getElementById('edit-pid').textContent = '#' + d.pid;
+  const set = (id, val) => document.getElementById(id).value = val || '';
+  set('ed-subcat', d.subcat); set('ed-brand', d.brand); set('ed-series', d.series);
+  set('ed-model', d.model); set('ed-size', d.size); set('ed-color', d.color);
+  set('ed-packaging', d.packaging); set('ed-condition', d.condition);
+  set('ed-variant', d.variant);
+  document.getElementById('ed-locked-warn').classList.toggle('d-none', d.locked !== '1');
+  document.getElementById('ed-preview').textContent = d.name || '—';
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('editModal')).show();
+  _edRefresh();
+}
+
+let _edTimer = null;
+function _edRefresh() {
+  clearTimeout(_edTimer);
+  _edTimer = setTimeout(async () => {
+    const {data} = await _postJSON('/naming/product/preview-name', _edFields());
+    if (data.ok) document.getElementById('ed-preview').textContent = data.name || '—';
+  }, 250);
+}
+
+async function saveProduct() {
+  if (!_edPid) return;
+  const btn = document.getElementById('ed-save');
+  btn.disabled = true;
+  const {data} = await _postJSON(`/naming/product/${_edPid}/save`, _edFields());
+  if (data.ok) { location.reload(); }
+  else { alert(data.error || 'เกิดข้อผิดพลาด'); btn.disabled = false; }
+}
+
+// Live-preview wiring — only on the workbench tab (editor fields exist there).
+if (document.getElementById('ed-subcat')) {
+  _edIds.forEach(id => document.getElementById(id).addEventListener('input', _edRefresh));
 }
 </script>
 {% endblock %}
