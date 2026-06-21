@@ -260,6 +260,12 @@
        class="sidebar-link {% if request.endpoint == 'unit_conversions' %}active{% endif %}">
       <i class="bi bi-arrow-left-right"></i> แปลงหน่วย
     </a>
+    {% if is_manager %}
+    <a href="{{ url_for('naming.index') }}"
+       class="sidebar-link {% if (request.endpoint or '').startswith('naming.') %}active{% endif %}">
+      <i class="bi bi-pencil-square"></i> ตั้งชื่อสินค้า
+    </a>
+    {% endif %}
     <a href="{{ url_for('supplier_catalogue.supplier_catalogue_list') }}"
        class="sidebar-link {% if (request.endpoint or '').startswith('supplier_catalogue.') %}active{% endif %}">
       <i class="bi bi-journals"></i> แคตตาล็อกผู้จัดจำหน่าย
