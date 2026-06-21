@@ -71,6 +71,7 @@ from blueprints.marketplace import bp_marketplace
 from blueprints.review import bp_review
 from blueprints.call import bp_call
 from blueprints.customer_review import bp_customer_review
+from blueprints.naming import bp_naming
 import cashflow as cf_mod
 import revenue as rev_mod
 import ar_followup as arf_mod
@@ -120,6 +121,7 @@ app.register_blueprint(bp_marketplace)
 app.register_blueprint(bp_review)
 app.register_blueprint(bp_call)
 app.register_blueprint(bp_customer_review)
+app.register_blueprint(bp_naming)
 
 with app.app_context():
     # SKIP_DB_INIT=1 lets the app boot without touching the database. Used
@@ -230,6 +232,10 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'photos_review_assign', 'photos_review_delete',
     # Acknowledging a billed≠payout discrepancy is a manager+ action (not staff).
     'marketplace.review_amount',
+    # Master Naming cascade — preview is read-only but POSTed (JSON body);
+    # apply mutates product_name in bulk. Manager/admin only.
+    'naming.dict_preview', 'naming.dict_apply',
+    'naming.product_preview_name', 'naming.product_save',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
 # the route. Other admin-only writes use _require_admin().
@@ -404,6 +410,11 @@ _ENDPOINT_MODULE = {
     'supplier_catalogue.supplier_catalogue_suggest': 'data',
     'supplier_catalogue.supplier_catalogue_mapping_save': 'data',
     'supplier_catalogue.supplier_catalogue_mapping_delete': 'data',
+    'naming.index': 'data',
+    'naming.dict_preview': 'data',
+    'naming.dict_apply': 'data',
+    'naming.product_preview_name': 'data',
+    'naming.product_save': 'data',
     # cashbook
     'cashbook.dashboard':     'cashbook',
     'cashbook.account_ledger': 'cashbook',
@@ -535,6 +546,11 @@ def require_login():
     # Cashbook module: staff cannot access any cashbook.* endpoint (GET or POST)
     if (endpoint or '').startswith('cashbook.') and role == 'staff':
         flash('ไม่มีสิทธิ์เข้าถึงระบบบัญชีรับ-จ่าย', 'danger')
+        return redirect(url_for('dashboard'))
+    # Master Naming: staff cannot access any naming.* endpoint (GET or POST) —
+    # bulk name cascades are manager/admin work.
+    if (endpoint or '').startswith('naming.') and role == 'staff':
+        flash('ไม่มีสิทธิ์เข้าถึงระบบตั้งชื่อสินค้า', 'danger')
         return redirect(url_for('dashboard'))
     if request.method != 'POST':
         return

@@ -1,0 +1,381 @@
+{% extends 'base.html' %}
+{% block title %}ตั้งชื่อสินค้า – ERP{% endblock %}
+{% block page_title %}ตั้งชื่อสินค้า (Master Naming){% endblock %}
+
+{% block content %}
+
+<!-- Tabs ─────────────────────────────────────────── -->
+<ul class="nav nav-tabs mb-3">
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab != 'dictionaries' %}active{% endif %}"
+       href="{{ url_for('naming.index', tab='workbench') }}">
+      <i class="bi bi-list-columns-reverse me-1"></i>รายการสินค้า
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'dictionaries' %}active{% endif %}"
+       href="{{ url_for('naming.index', tab='dictionaries') }}">
+      <i class="bi bi-translate me-1"></i>พจนานุกรม (สี / แบรนด์)
+    </a>
+  </li>
+</ul>
+
+{% if active_tab == 'dictionaries' %}
+{# ───────────────────────────── Tab 2: dictionaries ───────────────────────── #}
+<p class="text-muted small">
+  แก้คำแปลของ <b>โค้ดสี</b> หรือเลือก <b>คำแบรนด์</b> ที่จะใช้ในชื่อ แล้วกด “ดูตัวอย่าง”
+  ระบบจะแสดงชื่อสินค้าทุกตัวที่จะเปลี่ยน (เก่า → ใหม่) ให้ยืนยันก่อนเปลี่ยนจริง
+  (สำรองฐานข้อมูลอัตโนมัติก่อนทุกครั้ง · ไม่กระทบ sku_code)
+</p>
+
+<h5 class="mt-3"><i class="bi bi-palette me-1"></i>สี (color codes)</h5>
+<div class="table-responsive">
+<table class="table table-sm table-hover align-middle">
+  <thead><tr>
+    <th>โค้ด</th><th>ชื่อไทย (แก้ได้)</th><th class="text-end">ใช้กับสินค้า</th><th></th>
+  </tr></thead>
+  <tbody>
+  {% for c in colors %}
+    <tr>
+      <td><code>{{ c.code }}</code></td>
+      <td><input type="text" class="form-control form-control-sm" style="max-width:18rem"
+                 id="color-th-{{ c.code }}" value="{{ c.name_th or '' }}"></td>
+      <td class="text-end">{{ c.n_products }}</td>
+      <td class="text-end">
+        <button class="btn btn-sm btn-outline-primary"
+                onclick="previewColor('{{ c.code }}')"
+                {% if not c.n_products %}disabled title="ไม่มีสินค้าที่ใช้โค้ดนี้"{% endif %}>
+          ดูตัวอย่าง
+        </button>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h5 class="mt-4"><i class="bi bi-tag me-1"></i>แบรนด์ (in-name token)</h5>
+<p class="text-muted small mb-2">
+  ชื่อสินค้าใช้คำแบรนด์ไม่สม่ำเสมอ (บางตัวอังกฤษ บางตัวไทย) เลือกคำที่ต้องการให้เป็นมาตรฐาน
+  คอลัมน์ “อยู่ในชื่อ” บอกว่าตอนนี้กี่ตัวใช้อังกฤษ / กี่ตัวใช้ไทย
+</p>
+<div class="table-responsive">
+<table class="table table-sm table-hover align-middle">
+  <thead><tr>
+    <th>อังกฤษ</th><th>ไทย</th><th class="text-end">สินค้า</th>
+    <th class="text-end">อยู่ในชื่อ (อ/ท)</th><th>ทำให้เป็นมาตรฐาน →</th>
+  </tr></thead>
+  <tbody>
+  {% for b in brands %}
+    <tr>
+      <td>{{ b.name or '—' }}</td>
+      <td>{{ b.name_th or '—' }}</td>
+      <td class="text-end">{{ b.n_products }}</td>
+      <td class="text-end"><span class="text-success">{{ b.n_en }}</span> /
+          <span class="text-primary">{{ b.n_th }}</span></td>
+      <td>
+        {% if b.name %}
+        <button class="btn btn-sm btn-outline-success"
+                onclick="previewBrand({{ b.id }}, {{ b.name | tojson }})">→ {{ b.name }}</button>
+        {% endif %}
+        {% if b.name_th %}
+        <button class="btn btn-sm btn-outline-primary"
+                onclick="previewBrand({{ b.id }}, {{ b.name_th | tojson }})">→ {{ b.name_th }}</button>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% else %}
+{# ───────────────────────────── Tab 1: workbench ──────────────────────────── #}
+<form class="row g-2 mb-3" method="get">
+  <input type="hidden" name="tab" value="workbench">
+  <div class="col-auto">
+    <input type="text" name="q" value="{{ q }}" class="form-control form-control-sm"
+           placeholder="ค้นหาชื่อสินค้า…" style="min-width:16rem">
+  </div>
+  <div class="col-auto">
+    <select name="scope" class="form-select form-select-sm">
+      <option value="all"        {% if scope=='all' %}selected{% endif %}>ทั้งหมด</option>
+      <option value="decomposed" {% if scope=='decomposed' %}selected{% endif %}>แยกส่วนแล้ว</option>
+      <option value="freeform"   {% if scope=='freeform' %}selected{% endif %}>ยังไม่แยกส่วน</option>
+    </select>
+  </div>
+  <div class="col-auto">
+    <button class="btn btn-sm btn-primary" type="submit">ค้นหา</button>
+  </div>
+  <div class="col-auto d-flex align-items-center text-muted small">พบ {{ total }} รายการ</div>
+</form>
+
+<div class="table-responsive">
+<table class="table table-sm table-hover align-middle">
+  <thead><tr>
+    <th>#</th><th>ชื่อสินค้า</th><th>แบรนด์</th><th>ซีรีส์</th><th>รุ่น</th>
+    <th>ขนาด</th><th>สี</th><th>แพ็ค</th><th>สภาพ</th><th class="text-end">แก้ไข</th>
+  </tr></thead>
+  <tbody>
+  {% for p in products %}
+    <tr>
+      <td class="text-muted">{{ p.id }}</td>
+      <td>
+        {{ p.product_name }}
+        {% if not p.is_decomposed %}
+        <span class="badge bg-secondary ms-1" title="ยังไม่มีข้อมูลแยกส่วน">freeform</span>
+        {% endif %}
+      </td>
+      <td>{{ p.brand_name or '' }}</td>
+      <td>{{ p.series or '' }}</td>
+      <td>{{ p.model or '' }}</td>
+      <td>{{ p.size or '' }}</td>
+      <td>
+        {% if p.color_code %}<code>{{ p.color_code }}</code>{% endif %}
+        {{ p.color_th or '' }}
+      </td>
+      <td>{{ p.packaging_th or '' }}</td>
+      <td>{{ p.condition or '' }}</td>
+      <td class="text-end text-nowrap">
+        {% if p.pack_variant %}<span class="text-muted me-1">v{{ p.pack_variant }}</span>{% endif %}
+        <button class="btn btn-sm btn-outline-secondary py-0" onclick="openEditor(this)"
+                data-pid="{{ p.id }}" data-name="{{ p.product_name }}"
+                data-brand="{{ p.brand_id or '' }}" data-subcat="{{ p.sub_category or '' }}"
+                data-series="{{ p.series or '' }}" data-model="{{ p.model or '' }}"
+                data-size="{{ p.size or '' }}" data-color="{{ p.color_code or '' }}"
+                data-packaging="{{ p.packaging_th or '' }}" data-condition="{{ p.condition or '' }}"
+                data-variant="{{ p.pack_variant or '' }}" data-locked="{{ p.sku_code_locked }}">
+          แก้ไข
+        </button>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% if pages > 1 %}
+<nav>
+  <ul class="pagination pagination-sm">
+    <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+      <a class="page-link" href="{{ url_for('naming.index', tab='workbench', q=q, scope=scope, page=page-1) }}">ก่อนหน้า</a>
+    </li>
+    <li class="page-item disabled"><span class="page-link">{{ page }} / {{ pages }}</span></li>
+    <li class="page-item {% if page >= pages %}disabled{% endif %}">
+      <a class="page-link" href="{{ url_for('naming.index', tab='workbench', q=q, scope=scope, page=page+1) }}">ถัดไป</a>
+    </li>
+  </ul>
+</nav>
+{% endif %}
+
+<p class="text-muted small">
+  กด “แก้ไข” เพื่อปรับส่วนประกอบของสินค้าทีละตัว ระบบจะสร้างชื่อ + sku_code ใหม่ให้อัตโนมัติ
+  (นี่คือที่เดียวสำหรับแก้ชื่อสินค้า — ช่องแก้ชื่อเดิมในหน้าสินค้าถูกปิดแล้ว)
+</p>
+
+{# ── Single-product inline editor modal (workbench only) ──────────────────── #}
+<div class="modal fade" id="editModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">แก้ไขสินค้า <span id="edit-pid" class="text-muted"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row g-2">
+          <div class="col-md-4"><label class="form-label small mb-0">หมวด</label>
+            <input class="form-control form-control-sm" id="ed-subcat"></div>
+          <div class="col-md-4"><label class="form-label small mb-0">แบรนด์</label>
+            <select class="form-select form-select-sm" id="ed-brand">
+              <option value="">—</option>
+              {% for b in brand_opts %}<option value="{{ b.id }}">{{ b.name or b.name_th }}</option>{% endfor %}
+            </select></div>
+          <div class="col-md-4"><label class="form-label small mb-0">ซีรีส์</label>
+            <input class="form-control form-control-sm" id="ed-series"></div>
+          <div class="col-md-4"><label class="form-label small mb-0">รุ่น</label>
+            <input class="form-control form-control-sm" id="ed-model"></div>
+          <div class="col-md-4"><label class="form-label small mb-0">ขนาด</label>
+            <input class="form-control form-control-sm" id="ed-size"></div>
+          <div class="col-md-4"><label class="form-label small mb-0">สี</label>
+            <select class="form-select form-select-sm" id="ed-color">
+              <option value="">—</option>
+              {% for c in color_opts %}<option value="{{ c.code }}">{{ c.code }} — {{ c.name_th }}</option>{% endfor %}
+            </select></div>
+          <div class="col-md-4"><label class="form-label small mb-0">แพ็ค</label>
+            <select class="form-select form-select-sm" id="ed-packaging">
+              <option value="">—</option>
+              {% for pk in packaging_opts %}<option value="{{ pk }}">{{ pk }}</option>{% endfor %}
+            </select></div>
+          <div class="col-md-4"><label class="form-label small mb-0">สภาพ</label>
+            <select class="form-select form-select-sm" id="ed-condition">
+              <option value="">—</option>
+              {% for cd in condition_opts %}<option value="{{ cd }}">{{ cd }}</option>{% endfor %}
+            </select></div>
+          <div class="col-md-4"><label class="form-label small mb-0">variant</label>
+            <input class="form-control form-control-sm" id="ed-variant"></div>
+        </div>
+        <hr class="my-2">
+        <div class="small text-muted">ชื่อใหม่:</div>
+        <div id="ed-preview" class="fw-bold">—</div>
+        <div id="ed-locked-warn" class="small text-warning mt-1 d-none">
+          ⚠ sku_code ถูกล็อกไว้ — จะแก้เฉพาะชื่อ ไม่สร้าง sku ใหม่</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">ยกเลิก</button>
+        <button type="button" class="btn btn-primary" id="ed-save" onclick="saveProduct()">บันทึก</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── Shared cascade preview/confirm modal ──────────────────────────────────── #}
+<div class="modal fade" id="cascadeModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">ตัวอย่างการเปลี่ยนชื่อ</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="cascadeBody"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">ยกเลิก</button>
+        <button type="button" class="btn btn-danger" id="cascadeConfirm" onclick="confirmApply()">ยืนยัน</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const _csrf = () => document.querySelector('meta[name="csrf-token"]').content;
+const _esc = s => String(s == null ? '' : s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+let _pending = null;
+const _modal = () => bootstrap.Modal.getOrCreateInstance(document.getElementById('cascadeModal'));
+
+async function _postJSON(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': _csrf()},
+    body: JSON.stringify(body),
+  });
+  let data = {};
+  try { data = await r.json(); } catch (e) {}
+  return {status: r.status, data};
+}
+
+function _reasonTH(r) {
+  return {word_absent: 'ไม่มีคำเดิมในชื่อ', already_target: 'ใช้คำใหม่อยู่แล้ว',
+          brand_absent: 'ไม่มีคำแบรนด์ในชื่อ'}[r] || r;
+}
+
+function _renderModal(d) {
+  const head = (d.old)
+    ? `<p>เปลี่ยน <code>${_esc(d.key)}</code>: <span class="text-danger">${_esc(d.old)}</span>`
+      + ` → <span class="text-success">${_esc(d.new)}</span></p>`
+    : `<p>ทำให้คำแบรนด์ในชื่อเป็น <span class="text-success">${_esc(d.new)}</span></p>`;
+  let body = head +
+    `<p class="small text-muted">จะเปลี่ยน ${d.affected.length} ชื่อ · ข้าม ${d.skipped.length}</p>`;
+  if (d.affected.length) {
+    body += '<table class="table table-sm"><thead><tr><th>#</th><th>เดิม</th><th>ใหม่</th></tr></thead><tbody>';
+    body += d.affected.map(a =>
+      `<tr><td class="text-muted">${a.id}</td><td>${_esc(a.old_name)}</td>`
+      + `<td class="text-success">${_esc(a.new_name)}</td></tr>`).join('');
+    body += '</tbody></table>';
+  } else {
+    body += '<div class="alert alert-warning">ไม่มีชื่อที่จะเปลี่ยน</div>';
+  }
+  if (d.skipped.length) {
+    body += `<details class="small text-muted"><summary>ข้าม ${d.skipped.length} รายการ</summary><ul>`
+      + d.skipped.map(s => `<li>${s.id}: ${_esc(s.name)} <em>(${_reasonTH(s.reason)})</em></li>`).join('')
+      + '</ul></details>';
+  }
+  document.getElementById('cascadeBody').innerHTML = body;
+  const btn = document.getElementById('cascadeConfirm');
+  btn.disabled = (d.affected.length === 0);
+  btn.textContent = 'ยืนยัน (' + d.affected.length + ')';
+}
+
+async function _preview(kind, key, target) {
+  if (!target) { alert('กรุณาระบุค่าใหม่'); return; }
+  const {data} = await _postJSON(`/naming/dict/${kind}/preview`, {key, target});
+  if (!data.ok) { alert(data.error || 'เกิดข้อผิดพลาด'); return; }
+  _pending = {kind, key, target, expected: data.affected.length};
+  _renderModal(data);
+  _modal().show();
+}
+
+function previewColor(code) {
+  const target = document.getElementById('color-th-' + code).value.trim();
+  _preview('color', code, target);
+}
+function previewBrand(brandId, target) { _preview('brand', brandId, target); }
+
+async function confirmApply() {
+  if (!_pending) return;
+  const btn = document.getElementById('cascadeConfirm');
+  btn.disabled = true;
+  const {data} = await _postJSON(`/naming/dict/${_pending.kind}/apply`,
+    {key: _pending.key, target: _pending.target, expected_count: _pending.expected});
+  if (data.ok) {
+    location.reload();
+  } else {
+    alert(data.error || 'เกิดข้อผิดพลาด');
+    btn.disabled = false;
+  }
+}
+
+// ── Tab 1 single-product inline editor ──────────────────────────────────────
+let _edPid = null;
+const _edIds = ['ed-subcat','ed-brand','ed-series','ed-model','ed-size',
+                'ed-color','ed-packaging','ed-condition','ed-variant'];
+
+function _edFields() {
+  const v = id => document.getElementById(id).value.trim();
+  return {
+    sub_category: v('ed-subcat'), brand_id: v('ed-brand') || null,
+    series: v('ed-series'), model: v('ed-model'), size: v('ed-size'),
+    color_code: v('ed-color') || null, packaging_th: v('ed-packaging') || null,
+    condition: v('ed-condition') || null, pack_variant: v('ed-variant'),
+  };
+}
+
+function openEditor(btn) {
+  const d = btn.dataset;
+  _edPid = d.pid;
+  document.getElementById('edit-pid').textContent = '#' + d.pid;
+  const set = (id, val) => document.getElementById(id).value = val || '';
+  set('ed-subcat', d.subcat); set('ed-brand', d.brand); set('ed-series', d.series);
+  set('ed-model', d.model); set('ed-size', d.size); set('ed-color', d.color);
+  set('ed-packaging', d.packaging); set('ed-condition', d.condition);
+  set('ed-variant', d.variant);
+  document.getElementById('ed-locked-warn').classList.toggle('d-none', d.locked !== '1');
+  document.getElementById('ed-preview').textContent = d.name || '—';
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('editModal')).show();
+  _edRefresh();
+}
+
+let _edTimer = null;
+function _edRefresh() {
+  clearTimeout(_edTimer);
+  _edTimer = setTimeout(async () => {
+    const {data} = await _postJSON('/naming/product/preview-name', _edFields());
+    if (data.ok) document.getElementById('ed-preview').textContent = data.name || '—';
+  }, 250);
+}
+
+async function saveProduct() {
+  if (!_edPid) return;
+  const btn = document.getElementById('ed-save');
+  btn.disabled = true;
+  const {data} = await _postJSON(`/naming/product/${_edPid}/save`, _edFields());
+  if (data.ok) { location.reload(); }
+  else { alert(data.error || 'เกิดข้อผิดพลาด'); btn.disabled = false; }
+}
+
+// Live-preview wiring — only on the workbench tab (editor fields exist there).
+if (document.getElementById('ed-subcat')) {
+  _edIds.forEach(id => document.getElementById(id).addEventListener('input', _edRefresh));
+}
+</script>
+{% endblock %}
