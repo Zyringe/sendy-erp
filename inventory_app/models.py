@@ -888,6 +888,23 @@ def save_unit_conversions(items: list):
     conn.close()
 
 
+def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str) -> int:
+    """Delete all synced_to_stock=0 rows for (product_id, bsn_unit) from both
+    ledger tables. Used when the team entered a wrong unit and the rows are
+    stale — they have never touched stock so deletion is safe."""
+    conn = get_connection()
+    deleted = 0
+    for table in ('sales_transactions', 'purchase_transactions'):
+        cur = conn.execute(
+            f"DELETE FROM {table} WHERE product_id=? AND unit=? AND synced_to_stock=0",
+            (product_id, bsn_unit),
+        )
+        deleted += cur.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
 def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
     """อัปเดต ratio ที่มีอยู่แล้ว แล้ว re-sync BSN transactions ที่เกี่ยวข้อง"""
     conn = get_connection()
@@ -1089,6 +1106,77 @@ def resolve_pending_mappings(conn):
 
 
 # ── Weekly Import ─────────────────────────────────────────────────────────────
+
+# audit_log TTL: low-value `transactions` import churn older than this many days
+# is pruned by prune_audit_log(), which the import-confirm flow calls once per
+# import session. The table is the largest in the DB (a one-time historical BSN
+# import churned ~390k rows in a single day); this keeps it self-limiting so it
+# can never bloat the volume. This is the single policy lever — change retention
+# here only.
+AUDIT_LOG_RETENTION_DAYS = 90
+
+# Retention predicate (option B — `transactions`-only). We prune ONLY old
+# `transactions` import churn and keep EVERYTHING else forever:
+#   - PRUNE old `transactions` INSERT + DELETE → the import delete-then-reinsert
+#                                                rebuild (each delete has a
+#                                                matching reinsert moments later
+#                                                → no forensic value). This pair
+#                                                is ~95% of the table.
+#   - KEEP  all audit on every OTHER table, forever — including every finance
+#           INSERT (a created payout / receipt / invoice), UPDATE (price/cost/
+#           note edit), and DELETE (a hand-void) on commission_payouts /
+#           received_payments / paid_invoices / products / etc.
+#   - KEEP  `transactions` UPDATE (a real ledger-row edit) forever too — only
+#           INSERT/DELETE churn on `transactions` is dropped.
+# Pruning only `transactions` INSERT+DELETE reclaims the one-time bulk and stops
+# weekly-import regrowth without touching any money-table or human-edit trail.
+# Trade-off (accepted by Put): a genuine hand-void of a stock-ledger row is also
+# a `transactions` DELETE and is indistinguishable from import churn in the
+# current schema (trigger writes leave `user` NULL), so it is pruned after the
+# window too.
+_AUDIT_PRUNE_PREDICATE = (
+    "(table_name = 'transactions' AND action IN ('INSERT','DELETE'))"
+)
+
+
+def prune_audit_log(conn=None):
+    """Prune old `transactions` import churn from audit_log.
+
+    Option B (see _AUDIT_PRUNE_PREDICATE): prunes ONLY `transactions`
+    INSERT+DELETE older than AUDIT_LOG_RETENTION_DAYS; keeps all other audit
+    (every finance INSERT/UPDATE/DELETE, all UPDATEs, all non-`transactions`
+    DELETEs) FOREVER. Idempotent. Returns the number of rows deleted. The age
+    test is strict `<` cutoff, so a row at the boundary day is kept (see below).
+
+    Note on cost: the DELETE is a full table SCAN of audit_log — the only
+    created_at index (idx_audit_log_table_time) leads with table_name, so SQLite
+    won't seek on created_at alone for a DELETE. We deliberately DON'T add a
+    dedicated created_at index: it would cost ~10MB on a volume-constrained DB to
+    optimise a bounded delete that runs at most once per import flow (steady-state
+    it removes ~one day of rows). Measured sub-second on a prod-size snapshot.
+    """
+    own = conn is None
+    if own:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            # Cutoff is DATE-ONLY by design: created_at carries a time component
+            # ('YYYY-MM-DD HH:MM:SS'), and a same-day timestamp sorts AFTER the
+            # bare cutoff date string, so the boundary day is retained. Do NOT
+            # "fix" this to datetime(...) — that would drop the boundary day.
+            "DELETE FROM audit_log "
+            "WHERE created_at < date('now','localtime',?) "
+            f"AND {_AUDIT_PRUNE_PREDICATE}",
+            (f"-{AUDIT_LOG_RETENTION_DAYS} day",),
+        )
+        deleted = cur.rowcount
+        if own:
+            conn.commit()
+        return deleted
+    finally:
+        if own:
+            conn.close()
+
 
 def _resolve_mapping(conn, code):
     """(product_id, is_ignored, mapped?) — pure bsn_code lookup (mig 112)."""

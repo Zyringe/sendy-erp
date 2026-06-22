@@ -206,6 +206,7 @@ def bootstrap_upload_db():
 _STAFF_POST_OK = frozenset([
     'login', 'logout',
     'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
+    'unit_conversions_dismiss',
     # Decision B — staff may import everything; the unified box (/import-data)
     # snapshots the DB before writing (see _snapshot_before_import call sites).
     'unified_import', 'unified_import_confirm',
@@ -404,6 +405,7 @@ _ENDPOINT_MODULE = {
     'unit_conversions': 'data',
     'unit_conversions_save': 'data',
     'unit_conversions_edit': 'data',
+    'unit_conversions_dismiss': 'data',
     'supplier_catalogue.supplier_catalogue_list': 'data',
     'supplier_catalogue.supplier_catalogue_purchased': 'data',
     'supplier_catalogue.supplier_catalogue_match': 'data',
@@ -1468,6 +1470,16 @@ def unit_conversions_edit():
     if product_id and bsn_unit and new_ratio and new_ratio > 0:
         models.update_unit_conversion_ratio(product_id, bsn_unit, new_ratio)
         flash(f'อัปเดต ratio สำหรับ {bsn_unit} เรียบร้อย (re-sync แล้ว)', 'success')
+    return redirect(url_for('unit_conversions'))
+
+
+@app.route('/unit-conversions/dismiss', methods=['POST'])
+def unit_conversions_dismiss():
+    product_id = request.form.get('product_id', type=int)
+    bsn_unit   = request.form.get('bsn_unit', '').strip()
+    if product_id and bsn_unit:
+        deleted = models.dismiss_pending_unit_conversion(product_id, bsn_unit)
+        flash(f'ยกเลิก {deleted} แถวที่ยังไม่ sync ออกแล้ว (หน่วย "{bsn_unit}")', 'success')
     return redirect(url_for('unit_conversions'))
 
 
@@ -3004,6 +3016,13 @@ def unified_import_confirm():
             results.append({'filename': row['filename'], 'ok': False, 'msg': str(exc)})
     session.pop('import_stage', None)
     shutil.rmtree(base, ignore_errors=True)
+    # Self-limit audit_log once per import flow (not per file). A big import
+    # churns audit rows; the TTL prune keeps the table from bloating the volume.
+    # Best-effort — a prune failure must never sink a successful import.
+    try:
+        models.prune_audit_log()
+    except Exception as _prune_exc:
+        flash(f'ตัด audit log เก่าไม่สำเร็จ: {_prune_exc}', 'warning')
     return render_template('import_box.html', staged=False, rows=None,
                            report_labels=_REPORT_LABELS, results=results)
 
