@@ -375,3 +375,54 @@ def test_prune_handles_mixed_underscore_and_dash_reasons(tmp_path):
         assert names[i] in remaining, f"newest backup #{i} was incorrectly deleted"
     for i in range(3, 6):
         assert names[i] in deleted, f"oldest backup #{i} should have been deleted"
+
+
+# ── snapshot_db (consistent download — captures WAL) ─────────────────────────
+
+def test_snapshot_db_matches_source(tmp_path):
+    src = tmp_path / "src.db"
+    _make_db(str(src), ["a", "b", "c"])
+    dst = tmp_path / "snap.db"
+
+    db_backup.snapshot_db(str(src), str(dst))
+
+    assert _count(str(dst)) == 3
+    conn = sqlite3.connect(str(dst))
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    finally:
+        conn.close()
+
+
+def test_snapshot_db_captures_uncheckpointed_wal(tmp_path):
+    """Why /admin/download-db uses this instead of send_file(db): prod runs WAL
+    mode, so the newest committed pages can sit in the -wal sidecar. A bare file
+    copy of inventory.db misses them; the online-backup API captures them."""
+    import shutil
+    src = str(tmp_path / "src.db")
+    w = sqlite3.connect(src)
+    w.execute("PRAGMA journal_mode=WAL")
+    w.execute("PRAGMA wal_autocheckpoint=0")        # nothing flushes WAL -> main
+    w.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+    w.executemany("INSERT INTO t (v) VALUES (?)", [(str(i),) for i in range(50)])
+    w.commit()
+    # rows live in the WAL, not yet in the main db file
+    assert os.path.exists(src + "-wal") and os.path.getsize(src + "-wal") > 0
+
+    # a raw file copy (what send_file streams) sees the main file only
+    raw = str(tmp_path / "raw.db")
+    shutil.copyfile(src, raw)
+    rc = sqlite3.connect(raw)
+    try:
+        has_t = rc.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='t'").fetchone()
+        raw_rows = rc.execute("SELECT COUNT(*) FROM t").fetchone()[0] if has_t else 0
+    finally:
+        rc.close()
+    assert raw_rows < 50, "raw copy unexpectedly already had the WAL rows"
+
+    # the online-backup snapshot captures the WAL pages -> complete
+    snap = str(tmp_path / "snap.db")
+    db_backup.snapshot_db(src, snap)
+    w.close()
+    assert _count(snap) == 50

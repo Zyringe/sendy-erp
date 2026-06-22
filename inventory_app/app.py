@@ -47,7 +47,7 @@ from datetime import date, datetime
 
 from flask import (Flask, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort, send_file,
-                   send_from_directory)
+                   send_from_directory, Response)
 from flask_wtf.csrf import CSRFProtect, CSRFError
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -726,7 +726,41 @@ def download_db():
         abort(403)
     if not session.get('db_routes_enabled'):
         abort(403)
-    return send_file(config.DATABASE_PATH, as_attachment=True, download_name='inventory.db')
+    # Stream a CONSISTENT online-backup snapshot, not the raw live file: prod is
+    # WAL mode, so send_file(inventory.db) could omit the newest committed pages
+    # still in the -wal sidecar (stale/torn download). The temp lands on the
+    # ephemeral fs (not the small /data volume).
+    fd, tmp = tempfile.mkstemp(suffix='.db')
+    os.close(fd)
+    try:
+        db_backup.snapshot_db(config.DATABASE_PATH, tmp)
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+    size = os.path.getsize(tmp)
+
+    def _stream_and_cleanup():
+        # The generator's finally deletes the temp when the response finishes
+        # streaming OR the client disconnects (the WSGI server closes the
+        # generator) — reliable where send_file + call_on_close was not.
+        try:
+            with open(tmp, 'rb') as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    resp = Response(_stream_and_cleanup(), mimetype='application/octet-stream')
+    resp.headers['Content-Length'] = str(size)
+    resp.headers['Content-Disposition'] = 'attachment; filename="inventory.db"'
+    return resp
 
 
 # Tables compared during /admin/upload-db. If any of these have MORE rows in the

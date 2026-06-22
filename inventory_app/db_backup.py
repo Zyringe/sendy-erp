@@ -127,6 +127,26 @@ def safe_create_backup(reason, *, db_path, backup_dir, **kw):
         return None, str(e)
 
 
+def snapshot_db(db_path, dest_path):
+    """Write a CONSISTENT, plain (uncompressed) copy of ``db_path`` to
+    ``dest_path`` via SQLite's online-backup API.
+
+    Unlike a bare file copy / ``send_file(db_path)``, this captures pages still
+    sitting in the WAL — prod runs WAL journal mode, so the newest committed
+    rows can live in the ``-wal`` sidecar and a raw copy of inventory.db would be
+    stale or torn. Used by the ``/admin/download-db`` route so the download is a
+    true point-in-time snapshot."""
+    src = sqlite3.connect(db_path)
+    try:
+        dst = sqlite3.connect(dest_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+
+
 def list_backups(*, backup_dir):
     """All auto-* snapshots, newest first, with reason / created_at / size."""
     if not os.path.isdir(backup_dir):
