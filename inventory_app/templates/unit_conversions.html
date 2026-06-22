@@ -47,10 +47,18 @@
             <th class="text-center">หน่วยในระบบ</th>
             <th class="text-center" style="width:100px">จำนวนแถว</th>
             <th class="text-center" style="width:200px">1 หน่วย BSN = ? หน่วยระบบ</th>
+            <th style="width:90px"></th>
           </tr>
         </thead>
         <tbody>
           {% for p in pending %}
+          {# Hidden dismiss form — associated via form="dismiss-…" on the button below #}
+          <form id="dismiss-{{ p.product_id }}-{{ p.bsn_unit | replace(' ','_') }}"
+                method="post" action="{{ url_for('unit_conversions_dismiss') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="product_id" value="{{ p.product_id }}">
+            <input type="hidden" name="bsn_unit" value="{{ p.bsn_unit }}">
+          </form>
           <tr>
             <td class="fw-500">
               {{ p.product_name }}
@@ -82,6 +90,14 @@
                        class="form-control text-center" value="1" required>
                 <span class="input-group-text">{{ p.unit_type }}</span>
               </div>
+            </td>
+            <td class="text-center">
+              <button type="submit"
+                      form="dismiss-{{ p.product_id }}-{{ p.bsn_unit | replace(' ','_') }}"
+                      class="btn btn-sm btn-outline-danger"
+                      onclick="return confirm('ลบ {{ p.row_count }} แถวที่ยังไม่ sync ออก?\n(ข้อมูลหน่วย {{ p.bsn_unit }} ที่ทีมใส่ผิด)')">
+                ยกเลิก
+              </button>
             </td>
           </tr>
           {% endfor %}

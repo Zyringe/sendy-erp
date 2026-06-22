@@ -121,3 +121,42 @@ def test_get_base_qty_returns_none_when_unmapped(empty_db_conn):
     )
     empty_db_conn.commit()
     assert models._get_base_qty(empty_db_conn, pid, "ตัว", "กล", 5) == 60
+
+
+def test_dismiss_pending_unit_conversion(empty_db_conn):
+    """dismiss_pending_unit_conversion deletes only synced_to_stock=0 rows for
+    the given (product_id, bsn_unit); synced rows and other units are untouched."""
+    import models
+
+    pid = _seed_product(empty_db_conn, 90005, "พุกกิโล #7", unit_type="กิโลกรัม")
+    # stale unsynced row (wrong unit — กล่อง instead of กิโลกรัม)
+    empty_db_conn.execute("""
+        INSERT INTO sales_transactions
+            (date_iso, doc_no, doc_base, product_id, bsn_code, product_name_raw,
+             customer, customer_code, qty, unit, unit_price, vat_type,
+             discount, total, net, synced_to_stock)
+        VALUES ('2026-05-01','S001-1','S001',?,
+                'BSN-PLG','พุกกิโล','ลูกค้า','C01',
+                5,'กล่อง',10.0,0,'',50.0,50.0,0)
+    """, (pid,))
+    # already-synced row with a different unit — must NOT be deleted
+    empty_db_conn.execute("""
+        INSERT INTO sales_transactions
+            (date_iso, doc_no, doc_base, product_id, bsn_code, product_name_raw,
+             customer, customer_code, qty, unit, unit_price, vat_type,
+             discount, total, net, synced_to_stock)
+        VALUES ('2026-05-02','S002-1','S002',?,
+                'BSN-PLG','พุกกิโล','ลูกค้า','C01',
+                3,'กิโลกรัม',10.0,0,'',30.0,30.0,1)
+    """, (pid,))
+    empty_db_conn.commit()
+
+    deleted = models.dismiss_pending_unit_conversion(pid, 'กล่อง')
+
+    assert deleted == 1
+    remaining = empty_db_conn.execute(
+        "SELECT unit, synced_to_stock FROM sales_transactions WHERE product_id=?", (pid,)
+    ).fetchall()
+    assert len(remaining) == 1
+    assert remaining[0]['unit'] == 'กิโลกรัม'
+    assert remaining[0]['synced_to_stock'] == 1
