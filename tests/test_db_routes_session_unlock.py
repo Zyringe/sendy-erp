@@ -129,3 +129,33 @@ def test_enable_returns_to_referrer(client):
     resp = client.post('/admin/toggle-db-routes', headers={'Referer': '/customers'})
     assert resp.status_code == 302
     assert resp.headers.get('Location', '').endswith('/customers')
+
+
+def test_download_db_returns_complete_sqlite_db(client):
+    """The download is a consistent online-backup snapshot — a real, intact
+    SQLite db (not empty/torn). Pairs with the WAL-capture unit test on
+    db_backup.snapshot_db."""
+    import os as _os
+    import sqlite3
+    import tempfile
+    _login_as(client, 'admin')
+    _arm(client)
+    resp = client.get('/admin/download-db')
+    assert resp.status_code == 200
+    body = resp.get_data()
+    assert body[:16] == b'SQLite format 3\x00'        # real SQLite file header
+    fd, p = tempfile.mkstemp(suffix='.db')
+    _os.close(fd)
+    try:
+        with open(p, 'wb') as f:
+            f.write(body)
+        conn = sqlite3.connect(p)
+        try:
+            assert conn.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+            tbls = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")]
+            assert 'products' in tbls                  # the real schema, not a stub
+        finally:
+            conn.close()
+    finally:
+        _os.remove(p)
