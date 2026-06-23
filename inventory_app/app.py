@@ -210,7 +210,7 @@ _STAFF_POST_OK = frozenset([
     # Decision B — staff may import everything; the unified box (/import-data)
     # snapshots the DB before writing (see _snapshot_before_import call sites).
     'unified_import', 'unified_import_confirm',
-    'marketplace.import_orders', 'marketplace.settlement_import', 'marketplace.link_iv',
+    'marketplace.import_orders', 'marketplace.settlement_import', 'marketplace.upload', 'marketplace.link_iv',
     'products.product_location_save',
     'admin_exit_simulate',
     'conversion_new', 'conversion_pair', 'conversion_edit', 'conversion_run', 'conversion_delete',
