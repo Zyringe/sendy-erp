@@ -61,6 +61,7 @@ document.addEventListener('DOMContentLoaded', function () {
       .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(d => {
         const o = d.order;
+        const ff = d.fees;   // settlement breakdown (Income file) if uploaded, else null
         load.classList.add('d-none'); body.classList.remove('d-none');
         document.getElementById('odSn').textContent = o.order_sn;
         document.getElementById('odSummary').textContent = o.status || '';
@@ -68,7 +69,13 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('odBuyer').textContent = o.buyer_name || '–';
         document.getElementById('odShip').textContent = [o.ship_address, o.buyer_phone].filter(Boolean).join(' · ') || '–';
         document.getElementById('odDates').textContent = (o.order_date ? o.order_date.slice(0,10) : '–') + ' / ' + (o.settled_at || 'ยังไม่โอน');
-        document.getElementById('odMoney').innerHTML = `฿${fmt(o.item_total)} / <span class="text-danger">฿${fmt(o.marketplace_fee)}</span> / <span class="text-success fw-bold">฿${fmt(o.actual_payout)}</span>`;
+        // Fee: when the Income (settlement) file is uploaded, ff.fee_total is the
+        // finalized fee (= item_value − net_payout, satang-true). Until then only the
+        // Order-export estimate (o.marketplace_fee = commission+service+txn) exists —
+        // it misses platform + ad/escrow fees, so flag it as not-yet-finalized.
+        const feeFinal = ff ? ff.fee_total : o.marketplace_fee;
+        const feeBadge = ff ? '' : ' <span class="badge bg-warning text-dark" title="ยังไม่ได้อัปโหลดไฟล์ Income (โอนเงินสำเร็จ) — ค่าธรรมเนียมจากไฟล์ Order เป็นค่าประมาณ ยังไม่รวมค่าธรรมเนียมแพลตฟอร์ม/โฆษณา">ยังไม่ finalized</span>';
+        document.getElementById('odMoney').innerHTML = `฿${fmt(o.item_total)} / <span class="text-danger">฿${fmt(feeFinal)}</span>${feeBadge} / <span class="text-success fw-bold">฿${fmt(o.actual_payout)}</span>`;
         document.getElementById('odIv').innerHTML = o.matched_iv
           ? `<a href="/sales/doc/${o.matched_iv}" target="_blank" title="เปิดใบกำกับใน Express"><code>${o.matched_iv}</code></a> ${ivBadge[o.iv_confidence] || ''}`
           : '<span class="text-muted">ยังไม่ผูก</span>';
@@ -80,7 +87,6 @@ document.addEventListener('DOMContentLoaded', function () {
             <td class="text-end">${fmt(it.unit_price)}</td>
             <td class="text-end">${fmt(it.item_subtotal)}</td>
           </tr>`).join('') : '<tr><td colspan="5" class="text-muted text-center">ไม่มีรายการสินค้า</td></tr>');
-        const ff = d.fees;
         const fl = (lbl, v) => (v == null || Math.abs(v) < 0.005) ? '' :
           `<div class="d-flex justify-content-between"><span class="text-muted">${lbl}</span><span class="${v<0?'text-danger':''}">${v<0?'−':''}฿${fmt(Math.abs(v))}</span></div>`;
         document.getElementById('odFees').innerHTML = !ff ? '' : `
