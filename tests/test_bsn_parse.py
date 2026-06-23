@@ -188,3 +188,21 @@ def test_detect_file_type_purchase(sample_purchase_file):
 
 def test_detect_file_type_sales(sample_sales_file):
     assert parse_weekly.detect_file_type(sample_sales_file) == "sales"
+
+
+# ── VAT-entity gate ───────────────────────────────────────────────────────────
+
+def test_parse_sales_rejects_vat_entity_file(tmp_path):
+    """Files from the VAT entity (บริษัท บุญสวัสดิ์ นำชัย จำกัด) must be
+    rejected with a clear ValueError. Root cause: 2026-06-22 incident where
+    the VAT company export was accidentally imported, adding IV26* doc_nos."""
+    import pytest
+    vat_lines = [
+        '"บริษัท บุญสวัสดิ์ นำชัย จำกัด                                       หน้า   :        1"',
+        '"  รายงานประวัติการขาย แยกตามลูกค้า"',
+        '"      22/06/69   IV2600172-  1        25.00 ผน            5.61  2                   140.25                   140.25"',
+    ]
+    p = tmp_path / "ประวัติการขาย_22.6.69.csv"
+    p.write_text("\n".join(vat_lines) + "\n", encoding="cp874")
+    with pytest.raises(ValueError, match="VAT entity"):
+        parse_weekly.parse_sales(str(p))

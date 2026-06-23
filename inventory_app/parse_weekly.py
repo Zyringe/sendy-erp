@@ -99,6 +99,15 @@ def _parse(filepath: str, tx_pat, file_type: str) -> list:
     with open(filepath, encoding='cp874') as f:
         lines = [_clean(l) for l in f.readlines()]
 
+    # Reject VAT-entity files (บริษัท บุญสวัสดิ์ นำชัย จำกัด). NoVAT files always
+    # start with "(BSN)"; VAT files start with "บริษัท". Importing the wrong entity
+    # silently adds duplicate IV26* doc_nos that pollute revenue and stock.
+    if lines and 'บริษัท บุญสวัสดิ์ นำชัย' in lines[0]:
+        raise ValueError(
+            "ไฟล์นี้เป็นของ VAT entity (บริษัท บุญสวัสดิ์ นำชัย จำกัด) — "
+            "ห้าม import เข้า Sendy ใช้ไฟล์ของ (BSN)บจก.บุญสวัสดิ์นำชัย เท่านั้น"
+        )
+
     for line in lines:
         if not line.strip():
             continue
