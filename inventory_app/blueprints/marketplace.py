@@ -387,8 +387,11 @@ def upload():
                 parsed = parse_lazada_wallet(load_lazada_wallet_csv(io.BytesIO(data)))
                 ins = models.import_wallet_txns(
                     conn, parsed['withdrawals'], f.filename, platform='lazada')
+                # Per-statement settlement times re-anchor income for accurate reconcile.
+                models.upsert_lazada_settlements(conn, parsed['settlements'])
                 reconcile_platforms.add('lazada')
-                msgs.append(f'🏦 {f.filename}: Lazada เงินเข้าบัญชี +{ins} รายการ')
+                msgs.append(f'🏦 {f.filename}: Lazada เงินเข้าบัญชี +{ins} รายการ '
+                            f'(settlement {len(parsed["settlements"])} รอบบิล)')
         for plat in sorted(reconcile_platforms):
             try:
                 rec = marketplace_reconcile.reconcile_payouts(conn, plat)

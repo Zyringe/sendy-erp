@@ -5416,6 +5416,21 @@ def import_wallet_txns(conn, wallet_rows, source_file=None, platform='shopee'):
     return n
 
 
+def upsert_lazada_settlements(conn, settlements):
+    """Insert/replace per-statement (รอบบิล) settlement times from the Lazada wallet
+    Deposit/Settlement rows. Keyed by statement (PK) so a re-import corrects in place.
+    reconcile_payouts re-anchors Lazada income timing to these. Returns row count."""
+    n = 0
+    for s in settlements:
+        conn.execute(
+            """INSERT OR REPLACE INTO lazada_statement_settlement (statement, settled_at, amount)
+               VALUES (?,?,?)""",
+            (s['statement'], s['settled_at'], s['amount']))
+        n += 1
+    conn.commit()
+    return n
+
+
 def get_payout_years(conn, platform='shopee'):
     """Distinct years that have bank deposits, newest first (for the year filter)."""
     return [r[0] for r in conn.execute(

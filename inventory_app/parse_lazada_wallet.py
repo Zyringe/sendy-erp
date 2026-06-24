@@ -55,6 +55,7 @@ def parse_lazada_wallet(df):
                 f'ไม่พบคอลัมน์ "{col}" — ต้องเป็นไฟล์ Wallet/Transactions จาก Lazada ค่ะ')
     withdrawals = []
     deposits = {}
+    settle = {}   # statement -> {settled_at (precise), amount}
     for _, r in df.iterrows():
         typ = str(r.get(_C_TYPE, '')).strip()
         amt = _num(r.get(_C_AMT))
@@ -69,5 +70,12 @@ def parse_lazada_wallet(df):
         elif typ == 'Deposit':
             m = _STMT_RE.search(remark)
             if m:
-                deposits[m.group(1)] = round(deposits.get(m.group(1), 0.0) + amt, 2)
-    return {'withdrawals': withdrawals, 'deposits_by_statement': deposits}
+                stmt = m.group(1)
+                deposits[stmt] = round(deposits.get(stmt, 0.0) + amt, 2)
+                cur = settle.setdefault(stmt, {'settled_at': _iso_dt(r.get(_C_TIME)),
+                                               'amount': 0.0})
+                cur['amount'] = round(cur['amount'] + amt, 2)
+    settlements = [{'statement': k, 'settled_at': v['settled_at'], 'amount': v['amount']}
+                   for k, v in settle.items()]
+    return {'withdrawals': withdrawals, 'deposits_by_statement': deposits,
+            'settlements': settlements}

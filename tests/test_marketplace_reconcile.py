@@ -1,8 +1,47 @@
 import models, marketplace_reconcile
 
+
+def test_lazada_income_reanchored_to_statement_settlement_time(tmp_db_conn):
+    # Lazada income carries a DATE-ONLY release date that is occasionally off-by-one
+    # vs the actual ~2am settlement, mis-grouping it across deposit cycles. Order B's
+    # release date (06-08) would group it with A into the first deposit (→ 150 vs 100,
+    # unbalanced), but its statement S2 actually settled 06-09 (after the 06-08
+    # withdrawal). Re-anchoring by lazada_statement_settlement.settled_at must move B
+    # into the second deposit so BOTH cycles reconcile.
+    c = tmp_db_conn
+    c.execute("DELETE FROM marketplace_wallet_txns")
+    c.execute("DELETE FROM marketplace_payouts")
+    c.execute("DELETE FROM lazada_statement_settlement")
+    for sn in ('A', 'B'):
+        c.execute("INSERT INTO marketplace_orders (platform, order_sn) VALUES ('lazada', ?)", (sn,))
+    models.import_wallet_txns(c, [
+      {'txn_time':'2026-06-08','txn_type':'income','order_sn':'A','amount':100.0,'running_balance':None,'description':'S1'},
+      {'txn_time':'2026-06-08','txn_type':'income','order_sn':'B','amount':50.0,'running_balance':None,'description':'S2'},
+      {'txn_time':'2026-06-08 10:00:00','txn_type':'withdrawal','order_sn':None,'amount':-100.0,'running_balance':None,'description':'Bank Ref. X-0608'},
+      {'txn_time':'2026-06-15 10:00:00','txn_type':'withdrawal','order_sn':None,'amount':-50.0,'running_balance':None,'description':'Bank Ref. X-0615'},
+    ], 'bal.csv', platform='lazada')
+    c.executemany("INSERT INTO lazada_statement_settlement (statement, settled_at, amount) VALUES (?,?,?)",
+                  [('S1','2026-06-08 02:00:00',100.0), ('S2','2026-06-09 02:00:00',50.0)])
+    c.commit()
+    res = marketplace_reconcile.reconcile_payouts(c, 'lazada')
+    assert res['payouts'] == 2
+    assert res['unbalanced'] == 0          # both cycles balance after re-anchoring
+    rows = c.execute("""SELECT deposit_date, amount, n_orders, status FROM marketplace_payouts
+                        WHERE platform='lazada' ORDER BY deposit_date""").fetchall()
+    assert [(r['amount'], r['n_orders'], r['status']) for r in rows] == [
+        (100.0, 1, 'reconciled'), (50.0, 1, 'reconciled')]
+    p2 = c.execute("SELECT id FROM marketplace_payouts WHERE deposit_date='2026-06-15'").fetchone()['id']
+    linked = [r['order_sn'] for r in c.execute("SELECT order_sn FROM marketplace_orders WHERE payout_id=?", (p2,))]
+    assert linked == ['B']
+
 def _seed_orders(c, sns):
-    c.execute("DELETE FROM marketplace_wallet_txns WHERE platform='shopee'")
-    c.execute("DELETE FROM marketplace_payouts WHERE platform='shopee'")
+    # The fixture copies the live DB, which carries real lazada+shopee
+    # marketplace data. These tests assert on UNSCOPED marketplace_payouts
+    # queries (COUNT(*), full SELECTs ORDER BY date), so the table must be
+    # globally empty before each shopee reconcile — clearing only
+    # platform='shopee' leaks the 128 real lazada payout rows into assertions.
+    c.execute("DELETE FROM marketplace_wallet_txns")
+    c.execute("DELETE FROM marketplace_payouts")
     for sn in sns:
         c.execute("INSERT INTO marketplace_orders (platform, order_sn) VALUES ('shopee', ?)", (sn,))
     c.commit()
@@ -28,6 +67,30 @@ def test_two_cycles_assign_payouts(tmp_db_conn):
     p2 = c.execute("SELECT id FROM marketplace_payouts WHERE deposit_date='2026-06-16'").fetchone()['id']
     linked = [r['order_sn'] for r in c.execute("SELECT order_sn FROM marketplace_orders WHERE payout_id=? ORDER BY order_sn",(p2,))]
     assert linked == ['C','D']
+
+def test_lazada_cycle_total_from_settlement_not_order_income(tmp_db_conn):
+    # The statement per-order income carries refund-timing noise vs the wallet, so
+    # the cycle must total from the authoritative SETTLEMENT amount. รอบบิล S1
+    # settled 200 but only 100 of order income is tagged to it (a refund landed in a
+    # different รอบบิล in the statement) — settlement-driven reconcile must still
+    # balance the 200 deposit and link the order via its รอบบิล.
+    c = tmp_db_conn
+    c.execute("DELETE FROM marketplace_wallet_txns")
+    c.execute("DELETE FROM marketplace_payouts")
+    c.execute("DELETE FROM lazada_statement_settlement")
+    c.execute("INSERT INTO marketplace_orders (platform, order_sn) VALUES ('lazada','A')")
+    models.import_wallet_txns(c, [
+      {'txn_time':'2026-06-09','txn_type':'income','order_sn':'A','amount':100.0,'running_balance':None,'description':'S1'},
+      {'txn_time':'2026-06-15 10:00:00','txn_type':'withdrawal','order_sn':None,'amount':-200.0,'running_balance':None,'description':'Bank Ref. X'},
+    ], 'bal.csv', platform='lazada')
+    c.execute("INSERT INTO lazada_statement_settlement (statement, settled_at, amount) VALUES ('S1','2026-06-09 02:00:00',200.0)")
+    c.commit()
+    res = marketplace_reconcile.reconcile_payouts(c, 'lazada')
+    assert res['unbalanced'] == 0
+    p = c.execute("SELECT amount, n_orders, status FROM marketplace_payouts WHERE platform='lazada'").fetchone()
+    assert (p['amount'], p['status']) == (200.0, 'reconciled')
+    assert c.execute("SELECT payout_id FROM marketplace_orders WHERE order_sn='A'").fetchone()['payout_id'] is not None
+
 
 def test_idempotent_rerun(tmp_db_conn):
     c = tmp_db_conn
