@@ -74,7 +74,7 @@ document.addEventListener('DOMContentLoaded', function () {
         // Order-export estimate (o.marketplace_fee = commission+service+txn) exists —
         // it misses platform + ad/escrow fees, so flag it as not-yet-finalized.
         const feeFinal = ff ? ff.fee_total : o.marketplace_fee;
-        const feeBadge = ff ? '' : ' <span class="badge bg-warning text-dark" title="ยังไม่ได้อัปโหลดไฟล์ Income (โอนเงินสำเร็จ) — ค่าธรรมเนียมจากไฟล์ Order เป็นค่าประมาณ ยังไม่รวมค่าธรรมเนียมแพลตฟอร์ม/โฆษณา">ยังไม่ finalized</span>';
+        const feeBadge = ff ? '' : ' <span class="badge bg-warning text-dark" title="ยังไม่ได้อัปโหลดไฟล์ Income (โอนเงินสำเร็จ) — ค่าธรรมเนียมจากไฟล์ Order เป็นค่าประมาณ ยังไม่รวมค่าธรรมเนียมแพลตฟอร์ม/โฆษณา">estimate</span>';
         document.getElementById('odMoney').innerHTML = `฿${fmt(o.item_total)} / <span class="text-danger">฿${fmt(feeFinal)}</span>${feeBadge} / <span class="text-success fw-bold">฿${fmt(o.actual_payout)}</span>`;
         document.getElementById('odIv').innerHTML = o.matched_iv
           ? `<a href="/sales/doc/${o.matched_iv}" target="_blank" title="เปิดใบกำกับใน Express"><code>${o.matched_iv}</code></a> ${ivBadge[o.iv_confidence] || ''}`
