@@ -41,3 +41,13 @@ def test_detect_lazada_statement_csv():
 def test_detect_lazada_wallet_csv():
     h = 'Transaction Number;Transaction Time;Type;Sub Type;Amount;Remarks'
     assert detect_file(_csv_bytes(h)) == ('laz_wallet', 'lazada')
+
+def test_detect_lazada_statement_csv_thai():
+    # Lazada Seller Center exports in the UI language; the Thai Account Statement
+    # has Thai headers but is otherwise the same file.
+    h = ('ระยะเวลาใบแจ้งยอด;รหัสรอบบิล;วันที่ทำรายการ;ชื่อรายการธุรกรรม;'
+         'จำนวนเงิน(รวมภาษี);VAT Amount;สถานะการโอนเงิน;วันที่ปรับปรุงเข้ายอดของฉัน;'
+         'ความคิดเห็น;วันที่สร้างคำสั่งซื้อ;หมายเลขคำสั่งซื้อ;รหัสสินค้าในคำสั่งซื้อ;'
+         'SKU ร้านค้า;Lazada SKU;WHT Amount;WHT รวมอยู่ในจำนวนเงินแล้ว;'
+         'สถานะคำสั่งซื้อ;ชื่อสินค้า;Short Code')
+    assert detect_file(_csv_bytes(h)) == ('laz_statement', 'lazada')

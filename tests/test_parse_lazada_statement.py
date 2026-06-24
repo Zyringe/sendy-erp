@@ -63,6 +63,57 @@ def test_missing_required_column_raises():
     with pytest.raises(LazadaStatementError):
         parse_lazada_statement(df)
 
+# --- Thai-language Account Statement export (Thai headers + Thai fee names) ---
+TH_COLS = ['ระยะเวลาใบแจ้งยอด','รหัสรอบบิล','วันที่ทำรายการ','ชื่อรายการธุรกรรม',
+           'จำนวนเงิน(รวมภาษี)','VAT Amount','สถานะการโอนเงิน','วันที่ปรับปรุงเข้ายอดของฉัน',
+           'ความคิดเห็น','วันที่สร้างคำสั่งซื้อ','หมายเลขคำสั่งซื้อ','รหัสสินค้าในคำสั่งซื้อ',
+           'SKU ร้านค้า','Lazada SKU','WHT Amount','WHT รวมอยู่ในจำนวนเงินแล้ว',
+           'สถานะคำสั่งซื้อ','ชื่อสินค้า','Short Code']
+
+def _th_row(stmt, fee, amt, order, rel='24 Jun 2026'):
+    return {'ระยะเวลาใบแจ้งยอด':'', 'รหัสรอบบิล':stmt, 'วันที่ทำรายการ':'23 Jun 2026',
+            'ชื่อรายการธุรกรรม':fee, 'จำนวนเงิน(รวมภาษี)':amt, 'VAT Amount':'0',
+            'สถานะการโอนเงิน':'โอนเงินไปยังยอดของฉันแล้ว', 'วันที่ปรับปรุงเข้ายอดของฉัน':rel,
+            'ความคิดเห็น':'', 'วันที่สร้างคำสั่งซื้อ':'20 Jun 2026', 'หมายเลขคำสั่งซื้อ':order,
+            'รหัสสินค้าในคำสั่งซื้อ':'1', 'SKU ร้านค้า':'SK1', 'Lazada SKU':'L1', 'WHT Amount':'0',
+            'WHT รวมอยู่ในจำนวนเงินแล้ว':'NO', 'สถานะคำสั่งซื้อ':'ยืนยันแล้ว',
+            'ชื่อสินค้า':'สินค้า A', 'Short Code':'SC'}
+
+def _th_df(rows): return pd.DataFrame(rows, columns=TH_COLS)
+
+def test_thai_export_columns_and_fee_names():
+    # same data as test_aggregates_order_net_and_fees, Thai headers + fee names
+    df = _th_df([
+        _th_row('THJ-2026-0623','ยอดรวมค่าสินค้า','100','ORD1'),
+        _th_row('THJ-2026-0623','หักค่าธรรมเนียมการขายสินค้า','-8','ORD1'),
+        _th_row('THJ-2026-0623','ค่าธรรมเนียมการชำระเงิน','-2','ORD1'),
+    ])
+    out = parse_lazada_statement(df)
+    s = {x['order_sn']: x for x in out['settlements']}['ORD1']
+    assert s['actual_payout'] == 90.0
+    assert s['settled_at'] == '2026-06-24'        # release = วันที่ปรับปรุงเข้ายอดของฉัน (stmt date +1)
+    f = {x['order_sn']: x for x in out['fee_rows']}['ORD1']
+    assert f['item_value'] == 100.0
+    assert f['fee_commission'] == -8.0            # หักค่าธรรมเนียมการขายสินค้า
+    assert f['fee_transaction'] == -2.0           # ค่าธรรมเนียมการชำระเงิน
+    assert f['net_payout'] == 90.0
+    assert out['unmapped_fee_names'] == []
+
+def test_thai_lazcoins_and_premium_buckets():
+    df = _th_df([
+        _th_row('THJ-2026-0623','ยอดรวมค่าสินค้า','200','O1'),
+        _th_row('THJ-2026-0623','Premium Package','-5','O1'),          # English even in the Thai file
+        _th_row('THJ-2026-0623','ค่าธรรมเนียมโปรแกรมส่วนลด LazCoins','-3','O1'),
+        _th_row('THJ-2026-0623','ส่วนลด LazCoins','-1','O1'),
+        _th_row('THJ-2026-0623','รางวัลรีวิวสำหรับผู้ซื้อ','-2','O1'),
+    ])
+    out = parse_lazada_statement(df)
+    f = {x['order_sn']: x for x in out['fee_rows']}['O1']
+    assert f['fee_service'] == -5.0               # Premium Package
+    assert f['fee_ads_escrow'] == -6.0            # LazCoins fee + discount + review reward
+    assert f['net_payout'] == 189.0              # 200 -5 -3 -1 -2
+    assert out['unmapped_fee_names'] == []
+
 def test_extended_fee_names_bucketed():
     # fee names that appear in the fuller statement export must map, not fall to catch-all
     df = _df([

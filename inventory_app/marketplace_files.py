@@ -19,6 +19,10 @@ def detect_file(source):
         cols = {c.strip() for c in first.split(';')}
         if {'Statement Number', 'Fee Name', 'Amount(Include Tax)'} <= cols:
             return ('laz_statement', 'lazada')
+        # Thai-language Account Statement export (same file, Thai headers).
+        if {'รหัสรอบบิล', 'ชื่อรายการธุรกรรม', 'จำนวนเงิน(รวมภาษี)',
+            'หมายเลขคำสั่งซื้อ'} <= cols:
+            return ('laz_statement', 'lazada')
         if {'Transaction Number', 'Transaction Time', 'Type', 'Sub Type',
             'Amount', 'Remarks'} <= cols:
             return ('laz_wallet', 'lazada')
