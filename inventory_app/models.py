@@ -5477,6 +5477,27 @@ def get_payout_summaries(conn, platform='shopee', year=None, limit=1000):
     return [dict(r) for r in rows]
 
 
+def _fee_lines_from_raw(fee_raw_json):
+    """Parse marketplace_order_fees.fee_raw_json (a {label: amount} dict of the
+    RAW statement lines, exactly as the platform labels them) into an ordered
+    list for the fee-cell hover popover: the positive item/credit line(s) first,
+    then the negative fee lines, biggest deduction first. Σ amounts == net_payout
+    by construction (the parser sums every line into net). Returns None when there
+    is no breakdown (no Income file imported → fee is only an estimate)."""
+    if not fee_raw_json:
+        return None
+    try:
+        raw = json.loads(fee_raw_json)
+    except (ValueError, TypeError):
+        return None
+    if not raw:
+        return None
+    lines = [{'label': k, 'amount': round(v, 2)} for k, v in raw.items()]
+    # positives (item value / credits) first; within a sign, larger magnitude first
+    lines.sort(key=lambda x: (x['amount'] < 0, -abs(x['amount'])))
+    return lines
+
+
 def get_payout_orders(conn, platform, payout_id):
     """The order rows for ONE bank deposit (fetched on expand). Fills the 3
     columns (item_value / fee_total / net_payout) from the best source, tagged
@@ -5496,7 +5517,7 @@ def get_payout_orders(conn, platform, payout_id):
                                            - COALESCE(w.wallet_net, o.actual_payout), 2)
                            END) AS fee_total,
                   COALESCE(f.net_payout, w.wallet_net, o.actual_payout) AS net_payout,
-                  f.fee_pct,
+                  f.fee_pct, f.fee_raw_json,
                   CASE WHEN f.order_sn IS NOT NULL THEN 'settled'
                        WHEN w.wallet_net IS NOT NULL OR o.actual_payout IS NOT NULL THEN 'wallet'
                        WHEN o.item_total IS NOT NULL OR o.payout IS NOT NULL THEN 'order'
@@ -5516,7 +5537,12 @@ def get_payout_orders(conn, platform, payout_id):
            WHERE o.platform = ? AND o.payout_id = ?
            ORDER BY o.settled_at, o.order_sn""",
         (platform, platform, payout_id)).fetchall()
-    return [dict(o) for o in rows]
+    out = []
+    for o in rows:
+        d = dict(o)
+        d['fee_lines'] = _fee_lines_from_raw(d.pop('fee_raw_json', None))
+        out.append(d)
+    return out
 
 
 def get_deposit_tab_extras(conn, platform='shopee'):
