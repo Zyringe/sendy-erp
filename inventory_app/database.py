@@ -472,13 +472,20 @@ def init_db():
     existing = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
     ).fetchall()}
-    if not existing and os.path.exists(SCHEMA_SQL_PATH):
+    if not existing:
         # Brand-new DB (bare `git clone` + first `sendy-up`): build the complete
         # current schema from the checked-in baseline in one shot — every table
         # incl. `brands` now exists, so run_pending_migrations() takes its
         # bootstrap-backfill path and marks all shipped migrations applied.
         # Replaying the historical chain from empty cannot work (the embedded
-        # SCHEMA + the ALTER history collide → duplicate-column / unseeded-FK).
+        # SCHEMA + the ALTER history collide → duplicate-column / unseeded-FK),
+        # so fail LOUD if the baseline is missing rather than silently falling
+        # back to that broken replay.
+        if not os.path.exists(SCHEMA_SQL_PATH):
+            raise RuntimeError(
+                "cannot build a fresh DB: data/schema.sql is missing "
+                f"({SCHEMA_SQL_PATH}). Regenerate it with scripts/dump_schema.py."
+            )
         with open(SCHEMA_SQL_PATH, encoding='utf-8') as f:
             conn.executescript(f.read())
         conn.commit()
