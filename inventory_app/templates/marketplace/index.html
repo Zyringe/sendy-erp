@@ -102,7 +102,13 @@
           <td class="text-end">{{ o.total_qty | fmt_qty }}</td>
           <td class="text-end">{{ o.item_total | fmt_price }}</td>
           <td class="text-end text-muted">{{ o.marketplace_fee | fmt_price }}</td>
-          <td class="text-end">{{ o.payout | fmt_price }}</td>
+          {# ยอดรับ = ยอดโอนจริง (actual_payout, จากไฟล์ Income) ถ้ามี; ไม่งั้นประมาณ
+             จากยอดสินค้า − ค่าธรรมเนียม. NB: o.payout (จำนวนเงินทั้งหมด) รวมค่าส่งที่ผู้ซื้อจ่าย
+             จึง over-state ยอดที่ผู้ขายได้ — ไม่ใช้ตรงนี้ #}
+          <td class="text-end">
+            {% if o.actual_payout is not none %}{{ o.actual_payout | fmt_price }}
+            {% else %}<span title="ยังไม่ได้อัปไฟล์ Income (โอนเงินสำเร็จ) — ประมาณจากยอดสินค้า − ค่าธรรมเนียม">{{ ((o.item_total or 0) - (o.marketplace_fee or 0)) | fmt_price }} <span class="badge bg-secondary">~ประมาณ</span></span>{% endif %}
+          </td>
           <td class="small">{{ o.buyer_name or '-' }}</td>
         </tr>
         {% else %}

@@ -285,6 +285,37 @@ def test_marketplace_unmapped_renders(mp_client):
     assert resp.status_code == 200, resp.data[:600]
 
 
+def test_payout_column_shows_actual_then_estimate(tmp_db, mp_client):
+    """ยอดรับ column = real net (actual_payout) when settled, else item_total−fee
+    with a ~ประมาณ badge. It must NEVER show the raw order-export `payout`
+    (จำนวนเงินทั้งหมด, which includes buyer-paid shipping → over-states)."""
+    import re
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    # Far-future dates so both rows land in the newest-500 window on the DB clone.
+    conn.execute(
+        """INSERT INTO marketplace_orders
+             (platform, order_sn, status, order_date, item_total,
+              marketplace_fee, payout, actual_payout)
+           VALUES ('shopee','SETTLED1','สำเร็จแล้ว','2099-01-01 10:00',135,27,164,108)""")
+    conn.execute(
+        """INSERT INTO marketplace_orders
+             (platform, order_sn, status, order_date, item_total,
+              marketplace_fee, payout, actual_payout)
+           VALUES ('shopee','PENDING1','ที่ต้องจัดส่ง','2099-01-02 10:00',55,14,999,NULL)""")
+    conn.commit()
+    conn.close()
+
+    html = mp_client.get('/marketplace').get_data(as_text=True)
+    rows = re.split(r'<tr', html)
+    settled = next(r for r in rows if 'SETTLED1' in r)
+    pending = next(r for r in rows if 'PENDING1' in r)
+    # settled → shows real net 108.00, NOT the 164.00 buyer-total
+    assert '108.00' in settled and '164.00' not in settled
+    # unsettled → estimate 55−14 = 41.00 + badge, NOT the raw payout 999.00
+    assert '41.00' in pending and '~ประมาณ' in pending and '999.00' not in pending
+
+
 def test_staff_allowed_to_import_orders(tmp_db):
     """Staff may import marketplace orders (Put enabled it 2026-06-03).
 
