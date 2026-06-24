@@ -3844,39 +3844,6 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
             conn.close()
 
 
-def create_conversion_formula(name, output_product_id, output_qty, inputs, note=''):
-    conn = get_connection()
-    cur = conn.execute(
-        "INSERT INTO conversion_formulas(name, output_product_id, output_qty, note) VALUES (?,?,?,?)",
-        (name, output_product_id, output_qty, note or None)
-    )
-    formula_id = cur.lastrowid
-    for inp in inputs:
-        conn.execute(
-            "INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity) VALUES (?,?,?)",
-            (formula_id, inp['product_id'], inp['quantity'])
-        )
-    conn.commit()
-    conn.close()
-    return formula_id
-
-
-def update_conversion_formula(formula_id, name, output_product_id, output_qty, inputs, note=''):
-    conn = get_connection()
-    conn.execute(
-        "UPDATE conversion_formulas SET name=?, output_product_id=?, output_qty=?, note=? WHERE id=?",
-        (name, output_product_id, output_qty, note or None, formula_id)
-    )
-    conn.execute("DELETE FROM conversion_formula_inputs WHERE formula_id=?", (formula_id,))
-    for inp in inputs:
-        conn.execute(
-            "INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity) VALUES (?,?,?)",
-            (formula_id, inp['product_id'], inp['quantity'])
-        )
-    conn.commit()
-    conn.close()
-
-
 def delete_conversion_formula(formula_id, also_delete_id=None):
     """Delete a formula (+ its inputs via the explicit DELETE). When
     `also_delete_id` is given (the reciprocal pack/unpack partner), delete both
@@ -3940,6 +3907,56 @@ def find_pair_partner(formula_id, conn=None):
             if len(cins) == 1 and cins[0] == my_output:
                 return cand                     # full reciprocal match
         return None
+    finally:
+        if own:
+            conn.close()
+
+
+def derive_pair_from_formula(formula_id, conn=None):
+    """Recover the (pack, loose, ratio, direction) that built a [แพ็ค]/[แกะ]
+    pair-half, so the pair form can reopen it prefilled for editing.
+
+        PACK   half: output=pack qty1, input=(loose, ratio)  → ratio = input qty
+        UNPACK half: output=loose qty ratio, input=(pack, 1)  → ratio = output_qty
+
+    Returns {'pack_id','loose_id','ratio','direction','pack_name','loose_name'},
+    or None for anything that is NOT a clean pair-half (missing, no [แพ็ค]/[แกะ]
+    prefix, or != 1 input — i.e. a generic/advanced formula has no pair form).
+    `direction` is 'both' when the reciprocal partner is present, else the single
+    side this formula represents ('pack' or 'unpack')."""
+    own = conn is None
+    if own:
+        conn = get_connection()
+    try:
+        f = conn.execute(
+            "SELECT id, name, output_product_id, output_qty, note FROM conversion_formulas WHERE id=?",
+            (formula_id,)).fetchone()
+        if f is None:
+            return None
+        name = f["name"] or ""
+        is_pack, is_unpack = name.startswith('[แพ็ค]'), name.startswith('[แกะ]')
+        if not (is_pack or is_unpack):
+            return None                          # generic/advanced formula — no pair form
+        ins = [(r["product_id"], r["quantity"]) for r in conn.execute(
+            "SELECT product_id, quantity FROM conversion_formula_inputs WHERE formula_id=?",
+            (formula_id,)).fetchall()]
+        if len(ins) != 1:
+            return None                          # not a clean 1-input pair half
+        in_pid, in_qty = ins[0]
+        if is_pack:
+            pack_id, loose_id, ratio = f["output_product_id"], in_pid, in_qty
+        else:                                    # [แกะ]
+            loose_id, pack_id, ratio = f["output_product_id"], in_pid, f["output_qty"]
+        direction = 'both' if find_pair_partner(formula_id, conn=conn) is not None \
+                    else ('pack' if is_pack else 'unpack')
+
+        def _name(pid):
+            r = conn.execute("SELECT product_name FROM products WHERE id=?", (pid,)).fetchone()
+            return r["product_name"] if r else str(pid)
+
+        return {'pack_id': pack_id, 'loose_id': loose_id, 'ratio': int(ratio),
+                'direction': direction, 'pack_name': _name(pack_id), 'loose_name': _name(loose_id),
+                'note': f["note"] or ''}
     finally:
         if own:
             conn.close()
@@ -5481,6 +5498,8 @@ def get_payout_summaries(conn, platform='shopee', year=None, limit=1000):
 # tooltip + order-detail modal tooltip). Both Shopee and Lazada parsers fill these
 # typed columns (Lazada maps its raw English statement lines into the same buckets),
 # so ONE clean Thai-category breakdown serves both platforms — not the raw rows.
+from marketplace_fee_buckets import LAZADA_BUCKET, GRANULAR_LABEL
+
 _FEE_LABELS = [
     ('fee_commission',  'ค่าคอมมิชชั่น'),
     ('fee_service',     'ค่าบริการ'),
@@ -5493,21 +5512,43 @@ _FEE_LABELS = [
 ]
 
 
-def _bucket_fee_lines(d):
+def _smart_label(col, generic, raw):
+    """Lazada smart label: when a bucket came from ONE underlying fee type, show
+    that fee's real name (e.g. a LazCoins-only ค่าโฆษณา/โปรโมชั่น bucket → 'ส่วนลด
+    LazCoins'); keep the generic category when 2+ fee types combined into the bucket.
+    `raw` = the parsed fee_raw_json dict ({raw_label: amount})."""
+    names = set()
+    for lbl, amt in raw.items():
+        if isinstance(amt, (int, float)) and round(amt, 2) != 0.0 \
+                and LAZADA_BUCKET.get(lbl, 'fee_platform') == col:
+            names.add(GRANULAR_LABEL.get(lbl, generic))
+    return names.pop() if len(names) == 1 else generic
+
+
+def _bucket_fee_lines(d, fee_raw_json=None, platform=None):
     """Ordered fee-breakdown lines for ONE settled order (Shopee or Lazada), from
     the typed fee bucket columns: positive มูลค่าสินค้า first, each non-zero fee next
     (biggest deduction first), then a reconciling residual so Σ == net_payout (the
     footer). Returns None when there is no settled breakdown (item/net missing).
+    For Lazada, a single-source bucket is relabelled to its real fee name (see
+    _smart_label); Shopee keeps the generic categories (its buckets are its real fees).
     `d` is a row dict carrying item_value, net_payout + the fee_* bucket columns."""
     item, net = d.get('item_value'), d.get('net_payout')
     if item is None or net is None:
         return None
+    raw = None
+    if platform == 'lazada' and fee_raw_json:
+        try:
+            raw = json.loads(fee_raw_json)
+        except (ValueError, TypeError):
+            raw = None
     lines = [{'label': 'มูลค่าสินค้า', 'amount': round(item, 2)}]
     fees = 0.0
     for col, label in _FEE_LABELS:
         v = d.get(col) or 0.0
         if round(v, 2) != 0.0:
-            lines.append({'label': label, 'amount': round(v, 2)})
+            disp = _smart_label(col, label, raw) if raw else label
+            lines.append({'label': disp, 'amount': round(v, 2)})
             fees += v
     residual = round(net - item - fees, 2)
     if abs(residual) >= 0.01:
@@ -5535,7 +5576,7 @@ def get_payout_orders(conn, platform, payout_id):
                                            - COALESCE(w.wallet_net, o.actual_payout), 2)
                            END) AS fee_total,
                   COALESCE(f.net_payout, w.wallet_net, o.actual_payout) AS net_payout,
-                  f.fee_pct,
+                  f.fee_pct, f.fee_raw_json,
                   f.fee_commission, f.fee_service, f.fee_transaction, f.fee_platform,
                   f.fee_ads_escrow, f.fee_tax, f.shipping_net, f.fee_saver,
                   CASE WHEN f.order_sn IS NOT NULL THEN 'settled'
@@ -5562,7 +5603,10 @@ def get_payout_orders(conn, platform, payout_id):
         d = dict(o)
         # One clean Thai-category breakdown for both platforms, from the typed
         # bucket columns (only when settled — else show the estimate notice).
-        d['fee_lines'] = _bucket_fee_lines(d) if d.get('fee_source') == 'settled' else None
+        # Lazada uses fee_raw_json to smart-label single-source buckets.
+        d['fee_lines'] = (_bucket_fee_lines(d, d.get('fee_raw_json'), platform)
+                          if d.get('fee_source') == 'settled' else None)
+        d.pop('fee_raw_json', None)
         for col, _label in _FEE_LABELS:
             d.pop(col, None)
         out.append(d)
@@ -5721,7 +5765,7 @@ def get_marketplace_order_detail(conn, order_id):
     fees = conn.execute(
         """SELECT item_value, fee_commission, fee_service, fee_transaction,
                   fee_platform, fee_ads_escrow, fee_tax, shipping_net, fee_saver,
-                  fee_total, net_payout, fee_pct
+                  fee_total, net_payout, fee_pct, fee_raw_json
            FROM marketplace_order_fees
            WHERE platform = ? AND order_sn = ?""",
         (o['platform'], o['order_sn'])).fetchone()
@@ -5737,11 +5781,18 @@ def get_marketplace_order_detail(conn, order_id):
            WHERE platform = ? AND order_sn = ? AND txn_type = 'adjustment'
            ORDER BY txn_time""", (o['platform'], o['order_sn'])).fetchall()
     fees_d = dict(fees) if fees else None
+    # Build the breakdown from the raw lines (Lazada smart label), then drop the
+    # raw row before returning — it must not leak to the client (Shopee's raw row
+    # carries buyer name / order id / etc.).
+    fee_lines = None
+    if fees_d:
+        fee_lines = _bucket_fee_lines(fees_d, fees_d.get('fee_raw_json'), o['platform'])
+        fees_d.pop('fee_raw_json', None)
     return {'order': dict(o), 'items': [dict(r) for r in items],
             'fees': fees_d,
             # Same clean Thai-category breakdown as the settlement-page tooltip,
             # for the modal's ค่าธรรมเนียม hover. None when no Income breakdown.
-            'fee_lines': _bucket_fee_lines(fees_d) if fees_d else None,
+            'fee_lines': fee_lines,
             'payout': dict(payout) if payout else None,
             'adjustments': [dict(a) for a in adjustments],
             'margin': get_order_margin(conn, order_id)}
