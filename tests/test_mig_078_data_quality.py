@@ -10,6 +10,14 @@ import sqlite3
 
 import pytest
 
+# mig 078 writes/reads product_code_mapping.bsn_unit, the column mig 112 dropped
+# (pure bsn_code→product resolver). mig 078 is immutable and already applied to
+# prod, so re-running its SQL against the post-112 schema is impossible. Kept as
+# documentation of the migration's intent; see mig 112 + PR #177.
+pytestmark = pytest.mark.skip(
+    reason="mig 078 operates on product_code_mapping.bsn_unit, dropped by mig 112"
+)
+
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MIG_078 = os.path.join(REPO, "data", "migrations",
                       "078_data_quality_mapping_uc_cleanup.sql")

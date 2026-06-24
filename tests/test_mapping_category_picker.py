@@ -23,8 +23,8 @@ def manager_client(tmp_db):
     # and one pending suggestion (surfaces the approve-form combos).
     conn = sqlite3.connect(tmp_db)
     conn.execute(
-        "INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, bsn_unit, is_ignored) "
-        "VALUES ('ZZTEST01', 'combo render test', NULL, '', 0)"
+        "INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, is_ignored) "
+        "VALUES ('ZZTEST01', 'combo render test', NULL, 0)"
     )
     conn.execute(
         "INSERT INTO pending_product_suggestions (bsn_code, bsn_name, status, created_at) "
