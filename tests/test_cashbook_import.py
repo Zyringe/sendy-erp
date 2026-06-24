@@ -747,8 +747,14 @@ class TestEmployeeSync:
         )
 
     def test_emp001_diligence_not_clobbered(self, synth_wb, tmp_db, tmp_db_conn):
-        """EMP001 diligence_allowance=500 must not be changed."""
+        """import_cashbook (which updates EMP001, matched by the วุฒิพงษ์ row in
+        the synth sheet) must not change its diligence_allowance. Seed a known
+        value first — the live-DB EMP001 has drifted away from the mig-054 seed."""
         _ensure_mig056(tmp_db_conn)
+        tmp_db_conn.execute(
+            "UPDATE employees SET diligence_allowance=500 WHERE emp_code='EMP001'"
+        )
+        tmp_db_conn.commit()
         mod = _import_cashbook()
         mod.import_cashbook(synth_wb, conn=tmp_db_conn)
         tmp_db_conn.commit()

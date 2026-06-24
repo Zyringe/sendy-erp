@@ -199,35 +199,48 @@ def test_diligence_forfeited_on_manual_late(tmp_db_conn):
     assert it2['gross'] == it2['base_amount']
 
 
-# ── 6. Salary next-full-month resolution (seeded EMP002 วิภา) ─────────────────
+# ── 6. Salary next-full-month resolution (วิภา 13000→15000 progression) ───────
+# Hermetic: build the progression on a fresh employee. The live-DB EMP002 has
+# drifted to real salary data, so we no longer read the mig-054 seed by code.
 
 def test_resolve_salary_emp002_progression(tmp_db_conn):
-    emp = tmp_db_conn.execute(
-        "SELECT id FROM employees WHERE emp_code='EMP002'"
-    ).fetchone()
-    eid = emp['id']
+    eid = _mk_employee(tmp_db_conn, 'T_PROG', 'progression hire', '2026-01-01',
+                       monthly_salary=13000.0)
+    # post-probation raise effective the 1st of the next full month (mirrors
+    # the mig-054 EMP002 seed: 13000 then 15000 from 2026-07-01)
+    tmp_db_conn.execute(
+        """INSERT INTO employee_salary_history
+             (employee_id, effective_date, monthly_salary, reason)
+           VALUES (?, '2026-07-01', 15000, 'post_probation')""",
+        (eid,),
+    )
+    tmp_db_conn.commit()
     assert hr.resolve_salary(eid, '2026-04', conn=tmp_db_conn)['monthly_salary'] == 13000
     assert hr.resolve_salary(eid, '2026-06', conn=tmp_db_conn)['monthly_salary'] == 13000
     assert hr.resolve_salary(eid, '2026-07', conn=tmp_db_conn)['monthly_salary'] == 15000
     assert hr.resolve_salary(eid, '2026-09', conn=tmp_db_conn)['monthly_salary'] == 15000
 
 
-# ── 7. New-hire proration (seeded EMP001 วุฒิพงษ์, start 2026-05-02) ──────────
+# ── 7. New-hire proration (วุฒิพงษ์-style new hire, start 2026-05-02) ──────────
+# Hermetic: fresh new-hire (live-DB EMP001 has drifted). Same pattern as
+# test_mid_month_start_prorates above.
 
-def test_new_hire_proration_emp001(tmp_db_conn):
-    emp = tmp_db_conn.execute(
-        "SELECT id FROM employees WHERE emp_code='EMP001'"
-    ).fetchone()
-    eid = emp['id']
+def test_new_hire_proration_emp001(tmp_db_conn_hr_clean):
+    # _hr_clean wipes payroll runs so generate_run builds fresh and includes
+    # this new hire (the live DB already has finalized Apr/May runs that would
+    # otherwise be returned without the just-added employee).
+    conn = tmp_db_conn_hr_clean
+    eid = _mk_employee(conn, 'T_PROR', 'new hire', '2026-05-02',
+                       monthly_salary=13000.0)
     # May 2026: worked 2-May..31-May inclusive = 30 calendar days; capped at
     # day_divisor 30 → no proration loss. base == round(13000/30*30,2) = 13000.00
-    run5 = hr.generate_run('2026-05', 1, created_by=1, conn=tmp_db_conn)
-    it5 = _item(tmp_db_conn, run5['id'], eid)
+    run5 = hr.generate_run('2026-05', 1, created_by=1, conn=conn)
+    it5 = _item(conn, run5['id'], eid)
     assert it5['salary_rate'] == 13000
     assert it5['base_amount'] == 13000.00
     # June 2026: full month → 13000 flat
-    run6 = hr.generate_run('2026-06', 1, created_by=1, conn=tmp_db_conn)
-    it6 = _item(tmp_db_conn, run6['id'], eid)
+    run6 = hr.generate_run('2026-06', 1, created_by=1, conn=conn)
+    it6 = _item(conn, run6['id'], eid)
     assert it6['base_amount'] == 13000.00
 
 
