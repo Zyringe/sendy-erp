@@ -367,6 +367,25 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // ---- Lazy-load a deposit's order rows on expand (deposits tab) ----
   const fmtN = n => (n == null ? '0.00' : Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}));
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  // Hover-popover body for the ค่าธรรมเนียม cell: raw statement lines verbatim
+  // (positive item line first, then each fee deduction), footer = net payout.
+  // lines is null when no Income file imported yet → show the estimate notice.
+  function feePopHtml(lines, net) {
+    if (!lines || !lines.length)
+      return '<div class="text-muted small">ยังไม่ได้อัปโหลดไฟล์ Income (โอนเงินสำเร็จ) — ค่าธรรมเนียมเป็นค่าประมาณ ยังไม่มีรายละเอียดแยกบรรทัด</div>';
+    const frow = (l, v, cls) => `<div class="d-flex justify-content-between gap-3"><span class="text-muted">${esc(l)}</span><span class="${cls || ''}">${v}</span></div>`;
+    let html = '', prevPos = null;
+    lines.forEach(x => {
+      const neg = x.amount < 0;
+      if (prevPos === true && neg) html += '<div class="border-top my-1"></div>';
+      html += frow(x.label, (neg ? '−' : '') + '฿' + fmtN(Math.abs(x.amount)), neg ? 'text-danger' : '');
+      prevPos = !neg;
+    });
+    html += '<div class="border-top my-1"></div>';
+    html += `<div class="d-flex justify-content-between gap-3 fw-bold"><span>ยอดสุทธิ</span><span class="text-success">฿${fmtN(net)}</span></div>`;
+    return html;
+  }
   function ivCell(o) {
     if (o.matched_iv) {
       let badge = '';
@@ -390,7 +409,8 @@ document.addEventListener('DOMContentLoaded', function () {
       <td>${ivCell(o)}</td>
       <td class="small">${o.settled_at || '–'}</td>
       <td class="text-end">${fmtN(o.item_value)}</td>
-      <td class="text-end ${feeCls}">${fmtN(o.fee_total)}</td>
+      <td class="text-end ${feeCls}">${o.fee_total == null ? fmtN(o.fee_total)
+        : `<span class="js-fee-pop" tabindex="0" data-order-id="${o.id}" style="cursor:help;border-bottom:1px dotted">${fmtN(o.fee_total)}</span>`}</td>
       <td class="text-end fw-bold">${fmtN(o.net_payout)}</td>
       <td class="text-end small">${o.fee_pct || ''}</td>
     </tr>`;
@@ -406,6 +426,15 @@ document.addEventListener('DOMContentLoaded', function () {
           tbody.innerHTML = d.orders.length
             ? d.orders.map(depRowHtml).join('')
             : '<tr><td colspan="7" class="text-center text-muted py-3">ไม่มีออเดอร์</td></tr>';
+          // Attach the fee-breakdown hover popover to each just-rendered row.
+          d.orders.forEach(o => {
+            const el = tbody.querySelector(`.js-fee-pop[data-order-id="${o.id}"]`);
+            if (el) new bootstrap.Popover(el, {
+              trigger: 'hover focus', html: true, placement: 'left',
+              title: `ค่าธรรมเนียม · ${o.order_sn}`,
+              content: feePopHtml(o.fee_lines, o.net_payout),
+            });
+          });
         })
         .catch(() => { col.dataset.loaded = '0'; tbody.innerHTML = '<tr><td colspan="7" class="text-danger text-center py-3">โหลดไม่สำเร็จ</td></tr>'; });
     });

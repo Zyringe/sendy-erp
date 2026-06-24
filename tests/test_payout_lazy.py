@@ -54,6 +54,43 @@ def test_get_payout_report_still_composes_summary_plus_orders(tmp_db_conn):
     assert {o['order_sn'] for o in rep[0]['orders']} == {'LZ1', 'LZ2'}
 
 
+def test_fee_lines_from_raw_orders_parses_and_keeps_invariant():
+    import json
+    raw = json.dumps({'ค่าธรรมเนียมการชำระเงิน': -1.54, 'ยอดรวมค่าสินค้า': 49.0,
+                      'หักค่าธรรมเนียมการขายสินค้า': -6.16, 'ส่วนลด LazCoins': -0.98,
+                      'Premium Package': -3.08, 'รางวัลรีวิวสำหรับผู้ซื้อ': -5.35},
+                     ensure_ascii=False)
+    lines = models._fee_lines_from_raw(raw)
+    assert lines[0] == {'label': 'ยอดรวมค่าสินค้า', 'amount': 49.0}   # positive item line first
+    negs = [x['amount'] for x in lines[1:]]
+    assert negs == sorted(negs)                                       # biggest deduction first
+    assert {'label': 'ส่วนลด LazCoins', 'amount': -0.98} in lines      # raw label kept verbatim
+    assert round(sum(x['amount'] for x in lines), 2) == 31.89         # Σ == net (popover footer)
+
+
+def test_fee_lines_from_raw_none_for_missing_or_bad():
+    assert models._fee_lines_from_raw(None) is None
+    assert models._fee_lines_from_raw('') is None
+    assert models._fee_lines_from_raw('{}') is None
+    assert models._fee_lines_from_raw('not json') is None
+
+
+def test_payout_orders_includes_fee_lines_and_hides_raw(tmp_db_conn):
+    import json
+    c = tmp_db_conn
+    _seed_one_deposit(c)
+    c.execute("UPDATE marketplace_order_fees SET fee_raw_json=? "
+              "WHERE platform='shopee' AND order_sn='LZ1'",
+              (json.dumps({'Item': 60.0, 'Commission': -10.0}, ensure_ascii=False),))
+    c.commit()
+    pid = models.get_payout_summaries(c, 'shopee')[0]['id']
+    by_sn = {o['order_sn']: o for o in models.get_payout_orders(c, 'shopee', pid)}
+    assert by_sn['LZ1']['fee_lines'] == [{'label': 'Item', 'amount': 60.0},
+                                         {'label': 'Commission', 'amount': -10.0}]
+    assert by_sn['LZ2']['fee_lines'] is None       # no Income breakdown → estimate, no lines
+    assert 'fee_raw_json' not in by_sn['LZ1']      # raw string not leaked to the client
+
+
 def test_deposits_page_lazy_and_api_serves_rows(tmp_db_conn):
     """Deposits tab renders deposit cards but NOT the order rows (lazy); the new
     API serves a deposit's rows on demand."""
