@@ -21,6 +21,24 @@ def test_withdrawals_negative_iso_time():
     assert w['order_sn'] is None
     assert out['deposits_by_statement']['THJ-2026-0617'] == 84.42
 
+def test_settlements_carry_precise_time_per_statement():
+    # The Deposit/Settlement rows give the exact (~2am) time each รอบบิล settled
+    # into the Lazada balance — used to re-anchor income for accurate reconcile.
+    df = _df([
+        ['1','18 Jun 2026 02:25:02','Deposit','Settlement','+84.42','Statement No. THJ-2026-0617'],
+        ['2','19 Jun 2026 02:26:12','Deposit','Settlement','+94.10','Statement No. THJ-2026-0618'],
+        ['3','15 Jun 2026 10:21:07','Withdrawal','Auto Withdrawal','-178.52','Bank Ref. THJ-20260615'],
+    ])
+    out = parse_lazada_wallet(df)
+    s = {r['statement']: r for r in out['settlements']}
+    assert s['THJ-2026-0617'] == {'statement':'THJ-2026-0617',
+                                  'settled_at':'2026-06-18 02:25:02', 'amount':84.42}
+    assert s['THJ-2026-0618']['settled_at'] == '2026-06-19 02:26:12'
+    assert s['THJ-2026-0618']['amount'] == 94.10
+    # withdrawals unchanged
+    assert len(out['withdrawals']) == 1
+
+
 def test_bad_columns_raise():
     with pytest.raises(LazadaWalletError):
         parse_lazada_wallet(pd.DataFrame([{'Foo':'bar'}]))
