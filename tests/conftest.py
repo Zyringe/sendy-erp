@@ -135,16 +135,13 @@ def empty_db(tmp_path, monkeypatch):
     A data-less DB carrying the FULL live schema (every table/index/trigger/
     view, zero rows). Use when a test wants a clean slate.
 
-    NOT built by replaying migrations from empty. `database.init_db()` runs the
-    whole 001→053 chain with FK enforcement on, and several migrations seed
-    rows that depend on imported data — 014 `commission_assignments`→
-    `salespersons`, 018 `commission_product_overrides`→`products`
-    (hardcoded product_id=398), cascading to 019/020/023 — so a from-empty
-    replay raises `FOREIGN KEY constraint failed`. That path is unsupported
-    BY DESIGN: a fresh prod/Railway deploy bootstraps a *seeded* DB via
-    /bootstrap/upload-db and only then applies migrations (app.py:48-98). The
-    live DB's schema is the source of truth, so we clone the schema without
-    data. Do NOT revert this to init_db() — see tests/test_empty_db_fixture.py.
+    Built by cloning the LIVE schema (not via init_db). `database.init_db()` on
+    a brand-new DB now builds from the checked-in `data/schema.sql` baseline and
+    works (it no longer replays the 014/018/019 historical chain that used to
+    raise FOREIGN KEY / CHECK errors — see test_fresh_db_build.py). We still
+    clone from the live DB here so the fixture reflects the EXACT current live
+    schema, including any drift not yet folded into schema.sql — keep it that
+    way. Do NOT revert this to init_db() — see tests/test_empty_db_fixture.py.
     """
     if not os.path.exists(LIVE_DB):
         pytest.skip(f"Live DB not found at {LIVE_DB} — skipping schema-clone fixture")

@@ -37,6 +37,12 @@ MIGRATIONS_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', 'data', 'migrations')
 )
 
+# Complete current schema baseline, applied to a brand-new DB instead of
+# replaying the migration history (regenerate with scripts/dump_schema.py).
+SCHEMA_SQL_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..', 'data', 'schema.sql')
+)
+
 SCHEMA = """
 PRAGMA encoding = 'UTF-8';
 PRAGMA foreign_keys = ON;
@@ -463,7 +469,21 @@ def run_pending_migrations(conn, verbose=True):
 
 def init_db():
     conn = get_connection()
-    conn.executescript(SCHEMA)
+    existing = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+    if not existing and os.path.exists(SCHEMA_SQL_PATH):
+        # Brand-new DB (bare `git clone` + first `sendy-up`): build the complete
+        # current schema from the checked-in baseline in one shot — every table
+        # incl. `brands` now exists, so run_pending_migrations() takes its
+        # bootstrap-backfill path and marks all shipped migrations applied.
+        # Replaying the historical chain from empty cannot work (the embedded
+        # SCHEMA + the ALTER history collide → duplicate-column / unseeded-FK).
+        with open(SCHEMA_SQL_PATH, encoding='utf-8') as f:
+            conn.executescript(f.read())
+        conn.commit()
+    else:
+        conn.executescript(SCHEMA)
     # Migration: add synced_to_stock column to BSN transaction tables if missing
     for tbl in ('sales_transactions', 'purchase_transactions'):
         cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()]
