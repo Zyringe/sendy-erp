@@ -75,20 +75,50 @@ def test_fee_lines_from_raw_none_for_missing_or_bad():
     assert models._fee_lines_from_raw('not json') is None
 
 
-def test_payout_orders_includes_fee_lines_and_hides_raw(tmp_db_conn):
-    import json
+def test_shopee_payout_orders_build_fee_lines_from_buckets(tmp_db_conn):
+    """Shopee's breakdown comes from the typed fee_* bucket columns (item first,
+    each non-zero fee, then a reconciling residual so Σ == net_payout footer).
+    Shopee's fee_raw_json is the full raw statement row, NOT a {label:number}
+    fee dict — it must never feed the popover."""
     c = tmp_db_conn
     _seed_one_deposit(c)
-    c.execute("UPDATE marketplace_order_fees SET fee_raw_json=? "
-              "WHERE platform='shopee' AND order_sn='LZ1'",
-              (json.dumps({'Item': 60.0, 'Commission': -10.0}, ensure_ascii=False),))
+    # LZ1 is settled (item_value 60, net_payout 50): seed real buckets summing to −10.
+    c.execute("UPDATE marketplace_order_fees SET fee_commission=-6.0, fee_service=-4.0 "
+              "WHERE platform='shopee' AND order_sn='LZ1'")
     c.commit()
     pid = models.get_payout_summaries(c, 'shopee')[0]['id']
     by_sn = {o['order_sn']: o for o in models.get_payout_orders(c, 'shopee', pid)}
-    assert by_sn['LZ1']['fee_lines'] == [{'label': 'Item', 'amount': 60.0},
-                                         {'label': 'Commission', 'amount': -10.0}]
+    lines = by_sn['LZ1']['fee_lines']
+    assert lines[0] == {'label': 'มูลค่าสินค้า', 'amount': 60.0}     # positive item line first
+    assert {'label': 'ค่าคอมมิชชั่น', 'amount': -6.0} in lines
+    assert {'label': 'ค่าบริการ', 'amount': -4.0} in lines
+    assert round(sum(x['amount'] for x in lines), 2) == 50.0        # Σ == net_payout footer
     assert by_sn['LZ2']['fee_lines'] is None       # no Income breakdown → estimate, no lines
     assert 'fee_raw_json' not in by_sn['LZ1']      # raw string not leaked to the client
+    assert 'fee_commission' not in by_sn['LZ1']    # raw bucket columns not leaked either
+
+
+def test_shopee_raw_statement_row_does_not_crash_payout_orders(tmp_db_conn):
+    """Regression for PR #195: every Shopee deposit card showed 'โหลดไม่สำเร็จ'
+    because get_payout_orders ran round() over fee_raw_json — but Shopee stores
+    the FULL raw statement row there (string values, buyer name, order id, …),
+    so round('1381', 2) raised TypeError → 500 → card load failed. The expand
+    must build from buckets and must not touch the raw row for Shopee."""
+    import json
+    c = tmp_db_conn
+    _seed_one_deposit(c)
+    real_row = json.dumps({
+        'ลำดับที่': '1381', 'หมายเลขคำสั่งซื้อ': 'LZ1',
+        'ชื่อผู้ใช้ (ผู้ซื้อ)': 'pooysukan', 'ค่าธรรมเนียม (%)': '17.0',
+        'สินค้าราคาปกติ': '60.0', 'รหัสคืนสินค้า': None,
+    }, ensure_ascii=False)
+    c.execute("UPDATE marketplace_order_fees SET fee_raw_json=? "
+              "WHERE platform='shopee' AND order_sn='LZ1'", (real_row,))
+    c.commit()
+    pid = models.get_payout_summaries(c, 'shopee')[0]['id']
+    by_sn = {o['order_sn']: o for o in models.get_payout_orders(c, 'shopee', pid)}  # must NOT raise
+    labels = {x['label'] for x in by_sn['LZ1']['fee_lines']}
+    assert 'ชื่อผู้ใช้ (ผู้ซื้อ)' not in labels and 'ลำดับที่' not in labels  # no raw-row garbage
 
 
 def test_deposits_page_lazy_and_api_serves_rows(tmp_db_conn):
