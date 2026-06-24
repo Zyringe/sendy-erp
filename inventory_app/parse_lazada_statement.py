@@ -49,9 +49,31 @@ _BUCKET = {
     # fee); no dedicated bucket → parked in the platform catch-all, but mapped
     # explicitly so it stops being reported as an "unknown fee" on every import.
     'Lost Claim': 'fee_platform',
+    # --- Thai-language export: same transactions, Thai ชื่อรายการธุรกรรม → same
+    # buckets as the English names above. ('Premium Package' stays English even in
+    # the Thai file, so it is already covered.) ---
+    'ยอดรวมค่าสินค้า': 'item_value',                       # = Item Price Credit (gross)
+    'หักค่าธรรมเนียมการขายสินค้า': 'fee_commission',        # = Commission
+    'ค่าธรรมเนียมการชำระเงิน': 'fee_transaction',           # = Payment Fee
+    'ค่าธรรมเนียมโปรแกรมส่วนลด LazCoins': 'fee_ads_escrow',  # = LazCoins Discount Promotion Fee
+    'ส่วนลด LazCoins': 'fee_ads_escrow',                    # = LazCoins Discount
+    'รางวัลรีวิวสำหรับผู้ซื้อ': 'fee_ads_escrow',           # = Buyer Review Incentive
 }
 _BUCKETS = ('fee_commission', 'fee_service', 'fee_transaction', 'fee_platform',
             'fee_ads_escrow', 'fee_tax', 'shipping_net', 'fee_saver')
+
+# Thai-export headers → the English column names the parser uses. Lazada Seller
+# Center exports in the UI language; the files are otherwise identical. Renaming
+# is a no-op on an English file (no matching keys). 'วันที่ปรับปรุงเข้ายอดของฉัน'
+# ("credited to my balance") is the Release Date — verified to equal statement
+# date +1, matching the existing English-imported income txn_time convention.
+_TH_COL = {
+    'รหัสรอบบิล': _C_STMT,
+    'ชื่อรายการธุรกรรม': _C_FEE,
+    'จำนวนเงิน(รวมภาษี)': _C_AMT,
+    'หมายเลขคำสั่งซื้อ': _C_ORDER,
+    'วันที่ปรับปรุงเข้ายอดของฉัน': _C_REL,
+}
 
 
 def _num(v):
@@ -83,6 +105,7 @@ def load_lazada_statement_csv(source):
 
 def parse_lazada_statement(df):
     """Aggregate the Account Statement by Order Number. See module docstring."""
+    df = df.rename(columns=_TH_COL)   # normalize Thai-export headers (no-op for English)
     for col in _REQUIRED:
         if col not in df.columns:
             raise LazadaStatementError(
