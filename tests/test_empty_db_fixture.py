@@ -1,11 +1,11 @@
 """Guard test for the `empty_db` fixture.
 
-`empty_db` is a SCHEMA-ONLY CLONE of the live DB (zero rows), NOT a from-empty
-migration replay — that replay is unsupported by design and crashes at
-migration 014/018 (see conftest.py::empty_db docstring +
-project_sendy_migration_runner_gotchas memory). This test fails loudly if
-someone reverts the fixture to `database.init_db()` (which would re-introduce
-the 14 FOREIGN KEY errors) or to a partial hand-built schema.
+`empty_db` is a SCHEMA-ONLY CLONE of the live DB (zero rows). A from-empty
+`database.init_db()` now works too (it builds from data/schema.sql — see
+test_fresh_db_build.py), but the fixture still clones the LIVE schema so it
+reflects the exact current schema including any drift not yet folded into
+schema.sql. This test fails loudly if someone reverts the fixture to a partial
+hand-built schema.
 """
 import pytest
 
