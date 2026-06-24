@@ -1,18 +1,48 @@
 {% extends 'base.html' %}
-{% block title %}จับคู่แพ็ค-ตัวหลวม – ERP{% endblock %}
-{% block page_title %}จับคู่แพ็ค ↔ ตัวหลวม{% endblock %}
+{% set editing = prefill and prefill.editing %}
+{% block title %}{{ 'แก้ไข' if editing else 'สร้าง' }}สูตรแปลง แพ็ค-ตัวหลวม – ERP{% endblock %}
+{% block page_title %}{{ 'แก้ไข' if editing else 'สร้าง' }}สูตรแปลง แพ็ค-ตัวหลวม{% endblock %}
 
 {% block content %}
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{{ url_for('conversion_list') }}">สูตรแปลงสินค้า</a></li>
-    <li class="breadcrumb-item active">จับคู่แพ็ค-ตัวหลวม</li>
+    <li class="breadcrumb-item active">{{ 'แก้ไข' if editing else 'สร้างใหม่' }}</li>
   </ol>
 </nav>
 
+<style>
+  .conv-combo { position: relative; }
+  .conv-results {
+    display: none; position: absolute; z-index: 1056; left: 0; right: 0; top: 100%;
+    margin-top: 2px; max-height: 320px; overflow-y: auto;
+    background: #fff; border: 1px solid var(--bs-border-color, #dee2e6);
+    border-radius: .5rem; box-shadow: 0 .5rem 1rem rgba(0,0,0,.12);
+  }
+  .conv-results.open { display: block; }
+  .conv-item {
+    display: flex; align-items: center; gap: .5rem;
+    padding: .5rem .75rem; cursor: pointer; border-bottom: 1px solid #f1f1f1;
+  }
+  .conv-item:last-child { border-bottom: none; }
+  .conv-item:hover, .conv-item.active { background: #f4f6f9; }
+  .conv-item .name { flex: 1 1 auto; min-width: 0; }
+  .conv-unit-chip {
+    flex: 0 0 auto; font-size: .75rem; color: #6c757d;
+    background: #eef0f2; border-radius: 999px; padding: .05rem .5rem; white-space: nowrap;
+  }
+  .conv-empty { padding: .5rem .75rem; color: #6c757d; font-size: .85rem; }
+</style>
+
 <div class="row justify-content-center">
   <div class="col-lg-7">
-    <form method="post">
+    {% if editing %}
+    <div class="alert alert-info d-flex align-items-center py-2 small mb-3">
+      <i class="bi bi-pencil-square me-2"></i>
+      <div>กำลังแก้ไขคู่นี้ — เปลี่ยนค่าแล้วกด <strong>บันทึก</strong> ระบบจะอัปเดตสูตรเดิม (ไม่สร้างซ้ำ)</div>
+    </div>
+    {% endif %}
+    <form method="post" id="pairForm">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="card mb-3">
         <div class="card-body">
@@ -21,45 +51,46 @@
             ระบบจะสร้าง/อัปเดตสูตรแปลงให้อัตโนมัติ. ถ้าคู่นี้มีอยู่แล้วจะอัปเดตทับ ไม่สร้างซ้ำ.
           </p>
 
-          <div class="mb-3">
+          <div class="mb-3 conv-combo">
             <label class="form-label fw-500">สินค้าแพ็ค (แผง) <span class="text-danger">*</span></label>
-            <select name="pack_id" class="form-select" required>
-              <option value="">— เลือกสินค้าแพ็ค —</option>
-              {% for p in products %}
-              <option value="{{ p.id }}">{{ p.product_name }} ({{ p.unit_type }})</option>
-              {% endfor %}
-            </select>
+            <input type="hidden" name="pack_id" value="{{ prefill.pack_id if prefill else '' }}">
+            <input type="text" class="form-control conv-search" autocomplete="off"
+                   placeholder="พิมพ์ชื่อ / รหัส / บาร์โค้ด เพื่อค้นหา…"
+                   value="{{ prefill.pack_name if prefill else '' }}">
+            <div class="conv-results"></div>
           </div>
 
-          <div class="mb-3">
+          <div class="mb-3 conv-combo">
             <label class="form-label fw-500">สินค้าตัวหลวม (ตัว) <span class="text-danger">*</span></label>
-            <select name="loose_id" class="form-select" required>
-              <option value="">— เลือกสินค้าตัวหลวม —</option>
-              {% for p in products %}
-              <option value="{{ p.id }}">{{ p.product_name }} ({{ p.unit_type }})</option>
-              {% endfor %}
-            </select>
+            <input type="hidden" name="loose_id" value="{{ prefill.loose_id if prefill else '' }}">
+            <input type="text" class="form-control conv-search" autocomplete="off"
+                   placeholder="พิมพ์ชื่อ / รหัส / บาร์โค้ด เพื่อค้นหา…"
+                   value="{{ prefill.loose_name if prefill else '' }}">
+            <div class="conv-results"></div>
           </div>
 
           <div class="row g-3">
             <div class="col-sm-6">
               <label class="form-label fw-500">กี่ตัวต่อ 1 แพ็ค <span class="text-danger">*</span></label>
-              <input type="number" name="ratio" class="form-control" min="1" step="1" value="2" required>
+              <input type="number" name="ratio" class="form-control" min="1" step="1"
+                     value="{{ prefill.ratio if prefill else 2 }}" required>
               <div class="form-text text-subtle">เช่น 1 แผง = 2 ตัว → ใส่ 2</div>
             </div>
             <div class="col-sm-6">
               <label class="form-label fw-500">ทิศทาง</label>
+              {% set dir = prefill.direction if prefill else 'both' %}
               <select name="direction" class="form-select">
-                <option value="both" selected>ทั้ง 2 ทาง (แพ็ค + แกะ)</option>
-                <option value="unpack">แกะอย่างเดียว (แผง → ตัว)</option>
-                <option value="pack">แพ็คอย่างเดียว (ตัว → แผง)</option>
+                <option value="both"   {{ 'selected' if dir == 'both'   else '' }}>ทั้ง 2 ทาง (แพ็ค + แกะ)</option>
+                <option value="unpack" {{ 'selected' if dir == 'unpack' else '' }}>แกะอย่างเดียว (แผง → ตัว)</option>
+                <option value="pack"   {{ 'selected' if dir == 'pack'   else '' }}>แพ็คอย่างเดียว (ตัว → แผง)</option>
               </select>
             </div>
           </div>
 
           <div class="mt-3">
             <label class="form-label">หมายเหตุ</label>
-            <input type="text" name="note" class="form-control" placeholder="ไม่บังคับ">
+            <input type="text" name="note" class="form-control" placeholder="ไม่บังคับ"
+                   value="{{ prefill.note if prefill else '' }}">
           </div>
         </div>
       </div>
@@ -73,4 +104,101 @@
     </form>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var SEARCH_URL = "{{ url_for('api_products_search') }}";
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function initCombo(combo) {
+    var input  = combo.querySelector('.conv-search');
+    var hidden = combo.querySelector('input[type=hidden]');
+    var drop   = combo.querySelector('.conv-results');
+    var timer = null, items = [], active = -1;
+
+    function close() { drop.classList.remove('open'); active = -1; }
+    function open()  { drop.classList.add('open'); }
+
+    function render() {
+      if (!items.length) {
+        drop.innerHTML = '<div class="conv-empty">ไม่พบสินค้า</div>';
+        open(); return;
+      }
+      drop.innerHTML = items.map(function (it, i) {
+        return '<div class="conv-item' + (i === active ? ' active' : '') + '" data-i="' + i + '">' +
+                 '<span class="name">' + esc(it.name) + '</span>' +
+                 (it.unit ? '<span class="conv-unit-chip">' + esc(it.unit) + '</span>' : '') +
+               '</div>';
+      }).join('');
+      open();
+    }
+
+    function pick(i) {
+      var it = items[i];
+      if (!it) return;
+      input.value = it.name;        // name only — unit lives in the chip, never doubled
+      hidden.value = it.id;
+      close();
+    }
+
+    function search(q) {
+      fetch(SEARCH_URL + '?q=' + encodeURIComponent(q) + '&limit=20')
+        .then(function (r) { return r.json(); })
+        .then(function (d) { items = (d && d.items) || []; active = items.length ? 0 : -1; render(); })
+        .catch(function () { items = []; render(); });
+    }
+
+    input.addEventListener('input', function () {
+      hidden.value = '';            // typing invalidates a prior pick until re-chosen
+      var q = input.value.trim();
+      clearTimeout(timer);
+      if (q.length < 1) { close(); return; }
+      timer = setTimeout(function () { search(q); }, 200);
+    });
+    input.addEventListener('focus', function () {
+      var q = input.value.trim();
+      if (q && !hidden.value) search(q);
+    });
+    input.addEventListener('keydown', function (e) {
+      if (!drop.classList.contains('open')) return;
+      if (e.key === 'ArrowDown') { active = Math.min(active + 1, items.length - 1); render(); e.preventDefault(); }
+      else if (e.key === 'ArrowUp') { active = Math.max(active - 1, 0); render(); e.preventDefault(); }
+      else if (e.key === 'Enter') { if (active >= 0) { pick(active); e.preventDefault(); } }
+      else if (e.key === 'Escape') { close(); }
+    });
+    // mousedown (not click) so the pick fires before the input's blur closes the list
+    drop.addEventListener('mousedown', function (e) {
+      var item = e.target.closest('.conv-item');
+      if (!item) return;
+      e.preventDefault();
+      pick(parseInt(item.getAttribute('data-i'), 10));
+    });
+    input.addEventListener('blur', function () { setTimeout(close, 150); });
+  }
+
+  document.querySelectorAll('.conv-combo').forEach(initCombo);
+
+  // Block submit if either product wasn't actually picked from the list.
+  document.getElementById('pairForm').addEventListener('submit', function (e) {
+    var combos = document.querySelectorAll('.conv-combo');
+    for (var i = 0; i < combos.length; i++) {
+      var hidden = combos[i].querySelector('input[type=hidden]');
+      if (!hidden.value) {
+        e.preventDefault();
+        var inp = combos[i].querySelector('.conv-search');
+        inp.classList.add('is-invalid');
+        inp.focus();
+        return;
+      }
+    }
+  });
+})();
+</script>
 {% endblock %}
