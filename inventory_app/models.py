@@ -5477,61 +5477,34 @@ def get_payout_summaries(conn, platform='shopee', year=None, limit=1000):
     return [dict(r) for r in rows]
 
 
-def _fee_lines_from_raw(fee_raw_json):
-    """Parse marketplace_order_fees.fee_raw_json (a {label: amount} dict of the
-    RAW statement lines, exactly as the platform labels them) into an ordered
-    list for the fee-cell hover popover: the positive item/credit line(s) first,
-    then the negative fee lines, biggest deduction first. Σ amounts == net_payout
-    by construction (the parser sums every line into net). Returns None when there
-    is no breakdown (no Income file imported → fee is only an estimate)."""
-    if not fee_raw_json:
-        return None
-    try:
-        raw = json.loads(fee_raw_json)
-    except (ValueError, TypeError):
-        return None
-    if not raw:
-        return None
-    # Defensive: skip any non-numeric value so a stray string can't 500 the card.
-    lines = []
-    for k, v in raw.items():
-        try:
-            lines.append({'label': k, 'amount': round(float(v), 2)})
-        except (TypeError, ValueError):
-            continue
-    if not lines:
-        return None
-    # positives (item value / credits) first; within a sign, larger magnitude first
-    lines.sort(key=lambda x: (x['amount'] < 0, -abs(x['amount'])))
-    return lines
-
-
-# Shopee fee buckets → Thai labels for the deposit-card fee popover. Shopee's
-# breakdown is built from these typed columns, NOT fee_raw_json (which for Shopee
-# is the whole raw statement row: string values, buyer name, order id, …).
-_SHOPEE_FEE_LABELS = [
+# Fee buckets → Thai category labels for the fee breakdown (settlement-page hover
+# tooltip + order-detail modal tooltip). Both Shopee and Lazada parsers fill these
+# typed columns (Lazada maps its raw English statement lines into the same buckets),
+# so ONE clean Thai-category breakdown serves both platforms — not the raw rows.
+_FEE_LABELS = [
     ('fee_commission',  'ค่าคอมมิชชั่น'),
     ('fee_service',     'ค่าบริการ'),
     ('fee_transaction', 'ค่าธุรกรรมการชำระเงิน'),
     ('fee_platform',    'ค่าธรรมเนียมแพลตฟอร์ม'),
-    ('fee_ads_escrow',  'ค่าโฆษณา (Escrow)'),
+    ('fee_ads_escrow',  'ค่าโฆษณา/โปรโมชั่น'),
     ('fee_tax',         'ภาษี'),
     ('shipping_net',    'ค่าจัดส่ง (สุทธิ)'),
     ('fee_saver',       'ค่าโปรแกรมประหยัดค่าจัดส่ง'),
 ]
 
 
-def _shopee_fee_lines(d):
-    """Ordered popover lines for ONE settled Shopee order, from the typed fee
-    bucket columns: positive มูลค่าสินค้า first, each non-zero fee next (biggest
-    deduction first), then a reconciling residual so Σ == net_payout (the footer).
-    Returns None when there is no settled breakdown (item/net missing)."""
+def _bucket_fee_lines(d):
+    """Ordered fee-breakdown lines for ONE settled order (Shopee or Lazada), from
+    the typed fee bucket columns: positive มูลค่าสินค้า first, each non-zero fee next
+    (biggest deduction first), then a reconciling residual so Σ == net_payout (the
+    footer). Returns None when there is no settled breakdown (item/net missing).
+    `d` is a row dict carrying item_value, net_payout + the fee_* bucket columns."""
     item, net = d.get('item_value'), d.get('net_payout')
     if item is None or net is None:
         return None
     lines = [{'label': 'มูลค่าสินค้า', 'amount': round(item, 2)}]
     fees = 0.0
-    for col, label in _SHOPEE_FEE_LABELS:
+    for col, label in _FEE_LABELS:
         v = d.get(col) or 0.0
         if round(v, 2) != 0.0:
             lines.append({'label': label, 'amount': round(v, 2)})
@@ -5562,7 +5535,7 @@ def get_payout_orders(conn, platform, payout_id):
                                            - COALESCE(w.wallet_net, o.actual_payout), 2)
                            END) AS fee_total,
                   COALESCE(f.net_payout, w.wallet_net, o.actual_payout) AS net_payout,
-                  f.fee_pct, f.fee_raw_json,
+                  f.fee_pct,
                   f.fee_commission, f.fee_service, f.fee_transaction, f.fee_platform,
                   f.fee_ads_escrow, f.fee_tax, f.shipping_net, f.fee_saver,
                   CASE WHEN f.order_sn IS NOT NULL THEN 'settled'
@@ -5587,14 +5560,10 @@ def get_payout_orders(conn, platform, payout_id):
     out = []
     for o in rows:
         d = dict(o)
-        # Shopee: build from typed buckets (raw_json is the whole statement row).
-        # Lazada/other: raw_json IS the curated {label: amount} fee dict.
-        if platform == 'shopee':
-            d['fee_lines'] = _shopee_fee_lines(d) if d.get('fee_source') == 'settled' else None
-        else:
-            d['fee_lines'] = _fee_lines_from_raw(d.get('fee_raw_json'))
-        d.pop('fee_raw_json', None)
-        for col, _label in _SHOPEE_FEE_LABELS:
+        # One clean Thai-category breakdown for both platforms, from the typed
+        # bucket columns (only when settled — else show the estimate notice).
+        d['fee_lines'] = _bucket_fee_lines(d) if d.get('fee_source') == 'settled' else None
+        for col, _label in _FEE_LABELS:
             d.pop(col, None)
         out.append(d)
     return out
@@ -5767,8 +5736,12 @@ def get_marketplace_order_detail(conn, order_id):
            FROM marketplace_wallet_txns
            WHERE platform = ? AND order_sn = ? AND txn_type = 'adjustment'
            ORDER BY txn_time""", (o['platform'], o['order_sn'])).fetchall()
+    fees_d = dict(fees) if fees else None
     return {'order': dict(o), 'items': [dict(r) for r in items],
-            'fees': dict(fees) if fees else None,
+            'fees': fees_d,
+            # Same clean Thai-category breakdown as the settlement-page tooltip,
+            # for the modal's ค่าธรรมเนียม hover. None when no Income breakdown.
+            'fee_lines': _bucket_fee_lines(fees_d) if fees_d else None,
             'payout': dict(payout) if payout else None,
             'adjustments': [dict(a) for a in adjustments],
             'margin': get_order_margin(conn, order_id)}

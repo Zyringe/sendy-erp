@@ -54,25 +54,33 @@ def test_get_payout_report_still_composes_summary_plus_orders(tmp_db_conn):
     assert {o['order_sn'] for o in rep[0]['orders']} == {'LZ1', 'LZ2'}
 
 
-def test_fee_lines_from_raw_orders_parses_and_keeps_invariant():
+def test_lazada_payout_orders_use_thai_categories_not_raw(tmp_db_conn):
+    """Lazada uses the SAME clean Thai-category breakdown as Shopee (built from the
+    typed bucket columns), NOT the raw English statement lines — so the settlement
+    fee tooltip has one consistent format across both platforms."""
     import json
-    raw = json.dumps({'ค่าธรรมเนียมการชำระเงิน': -1.54, 'ยอดรวมค่าสินค้า': 49.0,
-                      'หักค่าธรรมเนียมการขายสินค้า': -6.16, 'ส่วนลด LazCoins': -0.98,
-                      'Premium Package': -3.08, 'รางวัลรีวิวสำหรับผู้ซื้อ': -5.35},
-                     ensure_ascii=False)
-    lines = models._fee_lines_from_raw(raw)
-    assert lines[0] == {'label': 'ยอดรวมค่าสินค้า', 'amount': 49.0}   # positive item line first
-    negs = [x['amount'] for x in lines[1:]]
-    assert negs == sorted(negs)                                       # biggest deduction first
-    assert {'label': 'ส่วนลด LazCoins', 'amount': -0.98} in lines      # raw label kept verbatim
-    assert round(sum(x['amount'] for x in lines), 2) == 31.89         # Σ == net (popover footer)
-
-
-def test_fee_lines_from_raw_none_for_missing_or_bad():
-    assert models._fee_lines_from_raw(None) is None
-    assert models._fee_lines_from_raw('') is None
-    assert models._fee_lines_from_raw('{}') is None
-    assert models._fee_lines_from_raw('not json') is None
+    c = tmp_db_conn
+    c.execute("DELETE FROM marketplace_payouts WHERE platform='lazada'")
+    c.execute("DELETE FROM marketplace_order_fees WHERE platform='lazada'")
+    c.execute("DELETE FROM marketplace_orders WHERE order_sn='LZD1'")
+    c.execute("INSERT INTO marketplace_orders (platform, order_sn, item_total) VALUES ('lazada','LZD1',100.0)")
+    oid = c.execute("SELECT id FROM marketplace_orders WHERE order_sn='LZD1'").fetchone()['id']
+    models.upsert_marketplace_fees(c, [{'order_sn': 'LZD1', 'item_value': 100.0, 'net_payout': 70.0,
+        'fee_total': 30.0, 'fee_commission': -20.0, 'fee_ads_escrow': -10.0,
+        'fee_raw_json': json.dumps({'Item Price Credit': 100.0, 'Commission': -20.0,
+                                    'LazCoins Discount': -10.0}, ensure_ascii=False)}],
+        'lz.xlsx', platform='lazada')
+    pid = c.execute("INSERT INTO marketplace_payouts (platform,deposit_date,amount,n_orders) "
+                    "VALUES ('lazada','2026-06-16',70.0,1)").lastrowid
+    c.execute("UPDATE marketplace_orders SET payout_id=? WHERE id=?", (pid, oid)); c.commit()
+    by_sn = {o['order_sn']: o for o in models.get_payout_orders(c, 'lazada', pid)}
+    fl = by_sn['LZD1']['fee_lines']
+    labels = {x['label'] for x in fl}
+    assert fl[0] == {'label': 'มูลค่าสินค้า', 'amount': 100.0}     # Thai category, item first
+    assert 'ค่าคอมมิชชั่น' in labels                                # Thai category, not "Commission"
+    assert 'Commission' not in labels and 'Item Price Credit' not in labels  # raw English NOT used
+    assert round(sum(x['amount'] for x in fl), 2) == 70.0          # Σ == net_payout
+    assert 'fee_raw_json' not in by_sn['LZD1']
 
 
 def test_shopee_payout_orders_build_fee_lines_from_buckets(tmp_db_conn):
