@@ -3,9 +3,10 @@ unit, so Put can mark which ones are a real ตัว/แผง-style SKU split 
 needs a per-unit mapping override (mig 061).
 
 Most multi-unit codes are a single product (the unit just needs a ratio in
-unit_conversions) — only a minority are deliberate SKU splits. Fill the two
-blank columns (override_unit, override_product_id) ONLY for the real splits,
-then feed the reviewed CSV to scripts/apply_unit_aware_remap.py.
+unit_conversions) — only a minority are deliberate SKU splits. Since mig 112
+each bsn_code maps to exactly one product (per-unit override mappings were
+removed); this report is now detection-only — handle real ตัว/แผง splits via
+unit_conversions or separate products in /mapping + /unit-conversions.
 
   python scripts/export_multiunit_candidates.py
 
@@ -58,12 +59,12 @@ def build_rows(conn):
         """, (code, code)).fetchall()
         per_unit = "; ".join(f"{r['unit']}:{r['n']}" for r in counts)
 
-        # current catch-all mapping (mig 061: bsn_unit='')
+        # current mapping (mig 112: one row per bsn_code)
         cm = conn.execute("""
             SELECT m.product_id, p.product_name, p.unit_type
               FROM product_code_mapping m
               LEFT JOIN products p ON p.id = m.product_id
-             WHERE m.bsn_code=? ORDER BY (m.bsn_unit='') DESC LIMIT 1
+             WHERE m.bsn_code=? LIMIT 1
         """, (code,)).fetchone()
         cur_pid = cm["product_id"] if cm else None
         cur_name = cm["product_name"] if cm else None
@@ -111,8 +112,8 @@ def main(argv=None):
         w.writerows(rows)
     print(f"multi-unit candidate codes: {len(rows)}")
     print(f"→ {out}")
-    print("Fill override_unit + override_product_id only for real "
-          "ตัว/แผง-style SKU splits, then run apply_unit_aware_remap.py.")
+    print("Detection-only since mig 112 (one product per bsn_code); handle "
+          "real ตัว/แผง splits via /mapping + /unit-conversions.")
     return 0
 
 

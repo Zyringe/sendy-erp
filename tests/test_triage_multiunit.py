@@ -40,7 +40,7 @@ def test_triage_classifies(tmp_db):
     c.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'แผง', ?, 1)", (PN, "เฉพาะกิจไม่มีพี่น้อง (แผง)", f"S{PN}"))
     for code, pid in ((RA, PA), (BU, PA), (NO, PN)):
         c.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
-                  "product_id,bsn_unit) VALUES (?,?,?,'')",
+                  "product_id) VALUES (?,?,?)",
                   (code, "n", pid))
     # RA: แผง (many) + ตัว (many) with a real (ตัว) sibling → SUGGEST
     _sale(c, RA, "แผง", 1, 6)

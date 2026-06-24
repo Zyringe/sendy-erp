@@ -31,7 +31,7 @@ def test_lists_only_multiunit_codes_readonly(tmp_db):
     conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'แผง', ?, 1)", (PA, "PA", f"SK{PA}"))
     conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (PB, "PB", f"SK{PB}"))
     conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
-                 "product_id,bsn_unit) VALUES (?,?,?,'')", (MULTI, "mn", PA))
+                 "product_id) VALUES (?,?,?)", (MULTI, "mn", PA))
     _sale(conn, MULTI, "แผง", "DM1")
     _sale(conn, MULTI, "ตัว", "DM2")
     _sale(conn, SINGLE, "ตัว", "DS1")

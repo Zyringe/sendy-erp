@@ -14,9 +14,10 @@ product's unit_type, classify:
           override (Put just confirms / edits).
   MANUAL  multi-unit, none of the above → Put eyeballs.
 
-Output: an enriched review CSV (one row per code+unit needing a decision)
-with override_unit / override_product_id PRE-FILLED only for SUGGEST.
-Feed the confirmed file straight to apply_unit_aware_remap.py.
+Output: an enriched review CSV (one row per code+unit needing a decision).
+Since mig 112 each bsn_code maps to exactly one product (per-unit override
+mappings were removed), so this is detection-only — handle real splits via
+unit_conversions or separate products in /mapping + /unit-conversions.
 
   python scripts/triage_multiunit_candidates.py            # dry, prints summary
   python scripts/triage_multiunit_candidates.py --db <db>
@@ -85,7 +86,7 @@ def classify(conn):
             SELECT m.product_id pid, p.product_name nm, p.unit_type ut
               FROM product_code_mapping m
               LEFT JOIN products p ON p.id=m.product_id
-             WHERE m.bsn_code=? ORDER BY (m.bsn_unit='') DESC LIMIT 1
+             WHERE m.bsn_code=? LIMIT 1
         """, (code,)).fetchone()
         cur_pid = cm["pid"] if cm else None
         cur_nm = cm["nm"] if cm else None
@@ -151,8 +152,8 @@ def main(argv=None):
     for k in ("SUGGEST", "MANUAL", "RATIO", "NOISE"):
         print(f"  {k:8s}: {cat_n.get(k, 0)}")
     print(f"→ {out}")
-    print("SUGGEST rows are pre-filled — confirm/edit, delete the rest, "
-          "then run apply_unit_aware_remap.py --csv <this file>.")
+    print("Detection-only since mig 112 (one product per bsn_code); handle "
+          "real splits via /mapping + /unit-conversions.")
     return 0
 
 

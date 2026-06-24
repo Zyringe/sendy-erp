@@ -14,10 +14,10 @@ unit_conversions are left as-is (they are product+unit scoped; the orphan
 already has the right ones). Dry-run by default. --apply commits. Unique
 backup first.
 
-NOTE: this repoints the WHOLE code (the bsn_unit='' catch-all). For a code
-that must route to DIFFERENT products depending on the SOLD UNIT (a real
-ตัว/แผง SKU split, mig 061), use scripts/apply_unit_aware_remap.py instead —
-it writes per-(bsn_code, bsn_unit) override rows. The two are complementary.
+NOTE: this repoints the WHOLE code. Since mig 112 each bsn_code maps to
+exactly one product (per-unit override mappings were removed); a code that
+needs different handling per SOLD UNIT is now modeled via unit_conversions
+(ratio) or separate products, not a mapping override.
 """
 from __future__ import annotations
 
