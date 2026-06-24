@@ -45,12 +45,38 @@ def test_conversions_list_renders(admin_client):
     # exercises the buildable column + url_for('conversion_pair') in the list
     resp = admin_client.get('/conversions')
     assert resp.status_code == 200, resp.data[:500]
-    assert 'จับคู่แพ็ค-ตัวหลวม'.encode() in resp.data
+    assert 'สร้างสูตรแปลง แพ็ค-ตัวหลวม'.encode() in resp.data   # the (renamed) create button
 
 
 def test_conversion_pair_form_renders(admin_client):
     resp = admin_client.get('/conversions/pair')
     assert resp.status_code == 200, resp.data[:500]
+
+
+def test_conversion_pair_edit_prefills(admin_client, tmp_db):
+    # the pencil "แก้ไข" reopens the pair screen prefilled from an existing pair
+    pack_fid, _ = _seed_pair(tmp_db, 900201, 900202)
+    resp = admin_client.get(f'/conversions/pair?from_formula={pack_fid}')
+    assert resp.status_code == 200, resp.data[:500]
+    body = resp.data.decode('utf-8', 'replace')
+    assert 'TESTPACK900201' in body         # pack name prefilled into the search box
+    assert 'value="900201"' in body         # hidden pack_id prefilled
+    assert 'กำลังแก้ไขคู่นี้' in body         # editing banner shown
+
+
+def test_conversion_pair_edit_nonpair_redirects(admin_client, tmp_db):
+    # a generic (non [แพ็ค]/[แกะ]) formula has no pair form → redirect to the list
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("INSERT INTO products (id, product_name, unit_type, is_active) VALUES (900301,'GEN-OUT','ตัว',1)")
+    conn.execute("INSERT INTO products (id, product_name, unit_type, is_active) VALUES (900302,'GEN-IN','ตัว',1)")
+    fid = conn.execute(
+        "INSERT INTO conversion_formulas(name, output_product_id, output_qty) VALUES ('generic mix',900301,1)"
+    ).lastrowid
+    conn.execute("INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity) VALUES (?,900302,1)", (fid,))
+    conn.commit(); conn.close()
+    resp = admin_client.get(f'/conversions/pair?from_formula={fid}', follow_redirects=False)
+    assert resp.status_code == 302
+    assert '/conversions' in resp.headers['Location']
 
 
 def test_conversion_run_page_has_writeoff(admin_client, tmp_db):

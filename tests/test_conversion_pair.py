@@ -163,3 +163,49 @@ def test_find_partner_ignores_non_prefixed_reciprocal(empty_db_conn):
     c.commit()
     assert models.find_pair_partner(f1, conn=c) is None
     assert models.find_pair_partner(f2, conn=c) is None
+
+
+# ── derive_pair_from_formula — reopen the pair form prefilled for editing ──────
+def test_derive_from_pack_half(empty_db_conn):
+    c = empty_db_conn
+    _seed_product(c, 10, "pack", "แผง"); _seed_product(c, 20, "loose", "ตัว")
+    c.commit()
+    models.upsert_pack_unpack_pair(10, 20, ratio=2, direction="both", conn=c); c.commit()
+    pack_fid = c.execute("SELECT id FROM conversion_formulas WHERE output_product_id=10").fetchone()["id"]
+    d = models.derive_pair_from_formula(pack_fid, conn=c)
+    assert d == {'pack_id': 10, 'loose_id': 20, 'ratio': 2, 'direction': 'both',
+                 'pack_name': 'pack', 'loose_name': 'loose', 'note': ''}
+
+
+def test_derive_from_unpack_half_same_pair(empty_db_conn):
+    # Either half must derive the SAME pack/loose/ratio so the edit form is identical.
+    c = empty_db_conn
+    _seed_product(c, 10, "pack", "แผง"); _seed_product(c, 20, "loose", "ตัว")
+    c.commit()
+    models.upsert_pack_unpack_pair(10, 20, ratio=3, direction="both", conn=c); c.commit()
+    unpack_fid = c.execute("SELECT id FROM conversion_formulas WHERE output_product_id=20").fetchone()["id"]
+    d = models.derive_pair_from_formula(unpack_fid, conn=c)
+    assert d['pack_id'] == 10 and d['loose_id'] == 20 and d['ratio'] == 3
+    assert d['direction'] == 'both'
+
+
+def test_derive_one_way_keeps_direction(empty_db_conn):
+    c = empty_db_conn
+    _seed_product(c, 10, "pack", "แผง"); _seed_product(c, 20, "loose", "ตัว")
+    c.commit()
+    models.upsert_pack_unpack_pair(10, 20, ratio=4, direction="unpack", conn=c); c.commit()
+    fid = c.execute("SELECT id FROM conversion_formulas WHERE is_active=1").fetchone()["id"]
+    d = models.derive_pair_from_formula(fid, conn=c)
+    assert d['pack_id'] == 10 and d['loose_id'] == 20 and d['ratio'] == 4
+    assert d['direction'] == 'unpack'          # partnerless → keep the single side
+
+
+def test_derive_non_pair_returns_none(empty_db_conn):
+    c = empty_db_conn
+    _seed_product(c, 50, "out", "ตัว"); _seed_product(c, 51, "a", "ตัว"); _seed_product(c, 52, "b", "ตัว")
+    multi = _mk_formula(c, "general mix", 50, 1, [(51, 1), (52, 1)])      # >1 input
+    generic = _mk_formula(c, "A→B generic", 51, 1, [(50, 1)])            # no [แพ็ค]/[แกะ] prefix
+    c.commit()
+    assert models.derive_pair_from_formula(multi, conn=c) is None
+    assert models.derive_pair_from_formula(generic, conn=c) is None
+    assert models.derive_pair_from_formula(999999, conn=c) is None       # missing id

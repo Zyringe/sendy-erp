@@ -4,10 +4,7 @@
 
 {% block topbar_actions %}
 <a href="{{ url_for('conversion_pair') }}" class="btn btn-primary btn-sm">
-  <i class="bi bi-link-45deg me-1"></i>จับคู่แพ็ค-ตัวหลวม
-</a>
-<a href="{{ url_for('conversion_new') }}" class="btn btn-outline-secondary btn-sm">
-  <i class="bi bi-plus-lg me-1"></i>สูตรขั้นสูง
+  <i class="bi bi-link-45deg me-1"></i>สร้างสูตรแปลง แพ็ค-ตัวหลวม
 </a>
 {% endblock %}
 
@@ -57,7 +54,7 @@
   <i class="bi bi-scissors" style="font-size:2.5rem;opacity:.3"></i>
   <div class="mt-2">ยังไม่มีสูตรแปลงสินค้า</div>
   <a href="{{ url_for('conversion_pair') }}" class="btn btn-primary btn-sm mt-3">
-    <i class="bi bi-link-45deg me-1"></i>จับคู่แพ็ค-ตัวหลวม
+    <i class="bi bi-link-45deg me-1"></i>สร้างสูตรแปลง แพ็ค-ตัวหลวม
   </a>
 </div>
 {% else %}
@@ -119,8 +116,8 @@
             </a>
             {% endif %}
             {% if current_role %}
-            <a href="{{ url_for('conversion_edit', formula_id=f.id) }}"
-               class="btn btn-sm btn-outline-secondary" title="แก้ไขสูตร">
+            <a href="{{ url_for('conversion_pair', from_formula=f.id) }}"
+               class="btn btn-sm btn-outline-secondary" title="แก้ไขคู่แพ็ค-ตัวหลวม">
               <i class="bi bi-pencil"></i>
             </a>
             <button type="button" class="btn btn-sm btn-danger" title="ลบสูตร"

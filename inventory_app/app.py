@@ -213,7 +213,7 @@ _STAFF_POST_OK = frozenset([
     'marketplace.import_orders', 'marketplace.settlement_import', 'marketplace.upload', 'marketplace.link_iv',
     'products.product_location_save',
     'admin_exit_simulate',
-    'conversion_new', 'conversion_pair', 'conversion_edit', 'conversion_run', 'conversion_delete',
+    'conversion_pair', 'conversion_run', 'conversion_delete',
     'api_product_barcodes',
     'review.scan',
     'call.call_mark_called',
@@ -317,8 +317,7 @@ _ENDPOINT_MODULE = {
     'stock_adjust': 'operation',
     'transaction_history': 'operation',
     'conversion_list': 'operation',
-    'conversion_new': 'operation',
-    'conversion_edit': 'operation',
+    'conversion_pair': 'operation',
     'conversion_run': 'operation',
     'conversion_delete': 'operation',
     'conversion_deactivate': 'operation',
@@ -2504,107 +2503,70 @@ def conversion_history():
     return render_template('conversions/history.html', runs=runs)
 
 
-def _get_active_products():
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT id, product_name, unit_type FROM products WHERE is_active=1 ORDER BY product_name"
-    ).fetchall()
-    conn.close()
-    return rows
-
-
-@app.route('/conversions/new', methods=['GET', 'POST'])
-def conversion_new():
-    if not session.get('role'):
-        abort(403)
-    products = _get_active_products()
-    if request.method == 'POST':
-        name              = request.form.get('name', '').strip()
-        output_product_id = request.form.get('output_product_id', '').strip()
-        output_qty        = request.form.get('output_qty', '1').strip()
-        note              = request.form.get('note', '').strip()
-        input_pids        = request.form.getlist('input_product_id[]')
-        input_qtys        = request.form.getlist('input_quantity[]')
-
-        inputs = [{'product_id': int(p), 'quantity': int(q)}
-                  for p, q in zip(input_pids, input_qtys) if p and q]
-        if not name or not output_product_id or not inputs:
-            flash('กรุณากรอกชื่อสูตร สินค้าที่ได้ และวัตถุดิบอย่างน้อย 1 รายการ', 'danger')
-            return render_template('conversions/form.html', products=products, formula=None, inputs=[])
-
-        models.create_conversion_formula(
-            name, int(output_product_id), int(output_qty), inputs, note
-        )
-        flash(f'สร้างสูตร "{name}" สำเร็จ', 'success')
-        return redirect(url_for('conversion_list'))
-
-    return render_template('conversions/form.html', products=products, formula=None, inputs=[])
+def _pair_prefill(pack_id, loose_id, ratio, direction, note):
+    """Build a pair_form prefill dict from raw submitted strings, so a validation
+    error re-shows the form without losing the user's input."""
+    def _name(pid):
+        if not pid:
+            return ''
+        conn = get_connection()
+        try:
+            r = conn.execute("SELECT product_name FROM products WHERE id=?", (pid,)).fetchone()
+        finally:
+            conn.close()
+        return r['product_name'] if r else ''
+    return {'pack_id': pack_id, 'loose_id': loose_id,
+            'pack_name': _name(pack_id), 'loose_name': _name(loose_id),
+            'ratio': ratio, 'direction': direction or 'both', 'note': note, 'editing': False}
 
 
 @app.route('/conversions/pair', methods=['GET', 'POST'])
 def conversion_pair():
-    """Pack↔loose pair mode: create/update both formulas in one step (vs the
-    case-by-case advanced builder). Idempotent via models.upsert_pack_unpack_pair."""
+    """Pack↔loose pairing — the single place to create OR edit a conversion
+    formula (the advanced builder was removed; see docs/adr/0001). Idempotent via
+    models.upsert_pack_unpack_pair, so re-saving an existing pair edits it.
+    GET ?from_formula=<id> reopens that pair prefilled (the list's แก้ไข button)."""
     if not session.get('role'):
         abort(403)
-    products = _get_active_products()
     if request.method == 'POST':
         pack_id   = request.form.get('pack_id', '').strip()
         loose_id  = request.form.get('loose_id', '').strip()
         ratio     = request.form.get('ratio', '').strip()
         direction = request.form.get('direction', 'both').strip()
         note      = request.form.get('note', '').strip()
+
+        def _reshow():
+            return render_template('conversions/pair_form.html',
+                                   prefill=_pair_prefill(pack_id, loose_id, ratio, direction, note))
         if not pack_id or not loose_id or not ratio:
             flash('กรุณาเลือกสินค้าแพ็ค สินค้าตัวหลวม และจำนวนตัวต่อแพ็ค', 'danger')
-            return render_template('conversions/pair_form.html', products=products)
+            return _reshow()
         if pack_id == loose_id:
             flash('สินค้าแพ็คและตัวหลวมต้องไม่ใช่ตัวเดียวกัน', 'danger')
-            return render_template('conversions/pair_form.html', products=products)
+            return _reshow()
         try:
             ratio_i = int(ratio)
             if ratio_i < 1:
                 raise ValueError
         except ValueError:
             flash('จำนวนตัวต่อแพ็คต้องเป็นจำนวนเต็มตั้งแต่ 1 ขึ้นไป', 'danger')
-            return render_template('conversions/pair_form.html', products=products)
+            return _reshow()
         if direction not in ('both', 'pack', 'unpack'):
             direction = 'both'
         res = models.upsert_pack_unpack_pair(int(pack_id), int(loose_id), ratio_i, direction, note)
         flash(f'บันทึกคู่แพ็ค-ตัวหลวมแล้ว (สร้าง {res["created"]} · อัปเดต {res["updated"]} สูตร)', 'success')
         return redirect(url_for('conversion_list'))
 
-    return render_template('conversions/pair_form.html', products=products)
-
-
-@app.route('/conversions/<int:formula_id>/edit', methods=['GET', 'POST'])
-def conversion_edit(formula_id):
-    if not session.get('role'):
-        abort(403)
-    formula, inputs = models.get_conversion_formula(formula_id)
-    if not formula:
-        abort(404)
-    products = _get_active_products()
-    if request.method == 'POST':
-        name              = request.form.get('name', '').strip()
-        output_product_id = request.form.get('output_product_id', '').strip()
-        output_qty        = request.form.get('output_qty', '1').strip()
-        note              = request.form.get('note', '').strip()
-        input_pids        = request.form.getlist('input_product_id[]')
-        input_qtys        = request.form.getlist('input_quantity[]')
-
-        new_inputs = [{'product_id': int(p), 'quantity': int(q)}
-                      for p, q in zip(input_pids, input_qtys) if p and q]
-        if not name or not output_product_id or not new_inputs:
-            flash('กรุณากรอกข้อมูลให้ครบ', 'danger')
-            return render_template('conversions/form.html', products=products, formula=formula, inputs=inputs)
-
-        models.update_conversion_formula(
-            formula_id, name, int(output_product_id), int(output_qty), new_inputs, note
-        )
-        flash(f'อัปเดตสูตร "{name}" สำเร็จ', 'success')
-        return redirect(url_for('conversion_list'))
-
-    return render_template('conversions/form.html', products=products, formula=formula, inputs=inputs)
+    # GET — blank (create) or prefilled from an existing formula (edit)
+    prefill = None
+    ff = request.args.get('from_formula', type=int)
+    if ff:
+        prefill = models.derive_pair_from_formula(ff)
+        if prefill is None:
+            flash('สูตรนี้แก้ไขผ่านหน้าจับคู่ไม่ได้ (ไม่ใช่คู่แพ็ค-ตัวหลวม)', 'warning')
+            return redirect(url_for('conversion_list'))
+        prefill['editing'] = True
+    return render_template('conversions/pair_form.html', prefill=prefill)
 
 
 @app.route('/conversions/<int:formula_id>/run', methods=['GET', 'POST'])
