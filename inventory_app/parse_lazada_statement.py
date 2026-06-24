@@ -26,39 +26,9 @@ _C_ORDER = 'Order Number'
 _C_OCD = 'Order Creation Date'
 _REQUIRED = (_C_STMT, _C_FEE, _C_AMT, _C_ORDER)
 
-# Lazada Fee Name → existing marketplace_order_fees bucket. Unmapped → fee_platform.
-_BUCKET = {
-    'Item Price Credit': 'item_value', 'Reversal Item Price': 'item_value',
-    'Commission': 'fee_commission', 'Reversal Commission': 'fee_commission',
-    'Commission fee - correction for undercharge': 'fee_commission',
-    'Payment Fee': 'fee_transaction', 'Payment Fee Credit': 'fee_transaction',
-    'Payment fee - correction for undercharge': 'fee_transaction',
-    'Premium Package': 'fee_service', 'Reverse - Premium Package': 'fee_service',
-    'Free Shipping Max Fee': 'shipping_net',
-    'Shipping Fee Voucher Refund to Laz': 'shipping_net',
-    'Wrong Shipping Fee Adjustment': 'shipping_net',
-    'Reversal of Free Shipping Max Fee': 'shipping_net',
-    'LazCoins Discount': 'fee_ads_escrow',
-    'LazCoins Discount Promotion Fee': 'fee_ads_escrow',
-    'Reversal of LazCoins Discount': 'fee_ads_escrow',
-    'Reversal of LazCoins Discount Promotion Fee': 'fee_ads_escrow',
-    'Buyer Review Incentive': 'fee_ads_escrow',
-    'Campaign Fee': 'fee_ads_escrow',
-    'Promotional Charges Vouchers': 'fee_ads_escrow',
-    # Lost Claim = Lazada reimbursement for parcels lost by 3PL (a credit, not a
-    # fee); no dedicated bucket → parked in the platform catch-all, but mapped
-    # explicitly so it stops being reported as an "unknown fee" on every import.
-    'Lost Claim': 'fee_platform',
-    # --- Thai-language export: same transactions, Thai ชื่อรายการธุรกรรม → same
-    # buckets as the English names above. ('Premium Package' stays English even in
-    # the Thai file, so it is already covered.) ---
-    'ยอดรวมค่าสินค้า': 'item_value',                       # = Item Price Credit (gross)
-    'หักค่าธรรมเนียมการขายสินค้า': 'fee_commission',        # = Commission
-    'ค่าธรรมเนียมการชำระเงิน': 'fee_transaction',           # = Payment Fee
-    'ค่าธรรมเนียมโปรแกรมส่วนลด LazCoins': 'fee_ads_escrow',  # = LazCoins Discount Promotion Fee
-    'ส่วนลด LazCoins': 'fee_ads_escrow',                    # = LazCoins Discount
-    'รางวัลรีวิวสำหรับผู้ซื้อ': 'fee_ads_escrow',           # = Buyer Review Incentive
-}
+# Lazada Fee Name → existing marketplace_order_fees bucket (single source of truth
+# in marketplace_fee_buckets, also used by the display layer). Unmapped → fee_platform.
+from marketplace_fee_buckets import LAZADA_BUCKET as _BUCKET
 _BUCKETS = ('fee_commission', 'fee_service', 'fee_transaction', 'fee_platform',
             'fee_ads_escrow', 'fee_tax', 'shipping_net', 'fee_saver')
 

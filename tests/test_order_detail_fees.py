@@ -35,6 +35,25 @@ def test_detail_includes_fee_lines_for_tooltip(tmp_db_conn):
     assert round(sum(x['amount'] for x in fl), 2) == 80.0          # Σ == net_payout
 
 
+def test_detail_lazada_smart_label_shows_lazcoins(tmp_db_conn):
+    """The modal's fee tooltip uses the same smart label: a single-source LazCoins
+    promo shows 'ส่วนลด LazCoins', not the generic bucket."""
+    import json
+    c = tmp_db_conn
+    c.execute("INSERT INTO marketplace_orders (platform, order_sn) VALUES ('lazada','LZM1')")
+    oid = c.execute("SELECT id FROM marketplace_orders WHERE order_sn='LZM1'").fetchone()['id']
+    models.upsert_marketplace_fees(c, [{'order_sn':'LZM1','item_value':100.0,'net_payout':80.0,
+        'fee_total':20.0,'fee_commission':-10.0,'fee_ads_escrow':-10.0,
+        'fee_raw_json': json.dumps({'Item Price Credit':100.0,'Commission':-10.0,
+                                    'LazCoins Discount':-10.0}, ensure_ascii=False)}],
+        'lz.xlsx', platform='lazada')
+    c.commit()
+    d = models.get_marketplace_order_detail(c, oid)
+    labels = {x['label'] for x in d['fee_lines']}
+    assert 'ส่วนลด LazCoins' in labels
+    assert 'fee_raw_json' not in d['fees']     # raw row must not leak to the client
+
+
 def test_detail_fee_lines_none_without_settlement(tmp_db_conn):
     c = tmp_db_conn
     c.execute("INSERT INTO marketplace_orders (platform, order_sn) VALUES ('shopee','NOFEE')")

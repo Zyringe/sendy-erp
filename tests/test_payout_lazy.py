@@ -83,6 +83,50 @@ def test_lazada_payout_orders_use_thai_categories_not_raw(tmp_db_conn):
     assert 'fee_raw_json' not in by_sn['LZD1']
 
 
+def _seed_lazada_fee(c, sn, item, net, buckets, raw):
+    import json
+    c.execute("DELETE FROM marketplace_payouts WHERE platform='lazada'")
+    c.execute("DELETE FROM marketplace_order_fees WHERE platform='lazada'")
+    c.execute("DELETE FROM marketplace_orders WHERE order_sn=?", (sn,))
+    c.execute("INSERT INTO marketplace_orders (platform,order_sn,item_total) VALUES ('lazada',?,?)", (sn, item))
+    oid = c.execute("SELECT id FROM marketplace_orders WHERE order_sn=?", (sn,)).fetchone()['id']
+    row = {'order_sn': sn, 'item_value': item, 'net_payout': net, 'fee_total': round(item - net, 2),
+           'fee_raw_json': json.dumps(raw, ensure_ascii=False)}
+    row.update(buckets)
+    models.upsert_marketplace_fees(c, [row], 'lz.xlsx', platform='lazada')
+    pid = c.execute("INSERT INTO marketplace_payouts (platform,deposit_date,amount,n_orders) "
+                    "VALUES ('lazada','2026-06-16',?,1)", (net,)).lastrowid
+    c.execute("UPDATE marketplace_orders SET payout_id=? WHERE id=?", (pid, oid)); c.commit()
+    return pid
+
+
+def test_lazada_smart_label_single_promo_shows_lazcoins(tmp_db_conn):
+    """When a bucket comes from ONE underlying fee, the line shows that fee's real
+    name — so a LazCoins-only promo reads 'ส่วนลด LazCoins', not the generic bucket."""
+    c = tmp_db_conn
+    pid = _seed_lazada_fee(c, 'LZS1', 100.0, 70.0,
+        {'fee_commission': -20.0, 'fee_ads_escrow': -10.0},
+        {'Item Price Credit': 100.0, 'Commission': -20.0, 'LazCoins Discount': -10.0})
+    fl = {o['order_sn']: o for o in models.get_payout_orders(c, 'lazada', pid)}['LZS1']['fee_lines']
+    labels = {x['label'] for x in fl}
+    assert 'ส่วนลด LazCoins' in labels            # single-source promo → real name
+    assert 'ค่าโฆษณา/โปรโมชั่น' not in labels      # not the generic bucket label
+    assert round(sum(x['amount'] for x in fl), 2) == 70.0
+
+
+def test_lazada_smart_label_mixed_promo_stays_generic(tmp_db_conn):
+    """When 2+ promo types land in one bucket (LazCoins + Campaign), the line falls
+    back to the generic category so we don't mislabel the combined amount."""
+    c = tmp_db_conn
+    pid = _seed_lazada_fee(c, 'LZS2', 100.0, 85.0,
+        {'fee_ads_escrow': -15.0},
+        {'Item Price Credit': 100.0, 'LazCoins Discount': -10.0, 'Campaign Fee': -5.0})
+    fl = {o['order_sn']: o for o in models.get_payout_orders(c, 'lazada', pid)}['LZS2']['fee_lines']
+    labels = {x['label'] for x in fl}
+    assert 'ค่าโฆษณา/โปรโมชั่น' in labels          # mixed promo → generic
+    assert 'ส่วนลด LazCoins' not in labels
+
+
 def test_shopee_payout_orders_build_fee_lines_from_buckets(tmp_db_conn):
     """Shopee's breakdown comes from the typed fee_* bucket columns (item first,
     each non-zero fee, then a reconciling residual so Σ == net_payout footer).
