@@ -16,6 +16,33 @@ def test_detail_includes_fees_and_payout(tmp_db_conn):
     assert d['payout']['deposit_date'] == '2026-06-16'
 
 
+def test_detail_includes_fee_lines_for_tooltip(tmp_db_conn):
+    """The drill-down modal shows the detailed ค่าธรรมเนียม as a hover tooltip, fed
+    by fee_lines (item value first, each non-zero Thai-category fee, Σ == net_payout)
+    — the SAME breakdown the settlement page tooltip uses."""
+    c = tmp_db_conn
+    c.execute("INSERT INTO marketplace_orders (platform, order_sn) VALUES ('shopee','FL1')")
+    oid = c.execute("SELECT id FROM marketplace_orders WHERE order_sn='FL1'").fetchone()['id']
+    models.upsert_marketplace_fees(c, [{'order_sn':'FL1','item_value':100.0,'net_payout':80.0,
+        'fee_total':20.0,'fee_commission':-12.0,'fee_service':-3.0,'fee_transaction':-2.0,
+        'fee_platform':-1.0,'fee_ads_escrow':-2.0,'fee_tax':0.0,'shipping_net':0.0,
+        'fee_saver':0.0,'fee_pct':'20%'}], 'f.xlsx')
+    c.commit()
+    d = models.get_marketplace_order_detail(c, oid)
+    fl = d['fee_lines']
+    assert fl[0] == {'label':'มูลค่าสินค้า','amount':100.0}
+    assert {'label':'ค่าคอมมิชชั่น','amount':-12.0} in fl
+    assert round(sum(x['amount'] for x in fl), 2) == 80.0          # Σ == net_payout
+
+
+def test_detail_fee_lines_none_without_settlement(tmp_db_conn):
+    c = tmp_db_conn
+    c.execute("INSERT INTO marketplace_orders (platform, order_sn) VALUES ('shopee','NOFEE')")
+    oid = c.execute("SELECT id FROM marketplace_orders WHERE order_sn='NOFEE'").fetchone()['id']
+    d = models.get_marketplace_order_detail(c, oid)
+    assert d['fee_lines'] is None       # no Income breakdown → no tooltip, estimate badge instead
+
+
 def test_detail_includes_adjustments(tmp_db_conn):
     # Refunds / Seller-Balance adjustments (txn_type='adjustment') carry an
     # order_sn — surface them on the order so a refund/ปรับปรุง is visible in the

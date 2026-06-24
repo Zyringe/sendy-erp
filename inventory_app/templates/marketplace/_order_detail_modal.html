@@ -25,7 +25,6 @@
             <dt class="col-4 col-sm-3">ใบกำกับ (IV)</dt><dd class="col-8 col-sm-9" id="odIv"></dd>
           </dl>
           <div id="odTimeline" class="mb-2"></div>
-          <div id="odFees" class="mb-2"></div>
           <div id="odMargin" class="mb-2"></div>
           <div id="odAdjust" class="mb-2"></div>
           <table class="table table-sm table-bordered mb-0">
@@ -47,6 +46,22 @@
 // no click handlers ever attach.
 document.addEventListener('DOMContentLoaded', function () {
   const fmt = n => (n == null ? '–' : Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}));
+  // Fee-breakdown body for the ค่าธรรมเนียม hover — same format as the settlement
+  // page tooltip: item/credit lines first, then each deduction, footer = net.
+  const escFee = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function feeBreakdownHtml(lines, net) {
+    const frow = (l, v, cls) => `<div class="d-flex justify-content-between gap-3"><span class="text-muted">${escFee(l)}</span><span class="${cls || ''}">${v}</span></div>`;
+    let html = '', prevPos = null;
+    lines.forEach(x => {
+      const neg = x.amount < 0;
+      if (prevPos === true && neg) html += '<div class="border-top my-1"></div>';
+      html += frow(x.label, (neg ? '−' : '') + '฿' + fmt(Math.abs(x.amount)), neg ? 'text-danger' : '');
+      prevPos = !neg;
+    });
+    html += '<div class="border-top my-1"></div>';
+    html += `<div class="d-flex justify-content-between gap-3 fw-bold"><span>ยอดสุทธิ</span><span class="text-success">฿${fmt(net)}</span></div>`;
+    return html;
+  }
   const detModal = new bootstrap.Modal(document.getElementById('orderDetailModal'));
   const ivBadge = {confident: '<span class="badge bg-success">ยอดตรง ใบเดียว</span>',
                    probable:  '<span class="badge bg-warning text-dark">ยอดตรง (อาจสลับใบยอดเท่ากัน)</span>',
@@ -74,8 +89,18 @@ document.addEventListener('DOMContentLoaded', function () {
         // Order-export estimate (o.marketplace_fee = commission+service+txn) exists —
         // it misses platform + ad/escrow fees, so flag it as not-yet-finalized.
         const feeFinal = ff ? ff.fee_total : o.marketplace_fee;
+        const breakdown = d.fee_lines;   // detailed Thai-category lines (settled) or null
         const feeBadge = ff ? '' : ' <span class="badge bg-warning text-dark" title="ยังไม่ได้อัปโหลดไฟล์ Income (โอนเงินสำเร็จ) — ค่าธรรมเนียมจากไฟล์ Order เป็นค่าประมาณ ยังไม่รวมค่าธรรมเนียมแพลตฟอร์ม/โฆษณา">estimate</span>';
-        document.getElementById('odMoney').innerHTML = `฿${fmt(o.item_total)} / <span class="text-danger">฿${fmt(feeFinal)}</span>${feeBadge} / <span class="text-success fw-bold">฿${fmt(o.actual_payout)}</span>`;
+        // When the Income breakdown exists, the ค่าธรรมเนียม number gets a hover
+        // popover with the per-line detail (same as the settlement-page tooltip).
+        const feeCell = breakdown
+          ? `<span id="odFeePop" class="text-danger" tabindex="0" style="cursor:help;border-bottom:1px dotted">฿${fmt(feeFinal)}</span>`
+          : `<span class="text-danger">฿${fmt(feeFinal)}</span>${feeBadge}`;
+        document.getElementById('odMoney').innerHTML = `฿${fmt(o.item_total)} / ${feeCell} / <span class="text-success fw-bold">฿${fmt(o.actual_payout)}</span>`;
+        if (breakdown) new bootstrap.Popover(document.getElementById('odFeePop'), {
+          trigger: 'hover focus', html: true, placement: 'top',
+          title: 'ค่าธรรมเนียมแยกรายการ', content: feeBreakdownHtml(breakdown, ff.net_payout),
+        });
         document.getElementById('odIv').innerHTML = o.matched_iv
           ? `<a href="/sales/doc/${o.matched_iv}" target="_blank" title="เปิดใบกำกับใน Express"><code>${o.matched_iv}</code></a> ${ivBadge[o.iv_confidence] || ''}`
           : '<span class="text-muted">ยังไม่ผูก</span>';
@@ -87,19 +112,6 @@ document.addEventListener('DOMContentLoaded', function () {
             <td class="text-end">${fmt(it.unit_price)}</td>
             <td class="text-end">${fmt(it.item_subtotal)}</td>
           </tr>`).join('') : '<tr><td colspan="5" class="text-muted text-center">ไม่มีรายการสินค้า</td></tr>');
-        const fl = (lbl, v) => (v == null || Math.abs(v) < 0.005) ? '' :
-          `<div class="d-flex justify-content-between"><span class="text-muted">${lbl}</span><span class="${v<0?'text-danger':''}">${v<0?'−':''}฿${fmt(Math.abs(v))}</span></div>`;
-        document.getElementById('odFees').innerHTML = !ff ? '' : `
-          <div class="border rounded p-2 bg-light small">
-            <div class="fw-bold mb-1" style="color:#c41e2a"><i class="bi bi-cash-stack"></i> ค่าธรรมเนียม & เงินโอน</div>
-            <div class="d-flex justify-content-between"><span class="text-muted">มูลค่าสินค้า</span><span>฿${fmt(ff.item_value)}</span></div>
-            ${fl('ค่าคอมมิชชั่น', ff.fee_commission)}${fl('ค่าบริการ', ff.fee_service)}
-            ${fl('ค่าธุรกรรมการชำระเงิน', ff.fee_transaction)}${fl('ค่าธรรมเนียมแพลตฟอร์ม', ff.fee_platform)}
-            ${fl('ค่าโฆษณา (Escrow)', ff.fee_ads_escrow)}${fl('ภาษี', ff.fee_tax)}
-            ${fl('ค่าจัดส่ง (สุทธิ)', ff.shipping_net)}${fl('ค่าประหยัดค่าส่ง', ff.fee_saver)}
-            <div class="d-flex justify-content-between border-top mt-1 pt-1 fw-bold"><span>ยอดสุทธิที่ได้รับ</span><span class="text-success">฿${fmt(ff.net_payout)}</span></div>
-            ${d.payout ? `<div class="text-muted mt-1"><i class="bi bi-bank"></i> เข้าบัญชีในยอดโอน ${d.payout.deposit_date} (฿${fmt(d.payout.amount)})</div>` : ''}
-          </div>`;
 
         // ---- Timeline: order → Shopee released to wallet → bank deposit ----
         const step = (lbl, val, cls) =>
