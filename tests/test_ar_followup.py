@@ -523,20 +523,21 @@ def test_bsn_snapshot_totals(tmp_db_conn):
 def test_customer_ranking_live_bsn(tmp_db_conn):
     """customer_ranking rolls up CANONICAL collectable AR per customer (latest
     snapshot, EXCLUDING RE + pre-2024 legacy + write-offs), net-positive only.
-    As of the 2026-06-05 snapshot with the 58 write-off decisions loaded:
-    = 34 customers / ฿496,018.48.
+    As of the 2026-06-05 snapshot, after write-off decisions incl. the
+    2026-06-24 วรสวัสดิ์ giveaway (IV6900401/402/403 = −฿164,911.39):
+    = 34 customers / ฿331,107.09.
 
     ทรงพลเทรดดิ้ง is entirely 2014 legacy → it drops out of the collectable
     ranking and is tracked in the not-collectable list instead (net ฿164,322.73,
     NOT ฿284,863.10 — credit-note netting guard).
-    NB: LIVE-DATA anchor — recompute against the live DB on the next import or
-    write-off (don't guess)."""
+    NB: LIVE-DATA anchor — recompute against the live DB on the next import,
+    write-off, or payment (don't guess)."""
     import cashflow as cf
     rows = arf.customer_ranking(conn=tmp_db_conn)
     total = round(sum(r['outstanding'] for r in rows), 2)
     assert len(rows) == 34, f"Expected 34 collectable net-positive customers, got {len(rows)}"
-    assert total == pytest.approx(496018.48, abs=0.01), \
-        f"Expected canonical collectable total ฿496,018.48, got {total}"
+    assert total == pytest.approx(331107.09, abs=0.01), \
+        f"Expected canonical collectable total ฿331,107.09, got {total}"
     # Verify sorted DESC
     for i in range(len(rows) - 1):
         assert rows[i]['outstanding'] >= rows[i+1]['outstanding']
@@ -552,14 +553,15 @@ def test_customer_ranking_live_bsn(tmp_db_conn):
 
 
 def test_customer_ranking_invoice_count(tmp_db_conn):
-    """Sum of per-customer invoice_count = 110 (collectable snapshot rows of
-    net-positive customers, after excluding RE + pre-2024 legacy + write-offs).
-    NB: LIVE-DATA anchor — recompute against the live DB on the next import or
-    write-off (don't guess)."""
+    """Sum of per-customer invoice_count = 107 (collectable snapshot rows of
+    net-positive customers, after excluding RE + pre-2024 legacy + write-offs;
+    the 2026-06-24 วรสวัสดิ์ giveaway removed IV6900401/402/403 → 110→107).
+    NB: LIVE-DATA anchor — recompute against the live DB on the next import,
+    write-off, or payment (don't guess)."""
     rows = arf.customer_ranking(conn=tmp_db_conn)
     total_invoices = sum(r['invoice_count'] for r in rows)
-    assert total_invoices == 110, \
-        f"Expected invoice_count sum=110, got {total_invoices}"
+    assert total_invoices == 107, \
+        f"Expected invoice_count sum=107, got {total_invoices}"
 
 
 def test_get_customer_ar_detail_live(tmp_db_conn):
