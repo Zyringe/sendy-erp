@@ -4,8 +4,11 @@ Task 3.1: verify migration 117 adds 'shareholder' + 'general' to the CHECK
           and that a bogus role is still rejected.
 Task 3.2: POST gate is default-deny (shareholder/general/unknown cannot POST
           arbitrary endpoints; staff/manager whitelists unchanged; admin free).
+Task 3.5: per-role access matrix — security proof (15 parametrized cases).
 """
 import sqlite3
+
+import pytest
 
 
 # ── Task 3.2 helpers ─────────────────────────────────────────────────────────
@@ -155,3 +158,37 @@ def test_general_login_lands_on_stock(tmp_db):
     assert resp.status_code == 302
     assert '/m/stock' in resp.headers.get('Location', ''), \
         f"general landed on {resp.headers.get('Location')} not /m/stock"
+
+
+# ── Task 3.5: per-role access matrix (security proof) ────────────────────────
+
+# expected: 200 = allowed; 'deny' = 302 redirect or 403
+MATRIX = [
+    ('admin',       'GET',  '/users',              200),
+    ('admin',       'GET',  '/hr/',                200),
+    ('manager',     'GET',  '/hr/',                200),
+    ('manager',     'GET',  '/users',              'deny'),
+    ('manager',     'POST', '/users/new',          'deny'),
+    ('staff',       'GET',  '/hr/',                'deny'),
+    ('staff',       'GET',  '/products',           200),
+    ('shareholder', 'GET',  '/hr/',                200),
+    ('shareholder', 'GET',  '/cashbook/',          200),
+    ('shareholder', 'GET',  '/users',              'deny'),
+    ('shareholder', 'POST', '/hr/employees/new',   'deny'),
+    ('general',     'GET',  '/m/stock',            200),
+    ('general',     'GET',  '/hr/',                'deny'),
+    ('general',     'GET',  '/products',           'deny'),
+    ('general',     'GET',  '/cashbook/',          'deny'),
+]
+
+
+@pytest.mark.parametrize("role,method,path,expected", MATRIX)
+def test_access_matrix(role, method, path, expected, tmp_db):
+    c = _client_as(role, tmp_db)
+    r = c.open(path, method=method)
+    if expected == 200:
+        assert r.status_code == 200, \
+            f"{role} {method} {path} → {r.status_code} (expected 200)"
+    else:
+        assert r.status_code in (302, 403), \
+            f"{role} {method} {path} → {r.status_code} (expected deny: 302 or 403)"
