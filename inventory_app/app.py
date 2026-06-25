@@ -290,14 +290,14 @@ _MODULE_DEFS = [
         'name': 'บุคลากร (HR)',
         'icon': 'bi-people',
         'first_endpoint': 'hr.dashboard',
-        'roles': ('admin', 'manager'),
+        'roles': ('admin', 'manager', 'shareholder'),
     },
     {
         'key': 'cashbook',
         'name': 'บัญชีรับ-จ่าย',
         'icon': 'bi-journal-text',
         'first_endpoint': 'cashbook.dashboard',
-        'roles': ('admin', 'manager'),
+        'roles': ('admin', 'manager', 'shareholder'),
     },
     {
         'key': 'data',
@@ -503,7 +503,11 @@ def build_mobile_nav_slots(role, endpoint=''):
     active). Any role that is not admin/manager — including '' or an unexpected
     value — gets only the always-visible slots, so a staff/unknown session can
     never be shown a slot whose landing page would 403."""
-    is_manager = role in ('admin', 'manager')
+    if role == 'general':
+        # general is stock-lookup only; Phase 5 adds ลาของฉัน slot
+        return [{'key': 'stock', 'label': 'สต็อก', 'icon': 'bi-search',
+                 'endpoint': 'mobile.stock_search', 'active': True}]
+    is_manager = role in ('admin', 'manager', 'shareholder')  # shareholder reads HR + accounting
     active = _mobile_active_slot(endpoint)
     slots = []
     for s in _MOBILE_NAV_SLOTS:
@@ -527,6 +531,8 @@ def inject_auth():
     for m in _MODULE_DEFS:
         if m['roles'] is None or role in m['roles']:
             visible_modules.append(m)
+    if role == 'general':
+        visible_modules = []   # general is mobile-only; desktop sidebar shows nothing
     return {
         'is_admin':      role == 'admin',
         'is_manager':    role in ('admin', 'manager'),
@@ -609,7 +615,7 @@ def login():
             session['role']         = user['role']
             session.permanent       = remember   # 30-day cookie when checked
             flash(f'ยินดีต้อนรับ {session["display_name"]}', 'success')
-            return redirect(request.args.get('next') or url_for('dashboard'))
+            return redirect(request.args.get('next') or _role_home(session['role']))
         flash('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง', 'danger')
     return render_template('login.html')
 
@@ -644,7 +650,7 @@ def user_new():
     if not username or not password:
         flash('กรุณากรอกชื่อผู้ใช้และรหัสผ่าน', 'danger')
         return redirect(url_for('user_list'))
-    if role not in ('admin', 'manager', 'staff'):
+    if role not in ('admin', 'manager', 'staff', 'shareholder', 'general'):
         role = 'staff'
     conn = get_connection()
     try:
@@ -669,7 +675,7 @@ def user_edit(uid):
     role         = request.form.get('role', 'staff')
     is_active    = 1 if request.form.get('is_active') else 0
     new_password = request.form.get('password', '').strip()
-    if role not in ('admin', 'manager', 'staff'):
+    if role not in ('admin', 'manager', 'staff', 'shareholder', 'general'):
         role = 'staff'
     conn = get_connection()
     if new_password:

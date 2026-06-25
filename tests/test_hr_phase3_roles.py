@@ -108,3 +108,50 @@ def test_simulating_admin_can_exit_simulate(tmp_db):
     # POST to exit-simulate endpoint — must NOT be 403'd by the gate
     r = c.post('/admin/exit-simulate')
     assert r.status_code in (200, 302), f"simulating admin got {r.status_code} — locked in simulation"
+
+
+# ── Task 3.4 tests ────────────────────────────────────────────────────────────
+
+def test_user_form_accepts_new_roles(tmp_db):
+    """Admin can create a user with role 'shareholder' (not coerced to 'staff')."""
+    c = _client_as('admin', tmp_db)
+    c.post('/users/new', data={'username': 'sh1', 'password': 'pass123',
+                               'display_name': 'SH', 'role': 'shareholder'})
+    row = sqlite3.connect(tmp_db).execute(
+        "SELECT role FROM users WHERE username='sh1'"
+    ).fetchone()
+    assert row is not None, "user was not created"
+    assert row[0] == 'shareholder', f"role coerced to {row[0]}"
+
+
+def test_shareholder_sees_hr_module_in_sidebar(tmp_db):
+    """shareholder has hr + cashbook in visible_modules (reads them)."""
+    import os; os.environ.setdefault('SKIP_DB_INIT', '1')
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as s:
+        s['user_id'] = 1; s['username'] = 'sh'; s['role'] = 'shareholder'
+    resp = c.get('/hr/')
+    assert resp.status_code == 200     # shareholder can GET hr
+    html = resp.get_data(as_text=True)
+    assert 'บุคลากร' in html           # hr module visible in sidebar
+
+
+def test_general_login_lands_on_stock(tmp_db):
+    """general role lands on /m/stock after login (not /dashboard)."""
+    import os; os.environ.setdefault('SKIP_DB_INIT', '1')
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    from werkzeug.security import generate_password_hash
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("INSERT OR IGNORE INTO users(username,password_hash,display_name,role) "
+                 "VALUES('gen_test',?,'Gen','general')",
+                 (generate_password_hash('pw123', method='pbkdf2:sha256'),))
+    conn.commit(); conn.close()
+    c = flask_app.test_client()
+    resp = c.post('/login', data={'username': 'gen_test', 'password': 'pw123'},
+                  follow_redirects=False)
+    assert resp.status_code == 302
+    assert '/m/stock' in resp.headers.get('Location', ''), \
+        f"general landed on {resp.headers.get('Location')} not /m/stock"
