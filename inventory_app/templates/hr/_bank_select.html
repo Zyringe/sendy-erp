@@ -1,0 +1,17 @@
+{% macro bank_select(banks, current) %}
+{% set known = current in banks %}
+<select name="bank_name" class="form-select form-select-sm"
+        onchange="document.getElementById('bank_other_'+this.dataset.k).classList.toggle('d-none', this.value!=='__other__')"
+        data-k="{{ current|default('new') }}">
+  <option value="">— เลือกธนาคาร —</option>
+  {% for b in banks %}
+    <option value="{{ b }}" {% if current == b %}selected{% endif %}>{{ b }}</option>
+  {% endfor %}
+  <option value="__other__" {% if current and not known %}selected{% endif %}>อื่นๆ (พิมพ์เอง)</option>
+</select>
+<input type="text" name="bank_name_other"
+       id="bank_other_{{ current|default('new') }}"
+       class="form-control form-control-sm mt-1 {% if not (current and not known) %}d-none{% endif %}"
+       placeholder="พิมพ์ชื่อธนาคาร"
+       value="{% if current and not known %}{{ current }}{% endif %}">
+{% endmacro %}

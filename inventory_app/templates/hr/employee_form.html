@@ -171,10 +171,10 @@
 
         <hr class="col-12 my-1">
         <div class="col-12 small text-muted">ข้อมูลธนาคาร</div>
+        {% from 'hr/_bank_select.html' import bank_select %}
         <div class="col-md-4">
           <label class="form-label small">ธนาคาร</label>
-          <input type="text" name="bank_name" class="form-control form-control-sm"
-                 value="{{ form.get('bank_name','') }}">
+          {{ bank_select(banks, form.get('bank_name','')) }}
         </div>
         <div class="col-md-4">
           <label class="form-label small">สาขา</label>

@@ -149,8 +149,8 @@
                 <input type="hidden" name="employment_type" value="{{ employee.employment_type or 'monthly' }}">
                 <input type="hidden" name="probation_days" value="{{ employee.probation_days or 90 }}">
                 <label class="form-label small">ธนาคาร</label>
-                <input type="text" name="bank_name" class="form-control form-control-sm"
-                       value="{{ employee.bank_name or '' }}">
+                {% from 'hr/_bank_select.html' import bank_select %}
+                {{ bank_select(banks, employee.bank_name or '') }}
               </div>
               <div class="col-md-4">
                 <label class="form-label small">สาขา</label>
