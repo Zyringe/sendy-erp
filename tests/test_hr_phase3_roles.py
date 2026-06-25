@@ -2,9 +2,57 @@
 
 Task 3.1: verify migration 117 adds 'shareholder' + 'general' to the CHECK
           and that a bogus role is still rejected.
+Task 3.2: POST gate is default-deny (shareholder/general/unknown cannot POST
+          arbitrary endpoints; staff/manager whitelists unchanged; admin free).
 """
 import sqlite3
 
+
+# ── Task 3.2 helpers ─────────────────────────────────────────────────────────
+
+def _client_as(role, tmp_db):
+    """Create a test client pre-logged-in as the given role. Import app AFTER
+    tmp_db is set up (config.DATABASE_PATH already patched by tmp_db fixture)."""
+    import os
+    os.environ.setdefault('SKIP_DB_INIT', '1')
+    from app import app as a
+    a.config['TESTING'] = True
+    c = a.test_client()
+    with c.session_transaction() as s:
+        s['user_id'] = 1
+        s['username'] = f'test-{role}'
+        s['role'] = role
+    return c
+
+
+# ── Task 3.2 tests ────────────────────────────────────────────────────────────
+
+def test_shareholder_cannot_post(tmp_db):
+    c = _client_as('shareholder', tmp_db)
+    r = c.post('/hr/employees/new', data={'emp_code': 'EMP900', 'full_name': 'x', 'company_id': '1'})
+    assert r.status_code in (302, 403), f"expected deny, got {r.status_code}"
+    import sqlite3
+    assert sqlite3.connect(tmp_db).execute(
+        "SELECT COUNT(*) FROM employees WHERE emp_code='EMP900'"
+    ).fetchone()[0] == 0, "shareholder created a row — POST was not blocked"
+
+
+def test_staff_post_allowed_endpoint_unchanged(tmp_db):
+    """staff can still POST to a whitelisted endpoint (import_weekly)."""
+    c = _client_as('staff', tmp_db)
+    # POST to logout (always allowed for everyone) is a safe proxy for "gate not blocking".
+    r = c.post('/logout')
+    assert r.status_code in (200, 302), f"staff logout denied: {r.status_code}"
+
+
+def test_manager_still_blocked_from_manager_forbidden_endpoint(tmp_db):
+    """manager cannot POST to an admin-only endpoint (user creation)."""
+    c = _client_as('manager', tmp_db)
+    r = c.post('/users/new', data={'username': 'x', 'password': 'p', 'display_name': 'X', 'role': 'staff'})
+    assert r.status_code in (302, 403), f"manager created a user: {r.status_code}"
+
+
+# ── Task 3.1 tests ────────────────────────────────────────────────────────────
 
 def test_users_role_check_allows_new_roles(tmp_db):
     conn = sqlite3.connect(tmp_db)

@@ -242,6 +242,14 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
 # the route. Other admin-only writes use _require_admin().
 # admin can POST anything
 
+_GENERAL_POST_OK = frozenset(['logout'])          # Phase 5 appends self-service leave endpoints here
+_ROLE_POST_OK = {
+    'manager':     _MANAGER_POST_OK,
+    'staff':       _STAFF_POST_OK,
+    'general':     _GENERAL_POST_OK,
+    'shareholder': frozenset(['logout']),          # reads only; can log out
+}
+
 
 # ── Module definitions for sidebar switcher ──────────────────────────────────
 # Each entry: key, name_th, icon (bootstrap-icons class), first_endpoint
@@ -528,6 +536,10 @@ def inject_auth():
     }
 
 
+def _role_home(role):
+    return url_for('mobile.stock_search') if role == 'general' else url_for('dashboard')
+
+
 @app.before_request
 def require_login():
     endpoint = request.endpoint
@@ -555,12 +567,11 @@ def require_login():
         return redirect(url_for('dashboard'))
     if request.method != 'POST':
         return
-    if role == 'staff' and endpoint not in _STAFF_POST_OK:
+    if role == 'admin':
+        return
+    if endpoint not in _ROLE_POST_OK.get(role, frozenset()):
         flash('ไม่มีสิทธิ์ดำเนินการนี้', 'danger')
-        return redirect(url_for('dashboard'))
-    if role == 'manager' and endpoint not in _MANAGER_POST_OK:
-        flash('ต้องใช้บัญชี Admin เท่านั้น', 'danger')
-        return redirect(url_for('dashboard'))
+        return redirect(_role_home(role))
 
 
 @app.route('/login', methods=['GET', 'POST'])
