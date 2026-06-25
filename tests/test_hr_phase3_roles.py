@@ -96,3 +96,15 @@ def test_users_role_check_allows_new_roles(tmp_db):
     import pytest
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("INSERT INTO users(username,password_hash,display_name,role) VALUES('_bad','x','b','wizard')")
+
+
+# ── Task 3.3 bug-fix: simulate-exit not blocked by admin_module gate ──────────
+
+def test_simulating_admin_can_exit_simulate(tmp_db):
+    """An admin simulating as manager must be able to reach admin_exit_simulate."""
+    c = _client_as('manager', tmp_db)          # simulated role
+    with c.session_transaction() as s:
+        s['_real_role'] = 'admin'              # marks them as simulating
+    # POST to exit-simulate endpoint — must NOT be 403'd by the gate
+    r = c.post('/admin/exit-simulate')
+    assert r.status_code in (200, 302), f"simulating admin got {r.status_code} — locked in simulation"

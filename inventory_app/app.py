@@ -560,8 +560,10 @@ def require_login():
     if not role:
         flash('กรุณาเข้าสู่ระบบก่อน', 'warning')
         return redirect(url_for('login', next=request.url))
-    # admin_module is admin-only at the module level (defense-in-depth)
-    if _ENDPOINT_MODULE.get(endpoint) == 'admin_module' and role != 'admin':
+    # admin_module is admin-only at the module level (defense-in-depth).
+    # Exception: an admin who is simulating another role still has _real_role set,
+    # so they must be able to reach admin_exit_simulate (and other admin endpoints).
+    if _ENDPOINT_MODULE.get(endpoint) == 'admin_module' and role != 'admin' and not session.get('_real_role'):
         abort(403)
     # general: PWA stock-lookup + own leave only — everything else → stock search
     if role == 'general' and endpoint not in _GENERAL_ALLOWED:
