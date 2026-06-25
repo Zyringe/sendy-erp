@@ -191,6 +191,7 @@ def employee_new():
         action_url=url_for("hr.employee_new"),
         page_title="เพิ่มพนักงาน",
         banks=BANK_OPTIONS,
+        next_emp_code=hrq.next_emp_code(),
     )
 
 

@@ -59,6 +59,20 @@ def get_leave_type(lt_id: int, conn: Optional[sqlite3.Connection] = None):
 
 # ── Employees ────────────────────────────────────────────────────────────────
 
+def next_emp_code(conn: Optional[sqlite3.Connection] = None) -> str:
+    """Return the next available EMP code (EMP%03d % (max_numeric + 1))."""
+    c, owned = _conn(conn)
+    try:
+        row = c.execute(
+            "SELECT MAX(CAST(SUBSTR(emp_code, 4) AS INTEGER))"
+            "  FROM employees WHERE emp_code GLOB 'EMP[0-9]*'"
+        ).fetchone()
+        return "EMP%03d" % ((row[0] or 0) + 1)
+    finally:
+        if owned:
+            c.close()
+
+
 def get_employees(active_only: bool = False,
                   conn: Optional[sqlite3.Connection] = None):
     c, owned = _conn(conn)

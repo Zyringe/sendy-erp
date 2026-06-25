@@ -14,6 +14,10 @@
 --   into a non-colliding range (+100000) then mapped back. Tables without
 --   UNIQUE constraints on employee_id get a direct single-pass map.
 -- NOTE: do NOT self-insert into applied_migrations (runner records it).
+-- Disable FK enforcement for this connection so the intermediate PK reassignment
+-- (offset → final) does not trigger FK violations. The runner's connection has
+-- PRAGMA foreign_keys = ON by default; we restore it at the end.
+PRAGMA foreign_keys = OFF;
 BEGIN;
 
 CREATE TEMP TABLE _idmap AS
@@ -47,3 +51,4 @@ UPDATE sqlite_sequence SET seq = (SELECT MAX(id) FROM employees)
 
 DROP TABLE _idmap;
 COMMIT;
+PRAGMA foreign_keys = ON;

@@ -157,3 +157,27 @@ def test_create_employee_non_emp_code_uses_autoincrement(tmp_db):
     })
     # autoincrement from seq=6 → 7 (assuming EMP009 test hasn't run first in same db)
     assert isinstance(new_id, int) and new_id > 0
+
+
+# ── Task 2.3: Add form prefills next emp_code ────────────────────────────────
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture
+def admin_client(tmp_db):
+    """Flask test client with admin session. Mirrors the fixture in test_bp_hr_routes.py."""
+    from app import app as flask_app
+    flask_app.config["TESTING"] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess["user_id"]  = 1
+        sess["username"] = "test-admin"
+        sess["role"]     = "admin"
+    return c
+
+
+def test_new_employee_form_prefills_next_emp_code(admin_client):
+    """Add form shows next available EMP code (EMP007 after EMP006)."""
+    html = admin_client.get("/hr/employees/new").get_data(as_text=True)
+    assert 'value="EMP007"' in html, "emp_code field not prefilled with EMP007"
