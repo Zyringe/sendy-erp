@@ -1,0 +1,107 @@
+{% extends 'base.html' %}
+{% block title %}คืนสินค้า + ยกเลิก – Marketplace{% endblock %}
+{% block page_title %}คืนสินค้า + ยกเลิก (Shopee / Lazada){% endblock %}
+
+{% block content %}
+
+<div class="mb-3">
+  <a href="{{ url_for('marketplace.dashboard') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i>กลับหน้า Marketplace
+  </a>
+</div>
+
+<div class="alert alert-light border small text-muted mb-3">
+  <i class="bi bi-info-circle me-1"></i>
+  ออเดอร์ทั้ง 2 ประเภทนี้ <strong>ไม่นับเป็นยอดขายจริง</strong> และถูกตัดออกจากการคิดกำไร/มาร์จิ้น
+  &middot; <strong>คืนสินค้า</strong> = ลูกค้าคืนของ ร้านได้เงินสุทธิติดลบ (แบกค่าส่งไป-กลับ) แม้สถานะจะขึ้น "สำเร็จแล้ว"
+  &middot; <strong>ยกเลิก</strong> = ไม่มีเงินเข้า
+</div>
+
+{# ── Summary cards ── #}
+<div class="row g-3 mb-4">
+  <div class="col-sm-6 col-md-3">
+    <div class="stat-card" style="border-left:4px solid #dc3545">
+      <div class="stat-card-label"><i class="bi bi-arrow-return-left me-1"></i>คืนสินค้า</div>
+      <div class="stat-card-value text-danger mt-1">{{ data.n_returns | fmt_qty }}</div>
+      <div class="stat-card-sub text-muted">{{ '%.1f' | format(data.return_rate) }}% ของออเดอร์ทั้งหมด</div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-md-3">
+    <div class="stat-card" style="border-left:4px solid #dc3545">
+      <div class="stat-card-label"><i class="bi bi-cash-stack me-1"></i>ขาดทุนจากการคืน</div>
+      <div class="stat-card-value text-danger mt-1">฿{{ (-data.return_loss) | fmt_price }}</div>
+      <div class="stat-card-sub text-muted">ค่าส่งไป-กลับที่ร้านแบก</div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-md-3">
+    <div class="stat-card" style="border-left:4px solid #6c757d">
+      <div class="stat-card-label"><i class="bi bi-x-circle me-1"></i>ยกเลิก</div>
+      <div class="stat-card-value text-secondary mt-1">{{ data.n_cancelled | fmt_qty }}</div>
+      <div class="stat-card-sub text-muted">{{ '%.1f' | format(data.cancel_rate) }}% ของออเดอร์ทั้งหมด</div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-md-3">
+    <div class="stat-card" style="border-left:4px solid #10b981">
+      <div class="stat-card-label"><i class="bi bi-receipt me-1"></i>ออเดอร์ทั้งหมด</div>
+      <div class="stat-card-value mt-1">{{ data.total_orders | fmt_qty }}</div>
+      <div class="stat-card-sub text-muted">Shopee + Lazada</div>
+    </div>
+  </div>
+</div>
+
+{# ── Returns table ── #}
+<h5 class="mb-2"><i class="bi bi-arrow-return-left text-danger me-1"></i>คืนสินค้า (return) — {{ data.n_returns | fmt_qty }} ออเดอร์</h5>
+<div class="table-responsive mb-4">
+  <table class="table table-sm table-hover align-middle">
+    <thead class="table-light">
+      <tr>
+        <th>แพลตฟอร์ม</th><th>order_sn</th><th>วันที่</th><th>สินค้า</th>
+        <th class="text-end">ยอดสินค้า</th><th class="text-end">เงินเข้าสุทธิ</th><th>สถานะ</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in data.returns %}
+      <tr>
+        <td>{% if r.platform == 'shopee' %}<span class="badge bg-danger">Shopee</span>{% else %}<span class="badge bg-primary">Lazada</span>{% endif %}</td>
+        <td><code class="small">{{ r.order_sn }}</code></td>
+        <td class="small text-muted">{{ r.date }}</td>
+        <td class="small">{{ r.product or '—' }}</td>
+        <td class="text-end">฿{{ r.item_value | fmt_price }}</td>
+        <td class="text-end text-danger fw-bold">฿{{ r.net_payout | fmt_price }}</td>
+        <td class="small text-muted">{{ r.status }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="text-center text-muted py-3">ไม่มีออเดอร์คืนสินค้า</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{# ── Cancelled table ── #}
+<h5 class="mb-2"><i class="bi bi-x-circle text-secondary me-1"></i>ยกเลิก (cancel) — {{ data.n_cancelled | fmt_qty }} ออเดอร์</h5>
+<div class="table-responsive">
+  <table class="table table-sm table-hover align-middle">
+    <thead class="table-light">
+      <tr>
+        <th>แพลตฟอร์ม</th><th>order_sn</th><th>วันที่</th><th>สินค้า</th>
+        <th class="text-end">ยอดสินค้า</th><th>สถานะ</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in data.cancelled %}
+      <tr>
+        <td>{% if r.platform == 'shopee' %}<span class="badge bg-danger">Shopee</span>{% else %}<span class="badge bg-primary">Lazada</span>{% endif %}</td>
+        <td><code class="small">{{ r.order_sn }}</code></td>
+        <td class="small text-muted">{{ r.date }}</td>
+        <td class="small">{{ r.product or '—' }}</td>
+        <td class="text-end">฿{{ r.item_total | fmt_price }}</td>
+        <td class="small text-muted">{{ r.status }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="text-center text-muted py-3">ไม่มีออเดอร์ยกเลิก</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

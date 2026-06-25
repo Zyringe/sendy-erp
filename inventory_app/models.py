@@ -6135,6 +6135,64 @@ def get_marketplace_unmapped():
         conn.close()
 
 
+# status values that mean an order was cancelled or returned (no real sale)
+_CANCEL_RETURN_STATUSES = (
+    'canceled', 'ยกเลิกแล้ว', 'Package Returned', 'returned',
+    'Package scrapped', 'Lost by 3PL', 'In Transit: Returning to seller',
+)
+
+
+def get_marketplace_returns_cancelled():
+    """Orders that are NOT real sales — excluded from margin analysis.
+
+    return  = settlement net_payout < 0 (buyer refunded; seller ate two-way
+              shipping). These can show status 'completed' yet be a financial
+              loss, so they are detected by net_payout, not status.
+    cancel  = order status in the cancel/return set (never paid out).
+    """
+    conn = get_connection()
+    try:
+        ph = ','.join('?' * len(_CANCEL_RETURN_STATUSES))
+        returns = [dict(r) for r in conn.execute(
+            """SELECT f.platform, f.order_sn, substr(o.order_date, 1, 10) AS date,
+                      o.status, f.item_value, f.net_payout, f.shipping_net,
+                      GROUP_CONCAT(DISTINCT COALESCE(p.product_name, oi.item_name)) AS product
+                 FROM marketplace_order_fees f
+                 JOIN marketplace_orders o
+                   ON o.platform = f.platform AND o.order_sn = f.order_sn
+                 LEFT JOIN marketplace_order_items oi
+                   ON oi.platform = f.platform AND oi.order_sn = f.order_sn
+                 LEFT JOIN products p ON p.id = oi.internal_product_id
+                WHERE f.net_payout < 0
+                GROUP BY f.platform, f.order_sn
+                ORDER BY f.net_payout""").fetchall()]
+        cancelled = [dict(r) for r in conn.execute(
+            f"""SELECT o.platform, o.order_sn, substr(o.order_date, 1, 10) AS date,
+                       o.status, o.item_total,
+                       GROUP_CONCAT(DISTINCT COALESCE(p.product_name, oi.item_name)) AS product
+                  FROM marketplace_orders o
+                  LEFT JOIN marketplace_order_items oi ON oi.order_id = o.id
+                  LEFT JOIN products p ON p.id = oi.internal_product_id
+                 WHERE o.status IN ({ph})
+                 GROUP BY o.id
+                 ORDER BY o.order_date DESC""", _CANCEL_RETURN_STATUSES).fetchall()]
+        total_orders = conn.execute(
+            "SELECT COUNT(*) FROM marketplace_orders").fetchone()[0] or 0
+        return_loss = sum((r['net_payout'] or 0) for r in returns)
+        return {
+            'returns': returns,
+            'cancelled': cancelled,
+            'n_returns': len(returns),
+            'n_cancelled': len(cancelled),
+            'return_loss': return_loss,
+            'total_orders': total_orders,
+            'return_rate': (len(returns) / total_orders * 100) if total_orders else 0,
+            'cancel_rate': (len(cancelled) / total_orders * 100) if total_orders else 0,
+        }
+    finally:
+        conn.close()
+
+
 # ── Payout batch functions (mig 105) ─────────────────────────────────────────
 
 def create_payout_batch(deposit_date, deposit_amount, bank_ref=None, note=None,
