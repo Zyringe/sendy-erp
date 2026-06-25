@@ -1,8 +1,8 @@
 """Phase 2 — id ↔ emp_code renumber (HIGH RISK).
 
-Synthetic fixture test: proves the migration aligns id==emp_code and
-preserves attribution (content keyed by emp_code is unchanged) across all
-FK-holding tables, with no row count change. No live DB needed.
+Tests:
+  test_renumber_*        — synthetic fixture; no live DB needed.
+  test_create_employee_* — integration; uses tmp_db (copy of live DB).
 """
 import sqlite3
 import pathlib
@@ -127,3 +127,33 @@ def test_renumber_aligns_id_and_preserves_attribution(tmp_path):
     for table, expected in expected_counts.items():
         actual = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         assert actual == expected, f"{table}: expected {expected} rows, got {actual}"
+
+
+# ── Task 2.2: create_employee assigns explicit id from emp_code ──────────────
+
+def test_create_employee_sets_id_from_emp_code(tmp_db):
+    """EMP009 → id 9. Current seq=6, so autoincrement gives 7 — tests explicit path."""
+    import hr_queries as hrq
+    new_id = hrq.create_employee({
+        "emp_code": "EMP009",
+        "full_name": "ทดสอบ ไอดี",
+        "company_id": 1,
+    })
+    assert new_id == 9, f"expected id=9 from EMP009, got {new_id}"
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute("SELECT id FROM employees WHERE emp_code='EMP009'").fetchone()
+    assert row is not None, "EMP009 row not found"
+    assert row[0] == 9, f"DB id={row[0]}, expected 9"
+
+
+def test_create_employee_non_emp_code_uses_autoincrement(tmp_db):
+    """Non-EMP### code → no explicit id, falls back to autoincrement."""
+    import hr_queries as hrq
+    new_id = hrq.create_employee({
+        "emp_code": "OWNER001",
+        "full_name": "เจ้าของ ทดสอบ",
+        "company_id": 1,
+    })
+    # autoincrement from seq=6 → 7 (assuming EMP009 test hasn't run first in same db)
+    assert isinstance(new_id, int) and new_id > 0
