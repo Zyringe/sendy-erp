@@ -69,6 +69,22 @@ def test_manager_still_blocked_from_manager_forbidden_endpoint(tmp_db):
     assert r.status_code in (302, 403), f"manager created a user: {r.status_code}"
 
 
+# ── Task 3.3 tests ────────────────────────────────────────────────────────────
+
+def test_general_blocked_from_hr_and_products(tmp_db):
+    """general role is redirected away from any endpoint not in _GENERAL_ALLOWED."""
+    c = _client_as('general', tmp_db)
+    assert c.get('/hr/').status_code == 302,      "general accessed /hr/"
+    assert c.get('/products').status_code == 302,  "general accessed /products"
+    assert c.get('/m/stock').status_code == 200,   "general blocked from /m/stock"
+
+
+def test_shareholder_blocked_from_admin_module_get(tmp_db):
+    """shareholder cannot GET admin_module endpoints (defense-in-depth gate)."""
+    c = _client_as('shareholder', tmp_db)
+    assert c.get('/users').status_code == 403,     "shareholder accessed /users"
+
+
 # ── Task 3.1 tests ────────────────────────────────────────────────────────────
 
 def test_users_role_check_allows_new_roles(tmp_db):

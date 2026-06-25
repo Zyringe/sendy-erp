@@ -250,6 +250,14 @@ _ROLE_POST_OK = {
     'shareholder': frozenset(['logout']),          # reads only; can log out
 }
 
+# GET allowlist for the 'general' role (PWA stock-lookup kiosk).
+# Everything not in this set → redirect to mobile.stock_search.
+# Phase 5: append self-service leave endpoints here when built.
+_GENERAL_ALLOWED = frozenset([
+    'mobile.stock_search', 'mobile.stock_search_api',
+    'logout',
+])
+
 
 # ── Module definitions for sidebar switcher ──────────────────────────────────
 # Each entry: key, name_th, icon (bootstrap-icons class), first_endpoint
@@ -552,6 +560,12 @@ def require_login():
     if not role:
         flash('กรุณาเข้าสู่ระบบก่อน', 'warning')
         return redirect(url_for('login', next=request.url))
+    # admin_module is admin-only at the module level (defense-in-depth)
+    if _ENDPOINT_MODULE.get(endpoint) == 'admin_module' and role != 'admin':
+        abort(403)
+    # general: PWA stock-lookup + own leave only — everything else → stock search
+    if role == 'general' and endpoint not in _GENERAL_ALLOWED:
+        return redirect(url_for('mobile.stock_search'))
     # HR module: staff cannot access any hr.* endpoint (GET or POST)
     if (endpoint or '').startswith('hr.') and role == 'staff':
         flash('ไม่มีสิทธิ์เข้าถึงระบบบุคลากร', 'danger')
