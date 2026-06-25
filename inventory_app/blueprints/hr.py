@@ -27,6 +27,23 @@ import hr_queries as hrq
 
 bp_hr = Blueprint("hr", __name__, url_prefix="/hr")
 
+# Canonical Thai bank names for the employee bank dropdown. Stored value =
+# the clean Thai name so payslips/exports stay tidy.
+BANK_OPTIONS = [
+    "ธนาคารกสิกรไทย",
+    "ธนาคารไทยพาณิชย์",
+    "ธนาคารกรุงเทพ",
+    "ธนาคารกรุงไทย",
+    "ธนาคารกรุงศรีอยุธยา",
+    "ธนาคารทหารไทยธนชาต",
+    "ธนาคารยูโอบี",
+    "ธนาคารเกียรตินาคินภัทร",
+    "ธนาคารทิสโก้",
+    "ธนาคารซีไอเอ็มบีไทย",
+    "ธนาคารออมสิน",
+    "ธนาคารเพื่อการเกษตรและสหกรณ์การเกษตร",
+]
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -147,6 +164,8 @@ def employee_new():
     companies = hrq.get_companies()
     if request.method == "POST":
         data = request.form.to_dict()
+        if data.get("bank_name") == "__other__":
+            data["bank_name"] = (request.form.get("bank_name_other") or "").strip()
         # Calculate probation_end_date if start_date provided
         _fill_probation_end(data)
         try:
@@ -171,6 +190,7 @@ def employee_new():
         form=request.form if request.method == "POST" else {},
         action_url=url_for("hr.employee_new"),
         page_title="เพิ่มพนักงาน",
+        banks=BANK_OPTIONS,
     )
 
 
@@ -192,6 +212,7 @@ def employee_detail(id: int):
         salary_history=salary_history,
         leave_balance=leave_bal,
         leave_types=leave_types,
+        banks=BANK_OPTIONS,
         year=year,
         be_year=_be_year,
         fmt_baht=_fmt_baht,
@@ -205,6 +226,8 @@ def employee_edit(id: int):
     if not emp:
         abort(404)
     data = request.form.to_dict()
+    if data.get("bank_name") == "__other__":
+        data["bank_name"] = (request.form.get("bank_name_other") or "").strip()
     _fill_probation_end(data)
     try:
         hrq.update_employee(id, data)
@@ -277,6 +300,7 @@ def employee_entitlements(id: int):
         leave_balance=leave_bal,
         year=year,
         be_year=_be_year,
+        banks=BANK_OPTIONS,
     )
 
 

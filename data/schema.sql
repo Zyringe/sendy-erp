@@ -410,7 +410,8 @@ CREATE TABLE employees (
     note                TEXT,
     created_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-);
+, sort_order INTEGER NOT NULL DEFAULT 100, on_payroll INTEGER NOT NULL DEFAULT 1
+                                  CHECK(on_payroll IN (0,1)));
 
 CREATE TABLE expense_categories (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

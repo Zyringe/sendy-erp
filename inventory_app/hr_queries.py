@@ -70,7 +70,7 @@ def get_employees(active_only: bool = False,
         """
         if active_only:
             sql += " WHERE e.is_active = 1"
-        sql += " ORDER BY e.emp_code"
+        sql += " ORDER BY e.sort_order, e.emp_code"
         return c.execute(sql).fetchall()
     finally:
         if owned:
