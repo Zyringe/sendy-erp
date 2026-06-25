@@ -106,6 +106,13 @@ def unmapped():
                            rows=models.get_marketplace_unmapped())
 
 
+@bp_marketplace.route('/marketplace/returns')
+def returns_cancelled():
+    """Returns (net_payout<0) + cancelled orders — not counted as real sales."""
+    return render_template('marketplace/returns.html',
+                           data=models.get_marketplace_returns_cancelled())
+
+
 @bp_marketplace.route('/marketplace/settlement-import', methods=['POST'])
 def settlement_import():
     f = request.files.get('settlement_file')
