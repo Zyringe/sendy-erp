@@ -37,6 +37,23 @@ def test_shareholder_cannot_post(tmp_db):
     ).fetchone()[0] == 0, "shareholder created a row — POST was not blocked"
 
 
+def test_shareholder_blocked_from_staff_post_endpoint(tmp_db):
+    """shareholder cannot POST to a staff-whitelisted endpoint (no inline admin guard).
+    Uses /mapping/save which is in _STAFF_POST_OK and returns 200 JSON on success.
+    Without the gate shareholder falls through and gets 200 — test is RED on baseline.
+    With the gate shareholder is redirected (302) — test is GREEN."""
+    c = _client_as('shareholder', tmp_db)
+    r = c.post('/mapping/save', json={})
+    assert r.status_code in (302, 403), f"expected deny, got {r.status_code}"
+
+
+def test_general_blocked_from_staff_post_endpoint(tmp_db):
+    """general cannot POST to a staff-whitelisted endpoint (no inline admin guard)."""
+    c = _client_as('general', tmp_db)
+    r = c.post('/mapping/save', json={})
+    assert r.status_code in (302, 403), f"expected deny, got {r.status_code}"
+
+
 def test_staff_post_allowed_endpoint_unchanged(tmp_db):
     """staff can still POST to a whitelisted endpoint (import_weekly)."""
     c = _client_as('staff', tmp_db)
