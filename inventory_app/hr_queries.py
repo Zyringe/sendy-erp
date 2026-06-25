@@ -59,6 +59,20 @@ def get_leave_type(lt_id: int, conn: Optional[sqlite3.Connection] = None):
 
 # ── Employees ────────────────────────────────────────────────────────────────
 
+def next_emp_code(conn: Optional[sqlite3.Connection] = None) -> str:
+    """Return the next available EMP code (EMP%03d % (max_numeric + 1))."""
+    c, owned = _conn(conn)
+    try:
+        row = c.execute(
+            "SELECT MAX(CAST(SUBSTR(emp_code, 4) AS INTEGER))"
+            "  FROM employees WHERE emp_code GLOB 'EMP[0-9]*'"
+        ).fetchone()
+        return "EMP%03d" % ((row[0] or 0) + 1)
+    finally:
+        if owned:
+            c.close()
+
+
 def get_employees(active_only: bool = False,
                   conn: Optional[sqlite3.Connection] = None):
     c, owned = _conn(conn)
@@ -108,33 +122,69 @@ def get_employee_salary_history(emp_id: int,
 
 
 def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
-    """Insert a new employee row. Returns new id."""
+    """Insert a new employee row. Returns new id.
+
+    When emp_code matches ^EMP\\d+$, sets id explicitly to the numeric suffix
+    so id==emp_code is preserved on every new hire (Phase 2 invariant).
+    """
+    import re
     c, owned = _conn(conn)
     try:
-        cur = c.execute(
-            """INSERT INTO employees
-                 (emp_code, full_name, nickname, national_id, gender, phone,
-                  address, position, company_id, employment_type, start_date,
-                  probation_days, probation_end_date, end_date, sso_enrolled,
-                  diligence_allowance, bank_name, bank_branch, bank_account_no,
-                  bank_account_name, salesperson_code, user_id, is_active, note)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                data.get("emp_code"), data.get("full_name"),
-                data.get("nickname"), data.get("national_id"),
-                data.get("gender"), data.get("phone"),
-                data.get("address"), data.get("position"),
-                data.get("company_id"), data.get("employment_type", "monthly"),
-                data.get("start_date"), data.get("probation_days", 90),
-                data.get("probation_end_date"), data.get("end_date"),
-                int(data.get("sso_enrolled", 1)),
-                float(data.get("diligence_allowance") or 0),
-                data.get("bank_name"), data.get("bank_branch"),
-                data.get("bank_account_no"), data.get("bank_account_name"),
-                data.get("salesperson_code"), data.get("user_id"),
-                int(data.get("is_active", 1)), data.get("note"),
-            ),
-        )
+        code = (data.get("emp_code") or "").strip()
+        m = re.fullmatch(r"EMP(\d+)", code)
+        explicit_id = int(m.group(1)) if m else None
+
+        if explicit_id is not None:
+            cur = c.execute(
+                """INSERT INTO employees
+                     (id, emp_code, full_name, nickname, national_id, gender, phone,
+                      address, position, company_id, employment_type, start_date,
+                      probation_days, probation_end_date, end_date, sso_enrolled,
+                      diligence_allowance, bank_name, bank_branch, bank_account_no,
+                      bank_account_name, salesperson_code, user_id, is_active, note)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    explicit_id,
+                    data.get("emp_code"), data.get("full_name"),
+                    data.get("nickname"), data.get("national_id"),
+                    data.get("gender"), data.get("phone"),
+                    data.get("address"), data.get("position"),
+                    data.get("company_id"), data.get("employment_type", "monthly"),
+                    data.get("start_date"), data.get("probation_days", 90),
+                    data.get("probation_end_date"), data.get("end_date"),
+                    int(data.get("sso_enrolled", 1)),
+                    float(data.get("diligence_allowance") or 0),
+                    data.get("bank_name"), data.get("bank_branch"),
+                    data.get("bank_account_no"), data.get("bank_account_name"),
+                    data.get("salesperson_code"), data.get("user_id"),
+                    int(data.get("is_active", 1)), data.get("note"),
+                ),
+            )
+        else:
+            cur = c.execute(
+                """INSERT INTO employees
+                     (emp_code, full_name, nickname, national_id, gender, phone,
+                      address, position, company_id, employment_type, start_date,
+                      probation_days, probation_end_date, end_date, sso_enrolled,
+                      diligence_allowance, bank_name, bank_branch, bank_account_no,
+                      bank_account_name, salesperson_code, user_id, is_active, note)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    data.get("emp_code"), data.get("full_name"),
+                    data.get("nickname"), data.get("national_id"),
+                    data.get("gender"), data.get("phone"),
+                    data.get("address"), data.get("position"),
+                    data.get("company_id"), data.get("employment_type", "monthly"),
+                    data.get("start_date"), data.get("probation_days", 90),
+                    data.get("probation_end_date"), data.get("end_date"),
+                    int(data.get("sso_enrolled", 1)),
+                    float(data.get("diligence_allowance") or 0),
+                    data.get("bank_name"), data.get("bank_branch"),
+                    data.get("bank_account_no"), data.get("bank_account_name"),
+                    data.get("salesperson_code"), data.get("user_id"),
+                    int(data.get("is_active", 1)), data.get("note"),
+                ),
+            )
         c.commit()
         return cur.lastrowid
     finally:

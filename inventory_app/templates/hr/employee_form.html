@@ -86,7 +86,7 @@
         <div class="col-md-3">
           <label class="form-label small">รหัสพนักงาน <span class="text-danger">*</span></label>
           <input type="text" name="emp_code" class="form-control form-control-sm"
-                 value="{{ form.get('emp_code','') }}" required placeholder="EMP003">
+                 value="{{ form.get('emp_code', next_emp_code) }}" required placeholder="EMP003">
         </div>
         <div class="col-md-5">
           <label class="form-label small">ชื่อ-นามสกุล <span class="text-danger">*</span></label>
