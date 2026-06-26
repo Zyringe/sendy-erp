@@ -134,6 +134,10 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
         m = re.fullmatch(r"EMP(\d+)", code)
         explicit_id = int(m.group(1)) if m else None
 
+        on_payroll = int(data.get("on_payroll") or 0) if "on_payroll" in data else 1
+        user_id_raw = data.get("user_id")
+        user_id = int(user_id_raw) if user_id_raw and str(user_id_raw).strip() else None
+
         if explicit_id is not None:
             cur = c.execute(
                 """INSERT INTO employees
@@ -141,8 +145,9 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
                       address, position, company_id, employment_type, start_date,
                       probation_days, probation_end_date, end_date, sso_enrolled,
                       diligence_allowance, bank_name, bank_branch, bank_account_no,
-                      bank_account_name, salesperson_code, user_id, is_active, note)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      bank_account_name, salesperson_code, user_id, is_active,
+                      on_payroll, note)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     explicit_id,
                     data.get("emp_code"), data.get("full_name"),
@@ -156,8 +161,8 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
                     float(data.get("diligence_allowance") or 0),
                     data.get("bank_name"), data.get("bank_branch"),
                     data.get("bank_account_no"), data.get("bank_account_name"),
-                    data.get("salesperson_code"), data.get("user_id"),
-                    int(data.get("is_active", 1)), data.get("note"),
+                    data.get("salesperson_code"), user_id,
+                    int(data.get("is_active", 1)), on_payroll, data.get("note"),
                 ),
             )
         else:
@@ -167,8 +172,9 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
                       address, position, company_id, employment_type, start_date,
                       probation_days, probation_end_date, end_date, sso_enrolled,
                       diligence_allowance, bank_name, bank_branch, bank_account_no,
-                      bank_account_name, salesperson_code, user_id, is_active, note)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      bank_account_name, salesperson_code, user_id, is_active,
+                      on_payroll, note)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     data.get("emp_code"), data.get("full_name"),
                     data.get("nickname"), data.get("national_id"),
@@ -181,8 +187,8 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
                     float(data.get("diligence_allowance") or 0),
                     data.get("bank_name"), data.get("bank_branch"),
                     data.get("bank_account_no"), data.get("bank_account_name"),
-                    data.get("salesperson_code"), data.get("user_id"),
-                    int(data.get("is_active", 1)), data.get("note"),
+                    data.get("salesperson_code"), user_id,
+                    int(data.get("is_active", 1)), on_payroll, data.get("note"),
                 ),
             )
         c.commit()
@@ -196,6 +202,11 @@ def update_employee(emp_id: int, data: dict,
                     conn: Optional[sqlite3.Connection] = None):
     c, owned = _conn(conn)
     try:
+        # on_payroll: checkbox sends "1" when checked, nothing when unchecked
+        on_payroll = int(data.get("on_payroll") or 0) if "on_payroll" in data else 1
+        # user_id: empty string from unselected dropdown → NULL
+        user_id_raw = data.get("user_id")
+        user_id = int(user_id_raw) if user_id_raw and str(user_id_raw).strip() else None
         c.execute(
             """UPDATE employees SET
                  emp_code=?, full_name=?, nickname=?, national_id=?, gender=?,
@@ -203,7 +214,7 @@ def update_employee(emp_id: int, data: dict,
                  start_date=?, probation_days=?, probation_end_date=?, end_date=?,
                  sso_enrolled=?, diligence_allowance=?, bank_name=?, bank_branch=?,
                  bank_account_no=?, bank_account_name=?, salesperson_code=?,
-                 user_id=?, is_active=?, note=?,
+                 user_id=?, is_active=?, on_payroll=?, note=?,
                  updated_at=datetime('now','localtime')
                WHERE id=?""",
             (
@@ -218,12 +229,37 @@ def update_employee(emp_id: int, data: dict,
                 float(data.get("diligence_allowance") or 0),
                 data.get("bank_name"), data.get("bank_branch"),
                 data.get("bank_account_no"), data.get("bank_account_name"),
-                data.get("salesperson_code"), data.get("user_id"),
-                int(data.get("is_active", 1)), data.get("note"),
+                data.get("salesperson_code"), user_id,
+                int(data.get("is_active", 1)), on_payroll, data.get("note"),
                 emp_id,
             ),
         )
         c.commit()
+    finally:
+        if owned:
+            c.close()
+
+
+def get_linkable_users(employee_id: Optional[int] = None,
+                       conn: Optional[sqlite3.Connection] = None):
+    """Return active users not already linked to another employee.
+
+    When employee_id is provided, the user currently linked to that employee
+    is included (so the edit form can show the existing selection).
+    """
+    c, owned = _conn(conn)
+    try:
+        return c.execute(
+            """SELECT id, username, display_name, role FROM users
+                WHERE is_active=1
+                  AND id NOT IN (
+                      SELECT user_id FROM employees
+                       WHERE user_id IS NOT NULL
+                         AND (? IS NULL OR id != ?)
+                  )
+                ORDER BY role, username""",
+            (employee_id, employee_id),
+        ).fetchall()
     finally:
         if owned:
             c.close()

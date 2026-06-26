@@ -170,6 +170,32 @@
         </div>
 
         <hr class="col-12 my-1">
+        <div class="col-12 small text-muted">บัญชีผู้ใช้ระบบ</div>
+        <div class="col-md-6">
+          <label class="form-label small">บัญชีผู้ใช้ (login)</label>
+          <select name="user_id" class="form-select form-select-sm">
+            <option value="">— ไม่ผูก —</option>
+            {% for u in (linkable_users or []) %}
+              <option value="{{ u['id'] }}"
+                {% if form.get('user_id')|string == u['id']|string %}selected{% endif %}>
+                {{ u['username'] }} ({{ u['display_name'] or u['username'] }}, {{ u['role'] }})
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-6 d-flex align-items-end pb-1">
+          <div class="form-check">
+            <input type="checkbox" name="on_payroll" value="1"
+                   id="on_payroll_new"
+                   class="form-check-input"
+                   {% if form.get('on_payroll','1') != '0' %}checked{% endif %}>
+            <label class="form-check-label small" for="on_payroll_new">
+              อยู่ในระบบเงินเดือน
+            </label>
+          </div>
+        </div>
+
+        <hr class="col-12 my-1">
         <div class="col-12 small text-muted">ข้อมูลธนาคาร</div>
         {% from 'hr/_bank_select.html' import bank_select %}
         <div class="col-md-4">
