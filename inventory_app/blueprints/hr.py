@@ -52,6 +52,11 @@ def _require_admin():
         abort(403)
 
 
+def _require_admin_or_manager():
+    if session.get("role") not in ("admin", "manager"):
+        abort(403)
+
+
 def _be_year(iso_date: Optional[str]) -> str:
     """Convert 'YYYY-MM-DD' to 'DD/MM/พ.ศ.' Thai display string."""
     if not iso_date:
@@ -103,6 +108,7 @@ def dashboard():
     on_leave = hrq.get_on_leave_today(today_iso)
     probation_ending = hrq.get_probation_ending(cutoff_iso, today_iso)
     payroll_runs = hrq.get_payroll_runs()
+    pending_leave_count = hrq.get_leave_count_by_status("pending")
 
     # Stale-draft alert: any draft run whose year_month is strictly before
     # the current month. A draft for the current month is normal mid-prep;
@@ -137,6 +143,7 @@ def dashboard():
         payroll_runs=payroll_runs,
         stale_drafts=stale_drafts,
         over_quota_alerts=over_quota_alerts,
+        pending_leave_count=pending_leave_count,
         today_iso=today_iso,
         be_year=_be_year,
         fmt_baht=_fmt_baht,
@@ -322,6 +329,13 @@ def leave_list():
     )
     employees = hrq.get_employees(active_only=True)
     leave_types = hrq.get_leave_types()
+    # Pending section: always show ALL pending (unfiltered) for admin/manager to action.
+    role = session.get("role", "")
+    pending_requests = (
+        hrq.get_leave_requests(status="pending")
+        if role in ("admin", "manager")
+        else []
+    )
     return render_template(
         "hr/leave.html",
         requests=requests,
@@ -330,6 +344,7 @@ def leave_list():
         filter_emp=emp_id or "",
         filter_month=ym,
         filter_lt=lt_id or "",
+        pending_requests=pending_requests,
         be_year=_be_year,
     )
 
@@ -371,6 +386,35 @@ def leave_edit(id: int):
         flash("อัปเดตการลาเรียบร้อย", "success")
     except Exception as e:
         flash(f"ไม่สามารถบันทึก: {e}", "danger")
+    return redirect(url_for("hr.leave_list"))
+
+
+@bp_hr.route("/leave/<int:rid>/approve", methods=["POST"])
+def leave_approve(rid: int):
+    _require_admin_or_manager()
+    from datetime import datetime
+    req = hrq.get_leave_request(rid)
+    if not req or req["status"] != "pending":
+        flash("ไม่พบคำขอหรือสถานะไม่ถูกต้อง", "warning")
+        return redirect(url_for("hr.leave_list"))
+    hrq.update_leave_request(rid, {
+        "status": "approved",
+        "approved_by": session.get("username"),
+        "approved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    flash("อนุมัติคำขอลาแล้ว", "success")
+    return redirect(url_for("hr.leave_list"))
+
+
+@bp_hr.route("/leave/<int:rid>/reject", methods=["POST"])
+def leave_reject(rid: int):
+    _require_admin_or_manager()
+    req = hrq.get_leave_request(rid)
+    if not req or req["status"] != "pending":
+        flash("ไม่พบคำขอหรือสถานะไม่ถูกต้อง", "warning")
+        return redirect(url_for("hr.leave_list"))
+    hrq.update_leave_request(rid, {"status": "rejected"})
+    flash("ปฏิเสธคำขอลาแล้ว", "warning")
     return redirect(url_for("hr.leave_list"))
 
 

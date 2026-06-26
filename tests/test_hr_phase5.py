@@ -134,6 +134,44 @@ def test_cannot_edit_another_employees_leave(tmp_db):
     assert row == (other_id, 'ORIGINAL', 'pending')
 
 
+# ── Task 5.4 — manager approval workflow ─────────────────────────────────────
+
+def test_manager_can_approve_leave(tmp_db):
+    """Manager POSTing /hr/leave/<rid>/approve sets status='approved' and stamps approved_by."""
+    import sqlite3; c = sqlite3.connect(tmp_db)
+    c.execute("UPDATE employees SET user_id=2 WHERE emp_code='EMP004'"); c.commit()
+    emp_id = c.execute("SELECT id FROM employees WHERE emp_code='EMP004'").fetchone()[0]
+    rid = c.execute(
+        "INSERT INTO leave_requests(employee_id,leave_type_id,start_date,end_date,days,status,created_by) "
+        "VALUES(?,1,'2026-08-01','2026-08-01',1,'pending','x') RETURNING id", (emp_id,)
+    ).fetchone()[0]; c.commit(); c.close()
+    cl = _client('manager', 99, tmp_db)   # manager (no employee link needed)
+    r = cl.post(f'/hr/leave/{rid}/approve', data={})
+    assert r.status_code in (200, 302)
+    row = sqlite3.connect(tmp_db).execute(
+        "SELECT status, approved_by FROM leave_requests WHERE id=?", (rid,)
+    ).fetchone()
+    assert row[0] == 'approved'
+    assert row[1] is not None   # approved_by was stamped
+
+
+def test_staff_cannot_approve_leave(tmp_db):
+    """Staff POSTing /hr/leave/<rid>/approve is blocked (302 or 403) and leave remains pending."""
+    import sqlite3; c = sqlite3.connect(tmp_db)
+    c.execute("UPDATE employees SET user_id=2 WHERE emp_code='EMP004'"); c.commit()
+    emp_id = c.execute("SELECT id FROM employees WHERE emp_code='EMP004'").fetchone()[0]
+    rid = c.execute(
+        "INSERT INTO leave_requests(employee_id,leave_type_id,start_date,end_date,days,status,created_by) "
+        "VALUES(?,1,'2026-08-01','2026-08-01',1,'pending','x') RETURNING id", (emp_id,)
+    ).fetchone()[0]; c.commit(); c.close()
+    cl = _client('staff', 2, tmp_db)
+    r = cl.post(f'/hr/leave/{rid}/approve', data={})
+    assert r.status_code in (302, 403)
+    assert sqlite3.connect(tmp_db).execute(
+        "SELECT status FROM leave_requests WHERE id=?", (rid,)
+    ).fetchone()[0] == 'pending'   # unchanged
+
+
 def test_cannot_edit_non_pending_leave(tmp_db):
     """Owner can only self-edit PENDING leave; editing an approved row → 403."""
     c = sqlite3.connect(tmp_db)

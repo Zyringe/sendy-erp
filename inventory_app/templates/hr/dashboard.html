@@ -63,6 +63,18 @@
   </div>
 </div>
 
+{% if pending_leave_count and session.role in ('admin', 'manager') %}
+<div class="alert alert-warning d-flex align-items-center mb-3" role="alert">
+  <i class="bi bi-hourglass-split me-2"></i>
+  <div>
+    <a href="{{ url_for('hr.leave_list') }}" class="alert-link fw-semibold">
+      รออนุมัติ <span class="badge bg-warning text-dark">{{ pending_leave_count }}</span>
+    </a>
+    — มีคำขอลารออนุมัติ กรุณาตรวจสอบ
+  </div>
+</div>
+{% endif %}
+
 <div class="row g-4">
   {# ── On leave today ─────────────────────────────────────────────────── #}
   <div class="col-md-6">
