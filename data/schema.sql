@@ -663,7 +663,7 @@ CREATE TABLE leave_requests (
                              CHECK(status IN ('pending','approved','rejected','cancelled')),
     created_by       TEXT,
     created_at       TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-);
+, approved_by TEXT, approved_at TEXT);
 
 CREATE TABLE leave_types (
     id                       INTEGER PRIMARY KEY AUTOINCREMENT,

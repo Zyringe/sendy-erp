@@ -72,6 +72,7 @@ from blueprints.review import bp_review
 from blueprints.call import bp_call
 from blueprints.customer_review import bp_customer_review
 from blueprints.naming import bp_naming
+from blueprints.me import bp_me
 import cashflow as cf_mod
 import revenue as rev_mod
 import ar_followup as arf_mod
@@ -122,6 +123,7 @@ app.register_blueprint(bp_review)
 app.register_blueprint(bp_call)
 app.register_blueprint(bp_customer_review)
 app.register_blueprint(bp_naming)
+app.register_blueprint(bp_me)
 
 with app.app_context():
     # SKIP_DB_INIT=1 lets the app boot without touching the database. Used
@@ -224,6 +226,11 @@ _STAFF_POST_OK = frozenset([
     'customer_review.normalize_confirm',
     'customer_review.normalize_skip',
     'stock_adjust',
+    # Phase 5 self-service leave — any employee may submit/edit/cancel their OWN
+    # pending leave. Ownership is enforced inside each route via _my_employee()
+    # (employee_id never read from form/URL); this gate only permits the POST to
+    # reach the route. The 'general' kiosk role's wiring is added in Task 5.6.
+    'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'customer_reassign', 'customer_bulk_reassign',
@@ -237,12 +244,17 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     # apply mutates product_name in bulk. Manager/admin only.
     'naming.dict_preview', 'naming.dict_apply',
     'naming.product_preview_name', 'naming.product_save',
+    # Phase 5 approval workflow — managers can approve/reject pending leave.
+    'hr.leave_approve', 'hr.leave_reject',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
 # the route. Other admin-only writes use _require_admin().
 # admin can POST anything
 
-_GENERAL_POST_OK = frozenset(['logout'])          # Phase 5 appends self-service leave endpoints here
+_GENERAL_POST_OK = frozenset([
+    'logout',
+    'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
+])
 _ROLE_POST_OK = {
     'manager':     _MANAGER_POST_OK,
     'staff':       _STAFF_POST_OK,
@@ -250,12 +262,12 @@ _ROLE_POST_OK = {
     'shareholder': frozenset(['logout']),          # reads only; can log out
 }
 
-# GET allowlist for the 'general' role (PWA stock-lookup kiosk).
+# GET allowlist for the 'general' role (PWA stock-lookup kiosk + own leave).
 # Everything not in this set → redirect to mobile.stock_search.
-# Phase 5: append self-service leave endpoints here when built.
 _GENERAL_ALLOWED = frozenset([
     'mobile.stock_search', 'mobile.stock_search_api',
     'logout',
+    'me.leave', 'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
 ])
 
 
@@ -503,10 +515,14 @@ def build_mobile_nav_slots(role, endpoint=''):
     active). Any role that is not admin/manager — including '' or an unexpected
     value — gets only the always-visible slots, so a staff/unknown session can
     never be shown a slot whose landing page would 403."""
+    _leave_slot = {'key': 'my_leave', 'label': 'ลาของฉัน', 'icon': 'bi-calendar-x',
+                   'endpoint': 'me.leave', 'active': endpoint == 'me.leave'}
     if role == 'general':
-        # general is stock-lookup only; Phase 5 adds ลาของฉัน slot
-        return [{'key': 'stock', 'label': 'สต็อก', 'icon': 'bi-search',
-                 'endpoint': 'mobile.stock_search', 'active': True}]
+        return [
+            {'key': 'stock', 'label': 'สต็อก', 'icon': 'bi-search',
+             'endpoint': 'mobile.stock_search', 'active': endpoint == 'mobile.stock_search'},
+            _leave_slot,
+        ]
     is_manager = role in ('admin', 'manager', 'shareholder')  # shareholder reads HR + accounting
     active = _mobile_active_slot(endpoint)
     slots = []
@@ -517,6 +533,7 @@ def build_mobile_nav_slots(role, endpoint=''):
             'key': s['key'], 'label': s['label'], 'icon': s['icon'],
             'endpoint': s['endpoint'], 'active': s['key'] == active,
         })
+    slots.append(_leave_slot)
     return slots
 
 

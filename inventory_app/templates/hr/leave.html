@@ -12,6 +12,60 @@
 
 {% block content %}
 
+{# ── Pending approval section (admin/manager only) ───────────────────────── #}
+{% if pending_requests and session.role in ('admin', 'manager') %}
+<div class="card mb-3 border-warning">
+  <div class="card-header bg-warning bg-opacity-10">
+    <i class="bi bi-hourglass-split me-1 text-warning"></i>
+    <strong>รออนุมัติ</strong>
+    <span class="badge bg-warning text-dark ms-1">{{ pending_requests|length }}</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead>
+        <tr>
+          <th>พนักงาน</th>
+          <th>ประเภทการลา</th>
+          <th>วันเริ่ม</th>
+          <th>วันสิ้นสุด</th>
+          <th class="text-end">วัน</th>
+          <th>เหตุผล</th>
+          <th class="text-end">จัดการ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in pending_requests %}
+        <tr>
+          <td>
+            <a href="{{ url_for('hr.employee_detail', id=r.employee_id) }}"
+               class="text-decoration-none">{{ r.full_name }}</a>
+            <span class="text-muted small">({{ r.emp_code }})</span>
+          </td>
+          <td class="small">{{ r.leave_name }}</td>
+          <td class="small">{{ be_year(r.start_date) }}</td>
+          <td class="small">{{ be_year(r.end_date) }}</td>
+          <td class="text-end">{{ r.days }}</td>
+          <td class="small text-muted">{{ r.reason or '–' }}</td>
+          <td class="text-end">
+            <form method="post" action="{{ url_for('hr.leave_approve', rid=r.id) }}"
+                  class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-success">อนุมัติ</button>
+            </form>
+            <form method="post" action="{{ url_for('hr.leave_reject', rid=r.id) }}"
+                  class="d-inline ms-1">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger">ปฏิเสธ</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 {# ── Filter bar ─────────────────────────────────────────────────────────── #}
 <div class="card mb-3">
   <div class="card-body py-2">

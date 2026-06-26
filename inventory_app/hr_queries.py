@@ -106,6 +106,19 @@ def get_employee(emp_id: int, conn: Optional[sqlite3.Connection] = None):
             c.close()
 
 
+def get_employee_by_user_id(user_id: int,
+                            conn: Optional[sqlite3.Connection] = None):
+    """Return the active employee row linked to the given user_id, or None."""
+    c, owned = _conn(conn)
+    try:
+        return c.execute(
+            "SELECT * FROM employees WHERE user_id=? AND is_active=1", (user_id,)
+        ).fetchone()
+    finally:
+        if owned:
+            c.close()
+
+
 def get_employee_salary_history(emp_id: int,
                                 conn: Optional[sqlite3.Connection] = None):
     c, owned = _conn(conn)
@@ -325,6 +338,7 @@ def upsert_entitlement(emp_id: int, leave_type_id: int, year: int,
 def get_leave_requests(employee_id: Optional[int] = None,
                        year_month: Optional[str] = None,
                        leave_type_id: Optional[int] = None,
+                       status: Optional[str] = None,
                        conn: Optional[sqlite3.Connection] = None):
     c, owned = _conn(conn)
     try:
@@ -339,6 +353,9 @@ def get_leave_requests(employee_id: Optional[int] = None,
         if leave_type_id:
             clauses.append("lr.leave_type_id = ?")
             params.append(leave_type_id)
+        if status:
+            clauses.append("lr.status = ?")
+            params.append(status)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         return c.execute(
             f"""SELECT lr.*, e.full_name, e.emp_code,
@@ -400,19 +417,31 @@ def update_leave_request(req_id: int, data: dict,
                          conn: Optional[sqlite3.Connection] = None):
     c, owned = _conn(conn)
     try:
-        c.execute(
-            """UPDATE leave_requests SET
-                 employee_id=?, leave_type_id=?, start_date=?, end_date=?,
-                 days=?, reason=?, has_medical_cert=?, status=?
-               WHERE id=?""",
-            (
-                data["employee_id"], data["leave_type_id"],
-                data["start_date"], data["end_date"],
-                float(data.get("days", 1)), data.get("reason"),
-                int(data.get("has_medical_cert", 0)),
-                data.get("status", "approved"), req_id,
-            ),
-        )
+        if "employee_id" in data:
+            # Full-edit path (admin leave_edit modal): all standard fields present.
+            c.execute(
+                """UPDATE leave_requests SET
+                     employee_id=?, leave_type_id=?, start_date=?, end_date=?,
+                     days=?, reason=?, has_medical_cert=?, status=?
+                   WHERE id=?""",
+                (
+                    data["employee_id"], data["leave_type_id"],
+                    data["start_date"], data["end_date"],
+                    float(data.get("days", 1)), data.get("reason"),
+                    int(data.get("has_medical_cert", 0)),
+                    data.get("status", "approved"), req_id,
+                ),
+            )
+        else:
+            # Partial-update path (approval workflow): only stamp the fields provided.
+            _allowed = {"status", "approved_by", "approved_at"}
+            sets = [(k, data[k]) for k in _allowed if k in data]
+            if sets:
+                cols = ", ".join(f"{k}=?" for k, _ in sets)
+                c.execute(
+                    f"UPDATE leave_requests SET {cols} WHERE id=?",
+                    [v for _, v in sets] + [req_id],
+                )
         c.commit()
     finally:
         if owned:
@@ -526,6 +555,19 @@ def get_on_leave_today(today_iso: str,
                 ORDER BY e.emp_code""",
             (today_iso, today_iso),
         ).fetchall()
+    finally:
+        if owned:
+            c.close()
+
+
+def get_leave_count_by_status(status: str,
+                             conn: Optional[sqlite3.Connection] = None) -> int:
+    """Return the count of leave_requests rows with the given status."""
+    c, owned = _conn(conn)
+    try:
+        return c.execute(
+            "SELECT COUNT(*) FROM leave_requests WHERE status=?", (status,)
+        ).fetchone()[0]
     finally:
         if owned:
             c.close()
