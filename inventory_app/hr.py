@@ -502,7 +502,7 @@ def generate_run(year_month: str, company_id: int, created_by: int,
         # active employees of this company who overlap the payroll month
         emps = c.execute(
             """SELECT * FROM employees
-                 WHERE company_id = ? AND is_active = 1
+                 WHERE company_id = ? AND is_active = 1 AND on_payroll = 1
                    AND (start_date IS NULL OR start_date <= ?)
                    AND (end_date   IS NULL OR end_date   >= ?)""",
             (company_id, period_end.isoformat(), period_start.isoformat()),
