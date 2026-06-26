@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from flask import (Blueprint, abort, flash, redirect, render_template,
@@ -392,7 +392,6 @@ def leave_edit(id: int):
 @bp_hr.route("/leave/<int:rid>/approve", methods=["POST"])
 def leave_approve(rid: int):
     _require_admin_or_manager()
-    from datetime import datetime
     req = hrq.get_leave_request(rid)
     if not req or req["status"] != "pending":
         flash("ไม่พบคำขอหรือสถานะไม่ถูกต้อง", "warning")
@@ -413,7 +412,11 @@ def leave_reject(rid: int):
     if not req or req["status"] != "pending":
         flash("ไม่พบคำขอหรือสถานะไม่ถูกต้อง", "warning")
         return redirect(url_for("hr.leave_list"))
-    hrq.update_leave_request(rid, {"status": "rejected"})
+    hrq.update_leave_request(rid, {
+        "status": "rejected",
+        "approved_by": session.get("username"),
+        "approved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
     flash("ปฏิเสธคำขอลาแล้ว", "warning")
     return redirect(url_for("hr.leave_list"))
 
