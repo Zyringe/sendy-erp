@@ -242,6 +242,22 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
 # the route. Other admin-only writes use _require_admin().
 # admin can POST anything
 
+_GENERAL_POST_OK = frozenset(['logout'])          # Phase 5 appends self-service leave endpoints here
+_ROLE_POST_OK = {
+    'manager':     _MANAGER_POST_OK,
+    'staff':       _STAFF_POST_OK,
+    'general':     _GENERAL_POST_OK,
+    'shareholder': frozenset(['logout']),          # reads only; can log out
+}
+
+# GET allowlist for the 'general' role (PWA stock-lookup kiosk).
+# Everything not in this set → redirect to mobile.stock_search.
+# Phase 5: append self-service leave endpoints here when built.
+_GENERAL_ALLOWED = frozenset([
+    'mobile.stock_search', 'mobile.stock_search_api',
+    'logout',
+])
+
 
 # ── Module definitions for sidebar switcher ──────────────────────────────────
 # Each entry: key, name_th, icon (bootstrap-icons class), first_endpoint
@@ -274,14 +290,14 @@ _MODULE_DEFS = [
         'name': 'บุคลากร (HR)',
         'icon': 'bi-people',
         'first_endpoint': 'hr.dashboard',
-        'roles': ('admin', 'manager'),
+        'roles': ('admin', 'manager', 'shareholder'),
     },
     {
         'key': 'cashbook',
         'name': 'บัญชีรับ-จ่าย',
         'icon': 'bi-journal-text',
         'first_endpoint': 'cashbook.dashboard',
-        'roles': ('admin', 'manager'),
+        'roles': ('admin', 'manager', 'shareholder'),
     },
     {
         'key': 'data',
@@ -487,7 +503,11 @@ def build_mobile_nav_slots(role, endpoint=''):
     active). Any role that is not admin/manager — including '' or an unexpected
     value — gets only the always-visible slots, so a staff/unknown session can
     never be shown a slot whose landing page would 403."""
-    is_manager = role in ('admin', 'manager')
+    if role == 'general':
+        # general is stock-lookup only; Phase 5 adds ลาของฉัน slot
+        return [{'key': 'stock', 'label': 'สต็อก', 'icon': 'bi-search',
+                 'endpoint': 'mobile.stock_search', 'active': True}]
+    is_manager = role in ('admin', 'manager', 'shareholder')  # shareholder reads HR + accounting
     active = _mobile_active_slot(endpoint)
     slots = []
     for s in _MOBILE_NAV_SLOTS:
@@ -511,6 +531,8 @@ def inject_auth():
     for m in _MODULE_DEFS:
         if m['roles'] is None or role in m['roles']:
             visible_modules.append(m)
+    if role == 'general':
+        visible_modules = []   # general is mobile-only; desktop sidebar shows nothing
     return {
         'is_admin':      role == 'admin',
         'is_manager':    role in ('admin', 'manager'),
@@ -528,6 +550,10 @@ def inject_auth():
     }
 
 
+def _role_home(role):
+    return url_for('mobile.stock_search') if role == 'general' else url_for('dashboard')
+
+
 @app.before_request
 def require_login():
     endpoint = request.endpoint
@@ -540,6 +566,14 @@ def require_login():
     if not role:
         flash('กรุณาเข้าสู่ระบบก่อน', 'warning')
         return redirect(url_for('login', next=request.url))
+    # admin_module is admin-only at the module level (defense-in-depth).
+    # Exception: an admin who is simulating another role still has _real_role set,
+    # so they must be able to reach admin_exit_simulate (and other admin endpoints).
+    if _ENDPOINT_MODULE.get(endpoint) == 'admin_module' and role != 'admin' and not session.get('_real_role'):
+        abort(403)
+    # general: PWA stock-lookup + own leave only — everything else → stock search
+    if role == 'general' and endpoint not in _GENERAL_ALLOWED:
+        return redirect(url_for('mobile.stock_search'))
     # HR module: staff cannot access any hr.* endpoint (GET or POST)
     if (endpoint or '').startswith('hr.') and role == 'staff':
         flash('ไม่มีสิทธิ์เข้าถึงระบบบุคลากร', 'danger')
@@ -555,12 +589,11 @@ def require_login():
         return redirect(url_for('dashboard'))
     if request.method != 'POST':
         return
-    if role == 'staff' and endpoint not in _STAFF_POST_OK:
+    if role == 'admin':
+        return
+    if endpoint not in _ROLE_POST_OK.get(role, frozenset()):
         flash('ไม่มีสิทธิ์ดำเนินการนี้', 'danger')
-        return redirect(url_for('dashboard'))
-    if role == 'manager' and endpoint not in _MANAGER_POST_OK:
-        flash('ต้องใช้บัญชี Admin เท่านั้น', 'danger')
-        return redirect(url_for('dashboard'))
+        return redirect(_role_home(role))
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -582,7 +615,7 @@ def login():
             session['role']         = user['role']
             session.permanent       = remember   # 30-day cookie when checked
             flash(f'ยินดีต้อนรับ {session["display_name"]}', 'success')
-            return redirect(request.args.get('next') or url_for('dashboard'))
+            return redirect(request.args.get('next') or _role_home(session['role']))
         flash('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง', 'danger')
     return render_template('login.html')
 
@@ -617,7 +650,7 @@ def user_new():
     if not username or not password:
         flash('กรุณากรอกชื่อผู้ใช้และรหัสผ่าน', 'danger')
         return redirect(url_for('user_list'))
-    if role not in ('admin', 'manager', 'staff'):
+    if role not in ('admin', 'manager', 'staff', 'shareholder', 'general'):
         role = 'staff'
     conn = get_connection()
     try:
@@ -642,7 +675,7 @@ def user_edit(uid):
     role         = request.form.get('role', 'staff')
     is_active    = 1 if request.form.get('is_active') else 0
     new_password = request.form.get('password', '').strip()
-    if role not in ('admin', 'manager', 'staff'):
+    if role not in ('admin', 'manager', 'staff', 'shareholder', 'general'):
         role = 'staff'
     conn = get_connection()
     if new_password:

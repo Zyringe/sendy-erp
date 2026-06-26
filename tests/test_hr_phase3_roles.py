@@ -1,0 +1,194 @@
+"""Phase 3 — 5-role model: users.role CHECK extended.
+
+Task 3.1: verify migration 117 adds 'shareholder' + 'general' to the CHECK
+          and that a bogus role is still rejected.
+Task 3.2: POST gate is default-deny (shareholder/general/unknown cannot POST
+          arbitrary endpoints; staff/manager whitelists unchanged; admin free).
+Task 3.5: per-role access matrix — security proof (15 parametrized cases).
+"""
+import sqlite3
+
+import pytest
+
+
+# ── Task 3.2 helpers ─────────────────────────────────────────────────────────
+
+def _client_as(role, tmp_db):
+    """Create a test client pre-logged-in as the given role. Import app AFTER
+    tmp_db is set up (config.DATABASE_PATH already patched by tmp_db fixture)."""
+    import os
+    os.environ.setdefault('SKIP_DB_INIT', '1')
+    from app import app as a
+    a.config['TESTING'] = True
+    c = a.test_client()
+    with c.session_transaction() as s:
+        s['user_id'] = 1
+        s['username'] = f'test-{role}'
+        s['role'] = role
+    return c
+
+
+# ── Task 3.2 tests ────────────────────────────────────────────────────────────
+
+def test_shareholder_cannot_post(tmp_db):
+    c = _client_as('shareholder', tmp_db)
+    r = c.post('/hr/employees/new', data={'emp_code': 'EMP900', 'full_name': 'x', 'company_id': '1'})
+    assert r.status_code in (302, 403), f"expected deny, got {r.status_code}"
+    import sqlite3
+    assert sqlite3.connect(tmp_db).execute(
+        "SELECT COUNT(*) FROM employees WHERE emp_code='EMP900'"
+    ).fetchone()[0] == 0, "shareholder created a row — POST was not blocked"
+
+
+def test_shareholder_blocked_from_staff_post_endpoint(tmp_db):
+    """shareholder cannot POST to a staff-whitelisted endpoint (no inline admin guard).
+    Uses /mapping/save which is in _STAFF_POST_OK and returns 200 JSON on success.
+    Without the gate shareholder falls through and gets 200 — test is RED on baseline.
+    With the gate shareholder is redirected (302) — test is GREEN."""
+    c = _client_as('shareholder', tmp_db)
+    r = c.post('/mapping/save', json={})
+    assert r.status_code in (302, 403), f"expected deny, got {r.status_code}"
+
+
+def test_general_blocked_from_staff_post_endpoint(tmp_db):
+    """general cannot POST to a staff-whitelisted endpoint (no inline admin guard)."""
+    c = _client_as('general', tmp_db)
+    r = c.post('/mapping/save', json={})
+    assert r.status_code in (302, 403), f"expected deny, got {r.status_code}"
+
+
+def test_staff_post_allowed_endpoint_unchanged(tmp_db):
+    """staff can still POST to a whitelisted endpoint (import_weekly)."""
+    c = _client_as('staff', tmp_db)
+    # POST to logout (always allowed for everyone) is a safe proxy for "gate not blocking".
+    r = c.post('/logout')
+    assert r.status_code in (200, 302), f"staff logout denied: {r.status_code}"
+
+
+def test_manager_still_blocked_from_manager_forbidden_endpoint(tmp_db):
+    """manager cannot POST to an admin-only endpoint (user creation)."""
+    c = _client_as('manager', tmp_db)
+    r = c.post('/users/new', data={'username': 'x', 'password': 'p', 'display_name': 'X', 'role': 'staff'})
+    assert r.status_code in (302, 403), f"manager created a user: {r.status_code}"
+
+
+# ── Task 3.3 tests ────────────────────────────────────────────────────────────
+
+def test_general_blocked_from_hr_and_products(tmp_db):
+    """general role is redirected away from any endpoint not in _GENERAL_ALLOWED."""
+    c = _client_as('general', tmp_db)
+    assert c.get('/hr/').status_code == 302,      "general accessed /hr/"
+    assert c.get('/products').status_code == 302,  "general accessed /products"
+    assert c.get('/m/stock').status_code == 200,   "general blocked from /m/stock"
+
+
+def test_shareholder_blocked_from_admin_module_get(tmp_db):
+    """shareholder cannot GET admin_module endpoints (defense-in-depth gate)."""
+    c = _client_as('shareholder', tmp_db)
+    assert c.get('/users').status_code == 403,     "shareholder accessed /users"
+
+
+# ── Task 3.1 tests ────────────────────────────────────────────────────────────
+
+def test_users_role_check_allows_new_roles(tmp_db):
+    conn = sqlite3.connect(tmp_db)
+    # both new roles must be insertable; a bogus role must still be rejected
+    conn.execute("INSERT INTO users(username,password_hash,display_name,role) VALUES('_sh','x','sh','shareholder')")
+    conn.execute("INSERT INTO users(username,password_hash,display_name,role) VALUES('_ge','x','ge','general')")
+    conn.commit()
+    import pytest
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO users(username,password_hash,display_name,role) VALUES('_bad','x','b','wizard')")
+
+
+# ── Task 3.3 bug-fix: simulate-exit not blocked by admin_module gate ──────────
+
+def test_simulating_admin_can_exit_simulate(tmp_db):
+    """An admin simulating as manager must be able to reach admin_exit_simulate."""
+    c = _client_as('manager', tmp_db)          # simulated role
+    with c.session_transaction() as s:
+        s['_real_role'] = 'admin'              # marks them as simulating
+    # POST to exit-simulate endpoint — must NOT be 403'd by the gate
+    r = c.post('/admin/exit-simulate')
+    assert r.status_code in (200, 302), f"simulating admin got {r.status_code} — locked in simulation"
+
+
+# ── Task 3.4 tests ────────────────────────────────────────────────────────────
+
+def test_user_form_accepts_new_roles(tmp_db):
+    """Admin can create a user with role 'shareholder' (not coerced to 'staff')."""
+    c = _client_as('admin', tmp_db)
+    c.post('/users/new', data={'username': 'sh1', 'password': 'pass123',
+                               'display_name': 'SH', 'role': 'shareholder'})
+    row = sqlite3.connect(tmp_db).execute(
+        "SELECT role FROM users WHERE username='sh1'"
+    ).fetchone()
+    assert row is not None, "user was not created"
+    assert row[0] == 'shareholder', f"role coerced to {row[0]}"
+
+
+def test_shareholder_sees_hr_module_in_sidebar(tmp_db):
+    """shareholder has hr + cashbook in visible_modules (reads them)."""
+    import os; os.environ.setdefault('SKIP_DB_INIT', '1')
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as s:
+        s['user_id'] = 1; s['username'] = 'sh'; s['role'] = 'shareholder'
+    resp = c.get('/hr/')
+    assert resp.status_code == 200     # shareholder can GET hr
+    html = resp.get_data(as_text=True)
+    assert 'บุคลากร' in html           # hr module visible in sidebar
+
+
+def test_general_login_lands_on_stock(tmp_db):
+    """general role lands on /m/stock after login (not /dashboard)."""
+    import os; os.environ.setdefault('SKIP_DB_INIT', '1')
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    from werkzeug.security import generate_password_hash
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("INSERT OR IGNORE INTO users(username,password_hash,display_name,role) "
+                 "VALUES('gen_test',?,'Gen','general')",
+                 (generate_password_hash('pw123', method='pbkdf2:sha256'),))
+    conn.commit(); conn.close()
+    c = flask_app.test_client()
+    resp = c.post('/login', data={'username': 'gen_test', 'password': 'pw123'},
+                  follow_redirects=False)
+    assert resp.status_code == 302
+    assert '/m/stock' in resp.headers.get('Location', ''), \
+        f"general landed on {resp.headers.get('Location')} not /m/stock"
+
+
+# ── Task 3.5: per-role access matrix (security proof) ────────────────────────
+
+# expected: 200 = allowed; 'deny' = 302 redirect or 403
+MATRIX = [
+    ('admin',       'GET',  '/users',              200),
+    ('admin',       'GET',  '/hr/',                200),
+    ('manager',     'GET',  '/hr/',                200),
+    ('manager',     'GET',  '/users',              'deny'),
+    ('manager',     'POST', '/users/new',          'deny'),
+    ('staff',       'GET',  '/hr/',                'deny'),
+    ('staff',       'GET',  '/products',           200),
+    ('shareholder', 'GET',  '/hr/',                200),
+    ('shareholder', 'GET',  '/cashbook/',          200),
+    ('shareholder', 'GET',  '/users',              'deny'),
+    ('shareholder', 'POST', '/hr/employees/new',   'deny'),
+    ('general',     'GET',  '/m/stock',            200),
+    ('general',     'GET',  '/hr/',                'deny'),
+    ('general',     'GET',  '/products',           'deny'),
+    ('general',     'GET',  '/cashbook/',          'deny'),
+]
+
+
+@pytest.mark.parametrize("role,method,path,expected", MATRIX)
+def test_access_matrix(role, method, path, expected, tmp_db):
+    c = _client_as(role, tmp_db)
+    r = c.open(path, method=method)
+    if expected == 200:
+        assert r.status_code == 200, \
+            f"{role} {method} {path} → {r.status_code} (expected 200)"
+    else:
+        assert r.status_code in (302, 403), \
+            f"{role} {method} {path} → {r.status_code} (expected deny: 302 or 403)"

@@ -1409,13 +1409,13 @@ CREATE TABLE unit_conversions (
     UNIQUE(product_id, bsn_unit)
 );
 
-CREATE TABLE users (
+CREATE TABLE "users" (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     username      TEXT    UNIQUE NOT NULL,
     password_hash TEXT    NOT NULL,
     display_name  TEXT,
     role          TEXT    NOT NULL DEFAULT 'staff'
-                          CHECK(role IN ('admin','manager','staff')),
+                          CHECK(role IN ('admin','manager','staff','shareholder','general')),
     is_active     INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 );

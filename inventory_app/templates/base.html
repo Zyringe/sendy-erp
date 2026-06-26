@@ -40,7 +40,8 @@
 
     {# Module switcher dropdown #}
     {% set cur_mod = visible_modules | selectattr('key','equalto', active_module) | list %}
-    {% set cur_mod = cur_mod[0] if cur_mod else visible_modules[0] %}
+    {% set cur_mod = cur_mod[0] if cur_mod else (visible_modules[0] if visible_modules else none) %}
+    {% if cur_mod %}
     <div class="dropdown ms-auto">
       <button class="btn btn-sm sidebar-module-btn dropdown-toggle"
               type="button"
@@ -60,12 +61,15 @@
         {% endfor %}
       </ul>
     </div>
+    {% endif %}
   </div>
 
   {# ── Active module label ── #}
+  {% if cur_mod %}
   <div class="sidebar-module-label">
     <i class="bi {{ cur_mod.icon }} me-1"></i>{{ cur_mod.name }}
   </div>
+  {% endif %}
 
   <nav class="sidebar-nav">
 
@@ -317,7 +321,7 @@
             onclick="toggleSidebar()" aria-label="เมนู">
       <i class="bi bi-list"></i>
     </button>
-    {% if current_role %}
+    {% if current_role and cur_mod %}
     <span class="topbar-crumb"><i class="bi {{ cur_mod.icon }} me-1"></i>{{ cur_mod.name }}</span>
     {% endif %}
     <div class="topbar-spacer"></div>
