@@ -12,6 +12,7 @@ Python 3.9 — Optional[...] not `X | None`.
 """
 from __future__ import annotations
 
+import json
 from datetime import date
 
 from flask import (
@@ -20,6 +21,7 @@ from flask import (
 
 import hr as hr_mod
 import hr_queries as hrq
+from database import get_connection
 
 bp_me = Blueprint("me", __name__, url_prefix="/me")
 
@@ -71,7 +73,17 @@ def leave_submit():
         "reason": request.form.get("reason", ""),
         "status": "pending",
     }
-    hrq.create_leave_request(data, created_by=session.get("username"))
+    new_rid = hrq.create_leave_request(data, created_by=session.get("username"))
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
+        " VALUES(?,?,?,?,?)",
+        ("leave_requests", new_rid, "INSERT",
+         json.dumps({"status": "pending"}, ensure_ascii=False),
+         session.get("username")),
+    )
+    conn.commit()
+    conn.close()
     flash("ส่งคำขอลาแล้ว รออนุมัติ", "success")
     return redirect(url_for("me.leave"))
 
@@ -95,6 +107,16 @@ def leave_edit(rid):
         "status": "pending",                   # stays pending after a self-edit
     }
     hrq.update_leave_request(rid, data)
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
+        " VALUES(?,?,?,?,?)",
+        ("leave_requests", rid, "UPDATE",
+         json.dumps({"edit": True}, ensure_ascii=False),
+         session.get("username")),
+    )
+    conn.commit()
+    conn.close()
     flash("แก้ไขคำขอลาแล้ว", "success")
     return redirect(url_for("me.leave"))
 
@@ -118,5 +140,15 @@ def leave_cancel(rid):
         "status": "cancelled",
     }
     hrq.update_leave_request(rid, data)
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
+        " VALUES(?,?,?,?,?)",
+        ("leave_requests", rid, "UPDATE",
+         json.dumps({"status": "cancelled"}, ensure_ascii=False),
+         session.get("username")),
+    )
+    conn.commit()
+    conn.close()
     flash("ยกเลิกคำขอลาแล้ว", "success")
     return redirect(url_for("me.leave"))

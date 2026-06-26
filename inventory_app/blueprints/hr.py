@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -24,6 +25,7 @@ from flask import (Blueprint, abort, flash, redirect, render_template,
 
 import hr as hr_mod
 import hr_queries as hrq
+from database import get_connection
 
 bp_hr = Blueprint("hr", __name__, url_prefix="/hr")
 
@@ -401,6 +403,16 @@ def leave_approve(rid: int):
         "approved_by": session.get("username"),
         "approved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
+        " VALUES(?,?,?,?,?)",
+        ("leave_requests", rid, "UPDATE",
+         json.dumps({"status": "approved"}, ensure_ascii=False),
+         session.get("username")),
+    )
+    conn.commit()
+    conn.close()
     flash("อนุมัติคำขอลาแล้ว", "success")
     return redirect(url_for("hr.leave_list"))
 
@@ -417,6 +429,16 @@ def leave_reject(rid: int):
         "approved_by": session.get("username"),
         "approved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
+        " VALUES(?,?,?,?,?)",
+        ("leave_requests", rid, "UPDATE",
+         json.dumps({"status": "rejected"}, ensure_ascii=False),
+         session.get("username")),
+    )
+    conn.commit()
+    conn.close()
     flash("ปฏิเสธคำขอลาแล้ว", "warning")
     return redirect(url_for("hr.leave_list"))
 

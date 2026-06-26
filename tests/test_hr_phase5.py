@@ -191,6 +191,52 @@ def test_manager_can_reject_leave_with_stamp(tmp_db):
     assert row[2] is not None   # approved_at was stamped
 
 
+# ── Task 5.5 — audit_log attribution ─────────────────────────────────────────
+
+def test_leave_changes_logged_to_audit(tmp_db):
+    """submit + approve each produce an audit_log row naming the correct actor."""
+    import sqlite3 as _s
+    c = _s.connect(tmp_db)
+    c.execute("UPDATE employees SET user_id=2 WHERE emp_code='EMP004'"); c.commit()
+    lt_id = c.execute("SELECT id FROM leave_types LIMIT 1").fetchone()[0]
+    c.close()
+
+    # employee submits — should log action='INSERT' to audit_log
+    cl_staff = _client('staff', 2, tmp_db)
+    cl_staff.post('/me/leave/new', data={
+        'leave_type_id': str(lt_id), 'start_date': '2026-09-01',
+        'end_date': '2026-09-01', 'days': '1', 'reason': 'ทดสอบ audit',
+    })
+
+    # fetch the new request id
+    c2 = _s.connect(tmp_db)
+    row = c2.execute(
+        "SELECT id FROM leave_requests WHERE reason='ทดสอบ audit'"
+    ).fetchone()
+    c2.close()
+    assert row is not None, "leave request was not created"
+    rid = row[0]
+
+    # manager approves — should log action='UPDATE' to audit_log
+    cl_mgr = _client('manager', 99, tmp_db)
+    cl_mgr.post(f'/hr/leave/{rid}/approve', data={})
+
+    # verify app-side audit rows (user IS NOT NULL — triggers leave user=NULL)
+    c3 = _s.connect(tmp_db)
+    rows = c3.execute(
+        "SELECT action, user FROM audit_log"
+        " WHERE table_name='leave_requests' AND row_id=? AND user IS NOT NULL",
+        (rid,)
+    ).fetchall()
+    c3.close()
+    actions = {r[0] for r in rows}
+    users = {r[1] for r in rows}
+    assert len(rows) >= 2, f"Expected >=2 app-side audit rows, got {len(rows)}: {rows}"
+    assert None not in users, f"audit_log.user must not be null, got users={users}"
+    assert 'INSERT' in actions, f"Expected INSERT action for submit, got {actions}"
+    assert 'UPDATE' in actions, f"Expected UPDATE action for approve, got {actions}"
+
+
 def test_cannot_edit_non_pending_leave(tmp_db):
     """Owner can only self-edit PENDING leave; editing an approved row → 403."""
     c = sqlite3.connect(tmp_db)
