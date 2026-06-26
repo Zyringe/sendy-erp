@@ -251,7 +251,10 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
 # the route. Other admin-only writes use _require_admin().
 # admin can POST anything
 
-_GENERAL_POST_OK = frozenset(['logout'])          # Phase 5 appends self-service leave endpoints here
+_GENERAL_POST_OK = frozenset([
+    'logout',
+    'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
+])
 _ROLE_POST_OK = {
     'manager':     _MANAGER_POST_OK,
     'staff':       _STAFF_POST_OK,
@@ -259,12 +262,12 @@ _ROLE_POST_OK = {
     'shareholder': frozenset(['logout']),          # reads only; can log out
 }
 
-# GET allowlist for the 'general' role (PWA stock-lookup kiosk).
+# GET allowlist for the 'general' role (PWA stock-lookup kiosk + own leave).
 # Everything not in this set → redirect to mobile.stock_search.
-# Phase 5: append self-service leave endpoints here when built.
 _GENERAL_ALLOWED = frozenset([
     'mobile.stock_search', 'mobile.stock_search_api',
     'logout',
+    'me.leave', 'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
 ])
 
 
@@ -512,10 +515,14 @@ def build_mobile_nav_slots(role, endpoint=''):
     active). Any role that is not admin/manager — including '' or an unexpected
     value — gets only the always-visible slots, so a staff/unknown session can
     never be shown a slot whose landing page would 403."""
+    _leave_slot = {'key': 'my_leave', 'label': 'ลาของฉัน', 'icon': 'bi-calendar-x',
+                   'endpoint': 'me.leave', 'active': endpoint == 'me.leave'}
     if role == 'general':
-        # general is stock-lookup only; Phase 5 adds ลาของฉัน slot
-        return [{'key': 'stock', 'label': 'สต็อก', 'icon': 'bi-search',
-                 'endpoint': 'mobile.stock_search', 'active': True}]
+        return [
+            {'key': 'stock', 'label': 'สต็อก', 'icon': 'bi-search',
+             'endpoint': 'mobile.stock_search', 'active': endpoint == 'mobile.stock_search'},
+            _leave_slot,
+        ]
     is_manager = role in ('admin', 'manager', 'shareholder')  # shareholder reads HR + accounting
     active = _mobile_active_slot(endpoint)
     slots = []
@@ -526,6 +533,7 @@ def build_mobile_nav_slots(role, endpoint=''):
             'key': s['key'], 'label': s['label'], 'icon': s['icon'],
             'endpoint': s['endpoint'], 'active': s['key'] == active,
         })
+    slots.append(_leave_slot)
     return slots
 
 

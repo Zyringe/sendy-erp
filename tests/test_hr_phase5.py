@@ -260,3 +260,35 @@ def test_cannot_edit_non_pending_leave(tmp_db):
     ).fetchone()[0]
     c3.close()
     assert status == 'approved'
+
+
+# ── Task 5.6 — access wiring: general role + mobile nav ──────────────────────
+
+def test_general_can_access_me_leave(tmp_db):
+    """general role GET /me/leave must return 200 (endpoint now in _GENERAL_ALLOWED)."""
+    import sqlite3; c = sqlite3.connect(tmp_db)
+    c.execute("UPDATE employees SET user_id=2 WHERE emp_code='EMP004'"); c.commit(); c.close()
+    cl = _client('general', 2, tmp_db)
+    r = cl.get('/me/leave')
+    assert r.status_code == 200, f"general GET /me/leave should be 200, got {r.status_code}"
+
+
+def test_general_can_post_leave(tmp_db):
+    """general role POST /me/leave/new must not be blocked (200 or 302)."""
+    import sqlite3; c = sqlite3.connect(tmp_db)
+    c.execute("UPDATE employees SET user_id=2 WHERE emp_code='EMP004'"); c.commit()
+    lt_id = c.execute("SELECT id FROM leave_types LIMIT 1").fetchone()[0]
+    c.close()
+    cl = _client('general', 2, tmp_db)
+    r = cl.post('/me/leave/new', data={
+        'leave_type_id': str(lt_id), 'start_date': '2026-10-01',
+        'end_date': '2026-10-01', 'days': '1', 'reason': 'general test',
+    })
+    assert r.status_code in (200, 302), f"general POST /me/leave/new should succeed, got {r.status_code}"
+
+
+def test_general_still_blocked_from_hr(tmp_db):
+    """general role must still be denied /hr/ and /products after the leave wiring."""
+    cl = _client('general', 99, tmp_db)
+    assert cl.get('/hr/').status_code in (302, 403), "general must not reach /hr/"
+    assert cl.get('/products').status_code in (302, 403), "general must not reach /products"
