@@ -292,3 +292,82 @@ def test_general_still_blocked_from_hr(tmp_db):
     cl = _client('general', 99, tmp_db)
     assert cl.get('/hr/').status_code in (302, 403), "general must not reach /hr/"
     assert cl.get('/products').status_code in (302, 403), "general must not reach /products"
+
+
+# ── Task 5.7 — per-actor SECURITY matrix (the proof) ─────────────────────────
+#
+# Two linked employees let the matrix prove cross-employee isolation:
+#   user_id 2 → EMP004 (Employee A)   ·   user_id 3 → EMP002 (Employee B)
+#
+# Every row of the spec matrix is proven by a test in this file:
+#   staff GET own leave → 200 ......... test_me_leave_access_matrix[staff] + test_my_leave_shows_only_own
+#   staff submit → pending for A only . test_submit_creates_pending_for_self
+#   staff cancel OWN pending → 302 .... test_cancel_own_pending_succeeds          (NEW)
+#   staff cancel ANOTHER's → 403 ...... test_cannot_cancel_another_employees_leave
+#   staff edit ANOTHER's → 403 ........ test_cannot_edit_another_employees_leave
+#   admin GET /me/leave → redirect .... test_me_leave_access_matrix[admin]        (NEW — exempt, not 403)
+#   shareholder GET /me/leave → redir . test_me_leave_access_matrix[shareholder]  (NEW — exempt, not 403)
+#   staff approve → denied ............ test_staff_cannot_approve_leave
+#   manager approve → allowed ......... test_manager_can_approve_leave
+# Phase 3's 27-case role matrix (tests/test_hr_phase3_roles.py) must stay green.
+
+def _setup_two_employees(tmp_db):
+    """Link user 2→EMP004 (A) and user 3→EMP002 (B). Return (emp_a_id, emp_b_id)."""
+    c = sqlite3.connect(tmp_db)
+    c.execute("UPDATE employees SET user_id=2 WHERE emp_code='EMP004'")
+    c.execute("UPDATE employees SET user_id=3 WHERE emp_code='EMP002'")
+    c.commit()
+    a = c.execute("SELECT id FROM employees WHERE emp_code='EMP004'").fetchone()[0]
+    b = c.execute("SELECT id FROM employees WHERE emp_code='EMP002'").fetchone()[0]
+    c.close()
+    return a, b
+
+
+def _insert_pending(tmp_db, employee_id, reason='test'):
+    """Insert a pending leave row for the given employee; return its id."""
+    c = sqlite3.connect(tmp_db)
+    rid = c.execute(
+        "INSERT INTO leave_requests"
+        "(employee_id,leave_type_id,start_date,end_date,days,reason,status,created_by) "
+        "VALUES(?,1,'2026-11-01','2026-11-01',1,?,'pending','x') RETURNING id",
+        (employee_id, reason),
+    ).fetchone()[0]
+    c.commit()
+    c.close()
+    return rid
+
+
+# (role, user_id, expected) — 200 = own page rendered; 'redirect' = 302/303
+# (exempt or gated). The exempt actors MUST redirect, never 403, never leak 200.
+LEAVE_ACCESS_MATRIX = [
+    ('staff',       2,  200),         # linked employee A → sees own leave page
+    ('general',     2,  200),         # kiosk role, linked → own leave allowed
+    ('admin',       1,  'redirect'),  # exempt: _my_employee()→None→redirect (NOT 403)
+    ('shareholder', 10, 'redirect'),  # exempt: reads-only role → redirect (NOT 403)
+]
+
+
+@pytest.mark.parametrize("role,user_id,expected", LEAVE_ACCESS_MATRIX)
+def test_me_leave_access_matrix(role, user_id, expected, tmp_db):
+    """GET /me/leave per actor: linked employees see their own page; admin and
+    shareholder are EXEMPT and redirected — never 403, never a 200 data leak."""
+    _setup_two_employees(tmp_db)   # ensure user 2/3 are linked employees
+    r = _client(role, user_id, tmp_db).get('/me/leave')
+    if expected == 200:
+        assert r.status_code == 200, \
+            f"{role} GET /me/leave → {r.status_code} (expected 200)"
+    else:
+        assert r.status_code in (302, 303), \
+            f"{role} GET /me/leave → {r.status_code} (expected redirect/exempt, not 403/200)"
+
+
+def test_cancel_own_pending_succeeds(tmp_db):
+    """Owner cancelling their OWN pending leave succeeds (302) and flips status."""
+    a, _b = _setup_two_employees(tmp_db)
+    rid = _insert_pending(tmp_db, a, 'CANCEL-MINE')
+    r = _client('staff', 2, tmp_db).post(f'/me/leave/{rid}/cancel', data={})
+    assert r.status_code in (200, 302)
+    status = sqlite3.connect(tmp_db).execute(
+        "SELECT status FROM leave_requests WHERE id=?", (rid,)
+    ).fetchone()[0]
+    assert status == 'cancelled'
