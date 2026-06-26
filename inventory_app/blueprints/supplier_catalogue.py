@@ -31,7 +31,7 @@ bp_supplier_catalogue = Blueprint('supplier_catalogue', __name__,
 @bp_supplier_catalogue.before_request
 def _require_admin_or_manager():
     role = session.get('role')
-    if role not in ('admin', 'manager'):
+    if role not in ('admin', 'manager', 'shareholder'):
         flash('ไม่มีสิทธิ์เข้าถึงข้อมูลราคาผู้ผลิต', 'danger')
         return redirect(url_for('dashboard'))
 

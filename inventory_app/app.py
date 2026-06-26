@@ -1678,7 +1678,7 @@ def mapping_save():
 def mapping_suggestion_approve(sid):
     """Manager/admin approves a staged SKU suggestion.
     Body may include edits to override staged fields before product creation."""
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         abort(403)
     edits = request.get_json() or {}
     # cast brand_id to int if present
@@ -1792,7 +1792,7 @@ def customer_reassign(customer_code):
 
 @app.route('/customers/bulk-reassign', methods=['GET', 'POST'])
 def customer_bulk_reassign():
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         abort(403)
 
     if request.method == 'POST':
@@ -1918,7 +1918,7 @@ def _walk_review_files():
 
 @app.route('/photos/review')
 def photos_review():
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         abort(403)
     files = _walk_review_files()
     after = request.args.get('after') or ''
@@ -1948,7 +1948,7 @@ def _safe_under(root, candidate):
 
 @app.route('/photos/review/assign', methods=['POST'])
 def photos_review_assign():
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         abort(403)
     src_rel = (request.form.get('src') or '').strip()
     sku_id = request.form.get('sku_id', type=int)
@@ -2032,7 +2032,7 @@ def photos_review_assign():
 
 @app.route('/photos/review/delete', methods=['POST'])
 def photos_review_delete():
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         abort(403)
     src_rel = (request.form.get('src') or '').strip()
     if not src_rel:
@@ -2050,7 +2050,7 @@ def photos_review_delete():
 
 @app.route('/products/walkthrough')
 def products_walkthrough():
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         abort(403)
     page = max(1, request.args.get('page', 1, type=int))
     per_page = request.args.get('per_page', 4, type=int)
@@ -2100,7 +2100,7 @@ def products_walkthrough():
 @app.route('/api/photos/review-queue')
 def api_photos_review_queue():
     """JSON list of _review/ photo URLs for the picker modal."""
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         abort(403)
     files = _walk_review_files()
     limit = min(request.args.get('limit', 60, type=int), 200)
@@ -3639,7 +3639,7 @@ def accounting_summary():
     Admin + manager: full view including cost/margin.
     Staff: redirected — same gating as cost-visible pages (e.g. customer_summary).
     """
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
         return redirect(url_for('dashboard'))
 
@@ -3758,7 +3758,7 @@ def cashflow_dashboard():
     Optional ?from=YYYY-MM&to=YYYY-MM period filter.
     Default: last 12 months ending the latest data month.
     """
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
         return redirect(url_for('dashboard'))
 
@@ -3843,7 +3843,7 @@ def revenue_dashboard():
     Optional ?from=YYYY-MM&to=YYYY-MM period filter.
     Default: last 12 months ending today's month.
     """
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
         return redirect(url_for('dashboard'))
 
@@ -3927,7 +3927,7 @@ def revenue_unmapped_drilldown():
     only. Optional ?from=YYYY-MM&to=YYYY-MM filter (defaults to last 12
     months — mirrors /revenue).
     """
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
         return redirect(url_for('dashboard'))
 
@@ -3975,7 +3975,7 @@ def revenue_unmapped_drilldown():
 # ── AR Follow-up workspace ───────────────────────────────────────────────────
 
 def _arf_require_manager():
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
         return redirect(url_for('dashboard'))
     return None
