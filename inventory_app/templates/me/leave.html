@@ -1,0 +1,136 @@
+{% extends 'base.html' %}
+{% block title %}การลาของฉัน – Sendy{% endblock %}
+{% block page_title %}การลาของฉัน — {{ employee.full_name }} ({{ year }}){% endblock %}
+
+{% block content %}
+
+{# ── Leave balance ────────────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-header fw-semibold">โควต้าการลา ปี {{ year }}</div>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>ประเภทการลา</th>
+          <th class="text-end">สิทธิ์ (วัน)</th>
+          <th class="text-end">ใช้แล้ว</th>
+          <th class="text-end">คงเหลือ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for lt in leave_types %}
+        {% set b = balance.get(lt.code, {}) %}
+        <tr>
+          <td>{{ lt.name_th }}</td>
+          <td class="text-end">
+            {% if b.entitlement is defined %}
+              {% if b.entitlement == b.entitlement|float and b.entitlement > 9998 %}
+                ไม่จำกัด
+              {% else %}
+                {{ b.entitlement | int }}
+              {% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td class="text-end">{{ b.used | default(0) | int }}</td>
+          <td class="text-end">
+            {% if b.remaining is defined %}
+              {% if b.remaining > 9998 %}
+                ไม่จำกัด
+              {% else %}
+                {{ b.remaining | int }}
+              {% endif %}
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# ── Leave history ─────────────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-header fw-semibold">ประวัติการลา ({{ requests|length }} รายการ)</div>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>ประเภท</th>
+          <th>วันเริ่ม</th>
+          <th>วันสิ้นสุด</th>
+          <th class="text-end">จำนวน (วัน)</th>
+          <th>เหตุผล</th>
+          <th>สถานะ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in requests %}
+        <tr>
+          <td>{{ r.leave_name }}</td>
+          <td>{{ r.start_date }}</td>
+          <td>{{ r.end_date }}</td>
+          <td class="text-end">{{ r.days | int }}</td>
+          <td class="text-muted small">{{ r.reason or '—' }}</td>
+          <td>
+            {% if r.status == 'approved' %}
+              <span class="badge bg-success">อนุมัติ</span>
+            {% elif r.status == 'pending' %}
+              <span class="badge bg-warning text-dark">รอดำเนินการ</span>
+            {% elif r.status == 'rejected' %}
+              <span class="badge bg-danger">ไม่อนุมัติ</span>
+            {% elif r.status == 'cancelled' %}
+              <span class="badge bg-secondary">ยกเลิก</span>
+            {% else %}
+              <span class="badge bg-secondary">{{ r.status }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-muted py-3">ยังไม่มีรายการลา</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# ── Submit leave form ─────────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-header fw-semibold">ยื่นใบลาใหม่</div>
+  <div class="card-body">
+    <form method="post" action="/me/leave/new">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label">ประเภทการลา</label>
+          <select name="leave_type_id" class="form-select" required>
+            <option value="">— เลือกประเภท —</option>
+            {% for lt in leave_types %}
+            <option value="{{ lt.id }}">{{ lt.name_th }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">วันเริ่มต้น</label>
+          <input type="date" name="start_date" class="form-control" required>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">วันสิ้นสุด</label>
+          <input type="date" name="end_date" class="form-control" required>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">จำนวน (วัน)</label>
+          <input type="number" name="days" class="form-control" min="0.5" step="0.5" required>
+        </div>
+        <div class="col-md-8">
+          <label class="form-label">เหตุผล</label>
+          <input type="text" name="reason" class="form-control" maxlength="200">
+        </div>
+        <div class="col-12">
+          <button type="submit" class="btn btn-primary">ยื่นใบลา</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% endblock %}

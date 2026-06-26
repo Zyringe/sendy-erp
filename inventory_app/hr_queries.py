@@ -106,6 +106,19 @@ def get_employee(emp_id: int, conn: Optional[sqlite3.Connection] = None):
             c.close()
 
 
+def get_employee_by_user_id(user_id: int,
+                            conn: Optional[sqlite3.Connection] = None):
+    """Return the active employee row linked to the given user_id, or None."""
+    c, owned = _conn(conn)
+    try:
+        return c.execute(
+            "SELECT * FROM employees WHERE user_id=? AND is_active=1", (user_id,)
+        ).fetchone()
+    finally:
+        if owned:
+            c.close()
+
+
 def get_employee_salary_history(emp_id: int,
                                 conn: Optional[sqlite3.Connection] = None):
     c, owned = _conn(conn)
