@@ -279,7 +279,7 @@ def product_set_brand(product_id):
 
 @bp_products.route('/products/<int:product_id>/cost-history')
 def product_cost_history(product_id):
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         abort(403)
     history = models.get_cost_history(product_id)
     current_wacc = history[-1]['wacc_after'] if history else 0.0
@@ -346,7 +346,7 @@ def product_location_save(product_id):
 
 @bp_products.route('/products/<int:product_id>/packaging', methods=['POST'])
 def product_packaging_save(product_id):
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         abort(403)
     if not models.get_product(product_id):
         abort(404)
@@ -389,7 +389,7 @@ def product_deactivate(product_id):
 def product_sku_code_save(product_id):
     """Manual edit of sku_code. Saving manually sets sku_code_locked=1
     so future bulk regen doesn't overwrite. Empty value clears + unlocks."""
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         abort(403)
     new_code = (request.form.get('sku_code') or '').strip() or None
     conn = get_connection()
@@ -424,7 +424,7 @@ def product_sku_code_save(product_id):
 def product_regen_sku_code(product_id):
     """Regenerate sku_code from current structured cols.
     Admin/manager only. Forces unlock if user explicitly regenerates."""
-    if session.get('role') not in ('admin', 'manager'):
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
         abort(403)
     import sku_code_utils
     conn = get_connection()
