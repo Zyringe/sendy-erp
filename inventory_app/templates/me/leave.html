@@ -61,6 +61,7 @@
           <th class="text-end">จำนวน (วัน)</th>
           <th>เหตุผล</th>
           <th>สถานะ</th>
+          <th class="text-end">จัดการ</th>
         </tr>
       </thead>
       <tbody>
@@ -84,9 +85,60 @@
               <span class="badge bg-secondary">{{ r.status }}</span>
             {% endif %}
           </td>
+          <td class="text-end">
+            {% if r.status == 'pending' %}
+            <button type="button" class="btn btn-sm btn-outline-secondary"
+                    data-bs-toggle="collapse" data-bs-target="#edit-{{ r.id }}">แก้ไข</button>
+            <form method="post" action="{{ url_for('me.leave_cancel', rid=r.id) }}"
+                  class="d-inline" onsubmit="return confirm('ยกเลิกคำขอลานี้?');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger">ยกเลิก</button>
+            </form>
+            {% else %}
+            <span class="text-muted">—</span>
+            {% endif %}
+          </td>
         </tr>
+        {% if r.status == 'pending' %}
+        <tr class="collapse" id="edit-{{ r.id }}">
+          <td colspan="7" class="bg-light">
+            <form method="post" action="{{ url_for('me.leave_edit', rid=r.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <div class="row g-2 align-items-end">
+                <div class="col-md-3">
+                  <label class="form-label small">ประเภทการลา</label>
+                  <select name="leave_type_id" class="form-select form-select-sm" required>
+                    {% for lt in leave_types %}
+                    <option value="{{ lt.id }}" {% if lt.id == r.leave_type_id %}selected{% endif %}>{{ lt.name_th }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label small">วันเริ่มต้น</label>
+                  <input type="date" name="start_date" class="form-control form-control-sm" value="{{ r.start_date }}" required>
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label small">วันสิ้นสุด</label>
+                  <input type="date" name="end_date" class="form-control form-control-sm" value="{{ r.end_date }}" required>
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label small">จำนวน (วัน)</label>
+                  <input type="number" name="days" class="form-control form-control-sm" min="0.5" step="0.5" value="{{ r.days }}" required>
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label small">เหตุผล</label>
+                  <input type="text" name="reason" class="form-control form-control-sm" maxlength="200" value="{{ r.reason or '' }}">
+                </div>
+                <div class="col-12">
+                  <button type="submit" class="btn btn-sm btn-primary">บันทึกการแก้ไข</button>
+                </div>
+              </div>
+            </form>
+          </td>
+        </tr>
+        {% endif %}
         {% else %}
-        <tr><td colspan="6" class="text-center text-muted py-3">ยังไม่มีรายการลา</td></tr>
+        <tr><td colspan="7" class="text-center text-muted py-3">ยังไม่มีรายการลา</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -97,7 +149,7 @@
 <div class="card">
   <div class="card-header fw-semibold">ยื่นใบลาใหม่</div>
   <div class="card-body">
-    <form method="post" action="/me/leave/new">
+    <form method="post" action="{{ url_for('me.leave_submit') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="row g-3">
         <div class="col-md-4">

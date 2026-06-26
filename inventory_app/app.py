@@ -226,6 +226,11 @@ _STAFF_POST_OK = frozenset([
     'customer_review.normalize_confirm',
     'customer_review.normalize_skip',
     'stock_adjust',
+    # Phase 5 self-service leave — any employee may submit/edit/cancel their OWN
+    # pending leave. Ownership is enforced inside each route via _my_employee()
+    # (employee_id never read from form/URL); this gate only permits the POST to
+    # reach the route. The 'general' kiosk role's wiring is added in Task 5.6.
+    'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'customer_reassign', 'customer_bulk_reassign',

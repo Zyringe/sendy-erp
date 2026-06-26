@@ -55,3 +55,105 @@ def test_my_leave_shows_only_own(tmp_db):
     cl = _client(role='staff', user_id=2, db=tmp_db)
     html = cl.get('/me/leave').get_data(as_text=True)
     assert 'MINE' in html and 'THEIRS' not in html
+
+
+# ── Task 5.3 — self-scoped writes (the security core) ─────────────────────────
+
+def test_submit_creates_pending_for_self(tmp_db):
+    """POST /me/leave/new creates a pending row owned by the session employee.
+
+    employee_id must come from the session (EMP004 ↔ user_id=2), never the form.
+    """
+    c = sqlite3.connect(tmp_db)
+    c.execute("UPDATE employees SET user_id=2 WHERE emp_code='EMP004'")
+    c.commit()
+    me_id = c.execute("SELECT id FROM employees WHERE emp_code='EMP004'").fetchone()[0]
+    c.close()
+    cl = _client('staff', 2, tmp_db)
+    cl.post('/me/leave/new', data={
+        'leave_type_id': '1', 'start_date': '2026-08-01',
+        'end_date': '2026-08-01', 'days': '1', 'reason': 'ธุระ',
+    })
+    c2 = sqlite3.connect(tmp_db)
+    r = c2.execute(
+        "SELECT employee_id, status FROM leave_requests WHERE reason='ธุระ'"
+    ).fetchone()
+    c2.close()
+    assert r == (me_id, 'pending')
+
+
+def test_cannot_cancel_another_employees_leave(tmp_db):
+    """Cross-employee cancel → hard 403 and the row is unchanged."""
+    c = sqlite3.connect(tmp_db)
+    c.execute("UPDATE employees SET user_id=2 WHERE emp_code='EMP004'")
+    c.commit()
+    other_id = c.execute("SELECT id FROM employees WHERE emp_code='EMP002'").fetchone()[0]
+    rid = c.execute(
+        "INSERT INTO leave_requests"
+        "(employee_id, leave_type_id, start_date, end_date, days, status, created_by) "
+        "VALUES(?,1,'2026-09-01','2026-09-01',1,'pending','x') RETURNING id", (other_id,)
+    ).fetchone()[0]
+    c.commit()
+    c.close()
+    cl = _client('staff', 2, tmp_db)   # user 2 = EMP004, NOT the owner of rid
+    r = cl.post(f'/me/leave/{rid}/cancel', data={})
+    assert r.status_code == 403
+    c3 = sqlite3.connect(tmp_db)
+    status = c3.execute(
+        "SELECT status FROM leave_requests WHERE id=?", (rid,)
+    ).fetchone()[0]
+    c3.close()
+    assert status == 'pending'
+
+
+def test_cannot_edit_another_employees_leave(tmp_db):
+    """Cross-employee edit → hard 403 and the row is unchanged."""
+    c = sqlite3.connect(tmp_db)
+    c.execute("UPDATE employees SET user_id=2 WHERE emp_code='EMP004'")
+    c.commit()
+    other_id = c.execute("SELECT id FROM employees WHERE emp_code='EMP002'").fetchone()[0]
+    rid = c.execute(
+        "INSERT INTO leave_requests"
+        "(employee_id, leave_type_id, start_date, end_date, days, reason, status, created_by) "
+        "VALUES(?,1,'2026-09-01','2026-09-01',1,'ORIGINAL','pending','x') RETURNING id",
+        (other_id,)
+    ).fetchone()[0]
+    c.commit()
+    c.close()
+    cl = _client('staff', 2, tmp_db)   # user 2 = EMP004, NOT the owner of rid
+    r = cl.post(f'/me/leave/{rid}/edit', data={
+        'leave_type_id': '1', 'start_date': '2099-01-01',
+        'end_date': '2099-01-01', 'days': '9', 'reason': 'HACKED',
+    })
+    assert r.status_code == 403
+    c3 = sqlite3.connect(tmp_db)
+    row = c3.execute(
+        "SELECT employee_id, reason, status FROM leave_requests WHERE id=?", (rid,)
+    ).fetchone()
+    c3.close()
+    assert row == (other_id, 'ORIGINAL', 'pending')
+
+
+def test_cannot_edit_non_pending_leave(tmp_db):
+    """Owner can only self-edit PENDING leave; editing an approved row → 403."""
+    c = sqlite3.connect(tmp_db)
+    c.execute("UPDATE employees SET user_id=2 WHERE emp_code='EMP004'")
+    c.commit()
+    me_id = c.execute("SELECT id FROM employees WHERE emp_code='EMP004'").fetchone()[0]
+    rid = c.execute(
+        "INSERT INTO leave_requests"
+        "(employee_id, leave_type_id, start_date, end_date, days, reason, status, created_by) "
+        "VALUES(?,1,'2026-10-01','2026-10-01',1,'APPROVED-MINE','approved','x') RETURNING id",
+        (me_id,)
+    ).fetchone()[0]
+    c.commit()
+    c.close()
+    cl = _client('staff', 2, tmp_db)   # owner, but the row is already approved
+    r = cl.post(f'/me/leave/{rid}/cancel', data={})
+    assert r.status_code == 403
+    c3 = sqlite3.connect(tmp_db)
+    status = c3.execute(
+        "SELECT status FROM leave_requests WHERE id=?", (rid,)
+    ).fetchone()[0]
+    c3.close()
+    assert status == 'approved'
