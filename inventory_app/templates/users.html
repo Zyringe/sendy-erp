@@ -87,9 +87,11 @@
                     <div class="col-sm-2">
                       <label class="form-label small mb-1">บทบาท</label>
                       <select name="role" class="form-select form-select-sm">
-                        <option value="admin"   {% if u.role=='admin' %}selected{% endif %}>Admin</option>
-                        <option value="manager" {% if u.role=='manager' %}selected{% endif %}>Manager</option>
-                        <option value="staff"   {% if u.role=='staff' %}selected{% endif %}>Staff</option>
+                        <option value="admin"       {% if u.role=='admin' %}selected{% endif %}>Admin</option>
+                        <option value="manager"     {% if u.role=='manager' %}selected{% endif %}>Manager</option>
+                        <option value="staff"       {% if u.role=='staff' %}selected{% endif %}>Staff</option>
+                        <option value="shareholder" {% if u.role=='shareholder' %}selected{% endif %}>ผู้ถือหุ้น — ดูได้ทุกอย่าง แก้ไม่ได้</option>
+                        <option value="general"     {% if u.role=='general' %}selected{% endif %}>พนักงานทั่วไป — ดูสต็อก + ลาตัวเอง</option>
                       </select>
                     </div>
                     <div class="col-sm-3">
@@ -144,11 +146,15 @@
               <option value="staff" selected>Staff — นำเข้าไฟล์สัปดาห์, ดูสต็อก</option>
               <option value="manager">Manager — เห็นต้นทุน/กำไร, import payment</option>
               <option value="admin">Admin — เต็มสิทธิ์</option>
+              <option value="shareholder">ผู้ถือหุ้น — ดูได้ทุกอย่าง แก้ไม่ได้</option>
+              <option value="general">พนักงานทั่วไป — ดูสต็อก + ลาตัวเอง</option>
             </select>
             <div class="form-text text-muted small mt-1">
               <strong>Staff</strong>: import ไฟล์สัปดาห์ + ดูยอดขาย (ไม่เห็นต้นทุน)<br>
               <strong>Manager</strong>: เห็นต้นทุน GP + สถานะชำระหนี้<br>
-              <strong>Admin</strong>: จัดการสินค้า, ผู้ใช้, ทุกอย่าง
+              <strong>Admin</strong>: จัดการสินค้า, ผู้ใช้, ทุกอย่าง<br>
+              <strong>ผู้ถือหุ้น</strong>: ดูทุกหน้า แก้ไขไม่ได้<br>
+              <strong>พนักงานทั่วไป</strong>: ดูสต็อก + จัดการลาตัวเอง (PWA)
             </div>
           </div>
           <div class="mb-3">
