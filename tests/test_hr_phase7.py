@@ -115,15 +115,16 @@ def test_manager_can_create_advance(tmp_db):
     emp = sqlite3.connect(tmp_db).execute(
         "SELECT id FROM employees WHERE emp_code='EMP004'"
     ).fetchone()[0]
+    # Use a unique amount unlikely to pre-exist in the live-DB copy
     r = _client('manager').post('/hr/advances/new', data={
         'employee_id': str(emp),
-        'advance_date': '2026-07-15',
-        'amount': '2000',
+        'advance_date': '2099-01-15',
+        'amount': '77015',
         'note': 'x',
     })
     assert r.status_code in (302, 200)
     assert sqlite3.connect(tmp_db).execute(
-        "SELECT COUNT(*) FROM salary_advances WHERE amount=2000"
+        "SELECT COUNT(*) FROM salary_advances WHERE amount=77015"
     ).fetchone()[0] == 1
 
 
@@ -172,12 +173,13 @@ def test_manager_post_advance_allowed_by_gate(tmp_db):
     emp = sqlite3.connect(tmp_db).execute(
         "SELECT id FROM employees WHERE emp_code='EMP004'"
     ).fetchone()[0]
+    # Use a unique amount unlikely to pre-exist in the live-DB copy
     r = _client('manager').post('/hr/advances/new', data={
         'employee_id': str(emp),
-        'advance_date': '2026-07-20',
-        'amount': '500',
+        'advance_date': '2099-01-20',
+        'amount': '77020',
     })
     assert r.status_code in (302, 200)   # NOT 400/403 from the POST gate
     assert sqlite3.connect(tmp_db).execute(
-        "SELECT COUNT(*) FROM salary_advances WHERE amount=500"
+        "SELECT COUNT(*) FROM salary_advances WHERE amount=77020"
     ).fetchone()[0] == 1

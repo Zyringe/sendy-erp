@@ -454,6 +454,75 @@ def leave_delete(id: int):
     return redirect(url_for("hr.leave_list"))
 
 
+# ── Salary advances ──────────────────────────────────────────────────────────
+
+@bp_hr.route("/advances")
+def advance_list():
+    return render_template(
+        "hr/advances.html",
+        advances=hrq.get_salary_advances(),
+        employees=hrq.get_employees(active_only=True),
+        accounts=hrq.get_active_cashbook_accounts(),
+        be_year=_be_year,
+        fmt_baht=_fmt_baht,
+    )
+
+
+@bp_hr.route("/advances/new", methods=["GET", "POST"])
+def advance_new():
+    _require_admin_or_manager()
+    if request.method == "POST":
+        try:
+            hrq.create_salary_advance(request.form.to_dict())
+            flash("บันทึกการเบิกล่วงหน้าเรียบร้อย", "success")
+            return redirect(url_for("hr.advance_list"))
+        except Exception as e:
+            flash(f"ไม่สามารถบันทึก: {e}", "danger")
+    return render_template(
+        "hr/advance_form.html",
+        adv=None,
+        employees=hrq.get_employees(active_only=True),
+        accounts=hrq.get_active_cashbook_accounts(),
+        form=request.form if request.method == "POST" else {},
+        today=date.today().isoformat(),
+        action_url=url_for("hr.advance_new"),
+        page_title="บันทึกเบิกล่วงหน้า",
+    )
+
+
+@bp_hr.route("/advances/<int:id>/edit", methods=["POST"])
+def advance_edit(id: int):
+    _require_admin_or_manager()
+    adv = hrq.get_salary_advance(id)
+    if not adv:
+        abort(404)
+    # Deducted-lock guard runs FIRST — before any helper needing full form data.
+    if adv["deducted_in_run_id"] is not None:
+        flash("ไม่สามารถแก้ไข — รายการนี้ถูกหักในรอบเงินเดือนแล้ว", "danger")
+        return redirect(url_for("hr.advance_list"))
+    try:
+        hrq.update_salary_advance(id, request.form.to_dict())
+        flash("อัปเดตเรียบร้อย", "success")
+    except Exception as e:
+        flash(f"ไม่สามารถบันทึก: {e}", "danger")
+    return redirect(url_for("hr.advance_list"))
+
+
+@bp_hr.route("/advances/<int:id>/delete", methods=["POST"])
+def advance_delete(id: int):
+    _require_admin_or_manager()
+    adv = hrq.get_salary_advance(id)
+    if not adv:
+        abort(404)
+    # Deducted-lock guard runs FIRST.
+    if adv["deducted_in_run_id"] is not None:
+        flash("ไม่สามารถลบ — รายการนี้ถูกหักในรอบเงินเดือนแล้ว", "danger")
+        return redirect(url_for("hr.advance_list"))
+    hrq.delete_salary_advance(id)
+    flash("ลบรายการเรียบร้อย", "success")
+    return redirect(url_for("hr.advance_list"))
+
+
 # ── Payroll ──────────────────────────────────────────────────────────────────
 
 @bp_hr.route("/payroll")
