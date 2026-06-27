@@ -153,3 +153,22 @@ def test_payslip_access_matrix(tmp_db):
     # (_my_employee() returns None → graceful redirect 302, not 500 or 403)
     assert _client('admin', 1).get('/me/payslip').status_code == 302
     assert _client('shareholder', 99).get('/me/payslip').status_code == 302
+
+
+# ── Desktop self-service nav (the ลาของฉัน + สลิป tabs were mobile-only) ──────
+
+def test_self_service_links_in_desktop_sidebar(tmp_db):
+    """Staff/manager get a desktop 'ของฉัน' sidebar section linking to their own
+    leave + payslip; admin (exempt) does not. The links were previously only in
+    the mobile bottom nav (d-lg-none), so desktop staff had no clickable path."""
+    staff = _client('staff', 99).get('/products').get_data(as_text=True)
+    assert 'sidebar-section">ของฉัน' in staff, "desktop self-service section missing for staff"
+    # the desktop sidebar link exists (>=2 because the mobile bottom-nav also has it)
+    assert staff.count('href="/me/leave"') >= 2
+    assert staff.count('href="/me/payslip"') >= 2
+    # managers (manage everyone AND see their own) also get it
+    mgr = _client('manager', 3).get('/products').get_data(as_text=True)
+    assert 'sidebar-section">ของฉัน' in mgr
+    # admin is leave/pay-exempt → no desktop self-service section
+    admin = _client('admin', 1).get('/products').get_data(as_text=True)
+    assert 'sidebar-section">ของฉัน' not in admin

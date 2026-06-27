@@ -204,6 +204,20 @@
     </a>
     {% endif %}
 
+    {# ── ของฉัน (self-service) — linked non-exempt users; role-gated only (NOT
+       active_module), so it always shows. admin/shareholder are leave/pay-exempt. #}
+    {% if session.role in ['staff', 'manager', 'general'] %}
+    <div class="sidebar-section">ของฉัน</div>
+    <a href="{{ url_for('me.leave') }}"
+       class="sidebar-link {% if request.endpoint == 'me.leave' %}active{% endif %}">
+      <i class="bi bi-calendar-x"></i> ลาของฉัน
+    </a>
+    <a href="{{ url_for('me.payslip_list') }}"
+       class="sidebar-link {% if (request.endpoint or '').startswith('me.payslip') %}active{% endif %}">
+      <i class="bi bi-cash-stack"></i> สลิปเงินเดือน
+    </a>
+    {% endif %}
+
     {# ── บุคลากร (HR) — admin/manager only ── #}
     {% if active_module == 'hr' and session.role in ['admin', 'manager'] %}
     <div class="sidebar-section">บุคลากร (HR)</div>
