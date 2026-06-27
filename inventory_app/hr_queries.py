@@ -526,6 +526,30 @@ def get_payroll_item(item_id: int, conn: Optional[sqlite3.Connection] = None):
             c.close()
 
 
+def get_employee_payslips(employee_id: int,
+                          conn: Optional[sqlite3.Connection] = None):
+    """One row per FINALIZED payslip for this employee, newest first.
+
+    Drafts are intentionally excluded — an employee may only see numbers
+    that have been finalized (a draft can still change before finalize)."""
+    c, owned = _conn(conn)
+    try:
+        return c.execute(
+            """SELECT pi.id AS item_id, pr.id AS run_id, pr.year_month,
+                      pr.status, pi.gross, pi.net_pay,
+                      co.name_th AS company_name
+                 FROM payroll_items pi
+                 JOIN payroll_runs pr ON pr.id = pi.run_id
+                 LEFT JOIN companies co ON co.id = pr.company_id
+                WHERE pi.employee_id = ? AND pr.status = 'finalized'
+                ORDER BY pr.year_month DESC, pr.id DESC""",
+            (employee_id,),
+        ).fetchall()
+    finally:
+        if owned:
+            c.close()
+
+
 # ── Dashboard helpers ────────────────────────────────────────────────────────
 
 def get_headcount(conn: Optional[sqlite3.Connection] = None) -> int:
