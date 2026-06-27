@@ -422,6 +422,8 @@ _ENDPOINT_MODULE = {
     'hr.employee_entitlements': 'hr',
     'hr.leave_list': 'hr',
     'hr.leave_new': 'hr',
+    'hr.advance_list': 'hr',
+    'hr.advance_new': 'hr',
     'hr.payroll_list': 'hr',
     'hr.payroll_detail': 'hr',
     'hr.payslip': 'hr',
