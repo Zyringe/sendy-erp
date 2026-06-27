@@ -116,3 +116,22 @@ def test_manager_payslip_still_links_to_run(tmp_db):
     html = _client('admin', 1).get('/hr/payroll/901/payslip/9001').get_data(as_text=True)
     assert 'กลับ Payroll Run' in html
     assert '/hr/payroll/901' in html
+
+
+# ── Task 6.4 — general allowlist + สลิป nav slot ─────────────────────────────
+
+def test_general_can_access_payslip(tmp_db):
+    """A 'general' role user can reach /me/payslip (the empty list), not redirect."""
+    _seed_payslips(tmp_db)
+    # EMP005 (บอล) linked to uid 9; no finalized items → empty list, still 200
+    _link(tmp_db, 'EMP005', 9)
+    assert _client('general', 9).get('/me/payslip').status_code == 200
+
+
+def test_payslip_slot_in_mobile_nav():
+    """build_mobile_nav_slots includes me.payslip_list for general, staff, and manager."""
+    os.environ.setdefault('SKIP_DB_INIT', '1')
+    from app import build_mobile_nav_slots
+    for role in ('general', 'staff', 'manager'):
+        eps = [s['endpoint'] for s in build_mobile_nav_slots(role)]
+        assert 'me.payslip_list' in eps, f"role={role} missing สลิป nav slot"

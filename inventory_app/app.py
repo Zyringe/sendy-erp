@@ -268,6 +268,7 @@ _GENERAL_ALLOWED = frozenset([
     'mobile.stock_search', 'mobile.stock_search_api',
     'logout',
     'me.leave', 'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
+    'me.payslip_list', 'me.payslip_detail',   # Phase 6: self-service payslip
 ])
 
 
@@ -517,11 +518,15 @@ def build_mobile_nav_slots(role, endpoint=''):
     never be shown a slot whose landing page would 403."""
     _leave_slot = {'key': 'my_leave', 'label': 'ลาของฉัน', 'icon': 'bi-calendar-x',
                    'endpoint': 'me.leave', 'active': endpoint == 'me.leave'}
+    _payslip_slot = {'key': 'my_payslip', 'label': 'สลิป', 'icon': 'bi-receipt',
+                     'endpoint': 'me.payslip_list',
+                     'active': endpoint == 'me.payslip_list'}
     if role == 'general':
         return [
             {'key': 'stock', 'label': 'สต็อก', 'icon': 'bi-search',
              'endpoint': 'mobile.stock_search', 'active': endpoint == 'mobile.stock_search'},
             _leave_slot,
+            _payslip_slot,
         ]
     is_manager = role in ('admin', 'manager', 'shareholder')  # shareholder reads HR + accounting
     active = _mobile_active_slot(endpoint)
@@ -534,6 +539,7 @@ def build_mobile_nav_slots(role, endpoint=''):
             'endpoint': s['endpoint'], 'active': s['key'] == active,
         })
     slots.append(_leave_slot)
+    slots.append(_payslip_slot)
     return slots
 
 
