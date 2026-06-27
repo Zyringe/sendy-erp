@@ -105,3 +105,14 @@ def test_payslip_detail_own_draft_403(tmp_db):
     """Detail page for own item in a DRAFT run → 403."""
     _seed_payslips(tmp_db); _link(tmp_db, 'EMP004', 2)
     assert _client('staff', 2).get('/me/payslip/9003').status_code == 403
+
+
+# ── Task 6.3 — back-button regression (manager flow byte-identical) ───────────
+
+def test_manager_payslip_still_links_to_run(tmp_db):
+    """The manager-side payslip template still renders its own 'กลับ Payroll Run'
+    back-link when back_url is not passed (manager flow is byte-identical)."""
+    _seed_payslips(tmp_db)
+    html = _client('admin', 1).get('/hr/payroll/901/payslip/9001').get_data(as_text=True)
+    assert 'กลับ Payroll Run' in html
+    assert '/hr/payroll/901' in html
