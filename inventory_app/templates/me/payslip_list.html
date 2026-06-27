@@ -1,0 +1,41 @@
+{% extends 'base.html' %}
+{% block title %}สลิปเงินเดือนของฉัน – Sendy{% endblock %}
+{% block page_title %}สลิปเงินเดือน — {{ employee.full_name }}{% endblock %}
+{% block content %}
+{% set month_names = ['', 'มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน',
+                      'กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'] %}
+<div class="card mb-3">
+  <div class="card-header fw-semibold">สลิปเงินเดือน ({{ payslips|length }} รายการ)</div>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>เดือน</th>
+          <th class="text-end">เงินสุทธิ</th>
+          <th class="text-end">ดู</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in payslips %}
+        {% set ym = p.year_month.split('-') %}
+        <tr>
+          <td>{{ month_names[ym[1]|int] }} พ.ศ. {{ ym[0]|int + 543 }}</td>
+          <td class="text-end fw-semibold text-success">฿{{ '{:,.2f}'.format(p.net_pay) }}</td>
+          <td class="text-end">
+            <a href="{{ url_for('me.payslip_detail', item_id=p.item_id) }}"
+               class="btn btn-sm btn-outline-primary">
+              <i class="bi bi-receipt me-1"></i>เปิด
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not payslips %}
+        <tr>
+          <td colspan="3" class="text-center text-muted py-4">ยังไม่มีสลิปเงินเดือน</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
