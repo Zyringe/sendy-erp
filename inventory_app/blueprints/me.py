@@ -121,6 +121,43 @@ def leave_edit(rid):
     return redirect(url_for("me.leave"))
 
 
+@bp_me.route("/payslip")
+def payslip_list():
+    emp = _my_employee()
+    if not emp:
+        flash("บัญชีนี้ไม่มีสลิปเงินเดือน", "info")
+        return redirect(url_for("dashboard"))
+    return render_template(
+        "me/payslip_list.html",
+        employee=emp,
+        payslips=hrq.get_employee_payslips(emp["id"]),
+    )
+
+
+@bp_me.route("/payslip/<int:item_id>")
+def payslip_detail(item_id):
+    emp = _my_employee()
+    if not emp:
+        flash("บัญชีนี้ไม่มีสลิปเงินเดือน", "info")
+        return redirect(url_for("dashboard"))
+    item = hrq.get_payroll_item(item_id)
+    # Ownership: item must belong to THIS employee (id from session — never the URL
+    # beyond the lookup key). Visibility: run must be finalized (drafts are not
+    # employee-visible; numbers can still change before finalize).
+    if not item or item["employee_id"] != emp["id"]:
+        abort(403)
+    run = hrq.get_payroll_run(item["run_id"])
+    if not run or run["status"] != "finalized":
+        abort(403)
+    from blueprints.hr import _be_year, _fmt_baht   # deferred: avoids import-cycle risk
+    return render_template(
+        "hr/payslip.html",
+        run=run, item=item, employee=emp,
+        be_year=_be_year, fmt_baht=_fmt_baht,
+        back_url=url_for("me.payslip_list"), back_label="กลับ สลิปทั้งหมด",
+    )
+
+
 @bp_me.route("/leave/<int:rid>/cancel", methods=["POST"])
 def leave_cancel(rid):
     emp = _my_employee()

@@ -73,3 +73,35 @@ def test_get_employee_payslips_finalized_only(tmp_db):
     assert 9001 in ids          # own finalized → visible
     assert 9003 not in ids      # own DRAFT → hidden
     assert 9002 not in ids      # another employee's item → never
+
+
+# ── Task 6.2 — /me/payslip routes (security core) ────────────────────────────
+
+def test_payslip_list_shows_only_own_finalized(tmp_db):
+    """GET /me/payslip links own finalized items, never draft or other-employee."""
+    # NOTE: tmp_db carries REAL payroll data (runs 3='2026-04', 4='2026-05' are
+    # already finalized), so DO NOT assert on year-month strings — they can appear.
+    # Key on the self-scoped item links.
+    _seed_payslips(tmp_db); _link(tmp_db, 'EMP004', 2)
+    html = _client('staff', 2).get('/me/payslip').get_data(as_text=True)
+    assert '/me/payslip/9001' in html       # own FINALIZED item → linked
+    assert '/me/payslip/9003' not in html   # own DRAFT item → never linked
+    assert '/me/payslip/9002' not in html   # another employee's item → never
+
+
+def test_payslip_detail_own_finalized_ok(tmp_db):
+    """Detail page for own finalized item → 200."""
+    _seed_payslips(tmp_db); _link(tmp_db, 'EMP004', 2)
+    assert _client('staff', 2).get('/me/payslip/9001').status_code == 200
+
+
+def test_payslip_detail_other_employee_403(tmp_db):
+    """Detail page for another employee's item → 403."""
+    _seed_payslips(tmp_db); _link(tmp_db, 'EMP004', 2)
+    assert _client('staff', 2).get('/me/payslip/9002').status_code == 403
+
+
+def test_payslip_detail_own_draft_403(tmp_db):
+    """Detail page for own item in a DRAFT run → 403."""
+    _seed_payslips(tmp_db); _link(tmp_db, 'EMP004', 2)
+    assert _client('staff', 2).get('/me/payslip/9003').status_code == 403
