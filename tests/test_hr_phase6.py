@@ -135,3 +135,21 @@ def test_payslip_slot_in_mobile_nav():
     for role in ('general', 'staff', 'manager'):
         eps = [s['endpoint'] for s in build_mobile_nav_slots(role)]
         assert 'me.payslip_list' in eps, f"role={role} missing สลิป nav slot"
+
+
+# ── Task 6.5 — per-actor security matrix (the proof) ─────────────────────────
+
+def test_payslip_access_matrix(tmp_db):
+    """Security matrix: own finalized visible; other/draft/exempt roles denied."""
+    a, b = _seed_payslips(tmp_db)
+    _link(tmp_db, 'EMP004', 2)   # A = staff, employee_id == a
+    _link(tmp_db, 'EMP002', 3)   # B = staff, employee_id == b
+    A = _client('staff', 2)
+    # A can see own finalized
+    assert A.get('/me/payslip/9001').status_code == 200      # own finalized
+    assert A.get('/me/payslip/9002').status_code == 403      # B's item → 403
+    assert A.get('/me/payslip/9003').status_code == 403      # own DRAFT → 403
+    # Exempt roles: admin + shareholder never get a payslip surface
+    # (_my_employee() returns None → graceful redirect 302, not 500 or 403)
+    assert _client('admin', 1).get('/me/payslip').status_code == 302
+    assert _client('shareholder', 99).get('/me/payslip').status_code == 302
