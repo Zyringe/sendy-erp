@@ -183,3 +183,24 @@ def test_manager_post_advance_allowed_by_gate(tmp_db):
     assert sqlite3.connect(tmp_db).execute(
         "SELECT COUNT(*) FROM salary_advances WHERE amount=77020"
     ).fetchone()[0] == 1
+
+
+# ── Nav completeness (post-ship fix) — the advances tab must show in BOTH navs ──
+
+def test_advances_nav_present_desktop_and_mobile(tmp_db):
+    """Regression for the missing left-nav tab: on /hr/advances the DESKTOP HR
+    sidebar must render (requires hr.advance_list mapped to the 'hr' module so
+    active_module=='hr'), AND the MOBILE drawer must include the advances link."""
+    import re
+    from app import _ENDPOINT_MODULE
+    # desktop: the advances pages must resolve to the 'hr' module, else the whole
+    # HR sidebar block ({% if active_module == 'hr' %}) disappears on those pages.
+    assert _ENDPOINT_MODULE.get('hr.advance_list') == 'hr'
+    assert _ENDPOINT_MODULE.get('hr.advance_new') == 'hr'
+
+    html = _client('admin', 1).get('/hr/advances').get_data(as_text=True)
+    # desktop HR sub-nav actually renders on the advances page
+    side = re.search(r'sidebar-section">บุคลากร.*?(?=sidebar-section|$)', html, re.S)
+    assert side and 'เบิกล่วงหน้า' in side.group(0), "desktop HR sidebar missing on /hr/advances"
+    # both navs link to /hr/advances (desktop sidebar + mobile drawer)
+    assert html.count('href="/hr/advances"') >= 2, "advances link missing from a nav"
