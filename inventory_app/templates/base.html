@@ -219,6 +219,10 @@
        class="sidebar-link {% if request.endpoint in ['hr.leave_list','hr.leave_new'] %}active{% endif %}">
       <i class="bi bi-calendar-x"></i> การลา
     </a>
+    <a href="{{ url_for('hr.advance_list') }}"
+       class="sidebar-link {% if request.endpoint in ['hr.advance_list','hr.advance_new'] %}active{% endif %}">
+      <i class="bi bi-cash"></i> เบิกล่วงหน้า
+    </a>
     <a href="{{ url_for('hr.payroll_list') }}"
        class="sidebar-link {% if (request.endpoint or '').startswith('hr.payroll') or request.endpoint == 'hr.payslip' %}active{% endif %}">
       <i class="bi bi-cash-coin"></i> Payroll
