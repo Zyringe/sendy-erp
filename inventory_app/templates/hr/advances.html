@@ -1,0 +1,140 @@
+{% extends 'base.html' %}
+{% block title %}เบิกล่วงหน้า – Sendy HR{% endblock %}
+{% block page_title %}การเบิกเงินล่วงหน้า ({{ advances|length }}){% endblock %}
+
+{% block topbar_actions %}
+  {% if session.role in ('admin', 'manager') %}
+  <a href="{{ url_for('hr.advance_new') }}" class="btn btn-primary btn-sm">
+    <i class="bi bi-plus-lg me-1"></i>เพิ่มการเบิก
+  </a>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>พนักงาน</th>
+          <th>วันที่เบิก</th>
+          <th class="text-end">จำนวนเงิน</th>
+          <th>โอนจากบัญชี</th>
+          <th>สถานะ</th>
+          <th>หมายเหตุ</th>
+          {% if session.role in ('admin', 'manager') %}
+          <th class="text-end">จัดการ</th>
+          {% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for adv in advances %}
+        <tr>
+          <td class="font-mono small text-muted">{{ adv.id }}</td>
+          <td>
+            <a href="{{ url_for('hr.employee_detail', id=adv.employee_id) }}"
+               class="text-decoration-none">{{ adv.full_name }}</a>
+            <span class="text-muted small">({{ adv.emp_code }})</span>
+          </td>
+          <td class="small">{{ be_year(adv.advance_date) }}</td>
+          <td class="text-end">{{ fmt_baht(adv.amount) }}</td>
+          <td class="small text-muted">{{ adv.account_name or '—' }}</td>
+          <td>
+            {% if adv.deducted_in_run_id %}
+            <span class="badge bg-success">ถูกหักแล้ว ({{ adv.deducted_ym or '' }})</span>
+            {% else %}
+            <span class="badge bg-warning text-dark">รอหัก</span>
+            {% endif %}
+          </td>
+          <td class="small text-muted">{{ adv.note or '—' }}</td>
+          {% if session.role in ('admin', 'manager') %}
+          <td class="text-end">
+            {% if not adv.deducted_in_run_id %}
+            <button class="btn btn-sm btn-outline-secondary"
+                    data-bs-toggle="modal"
+                    data-bs-target="#editModal{{ adv.id }}">
+              <i class="bi bi-pencil"></i>
+            </button>
+            <form method="post"
+                  action="{{ url_for('hr.advance_delete', id=adv.id) }}"
+                  class="d-inline"
+                  onsubmit="return confirm('ลบรายการเบิกนี้?')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-trash"></i>
+              </button>
+            </form>
+            {% else %}
+            <span class="text-muted small">ล็อก</span>
+            {% endif %}
+          </td>
+          {% endif %}
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="8" class="text-center text-muted py-4">ยังไม่มีรายการเบิกล่วงหน้า</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# ── Edit modals (admin/manager only) ───────────────────────────────────────── #}
+{% if session.role in ('admin', 'manager') %}
+{% for adv in advances %}
+{% if not adv.deducted_in_run_id %}
+<div class="modal fade" id="editModal{{ adv.id }}" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title small">แก้ไขการเบิก #{{ adv.id }} — {{ adv.full_name }}</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" action="{{ url_for('hr.advance_edit', id=adv.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="modal-body">
+          <input type="hidden" name="employee_id" value="{{ adv.employee_id }}">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label small">วันที่เบิก <span class="text-danger">*</span></label>
+              <input type="date" name="advance_date" class="form-control form-control-sm"
+                     value="{{ adv.advance_date }}" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small">จำนวนเงิน (฿) <span class="text-danger">*</span></label>
+              <input type="number" name="amount" class="form-control form-control-sm"
+                     value="{{ adv.amount }}" min="0.01" step="0.01" required>
+            </div>
+            <div class="col-12">
+              <label class="form-label small">โอนจากบัญชี</label>
+              <select name="from_account_id" class="form-select form-select-sm">
+                <option value="">— ไม่ระบุ —</option>
+                {% for acct in accounts %}
+                <option value="{{ acct.id }}"
+                  {% if adv.from_account_id == acct.id %}selected{% endif %}>
+                  {{ acct.display_name or acct.code }}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12">
+              <label class="form-label small">หมายเหตุ</label>
+              <input type="text" name="note" class="form-control form-control-sm"
+                     value="{{ adv.note or '' }}">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-primary btn-sm">บันทึก</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endblock %}

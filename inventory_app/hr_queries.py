@@ -550,6 +550,131 @@ def get_employee_payslips(employee_id: int,
             c.close()
 
 
+# ── Salary advances ──────────────────────────────────────────────────────────
+
+def get_active_cashbook_accounts(conn: Optional[sqlite3.Connection] = None):
+    """Return active cashbook accounts for the advance form dropdown."""
+    c, owned = _conn(conn)
+    try:
+        return c.execute(
+            """SELECT id, code, display_name
+                 FROM cashbook_accounts
+                WHERE is_active = 1
+                ORDER BY sort_order, id"""
+        ).fetchall()
+    finally:
+        if owned:
+            c.close()
+
+
+def _coerce_advance_data(data: dict) -> dict:
+    """Coerce string values from request.form to the correct Python types.
+
+    Blank/missing from_account_id → None (avoids FK IntegrityError on the
+    INTEGER column when the leading '— ไม่ระบุ —' option is selected).
+    """
+    faid_raw = data.get("from_account_id")
+    faid = None if (not faid_raw or str(faid_raw).strip() == "") else int(faid_raw)
+    return {
+        "employee_id": int(data["employee_id"]),
+        "advance_date": data.get("advance_date", ""),
+        "amount": float(data.get("amount", 0)),
+        "from_account_id": faid,
+        "note": data.get("note") or None,
+    }
+
+
+def get_salary_advances(conn: Optional[sqlite3.Connection] = None):
+    """Return all advances, newest first, with employee + account info."""
+    c, owned = _conn(conn)
+    try:
+        return c.execute(
+            """SELECT sa.*,
+                      e.full_name, e.emp_code,
+                      ca.display_name AS account_name,
+                      pr.year_month   AS deducted_ym
+                 FROM salary_advances sa
+                 JOIN employees e ON e.id = sa.employee_id
+                 LEFT JOIN cashbook_accounts ca ON ca.id = sa.from_account_id
+                 LEFT JOIN payroll_runs pr ON pr.id = sa.deducted_in_run_id
+                 ORDER BY sa.advance_date DESC, sa.id DESC"""
+        ).fetchall()
+    finally:
+        if owned:
+            c.close()
+
+
+def get_salary_advance(adv_id: int, conn: Optional[sqlite3.Connection] = None):
+    """Return a single advance row with employee + account info, or None."""
+    c, owned = _conn(conn)
+    try:
+        return c.execute(
+            """SELECT sa.*,
+                      e.full_name, e.emp_code,
+                      ca.display_name AS account_name,
+                      pr.year_month   AS deducted_ym
+                 FROM salary_advances sa
+                 JOIN employees e ON e.id = sa.employee_id
+                 LEFT JOIN cashbook_accounts ca ON ca.id = sa.from_account_id
+                 LEFT JOIN payroll_runs pr ON pr.id = sa.deducted_in_run_id
+                WHERE sa.id = ?""",
+            (adv_id,),
+        ).fetchone()
+    finally:
+        if owned:
+            c.close()
+
+
+def create_salary_advance(data: dict, conn: Optional[sqlite3.Connection] = None):
+    """Insert a new salary_advance row. Returns the new id."""
+    d = _coerce_advance_data(data)
+    c, owned = _conn(conn)
+    try:
+        cur = c.execute(
+            """INSERT INTO salary_advances
+                 (employee_id, advance_date, amount, from_account_id, note)
+               VALUES (?,?,?,?,?)""",
+            (d["employee_id"], d["advance_date"], d["amount"],
+             d["from_account_id"], d["note"]),
+        )
+        c.commit()
+        return cur.lastrowid
+    finally:
+        if owned:
+            c.close()
+
+
+def update_salary_advance(adv_id: int, data: dict,
+                          conn: Optional[sqlite3.Connection] = None):
+    """Update editable fields. Does NOT touch deducted_in_run_id."""
+    d = _coerce_advance_data(data)
+    c, owned = _conn(conn)
+    try:
+        c.execute(
+            """UPDATE salary_advances
+                  SET employee_id=?, advance_date=?, amount=?,
+                      from_account_id=?, note=?
+                WHERE id=?""",
+            (d["employee_id"], d["advance_date"], d["amount"],
+             d["from_account_id"], d["note"], adv_id),
+        )
+        c.commit()
+    finally:
+        if owned:
+            c.close()
+
+
+def delete_salary_advance(adv_id: int, conn: Optional[sqlite3.Connection] = None):
+    """Hard-delete an advance (audit trigger logs the DELETE automatically)."""
+    c, owned = _conn(conn)
+    try:
+        c.execute("DELETE FROM salary_advances WHERE id=?", (adv_id,))
+        c.commit()
+    finally:
+        if owned:
+            c.close()
+
+
 # ── Dashboard helpers ────────────────────────────────────────────────────────
 
 def get_headcount(conn: Optional[sqlite3.Connection] = None) -> int:

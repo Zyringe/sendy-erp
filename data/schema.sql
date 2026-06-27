@@ -1226,7 +1226,7 @@ CREATE TABLE "salary_advances" (
     source_file        TEXT,
     import_batch_id    TEXT,
     created_at         TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-);
+, from_account_id INTEGER REFERENCES cashbook_accounts(id));
 
 CREATE TABLE sales_transactions (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,

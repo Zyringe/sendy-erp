@@ -160,10 +160,13 @@
         <div class="text-muted p-3 text-center small">ยังไม่มี payroll run</div>
         {% endif %}
       </div>
-      {% if session.role == 'admin' %}
+      {% if session.role in ('admin', 'manager') %}
       <div class="card-footer">
         <a href="{{ url_for('hr.payroll_list') }}" class="btn btn-sm btn-outline-primary">
           <i class="bi bi-plus me-1"></i>ไปหน้า Payroll
+        </a>
+        <a href="{{ url_for('hr.advance_list') }}" class="btn btn-sm btn-outline-secondary ms-2">
+          <i class="bi bi-cash me-1"></i>เบิกล่วงหน้า
         </a>
       </div>
       {% endif %}
