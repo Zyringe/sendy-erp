@@ -246,6 +246,8 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'naming.product_preview_name', 'naming.product_save',
     # Phase 5 approval workflow — managers can approve/reject pending leave.
     'hr.leave_approve', 'hr.leave_reject',
+    # Phase 7 salary-advance CRUD — managers can create/edit/delete advances.
+    'hr.advance_new', 'hr.advance_edit', 'hr.advance_delete',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
 # the route. Other admin-only writes use _require_admin().
