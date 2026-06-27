@@ -80,6 +80,32 @@ def _month_bounds(year_month: str):
     return date(y, m, 1), date(y, m, last_day)
 
 
+def previous_ym(today):
+    """'YYYY-MM' of the calendar month before `today`."""
+    y, m = today.year, today.month
+    return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
+
+
+def payroll_reminder_month(today, conn):
+    """Previous month's 'YYYY-MM' if any payroll company is missing its run for
+    that month, else None. Drives the admin dashboard payroll nudge.
+
+    'Payroll companies' = companies with active on_payroll employees (derived
+    from data, not hardcoded), so a non-payroll entity never triggers it."""
+    prev = previous_ym(today)
+    company_ids = [r[0] for r in conn.execute(
+        "SELECT DISTINCT company_id FROM employees "
+        "WHERE on_payroll = 1 AND is_active = 1 AND company_id IS NOT NULL"
+    )]
+    for cid in company_ids:
+        if not conn.execute(
+            "SELECT 1 FROM payroll_runs WHERE year_month = ? AND company_id = ?",
+            (prev, cid),
+        ).fetchone():
+            return prev
+    return None
+
+
 def _to_date(s: Optional[str]) -> Optional[date]:
     if not s:
         return None

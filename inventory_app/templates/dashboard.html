@@ -4,6 +4,16 @@
 {% block page_desc %}<div class="page-desc">สรุปสต็อกและความเคลื่อนไหวล่าสุด</div>{% endblock %}
 
 {% block content %}
+{% if payroll_reminder %}
+{% set _ym = payroll_reminder.split('-') %}
+{% set _months = ['', 'มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'] %}
+<div class="alert alert-warning d-flex flex-wrap align-items-center gap-2 mb-3" role="alert">
+  <i class="bi bi-cash-coin fs-5"></i>
+  <span class="flex-grow-1" style="min-width:0">ยังไม่ได้สร้างรอบเงินเดือนของเดือน
+    <strong>{{ _months[_ym[1]|int] }} {{ _ym[0]|int + 543 }}</strong></span>
+  <a href="{{ url_for('hr.payroll_list') }}" class="btn btn-sm btn-warning ms-auto">สร้างรอบเงินเดือน</a>
+</div>
+{% endif %}
 {% if suspicious_count > 0 %}
 <div class="alert alert-warning d-flex flex-wrap align-items-center gap-2 mb-3" role="alert">
   <i class="bi bi-clipboard-check fs-5"></i>
