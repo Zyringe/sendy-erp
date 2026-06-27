@@ -1252,11 +1252,19 @@ def dashboard():
     recent_txns = models.get_recent_transactions(10)
     total_products = models.count_active_products()
     in_stock_count = models.count_in_stock()
+    payroll_reminder = None
+    if session.get('role') == 'admin':
+        conn = get_connection()
+        try:
+            payroll_reminder = hr_mod.payroll_reminder_month(date.today(), conn)
+        finally:
+            conn.close()
     return render_template('dashboard.html',
                            restock_count=restock_count,
                            recent_txns=recent_txns,
                            total_products=total_products,
-                           in_stock_count=in_stock_count)
+                           in_stock_count=in_stock_count,
+                           payroll_reminder=payroll_reminder)
 
 
 # ── Alerts ────────────────────────────────────────────────────────────────────
