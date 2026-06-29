@@ -137,7 +137,10 @@ def build_sku_code(p: dict) -> str:
 
     if not parts:
         return f"INT-{p['id']}"
-    return "-".join(parts)
+    # '/' is a valid fraction char in size/series/model (1/2", 5/16") but is a
+    # path separator — keep sku_code path-safe by mapping '/'→'-'. See
+    # test_sku_code_slash.py (Put 2026-06-29).
+    return "-".join(part.replace("/", "-") for part in parts)
 
 
 def regenerate_for_product(conn, product_id: int) -> tuple:
