@@ -148,8 +148,8 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
         explicit_id = int(m.group(1)) if m else None
 
         on_payroll = int(data.get("on_payroll") or 0) if "on_payroll" in data else 1
-        user_id_raw = data.get("user_id")
-        user_id = int(user_id_raw) if user_id_raw and str(user_id_raw).strip() else None
+        # The employee↔login link (user_id) is NOT set here — new employees start
+        # unlinked; the link is managed solely on /users. Column defaults to NULL.
 
         if explicit_id is not None:
             cur = c.execute(
@@ -158,9 +158,9 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
                       address, position, company_id, employment_type, start_date,
                       probation_days, probation_end_date, end_date, sso_enrolled,
                       diligence_allowance, bank_name, bank_branch, bank_account_no,
-                      bank_account_name, salesperson_code, user_id, is_active,
+                      bank_account_name, salesperson_code, is_active,
                       on_payroll, note)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     explicit_id,
                     data.get("emp_code"), data.get("full_name"),
@@ -174,7 +174,7 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
                     float(data.get("diligence_allowance") or 0),
                     data.get("bank_name"), data.get("bank_branch"),
                     data.get("bank_account_no"), data.get("bank_account_name"),
-                    data.get("salesperson_code"), user_id,
+                    data.get("salesperson_code"),
                     int(data.get("is_active", 1)), on_payroll, data.get("note"),
                 ),
             )
@@ -185,9 +185,9 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
                       address, position, company_id, employment_type, start_date,
                       probation_days, probation_end_date, end_date, sso_enrolled,
                       diligence_allowance, bank_name, bank_branch, bank_account_no,
-                      bank_account_name, salesperson_code, user_id, is_active,
+                      bank_account_name, salesperson_code, is_active,
                       on_payroll, note)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     data.get("emp_code"), data.get("full_name"),
                     data.get("nickname"), data.get("national_id"),
@@ -200,7 +200,7 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
                     float(data.get("diligence_allowance") or 0),
                     data.get("bank_name"), data.get("bank_branch"),
                     data.get("bank_account_no"), data.get("bank_account_name"),
-                    data.get("salesperson_code"), user_id,
+                    data.get("salesperson_code"),
                     int(data.get("is_active", 1)), on_payroll, data.get("note"),
                 ),
             )
@@ -217,9 +217,8 @@ def update_employee(emp_id: int, data: dict,
     try:
         # on_payroll: checkbox sends "1" when checked, nothing when unchecked
         on_payroll = int(data.get("on_payroll") or 0) if "on_payroll" in data else 1
-        # user_id: empty string from unselected dropdown → NULL
-        user_id_raw = data.get("user_id")
-        user_id = int(user_id_raw) if user_id_raw and str(user_id_raw).strip() else None
+        # user_id is deliberately NOT in this UPDATE: the employee↔login link is
+        # owned by /users, so an HR edit must leave the existing link untouched.
         c.execute(
             """UPDATE employees SET
                  emp_code=?, full_name=?, nickname=?, national_id=?, gender=?,
@@ -227,7 +226,7 @@ def update_employee(emp_id: int, data: dict,
                  start_date=?, probation_days=?, probation_end_date=?, end_date=?,
                  sso_enrolled=?, diligence_allowance=?, bank_name=?, bank_branch=?,
                  bank_account_no=?, bank_account_name=?, salesperson_code=?,
-                 user_id=?, is_active=?, on_payroll=?, note=?,
+                 is_active=?, on_payroll=?, note=?,
                  updated_at=datetime('now','localtime')
                WHERE id=?""",
             (
@@ -242,7 +241,7 @@ def update_employee(emp_id: int, data: dict,
                 float(data.get("diligence_allowance") or 0),
                 data.get("bank_name"), data.get("bank_branch"),
                 data.get("bank_account_no"), data.get("bank_account_name"),
-                data.get("salesperson_code"), user_id,
+                data.get("salesperson_code"),
                 int(data.get("is_active", 1)), on_payroll, data.get("note"),
                 emp_id,
             ),
@@ -253,25 +252,40 @@ def update_employee(emp_id: int, data: dict,
             c.close()
 
 
-def get_linkable_users(employee_id: Optional[int] = None,
+def get_linked_account(user_id: Optional[int],
                        conn: Optional[sqlite3.Connection] = None):
-    """Return active users not already linked to another employee.
+    """The login account linked to an employee (read-only, for HR display).
+    The link is edited only on /users; HR just shows it. None when unlinked."""
+    if not user_id:
+        return None
+    c, owned = _conn(conn)
+    try:
+        return c.execute(
+            "SELECT id, username, display_name, role FROM users WHERE id=?",
+            (user_id,),
+        ).fetchone()
+    finally:
+        if owned:
+            c.close()
 
-    When employee_id is provided, the user currently linked to that employee
-    is included (so the edit form can show the existing selection).
+
+def get_linkable_employees(user_id: Optional[int] = None,
+                           conn: Optional[sqlite3.Connection] = None):
+    """Return active employees available to link to a login account.
+
+    The employee↔account link (`employees.user_id`) is 1:1 and edited only on
+    `/users`. This is the single source of that selection rule: offer employees
+    with no login yet, plus — when `user_id` is given — the employee currently
+    linked to that account (so the edit picker shows the existing selection).
     """
     c, owned = _conn(conn)
     try:
         return c.execute(
-            """SELECT id, username, display_name, role FROM users
+            """SELECT id, emp_code, full_name, nickname FROM employees
                 WHERE is_active=1
-                  AND id NOT IN (
-                      SELECT user_id FROM employees
-                       WHERE user_id IS NOT NULL
-                         AND (? IS NULL OR id != ?)
-                  )
-                ORDER BY role, username""",
-            (employee_id, employee_id),
+                  AND (user_id IS NULL OR user_id = ?)
+                ORDER BY sort_order, full_name""",
+            (user_id,),
         ).fetchall()
     finally:
         if owned:
