@@ -69,3 +69,18 @@
     only POST it may make is logout. Edits nothing.
   - **พนักงานทั่วไป (general)** — mobile PWA kiosk only: ค้นหาสต็อก + own leave + own
     payslip. Desktop sidebar is empty; every other endpoint redirects to stock search.
+
+- **Impersonate a user (จำลอง / "ดูในมุมมองของ…")** — an admin temporarily *becomes a
+  specific other user*: the session's `user_id` + `role` + `display_name` are swapped to
+  the target so identity-keyed pages (`/me/*`) show **that person's** data, and the admin
+  can act **as** them (writes are attributed to the target). The real identity is stashed
+  in `_real_*` and restored on exit; "exit impersonation" is always reachable regardless
+  of the impersonated role. This is **impersonating a user**, NOT the older "simulate a
+  role" (which swapped only the permission level and kept the admin's own `user_id`, so
+  `/me/*` still showed the admin's data). Only a (real) admin can start it; entering is
+  audit-logged under the real admin.
+
+- **identity-keyed vs role-gated pages** — `/me/leave` + `/me/payslip` resolve their data
+  from `session['user_id']` (via `_my_employee()`), so *who* you are changes what they
+  show. Every other page is role-gated only: same global data regardless of user. This is
+  why impersonation must swap `user_id`, not just `role`.

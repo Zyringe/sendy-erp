@@ -53,12 +53,12 @@
               </td>
               <td class="text-end pe-3">
                 <div class="d-flex gap-1 justify-content-end">
-                  {# Simulate button (non-admin only) #}
+                  {# Impersonate this user (non-admin only) — become them to see their data #}
                   {% if u.role != 'admin' %}
                   <form method="post" action="{{ url_for('admin_simulate_role') }}" class="d-inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <input type="hidden" name="role" value="{{ u.role }}">
-                    <button type="submit" class="btn btn-xs btn-outline-primary" title="จำลองเป็น {{ (roles.get(u.role) or {}).get('label', u.role) }}">
+                    <input type="hidden" name="user_id" value="{{ u.id }}">
+                    <button type="submit" class="btn btn-xs btn-outline-primary" title="ดูในมุมมองของ {{ u.display_name or u.username }}">
                       <i class="bi bi-person-badge"></i>
                     </button>
                   </form>
