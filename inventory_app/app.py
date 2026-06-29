@@ -590,7 +590,8 @@ def inject_auth():
         'is_manager':    role in ('admin', 'manager'),
         'current_user':  session.get('display_name', ''),
         'current_role':  role,
-        'simulating_as': role if real_role else None,
+        'simulating_as': session.get('display_name') if real_role else None,
+        'simulating_as_role': (ROLES.get(role, {}).get('label', role)) if real_role else None,
         'real_role':     real_role,
         'alert_count':   models.count_stock_alerts(),
         'suspicious_count': rr.suspicious_count(since_date=rr.default_since()),
@@ -620,6 +621,14 @@ def require_login():
     if not role:
         flash('กรุณาเข้าสู่ระบบก่อน', 'warning')
         return redirect(url_for('login', next=request.url))
+    # While impersonating, the impersonation controls must ALWAYS be reachable,
+    # whatever the impersonated role's gates do (general redirects everything to
+    # stock-search; shareholder may only POST logout). 'exit' returns to the real
+    # admin; 'simulate-role' switches to another user (keeping the original admin
+    # stashed). Only a current impersonator (_real_role set) can hit either, and
+    # the route itself only ever lands on the real admin or a non-admin target → safe.
+    if endpoint in ('admin_exit_simulate', 'admin_simulate_role') and session.get('_real_role'):
+        return
     # admin_module is admin-only at the module level (defense-in-depth).
     # Exception: an admin who is simulating another role still has _real_role set,
     # so they must be able to reach admin_exit_simulate (and other admin endpoints).
@@ -803,23 +812,55 @@ def user_delete(uid):
 
 @app.route('/admin/simulate-role', methods=['POST'])
 def admin_simulate_role():
+    # Impersonate a specific USER: become them (user_id+role+display_name) so
+    # identity-keyed pages (/me/*) show THEIR data and act-as is attributed to
+    # them. Only a real admin may start; while already impersonating, _real_role
+    # is set (current role is the impersonated one) so switching user is allowed.
     if session.get('role') != 'admin' and not session.get('_real_role'):
         abort(403)
-    target_role = request.form.get('role', '')
-    if target_role not in ('manager', 'staff'):
-        flash('Role ไม่ถูกต้อง', 'danger')
+    try:
+        target_id = int(request.form.get('user_id', ''))
+    except (TypeError, ValueError):
+        target_id = None
+    conn = get_connection()
+    target = conn.execute(
+        "SELECT id, username, display_name, role FROM users WHERE id=?", (target_id,)
+    ).fetchone() if target_id else None
+    conn.close()
+    if not target or target['role'] == 'admin':
+        flash('เลือกผู้ใช้ไม่ถูกต้อง', 'danger')
         return redirect(url_for('user_list'))
-    session['_real_role'] = session.get('_real_role') or 'admin'
-    session['role'] = target_role
-    flash(f'กำลังจำลองเป็น {target_role} — คลิก "ออกจากโหมดจำลอง" เพื่อกลับ', 'info')
-    return redirect(url_for('dashboard'))
+    # Stash the REAL identity once, so user→user switches keep the original admin.
+    if not session.get('_real_role'):
+        session['_real_role']         = session.get('role')
+        session['_real_user_id']      = session.get('user_id')
+        session['_real_username']     = session.get('username')
+        session['_real_display_name'] = session.get('display_name')
+    # Trail for any act-as write: log the enter event under the REAL admin.
+    # (Not audit_log — its CHECK limits action to INSERT/UPDATE/DELETE, and
+    # impersonation is not a row mutation.)
+    app.logger.info("IMPERSONATE enter: %s -> user %s (%s, role=%s)",
+                    session.get('_real_username') or session.get('username'),
+                    target['id'], target['username'], target['role'])
+    # Become the target user.
+    session['user_id']      = target['id']
+    session['username']     = target['username']
+    session['display_name'] = target['display_name'] or target['username']
+    session['role']         = target['role']
+    flash(f'กำลังดูในมุมมองของ {session["display_name"]} — คลิก "ออกจากโหมดจำลอง" เพื่อกลับ', 'info')
+    return redirect(_role_home(target['role']))
 
 
 @app.route('/admin/exit-simulate', methods=['POST'])
 def admin_exit_simulate():
     real_role = session.pop('_real_role', None)
     if real_role:
-        session['role'] = real_role
+        real_admin = session.get('_real_username') or session.get('username')
+        session['role']         = real_role
+        session['user_id']      = session.pop('_real_user_id', session.get('user_id'))
+        session['username']     = session.pop('_real_username', session.get('username'))
+        session['display_name'] = session.pop('_real_display_name', session.get('display_name'))
+        app.logger.info("IMPERSONATE exit: back to %s", real_admin)
         flash('ออกจากโหมดจำลองแล้ว กลับเป็น Admin', 'success')
     return redirect(url_for('dashboard'))
 
