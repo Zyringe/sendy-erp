@@ -201,7 +201,6 @@ def employee_new():
         page_title="เพิ่มพนักงาน",
         banks=BANK_OPTIONS,
         next_emp_code=hrq.next_emp_code(),
-        linkable_users=hrq.get_linkable_users(),
     )
 
 
@@ -227,7 +226,7 @@ def employee_detail(id: int):
         year=year,
         be_year=_be_year,
         fmt_baht=_fmt_baht,
-        linkable_users=hrq.get_linkable_users(employee_id=id),
+        linked_account=hrq.get_linked_account(emp["user_id"]),
     )
 
 

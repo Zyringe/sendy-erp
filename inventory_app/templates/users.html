@@ -18,6 +18,7 @@
             <tr>
               <th>ชื่อผู้ใช้</th>
               <th>ชื่อแสดง</th>
+              <th>พนักงาน</th>
               <th class="text-center">บทบาท</th>
               <th class="text-center">สถานะ</th>
               <th></th>
@@ -28,13 +29,19 @@
             <tr>
               <td class="font-mono">{{ u.username }}</td>
               <td>{{ u.display_name or '–' }}</td>
-              <td class="text-center">
-                {% if u.role == 'admin' %}
-                  <span class="badge bg-danger">Admin</span>
-                {% elif u.role == 'manager' %}
-                  <span class="badge bg-warning text-dark">Manager</span>
+              <td>
+                {% if u.emp_id %}
+                  {% if u.emp_nickname %}{{ u.emp_nickname }} — {{ u.emp_full_name }}{% else %}{{ u.emp_full_name }}{% endif %}
                 {% else %}
-                  <span class="badge bg-secondary">Staff</span>
+                  <span class="text-muted">— ไม่ผูก —</span>
+                {% endif %}
+              </td>
+              <td class="text-center">
+                {% set rm = roles.get(u.role) %}
+                {% if rm %}
+                  <span class="badge {{ rm.badge }}">{{ rm.label }}</span>
+                {% else %}
+                  <span class="badge bg-dark">{{ u.role }}</span>
                 {% endif %}
               </td>
               <td class="text-center">
@@ -51,7 +58,7 @@
                   <form method="post" action="{{ url_for('admin_simulate_role') }}" class="d-inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="role" value="{{ u.role }}">
-                    <button type="submit" class="btn btn-xs btn-outline-primary" title="จำลองเป็น {{ u.role }}">
+                    <button type="submit" class="btn btn-xs btn-outline-primary" title="จำลองเป็น {{ (roles.get(u.role) or {}).get('label', u.role) }}">
                       <i class="bi bi-person-badge"></i>
                     </button>
                   </form>
@@ -75,7 +82,7 @@
               </td>
             </tr>
             <tr class="collapse" id="edit-{{ u.id }}">
-              <td colspan="5" class="bg-light py-3 px-4">
+              <td colspan="6" class="bg-light py-3 px-4">
                 <form method="post" action="{{ url_for('user_edit', uid=u.id) }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <div class="row g-2 align-items-end">
@@ -84,14 +91,23 @@
                       <input type="text" name="display_name" class="form-control form-control-sm"
                              value="{{ u.display_name or '' }}">
                     </div>
-                    <div class="col-sm-2">
+                    <div class="col-sm-3">
                       <label class="form-label small mb-1">บทบาท</label>
                       <select name="role" class="form-select form-select-sm">
-                        <option value="admin"       {% if u.role=='admin' %}selected{% endif %}>Admin</option>
-                        <option value="manager"     {% if u.role=='manager' %}selected{% endif %}>Manager</option>
-                        <option value="staff"       {% if u.role=='staff' %}selected{% endif %}>Staff</option>
-                        <option value="shareholder" {% if u.role=='shareholder' %}selected{% endif %}>ผู้ถือหุ้น — ดูได้ทุกอย่าง แก้ไม่ได้</option>
-                        <option value="general"     {% if u.role=='general' %}selected{% endif %}>พนักงานทั่วไป — ดูสต็อก + ลาตัวเอง</option>
+                        {% for r in role_order %}
+                        <option value="{{ r }}" {% if u.role==r %}selected{% endif %}>{{ roles[r].label }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-sm-3">
+                      <label class="form-label small mb-1">พนักงาน</label>
+                      <select name="employee_id" class="form-select form-select-sm">
+                        <option value="">— ไม่ผูก —</option>
+                        {% for e in linkable[u.id] %}
+                        <option value="{{ e.id }}" {% if e.id == u.emp_id %}selected{% endif %}>
+                          {{ e.nickname or e.full_name }} ({{ e.full_name }})
+                        </option>
+                        {% endfor %}
                       </select>
                     </div>
                     <div class="col-sm-3">
@@ -99,14 +115,14 @@
                       <input type="password" name="password" class="form-control form-control-sm"
                              placeholder="ใหม่...">
                     </div>
-                    <div class="col-sm-2">
-                      <div class="form-check mt-4">
+                    <div class="col-sm-3">
+                      <div class="form-check mt-2">
                         <input class="form-check-input" type="checkbox" name="is_active"
                                id="active-{{ u.id }}" {% if u.is_active %}checked{% endif %}>
                         <label class="form-check-label small" for="active-{{ u.id }}">เปิดใช้งาน</label>
                       </div>
                     </div>
-                    <div class="col-sm-2 text-end">
+                    <div class="col-sm-3 text-end">
                       <button type="submit" class="btn btn-primary btn-sm">บันทึก</button>
                     </div>
                   </div>
@@ -141,21 +157,24 @@
                    placeholder="เช่น สมชาย ใจดี">
           </div>
           <div class="mb-3">
-            <label class="form-label">บทบาท</label>
-            <select name="role" class="form-select">
-              <option value="staff" selected>Staff — นำเข้าไฟล์สัปดาห์, ดูสต็อก</option>
-              <option value="manager">Manager — เห็นต้นทุน/กำไร, import payment</option>
-              <option value="admin">Admin — เต็มสิทธิ์</option>
-              <option value="shareholder">ผู้ถือหุ้น — ดูได้ทุกอย่าง แก้ไม่ได้</option>
-              <option value="general">พนักงานทั่วไป — ดูสต็อก + ลาตัวเอง</option>
+            <label class="form-label">พนักงาน <span class="text-muted small">(เว้นว่างได้)</span></label>
+            <select name="employee_id" class="form-select">
+              <option value="">— ไม่ผูก —</option>
+              {% for e in create_employees %}
+              <option value="{{ e.id }}">{{ e.nickname or e.full_name }} ({{ e.full_name }})</option>
+              {% endfor %}
             </select>
             <div class="form-text text-muted small mt-1">
-              <strong>Staff</strong>: import ไฟล์สัปดาห์ + ดูยอดขาย (ไม่เห็นต้นทุน)<br>
-              <strong>Manager</strong>: เห็นต้นทุน GP + สถานะชำระหนี้<br>
-              <strong>Admin</strong>: จัดการสินค้า, ผู้ใช้, ทุกอย่าง<br>
-              <strong>ผู้ถือหุ้น</strong>: ดูทุกหน้า แก้ไขไม่ได้<br>
-              <strong>พนักงานทั่วไป</strong>: ดูสต็อก + จัดการลาตัวเอง (PWA)
+              เลือกพนักงานที่ยังไม่มีบัญชี — เว้นว่างแล้วผูกทีหลังจากปุ่มแก้ไขก็ได้
             </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">บทบาท</label>
+            <select name="role" class="form-select">
+              {% for r in role_order %}
+              <option value="{{ r }}" {% if r=='staff' %}selected{% endif %}>{{ roles[r].label }}</option>
+              {% endfor %}
+            </select>
           </div>
           <div class="mb-3">
             <label class="form-label">รหัสผ่าน</label>
@@ -169,22 +188,17 @@
       </div>
     </div>
 
-    {# Role summary #}
+    {# Role summary — rendered from the single ROLES source in app.py #}
     <div class="card mt-3">
       <div class="card-header small"><i class="bi bi-shield-check me-1"></i>สิทธิ์แต่ละ Role</div>
-      <div class="card-body p-0">
-        <table class="table table-sm mb-0 small">
-          <thead><tr><th>ฟีเจอร์</th><th class="text-center">Staff</th><th class="text-center">Mgr</th><th class="text-center">Admin</th></tr></thead>
-          <tbody>
-            <tr><td>ดูสต็อก/ยอดขาย</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center">✅</td></tr>
-            <tr><td>Import ไฟล์สัปดาห์</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center">✅</td></tr>
-            <tr><td>เห็นราคาทุน / GP</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center">✅</td></tr>
-            <tr><td>สถานะชำระหนี้</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center">✅</td></tr>
-            <tr><td>แก้ไขข้อมูลสินค้า</td><td class="text-center">❌</td><td class="text-center">❌</td><td class="text-center">✅</td></tr>
-            <tr><td>จัดการผู้ใช้</td><td class="text-center">❌</td><td class="text-center">❌</td><td class="text-center">✅</td></tr>
-          </tbody>
-        </table>
-      </div>
+      <ul class="list-group list-group-flush small">
+        {% for r in role_order %}
+        <li class="list-group-item">
+          <span class="badge {{ roles[r].badge }} mb-1">{{ roles[r].label }}</span>
+          <div class="text-muted">{{ roles[r].desc }}</div>
+        </li>
+        {% endfor %}
+      </ul>
     </div>
   </div>
 

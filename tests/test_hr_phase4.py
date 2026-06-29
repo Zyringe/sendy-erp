@@ -1,8 +1,9 @@
 """Phase 4 Part A — enablers (Tasks 4.1–4.3).
 
 Task 4.1: generate_run skips employees with on_payroll=0.
-Task 4.2: create_employee/update_employee bind on_payroll; get_linkable_users
-          excludes already-linked accounts.
+Task 4.2: create_employee/update_employee bind on_payroll. (The employee↔login
+          link moved to /users on 2026-06-29 — HR no longer binds user_id; HR
+          edits must preserve the existing link. See test_users_employee_link.py.)
 Task 4.3: /users form offers shareholder + general role options.
 """
 import os
@@ -64,20 +65,35 @@ def test_payroll_includes_on_payroll_employees(tmp_db_conn):
 
 # ── Task 4.2 ──────────────────────────────────────────────────────────────────
 
-def test_create_employee_links_user_and_off_payroll(tmp_db):
-    """create_employee binds user_id and on_payroll=0 when supplied."""
+def test_create_employee_ignores_user_id_binds_on_payroll(tmp_db):
+    """create_employee no longer binds user_id (the link is owned by /users);
+    a passed user_id is ignored. on_payroll still binds."""
     import hr_queries as hrq
     eid = hrq.create_employee({
         "emp_code": "EMP800",
         "full_name": "แม่ ทดสอบ",
         "company_id": 1,
-        "user_id": 10,
+        "user_id": 10,   # must be ignored — link managed on /users
         "on_payroll": "0",
     })
     row = sqlite3.connect(tmp_db).execute(
         "SELECT user_id, on_payroll FROM employees WHERE id=?", (eid,)
     ).fetchone()
-    assert row == (10, 0)
+    assert row == (None, 0)
+
+
+def test_update_employee_preserves_user_link(tmp_db):
+    """An HR edit must NOT touch the login link — even if user_id is absent or
+    forged in the form. (EMP004/id 4 is linked to user 2 in the live DB.)"""
+    import hr_queries as hrq
+    hrq.update_employee(4, {
+        "emp_code": "EMP004", "full_name": "วิภา ขมสันเทียะ",
+        "company_id": 1, "user_id": "",   # would have wiped the link under old code
+    })
+    row = sqlite3.connect(tmp_db).execute(
+        "SELECT user_id FROM employees WHERE id=4"
+    ).fetchone()
+    assert row[0] == 2, "HR edit must leave employees.user_id untouched"
 
 
 def test_update_employee_sets_on_payroll_zero(tmp_db):
@@ -96,33 +112,19 @@ def test_update_employee_sets_on_payroll_zero(tmp_db):
     assert row[0] == 0
 
 
-def test_linkable_users_excludes_already_linked(tmp_db):
-    """get_linkable_users must not return users already linked to another employee."""
-    import hr_queries as hrq
-    c = sqlite3.connect(tmp_db)
-    c.execute("UPDATE employees SET user_id=3 WHERE emp_code='EMP002'")
-    c.commit(); c.close()
-    ids = [u["id"] for u in hrq.get_linkable_users()]
-    assert 3 not in ids, "user 3 is linked to EMP002 — must not appear in linkable list"
+# Note: the employee↔account link selection rule moved off HR (get_linkable_users
+# removed) onto /users (get_linkable_employees). Its tests live in
+# tests/test_users_employee_link.py.
 
 
-def test_linkable_users_includes_self(tmp_db):
-    """When editing employee X already linked to user Y, Y must appear in the list."""
-    import hr_queries as hrq
-    c = sqlite3.connect(tmp_db)
-    c.execute("UPDATE employees SET user_id=3 WHERE emp_code='EMP002'")
-    c.commit(); c.close()
-    # When editing EMP002 (id=2), user 3 should appear (it's the current link)
-    ids = [u["id"] for u in hrq.get_linkable_users(employee_id=2)]
-    assert 3 in ids, "self-linked user must be included when editing the same employee"
-
-
-def test_employee_form_has_user_link_and_on_payroll(tmp_db):
-    """Add-employee form renders the user_id dropdown and on_payroll checkbox."""
+def test_employee_form_no_user_link_but_on_payroll(tmp_db):
+    """HR add form no longer edits the login link (managed on /users) but keeps
+    the on_payroll field, and points to the user page."""
     c = _client_as('admin', tmp_db)
     html = c.get('/hr/employees/new').get_data(as_text=True)
-    assert 'name="user_id"' in html, "user_id dropdown must be in the add form"
-    assert 'name="on_payroll"' in html, "on_payroll field must be in the add form"
+    assert 'name="user_id"' not in html, "HR must not edit the login link anymore"
+    assert 'name="on_payroll"' in html, "on_payroll field must remain in the add form"
+    assert 'href="/users"' in html, "form should link to the user page"
 
 
 # ── Task 4.3 ──────────────────────────────────────────────────────────────────

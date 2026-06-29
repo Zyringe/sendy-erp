@@ -347,16 +347,13 @@
       {% block topbar_actions %}{% endblock %}
       <span class="text-muted small me-2 d-none d-lg-inline" id="today-date"></span>
       {% if current_role %}
-        {# Role badge — full text ≥lg, icon-only on smaller screens #}
-        {% if current_role == 'admin' %}
-          <span class="badge bg-danger me-2 d-none d-lg-inline">Admin</span>
-          <i class="bi bi-shield-fill-check text-danger d-lg-none me-2" title="Admin"></i>
-        {% elif current_role == 'manager' %}
-          <span class="badge bg-warning text-dark me-2 d-none d-lg-inline">Manager</span>
-          <i class="bi bi-shield-fill text-warning d-lg-none me-2" title="Manager"></i>
+        {# Role badge — full text ≥lg, icon-only on smaller screens (single ROLES source) #}
+        {% set rm = roles.get(current_role) %}
+        {% if rm %}
+          <span class="badge {{ rm.badge }} me-2 d-none d-lg-inline">{{ rm.label }}</span>
+          <i class="bi {{ rm.icon }} d-lg-none me-2" title="{{ rm.label }}"></i>
         {% else %}
-          <span class="badge bg-secondary me-2 d-none d-lg-inline">Staff</span>
-          <i class="bi bi-person-fill text-secondary d-lg-none me-2" title="Staff"></i>
+          <span class="badge bg-dark me-2 d-none d-lg-inline">{{ current_role }}</span>
         {% endif %}
         <span class="text-muted small me-2 d-none d-lg-inline">{{ current_user }}</span>
         {% if is_admin %}

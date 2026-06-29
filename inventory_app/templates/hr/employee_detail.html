@@ -147,15 +147,15 @@
               <div class="col-12"><hr class="my-1"><small class="text-muted">บัญชีผู้ใช้ระบบ</small></div>
               <div class="col-md-6">
                 <label class="form-label small">บัญชีผู้ใช้ (login)</label>
-                <select name="user_id" class="form-select form-select-sm">
-                  <option value="">— ไม่ผูก —</option>
-                  {% for u in (linkable_users or []) %}
-                    <option value="{{ u['id'] }}"
-                      {% if employee.user_id == u['id'] %}selected{% endif %}>
-                      {{ u['username'] }} ({{ u['display_name'] or u['username'] }}, {{ u['role'] }})
-                    </option>
-                  {% endfor %}
-                </select>
+                <div class="form-control form-control-sm bg-light">
+                  {% if linked_account %}
+                    {{ linked_account.username }}
+                    <span class="text-muted">({{ linked_account.display_name or linked_account.username }}, {{ (roles.get(linked_account.role) or {}).get('label', linked_account.role) }})</span>
+                  {% else %}
+                    <span class="text-muted">— ยังไม่ผูกบัญชี —</span>
+                  {% endif %}
+                </div>
+                <div class="form-text small">จัดการการผูกบัญชีที่ <a href="{{ url_for('user_list') }}">หน้าผู้ใช้</a></div>
               </div>
               <div class="col-md-6 d-flex align-items-end pb-1">
                 <div class="form-check">

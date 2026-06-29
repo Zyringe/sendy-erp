@@ -56,6 +56,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 import models
+import hr_queries as hrq
 import db_backup
 from database import init_db, get_connection
 from parse_platform import (parse_shopee, parse_lazada, export_shopee, export_lazada,
@@ -272,6 +273,30 @@ _GENERAL_ALLOWED = frozenset([
     'me.leave', 'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
     'me.payslip_list', 'me.payslip_detail',   # Phase 6: self-service payslip
 ])
+
+# ── Roles: the single source of role display (label / badge / description) ─────
+# The keys ARE the role enum — every role guard validates against `ROLES`. The
+# permission descriptions here mirror the POST whitelists + GET gating above and
+# are rendered verbatim on /users (badges + the "สิทธิ์แต่ละ Role" summary) and in
+# the topbar badge. Update this table whenever a role's real permissions change.
+ROLES = {
+    'admin':       {'label': 'ผู้ดูแลระบบ',    'badge': 'bg-danger',
+                    'icon': 'bi-shield-fill-check',
+                    'desc': 'เต็มสิทธิ์: จัดการผู้ใช้, แก้ไขสินค้า/ข้อมูลทุกอย่าง, เห็นต้นทุน/กำไร, ทุกโมดูล'},
+    'manager':     {'label': 'ผู้จัดการ',      'badge': 'bg-warning text-dark',
+                    'icon': 'bi-shield-fill',
+                    'desc': 'เห็นต้นทุน/กำไร + สถานะชำระหนี้, อนุมัติลา/เบิกเงิน, แก้ชื่อสินค้า, เข้า HR + บัญชี; จัดการผู้ใช้ไม่ได้'},
+    'staff':       {'label': 'พนักงานออฟฟิศ',  'badge': 'bg-secondary',
+                    'icon': 'bi-person-fill',
+                    'desc': 'นำเข้าไฟล์ทุกชนิด + ดูสต็อก/ยอดขาย, ปรับสต็อก, ผูกรหัส; ไม่เห็นต้นทุน, เข้า HR/บัญชีไม่ได้'},
+    'shareholder': {'label': 'ผู้ถือหุ้น',     'badge': 'bg-info',
+                    'icon': 'bi-eye-fill',
+                    'desc': 'ดูได้ทุกหน้า (รวมต้นทุน/กำไร, HR, บัญชี) แต่แก้ไขอะไรไม่ได้เลย'},
+    'general':     {'label': 'พนักงานทั่วไป',   'badge': 'bg-success',
+                    'icon': 'bi-phone-fill',
+                    'desc': 'มือถือเท่านั้น: ค้นหาสต็อก + ลาของตัวเอง + ดูสลิปเงินเดือนตัวเอง'},
+}
+ROLE_ORDER = ['admin', 'manager', 'staff', 'shareholder', 'general']
 
 
 # ── Module definitions for sidebar switcher ──────────────────────────────────
@@ -574,6 +599,8 @@ def inject_auth():
         'active_module': active_module,
         'visible_modules': visible_modules,
         'mobile_nav_slots': build_mobile_nav_slots(role, endpoint),
+        'roles': ROLES,
+        'role_order': ROLE_ORDER,
     }
 
 
@@ -656,14 +683,39 @@ def logout():
 
 # ── User management (admin only) ──────────────────────────────────────────────
 
+def _set_account_employee(conn, uid, emp_id):
+    """Point at most one employee at this account — 1:1, integrity-safe.
+
+    First clears any employee currently linked to this account, then links the
+    chosen one ONLY if it is free (`user_id IS NULL`). The free-only guard means
+    a forged/stale employee_id can never steal an employee already linked
+    elsewhere. emp_id may be falsy (= "ไม่ผูก": just unlink)."""
+    conn.execute("UPDATE employees SET user_id=NULL WHERE user_id=?", (uid,))
+    if emp_id:
+        conn.execute(
+            "UPDATE employees SET user_id=? WHERE id=? AND is_active=1 AND user_id IS NULL",
+            (uid, emp_id))
+
+
 @app.route('/users')
 def user_list():
     if session.get('role') != 'admin':
         abort(403)
     conn = get_connection()
-    users = conn.execute("SELECT * FROM users ORDER BY role, username").fetchall()
+    users = conn.execute("""
+        SELECT u.*, e.id AS emp_id, e.full_name AS emp_full_name, e.nickname AS emp_nickname
+          FROM users u
+          LEFT JOIN employees e ON e.user_id = u.id AND e.is_active = 1
+         GROUP BY u.id
+         ORDER BY u.role, u.username
+    """).fetchall()
+    # Employees offered for linking: unlinked for the create form; unlinked +
+    # the account's own current link for each edit form (the 1:1 rule).
+    create_employees = hrq.get_linkable_employees(conn=conn)
+    linkable = {u['id']: hrq.get_linkable_employees(user_id=u['id'], conn=conn) for u in users}
     conn.close()
-    return render_template('users.html', users=users)
+    return render_template('users.html', users=users,
+                           create_employees=create_employees, linkable=linkable)
 
 
 @app.route('/users/new', methods=['POST'])
@@ -674,19 +726,21 @@ def user_new():
     display_name = request.form.get('display_name', '').strip()
     role         = request.form.get('role', 'staff')
     password     = request.form.get('password', '')
+    employee_id  = request.form.get('employee_id', '').strip() or None
     if not username or not password:
         flash('กรุณากรอกชื่อผู้ใช้และรหัสผ่าน', 'danger')
         return redirect(url_for('user_list'))
-    if role not in ('admin', 'manager', 'staff', 'shareholder', 'general'):
+    if role not in ROLES:
         role = 'staff'
     conn = get_connection()
     try:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO users(username, password_hash, display_name, role) VALUES (?,?,?,?)",
             (username, generate_password_hash(password, method='pbkdf2:sha256'), display_name or username, role)
         )
+        _set_account_employee(conn, cur.lastrowid, employee_id)
         conn.commit()
-        flash(f'เพิ่มผู้ใช้ {username} ({role}) สำเร็จ', 'success')
+        flash(f'เพิ่มผู้ใช้ {username} ({ROLES[role]["label"]}) สำเร็จ', 'success')
     except Exception:
         flash(f'ชื่อผู้ใช้ "{username}" ซ้ำในระบบ', 'danger')
     finally:
@@ -702,7 +756,8 @@ def user_edit(uid):
     role         = request.form.get('role', 'staff')
     is_active    = 1 if request.form.get('is_active') else 0
     new_password = request.form.get('password', '').strip()
-    if role not in ('admin', 'manager', 'staff', 'shareholder', 'general'):
+    employee_id  = request.form.get('employee_id', '').strip() or None
+    if role not in ROLES:
         role = 'staff'
     conn = get_connection()
     if new_password:
@@ -715,6 +770,7 @@ def user_edit(uid):
             "UPDATE users SET display_name=?, role=?, is_active=? WHERE id=?",
             (display_name, role, is_active, uid)
         )
+    _set_account_employee(conn, uid, employee_id)
     conn.commit()
     conn.close()
     flash('อัปเดตผู้ใช้สำเร็จ', 'success')
@@ -734,6 +790,10 @@ def user_delete(uid):
     elif target['id'] == session.get('user_id'):
         flash('ไม่สามารถลบบัญชีของตัวเองได้', 'danger')
     else:
+        # Unlink any employee first — employees.user_id REFERENCES users(id) with
+        # no ON DELETE rule, so deleting a linked account would otherwise raise a
+        # FK error (500). The employee (HR record) is kept.
+        conn.execute("UPDATE employees SET user_id=NULL WHERE user_id=?", (uid,))
         conn.execute("DELETE FROM users WHERE id=?", (uid,))
         conn.commit()
         flash(f'ลบผู้ใช้ {target["username"]} สำเร็จ', 'success')
