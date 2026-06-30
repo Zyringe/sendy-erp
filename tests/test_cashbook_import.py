@@ -30,7 +30,7 @@ REAL_FILE = "/Users/putty/Downloads/NoVat_Account.xlsx"
 
 # ── Synthetic workbook builder ────────────────────────────────────────────────
 
-def _build_import_wb(path, *, include_transfer_account=True):
+def _build_import_wb(path, *, include_transfer_account=True, advance_rows=None):
     """
     Build a minimal synthetic cashbook xlsx suitable for import tests.
 
@@ -136,17 +136,16 @@ def _build_import_wb(path, *, include_transfer_account=True):
     ws_adv.cell(row=2, column=4, value="เบิกเงินล่วงหน้า")
     ws_adv.cell(row=2, column=5, value="หมายเหตุ")
 
-    # advance 1: บอล → matched to EMP001
-    ws_adv.cell(row=3, column=2, value=datetime.datetime(2026, 4, 10))
-    ws_adv.cell(row=3, column=3, value="บอล")
-    ws_adv.cell(row=3, column=4, value=2000.0)
-    ws_adv.cell(row=3, column=5, value="ค่าอาหาร")
-
-    # advance 2: ไม่รู้ → unmatched
-    ws_adv.cell(row=4, column=2, value=datetime.datetime(2026, 4, 15))
-    ws_adv.cell(row=4, column=3, value="ไม่รู้")
-    ws_adv.cell(row=4, column=4, value=500.0)
-    ws_adv.cell(row=4, column=5, value=None)
+    if advance_rows is None:
+        advance_rows = [
+            (datetime.datetime(2026, 4, 10), "บอล",  2000.0, "ค่าอาหาร"),
+            (datetime.datetime(2026, 4, 15), "ไม่รู้",  500.0, None),
+        ]
+    for _ai, (_adate, _aname, _aamt, _anote) in enumerate(advance_rows, start=3):
+        ws_adv.cell(row=_ai, column=2, value=_adate)
+        ws_adv.cell(row=_ai, column=3, value=_aname)
+        ws_adv.cell(row=_ai, column=4, value=_aamt)
+        ws_adv.cell(row=_ai, column=5, value=_anote)
 
     # ── Setup ─────────────────────────────────────────────────────────────────
     ws_setup = wb.create_sheet("Setup")
@@ -194,6 +193,31 @@ def synth_wb_no_transfer(tmp_path):
     """Synthetic workbook path (without PASS account)."""
     p = str(tmp_path / "NoVat_Test_NoPass.xlsx")
     _build_import_wb(p, include_transfer_account=False)
+    return p
+
+
+@pytest.fixture
+def synth_wb_edited_advance(tmp_path):
+    """Same structure as synth_wb but บอล's advance amount changed 2000→2001.
+    Used to test that a stamp whose key no longer matches emits a warning."""
+    p = str(tmp_path / "NoVat_Test_Edited.xlsx")
+    _build_import_wb(p, include_transfer_account=True, advance_rows=[
+        (datetime.datetime(2026, 4, 10), "บอล",  2001.0, "ค่าอาหาร"),  # edited
+        (datetime.datetime(2026, 4, 15), "ไม่รู้",  500.0, None),
+    ])
+    return p
+
+
+@pytest.fixture
+def synth_wb_dups(tmp_path):
+    """Workbook with two identical (บอล, 2026-04-10, 1500.0) advance rows.
+    Used to test multiset stamp restore: both rows re-stamped after re-import."""
+    p = str(tmp_path / "NoVat_Test_Dups.xlsx")
+    _build_import_wb(p, include_transfer_account=True, advance_rows=[
+        (datetime.datetime(2026, 4, 10), "บอล",  1500.0, "ค่าอาหาร"),
+        (datetime.datetime(2026, 4, 10), "บอล",  1500.0, "ค่าอาหาร"),  # exact duplicate
+        (datetime.datetime(2026, 4, 15), "ไม่รู้",  500.0, None),
+    ])
     return p
 
 
@@ -874,6 +898,192 @@ class TestReconciliationSummary:
         result = mod.import_cashbook(synth_wb, conn=tmp_db_conn)
         assert "warnings" in result
         assert isinstance(result["warnings"], list)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Advance stamp preservation — TDD for the deducted_in_run_id data-loss bug
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestAdvanceDeductionStampPreservation:
+    """Verify deducted_in_run_id stamps survive cashbook re-import.
+
+    Bug: Step 7 DELETE FROM salary_advances wiped deduction stamps that payroll
+    finalization had set. A subsequent payroll run would then double-deduct
+    already-paid advances.
+
+    Fix (in import_cashbook.py): snapshot stamped rows before DELETE, restore
+    matching stamps after re-insert, warn loudly about any unmatched stamps.
+
+    Tests written FIRST (red), fix applied after (green). Three scenarios:
+      preserve       — same workbook: stamp survives
+      warn_on_edit   — amount changed in sheet: stamp gone + warning emitted
+      duplicates     — two identical (emp, date, amount) rows both restamped
+    """
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _seed_nickname(self, conn):
+        """Make บอล uniquely resolve to EMP001 (clear any collision first)."""
+        conn.execute("UPDATE employees SET nickname=NULL WHERE nickname='บอล'")
+        conn.execute("UPDATE employees SET nickname='บอล' WHERE emp_code='EMP001'")
+        conn.commit()
+
+    def _insert_run(self, conn, idx=0):
+        """Insert a test payroll_runs row using a far-future year_month to avoid
+        collisions with real data in the tmp_db snapshot. idx distinguishes calls
+        within the same test (e.g. two runs for the duplicates test)."""
+        ym = "9999-{:02d}".format(idx + 1)
+        conn.execute(
+            "DELETE FROM payroll_runs WHERE year_month=? AND company_id=1", (ym,)
+        )
+        cur = conn.execute(
+            "INSERT INTO payroll_runs (year_month, company_id, status, created_by) "
+            "VALUES (?, 1, 'finalized', 'test')", (ym,)
+        )
+        conn.commit()
+        return cur.lastrowid
+
+    # ── tests ─────────────────────────────────────────────────────────────────
+
+    def test_preserve_deducted_stamp(self, synth_wb, tmp_db, tmp_db_conn):
+        """Re-import the same workbook → deducted_in_run_id stamp is preserved."""
+        _ensure_mig056(tmp_db_conn)
+        self._seed_nickname(tmp_db_conn)
+        mod = _import_cashbook()
+
+        # First import
+        mod.import_cashbook(synth_wb, conn=tmp_db_conn)
+        tmp_db_conn.commit()
+
+        # Stamp บอล's advance as deducted in a payroll run
+        run_id = self._insert_run(tmp_db_conn)
+        adv_row = tmp_db_conn.execute(
+            "SELECT id FROM salary_advances WHERE raw_name='บอล'"
+        ).fetchone()
+        assert adv_row is not None, "Advance for บอล not found after first import"
+        tmp_db_conn.execute(
+            "UPDATE salary_advances SET deducted_in_run_id=? WHERE id=?",
+            (run_id, adv_row[0]),
+        )
+        tmp_db_conn.commit()
+
+        # Re-import the same workbook
+        result = mod.import_cashbook(synth_wb, conn=tmp_db_conn)
+        tmp_db_conn.commit()
+
+        # Stamp must survive
+        restored = tmp_db_conn.execute(
+            "SELECT deducted_in_run_id FROM salary_advances WHERE raw_name='บอล'"
+        ).fetchone()
+        assert restored is not None
+        assert restored[0] == run_id, (
+            f"deducted_in_run_id should be {run_id} after re-import, got {restored[0]}"
+        )
+
+        # Row count must still equal the sheet (2 rows)
+        basename = os.path.basename(synth_wb)
+        count = tmp_db_conn.execute(
+            "SELECT COUNT(*) FROM salary_advances WHERE source_file=?", (basename,)
+        ).fetchone()[0]
+        assert count == 2, f"Expected 2 advances after re-import, got {count}"
+
+        # No spurious stamp-lost warnings
+        lost = [w for w in result.get("warnings", []) if "ADVANCE_STAMP_LOST" in w]
+        assert not lost, f"Unexpected ADVANCE_STAMP_LOST warnings: {lost}"
+
+    def test_warn_on_edited_advance(
+        self, synth_wb, synth_wb_edited_advance, tmp_db, tmp_db_conn
+    ):
+        """Amount edited in sheet → stamp gone on that row, warning emitted."""
+        _ensure_mig056(tmp_db_conn)
+        self._seed_nickname(tmp_db_conn)
+        mod = _import_cashbook()
+
+        # First import (บอล at amount=2000.0)
+        mod.import_cashbook(synth_wb, conn=tmp_db_conn)
+        tmp_db_conn.commit()
+
+        # Stamp บอล's advance
+        run_id = self._insert_run(tmp_db_conn)
+        tmp_db_conn.execute(
+            "UPDATE salary_advances SET deducted_in_run_id=? WHERE raw_name='บอล'",
+            (run_id,),
+        )
+        tmp_db_conn.commit()
+
+        # Re-import with บอล's amount changed to 2001.0 — key no longer matches
+        result = mod.import_cashbook(synth_wb_edited_advance, conn=tmp_db_conn)
+        tmp_db_conn.commit()
+
+        # บอล's new row must have NULL stamp (key miss)
+        row = tmp_db_conn.execute(
+            "SELECT deducted_in_run_id FROM salary_advances WHERE raw_name='บอล'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] is None, (
+            f"Edited advance should have NULL deducted_in_run_id, got {row[0]}"
+        )
+
+        # A warning must name the lost stamp (prefix + run_id present)
+        warnings = result.get("warnings", [])
+        lost = [w for w in warnings if "ADVANCE_STAMP_LOST" in w]
+        assert lost, (
+            f"Expected ADVANCE_STAMP_LOST warning for edited บอล advance; got: {warnings}"
+        )
+        assert any(str(run_id) in w for w in lost), (
+            f"Warning must include run_id={run_id}; got: {lost}"
+        )
+
+    def test_duplicates_both_restamped(self, synth_wb_dups, tmp_db, tmp_db_conn):
+        """Two identical (emp, date, amount) advances both deducted → both restored."""
+        _ensure_mig056(tmp_db_conn)
+        self._seed_nickname(tmp_db_conn)
+        mod = _import_cashbook()
+
+        # First import — two บอล rows at (2026-04-10, 1500.0)
+        mod.import_cashbook(synth_wb_dups, conn=tmp_db_conn)
+        tmp_db_conn.commit()
+
+        basename = os.path.basename(synth_wb_dups)
+        dup_ids = [r[0] for r in tmp_db_conn.execute(
+            """SELECT id FROM salary_advances
+               WHERE raw_name='บอล' AND amount=1500.0 AND source_file=?
+               ORDER BY id""",
+            (basename,),
+        ).fetchall()]
+        assert len(dup_ids) == 2, f"Expected 2 duplicate advances, got {len(dup_ids)}"
+
+        # Stamp both with distinct run ids
+        run_id1 = self._insert_run(tmp_db_conn, idx=0)
+        run_id2 = self._insert_run(tmp_db_conn, idx=1)
+        tmp_db_conn.execute(
+            "UPDATE salary_advances SET deducted_in_run_id=? WHERE id=?",
+            (run_id1, dup_ids[0]),
+        )
+        tmp_db_conn.execute(
+            "UPDATE salary_advances SET deducted_in_run_id=? WHERE id=?",
+            (run_id2, dup_ids[1]),
+        )
+        tmp_db_conn.commit()
+
+        # Re-import same workbook
+        result = mod.import_cashbook(synth_wb_dups, conn=tmp_db_conn)
+        tmp_db_conn.commit()
+
+        # Both stamps must be restored (multiset: one stamp per matching row)
+        stamped_run_ids = {r[0] for r in tmp_db_conn.execute(
+            """SELECT deducted_in_run_id FROM salary_advances
+               WHERE raw_name='บอล' AND amount=1500.0 AND source_file=?
+               ORDER BY id""",
+            (basename,),
+        ).fetchall()}
+        assert stamped_run_ids == {run_id1, run_id2}, (
+            f"Expected both run_ids {{{run_id1}, {run_id2}}} restored, got {stamped_run_ids}"
+        )
+
+        # No stamp-lost warnings
+        lost = [w for w in result.get("warnings", []) if "ADVANCE_STAMP_LOST" in w]
+        assert not lost, f"Unexpected ADVANCE_STAMP_LOST warnings: {lost}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
