@@ -707,6 +707,15 @@ CREATE TABLE marketplace_amount_review (
     UNIQUE(platform, order_sn)
 );
 
+CREATE TABLE marketplace_listing_status (
+    platform        TEXT NOT NULL,
+    product_id_str  TEXT NOT NULL,
+    status          TEXT NOT NULL CHECK (status IN ('live','delisted')),
+    as_of           TEXT,
+    source_file     TEXT,
+    PRIMARY KEY (platform, product_id_str)
+);
+
 CREATE TABLE marketplace_order_fees (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     platform        TEXT NOT NULL,
