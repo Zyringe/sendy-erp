@@ -598,6 +598,17 @@ def _do_import(path, conn):
     categories_added = cats_after - cats_before
 
     # ── Step 7: salary_advances — full-replace ───────────────────────────────
+    # Snapshot deducted_in_run_id stamps before wiping so they survive re-import.
+    # Key: (employee_id, advance_date, round(amount, 2)) → list[run_id] (multiset).
+    # round(amount, 2) guards against IEEE-754 noise (per verification rules).
+    _stamp_snapshot = {}  # type: dict
+    for _sr in conn.execute(
+        "SELECT employee_id, advance_date, amount, deducted_in_run_id "
+        "FROM salary_advances WHERE deducted_in_run_id IS NOT NULL"
+    ).fetchall():
+        _skey = (_sr[0], _sr[1], round(_sr[2], 2))
+        _stamp_snapshot.setdefault(_skey, []).append(_sr[3])
+
     conn.execute("DELETE FROM salary_advances")
 
     # Build up-to-date nickname map (after employee sync would run, but sync
@@ -644,6 +655,33 @@ def _do_import(path, conn):
             ),
         )
         adv_inserted += 1
+
+    # ── Step 9b: restore deducted_in_run_id stamps from pre-wipe snapshot ───
+    # Iterate newly-inserted rows by id (deterministic order) and consume one
+    # stamp per matching key.  Remaining unmatched stamps → human-readable
+    # warnings (advance edited/removed from the sheet).
+    if _stamp_snapshot:
+        _remaining = {k: list(v) for k, v in _stamp_snapshot.items()}
+        for _nr in conn.execute(
+            "SELECT id, employee_id, advance_date, amount FROM salary_advances "
+            "WHERE import_batch_id=? ORDER BY id",
+            (batch_id,),
+        ).fetchall():
+            _rkey = (_nr[1], _nr[2], round(_nr[3], 2))
+            if _rkey in _remaining and _remaining[_rkey]:
+                _run_id = _remaining[_rkey].pop(0)
+                conn.execute(
+                    "UPDATE salary_advances SET deducted_in_run_id=? WHERE id=?",
+                    (_run_id, _nr[0]),
+                )
+        for (_emp_id, _adv_date, _amt), _leftover in _remaining.items():
+            for _run_id in _leftover:
+                all_warnings.append(
+                    "ADVANCE_STAMP_LOST: employee_id={}, date={}, amount={:.2f}, "
+                    "run_id={} — advance removed or edited in the sheet".format(
+                        _emp_id, _adv_date, _amt, _run_id
+                    )
+                )
 
     conn.commit()
 
