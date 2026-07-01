@@ -8,8 +8,11 @@ has been migrated yet (order-independent within this PR).
 
 Contract under test (Put, 2026-06-09):
   - products.sku (INT) is GONE; sku_code (TEXT) is KEPT.
-  - product create / edit / CSV-import / marketplace-mapping / search all key on
-    product_id, never sku.
+  - product create / edit / marketplace-mapping / search all key on
+    product_id, never sku. (The CSV product-master importer this file
+    originally also covered was deleted in P1 of the
+    product-creation-consolidation plan, 2026-07; its contract check was
+    ported onto models.create_product, the surviving insert path.)
 """
 import glob
 import os
@@ -101,31 +104,25 @@ def test_update_product_without_sku(migrated_db):
     assert models.get_product(pid)['product_name'] == 'pytest renamed'
 
 
-def test_bulk_import_inserts_new_when_product_id_blank(migrated_db):
+def test_create_product_inserts_new_row_keyed_by_product_id(migrated_db):
+    # Was test_bulk_import_inserts_new_when_product_id_blank (CSV importer,
+    # deleted in P1 of the product-creation-consolidation plan). Ports the
+    # same contract check — a fresh product insert increments the row count
+    # and is addressable purely by product_id, no sku column involved —
+    # onto the surviving canonical insert path, models.create_product.
     import models
     before = sqlite3.connect(migrated_db).execute(
         "SELECT COUNT(*) FROM products").fetchone()[0]
-    imported, skipped = models.bulk_import_products([{
-        'product_id': None, 'product_name': 'bulk-new-row',
-        'units_per_carton': 1, 'units_per_box': 1,
-        'unit_type': 'ตัว', 'hard_to_sell': 0,
-    }], overwrite=False)
+    pid = models.create_product({
+        'product_name': 'created-new-row', 'units_per_carton': 1, 'units_per_box': 1,
+        'unit_type': 'ตัว', 'hard_to_sell': 0, 'cost_price': 0.0,
+        'base_sell_price': 0.0, 'low_stock_threshold': 10,
+        'shopee_stock': 0, 'lazada_stock': 0,
+    })
     after = sqlite3.connect(migrated_db).execute(
         "SELECT COUNT(*) FROM products").fetchone()[0]
-    assert imported == 1
+    assert isinstance(pid, int) and pid > 0
     assert after == before + 1
-
-
-def test_bulk_import_updates_existing_by_product_id(migrated_db):
-    import models
-    pid = sqlite3.connect(migrated_db).execute(
-        "SELECT id FROM products WHERE is_active=1 LIMIT 1").fetchone()[0]
-    models.bulk_import_products([{
-        'product_id': pid, 'product_name': 'bulk-overwritten-name',
-        'units_per_carton': 3, 'units_per_box': 6,
-        'unit_type': 'ตัว', 'hard_to_sell': 0,
-    }], overwrite=True)
-    assert models.get_product(pid)['product_name'] == 'bulk-overwritten-name'
 
 
 # ── marketplace mapping (money path) ─────────────────────────────────────────

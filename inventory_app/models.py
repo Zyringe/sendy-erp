@@ -29,8 +29,11 @@ import json
 import re
 import sqlite3
 
+import config
 from database import get_connection
 import bsn_units
+import name_builder
+from sku_code_utils import PACKAGING_SHORT, regenerate_for_product
 from cashflow import BSN_AR_PREDICATE
 from collections import defaultdict
 from datetime import date
@@ -121,6 +124,7 @@ def get_product(product_id):
                p.low_stock_threshold, p.is_active, p.brand_id, p.category_id,
                p.sub_category, p.series, p.model, p.size,
                p.color_code, p.packaging_th, p.packaging_short, p.condition, p.pack_variant,
+               p.created_via,
                p.created_at, p.updated_at,
                COALESCE(s.quantity, 0) AS quantity,
                CASE WHEN COALESCE(s.quantity, 0) <= p.low_stock_threshold THEN 1 ELSE 0 END AS is_low,
@@ -152,6 +156,165 @@ def create_product(data: dict) -> int:
     pid = cur.lastrowid
     conn.close()
     return pid
+
+
+def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
+    """Canonical structured product-creation path (P3 of the
+    product-creation-consolidation plan). Resolves inline "other"
+    brand/color into new FK rows, resolves a free-text `category` into
+    `category_id` when no id was given, derives `packaging_short` from
+    `packaging_th`, inserts the product row (spec columns + core numeric
+    fields + `created_via`), ensures a matching `stock_levels` row, then
+    sets `product_name` (an explicit override is kept verbatim; otherwise
+    it's derived from the spec columns via `name_builder.rebuild_product_name`)
+    and always (re)generates `sku_code` (collision-safe, falls back to
+    `INT-<id>` when no structured fields are present).
+
+    Both real create entry points route through this: the `/products/new`
+    hand form (`created_via='manual'`) and Smart Suggest approval
+    (`created_via='smart_mapping'`).
+
+    Transaction ownership: when `conn` is omitted, this function opens its
+    own connection and is a self-contained transaction (commits on success,
+    rolls back + closes on error) — used by the standalone `/products/new`
+    path. When a caller passes its own `conn` (e.g. `approve_pending_suggestion`,
+    which does more writes — the BSN-mapping upsert, unit_conversion,
+    suggestion status — around this call), this function does NOT commit,
+    rollback, or close; it just raises on error so the CALLER's transaction
+    owns the all-or-nothing outcome (no orphan product on a later step's
+    failure).
+
+    `fields` keys (all optional unless noted):
+      product_name          -- explicit override; falsy => name is derived
+      brand_id, brand_other_name
+      color_code, color_code_other, color_th
+      category_id, category (free-text, resolved only when category_id absent)
+      sub_category, series, model, size, condition, pack_variant
+      packaging_th          -- must be NULL or one of the CHECK-trigger values
+      unit_type (default 'ตัว'), hard_to_sell (default 0)
+      cost_price (default 0.0) -- also seeds opening_cost
+      base_sell_price (default 0.0)
+      low_stock_threshold (default config.LOW_STOCK_DEFAULT_THRESHOLD)
+      shopee_stock, lazada_stock (default 0)
+      units_per_carton, units_per_box (default 1)
+
+    Returns the new product id. Raises on any error, e.g. an invalid
+    `packaging_th` value (the products_packaging_th_check_insert trigger) —
+    with `conn=None` this leaves no orphan product/stock_levels row; with a
+    caller-supplied `conn`, the caller's own rollback is responsible for that.
+    """
+    d = dict(fields)
+    own_conn = conn is None
+    conn = conn or get_connection()
+    try:
+        # brand: if brand_other_name set and no brand_id -> INSERT new brand row
+        if not d.get('brand_id') and d.get('brand_other_name'):
+            new_brand_name = d['brand_other_name'].strip()
+            if new_brand_name:
+                code = new_brand_name.upper().replace(' ', '_')[:30]
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO brands (code, name, name_th, is_own_brand, sort_order)"
+                    " VALUES (?, ?, ?, 0, 100)",
+                    (code, new_brand_name, new_brand_name)
+                )
+                bid = cur.lastrowid or conn.execute(
+                    "SELECT id FROM brands WHERE code = ?", (code,)
+                ).fetchone()[0]
+                d['brand_id'] = bid
+
+        # color: if color_code_other set and no color_code -> INSERT new color row
+        if not d.get('color_code') and d.get('color_code_other'):
+            new_code = d['color_code_other'].strip().upper()[:10]
+            color_th = d.get('color_th') or new_code
+            if new_code:
+                conn.execute(
+                    "INSERT OR IGNORE INTO color_finish_codes (code, name_th, sort_order)"
+                    " VALUES (?, ?, 100)",
+                    (new_code, color_th)
+                )
+                d['color_code'] = new_code
+
+        # category: resolve free-text against the categories master when no
+        # id was given. Unmatched text -> NULL (never create a new category
+        # here — that's a deliberate migration, matches approve's behavior).
+        category_id = d.get('category_id')
+        if not category_id and d.get('category'):
+            cat_txt = str(d['category']).strip()
+            crow = conn.execute(
+                "SELECT id FROM categories WHERE name_th = ? OR code = ? LIMIT 1",
+                (cat_txt, cat_txt),
+            ).fetchone()
+            category_id = crow[0] if crow else None
+
+        pkg_th = d.get('packaging_th') or None
+        pkg_short = PACKAGING_SHORT.get(pkg_th) if pkg_th else None
+        cost_price = d.get('cost_price') or 0.0
+
+        cur = conn.execute("""
+            INSERT INTO products
+              (product_name, units_per_carton, units_per_box,
+               unit_type, hard_to_sell, cost_price, opening_cost, base_sell_price,
+               low_stock_threshold, shopee_stock, lazada_stock,
+               brand_id, category_id, sub_category, color_code,
+               packaging_th, packaging_short,
+               series, model, size, condition, pack_variant, created_via)
+            VALUES
+              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            d.get('product_name') or '',
+            d.get('units_per_carton') or 1,
+            d.get('units_per_box') or 1,
+            d.get('unit_type') or 'ตัว',
+            1 if d.get('hard_to_sell') else 0,
+            cost_price,
+            cost_price,
+            d.get('base_sell_price') or 0.0,
+            d.get('low_stock_threshold') if d.get('low_stock_threshold') is not None
+                else config.LOW_STOCK_DEFAULT_THRESHOLD,
+            d.get('shopee_stock') or 0,
+            d.get('lazada_stock') or 0,
+            d.get('brand_id'),
+            category_id,
+            d.get('sub_category') or None,
+            d.get('color_code') or None,
+            pkg_th,
+            pkg_short,
+            d.get('series') or None,
+            d.get('model') or None,
+            d.get('size') or None,
+            d.get('condition') or None,
+            d.get('pack_variant') or None,
+            created_via,
+        ))
+        new_pid = cur.lastrowid
+
+        # ensure stock_levels row
+        conn.execute(
+            "INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)",
+            (new_pid,)
+        )
+
+        # name: explicit override kept verbatim; otherwise derive from spec cols
+        if not d.get('product_name'):
+            derived = name_builder.rebuild_product_name(conn, new_pid)
+            conn.execute(
+                "UPDATE products SET product_name = ? WHERE id = ?",
+                (derived, new_pid)
+            )
+
+        # sku_code: always (re)generate — collision-safe, falls back to INT-<id>
+        regenerate_for_product(conn, new_pid)
+
+        if own_conn:
+            conn.commit()
+        return new_pid
+    except Exception:
+        if own_conn:
+            conn.rollback()
+        raise
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def update_product(product_id: int, data: dict):
@@ -612,41 +775,6 @@ def get_product_price_tiers(product_id: int):
         ).fetchall()
     finally:
         conn.close()
-
-
-# ── CSV Import ────────────────────────────────────────────────────────────────
-
-def bulk_import_products(rows: list, overwrite=False) -> tuple:
-    """rows: list of dicts with CSV fields. Returns (imported, skipped)."""
-    conn = get_connection()
-    imported = skipped = 0
-    for r in rows:
-        pid = r.get('product_id')
-        existing = None
-        if pid:
-            existing = conn.execute("SELECT id FROM products WHERE id = ?", (pid,)).fetchone()
-        if existing and not overwrite:
-            skipped += 1
-            continue
-        if existing and overwrite:
-            conn.execute("""
-                UPDATE products SET product_name=?, units_per_carton=?, units_per_box=?,
-                    unit_type=?, hard_to_sell=?
-                WHERE id=?
-            """, (r['product_name'], r['units_per_carton'], r['units_per_box'],
-                  r['unit_type'], r['hard_to_sell'], pid))
-            skipped += 1
-        else:
-            cur = conn.execute("""
-                INSERT INTO products (product_name, units_per_carton, units_per_box, unit_type, hard_to_sell)
-                VALUES (?, ?, ?, ?, ?)
-            """, (r['product_name'], r['units_per_carton'], r['units_per_box'],
-                  r['unit_type'], r['hard_to_sell']))
-            conn.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (cur.lastrowid,))
-            imported += 1
-    conn.commit()
-    conn.close()
-    return imported, skipped
 
 
 # ── BSN → Stock sync helpers ─────────────────────────────────────────────────
@@ -5089,8 +5217,15 @@ def save_pending_suggestion(data: dict, user_id: int) -> int:
 
 def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int) -> int:
     """Apply manager/admin edits → create product → map BSN code → mark approved.
-    Returns the new product id. Single transaction.
-    `edits` dict overrides any field on the staged suggestion."""
+    Returns the new product id. Single transaction (on `conn`) — the product
+    row itself (spec cols + derived/override name + sku_code) is created by
+    `create_structured_product` (P3 of the product-creation-consolidation
+    plan; stamps `created_via='smart_mapping'`), called WITH this function's
+    `conn` so it participates in the same transaction rather than committing
+    on its own. That plus the surrounding BSN-mapping upsert, unit_conversion
+    insert, and suggestion status update all commit or roll back together —
+    a failure anywhere leaves no orphan product/mapping row. `edits` dict
+    overrides any field on the staged suggestion."""
     conn = get_connection()
     try:
         sug = conn.execute(
@@ -5104,93 +5239,39 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         d = dict(sug)
         d.update({k: v for k, v in edits.items() if v is not None})
 
-        # Resolve free-text overrides into FK-target rows where possible.
-        # brand: if brand_other_name set and no brand_id → INSERT new brand row
-        if not d.get('brand_id') and d.get('brand_other_name'):
-            new_brand_name = d['brand_other_name'].strip()
-            if new_brand_name:
-                # Use display name as both code and name
-                code = new_brand_name.upper().replace(' ', '_')[:30]
-                cur = conn.execute(
-                    "INSERT OR IGNORE INTO brands (code, name, name_th, is_own_brand, sort_order)"
-                    " VALUES (?, ?, ?, 0, 100)",
-                    (code, new_brand_name, new_brand_name)
-                )
-                bid = cur.lastrowid or conn.execute(
-                    "SELECT id FROM brands WHERE code = ?", (code,)
-                ).fetchone()[0]
-                d['brand_id'] = bid
-
-        # color: if color_code_other set and no color_code → INSERT new color row
-        if not d.get('color_code') and d.get('color_code_other'):
-            new_code = d['color_code_other'].strip().upper()[:10]
-            color_th = d.get('color_th') or new_code
-            if new_code:
-                conn.execute(
-                    "INSERT OR IGNORE INTO color_finish_codes (code, name_th, sort_order)"
-                    " VALUES (?, ?, 100)",
-                    (new_code, color_th)
-                )
-                d['color_code'] = new_code
-
         # packaging: free-text override is stored if dropdown empty
         # (may fail CHECK trigger on products INSERT — admin must extend trigger first)
-        if not d.get('packaging') and d.get('packaging_other'):
-            d['packaging'] = d['packaging_other'].strip()
+        packaging_th = d.get('packaging') or None
+        if not packaging_th and d.get('packaging_other'):
+            packaging_th = d['packaging_other'].strip() or None
 
-        # category: the approve form's picker resolves to a category_id and
-        # sends it as an edit. When absent (e.g. the suggestion was staged with
-        # only the parser's free-text `category`), resolve that text against
-        # the categories master by name_th or code. Unmatched text → NULL (we
-        # never create a new category here — that's a deliberate migration).
-        category_id = d.get('category_id')
-        if not category_id and d.get('category'):
-            cat_txt = str(d['category']).strip()
-            crow = conn.execute(
-                "SELECT id FROM categories WHERE name_th = ? OR code = ? LIMIT 1",
-                (cat_txt, cat_txt),
-            ).fetchone()
-            category_id = crow[0] if crow else None
-
-        # Insert product with structured fields
-        from sku_code_utils import PACKAGING_SHORT
-        pkg_th = d.get('packaging') or None
-        pkg_short = PACKAGING_SHORT.get(pkg_th) if pkg_th else None
-        cur = conn.execute("""
-            INSERT INTO products
-              (product_name, unit_type, hard_to_sell,
-               cost_price, base_sell_price, low_stock_threshold,
-               shopee_stock, lazada_stock,
-               brand_id, category_id, color_code, packaging_th, packaging_short,
-               series, model, size, condition, pack_variant,
-               units_per_carton, units_per_box)
-            VALUES
-              (?, ?, 0, ?, 0.0, 10, 0, 0,
-               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            d.get('suggested_name') or d.get('bsn_name'),
-            d.get('suggested_unit_type') or 'ตัว',
-            d.get('suggested_cost') or 0.0,
-            d.get('brand_id'),
-            category_id,
-            d.get('color_code') or None,
-            pkg_th,
-            pkg_short,
-            d.get('series') or None,
-            d.get('model') or None,
-            d.get('size') or None,
-            d.get('condition') or None,
-            d.get('pack_variant') or None,
-            d.get('units_per_carton') or 1,
-            d.get('units_per_box') or 1,
-        ))
-        new_pid = cur.lastrowid
-
-        # ensure stock_levels row
-        conn.execute(
-            "INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)",
-            (new_pid,)
-        )
+        # Row-insert + name + sku_code all go through the canonical create
+        # path. It re-resolves brand_other_name/color_code_other into new FK
+        # rows and free-text `category` into `category_id` itself (same
+        # logic this function used to inline). Passing OUR conn keeps it
+        # inside this function's own transaction — no separate commit, so
+        # the mapping/status writes below can still roll everything back
+        # together on failure (no orphan product).
+        new_pid = create_structured_product({
+            'product_name': d.get('suggested_name') or d.get('bsn_name'),
+            'brand_id': d.get('brand_id'),
+            'brand_other_name': d.get('brand_other_name'),
+            'color_code': d.get('color_code'),
+            'color_code_other': d.get('color_code_other'),
+            'color_th': d.get('color_th'),
+            'category_id': d.get('category_id'),
+            'category': d.get('category'),
+            'series': d.get('series'),
+            'model': d.get('model'),
+            'size': d.get('size'),
+            'condition': d.get('condition'),
+            'pack_variant': d.get('pack_variant'),
+            'packaging_th': packaging_th,
+            'unit_type': d.get('suggested_unit_type') or 'ตัว',
+            'cost_price': d.get('suggested_cost') or 0.0,
+            'units_per_carton': d.get('units_per_carton') or 1,
+            'units_per_box': d.get('units_per_box') or 1,
+        }, 'smart_mapping', conn=conn)
 
         # Upsert mapping (bsn_code → new product) — one row per code (mig 112).
         # UPDATE-then-INSERT mirrors upsert_mapping() (boundary-safe; reuses the

@@ -368,8 +368,6 @@ _ENDPOINT_MODULE = {
     'products.product_detail': 'operation',
     'products.product_new': 'operation',
     'products.product_edit': 'operation',
-    'stock_in': 'operation',
-    'stock_out': 'operation',
     'stock_adjust': 'operation',
     'transaction_history': 'operation',
     'conversion_list': 'operation',
@@ -1388,72 +1386,6 @@ def alerts_view():
 
 
 
-# ── Stock In / Out ────────────────────────────────────────────────────────────
-
-@app.route('/products/<int:product_id>/stock-in', methods=['GET', 'POST'])
-def stock_in(product_id):
-    product = models.get_product(product_id)
-    if not product:
-        flash('ไม่พบสินค้า', 'danger')
-        return redirect(url_for('products.product_list'))
-
-    if request.method == 'POST':
-        f = request.form
-        try:
-            qty = int(f['quantity'])
-            if qty <= 0:
-                raise ValueError('จำนวนต้องมากกว่า 0')
-        except ValueError as e:
-            flash(str(e), 'danger')
-            return render_template('transactions/stock_form.html',
-                                   product=product, txn_type='IN')
-
-        unit_mode = f.get('unit_mode', 'unit')
-        base_qty = models.to_base_units(qty, unit_mode, product)
-        models.add_transaction(product_id, 'IN', base_qty, unit_mode,
-                               reference_no=f.get('reference_no'),
-                               note=f.get('note'))
-        flash(f'รับสินค้าเข้า {base_qty} {product["unit_type"]} เรียบร้อย', 'success')
-        return redirect(url_for('products.product_detail', product_id=product_id))
-
-    return render_template('transactions/stock_form.html', product=product, txn_type='IN')
-
-
-@app.route('/products/<int:product_id>/stock-out', methods=['GET', 'POST'])
-def stock_out(product_id):
-    product = models.get_product(product_id)
-    if not product:
-        flash('ไม่พบสินค้า', 'danger')
-        return redirect(url_for('products.product_list'))
-
-    if request.method == 'POST':
-        f = request.form
-        try:
-            qty = int(f['quantity'])
-            if qty <= 0:
-                raise ValueError('จำนวนต้องมากกว่า 0')
-        except ValueError as e:
-            flash(str(e), 'danger')
-            return render_template('transactions/stock_form.html',
-                                   product=product, txn_type='OUT')
-
-        unit_mode = f.get('unit_mode', 'unit')
-        base_qty = models.to_base_units(qty, unit_mode, product)
-        current = models.get_current_stock(product_id)
-        if base_qty > current:
-            flash(f'สต็อกไม่พอ (มี {current} {product["unit_type"]})', 'danger')
-            return render_template('transactions/stock_form.html',
-                                   product=product, txn_type='OUT')
-
-        models.add_transaction(product_id, 'OUT', -base_qty, unit_mode,
-                               reference_no=f.get('reference_no'),
-                               note=f.get('note'))
-        flash(f'จ่ายสินค้าออก {base_qty} {product["unit_type"]} เรียบร้อย', 'success')
-        return redirect(url_for('products.product_detail', product_id=product_id))
-
-    return render_template('transactions/stock_form.html', product=product, txn_type='OUT')
-
-
 @app.route('/products/<int:product_id>/adjust', methods=['GET', 'POST'])
 def stock_adjust(product_id):
     product = models.get_product(product_id)
@@ -1729,7 +1661,7 @@ def mapping_save():
     user_id = session.get('user_id')
     for item in data.get('mappings', []):
         bsn_code = item.get('bsn_code')
-        action   = item.get('action')       # 'map', 'new', 'ignore', 'stage'
+        action   = item.get('action')       # 'map', 'ignore', 'stage'
         if action == 'map':
             pid = int(item['product_id'])
             models.upsert_mapping(bsn_code, item['bsn_name'], product_id=pid)
@@ -1743,24 +1675,6 @@ def mapping_save():
                     r = 0
                 if r > 0:
                     models.upsert_unit_conversion(pid, bsn_unit, r)
-        elif action == 'new':
-            # legacy quick-create — admin-only path. Still supported but
-            # smart-suggest flow uses 'stage' instead so manager review applies.
-            if session.get('role') != 'admin':
-                continue
-            pid = models.create_product({
-                'product_name': item.get('new_name') or item['bsn_name'],
-                'units_per_carton': None,
-                'units_per_box': None,
-                'unit_type': 'ตัว',
-                'hard_to_sell': 0,
-                'cost_price': 0.0,
-                'base_sell_price': 0.0,
-                'low_stock_threshold': config.LOW_STOCK_DEFAULT_THRESHOLD,
-                'shopee_stock': 0,
-                'lazada_stock': 0,
-            })
-            models.upsert_mapping(bsn_code, item['bsn_name'], product_id=pid)
         elif action == 'stage':
             # Smart-suggest flow: stage new SKU for manager/admin review
             payload = {

@@ -254,6 +254,74 @@ def test_approve_unmatched_category_text_leaves_null(empty_db_with_user):
     assert row[0] is None
 
 
+def test_approve_generates_sku_code_and_stamps_created_via(empty_db_with_user):
+    """Regression (P3, product-creation-consolidation): approve used to
+    leave sku_code NULL on every product it created. It now routes through
+    models.create_structured_product, which always (re)generates sku_code
+    and stamps created_via='smart_mapping'."""
+    empty_db, uid = empty_db_with_user
+    import models
+    sid = _stage_minimal(_stage_payload('TEST008'), user_id=uid)
+
+    new_pid = models.approve_pending_suggestion(sid, edits={}, reviewer_id=uid)
+
+    conn = sqlite3.connect(empty_db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT sku_code, created_via FROM products WHERE id = ?",
+        (new_pid,),
+    ).fetchone()
+    conn.close()
+
+    assert row['sku_code'] is not None
+    assert row['created_via'] == 'smart_mapping'
+
+
+def test_approve_rolls_back_atomically_when_post_create_step_fails(empty_db_with_user, monkeypatch):
+    """Atomicity regression (P3 follow-up fix): create_structured_product used
+    to open its OWN connection and commit independently of approve's
+    surrounding writes, so a failure in a later step (mapping upsert, status
+    update, resolve_pending_mappings) — AFTER the product row had already
+    committed on its own — would leave an orphan product with no mapping and
+    a suggestion stuck 'pending' forever. create_structured_product now
+    accepts approve's own `conn` and does not commit/rollback/close on it,
+    so a failure anywhere in approve's transaction rolls back EVERYTHING,
+    including the just-inserted product/stock_levels rows."""
+    empty_db, uid = empty_db_with_user
+    import models
+
+    def _boom(*a, **k):
+        raise RuntimeError('boom')
+
+    monkeypatch.setattr(models, 'resolve_pending_mappings', _boom)
+
+    conn = sqlite3.connect(empty_db)
+    before_products = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+    before_mapping = conn.execute("SELECT COUNT(*) FROM product_code_mapping").fetchone()[0]
+    before_stock = conn.execute("SELECT COUNT(*) FROM stock_levels").fetchone()[0]
+    conn.close()
+
+    sid = _stage_minimal(_stage_payload('TEST009'), user_id=uid)
+
+    with pytest.raises(RuntimeError, match='boom'):
+        models.approve_pending_suggestion(sid, edits={}, reviewer_id=uid)
+
+    conn = sqlite3.connect(empty_db)
+    conn.row_factory = sqlite3.Row
+    after_products = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+    after_mapping = conn.execute("SELECT COUNT(*) FROM product_code_mapping").fetchone()[0]
+    after_stock = conn.execute("SELECT COUNT(*) FROM stock_levels").fetchone()[0]
+    sug = conn.execute(
+        "SELECT status FROM pending_product_suggestions WHERE id = ?", (sid,)
+    ).fetchone()
+    conn.close()
+
+    assert after_products == before_products, "no orphan product row must survive a rollback"
+    assert after_mapping == before_mapping, "no orphan product_code_mapping row"
+    assert after_stock == before_stock, "no orphan stock_levels row"
+    assert sug['status'] == 'pending', "suggestion must remain pending, not stuck half-approved"
+
+
 def test_approve_falls_back_to_catchall_when_bsn_unit_missing(empty_db_with_user):
     """A suggestion with no bsn_unit (no purchase/sale history) still maps the
     code to its new product (mig 112: one row per bsn_code, no unit scoping)."""

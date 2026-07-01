@@ -1,5 +1,3 @@
-import csv
-import io
 import sqlite3
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
@@ -8,6 +6,7 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 import config
 import models
 from database import get_connection
+from sku_code_utils import PACKAGING_SHORT
 
 bp_products = Blueprint('products', __name__)
 
@@ -177,13 +176,83 @@ def product_list():
                            restock=restock, show_alt=show_alt, buildable=buildable)
 
 
+def _new_form_context():
+    """Pick-list data shared by the GET render and any re-render on a POST
+    validation error, for the /products/new structured form (category/brand/
+    color selects)."""
+    conn = get_connection()
+    categories = conn.execute(
+        "SELECT id, code, name_th FROM categories ORDER BY sort_order, name_th"
+    ).fetchall()
+    color_codes = conn.execute(
+        "SELECT code, name_th FROM color_finish_codes ORDER BY sort_order, code"
+    ).fetchall()
+    conn.close()
+    return {
+        'categories': categories,
+        'color_codes': color_codes,
+        'brands': models.get_brands(),
+        'packaging_options': list(PACKAGING_SHORT.keys()),
+    }
+
+
+@bp_products.route('/products/parse-name')
+def product_parse_name():
+    """Parse a raw/typed product name into structured spec fields, for the
+    /products/new 'type name -> parse -> review/edit' flow (P4). Reuses the
+    same name-only parser bsn_suggest.py wraps for Smart Suggest (no bsn_code
+    involved here). Read-only GET — the global login gate in app.py already
+    covers it, no extra role check needed."""
+    name = (request.args.get('name') or '').strip()
+    if not name:
+        return jsonify({'parsed': {}, 'proposed_name': '', 'brand_id': None, 'color_code': None})
+
+    import bsn_suggest
+    conn = get_connection()
+    ctx = bsn_suggest._load_parser_context(conn)
+    parsed = bsn_suggest._parse_bsn_name(name, ctx)
+    proposed_name = bsn_suggest._build_proposed_name(parsed, ctx)
+
+    brand_id = None
+    if parsed.get('brand'):
+        for bid, brec in ctx['brands_by_id'].items():
+            if brec['name'] == parsed['brand']:
+                brand_id = bid
+                break
+    conn.close()
+
+    return jsonify({
+        'parsed': parsed,
+        'proposed_name': proposed_name,
+        'brand_id': brand_id,
+        'color_code': parsed.get('color_code') or None,
+    })
+
+
 @bp_products.route('/products/new', methods=['GET', 'POST'])
 def product_new():
     if request.method == 'POST':
         f = request.form
+        # brand_id / color_code selects carry a '__other__' sentinel when the
+        # user picked "อื่นๆ (ระบุ)" — in that case the real value lives in
+        # the paired *_other_name/*_other free-text field instead.
+        brand_raw = (f.get('brand_id') or '').strip()
+        color_raw = (f.get('color_code') or '').strip()
         try:
             data = {
                 'product_name': f['product_name'].strip(),
+                'category_id': int(f['category_id']) if f.get('category_id') else None,
+                'sub_category': f.get('sub_category', '').strip() or None,
+                'brand_id': int(brand_raw) if brand_raw and brand_raw != '__other__' else None,
+                'brand_other_name': f.get('brand_other_name', '').strip() or None,
+                'color_code': color_raw if color_raw and color_raw != '__other__' else None,
+                'color_code_other': f.get('color_code_other', '').strip() or None,
+                'packaging_th': f.get('packaging_th', '').strip() or None,
+                'series': f.get('series', '').strip() or None,
+                'model': f.get('model', '').strip() or None,
+                'size': f.get('size', '').strip() or None,
+                'condition': f.get('condition', '').strip() or None,
+                'pack_variant': f.get('pack_variant', '').strip() or None,
                 'units_per_carton': int(f['units_per_carton']) if f.get('units_per_carton') else None,
                 'units_per_box': int(f['units_per_box']) if f.get('units_per_box') else None,
                 'unit_type': f.get('unit_type', 'ตัว').strip() or 'ตัว',
@@ -196,15 +265,23 @@ def product_new():
             }
         except ValueError as e:
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
-            return render_template('products/form.html', product=f, action='new')
+            return render_template('products/form.html', product=f, action='new',
+                                   locations=[], **_new_form_context())
 
-        pid = models.create_product(data)
+        try:
+            pid = models.create_structured_product(data, 'manual')
+        except sqlite3.DatabaseError as e:
+            flash(f'บันทึกไม่สำเร็จ: {e}', 'danger')
+            return render_template('products/form.html', product=f, action='new',
+                                   locations=[], **_new_form_context())
+
         locations = request.form.getlist('floor_no')
         models.save_product_locations(pid, locations)
         flash('เพิ่มสินค้าเรียบร้อย', 'success')
         return redirect(url_for('products.product_detail', product_id=pid))
 
-    return render_template('products/form.html', product={}, action='new', locations=[])
+    return render_template('products/form.html', product={}, action='new', locations=[],
+                           **_new_form_context())
 
 
 @bp_products.route('/products/<int:product_id>')
@@ -553,82 +630,3 @@ def promotion_deactivate(promo_id):
     models.deactivate_promotion(promo_id)
     flash('ยกเลิกโปรโมชันเรียบร้อย', 'success')
     return redirect(url_for('products.product_detail', product_id=product_id) if product_id else url_for('products.product_list'))
-
-
-# ── CSV Import (product master) ───────────────────────────────────────────────
-
-def _parse_csv_content(text):
-    reader = csv.DictReader(io.StringIO(text))
-    rows = []
-    for r in reader:
-        def parse_int(v):
-            v = str(v).strip()
-            return int(v) if v else None
-
-        try:
-            product_id = parse_int(r.get('product_id', ''))
-        except ValueError:
-            continue
-        name = r.get('Product_Name', '').strip()
-        if not name:
-            continue
-
-        rows.append({
-            'product_id': product_id,
-            'product_name': name,
-            'units_per_carton': parse_int(r.get('บรรจุ/ลัง', '')),
-            'units_per_box': parse_int(r.get('บรรจุ/กล่อง', '')),
-            'unit_type': r.get('หน่วย', 'ตัว').strip() or 'ตัว',
-            'hard_to_sell': 1 if str(r.get('ขายยาก', '')).strip().upper() == 'TRUE' else 0,
-        })
-    return rows
-
-
-@bp_products.route('/import', methods=['GET', 'POST'])
-def csv_import():
-    if request.method == 'POST':
-        if 'csv_file' not in request.files:
-            flash('กรุณาเลือกไฟล์', 'danger')
-            return redirect(url_for('products.csv_import'))
-
-        f = request.files['csv_file']
-        if not f.filename.endswith('.csv'):
-            flash('รองรับเฉพาะไฟล์ .csv', 'danger')
-            return redirect(url_for('products.csv_import'))
-
-        content = f.read().decode('utf-8-sig')
-        rows = _parse_csv_content(content)
-        if not rows:
-            flash('ไม่พบข้อมูลในไฟล์', 'warning')
-            return redirect(url_for('products.csv_import'))
-
-        session['import_rows'] = rows
-        session['import_filename'] = f.filename
-        return render_template('import.html', preview=rows[:20],
-                               total=len(rows), step='confirm',
-                               filename=f.filename)
-
-    return render_template('import.html', step='upload')
-
-
-@bp_products.route('/import/confirm', methods=['POST'])
-def csv_import_confirm():
-    rows = session.pop('import_rows', None)
-    filename = session.pop('import_filename', 'unknown.csv')
-    if not rows:
-        flash('หมดเวลา กรุณาอัปโหลดใหม่', 'warning')
-        return redirect(url_for('products.csv_import'))
-
-    overwrite = request.form.get('overwrite') == '1'
-    imported, skipped = models.bulk_import_products(rows, overwrite=overwrite)
-
-    conn = get_connection()
-    conn.execute("""
-        INSERT INTO import_log (filename, rows_imported, rows_skipped, notes)
-        VALUES (?, ?, ?, ?)
-    """, (filename, imported, skipped, f'overwrite={overwrite}'))
-    conn.commit()
-    conn.close()
-
-    flash(f'นำเข้าสำเร็จ {imported} รายการ, ข้าม {skipped} รายการ', 'success')
-    return redirect(url_for('products.product_list'))
