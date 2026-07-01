@@ -132,16 +132,30 @@ def _settled_orders(conn, platform):
     ).fetchall()
 
 
-def _pick_iv(o, ivs, claimed, iv_prod, o_prod, window_days, exact_only):
+def _pick_iv(o, ivs, claimed, iv_prod, o_prod, window_days, mode):
     """Lowest-cost unclaimed valid IV for one order, or None.
 
-    exact_only=True  (pass 1): require BOTH a shared product AND an exact amount
-        (adiff < _AMOUNT_TOL). These get locked in before any fuzzy match runs, so
-        a product-only neighbour can't steal an invoice that is another order's
-        exact (amount+product) match — the greedy-oldest-first collision that put
-        a wrong IV on an order whose exact invoice a sibling had already grabbed.
-    exact_only=False (pass 2): the original rule — a shared product OR a near
-        amount (within FUZZY_AMOUNT_TOL).
+    Three modes, run in this order so a product match is never displaced by an
+    amount coincidence (greedy-oldest-first otherwise lets an older amount-only
+    order grab an IV that a later product-overlap order needs):
+      'exact'   (pass 1): shared product AND exact amount (adiff < _AMOUNT_TOL).
+      'product' (pass 2): shared product, ANY amount. Locks every product-overlap
+          match before the amount-only fallback — the fee-divergent product match
+          (Lazada payout < IV net) that the exact pass can't catch. Without this,
+          an unrelated near-amount order steals it (the 913281 case).
+      'amount'  (pass 3): near amount (adiff <= FUZZY_AMOUNT_TOL), product optional
+          — the fallback for orders left with no unclaimed product IV.
+    The union of eligible matches is unchanged from the old two-pass rule
+    (product OR near-amount); only the assignment PRIORITY changes.
+
+    NOTE (deliberate trade-off): product priority can, rarely, displace a DEAD-ON
+    amount-only match — an order with no product overlap whose payout equals an IV
+    to the satang. That amount is usually a coincidence and the IV's real owner is
+    the product match. Reserving near-exact amounts BEFORE the product pass was
+    implemented and tested on the full prod dataset, then REJECTED: it let amount
+    coincidences steal 27 product matches (net −17 links) — far worse than the ~1
+    ambiguous near-exact edge it protected. Do not re-add a near-exact reservation
+    pass without re-verifying the full-dataset diff.
     """
     payout = round(o['billed_basis'], 2)
     my_prod = o_prod.get(o['order_sn'], set())
@@ -154,13 +168,15 @@ def _pick_iv(o, ivs, claimed, iv_prod, o_prod, window_days, exact_only):
             continue
         overlap = len(my_prod & iv_prod.get(iv['doc_base'], set()))
         adiff = abs((iv['iv_net'] or 0) - payout)
-        if exact_only:
+        if mode == 'exact':
             if overlap == 0 or adiff >= _AMOUNT_TOL:
                 continue
-        elif overlap == 0 and adiff > FUZZY_AMOUNT_TOL:
-            # A candidate must be confirmed by a shared product OR a near amount —
-            # otherwise an unrelated same-window invoice could be grabbed.
-            continue
+        elif mode == 'product':
+            if overlap == 0:
+                continue
+        else:  # 'amount' — the fuzzy fallback; a near amount can stand alone
+            if adiff > FUZZY_AMOUNT_TOL:
+                continue
         cost = (0 if overlap else 1, gap, adiff)
         if best is None or cost < best[0]:
             best = (cost, iv['doc_base'], adiff)
@@ -169,12 +185,14 @@ def _pick_iv(o, ivs, claimed, iv_prod, o_prod, window_days, exact_only):
 
 def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
     """Auto-link settled ``platform`` orders to their Express IV by product + date
-    (after the order) + amount. Two passes, each greedy oldest-order-first: pass 1
-    locks EXACT (shared-product AND exact-amount) matches, pass 2 fills the rest
-    with the fuzzy rule. The exact-first pass stops a product-only fuzzy match from
-    grabbing an invoice that is another order's exact match. Rebuilds all 'auto'
-    rows; never touches 'manual' rows nor reuses a manually-held IV. Labels
-    'confident' (amount == payout) or 'review' (amount differs).
+    (after the order) + amount. THREE passes, each greedy oldest-order-first:
+    'exact' (shared-product AND exact-amount) → 'product' (shared-product, any
+    amount) → 'amount' (near-amount fallback). Assigning all product-overlap
+    matches before the amount-only fallback stops an amount coincidence from
+    stealing an IV that is another order's product match (incl. the fee-divergent
+    product match the exact pass can't lock). Rebuilds all 'auto' rows; never
+    touches 'manual' rows nor reuses a manually-held IV. Labels 'confident'
+    (amount == payout) or 'review' (amount differs).
     Returns {matched, confident, review, unmatched}.
     """
     code = _CUST_CODE[platform]
@@ -194,12 +212,12 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
         (platform,))
 
     results = {}  # order_sn -> (doc_base, adiff)
-    for exact_only in (True, False):
+    for mode in ('exact', 'product', 'amount'):
         for o in orders:
             sn = o['order_sn']
             if sn in manual_orders or sn in results:
                 continue
-            best = _pick_iv(o, ivs, claimed, iv_prod, o_prod, window_days, exact_only)
+            best = _pick_iv(o, ivs, claimed, iv_prod, o_prod, window_days, mode)
             if best is None:
                 continue
             _cost, doc_base, adiff = best
