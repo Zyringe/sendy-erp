@@ -268,21 +268,36 @@ def test_exact_match_not_stolen_by_fuzzy_neighbour(mm_conn):
     assert links['OA'][0] == 'IV_A'                    # OA falls to its own amount-exact invoice
 
 
-def test_product_match_not_stolen_by_amount_only_neighbour(mm_conn):
-    """A product-overlap match with a FEE-DIVERGENT amount must not be displaced by
-    an older amount-only order. This is the 913281 case: a Lazada order (product
-    1543, payout 245.98) whose IV is the same product at net 299 — an unrelated
-    ~290 order must NOT steal that IV just because the amount is close. The exact
-    pass can't protect it (amount off by 53), so a product-overlap pass must run
-    before any amount-only fallback."""
+def test_product_beats_loose_near_amount_neighbour(mm_conn):
+    """The 913281 case: a product-overlap match with a FEE-DIVERGENT amount must not
+    be displaced by an older order whose amount is only LOOSELY near. Order OB
+    (product 500, payout 47 vs IV 100 — off 53, a Lazada fee) is the real match;
+    OA (no product, payout 91 — off 9, a loose coincidence) must NOT steal it. The
+    product pass runs before the loose-amount fallback."""
     c = mm_conn
-    # OA (older): no shared product; payout 100 EXACTLY equals IV_X → pure amount candidate.
-    # OB (newer): shares IV_X's product 500; payout 60 vs IV 100 → amount off 40 (fee-like).
-    _add_order(c, 'OA', 100.0, '2026-06-04')
-    _add_order(c, 'OB', 60.0,  '2026-06-05', product_id=500)
+    _add_order(c, 'OA', 91.0, '2026-06-04')                  # loose-near (off 9), no product
+    _add_order(c, 'OB', 47.0, '2026-06-05', product_id=500)  # product, fee-divergent (off 53)
     _add_iv(c, 'IV_X', 100.0, '2026-06-06', product_id=500)
     mm.run_automatch(c, 'shopee')
     links = {r['order_sn']: r['doc_base'] for r in c.execute(
         "SELECT order_sn, doc_base FROM marketplace_order_invoice WHERE platform='shopee'")}
-    assert links.get('OB') == 'IV_X'      # product match wins its own invoice
-    assert 'OA' not in links              # amount-only neighbour did NOT steal it
+    assert links.get('OB') == 'IV_X'      # product wins over a loose amount coincidence
+    assert 'OA' not in links
+
+
+def test_product_beats_even_dead_on_amount_only(mm_conn):
+    """Deliberate trade-off (see run_automatch NOTE): product priority wins even over
+    a DEAD-ON amount-only match. OA has no product but payout == IV to the satang;
+    OB shares the product with a far-off amount. OB (product) takes it — a dead-on
+    amount with no product is usually a coincidence, and reserving such matches was
+    tested on the full dataset and rejected (it stole 27 product matches). This test
+    pins that the product-first order is intentional, not an oversight."""
+    c = mm_conn
+    _add_order(c, 'OA', 100.0, '2026-06-04')                 # dead-on amount, no product
+    _add_order(c, 'OB', 60.0,  '2026-06-05', product_id=500) # product, far-off amount
+    _add_iv(c, 'IV_X', 100.0, '2026-06-06', product_id=500)
+    mm.run_automatch(c, 'shopee')
+    links = {r['order_sn']: r['doc_base'] for r in c.execute(
+        "SELECT order_sn, doc_base FROM marketplace_order_invoice WHERE platform='shopee'")}
+    assert links.get('OB') == 'IV_X'      # product wins (intentional)
+    assert 'OA' not in links

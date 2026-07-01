@@ -147,6 +147,15 @@ def _pick_iv(o, ivs, claimed, iv_prod, o_prod, window_days, mode):
           — the fallback for orders left with no unclaimed product IV.
     The union of eligible matches is unchanged from the old two-pass rule
     (product OR near-amount); only the assignment PRIORITY changes.
+
+    NOTE (deliberate trade-off): product priority can, rarely, displace a DEAD-ON
+    amount-only match — an order with no product overlap whose payout equals an IV
+    to the satang. That amount is usually a coincidence and the IV's real owner is
+    the product match. Reserving near-exact amounts BEFORE the product pass was
+    implemented and tested on the full prod dataset, then REJECTED: it let amount
+    coincidences steal 27 product matches (net −17 links) — far worse than the ~1
+    ambiguous near-exact edge it protected. Do not re-add a near-exact reservation
+    pass without re-verifying the full-dataset diff.
     """
     payout = round(o['billed_basis'], 2)
     my_prod = o_prod.get(o['order_sn'], set())
