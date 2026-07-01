@@ -54,6 +54,55 @@ def test_get_payout_report_still_composes_summary_plus_orders(tmp_db_conn):
     assert {o['order_sn'] for o in rep[0]['orders']} == {'LZ1', 'LZ2'}
 
 
+def test_fee_pct_str_helper_edges():
+    """The shared take-rate helper: 1-decimal %, blank on non-positive item value."""
+    assert models._fee_pct_str(55.0, 17.0) == '30.9%'   # 17/55 = 30.909 → 30.9
+    assert models._fee_pct_str(100.0, 30.0) == '30.0%'
+    assert models._fee_pct_str(0, 5.0) == ''            # no item value → blank
+    assert models._fee_pct_str(None, 5.0) == ''
+    assert models._fee_pct_str(50.0, None) == ''
+    # A returned order (net negative) legitimately deducts >100% of item value —
+    # same formula, same behaviour for both platforms.
+    assert models._fee_pct_str(240.0, 313.0) == '130.4%'
+
+
+def test_shopee_fee_pct_is_computed_take_rate_not_stored_partial(tmp_db_conn):
+    """Shopee's Income file stores a partial 'ค่าธรรมเนียม (%)' (~3.21% = just the
+    transaction fee). get_payout_orders must return the COMPUTED total take-rate
+    (fee ÷ ยอดสินค้า) — the same metric Lazada shows — not the stored 3.21%."""
+    c = tmp_db_conn
+    c.execute("DELETE FROM marketplace_payouts WHERE platform='shopee'")
+    c.execute("DELETE FROM marketplace_order_fees WHERE platform='shopee'")
+    c.execute("DELETE FROM marketplace_orders WHERE order_sn='SHP1'")
+    c.execute("INSERT INTO marketplace_orders (platform, order_sn, item_total) VALUES ('shopee','SHP1',55.0)")
+    oid = c.execute("SELECT id FROM marketplace_orders WHERE order_sn='SHP1'").fetchone()['id']
+    models.upsert_marketplace_fees(c, [{'order_sn': 'SHP1', 'item_value': 55.0, 'net_payout': 38.0,
+        'fee_total': 17.0, 'fee_pct': '3.21%'}], 'shp.xlsx')   # stored partial %
+    pid = c.execute("INSERT INTO marketplace_payouts (platform,deposit_date,amount,n_orders) "
+                    "VALUES ('shopee','2026-06-24',38.0,1)").lastrowid
+    c.execute("UPDATE marketplace_orders SET payout_id=? WHERE id=?", (pid, oid)); c.commit()
+    o = models.get_payout_orders(c, 'shopee', pid)[0]
+    assert o['fee_pct'] == '30.9%'          # computed take-rate, NOT the stored '3.21%'
+
+
+def test_lazada_and_shopee_fee_pct_use_identical_formula(tmp_db_conn):
+    """Same ยอดสินค้า + fee on both platforms → identical % string (the whole point)."""
+    c = tmp_db_conn
+    for plat, sn in (('shopee', 'SHPX'), ('lazada', 'LZDX')):
+        c.execute("DELETE FROM marketplace_payouts WHERE platform=?", (plat,))
+        c.execute("DELETE FROM marketplace_order_fees WHERE platform=?", (plat,))
+        c.execute("DELETE FROM marketplace_orders WHERE order_sn=?", (sn,))
+        c.execute("INSERT INTO marketplace_orders (platform, order_sn, item_total) VALUES (?,?,100.0)", (plat, sn))
+        oid = c.execute("SELECT id FROM marketplace_orders WHERE order_sn=?", (sn,)).fetchone()['id']
+        models.upsert_marketplace_fees(c, [{'order_sn': sn, 'item_value': 100.0, 'net_payout': 72.0,
+            'fee_total': 28.0}], 'f.xlsx', platform=plat)
+        pid = c.execute("INSERT INTO marketplace_payouts (platform,deposit_date,amount,n_orders) "
+                        "VALUES (?,'2026-06-24',72.0,1)", (plat,)).lastrowid
+        c.execute("UPDATE marketplace_orders SET payout_id=? WHERE id=?", (pid, oid)); c.commit()
+        o = models.get_payout_orders(c, plat, pid)[0]
+        assert o['fee_pct'] == '28.0%', f"{plat} fee_pct wrong: {o['fee_pct']}"
+
+
 def test_lazada_payout_orders_use_thai_categories_not_raw(tmp_db_conn):
     """Lazada uses the SAME clean Thai-category breakdown as Shopee (built from the
     typed bucket columns), NOT the raw English statement lines — so the settlement
