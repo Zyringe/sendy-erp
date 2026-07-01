@@ -1,0 +1,197 @@
+{% extends 'base.html' %}
+{% block title %}เพิ่มรายการ – บัญชีรับ-จ่าย – Sendy{% endblock %}
+{% block page_title %}เพิ่มรายการบัญชีรับ-จ่าย{% endblock %}
+
+{% block topbar_actions %}
+<a href="{{ url_for('cashbook.dashboard') }}" class="btn btn-sm btn-outline-secondary">
+  <i class="bi bi-arrow-left me-1"></i>กลับ
+</a>
+{% endblock %}
+
+{% block content %}
+
+{# ── Category / ผู้ใช้ datalists — shared across all rows ─────────────────── #}
+<datalist id="categories-income">
+  {% for name in categories_by_direction.income %}
+  <option value="{{ name }}">
+  {% endfor %}
+</datalist>
+<datalist id="categories-expense">
+  {% for name in categories_by_direction.expense %}
+  <option value="{{ name }}">
+  {% endfor %}
+</datalist>
+<datalist id="user-tags">
+  {% for tag in known_tags %}
+  <option value="{{ tag }}">
+  {% endfor %}
+</datalist>
+
+<form method="post" action="{{ url_for('cashbook.new_transaction') }}" id="batch-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  {# ── Shared header: date + account ────────────────────────────────────────── #}
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-3">
+          <label class="form-label small">วันที่ <span class="text-danger">*</span></label>
+          <input type="date" name="txn_date" class="form-control form-control-sm"
+                 value="{{ txn_date }}" required>
+        </div>
+        <div class="col-md-5">
+          <label class="form-label small">บัญชี <span class="text-danger">*</span></label>
+          <select name="account_id" class="form-select form-select-sm" required>
+            <option value="">— เลือกบัญชี —</option>
+            {% for acct in accounts %}
+            <option value="{{ acct.id }}" {% if account_id == acct.id|string %}selected{% endif %}>
+              {{ acct.display_name or acct.code }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Row grid ──────────────────────────────────────────────────────────────── #}
+  <div class="card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span class="fw-semibold"><i class="bi bi-list-ul me-1"></i>รายการ</span>
+      <button type="button" id="add-row-btn" class="btn btn-sm btn-outline-primary">
+        <i class="bi bi-plus-lg me-1"></i>เพิ่มแถว
+      </button>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 align-middle">
+        <thead class="table-light">
+          <tr>
+            <th style="min-width:110px">ประเภท</th>
+            <th style="min-width:160px">หมวดหมู่</th>
+            <th style="min-width:140px">ผู้ใช้</th>
+            <th style="min-width:120px" class="text-end">จำนวนเงิน</th>
+            <th style="min-width:160px">รายละเอียด</th>
+            <th style="min-width:140px">หมายเหตุ</th>
+            <th style="width:40px"></th>
+          </tr>
+        </thead>
+        <tbody id="batch-rows-body">
+          {% for row in rows %}
+          <tr class="batch-row">
+            <td>
+              <select name="rows-{{ row.index }}-direction" class="form-select form-select-sm direction-select">
+                <option value="expense" {% if row.direction == 'expense' %}selected{% endif %}>รายจ่าย</option>
+                <option value="income"  {% if row.direction == 'income'  %}selected{% endif %}>รายรับ</option>
+              </select>
+            </td>
+            <td>
+              <input type="text" name="rows-{{ row.index }}-category" class="form-control form-control-sm category-input"
+                     list="categories-{{ 'income' if row.direction == 'income' else 'expense' }}"
+                     value="{{ row.category }}">
+            </td>
+            <td>
+              <input type="text" name="rows-{{ row.index }}-user_category" class="form-control form-control-sm"
+                     list="user-tags" value="{{ row.user_category }}">
+            </td>
+            <td>
+              <input type="number" name="rows-{{ row.index }}-amount" class="form-control form-control-sm text-end"
+                     min="0.01" step="0.01" value="{{ row.amount }}">
+            </td>
+            <td>
+              <input type="text" name="rows-{{ row.index }}-description" class="form-control form-control-sm"
+                     value="{{ row.description }}">
+            </td>
+            <td>
+              <input type="text" name="rows-{{ row.index }}-note" class="form-control form-control-sm"
+                     value="{{ row.note }}">
+            </td>
+            <td>
+              <button type="button" class="btn btn-sm btn-outline-danger remove-row-btn" title="ลบแถวนี้">
+                <i class="bi bi-x-lg"></i>
+              </button>
+            </td>
+          </tr>
+          {% if row.errors %}
+          <tr class="table-danger">
+            <td colspan="7" class="small">{{ row.errors | join(', ') }}</td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+          <template id="row-template">
+            <tr class="batch-row">
+              <td>
+                <select name="rows-__IDX__-direction" class="form-select form-select-sm direction-select">
+                  <option value="expense" selected>รายจ่าย</option>
+                  <option value="income">รายรับ</option>
+                </select>
+              </td>
+              <td>
+                <input type="text" name="rows-__IDX__-category" class="form-control form-control-sm category-input"
+                       list="categories-expense" value="">
+              </td>
+              <td>
+                <input type="text" name="rows-__IDX__-user_category" class="form-control form-control-sm"
+                       list="user-tags" value="">
+              </td>
+              <td>
+                <input type="number" name="rows-__IDX__-amount" class="form-control form-control-sm text-end"
+                       min="0.01" step="0.01" value="">
+              </td>
+              <td>
+                <input type="text" name="rows-__IDX__-description" class="form-control form-control-sm" value="">
+              </td>
+              <td>
+                <input type="text" name="rows-__IDX__-note" class="form-control form-control-sm" value="">
+              </td>
+              <td>
+                <button type="button" class="btn btn-sm btn-outline-danger remove-row-btn" title="ลบแถวนี้">
+                  <i class="bi bi-x-lg"></i>
+                </button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <button type="submit" class="btn btn-primary">
+    <i class="bi bi-save me-1"></i>บันทึกทั้งหมด
+  </button>
+  <a href="{{ url_for('cashbook.dashboard') }}" class="btn btn-outline-secondary ms-2">ยกเลิก</a>
+</form>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var body = document.getElementById('batch-rows-body');
+  var tpl = document.getElementById('row-template');
+  var nextIndex = {{ (rows | length) }};
+
+  document.getElementById('add-row-btn').addEventListener('click', function () {
+    var html = tpl.innerHTML.split('__IDX__').join(String(nextIndex));
+    var frag = document.createElement('tbody');
+    frag.innerHTML = html;
+    var newRow = frag.firstElementChild;
+    body.insertBefore(newRow, tpl);
+    nextIndex++;
+  });
+
+  body.addEventListener('click', function (e) {
+    var btn = e.target.closest('.remove-row-btn');
+    if (!btn) return;
+    var tr = btn.closest('tr');
+    if (tr) tr.remove();
+  });
+
+  body.addEventListener('change', function (e) {
+    if (!e.target.classList.contains('direction-select')) return;
+    var tr = e.target.closest('tr');
+    var catInput = tr.querySelector('.category-input');
+    catInput.setAttribute('list', e.target.value === 'income' ? 'categories-income' : 'categories-expense');
+  });
+})();
+</script>
+{% endblock %}

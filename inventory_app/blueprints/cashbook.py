@@ -1,31 +1,36 @@
-"""Cashbook blueprint — รายรับ/รายจ่าย dashboard, ledger.
+"""Cashbook blueprint — รายรับ/รายจ่าย dashboard, ledger, manual entry.
 
 Access control
 --------------
-  admin   : full access
-  manager : read-only (GET dashboard/ledger)
+  admin / manager / shareholder : full read + manual add/edit/delete
+                                   (POST whitelisted in app.py; see
+                                   `_MANAGER_POST_OK` + the shareholder
+                                   POST set).
   staff   : blocked entirely — before_request redirects any cashbook.* endpoint.
+
+Manual rows (payroll_item_id IS NULL) can be edited/deleted here. Salary
+pay-event rows (payroll_item_id set, added by a later phase) are locked —
+see `_reject_if_salary_row`.
 
 Python 3.9 — no `X | None` union syntax.
 """
 from __future__ import annotations
 
+import json
+import re
+from datetime import date
 from typing import Optional
 
 from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
                    request, session, url_for)
 
 import database
+import hr_queries as hrq
 
 bp_cashbook = Blueprint("cashbook", __name__, url_prefix="/cashbook")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _require_admin():
-    if session.get("role") != "admin":
-        abort(403)
-
 
 def _fmt_baht(val) -> str:
     try:
@@ -332,6 +337,11 @@ def account_ledger(account_id):
                ORDER BY m""",
             (account_id,),
         ).fetchall()
+
+        # For the per-row edit modals (manual rows only — see txn_edit.html).
+        accounts = hrq.get_active_cashbook_accounts(conn)
+        categories_by_direction = _categories_by_direction(conn)
+        known_tags = _get_known_user_tags(conn)
     finally:
         conn.close()
 
@@ -351,4 +361,303 @@ def account_ledger(account_id):
         sum_expense=sum_expense,
         balance=sum_income - sum_expense,
         months=[r["m"] for r in months],
+        accounts=accounts,
+        categories_by_direction=categories_by_direction,
+        known_tags=known_tags,
     )
+
+
+# ── Manual entry (batch add / edit / delete) ──────────────────────────────────
+#
+# Write access is gated in app.py: `_MANAGER_POST_OK` and the shareholder POST
+# set both whitelist `cashbook.new_transaction` / `.txn_edit` / `.txn_delete`.
+# Staff is blocked entirely by the before_request cashbook.* check above.
+
+_ROW_AMOUNT_RE = re.compile(r"^rows-(\d+)-amount$")
+
+
+def _categories_by_direction(conn):
+    """{'income': [name, ...], 'expense': [name, ...]} for the category
+    <datalist>s, active categories only."""
+    rows = conn.execute(
+        """SELECT name, direction FROM cashbook_categories
+            WHERE is_active = 1
+            ORDER BY direction, sort_order, name"""
+    ).fetchall()
+    out = {"income": [], "expense": []}
+    for r in rows:
+        out.setdefault(r["direction"], []).append(r["name"])
+    return out
+
+
+def _get_known_user_tags(conn):
+    """Distinct ผู้ใช้ tags already used, for the user_category <datalist>.
+    There is no separate tags table — user_category is free text on
+    cashbook_transactions."""
+    rows = conn.execute(
+        """SELECT DISTINCT user_category FROM cashbook_transactions
+            WHERE user_category IS NOT NULL AND user_category != ''
+            ORDER BY user_category"""
+    ).fetchall()
+    return [r["user_category"] for r in rows]
+
+
+def _blank_rows(n=8):
+    return [
+        {"index": i, "direction": "expense", "category": "", "user_category": "",
+         "amount": "", "description": "", "note": "", "errors": []}
+        for i in range(n)
+    ]
+
+
+def _parse_batch_rows(form):
+    """Parse indexed `rows-<i>-*` fields from a submitted batch form into an
+    ordered list of dicts (one per submitted row slot). Purely mechanical —
+    validation happens in the caller."""
+    indices = sorted(int(m.group(1)) for k in form.keys()
+                      for m in [_ROW_AMOUNT_RE.match(k)] if m)
+    rows = []
+    for i in indices:
+        rows.append({
+            "index": i,
+            "direction": form.get(f"rows-{i}-direction", "expense").strip(),
+            "category": form.get(f"rows-{i}-category", "").strip(),
+            "user_category": form.get(f"rows-{i}-user_category", "").strip(),
+            "amount": form.get(f"rows-{i}-amount", "").strip(),
+            "description": form.get(f"rows-{i}-description", "").strip(),
+            "note": form.get(f"rows-{i}-note", "").strip(),
+            "errors": [],
+        })
+    return rows
+
+
+def _validate_batch(rows, account_ids):
+    """Validate non-blank rows in place (sets row['errors']); blank rows
+    (amount empty) are left untouched — they're skipped, not errors.
+    Returns the list of rows that are valid AND non-blank, each with a
+    parsed float `amount`."""
+    to_insert = []
+    for r in rows:
+        if not r["amount"]:
+            continue  # blank row — silently skipped
+        errors = []
+        try:
+            amount = float(r["amount"])
+        except ValueError:
+            amount = None
+        if amount is None or amount <= 0:
+            errors.append("จำนวนเงินต้องมากกว่า 0")
+        if r["direction"] not in ("income", "expense"):
+            errors.append("ประเภทไม่ถูกต้อง")
+        if not r["category"]:
+            errors.append("กรุณาระบุหมวดหมู่")
+        if errors:
+            r["errors"] = errors
+        else:
+            to_insert.append({**r, "amount": amount})
+    return to_insert
+
+
+def _upsert_category(conn, name, direction):
+    conn.execute(
+        "INSERT OR IGNORE INTO cashbook_categories(name,direction,source) VALUES(?,?,NULL)",
+        (name, direction),
+    )
+
+
+@bp_cashbook.route("/new", methods=["GET", "POST"])
+def new_transaction():
+    conn = database.get_connection()
+    try:
+        accounts = hrq.get_active_cashbook_accounts(conn)
+        account_ids = {a["id"] for a in accounts}
+
+        if request.method == "POST":
+            txn_date = request.form.get("txn_date", "").strip() or date.today().isoformat()
+            account_id_raw = request.form.get("account_id", "").strip()
+            account_id = int(account_id_raw) if account_id_raw.isdigit() else None
+
+            rows = _parse_batch_rows(request.form)
+            to_insert = _validate_batch(rows, account_ids)
+
+            form_errors = []
+            if account_id not in account_ids:
+                form_errors.append("กรุณาเลือกบัญชีที่ถูกต้องและยังใช้งานอยู่")
+            row_errors = any(r["errors"] for r in rows)
+            if not form_errors and not row_errors and not to_insert:
+                form_errors.append("กรุณากรอกอย่างน้อย 1 รายการ")
+
+            if form_errors or row_errors:
+                for msg in form_errors:
+                    flash(msg, "danger")
+                return render_template(
+                    "cashbook/new.html",
+                    accounts=accounts,
+                    txn_date=txn_date,
+                    account_id=account_id_raw,
+                    rows=rows,
+                    categories_by_direction=_categories_by_direction(conn),
+                    known_tags=_get_known_user_tags(conn),
+                )
+
+            # All rows valid — insert within one transaction (single connection,
+            # single commit): upsert any brand-new category first, then the rows.
+            created_by = session.get("display_name") or session.get("username")
+            for r in to_insert:
+                _upsert_category(conn, r["category"], r["direction"])
+            for r in to_insert:
+                conn.execute(
+                    """INSERT INTO cashbook_transactions
+                       (account_id, txn_date, direction, category, user_category,
+                        amount, description, note, created_by)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (account_id, txn_date, r["direction"], r["category"],
+                     r["user_category"] or None, r["amount"],
+                     r["description"] or None, r["note"] or None, created_by),
+                )
+            conn.commit()
+            flash(f"บันทึก {len(to_insert)} รายการเรียบร้อย", "success")
+            return redirect(url_for("cashbook.account_ledger", account_id=account_id))
+
+        return render_template(
+            "cashbook/new.html",
+            accounts=accounts,
+            txn_date=date.today().isoformat(),
+            account_id="",
+            rows=_blank_rows(),
+            categories_by_direction=_categories_by_direction(conn),
+            known_tags=_get_known_user_tags(conn),
+        )
+    finally:
+        conn.close()
+
+
+def _reject_if_salary_row(row):
+    """Salary pay-event rows (payroll_item_id set, posted by a later phase)
+    are locked — never editable/deletable from the cashbook. Flashes + aborts
+    403 if locked."""
+    if row["payroll_item_id"] is not None:
+        flash("รายการนี้เป็นรายการเงินเดือนที่ผูกกับ Payroll — แก้ไข/ลบที่นี่ไม่ได้", "danger")
+        abort(403)
+
+
+@bp_cashbook.route("/txn/<int:txn_id>/edit", methods=["POST"])
+def txn_edit(txn_id):
+    """Edit a manual row. Submitted from the edit modal on account_ledger.html
+    (templates/cashbook/txn_edit.html) — there is no separate GET page, so on
+    a validation error we flash + redirect back to the ledger (same pattern as
+    hr.py::advance_edit) rather than re-rendering a form."""
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM cashbook_transactions WHERE id=?", (txn_id,)
+        ).fetchone()
+        if row is None:
+            abort(404)
+        _reject_if_salary_row(row)
+
+        account_id_raw = request.form.get("account_id", "").strip()
+        txn_date = request.form.get("txn_date", "").strip()
+        direction = request.form.get("direction", "").strip()
+        category = request.form.get("category", "").strip()
+        user_category = request.form.get("user_category", "").strip()
+        amount_raw = request.form.get("amount", "").strip()
+        description = request.form.get("description", "").strip()
+        note = request.form.get("note", "").strip()
+
+        account = conn.execute(
+            "SELECT id FROM cashbook_accounts WHERE id=? AND is_active=1",
+            (account_id_raw,),
+        ).fetchone() if account_id_raw.isdigit() else None
+        try:
+            amount = float(amount_raw)
+        except ValueError:
+            amount = None
+
+        errors = []
+        if account is None:
+            errors.append("กรุณาเลือกบัญชีที่ถูกต้องและยังใช้งานอยู่")
+        if not txn_date:
+            errors.append("กรุณาระบุวันที่")
+        if amount is None or amount <= 0:
+            errors.append("จำนวนเงินต้องมากกว่า 0")
+        if direction not in ("income", "expense"):
+            errors.append("ประเภทไม่ถูกต้อง")
+        if not category:
+            errors.append("กรุณาระบุหมวดหมู่")
+
+        if errors:
+            for msg in errors:
+                flash(msg, "danger")
+            return redirect(url_for("cashbook.account_ledger", account_id=row["account_id"]))
+
+        _upsert_category(conn, category, direction)
+
+        new_vals = {
+            "account_id": int(account_id_raw), "txn_date": txn_date, "direction": direction,
+            "category": category, "user_category": user_category or None,
+            "amount": amount, "description": description or None, "note": note or None,
+        }
+        changed = {
+            field: [row[field], new_v]
+            for field, new_v in new_vals.items() if row[field] != new_v
+        }
+
+        conn.execute(
+            """UPDATE cashbook_transactions
+               SET account_id=?, txn_date=?, direction=?, category=?, user_category=?,
+                   amount=?, description=?, note=?
+               WHERE id=?""",
+            (*new_vals.values(), txn_id),
+        )
+        if changed:
+            # The mig 076 AFTER UPDATE trigger already writes a field-diff
+            # audit_log row for this UPDATE (user=NULL — triggers have no
+            # session). This explicit row attributes the change to the
+            # actor, same pattern as hr.py::reopen_run.
+            conn.execute(
+                "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
+                " VALUES(?,?,?,?,?)",
+                ("cashbook_transactions", txn_id, "UPDATE",
+                 json.dumps(changed, ensure_ascii=False),
+                 session.get("display_name") or session.get("username")),
+            )
+        conn.commit()
+        flash("แก้ไขรายการเรียบร้อย", "success")
+        return redirect(url_for("cashbook.account_ledger", account_id=new_vals["account_id"]))
+    finally:
+        conn.close()
+
+
+@bp_cashbook.route("/txn/<int:txn_id>/delete", methods=["POST"])
+def txn_delete(txn_id):
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM cashbook_transactions WHERE id=?", (txn_id,)
+        ).fetchone()
+        if row is None:
+            abort(404)
+        _reject_if_salary_row(row)
+
+        account_id = row["account_id"]
+        conn.execute("DELETE FROM cashbook_transactions WHERE id=?", (txn_id,))
+        # The mig 076 BEFORE DELETE trigger already writes an audit_log DELETE
+        # row (user=NULL). This explicit row attributes it to the actor, same
+        # pattern as hr.py::reopen_run / the mig 076 UPDATE trigger above.
+        conn.execute(
+            "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
+            " VALUES(?,?,?,?,?)",
+            ("cashbook_transactions", txn_id, "DELETE",
+             json.dumps({
+                 "account_id": account_id, "txn_date": row["txn_date"],
+                 "direction": row["direction"], "category": row["category"],
+                 "amount": row["amount"],
+             }, ensure_ascii=False),
+             session.get("display_name") or session.get("username")),
+        )
+        conn.commit()
+        flash("ลบรายการเรียบร้อย", "success")
+        return redirect(url_for("cashbook.account_ledger", account_id=account_id))
+    finally:
+        conn.close()

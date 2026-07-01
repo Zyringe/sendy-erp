@@ -1,0 +1,74 @@
+{# Edit modal for one manual cashbook row. Included from account_ledger.html
+   inside a `{% for r in rows %}` loop (manual rows only — payroll_item_id
+   falsy) — `r`, `accounts`, `categories_by_direction`, `known_tags` are all
+   in scope from the including template. Mirrors templates/hr/advances.html's
+   per-row edit modal pattern. #}
+<div class="modal fade" id="editTxnModal{{ r.id }}" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title small">แก้ไขรายการ #{{ r.id }}</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" action="{{ url_for('cashbook.txn_edit', txn_id=r.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="modal-body">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label small">วันที่ <span class="text-danger">*</span></label>
+              <input type="date" name="txn_date" class="form-control form-control-sm"
+                     value="{{ r.txn_date }}" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small">บัญชี <span class="text-danger">*</span></label>
+              <select name="account_id" class="form-select form-select-sm" required>
+                {% for acct in accounts %}
+                <option value="{{ acct.id }}" {% if r.account_id == acct.id %}selected{% endif %}>
+                  {{ acct.display_name or acct.code }}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small">ประเภท <span class="text-danger">*</span></label>
+              <select name="direction" class="form-select form-select-sm edit-direction-select" required>
+                <option value="expense" {% if r.direction == 'expense' %}selected{% endif %}>รายจ่าย</option>
+                <option value="income"  {% if r.direction == 'income'  %}selected{% endif %}>รายรับ</option>
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small">จำนวนเงิน (฿) <span class="text-danger">*</span></label>
+              <input type="number" name="amount" class="form-control form-control-sm"
+                     value="{{ r.amount }}" min="0.01" step="0.01" required>
+            </div>
+            <div class="col-12">
+              <label class="form-label small">หมวดหมู่ <span class="text-danger">*</span></label>
+              <input type="text" name="category" class="form-control form-control-sm edit-category-input"
+                     list="categories-{{ 'income' if r.direction == 'income' else 'expense' }}"
+                     value="{{ r.category or '' }}" required>
+            </div>
+            <div class="col-12">
+              <label class="form-label small">ผู้ใช้</label>
+              <input type="text" name="user_category" class="form-control form-control-sm"
+                     list="user-tags" value="{{ r.user_category or '' }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label small">รายละเอียด</label>
+              <input type="text" name="description" class="form-control form-control-sm"
+                     value="{{ r.description or '' }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label small">หมายเหตุ</label>
+              <input type="text" name="note" class="form-control form-control-sm"
+                     value="{{ r.note or '' }}">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-primary btn-sm">บันทึก</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
