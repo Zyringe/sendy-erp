@@ -21,10 +21,18 @@
   </form>
   {% endif %}
   {% if session.role == 'admin' and run.status == 'finalized' %}
-  <button type="button" class="btn btn-sm btn-outline-danger ms-1"
-          data-bs-toggle="modal" data-bs-target="#reopenRunModal">
-    <i class="bi bi-unlock me-1"></i>Reopen
-  </button>
+    {% if any_paid %}
+    <button type="button" class="btn btn-sm btn-outline-danger ms-1" disabled
+            title="ยกเลิกการจ่ายทุกรายการก่อน reopen">
+      <i class="bi bi-unlock me-1"></i>Reopen
+    </button>
+    <span class="text-muted small ms-1">ยกเลิกการจ่ายก่อน reopen</span>
+    {% else %}
+    <button type="button" class="btn btn-sm btn-outline-danger ms-1"
+            data-bs-toggle="modal" data-bs-target="#reopenRunModal">
+      <i class="bi bi-unlock me-1"></i>Reopen
+    </button>
+    {% endif %}
   {% endif %}
 {% endblock %}
 
@@ -165,10 +173,17 @@
   </div>
 </div>
 
-{# ── Transfer checklist (read-only display; Phase 3) ─────────────────────
-   Shows who to pay, their bank details, and the default pay-from account.
-   No form/POST here — the จ่ายแล้ว / ยกเลิกการจ่าย actions arrive in Phase 4. #}
+{# ── Transfer checklist — interactive (Phase 4) ───────────────────────────
+   Shows who to pay, their bank details, the default pay-from account, and
+   the จ่ายแล้ว / ยกเลิกการจ่าย pay-event controls. Paid-state is DERIVED
+   from item.paid_txn_id (no `paid` column — ADR 0006). #}
 {% if run.status == 'finalized' %}
+{% if dup_manual_salary_count and dup_manual_salary_count > 0 %}
+<div class="alert alert-warning small mt-3 mb-0">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  มีรายการเงินเดือนกรอกมือ {{ dup_manual_salary_count }} รายการในเดือนนี้ — ตรวจสอบว่าซ้ำ
+</div>
+{% endif %}
 <div class="card mt-3">
   <div class="card-header">
     <i class="bi bi-bank2 me-1"></i>จ่ายเงินเดือน (โอนเงิน)
@@ -182,7 +197,7 @@
           <th>เลขบัญชี</th>
           <th class="text-end">เงินสุทธิ</th>
           <th>บัญชีจ่ายเงินเดือน</th>
-          <th>สถานะ</th>
+          <th style="min-width:220px">สถานะ</th>
         </tr>
       </thead>
       <tbody>
@@ -199,7 +214,46 @@
           <td class="small font-mono">{{ item.bank_account_no or '–' }}</td>
           <td class="text-end small fw-bold">{{ fmt_baht(item.net_pay) }}</td>
           <td class="small">{{ item.default_cashbook_account_name or '—' }}</td>
-          <td><span class="text-muted small">รอบันทึกการจ่าย</span></td>
+          <td>
+            {% if not item.net_pay or item.net_pay <= 0 %}
+              <span class="text-muted small">ไม่มียอดโอน</span>
+            {% elif item.paid_txn_id %}
+              <span class="badge bg-success d-block mb-1" style="width:fit-content">
+                จ่ายแล้ว {{ be_year(item.paid_txn_date) }}
+              </span>
+              <span class="small text-muted d-block mb-1">{{ item.paid_account_name or '—' }}</span>
+              {% if can_edit_cashbook %}
+              <form method="post"
+                    action="{{ url_for('hr.payroll_item_unpay', run_id=run.id, item_id=item.id) }}"
+                    onsubmit="return confirm('ยกเลิกการจ่ายเงินเดือนของ {{ item.nickname or item.full_name }}?')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-sm btn-outline-danger">ยกเลิกการจ่าย</button>
+              </form>
+              {% endif %}
+            {% else %}
+              {% if can_edit_cashbook %}
+              <form method="post"
+                    action="{{ url_for('hr.payroll_item_pay', run_id=run.id, item_id=item.id) }}"
+                    class="d-flex flex-column gap-1">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <select name="account_id" class="form-select form-select-sm" required>
+                  <option value="">— เลือกบัญชี —</option>
+                  {% for acct in pay_accounts %}
+                  <option value="{{ acct.id }}"
+                    {% if item.default_cashbook_account_id == acct.id %}selected{% endif %}>
+                    {{ acct.display_name or acct.code }}
+                  </option>
+                  {% endfor %}
+                </select>
+                <input type="date" name="pay_date" class="form-control form-control-sm"
+                       value="{{ today_iso }}">
+                <button type="submit" class="btn btn-sm btn-success">จ่ายแล้ว</button>
+              </form>
+              {% else %}
+              <span class="text-muted small">รอบันทึกการจ่าย</span>
+              {% endif %}
+            {% endif %}
+          </td>
         </tr>
         {% else %}
         <tr>

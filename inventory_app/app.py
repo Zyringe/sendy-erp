@@ -252,6 +252,8 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     # Cashbook manual entry (Phase 2) — managers can add/edit/delete manual
     # rows (salary pay-event rows are locked separately, see cashbook.py).
     'cashbook.new_transaction', 'cashbook.txn_edit', 'cashbook.txn_delete',
+    # Salary pay-event posting (Phase 4) — manager can mark จ่ายแล้ว/ยกเลิกการจ่าย.
+    'hr.payroll_item_pay', 'hr.payroll_item_unpay',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
 # the route. Other admin-only writes use _require_admin().
@@ -265,12 +267,15 @@ _ROLE_POST_OK = {
     'manager':     _MANAGER_POST_OK,
     'staff':       _STAFF_POST_OK,
     'general':     _GENERAL_POST_OK,
-    # shareholder reads everything; the ONE write exception is cashbook manual
-    # entry (Phase 2 design decision — manager + shareholder gain add/edit/
-    # delete on cashbook_transactions, salary pay-event rows stay locked).
+    # shareholder reads everything; write exceptions are cashbook manual
+    # entry (Phase 2 — manager + shareholder gain add/edit/delete on
+    # cashbook_transactions, salary pay-event rows stay locked) and salary
+    # pay-event posting (Phase 4 — she must be able to record real transfers
+    # she makes; _require_pay_role in blueprints/hr.py mirrors this set).
     'shareholder': frozenset([
         'logout',
         'cashbook.new_transaction', 'cashbook.txn_edit', 'cashbook.txn_delete',
+        'hr.payroll_item_pay', 'hr.payroll_item_unpay',
     ]),
 }
 

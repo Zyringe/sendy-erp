@@ -523,22 +523,55 @@ def get_payroll_run(run_id: int, conn: Optional[sqlite3.Connection] = None):
 def get_payroll_items(run_id: int, conn: Optional[sqlite3.Connection] = None):
     """Payroll items joined to employee bank details + nickname + the
     employee's default cashbook pay-from account (name + id) — feeds the
-    read-only transfer checklist panel on payroll_detail.html (Phase 3)."""
+    transfer checklist panel on payroll_detail.html.
+
+    Phase 4 adds a LEFT JOIN to the linked salary pay-event
+    `cashbook_transactions` row: `paid_txn_id`/`paid_txn_date`/
+    `paid_account_id`/`paid_account_name` — all NULL when unpaid. Paid-state
+    is DERIVED from `paid_txn_id IS NOT NULL` (no `paid` column, ADR 0006)."""
     c, owned = _conn(conn)
     try:
         return c.execute(
             """SELECT pi.*, e.full_name, e.emp_code, e.nickname, e.bank_name,
                       e.bank_branch, e.bank_account_no, e.bank_account_name,
                       e.default_cashbook_account_id,
-                      COALESCE(ca.display_name, ca.code) AS default_cashbook_account_name
+                      COALESCE(ca.display_name, ca.code) AS default_cashbook_account_name,
+                      cbt.id AS paid_txn_id, cbt.txn_date AS paid_txn_date,
+                      cbt.account_id AS paid_account_id,
+                      COALESCE(pca.display_name, pca.code) AS paid_account_name
                  FROM payroll_items pi
                  JOIN employees e ON e.id = pi.employee_id
                  LEFT JOIN cashbook_accounts ca
                         ON ca.id = e.default_cashbook_account_id
+                 LEFT JOIN cashbook_transactions cbt
+                        ON cbt.payroll_item_id = pi.id
+                 LEFT JOIN cashbook_accounts pca
+                        ON pca.id = cbt.account_id
                 WHERE pi.run_id = ?
                 ORDER BY e.emp_code""",
             (run_id,),
         ).fetchall()
+    finally:
+        if owned:
+            c.close()
+
+
+def count_manual_salary_rows_for_month(year_month: str,
+                                       conn: Optional[sqlite3.Connection] = None) -> int:
+    """Count of MANUAL (payroll_item_id IS NULL) เงินเดือน cashbook rows
+    already sitting in this run's month. Feeds the payroll_detail dup-entry
+    warning banner (Phase 4) — a hand-typed salary row coexisting with a
+    pay-event-posted one for the same month is very likely a duplicate."""
+    c, owned = _conn(conn)
+    try:
+        row = c.execute(
+            """SELECT COUNT(*) AS n FROM cashbook_transactions
+                WHERE payroll_item_id IS NULL
+                  AND category = 'เงินเดือน'
+                  AND strftime('%Y-%m', txn_date) = ?""",
+            (year_month,),
+        ).fetchone()
+        return row["n"] if row else 0
     finally:
         if owned:
             c.close()
