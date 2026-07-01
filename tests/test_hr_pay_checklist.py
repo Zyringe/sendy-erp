@@ -265,9 +265,11 @@ def test_payroll_detail_shows_checklist_for_finalized_run(admin_client, tmp_db):
     assert 'จ่ายเงินเดือน (โอนเงิน)' in html
     assert 'เช็คลิสต์' in html
     assert 'ธนาคารกรุงไทย' in html
-    assert 'รอบันทึกการจ่าย' in html
-    # Phase 3 is read-only: no pay/unpay form should exist yet.
-    assert 'จ่ายแล้ว' not in html
+    # Phase 4 supersedes Phase 3's read-only assertion here: the checklist is
+    # now interactive for a can_edit_cashbook viewer (admin), so an unpaid
+    # net_pay>0 item renders the จ่ายแล้ว pay-from form, not static text.
+    # See tests/test_salary_pay_event.py for the full pay/unpay coverage.
+    assert 'จ่ายแล้ว' in html
 
 
 def test_payroll_detail_hides_checklist_for_draft_run(admin_client, tmp_db):
