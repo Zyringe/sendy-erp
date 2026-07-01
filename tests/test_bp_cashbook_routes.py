@@ -3,11 +3,11 @@
 Uses tmp_db so route + models + templates execute against a live-DB clone
 and never touch the real DB. Logs in as admin via session pre-population
 because the cashbook before_request middleware in app.py blocks staff
-entirely from cashbook.* and manager from POST /cashbook/import.
+entirely from cashbook.*.
 
-Covers 3 GET endpoints: dashboard, per-account ledger, and the import
-form page (GET — the POST path needs an .xlsx upload and is out of scope
-for happy-path coverage).
+Covers the 2 GET endpoints that remain after import/export retirement
+(Phase 1 of the cashbook-manual-entry plan): dashboard and per-account
+ledger.
 """
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
@@ -55,8 +55,8 @@ def test_cashbook_account_ledger_renders(admin_client, tmp_db):
     assert resp.status_code == 200, resp.data[:500]
 
 
-def test_cashbook_import_view_renders(admin_client):
-    """GET form page for the .xlsx import flow — POST path needs a file
-    and is covered separately by test_cashbook_import.py."""
-    resp = admin_client.get('/cashbook/import')
-    assert resp.status_code == 200, resp.data[:500]
+def test_cashbook_import_and_export_routes_retired(admin_client):
+    """Import/export were removed in Phase 1 (cashbook-manual-entry plan) —
+    the routes must no longer resolve."""
+    assert admin_client.get('/cashbook/import').status_code == 404
+    assert admin_client.get('/cashbook/export').status_code == 404

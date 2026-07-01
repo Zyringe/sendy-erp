@@ -477,8 +477,6 @@ _ENDPOINT_MODULE = {
     # cashbook
     'cashbook.dashboard':     'cashbook',
     'cashbook.account_ledger': 'cashbook',
-    'cashbook.import_view':   'cashbook',
-    'cashbook.export_view':   'cashbook',
     # admin_module
     'user_list': 'admin_module',
     'user_new': 'admin_module',
