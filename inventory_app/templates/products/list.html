@@ -8,9 +8,6 @@
   <i class="bi bi-tags me-1"></i>จัดหมวด
 </a>
 {% endif %}
-<a href="{{ url_for('products.csv_import') }}" class="btn btn-sm btn-outline-secondary">
-  <i class="bi bi-upload me-1"></i>นำเข้า CSV
-</a>
 {% endblock %}
 
 {% block content %}
@@ -103,14 +100,6 @@
           <td data-label="Lazada" class="text-end text-subtle">{{ p.lazada_stock | fmt_qty }}</td>
           <td class="text-center td-actions">
             {% if is_admin %}
-            <a href="{{ url_for('stock_in', product_id=p.id) }}"
-               class="btn btn-xs me-1" style="background:#dcf2e0;color:#2e7d3a;border:none" title="รับเข้า">
-              <i class="bi bi-arrow-down-circle"></i>
-            </a>
-            <a href="{{ url_for('stock_out', product_id=p.id) }}"
-               class="btn btn-xs me-1" style="background:#fdecee;color:#c41e2a;border:none" title="จ่ายออก">
-              <i class="bi bi-arrow-up-circle"></i>
-            </a>
             <a href="{{ url_for('products.product_edit', product_id=p.id) }}"
                class="btn btn-xs" style="background:#f1f5f9;color:#475569;border:none" title="แก้ไข">
               <i class="bi bi-pencil"></i>

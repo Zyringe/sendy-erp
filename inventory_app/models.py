@@ -614,41 +614,6 @@ def get_product_price_tiers(product_id: int):
         conn.close()
 
 
-# ── CSV Import ────────────────────────────────────────────────────────────────
-
-def bulk_import_products(rows: list, overwrite=False) -> tuple:
-    """rows: list of dicts with CSV fields. Returns (imported, skipped)."""
-    conn = get_connection()
-    imported = skipped = 0
-    for r in rows:
-        pid = r.get('product_id')
-        existing = None
-        if pid:
-            existing = conn.execute("SELECT id FROM products WHERE id = ?", (pid,)).fetchone()
-        if existing and not overwrite:
-            skipped += 1
-            continue
-        if existing and overwrite:
-            conn.execute("""
-                UPDATE products SET product_name=?, units_per_carton=?, units_per_box=?,
-                    unit_type=?, hard_to_sell=?
-                WHERE id=?
-            """, (r['product_name'], r['units_per_carton'], r['units_per_box'],
-                  r['unit_type'], r['hard_to_sell'], pid))
-            skipped += 1
-        else:
-            cur = conn.execute("""
-                INSERT INTO products (product_name, units_per_carton, units_per_box, unit_type, hard_to_sell)
-                VALUES (?, ?, ?, ?, ?)
-            """, (r['product_name'], r['units_per_carton'], r['units_per_box'],
-                  r['unit_type'], r['hard_to_sell']))
-            conn.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (cur.lastrowid,))
-            imported += 1
-    conn.commit()
-    conn.close()
-    return imported, skipped
-
-
 # ── BSN → Stock sync helpers ─────────────────────────────────────────────────
 
 def _get_base_qty(conn, product_id: int, product_unit_type: str, bsn_unit: str, qty):
