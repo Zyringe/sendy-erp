@@ -216,6 +216,21 @@
                  value="{{ form.get('note','') }}">
         </div>
 
+        <hr class="col-12 my-1">
+        <div class="col-12 small text-muted">การจ่ายเงินเดือน</div>
+        <div class="col-md-6">
+          <label class="form-label small">บัญชีจ่ายเงินเดือนเริ่มต้น</label>
+          <select name="default_cashbook_account_id" class="form-select form-select-sm">
+            <option value="">— ไม่ระบุ —</option>
+            {% for acct in cashbook_accounts %}
+            <option value="{{ acct.id }}"
+              {% if form.get('default_cashbook_account_id') == acct.id|string %}selected{% endif %}>
+              {{ acct.display_name or acct.code }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+
         <div class="col-12">
           <button type="submit" class="btn btn-primary">
             <i class="bi bi-save me-1"></i>บันทึก

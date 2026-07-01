@@ -197,6 +197,20 @@
                 <input type="text" name="note" class="form-control form-control-sm"
                        value="{{ employee.note or '' }}">
               </div>
+              {# Default pay-from account #}
+              <div class="col-12"><hr class="my-1"><small class="text-muted">การจ่ายเงินเดือน</small></div>
+              <div class="col-md-6">
+                <label class="form-label small">บัญชีจ่ายเงินเดือนเริ่มต้น</label>
+                <select name="default_cashbook_account_id" class="form-select form-select-sm">
+                  <option value="">— ไม่ระบุ —</option>
+                  {% for acct in cashbook_accounts %}
+                  <option value="{{ acct.id }}"
+                    {% if employee.default_cashbook_account_id == acct.id %}selected{% endif %}>
+                    {{ acct.display_name or acct.code }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </div>
               <div class="col-12">
                 <button type="submit" class="btn btn-primary btn-sm">
                   <i class="bi bi-save me-1"></i>บันทึก

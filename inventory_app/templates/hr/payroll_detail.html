@@ -165,6 +165,53 @@
   </div>
 </div>
 
+{# ── Transfer checklist (read-only display; Phase 3) ─────────────────────
+   Shows who to pay, their bank details, and the default pay-from account.
+   No form/POST here — the จ่ายแล้ว / ยกเลิกการจ่าย actions arrive in Phase 4. #}
+{% if run.status == 'finalized' %}
+<div class="card mt-3">
+  <div class="card-header">
+    <i class="bi bi-bank2 me-1"></i>จ่ายเงินเดือน (โอนเงิน)
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead>
+        <tr>
+          <th>ชื่อเล่น</th>
+          <th>ธนาคาร</th>
+          <th>เลขบัญชี</th>
+          <th class="text-end">เงินสุทธิ</th>
+          <th>บัญชีจ่ายเงินเดือน</th>
+          <th>สถานะ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in items %}
+        <tr>
+          <td class="small">{{ item.nickname or item.full_name }}</td>
+          <td class="small">
+            {% if item.bank_account_no %}
+              {{ item.bank_name or '–' }}
+            {% else %}
+              <span class="text-muted">ยังไม่มีเลขบัญชี</span>
+            {% endif %}
+          </td>
+          <td class="small font-mono">{{ item.bank_account_no or '–' }}</td>
+          <td class="text-end small fw-bold">{{ fmt_baht(item.net_pay) }}</td>
+          <td class="small">{{ item.default_cashbook_account_name or '—' }}</td>
+          <td><span class="text-muted small">รอบันทึกการจ่าย</span></td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="text-center text-muted py-3">ไม่มีรายการพนักงาน</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 {# ── Edit item modals (admin, draft only) ────────────────────────────────── #}
 {% if session.role == 'admin' and run.status == 'draft' %}
 {% for item in items %}

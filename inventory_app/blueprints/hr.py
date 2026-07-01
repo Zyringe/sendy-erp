@@ -201,6 +201,7 @@ def employee_new():
         page_title="เพิ่มพนักงาน",
         banks=BANK_OPTIONS,
         next_emp_code=hrq.next_emp_code(),
+        cashbook_accounts=hrq.get_active_cashbook_accounts(non_transfer_only=True),
     )
 
 
@@ -227,6 +228,7 @@ def employee_detail(id: int):
         be_year=_be_year,
         fmt_baht=_fmt_baht,
         linked_account=hrq.get_linked_account(emp["user_id"]),
+        cashbook_accounts=hrq.get_active_cashbook_accounts(non_transfer_only=True),
     )
 
 
