@@ -303,9 +303,13 @@ def test_product_beats_even_dead_on_amount_only(mm_conn):
     assert 'OA' not in links
 
 
-def _add_combo_formula(c, pack, comps):
+def _add_combo_formula(c, pack, comps, is_active=0):
+    """Combo markers are stored INACTIVE (is_active=0, like prod's fid 126) so they
+    never show up as a runnable /conversions — that inactive flag is exactly what
+    _combo_components keys on. Pass is_active=1 to simulate a real manufacturing
+    conversion, which must NOT be treated as a marketplace combo."""
     fid = c.execute("INSERT INTO conversion_formulas (name, output_product_id, output_qty, is_active) "
-                    "VALUES (?,?,1,1)", (f'[combo] {pack}', pack)).lastrowid
+                    "VALUES (?,?,1,?)", (f'[combo] {pack}', pack, is_active)).lastrowid
     for p in comps:
         c.execute("INSERT INTO conversion_formula_inputs (formula_id, product_id, quantity) VALUES (?,?,1)", (fid, p))
     c.commit()
@@ -339,3 +343,21 @@ def test_single_component_pack_is_not_expanded(mm_conn):
     _add_iv(c, 'IV_LOOSE', 150.0, '2026-06-05', product_id=911)     # only 911; amount off 50
     mm.run_automatch(c, 'shopee')
     assert c.execute("SELECT COUNT(*) FROM marketplace_order_invoice WHERE order_sn='O-PACK'").fetchone()[0] == 0
+
+
+def test_active_manufacturing_formula_not_expanded(mm_conn):
+    """A real (is_active=1) multi-input manufacturing conversion is NOT a marketplace
+    combo. _combo_components keys on the INACTIVE flag, so an active assembly formula
+    (e.g. building one finished product from several parts) can't silently corrupt
+    matching. Same shape as test_combo_order_matches_component_bundle_iv but active →
+    no expansion → the product overlap is never seen and (amount far off) no match."""
+    c = mm_conn
+    _add_combo_formula(c, 920, [921, 922], is_active=1)             # ACTIVE assembly, not a combo marker
+    _add_order(c, 'O-ACTIVE', 100.0, '2026-06-04', product_id=920)
+    _add_iv(c, 'IV_ASSY', 150.0, '2026-06-05', product_id=921)     # line 1 = part 921
+    c.execute("""INSERT INTO sales_transactions (date_iso, doc_no, doc_base, customer, customer_code,
+                 qty, unit_price, vat_type, total, net, product_id, created_at, synced_to_stock)
+                 VALUES ('2026-06-05','IV_ASSY-2','IV_ASSY','หน้าร้านS','Zหน้าร้าน',1,0,1,0,0,922,'2026-06-01 00:00:00',1)""")
+    c.commit()
+    mm.run_automatch(c, 'shopee')
+    assert c.execute("SELECT COUNT(*) FROM marketplace_order_invoice WHERE order_sn='O-ACTIVE'").fetchone()[0] == 0
