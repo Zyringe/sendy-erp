@@ -266,3 +266,23 @@ def test_exact_match_not_stolen_by_fuzzy_neighbour(mm_conn):
         "SELECT order_sn, doc_base, confidence FROM marketplace_order_invoice WHERE platform='shopee'")}
     assert links['OB'] == ('IV_SHARED', 'confident')   # exact match locked, not stolen by OA
     assert links['OA'][0] == 'IV_A'                    # OA falls to its own amount-exact invoice
+
+
+def test_product_match_not_stolen_by_amount_only_neighbour(mm_conn):
+    """A product-overlap match with a FEE-DIVERGENT amount must not be displaced by
+    an older amount-only order. This is the 913281 case: a Lazada order (product
+    1543, payout 245.98) whose IV is the same product at net 299 — an unrelated
+    ~290 order must NOT steal that IV just because the amount is close. The exact
+    pass can't protect it (amount off by 53), so a product-overlap pass must run
+    before any amount-only fallback."""
+    c = mm_conn
+    # OA (older): no shared product; payout 100 EXACTLY equals IV_X → pure amount candidate.
+    # OB (newer): shares IV_X's product 500; payout 60 vs IV 100 → amount off 40 (fee-like).
+    _add_order(c, 'OA', 100.0, '2026-06-04')
+    _add_order(c, 'OB', 60.0,  '2026-06-05', product_id=500)
+    _add_iv(c, 'IV_X', 100.0, '2026-06-06', product_id=500)
+    mm.run_automatch(c, 'shopee')
+    links = {r['order_sn']: r['doc_base'] for r in c.execute(
+        "SELECT order_sn, doc_base FROM marketplace_order_invoice WHERE platform='shopee'")}
+    assert links.get('OB') == 'IV_X'      # product match wins its own invoice
+    assert 'OA' not in links              # amount-only neighbour did NOT steal it
