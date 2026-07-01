@@ -196,7 +196,7 @@ def product_new():
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
             return render_template('products/form.html', product=f, action='new')
 
-        pid = models.create_product(data)
+        pid = models.create_structured_product(data, 'manual')
         locations = request.form.getlist('floor_no')
         models.save_product_locations(pid, locations)
         flash('เพิ่มสินค้าเรียบร้อย', 'success')

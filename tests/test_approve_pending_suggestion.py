@@ -254,6 +254,29 @@ def test_approve_unmatched_category_text_leaves_null(empty_db_with_user):
     assert row[0] is None
 
 
+def test_approve_generates_sku_code_and_stamps_created_via(empty_db_with_user):
+    """Regression (P3, product-creation-consolidation): approve used to
+    leave sku_code NULL on every product it created. It now routes through
+    models.create_structured_product, which always (re)generates sku_code
+    and stamps created_via='smart_mapping'."""
+    empty_db, uid = empty_db_with_user
+    import models
+    sid = _stage_minimal(_stage_payload('TEST008'), user_id=uid)
+
+    new_pid = models.approve_pending_suggestion(sid, edits={}, reviewer_id=uid)
+
+    conn = sqlite3.connect(empty_db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT sku_code, created_via FROM products WHERE id = ?",
+        (new_pid,),
+    ).fetchone()
+    conn.close()
+
+    assert row['sku_code'] is not None
+    assert row['created_via'] == 'smart_mapping'
+
+
 def test_approve_falls_back_to_catchall_when_bsn_unit_missing(empty_db_with_user):
     """A suggestion with no bsn_unit (no purchase/sale history) still maps the
     code to its new product (mig 112: one row per bsn_code, no unit scoping)."""

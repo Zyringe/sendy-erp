@@ -90,6 +90,38 @@ def test_product_detail_unknown_id_redirects_to_list(admin_client):
     )
 
 
+def test_product_new_get_renders(admin_client):
+    resp = admin_client.get('/products/new')
+    assert resp.status_code == 200, resp.data[:500]
+
+
+def test_product_new_post_creates_via_structured_path(admin_client, tmp_db):
+    """P3 regression: /products/new POST now calls
+    models.create_structured_product(data, 'manual') instead of the bare
+    models.create_product — the created row must carry created_via='manual'
+    and a (fallback) sku_code, and the response redirects to the new
+    product's detail page."""
+    resp = admin_client.post('/products/new', data={
+        'product_name': 'pytest route-created product',
+        'unit_type': 'ตัว',
+        'cost_price': '5.5',
+        'base_sell_price': '9.9',
+    }, follow_redirects=False)
+    assert resp.status_code == 302, resp.data[:500]
+
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT id, created_via, sku_code FROM products "
+        "WHERE product_name = 'pytest route-created product'"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row['created_via'] == 'manual'
+    assert row['sku_code'] == f"INT-{row['id']}"
+    assert resp.headers['Location'].endswith(f"/products/{row['id']}")
+
+
 def test_products_show_alt_renders(admin_client):
     """The 'เติมได้จากแพ็ค' tick (show_alt) must render without error."""
     resp = admin_client.get('/products?show_alt=1')
