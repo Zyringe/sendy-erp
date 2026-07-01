@@ -1,0 +1,49 @@
+-- 123_cashbook_manual_entry.sql
+-- Groundwork for manual cashbook entry + salary pay-event posting (Phase 1 of
+-- the cashbook-manual-entry plan; see sendy_erp/docs/adr/0005-*.md, 0006-*.md).
+--
+-- NOTE: plan.md said "next number = 122", but by the time this shipped a
+-- sibling in-flight worktree (feat/product-creation-consolidation) had already
+-- claimed 122_product_created_via.sql against the shared local dev DB (not yet
+-- merged to main). Renumbered to 123 to avoid a filename collision; the two
+-- migrations are schema-orthogonal (different tables), so no functional clash.
+--
+-- cashbook_transactions: created_by (who entered/edited a manual row) +
+--   payroll_run_id/payroll_item_id (link to the payroll item a salary
+--   pay-event row was posted for; NULL = manual row).
+-- employees.default_cashbook_account_id: per-employee default pay-from
+--   account for the future salary pay-event UI (Phase 3/4); nullable,
+--   overridable at pay time.
+--
+-- NOTE: do NOT self-insert into applied_migrations (the runner records it).
+BEGIN;
+
+ALTER TABLE cashbook_transactions ADD COLUMN created_by      TEXT;
+ALTER TABLE cashbook_transactions ADD COLUMN payroll_run_id  INTEGER REFERENCES payroll_runs(id);
+ALTER TABLE cashbook_transactions ADD COLUMN payroll_item_id INTEGER REFERENCES payroll_items(id);
+
+CREATE INDEX idx_cashbook_txn_payroll_item ON cashbook_transactions(payroll_item_id);
+
+ALTER TABLE employees ADD COLUMN default_cashbook_account_id INTEGER REFERENCES cashbook_accounts(id);
+
+-- Best-effort seed of the per-employee default pay-from account from history:
+-- the account of that employee's most-recent hand-typed เงินเดือน row (matched
+-- by nickname = user_category). Harmless if wrong — it's just a UI default,
+-- overridable per-payment later. On a DB with zero cashbook_transactions rows
+-- (e.g. a fresh test DB built during init_db()) this UPDATE matches and
+-- changes 0 rows — not independently unit-testable there. The real seed
+-- values must be verified against the live DB after this migration applies
+-- there (see tests/test_migration_123_cashbook_manual_entry.py header note).
+UPDATE employees
+   SET default_cashbook_account_id = (
+       SELECT t.account_id
+         FROM cashbook_transactions t
+        WHERE t.category = 'เงินเดือน'
+          AND t.user_category = employees.nickname
+        ORDER BY t.txn_date DESC, t.id DESC
+        LIMIT 1)
+ WHERE nickname IS NOT NULL AND nickname != ''
+   AND EXISTS (SELECT 1 FROM cashbook_transactions t2
+                WHERE t2.category='เงินเดือน' AND t2.user_category = employees.nickname);
+
+COMMIT;
