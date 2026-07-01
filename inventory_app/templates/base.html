@@ -243,8 +243,8 @@
     </a>
     {% endif %}
 
-    {# ── บัญชีรับ-จ่าย — admin/manager only ── #}
-    {% if active_module == 'cashbook' and session.role in ['admin', 'manager'] %}
+    {# ── บัญชีรับ-จ่าย — admin/manager/shareholder (all can view + edit cashbook) ── #}
+    {% if active_module == 'cashbook' and session.role in ['admin', 'manager', 'shareholder'] %}
     <div class="sidebar-section">บัญชีรับ-จ่าย</div>
     <a href="{{ url_for('cashbook.dashboard', vat='novat') }}"
        class="sidebar-link {% if request.endpoint == 'cashbook.dashboard' %}active{% endif %}">
