@@ -57,6 +57,41 @@ def test_product_detail_renders(admin_client, tmp_db):
     assert resp.status_code == 200, resp.data[:500]
 
 
+def test_product_detail_created_via_badge(admin_client, tmp_db):
+    """P5: the detail page's ที่มา badge maps products.created_via to a
+    Thai label (manual/smart_mapping/legacy) and renders nothing for NULL.
+    Uses the isolated tmp_db copy so these writes never touch the live DB."""
+    conn = sqlite3.connect(tmp_db)
+    ids = [r[0] for r in conn.execute(
+        "SELECT id FROM products WHERE is_active = 1 ORDER BY id LIMIT 4"
+    ).fetchall()]
+    if len(ids) < 4:
+        pytest.skip("Need at least 4 active products in live DB clone")
+    pid_manual, pid_smart, pid_legacy, pid_null = ids
+    conn.execute("UPDATE products SET created_via='manual' WHERE id=?", (pid_manual,))
+    conn.execute("UPDATE products SET created_via='smart_mapping' WHERE id=?", (pid_smart,))
+    conn.execute("UPDATE products SET created_via='legacy' WHERE id=?", (pid_legacy,))
+    conn.execute("UPDATE products SET created_via=NULL WHERE id=?", (pid_null,))
+    conn.commit()
+    conn.close()
+
+    resp = admin_client.get(f'/products/{pid_manual}')
+    assert resp.status_code == 200
+    assert 'เพิ่มเอง' in resp.data.decode('utf-8')
+
+    resp = admin_client.get(f'/products/{pid_smart}')
+    assert resp.status_code == 200
+    assert 'จาก Smart Mapping' in resp.data.decode('utf-8')
+
+    resp = admin_client.get(f'/products/{pid_legacy}')
+    assert resp.status_code == 200
+    assert 'เดิม' in resp.data.decode('utf-8')
+
+    resp = admin_client.get(f'/products/{pid_null}')
+    assert resp.status_code == 200
+    assert 'ที่มา</td>' not in resp.data.decode('utf-8')
+
+
 def test_product_cost_history_returns_json(admin_client, tmp_db):
     """Admin/manager-gated JSON endpoint — guards the WACC history
     surface that finance reports depend on."""

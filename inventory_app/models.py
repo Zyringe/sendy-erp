@@ -124,6 +124,7 @@ def get_product(product_id):
                p.low_stock_threshold, p.is_active, p.brand_id, p.category_id,
                p.sub_category, p.series, p.model, p.size,
                p.color_code, p.packaging_th, p.packaging_short, p.condition, p.pack_variant,
+               p.created_via,
                p.created_at, p.updated_at,
                COALESCE(s.quantity, 0) AS quantity,
                CASE WHEN COALESCE(s.quantity, 0) <= p.low_stock_threshold THEN 1 ELSE 0 END AS is_low,
