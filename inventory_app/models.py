@@ -5557,6 +5557,17 @@ def _bucket_fee_lines(d, fee_raw_json=None, platform=None):
     return lines
 
 
+def _fee_pct_str(item_value, fee_total):
+    """Total take-rate 'X.X%' = fee_total / item_value, computed IDENTICALLY for both
+    platforms so the settlement % is comparable. Shopee's Income file ships a partial
+    'ค่าธรรมเนียม (%)' column (~3.21% — only the transaction fee); Lazada already
+    computes the total. We compute the true total deduction here for both instead of
+    trusting the per-platform stored value. Blank when there is no positive ยอดสินค้า."""
+    if not item_value or item_value <= 0 or fee_total is None:
+        return ''
+    return f"{round(fee_total / item_value * 100, 1)}%"
+
+
 def get_payout_orders(conn, platform, payout_id):
     """The order rows for ONE bank deposit (fetched on expand). Fills the 3
     columns (item_value / fee_total / net_payout) from the best source, tagged
@@ -5606,6 +5617,11 @@ def get_payout_orders(conn, platform, payout_id):
         # Lazada uses fee_raw_json to smart-label single-source buckets.
         d['fee_lines'] = (_bucket_fee_lines(d, d.get('fee_raw_json'), platform)
                           if d.get('fee_source') == 'settled' else None)
+        # Unify the settlement % across platforms: total take-rate = fee ÷ ยอดสินค้า,
+        # computed here for both (Shopee's stored fee_pct is only its partial
+        # transaction-fee %). Only settled rows carry a %, same footprint as before.
+        d['fee_pct'] = (_fee_pct_str(d.get('item_value'), d.get('fee_total'))
+                        if d.get('fee_source') == 'settled' else None)
         d.pop('fee_raw_json', None)
         for col, _label in _FEE_LABELS:
             d.pop(col, None)
