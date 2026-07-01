@@ -157,22 +157,31 @@ def create_product(data: dict) -> int:
     return pid
 
 
-def create_structured_product(fields: dict, created_via: str) -> int:
+def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
     """Canonical structured product-creation path (P3 of the
-    product-creation-consolidation plan). Single transaction: resolves
-    inline "other" brand/color into new FK rows, resolves a free-text
-    `category` into `category_id` when no id was given, derives
-    `packaging_short` from `packaging_th`, inserts the product row (spec
-    columns + core numeric fields + `created_via`), ensures a matching
-    `stock_levels` row, then sets `product_name` (an explicit override is
-    kept verbatim; otherwise it's derived from the spec columns via
-    `name_builder.rebuild_product_name`) and always (re)generates
-    `sku_code` (collision-safe, falls back to `INT-<id>` when no
-    structured fields are present).
+    product-creation-consolidation plan). Resolves inline "other"
+    brand/color into new FK rows, resolves a free-text `category` into
+    `category_id` when no id was given, derives `packaging_short` from
+    `packaging_th`, inserts the product row (spec columns + core numeric
+    fields + `created_via`), ensures a matching `stock_levels` row, then
+    sets `product_name` (an explicit override is kept verbatim; otherwise
+    it's derived from the spec columns via `name_builder.rebuild_product_name`)
+    and always (re)generates `sku_code` (collision-safe, falls back to
+    `INT-<id>` when no structured fields are present).
 
     Both real create entry points route through this: the `/products/new`
     hand form (`created_via='manual'`) and Smart Suggest approval
     (`created_via='smart_mapping'`).
+
+    Transaction ownership: when `conn` is omitted, this function opens its
+    own connection and is a self-contained transaction (commits on success,
+    rolls back + closes on error) — used by the standalone `/products/new`
+    path. When a caller passes its own `conn` (e.g. `approve_pending_suggestion`,
+    which does more writes — the BSN-mapping upsert, unit_conversion,
+    suggestion status — around this call), this function does NOT commit,
+    rollback, or close; it just raises on error so the CALLER's transaction
+    owns the all-or-nothing outcome (no orphan product on a later step's
+    failure).
 
     `fields` keys (all optional unless noted):
       product_name          -- explicit override; falsy => name is derived
@@ -188,12 +197,14 @@ def create_structured_product(fields: dict, created_via: str) -> int:
       shopee_stock, lazada_stock (default 0)
       units_per_carton, units_per_box (default 1)
 
-    Returns the new product id. Raises and rolls back (no orphan
-    product/stock_levels row left behind) on any error, e.g. an invalid
-    `packaging_th` value (the products_packaging_th_check_insert trigger).
+    Returns the new product id. Raises on any error, e.g. an invalid
+    `packaging_th` value (the products_packaging_th_check_insert trigger) —
+    with `conn=None` this leaves no orphan product/stock_levels row; with a
+    caller-supplied `conn`, the caller's own rollback is responsible for that.
     """
     d = dict(fields)
-    conn = get_connection()
+    own_conn = conn is None
+    conn = conn or get_connection()
     try:
         # brand: if brand_other_name set and no brand_id -> INSERT new brand row
         if not d.get('brand_id') and d.get('brand_other_name'):
@@ -293,13 +304,16 @@ def create_structured_product(fields: dict, created_via: str) -> int:
         # sku_code: always (re)generate — collision-safe, falls back to INT-<id>
         regenerate_for_product(conn, new_pid)
 
-        conn.commit()
+        if own_conn:
+            conn.commit()
         return new_pid
     except Exception:
-        conn.rollback()
+        if own_conn:
+            conn.rollback()
         raise
     finally:
-        conn.close()
+        if own_conn:
+            conn.close()
 
 
 def update_product(product_id: int, data: dict):
@@ -5202,15 +5216,15 @@ def save_pending_suggestion(data: dict, user_id: int) -> int:
 
 def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int) -> int:
     """Apply manager/admin edits → create product → map BSN code → mark approved.
-    Returns the new product id.
-
-    The product row itself (spec cols + derived/override name + sku_code) is
-    created by `create_structured_product` (P3 of the product-creation-
-    consolidation plan; stamps `created_via='smart_mapping'`) — that call is
-    its own transaction. This function's own transaction (on `conn`) then
-    covers the surrounding BSN-mapping upsert, unit_conversion insert, and
-    the suggestion's status update. `edits` dict overrides any field on the
-    staged suggestion."""
+    Returns the new product id. Single transaction (on `conn`) — the product
+    row itself (spec cols + derived/override name + sku_code) is created by
+    `create_structured_product` (P3 of the product-creation-consolidation
+    plan; stamps `created_via='smart_mapping'`), called WITH this function's
+    `conn` so it participates in the same transaction rather than committing
+    on its own. That plus the surrounding BSN-mapping upsert, unit_conversion
+    insert, and suggestion status update all commit or roll back together —
+    a failure anywhere leaves no orphan product/mapping row. `edits` dict
+    overrides any field on the staged suggestion."""
     conn = get_connection()
     try:
         sug = conn.execute(
@@ -5233,7 +5247,10 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         # Row-insert + name + sku_code all go through the canonical create
         # path. It re-resolves brand_other_name/color_code_other into new FK
         # rows and free-text `category` into `category_id` itself (same
-        # logic this function used to inline).
+        # logic this function used to inline). Passing OUR conn keeps it
+        # inside this function's own transaction — no separate commit, so
+        # the mapping/status writes below can still roll everything back
+        # together on failure (no orphan product).
         new_pid = create_structured_product({
             'product_name': d.get('suggested_name') or d.get('bsn_name'),
             'brand_id': d.get('brand_id'),
@@ -5253,7 +5270,7 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
             'cost_price': d.get('suggested_cost') or 0.0,
             'units_per_carton': d.get('units_per_carton') or 1,
             'units_per_box': d.get('units_per_box') or 1,
-        }, 'smart_mapping')
+        }, 'smart_mapping', conn=conn)
 
         # Upsert mapping (bsn_code → new product) — one row per code (mig 112).
         # UPDATE-then-INSERT mirrors upsert_mapping() (boundary-safe; reuses the
