@@ -725,6 +725,17 @@ def reopen_run(run_id: int, reason: str, actor: str,
             return None
         if run["status"] != "finalized":
             return run
+        paid_count = c.execute(
+            "SELECT COUNT(*) FROM cashbook_transactions WHERE payroll_run_id = ?",
+            (run_id,),
+        ).fetchone()[0]
+        if paid_count:
+            # Never edit a salary figure while its cash is already posted —
+            # the admin must ยกเลิกการจ่าย every paid item first (Phase 4).
+            raise ValueError(
+                f"มี {paid_count} รายการจ่ายเงินเดือนที่บันทึกไว้แล้ว — "
+                f"กรุณายกเลิกการจ่ายทั้งหมดก่อนจึงจะ reopen ได้"
+            )
         c.execute(
             "UPDATE payroll_runs SET status='draft', finalized_at=NULL WHERE id=?",
             (run_id,),
@@ -740,3 +751,131 @@ def reopen_run(run_id: int, reason: str, actor: str,
         return c.execute(
             "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
         ).fetchone()
+
+
+# ── salary pay-event posting (ADR 0006) ──────────────────────────────────────
+def post_salary_payment(item_id: int, account_id: int,
+                        pay_date: Optional[str], actor: str,
+                        conn: Optional[sqlite3.Connection] = None,
+                        db_path: Optional[str] = None) -> int:
+    """Post the per-employee salary pay-event ("จ่ายแล้ว") — ONE linked
+    `cashbook_transactions` expense row for `payroll_items.id = item_id`.
+
+    Paid-state is DERIVED from this row's existence (no `paid` column), so
+    this function is the single write path and must stay idempotent.
+
+    Rejects (raises ValueError, Thai message) when:
+      - the item's net_pay <= 0 (nothing to transfer)
+      - a cashbook row is already linked to this item (no double-post)
+      - the chosen account is inactive or is_transfer=1 (would hide the
+        expense from the cashbook P&L — see cashbook.py dashboard exclusion)
+
+    Returns the new cashbook_transactions.id.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        item = c.execute(
+            "SELECT * FROM payroll_items WHERE id = ?", (item_id,)
+        ).fetchone()
+        if item is None:
+            raise ValueError(f"ไม่พบรายการ payroll_items id {item_id}")
+
+        if item["net_pay"] <= 0:
+            raise ValueError("เงินสุทธิ <= 0 — ไม่มียอดโอน ไม่สามารถบันทึกการจ่ายได้")
+
+        existing = c.execute(
+            "SELECT id FROM cashbook_transactions WHERE payroll_item_id = ?",
+            (item_id,),
+        ).fetchone()
+        if existing is not None:
+            raise ValueError(
+                f"รายการนี้ถูกบันทึกจ่ายไปแล้ว (cashbook id {existing['id']}) — "
+                f"ต้องยกเลิกการจ่ายก่อนจึงจะบันทึกใหม่ได้"
+            )
+
+        account = c.execute(
+            "SELECT * FROM cashbook_accounts WHERE id = ?", (account_id,)
+        ).fetchone()
+        if account is None or account["is_active"] != 1:
+            raise ValueError("บัญชีที่เลือกไม่ถูกต้องหรือถูกปิดใช้งานแล้ว")
+        if account["is_transfer"] == 1:
+            raise ValueError("ไม่สามารถจ่ายเงินเดือนเข้าบัญชีประเภทเงินโอนได้")
+
+        run = c.execute(
+            "SELECT year_month, status FROM payroll_runs WHERE id = ?",
+            (item["run_id"],),
+        ).fetchone()
+        if run is None:
+            raise ValueError("ไม่พบรอบเงินเดือนของรายการนี้")
+        # Defense-in-depth: the route already gates finalized, but the invariant
+        # "paid rows only on finalized runs" (which keeps generate_run's item
+        # DELETE off referenced rows) must hold for any caller.
+        if run["status"] != "finalized":
+            raise ValueError("บันทึกการจ่ายได้เฉพาะรอบเงินเดือนที่ finalized แล้วเท่านั้น")
+        year_month = run["year_month"]
+
+        emp = c.execute(
+            "SELECT nickname, full_name FROM employees WHERE id = ?",
+            (item["employee_id"],),
+        ).fetchone()
+        display_name = (emp["nickname"] or emp["full_name"]) if emp else ""
+
+        txn_date = pay_date or date.today().isoformat()
+        description = f"เงินเดือน {year_month} — {display_name}"
+
+        try:
+            cur = c.execute(
+                """INSERT INTO cashbook_transactions
+                     (account_id, txn_date, direction, category, amount,
+                      user_category, description, created_by,
+                      payroll_run_id, payroll_item_id)
+                   VALUES (?, ?, 'expense', 'เงินเดือน', ?, ?, ?, ?, ?, ?)""",
+                (account_id, txn_date, item["net_pay"], display_name, description,
+                 actor, item["run_id"], item_id),
+            )
+        except sqlite3.IntegrityError:
+            # UNIQUE(payroll_item_id) tripped — a concurrent request already
+            # posted this item (check-then-insert race under gunicorn -w 2 or a
+            # double-submit). Surface as ValueError so the route flashes instead
+            # of 500ing. The DB constraint, not this Python check, is the real
+            # idempotency guarantee.
+            raise ValueError(
+                "รายการนี้ถูกบันทึกจ่ายไปแล้ว — ต้องยกเลิกการจ่ายก่อนจึงจะบันทึกใหม่ได้"
+            )
+        txn_id = cur.lastrowid
+        # Attribute the cash-out to the actor: the mig-076 AFTER INSERT trigger
+        # stamps user=NULL, so mirror void_salary_payment's explicit audit row.
+        c.execute(
+            """INSERT INTO audit_log (table_name, row_id, action, changed_fields, user)
+                 VALUES ('cashbook_transactions', ?, 'INSERT', ?, ?)""",
+            (txn_id,
+             json.dumps({"payroll_item_id": item_id, "amount": item["net_pay"],
+                         "account_id": account_id}, ensure_ascii=False),
+             actor),
+        )
+        c.commit()
+        return txn_id
+
+
+def void_salary_payment(item_id: int, actor: str,
+                        conn: Optional[sqlite3.Connection] = None,
+                        db_path: Optional[str] = None) -> None:
+    """Void a salary pay-event ("ยกเลิกการจ่าย") — deletes the linked
+    `cashbook_transactions` row for this payroll item (the paid-state source
+    of truth). No-op if no row is linked."""
+    with _ConnCtx(conn, db_path) as c:
+        row = c.execute(
+            "SELECT id FROM cashbook_transactions WHERE payroll_item_id = ?",
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            return
+        txn_id = row["id"]
+        c.execute("DELETE FROM cashbook_transactions WHERE id = ?", (txn_id,))
+        c.execute(
+            """INSERT INTO audit_log (table_name, row_id, action, changed_fields, user)
+                 VALUES ('cashbook_transactions', ?, 'DELETE', ?, ?)""",
+            (txn_id,
+             json.dumps({"payroll_item_id": item_id}, ensure_ascii=False),
+             actor),
+        )
+        c.commit()

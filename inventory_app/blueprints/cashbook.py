@@ -1,39 +1,36 @@
-"""Cashbook blueprint — รายรับ/รายจ่าย dashboard, ledger, import, export.
+"""Cashbook blueprint — รายรับ/รายจ่าย dashboard, ledger, manual entry.
 
 Access control
 --------------
-  admin   : full access (GET + import POST + export)
-  manager : read-only (GET dashboard/ledger/export); POST /cashbook/import is
-            blocked by before_request (not in _MANAGER_POST_OK) + belt-and-braces
-            abort(403) inside the POST handler.
+  admin / manager / shareholder : full read + manual add/edit/delete
+                                   (POST whitelisted in app.py; see
+                                   `_MANAGER_POST_OK` + the shareholder
+                                   POST set).
   staff   : blocked entirely — before_request redirects any cashbook.* endpoint.
+
+Manual rows (payroll_item_id IS NULL) can be edited/deleted here. Salary
+pay-event rows (payroll_item_id set, added by a later phase) are locked —
+see `_reject_if_salary_row`.
 
 Python 3.9 — no `X | None` union syntax.
 """
 from __future__ import annotations
 
-import io
-import os
-import tempfile
+import json
+import re
+from datetime import date
 from typing import Optional
 
-import openpyxl
 from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
-                   request, session, url_for, make_response)
+                   request, session, url_for)
 
 import database
-import import_cashbook as cashbook_mod
-from parse_cashbook import parse_cashbook
+import hr_queries as hrq
 
 bp_cashbook = Blueprint("cashbook", __name__, url_prefix="/cashbook")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _require_admin():
-    if session.get("role") != "admin":
-        abort(403)
-
 
 def _fmt_baht(val) -> str:
     try:
@@ -340,6 +337,11 @@ def account_ledger(account_id):
                ORDER BY m""",
             (account_id,),
         ).fetchall()
+
+        # For the per-row edit modals (manual rows only — see txn_edit.html).
+        accounts = hrq.get_active_cashbook_accounts(conn)
+        categories_by_direction = _categories_by_direction(conn)
+        known_tags = _get_known_user_tags(conn)
     finally:
         conn.close()
 
@@ -359,270 +361,303 @@ def account_ledger(account_id):
         sum_expense=sum_expense,
         balance=sum_income - sum_expense,
         months=[r["m"] for r in months],
+        accounts=accounts,
+        categories_by_direction=categories_by_direction,
+        known_tags=known_tags,
     )
 
 
-@bp_cashbook.route("/import", methods=["GET", "POST"])
-def import_view():
-    if request.method == "POST":
-        # Belt-and-braces admin check (before_request handles manager redirect;
-        # this catches any bypass attempt).
-        if session.get("role") != "admin":
-            abort(403)
+# ── Manual entry (batch add / edit / delete) ──────────────────────────────────
+#
+# Write access is gated in app.py: `_MANAGER_POST_OK` and the shareholder POST
+# set both whitelist `cashbook.new_transaction` / `.txn_edit` / `.txn_delete`.
+# Staff is blocked entirely by the before_request cashbook.* check above.
 
-        f = request.files.get("cashbook_file")
-        if not f or not f.filename.endswith(".xlsx"):
-            flash("กรุณาเลือกไฟล์ .xlsx", "danger")
-            return redirect(url_for("cashbook.import_view"))
+_ROW_AMOUNT_RE = re.compile(r"^rows-(\d+)-amount$")
 
-        # Save to temp file
-        tmp = tempfile.NamedTemporaryFile(
-            suffix=".xlsx", delete=False,
-            dir=os.path.join(os.path.dirname(os.path.dirname(__file__)), "imports")
-        )
+
+def _categories_by_direction(conn):
+    """{'income': [name, ...], 'expense': [name, ...]} for the category
+    <datalist>s, active categories only."""
+    rows = conn.execute(
+        """SELECT name, direction FROM cashbook_categories
+            WHERE is_active = 1
+            ORDER BY direction, sort_order, name"""
+    ).fetchall()
+    out = {"income": [], "expense": []}
+    for r in rows:
+        out.setdefault(r["direction"], []).append(r["name"])
+    return out
+
+
+def _get_known_user_tags(conn):
+    """Distinct ผู้ใช้ tags already used, for the user_category <datalist>.
+    There is no separate tags table — user_category is free text on
+    cashbook_transactions."""
+    rows = conn.execute(
+        """SELECT DISTINCT user_category FROM cashbook_transactions
+            WHERE user_category IS NOT NULL AND user_category != ''
+            ORDER BY user_category"""
+    ).fetchall()
+    return [r["user_category"] for r in rows]
+
+
+def _blank_rows(n=8):
+    return [
+        {"index": i, "direction": "expense", "category": "", "user_category": "",
+         "amount": "", "description": "", "note": "", "errors": []}
+        for i in range(n)
+    ]
+
+
+def _parse_batch_rows(form):
+    """Parse indexed `rows-<i>-*` fields from a submitted batch form into an
+    ordered list of dicts (one per submitted row slot). Purely mechanical —
+    validation happens in the caller."""
+    indices = sorted(int(m.group(1)) for k in form.keys()
+                      for m in [_ROW_AMOUNT_RE.match(k)] if m)
+    rows = []
+    for i in indices:
+        rows.append({
+            "index": i,
+            "direction": form.get(f"rows-{i}-direction", "expense").strip(),
+            "category": form.get(f"rows-{i}-category", "").strip(),
+            "user_category": form.get(f"rows-{i}-user_category", "").strip(),
+            "amount": form.get(f"rows-{i}-amount", "").strip(),
+            "description": form.get(f"rows-{i}-description", "").strip(),
+            "note": form.get(f"rows-{i}-note", "").strip(),
+            "errors": [],
+        })
+    return rows
+
+
+def _validate_batch(rows):
+    """Validate non-blank rows in place (sets row['errors']); blank rows
+    (amount empty) are left untouched — they're skipped, not errors.
+    Returns the list of rows that are valid AND non-blank, each with a
+    parsed float `amount`."""
+    to_insert = []
+    for r in rows:
+        if not r["amount"]:
+            continue  # blank row — silently skipped
+        errors = []
         try:
-            f.save(tmp.name)
-            tmp.close()
+            amount = float(r["amount"])
+        except ValueError:
+            amount = None
+        if amount is None or amount <= 0:
+            errors.append("จำนวนเงินต้องมากกว่า 0")
+        if r["direction"] not in ("income", "expense"):
+            errors.append("ประเภทไม่ถูกต้อง")
+        if not r["category"]:
+            errors.append("กรุณาระบุหมวดหมู่")
+        if errors:
+            r["errors"] = errors
+        else:
+            to_insert.append({**r, "amount": amount})
+    return to_insert
 
-            summary = cashbook_mod.import_cashbook(tmp.name)
-        finally:
-            try:
-                os.unlink(tmp.name)
-            except OSError:
-                pass
 
-        return render_template("cashbook/import_result.html", summary=summary,
-                               filename=f.filename)
-
-    return render_template("cashbook/import.html")
+def _upsert_category(conn, name, direction):
+    conn.execute(
+        "INSERT OR IGNORE INTO cashbook_categories(name,direction,source) VALUES(?,?,NULL)",
+        (name, direction),
+    )
 
 
-@bp_cashbook.route("/export")
-def export_view():
+@bp_cashbook.route("/new", methods=["GET", "POST"])
+def new_transaction():
     conn = database.get_connection()
     try:
-        xlsx_bytes = _build_export_xlsx(conn)
+        accounts = hrq.get_active_cashbook_accounts(conn)
+        account_ids = {a["id"] for a in accounts}
+
+        if request.method == "POST":
+            txn_date = request.form.get("txn_date", "").strip() or date.today().isoformat()
+            account_id_raw = request.form.get("account_id", "").strip()
+            account_id = int(account_id_raw) if account_id_raw.isdigit() else None
+
+            rows = _parse_batch_rows(request.form)
+            to_insert = _validate_batch(rows)
+
+            form_errors = []
+            if account_id not in account_ids:
+                form_errors.append("กรุณาเลือกบัญชีที่ถูกต้องและยังใช้งานอยู่")
+            row_errors = any(r["errors"] for r in rows)
+            if not form_errors and not row_errors and not to_insert:
+                form_errors.append("กรุณากรอกอย่างน้อย 1 รายการ")
+
+            if form_errors or row_errors:
+                for msg in form_errors:
+                    flash(msg, "danger")
+                return render_template(
+                    "cashbook/new.html",
+                    accounts=accounts,
+                    txn_date=txn_date,
+                    account_id=account_id_raw,
+                    rows=rows,
+                    categories_by_direction=_categories_by_direction(conn),
+                    known_tags=_get_known_user_tags(conn),
+                )
+
+            # All rows valid — insert within one transaction (single connection,
+            # single commit): upsert any brand-new category first, then the rows.
+            created_by = session.get("display_name") or session.get("username")
+            for r in to_insert:
+                _upsert_category(conn, r["category"], r["direction"])
+            for r in to_insert:
+                conn.execute(
+                    """INSERT INTO cashbook_transactions
+                       (account_id, txn_date, direction, category, user_category,
+                        amount, description, note, created_by)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (account_id, txn_date, r["direction"], r["category"],
+                     r["user_category"] or None, r["amount"],
+                     r["description"] or None, r["note"] or None, created_by),
+                )
+            conn.commit()
+            flash(f"บันทึก {len(to_insert)} รายการเรียบร้อย", "success")
+            return redirect(url_for("cashbook.account_ledger", account_id=account_id))
+
+        return render_template(
+            "cashbook/new.html",
+            accounts=accounts,
+            txn_date=date.today().isoformat(),
+            account_id="",
+            rows=_blank_rows(),
+            categories_by_direction=_categories_by_direction(conn),
+            known_tags=_get_known_user_tags(conn),
+        )
     finally:
         conn.close()
 
-    filename = "cashbook_export.xlsx"
-    response = make_response(xlsx_bytes)
-    response.headers["Content-Type"] = (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
-    return response
+
+def _reject_if_salary_row(row):
+    """Salary pay-event rows (payroll_item_id set, posted by a later phase)
+    are locked — never editable/deletable from the cashbook. Flashes + aborts
+    403 if locked."""
+    if row["payroll_item_id"] is not None:
+        flash("รายการนี้เป็นรายการเงินเดือนที่ผูกกับ Payroll — แก้ไข/ลบที่นี่ไม่ได้", "danger")
+        abort(403)
 
 
-# ── Export builder ────────────────────────────────────────────────────────────
-
-def _build_export_xlsx(conn) -> bytes:
-    """
-    Build a round-trip-compatible .xlsx in the same multi-sheet format the
-    parser expects.  Sheets:
-      Overview              — computed P&L (excluding transfer accounts)
-      Txn_<code>            — one per account (header + rows + I/J sidecar)
-      Salary_Sheet          — from employees + latest salary_history
-      เบิกเงินล่วงหน้า      — from salary_advances
-      Setup                 — cashbook_categories
-    """
-    wb = openpyxl.Workbook()
-    # Remove the default empty sheet
-    wb.remove(wb.active)
-
-    # ── 1. Overview ───────────────────────────────────────────────────────────
-    ws_ov = wb.create_sheet("Overview")
-    accounts_raw = conn.execute(
-        "SELECT id, code, is_transfer FROM cashbook_accounts WHERE is_active=1"
-    ).fetchall()
-    non_transfer_ids = {r["id"] for r in accounts_raw if r["is_transfer"] == 0}
-
-    income_total  = 0.0
-    expense_total = 0.0
-    if non_transfer_ids:
-        placeholders = ",".join("?" * len(non_transfer_ids))
-        row_ov = conn.execute(
-            f"""SELECT
-                  COALESCE(SUM(CASE WHEN direction='income'  THEN amount ELSE 0 END), 0) AS inc,
-                  COALESCE(SUM(CASE WHEN direction='expense' THEN amount ELSE 0 END), 0) AS exp
-                FROM cashbook_transactions
-                WHERE account_id IN ({placeholders})""",
-            list(non_transfer_ids),
+@bp_cashbook.route("/txn/<int:txn_id>/edit", methods=["POST"])
+def txn_edit(txn_id):
+    """Edit a manual row. Submitted from the edit modal on account_ledger.html
+    (templates/cashbook/txn_edit.html) — there is no separate GET page, so on
+    a validation error we flash + redirect back to the ledger (same pattern as
+    hr.py::advance_edit) rather than re-rendering a form."""
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM cashbook_transactions WHERE id=?", (txn_id,)
         ).fetchone()
-        if row_ov:
-            income_total  = row_ov["inc"] or 0.0
-            expense_total = row_ov["exp"] or 0.0
+        if row is None:
+            abort(404)
+        _reject_if_salary_row(row)
 
-    balance_total = income_total - expense_total
-    # Layout: row 3=รายรับ, row 4=รายจ่าย, row 5=คงเหลือ  (cols B/C = indices 1/2)
-    ws_ov.cell(row=3, column=2, value="รายรับ")
-    ws_ov.cell(row=3, column=3, value=income_total)
-    ws_ov.cell(row=4, column=2, value="รายจ่าย")
-    ws_ov.cell(row=4, column=3, value=expense_total)
-    ws_ov.cell(row=5, column=2, value="คงเหลือ")
-    ws_ov.cell(row=5, column=3, value=balance_total)
+        account_id_raw = request.form.get("account_id", "").strip()
+        txn_date = request.form.get("txn_date", "").strip()
+        direction = request.form.get("direction", "").strip()
+        category = request.form.get("category", "").strip()
+        user_category = request.form.get("user_category", "").strip()
+        amount_raw = request.form.get("amount", "").strip()
+        description = request.form.get("description", "").strip()
+        note = request.form.get("note", "").strip()
 
-    # ── 2. Txn_<code> sheets ─────────────────────────────────────────────────
-    accounts = conn.execute(
-        "SELECT * FROM cashbook_accounts WHERE is_active=1 ORDER BY sort_order, id"
-    ).fetchall()
-
-    for acct in accounts:
-        code = acct["code"]
-        ws = wb.create_sheet(f"Txn_{code}")
-
-        # Header row (row 1)
-        headers = ["วันที่", "ประเภท", "หมวดหมู่", "หมวดหมู่_ผู้ใช้",
-                   "จำนวนเงิน", "รายละเอียด", "หมายเหตุ"]
-        for ci, h in enumerate(headers, start=1):
-            ws.cell(row=1, column=ci, value=h)
-
-        # I/J sidecar meta (cols I=9, J=10)
-        sidecar = [
-            ("Bank",           acct["bank_name"]),
-            ("Account Number", acct["bank_account_no"]),
-            ("Name",           acct["account_owner_name"]),
-            ("หมายเหตุ",       acct["account_note"] if "account_note" in acct.keys() else acct["note"]),
-        ]
-        for si, (label, value) in enumerate(sidecar, start=1):
-            ws.cell(row=si, column=9, value=label)
-            ws.cell(row=si, column=10, value=value)
-
-        # Transaction rows
-        txns = conn.execute(
-            """SELECT txn_date, direction, category, user_category,
-                      amount, description, note
-               FROM cashbook_transactions
-               WHERE account_id=?
-               ORDER BY txn_date ASC, id ASC""",
-            (acct["id"],),
-        ).fetchall()
-
-        for ri, txn in enumerate(txns, start=2):
-            direction_th = "รายรับ" if txn["direction"] == "income" else "รายจ่าย"
-            # Parse date string to datetime.date so openpyxl writes a real date
-            import datetime as _dt
-            try:
-                d = _dt.date.fromisoformat(txn["txn_date"])
-            except (TypeError, ValueError):
-                d = txn["txn_date"]
-            ws.cell(row=ri, column=1, value=d)
-            ws.cell(row=ri, column=2, value=direction_th)
-            ws.cell(row=ri, column=3, value=txn["category"])
-            ws.cell(row=ri, column=4, value=txn["user_category"])
-            ws.cell(row=ri, column=5, value=txn["amount"])
-            ws.cell(row=ri, column=6, value=txn["description"])
-            ws.cell(row=ri, column=7, value=txn["note"])
-
-        # I/J summary totals block (appended after meta rows, matching source format)
-        meta_end = len(sidecar) + 1
-        inc_sum = sum(t["amount"] for t in txns if t["direction"] == "income")
-        exp_sum = sum(t["amount"] for t in txns if t["direction"] == "expense")
-        totals = [("รายรับ", inc_sum), ("รายจ่าย", exp_sum),
-                  ("คงเหลือ", inc_sum - exp_sum)]
-        for ti, (label, val) in enumerate(totals, start=meta_end):
-            ws.cell(row=ti, column=9, value=label)
-            ws.cell(row=ti, column=10, value=val)
-
-    # ── 3. Salary_Sheet ───────────────────────────────────────────────────────
-    ws_sal = wb.create_sheet("Salary_Sheet")
-    # Row 1: 'des' marker  (parser checks min_row=3 so rows 1-2 are header)
-    ws_sal.cell(row=1, column=1, value="des")
-    # Row 2: header
-    sal_headers = ["", "ชื่อ", "นามสกุล", "ชื่อเล่น", "ธนาคาร", "เลขบัญชี",
-                   "เงินเดือน", "หักประกันสังคม", "เงินเดือนสุทธิ", "is_active"]
-    for ci, h in enumerate(sal_headers, start=1):
-        ws_sal.cell(row=2, column=ci, value=h)
-
-    # Employee rows from DB
-    employees = conn.execute("""
-        SELECT e.id, e.full_name, e.nickname, e.bank_name, e.bank_account_no, e.is_active,
-               COALESCE(sh.monthly_salary, 0) AS salary,
-               COALESCE(e.sso_enrolled, 0) AS sso_enrolled
-        FROM employees e
-        LEFT JOIN (
-            SELECT employee_id,
-                   monthly_salary,
-                   ROW_NUMBER() OVER (PARTITION BY employee_id ORDER BY effective_date DESC) AS rn
-            FROM employee_salary_history
-        ) sh ON sh.employee_id = e.id AND sh.rn = 1
-        WHERE e.is_active = 1
-        ORDER BY e.emp_code
-    """).fetchall()
-
-    for ri, emp in enumerate(employees, start=3):
-        salary = float(emp["salary"] or 0.0)
-        # SSO ~750 (standard Thai deduction) if enrolled; else 0
-        sso = 750.0 if emp["sso_enrolled"] else 0.0
-        net = salary - sso
-
-        # Split full_name into first/last
-        parts = str(emp["full_name"] or "").split(" ", 1)
-        first = parts[0] if parts else ""
-        last  = parts[1] if len(parts) > 1 else ""
-
-        ws_sal.cell(row=ri, column=2, value=first)
-        ws_sal.cell(row=ri, column=3, value=last)
-        ws_sal.cell(row=ri, column=4, value=emp["nickname"])
-        ws_sal.cell(row=ri, column=5, value=emp["bank_name"])
-        ws_sal.cell(row=ri, column=6, value=emp["bank_account_no"])
-        ws_sal.cell(row=ri, column=7, value=salary)
-        ws_sal.cell(row=ri, column=8, value=sso)
-        ws_sal.cell(row=ri, column=9, value=net)
-        ws_sal.cell(row=ri, column=10, value=emp["is_active"])
-
-    # ── 4. เบิกเงินล่วงหน้า ───────────────────────────────────────────────────
-    ws_adv = wb.create_sheet("เบิกเงินล่วงหน้า")
-    # Row 1: filler; Row 2: header (cols B-E = 2-5)
-    ws_adv.cell(row=2, column=2, value="วันที่")
-    ws_adv.cell(row=2, column=3, value="ชื่อ")
-    ws_adv.cell(row=2, column=4, value="เบิกเงินล่วงหน้า")
-    ws_adv.cell(row=2, column=5, value="หมายเหตุ")
-
-    advances = conn.execute(
-        """SELECT sa.advance_date, COALESCE(e.nickname, sa.raw_name) AS name,
-                  sa.amount, sa.note
-           FROM salary_advances sa
-           LEFT JOIN employees e ON e.id = sa.employee_id
-           ORDER BY sa.advance_date ASC, sa.id ASC"""
-    ).fetchall()
-
-    import datetime as _dt2
-    for ri, adv in enumerate(advances, start=3):
+        account = conn.execute(
+            "SELECT id FROM cashbook_accounts WHERE id=? AND is_active=1",
+            (account_id_raw,),
+        ).fetchone() if account_id_raw.isdigit() else None
         try:
-            d = _dt2.date.fromisoformat(str(adv["advance_date"])[:10])
-        except (TypeError, ValueError):
-            d = adv["advance_date"]
-        ws_adv.cell(row=ri, column=2, value=d)
-        ws_adv.cell(row=ri, column=3, value=adv["name"])
-        ws_adv.cell(row=ri, column=4, value=adv["amount"])
-        ws_adv.cell(row=ri, column=5, value=adv["note"])
+            amount = float(amount_raw)
+        except ValueError:
+            amount = None
 
-    # ── 5. Setup ──────────────────────────────────────────────────────────────
-    ws_setup = wb.create_sheet("Setup")
-    # Row 2: header (B=รายรับ, C=รายจ่าย, E=ผู้ใช้, F=ผู้ใช้ (คน))
-    ws_setup.cell(row=2, column=2, value="รายรับ")
-    ws_setup.cell(row=2, column=3, value="รายจ่าย")
-    ws_setup.cell(row=2, column=5, value="ผู้ใช้")
-    ws_setup.cell(row=2, column=6, value="ผู้ใช้ (คน)")
+        errors = []
+        if account is None:
+            errors.append("กรุณาเลือกบัญชีที่ถูกต้องและยังใช้งานอยู่")
+        if not txn_date:
+            errors.append("กรุณาระบุวันที่")
+        if amount is None or amount <= 0:
+            errors.append("จำนวนเงินต้องมากกว่า 0")
+        if direction not in ("income", "expense"):
+            errors.append("ประเภทไม่ถูกต้อง")
+        if not category:
+            errors.append("กรุณาระบุหมวดหมู่")
 
-    income_cats = conn.execute(
-        "SELECT name FROM cashbook_categories WHERE direction='income' AND is_active=1 ORDER BY sort_order, id"
-    ).fetchall()
-    expense_cats = conn.execute(
-        "SELECT name FROM cashbook_categories WHERE direction='expense' AND is_active=1 ORDER BY sort_order, id"
-    ).fetchall()
+        if errors:
+            for msg in errors:
+                flash(msg, "danger")
+            return redirect(url_for("cashbook.account_ledger", account_id=row["account_id"]))
 
-    max_rows = max(len(income_cats), len(expense_cats), 1)
-    for i in range(max_rows):
-        row = i + 3
-        if i < len(income_cats):
-            ws_setup.cell(row=row, column=2, value=income_cats[i]["name"])
-        if i < len(expense_cats):
-            ws_setup.cell(row=row, column=3, value=expense_cats[i]["name"])
+        _upsert_category(conn, category, direction)
 
-    # ── Serialise ─────────────────────────────────────────────────────────────
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf.read()
+        new_vals = {
+            "account_id": int(account_id_raw), "txn_date": txn_date, "direction": direction,
+            "category": category, "user_category": user_category or None,
+            "amount": amount, "description": description or None, "note": note or None,
+        }
+        changed = {
+            field: [row[field], new_v]
+            for field, new_v in new_vals.items() if row[field] != new_v
+        }
+
+        conn.execute(
+            """UPDATE cashbook_transactions
+               SET account_id=?, txn_date=?, direction=?, category=?, user_category=?,
+                   amount=?, description=?, note=?
+               WHERE id=?""",
+            (*new_vals.values(), txn_id),
+        )
+        if changed:
+            # The mig 076 AFTER UPDATE trigger already writes a field-diff
+            # audit_log row for this UPDATE (user=NULL — triggers have no
+            # session). This explicit row attributes the change to the
+            # actor, same pattern as hr.py::reopen_run.
+            conn.execute(
+                "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
+                " VALUES(?,?,?,?,?)",
+                ("cashbook_transactions", txn_id, "UPDATE",
+                 json.dumps(changed, ensure_ascii=False),
+                 session.get("display_name") or session.get("username")),
+            )
+        conn.commit()
+        flash("แก้ไขรายการเรียบร้อย", "success")
+        return redirect(url_for("cashbook.account_ledger", account_id=new_vals["account_id"]))
+    finally:
+        conn.close()
+
+
+@bp_cashbook.route("/txn/<int:txn_id>/delete", methods=["POST"])
+def txn_delete(txn_id):
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM cashbook_transactions WHERE id=?", (txn_id,)
+        ).fetchone()
+        if row is None:
+            abort(404)
+        _reject_if_salary_row(row)
+
+        account_id = row["account_id"]
+        conn.execute("DELETE FROM cashbook_transactions WHERE id=?", (txn_id,))
+        # The mig 076 BEFORE DELETE trigger already writes an audit_log DELETE
+        # row (user=NULL). This explicit row attributes it to the actor, same
+        # pattern as hr.py::reopen_run / the mig 076 UPDATE trigger above.
+        conn.execute(
+            "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
+            " VALUES(?,?,?,?,?)",
+            ("cashbook_transactions", txn_id, "DELETE",
+             json.dumps({
+                 "account_id": account_id, "txn_date": row["txn_date"],
+                 "direction": row["direction"], "category": row["category"],
+                 "amount": row["amount"],
+             }, ensure_ascii=False),
+             session.get("display_name") or session.get("username")),
+        )
+        conn.commit()
+        flash("ลบรายการเรียบร้อย", "success")
+        return redirect(url_for("cashbook.account_ledger", account_id=account_id))
+    finally:
+        conn.close()

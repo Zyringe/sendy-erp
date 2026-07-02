@@ -59,6 +59,14 @@ def _require_admin_or_manager():
         abort(403)
 
 
+def _require_pay_role():
+    """Gate for salary pay-event routes (จ่ายแล้ว / ยกเลิกการจ่าย). Deliberately
+    NOT `_require_admin_or_manager` — that gate excludes shareholder, and the
+    mother (a shareholder) must be able to record salary transfers she makes."""
+    if session.get("role") not in ("admin", "manager", "shareholder"):
+        abort(403)
+
+
 def _be_year(iso_date: Optional[str]) -> str:
     """Convert 'YYYY-MM-DD' to 'DD/MM/พ.ศ.' Thai display string."""
     if not iso_date:
@@ -201,6 +209,7 @@ def employee_new():
         page_title="เพิ่มพนักงาน",
         banks=BANK_OPTIONS,
         next_emp_code=hrq.next_emp_code(),
+        cashbook_accounts=hrq.get_active_cashbook_accounts(non_transfer_only=True),
     )
 
 
@@ -227,6 +236,7 @@ def employee_detail(id: int):
         be_year=_be_year,
         fmt_baht=_fmt_baht,
         linked_account=hrq.get_linked_account(emp["user_id"]),
+        cashbook_accounts=hrq.get_active_cashbook_accounts(non_transfer_only=True),
     )
 
 
@@ -562,13 +572,66 @@ def payroll_detail(run_id: int):
     if not run:
         abort(404)
     items = hrq.get_payroll_items(run_id)
+    pay_accounts = hrq.get_active_cashbook_accounts(non_transfer_only=True)
+    dup_manual_salary_count = hrq.count_manual_salary_rows_for_month(run["year_month"])
+    any_paid = any(item["paid_txn_id"] is not None for item in items)
     return render_template(
         "hr/payroll_detail.html",
         run=run,
         items=items,
+        pay_accounts=pay_accounts,
+        dup_manual_salary_count=dup_manual_salary_count,
+        any_paid=any_paid,
+        today_iso=date.today().isoformat(),
         be_year=_be_year,
         fmt_baht=_fmt_baht,
     )
+
+
+@bp_hr.route("/payroll/<int:run_id>/item/<int:item_id>/pay", methods=["POST"])
+def payroll_item_pay(run_id: int, item_id: int):
+    """Post a per-employee salary pay-event ("จ่ายแล้ว" — ADR 0006)."""
+    _require_pay_role()
+    run = hrq.get_payroll_run(run_id)
+    if not run:
+        abort(404)
+    item = hrq.get_payroll_item(item_id)
+    if not item or item["run_id"] != run_id:
+        abort(404)
+    if run["status"] != "finalized":
+        flash("บันทึกการจ่ายได้เฉพาะ payroll run ที่ finalized แล้วเท่านั้น", "danger")
+        return redirect(url_for("hr.payroll_detail", run_id=run_id))
+
+    account_id_raw = request.form.get("account_id", "").strip()
+    pay_date = request.form.get("pay_date", "").strip() or None
+    if not account_id_raw.isdigit():
+        flash("กรุณาเลือกบัญชีจ่ายเงิน", "danger")
+        return redirect(url_for("hr.payroll_detail", run_id=run_id))
+
+    actor = session.get("display_name") or session.get("username") or "unknown"
+    try:
+        hr_mod.post_salary_payment(item_id, int(account_id_raw), pay_date, actor)
+        flash("บันทึกการจ่ายเงินเดือนเรียบร้อย", "success")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(url_for("hr.payroll_detail", run_id=run_id))
+
+
+@bp_hr.route("/payroll/<int:run_id>/item/<int:item_id>/unpay", methods=["POST"])
+def payroll_item_unpay(run_id: int, item_id: int):
+    """Void a salary pay-event ("ยกเลิกการจ่าย" — ADR 0006)."""
+    _require_pay_role()
+    run = hrq.get_payroll_run(run_id)
+    if not run:
+        abort(404)
+    item = hrq.get_payroll_item(item_id)
+    if not item or item["run_id"] != run_id:
+        abort(404)
+
+    actor = session.get("display_name") or session.get("username") or "unknown"
+    hr_mod.void_salary_payment(item_id, actor)
+    flash("ยกเลิกการจ่ายเงินเดือนเรียบร้อย", "success")
+    return redirect(url_for("hr.payroll_detail", run_id=run_id))
 
 
 @bp_hr.route("/payroll/<int:run_id>/item/<int:item_id>", methods=["POST"])

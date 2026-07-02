@@ -3,14 +3,9 @@
 {% block page_title %}บัญชีรับ-จ่าย{% endblock %}
 
 {% block topbar_actions %}
-<a href="{{ url_for('cashbook.export_view') }}"
-   class="btn btn-sm btn-outline-secondary">
-  <i class="bi bi-download me-1"></i>Export
-</a>
-{% if is_admin %}
-<a href="{{ url_for('cashbook.import_view') }}"
-   class="btn btn-sm btn-primary ms-1">
-  <i class="bi bi-upload me-1"></i>นำเข้าข้อมูล
+{% if can_edit_cashbook %}
+<a href="{{ url_for('cashbook.new_transaction') }}" class="btn btn-primary btn-sm">
+  <i class="bi bi-plus-lg me-1"></i>เพิ่มรายการ
 </a>
 {% endif %}
 {% endblock %}
@@ -200,12 +195,7 @@
 {% if not op_accounts and not tr_accounts %}
 <div class="alert alert-info">
   <i class="bi bi-info-circle me-1"></i>
-  ยังไม่มีข้อมูลบัญชี — กรุณา
-  {% if is_admin %}
-  <a href="{{ url_for('cashbook.import_view') }}">นำเข้าไฟล์ cashbook</a>
-  {% else %}
-  ขอให้ Admin นำเข้าข้อมูล
-  {% endif %}
+  ยังไม่มีข้อมูลบัญชี
 </div>
 {% endif %}
 

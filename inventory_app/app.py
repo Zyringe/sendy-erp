@@ -249,6 +249,11 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'hr.leave_approve', 'hr.leave_reject',
     # Phase 7 salary-advance CRUD — managers can create/edit/delete advances.
     'hr.advance_new', 'hr.advance_edit', 'hr.advance_delete',
+    # Cashbook manual entry (Phase 2) — managers can add/edit/delete manual
+    # rows (salary pay-event rows are locked separately, see cashbook.py).
+    'cashbook.new_transaction', 'cashbook.txn_edit', 'cashbook.txn_delete',
+    # Salary pay-event posting (Phase 4) — manager can mark จ่ายแล้ว/ยกเลิกการจ่าย.
+    'hr.payroll_item_pay', 'hr.payroll_item_unpay',
 ])
 # regions_admin POST is intentionally admin-only — gated inline at the top of
 # the route. Other admin-only writes use _require_admin().
@@ -262,7 +267,16 @@ _ROLE_POST_OK = {
     'manager':     _MANAGER_POST_OK,
     'staff':       _STAFF_POST_OK,
     'general':     _GENERAL_POST_OK,
-    'shareholder': frozenset(['logout']),          # reads only; can log out
+    # shareholder reads everything; write exceptions are cashbook manual
+    # entry (Phase 2 — manager + shareholder gain add/edit/delete on
+    # cashbook_transactions, salary pay-event rows stay locked) and salary
+    # pay-event posting (Phase 4 — she must be able to record real transfers
+    # she makes; _require_pay_role in blueprints/hr.py mirrors this set).
+    'shareholder': frozenset([
+        'logout',
+        'cashbook.new_transaction', 'cashbook.txn_edit', 'cashbook.txn_delete',
+        'hr.payroll_item_pay', 'hr.payroll_item_unpay',
+    ]),
 }
 
 # GET allowlist for the 'general' role (PWA stock-lookup kiosk + own leave).
@@ -475,8 +489,7 @@ _ENDPOINT_MODULE = {
     # cashbook
     'cashbook.dashboard':     'cashbook',
     'cashbook.account_ledger': 'cashbook',
-    'cashbook.import_view':   'cashbook',
-    'cashbook.export_view':   'cashbook',
+    'cashbook.new_transaction': 'cashbook',
     # admin_module
     'user_list': 'admin_module',
     'user_new': 'admin_module',
@@ -586,6 +599,9 @@ def inject_auth():
     return {
         'is_admin':      role == 'admin',
         'is_manager':    role in ('admin', 'manager'),
+        # Cashbook manual-entry write access (Phase 2 design decision — manager
+        # AND shareholder gain add/edit/delete; staff stays blocked entirely).
+        'can_edit_cashbook': role in ('admin', 'manager', 'shareholder'),
         'current_user':  session.get('display_name', ''),
         'current_role':  role,
         'simulating_as': session.get('display_name') if real_role else None,

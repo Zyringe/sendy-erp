@@ -134,6 +134,14 @@ def get_employee_salary_history(emp_id: int,
             c.close()
 
 
+def _coerce_optional_int(raw) -> Optional[int]:
+    """Blank/missing → None (avoids FK IntegrityError when a form's
+    '— ไม่ระบุ —' option is selected), mirroring _coerce_advance_data below."""
+    if not raw or str(raw).strip() == "":
+        return None
+    return int(raw)
+
+
 def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
     """Insert a new employee row. Returns new id.
 
@@ -150,6 +158,7 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
         on_payroll = int(data.get("on_payroll") or 0) if "on_payroll" in data else 1
         # The employee↔login link (user_id) is NOT set here — new employees start
         # unlinked; the link is managed solely on /users. Column defaults to NULL.
+        dcai = _coerce_optional_int(data.get("default_cashbook_account_id"))
 
         if explicit_id is not None:
             cur = c.execute(
@@ -159,8 +168,8 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
                       probation_days, probation_end_date, end_date, sso_enrolled,
                       diligence_allowance, bank_name, bank_branch, bank_account_no,
                       bank_account_name, salesperson_code, is_active,
-                      on_payroll, note)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      on_payroll, note, default_cashbook_account_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     explicit_id,
                     data.get("emp_code"), data.get("full_name"),
@@ -176,6 +185,7 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
                     data.get("bank_account_no"), data.get("bank_account_name"),
                     data.get("salesperson_code"),
                     int(data.get("is_active", 1)), on_payroll, data.get("note"),
+                    dcai,
                 ),
             )
         else:
@@ -186,8 +196,8 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
                       probation_days, probation_end_date, end_date, sso_enrolled,
                       diligence_allowance, bank_name, bank_branch, bank_account_no,
                       bank_account_name, salesperson_code, is_active,
-                      on_payroll, note)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      on_payroll, note, default_cashbook_account_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     data.get("emp_code"), data.get("full_name"),
                     data.get("nickname"), data.get("national_id"),
@@ -202,6 +212,7 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
                     data.get("bank_account_no"), data.get("bank_account_name"),
                     data.get("salesperson_code"),
                     int(data.get("is_active", 1)), on_payroll, data.get("note"),
+                    dcai,
                 ),
             )
         c.commit()
@@ -219,6 +230,7 @@ def update_employee(emp_id: int, data: dict,
         on_payroll = int(data.get("on_payroll") or 0) if "on_payroll" in data else 1
         # user_id is deliberately NOT in this UPDATE: the employee↔login link is
         # owned by /users, so an HR edit must leave the existing link untouched.
+        dcai = _coerce_optional_int(data.get("default_cashbook_account_id"))
         c.execute(
             """UPDATE employees SET
                  emp_code=?, full_name=?, nickname=?, national_id=?, gender=?,
@@ -226,7 +238,7 @@ def update_employee(emp_id: int, data: dict,
                  start_date=?, probation_days=?, probation_end_date=?, end_date=?,
                  sso_enrolled=?, diligence_allowance=?, bank_name=?, bank_branch=?,
                  bank_account_no=?, bank_account_name=?, salesperson_code=?,
-                 is_active=?, on_payroll=?, note=?,
+                 is_active=?, on_payroll=?, note=?, default_cashbook_account_id=?,
                  updated_at=datetime('now','localtime')
                WHERE id=?""",
             (
@@ -243,6 +255,7 @@ def update_employee(emp_id: int, data: dict,
                 data.get("bank_account_no"), data.get("bank_account_name"),
                 data.get("salesperson_code"),
                 int(data.get("is_active", 1)), on_payroll, data.get("note"),
+                dcai,
                 emp_id,
             ),
         )
@@ -508,17 +521,57 @@ def get_payroll_run(run_id: int, conn: Optional[sqlite3.Connection] = None):
 
 
 def get_payroll_items(run_id: int, conn: Optional[sqlite3.Connection] = None):
+    """Payroll items joined to employee bank details + nickname + the
+    employee's default cashbook pay-from account (name + id) — feeds the
+    transfer checklist panel on payroll_detail.html.
+
+    Phase 4 adds a LEFT JOIN to the linked salary pay-event
+    `cashbook_transactions` row: `paid_txn_id`/`paid_txn_date`/
+    `paid_account_id`/`paid_account_name` — all NULL when unpaid. Paid-state
+    is DERIVED from `paid_txn_id IS NOT NULL` (no `paid` column, ADR 0006)."""
     c, owned = _conn(conn)
     try:
         return c.execute(
-            """SELECT pi.*, e.full_name, e.emp_code, e.bank_name,
-                      e.bank_branch, e.bank_account_no, e.bank_account_name
+            """SELECT pi.*, e.full_name, e.emp_code, e.nickname, e.bank_name,
+                      e.bank_branch, e.bank_account_no, e.bank_account_name,
+                      e.default_cashbook_account_id,
+                      COALESCE(ca.display_name, ca.code) AS default_cashbook_account_name,
+                      cbt.id AS paid_txn_id, cbt.txn_date AS paid_txn_date,
+                      cbt.account_id AS paid_account_id,
+                      COALESCE(pca.display_name, pca.code) AS paid_account_name
                  FROM payroll_items pi
                  JOIN employees e ON e.id = pi.employee_id
+                 LEFT JOIN cashbook_accounts ca
+                        ON ca.id = e.default_cashbook_account_id
+                 LEFT JOIN cashbook_transactions cbt
+                        ON cbt.payroll_item_id = pi.id
+                 LEFT JOIN cashbook_accounts pca
+                        ON pca.id = cbt.account_id
                 WHERE pi.run_id = ?
                 ORDER BY e.emp_code""",
             (run_id,),
         ).fetchall()
+    finally:
+        if owned:
+            c.close()
+
+
+def count_manual_salary_rows_for_month(year_month: str,
+                                       conn: Optional[sqlite3.Connection] = None) -> int:
+    """Count of MANUAL (payroll_item_id IS NULL) เงินเดือน cashbook rows
+    already sitting in this run's month. Feeds the payroll_detail dup-entry
+    warning banner (Phase 4) — a hand-typed salary row coexisting with a
+    pay-event-posted one for the same month is very likely a duplicate."""
+    c, owned = _conn(conn)
+    try:
+        row = c.execute(
+            """SELECT COUNT(*) AS n FROM cashbook_transactions
+                WHERE payroll_item_id IS NULL
+                  AND category = 'เงินเดือน'
+                  AND strftime('%Y-%m', txn_date) = ?""",
+            (year_month,),
+        ).fetchone()
+        return row["n"] if row else 0
     finally:
         if owned:
             c.close()
@@ -566,16 +619,22 @@ def get_employee_payslips(employee_id: int,
 
 # ── Salary advances ──────────────────────────────────────────────────────────
 
-def get_active_cashbook_accounts(conn: Optional[sqlite3.Connection] = None):
-    """Return active cashbook accounts for the advance form dropdown."""
+def get_active_cashbook_accounts(non_transfer_only: bool = False,
+                                 conn: Optional[sqlite3.Connection] = None):
+    """Return active cashbook accounts for a pay-from dropdown.
+
+    non_transfer_only=True excludes is_transfer=1 accounts (e.g. code 904) —
+    used by the employee default-pay-account select and (Phase 4) the salary
+    pay-event account picker, since posting salary to a transfer account
+    would make it vanish from the P&L (see cashbook.py dashboard exclusion).
+    """
     c, owned = _conn(conn)
     try:
-        return c.execute(
-            """SELECT id, code, display_name
-                 FROM cashbook_accounts
-                WHERE is_active = 1
-                ORDER BY sort_order, id"""
-        ).fetchall()
+        sql = "SELECT id, code, display_name FROM cashbook_accounts WHERE is_active = 1"
+        if non_transfer_only:
+            sql += " AND is_transfer = 0"
+        sql += " ORDER BY sort_order, id"
+        return c.execute(sql).fetchall()
     finally:
         if owned:
             c.close()

@@ -243,22 +243,12 @@
     </a>
     {% endif %}
 
-    {# ── บัญชีรับ-จ่าย — admin/manager only ── #}
-    {% if active_module == 'cashbook' and session.role in ['admin', 'manager'] %}
+    {# ── บัญชีรับ-จ่าย — admin/manager/shareholder (all can view + edit cashbook) ── #}
+    {% if active_module == 'cashbook' and session.role in ['admin', 'manager', 'shareholder'] %}
     <div class="sidebar-section">บัญชีรับ-จ่าย</div>
     <a href="{{ url_for('cashbook.dashboard', vat='novat') }}"
        class="sidebar-link {% if request.endpoint == 'cashbook.dashboard' %}active{% endif %}">
       <i class="bi bi-speedometer2"></i> Dashboard
-    </a>
-    {% if is_admin %}
-    <a href="{{ url_for('cashbook.import_view') }}"
-       class="sidebar-link {% if request.endpoint == 'cashbook.import_view' %}active{% endif %}">
-      <i class="bi bi-upload"></i> นำเข้าข้อมูล
-    </a>
-    {% endif %}
-    <a href="{{ url_for('cashbook.export_view', vat='novat') }}"
-       class="sidebar-link {% if request.endpoint == 'cashbook.export_view' %}active{% endif %}">
-      <i class="bi bi-download"></i> Export (.xlsx)
     </a>
     {% endif %}
 

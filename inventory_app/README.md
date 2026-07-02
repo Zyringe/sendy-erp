@@ -23,7 +23,6 @@ App listens on `:5001`. DB at `instance/inventory.db`.
 | `database.py` | Schema bootstrap + migration runner (filename-keyed) |
 | `config.py` | `DATABASE_PATH`, `SECRET_KEY`, `ADMIN_PASSWORD` (env-required since secrets sprint) |
 | `parse_weekly.py` | BSN cp874 weekly file parser |
-| `parse_cashbook.py` | NoVat cashbook Excel parser |
 | `parse_platform.py` | Shopee / Lazada / TikTok parser |
 | `bsn_suggest.py` | Smart-mapping suggester |
 | `bsn_units.py` | BSN unit alias normalizer (mig 064) |
@@ -33,7 +32,6 @@ App listens on `:5001`. DB at `instance/inventory.db`.
 | `revenue.py` | Revenue dashboard (Phase 3, by brand) |
 | `ar_followup.py` | AR follow-up workspace + outreach log (mig 065) |
 | `hr.py` / `hr_queries.py` | HR module reads/writes |
-| `import_cashbook.py` | Cashbook Excel import (round-trip) |
 | `import_credit_notes.py` | CN preview/confirm two-step (PR #36/#37) |
 | `sku_code_utils.py` | SKU-code builder (post-mig 033 naming rule) |
 | `blueprints/` | `bp_products`, `bp_cashbook`, `bp_hr`, `bp_supplier_catalogue`, `bp_mobile` |

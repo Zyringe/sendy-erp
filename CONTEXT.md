@@ -65,8 +65,11 @@
     edits product names/packaging, enters HR + Cashbook. Cannot manage users.
   - **พนักงานออฟฟิศ (staff)** — desktop back-office: imports every file type + stock/sales
     views, stock-adjust, mapping. Does **not** see cost/GP; blocked from HR + Cashbook.
-  - **ผู้ถือหุ้น (shareholder)** — reads *everything* (incl. cost/GP, HR, Cashbook); the
-    only POST it may make is logout. Edits nothing.
+  - **ผู้ถือหุ้น (shareholder)** — reads *everything* (incl. cost/GP, HR, Cashbook) and may
+    **add/edit/delete Cashbook transactions** + **mark payroll salaries paid** (which posts
+    those cashbook rows — how Put's mother records the salaries she pays); otherwise the only
+    POST it makes is logout. It still cannot change payroll *numbers* (generate/edit/finalize)
+    or edit anything else.
   - **พนักงานทั่วไป (general)** — mobile PWA kiosk only: ค้นหาสต็อก + own leave + own
     payslip. Desktop sidebar is empty; every other endpoint redirects to stock search.
 
@@ -85,6 +88,54 @@
   show. Every other page is role-gated only: same global data regardless of user. This is
   why impersonation must swap `user_id`, not just `role`.
 
+## Cashbook (the `/cashbook` feature — บัญชีรับ-จ่าย)
+
+- **Cashbook (บัญชีรับ-จ่าย)** — the multi-account operating cash ledger: money in/out of
+  the family's bank accounts + wallets. **Separate from the BSN VAT books**
+  (`sales_transactions` / `purchase_transactions`) — a different set of money. Lives in
+  `cashbook_transactions` over `cashbook_accounts`.
+
+- **Cashbook account (บัญชี)** — one bank/wallet the cash flows through (`392`, `LEX`,
+  `SPX`, `ชฎามาศ`, `กิติยา`, `904`). `cashbook_accounts`. NOT a User account (login) and
+  NOT an Employee — a third, unrelated "account" sense. Accounts are entered/edited out of
+  band (no in-app add-account screen yet).
+
+- **Cashbook transaction (รายการรับ-จ่าย)** — one **income (รายรับ)** or **expense
+  (รายจ่าย)** line against a cashbook account: date, category, ผู้ใช้ tag, amount,
+  description, note. Entered **by hand** — the Excel importer + round-trip export are
+  retired (ADR 0005).
+
+- **Category (หมวดหมู่)** — the accounting bucket of a transaction (`เงินเดือน`, `ค่าไฟ`,
+  `ซื้อสินค้า`, …). Lives in `cashbook_categories`, scoped by direction. A new one can be
+  typed on the entry form (created on save).
+  _Not to be confused with_: ผู้ใช้ tag.
+
+- **ผู้ใช้ tag (`user_category`)** — a free-text "**who / where** this money was for" label
+  (e.g. `บ่าว`, `โกดัง Lion`, `ออฟฟิสสุนทร`). A *different axis* from category, and NOT the
+  person who keyed the row (that is `created_by`). For salary rows it holds the employee's
+  nickname.
+  _Avoid_: calling this a "user" — it has nothing to do with a login.
+
+- **Transfer account / transfer category** — capital / inter-account movements
+  (`cashbook_accounts.is_transfer=1`, e.g. `904`, and the `เงินทุน/เงินโอน` category). Real
+  cash (so they count toward an account **balance**) but excluded from the headline **P&L**
+  (รายรับ/รายจ่าย), the category summary and the monthly chart.
+
+- **Salary posting (pay-event)** — salary reaches the cashbook when a transfer is actually
+  **marked paid**, per employee, on the payroll detail page — NOT when the run is finalized
+  (finalize only locks the numbers). "จ่ายแล้ว" posts one `เงินเดือน` **expense**
+  (amount = `net_pay`, skipped if `net_pay <= 0`) into that row's pay-from account, dated the
+  real pay date, stamped `payroll_run_id` + `payroll_item_id`. "ยกเลิกการจ่าย" deletes it.
+  **Paid-state is derived from the linked cashbook row** (no separate flag). Paid rows are
+  **read-only in the cashbook**; a run can't be reopened while any item is paid. Two people
+  pay independent subsets (Put + his mother), so it is per-employee, not one click. See
+  ADR 0006.
+
+- **Pay-from account** — the cashbook account a given salary transfer is paid *out of*.
+  Chosen per employee at mark-paid time, defaulting to that employee's **default pay-from
+  account** (`employees.default_cashbook_account_id`, e.g. Put's staff → `392`, his mother's
+  → `ชฎามาศ`). Transfer accounts (`is_transfer=1`) are not eligible (they're excluded from
+  the P&L).
 ## Product creation & naming
 
 - **Structured product** — a product whose spec columns (`brand_id`, `category_id`,
