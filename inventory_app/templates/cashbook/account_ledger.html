@@ -10,25 +10,6 @@
 
 {% block content %}
 
-{% if can_edit_cashbook %}
-{# ── Category / ผู้ใช้ datalists for the edit modals below ─────────────────── #}
-<datalist id="categories-income">
-  {% for name in categories_by_direction.income %}
-  <option value="{{ name }}">
-  {% endfor %}
-</datalist>
-<datalist id="categories-expense">
-  {% for name in categories_by_direction.expense %}
-  <option value="{{ name }}">
-  {% endfor %}
-</datalist>
-<datalist id="user-tags">
-  {% for tag in known_tags %}
-  <option value="{{ tag }}">
-  {% endfor %}
-</datalist>
-{% endif %}
-
 {# ── Account header ────────────────────────────────────────────────────────── #}
 <div class="card mb-3">
   <div class="card-body py-2">
@@ -213,11 +194,21 @@
 
 {% block scripts %}
 {% if can_edit_cashbook %}
+{# Combo option data for the edit modals' category / ผู้ใช้ fields (shared
+   .combo component: static/js/combo.js + static/css/combo.css, loaded
+   globally in base.html BEFORE this block). #}
+<script>
+  window.COMBO_OPTS = {
+    categories_income:  [{% for name in categories_by_direction.income %}{v:{{ name|tojson }},label:{{ name|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+    categories_expense: [{% for name in categories_by_direction.expense %}{v:{{ name|tojson }},label:{{ name|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+    user_tags:          [{% for tag in known_tags %}{v:{{ tag|tojson }},label:{{ tag|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+  };
+</script>
 <script>
 document.querySelectorAll('.edit-direction-select').forEach(function (sel) {
   sel.addEventListener('change', function () {
-    var catInput = sel.closest('.modal-body').querySelector('.edit-category-input');
-    catInput.setAttribute('list', sel.value === 'income' ? 'categories-income' : 'categories-expense');
+    var catCombo = sel.closest('.modal-body').querySelector('.edit-category-combo');
+    comboSetGroup(catCombo, sel.value === 'income' ? 'categories_income' : 'categories_expense');
   });
 });
 </script>

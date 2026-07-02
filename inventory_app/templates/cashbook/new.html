@@ -10,23 +10,6 @@
 
 {% block content %}
 
-{# ── Category / ผู้ใช้ datalists — shared across all rows ─────────────────── #}
-<datalist id="categories-income">
-  {% for name in categories_by_direction.income %}
-  <option value="{{ name }}">
-  {% endfor %}
-</datalist>
-<datalist id="categories-expense">
-  {% for name in categories_by_direction.expense %}
-  <option value="{{ name }}">
-  {% endfor %}
-</datalist>
-<datalist id="user-tags">
-  {% for tag in known_tags %}
-  <option value="{{ tag }}">
-  {% endfor %}
-</datalist>
-
 <form method="post" action="{{ url_for('cashbook.new_transaction') }}" id="batch-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
@@ -85,13 +68,18 @@
               </select>
             </td>
             <td>
-              <input type="text" name="rows-{{ row.index }}-category" class="form-control form-control-sm category-input"
-                     list="categories-{{ 'income' if row.direction == 'income' else 'expense' }}"
-                     value="{{ row.category }}">
+              <div class="combo category-combo" data-opts="categories_{{ 'income' if row.direction == 'income' else 'expense' }}" data-allow-new="1">
+                <input class="combo-input form-control form-control-sm" autocomplete="off">
+                <input type="hidden" class="combo-value" name="rows-{{ row.index }}-category" value="{{ row.category }}">
+                <div class="ac-drop"></div>
+              </div>
             </td>
             <td>
-              <input type="text" name="rows-{{ row.index }}-user_category" class="form-control form-control-sm"
-                     list="user-tags" value="{{ row.user_category }}">
+              <div class="combo" data-opts="user_tags" data-allow-new="1">
+                <input class="combo-input form-control form-control-sm" autocomplete="off">
+                <input type="hidden" class="combo-value" name="rows-{{ row.index }}-user_category" value="{{ row.user_category }}">
+                <div class="ac-drop"></div>
+              </div>
             </td>
             <td>
               <input type="number" name="rows-{{ row.index }}-amount" class="form-control form-control-sm text-end"
@@ -126,12 +114,18 @@
                 </select>
               </td>
               <td>
-                <input type="text" name="rows-__IDX__-category" class="form-control form-control-sm category-input"
-                       list="categories-expense" value="">
+                <div class="combo category-combo" data-opts="categories_expense" data-allow-new="1">
+                  <input class="combo-input form-control form-control-sm" autocomplete="off">
+                  <input type="hidden" class="combo-value" name="rows-__IDX__-category" value="">
+                  <div class="ac-drop"></div>
+                </div>
               </td>
               <td>
-                <input type="text" name="rows-__IDX__-user_category" class="form-control form-control-sm"
-                       list="user-tags" value="">
+                <div class="combo" data-opts="user_tags" data-allow-new="1">
+                  <input class="combo-input form-control form-control-sm" autocomplete="off">
+                  <input type="hidden" class="combo-value" name="rows-__IDX__-user_category" value="">
+                  <div class="ac-drop"></div>
+                </div>
               </td>
               <td>
                 <input type="number" name="rows-__IDX__-amount" class="form-control form-control-sm text-end"
@@ -164,6 +158,16 @@
 {% endblock %}
 
 {% block scripts %}
+{# Combo option data for the category / ผู้ใช้ fields above (shared .combo
+   component: static/js/combo.js + static/css/combo.css, loaded globally in
+   base.html BEFORE this block, so the functions below are already defined). #}
+<script>
+  window.COMBO_OPTS = {
+    categories_income:  [{% for name in categories_by_direction.income %}{v:{{ name|tojson }},label:{{ name|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+    categories_expense: [{% for name in categories_by_direction.expense %}{v:{{ name|tojson }},label:{{ name|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+    user_tags:          [{% for tag in known_tags %}{v:{{ tag|tojson }},label:{{ tag|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+  };
+</script>
 <script>
 (function () {
   var body = document.getElementById('batch-rows-body');
@@ -176,6 +180,7 @@
     frag.innerHTML = html;
     var newRow = frag.firstElementChild;
     body.insertBefore(newRow, tpl);
+    initAllCombos(newRow);   // cloned .combo divs need explicit init
     nextIndex++;
   });
 
@@ -189,8 +194,8 @@
   body.addEventListener('change', function (e) {
     if (!e.target.classList.contains('direction-select')) return;
     var tr = e.target.closest('tr');
-    var catInput = tr.querySelector('.category-input');
-    catInput.setAttribute('list', e.target.value === 'income' ? 'categories-income' : 'categories-expense');
+    var catCombo = tr.querySelector('.category-combo');
+    comboSetGroup(catCombo, e.target.value === 'income' ? 'categories_income' : 'categories_expense');
   });
 })();
 </script>

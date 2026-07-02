@@ -43,14 +43,19 @@
             </div>
             <div class="col-12">
               <label class="form-label small">หมวดหมู่ <span class="text-danger">*</span></label>
-              <input type="text" name="category" class="form-control form-control-sm edit-category-input"
-                     list="categories-{{ 'income' if r.direction == 'income' else 'expense' }}"
-                     value="{{ r.category or '' }}" required>
+              <div class="combo edit-category-combo" data-opts="categories_{{ 'income' if r.direction == 'income' else 'expense' }}" data-allow-new="1">
+                <input class="combo-input form-control form-control-sm" autocomplete="off">
+                <input type="hidden" class="combo-value" name="category" value="{{ r.category or '' }}">
+                <div class="ac-drop"></div>
+              </div>
             </div>
             <div class="col-12">
               <label class="form-label small">ผู้ใช้</label>
-              <input type="text" name="user_category" class="form-control form-control-sm"
-                     list="user-tags" value="{{ r.user_category or '' }}">
+              <div class="combo" data-opts="user_tags" data-allow-new="1">
+                <input class="combo-input form-control form-control-sm" autocomplete="off">
+                <input type="hidden" class="combo-value" name="user_category" value="{{ r.user_category or '' }}">
+                <div class="ac-drop"></div>
+              </div>
             </div>
             <div class="col-12">
               <label class="form-label small">รายละเอียด</label>

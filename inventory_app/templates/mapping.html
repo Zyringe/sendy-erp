@@ -28,25 +28,10 @@
   {% endif %}
 </ul>
 
-{# ── Shared searchable-dropdown (combo) component ─────────────────────────
-   One reusable type-to-search dropdown used by EVERY pick-list field on both
-   the approve form and the Suggest modal (Category, Brand, Color, Packaging,
-   Unit type, Condition) so they all behave identically. A combo is:
-     <div class="combo" data-opts="<key>" [data-allow-new="1"]>
-       <input class="combo-input ...">          visible text box (type to filter)
-       <input type="hidden" class="combo-value" id="<legacy id>">   canonical value
-       <input type="hidden" class="combo-other" id="...">   (allow-new only) free text
-       <div class="ac-drop"></div>
-     </div>
-   Behaviour: focus → full list; type → substring filter; pick → fills value.
-   allow-new (brand/color/unit/condition): an unmatched typed value is kept
-   (→ combo-other when present, else → combo-value). pick-only (category/
-   packaging): an unmatched value resolves to empty. #}
-<style>
-  .combo { position: relative; }
-  .combo .ac-drop { min-width: 220px; }
-  .combo-input.combo-open { border-color: var(--accent); }
-</style>
+{# ── Combo option data for this page's pick-list fields (Category, Brand,
+   Color, Packaging, Unit type, Condition) — used by the shared .combo
+   component (behaviour + markup contract: static/js/combo.js, styles:
+   static/css/combo.css, both loaded globally in base.html). #}
 <script>
   // Option sets: {v: canonical value, label: shown/typed text, hint: muted suffix}
   const COMBO_OPTS = {
@@ -57,104 +42,6 @@
     units:      [{% for u in unit_suggestions %}{v:{{ u|tojson }},label:{{ u|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
     conditions: [{% for c in condition_suggestions %}{v:{{ c|tojson }},label:{{ c|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
   };
-
-  // Resolve the combo's hidden value(s) from the current input text.
-  function comboCommit(div) {
-    const opts  = COMBO_OPTS[div.dataset.opts] || [];
-    const input = div.querySelector('.combo-input');
-    const valEl = div.querySelector('.combo-value');
-    const othEl = div.querySelector('.combo-other');
-    const allowNew = div.dataset.allowNew === '1';
-    const text = (input.value || '').trim();
-    const opt = opts.find(o => o.label === text) ||
-                opts.find(o => String(o.v) === text);   // also match by raw value
-    if (opt) {
-      input.value = opt.label;
-      if (valEl) valEl.value = opt.v;
-      if (othEl) othEl.value = '';
-    } else if (allowNew) {
-      if (othEl) { if (valEl) valEl.value = ''; othEl.value = text; }
-      else if (valEl) valEl.value = text;          // free-text combo (unit/condition)
-    } else {                                        // pick-only, no match → empty
-      if (valEl) valEl.value = '';
-      if (othEl) othEl.value = '';
-    }
-    // notify dependents (e.g. sm-unit → unit-conversion row visibility)
-    if (valEl) valEl.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-
-  // Sync a combo's VISIBLE input from its hidden value/other (used on load and
-  // after the modal prefills the hidden fields programmatically).
-  function comboSyncLabel(div) {
-    const opts  = COMBO_OPTS[div.dataset.opts] || [];
-    const input = div.querySelector('.combo-input');
-    const valEl = div.querySelector('.combo-value');
-    const othEl = div.querySelector('.combo-other');
-    if (valEl && valEl.value !== '') {
-      const opt = opts.find(o => String(o.v) === String(valEl.value));
-      input.value = opt ? opt.label : valEl.value;
-    } else if (othEl && othEl.value) {
-      input.value = othEl.value;
-    } else if (input.value) {
-      comboCommit(div);   // input pre-filled (e.g. staged category text) → resolve
-    }
-  }
-
-  function comboRender(div, q) {
-    const opts = COMBO_OPTS[div.dataset.opts] || [];
-    const drop = div.querySelector('.ac-drop');
-    const ql = (q || '').toLowerCase();
-    const hits = (ql ? opts.filter(o => o.label.toLowerCase().includes(ql)) : opts).slice(0, 80);
-    drop.innerHTML = hits.length
-      ? hits.map(o =>
-          `<div class="ac-item" data-v="${String(o.v).replace(/"/g,'&quot;')}">` +
-          `<span class="flex-fill">${o.label}</span>` +
-          (o.hint ? `<span class="ac-sku">${o.hint}</span>` : '') + `</div>`).join('')
-      : '<div class="ac-item text-subtle">ไม่พบ — ' +
-        (div.dataset.allowNew === '1' ? 'พิมพ์เพื่อใช้ค่าใหม่ได้' : 'เลือกจากรายการ') + '</div>';
-  }
-  function comboOpen(div) {
-    const input = div.querySelector('.combo-input');
-    const drop  = div.querySelector('.ac-drop');
-    const rect = input.getBoundingClientRect();
-    drop.style.left = rect.left + 'px';
-    drop.style.top = (rect.bottom + 2) + 'px';
-    drop.style.width = Math.max(rect.width, 220) + 'px';
-    drop.classList.add('open');
-    input.classList.add('combo-open');
-  }
-  function comboClose(div) {
-    div.querySelector('.ac-drop').classList.remove('open');
-    div.querySelector('.combo-input').classList.remove('combo-open');
-  }
-
-  function initCombo(div) {
-    if (div._comboInit) return;
-    div._comboInit = true;
-    const input = div.querySelector('.combo-input');
-    const drop  = div.querySelector('.ac-drop');
-    comboSyncLabel(div);
-    input.addEventListener('focus', () => { comboRender(div, ''); comboOpen(div); });
-    input.addEventListener('input', () => { comboRender(div, input.value); comboOpen(div); });
-    input.addEventListener('blur', () => { setTimeout(() => { comboClose(div); comboCommit(div); }, 180); });
-    drop.addEventListener('mousedown', e => {
-      const item = e.target.closest('.ac-item[data-v]');
-      if (!item) return;
-      e.preventDefault();
-      const opt = (COMBO_OPTS[div.dataset.opts] || []).find(o => String(o.v) === item.dataset.v);
-      input.value = opt ? opt.label : item.dataset.v;
-      comboCommit(div);
-      comboClose(div);
-    });
-  }
-  function initAllCombos(root) {
-    (root || document).querySelectorAll('.combo').forEach(initCombo);
-  }
-  // Repaint visible labels from the hidden values (after programmatic prefill).
-  function syncCombos(root) {
-    (root || document).querySelectorAll('.combo').forEach(comboSyncLabel);
-  }
-  document.addEventListener('DOMContentLoaded', () => initAllCombos(document));
 </script>
 
 {% if active_tab == 'suggestions' %}
@@ -580,17 +467,11 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
 </div>
 
 <style>
+{# .ac-wrap/.ac-drop/.ac-item/.ac-sku base rendering now lives in the global
+   combo.css (shared with the .combo component below). This block keeps only
+   the styles specific to this page's separate product-search autocomplete
+   (Card A "sm-product-search") and its fuzzy-match rows. #}
 .ac-wrap { position: relative; }
-.ac-drop { display: none; position: fixed; background: #fff; border: 1px solid var(--border);
-           border-radius: var(--radius-sm); box-shadow: var(--shadow-lg); max-height: 220px;
-           overflow-y: auto; z-index: 9999; min-width: 260px; }
-.ac-drop.open { display: block; }
-.ac-item { padding: 7px 12px; cursor: pointer; font-size: .82rem; border-bottom: 1px solid #f8fafc;
-           display: flex; align-items: center; gap: 8px; }
-.ac-item:last-child { border-bottom: none; }
-.ac-item:hover { background: var(--accent-light); }
-.ac-sku { font-family: 'SF Mono','Fira Code',monospace; font-size: .72rem; background: #f1f5f9;
-          color: #475569; padding: 1px 5px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }
 .match-row { padding:6px 8px; border:1px solid #e5e7eb; border-radius:4px; margin-bottom:4px;
              cursor:pointer; display:flex; align-items:center; gap:8px; font-size:.85rem; }
 .match-row:hover { background: var(--accent-light); border-color: var(--accent); }

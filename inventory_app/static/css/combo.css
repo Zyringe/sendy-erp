@@ -1,0 +1,21 @@
+/* ── Shared searchable-dropdown (combo) component ─────────────────────────
+   Styles for the .combo widget (see static/js/combo.js for behaviour/markup
+   contract). Loaded globally so any page (mapping, cashbook, ...) can drop
+   in a `.combo` div and get a working type-to-search dropdown for free. */
+.combo { position: relative; }
+.combo .ac-drop { min-width: 220px; }
+.combo-input.combo-open { border-color: var(--accent); }
+
+/* Generic dropdown-panel + item rendering — shared with mapping.html's
+   separate product-search autocomplete, which reuses the same .ac-* classes
+   (that impl stays in mapping.html; only these display rules moved here). */
+.ac-drop { display: none; position: fixed; background: #fff; border: 1px solid var(--border);
+           border-radius: var(--radius-sm); box-shadow: var(--shadow-lg); max-height: 220px;
+           overflow-y: auto; z-index: 9999; min-width: 260px; }
+.ac-drop.open { display: block; }
+.ac-item { padding: 7px 12px; cursor: pointer; font-size: .82rem; border-bottom: 1px solid #f8fafc;
+           display: flex; align-items: center; gap: 8px; }
+.ac-item:last-child { border-bottom: none; }
+.ac-item:hover { background: var(--accent-light); }
+.ac-sku { font-family: 'SF Mono','Fira Code',monospace; font-size: .72rem; background: #f1f5f9;
+          color: #475569; padding: 1px 5px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }

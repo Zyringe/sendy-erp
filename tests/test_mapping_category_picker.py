@@ -47,7 +47,9 @@ def test_mapping_tab_renders_combo(manager_client):
     """The ผูกรหัส (Suggest modal) tab renders the combo infra + Card B combos."""
     body = manager_client.get('/mapping').get_data(as_text=True)
     assert 'COMBO_OPTS' in body
-    assert 'function initCombo' in body
+    # initCombo/comboRender/etc. now live in the shared static/js/combo.js
+    # (loaded globally via base.html), not inlined per-page.
+    assert 'js/combo.js' in body
     for key in ('categories:', 'brands:', 'colorcodes:', 'packaging:', 'units:', 'conditions:'):
         assert key in body, f'missing COMBO_OPTS.{key}'
     assert 'chemical' in body          # category option set populated (code is the hint, ASCII)
