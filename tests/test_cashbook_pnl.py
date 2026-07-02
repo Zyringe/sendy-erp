@@ -117,7 +117,11 @@ def admin_client(tmp_db):
 
 def test_dashboard_renders_new_sections(admin_client):
     """The full template renders (Jinja valid) with the by-tag and
-    transfer-disclosure sections present."""
-    html = admin_client.get('/cashbook/').data.decode('utf-8')
+    transfer-disclosure sections present. Pinned to ?month=ทั้งหมด (all-time
+    mode) because the dashboard's default (no ?month=) now resolves to the
+    most-recent month with data (Phase 2, decision 6) — the คงเหลือ
+    true-cash disclosure this test checks is the ALL-TIME-mode text; month
+    mode shows a different (สุทธิเดือนนี้) disclosure instead."""
+    html = admin_client.get('/cashbook/?month=ทั้งหมด').data.decode('utf-8')
     assert 'ค่าใช้จ่ายตามผู้ใช้/สถานที่' in html
     assert 'เงินสดจริงในบัญชี' in html          # คงเหลือ disclosure (true cash incl transfers)

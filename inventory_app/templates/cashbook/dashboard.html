@@ -3,6 +3,18 @@
 {% block page_title %}บัญชีรับ-จ่าย{% endblock %}
 
 {% block topbar_actions %}
+<form method="get" action="{{ url_for('cashbook.dashboard') }}" class="d-flex align-items-center gap-2 me-2">
+  <select name="month" class="form-select form-select-sm" style="width:auto"
+          onchange="this.form.submit()" aria-label="เลือกเดือน">
+    <option value="ทั้งหมด" {% if is_all_time %}selected{% endif %}>ทั้งหมด</option>
+    {% for m in available_months %}
+    <option value="{{ m }}" {% if m == selected_month %}selected{% endif %}>{{ m }}</option>
+    {% endfor %}
+  </select>
+</form>
+{% if is_current_month %}
+<span class="badge bg-light text-muted border me-2">เดือนยังไม่จบ (เทียบแบบ MTD)</span>
+{% endif %}
 {% if can_edit_cashbook %}
 <a href="{{ url_for('cashbook.new_transaction') }}" class="btn btn-primary btn-sm">
   <i class="bi bi-plus-lg me-1"></i>เพิ่มรายการ
@@ -34,7 +46,13 @@
           <i class="bi bi-arrow-up-circle" style="color:#c41e2a"></i>
         </div>
         <div>
-          <div class="stat-card-label">รายจ่ายรวม</div>
+          <div class="stat-card-label">
+            รายจ่ายรวม
+            {% set nflag = overspend|selectattr('flagged')|list|length %}
+            {% if nflag > 0 %}
+            <span class="badge bg-danger-subtle text-danger ms-1">▲{{ nflag }} หมวดบวม</span>
+            {% endif %}
+          </div>
           <div class="stat-card-value text-danger">฿{{ "{:,.2f}".format(total_expense) }}</div>
         </div>
       </div>
@@ -44,14 +62,14 @@
     <div class="stat-card">
       <div class="d-flex align-items-center gap-3">
         <div class="stat-card-icon"
-             style="background:{% if total_balance >= 0 %}#e0f2fe{% else %}#fdecee{% endif %}">
+             style="background:{% if card3_value >= 0 %}#e0f2fe{% else %}#fdecee{% endif %}">
           <i class="bi bi-wallet2"
-             style="color:{% if total_balance >= 0 %}#0284c7{% else %}#c41e2a{% endif %}"></i>
+             style="color:{% if card3_value >= 0 %}#0284c7{% else %}#c41e2a{% endif %}"></i>
         </div>
         <div>
-          <div class="stat-card-label">คงเหลือ</div>
-          <div class="stat-card-value {% if total_balance >= 0 %}text-primary{% else %}text-danger{% endif %}">
-            ฿{{ "{:,.2f}".format(total_balance) }}
+          <div class="stat-card-label">{% if card3_is_net %}สุทธิเดือนนี้{% else %}คงเหลือ{% endif %}</div>
+          <div class="stat-card-value {% if card3_value >= 0 %}text-primary{% else %}text-danger{% endif %}">
+            ฿{{ "{:,.2f}".format(card3_value) }}
           </div>
         </div>
       </div>
@@ -64,13 +82,23 @@
     <ul class="list-unstyled mb-0">
       <li class="mb-1">
         <span class="fw-semibold">รายรับ/รายจ่าย</span> = ยอด Operating เท่านั้น
+        {% if is_all_time %}(ทั้งหมด){% else %}(เฉพาะเดือน {{ selected_month }}){% endif %}
         — ไม่นับบัญชีพักเงิน (is_transfer) และไม่รวมหมวดเงินทุน/เงินโอน
         (<span class="fw-semibold">฿{{ "{:,.2f}".format(transfer_total) }}</span>)
       </li>
+      {% if is_all_time %}
       <li>
         <span class="fw-semibold">คงเหลือ</span> = เงินสดจริงในบัญชี (รวมเงินทุน/เงินโอนที่โอนเข้า)
         จึง <span class="fw-semibold">ไม่เท่ากับ</span> รายรับ − รายจ่าย
       </li>
+      {% else %}
+      <li>
+        <span class="fw-semibold">สุทธิเดือนนี้</span> = รายรับ − รายจ่าย ของเดือน {{ selected_month }}
+        (เฉพาะ Operating) — เป็นตัวเลขกำไร/ขาดทุนของเดือนนี้เท่านั้น
+        <span class="fw-semibold">ไม่ใช่</span> เงินสดคงเหลือจริงในบัญชี
+        (ดูคงเหลือจริงได้ที่โหมด "ทั้งหมด")
+      </li>
+      {% endif %}
     </ul>
   </div>
 </div>
@@ -232,9 +260,19 @@
         <table class="table table-sm mb-0">
           <tbody>
             {% for c in expense_cats %}
+            {% set o = (overspend|selectattr('category','equalto',c.category)|first) if not is_all_time else None %}
             <tr data-cb-dim="expense_category" data-cb-key="{{ c.category }}"
                 data-cb-label="รายจ่าย: {{ c.category }}" role="button" style="cursor:pointer">
-              <td>{{ c.category }} <i class="bi bi-chevron-right text-muted small" aria-hidden="true"></i></td>
+              <td>
+                {{ c.category }} <i class="bi bi-chevron-right text-muted small" aria-hidden="true"></i>
+                {% if o and o.flagged %}
+                <span class="badge bg-danger-subtle text-danger ms-1">
+                  ▲{{ o.pct|round(0)|int }}% · +฿{{ "{:,.0f}".format(o.diff) }}
+                </span>
+                {% elif o and o.is_new %}
+                <span class="badge bg-light text-muted border ms-1">ใหม่</span>
+                {% endif %}
+              </td>
               <td class="text-end text-danger small">฿{{ "{:,.2f}".format(c.total) }}</td>
             </tr>
             {% else %}
@@ -304,9 +342,13 @@
       <tbody>
         {% for m in monthly %}
         {% set bal = m.income - m.expense %}
-        <tr data-cb-dim="month" data-cb-key="{{ m.month }}"
-            data-cb-label="เดือน {{ m.month }}" role="button" style="cursor:pointer">
-          <td class="small">{{ m.month }} <i class="bi bi-chevron-right text-muted small" aria-hidden="true"></i></td>
+        <tr data-cb-month="{{ m.month }}" role="button" style="cursor:pointer"
+            class="{% if m.month == selected_month %}table-active{% endif %}">
+          <td class="small">
+            {{ m.month }}
+            {% if m.month == selected_month %}<i class="bi bi-check-circle-fill text-primary ms-1" title="เดือนที่เลือกอยู่"></i>{% endif %}
+            <i class="bi bi-chevron-right text-muted small" aria-hidden="true"></i>
+          </td>
           <td class="text-end text-success small">฿{{ "{:,.2f}".format(m.income) }}</td>
           <td class="text-end text-danger small">฿{{ "{:,.2f}".format(m.expense) }}</td>
           <td class="text-end fw-semibold small
@@ -416,7 +458,8 @@
       });
   }
 
-  // Table rows
+  // Table rows (category/tag drill modals — month rows are handled separately below,
+  // as a navigator rather than a modal — see plan.md "What scopes vs what does not")
   document.querySelectorAll('[data-cb-dim]').forEach(row => {
     row.addEventListener('click', () => openCbDetail(
       row.getAttribute('data-cb-dim'),
@@ -424,18 +467,35 @@
       row.getAttribute('data-cb-label')));
   });
 
+  function navigateToMonth(m) {
+    window.location.search = '?month=' + encodeURIComponent(m);
+  }
+
+  // สรุปรายเดือน month rows — navigate (set the page's month scope), not a modal.
+  document.querySelectorAll('[data-cb-month]').forEach(row => {
+    row.addEventListener('click', () => navigateToMonth(row.getAttribute('data-cb-month')));
+  });
+
   // Charts
   const monthly = {{ monthly|tojson }};
   const expenseChart = {{ expense_chart|tojson }};
+  const selectedMonth = {{ selected_month|tojson }};
 
   const trendEl = document.getElementById('cbTrendChart');
   if (trendEl && monthly.length) {
+    // The trend chart never scopes (it IS the all-months story), but it highlights
+    // the currently-selected month and doubles as the month navigator on bar click.
+    const incomeColors = monthly.map(m => m.month === selectedMonth ? '#1b5e20' : '#2e7d3a');
+    const expenseColors = monthly.map(m => m.month === selectedMonth ? '#7f1418' : '#c41e2a');
+    const highlightBorder = monthly.map(m => m.month === selectedMonth ? 2 : 0);
     new Chart(trendEl, {
       data: {
         labels: monthly.map(m => m.month),
         datasets: [
-          { type: 'bar', label: 'รายรับ', backgroundColor: '#2e7d3a', data: monthly.map(m => m.income) },
-          { type: 'bar', label: 'รายจ่าย', backgroundColor: '#c41e2a', data: monthly.map(m => m.expense) },
+          { type: 'bar', label: 'รายรับ', backgroundColor: incomeColors,
+            borderColor: '#0d3311', borderWidth: highlightBorder, data: monthly.map(m => m.income) },
+          { type: 'bar', label: 'รายจ่าย', backgroundColor: expenseColors,
+            borderColor: '#4a0d10', borderWidth: highlightBorder, data: monthly.map(m => m.expense) },
           { type: 'line', label: 'คงเหลือสุทธิ', borderColor: '#0284c7', backgroundColor: '#0284c7',
             data: monthly.map(m => m.income - m.expense), tension: 0.3, fill: false }
         ]
@@ -446,7 +506,7 @@
         onClick: (e, els) => {
           if (!els.length) return;
           const m = monthly[els[0].index];
-          openCbDetail('month', m.month, 'เดือน ' + m.month);
+          navigateToMonth(m.month);
         }
       }
     });
