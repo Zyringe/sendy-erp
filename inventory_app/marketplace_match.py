@@ -80,13 +80,18 @@ def _combo_components(conn):
     packs (a ตัว/แผง pair, one input) are EXCLUDED — those share a unit and match
     without expansion; expanding them would over-match. Lets a combo marketplace
     order product-match the Express IV, which the team keys as the SEPARATE
-    components (253 order ↔ a 251+252 two-line invoice)."""
+    components (253 order ↔ a 251+252 two-line invoice).
+
+    Scoped to is_active=0: a combo marker is stored INACTIVE (prod fid 126) so it
+    never appears as a runnable /conversions. is_active=1 formulas are REAL
+    manufacturing conversions (assemble one product from parts) and must NOT be
+    treated as marketplace combos — expanding one would silently corrupt matching."""
     by_pack = {}
     for r in conn.execute(
         """SELECT f.output_product_id AS pack, i.product_id AS comp
            FROM conversion_formulas f
            JOIN conversion_formula_inputs i ON i.formula_id = f.id
-           WHERE i.product_id IS NOT NULL"""):
+           WHERE i.product_id IS NOT NULL AND f.is_active = 0"""):
         by_pack.setdefault(r['pack'], set()).add(r['comp'])
     return {p: comps for p, comps in by_pack.items() if len(comps) >= 2}
 
