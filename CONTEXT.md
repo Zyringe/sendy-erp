@@ -136,6 +136,29 @@
   account** (`employees.default_cashbook_account_id`, e.g. Put's staff → `392`, his mother's
   → `ชฎามาศ`). Transfer accounts (`is_transfer=1`) are not eligible (they're excluded from
   the P&L).
+
+- **All-time mode vs Month-scoped mode** — the two states of the `/cashbook` dashboard, chosen by
+  the month picker. All-time (`?month=ทั้งหมด`) = every txn (the original behavior). Month-scoped
+  (`?month=YYYY-MM`) filters the cards, per-account table, category/tag summaries and the doughnut
+  to one calendar month. Default on load = the most recent month **with data** (not the current
+  month, which entry-lag often leaves empty). The trend chart + สรุปรายเดือน table never scope
+  (they are the all-months story + the month navigator). See ADR 0007.
+
+- **สุทธิเดือนนี้ (net this month)** — operating `income − expense` for the selected month; the 3rd
+  headline card in month mode (the same slot shows **คงเหลือ**, true cash, in all-time mode — the
+  label swaps with the mode). It is a monthly P&L net, **NOT** a cash balance, and is computed as
+  `income − expense`, never `sum(account.balance)` (which folds in `เงินทุน/เงินโอน` transfers).
+
+- **Overspend flag** — a per-category expense alert on the month-scoped dashboard: this month's
+  category total ≥ 20% **and** ≥ ฿1,000 above the previous month's (both). Categories absent last
+  month are labelled "ใหม่", not flagged. Roll-up "▲N หมวดบวม" on the รายจ่ายรวม card. Baseline is
+  the previous month (thresholds are tunable constants). See ADR 0007.
+
+- **MTD (month-to-date) comparison** — for the current, incomplete month the overspend/delta compare
+  uses the previous month's **same day-range** (day 1..today, clamped to the prev month's length) so
+  a partial month isn't judged against a full one; tagged "เดือนยังไม่จบ". Past months compare
+  full-vs-full.
+
 ## Product creation & naming
 
 - **Structured product** — a product whose spec columns (`brand_id`, `category_id`,
