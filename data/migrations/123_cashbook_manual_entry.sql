@@ -22,7 +22,11 @@ ALTER TABLE cashbook_transactions ADD COLUMN created_by      TEXT;
 ALTER TABLE cashbook_transactions ADD COLUMN payroll_run_id  INTEGER REFERENCES payroll_runs(id);
 ALTER TABLE cashbook_transactions ADD COLUMN payroll_item_id INTEGER REFERENCES payroll_items(id);
 
-CREATE INDEX idx_cashbook_txn_payroll_item ON cashbook_transactions(payroll_item_id);
+-- UNIQUE: one salary pay-event row per payroll item (DB-level idempotency —
+-- the app's check-then-insert is racy under gunicorn -w 2 / double-submit).
+-- SQLite treats NULLs as distinct, so the many manual rows (payroll_item_id
+-- NULL) are unconstrained; only salary rows get one-per-item enforcement.
+CREATE UNIQUE INDEX idx_cashbook_txn_payroll_item ON cashbook_transactions(payroll_item_id);
 
 ALTER TABLE employees ADD COLUMN default_cashbook_account_id INTEGER REFERENCES cashbook_accounts(id);
 

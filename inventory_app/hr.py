@@ -801,9 +801,17 @@ def post_salary_payment(item_id: int, account_id: int,
             raise ValueError("ไม่สามารถจ่ายเงินเดือนเข้าบัญชีประเภทเงินโอนได้")
 
         run = c.execute(
-            "SELECT year_month FROM payroll_runs WHERE id = ?", (item["run_id"],)
+            "SELECT year_month, status FROM payroll_runs WHERE id = ?",
+            (item["run_id"],),
         ).fetchone()
-        year_month = run["year_month"] if run else ""
+        if run is None:
+            raise ValueError("ไม่พบรอบเงินเดือนของรายการนี้")
+        # Defense-in-depth: the route already gates finalized, but the invariant
+        # "paid rows only on finalized runs" (which keeps generate_run's item
+        # DELETE off referenced rows) must hold for any caller.
+        if run["status"] != "finalized":
+            raise ValueError("บันทึกการจ่ายได้เฉพาะรอบเงินเดือนที่ finalized แล้วเท่านั้น")
+        year_month = run["year_month"]
 
         emp = c.execute(
             "SELECT nickname, full_name FROM employees WHERE id = ?",
@@ -814,17 +822,38 @@ def post_salary_payment(item_id: int, account_id: int,
         txn_date = pay_date or date.today().isoformat()
         description = f"เงินเดือน {year_month} — {display_name}"
 
-        cur = c.execute(
-            """INSERT INTO cashbook_transactions
-                 (account_id, txn_date, direction, category, amount,
-                  user_category, description, created_by,
-                  payroll_run_id, payroll_item_id)
-               VALUES (?, ?, 'expense', 'เงินเดือน', ?, ?, ?, ?, ?, ?)""",
-            (account_id, txn_date, item["net_pay"], display_name, description,
-             actor, item["run_id"], item_id),
+        try:
+            cur = c.execute(
+                """INSERT INTO cashbook_transactions
+                     (account_id, txn_date, direction, category, amount,
+                      user_category, description, created_by,
+                      payroll_run_id, payroll_item_id)
+                   VALUES (?, ?, 'expense', 'เงินเดือน', ?, ?, ?, ?, ?, ?)""",
+                (account_id, txn_date, item["net_pay"], display_name, description,
+                 actor, item["run_id"], item_id),
+            )
+        except sqlite3.IntegrityError:
+            # UNIQUE(payroll_item_id) tripped — a concurrent request already
+            # posted this item (check-then-insert race under gunicorn -w 2 or a
+            # double-submit). Surface as ValueError so the route flashes instead
+            # of 500ing. The DB constraint, not this Python check, is the real
+            # idempotency guarantee.
+            raise ValueError(
+                "รายการนี้ถูกบันทึกจ่ายไปแล้ว — ต้องยกเลิกการจ่ายก่อนจึงจะบันทึกใหม่ได้"
+            )
+        txn_id = cur.lastrowid
+        # Attribute the cash-out to the actor: the mig-076 AFTER INSERT trigger
+        # stamps user=NULL, so mirror void_salary_payment's explicit audit row.
+        c.execute(
+            """INSERT INTO audit_log (table_name, row_id, action, changed_fields, user)
+                 VALUES ('cashbook_transactions', ?, 'INSERT', ?, ?)""",
+            (txn_id,
+             json.dumps({"payroll_item_id": item_id, "amount": item["net_pay"],
+                         "account_id": account_id}, ensure_ascii=False),
+             actor),
         )
         c.commit()
-        return cur.lastrowid
+        return txn_id
 
 
 def void_salary_payment(item_id: int, actor: str,

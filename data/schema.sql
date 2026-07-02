@@ -1458,7 +1458,7 @@ CREATE INDEX idx_cashbook_txn_category     ON cashbook_transactions(category);
 
 CREATE INDEX idx_cashbook_txn_date         ON cashbook_transactions(txn_date);
 
-CREATE INDEX idx_cashbook_txn_payroll_item ON cashbook_transactions(payroll_item_id);
+CREATE UNIQUE INDEX idx_cashbook_txn_payroll_item ON cashbook_transactions(payroll_item_id);
 
 CREATE INDEX idx_catalogue_items_name_norm
     ON supplier_catalogue_items(name_normalized);

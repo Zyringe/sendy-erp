@@ -162,6 +162,77 @@ def test_pay_twice_rejected_idempotent(tmp_db_conn_hr_clean):
     assert len(rows) == 1, "double-post must never create a second row"
 
 
+# ── 2b. concurrency guard: UNIQUE(payroll_item_id) is the REAL idempotency ──
+#    The sequential test above passes on the Python check alone; the DB
+#    constraint is what stops a check-then-insert race under gunicorn -w 2.
+
+def test_unique_index_enforces_one_pay_row_per_item(tmp_db_conn_hr_clean):
+    conn = tmp_db_conn_hr_clean
+    eid = _mk_employee(conn, 'T_PAY2B', 'แข่งจ่าย')
+    run_id = _mk_run(conn, '2026-09')
+    item_id = _mk_item(conn, run_id, eid, net_pay=12000.0)
+    account_id = _account_id(conn, '392')
+
+    hr_mod.post_salary_payment(item_id, account_id, '2026-09-28', 'test-admin', conn=conn)
+
+    # A racer that slips past the Python check (raw second insert, same item)
+    # must be rejected by the DB, not accepted.
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO cashbook_transactions "
+            "(account_id, txn_date, direction, category, amount, payroll_item_id) "
+            "VALUES (?, '2026-09-28', 'expense', 'เงินเดือน', 12000.0, ?)",
+            (account_id, item_id),
+        )
+    conn.rollback()
+
+    # NULL payroll_item_id (manual rows) stays unconstrained — many allowed.
+    for _ in range(2):
+        conn.execute(
+            "INSERT INTO cashbook_transactions "
+            "(account_id, txn_date, direction, category, amount, payroll_item_id) "
+            "VALUES (?, '2026-09-28', 'expense', 'ค่าไฟ', 100.0, NULL)",
+            (account_id,),
+        )
+    conn.commit()  # no IntegrityError for NULL links
+
+
+# ── defense-in-depth: cannot pay a DRAFT run (invariant guarded in the fn) ──
+
+def test_pay_on_draft_run_rejected(tmp_db_conn_hr_clean):
+    conn = tmp_db_conn_hr_clean
+    eid = _mk_employee(conn, 'T_PAYDRAFT', 'ร่าง')
+    run_id = _mk_run(conn, '2026-09', status='draft')
+    item_id = _mk_item(conn, run_id, eid, net_pay=9000.0)
+    account_id = _account_id(conn, '392')
+
+    with pytest.raises(ValueError):
+        hr_mod.post_salary_payment(item_id, account_id, '2026-09-28', 'test-admin', conn=conn)
+
+    n = conn.execute(
+        "SELECT COUNT(*) FROM cashbook_transactions WHERE payroll_item_id=?", (item_id,)
+    ).fetchone()[0]
+    assert n == 0
+
+
+# ── audit: the cash-out row is attributed to the actor (symmetry with unpay) ──
+
+def test_pay_writes_actor_attributed_audit_row(tmp_db_conn_hr_clean):
+    conn = tmp_db_conn_hr_clean
+    eid = _mk_employee(conn, 'T_PAYAUD', 'ออดิท')
+    run_id = _mk_run(conn, '2026-09')
+    item_id = _mk_item(conn, run_id, eid, net_pay=7000.0)
+    account_id = _account_id(conn, '392')
+
+    txn_id = hr_mod.post_salary_payment(item_id, account_id, '2026-09-28', 'mgr-mom', conn=conn)
+
+    row = conn.execute(
+        "SELECT 1 FROM audit_log WHERE table_name='cashbook_transactions' "
+        "AND row_id=? AND action='INSERT' AND user='mgr-mom'", (txn_id,)
+    ).fetchone()
+    assert row is not None, "pay-event must write an actor-attributed audit_log INSERT row"
+
+
 # ── 3. net_pay == 0 → no row posted, clear rejection ────────────────────────
 
 def test_pay_zero_net_pay_rejected(tmp_db_conn_hr_clean):

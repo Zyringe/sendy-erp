@@ -431,7 +431,7 @@ def _parse_batch_rows(form):
     return rows
 
 
-def _validate_batch(rows, account_ids):
+def _validate_batch(rows):
     """Validate non-blank rows in place (sets row['errors']); blank rows
     (amount empty) are left untouched — they're skipped, not errors.
     Returns the list of rows that are valid AND non-blank, each with a
@@ -478,7 +478,7 @@ def new_transaction():
             account_id = int(account_id_raw) if account_id_raw.isdigit() else None
 
             rows = _parse_batch_rows(request.form)
-            to_insert = _validate_batch(rows, account_ids)
+            to_insert = _validate_batch(rows)
 
             form_errors = []
             if account_id not in account_ids:
