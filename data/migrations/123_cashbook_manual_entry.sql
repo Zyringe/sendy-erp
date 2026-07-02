@@ -31,23 +31,39 @@ CREATE UNIQUE INDEX idx_cashbook_txn_payroll_item ON cashbook_transactions(payro
 ALTER TABLE employees ADD COLUMN default_cashbook_account_id INTEGER REFERENCES cashbook_accounts(id);
 
 -- Best-effort seed of the per-employee default pay-from account from history:
--- the account of that employee's most-recent hand-typed เงินเดือน row (matched
--- by nickname = user_category). Harmless if wrong — it's just a UI default,
--- overridable per-payment later. On a DB with zero cashbook_transactions rows
--- (e.g. a fresh test DB built during init_db()) this UPDATE matches and
--- changes 0 rows — not independently unit-testable there. The real seed
--- values must be verified against the live DB after this migration applies
--- there (see tests/test_migration_123_cashbook_manual_entry.py header note).
+-- the account of that employee's most-recent hand-typed เงินเดือน row. The
+-- historical rows tag by FIRST NAME (e.g. แต/สันติ/วฤทธิ์), so we match
+-- user_category against nickname OR the first token of full_name OR full_name
+-- (mirrors the emp-resolver precedence: first name is Put's everyday key). Only
+-- non-transfer accounts are eligible (the pay-from dropdown excludes transfers).
+-- Harmless if wrong — a UI default, overridable per-payment. On a fresh DB with
+-- no cashbook rows (init_db test build) it changes 0 rows; the real seed effect
+-- is verified against the live DB (see the migration test header note).
 UPDATE employees
    SET default_cashbook_account_id = (
        SELECT t.account_id
          FROM cashbook_transactions t
+         JOIN cashbook_accounts a ON a.id = t.account_id AND a.is_transfer = 0
         WHERE t.category = 'เงินเดือน'
-          AND t.user_category = employees.nickname
+          AND t.user_category IN (
+              NULLIF(employees.nickname, ''),
+              employees.full_name,
+              CASE WHEN instr(employees.full_name, ' ') > 0
+                   THEN substr(employees.full_name, 1, instr(employees.full_name, ' ') - 1)
+                   ELSE employees.full_name END)
         ORDER BY t.txn_date DESC, t.id DESC
         LIMIT 1)
- WHERE nickname IS NOT NULL AND nickname != ''
-   AND EXISTS (SELECT 1 FROM cashbook_transactions t2
-                WHERE t2.category='เงินเดือน' AND t2.user_category = employees.nickname);
+ WHERE default_cashbook_account_id IS NULL
+   AND EXISTS (
+       SELECT 1
+         FROM cashbook_transactions t2
+         JOIN cashbook_accounts a2 ON a2.id = t2.account_id AND a2.is_transfer = 0
+        WHERE t2.category = 'เงินเดือน'
+          AND t2.user_category IN (
+              NULLIF(employees.nickname, ''),
+              employees.full_name,
+              CASE WHEN instr(employees.full_name, ' ') > 0
+                   THEN substr(employees.full_name, 1, instr(employees.full_name, ' ') - 1)
+                   ELSE employees.full_name END));
 
 COMMIT;
