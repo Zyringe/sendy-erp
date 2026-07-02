@@ -19,7 +19,14 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(REPO, "inventory_app"))
 import models  # noqa: E402
 
+MIG_124 = os.path.join(REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+
 PID = 906001
+
+
+def _migrate124(conn):
+    with open(MIG_124, encoding="utf-8") as f:
+        conn.executescript(f.read())
 CODE = "ZZTESTFK"
 DOC = "RRTESTFK1"
 PRICE = 55.0
@@ -41,6 +48,7 @@ def test_overwrite_no_orphan_no_fkfail(tmp_db, monkeypatch):
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    _migrate124(conn)
     conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, ?, ?, 1)", (PID, "TEST", "อัน", f"SK{PID}"))
     conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"
                  "product_id,is_ignored) VALUES (?,?,?,0)",

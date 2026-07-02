@@ -6,6 +6,16 @@
 4. pragma_table_info('product_code_mapping') has NO bsn_unit after init_db
    (the live DB will have mig-112 applied; the CREATE TABLE in database.py
    also has no bsn_unit — verified via the schema-clone empty_db fixture).
+
+⚠ 2026-07-02: mig 124 restored bsn_unit (see
+tests/test_mapping_unit_aware_restore.py for the new unit-aware spec). Tests
+1-2 here now apply mig 124 to their tmp_db copy first (`_migrate124`) so
+`models._resolve_mapping`/`models.upsert_mapping` — which now reference the
+bsn_unit column unconditionally — don't hit "no such column" on a tmp_db copy
+of a live DB that hasn't been migrated yet. Their assertions are UNCHANGED:
+this is exactly the backward-compatibility guarantee mig 124 promises for a
+non-split code. Test 3 (resolve_pending_mappings) and test 4 (mig-112-in-
+isolation) don't touch bsn_unit at all and are untouched.
 """
 import os
 import sqlite3
@@ -18,9 +28,16 @@ sys.path.insert(0, os.path.join(REPO, "inventory_app"))
 import models  # noqa: E402
 import database  # noqa: E402
 
+MIG_124 = os.path.join(REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+
 PA = 907201
 PB = 907202
 CODE = "ZNBU100"
+
+
+def _migrate124(conn):
+    with open(MIG_124, encoding="utf-8") as f:
+        conn.executescript(f.read())
 
 
 def _seed_products(conn):
@@ -39,6 +56,7 @@ def _seed_products(conn):
 def test_resolve_mapping_returns_correct_product(tmp_db, monkeypatch):
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
+    _migrate124(conn)
     _seed_products(conn)
     conn.execute(
         "INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id) "
@@ -63,6 +81,7 @@ def test_resolve_mapping_returns_correct_product(tmp_db, monkeypatch):
 def test_resolve_mapping_unknown_code_returns_none(tmp_db, monkeypatch):
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
+    _migrate124(conn)
     _seed_products(conn)
     conn.commit()
 
@@ -81,6 +100,7 @@ def test_resolve_mapping_unknown_code_returns_none(tmp_db, monkeypatch):
 def test_upsert_mapping_second_call_updates_no_dup(tmp_db, monkeypatch):
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
+    _migrate124(conn)
     _seed_products(conn)
     conn.close()
 

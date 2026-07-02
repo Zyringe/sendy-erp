@@ -995,7 +995,8 @@ CREATE TABLE "product_code_mapping" (
   is_ignored INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   ignore_reason TEXT,
-  UNIQUE(bsn_code)
+  bsn_unit TEXT NOT NULL DEFAULT '',
+  UNIQUE(bsn_code, bsn_unit)
 );
 
 CREATE TABLE product_cost_ledger (

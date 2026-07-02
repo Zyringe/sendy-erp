@@ -11,7 +11,23 @@ See models.import_weekly (models.py:730+). For BSN-format doc_no
 
 Tests drive import_weekly directly to keep the surface area small.
 """
+import os
+import sqlite3
+
 import pytest
+
+_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_MIG_124 = os.path.join(_REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+
+
+def _migrate124(db_path):
+    """empty_db clones the live schema, which doesn't have mig 124 (bsn_unit
+    restore) applied on this machine yet — apply it so import_weekly's
+    _resolve_mapping call doesn't hit 'no such column: bsn_unit'."""
+    conn = sqlite3.connect(db_path)
+    with open(_MIG_124, encoding="utf-8") as f:
+        conn.executescript(f.read())
+    conn.close()
 
 
 def _entry(*, doc_no, bsn_code, qty=1.0, unit='ตัว', unit_price=10.0,
@@ -38,6 +54,7 @@ def test_same_doc_no_different_bsn_code_is_not_duplicate(empty_db, monkeypatch):
     """Two line items on the same invoice (different products) must both import."""
     import models
 
+    _migrate124(empty_db)
     e1 = _entry(doc_no='IV6900999-1', bsn_code='AAA001', name='Item A')
     e2 = _entry(doc_no='IV6900999-2', bsn_code='BBB002', name='Item B')
 
@@ -63,6 +80,7 @@ def test_same_doc_no_and_bsn_code_is_duplicate(empty_db):
     """
     import models
 
+    _migrate124(empty_db)
     e = _entry(doc_no='IV6901000-1', bsn_code='CCC003', name='Item C',
                unit_price=10.0, net=10.0)
     models.import_weekly([e], 'sales', 'first.csv')
@@ -94,6 +112,7 @@ def test_same_doc_base_same_bsn_different_unit_price_keeps_both(empty_db):
     """
     import models
 
+    _migrate124(empty_db)
     e1 = _entry(doc_no='IV6901001-1', bsn_code='DDD004', unit_price=10.0, net=10.0)
     e2 = _entry(doc_no='IV6901001-2', bsn_code='DDD004', unit_price=15.0, net=15.0)
     models.import_weekly([e1, e2], 'sales', 'sample.csv')

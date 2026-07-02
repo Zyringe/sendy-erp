@@ -8,7 +8,11 @@ forever (e.g. กันชน went to -2; IV6900437-2; RR6900057). These tests p
 Critical safety constraint: detection is scoped to docs (doc_base) PRESENT in the
 file. A partial slice that doesn't mention a doc must NEVER reverse that doc.
 """
+import os
 import sqlite3
+
+_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_MIG_124 = os.path.join(_REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
 
 
 def _conn(path):
@@ -18,8 +22,21 @@ def _conn(path):
     return c
 
 
+def _ensure_bsn_unit(c):
+    """empty_db clones the live schema, which doesn't have mig 124 (bsn_unit
+    restore) applied on this machine yet — apply it once so import_weekly's
+    _resolve_mapping call doesn't hit 'no such column: bsn_unit'. Guarded by
+    a column check since _seed() (which calls this) runs more than once per
+    test on the same DB file."""
+    cols = {r[1] for r in c.execute("PRAGMA table_info(product_code_mapping)")}
+    if "bsn_unit" not in cols:
+        with open(_MIG_124, encoding="utf-8") as f:
+            c.executescript(f.read())
+
+
 def _seed(path, sku, code, unit_type='ตัว'):
     c = _conn(path)
+    _ensure_bsn_unit(c)
     pid = c.execute("INSERT INTO products (product_name, unit_type, cost_price) VALUES (?, ?, 0)",
                     (f"P{sku}", unit_type)).lastrowid
     c.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
