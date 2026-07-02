@@ -123,6 +123,15 @@ def test_get_active_cashbook_accounts_excludes_transfer(tmp_db_conn):
     unfiltered = hrq.get_active_cashbook_accounts(conn=conn)
     assert transfer_id in {a['id'] for a in unfiltered}
 
+    # regression guard: the cashbook manual-entry + edit-modal dropdowns call
+    # this with a POSITIONAL conn — get_active_cashbook_accounts(conn). That
+    # must bind conn (not non_transfer_only) and therefore INCLUDE transfer
+    # accounts like 904. Before the keyword-only fix, a positional conn landed
+    # in non_transfer_only (truthy) and silently dropped 904 from those forms.
+    positional = hrq.get_active_cashbook_accounts(conn)
+    assert transfer_id in {a['id'] for a in positional}, \
+        "positional conn must NOT be treated as non_transfer_only (904 dropped)"
+
 
 def test_employee_form_save_sets_default_cashbook_account(tmp_db_conn_hr_clean):
     conn = tmp_db_conn_hr_clean

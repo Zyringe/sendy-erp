@@ -619,14 +619,20 @@ def get_employee_payslips(employee_id: int,
 
 # ── Salary advances ──────────────────────────────────────────────────────────
 
-def get_active_cashbook_accounts(non_transfer_only: bool = False,
-                                 conn: Optional[sqlite3.Connection] = None):
+def get_active_cashbook_accounts(conn: Optional[sqlite3.Connection] = None,
+                                 *, non_transfer_only: bool = False):
     """Return active cashbook accounts for a pay-from dropdown.
 
     non_transfer_only=True excludes is_transfer=1 accounts (e.g. code 904) —
     used by the employee default-pay-account select and (Phase 4) the salary
     pay-event account picker, since posting salary to a transfer account
     would make it vanish from the P&L (see cashbook.py dashboard exclusion).
+
+    `non_transfer_only` is KEYWORD-ONLY on purpose: `conn` is the first
+    positional param so existing `get_active_cashbook_accounts(conn)` callers
+    (cashbook manual-entry + edit-modal dropdowns) bind conn correctly. Before
+    this order, a positional conn landed in `non_transfer_only` (truthy) and
+    silently dropped transfer accounts like 904 from those dropdowns.
     """
     c, owned = _conn(conn)
     try:
