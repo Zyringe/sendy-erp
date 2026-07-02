@@ -9,7 +9,11 @@ import_weekly opens its own connection via get_connection(), so these tests use
 the empty_db PATH fixture (which patches config/database.DATABASE_PATH) and open
 fresh connections for seeding + assertions.
 """
+import os
 import sqlite3
+
+_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_MIG_124 = os.path.join(_REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
 
 
 def _conn(path):
@@ -19,8 +23,21 @@ def _conn(path):
     return c
 
 
+def _ensure_bsn_unit(c):
+    """empty_db clones the live schema, which doesn't have mig 124 (bsn_unit
+    restore) applied on this machine yet — apply it once so import_weekly's
+    _resolve_mapping call doesn't hit 'no such column: bsn_unit'. Guarded by
+    a column check since _seed() (which calls this) runs more than once per
+    test on the same DB file."""
+    cols = {r[1] for r in c.execute("PRAGMA table_info(product_code_mapping)")}
+    if "bsn_unit" not in cols:
+        with open(_MIG_124, encoding="utf-8") as f:
+            c.executescript(f.read())
+
+
 def _seed(path, sku, code, unit_type='ตัว'):
     c = _conn(path)
+    _ensure_bsn_unit(c)
     cur = c.execute("INSERT INTO products (product_name, unit_type, cost_price) VALUES (?, ?, 0)", (f"P{sku}", unit_type))
     pid = cur.lastrowid
     c.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
@@ -116,6 +133,7 @@ def test_reimport_raw_stored_unit_is_noop(empty_db):
     assert norm != raw, "fixture needs a unit whose normalize() differs from raw"
 
     c = _conn(empty_db)
+    _ensure_bsn_unit(c)
     cur = c.execute("INSERT INTO products (product_name, unit_type, cost_price) VALUES ('Praw', ?, 0)", (norm,))   # unit_type=norm → 1:1
     pid = cur.lastrowid
     # stock_levels starts at 0; the seeded transaction below drives it to 5 via
@@ -155,6 +173,7 @@ def test_unmapped_code_preserves_existing_product_link(empty_db):
     preview's "won't affect stock" for a truly-unmapped code (scrutiny major)."""
     import models
     c = _conn(empty_db)
+    _ensure_bsn_unit(c)
     cur = c.execute("INSERT INTO products (product_name, unit_type, cost_price) VALUES ('Linked', 'ตัว', 0)")
     pid = cur.lastrowid
     c.execute("INSERT INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))

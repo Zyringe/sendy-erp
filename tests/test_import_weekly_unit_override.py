@@ -1,7 +1,8 @@
-"""import_weekly resolves product_id via pure bsn_code mapping (post-mig-112).
+"""import_weekly resolves product_id via bsn_code (+ unit) mapping.
 
-After mig-112: one row per bsn_code, all units of a code route to the same
-product. Tests verify the simplified behavior (unit-override behavior is gone).
+A single (bsn_code, bsn_unit='') mapping row is the non-split catch-all: ALL
+units of that code route to the same product (mig 124 restored bsn_unit, but
+these test codes were never split, so behavior is unchanged from mig-112).
 """
 import os
 import sqlite3
@@ -11,8 +12,15 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(REPO, "inventory_app"))
 import models  # noqa: E402
 
+MIG_124 = os.path.join(REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+
 PA, PB = 907101, 907102
 CODE = "ZIMP100"
+
+
+def _migrate124(conn):
+    with open(MIG_124, encoding="utf-8") as f:
+        conn.executescript(f.read())
 
 
 def _entry(code, unit, doc):
@@ -28,6 +36,7 @@ def test_import_routes_all_units_to_single_product(tmp_db, monkeypatch):
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    _migrate124(conn)
     for pid in (PA, PB):
         conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (pid, f"P{pid}", f"SK{pid}"))
     conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id) "
@@ -56,6 +65,7 @@ def test_import_routes_all_units_to_single_product(tmp_db, monkeypatch):
 def test_non_mapped_code_stays_null(tmp_db, monkeypatch):
     """A code with no mapping row results in NULL product_id."""
     conn = sqlite3.connect(tmp_db)
+    _migrate124(conn)
     conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (PA, "P", f"SK{PA}"))
     conn.commit()
     conn.close()

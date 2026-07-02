@@ -10,7 +10,14 @@ sys.path.insert(0, os.path.join(REPO, "inventory_app"))
 import models  # noqa: E402
 import bsn_units  # noqa: E402
 
+MIG_124 = os.path.join(REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+
 PID = 906201
+
+
+def _migrate124(conn):
+    with open(MIG_124, encoding="utf-8") as f:
+        conn.executescript(f.read())
 
 
 def _entry(code, unit):
@@ -29,6 +36,7 @@ def test_known_acronym_normalized_unknown_kept(tmp_db, monkeypatch):
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    _migrate124(conn)
     conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, ?, ?, 1)", (PID, "P", "ตัว", f"SK{PID}"))
     for code in ("CNORMK", "CNORMU"):
         conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,"

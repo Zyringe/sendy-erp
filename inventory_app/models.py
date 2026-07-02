@@ -1157,12 +1157,17 @@ def delete_transactions_by_ids(ids):
 # ── Product Code Mapping (BSN ↔ internal SKU) ─────────────────────────────────
 
 def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
-                   ignore_reason=None):
-    """Upsert a mapping row by bsn_code (mig 112: no bsn_unit column).
+                   ignore_reason=None, bsn_unit=''):
+    """Upsert a mapping row by (bsn_code, bsn_unit) (mig 124 restore).
+
+    Default bsn_unit='' matches/creates only the non-split catch-all row, so
+    a generic caller that doesn't know about units (the /mapping UI today)
+    never clobbers a unit-specific split row created elsewhere.
 
     Uses UPDATE-then-INSERT to avoid dependency on which UNIQUE constraint is
-    currently active (compatible across the mig-112 boundary).
+    currently active (compatible across the mig-112/mig-124 boundary).
     """
+    bsn_unit = bsn_unit or ''
     conn = get_connection()
     updated = conn.execute("""
         UPDATE product_code_mapping SET
@@ -1170,14 +1175,14 @@ def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
             product_id    = ?,
             is_ignored    = ?,
             ignore_reason = ?
-        WHERE bsn_code = ?
-    """, (bsn_name, product_id, is_ignored, ignore_reason, bsn_code)).rowcount
+        WHERE bsn_code = ? AND bsn_unit = ?
+    """, (bsn_name, product_id, is_ignored, ignore_reason, bsn_code, bsn_unit)).rowcount
     if not updated:
         conn.execute("""
             INSERT OR IGNORE INTO product_code_mapping
-                (bsn_code, bsn_name, product_id, is_ignored, ignore_reason)
-            VALUES (?, ?, ?, ?, ?)
-        """, (bsn_code, bsn_name, product_id, is_ignored, ignore_reason))
+                (bsn_code, bsn_name, product_id, is_ignored, ignore_reason, bsn_unit)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (bsn_code, bsn_name, product_id, is_ignored, ignore_reason, bsn_unit))
     conn.commit()
     conn.close()
 
@@ -1213,21 +1218,41 @@ def get_pending_mappings():
 def resolve_pending_mappings(conn):
     """
     เติม product_id ให้แถว BSN ที่ยังไม่มี แล้ว sync ไปยัง stock ทันที
+
+    Unit-aware (mig 124 restore): resolves each pending row through
+    _resolve_mapping(conn, bsn_code, unit) instead of a bare bsn_code join —
+    once a code is split (e.g. 030บ3412 → 81 for แผง, 111 for ตัว), a plain
+    "first row for this code" join would backfill a pending row to an
+    arbitrary unit's product. Row-by-row in Python because
+    _resolve_mapping's unit normalization + blank-catch-all tiebreak can't be
+    expressed as a single correlated-subquery UPDATE.
+
+    Historical PURCHASE rows store the RAW BSN unit acronym (e.g. 'ตว');
+    SALES rows are normalized at import time. _resolve_mapping normalizes
+    its `unit` arg itself, so passing the stored `unit` straight in resolves
+    correctly for both tables regardless of which form is on disk.
+
+    For any non-split code (the current live state — only a blank bsn_unit=''
+    catch-all row exists) this returns exactly what the old bare bsn_code
+    join did: one row, any unit resolves to it.
     """
     for table, file_type in (
         ('sales_transactions',    'sales'),
         ('purchase_transactions', 'purchase'),
     ):
-        conn.execute(f"""
-            UPDATE {table}
-            SET product_id = (
-                SELECT m.product_id FROM product_code_mapping m
-                WHERE m.bsn_code = {table}.bsn_code
-                  AND m.product_id IS NOT NULL
-                LIMIT 1
+        pending = conn.execute(
+            f"SELECT id, bsn_code, unit FROM {table} "
+            f"WHERE product_id IS NULL AND bsn_code IS NOT NULL"
+        ).fetchall()
+        for row in pending:
+            product_id, is_ignored, mapped = _resolve_mapping(
+                conn, row['bsn_code'], row['unit']
             )
-            WHERE product_id IS NULL AND bsn_code IS NOT NULL
-        """)
+            if mapped and not is_ignored and product_id is not None:
+                conn.execute(
+                    f"UPDATE {table} SET product_id = ? WHERE id = ?",
+                    (product_id, row['id'])
+                )
         # sync แถวที่เพิ่ง resolve ไปยัง transactions/stock
         _sync_bsn_to_stock(conn, table, file_type)
     conn.commit()
@@ -1306,12 +1331,24 @@ def prune_audit_log(conn=None):
             conn.close()
 
 
-def _resolve_mapping(conn, code):
-    """(product_id, is_ignored, mapped?) — pure bsn_code lookup (mig 112)."""
+def _resolve_mapping(conn, code, unit=''):
+    """(product_id, is_ignored, mapped?) — unit-aware bsn_code lookup (mig 124
+    restore). A split bsn_code can map to DIFFERENT products per BSN unit
+    (e.g. แผง vs ตัว); a blank bsn_unit row is the non-split catch-all and
+    matches any unit that has no dedicated row.
+
+    `unit` is normalized the same way import does (bsn_units.normalize_unit)
+    so a raw acronym ('ตว') matches a mapping row stored in full-Thai ('ตัว').
+    Omitting `unit` (default '') matches ONLY the blank/catch-all row —
+    preserves the pre-restore pure-bsn_code behavior for callers that don't
+    pass a unit.
+    """
+    unit = bsn_units.normalize_unit(unit) or ''
     m = conn.execute(
         "SELECT product_id, is_ignored FROM product_code_mapping "
-        "WHERE bsn_code = ? LIMIT 1",
-        (code,)
+        "WHERE bsn_code = ? AND bsn_unit IN (?, '') "
+        "ORDER BY (bsn_unit = '') LIMIT 1",
+        (code, unit)
     ).fetchone()
     return (m['product_id'] if m else None, m['is_ignored'] if m else 0, bool(m))
 
@@ -1377,7 +1414,7 @@ def preview_import(entries: list, file_type: str) -> dict:
             unit = bsn_units.normalize_unit(e.get('unit'))
             doc_no = e['doc_no']
             line_seq = e.get('line_seq', 1)
-            pid, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'])
+            pid, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'], unit)
             if is_ignored:
                 counts['ignored'] += 1
                 continue
@@ -1485,7 +1522,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
         doc_base = doc_no.rsplit('-', 1)[0] if '-' in doc_no else doc_no
         line_seq = e.get('line_seq', 1)
 
-        product_id, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'])
+        product_id, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'], e['unit'])
         if is_ignored:
             skipped_dup += 1
             continue
@@ -5273,18 +5310,25 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
             'units_per_box': d.get('units_per_box') or 1,
         }, 'smart_mapping', conn=conn)
 
-        # Upsert mapping (bsn_code → new product) — one row per code (mig 112).
-        # UPDATE-then-INSERT mirrors upsert_mapping() (boundary-safe; reuses the
-        # existing pending row, so no separate placeholder cleanup is needed).
+        # Upsert mapping (bsn_code → new product) — the non-split catch-all row
+        # (bsn_unit='', mig 124 restore). UPDATE-then-INSERT mirrors
+        # upsert_mapping() (boundary-safe; reuses the existing pending row, so
+        # no separate placeholder cleanup is needed). Filtering/inserting on
+        # bsn_unit='' means this never clobbers a unit-specific split row that
+        # may already exist for this code (PR #178 regression class: mig 112
+        # once made this INSERT omit bsn_unit entirely and 500 on a NOT NULL
+        # column with no default — restored here explicitly, not relying on
+        # the column DEFAULT, to keep intent obvious).
         updated = conn.execute(
             "UPDATE product_code_mapping SET bsn_name=?, product_id=?, is_ignored=0 "
-            "WHERE bsn_code=?",
+            "WHERE bsn_code=? AND bsn_unit=''",
             (sug['bsn_name'], new_pid, sug['bsn_code'])
         ).rowcount
         if not updated:
             conn.execute(
                 "INSERT OR IGNORE INTO product_code_mapping "
-                "(bsn_code, bsn_name, product_id, is_ignored) VALUES (?, ?, ?, 0)",
+                "(bsn_code, bsn_name, product_id, is_ignored, bsn_unit) "
+                "VALUES (?, ?, ?, 0, '')",
                 (sug['bsn_code'], sug['bsn_name'], new_pid)
             )
 

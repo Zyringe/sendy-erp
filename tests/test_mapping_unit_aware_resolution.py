@@ -1,6 +1,10 @@
-"""Mapping resolution (models.py) — post-mig-112 pure bsn_code→product_id.
+"""Mapping resolution (models.py) via resolve_pending_mappings() — pure
+bsn_code→product_id (resolve_pending_mappings does NOT consult bsn_unit even
+after mig 124 restored the column; see test_mapping_unit_aware_restore.py for
+the unit-aware `_resolve_mapping` spec used at import time).
 
-Tests verify the simplified resolver: one row per bsn_code, no bsn_unit column.
+Tests verify: one row per bsn_code, product_id-only join, routes ANY unit of
+that code to the same product.
 """
 import os
 import sqlite3
@@ -10,8 +14,19 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(REPO, "inventory_app"))
 import models  # noqa: E402
 
+MIG_124 = os.path.join(REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+
 PA, PB = 907001, 907002          # synthetic product ids
 CODE = "ZRES100"
+
+
+def _migrate124(conn):
+    with open(MIG_124, encoding="utf-8") as f:
+        conn.executescript(f.read())
+    # mig 124's own trailer turns foreign_keys back ON; these tests seed
+    # transactions with a placeholder batch_id=0 (no real import_log row),
+    # so restore the ambient OFF state they were written against.
+    conn.execute("PRAGMA foreign_keys = OFF")
 
 
 def _seed(conn):
@@ -38,6 +53,7 @@ def _pid_of(conn, did):
 def test_single_mapping_resolves_all_units(tmp_db):
     """After mig-112: one mapping row routes all units of that code."""
     conn = sqlite3.connect(tmp_db)
+    _migrate124(conn)
     _seed(conn)
     conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id) "
                  "VALUES (?,?,?)", (CODE, "n", PA))
@@ -53,6 +69,7 @@ def test_single_mapping_resolves_all_units(tmp_db):
 def test_unmapped_code_leaves_null(tmp_db):
     """A code with no mapping row stays unresolved."""
     conn = sqlite3.connect(tmp_db)
+    _migrate124(conn)
     _seed(conn)
     _sale(conn, "ตัว", "D1")
     conn.commit()
@@ -64,6 +81,7 @@ def test_unmapped_code_leaves_null(tmp_db):
 def test_null_unit_resolves_to_same_product(tmp_db):
     """NULL unit still resolves via the single mapping row."""
     conn = sqlite3.connect(tmp_db)
+    _migrate124(conn)
     _seed(conn)
     conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id) "
                  "VALUES (?,?,?)", (CODE, "n", PA))
@@ -82,6 +100,7 @@ def test_null_unit_resolves_to_same_product(tmp_db):
 def test_upsert_mapping_by_bsn_code(tmp_db):
     """upsert_mapping by bsn_code only — second call updates same row."""
     conn = sqlite3.connect(tmp_db)
+    _migrate124(conn)
     _seed(conn)
     conn.commit()
     conn.close()

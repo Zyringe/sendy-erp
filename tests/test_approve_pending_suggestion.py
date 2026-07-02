@@ -3,18 +3,33 @@
 Covers:
 - units_per_carton/box = NULL must NOT block approval (mig 069 made them
   NOT NULL DEFAULT 1; backend defaults to 1 when frontend sends null).
-- Mapping row uses sug.bsn_unit as scope (strict mode), not hardcoded ''.
+- Mapping row is scoped to the non-split catch-all (bsn_unit='') — mig 124
+  restored the column but approve still writes the generic catch-all row,
+  not a unit-specific split row (see models.py::approve_pending_suggestion).
+
+⚠ 2026-07-02: `empty_db` clones the LIVE schema, which doesn't have mig 124
+applied on this machine yet (implementer session never touches the live DB —
+see erp-engineering-discipline.md). `empty_db_with_user` applies mig 124
+itself so every test below (all going through this one fixture) sees the
+restored bsn_unit column.
 """
+import os
 import sqlite3
 
 import pytest
 
+_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_MIG_124 = os.path.join(_REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+
 
 @pytest.fixture
 def empty_db_with_user(empty_db):
-    """empty_db + a single user row so pending_product_suggestions's FK to
-    users(id) is satisfied. Returns (db_path, user_id)."""
+    """empty_db + mig 124 (bsn_unit restore) + a single user row so
+    pending_product_suggestions's FK to users(id) is satisfied. Returns
+    (db_path, user_id)."""
     conn = sqlite3.connect(empty_db)
+    with open(_MIG_124, encoding="utf-8") as f:
+        conn.executescript(f.read())
     conn.execute(
         "INSERT INTO users (username, password_hash, display_name, role, is_active) "
         "VALUES ('tester', 'x', 'Tester', 'admin', 1)"
