@@ -301,3 +301,41 @@ def test_product_beats_even_dead_on_amount_only(mm_conn):
         "SELECT order_sn, doc_base FROM marketplace_order_invoice WHERE platform='shopee'")}
     assert links.get('OB') == 'IV_X'      # product wins (intentional)
     assert 'OA' not in links
+
+
+def _add_combo_formula(c, pack, comps):
+    fid = c.execute("INSERT INTO conversion_formulas (name, output_product_id, output_qty, is_active) "
+                    "VALUES (?,?,1,1)", (f'[combo] {pack}', pack)).lastrowid
+    for p in comps:
+        c.execute("INSERT INTO conversion_formula_inputs (formula_id, product_id, quantity) VALUES (?,?,1)", (fid, p))
+    c.commit()
+
+
+def test_combo_order_matches_component_bundle_iv(mm_conn):
+    """A combo/pack marketplace order (product P = pack of A+B) product-matches an
+    Express IV keyed as the two SEPARATE components — because the team books a combo
+    sale as its components (253 ↔ a 251+252 two-line invoice). _order_products expands
+    the combo to its components, so the overlap is seen even though the order's single
+    pid ≠ the IV pids. Amount is far off here, so ONLY the expansion can match it."""
+    c = mm_conn
+    _add_combo_formula(c, 900, [901, 902])                          # pack 900 = 901 + 902
+    _add_order(c, 'O-COMBO', 100.0, '2026-06-04', product_id=900)   # combo order
+    _add_iv(c, 'IV_BUNDLE', 150.0, '2026-06-05', product_id=901)    # line 1 = component 901
+    c.execute("""INSERT INTO sales_transactions (date_iso, doc_no, doc_base, customer, customer_code,
+                 qty, unit_price, vat_type, total, net, product_id, created_at, synced_to_stock)
+                 VALUES ('2026-06-05','IV_BUNDLE-2','IV_BUNDLE','หน้าร้านS','Zหน้าร้าน',1,0,1,0,0,902,'2026-06-01 00:00:00',1)""")
+    c.commit()
+    mm.run_automatch(c, 'shopee')
+    row = c.execute("SELECT doc_base FROM marketplace_order_invoice WHERE order_sn='O-COMBO'").fetchone()
+    assert row is not None and row['doc_base'] == 'IV_BUNDLE'       # matched via component expansion
+
+
+def test_single_component_pack_is_not_expanded(mm_conn):
+    """A ตัว/แผง pack (ONE component) is NOT expanded — those share a unit and match
+    without it; expanding would over-match. Only multi-component combos expand."""
+    c = mm_conn
+    _add_combo_formula(c, 910, [911])                               # single-component "pack"
+    _add_order(c, 'O-PACK', 100.0, '2026-06-04', product_id=910)
+    _add_iv(c, 'IV_LOOSE', 150.0, '2026-06-05', product_id=911)     # only 911; amount off 50
+    mm.run_automatch(c, 'shopee')
+    assert c.execute("SELECT COUNT(*) FROM marketplace_order_invoice WHERE order_sn='O-PACK'").fetchone()[0] == 0

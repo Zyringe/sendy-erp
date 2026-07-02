@@ -14,7 +14,7 @@
 </nav>
 
 <div class="row justify-content-center">
-  <div class="col-lg-7">
+  <div class="col-lg-{{ 9 if action == 'new' else 7 }}">
     <div class="card">
       <div class="card-header">
         <i class="bi bi-{% if action == 'new' %}plus-circle{% else %}pencil{% endif %} me-2 text-accent"></i>
@@ -23,10 +23,11 @@
       <div class="card-body">
         <form method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+{% if action == 'edit' %}
           <div class="row g-3">
             <div class="col-md-8">
-              <label class="form-label">ชื่อสินค้า {% if action != 'edit' %}<span class="text-danger">*</span>{% endif %}</label>
-              {% if action == 'edit' %}
+              <label class="form-label">ชื่อสินค้า</label>
               <input type="text" name="product_name" class="form-control bg-light"
                      value="{{ product.product_name or '' }}" readonly>
               <div class="form-text">
@@ -34,10 +35,6 @@
                 <a href="{{ url_for('naming.index', tab='workbench') }}">หน้าตั้งชื่อสินค้า (Master Naming) →</a>
                 ระบบจะสร้างชื่อ + sku_code ใหม่ให้สอดคล้องกัน
               </div>
-              {% else %}
-              <input type="text" name="product_name" class="form-control"
-                     value="{{ product.product_name or '' }}" required>
-              {% endif %}
             </div>
             <div class="col-md-4">
               <label class="form-label">หน่วย</label>
@@ -103,6 +100,180 @@
                 <i class="bi bi-plus me-1"></i>เพิ่มสถานที่
               </button>
             </div>
+{% else %}
+          {# ── New product: type raw name -> parse -> review/edit spec fields ── #}
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label">ชื่อดิบ (พิมพ์ชื่อสินค้าตามที่จะตั้ง แล้วกด "แยกวิเคราะห์")</label>
+              <div class="input-group">
+                <input type="text" id="raw_name" class="form-control"
+                       placeholder="เช่น บานพับ 3นิ้ว สแตนเลส Sendai">
+                <button type="button" class="btn btn-outline-primary" onclick="parseRawName()">
+                  <i class="bi bi-magic me-1"></i>แยกวิเคราะห์ (Parse)
+                </button>
+              </div>
+              <div class="form-text" id="parse-status"></div>
+            </div>
+
+            <div class="col-12">
+              <label class="form-label">ชื่อสินค้า (แก้ไขได้) <span class="text-danger">*</span></label>
+              <input type="text" name="product_name" id="product_name" class="form-control"
+                     value="{{ product.product_name or '' }}" required>
+            </div>
+
+            <div class="col-12"><hr class="my-1"></div>
+
+            <div class="col-md-4">
+              <label class="form-label">หมวดหมู่</label>
+              <select name="category_id" id="category_id" class="form-select">
+                <option value="">— ไม่ระบุ —</option>
+                {% for c in categories %}
+                <option value="{{ c.id }}" {% if (product.category_id|string) == (c.id|string) %}selected{% endif %}>{{ c.name_th }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">หมวดย่อย</label>
+              <input type="text" name="sub_category" id="sub_category" class="form-control"
+                     value="{{ product.sub_category or '' }}">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">ซีรีส์</label>
+              <input type="text" name="series" id="series" class="form-control"
+                     value="{{ product.series or '' }}">
+            </div>
+
+            <div class="col-md-4">
+              <label class="form-label">แบรนด์</label>
+              <select name="brand_id" id="brand_id" class="form-select" onchange="toggleOtherField('brand_id','brand_other_name')">
+                <option value="">— ไม่ระบุ —</option>
+                {% for b in brands %}
+                <option value="{{ b.id }}" {% if (product.brand_id|string) == (b.id|string) %}selected{% endif %}>{{ b.name }}{% if b.name_th %} / {{ b.name_th }}{% endif %}</option>
+                {% endfor %}
+                <option value="__other__">อื่นๆ (ระบุ)</option>
+              </select>
+              <input type="text" name="brand_other_name" id="brand_other_name"
+                     class="form-control mt-1 d-none" placeholder="ชื่อแบรนด์ใหม่"
+                     value="{{ product.brand_other_name or '' }}">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">รุ่น (model)</label>
+              <input type="text" name="model" id="model" class="form-control"
+                     value="{{ product.model or '' }}">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">ขนาด</label>
+              <input type="text" name="size" id="size" class="form-control"
+                     value="{{ product.size or '' }}">
+            </div>
+
+            <div class="col-md-4">
+              <label class="form-label">สี</label>
+              <select name="color_code" id="color_code" class="form-select" onchange="toggleOtherField('color_code','color_code_other')">
+                <option value="">— ไม่ระบุ —</option>
+                {% for cc in color_codes %}
+                <option value="{{ cc.code }}" {% if (product.color_code|string) == (cc.code|string) %}selected{% endif %}>{{ cc.code }} — {{ cc.name_th }}</option>
+                {% endfor %}
+                <option value="__other__">อื่นๆ (ระบุ)</option>
+              </select>
+              <input type="text" name="color_code_other" id="color_code_other"
+                     class="form-control mt-1 d-none" placeholder="รหัสสีใหม่"
+                     value="{{ product.color_code_other or '' }}">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">บรรจุภัณฑ์</label>
+              <select name="packaging_th" id="packaging_th" class="form-select">
+                <option value="">— ไม่ระบุ —</option>
+                {% for p in packaging_options %}
+                <option value="{{ p }}" {% if product.packaging_th == p %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">สภาพสินค้า</label>
+              <input type="text" name="condition" id="condition" class="form-control"
+                     placeholder="เช่น เก่า, ไม่สวย, ตำหนิ" value="{{ product.condition or '' }}">
+            </div>
+
+            <div class="col-md-4">
+              <label class="form-label">Pack variant</label>
+              <input type="text" name="pack_variant" id="pack_variant" class="form-control"
+                     value="{{ product.pack_variant or '' }}">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">หน่วย</label>
+              <input type="text" name="unit_type" class="form-control"
+                     value="{{ product.unit_type or 'ตัว' }}" placeholder="ตัว / แผง / ชิ้น">
+            </div>
+            <div class="col-md-2">
+              <label class="form-label">บรรจุ/ลัง</label>
+              <input type="number" name="units_per_carton" class="form-control"
+                     value="{{ product.units_per_carton or '' }}" min="1" placeholder="–">
+            </div>
+            <div class="col-md-2">
+              <label class="form-label">บรรจุ/กล่อง</label>
+              <input type="number" name="units_per_box" class="form-control"
+                     value="{{ product.units_per_box or '' }}" min="1" placeholder="–">
+            </div>
+
+            <div class="col-12"><hr class="my-1"></div>
+
+            <div class="col-md-3">
+              <label class="form-label">ต้นทุน (฿)</label>
+              <div class="input-group">
+                <span class="input-group-text">฿</span>
+                <input type="number" name="cost_price" class="form-control"
+                       value="{{ product.cost_price or '' }}" step="0.01" min="0" placeholder="0.00">
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">ราคาขาย (฿)</label>
+              <div class="input-group">
+                <span class="input-group-text">฿</span>
+                <input type="number" name="base_sell_price" class="form-control"
+                       value="{{ product.base_sell_price or '' }}" step="0.01" min="0" placeholder="0.00">
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">แจ้งเตือนสต็อก ≤</label>
+              <div class="input-group">
+                <input type="number" name="low_stock_threshold" class="form-control"
+                       value="{{ product.low_stock_threshold or 10 }}" min="0">
+                <span class="input-group-text">หน่วย</span>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Stock Shopee / Lazada (เริ่มต้น)</label>
+              <div class="input-group">
+                <input type="number" name="shopee_stock" class="form-control"
+                       value="{{ product.shopee_stock or 0 }}" min="0" placeholder="Shopee">
+                <input type="number" name="lazada_stock" class="form-control"
+                       value="{{ product.lazada_stock or 0 }}" min="0" placeholder="Lazada">
+              </div>
+            </div>
+          </div>
+
+            <div class="col-12"><hr class="my-1"></div>
+
+            <div class="col-12">
+              <label class="form-label">สถานที่เก็บ</label>
+              <div id="loc-list">
+                {% for loc in (locations or []) %}
+                <div class="input-group mb-1 loc-row">
+                  <input type="text" name="floor_no" class="form-control form-control-sm font-mono"
+                         value="{{ loc }}" placeholder="เช่น A-1, B-23">
+                  <button type="button" class="btn btn-sm btn-outline-danger"
+                          onclick="this.closest('.loc-row').remove()">
+                    <i class="bi bi-x"></i>
+                  </button>
+                </div>
+                {% endfor %}
+              </div>
+              <button type="button" class="btn btn-sm btn-outline-secondary mt-1" onclick="addLocRow()">
+                <i class="bi bi-plus me-1"></i>เพิ่มสถานที่
+              </button>
+            </div>
+{% endif %}
           </div>
 
           <hr class="mt-4">
@@ -130,5 +301,83 @@ function addLocRow() {
   list.appendChild(div);
   div.querySelector('input').focus();
 }
+
+{% if action != 'edit' %}
+// Reveal the paired free-text input when a combo select's "อื่นๆ (ระบุ)"
+// sentinel option is chosen; hide + clear it otherwise.
+function toggleOtherField(selectId, otherId) {
+  var sel = document.getElementById(selectId);
+  var other = document.getElementById(otherId);
+  if (!sel || !other) return;
+  if (sel.value === '__other__') {
+    other.classList.remove('d-none');
+    other.focus();
+  } else {
+    other.classList.add('d-none');
+    other.value = '';
+  }
+}
+document.addEventListener('DOMContentLoaded', function () {
+  toggleOtherField('brand_id', 'brand_other_name');
+  toggleOtherField('color_code', 'color_code_other');
+});
+
+// Set a <select>'s value if one of its options matches (by value); no-op
+// (leaves the manual default) when the parser didn't find a match.
+function setSelectIfPresent(selectId, value) {
+  if (!value) return;
+  var sel = document.getElementById(selectId);
+  if (!sel) return;
+  for (var i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === String(value)) { sel.value = String(value); return; }
+  }
+}
+
+// Try to select a category option whose visible text matches the parser's
+// free-text category guess (parse_name has no category_id, only a Thai label).
+function setCategoryByLabel(label) {
+  if (!label) return;
+  var sel = document.getElementById('category_id');
+  if (!sel) return;
+  for (var i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].text.trim() === label.trim()) { sel.value = sel.options[i].value; return; }
+  }
+}
+
+function parseRawName() {
+  var name = document.getElementById('raw_name').value.trim();
+  var status = document.getElementById('parse-status');
+  if (!name) { status.textContent = 'พิมพ์ชื่อสินค้าก่อนกด Parse'; return; }
+  status.textContent = 'กำลังวิเคราะห์...';
+
+  fetch('/products/parse-name?name=' + encodeURIComponent(name))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var p = d.parsed || {};
+      setCategoryByLabel(p.category);
+      document.getElementById('series').value = p.series || '';
+      document.getElementById('model').value = p.model || '';
+      document.getElementById('size').value = p.size || '';
+      document.getElementById('condition').value = p.condition || '';
+      document.getElementById('pack_variant').value = p.pack_variant || '';
+
+      setSelectIfPresent('brand_id', d.brand_id || '');
+      toggleOtherField('brand_id', 'brand_other_name');
+
+      setSelectIfPresent('color_code', d.color_code || '');
+      toggleOtherField('color_code', 'color_code_other');
+
+      setSelectIfPresent('packaging_th', p.packaging || '');
+
+      if (d.proposed_name) {
+        document.getElementById('product_name').value = d.proposed_name;
+      }
+      status.textContent = 'วิเคราะห์แล้ว — ตรวจสอบ/แก้ไข field ด้านล่างก่อนบันทึก';
+    })
+    .catch(function () {
+      status.textContent = 'วิเคราะห์ไม่สำเร็จ — กรอก field เองได้';
+    });
+}
+{% endif %}
 </script>
 {% endblock %}

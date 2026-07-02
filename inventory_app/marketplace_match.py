@@ -73,15 +73,38 @@ def _iv_products(conn, customer_code):
     return out
 
 
+def _combo_components(conn):
+    """pack product_id -> set(component product_ids), for MULTI-component 'ชุด' packs
+    only (e.g. 253 ชุดฝาครอบลูกบิด+กุญแจ = 251 + 252). Read from conversion_formulas:
+    the pack is the formula OUTPUT, its components are the inputs. Single-component
+    packs (a ตัว/แผง pair, one input) are EXCLUDED — those share a unit and match
+    without expansion; expanding them would over-match. Lets a combo marketplace
+    order product-match the Express IV, which the team keys as the SEPARATE
+    components (253 order ↔ a 251+252 two-line invoice)."""
+    by_pack = {}
+    for r in conn.execute(
+        """SELECT f.output_product_id AS pack, i.product_id AS comp
+           FROM conversion_formulas f
+           JOIN conversion_formula_inputs i ON i.formula_id = f.id
+           WHERE i.product_id IS NOT NULL"""):
+        by_pack.setdefault(r['pack'], set()).add(r['comp'])
+    return {p: comps for p, comps in by_pack.items() if len(comps) >= 2}
+
+
 def _order_products(conn, platform):
-    """order_sn -> set(internal_product_id) from the (imperfect) SKU mapping."""
+    """order_sn -> set(internal_product_id) from the (imperfect) SKU mapping. A combo
+    product is expanded to its components (see _combo_components) so a combo order
+    product-matches the Express bundle IV that is keyed as the separate components."""
+    combo = _combo_components(conn)
     out = {}
     for r in conn.execute(
         """SELECT order_sn, internal_product_id FROM marketplace_order_items
            WHERE platform = ? AND internal_product_id IS NOT NULL""",
         (platform,)
     ):
-        out.setdefault(r['order_sn'], set()).add(r['internal_product_id'])
+        s = out.setdefault(r['order_sn'], set())
+        s.add(r['internal_product_id'])
+        s |= combo.get(r['internal_product_id'], set())
     return out
 
 

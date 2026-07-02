@@ -83,14 +83,6 @@
       </div>
 
       <div class="card-footer d-flex gap-2">
-        {% if is_admin %}
-        <a href="{{ url_for('stock_in', product_id=product.id) }}"
-           class="btn btn-sm flex-fill fw-500" style="background:#dcf2e0;color:#2e7d3a;border:none">
-          <i class="bi bi-arrow-down-circle me-1"></i>รับเข้า</a>
-        <a href="{{ url_for('stock_out', product_id=product.id) }}"
-           class="btn btn-sm flex-fill fw-500" style="background:#fdecee;color:#c41e2a;border:none">
-          <i class="bi bi-arrow-up-circle me-1"></i>จ่ายออก</a>
-        {% endif %}
         <button type="button" class="btn btn-sm flex-fill fw-500"
                 data-bs-toggle="modal" data-bs-target="#adjustModal"
                 style="background:#f1f5f9;color:#475569;border:none">
@@ -129,6 +121,12 @@
                   </button>
                   {% endif %}
                 </td></tr>
+            {% set _created_via_labels = {'manual': 'เพิ่มเอง', 'smart_mapping': 'จาก Smart Mapping', 'legacy': 'เดิม'} %}
+            {% set _created_via_label = _created_via_labels.get(product.created_via) %}
+            {% if _created_via_label %}
+            <tr><td class="text-subtle">ที่มา</td>
+                <td><span class="badge badge-gray" title="วิธีที่สินค้านี้ถูกสร้าง">{{ _created_via_label }}</span></td></tr>
+            {% endif %}
             {% if product.sub_category %}
             <tr><td class="text-subtle">ประเภท</td>
                 <td><span class="text-main">{{ product.sub_category }}</span></td></tr>

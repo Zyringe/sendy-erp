@@ -136,3 +136,32 @@
   account** (`employees.default_cashbook_account_id`, e.g. Put's staff → `392`, his mother's
   → `ชฎามาศ`). Transfer accounts (`is_transfer=1`) are not eligible (they're excluded from
   the P&L).
+## Product creation & naming
+
+- **Structured product** — a product whose spec columns (`brand_id`, `category_id`,
+  `sub_category`, `series`, `model`, `size`, `color_code`, `packaging_th`, `condition`,
+  `pack_variant`) are filled, so its `product_name` and `sku_code` are **derived** from
+  those columns by the naming engine — not typed free-hand. The target shape for every
+  product in the catalog.
+
+- **Bare product** — a product carrying only a free-text `product_name` (+ unit / pack
+  counts) with no spec columns, hence no derived `sku_code`. Produced by the old hand
+  form, the CSV master importer, and the legacy quick-create. Being phased out: creation
+  now goes through the structured path. _Avoid_: "quick product", "stub product".
+
+- **Smart Suggest (staged suggestion)** — the `/mapping` flow that parses a BSN code's
+  raw name into spec fields, stages them as a `pending_product_suggestion`, and a
+  manager **approves** to create a *structured product* mapped to that code. The trusted
+  template for how products should be created. _Avoid_: "auto-map", "quick create".
+
+- **Canonical product creation (single source of truth)** — the one path every new
+  structured product goes through: type a raw name → the parser fills spec fields →
+  review/edit → engine builds the derived name + `sku_code` → insert. Both the hand form
+  (`/products/new`) and Smart Suggest approval funnel through it. There is deliberately
+  **no** "create a bare product" path. See `docs/adr/0004`.
+
+- **created_via (product origin / provenance)** — a label recording **how** a product
+  entered the catalog: `manual` (hand form), `smart_mapping` (Smart Suggest approval), or
+  `legacy` (existed before origin tracking, incl. bulk-imported rows). A provenance tag
+  shown on the product page. It is **not** a permission, a status, or a lifecycle state.
+  _Avoid_: "source", "type", "created_by" (that would be a person, not a method).

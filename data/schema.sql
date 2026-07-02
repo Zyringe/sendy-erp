@@ -1099,7 +1099,7 @@ CREATE TABLE "products" (
                                   CHECK(sku_code_locked IN (0, 1)),
     sub_category_short_code  TEXT,
     packaging_short          TEXT
-, opening_cost REAL NOT NULL DEFAULT 0.0);
+, opening_cost REAL NOT NULL DEFAULT 0.0, created_via TEXT);
 
 CREATE TABLE "promotions" (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
