@@ -221,14 +221,15 @@ def main(argv=None):
             conn.execute("UPDATE products SET sku_code=? WHERE id=?", (skuc, pid))
         if pname:
             conn.execute("UPDATE products SET product_name=? WHERE id=?", (pname, pid))
-    # mig 112: product_code_mapping is keyed by bsn_code only (pure
-    # bsn_code→product resolver; the per-unit bsn_unit column was dropped).
+    # mig 124 restored product_code_mapping.bsn_unit (UNIQUE(bsn_code,
+    # bsn_unit)) — this script's CSV rows carry no per-unit split intent, so
+    # every upsert here targets the non-split catch-all row (bsn_unit='').
     for bsn_code, bsn_name, pid in mappings:
         conn.execute("""
             INSERT INTO product_code_mapping
-                (bsn_code,bsn_name,product_id,is_ignored)
-            VALUES (?,?,?,0)
-            ON CONFLICT(bsn_code) DO UPDATE SET
+                (bsn_code,bsn_name,product_id,is_ignored,bsn_unit)
+            VALUES (?,?,?,0,'')
+            ON CONFLICT(bsn_code, bsn_unit) DO UPDATE SET
               bsn_name=excluded.bsn_name, product_id=excluded.product_id,
               is_ignored=0, ignore_reason=NULL
         """, (bsn_code, bsn_name, pid))

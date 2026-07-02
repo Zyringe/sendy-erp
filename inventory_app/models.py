@@ -1218,21 +1218,41 @@ def get_pending_mappings():
 def resolve_pending_mappings(conn):
     """
     เติม product_id ให้แถว BSN ที่ยังไม่มี แล้ว sync ไปยัง stock ทันที
+
+    Unit-aware (mig 124 restore): resolves each pending row through
+    _resolve_mapping(conn, bsn_code, unit) instead of a bare bsn_code join —
+    once a code is split (e.g. 030บ3412 → 81 for แผง, 111 for ตัว), a plain
+    "first row for this code" join would backfill a pending row to an
+    arbitrary unit's product. Row-by-row in Python because
+    _resolve_mapping's unit normalization + blank-catch-all tiebreak can't be
+    expressed as a single correlated-subquery UPDATE.
+
+    Historical PURCHASE rows store the RAW BSN unit acronym (e.g. 'ตว');
+    SALES rows are normalized at import time. _resolve_mapping normalizes
+    its `unit` arg itself, so passing the stored `unit` straight in resolves
+    correctly for both tables regardless of which form is on disk.
+
+    For any non-split code (the current live state — only a blank bsn_unit=''
+    catch-all row exists) this returns exactly what the old bare bsn_code
+    join did: one row, any unit resolves to it.
     """
     for table, file_type in (
         ('sales_transactions',    'sales'),
         ('purchase_transactions', 'purchase'),
     ):
-        conn.execute(f"""
-            UPDATE {table}
-            SET product_id = (
-                SELECT m.product_id FROM product_code_mapping m
-                WHERE m.bsn_code = {table}.bsn_code
-                  AND m.product_id IS NOT NULL
-                LIMIT 1
+        pending = conn.execute(
+            f"SELECT id, bsn_code, unit FROM {table} "
+            f"WHERE product_id IS NULL AND bsn_code IS NOT NULL"
+        ).fetchall()
+        for row in pending:
+            product_id, is_ignored, mapped = _resolve_mapping(
+                conn, row['bsn_code'], row['unit']
             )
-            WHERE product_id IS NULL AND bsn_code IS NOT NULL
-        """)
+            if mapped and not is_ignored and product_id is not None:
+                conn.execute(
+                    f"UPDATE {table} SET product_id = ? WHERE id = ?",
+                    (product_id, row['id'])
+                )
         # sync แถวที่เพิ่ง resolve ไปยัง transactions/stock
         _sync_bsn_to_stock(conn, table, file_type)
     conn.commit()

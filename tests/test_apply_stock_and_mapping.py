@@ -16,6 +16,16 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 import apply_stock_and_mapping_csv as app  # noqa: E402
 
+MIG_124 = os.path.join(REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+
+
+def _migrate124(conn):
+    """tmp_db clones the live DB, which doesn't have mig 124 (bsn_unit
+    restore) applied on this machine yet — apply it so app.main()'s call to
+    models.resolve_pending_mappings doesn't hit 'no such column: bsn_unit'."""
+    with open(MIG_124, encoding="utf-8") as f:
+        conn.executescript(f.read())
+
 
 def _seed(conn, pid, sku, base_unit):
     conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, ?, ?, 1)", (pid, f"OLD NAME {pid}", base_unit, f"OLD-{pid}"))
@@ -49,6 +59,8 @@ def test_ledger_unit_normalized_and_ratio_applied(tmp_db, tmp_path):
     """หล (acronym) in ledger → conv keyed โหล=12; ledger unit becomes โหล;
     no leftover หล conv; stock == qty*12 == SUM(transactions)."""
     conn = sqlite3.connect(tmp_db)
+    _migrate124(conn)
+    conn.execute("PRAGMA foreign_keys = OFF")  # mig 124's own trailer turns it ON
     _seed(conn, 950001, 950001, "แผ่น")
     # stale OLD acronym conv that the buggy version would have used (ratio 1)
     conn.execute("INSERT INTO unit_conversions(product_id,bsn_unit,ratio) "
@@ -85,6 +97,8 @@ def test_ledger_unit_normalized_and_ratio_applied(tmp_db, tmp_path):
 def test_forced_base_equals_1_overrides_csv(tmp_db, tmp_path):
     """bsn_unit maps to product base unit → ratio forced 1 even if CSV≠1."""
     conn = sqlite3.connect(tmp_db)
+    _migrate124(conn)
+    conn.execute("PRAGMA foreign_keys = OFF")  # mig 124's own trailer turns it ON
     _seed(conn, 950002, 950002, "อัน")        # base = อัน
     _bsn_sale(conn, 950002, "ZZ950002", "อน", 5, "DOC9502")  # อน→อัน == base
     conn.commit(); conn.close()
@@ -105,6 +119,8 @@ def test_unknown_acronym_skips_conversion_keeps_mapping(tmp_db, tmp_path):
     """UNKNOWN acronym (ปน) → no conversion, but mapping + sku/name applied,
     ledger unit left untouched."""
     conn = sqlite3.connect(tmp_db)
+    _migrate124(conn)
+    conn.execute("PRAGMA foreign_keys = OFF")  # mig 124's own trailer turns it ON
     _seed(conn, 950003, 950003, "ตัว")
     _bsn_sale(conn, 950003, "ZZ950003", "ปน", 2, "DOC9503")
     conn.commit(); conn.close()
@@ -128,6 +144,8 @@ def test_unknown_acronym_skips_conversion_keeps_mapping(tmp_db, tmp_path):
 
 def test_false_and_done_rows_untouched(tmp_db, tmp_path):
     conn = sqlite3.connect(tmp_db)
+    _migrate124(conn)
+    conn.execute("PRAGMA foreign_keys = OFF")  # mig 124's own trailer turns it ON
     _seed(conn, 950004, 950004, "ตัว")
     conn.commit(); conn.close()
     csvf = _csv(tmp_path, [

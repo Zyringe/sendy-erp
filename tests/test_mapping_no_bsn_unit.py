@@ -38,6 +38,10 @@ CODE = "ZNBU100"
 def _migrate124(conn):
     with open(MIG_124, encoding="utf-8") as f:
         conn.executescript(f.read())
+    # mig 124's own trailer turns foreign_keys back ON; some tests below seed
+    # transactions with a placeholder batch_id=0 (no real import_log row), so
+    # restore the ambient OFF state they were written against.
+    conn.execute("PRAGMA foreign_keys = OFF")
 
 
 def _seed_products(conn):
@@ -129,6 +133,7 @@ def test_resolve_pending_mappings_backfills_pending_row(tmp_db, monkeypatch):
 
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
+    _migrate124(conn)
     _seed_products(conn)
     # Insert mapping row
     conn.execute(

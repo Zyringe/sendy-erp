@@ -23,6 +23,10 @@ CODE = "ZRES100"
 def _migrate124(conn):
     with open(MIG_124, encoding="utf-8") as f:
         conn.executescript(f.read())
+    # mig 124's own trailer turns foreign_keys back ON; these tests seed
+    # transactions with a placeholder batch_id=0 (no real import_log row),
+    # so restore the ambient OFF state they were written against.
+    conn.execute("PRAGMA foreign_keys = OFF")
 
 
 def _seed(conn):
@@ -49,6 +53,7 @@ def _pid_of(conn, did):
 def test_single_mapping_resolves_all_units(tmp_db):
     """After mig-112: one mapping row routes all units of that code."""
     conn = sqlite3.connect(tmp_db)
+    _migrate124(conn)
     _seed(conn)
     conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id) "
                  "VALUES (?,?,?)", (CODE, "n", PA))
@@ -64,6 +69,7 @@ def test_single_mapping_resolves_all_units(tmp_db):
 def test_unmapped_code_leaves_null(tmp_db):
     """A code with no mapping row stays unresolved."""
     conn = sqlite3.connect(tmp_db)
+    _migrate124(conn)
     _seed(conn)
     _sale(conn, "ตัว", "D1")
     conn.commit()
@@ -75,6 +81,7 @@ def test_unmapped_code_leaves_null(tmp_db):
 def test_null_unit_resolves_to_same_product(tmp_db):
     """NULL unit still resolves via the single mapping row."""
     conn = sqlite3.connect(tmp_db)
+    _migrate124(conn)
     _seed(conn)
     conn.execute("INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id) "
                  "VALUES (?,?,?)", (CODE, "n", PA))

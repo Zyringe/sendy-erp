@@ -262,3 +262,98 @@ def test_upsert_mapping_default_unit_matches_only_blank_row(tmp_db, monkeypatch)
     assert rows['แผง']['bsn_name'] == 'split'
     # ...and a NEW blank catch-all row was created (not merged into 'แผง')
     assert rows['']['bsn_name'] == 'generic map'
+
+
+# ── resolve_pending_mappings is unit-aware too (last pure-bsn_code join) ────
+
+PC, PD = 907303, 907304
+
+
+def _seed_two_products(conn):
+    conn.row_factory = sqlite3.Row
+    for pid in (PC, PD):
+        conn.execute(
+            "INSERT INTO products (id, product_name, unit_type, sku_code, is_active) "
+            "VALUES (?, ?, 'ตัว', ?, 1)",
+            (pid, f"P{pid}", f"SK{pid}")
+        )
+    conn.commit()
+
+
+def test_resolve_pending_mappings_split_code_routes_by_unit(tmp_db):
+    """A pending (product_id NULL) row of a SPLIT code must backfill to the
+    product matching ITS unit, not an arbitrary row for that code. Purchase
+    rows can carry the RAW unit acronym ('ตว') on disk — _resolve_mapping's
+    normalization must still hit the 'ตัว' split row."""
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _migrate(conn)
+    conn.execute("PRAGMA foreign_keys = OFF")  # mig 124's own trailer turns it ON
+    _seed_two_products(conn)
+    conn.execute(
+        "INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id,bsn_unit) "
+        "VALUES ('030บ3412','#412 GP',?, 'แผง')", (PC,))
+    conn.execute(
+        "INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id,bsn_unit) "
+        "VALUES ('030บ3412','#412 GP',?, 'ตัว')", (PD,))
+
+    # pending sales row, already-normalized unit 'แผง' → should route to PC
+    conn.execute(
+        "INSERT INTO sales_transactions (batch_id,date_iso,doc_no,doc_base,"
+        "product_id,bsn_code,product_name_raw,customer,customer_code,qty,"
+        "unit,unit_price,vat_type,discount,total,net,synced_to_stock) "
+        "VALUES (0,'2026-07-02','SD1','SD1',NULL,'030บ3412','n','C','C1',0,"
+        "'แผง',1,0,0,0,0,0)")
+
+    # pending purchase row, RAW stored unit 'ตว' (as the loader historically
+    # wrote it, pre-normalization) → should route to PD via normalize('ตว')='ตัว'
+    conn.execute(
+        "INSERT INTO purchase_transactions (batch_id,date_iso,doc_no,doc_base,"
+        "product_id,bsn_code,product_name_raw,supplier,supplier_code,qty,unit,"
+        "unit_price,vat_type,discount,total,net,synced_to_stock,line_seq) "
+        "VALUES (0,'2026-07-02','PD1','PD1',NULL,'030บ3412','n','S','S1',0,"
+        "'ตว',1,0,0,0,0,0,1)")
+    conn.commit()
+
+    models.resolve_pending_mappings(conn)
+
+    sales_pid = conn.execute(
+        "SELECT product_id FROM sales_transactions WHERE doc_no='SD1'"
+    ).fetchone()[0]
+    purchase_pid = conn.execute(
+        "SELECT product_id FROM purchase_transactions WHERE doc_no='PD1'"
+    ).fetchone()[0]
+    conn.close()
+
+    assert sales_pid == PC        # แผง → the แผง split row
+    assert purchase_pid == PD     # raw 'ตว' → normalized → the ตัว split row
+
+
+def test_resolve_pending_mappings_nonsplit_code_still_backfills(tmp_db):
+    """Regression: a non-split (blank bsn_unit='' catch-all) code still
+    backfills a pending row exactly like before the unit-aware rewrite —
+    any unit routes to the single mapped product."""
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _migrate(conn)
+    conn.execute("PRAGMA foreign_keys = OFF")  # mig 124's own trailer turns it ON
+    _seed_two_products(conn)
+    conn.execute(
+        "INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id,bsn_unit) "
+        "VALUES ('ZRPM1','n',?, '')", (PC,))
+    conn.execute(
+        "INSERT INTO sales_transactions (batch_id,date_iso,doc_no,doc_base,"
+        "product_id,bsn_code,product_name_raw,customer,customer_code,qty,"
+        "unit,unit_price,vat_type,discount,total,net,synced_to_stock) "
+        "VALUES (0,'2026-07-02','SD2','SD2',NULL,'ZRPM1','n','C','C1',0,"
+        "'กล่อง',1,0,0,0,0,0)")
+    conn.commit()
+
+    models.resolve_pending_mappings(conn)
+
+    pid = conn.execute(
+        "SELECT product_id FROM sales_transactions WHERE doc_no='SD2'"
+    ).fetchone()[0]
+    conn.close()
+
+    assert pid == PC
