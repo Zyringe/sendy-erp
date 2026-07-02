@@ -149,8 +149,11 @@ def test_detail_api_requires_login(anon_client):
 
 def test_dashboard_includes_drilldown_modal(admin_client):
     """Full template renders (url_for(cashbook.detail_api) resolves, no BuildError)
-    and the clickable rows + modal are present."""
+    and the clickable rows + modal are present. สรุปรายเดือน month rows navigate
+    the page's month scope (data-cb-month) rather than opening the drill modal
+    (Phase 2, plan.md "What scopes vs what does not") — the other dimensions
+    (expense_category / income_category / user_tag) still use the modal."""
     html = admin_client.get('/cashbook/').data.decode('utf-8')
     assert 'id="cbDetailModal"' in html
-    assert 'data-cb-dim="month"' in html
+    assert 'data-cb-month=' in html
     assert 'data-cb-dim="expense_category"' in html

@@ -51,13 +51,24 @@ def _tcat_ph():
     return ",".join("?" * len(TRANSFER_CATEGORIES)), list(TRANSFER_CATEGORIES)
 
 
-def _get_accounts_with_totals(conn):
+def _get_accounts_with_totals(conn, month: Optional[str] = None):
     """
     One dict per active account. `income`/`expense` are OPERATING totals (transfer
     categories excluded) so they sum to the headline P&L. `transfer_in`/`transfer_out`
     hold the excluded capital movements. `balance` is true cash = operating + transfers.
+
+    `month` (optional, 'YYYY-MM') scopes every total to that calendar month.
+    ⚠ This is a LEFT JOIN (idle accounts with zero txns must still appear), so the
+    month filter is applied INSIDE each CASE WHEN, never in the WHERE clause — a
+    WHERE-based filter would silently turn this into an inner join and drop any
+    account with no activity that month.
     """
-    ph, params = _tcat_ph()
+    ph, tcat_params = _tcat_ph()
+    month_sql = " AND strftime('%Y-%m', t.txn_date) = ?" if month else ""
+    clause_params = tcat_params + [month] if month else tcat_params
+    count_sql = " AND strftime('%Y-%m', t.txn_date) = ?" if month else ""
+    count_params = [month] if month else []
+
     rows = conn.execute(f"""
         SELECT
             a.id,
@@ -68,17 +79,17 @@ def _get_accounts_with_totals(conn):
             a.bank_account_no,
             a.note AS account_note,
             a.is_transfer,
-            COALESCE(SUM(CASE WHEN t.direction='income'  AND COALESCE(t.category,'') NOT IN ({ph}) THEN t.amount ELSE 0 END), 0) AS income,
-            COALESCE(SUM(CASE WHEN t.direction='expense' AND COALESCE(t.category,'') NOT IN ({ph}) THEN t.amount ELSE 0 END), 0) AS expense,
-            COALESCE(SUM(CASE WHEN t.direction='income'  AND COALESCE(t.category,'') IN ({ph}) THEN t.amount ELSE 0 END), 0) AS transfer_in,
-            COALESCE(SUM(CASE WHEN t.direction='expense' AND COALESCE(t.category,'') IN ({ph}) THEN t.amount ELSE 0 END), 0) AS transfer_out,
-            COUNT(t.id) AS txn_count
+            COALESCE(SUM(CASE WHEN t.direction='income'  AND COALESCE(t.category,'') NOT IN ({ph}){month_sql} THEN t.amount ELSE 0 END), 0) AS income,
+            COALESCE(SUM(CASE WHEN t.direction='expense' AND COALESCE(t.category,'') NOT IN ({ph}){month_sql} THEN t.amount ELSE 0 END), 0) AS expense,
+            COALESCE(SUM(CASE WHEN t.direction='income'  AND COALESCE(t.category,'') IN ({ph}){month_sql} THEN t.amount ELSE 0 END), 0) AS transfer_in,
+            COALESCE(SUM(CASE WHEN t.direction='expense' AND COALESCE(t.category,'') IN ({ph}){month_sql} THEN t.amount ELSE 0 END), 0) AS transfer_out,
+            COUNT(CASE WHEN 1=1{count_sql} THEN t.id END) AS txn_count
         FROM cashbook_accounts a
         LEFT JOIN cashbook_transactions t ON t.account_id = a.id
         WHERE a.is_active = 1
         GROUP BY a.id
         ORDER BY a.is_transfer ASC, a.sort_order ASC, a.id ASC
-    """, params * 4).fetchall()
+    """, clause_params * 4 + count_params).fetchall()
 
     result = []
     for r in rows:
@@ -107,10 +118,17 @@ def _get_monthly_summary(conn, exclude_transfer: bool = True):
     return [dict(r) for r in rows]
 
 
-def _get_category_summary(conn):
+def _get_category_summary(conn, month: Optional[str] = None):
     """Income and expense totals by category, excluding transfer accounts AND
-    transfer categories."""
+    transfer categories. `month` (optional, 'YYYY-MM') scopes to that calendar
+    month; `None` (default) = all-time, unchanged from the original behavior.
+    Inner join, so a plain WHERE is correct here (categories absent that month
+    are meant to drop out)."""
     ph, params = _tcat_ph()
+    month_sql = ""
+    if month:
+        month_sql = " AND strftime('%Y-%m', t.txn_date) = ?"
+        params = params + [month]
     rows = conn.execute(f"""
         SELECT
             t.direction,
@@ -118,7 +136,7 @@ def _get_category_summary(conn):
             SUM(t.amount) AS total
         FROM cashbook_transactions t
         JOIN cashbook_accounts a ON a.id = t.account_id
-        WHERE a.is_transfer = 0 AND COALESCE(t.category,'') NOT IN ({ph})
+        WHERE a.is_transfer = 0 AND COALESCE(t.category,'') NOT IN ({ph}){month_sql}
         GROUP BY t.direction, category
         ORDER BY t.direction DESC, total DESC
     """, params).fetchall()
@@ -137,10 +155,16 @@ def _expense_topn(expense_cats, n=7):
     return out
 
 
-def _get_tag_summary(conn):
+def _get_tag_summary(conn, month: Optional[str] = None):
     """Operating EXPENSE grouped by ผู้ใช้ tag (user_category). Excludes transfer
-    accounts, transfer categories and untagged rows."""
+    accounts, transfer categories and untagged rows. `month` (optional, 'YYYY-MM')
+    scopes to that calendar month; `None` (default) = all-time, unchanged from
+    the original behavior."""
     ph, params = _tcat_ph()
+    month_sql = ""
+    if month:
+        month_sql = " AND strftime('%Y-%m', t.txn_date) = ?"
+        params = params + [month]
     rows = conn.execute(f"""
         SELECT
             t.user_category AS tag,
@@ -151,11 +175,125 @@ def _get_tag_summary(conn):
         WHERE a.is_transfer = 0
           AND t.direction = 'expense'
           AND COALESCE(t.category,'') NOT IN ({ph})
-          AND t.user_category IS NOT NULL AND t.user_category != ''
+          AND t.user_category IS NOT NULL AND t.user_category != ''{month_sql}
         GROUP BY t.user_category
         ORDER BY total DESC
     """, params).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Month-scope helpers (default month, overspend flags) ───────────────────────
+
+# Overspend flag thresholds (decision 5, plan.md) — named constants, not inline
+# magic numbers, so they're easy to tune later.
+_OVERSPEND_PCT_THRESHOLD = 0.20     # this >= prev * 1.20
+_OVERSPEND_DIFF_FLOOR = 1000.0      # AND (this - prev) >= ฿1,000
+
+
+def _default_month(conn) -> Optional[str]:
+    """Most recent calendar month ('YYYY-MM') that has any cashbook transaction,
+    or None if the ledger has no transactions at all (dashboard falls back to
+    all-time mode in that case). Used as the default when the dashboard route
+    receives no `?month=` — NOT `strftime('now')`: entry lags, so the strict
+    current month is often empty and would render a misleading ฿0 page."""
+    row = conn.execute(
+        "SELECT MAX(strftime('%Y-%m', txn_date)) AS m FROM cashbook_transactions"
+    ).fetchone()
+    return row["m"] if row and row["m"] else None
+
+
+def _prev_month(month: str) -> str:
+    """'YYYY-MM' -> the previous calendar month's 'YYYY-MM'."""
+    y, m = int(month[:4]), int(month[5:7])
+    return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
+
+
+def _month_day_count(month: str) -> int:
+    """Number of calendar days in 'YYYY-MM'."""
+    y, m = int(month[:4]), int(month[5:7])
+    nxt = date(y + 1, 1, 1) if m == 12 else date(y, m + 1, 1)
+    return (nxt - date(y, m, 1)).days
+
+
+def _month_bounds(month: str, day_limit: Optional[int] = None):
+    """(start_date, end_date) date-strings spanning 'YYYY-MM', inclusive.
+
+    Without `day_limit`, spans the whole month. With `day_limit`, the end date
+    is clipped to day 1..day_limit, CLAMPED to the month's actual length — e.g.
+    `_month_bounds('2026-02', 31)` clips to '2026-02-28' (February has no 31st),
+    not a nonexistent '2026-02-31'. This is the MTD prev-month clamp (plan.md
+    "Partial month MTD": today Mar 31 -> prev Feb clip = Feb 1..28)."""
+    days_in_month = _month_day_count(month)
+    d = min(day_limit, days_in_month) if day_limit else days_in_month
+    return f"{month}-01", f"{month}-{d:02d}"
+
+
+def _expense_by_category_range(conn, start_date: str, end_date: str):
+    """{category: total} of OPERATING expense within [start_date, end_date]
+    inclusive (txn_date is a zero-padded 'YYYY-MM-DD' string, so lexical
+    comparison matches calendar order). Same operating scope as
+    `_get_category_summary`: transfer accounts + transfer category excluded."""
+    ph, params = _tcat_ph()
+    rows = conn.execute(f"""
+        SELECT COALESCE(t.category, '(ไม่ระบุ)') AS category, SUM(t.amount) AS total
+        FROM cashbook_transactions t
+        JOIN cashbook_accounts a ON a.id = t.account_id
+        WHERE a.is_transfer = 0
+          AND t.direction = 'expense'
+          AND COALESCE(t.category,'') NOT IN ({ph})
+          AND t.txn_date >= ? AND t.txn_date <= ?
+        GROUP BY category
+    """, params + [start_date, end_date]).fetchall()
+    return {r["category"]: r["total"] for r in rows}
+
+
+def _overspend_flags(conn, month: str, today: Optional[date] = None):
+    """Per-category expense overspend flags for `month`, vs the previous
+    calendar month (decision 4+5, plan.md). One dict per operating expense
+    category PRESENT in `month`:
+
+        {category, this, prev, pct, diff, flagged, is_new}
+
+    - `flagged`: prev > 0 AND this >= prev * (1+_OVERSPEND_PCT_THRESHOLD)
+                 AND (this - prev) >= _OVERSPEND_DIFF_FLOOR
+    - `is_new` (prev == 0, category absent/zero last month): never flagged.
+    - MTD rule: if `month` is the CURRENT calendar month (derived from `today`,
+      default `date.today()` — inject for deterministic tests), both `this` and
+      `prev` are clipped to day 1..D (D = today's day-of-month), with the prev
+      side clamped to the previous month's length (see `_month_bounds`). A
+      fully-past month compares full-month totals on both sides.
+
+    Pure/unit-testable aside from the two SELECTs (conn is the only I/O).
+    """
+    if today is None:
+        today = date.today()
+    current_month = today.strftime("%Y-%m")
+    prev_month = _prev_month(month)
+
+    day_limit = today.day if month == current_month else None
+    this_start, this_end = _month_bounds(month, day_limit)
+    prev_start, prev_end = _month_bounds(prev_month, day_limit)
+
+    this_map = _expense_by_category_range(conn, this_start, this_end)
+    prev_map = _expense_by_category_range(conn, prev_start, prev_end)
+
+    out = []
+    for cat in sorted(this_map.keys()):
+        this_v = this_map[cat]
+        prev_v = prev_map.get(cat, 0.0)
+        diff = this_v - prev_v
+        is_new = prev_v == 0
+        pct = None if prev_v == 0 else (diff / prev_v) * 100.0
+        flagged = (
+            not is_new
+            and this_v >= prev_v * (1 + _OVERSPEND_PCT_THRESHOLD)
+            and diff >= _OVERSPEND_DIFF_FLOOR
+        )
+        out.append({
+            "category": cat, "this": this_v, "prev": prev_v,
+            "pct": pct, "diff": diff, "flagged": flagged, "is_new": is_new,
+        })
+    return out
 
 
 # ── Drill-down detail ──────────────────────────────────────────────────────────
@@ -224,10 +362,35 @@ def _get_detail_rows(conn, dim, key):
 def dashboard():
     conn = database.get_connection()
     try:
-        accounts      = _get_accounts_with_totals(conn)
-        monthly       = _get_monthly_summary(conn, exclude_transfer=True)
-        income_cats, expense_cats = _get_category_summary(conn)
-        tag_summary   = _get_tag_summary(conn)
+        # Month-scope resolution (decision 2+6, plan.md):
+        #   absent ?month=      -> resolve to the most-recent month with data
+        #   ?month=  or ทั้งหมด  -> all-time (month=None)
+        #   ?month=YYYY-MM      -> that month
+        raw_month = request.args.get("month")
+        if raw_month is None:
+            month = _default_month(conn)          # None if the ledger is empty
+        elif raw_month in ("", "ทั้งหมด"):
+            month = None
+        else:
+            month = raw_month
+        is_all_time = month is None
+
+        accounts      = _get_accounts_with_totals(conn, month)
+        monthly       = _get_monthly_summary(conn, exclude_transfer=True)  # never scoped (trend chart)
+        income_cats, expense_cats = _get_category_summary(conn, month)
+        tag_summary   = _get_tag_summary(conn, month)
+
+        today = date.today()
+        is_current_month = (not is_all_time) and month == today.strftime("%Y-%m")
+        overspend = _overspend_flags(conn, month, today=today) if not is_all_time else []
+
+        available_months = [
+            r["m"] for r in conn.execute(
+                """SELECT DISTINCT strftime('%Y-%m', txn_date) AS m
+                   FROM cashbook_transactions
+                   ORDER BY m DESC"""
+            ).fetchall()
+        ]
     finally:
         conn.close()
 
@@ -245,6 +408,17 @@ def dashboard():
     # Capital/inter-account movements excluded from the P&L (disclosure figure)
     transfer_total = sum(a["transfer_in"] + a["transfer_out"] for a in op_accounts)
 
+    # Card 3 (decision 3, plan.md "Card-3 semantics"): meaning changes by mode.
+    #   Month mode : สุทธิเดือนนี้ = income − expense (operating P&L net for the
+    #                month). Must NOT reuse total_balance — that folds in transfers.
+    #   All-time   : คงเหลือ = true cash on hand (unchanged from today).
+    if is_all_time:
+        card3_value = total_balance
+        card3_is_net = False
+    else:
+        card3_value = total_income - total_expense
+        card3_is_net = True
+
     return render_template(
         "cashbook/dashboard.html",
         accounts=accounts,
@@ -259,6 +433,13 @@ def dashboard():
         expense_cats=expense_cats,
         expense_chart=_expense_topn(expense_cats),
         tag_summary=tag_summary,
+        selected_month=("ทั้งหมด" if is_all_time else month),
+        is_all_time=is_all_time,
+        is_current_month=is_current_month,
+        card3_value=card3_value,
+        card3_is_net=card3_is_net,
+        overspend=overspend,
+        available_months=available_months,
     )
 
 
