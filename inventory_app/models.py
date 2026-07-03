@@ -915,7 +915,11 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str):
                         platform_units = remaining / qps
                         platform_deduct = round(platform_units)
                         if platform_deduct < 1:
-                            platform_deduct = 1
+                            # Remaining base qty is under half a platform unit —
+                            # nothing meaningful left to deduct from this or any
+                            # later (smaller-stock) SKU in the ORDER BY stock DESC
+                            # list, so stop instead of forcing a whole unit off.
+                            break
                         conn.execute("""
                             UPDATE platform_skus
                             SET stock = MAX(0, stock - ?)
