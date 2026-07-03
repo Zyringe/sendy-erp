@@ -60,7 +60,7 @@
       <div class="card-body">
         <div class="wt-thumb mb-2">
           {% if p.image_path %}
-            <img src="{{ url_for('serve_catalog_photo', filepath=p.image_path) }}" alt="">
+            <img src="{{ url_for('products.serve_catalog_photo', filepath=p.image_path) }}" alt="">
           {% else %}
             <span class="wt-thumb-placeholder"><i class="bi bi-image"></i></span>
           {% endif %}

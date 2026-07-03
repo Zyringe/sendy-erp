@@ -113,14 +113,14 @@
       <i class="bi bi-scissors"></i> แปลงสินค้า
     </a>
     {% if is_manager %}
-    <a href="{{ url_for('products_walkthrough') }}"
-       class="sidebar-link {% if request.endpoint == 'products_walkthrough' %}active{% endif %}">
+    <a href="{{ url_for('products.products_walkthrough') }}"
+       class="sidebar-link {% if request.endpoint == 'products.products_walkthrough' %}active{% endif %}">
       <i class="bi bi-images"></i> รูปสินค้า
     </a>
     {% endif %}
     {% if is_admin %}
-    <a href="{{ url_for('labels_view') }}"
-       class="sidebar-link {% if request.endpoint == 'labels_view' %}active{% endif %}">
+    <a href="{{ url_for('products.labels_view') }}"
+       class="sidebar-link {% if request.endpoint == 'products.labels_view' %}active{% endif %}">
       <i class="bi bi-upc-scan"></i> พิมพ์ป้าย/บาร์โค้ด
     </a>
     {% endif %}

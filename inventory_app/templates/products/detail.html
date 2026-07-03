@@ -5,7 +5,7 @@
 
 {% block topbar_actions %}
 {% if is_admin %}
-<a href="{{ url_for('labels_view') }}?add={{ product.id }}" class="btn btn-sm btn-outline-secondary"
+<a href="{{ url_for('products.labels_view') }}?add={{ product.id }}" class="btn btn-sm btn-outline-secondary"
    onclick="event.preventDefault(); addToLabelQueue(this.href);">
   <i class="bi bi-upc-scan me-1"></i>พิมพ์ป้าย
 </a>
@@ -852,15 +852,15 @@ async function addToLabelQueue(_href) {
     const res = await fetch(`/api/products/search?q={{ product.id }}&limit=5`);
     const data = await res.json();
     const item = (data.items || []).find(x => x.id === pid);
-    if (!item) { window.location.href = '{{ url_for("labels_view") }}'; return; }
+    if (!item) { window.location.href = '{{ url_for("products.labels_view") }}'; return; }
     const queue = JSON.parse(localStorage.getItem(KEY) || '[]');
     const existing = queue.find(x => x.id === pid);
     if (existing) existing.qty = (existing.qty || 1) + 1;
     else queue.push({ ...item, qty: 1 });
     localStorage.setItem(KEY, JSON.stringify(queue));
-    window.location.href = '{{ url_for("labels_view") }}';
+    window.location.href = '{{ url_for("products.labels_view") }}';
   } catch (e) {
-    window.location.href = '{{ url_for("labels_view") }}';
+    window.location.href = '{{ url_for("products.labels_view") }}';
   }
 }
 </script>

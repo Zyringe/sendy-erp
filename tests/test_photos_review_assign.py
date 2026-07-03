@@ -1,4 +1,5 @@
-"""Tests for /photos/review/assign (app.py).
+"""Tests for /photos/review/assign (blueprints/products.py — moved from
+app.py in the Phase 4 structural refactor).
 
 Covers the orphan-on-commit-failure bug: if shutil.move() succeeds but
 conn.commit() then fails (disk full, DB locked), the photo file had already
@@ -18,8 +19,9 @@ import pytest
 
 def _make_client(tmp_review_dir, tmp_photos_dir, monkeypatch):
     import app as app_module
-    monkeypatch.setattr(app_module, '_REVIEW_ROOT_REL', tmp_review_dir)
-    monkeypatch.setattr(app_module, '_PHOTOS_ROOT_REL', tmp_photos_dir)
+    import blueprints.products as products_module
+    monkeypatch.setattr(products_module, '_REVIEW_ROOT_REL', tmp_review_dir)
+    monkeypatch.setattr(products_module, '_PHOTOS_ROOT_REL', tmp_photos_dir)
     app_module.app.config['TESTING'] = True
     c = app_module.app.test_client()
     with c.session_transaction() as sess:
@@ -79,7 +81,8 @@ def test_commit_failure_moves_file_back_no_orphan(tmp_db, tmp_path, monkeypatch)
     def _fail_commit_get_connection():
         return _CommitFailConn(real_get_connection())
 
-    monkeypatch.setattr(app_module, 'get_connection', _fail_commit_get_connection)
+    import blueprints.products as products_module
+    monkeypatch.setattr(products_module, 'get_connection', _fail_commit_get_connection)
 
     with pytest.raises(sqlite3.OperationalError):
         client.post('/photos/review/assign', data={

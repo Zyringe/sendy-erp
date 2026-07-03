@@ -31,7 +31,7 @@ _STAFF_POST_OK = frozenset([
     'products.product_location_save',
     'admin_exit_simulate',
     'inventory.conversion_pair', 'inventory.conversion_run', 'inventory.conversion_delete',
-    'api_product_barcodes',
+    'products.api_product_barcodes',
     'review.scan',
     'call.call_mark_called',
     'call.call_note',
@@ -54,7 +54,7 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'products.product_sku_code_save', 'products.product_regen_sku_code',
     'products.product_packaging_save',
     'bsn.mapping_suggestion_approve',
-    'photos_review_assign', 'photos_review_delete',
+    'products.photos_review_assign', 'products.photos_review_delete',
     # Acknowledging a billed≠payout discrepancy is a manager+ action (not staff).
     'marketplace.review_amount',
     # Master Naming cascade — preview is read-only but POSTed (JSON body);
@@ -208,8 +208,8 @@ _ENDPOINT_MODULE = {
     'inventory.conversion_deactivate': 'operation',
     'inventory.conversion_activate': 'operation',
     'inventory.conversion_history': 'operation',
-    'labels_view': 'operation',
-    'products_walkthrough': 'operation',
+    'products.labels_view': 'operation',
+    'products.products_walkthrough': 'operation',
     # accounting
     'accounting_summary': 'accounting',
     'cashflow_dashboard': 'accounting',

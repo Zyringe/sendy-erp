@@ -109,7 +109,7 @@
 {% block scripts %}
 <script>
 (function () {
-  var SEARCH_URL = "{{ url_for('api_products_search') }}";
+  var SEARCH_URL = "{{ url_for('products.api_products_search') }}";
 
   function esc(s) {
     return String(s == null ? '' : s)
