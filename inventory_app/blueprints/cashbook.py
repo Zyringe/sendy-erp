@@ -583,10 +583,10 @@ def _get_known_user_tags(conn):
     return [r["user_category"] for r in rows]
 
 
-def _blank_rows(n=8):
+def _blank_rows(n=1):
     return [
         {"index": i, "direction": "expense", "category": "", "user_category": "",
-         "amount": "", "description": "", "note": "", "errors": []}
+         "amount": "", "description": "", "note": "", "txn_date": "", "errors": []}
         for i in range(n)
     ]
 
@@ -607,16 +607,22 @@ def _parse_batch_rows(form):
             "amount": form.get(f"rows-{i}-amount", "").strip(),
             "description": form.get(f"rows-{i}-description", "").strip(),
             "note": form.get(f"rows-{i}-note", "").strip(),
+            "txn_date": form.get(f"rows-{i}-txn_date", "").strip(),
             "errors": [],
         })
     return rows
 
 
-def _validate_batch(rows):
+def _validate_batch(rows, default_date):
     """Validate non-blank rows in place (sets row['errors']); blank rows
     (amount empty) are left untouched — they're skipped, not errors.
-    Returns the list of rows that are valid AND non-blank, each with a
-    parsed float `amount`."""
+
+    Each row's EFFECTIVE date (decision B2, plan.md) is its own `txn_date`
+    if set (bulk mode), else `default_date` (the shared top-of-form date —
+    single mode, or any row left blank in bulk mode). Returns the list of
+    rows that are valid AND non-blank, each with a parsed float `amount`
+    and a validated `effective_date`.
+    """
     to_insert = []
     for r in rows:
         if not r["amount"]:
@@ -632,11 +638,47 @@ def _validate_batch(rows):
             errors.append("ประเภทไม่ถูกต้อง")
         if not r["category"]:
             errors.append("กรุณาระบุหมวดหมู่")
+        effective_date = r["txn_date"] or default_date
+        if not effective_date:
+            errors.append("กรุณาระบุวันที่")
+        else:
+            try:
+                date.fromisoformat(effective_date)
+            except ValueError:
+                errors.append("รูปแบบวันที่ไม่ถูกต้อง")
         if errors:
             r["errors"] = errors
         else:
-            to_insert.append({**r, "amount": amount})
+            to_insert.append({**r, "amount": amount, "effective_date": effective_date})
     return to_insert
+
+
+def _find_duplicate_indices(conn, account_id, to_insert):
+    """Row `index` values in `to_insert` that exactly match — on (account_id,
+    effective date, direction, category, user_category, amount) — either an
+    already-saved `cashbook_transactions` row or another row in the SAME
+    submitted batch (decision D2, plan.md). Both rows of an in-batch
+    duplicate pair are flagged, not just the second one."""
+    dup_indices = set()
+    seen_in_batch = {}
+    for r in to_insert:
+        key = (r["effective_date"], r["direction"], r["category"],
+               r["user_category"] or "", r["amount"])
+        existing = conn.execute(
+            """SELECT 1 FROM cashbook_transactions
+               WHERE account_id=? AND txn_date=? AND direction=? AND category=?
+                 AND COALESCE(user_category,'')=? AND amount=?
+               LIMIT 1""",
+            (account_id,) + key,
+        ).fetchone()
+        if existing:
+            dup_indices.add(r["index"])
+        if key in seen_in_batch:
+            dup_indices.add(r["index"])
+            dup_indices.add(seen_in_batch[key])
+        else:
+            seen_in_batch[key] = r["index"]
+    return dup_indices
 
 
 def _upsert_category(conn, name, direction):
@@ -644,6 +686,18 @@ def _upsert_category(conn, name, direction):
         "INSERT OR IGNORE INTO cashbook_categories(name,direction,source) VALUES(?,?,NULL)",
         (name, direction),
     )
+
+
+def _default_account_id_for_user(conn, user_id):
+    """The logged-in user's `users.default_cashbook_account_id` (mig 126,
+    Phase 1a) — a pre-selection only, still changeable per entry (decision
+    A3, plan.md). None if unset or user_id is falsy."""
+    if not user_id:
+        return None
+    row = conn.execute(
+        "SELECT default_cashbook_account_id FROM users WHERE id=?", (user_id,)
+    ).fetchone()
+    return row["default_cashbook_account_id"] if row else None
 
 
 @bp_cashbook.route("/new", methods=["GET", "POST"])
@@ -657,9 +711,11 @@ def new_transaction():
             txn_date = request.form.get("txn_date", "").strip() or date.today().isoformat()
             account_id_raw = request.form.get("account_id", "").strip()
             account_id = int(account_id_raw) if account_id_raw.isdigit() else None
+            bulk_mode = request.form.get("bulk_mode") == "1"
+            confirm_duplicates = request.form.get("confirm_duplicates") == "1"
 
             rows = _parse_batch_rows(request.form)
-            to_insert = _validate_batch(rows)
+            to_insert = _validate_batch(rows, txn_date)
 
             form_errors = []
             if account_id not in account_ids:
@@ -676,13 +732,39 @@ def new_transaction():
                     accounts=accounts,
                     txn_date=txn_date,
                     account_id=account_id_raw,
+                    bulk_mode=bulk_mode,
                     rows=rows,
                     categories_by_direction=_categories_by_direction(conn),
                     known_tags=_get_known_user_tags(conn),
                 )
 
-            # All rows valid — insert within one transaction (single connection,
-            # single commit): upsert any brand-new category first, then the rows.
+            # Duplicate-row guard (decision D2, plan.md): warn-then-confirm,
+            # never silently block or silently double-insert.
+            if not confirm_duplicates:
+                dup_indices = _find_duplicate_indices(conn, account_id, to_insert)
+                if dup_indices:
+                    for r in rows:
+                        if r["index"] in dup_indices:
+                            r["errors"].append("รายการนี้ซ้ำกับรายการที่มีอยู่แล้ว")
+                    flash(f"พบรายการซ้ำ {len(dup_indices)} รายการ กรุณาตรวจสอบและยืนยัน", "warning")
+                    return render_template(
+                        "cashbook/new.html",
+                        accounts=accounts,
+                        txn_date=txn_date,
+                        account_id=account_id_raw,
+                        bulk_mode=bulk_mode,
+                        rows=rows,
+                        show_duplicate_confirm=True,
+                        categories_by_direction=_categories_by_direction(conn),
+                        known_tags=_get_known_user_tags(conn),
+                    )
+
+            # All rows valid (and no unconfirmed duplicates) — insert within one
+            # transaction (single connection, single commit): upsert any
+            # brand-new category first, then the rows, each at ITS OWN
+            # effective date (decision B2, plan.md — single mode: the shared
+            # top date; bulk mode: the row's own date, or the top date if the
+            # row was left blank).
             created_by = session.get("display_name") or session.get("username")
             for r in to_insert:
                 _upsert_category(conn, r["category"], r["direction"])
@@ -692,7 +774,7 @@ def new_transaction():
                        (account_id, txn_date, direction, category, user_category,
                         amount, description, note, created_by)
                        VALUES (?,?,?,?,?,?,?,?,?)""",
-                    (account_id, txn_date, r["direction"], r["category"],
+                    (account_id, r["effective_date"], r["direction"], r["category"],
                      r["user_category"] or None, r["amount"],
                      r["description"] or None, r["note"] or None, created_by),
                 )
@@ -700,11 +782,13 @@ def new_transaction():
             flash(f"บันทึก {len(to_insert)} รายการเรียบร้อย", "success")
             return redirect(url_for("cashbook.account_ledger", account_id=account_id))
 
+        default_account_id = _default_account_id_for_user(conn, session.get("user_id"))
         return render_template(
             "cashbook/new.html",
             accounts=accounts,
             txn_date=date.today().isoformat(),
-            account_id="",
+            account_id=(str(default_account_id) if default_account_id else ""),
+            bulk_mode=False,
             rows=_blank_rows(),
             categories_by_direction=_categories_by_direction(conn),
             known_tags=_get_known_user_tags(conn),

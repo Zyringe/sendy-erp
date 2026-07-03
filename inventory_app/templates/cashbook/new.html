@@ -13,13 +13,13 @@
 <form method="post" action="{{ url_for('cashbook.new_transaction') }}" id="batch-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
-  {# ── Shared header: date + account ────────────────────────────────────────── #}
+  {# ── Shared header: date + account + bulk toggle ─────────────────────────────── #}
   <div class="card mb-3">
     <div class="card-body">
       <div class="row g-3">
         <div class="col-md-3">
-          <label class="form-label small">วันที่ <span class="text-danger">*</span></label>
-          <input type="date" name="txn_date" class="form-control form-control-sm"
+          <label class="form-label small">วันที่ (ค่าเริ่มต้น) <span class="text-danger">*</span></label>
+          <input type="date" name="txn_date" id="top-txn-date" class="form-control form-control-sm"
                  value="{{ txn_date }}" required>
         </div>
         <div class="col-md-5">
@@ -33,6 +33,14 @@
             {% endfor %}
           </select>
         </div>
+        <div class="col-md-4 d-flex flex-column justify-content-center">
+          <div class="form-check form-switch mb-0">
+            <input class="form-check-input" type="checkbox" id="bulk-mode-toggle"
+                   name="bulk_mode" value="1" {% if bulk_mode %}checked{% endif %}>
+            <label class="form-check-label small" for="bulk-mode-toggle">บันทึกหลายรายการ (bulk)</label>
+          </div>
+          <div class="form-text">ต้องลบแถวให้เหลือ 1 แถวก่อน จึงจะปิดโหมดนี้ได้</div>
+        </div>
       </div>
     </div>
   </div>
@@ -41,7 +49,8 @@
   <div class="card mb-3">
     <div class="card-header d-flex justify-content-between align-items-center">
       <span class="fw-semibold"><i class="bi bi-list-ul me-1"></i>รายการ</span>
-      <button type="button" id="add-row-btn" class="btn btn-sm btn-outline-primary">
+      <button type="button" id="add-row-btn" class="btn btn-sm btn-outline-primary"
+              {% if not bulk_mode %}style="display:none"{% endif %}>
         <i class="bi bi-plus-lg me-1"></i>เพิ่มแถว
       </button>
     </div>
@@ -49,6 +58,7 @@
       <table class="table table-sm mb-0 align-middle">
         <thead class="table-light">
           <tr>
+            <th class="bulk-date-col" style="{{ 'display:none' if not bulk_mode else 'min-width:130px' }}">วันที่</th>
             <th style="min-width:110px">ประเภท</th>
             <th style="min-width:160px">หมวดหมู่</th>
             <th style="min-width:140px">ผู้ใช้</th>
@@ -61,6 +71,10 @@
         <tbody id="batch-rows-body">
           {% for row in rows %}
           <tr class="batch-row">
+            <td class="bulk-date-col" {% if not bulk_mode %}style="display:none"{% endif %}>
+              <input type="date" name="rows-{{ row.index }}-txn_date" class="form-control form-control-sm row-date-input"
+                     value="{{ row.txn_date }}">
+            </td>
             <td>
               <select name="rows-{{ row.index }}-direction" class="form-select form-select-sm direction-select">
                 <option value="expense" {% if row.direction == 'expense' %}selected{% endif %}>รายจ่าย</option>
@@ -100,13 +114,16 @@
             </td>
           </tr>
           {% if row.errors %}
-          <tr class="table-danger">
-            <td colspan="7" class="small">{{ row.errors | join(', ') }}</td>
+          <tr class="{{ 'table-warning' if show_duplicate_confirm else 'table-danger' }}">
+            <td colspan="8" class="small">{{ row.errors | join(', ') }}</td>
           </tr>
           {% endif %}
           {% endfor %}
           <template id="row-template">
             <tr class="batch-row">
+              <td class="bulk-date-col">
+                <input type="date" name="rows-__IDX__-txn_date" class="form-control form-control-sm row-date-input" value="">
+              </td>
               <td>
                 <select name="rows-__IDX__-direction" class="form-select form-select-sm direction-select">
                   <option value="expense" selected>รายจ่าย</option>
@@ -149,6 +166,17 @@
     </div>
   </div>
 
+  {% if show_duplicate_confirm %}
+  <div class="alert alert-warning">
+    <div class="form-check">
+      <input class="form-check-input" type="checkbox" id="confirm-duplicates" name="confirm_duplicates" value="1">
+      <label class="form-check-label" for="confirm-duplicates">
+        ยืนยันบันทึกรายการซ้ำ (รายการที่ไฮไลต์ด้านบนตรงกับรายการที่มีอยู่แล้ว)
+      </label>
+    </div>
+  </div>
+  {% endif %}
+
   <button type="submit" class="btn btn-primary">
     <i class="bi bi-save me-1"></i>บันทึกทั้งหมด
   </button>
@@ -173,15 +201,56 @@
   var body = document.getElementById('batch-rows-body');
   var tpl = document.getElementById('row-template');
   var nextIndex = {{ (rows | length) }};
+  var bulkToggle = document.getElementById('bulk-mode-toggle');
+  var addRowBtn = document.getElementById('add-row-btn');
+  var topDateInput = document.getElementById('top-txn-date');
 
-  document.getElementById('add-row-btn').addEventListener('click', function () {
+  function rowEls() {
+    return Array.prototype.slice.call(body.querySelectorAll('tr.batch-row'));
+  }
+
+  // Single mode (unchecked): hide "เพิ่มแถว" + the per-row วันที่ column.
+  // Bulk mode (checked): show them (decisions B1/B3, plan.md).
+  function applyBulkVisibility() {
+    var isBulk = bulkToggle.checked;
+    addRowBtn.style.display = isBulk ? '' : 'none';
+    document.querySelectorAll('.bulk-date-col').forEach(function (el) {
+      el.style.display = isBulk ? '' : 'none';
+    });
+  }
+
+  // Bulk-mode rows' dates pre-fill from the top default date, individually
+  // overridable — never overwrite a date the user already set (decision B2).
+  function fillEmptyDates() {
+    rowEls().forEach(function (tr) {
+      var input = tr.querySelector('.row-date-input');
+      if (input && !input.value) input.value = topDateInput.value;
+    });
+  }
+
+  bulkToggle.addEventListener('change', function () {
+    // Un-ticking bulk is disabled once 2+ rows exist (decision B3) — revert
+    // the attempted uncheck rather than using the native `disabled`
+    // attribute, which would drop bulk_mode from the submitted form data.
+    if (!bulkToggle.checked && rowEls().length >= 2) {
+      bulkToggle.checked = true;
+      return;
+    }
+    if (bulkToggle.checked) fillEmptyDates();
+    applyBulkVisibility();
+  });
+
+  addRowBtn.addEventListener('click', function () {
     var html = tpl.innerHTML.split('__IDX__').join(String(nextIndex));
     var frag = document.createElement('tbody');
     frag.innerHTML = html;
     var newRow = frag.firstElementChild;
     body.insertBefore(newRow, tpl);
     initAllCombos(newRow);   // cloned .combo divs need explicit init
+    var dateInput = newRow.querySelector('.row-date-input');
+    if (dateInput) dateInput.value = topDateInput.value;   // inherit current top date
     nextIndex++;
+    applyBulkVisibility();
   });
 
   body.addEventListener('click', function (e) {
@@ -197,6 +266,8 @@
     var catCombo = tr.querySelector('.category-combo');
     comboSetGroup(catCombo, e.target.value === 'income' ? 'categories_income' : 'categories_expense');
   });
+
+  applyBulkVisibility();
 })();
 </script>
 {% endblock %}
