@@ -923,15 +923,19 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str):
                         """, (platform_deduct, sku['id']))
                         remaining -= platform_deduct * qps
 
-            # history_import: สร้าง IN คู่เพื่อไม่ให้กระทบสต็อค
+            # history_import: สร้าง txn ตรงข้ามคู่กันเพื่อไม่ให้กระทบสต็อคปัจจุบัน
+            # ต้อง reverse แถวจริง (row_txn_type/change) ไม่ใช่สมมติว่าเป็นขายเสมอ —
+            # แถว SR ในไฟล์ history โพสต์ IN เป็น primary leg แล้ว (ดูด้านบน),
+            # ถ้า compensator ยัง +IN ซ้ำจะกลายเป็น +2×qty แทนที่จะหักล้างเป็น 0
             if row['batch_id'] == 'history_import' and txn_type == 'OUT':
+                reverse_txn_type = 'OUT' if row_txn_type == 'IN' else 'IN'
                 conn.execute("""
                     INSERT INTO transactions
                         (product_id, txn_type, quantity_change, unit_mode,
                          reference_no, note, created_at)
-                    VALUES (?, 'IN', ?, 'unit', ?, ?, ?)
+                    VALUES (?, ?, ?, 'unit', ?, ?, ?)
                 """, (
-                    row['product_id'], base_qty,
+                    row['product_id'], reverse_txn_type, -change,
                     row['doc_no'],
                     f'ประวัติขาย (ไม่นับสต็อค): {row["product_name_raw"]}',
                     row['date_iso'] + ' 00:00:00',
