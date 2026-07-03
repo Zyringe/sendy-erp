@@ -63,8 +63,9 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'naming.product_preview_name', 'naming.product_save',
     # Phase 5 approval workflow — managers can approve/reject pending leave.
     'hr.leave_approve', 'hr.leave_reject',
-    # Phase 7 salary-advance CRUD — managers can create/edit/delete advances.
-    'hr.advance_new', 'hr.advance_edit', 'hr.advance_delete',
+    # (Phase 7 salary-advance CRUD routes removed in the cashbook Phase 2
+    # overhaul — advances are now written via cashbook.new_transaction below,
+    # plan.md C5c; /hr/advances is read-only.)
     # Cashbook manual entry (Phase 2) — managers can add/edit/delete manual
     # rows (salary pay-event rows are locked separately, see cashbook.py).
     'cashbook.new_transaction', 'cashbook.txn_edit', 'cashbook.txn_delete',
@@ -276,7 +277,6 @@ _ENDPOINT_MODULE = {
     'hr.leave_list': 'hr',
     'hr.leave_new': 'hr',
     'hr.advance_list': 'hr',
-    'hr.advance_new': 'hr',
     'hr.payroll_list': 'hr',
     'hr.payroll_detail': 'hr',
     'hr.payslip': 'hr',

@@ -723,35 +723,11 @@ def create_salary_advance(data: dict, conn: Optional[sqlite3.Connection] = None)
             c.close()
 
 
-def update_salary_advance(adv_id: int, data: dict,
-                          conn: Optional[sqlite3.Connection] = None):
-    """Update editable fields. Does NOT touch deducted_in_run_id."""
-    d = _coerce_advance_data(data)
-    c, owned = _conn(conn)
-    try:
-        c.execute(
-            """UPDATE salary_advances
-                  SET employee_id=?, advance_date=?, amount=?,
-                      from_account_id=?, note=?
-                WHERE id=?""",
-            (d["employee_id"], d["advance_date"], d["amount"],
-             d["from_account_id"], d["note"], adv_id),
-        )
-        c.commit()
-    finally:
-        if owned:
-            c.close()
-
-
-def delete_salary_advance(adv_id: int, conn: Optional[sqlite3.Connection] = None):
-    """Hard-delete an advance (audit trigger logs the DELETE automatically)."""
-    c, owned = _conn(conn)
-    try:
-        c.execute("DELETE FROM salary_advances WHERE id=?", (adv_id,))
-        c.commit()
-    finally:
-        if owned:
-            c.close()
+# update_salary_advance / delete_salary_advance were removed in the cashbook
+# Phase 2 overhaul (plan.md C5c): advances are now edited by delete+re-add on
+# the cashbook (blueprints/cashbook.py::txn_delete cascades to salary_advances),
+# so the HR-side update/delete helpers have no callers. create_salary_advance +
+# get_salary_advance remain (data-layer primitives, exercised by tests).
 
 
 # ── Dashboard helpers ────────────────────────────────────────────────────────
