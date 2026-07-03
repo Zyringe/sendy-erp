@@ -61,12 +61,20 @@ def test_sales_routes_to_import_weekly_canonical(monkeypatch):
 def test_express_family_routes_to_express_importer(monkeypatch, rtype, express_kind):
     import import_router
     import import_express
+    import config
     seen = {}
     monkeypatch.setattr(import_express, "run_import",
-                        lambda ft, p, **kw: seen.update(ft=ft, path=p, dry=kw.get("dry_run")))
+                        lambda ft, p, **kw: seen.update(ft=ft, path=p, dry=kw.get("dry_run"),
+                                                        db_path=kw.get("db_path")))
     out = import_router.commit_file(PATH, rtype)
     assert seen["ft"] == express_kind and seen["path"] == PATH
     assert seen["dry"] is False           # commit, not preview
+    # Regression (prod "unable to open database file"): the Express family must
+    # commit against the CONFIGURED DB — config.DATABASE_PATH honours DATA_DIR —
+    # NOT import_express's hard-coded inventory_app/instance/inventory.db, which
+    # does not exist on the Railway container, so sqlite3.connect() raised
+    # SQLITE_CANTOPEN on every AP/AR Express import via the web box.
+    assert seen["db_path"] == config.DATABASE_PATH
     assert out["type"] == rtype and out["ok"] is True
 
 

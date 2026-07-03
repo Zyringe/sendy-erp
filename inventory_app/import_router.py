@@ -89,8 +89,13 @@ def commit_file(path, report_type, filename=None, db_path=None):
         return {"type": report_type, "ok": True, "summary": stats}
 
     if report_type in _EXPRESS_KIND:
+        import config
         import import_express
-        import_express.run_import(_EXPRESS_KIND[report_type], path, dry_run=False)
+        # Pin the DB to config.DATABASE_PATH (honours DATA_DIR → /data on Railway).
+        # import_express's own DB_PATH default is inventory_app/instance/inventory.db,
+        # which does not exist on the prod container → "unable to open database file".
+        import_express.run_import(_EXPRESS_KIND[report_type], path, dry_run=False,
+                                  db_path=db_path or config.DATABASE_PATH)
         return {"type": report_type, "ok": True, "summary": {"imported": True}}
 
     raise ValueError(f"unknown report_type: {report_type!r}")
