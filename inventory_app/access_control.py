@@ -208,6 +208,10 @@ _ENDPOINT_MODULE = {
     'conversion_activate': 'operation',
     'conversion_history': 'operation',
     'labels_view': 'operation',
+    'labels.manage': 'operation',
+    'labels.edit': 'operation',
+    'labels.bulk_size': 'operation',
+    'labels.company_block': 'operation',
     'products_walkthrough': 'operation',
     # accounting
     'accounting_summary': 'accounting',

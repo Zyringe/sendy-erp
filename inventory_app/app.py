@@ -75,6 +75,7 @@ from blueprints.customer_review import bp_customer_review
 from blueprints.naming import bp_naming
 from blueprints.me import bp_me
 from blueprints.bsn import bp_bsn
+from blueprints.labels import bp_labels
 import cashflow as cf_mod
 import revenue as rev_mod
 import ar_followup as arf_mod
@@ -133,6 +134,7 @@ app.register_blueprint(bp_customer_review)
 app.register_blueprint(bp_naming)
 app.register_blueprint(bp_me)
 app.register_blueprint(bp_bsn)
+app.register_blueprint(bp_labels)
 
 with app.app_context():
     # SKIP_DB_INIT=1 lets the app boot without touching the database. Used
