@@ -137,6 +137,22 @@
   → `ชฎามาศ`). Transfer accounts (`is_transfer=1`) are not eligible (they're excluded from
   the P&L).
 
+- **Data-entry default account** — the cashbook account `/cashbook/new` **pre-selects** for a **login
+  user** (`users.default_cashbook_account_id`): Put→`392`, ชฎามาศ→`ชฎามาศ`, กิติยา (login `Siang`)→
+  `กิติยา`. A *different sense* from **Pay-from account** (which is per-*employee*, for where a salary is
+  paid out of): กิติยา's salary is paid *from* 392, but her data-entry default is *กิติยา*. Editable on
+  `/users`; still changeable per row on the form. _Avoid_: conflating with pay-from account.
+
+- **Single vs Bulk entry** — the two modes of `/cashbook/new`. **Single** (default) = one row + one date.
+  **Bulk** (tickbox) = many rows sharing **one account**, each row carrying **its own date** (pre-filled
+  from a top "default date", overridable). Un-ticking is blocked once 2+ rows exist.
+
+  > The **salary-family "source of truth"** model (advances sourced in the cashbook with HR write-back;
+  > salary & in-engine commission sourced from their home pages and auto-posting locked cashbook rows;
+  > off-system commission staying manual) is **proposed but not yet built** — see ADR 0008 +
+  > `projects/cashbook-entry-reconcile/plan.md` (Phases 2–3). Not added to this glossary as current truth
+  > until the behavior ships.
+
 - **All-time mode vs Month-scoped mode** — the two states of the `/cashbook` dashboard, chosen by
   the month picker. All-time (`?month=ทั้งหมด`) = every txn (the original behavior). Month-scoped
   (`?month=YYYY-MM`) filters the cards, per-account table, category/tag summaries and the doughnut

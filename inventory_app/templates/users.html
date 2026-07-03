@@ -116,6 +116,17 @@
                              placeholder="ใหม่...">
                     </div>
                     <div class="col-sm-3">
+                      <label class="form-label small mb-1">บัญชีเริ่มต้น (Cashbook)</label>
+                      <select name="default_cashbook_account_id" class="form-select form-select-sm">
+                        <option value="">— ไม่ตั้ง —</option>
+                        {% for a in cashbook_accounts %}
+                        <option value="{{ a.id }}" {% if a.id == u.default_cashbook_account_id %}selected{% endif %}>
+                          {{ a.display_name or a.code }}
+                        </option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-sm-3">
                       <div class="form-check mt-2">
                         <input class="form-check-input" type="checkbox" name="is_active"
                                id="active-{{ u.id }}" {% if u.is_active %}checked{% endif %}>
