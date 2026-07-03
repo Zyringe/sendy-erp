@@ -5,6 +5,19 @@
 - both products stay active (NOT merged); stock recalced for both
 - code with no existing mapping → mapping row created
 - dry-run writes nothing
+
+NOTE (2026-07-03): `test_remap`'s 3 seeded sales rows are `synced_to_stock=1`
+with NO matching `transactions` ledger row (a stand-in for the old bug's
+"marked synced, never actually posted" state — see models.repoint_bsn_code's
+docstring / decisions/log.md 2026-07-02/07-03). The old (buggy) script never
+touched the ledger, so it never posted these 3 units either — the earlier
+version of this test asserted NEW's stock stayed at 4704 (the unrelated
+manual stock only), which was encoding the BUG as expected behavior. The
+fixed script forces a full ledger rebuild for every affected product, so
+these 3 historical แผง-unit OUT rows now correctly land on NEW's ledger:
+4704 - 3 = 4701. See tests/test_repoint_bsn_code.py for focused coverage of
+the fix itself (ledger orphans, unit-conversion ratios, idempotency, the
+split-code bsn_unit-scoped case).
 """
 import os
 import sqlite3
@@ -63,10 +76,19 @@ def test_remap(tmp_db):
     # both still active (NOT merged)
     assert one("SELECT is_active FROM products WHERE id=?", OLD) == 1
     assert one("SELECT is_active FROM products WHERE id=?", NEW) == 1
+    # 4704 (manual stock) - 3 (the 3 historical sales, now correctly rebuilt
+    # onto NEW's ledger instead of staying stranded/never-posted — see the
+    # module docstring note above).
     assert one("SELECT quantity FROM stock_levels WHERE product_id=?",
-               NEW) == 4704
+               NEW) == 4701
     assert one("SELECT quantity FROM stock_levels WHERE product_id=?",
                OLD) == 0
+    # regression: no stray `transactions` ledger rows for CODE off of NEW.
+    orphan = one(
+        "SELECT COUNT(*) FROM transactions t WHERE t.note LIKE 'BSN%' "
+        "AND t.reference_no IN (SELECT doc_no FROM sales_transactions "
+        "WHERE bsn_code=?) AND t.product_id<>?", CODE, NEW)
+    assert orphan == 0
     conn.close()
 
 
