@@ -536,7 +536,7 @@ def product_trade_summary(product_id):
     data = models.get_product_trade_summary(product_id, date_from, date_to)
     if not data['product']:
         flash('ไม่พบสินค้า', 'danger')
-        return redirect(url_for('trade_dashboard'))
+        return redirect(url_for('sales.trade_dashboard'))
     return render_template('products/trade_summary.html', data=data)
 
 

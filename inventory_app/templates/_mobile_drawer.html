@@ -45,13 +45,13 @@
 
       {# ── การค้า & บัญชี ── #}
       <div class="list-group-item bg-light text-muted small fw-bold">การค้า & บัญชี</div>
-      <a href="{{ url_for('trade_dashboard') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('sales.trade_dashboard') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-bar-chart-line me-3"></i>ภาพรวมการค้า
       </a>
-      <a href="{{ url_for('sales_view') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('sales.sales_view') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-graph-up-arrow me-3"></i>ยอดขาย
       </a>
-      <a href="{{ url_for('purchases_view') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('sales.purchases_view') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-truck me-3"></i>ยอดซื้อ
       </a>
       <a href="{{ url_for('partners.supplier_list') }}" class="list-group-item list-group-item-action">

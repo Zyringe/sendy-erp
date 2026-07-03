@@ -3,9 +3,9 @@
   {%- set base = ref.rsplit('-', 1)[0] -%}
   {%- set prefix = ref[:2] | upper -%}
   {%- if prefix in ('IV', 'HS', 'SR') -%}
-    <a href="{{ url_for('sales_doc', doc_base=base) }}" class="font-mono small text-decoration-none text-main">{{ base }}</a>
+    <a href="{{ url_for('sales.sales_doc', doc_base=base) }}" class="font-mono small text-decoration-none text-main">{{ base }}</a>
   {%- elif prefix in ('HP', 'RR') -%}
-    <a href="{{ url_for('purchases_doc', doc_base=base) }}" class="font-mono small text-decoration-none text-main">{{ base }}</a>
+    <a href="{{ url_for('sales.purchases_doc', doc_base=base) }}" class="font-mono small text-decoration-none text-main">{{ base }}</a>
   {%- else -%}
     <span class="font-mono small text-subtle">{{ ref }}</span>
   {%- endif -%}

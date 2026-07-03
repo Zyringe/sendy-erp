@@ -148,16 +148,16 @@
     </a>
     {% endif %}
     <div class="sidebar-section">การค้า</div>
-    <a href="{{ url_for('trade_dashboard') }}"
-       class="sidebar-link {% if request.endpoint == 'trade_dashboard' %}active{% endif %}">
+    <a href="{{ url_for('sales.trade_dashboard') }}"
+       class="sidebar-link {% if request.endpoint == 'sales.trade_dashboard' %}active{% endif %}">
       <i class="bi bi-bar-chart-line"></i> ภาพรวมการค้า
     </a>
-    <a href="{{ url_for('sales_view') }}"
-       class="sidebar-link {% if request.endpoint == 'sales_view' %}active{% endif %}">
+    <a href="{{ url_for('sales.sales_view') }}"
+       class="sidebar-link {% if request.endpoint == 'sales.sales_view' %}active{% endif %}">
       <i class="bi bi-graph-up-arrow"></i> ยอดขาย
     </a>
-    <a href="{{ url_for('purchases_view') }}"
-       class="sidebar-link {% if request.endpoint == 'purchases_view' %}active{% endif %}">
+    <a href="{{ url_for('sales.purchases_view') }}"
+       class="sidebar-link {% if request.endpoint == 'sales.purchases_view' %}active{% endif %}">
       <i class="bi bi-truck"></i> ยอดซื้อ
     </a>
     <a href="{{ url_for('partners.customer_list') }}"
