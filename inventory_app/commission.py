@@ -49,6 +49,7 @@ Override cache contract (`commission_overrides` table):
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from collections import defaultdict
@@ -106,6 +107,30 @@ def _connect(db_path=None):
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = OFF')
     return conn
+
+
+class _ConnCtx:
+    """Use the caller's connection if given (no close); else open/own one.
+    Mirrors hr.py::_ConnCtx — record_payout/delete_payout need an atomic,
+    single-commit multi-statement write (plan.md finding #2), and tests reuse
+    one connection across setup + assertion (same pattern as the salary
+    pay-event tests)."""
+
+    def __init__(self, conn=None, db_path=None):
+        self._given = conn
+        self._db_path = db_path
+        self._owned = None
+
+    def __enter__(self):
+        if self._given is not None:
+            return self._given
+        self._owned = _connect(self._db_path)
+        return self._owned
+
+    def __exit__(self, *exc):
+        if self._owned is not None:
+            self._owned.close()
+        return False
 
 
 def _load_tiers(conn):
@@ -562,27 +587,116 @@ def get_invoice_cycle_month(salesperson_code, invoice_no, db_path=None):
 
 def record_payout(year_month, salesperson_code, amount_paid,
                   paid_date, paid_method='', note='', paid_by='',
-                  invoice_no=None, db_path=None):
-    """Insert one commission_payouts row. Returns the new row id."""
-    conn = _connect(db_path)
-    cur = conn.execute("""
-        INSERT INTO commission_payouts
-            (year_month, salesperson_code, amount_paid, paid_date,
-             paid_method, note, paid_by, invoice_no)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (year_month, salesperson_code, amount_paid, paid_date,
-          paid_method or None, note or None, paid_by or None, invoice_no))
-    conn.commit()
-    new_id = cur.lastrowid
-    conn.close()
-    return new_id
+                  invoice_no=None, account_id=None,
+                  conn=None, db_path=None):
+    """Insert one commission_payouts row.
+
+    When `account_id` is given (the normal user-triggered path — plan.md
+    decisions C1/C4/C7), ALSO auto-posts one linked, LOCKED `จ่ายค่าคอมมิชชั่น`
+    cashbook_transactions row in the SAME commit (mirrors hr.post_salary_payment
+    — atomic 2-row write-back, finding #2). Rejects (raises ValueError, Thai
+    message) when the account is missing / inactive / is_transfer=1 — nothing
+    is written in that case, not even the payout row.
+
+    `account_id=None` (default) skips the cashbook auto-post entirely and just
+    inserts the payout row (the pre-existing behavior). Used by the
+    pre-Feb-2026 top-up backfill (models.py::_topup_pre_feb_for_product) —
+    those rows are RETROACTIVE bookkeeping corrections for invoices already
+    settled by business rule (SETTLED_THROUGH / SOLD_SETTLED_BEFORE above),
+    not new real cash movements, so they must NOT create a new cashbook
+    expense. Any NEW caller wiring a real payment (the /commission/payout
+    route) always passes a real account_id.
+
+    Returns the new commission_payouts.id.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        if account_id is None:
+            cur = c.execute("""
+                INSERT INTO commission_payouts
+                    (year_month, salesperson_code, amount_paid, paid_date,
+                     paid_method, note, paid_by, invoice_no)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (year_month, salesperson_code, amount_paid, paid_date,
+                  paid_method or None, note or None, paid_by or None, invoice_no))
+            c.commit()
+            return cur.lastrowid
+
+        account = c.execute(
+            "SELECT * FROM cashbook_accounts WHERE id = ?", (account_id,)
+        ).fetchone()
+        if account is None or account["is_active"] != 1:
+            raise ValueError("บัญชีที่เลือกไม่ถูกต้องหรือถูกปิดใช้งานแล้ว")
+        if account["is_transfer"] == 1:
+            raise ValueError("ไม่สามารถจ่ายค่าคอมมิชชั่นเข้าบัญชีประเภทเงินโอนได้")
+
+        sp = c.execute(
+            "SELECT name FROM salespersons WHERE code = ?", (salesperson_code,)
+        ).fetchone()
+        sp_name = sp["name"] if sp else salesperson_code
+
+        cur = c.execute("""
+            INSERT INTO commission_payouts
+                (year_month, salesperson_code, amount_paid, paid_date,
+                 paid_method, note, paid_by, invoice_no)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (year_month, salesperson_code, amount_paid, paid_date,
+              paid_method or None, note or None, paid_by or None, invoice_no))
+        payout_id = cur.lastrowid
+
+        description = f"ค่าคอมมิชชั่น {year_month} — {sp_name}"
+        try:
+            cur2 = c.execute("""
+                INSERT INTO cashbook_transactions
+                    (account_id, txn_date, direction, category, amount,
+                     user_category, description, created_by, commission_payout_id)
+                VALUES (?, ?, 'expense', 'จ่ายค่าคอมมิชชั่น', ?, ?, ?, ?, ?)
+            """, (account_id, paid_date, amount_paid, sp_name, description,
+                  paid_by or None, payout_id))
+        except sqlite3.IntegrityError:
+            # UNIQUE(commission_payout_id) tripped — should be unreachable
+            # (payout_id is a brand-new lastrowid), kept for parity with
+            # hr.post_salary_payment's same defense-in-depth guard.
+            raise ValueError(
+                "รายการจ่าย commission นี้ถูกบันทึกลงบัญชีรับ-จ่ายไปแล้ว"
+            )
+        txn_id = cur2.lastrowid
+        # Attribute the cash-out to the actor: the mig-076 AFTER INSERT trigger
+        # stamps user=NULL, so mirror hr.post_salary_payment's explicit audit row.
+        c.execute(
+            """INSERT INTO audit_log (table_name, row_id, action, changed_fields, user)
+                 VALUES ('cashbook_transactions', ?, 'INSERT', ?, ?)""",
+            (txn_id,
+             json.dumps({"commission_payout_id": payout_id, "amount": amount_paid,
+                         "account_id": account_id}, ensure_ascii=False),
+             paid_by or ''),
+        )
+        c.commit()
+        return payout_id
 
 
-def delete_payout(payout_id, db_path=None):
-    conn = _connect(db_path)
-    conn.execute('DELETE FROM commission_payouts WHERE id = ?', (payout_id,))
-    conn.commit()
-    conn.close()
+def delete_payout(payout_id, actor='', conn=None, db_path=None):
+    """Void a commission payout ("ยกเลิกการจ่าย"). Cascades: deletes the linked
+    cashbook_transactions row (if any) FIRST, with an explicit actor-attributed
+    audit_log DELETE row, THEN the commission_payouts row itself — all in one
+    commit (mirrors hr.void_salary_payment). No-op-safe on a historical payout
+    with no linked row (the 2071 pre-Phase-3 payouts and any account_id=None
+    top-up rows are never backfilled — plan.md ground truth)."""
+    with _ConnCtx(conn, db_path) as c:
+        cb = c.execute(
+            "SELECT id FROM cashbook_transactions WHERE commission_payout_id = ?",
+            (payout_id,),
+        ).fetchone()
+        if cb is not None:
+            txn_id = cb["id"]
+            c.execute("DELETE FROM cashbook_transactions WHERE id = ?", (txn_id,))
+            c.execute(
+                """INSERT INTO audit_log (table_name, row_id, action, changed_fields, user)
+                     VALUES ('cashbook_transactions', ?, 'DELETE', ?, ?)""",
+                (txn_id, json.dumps({"commission_payout_id": payout_id}, ensure_ascii=False),
+                 actor or ''),
+            )
+        c.execute('DELETE FROM commission_payouts WHERE id = ?', (payout_id,))
+        c.commit()
 
 
 # ── All-invoices view (paid + unpaid) for one salesperson ───────────────────
