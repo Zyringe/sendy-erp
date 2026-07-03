@@ -1196,23 +1196,29 @@ def upload_db():
                 disk=db_backup.disk_usage_mb(os.path.dirname(config.DATABASE_PATH)),
             )
 
-        # Always backup the current DB before replacing.
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        backup_dir = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', 'data', 'backups')
-        )
-        os.makedirs(backup_dir, exist_ok=True)
-        backup_path = os.path.join(backup_dir, f'inventory-pre-upload-{ts}.db')
-        try:
-            shutil.copy(config.DATABASE_PATH, backup_path)
-        except FileNotFoundError:
-            backup_path = None  # no current DB; skip backup
+        # Always backup the current DB before replacing (WAL-safe online backup —
+        # a bare file copy of a WAL-mode DB can capture a torn snapshot).
+        backup_info, backup_err = db_backup.safe_create_backup(
+            'pre-upload-full', db_path=config.DATABASE_PATH, backup_dir=_backups_dir())
 
+        # Clear stale -wal/-shm BEFORE the swap (same reasoning as restore_backup:
+        # under gunicorn -w 2 a connection arriving mid-swap could otherwise pair
+        # the new file with old WAL frames), then again after (belt-and-braces).
+        db_backup._remove_sidecars(config.DATABASE_PATH)
         shutil.move(tmp, config.DATABASE_PATH)
-        if backup_path:
-            flash(f'อัปโหลด DB สำเร็จ. Backup เก็บไว้ที่ {os.path.basename(backup_path)}', 'success')
+        db_backup._remove_sidecars(config.DATABASE_PATH)
+
+        if backup_info:
+            flash(f'อัปโหลด DB สำเร็จ. Backup เก็บไว้ที่ {backup_info["name"]}', 'success')
+        elif backup_err:
+            flash(f'อัปโหลด DB สำเร็จ (⚠ backup ก่อนอัปโหลดล้มเหลว: {backup_err})', 'warning')
         else:
             flash('อัปโหลด DB สำเร็จ', 'success')
+        if _reload_workers_after_restore():
+            flash('ระบบกำลังรีโหลดอัตโนมัติเพื่อให้ทุกตัวใช้ข้อมูลที่อัปโหลด (~ไม่กี่วินาที) '
+                  'แล้วตรวจข้อมูลอีกครั้ง', 'info')
+        else:
+            flash('แนะนำให้ปิด-เปิดแอป (restart) แล้วตรวจข้อมูลอีกครั้ง', 'warning')
         return redirect(url_for('dashboard'))
     return render_template(
         'admin_upload_db.html',
@@ -1241,15 +1247,24 @@ def upload_db_confirm():
         flash('ยกเลิกการอัปโหลดแล้ว', 'info')
         return redirect(url_for('upload_db'))
 
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    backup_dir = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), '..', 'data', 'backups')
-    )
-    os.makedirs(backup_dir, exist_ok=True)
-    backup_path = os.path.join(backup_dir, f'inventory-pre-upload-{ts}.db')
-    shutil.copy(config.DATABASE_PATH, backup_path)
+    backup_info, backup_err = db_backup.safe_create_backup(
+        'pre-upload-full', db_path=config.DATABASE_PATH, backup_dir=_backups_dir())
+
+    db_backup._remove_sidecars(config.DATABASE_PATH)
     shutil.move(hold_path, config.DATABASE_PATH)
-    flash(f'อัปโหลด DB สำเร็จ. Backup เก็บไว้ที่ {os.path.basename(backup_path)}', 'success')
+    db_backup._remove_sidecars(config.DATABASE_PATH)
+
+    if backup_info:
+        flash(f'อัปโหลด DB สำเร็จ. Backup เก็บไว้ที่ {backup_info["name"]}', 'success')
+    elif backup_err:
+        flash(f'อัปโหลด DB สำเร็จ (⚠ backup ก่อนอัปโหลดล้มเหลว: {backup_err})', 'warning')
+    else:
+        flash('อัปโหลด DB สำเร็จ', 'success')
+    if _reload_workers_after_restore():
+        flash('ระบบกำลังรีโหลดอัตโนมัติเพื่อให้ทุกตัวใช้ข้อมูลที่อัปโหลด (~ไม่กี่วินาที) '
+              'แล้วตรวจข้อมูลอีกครั้ง', 'info')
+    else:
+        flash('แนะนำให้ปิด-เปิดแอป (restart) แล้วตรวจข้อมูลอีกครั้ง', 'warning')
     return redirect(url_for('dashboard'))
 
 
@@ -1282,6 +1297,7 @@ _BACKUP_REASON_LABELS = {
     'unified': 'นำเข้า (รวมทุกไฟล์)', 'weekly': 'นำเข้ารายสัปดาห์',
     'marketplace': 'คำสั่งซื้อ Marketplace', 'pre-restore': 'ก่อนกู้คืน',
     'payments': 'นำเข้าการรับชำระ', 'credit-notes': 'นำเข้าใบลดหนี้',
+    'pre-upload-full': 'ก่อนแทนที่ DB (Full replace)',
 }
 
 
