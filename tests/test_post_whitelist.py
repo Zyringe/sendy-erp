@@ -161,7 +161,7 @@ def test_module_first_endpoints_valid_and_data_uses_unified_import():
         assert m['first_endpoint'] in endpoints, \
             f"module '{m['key']}' first_endpoint {m['first_endpoint']} is not a real endpoint"
     data = next(m for m in _MODULE_DEFS if m['key'] == 'data')
-    assert data['first_endpoint'] == 'unified_import', \
+    assert data['first_endpoint'] == 'bsn.unified_import', \
         "data module switcher must open /import-data, not the retired /import-weekly"
 
 

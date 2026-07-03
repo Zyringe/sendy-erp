@@ -98,13 +98,13 @@
 
       {# ── นำเข้าข้อมูล ── #}
       <div class="list-group-item bg-light text-muted small fw-bold">นำเข้าข้อมูล</div>
-      <a href="{{ url_for('unified_import') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('bsn.unified_import') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-box-arrow-in-down me-3"></i>นำเข้าข้อมูล
       </a>
-      <a href="{{ url_for('mapping') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('bsn.mapping') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-tags me-3"></i>ผูกรหัส BSN
       </a>
-      <a href="{{ url_for('unit_conversions') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('bsn.unit_conversions') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-arrow-left-right me-3"></i>แปลงหน่วย
       </a>
       <a href="{{ url_for('supplier_catalogue.supplier_catalogue_list') }}" class="list-group-item list-group-item-action">

@@ -8,7 +8,7 @@
 <ul class="nav nav-tabs mb-3" id="mappingTabs">
   <li class="nav-item">
     <a class="nav-link {% if active_tab != 'suggestions' %}active{% endif %}"
-       href="{{ url_for('mapping') }}">
+       href="{{ url_for('bsn.mapping') }}">
       <i class="bi bi-link-45deg me-1"></i>ผูกรหัส BSN
       {% if pending %}
       <span class="badge bg-warning text-dark ms-1">{{ pending | length }}</span>
@@ -18,7 +18,7 @@
   {% if is_manager %}
   <li class="nav-item">
     <a class="nav-link {% if active_tab == 'suggestions' %}active{% endif %}"
-       href="{{ url_for('mapping', tab='suggestions') }}">
+       href="{{ url_for('bsn.mapping', tab='suggestions') }}">
       <i class="bi bi-clipboard-check me-1"></i>อนุมัติ SKU ใหม่
       {% if pending_suggestions %}
       <span class="badge bg-danger ms-1">{{ pending_suggestions | length }}</span>
@@ -864,7 +864,7 @@ function confirmIgnore() {
 }
 
 function saveSingle(entry) {
-  fetch('{{ url_for("mapping_save") }}', {
+  fetch('{{ url_for("bsn.mapping_save") }}', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

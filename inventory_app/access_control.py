@@ -22,11 +22,11 @@ import review_rules as rr
 # POST whitelist by role
 _STAFF_POST_OK = frozenset([
     'login', 'logout',
-    'mapping_save', 'unit_conversions_save', 'unit_conversions_edit',
-    'unit_conversions_dismiss',
+    'bsn.mapping_save', 'bsn.unit_conversions_save', 'bsn.unit_conversions_edit',
+    'bsn.unit_conversions_dismiss',
     # Decision B — staff may import everything; the unified box (/import-data)
     # snapshots the DB before writing (see _snapshot_before_import call sites).
-    'unified_import', 'unified_import_confirm',
+    'bsn.unified_import', 'bsn.unified_import_confirm',
     'marketplace.import_orders', 'marketplace.settlement_import', 'marketplace.upload', 'marketplace.link_iv',
     'products.product_location_save',
     'admin_exit_simulate',
@@ -53,7 +53,7 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'customer_geocode',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
     'products.product_packaging_save',
-    'mapping_suggestion_approve',
+    'bsn.mapping_suggestion_approve',
     'photos_review_assign', 'photos_review_delete',
     # Acknowledging a billed≠payout discrepancy is a manager+ action (not staff).
     'marketplace.review_amount',
@@ -173,7 +173,7 @@ _MODULE_DEFS = [
         'key': 'data',
         'name': 'นำเข้าข้อมูล',
         'icon': 'bi-upload',
-        'first_endpoint': 'unified_import',   # /import-data (the consolidated box)
+        'first_endpoint': 'bsn.unified_import',   # /import-data (the consolidated box)
         'roles': None,
     },
     {
@@ -281,16 +281,16 @@ _ENDPOINT_MODULE = {
     'hr.payroll_detail': 'hr',
     'hr.payslip': 'hr',
     # data
-    'unified_import': 'data',
-    'unified_import_confirm': 'data',
-    'mapping': 'data',
-    'mapping_save': 'data',
-    'mapping_suggest': 'data',
-    'mapping_suggestion_approve': 'data',
-    'unit_conversions': 'data',
-    'unit_conversions_save': 'data',
-    'unit_conversions_edit': 'data',
-    'unit_conversions_dismiss': 'data',
+    'bsn.unified_import': 'data',
+    'bsn.unified_import_confirm': 'data',
+    'bsn.mapping': 'data',
+    'bsn.mapping_save': 'data',
+    'bsn.mapping_suggest': 'data',
+    'bsn.mapping_suggestion_approve': 'data',
+    'bsn.unit_conversions': 'data',
+    'bsn.unit_conversions_save': 'data',
+    'bsn.unit_conversions_edit': 'data',
+    'bsn.unit_conversions_dismiss': 'data',
     'supplier_catalogue.supplier_catalogue_list': 'data',
     'supplier_catalogue.supplier_catalogue_purchased': 'data',
     'supplier_catalogue.supplier_catalogue_match': 'data',

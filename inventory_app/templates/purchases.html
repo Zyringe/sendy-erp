@@ -5,11 +5,11 @@
 
 {% block topbar_actions %}
 {% if pending_map > 0 %}
-<a href="{{ url_for('mapping') }}" class="btn btn-sm" style="background:#fdf3dd;color:#6e4a00;border:none">
+<a href="{{ url_for('bsn.mapping') }}" class="btn btn-sm" style="background:#fdf3dd;color:#6e4a00;border:none">
   <i class="bi bi-tags me-1"></i>ผูกรหัส ({{ pending_map }})
 </a>
 {% endif %}
-<a href="{{ url_for('unified_import') }}" class="btn btn-sm btn-outline-secondary">
+<a href="{{ url_for('bsn.unified_import') }}" class="btn btn-sm btn-outline-secondary">
   <i class="bi bi-upload me-1"></i>นำเข้าไฟล์
 </a>
 {% endblock %}
