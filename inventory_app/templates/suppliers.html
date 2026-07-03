@@ -16,7 +16,7 @@
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">ค้นหา</button>
         {% if search %}
-        <a href="{{ url_for('supplier_list') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+        <a href="{{ url_for('partners.supplier_list') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
         {% endif %}
       </div>
       <div class="col-auto ms-auto align-self-center">
@@ -42,7 +42,7 @@
       <tbody>
         {% for s in suppliers %}
         <tr style="cursor:pointer"
-            onclick="window.location='{{ url_for('supplier_summary', supplier_name=s.supplier) }}'">
+            onclick="window.location='{{ url_for('partners.supplier_summary', supplier_name=s.supplier) }}'">
           <td class="fw-500">{{ s.supplier }}</td>
           <td><span class="badge badge-gray font-mono">{{ s.supplier_code or '—' }}</span></td>
           <td class="text-center text-subtle small">{{ s.doc_count }}</td>
@@ -67,17 +67,17 @@
     <nav>
       <ul class="pagination pagination-sm mb-0">
         <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('supplier_list', q=search, page=page-1) }}">‹</a>
+          <a class="page-link" href="{{ url_for('partners.supplier_list', q=search, page=page-1) }}">‹</a>
         </li>
         <li class="page-item {% if page == 1 %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('supplier_list', q=search, page=1) }}">1</a>
+          <a class="page-link" href="{{ url_for('partners.supplier_list', q=search, page=1) }}">1</a>
         </li>
         {% if p_start > 2 %}
         <li class="page-item disabled"><span class="page-link">…</span></li>
         {% endif %}
         {% for p in range(p_start, p_end+1) %}
         <li class="page-item {% if p == page %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('supplier_list', q=search, page=p) }}">{{ p }}</a>
+          <a class="page-link" href="{{ url_for('partners.supplier_list', q=search, page=p) }}">{{ p }}</a>
         </li>
         {% endfor %}
         {% if p_end < pages-1 %}
@@ -85,11 +85,11 @@
         {% endif %}
         {% if pages > 1 %}
         <li class="page-item {% if page == pages %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('supplier_list', q=search, page=pages) }}">{{ pages }}</a>
+          <a class="page-link" href="{{ url_for('partners.supplier_list', q=search, page=pages) }}">{{ pages }}</a>
         </li>
         {% endif %}
         <li class="page-item {% if page >= pages %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('supplier_list', q=search, page=page+1) }}">›</a>
+          <a class="page-link" href="{{ url_for('partners.supplier_list', q=search, page=page+1) }}">›</a>
         </li>
       </ul>
     </nav>

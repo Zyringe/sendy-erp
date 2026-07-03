@@ -63,7 +63,7 @@ def test_every_slot_has_required_render_fields():
     ('inventory.transaction_history', 'products'),     # operation module
     ('trade_dashboard', 'trade'),
     ('sales_view', 'trade'),                  # accounting module, trade side
-    ('customer_list', 'trade'),
+    ('partners.customer_list', 'trade'),
     ('ecommerce', 'trade'),
     ('accounting_summary', 'accounting'),     # accounting module, finance side
     ('cashflow_dashboard', 'accounting'),

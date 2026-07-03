@@ -97,7 +97,7 @@
         <tr class="{{ 'table-success' if c.diff == 0 else '' }}">
           <td class="ps-3 text-subtle">{{ loop.index }}</td>
           <td class="fw-medium">
-            <a href="{{ url_for('customer_summary', customer_name=c.customer) }}"
+            <a href="{{ url_for('partners.customer_summary', customer_name=c.customer) }}"
                class="text-decoration-none">{{ c.customer }}</a>
           </td>
           <td class="text-subtle small">
@@ -157,7 +157,7 @@
         <tr>
           <td class="ps-3 text-subtle td-hide-mobile">{{ loop.index }}</td>
           <td class="td-primary fw-medium">
-            <a href="{{ url_for('customer_summary', customer_name=row.customer) }}"
+            <a href="{{ url_for('partners.customer_summary', customer_name=row.customer) }}"
                class="text-decoration-none">
               {{ row.customer or '–' }}
             </a>

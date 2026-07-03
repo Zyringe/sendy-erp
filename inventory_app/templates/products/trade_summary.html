@@ -133,7 +133,7 @@
             <tr>
               <td class="text-subtle">{{ loop.index }}</td>
               <td>
-                <a href="{{ url_for('customer_summary', customer_name=r.customer,
+                <a href="{{ url_for('partners.customer_summary', customer_name=r.customer,
                                     date_from=data.date_from, date_to=data.date_to) }}"
                    class="text-decoration-none text-main fw-500">{{ r.customer }}</a>
               </td>
@@ -180,7 +180,7 @@
               </td>
               <td class="small">
                 {% if r.customer %}
-                  <a href="{{ url_for('customer_summary', customer_name=r.customer) }}"
+                  <a href="{{ url_for('partners.customer_summary', customer_name=r.customer) }}"
                      class="text-decoration-none text-subtle">{{ r.customer }}</a>
                 {% else %}—{% endif %}
               </td>

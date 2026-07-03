@@ -27,7 +27,7 @@
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-touch">ค้นหา</button>
         {% if search or region_id or region %}
-        <a href="{{ url_for('customer_list') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+        <a href="{{ url_for('partners.customer_list') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
         {% endif %}
       </div>
       <div class="col-auto ms-auto align-self-center">
@@ -35,12 +35,12 @@
       </div>
       {% if is_manager %}
       <div class="col-auto align-self-center">
-        <a href="{{ url_for('customer_bulk_reassign') }}"
+        <a href="{{ url_for('partners.customer_bulk_reassign') }}"
            class="btn btn-sm btn-outline-primary">
           <i class="bi bi-people-fill me-1"></i>Bulk reassign
         </a>
         {% if is_admin %}
-        <a href="{{ url_for('regions_admin') }}"
+        <a href="{{ url_for('partners.regions_admin') }}"
            class="btn btn-sm btn-outline-secondary">
           <i class="bi bi-geo-alt me-1"></i>เขตการขาย
         </a>
@@ -69,7 +69,7 @@
       <tbody>
         {% for c in customers %}
         <tr style="cursor:pointer"
-            onclick="window.location='{{ url_for('customer_summary', customer_name=c.customer) }}'">
+            onclick="window.location='{{ url_for('partners.customer_summary', customer_name=c.customer) }}'">
           <td class="td-primary fw-500">
             {{ c.customer }}
             <span class="d-mobile-only badge badge-gray font-mono ms-1">{{ c.customer_code }}</span>
@@ -114,17 +114,17 @@
     <nav>
       <ul class="pagination pagination-sm mb-0">
         <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('customer_list', q=search, region_id=region_id, page=page-1) }}">‹</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, page=page-1) }}">‹</a>
         </li>
         <li class="page-item {% if page == 1 %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('customer_list', q=search, region_id=region_id, page=1) }}">1</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, page=1) }}">1</a>
         </li>
         {% if p_start > 2 %}
         <li class="page-item disabled"><span class="page-link">…</span></li>
         {% endif %}
         {% for p in range(p_start, p_end+1) %}
         <li class="page-item {% if p == page %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('customer_list', q=search, region_id=region_id, page=p) }}">{{ p }}</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, page=p) }}">{{ p }}</a>
         </li>
         {% endfor %}
         {% if p_end < pages-1 %}
@@ -132,11 +132,11 @@
         {% endif %}
         {% if pages > 1 %}
         <li class="page-item {% if page == pages %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('customer_list', q=search, region_id=region_id, page=pages) }}">{{ pages }}</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, page=pages) }}">{{ pages }}</a>
         </li>
         {% endif %}
         <li class="page-item {% if page >= pages %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('customer_list', q=search, region_id=region_id, page=page+1) }}">›</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, page=page+1) }}">›</a>
         </li>
       </ul>
     </nav>
