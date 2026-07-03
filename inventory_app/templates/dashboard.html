@@ -63,7 +63,7 @@
       </div>
       <div class="stat-foot">
         <span class="delta flat"><i class="bi bi-clock-history"></i> จาก 10 ล่าสุด</span>
-        <a class="stat-link" href="{{ url_for('transaction_history', type='IN') }}">ดูประวัติ <i class="bi bi-chevron-right"></i></a>
+        <a class="stat-link" href="{{ url_for('inventory.transaction_history', type='IN') }}">ดูประวัติ <i class="bi bi-chevron-right"></i></a>
       </div>
     </div>
   </div>
@@ -84,7 +84,7 @@
       </div>
       <div class="stat-foot">
         <span class="delta flat"><i class="bi bi-clock-history"></i> จาก 10 ล่าสุด</span>
-        <a class="stat-link" href="{{ url_for('transaction_history', type='OUT') }}">ดูประวัติ <i class="bi bi-chevron-right"></i></a>
+        <a class="stat-link" href="{{ url_for('inventory.transaction_history', type='OUT') }}">ดูประวัติ <i class="bi bi-chevron-right"></i></a>
       </div>
     </div>
   </div>
@@ -113,7 +113,7 @@
 <div class="card">
   <div class="card-header d-flex justify-content-between align-items-center">
     <span><i class="bi bi-clock-history me-2 text-accent"></i>รายการล่าสุด</span>
-    <a href="{{ url_for('transaction_history') }}" class="btn btn-xs" style="background:var(--accent-light);color:var(--accent);border:none">ดูทั้งหมด →</a>
+    <a href="{{ url_for('inventory.transaction_history') }}" class="btn btn-xs" style="background:var(--accent-light);color:var(--accent);border:none">ดูทั้งหมด →</a>
   </div>
   <div class="table-responsive">
     <table class="table table-mobile-cards mb-0">

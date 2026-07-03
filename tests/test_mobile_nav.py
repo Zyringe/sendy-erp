@@ -60,7 +60,7 @@ def test_every_slot_has_required_render_fields():
 @pytest.mark.parametrize('endpoint,expected_active', [
     ('products.product_list', 'products'),
     ('products.product_detail', 'products'),
-    ('transaction_history', 'products'),     # operation module
+    ('inventory.transaction_history', 'products'),     # operation module
     ('trade_dashboard', 'trade'),
     ('sales_view', 'trade'),                  # accounting module, trade side
     ('customer_list', 'trade'),
@@ -81,7 +81,7 @@ def test_active_slot_highlight_for_admin(endpoint, expected_active):
 def test_no_slot_active_on_overview_and_data_pages():
     # dashboard (overview), import (data), user_list (admin) have no bottom-nav
     # slot — none should highlight (those modules live in the drawer).
-    for endpoint in ('dashboard', 'alerts_view', 'unified_import', 'user_list'):
+    for endpoint in ('dashboard', 'inventory.alerts_view', 'unified_import', 'user_list'):
         slots = build_mobile_nav_slots('admin', endpoint)
         assert [s['key'] for s in slots if s['active']] == [], endpoint
 

@@ -3,7 +3,7 @@
 {% block page_title %}สูตรแปลงสินค้า{% endblock %}
 
 {% block topbar_actions %}
-<a href="{{ url_for('conversion_pair') }}" class="btn btn-primary btn-sm">
+<a href="{{ url_for('inventory.conversion_pair') }}" class="btn btn-primary btn-sm">
   <i class="bi bi-link-45deg me-1"></i>สร้างสูตรแปลง แพ็ค-ตัวหลวม
 </a>
 {% endblock %}
@@ -14,7 +14,7 @@
     <div class="fw-500">
       <i class="bi bi-clock-history me-1"></i>การแปลงล่าสุด
     </div>
-    <a href="{{ url_for('conversion_history') }}" class="btn btn-sm btn-outline-secondary">
+    <a href="{{ url_for('inventory.conversion_history') }}" class="btn btn-sm btn-outline-secondary">
       ดูประวัติทั้งหมด <i class="bi bi-chevron-right"></i>
     </a>
   </div>
@@ -53,7 +53,7 @@
 <div class="text-center py-5 text-subtle">
   <i class="bi bi-scissors" style="font-size:2.5rem;opacity:.3"></i>
   <div class="mt-2">ยังไม่มีสูตรแปลงสินค้า</div>
-  <a href="{{ url_for('conversion_pair') }}" class="btn btn-primary btn-sm mt-3">
+  <a href="{{ url_for('inventory.conversion_pair') }}" class="btn btn-primary btn-sm mt-3">
     <i class="bi bi-link-45deg me-1"></i>สร้างสูตรแปลง แพ็ค-ตัวหลวม
   </a>
 </div>
@@ -110,13 +110,13 @@
           </td>
           <td class="text-end" style="white-space:nowrap">
             {% if f.is_active %}
-            <a href="{{ url_for('conversion_run', formula_id=f.id) }}"
+            <a href="{{ url_for('inventory.conversion_run', formula_id=f.id) }}"
                class="btn btn-sm btn-success" title="แปลงสินค้า">
               <i class="bi bi-play-fill me-1"></i>แปลง
             </a>
             {% endif %}
             {% if current_role %}
-            <a href="{{ url_for('conversion_pair', from_formula=f.id) }}"
+            <a href="{{ url_for('inventory.conversion_pair', from_formula=f.id) }}"
                class="btn btn-sm btn-outline-secondary" title="แก้ไขคู่แพ็ค-ตัวหลวม">
               <i class="bi bi-pencil"></i>
             </a>
@@ -129,7 +129,7 @@
             {% endif %}
             {% if is_admin %}
               {% if f.is_active %}
-              <form method="post" action="{{ url_for('conversion_deactivate', formula_id=f.id) }}"
+              <form method="post" action="{{ url_for('inventory.conversion_deactivate', formula_id=f.id) }}"
                     class="d-inline"
                     onsubmit="return confirm('ปิดใช้งานสูตร &quot;{{ f.name }}&quot;?')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -138,7 +138,7 @@
                 </button>
               </form>
               {% else %}
-              <form method="post" action="{{ url_for('conversion_activate', formula_id=f.id) }}"
+              <form method="post" action="{{ url_for('inventory.conversion_activate', formula_id=f.id) }}"
                     class="d-inline"
                     onsubmit="return confirm('เปิดใช้งานสูตร &quot;{{ f.name }}&quot;?')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -205,7 +205,7 @@
   var partnerBlock = document.getElementById('deletePartnerBlock');
   var partnerName  = document.getElementById('deletePartnerName');
   var partnerChk   = document.getElementById('deletePartnerChk');
-  var deleteUrlBase = "{{ url_for('conversion_delete', formula_id=0) }}";
+  var deleteUrlBase = "{{ url_for('inventory.conversion_delete', formula_id=0) }}";
 
   modal.addEventListener('show.bs.modal', function(ev) {
     var trigger = ev.relatedTarget;

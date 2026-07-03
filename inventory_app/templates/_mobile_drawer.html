@@ -15,7 +15,7 @@
       <a href="{{ url_for('dashboard') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-speedometer2 me-3"></i>Dashboard
       </a>
-      <a href="{{ url_for('alerts_view') }}" class="list-group-item list-group-item-action d-flex align-items-center">
+      <a href="{{ url_for('inventory.alerts_view') }}" class="list-group-item list-group-item-action d-flex align-items-center">
         <i class="bi bi-exclamation-triangle me-3"></i>
         <span class="flex-grow-1">แจ้งเตือน</span>
         {% if alert_count > 0 %}<span class="badge bg-danger rounded-pill">{{ alert_count }}</span>{% endif %}
@@ -31,10 +31,10 @@
       <a href="{{ url_for('products.product_list') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-grid-3x3-gap me-3"></i>สินค้า
       </a>
-      <a href="{{ url_for('transaction_history') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('inventory.transaction_history') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-arrow-left-right me-3"></i>ประวัติสต็อก
       </a>
-      <a href="{{ url_for('conversion_list') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('inventory.conversion_list') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-scissors me-3"></i>แปลงสินค้า
       </a>
       {% if is_admin %}
