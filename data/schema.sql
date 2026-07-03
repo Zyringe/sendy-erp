@@ -1428,7 +1428,7 @@ CREATE TABLE "users" (
                           CHECK(role IN ('admin','manager','staff','shareholder','general')),
     is_active     INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-);
+, default_cashbook_account_id INTEGER REFERENCES cashbook_accounts(id));
 
 CREATE INDEX idx_ar_followup_customer       ON ar_followup_log(customer);
 

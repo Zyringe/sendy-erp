@@ -276,9 +276,17 @@ def user_list():
     # the account's own current link for each edit form (the 1:1 rule).
     create_employees = hrq.get_linkable_employees(conn=conn)
     linkable = {u['id']: hrq.get_linkable_employees(user_id=u['id'], conn=conn) for u in users}
+    # Active cashbook accounts offered for each user's data-entry default
+    # (mig 126) — distinct from employees.default_cashbook_account_id (the
+    # per-employee salary pay-from account).
+    cashbook_accounts = conn.execute(
+        "SELECT id, code, display_name FROM cashbook_accounts"
+        " WHERE is_active=1 ORDER BY sort_order, code"
+    ).fetchall()
     conn.close()
     return render_template('users.html', users=users,
-                           create_employees=create_employees, linkable=linkable)
+                           create_employees=create_employees, linkable=linkable,
+                           cashbook_accounts=cashbook_accounts)
 
 
 @app.route('/users/new', methods=['POST'])
@@ -320,18 +328,22 @@ def user_edit(uid):
     is_active    = 1 if request.form.get('is_active') else 0
     new_password = request.form.get('password', '').strip()
     employee_id  = request.form.get('employee_id', '').strip() or None
+    default_cashbook_account_id = request.form.get('default_cashbook_account_id', '').strip() or None
     if role not in ROLES:
         role = 'staff'
     conn = get_connection()
     if new_password:
         conn.execute(
-            "UPDATE users SET display_name=?, role=?, is_active=?, password_hash=? WHERE id=?",
-            (display_name, role, is_active, generate_password_hash(new_password, method='pbkdf2:sha256'), uid)
+            "UPDATE users SET display_name=?, role=?, is_active=?, password_hash=?,"
+            " default_cashbook_account_id=? WHERE id=?",
+            (display_name, role, is_active, generate_password_hash(new_password, method='pbkdf2:sha256'),
+             default_cashbook_account_id, uid)
         )
     else:
         conn.execute(
-            "UPDATE users SET display_name=?, role=?, is_active=? WHERE id=?",
-            (display_name, role, is_active, uid)
+            "UPDATE users SET display_name=?, role=?, is_active=?,"
+            " default_cashbook_account_id=? WHERE id=?",
+            (display_name, role, is_active, default_cashbook_account_id, uid)
         )
     _set_account_employee(conn, uid, employee_id)
     conn.commit()
