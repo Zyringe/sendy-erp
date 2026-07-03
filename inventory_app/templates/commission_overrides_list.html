@@ -14,11 +14,11 @@
 
 <div class="card mb-3">
   <div class="card-body py-2 d-flex align-items-center">
-    <a href="{{ url_for('commission_dashboard') }}"
+    <a href="{{ url_for('commission.commission_dashboard') }}"
        class="btn btn-sm btn-outline-secondary">
       <i class="bi bi-arrow-left me-1"></i>กลับ commission
     </a>
-    <a href="{{ url_for('commission_overrides_new') }}"
+    <a href="{{ url_for('commission.commission_overrides_new') }}"
        class="btn btn-sm btn-primary ms-auto">
       <i class="bi bi-plus-lg me-1"></i>เพิ่ม rule
     </a>
@@ -97,11 +97,11 @@
             {% endif %}
           </td>
           <td class="text-end text-nowrap">
-            <a href="{{ url_for('commission_overrides_edit', override_id=r.id) }}"
+            <a href="{{ url_for('commission.commission_overrides_edit', override_id=r.id) }}"
                class="btn btn-sm btn-outline-primary">
               <i class="bi bi-pencil"></i>
             </a>
-            <form method="post" action="{{ url_for('commission_overrides_toggle', override_id=r.id) }}"
+            <form method="post" action="{{ url_for('commission.commission_overrides_toggle', override_id=r.id) }}"
                   class="d-inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-sm btn-outline-secondary"
@@ -109,7 +109,7 @@
                 <i class="bi bi-{{ 'toggle-on' if r.is_active else 'toggle-off' }}"></i>
               </button>
             </form>
-            <form method="post" action="{{ url_for('commission_overrides_delete', override_id=r.id) }}"
+            <form method="post" action="{{ url_for('commission.commission_overrides_delete', override_id=r.id) }}"
                   class="d-inline"
                   onsubmit="return confirm('ลบ rule #{{ r.id }} ถาวร?\\n(audit_log จะเก็บประวัติไว้)');">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
