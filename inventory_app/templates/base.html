@@ -160,12 +160,12 @@
        class="sidebar-link {% if request.endpoint == 'purchases_view' %}active{% endif %}">
       <i class="bi bi-truck"></i> ยอดซื้อ
     </a>
-    <a href="{{ url_for('customer_list') }}"
-       class="sidebar-link {% if request.endpoint in ['customer_list','customer_summary'] %}active{% endif %}">
+    <a href="{{ url_for('partners.customer_list') }}"
+       class="sidebar-link {% if request.endpoint in ['partners.customer_list','partners.customer_summary'] %}active{% endif %}">
       <i class="bi bi-people"></i> ลูกค้า
     </a>
-    <a href="{{ url_for('supplier_list') }}"
-       class="sidebar-link {% if request.endpoint in ['supplier_list','supplier_summary'] %}active{% endif %}">
+    <a href="{{ url_for('partners.supplier_list') }}"
+       class="sidebar-link {% if request.endpoint in ['partners.supplier_list','partners.supplier_summary'] %}active{% endif %}">
       <i class="bi bi-truck"></i> Supplier
     </a>
     {# แผนที่ลูกค้า hidden from nav: only ~3% of customers are geocoded and it

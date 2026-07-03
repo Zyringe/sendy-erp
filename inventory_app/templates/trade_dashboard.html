@@ -193,7 +193,7 @@
             <tr>
               <td class="text-subtle">{{ loop.index }}</td>
               <td>
-                <a href="{{ url_for('customer_summary', customer_name=row.customer, date_from=stats.date_from, date_to=stats.date_to) }}"
+                <a href="{{ url_for('partners.customer_summary', customer_name=row.customer, date_from=stats.date_from, date_to=stats.date_to) }}"
                    class="text-decoration-none text-main fw-500">{{ row.customer }}</a>
               </td>
               <td class="text-end font-mono text-subtle">{{ row.doc_count }}</td>

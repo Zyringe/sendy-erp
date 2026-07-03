@@ -147,7 +147,7 @@
           </td>
           <td class="text-center small">{{ r.last_paid or '—' }}</td>
           <td>
-            <a href="{{ url_for('supplier_summary', supplier_name=r.supplier_name) }}"
+            <a href="{{ url_for('partners.supplier_summary', supplier_name=r.supplier_name) }}"
                class="btn btn-sm btn-outline-secondary py-0">ดูรายละเอียด</a>
           </td>
         </tr>

@@ -20,11 +20,11 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
-        <a href="{{ url_for('supplier_summary', supplier_name=data.supplier) }}"
+        <a href="{{ url_for('partners.supplier_summary', supplier_name=data.supplier) }}"
            class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
       </div>
       <div class="col-auto ms-auto">
-        <a href="{{ url_for('supplier_list') }}" class="btn btn-sm btn-outline-secondary">
+        <a href="{{ url_for('partners.supplier_list') }}" class="btn btn-sm btn-outline-secondary">
           <i class="bi bi-arrow-left me-1"></i>รายชื่อ Supplier
         </a>
       </div>

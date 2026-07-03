@@ -48,9 +48,9 @@ _STAFF_POST_OK = frozenset([
     'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
-    'customer_reassign', 'customer_bulk_reassign',
+    'partners.customer_reassign', 'partners.customer_bulk_reassign',
     # Customer map geocoding (B5) — manager+ feature; staff doesn't need it.
-    'customer_geocode',
+    'partners.customer_geocode',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
     'products.product_packaging_save',
     'bsn.mapping_suggestion_approve',
@@ -72,8 +72,8 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     # Salary pay-event posting (Phase 4) — manager can mark จ่ายแล้ว/ยกเลิกการจ่าย.
     'hr.payroll_item_pay', 'hr.payroll_item_unpay',
 ])
-# regions_admin POST is intentionally admin-only — gated inline at the top of
-# the route. Other admin-only writes use _require_admin().
+# partners.regions_admin POST is intentionally admin-only — gated inline at
+# the top of the route. Other admin-only writes use _require_admin().
 # admin can POST anything
 
 _GENERAL_POST_OK = frozenset([
@@ -225,11 +225,11 @@ _ENDPOINT_MODULE = {
     'sales_doc': 'accounting',
     'purchases_view': 'accounting',
     'purchases_doc': 'accounting',
-    'customer_list': 'accounting',
-    'customer_summary': 'accounting',
-    'customer_map': 'accounting',
-    'supplier_list': 'accounting',
-    'supplier_summary': 'accounting',
+    'partners.customer_list': 'accounting',
+    'partners.customer_summary': 'accounting',
+    'partners.customer_map': 'accounting',
+    'partners.supplier_list': 'accounting',
+    'partners.supplier_summary': 'accounting',
     'payment_status': 'accounting',
     'payment_customers': 'accounting',
     'commission_dashboard': 'accounting',
