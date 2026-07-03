@@ -30,7 +30,7 @@ _STAFF_POST_OK = frozenset([
     'marketplace.import_orders', 'marketplace.settlement_import', 'marketplace.upload', 'marketplace.link_iv',
     'products.product_location_save',
     'admin_exit_simulate',
-    'conversion_pair', 'conversion_run', 'conversion_delete',
+    'inventory.conversion_pair', 'inventory.conversion_run', 'inventory.conversion_delete',
     'api_product_barcodes',
     'review.scan',
     'call.call_mark_called',
@@ -40,7 +40,7 @@ _STAFF_POST_OK = frozenset([
     'call.call_log_delete',
     'customer_review.normalize_confirm',
     'customer_review.normalize_skip',
-    'stock_adjust',
+    'inventory.stock_adjust',
     # Phase 5 self-service leave — any employee may submit/edit/cancel their OWN
     # pending leave. Ownership is enforced inside each route via _my_employee()
     # (employee_id never read from form/URL); this gate only permits the POST to
@@ -191,7 +191,7 @@ _MODULE_DEFS = [
 _ENDPOINT_MODULE = {
     # overview
     'dashboard': 'overview',
-    'alerts_view': 'overview',
+    'inventory.alerts_view': 'overview',
     'review.index': 'overview',
     'review.scan': 'overview',
     # operation
@@ -199,15 +199,15 @@ _ENDPOINT_MODULE = {
     'products.product_detail': 'operation',
     'products.product_new': 'operation',
     'products.product_edit': 'operation',
-    'stock_adjust': 'operation',
-    'transaction_history': 'operation',
-    'conversion_list': 'operation',
-    'conversion_pair': 'operation',
-    'conversion_run': 'operation',
-    'conversion_delete': 'operation',
-    'conversion_deactivate': 'operation',
-    'conversion_activate': 'operation',
-    'conversion_history': 'operation',
+    'inventory.stock_adjust': 'operation',
+    'inventory.transaction_history': 'operation',
+    'inventory.conversion_list': 'operation',
+    'inventory.conversion_pair': 'operation',
+    'inventory.conversion_run': 'operation',
+    'inventory.conversion_delete': 'operation',
+    'inventory.conversion_deactivate': 'operation',
+    'inventory.conversion_activate': 'operation',
+    'inventory.conversion_history': 'operation',
     'labels_view': 'operation',
     'products_walkthrough': 'operation',
     # accounting

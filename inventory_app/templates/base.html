@@ -81,8 +81,8 @@
        class="sidebar-link {% if request.endpoint == 'dashboard' %}active{% endif %}">
       <i class="bi bi-speedometer2"></i> Dashboard
     </a>
-    <a href="{{ url_for('alerts_view') }}"
-       class="sidebar-link {% if request.endpoint == 'alerts_view' %}active{% endif %}">
+    <a href="{{ url_for('inventory.alerts_view') }}"
+       class="sidebar-link {% if request.endpoint == 'inventory.alerts_view' %}active{% endif %}">
       <i class="bi bi-exclamation-triangle"></i> แจ้งเตือน
       {% if alert_count > 0 %}
       <span class="badge-count">{{ alert_count }}</span>
@@ -104,12 +104,12 @@
        class="sidebar-link {% if 'product' in (request.endpoint or '') %}active{% endif %}">
       <i class="bi bi-grid-3x3-gap"></i> สินค้า
     </a>
-    <a href="{{ url_for('transaction_history') }}"
-       class="sidebar-link {% if request.endpoint == 'transaction_history' %}active{% endif %}">
+    <a href="{{ url_for('inventory.transaction_history') }}"
+       class="sidebar-link {% if request.endpoint == 'inventory.transaction_history' %}active{% endif %}">
       <i class="bi bi-arrow-left-right"></i> ประวัติสต็อก
     </a>
-    <a href="{{ url_for('conversion_list') }}"
-       class="sidebar-link {% if (request.endpoint or '').startswith('conversion_') or request.endpoint == 'conversion_list' %}active{% endif %}">
+    <a href="{{ url_for('inventory.conversion_list') }}"
+       class="sidebar-link {% if (request.endpoint or '').startswith('inventory.conversion_') or request.endpoint == 'inventory.conversion_list' %}active{% endif %}">
       <i class="bi bi-scissors"></i> แปลงสินค้า
     </a>
     {% if is_manager %}
