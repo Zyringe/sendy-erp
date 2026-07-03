@@ -361,11 +361,16 @@ _IMPORTERS = {
 _SNAPSHOT_IMPORTERS = {'ar_snapshot', 'ap_snapshot'}
 
 
-def run_import(file_type, path, company_code='BSN', dry_run=False, incremental=True):
+def run_import(file_type, path, company_code='BSN', dry_run=False, incremental=True,
+               db_path=None):
     if file_type not in _IMPORTERS:
         raise SystemExit(f'unknown file_type {file_type!r} — pick from {sorted(_IMPORTERS)}')
 
-    conn = sqlite3.connect(DB_PATH)
+    # db_path lets the web app inject config.DATABASE_PATH (which honours DATA_DIR,
+    # e.g. /data/inventory.db on Railway). The module-level DB_PATH is only a
+    # convenience default for local CLI runs — on prod it points at a directory
+    # that doesn't exist, so relying on it raised "unable to open database file".
+    conn = sqlite3.connect(db_path or DB_PATH)
     conn.execute('PRAGMA foreign_keys = OFF')   # match app behaviour
     company_id = _company_id(conn, company_code)
 
