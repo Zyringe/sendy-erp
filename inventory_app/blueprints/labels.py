@@ -1,10 +1,11 @@
-"""Product-label (ป้ายสินค้า) admin blueprint — Phase 2 manage/edit UI.
+"""Product-label (ป้ายสินค้า) blueprint — Phase 2 admin manage/edit UI +
+Phase 3 team print UI.
 
 Phase 1 (data model + import, migration 127) already shipped `product_labels`
 (1,104 rows) + a single `label_company_block` config row — see
-projects/product-label-printing/plan.md. This blueprint is the ADMIN-ONLY
-screen to search/filter/edit those rows. NOT the print UI (Phase 3, separate
-work under the existing bare `/labels` route in app.py).
+projects/product-label-printing/plan.md. Phase 2 is the ADMIN-ONLY screen to
+search/filter/edit those rows. Phase 3 is the team-facing print UI (NOT the
+old price-tag `/labels` route in app.py, which is a different feature).
 
 Routes
 ------
@@ -14,14 +15,18 @@ POST /labels/<id>/edit               save one row
 POST /labels/bulk-size               set label_size on selected/filtered rows
 GET  /labels/company-block           edit form for the single constant-block row
 POST /labels/company-block           save
+GET  /labels/print                   Phase 3 — search + queue + print (team)
+GET  /api/labels/search              Phase 3 — JSON search for the picker
 
-Access: admin only (plan decision D6 — only Put edits label data). Mirrors
+Access: manage/edit/company-block = admin only (plan decision D6 — only Put
+edits label data). print/search = admin/manager/staff (plan decision D6 —
+everyone except พนักงานทั่วไป(`general`) + `shareholder` prints). Mirrors
 hr.py's local `_require_admin()` pattern — no shared helper across blueprints.
 
 Python 3.9 — Optional[...] not X | None.
 """
 from flask import (Blueprint, render_template, request, redirect, url_for,
-                   flash, session, abort)
+                   flash, session, abort, jsonify)
 
 from database import get_connection
 
@@ -32,6 +37,11 @@ _PER_PAGE = 50
 
 def _require_admin():
     if session.get('role') != 'admin':
+        abort(403)
+
+
+def _require_print_role():
+    if session.get('role') not in ('admin', 'manager', 'staff'):
         abort(403)
 
 
@@ -212,3 +222,55 @@ def company_block():
         return render_template('labels/company_block.html', row=row)
     finally:
         conn.close()
+
+
+# ── Phase 3: team print UI ──────────────────────────────────────────────────
+
+@bp_labels.route('/labels/print')
+def print_page():
+    _require_print_role()
+    conn = get_connection()
+    try:
+        company = conn.execute(
+            "SELECT * FROM label_company_block ORDER BY id LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    return render_template('labels/print.html', company=company)
+
+
+@bp_labels.route('/api/labels/search')
+def search_api():
+    _require_print_role()
+    q = (request.args.get('q') or '').strip()
+    if not q:
+        return jsonify({'items': []})
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, barcode, product_name, brand, packaging_th, size_th, label_size
+              FROM product_labels
+             WHERE is_active = 1
+               AND (product_name LIKE :q OR barcode LIKE :q OR brand LIKE :q)
+             ORDER BY
+                 CASE WHEN barcode = :exact THEN 0
+                      WHEN product_name LIKE :starts THEN 1
+                      ELSE 2 END,
+                 product_name
+             LIMIT 30
+            """,
+            {'q': f'%{q}%', 'starts': f'{q}%', 'exact': q},
+        ).fetchall()
+    finally:
+        conn.close()
+    items = [{
+        'id':           r['id'],
+        'barcode':      r['barcode'] or '',
+        'product_name': r['product_name'],
+        'brand':        r['brand'] or '',
+        'packaging_th': r['packaging_th'] or '',
+        'size_th':      r['size_th'] or '',
+        'label_size':   r['label_size'],
+    } for r in rows]
+    return jsonify({'items': items})

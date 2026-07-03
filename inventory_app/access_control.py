@@ -212,6 +212,8 @@ _ENDPOINT_MODULE = {
     'labels.edit': 'operation',
     'labels.bulk_size': 'operation',
     'labels.company_block': 'operation',
+    'labels.print_page': 'operation',
+    'labels.search_api': 'operation',
     'products_walkthrough': 'operation',
     # accounting
     'accounting_summary': 'accounting',
