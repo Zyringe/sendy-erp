@@ -139,6 +139,21 @@
             <a href="{{ url_for('hr.payroll_detail', run_id=r.payroll_run_id) }}"
                class="small">ดูใน HR</a>
             {% endif %}
+            {% elif r.salary_advance_id %}
+            {# Advance rows aren't editable in place (delete + re-add before
+               deduction, plan.md A/C5c) — show a lock, keep delete (which
+               cascades to HR and 403s once the advance is deducted). #}
+            <span class="text-muted small me-1"
+                  title="รายการเบิกล่วงหน้า — แก้ที่นี่ไม่ได้ ลบแล้วเพิ่มใหม่ (ก่อนถูกหักในรอบเงินเดือน)">
+              <i class="bi bi-lock-fill"></i> เบิกล่วงหน้า
+            </span>
+            <form method="post" action="{{ url_for('cashbook.txn_delete', txn_id=r.id) }}"
+                  class="d-inline" onsubmit="return confirm('ลบรายการเบิกนี้? (ลบทั้งในสมุดเงินสดและ HR)')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-trash"></i>
+              </button>
+            </form>
             {% else %}
             <button type="button" class="btn btn-sm btn-outline-secondary"
                     data-bs-toggle="modal" data-bs-target="#editTxnModal{{ r.id }}">
@@ -184,7 +199,7 @@
 {# ── Edit modals (manual rows only) ───────────────────────────────────────── #}
 {% if can_edit_cashbook %}
 {% for r in rows %}
-{% if not r.payroll_item_id %}
+{% if not r.payroll_item_id and not r.salary_advance_id %}
 {% include 'cashbook/txn_edit.html' %}
 {% endif %}
 {% endfor %}

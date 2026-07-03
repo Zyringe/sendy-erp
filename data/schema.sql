@@ -124,7 +124,7 @@ CREATE TABLE "cashbook_transactions" (
     source_row      INTEGER,
     import_batch_id TEXT,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-, created_by      TEXT, payroll_run_id  INTEGER REFERENCES payroll_runs(id), payroll_item_id INTEGER REFERENCES payroll_items(id));
+, created_by      TEXT, payroll_run_id  INTEGER REFERENCES payroll_runs(id), payroll_item_id INTEGER REFERENCES payroll_items(id), salary_advance_id INTEGER REFERENCES salary_advances(id));
 
 CREATE TABLE categories (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1460,6 +1460,9 @@ CREATE INDEX idx_cashbook_txn_category     ON cashbook_transactions(category);
 CREATE INDEX idx_cashbook_txn_date         ON cashbook_transactions(txn_date);
 
 CREATE UNIQUE INDEX idx_cashbook_txn_payroll_item ON cashbook_transactions(payroll_item_id);
+
+CREATE UNIQUE INDEX idx_cashbook_txn_salary_advance
+    ON cashbook_transactions(salary_advance_id);
 
 CREATE INDEX idx_catalogue_items_name_norm
     ON supplier_catalogue_items(name_normalized);
