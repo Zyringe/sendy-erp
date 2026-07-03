@@ -7,7 +7,7 @@
 {# ── Search (ครอบคลุมทั้ง pending และ existing) ─────────────────────────────── #}
 <div class="card mb-3">
   <div class="card-body py-2">
-    <form method="get" action="{{ url_for('unit_conversions') }}" class="d-flex gap-2 align-items-center flex-wrap">
+    <form method="get" action="{{ url_for('bsn.unit_conversions') }}" class="d-flex gap-2 align-items-center flex-wrap">
       <div class="input-group input-group-sm flex-grow-1" style="max-width:380px;min-width:0">
         <span class="input-group-text"><i class="bi bi-search"></i></span>
         <input type="search" name="q" value="{{ search }}"
@@ -15,7 +15,7 @@
       </div>
       <button class="btn btn-sm btn-primary" type="submit">ค้นหา</button>
       {% if search %}
-      <a href="{{ url_for('unit_conversions') }}" class="btn btn-sm btn-outline-secondary">ล้าง</a>
+      <a href="{{ url_for('bsn.unit_conversions') }}" class="btn btn-sm btn-outline-secondary">ล้าง</a>
       {% endif %}
     </form>
   </div>
@@ -35,7 +35,7 @@
   พบสินค้าที่หน่วยใน BSN <strong>ไม่ตรง</strong>กับหน่วยในระบบ — กรุณากำหนดว่า 1 หน่วย BSN เท่ากับกี่หน่วยในระบบ
 </div>
 
-<form method="post" action="{{ url_for('unit_conversions_save') }}">
+<form method="post" action="{{ url_for('bsn.unit_conversions_save') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div class="card mb-4">
     <div class="table-responsive" style="min-width:0">
@@ -54,7 +54,7 @@
           {% for p in pending %}
           {# Hidden dismiss form — associated via form="dismiss-…" on the button below #}
           <form id="dismiss-{{ p.product_id }}-{{ p.bsn_unit | replace(' ','_') }}"
-                method="post" action="{{ url_for('unit_conversions_dismiss') }}">
+                method="post" action="{{ url_for('bsn.unit_conversions_dismiss') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="product_id" value="{{ p.product_id }}">
             <input type="hidden" name="bsn_unit" value="{{ p.bsn_unit }}">
@@ -158,7 +158,7 @@
               1 {{ uc.bsn_unit }} = <strong>{{ uc.ratio }}</strong> {{ uc.unit_type }}
             </span>
             <form class="ratio-form d-none" id="form-{{ uc.id }}"
-                  method="post" action="{{ url_for('unit_conversions_edit') }}">
+                  method="post" action="{{ url_for('bsn.unit_conversions_edit') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <input type="hidden" name="product_id" value="{{ uc.product_id }}">
               <input type="hidden" name="bsn_unit" value="{{ uc.bsn_unit }}">
@@ -196,11 +196,11 @@
       <ul class="pagination pagination-sm mb-0">
         {# ‹ prev #}
         <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('unit_conversions', q=search, page=page-1) }}">‹</a>
+          <a class="page-link" href="{{ url_for('bsn.unit_conversions', q=search, page=page-1) }}">‹</a>
         </li>
         {# หน้า 1 #}
         <li class="page-item {% if page == 1 %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('unit_conversions', q=search, page=1) }}">1</a>
+          <a class="page-link" href="{{ url_for('bsn.unit_conversions', q=search, page=1) }}">1</a>
         </li>
         {# ... ซ้าย #}
         {% if p_start > 2 %}
@@ -209,7 +209,7 @@
         {# หน้ากลาง #}
         {% for p in range(p_start, p_end+1) %}
         <li class="page-item {% if p == page %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('unit_conversions', q=search, page=p) }}">{{ p }}</a>
+          <a class="page-link" href="{{ url_for('bsn.unit_conversions', q=search, page=p) }}">{{ p }}</a>
         </li>
         {% endfor %}
         {# ... ขวา #}
@@ -219,12 +219,12 @@
         {# หน้าสุดท้าย #}
         {% if pages > 1 %}
         <li class="page-item {% if page == pages %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('unit_conversions', q=search, page=pages) }}">{{ pages }}</a>
+          <a class="page-link" href="{{ url_for('bsn.unit_conversions', q=search, page=pages) }}">{{ pages }}</a>
         </li>
         {% endif %}
         {# › next #}
         <li class="page-item {% if page >= pages %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('unit_conversions', q=search, page=page+1) }}">›</a>
+          <a class="page-link" href="{{ url_for('bsn.unit_conversions', q=search, page=page+1) }}">›</a>
         </li>
       </ul>
     </nav>

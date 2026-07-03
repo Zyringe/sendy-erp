@@ -95,7 +95,7 @@
             {% if r.source_type == 'unmapped_code' and r.bsn_code %}
               {# /mapping doesn't currently consume ?q=; link still lands #}
               {# on the mapping page so user can locate the row manually. #}
-              <a href="{{ url_for('mapping') }}"
+              <a href="{{ url_for('bsn.mapping') }}"
                  class="btn btn-sm btn-outline-primary"
                  title="Code: {{ r.bsn_code }}">
                 <i class="bi bi-link"></i> map

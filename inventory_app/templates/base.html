@@ -258,19 +258,19 @@
     <div class="sidebar-section">นำเข้าข้อมูล</div>
     {# Single import entry — /import-data handles ขาย/ซื้อ/AR/AP/payments/CN
        (superset of the old /import-weekly). Visible to staff too (they can import). #}
-    <a href="{{ url_for('unified_import') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('unified_import') %}active{% endif %}">
+    <a href="{{ url_for('bsn.unified_import') }}"
+       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('bsn.unified_import') %}active{% endif %}">
       <i class="bi bi-box-arrow-in-down"></i> นำเข้าข้อมูล
     </a>
-    <a href="{{ url_for('mapping') }}"
-       class="sidebar-link {% if request.endpoint == 'mapping' %}active{% endif %}">
+    <a href="{{ url_for('bsn.mapping') }}"
+       class="sidebar-link {% if request.endpoint == 'bsn.mapping' %}active{% endif %}">
       <i class="bi bi-tags"></i> ผูกรหัส BSN
       {% if is_manager and pending_suggestions_count %}
       <span class="badge bg-danger ms-auto">{{ pending_suggestions_count }}</span>
       {% endif %}
     </a>
-    <a href="{{ url_for('unit_conversions') }}"
-       class="sidebar-link {% if request.endpoint == 'unit_conversions' %}active{% endif %}">
+    <a href="{{ url_for('bsn.unit_conversions') }}"
+       class="sidebar-link {% if request.endpoint == 'bsn.unit_conversions' %}active{% endif %}">
       <i class="bi bi-arrow-left-right"></i> แปลงหน่วย
     </a>
     {% if is_manager %}
