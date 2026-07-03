@@ -15,14 +15,14 @@
     </form>
     <div class="ms-auto d-flex gap-2">
       {% if is_admin %}
-      <a href="{{ url_for('commission_overrides_list') }}" class="btn btn-sm btn-outline-secondary">
+      <a href="{{ url_for('commission.commission_overrides_list') }}" class="btn btn-sm btn-outline-secondary">
         <i class="bi bi-sliders"></i> จัดการ rule
       </a>
       {% endif %}
-      <a href="{{ url_for('commission_payouts_list', month=year_month) }}" class="btn btn-sm btn-outline-secondary">
+      <a href="{{ url_for('commission.commission_payouts_list', month=year_month) }}" class="btn btn-sm btn-outline-secondary">
         <i class="bi bi-clock-history"></i> ประวัติการจ่าย
       </a>
-      <a href="{{ url_for('commission_export', month=year_month) }}" class="btn btn-sm btn-outline-primary">
+      <a href="{{ url_for('commission.commission_export', month=year_month) }}" class="btn btn-sm btn-outline-primary">
         <i class="bi bi-download"></i> Export CSV
       </a>
     </div>
@@ -56,7 +56,7 @@
 </div>
 
 {# ── Per-salesperson breakdown + bulk pay form ───────────────────────────── #}
-<form method="post" action="{{ url_for('commission_record_payout') }}" id="payout-form">
+<form method="post" action="{{ url_for('commission.commission_record_payout') }}" id="payout-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="month" value="{{ year_month }}">
 
@@ -112,7 +112,7 @@
               {% endif %}
             </td>
             <td class="td-primary fw-500">
-              <a href="{{ url_for('commission_drilldown', sp_code=r.salesperson_code, month=year_month) }}" class="text-reset text-decoration-none">
+              <a href="{{ url_for('commission.commission_drilldown', sp_code=r.salesperson_code, month=year_month) }}" class="text-reset text-decoration-none">
                 {{ r.salesperson_name or r.salesperson_code }}
                 <span class="d-mobile-only badge badge-gray font-mono ms-1">{{ r.salesperson_code }}</span>
                 <i class="bi bi-chevron-right small text-subtle"></i>
@@ -173,6 +173,6 @@
 <div class="text-subtle small mt-3 px-2">
   <i class="bi bi-info-circle"></i>
   ติ๊กเซลส์ที่ต้องการจ่าย → กำหนดยอด (default = คงเหลือ) → กดปุ่ม "บันทึกที่ติ๊ก"
-  ดูประวัติทั้งหมดที่ <a href="{{ url_for('commission_payouts_list', month=year_month) }}">ประวัติการจ่าย</a>
+  ดูประวัติทั้งหมดที่ <a href="{{ url_for('commission.commission_payouts_list', month=year_month) }}">ประวัติการจ่าย</a>
 </div>
 {% endblock %}

@@ -4,7 +4,7 @@
 
 {% block content %}
 <div class="d-flex align-items-center mb-3 gap-2 flex-wrap">
-  <a href="{{ url_for('commission_dashboard', month=year_month) }}" class="btn btn-sm btn-outline-secondary">
+  <a href="{{ url_for('commission.commission_dashboard', month=year_month) }}" class="btn btn-sm btn-outline-secondary">
     <i class="bi bi-arrow-left"></i> กลับ Commission
   </a>
   <form method="get" class="d-inline">
@@ -14,7 +14,7 @@
       {% endfor %}
     </select>
   </form>
-  <a href="{{ url_for('commission_payouts_list', sp=sp_code) }}" class="btn btn-sm btn-outline-secondary ms-auto">
+  <a href="{{ url_for('commission.commission_payouts_list', sp=sp_code) }}" class="btn btn-sm btn-outline-secondary ms-auto">
     <i class="bi bi-clock-history"></i> ประวัติการจ่ายของคนนี้
   </a>
 </div>
@@ -76,11 +76,11 @@
   {# ── Tab: per-invoice payout tick-list ──────────────────────────────── #}
   <div id="tab-pay" class="tab-pane fade show active">
     {% if invoice_commissions %}
-    <form method="post" action="{{ url_for('commission_record_payout') }}" id="invoice-payout-form">
+    <form method="post" action="{{ url_for('commission.commission_record_payout') }}" id="invoice-payout-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="month" value="{{ year_month }}">
       <input type="hidden" name="sp_code" value="{{ sp_code }}">
-      <input type="hidden" name="redirect_to" value="{{ url_for('commission_drilldown', sp_code=sp_code, month=year_month) }}">
+      <input type="hidden" name="redirect_to" value="{{ url_for('commission.commission_drilldown', sp_code=sp_code, month=year_month) }}">
 
       <div class="card mb-2">
         <div class="card-body py-2 d-flex flex-wrap align-items-end gap-2">
@@ -117,7 +117,7 @@
           {% macro sort_link(col, label, align='start') -%}
             {%- set is_active = (sort_col == col) -%}
             {%- set next_order = 'asc' if (is_active and sort_order == 'desc') else 'desc' -%}
-            <a href="{{ url_for('commission_drilldown', sp_code=sp_code, month=year_month, sort=col, order=next_order) }}"
+            <a href="{{ url_for('commission.commission_drilldown', sp_code=sp_code, month=year_month, sort=col, order=next_order) }}"
                class="text-reset text-decoration-none">
               {{ label }}
               {%- if is_active %}
@@ -156,7 +156,7 @@
                 <td class="font-mono small">{{ inv.invoice_date or '—' }}</td>
                 <td class="font-mono small">{{ inv.receipt_date }}</td>
                 <td class="font-mono">
-                  <a href="{{ url_for('commission_invoice_detail', sp_code=sp_code, invoice_no=inv.invoice_no, month=year_month) }}"
+                  <a href="{{ url_for('commission.commission_invoice_detail', sp_code=sp_code, invoice_no=inv.invoice_no, month=year_month) }}"
                      class="text-reset text-decoration-none" title="ดูรายละเอียดสินค้า + rate">
                     <strong>{{ inv.invoice_no }}</strong>
                   </a>
@@ -293,7 +293,7 @@
             <tr>
               <td class="font-mono small">{{ inv.date_iso }}</td>
               <td class="font-mono">
-                <a href="{{ url_for('commission_invoice_detail', sp_code=sp_code, invoice_no=inv.doc_no, month=year_month) }}"
+                <a href="{{ url_for('commission.commission_invoice_detail', sp_code=sp_code, invoice_no=inv.doc_no, month=year_month) }}"
                    class="text-reset text-decoration-none" title="ดูรายละเอียดสินค้า + rate">
                   <strong>{{ inv.doc_no }}</strong>
                 </a>
@@ -349,7 +349,7 @@
               <td class="font-mono small">{{ p.invoice_date or '—' }}</td>
               <td class="font-mono small">
                 {% if p.invoice_no %}
-                <a href="{{ url_for('commission_invoice_detail', sp_code=sp_code, invoice_no=p.invoice_no, month=p.year_month) }}"
+                <a href="{{ url_for('commission.commission_invoice_detail', sp_code=sp_code, invoice_no=p.invoice_no, month=p.year_month) }}"
                    class="text-reset text-decoration-none">{{ p.invoice_no }}</a>
                 {% else %}
                 <span class="text-subtle">— (month-level)</span>
@@ -364,7 +364,7 @@
               <td class="small text-subtle" style="max-width:300px">{{ p.note or '' }}</td>
               <td class="text-center small text-subtle">{{ p.paid_by or '—' }}</td>
               <td class="text-end">
-                <form method="post" action="{{ url_for('commission_delete_payout', payout_id=p.id) }}"
+                <form method="post" action="{{ url_for('commission.commission_delete_payout', payout_id=p.id) }}"
                       onsubmit="return confirm('ลบรายการจ่าย ฿{{ p.amount_paid }}?')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button class="btn btn-link text-danger btn-sm p-0"><i class="bi bi-trash"></i></button>

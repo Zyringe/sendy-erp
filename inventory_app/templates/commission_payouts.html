@@ -28,7 +28,7 @@
         <button type="submit" class="btn btn-primary btn-sm">ดู</button>
       </div>
       <div class="col-auto ms-auto align-self-center">
-        <a href="{{ url_for('commission_dashboard', month=year_month or '') }}" class="btn btn-outline-secondary btn-sm">
+        <a href="{{ url_for('commission.commission_dashboard', month=year_month or '') }}" class="btn btn-outline-secondary btn-sm">
           <i class="bi bi-arrow-left"></i> กลับ Commission
         </a>
       </div>
@@ -78,7 +78,7 @@
           <td class="text-center small text-subtle">{{ p.paid_by or '—' }}</td>
           <td class="text-center small text-subtle">{{ p.created_at }}</td>
           <td class="text-end">
-            <form method="post" action="{{ url_for('commission_delete_payout', payout_id=p.id) }}"
+            <form method="post" action="{{ url_for('commission.commission_delete_payout', payout_id=p.id) }}"
                   onsubmit="return confirm('ลบรายการจ่าย {{ p.amount_paid }} ของ {{ p.salesperson_code }} {{ p.year_month }}?')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button class="btn btn-link text-danger btn-sm p-0"><i class="bi bi-trash"></i></button>

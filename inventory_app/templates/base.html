@@ -181,8 +181,8 @@
     </a>
 
     <div class="sidebar-section">การเงิน (Express)</div>
-    <a href="{{ url_for('commission_dashboard') }}"
-       class="sidebar-link {% if request.endpoint == 'commission_dashboard' %}active{% endif %}">
+    <a href="{{ url_for('commission.commission_dashboard') }}"
+       class="sidebar-link {% if request.endpoint == 'commission.commission_dashboard' %}active{% endif %}">
       <i class="bi bi-cash-coin"></i> Commission
     </a>
     <a href="{{ url_for('ap_dashboard') }}"
