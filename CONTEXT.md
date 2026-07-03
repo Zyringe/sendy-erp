@@ -204,3 +204,33 @@
   `legacy` (existed before origin tracking, incl. bulk-imported rows). A provenance tag
   shown on the product page. It is **not** a permission, a status, or a lifecycle state.
   _Avoid_: "source", "type", "created_by" (that would be a person, not a method).
+
+## Product labels (ป้ายสินค้า — the `/labels` print feature)
+
+- **ป้ายสินค้า (product label / hang-tag)** — an **own-brand compliance sticker** printed and
+  stuck on the product: name, brand, an EAN-13 barcode, วิธีใช้ (usage), ข้อแนะนำ (warning),
+  บรรจุ (packaging), size, plus a fixed **company block** and a fixed price line. Physical media,
+  printed to a **GoDEX thermal printer**. This is the concept behind Put's 2017 Excel barcode master.
+  _Avoid_: "price tag", "sticker" (ambiguous — see below).
+
+- **price tag / shelf label** — the *other*, simpler label the existing `/labels` page renders
+  today: product name + a live **numeric price** + barcode, for shelf/หน้าร้าน display. A **different
+  artefact** from a ป้ายสินค้า, which never shows a number. Keep the two distinct.
+
+- **ตรวจสอบ ณ จุดขาย (price line)** — a ป้ายสินค้า **never prints a numeric price**; the price
+  field is always the literal text "ราคา : ตรวจสอบ ณ จุดขาย". Own-brand B2B prices vary per
+  customer, so no price is committed to the physical sticker.
+
+- **company block (constant boilerplate)** — the ~70% of a ป้ายสินค้า that is **identical on every
+  label**: ผู้จัดจำหน่าย (distributor = บุญสวัสดิ์นำชัย), นำเข้าโดย (importer = เซ็นไดเทรดดิ้ง),
+  addresses, ประเทศที่ผลิต, quality line. Stored **once**, not per row. Only ~6 fields vary per
+  product (name, brand, barcode, usage, warning, packaging, size).
+
+- **barcode (EAN-13)** — a **registered** GS1 barcode (885… = Thailand). These live in the label
+  master; Sendy's own `product_barcodes` table is empty. On a ป้ายสินค้า the barcode is printed
+  identity, **not** currently scanned into any system.
+
+- **label master (standalone dataset)** — the ป้ายสินค้า data is its **own table**, imported from
+  the Excel and edited in Sendy, **not tied to `products`**. It is a superset of the live own-brand
+  catalogue and has no reliable key back to a product. A future `product_id` link will be matched by
+  **barcode**. See `docs/adr/0009`. _Avoid_: "product field", "product column".
