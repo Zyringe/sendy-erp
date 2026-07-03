@@ -2106,7 +2106,21 @@ def photos_review_assign():
         )
         # Move file last so DB write rolls back if file move fails
         shutil.move(src_abs, target_abs)
-        conn.commit()
+        try:
+            conn.commit()
+        except Exception:
+            # File already left the review queue but the INSERT never landed —
+            # move it back so it isn't orphaned, then surface the failure the
+            # same way an earlier move failure would (uncaught → 500).
+            try:
+                shutil.move(target_abs, src_abs)
+            except Exception:
+                app.logger.error(
+                    "photos_review_assign: commit failed AND compensating "
+                    "move-back failed; file may be stranded at %s (expected %s)",
+                    target_abs, src_abs
+                )
+            raise
     finally:
         conn.close()
     return jsonify({'ok': True, 'next_url': url_for('photos_review')})
