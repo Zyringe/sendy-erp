@@ -386,7 +386,7 @@
         {% for r in inv_rows %}
         <tr>
           <td>
-            <a href="{{ url_for('sales_doc', doc_base=r.doc_base) }}" class="text-decoration-none">
+            <a href="{{ url_for('sales.sales_doc', doc_base=r.doc_base) }}" class="text-decoration-none">
               {{ r.doc_base }}
             </a>
           </td>

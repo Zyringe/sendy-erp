@@ -130,7 +130,7 @@
           {% for inv in invoices %}
           <tr>
             <td class="small">{{ inv.invoice_date or '—' }}</td>
-            <td><a href="{{ url_for('sales_doc', doc_base=inv.doc_base) }}">{{ inv.doc_base }}</a></td>
+            <td><a href="{{ url_for('sales.sales_doc', doc_base=inv.doc_base) }}">{{ inv.doc_base }}</a></td>
             <td class="text-end">฿{{ '{:,.2f}'.format(inv.bill_amount) }}</td>
             <td class="text-end">{% if inv.paid_amount %}฿{{ '{:,.2f}'.format(inv.paid_amount) }}{% else %}<span class="text-subtle">–</span>{% endif %}</td>
             <td class="text-end fw-bold">฿{{ '{:,.2f}'.format(inv.outstanding) }}</td>

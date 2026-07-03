@@ -153,7 +153,7 @@ _MODULE_DEFS = [
         'key': 'accounting',
         'name': 'การค้า & บัญชี',
         'icon': 'bi-cash-coin',
-        'first_endpoint': 'trade_dashboard',  # staff-safe landing (sales/purchases/customers)
+        'first_endpoint': 'sales.trade_dashboard',  # staff-safe landing (sales/purchases/customers)
         'roles': None,  # module visible to all; only the /accounting cost link+route is admin/manager
     },
     {
@@ -220,18 +220,18 @@ _ENDPOINT_MODULE = {
     'ar_followup_log_new': 'accounting',
     'ar_followup_log_delete': 'accounting',
     'ar_followup_export': 'accounting',
-    'trade_dashboard': 'accounting',
-    'sales_view': 'accounting',
-    'sales_doc': 'accounting',
-    'purchases_view': 'accounting',
-    'purchases_doc': 'accounting',
+    'sales.trade_dashboard': 'accounting',
+    'sales.sales_view': 'accounting',
+    'sales.sales_doc': 'accounting',
+    'sales.purchases_view': 'accounting',
+    'sales.purchases_doc': 'accounting',
     'partners.customer_list': 'accounting',
     'partners.customer_summary': 'accounting',
     'partners.customer_map': 'accounting',
     'partners.supplier_list': 'accounting',
     'partners.supplier_summary': 'accounting',
-    'payment_status': 'accounting',
-    'payment_customers': 'accounting',
+    'sales.payment_status': 'accounting',
+    'sales.payment_customers': 'accounting',
     'commission_dashboard': 'accounting',
     'commission_record_payout': 'accounting',
     'commission_delete_payout': 'accounting',
@@ -341,7 +341,7 @@ _ENDPOINT_MODULE = {
 # a role can't open. ตรวจบิล is NOT here (drawer + dashboard banner instead).
 _MOBILE_NAV_SLOTS = [
     {'key': 'products',   'label': 'สินค้า',  'icon': 'bi-box-seam',       'endpoint': 'products.product_list', 'manager_only': False},
-    {'key': 'trade',      'label': 'การค้า',  'icon': 'bi-bar-chart-line', 'endpoint': 'trade_dashboard',       'manager_only': False},
+    {'key': 'trade',      'label': 'การค้า',  'icon': 'bi-bar-chart-line', 'endpoint': 'sales.trade_dashboard', 'manager_only': False},
     {'key': 'hr',         'label': 'บุคลากร', 'icon': 'bi-people',         'endpoint': 'hr.dashboard',          'manager_only': True},
     {'key': 'accounting', 'label': 'บัญชี',   'icon': 'bi-calculator',     'endpoint': 'accounting_summary',    'manager_only': True},
 ]

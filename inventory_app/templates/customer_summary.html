@@ -192,7 +192,7 @@
         {% for b in unpaid_bills %}
         <tr>
           <td class="ps-3 fw-medium">
-            <a href="{{ url_for('sales_doc', doc_base=b.doc_base) }}" class="text-decoration-none">
+            <a href="{{ url_for('sales.sales_doc', doc_base=b.doc_base) }}" class="text-decoration-none">
               {% if b.vat_type == 2 %}
                 <span class="badge bg-info-subtle text-info">{{ b.doc_base }}</span>
               {% elif b.vat_type == 1 %}
@@ -356,7 +356,7 @@
             <tr>
               <td class="font-mono text-subtle small">{{ r.date_iso }}</td>
               <td class="font-mono small">
-                <a href="{{ url_for('sales_doc', doc_base=r.doc_no.rsplit('-',1)[0]) }}"
+                <a href="{{ url_for('sales.sales_doc', doc_base=r.doc_no.rsplit('-',1)[0]) }}"
                    class="text-decoration-none text-main">
                   {{ r.doc_no.rsplit('-',1)[0] }}
                 </a>

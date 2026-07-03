@@ -20,7 +20,7 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
-        <a href="{{ url_for('trade_dashboard') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+        <a href="{{ url_for('sales.trade_dashboard') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
       </div>
     </form>
   </div>
@@ -42,7 +42,7 @@
         </div>
       </div>
       <div class="mt-2 text-subtle small">{{ stats.sales.doc_count | fmt_qty }} เอกสาร &middot; {{ stats.sales.total_qty | fmt_qty }} ชิ้น</div>
-      <a href="{{ url_for('sales_view') }}" class="btn btn-sm w-100 mt-2"
+      <a href="{{ url_for('sales.sales_view') }}" class="btn btn-sm w-100 mt-2"
          style="background:#dcf2e0;color:#2e7d3a;border:none;font-weight:500">ดูรายละเอียด →</a>
     </div>
   </div>
@@ -60,7 +60,7 @@
         </div>
       </div>
       <div class="mt-2 text-subtle small">{{ stats.purchases.doc_count | fmt_qty }} เอกสาร &middot; {{ stats.purchases.total_qty | fmt_qty }} ชิ้น</div>
-      <a href="{{ url_for('purchases_view') }}" class="btn btn-sm w-100 mt-2"
+      <a href="{{ url_for('sales.purchases_view') }}" class="btn btn-sm w-100 mt-2"
          style="background:#fdf3dd;color:#b45309;border:none;font-weight:500">ดูรายละเอียด →</a>
     </div>
   </div>

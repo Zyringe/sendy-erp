@@ -60,7 +60,7 @@
 
         {# header row #}
         <div class="d-flex flex-wrap align-items-baseline gap-2 mb-1">
-          <a href="{{ url_for('sales_doc', doc_base=doc.doc_base) }}"
+          <a href="{{ url_for('sales.sales_doc', doc_base=doc.doc_base) }}"
              class="fw-semibold text-decoration-none text-main">{{ doc.doc_base }}<i class="bi bi-box-arrow-up-right small text-muted ms-1"></i></a>
           <span class="text-muted small">{{ doc.date_iso }}</span>
           {% if doc.customer %}
