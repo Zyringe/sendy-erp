@@ -235,6 +235,8 @@ _STAFF_POST_OK = frozenset([
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'customer_reassign', 'customer_bulk_reassign',
+    # Customer map geocoding (B5) — manager+ feature; staff doesn't need it.
+    'customer_geocode',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
     'products.product_packaging_save',
     'mapping_suggestion_approve',
@@ -2852,7 +2854,11 @@ def customer_map():
 def customer_import_bsn():
     if session.get('role') != 'admin':
         abort(403)
-    customers = _parse_bsn_customers()
+    try:
+        customers = _parse_bsn_customers()
+    except FileNotFoundError:
+        flash('ไม่พบไฟล์ bsn_customer_info.csv ใน data/source/ กรุณาวางไฟล์ก่อนนำเข้า', 'danger')
+        return redirect(url_for('customer_map'))
     inserted, updated, protected = models.import_customers_from_bsn(customers)
     flash(
         f'นำเข้าสำเร็จ: เพิ่มใหม่ {inserted} รายการ, อัปเดต {updated} รายการ'
@@ -2864,6 +2870,8 @@ def customer_import_bsn():
 
 @app.route('/customers/geocode/<code>', methods=['POST'])
 def customer_geocode(code):
+    if session.get('role') not in ('admin', 'manager'):
+        abort(403)
     import urllib.request, urllib.parse, json as _json
     conn = get_connection()
     row = conn.execute("SELECT address, name FROM customers WHERE code=?", (code,)).fetchone()
@@ -3568,7 +3576,7 @@ def commission_overrides_toggle(override_id):
     _require_admin()
     result = models.toggle_commission_override(override_id)
     if result['ok']:
-        commission_mod.clear_override_cache()
+        _safe_clear_override_cache()
         state = 'active' if result['is_active'] else 'inactive'
         flash(f'rule #{override_id} → {state}', 'success')
     else:
@@ -3581,7 +3589,7 @@ def commission_overrides_delete(override_id):
     _require_admin()
     result = models.delete_commission_override(override_id)
     if result['ok']:
-        commission_mod.clear_override_cache()
+        _safe_clear_override_cache()
         flash(f'ลบ rule #{override_id} เรียบร้อย', 'success')
     else:
         flash(f'ไม่สามารถลบ: {result["error"]}', 'danger')
