@@ -63,6 +63,17 @@
   <div class="card mb-2">
     <div class="card-body py-2 d-flex flex-wrap align-items-end gap-2">
       <div>
+        <label class="form-label small mb-1 d-block">จ่ายจากบัญชี <span class="text-danger">*</span></label>
+        <select name="account_id" class="form-select form-select-sm" required>
+          <option value="">— เลือกบัญชี —</option>
+          {% for acct in pay_accounts %}
+          <option value="{{ acct.id }}" {% if default_account_id == acct.id %}selected{% endif %}>
+            {{ acct.display_name or acct.code }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
         <label class="form-label small mb-1 d-block">วันที่จ่าย</label>
         <input type="date" name="paid_date" value="{{ today }}" class="form-control form-control-sm">
       </div>
