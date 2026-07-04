@@ -51,8 +51,8 @@
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   }
   .lbl .pack { color: #444; }
-  .lbl .bc { position: absolute; left: 1.5mm; right: 1.5mm; bottom: .8mm; text-align: center; }
-  .lbl .bc svg { width: 100%; }
+  .lbl .bc { position: absolute; left: 1.5mm; right: 1.5mm; bottom: 2mm; text-align: center; }
+  .lbl .bc img { width: 100%; }
 
   /* ── Big: 50 x 30mm, 2-up, 0 gap ── */
   .row-big { display: flex; width: 100mm; height: 30mm; }
@@ -61,7 +61,7 @@
   .row-big .lbl .price { font-size: 4.3pt; }
   .row-big .lbl .name  { font-size: 7pt; }
   .row-big .lbl .pack  { font-size: 5pt; }
-  .row-big .lbl .bc svg { height: 10mm; }
+  .row-big .lbl .bc img { height: 10mm; }
 
   /* ── Small: 30 x 25mm, 3-up, 0 gap ──
      ⚠ 90mm web / 0-gap is ASSUMED (mirrors the big roll), not yet confirmed
@@ -72,18 +72,23 @@
   .row-small .lbl .price { font-size: 3.3pt; }
   .row-small .lbl .name  { font-size: 5.5pt; }
   .row-small .lbl .pack  { font-size: 3.8pt; }
-  .row-small .lbl .bc svg { height: 8mm; }
+  .row-small .lbl .bc img { height: 8mm; }
 
   #preview-wrap[data-mode="big"] #grid-small,
   #preview-wrap[data-mode="small"] #grid-big { display: none; }
 
-  /* ── Print ── */
+  /* ── Print: isolate the label grid. Hide EVERYTHING except the labels by
+     walking the DOM path (body → .main-wrap → .page-content → #preview-wrap)
+     and hiding every sibling at each level. Robust against BOTH desktop chrome
+     AND the mobile/PWA bottom-nav + drawer (which are direct <body> children,
+     not inside .main-wrap — the old class-list approach missed them). ── */
   @media print {
-    body { background: #fff !important; }
-    .sidebar, .topbar, .label-controls, .label-queue, .alert, .page-content > h2,
-    .preview-heading { display: none !important; }
-    .main-wrap { margin-left: 0 !important; }
-    .page-content { padding: 0 !important; }
+    body { margin: 0 !important; background: #fff !important; }
+    body > *:not(.main-wrap)             { display: none !important; }
+    .main-wrap                           { margin: 0 !important; }
+    .main-wrap > *:not(.page-content)    { display: none !important; }
+    .page-content                        { margin: 0 !important; padding: 0 !important; }
+    .page-content > *:not(#preview-wrap) { display: none !important; }
     .lbl { border: none !important; }
     .label-row:not(:last-child) { page-break-after: always; break-after: page; }
   }
@@ -333,11 +338,11 @@
   function labelHTML(it) {
     return `
       <div class="lbl">
+        <div class="name">${escapeHTML(it.product_name)}</div>
         <div class="brand">${escapeHTML(it.brand)}</div>
         <div class="price">${escapeHTML(PRICE_LINE)}</div>
-        <div class="name">${escapeHTML(it.product_name)}</div>
-        <div class="pack">${escapeHTML(it.packaging_th)}</div>
-        ${it.barcode ? `<div class="bc"><svg data-bc="${it.barcode}"></svg></div>` : ''}
+        ${it.packaging_th ? `<div class="pack">บรรจุ: ${escapeHTML(it.packaging_th)}</div>` : ''}
+        ${it.barcode ? `<div class="bc"><img data-bc="${it.barcode}"></div>` : ''}
       </div>
     `;
   }
@@ -350,18 +355,23 @@
     container.innerHTML = rows.map(row => `
       <div class="label-row ${rowClass}">${row.map(labelHTML).join('')}</div>
     `).join('');
-    container.querySelectorAll('svg[data-bc]').forEach(svg => {
-      const v = svg.getAttribute('data-bc');
+    container.querySelectorAll('img[data-bc]').forEach(img => {
+      const v = img.getAttribute('data-bc');
       let format = 'CODE128';
       if (/^\d{13}$/.test(v)) format = 'EAN13';
       else if (/^\d{12}$/.test(v)) format = 'UPC';
       else if (/^\d{8}$/.test(v))  format = 'EAN8';
+      // Render to a HIGH-RES canvas BITMAP, not inline SVG: thin SVG bars drop
+      // out of the browser's window.print() rasterization to the thermal G500,
+      // but a raster image prints reliably. (Diagnosed 2026-07-04.)
+      const canvas = document.createElement('canvas');
       try {
-        JsBarcode(svg, v, { format, displayValue: true, fontSize: 8, margin: 0, height: 22, width: 1.2, textMargin: 0, font: 'monospace' });
+        JsBarcode(canvas, v, { format, displayValue: true, fontSize: 14, margin: 0, height: 60, width: 3, textMargin: 2, font: 'monospace', lineColor: '#000000', background: '#ffffff' });
       } catch (e) {
-        try { JsBarcode(svg, v, { format: 'CODE128', displayValue: true, fontSize: 8, margin: 0, height: 22 }); }
-        catch (e2) { console.warn('bc fail', v, e2); }
+        try { JsBarcode(canvas, v, { format: 'CODE128', displayValue: true, fontSize: 14, margin: 0, height: 60, width: 3, lineColor: '#000000', background: '#ffffff' }); }
+        catch (e2) { console.warn('bc fail', v, e2); return; }
       }
+      img.src = canvas.toDataURL('image/png');
     });
   }
 
