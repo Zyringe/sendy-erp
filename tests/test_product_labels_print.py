@@ -181,3 +181,11 @@ def test_print_page_passes_distributor(tmp_db):
     # สคบ labels print ผู้จัดจำหน่าย from the company block.
     html = _client('admin').get('/labels/print').get_data(as_text=True)
     assert 'const DISTRIBUTOR' in html
+
+
+def test_print_page_has_barcode_mode_guard(tmp_db):
+    # A barcodeless product must be skippable in บาร์โค้ด mode (ADR 0010) — guard
+    # its front-end helper + skip flag against accidental deletion.
+    html = _client('admin').get('/labels/print').get_data(as_text=True)
+    assert 'function printableInMode' in html
+    assert 'label-skipped' in html

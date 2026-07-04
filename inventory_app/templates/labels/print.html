@@ -35,6 +35,8 @@
     width: 64px; text-align: center; padding: 4px 6px;
     border: 1px solid var(--border); border-radius: 6px;
   }
+  /* barcode mode: a barcodeless row is dimmed (it's excluded from the run) */
+  .label-queue tr.label-skipped { opacity: .5; }
 
   /* ── Label content (shared by both sizes) ── */
   .lbl {
@@ -361,6 +363,13 @@
     if (it) { it.qty = Math.max(1, Math.min(parseInt(qty, 10) || 1, 99)); persist(); renderPreview(); }
   }
 
+  // A queued item is printable in the current mode UNLESS it's บาร์โค้ด mode and
+  // the item has no barcode — a barcode tag with no barcode is a broken label, so
+  // barcode runs skip it (ADR 0010). สคบ mode prints everything.
+  function printableInMode(it) {
+    return activeMode !== 'barcode' || !!it.barcode;
+  }
+
   function renderQueue() {
     if (!queue.length) {
       queueEmpty.style.display = '';
@@ -373,11 +382,16 @@
       return;
     }
     queueEmpty.style.display = 'none';
-    queueBody.innerHTML = queue.map(it => `
-      <tr data-id="${it.id}">
+    queueBody.innerHTML = queue.map(it => {
+      const skipped = !printableInMode(it);   // barcode mode + no barcode → excluded
+      return `
+      <tr data-id="${it.id}" class="${skipped ? 'label-skipped' : ''}">
         <td><span class="badge badge-gray">${it.label_size === 'small' ? 'เล็ก' : 'ใหญ่'}</span></td>
         <td>${escapeHTML(it.product_name)}</td>
-        <td><span class="font-mono small ${it.barcode ? '' : 'text-muted'}">${it.barcode || '— ไม่มีบาร์โค้ด —'}</span></td>
+        <td>
+          <span class="font-mono small ${it.barcode ? '' : 'text-muted'}">${it.barcode || '— ไม่มีบาร์โค้ด —'}</span>
+          ${skipped ? '<span class="badge bg-danger ms-1" title="ไม่มีบาร์โค้ด — โหมดบาร์โค้ดจะข้ามรายการนี้ (พิมพ์ด้วยโหมด สคบ ได้)">ข้าม</span>' : ''}
+        </td>
         <td class="text-center">
           <input type="number" min="1" max="99" value="${it.qty}" class="qty-input" data-id="${it.id}">
         </td>
@@ -387,7 +401,8 @@
           </button>
         </td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
     queueCount.textContent = queue.length;
     const total = queue.reduce((s, x) => s + (x.qty || 1), 0);
     queueTotal.textContent = `รวม ${total} ดวง`;
@@ -464,9 +479,11 @@
   function renderPreview() {
     const expand = (sizeKey) => {
       const list = [];
-      queue.filter(x => (x.label_size === 'small') === (sizeKey === 'small')).forEach(it => {
-        for (let i = 0; i < (it.qty || 1); i++) list.push(it);
-      });
+      queue.filter(x => (x.label_size === 'small') === (sizeKey === 'small'))
+           .filter(printableInMode)   // barcode mode drops barcodeless items (ADR 0010)
+           .forEach(it => {
+             for (let i = 0; i < (it.qty || 1); i++) list.push(it);
+           });
       return list;
     };
     renderGrid(gridBig, 'row-big', 2, expand('big'));
@@ -497,14 +514,24 @@
     activeMode = mode;
     modeBarcode.classList.toggle('active', mode === 'barcode');
     modeScb.classList.toggle('active', mode === 'scb');
+    renderQueue();     // refresh the ข้าม flags for the new mode
     renderPreview();
   }
   modeBarcode.addEventListener('click', () => setActiveMode('barcode'));
   modeScb.addEventListener('click', () => setActiveMode('scb'));
 
   $('#btn-print').addEventListener('click', async () => {
-    const activeQueue = queue.filter(x => (x.label_size === 'small') === (activeSize === 'small'));
-    if (!activeQueue.length) { alert(`ยังไม่มีป้าย${activeSize === 'small' ? 'เล็ก' : 'ใหญ่'}ในคิว`); return; }
+    const sizeLabel = activeSize === 'small' ? 'เล็ก' : 'ใหญ่';
+    const sizeQueue = queue.filter(x => (x.label_size === 'small') === (activeSize === 'small'));
+    const activeQueue = sizeQueue.filter(printableInMode);   // barcode mode excludes barcodeless
+    if (!activeQueue.length) {
+      if (sizeQueue.length && activeMode === 'barcode') {
+        alert(`ป้าย${sizeLabel}ในคิวไม่มีบาร์โค้ด — สลับไปโหมด สคบ เพื่อพิมพ์`);
+      } else {
+        alert(`ยังไม่มีป้าย${sizeLabel}ในคิว`);
+      }
+      return;
+    }
     const grid = activeSize === 'big' ? gridBig : gridSmall;
     const w = activeSize === 'big' ? 100 : 97;
     const h = activeSize === 'big' ? 30 : 25;
