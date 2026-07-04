@@ -403,7 +403,8 @@ def product_edit(product_id):
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
             return render_template('products/form.html', product=f, action='edit', product_id=product_id)
 
-        models.update_product(product_id, data)
+        _who = session.get('username') or session.get('display_name') or '?'
+        models.update_product(product_id, data, source=f'manual:{_who}')
         locations = request.form.getlist('floor_no')
         models.save_product_locations(product_id, locations)
         flash('แก้ไขสินค้าเรียบร้อย', 'success')

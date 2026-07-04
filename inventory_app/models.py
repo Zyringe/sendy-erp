@@ -317,8 +317,25 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
             conn.close()
 
 
-def update_product(product_id: int, data: dict):
+def _set_price_change_source(conn, source):
+    """Tell the product_price_history trigger WHY the next price change on
+    `products` happened. The trigger (mig 130) reads the single-row
+    price_change_source table in the SAME transaction and stamps
+    product_price_history.source with it. UPSERT so it also works on a
+    fresh DB where schema.sql created the table but seeded no row. Callers
+    reset to None after the UPDATE so unrelated price writes default to NULL."""
+    conn.execute(
+        "INSERT INTO price_change_source (id, source) VALUES (1, ?) "
+        "ON CONFLICT(id) DO UPDATE SET source = excluded.source",
+        (source,)
+    )
+
+
+def update_product(product_id: int, data: dict, source=None):
     conn = get_connection()
+    # set source BEFORE the UPDATE so the price-history trigger can stamp it;
+    # reset to NULL AFTER so a later write on this connection defaults to NULL.
+    _set_price_change_source(conn, source)
     conn.execute("""
         UPDATE products SET
             product_name=:product_name,
@@ -329,6 +346,7 @@ def update_product(product_id: int, data: dict):
             shopee_stock=:shopee_stock, lazada_stock=:lazada_stock
         WHERE id=:id
     """, {**data, 'id': product_id})
+    _set_price_change_source(conn, None)
     conn.commit()
     conn.close()
 
@@ -5008,9 +5026,12 @@ def recalculate_product_wacc(product_id, conn=None):
     # instead of being wiped to 0. opening_cost (the seed) is never touched here, which
     # keeps repeated recomputes idempotent.
     if current_wacc and current_wacc > 0:
+        # stamp the price-history row so it reads as an automatic WACC sync
+        _set_price_change_source(conn, 'wac-sync')
         conn.execute(
             "UPDATE products SET cost_price=? WHERE id=?", (current_wacc, product_id)
         )
+        _set_price_change_source(conn, None)
 
     if close_conn:
         conn.commit()

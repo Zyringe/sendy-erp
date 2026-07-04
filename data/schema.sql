@@ -977,6 +977,11 @@ CREATE TABLE po_sequences (
     PRIMARY KEY (company_id, year)
 );
 
+CREATE TABLE price_change_source (
+    id     INTEGER PRIMARY KEY CHECK(id = 1),
+    source TEXT
+);
+
 CREATE TABLE product_barcodes (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -1055,7 +1060,7 @@ CREATE TABLE product_price_history (
     old_value   REAL,
     new_value   REAL,
     changed_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-);
+, source TEXT);
 
 CREATE TABLE product_price_tiers (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3601,8 +3606,9 @@ WHEN (
     OR OLD.low_stock_threshold IS NOT NEW.low_stock_threshold
 )
 BEGIN
-    INSERT INTO product_price_history (product_id, field_name, old_value, new_value)
-    SELECT NEW.id, field, old_v, new_v
+    INSERT INTO product_price_history (product_id, field_name, old_value, new_value, source)
+    SELECT NEW.id, field, old_v, new_v,
+           (SELECT source FROM price_change_source WHERE id = 1)
     FROM (
                   SELECT 'cost_price'          AS field, OLD.cost_price          AS old_v, NEW.cost_price          AS new_v WHERE OLD.cost_price          IS NOT NEW.cost_price
         UNION ALL SELECT 'base_sell_price',             OLD.base_sell_price,             NEW.base_sell_price             WHERE OLD.base_sell_price     IS NOT NEW.base_sell_price
