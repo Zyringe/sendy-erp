@@ -81,7 +81,7 @@ def test_active_slot_highlight_for_admin(endpoint, expected_active):
 def test_no_slot_active_on_overview_and_data_pages():
     # dashboard (overview), import (data), user_list (admin) have no bottom-nav
     # slot — none should highlight (those modules live in the drawer).
-    for endpoint in ('dashboard', 'inventory.alerts_view', 'unified_import', 'user_list'):
+    for endpoint in ('dashboard', 'inventory.alerts_view', 'unified_import', 'admin.user_list'):
         slots = build_mobile_nav_slots('admin', endpoint)
         assert [s['key'] for s in slots if s['active']] == [], endpoint
 
