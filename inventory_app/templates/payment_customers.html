@@ -8,7 +8,7 @@
   <i class="bi bi-info-circle mt-1"></i>
   <span>ยอดในหน้านี้คำนวณจาก <strong>ledger ภายใน</strong> (บิล − รับชำระ − ใบลดหนี้) เหมาะกับการจับคู่การชำระรายลูกค้า.
   ยอด <strong>AR อ้างอิงหลักของ BSN</strong> ดูที่หน้า
-  <a href="{{ url_for('express_ar_dashboard') }}" class="alert-link">AR / ลูกหนี้</a> (Express snapshot) — ยอดรวมอาจต่างกัน.</span>
+  <a href="{{ url_for('accounting.express_ar_dashboard') }}" class="alert-link">AR / ลูกหนี้</a> (Express snapshot) — ยอดรวมอาจต่างกัน.</span>
 </div>
 
 {# ── Summary Card ────────────────────────────────────────────────────────── #}
@@ -38,11 +38,11 @@
   <div class="card-body py-2">
     <div class="d-flex flex-wrap gap-2 align-items-center">
       <div class="btn-group btn-group-sm me-2" role="group">
-        <a href="{{ url_for('payment_status', status='unpaid') }}"
+        <a href="{{ url_for('sales.payment_status', status='unpaid') }}"
            class="btn btn-outline-secondary">
           <i class="bi bi-list-ul me-1"></i>รายบิล
         </a>
-        <a href="{{ url_for('payment_customers') }}"
+        <a href="{{ url_for('sales.payment_customers') }}"
            class="btn btn-dark">
           <i class="bi bi-people-fill me-1"></i>รายลูกค้า
         </a>
@@ -63,7 +63,7 @@
           <i class="bi bi-search"></i>
         </button>
         {% if search or match_str %}
-        <a href="{{ url_for('payment_customers') }}" class="btn btn-sm btn-outline-secondary">ล้าง</a>
+        <a href="{{ url_for('sales.payment_customers') }}" class="btn btn-sm btn-outline-secondary">ล้าง</a>
         {% endif %}
       </form>
     </div>
@@ -97,7 +97,7 @@
         <tr class="{{ 'table-success' if c.diff == 0 else '' }}">
           <td class="ps-3 text-subtle">{{ loop.index }}</td>
           <td class="fw-medium">
-            <a href="{{ url_for('customer_summary', customer_name=c.customer) }}"
+            <a href="{{ url_for('partners.customer_summary', customer_name=c.customer) }}"
                class="text-decoration-none">{{ c.customer }}</a>
           </td>
           <td class="text-subtle small">
@@ -157,7 +157,7 @@
         <tr>
           <td class="ps-3 text-subtle td-hide-mobile">{{ loop.index }}</td>
           <td class="td-primary fw-medium">
-            <a href="{{ url_for('customer_summary', customer_name=row.customer) }}"
+            <a href="{{ url_for('partners.customer_summary', customer_name=row.customer) }}"
                class="text-decoration-none">
               {{ row.customer or '–' }}
             </a>

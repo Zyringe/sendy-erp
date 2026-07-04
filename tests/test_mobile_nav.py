@@ -60,15 +60,15 @@ def test_every_slot_has_required_render_fields():
 @pytest.mark.parametrize('endpoint,expected_active', [
     ('products.product_list', 'products'),
     ('products.product_detail', 'products'),
-    ('transaction_history', 'products'),     # operation module
-    ('trade_dashboard', 'trade'),
-    ('sales_view', 'trade'),                  # accounting module, trade side
-    ('customer_list', 'trade'),
-    ('ecommerce', 'trade'),
-    ('accounting_summary', 'accounting'),     # accounting module, finance side
-    ('cashflow_dashboard', 'accounting'),
-    ('revenue_dashboard', 'accounting'),
-    ('ar_followup', 'accounting'),
+    ('inventory.transaction_history', 'products'),     # operation module
+    ('sales.trade_dashboard', 'trade'),
+    ('sales.sales_view', 'trade'),                  # accounting module, trade side
+    ('partners.customer_list', 'trade'),
+    ('ecommerce.ecommerce', 'trade'),
+    ('accounting.accounting_summary', 'accounting'),     # accounting module, finance side
+    ('accounting.cashflow_dashboard', 'accounting'),
+    ('accounting.revenue_dashboard', 'accounting'),
+    ('accounting.ar_followup', 'accounting'),
     ('hr.dashboard', 'hr'),
     ('hr.payroll_list', 'hr'),
 ])
@@ -81,7 +81,7 @@ def test_active_slot_highlight_for_admin(endpoint, expected_active):
 def test_no_slot_active_on_overview_and_data_pages():
     # dashboard (overview), import (data), user_list (admin) have no bottom-nav
     # slot — none should highlight (those modules live in the drawer).
-    for endpoint in ('dashboard', 'alerts_view', 'unified_import', 'user_list'):
+    for endpoint in ('dashboard', 'inventory.alerts_view', 'unified_import', 'admin.user_list'):
         slots = build_mobile_nav_slots('admin', endpoint)
         assert [s['key'] for s in slots if s['active']] == [], endpoint
 
@@ -89,8 +89,8 @@ def test_no_slot_active_on_overview_and_data_pages():
 def test_trade_and_accounting_are_mutually_exclusive():
     # การค้า and บัญชี share the 'accounting' module — exactly one (or neither)
     # may light up, never both, or the nav looks buggy.
-    for endpoint in ('trade_dashboard', 'sales_view', 'accounting_summary',
-                     'cashflow_dashboard', 'ar_followup'):
+    for endpoint in ('sales.trade_dashboard', 'sales.sales_view', 'accounting.accounting_summary',
+                     'accounting.cashflow_dashboard', 'accounting.ar_followup'):
         active = [s['key'] for s in build_mobile_nav_slots('admin', endpoint)
                   if s['active'] and s['key'] in ('trade', 'accounting')]
         assert len(active) <= 1, f"{endpoint} lit both: {active}"

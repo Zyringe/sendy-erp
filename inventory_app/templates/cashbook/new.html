@@ -88,11 +88,37 @@
                 <div class="ac-drop"></div>
               </div>
             </td>
-            <td>
-              <div class="combo" data-opts="user_tags" data-allow-new="1">
+            <td class="user-cell">
+              {# Normal rows: free-text ผู้ใช้ tag. Advance rows (category
+                 = advance_category): the JS hides this and shows the employee
+                 picker below — the write-back needs a real employee. #}
+              <div class="combo user-tag-wrap" data-opts="user_tags" data-allow-new="1">
                 <input class="combo-input form-control form-control-sm" autocomplete="off">
                 <input type="hidden" class="combo-value" name="rows-{{ row.index }}-user_category" value="{{ row.user_category }}">
                 <div class="ac-drop"></div>
+              </div>
+              <div class="advance-emp-wrap input-group input-group-sm" style="display:none">
+                <select name="rows-{{ row.index }}-employee_id" class="form-select form-select-sm advance-emp-select">
+                  <option value="">— เลือกพนักงาน —</option>
+                  {% for e in employees %}
+                  <option value="{{ e.id }}" {% if row.employee_id == e.id|string %}selected{% endif %}>{{ e.nickname or e.full_name }}{% if e.emp_code %} ({{ e.emp_code }}){% endif %}</option>
+                  {% endfor %}
+                </select>
+                <button type="button" class="btn btn-outline-secondary advance-history-btn" title="ดูประวัติเบิกล่วงหน้า">
+                  <i class="bi bi-clock-history"></i>
+                </button>
+              </div>
+              {# Salary / in-engine-commission: hard-blocked at save, so the ผู้ใช้
+                 cell shows a redirect instead of a "ดูประวัติ" modal (decision C6). #}
+              <div class="salary-redirect-wrap mt-1" style="display:none">
+                <a href="{{ url_for('hr.payroll_list') }}" class="btn btn-sm btn-outline-warning w-100">
+                  <i class="bi bi-box-arrow-up-right"></i> ไปหน้าเงินเดือน (HR)
+                </a>
+              </div>
+              <div class="commission-redirect-wrap mt-1" style="display:none">
+                <a href="{{ url_for('commission.commission_dashboard') }}" class="btn btn-sm btn-outline-warning w-100">
+                  <i class="bi bi-box-arrow-up-right"></i> ไปหน้าคอมมิชชั่น
+                </a>
               </div>
             </td>
             <td>
@@ -137,11 +163,32 @@
                   <div class="ac-drop"></div>
                 </div>
               </td>
-              <td>
-                <div class="combo" data-opts="user_tags" data-allow-new="1">
+              <td class="user-cell">
+                <div class="combo user-tag-wrap" data-opts="user_tags" data-allow-new="1">
                   <input class="combo-input form-control form-control-sm" autocomplete="off">
                   <input type="hidden" class="combo-value" name="rows-__IDX__-user_category" value="">
                   <div class="ac-drop"></div>
+                </div>
+                <div class="advance-emp-wrap input-group input-group-sm" style="display:none">
+                  <select name="rows-__IDX__-employee_id" class="form-select form-select-sm advance-emp-select">
+                    <option value="">— เลือกพนักงาน —</option>
+                    {% for e in employees %}
+                    <option value="{{ e.id }}">{{ e.nickname or e.full_name }}{% if e.emp_code %} ({{ e.emp_code }}){% endif %}</option>
+                    {% endfor %}
+                  </select>
+                  <button type="button" class="btn btn-outline-secondary advance-history-btn" title="ดูประวัติเบิกล่วงหน้า">
+                    <i class="bi bi-clock-history"></i>
+                  </button>
+                </div>
+                <div class="salary-redirect-wrap mt-1" style="display:none">
+                  <a href="{{ url_for('hr.payroll_list') }}" class="btn btn-sm btn-outline-warning w-100">
+                    <i class="bi bi-box-arrow-up-right"></i> ไปหน้าเงินเดือน (HR)
+                  </a>
+                </div>
+                <div class="commission-redirect-wrap mt-1" style="display:none">
+                  <a href="{{ url_for('commission.commission_dashboard') }}" class="btn btn-sm btn-outline-warning w-100">
+                    <i class="bi bi-box-arrow-up-right"></i> ไปหน้าคอมมิชชั่น
+                  </a>
                 </div>
               </td>
               <td>
@@ -183,6 +230,19 @@
   <a href="{{ url_for('cashbook.dashboard') }}" class="btn btn-outline-secondary ms-2">ยกเลิก</a>
 </form>
 
+{# ดูประวัติ modal (decision C6): filled by JS from /cashbook/advance-history #}
+<div class="modal fade" id="advanceHistoryModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title small" id="ah-title">ประวัติเบิกล่วงหน้า</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="ah-body"></div>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -194,6 +254,11 @@
     categories_income:  [{% for name in categories_by_direction.income %}{v:{{ name|tojson }},label:{{ name|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
     categories_expense: [{% for name in categories_by_direction.expense %}{v:{{ name|tojson }},label:{{ name|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
     user_tags:          [{% for tag in known_tags %}{v:{{ tag|tojson }},label:{{ tag|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+    // In-engine salespersons for the commission recipient picker (plan.md C7):
+    // reused as the user-tag-wrap combo's option GROUP when category ==
+    // COMMISSION_CAT — the combo stays data-allow-new="1", so an off-system
+    // rep (อัคเรศ, แต, บ่าว, ...) is still just typed free-text (ADR 0008 hybrid).
+    commission_reps:    [{% for rep in commission_reps %}{v:{{ rep.value|tojson }},label:{{ rep.label|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
   };
 </script>
 <script>
@@ -207,6 +272,97 @@
 
   function rowEls() {
     return Array.prototype.slice.call(body.querySelectorAll('tr.batch-row'));
+  }
+
+  // ── Category modes (decisions C1-C3/C5-C7, plan.md): a row's ผู้ใช้ cell
+  // changes shape by category —
+  //   ADVANCE_CAT     : free-text tag → employee picker + ดูประวัติ (write-back
+  //                     needs a real employee_id).
+  //   SALARY_CAT      : hard-blocked (sourced in HR) → redirect button only.
+  //   COMMISSION_CAT  : the SAME free-text combo, but its suggestions switch to
+  //                     in-engine reps (real-name alias shown); an in-engine
+  //                     pick ALSO shows a redirect hint (blocked at save —
+  //                     sourced on /commission), off-system stays a normal tag.
+  var ADVANCE_CAT = {{ advance_category|tojson }};
+  var SALARY_CAT = {{ salary_category|tojson }};
+  var COMMISSION_CAT = {{ commission_category|tojson }};
+  var COMMISSION_REPS = [
+    {% for rep in commission_reps %}{code:{{ rep.code|tojson }}, name:{{ rep.name|tojson }}, real_name:{{ rep.real_name|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}
+  ];
+  // Mirrors `_is_in_engine_commission_recipient` server-side (cashbook.py):
+  // code, name, OR real_name all count as an in-engine identifier match.
+  var IN_ENGINE_IDENTS = (function () {
+    var s = {};
+    COMMISSION_REPS.forEach(function (r) {
+      s[r.code] = true;
+      s[r.name] = true;
+      if (r.real_name) s[r.real_name] = true;
+    });
+    return s;
+  })();
+
+  function applyCategoryMode(tr) {
+    var catVal = tr.querySelector('.category-combo .combo-value');
+    var cat = catVal ? catVal.value : '';
+    var isAdv = cat === ADVANCE_CAT;
+    var isSalary = cat === SALARY_CAT;
+    var isCommission = cat === COMMISSION_CAT;
+
+    var tagWrap = tr.querySelector('.user-tag-wrap');
+    var empWrap = tr.querySelector('.advance-emp-wrap');
+    var salaryWrap = tr.querySelector('.salary-redirect-wrap');
+    var commissionWrap = tr.querySelector('.commission-redirect-wrap');
+
+    if (tagWrap) tagWrap.style.display = (isAdv || isSalary) ? 'none' : '';
+    if (empWrap) empWrap.style.display = isAdv ? '' : 'none';
+    if (salaryWrap) salaryWrap.style.display = isSalary ? '' : 'none';
+
+    if (tagWrap) comboSetGroup(tagWrap, isCommission ? 'commission_reps' : 'user_tags');
+
+    if (commissionWrap) {
+      var valEl = tagWrap && tagWrap.querySelector('.combo-value');
+      var recipient = valEl ? (valEl.value || '').trim() : '';
+      commissionWrap.style.display = (isCommission && IN_ENGINE_IDENTS[recipient]) ? '' : 'none';
+    }
+  }
+
+  function fmtBaht(n) {
+    return '฿' + Number(n || 0).toLocaleString('th-TH', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  }
+
+  // ดูประวัติ: fetch that employee's month advances + outstanding + salary and
+  // show the modal, so you don't over-advance.
+  function showAdvanceHistory(tr) {
+    var sel = tr.querySelector('.advance-emp-select');
+    var empId = sel && sel.value;
+    if (!empId) { if (sel) sel.focus(); return; }
+    var dateInput = tr.querySelector('.row-date-input');
+    var dateVal = (dateInput && dateInput.value) || topDateInput.value || '';
+    var month = dateVal ? dateVal.slice(0, 7) : '';
+    var url = '/cashbook/advance-history/' + encodeURIComponent(empId) +
+              (month ? ('?month=' + encodeURIComponent(month)) : '');
+    fetch(url).then(function (r) { return r.json(); }).then(function (d) {
+      var advRows = (d.advances || []).map(function (a) {
+        return '<tr><td class="small">' + a.advance_date + '</td>' +
+               '<td class="text-end">' + fmtBaht(a.amount) + '</td>' +
+               '<td>' + (a.deducted ? '<span class="badge bg-success">หักแล้ว</span>'
+                                    : '<span class="badge bg-warning text-dark">รอหัก</span>') +
+               '</td></tr>';
+      }).join('') ||
+      '<tr><td colspan="3" class="text-center text-muted small py-2">ไม่มีรายการเดือนนี้</td></tr>';
+      document.getElementById('ah-title').textContent =
+        'ประวัติเบิกล่วงหน้า — ' + ((d.employee && d.employee.name) || '') + ' (' + (d.month || '') + ')';
+      document.getElementById('ah-body').innerHTML =
+        '<table class="table table-sm mb-2"><thead><tr><th>วันที่</th>' +
+        '<th class="text-end">จำนวน</th><th>สถานะ</th></tr></thead><tbody>' + advRows + '</tbody></table>' +
+        '<div class="d-flex justify-content-between small"><span>เบิกเดือนนี้</span>' +
+        '<strong>' + fmtBaht(d.month_total) + '</strong></div>' +
+        '<div class="d-flex justify-content-between small text-danger">' +
+        '<span>ค้างยังไม่ถูกหัก (รวมทุกเดือน)</span><strong>' + fmtBaht(d.outstanding_total) + '</strong></div>' +
+        '<div class="d-flex justify-content-between small"><span>เงินเดือนสุทธิเดือนนี้</span>' +
+        '<strong>' + (d.net_pay == null ? '—' : fmtBaht(d.net_pay)) + '</strong></div>';
+      bootstrap.Modal.getOrCreateInstance(document.getElementById('advanceHistoryModal')).show();
+    });
   }
 
   // Single mode (unchecked): hide "เพิ่มแถว" + the per-row วันที่ column.
@@ -249,11 +405,14 @@
     initAllCombos(newRow);   // cloned .combo divs need explicit init
     var dateInput = newRow.querySelector('.row-date-input');
     if (dateInput) dateInput.value = topDateInput.value;   // inherit current top date
+    applyCategoryMode(newRow);   // fresh row starts non-advance; keep state consistent
     nextIndex++;
     applyBulkVisibility();
   });
 
   body.addEventListener('click', function (e) {
+    var hb = e.target.closest('.advance-history-btn');
+    if (hb) { showAdvanceHistory(hb.closest('tr')); return; }
     var btn = e.target.closest('.remove-row-btn');
     if (!btn) return;
     var tr = btn.closest('tr');
@@ -261,13 +420,21 @@
   });
 
   body.addEventListener('change', function (e) {
-    if (!e.target.classList.contains('direction-select')) return;
     var tr = e.target.closest('tr');
-    var catCombo = tr.querySelector('.category-combo');
-    comboSetGroup(catCombo, e.target.value === 'income' ? 'categories_income' : 'categories_expense');
+    if (!tr) return;
+    if (e.target.classList.contains('direction-select')) {
+      var catCombo = tr.querySelector('.category-combo');
+      comboSetGroup(catCombo, e.target.value === 'income' ? 'categories_income' : 'categories_expense');
+    } else if (e.target.classList.contains('combo-value') &&
+               (e.target.closest('.category-combo') || e.target.closest('.user-tag-wrap'))) {
+      // combo.js dispatches 'change' on .combo-value when a category (or,
+      // in commission mode, a recipient) is picked/typed.
+      applyCategoryMode(tr);
+    }
   });
 
   applyBulkVisibility();
+  rowEls().forEach(applyCategoryMode);   // error re-renders may already hold a salary/advance/commission row
 })();
 </script>
 {% endblock %}

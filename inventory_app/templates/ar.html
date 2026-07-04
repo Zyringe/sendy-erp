@@ -8,19 +8,19 @@
 <ul class="nav nav-tabs mb-4">
   <li class="nav-item">
     <a class="nav-link {% if tab == 'overview' %}active{% endif %}"
-       href="{{ url_for('ar_dashboard', tab='overview') }}">ภาพรวม</a>
+       href="{{ url_for('accounting.ar_dashboard', tab='overview') }}">ภาพรวม</a>
   </li>
   <li class="nav-item">
     <a class="nav-link {% if tab == 'customers' %}active{% endif %}"
-       href="{{ url_for('ar_dashboard', tab='customers') }}">รายลูกค้า</a>
+       href="{{ url_for('accounting.ar_dashboard', tab='customers') }}">รายลูกค้า</a>
   </li>
   <li class="nav-item">
     <a class="nav-link {% if tab == 'invoices' %}active{% endif %}"
-       href="{{ url_for('ar_dashboard', tab='invoices') }}">รายบิล</a>
+       href="{{ url_for('accounting.ar_dashboard', tab='invoices') }}">รายบิล</a>
   </li>
   <li class="nav-item">
     <a class="nav-link {% if tab == 'reconcile' %}active{% endif %}"
-       href="{{ url_for('ar_dashboard', tab='reconcile') }}">กระทบยอด</a>
+       href="{{ url_for('accounting.ar_dashboard', tab='reconcile') }}">กระทบยอด</a>
   </li>
 </ul>
 
@@ -107,7 +107,7 @@
     {% if b6190.amount > 0 %}
     <div class="alert alert-warning py-2 small mt-2 mb-0">
       ฿{{ '{:,.0f}'.format(b6190.amount) }} อยู่ช่วง 61–90 วัน (กำลังจะกลายเป็นหนี้เก่า) —
-      <a href="{{ url_for('ar_dashboard', tab='customers', bucket='61-90') }}">เร่งทวงก่อน</a>
+      <a href="{{ url_for('accounting.ar_dashboard', tab='customers', bucket='61-90') }}">เร่งทวงก่อน</a>
     </div>
     {% endif %}
     {% endif %}
@@ -138,7 +138,7 @@
           <td class="text-end fw-bold">฿{{ '{:,.0f}'.format(c.outstanding_amount or 0) }}</td>
           <td class="text-end">{{ c.unpaid_bills }}</td>
           <td>
-            <a href="{{ url_for('ar_dashboard', tab='customers') }}" class="btn btn-sm btn-outline-primary py-0">ทวง →</a>
+            <a href="{{ url_for('accounting.ar_dashboard', tab='customers') }}" class="btn btn-sm btn-outline-primary py-0">ทวง →</a>
           </td>
         </tr>
         {% endfor %}
@@ -150,7 +150,7 @@
 <div class="alert alert-secondary py-2 small">
   <i class="bi bi-info-circle me-1"></i>
   กระแสเงินสด / รายได้ / เงินเข้ารายเดือน →
-  ยังอยู่ที่หน้า <a href="{{ url_for('cashflow_dashboard') }}">กระแสเงินสด (/cashflow)</a> แยกต่างหาก
+  ยังอยู่ที่หน้า <a href="{{ url_for('accounting.cashflow_dashboard') }}">กระแสเงินสด (/cashflow)</a> แยกต่างหาก
 </div>
 
 {% endif %}{# end overview #}
@@ -165,7 +165,7 @@
   <i class="bi bi-info-circle me-1"></i>
   ยอดจาก Express snapshot ของ BSN · เรียงตามยอดค้างมากสุด
   {% if is_ar_manager %}
-  · <a href="{{ url_for('ar_followup_export') }}">ดาวน์โหลด CSV</a>
+  · <a href="{{ url_for('accounting.ar_followup_export') }}">ดาวน์โหลด CSV</a>
   {% endif %}
 </div>
 
@@ -200,7 +200,7 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-sm btn-primary">กรอง</button>
-        <a href="{{ url_for('ar_dashboard', tab='customers') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+        <a href="{{ url_for('accounting.ar_dashboard', tab='customers') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
       </div>
     </form>
   </div>
@@ -227,7 +227,7 @@
         <tr>
           <td>
             {% if is_ar_manager %}
-            <a href="{{ url_for('ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}"
+            <a href="{{ url_for('accounting.ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}"
                class="text-decoration-none fw-bold">{{ r.customer }}</a>
             {% else %}
             <span class="fw-bold">{{ r.customer }}</span>
@@ -250,7 +250,7 @@
           </td>
           <td>
             {% if is_ar_manager %}
-            <a href="{{ url_for('ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}"
+            <a href="{{ url_for('accounting.ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}"
                class="btn btn-sm btn-outline-secondary py-0">ดูบิล/ทวง</a>
             {% endif %}
           </td>
@@ -360,7 +360,7 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-sm btn-primary">กรอง</button>
-        <a href="{{ url_for('ar_dashboard', tab='invoices') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+        <a href="{{ url_for('accounting.ar_dashboard', tab='invoices') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
       </div>
     </form>
   </div>
@@ -386,7 +386,7 @@
         {% for r in inv_rows %}
         <tr>
           <td>
-            <a href="{{ url_for('sales_doc', doc_base=r.doc_base) }}" class="text-decoration-none">
+            <a href="{{ url_for('sales.sales_doc', doc_base=r.doc_base) }}" class="text-decoration-none">
               {{ r.doc_base }}
             </a>
           </td>

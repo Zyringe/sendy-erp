@@ -20,11 +20,11 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
-        <a href="{{ url_for('customer_summary', customer_name=data.customer) }}"
+        <a href="{{ url_for('partners.customer_summary', customer_name=data.customer) }}"
            class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
       </div>
       <div class="col-auto ms-auto">
-        <a href="{{ url_for('customer_list') }}" class="btn btn-sm btn-outline-secondary">
+        <a href="{{ url_for('partners.customer_list') }}" class="btn btn-sm btn-outline-secondary">
           <i class="bi bi-arrow-left me-1"></i>รายชื่อลูกค้า
         </a>
       </div>
@@ -127,7 +127,7 @@
   </div>
   <div class="card-body py-3">
     <form method="post"
-          action="{{ url_for('customer_reassign', customer_code=master.code) }}"
+          action="{{ url_for('partners.customer_reassign', customer_code=master.code) }}"
           class="row g-2 align-items-end">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="col-md-4">
@@ -192,7 +192,7 @@
         {% for b in unpaid_bills %}
         <tr>
           <td class="ps-3 fw-medium">
-            <a href="{{ url_for('sales_doc', doc_base=b.doc_base) }}" class="text-decoration-none">
+            <a href="{{ url_for('sales.sales_doc', doc_base=b.doc_base) }}" class="text-decoration-none">
               {% if b.vat_type == 2 %}
                 <span class="badge bg-info-subtle text-info">{{ b.doc_base }}</span>
               {% elif b.vat_type == 1 %}
@@ -356,7 +356,7 @@
             <tr>
               <td class="font-mono text-subtle small">{{ r.date_iso }}</td>
               <td class="font-mono small">
-                <a href="{{ url_for('sales_doc', doc_base=r.doc_no.rsplit('-',1)[0]) }}"
+                <a href="{{ url_for('sales.sales_doc', doc_base=r.doc_no.rsplit('-',1)[0]) }}"
                    class="text-decoration-none text-main">
                   {{ r.doc_no.rsplit('-',1)[0] }}
                 </a>

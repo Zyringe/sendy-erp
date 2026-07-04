@@ -15,7 +15,7 @@
       <a href="{{ url_for('dashboard') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-speedometer2 me-3"></i>Dashboard
       </a>
-      <a href="{{ url_for('alerts_view') }}" class="list-group-item list-group-item-action d-flex align-items-center">
+      <a href="{{ url_for('inventory.alerts_view') }}" class="list-group-item list-group-item-action d-flex align-items-center">
         <i class="bi bi-exclamation-triangle me-3"></i>
         <span class="flex-grow-1">แจ้งเตือน</span>
         {% if alert_count > 0 %}<span class="badge bg-danger rounded-pill">{{ alert_count }}</span>{% endif %}
@@ -31,14 +31,14 @@
       <a href="{{ url_for('products.product_list') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-grid-3x3-gap me-3"></i>สินค้า
       </a>
-      <a href="{{ url_for('transaction_history') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('inventory.transaction_history') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-arrow-left-right me-3"></i>ประวัติสต็อก
       </a>
-      <a href="{{ url_for('conversion_list') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('inventory.conversion_list') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-scissors me-3"></i>แปลงสินค้า
       </a>
       {% if is_admin %}
-      <a href="{{ url_for('labels_view') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('products.labels_view') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-upc-scan me-3"></i>พิมพ์ป้าย/บาร์โค้ด
       </a>
       <a href="{{ url_for('labels.manage') }}" class="list-group-item list-group-item-action">
@@ -53,34 +53,34 @@
 
       {# ── การค้า & บัญชี ── #}
       <div class="list-group-item bg-light text-muted small fw-bold">การค้า & บัญชี</div>
-      <a href="{{ url_for('trade_dashboard') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('sales.trade_dashboard') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-bar-chart-line me-3"></i>ภาพรวมการค้า
       </a>
-      <a href="{{ url_for('sales_view') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('sales.sales_view') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-graph-up-arrow me-3"></i>ยอดขาย
       </a>
-      <a href="{{ url_for('purchases_view') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('sales.purchases_view') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-truck me-3"></i>ยอดซื้อ
       </a>
-      <a href="{{ url_for('supplier_list') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('partners.supplier_list') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-truck me-3"></i>Supplier
       </a>
-      <a href="{{ url_for('commission_dashboard') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('commission.commission_dashboard') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-cash-coin me-3"></i>Commission
       </a>
-      <a href="{{ url_for('ar_dashboard') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('accounting.ar_dashboard') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-receipt-cutoff me-3"></i>ลูกหนี้ (AR)
       </a>
-      <a href="{{ url_for('ap_dashboard') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('accounting.ap_dashboard') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-bank me-3"></i>AP / ซัพพลายเออร์
       </a>
 
       {# ── E-commerce ── #}
       <div class="list-group-item bg-light text-muted small fw-bold">E-commerce</div>
-      <a href="{{ url_for('ecommerce', tab='shopee') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('ecommerce.ecommerce', tab='shopee') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-bag-heart me-3" style="color:#ee4d2d"></i>Shopee
       </a>
-      <a href="{{ url_for('ecommerce', tab='lazada') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('ecommerce.ecommerce', tab='lazada') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-shop me-3" style="color:#003087"></i>Lazada
       </a>
 
@@ -125,7 +125,7 @@
       {# ── ระบบ — admin only ── #}
       {% if is_admin %}
       <div class="list-group-item bg-light text-muted small fw-bold">ระบบ</div>
-      <a href="{{ url_for('user_list') }}" class="list-group-item list-group-item-action">
+      <a href="{{ url_for('admin.user_list') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-people me-3"></i>จัดการผู้ใช้
       </a>
       {% endif %}

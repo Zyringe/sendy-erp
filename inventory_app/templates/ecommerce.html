@@ -4,7 +4,7 @@
 
 {% block topbar_actions %}
 {% if tab != 'mapping' %}
-<a href="{{ url_for('ecommerce_export', platform=tab) }}" class="btn btn-sm btn-outline-success">
+<a href="{{ url_for('ecommerce.ecommerce_export', platform=tab) }}" class="btn btn-sm btn-outline-success">
   <i class="bi bi-download me-1"></i>ดาวน์โหลด {{ tab | capitalize }}
 </a>
 {% endif %}
@@ -72,7 +72,7 @@
     <ul class="nav nav-tabs card-header-tabs" id="platformTab">
       <li class="nav-item">
         <a class="nav-link {% if tab == 'shopee' %}active{% endif %}"
-           href="{{ url_for('ecommerce', tab='shopee', q=search) }}">
+           href="{{ url_for('ecommerce.ecommerce', tab='shopee', q=search) }}">
           <span style="color:#ee4d2d"><i class="bi bi-bag-heart me-1"></i></span>
           Shopee
           {% if summary.get('shopee') %}
@@ -82,7 +82,7 @@
       </li>
       <li class="nav-item">
         <a class="nav-link {% if tab == 'lazada' %}active{% endif %}"
-           href="{{ url_for('ecommerce', tab='lazada', q=search) }}">
+           href="{{ url_for('ecommerce.ecommerce', tab='lazada', q=search) }}">
           <span style="color:#003087"><i class="bi bi-shop me-1"></i></span>
           Lazada
           {% if summary.get('lazada') %}
@@ -92,7 +92,7 @@
       </li>
       <li class="nav-item">
         <a class="nav-link {% if tab == 'mapping' %}active{% endif %}"
-           href="{{ url_for('ecommerce', tab='mapping') }}">
+           href="{{ url_for('ecommerce.ecommerce', tab='mapping') }}">
           <i class="bi bi-link-45deg me-1 text-warning"></i>Listing Mapping
           {% if ltotal > lmapped %}
           <span class="badge bg-warning text-dark ms-1">{{ ltotal - lmapped }}</span>
@@ -109,7 +109,7 @@
     <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
 
       {# Search #}
-      <form class="d-flex gap-2 me-auto" method="GET" action="{{ url_for('ecommerce') }}">
+      <form class="d-flex gap-2 me-auto" method="GET" action="{{ url_for('ecommerce.ecommerce') }}">
         <input type="hidden" name="tab" value="{{ tab }}">
         {% if tab == 'mapping' %}
         <select name="platform" class="form-select form-select-sm" style="width:120px">
@@ -129,7 +129,7 @@
                  placeholder="ค้นหาชื่อสินค้า / variation..."
                  value="{{ search }}">
           {% if search %}
-          <a href="{{ url_for('ecommerce', tab=tab) }}" class="btn btn-outline-secondary">
+          <a href="{{ url_for('ecommerce.ecommerce', tab=tab) }}" class="btn btn-outline-secondary">
             <i class="bi bi-x-lg"></i>
           </a>
           {% endif %}
@@ -142,11 +142,11 @@
       <button class="btn btn-sm btn-outline-warning" data-bs-toggle="modal" data-bs-target="#uploadOrdersModal">
         <i class="bi bi-upload me-1"></i>นำเข้าไฟล์คำสั่งซื้อ
       </button>
-      <a href="{{ url_for('ecommerce_listings_mapping_export') }}"
+      <a href="{{ url_for('ecommerce.ecommerce_listings_mapping_export') }}"
          class="btn btn-sm btn-outline-primary">
         <i class="bi bi-download me-1"></i>ดาวน์โหลด Mapping
       </a>
-      <a href="{{ url_for('ecommerce_listings_mapping_export', unmatched='1') }}"
+      <a href="{{ url_for('ecommerce.ecommerce_listings_mapping_export', unmatched='1') }}"
          class="btn btn-sm btn-outline-danger">
         <i class="bi bi-download me-1"></i>ยังไม่ผูก
       </a>
@@ -160,7 +160,7 @@
         <i class="bi bi-upload me-1"></i>อัพโหลด {{ tab | capitalize }}
       </button>
       {# Download #}
-      <a href="{{ url_for('ecommerce_export', platform=tab) }}"
+      <a href="{{ url_for('ecommerce.ecommerce_export', platform=tab) }}"
          class="btn btn-sm {% if tab == 'shopee' %}btn-danger{% else %}btn-primary{% endif %}">
         <i class="bi bi-download me-1"></i>ดาวน์โหลด {{ tab | capitalize }}
       </a>
@@ -290,7 +290,7 @@
           {# Edit Modal #}
           <div class="modal fade" id="editModal{{ r.id }}" tabindex="-1">
             <div class="modal-dialog modal-sm">
-              <form method="POST" action="{{ url_for('ecommerce_sku_edit', sku_id=r.id) }}">
+              <form method="POST" action="{{ url_for('ecommerce.ecommerce_sku_edit', sku_id=r.id) }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="platform" value="{{ tab }}">
                 <input type="hidden" name="page" value="{{ page }}">
@@ -352,17 +352,17 @@
       <ul class="pagination pagination-sm justify-content-center mb-0">
         {% if page > 1 %}
         <li class="page-item">
-          <a class="page-link" href="{{ url_for('ecommerce', tab=tab, q=search, page=page-1) }}">‹</a>
+          <a class="page-link" href="{{ url_for('ecommerce.ecommerce', tab=tab, q=search, page=page-1) }}">‹</a>
         </li>
         {% endif %}
         {% for p in range([1, page-2]|max, [pages+1, page+3]|min) %}
         <li class="page-item {% if p == page %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('ecommerce', tab=tab, q=search, page=p) }}">{{ p }}</a>
+          <a class="page-link" href="{{ url_for('ecommerce.ecommerce', tab=tab, q=search, page=p) }}">{{ p }}</a>
         </li>
         {% endfor %}
         {% if page < pages %}
         <li class="page-item">
-          <a class="page-link" href="{{ url_for('ecommerce', tab=tab, q=search, page=page+1) }}">›</a>
+          <a class="page-link" href="{{ url_for('ecommerce.ecommerce', tab=tab, q=search, page=page+1) }}">›</a>
         </li>
         {% endif %}
       </ul>
@@ -405,7 +405,7 @@
   <div class="card-header bg-white d-flex align-items-center justify-content-between py-2">
     <span class="fw-semibold"><i class="bi bi-link-45deg me-1 text-primary"></i>การผูก SKU กับสินค้าในระบบ</span>
     <div class="d-flex gap-2">
-      <a href="{{ url_for('ecommerce_mapping_export') }}"
+      <a href="{{ url_for('ecommerce.ecommerce_mapping_export') }}"
          class="btn btn-sm btn-outline-primary">
         <i class="bi bi-download me-1"></i>ดาวน์โหลดไฟล์ Mapping
       </a>
@@ -441,7 +441,7 @@
 {% for plat in ['Shopee', 'Lazada'] %}
 <div class="modal fade" id="uploadModal{{ plat }}" tabindex="-1">
   <div class="modal-dialog">
-    <form method="POST" action="{{ url_for('ecommerce_import') }}" enctype="multipart/form-data">
+    <form method="POST" action="{{ url_for('ecommerce.ecommerce_import') }}" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="platform" value="{{ plat | lower }}">
       <div class="modal-content">
@@ -490,7 +490,7 @@
 {# ── Upload Orders Modal (for Listing Mapping) ── #}
 <div class="modal fade" id="uploadOrdersModal" tabindex="-1">
   <div class="modal-dialog modal-lg">
-    <form method="POST" action="{{ url_for('ecommerce_listings_import') }}" enctype="multipart/form-data">
+    <form method="POST" action="{{ url_for('ecommerce.ecommerce_listings_import') }}" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="modal-content">
         <div class="modal-header">
@@ -542,7 +542,7 @@
 {# ── Upload Listing Mapping Modal ── #}
 <div class="modal fade" id="uploadListingMappingModal" tabindex="-1">
   <div class="modal-dialog">
-    <form method="POST" action="{{ url_for('ecommerce_listings_mapping_import') }}" enctype="multipart/form-data">
+    <form method="POST" action="{{ url_for('ecommerce.ecommerce_listings_mapping_import') }}" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="modal-content">
         <div class="modal-header">
@@ -575,7 +575,7 @@
 {# ── Upload Mapping Modal ── #}
 <div class="modal fade" id="uploadMappingModal" tabindex="-1">
   <div class="modal-dialog">
-    <form method="POST" action="{{ url_for('ecommerce_mapping_import') }}" enctype="multipart/form-data">
+    <form method="POST" action="{{ url_for('ecommerce.ecommerce_mapping_import') }}" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="modal-content">
         <div class="modal-header">

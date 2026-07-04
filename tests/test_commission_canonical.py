@@ -91,9 +91,9 @@ def test_may_month_appears_in_payment_activity(tmp_db, monkeypatch):
     import config
     monkeypatch.setattr(config, "DATABASE_PATH", tmp_db)
     import importlib
-    import app as app_mod
-    importlib.reload(app_mod)
+    import blueprints.commission_bp as commission_bp_mod
+    importlib.reload(commission_bp_mod)
 
-    months = app_mod._months_with_payment_activity()
+    months = commission_bp_mod._months_with_payment_activity()
     assert "2026-05" in months, "May must appear in the commission month dropdown"
     assert "2026-06" in months, "June must appear too"

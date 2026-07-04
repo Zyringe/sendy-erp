@@ -34,7 +34,7 @@
       </table>
       <a href="{{ url_for('bsn.unified_import') }}" class="btn btn-outline-primary"><i class="bi bi-arrow-repeat me-1"></i>นำเข้าไฟล์ชุดใหม่</a>
       {% if is_admin %}
-      <a href="{{ url_for('backups_list') }}" class="btn btn-outline-secondary ms-2"><i class="bi bi-clock-history me-1"></i>นำเข้าผิด? กู้คืนข้อมูล</a>
+      <a href="{{ url_for('admin.backups_list') }}" class="btn btn-outline-secondary ms-2"><i class="bi bi-clock-history me-1"></i>นำเข้าผิด? กู้คืนข้อมูล</a>
       {% endif %}
     </div>
   </div>
@@ -175,7 +175,7 @@
           </div>
           <div class="small text-subtle mb-3">
             <i class="bi bi-shield-check me-1"></i>ทุกการนำเข้าจะสำรองฐานข้อมูลอัตโนมัติก่อน
-            {% if is_admin %}<a href="{{ url_for('backups_list') }}">ดู / กู้คืนข้อมูล</a>{% endif %}
+            {% if is_admin %}<a href="{{ url_for('admin.backups_list') }}">ดู / กู้คืนข้อมูล</a>{% endif %}
           </div>
           <form method="post" action="{{ url_for('bsn.unified_import') }}" enctype="multipart/form-data">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

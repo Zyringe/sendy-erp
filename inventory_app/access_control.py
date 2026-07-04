@@ -30,8 +30,8 @@ _STAFF_POST_OK = frozenset([
     'marketplace.import_orders', 'marketplace.settlement_import', 'marketplace.upload', 'marketplace.link_iv',
     'products.product_location_save',
     'admin_exit_simulate',
-    'conversion_pair', 'conversion_run', 'conversion_delete',
-    'api_product_barcodes',
+    'inventory.conversion_pair', 'inventory.conversion_run', 'inventory.conversion_delete',
+    'products.api_product_barcodes',
     'review.scan',
     'call.call_mark_called',
     'call.call_note',
@@ -40,7 +40,7 @@ _STAFF_POST_OK = frozenset([
     'call.call_log_delete',
     'customer_review.normalize_confirm',
     'customer_review.normalize_skip',
-    'stock_adjust',
+    'inventory.stock_adjust',
     # Phase 5 self-service leave — any employee may submit/edit/cancel their OWN
     # pending leave. Ownership is enforced inside each route via _my_employee()
     # (employee_id never read from form/URL); this gate only permits the POST to
@@ -48,13 +48,13 @@ _STAFF_POST_OK = frozenset([
     'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
-    'customer_reassign', 'customer_bulk_reassign',
+    'partners.customer_reassign', 'partners.customer_bulk_reassign',
     # Customer map geocoding (B5) — manager+ feature; staff doesn't need it.
-    'customer_geocode',
+    'partners.customer_geocode',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
     'products.product_packaging_save',
     'bsn.mapping_suggestion_approve',
-    'photos_review_assign', 'photos_review_delete',
+    'products.photos_review_assign', 'products.photos_review_delete',
     # Acknowledging a billed≠payout discrepancy is a manager+ action (not staff).
     'marketplace.review_amount',
     # Master Naming cascade — preview is read-only but POSTed (JSON body);
@@ -63,16 +63,17 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'naming.product_preview_name', 'naming.product_save',
     # Phase 5 approval workflow — managers can approve/reject pending leave.
     'hr.leave_approve', 'hr.leave_reject',
-    # Phase 7 salary-advance CRUD — managers can create/edit/delete advances.
-    'hr.advance_new', 'hr.advance_edit', 'hr.advance_delete',
+    # (Phase 7 salary-advance CRUD routes removed in the cashbook Phase 2
+    # overhaul — advances are now written via cashbook.new_transaction below,
+    # plan.md C5c; /hr/advances is read-only.)
     # Cashbook manual entry (Phase 2) — managers can add/edit/delete manual
     # rows (salary pay-event rows are locked separately, see cashbook.py).
     'cashbook.new_transaction', 'cashbook.txn_edit', 'cashbook.txn_delete',
     # Salary pay-event posting (Phase 4) — manager can mark จ่ายแล้ว/ยกเลิกการจ่าย.
     'hr.payroll_item_pay', 'hr.payroll_item_unpay',
 ])
-# regions_admin POST is intentionally admin-only — gated inline at the top of
-# the route. Other admin-only writes use _require_admin().
+# partners.regions_admin POST is intentionally admin-only — gated inline at
+# the top of the route. Other admin-only writes use _require_admin().
 # admin can POST anything
 
 _GENERAL_POST_OK = frozenset([
@@ -152,7 +153,7 @@ _MODULE_DEFS = [
         'key': 'accounting',
         'name': 'การค้า & บัญชี',
         'icon': 'bi-cash-coin',
-        'first_endpoint': 'trade_dashboard',  # staff-safe landing (sales/purchases/customers)
+        'first_endpoint': 'sales.trade_dashboard',  # staff-safe landing (sales/purchases/customers)
         'roles': None,  # module visible to all; only the /accounting cost link+route is admin/manager
     },
     {
@@ -180,7 +181,7 @@ _MODULE_DEFS = [
         'key': 'admin_module',
         'name': 'ระบบ',
         'icon': 'bi-gear',
-        'first_endpoint': 'user_list',
+        'first_endpoint': 'admin.user_list',
         'roles': ('admin',),
     },
 ]
@@ -190,7 +191,7 @@ _MODULE_DEFS = [
 _ENDPOINT_MODULE = {
     # overview
     'dashboard': 'overview',
-    'alerts_view': 'overview',
+    'inventory.alerts_view': 'overview',
     'review.index': 'overview',
     'review.scan': 'overview',
     # operation
@@ -198,71 +199,71 @@ _ENDPOINT_MODULE = {
     'products.product_detail': 'operation',
     'products.product_new': 'operation',
     'products.product_edit': 'operation',
-    'stock_adjust': 'operation',
-    'transaction_history': 'operation',
-    'conversion_list': 'operation',
-    'conversion_pair': 'operation',
-    'conversion_run': 'operation',
-    'conversion_delete': 'operation',
-    'conversion_deactivate': 'operation',
-    'conversion_activate': 'operation',
-    'conversion_history': 'operation',
-    'labels_view': 'operation',
+    'inventory.stock_adjust': 'operation',
+    'inventory.transaction_history': 'operation',
+    'inventory.conversion_list': 'operation',
+    'inventory.conversion_pair': 'operation',
+    'inventory.conversion_run': 'operation',
+    'inventory.conversion_delete': 'operation',
+    'inventory.conversion_deactivate': 'operation',
+    'inventory.conversion_activate': 'operation',
+    'inventory.conversion_history': 'operation',
+    'products.labels_view': 'operation',
     'labels.manage': 'operation',
     'labels.edit': 'operation',
     'labels.bulk_size': 'operation',
     'labels.company_block': 'operation',
     'labels.print_page': 'operation',
     'labels.search_api': 'operation',
-    'products_walkthrough': 'operation',
+    'products.products_walkthrough': 'operation',
     # accounting
-    'accounting_summary': 'accounting',
-    'cashflow_dashboard': 'accounting',
-    'revenue_dashboard': 'accounting',
-    'revenue_unmapped_drilldown': 'accounting',
-    'ar_followup': 'accounting',
-    'ar_followup_customer': 'accounting',
-    'ar_followup_log_new': 'accounting',
-    'ar_followup_log_delete': 'accounting',
-    'ar_followup_export': 'accounting',
-    'trade_dashboard': 'accounting',
-    'sales_view': 'accounting',
-    'sales_doc': 'accounting',
-    'purchases_view': 'accounting',
-    'purchases_doc': 'accounting',
-    'customer_list': 'accounting',
-    'customer_summary': 'accounting',
-    'customer_map': 'accounting',
-    'supplier_list': 'accounting',
-    'supplier_summary': 'accounting',
-    'payment_status': 'accounting',
-    'payment_customers': 'accounting',
-    'commission_dashboard': 'accounting',
-    'commission_record_payout': 'accounting',
-    'commission_delete_payout': 'accounting',
-    'commission_payouts_list': 'accounting',
-    'commission_drilldown': 'accounting',
-    'commission_invoice_detail': 'accounting',
-    'commission_export': 'accounting',
-    'commission_overrides_list': 'accounting',
-    'commission_overrides_new': 'accounting',
-    'commission_overrides_edit': 'accounting',
-    'commission_overrides_toggle': 'accounting',
-    'commission_overrides_delete': 'accounting',
-    'ar_dashboard': 'accounting',
-    'express_ar_dashboard': 'accounting',
-    'express_ar_customer': 'accounting',
-    'express_ap_dashboard': 'accounting',
-    'ap_dashboard': 'accounting',
-    'ecommerce': 'accounting',
-    'ecommerce_import': 'accounting',
-    'ecommerce_sku_edit': 'accounting',
-    'ecommerce_export': 'accounting',
-    'ecommerce_mapping_export': 'accounting',
-    'ecommerce_mapping_import': 'accounting',
-    'ecommerce_listings_import': 'accounting',
-    'ecommerce_listings_mapping_export': 'accounting',
-    'ecommerce_listings_mapping_import': 'accounting',
+    'accounting.accounting_summary': 'accounting',
+    'accounting.cashflow_dashboard': 'accounting',
+    'accounting.revenue_dashboard': 'accounting',
+    'accounting.revenue_unmapped_drilldown': 'accounting',
+    'accounting.ar_followup': 'accounting',
+    'accounting.ar_followup_customer': 'accounting',
+    'accounting.ar_followup_log_new': 'accounting',
+    'accounting.ar_followup_log_delete': 'accounting',
+    'accounting.ar_followup_export': 'accounting',
+    'sales.trade_dashboard': 'accounting',
+    'sales.sales_view': 'accounting',
+    'sales.sales_doc': 'accounting',
+    'sales.purchases_view': 'accounting',
+    'sales.purchases_doc': 'accounting',
+    'partners.customer_list': 'accounting',
+    'partners.customer_summary': 'accounting',
+    'partners.customer_map': 'accounting',
+    'partners.supplier_list': 'accounting',
+    'partners.supplier_summary': 'accounting',
+    'sales.payment_status': 'accounting',
+    'sales.payment_customers': 'accounting',
+    'commission.commission_dashboard': 'accounting',
+    'commission.commission_record_payout': 'accounting',
+    'commission.commission_delete_payout': 'accounting',
+    'commission.commission_payouts_list': 'accounting',
+    'commission.commission_drilldown': 'accounting',
+    'commission.commission_invoice_detail': 'accounting',
+    'commission.commission_export': 'accounting',
+    'commission.commission_overrides_list': 'accounting',
+    'commission.commission_overrides_new': 'accounting',
+    'commission.commission_overrides_edit': 'accounting',
+    'commission.commission_overrides_toggle': 'accounting',
+    'commission.commission_overrides_delete': 'accounting',
+    'accounting.ar_dashboard': 'accounting',
+    'accounting.express_ar_dashboard': 'accounting',
+    'accounting.express_ar_customer': 'accounting',
+    'accounting.express_ap_dashboard': 'accounting',
+    'accounting.ap_dashboard': 'accounting',
+    'ecommerce.ecommerce': 'accounting',
+    'ecommerce.ecommerce_import': 'accounting',
+    'ecommerce.ecommerce_sku_edit': 'accounting',
+    'ecommerce.ecommerce_export': 'accounting',
+    'ecommerce.ecommerce_mapping_export': 'accounting',
+    'ecommerce.ecommerce_mapping_import': 'accounting',
+    'ecommerce.ecommerce_listings_import': 'accounting',
+    'ecommerce.ecommerce_listings_mapping_export': 'accounting',
+    'ecommerce.ecommerce_listings_mapping_import': 'accounting',
     'marketplace.dashboard': 'accounting',
     'marketplace.import_orders': 'accounting',
     'marketplace.unmapped': 'accounting',
@@ -282,7 +283,6 @@ _ENDPOINT_MODULE = {
     'hr.leave_list': 'hr',
     'hr.leave_new': 'hr',
     'hr.advance_list': 'hr',
-    'hr.advance_new': 'hr',
     'hr.payroll_list': 'hr',
     'hr.payroll_detail': 'hr',
     'hr.payslip': 'hr',
@@ -313,17 +313,17 @@ _ENDPOINT_MODULE = {
     'cashbook.account_ledger': 'cashbook',
     'cashbook.new_transaction': 'cashbook',
     # admin_module
-    'user_list': 'admin_module',
-    'user_new': 'admin_module',
-    'user_edit': 'admin_module',
-    'toggle_db_routes': 'admin_module',
-    'upload_db': 'admin_module',
-    'upload_db_confirm': 'admin_module',
-    'download_db': 'admin_module',
-    'backups_list': 'admin_module',
-    'backup_download': 'admin_module',
-    'backup_restore': 'admin_module',
-    'backup_delete': 'admin_module',
+    'admin.user_list': 'admin_module',
+    'admin.user_new': 'admin_module',
+    'admin.user_edit': 'admin_module',
+    'admin.toggle_db_routes': 'admin_module',
+    'admin.upload_db': 'admin_module',
+    'admin.upload_db_confirm': 'admin_module',
+    'admin.download_db': 'admin_module',
+    'admin.backups_list': 'admin_module',
+    'admin.backup_download': 'admin_module',
+    'admin.backup_restore': 'admin_module',
+    'admin.backup_delete': 'admin_module',
     'admin_simulate_role': 'admin_module',
     'admin_exit_simulate': 'admin_module',
     # call-card
@@ -347,9 +347,9 @@ _ENDPOINT_MODULE = {
 # a role can't open. ตรวจบิล is NOT here (drawer + dashboard banner instead).
 _MOBILE_NAV_SLOTS = [
     {'key': 'products',   'label': 'สินค้า',  'icon': 'bi-box-seam',       'endpoint': 'products.product_list', 'manager_only': False},
-    {'key': 'trade',      'label': 'การค้า',  'icon': 'bi-bar-chart-line', 'endpoint': 'trade_dashboard',       'manager_only': False},
+    {'key': 'trade',      'label': 'การค้า',  'icon': 'bi-bar-chart-line', 'endpoint': 'sales.trade_dashboard', 'manager_only': False},
     {'key': 'hr',         'label': 'บุคลากร', 'icon': 'bi-people',         'endpoint': 'hr.dashboard',          'manager_only': True},
-    {'key': 'accounting', 'label': 'บัญชี',   'icon': 'bi-calculator',     'endpoint': 'accounting_summary',    'manager_only': True},
+    {'key': 'accounting', 'label': 'บัญชี',   'icon': 'bi-calculator',     'endpoint': 'accounting.accounting_summary', 'manager_only': True},
 ]
 
 # The 'accounting' module ('การค้า & บัญชี') splits across two bottom-nav slots:
@@ -357,9 +357,11 @@ _MOBILE_NAV_SLOTS = [
 # every other 'accounting'-module endpoint highlights การค้า. Keeps the two
 # slots mutually exclusive so the nav never lights up both at once.
 _ACCT_FINANCE_ENDPOINTS = frozenset({
-    'accounting_summary', 'cashflow_dashboard', 'revenue_dashboard',
-    'revenue_unmapped_drilldown', 'ar_followup', 'ar_followup_customer',
-    'ar_followup_log_new', 'ar_followup_log_delete', 'ar_followup_export',
+    'accounting.accounting_summary', 'accounting.cashflow_dashboard',
+    'accounting.revenue_dashboard', 'accounting.revenue_unmapped_drilldown',
+    'accounting.ar_followup', 'accounting.ar_followup_customer',
+    'accounting.ar_followup_log_new', 'accounting.ar_followup_log_delete',
+    'accounting.ar_followup_export',
 })
 
 

@@ -10,7 +10,7 @@
     <i class="bi bi-person-x fs-2 d-block mb-2 opacity-50"></i>
     ไม่พบข้อมูลลูกค้า "{{ customer_name }}"
     <div class="mt-3">
-      <a href="{{ url_for('customer_list') }}" class="btn btn-sm btn-outline-secondary">← กลับรายชื่อลูกค้า</a>
+      <a href="{{ url_for('partners.customer_list') }}" class="btn btn-sm btn-outline-secondary">← กลับรายชื่อลูกค้า</a>
     </div>
   </div>
 </div>
@@ -78,7 +78,7 @@
   </div>
   <div class="list-group list-group-flush">
     {% for b in unpaid %}
-    <a href="{{ url_for('sales_doc', doc_base=b.doc_base) }}"
+    <a href="{{ url_for('sales.sales_doc', doc_base=b.doc_base) }}"
        class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
       <div>
         <div class="font-mono small">{{ b.doc_base }}</div>
@@ -115,7 +115,7 @@
   <div class="card-header"><i class="bi bi-clock-history me-2"></i>ขายล่าสุด</div>
   <div class="list-group list-group-flush">
     {% for s in last_sales %}
-    <a href="{{ url_for('sales_doc', doc_base=s.doc_no.rsplit('-',1)[0]) }}"
+    <a href="{{ url_for('sales.sales_doc', doc_base=s.doc_no.rsplit('-',1)[0]) }}"
        class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
       <div>
         <div class="font-mono small">{{ s.doc_no }}</div>
@@ -129,7 +129,7 @@
 {% endif %}
 
 <div class="text-center mb-3">
-  <a href="{{ url_for('customer_summary', customer_name=customer_name) }}"
+  <a href="{{ url_for('partners.customer_summary', customer_name=customer_name) }}"
      class="btn btn-sm btn-outline-secondary">
     ดูรายละเอียดเต็ม →
   </a>

@@ -28,7 +28,7 @@
            class="btn btn-sm btn-outline-secondary">
           <i class="bi bi-box-seam me-1"></i>ข้อมูลสต็อก
         </a>
-        <a href="{{ url_for('trade_dashboard') }}" class="btn btn-sm btn-outline-secondary">
+        <a href="{{ url_for('sales.trade_dashboard') }}" class="btn btn-sm btn-outline-secondary">
           <i class="bi bi-arrow-left me-1"></i>ภาพรวมการค้า
         </a>
       </div>
@@ -133,7 +133,7 @@
             <tr>
               <td class="text-subtle">{{ loop.index }}</td>
               <td>
-                <a href="{{ url_for('customer_summary', customer_name=r.customer,
+                <a href="{{ url_for('partners.customer_summary', customer_name=r.customer,
                                     date_from=data.date_from, date_to=data.date_to) }}"
                    class="text-decoration-none text-main fw-500">{{ r.customer }}</a>
               </td>
@@ -173,14 +173,14 @@
             <tr>
               <td class="font-mono text-subtle small">{{ r.date_iso }}</td>
               <td class="font-mono small">
-                <a href="{{ url_for('sales_doc', doc_base=r.doc_no.rsplit('-',1)[0]) }}"
+                <a href="{{ url_for('sales.sales_doc', doc_base=r.doc_no.rsplit('-',1)[0]) }}"
                    class="text-decoration-none text-main">
                   {{ r.doc_no.rsplit('-',1)[0] }}
                 </a>
               </td>
               <td class="small">
                 {% if r.customer %}
-                  <a href="{{ url_for('customer_summary', customer_name=r.customer) }}"
+                  <a href="{{ url_for('partners.customer_summary', customer_name=r.customer) }}"
                      class="text-decoration-none text-subtle">{{ r.customer }}</a>
                 {% else %}—{% endif %}
               </td>

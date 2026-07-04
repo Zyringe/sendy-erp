@@ -218,7 +218,7 @@
           <tr class="{% if o.amount_mismatch and not o.reviewed %}table-warning{% elif not o.iv %}table-light text-muted{% endif %}">
             <td><code class="js-order-detail" role="button" data-order-id="{{ o.order_id }}" title="ดูรายละเอียด">{{ o.order_sn }}</code></td>
             <td>
-              {% if o.iv %}<a href="{{ url_for('sales_doc', doc_base=o.iv) }}" target="_blank" title="เปิดใบกำกับใน Express"><code>{{ o.iv }}</code></a>
+              {% if o.iv %}<a href="{{ url_for('sales.sales_doc', doc_base=o.iv) }}" target="_blank" title="เปิดใบกำกับใน Express"><code>{{ o.iv }}</code></a>
                 {% if o.iv_confidence == 'probable' %}<span class="badge bg-warning text-dark" title="ยอดตรง อาจสลับใบยอดเท่ากัน">~</span>
                 {% elif o.iv_confidence == 'review' %}<span class="badge bg-info text-dark" title="ยอดในบิลไม่ตรงยอดโอน">⚠ ยอดต่าง</span>{% endif %}
               {% else %}<span class="text-warning small">ยังไม่ผูก</span>{% endif %}

@@ -5,7 +5,7 @@
 
 {% block topbar_actions %}
 {% if is_admin %}
-<a href="{{ url_for('labels_view') }}?add={{ product.id }}" class="btn btn-sm btn-outline-secondary"
+<a href="{{ url_for('products.labels_view') }}?add={{ product.id }}" class="btn btn-sm btn-outline-secondary"
    onclick="event.preventDefault(); addToLabelQueue(this.href);">
   <i class="bi bi-upc-scan me-1"></i>พิมพ์ป้าย
 </a>
@@ -620,9 +620,9 @@
         <span><i class="bi bi-clock-history me-2 text-accent"></i>ประวัติสต็อก
           <span class="text-subtle small ms-1">({{ txn_total | fmt_qty }} รายการ)</span>
         </span>
-        <a href="{{ url_for('transaction_history', product_id=product.id) }}"
+        <a href="{{ url_for('inventory.transaction_history', product_id=product.id) }}"
            class="btn btn-xs" style="background:#f1f5f9;color:#475569;border:none">ดูทั้งหมด →</a>
-        <a href="{{ url_for('sales_view', product_id=product.id) }}"
+        <a href="{{ url_for('sales.sales_view', product_id=product.id) }}"
            class="btn btn-xs ms-1" style="background:#f0fdf4;color:#166534;border:none">ประวัติขาย BSN →</a>
       </div>
       <div class="table-responsive">
@@ -688,7 +688,7 @@
 <div class="modal fade" id="adjustModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
-      <form method="post" action="{{ url_for('stock_adjust', product_id=product.id) }}">
+      <form method="post" action="{{ url_for('inventory.stock_adjust', product_id=product.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="next" value="{{ url_for('products.product_detail', product_id=product.id) }}">
         <div class="modal-header">
@@ -852,15 +852,15 @@ async function addToLabelQueue(_href) {
     const res = await fetch(`/api/products/search?q={{ product.id }}&limit=5`);
     const data = await res.json();
     const item = (data.items || []).find(x => x.id === pid);
-    if (!item) { window.location.href = '{{ url_for("labels_view") }}'; return; }
+    if (!item) { window.location.href = '{{ url_for("products.labels_view") }}'; return; }
     const queue = JSON.parse(localStorage.getItem(KEY) || '[]');
     const existing = queue.find(x => x.id === pid);
     if (existing) existing.qty = (existing.qty || 1) + 1;
     else queue.push({ ...item, qty: 1 });
     localStorage.setItem(KEY, JSON.stringify(queue));
-    window.location.href = '{{ url_for("labels_view") }}';
+    window.location.href = '{{ url_for("products.labels_view") }}';
   } catch (e) {
-    window.location.href = '{{ url_for("labels_view") }}';
+    window.location.href = '{{ url_for("products.labels_view") }}';
   }
 }
 </script>

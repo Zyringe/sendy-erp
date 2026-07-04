@@ -28,7 +28,7 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
-        <a href="{{ url_for('purchases_view') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+        <a href="{{ url_for('sales.purchases_view') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
       </div>
     </form>
   </div>
@@ -82,7 +82,7 @@
       <ul class="pagination pagination-sm mb-0 justify-content-center flex-wrap">
         {% set ns = namespace(prev=0) %}
         <li class="page-item {% if page == 1 %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('purchases_view', page=page-1, date_from=date_from or '', date_to=date_to or '') }}">&laquo;</a>
+          <a class="page-link" href="{{ url_for('sales.purchases_view', page=page-1, date_from=date_from or '', date_to=date_to or '') }}">&laquo;</a>
         </li>
         {% for p in range(1, pages+1) %}
           {% if p == 1 or p == pages or (p >= page-2 and p <= page+2) %}
@@ -90,13 +90,13 @@
             <li class="page-item disabled"><span class="page-link">…</span></li>
             {% endif %}
             <li class="page-item {% if p == page %}active{% endif %}">
-              <a class="page-link" href="{{ url_for('purchases_view', page=p, date_from=date_from or '', date_to=date_to or '') }}">{{ p }}</a>
+              <a class="page-link" href="{{ url_for('sales.purchases_view', page=p, date_from=date_from or '', date_to=date_to or '') }}">{{ p }}</a>
             </li>
             {% set ns.prev = p %}
           {% endif %}
         {% endfor %}
         <li class="page-item {% if page == pages %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('purchases_view', page=page+1, date_from=date_from or '', date_to=date_to or '') }}">&raquo;</a>
+          <a class="page-link" href="{{ url_for('sales.purchases_view', page=page+1, date_from=date_from or '', date_to=date_to or '') }}">&raquo;</a>
         </li>
       </ul>
     </nav>

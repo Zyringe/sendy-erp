@@ -4,7 +4,7 @@
 
 {% block content %}
 <div class="d-flex align-items-center mb-3 gap-2 flex-wrap">
-  <a href="{{ url_for('commission_drilldown', sp_code=sp_code, month=year_month) }}" class="btn btn-sm btn-outline-secondary">
+  <a href="{{ url_for('commission.commission_drilldown', sp_code=sp_code, month=year_month) }}" class="btn btn-sm btn-outline-secondary">
     <i class="bi bi-arrow-left"></i> กลับ {{ sp_name }}
   </a>
 </div>

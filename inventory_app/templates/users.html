@@ -70,7 +70,7 @@
                   </button>
                   {# Delete button (non-admin only, can't delete self) #}
                   {% if u.role != 'admin' %}
-                  <form method="post" action="{{ url_for('user_delete', uid=u.id) }}" class="d-inline"
+                  <form method="post" action="{{ url_for('admin.user_delete', uid=u.id) }}" class="d-inline"
                         onsubmit="return confirm('ลบผู้ใช้ {{ u.username }}?')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button type="submit" class="btn btn-xs btn-outline-danger">
@@ -83,7 +83,7 @@
             </tr>
             <tr class="collapse" id="edit-{{ u.id }}">
               <td colspan="6" class="bg-light py-3 px-4">
-                <form method="post" action="{{ url_for('user_edit', uid=u.id) }}">
+                <form method="post" action="{{ url_for('admin.user_edit', uid=u.id) }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <div class="row g-2 align-items-end">
                     <div class="col-sm-3">
@@ -155,7 +155,7 @@
         <i class="bi bi-person-plus me-2"></i>เพิ่มผู้ใช้ใหม่
       </div>
       <div class="card-body">
-        <form method="post" action="{{ url_for('user_new') }}">
+        <form method="post" action="{{ url_for('admin.user_new') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="mb-3">
             <label class="form-label">ชื่อผู้ใช้ (username)</label>

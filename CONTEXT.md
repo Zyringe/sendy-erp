@@ -131,6 +131,18 @@
   pay independent subsets (Put + his mother), so it is per-employee, not one click. See
   ADR 0006.
 
+- **Advance (cashbook-sourced) (เงินเดือน (เบิกล่วงหน้า))** — a salary advance is entered in the
+  **cashbook** (`/cashbook/new`, category `เงินเดือน (เบิกล่วงหน้า)`), NOT in HR: the ผู้ใช้ cell
+  becomes a required active-employee picker, and saving writes BOTH a `salary_advances` row and a
+  linked `เงินเดือน (เบิกล่วงหน้า)` **expense** row in one commit (FK
+  `cashbook_transactions.salary_advance_id`, UNIQUE — a "linked & locked row", same idea as the
+  salary `payroll_item_id`). `/hr/advances` is a **read-only mirror**. An advance row is **not
+  editable in the ledger** — correct it by delete + re-add; **delete cascades** to
+  `salary_advances`, but only while **un-deducted** (`deducted_in_run_id IS NULL`), after which
+  both rows are locked. Excluded from overspend flags (advances are lumpy). "ดูประวัติ" shows that
+  employee's month advances + total outstanding + net salary (an over-advance guard). See ADR 0008
+  + mig 128.
+
 - **Pay-from account** — the cashbook account a given salary transfer is paid *out of*.
   Chosen per employee at mark-paid time, defaulting to that employee's **default pay-from
   account** (`employees.default_cashbook_account_id`, e.g. Put's staff → `392`, his mother's

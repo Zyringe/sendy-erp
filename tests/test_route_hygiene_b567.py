@@ -116,17 +116,17 @@ def test_b5_endpoint_in_manager_whitelist():
     because before_request would still redirect manager away before the view
     (and its inline check) ever runs."""
     from app import _MANAGER_POST_OK
-    assert 'customer_geocode' in _MANAGER_POST_OK
+    assert 'partners.customer_geocode' in _MANAGER_POST_OK
 
 
 # ── B6: customer_import_bsn missing-CSV guard ───────────────────────────────
 
 def test_b6_missing_csv_flashes_and_redirects_not_500(client, monkeypatch):
-    import app as app_module
+    import blueprints.partners as partners_module
 
     def _raise_fnf():
         raise FileNotFoundError('no such file: bsn_customer_info.csv')
-    monkeypatch.setattr(app_module, '_parse_bsn_customers', _raise_fnf)
+    monkeypatch.setattr(partners_module, '_parse_bsn_customers', _raise_fnf)
 
     _login(client, 'admin')
     resp = client.post('/customers/import-bsn', follow_redirects=False)
@@ -141,14 +141,14 @@ def test_b6_missing_csv_flashes_and_redirects_not_500(client, monkeypatch):
 def test_b6_happy_path_unaffected(client, monkeypatch):
     """The guard must not touch the success path: a normal parse result still
     imports and redirects with the usual success flash."""
-    import app as app_module
+    import blueprints.partners as partners_module
 
     fake_customers = [{
         'code': 'HAPPY_001', 'name': 'ร้านทดสอบ', 'salesperson': 'SP01',
         'zone': 'Z1', 'customer_type': 'R', 'address': '', 'phone': '',
         'tax_id': '', 'credit_days': 0, 'contact': '',
     }]
-    monkeypatch.setattr(app_module, '_parse_bsn_customers', lambda: fake_customers)
+    monkeypatch.setattr(partners_module, '_parse_bsn_customers', lambda: fake_customers)
 
     _login(client, 'admin')
     resp = client.post('/customers/import-bsn', follow_redirects=False)

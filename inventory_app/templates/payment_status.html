@@ -58,11 +58,11 @@
       {# View toggle #}
       <div class="col-auto">
         <div class="btn-group btn-group-sm me-1" role="group">
-          <a href="{{ url_for('payment_status') }}"
+          <a href="{{ url_for('sales.payment_status') }}"
              class="btn btn-dark">
             <i class="bi bi-list-ul me-1"></i>รายบิล
           </a>
-          <a href="{{ url_for('payment_customers') }}"
+          <a href="{{ url_for('sales.payment_customers') }}"
              class="btn btn-outline-secondary">
             <i class="bi bi-people me-1"></i>รายลูกค้า
           </a>
@@ -92,7 +92,7 @@
       </div>
       <div class="col-auto">
         <button class="btn btn-sm btn-primary" type="submit"><i class="bi bi-search"></i></button>
-        <a href="{{ url_for('payment_status') }}" class="btn btn-sm btn-outline-secondary">ล้าง</a>
+        <a href="{{ url_for('sales.payment_status') }}" class="btn btn-sm btn-outline-secondary">ล้าง</a>
       </div>
     </form>
   </div>
@@ -141,7 +141,7 @@
           <td class="text-subtle">{{ row.paid_date or '–' }}</td>
           <td class="text-subtle">{{ row.re_no or '–' }}</td>
           <td class="pe-3 fw-medium">
-            <a href="{{ url_for('sales_doc', doc_base=row.doc_base) }}" class="text-decoration-none">
+            <a href="{{ url_for('sales.sales_doc', doc_base=row.doc_base) }}" class="text-decoration-none">
               {{ row.doc_base }}
             </a>
           </td>

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from datetime import date
 from typing import Optional
 
@@ -44,6 +45,25 @@ def _fmt_baht(val) -> str:
 # by-tag report. They are still real money (so they DO count toward account balance)
 # and remain visible in the per-account ledger.
 TRANSFER_CATEGORIES = ("เงินทุน/เงินโอน",)
+
+# The one expense category whose rows are cashbook-SOURCED salary advances
+# (plan.md decision C5): saving one writes back to HR salary_advances and links
+# the two rows (salary_advance_id). Seeded by mig 128. A row in this category is
+# treated as an advance iff it also resolves a valid employee — see
+# `_resolve_advance_rows`. Excluded from overspend flags (advances are lumpy,
+# finding #5); still counts in the P&L / category summary.
+ADVANCE_CATEGORY = "เงินเดือน (เบิกล่วงหน้า)"
+
+# Phase 3 (plan.md decisions C1-C3): the other two salary-family categories,
+# each hard-blocked from MANUAL cashbook entry because they are sourced
+# elsewhere and auto-post their own linked+locked row there:
+#   - SALARY_CATEGORY: ALWAYS blocked — sourced in HR payroll (ADR 0006);
+#     "จ่ายแล้ว" already auto-posts a locked row via hr.post_salary_payment.
+#   - COMMISSION_CATEGORY: HYBRID blocked — only for an "in-engine" recipient
+#     (see `_is_in_engine_commission_recipient`); an off-system rep (not in
+#     `salespersons`) keeps the cashbook as its manual home (ADR 0008).
+SALARY_CATEGORY = "เงินเดือน"
+COMMISSION_CATEGORY = "จ่ายค่าคอมมิชชั่น"
 
 
 def _tcat_ph():
@@ -279,6 +299,8 @@ def _overspend_flags(conn, month: str, today: Optional[date] = None):
 
     out = []
     for cat in sorted(this_map.keys()):
+        if cat == ADVANCE_CATEGORY:
+            continue  # advances are lumpy — never an operating overspend (finding #5)
         this_v = this_map[cat]
         prev_v = prev_map.get(cat, 0.0)
         diff = this_v - prev_v
@@ -457,6 +479,58 @@ def detail_api():
     return jsonify(rows=rows, summary=summary, dim=dim, key=key)
 
 
+@bp_cashbook.route("/advance-history/<int:employee_id>")
+def advance_history(employee_id):
+    """Read-only JSON for the advance "ดูประวัติ" modal (plan.md C6): an
+    employee's advances in `month` (?month=YYYY-MM, default this month), their
+    TOTAL still-outstanding advances (not-yet-deducted, across all months — the
+    "don't over-advance" figure), and that month's net salary if a run exists."""
+    month = request.args.get("month", "").strip() or date.today().strftime("%Y-%m")
+    conn = database.get_connection()
+    try:
+        emp = conn.execute(
+            "SELECT id, COALESCE(nickname, full_name) AS name FROM employees WHERE id=?",
+            (employee_id,),
+        ).fetchone()
+        if emp is None:
+            abort(404)
+        adv_rows = conn.execute(
+            """SELECT id, advance_date, amount, deducted_in_run_id
+                 FROM salary_advances
+                WHERE employee_id=? AND strftime('%Y-%m', advance_date)=?
+                ORDER BY advance_date, id""",
+            (employee_id, month),
+        ).fetchall()
+        advances = [
+            {"id": r["id"], "advance_date": r["advance_date"], "amount": r["amount"],
+             "deducted": r["deducted_in_run_id"] is not None}
+            for r in adv_rows
+        ]
+        month_total = sum(r["amount"] for r in adv_rows)
+        outstanding_total = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM salary_advances"
+            " WHERE employee_id=? AND deducted_in_run_id IS NULL",
+            (employee_id,),
+        ).fetchone()[0]
+        net_row = conn.execute(
+            """SELECT COALESCE(SUM(pi.net_pay),0) AS np, COUNT(*) AS n
+                 FROM payroll_items pi JOIN payroll_runs pr ON pr.id = pi.run_id
+                WHERE pi.employee_id=? AND pr.year_month=?""",
+            (employee_id, month),
+        ).fetchone()
+        net_pay = net_row["np"] if net_row["n"] else None
+    finally:
+        conn.close()
+    return jsonify(
+        employee={"id": emp["id"], "name": emp["name"]},
+        month=month,
+        advances=advances,
+        month_total=month_total,
+        outstanding_total=outstanding_total,
+        net_pay=net_pay,
+    )
+
+
 @bp_cashbook.route("/account/<int:account_id>")
 def account_ledger(account_id):
     conn = database.get_connection()
@@ -586,7 +660,8 @@ def _get_known_user_tags(conn):
 def _blank_rows(n=1):
     return [
         {"index": i, "direction": "expense", "category": "", "user_category": "",
-         "amount": "", "description": "", "note": "", "txn_date": "", "errors": []}
+         "employee_id": "", "amount": "", "description": "", "note": "",
+         "txn_date": "", "errors": []}
         for i in range(n)
     ]
 
@@ -604,6 +679,7 @@ def _parse_batch_rows(form):
             "direction": form.get(f"rows-{i}-direction", "expense").strip(),
             "category": form.get(f"rows-{i}-category", "").strip(),
             "user_category": form.get(f"rows-{i}-user_category", "").strip(),
+            "employee_id": form.get(f"rows-{i}-employee_id", "").strip(),
             "amount": form.get(f"rows-{i}-amount", "").strip(),
             "description": form.get(f"rows-{i}-description", "").strip(),
             "note": form.get(f"rows-{i}-note", "").strip(),
@@ -611,6 +687,137 @@ def _parse_batch_rows(form):
             "errors": [],
         })
     return rows
+
+
+def _resolve_advance_rows(conn, rows, to_insert):
+    """Enrich every advance-category row in `to_insert` in place and validate
+    its employee (plan.md decision C5). An advance row (category ==
+    ADVANCE_CATEGORY) requires a valid active employee: on success the row is
+    marked `is_advance`, its `employee_id` set, `direction` forced to 'expense',
+    and `user_category` overridden with the employee's display name (nickname or
+    full_name — the auto-filled ผู้ใช้ tag). An invalid/missing employee appends
+    an error to the ORIGINAL `rows` entry (so the form re-renders it) and the row
+    is dropped from the returned insert list. Non-advance rows pass through
+    untouched. Returns the filtered insert list."""
+    rows_by_index = {r["index"]: r for r in rows}
+    kept = []
+    for item in to_insert:
+        if item["category"] != ADVANCE_CATEGORY:
+            kept.append(item)
+            continue
+        emp_id_raw = str(item.get("employee_id") or "").strip()
+        emp = None
+        if emp_id_raw.isdigit():
+            emp = conn.execute(
+                "SELECT id, COALESCE(nickname, full_name) AS display"
+                "  FROM employees WHERE id=? AND is_active=1",
+                (int(emp_id_raw),),
+            ).fetchone()
+        if emp is None:
+            rows_by_index[item["index"]]["errors"].append(
+                "กรุณาเลือกพนักงานสำหรับรายการเบิกล่วงหน้า"
+            )
+            continue
+        item["is_advance"] = True
+        item["employee_id"] = emp["id"]
+        item["direction"] = "expense"
+        item["user_category"] = emp["display"]
+        kept.append(item)
+    return kept
+
+
+def _salespersons_with_real_name(conn, where_sql):
+    """SELECT code, name, real_name FROM salespersons {where_sql}, tolerating
+    a DB that predates mig 129 (no real_name column yet — e.g. a `tmp_db`
+    clone of a live DB not yet migrated). Mirrors `_advance_link_id`'s
+    pre-mig fallback: absent column == every real_name is NULL, the correct
+    "no aliases known yet" default."""
+    try:
+        return conn.execute(
+            f"SELECT code, name, real_name FROM salespersons {where_sql}"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return conn.execute(
+            f"SELECT code, name, NULL AS real_name FROM salespersons {where_sql}"
+        ).fetchall()
+
+
+def _is_in_engine_commission_recipient(conn, recipient):
+    """True if `recipient` (a ผู้ใช้ tag, trimmed) matches an in-engine
+    salesperson's code, name, or real_name alias (plan.md D3 gate — the
+    hard-confirmed double-book risk: เจียรนัย=ต๋อ/06(-L), ทวีเกียรติ=ท/03).
+    Active salespersons are the practical in-engine set. Off-system reps
+    (อัคเรศ, แต, บ่าว, ...) match nothing here and stay manual (hybrid)."""
+    recipient = (recipient or "").strip()
+    if not recipient:
+        return False
+    rows = _salespersons_with_real_name(conn, "WHERE is_active = 1")
+    for r in rows:
+        idents = {r["code"], r["name"]}
+        if r["real_name"]:
+            idents.add(r["real_name"])
+        if recipient in idents:
+            return True
+    return False
+
+
+def _policy_blocked_reason(conn, item):
+    """Thai block-reason string for `item` (a `to_insert` row dict), or None
+    if it's allowed. ONE "linked & locked" concept covering both hard-blocked
+    families (finding #6) — salary is unconditional; commission is hybrid
+    (only an in-engine recipient blocks)."""
+    if item["category"] == SALARY_CATEGORY:
+        return "เงินเดือนบันทึกที่หน้าเงินเดือน (HR) เท่านั้น"
+    if item["category"] == COMMISSION_CATEGORY and _is_in_engine_commission_recipient(
+        conn, item.get("user_category") or ""
+    ):
+        return "คอมมิชชั่นของเซลส์ในระบบบันทึกที่หน้าคอมมิชชั่นเท่านั้น"
+    return None
+
+
+def _apply_policy_blocks(conn, rows, to_insert):
+    """Remove hard-blocked rows (manual เงินเดือน; in-engine จ่ายค่าคอมมิชชั่น)
+    from `to_insert` (plan.md decisions C1-C3, D1, findings #1/#3/#6). Each
+    blocked row's reason is appended to the ORIGINAL `rows` entry (so a
+    re-render highlights it) and the row is reported back separately so the
+    caller can summarize it (bulk: skip + flash summary, still save the rest;
+    single / all-blocked: nothing to save, re-render like a validation error).
+    Off-system commission rows and every other category pass through
+    untouched. Returns (kept, blocked) where `blocked` is a list of
+    {index, category, reason}."""
+    rows_by_index = {r["index"]: r for r in rows}
+    kept = []
+    blocked = []
+    for item in to_insert:
+        reason = _policy_blocked_reason(conn, item)
+        if reason is None:
+            kept.append(item)
+            continue
+        rows_by_index[item["index"]]["errors"].append(reason)
+        blocked.append({"index": item["index"], "category": item["category"], "reason": reason})
+    return kept, blocked
+
+
+def _commission_reps_for_picker(conn):
+    """Active salespersons for the commission recipient picker (plan.md C7):
+    each carries its real_name alias (if any, seeded by mig 129's D3 gate) so
+    Put recognizes an in-engine rep instead of typing them as free-text
+    off-system — which would double-book against the /commission auto-post.
+    `value` is what actually gets submitted as the ผู้ใช้ tag on selection, so
+    it MUST be one of the identifiers `_is_in_engine_commission_recipient`
+    matches against (the real_name alias if set, else the salesperson's own
+    `name`); `label` is the human-readable alias shown in the dropdown.
+    `code`/`name`/`real_name` are also returned (raw) so the template's JS can
+    build the SAME in-engine identifier set the server checks, for a live
+    redirect-button hint without a round-trip."""
+    rows = _salespersons_with_real_name(conn, "WHERE is_active=1 ORDER BY code")
+    out = []
+    for r in rows:
+        value = r["real_name"] or r["name"]
+        label = f'{r["real_name"]} ({r["name"]})' if r["real_name"] else r["name"]
+        out.append({"code": r["code"], "name": r["name"], "real_name": r["real_name"],
+                    "value": value, "label": label})
+    return out
 
 
 def _validate_batch(rows, default_date):
@@ -706,6 +913,9 @@ def new_transaction():
     try:
         accounts = hrq.get_active_cashbook_accounts(conn)
         account_ids = {a["id"] for a in accounts}
+        # Active employees for the advance-row employee picker (category
+        # ADVANCE_CATEGORY swaps the ผู้ใช้ cell to this dropdown, plan.md C5).
+        employees = hrq.get_employees(active_only=True)
 
         if request.method == "POST":
             txn_date = request.form.get("txn_date", "").strip() or date.today().isoformat()
@@ -716,6 +926,10 @@ def new_transaction():
 
             rows = _parse_batch_rows(request.form)
             to_insert = _validate_batch(rows, txn_date)
+            # Advance rows (category == ADVANCE_CATEGORY) resolve + require an
+            # employee; invalid ones get a row error here and drop out of
+            # to_insert (plan.md C5). Must run BEFORE row_errors is computed.
+            to_insert = _resolve_advance_rows(conn, rows, to_insert)
 
             form_errors = []
             if account_id not in account_ids:
@@ -736,7 +950,47 @@ def new_transaction():
                     rows=rows,
                     categories_by_direction=_categories_by_direction(conn),
                     known_tags=_get_known_user_tags(conn),
+                    employees=employees,
+                    advance_category=ADVANCE_CATEGORY,
+                    salary_category=SALARY_CATEGORY,
+                    commission_category=COMMISSION_CATEGORY,
+                    commission_reps=_commission_reps_for_picker(conn),
                 )
+
+            # Policy blocks (plan.md C1-C3, D1, findings #1/#3/#6): manual
+            # เงินเดือน is ALWAYS blocked; manual จ่ายค่าคอมมิชชั่น is blocked only
+            # for an in-engine recipient (hybrid — off-system reps pass through).
+            # Blocked rows drop out of to_insert; genuine validation errors
+            # above already rejected the whole batch, so anything remaining
+            # here is otherwise-valid and safe to keep saving.
+            to_insert, policy_blocked = _apply_policy_blocks(conn, rows, to_insert)
+            if policy_blocked and not to_insert:
+                # Nothing left to save (single-mode block, or a bulk batch
+                # that was ENTIRELY policy-blocked) — re-render like a
+                # validation error, no insert.
+                for b in policy_blocked:
+                    flash(b["reason"], "danger")
+                return render_template(
+                    "cashbook/new.html",
+                    accounts=accounts,
+                    txn_date=txn_date,
+                    account_id=account_id_raw,
+                    bulk_mode=bulk_mode,
+                    rows=rows,
+                    categories_by_direction=_categories_by_direction(conn),
+                    known_tags=_get_known_user_tags(conn),
+                    employees=employees,
+                    advance_category=ADVANCE_CATEGORY,
+                    salary_category=SALARY_CATEGORY,
+                    commission_category=COMMISSION_CATEGORY,
+                    commission_reps=_commission_reps_for_picker(conn),
+                )
+            if policy_blocked:
+                # Bulk mode with at least one valid row left (decision D1):
+                # skip the blocked rows + summarize, still save the rest.
+                from collections import Counter
+                for reason, n in Counter(b["reason"] for b in policy_blocked).items():
+                    flash(f"ข้าม {n} แถว: {reason}", "warning")
 
             # Duplicate-row guard (decision D2, plan.md): warn-then-confirm,
             # never silently block or silently double-insert.
@@ -757,6 +1011,11 @@ def new_transaction():
                         show_duplicate_confirm=True,
                         categories_by_direction=_categories_by_direction(conn),
                         known_tags=_get_known_user_tags(conn),
+                        employees=employees,
+                        advance_category=ADVANCE_CATEGORY,
+                        salary_category=SALARY_CATEGORY,
+                        commission_category=COMMISSION_CATEGORY,
+                        commission_reps=_commission_reps_for_picker(conn),
                     )
 
             # All rows valid (and no unconfirmed duplicates) — insert within one
@@ -769,15 +1028,39 @@ def new_transaction():
             for r in to_insert:
                 _upsert_category(conn, r["category"], r["direction"])
             for r in to_insert:
-                conn.execute(
-                    """INSERT INTO cashbook_transactions
-                       (account_id, txn_date, direction, category, user_category,
-                        amount, description, note, created_by)
-                       VALUES (?,?,?,?,?,?,?,?,?)""",
-                    (account_id, r["effective_date"], r["direction"], r["category"],
-                     r["user_category"] or None, r["amount"],
-                     r["description"] or None, r["note"] or None, created_by),
-                )
+                if r.get("is_advance"):
+                    # Cashbook-sourced advance: write the HR salary_advances row
+                    # first (get its id), then the linked cashbook row — same
+                    # conn, same commit, so the pair is atomic (finding #2). The
+                    # cashbook row carries salary_advance_id; the ผู้ใช้ tag was
+                    # set to the employee display in _resolve_advance_rows.
+                    adv_id = conn.execute(
+                        """INSERT INTO salary_advances
+                           (employee_id, advance_date, amount, from_account_id, note)
+                           VALUES (?,?,?,?,?)""",
+                        (r["employee_id"], r["effective_date"], r["amount"],
+                         account_id, r["note"] or None),
+                    ).lastrowid
+                    conn.execute(
+                        """INSERT INTO cashbook_transactions
+                           (account_id, txn_date, direction, category, user_category,
+                            amount, description, note, created_by, salary_advance_id)
+                           VALUES (?,?,'expense',?,?,?,?,?,?,?)""",
+                        (account_id, r["effective_date"], r["category"],
+                         r["user_category"] or None, r["amount"],
+                         r["description"] or None, r["note"] or None, created_by,
+                         adv_id),
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO cashbook_transactions
+                           (account_id, txn_date, direction, category, user_category,
+                            amount, description, note, created_by)
+                           VALUES (?,?,?,?,?,?,?,?,?)""",
+                        (account_id, r["effective_date"], r["direction"], r["category"],
+                         r["user_category"] or None, r["amount"],
+                         r["description"] or None, r["note"] or None, created_by),
+                    )
             conn.commit()
             flash(f"บันทึก {len(to_insert)} รายการเรียบร้อย", "success")
             return redirect(url_for("cashbook.account_ledger", account_id=account_id))
@@ -792,13 +1075,18 @@ def new_transaction():
             rows=_blank_rows(),
             categories_by_direction=_categories_by_direction(conn),
             known_tags=_get_known_user_tags(conn),
+            employees=employees,
+            advance_category=ADVANCE_CATEGORY,
+            salary_category=SALARY_CATEGORY,
+            commission_category=COMMISSION_CATEGORY,
+            commission_reps=_commission_reps_for_picker(conn),
         )
     finally:
         conn.close()
 
 
 def _reject_if_salary_row(row):
-    """Salary pay-event rows (payroll_item_id set, posted by a later phase)
+    """Salary pay-event rows (payroll_item_id set, posted by the HR pay-event)
     are locked — never editable/deletable from the cashbook. Flashes + aborts
     403 if locked."""
     if row["payroll_item_id"] is not None:
@@ -806,12 +1094,56 @@ def _reject_if_salary_row(row):
         abort(403)
 
 
+def _advance_link_id(row):
+    """salary_advance_id of a cashbook row, or None if that column is absent
+    (a DB predating mig 128) or NULL. A pre-mig DB has no advances, so absent ==
+    "not an advance row" — the correct fallback. sqlite3.Row raises
+    IndexError/KeyError on a missing key, hence the guard."""
+    try:
+        return row["salary_advance_id"]
+    except (IndexError, KeyError):
+        return None
+
+
+def _reject_if_advance_edit(row):
+    """Advance-linked rows (salary_advance_id set) are NOT editable in place —
+    the cashbook is their source of truth, and a correction is delete + re-add
+    while still un-deducted (plan.md decision A / C5d). Deletion is handled
+    separately (with a cascade to salary_advances). Flashes + aborts 403."""
+    if _advance_link_id(row) is not None:
+        flash("รายการเบิกล่วงหน้าแก้ไขที่นี่ไม่ได้ — ให้ลบแล้วเพิ่มใหม่ "
+              "(ทำได้ก่อนถูกหักในรอบเงินเดือน)", "danger")
+        abort(403)
+
+
+def _commission_link_id(row):
+    """commission_payout_id of a cashbook row, or None if that column is
+    absent (a DB predating mig 129) or NULL. Mirrors _advance_link_id."""
+    try:
+        return row["commission_payout_id"]
+    except (IndexError, KeyError):
+        return None
+
+
+def _reject_if_commission_row(row):
+    """Commission-linked rows (commission_payout_id set, posted by the
+    /commission auto-post — plan.md decision C1/C4, finding #6) are locked —
+    never editable/deletable from the cashbook. They are removed only via
+    /commission's "ยกเลิกการจ่าย" (commission.delete_payout), which cascades
+    the linked row itself — mirror of _reject_if_salary_row for
+    payroll_item_id. Flashes + aborts 403 if locked."""
+    if _commission_link_id(row) is not None:
+        flash("รายการนี้เป็นรายการคอมมิชชั่นที่ผูกกับหน้าคอมมิชชั่น — "
+              "แก้ไข/ลบที่นี่ไม่ได้ (ยกเลิกได้ที่หน้าคอมมิชชั่นเท่านั้น)", "danger")
+        abort(403)
+
+
 @bp_cashbook.route("/txn/<int:txn_id>/edit", methods=["POST"])
 def txn_edit(txn_id):
     """Edit a manual row. Submitted from the edit modal on account_ledger.html
     (templates/cashbook/txn_edit.html) — there is no separate GET page, so on
-    a validation error we flash + redirect back to the ledger (same pattern as
-    hr.py::advance_edit) rather than re-rendering a form."""
+    a validation error we flash + redirect back to the ledger rather than
+    re-rendering a form. Salary and advance-linked rows are rejected (locked)."""
     conn = database.get_connection()
     try:
         row = conn.execute(
@@ -820,6 +1152,8 @@ def txn_edit(txn_id):
         if row is None:
             abort(404)
         _reject_if_salary_row(row)
+        _reject_if_advance_edit(row)
+        _reject_if_commission_row(row)
 
         account_id_raw = request.form.get("account_id", "").strip()
         txn_date = request.form.get("txn_date", "").strip()
@@ -904,9 +1238,38 @@ def txn_delete(txn_id):
         if row is None:
             abort(404)
         _reject_if_salary_row(row)
+        _reject_if_commission_row(row)
 
         account_id = row["account_id"]
+        adv_id = _advance_link_id(row)
+        # Fast-path reject for an advance already deducted by a payroll run
+        # (the common locked case) — avoids deleting the cashbook row then
+        # rolling it back.
+        if adv_id is not None:
+            adv = conn.execute(
+                "SELECT deducted_in_run_id FROM salary_advances WHERE id=?", (adv_id,)
+            ).fetchone()
+            if adv is not None and adv["deducted_in_run_id"] is not None:
+                flash("รายการเบิกล่วงหน้านี้ถูกหักในรอบเงินเดือนแล้ว — ลบไม่ได้", "danger")
+                abort(403)
+
+        # Delete the cashbook row (child) FIRST — the salary_advances FK forbids
+        # dropping the parent while this row still references it.
         conn.execute("DELETE FROM cashbook_transactions WHERE id=?", (txn_id,))
+        if adv_id is not None:
+            # Cascade-delete the advance, but ONLY if still un-deducted. The
+            # WHERE ... IS NULL makes this atomic against the gunicorn -w 2 race
+            # (a payroll run could set deducted_in_run_id between the read above
+            # and here): 0 rows matched -> a run just deducted it -> roll the
+            # whole txn back (undoing the cashbook delete too) and abort.
+            cur = conn.execute(
+                "DELETE FROM salary_advances WHERE id=? AND deducted_in_run_id IS NULL",
+                (adv_id,),
+            )
+            if cur.rowcount == 0:
+                conn.rollback()
+                flash("รายการเบิกล่วงหน้านี้ถูกหักในรอบเงินเดือนแล้ว — ลบไม่ได้", "danger")
+                abort(403)
         # The mig 076 BEFORE DELETE trigger already writes an audit_log DELETE
         # row (user=NULL). This explicit row attributes it to the actor, same
         # pattern as hr.py::reopen_run / the mig 076 UPDATE trigger above.
