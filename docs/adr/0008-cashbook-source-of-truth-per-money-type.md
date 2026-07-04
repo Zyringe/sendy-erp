@@ -1,6 +1,6 @@
 # ADR 0008 — One source of truth per salary-family money type (asymmetric)
 
-Status: Proposed · 2026-07-03 · builds on ADR 0006
+Status: Accepted · 2026-07-04 · builds on ADR 0006
 
 ## Context
 

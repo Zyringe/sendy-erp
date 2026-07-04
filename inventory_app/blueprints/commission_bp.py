@@ -20,8 +20,20 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 import models
 from database import get_connection
 import commission as commission_mod
+import hr_queries as hrq
+from blueprints.cashbook import _default_account_id_for_user
 
 bp_commission = Blueprint('commission', __name__)
+
+
+def _commission_pay_accounts_ctx(conn):
+    """(pay_accounts, default_account_id) for the commission payout account
+    picker (plan.md decision C4) — active non-transfer cashbook accounts +
+    the logged-in user's data-entry default (mirrors the salary pay-event
+    account picker on /hr/payroll/<run_id>)."""
+    accounts = hrq.get_active_cashbook_accounts(conn, non_transfer_only=True)
+    default_account_id = _default_account_id_for_user(conn, session.get('user_id'))
+    return accounts, default_account_id
 
 
 def _months_with_payment_activity():
@@ -57,6 +69,7 @@ def commission_dashboard():
         "LEFT JOIN commission_tiers t ON t.id = a.tier_id "
         "ORDER BY s.code"
     ).fetchall()
+    pay_accounts, default_account_id = _commission_pay_accounts_ctx(conn)
     conn.close()
     sp_meta = {r['code']: dict(r) for r in sp_rows}
 
@@ -114,7 +127,8 @@ def commission_dashboard():
     today = date.today().isoformat()
     return render_template('commission.html',
                            rows=full_rows, months=months, year_month=year_month,
-                           summary=summary, today=today)
+                           summary=summary, today=today,
+                           pay_accounts=pay_accounts, default_account_id=default_account_id)
 
 
 @bp_commission.route('/commission/payout', methods=['POST'])
@@ -139,6 +153,24 @@ def commission_record_payout():
     redirect_to = request.form.get('redirect_to') or url_for('commission.commission_dashboard',
                                                               month=year_month)
 
+    # Pay-from account (plan.md decision C4): form override → else the logged-in
+    # user's data-entry default. Validated ONCE up front — an invalid/missing
+    # account inserts nothing (no partial batch, no auto-post to a bad account).
+    conn = get_connection()
+    account_id_raw = request.form.get('account_id', '').strip()
+    if account_id_raw.isdigit():
+        account_id = int(account_id_raw)
+    else:
+        account_id = _default_account_id_for_user(conn, session.get('user_id'))
+    account = conn.execute(
+        "SELECT id FROM cashbook_accounts WHERE id=? AND is_active=1 AND is_transfer=0",
+        (account_id,),
+    ).fetchone() if account_id else None
+    conn.close()
+    if account is None:
+        flash('กรุณาเลือกบัญชีจ่ายเงินที่ถูกต้องและยังใช้งานอยู่', 'danger')
+        return redirect(redirect_to)
+
     # Mode 1: per-invoice tick-list
     inv_list = request.form.getlist('invoice_no')
     if inv_list:
@@ -147,6 +179,7 @@ def commission_record_payout():
             flash('ขาด sp_code', 'danger')
             return redirect(redirect_to)
         inserted = 0
+        errors = []
         for inv in inv_list:
             amt_raw = request.form.get(f'amount_{inv}', '').strip()
             if not amt_raw:
@@ -164,16 +197,21 @@ def commission_record_payout():
             # lookup only counts year_month <= the selected month).
             cycle_ym = commission_mod.get_invoice_cycle_month(sp_code, inv) \
                 or year_month
-            commission_mod.record_payout(
-                year_month=cycle_ym, salesperson_code=sp_code,
-                amount_paid=amt, paid_date=paid_date,
-                paid_method=paid_method, note=note, paid_by=paid_by,
-                invoice_no=inv,
-            )
-            inserted += 1
+            try:
+                commission_mod.record_payout(
+                    year_month=cycle_ym, salesperson_code=sp_code,
+                    amount_paid=amt, paid_date=paid_date,
+                    paid_method=paid_method, note=note, paid_by=paid_by,
+                    invoice_no=inv, account_id=account_id,
+                )
+                inserted += 1
+            except ValueError as e:
+                errors.append(str(e))
+        for e in errors:
+            flash(e, 'danger')
         if inserted:
             flash(f'บันทึกการจ่าย commission แล้ว {inserted} ใบ', 'success')
-        else:
+        elif not errors:
             flash('ไม่ได้บันทึก (ยอดเป็น 0 หรือว่างเปล่า)', 'warning')
         return redirect(redirect_to)
 
@@ -184,6 +222,7 @@ def commission_record_payout():
         if single:
             sp_codes = [single]
     inserted = 0
+    errors = []
     for sp in sp_codes:
         amt_raw = request.form.get(f'amount_{sp}', '').strip() \
                   or request.form.get('amount', '').strip()
@@ -195,15 +234,21 @@ def commission_record_payout():
             continue
         if amt <= 0:
             continue
-        commission_mod.record_payout(
-            year_month=year_month, salesperson_code=sp,
-            amount_paid=amt, paid_date=paid_date,
-            paid_method=paid_method, note=note, paid_by=paid_by,
-        )
-        inserted += 1
+        try:
+            commission_mod.record_payout(
+                year_month=year_month, salesperson_code=sp,
+                amount_paid=amt, paid_date=paid_date,
+                paid_method=paid_method, note=note, paid_by=paid_by,
+                account_id=account_id,
+            )
+            inserted += 1
+        except ValueError as e:
+            errors.append(str(e))
+    for e in errors:
+        flash(e, 'danger')
     if inserted:
         flash(f'บันทึกการจ่าย commission แล้ว {inserted} รายการ', 'success')
-    else:
+    elif not errors:
         flash('ไม่ได้บันทึก (เลือกจำนวน + ยอดให้ถูก)', 'warning')
     return redirect(redirect_to)
 
@@ -216,7 +261,8 @@ def commission_delete_payout(payout_id):
         (payout_id,)
     ).fetchone()
     conn.close()
-    commission_mod.delete_payout(payout_id)
+    actor = session.get('display_name') or session.get('username') or ''
+    commission_mod.delete_payout(payout_id, actor=actor)
     flash('ลบรายการจ่ายแล้ว', 'success')
     if row:
         return redirect(url_for('commission.commission_payouts_list', month=row['year_month']))
@@ -295,6 +341,7 @@ def commission_drilldown(sp_code):
     conn = get_connection()
     sp_row = conn.execute('SELECT name FROM salespersons WHERE code = ?',
                           (sp_code,)).fetchone()
+    pay_accounts, default_account_id = _commission_pay_accounts_ctx(conn)
     conn.close()
     sp_name = sp_row['name'] if sp_row else sp_code
     # Per-invoice commission for the "tick to mark paid" workflow.
@@ -337,7 +384,8 @@ def commission_drilldown(sp_code):
                            paid_amount=paid_amount,
                            cumulative_remaining=cumulative_remaining,
                            sort_col=sort_col, sort_order=sort_order,
-                           today=date.today().isoformat())
+                           today=date.today().isoformat(),
+                           pay_accounts=pay_accounts, default_account_id=default_account_id)
 
 
 @bp_commission.route('/commission/export')

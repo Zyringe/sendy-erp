@@ -13,11 +13,25 @@ earliest receipt the salesperson collected against it.
 from __future__ import annotations
 
 import os
+os.environ.setdefault('SKIP_DB_INIT', '1')
+
 import sqlite3
 import sys
 
+import pytest
+
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(REPO, "inventory_app"))
+
+
+@pytest.fixture
+def migrated_db(tmp_db):
+    """tmp_db with pending migrations applied (Phase 3 needs mig 129's
+    cashbook_transactions.commission_payout_id — the route now auto-posts a
+    linked cashbook row on every payout, see commission.record_payout)."""
+    import database
+    database.init_db()
+    return tmp_db
 
 
 def _seed_receipt(db_path, *, re_no, date_iso, salesperson, doc_no,
@@ -111,9 +125,10 @@ def _payout_rows(db_path, doc_no):
         conn.close()
 
 
-def test_route_stamps_receipt_cycle_not_page_month(tmp_db):
+def test_route_stamps_receipt_cycle_not_page_month(migrated_db):
     """The bug repro: tick a May-collected invoice from the June page →
     payout must land in year_month=2026-05, not 2026-06."""
+    tmp_db = migrated_db
     _seed_receipt(tmp_db, re_no="RE_RT_1", date_iso="2026-05-08",
                   salesperson="ZZ", doc_no="IV_RT_1")
     client = _admin_client(tmp_db)
@@ -133,8 +148,9 @@ def test_route_stamps_receipt_cycle_not_page_month(tmp_db):
         f"expected receipt-cycle month 2026-05, got {rows[0]['year_month']}")
 
 
-def test_route_falls_back_to_form_month_when_no_receipt(tmp_db):
+def test_route_falls_back_to_form_month_when_no_receipt(migrated_db):
     """Defensive: an invoice with no qualifying receipt keeps the form month."""
+    tmp_db = migrated_db
     client = _admin_client(tmp_db)
     resp = client.post("/commission/payout", data={
         "month": "2026-06",
@@ -149,9 +165,10 @@ def test_route_falls_back_to_form_month_when_no_receipt(tmp_db):
     assert rows[0]["year_month"] == "2026-06"
 
 
-def test_mode2_month_level_still_uses_form_month(tmp_db):
+def test_mode2_month_level_still_uses_form_month(migrated_db):
     """Mode 2 (per-salesperson, no invoice_no) is an explicit month-level
     payout — it must keep using the form's month."""
+    tmp_db = migrated_db
     client = _admin_client(tmp_db)
     resp = client.post("/commission/payout", data={
         "month": "2026-06",
