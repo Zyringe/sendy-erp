@@ -65,10 +65,10 @@ def test_every_slot_has_required_render_fields():
     ('sales.sales_view', 'trade'),                  # accounting module, trade side
     ('partners.customer_list', 'trade'),
     ('ecommerce.ecommerce', 'trade'),
-    ('accounting_summary', 'accounting'),     # accounting module, finance side
-    ('cashflow_dashboard', 'accounting'),
-    ('revenue_dashboard', 'accounting'),
-    ('ar_followup', 'accounting'),
+    ('accounting.accounting_summary', 'accounting'),     # accounting module, finance side
+    ('accounting.cashflow_dashboard', 'accounting'),
+    ('accounting.revenue_dashboard', 'accounting'),
+    ('accounting.ar_followup', 'accounting'),
     ('hr.dashboard', 'hr'),
     ('hr.payroll_list', 'hr'),
 ])
@@ -89,8 +89,8 @@ def test_no_slot_active_on_overview_and_data_pages():
 def test_trade_and_accounting_are_mutually_exclusive():
     # การค้า and บัญชี share the 'accounting' module — exactly one (or neither)
     # may light up, never both, or the nav looks buggy.
-    for endpoint in ('sales.trade_dashboard', 'sales.sales_view', 'accounting_summary',
-                     'cashflow_dashboard', 'ar_followup'):
+    for endpoint in ('sales.trade_dashboard', 'sales.sales_view', 'accounting.accounting_summary',
+                     'accounting.cashflow_dashboard', 'accounting.ar_followup'):
         active = [s['key'] for s in build_mobile_nav_slots('admin', endpoint)
                   if s['active'] and s['key'] in ('trade', 'accounting')]
         assert len(active) <= 1, f"{endpoint} lit both: {active}"

@@ -5,7 +5,7 @@
 {% block content %}
 
 <div class="mb-3">
-  <a href="{{ url_for('ar_followup') }}" class="btn btn-sm btn-outline-secondary">
+  <a href="{{ url_for('accounting.ar_followup') }}" class="btn btn-sm btn-outline-secondary">
     <i class="bi bi-arrow-left"></i> กลับรายการ
   </a>
   {% if customer_code %}<span class="text-subtle small ms-2">รหัส [{{ customer_code }}]</span>{% endif %}
@@ -44,7 +44,7 @@
 <div class="card mb-3">
   <div class="card-header py-2"><strong>บันทึกการติดตามใหม่</strong></div>
   <div class="card-body py-3">
-    <form method="post" action="{{ url_for('ar_followup_log_new') }}">
+    <form method="post" action="{{ url_for('accounting.ar_followup_log_new') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="customer" value="{{ customer_name }}">
       <input type="hidden" name="customer_code" value="{{ customer_code or '' }}">
@@ -186,7 +186,7 @@
             <td class="small text-subtle">{{ f.created_by }}</td>
             {% if is_admin %}
             <td class="text-end">
-              <form method="post" action="{{ url_for('ar_followup_log_delete', log_id=f.id) }}"
+              <form method="post" action="{{ url_for('accounting.ar_followup_log_delete', log_id=f.id) }}"
                     onsubmit="return confirm('ลบรายการนี้?');" class="d-inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="customer_key" value="{{ customer_key }}">

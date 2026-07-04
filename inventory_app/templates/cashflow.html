@@ -29,7 +29,7 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
-        <a href="{{ url_for('cashflow_dashboard') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+        <a href="{{ url_for('accounting.cashflow_dashboard') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
       </div>
       <div class="col-auto align-self-end text-subtle small">
         ช่วง: {{ date_from }} – {{ date_to }}
@@ -295,14 +295,14 @@
   {% endif %}
   <div class="card-footer small text-subtle">
     {% if show_all_credit %}
-      <a href="{{ url_for('cashflow_dashboard', **{'from': from_month, 'to': to_month}) }}">
+      <a href="{{ url_for('accounting.cashflow_dashboard', **{'from': from_month, 'to': to_month}) }}">
         ซ่อนรายการต่ำกว่า ฿5 (rounding noise)
       </a>
     {% else %}
       {% if credit_hidden_count > 0 %}
         ซ่อน {{ credit_hidden_count }} รายการต่ำกว่า ฿5 (rounding noise) —
       {% endif %}
-      <a href="{{ url_for('cashflow_dashboard',
+      <a href="{{ url_for('accounting.cashflow_dashboard',
                           show_all=1,
                           **{'from': from_month, 'to': to_month}) }}">
         แสดงทั้งหมด (show_all=1)

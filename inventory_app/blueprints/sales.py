@@ -118,10 +118,10 @@ def purchases_doc(doc_base):
 @bp_sales.route('/payment-status')
 def payment_status():
     """Redirect stub — content moved to /ar?tab=invoices (AR consolidation)."""
-    return redirect(url_for('ar_dashboard', tab='invoices'))
+    return redirect(url_for('accounting.ar_dashboard', tab='invoices'))
 
 
 @bp_sales.route('/payment-status/customers')
 def payment_customers():
     """Redirect stub — content moved to /ar?tab=customers (AR consolidation)."""
-    return redirect(url_for('ar_dashboard', tab='customers'))
+    return redirect(url_for('accounting.ar_dashboard', tab='customers'))
