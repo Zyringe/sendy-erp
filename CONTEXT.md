@@ -208,10 +208,28 @@
 ## Product labels (ป้ายสินค้า — the `/labels` print feature)
 
 - **ป้ายสินค้า (product label / hang-tag)** — an **own-brand compliance sticker** printed and
-  stuck on the product: name, brand, an EAN-13 barcode, วิธีใช้ (usage), ข้อแนะนำ (warning),
-  บรรจุ (packaging), size, plus a fixed **company block** and a fixed price line. Physical media,
-  printed to a **GoDEX thermal printer**. This is the concept behind Put's 2017 Excel barcode master.
-  _Avoid_: "price tag", "sticker" (ambiguous — see below).
+  stuck on the product: name, brand, วิธีใช้ (usage), ข้อแนะนำ (warning), บรรจุ (packaging), size,
+  plus a fixed **company block** and a fixed price line. Printed in one of two **label modes**
+  (บาร์โค้ด / สคบ — see below) to a **GoDEX thermal printer**. This is the concept behind Put's 2017
+  Excel barcode master. _Avoid_: "price tag", "sticker" (ambiguous — see below).
+
+- **label mode (บาร์โค้ด / สคบ)** — a ป้ายสินค้า prints in one of two modes, chosen **per print run**,
+  NOT stored on the product: **บาร์โค้ด** (the EAN-13 barcode tag) or **สคบ** (the no-barcode
+  compliance tag). สคบ works for every product; บาร์โค้ด only for rows that carry a barcode (a
+  barcodeless product is flagged and excluded from a barcode run). Each mode × size has ONE fixed
+  layout applied to all products. _Avoid_: "label type" (mode is a print-time choice, not a product
+  attribute).
+
+- **สคบ label (ป้ายคำแนะนำ สคบ)** — the **no-barcode** compliance/instruction ป้ายสินค้า mandated by
+  the **สคบ** (สำนักงานคณะกรรมการคุ้มครองผู้บริโภค — Office of the Consumer Protection Board):
+  product name + เครื่องหมายการค้า, วิธีใช้, ข้อแนะนำ, ผู้จัดจำหน่าย, ราคา, บรรจุ. Same media/sizes
+  as the barcode tag. An optional field a product has no data for **collapses** (its line drops);
+  name, ราคา and ผู้จัดจำหน่าย always print. _Avoid_: "instruction label", "info sticker".
+
+- **card registration (per-card offset)** — where each label sits across a **multi-up** roll,
+  positioned by a per-card horizontal offset (the small roll is 3-up). A property of the **physical
+  roll** — it drifts per roll — NOT of the layout, and it lives server-side so Mac (tuning) and
+  Windows (printing) agree. _Avoid_: "margin" (ambiguous with a label's inner padding), "gap".
 
 - **price tag / shelf label** — the *other*, simpler label the existing `/labels` page renders
   today: product name + a live **numeric price** + barcode, for shelf/หน้าร้าน display. A **different
