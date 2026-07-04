@@ -249,7 +249,8 @@ def search_api():
     try:
         rows = conn.execute(
             """
-            SELECT id, barcode, product_name, brand, packaging_th, size_th, label_size
+            SELECT id, barcode, product_name, brand, packaging_th, size_th, label_size,
+                   usage_th, warning_th
               FROM product_labels
              WHERE is_active = 1
                AND (product_name LIKE :q OR barcode LIKE :q OR brand LIKE :q)
@@ -272,5 +273,7 @@ def search_api():
         'packaging_th': r['packaging_th'] or '',
         'size_th':      r['size_th'] or '',
         'label_size':   r['label_size'],
+        'usage_th':     r['usage_th'] or '',
+        'warning_th':   r['warning_th'] or '',
     } for r in rows]
     return jsonify({'items': items})

@@ -14,6 +14,7 @@ Python 3.9 — Optional[...] not X | None.
 """
 import os
 import sqlite3
+from urllib.parse import quote
 
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
@@ -102,6 +103,26 @@ def test_search_api_returns_matching_rows(tmp_db):
     assert match['label_size'] == row['label_size']
 
 
+def test_search_api_returns_scb_fields(tmp_db):
+    # สคบ (no-barcode) mode needs วิธีใช้ + ข้อแนะนำ from the picker payload.
+    row = _conn(tmp_db).execute(
+        "SELECT id, product_name, usage_th, warning_th FROM product_labels "
+        "WHERE is_active = 1 AND usage_th IS NOT NULL AND usage_th <> '' LIMIT 1"
+    ).fetchone()
+    assert row is not None, "fixture DB should carry a row with usage_th"
+
+    # quote() the name: raw '+' in a query string decodes to a space (row 1's
+    # name is "กรรไกรตัดกิ่ง+เลื่อย 'SENDAI'"), which would miss the LIKE.
+    data = _client('admin').get(
+        '/api/labels/search?q=' + quote(row['product_name'])
+    ).get_json()
+    match = next((it for it in data['items'] if it['id'] == row['id']), None)
+    assert match is not None
+    assert 'usage_th' in match and 'warning_th' in match
+    assert match['usage_th'] == row['usage_th']
+    assert match['warning_th'] == (row['warning_th'] or '')
+
+
 def test_search_api_by_barcode(tmp_db):
     row = _conn(tmp_db).execute(
         "SELECT barcode FROM product_labels WHERE barcode IS NOT NULL AND barcode <> '' "
@@ -135,3 +156,28 @@ def test_print_page_nav_visible_to_staff(tmp_db):
     # labels links — staff must see the print link too.
     html = _client('staff').get('/labels/print').get_data(as_text=True)
     assert html.count('href="/labels/print"') >= 2
+
+
+# ── สคบ mode toggle + confirmed small-roll geometry (2026-07-04 build) ────────
+
+def test_print_page_has_scb_mode_toggle(tmp_db):
+    html = _client('admin').get('/labels/print').get_data(as_text=True)
+    assert 'id="mode-barcode"' in html
+    assert 'id="mode-scb"' in html
+    assert 'ป้าย สคบ' in html
+
+
+def test_print_page_small_geometry_is_97mm(tmp_db):
+    # The stale 90mm flex assumption was replaced by the confirmed 97mm
+    # absolute per-card layout (SMALL_OFFSETS 0/33/67). Guard both the on-screen
+    # @page value and the offsets constant so a regression to 90mm is caught.
+    html = _client('admin').get('/labels/print').get_data(as_text=True)
+    assert '97mm 25mm' in html
+    assert 'SMALL_OFFSETS = [0, 33, 67]' in html
+    assert '90mm 25mm' not in html
+
+
+def test_print_page_passes_distributor(tmp_db):
+    # สคบ labels print ผู้จัดจำหน่าย from the company block.
+    html = _client('admin').get('/labels/print').get_data(as_text=True)
+    assert 'const DISTRIBUTOR' in html

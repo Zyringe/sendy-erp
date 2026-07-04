@@ -25,8 +25,9 @@
   .label-search-item .pname .meta { font-size: .72rem; color: var(--text-muted); }
   .label-search-item .bc-flag { font-size: .7rem; }
 
-  /* ── Size tabs ── */
-  .size-tabs .btn.active { box-shadow: inset 0 0 0 2px var(--bsn-gold); }
+  /* ── Size tabs + mode tabs ── */
+  .size-tabs .btn.active,
+  .mode-tabs .btn.active { box-shadow: inset 0 0 0 2px var(--bsn-gold); }
 
   /* ── Queue ── */
   .label-queue table { font-size: .85rem; }
@@ -63,16 +64,30 @@
   .row-big .lbl .pack  { font-size: 5pt; }
   .row-big .lbl .bc img { height: 10mm; }
 
-  /* ── Small: 30 x 25mm, 3-up, 0 gap ──
-     ⚠ 90mm web / 0-gap is ASSUMED (mirrors the big roll), not yet confirmed
-     against a physical small-roll sample — see plan.md "Open items". */
-  .row-small { display: flex; width: 90mm; height: 25mm; }
-  .row-small .lbl { width: 30mm; height: 25mm; padding: 1.2mm 1.5mm; }
+  /* ── Small: 30 x 25mm, 3-up on a 97mm web ──
+     Confirmed geometry (2026-07-04 physical run): per-card horizontal offsets
+     DRIFT, so cards are ABSOLUTELY positioned; each card's `left` is set inline
+     from JS SMALL_OFFSETS (0/33/67mm here) — the seed for the future admin
+     alignment-offset config. Do NOT switch back to a flex row / uniform gap. */
+  .row-small { position: relative; width: 97mm; height: 25mm; }
+  .row-small .lbl { position: absolute; top: 0; width: 30mm; height: 25mm; padding: 1.2mm 1.5mm; }
   .row-small .lbl .brand { font-size: 5pt; }
   .row-small .lbl .price { font-size: 3.3pt; }
   .row-small .lbl .name  { font-size: 5.5pt; }
   .row-small .lbl .pack  { font-size: 3.8pt; }
   .row-small .lbl .bc img { height: 8mm; }
+
+  /* ── สคบ (compliance / no-barcode) content — proven layouts from
+     label-templates/scb-label-{big,small}. Name is a plain block (not the
+     2-line barcode clamp); fields are bold-label lines. ── */
+  .lbl.scb .name { display: block; -webkit-line-clamp: none; line-height: 1.12; margin-bottom: .8mm; }
+  .lbl.scb .f    { color: #000; }
+  .lbl.scb .f b  { font-weight: 700; }
+  .row-big  .lbl.scb .name { font-size: 7pt; font-weight: 700; }
+  .row-big  .lbl.scb .f    { font-size: 5.4pt; line-height: 1.28; }
+  .row-small .lbl.scb        { padding: 1.1mm 0.9mm; }
+  .row-small .lbl.scb .name  { font-size: 6pt; font-weight: 800; margin-bottom: .6mm; white-space: nowrap; }
+  .row-small .lbl.scb .f     { font-size: 5pt; line-height: 1.16; }
 
   #preview-wrap[data-mode="big"] #grid-small,
   #preview-wrap[data-mode="small"] #grid-big { display: none; }
@@ -115,8 +130,16 @@
     <!-- Size selector -->
     <div class="col-lg-5">
       <div class="card h-100">
-        <div class="card-header"><i class="bi bi-rulers me-2 text-accent"></i>ขนาดป้ายที่จะพิมพ์</div>
+        <div class="card-header"><i class="bi bi-rulers me-2 text-accent"></i>รูปแบบ & ขนาดป้าย</div>
         <div class="card-body">
+          <div class="btn-group mode-tabs w-100 mb-2" role="group">
+            <button type="button" class="btn btn-outline-secondary active" id="mode-barcode" data-mode="barcode">
+              <i class="bi bi-upc-scan me-1"></i>ป้ายบาร์โค้ด
+            </button>
+            <button type="button" class="btn btn-outline-secondary" id="mode-scb" data-mode="scb">
+              <i class="bi bi-card-text me-1"></i>ป้าย สคบ (ไม่มีบาร์โค้ด)
+            </button>
+          </div>
           <div class="btn-group size-tabs w-100 mb-2" role="group">
             <button type="button" class="btn btn-outline-secondary active" id="tab-big" data-size="big">
               ป้ายใหญ่ 50×30mm <span class="badge badge-gray ms-1" id="count-big">0</span>
@@ -192,6 +215,48 @@
   // 203dpi (3.2pt Thai tone marks blur to noise) — omitted. See Phase 3
   // report for the render check. Kept out of both sizes for consistency.
   const PRICE_LINE = {{ (company['price_line_th'] if company else 'ราคา : ตรวจสอบ ณ จุดขาย') | tojson }};
+  const DISTRIBUTOR = {{ (company['distributor_th'] if company and company['distributor_th'] else 'บริษัท บุญสวัสดิ์นำชัย จำกัด') | tojson }};
+  // สคบ labels print "ราคา:" as their own bold prefix, so strip the leading
+  // "ราคา :" from the config value to avoid "ราคา: ราคา : …".
+  const PRICE_VALUE = PRICE_LINE.replace(/^\s*ราคา\s*:?\s*/, '');
+  // Per-card horizontal offsets (mm) for the 3-up small roll — CONFIRMED by the
+  // 2026-07-04 physical run (registration drifts per card, not a uniform gap).
+  // TODO(next): make these admin-editable (per-roll alignment config); this is the seed.
+  const SMALL_OFFSETS = [0, 33, 67];
+
+  // Self-contained label CSS sent to the local print bridge (headless-Chrome PDF
+  // → lp). Kept separate from the on-screen <style> on purpose: it must NOT carry
+  // the @media-print isolation rules (they'd hide the bare grid), and brand/price
+  // are forced BLACK here (thermal is monochrome). Mirror the .row-big/.row-small
+  // sizes if the on-screen ones change.
+  const PRINT_CSS = `
+    .lbl { box-sizing:border-box; overflow:hidden; position:relative; font-family:'Thonburi','Sukhumvit Set',sans-serif; }
+    .lbl .brand { font-family:Arial,sans-serif; font-weight:700; color:#000; text-transform:uppercase; letter-spacing:.04em; }
+    .lbl .price { color:#000; }
+    .lbl .name  { font-weight:600; line-height:1.15; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+    .lbl .pack  { color:#000; }
+    .lbl .bc { position:absolute; left:1.5mm; right:1.5mm; bottom:2mm; text-align:center; }
+    .lbl .bc img { width:100%; }
+    .row-big { display:flex; width:100mm; height:30mm; }
+    .row-big .lbl { width:50mm; height:30mm; padding:1.6mm 2mm; }
+    .row-big .lbl .brand { font-size:6.5pt; } .row-big .lbl .price { font-size:4.3pt; }
+    .row-big .lbl .name { font-size:7pt; } .row-big .lbl .pack { font-size:5pt; }
+    .row-big .lbl .bc img { height:10mm; }
+    .row-small { position:relative; width:97mm; height:25mm; }
+    .row-small .lbl { position:absolute; top:0; width:30mm; height:25mm; padding:1.2mm 1.5mm; }
+    .row-small .lbl .brand { font-size:5pt; } .row-small .lbl .price { font-size:3.3pt; }
+    .row-small .lbl .name { font-size:5.5pt; } .row-small .lbl .pack { font-size:3.8pt; }
+    .row-small .lbl .bc img { height:8mm; }
+    .lbl.scb .name { display:block; -webkit-line-clamp:none; line-height:1.12; margin-bottom:.8mm; }
+    .lbl.scb .f { color:#000; } .lbl.scb .f b { font-weight:700; }
+    .row-big .lbl.scb .name { font-size:7pt; font-weight:700; }
+    .row-big .lbl.scb .f { font-size:5.4pt; line-height:1.28; }
+    .row-small .lbl.scb { padding:1.1mm 0.9mm; }
+    .row-small .lbl.scb .name { font-size:6pt; font-weight:800; margin-bottom:.6mm; white-space:nowrap; }
+    .row-small .lbl.scb .f { font-size:5pt; line-height:1.16; }
+    .label-row:not(:last-child) { page-break-after: always; break-after: page; }
+  `;
+  const BRIDGE_URL = 'http://127.0.0.1:9911/print';
 
   const $ = (sel) => document.querySelector(sel);
   const searchInput   = $('#search-input');
@@ -208,8 +273,11 @@
   const tabSmall      = $('#tab-small');
   const countBig      = $('#count-big');
   const countSmall    = $('#count-small');
+  const modeBarcode   = $('#mode-barcode');
+  const modeScb       = $('#mode-scb');
 
   let activeSize = 'big';
+  let activeMode = 'barcode';   // 'barcode' | 'scb'
 
   function persist() { localStorage.setItem(KEY, JSON.stringify(queue)); }
 
@@ -335,9 +403,27 @@
   }
 
   // ── Preview: chunk the active size's queue into fixed-size rows ──
-  function labelHTML(it) {
+  function labelHTML(it, idxInRow) {
+    // สคบ mode: no-barcode compliance text (proven scb-label templates).
+    if (activeMode === 'scb') {
+      const f = (label, val) => val ? `<div class="f"><b>${label}:</b> ${escapeHTML(val)}</div>` : '';
+      const style = (activeSize === 'small') ? ` style="left:${SMALL_OFFSETS[idxInRow]}mm"` : '';
+      return `
+        <div class="lbl scb"${style}>
+          <div class="name">${escapeHTML(it.product_name)}</div>
+          ${f('เครื่องหมายการค้า', it.brand)}
+          ${f('วิธีใช้', it.usage_th)}
+          ${f('ข้อแนะนำ', it.warning_th)}
+          ${f('ผู้จัดจำหน่าย', DISTRIBUTOR)}
+          <div class="f"><b>ราคา:</b> ${escapeHTML(PRICE_VALUE)}</div>
+          ${it.packaging_th ? `<div class="f"><b>บรรจุ:</b> ${escapeHTML(it.packaging_th)}</div>` : ''}
+        </div>
+      `;
+    }
+    // Barcode mode.
+    const style = (activeSize === 'small') ? ` style="left:${SMALL_OFFSETS[idxInRow]}mm"` : '';
     return `
-      <div class="lbl">
+      <div class="lbl"${style}>
         <div class="name">${escapeHTML(it.product_name)}</div>
         <div class="brand">${escapeHTML(it.brand)}</div>
         <div class="price">${escapeHTML(PRICE_LINE)}</div>
@@ -353,7 +439,7 @@
       rows.push(items.slice(i, i + perRow));
     }
     container.innerHTML = rows.map(row => `
-      <div class="label-row ${rowClass}">${row.map(labelHTML).join('')}</div>
+      <div class="label-row ${rowClass}">${row.map((it, i) => labelHTML(it, i)).join('')}</div>
     `).join('');
     container.querySelectorAll('img[data-bc]').forEach(img => {
       const v = img.getAttribute('data-bc');
@@ -401,16 +487,52 @@
     tabSmall.classList.toggle('active', size === 'small');
     pageStyle.textContent = size === 'big'
       ? '@page { size: 100mm 30mm; margin: 0; }'
-      : '@page { size: 90mm 25mm; margin: 0; }';
+      : '@page { size: 97mm 25mm; margin: 0; }';
     renderPreview();
   }
   tabBig.addEventListener('click', () => setActiveSize('big'));
   tabSmall.addEventListener('click', () => setActiveSize('small'));
 
-  $('#btn-print').addEventListener('click', () => {
+  function setActiveMode(mode) {
+    activeMode = mode;
+    modeBarcode.classList.toggle('active', mode === 'barcode');
+    modeScb.classList.toggle('active', mode === 'scb');
+    renderPreview();
+  }
+  modeBarcode.addEventListener('click', () => setActiveMode('barcode'));
+  modeScb.addEventListener('click', () => setActiveMode('scb'));
+
+  $('#btn-print').addEventListener('click', async () => {
     const activeQueue = queue.filter(x => (x.label_size === 'small') === (activeSize === 'small'));
     if (!activeQueue.length) { alert(`ยังไม่มีป้าย${activeSize === 'small' ? 'เล็ก' : 'ใหญ่'}ในคิว`); return; }
-    window.print();
+    const grid = activeSize === 'big' ? gridBig : gridSmall;
+    const w = activeSize === 'big' ? 100 : 97;
+    const h = activeSize === 'big' ? 30 : 25;
+    const html = `<!doctype html><html><head><meta charset="utf-8">`
+      + `<style>html,body{margin:0;padding:0;-webkit-print-color-adjust:exact}`
+      + `@page{size:${w}mm ${h}mm;margin:0}\n${PRINT_CSS}</style></head>`
+      + `<body>${grid.outerHTML}</body></html>`;
+    const btn = $('#btn-print');
+    const orig = btn.innerHTML;
+    btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>กำลังพิมพ์…';
+    try {
+      const res = await fetch(BRIDGE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ html, w, h }),
+      });
+      const j = await res.json();
+      if (j.ok) {
+        btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>ส่งพิมพ์แล้ว';
+        setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 1600);
+      } else {
+        alert('พิมพ์ไม่สำเร็จ: ' + (j.msg || 'ไม่ทราบสาเหตุ'));
+        btn.innerHTML = orig; btn.disabled = false;
+      }
+    } catch (e) {
+      alert('ไม่พบตัวช่วยพิมพ์ GoDEX (print helper)\n\n'
+        + 'กรุณาเปิดโปรแกรมช่วยพิมพ์ที่เครื่องที่ต่อเครื่องพิมพ์อยู่ แล้วลองใหม่อีกครั้ง');
+      btn.innerHTML = orig; btn.disabled = false;
+    }
   });
   $('#btn-clear').addEventListener('click', () => {
     if (!queue.length) return;
