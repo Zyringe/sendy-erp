@@ -288,15 +288,15 @@
     {# ── ระบบ — admin only ── #}
     {% if active_module == 'admin_module' and is_admin %}
     <div class="sidebar-section">ระบบ</div>
-    <a href="{{ url_for('user_list') }}"
-       class="sidebar-link {% if request.endpoint in ['user_list','user_new','user_edit'] %}active{% endif %}">
+    <a href="{{ url_for('admin.user_list') }}"
+       class="sidebar-link {% if request.endpoint in ['admin.user_list','admin.user_new','admin.user_edit'] %}active{% endif %}">
       <i class="bi bi-people"></i> จัดการผู้ใช้
     </a>
-    <a href="{{ url_for('backups_list') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('backup') %}active{% endif %}">
+    <a href="{{ url_for('admin.backups_list') }}"
+       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('admin.backup') %}active{% endif %}">
       <i class="bi bi-clock-history"></i> สำรอง/กู้คืนข้อมูล
     </a>
-    <form method="post" action="{{ url_for('toggle_db_routes') }}" class="d-grid px-2 mt-1">
+    <form method="post" action="{{ url_for('admin.toggle_db_routes') }}" class="d-grid px-2 mt-1">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-sm {% if db_routes_enabled %}btn-warning{% else %}btn-outline-secondary{% endif %}">
         <i class="bi bi-database{% if db_routes_enabled %}-fill{% endif %}"></i>
@@ -308,11 +308,11 @@
       </button>
     </form>
     {% if db_routes_enabled %}
-    <a href="{{ url_for('upload_db') }}"
-       class="sidebar-link {% if request.endpoint == 'upload_db' %}active{% endif %}">
+    <a href="{{ url_for('admin.upload_db') }}"
+       class="sidebar-link {% if request.endpoint == 'admin.upload_db' %}active{% endif %}">
       <i class="bi bi-cloud-upload"></i> Upload Database
     </a>
-    <a href="{{ url_for('download_db') }}" class="sidebar-link">
+    <a href="{{ url_for('admin.download_db') }}" class="sidebar-link">
       <i class="bi bi-cloud-download"></i> Download Database
     </a>
     {% endif %}
