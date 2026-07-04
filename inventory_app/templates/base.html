@@ -191,12 +191,12 @@
     </a>
 
     <div class="sidebar-section">E-commerce</div>
-    <a href="{{ url_for('ecommerce', tab='shopee') }}"
-       class="sidebar-link {% if request.endpoint == 'ecommerce' and request.args.get('tab','shopee') == 'shopee' %}active{% endif %}">
+    <a href="{{ url_for('ecommerce.ecommerce', tab='shopee') }}"
+       class="sidebar-link {% if request.endpoint == 'ecommerce.ecommerce' and request.args.get('tab','shopee') == 'shopee' %}active{% endif %}">
       <i class="bi bi-bag-heart" style="color:#ee4d2d"></i> Shopee
     </a>
-    <a href="{{ url_for('ecommerce', tab='lazada') }}"
-       class="sidebar-link {% if request.endpoint == 'ecommerce' and request.args.get('tab') == 'lazada' %}active{% endif %}">
+    <a href="{{ url_for('ecommerce.ecommerce', tab='lazada') }}"
+       class="sidebar-link {% if request.endpoint == 'ecommerce.ecommerce' and request.args.get('tab') == 'lazada' %}active{% endif %}">
       <i class="bi bi-shop" style="color:#003087"></i> Lazada
     </a>
     <a href="{{ url_for('marketplace.dashboard') }}"
