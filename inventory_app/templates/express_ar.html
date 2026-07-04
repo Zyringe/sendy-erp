@@ -5,7 +5,7 @@
 {% block content %}
 <div class="d-flex flex-wrap align-items-center gap-2 mb-3 small">
   <span class="text-subtle">ยอด AR อ้างอิงหลักของ BSN ·</span>
-  <a href="{{ url_for('ar_followup') }}" class="btn btn-sm btn-outline-primary">
+  <a href="{{ url_for('accounting.ar_followup') }}" class="btn btn-sm btn-outline-primary">
     <i class="bi bi-telephone-forward me-1"></i>ตามทวงหนี้
   </a>
   <a href="{{ url_for('sales.payment_customers') }}" class="btn btn-sm btn-outline-secondary">
@@ -100,7 +100,7 @@
         {% for r in rows %}
         <tr>
           <td class="td-primary fw-500">
-            <a href="{{ url_for('express_ar_customer', customer_code=r.customer_code) }}"
+            <a href="{{ url_for('accounting.express_ar_customer', customer_code=r.customer_code) }}"
                class="text-reset text-decoration-none" title="ดูบิลค้างของลูกค้านี้">
               {{ r.customer_name }}
             </a>
@@ -108,7 +108,7 @@
             {% if r.has_warning %}<span class="badge bg-danger ms-1">***</span>{% endif %}
           </td>
           <td data-label="รหัส">
-            <a href="{{ url_for('express_ar_customer', customer_code=r.customer_code) }}"
+            <a href="{{ url_for('accounting.express_ar_customer', customer_code=r.customer_code) }}"
                class="text-reset text-decoration-none">
               <span class="badge badge-gray font-mono">{{ r.customer_code }}</span>
             </a>

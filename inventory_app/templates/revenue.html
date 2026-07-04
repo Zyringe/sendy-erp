@@ -28,7 +28,7 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
-        <a href="{{ url_for('revenue_dashboard') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+        <a href="{{ url_for('accounting.revenue_dashboard') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
       </div>
       <div class="col-auto align-self-end text-subtle small">
         ช่วง: {{ date_from }} – {{ date_to }}
@@ -310,7 +310,7 @@
           <td class="text-subtle">{{ loop.index }}</td>
           <td>
             {% if row.brand_display == 'ไม่ระบุแบรนด์' %}
-            <a href="{{ url_for('revenue_unmapped_drilldown', **{'from': from_month, 'to': to_month}) }}"
+            <a href="{{ url_for('accounting.revenue_unmapped_drilldown', **{'from': from_month, 'to': to_month}) }}"
                class="text-decoration-none">
               {{ row.brand_display }}
               <i class="bi bi-arrow-right-circle small"></i>

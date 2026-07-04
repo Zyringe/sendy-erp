@@ -211,15 +211,15 @@ _ENDPOINT_MODULE = {
     'products.labels_view': 'operation',
     'products.products_walkthrough': 'operation',
     # accounting
-    'accounting_summary': 'accounting',
-    'cashflow_dashboard': 'accounting',
-    'revenue_dashboard': 'accounting',
-    'revenue_unmapped_drilldown': 'accounting',
-    'ar_followup': 'accounting',
-    'ar_followup_customer': 'accounting',
-    'ar_followup_log_new': 'accounting',
-    'ar_followup_log_delete': 'accounting',
-    'ar_followup_export': 'accounting',
+    'accounting.accounting_summary': 'accounting',
+    'accounting.cashflow_dashboard': 'accounting',
+    'accounting.revenue_dashboard': 'accounting',
+    'accounting.revenue_unmapped_drilldown': 'accounting',
+    'accounting.ar_followup': 'accounting',
+    'accounting.ar_followup_customer': 'accounting',
+    'accounting.ar_followup_log_new': 'accounting',
+    'accounting.ar_followup_log_delete': 'accounting',
+    'accounting.ar_followup_export': 'accounting',
     'sales.trade_dashboard': 'accounting',
     'sales.sales_view': 'accounting',
     'sales.sales_doc': 'accounting',
@@ -244,11 +244,11 @@ _ENDPOINT_MODULE = {
     'commission.commission_overrides_edit': 'accounting',
     'commission.commission_overrides_toggle': 'accounting',
     'commission.commission_overrides_delete': 'accounting',
-    'ar_dashboard': 'accounting',
-    'express_ar_dashboard': 'accounting',
-    'express_ar_customer': 'accounting',
-    'express_ap_dashboard': 'accounting',
-    'ap_dashboard': 'accounting',
+    'accounting.ar_dashboard': 'accounting',
+    'accounting.express_ar_dashboard': 'accounting',
+    'accounting.express_ar_customer': 'accounting',
+    'accounting.express_ap_dashboard': 'accounting',
+    'accounting.ap_dashboard': 'accounting',
     'ecommerce.ecommerce': 'accounting',
     'ecommerce.ecommerce_import': 'accounting',
     'ecommerce.ecommerce_sku_edit': 'accounting',
@@ -343,7 +343,7 @@ _MOBILE_NAV_SLOTS = [
     {'key': 'products',   'label': 'สินค้า',  'icon': 'bi-box-seam',       'endpoint': 'products.product_list', 'manager_only': False},
     {'key': 'trade',      'label': 'การค้า',  'icon': 'bi-bar-chart-line', 'endpoint': 'sales.trade_dashboard', 'manager_only': False},
     {'key': 'hr',         'label': 'บุคลากร', 'icon': 'bi-people',         'endpoint': 'hr.dashboard',          'manager_only': True},
-    {'key': 'accounting', 'label': 'บัญชี',   'icon': 'bi-calculator',     'endpoint': 'accounting_summary',    'manager_only': True},
+    {'key': 'accounting', 'label': 'บัญชี',   'icon': 'bi-calculator',     'endpoint': 'accounting.accounting_summary', 'manager_only': True},
 ]
 
 # The 'accounting' module ('การค้า & บัญชี') splits across two bottom-nav slots:
@@ -351,9 +351,11 @@ _MOBILE_NAV_SLOTS = [
 # every other 'accounting'-module endpoint highlights การค้า. Keeps the two
 # slots mutually exclusive so the nav never lights up both at once.
 _ACCT_FINANCE_ENDPOINTS = frozenset({
-    'accounting_summary', 'cashflow_dashboard', 'revenue_dashboard',
-    'revenue_unmapped_drilldown', 'ar_followup', 'ar_followup_customer',
-    'ar_followup_log_new', 'ar_followup_log_delete', 'ar_followup_export',
+    'accounting.accounting_summary', 'accounting.cashflow_dashboard',
+    'accounting.revenue_dashboard', 'accounting.revenue_unmapped_drilldown',
+    'accounting.ar_followup', 'accounting.ar_followup_customer',
+    'accounting.ar_followup_log_new', 'accounting.ar_followup_log_delete',
+    'accounting.ar_followup_export',
 })
 
 

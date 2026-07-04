@@ -7,8 +7,8 @@
 <div class="alert alert-secondary py-2 mb-3 small">
   <i class="bi bi-info-circle me-1"></i>
   ยอดจาก Express snapshot ของ BSN (credit-note-netted)
-  &nbsp;·&nbsp; เรียงตามยอดค้างมากสุด &nbsp;·&nbsp; <a href="{{ url_for('ar_followup_export') }}">ดาวน์โหลด CSV</a>
-  &nbsp;·&nbsp; <a href="{{ url_for('express_ar_dashboard') }}">หน้า AR / ลูกหนี้</a>
+  &nbsp;·&nbsp; เรียงตามยอดค้างมากสุด &nbsp;·&nbsp; <a href="{{ url_for('accounting.ar_followup_export') }}">ดาวน์โหลด CSV</a>
+  &nbsp;·&nbsp; <a href="{{ url_for('accounting.express_ar_dashboard') }}">หน้า AR / ลูกหนี้</a>
   {% if excluded and (excluded.legacy_count or excluded.re_count) %}
   <div class="mt-1 text-subtle">
     <i class="bi bi-funnel me-1"></i>ไม่รวม: หนี้ก่อนปี 2024 (legacy) ฿{{ '{:,.0f}'.format(excluded.legacy_amount) }} ({{ excluded.legacy_count }} ใบ)
@@ -45,7 +45,7 @@
   <i class="bi bi-exclamation-triangle me-1"></i>
   <strong>{{ overdue|length }} รายการนัดติดตามเกินกำหนด</strong>:
   {% for o in overdue[:5] %}
-    <a href="{{ url_for('ar_followup_customer', customer_key=(o.customer_code or o.customer)) }}">{{ o.customer }}</a> ({{ o.next_action_date }}){% if not loop.last %}, {% endif %}
+    <a href="{{ url_for('accounting.ar_followup_customer', customer_key=(o.customer_code or o.customer)) }}">{{ o.customer }}</a> ({{ o.next_action_date }}){% if not loop.last %}, {% endif %}
   {% endfor %}
   {% if overdue|length > 5 %}+ อีก {{ overdue|length - 5 }} ราย{% endif %}
 </div>
@@ -82,7 +82,7 @@
       </div>
       <div class="col-md-3 d-flex gap-2">
         <button type="submit" class="btn btn-sm btn-primary">กรอง</button>
-        <a href="{{ url_for('ar_followup') }}" class="btn btn-sm btn-outline-secondary">ล้าง</a>
+        <a href="{{ url_for('accounting.ar_followup') }}" class="btn btn-sm btn-outline-secondary">ล้าง</a>
       </div>
     </div>
   </div>
@@ -112,7 +112,7 @@
           {% for r in rows %}
           <tr>
             <td>
-              <a href="{{ url_for('ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}">
+              <a href="{{ url_for('accounting.ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}">
                 <strong>{{ r.customer }}</strong>
               </a>
               {% if r.customer_code %}<span class="text-subtle small">[{{ r.customer_code }}]</span>{% endif %}
@@ -182,7 +182,7 @@
         {% for r in excluded_rows %}
         <tr>
           <td>
-            <a href="{{ url_for('express_ar_customer', customer_code=r.customer_code) }}">{{ r.customer_name }}</a>
+            <a href="{{ url_for('accounting.express_ar_customer', customer_code=r.customer_code) }}">{{ r.customer_name }}</a>
             {% if r.customer_code %}<span class="text-subtle small">[{{ r.customer_code }}]</span>{% endif %}
           </td>
           <td class="text-end fw-600">฿{{ '{:,.0f}'.format(r.outstanding) }}</td>

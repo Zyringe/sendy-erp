@@ -8,15 +8,15 @@
 <ul class="nav nav-tabs mb-4">
   <li class="nav-item">
     <a class="nav-link {% if tab == 'overview' %}active{% endif %}"
-       href="{{ url_for('ap_dashboard', tab='overview') }}">ภาพรวม</a>
+       href="{{ url_for('accounting.ap_dashboard', tab='overview') }}">ภาพรวม</a>
   </li>
   <li class="nav-item">
     <a class="nav-link {% if tab == 'suppliers' %}active{% endif %}"
-       href="{{ url_for('ap_dashboard', tab='suppliers') }}">รายซัพพลายเออร์</a>
+       href="{{ url_for('accounting.ap_dashboard', tab='suppliers') }}">รายซัพพลายเออร์</a>
   </li>
   <li class="nav-item">
     <a class="nav-link {% if tab == 'payments' %}active{% endif %}"
-       href="{{ url_for('ap_dashboard', tab='payments') }}">การจ่ายเงิน</a>
+       href="{{ url_for('accounting.ap_dashboard', tab='payments') }}">การจ่ายเงิน</a>
   </li>
 </ul>
 
@@ -63,7 +63,7 @@
 <div class="card mb-4">
   <div class="card-header">
     ค้างจ่ายมากสุด (top owed) —
-    <a href="{{ url_for('ap_dashboard', tab='suppliers') }}" class="text-decoration-none">ดูทั้งหมด →</a>
+    <a href="{{ url_for('accounting.ap_dashboard', tab='suppliers') }}" class="text-decoration-none">ดูทั้งหมด →</a>
   </div>
   <div class="table-responsive">
     <table class="table table-hover mb-0">
@@ -87,7 +87,7 @@
           <td class="text-end fw-bold text-warning">฿{{ '{:,.0f}'.format(sup.subtotal or 0) }}</td>
           <td class="text-end">{{ sup.invoices | length }}</td>
           <td>
-            <a href="{{ url_for('ap_dashboard', tab='suppliers') }}"
+            <a href="{{ url_for('accounting.ap_dashboard', tab='suppliers') }}"
                class="btn btn-sm btn-outline-warning py-0">ดู →</a>
           </td>
         </tr>
@@ -213,7 +213,7 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
-        <a href="{{ url_for('ap_dashboard', tab='payments') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+        <a href="{{ url_for('accounting.ap_dashboard', tab='payments') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
       </div>
     </form>
   </div>
