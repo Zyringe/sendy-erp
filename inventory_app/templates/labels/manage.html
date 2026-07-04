@@ -1,0 +1,110 @@
+{% extends 'base.html' %}
+{% block title %}จัดการป้ายสินค้า – Sendy{% endblock %}
+{% block page_title %}จัดการป้ายสินค้า{% endblock %}
+
+{% block topbar_actions %}
+<a href="{{ url_for('labels.company_block') }}" class="btn btn-sm btn-outline-secondary">
+  <i class="bi bi-building me-1"></i>ข้อมูลบริษัท (คงที่)
+</a>
+{% endblock %}
+
+{% block content %}
+<form class="row g-2 mb-3" method="get">
+  <div class="col-auto">
+    <input type="text" name="q" value="{{ q }}" class="form-control form-control-sm"
+           placeholder="ค้นหาชื่อ / บาร์โค้ด / แบรนด์…" style="min-width:16rem">
+  </div>
+  <div class="col-auto">
+    <select name="review" class="form-select form-select-sm">
+      <option value=""        {% if review=='' %}selected{% endif %}>ทั้งหมด</option>
+      <option value="flagged" {% if review=='flagged' %}selected{% endif %}>ต้องตรวจสอบ ({{ flagged_total }})</option>
+      <option value="ok"      {% if review=='ok' %}selected{% endif %}>ปกติ</option>
+    </select>
+  </div>
+  <div class="col-auto">
+    <button class="btn btn-sm btn-primary" type="submit">ค้นหา</button>
+  </div>
+  <div class="col-auto d-flex align-items-center text-muted small">พบ {{ total }} รายการ</div>
+</form>
+
+<form method="post" action="{{ url_for('labels.bulk_size') }}" id="bulk-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="q" value="{{ q }}">
+  <input type="hidden" name="review" value="{{ review }}">
+  <input type="hidden" name="page" value="{{ page }}">
+  <input type="hidden" name="scope" id="bulk-scope" value="selected">
+
+  <div class="d-flex align-items-center gap-2 mb-2">
+    <select name="label_size" class="form-select form-select-sm" style="width:auto">
+      <option value="big">ใหญ่ (50×30mm)</option>
+      <option value="small">เล็ก (30×25mm)</option>
+    </select>
+    <button type="submit" id="btn-set-selected" class="btn btn-sm btn-outline-primary">
+      ตั้งขนาดที่เลือก
+    </button>
+    <button type="button" id="btn-set-filtered" class="btn btn-sm btn-outline-warning">
+      ตั้งขนาดทั้งหมด {{ total }} รายการที่กรอง
+    </button>
+  </div>
+
+  <div class="table-responsive">
+  <table class="table table-sm table-hover align-middle">
+    <thead><tr>
+      <th style="width:32px"><input type="checkbox" id="check-all"></th>
+      <th>บาร์โค้ด</th><th>ชื่อสินค้า</th><th>แบรนด์</th><th>ขนาดป้าย</th><th>สถานะ</th><th class="text-end">แก้ไข</th>
+    </tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td><input type="checkbox" name="label_ids" value="{{ r.id }}" class="row-check"></td>
+        <td><span class="font-mono small {% if r.needs_review %}text-danger{% endif %}">{{ r.barcode or '—' }}</span></td>
+        <td>{{ r.product_name }}</td>
+        <td>{{ r.brand or '' }}</td>
+        <td><span class="badge {% if r.label_size == 'small' %}bg-info{% else %}bg-secondary{% endif %}">{{ r.label_size }}</span></td>
+        <td>
+          {% if r.needs_review %}
+          <span class="badge bg-danger" title="{{ r.review_note or '' }}">ต้องตรวจสอบ</span>
+          {% else %}
+          <span class="badge bg-success">ปกติ</span>
+          {% endif %}
+        </td>
+        <td class="text-end">
+          <a href="{{ url_for('labels.edit', label_id=r.id, q=q, review=review, page=page) }}"
+             class="btn btn-sm btn-outline-secondary">แก้ไข</a>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="text-center text-muted py-4">ไม่พบป้ายสินค้าตามเงื่อนไข</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</form>
+
+{% if pages > 1 %}
+<nav>
+  <ul class="pagination pagination-sm">
+    <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+      <a class="page-link" href="{{ url_for('labels.manage', q=q, review=review, page=page-1) }}">ก่อนหน้า</a>
+    </li>
+    <li class="page-item disabled"><span class="page-link">{{ page }} / {{ pages }}</span></li>
+    <li class="page-item {% if page >= pages %}disabled{% endif %}">
+      <a class="page-link" href="{{ url_for('labels.manage', q=q, review=review, page=page+1) }}">ถัดไป</a>
+    </li>
+  </ul>
+</nav>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('check-all')?.addEventListener('change', function () {
+  document.querySelectorAll('.row-check').forEach(cb => { cb.checked = this.checked; });
+});
+document.getElementById('btn-set-filtered')?.addEventListener('click', function () {
+  if (!confirm('ตั้งขนาดให้ทั้ง {{ total }} รายการที่กรองอยู่ใช่ไหม?')) return;
+  document.getElementById('bulk-scope').value = 'filtered';
+  document.getElementById('bulk-form').submit();
+});
+</script>
+{% endblock %}

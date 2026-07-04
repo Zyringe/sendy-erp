@@ -65,6 +65,7 @@ from blueprints.customer_review import bp_customer_review
 from blueprints.naming import bp_naming
 from blueprints.me import bp_me
 from blueprints.bsn import bp_bsn
+from blueprints.labels import bp_labels
 from blueprints.inventory import bp_inventory
 from blueprints.partners import bp_partners
 from blueprints.sales import bp_sales
@@ -126,6 +127,7 @@ app.register_blueprint(bp_customer_review)
 app.register_blueprint(bp_naming)
 app.register_blueprint(bp_me)
 app.register_blueprint(bp_bsn)
+app.register_blueprint(bp_labels)
 app.register_blueprint(bp_inventory)
 app.register_blueprint(bp_partners)
 app.register_blueprint(bp_sales)

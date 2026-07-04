@@ -1,0 +1,575 @@
+{% extends 'base.html' %}
+{% block title %}พิมพ์ป้ายสินค้า – Sendy{% endblock %}
+{% block page_title %}พิมพ์ป้ายสินค้า{% endblock %}
+
+{% block head_extra %}
+<style>
+  /* ── Picker (same shape as /labels price-tag page) ── */
+  .label-picker { position: relative; }
+  .label-search-results {
+    position: absolute; top: 100%; left: 0; right: 0;
+    background: #fff; border: 1px solid var(--border);
+    border-radius: var(--radius-sm); box-shadow: var(--shadow);
+    max-height: 320px; overflow-y: auto; z-index: 50;
+    display: none;
+  }
+  .label-search-results.open { display: block; }
+  .label-search-item {
+    padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #f1eee7;
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  }
+  .label-search-item:hover { background: #fdf9f3; }
+  .label-search-item:last-child { border-bottom: none; }
+  .label-search-item .pname { flex: 1; }
+  .label-search-item .pname .name { font-size: .85rem; }
+  .label-search-item .pname .meta { font-size: .72rem; color: var(--text-muted); }
+  .label-search-item .bc-flag { font-size: .7rem; }
+
+  /* ── Size tabs + mode tabs ── */
+  .size-tabs .btn.active,
+  .mode-tabs .btn.active { box-shadow: inset 0 0 0 2px var(--bsn-gold); }
+
+  /* ── Queue ── */
+  .label-queue table { font-size: .85rem; }
+  .label-queue .qty-input {
+    width: 64px; text-align: center; padding: 4px 6px;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  /* barcode mode: a barcodeless row is dimmed (it's excluded from the run) */
+  .label-queue tr.label-skipped { opacity: .5; }
+
+  /* ── Label content (shared by both sizes) ── */
+  .lbl {
+    box-sizing: border-box; overflow: hidden; position: relative;
+    font-family: 'Thonburi', 'Sukhumvit Set', sans-serif;
+    border: 1px dashed #cbc6bd;
+  }
+  .lbl .brand {
+    font-family: Arial, sans-serif; font-weight: 700; color: var(--bsn-gold);
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .lbl .price { color: #444; }
+  .lbl .name {
+    font-weight: 600; line-height: 1.15; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  .lbl .pack { color: #444; }
+  .lbl .bc { position: absolute; left: 1.5mm; right: 1.5mm; bottom: 2mm; text-align: center; }
+  .lbl .bc img { width: 100%; }
+
+  /* ── Big: 50 x 30mm, 2-up, 0 gap ── */
+  .row-big { display: flex; width: 100mm; height: 30mm; }
+  .row-big .lbl { width: 50mm; height: 30mm; padding: 1.6mm 2mm; }
+  .row-big .lbl .brand { font-size: 6.5pt; }
+  .row-big .lbl .price { font-size: 4.3pt; }
+  .row-big .lbl .name  { font-size: 7pt; }
+  .row-big .lbl .pack  { font-size: 5pt; }
+  .row-big .lbl .bc img { height: 10mm; }
+
+  /* ── Small: 30 x 25mm, 3-up on a 97mm web ──
+     Confirmed geometry (2026-07-04 physical run): per-card horizontal offsets
+     DRIFT, so cards are ABSOLUTELY positioned; each card's `left` is set inline
+     from JS SMALL_OFFSETS (0/33/67mm here) — the seed for the future admin
+     alignment-offset config. Do NOT switch back to a flex row / uniform gap. */
+  .row-small { position: relative; width: 97mm; height: 25mm; }
+  .row-small .lbl { position: absolute; top: 0; width: 30mm; height: 25mm; padding: 1.2mm 1.5mm; }
+  .row-small .lbl .brand { font-size: 5pt; }
+  .row-small .lbl .price { font-size: 3.3pt; }
+  .row-small .lbl .name  { font-size: 5.5pt; }
+  .row-small .lbl .pack  { font-size: 3.8pt; }
+  .row-small .lbl .bc img { height: 8mm; }
+
+  /* ── สคบ (compliance / no-barcode) content — proven layouts from
+     label-templates/scb-label-{big,small}. Name is a plain block (not the
+     2-line barcode clamp); fields are bold-label lines. ── */
+  .lbl.scb .name { display: block; -webkit-line-clamp: none; line-height: 1.12; margin-bottom: .8mm; }
+  .lbl.scb .f    { color: #000; }
+  .lbl.scb .f b  { font-weight: 700; }
+  .row-big  .lbl.scb .name { font-size: 7pt; font-weight: 700; }
+  .row-big  .lbl.scb .f    { font-size: 5.4pt; line-height: 1.28; }
+  .row-small .lbl.scb        { padding: 1.1mm 0.9mm; }
+  .row-small .lbl.scb .name  { font-size: 6pt; font-weight: 800; margin-bottom: .6mm; white-space: nowrap; }
+  .row-small .lbl.scb .f     { font-size: 5pt; line-height: 1.16; }
+
+  #preview-wrap[data-mode="big"] #grid-small,
+  #preview-wrap[data-mode="small"] #grid-big { display: none; }
+
+  /* ── Print: isolate the label grid. Hide EVERYTHING except the labels by
+     walking the DOM path (body → .main-wrap → .page-content → #preview-wrap)
+     and hiding every sibling at each level. Robust against BOTH desktop chrome
+     AND the mobile/PWA bottom-nav + drawer (which are direct <body> children,
+     not inside .main-wrap — the old class-list approach missed them). ── */
+  @media print {
+    body { margin: 0 !important; background: #fff !important; }
+    body > *:not(.main-wrap)             { display: none !important; }
+    .main-wrap                           { margin: 0 !important; }
+    .main-wrap > *:not(.page-content)    { display: none !important; }
+    .page-content                        { margin: 0 !important; padding: 0 !important; }
+    .page-content > *:not(#preview-wrap) { display: none !important; }
+    .lbl { border: none !important; }
+    .label-row:not(:last-child) { page-break-after: always; break-after: page; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="label-controls">
+  <div class="row g-3 mb-3">
+    <!-- Picker -->
+    <div class="col-lg-7">
+      <div class="card h-100">
+        <div class="card-header"><i class="bi bi-search me-2 text-accent"></i>ค้นหาป้ายสินค้า</div>
+        <div class="card-body">
+          <div class="label-picker">
+            <input type="text" id="search-input" class="form-control"
+                   placeholder="พิมพ์ชื่อสินค้า / บาร์โค้ด / แบรนด์…" autocomplete="off">
+            <div id="search-results" class="label-search-results"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Size selector -->
+    <div class="col-lg-5">
+      <div class="card h-100">
+        <div class="card-header"><i class="bi bi-rulers me-2 text-accent"></i>รูปแบบ & ขนาดป้าย</div>
+        <div class="card-body">
+          <div class="btn-group mode-tabs w-100 mb-2" role="group">
+            <button type="button" class="btn btn-outline-secondary active" id="mode-barcode" data-mode="barcode">
+              <i class="bi bi-upc-scan me-1"></i>ป้ายบาร์โค้ด
+            </button>
+            <button type="button" class="btn btn-outline-secondary" id="mode-scb" data-mode="scb">
+              <i class="bi bi-card-text me-1"></i>ป้าย สคบ (ไม่มีบาร์โค้ด)
+            </button>
+          </div>
+          <div class="btn-group size-tabs w-100 mb-2" role="group">
+            <button type="button" class="btn btn-outline-secondary active" id="tab-big" data-size="big">
+              ป้ายใหญ่ 50×30mm <span class="badge badge-gray ms-1" id="count-big">0</span>
+            </button>
+            <button type="button" class="btn btn-outline-secondary" id="tab-small" data-size="small">
+              ป้ายเล็ก 30×25mm <span class="badge badge-gray ms-1" id="count-small">0</span>
+            </button>
+          </div>
+          <div class="form-text mb-2">
+            <i class="bi bi-info-circle me-1"></i>
+            พิมพ์ได้ทีละขนาด (ม้วนสติ๊กเกอร์คนละขนาด) — เปลี่ยนแท็บแล้วกดพิมพ์อีกรอบสำหรับอีกขนาด
+          </div>
+          <div class="d-flex gap-2 align-items-center">
+            <button id="btn-print" class="btn btn-primary btn-sm flex-grow-1">
+              <i class="bi bi-printer me-1"></i>พิมพ์
+            </button>
+            <button id="btn-clear" class="btn btn-outline-secondary btn-sm">
+              <i class="bi bi-trash"></i> ล้าง
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Queue -->
+<div class="card mb-3 label-queue">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-list-check me-2 text-accent"></i>คิวพิมพ์
+      <span class="badge badge-gray ms-1" id="queue-count">0</span>
+    </span>
+    <span class="small" id="queue-total">รวม 0 ดวง</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr>
+          <th style="width:56px">ขนาด</th>
+          <th>ชื่อสินค้า</th>
+          <th>บาร์โค้ด</th>
+          <th class="text-center" style="width:130px">จำนวน</th>
+          <th style="width:48px"></th>
+        </tr>
+      </thead>
+      <tbody id="queue-body">
+        <tr id="queue-empty"><td colspan="5" class="text-center text-muted py-4">ยังไม่มีสินค้าในคิว — ค้นหาแล้วกดเพิ่ม</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Preview / Print area -->
+<div class="preview-heading d-flex justify-content-between align-items-center mb-2">
+  <h6 class="mb-0 text-muted">ตัวอย่าง</h6>
+  <span class="text-muted small" id="preview-count"></span>
+</div>
+<div id="preview-wrap" data-mode="big">
+  <div id="grid-big"></div>
+  <div id="grid-small"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/JsBarcode.all.min.js') }}"></script>
+<script>
+(function () {
+  const KEY = 'sendy.labels.print.queue.v1';
+  const queue = JSON.parse(localStorage.getItem(KEY) || '[]');
+
+  // Brand quality line (plan.md "Phase 1 RESULT", CONFIRMED decision) was
+  // tried as a small footer on big labels and measured illegible at true
+  // 203dpi (3.2pt Thai tone marks blur to noise) — omitted. See Phase 3
+  // report for the render check. Kept out of both sizes for consistency.
+  const PRICE_LINE = {{ (company['price_line_th'] if company else 'ราคา : ตรวจสอบ ณ จุดขาย') | tojson }};
+  const DISTRIBUTOR = {{ (company['distributor_th'] if company and company['distributor_th'] else 'บริษัท บุญสวัสดิ์นำชัย จำกัด') | tojson }};
+  // สคบ labels print "ราคา:" as their own bold prefix, so strip the leading
+  // "ราคา :" from the config value to avoid "ราคา: ราคา : …".
+  const PRICE_VALUE = PRICE_LINE.replace(/^\s*ราคา\s*:?\s*/, '');
+  // Per-card horizontal offsets (mm) for the 3-up small roll — CONFIRMED by the
+  // 2026-07-04 physical run (registration drifts per card, not a uniform gap).
+  // TODO(next): make these admin-editable (per-roll alignment config); this is the seed.
+  const SMALL_OFFSETS = [0, 33, 67];
+
+  // Self-contained label CSS sent to the local print bridge (headless-Chrome PDF
+  // → lp). Kept separate from the on-screen <style> on purpose: it must NOT carry
+  // the @media-print isolation rules (they'd hide the bare grid), and brand/price
+  // are forced BLACK here (thermal is monochrome). Mirror the .row-big/.row-small
+  // sizes if the on-screen ones change.
+  const PRINT_CSS = `
+    .lbl { box-sizing:border-box; overflow:hidden; position:relative; font-family:'Thonburi','Sukhumvit Set',sans-serif; }
+    .lbl .brand { font-family:Arial,sans-serif; font-weight:700; color:#000; text-transform:uppercase; letter-spacing:.04em; }
+    .lbl .price { color:#000; }
+    .lbl .name  { font-weight:600; line-height:1.15; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+    .lbl .pack  { color:#000; }
+    .lbl .bc { position:absolute; left:1.5mm; right:1.5mm; bottom:2mm; text-align:center; }
+    .lbl .bc img { width:100%; }
+    .row-big { display:flex; width:100mm; height:30mm; }
+    .row-big .lbl { width:50mm; height:30mm; padding:1.6mm 2mm; }
+    .row-big .lbl .brand { font-size:6.5pt; } .row-big .lbl .price { font-size:4.3pt; }
+    .row-big .lbl .name { font-size:7pt; } .row-big .lbl .pack { font-size:5pt; }
+    .row-big .lbl .bc img { height:10mm; }
+    .row-small { position:relative; width:97mm; height:25mm; }
+    .row-small .lbl { position:absolute; top:0; width:30mm; height:25mm; padding:1.2mm 1.5mm; }
+    .row-small .lbl .brand { font-size:5pt; } .row-small .lbl .price { font-size:3.3pt; }
+    .row-small .lbl .name { font-size:5.5pt; } .row-small .lbl .pack { font-size:3.8pt; }
+    .row-small .lbl .bc img { height:8mm; }
+    .lbl.scb .name { display:block; -webkit-line-clamp:none; line-height:1.12; margin-bottom:.8mm; }
+    .lbl.scb .f { color:#000; } .lbl.scb .f b { font-weight:700; }
+    .row-big .lbl.scb .name { font-size:7pt; font-weight:700; }
+    .row-big .lbl.scb .f { font-size:5.4pt; line-height:1.28; }
+    .row-small .lbl.scb { padding:1.1mm 0.9mm; }
+    .row-small .lbl.scb .name { font-size:6pt; font-weight:800; margin-bottom:.6mm; white-space:nowrap; }
+    .row-small .lbl.scb .f { font-size:5pt; line-height:1.16; }
+    .label-row:not(:last-child) { page-break-after: always; break-after: page; }
+  `;
+  const BRIDGE_URL = 'http://127.0.0.1:9911/print';
+
+  const $ = (sel) => document.querySelector(sel);
+  const searchInput   = $('#search-input');
+  const searchResults = $('#search-results');
+  const queueBody     = $('#queue-body');
+  const queueEmpty    = $('#queue-empty');
+  const queueCount    = $('#queue-count');
+  const queueTotal    = $('#queue-total');
+  const previewWrap   = $('#preview-wrap');
+  const previewCount  = $('#preview-count');
+  const gridBig       = $('#grid-big');
+  const gridSmall     = $('#grid-small');
+  const tabBig        = $('#tab-big');
+  const tabSmall      = $('#tab-small');
+  const countBig      = $('#count-big');
+  const countSmall    = $('#count-small');
+  const modeBarcode   = $('#mode-barcode');
+  const modeScb       = $('#mode-scb');
+
+  let activeSize = 'big';
+  let activeMode = 'barcode';   // 'barcode' | 'scb'
+
+  function persist() { localStorage.setItem(KEY, JSON.stringify(queue)); }
+
+  // ── Search (debounced) ──
+  let searchT = null;
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchT);
+    const q = searchInput.value.trim();
+    if (!q) { searchResults.classList.remove('open'); return; }
+    searchT = setTimeout(() => doSearch(q), 180);
+  });
+  searchInput.addEventListener('blur', () => {
+    setTimeout(() => searchResults.classList.remove('open'), 180);
+  });
+  searchInput.addEventListener('focus', () => {
+    if (searchInput.value.trim()) doSearch(searchInput.value.trim());
+  });
+
+  async function doSearch(q) {
+    try {
+      const res = await fetch(`/api/labels/search?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      renderResults(data.items || []);
+    } catch (e) { console.error(e); }
+  }
+
+  function renderResults(items) {
+    if (!items.length) {
+      searchResults.innerHTML = '<div class="label-search-item text-muted">ไม่พบป้ายสินค้า</div>';
+      searchResults.classList.add('open');
+      return;
+    }
+    searchResults.innerHTML = items.map(it => `
+      <div class="label-search-item" data-id="${it.id}">
+        <span class="pname">
+          <span class="name">${escapeHTML(it.product_name)}</span><br>
+          <span class="meta">${escapeHTML(it.brand)}${it.packaging_th ? ' · ' + escapeHTML(it.packaging_th) : ''}${it.size_th ? ' · ' + escapeHTML(it.size_th) : ''} · ${it.label_size === 'small' ? 'เล็ก' : 'ใหญ่'}</span>
+        </span>
+        <span class="bc-flag ${it.barcode ? 'text-success' : 'text-muted'}">
+          <i class="bi bi-${it.barcode ? 'upc-scan' : 'dash-circle'}"></i>
+        </span>
+      </div>
+    `).join('');
+    searchResults.classList.add('open');
+    searchResults.querySelectorAll('.label-search-item[data-id]').forEach((el, i) => {
+      el.addEventListener('click', () => {
+        addToQueue(items[i]);
+        searchInput.value = '';
+        searchResults.classList.remove('open');
+        searchInput.focus();
+      });
+    });
+  }
+
+  function escapeHTML(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+  }
+
+  // ── Queue ──
+  function addToQueue(item) {
+    const existing = queue.find(x => x.id === item.id);
+    if (existing) {
+      existing.qty = (existing.qty || 1) + 1;
+    } else {
+      queue.push({ ...item, qty: 1 });
+    }
+    persist();
+    renderQueue();
+    renderPreview();
+  }
+
+  function removeFromQueue(id) {
+    const i = queue.findIndex(x => x.id === id);
+    if (i >= 0) { queue.splice(i, 1); persist(); renderQueue(); renderPreview(); }
+  }
+
+  function setQty(id, qty) {
+    const it = queue.find(x => x.id === id);
+    if (it) { it.qty = Math.max(1, Math.min(parseInt(qty, 10) || 1, 99)); persist(); renderPreview(); }
+  }
+
+  // A queued item is printable in the current mode UNLESS it's บาร์โค้ด mode and
+  // the item has no barcode — a barcode tag with no barcode is a broken label, so
+  // barcode runs skip it (ADR 0010). สคบ mode prints everything.
+  function printableInMode(it) {
+    return activeMode !== 'barcode' || !!it.barcode;
+  }
+
+  function renderQueue() {
+    if (!queue.length) {
+      queueEmpty.style.display = '';
+      queueBody.innerHTML = '';
+      queueBody.appendChild(queueEmpty);
+      queueCount.textContent = '0';
+      queueTotal.textContent = 'รวม 0 ดวง';
+      countBig.textContent = '0';
+      countSmall.textContent = '0';
+      return;
+    }
+    queueEmpty.style.display = 'none';
+    queueBody.innerHTML = queue.map(it => {
+      const skipped = !printableInMode(it);   // barcode mode + no barcode → excluded
+      return `
+      <tr data-id="${it.id}" class="${skipped ? 'label-skipped' : ''}">
+        <td><span class="badge badge-gray">${it.label_size === 'small' ? 'เล็ก' : 'ใหญ่'}</span></td>
+        <td>${escapeHTML(it.product_name)}</td>
+        <td>
+          <span class="font-mono small ${it.barcode ? '' : 'text-muted'}">${it.barcode || '— ไม่มีบาร์โค้ด —'}</span>
+          ${skipped ? '<span class="badge bg-danger ms-1" title="ไม่มีบาร์โค้ด — โหมดบาร์โค้ดจะข้ามรายการนี้ (พิมพ์ด้วยโหมด สคบ ได้)">ข้าม</span>' : ''}
+        </td>
+        <td class="text-center">
+          <input type="number" min="1" max="99" value="${it.qty}" class="qty-input" data-id="${it.id}">
+        </td>
+        <td class="text-end">
+          <button class="btn btn-sm btn-outline-secondary remove-btn" data-id="${it.id}" title="ลบ">
+            <i class="bi bi-x-lg"></i>
+          </button>
+        </td>
+      </tr>
+    `;
+    }).join('');
+    queueCount.textContent = queue.length;
+    const total = queue.reduce((s, x) => s + (x.qty || 1), 0);
+    queueTotal.textContent = `รวม ${total} ดวง`;
+    countBig.textContent = queue.filter(x => x.label_size !== 'small').reduce((s, x) => s + (x.qty || 1), 0);
+    countSmall.textContent = queue.filter(x => x.label_size === 'small').reduce((s, x) => s + (x.qty || 1), 0);
+
+    queueBody.querySelectorAll('.qty-input').forEach(inp => {
+      inp.addEventListener('change', e => setQty(parseInt(e.target.dataset.id, 10), e.target.value));
+    });
+    queueBody.querySelectorAll('.remove-btn').forEach(btn => {
+      btn.addEventListener('click', () => removeFromQueue(parseInt(btn.dataset.id, 10)));
+    });
+  }
+
+  // ── Preview: chunk the active size's queue into fixed-size rows ──
+  function labelHTML(it, idxInRow) {
+    // สคบ mode: no-barcode compliance text (proven scb-label templates).
+    if (activeMode === 'scb') {
+      const f = (label, val) => val ? `<div class="f"><b>${label}:</b> ${escapeHTML(val)}</div>` : '';
+      const style = (activeSize === 'small') ? ` style="left:${SMALL_OFFSETS[idxInRow]}mm"` : '';
+      return `
+        <div class="lbl scb"${style}>
+          <div class="name">${escapeHTML(it.product_name)}</div>
+          ${f('เครื่องหมายการค้า', it.brand)}
+          ${f('วิธีใช้', it.usage_th)}
+          ${f('ข้อแนะนำ', it.warning_th)}
+          ${f('ผู้จัดจำหน่าย', DISTRIBUTOR)}
+          <div class="f"><b>ราคา:</b> ${escapeHTML(PRICE_VALUE)}</div>
+          ${it.packaging_th ? `<div class="f"><b>บรรจุ:</b> ${escapeHTML(it.packaging_th)}</div>` : ''}
+        </div>
+      `;
+    }
+    // Barcode mode.
+    const style = (activeSize === 'small') ? ` style="left:${SMALL_OFFSETS[idxInRow]}mm"` : '';
+    return `
+      <div class="lbl"${style}>
+        <div class="name">${escapeHTML(it.product_name)}</div>
+        <div class="brand">${escapeHTML(it.brand)}</div>
+        <div class="price">${escapeHTML(PRICE_LINE)}</div>
+        ${it.packaging_th ? `<div class="pack">บรรจุ: ${escapeHTML(it.packaging_th)}</div>` : ''}
+        ${it.barcode ? `<div class="bc"><img data-bc="${it.barcode}"></div>` : ''}
+      </div>
+    `;
+  }
+
+  function renderGrid(container, rowClass, perRow, items) {
+    const rows = [];
+    for (let i = 0; i < items.length; i += perRow) {
+      rows.push(items.slice(i, i + perRow));
+    }
+    container.innerHTML = rows.map(row => `
+      <div class="label-row ${rowClass}">${row.map((it, i) => labelHTML(it, i)).join('')}</div>
+    `).join('');
+    container.querySelectorAll('img[data-bc]').forEach(img => {
+      const v = img.getAttribute('data-bc');
+      let format = 'CODE128';
+      if (/^\d{13}$/.test(v)) format = 'EAN13';
+      else if (/^\d{12}$/.test(v)) format = 'UPC';
+      else if (/^\d{8}$/.test(v))  format = 'EAN8';
+      // Render to a HIGH-RES canvas BITMAP, not inline SVG: thin SVG bars drop
+      // out of the browser's window.print() rasterization to the thermal G500,
+      // but a raster image prints reliably. (Diagnosed 2026-07-04.)
+      const canvas = document.createElement('canvas');
+      try {
+        JsBarcode(canvas, v, { format, displayValue: true, fontSize: 14, margin: 0, height: 60, width: 3, textMargin: 2, font: 'monospace', lineColor: '#000000', background: '#ffffff' });
+      } catch (e) {
+        try { JsBarcode(canvas, v, { format: 'CODE128', displayValue: true, fontSize: 14, margin: 0, height: 60, width: 3, lineColor: '#000000', background: '#ffffff' }); }
+        catch (e2) { console.warn('bc fail', v, e2); return; }
+      }
+      img.src = canvas.toDataURL('image/png');
+    });
+  }
+
+  function renderPreview() {
+    const expand = (sizeKey) => {
+      const list = [];
+      queue.filter(x => (x.label_size === 'small') === (sizeKey === 'small'))
+           .filter(printableInMode)   // barcode mode drops barcodeless items (ADR 0010)
+           .forEach(it => {
+             for (let i = 0; i < (it.qty || 1); i++) list.push(it);
+           });
+      return list;
+    };
+    renderGrid(gridBig, 'row-big', 2, expand('big'));
+    renderGrid(gridSmall, 'row-small', 3, expand('small'));
+
+    const activeCount = activeSize === 'big' ? expand('big').length : expand('small').length;
+    previewCount.textContent = `${activeCount} ดวง`;
+  }
+
+  // ── Size tab + @page swap ──
+  const pageStyle = document.createElement('style');
+  document.head.appendChild(pageStyle);
+
+  function setActiveSize(size) {
+    activeSize = size;
+    previewWrap.dataset.mode = size;
+    tabBig.classList.toggle('active', size === 'big');
+    tabSmall.classList.toggle('active', size === 'small');
+    pageStyle.textContent = size === 'big'
+      ? '@page { size: 100mm 30mm; margin: 0; }'
+      : '@page { size: 97mm 25mm; margin: 0; }';
+    renderPreview();
+  }
+  tabBig.addEventListener('click', () => setActiveSize('big'));
+  tabSmall.addEventListener('click', () => setActiveSize('small'));
+
+  function setActiveMode(mode) {
+    activeMode = mode;
+    modeBarcode.classList.toggle('active', mode === 'barcode');
+    modeScb.classList.toggle('active', mode === 'scb');
+    renderQueue();     // refresh the ข้าม flags for the new mode
+    renderPreview();
+  }
+  modeBarcode.addEventListener('click', () => setActiveMode('barcode'));
+  modeScb.addEventListener('click', () => setActiveMode('scb'));
+
+  $('#btn-print').addEventListener('click', async () => {
+    const sizeLabel = activeSize === 'small' ? 'เล็ก' : 'ใหญ่';
+    const sizeQueue = queue.filter(x => (x.label_size === 'small') === (activeSize === 'small'));
+    const activeQueue = sizeQueue.filter(printableInMode);   // barcode mode excludes barcodeless
+    if (!activeQueue.length) {
+      if (sizeQueue.length && activeMode === 'barcode') {
+        alert(`ป้าย${sizeLabel}ในคิวไม่มีบาร์โค้ด — สลับไปโหมด สคบ เพื่อพิมพ์`);
+      } else {
+        alert(`ยังไม่มีป้าย${sizeLabel}ในคิว`);
+      }
+      return;
+    }
+    const grid = activeSize === 'big' ? gridBig : gridSmall;
+    const w = activeSize === 'big' ? 100 : 97;
+    const h = activeSize === 'big' ? 30 : 25;
+    const html = `<!doctype html><html><head><meta charset="utf-8">`
+      + `<style>html,body{margin:0;padding:0;-webkit-print-color-adjust:exact}`
+      + `@page{size:${w}mm ${h}mm;margin:0}\n${PRINT_CSS}</style></head>`
+      + `<body>${grid.outerHTML}</body></html>`;
+    const btn = $('#btn-print');
+    const orig = btn.innerHTML;
+    btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>กำลังพิมพ์…';
+    try {
+      const res = await fetch(BRIDGE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ html, w, h }),
+      });
+      const j = await res.json();
+      if (j.ok) {
+        btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>ส่งพิมพ์แล้ว';
+        setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 1600);
+      } else {
+        alert('พิมพ์ไม่สำเร็จ: ' + (j.msg || 'ไม่ทราบสาเหตุ'));
+        btn.innerHTML = orig; btn.disabled = false;
+      }
+    } catch (e) {
+      alert('ไม่พบตัวช่วยพิมพ์ GoDEX (print helper)\n\n'
+        + 'กรุณาเปิดโปรแกรมช่วยพิมพ์ที่เครื่องที่ต่อเครื่องพิมพ์อยู่ แล้วลองใหม่อีกครั้ง');
+      btn.innerHTML = orig; btn.disabled = false;
+    }
+  });
+  $('#btn-clear').addEventListener('click', () => {
+    if (!queue.length) return;
+    if (!confirm('ล้างคิวทั้งหมด?')) return;
+    queue.length = 0; persist(); renderQueue(); renderPreview();
+  });
+
+  setActiveSize('big');
+  renderQueue();
+  renderPreview();
+})();
+</script>
+{% endblock %}

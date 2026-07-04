@@ -123,6 +123,16 @@
        class="sidebar-link {% if request.endpoint == 'products.labels_view' %}active{% endif %}">
       <i class="bi bi-upc-scan"></i> พิมพ์ป้าย/บาร์โค้ด
     </a>
+    <a href="{{ url_for('labels.manage') }}"
+       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('labels.') %}active{% endif %}">
+      <i class="bi bi-tags"></i> จัดการป้ายสินค้า
+    </a>
+    {% endif %}
+    {% if session.role in ['admin', 'manager', 'staff'] %}
+    <a href="{{ url_for('labels.print_page') }}"
+       class="sidebar-link {% if request.endpoint == 'labels.print_page' %}active{% endif %}">
+      <i class="bi bi-printer"></i> พิมพ์ป้ายสินค้า
+    </a>
     {% endif %}
     {% endif %}
 

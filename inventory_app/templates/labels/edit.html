@@ -1,0 +1,76 @@
+{% extends 'base.html' %}
+{% block title %}แก้ไขป้ายสินค้า – Sendy{% endblock %}
+{% block page_title %}แก้ไขป้ายสินค้า{% endblock %}
+
+{% block topbar_actions %}
+<a href="{{ url_for('labels.manage', q=request.args.get('q',''), review=request.args.get('review',''), page=request.args.get('page',1)) }}"
+   class="btn btn-sm btn-outline-secondary">
+  <i class="bi bi-arrow-left me-1"></i>กลับรายการ
+</a>
+{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width:720px">
+  <div class="card-header"><i class="bi bi-tag me-1"></i>ป้ายสินค้า #{{ row.id }}</div>
+  <div class="card-body">
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="back_q" value="{{ request.args.get('q','') }}">
+      <input type="hidden" name="back_review" value="{{ request.args.get('review','') }}">
+      <input type="hidden" name="back_page" value="{{ request.args.get('page',1) }}">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label small">ชื่อสินค้า <span class="text-danger">*</span></label>
+          <input type="text" name="product_name" class="form-control form-control-sm"
+                 value="{{ row.product_name }}" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small">แบรนด์</label>
+          <input type="text" name="brand" class="form-control form-control-sm" value="{{ row.brand or '' }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small">บาร์โค้ด (EAN-13)</label>
+          <input type="text" name="barcode" class="form-control form-control-sm" value="{{ row.barcode or '' }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small">ขนาดป้าย</label>
+          <select name="label_size" class="form-select form-select-sm">
+            <option value="big"   {% if row.label_size == 'big' %}selected{% endif %}>ใหญ่ (50×30mm)</option>
+            <option value="small" {% if row.label_size == 'small' %}selected{% endif %}>เล็ก (30×25mm)</option>
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label small">วิธีใช้</label>
+          <textarea name="usage_th" class="form-control form-control-sm" rows="2">{{ row.usage_th or '' }}</textarea>
+        </div>
+        <div class="col-12">
+          <label class="form-label small">ข้อแนะนำ</label>
+          <textarea name="warning_th" class="form-control form-control-sm" rows="2">{{ row.warning_th or '' }}</textarea>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small">บรรจุ</label>
+          <input type="text" name="packaging_th" class="form-control form-control-sm" value="{{ row.packaging_th or '' }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small">ขนาดสินค้า</label>
+          <input type="text" name="size_th" class="form-control form-control-sm" value="{{ row.size_th or '' }}">
+        </div>
+        <div class="col-12">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="needs_review" id="needs_review"
+                   {% if row.needs_review %}checked{% endif %}>
+            <label class="form-check-label" for="needs_review">ต้องตรวจสอบ (needs_review)</label>
+          </div>
+        </div>
+        <div class="col-12">
+          <label class="form-label small">หมายเหตุตรวจสอบ</label>
+          <input type="text" name="review_note" class="form-control form-control-sm" value="{{ row.review_note or '' }}">
+        </div>
+        <div class="col-12">
+          <button type="submit" class="btn btn-primary"><i class="bi bi-save me-1"></i>บันทึก</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

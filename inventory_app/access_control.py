@@ -209,6 +209,12 @@ _ENDPOINT_MODULE = {
     'inventory.conversion_activate': 'operation',
     'inventory.conversion_history': 'operation',
     'products.labels_view': 'operation',
+    'labels.manage': 'operation',
+    'labels.edit': 'operation',
+    'labels.bulk_size': 'operation',
+    'labels.company_block': 'operation',
+    'labels.print_page': 'operation',
+    'labels.search_api': 'operation',
     'products.products_walkthrough': 'operation',
     # accounting
     'accounting.accounting_summary': 'accounting',

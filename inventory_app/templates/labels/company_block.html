@@ -1,0 +1,68 @@
+{% extends 'base.html' %}
+{% block title %}ข้อมูลบริษัท (ป้ายสินค้า) – Sendy{% endblock %}
+{% block page_title %}ข้อมูลบริษัท (คงที่บนทุกป้าย){% endblock %}
+
+{% block topbar_actions %}
+<a href="{{ url_for('labels.manage') }}" class="btn btn-sm btn-outline-secondary">
+  <i class="bi bi-arrow-left me-1"></i>กลับรายการป้าย
+</a>
+{% endblock %}
+
+{% block content %}
+<p class="text-muted small">
+  ข้อความชุดนี้พิมพ์เหมือนกันบนป้ายสินค้าทุกใบ (ผู้จัดจำหน่าย / นำเข้าโดย / ที่อยู่ / ประเทศที่ผลิต / บรรทัดราคา)
+  ยกเว้นบรรทัดคุณภาพการผลิตที่ต่อท้าย "ประเทศที่ผลิต" — อันนั้นระบบจะแทรกชื่อแบรนด์ของแต่ละป้ายเองตอนพิมพ์ (Phase 3)
+</p>
+<div class="card" style="max-width:720px">
+  <div class="card-body">
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label small">ผู้จัดจำหน่าย (distributor)</label>
+          <input type="text" name="distributor_th" class="form-control form-control-sm"
+                 value="{{ row.distributor_th if row else '' }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label small">นำเข้าโดย (importer)</label>
+          <input type="text" name="importer_th" class="form-control form-control-sm"
+                 value="{{ row.importer_th if row else '' }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label small">ที่อยู่ (ผู้จัดจำหน่าย)</label>
+          <input type="text" name="address_th" class="form-control form-control-sm"
+                 value="{{ row.address_th if row else '' }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label small">ที่อยู่ผู้นำเข้า บรรทัด 1</label>
+          <input type="text" name="importer_addr1_th" class="form-control form-control-sm"
+                 value="{{ row.importer_addr1_th if row else '' }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label small">ที่อยู่ผู้นำเข้า บรรทัด 2</label>
+          <input type="text" name="importer_addr2_th" class="form-control form-control-sm"
+                 value="{{ row.importer_addr2_th if row else '' }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label small">ประเทศที่ผลิต</label>
+          <input type="text" name="country_th" class="form-control form-control-sm"
+                 value="{{ row.country_th if row else '' }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label small">คุณภาพการผลิต (ส่วนท้าย)</label>
+          <input type="text" name="quality_th" class="form-control form-control-sm"
+                 value="{{ row.quality_th if row else '' }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label small">บรรทัดราคา</label>
+          <input type="text" name="price_line_th" class="form-control form-control-sm"
+                 value="{{ row.price_line_th if row else 'ราคา : ตรวจสอบ ณ จุดขาย' }}">
+        </div>
+        <div class="col-12">
+          <button type="submit" class="btn btn-primary"><i class="bi bi-save me-1"></i>บันทึก</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
