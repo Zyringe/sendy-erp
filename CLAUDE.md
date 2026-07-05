@@ -68,15 +68,18 @@ sendy_erp/
   scripts/              ← apply_sku_*, parse_*, import_*, backup_db.sh, com.boonsawat.erp.backup.plist
   tests/                ← pytest
   inventory_app/
-    app.py              ← routes ส่วนใหญ่ + POST whitelist (~line 109-122)
-    models.py           ← business logic + DB queries
+    app.py              ← app core (~350 LOC): blueprint registration + auth core (login/dashboard/act-as)
+    access_control.py   ← POST whitelist (_STAFF_POST_OK/_MANAGER_POST_OK) + _ENDPOINT_MODULE + require_login
+    filters.py          ← Jinja template filters
+    models/             ← business logic + DB queries (facade __init__.py + 22 domain submodules)
     database.py         ← schema + init_db() + migration runner
     parse_weekly.py     ← BSN weekly parser (cp874)
     parse_platform.py   ← Shopee/Lazada/TikTok parser
     bsn_suggest.py      ← smart-mapping suggestions
     commission.py       ← commission engine
     config.py           ← DATABASE_PATH, UPLOAD_FOLDER, SECRET_KEY, sessions
-    blueprints/         ← products, supplier_catalogue, mobile
+    blueprints/         ← 20 domain blueprints (products, sales, partners, inventory, bsn, accounting,
+                          admin, ecommerce, marketplace, commission_bp, cashbook, hr, labels, mobile, …)
     imports/            ← Express AR/AP parsers
     templates/, static/
     instance/inventory.db
@@ -324,6 +327,6 @@ List ครบดูได้จาก `git grep -nE "@.*\.route" inventory_app/
 > **Escape hatch (rare):** runner is filename-keyed and does NOT re-check sha256, so in-place editing an already-applied mig is *technically possible* without bumping the number. Only acceptable when **all** of these hold: (1) edit is rerun-safe (idempotent), (2) the change hasn't been deployed to Railway yet, (3) no other dev/restore DB has the old filename in `applied_migrations`. Otherwise prod will silently keep the old SQL while fresh environments run the new SQL → schema drift. When in doubt, write a new mig.
 
 ## Auth + Deploy
-- **Auth/permissions**: role enum + POST whitelist live in `inventory_app/auth.py` + `inventory_app/permissions.py`. Read those for the source of truth.
+- **Auth/permissions**: POST whitelist + endpoint→module map live in `inventory_app/access_control.py` (`_STAFF_POST_OK` / `_MANAGER_POST_OK` / `_ENDPOINT_MODULE`, `require_login`); the auth-core routes (login/logout/act-as) stay in `app.py`. Read `access_control.py` for the source of truth.
 - **Deploy**: Railway project linked to `Zyringe/sendy-erp` main; PR-merge auto-deploys. DB sync flow via `/admin/upload-db` (selective master tables only) — never push full DB over friend's rows.
 - **Production env vars**: `SECRET_KEY` (rotated 2026-05-05), `ADMIN_PASSWORD`, `DATA_DIR=/data`. Bootstrap-only: `SKIP_DB_INIT`, `BOOTSTRAP_TOKEN` (unset หลัง first seed).
