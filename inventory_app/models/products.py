@@ -276,21 +276,31 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
             conn.close()
 
 
+# The only columns update_product is allowed to write. Built dynamically from
+# whichever of these keys are actually present in `data` — callers (currently
+# just product_edit) may omit fields their form doesn't collect, and those
+# columns are left untouched rather than clobbered to 0/NULL. See PR fixing
+# the product-edit form silently zeroing hard_to_sell/shopee_stock/lazada_stock
+# (those three aren't rendered by the edit form, so they were always absent
+# from `data` and a fixed full-column UPDATE wiped them on every save).
+_UPDATABLE_PRODUCT_COLUMNS = (
+    'product_name', 'units_per_carton', 'units_per_box', 'unit_type',
+    'hard_to_sell', 'cost_price', 'base_sell_price', 'low_stock_threshold',
+    'shopee_stock', 'lazada_stock',
+)
+
+
 def update_product(product_id: int, data: dict, source=None):
+    fields = {k: data[k] for k in _UPDATABLE_PRODUCT_COLUMNS if k in data}
+    if not fields:
+        return
     conn = get_connection()
     # set source BEFORE the UPDATE so the price-history trigger can stamp it;
     # reset to NULL AFTER so a later write on this connection defaults to NULL.
     _set_price_change_source(conn, source)
-    conn.execute("""
-        UPDATE products SET
-            product_name=:product_name,
-            units_per_carton=:units_per_carton, units_per_box=:units_per_box,
-            unit_type=:unit_type, hard_to_sell=:hard_to_sell,
-            cost_price=:cost_price, base_sell_price=:base_sell_price,
-            low_stock_threshold=:low_stock_threshold,
-            shopee_stock=:shopee_stock, lazada_stock=:lazada_stock
-        WHERE id=:id
-    """, {**data, 'id': product_id})
+    set_clause = ", ".join(f"{col}=:{col}" for col in fields)
+    conn.execute(f"UPDATE products SET {set_clause} WHERE id=:id",
+                 {**fields, 'id': product_id})
     _set_price_change_source(conn, None)
     conn.commit()
     conn.close()

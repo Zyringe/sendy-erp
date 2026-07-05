@@ -392,12 +392,16 @@ def product_edit(product_id):
                 'units_per_carton': int(f['units_per_carton']) if f.get('units_per_carton') else None,
                 'units_per_box': int(f['units_per_box']) if f.get('units_per_box') else None,
                 'unit_type': f.get('unit_type', 'ตัว').strip() or 'ตัว',
-                'hard_to_sell': 1 if f.get('hard_to_sell') else 0,
+                # hard_to_sell / shopee_stock / lazada_stock are intentionally
+                # NOT included here: the edit form (templates/products/form.html,
+                # `{% if action == 'edit' %}` block) doesn't render inputs for
+                # them, so they'd always be absent from `f` and would clobber
+                # the real values to 0/False. models.update_product only writes
+                # columns present in this dict, so omitting them preserves
+                # whatever is already in the DB.
                 'cost_price': float(f.get('cost_price') or 0),
                 'base_sell_price': float(f.get('base_sell_price') or 0),
                 'low_stock_threshold': int(f.get('low_stock_threshold') or config.LOW_STOCK_DEFAULT_THRESHOLD),
-                'shopee_stock': int(f.get('shopee_stock') or 0),
-                'lazada_stock': int(f.get('lazada_stock') or 0),
             }
         except ValueError as e:
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
