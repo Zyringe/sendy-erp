@@ -22,7 +22,7 @@ MOVED_NAMES = {
     '_shared': [
         '_set_price_change_source', 'AUDIT_LOG_RETENTION_DAYS',
         '_AUDIT_PRUNE_PREDICATE', 'prune_audit_log',
-        '_NOISE_WORDS', '_QTY_PREFIX', '_clean_for_match',
+        '_NOISE_WORDS', '_QTY_PREFIX', '_clean_for_match', '_re_mod',
     ],
     'products': [
         'get_products', 'get_product', 'create_product',
