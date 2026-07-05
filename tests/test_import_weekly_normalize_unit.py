@@ -28,7 +28,7 @@ def _entry(code, unit):
             "total": 10.0, "net": 10.0}
 
 
-def test_known_acronym_normalized_unknown_kept(tmp_db, monkeypatch):
+def test_known_acronym_normalized_unknown_kept(tmp_db, monkeypatch, patch_models_conn):
     # sanity: the live map really has หล→โหล and no 'ZZ' acronym
     assert bsn_units.normalize_unit("หล") == "โหล"
     assert bsn_units.normalize_unit("ZZ") == "ZZ"
@@ -48,7 +48,7 @@ def test_known_acronym_normalized_unknown_kept(tmp_db, monkeypatch):
     tconn = sqlite3.connect(tmp_db)
     tconn.row_factory = sqlite3.Row
     tconn.execute("PRAGMA foreign_keys = ON")
-    monkeypatch.setattr(models, "get_connection", lambda: tconn)
+    patch_models_conn(lambda: tconn)
 
     models.import_weekly([_entry("CNORMK", "หล"),        # known → โหล
                           _entry("CNORMU", "ผป")],       # unknown → kept

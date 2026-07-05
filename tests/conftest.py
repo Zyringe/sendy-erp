@@ -250,3 +250,28 @@ def sample_sales_file(tmp_path):
     p = tmp_path / "ขาย_sample.csv"
     p.write_text("\n".join(SALES_SAMPLE_LINES) + "\n", encoding="cp874")
     return str(p)
+
+
+@pytest.fixture
+def patch_models_conn(monkeypatch):
+    """Patch a get_connection factory everywhere the models package sees it.
+
+    Pre-split (monolithic models.py) a single
+    ``monkeypatch.setattr(models, "get_connection", ...)`` covered every model
+    function. Post Phase-11/12, each models/ submodule holds its own
+    ``from database import get_connection`` binding, so a facade-only patch
+    silently misses moved code (the landmine guarded by
+    tests/test_models_package.py). This applies the same factory to the
+    facade AND every submodule that binds get_connection — exact monolith
+    semantics.
+    """
+    import types
+
+    def _patch(factory):
+        import models as _m
+        monkeypatch.setattr(_m, "get_connection", factory)
+        for _name in dir(_m):
+            _sub = getattr(_m, _name)
+            if isinstance(_sub, types.ModuleType) and hasattr(_sub, "get_connection"):
+                monkeypatch.setattr(_sub, "get_connection", factory)
+    return _patch

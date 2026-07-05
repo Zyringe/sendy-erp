@@ -41,7 +41,7 @@ def test_helpers_roundtrip(tmp_path, monkeypatch):
     assert "Zx9" not in json.load(open(real, encoding="utf-8"))["map"]
 
 
-def test_pending_is_acronym_flag(tmp_db, tmp_path, monkeypatch):
+def test_pending_is_acronym_flag(tmp_db, tmp_path, monkeypatch, patch_models_conn):
     _tmp_json(tmp_path, monkeypatch)
     conn = sqlite3.connect(tmp_db)
     conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (PID, "P", f"SK{PID}"))
@@ -56,7 +56,7 @@ def test_pending_is_acronym_flag(tmp_db, tmp_path, monkeypatch):
     conn.close()
     tconn = sqlite3.connect(tmp_db)
     tconn.row_factory = sqlite3.Row
-    monkeypatch.setattr(models, "get_connection", lambda: tconn)
+    patch_models_conn(lambda: tconn)
     pend = {p["bsn_unit"]: p["is_acronym"]
             for p in models.get_pending_unit_conversions()
             if p["product_id"] == PID}
@@ -64,7 +64,7 @@ def test_pending_is_acronym_flag(tmp_db, tmp_path, monkeypatch):
     assert pend.get("โหล") is False           # known full → not flagged
 
 
-def test_learn_acronyms_normalize(tmp_db, tmp_path, monkeypatch):
+def test_learn_acronyms_normalize(tmp_db, tmp_path, monkeypatch, patch_models_conn):
     _tmp_json(tmp_path, monkeypatch)
     conn = sqlite3.connect(tmp_db)
     conn.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) VALUES (?, ?, 'ตัว', ?, 1)", (PID + 1, "P", f"SK{PID+1}"))
@@ -81,7 +81,7 @@ def test_learn_acronyms_normalize(tmp_db, tmp_path, monkeypatch):
     conn.close()
     tconn = sqlite3.connect(tmp_db)
     tconn.row_factory = sqlite3.Row
-    monkeypatch.setattr(models, "get_connection", lambda: tconn)
+    patch_models_conn(lambda: tconn)
 
     models.learn_acronyms_normalize({"Qq9": "กระป๋องใหม่"})
 

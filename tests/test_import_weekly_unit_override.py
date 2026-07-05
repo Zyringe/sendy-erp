@@ -31,7 +31,7 @@ def _entry(code, unit, doc):
             "total": 0.0, "net": 0.0}
 
 
-def test_import_routes_all_units_to_single_product(tmp_db, monkeypatch):
+def test_import_routes_all_units_to_single_product(tmp_db, monkeypatch, patch_models_conn):
     """All units of a bsn_code map to the single mapped product (no unit override)."""
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
@@ -47,7 +47,7 @@ def test_import_routes_all_units_to_single_product(tmp_db, monkeypatch):
     tconn = sqlite3.connect(tmp_db)
     tconn.row_factory = sqlite3.Row
     tconn.execute("PRAGMA foreign_keys = ON")
-    monkeypatch.setattr(models, "get_connection", lambda: tconn)
+    patch_models_conn(lambda: tconn)
 
     models.import_weekly([_entry(CODE, "แผง", "RRO1"),
                           _entry(CODE, "ตัว", "RRO2")],
@@ -62,7 +62,7 @@ def test_import_routes_all_units_to_single_product(tmp_db, monkeypatch):
     c.close()
 
 
-def test_non_mapped_code_stays_null(tmp_db, monkeypatch):
+def test_non_mapped_code_stays_null(tmp_db, monkeypatch, patch_models_conn):
     """A code with no mapping row results in NULL product_id."""
     conn = sqlite3.connect(tmp_db)
     _migrate124(conn)
@@ -72,7 +72,7 @@ def test_non_mapped_code_stays_null(tmp_db, monkeypatch):
 
     tconn = sqlite3.connect(tmp_db)
     tconn.row_factory = sqlite3.Row
-    monkeypatch.setattr(models, "get_connection", lambda: tconn)
+    patch_models_conn(lambda: tconn)
 
     models.import_weekly([_entry(CODE, "แผง", "RRN1"),
                           _entry(CODE, "ตัว", "RRN2")],
