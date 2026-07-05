@@ -7,6 +7,8 @@ engine) and `blueprints/commission_bp.py` (routes) — this module is
 `models.commission`, the DB-row CRUD for commission_overrides only.
 """
 
+import sqlite3
+
 from database import get_connection
 
 
