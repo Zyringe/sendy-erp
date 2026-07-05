@@ -1,22 +1,24 @@
-"""Sendy ERP — Flask application module.
+"""Sendy ERP — Flask application core.
 
-This is the largest file in the app (~3,600 LOC). It owns:
+Post-refactor (2026-07, phases 1-12) this file is the ~350-line application
+core. It owns ONLY:
 
-- Flask app construction (`app = Flask(__name__)`) + blueprint registration
-- The session-based auth model: /login, /logout, _login_required, role check
-- The POST permission gate (`_STAFF_POST_OK`, `_MANAGER_POST_OK`, `_before_request`)
-- Most legacy routes that pre-date the blueprint split: trade dashboard,
-  customers, suppliers, BSN import / mapping / unit-conversions, payment
-  status, ecommerce, conversions (manufacturing), commission UI, express
-  AR/AP, labels, admin DB upload/download
-- The module-switcher sidebar metadata (`_MODULES`)
+- Flask app construction (`app = Flask(__name__)`) + registration of the 20
+  blueprints in `blueprints/` + `init_access_control(app)` + filters
+- The auth core, kept here permanently: /login, /logout, /healthz,
+  service-worker + install help, bootstrap DB upload, /dashboard, and the
+  admin act-as (impersonation) routes — wired into before_request literals,
+  `_role_home`, and the CSRF error handler
 
-Domain-coherent areas have been extracted to blueprints (see
-`inventory_app/blueprints/`): products, cashbook, hr, supplier_catalogue,
-mobile. Future splits — inventory, bsn, sales, payments, ecommerce, admin —
-are opportunistic; do one when a natural touchpoint brings you here.
+Everything else lives elsewhere:
+- Role/POST-permission gate + endpoint→module map: `access_control.py`
+  (`_STAFF_POST_OK`, `_MANAGER_POST_OK`, `_ENDPOINT_MODULE`, `require_login`)
+- Template filters: `filters.py`
+- Domain routes: `blueprints/<domain>.py` (20 blueprints)
+- Business logic + DB queries: the `models/` package (pure facade
+  `__init__.py` + 22 domain submodules)
 
-Permission model (see `_STAFF_POST_OK` / `_MANAGER_POST_OK` near the top):
+Permission model (source of truth: access_control.py):
   - admin: full access + user management
   - manager: see cost/GP/payments; cannot edit products/users
   - staff: import weekly flow + read-only views (no cost/GP, no hr.*,
