@@ -3,6 +3,8 @@ models.py (behavior-preserving split, Phase 12) — see models/__init__.py's
 module docstring for the overall file-split rationale. No behavior changes.
 """
 
+from datetime import date
+
 from database import get_connection
 
 
