@@ -177,7 +177,24 @@ def admin_client(tmp_db):
     return c
 
 
-def test_new_employee_form_prefills_next_emp_code(admin_client):
-    """Add form shows next available EMP code (EMP007 after EMP006)."""
+def test_new_employee_form_prefills_next_emp_code(admin_client, tmp_db):
+    """Add form shows next available EMP code (max existing numeric emp_code + 1).
+
+    Hermetic (issue #264): originally asserted a fixed 'EMP007' assuming the
+    live DB tops out at EMP006 — that drifted once real EMP007/EMP008 hires
+    were added. next_emp_code() (hr_queries.py) only reads the employees
+    table, so reset it to a known EMP001..EMP006 set first; no other table
+    needs to stay in sync for this GET-only route (see blueprints/hr.py
+    employee_new)."""
+    conn = sqlite3.connect(tmp_db)
+    try:
+        conn.execute("DELETE FROM employees")
+        conn.executemany(
+            "INSERT INTO employees (emp_code, full_name, company_id) VALUES (?, ?, 1)",
+            [(f"EMP{n:03d}", f"ทดสอบ {n}") for n in range(1, 7)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
     html = admin_client.get("/hr/employees/new").get_data(as_text=True)
     assert 'value="EMP007"' in html, "emp_code field not prefilled with EMP007"
