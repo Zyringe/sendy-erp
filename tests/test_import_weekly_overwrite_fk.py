@@ -44,7 +44,7 @@ def _entry():
     }
 
 
-def test_overwrite_no_orphan_no_fkfail(tmp_db, monkeypatch):
+def test_overwrite_no_orphan_no_fkfail(tmp_db, monkeypatch, patch_models_conn):
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -80,7 +80,7 @@ def test_overwrite_no_orphan_no_fkfail(tmp_db, monkeypatch):
     tconn = sqlite3.connect(tmp_db)
     tconn.row_factory = sqlite3.Row
     tconn.execute("PRAGMA foreign_keys = ON")
-    monkeypatch.setattr(models, "get_connection", lambda: tconn)
+    patch_models_conn(lambda: tconn)
 
     # must NOT raise sqlite3.IntegrityError (the bug)
     stats = models.import_weekly([_entry()], "purchase", "test.csv")
