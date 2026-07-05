@@ -2,9 +2,15 @@
 (behavior-preserving split, Phase 11) — see models/__init__.py's module
 docstring for the overall file-split rationale. No behavior changes.
 
-Pure sink: imports nothing from the models package.
+Imports nothing from other domain submodules (products/customers/etc) —
+only the shared `_shared` leaf helper (no circular-import risk) plus
+stdlib/database, matching the pattern every other Phase-11 submodule uses.
 """
+from collections import defaultdict
+
 from database import get_connection
+
+from ._shared import _set_price_change_source
 
 
 _WACC_INITIAL_DATE = '2026-03-03'
