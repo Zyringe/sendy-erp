@@ -308,7 +308,10 @@ def test_approve_rolls_back_atomically_when_post_create_step_fails(empty_db_with
     def _boom(*a, **k):
         raise RuntimeError('boom')
 
-    monkeypatch.setattr(models, 'resolve_pending_mappings', _boom)
+    # resolve_pending_mappings is called bare inside models/suggestions.py's
+    # approve_pending_suggestion (from .mapping import resolve_pending_mappings),
+    # so the interception must target that binding, not the facade's.
+    monkeypatch.setattr(models.suggestions, 'resolve_pending_mappings', _boom)
 
     conn = sqlite3.connect(empty_db)
     before_products = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
