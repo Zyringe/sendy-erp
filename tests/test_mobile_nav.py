@@ -6,6 +6,15 @@ a slot is hidden when the session role cannot GET its landing page (it would
 403/redirect). Staff see only สินค้า/การค้า; admin/manager also see บุคลากร/บัญชี.
 ตรวจบิล is NOT a bottom-nav slot (it lives in the drawer + dashboard banner).
 
+Phase 5/6 self-service (PR #211, 2026-06-27; access_control.py::
+build_mobile_nav_slots) unconditionally appends two more slots — ลาของฉัน
+(my_leave) and สลิป (my_payslip) — for EVERY role, since self-service
+leave/payslip is for staff/general too, not just admin/manager. This file
+predates that change and was never updated, so the exact-list assertions
+below went stale (NOT live-DB drift — build_mobile_nav_slots takes no DB
+connection at all; issue #264's "known live-DB-drift" framing miscategorized
+these 4). Fixed by adding the two always-present keys to each expected list.
+
 These test the pure builder so the "never show a slot that 403s" invariant is
 verified without rendering a full page. Landing-route gating verified in app.py:
   - products.product_list / trade_dashboard → all roles
@@ -25,21 +34,22 @@ def _keys(role, endpoint=''):
 
 
 def test_staff_sees_only_products_and_trade():
-    assert _keys('staff') == ['products', 'trade']
+    # + my_leave/my_payslip: self-service slots, present for every role (Phase 5/6).
+    assert _keys('staff') == ['products', 'trade', 'my_leave', 'my_payslip']
 
 
 def test_manager_sees_all_four_module_slots():
-    assert _keys('manager') == ['products', 'trade', 'hr', 'accounting']
+    assert _keys('manager') == ['products', 'trade', 'hr', 'accounting', 'my_leave', 'my_payslip']
 
 
 def test_admin_sees_all_four_module_slots():
-    assert _keys('admin') == ['products', 'trade', 'hr', 'accounting']
+    assert _keys('admin') == ['products', 'trade', 'hr', 'accounting', 'my_leave', 'my_payslip']
 
 
 def test_unknown_or_empty_role_falls_back_to_staff_visibility():
     # An unexpected/blank role must NOT leak manager-only slots.
-    assert _keys('') == ['products', 'trade']
-    assert _keys('something-else') == ['products', 'trade']
+    assert _keys('') == ['products', 'trade', 'my_leave', 'my_payslip']
+    assert _keys('something-else') == ['products', 'trade', 'my_leave', 'my_payslip']
 
 
 def test_slot_labels_match_puts_decision():
