@@ -25,7 +25,14 @@ def test_reminder_none_when_prev_run_exists(tmp_db):
 def test_reminder_returns_month_when_missing(tmp_db):
     import hr
     conn = sqlite3.connect(tmp_db)
-    # "today" in a month whose previous month has no run (no 2026-06 run exists) → July → prev=2026-06 missing
+    # Hermetic (issue #264): originally relied on the live DB never having a
+    # 2026-06 payroll run yet — that drifted once real June payroll got
+    # finalized. Delete it explicitly so "missing" holds regardless of when
+    # this test runs (mirrors the DELETE FROM payroll_runs pattern already
+    # used by the dashboard-banner tests below).
+    conn.execute("DELETE FROM payroll_runs WHERE year_month = '2026-06'")
+    conn.commit()
+    # "today" in a month whose previous month has no run → July → prev=2026-06 missing
     assert hr.payroll_reminder_month(date(2026, 7, 5), conn) == "2026-06"
 
 

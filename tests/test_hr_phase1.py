@@ -39,20 +39,29 @@ def _cols(conn, table):
 
 # ── Task 1.1: Migration 114 ───────────────────────────────────────────────────
 
-def test_employees_has_sort_order_and_on_payroll(tmp_db):
-    conn = sqlite3.connect(tmp_db)
-    try:
-        cols = _cols(conn, "employees")
-        assert "sort_order" in cols
-        assert "on_payroll" in cols
-        rows = conn.execute(
-            "SELECT on_payroll, sort_order FROM employees"
-        ).fetchall()
-        for on_payroll, sort_order in rows:
-            assert on_payroll == 1
-            assert sort_order is not None
-    finally:
-        conn.close()
+def test_employees_has_sort_order_and_on_payroll(tmp_db_conn):
+    """Migration 114 added sort_order + on_payroll to employees, both
+    NOT NULL with defaults (sort_order=100, on_payroll=1).
+
+    Hermetic (issue #264): originally asserted on_payroll==1 across every
+    live employee row, which drifted the day a real employee (EMP008) was
+    legitimately marked off-payroll (on_payroll=0 is valid business data, not
+    a bug). What the migration actually guarantees is the DEFAULT for a
+    freshly-inserted row — insert one and check that instead."""
+    conn = tmp_db_conn
+    cols = _cols(conn, "employees")
+    assert "sort_order" in cols
+    assert "on_payroll" in cols
+    conn.execute(
+        "INSERT INTO employees (emp_code, full_name, start_date) "
+        "VALUES ('T_MIG114', 'ทดสอบ migration 114', '2026-01-01')"
+    )
+    conn.commit()
+    on_payroll, sort_order = conn.execute(
+        "SELECT on_payroll, sort_order FROM employees WHERE emp_code='T_MIG114'"
+    ).fetchone()
+    assert on_payroll == 1
+    assert sort_order is not None
 
 
 # ── Task 1.2: get_employees ORDER BY sort_order ───────────────────────────────
