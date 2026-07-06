@@ -36,6 +36,11 @@ import sqlite3  # noqa: E402
 
 # product_id reassigned by plain UPDATE here; the two below are special-cased.
 SPECIAL = {"unit_conversions", "product_code_mapping"}
+# Never re-point these: product_id is a PRIMARY KEY forensic archive of the
+# dropped integer sku (mig 097). Re-pointing collides on a merge where both
+# products have a row, and would corrupt the id->old-sku trace. Leave the
+# loser's row pointing at the (now is_active=0) loser product.
+SKIP = {"stock_levels", "legacy_product_sku_map"}
 
 
 def tables_with_product_id(conn):
@@ -121,9 +126,7 @@ def main(argv=None):
                      "WHERE product_id=?", (a.dst, a.src))
         # everything else with a product_id column
         for t in tabs:
-            if t in SPECIAL:
-                continue
-            if t == "stock_levels":
+            if t in SPECIAL or t in SKIP:
                 continue
             conn.execute(f"UPDATE {t} SET product_id=? WHERE product_id=?",
                          (a.dst, a.src))
@@ -151,7 +154,7 @@ def main(argv=None):
                             "product_id=?", (a.dst,)).fetchone()[0]
     leftover = sum(conn.execute(f"SELECT COUNT(*) FROM {t} WHERE "
                                 f"product_id=?", (a.src,)).fetchone()[0]
-                   for t in tabs if t not in ("stock_levels",))
+                   for t in tabs if t not in SKIP)
     ok = (to_after == s_src + s_dst) and leftover == 0
     print(f"\nAPPLIED. to({a.dst}) stock={to_after} "
           f"(expected {s_src + s_dst}) {'OK' if to_after==s_src+s_dst else 'MISMATCH'}")
