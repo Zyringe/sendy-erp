@@ -44,6 +44,11 @@
   Lives in `employees`. A person on the team. May exist with **no** login (e.g. บอล, ริน
   — staff who never use the system).
 
+- **Nickname-only employee (พนักงานที่มีแต่ชื่อเล่น)** — a real worker whose legal name
+  is not on file (informal staff, e.g. a foreign แม่บ้าน): the Employee record carries
+  the nickname as its full name until a legal name is ever provided. In every other
+  sense a normal Employee (payroll, leave, pay-from account). First case: ปู้ (EMP009).
+
 - **The link (employee ↔ account)** — `employees.user_id → users.id`, **1:1 and optional
   on both sides**: an employee has at most one login; a login belongs to at most one
   employee; either can exist without the other. The account is normally created first and

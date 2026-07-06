@@ -142,6 +142,16 @@ def _coerce_optional_int(raw) -> Optional[int]:
     return int(raw)
 
 
+def _blank_dates_to_none(data: dict) -> None:
+    """The HTML form posts blank date inputs as '' — stored verbatim, that
+    breaks the payroll generate filter (`end_date IS NULL OR end_date >= ?`
+    reads '' as an always-past end date and silently drops the employee;
+    hit EMP001 + EMP008 on prod, 2026-07-06). Normalize in the write path."""
+    for k in ("start_date", "end_date", "probation_end_date"):
+        if k in data and isinstance(data[k], str) and not data[k].strip():
+            data[k] = None
+
+
 def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
     """Insert a new employee row. Returns new id.
 
@@ -149,6 +159,7 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
     so id==emp_code is preserved on every new hire (Phase 2 invariant).
     """
     import re
+    _blank_dates_to_none(data)
     c, owned = _conn(conn)
     try:
         code = (data.get("emp_code") or "").strip()
@@ -224,6 +235,7 @@ def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
 
 def update_employee(emp_id: int, data: dict,
                     conn: Optional[sqlite3.Connection] = None):
+    _blank_dates_to_none(data)
     c, owned = _conn(conn)
     try:
         # on_payroll: checkbox sends "1" when checked, nothing when unchecked
