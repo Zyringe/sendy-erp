@@ -114,9 +114,15 @@ def tmp_db_conn_hr_clean(tmp_db):
     conn = sqlite3.connect(tmp_db, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    # FK order: payroll_items + salary_advances both reference payroll_runs.
-    # Delete dependents first, then runs.
+    # FK order: cashbook_transactions references payroll_items/payroll_runs
+    # (salary pay-events, ADR 0006) and salary_advances (ADR 0008) — the live
+    # DB carries such rows since 2026-06-30, so clear those links first, then
+    # payroll_items + salary_advances (both reference payroll_runs), then runs.
     conn.executescript("""
+        DELETE FROM cashbook_transactions
+         WHERE payroll_item_id IS NOT NULL
+            OR payroll_run_id  IS NOT NULL
+            OR salary_advance_id IS NOT NULL;
         DELETE FROM payroll_items;
         DELETE FROM salary_advances;
         DELETE FROM payroll_runs;
