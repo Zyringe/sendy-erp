@@ -78,7 +78,6 @@ BRAND_ALIASES = {
     "SD-":     "Sendai",
     "เซ็นได":   "Sendai",
     # TOA
-    "จระเข้":  "TOA",
 }
 
 

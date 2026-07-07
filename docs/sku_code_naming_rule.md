@@ -43,7 +43,7 @@
 | 4 | **Minimum 2 segments** — ทุก SKU ต้องมีอย่างน้อย `cat + 1 อื่น` (ห้ามมีแค่ `cat` slot เดียว) | `INT` → `INT-OTH` (เติม subcat) |
 | 5 | **Drop sub_cat_short ถ้าซ้ำกับ cat_short** | `BOX-BOX-SD-...` → `BOX-SD-...` |
 | 6 | **Sub_cat_short** = single segment, 3-8 chars, **ห้ามมี internal dash** | `HDOR-LATCH` → `HDOR` หรือ `LATCH` (เลือก 1) |
-| 7 | **Disambiguator** — ถ้า 2 SKUs ได้ sku_code ซ้ำกัน → suffix `-{sku}` (เลขจาก `products.sku` column) เฉพาะ SKU ที่ collide | `BLT-SD-230-4in-AC-UN` (สมมติ pid 1 + pid 2) → pid 1: `BLT-SD-230-4in-AC-UN-1`; pid 2: `BLT-SD-230-4in-AC-UN-2` |
+| 7 | **Disambiguator** — ถ้า 2 SKUs ได้ sku_code ซ้ำกัน → suffix `-{id}` (product_id; `products.sku` ถูก drop ใน mig 097) เฉพาะ SKU ที่ collide. **Priority (D7, 2026-07-07): ตัว active ชนะ bare code**, inactive/ผู้แพ้ห้อย `-{id}`; status เดียวกัน → pid ต่ำกว่าชนะ | `BLT-SD-230-4in-AC-UN` (สมมติ pid 1 + pid 2) → pid 1: `BLT-SD-230-4in-AC-UN-1`; pid 2: `BLT-SD-230-4in-AC-UN-2` |
 
 ### Slot-by-slot rules
 
@@ -63,6 +63,7 @@
 ### Series slot — special clarification (2026-05-14)
 
 - ✅ **English series code** (JAC, B, A, AAA) → **ใส่ใน sku_code slot 4** + เก็บใน `products.series` column
+- ❌ **Series สัญลักษณ์ล้วน** (`+`/`-` หัวไขควง) → **omit จาก sku_code** (2026-07-07: กัน segment `-+-`/`---`; subcat/ชื่อบอกหัวอยู่แล้ว — ดู `_series_segment`)
 - ❌ **Thai series description** (`แกนเล็ก`, `จุกทอง`, `แกนใหญ่ยอดกลม`) → **omit จาก sku_code** (ใส่ใน series column เท่านั้น)
 - ไม่บังคับให้ทุก series ต้องมี English code — แต่ถ้ามี → ต้องใส่ใน sku_code
 - ถ้าจะ promote Thai series → English (เช่น "แกนเล็ก" → SHFT-S) ต้อง update ทั้ง series column + sku_code พร้อมกัน
@@ -204,7 +205,7 @@ SND-FLPH-GL-B-#40
 2. Skip slot ที่เป็น NULL/empty (NULL-aware)
 3. Drop sub_cat_short ถ้าเท่ากับ cat_short
 4. Check collision กับ existing `products.sku_code`
-5. ถ้า collide → append `-{sku}` disambiguator
+5. ถ้า collide → append `-{id}` disambiguator (active ชนะ bare — D7)
 6. ถ้า strip rule trigger → strip disambig ก่อน insert condition
 
 ---
@@ -265,4 +266,5 @@ State หลังจาก migration 052 (2026-05-12):
 
 - **2026-05-12** — Convention locked. State: 1,963 products, 0 empty/Thai/duplicate sku_codes. Migrations 046-052 applied.
 - **2026-05-14** — Added series-slot clarification (English series → in sku_code; Thai series → omit). pid 83 example updated: `HNG-HDOR-SD-#410-BRS-PN` → `HNG-HDOR-SD-JAC-#410-BRS-PN`.
+- **2026-07-07** — Naming audit: sku_code regen 77 ตัว (local+prod). Disambiguator = `-{id}` + D7 active-wins-bare. Series สัญลักษณ์ล้วน omit จาก sku. `[ใส]` หลุดจาก model pid 1962 (Thai-in-sku ตัวสุดท้าย).
 - **2026-05-28** — 10-slot revision (mig 087). Material slot 8 dropped (never wired into `build_sku_code` despite the rule promising it; column removed too). Packaging split into `packaging_th` (Thai) + `packaging_short` (code) — pkg slot now reads `packaging_short` directly instead of dict lookup at generation time. **pack_variant=1 suppression rule added**: default variant (value 1 or NULL) renders no suffix in both `sku_code` AND `product_name`; only ≥ 2 visible. Also: subcat slot now consumed by `build_sku_code` (was documented in rule but the generator silently skipped it pre-2026-05-28). Example `BLT-MYM-SD-#230-4in-AC-UN` now generates correctly.

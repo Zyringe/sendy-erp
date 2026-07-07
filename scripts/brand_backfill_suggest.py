@@ -42,7 +42,6 @@ ALIASES = {
     "เซ็นได":   "sendai",
     "สิงห์ทอง": "golden_lion",
     "สิงห์":    "golden_lion",
-    "จระเข้":   "toa",
 }
 
 
