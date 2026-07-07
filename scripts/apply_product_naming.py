@@ -114,6 +114,10 @@ def validate_ops(db_path, ops):
         elif o['op'] == 'brand_name_th':
             if conn.execute('SELECT 1 FROM brands WHERE id=?', (o['field'],)).fetchone() is None:
                 errs.append(f"brand {o['field']}: not in DB")
+        elif o['op'] == 'color_name_th':
+            if conn.execute('SELECT 1 FROM color_finish_codes WHERE code=?',
+                            (o['field'],)).fetchone() is None:
+                errs.append(f"color code {o['field']}: not in DB")
         else:
             errs.append(f"unknown op {o['op']}")
     conn.close()
@@ -145,6 +149,9 @@ def apply_ops(db_path, ops, dry_run=True, backup_dir=None):
                     (val, o['product_id']))
             elif o['op'] == 'brand_name_th':
                 cur = conn.execute('UPDATE brands SET name_th=? WHERE id=?',
+                                   (o['value'], o['field']))
+            elif o['op'] == 'color_name_th':
+                cur = conn.execute('UPDATE color_finish_codes SET name_th=? WHERE code=?',
                                    (o['value'], o['field']))
             if cur.rowcount != 1:
                 raise ApplyError(f"op {o['op']} pid={o['product_id']} matched "
@@ -293,12 +300,17 @@ def main():
             w.writerow(['product_id', 'product_name (ปัจจุบัน)', 'ชื่อใหม่ (ถ้าแก้)',
                         'change_kind', 'before', 'after', 'source'])
             for o in ops:
-                kind = {'name': 'name', 'field': 'field', 'brand_name_th': 'dict'}[o['op']]
+                kind = {'name': 'name', 'field': 'field', 'brand_name_th': 'dict',
+                        'color_name_th': 'dict'}[o['op']]
                 what = f"{o['field']}=" if o['op'] == 'field' else ''
                 if o['op'] == 'brand_name_th':
                     # id column would read as a product_id — label it as a brand row
-                    w.writerow([f"brand:{o['field']}", f"แบรนด์ HORSE SHOE (id {o['field']})",
+                    w.writerow([f"brand:{o['field']}", f"แบรนด์ (brand id {o['field']})",
                                 '', kind, 'name_th=(ว่าง)', f"name_th={o['after']}", o['source']])
+                    continue
+                if o['op'] == 'color_name_th':
+                    w.writerow([f"color:{o['field']}", f"สี (color code {o['field']})",
+                                '', kind, o['before'], f"name_th={o['after']}", o['source']])
                     continue
                 cur, new = _namecols(o['product_id'])
                 w.writerow([o['product_id'], cur, new, kind,
@@ -307,10 +319,6 @@ def main():
                 cur, new = _namecols(p['product_id'])
                 w.writerow([p['product_id'], cur, new, 'sku', p['before'], p['after'],
                             'regen D3/D7'])
-            cur, new = _namecols('1394')
-            w.writerow(['1394', cur, new, 'flagged', 'JSN name_th=สีนิกเกิล',
-                        'เสนอ สีนิกเกิลซาติน — NOT approved yet, Put decides at apply',
-                        'dict-decision'])
         import collections
         counts = collections.Counter(o['op'] for o in ops)
         counts['sku'] = len(plans)

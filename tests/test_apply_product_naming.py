@@ -83,6 +83,7 @@ CREATE TABLE products (
 );
 CREATE UNIQUE INDEX idx_products_sku_code ON products(sku_code);
 CREATE TABLE brands (id INTEGER PRIMARY KEY, name TEXT, name_th TEXT, short_code TEXT);
+CREATE TABLE color_finish_codes (code TEXT PRIMARY KEY, name_th TEXT);
 CREATE TABLE categories (id INTEGER PRIMARY KEY, short_code TEXT);
 CREATE TABLE product_code_mapping (id INTEGER PRIMARY KEY, bsn_code TEXT, product_id INTEGER);
 CREATE TABLE import_log (
@@ -99,6 +100,7 @@ def db(tmp_path):
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
     conn.execute("INSERT INTO brands VALUES (3,'Sendai','เซ็นได','SD'), (22,'HORSE SHOE',NULL,'HORSE')")
+    conn.execute("INSERT INTO color_finish_codes VALUES ('JSN','สีนิกเกิล'), ('NK','สีนิกเกิล')")
     conn.execute("INSERT INTO categories VALUES (1,'BLT')")
     conn.commit()
     conn.close()
@@ -171,6 +173,25 @@ def test_compiler_excludes_pending_and_noop():
     ]
     ops, errors = cao.compile_judgment(rows)
     assert ops == [] and errors == []
+
+
+def test_symbol_only_series_omitted_from_sku():
+    from sku_code_utils import build_sku_code
+    base = {'id': 1797, 'cat_short_code': 'SDR', 'sub_category_short_code': 'SDR+',
+            'brand_short_code': 'ANS', 'size': '4mm/5in', 'color_code': 'BLK'}
+    assert build_sku_code({**base, 'series': '+'}) == 'SDR-SDR+-ANS-4mm-5in-BLK'
+    assert build_sku_code({**base, 'series': '-'}) == 'SDR-SDR+-ANS-4mm-5in-BLK'
+    # alphanumeric series still included
+    assert build_sku_code({**base, 'series': 'DOME'}) == 'SDR-SDR+-ANS-DOME-4mm-5in-BLK'
+
+
+def test_color_name_th_op(db):
+    ops = [{'op': 'color_name_th', 'product_id': '', 'field': 'JSN', 'value': 'สีนิกเกิ้ล',
+            'before': 'สีนิกเกิล', 'after': 'สีนิกเกิ้ล', 'source': 'Put chat 2026-07-07'}]
+    apn.apply_ops(db, ops, dry_run=False, backup_dir=os.path.dirname(db))
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT name_th FROM color_finish_codes WHERE code='JSN'").fetchone()[0] == 'สีนิกเกิ้ล'
+    assert conn.execute("SELECT name_th FROM color_finish_codes WHERE code='NK'").fetchone()[0] == 'สีนิกเกิล'
 
 
 def test_compiler_explicit_name_target():

@@ -79,10 +79,15 @@ def _series_segment(s: str) -> str:
     """Convert series value to a sku_code-safe segment.
     ASCII: cleaned + uppercase (DOME, BRUSHNO.98, CSK).
     Thai/mixed: 'S' + 4-hex hash (stable across runs, ASCII-safe).
+    Symbol-only (screwdriver-head '+'/'-'): omitted — a bare symbol segment
+    renders as '-+-' / '---' (padding, violates rule 2) and subcat/name
+    already carry the head type (Put 2026-07-07, pids 1797-1800).
     """
     if not s:
         return ""
     s = s.strip()
+    if not re.search(r"[0-9A-Za-zก-๙]", s):
+        return ""
     if s.isascii():
         return re.sub(r"\s+", "", s).upper()
     return "S" + hashlib.md5(s.encode("utf-8")).hexdigest()[:4].upper()
