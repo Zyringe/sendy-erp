@@ -295,8 +295,13 @@ def main():
             for o in ops:
                 kind = {'name': 'name', 'field': 'field', 'brand_name_th': 'dict'}[o['op']]
                 what = f"{o['field']}=" if o['op'] == 'field' else ''
-                cur, new = _namecols(o['product_id']) if o['op'] != 'brand_name_th' else ('', '')
-                w.writerow([o['product_id'] or o['field'], cur, new, kind,
+                if o['op'] == 'brand_name_th':
+                    # id column would read as a product_id — label it as a brand row
+                    w.writerow([f"brand:{o['field']}", f"แบรนด์ HORSE SHOE (id {o['field']})",
+                                '', kind, 'name_th=(ว่าง)', f"name_th={o['after']}", o['source']])
+                    continue
+                cur, new = _namecols(o['product_id'])
+                w.writerow([o['product_id'], cur, new, kind,
                             o['before'] or what, what + o['after'], o['source']])
             for p in plans:
                 cur, new = _namecols(p['product_id'])
