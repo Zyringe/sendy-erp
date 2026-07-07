@@ -213,6 +213,10 @@
        class="sidebar-link {% if request.endpoint and request.endpoint.startswith('marketplace.') %}active{% endif %}">
       <i class="bi bi-receipt"></i> คำสั่งซื้อ Marketplace
     </a>
+    <a href="{{ url_for('marketplace.review') }}"
+       class="sidebar-link {% if request.endpoint == 'marketplace.review' %}active{% endif %}">
+      <i class="bi bi-clipboard-check"></i> ต้องตรวจการจับคู่ใบกำกับ
+    </a>
     {% endif %}
 
     {# ── ของฉัน (self-service) — linked non-exempt users; role-gated only (NOT

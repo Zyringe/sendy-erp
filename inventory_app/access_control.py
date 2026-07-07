@@ -274,6 +274,7 @@ _ENDPOINT_MODULE = {
     'marketplace.api_order_detail': 'accounting',
     'marketplace.reconciliation': 'accounting',
     'marketplace.review_amount': 'accounting',
+    'marketplace.review': 'accounting',
     # hr
     'hr.dashboard': 'hr',
     'hr.employee_list': 'hr',
