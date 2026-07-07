@@ -1,0 +1,182 @@
+{% extends 'base.html' %}
+{% block title %}ต้องตรวจการจับคู่ใบกำกับ — {{ platform | capitalize }}{% endblock %}
+{% block content %}
+<div class="container-fluid py-3">
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <h4 class="mb-0">ต้องตรวจการจับคู่ใบกำกับ — {{ platform | capitalize }}</h4>
+    <a href="{{ url_for('marketplace.settlement', platform=platform) }}" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-left"></i> กลับ Settlement
+    </a>
+  </div>
+
+  {# ── Platform switcher (Shopee / Lazada) — worklist is per-platform ── #}
+  <div class="btn-group btn-group-sm mb-3" role="group" aria-label="เลือกแพลตฟอร์ม">
+    <a href="{{ url_for('marketplace.review', platform='shopee') }}"
+       class="btn btn-outline-danger {% if platform == 'shopee' %}active{% endif %}">Shopee</a>
+    <a href="{{ url_for('marketplace.review', platform='lazada') }}"
+       class="btn btn-outline-primary {% if platform == 'lazada' %}active{% endif %}">Lazada</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="alert alert-{{ cat }} alert-dismissible fade show">{{ msg }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>
+    {% endfor %}
+  {% endwith %}
+
+  <p class="text-muted small">
+    หน้านี้แสดงผลอย่างเดียว ไม่บันทึกอะไร — ออเดอร์ที่เชื่อมกับใบกำกับ (IV) ถูกต้องแล้ว (สินค้าตรงกัน)
+    จะไม่แสดงที่นี่ แม้ยอดเงินจะต่างกันก็ตาม (ยึดสินค้าเป็นหลัก)
+  </p>
+
+  {# ── A: settlement ยังไม่ import — SUMMARY by period, not per-order (huge bucket) ── #}
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <strong>A. ยังไม่มียอดโอน (settlement ยังไม่ import)</strong>
+      <span class="badge bg-secondary">{{ worklist.total_a }} ออเดอร์</span>
+    </div>
+    <div class="card-body">
+      {% if worklist.summary_a %}
+      <p class="small text-muted mb-2">
+        import ไฟล์ Income/Settlement (Shopee) หรือ Account Statement (Lazada) ของช่วงนั้นๆ แล้ว
+        auto-link จะจับคู่ใบกำกับให้เองค่ะ
+      </p>
+      <div class="table-responsive">
+      <table class="table table-sm table-bordered mb-0">
+        <thead class="table-light">
+          <tr><th>ช่วงเวลา (เดือน)</th><th class="text-end">จำนวนออเดอร์</th><th class="text-end">เงินเข้า wallet แล้ว (฿)</th></tr>
+        </thead>
+        <tbody>
+          {% for r in worklist.summary_a %}
+          <tr>
+            <td>{{ r.period or '(ไม่ทราบวันที่)' }}</td>
+            <td class="text-end">{{ r.count }}</td>
+            <td class="text-end">{{ '{:,.2f}'.format(r.wallet_income) if r.wallet_income else '–' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <div class="text-success small">ไม่มีออเดอร์ค้าง import settlement ✓</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── B: สินค้ายังไม่แม็พ ── #}
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <strong>B. สินค้ายังไม่แม็พ</strong>
+      <span class="badge bg-secondary">{{ worklist.count_b }} ออเดอร์</span>
+    </div>
+    <div class="card-body p-0">
+      {% if worklist.rows_b %}
+      <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0">
+        <thead class="table-light">
+          <tr><th>เลขออเดอร์</th><th>วันสั่ง</th><th class="text-end">ยอดโอน (฿)</th><th>สินค้าในออเดอร์</th><th>แนะนำ</th></tr>
+        </thead>
+        <tbody>
+          {% for o in worklist.rows_b %}
+          <tr>
+            <td><code class="js-order-detail" role="button" data-order-id="{{ o.id }}" title="ดูรายละเอียดออเดอร์">{{ o.order_sn }}</code></td>
+            <td class="small">{{ o.order_date[:10] if o.order_date else '–' }}</td>
+            <td class="text-end">{{ '{:,.2f}'.format(o.payout) if o.payout is not none else '–' }}</td>
+            <td class="small">{{ o.item_names | join(', ') if o.item_names else '–' }}</td>
+            <td>
+              <a class="btn btn-sm btn-outline-warning py-0"
+                 href="{{ url_for('ecommerce.ecommerce', tab='mapping', mapped=0, platform=platform, q=(o.item_names[0] if o.item_names else '')) }}">
+                แม็พสินค้า
+              </a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <div class="text-success small p-3">ไม่มีสินค้าที่ยังไม่แม็พ ✓</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── C: เดายอด — ใบกำกับคนละสินค้า ── #}
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <strong>C. เดายอด — ใบกำกับคนละสินค้า</strong>
+      <span class="badge bg-secondary">{{ worklist.count_c }} ออเดอร์</span>
+    </div>
+    <div class="card-body p-0">
+      {% if worklist.rows_c %}
+      <p class="small text-muted p-2 mb-0">ใบกำกับที่ผูกอยู่เป็นคนละสินค้ากับออเดอร์ — น่าจะจับคู่ผิด กดเลือกใบกำกับใหม่</p>
+      <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>เลขออเดอร์</th><th>วันสั่ง</th><th class="text-end">ยอดโอน (฿)</th>
+            <th>สินค้าในออเดอร์</th><th>ใบกำกับปัจจุบัน</th><th>สินค้าในใบกำกับ</th><th>แก้ไข</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for o in worklist.rows_c %}
+          <tr class="table-warning">
+            <td><code class="js-order-detail" role="button" data-order-id="{{ o.id }}" title="ดูรายละเอียดออเดอร์">{{ o.order_sn }}</code></td>
+            <td class="small">{{ o.order_date[:10] if o.order_date else '–' }}</td>
+            <td class="text-end">{{ '{:,.2f}'.format(o.payout) if o.payout is not none else '–' }}</td>
+            <td class="small">{{ o.item_names | join(', ') if o.item_names else '–' }}</td>
+            <td><a href="{{ url_for('sales.sales_doc', doc_base=o.doc_base) }}" target="_blank" title="เปิดใบกำกับใน Express"><code>{{ o.doc_base }}</code></a></td>
+            <td class="small">{{ o.iv_items | join(', ') if o.iv_items else '–' }}</td>
+            <td>
+              <button type="button" class="btn btn-sm btn-outline-danger py-0 js-iv-pick"
+                      data-order-id="{{ o.id }}" data-order-sn="{{ o.order_sn }}">เลือกใบกำกับใหม่</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <div class="text-success small p-3">ไม่มีใบกำกับคนละสินค้า ✓</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── D: ไม่มีใบกำกับว่างให้จับคู่ ── #}
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <strong>D. ไม่มีใบกำกับว่างให้จับคู่</strong>
+      <span class="badge bg-secondary">{{ worklist.count_d }} ออเดอร์</span>
+    </div>
+    <div class="card-body p-0">
+      {% if worklist.rows_d %}
+      <p class="small text-muted p-2 mb-0">สินค้าแม็พแล้ว แต่ไม่มีใบกำกับว่างให้จับคู่ (ทีมยังไม่ได้คีย์ / คีย์เป็นสินค้าอื่นไปแล้ว)</p>
+      <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0">
+        <thead class="table-light">
+          <tr><th>เลขออเดอร์</th><th>วันสั่ง</th><th class="text-end">ยอดโอน (฿)</th><th>สินค้าในออเดอร์</th><th>action</th></tr>
+        </thead>
+        <tbody>
+          {% for o in worklist.rows_d %}
+          <tr>
+            <td><code class="js-order-detail" role="button" data-order-id="{{ o.id }}" title="ดูรายละเอียดออเดอร์">{{ o.order_sn }}</code></td>
+            <td class="small">{{ o.order_date[:10] if o.order_date else '–' }}</td>
+            <td class="text-end">{{ '{:,.2f}'.format(o.payout) if o.payout is not none else '–' }}</td>
+            <td class="small">{{ o.item_names | join(', ') if o.item_names else '–' }}</td>
+            <td>
+              <button type="button" class="btn btn-sm btn-outline-primary py-0 js-iv-pick"
+                      data-order-id="{{ o.id }}" data-order-sn="{{ o.order_sn }}">key ใบกำกับ / เลือกเอง</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <div class="text-success small p-3">ไม่มีออเดอร์รอใบกำกับ ✓</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% include 'marketplace/_iv_picker_modal.html' %}
+{% include 'marketplace/_order_detail_modal.html' %}
+{% endblock %}

@@ -1425,8 +1425,11 @@ def get_iv_match_worklist(conn, platform='shopee'):
                 bucket['wallet_income'] += wallet_income.get(sn) or 0.0
             continue   # not yet actionable either way
 
+        # NOTE: 'item_names', not 'items' — dict.items is a bound method, so
+        # Jinja's dot-notation (getattr-first) would silently shadow a dict
+        # key literally named 'items' in the template instead of raising.
         row = {'id': o['id'], 'order_sn': sn, 'order_date': o['order_date'],
-               'payout': payout, 'items': item['names']}
+               'payout': payout, 'item_names': item['names']}
 
         if not op:
             rows_b.append(row)
