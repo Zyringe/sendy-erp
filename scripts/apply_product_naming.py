@@ -278,18 +278,32 @@ def main():
                 print('STALE:', e, file=sys.stderr)
             sys.exit(1)
         plans = plan_sku_regen(args.db, _field_overrides(ops))
+        conn = _ro(args.db)
+        cur_names = {str(r[0]): r[1] for r in conn.execute('SELECT id, product_name FROM products')}
+        conn.close()
+        new_names = {o['product_id']: o['after'] for o in ops if o['op'] == 'name'}
+
+        def _namecols(pid):
+            cur = cur_names.get(str(pid), '')
+            return cur, new_names.get(str(pid), '')
+
         out = args.preview_out or f'apply_preview_{DATE}.csv'
         with open(out, 'w', encoding='utf-8-sig', newline='') as f:
             w = csv.writer(f)
-            w.writerow(['product_id', 'change_kind', 'before', 'after', 'source'])
+            w.writerow(['product_id', 'product_name (ปัจจุบัน)', 'ชื่อใหม่ (ถ้าแก้)',
+                        'change_kind', 'before', 'after', 'source'])
             for o in ops:
                 kind = {'name': 'name', 'field': 'field', 'brand_name_th': 'dict'}[o['op']]
                 what = f"{o['field']}=" if o['op'] == 'field' else ''
-                w.writerow([o['product_id'] or o['field'], kind,
+                cur, new = _namecols(o['product_id']) if o['op'] != 'brand_name_th' else ('', '')
+                w.writerow([o['product_id'] or o['field'], cur, new, kind,
                             o['before'] or what, what + o['after'], o['source']])
             for p in plans:
-                w.writerow([p['product_id'], 'sku', p['before'], p['after'], 'regen D3/D7'])
-            w.writerow(['1394', 'flagged', 'JSN name_th=สีนิกเกิล',
+                cur, new = _namecols(p['product_id'])
+                w.writerow([p['product_id'], cur, new, 'sku', p['before'], p['after'],
+                            'regen D3/D7'])
+            cur, new = _namecols('1394')
+            w.writerow(['1394', cur, new, 'flagged', 'JSN name_th=สีนิกเกิล',
                         'เสนอ สีนิกเกิลซาติน — NOT approved yet, Put decides at apply',
                         'dict-decision'])
         import collections
