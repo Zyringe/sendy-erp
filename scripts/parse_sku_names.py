@@ -45,7 +45,6 @@ ALIASES = {
     "เซ็นได":   "Sendai",
     "สิงห์ทอง": "Golden Lion",
     "สิงห์":    "Golden Lion",
-    "จระเข้":   "TOA",
 }
 
 # Annotations that should be stripped from product names entirely.

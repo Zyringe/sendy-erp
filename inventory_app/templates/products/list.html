@@ -46,6 +46,12 @@
           <label class="form-check-label small" for="chkShowAlt"
                  title="แสดงจำนวนที่เติมได้จากการแกะแพ็ค/แพ็คตัวหลวม (ทางเลือก)">เติมได้จากแพ็ค</label>
         </div>
+        <div class="form-check mb-0">
+          <input class="form-check-input" type="checkbox" name="show_inactive" value="1"
+                 id="chkShowInactive" {% if show_inactive %}checked{% endif %}>
+          <label class="form-check-label small" for="chkShowInactive"
+                 title="รวมสินค้าที่ปิดใช้งานแล้ว (เช่น ตัวที่ถูก merge/เลิกขาย)">แสดงที่ปิดใช้งาน</label>
+        </div>
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
         <a href="{{ url_for('products.product_list') }}" class="btn btn-sm btn-outline-secondary">ล้าง</a>
       </div>
@@ -88,6 +94,9 @@
             {% if p.is_low %}
               <span class="badge badge-danger ms-1">สต็อกต่ำ</span>
             {% endif %}
+            {% if not p.is_active %}
+              <span class="badge badge-gray ms-1" title="สินค้าถูกปิดใช้งาน (เช่น ถูก merge/เลิกขาย)">ปิดใช้งาน</span>
+            {% endif %}
             <span class="d-mobile-only badge badge-gray font-mono ms-2">ID {{ p.id }}{% if p.sku_code %} · {{ p.sku_code }}{% endif %}</span>
           </td>
           <td data-label="หน่วย" class="text-center text-subtle">{{ p.unit_type }}</td>
@@ -121,7 +130,7 @@
       <ul class="pagination pagination-sm mb-0 justify-content-center flex-wrap">
         {% set ns = namespace(prev=0) %}
         <li class="page-item {% if page == 1 %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('products.product_list', page=page-1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '') }}">&laquo;</a>
+          <a class="page-link" href="{{ url_for('products.product_list', page=page-1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_inactive=1 if show_inactive else '') }}">&laquo;</a>
         </li>
         {% for p in range(1, pages+1) %}
           {% if p == 1 or p == pages or (p >= page-2 and p <= page+2) %}
@@ -129,13 +138,13 @@
             <li class="page-item disabled"><span class="page-link">…</span></li>
             {% endif %}
             <li class="page-item {% if p == page %}active{% endif %}">
-              <a class="page-link" href="{{ url_for('products.product_list', page=p, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '') }}">{{ p }}</a>
+              <a class="page-link" href="{{ url_for('products.product_list', page=p, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_inactive=1 if show_inactive else '') }}">{{ p }}</a>
             </li>
             {% set ns.prev = p %}
           {% endif %}
         {% endfor %}
         <li class="page-item {% if page == pages %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('products.product_list', page=page+1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '') }}">&raquo;</a>
+          <a class="page-link" href="{{ url_for('products.product_list', page=page+1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_inactive=1 if show_inactive else '') }}">&raquo;</a>
         </li>
       </ul>
     </nav>

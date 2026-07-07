@@ -11,9 +11,10 @@ from ._shared import _set_price_change_source
 
 
 def get_products(search=None, low_stock=False, hard_to_sell=False,
-                 location=None, in_stock=False, restock=False, page=1, per_page=50):
+                 location=None, in_stock=False, restock=False, page=1, per_page=50,
+                 include_inactive=False):
     conn = get_connection()
-    conditions = ["p.is_active = 1"]
+    conditions = [] if include_inactive else ["p.is_active = 1"]
     params = []
     if search:
         conditions.append("(p.product_name LIKE ? OR CAST(p.id AS TEXT) LIKE ? OR p.sku_code LIKE ?)")
@@ -27,7 +28,7 @@ def get_products(search=None, low_stock=False, hard_to_sell=False,
         )
         params.append(f"%{location}%")
 
-    where = " AND ".join(conditions)
+    where = " AND ".join(conditions) if conditions else "1=1"
     having_clauses = []
     if low_stock:
         having_clauses.append("COALESCE(s.quantity, 0) <= p.low_stock_threshold")

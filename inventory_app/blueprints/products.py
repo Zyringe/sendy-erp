@@ -147,6 +147,7 @@ def product_list():
     in_stock = request.args.get('in_stock') == '1'
     restock = request.args.get('restock') == '1'
     show_alt = request.args.get('show_alt') == '1'
+    show_inactive = request.args.get('show_inactive') == '1'
     page = int(request.args.get('page', 1))
     per_page = current_app.config['ITEMS_PER_PAGE']
 
@@ -159,6 +160,7 @@ def product_list():
         restock=restock,
         page=page,
         per_page=per_page,
+        include_inactive=show_inactive,
     )
     pages = (total + per_page - 1) // per_page
     # Pack/unpack "true availability": only when the tick is on, compute how many
@@ -175,7 +177,8 @@ def product_list():
                            search=search, low_stock=low_stock,
                            hard_to_sell=hard_to_sell,
                            location=location, in_stock=in_stock,
-                           restock=restock, show_alt=show_alt, buildable=buildable)
+                           restock=restock, show_alt=show_alt, buildable=buildable,
+                           show_inactive=show_inactive)
 
 
 def _new_form_context():
