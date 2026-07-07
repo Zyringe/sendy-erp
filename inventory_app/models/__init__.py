@@ -148,6 +148,6 @@ from .marketplace import (
     _CANCEL_RETURN_STATUSES, get_marketplace_returns_cancelled,
     create_payout_batch, _BATCH_TOLERANCE, match_orders_to_amount,
     assign_orders_to_batch, assign_orders_manual, get_deposit_batch_report,
-    create_baseline_batch, unassign_batch,
+    create_baseline_batch, unassign_batch, get_iv_match_worklist,
 )
 

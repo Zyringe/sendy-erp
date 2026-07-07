@@ -15,6 +15,7 @@ was already adjacent to in the monolith.
 import json
 
 from database import get_connection
+import marketplace_match
 
 
 def resolve_marketplace_product_id(conn, platform, item):
@@ -1323,3 +1324,134 @@ def unassign_batch(batch_id, conn=None):
     finally:
         if _own_conn:
             conn.close()
+
+
+def get_iv_match_worklist(conn, platform='shopee'):
+    """Read-only diagnostic (build-phase 1 of marketplace-iv-matching): classify
+    every non-cancelled/returned ``platform`` order into ONE of four
+    "needs attention" buckets, or drop it silently when it's either OK (linked
+    to a product-matching IV — product-first, trusted regardless of any ฿ gap)
+    or not yet actionable (still in flight: no settlement and no deposit yet).
+    Writes NOTHING. See projects/marketplace-iv-matching/worklist-spec.md.
+
+    Buckets (priority + display order):
+      A "ยังไม่มียอดโอน (settlement ยังไม่ import)" — actual_payout still NULL but
+        money looks to have arrived (in a deposit, or status สำเร็จแล้ว). Returned
+        as a per-PERIOD summary (this bucket is huge, ~970 on prod), not rows.
+      B "สินค้ายังไม่แม็พ"            — settled, but no line item has a product.
+      C "เดายอด — ใบกำกับคนละสินค้า"  — linked to an IV whose product doesn't
+        overlap the order's (the cross-product steal, plan.md issue 3).
+      D "ไม่มีใบกำกับว่างให้จับคู่"    — settled + mapped, but not linked at all
+        (an IV-shortage case, plan.md issue 2).
+
+    Returns a dict: platform, summary_a (list of {period, count, wallet_income}),
+    total_a, rows_b/rows_c/rows_d (each order: id, order_sn, order_date, payout,
+    items — rows_c/rows_d additionally carry the current doc_base + iv_items),
+    count_b/count_c/count_d, count_bcd (the settlement-page badge number).
+    """
+    cust_code = marketplace_match._CUST_CODE.get(platform)
+
+    orders = conn.execute(
+        """SELECT id, order_sn, status, order_date, actual_payout, payout_id, settled_at
+             FROM marketplace_orders WHERE platform = ?""",
+        (platform,)).fetchall()
+
+    # order_sn -> {'product_ids': set(non-null internal_product_id), 'names': [item_name,...]}
+    items_by_order = {}
+    for r in conn.execute(
+        """SELECT order_sn, item_name, internal_product_id
+             FROM marketplace_order_items WHERE platform = ?""",
+        (platform,)):
+        d = items_by_order.setdefault(r['order_sn'], {'product_ids': set(), 'names': []})
+        if r['item_name']:
+            d['names'].append(r['item_name'])
+        if r['internal_product_id'] is not None:
+            d['product_ids'].add(r['internal_product_id'])
+
+    links = {r['order_sn']: dict(r) for r in conn.execute(
+        """SELECT order_sn, doc_base, match_method, confidence
+             FROM marketplace_order_invoice WHERE platform = ?""",
+        (platform,))}
+
+    # doc_base -> {'product_ids': set, 'names': [product name,...]} — every หน้าร้าน
+    # IV for this platform (mirrors marketplace_match._iv_products, plus names
+    # for display; see that module's docstring for why the customer_code join
+    # is how an Express IV is scoped to one platform).
+    iv_products = {}
+    if cust_code:
+        for r in conn.execute(
+            """SELECT st.doc_base, st.product_id,
+                      COALESCE(p.product_name, st.product_name_raw) AS name
+                 FROM sales_transactions st
+                 LEFT JOIN products p ON p.id = st.product_id
+                WHERE st.customer_code = ? AND st.doc_base LIKE 'IV%'""",
+            (cust_code,)):
+            d = iv_products.setdefault(r['doc_base'], {'product_ids': set(), 'names': []})
+            if r['name']:
+                d['names'].append(r['name'])
+            if r['product_id'] is not None:
+                d['product_ids'].add(r['product_id'])
+
+    wallet_income = {r['order_sn']: r['income'] for r in conn.execute(
+        """SELECT order_sn, SUM(amount) AS income
+             FROM marketplace_wallet_txns
+            WHERE platform = ? AND txn_type = 'income' AND order_sn IS NOT NULL
+            GROUP BY order_sn""",
+        (platform,))}
+
+    a_by_period = {}   # 'YYYY-MM' -> {'period','count','wallet_income'}
+    rows_b, rows_c, rows_d = [], [], []
+    empty_item = {'product_ids': set(), 'names': []}
+
+    for o in orders:
+        status = o['status'] or ''
+        payout = o['actual_payout']
+        # Exclude cancelled/returned — never a real sale to reconcile.
+        if status.startswith('ยกเลิก') or (payout is not None and payout < 0):
+            continue
+
+        sn = o['order_sn']
+        has_settlement = payout is not None
+        in_deposit = o['payout_id'] is not None
+        item = items_by_order.get(sn, empty_item)
+        op = item['product_ids']
+
+        if not has_settlement:
+            if in_deposit or status == 'สำเร็จแล้ว':
+                period = (o['settled_at'] or o['order_date'] or '')[:7]
+                bucket = a_by_period.setdefault(
+                    period, {'period': period, 'count': 0, 'wallet_income': 0.0})
+                bucket['count'] += 1
+                bucket['wallet_income'] += wallet_income.get(sn) or 0.0
+            continue   # not yet actionable either way
+
+        row = {'id': o['id'], 'order_sn': sn, 'order_date': o['order_date'],
+               'payout': payout, 'items': item['names']}
+
+        if not op:
+            rows_b.append(row)
+            continue
+
+        link = links.get(sn)
+        if link is None:
+            rows_d.append(row)
+            continue
+
+        ivp = iv_products.get(link['doc_base'], empty_item)
+        if ivp['product_ids'] and not (op & ivp['product_ids']):
+            rows_c.append({**row, 'doc_base': link['doc_base'], 'iv_items': ivp['names']})
+        # else: OK (product overlap, or the IV has no resolved product at all —
+        # ambiguous, left as-is per the spec's "anything else" rule) — hidden.
+
+    summary_a = sorted(a_by_period.values(), key=lambda r: r['period'])
+    for r in summary_a:
+        r['wallet_income'] = round(r['wallet_income'], 2)
+
+    return {
+        'platform': platform,
+        'summary_a': summary_a,
+        'total_a': sum(r['count'] for r in summary_a),
+        'rows_b': rows_b, 'rows_c': rows_c, 'rows_d': rows_d,
+        'count_b': len(rows_b), 'count_c': len(rows_c), 'count_d': len(rows_d),
+        'count_bcd': len(rows_b) + len(rows_c) + len(rows_d),
+    }
