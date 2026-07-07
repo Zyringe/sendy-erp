@@ -79,8 +79,9 @@ def _assert_invariants(conn, n_products_before):
         raise ApplyError(f'duplicate sku_code after apply: {[d[0] for d in dup[:3]]}')
     orphan = conn.execute(
         'SELECT COUNT(*) FROM product_code_mapping m LEFT JOIN products p'
-        ' ON p.id = m.product_id WHERE p.id IS NULL').fetchone()[0]
-    if orphan:
+        ' ON p.id = m.product_id'
+        ' WHERE m.product_id IS NOT NULL AND p.id IS NULL').fetchone()[0]
+    if orphan:  # NULL product_id = intentionally-ignored BSN code, not an orphan
         raise ApplyError(f'{orphan} orphaned product_code_mapping rows')
 
 
@@ -237,12 +238,18 @@ def apply_sku_plans(db_path, plans, backup_dir=None):
         conn.execute('BEGIN IMMEDIATE')
         n_before = conn.execute('SELECT COUNT(*) FROM products').fetchone()[0]
         applied = 0
+        # two-phase: park every planned row on a temp code first, else a plan
+        # whose target equals another plan's OLD code hits UNIQUE mid-sequence
         for p in plans:
             cur = conn.execute(
-                'UPDATE products SET sku_code=? WHERE id=? AND sku_code IS ?',
-                (p['after'], p['product_id'], p['before']))
+                "UPDATE products SET sku_code='~tmp~'||id WHERE id=? AND sku_code IS ?",
+                (p['product_id'], p['before']))
             if cur.rowcount != 1:
                 raise ApplyError(f"sku pid={p['product_id']} stale (matched {cur.rowcount})")
+        for p in plans:
+            conn.execute(
+                "UPDATE products SET sku_code=? WHERE id=? AND sku_code='~tmp~'||id",
+                (p['after'], p['product_id']))
             applied += 1
         _assert_invariants(conn, n_before)
         _log(conn, 'apply_product_naming --apply (sku)', applied,

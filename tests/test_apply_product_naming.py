@@ -163,6 +163,21 @@ def test_sku_regen_skips_locked_and_d7_collision(db):
     assert codes == {'BLT-SD-AC', 'BLT-SD-AC-21'}
 
 
+def test_sku_swap_chain_two_phase(db):
+    # A's new code == B's OLD code while B moves away — single-pass UPDATE
+    # order would hit UNIQUE; two-phase parking must succeed
+    _add_product(db, 30, 'ก', 'CODE-B', active=1)
+    _add_product(db, 31, 'ข', 'CODE-C', active=1)
+    plans = [
+        {'product_id': 30, 'before': 'CODE-B', 'after': 'CODE-C', 'is_active': 1},
+        {'product_id': 31, 'before': 'CODE-C', 'after': 'CODE-D', 'is_active': 1},
+    ]
+    apn.apply_sku_plans(db, plans, backup_dir=os.path.dirname(db))
+    conn = sqlite3.connect(db)
+    got = {r[0]: r[1] for r in conn.execute("SELECT id, sku_code FROM products WHERE id IN (30,31)")}
+    assert got == {30: 'CODE-C', 31: 'CODE-D'}
+
+
 def test_compiler_excludes_pending_and_noop():
     rows = [
         {'product_id': '1768', 'issue': 'MODEL_MISMATCH', 'current_name': 'x', 'current_fields': '',
