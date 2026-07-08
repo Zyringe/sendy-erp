@@ -1356,7 +1356,12 @@ def get_iv_match_worklist(conn, platform='shopee'):
              FROM marketplace_orders WHERE platform = ?""",
         (platform,)).fetchall()
 
-    # order_sn -> {'product_ids': set(non-null internal_product_id), 'names': [item_name,...]}
+    # order_sn -> {'product_ids': set(product_id), 'names': [item_name,...]}. A
+    # combo pack pid is REPLACED by its components (mirrors
+    # marketplace_match._order_products), so a ชุด order the matcher product-
+    # matched to a component-keyed IV isn't false-flagged bucket C (the pid-253
+    # class: 187 correct Lazada matches were mislabelled by the raw-pid compare).
+    combo = marketplace_match._combo_components(conn)
     items_by_order = {}
     for r in conn.execute(
         """SELECT order_sn, item_name, internal_product_id
@@ -1365,8 +1370,9 @@ def get_iv_match_worklist(conn, platform='shopee'):
         d = items_by_order.setdefault(r['order_sn'], {'product_ids': set(), 'names': []})
         if r['item_name']:
             d['names'].append(r['item_name'])
-        if r['internal_product_id'] is not None:
-            d['product_ids'].add(r['internal_product_id'])
+        pid = r['internal_product_id']
+        if pid is not None:
+            d['product_ids'] |= combo.get(pid) or {pid}
 
     links = {r['order_sn']: dict(r) for r in conn.execute(
         """SELECT order_sn, doc_base, match_method, confidence
