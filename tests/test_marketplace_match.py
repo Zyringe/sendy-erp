@@ -1,9 +1,15 @@
 """Tests for marketplace_match — linking marketplace orders to Express IVs.
 
 The matcher links a settled Shopee/Lazada order to the Express invoice the team
-keyed shortly AFTER the platform order, using product overlap → date (IV on/after
-the order date) → amount. 'confident' = the matched IV's amount equals the payout;
-'review' = it differs (a billed≠payout discrepancy to fix in Express).
+keyed shortly AFTER the platform order, via a GLOBAL product-first/nearest-date
+assignment (see marketplace_match module docstring + matcher-rebuild-spec.md).
+'confident' = a product-compatible + date-valid match, regardless of the ฿ gap
+(D12) — amount is a tiebreaker only, never a confidence gate. 'review' = an
+amount-only guess with no product corroboration (D13) — never 'confident', even
+when the ฿ matches exactly (that used to be the bug: see
+test_exact_amount_confident / test_vat_type2_amount_matches_payout below, which
+were updated for the rebuild, not left pinning the old amount-blind-confidence
+flaw the rebuild fixes).
 
 Fixture isolates the matcher: it un-settles every real order and deletes the real
 Zหน้าร้าน/Lหน้าร้าน sales rows + items from the tmp clone, then seeds synthetic data.
@@ -57,17 +63,24 @@ def _add_iv(c, doc_base, net, date_iso, customer_code='Zหน้าร้าน
     c.commit()
 
 
-def test_exact_amount_confident(mm_conn):
+def test_exact_amount_no_product_is_review_guess(mm_conn):
+    """REBUILD CHANGE (D13): neither side has a product, so this is an amount-only
+    guess — it still auto-links (exact ฿ is a strong signal), but as 'review', never
+    'confident'. Pre-rebuild this was the "amount-blind confidence" bug (plan.md
+    §2/§3 D2): an exact-฿ amount-only coincidence used to be stamped 'confident'
+    with no product check at all — exactly the class of silent wrong-match the
+    rebuild's D12/D13 split fixes. See test_amount_differs_is_review below for the
+    real 'confident' case (product-matched, amount doesn't even need to agree)."""
     c = mm_conn
     _add_order(c, 'O-UNIQ', 99.0, '2026-06-04')
     _add_iv(c, 'IV9000001', 99.0, '2026-06-05')           # 1 day after, amount matches
     stats = mm.run_automatch(c, 'shopee')
-    assert stats['matched'] == 1 and stats['confident'] == 1
+    assert stats['matched'] == 1 and stats['review'] == 1 and stats['confident'] == 0
     row = c.execute(
         "SELECT doc_base, match_method, confidence FROM marketplace_order_invoice WHERE order_sn='O-UNIQ'"
     ).fetchone()
     assert row['doc_base'] == 'IV9000001'
-    assert row['match_method'] == 'auto' and row['confidence'] == 'confident'
+    assert row['match_method'] == 'auto' and row['confidence'] == 'review'
 
 
 def test_iv_before_order_is_excluded(mm_conn):
@@ -95,16 +108,19 @@ def test_product_overlap_beats_nearer_date(mm_conn):
 
 
 def test_amount_differs_is_review(mm_conn):
-    """Product confirms the invoice but the amount differs (Shopee adjusted the
-    payout) → labelled 'review' (a discrepancy to fix)."""
+    """REBUILD CHANGE (D12/D6): product confirms the invoice, so it's trusted
+    ('confident') even though the amount differs (Shopee adjusted the payout) —
+    the ฿ gap is informational (ส่วนลด/ยอดต่าง), not a match-quality downgrade.
+    Pre-rebuild a product match was still downgraded to 'review' on any ฿ gap;
+    that's exactly what D6/D12 were written to stop (plan.md §3b)."""
     c = mm_conn
     _add_order(c, 'O-ADJ', 236.0, '2026-06-05', product_id=440)
     _add_iv(c, 'IV9000010', 246.0, '2026-06-06', product_id=440)    # +10฿, shares product
     stats = mm.run_automatch(c, 'shopee')
-    assert stats['matched'] == 1 and stats['review'] == 1 and stats['confident'] == 0
+    assert stats['matched'] == 1 and stats['confident'] == 1 and stats['review'] == 0
     row = c.execute(
         "SELECT doc_base, confidence FROM marketplace_order_invoice WHERE order_sn='O-ADJ'").fetchone()
-    assert row['doc_base'] == 'IV9000010' and row['confidence'] == 'review'
+    assert row['doc_base'] == 'IV9000010' and row['confidence'] == 'confident'
 
 
 def test_unconfirmed_large_amount_gap_unmatched(mm_conn):
@@ -165,14 +181,22 @@ def test_idempotent(mm_conn):
 
 
 def test_vat_type2_amount_matches_payout(mm_conn):
+    """VAT-aware net (net*1.07 for vat_type=2) must feed the amount-only guess pass
+    correctly. No product on either side, so per D13 this is 'review', never
+    'confident' (see test_exact_amount_no_product_is_review_guess) — but amounts
+    are picked so a BROKEN VAT calc (raw net=500, diff=35) would exceed
+    FUZZY_AMOUNT_TOL(15) and leave it unmatched, while the correct VAT-adjusted
+    net (500*1.07=535, diff=0) matches cleanly — still a real test of the VAT
+    math, just via matched-or-not instead of the (now retired) confidence label."""
     c = mm_conn
-    _add_order(c, 'O-VAT', 107.0, '2026-06-09')
-    _add_iv(c, 'IV9000060', 100.0, '2026-06-10', vat_type=2)        # 100*1.07 = 107
+    _add_order(c, 'O-VAT', 535.0, '2026-06-09')
+    _add_iv(c, 'IV9000060', 500.0, '2026-06-10', vat_type=2)        # 500*1.07 = 535
     stats = mm.run_automatch(c, 'shopee')
-    assert stats['confident'] == 1
-    assert c.execute(
-        "SELECT doc_base FROM marketplace_order_invoice WHERE order_sn='O-VAT'"
-    ).fetchone()['doc_base'] == 'IV9000060'
+    assert stats['matched'] == 1 and stats['review'] == 1 and stats['confident'] == 0
+    row = c.execute(
+        "SELECT doc_base, confidence FROM marketplace_order_invoice WHERE order_sn='O-VAT'"
+    ).fetchone()
+    assert row['doc_base'] == 'IV9000060' and row['confidence'] == 'review'
 
 
 def test_lazada_uses_L_code(mm_conn):
@@ -234,6 +258,13 @@ def test_picker_ranks_product_match_first(mm_conn):
 
 
 def test_lazada_matches_iv_on_gross_not_net(mm_conn):
+    """No product on either side, so this is an amount-only guess (D13: 'review',
+    never 'confident' — see test_exact_amount_no_product_is_review_guess). Still a
+    real test of the gross-vs-net billed_basis: if the matcher used net payout(80)
+    instead of gross item_value(100), the diff (|100-80|=20) would exceed
+    FUZZY_AMOUNT_TOL(15) and it would go UNMATCHED, not just mislabeled — so
+    `matched` proves gross is used, independent of the (now-retired) confidence
+    assertion this test used to make."""
     c = mm_conn
     # Lazada order: gross 100, net payout 80 (20% fee). Team keyed the IV at GROSS=100.
     cur = c.execute("""INSERT INTO marketplace_orders
@@ -244,28 +275,37 @@ def test_lazada_matches_iv_on_gross_not_net(mm_conn):
     c.commit()
     _add_iv(c, 'IV7000001', 100.0, '2026-06-11', customer_code='Lหน้าร้าน')
     res = mm.run_automatch(c, 'lazada')
+    assert res['matched'] == 1 and res['review'] == 1
     row = c.execute("SELECT doc_base, confidence FROM marketplace_order_invoice WHERE order_sn='LZ1'").fetchone()
     assert row['doc_base'] == 'IV7000001'
-    assert row['confidence'] == 'confident'      # IV(100) == gross(100), not net(80)
+    assert row['confidence'] == 'review'
 
 
-def test_exact_match_not_stolen_by_fuzzy_neighbour(mm_conn):
-    """Greedy-oldest-first let an older order grab a sibling's EXACT invoice on a
-    shared-product signal (amount off by 56), stranding the order it exactly
-    matched. The exact-first pass must lock the exact pair first. (Real case:
-    order 1098207080807149 ฿32 should get IV6900807 ฿32, not a leftover.)"""
+def test_exact_match_not_stolen_and_cross_product_guess_blocked(mm_conn):
+    """OB's product+date match to IV_SHARED must lock in, not get displaced by OA.
+
+    REBUILD CHANGE (D7): OA declares product 457 but IV_A is product 458 — a KNOWN,
+    DIFFERING product pair. Pre-rebuild, the amount-only fallback pass had no
+    product-conflict guard at all, so OA's exact ฿88 coincidence auto-linked it to
+    the WRONG-PRODUCT invoice IV_A. That is precisely issue 3 / mode C from
+    plan.md (the ถุงหิ้ว→กันชน cross-product steal) — D7 explicitly hardens the
+    guess pass to skip an IV when order-product AND IV-product are both known and
+    differ. So OA must now stay UNMATCHED rather than get a fabricated wrong link
+    (D14 floor) — a real amount-only guess still fires when the invoice's product
+    is unmapped/unknown (see test_amount_only_guess_labeled in
+    test_marketplace_match_rebuild.py)."""
     c = mm_conn
-    # OA (older): shares product 457 with IV_SHARED, but its real invoice is IV_A
-    # (amount-exact 88, a product OA does NOT carry). OB (newer): exactly IV_SHARED.
+    # OA (older): shares product 457 with IV_SHARED, but IV_A (its old, WRONG,
+    # amount-exact match) is a different known product (458). OB (newer): exactly IV_SHARED.
     _add_order(c, 'OA', 88, '2026-05-29', product_id=457)
     _add_order(c, 'OB', 32, '2026-05-30', product_id=457)
-    _add_iv(c, 'IV_A',      88.0, '2026-05-30', product_id=458)   # OA exact amount, product NOT shared
+    _add_iv(c, 'IV_A',      88.0, '2026-05-30', product_id=458)   # OA exact amount, DIFFERENT known product
     _add_iv(c, 'IV_SHARED', 32.0, '2026-05-30', product_id=457)   # OB exact (product+amount); also OA product-overlap
     mm.run_automatch(c, 'shopee')
     links = {r['order_sn']: (r['doc_base'], r['confidence']) for r in c.execute(
         "SELECT order_sn, doc_base, confidence FROM marketplace_order_invoice WHERE platform='shopee'")}
-    assert links['OB'] == ('IV_SHARED', 'confident')   # exact match locked, not stolen by OA
-    assert links['OA'][0] == 'IV_A'                    # OA falls to its own amount-exact invoice
+    assert links['OB'] == ('IV_SHARED', 'confident')   # product+date match locked, not stolen by OA
+    assert 'OA' not in links                           # D7: never a cross-known-product guess
 
 
 def test_product_beats_loose_near_amount_neighbour(mm_conn):
