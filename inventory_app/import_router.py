@@ -149,3 +149,63 @@ def preview_file(path, report_type, db_path=None):
         return {"type": report_type, "ok": True, "count": len(records), "detail": {}}
 
     raise ValueError(f"unknown report_type: {report_type!r}")
+
+
+def commit_express_dbf(dataset_dir, db_path=None):
+    """Import Express DBF sales + purchase for one dataset directory into
+    Sendy — the DBF branch parallel to the text-report path above, Phase 1
+    slice A only (payments/credit-notes are a separate slice, not wired
+    here). Reads ARTRN/APTRN/STCRD/ARMAS/APMAS/ARTRNRM straight off disk and
+    feeds the SAME downstream importer (models.import_weekly) the
+    text-report path uses, so idempotency/dedup is unchanged.
+
+    No web route yet — that's Phase 2 (an upload endpoint that unzips a
+    dataset dir and calls this). Returns a summary dict.
+    """
+    import config
+    import models
+    import express_dbf_source as eds
+
+    db_path = db_path or config.DATABASE_PATH
+
+    artrn = eds.open_table(dataset_dir, "ARTRN")
+    aptrn = eds.open_table(dataset_dir, "APTRN")
+    stcrd = eds.open_table(dataset_dir, "STCRD")
+    armas = eds.open_table(dataset_dir, "ARMAS")
+    apmas = eds.open_table(dataset_dir, "APMAS")
+    artrnrm = eds.open_table(dataset_dir, "ARTRNRM")
+
+    sales_entries = eds.build_sales_entries(artrn, stcrd, armas)
+    purchase_entries = eds.build_purchase_entries(aptrn, stcrd, apmas)
+    refs = eds.build_invoice_refs(artrn, artrnrm)
+
+    label = f"express_dbf:{os.path.basename(os.path.normpath(dataset_dir))}"
+    sales_stats = models.import_weekly(sales_entries, "sales", label)
+    purchase_stats = models.import_weekly(purchase_entries, "purchase", label)
+    refs_upserted = _upsert_invoice_refs(refs, db_path)
+
+    return {"sales": sales_stats, "purchase": purchase_stats,
+            "invoice_refs_upserted": refs_upserted}
+
+
+def _upsert_invoice_refs(refs, db_path):
+    """Write express_invoice_refs rows (doc_base PK upsert). A plain sqlite3
+    connection pinned to db_path — always config.DATABASE_PATH via the
+    caller, never a self-computed instance/ path (the PR #242 prod
+    CANTOPEN bug)."""
+    if not refs:
+        return 0
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executemany(
+            "INSERT INTO express_invoice_refs (doc_base, youref, remark, updated_at) "
+            "VALUES (?, ?, ?, datetime('now')) "
+            "ON CONFLICT(doc_base) DO UPDATE SET "
+            "youref=excluded.youref, remark=excluded.remark, updated_at=excluded.updated_at",
+            [(r["doc_base"], r["youref"], r["remark"]) for r in refs]
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(refs)
