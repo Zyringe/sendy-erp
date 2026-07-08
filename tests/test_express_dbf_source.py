@@ -11,10 +11,14 @@ verified 2026-07-08) — do not rediscover them:
     does not (line identity is (doc_no, bsn_code, line_seq)).
 """
 import datetime
-
-import pytest
+import os
+import sqlite3
 
 from express_dbf_source import build_invoice_refs, build_purchase_entries, build_sales_entries
+
+_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_MIG_124 = os.path.join(_REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+_MIG_132 = os.path.join(_REPO, "data", "migrations", "132_express_invoice_refs.sql")
 
 
 def _artrn(docnum, rectyp, *, cuscod='C001', flgvat=0, docdat=None, youref=None):
@@ -205,3 +209,123 @@ def test_build_invoice_refs_excludes_out_of_scope_rectyp():
     refs = build_invoice_refs(artrn, artrnrm)
 
     assert refs == []
+
+
+# ── idempotency + wiring (through models.import_weekly / import_router) ──
+#
+# empty_db clones the LIVE schema (see conftest.py) — a dev machine whose
+# live DB hasn't picked up mig 124 (bsn_unit) or 132 (express_invoice_refs,
+# this PR's own migration) yet would otherwise fail these tests with "no
+# such column/table". Apply them defensively, mirroring
+# tests/test_import_weekly_idempotent.py's _ensure_bsn_unit pattern.
+
+def _conn(path):
+    c = sqlite3.connect(path)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    return c
+
+
+def _ensure_migrations(c):
+    cols = {r[1] for r in c.execute("PRAGMA table_info(product_code_mapping)")}
+    if "bsn_unit" not in cols:
+        with open(_MIG_124, encoding="utf-8") as f:
+            c.executescript(f.read())
+    tbl = c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='express_invoice_refs'"
+    ).fetchone()
+    if not tbl:
+        with open(_MIG_132, encoding="utf-8") as f:
+            c.executescript(f.read())
+
+
+def _seed_product(path, name, code, unit_type='ตัว'):
+    c = _conn(path)
+    _ensure_migrations(c)
+    cur = c.execute(
+        "INSERT INTO products (product_name, unit_type, cost_price) VALUES (?, ?, 0)",
+        (name, unit_type))
+    pid = cur.lastrowid
+    c.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
+    c.execute("INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id) "
+              "VALUES (?, ?, ?)", (code, name, pid))
+    c.commit()
+    c.close()
+    return pid
+
+
+def _stock(path, pid):
+    c = _conn(path)
+    row = c.execute("SELECT quantity FROM stock_levels WHERE product_id=?", (pid,)).fetchone()
+    c.close()
+    return row[0] if row else None
+
+
+def test_dbf_entries_import_twice_is_idempotent(empty_db):
+    """Building entries from DBF fixtures and importing twice must converge
+    to the same stock (no double-count) — mirrors
+    test_import_weekly_idempotent.py's re-import-is-noop contract."""
+    import models
+
+    pid_sale = _seed_product(empty_db, 'Psale', '804ข1108')
+    pid_purch = _seed_product(empty_db, 'Ppurch', '035ป6107')
+
+    artrn = [_artrn('IV6900929', '3', cuscod='C001')]
+    stcrd_sale = [_stcrd('IV6900929', 1, stkcod='804ข1108', qty=2.0, unitpr=45.0,
+                          trnval=90.0, netval=90.0)]
+    aptrn = [_aptrn('RR6900077', '3', supcod='S001')]
+    stcrd_purch = [_stcrd('RR6900077', 1, stkcod='035ป6107', qty=400.0, unitpr=4.80,
+                           trnval=1920.0, netval=1920.0)]
+
+    s1 = models.import_weekly(build_sales_entries(artrn, stcrd_sale, []), 'sales', 'f1')
+    p1 = models.import_weekly(build_purchase_entries(aptrn, stcrd_purch, []), 'purchase', 'f1')
+    assert s1['imported'] == 1
+    assert p1['imported'] == 1
+    assert _stock(empty_db, pid_sale) == -2.0
+    assert _stock(empty_db, pid_purch) == 400.0
+
+    # Re-build + re-import the SAME DBF fixtures — must be a pure no-op.
+    s2 = models.import_weekly(build_sales_entries(artrn, stcrd_sale, []), 'sales', 'f2')
+    p2 = models.import_weekly(build_purchase_entries(aptrn, stcrd_purch, []), 'purchase', 'f2')
+    assert s2['unchanged'] == 1 and s2['imported'] == 0
+    assert p2['unchanged'] == 1 and p2['imported'] == 0
+    assert _stock(empty_db, pid_sale) == -2.0, "re-import must not double-count stock"
+    assert _stock(empty_db, pid_purch) == 400.0, "re-import must not double-count stock"
+
+
+def test_commit_express_dbf_wires_sales_purchase_and_refs(empty_db, monkeypatch):
+    """import_router.commit_express_dbf(): open_table → build_* → import_weekly
+    → express_invoice_refs upsert, end to end. open_table is monkeypatched
+    (no real DBF files needed) so this exercises the wiring, not dbfread."""
+    import express_dbf_source as eds
+    import import_router
+
+    _seed_product(empty_db, 'Psale2', '804ข1108')
+    _seed_product(empty_db, 'Ppurch2', '035ป6107')
+
+    fake_tables = {
+        'ARTRN': [_artrn('IV6900930', '3', cuscod='C001', youref='วรันดา(L)')],
+        'APTRN': [_aptrn('RR6900078', '3', supcod='S001')],
+        'STCRD': [
+            _stcrd('IV6900930', 1, stkcod='804ข1108', qty=1.0, unitpr=45.0, trnval=45.0, netval=45.0),
+            _stcrd('RR6900078', 1, stkcod='035ป6107', qty=10.0, unitpr=4.80, trnval=48.0, netval=48.0),
+        ],
+        'ARMAS': [],
+        'APMAS': [],
+        'ARTRNRM': [{'DOCNUM': 'IV6900930', 'REMARK': 'แถม'}],
+    }
+    monkeypatch.setattr(eds, 'open_table', lambda dataset_dir, name: fake_tables[name])
+
+    result = import_router.commit_express_dbf('/fake/dataset')
+
+    assert result['sales']['imported'] == 1
+    assert result['purchase']['imported'] == 1
+    assert result['invoice_refs_upserted'] == 1
+
+    c = _conn(empty_db)
+    row = c.execute(
+        "SELECT youref, remark FROM express_invoice_refs WHERE doc_base='IV6900930'"
+    ).fetchone()
+    c.close()
+    assert row['youref'] == 'วรันดา(L)'
+    assert row['remark'] == 'แถม'
