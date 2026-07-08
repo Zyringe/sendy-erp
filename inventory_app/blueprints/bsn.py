@@ -8,6 +8,9 @@ route rules are unchanged, only their endpoint names gain a `bsn.` prefix.
 import os
 import shutil
 import sys
+import tempfile
+import zipfile
+from datetime import datetime
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort, current_app)
@@ -428,3 +431,83 @@ def unified_import_confirm():
         flash(f'ตัด audit log เก่าไม่สำเร็จ: {_prune_exc}', 'warning')
     return render_template('import_box.html', staged=False, rows=None,
                            report_labels=_REPORT_LABELS, results=results)
+
+
+# ── Express DBF-direct import (projects/express-integration/plan.md Phase 2) ──
+# The team's end-of-day ritual: a Windows script zips ~11 Express DBF tables
+# and POSTs the zip non-interactively (no browser session) to the upload
+# endpoint below. The GET page here is only for Put/an admin to eyeball
+# freshness and manually try an upload — it stays behind normal login.
+
+# A little above the observed ~30-40MB zip (plan §"Sizes") — no global
+# MAX_CONTENT_LENGTH is set anywhere in this app (the existing DB-upload
+# routes accept an ~80MB file uncapped), so this is a scoped safety cap
+# for a now-public, token-gated endpoint rather than a raise of an existing limit.
+_EXPRESS_DBF_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+
+
+def _find_express_dbf_dataset_dir(root):
+    """Locate the directory that directly holds the .DBF tables inside an
+    extracted zip — root itself, or however deep Compress-Archive happened
+    to nest it. ARTRN.DBF is mandatory for every import type, so its
+    location pins the dataset dir express_dbf_source.open_table() expects."""
+    for dirpath, _dirnames, filenames in os.walk(root):
+        if any(fn.upper() == 'ARTRN.DBF' for fn in filenames):
+            return dirpath
+    return None
+
+
+@bp_bsn.route('/import-express-dbf')
+def express_dbf_import():
+    freshness = models.get_express_dbf_freshness()
+    return render_template('import_express_dbf.html', freshness=freshness)
+
+
+@bp_bsn.route('/import-express-dbf/upload', methods=['POST'])
+def express_dbf_upload():
+    # No session ever accompanies this request (see access_control.py's
+    # require_login skip-list + the csrf.exempt() call in app.py) — the
+    # Windows script authenticates with a shared token instead, same
+    # precedent as /bootstrap/upload-db. Always returns JSON so the script
+    # can show a clear ✅/❌ without parsing HTML.
+    expected = os.environ.get('EXPRESS_UPLOAD_TOKEN', '')
+    if not expected:
+        return jsonify({'ok': False, 'error': 'EXPRESS_UPLOAD_TOKEN not configured'}), 404
+    if request.form.get('token', '') != expected:
+        return jsonify({'ok': False, 'error': 'bad token'}), 403
+
+    # Checked via the Content-Length header BEFORE touching request.files —
+    # accessing request.files is what makes werkzeug parse/spool the whole
+    # multipart body, so this bails before any of an oversized upload lands
+    # on disk.
+    if request.content_length and request.content_length > _EXPRESS_DBF_MAX_UPLOAD_BYTES:
+        limit_mb = _EXPRESS_DBF_MAX_UPLOAD_BYTES // (1024 * 1024)
+        return jsonify({'ok': False, 'error': f'file too large (max {limit_mb}MB)'}), 413
+
+    f = request.files.get('file')
+    if not f or not f.filename:
+        return jsonify({'ok': False, 'error': 'missing file field "file"'}), 400
+    if not f.filename.lower().endswith('.zip'):
+        return jsonify({'ok': False, 'error': 'expected a .zip file'}), 400
+
+    tmpdir = tempfile.mkdtemp(prefix='express_dbf_')
+    try:
+        zip_path = os.path.join(tmpdir, 'upload.zip')
+        f.save(zip_path)
+        if not zipfile.is_zipfile(zip_path):
+            return jsonify({'ok': False, 'error': 'not a valid zip file'}), 400
+        extract_dir = os.path.join(tmpdir, 'extracted')
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(extract_dir)
+        dataset_dir = _find_express_dbf_dataset_dir(extract_dir)
+        if dataset_dir is None:
+            return jsonify({'ok': False, 'error': 'ARTRN.DBF not found in zip'}), 400
+
+        per_type = import_router.commit_express_dbf(dataset_dir, db_path=config.DATABASE_PATH)
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return jsonify({'ok': True, 'per_type': per_type,
+                    'imported_at': datetime.now().isoformat(timespec='seconds')})
