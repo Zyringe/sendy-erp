@@ -151,7 +151,7 @@ def _order_products(conn, platform):
 def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
     """IVs that could be ``order``, for the manual picker — Zหน้าร้าน/Lหน้าร้าน IVs
     dated on/after the platform order date within the window, ranked by
-    product-match → nearest date → amount-closeness. Each candidate carries the ฿
+    product-match → amount-closeness → nearest date. Each candidate carries the ฿
     difference from the payout, whether it shares a product, and which order (if
     any) currently holds it.
     """
@@ -175,8 +175,15 @@ def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
         out.append({**iv, 'date_gap': gap, 'product_match': overlap > 0,
                     'amount_diff': round((iv['iv_net'] or 0) - payout, 2),
                     'linked_to': linked.get(iv['doc_base'])})
-    out.sort(key=lambda x: (0 if x['product_match'] else 1, x['date_gap'],
-                            abs(x['amount_diff']), x['doc_base']))
+    # product-match first; then AMOUNT-closeness, then nearest date. Amount before
+    # date matters for the common sibling-pid order (its listing maps to a sibling
+    # of the IV's pid, so NO candidate can be a product-match): the team keys
+    # หน้าร้าน IVs at the net payout, so an exact ฿ match is the strongest identity
+    # signal and must not be buried behind a nearer-date wrong-amount IV
+    # (260701HNJFD30G: IV6901054 gap0/฿-146 vs the right IV6901057 gap1/฿0).
+    # Integer satang keeps the primary key free of float drift.
+    out.sort(key=lambda x: (0 if x['product_match'] else 1,
+                            round(abs(x['amount_diff']) * 100), x['date_gap'], x['doc_base']))
     return out[:max_results]
 
 

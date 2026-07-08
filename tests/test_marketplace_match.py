@@ -257,6 +257,22 @@ def test_picker_ranks_product_match_first(mm_conn):
     assert cands[0]['doc_base'] == 'IV_B' and cands[0]['product_match'] is True
 
 
+def test_picker_ranks_exact_amount_before_nearer_date_when_no_product_match(mm_conn):
+    """When the order maps to a sibling pid (no IV shares its product), the EXACT-
+    amount IV must rank above a nearer-date wrong-amount one. Regression for
+    260701HNJFD30G: IV6901054 (gap0, ฿-146) wrongly outranked IV6901057 (gap1, ฿0)
+    because the picker sorted date before amount."""
+    c = mm_conn
+    _add_order(c, 'O-AMT', 364.0, '2026-07-01', product_id=194)   # sibling pid; no IV has it
+    _add_iv(c, 'IV_SAMEDAY', 218.0, '2026-07-01')                 # gap 0, ฿146 off, no product
+    _add_iv(c, 'IV_EXACT',   364.0, '2026-07-02')                 # gap 1, exact ฿, no product
+    order = c.execute("SELECT * FROM marketplace_orders WHERE order_sn='O-AMT'").fetchone()
+    cands = mm.iv_candidates(c, order)
+    assert cands[0]['doc_base'] == 'IV_EXACT'
+    # the near-date wrong-amount IV still appears, just ranked lower
+    assert 'IV_SAMEDAY' in {x['doc_base'] for x in cands}
+
+
 def test_lazada_matches_iv_on_gross_not_net(mm_conn):
     """No product on either side, so this is an amount-only guess (D13: 'review',
     never 'confident' — see test_exact_amount_no_product_is_review_guess). Still a
