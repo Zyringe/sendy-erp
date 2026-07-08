@@ -98,6 +98,32 @@ def worklist_conn(tmp_db_conn):
     ocxl = _order('WLBUCKETCANCEL', 'ยกเลิกแล้ว', 90.0, '2026-05-15', '2026-05-14 10:00')
     _item(ocxl, 'WLBUCKETCANCEL', px)
 
+    # COMBO — a ชุด order whose raw item is the PACK pid, linked to an IV the team
+    # keyed as the pack's separate COMPONENTS (two lines). The matcher product-
+    # matches this via combo expansion (see marketplace_match._combo_components),
+    # so the worklist must ALSO expand and treat it as OK — NOT flag bucket C.
+    # Regression for the pid-253 false-positives (187 correct Lazada matches
+    # mislabelled because the classifier compared the raw pack pid).
+    pack = c.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES ('WL Combo Pack','ชุด')").lastrowid
+    cp1 = c.execute("INSERT INTO products (product_name) VALUES ('WL Combo Part 1')").lastrowid
+    cp2 = c.execute("INSERT INTO products (product_name) VALUES ('WL Combo Part 2')").lastrowid
+    fid = c.execute(
+        """INSERT INTO conversion_formulas (name, output_product_id, output_qty, is_active)
+           VALUES ('WL combo', ?, 1, 0)""", (pack,)).lastrowid
+    c.execute("INSERT INTO conversion_formula_inputs (formula_id, product_id, quantity) VALUES (?,?,1)", (fid, cp1))
+    c.execute("INSERT INTO conversion_formula_inputs (formula_id, product_id, quantity) VALUES (?,?,1)", (fid, cp2))
+    ocombo = _order('WLBUCKETCOMBO', 'สำเร็จแล้ว', 65.0, '2026-05-16', '2026-05-15 10:00')
+    _item(ocombo, 'WLBUCKETCOMBO', pack)
+    for i, (pid, amt) in enumerate([(cp1, 30.0), (cp2, 35.0)], 1):
+        c.execute(
+            """INSERT INTO sales_transactions
+               (date_iso, doc_no, doc_base, product_id, customer, customer_code,
+                qty, unit_price, vat_type, total, net, synced_to_stock)
+               VALUES ('2026-05-16', ?, 'IV9300003', ?, 'หน้าร้านS', 'Zหน้าร้าน', 1, ?, 1, ?, ?, 1)""",
+            ('IV9300003-%d' % i, pid, amt, amt, amt))
+    _link('WLBUCKETCOMBO', 'IV9300003')
+
     c.commit()
     return c
 
@@ -153,3 +179,13 @@ def test_badge_count_is_b_plus_c_plus_d(worklist_conn):
     wl = models.get_iv_match_worklist(worklist_conn, 'shopee')
     assert wl['count_bcd'] == len(wl['rows_b']) + len(wl['rows_c']) + len(wl['rows_d'])
     assert wl['count_bcd'] >= 3   # our B + C + D fixture rows, at minimum
+
+
+def test_combo_order_matched_to_component_iv_excluded(worklist_conn):
+    """A ชุด order linked to an IV keyed as its separate components must be a
+    product-match via combo expansion, NOT flagged bucket C (the pid-253
+    false-positive class)."""
+    import models
+    wl = models.get_iv_match_worklist(worklist_conn, 'shopee')
+    all_sns = _sns(wl['rows_b']) | _sns(wl['rows_c']) | _sns(wl['rows_d'])
+    assert 'WLBUCKETCOMBO' not in all_sns
