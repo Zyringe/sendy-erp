@@ -152,12 +152,12 @@ def preview_file(path, report_type, db_path=None):
 
 
 def commit_express_dbf(dataset_dir, db_path=None):
-    """Import Express DBF sales + purchase for one dataset directory into
-    Sendy — the DBF branch parallel to the text-report path above, Phase 1
-    slice A only (payments/credit-notes are a separate slice, not wired
-    here). Reads ARTRN/APTRN/STCRD/ARMAS/APMAS/ARTRNRM straight off disk and
-    feeds the SAME downstream importer (models.import_weekly) the
-    text-report path uses, so idempotency/dedup is unchanged.
+    """Import all 6 Express DBF transactional types for one dataset
+    directory into Sendy — the DBF branch parallel to the text-report path
+    above (Phase 1 slices A+B — payments/credit-notes join sales/purchase
+    here). Reads the needed tables straight off disk and feeds each type's
+    SAME downstream importer the text-report path uses, so idempotency/
+    dedup is unchanged.
 
     No web route yet — that's Phase 2 (an upload endpoint that unzips a
     dataset dir and calls this). Returns a summary dict.
@@ -165,6 +165,8 @@ def commit_express_dbf(dataset_dir, db_path=None):
     import config
     import models
     import express_dbf_source as eds
+    import import_credit_notes
+    import import_express
 
     db_path = db_path or config.DATABASE_PATH
 
@@ -174,18 +176,35 @@ def commit_express_dbf(dataset_dir, db_path=None):
     armas = eds.open_table(dataset_dir, "ARMAS")
     apmas = eds.open_table(dataset_dir, "APMAS")
     artrnrm = eds.open_table(dataset_dir, "ARTRNRM")
+    arrcpit = eds.open_table(dataset_dir, "ARRCPIT")
+    aprcpit = eds.open_table(dataset_dir, "APRCPIT")
 
     sales_entries = eds.build_sales_entries(artrn, stcrd, armas)
     purchase_entries = eds.build_purchase_entries(aptrn, stcrd, apmas)
     refs = eds.build_invoice_refs(artrn, artrnrm)
+    payments_in_records = eds.build_payments_in_records(artrn, arrcpit, armas)
+    payments_out_records = eds.build_payments_out_records(aptrn, aprcpit, apmas)
+    credit_notes_ar_records = eds.build_credit_notes_ar_records(artrn, armas)
+    credit_notes_ap_records = eds.build_credit_notes_ap_records(aptrn, stcrd, apmas)
 
     label = f"express_dbf:{os.path.basename(os.path.normpath(dataset_dir))}"
     sales_stats = models.import_weekly(sales_entries, "sales", label)
     purchase_stats = models.import_weekly(purchase_entries, "purchase", label)
     refs_upserted = _upsert_invoice_refs(refs, db_path)
+    payments_in_stats = models.import_payment_records(payments_in_records)
+    payments_out_stats = import_express.run_import_records(
+        "payments_out", payments_out_records, db_path=db_path)
+    credit_notes_ar_stats = import_credit_notes.import_credit_note_amounts_records(
+        credit_notes_ar_records, db_path=db_path)
+    credit_notes_ap_stats = import_express.run_import_records(
+        "credit_notes", credit_notes_ap_records, db_path=db_path)
 
     return {"sales": sales_stats, "purchase": purchase_stats,
-            "invoice_refs_upserted": refs_upserted}
+            "invoice_refs_upserted": refs_upserted,
+            "payments_in": payments_in_stats,
+            "payments_out": payments_out_stats,
+            "credit_notes_ar": credit_notes_ar_stats,
+            "credit_notes_ap": credit_notes_ap_stats}
 
 
 def _upsert_invoice_refs(refs, db_path):
