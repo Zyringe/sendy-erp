@@ -3,23 +3,41 @@
 The team books each marketplace order as ONE Express invoice under customer codes
 ``Zหน้าร้าน`` (Shopee) / ``Lหน้าร้าน`` (Lazada), keyed in Express shortly AFTER the
 order is placed on the platform. There is no stored order_sn↔IV key, so we match
-on three signals (strongest first):
+on three signals:
 
   1. product overlap — the order's line items (resolved to internal product_ids via
      the marketplace SKU mapping) vs the IV's product_ids. A shared product is the
      strongest identity signal, robust to the amount noise below.
   2. date — the IV is dated on/after the platform order date, almost always within a
-     day or two (IV.date_iso ≥ order_date; nearest-first). An IV dated BEFORE the
-     order can't be that order's invoice.
-  3. amount — IV (VAT-aware) net vs the Shopee payout. Usually equal, but Shopee
-     often ADJUSTS the payout after the order (e.g. 246 shown → 236 paid), so a
-     different amount is a real discrepancy to surface, not a reason to reject.
+     day or two (IV.date_iso ≥ order_date). An IV dated BEFORE the order can't be
+     that order's invoice.
+  3. amount — IV (VAT-aware) net vs the Shopee payout. Usually close, but Shopee
+     often ADJUSTS the payout after the order (fee/rounding today; a full lump
+     discount once the team moves it to รับชำระหนี้), so a ฿ gap is normal, not a
+     rejection reason.
 
-``run_automatch`` greedily assigns each order (oldest first) its lowest-cost
-unclaimed IV in the forward window. Labels 'confident' when the matched IV's amount
-equals the payout, else 'review' (billed ≠ payout — a discrepancy for the team to
-fix in Express). Manual links are never clobbered and their IV is never reused.
+``run_automatch`` is a GLOBAL assignment, not a greedy per-order pass (a greedy
+oldest-first/exact-amount-first matcher strands date-constrained later orders and
+lets amount coincidences steal a different order's rightful product match — see
+projects/marketplace-iv-matching/plan.md §3b / matcher-rebuild-spec.md):
+
+  1. Build every valid product-compatible + date-valid candidate edge (see
+     ``_product_compatible`` — multi-item orders/invoices need amount
+     corroboration too, so a bundle can't be split by a single-item neighbour).
+  2. Solve the assignment that maximizes matched orders, then minimizes total
+     date-gap (nearest-date), then total |amount diff| (amount is a tiebreaker
+     ONLY, never a gate) — a min-cost bipartite match. Every result here is
+     ``'confident'``: product + valid date is trusted regardless of the ฿ gap.
+  3. Orders still unmatched (no product info, or their product's IVs were all
+     claimed) get one more pass: the nearest plausible AMOUNT-only guess among
+     remaining unclaimed IVs — but never across two KNOWN, DIFFERING products
+     (the cross-product steal this rebuild fixes). Labelled ``'review'``, never
+     ``'confident'``.
+  4. Nothing plausible → left unmatched; no fabricated link.
+
+Manual links are never clobbered and their IV is never reused.
 """
+from collections import deque
 from datetime import datetime
 
 # Customer code per platform (sales_transactions.customer_code).
@@ -28,9 +46,20 @@ _CUST_CODE = {'shopee': 'Zหน้าร้าน', 'lazada': 'Lหน้าร
 # The IV is keyed within this many days AFTER the platform order date.
 FORWARD_WINDOW_DAYS = 7
 PICKER_WINDOW_DAYS = 14          # the manual picker looks a bit further out
-_AMOUNT_TOL = 0.005              # amounts within half a satang are "equal"
 # When the product mapping can't confirm a candidate, only trust a near amount.
 FUZZY_AMOUNT_TOL = 15.0
+# A multi-item order/invoice (a bundle) additionally needs amount corroboration
+# to product-match on a partial overlap — band = max(FUZZY_AMOUNT_TOL, this % of
+# the payout). Keeps a small single-item order from grabbing a big bundle IV (or
+# vice versa) just because they share one product.
+_CORROB_PCT = 0.40
+# Cost weighting for the min-cost bipartite match: nearest-date is the PRIMARY
+# objective, amount a tiebreaker only. Must exceed the largest possible summed
+# amount-diff across all edges on a platform so one extra day of gap always
+# outweighs any amount saving (verified: ~1,500-2,500 orders/platform, amounts
+# in the hundreds of ฿ — nowhere near 1e9 satang). Integer satang avoids float
+# drift in the shortest-path search over thousands of edges.
+_GAP_WEIGHT = 10 ** 9
 
 # Amount the customer actually paid = VAT-aware net (the idiom used across the
 # codebase: models.py · payments_alloc.py · cashflow). vat_type 2 = VAT-exclusive.
@@ -98,8 +127,14 @@ def _combo_components(conn):
 
 def _order_products(conn, platform):
     """order_sn -> set(internal_product_id) from the (imperfect) SKU mapping. A combo
-    product is expanded to its components (see _combo_components) so a combo order
-    product-matches the Express bundle IV that is keyed as the separate components."""
+    product is REPLACED by its components (see _combo_components) — not unioned in
+    alongside the pack id — so a combo order's product set matches EXACTLY what the
+    Express IV is keyed as (the separate components; the pack id itself never
+    appears on any invoice). This matters beyond overlap: the global matcher's
+    multi-item corroboration (_product_compatible) checks product-SET equality, so
+    a leftover pack id would make even a perfect combo match (pack -> its own
+    2-line component IV) fail equality and need amount corroboration it doesn't
+    need."""
     combo = _combo_components(conn)
     out = {}
     for r in conn.execute(
@@ -107,9 +142,9 @@ def _order_products(conn, platform):
            WHERE platform = ? AND internal_product_id IS NOT NULL""",
         (platform,)
     ):
+        pid = r['internal_product_id']
         s = out.setdefault(r['order_sn'], set())
-        s.add(r['internal_product_id'])
-        s |= combo.get(r['internal_product_id'], set())
+        s |= combo.get(pid) or {pid}
     return out
 
 
@@ -160,71 +195,178 @@ def _settled_orders(conn, platform):
     ).fetchall()
 
 
-def _pick_iv(o, ivs, claimed, iv_prod, o_prod, window_days, mode):
-    """Lowest-cost unclaimed valid IV for one order, or None.
+def _product_compatible(my_prod, ivp, payout, iv_net):
+    """True iff an order (product set ``my_prod``) and an IV (product set ``ivp``,
+    net ``iv_net``) are a valid product-matched candidate edge. Single-product
+    order AND single-product IV sharing that product need no amount check (D12:
+    trusted regardless of ฿ gap). A multi-item order or IV (a bundle) additionally
+    needs either an EXACT product-set match, or amount corroboration within a
+    sane band — a ฿57 2-item order must not grab a ฿29 1-item invoice on one
+    shared product, and a ฿29 1-item order must not grab a ฿57 bundle IV either."""
+    if not (my_prod & ivp):
+        return False
+    if len(my_prod) <= 1 and len(ivp) <= 1:
+        return True
+    if my_prod == ivp:
+        return True
+    band = max(FUZZY_AMOUNT_TOL, _CORROB_PCT * payout)
+    return abs((iv_net or 0) - payout) <= band
 
-    Three modes, run in this order so a product match is never displaced by an
-    amount coincidence (greedy-oldest-first otherwise lets an older amount-only
-    order grab an IV that a later product-overlap order needs):
-      'exact'   (pass 1): shared product AND exact amount (adiff < _AMOUNT_TOL).
-      'product' (pass 2): shared product, ANY amount. Locks every product-overlap
-          match before the amount-only fallback — the fee-divergent product match
-          (Lazada payout < IV net) that the exact pass can't catch. Without this,
-          an unrelated near-amount order steals it (the 913281 case).
-      'amount'  (pass 3): near amount (adiff <= FUZZY_AMOUNT_TOL), product optional
-          — the fallback for orders left with no unclaimed product IV.
-    The union of eligible matches is unchanged from the old two-pass rule
-    (product OR near-amount); only the assignment PRIORITY changes.
 
-    NOTE (deliberate trade-off): product priority can, rarely, displace a DEAD-ON
-    amount-only match — an order with no product overlap whose payout equals an IV
-    to the satang. That amount is usually a coincidence and the IV's real owner is
-    the product match. Reserving near-exact amounts BEFORE the product pass was
-    implemented and tested on the full prod dataset, then REJECTED: it let amount
-    coincidences steal 27 product matches (net −17 links) — far worse than the ~1
-    ambiguous near-exact edge it protected. Do not re-add a near-exact reservation
-    pass without re-verifying the full-dataset diff.
+def _build_edges(orders, free_ivs, iv_prod, o_prod, window_days):
+    """order_sn -> [(gap, adiff, doc_base), ...] for every valid product+date
+    candidate edge (see ``_product_compatible``). Orders with no resolved
+    product get no edges here — they fall through to the amount-only guess pass."""
+    edges_by_order = {}
+    for o in orders:
+        sn = o['order_sn']
+        my_prod = o_prod.get(sn, set())
+        if not my_prod:
+            continue
+        payout = round(o['billed_basis'], 2)
+        my_edges = []
+        for iv in free_ivs:
+            gap = _signed_gap(iv['date_iso'], o['order_date'])
+            if gap is None or gap < 0 or gap > window_days:
+                continue
+            ivp = iv_prod.get(iv['doc_base'], set())
+            if not _product_compatible(my_prod, ivp, payout, iv['iv_net']):
+                continue
+            adiff = abs((iv['iv_net'] or 0) - payout)
+            my_edges.append((gap, adiff, iv['doc_base']))
+        if my_edges:
+            edges_by_order[sn] = my_edges
+    return edges_by_order
+
+
+def _min_cost_bipartite_match(edges_by_order):
+    """Global assignment: maximize the number of matched orders, then minimize
+    total cost (date-gap primary, amount secondary — see ``_GAP_WEIGHT``) among
+    all maximum matchings. A min-cost max-flow over a bipartite graph with
+    unit-capacity edges, solved via successive shortest augmenting paths
+    (SPFA/Bellman-Ford — correct here despite the negative-cost reverse residual
+    edges the algorithm creates, since always augmenting along the shortest path
+    is exactly what keeps a min-cost-flow network free of negative cycles).
+
+    ``edges_by_order``: order_sn -> [(gap, adiff, doc_base), ...].
+    Returns order_sn -> doc_base for every matched order.
+
+    Dataset is small and sparse (verified on prod: ~1,500-2,500 orders/platform,
+    ~1.6-1.8 candidate edges/order, max ~11) — plain SPFA per augmentation is
+    comfortably fast; no need for Dijkstra+potentials.
     """
-    payout = round(o['billed_basis'], 2)
-    my_prod = o_prod.get(o['order_sn'], set())
-    best = None  # (cost_tuple, doc_base, amount_diff)
-    for iv in ivs:
-        if iv['doc_base'] in claimed:
-            continue
-        gap = _signed_gap(iv['date_iso'], o['order_date'])
-        if gap is None or gap < 0 or gap > window_days:
-            continue
-        overlap = len(my_prod & iv_prod.get(iv['doc_base'], set()))
-        adiff = abs((iv['iv_net'] or 0) - payout)
-        if mode == 'exact':
-            if overlap == 0 or adiff >= _AMOUNT_TOL:
+    order_ids = list(edges_by_order.keys())
+    doc_bases = sorted({db for edges in edges_by_order.values() for (_g, _a, db) in edges})
+    if not order_ids or not doc_bases:
+        return {}
+    o_idx = {sn: i for i, sn in enumerate(order_ids)}
+    d_idx = {db: i for i, db in enumerate(doc_bases)}
+    n_o, n_d = len(order_ids), len(doc_bases)
+    SRC, SINK = 0, n_o + n_d + 1
+    n_nodes = n_o + n_d + 2
+
+    # adjacency: node -> list of [to, cap, cost, rev_index_in_graph[to]]
+    graph = [[] for _ in range(n_nodes)]
+
+    def add_edge(u, v, cap, cost):
+        graph[u].append([v, cap, cost, len(graph[v])])
+        graph[v].append([u, 0, -cost, len(graph[u]) - 1])
+
+    for sn in order_ids:
+        add_edge(SRC, 1 + o_idx[sn], 1, 0)
+    for db in doc_bases:
+        add_edge(1 + n_o + d_idx[db], SINK, 1, 0)
+    for sn, edges in edges_by_order.items():
+        u = 1 + o_idx[sn]
+        for gap, adiff, db in edges:
+            cost = gap * _GAP_WEIGHT + round(abs(adiff) * 100)
+            add_edge(u, 1 + n_o + d_idx[db], 1, cost)
+
+    while True:
+        dist = [None] * n_nodes
+        dist[SRC] = 0
+        prev = [None] * n_nodes          # node -> (from_node, edge_index_in_from_node)
+        in_queue = [False] * n_nodes
+        dq = deque([SRC])
+        in_queue[SRC] = True
+        while dq:
+            u = dq.popleft()
+            in_queue[u] = False
+            du = dist[u]
+            for ei, e in enumerate(graph[u]):
+                v, cap, cost, _rev = e
+                if cap <= 0:
+                    continue
+                nd = du + cost
+                if dist[v] is None or nd < dist[v]:
+                    dist[v] = nd
+                    prev[v] = (u, ei)
+                    if not in_queue[v]:
+                        dq.append(v)
+                        in_queue[v] = True
+        if dist[SINK] is None:
+            break
+        v = SINK
+        while v != SRC:
+            u, ei = prev[v]
+            e = graph[u][ei]
+            e[1] -= 1
+            graph[v][e[3]][1] += 1
+            v = u
+
+    match = {}
+    for sn in order_ids:
+        u = 1 + o_idx[sn]
+        for v, cap, _cost, _rev in graph[u]:
+            if cap == 0 and 1 + n_o <= v < 1 + n_o + n_d:
+                match[sn] = doc_bases[v - (1 + n_o)]
+                break
+    return match
+
+
+def _amount_only_guesses(remaining, free_ivs, iv_prod, o_prod, window_days):
+    """D13/D14: for orders with no valid product-matched edge, guess the nearest
+    plausible unclaimed IV by amount (product ignored) — but NEVER across two
+    KNOWN, DIFFERING products (that cross-product steal is the root cause this
+    rebuild fixes). Ranked (gap, amount-diff) like the primary pass, greedily
+    assigned. Returns order_sn -> doc_base; caller labels these 'review', never
+    'confident'."""
+    candidates = []
+    for o in remaining:
+        sn = o['order_sn']
+        my_prod = o_prod.get(sn, set())
+        payout = round(o['billed_basis'], 2)
+        for iv in free_ivs:
+            db = iv['doc_base']
+            gap = _signed_gap(iv['date_iso'], o['order_date'])
+            if gap is None or gap < 0 or gap > window_days:
                 continue
-        elif mode == 'product':
-            if overlap == 0:
-                continue
-        else:  # 'amount' — the fuzzy fallback; a near amount can stand alone
+            ivp = iv_prod.get(db, set())
+            if my_prod and ivp and not (my_prod & ivp):
+                continue          # both products known and different — never guess across them
+            adiff = abs((iv['iv_net'] or 0) - payout)
             if adiff > FUZZY_AMOUNT_TOL:
                 continue
-        cost = (0 if overlap else 1, gap, adiff)
-        if best is None or cost < best[0]:
-            best = (cost, iv['doc_base'], adiff)
-    return best
+            candidates.append((gap, adiff, sn, db))
+    candidates.sort()
+    matched, claimed_now = {}, set()
+    for gap, adiff, sn, db in candidates:
+        if sn in matched or db in claimed_now:
+            continue
+        matched[sn] = db
+        claimed_now.add(db)
+    return matched
 
 
 def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
-    """Auto-link settled ``platform`` orders to their Express IV by product + date
-    (after the order) + amount. THREE passes, each greedy oldest-order-first:
-    'exact' (shared-product AND exact-amount) → 'product' (shared-product, any
-    amount) → 'amount' (near-amount fallback). Assigning all product-overlap
-    matches before the amount-only fallback stops an amount coincidence from
-    stealing an IV that is another order's product match (incl. the fee-divergent
-    product match the exact pass can't lock). Rebuilds all 'auto' rows; never
-    touches 'manual' rows nor reuses a manually-held IV. Labels 'confident'
-    (amount == payout) or 'review' (amount differs).
+    """Auto-link settled ``platform`` orders to their Express IV — a single
+    GLOBAL assignment (see module docstring), not a greedy per-order pass.
+    Rebuilds all 'auto' rows on every call (idempotent); never touches 'manual'
+    rows nor reuses a manually-held IV.
     Returns {matched, confident, review, unmatched}.
     """
     code = _CUST_CODE[platform]
-    orders = _settled_orders(conn, platform)        # oldest order_date first
+    orders = _settled_orders(conn, platform)
     ivs = _ivs_for(conn, code)
     iv_prod = _iv_products(conn, code)
     o_prod = _order_products(conn, platform)
@@ -239,22 +381,28 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
         "DELETE FROM marketplace_order_invoice WHERE platform=? AND match_method='auto'",
         (platform,))
 
-    results = {}  # order_sn -> (doc_base, adiff)
-    for mode in ('exact', 'product', 'amount'):
-        for o in orders:
-            sn = o['order_sn']
-            if sn in manual_orders or sn in results:
-                continue
-            best = _pick_iv(o, ivs, claimed, iv_prod, o_prod, window_days, mode)
-            if best is None:
-                continue
-            _cost, doc_base, adiff = best
-            claimed.add(doc_base)
-            results[sn] = (doc_base, adiff)
+    auto_orders = [o for o in orders if o['order_sn'] not in manual_orders]
+    free_ivs = [iv for iv in ivs if iv['doc_base'] not in claimed]
+
+    # Pass 1: global product-matched assignment — every result is 'confident'.
+    edges = _build_edges(auto_orders, free_ivs, iv_prod, o_prod, window_days)
+    product_match = _min_cost_bipartite_match(edges)
+
+    results = {}  # order_sn -> (doc_base, confidence)
+    for sn, doc_base in product_match.items():
+        results[sn] = (doc_base, 'confident')
+        claimed.add(doc_base)
+
+    # Pass 2: amount-only guesses for whatever's left — always 'review'.
+    remaining = [o for o in auto_orders if o['order_sn'] not in results]
+    free_ivs2 = [iv for iv in free_ivs if iv['doc_base'] not in claimed]
+    guesses = _amount_only_guesses(remaining, free_ivs2, iv_prod, o_prod, window_days)
+    for sn, doc_base in guesses.items():
+        results[sn] = (doc_base, 'review')
+        claimed.add(doc_base)
 
     confident = review = 0
-    for sn, (doc_base, adiff) in results.items():
-        confidence = 'confident' if adiff < _AMOUNT_TOL else 'review'
+    for sn, (doc_base, confidence) in results.items():
         conn.execute(
             """INSERT INTO marketplace_order_invoice
                    (platform, order_sn, doc_base, customer_code, match_method, confidence)
@@ -264,8 +412,7 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
             confident += 1
         else:
             review += 1
-    unmatched = sum(1 for o in orders
-                    if o['order_sn'] not in manual_orders and o['order_sn'] not in results)
+    unmatched = sum(1 for o in auto_orders if o['order_sn'] not in results)
 
     conn.commit()
     return {'matched': confident + review, 'confident': confident,
