@@ -190,6 +190,45 @@ def test_build_sales_entries_falls_back_to_customer_code_when_name_missing():
     assert entries[0]['party'] == 'UNKNOWN'
 
 
+# ── recency window (cutoff) — Phase 2 follow-up, Put chose since_days=60 ───
+
+def test_build_sales_entries_cutoff_excludes_older_doc():
+    """A doc dated before cutoff is dropped entirely — header AND its STCRD
+    lines (the header-set filter is what keeps the two consistent)."""
+    cutoff = datetime.date(2026, 6, 1)
+    artrn = [
+        _artrn('IV_OLD', '3', docdat=datetime.date(2026, 5, 1)),   # before cutoff
+        _artrn('IV_NEW', '3', docdat=datetime.date(2026, 6, 15)),  # on/after cutoff
+    ]
+    stcrd = [_stcrd('IV_OLD', 1, stkcod='old'), _stcrd('IV_NEW', 1, stkcod='new')]
+
+    entries = build_sales_entries(artrn, stcrd, [], cutoff=cutoff)
+
+    assert [e['product_code_raw'] for e in entries] == ['new']
+
+
+def test_build_sales_entries_cutoff_boundary_is_inclusive():
+    """A doc dated EXACTLY on cutoff is kept (>=, not >)."""
+    cutoff = datetime.date(2026, 6, 1)
+    artrn = [_artrn('IV_EDGE', '3', docdat=cutoff)]
+    stcrd = [_stcrd('IV_EDGE', 1)]
+
+    entries = build_sales_entries(artrn, stcrd, [], cutoff=cutoff)
+
+    assert len(entries) == 1
+
+
+def test_build_sales_entries_cutoff_none_keeps_full_history():
+    """cutoff=None (the explicit override, e.g. a manual backfill) must
+    behave exactly like the pre-Phase-2 unfiltered call."""
+    artrn = [_artrn('IV_ANCIENT', '3', docdat=datetime.date(2003, 1, 1))]
+    stcrd = [_stcrd('IV_ANCIENT', 1)]
+
+    entries = build_sales_entries(artrn, stcrd, [], cutoff=None)
+
+    assert len(entries) == 1
+
+
 # ── purchase ─────────────────────────────────────────────────────────────
 
 def test_build_purchase_entries_rr_line_doc_no_has_no_suffix():
@@ -243,6 +282,20 @@ def test_build_purchase_entries_excludes_oe_and_ps():
     entries = build_purchase_entries(aptrn, stcrd, [])
 
     assert entries == []
+
+
+def test_build_purchase_entries_cutoff_excludes_older_doc():
+    """Same recency-window treatment on the APTRN header set."""
+    cutoff = datetime.date(2026, 6, 1)
+    aptrn = [
+        _aptrn('RR_OLD', '3', docdat=datetime.date(2026, 5, 1)),
+        _aptrn('RR_NEW', '3', docdat=datetime.date(2026, 6, 15)),
+    ]
+    stcrd = [_stcrd('RR_OLD', 1, stkcod='old'), _stcrd('RR_NEW', 1, stkcod='new')]
+
+    entries = build_purchase_entries(aptrn, stcrd, [], cutoff=cutoff)
+
+    assert [e['product_code_raw'] for e in entries] == ['new']
 
 
 # ── invoice refs (YOUREF / REMARK side table) ───────────────────────────
@@ -392,7 +445,10 @@ def test_commit_express_dbf_wires_sales_purchase_and_refs(empty_db, monkeypatch)
     }
     monkeypatch.setattr(eds, 'open_table', lambda dataset_dir, name: fake_tables[name])
 
-    result = import_router.commit_express_dbf('/fake/dataset')
+    # since_days=None: this test's fixture dates are fixed (not relative to
+    # "today") — it's pinning the WIRING, not the recency filter (that's
+    # tested separately, see test_commit_express_dbf_since_days_window_*).
+    result = import_router.commit_express_dbf('/fake/dataset', since_days=None)
 
     assert result['sales']['imported'] == 1
     assert result['purchase']['imported'] == 1
@@ -473,17 +529,34 @@ def test_build_payments_in_records_cancelled_defaults_false():
     assert records[0]['cancelled'] is False
 
 
-def test_build_payments_in_records_unknown_rectyp_fails_loud():
-    """ARRCPIT.RECTYP outside {3,5} must raise, not silently misclassify —
-    mirrors parse_payment_csv's fail-loud unknown-doc-prefix guard."""
+def test_build_payments_in_records_unknown_rectyp_skips_not_raises():
+    """ARRCPIT.RECTYP outside {3,5} (real data: RECTYP='4', a 'DR' doc, 1
+    row out of 57,024) must NOT crash the whole import — Put's call
+    (2026-07-08, Phase 2 follow-up): skip it, don't guess the money, and
+    surface it via the `skipped` list so it's never silent."""
     artrn = [_artrn_re('RE6900302', cuscod='C001')]
-    arrcpit = [_arrcpit('RE6900302', 'HS6900001', '1', 100.0)]
+    arrcpit = [
+        _arrcpit('RE6900302', 'IV6900001', '3', 500.0),
+        _arrcpit('RE6900302', 'DR0000003', '4', 600.0),   # unsupported kind
+    ]
 
-    try:
-        build_payments_in_records(artrn, arrcpit, [])
-        assert False, "expected ValueError for unknown RECTYP"
-    except ValueError:
-        pass
+    records = build_payments_in_records(artrn, arrcpit, [])   # skipped=None: silent-skip path
+
+    assert len(records) == 1
+    assert records[0]['iv_list'] == [{'iv_no': 'IV6900001', 'amount': 500.0, 'kind': 'IV'}]
+    assert records[0]['total'] == 500.0, "the unsupported line must not corrupt the IV total"
+
+
+def test_build_payments_in_records_unknown_rectyp_surfaces_in_skipped_list():
+    """Same fixture, but with the `skipped` collector passed — the DR line
+    must show up there with re_no/doc/rectyp/amount, never silently vanish."""
+    artrn = [_artrn_re('RE6900302', cuscod='C001')]
+    arrcpit = [_arrcpit('RE6900302', 'DR0000003', '4', 600.0)]
+    skipped = []
+
+    build_payments_in_records(artrn, arrcpit, [], skipped=skipped)
+
+    assert skipped == [{'re_no': 'RE6900302', 'doc': 'DR0000003', 'rectyp': '4', 'amount': 600.0}]
 
 
 def test_build_payments_in_records_excludes_out_of_scope_rectyp():
@@ -706,7 +779,9 @@ def test_commit_express_dbf_wires_all_six_types(empty_db, monkeypatch):
     }
     monkeypatch.setattr(eds, 'open_table', lambda dataset_dir, name: fake_tables[name])
 
-    result = import_router.commit_express_dbf('/fake/dataset')
+    # since_days=None: fixed fixture dates, not relative to "today" — this
+    # test pins the 6-type WIRING, not the recency filter.
+    result = import_router.commit_express_dbf('/fake/dataset', since_days=None)
 
     assert result['sales']['imported'] >= 1
     assert result['purchase']['imported'] >= 1
@@ -725,3 +800,89 @@ def test_commit_express_dbf_wires_all_six_types(empty_db, monkeypatch):
     cn = c.execute("SELECT total_amount FROM express_credit_notes WHERE doc_no='GR6900002'").fetchone()
     assert cn['total_amount'] == 48.0
     c.close()
+
+
+# ── commit_express_dbf: since_days recency window + DR-skip surfacing ──────
+# Both Put's calls (2026-07-08, Phase 2 follow-up): a real full-history
+# upload took 12+ minutes before the window existed (would blow Railway's
+# gunicorn --timeout 60); a real ARRCPIT RECTYP='4' ("DR") row must not
+# crash the whole batch.
+
+def test_commit_express_dbf_since_days_window_excludes_old_includes_recent(empty_db, monkeypatch):
+    """An old doc is excluded from the import when since_days is set (the
+    default path); a recent doc within the window still imports. Dates are
+    relative to today so this test doesn't rot."""
+    import sys
+    _scripts = os.path.join(_REPO, "scripts")
+    if _scripts not in sys.path:
+        sys.path.insert(0, _scripts)
+
+    import express_dbf_source as eds
+    import import_router
+
+    today = datetime.date.today()
+    old_date = today - datetime.timedelta(days=100)   # outside a 60-day window
+    recent_date = today - datetime.timedelta(days=5)   # inside it
+
+    _seed_product(empty_db, 'PsaleOld', 'old-code')
+    _seed_product(empty_db, 'PsaleNew', 'new-code')
+    _seed_company(empty_db, 'BSN')
+
+    fake_tables = {
+        'ARTRN': [
+            _artrn('IV_OLD', '3', cuscod='C001', docdat=old_date),
+            _artrn('IV_NEW', '3', cuscod='C001', docdat=recent_date),
+        ],
+        'APTRN': [],
+        'STCRD': [
+            _stcrd('IV_OLD', 1, stkcod='old-code', trnval=10.0, netval=10.0),
+            _stcrd('IV_NEW', 1, stkcod='new-code', trnval=20.0, netval=20.0),
+        ],
+        'ARMAS': [{'CUSCOD': 'C001', 'CUSNAM': 'ลูกค้าทดสอบ'}],
+        'APMAS': [],
+        'ARTRNRM': [],
+        'ARRCPIT': [],
+        'APRCPIT': [],
+    }
+    monkeypatch.setattr(eds, 'open_table', lambda dataset_dir, name: fake_tables[name])
+
+    result = import_router.commit_express_dbf('/fake/dataset', since_days=60)
+
+    assert result['sales']['imported'] == 1, "only the in-window doc should import"
+    c = _conn(empty_db)
+    rows = c.execute("SELECT bsn_code FROM sales_transactions").fetchall()
+    c.close()
+    assert [r['bsn_code'] for r in rows] == ['new-code']
+
+
+def test_commit_express_dbf_surfaces_skipped_dr_line_in_payments_in(empty_db, monkeypatch):
+    """A real-shaped ARRCPIT RECTYP='4' line must not crash
+    commit_express_dbf — it shows up in payments_in.skipped_rectyp instead."""
+    import sys
+    _scripts = os.path.join(_REPO, "scripts")
+    if _scripts not in sys.path:
+        sys.path.insert(0, _scripts)
+
+    import express_dbf_source as eds
+    import import_router
+
+    recent = datetime.date.today() - datetime.timedelta(days=2)
+    _seed_company(empty_db, 'BSN')
+
+    fake_tables = {
+        'ARTRN': [_artrn_re('RE0041138', cuscod='C900', docdat=recent)],
+        'APTRN': [],
+        'STCRD': [],
+        'ARMAS': [],
+        'APMAS': [],
+        'ARTRNRM': [],
+        'ARRCPIT': [_arrcpit('RE0041138', 'DR0000003', '4', 600.0)],
+        'APRCPIT': [],
+    }
+    monkeypatch.setattr(eds, 'open_table', lambda dataset_dir, name: fake_tables[name])
+
+    result = import_router.commit_express_dbf('/fake/dataset', since_days=60)
+
+    assert result['payments_in']['skipped_rectyp'] == [
+        {'re_no': 'RE0041138', 'doc': 'DR0000003', 'rectyp': '4', 'amount': 600.0}
+    ]

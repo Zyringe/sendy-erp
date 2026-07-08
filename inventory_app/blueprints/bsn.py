@@ -503,6 +503,9 @@ def express_dbf_upload():
         if dataset_dir is None:
             return jsonify({'ok': False, 'error': 'ARTRN.DBF not found in zip'}), 400
 
+        # since_days defaults to 60 inside commit_express_dbf — a daily
+        # upload of the full Express history only ever needs the recent
+        # window; leave the default rather than duplicating it here.
         per_type = import_router.commit_express_dbf(dataset_dir, db_path=config.DATABASE_PATH)
     except Exception as exc:
         return jsonify({'ok': False, 'error': str(exc)}), 500

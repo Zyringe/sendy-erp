@@ -110,11 +110,37 @@ def _header_date_iso(hdr):
     return d.isoformat()
 
 
-def build_sales_entries(artrn_rows, stcrd_rows, armas_rows):
+def _in_window(hdr, cutoff):
+    """True if cutoff is None (no filter — the old, unfiltered behavior every
+    existing caller/test gets by default) or hdr's DOCDAT >= cutoff.
+
+    A missing/malformed DOCDAT is treated as OUT of a windowed run rather
+    than letting it reach _header_date_iso()'s raise later — scoping which
+    docs to process is a cheaper, safer place to drop a bad row than mid-way
+    through building its entries. cutoff=None (unfiltered) keeps the old
+    fail-loud-on-bad-date behavior unchanged."""
+    if cutoff is None:
+        return True
+    d = hdr.get('DOCDAT')
+    return d is not None and d >= cutoff
+
+
+def build_sales_entries(artrn_rows, stcrd_rows, armas_rows, cutoff=None):
     """Build sales entries — the SAME shape parse_weekly.parse_sales emits —
     from already-read Express DBF rows. Pure: no file IO, so a caller can
-    build entries with plain dict fixtures for tests."""
-    headers = {r['DOCNUM']: r for r in artrn_rows if r.get('RECTYP') in _SCOPE_RECTYP}
+    build entries with plain dict fixtures for tests.
+
+    cutoff (a datetime.date, or None): when given, only headers with
+    DOCDAT >= cutoff are kept — the recency window (import_router's
+    since_days) that keeps a daily full-history DBF upload fast. Filtering
+    the HEADERS set (not the STCRD lines directly) is what keeps a doc's
+    lines all-or-nothing consistent, and is also the only thing that makes
+    the STCRD loop below skip almost all of its lines cheaply (a dict miss,
+    no field parsing) instead of models.import_weekly() diffing every one
+    against the DB — that per-row diffing is what made a full-history
+    upload take 12+ minutes before this filter existed."""
+    headers = {r['DOCNUM']: r for r in artrn_rows
+               if r.get('RECTYP') in _SCOPE_RECTYP and _in_window(r, cutoff)}
     names = {r['CUSCOD']: r['CUSNAM'] for r in armas_rows}
 
     entries = []
@@ -142,10 +168,14 @@ def build_sales_entries(artrn_rows, stcrd_rows, armas_rows):
     return entries
 
 
-def build_purchase_entries(aptrn_rows, stcrd_rows, apmas_rows):
+def build_purchase_entries(aptrn_rows, stcrd_rows, apmas_rows, cutoff=None):
     """Build purchase entries — the SAME shape parse_weekly.parse_purchases
-    emits — from already-read Express DBF rows. Pure: no file IO."""
-    headers = {r['DOCNUM']: r for r in aptrn_rows if r.get('RECTYP') in _SCOPE_RECTYP}
+    emits — from already-read Express DBF rows. Pure: no file IO.
+
+    cutoff: see build_sales_entries's docstring — same recency-window
+    treatment on the APTRN header set."""
+    headers = {r['DOCNUM']: r for r in aptrn_rows
+               if r.get('RECTYP') in _SCOPE_RECTYP and _in_window(r, cutoff)}
     names = {r['SUPCOD']: r['SUPNAM'] for r in apmas_rows}
 
     entries = []
@@ -173,12 +203,15 @@ def build_purchase_entries(aptrn_rows, stcrd_rows, apmas_rows):
     return entries
 
 
-def build_invoice_refs(artrn_rows, artrnrm_rows):
+def build_invoice_refs(artrn_rows, artrnrm_rows, cutoff=None):
     """Build express_invoice_refs rows: doc_base -> (youref, remark), scoped
     to the same sales doc set build_sales_entries uses (IV/HS/SR). Feeds the
     marketplace-IV matcher (buyer-name on YOUREF, #271/#272 — a separate
     project). Docs with neither field populated are skipped (nothing to
-    store — most non-marketplace invoices have a blank YOUREF)."""
+    store — most non-marketplace invoices have a blank YOUREF).
+
+    cutoff: same recency window as build_sales_entries — scoped to the same
+    doc set that got imported this run."""
     remarks = {}
     for r in artrnrm_rows:
         doc = r.get('DOCNUM')
@@ -190,6 +223,8 @@ def build_invoice_refs(artrn_rows, artrnrm_rows):
     refs = []
     for r in artrn_rows:
         if r.get('RECTYP') not in _SCOPE_RECTYP:
+            continue
+        if not _in_window(r, cutoff):
             continue
         doc = r.get('DOCNUM')
         youref = (r.get('YOUREF') or '').strip() or None
@@ -207,7 +242,7 @@ def build_invoice_refs(artrn_rows, artrnrm_rows):
 _PAYMENTS_IN_LINE_KIND = {'3': 'IV', '5': 'SR'}
 
 
-def build_payments_in_records(artrn_rows, arrcpit_rows, armas_rows):
+def build_payments_in_records(artrn_rows, arrcpit_rows, armas_rows, cutoff=None, skipped=None):
     """Build payments_in records — the SAME shape models.parse_payment_csv
     emits (re_no, cancelled, date_iso, customer, salesperson, iv_list,
     total) — from Express DBF rows. Feeds models.import_payment_records()
@@ -216,8 +251,17 @@ def build_payments_in_records(artrn_rows, arrcpit_rows, armas_rows):
 
     RE header money fields are always 0 (MAPPING.md §3) — `total` is Σ
     ARRCPIT.RCVAMT for IV lines only, mirroring parse_payment_csv exactly.
+
+    cutoff: recency window on the RE headers (see build_sales_entries).
+
+    An ARRCPIT line whose RECTYP isn't {3=IV, 5=SR} is SKIPPED, not raised —
+    real data has 1 such row out of 57,024 (RECTYP='4', a 'DR' doc; Put's
+    call: don't crash, don't guess the money, surface it — the correct
+    accounting treatment is a separate finance decision). Pass a list via
+    `skipped` to collect {re_no, doc, rectyp, amount} dicts for the ones
+    dropped; omit it to just skip silently.
     """
-    headers = [r for r in artrn_rows if r.get('RECTYP') == '9']
+    headers = [r for r in artrn_rows if r.get('RECTYP') == '9' and _in_window(r, cutoff)]
     lines_by_rcp = defaultdict(list)
     for line in arrcpit_rows:
         lines_by_rcp[line.get('RCPNUM')].append(line)
@@ -230,15 +274,14 @@ def build_payments_in_records(artrn_rows, arrcpit_rows, armas_rows):
         for line in lines_by_rcp.get(re_no, []):
             kind = _PAYMENTS_IN_LINE_KIND.get(line.get('RECTYP'))
             if kind is None:
-                # Fail loud — mirrors parse_payment_csv's fail-loud guard on
-                # an unknown doc prefix. The regex/filter above limits scope
-                # to {3,5}; if that's ever widened, this catches a new kind
-                # before it silently mis-signs into paid_invoices.
-                raise ValueError(
-                    f"build_payments_in_records: unexpected ARRCPIT.RECTYP "
-                    f"{line.get('RECTYP')!r} on RE {re_no!r} "
-                    f"(supported: 3=IV, 5=SR)"
-                )
+                if skipped is not None:
+                    skipped.append({
+                        're_no': re_no,
+                        'doc': line.get('DOCNUM'),
+                        'rectyp': line.get('RECTYP'),
+                        'amount': _num(line, 'RCVAMT'),
+                    })
+                continue
             amount = _num(line, 'RCVAMT')
             if kind == 'SR':
                 amount = -abs(amount)
@@ -260,10 +303,12 @@ def build_payments_in_records(artrn_rows, arrcpit_rows, armas_rows):
 
 # ── payments_out (PS header + APRCPIT lines) ────────────────────────────────
 
-def build_payments_out_records(aptrn_rows, aprcpit_rows, apmas_rows):
+def build_payments_out_records(aptrn_rows, aprcpit_rows, apmas_rows, cutoff=None):
     """Build payments_out records — the dataclasses.asdict() shape of
     parse_express_payments_out.APPayment — from Express DBF rows. Feeds
     import_express.run_import_records('payments_out', ...).
+
+    cutoff: recency window on the PS headers (see build_sales_entries).
 
     TRAP (MAPPING.md §4): invoice_amount must be APTRN.RCVAMT, NOT PAYAMT
     (PAYAMT diverges arbitrarily on 6/24 matched docs, three of them
@@ -278,7 +323,7 @@ def build_payments_out_records(aptrn_rows, aprcpit_rows, apmas_rows):
     here (not in MAPPING.md's confirmed field map) — left None rather than
     guessing a DBF field name that was never verified.
     """
-    headers = [r for r in aptrn_rows if r.get('RECTYP') == '9']
+    headers = [r for r in aptrn_rows if r.get('RECTYP') == '9' and _in_window(r, cutoff)]
     lines_by_rcp = defaultdict(list)
     for line in aprcpit_rows:
         lines_by_rcp[line.get('RCPNUM')].append(line)
@@ -320,7 +365,7 @@ def build_payments_out_records(aptrn_rows, aprcpit_rows, apmas_rows):
 
 # ── credit_notes_ar (SR header, no lines — credit_note_amounts) ────────────
 
-def build_credit_notes_ar_records(artrn_rows, armas_rows):
+def build_credit_notes_ar_records(artrn_rows, armas_rows, cutoff=None):
     """Build credit_notes_ar records — feeds
     import_credit_notes.import_credit_note_amounts_records() directly: the
     HEADER-level credit_note_amounts table (authoritative per-SR credited
@@ -331,6 +376,8 @@ def build_credit_notes_ar_records(artrn_rows, armas_rows):
     build_sales_entries (slice A) already writes into sales_transactions —
     same source rows, deliberately different (both correct) numbers by
     design. Do not unify; see MAPPING.md's "SR/GR-in-ledger duality" note.
+
+    cutoff: recency window on the SR headers (see build_sales_entries).
     """
     names = {r['CUSCOD']: r['CUSNAM'] for r in armas_rows}
     records = []
@@ -339,6 +386,8 @@ def build_credit_notes_ar_records(artrn_rows, armas_rows):
             continue
         doc = r.get('DOCNUM') or ''
         if not doc.startswith('SR'):
+            continue
+        if not _in_window(r, cutoff):
             continue
         records.append({
             'sr_doc_base': doc,
@@ -362,7 +411,7 @@ def _ref_doc_base(rdocnum):
     return tokens[0] if tokens else None
 
 
-def build_credit_notes_ap_records(aptrn_rows, stcrd_rows, apmas_rows):
+def build_credit_notes_ap_records(aptrn_rows, stcrd_rows, apmas_rows, cutoff=None):
     """Build credit_notes_ap records — the dataclasses.asdict() shape of
     parse_express_credit_notes.CreditNote(+CreditNoteLine) — from Express
     DBF rows. Feeds import_express.run_import_records('credit_notes', ...).
@@ -372,6 +421,8 @@ def build_credit_notes_ap_records(aptrn_rows, stcrd_rows, apmas_rows):
     STCRD line sum). TRAP: total = Σ STCRD.TRNVAL, NOT NETVAL (NETVAL is
     VAT-stripped/post-discount; Sendy's express_credit_notes.total_amount
     stores the pre-VAT-strip TRNVAL — same trap as SR-in-sales/GR-in-purchase).
+
+    cutoff: recency window on the GR headers (see build_sales_entries).
     """
     names = {r['SUPCOD']: r['SUPNAM'] for r in apmas_rows}
     lines_by_doc = defaultdict(list)
@@ -384,6 +435,8 @@ def build_credit_notes_ap_records(aptrn_rows, stcrd_rows, apmas_rows):
             continue
         doc = hdr.get('DOCNUM') or ''
         if not doc.startswith('GR'):
+            continue
+        if not _in_window(hdr, cutoff):
             continue
         lines = sorted(lines_by_doc.get(doc, []), key=lambda l: _int(l, 'SEQNUM', 1))
         records.append({

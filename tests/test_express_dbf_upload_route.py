@@ -102,20 +102,27 @@ def client(tmp_db):
         yield c
 
 
+# The route calls commit_express_dbf() with its default since_days=60, so
+# every header row below must be recent (relative to today, not a fixed
+# date) or the recency filter (see test_express_dbf_source.py) would drop
+# it before it ever reaches these assertions.
+_RECENT = datetime.date.today() - datetime.timedelta(days=5)
+
+
 def _fake_tables():
     """One row per Phase-0 RECTYP scope, same shape as
     test_express_dbf_source.py's test_commit_express_dbf_wires_all_six_types
     (fresh doc numbers so this file's assertions don't depend on that one)."""
     return {
         'ARTRN': [
-            _artrn('IV7000931', '3', cuscod='C900'),
-            _artrn_re('RE7000400', cuscod='C900'),
-            _artrn_sr('SR7000010', cuscod='C900', sonum='IV7000931', total=100.0),
+            _artrn('IV7000931', '3', cuscod='C900', docdat=_RECENT),
+            _artrn_re('RE7000400', cuscod='C900', docdat=_RECENT),
+            _artrn_sr('SR7000010', cuscod='C900', sonum='IV7000931', total=100.0, docdat=_RECENT),
         ],
         'APTRN': [
-            _aptrn('RR7000079', '3', supcod='S900'),
-            _aptrn_ps('PS0900000', supcod='S900', rcvamt=50.0),
-            _aptrn_gr('GR7000002', supcod='S900'),
+            _aptrn('RR7000079', '3', supcod='S900', docdat=_RECENT),
+            _aptrn_ps('PS0900000', supcod='S900', rcvamt=50.0, docdat=_RECENT),
+            _aptrn_gr('GR7000002', supcod='S900', docdat=_RECENT),
         ],
         'STCRD': [
             _stcrd('IV7000931', 1, stkcod='route-sale', qty=1.0, unitpr=45.0, trnval=45.0, netval=45.0),
@@ -312,6 +319,8 @@ def test_upload_happy_path_imports_all_six_types(client, tmp_path, monkeypatch):
     assert body['per_type']['payments_out']['imported'] == 1
     assert body['per_type']['credit_notes_ar']['upserted'] == 1
     assert body['per_type']['credit_notes_ap']['imported'] == 1
+    assert body['per_type']['payments_in']['skipped_rectyp'] == [], \
+        "no DR-style row in this fixture — the key must still be present, just empty"
     assert body['imported_at']
 
     import sqlite3
@@ -371,6 +380,35 @@ def test_upload_cleans_up_temp_dir(client, tmp_path, monkeypatch):
     assert resp.status_code == 200
     assert created, "route never called tempfile.mkdtemp"
     assert not os.path.exists(created[-1]), "temp extraction dir was not cleaned up"
+
+
+def test_upload_surfaces_dr_skip_end_to_end(client, tmp_path, monkeypatch):
+    """A real-shaped ARRCPIT RECTYP='4' ('DR') line — the 1-in-57,024-row
+    edge case found during real-data verification — must not 500 the whole
+    upload; it shows up in the JSON response instead."""
+    monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
+
+    import express_dbf_source as eds
+    tables = {
+        'ARTRN': [_artrn_re('RE7000401', cuscod='C900', docdat=_RECENT)],
+        'APTRN': [], 'STCRD': [], 'ARMAS': [], 'APMAS': [], 'ARTRNRM': [],
+        'ARRCPIT': [_arrcpit('RE7000401', 'DR0000099', '4', 600.0)],
+        'APRCPIT': [],
+    }
+    monkeypatch.setattr(eds, 'open_table', lambda dataset_dir, name: tables[name])
+
+    zpath = _make_zip(tmp_path, names=list(tables))
+    with open(zpath, 'rb') as f:
+        resp = client.post('/import-express-dbf/upload',
+                           data={'token': 'right-token', 'file': (f, 'upload.zip')},
+                           content_type='multipart/form-data')
+
+    assert resp.status_code == 200, resp.data[:500]
+    body = resp.get_json()
+    assert body['ok'] is True
+    assert body['per_type']['payments_in']['skipped_rectyp'] == [
+        {'re_no': 'RE7000401', 'doc': 'DR0000099', 'rectyp': '4', 'amount': 600.0}
+    ]
 
 
 # ── models.get_express_dbf_freshness ─────────────────────────────────────────
