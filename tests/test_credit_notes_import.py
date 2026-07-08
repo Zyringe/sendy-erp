@@ -790,3 +790,111 @@ def test_credit_note_amounts_does_not_touch_sales_transactions(tmp_path, tmp_db_
     conn.commit()
 
     assert _sr_net_sum(conn) == pytest.approx(net_before)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# import_credit_note_amounts_records — records-first seam (Phase 1 slice B,
+# Express DBF-direct path). Same target table (credit_note_amounts) as the
+# text-file wrapper above, but skips the raw-file regex parse entirely —
+# records are built by express_dbf_source.py::build_credit_notes_ar_records.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_import_credit_note_amounts_records_basic(tmp_db_conn):
+    import import_credit_notes as icn
+
+    conn = tmp_db_conn
+    _ensure_062(conn)
+
+    result = icn.import_credit_note_amounts_records(
+        [{'sr_doc_base': 'SR6900500', 'ref_invoice': 'IV6900500',
+          'credited_amount': 500.0, 'sr_date_iso': '2026-05-01',
+          'customer': 'ลูกค้าทดสอบ', 'source': 'express_dbf'}],
+        conn=conn,
+    )
+    conn.commit()
+
+    assert result['upserted'] == 1
+    row = conn.execute(
+        "SELECT * FROM credit_note_amounts WHERE sr_doc_base='SR6900500'"
+    ).fetchone()
+    assert row['ref_invoice'] == 'IV6900500'
+    assert row['credited_amount'] == pytest.approx(500.0)
+    assert row['source'] == 'express_dbf'
+
+
+def test_import_credit_note_amounts_records_idempotent(tmp_db_conn):
+    """Same seam, imported twice — one row, no duplicates (mirrors the
+    text-file path's idempotency test above)."""
+    import import_credit_notes as icn
+
+    conn = tmp_db_conn
+    _ensure_062(conn)
+    records = [{'sr_doc_base': 'SR6900501', 'ref_invoice': 'IV6900501',
+                'credited_amount': 750.0, 'sr_date_iso': '2026-05-02',
+                'customer': 'ลูกค้าทดสอบ2', 'source': 'express_dbf'}]
+
+    icn.import_credit_note_amounts_records(records, conn=conn)
+    conn.commit()
+    icn.import_credit_note_amounts_records(records, conn=conn)
+    conn.commit()
+
+    rows = conn.execute(
+        "SELECT * FROM credit_note_amounts WHERE sr_doc_base='SR6900501'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]['credited_amount'] == pytest.approx(750.0)
+
+
+def test_import_credit_note_amounts_records_opens_own_connection(tmp_db):
+    """No conn passed → opens its own via db_path, commits, closes (mirrors
+    import_credit_notes()'s own-conn contract)."""
+    import sqlite3
+    import import_credit_notes as icn
+
+    seed_conn = sqlite3.connect(tmp_db)
+    _ensure_062(seed_conn)
+    seed_conn.close()
+
+    result = icn.import_credit_note_amounts_records(
+        [{'sr_doc_base': 'SR6900502', 'ref_invoice': None,
+          'credited_amount': 250.0, 'sr_date_iso': '2026-05-03',
+          'customer': 'ลูกค้าC', 'source': 'express_dbf'}],
+        db_path=tmp_db,
+    )
+    assert result['upserted'] == 1
+
+    check_conn = sqlite3.connect(tmp_db)
+    row = check_conn.execute(
+        "SELECT credited_amount FROM credit_note_amounts WHERE sr_doc_base='SR6900502'"
+    ).fetchone()
+    check_conn.close()
+    assert row[0] == pytest.approx(250.0)
+
+
+def test_import_credit_note_amounts_records_does_not_touch_sales_transactions(tmp_db_conn):
+    """Records-first path must NOT touch sales_transactions or
+    credit_note_imports — that Case-1/Case-2 backfill logic is specific to
+    the standalone text file and out of scope for the DBF path (slice A's
+    build_sales_entries already writes SR lines into sales_transactions)."""
+    import import_credit_notes as icn
+
+    conn = tmp_db_conn
+    _ensure_062(conn)
+    _seed_sr(conn, "SR8800099-1", "SR8800099", ref_invoice=None, net=999.0)
+    net_before = _sr_net_sum(conn)
+
+    icn.import_credit_note_amounts_records(
+        [{'sr_doc_base': 'SR8800099', 'ref_invoice': 'IV8800099',
+          'credited_amount': 950.0, 'sr_date_iso': '2026-05-04',
+          'customer': 'ลูกค้าD', 'source': 'express_dbf'}],
+        conn=conn,
+    )
+    conn.commit()
+
+    assert _sr_net_sum(conn) == pytest.approx(net_before)
+    # ref_invoice on the sales_transactions row must remain untouched (NULL),
+    # unlike the text-file wrapper's Case-1 backfill.
+    row = conn.execute(
+        "SELECT ref_invoice FROM sales_transactions WHERE doc_no='SR8800099-1'"
+    ).fetchone()
+    assert row['ref_invoice'] is None

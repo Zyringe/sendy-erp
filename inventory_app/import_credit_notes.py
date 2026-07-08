@@ -249,6 +249,81 @@ def _process_entry(conn, entry, ref_conflicts):
 
 # ── credit_note_amounts upsert (migration 062) ────────────────────────────────
 
+def _upsert_credit_note_amounts_records(conn, records):
+    """Upsert already-built records into credit_note_amounts (migration 062)
+    — the shared write step behind both the standalone ใบลดหนี้ text-file
+    wrapper (_upsert_credit_note_amounts) and the Express DBF-direct path
+    (import_credit_note_amounts_records, fed by
+    express_dbf_source.py::build_credit_notes_ar_records).
+
+    records: list of dicts with keys sr_doc_base, ref_invoice,
+    credited_amount, sr_date_iso, customer, source.
+
+    Idempotent: ON CONFLICT(sr_doc_base) DO UPDATE — re-running the same or
+    a superset record set leaves one row per SR with identical values.
+
+    Migration 062 may not be applied yet (pre-062 snapshots / schema-clone
+    test fixtures). Without the table this is a graceful no-op: AR math
+    transparently falls back to the legacy SR.net `cn` in payments_alloc,
+    so behaviour is byte-identical to pre-062 for those databases.
+
+    Returns dict: {'upserted': int}, or {'upserted': 0, 'skipped_no_table':
+    True} if the table doesn't exist.
+    """
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type='table' AND name='credit_note_amounts'"
+    ).fetchone()
+    if has_table is None:
+        return {"upserted": 0, "skipped_no_table": True}
+
+    upserted = 0
+    for r in records:
+        conn.execute(
+            """INSERT INTO credit_note_amounts
+                   (sr_doc_base, ref_invoice, credited_amount,
+                    sr_date_iso, customer, source)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(sr_doc_base) DO UPDATE SET
+                   ref_invoice     = excluded.ref_invoice,
+                   credited_amount = excluded.credited_amount,
+                   sr_date_iso     = excluded.sr_date_iso,
+                   customer        = excluded.customer,
+                   source          = excluded.source
+            """,
+            (r['sr_doc_base'], r.get('ref_invoice'), r['credited_amount'],
+             r.get('sr_date_iso'), r.get('customer'), r.get('source')),
+        )
+        upserted += 1
+    return {"upserted": upserted}
+
+
+def import_credit_note_amounts_records(records, conn=None, db_path=None):
+    """Public records-first entry point for credit_notes_ar (Express
+    DBF-direct path, Phase 1 slice B) — upserts directly into
+    credit_note_amounts, skipping the standalone ใบลดหนี้ text-file parse.
+
+    Does NOT touch sales_transactions or credit_note_imports — the Case-1
+    (ref_invoice backfill) / Case-2 (new-SR side-table) logic in
+    import_credit_notes() is specific to the standalone text file's format
+    and out of scope here (SR line items are already written into
+    sales_transactions by build_sales_entries, slice A — see MAPPING.md's
+    "SR/GR-in-ledger duality" note).
+
+    Connection contract mirrors import_credit_notes(): accepts an optional
+    caller-supplied conn (used, not committed/closed) or opens its own via
+    config.DATABASE_PATH / db_path.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = _open_conn(db_path)
+    result = _upsert_credit_note_amounts_records(conn, records)
+    if own_conn:
+        conn.commit()
+        conn.close()
+    return result
+
+
 def _upsert_credit_note_amounts(conn, path):
     """Parse the ใบลดหนี้ MASTER lines and cache one row per SR doc_base in
     credit_note_amounts (migration 062).
@@ -263,24 +338,19 @@ def _upsert_credit_note_amounts(conn, path):
     We re-scan the raw file with the imported `_SR_MASTER_RE` rather than
     re-deriving from parse_credit_notes() output so the master "total" is
     taken verbatim from the master line (the flattened detail entries carry
-    the per-line amount, not the master total).
-
-    Idempotent: ON CONFLICT(sr_doc_base) DO UPDATE — re-running the same or a
-    superset cumulative file leaves one row per SR with identical values.
+    the per-line amount, not the master total). The actual upsert is
+    delegated to _upsert_credit_note_amounts_records() (shared with the
+    Express DBF-direct path).
 
     Cancelled SR masters (leading '*') are skipped: a cancelled credit note
     credits nothing, so it must not net against the invoice.
 
     Returns dict: {'parsed_masters': int, 'upserted': int, 'skipped_cancelled': int}.
     """
-    parsed_masters = 0
-    upserted = 0
-    skipped_cancelled = 0
-
-    # Migration 062 may not be applied yet (pre-062 snapshots / schema-clone
-    # test fixtures). Without the table this is a graceful no-op: AR math
-    # transparently falls back to the legacy SR.net `cn` in payments_alloc,
-    # so behaviour is byte-identical to pre-062 for those databases.
+    # Checked BEFORE reading the file so a missing migration 062 costs zero
+    # parse work and returns the original all-zero shape (see
+    # _upsert_credit_note_amounts_records's docstring for why a missing
+    # table is a graceful no-op, not an error).
     has_table = conn.execute(
         "SELECT 1 FROM sqlite_master "
         "WHERE type='table' AND name='credit_note_amounts'"
@@ -292,6 +362,10 @@ def _upsert_credit_note_amounts(conn, path):
             "skipped_cancelled": 0,
             "skipped_no_table": True,
         }
+
+    parsed_masters = 0
+    skipped_cancelled = 0
+    records = []
 
     with open(path, encoding="cp874") as f:
         raw_lines = f.readlines()
@@ -309,25 +383,16 @@ def _upsert_credit_note_amounts(conn, path):
         if cancel:
             skipped_cancelled += 1
             continue
-        credited = _parse_float_or_zero(total_amt)
-        ref = ref_inv.strip() if ref_inv else None
-        conn.execute(
-            """INSERT INTO credit_note_amounts
-                   (sr_doc_base, ref_invoice, credited_amount,
-                    sr_date_iso, customer, source)
-               VALUES (?,?,?,?,?,?)
-               ON CONFLICT(sr_doc_base) DO UPDATE SET
-                   ref_invoice     = excluded.ref_invoice,
-                   credited_amount = excluded.credited_amount,
-                   sr_date_iso     = excluded.sr_date_iso,
-                   customer        = excluded.customer,
-                   source          = excluded.source
-            """,
-            (sr_no, ref, credited, _be_to_iso(date_be),
-             customer.strip(), "ใบลดหนี้"),
-        )
-        upserted += 1
+        records.append({
+            'sr_doc_base': sr_no,
+            'ref_invoice': ref_inv.strip() if ref_inv else None,
+            'credited_amount': _parse_float_or_zero(total_amt),
+            'sr_date_iso': _be_to_iso(date_be),
+            'customer': customer.strip(),
+            'source': 'ใบลดหนี้',
+        })
 
+    upserted = _upsert_credit_note_amounts_records(conn, records)["upserted"]
     return {
         "parsed_masters": parsed_masters,
         "upserted": upserted,
