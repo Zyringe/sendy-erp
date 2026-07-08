@@ -347,3 +347,32 @@ def get_recent_imports(limit=5):
     ).fetchall()
     conn.close()
     return rows
+
+
+def get_express_dbf_freshness(stale_after_hours=26):
+    """Last full Express-DBF-direct import + staleness, for the dashboard
+    freshness badge (projects/express-integration/plan.md Phase 2).
+
+    import_router.commit_express_dbf() always runs payments_out and
+    credit_notes_ap through import_express.run_import_records(), which
+    INSERTs an express_import_log row (source_filename='express_dbf')
+    unconditionally at the start of each call — even when that particular
+    batch has zero of those records. So MAX(imported_at) filtered to
+    source_filename='express_dbf' is a reliable "last full DBF commit"
+    marker, not just a payments/credit-note-specific one. (Column is
+    `imported_at`, not `created_at`.)
+    """
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT MAX(imported_at) AS last_at, "
+        "(julianday('now','localtime') - julianday(MAX(imported_at))) * 24.0 AS hours_stale "
+        "FROM express_import_log WHERE source_filename = 'express_dbf'"
+    ).fetchone()
+    conn.close()
+    last_at = row['last_at']
+    hours_stale = row['hours_stale']
+    return {
+        'last_at': last_at,
+        'hours_stale': hours_stale,
+        'is_stale': last_at is None or hours_stale > stale_after_hours,
+    }

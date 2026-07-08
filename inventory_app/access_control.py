@@ -290,6 +290,7 @@ _ENDPOINT_MODULE = {
     # data
     'bsn.unified_import': 'data',
     'bsn.unified_import_confirm': 'data',
+    'bsn.express_dbf_import': 'data',
     'bsn.mapping': 'data',
     'bsn.mapping_save': 'data',
     'bsn.mapping_suggest': 'data',
@@ -451,8 +452,12 @@ def require_login():
     endpoint = request.endpoint
     # Allow static files, login page, healthcheck, and the bootstrap DB
     # upload (which is itself token-gated) without authentication.
+    # bsn.express_dbf_upload is the same pattern: the team's Windows script
+    # POSTs the daily Express DBF zip with no browser session, gated by
+    # EXPRESS_UPLOAD_TOKEN instead (see blueprints/bsn.py). The paired GET
+    # test page (bsn.express_dbf_import) stays behind normal login.
     if endpoint in ('login', 'static', 'healthz', 'bootstrap_upload_db',
-                    'serve_sw', 'help_install'):
+                    'serve_sw', 'help_install', 'bsn.express_dbf_upload'):
         return
     role = session.get('role', '')
     if not role:

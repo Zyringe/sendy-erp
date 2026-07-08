@@ -21,6 +21,21 @@
   <a href="{{ url_for('review.index') }}" class="btn btn-sm btn-warning ms-auto">ไปตรวจบิล</a>
 </div>
 {% endif %}
+{% if express_freshness %}
+<div class="alert {% if express_freshness.is_stale %}alert-danger{% else %}alert-secondary{% endif %} d-flex flex-wrap align-items-center gap-2 mb-3" role="alert">
+  <i class="bi bi-arrow-repeat fs-5"></i>
+  <span class="flex-grow-1" style="min-width:0">
+    {% if express_freshness.last_at %}
+    อัปเดตล่าสุดจาก Express: <strong>{{ express_freshness.last_at[:16] }}</strong>
+    {% else %}
+    ยังไม่เคยนำเข้าข้อมูลจาก Express (DBF)
+    {% endif %}
+  </span>
+  {% if express_freshness.is_stale %}
+  <a href="{{ url_for('bsn.express_dbf_import') }}" class="btn btn-sm btn-danger ms-auto">ไปหน้านำเข้า</a>
+  {% endif %}
+</div>
+{% endif %}
 <div class="row g-3 mb-4">
   <!-- Restock needed: out of stock but sold in the last 30 days -->
   <div class="col-sm-6 col-xl-3">

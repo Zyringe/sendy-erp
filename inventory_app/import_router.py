@@ -151,7 +151,7 @@ def preview_file(path, report_type, db_path=None):
     raise ValueError(f"unknown report_type: {report_type!r}")
 
 
-def commit_express_dbf(dataset_dir, db_path=None):
+def commit_express_dbf(dataset_dir, db_path=None, since_days=60):
     """Import all 6 Express DBF transactional types for one dataset
     directory into Sendy — the DBF branch parallel to the text-report path
     above (Phase 1 slices A+B — payments/credit-notes join sales/purchase
@@ -159,9 +159,21 @@ def commit_express_dbf(dataset_dir, db_path=None):
     SAME downstream importer the text-report path uses, so idempotency/
     dedup is unchanged.
 
-    No web route yet — that's Phase 2 (an upload endpoint that unzips a
-    dataset dir and calls this). Returns a summary dict.
+    since_days: recency window (Put's call, Phase 2 follow-up) — only docs
+    with DOCDAT within the last `since_days` days are imported. None means
+    no filter (the whole history — a manual backfill/override, never the
+    daily default). Filtering is scoped to each type's HEADER rows (ARTRN/
+    APTRN), which is what keeps a doc's own lines all-or-nothing consistent
+    AND is the actual fix for the 12+-minute full-history run: STCRD still
+    gets read whole (open_table has no filter — dbfread must scan the file
+    regardless), but models.import_weekly() only ever sees entries for
+    in-window docs instead of diffing the full multi-year history against
+    the DB row by row.
+
+    Called by the web route (blueprints/bsn.py::express_dbf_upload).
+    Returns a summary dict.
     """
+    import datetime
     import config
     import models
     import express_dbf_source as eds
@@ -169,6 +181,8 @@ def commit_express_dbf(dataset_dir, db_path=None):
     import import_express
 
     db_path = db_path or config.DATABASE_PATH
+    cutoff = (datetime.date.today() - datetime.timedelta(days=since_days)
+              if since_days is not None else None)
 
     artrn = eds.open_table(dataset_dir, "ARTRN")
     aptrn = eds.open_table(dataset_dir, "APTRN")
@@ -179,19 +193,25 @@ def commit_express_dbf(dataset_dir, db_path=None):
     arrcpit = eds.open_table(dataset_dir, "ARRCPIT")
     aprcpit = eds.open_table(dataset_dir, "APRCPIT")
 
-    sales_entries = eds.build_sales_entries(artrn, stcrd, armas)
-    purchase_entries = eds.build_purchase_entries(aptrn, stcrd, apmas)
-    refs = eds.build_invoice_refs(artrn, artrnrm)
-    payments_in_records = eds.build_payments_in_records(artrn, arrcpit, armas)
-    payments_out_records = eds.build_payments_out_records(aptrn, aprcpit, apmas)
-    credit_notes_ar_records = eds.build_credit_notes_ar_records(artrn, armas)
-    credit_notes_ap_records = eds.build_credit_notes_ap_records(aptrn, stcrd, apmas)
+    sales_entries = eds.build_sales_entries(artrn, stcrd, armas, cutoff=cutoff)
+    purchase_entries = eds.build_purchase_entries(aptrn, stcrd, apmas, cutoff=cutoff)
+    refs = eds.build_invoice_refs(artrn, artrnrm, cutoff=cutoff)
+    payments_in_skipped = []
+    payments_in_records = eds.build_payments_in_records(
+        artrn, arrcpit, armas, cutoff=cutoff, skipped=payments_in_skipped)
+    payments_out_records = eds.build_payments_out_records(aptrn, aprcpit, apmas, cutoff=cutoff)
+    credit_notes_ar_records = eds.build_credit_notes_ar_records(artrn, armas, cutoff=cutoff)
+    credit_notes_ap_records = eds.build_credit_notes_ap_records(aptrn, stcrd, apmas, cutoff=cutoff)
 
     label = f"express_dbf:{os.path.basename(os.path.normpath(dataset_dir))}"
     sales_stats = models.import_weekly(sales_entries, "sales", label)
     purchase_stats = models.import_weekly(purchase_entries, "purchase", label)
     refs_upserted = _upsert_invoice_refs(refs, db_path)
     payments_in_stats = models.import_payment_records(payments_in_records)
+    # Never silent: a skipped DR-type ARRCPIT line (or any future unsupported
+    # RECTYP) always surfaces here, count and detail, even when the list is
+    # empty — so the route's JSON response has a stable shape either way.
+    payments_in_stats["skipped_rectyp"] = payments_in_skipped
     payments_out_stats = import_express.run_import_records(
         "payments_out", payments_out_records, db_path=db_path)
     credit_notes_ar_stats = import_credit_notes.import_credit_note_amounts_records(

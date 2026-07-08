@@ -66,7 +66,7 @@ from blueprints.call import bp_call
 from blueprints.customer_review import bp_customer_review
 from blueprints.naming import bp_naming
 from blueprints.me import bp_me
-from blueprints.bsn import bp_bsn
+from blueprints.bsn import bp_bsn, express_dbf_upload
 from blueprints.labels import bp_labels
 from blueprints.inventory import bp_inventory
 from blueprints.partners import bp_partners
@@ -107,6 +107,10 @@ app.config['WTF_CSRF_ENABLED'] = (
     os.environ.get('WTF_CSRF_ENABLED', 'True').lower() not in ('false', '0', 'no')
 )
 csrf = CSRFProtect(app)
+# Token-gated, no-session upload (the team's Express DBF script) — same
+# exemption precedent as /bootstrap/upload-db below. The paired GET test
+# page (bsn.express_dbf_import) is NOT exempt; it stays behind normal login.
+csrf.exempt(express_dbf_upload)
 
 
 @app.errorhandler(CSRFError)
@@ -350,12 +354,14 @@ def dashboard():
             payroll_reminder = hr_mod.payroll_reminder_month(date.today(), conn)
         finally:
             conn.close()
+    express_freshness = models.get_express_dbf_freshness()
     return render_template('dashboard.html',
                            restock_count=restock_count,
                            recent_txns=recent_txns,
                            total_products=total_products,
                            in_stock_count=in_stock_count,
-                           payroll_reminder=payroll_reminder)
+                           payroll_reminder=payroll_reminder,
+                           express_freshness=express_freshness)
 
 
 # ── Products — moved to blueprints/products.py ────────────────────────────────

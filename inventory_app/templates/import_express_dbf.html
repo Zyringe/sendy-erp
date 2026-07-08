@@ -1,0 +1,46 @@
+{% extends 'base.html' %}
+{% block title %}นำเข้า Express (DBF) – ERP{% endblock %}
+{% block page_title %}นำเข้า Express (DBF){% endblock %}
+{% block page_desc %}<div class="page-desc">อัปโหลด zip ตาราง DBF จาก Express — ใช้โดยสคริปต์ของทีมทุกสิ้นวัน</div>{% endblock %}
+
+{% block content %}
+<div class="row g-3 justify-content-center">
+  <div class="col-lg-7">
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-clock-history me-2 text-accent"></i>ความสดของข้อมูล</div>
+      <div class="card-body">
+        {% if freshness.last_at %}
+        <p class="mb-0 {% if freshness.is_stale %}text-danger{% else %}text-success{% endif %}">
+          <i class="bi {% if freshness.is_stale %}bi-exclamation-triangle{% else %}bi-check2-circle{% endif %} me-1"></i>
+          อัปเดตล่าสุดจาก Express: <strong>{{ freshness.last_at[:16] }}</strong>
+          {% if freshness.is_stale %}(นานเกิน 26 ชม.){% endif %}
+        </p>
+        {% else %}
+        <p class="mb-0 text-danger"><i class="bi bi-exclamation-triangle me-1"></i>ยังไม่เคยนำเข้าข้อมูลจาก Express (DBF)</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><i class="bi bi-upload me-2 text-accent"></i>อัปโหลด zip ตาราง Express DBF</div>
+      <div class="card-body">
+        <div class="alert alert-info mb-3">
+          <i class="bi bi-info-circle me-1"></i>สำหรับสคริปต์ "อัปโหลดเข้า Sendy" ของทีม — หรือทดสอบด้วยมือที่นี่
+          (ต้องใส่ token จาก <code>EXPRESS_UPLOAD_TOKEN</code>)
+        </div>
+        <form method="post" action="{{ url_for('bsn.express_dbf_upload') }}" enctype="multipart/form-data">
+          <div class="mb-3">
+            <label class="form-label">Token</label>
+            <input type="password" name="token" class="form-control" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">ไฟล์ zip</label>
+            <input type="file" name="file" accept=".zip" class="form-control" required>
+          </div>
+          <button type="submit" class="btn btn-primary"><i class="bi bi-cloud-upload me-1"></i>อัปโหลด</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
