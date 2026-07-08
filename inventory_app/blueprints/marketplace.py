@@ -198,14 +198,36 @@ def settlement():
             # /marketplace/api/payout/<id>/orders on expand.
             payout_report = models.get_payout_summaries(conn, platform=platform, year=report_year)
             extras = models.get_deposit_tab_extras(conn, platform=platform)
+        # Read-only worklist counts for the "ต้องตรวจการจับคู่ใบกำกับ" badge —
+        # see /marketplace/review (build-phase 1 of marketplace-iv-matching).
+        worklist_badge = models.get_iv_match_worklist(conn, platform=platform)
     finally:
         conn.close()
     return render_template('marketplace/settlement.html',
                            report=report, platform=platform, tab=tab,
                            payout_report=payout_report,
                            payout_years=payout_years,
+                           worklist_badge=worklist_badge,
                            selected_year=selected_year,
                            extras=extras)
+
+
+@bp_marketplace.route('/marketplace/review')
+def review():
+    """ต้องตรวจการจับคู่ใบกำกับ — read-only worklist (build-phase 1 of
+    marketplace-iv-matching). Groups every order that isn't cleanly connected
+    to an Express IV by reason (A/B/C/D, see models.get_iv_match_worklist),
+    with a suggested action per group. Writes NOTHING; B/C/D rows reuse the
+    existing IV picker (iv-candidates + link-iv) for the pick action."""
+    platform = request.args.get('platform', 'shopee')
+    if platform not in ('shopee', 'lazada'):
+        platform = 'shopee'
+    conn = get_connection()
+    try:
+        worklist = models.get_iv_match_worklist(conn, platform=platform)
+    finally:
+        conn.close()
+    return render_template('marketplace/review.html', platform=platform, worklist=worklist)
 
 
 @bp_marketplace.route('/marketplace/reconciliation')

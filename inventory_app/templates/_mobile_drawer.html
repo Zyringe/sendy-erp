@@ -83,6 +83,9 @@
       <a href="{{ url_for('ecommerce.ecommerce', tab='lazada') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-shop me-3" style="color:#003087"></i>Lazada
       </a>
+      <a href="{{ url_for('marketplace.review') }}" class="list-group-item list-group-item-action">
+        <i class="bi bi-clipboard-check me-3"></i>ต้องตรวจการจับคู่ใบกำกับ
+      </a>
 
       {# ── บุคลากร (HR) — admin/manager only ── #}
       {% if session.role in ['admin', 'manager'] %}
