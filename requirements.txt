@@ -9,3 +9,4 @@ gunicorn>=21.0,<24
 pandas>=2.3,<3
 openpyxl>=3.1,<4
 rapidfuzz>=3.13,<4
+dbfread>=2.0,<3
