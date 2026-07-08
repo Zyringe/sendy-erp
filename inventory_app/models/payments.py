@@ -96,11 +96,23 @@ def parse_payment_csv(filepath):
 
 
 def import_payments(filepath):
-    """Import payment CSV into received_payments + paid_invoices tables.
+    """Import payment CSV file into received_payments + paid_invoices — thin
+    file-path wrapper around import_payment_records(). See that function's
+    docstring for the actual write logic (shared with the Express DBF-direct
+    path, which builds the same record shape without a CSV file — see
+    express_dbf_source.py::build_payments_in_records)."""
+    return import_payment_records(parse_payment_csv(filepath))
+
+
+def import_payment_records(records):
+    """Import already-parsed payment records into received_payments +
+    paid_invoices tables. records: list of dicts shaped like
+    parse_payment_csv()'s output (re_no, cancelled, date_iso, customer,
+    salesperson, iv_list, total).
 
     Uses idempotent upserts (ON CONFLICT DO UPDATE) so re-importing the same
-    file any number of times leaves row counts and every amount/total identical
-    after the first successful run.
+    records any number of times leaves row counts and every amount/total
+    identical after the first successful run.
 
     Re_id resolution
     ----------------
@@ -132,7 +144,6 @@ def import_payments(filepath):
     Note: legacy rows imported before migration 058 have amount/total = NULL;
     they are updated to carry real amounts the first time that RE is re-imported.
     """
-    records = parse_payment_csv(filepath)
     conn = get_connection()
     imported = 0
     updated = 0

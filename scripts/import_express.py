@@ -95,13 +95,23 @@ def _existing_doc_nos(conn, table):
     return {r[0] for r in conn.execute(f'SELECT doc_no FROM {table}').fetchall()}
 
 
-def _import_credit_notes(conn, path, batch_id, company_id, incremental=True):
-    records = list(p_cn.parse_credit_notes(path))
+def _import_credit_notes_records(conn, records, batch_id, company_id, incremental=True):
+    """Shared write step behind _import_credit_notes (text-report path,
+    which converts p_cn.parse_credit_notes()'s CreditNote objects to dicts
+    via dataclasses.asdict) and the Express DBF-direct path
+    (express_dbf_source.py::build_credit_notes_ap_records, via
+    run_import_records — Phase 1 slice B).
+
+    records: list of dicts shaped like dataclasses.asdict(CreditNote(...))
+    — doc_no, date_iso, supplier_name, ref_doc, discount, vat, total,
+    is_cleared, is_void, type_code, note, lines=[{line_no, product_code,
+    product_name, qty, unit, unit_price, discount, line_total, is_cleared}].
+    """
     skip = _existing_doc_nos(conn, 'express_credit_notes') if incremental else set()
     skipped = 0
     line_count = 0
     for r in records:
-        if r.doc_no in skip:
+        if r['doc_no'] in skip:
             skipped += 1
             continue
         cur = conn.execute("""
@@ -111,13 +121,13 @@ def _import_credit_notes(conn, path, batch_id, company_id, incremental=True):
                  is_cleared, is_void, type_code, note)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            batch_id, r.doc_no, r.date_iso, company_id, r.supplier_name,
-            _supplier_id_by_name(conn, r.supplier_name),
-            r.ref_doc, r.discount, r.vat, r.total,
-            int(r.is_cleared), int(r.is_void), r.type_code, r.note,
+            batch_id, r['doc_no'], r['date_iso'], company_id, r['supplier_name'],
+            _supplier_id_by_name(conn, r['supplier_name']),
+            r['ref_doc'], r['discount'], r['vat'], r['total'],
+            int(r['is_cleared']), int(r['is_void']), r['type_code'], r['note'],
         ))
         cn_id = cur.lastrowid
-        for ln in r.lines:
+        for ln in r['lines']:
             conn.execute("""
                 INSERT INTO express_credit_note_lines
                     (credit_note_id, line_no, product_code, product_id,
@@ -125,13 +135,18 @@ def _import_credit_notes(conn, path, batch_id, company_id, incremental=True):
                      discount, line_total, is_cleared)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                cn_id, ln.line_no, ln.product_code,
-                _product_id_by_code(conn, ln.product_code),
-                ln.product_name, ln.qty, ln.unit, ln.unit_price,
-                ln.discount, ln.line_total, int(ln.is_cleared),
+                cn_id, ln['line_no'], ln['product_code'],
+                _product_id_by_code(conn, ln['product_code']),
+                ln['product_name'], ln['qty'], ln['unit'], ln['unit_price'],
+                ln['discount'], ln['line_total'], int(ln['is_cleared']),
             ))
             line_count += 1
     return len(records) - skipped, line_count
+
+
+def _import_credit_notes(conn, path, batch_id, company_id, incremental=True):
+    records = [asdict(r) for r in p_cn.parse_credit_notes(path)]
+    return _import_credit_notes_records(conn, records, batch_id, company_id, incremental)
 
 
 def _import_payments_in(conn, path, batch_id, company_id, incremental=True):
@@ -260,13 +275,25 @@ def _import_ap_snapshot(conn, path, batch_id, company_id, incremental=True,
     return len(records), 0
 
 
-def _import_payments_out(conn, path, batch_id, company_id, incremental=True):
-    records = list(p_pout.parse_payments_out(path))
+def _import_payments_out_records(conn, records, batch_id, company_id, incremental=True):
+    """Shared write step behind _import_payments_out (text-report path,
+    which converts p_pout.parse_payments_out()'s APPayment objects to dicts
+    via dataclasses.asdict) and the Express DBF-direct path
+    (express_dbf_source.py::build_payments_out_records, via
+    run_import_records — Phase 1 slice B).
+
+    records: list of dicts shaped like dataclasses.asdict(APPayment(...))
+    — doc_no, date_iso, supplier_name, is_void, deposit_applied,
+    invoice_amount, cash_amount, cheque_amount, interest_amount,
+    discount_amount, vat_amount, cheque_no, cheque_date_iso, bank,
+    cheque_status, note, receive_refs=[{receive_doc, receive_date_iso,
+    invoice_ref, amount}].
+    """
     skip = _existing_doc_nos(conn, 'express_payments_out') if incremental else set()
     skipped = 0
     line_count = 0
     for r in records:
-        if r.doc_no in skip:
+        if r['doc_no'] in skip:
             skipped += 1
             continue
         cur = conn.execute("""
@@ -282,21 +309,26 @@ def _import_payments_out(conn, path, batch_id, company_id, incremental=True):
                     ?, ?, ?,
                     ?, ?, ?, ?, ?)
         """, (
-            batch_id, r.doc_no, r.date_iso, company_id,
-            r.supplier_name, _supplier_id_by_name(conn, r.supplier_name), int(r.is_void),
-            r.deposit_applied, r.invoice_amount, r.cash_amount, r.cheque_amount,
-            r.interest_amount, r.discount_amount, r.vat_amount,
-            r.cheque_no, r.cheque_date_iso, r.bank, r.cheque_status, r.note,
+            batch_id, r['doc_no'], r['date_iso'], company_id,
+            r['supplier_name'], _supplier_id_by_name(conn, r['supplier_name']), int(r['is_void']),
+            r['deposit_applied'], r['invoice_amount'], r['cash_amount'], r['cheque_amount'],
+            r['interest_amount'], r['discount_amount'], r['vat_amount'],
+            r['cheque_no'], r['cheque_date_iso'], r['bank'], r['cheque_status'], r['note'],
         ))
         pid = cur.lastrowid
-        for ref in r.receive_refs:
+        for ref in r['receive_refs']:
             conn.execute("""
                 INSERT INTO express_payment_out_receive_refs
                     (payment_out_id, receive_doc, receive_date_iso, invoice_ref, amount)
                 VALUES (?, ?, ?, ?, ?)
-            """, (pid, ref.receive_doc, ref.receive_date_iso, ref.invoice_ref, ref.amount))
+            """, (pid, ref['receive_doc'], ref['receive_date_iso'], ref['invoice_ref'], ref['amount']))
             line_count += 1
     return len(records) - skipped, line_count
+
+
+def _import_payments_out(conn, path, batch_id, company_id, incremental=True):
+    records = [asdict(r) for r in p_pout.parse_payments_out(path)]
+    return _import_payments_out_records(conn, records, batch_id, company_id, incremental)
 
 
 def _import_sales(conn, path, batch_id, company_id, incremental=True):
@@ -425,6 +457,61 @@ def run_import(file_type, path, company_code='BSN', dry_run=False, incremental=T
         raise
     finally:
         conn.close()
+
+
+# Records-first importers — the two file_types with a records-based writer
+# (Phase 1 slice B). ar_snapshot/ap_snapshot/sales/payments_in stay path-only
+# (out of scope for this slice; sales/payments_in flow through models.py
+# instead of this module — see import_router.py::commit_express_dbf).
+_RECORDS_IMPORTERS = {
+    'payments_out': _import_payments_out_records,
+    'credit_notes': _import_credit_notes_records,
+}
+
+
+def run_import_records(file_type, records, company_code='BSN', db_path=None,
+                        incremental=True):
+    """Records-first entry point — the Express DBF-direct path
+    (express_dbf_source.py::build_payments_out_records /
+    build_credit_notes_ap_records) calls this with already-built records,
+    skipping file parsing entirely. Mirrors run_import()'s batch-logging /
+    commit-or-rollback semantics, minus the parse step.
+    """
+    if file_type not in _RECORDS_IMPORTERS:
+        raise SystemExit(
+            f'file_type {file_type!r} has no records-first importer — '
+            f'pick from {sorted(_RECORDS_IMPORTERS)}'
+        )
+
+    conn = sqlite3.connect(db_path or DB_PATH)
+    conn.execute('PRAGMA foreign_keys = OFF')
+    company_id = _company_id(conn, company_code)
+
+    cur = conn.execute("""
+        INSERT INTO express_import_log
+            (file_type, source_filename, company_id, status, note)
+        VALUES (?, ?, ?, 'imported', ?)
+    """, (file_type, 'express_dbf', company_id,
+          'imported via express_dbf_source (DBF-direct)'))
+    batch_id = cur.lastrowid
+
+    try:
+        record_count, line_count = _RECORDS_IMPORTERS[file_type](
+            conn, records, batch_id, company_id, incremental=incremental)
+        conn.execute("""
+            UPDATE express_import_log
+            SET record_count = ?, line_count = ?
+            WHERE id = ?
+        """, (record_count, line_count, batch_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    return {'imported': record_count, 'skipped': len(records) - record_count,
+            'total': len(records), 'lines': line_count}
 
 
 def main():
