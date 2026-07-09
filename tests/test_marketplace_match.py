@@ -11,8 +11,11 @@ test_exact_amount_confident / test_vat_type2_amount_matches_payout below, which
 were updated for the rebuild, not left pinning the old amount-blind-confidence
 flaw the rebuild fixes).
 
-Fixture isolates the matcher: it un-settles every real order and deletes the real
-Zหน้าร้าน/Lหน้าร้าน sales rows + items from the tmp clone, then seeds synthetic data.
+Fixture isolates the matcher: it deletes every real order (cascades to their
+items) and the real Zหน้าร้าน/Lหน้าร้าน sales rows from the tmp clone, then seeds
+synthetic data. Deleting (not just un-settling) is required since the matcher's
+gate is STATUS-based, not settled-only (2026-07-10) — a merely un-settled real
+order can still be status-matchable and pollute the pool.
 """
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
@@ -25,7 +28,7 @@ import marketplace_match as mm
 @pytest.fixture
 def mm_conn(tmp_db_conn):
     c = tmp_db_conn
-    c.execute("UPDATE marketplace_orders SET actual_payout=NULL, settled_at=NULL, settlement_source=NULL")
+    c.execute("DELETE FROM marketplace_orders")
     c.execute("DELETE FROM marketplace_order_invoice")
     c.execute("DELETE FROM sales_transactions WHERE customer_code IN ('Zหน้าร้าน','Lหน้าร้าน')")
     c.commit()
@@ -285,7 +288,7 @@ def test_lazada_matches_iv_on_gross_not_net(mm_conn):
     # Lazada order: gross 100, net payout 80 (20% fee). Team keyed the IV at GROSS=100.
     cur = c.execute("""INSERT INTO marketplace_orders
         (platform, order_sn, status, actual_payout, settled_at, order_date, item_total, currency)
-        VALUES ('lazada','LZ1','สำเร็จ', 80, '2026-06-10', '2026-06-10 10:00', 100, 'THB')""")
+        VALUES ('lazada','LZ1','confirmed', 80, '2026-06-10', '2026-06-10 10:00', 100, 'THB')""")
     c.execute("""INSERT INTO marketplace_order_fees (platform, order_sn, item_value, net_payout, fee_total)
                  VALUES ('lazada','LZ1',100,80,20)""")
     c.commit()

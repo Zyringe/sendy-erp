@@ -5,9 +5,12 @@ the old behavior it superseded). These 6 cases pin the spec at
 ``projects/marketplace-iv-matching/matcher-rebuild-spec.md`` — they must FAIL on
 the old greedy matcher and PASS on the new global-assignment one.
 
-Fixture isolates the matcher exactly like test_marketplace_match.py: un-settles
-every real order and deletes the real Zหน้าร้าน/Lหน้าร้าน sales rows + items from
-the tmp clone, then seeds synthetic data. product_ids 686/687/500/440/458/777/999
+Fixture isolates the matcher exactly like test_marketplace_match.py: deletes
+every real order (cascades to their items) and the real Zหน้าร้าน/Lหน้าร้าน sales
+rows from the tmp clone, then seeds synthetic data. Deleting (not just
+un-settling) is required since the matcher's gate is STATUS-based, not
+settled-only (2026-07-10) — a merely un-settled real order can still be
+status-matchable and pollute the pool. product_ids 686/687/500/440/458/777/999
 are real live-DB products (reused from test_marketplace_match.py) so FK checks
 (PRAGMA foreign_keys=ON) don't trip; 686/687 are the actual ถุงหิ้ว pids from the
 real incident this rebuild fixes.
@@ -23,7 +26,7 @@ import marketplace_match as mm
 @pytest.fixture
 def mm_conn(tmp_db_conn):
     c = tmp_db_conn
-    c.execute("UPDATE marketplace_orders SET actual_payout=NULL, settled_at=NULL, settlement_source=NULL")
+    c.execute("DELETE FROM marketplace_orders")
     c.execute("DELETE FROM marketplace_order_invoice")
     c.execute("DELETE FROM sales_transactions WHERE customer_code IN ('Zหน้าร้าน','Lหน้าร้าน')")
     c.commit()
