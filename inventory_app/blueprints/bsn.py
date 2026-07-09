@@ -10,7 +10,6 @@ import shutil
 import sys
 import tempfile
 import zipfile
-from datetime import datetime
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort, current_app)
@@ -435,14 +434,14 @@ def unified_import_confirm():
 
 # ── Express DBF-direct import (projects/express-integration/plan.md Phase 2) ──
 # The team's end-of-day ritual: a Windows script zips ~11 Express DBF tables
-# and POSTs the zip non-interactively (no browser session) to the upload
-# endpoint below. The GET page here is only for Put/an admin to eyeball
-# freshness and manually try an upload — it stays behind normal login.
+# (script 1). A logged-in team member then uploads that zip through this page
+# (script 2 — the old non-interactive curl upload — is retired), so the
+# upload below is a normal login+CSRF Sendy POST, not a token-gated endpoint.
 
 # A little above the observed ~30-40MB zip (plan §"Sizes") — no global
 # MAX_CONTENT_LENGTH is set anywhere in this app (the existing DB-upload
 # routes accept an ~80MB file uncapped), so this is a scoped safety cap
-# for a now-public, token-gated endpoint rather than a raise of an existing limit.
+# for this endpoint rather than a raise of an existing limit.
 _EXPRESS_DBF_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 
@@ -463,18 +462,28 @@ def express_dbf_import():
     return render_template('import_express_dbf.html', freshness=freshness)
 
 
+def _express_dbf_summary_message(per_type):
+    """Thai one-liner for the post-upload flash — the per-type 'imported'
+    (or 'upserted', for credit_notes_ar) count from commit_express_dbf()'s
+    result dict."""
+    sales = per_type['sales']['imported']
+    purchase = per_type['purchase']['imported']
+    pay_in = per_type['payments_in']['imported']
+    pay_out = per_type['payments_out']['imported']
+    cn_ar = per_type['credit_notes_ar']['upserted']
+    cn_ap = per_type['credit_notes_ap']['imported']
+    return (f'นำเข้าสำเร็จ — ขาย {sales}, ซื้อ {purchase}, '
+            f'รับชำระ {pay_in}, จ่ายเงิน {pay_out}, '
+            f'ลดหนี้ขาย {cn_ar}, ลดหนี้ซื้อ {cn_ap} รายการ')
+
+
 @bp_bsn.route('/import-express-dbf/upload', methods=['POST'])
 def express_dbf_upload():
-    # No session ever accompanies this request (see access_control.py's
-    # require_login skip-list + the csrf.exempt() call in app.py) — the
-    # Windows script authenticates with a shared token instead, same
-    # precedent as /bootstrap/upload-db. Always returns JSON so the script
-    # can show a clear ✅/❌ without parsing HTML.
-    expected = os.environ.get('EXPRESS_UPLOAD_TOKEN', '')
-    if not expected:
-        return jsonify({'ok': False, 'error': 'EXPRESS_UPLOAD_TOKEN not configured'}), 404
-    if request.form.get('token', '') != expected:
-        return jsonify({'ok': False, 'error': 'bad token'}), 403
+    # A logged-in team member (require_login + staff POST whitelist, see
+    # access_control.py) uploads the daily Express DBF zip through this
+    # form — PRG pattern: flash the result and redirect back to the GET
+    # page, same as every other Sendy import route.
+    redirect_to = url_for('bsn.express_dbf_import')
 
     # Checked via the Content-Length header BEFORE touching request.files —
     # accessing request.files is what makes werkzeug parse/spool the whole
@@ -482,35 +491,41 @@ def express_dbf_upload():
     # on disk.
     if request.content_length and request.content_length > _EXPRESS_DBF_MAX_UPLOAD_BYTES:
         limit_mb = _EXPRESS_DBF_MAX_UPLOAD_BYTES // (1024 * 1024)
-        return jsonify({'ok': False, 'error': f'file too large (max {limit_mb}MB)'}), 413
+        flash(f'ไฟล์ใหญ่เกินไป (จำกัด {limit_mb}MB)', 'danger')
+        return redirect(redirect_to)
 
     f = request.files.get('file')
     if not f or not f.filename:
-        return jsonify({'ok': False, 'error': 'missing file field "file"'}), 400
+        flash('กรุณาเลือกไฟล์ zip', 'danger')
+        return redirect(redirect_to)
     if not f.filename.lower().endswith('.zip'):
-        return jsonify({'ok': False, 'error': 'expected a .zip file'}), 400
+        flash('ไฟล์ต้องเป็น .zip', 'danger')
+        return redirect(redirect_to)
 
     tmpdir = tempfile.mkdtemp(prefix='express_dbf_')
     try:
         zip_path = os.path.join(tmpdir, 'upload.zip')
         f.save(zip_path)
         if not zipfile.is_zipfile(zip_path):
-            return jsonify({'ok': False, 'error': 'not a valid zip file'}), 400
+            flash('ไฟล์ไม่ใช่ zip ที่ถูกต้อง', 'danger')
+            return redirect(redirect_to)
         extract_dir = os.path.join(tmpdir, 'extracted')
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(extract_dir)
         dataset_dir = _find_express_dbf_dataset_dir(extract_dir)
         if dataset_dir is None:
-            return jsonify({'ok': False, 'error': 'ARTRN.DBF not found in zip'}), 400
+            flash('ไม่พบ ARTRN.DBF ใน zip ที่อัปโหลด', 'danger')
+            return redirect(redirect_to)
 
         # since_days defaults to 60 inside commit_express_dbf — a daily
         # upload of the full Express history only ever needs the recent
         # window; leave the default rather than duplicating it here.
         per_type = import_router.commit_express_dbf(dataset_dir, db_path=config.DATABASE_PATH)
     except Exception as exc:
-        return jsonify({'ok': False, 'error': str(exc)}), 500
+        flash(f'นำเข้าไม่สำเร็จ: {exc}', 'danger')
+        return redirect(redirect_to)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    return jsonify({'ok': True, 'per_type': per_type,
-                    'imported_at': datetime.now().isoformat(timespec='seconds')})
+    flash(_express_dbf_summary_message(per_type), 'success')
+    return redirect(redirect_to)

@@ -26,7 +26,7 @@ _STAFF_POST_OK = frozenset([
     'bsn.unit_conversions_dismiss',
     # Decision B — staff may import everything; the unified box (/import-data)
     # snapshots the DB before writing (see _snapshot_before_import call sites).
-    'bsn.unified_import', 'bsn.unified_import_confirm',
+    'bsn.unified_import', 'bsn.unified_import_confirm', 'bsn.express_dbf_upload',
     'marketplace.import_orders', 'marketplace.settlement_import', 'marketplace.upload', 'marketplace.link_iv',
     'products.product_location_save',
     'admin_exit_simulate',
@@ -291,6 +291,7 @@ _ENDPOINT_MODULE = {
     'bsn.unified_import': 'data',
     'bsn.unified_import_confirm': 'data',
     'bsn.express_dbf_import': 'data',
+    'bsn.express_dbf_upload': 'data',
     'bsn.mapping': 'data',
     'bsn.mapping_save': 'data',
     'bsn.mapping_suggest': 'data',
@@ -452,12 +453,12 @@ def require_login():
     endpoint = request.endpoint
     # Allow static files, login page, healthcheck, and the bootstrap DB
     # upload (which is itself token-gated) without authentication.
-    # bsn.express_dbf_upload is the same pattern: the team's Windows script
-    # POSTs the daily Express DBF zip with no browser session, gated by
-    # EXPRESS_UPLOAD_TOKEN instead (see blueprints/bsn.py). The paired GET
-    # test page (bsn.express_dbf_import) stays behind normal login.
+    # bsn.express_dbf_upload used to be here too (a token-gated, no-session
+    # script upload) — it now goes through the normal login gate like any
+    # other Sendy POST, since a logged-in team member uploads the daily
+    # Express DBF zip through the website (see blueprints/bsn.py).
     if endpoint in ('login', 'static', 'healthz', 'bootstrap_upload_db',
-                    'serve_sw', 'help_install', 'bsn.express_dbf_upload'):
+                    'serve_sw', 'help_install'):
         return
     role = session.get('role', '')
     if not role:
