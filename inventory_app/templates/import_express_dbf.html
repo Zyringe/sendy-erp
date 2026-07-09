@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}นำเข้า Express (DBF) – ERP{% endblock %}
 {% block page_title %}นำเข้า Express (DBF){% endblock %}
-{% block page_desc %}<div class="page-desc">อัปโหลด zip ตาราง DBF จาก Express — ใช้โดยสคริปต์ของทีมทุกสิ้นวัน</div>{% endblock %}
+{% block page_desc %}<div class="page-desc">อัปโหลด zip ตาราง DBF จาก Express — ทีมอัปโหลดที่นี่ทุกสิ้นวัน</div>{% endblock %}
 
 {% block content %}
 <div class="row g-3 justify-content-center">
@@ -25,14 +25,10 @@
       <div class="card-header"><i class="bi bi-upload me-2 text-accent"></i>อัปโหลด zip ตาราง Express DBF</div>
       <div class="card-body">
         <div class="alert alert-info mb-3">
-          <i class="bi bi-info-circle me-1"></i>สำหรับสคริปต์ "อัปโหลดเข้า Sendy" ของทีม — หรือทดสอบด้วยมือที่นี่
-          (ต้องใส่ token จาก <code>EXPRESS_UPLOAD_TOKEN</code>)
+          <i class="bi bi-info-circle me-1"></i>เลือกไฟล์ zip ที่ได้จากสคริปต์ "1 - ดึงข้อมูล Express" แล้วกดอัปโหลด
         </div>
         <form method="post" action="{{ url_for('bsn.express_dbf_upload') }}" enctype="multipart/form-data">
-          <div class="mb-3">
-            <label class="form-label">Token</label>
-            <input type="password" name="token" class="form-control" required>
-          </div>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="mb-3">
             <label class="form-label">ไฟล์ zip</label>
             <input type="file" name="file" accept=".zip" class="form-control" required>

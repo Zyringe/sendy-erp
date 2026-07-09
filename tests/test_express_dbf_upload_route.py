@@ -1,10 +1,11 @@
 """Route tests for /import-express-dbf (GET) + /import-express-dbf/upload
 (POST) — projects/express-integration/plan.md Phase 2.
 
-The upload POST is the team's non-interactive end-of-day script: no browser
-session ever accompanies it, so it is gated by EXPRESS_UPLOAD_TOKEN instead
-(same precedent as /bootstrap/upload-db) and exempted from both the login
-gate (access_control.py) and CSRF (app.py's csrf.exempt() call).
+The upload POST used to be the team's non-interactive end-of-day script
+(gated by EXPRESS_UPLOAD_TOKEN + exempt from login/CSRF, same precedent as
+/bootstrap/upload-db). That script is retired: a logged-in team member now
+uploads the daily zip through this page instead (30-day session), so the
+route is a normal login+CSRF Sendy POST — flash + redirect (PRG), not JSON.
 
 Reuses the DBF-row fixture builders from test_express_dbf_source.py so the
 "real adapters, fake open_table()" test exercises the SAME
@@ -169,8 +170,9 @@ def test_get_page_renders_for_logged_in_user(client):
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
     assert 'action="/import-express-dbf/upload"' in html
-    assert 'name="token"' in html
     assert 'name="file"' in html
+    assert 'name="csrf_token"' in html
+    assert 'name="token"' not in html
 
 
 # ── Nav wiring (3 surfaces) ──────────────────────────────────────────────────
@@ -185,143 +187,101 @@ def test_endpoint_module_and_nav_present(client):
         "express-dbf-import link missing from a nav (sidebar or mobile drawer)"
 
 
-# ── POST /import-express-dbf/upload — auth / input guards ──────────────────
+# ── POST /import-express-dbf/upload — login gate ────────────────────────────
 
-def test_upload_404_when_token_not_configured(client, tmp_path, monkeypatch):
-    monkeypatch.delenv('EXPRESS_UPLOAD_TOKEN', raising=False)
+def test_post_without_login_redirects_to_login(client, tmp_path):
     zpath = _make_zip(tmp_path)
     with open(zpath, 'rb') as f:
         resp = client.post('/import-express-dbf/upload',
-                           data={'token': 'whatever', 'file': (f, 'upload.zip')},
-                           content_type='multipart/form-data')
-    assert resp.status_code == 404
+                           data={'file': (f, 'upload.zip')},
+                           content_type='multipart/form-data',
+                           follow_redirects=False)
+    assert resp.status_code == 302
+    assert '/login' in resp.headers.get('Location', '')
 
 
-def test_upload_403_on_wrong_token(client, tmp_path, monkeypatch):
-    monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
-    zpath = _make_zip(tmp_path)
-    with open(zpath, 'rb') as f:
-        resp = client.post('/import-express-dbf/upload',
-                           data={'token': 'wrong-token', 'file': (f, 'upload.zip')},
-                           content_type='multipart/form-data')
-    assert resp.status_code == 403
-    assert resp.get_json()['ok'] is False
+# ── POST /import-express-dbf/upload — input guards (logged-in) ─────────────
+# WTF_CSRF_ENABLED=False in tests/conftest.py, so these logged-in POSTs don't
+# need a real csrf_token field. All error paths flash + redirect (PRG) back
+# to the GET page rather than returning JSON.
+
+def test_upload_400_on_missing_file(client):
+    _login(client)
+    resp = client.post('/import-express-dbf/upload', data={},
+                       content_type='multipart/form-data', follow_redirects=True)
+    assert resp.status_code == 200
+    assert 'กรุณาเลือกไฟล์ zip'.encode() in resp.data
 
 
-def test_upload_400_on_missing_file(client, monkeypatch):
-    monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
-    resp = client.post('/import-express-dbf/upload', data={'token': 'right-token'},
-                       content_type='multipart/form-data')
-    assert resp.status_code == 400
-    assert 'file' in resp.get_json()['error']
-
-
-def test_upload_400_on_non_zip_filename(client, tmp_path, monkeypatch):
-    monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
+def test_upload_400_on_non_zip_filename(client, tmp_path):
+    _login(client)
     p = tmp_path / 'notazip.txt'
     p.write_text('hello')
     with open(p, 'rb') as f:
         resp = client.post('/import-express-dbf/upload',
-                           data={'token': 'right-token', 'file': (f, 'notazip.txt')},
-                           content_type='multipart/form-data')
-    assert resp.status_code == 400
+                           data={'file': (f, 'notazip.txt')},
+                           content_type='multipart/form-data', follow_redirects=True)
+    assert resp.status_code == 200
+    assert 'ไฟล์ต้องเป็น .zip'.encode() in resp.data
 
 
-def test_upload_400_on_corrupt_zip_bytes(client, tmp_path, monkeypatch):
-    monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
+def test_upload_400_on_corrupt_zip_bytes(client, tmp_path):
+    _login(client)
     p = tmp_path / 'fake.zip'
     p.write_bytes(b'not actually a zip file')
     with open(p, 'rb') as f:
         resp = client.post('/import-express-dbf/upload',
-                           data={'token': 'right-token', 'file': (f, 'fake.zip')},
-                           content_type='multipart/form-data')
-    assert resp.status_code == 400
+                           data={'file': (f, 'fake.zip')},
+                           content_type='multipart/form-data', follow_redirects=True)
+    assert resp.status_code == 200
+    assert 'ไฟล์ไม่ใช่ zip ที่ถูกต้อง'.encode() in resp.data
 
 
-def test_upload_400_when_artrn_missing_from_zip(client, tmp_path, monkeypatch):
-    monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
+def test_upload_400_when_artrn_missing_from_zip(client, tmp_path):
+    _login(client)
     zpath = _make_zip(tmp_path, names=['APTRN', 'STCRD'])   # no ARTRN.DBF
     with open(zpath, 'rb') as f:
         resp = client.post('/import-express-dbf/upload',
-                           data={'token': 'right-token', 'file': (f, 'upload.zip')},
-                           content_type='multipart/form-data')
-    assert resp.status_code == 400
-    assert 'ARTRN' in resp.get_json()['error']
+                           data={'file': (f, 'upload.zip')},
+                           content_type='multipart/form-data', follow_redirects=True)
+    assert resp.status_code == 200
+    assert 'ARTRN'.encode() in resp.data
 
 
 def test_upload_413_when_over_scoped_size_cap(client, tmp_path, monkeypatch):
     import blueprints.bsn as bsn_mod
-    monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
+    _login(client)
     monkeypatch.setattr(bsn_mod, '_EXPRESS_DBF_MAX_UPLOAD_BYTES', 10)
     zpath = _make_zip(tmp_path)
     with open(zpath, 'rb') as f:
         resp = client.post('/import-express-dbf/upload',
-                           data={'token': 'right-token', 'file': (f, 'upload.zip')},
-                           content_type='multipart/form-data')
-    assert resp.status_code == 413
-
-
-# ── POST /import-express-dbf/upload — no session required (skip-list) ──────
-
-def test_upload_reaches_view_with_zero_session_state(client, tmp_path, monkeypatch):
-    """A request with NO session cookie at all must reach the view logic
-    (proves the require_login skip-list wiring) rather than 302-ing to
-    /login. Wrong token still 403s — that's the view's OWN gate, not the
-    login gate — but a 403 (not a 302-to-/login) is exactly the proof."""
-    monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
-    zpath = _make_zip(tmp_path)
-    with open(zpath, 'rb') as f:
-        resp = client.post('/import-express-dbf/upload',
-                           data={'token': 'wrong', 'file': (f, 'upload.zip')},
-                           content_type='multipart/form-data',
-                           follow_redirects=False)
-    assert resp.status_code == 403, \
-        f"expected the view's own 403, got a redirect (login gate not skipped?): {resp.status_code}"
-
-
-def test_upload_exempt_from_csrf_even_when_csrf_enabled(tmp_db, tmp_path, monkeypatch):
-    """Re-enable CSRF app-wide (like test_csrf_protection.py's csrf_client)
-    and confirm the upload route still isn't blocked by it — no session,
-    no csrf_token field, and it must NOT get the raw-CSRF 400."""
-    from app import app as flask_app
-    flask_app.config['TESTING'] = True
-    flask_app.config['WTF_CSRF_ENABLED'] = True
-    try:
-        c = flask_app.test_client()
-        monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
-        zpath = _make_zip(tmp_path)
-        with open(zpath, 'rb') as f:
-            resp = c.post('/import-express-dbf/upload',
-                          data={'token': 'wrong-token', 'file': (f, 'upload.zip')},
-                          content_type='multipart/form-data')
-        # Must reach the view's own token check (403), never the CSRF 400.
-        assert resp.status_code == 403, resp.data[:300]
-    finally:
-        flask_app.config['WTF_CSRF_ENABLED'] = False
+                           data={'file': (f, 'upload.zip')},
+                           content_type='multipart/form-data', follow_redirects=True)
+    assert resp.status_code == 200
+    assert 'ไฟล์ใหญ่เกินไป'.encode() in resp.data
 
 
 # ── POST /import-express-dbf/upload — happy path (real pipeline) ───────────
 
 def test_upload_happy_path_imports_all_six_types(client, tmp_path, monkeypatch):
-    monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
+    _login(client)
     _patch_open_table(monkeypatch)
 
     zpath = _make_zip(tmp_path)
     with open(zpath, 'rb') as f:
         resp = client.post('/import-express-dbf/upload',
-                           data={'token': 'right-token', 'file': (f, 'upload.zip')},
-                           content_type='multipart/form-data')
+                           data={'file': (f, 'upload.zip')},
+                           content_type='multipart/form-data', follow_redirects=True)
 
     assert resp.status_code == 200, resp.data[:500]
-    body = resp.get_json()
-    assert body['ok'] is True
-    assert body['per_type']['payments_in']['imported'] == 1
-    assert body['per_type']['payments_out']['imported'] == 1
-    assert body['per_type']['credit_notes_ar']['upserted'] == 1
-    assert body['per_type']['credit_notes_ap']['imported'] == 1
-    assert body['per_type']['payments_in']['skipped_rectyp'] == [], \
-        "no DR-style row in this fixture — the key must still be present, just empty"
-    assert body['imported_at']
+    assert 'นำเข้าสำเร็จ'.encode() in resp.data
+    # Per-type counts embedded in the flash text (see
+    # blueprints/bsn.py::_express_dbf_summary_message) — the same 4 counts
+    # the old JSON response asserted.
+    assert 'รับชำระ 1'.encode() in resp.data
+    assert 'จ่ายเงิน 1'.encode() in resp.data
+    assert 'ลดหนี้ขาย 1'.encode() in resp.data
+    assert 'ลดหนี้ซื้อ 1'.encode() in resp.data
 
     import sqlite3
     import config
@@ -343,15 +303,15 @@ def test_upload_updates_freshness_badge(client, tmp_path, monkeypatch):
     # legitimately carry real express_dbf rows). The invariant this test
     # actually pins is "right after a commit, freshness reads fresh."
     import models
-    monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
+    _login(client)
     _patch_open_table(monkeypatch)
 
     zpath = _make_zip(tmp_path)
     with open(zpath, 'rb') as f:
         resp = client.post('/import-express-dbf/upload',
-                           data={'token': 'right-token', 'file': (f, 'upload.zip')},
+                           data={'file': (f, 'upload.zip')},
                            content_type='multipart/form-data')
-    assert resp.status_code == 200
+    assert resp.status_code == 302
 
     after = models.get_express_dbf_freshness()
     assert after['last_at'] is not None
@@ -360,7 +320,7 @@ def test_upload_updates_freshness_badge(client, tmp_path, monkeypatch):
 
 def test_upload_cleans_up_temp_dir(client, tmp_path, monkeypatch):
     import tempfile
-    monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
+    _login(client)
     _patch_open_table(monkeypatch)
 
     created = []
@@ -375,9 +335,9 @@ def test_upload_cleans_up_temp_dir(client, tmp_path, monkeypatch):
     zpath = _make_zip(tmp_path)
     with open(zpath, 'rb') as f:
         resp = client.post('/import-express-dbf/upload',
-                           data={'token': 'right-token', 'file': (f, 'upload.zip')},
+                           data={'file': (f, 'upload.zip')},
                            content_type='multipart/form-data')
-    assert resp.status_code == 200
+    assert resp.status_code == 302
     assert created, "route never called tempfile.mkdtemp"
     assert not os.path.exists(created[-1]), "temp extraction dir was not cleaned up"
 
@@ -385,8 +345,10 @@ def test_upload_cleans_up_temp_dir(client, tmp_path, monkeypatch):
 def test_upload_surfaces_dr_skip_end_to_end(client, tmp_path, monkeypatch):
     """A real-shaped ARRCPIT RECTYP='4' ('DR') line — the 1-in-57,024-row
     edge case found during real-data verification — must not 500 the whole
-    upload; it shows up in the JSON response instead."""
-    monkeypatch.setenv('EXPRESS_UPLOAD_TOKEN', 'right-token')
+    upload. The skip detail itself is no longer surfaced in the browser
+    response (flash + redirect carries only the summary counts, see
+    _express_dbf_summary_message); this test pins the "doesn't crash" half."""
+    _login(client)
 
     import express_dbf_source as eds
     tables = {
@@ -400,15 +362,11 @@ def test_upload_surfaces_dr_skip_end_to_end(client, tmp_path, monkeypatch):
     zpath = _make_zip(tmp_path, names=list(tables))
     with open(zpath, 'rb') as f:
         resp = client.post('/import-express-dbf/upload',
-                           data={'token': 'right-token', 'file': (f, 'upload.zip')},
-                           content_type='multipart/form-data')
+                           data={'file': (f, 'upload.zip')},
+                           content_type='multipart/form-data', follow_redirects=True)
 
     assert resp.status_code == 200, resp.data[:500]
-    body = resp.get_json()
-    assert body['ok'] is True
-    assert body['per_type']['payments_in']['skipped_rectyp'] == [
-        {'re_no': 'RE7000401', 'doc': 'DR0000099', 'rectyp': '4', 'amount': 600.0}
-    ]
+    assert 'นำเข้าสำเร็จ'.encode() in resp.data
 
 
 # ── models.get_express_dbf_freshness ─────────────────────────────────────────
