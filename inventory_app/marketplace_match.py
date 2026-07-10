@@ -204,23 +204,40 @@ _STATUS_COMPLETED = {
 # ("...จนถึง 2026-07-04") — prefix match, not exact string equality.
 _STATUS_COMPLETED_PREFIX = 'ผู้ซื้อได้รับสินค้าแล้ว'
 _STATUS_IN_TRANSIT = {'การจัดส่ง', 'shipped'}          # team keys the IV at pack/ship
-_STATUS_NOT_SHIPPED = {'ที่ต้องจัดส่ง'}                  # IV may not exist yet — skip
+# 'ready_to_ship' (Lazada, prod-only string, discovered 2026-07-10) is the same
+# kind of not-shipped-yet status as ที่ต้องจัดส่ง — classifying it here silences
+# the unknown-status warning for it; unsettled behaviour is unchanged (skip).
+_STATUS_NOT_SHIPPED = {'ที่ต้องจัดส่ง', 'ready_to_ship'}  # IV may not exist yet — skip
 _STATUS_CANCEL_RETURN = {
     'ยกเลิกแล้ว', 'canceled', 'returned', 'Package Returned',
     'Package scrapped', 'Lost by 3PL', 'In Transit: Returning to seller',
 }
 
 
-def _is_matchable_status(status):
+def _is_matchable_status(status, settled=False):
     """True if an order at this ``status`` should enter the automatch pool.
-    Fail-safe: any status outside the known inventory above is SKIPPED (never
-    guessed) and logged — a platform introducing a new status must not
-    silently start (or stop) matching until someone classifies it."""
+
+    ``status`` is a STALE snapshot from the last order-export upload — it can
+    lag reality (2026-07-10 regression: settled orders still showing
+    ที่ต้องจัดส่ง). ``settled`` (``settled_at`` and ``actual_payout`` both
+    present) is stronger, more current evidence that the order shipped, so it
+    OVERRIDES a not-shipped-yet or unrecognized status. It does NOT override
+    the cancel/return family — those are FINAL states, not stale ones (a
+    returned order can settle with a clawback).
+
+    Fail-safe: an unsettled order at a status outside the known inventory
+    above is SKIPPED (never guessed) and logged — a platform introducing a
+    new status must not silently start (or stop) matching until someone
+    classifies it."""
+    if status in _STATUS_CANCEL_RETURN:
+        return False
     if status in _STATUS_COMPLETED or status in _STATUS_IN_TRANSIT:
         return True
     if status and status.startswith(_STATUS_COMPLETED_PREFIX):
         return True
-    if status in _STATUS_NOT_SHIPPED or status in _STATUS_CANCEL_RETURN:
+    if settled:
+        return True
+    if status in _STATUS_NOT_SHIPPED:
         return False
     logging.getLogger(__name__).warning(
         "marketplace_match: unknown order status %r — skipping (fail-safe)", status)
@@ -248,7 +265,10 @@ def _matchable_orders(conn, platform):
            ORDER BY o.order_date""",
         (platform,)
     ).fetchall()
-    return [r for r in rows if _is_matchable_status(r['status']) and r['billed_basis'] is not None]
+    return [r for r in rows
+            if _is_matchable_status(
+                r['status'], settled=r['settled_at'] is not None and r['actual_payout'] is not None)
+            and r['billed_basis'] is not None]
 
 
 def _product_compatible(my_prod, ivp, payout, iv_net):

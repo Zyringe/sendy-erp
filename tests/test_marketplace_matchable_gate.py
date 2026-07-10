@@ -199,3 +199,79 @@ def test_in_transit_order_matchable_before_settlement(mm_conn):
     _add_iv(c, 'IV9100007', 66.0, '2026-06-05', customer_code='Lหน้าร้าน', product_id=301)
     stats = mm.run_automatch(c, 'lazada')
     assert stats['matched'] == 1 and stats['confident'] == 1
+
+
+# ── settled-overrides-stale-status regression (2026-07-10 follow-up) ───────
+#
+# ``status`` is a stale snapshot from the last order-export upload — it can lag
+# reality. A settled order (settled_at + actual_payout both present) has PROVEN
+# it shipped, regardless of what its stale status string says, EXCEPT the
+# cancel/return family, which are final states even when settled (a returned
+# order can settle with a clawback). See marketplace-iv-mapping-plan.md.
+
+@pytest.mark.parametrize('status', ['ที่ต้องจัดส่ง', 'ready_to_ship'])
+def test_settled_not_shipped_yet_status_is_now_matchable(status):
+    """The regression this file pins: orders 260629CFJDMA9R / 260629CCG1HQD4
+    are settled but still carry a stale 'not shipped yet' status."""
+    assert mm._is_matchable_status(status, settled=True) is True
+
+
+@pytest.mark.parametrize('status', ['ที่ต้องจัดส่ง', 'ready_to_ship'])
+def test_unsettled_not_shipped_yet_status_still_excluded(status):
+    """Unsettled not-shipped-yet orders are unchanged — still skipped."""
+    assert mm._is_matchable_status(status, settled=False) is False
+
+
+@pytest.mark.parametrize('status', [
+    'ยกเลิกแล้ว', 'canceled', 'returned', 'Package Returned',
+    'Package scrapped', 'Lost by 3PL', 'In Transit: Returning to seller',
+])
+def test_settled_cancel_return_family_still_never_matchable(status):
+    """Cancel/return is a FINAL state, not a stale one — settlement does not
+    override it (a returned order can settle with a clawback)."""
+    assert mm._is_matchable_status(status, settled=True) is False
+
+
+def test_settled_unknown_status_is_matchable_with_no_warning(caplog):
+    """Settlement is proof enough even for a status the matcher has never
+    classified — no need to guess-and-log when settlement already answers
+    the 'did this ship' question."""
+    with caplog.at_level('WARNING'):
+        assert mm._is_matchable_status('some_other_new_status', settled=True) is True
+    assert not any('some_other_new_status' in r.message for r in caplog.records)
+
+
+def test_ready_to_ship_is_a_known_status_no_warning_when_unsettled(caplog):
+    """ready_to_ship (Lazada, prod-only) is now a KNOWN not-shipped-yet status
+    — unsettled behaviour is unchanged (skip), but it must not log the
+    unknown-status warning anymore."""
+    with caplog.at_level('WARNING'):
+        assert mm._is_matchable_status('ready_to_ship', settled=False) is False
+    assert not any('ready_to_ship' in r.message for r in caplog.records)
+
+
+def test_settled_stale_not_shipped_order_enters_pool_and_matches(mm_conn):
+    """Integration: the exact regression shape — สถานะเก่า 'ที่ต้องจัดส่ง' but the
+    order actually settled. Must now product-match."""
+    c = mm_conn
+    _add_order(c, 'O-STALE-SETTLED', '2026-06-04', 'ที่ต้องจัดส่ง',
+               item_total=99.0, actual_payout=88.0, settled_at='2026-06-05',
+               product_id=302)
+    _add_iv(c, 'IV9100008', 88.0, '2026-06-05', product_id=302)
+    stats = mm.run_automatch(c, 'shopee')
+    assert stats['matched'] == 1 and stats['confident'] == 1
+    row = c.execute(
+        "SELECT doc_base FROM marketplace_order_invoice WHERE order_sn='O-STALE-SETTLED'").fetchone()
+    assert row['doc_base'] == 'IV9100008'
+
+
+def test_unsettled_stale_not_shipped_order_still_excluded(mm_conn):
+    """Same status, but NOT settled (no actual_payout/settled_at) — must stay
+    OUT, unchanged from #280's behaviour."""
+    c = mm_conn
+    _add_order(c, 'O-STALE-UNSETTLED', '2026-06-04', 'ที่ต้องจัดส่ง',
+               item_total=99.0, actual_payout=None, settled_at=None, product_id=302)
+    _add_iv(c, 'IV9100009', 99.0, '2026-06-05', product_id=302)
+    stats = mm.run_automatch(c, 'shopee')
+    assert stats['unmatched'] == 0
+    assert c.execute("SELECT COUNT(*) FROM marketplace_order_invoice").fetchone()[0] == 0
