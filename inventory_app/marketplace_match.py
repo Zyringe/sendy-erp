@@ -37,6 +37,7 @@ projects/marketplace-iv-matching/plan.md §3b / matcher-rebuild-spec.md):
 
 Manual links are never clobbered and their IV is never reused.
 """
+import logging
 from collections import deque
 from datetime import datetime
 
@@ -187,19 +188,67 @@ def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
     return out[:max_results]
 
 
-def _settled_orders(conn, platform):
-    return conn.execute(
-        """SELECT o.id, o.order_sn, o.platform, o.actual_payout, o.settled_at, o.order_date,
+# STATUS-BASED matchable gate (2026-07-10 relax, replaces the old settled-only
+# gate below). An order enters the automatch pool once its lifecycle status
+# says the team has (or is about to have) keyed its Express IV — NOT only once
+# Sendy has imported a settlement file for it. Before this, a large 2024
+# Shopee tranche (สำเร็จแล้ว, keyed by the team long before Sendy ever imported
+# a settlement file) was invisible to the matcher forever (see
+# projects/express-integration/marketplace-iv-mapping-plan.md, ground truth).
+# Every value below is a REAL status seen on prod (verified 2026-07-10) —
+# nothing here is speculative.
+_STATUS_COMPLETED = {
+    'สำเร็จแล้ว', 'จัดส่งสำเร็จแล้ว', 'delivered', 'confirmed',
+}
+# Shopee appends a dynamic return-window deadline to this one
+# ("...จนถึง 2026-07-04") — prefix match, not exact string equality.
+_STATUS_COMPLETED_PREFIX = 'ผู้ซื้อได้รับสินค้าแล้ว'
+_STATUS_IN_TRANSIT = {'การจัดส่ง', 'shipped'}          # team keys the IV at pack/ship
+_STATUS_NOT_SHIPPED = {'ที่ต้องจัดส่ง'}                  # IV may not exist yet — skip
+_STATUS_CANCEL_RETURN = {
+    'ยกเลิกแล้ว', 'canceled', 'returned', 'Package Returned',
+    'Package scrapped', 'Lost by 3PL', 'In Transit: Returning to seller',
+}
+
+
+def _is_matchable_status(status):
+    """True if an order at this ``status`` should enter the automatch pool.
+    Fail-safe: any status outside the known inventory above is SKIPPED (never
+    guessed) and logged — a platform introducing a new status must not
+    silently start (or stop) matching until someone classifies it."""
+    if status in _STATUS_COMPLETED or status in _STATUS_IN_TRANSIT:
+        return True
+    if status and status.startswith(_STATUS_COMPLETED_PREFIX):
+        return True
+    if status in _STATUS_NOT_SHIPPED or status in _STATUS_CANCEL_RETURN:
+        return False
+    logging.getLogger(__name__).warning(
+        "marketplace_match: unknown order status %r — skipping (fail-safe)", status)
+    return False
+
+
+def _matchable_orders(conn, platform):
+    """Orders eligible for the automatch pool (see ``_is_matchable_status``).
+    ``billed_basis`` still prefers the real settlement figure when one exists;
+    a matchable-but-unsettled order falls back to ``item_total`` (its pre-fee
+    subtotal, populated at order-import time, never settlement time — so it's
+    always available even when nothing has settled yet). Lazada's existing
+    gross-first COALESCE is untouched (the team keys Lazada IVs at gross, not
+    net payout, whenever a fee row exists)."""
+    rows = conn.execute(
+        """SELECT o.id, o.order_sn, o.platform, o.status, o.actual_payout, o.settled_at,
+                  o.order_date,
                   CASE WHEN o.platform='lazada'
                        THEN COALESCE(f.item_value, o.item_total, o.actual_payout)
-                       ELSE o.actual_payout END AS billed_basis
+                       ELSE COALESCE(o.actual_payout, o.item_total) END AS billed_basis
            FROM marketplace_orders o
            LEFT JOIN marketplace_order_fees f
                   ON f.platform=o.platform AND f.order_sn=o.order_sn
-           WHERE o.platform = ? AND o.settled_at IS NOT NULL AND o.actual_payout IS NOT NULL
+           WHERE o.platform = ?
            ORDER BY o.order_date""",
         (platform,)
     ).fetchall()
+    return [r for r in rows if _is_matchable_status(r['status']) and r['billed_basis'] is not None]
 
 
 def _product_compatible(my_prod, ivp, payout, iv_net):
@@ -366,14 +415,15 @@ def _amount_only_guesses(remaining, free_ivs, iv_prod, o_prod, window_days):
 
 
 def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
-    """Auto-link settled ``platform`` orders to their Express IV — a single
-    GLOBAL assignment (see module docstring), not a greedy per-order pass.
+    """Auto-link matchable ``platform`` orders (see ``_is_matchable_status`` —
+    status-based, not settled-only) to their Express IV — a single GLOBAL
+    assignment (see module docstring), not a greedy per-order pass.
     Rebuilds all 'auto' rows on every call (idempotent); never touches 'manual'
     rows nor reuses a manually-held IV.
     Returns {matched, confident, review, unmatched}.
     """
     code = _CUST_CODE[platform]
-    orders = _settled_orders(conn, platform)
+    orders = _matchable_orders(conn, platform)
     ivs = _ivs_for(conn, code)
     iv_prod = _iv_products(conn, code)
     o_prod = _order_products(conn, platform)
