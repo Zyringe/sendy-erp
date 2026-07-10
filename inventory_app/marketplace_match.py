@@ -103,6 +103,102 @@ def _iv_products(conn, customer_code):
     return out
 
 
+# ── Bucket 3 (2026-07-10 /grilling session): settled cancel/return orders ──
+#
+# _is_matchable_status excludes the WHOLE cancel/return family forever —
+# correct for the ~95% that never got invoiced (cancelled before shipping),
+# but Put wants the handful that DID settle (shipped, then returned/lost,
+# with a real Express document) linked too. This is a SEPARATE pass, run
+# only for settled cancel/return orders, searching BOTH 'IV%' and 'SR%' docs
+# (the main pool only ever touches 'IV%', so widening here can't create a
+# double-claim risk against it). Real return processing lag can exceed the
+# main pool's 7-day forward window (verified up to 9 days on real data), so
+# this pass uses a wider one.
+_RETURN_WINDOW_DAYS = 30
+
+
+def _ivs_and_srs_for(conn, customer_code):
+    """Like _ivs_for but also includes SR (credit-note) docs."""
+    rows = conn.execute(
+        f"""SELECT doc_base,
+                   MIN(date_iso)                  AS date_iso,
+                   ROUND(SUM({_VAT_NET}), 2)      AS iv_net,
+                   COUNT(*)                       AS line_count
+            FROM sales_transactions
+            WHERE customer_code = ? AND (doc_base LIKE 'IV%' OR doc_base LIKE 'SR%')
+            GROUP BY doc_base""",
+        (customer_code,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _iv_and_sr_products(conn, customer_code):
+    """doc_base -> set(product_id), IV and SR docs both included."""
+    out = {}
+    for r in conn.execute(
+        """SELECT doc_base, product_id FROM sales_transactions
+           WHERE customer_code = ? AND (doc_base LIKE 'IV%' OR doc_base LIKE 'SR%')
+             AND product_id IS NOT NULL""",
+        (customer_code,)
+    ):
+        out.setdefault(r['doc_base'], set()).add(r['product_id'])
+    return out
+
+
+def _settled_cancel_return_orders(conn, platform):
+    """Settled orders (actual_payout + settled_at both present) whose status
+    is in the cancel/return family — the only subset of that family this
+    module ever tries to link (see module-level rationale above)."""
+    placeholders = ",".join("?" * len(_STATUS_CANCEL_RETURN))
+    rows = conn.execute(
+        f"""SELECT id, order_sn, platform, status, order_date
+            FROM marketplace_orders
+            WHERE platform = ? AND status IN ({placeholders})
+              AND settled_at IS NOT NULL AND actual_payout IS NOT NULL
+            ORDER BY order_date""",
+        (platform, *_STATUS_CANCEL_RETURN)
+    ).fetchall()
+    return list(rows)
+
+
+def _product_compatible_return(my_prod, docp):
+    """Return-only compatibility: no amount signal is trustworthy here (a
+    return's actual_payout can be positive, negative, or zero with no
+    consistent relationship to a doc's net — verified on real data). Trust
+    product identity ONLY. Single<->single is trusted like the main matcher's
+    D12; multi-item requires an EXACT product-set match (no partial-overlap +
+    amount-band fallback, since there is nothing trustworthy to corroborate
+    with)."""
+    if not (my_prod & docp):
+        return False
+    if len(my_prod) <= 1 and len(docp) <= 1:
+        return True
+    return my_prod == docp
+
+
+def _build_return_edges(orders, free_docs, doc_prod, o_prod, window_days):
+    """Same shape as _build_edges but for the returns pass: no amount
+    tiebreak (nothing trustworthy to tiebreak with), nearest-date only."""
+    edges_by_order = {}
+    for o in orders:
+        sn = o['order_sn']
+        my_prod = o_prod.get(sn, set())
+        if not my_prod:
+            continue
+        my_edges = []
+        for doc in free_docs:
+            gap = _signed_gap(doc['date_iso'], o['order_date'])
+            if gap is None or gap < 0 or gap > window_days:
+                continue
+            docp = doc_prod.get(doc['doc_base'], set())
+            if not _product_compatible_return(my_prod, docp):
+                continue
+            my_edges.append((gap, 0, doc['doc_base']))
+        if my_edges:
+            edges_by_order[sn] = my_edges
+    return edges_by_order
+
+
 def _combo_components(conn):
     """pack product_id -> set(component product_ids), for MULTI-component 'ชุด' packs
     only (e.g. 253 ชุดฝาครอบลูกบิด+กุญแจ = 251 + 252). Read from conversion_formulas:
@@ -440,7 +536,15 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
     assignment (see module docstring), not a greedy per-order pass.
     Rebuilds all 'auto' rows on every call (idempotent); never touches 'manual'
     rows nor reuses a manually-held IV.
-    Returns {matched, confident, review, unmatched}.
+
+    ALSO links settled cancel/return orders to their Express document (IV or
+    SR) when one exists — see the bucket-3 section above _settled_cancel_
+    return_orders. That is a small, separate, no-amount-guessing pass; its
+    successes/failures are reported under ``returns_matched`` only, never
+    folded into ``unmatched`` (being unmatched is the CORRECT, expected
+    outcome for most cancel/return orders, not a problem to flag).
+
+    Returns {matched, confident, review, unmatched, returns_matched}.
     """
     code = _CUST_CODE[platform]
     orders = _matchable_orders(conn, platform)
@@ -478,6 +582,24 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
         results[sn] = (doc_base, 'review')
         claimed.add(doc_base)
 
+    # Pass 3 (bucket 3): settled cancel/return orders -> IV or SR, product-only,
+    # no guessing. Separate order pool, separate claim coordination (still
+    # respects `claimed` so it can never steal a doc the passes above took).
+    return_orders_all = _settled_cancel_return_orders(conn, platform)
+    return_orders = [o for o in return_orders_all if o['order_sn'] not in manual_orders
+                      and o['order_sn'] not in results]
+    return_docs = _ivs_and_srs_for(conn, code)
+    return_doc_prod = _iv_and_sr_products(conn, code)
+    free_return_docs = [d for d in return_docs if d['doc_base'] not in claimed]
+    return_edges = _build_return_edges(return_orders, free_return_docs, return_doc_prod,
+                                        o_prod, _RETURN_WINDOW_DAYS)
+    return_match = _min_cost_bipartite_match(return_edges)
+    returns_matched = 0
+    for sn, doc_base in return_match.items():
+        results[sn] = (doc_base, 'confident')
+        claimed.add(doc_base)
+        returns_matched += 1
+
     confident = review = 0
     for sn, (doc_base, confidence) in results.items():
         conn.execute(
@@ -493,7 +615,7 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
 
     conn.commit()
     return {'matched': confident + review, 'confident': confident,
-            'review': review, 'unmatched': unmatched}
+            'review': review, 'unmatched': unmatched, 'returns_matched': returns_matched}
 
 
 def link_manual(conn, platform, order_sn, doc_base, customer_code=None, confirmed_by=None):
