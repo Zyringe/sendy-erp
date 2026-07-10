@@ -525,6 +525,13 @@ CREATE TABLE "express_import_log" (
     imported_at       TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+CREATE TABLE express_invoice_refs (
+    doc_base   TEXT PRIMARY KEY,
+    youref     TEXT,
+    remark     TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE express_payment_in_invoice_refs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     payment_in_id   INTEGER NOT NULL REFERENCES express_payments_in(id) ON DELETE CASCADE,
@@ -1041,6 +1048,16 @@ CREATE TABLE product_families (
     created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 , display_format TEXT DEFAULT 'single', catalogue_label TEXT);
+
+CREATE TABLE product_generic_standins (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    variant_product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    generic_product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    note                TEXT,
+    created_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(variant_product_id, generic_product_id),
+    CHECK (variant_product_id <> generic_product_id)
+);
 
 CREATE TABLE product_images (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1617,6 +1634,10 @@ CREATE INDEX idx_express_sales_doc ON express_sales(doc_no);
 CREATE INDEX idx_express_sales_doctype ON express_sales(doc_type, date_iso);
 
 CREATE INDEX idx_express_sales_product ON express_sales(product_id);
+
+CREATE INDEX idx_generic_standins_generic ON product_generic_standins(generic_product_id);
+
+CREATE INDEX idx_generic_standins_variant ON product_generic_standins(variant_product_id);
 
 CREATE INDEX idx_leave_entl_emp ON employee_leave_entitlements(employee_id);
 
@@ -2565,6 +2586,25 @@ BEGIN
         UNION ALL SELECT 'description',             OLD.description,             NEW.description             WHERE OLD.description    IS NOT NEW.description
         UNION ALL SELECT 'doc_no',                  OLD.doc_no,                  NEW.doc_no                  WHERE OLD.doc_no         IS NOT NEW.doc_no
     );
+END;
+
+CREATE TRIGGER audit_generic_standins_delete
+BEFORE DELETE ON product_generic_standins
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES ('product_generic_standins', OLD.id, 'DELETE',
+        json_object('variant_product_id', OLD.variant_product_id,
+                     'generic_product_id', OLD.generic_product_id));
+END;
+
+CREATE TRIGGER audit_generic_standins_insert
+AFTER INSERT ON product_generic_standins
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES ('product_generic_standins', NEW.id, 'INSERT',
+        json_object('variant_product_id', NEW.variant_product_id,
+                     'generic_product_id', NEW.generic_product_id,
+                     'note', NEW.note));
 END;
 
 CREATE TRIGGER audit_leave_requests_delete
