@@ -55,6 +55,18 @@ def _apply(conn, path):
         conn.executescript(f.read())
 
 
+@pytest.fixture
+def pre134_conn(empty_db_conn):
+    """empty_db clones the LIVE local DB schema, which already contains
+    product_generic_standins on any machine where mig 134 has been applied
+    (live local got it 2026-07-11) — re-applying the migration there raises
+    'table already exists'. Reconstruct the true pre-134 state by running the
+    rollback (exactly the drop of everything 134 creates) before each
+    apply-test."""
+    _apply(empty_db_conn, ROLLBACK_134)
+    return empty_db_conn
+
+
 def _seed_products(conn, ids):
     """Minimal products rows so the migration's WHERE EXISTS guard and its
     FK references are satisfied (empty_db_conn carries the schema only)."""
@@ -69,10 +81,10 @@ def _all_referenced_pids():
     return sorted({908, 907, 848} | {v for v, _g in EXPECTED_PAIRS})
 
 
-def test_migration_creates_table_and_seeds_18_rows(empty_db_conn):
-    _seed_products(empty_db_conn, _all_referenced_pids())
-    _apply(empty_db_conn, MIG_134)
-    rows = empty_db_conn.execute(
+def test_migration_creates_table_and_seeds_18_rows(pre134_conn):
+    _seed_products(pre134_conn, _all_referenced_pids())
+    _apply(pre134_conn, MIG_134)
+    rows = pre134_conn.execute(
         "SELECT variant_product_id, generic_product_id FROM product_generic_standins "
         "ORDER BY generic_product_id, variant_product_id"
     ).fetchall()
@@ -81,86 +93,86 @@ def test_migration_creates_table_and_seeds_18_rows(empty_db_conn):
     assert len(got) == 18
 
 
-def test_all_21_referenced_pids_exist(empty_db_conn):
+def test_all_21_referenced_pids_exist(pre134_conn):
     """Guard against a curation typo: every pid the seed references must be a
     real product row before/after the migration runs."""
     pids = _all_referenced_pids()
     assert len(pids) == 21
-    _seed_products(empty_db_conn, pids)
-    _apply(empty_db_conn, MIG_134)
+    _seed_products(pre134_conn, pids)
+    _apply(pre134_conn, MIG_134)
     for variant, generic in EXPECTED_PAIRS:
         for pid in (variant, generic):
-            exists = empty_db_conn.execute(
+            exists = pre134_conn.execute(
                 "SELECT 1 FROM products WHERE id=?", (pid,)
             ).fetchone()
             assert exists, f"pid {pid} referenced by seed but missing from products"
 
 
-def test_variant_unique_per_generic(empty_db_conn):
+def test_variant_unique_per_generic(pre134_conn):
     """UNIQUE(variant_product_id, generic_product_id) rejects an exact-duplicate
     curated pair (a real re-curation would be delete+insert, not a raw dup)."""
-    _seed_products(empty_db_conn, _all_referenced_pids())
-    _apply(empty_db_conn, MIG_134)
+    _seed_products(pre134_conn, _all_referenced_pids())
+    _apply(pre134_conn, MIG_134)
     with pytest.raises(sqlite3.IntegrityError):
-        empty_db_conn.execute(
+        pre134_conn.execute(
             "INSERT INTO product_generic_standins (variant_product_id, generic_product_id) "
             "VALUES (519, 908)"
         )
 
 
-def test_self_reference_rejected(empty_db_conn):
+def test_self_reference_rejected(pre134_conn):
     """CHECK(variant_product_id <> generic_product_id) — a product can never
     be curated as its own stand-in."""
-    _seed_products(empty_db_conn, _all_referenced_pids())
-    _apply(empty_db_conn, MIG_134)
+    _seed_products(pre134_conn, _all_referenced_pids())
+    _apply(pre134_conn, MIG_134)
     with pytest.raises(sqlite3.IntegrityError):
-        empty_db_conn.execute(
+        pre134_conn.execute(
             "INSERT INTO product_generic_standins (variant_product_id, generic_product_id) "
             "VALUES (908, 908)"
         )
 
 
-def test_missing_product_guard_no_ops_that_pair(empty_db_conn):
+def test_missing_product_guard_no_ops_that_pair(pre134_conn):
     """WHERE EXISTS guard (fresh-build safety, mirrors migs 014/018): if a
     referenced pid doesn't exist, that pair is skipped rather than raising a
     FOREIGN KEY error — the table still gets created."""
     # Seed everything EXCEPT pid 848 (the 4-6 generic) to prove its pair-group
     # no-ops cleanly while the other two groups still seed normally.
     pids = [p for p in _all_referenced_pids() if p != 848]
-    _seed_products(empty_db_conn, pids)
-    _apply(empty_db_conn, MIG_134)
-    n = empty_db_conn.execute(
+    _seed_products(pre134_conn, pids)
+    _apply(pre134_conn, MIG_134)
+    n = pre134_conn.execute(
         "SELECT COUNT(*) FROM product_generic_standins"
     ).fetchone()[0]
     assert n == 14  # 7 (family 441) + 7 (family 443), the 848 group (4 rows) skipped
-    n_848 = empty_db_conn.execute(
+    n_848 = pre134_conn.execute(
         "SELECT COUNT(*) FROM product_generic_standins WHERE generic_product_id=848"
     ).fetchone()[0]
     assert n_848 == 0
 
 
-def test_rollback_drops_table_cleanly(empty_db_conn):
-    _seed_products(empty_db_conn, _all_referenced_pids())
-    _apply(empty_db_conn, MIG_134)
-    _apply(empty_db_conn, ROLLBACK_134)
+def test_rollback_drops_table_cleanly(pre134_conn):
+    _seed_products(pre134_conn, _all_referenced_pids())
+    _apply(pre134_conn, MIG_134)
+    _apply(pre134_conn, ROLLBACK_134)
     tables = {
-        r[0] for r in empty_db_conn.execute(
+        r[0] for r in pre134_conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
     assert "product_generic_standins" not in tables
     # Re-apply from scratch must work identically after rollback.
-    _apply(empty_db_conn, MIG_134)
-    n = empty_db_conn.execute(
+    _apply(pre134_conn, MIG_134)
+    n = pre134_conn.execute(
         "SELECT COUNT(*) FROM product_generic_standins"
     ).fetchone()[0]
     assert n == 18
 
 
-def test_audit_log_records_seed_inserts(empty_db_conn):
-    _seed_products(empty_db_conn, _all_referenced_pids())
-    _apply(empty_db_conn, MIG_134)
-    n = empty_db_conn.execute(
+def test_audit_log_records_seed_inserts(pre134_conn):
+    _seed_products(pre134_conn, _all_referenced_pids())
+    _apply(pre134_conn, MIG_134)
+    n = pre134_conn.execute(
         "SELECT COUNT(*) FROM audit_log WHERE table_name='product_generic_standins' "
         "AND action='INSERT'"
     ).fetchone()[0]
