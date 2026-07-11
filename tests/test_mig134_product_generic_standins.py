@@ -168,12 +168,11 @@ def test_audit_log_records_seed_inserts(empty_db_conn):
 
 
 def test_invariant_no_consumer_outside_marketplace_match_yet():
-    """Pin: today, no application source file references
-    product_generic_standins except migrations/tests. The matcher consumer
-    (marketplace_match.py Pass 1.5) is a LATER session's job — when it lands,
-    update this test's allow-list to {'marketplace_match.py'} and it must
-    stay a single-file allow-list forever (the invariant this pins: never
-    consulted by stock-deduction paths)."""
+    """Pin: today, the only application source file referencing
+    product_generic_standins is marketplace_match.py (Pass 1.5, 2026-07-11).
+    This allow-list must stay single-file forever (the invariant this pins:
+    never consulted by stock-deduction paths — see the migration's own
+    invariant note)."""
     app_dir = os.path.join(REPO, "inventory_app")
     result = subprocess.run(
         ["grep", "-rl", "product_generic_standins", app_dir],
@@ -182,7 +181,7 @@ def test_invariant_no_consumer_outside_marketplace_match_yet():
     hits = [
         os.path.relpath(p, app_dir) for p in result.stdout.splitlines() if p.strip()
     ]
-    allowed = set()  # empty today; add 'marketplace_match.py' when Pass 1.5 ships
+    allowed = {'marketplace_match.py'}
     unexpected = [h for h in hits if h not in allowed]
     assert not unexpected, (
         f"product_generic_standins is referenced outside the allowed set: {unexpected} "

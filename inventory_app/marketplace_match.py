@@ -222,6 +222,32 @@ def _combo_components(conn):
     return {p: comps for p, comps in by_pack.items() if len(comps) >= 2}
 
 
+def _generic_standins(conn):
+    """variant_product_id -> generic_product_id, from the curated
+    product_generic_standins table (mig 134). Some color/size-specific
+    products have real, separately-tracked stock but are booked in Express
+    under one generic catch-all product instead of the specific variant —
+    see Operations/05_analysis-reports/engineering/
+    generic-standin-schema-design_2026-07-10.md. Consumed ONLY by Pass 1.5
+    below; never joined into any stock/mapping/unit_conversion path (that
+    invariant lives in the migration's own header comment too)."""
+    return {r['variant_product_id']: r['generic_product_id'] for r in conn.execute(
+        "SELECT variant_product_id, generic_product_id FROM product_generic_standins")}
+
+
+def _apply_standins(prod_set, standins):
+    """Replace each pid in ``prod_set`` with its curated generic stand-in, if
+    one exists, else leave it unchanged. REPLACE, not union: this is only
+    ever called for Pass 1.5, on orders Pass 1 already exhaustively tried (and
+    failed) to match with their real product id(s) against the full IV pool —
+    nothing is lost by dropping the original id here. Keeping the substituted
+    set the SAME SIZE as the original also matters: _product_compatible's
+    single<->single "trust regardless of amount" rule (D12) keys off set
+    size, so a naive union (which would inflate a 1-product order to size 2)
+    would wrongly demote it into the amount-band-corroboration path."""
+    return {standins.get(pid, pid) for pid in prod_set}
+
+
 def _order_products(conn, platform):
     """order_sn -> set(internal_product_id) from the (imperfect) SKU mapping. A combo
     product is REPLACED by its components (see _combo_components) — not unioned in
@@ -544,6 +570,13 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
     folded into ``unmatched`` (being unmatched is the CORRECT, expected
     outcome for most cancel/return orders, not a problem to flag).
 
+    ALSO retries (Pass 1.5, between Pass 1 and Pass 2) orders Pass 1 couldn't
+    place using each product's curated generic stand-in (see
+    _generic_standins / product_generic_standins, mig 134) — some color/size
+    variants are booked in Express under one generic catch-all product.
+    Placed before the amount-only guess since a curated product match is a
+    stronger signal than a bare amount coincidence.
+
     Returns {matched, confident, review, unmatched, returns_matched}.
     """
     code = _CUST_CODE[platform]
@@ -571,6 +604,21 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
 
     results = {}  # order_sn -> (doc_base, confidence)
     for sn, doc_base in product_match.items():
+        results[sn] = (doc_base, 'confident')
+        claimed.add(doc_base)
+
+    # Pass 1.5: retry orders Pass 1 left unmatched, substituting each
+    # product's curated generic stand-in (see _apply_standins — replace, not
+    # union). Still 'confident': a curated equivalence + product identity +
+    # valid date is the same trust bar as Pass 1 (see module docstring).
+    standins = _generic_standins(conn)
+    remaining_15 = [o for o in auto_orders if o['order_sn'] not in results]
+    free_ivs_15 = [iv for iv in free_ivs if iv['doc_base'] not in claimed]
+    o_prod_standin = {o['order_sn']: _apply_standins(o_prod.get(o['order_sn'], set()), standins)
+                       for o in remaining_15}
+    edges_15 = _build_edges(remaining_15, free_ivs_15, iv_prod, o_prod_standin, window_days)
+    standin_match = _min_cost_bipartite_match(edges_15)
+    for sn, doc_base in standin_match.items():
         results[sn] = (doc_base, 'confident')
         claimed.add(doc_base)
 
