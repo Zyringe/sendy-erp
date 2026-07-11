@@ -26,6 +26,7 @@ def worklist_conn(tmp_db_conn):
     c.execute("DELETE FROM sales_transactions WHERE doc_base LIKE 'IV93%'")
     c.execute("DELETE FROM marketplace_wallet_txns WHERE order_sn LIKE 'WLBUCKET%'")
     c.execute("DELETE FROM marketplace_order_invoice WHERE order_sn LIKE 'WLBUCKET%'")
+    c.execute("DELETE FROM product_generic_standins WHERE note LIKE 'WL test%'")
 
     # Two distinct products so bucket C's cross-product mismatch is genuine:
     # X = the order's mapped product, Y = the (wrongly) linked IV's product.
@@ -124,6 +125,30 @@ def worklist_conn(tmp_db_conn):
             ('IV9300003-%d' % i, pid, amt, amt, amt))
     _link('WLBUCKETCOMBO', 'IV9300003')
 
+    # STANDIN — a variant-pid order linked to an IV the team books under the
+    # curated generic catch-all (product_generic_standins, mig 134). Pass 1.5
+    # product-matches this via stand-in substitution, so the worklist must ALSO
+    # substitute and treat it as OK — NOT flag bucket C. Regression for the
+    # 2026-07-11 false positives (21 of 22 live bucket-C rows were correct
+    # Pass 1.5 links: ลูกรีเวท variants → generic 848, หัวสายชำระ → 908).
+    variant = c.execute("INSERT INTO products (product_name) VALUES ('WL Standin Variant')").lastrowid
+    generic = c.execute("INSERT INTO products (product_name) VALUES ('WL Standin Generic')").lastrowid
+    c.execute(
+        "INSERT INTO product_generic_standins (variant_product_id, generic_product_id, note) "
+        "VALUES (?, ?, 'WL test standin')", (variant, generic))
+    ostd = _order('WLBUCKETSTANDIN', 'สำเร็จแล้ว', 57.0, '2026-05-17', '2026-05-16 10:00')
+    _item(ostd, 'WLBUCKETSTANDIN', variant)
+    _iv('IV9300004', generic, 57.0, '2026-05-17')
+    _link('WLBUCKETSTANDIN', 'IV9300004')
+
+    # STANDIN-MISS — same variant-order shape, but linked to an IV whose product
+    # is unrelated to both the variant AND its generic: still a real bucket-C
+    # row (substitution must not blanket-suppress genuine cross-product steals).
+    ostdm = _order('WLBUCKETSTANDINMISS', 'สำเร็จแล้ว', 58.0, '2026-05-18', '2026-05-17 10:00')
+    _item(ostdm, 'WLBUCKETSTANDINMISS', variant)
+    _iv('IV9300005', py, 58.0, '2026-05-18')
+    _link('WLBUCKETSTANDINMISS', 'IV9300005')
+
     c.commit()
     return c
 
@@ -189,3 +214,23 @@ def test_combo_order_matched_to_component_iv_excluded(worklist_conn):
     wl = models.get_iv_match_worklist(worklist_conn, 'shopee')
     all_sns = _sns(wl['rows_b']) | _sns(wl['rows_c']) | _sns(wl['rows_d'])
     assert 'WLBUCKETCOMBO' not in all_sns
+
+
+def test_standin_order_matched_to_generic_iv_excluded(worklist_conn):
+    """A variant-pid order linked to an IV keyed under its curated generic
+    stand-in is a product match via substitution (mirrors matcher Pass 1.5 and
+    the #288 picker) — NOT bucket C. Regression for 2026-07-11, when 21 of the
+    22 live bucket-C rows were correct Pass 1.5 links flagged by the raw-pid
+    compare."""
+    import models
+    wl = models.get_iv_match_worklist(worklist_conn, 'shopee')
+    all_sns = _sns(wl['rows_b']) | _sns(wl['rows_c']) | _sns(wl['rows_d'])
+    assert 'WLBUCKETSTANDIN' not in all_sns
+
+
+def test_standin_substitution_does_not_blanket_suppress_bucket_c(worklist_conn):
+    """The stand-in aware compare must still flag a variant order linked to an
+    IV whose product matches NEITHER the variant NOR its generic."""
+    import models
+    wl = models.get_iv_match_worklist(worklist_conn, 'shopee')
+    assert 'WLBUCKETSTANDINMISS' in _sns(wl['rows_c'])

@@ -1362,6 +1362,12 @@ def get_iv_match_worklist(conn, platform='shopee'):
     # matched to a component-keyed IV isn't false-flagged bucket C (the pid-253
     # class: 187 correct Lazada matches were mislabelled by the raw-pid compare).
     combo = marketplace_match._combo_components(conn)
+    # Curated generic stand-ins (mig 134): a variant-pid order the matcher
+    # linked (Pass 1.5) to an IV keyed under the generic catch-all is a CORRECT
+    # product match — the bucket-C compare must accept the substituted set too
+    # (mirrors iv_candidates in #288; 2026-07-11: 21 of 22 live bucket-C rows
+    # were these false positives).
+    standins = marketplace_match._generic_standins(conn)
     items_by_order = {}
     for r in conn.execute(
         """SELECT order_sn, item_name, internal_product_id
@@ -1447,7 +1453,9 @@ def get_iv_match_worklist(conn, platform='shopee'):
             continue
 
         ivp = iv_products.get(link['doc_base'], empty_item)
-        if ivp['product_ids'] and not (op & ivp['product_ids']):
+        op_standin = marketplace_match._apply_standins(op, standins)
+        if (ivp['product_ids'] and not (op & ivp['product_ids'])
+                and not (op_standin & ivp['product_ids'])):
             rows_c.append({**row, 'doc_base': link['doc_base'], 'iv_items': ivp['names']})
         # else: OK (product overlap, or the IV has no resolved product at all —
         # ambiguous, left as-is per the spec's "anything else" rule) — hidden.
