@@ -275,8 +275,9 @@ def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
     """IVs that could be ``order``, for the manual picker — Zหน้าร้าน/Lหน้าร้าน IVs
     dated on/after the platform order date within the window, ranked by
     product-match → amount-closeness → nearest date. Each candidate carries the ฿
-    difference from the payout, whether it shares a product, and which order (if
-    any) currently holds it.
+    difference from the payout, whether it shares a product (directly or via a
+    curated generic stand-in — see _apply_standins), and which order (if any)
+    currently holds it.
     """
     code = _CUST_CODE.get(order['platform'])
     d = dict(order)
@@ -289,13 +290,17 @@ def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
         (order['platform'],)).fetchall()}
     iv_prod = _iv_products(conn, code)
     my_prod = _order_products(conn, order['platform']).get(order['order_sn'], set())
+    my_prod_standin = _apply_standins(my_prod, _generic_standins(conn))
     out = []
     for iv in _ivs_for(conn, code):
         gap = _signed_gap(iv['date_iso'], order['order_date'])
         if gap is None or gap < 0 or gap > window_days:
             continue
-        overlap = len(my_prod & iv_prod.get(iv['doc_base'], set()))
-        out.append({**iv, 'date_gap': gap, 'product_match': overlap > 0,
+        ivp = iv_prod.get(iv['doc_base'], set())
+        direct = bool(my_prod & ivp)
+        standin = (not direct) and bool(my_prod_standin & ivp)
+        out.append({**iv, 'date_gap': gap, 'product_match': direct or standin,
+                    'standin_match': standin,
                     'amount_diff': round((iv['iv_net'] or 0) - payout, 2),
                     'linked_to': linked.get(iv['doc_base'])})
     # product-match first; then AMOUNT-closeness, then nearest date. Amount before

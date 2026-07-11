@@ -190,3 +190,71 @@ def test_no_standin_candidate_stays_unmatched_not_a_review_guess(mm_conn):
         "SELECT COUNT(*) FROM marketplace_order_invoice WHERE order_sn='O-NOTHING'"
     ).fetchone()[0] == 0
     assert stats['unmatched'] >= 1
+
+
+# ── /marketplace/review picker (Put's /scrutinize follow-up, 2026-07-11) ────
+#
+# iv_candidates() (the MANUAL picker, distinct from run_automatch's auto
+# path) built its product-match flag from the order's raw resolved product
+# id(s) only — it never consulted product_generic_standins, so a human
+# reviewing a variant-pid order (e.g. หัวสายชำระ สีเขียว, pid 523) saw its
+# correct generic-908 IV ranked as product_match=False, losing the product
+# signal Pass 1.5 already gives the auto path. Fixed the same way as Pass
+# 1.5: compute a standin-substituted set alongside the raw one and treat
+# overlap on EITHER as product_match — plus a separate `standin_match` flag
+# (True only when the match came via substitution, not a direct hit) so a
+# future UI badge can distinguish "real product match" from "matched via a
+# curated generic stand-in" without another backend change.
+
+def test_picker_flags_product_match_via_generic_standin(mm_conn):
+    c = mm_conn
+    _add_standin(c, 360, 361)
+    _add_order(c, 'O-PICKER-STANDIN', '2026-06-04', actual_payout=57.0, product_ids=[360])
+    _add_doc(c, 'IV9300001', '2026-06-05', product_ids=[(361, 500.0)])  # generic-only IV
+    order = c.execute("SELECT * FROM marketplace_orders WHERE order_sn='O-PICKER-STANDIN'").fetchone()
+    cands = mm.iv_candidates(c, order)
+    m = next(x for x in cands if x['doc_base'] == 'IV9300001')
+    assert m['product_match'] is True
+    assert m['standin_match'] is True
+
+
+def test_picker_standin_match_false_when_direct_overlap_exists(mm_conn):
+    """standin_match distinguishes HOW the match happened — a candidate that
+    already overlaps directly must not also claim to be a standin match."""
+    c = mm_conn
+    _add_standin(c, 360, 361)
+    _add_order(c, 'O-PICKER-DIRECT', '2026-06-04', actual_payout=40.0, product_ids=[360])
+    _add_doc(c, 'IV9300002', '2026-06-05', product_ids=[(360, 40.0)])  # direct product hit
+    order = c.execute("SELECT * FROM marketplace_orders WHERE order_sn='O-PICKER-DIRECT'").fetchone()
+    cands = mm.iv_candidates(c, order)
+    m = next(x for x in cands if x['doc_base'] == 'IV9300002')
+    assert m['product_match'] is True
+    assert m['standin_match'] is False
+
+
+def test_picker_no_false_positive_without_a_curated_standin(mm_conn):
+    """A product with NO curated standin row must never be flagged as a
+    product/standin match against an unrelated generic-looking IV."""
+    c = mm_conn
+    _add_order(c, 'O-PICKER-NOSTANDIN', '2026-06-04', actual_payout=22.0, product_ids=[362])
+    _add_doc(c, 'IV9300003', '2026-06-05', product_ids=[(361, 22.0)])  # unrelated product
+    order = c.execute("SELECT * FROM marketplace_orders WHERE order_sn='O-PICKER-NOSTANDIN'").fetchone()
+    cands = mm.iv_candidates(c, order)
+    m = next(x for x in cands if x['doc_base'] == 'IV9300003')
+    assert m['product_match'] is False
+    assert m['standin_match'] is False
+
+
+def test_picker_ranks_standin_match_same_priority_as_direct_match(mm_conn):
+    """A standin-matched candidate must outrank a no-product-match candidate,
+    same as a direct match would (unchanged sort priority — see
+    test_picker_ranks_product_match_first in test_marketplace_match.py)."""
+    c = mm_conn
+    _add_standin(c, 360, 361)
+    _add_order(c, 'O-PICKER-RANK', '2026-06-04', actual_payout=90.0, product_ids=[360])
+    _add_doc(c, 'IV9300004', '2026-06-04', product_ids=[(999, 90.0)])   # gap 0, no product at all
+    _add_doc(c, 'IV9300005', '2026-06-05', product_ids=[(361, 90.0)])   # gap 1, standin match
+    order = c.execute("SELECT * FROM marketplace_orders WHERE order_sn='O-PICKER-RANK'").fetchone()
+    cands = mm.iv_candidates(c, order)
+    assert cands[0]['doc_base'] == 'IV9300005'
+    assert cands[0]['standin_match'] is True
