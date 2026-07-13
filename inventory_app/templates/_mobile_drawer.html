@@ -38,9 +38,6 @@
         <i class="bi bi-scissors me-3"></i>แปลงสินค้า
       </a>
       {% if is_admin %}
-      <a href="{{ url_for('products.labels_view') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-upc-scan me-3"></i>พิมพ์ป้าย/บาร์โค้ด
-      </a>
       <a href="{{ url_for('labels.manage') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-tags me-3"></i>จัดการป้ายสินค้า
       </a>
@@ -120,9 +117,6 @@
       </a>
       <a href="{{ url_for('bsn.unit_conversions') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-arrow-left-right me-3"></i>แปลงหน่วย
-      </a>
-      <a href="{{ url_for('supplier_catalogue.supplier_catalogue_list') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-journals me-3"></i>แคตตาล็อกผู้จัดจำหน่าย
       </a>
       <a href="{{ url_for('mobile.sales_trip') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-pin-map me-3"></i>แผนทริปขาย (เขต)
