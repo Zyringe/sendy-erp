@@ -145,6 +145,7 @@ from .marketplace import (
     get_payout_report, get_settlement_report, get_marketplace_order,
     get_marketplace_order_detail, resolve_line_ratio, get_order_margin,
     _RECON_CUSTOMER, get_marketplace_reconciliation, set_amount_review,
+    dismiss_review_order, undismiss_review_order,
     get_marketplace_summary, get_marketplace_orders, get_marketplace_unmapped,
     _CANCEL_RETURN_STATUSES, get_marketplace_returns_cancelled,
     create_payout_batch, _BATCH_TOLERANCE, match_orders_to_amount,

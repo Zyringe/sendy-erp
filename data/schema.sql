@@ -822,6 +822,16 @@ CREATE TABLE marketplace_payouts (
     created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+CREATE TABLE marketplace_review_dismissals (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform     TEXT NOT NULL,
+    order_sn     TEXT NOT NULL,
+    reason       TEXT,
+    dismissed_by TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE (platform, order_sn)
+);
+
 CREATE TABLE marketplace_wallet_txns (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     platform        TEXT NOT NULL,
