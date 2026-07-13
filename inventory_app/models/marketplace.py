@@ -1504,11 +1504,16 @@ def get_iv_match_worklist(conn, platform='shopee'):
 
         ivp = iv_products.get(link['doc_base'], empty_item)
         op_standin = marketplace_match._apply_standins(op, standins)
-        if (ivp['product_ids'] and not (op & ivp['product_ids'])
+        if (link['match_method'] != 'manual'
+                and ivp['product_ids'] and not (op & ivp['product_ids'])
                 and not (op_standin & ivp['product_ids'])):
             rows_c.append({**row, 'doc_base': link['doc_base'], 'iv_items': ivp['names']})
         # else: OK (product overlap, or the IV has no resolved product at all —
         # ambiguous, left as-is per the spec's "anything else" rule) — hidden.
+        # A match_method='manual' link is never C: bucket C exists to catch the
+        # AUTO matcher's cross-product steals; manual means a human already
+        # adjudicated the mismatch (e.g. team keyed a sibling variant — the
+        # bucket-D sheet 2026-07-13 class).
 
     summary_a = sorted(a_by_period.values(), key=lambda r: r['period'])
     for r in summary_a:
