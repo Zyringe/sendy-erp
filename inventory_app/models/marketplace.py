@@ -861,6 +861,40 @@ def set_amount_review(conn, order_id, accept, reviewed_by=None):
     return {'accepted': True, 'd_bill': d_bill}
 
 
+def dismiss_review_order(conn, order_id, reason=None, by=None):
+    """Manager acknowledges a bucket-D order that has NO Express IV (sale was
+    never keyed into Express). The order leaves the worklist buckets but stays
+    listed in rows_dismissed with an undo, so the acknowledgement is auditable
+    and reversible. Idempotent per (platform, order_sn).
+    Returns the order_sn, or None if the order doesn't exist."""
+    o = conn.execute(
+        "SELECT platform, order_sn FROM marketplace_orders WHERE id = ?",
+        (order_id,)).fetchone()
+    if o is None:
+        return None
+    conn.execute(
+        """INSERT INTO marketplace_review_dismissals (platform, order_sn, reason, dismissed_by)
+           VALUES (?,?,?,?)
+           ON CONFLICT(platform, order_sn) DO NOTHING""",
+        (o['platform'], o['order_sn'], reason, by))
+    conn.commit()
+    return o['order_sn']
+
+
+def undismiss_review_order(conn, order_id):
+    """Undo dismiss_review_order. Returns the number of rows removed (0/1)."""
+    o = conn.execute(
+        "SELECT platform, order_sn FROM marketplace_orders WHERE id = ?",
+        (order_id,)).fetchone()
+    if o is None:
+        return 0
+    cur = conn.execute(
+        "DELETE FROM marketplace_review_dismissals WHERE platform=? AND order_sn=?",
+        (o['platform'], o['order_sn']))
+    conn.commit()
+    return cur.rowcount
+
+
 def get_marketplace_summary():
     """Per-platform counts for the dashboard cards."""
     conn = get_connection()
@@ -1385,6 +1419,13 @@ def get_iv_match_worklist(conn, platform='shopee'):
              FROM marketplace_order_invoice WHERE platform = ?""",
         (platform,))}
 
+    # Acknowledged "no IV exists" orders (mig 135): excluded from every bucket,
+    # returned separately so the page can list them with an undo.
+    dismissed = {r['order_sn']: dict(r) for r in conn.execute(
+        """SELECT order_sn, reason, dismissed_by, created_at
+             FROM marketplace_review_dismissals WHERE platform = ?""",
+        (platform,))}
+
     # doc_base -> {'product_ids': set, 'names': [product name,...]} — every หน้าร้าน
     # IV for this platform (mirrors marketplace_match._iv_products, plus names
     # for display; see that module's docstring for why the customer_code join
@@ -1413,6 +1454,7 @@ def get_iv_match_worklist(conn, platform='shopee'):
 
     a_by_period = {}   # 'YYYY-MM' -> {'period','count','wallet_income'}
     rows_b, rows_c, rows_d = [], [], []
+    rows_dismissed = []
     empty_item = {'product_ids': set(), 'names': []}
 
     for o in orders:
@@ -1423,6 +1465,14 @@ def get_iv_match_worklist(conn, platform='shopee'):
             continue
 
         sn = o['order_sn']
+        if sn in dismissed:
+            d = dismissed[sn]
+            rows_dismissed.append({
+                'id': o['id'], 'order_sn': sn, 'order_date': o['order_date'],
+                'payout': payout, 'reason': d['reason'],
+                'dismissed_by': d['dismissed_by'], 'dismissed_at': d['created_at'],
+            })
+            continue
         has_settlement = payout is not None
         in_deposit = o['payout_id'] is not None
         item = items_by_order.get(sn, empty_item)
@@ -1464,6 +1514,8 @@ def get_iv_match_worklist(conn, platform='shopee'):
     for r in summary_a:
         r['wallet_income'] = round(r['wallet_income'], 2)
 
+    rows_dismissed.sort(key=lambda r: r['dismissed_at'] or '', reverse=True)
+
     return {
         'platform': platform,
         'summary_a': summary_a,
@@ -1471,4 +1523,5 @@ def get_iv_match_worklist(conn, platform='shopee'):
         'rows_b': rows_b, 'rows_c': rows_c, 'rows_d': rows_d,
         'count_b': len(rows_b), 'count_c': len(rows_c), 'count_d': len(rows_d),
         'count_bcd': len(rows_b) + len(rows_c) + len(rows_d),
+        'rows_dismissed': rows_dismissed, 'count_dismissed': len(rows_dismissed),
     }

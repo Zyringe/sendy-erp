@@ -57,6 +57,8 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'products.photos_review_assign', 'products.photos_review_delete',
     # Acknowledging a billed≠payout discrepancy is a manager+ action (not staff).
     'marketplace.review_amount',
+    # Acknowledging a no-IV-exists order on /marketplace/review (mig 135).
+    'marketplace.review_dismiss',
     # Master Naming cascade — preview is read-only but POSTed (JSON body);
     # apply mutates product_name in bulk. Manager/admin only.
     'naming.dict_preview', 'naming.dict_apply',
@@ -275,6 +277,7 @@ _ENDPOINT_MODULE = {
     'marketplace.reconciliation': 'accounting',
     'marketplace.review_amount': 'accounting',
     'marketplace.review': 'accounting',
+    'marketplace.review_dismiss': 'accounting',
     # hr
     'hr.dashboard': 'hr',
     'hr.employee_list': 'hr',

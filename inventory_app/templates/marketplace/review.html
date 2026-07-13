@@ -161,9 +161,14 @@
             <td class="small">{{ o.order_date[:10] if o.order_date else '–' }}</td>
             <td class="text-end">{{ '{:,.2f}'.format(o.payout) if o.payout is not none else '–' }}</td>
             <td class="small">{{ o.item_names | join(', ') if o.item_names else '–' }}</td>
-            <td>
+            <td class="text-nowrap">
               <button type="button" class="btn btn-sm btn-outline-primary py-0 js-iv-pick"
                       data-order-id="{{ o.id }}" data-order-sn="{{ o.order_sn }}">key ใบกำกับ / เลือกเอง</button>
+              <form method="post" action="{{ url_for('marketplace.review_dismiss', order_id=o.id) }}" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="platform" value="{{ platform }}">
+                <button class="btn btn-sm btn-outline-secondary py-0" title="ยืนยันว่าออเดอร์นี้ไม่มีใบกำกับ (ไม่ได้คีย์) — เอาออกจากรายการตรวจ กดคืนได้">รับทราบ — ไม่มีใบกำกับ</button>
+              </form>
             </td>
           </tr>
           {% endfor %}
@@ -175,6 +180,45 @@
       {% endif %}
     </div>
   </div>
+
+  {# ── รับทราบแล้ว (dismissed, mig 135) ── #}
+  {% if worklist.rows_dismissed %}
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <strong>รับทราบแล้ว — ไม่มีใบกำกับ (ไม่ได้คีย์)</strong>
+      <span class="badge bg-light text-dark">{{ worklist.count_dismissed }} ออเดอร์</span>
+    </div>
+    <div class="card-body p-0">
+      <p class="small text-muted p-2 mb-0">ออเดอร์ที่ยืนยันแล้วว่าไม่มีใบกำกับใน Express — ไม่นับในรายการตรวจ กด "คืน" เพื่อนำกลับ</p>
+      <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0">
+        <thead class="table-light">
+          <tr><th>เลขออเดอร์</th><th>วันสั่ง</th><th class="text-end">ยอดโอน (฿)</th><th>เหตุผล</th><th>รับทราบโดย</th><th>action</th></tr>
+        </thead>
+        <tbody>
+          {% for o in worklist.rows_dismissed %}
+          <tr>
+            <td><code class="js-order-detail" role="button" data-order-id="{{ o.id }}" title="ดูรายละเอียดออเดอร์">{{ o.order_sn }}</code></td>
+            <td class="small">{{ o.order_date[:10] if o.order_date else '–' }}</td>
+            <td class="text-end">{{ '{:,.2f}'.format(o.payout) if o.payout is not none else '–' }}</td>
+            <td class="small">{{ o.reason or '–' }}</td>
+            <td class="small">{{ o.dismissed_by or '–' }} · {{ o.dismissed_at[:10] if o.dismissed_at else '' }}</td>
+            <td>
+              <form method="post" action="{{ url_for('marketplace.review_dismiss', order_id=o.id) }}" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="platform" value="{{ platform }}">
+                <input type="hidden" name="action" value="undo">
+                <button class="btn btn-sm btn-outline-secondary py-0">คืน</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 {% include 'marketplace/_iv_picker_modal.html' %}

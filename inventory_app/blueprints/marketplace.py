@@ -299,6 +299,32 @@ def review_amount(order_id):
                             platform=request.args.get('platform', 'shopee')))
 
 
+@bp_marketplace.route('/marketplace/order/<int:order_id>/review-dismiss', methods=['POST'])
+def review_dismiss(order_id):
+    """Manager+ acknowledges a bucket-D order that has NO Express IV (sale was
+    never keyed) so it stops nagging on /marketplace/review — or undoes that
+    (action=undo). Auditable + reversible; gated via _MANAGER_POST_OK."""
+    undo = request.form.get('action', 'dismiss') == 'undo'
+    conn = get_connection()
+    try:
+        if undo:
+            n = models.undismiss_review_order(conn, order_id)
+            flash('นำกลับเข้ารายการตรวจแล้ว' if n else 'ไม่พบรายการที่รับทราบไว้',
+                  'success' if n else 'warning')
+        else:
+            sn = models.dismiss_review_order(
+                conn, order_id,
+                reason=(request.form.get('reason') or '').strip() or 'ไม่มีใบกำกับ (ทีมไม่ได้คีย์)',
+                by=session.get('username'))
+            if sn is None:
+                abort(404)
+            flash(f'รับทราบออเดอร์ {sn} แล้ว (ไม่มีใบกำกับ) — กดคืนได้จากส่วน "รับทราบแล้ว"', 'success')
+    finally:
+        conn.close()
+    return redirect(url_for('marketplace.review',
+                            platform=request.form.get('platform', 'shopee')))
+
+
 @bp_marketplace.route('/marketplace/order/<int:order_id>/link-iv', methods=['POST'])
 def link_iv(order_id):
     """Human confirms (or overrides) the IV for one order. doc_base from the picker."""
