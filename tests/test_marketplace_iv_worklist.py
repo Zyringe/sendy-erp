@@ -234,3 +234,51 @@ def test_standin_substitution_does_not_blanket_suppress_bucket_c(worklist_conn):
     import models
     wl = models.get_iv_match_worklist(worklist_conn, 'shopee')
     assert 'WLBUCKETSTANDINMISS' in _sns(wl['rows_c'])
+
+
+def test_manual_link_with_product_mismatch_is_not_bucket_c(tmp_db_conn):
+    """A HUMAN-confirmed (match_method='manual') link must never be re-flagged
+    as bucket C, even when the IV's product doesn't overlap the order's —
+    bucket C exists to catch the AUTO matcher's cross-product steals; a manual
+    link means a person already adjudicated the mismatch (e.g. the team keyed
+    a sibling variant — the bucket-D sheet 2026-07-13 class)."""
+    from models.marketplace import get_iv_match_worklist
+    c = tmp_db_conn
+    c.execute("DELETE FROM marketplace_orders WHERE order_sn LIKE 'WLMANUAL%'")
+    c.execute("DELETE FROM sales_transactions WHERE doc_base LIKE 'IV94%'")
+    c.execute("DELETE FROM marketplace_order_invoice WHERE order_sn LIKE 'WLMANUAL%'")
+    px = c.execute("INSERT INTO products (product_name) VALUES ('WLM Product X')").lastrowid
+    py = c.execute("INSERT INTO products (product_name) VALUES ('WLM Product Y')").lastrowid
+
+    def _seed(order_sn, doc_base, method):
+        oid = c.execute(
+            """INSERT INTO marketplace_orders
+               (platform, order_sn, status, order_date, actual_payout, settled_at, currency)
+               VALUES ('shopee', ?, 'สำเร็จแล้ว', '2026-05-10 10:00', 65.0, '2026-05-11', 'THB')""",
+            (order_sn,)).lastrowid
+        c.execute(
+            """INSERT INTO marketplace_order_items
+               (order_id, platform, order_sn, line_key, item_name, qty, internal_product_id)
+               VALUES (?, 'shopee', ?, 'L1', 'wlm item', 1, ?)""", (oid, order_sn, px))
+        c.execute(
+            """INSERT INTO sales_transactions
+               (date_iso, doc_no, doc_base, product_id, customer, customer_code,
+                qty, unit_price, vat_type, total, net, synced_to_stock)
+               VALUES ('2026-05-11', ?, ?, ?, 'หน้าร้านS', 'Zหน้าร้าน', 1, 65, 1, 65, 65, 1)""",
+            (doc_base + '-1', doc_base, py))   # different product -> raw mismatch
+        c.execute(
+            """INSERT INTO marketplace_order_invoice
+               (platform, order_sn, doc_base, customer_code, match_method, confidence)
+               VALUES ('shopee', ?, ?, 'Zหน้าร้าน', ?, ?)""",
+            (order_sn, doc_base, method, 'manual' if method == 'manual' else 'review'))
+
+    _seed('WLMANUAL1', 'IV9400001', 'manual')   # human-adjudicated -> hidden
+    _seed('WLMANUAL2', 'IV9400002', 'auto')     # auto cross-product -> still C
+    c.commit()
+
+    w = get_iv_match_worklist(c, 'shopee')
+    c_sns = {r['order_sn'] for r in w['rows_c']}
+    assert 'WLMANUAL1' not in c_sns
+    assert 'WLMANUAL2' in c_sns
+    all_sns = {r['order_sn'] for r in w['rows_b'] + w['rows_c'] + w['rows_d']}
+    assert 'WLMANUAL1' not in all_sns   # fully clean, not reshuffled elsewhere
