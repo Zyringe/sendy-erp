@@ -22,7 +22,7 @@ Permission model (source of truth: access_control.py):
   - admin: full access + user management
   - manager: see cost/GP/payments; cannot edit products/users
   - staff: import weekly flow + read-only views (no cost/GP, no hr.*,
-    no cashbook.*, no supplier_catalogue.*)
+    no cashbook.*)
 """
 import io
 import json
@@ -56,7 +56,6 @@ import config
 import models
 from database import init_db, get_connection
 from blueprints.products import bp_products
-from blueprints.supplier_catalogue import bp_supplier_catalogue
 from blueprints.mobile import bp_mobile
 from blueprints.hr import bp_hr
 from blueprints.cashbook import bp_cashbook
@@ -118,7 +117,6 @@ def _csrf_error(e):
 os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
 
 app.register_blueprint(bp_products)
-app.register_blueprint(bp_supplier_catalogue)
 app.register_blueprint(bp_mobile)
 app.register_blueprint(bp_hr)
 app.register_blueprint(bp_cashbook)

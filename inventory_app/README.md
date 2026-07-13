@@ -34,7 +34,7 @@ App listens on `:5001`. DB at `instance/inventory.db`.
 | `hr.py` / `hr_queries.py` | HR module reads/writes |
 | `import_credit_notes.py` | CN preview/confirm two-step (PR #36/#37) |
 | `sku_code_utils.py` | SKU-code builder (post-mig 033 naming rule) |
-| `blueprints/` | `bp_products`, `bp_cashbook`, `bp_hr`, `bp_supplier_catalogue`, `bp_mobile` |
+| `blueprints/` | `bp_products`, `bp_cashbook`, `bp_hr`, `bp_mobile` |
 | `imports/` | Express AR/AP parsers (Sendai Trading) |
 | `templates/`, `static/` | Jinja + CSS |
 | `instance/inventory.db` | SQLite live DB (NOT in git) |

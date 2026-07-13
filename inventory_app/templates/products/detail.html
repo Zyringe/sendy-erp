@@ -5,8 +5,7 @@
 
 {% block topbar_actions %}
 {% if is_admin %}
-<a href="{{ url_for('products.labels_view') }}?add={{ product.id }}" class="btn btn-sm btn-outline-secondary"
-   onclick="event.preventDefault(); addToLabelQueue(this.href);">
+<a href="{{ url_for('labels.print_page') }}" class="btn btn-sm btn-outline-secondary">
   <i class="bi bi-upc-scan me-1"></i>พิมพ์ป้าย
 </a>
 <a href="{{ url_for('products.product_edit', product_id=product.id) }}" class="btn btn-sm btn-outline-secondary">
@@ -843,25 +842,5 @@ document.getElementById('locationModal')?.addEventListener('shown.bs.modal', () 
     }
   } catch (e) {}
 })();
-
-// ── Quick "Add to label queue" from product detail ──
-async function addToLabelQueue(_href) {
-  const KEY = 'sendy.labels.queue.v1';
-  const pid = {{ product.id }};
-  try {
-    const res = await fetch(`/api/products/search?q={{ product.id }}&limit=5`);
-    const data = await res.json();
-    const item = (data.items || []).find(x => x.id === pid);
-    if (!item) { window.location.href = '{{ url_for("products.labels_view") }}'; return; }
-    const queue = JSON.parse(localStorage.getItem(KEY) || '[]');
-    const existing = queue.find(x => x.id === pid);
-    if (existing) existing.qty = (existing.qty || 1) + 1;
-    else queue.push({ ...item, qty: 1 });
-    localStorage.setItem(KEY, JSON.stringify(queue));
-    window.location.href = '{{ url_for("products.labels_view") }}';
-  } catch (e) {
-    window.location.href = '{{ url_for("products.labels_view") }}';
-  }
-}
 </script>
 {% endblock %}

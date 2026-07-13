@@ -112,19 +112,9 @@
        class="sidebar-link {% if (request.endpoint or '').startswith('inventory.conversion_') or request.endpoint == 'inventory.conversion_list' %}active{% endif %}">
       <i class="bi bi-scissors"></i> แปลงสินค้า
     </a>
-    {% if is_manager %}
-    <a href="{{ url_for('products.products_walkthrough') }}"
-       class="sidebar-link {% if request.endpoint == 'products.products_walkthrough' %}active{% endif %}">
-      <i class="bi bi-images"></i> รูปสินค้า
-    </a>
-    {% endif %}
     {% if is_admin %}
-    <a href="{{ url_for('products.labels_view') }}"
-       class="sidebar-link {% if request.endpoint == 'products.labels_view' %}active{% endif %}">
-      <i class="bi bi-upc-scan"></i> พิมพ์ป้าย/บาร์โค้ด
-    </a>
     <a href="{{ url_for('labels.manage') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('labels.') %}active{% endif %}">
+       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('labels.') and request.endpoint != 'labels.print_page' %}active{% endif %}">
       <i class="bi bi-tags"></i> จัดการป้ายสินค้า
     </a>
     {% endif %}
@@ -210,7 +200,7 @@
       <i class="bi bi-shop" style="color:#003087"></i> Lazada
     </a>
     <a href="{{ url_for('marketplace.dashboard') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('marketplace.') %}active{% endif %}">
+       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('marketplace.') and request.endpoint != 'marketplace.review' %}active{% endif %}">
       <i class="bi bi-receipt"></i> คำสั่งซื้อ Marketplace
     </a>
     <a href="{{ url_for('marketplace.review') }}"
@@ -297,10 +287,6 @@
       <i class="bi bi-pencil-square"></i> ตั้งชื่อสินค้า
     </a>
     {% endif %}
-    <a href="{{ url_for('supplier_catalogue.supplier_catalogue_list') }}"
-       class="sidebar-link {% if (request.endpoint or '').startswith('supplier_catalogue.') %}active{% endif %}">
-      <i class="bi bi-journals"></i> แคตตาล็อกผู้จัดจำหน่าย
-    </a>
     {% endif %}
 
     {# ── ระบบ — admin only ── #}
