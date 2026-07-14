@@ -87,6 +87,21 @@ def tmp_db(tmp_path, monkeypatch):
     # snapshot too — same reason as database/hr above.
     import commission
     monkeypatch.setattr(commission, 'DATABASE_PATH', str(dst))
+    # cashflow.py / payments_alloc.py / revenue.py also `from config import
+    # DATABASE_PATH` at module load — and models/__init__.py transitively
+    # imports cashflow (for BSN_AR_PREDICATE), so `import models` anywhere in
+    # the test session permanently snapshots cashflow.DATABASE_PATH to
+    # whatever tmp_db happened to be active at that FIRST import. Every route
+    # that calls these modules without an explicit db_path (e.g. /ar's
+    # `cf_mod.ar_aging()`) would then silently hit a stale/torn-down tmp path
+    # from an earlier, unrelated test — order-dependent "unable to open
+    # database file" crashes. Patch all three snapshots too.
+    import cashflow
+    monkeypatch.setattr(cashflow, 'DATABASE_PATH', str(dst))
+    import payments_alloc
+    monkeypatch.setattr(payments_alloc, 'DATABASE_PATH', str(dst))
+    import revenue
+    monkeypatch.setattr(revenue, 'DATABASE_PATH', str(dst))
 
     return str(dst)
 

@@ -573,3 +573,94 @@ def test_credit_note_aware_identity_and_cash_unaffected_by_sr(empty_db_conn):
     assert ag['total_outstanding'] == pytest.approx(0.0)
     assert ag['total_billed'] == pytest.approx(0.0)
     assert ag['total_collected'] == pytest.approx(0.0)
+
+
+# ── cash_vs_revenue_by_month (Phase 2 /cashflow merged table) ────────────────
+#
+# Pure merge of revenue_by_month + cash_in_by_month (full outer join by
+# month, gaps → 0). Ported from the month_compare logic already shipped in
+# accounting.py::revenue_dashboard — /revenue stays untouched; this gives
+# /cashflow its own callable instead of duplicating the python inline.
+#
+# Independent-signal check: every assertion below re-derives the expected
+# revenue/cash_in/gap from cf.revenue_by_month() / cf.cash_in_by_month()
+# directly (the two already-tested source aggregates), never from the
+# merged function's own output.
+
+def test_cash_vs_revenue_merges_months_present_in_either_series(empty_db_conn):
+    """Sale in Jan (accrual), payment in Mar (cash) — same fixture shape as
+    test_revenue_differs_from_cash_in_across_months. Both months must appear
+    in the merged table even though each only has one side populated."""
+    c = empty_db_conn
+    _ins_sale(c, 'IVM001', 'ACME', 'C01', '2026-01-15', 1000)
+    r = _ins_receipt(c, 'REM001', 'ACME', '2026-03-20', total=1000)
+    _ins_paid(c, r, 'IVM001', 1000)
+    c.commit()
+
+    merged = {row['month']: row for row in cf.cash_vs_revenue_by_month(conn=c)}
+    rev_by_m  = {r['month']: r['revenue'] for r in cf.revenue_by_month(conn=c)}
+    cash_by_m = {r['month']: r['cash_in'] for r in cf.cash_in_by_month(conn=c)}
+
+    assert '2026-01' in merged and '2026-03' in merged
+    assert merged['2026-01']['revenue'] == pytest.approx(rev_by_m['2026-01'])
+    assert merged['2026-01']['cash_in'] == pytest.approx(0.0)
+    assert merged['2026-03']['cash_in'] == pytest.approx(cash_by_m['2026-03'])
+    assert merged['2026-03']['revenue'] == pytest.approx(0.0)
+
+
+def test_cash_vs_revenue_gap_equals_revenue_minus_cash(empty_db_conn):
+    c = empty_db_conn
+    _ins_sale(c, 'IVM002', 'ACME', 'C01', '2026-05-01', 1200)
+    r = _ins_receipt(c, 'REM002', 'ACME', '2026-05-05', total=500)
+    _ins_paid(c, r, 'IVM002', 500)
+    c.commit()
+
+    merged = {row['month']: row for row in cf.cash_vs_revenue_by_month(conn=c)}
+    row = merged['2026-05']
+    assert row['gap'] == pytest.approx(row['revenue'] - row['cash_in'])
+    assert row['revenue'] == pytest.approx(1200.0)
+    assert row['cash_in'] == pytest.approx(500.0)
+    assert row['gap'] == pytest.approx(700.0)
+
+
+def test_cash_vs_revenue_matches_independent_source_aggregates_exactly(empty_db_conn):
+    """Multi-month combined dataset: every merged row must equal the
+    corresponding row computed by calling revenue_by_month/cash_in_by_month
+    directly (independent signal, not the merge function re-run)."""
+    c = empty_db_conn
+    _ins_sale(c, 'IVM010', 'A', 'C01', '2026-01-10', 700)
+    _ins_sale(c, 'IVM011', 'B', 'C02', '2026-02-10', 300)
+    r1 = _ins_receipt(c, 'REM010', 'A', '2026-01-20', total=700)
+    _ins_paid(c, r1, 'IVM010', 700)
+    r2 = _ins_receipt(c, 'REM011', 'B', '2026-03-15', total=300)
+    _ins_paid(c, r2, 'IVM011', 300)
+    c.commit()
+
+    merged     = cf.cash_vs_revenue_by_month(conn=c)
+    rev_by_m   = {r['month']: r['revenue'] for r in cf.revenue_by_month(conn=c)}
+    cash_by_m  = {r['month']: r['cash_in'] for r in cf.cash_in_by_month(conn=c)}
+    all_months = sorted(set(rev_by_m) | set(cash_by_m))
+
+    assert [row['month'] for row in merged] == all_months
+    for row in merged:
+        m = row['month']
+        assert row['revenue'] == pytest.approx(rev_by_m.get(m, 0.0))
+        assert row['cash_in'] == pytest.approx(cash_by_m.get(m, 0.0))
+        assert row['gap'] == pytest.approx(rev_by_m.get(m, 0.0) - cash_by_m.get(m, 0.0))
+
+
+def test_cash_vs_revenue_date_filter_respected(empty_db_conn):
+    c = empty_db_conn
+    _ins_sale(c, 'IVM020', 'A', 'C01', '2025-12-01', 500)
+    _ins_sale(c, 'IVM021', 'A', 'C01', '2026-02-01', 700)
+    c.commit()
+
+    merged = {row['month']: row for row in
+              cf.cash_vs_revenue_by_month(date_from='2026-01-01',
+                                           date_to='2026-12-31', conn=c)}
+    assert '2025-12' not in merged
+    assert merged['2026-02']['revenue'] == pytest.approx(700.0)
+
+
+def test_cash_vs_revenue_empty_dataset_returns_empty_list(empty_db_conn):
+    assert cf.cash_vs_revenue_by_month(conn=empty_db_conn) == []

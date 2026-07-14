@@ -101,6 +101,81 @@ def test_reconcile_tab_shows_both_totals(tmp_db):
     assert f"{rec['ledger_total']:,.0f}".split('.')[0][:3] in body
 
 
+# ── Phase 2 (finance revamp R1) ─────────────────────────────────────────────
+# "/ar owns all AR" — the ยอดเครดิตลูกค้าค้างคืน (customer credit balance)
+# section moves from /cashflow to /ar's reconcile tab.
+
+def test_reconcile_tab_shows_customer_credit_section(tmp_db):
+    c = _admin(tmp_db)
+    r = c.get('/ar?tab=reconcile')
+    body = r.data.decode()
+    assert r.status_code == 200
+    assert 'ยอดเครดิตลูกค้าค้างคืน' in body, (
+        "Expected the customer-credit-balance section (moved from /cashflow) "
+        "to render on /ar?tab=reconcile."
+    )
+
+
+def test_reconcile_tab_show_all_toggle_present(tmp_db):
+    c = _admin(tmp_db)
+    r = c.get('/ar?tab=reconcile')
+    body = r.data.decode()
+    assert 'show_all=1' in body
+
+
+def test_reconcile_tab_show_all_offers_hide_link(tmp_db):
+    c = _admin(tmp_db)
+    r = c.get('/ar?tab=reconcile&show_all=1')
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert 'ซ่อนรายการต่ำกว่า' in body
+
+
+# ── Phase 2 (finance revamp R3) ─────────────────────────────────────────────
+# ar.html:43 used to hardcode "34 ราย" regardless of the real snapshot count.
+
+def test_overview_snapshot_count_is_dynamic_not_hardcoded(tmp_db):
+    """Insert one additional collectable customer into the live-DB clone's
+    latest BSN snapshot and assert the rendered count moves accordingly — a
+    hardcoded literal would never move, and would keep showing the OLD
+    (pre-insert) count text no matter what the DB says."""
+    import sqlite3
+    import models
+
+    before_count = len(models.get_customer_debt_summary())
+
+    conn = sqlite3.connect(tmp_db)
+    snap, batch_id = conn.execute("""
+        SELECT snapshot_date_iso, batch_id FROM express_ar_outstanding
+         WHERE entity = 'BSN'
+         ORDER BY snapshot_date_iso DESC LIMIT 1
+    """).fetchone()
+    conn.execute("""
+        INSERT INTO express_ar_outstanding
+            (batch_id, snapshot_date_iso, customer_code, customer_name,
+             doc_no, doc_date_iso, is_anomalous, bill_amount, paid_amount,
+             outstanding_amount, entity)
+        VALUES (?, ?, 'ZZTEST01', 'ทดสอบไดนามิก', 'IVZZTEST01', ?, 0,
+                999.0, 0.0, 999.0, 'BSN')
+    """, (batch_id, snap, snap))
+    conn.commit()
+    conn.close()
+
+    after_count = before_count + 1
+
+    c = _admin(tmp_db)
+    r = c.get('/ar')
+    body = r.data.decode()
+    assert f"{after_count:,} ราย" in body, (
+        f"Expected the dynamic count ({after_count} ราย) to appear after "
+        "inserting an extra snapshot row."
+    )
+    assert f"{before_count:,} ราย" not in body, (
+        "Old count text still present — the count did not update, "
+        "suggesting it is still hardcoded."
+    )
+
+
 # ── Task 6 ────────────────────────────────────────────────────────────────────
 
 def test_old_ar_routes_redirect_to_unified(tmp_db):

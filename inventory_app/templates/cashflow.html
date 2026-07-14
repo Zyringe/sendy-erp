@@ -42,7 +42,7 @@
 <div class="row g-3 mb-4">
 
   {# เงินเข้ารวมช่วงนี้ #}
-  <div class="col-sm-6 col-xl-4">
+  <div class="col-sm-6 col-xl-6">
     <div class="stat-card">
       <div class="d-flex align-items-center gap-3">
         <div class="stat-card-icon" style="background:#dcf2e0">
@@ -60,53 +60,38 @@
     </div>
   </div>
 
-  {# AR คงค้างรวม (ปัจจุบัน) #}
-  <div class="col-sm-6 col-xl-4">
-    <div class="stat-card">
-      <div class="d-flex align-items-center gap-3">
-        <div class="stat-card-icon" style="background:#fdf3dd">
-          <i class="bi bi-hourglass-split" style="color:#b45309"></i>
+  {# AR คงค้างรวม (ปัจจุบัน) — compact headline, รายละเอียดอยู่ที่ /ar #}
+  <div class="col-sm-6 col-xl-6">
+    <a href="{{ url_for('accounting.ar_dashboard') }}" class="text-decoration-none">
+      <div class="stat-card h-100">
+        <div class="d-flex align-items-center gap-3">
+          <div class="stat-card-icon" style="background:#fdf3dd">
+            <i class="bi bi-hourglass-split" style="color:#b45309"></i>
+          </div>
+          <div>
+            <div class="stat-card-label">AR คงค้างรวม</div>
+            <div class="stat-card-value text-warning">{{ total_outstanding | fmt_price }}</div>
+          </div>
         </div>
-        <div>
-          <div class="stat-card-label">AR คงค้างรวม</div>
-          <div class="stat-card-value text-warning">{{ total_outstanding | fmt_price }}</div>
-        </div>
-      </div>
-      <div class="mt-2 text-subtle small">
-        ณ วันนี้ ({{ aging.as_of }}) · ทุกช่วงเวลา
-      </div>
-    </div>
-  </div>
-
-  {# จำนวนใบค้าง #}
-  <div class="col-sm-6 col-xl-4">
-    <div class="stat-card">
-      <div class="d-flex align-items-center gap-3">
-        <div class="stat-card-icon" style="background:#fdecee">
-          <i class="bi bi-receipt" style="color:#c41e2a"></i>
-        </div>
-        <div>
-          <div class="stat-card-label">จำนวนใบค้าง</div>
-          <div class="stat-card-value text-danger">{{ total_open_count | fmt_qty }} ใบ</div>
+        <div class="mt-2 text-subtle small">
+          ณ {{ aging.as_of }} · {{ total_open_count | fmt_qty }} ใบค้าง ·
+          <span class="text-accent">ดูรายละเอียด (aging / กระทบยอด) →</span>
         </div>
       </div>
-      <div class="mt-2 text-subtle small">
-        ใบที่ยังมียอดค้างชำระ (outstanding &gt; 0)
-      </div>
-    </div>
+    </a>
   </div>
 
 </div>
 
-{# ── เงินเข้าจริงรายเดือน (ตามวันรับเงิน) ─────────────────────────────────── #}
+{# ── เงินเข้า (Cash) เทียบรายได้ (Accrual) รายเดือน ────────────────────────── #}
 <div class="card mb-4">
   <div class="card-header d-flex justify-content-between align-items-center">
-    <span><i class="bi bi-cash-coin me-2 text-accent"></i>เงินเข้าจริงตามวันใบเสร็จรับเงิน</span>
-    <span class="text-subtle small">Cash basis — RE date</span>
+    <span><i class="bi bi-cash-coin me-2 text-accent"></i>เงินเข้า (Cash) เทียบรายได้ (Accrual) รายเดือน</span>
+    <span class="text-subtle small">เงินเข้า = วันใบเสร็จรับเงิน (RE) · รายได้ = วันที่ขาย</span>
   </div>
 
   {% if cash_rows %}
-  {# simple bar chart using inline CSS widths #}
+  {# simple bar chart on cash-in using inline CSS widths #}
   {% set max_cash = cash_rows | map(attribute='cash_in') | max %}
   <div class="card-body pb-0">
     {% for row in cash_rows %}
@@ -128,227 +113,53 @@
     </div>
     {% endfor %}
   </div>
+  {% endif %}
 
+  {% if month_compare %}
+  <div class="card-body py-2 small text-subtle">
+    ส่วนต่างบวก = ออกบิลแล้วยังไม่เก็บเงิน (AR เพิ่ม) ·
+    ลบ = เก็บเงินใบเก่ามากกว่าออกใบใหม่
+  </div>
   <div class="table-responsive mt-2">
     <table class="table table-sm mb-0">
       <thead>
         <tr>
           <th>เดือน</th>
+          <th class="text-end">รายได้ (฿)</th>
           <th class="text-end">เงินเข้า (฿)</th>
-          <th class="text-end">จำนวนใบเสร็จ</th>
+          <th class="text-end">ส่วนต่าง (฿)</th>
         </tr>
       </thead>
       <tbody>
-        {% for row in cash_rows %}
-        <tr>
-          <td>{{ row.month }}</td>
-          <td class="text-end">{{ row.cash_in | fmt_price }}</td>
-          <td class="text-end text-subtle">{{ row.receipts }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-      <tfoot class="table-secondary fw-bold">
-        <tr>
-          <td>รวม</td>
-          <td class="text-end text-success">{{ total_cash_in | fmt_price }}</td>
-          <td class="text-end text-subtle">{{ total_receipts }}</td>
-        </tr>
-      </tfoot>
-    </table>
-  </div>
-
-  {% else %}
-  <div class="card-body text-subtle text-center py-4">
-    <i class="bi bi-inbox fs-3 d-block mb-2"></i>
-    ไม่มีข้อมูลใบเสร็จรับเงินในช่วงนี้
-  </div>
-  {% endif %}
-</div>
-
-{# ── AR Aging ─────────────────────────────────────────────────────────────── #}
-<div class="card mb-4">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <span>
-      <i class="bi bi-calendar3-range me-2 text-accent"></i>
-      AR Aging — ยอดค้างจำแนกตามอายุ
-    </span>
-    <span class="text-subtle small">ณ {{ aging.as_of }}</span>
-  </div>
-  <div class="table-responsive">
-    <table class="table mb-0">
-      <thead>
-        <tr>
-          <th>ช่วงอายุ (วัน)</th>
-          <th class="text-end">ยอดค้าง (฿)</th>
-          <th class="text-end">จำนวนใบ</th>
-          <th class="text-end">% ของทั้งหมด</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for b in aging.buckets %}
-        <tr>
-          <td>
-            {% if b.label == '90+' %}
-            <span class="badge bg-danger">{{ b.label }} วัน</span>
-            {% elif b.label == '61-90' %}
-            <span class="badge bg-warning text-dark">{{ b.label }} วัน</span>
-            {% else %}
-            {{ b.label }} วัน
-            {% endif %}
-          </td>
-          <td class="text-end {% if b.label == '90+' and b.amount > 0 %}text-danger fw-semibold{% endif %}">
-            {{ b.amount | fmt_price }}
-          </td>
-          <td class="text-end text-subtle">{{ b.count }}</td>
-          <td class="text-end text-subtle small">
-            {% if aging.total_outstanding > 0 %}
-            {{ "%.1f"|format(b.amount / aging.total_outstanding * 100) }}%
-            {% else %}—{% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-      <tfoot class="table-secondary fw-bold">
-        <tr>
-          <td>รวมค้างทั้งหมด</td>
-          <td class="text-end text-warning">{{ aging.total_outstanding | fmt_price }}</td>
-          <td class="text-end text-subtle">
-            {{ aging.buckets | map(attribute='count') | sum }}
-          </td>
-          <td></td>
-        </tr>
-        <tr class="table-light text-subtle small">
-          <td>ยอดขายรวม (billed)</td>
-          <td class="text-end">{{ aging.total_billed | fmt_price }}</td>
-          <td colspan="2" class="text-end">
-            รับแล้ว {{ aging.total_collected | fmt_price }}
-          </td>
-        </tr>
-      </tfoot>
-    </table>
-  </div>
-</div>
-
-{# ── ยอดเครดิตลูกค้าค้างคืน (overpaid invoices) ──────────────────────────── #}
-<div class="card mb-4">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <span>
-      <i class="bi bi-cash-coin me-2 text-accent"></i>
-      ยอดเครดิตลูกค้าค้างคืน
-      <small class="text-subtle ms-2">บิลที่ลูกค้าจ่ายเกินยอดสุทธิ — เราเป็นหนี้ลูกค้า</small>
-    </span>
-    <span class="text-end">
-      <span class="fw-bold text-danger">{{ credit_total | fmt_price }}</span>
-      <span class="text-subtle small ms-2">{{ credit_rows | length }} รายการ</span>
-    </span>
-  </div>
-  {% if credit_rows %}
-  <div class="table-responsive">
-    <table class="table table-sm mb-0 align-middle">
-      <thead>
-        <tr>
-          <th>IV</th>
-          <th>ลูกค้า</th>
-          <th>วันที่บิล</th>
-          <th class="text-end">ยอดบิล</th>
-          <th class="text-end">ใบลดหนี้</th>
-          <th class="text-end">รับชำระ</th>
-          <th class="text-end">ยอดเครดิต</th>
-          <th class="text-end">อายุ</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in credit_rows %}
-        <tr>
-          <td>
-            <a href="{{ url_for('sales.sales_doc', doc_base=r.doc_base) }}">
-              {{ r.doc_base }}
-            </a>
-          </td>
-          <td>
-            <a href="{{ url_for('partners.customer_summary', customer_name=r.customer) }}">
-              {{ r.customer }}
-            </a>
-          </td>
-          <td>{{ r.invoice_date or '—' }}</td>
-          <td class="text-end">{{ r.billed | fmt_price }}</td>
-          <td class="text-end">
-            {% if r.credit_notes %}{{ r.credit_notes | fmt_price }}{% else %}—{% endif %}
-          </td>
-          <td class="text-end">{{ r.collected | fmt_price }}</td>
-          <td class="text-end fw-bold text-danger">
-            {{ r.credit | fmt_price }}
-          </td>
-          <td class="text-end text-subtle small">
-            {% if r.days_old is not none %}{{ r.days_old }} วัน{% else %}—{% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-  <div class="card-body text-subtle text-center py-3">
-    ไม่มียอดเครดิตค้างคืน
-    {% if not show_all_credit %}(เกณฑ์ ≥฿5){% endif %}
-  </div>
-  {% endif %}
-  <div class="card-footer small text-subtle">
-    {% if show_all_credit %}
-      <a href="{{ url_for('accounting.cashflow_dashboard', **{'from': from_month, 'to': to_month}) }}">
-        ซ่อนรายการต่ำกว่า ฿5 (rounding noise)
-      </a>
-    {% else %}
-      {% if credit_hidden_count > 0 %}
-        ซ่อน {{ credit_hidden_count }} รายการต่ำกว่า ฿5 (rounding noise) —
-      {% endif %}
-      <a href="{{ url_for('accounting.cashflow_dashboard',
-                          show_all=1,
-                          **{'from': from_month, 'to': to_month}) }}">
-        แสดงทั้งหมด (show_all=1)
-      </a>
-    {% endif %}
-  </div>
-</div>
-
-{# ── รายได้ตามเกณฑ์คงค้าง (Accrual) รายเดือน ─────────────────────────────── #}
-<div class="card mb-4">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <span>
-      <i class="bi bi-graph-up me-2 text-accent"></i>
-      รายได้ตามเกณฑ์คงค้าง (Accrual) รายเดือน
-    </span>
-    <span class="text-subtle small">วันที่ขาย — เปรียบเทียบกับ Cash basis ข้างบน</span>
-  </div>
-  {% if revenue_rows %}
-  <div class="table-responsive">
-    <table class="table table-sm mb-0">
-      <thead>
-        <tr>
-          <th>เดือน</th>
-          <th class="text-end">รายได้สุทธิ (net)</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in revenue_rows %}
+        {% for row in month_compare %}
         <tr>
           <td>{{ row.month }}</td>
           <td class="text-end">{{ row.revenue | fmt_price }}</td>
+          <td class="text-end">{{ row.cash_in | fmt_price }}</td>
+          <td class="text-end {% if row.gap > 0.5 %}text-warning fw-semibold{% elif row.gap < -0.5 %}text-success fw-semibold{% else %}text-subtle{% endif %}">
+            {{ row.gap | fmt_price }}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
       <tfoot class="table-secondary fw-bold">
+        {% set gap_total = total_revenue - total_cash_in %}
         <tr>
           <td>รวม</td>
-          <td class="text-end">
-            {{ revenue_rows | map(attribute='revenue') | sum | fmt_price }}
+          <td class="text-end">{{ total_revenue | fmt_price }}</td>
+          <td class="text-end text-success">{{ total_cash_in | fmt_price }}</td>
+          <td class="text-end {% if gap_total > 0.5 %}text-warning{% elif gap_total < -0.5 %}text-success{% endif %}">
+            {{ gap_total | fmt_price }}
           </td>
         </tr>
       </tfoot>
     </table>
   </div>
   {% else %}
-  <div class="card-body text-subtle text-center py-3">ไม่มียอดขายในช่วงนี้</div>
+  <div class="card-body text-subtle text-center py-4">
+    <i class="bi bi-inbox fs-3 d-block mb-2"></i>
+    ไม่มีข้อมูลในช่วงนี้
+  </div>
   {% endif %}
 </div>
 
@@ -359,7 +170,8 @@
     เงินเข้า = รับรู้ตามวันใบเสร็จรับเงิน (RE) ที่ไม่ถูกยกเลิก ·
     ใบที่ import ก่อนระบบเก็บยอด (legacy) ถือว่าชำระเต็มใบ ·
     BSN เท่านั้น · ไม่รวม VAT ·
-    AR Aging คำนวณ ณ วันปัจจุบัน ({{ aging.as_of }}) ทุกช่วงเวลา ·
+    ยอด AR คงค้าง คำนวณ ณ วันปัจจุบัน ({{ aging.as_of }}) — รายละเอียด/aging/กระทบยอดเต็มอยู่ที่
+    <a href="{{ url_for('accounting.ar_dashboard') }}">ลูกหนี้ (AR)</a> ·
     รายได้ Accrual = <code>net</code> จาก <code>sales_transactions</code> ตามวันที่ขาย
   </div>
 </div>

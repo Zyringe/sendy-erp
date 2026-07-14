@@ -320,6 +320,49 @@ def revenue_by_month(date_from: Optional[str] = None,
             for r in rows]
 
 
+# ── 4. cash_vs_revenue_by_month ───────────────────────────────────────────────
+
+def cash_vs_revenue_by_month(date_from: Optional[str] = None,
+                             date_to: Optional[str] = None,
+                             conn: Optional[sqlite3.Connection] = None,
+                             db_path: Optional[str] = None) -> List[dict]:
+    """Accrual revenue vs cash-in, merged by month (full outer join in
+    Python so a month present in only one series still shows, with 0 on
+    the other side).
+
+    Ports the month_compare logic already shipped in
+    accounting.py::revenue_dashboard so /cashflow can show ONE combined
+    table instead of two separate monthly tables (Phase 2 finance revamp,
+    R1) without duplicating the inline python. /revenue keeps its own
+    copy untouched — this function is additive, not a replacement.
+
+    Returns list[{'month': 'YYYY-MM', 'revenue': float, 'cash_in': float,
+                   'gap': float}] sorted by month ASC. gap = revenue - cash_in
+    (positive = billed but not yet collected; negative = collected more
+    than billed this month, e.g. older AR coming in).
+    """
+    revenue_rows = revenue_by_month(date_from=date_from, date_to=date_to,
+                                    conn=conn, db_path=db_path)
+    cash_rows    = cash_in_by_month(date_from=date_from, date_to=date_to,
+                                    conn=conn, db_path=db_path)
+
+    rev_by_m  = {r['month']: r['revenue'] for r in revenue_rows}
+    cash_by_m = {r['month']: r['cash_in']  for r in cash_rows}
+    months = sorted(set(rev_by_m) | set(cash_by_m))
+
+    result = []
+    for m in months:
+        rev_v  = rev_by_m.get(m, 0.0)
+        cash_v = cash_by_m.get(m, 0.0)
+        result.append({
+            'month':   m,
+            'revenue': round(rev_v, 2),
+            'cash_in': round(cash_v, 2),
+            'gap':     round(rev_v - cash_v, 2),
+        })
+    return result
+
+
 def bsn_ar_excluded(conn: Optional[sqlite3.Connection] = None,
                     db_path: Optional[str] = None) -> dict:
     """Amounts EXCLUDED from canonical BSN AR (see BSN_AR_PREDICATE), for

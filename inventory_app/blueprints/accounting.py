@@ -210,10 +210,12 @@ def ar_dashboard():
         debt = models.get_customer_debt_summary()
         summ = models.get_payment_summary()
         snapshot_total = sum(r['outstanding_amount'] or 0 for r in debt)
+        snapshot_count = len(debt)
         ledger_unpaid = summ['unpaid_amount']
         diff_amount = ledger_unpaid - snapshot_total
         ctx.update(
             snapshot_total=snapshot_total,
+            snapshot_count=snapshot_count,
             ledger_unpaid=ledger_unpaid,
             unpaid_count=summ['unpaid_count'],
             diff_amount=diff_amount,
@@ -276,6 +278,26 @@ def ar_dashboard():
         rec = models.get_ar_reconciliation()
         ctx['reconcile'] = rec
 
+        # Customer-credit-balance section — moved here verbatim from
+        # /cashflow (R1, Phase 2 finance revamp): "/ar owns all AR".
+        # Point-in-time today, not period. Single snapshot then
+        # Python-filter — avoids double-querying and the drift that two
+        # separate calls could produce in a concurrent import.
+        show_all_credit  = request.args.get('show_all') in ('1', 'true', 'on')
+        credit_threshold = 0.0 if show_all_credit else 5.0
+        all_credit_rows  = pa_mod.customer_credit_rows(threshold=0.0)
+        credit_rows = (all_credit_rows if show_all_credit
+                       else [r for r in all_credit_rows
+                             if r['credit'] >= credit_threshold])
+        credit_total = round(sum(r['credit'] for r in credit_rows), 2)
+        credit_hidden_count = len(all_credit_rows) - len(credit_rows)
+        ctx.update(
+            credit_rows=credit_rows,
+            credit_total=credit_total,
+            credit_hidden_count=credit_hidden_count,
+            show_all_credit=show_all_credit,
+        )
+
     return render_template('ar.html', **ctx)
 
 
@@ -283,7 +305,11 @@ def ar_dashboard():
 
 @bp_accounting.route('/cashflow')
 def cashflow_dashboard():
-    """Cash flow dashboard: cash-in by RE month + AR aging + accrual revenue.
+    """Cash flow dashboard: pure "เงินเข้า" view — cash-in by RE month vs
+    accrual revenue, plus a compact AR headline linking to /ar.
+
+    AR detail (full aging breakdown + customer credit balances) lives on
+    /ar now (R1, Phase 2 finance revamp) — /cashflow only teases the total.
 
     Admin + manager only (same gating as accounting_summary).
     Optional ?from=YYYY-MM&to=YYYY-MM period filter.
@@ -322,44 +348,30 @@ def cashflow_dashboard():
     date_from = _month_start(from_month)
     date_to   = _month_end(to_month)
 
-    cash_rows   = cf_mod.cash_in_by_month(date_from=date_from, date_to=date_to)
-    aging       = cf_mod.ar_aging()          # always point-in-time today
-    revenue_rows = cf_mod.revenue_by_month(date_from=date_from, date_to=date_to)
+    cash_rows     = cf_mod.cash_in_by_month(date_from=date_from, date_to=date_to)
+    aging         = cf_mod.ar_aging()          # always point-in-time today — AR headline only
+    month_compare = cf_mod.cash_vs_revenue_by_month(date_from=date_from, date_to=date_to)
 
     total_cash_in     = round(sum(r['cash_in'] for r in cash_rows), 2)
     total_receipts    = sum(r['receipts'] for r in cash_rows)
     total_outstanding = aging['total_outstanding']
     total_open_count  = sum(b['count'] for b in aging['buckets'])
-
-    # Customer-credit-balance section (point-in-time today, not period).
-    # Single snapshot then Python-filter — avoids double-querying and the
-    # drift that two separate calls could produce in a concurrent import.
-    show_all_credit  = request.args.get('show_all') in ('1', 'true', 'on')
-    credit_threshold = 0.0 if show_all_credit else 5.0
-    all_credit_rows  = pa_mod.customer_credit_rows(threshold=0.0)
-    credit_rows = (all_credit_rows if show_all_credit
-                   else [r for r in all_credit_rows
-                         if r['credit'] >= credit_threshold])
-    credit_total = round(sum(r['credit'] for r in credit_rows), 2)
-    credit_hidden_count = len(all_credit_rows) - len(credit_rows)
+    total_revenue     = round(sum(r['revenue'] for r in month_compare), 2)
 
     return render_template(
         'cashflow.html',
         cash_rows=cash_rows,
         aging=aging,
-        revenue_rows=revenue_rows,
+        month_compare=month_compare,
         total_cash_in=total_cash_in,
         total_receipts=total_receipts,
         total_outstanding=total_outstanding,
         total_open_count=total_open_count,
+        total_revenue=total_revenue,
         from_month=from_month,
         to_month=to_month,
         date_from=date_from,
         date_to=date_to,
-        credit_rows=credit_rows,
-        credit_total=credit_total,
-        credit_hidden_count=credit_hidden_count,
-        show_all_credit=show_all_credit,
     )
 
 

@@ -40,7 +40,7 @@
         </div>
         <div class="fs-3 fw-bold">฿{{ '{:,.0f}'.format(snapshot_total) }}</div>
         <div class="text-subtle small mt-1">
-          34 ราย · ยอด ณ {{ snapshot_date or '—' }} (export จาก Express) · ใช้ทวงหนี้
+          {{ '{:,}'.format(snapshot_count) }} ราย · ยอด ณ {{ snapshot_date or '—' }} (export จาก Express) · ใช้ทวงหนี้
         </div>
       </div>
     </div>
@@ -469,6 +469,86 @@
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+{# ── ยอดเครดิตลูกค้าค้างคืน (overpaid invoices) — moved here from /cashflow ── #}
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>
+      <i class="bi bi-cash-coin me-2 text-accent"></i>
+      ยอดเครดิตลูกค้าค้างคืน
+      <small class="text-subtle ms-2">บิลที่ลูกค้าจ่ายเกินยอดสุทธิ — เราเป็นหนี้ลูกค้า</small>
+    </span>
+    <span class="text-end">
+      <span class="fw-bold text-danger">{{ credit_total | fmt_price }}</span>
+      <span class="text-subtle small ms-2">{{ credit_rows | length }} รายการ</span>
+    </span>
+  </div>
+  {% if credit_rows %}
+  <div class="table-responsive">
+    <table class="table table-sm mb-0 align-middle">
+      <thead>
+        <tr>
+          <th>IV</th>
+          <th>ลูกค้า</th>
+          <th>วันที่บิล</th>
+          <th class="text-end">ยอดบิล</th>
+          <th class="text-end">ใบลดหนี้</th>
+          <th class="text-end">รับชำระ</th>
+          <th class="text-end">ยอดเครดิต</th>
+          <th class="text-end">อายุ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in credit_rows %}
+        <tr>
+          <td>
+            <a href="{{ url_for('sales.sales_doc', doc_base=r.doc_base) }}">
+              {{ r.doc_base }}
+            </a>
+          </td>
+          <td>
+            <a href="{{ url_for('partners.customer_summary', customer_name=r.customer) }}">
+              {{ r.customer }}
+            </a>
+          </td>
+          <td>{{ r.invoice_date or '—' }}</td>
+          <td class="text-end">{{ r.billed | fmt_price }}</td>
+          <td class="text-end">
+            {% if r.credit_notes %}{{ r.credit_notes | fmt_price }}{% else %}—{% endif %}
+          </td>
+          <td class="text-end">{{ r.collected | fmt_price }}</td>
+          <td class="text-end fw-bold text-danger">
+            {{ r.credit | fmt_price }}
+          </td>
+          <td class="text-end text-subtle small">
+            {% if r.days_old is not none %}{{ r.days_old }} วัน{% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-body text-subtle text-center py-3">
+    ไม่มียอดเครดิตค้างคืน
+    {% if not show_all_credit %}(เกณฑ์ ≥฿5){% endif %}
+  </div>
+  {% endif %}
+  <div class="card-footer small text-subtle">
+    {% if show_all_credit %}
+      <a href="{{ url_for('accounting.ar_dashboard', tab='reconcile') }}">
+        ซ่อนรายการต่ำกว่า ฿5 (rounding noise)
+      </a>
+    {% else %}
+      {% if credit_hidden_count > 0 %}
+        ซ่อน {{ credit_hidden_count }} รายการต่ำกว่า ฿5 (rounding noise) —
+      {% endif %}
+      <a href="{{ url_for('accounting.ar_dashboard', tab='reconcile', show_all=1) }}">
+        แสดงทั้งหมด (show_all=1)
+      </a>
+    {% endif %}
   </div>
 </div>
 
