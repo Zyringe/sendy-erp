@@ -48,8 +48,8 @@
       </a>
       {% endif %}
 
-      {# ── การค้า & บัญชี ── #}
-      <div class="list-group-item bg-light text-muted small fw-bold">การค้า & บัญชี</div>
+      {# ── การค้า ── #}
+      <div class="list-group-item bg-light text-muted small fw-bold">การค้า</div>
       <a href="{{ url_for('sales.trade_dashboard') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-bar-chart-line me-3"></i>ภาพรวมการค้า
       </a>
@@ -60,28 +60,25 @@
         <i class="bi bi-truck me-3"></i>ยอดซื้อ
       </a>
       <a href="{{ url_for('partners.supplier_list') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-truck me-3"></i>Supplier
+        <i class="bi bi-truck me-3"></i>ผู้จำหน่าย
       </a>
-      <a href="{{ url_for('commission.commission_dashboard') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-cash-coin me-3"></i>Commission
+      <a href="{{ url_for('ecommerce.ecommerce') }}" class="list-group-item list-group-item-action">
+        <i class="bi bi-bag-heart me-3"></i>รายการขายออนไลน์
       </a>
+      <a href="{{ url_for('marketplace.review') }}" class="list-group-item list-group-item-action">
+        <i class="bi bi-clipboard-check me-3"></i>ต้องตรวจการจับคู่ใบกำกับ
+      </a>
+
+      {# ── การเงิน ── #}
+      <div class="list-group-item bg-light text-muted small fw-bold">การเงิน</div>
       <a href="{{ url_for('accounting.ar_dashboard') }}" class="list-group-item list-group-item-action">
         <i class="bi bi-receipt-cutoff me-3"></i>ลูกหนี้ (AR)
       </a>
       <a href="{{ url_for('accounting.ap_dashboard') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-bank me-3"></i>AP / ซัพพลายเออร์
+        <i class="bi bi-bank me-3"></i>เจ้าหนี้ (AP)
       </a>
-
-      {# ── E-commerce ── #}
-      <div class="list-group-item bg-light text-muted small fw-bold">E-commerce</div>
-      <a href="{{ url_for('ecommerce.ecommerce', tab='shopee') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-bag-heart me-3" style="color:#ee4d2d"></i>Shopee
-      </a>
-      <a href="{{ url_for('ecommerce.ecommerce', tab='lazada') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-shop me-3" style="color:#003087"></i>Lazada
-      </a>
-      <a href="{{ url_for('marketplace.review') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-clipboard-check me-3"></i>ต้องตรวจการจับคู่ใบกำกับ
+      <a href="{{ url_for('commission.commission_dashboard') }}" class="list-group-item list-group-item-action">
+        <i class="bi bi-cash-coin me-3"></i>ค่าคอมพนักงานขาย
       </a>
 
       {# ── บุคลากร (HR) — admin/manager only ── #}
