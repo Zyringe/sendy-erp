@@ -84,7 +84,8 @@
       </div>
       {% if is_manager and stats.sales.total_net > 0 %}
       <div class="mt-2 text-subtle small">
-        margin {{ "%.1f"|format(stats.gross_profit / stats.sales.total_net * 100) }}%
+        {{ "%.1f"|format(stats.gross_profit / stats.sales.total_net * 100) }}% ของยอดขาย
+        — ไม่ใช่กำไรขั้นต้น (ดู สรุปกำไร-ขาดทุน)
       </div>
       {% else %}
       <div class="mt-2 text-subtle small">—</div>

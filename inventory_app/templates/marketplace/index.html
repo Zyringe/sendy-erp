@@ -16,7 +16,7 @@
       <div class="stat-card-value text-danger mt-1">{{ sp.get('orders', 0) | fmt_qty }}</div>
       <div class="stat-card-sub">ออเดอร์ · ยอดรวม ฿{{ sp.get('gmv', 0) | fmt_price }}</div>
       <div class="stat-card-sub text-muted">
-        {% if sp.get('last_import') %}นำเข้าล่าสุด {{ sp.last_import[:16] }}{% else %}ยังไม่มีข้อมูล{% endif %}
+        {% if sp.get('last_import') %}นำเข้าออเดอร์ล่าสุด {{ sp.last_import[:16] }}{% else %}ยังไม่มีข้อมูล{% endif %}
       </div>
     </div>
   </div>
@@ -26,7 +26,7 @@
       <div class="stat-card-value text-primary mt-1">{{ lz.get('orders', 0) | fmt_qty }}</div>
       <div class="stat-card-sub">ออเดอร์ · ยอดรวม ฿{{ lz.get('gmv', 0) | fmt_price }}</div>
       <div class="stat-card-sub text-muted">
-        {% if lz.get('last_import') %}นำเข้าล่าสุด {{ lz.last_import[:16] }}{% else %}ยังไม่มีข้อมูล{% endif %}
+        {% if lz.get('last_import') %}นำเข้าออเดอร์ล่าสุด {{ lz.last_import[:16] }}{% else %}ยังไม่มีข้อมูล{% endif %}
       </div>
     </div>
   </div>
@@ -40,7 +40,7 @@
   <div class="col-sm-6 col-md-3">
     <a href="{{ url_for('marketplace.unmapped') }}" class="text-decoration-none">
       <div class="stat-card" style="border-left:4px solid {% if unmapped %}#f59e0b{% else %}#10b981{% endif %}">
-        <div class="stat-card-label"><i class="bi bi-link-45deg me-1"></i>รายการยังไม่จับคู่</div>
+        <div class="stat-card-label"><i class="bi bi-link-45deg me-1"></i>ออเดอร์ยังไม่จับคู่สินค้า</div>
         <div class="stat-card-value {% if unmapped %}text-warning{% else %}text-success{% endif %} mt-1">{{ unmapped | fmt_qty }}</div>
         <div class="stat-card-sub text-muted">คลิกเพื่อจับคู่สินค้า</div>
       </div>

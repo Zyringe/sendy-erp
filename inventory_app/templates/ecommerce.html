@@ -22,7 +22,7 @@
       <div class="stat-card-value text-danger mt-1">{{ shopee_info.get('sku_count', 0) | fmt_qty }}</div>
       <div class="stat-card-sub">คลังรวม {{ shopee_info.get('total_stock', 0) | fmt_qty }} ชิ้น</div>
       {% if shopee_info.get('last_import') %}
-      <div class="stat-card-sub text-muted">นำเข้าล่าสุด {{ shopee_info.last_import[:10] }}</div>
+      <div class="stat-card-sub text-muted">นำเข้า listing ล่าสุด {{ shopee_info.last_import[:10] }}</div>
       {% else %}
       <div class="stat-card-sub text-muted">ยังไม่มีข้อมูล</div>
       {% endif %}
@@ -34,7 +34,7 @@
       <div class="stat-card-value text-primary mt-1">{{ lazada_info.get('sku_count', 0) | fmt_qty }}</div>
       <div class="stat-card-sub">คลังรวม {{ lazada_info.get('total_stock', 0) | fmt_qty }} ชิ้น</div>
       {% if lazada_info.get('last_import') %}
-      <div class="stat-card-sub text-muted">นำเข้าล่าสุด {{ lazada_info.last_import[:10] }}</div>
+      <div class="stat-card-sub text-muted">นำเข้า listing ล่าสุด {{ lazada_info.last_import[:10] }}</div>
       {% else %}
       <div class="stat-card-sub text-muted">ยังไม่มีข้อมูล</div>
       {% endif %}
@@ -60,7 +60,7 @@
         {% if ltotal > 0 %}{{ lmapped }}/{{ ltotal }}{% else %}—{% endif %}
       </div>
       <div class="stat-card-sub {% if ltotal > lmapped %}text-danger{% else %}text-muted{% endif %}">
-        {% if ltotal > 0 %}ยังไม่ผูก {{ ltotal - lmapped }} รายการ{% else %}ยังไม่มีข้อมูล{% endif %}
+        {% if ltotal > 0 %}listing ยังไม่ผูกสินค้า {{ ltotal - lmapped }} รายการ{% else %}ยังไม่มีข้อมูล{% endif %}
       </div>
     </div>
   </div>
