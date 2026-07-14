@@ -188,7 +188,7 @@ def _propagate_listings_to_platform_skus(conn, platform):
 def get_platform_skus(platform, search=None, page=1, per_page=50):
     conn = get_connection()
     params = [platform]
-    where = "WHERE platform = ?"
+    where = "WHERE platform = ? AND is_ignored = 0"
     if search:
         where += " AND (product_name LIKE ? OR variation_name LIKE ? OR seller_sku LIKE ?)"
         params += [f"%{search}%", f"%{search}%", f"%{search}%"]
@@ -209,7 +209,8 @@ def get_platform_skus(platform, search=None, page=1, per_page=50):
 def get_platform_skus_all(platform):
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM platform_skus WHERE platform = ? ORDER BY product_name, variation_name",
+        "SELECT * FROM platform_skus WHERE platform = ? AND is_ignored = 0 "
+        "ORDER BY product_name, variation_name",
         (platform,)
     ).fetchall()
     conn.close()
@@ -224,6 +225,7 @@ def get_platform_summary():
                SUM(stock) AS total_stock,
                MAX(imported_at) AS last_import
         FROM platform_skus
+        WHERE is_ignored = 0
         GROUP BY platform
     """).fetchall()
     conn.close()
@@ -258,6 +260,7 @@ def get_platform_mapping_data():
             p.unit_type
         FROM platform_skus ps
         LEFT JOIN products p ON p.id = ps.internal_product_id
+        WHERE ps.is_ignored = 0
         ORDER BY ps.platform, ps.product_name, ps.variation_name
     """).fetchall()
     conn.close()
@@ -320,7 +323,7 @@ def suggest_platform_mapping():
     ).fetchall())
     psku_list = list(conn.execute(
         "SELECT id, product_name, variation_name, seller_sku, internal_product_id "
-        "FROM platform_skus"
+        "FROM platform_skus WHERE is_ignored = 0"
     ).fetchall())
     conn.close()
 

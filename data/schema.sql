@@ -984,7 +984,7 @@ CREATE TABLE platform_skus (
     internal_product_id  INTEGER REFERENCES products(id),
     qty_per_sale         REAL    NOT NULL DEFAULT 1,
     raw_json             TEXT,
-    imported_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime')), weight_kg REAL, length_cm REAL, width_cm REAL, height_cm REAL, gtin TEXT, special_price_start TEXT, special_price_end TEXT, variation_image_url TEXT,
+    imported_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime')), weight_kg REAL, length_cm REAL, width_cm REAL, height_cm REAL, gtin TEXT, special_price_start TEXT, special_price_end TEXT, variation_image_url TEXT, is_ignored INTEGER NOT NULL DEFAULT 0,
     UNIQUE(platform, variation_id)
 );
 
