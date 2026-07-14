@@ -126,10 +126,10 @@
     {% endif %}
     {% endif %}
 
-    {# ── การค้า & บัญชี ── #}
-    {% if active_module == 'accounting' %}
-    {% if session.role in ['admin','manager'] %}
-    <div class="sidebar-section">บัญชี</div>
+    {# ── การเงิน ── #}
+    {% if active_module == 'finance' %}
+    {% if session.role in ['admin','manager','shareholder'] %}
+    <div class="sidebar-section">การเงิน</div>
     <a href="{{ url_for('accounting.accounting_summary') }}"
        class="sidebar-link {% if request.endpoint == 'accounting.accounting_summary' %}active{% endif %}">
       <i class="bi bi-calculator"></i> สรุปกำไร-ขาดทุน
@@ -138,15 +138,25 @@
        class="sidebar-link {% if request.endpoint == 'accounting.cashflow_dashboard' %}active{% endif %}">
       <i class="bi bi-cash-stack"></i> กระแสเงินสด
     </a>
-    <a href="{{ url_for('accounting.revenue_dashboard') }}"
-       class="sidebar-link {% if request.endpoint == 'accounting.revenue_dashboard' %}active{% endif %}">
-      <i class="bi bi-graph-up"></i> รายได้
-    </a>
+    {# รายได้ hidden from nav: superseded by the merged accrual/cash table on
+       กระแสเงินสด (PR2 finance revamp). Route /revenue still works by URL. #}
     <a href="{{ url_for('accounting.ar_dashboard') }}"
        class="sidebar-link {% if request.endpoint in ('accounting.ar_dashboard','accounting.ar_followup','accounting.ar_followup_customer') %}active{% endif %}">
       <i class="bi bi-receipt-cutoff"></i> ลูกหนี้ (AR)
     </a>
+    <a href="{{ url_for('accounting.ap_dashboard') }}"
+       class="sidebar-link {% if request.endpoint == 'accounting.ap_dashboard' %}active{% endif %}">
+      <i class="bi bi-bank"></i> เจ้าหนี้ (AP)
+    </a>
+    <a href="{{ url_for('commission.commission_dashboard') }}"
+       class="sidebar-link {% if request.endpoint == 'commission.commission_dashboard' %}active{% endif %}">
+      <i class="bi bi-cash-coin"></i> ค่าคอมพนักงานขาย
+    </a>
     {% endif %}
+    {% endif %}
+
+    {# ── การค้า ── #}
+    {% if active_module == 'trade' %}
     <div class="sidebar-section">การค้า</div>
     <a href="{{ url_for('sales.trade_dashboard') }}"
        class="sidebar-link {% if request.endpoint == 'sales.trade_dashboard' %}active{% endif %}">
@@ -166,7 +176,7 @@
     </a>
     <a href="{{ url_for('partners.supplier_list') }}"
        class="sidebar-link {% if request.endpoint in ['partners.supplier_list','partners.supplier_summary'] %}active{% endif %}">
-      <i class="bi bi-truck"></i> Supplier
+      <i class="bi bi-truck"></i> ผู้จำหน่าย
     </a>
     {# แผนที่ลูกค้า hidden from nav: only ~3% of customers are geocoded and it
        serves no current priority. Route /customers/map still works by URL. #}
@@ -175,29 +185,11 @@
        class="sidebar-link {% if request.endpoint and request.endpoint.startswith('call.') %}active{% endif %}">
       <i class="bi bi-telephone-outbound"></i> โทรหาลูกค้า
     </a>
-    <a href="{{ url_for('customer_review.normalize_list') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('customer_review.') %}active{% endif %}">
-      <i class="bi bi-person-check"></i> ตรวจข้อมูลลูกค้า
-    </a>
 
-    <div class="sidebar-section">การเงิน (Express)</div>
-    <a href="{{ url_for('commission.commission_dashboard') }}"
-       class="sidebar-link {% if request.endpoint == 'commission.commission_dashboard' %}active{% endif %}">
-      <i class="bi bi-cash-coin"></i> Commission
-    </a>
-    <a href="{{ url_for('accounting.ap_dashboard') }}"
-       class="sidebar-link {% if request.endpoint == 'accounting.ap_dashboard' %}active{% endif %}">
-      <i class="bi bi-bank"></i> AP / ซัพพลายเออร์
-    </a>
-
-    <div class="sidebar-section">E-commerce</div>
-    <a href="{{ url_for('ecommerce.ecommerce', tab='shopee') }}"
-       class="sidebar-link {% if request.endpoint == 'ecommerce.ecommerce' and request.args.get('tab','shopee') == 'shopee' %}active{% endif %}">
-      <i class="bi bi-bag-heart" style="color:#ee4d2d"></i> Shopee
-    </a>
-    <a href="{{ url_for('ecommerce.ecommerce', tab='lazada') }}"
-       class="sidebar-link {% if request.endpoint == 'ecommerce.ecommerce' and request.args.get('tab') == 'lazada' %}active{% endif %}">
-      <i class="bi bi-shop" style="color:#003087"></i> Lazada
+    <div class="sidebar-section">ขายออนไลน์</div>
+    <a href="{{ url_for('ecommerce.ecommerce') }}"
+       class="sidebar-link {% if request.endpoint == 'ecommerce.ecommerce' %}active{% endif %}">
+      <i class="bi bi-bag-heart"></i> รายการขายออนไลน์
     </a>
     <a href="{{ url_for('marketplace.dashboard') }}"
        class="sidebar-link {% if request.endpoint and request.endpoint.startswith('marketplace.') and request.endpoint != 'marketplace.review' %}active{% endif %}">
@@ -280,6 +272,10 @@
     <a href="{{ url_for('bsn.unit_conversions') }}"
        class="sidebar-link {% if request.endpoint == 'bsn.unit_conversions' %}active{% endif %}">
       <i class="bi bi-arrow-left-right"></i> แปลงหน่วย
+    </a>
+    <a href="{{ url_for('customer_review.normalize_list') }}"
+       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('customer_review.') %}active{% endif %}">
+      <i class="bi bi-person-check"></i> ตรวจข้อมูลลูกค้า
     </a>
     {% if is_manager %}
     <a href="{{ url_for('naming.index') }}"

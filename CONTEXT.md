@@ -93,6 +93,29 @@
   show. Every other page is role-gated only: same global data regardless of user. This is
   why impersonation must swap `user_id`, not just `role`.
 
+## Trade partners & money owed (การค้า / การเงิน)
+
+> Two senses per real-world party, named separately: the **directory sense** (who they
+> are, trade history — ลูกค้า / ผู้จำหน่าย) and the **money-owed sense** (what is still
+> unpaid — ลูกหนี้ / เจ้าหนี้). The same party can appear in both.
+
+- **ผู้จำหน่าย (supplier)** — a party the business buys stock from (directory sense:
+  identity + purchase history). _Avoid_: "Supplier" (English), "ซัพพลายเออร์", and
+  especially **ผู้จัดจำหน่าย** — that is BSN itself in its *distributor* role on a printed
+  ป้ายสินค้า: the opposite direction of the supply chain. The two must never be used
+  interchangeably.
+
+- **ลูกหนี้ (AR)** — outstanding money customers still owe the business (money-owed sense
+  of ลูกค้า). Pairs with เจ้าหนี้.
+
+- **เจ้าหนี้ (AP)** — outstanding money the business still owes its ผู้จำหน่าย (money-owed
+  sense of ผู้จำหน่าย). _Avoid_: "AP / ซัพพลายเออร์" (old label that named the data source
+  era, not the concept).
+
+- **ค่าคอมพนักงานขาย (sales-rep commission)** — money owed to a sales rep, earned when the
+  customer's payment is **collected** (receipt-driven), not when the sale is invoiced.
+  _Avoid_: "Commission" (bare English label).
+
 ## Cashbook (the `/cashbook` feature — บัญชีรับ-จ่าย)
 
 - **Cashbook (บัญชีรับ-จ่าย)** — the multi-account operating cash ledger: money in/out of

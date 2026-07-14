@@ -65,7 +65,7 @@ def test_express_ap_redirects(tmp_db):
 
 def test_ap_dashboard_in_endpoint_module(tmp_db):
     from app import _ENDPOINT_MODULE
-    assert _ENDPOINT_MODULE.get('accounting.ap_dashboard') == 'accounting'
+    assert _ENDPOINT_MODULE.get('accounting.ap_dashboard') == 'finance'
 
 
 def test_whitelist_and_module_keys_valid(tmp_db):

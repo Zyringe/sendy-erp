@@ -1,10 +1,17 @@
 """Unit tests for the role-aware mobile bottom-nav slot builder.
 
 Put's decision (2026-06-11): the mobile bottom nav = module headers
-สินค้า · การค้า · บุคลากร · บัญชี · เพิ่มเติม(drawer). Slots are role-aware:
+สินค้า · การค้า · บุคลากร · การเงิน · เพิ่มเติม(drawer). Slots are role-aware:
 a slot is hidden when the session role cannot GET its landing page (it would
-403/redirect). Staff see only สินค้า/การค้า; admin/manager also see บุคลากร/บัญชี.
+403/redirect). Staff see only สินค้า/การค้า; admin/manager also see บุคลากร/การเงิน.
 ตรวจบิล is NOT a bottom-nav slot (it lives in the drawer + dashboard banner).
+
+Nav reorg (PR1, 2026-07-14): the module previously named 'accounting'
+('การค้า & บัญชี') split into 'trade' ('การค้า') and 'finance' ('การเงิน').
+The bottom-nav slot key follows suit: 'accounting' → 'finance'. Each module
+now maps to exactly one slot (see `_mobile_active_slot` in access_control.py),
+so the old two-slots-share-one-module split (`_ACCT_FINANCE_ENDPOINTS`) is
+gone.
 
 Phase 5/6 self-service (PR #211, 2026-06-27; access_control.py::
 build_mobile_nav_slots) unconditionally appends two more slots — ลาของฉัน
@@ -39,11 +46,11 @@ def test_staff_sees_only_products_and_trade():
 
 
 def test_manager_sees_all_four_module_slots():
-    assert _keys('manager') == ['products', 'trade', 'hr', 'accounting', 'my_leave', 'my_payslip']
+    assert _keys('manager') == ['products', 'trade', 'hr', 'finance', 'my_leave', 'my_payslip']
 
 
 def test_admin_sees_all_four_module_slots():
-    assert _keys('admin') == ['products', 'trade', 'hr', 'accounting', 'my_leave', 'my_payslip']
+    assert _keys('admin') == ['products', 'trade', 'hr', 'finance', 'my_leave', 'my_payslip']
 
 
 def test_unknown_or_empty_role_falls_back_to_staff_visibility():
@@ -57,7 +64,7 @@ def test_slot_labels_match_puts_decision():
     assert by_key['products'] == 'สินค้า'
     assert by_key['trade'] == 'การค้า'
     assert by_key['hr'] == 'บุคลากร'
-    assert by_key['accounting'] == 'บัญชี'
+    assert by_key['finance'] == 'การเงิน'
 
 
 def test_every_slot_has_required_render_fields():
@@ -72,13 +79,13 @@ def test_every_slot_has_required_render_fields():
     ('products.product_detail', 'products'),
     ('inventory.transaction_history', 'products'),     # operation module
     ('sales.trade_dashboard', 'trade'),
-    ('sales.sales_view', 'trade'),                  # accounting module, trade side
+    ('sales.sales_view', 'trade'),                  # trade module
     ('partners.customer_list', 'trade'),
     ('ecommerce.ecommerce', 'trade'),
-    ('accounting.accounting_summary', 'accounting'),     # accounting module, finance side
-    ('accounting.cashflow_dashboard', 'accounting'),
-    ('accounting.revenue_dashboard', 'accounting'),
-    ('accounting.ar_followup', 'accounting'),
+    ('accounting.accounting_summary', 'finance'),     # finance module
+    ('accounting.cashflow_dashboard', 'finance'),
+    ('accounting.revenue_dashboard', 'finance'),
+    ('accounting.ar_followup', 'finance'),
     ('hr.dashboard', 'hr'),
     ('hr.payroll_list', 'hr'),
 ])
@@ -96,11 +103,11 @@ def test_no_slot_active_on_overview_and_data_pages():
         assert [s['key'] for s in slots if s['active']] == [], endpoint
 
 
-def test_trade_and_accounting_are_mutually_exclusive():
-    # การค้า and บัญชี share the 'accounting' module — exactly one (or neither)
-    # may light up, never both, or the nav looks buggy.
+def test_trade_and_finance_are_mutually_exclusive():
+    # การค้า and การเงิน are now separate modules (each endpoint maps to exactly
+    # one) — exactly one (or neither) slot may light up, never both.
     for endpoint in ('sales.trade_dashboard', 'sales.sales_view', 'accounting.accounting_summary',
                      'accounting.cashflow_dashboard', 'accounting.ar_followup'):
         active = [s['key'] for s in build_mobile_nav_slots('admin', endpoint)
-                  if s['active'] and s['key'] in ('trade', 'accounting')]
+                  if s['active'] and s['key'] in ('trade', 'finance')]
         assert len(active) <= 1, f"{endpoint} lit both: {active}"
