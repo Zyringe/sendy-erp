@@ -91,3 +91,40 @@ def test_no_date_filter_covers_everything(db_conn):
     summary = models.get_purchases_summary()
     assert summary['total_net'] == pytest.approx(333.0)
     assert summary['txn_count'] == 2
+
+
+# ── Route-level render test (R3: purchases.html "รวมช่วงนี้") ────────────────
+
+def _admin(tmp_db):
+    from app import app as a
+    a.config['TESTING'] = True
+    c = a.test_client()
+    with c.session_transaction() as s:
+        s['user_id'] = 1; s['username'] = 'admin'; s['role'] = 'admin'
+    return c
+
+
+def test_purchases_route_shows_range_total_not_page_only_sum(tmp_db):
+    """Integration guard: /purchases must show the FULL filtered-range total
+    (models.get_purchases_summary), not the old page-only Jinja
+    `rows | sum(attribute='net')`. Uses the default (this-month) filter so
+    the assertion is against the SAME range the route itself derives."""
+    import models
+    from datetime import date
+
+    today = date.today()
+    date_from = today.replace(day=1).isoformat()
+    date_to = today.isoformat()
+
+    c = _admin(tmp_db)
+    r = c.get('/purchases')
+    assert r.status_code == 200
+    body = r.data.decode()
+
+    expected = models.get_purchases_summary(date_from=date_from, date_to=date_to)
+    assert 'รวมช่วงนี้' in body
+    # fmt_price always formats as ':,.2f' (filters.py) — match that exactly.
+    assert f"{expected['total_net']:,.2f}" in body, (
+        "Expected the range-total (not a page-only sum) to render on "
+        "/purchases."
+    )

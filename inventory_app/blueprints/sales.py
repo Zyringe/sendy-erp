@@ -93,10 +93,12 @@ def purchases_view():
         page=page, per_page=per_page
     )
     pages = (total + per_page - 1) // per_page
+    summary = models.get_purchases_summary(date_from=date_from, date_to=date_to)
 
     return render_template('purchases.html',
                            rows=rows, total=total, pages=pages, page=page,
                            date_from=date_from, date_to=date_to,
+                           summary=summary,
                            pending_map=len(models.get_pending_mappings()))
 
 

@@ -86,7 +86,7 @@ MOVED_NAMES = {
     'sales': [
         'get_sales', 'get_purchases_by_doc', 'get_sales_summary',
         'get_sales_by_doc', 'get_trade_dashboard',
-        'get_product_trade_summary', 'get_purchases',
+        'get_product_trade_summary', 'get_purchases', 'get_purchases_summary',
     ],
     'commission': [
         '_normalise_override_payload', '_validate_override_targets',
