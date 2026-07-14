@@ -318,3 +318,28 @@ def get_purchases(product_id=None, date_from=None, date_to=None, page=1, per_pag
     ).fetchone()[0]
     conn.close()
     return rows, total
+
+
+def get_purchases_summary(date_from=None, date_to=None):
+    """Range-total summary for purchases_view (mirrors get_sales_summary's
+    pattern). purchases.html used to show `rows | sum(attribute='net')`,
+    which only summed the CURRENT PAGE of a paginated list — this gives the
+    real total across the whole filtered date range instead. Same WHERE
+    filters as get_purchases (date only; purchases_view never passes
+    product_id, so this doesn't need to accept it either)."""
+    conn = get_connection()
+    conds = ['1=1']
+    params = []
+    if date_from:
+        conds.append('date_iso >= ?'); params.append(date_from)
+    if date_to:
+        conds.append('date_iso <= ?'); params.append(date_to)
+    where = ' AND '.join(conds)
+    row = conn.execute(f"""
+        SELECT COUNT(*)        AS txn_count,
+               SUM(net)        AS total_net
+        FROM purchase_transactions
+        WHERE {where}
+    """, params).fetchone()
+    conn.close()
+    return {'txn_count': row['txn_count'] or 0, 'total_net': row['total_net'] or 0.0}

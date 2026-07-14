@@ -499,8 +499,16 @@ def get_customer_unpaid_bills(customer_name):
     Sourced from express_ar_outstanding (latest snapshot, doc_date >= 2024).
     Customer matched first by customers.name → customer_code, then falls
     back to ao.customer_name LIKE for legacy/typo cases.
+
+    Returns (rows, snapshot_date) — snapshot_date is the latest BSN AR
+    snapshot date (same value other AR widgets show as "ณ {snapshot_date}",
+    e.g. cashflow.ar_aging()['as_of']), so callers can disclose data
+    freshness instead of leaving it unstated.
     """
     conn = get_connection()
+    snapshot_date = conn.execute(
+        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding WHERE entity = 'BSN'"
+    ).fetchone()['d']
     rows = conn.execute("""
         SELECT
             ao.doc_no                    AS doc_base,
@@ -526,4 +534,4 @@ def get_customer_unpaid_bills(customer_name):
         ORDER BY ao.doc_date_iso DESC
     """, [customer_name, customer_name]).fetchall()
     conn.close()
-    return rows
+    return rows, snapshot_date

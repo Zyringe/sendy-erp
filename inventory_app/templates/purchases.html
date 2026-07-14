@@ -37,7 +37,7 @@
 <div class="card">
   <div class="card-header d-flex justify-content-between align-items-center">
     <span class="text-subtle small">พบ <strong class="text-main">{{ total | fmt_qty }}</strong> รายการ</span>
-    <span class="fw-600 text-accent">รวม: ฿{{ rows | sum(attribute='net') | fmt_price }}</span>
+    <span class="fw-600 text-accent">รวมช่วงนี้: ฿{{ summary.total_net | fmt_price }}</span>
   </div>
   <div class="table-responsive">
     <table class="table table-mobile-cards mb-0">

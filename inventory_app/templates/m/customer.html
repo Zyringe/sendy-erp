@@ -74,7 +74,7 @@
 {% if unpaid %}
 <div class="card mb-3 border-danger">
   <div class="card-header bg-danger-subtle text-danger-emphasis d-flex justify-content-between align-items-center">
-    <span><i class="bi bi-exclamation-circle me-2"></i>บิลค้างชำระ ({{ unpaid|length }}{% if unpaid_total %} จาก ฿{{ '{:,.0f}'.format(unpaid_total) }}{% endif %})</span>
+    <span><i class="bi bi-exclamation-circle me-2"></i>บิลค้างชำระ ({{ unpaid|length }}{% if unpaid_total %} จาก ฿{{ '{:,.0f}'.format(unpaid_total) }}{% endif %}){% if unpaid_snapshot_date %} <span class="text-muted small">· ณ {{ unpaid_snapshot_date }}</span>{% endif %}</span>
   </div>
   <div class="list-group list-group-flush">
     {% for b in unpaid %}
