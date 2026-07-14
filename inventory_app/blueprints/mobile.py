@@ -109,7 +109,7 @@ def customer_detail(customer_name):
 
     conn.close()
     # Use existing model fn — handles VAT, SR/HS doc filtering, paid-status correctly
-    unpaid_full = models.get_customer_unpaid_bills(customer_name)
+    unpaid_full, unpaid_snapshot_date = models.get_customer_unpaid_bills(customer_name)
     unpaid = unpaid_full[:5]
     unpaid_total = sum((b['total_net'] or 0) for b in unpaid_full)
     conn = get_connection()
@@ -147,6 +147,7 @@ def customer_detail(customer_name):
         region=region_row,
         unpaid=unpaid,
         unpaid_total=unpaid_total,
+        unpaid_snapshot_date=unpaid_snapshot_date,
         last_sales=last_sales,
         stats=stats,
     )

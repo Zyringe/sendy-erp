@@ -60,13 +60,14 @@ def customer_summary(customer_name):
     date_from = request.args.get('date_from') or None
     date_to   = request.args.get('date_to')   or None
     data = models.get_customer_summary(customer_name, date_from, date_to)
-    unpaid_bills = models.get_customer_unpaid_bills(customer_name)
+    unpaid_bills, unpaid_snapshot_date = models.get_customer_unpaid_bills(customer_name)
     unpaid_total = sum(b['total_net'] or 0 for b in unpaid_bills)
 
     master = models.get_customer_master(data['customer_code']) if data.get('customer_code') else None
     return render_template('customer_summary.html',
                            data=data,
                            unpaid_bills=unpaid_bills, unpaid_total=unpaid_total,
+                           unpaid_snapshot_date=unpaid_snapshot_date,
                            master=master,
                            salespersons=models.get_active_salespersons(),
                            regions=models.get_all_regions(),
