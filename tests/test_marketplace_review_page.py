@@ -75,12 +75,15 @@ def test_settlement_page_shows_worklist_badge(seeded):
 
 def test_review_nav_present_desktop_and_mobile(tmp_db):
     """Regression for the missing left-nav tab (erp-engineering-discipline):
-    the review page must resolve to the 'accounting' module (else the whole
-    E-commerce/accounting sidebar block disappears on that page), AND both the
-    desktop sidebar and mobile drawer must link to it. Needs tmp_db (a real
-    cloned DB) — never render a route against the untouched default path."""
+    the review page must resolve to the 'trade' module (else the whole
+    การค้า sidebar block disappears on that page), AND both the desktop
+    sidebar and mobile drawer must link to it. Needs tmp_db (a real cloned
+    DB) — never render a route against the untouched default path.
+
+    Nav reorg (PR1, 2026-07-14): 'accounting' module split into 'trade' +
+    'finance'; marketplace.* (incl. .review) moved to 'trade'."""
     from access_control import _ENDPOINT_MODULE
-    assert _ENDPOINT_MODULE.get('marketplace.review') == 'accounting'
+    assert _ENDPOINT_MODULE.get('marketplace.review') == 'trade'
 
     html = _client().get('/marketplace/settlement').get_data(as_text=True)
     assert html.count('href="/marketplace/review"') >= 2, \
