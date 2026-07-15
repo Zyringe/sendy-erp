@@ -157,6 +157,127 @@ def user_delete(uid):
     return redirect(url_for('admin.user_list'))
 
 
+# ── Cashbook account management (admin only) ─────────────────────────────────
+# The cash/bank accounts behind the /cashbook dashboard cards. Previously seeded
+# only by migration; this is the self-service UI. Admin-only, mirroring /users.
+# NO schema change — cashbook_accounts already has every column.
+
+@bp_admin.route('/cashbook-accounts')
+def cashbook_account_list():
+    if session.get('role') != 'admin':
+        abort(403)
+    conn = get_connection()
+    # ref_count = every FK referrer (txns + user/employee defaults + salary
+    # advances). ref_count==0 ⇒ a hard delete is safe; otherwise the UI offers
+    # deactivate instead. The delete route still catches IntegrityError as the
+    # real guard — this hint can go stale under concurrent writes.
+    accounts = conn.execute("""
+        SELECT a.*,
+               (SELECT COUNT(*) FROM cashbook_transactions WHERE account_id=a.id) AS txn_count,
+               ( (SELECT COUNT(*) FROM cashbook_transactions WHERE account_id=a.id)
+                +(SELECT COUNT(*) FROM users WHERE default_cashbook_account_id=a.id)
+                +(SELECT COUNT(*) FROM employees WHERE default_cashbook_account_id=a.id)
+                +(SELECT COUNT(*) FROM salary_advances WHERE from_account_id=a.id) ) AS ref_count
+          FROM cashbook_accounts a
+         ORDER BY a.is_transfer ASC, a.sort_order ASC, a.code ASC
+    """).fetchall()
+    conn.close()
+    return render_template('admin_cashbook_accounts.html', accounts=accounts)
+
+
+def _cashbook_form_fields():
+    """Pull the shared account fields from the POST form. Empty strings → None
+    so blank optional fields store NULL (a เงินสด account has no bank)."""
+    code = request.form.get('code', '').strip()
+    return {
+        'code':               code,
+        'is_transfer':        1 if request.form.get('is_transfer') == '1' else 0,
+        'account_owner_name': request.form.get('account_owner_name', '').strip() or None,
+        'bank_name':          request.form.get('bank_name', '').strip() or None,
+        'bank_account_no':    request.form.get('bank_account_no', '').strip() or None,
+        'note':               request.form.get('note', '').strip() or None,
+    }
+
+
+@bp_admin.route('/cashbook-accounts/new', methods=['POST'])
+def cashbook_account_new():
+    if session.get('role') != 'admin':
+        abort(403)
+    f = _cashbook_form_fields()
+    if not f['code']:
+        flash('กรุณากรอกรหัสบัญชี', 'danger')
+        return redirect(url_for('admin.cashbook_account_list'))
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO cashbook_accounts(code, account_owner_name, bank_name,"
+            " bank_account_no, note, is_transfer) VALUES (?,?,?,?,?,?)",
+            (f['code'], f['account_owner_name'], f['bank_name'],
+             f['bank_account_no'], f['note'], f['is_transfer'])
+        )
+        conn.commit()
+        flash(f'เพิ่มบัญชี {f["code"]} สำเร็จ', 'success')
+    except sqlite3.IntegrityError:
+        flash(f'รหัสบัญชี "{f["code"]}" ซ้ำในระบบ', 'danger')
+    finally:
+        conn.close()
+    return redirect(url_for('admin.cashbook_account_list'))
+
+
+@bp_admin.route('/cashbook-accounts/<int:aid>/edit', methods=['POST'])
+def cashbook_account_edit(aid):
+    if session.get('role') != 'admin':
+        abort(403)
+    f = _cashbook_form_fields()
+    if not f['code']:
+        flash('กรุณากรอกรหัสบัญชี', 'danger')
+        return redirect(url_for('admin.cashbook_account_list'))
+    is_active = 1 if request.form.get('is_active') else 0
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE cashbook_accounts SET code=?, account_owner_name=?, bank_name=?,"
+            " bank_account_no=?, note=?, is_transfer=?, is_active=?,"
+            " updated_at=datetime('now','localtime') WHERE id=?",
+            (f['code'], f['account_owner_name'], f['bank_name'], f['bank_account_no'],
+             f['note'], f['is_transfer'], is_active, aid)
+        )
+        conn.commit()
+        flash(f'อัปเดตบัญชี {f["code"]} สำเร็จ', 'success')
+    except sqlite3.IntegrityError:
+        flash(f'รหัสบัญชี "{f["code"]}" ซ้ำในระบบ', 'danger')
+    finally:
+        conn.close()
+    return redirect(url_for('admin.cashbook_account_list'))
+
+
+@bp_admin.route('/cashbook-accounts/<int:aid>/delete', methods=['POST'])
+def cashbook_account_delete(aid):
+    if session.get('role') != 'admin':
+        abort(403)
+    conn = get_connection()
+    acct = conn.execute("SELECT code FROM cashbook_accounts WHERE id=?", (aid,)).fetchone()
+    if not acct:
+        conn.close()
+        flash('ไม่พบบัญชี', 'danger')
+        return redirect(url_for('admin.cashbook_account_list'))
+    try:
+        # foreign_keys=ON is the real guard: cashbook_transactions.account_id,
+        # users/employees.default_cashbook_account_id and salary_advances
+        # .from_account_id all REFERENCE this id, so a referenced account raises
+        # here — no need to enumerate the referrers (that list rots).
+        conn.execute("DELETE FROM cashbook_accounts WHERE id=?", (aid,))
+        conn.commit()
+        flash(f'ลบบัญชี {acct["code"]} แล้ว', 'success')
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        flash(f'ลบบัญชี {acct["code"]} ไม่ได้ — บัญชีนี้ถูกอ้างอิงอยู่ '
+              '(มีรายการ หรือเป็นบัญชีตั้งต้นของผู้ใช้/พนักงาน) ให้ "ปิดใช้งาน" แทน', 'warning')
+    finally:
+        conn.close()
+    return redirect(url_for('admin.cashbook_account_list'))
+
+
 # ── Temp: Download DB (ลบออกหลังใช้) ─────────────────────────────────────────
 
 @bp_admin.route('/admin/toggle-db-routes', methods=['POST'])

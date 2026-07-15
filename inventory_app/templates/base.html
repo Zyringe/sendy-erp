@@ -292,6 +292,10 @@
        class="sidebar-link {% if request.endpoint in ['admin.user_list','admin.user_new','admin.user_edit'] %}active{% endif %}">
       <i class="bi bi-people"></i> จัดการผู้ใช้
     </a>
+    <a href="{{ url_for('admin.cashbook_account_list') }}"
+       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('admin.cashbook_account') %}active{% endif %}">
+      <i class="bi bi-bank"></i> จัดการบัญชีเงินสด/ธนาคาร
+    </a>
     <a href="{{ url_for('admin.backups_list') }}"
        class="sidebar-link {% if request.endpoint and request.endpoint.startswith('admin.backup') %}active{% endif %}">
       <i class="bi bi-clock-history"></i> สำรอง/กู้คืนข้อมูล

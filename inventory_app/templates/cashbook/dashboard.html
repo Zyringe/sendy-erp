@@ -134,8 +134,13 @@
 {# ── Per-account table ─────────────────────────────────────────────────────── #}
 {% if op_accounts %}
 <div class="card mb-4">
-  <div class="card-header fw-semibold">
-    <i class="bi bi-bank me-1"></i>บัญชีดำเนินการ
+  <div class="card-header fw-semibold d-flex align-items-center">
+    <span><i class="bi bi-bank me-1"></i>บัญชีดำเนินการ</span>
+    {% if is_admin %}
+    <a href="{{ url_for('admin.cashbook_account_list') }}" class="ms-auto small fw-normal text-decoration-none">
+      จัดการบัญชี <i class="bi bi-chevron-right small"></i>
+    </a>
+    {% endif %}
   </div>
   <div class="table-responsive">
     <table class="table table-sm table-hover mb-0">
