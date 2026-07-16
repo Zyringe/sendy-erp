@@ -116,6 +116,21 @@
   customer's payment is **collected** (receipt-driven), not when the sale is invoiced.
   _Avoid_: "Commission" (bare English label).
 
+## Trade documents (เอกสารซื้อ-ขาย — the `/sales` + `/purchases` tables)
+
+- **เอกสาร / เลขที่เอกสาร (document / doc-base)** — one whole invoice, purchase bill, or
+  credit note in the BSN books, identified by its base number (e.g. `IV6901104`). This is
+  what a person means by "**the invoice**" — the thing you search for and click through to
+  its detail page (`/sales/doc/<base>`). A prefix names the kind: sales-side **IV** (invoice
+  ใบกำกับ), **SR** (credit note ใบลดหนี้), **HS**; purchase-side **HP**, **RR**, **GR**.
+
+- **บรรทัดเอกสาร (document line / doc_no)** — one product line *within* a document
+  (`IV6901104-1`, `IV6901104-2`, …). The rows shown in the `/sales` and `/purchases` tables
+  are **lines, not documents**: an invoice with four products is four rows sharing one
+  เลขที่เอกสาร. Searching a document number therefore returns several line-rows (all the
+  lines of that document), which the detail page regroups back into one invoice. _Avoid_:
+  calling a single table row "an invoice" — it is one line of one.
+
 ## Cashbook (the `/cashbook` feature — บัญชีรับ-จ่าย)
 
 - **Cashbook (บัญชีรับ-จ่าย)** — the multi-account operating cash ledger: money in/out of
