@@ -65,7 +65,7 @@
           </td>
           <td data-label="หน่วย" class="text-subtle small">{{ t.unit_type }}</td>
           <td data-label="เอกสาร">{{ doc_link(t.reference_no) }}</td>
-          <td data-label="หมายเหตุ" class="text-subtle small">{{ t.note or '—' }}</td>
+          <td data-label="หมายเหตุ" class="text-subtle small td-hide-mobile">{{ t.note or '—' }}</td>
         </tr>
         {% else %}
         <tr><td colspan="8" class="text-center text-subtle py-5">ไม่พบรายการ</td></tr>
