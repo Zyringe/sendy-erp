@@ -99,8 +99,9 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
-        <a href="{{ url_for('hr.leave_list') }}"
-           class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+        {# month= (blank) escapes the current-month default → show all months #}
+        <a href="{{ url_for('hr.leave_list') }}?month="
+           class="btn btn-sm btn-outline-secondary ms-1">ทั้งหมด</a>
       </div>
     </form>
   </div>

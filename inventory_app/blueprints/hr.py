@@ -330,7 +330,11 @@ def employee_entitlements(id: int):
 @bp_hr.route("/leave")
 def leave_list():
     emp_id = request.args.get("employee_id")
-    ym = request.args.get("month") or ""
+    # Default to the current month on a fresh load. `month` absent (sidebar
+    # link) → current month; present-but-blank ("?month=", via ล้าง or a
+    # cleared input) → all months. This keeps a "see all history" escape hatch.
+    raw_month = request.args.get("month")
+    ym = _current_year_month() if raw_month is None else raw_month
     lt_id = request.args.get("leave_type_id")
 
     requests = hrq.get_leave_requests(
@@ -467,11 +471,24 @@ def leave_delete(id: int):
 
 @bp_hr.route("/advances")
 def advance_list():
+    emp_id = request.args.get("employee_id")
+    # Default view = outstanding (รอหัก): this page exists to surface money
+    # still owed back. `status` absent → 'pending'; 'all' (or anything else)
+    # → every status. The status dropdown itself is the escape hatch to history.
+    status = request.args.get("status")
+    if status is None:
+        status = "pending"
+    effective_status = status if status in ("pending", "deducted") else None
     return render_template(
         "hr/advances.html",
-        advances=hrq.get_salary_advances(),
+        advances=hrq.get_salary_advances(
+            employee_id=int(emp_id) if emp_id else None,
+            status=effective_status,
+        ),
         employees=hrq.get_employees(active_only=True),
         accounts=hrq.get_active_cashbook_accounts(),
+        filter_emp=emp_id or "",
+        filter_status=status,
         be_year=_be_year,
         fmt_baht=_fmt_baht,
     )
