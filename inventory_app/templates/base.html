@@ -21,10 +21,8 @@
 </head>
 <body>
 
-<!-- ── Mobile sidebar backdrop (tap to close) ─────── -->
-<div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebar()"></div>
-
-<!-- ── Sidebar ─────────────────────────────────────── -->
+<!-- ── Sidebar (desktop-only <lg; the mobile bottom-nav + drawer take over
+     below 992px, see _mobile_bottom_nav.html / _mobile_drawer.html) ── -->
 <aside class="sidebar" id="sidebar">
 
   {# ── Brand row: logo + module switcher ── #}
@@ -219,31 +217,6 @@
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 <script src="{{ url_for('static', filename='js/combo.js') }}"></script>
 <script>
-  /* Sidebar mobile control: open/close + backdrop. ≥lg: sidebar is always
-     visible (CSS), so these toggles are no-ops on big screens. */
-  function openSidebar() {
-    document.getElementById('sidebar').classList.add('open');
-    document.getElementById('sidebarBackdrop').classList.add('open');
-  }
-  function closeSidebar() {
-    document.getElementById('sidebar').classList.remove('open');
-    document.getElementById('sidebarBackdrop').classList.remove('open');
-  }
-  function toggleSidebar() {
-    var sb = document.getElementById('sidebar');
-    if (sb.classList.contains('open')) closeSidebar(); else openSidebar();
-  }
-  /* Auto-close sidebar when a link is tapped on mobile (it stays open
-     otherwise, hiding the page the user just navigated to). */
-  document.addEventListener('DOMContentLoaded', function() {
-    var links = document.querySelectorAll('#sidebar a.sidebar-link');
-    links.forEach(function(a) {
-      a.addEventListener('click', function() {
-        if (window.matchMedia('(max-width: 991.98px)').matches) closeSidebar();
-      });
-    });
-  });
-
   (function() {
     function updateDate() {
       var d = new Date();

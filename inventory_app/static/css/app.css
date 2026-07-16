@@ -489,14 +489,15 @@ body {
 ::-webkit-scrollbar-thumb { background: #c9c2b6; border-radius: 10px; }
 ::-webkit-scrollbar-thumb:hover { background: #8a8275; }
 
-/* ── Mobile/tablet sidebar (Bootstrap lg breakpoint = 992px) ── */
+/* ── Mobile/tablet sidebar (Bootstrap lg breakpoint = 992px) ──
+   Desktop-only now: no more hamburger/backdrop to open it, so it just stays
+   off-screen <lg (the bottom-nav + drawer are the mobile nav surface). */
 @media (max-width: 991.98px) {
   .sidebar {
     transform: translateX(-100%);
     height: 100vh;        /* iOS Safari fallback */
     height: 100dvh;       /* dynamic viewport height handles address-bar resize */
   }
-  .sidebar.open { transform: translateX(0); }
   .main-wrap { margin-left: 0; }
 
   .page-content { padding: 12px; }     /* less wasted horizontal space on small screens */
@@ -505,18 +506,6 @@ body {
   /* Bottom-nav clearance: keep last content visible above the fixed nav (60px nav + 6px breathing) */
   body { padding-bottom: 66px; }
 }
-
-/* ── Sidebar backdrop (mobile only, click outside to close) ── */
-.sidebar-backdrop {
-  display: none;
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,.4);
-  z-index: 99;            /* sidebar = 100, backdrop just below */
-  opacity: 0;
-  transition: opacity .25s ease;
-}
-.sidebar-backdrop.open { display: block; opacity: 1; }
 
 /* ── Bottom nav (mobile only) ── */
 .bottom-nav {
