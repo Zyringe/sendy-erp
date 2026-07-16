@@ -658,6 +658,17 @@ body {
   }
   table.table-mobile-cards td.td-actions::before { content: none; }
   table.table-mobile-cards td.td-hide-mobile { display: none; }
+  /* A single dominant number rendered big — the row's "hero" (stock, debt, spend).
+     Full-width block: small muted label on its own line, large value below. Colour
+     inherits from the cell's own utility (text-danger stays red, text-success green).
+     Sits right under td-primary. Opt-in per cell — used only on the 2 entity list pages. */
+  table.table-mobile-cards td.td-hero {
+    display: block;
+    padding: 6px 0 2px;
+    font-size: 1.35rem;
+    line-height: 1.2;
+  }
+  table.table-mobile-cards td.td-hero::before { display: block; }
 }
 
 /* ════════════════════════════════════════════════════════════════════════

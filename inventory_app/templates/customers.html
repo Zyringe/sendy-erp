@@ -75,14 +75,14 @@
             <span class="d-mobile-only badge badge-gray font-mono ms-1">{{ c.customer_code }}</span>
           </td>
           <td data-label="รหัส" class="td-hide-mobile"><span class="badge badge-gray font-mono">{{ c.customer_code }}</span></td>
-          <td data-label="เขต" class="text-center">
+          <td data-label="เขต" class="text-center td-hide-mobile">
             {% if c.region %}
             <span class="badge badge-info">{{ c.region }}</span>
             {% else %}
             <span class="text-subtle">—</span>
             {% endif %}
           </td>
-          <td data-label="พนักงานขาย" class="small text-subtle">
+          <td data-label="พนักงานขาย" class="small text-subtle td-hide-mobile">
             {% if c.salesperson %}
               {{ c.salesperson }}
               {% if c.salesperson_orphan %}
@@ -92,8 +92,8 @@
               —
             {% endif %}
           </td>
-          <td data-label="เอกสาร" class="text-center text-subtle small">{{ c.doc_count }}</td>
-          <td data-label="ยอดรวม (฿)" class="text-end fw-600 font-mono text-success">
+          <td data-label="เอกสาร" class="text-center text-subtle small td-hide-mobile">{{ c.doc_count }}</td>
+          <td data-label="ยอดรวม (฿)" class="text-end fw-600 font-mono text-success td-hero">
             {{ '{:,.0f}'.format(c.total_net) }}
           </td>
           <td data-label="ซื้อล่าสุด" class="text-center font-mono small text-subtle">{{ c.last_date or '—' }}</td>
