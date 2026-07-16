@@ -8,6 +8,7 @@ from flask import session, request, redirect, url_for, flash, abort
 
 import models
 import review_rules as rr
+from nav import active_link, nav_sections
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -401,59 +402,71 @@ _NAV_EXEMPT_ENDPOINTS = frozenset([
 ])
 
 
-# ── Mobile bottom-nav slots (module headers) ─────────────────────────────────
-# Put's decision (2026-06-11): the mobile bottom nav shows module headers, not
-# individual pages — สินค้า · การค้า · บุคลากร · บัญชี + เพิ่มเติม(drawer, rendered
-# separately in the template). Each slot lands on a module's landing route.
-# `manager_only` slots are hidden for staff because their landing 403s/redirects
-# (hr.dashboard + accounting_summary are admin/manager only) — never show a slot
-# a role can't open. ตรวจบิล is NOT here (drawer + dashboard banner instead).
+# ── Mobile bottom-nav slots ───────────────────────────────────────────────────
+# Put's decision (2026-07-16, pwa-nav-redesign): the bar slims to 3 module
+# slots — หน้าหลัก · สินค้า · การค้า — the same 3 for every office role (admin/
+# manager/staff/shareholder); the 4th "slot" is the เพิ่มเติม drawer button,
+# rendered separately in _mobile_bottom_nav.html. บุคลากร/การเงิน are no longer
+# bottom-nav slots (they're admin/manager(+shareholder)-only anyway, hence the
+# now-removed `manager_only` filtering) — they live in the drawer's NAV-derived
+# sections instead (nav.py). ลาของฉัน/สลิป also moved into the drawer's ของฉัน
+# section: "if they want payslip or leave just go see in เพิ่มเติม tab" (Put).
+# ตรวจบิล was never a slot (drawer + dashboard banner instead).
 _MOBILE_NAV_SLOTS = [
-    {'key': 'products', 'label': 'สินค้า',  'icon': 'bi-box-seam',       'endpoint': 'products.product_list',         'manager_only': False},
-    {'key': 'trade',    'label': 'การค้า',  'icon': 'bi-bar-chart-line', 'endpoint': 'sales.trade_dashboard',         'manager_only': False},
-    {'key': 'hr',       'label': 'บุคลากร', 'icon': 'bi-people',         'endpoint': 'hr.dashboard',                  'manager_only': True},
-    {'key': 'finance',  'label': 'การเงิน', 'icon': 'bi-calculator',     'endpoint': 'accounting.accounting_summary', 'manager_only': True},
+    {'key': 'home',     'label': 'หน้าหลัก', 'icon': 'bi-house-door',     'endpoint': 'dashboard'},
+    {'key': 'products', 'label': 'สินค้า',   'icon': 'bi-box-seam',       'endpoint': 'products.product_list'},
+    {'key': 'trade',    'label': 'การค้า',   'icon': 'bi-bar-chart-line', 'endpoint': 'sales.trade_dashboard'},
 ]
 
 
 def _mobile_active_slot(endpoint):
-    """Which bottom-nav slot key (if any) the current endpoint should highlight."""
+    """Which bottom-nav slot key (if any) the current endpoint should highlight.
+
+    หน้าหลัก owns the whole ภาพรวม nav GROUP — Dashboard + แจ้งเตือน + ตรวจบิล
+    (Put, 2026-07-16: they are the Dashboard group and should read as หน้าหลัก
+    rather than leaving เพิ่มเติม lit). The group is resolved from nav.py's ภาพรวม
+    SECTION, so it is defined in exactly one place: add a link to that section and
+    the bar follows automatically, matchers (e.g. review.*'s prefix) included.
+
+    ⚠ Keyed on the SECTION, deliberately NOT on the 'overview' MODULE. Phase 1.5
+    maps me.leave/me.payslip* to 'overview' too (so the desktop sidebar stays
+    unchanged on those pages), so a module-keyed check would wrongly light หน้าหลัก
+    on ลาของฉัน/สลิป. Those links live in NAV's ของฉัน section (module=None), so
+    resolving by section keeps them out and lets เพิ่มเติม — which actually holds
+    them — light instead. Pinned by tests/test_mobile_nav.py."""
     module = _ENDPOINT_MODULE.get(endpoint, 'overview')
-    return {'operation': 'products', 'trade': 'trade', 'finance': 'finance', 'hr': 'hr'}.get(module)
+    slot = {'operation': 'products', 'trade': 'trade'}.get(module)
+    if slot:
+        return slot
+    # active_link scopes to the module + `always` sections; only a hit inside the
+    # ภาพรวม section itself (module 'overview') counts as หน้าหลัก.
+    hit = active_link(endpoint, 'overview')
+    return 'home' if hit and hit[0] == 'overview' else None
 
 
 def build_mobile_nav_slots(role, endpoint=''):
     """Role-filtered bottom-nav slots with the active one flagged.
 
-    Returns the list of visible slots (each a dict with key/label/icon/endpoint/
-    active). Any role that is not admin/manager — including '' or an unexpected
-    value — gets only the always-visible slots, so a staff/unknown session can
-    never be shown a slot whose landing page would 403."""
-    _leave_slot = {'key': 'my_leave', 'label': 'ลาของฉัน', 'icon': 'bi-calendar-x',
-                   'endpoint': 'me.leave', 'active': endpoint == 'me.leave'}
-    _payslip_slot = {'key': 'my_payslip', 'label': 'สลิป', 'icon': 'bi-receipt',
-                     'endpoint': 'me.payslip_list',
-                     'active': endpoint == 'me.payslip_list'}
+    `general` (บอล's PWA kiosk role) gets its own untouched 3-slot bar — see the
+    module docstring section on the 'general' role. Every other role (including
+    '' or an unexpected value) gets the identical 3 office slots: none of their
+    landings (dashboard / products / trade-dashboard) 403 or redirect for any
+    role, so there is nothing left to hide."""
     if role == 'general':
         return [
             {'key': 'stock', 'label': 'สต็อก', 'icon': 'bi-search',
              'endpoint': 'mobile.stock_search', 'active': endpoint == 'mobile.stock_search'},
-            _leave_slot,
-            _payslip_slot,
+            {'key': 'my_leave', 'label': 'ลาของฉัน', 'icon': 'bi-calendar-x',
+             'endpoint': 'me.leave', 'active': endpoint == 'me.leave'},
+            {'key': 'my_payslip', 'label': 'สลิป', 'icon': 'bi-receipt',
+             'endpoint': 'me.payslip_list', 'active': endpoint == 'me.payslip_list'},
         ]
-    is_manager = role in ('admin', 'manager', 'shareholder')  # shareholder reads HR + accounting
     active = _mobile_active_slot(endpoint)
-    slots = []
-    for s in _MOBILE_NAV_SLOTS:
-        if s['manager_only'] and not is_manager:
-            continue
-        slots.append({
-            'key': s['key'], 'label': s['label'], 'icon': s['icon'],
-            'endpoint': s['endpoint'], 'active': s['key'] == active,
-        })
-    slots.append(_leave_slot)
-    slots.append(_payslip_slot)
-    return slots
+    return [
+        {'key': s['key'], 'label': s['label'], 'icon': s['icon'],
+         'endpoint': s['endpoint'], 'active': s['key'] == active}
+        for s in _MOBILE_NAV_SLOTS
+    ]
 
 
 def inject_auth():
@@ -486,6 +499,11 @@ def inject_auth():
         'active_module': active_module,
         'visible_modules': visible_modules,
         'mobile_nav_slots': build_mobile_nav_slots(role, endpoint),
+        # Flat, role-filtered NAV sections for the mobile drawer (_mobile_drawer.
+        # html) — see nav.py::nav_sections. Precomputed here (once per request,
+        # role already resolved) rather than exposing nav_sections() itself to
+        # Jinja, so the template just loops over plain dicts.
+        'drawer_sections': nav_sections(role),
         'roles': ROLES,
         'role_order': ROLE_ORDER,
     }

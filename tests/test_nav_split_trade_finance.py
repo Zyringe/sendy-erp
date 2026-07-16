@@ -84,12 +84,15 @@ def test_accounting_module_key_removed_and_trade_finance_present():
     assert {'trade', 'finance'} <= keys
 
 
-def test_mobile_slot_finance_active_for_shareholder():
+def test_mobile_finance_page_has_no_bottom_nav_slot():
+    # SUPERSEDED (pwa-nav-redesign, 2026-07-16): the bottom bar no longer carries
+    # a การเงิน (or บุคลากร) slot at all — see tests/test_mobile_nav.py's own
+    # supersession note. Finance now lives in the drawer only; landing on it
+    # must light no bottom-nav slot (เพิ่มเติม lights instead).
     from access_control import build_mobile_nav_slots
     slots = build_mobile_nav_slots('shareholder', 'accounting.accounting_summary')
-    by_key = {s['key']: s for s in slots}
-    assert by_key['finance']['active'] is True
-    assert by_key['finance']['label'] == 'การเงิน'
+    assert 'finance' not in {s['key'] for s in slots}
+    assert [s['key'] for s in slots if s['active']] == []
 
 
 # ── Render tests: a page's sidebar + the (always-rendered) mobile drawer ──────

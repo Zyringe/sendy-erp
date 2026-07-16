@@ -1,5 +1,15 @@
-{# Mobile "More" drawer — Bootstrap Offcanvas (right). Holds secondary nav links
-   that didn't fit in the 5-slot bottom nav. Grouped by module to mirror sidebar. #}
+{# Mobile "More" drawer — Bootstrap Offcanvas (right). Flat, ALL nav sections in
+   one scroll, role-filtered — rendered from `drawer_sections`
+   (access_control.py::inject_auth -> nav.py::nav_sections(role)), the SAME NAV
+   list a future phase will also feed the desktop sidebar from. No active state
+   here (it's a menu, not a page nav) — see projects/pwa-nav-redesign/plan.md.
+
+   `link.condition` (currently only 'db_routes_enabled') is a session-key name;
+   a link with a condition only renders when that session value is truthy —
+   the DB-routes ON/OFF toggle itself stays a hand-coded POST form in
+   base.html, desktop-only (see nav.py's comment on the 'ระบบ' section). #}
+{% set _nav_badge_counts = {'alert_count': alert_count, 'suspicious_count': suspicious_count,
+                             'pending_suggestions_count': pending_suggestions_count} %}
 <div class="offcanvas offcanvas-end" tabindex="-1" id="mobileDrawer" aria-labelledby="mobileDrawerLabel">
   <div class="offcanvas-header border-bottom">
     <h5 class="offcanvas-title" id="mobileDrawerLabel">
@@ -9,133 +19,22 @@
   </div>
   <div class="offcanvas-body p-0">
     <div class="list-group list-group-flush">
-
-      {# ── ภาพรวม ── #}
-      <div class="list-group-item bg-light text-muted small fw-bold">ภาพรวม</div>
-      <a href="{{ url_for('dashboard') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-speedometer2 me-3"></i>Dashboard
-      </a>
-      <a href="{{ url_for('inventory.alerts_view') }}" class="list-group-item list-group-item-action d-flex align-items-center">
-        <i class="bi bi-exclamation-triangle me-3"></i>
-        <span class="flex-grow-1">แจ้งเตือน</span>
-        {% if alert_count > 0 %}<span class="badge bg-danger rounded-pill">{{ alert_count }}</span>{% endif %}
-      </a>
-      <a href="{{ url_for('review.index') }}" class="list-group-item list-group-item-action d-flex align-items-center">
-        <i class="bi bi-clipboard-check me-3"></i>
-        <span class="flex-grow-1">ตรวจบิล</span>
-        {% if suspicious_count > 0 %}<span class="badge bg-warning text-dark rounded-pill">{{ suspicious_count }}</span>{% endif %}
-      </a>
-
-      {# ── คลังสินค้า ── #}
-      <div class="list-group-item bg-light text-muted small fw-bold">คลังสินค้า</div>
-      <a href="{{ url_for('products.product_list') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-grid-3x3-gap me-3"></i>สินค้า
-      </a>
-      <a href="{{ url_for('inventory.transaction_history') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-arrow-left-right me-3"></i>ประวัติสต็อก
-      </a>
-      <a href="{{ url_for('inventory.conversion_list') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-scissors me-3"></i>แปลงสินค้า
-      </a>
-      {% if is_admin %}
-      <a href="{{ url_for('labels.manage') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-tags me-3"></i>จัดการป้ายสินค้า
-      </a>
-      {% endif %}
-      {% if session.role in ['admin', 'manager', 'staff'] %}
-      <a href="{{ url_for('labels.print_page') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-printer me-3"></i>พิมพ์ป้ายสินค้า
-      </a>
-      {% endif %}
-
-      {# ── การค้า ── #}
-      <div class="list-group-item bg-light text-muted small fw-bold">การค้า</div>
-      <a href="{{ url_for('sales.trade_dashboard') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-bar-chart-line me-3"></i>ภาพรวมการค้า
-      </a>
-      <a href="{{ url_for('sales.sales_view') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-graph-up-arrow me-3"></i>ยอดขาย
-      </a>
-      <a href="{{ url_for('sales.purchases_view') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-truck me-3"></i>ยอดซื้อ
-      </a>
-      <a href="{{ url_for('partners.supplier_list') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-truck me-3"></i>ผู้จำหน่าย
-      </a>
-      <a href="{{ url_for('ecommerce.ecommerce') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-bag-heart me-3"></i>รายการขายออนไลน์
-      </a>
-      <a href="{{ url_for('marketplace.review') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-clipboard-check me-3"></i>ต้องตรวจการจับคู่ใบกำกับ
-      </a>
-
-      {# ── การเงิน ── #}
-      <div class="list-group-item bg-light text-muted small fw-bold">การเงิน</div>
-      <a href="{{ url_for('accounting.ar_dashboard') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-receipt-cutoff me-3"></i>ลูกหนี้ (AR)
-      </a>
-      <a href="{{ url_for('accounting.ap_dashboard') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-bank me-3"></i>เจ้าหนี้ (AP)
-      </a>
-      <a href="{{ url_for('commission.commission_dashboard') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-cash-coin me-3"></i>ค่าคอมพนักงานขาย
-      </a>
-
-      {# ── บุคลากร (HR) — admin/manager only ── #}
-      {% if session.role in ['admin', 'manager'] %}
-      <div class="list-group-item bg-light text-muted small fw-bold">บุคลากร (HR)</div>
-      <a href="{{ url_for('hr.dashboard') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-person-badge me-3"></i>HR Dashboard
-      </a>
-      <a href="{{ url_for('hr.employee_list') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-people me-3"></i>พนักงาน
-      </a>
-      <a href="{{ url_for('hr.leave_list') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-calendar-x me-3"></i>การลา
-      </a>
-      <a href="{{ url_for('hr.advance_list') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-cash me-3"></i>เบิกล่วงหน้า
-      </a>
-      <a href="{{ url_for('hr.payroll_list') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-cash-coin me-3"></i>Payroll
-      </a>
-      {% endif %}
-
-      {# ── นำเข้าข้อมูล ── #}
-      <div class="list-group-item bg-light text-muted small fw-bold">นำเข้าข้อมูล</div>
-      <a href="{{ url_for('bsn.unified_import') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-box-arrow-in-down me-3"></i>นำเข้าข้อมูล
-      </a>
-      <a href="{{ url_for('bsn.express_dbf_import') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-file-earmark-arrow-up me-3"></i>นำเข้า Express (DBF)
-      </a>
-      <a href="{{ url_for('bsn.mapping') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-tags me-3"></i>ผูกรหัส BSN
-      </a>
-      <a href="{{ url_for('bsn.unit_conversions') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-arrow-left-right me-3"></i>แปลงหน่วย
-      </a>
-      <a href="{{ url_for('mobile.sales_trip') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-pin-map me-3"></i>แผนทริปขาย (เขต)
-      </a>
-
-      {# ── ระบบ — admin only ── #}
-      {% if is_admin %}
-      <div class="list-group-item bg-light text-muted small fw-bold">ระบบ</div>
-      <a href="{{ url_for('admin.user_list') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-people me-3"></i>จัดการผู้ใช้
-      </a>
-      <a href="{{ url_for('admin.cashbook_account_list') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-bank me-3"></i>จัดการบัญชีเงินสด/ธนาคาร
-      </a>
-      {% endif %}
-
-      {# ── ติดตั้งแอป ── #}
-      <div class="list-group-item bg-light text-muted small fw-bold">แอป</div>
-      <a href="{{ url_for('help_install') }}" class="list-group-item list-group-item-action">
-        <i class="bi bi-phone-fill me-3"></i>ติดตั้งแอปบนมือถือ
-      </a>
-
+      {% for section in drawer_sections %}
+      <div class="list-group-item bg-light text-muted small fw-bold">{{ section.section }}</div>
+      {% for link in section.links %}
+        {% if not link.condition or session.get(link.condition) %}
+        <a href="{{ url_for(link.ep, **(link.url_kwargs or {})) }}"
+           class="list-group-item list-group-item-action d-flex align-items-center">
+          <i class="bi {{ link.icon }} me-3"></i>
+          <span class="flex-grow-1">{{ link.label }}</span>
+          {% if link.badge and (not link.badge.roles or session.role in link.badge.roles) %}
+            {% set bval = _nav_badge_counts.get(link.badge.key, 0) %}
+            {% if bval > 0 %}<span class="badge bg-danger rounded-pill">{{ bval }}</span>{% endif %}
+          {% endif %}
+        </a>
+        {% endif %}
+      {% endfor %}
+      {% endfor %}
     </div>
   </div>
 </div>
