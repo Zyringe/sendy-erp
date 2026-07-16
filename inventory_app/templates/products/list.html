@@ -11,61 +11,83 @@
 {% endblock %}
 
 {% block content %}
+{# Active-filter count (location + 4 checkboxes; search stays always-visible so it doesn't count) #}
+{% set filters_count = (1 if low_stock else 0) + (1 if in_stock else 0) + (1 if show_alt else 0) + (1 if show_inactive else 0) + (1 if location else 0) %}
+{% set filters_active = filters_count > 0 %}
+
 <!-- Search / Filter bar -->
 <div class="card mb-3">
   <div class="card-body py-2">
-    <form method="get" class="row g-2 align-items-center">
-      <div class="col">
-        <div class="input-group input-group-sm">
-          <span class="input-group-text"><i class="bi bi-search"></i></span>
-          <input type="text" name="q" class="form-control"
-                 placeholder="ค้นหาชื่อสินค้า หรือ ID..." value="{{ search }}">
+    <form method="get">
+      {# Row 1: search (always visible) + mobile filter toggle #}
+      <div class="row g-2 align-items-center">
+        <div class="col">
+          <div class="input-group input-group-sm">
+            <span class="input-group-text"><i class="bi bi-search"></i></span>
+            <input type="text" name="q" class="form-control"
+                   placeholder="ค้นหาชื่อสินค้า หรือ ID..." value="{{ search }}">
+          </div>
+        </div>
+        <div class="col-auto d-lg-none">
+          <button class="btn btn-sm btn-outline-secondary" type="button"
+                  data-bs-toggle="collapse" data-bs-target="#prodFilters"
+                  aria-expanded="{{ 'true' if filters_active else 'false' }}" aria-controls="prodFilters">
+            <i class="bi bi-sliders me-1"></i>ตัวกรอง{% if filters_count %} <span class="badge badge-danger ms-1">{{ filters_count }}</span>{% endif %}
+          </button>
         </div>
       </div>
-      <div class="col-auto" style="min-width:180px">
-        <div class="input-group input-group-sm">
-          <span class="input-group-text"><i class="bi bi-geo-alt"></i></span>
-          <input type="text" name="location" class="form-control"
-                 placeholder="สถานที่เก็บ เช่น A1" value="{{ location }}">
+
+      {# Location + checkboxes + actions: collapsible on mobile, always shown on desktop #}
+      <div class="collapse d-lg-block {% if filters_active %}show{% endif %}" id="prodFilters">
+        <div class="d-lg-flex align-items-lg-center gap-lg-3 mt-2 mt-lg-0">
+          <div class="mb-2 mb-lg-0" style="max-width:260px">
+            <div class="input-group input-group-sm">
+              <span class="input-group-text"><i class="bi bi-geo-alt"></i></span>
+              <input type="text" name="location" class="form-control"
+                     placeholder="สถานที่เก็บ เช่น A1" value="{{ location }}">
+            </div>
+          </div>
+          <div class="mb-2 mb-lg-0">
+            <div class="form-check form-check-inline mb-1">
+              <input class="form-check-input" type="checkbox" name="low_stock" value="1"
+                     id="chkLow" {% if low_stock %}checked{% endif %}>
+              <label class="form-check-label small" for="chkLow">สต็อกต่ำ</label>
+            </div>
+            <div class="form-check form-check-inline mb-1">
+              <input class="form-check-input" type="checkbox" name="in_stock" value="1"
+                     id="chkInStock" {% if in_stock %}checked{% endif %}>
+              <label class="form-check-label small" for="chkInStock">มีสต็อก &gt; 0</label>
+            </div>
+            <div class="form-check form-check-inline mb-1">
+              <input class="form-check-input" type="checkbox" name="show_alt" value="1"
+                     id="chkShowAlt" {% if show_alt %}checked{% endif %}>
+              <label class="form-check-label small" for="chkShowAlt"
+                     title="แสดงจำนวนที่เติมได้จากการแกะแพ็ค/แพ็คตัวหลวม (ทางเลือก)">เติมได้จากแพ็ค</label>
+            </div>
+            <div class="form-check form-check-inline mb-1">
+              <input class="form-check-input" type="checkbox" name="show_inactive" value="1"
+                     id="chkShowInactive" {% if show_inactive %}checked{% endif %}>
+              <label class="form-check-label small" for="chkShowInactive"
+                     title="รวมสินค้าที่ปิดใช้งานแล้ว (เช่น ตัวที่ถูก merge/เลิกขาย)">แสดงที่ปิดใช้งาน</label>
+            </div>
+          </div>
+          <div class="d-flex gap-2 ms-lg-auto">
+            <button type="submit" class="btn btn-primary btn-touch flex-fill flex-lg-grow-0">กรอง</button>
+            <a href="{{ url_for('products.product_list') }}" class="btn btn-outline-secondary btn-touch flex-fill flex-lg-grow-0">ล้าง</a>
+          </div>
         </div>
-      </div>
-      <div class="col-auto d-flex gap-3 align-items-center">
-        <div class="form-check mb-0">
-          <input class="form-check-input" type="checkbox" name="low_stock" value="1"
-                 id="chkLow" {% if low_stock %}checked{% endif %}>
-          <label class="form-check-label small" for="chkLow">สต็อกต่ำ</label>
-        </div>
-        <div class="form-check mb-0">
-          <input class="form-check-input" type="checkbox" name="in_stock" value="1"
-                 id="chkInStock" {% if in_stock %}checked{% endif %}>
-          <label class="form-check-label small" for="chkInStock">มีสต็อก &gt; 0</label>
-        </div>
-        <div class="form-check mb-0">
-          <input class="form-check-input" type="checkbox" name="show_alt" value="1"
-                 id="chkShowAlt" {% if show_alt %}checked{% endif %}>
-          <label class="form-check-label small" for="chkShowAlt"
-                 title="แสดงจำนวนที่เติมได้จากการแกะแพ็ค/แพ็คตัวหลวม (ทางเลือก)">เติมได้จากแพ็ค</label>
-        </div>
-        <div class="form-check mb-0">
-          <input class="form-check-input" type="checkbox" name="show_inactive" value="1"
-                 id="chkShowInactive" {% if show_inactive %}checked{% endif %}>
-          <label class="form-check-label small" for="chkShowInactive"
-                 title="รวมสินค้าที่ปิดใช้งานแล้ว (เช่น ตัวที่ถูก merge/เลิกขาย)">แสดงที่ปิดใช้งาน</label>
-        </div>
-        <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
-        <a href="{{ url_for('products.product_list') }}" class="btn btn-sm btn-outline-secondary">ล้าง</a>
       </div>
     </form>
   </div>
 </div>
 
-<!-- Table -->
-<div class="card">
+<!-- ════ Desktop: full table (unchanged; hidden on mobile) ════ -->
+<div class="card d-none d-lg-block">
   <div class="card-header d-flex justify-content-between align-items-center">
     <span class="text-subtle small">พบ <strong class="text-main">{{ total | fmt_qty }}</strong> รายการ</span>
   </div>
   <div class="table-responsive">
-    <table class="table table-mobile-cards mb-0">
+    <table class="table mb-0">
       <thead>
         <tr>
           <th style="width:200px; white-space:nowrap">ID</th>
@@ -82,13 +104,13 @@
       <tbody>
         {% for p in products %}
         <tr {% if p.is_low %}class="row-low-stock"{% endif %}>
-          <td data-label="ID" class="td-hide-mobile" style="white-space:nowrap">
+          <td style="white-space:nowrap">
             <span class="badge badge-gray font-mono">{{ p.id }}</span>
             {% if p.sku_code %}
             <div class="font-mono text-subtle small mt-1" style="font-size:.7rem; white-space:nowrap">{{ p.sku_code }}</div>
             {% endif %}
           </td>
-          <td class="td-primary">
+          <td>
             <a href="{{ url_for('products.product_detail', product_id=p.id) }}"
                class="text-decoration-none fw-500 text-main">{{ p.product_name }}</a>
             {% if p.is_low %}
@@ -97,17 +119,16 @@
             {% if not p.is_active %}
               <span class="badge badge-gray ms-1" title="สินค้าถูกปิดใช้งาน (เช่น ถูก merge/เลิกขาย)">ปิดใช้งาน</span>
             {% endif %}
-            <span class="d-mobile-only badge badge-gray font-mono ms-2">ID {{ p.id }}{% if p.sku_code %} · {{ p.sku_code }}{% endif %}</span>
           </td>
-          <td data-label="หน่วย" class="text-center text-subtle">{{ p.unit_type }}</td>
-          <td data-label="ราคาขาย" class="text-end text-subtle">{{ p.base_sell_price | fmt_price }}</td>
-          <td data-label="สต็อก" class="text-end fw-600 {% if p.is_low %}text-danger{% else %}text-main{% endif %}">
+          <td class="text-center text-subtle">{{ p.unit_type }}</td>
+          <td class="text-end text-subtle">{{ p.base_sell_price | fmt_price }}</td>
+          <td class="text-end fw-600 {% if p.is_low %}text-danger{% else %}text-main{% endif %}">
             {{ p.quantity | fmt_qty }}{% if show_alt and buildable.get(p.id) %} <span class="text-subtle fw-500" title="เติมได้อีก {{ buildable.get(p.id) | fmt_qty }} จากการแกะ/แพ็ค (ตัวหลวม↔แผง) — ทางเลือก ไม่ใช่สต๊อกจริง">(+{{ buildable.get(p.id) | fmt_qty }})</span>{% endif %}
           </td>
-          <td data-label="ต้นทุน" class="text-end text-subtle">{% if is_manager %}{{ p.cost_price | fmt_price }}{% else %}—{% endif %}</td>
-          <td data-label="Shopee" class="text-end text-subtle">{{ p.shopee_stock | fmt_qty }}</td>
-          <td data-label="Lazada" class="text-end text-subtle">{{ p.lazada_stock | fmt_qty }}</td>
-          <td class="text-center td-actions">
+          <td class="text-end text-subtle">{% if is_manager %}{{ p.cost_price | fmt_price }}{% else %}—{% endif %}</td>
+          <td class="text-end text-subtle">{{ p.shopee_stock | fmt_qty }}</td>
+          <td class="text-end text-subtle">{{ p.lazada_stock | fmt_qty }}</td>
+          <td class="text-center">
             {% if is_admin %}
             <a href="{{ url_for('products.product_edit', product_id=p.id) }}"
                class="btn btn-xs" style="background:#f1f5f9;color:#475569;border:none" title="แก้ไข">
@@ -118,7 +139,6 @@
         </tr>
         {% else %}
         <tr><td colspan="9" class="text-center text-subtle py-5">ไม่พบสินค้า</td></tr>
-
         {% endfor %}
       </tbody>
     </table>
@@ -148,6 +168,66 @@
         </li>
       </ul>
     </nav>
+  </div>
+  {% endif %}
+</div>
+
+<!-- ════ Mobile: compact cards — stock hero + price ════ -->
+<div class="d-lg-none">
+  <div class="d-flex justify-content-between align-items-center mb-2 px-1">
+    <span class="text-subtle small">พบ <strong class="text-main">{{ total | fmt_qty }}</strong> รายการ</span>
+  </div>
+
+  {% for p in products %}
+  <div class="card mb-2 position-relative{% if p.is_low %} border-start border-danger border-4{% endif %}">
+    <div class="card-body py-2 px-3">
+      {# Title row: name (whole card tap → detail via stretched-link) + edit #}
+      <div class="d-flex justify-content-between align-items-start">
+        <div class="pe-2">
+          <a href="{{ url_for('products.product_detail', product_id=p.id) }}"
+             class="stretched-link text-decoration-none fw-600 text-main">{{ p.product_name }}</a>
+          {% if p.is_low %}<span class="badge badge-danger ms-1">สต็อกต่ำ</span>{% endif %}
+          {% if not p.is_active %}<span class="badge badge-gray ms-1" title="สินค้าถูกปิดใช้งาน">ปิดใช้งาน</span>{% endif %}
+          <div class="text-subtle font-mono mt-1" style="font-size:.72rem">ID {{ p.id }}</div>
+        </div>
+        {% if is_admin %}
+        <a href="{{ url_for('products.product_edit', product_id=p.id) }}"
+           class="btn btn-xs position-relative flex-shrink-0" style="background:#f1f5f9;color:#475569;border:none;z-index:2" title="แก้ไข">
+          <i class="bi bi-pencil"></i>
+        </a>
+        {% endif %}
+      </div>
+      {# Hero row: stock (big) + price #}
+      <div class="d-flex justify-content-between align-items-baseline mt-2">
+        <div>
+          <span class="fs-4 fw-bold {% if p.is_low %}text-danger{% else %}text-main{% endif %}">{{ p.quantity | fmt_qty }}</span>
+          <span class="text-subtle small">{{ p.unit_type }}</span>
+          {% if show_alt and buildable.get(p.id) %}<span class="text-subtle small" title="เติมได้อีก {{ buildable.get(p.id) | fmt_qty }} จากการแกะ/แพ็ค (ตัวหลวม↔แผง) — ทางเลือก ไม่ใช่สต๊อกจริง">(+{{ buildable.get(p.id) | fmt_qty }})</span>{% endif %}
+        </div>
+        <div class="text-end">
+          <span class="text-subtle small">ราคา</span>
+          <span class="fw-600 text-main">{{ p.base_sell_price | fmt_price }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="card"><div class="card-body text-center text-subtle py-4">ไม่พบสินค้า</div></div>
+  {% endfor %}
+
+  {% if pages > 1 %}
+  <div class="d-flex justify-content-between align-items-center mt-3">
+    {% if page > 1 %}
+    <a class="btn btn-outline-secondary btn-touch" href="{{ url_for('products.product_list', page=page-1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_inactive=1 if show_inactive else '') }}"><i class="bi bi-chevron-left"></i> ก่อนหน้า</a>
+    {% else %}
+    <span class="btn btn-outline-secondary disabled"><i class="bi bi-chevron-left"></i> ก่อนหน้า</span>
+    {% endif %}
+    <span class="text-subtle small">หน้า {{ page }} / {{ pages }}</span>
+    {% if page < pages %}
+    <a class="btn btn-outline-secondary btn-touch" href="{{ url_for('products.product_list', page=page+1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_inactive=1 if show_inactive else '') }}">ถัดไป <i class="bi bi-chevron-right"></i></a>
+    {% else %}
+    <span class="btn btn-outline-secondary disabled">ถัดไป <i class="bi bi-chevron-right"></i></span>
+    {% endif %}
   </div>
   {% endif %}
 </div>
