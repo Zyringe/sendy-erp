@@ -25,6 +25,38 @@
   </span>
 </div>
 
+{# ── Filter bar ─────────────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <form method="get" class="row g-2 align-items-end">
+      <div class="col-md-3">
+        <label class="form-label small mb-1">พนักงาน</label>
+        <select name="employee_id" class="form-select form-select-sm">
+          <option value="">— ทุกคน —</option>
+          {% for emp in employees %}
+          <option value="{{ emp.id }}" {% if filter_emp == emp.id|string %}selected{% endif %}>
+            {{ emp.emp_code }} — {{ emp.full_name }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small mb-1">สถานะ</label>
+        <select name="status" class="form-select form-select-sm">
+          <option value="pending"  {% if filter_status == 'pending'  %}selected{% endif %}>รอหัก</option>
+          <option value="deducted" {% if filter_status == 'deducted' %}selected{% endif %}>ถูกหักแล้ว</option>
+          <option value="all"      {% if filter_status == 'all'      %}selected{% endif %}>ทั้งหมด</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
+        <a href="{{ url_for('hr.advance_list') }}"
+           class="btn btn-sm btn-outline-secondary ms-1">รอหัก</a>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div class="card">
   <div class="table-responsive">
     <table class="table table-sm table-hover align-middle mb-0">
@@ -62,7 +94,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="7" class="text-center text-muted py-4">ยังไม่มีรายการเบิกล่วงหน้า</td>
+          <td colspan="7" class="text-center text-muted py-4">ไม่มีรายการเบิกล่วงหน้าตามที่กรอง</td>
         </tr>
         {% endfor %}
       </tbody>

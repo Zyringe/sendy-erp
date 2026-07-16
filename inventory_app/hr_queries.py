@@ -675,12 +675,29 @@ def _coerce_advance_data(data: dict) -> dict:
     }
 
 
-def get_salary_advances(conn: Optional[sqlite3.Connection] = None):
-    """Return all advances, newest first, with employee + account info."""
+def get_salary_advances(employee_id: Optional[int] = None,
+                        status: Optional[str] = None,
+                        conn: Optional[sqlite3.Connection] = None):
+    """Return advances, newest first, with employee + account info.
+
+    status: 'pending'  → only รอหัก (deducted_in_run_id IS NULL)
+            'deducted' → only ถูกหักแล้ว (deducted_in_run_id IS NOT NULL)
+            None/other → all statuses
+    """
     c, owned = _conn(conn)
     try:
+        clauses = []
+        params = []
+        if employee_id:
+            clauses.append("sa.employee_id = ?")
+            params.append(employee_id)
+        if status == "pending":
+            clauses.append("sa.deducted_in_run_id IS NULL")
+        elif status == "deducted":
+            clauses.append("sa.deducted_in_run_id IS NOT NULL")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         return c.execute(
-            """SELECT sa.*,
+            f"""SELECT sa.*,
                       e.full_name, e.emp_code,
                       ca.display_name AS account_name,
                       pr.year_month   AS deducted_ym
@@ -688,7 +705,9 @@ def get_salary_advances(conn: Optional[sqlite3.Connection] = None):
                  JOIN employees e ON e.id = sa.employee_id
                  LEFT JOIN cashbook_accounts ca ON ca.id = sa.from_account_id
                  LEFT JOIN payroll_runs pr ON pr.id = sa.deducted_in_run_id
-                 ORDER BY sa.advance_date DESC, sa.id DESC"""
+                 {where}
+                 ORDER BY sa.advance_date DESC, sa.id DESC""",
+            params,
         ).fetchall()
     finally:
         if owned:
