@@ -256,15 +256,36 @@ def _link_matches(link, endpoint):
     return False
 
 
-def active_link(endpoint):
-    """(module, ep) of the NAV link that would highlight for this request.endpoint,
-    or None. No live consumer yet — base.html still hand-renders its own active-
-    state checks; this exists so the desktop refactor (a later phase) has a
-    pre-tested matcher to switch over to, instead of re-deriving it from scratch.
+def active_link(endpoint, module):
+    """(module, ep) of the NAV link that highlights for `endpoint`, or None.
+
+    `module` is REQUIRED and is the request's `active_module`. base.html only ever
+    evaluates its matchers INSIDE the active module's section (every section is
+    wrapped in `{% if active_module == 'x' %}`), so matching must be scoped the
+    same way or it silently crosses modules:
+
+        active_link('naming.product_save', 'data')  -> ('data', 'naming.index')   ✔
+        # unscoped, this returned ('operation', 'products.product_list') — because
+        # products.product_list matches on the SUBSTRING 'product', and
+        # 'naming.product_save' contains it. On a naming.* page (module='data')
+        # base.html never renders the คลังสินค้า section at all, so สินค้า cannot
+        # be the highlighted link there.
+
+    Same bug family as PR #291 (a parent link lighting up on a sibling child that
+    owns its own link) — hence `module` is a required arg, not an optional one: a
+    caller cannot accidentally get the global-scan behaviour.
+
+    No live consumer yet: base.html still hand-renders its own active-state checks.
+    This exists so the desktop refactor (a later phase) switches to a matcher that
+    is already pinned by tests + snapshot B, instead of re-deriving it from scratch.
     """
     if not endpoint:
         return None
     for section in NAV:
+        if section.get('desktop') is False:
+            continue
+        if section.get('module') != module and not section.get('always'):
+            continue
         for link in section['links']:
             if _link_matches(link, endpoint):
                 return (section.get('module'), link['ep'])

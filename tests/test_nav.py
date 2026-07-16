@@ -158,36 +158,51 @@ def test_badge_model_is_dict_not_bare_string():
 # Not one of the plan's numbered tests (no live consumer of active_link() until
 # the desktop sidebar is switched over) — cheap, and de-risks that future phase.
 
-@pytest.mark.parametrize('endpoint,expected_ep', [
-    ('dashboard', 'dashboard'),                             # exact
-    ('review.scan', 'review.index'),                        # prefix
-    ('products.product_pricing', 'products.product_list'),  # substring, not prefix
-    ('labels.edit', 'labels.manage'),                        # prefix
-    ('marketplace.unmapped', 'marketplace.dashboard'),       # prefix
-    ('marketplace.review', 'marketplace.review'),            # prefix-with-exclusion boundary
-    ('accounting.ar_followup', 'accounting.ar_dashboard'),   # or-list
-    ('accounting.ar_followup_customer', 'accounting.ar_dashboard'),  # or-list
-    ('hr.payslip', 'hr.payroll_list'),                       # or-list beyond the prefix
-    ('hr.payroll_detail', 'hr.payroll_list'),                # prefix
-    ('inventory.conversion_history', 'inventory.conversion_list'),  # prefix
-    ('me.payslip_detail', 'me.payslip_list'),                # prefix
-    ('customer_review.normalize_detail', 'customer_review.normalize_list'),  # prefix
+@pytest.mark.parametrize('endpoint,module,expected_ep', [
+    ('dashboard', 'overview', 'dashboard'),                             # exact
+    ('review.scan', 'overview', 'review.index'),                        # prefix
+    ('products.product_pricing', 'operation', 'products.product_list'),  # substring, not prefix
+    ('labels.edit', 'operation', 'labels.manage'),                       # prefix
+    ('marketplace.unmapped', 'trade', 'marketplace.dashboard'),          # prefix
+    ('marketplace.review', 'trade', 'marketplace.review'),               # prefix-with-exclusion boundary
+    ('accounting.ar_followup', 'finance', 'accounting.ar_dashboard'),    # or-list
+    ('accounting.ar_followup_customer', 'finance', 'accounting.ar_dashboard'),  # or-list
+    ('hr.payslip', 'hr', 'hr.payroll_list'),                             # or-list beyond the prefix
+    ('hr.payroll_detail', 'hr', 'hr.payroll_list'),                      # prefix
+    ('inventory.conversion_history', 'operation', 'inventory.conversion_list'),  # prefix
+    ('me.payslip_detail', 'overview', 'me.payslip_list'),                # prefix, via an `always` section
+    ('customer_review.normalize_detail', 'data', 'customer_review.normalize_list'),  # prefix
 ])
-def test_active_link_matchers(endpoint, expected_ep):
-    result = active_link(endpoint)
+def test_active_link_matchers(endpoint, module, expected_ep):
+    result = active_link(endpoint, module)
     assert result is not None and result[1] == expected_ep, (endpoint, result)
 
 
+@pytest.mark.parametrize('endpoint,module,expected_ep', [
+    # 'naming.product_save' CONTAINS 'product', so products.product_list's substring
+    # matcher catches it — but base.html never renders คลังสินค้า on a data-module
+    # page, so สินค้า cannot be the highlight there. Unscoped matching returned
+    # ('operation','products.product_list'); scoping to the module is the fix.
+    # Same bug family as PR #291 (see tests/test_nav_active_highlight.py).
+    ('naming.product_save', 'data', 'naming.index'),
+    ('naming.product_preview_name', 'data', 'naming.index'),
+])
+def test_active_link_does_not_cross_modules(endpoint, module, expected_ep):
+    result = active_link(endpoint, module)
+    assert result is not None and result[1] == expected_ep, (endpoint, result)
+    assert result[0] == module, f"{endpoint} highlighted a link outside module {module}: {result}"
+
+
 def test_labels_print_page_excluded_from_labels_manage():
-    assert active_link('labels.print_page') == ('operation', 'labels.print_page')
+    assert active_link('labels.print_page', 'operation') == ('operation', 'labels.print_page')
 
 
 def test_admin_download_db_never_highlights():
     # base.html gives this link no active-state clause at all.
-    assert active_link('admin.download_db') is None
+    assert active_link('admin.download_db', 'admin_module') is None
 
 
 def test_active_link_unknown_or_empty_endpoint_is_none():
-    assert active_link('') is None
-    assert active_link(None) is None
-    assert active_link('nonexistent.endpoint') is None
+    assert active_link('', 'overview') is None
+    assert active_link(None, 'overview') is None
+    assert active_link('nonexistent.endpoint', 'overview') is None
