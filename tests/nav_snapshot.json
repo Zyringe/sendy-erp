@@ -1,0 +1,2065 @@
+{
+ "A": {
+  "admin@marketplace.returns_cancelled": [
+   {
+    "kind": "section",
+    "label": "การค้า"
+   },
+   {
+    "href": "/trade-dashboard",
+    "icon": "bi-bar-chart-line",
+    "kind": "link",
+    "label": "ภาพรวมการค้า"
+   },
+   {
+    "href": "/sales",
+    "icon": "bi-graph-up-arrow",
+    "kind": "link",
+    "label": "ยอดขาย"
+   },
+   {
+    "href": "/purchases",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ยอดซื้อ"
+   },
+   {
+    "href": "/customers",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "ลูกค้า"
+   },
+   {
+    "href": "/suppliers",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ผู้จำหน่าย"
+   },
+   {
+    "href": "/call",
+    "icon": "bi-telephone-outbound",
+    "kind": "link",
+    "label": "โทรหาลูกค้า"
+   },
+   {
+    "kind": "section",
+    "label": "ขายออนไลน์"
+   },
+   {
+    "href": "/ecommerce",
+    "icon": "bi-bag-heart",
+    "kind": "link",
+    "label": "รายการขายออนไลน์"
+   },
+   {
+    "href": "/marketplace",
+    "icon": "bi-receipt",
+    "kind": "link",
+    "label": "คำสั่งซื้อ Marketplace"
+   },
+   {
+    "href": "/marketplace/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ต้องตรวจการจับคู่ใบกำกับ"
+   }
+  ],
+  "admin@mobile.sales_trip": [],
+  "admin@partners.customer_bulk_reassign": [
+   {
+    "kind": "section",
+    "label": "การค้า"
+   },
+   {
+    "href": "/trade-dashboard",
+    "icon": "bi-bar-chart-line",
+    "kind": "link",
+    "label": "ภาพรวมการค้า"
+   },
+   {
+    "href": "/sales",
+    "icon": "bi-graph-up-arrow",
+    "kind": "link",
+    "label": "ยอดขาย"
+   },
+   {
+    "href": "/purchases",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ยอดซื้อ"
+   },
+   {
+    "href": "/customers",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "ลูกค้า"
+   },
+   {
+    "href": "/suppliers",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ผู้จำหน่าย"
+   },
+   {
+    "href": "/call",
+    "icon": "bi-telephone-outbound",
+    "kind": "link",
+    "label": "โทรหาลูกค้า"
+   },
+   {
+    "kind": "section",
+    "label": "ขายออนไลน์"
+   },
+   {
+    "href": "/ecommerce",
+    "icon": "bi-bag-heart",
+    "kind": "link",
+    "label": "รายการขายออนไลน์"
+   },
+   {
+    "href": "/marketplace",
+    "icon": "bi-receipt",
+    "kind": "link",
+    "label": "คำสั่งซื้อ Marketplace"
+   },
+   {
+    "href": "/marketplace/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ต้องตรวจการจับคู่ใบกำกับ"
+   }
+  ],
+  "admin@partners.regions_admin": [
+   {
+    "kind": "section",
+    "label": "การค้า"
+   },
+   {
+    "href": "/trade-dashboard",
+    "icon": "bi-bar-chart-line",
+    "kind": "link",
+    "label": "ภาพรวมการค้า"
+   },
+   {
+    "href": "/sales",
+    "icon": "bi-graph-up-arrow",
+    "kind": "link",
+    "label": "ยอดขาย"
+   },
+   {
+    "href": "/purchases",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ยอดซื้อ"
+   },
+   {
+    "href": "/customers",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "ลูกค้า"
+   },
+   {
+    "href": "/suppliers",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ผู้จำหน่าย"
+   },
+   {
+    "href": "/call",
+    "icon": "bi-telephone-outbound",
+    "kind": "link",
+    "label": "โทรหาลูกค้า"
+   },
+   {
+    "kind": "section",
+    "label": "ขายออนไลน์"
+   },
+   {
+    "href": "/ecommerce",
+    "icon": "bi-bag-heart",
+    "kind": "link",
+    "label": "รายการขายออนไลน์"
+   },
+   {
+    "href": "/marketplace",
+    "icon": "bi-receipt",
+    "kind": "link",
+    "label": "คำสั่งซื้อ Marketplace"
+   },
+   {
+    "href": "/marketplace/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ต้องตรวจการจับคู่ใบกำกับ"
+   }
+  ],
+  "admin@products.photos_review": [
+   {
+    "kind": "section",
+    "label": "คลังสินค้า"
+   },
+   {
+    "href": "/products",
+    "icon": "bi-grid-3x3-gap",
+    "kind": "link",
+    "label": "สินค้า"
+   },
+   {
+    "href": "/transactions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "ประวัติสต็อก"
+   },
+   {
+    "href": "/conversions",
+    "icon": "bi-scissors",
+    "kind": "link",
+    "label": "แปลงสินค้า"
+   },
+   {
+    "href": "/labels/manage",
+    "icon": "bi-tags",
+    "kind": "link",
+    "label": "จัดการป้ายสินค้า"
+   },
+   {
+    "href": "/labels/print",
+    "icon": "bi-printer",
+    "kind": "link",
+    "label": "พิมพ์ป้ายสินค้า"
+   }
+  ],
+  "admin@products.product_categorize": [
+   {
+    "kind": "section",
+    "label": "คลังสินค้า"
+   },
+   {
+    "href": "/products",
+    "icon": "bi-grid-3x3-gap",
+    "kind": "link",
+    "label": "สินค้า"
+   },
+   {
+    "href": "/transactions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "ประวัติสต็อก"
+   },
+   {
+    "href": "/conversions",
+    "icon": "bi-scissors",
+    "kind": "link",
+    "label": "แปลงสินค้า"
+   },
+   {
+    "href": "/labels/manage",
+    "icon": "bi-tags",
+    "kind": "link",
+    "label": "จัดการป้ายสินค้า"
+   },
+   {
+    "href": "/labels/print",
+    "icon": "bi-printer",
+    "kind": "link",
+    "label": "พิมพ์ป้ายสินค้า"
+   }
+  ],
+  "admin@products.product_pricing": [
+   {
+    "kind": "section",
+    "label": "คลังสินค้า"
+   },
+   {
+    "href": "/products",
+    "icon": "bi-grid-3x3-gap",
+    "kind": "link",
+    "label": "สินค้า"
+   },
+   {
+    "href": "/transactions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "ประวัติสต็อก"
+   },
+   {
+    "href": "/conversions",
+    "icon": "bi-scissors",
+    "kind": "link",
+    "label": "แปลงสินค้า"
+   },
+   {
+    "href": "/labels/manage",
+    "icon": "bi-tags",
+    "kind": "link",
+    "label": "จัดการป้ายสินค้า"
+   },
+   {
+    "href": "/labels/print",
+    "icon": "bi-printer",
+    "kind": "link",
+    "label": "พิมพ์ป้ายสินค้า"
+   }
+  ],
+  "admin@products.product_trade_summary": [
+   {
+    "kind": "section",
+    "label": "คลังสินค้า"
+   },
+   {
+    "href": "/products",
+    "icon": "bi-grid-3x3-gap",
+    "kind": "link",
+    "label": "สินค้า"
+   },
+   {
+    "href": "/transactions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "ประวัติสต็อก"
+   },
+   {
+    "href": "/conversions",
+    "icon": "bi-scissors",
+    "kind": "link",
+    "label": "แปลงสินค้า"
+   },
+   {
+    "href": "/labels/manage",
+    "icon": "bi-tags",
+    "kind": "link",
+    "label": "จัดการป้ายสินค้า"
+   },
+   {
+    "href": "/labels/print",
+    "icon": "bi-printer",
+    "kind": "link",
+    "label": "พิมพ์ป้ายสินค้า"
+   }
+  ],
+  "admin@products.promotion_new": [
+   {
+    "kind": "section",
+    "label": "คลังสินค้า"
+   },
+   {
+    "href": "/products",
+    "icon": "bi-grid-3x3-gap",
+    "kind": "link",
+    "label": "สินค้า"
+   },
+   {
+    "href": "/transactions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "ประวัติสต็อก"
+   },
+   {
+    "href": "/conversions",
+    "icon": "bi-scissors",
+    "kind": "link",
+    "label": "แปลงสินค้า"
+   },
+   {
+    "href": "/labels/manage",
+    "icon": "bi-tags",
+    "kind": "link",
+    "label": "จัดการป้ายสินค้า"
+   },
+   {
+    "href": "/labels/print",
+    "icon": "bi-printer",
+    "kind": "link",
+    "label": "พิมพ์ป้ายสินค้า"
+   }
+  ],
+  "admin|admin_module": [
+   {
+    "kind": "section",
+    "label": "ระบบ"
+   },
+   {
+    "href": "/users",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "จัดการผู้ใช้"
+   },
+   {
+    "href": "/cashbook-accounts",
+    "icon": "bi-bank",
+    "kind": "link",
+    "label": "จัดการบัญชีเงินสด/ธนาคาร"
+   },
+   {
+    "href": "/admin/backups",
+    "icon": "bi-clock-history",
+    "kind": "link",
+    "label": "สำรอง/กู้คืนข้อมูล"
+   }
+  ],
+  "admin|admin_module|db_routes": [
+   {
+    "kind": "section",
+    "label": "ระบบ"
+   },
+   {
+    "href": "/users",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "จัดการผู้ใช้"
+   },
+   {
+    "href": "/cashbook-accounts",
+    "icon": "bi-bank",
+    "kind": "link",
+    "label": "จัดการบัญชีเงินสด/ธนาคาร"
+   },
+   {
+    "href": "/admin/backups",
+    "icon": "bi-clock-history",
+    "kind": "link",
+    "label": "สำรอง/กู้คืนข้อมูล"
+   },
+   {
+    "href": "/admin/upload-db",
+    "icon": "bi-cloud-upload",
+    "kind": "link",
+    "label": "Upload Database"
+   },
+   {
+    "href": "/admin/download-db",
+    "icon": "bi-cloud-download",
+    "kind": "link",
+    "label": "Download Database"
+   }
+  ],
+  "admin|cashbook": [
+   {
+    "kind": "section",
+    "label": "บัญชีรับ-จ่าย"
+   },
+   {
+    "href": "/cashbook/?vat=novat",
+    "icon": "bi-speedometer2",
+    "kind": "link",
+    "label": "Dashboard"
+   }
+  ],
+  "admin|data": [
+   {
+    "kind": "section",
+    "label": "นำเข้าข้อมูล"
+   },
+   {
+    "href": "/import-data",
+    "icon": "bi-box-arrow-in-down",
+    "kind": "link",
+    "label": "นำเข้าข้อมูล"
+   },
+   {
+    "href": "/import-express-dbf",
+    "icon": "bi-file-earmark-arrow-up",
+    "kind": "link",
+    "label": "นำเข้า Express (DBF)"
+   },
+   {
+    "href": "/mapping",
+    "icon": "bi-tags",
+    "kind": "link",
+    "label": "ผูกรหัส BSN"
+   },
+   {
+    "href": "/unit-conversions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "แปลงหน่วย"
+   },
+   {
+    "href": "/customers/normalize",
+    "icon": "bi-person-check",
+    "kind": "link",
+    "label": "ตรวจข้อมูลลูกค้า"
+   },
+   {
+    "href": "/naming",
+    "icon": "bi-pencil-square",
+    "kind": "link",
+    "label": "ตั้งชื่อสินค้า"
+   }
+  ],
+  "admin|finance": [
+   {
+    "kind": "section",
+    "label": "การเงิน"
+   },
+   {
+    "href": "/accounting",
+    "icon": "bi-calculator",
+    "kind": "link",
+    "label": "สรุปกำไร-ขาดทุน"
+   },
+   {
+    "href": "/cashflow",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "กระแสเงินสด"
+   },
+   {
+    "href": "/ar",
+    "icon": "bi-receipt-cutoff",
+    "kind": "link",
+    "label": "ลูกหนี้ (AR)"
+   },
+   {
+    "href": "/ap",
+    "icon": "bi-bank",
+    "kind": "link",
+    "label": "เจ้าหนี้ (AP)"
+   },
+   {
+    "href": "/commission",
+    "icon": "bi-cash-coin",
+    "kind": "link",
+    "label": "ค่าคอมพนักงานขาย"
+   }
+  ],
+  "admin|hr": [
+   {
+    "kind": "section",
+    "label": "บุคลากร (HR)"
+   },
+   {
+    "href": "/hr/",
+    "icon": "bi-person-badge",
+    "kind": "link",
+    "label": "HR Dashboard"
+   },
+   {
+    "href": "/hr/employees",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "พนักงาน"
+   },
+   {
+    "href": "/hr/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "การลา"
+   },
+   {
+    "href": "/hr/advances",
+    "icon": "bi-cash",
+    "kind": "link",
+    "label": "เบิกล่วงหน้า"
+   },
+   {
+    "href": "/hr/payroll",
+    "icon": "bi-cash-coin",
+    "kind": "link",
+    "label": "Payroll"
+   }
+  ],
+  "admin|operation": [
+   {
+    "kind": "section",
+    "label": "คลังสินค้า"
+   },
+   {
+    "href": "/products",
+    "icon": "bi-grid-3x3-gap",
+    "kind": "link",
+    "label": "สินค้า"
+   },
+   {
+    "href": "/transactions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "ประวัติสต็อก"
+   },
+   {
+    "href": "/conversions",
+    "icon": "bi-scissors",
+    "kind": "link",
+    "label": "แปลงสินค้า"
+   },
+   {
+    "href": "/labels/manage",
+    "icon": "bi-tags",
+    "kind": "link",
+    "label": "จัดการป้ายสินค้า"
+   },
+   {
+    "href": "/labels/print",
+    "icon": "bi-printer",
+    "kind": "link",
+    "label": "พิมพ์ป้ายสินค้า"
+   }
+  ],
+  "admin|overview": [
+   {
+    "kind": "section",
+    "label": "ภาพรวม"
+   },
+   {
+    "href": "/",
+    "icon": "bi-speedometer2",
+    "kind": "link",
+    "label": "Dashboard"
+   },
+   {
+    "href": "/alerts",
+    "icon": "bi-exclamation-triangle",
+    "kind": "link",
+    "label": "แจ้งเตือน"
+   },
+   {
+    "href": "/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ตรวจบิล"
+   }
+  ],
+  "admin|trade": [
+   {
+    "kind": "section",
+    "label": "การค้า"
+   },
+   {
+    "href": "/trade-dashboard",
+    "icon": "bi-bar-chart-line",
+    "kind": "link",
+    "label": "ภาพรวมการค้า"
+   },
+   {
+    "href": "/sales",
+    "icon": "bi-graph-up-arrow",
+    "kind": "link",
+    "label": "ยอดขาย"
+   },
+   {
+    "href": "/purchases",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ยอดซื้อ"
+   },
+   {
+    "href": "/customers",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "ลูกค้า"
+   },
+   {
+    "href": "/suppliers",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ผู้จำหน่าย"
+   },
+   {
+    "href": "/call",
+    "icon": "bi-telephone-outbound",
+    "kind": "link",
+    "label": "โทรหาลูกค้า"
+   },
+   {
+    "kind": "section",
+    "label": "ขายออนไลน์"
+   },
+   {
+    "href": "/ecommerce",
+    "icon": "bi-bag-heart",
+    "kind": "link",
+    "label": "รายการขายออนไลน์"
+   },
+   {
+    "href": "/marketplace",
+    "icon": "bi-receipt",
+    "kind": "link",
+    "label": "คำสั่งซื้อ Marketplace"
+   },
+   {
+    "href": "/marketplace/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ต้องตรวจการจับคู่ใบกำกับ"
+   }
+  ],
+  "general@help_install": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "general@me.leave": [
+   {
+    "kind": "section",
+    "label": "ภาพรวม"
+   },
+   {
+    "href": "/",
+    "icon": "bi-speedometer2",
+    "kind": "link",
+    "label": "Dashboard"
+   },
+   {
+    "href": "/alerts",
+    "icon": "bi-exclamation-triangle",
+    "kind": "link",
+    "label": "แจ้งเตือน"
+   },
+   {
+    "href": "/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ตรวจบิล"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "general@mobile.stock_search": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "general|admin_module": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "general|cashbook": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "general|data": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   },
+   {
+    "kind": "section",
+    "label": "นำเข้าข้อมูล"
+   },
+   {
+    "href": "/import-data",
+    "icon": "bi-box-arrow-in-down",
+    "kind": "link",
+    "label": "นำเข้าข้อมูล"
+   },
+   {
+    "href": "/import-express-dbf",
+    "icon": "bi-file-earmark-arrow-up",
+    "kind": "link",
+    "label": "นำเข้า Express (DBF)"
+   },
+   {
+    "href": "/mapping",
+    "icon": "bi-tags",
+    "kind": "link",
+    "label": "ผูกรหัส BSN"
+   },
+   {
+    "href": "/unit-conversions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "แปลงหน่วย"
+   },
+   {
+    "href": "/customers/normalize",
+    "icon": "bi-person-check",
+    "kind": "link",
+    "label": "ตรวจข้อมูลลูกค้า"
+   }
+  ],
+  "general|finance": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "general|hr": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "general|operation": [
+   {
+    "kind": "section",
+    "label": "คลังสินค้า"
+   },
+   {
+    "href": "/products",
+    "icon": "bi-grid-3x3-gap",
+    "kind": "link",
+    "label": "สินค้า"
+   },
+   {
+    "href": "/transactions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "ประวัติสต็อก"
+   },
+   {
+    "href": "/conversions",
+    "icon": "bi-scissors",
+    "kind": "link",
+    "label": "แปลงสินค้า"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "general|overview": [
+   {
+    "kind": "section",
+    "label": "ภาพรวม"
+   },
+   {
+    "href": "/",
+    "icon": "bi-speedometer2",
+    "kind": "link",
+    "label": "Dashboard"
+   },
+   {
+    "href": "/alerts",
+    "icon": "bi-exclamation-triangle",
+    "kind": "link",
+    "label": "แจ้งเตือน"
+   },
+   {
+    "href": "/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ตรวจบิล"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "general|trade": [
+   {
+    "kind": "section",
+    "label": "การค้า"
+   },
+   {
+    "href": "/trade-dashboard",
+    "icon": "bi-bar-chart-line",
+    "kind": "link",
+    "label": "ภาพรวมการค้า"
+   },
+   {
+    "href": "/sales",
+    "icon": "bi-graph-up-arrow",
+    "kind": "link",
+    "label": "ยอดขาย"
+   },
+   {
+    "href": "/purchases",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ยอดซื้อ"
+   },
+   {
+    "href": "/customers",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "ลูกค้า"
+   },
+   {
+    "href": "/suppliers",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ผู้จำหน่าย"
+   },
+   {
+    "href": "/call",
+    "icon": "bi-telephone-outbound",
+    "kind": "link",
+    "label": "โทรหาลูกค้า"
+   },
+   {
+    "kind": "section",
+    "label": "ขายออนไลน์"
+   },
+   {
+    "href": "/ecommerce",
+    "icon": "bi-bag-heart",
+    "kind": "link",
+    "label": "รายการขายออนไลน์"
+   },
+   {
+    "href": "/marketplace",
+    "icon": "bi-receipt",
+    "kind": "link",
+    "label": "คำสั่งซื้อ Marketplace"
+   },
+   {
+    "href": "/marketplace/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ต้องตรวจการจับคู่ใบกำกับ"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "manager@me.payslip_list": [
+   {
+    "kind": "section",
+    "label": "ภาพรวม"
+   },
+   {
+    "href": "/",
+    "icon": "bi-speedometer2",
+    "kind": "link",
+    "label": "Dashboard"
+   },
+   {
+    "href": "/alerts",
+    "icon": "bi-exclamation-triangle",
+    "kind": "link",
+    "label": "แจ้งเตือน"
+   },
+   {
+    "href": "/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ตรวจบิล"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "manager|admin_module": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "manager|cashbook": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   },
+   {
+    "kind": "section",
+    "label": "บัญชีรับ-จ่าย"
+   },
+   {
+    "href": "/cashbook/?vat=novat",
+    "icon": "bi-speedometer2",
+    "kind": "link",
+    "label": "Dashboard"
+   }
+  ],
+  "manager|data": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   },
+   {
+    "kind": "section",
+    "label": "นำเข้าข้อมูล"
+   },
+   {
+    "href": "/import-data",
+    "icon": "bi-box-arrow-in-down",
+    "kind": "link",
+    "label": "นำเข้าข้อมูล"
+   },
+   {
+    "href": "/import-express-dbf",
+    "icon": "bi-file-earmark-arrow-up",
+    "kind": "link",
+    "label": "นำเข้า Express (DBF)"
+   },
+   {
+    "href": "/mapping",
+    "icon": "bi-tags",
+    "kind": "link",
+    "label": "ผูกรหัส BSN"
+   },
+   {
+    "href": "/unit-conversions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "แปลงหน่วย"
+   },
+   {
+    "href": "/customers/normalize",
+    "icon": "bi-person-check",
+    "kind": "link",
+    "label": "ตรวจข้อมูลลูกค้า"
+   },
+   {
+    "href": "/naming",
+    "icon": "bi-pencil-square",
+    "kind": "link",
+    "label": "ตั้งชื่อสินค้า"
+   }
+  ],
+  "manager|finance": [
+   {
+    "kind": "section",
+    "label": "การเงิน"
+   },
+   {
+    "href": "/accounting",
+    "icon": "bi-calculator",
+    "kind": "link",
+    "label": "สรุปกำไร-ขาดทุน"
+   },
+   {
+    "href": "/cashflow",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "กระแสเงินสด"
+   },
+   {
+    "href": "/ar",
+    "icon": "bi-receipt-cutoff",
+    "kind": "link",
+    "label": "ลูกหนี้ (AR)"
+   },
+   {
+    "href": "/ap",
+    "icon": "bi-bank",
+    "kind": "link",
+    "label": "เจ้าหนี้ (AP)"
+   },
+   {
+    "href": "/commission",
+    "icon": "bi-cash-coin",
+    "kind": "link",
+    "label": "ค่าคอมพนักงานขาย"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "manager|hr": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   },
+   {
+    "kind": "section",
+    "label": "บุคลากร (HR)"
+   },
+   {
+    "href": "/hr/",
+    "icon": "bi-person-badge",
+    "kind": "link",
+    "label": "HR Dashboard"
+   },
+   {
+    "href": "/hr/employees",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "พนักงาน"
+   },
+   {
+    "href": "/hr/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "การลา"
+   },
+   {
+    "href": "/hr/advances",
+    "icon": "bi-cash",
+    "kind": "link",
+    "label": "เบิกล่วงหน้า"
+   },
+   {
+    "href": "/hr/payroll",
+    "icon": "bi-cash-coin",
+    "kind": "link",
+    "label": "Payroll"
+   }
+  ],
+  "manager|operation": [
+   {
+    "kind": "section",
+    "label": "คลังสินค้า"
+   },
+   {
+    "href": "/products",
+    "icon": "bi-grid-3x3-gap",
+    "kind": "link",
+    "label": "สินค้า"
+   },
+   {
+    "href": "/transactions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "ประวัติสต็อก"
+   },
+   {
+    "href": "/conversions",
+    "icon": "bi-scissors",
+    "kind": "link",
+    "label": "แปลงสินค้า"
+   },
+   {
+    "href": "/labels/print",
+    "icon": "bi-printer",
+    "kind": "link",
+    "label": "พิมพ์ป้ายสินค้า"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "manager|overview": [
+   {
+    "kind": "section",
+    "label": "ภาพรวม"
+   },
+   {
+    "href": "/",
+    "icon": "bi-speedometer2",
+    "kind": "link",
+    "label": "Dashboard"
+   },
+   {
+    "href": "/alerts",
+    "icon": "bi-exclamation-triangle",
+    "kind": "link",
+    "label": "แจ้งเตือน"
+   },
+   {
+    "href": "/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ตรวจบิล"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "manager|trade": [
+   {
+    "kind": "section",
+    "label": "การค้า"
+   },
+   {
+    "href": "/trade-dashboard",
+    "icon": "bi-bar-chart-line",
+    "kind": "link",
+    "label": "ภาพรวมการค้า"
+   },
+   {
+    "href": "/sales",
+    "icon": "bi-graph-up-arrow",
+    "kind": "link",
+    "label": "ยอดขาย"
+   },
+   {
+    "href": "/purchases",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ยอดซื้อ"
+   },
+   {
+    "href": "/customers",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "ลูกค้า"
+   },
+   {
+    "href": "/suppliers",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ผู้จำหน่าย"
+   },
+   {
+    "href": "/call",
+    "icon": "bi-telephone-outbound",
+    "kind": "link",
+    "label": "โทรหาลูกค้า"
+   },
+   {
+    "kind": "section",
+    "label": "ขายออนไลน์"
+   },
+   {
+    "href": "/ecommerce",
+    "icon": "bi-bag-heart",
+    "kind": "link",
+    "label": "รายการขายออนไลน์"
+   },
+   {
+    "href": "/marketplace",
+    "icon": "bi-receipt",
+    "kind": "link",
+    "label": "คำสั่งซื้อ Marketplace"
+   },
+   {
+    "href": "/marketplace/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ต้องตรวจการจับคู่ใบกำกับ"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "shareholder|admin_module": [],
+  "shareholder|cashbook": [
+   {
+    "kind": "section",
+    "label": "บัญชีรับ-จ่าย"
+   },
+   {
+    "href": "/cashbook/?vat=novat",
+    "icon": "bi-speedometer2",
+    "kind": "link",
+    "label": "Dashboard"
+   }
+  ],
+  "shareholder|data": [
+   {
+    "kind": "section",
+    "label": "นำเข้าข้อมูล"
+   },
+   {
+    "href": "/import-data",
+    "icon": "bi-box-arrow-in-down",
+    "kind": "link",
+    "label": "นำเข้าข้อมูล"
+   },
+   {
+    "href": "/import-express-dbf",
+    "icon": "bi-file-earmark-arrow-up",
+    "kind": "link",
+    "label": "นำเข้า Express (DBF)"
+   },
+   {
+    "href": "/mapping",
+    "icon": "bi-tags",
+    "kind": "link",
+    "label": "ผูกรหัส BSN"
+   },
+   {
+    "href": "/unit-conversions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "แปลงหน่วย"
+   },
+   {
+    "href": "/customers/normalize",
+    "icon": "bi-person-check",
+    "kind": "link",
+    "label": "ตรวจข้อมูลลูกค้า"
+   }
+  ],
+  "shareholder|finance": [
+   {
+    "kind": "section",
+    "label": "การเงิน"
+   },
+   {
+    "href": "/accounting",
+    "icon": "bi-calculator",
+    "kind": "link",
+    "label": "สรุปกำไร-ขาดทุน"
+   },
+   {
+    "href": "/cashflow",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "กระแสเงินสด"
+   },
+   {
+    "href": "/ar",
+    "icon": "bi-receipt-cutoff",
+    "kind": "link",
+    "label": "ลูกหนี้ (AR)"
+   },
+   {
+    "href": "/ap",
+    "icon": "bi-bank",
+    "kind": "link",
+    "label": "เจ้าหนี้ (AP)"
+   },
+   {
+    "href": "/commission",
+    "icon": "bi-cash-coin",
+    "kind": "link",
+    "label": "ค่าคอมพนักงานขาย"
+   }
+  ],
+  "shareholder|hr": [],
+  "shareholder|operation": [
+   {
+    "kind": "section",
+    "label": "คลังสินค้า"
+   },
+   {
+    "href": "/products",
+    "icon": "bi-grid-3x3-gap",
+    "kind": "link",
+    "label": "สินค้า"
+   },
+   {
+    "href": "/transactions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "ประวัติสต็อก"
+   },
+   {
+    "href": "/conversions",
+    "icon": "bi-scissors",
+    "kind": "link",
+    "label": "แปลงสินค้า"
+   }
+  ],
+  "shareholder|overview": [
+   {
+    "kind": "section",
+    "label": "ภาพรวม"
+   },
+   {
+    "href": "/",
+    "icon": "bi-speedometer2",
+    "kind": "link",
+    "label": "Dashboard"
+   },
+   {
+    "href": "/alerts",
+    "icon": "bi-exclamation-triangle",
+    "kind": "link",
+    "label": "แจ้งเตือน"
+   },
+   {
+    "href": "/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ตรวจบิล"
+   }
+  ],
+  "shareholder|trade": [
+   {
+    "kind": "section",
+    "label": "การค้า"
+   },
+   {
+    "href": "/trade-dashboard",
+    "icon": "bi-bar-chart-line",
+    "kind": "link",
+    "label": "ภาพรวมการค้า"
+   },
+   {
+    "href": "/sales",
+    "icon": "bi-graph-up-arrow",
+    "kind": "link",
+    "label": "ยอดขาย"
+   },
+   {
+    "href": "/purchases",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ยอดซื้อ"
+   },
+   {
+    "href": "/customers",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "ลูกค้า"
+   },
+   {
+    "href": "/suppliers",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ผู้จำหน่าย"
+   },
+   {
+    "href": "/call",
+    "icon": "bi-telephone-outbound",
+    "kind": "link",
+    "label": "โทรหาลูกค้า"
+   },
+   {
+    "kind": "section",
+    "label": "ขายออนไลน์"
+   },
+   {
+    "href": "/ecommerce",
+    "icon": "bi-bag-heart",
+    "kind": "link",
+    "label": "รายการขายออนไลน์"
+   },
+   {
+    "href": "/marketplace",
+    "icon": "bi-receipt",
+    "kind": "link",
+    "label": "คำสั่งซื้อ Marketplace"
+   },
+   {
+    "href": "/marketplace/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ต้องตรวจการจับคู่ใบกำกับ"
+   }
+  ],
+  "staff@me.leave": [
+   {
+    "kind": "section",
+    "label": "ภาพรวม"
+   },
+   {
+    "href": "/",
+    "icon": "bi-speedometer2",
+    "kind": "link",
+    "label": "Dashboard"
+   },
+   {
+    "href": "/alerts",
+    "icon": "bi-exclamation-triangle",
+    "kind": "link",
+    "label": "แจ้งเตือน"
+   },
+   {
+    "href": "/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ตรวจบิล"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "staff|admin_module": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "staff|cashbook": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "staff|data": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   },
+   {
+    "kind": "section",
+    "label": "นำเข้าข้อมูล"
+   },
+   {
+    "href": "/import-data",
+    "icon": "bi-box-arrow-in-down",
+    "kind": "link",
+    "label": "นำเข้าข้อมูล"
+   },
+   {
+    "href": "/import-express-dbf",
+    "icon": "bi-file-earmark-arrow-up",
+    "kind": "link",
+    "label": "นำเข้า Express (DBF)"
+   },
+   {
+    "href": "/mapping",
+    "icon": "bi-tags",
+    "kind": "link",
+    "label": "ผูกรหัส BSN"
+   },
+   {
+    "href": "/unit-conversions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "แปลงหน่วย"
+   },
+   {
+    "href": "/customers/normalize",
+    "icon": "bi-person-check",
+    "kind": "link",
+    "label": "ตรวจข้อมูลลูกค้า"
+   }
+  ],
+  "staff|finance": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "staff|hr": [
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "staff|operation": [
+   {
+    "kind": "section",
+    "label": "คลังสินค้า"
+   },
+   {
+    "href": "/products",
+    "icon": "bi-grid-3x3-gap",
+    "kind": "link",
+    "label": "สินค้า"
+   },
+   {
+    "href": "/transactions",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "ประวัติสต็อก"
+   },
+   {
+    "href": "/conversions",
+    "icon": "bi-scissors",
+    "kind": "link",
+    "label": "แปลงสินค้า"
+   },
+   {
+    "href": "/labels/print",
+    "icon": "bi-printer",
+    "kind": "link",
+    "label": "พิมพ์ป้ายสินค้า"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "staff|overview": [
+   {
+    "kind": "section",
+    "label": "ภาพรวม"
+   },
+   {
+    "href": "/",
+    "icon": "bi-speedometer2",
+    "kind": "link",
+    "label": "Dashboard"
+   },
+   {
+    "href": "/alerts",
+    "icon": "bi-exclamation-triangle",
+    "kind": "link",
+    "label": "แจ้งเตือน"
+   },
+   {
+    "href": "/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ตรวจบิล"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ],
+  "staff|trade": [
+   {
+    "kind": "section",
+    "label": "การค้า"
+   },
+   {
+    "href": "/trade-dashboard",
+    "icon": "bi-bar-chart-line",
+    "kind": "link",
+    "label": "ภาพรวมการค้า"
+   },
+   {
+    "href": "/sales",
+    "icon": "bi-graph-up-arrow",
+    "kind": "link",
+    "label": "ยอดขาย"
+   },
+   {
+    "href": "/purchases",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ยอดซื้อ"
+   },
+   {
+    "href": "/customers",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "ลูกค้า"
+   },
+   {
+    "href": "/suppliers",
+    "icon": "bi-truck",
+    "kind": "link",
+    "label": "ผู้จำหน่าย"
+   },
+   {
+    "href": "/call",
+    "icon": "bi-telephone-outbound",
+    "kind": "link",
+    "label": "โทรหาลูกค้า"
+   },
+   {
+    "kind": "section",
+    "label": "ขายออนไลน์"
+   },
+   {
+    "href": "/ecommerce",
+    "icon": "bi-bag-heart",
+    "kind": "link",
+    "label": "รายการขายออนไลน์"
+   },
+   {
+    "href": "/marketplace",
+    "icon": "bi-receipt",
+    "kind": "link",
+    "label": "คำสั่งซื้อ Marketplace"
+   },
+   {
+    "href": "/marketplace/review",
+    "icon": "bi-clipboard-check",
+    "kind": "link",
+    "label": "ต้องตรวจการจับคู่ใบกำกับ"
+   },
+   {
+    "kind": "section",
+    "label": "ของฉัน"
+   },
+   {
+    "href": "/me/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "ลาของฉัน"
+   },
+   {
+    "href": "/me/payslip",
+    "icon": "bi-cash-stack",
+    "kind": "link",
+    "label": "สลิปเงินเดือน"
+   }
+  ]
+ },
+ "B": {
+  "admin|accounting.accounting_summary|0": "/accounting",
+  "admin|accounting.ap_dashboard|0": "/ap",
+  "admin|accounting.ar_dashboard|0": "/ar",
+  "admin|accounting.ar_followup_customer|0": "/ar",
+  "admin|accounting.ar_followup|0": "/ar",
+  "admin|accounting.cashflow_dashboard|0": "/cashflow",
+  "admin|admin.backup_restore|0": "/admin/backups",
+  "admin|admin.backups_list|0": "/admin/backups",
+  "admin|admin.cashbook_account_list|0": "/cashbook-accounts",
+  "admin|admin.cashbook_account_new|0": "/cashbook-accounts",
+  "admin|admin.download_db|1": null,
+  "admin|admin.upload_db|1": "/admin/upload-db",
+  "admin|admin.user_edit|0": "/users",
+  "admin|admin.user_list|0": "/users",
+  "admin|bsn.express_dbf_import|0": "/import-express-dbf",
+  "admin|bsn.mapping|0": "/mapping",
+  "admin|bsn.unified_import_confirm|0": "/import-data",
+  "admin|bsn.unified_import|0": "/import-data",
+  "admin|bsn.unit_conversions|0": "/unit-conversions",
+  "admin|call.call_card|0": "/call",
+  "admin|call.call_list|0": "/call",
+  "admin|cashbook.dashboard|0": "/cashbook/?vat=novat",
+  "admin|commission.commission_dashboard|0": "/commission",
+  "admin|customer_review.normalize_detail|0": "/customers/normalize",
+  "admin|customer_review.normalize_list|0": "/customers/normalize",
+  "admin|dashboard|0": "/",
+  "admin|ecommerce.ecommerce|0": "/ecommerce",
+  "admin|hr.advance_list|0": "/hr/advances",
+  "admin|hr.dashboard|0": "/hr/",
+  "admin|hr.employee_detail|0": "/hr/employees",
+  "admin|hr.employee_list|0": "/hr/employees",
+  "admin|hr.leave_list|0": "/hr/leave",
+  "admin|hr.payroll_list|0": "/hr/payroll",
+  "admin|hr.payslip|0": "/hr/payroll",
+  "admin|inventory.alerts_view|0": "/alerts",
+  "admin|inventory.conversion_history|0": "/conversions",
+  "admin|inventory.conversion_list|0": "/conversions",
+  "admin|inventory.transaction_history|0": "/transactions",
+  "admin|labels.edit|0": "/labels/manage",
+  "admin|labels.manage|0": "/labels/manage",
+  "admin|labels.print_page|0": "/labels/print",
+  "admin|marketplace.dashboard|0": "/marketplace",
+  "admin|marketplace.returns_cancelled|0": "/marketplace",
+  "admin|marketplace.review|0": "/marketplace/review",
+  "admin|marketplace.unmapped|0": "/marketplace",
+  "admin|mobile.sales_trip|0": null,
+  "admin|naming.index|0": "/naming",
+  "admin|partners.customer_bulk_reassign|0": null,
+  "admin|partners.customer_list|0": "/customers",
+  "admin|partners.customer_summary|0": "/customers",
+  "admin|partners.regions_admin|0": null,
+  "admin|partners.supplier_list|0": "/suppliers",
+  "admin|partners.supplier_summary|0": "/suppliers",
+  "admin|products.photos_review|0": "/products",
+  "admin|products.product_categorize|0": "/products",
+  "admin|products.product_detail|0": "/products",
+  "admin|products.product_list|0": "/products",
+  "admin|products.product_new|0": "/products",
+  "admin|products.product_pricing|0": "/products",
+  "admin|products.product_trade_summary|0": "/products",
+  "admin|products.promotion_new|0": "/products",
+  "admin|review.index|0": "/review",
+  "admin|review.scan|0": "/review",
+  "admin|sales.purchases_view|0": "/purchases",
+  "admin|sales.sales_view|0": "/sales",
+  "admin|sales.trade_dashboard|0": "/trade-dashboard",
+  "general|mobile.stock_search|0": null,
+  "manager|me.leave|0": "/me/leave",
+  "manager|me.payslip_detail|0": "/me/payslip",
+  "manager|me.payslip_list|0": "/me/payslip",
+  "shareholder|accounting.accounting_summary|0": "/accounting",
+  "staff|bsn.mapping|0": "/mapping",
+  "staff|labels.print_page|0": "/labels/print",
+  "staff|me.leave|0": "/me/leave"
+ }
+}

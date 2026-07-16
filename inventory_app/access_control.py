@@ -196,7 +196,20 @@ _MODULE_DEFS = [
 ]
 
 # Map each endpoint to the module key it belongs to.
-# Endpoints not listed here fall back to 'overview'.
+#
+# ⚠ Endpoints not listed here fall back to 'overview' — a SILENT default that
+# never errors, it just paints the wrong sidebar. Eight real pages sat in that
+# hole until 2026-07-16 (/products/<id>/pricing and friends showed the ภาพรวม
+# sidebar instead of คลังสินค้า). `_NAV_EXEMPT_ENDPOINTS` below + the hygiene test
+# in tests/test_endpoint_module_coverage.py now force every GET-able endpoint to
+# be listed in exactly one of the two, so a new page cannot silently regress.
+#
+# Module key 'mobile' is a SENTINEL: it has no _MODULE_DEFS entry and no sidebar
+# section in base.html, so mobile-only PWA pages render no desktop module nav.
+# That is deliberate — access_control.py's inject_auth already declares "general
+# is mobile-only; desktop sidebar shows nothing", and landing those pages on
+# 'overview' was what put three dead links (they all redirect to stock search)
+# in the kiosk role's sidebar.
 _ENDPOINT_MODULE = {
     # overview
     'dashboard': 'overview',
@@ -208,6 +221,11 @@ _ENDPOINT_MODULE = {
     'products.product_detail': 'operation',
     'products.product_new': 'operation',
     'products.product_edit': 'operation',
+    'products.product_pricing': 'operation',
+    'products.product_trade_summary': 'operation',
+    'products.product_categorize': 'operation',
+    'products.photos_review': 'operation',
+    'products.promotion_new': 'operation',
     'inventory.stock_adjust': 'operation',
     'inventory.transaction_history': 'operation',
     'inventory.conversion_list': 'operation',
@@ -261,6 +279,8 @@ _ENDPOINT_MODULE = {
     'partners.customer_list': 'trade',
     'partners.customer_summary': 'trade',
     'partners.customer_map': 'trade',
+    'partners.customer_bulk_reassign': 'trade',
+    'partners.regions_admin': 'trade',
     'partners.supplier_list': 'trade',
     'partners.supplier_summary': 'trade',
     'ecommerce.ecommerce': 'trade',
@@ -284,6 +304,21 @@ _ENDPOINT_MODULE = {
     'marketplace.review_amount': 'trade',
     'marketplace.review': 'trade',
     'marketplace.review_dismiss': 'trade',
+    'marketplace.returns_cancelled': 'trade',
+    # ── ของฉัน (self-service) — explicitly 'overview', which is exactly what the
+    # silent fallback already resolved these to. Listed so the hygiene test can
+    # tell "decided" from "forgotten"; mapping them anywhere else would change
+    # which sidebar staff/manager see on ลาของฉัน/สลิป pages. The ของฉัน sidebar
+    # section is role-gated (not module-gated), so it shows regardless.
+    # No bottom-nav slot maps to 'overview' → เพิ่มเติม lights on me.* pages.
+    'me.leave': 'overview',
+    'me.payslip_list': 'overview',
+    'me.payslip_detail': 'overview',
+    # ── mobile-only PWA pages → the 'mobile' sentinel (no desktop module nav).
+    'mobile.stock_search': 'mobile',
+    'mobile.sales_trip': 'mobile',
+    'mobile.customer_detail': 'mobile',
+    'help_install': 'mobile',
     # hr
     'hr.dashboard': 'hr',
     'hr.employee_list': 'hr',
@@ -346,6 +381,24 @@ _ENDPOINT_MODULE = {
     'customer_review.normalize_confirm': 'data',
     'customer_review.normalize_skip':    'data',
 }
+
+# GET-able endpoints that deliberately carry NO module: they never render a
+# sidebar, so the 'overview' fallback is harmless for them. Kept explicit (rather
+# than just absent) so tests/test_endpoint_module_coverage.py can tell a decision
+# apart from an oversight — being absent from BOTH lists is the bug it catches.
+_NAV_EXEMPT_ENDPOINTS = frozenset([
+    # JSON APIs
+    'cashbook.advance_history', 'cashbook.detail_api',
+    'marketplace.api_payout_orders', 'mobile.stock_search_api',
+    'products.api_product_barcodes', 'products.api_products_search',
+    'products.product_cost_history', 'products.product_parse_name',
+    # file / binary responses
+    'hr.payroll_export', 'products.serve_catalog_photo', 'serve_sw',
+    # legacy redirect stubs kept so old bookmarks don't 404 (both → /import-data)
+    'accounting.express_import', 'bsn.import_weekly',
+    # infrastructure / pre-auth
+    'healthz', 'bootstrap_upload_db', 'login',
+])
 
 
 # ── Mobile bottom-nav slots (module headers) ─────────────────────────────────
