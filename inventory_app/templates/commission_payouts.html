@@ -68,16 +68,16 @@
       <tbody>
         {% for p in payouts %}
         <tr>
-          <td>{{ p.id }}</td>
-          <td><span class="badge bg-light text-dark font-mono">{{ p.year_month }}</span></td>
-          <td><span class="font-mono">{{ p.salesperson_code }}</span></td>
-          <td class="text-end font-mono fw-600 text-primary">{{ '{:,.2f}'.format(p.amount_paid) }}</td>
-          <td class="text-center font-mono small">{{ p.paid_date }}</td>
-          <td class="text-center small">{{ p.paid_method or '—' }}</td>
-          <td class="small text-subtle">{{ p.note or '' }}</td>
-          <td class="text-center small text-subtle">{{ p.paid_by or '—' }}</td>
-          <td class="text-center small text-subtle">{{ p.created_at }}</td>
-          <td class="text-end">
+          <td class="td-hide-mobile">{{ p.id }}</td>
+          <td data-label="เดือน"><span class="badge bg-light text-dark font-mono">{{ p.year_month }}</span></td>
+          <td class="td-primary"><span class="font-mono">{{ p.salesperson_code }}</span></td>
+          <td data-label="ยอด" class="text-end font-mono fw-600 text-primary">{{ '{:,.2f}'.format(p.amount_paid) }}</td>
+          <td data-label="วันจ่าย" class="text-center font-mono small">{{ p.paid_date }}</td>
+          <td data-label="วิธี" class="text-center small">{{ p.paid_method or '—' }}</td>
+          <td class="small text-subtle td-hide-mobile">{{ p.note or '' }}</td>
+          <td class="text-center small text-subtle td-hide-mobile">{{ p.paid_by or '—' }}</td>
+          <td class="text-center small text-subtle td-hide-mobile">{{ p.created_at }}</td>
+          <td class="text-end td-actions">
             <form method="post" action="{{ url_for('commission.commission_delete_payout', payout_id=p.id) }}"
                   onsubmit="return confirm('ลบรายการจ่าย {{ p.amount_paid }} ของ {{ p.salesperson_code }} {{ p.year_month }}?')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

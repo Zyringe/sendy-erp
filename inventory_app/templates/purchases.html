@@ -116,8 +116,8 @@
           </td>
           <td data-label="ผู้จำหน่าย" class="text-subtle small">{{ r.supplier or '–' }}</td>
           <td data-label="จำนวน" class="text-end small">{{ r.qty | fmt_qty }} {{ r.unit }}</td>
-          <td data-label="ราคา/หน่วย" class="text-end small">{{ r.unit_price | fmt_price }}</td>
-          <td data-label="ส่วนลด" class="text-end small text-danger">{{ r.discount or '–' }}</td>
+          <td data-label="ราคา/หน่วย" class="text-end small td-hide-mobile">{{ r.unit_price | fmt_price }}</td>
+          <td data-label="ส่วนลด" class="text-end small text-danger td-hide-mobile">{{ r.discount or '–' }}</td>
           <td data-label="ยอดสุทธิ" class="text-end fw-600">{{ r.net | fmt_price }}</td>
         </tr>
         {% else %}

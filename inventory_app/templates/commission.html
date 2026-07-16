@@ -129,16 +129,16 @@
                 <i class="bi bi-chevron-right small text-subtle"></i>
               </a>
             </td>
-            <td data-label="Tier" class="text-center">
+            <td data-label="Tier" class="text-center td-hide-mobile">
               <span class="badge {% if r.tier_code == 'A' %}bg-primary{% elif r.tier_code == 'B' %}bg-warning text-dark{% else %}bg-secondary{% endif %}">{{ r.tier_code }}</span>
             </td>
-            <td data-label="Own" class="text-end font-mono">{{ '{:,.2f}'.format(r.own_net) }}</td>
-            <td data-label="3rd-party" class="text-end font-mono">{{ '{:,.2f}'.format(r.third_net) }}</td>
-            <td data-label="Total net" class="text-end font-mono fw-600">{{ '{:,.2f}'.format(r.total_net) }}
+            <td data-label="Own" class="text-end font-mono td-hide-mobile">{{ '{:,.2f}'.format(r.own_net) }}</td>
+            <td data-label="3rd-party" class="text-end font-mono td-hide-mobile">{{ '{:,.2f}'.format(r.third_net) }}</td>
+            <td data-label="Total net" class="text-end font-mono fw-600 td-hide-mobile">{{ '{:,.2f}'.format(r.total_net) }}
               {% if r.threshold_amount and r.total_net > r.threshold_amount %}<i class="bi bi-arrow-up-right text-success" title="ผ่าน threshold"></i>{% endif %}
             </td>
             <td data-label="รวม commission" class="text-end font-mono fw-600 text-success">{{ '{:,.2f}'.format(r.total_commission) }}</td>
-            <td data-label="จ่ายแล้ว" class="text-end font-mono">{{ '{:,.2f}'.format(r.paid_amount) }}</td>
+            <td data-label="จ่ายแล้ว" class="text-end font-mono td-hide-mobile">{{ '{:,.2f}'.format(r.paid_amount) }}</td>
             <td data-label="คงเหลือ" class="text-end font-mono {% if r.remaining > 0.01 %}text-warning fw-600{% else %}text-subtle{% endif %}">
               {{ '{:,.2f}'.format(r.remaining) }}
             </td>

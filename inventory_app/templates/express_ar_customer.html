@@ -59,15 +59,15 @@
       <tbody>
         {% for r in rows %}
         <tr>
-          <td data-label="เลขที่" class="font-mono"><strong>{{ r.doc_no }}</strong></td>
+          <td class="td-primary font-mono"><strong>{{ r.doc_no }}</strong></td>
           <td data-label="วันที่" class="text-center font-mono small">{{ r.doc_date_iso }}</td>
           <td data-label="อายุ" class="text-center small {% if r.age_days and r.age_days > 60 %}text-danger fw-600{% elif r.age_days and r.age_days > 30 %}text-warning{% endif %}">
             {{ r.age_days or '—' }}
           </td>
-          <td data-label="ยอดบิล" class="text-end font-mono">{{ '{:,.2f}'.format(r.bill_amount or 0) }}</td>
-          <td data-label="จ่ายแล้ว" class="text-end font-mono">{{ '{:,.2f}'.format(r.paid_amount or 0) }}</td>
+          <td data-label="ยอดบิล" class="text-end font-mono td-hide-mobile">{{ '{:,.2f}'.format(r.bill_amount or 0) }}</td>
+          <td data-label="จ่ายแล้ว" class="text-end font-mono td-hide-mobile">{{ '{:,.2f}'.format(r.paid_amount or 0) }}</td>
           <td data-label="คงค้าง" class="text-end font-mono fw-600 text-danger">{{ '{:,.2f}'.format(r.outstanding_amount or 0) }}</td>
-          <td data-label="flags" class="text-center">
+          <td data-label="flags" class="text-center td-hide-mobile">
             {% if r.is_anomalous %}<span class="badge bg-warning text-dark me-1" title="ใบเสร็จไม่เรียบร้อย">!</span>{% endif %}
             {% if r.has_warning %}<span class="badge bg-danger" title="warning">***</span>{% endif %}
           </td>
@@ -75,7 +75,7 @@
         {% else %}
         <tr><td colspan="7" class="text-center text-subtle py-4">ไม่พบบิลค้างของลูกค้านี้</td></tr>
         {% endfor %}
-        <tr class="table-light">
+        <tr class="table-light d-none d-lg-table-row">
           <td colspan="3" class="text-end fw-600">รวม</td>
           <td class="text-end font-mono fw-600">{{ '{:,.2f}'.format(total_billed) }}</td>
           <td></td>
