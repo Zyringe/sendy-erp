@@ -9,16 +9,20 @@ from database import get_connection
 
 
 def get_sales(product_id=None, date_from=None, date_to=None,
-              vat_type=None, page=1, per_page=50):
+              vat_type=None, page=1, per_page=50, doc_no=None):
     conn = get_connection()
     conds = ['1=1']
     params = []
     if product_id:
         conds.append('s.product_id = ?'); params.append(product_id)
-    if date_from:
-        conds.append('s.date_iso >= ?'); params.append(date_from)
-    if date_to:
-        conds.append('s.date_iso <= ?'); params.append(date_to)
+    if doc_no:
+        # doc_no search overrides the date range entirely — search all history.
+        conds.append("s.doc_no LIKE '%'||?||'%'"); params.append(doc_no)
+    else:
+        if date_from:
+            conds.append('s.date_iso >= ?'); params.append(date_from)
+        if date_to:
+            conds.append('s.date_iso <= ?'); params.append(date_to)
     if vat_type is not None:
         conds.append('s.vat_type = ?'); params.append(vat_type)
     where = ' AND '.join(conds)
@@ -54,15 +58,19 @@ def get_purchases_by_doc(doc_base):
     return rows
 
 
-def get_sales_summary(date_from=None, date_to=None):
+def get_sales_summary(date_from=None, date_to=None, doc_no=None):
     """Returns totals split by vat_type."""
     conn = get_connection()
     conds = ['1=1']
     params = []
-    if date_from:
-        conds.append('date_iso >= ?'); params.append(date_from)
-    if date_to:
-        conds.append('date_iso <= ?'); params.append(date_to)
+    if doc_no:
+        # doc_no search overrides the date range entirely — search all history.
+        conds.append("doc_no LIKE '%'||?||'%'"); params.append(doc_no)
+    else:
+        if date_from:
+            conds.append('date_iso >= ?'); params.append(date_from)
+        if date_to:
+            conds.append('date_iso <= ?'); params.append(date_to)
     where = ' AND '.join(conds)
     rows = conn.execute(f"""
         SELECT vat_type,
@@ -292,16 +300,23 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None):
     }
 
 
-def get_purchases(product_id=None, date_from=None, date_to=None, page=1, per_page=50):
+def get_purchases(product_id=None, date_from=None, date_to=None, page=1,
+                   per_page=50, vat_type=None, doc_no=None):
     conn = get_connection()
     conds = ['1=1']
     params = []
     if product_id:
         conds.append('p2.product_id = ?'); params.append(product_id)
-    if date_from:
-        conds.append('p2.date_iso >= ?'); params.append(date_from)
-    if date_to:
-        conds.append('p2.date_iso <= ?'); params.append(date_to)
+    if doc_no:
+        # doc_no search overrides the date range entirely — search all history.
+        conds.append("p2.doc_no LIKE '%'||?||'%'"); params.append(doc_no)
+    else:
+        if date_from:
+            conds.append('p2.date_iso >= ?'); params.append(date_from)
+        if date_to:
+            conds.append('p2.date_iso <= ?'); params.append(date_to)
+    if vat_type is not None:
+        conds.append('p2.vat_type = ?'); params.append(vat_type)
     where = ' AND '.join(conds)
     sql = f"""
         SELECT p2.*,
@@ -320,7 +335,7 @@ def get_purchases(product_id=None, date_from=None, date_to=None, page=1, per_pag
     return rows, total
 
 
-def get_purchases_summary(date_from=None, date_to=None):
+def get_purchases_summary(date_from=None, date_to=None, doc_no=None):
     """Range-total summary for purchases_view (mirrors get_sales_summary's
     pattern). purchases.html used to show `rows | sum(attribute='net')`,
     which only summed the CURRENT PAGE of a paginated list — this gives the
@@ -330,10 +345,14 @@ def get_purchases_summary(date_from=None, date_to=None):
     conn = get_connection()
     conds = ['1=1']
     params = []
-    if date_from:
-        conds.append('date_iso >= ?'); params.append(date_from)
-    if date_to:
-        conds.append('date_iso <= ?'); params.append(date_to)
+    if doc_no:
+        # doc_no search overrides the date range entirely — search all history.
+        conds.append("doc_no LIKE '%'||?||'%'"); params.append(doc_no)
+    else:
+        if date_from:
+            conds.append('date_iso >= ?'); params.append(date_from)
+        if date_to:
+            conds.append('date_iso <= ?'); params.append(date_to)
     where = ' AND '.join(conds)
     row = conn.execute(f"""
         SELECT COUNT(*)        AS txn_count,
@@ -343,3 +362,31 @@ def get_purchases_summary(date_from=None, date_to=None):
     """, params).fetchone()
     conn.close()
     return {'txn_count': row['txn_count'] or 0, 'total_net': row['total_net'] or 0.0}
+
+
+def get_purchases_summary_by_vat(date_from=None, date_to=None, doc_no=None):
+    """Returns purchase totals split by vat_type (mirrors get_sales_summary),
+    backing the 3 VAT summary cards on purchases.html."""
+    conn = get_connection()
+    conds = ['1=1']
+    params = []
+    if doc_no:
+        # doc_no search overrides the date range entirely — search all history.
+        conds.append("doc_no LIKE '%'||?||'%'"); params.append(doc_no)
+    else:
+        if date_from:
+            conds.append('date_iso >= ?'); params.append(date_from)
+        if date_to:
+            conds.append('date_iso <= ?'); params.append(date_to)
+    where = ' AND '.join(conds)
+    rows = conn.execute(f"""
+        SELECT vat_type,
+               COUNT(*)       AS txn_count,
+               SUM(qty)       AS total_qty,
+               SUM(net)       AS total_net
+        FROM purchase_transactions
+        WHERE {where}
+        GROUP BY vat_type
+    """, params).fetchall()
+    conn.close()
+    return rows
