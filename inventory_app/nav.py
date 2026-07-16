@@ -202,13 +202,29 @@ def _link_visible(link, role):
     return True
 
 
-def _section_visible(section, role):
+def _section_visible(section, role, flat):
+    """`flat=True` (the drawer, module=None): a section's `roles=None` means
+    "every role EXCEPT 'general'" — the mobile kiosk role opts in explicitly
+    (see module docstring). A section that really is for every role including
+    general (แอป) lists ALL_ROLES explicitly instead of None.
+
+    `flat=False` (the desktop, module='x'): `roles=None` means literally every
+    role, general included. base.html's module-gated sections (ภาพรวม/
+    คลังสินค้า/การค้า/ขายออนไลน์/นำเข้าข้อมูล) have NEVER had a role gate — only
+    `active_module` gates them. 'general' only ever avoids seeing them in
+    practice because `require_login` redirects it away before the page can
+    render, not because the sidebar itself hides the section. Verified against
+    tests/nav_snapshot.json's `general|operation`/`general|trade`/`general|data`/
+    `general|overview` entries, captured pre-refactor: general renders the FULL
+    module content there (labels.manage/naming.index etc. still excluded, via
+    their own per-LINK `roles`). Reproduced faithfully, not fixed — same
+    "pre-existing quirk, out of scope" treatment as the shareholder/HR gap.
+    This is a genuine, deliberate asymmetry: the drawer is a NEW, tighter fix
+    for general (this project's whole point); the desktop sidebar is a frozen
+    port of code that never had this restriction to begin with."""
     roles = section.get('roles')
     if roles is None:
-        # Open to every role EXCEPT 'general' — the mobile kiosk role opts in
-        # explicitly (see module docstring). A section that really is for every
-        # role including general (แอป) lists ALL_ROLES explicitly instead of None.
-        return role != 'general'
+        return (role != 'general') if flat else True
     return role in roles
 
 
@@ -224,12 +240,16 @@ def nav_sections(role, module=None):
     A section left with zero links after role-filtering is dropped entirely
     (e.g. 'ระบบ' vanishes outright for non-admin, rather than showing an empty
     header — matches base.html, which wraps the whole section in the role `if`).
+
+    See `_section_visible`'s docstring for the one deliberate flat-vs-scoped
+    asymmetry (general's section-level visibility for `roles=None` sections).
     """
+    flat = module is None
     out = []
     for section in NAV:
-        if not _section_visible(section, role):
+        if not _section_visible(section, role, flat):
             continue
-        if module is not None:
+        if not flat:
             if section.get('desktop') is False:
                 continue
             if section.get('module') != module and not section.get('always'):
