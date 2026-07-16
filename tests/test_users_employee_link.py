@@ -38,11 +38,37 @@ def _user_id(db, username):
     return row[0] if row else None
 
 
-# Live-DB facts the fixture copies (verified 2026-06-29):
-#   EMP004 (id 4, นิคเนม หลุย) → user 2 (l, staff)
-#   EMP005 (id 5, บอล) → ACTIVE + unlinked (the only linkable employee)
-#   EMP006 (id 6, ริน) → is_active=0, so NOT offered for linking
-#   user 10 (mamaput) → shareholder; user 9 (a) → EMP007
+# Baseline these tests assume. Originally these were live-DB facts "verified
+# 2026-06-29", but the live snapshot drifts as employees gain logins over time
+# (EMP005/บอล got one 2026-07-14, which broke the old "EMP005 is the only free
+# employee" assumption and failed 5 tests). So instead of depending on whichever
+# employee happens to be free this week, `_pin_employee_link_baseline` normalizes
+# the four referenced rows on the throwaway temp copy:
+#   EMP004 (id 4, หลุย) → linked to user 2   (already-linked / cannot-steal case)
+#   EMP005 (id 5, บอล)  → active + unlinked   (free-to-link case)
+#   EMP006 (id 6, ริน)  → inactive            (not-offered case)
+#   EMP007 (id 7, เอ๋)  → linked to user 9    (delete-unlink case)
+# Users 2/8/9 are stable login rows the fixture links against.
+
+
+@pytest.fixture(autouse=True)
+def _pin_employee_link_baseline(tmp_db):
+    """Pin the employee↔user link state the tests document, on the temp DB copy.
+
+    Raw UPDATEs bypass the app's 1:1 link guard on purpose — this is test setup,
+    not a code path under test. Only EMP005 actually changes today (its live
+    link is cleared); the other three rows already match and are pinned so a
+    future live drift of any of them can't silently break these tests."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(
+        "UPDATE employees SET is_active=1, user_id=2    WHERE id=4;"
+        "UPDATE employees SET is_active=1, user_id=NULL WHERE id=5;"
+        "UPDATE employees SET is_active=0, user_id=NULL WHERE id=6;"
+        "UPDATE employees SET is_active=1, user_id=9    WHERE id=7;"
+    )
+    conn.commit()
+    conn.close()
 
 
 # ── 1:1 selection helper ──────────────────────────────────────────────────────
