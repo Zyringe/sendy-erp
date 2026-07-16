@@ -15,13 +15,9 @@
 {% set filters_count = (1 if low_stock else 0) + (1 if in_stock else 0) + (1 if show_alt else 0) + (1 if show_inactive else 0) + (1 if location else 0) %}
 {% set filters_active = filters_count > 0 %}
 
-{# Back-to-filtered-list URL carried into each product so the detail page can return here #}
-{% set back_to_list = url_for('products.product_list',
-     q=search or none, location=location or none,
-     low_stock='1' if low_stock else none, in_stock='1' if in_stock else none,
-     show_alt='1' if show_alt else none, show_inactive='1' if show_inactive else none,
-     hard_to_sell='1' if hard_to_sell else none, restock='1' if restock else none,
-     page=page if page and page > 1 else none) %}
+{# Back-to-filtered-list URL (built in the route, also stashed in session) carried
+   into each product link so the detail page can return to this exact view #}
+{% set back_to_list = return_url %}
 
 <!-- Search / Filter bar -->
 <div class="card mb-3">
@@ -34,6 +30,8 @@
             <span class="input-group-text"><i class="bi bi-search"></i></span>
             <input type="text" name="q" class="form-control"
                    placeholder="ค้นหาชื่อสินค้า หรือ ID..." value="{{ search }}">
+            {# Mobile needs a visible submit (กรอง lives inside the collapsed panel); desktop uses กรอง #}
+            <button type="submit" class="btn btn-primary d-lg-none" aria-label="ค้นหา"><i class="bi bi-search"></i></button>
           </div>
         </div>
         <div class="col-auto d-lg-none">
@@ -158,7 +156,7 @@
       <ul class="pagination pagination-sm mb-0 justify-content-center flex-wrap">
         {% set ns = namespace(prev=0) %}
         <li class="page-item {% if page == 1 %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('products.product_list', page=page-1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_inactive=1 if show_inactive else '') }}">&laquo;</a>
+          <a class="page-link" href="{{ url_for('products.product_list', page=page-1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_alt=1 if show_alt else '', show_inactive=1 if show_inactive else '') }}">&laquo;</a>
         </li>
         {% for p in range(1, pages+1) %}
           {% if p == 1 or p == pages or (p >= page-2 and p <= page+2) %}
@@ -166,13 +164,13 @@
             <li class="page-item disabled"><span class="page-link">…</span></li>
             {% endif %}
             <li class="page-item {% if p == page %}active{% endif %}">
-              <a class="page-link" href="{{ url_for('products.product_list', page=p, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_inactive=1 if show_inactive else '') }}">{{ p }}</a>
+              <a class="page-link" href="{{ url_for('products.product_list', page=p, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_alt=1 if show_alt else '', show_inactive=1 if show_inactive else '') }}">{{ p }}</a>
             </li>
             {% set ns.prev = p %}
           {% endif %}
         {% endfor %}
         <li class="page-item {% if page == pages %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('products.product_list', page=page+1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_inactive=1 if show_inactive else '') }}">&raquo;</a>
+          <a class="page-link" href="{{ url_for('products.product_list', page=page+1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_alt=1 if show_alt else '', show_inactive=1 if show_inactive else '') }}">&raquo;</a>
         </li>
       </ul>
     </nav>
@@ -226,13 +224,13 @@
   {% if pages > 1 %}
   <div class="d-flex justify-content-between align-items-center mt-3">
     {% if page > 1 %}
-    <a class="btn btn-outline-secondary btn-touch" href="{{ url_for('products.product_list', page=page-1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_inactive=1 if show_inactive else '') }}"><i class="bi bi-chevron-left"></i> ก่อนหน้า</a>
+    <a class="btn btn-outline-secondary btn-touch" href="{{ url_for('products.product_list', page=page-1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_alt=1 if show_alt else '', show_inactive=1 if show_inactive else '') }}"><i class="bi bi-chevron-left"></i> ก่อนหน้า</a>
     {% else %}
     <span class="btn btn-outline-secondary disabled"><i class="bi bi-chevron-left"></i> ก่อนหน้า</span>
     {% endif %}
     <span class="text-subtle small">หน้า {{ page }} / {{ pages }}</span>
     {% if page < pages %}
-    <a class="btn btn-outline-secondary btn-touch" href="{{ url_for('products.product_list', page=page+1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_inactive=1 if show_inactive else '') }}">ถัดไป <i class="bi bi-chevron-right"></i></a>
+    <a class="btn btn-outline-secondary btn-touch" href="{{ url_for('products.product_list', page=page+1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_alt=1 if show_alt else '', show_inactive=1 if show_inactive else '') }}">ถัดไป <i class="bi bi-chevron-right"></i></a>
     {% else %}
     <span class="btn btn-outline-secondary disabled">ถัดไป <i class="bi bi-chevron-right"></i></span>
     {% endif %}
