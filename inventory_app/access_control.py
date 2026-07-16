@@ -8,7 +8,7 @@ from flask import session, request, redirect, url_for, flash, abort
 
 import models
 import review_rules as rr
-from nav import nav_sections
+from nav import active_link, nav_sections
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -422,16 +422,26 @@ _MOBILE_NAV_SLOTS = [
 def _mobile_active_slot(endpoint):
     """Which bottom-nav slot key (if any) the current endpoint should highlight.
 
-    'home' matches the literal 'dashboard' endpoint, NOT the whole 'overview'
-    module — 'overview' also covers me.leave/me.payslip_list/me.payslip_detail
-    (mapped there deliberately in _ENDPOINT_MODULE so the desktop sidebar stays
-    unchanged on those pages) and inventory.alerts_view/review.index. None of
-    those should light หน้าหลัก; they fall through to the "no slot active"
-    default, so เพิ่มเติม (which actually holds those pages) lights instead."""
-    if endpoint == 'dashboard':
-        return 'home'
+    หน้าหลัก owns the whole ภาพรวม nav GROUP — Dashboard + แจ้งเตือน + ตรวจบิล
+    (Put, 2026-07-16: they are the Dashboard group and should read as หน้าหลัก
+    rather than leaving เพิ่มเติม lit). The group is resolved from nav.py's ภาพรวม
+    SECTION, so it is defined in exactly one place: add a link to that section and
+    the bar follows automatically, matchers (e.g. review.*'s prefix) included.
+
+    ⚠ Keyed on the SECTION, deliberately NOT on the 'overview' MODULE. Phase 1.5
+    maps me.leave/me.payslip* to 'overview' too (so the desktop sidebar stays
+    unchanged on those pages), so a module-keyed check would wrongly light หน้าหลัก
+    on ลาของฉัน/สลิป. Those links live in NAV's ของฉัน section (module=None), so
+    resolving by section keeps them out and lets เพิ่มเติม — which actually holds
+    them — light instead. Pinned by tests/test_mobile_nav.py."""
     module = _ENDPOINT_MODULE.get(endpoint, 'overview')
-    return {'operation': 'products', 'trade': 'trade'}.get(module)
+    slot = {'operation': 'products', 'trade': 'trade'}.get(module)
+    if slot:
+        return slot
+    # active_link scopes to the module + `always` sections; only a hit inside the
+    # ภาพรวม section itself (module 'overview') counts as หน้าหลัก.
+    hit = active_link(endpoint, 'overview')
+    return 'home' if hit and hit[0] == 'overview' else None
 
 
 def build_mobile_nav_slots(role, endpoint=''):

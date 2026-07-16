@@ -62,6 +62,13 @@ def test_every_slot_has_required_render_fields():
 
 @pytest.mark.parametrize('endpoint,expected_active', [
     ('dashboard', 'home'),
+    # Put's call (2026-07-16): หน้าหลัก owns the whole ภาพรวม nav GROUP, not just
+    # the dashboard endpoint — แจ้งเตือน/ตรวจบิล are the Dashboard group and should
+    # read as หน้าหลัก, rather than leaving เพิ่มเติม lit. The group is defined by
+    # nav.py's ภาพรวม section (single source), so adding a link there follows here.
+    ('inventory.alerts_view', 'home'),
+    ('review.index', 'home'),
+    ('review.scan', 'home'),                            # prefix matcher, via NAV
     ('products.product_list', 'products'),
     ('products.product_detail', 'products'),
     ('inventory.transaction_history', 'products'),      # operation module
@@ -77,7 +84,6 @@ def test_active_slot_highlight_for_admin(endpoint, expected_active):
 
 
 @pytest.mark.parametrize('endpoint', [
-    'inventory.alerts_view', 'review.index',                          # ภาพรวม, not dashboard itself
     'accounting.accounting_summary', 'accounting.cashflow_dashboard',  # finance — now drawer-only
     'hr.dashboard', 'hr.payroll_list',                                 # hr — now drawer-only
     'bsn.unified_import', 'admin.user_list', 'cashbook.dashboard',     # data/admin/cashbook
@@ -86,9 +92,13 @@ def test_active_slot_highlight_for_admin(endpoint, expected_active):
 def test_no_slot_active_lets_more_button_light(endpoint):
     # All of these live in the drawer now. No bottom-nav slot may claim them, or
     # a role landing there would see the wrong tab highlighted while เพิ่มเติม
-    # (which actually holds the page) stays dark. me.* is the one that would have
-    # regressed if the new 'home' slot matched by module instead of by exact
-    # endpoint — 'overview' now covers both dashboard AND me.leave/me.payslip.
+    # (which actually holds the page) stays dark.
+    #
+    # ⚠ me.* is the landmine: _ENDPOINT_MODULE maps me.leave/me.payslip* to
+    # 'overview' (Phase 1.5, so the desktop sidebar stays unchanged there), so a
+    # หน้าหลัก slot keyed on the MODULE would wrongly light on ลาของฉัน/สลิป.
+    # Keying it on nav.py's ภาพรวม SECTION avoids that: me.* lives in the ของฉัน
+    # section (module=None), so it can never resolve to หน้าหลัก.
     slots = build_mobile_nav_slots('admin', endpoint)
     assert [s['key'] for s in slots if s['active']] == [], endpoint
 
