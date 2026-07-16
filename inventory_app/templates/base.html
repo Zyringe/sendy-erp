@@ -330,10 +330,6 @@
 
   <!-- Top bar -->
   <header class="topbar">
-    <button class="btn btn-sm btn-outline-secondary d-lg-none me-2 btn-touch"
-            onclick="toggleSidebar()" aria-label="เมนู">
-      <i class="bi bi-list"></i>
-    </button>
     {% if current_role and cur_mod %}
     <span class="topbar-crumb"><i class="bi {{ cur_mod.icon }} me-1"></i>{{ cur_mod.name }}</span>
     {% endif %}

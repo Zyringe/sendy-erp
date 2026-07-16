@@ -1,10 +1,15 @@
 {# Mobile bottom navigation — visible only <lg (≤991.98px).
-   Slots = MODULE HEADERS (Put's decision 2026-06-11): สินค้า · การค้า · บุคลากร ·
-   การเงิน · เพิ่มเติม(drawer). The first four come from `mobile_nav_slots`
-   (role-filtered in app.py::build_mobile_nav_slots — staff see only
-   สินค้า/การค้า; a slot whose landing page would 403 is never rendered).
-   ตรวจบิล is NOT a slot here — it lives in the drawer + dashboard banner.
-   Slot 5 opens the offcanvas drawer in _mobile_drawer.html. #}
+   Slots (Put's decision, pwa-nav-redesign 2026-07-16, supersedes the 2026-06-11
+   module-header call): หน้าหลัก · สินค้า · การค้า + เพิ่มเติม(drawer). The first
+   three come from `mobile_nav_slots` (access_control.py::build_mobile_nav_slots)
+   — the same 3 slots for every office role; `general` gets its own untouched
+   kiosk bar (สต็อก·ลาของฉัน·สลิป). ตรวจบิล/บุคลากร/การเงิน/ของฉัน etc. are NOT
+   slots — they live in the drawer (เพิ่มเติม) instead.
+   Slot 4 opens the offcanvas drawer in _mobile_drawer.html, and lights up
+   itself whenever none of the first 3 slots are active — i.e. the current
+   page actually lives in the drawer (finance/hr/data/cashbook/admin_module,
+   ของฉัน, ตรวจบิล/แจ้งเตือน). #}
+{% set _any_slot_active = mobile_nav_slots | selectattr('active') | list | length > 0 %}
 <nav class="bottom-nav d-lg-none" aria-label="เมนูหลักมือถือ">
   {% for slot in mobile_nav_slots %}
   <a href="{{ url_for(slot.endpoint) }}"
@@ -13,7 +18,7 @@
     <span>{{ slot.label }}</span>
   </a>
   {% endfor %}
-  <button type="button" class="bottom-nav-item"
+  <button type="button" class="bottom-nav-item {% if not _any_slot_active %}active{% endif %}"
           data-bs-toggle="offcanvas" data-bs-target="#mobileDrawer" aria-controls="mobileDrawer">
     <i class="bi bi-grid"></i>
     <span>เพิ่มเติม</span>
