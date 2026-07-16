@@ -171,6 +171,21 @@ def product_list():
         buildable = {pid: info['buildable']
                      for pid, info in models.get_buildable([p['id'] for p in products]).items()
                      if info['buildable'] > 0}
+    # Remember this filtered view so a product's back button can return here even
+    # after a detail-page action redirects without the ?back= param. Stored per
+    # user in the signed-cookie session (multi-worker safe). Only the detail back
+    # button reads it — /products itself never auto-restores it, so the สินค้า nav
+    # tab still shows the full list (not sticky).
+    return_url = url_for('products.product_list',
+                         q=search or None, location=location or None,
+                         low_stock='1' if low_stock else None,
+                         in_stock='1' if in_stock else None,
+                         show_alt='1' if show_alt else None,
+                         show_inactive='1' if show_inactive else None,
+                         hard_to_sell='1' if hard_to_sell else None,
+                         restock='1' if restock else None,
+                         page=page if page and page > 1 else None)
+    session['products_return'] = return_url
     return render_template('products/list.html',
                            products=products, total=total,
                            page=page, pages=pages,
@@ -178,7 +193,7 @@ def product_list():
                            hard_to_sell=hard_to_sell,
                            location=location, in_stock=in_stock,
                            restock=restock, show_alt=show_alt, buildable=buildable,
-                           show_inactive=show_inactive)
+                           show_inactive=show_inactive, return_url=return_url)
 
 
 def _new_form_context():
@@ -309,8 +324,16 @@ def product_detail(product_id):
     current_brand = models.get_brand(product['brand_id']) if product['brand_id'] else None
     # pack/unpack true-availability: extra units obtainable by running a conversion
     buildable = models.get_buildable([product_id]).get(product_id)
+    # "Back to filtered list": prefer the ?back= the list link carried; fall back
+    # to the last list view remembered in session so the back button still returns
+    # to the filter even after a detail-page action redirects without ?back=.
+    # Validated to an internal product-list path (prefix-safe; open-redirect guard).
+    list_root = url_for('products.product_list')
+    back = request.args.get('back') or session.get('products_return', '')
+    back_url = back if (back == list_root or back.startswith(list_root + '?')) else list_root
     return render_template('products/detail.html',
                            product=product,
+                           back_url=back_url,
                            buildable=buildable,
                            promotions=promotions,
                            active_promo=active_promo,
