@@ -309,8 +309,15 @@ def product_detail(product_id):
     current_brand = models.get_brand(product['brand_id']) if product['brand_id'] else None
     # pack/unpack true-availability: extra units obtainable by running a conversion
     buildable = models.get_buildable([product_id]).get(product_id)
+    # "Back to filtered list": the list page passes the exact search/filter URL it
+    # came from so the back button returns there. Validate it's an internal
+    # /products path (guard against an open-redirect via a crafted ?back=).
+    back = request.args.get('back', '')
+    back_url = back if (back == '/products' or back.startswith('/products?')) \
+        else url_for('products.product_list')
     return render_template('products/detail.html',
                            product=product,
+                           back_url=back_url,
                            buildable=buildable,
                            promotions=promotions,
                            active_promo=active_promo,
