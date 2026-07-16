@@ -481,6 +481,14 @@ def inject_auth():
             visible_modules.append(m)
     if role == 'general':
         visible_modules = []   # general is mobile-only; desktop sidebar shows nothing
+    # Desktop sidebar (base.html <nav class="sidebar-nav">) — module-scoped NAV
+    # sections + which link (if any) highlights. `active_link` needs the request's
+    # actual `active_module`, not the section's own `module` key, because
+    # base.html only ever evaluates a matcher INSIDE the module currently
+    # rendered (see nav.py::active_link's docstring — an unscoped scan can cross
+    # modules, e.g. a naming.* page wrongly lighting up สินค้า via its substring
+    # matcher).
+    _active_hit = active_link(endpoint, active_module)
     return {
         'is_admin':      role == 'admin',
         'is_manager':    role in ('admin', 'manager'),
@@ -504,6 +512,11 @@ def inject_auth():
         # role already resolved) rather than exposing nav_sections() itself to
         # Jinja, so the template just loops over plain dicts.
         'drawer_sections': nav_sections(role),
+        # Desktop sidebar — module-scoped (mirrors base.html's per-module `{% if
+        # active_module == 'x' %}` blocks) + the endpoint of whichever link
+        # should render `active` (None if nothing matches, same as today).
+        'sidebar_sections': nav_sections(role, module=active_module),
+        'sidebar_active_ep': _active_hit[1] if _active_hit else None,
         'roles': ROLES,
         'role_order': ROLE_ORDER,
     }

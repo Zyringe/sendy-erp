@@ -73,255 +73,47 @@
   {% endif %}
 
   <nav class="sidebar-nav">
+    {# Renders from `sidebar_sections` (access_control.py::inject_auth ->
+       nav.py::nav_sections(role, module=active_module)) — the SAME NAV list
+       that drives the mobile drawer. `sidebar_active_ep` is the one link (if
+       any) that should get `.active`, resolved once server-side via
+       nav.py::active_link(endpoint, active_module) (module-scoped — see its
+       docstring on why an unscoped scan can cross modules).
 
-    {# ── ภาพรวม ── #}
-    {% if active_module == 'overview' %}
-    <div class="sidebar-section">ภาพรวม</div>
-    <a href="{{ url_for('dashboard') }}"
-       class="sidebar-link {% if request.endpoint == 'dashboard' %}active{% endif %}">
-      <i class="bi bi-speedometer2"></i> Dashboard
-    </a>
-    <a href="{{ url_for('inventory.alerts_view') }}"
-       class="sidebar-link {% if request.endpoint == 'inventory.alerts_view' %}active{% endif %}">
-      <i class="bi bi-exclamation-triangle"></i> แจ้งเตือน
-      {% if alert_count > 0 %}
-      <span class="badge-count">{{ alert_count }}</span>
-      {% endif %}
-    </a>
-    <a href="{{ url_for('review.index') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('review.') %}active{% endif %}">
-      <i class="bi bi-clipboard-check"></i> ตรวจบิล
-      {% if suspicious_count > 0 %}
-      <span class="badge-count">{{ suspicious_count }}</span>
-      {% endif %}
-    </a>
-    {% endif %}
-
-    {# ── คลังสินค้า ── #}
-    {% if active_module == 'operation' %}
-    <div class="sidebar-section">คลังสินค้า</div>
-    <a href="{{ url_for('products.product_list') }}"
-       class="sidebar-link {% if 'product' in (request.endpoint or '') %}active{% endif %}">
-      <i class="bi bi-grid-3x3-gap"></i> สินค้า
-    </a>
-    <a href="{{ url_for('inventory.transaction_history') }}"
-       class="sidebar-link {% if request.endpoint == 'inventory.transaction_history' %}active{% endif %}">
-      <i class="bi bi-arrow-left-right"></i> ประวัติสต็อก
-    </a>
-    <a href="{{ url_for('inventory.conversion_list') }}"
-       class="sidebar-link {% if (request.endpoint or '').startswith('inventory.conversion_') or request.endpoint == 'inventory.conversion_list' %}active{% endif %}">
-      <i class="bi bi-scissors"></i> แปลงสินค้า
-    </a>
-    {% if is_admin %}
-    <a href="{{ url_for('labels.manage') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('labels.') and request.endpoint != 'labels.print_page' %}active{% endif %}">
-      <i class="bi bi-tags"></i> จัดการป้ายสินค้า
-    </a>
-    {% endif %}
-    {% if session.role in ['admin', 'manager', 'staff'] %}
-    <a href="{{ url_for('labels.print_page') }}"
-       class="sidebar-link {% if request.endpoint == 'labels.print_page' %}active{% endif %}">
-      <i class="bi bi-printer"></i> พิมพ์ป้ายสินค้า
-    </a>
-    {% endif %}
-    {% endif %}
-
-    {# ── การเงิน ── #}
-    {% if active_module == 'finance' %}
-    {% if session.role in ['admin','manager','shareholder'] %}
-    <div class="sidebar-section">การเงิน</div>
-    <a href="{{ url_for('accounting.accounting_summary') }}"
-       class="sidebar-link {% if request.endpoint == 'accounting.accounting_summary' %}active{% endif %}">
-      <i class="bi bi-calculator"></i> สรุปกำไร-ขาดทุน
-    </a>
-    <a href="{{ url_for('accounting.cashflow_dashboard') }}"
-       class="sidebar-link {% if request.endpoint == 'accounting.cashflow_dashboard' %}active{% endif %}">
-      <i class="bi bi-cash-stack"></i> กระแสเงินสด
-    </a>
-    {# รายได้ hidden from nav: superseded by the merged accrual/cash table on
-       กระแสเงินสด (PR2 finance revamp). Route /revenue still works by URL. #}
-    <a href="{{ url_for('accounting.ar_dashboard') }}"
-       class="sidebar-link {% if request.endpoint in ('accounting.ar_dashboard','accounting.ar_followup','accounting.ar_followup_customer') %}active{% endif %}">
-      <i class="bi bi-receipt-cutoff"></i> ลูกหนี้ (AR)
-    </a>
-    <a href="{{ url_for('accounting.ap_dashboard') }}"
-       class="sidebar-link {% if request.endpoint == 'accounting.ap_dashboard' %}active{% endif %}">
-      <i class="bi bi-bank"></i> เจ้าหนี้ (AP)
-    </a>
-    <a href="{{ url_for('commission.commission_dashboard') }}"
-       class="sidebar-link {% if request.endpoint == 'commission.commission_dashboard' %}active{% endif %}">
-      <i class="bi bi-cash-coin"></i> ค่าคอมพนักงานขาย
-    </a>
-    {% endif %}
-    {% endif %}
-
-    {# ── การค้า ── #}
-    {% if active_module == 'trade' %}
-    <div class="sidebar-section">การค้า</div>
-    <a href="{{ url_for('sales.trade_dashboard') }}"
-       class="sidebar-link {% if request.endpoint == 'sales.trade_dashboard' %}active{% endif %}">
-      <i class="bi bi-bar-chart-line"></i> ภาพรวมการค้า
-    </a>
-    <a href="{{ url_for('sales.sales_view') }}"
-       class="sidebar-link {% if request.endpoint == 'sales.sales_view' %}active{% endif %}">
-      <i class="bi bi-graph-up-arrow"></i> ยอดขาย
-    </a>
-    <a href="{{ url_for('sales.purchases_view') }}"
-       class="sidebar-link {% if request.endpoint == 'sales.purchases_view' %}active{% endif %}">
-      <i class="bi bi-truck"></i> ยอดซื้อ
-    </a>
-    <a href="{{ url_for('partners.customer_list') }}"
-       class="sidebar-link {% if request.endpoint in ['partners.customer_list','partners.customer_summary'] %}active{% endif %}">
-      <i class="bi bi-people"></i> ลูกค้า
-    </a>
-    <a href="{{ url_for('partners.supplier_list') }}"
-       class="sidebar-link {% if request.endpoint in ['partners.supplier_list','partners.supplier_summary'] %}active{% endif %}">
-      <i class="bi bi-truck"></i> ผู้จำหน่าย
-    </a>
-    {# แผนที่ลูกค้า hidden from nav: only ~3% of customers are geocoded and it
-       serves no current priority. Route /customers/map still works by URL. #}
-    {# payment_status/payment_customers now redirect to /ar; link goes direct #}
-    <a href="{{ url_for('call.call_list') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('call.') %}active{% endif %}">
-      <i class="bi bi-telephone-outbound"></i> โทรหาลูกค้า
-    </a>
-
-    <div class="sidebar-section">ขายออนไลน์</div>
-    <a href="{{ url_for('ecommerce.ecommerce') }}"
-       class="sidebar-link {% if request.endpoint == 'ecommerce.ecommerce' %}active{% endif %}">
-      <i class="bi bi-bag-heart"></i> รายการขายออนไลน์
-    </a>
-    <a href="{{ url_for('marketplace.dashboard') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('marketplace.') and request.endpoint != 'marketplace.review' %}active{% endif %}">
-      <i class="bi bi-receipt"></i> คำสั่งซื้อ Marketplace
-    </a>
-    <a href="{{ url_for('marketplace.review') }}"
-       class="sidebar-link {% if request.endpoint == 'marketplace.review' %}active{% endif %}">
-      <i class="bi bi-clipboard-check"></i> ต้องตรวจการจับคู่ใบกำกับ
-    </a>
-    {% endif %}
-
-    {# ── ของฉัน (self-service) — linked non-exempt users; role-gated only (NOT
-       active_module), so it always shows. admin/shareholder are leave/pay-exempt. #}
-    {% if session.role in ['staff', 'manager', 'general'] %}
-    <div class="sidebar-section">ของฉัน</div>
-    <a href="{{ url_for('me.leave') }}"
-       class="sidebar-link {% if request.endpoint == 'me.leave' %}active{% endif %}">
-      <i class="bi bi-calendar-x"></i> ลาของฉัน
-    </a>
-    <a href="{{ url_for('me.payslip_list') }}"
-       class="sidebar-link {% if (request.endpoint or '').startswith('me.payslip') %}active{% endif %}">
-      <i class="bi bi-cash-stack"></i> สลิปเงินเดือน
-    </a>
-    {% endif %}
-
-    {# ── บุคลากร (HR) — admin/manager only ── #}
-    {% if active_module == 'hr' and session.role in ['admin', 'manager'] %}
-    <div class="sidebar-section">บุคลากร (HR)</div>
-    <a href="{{ url_for('hr.dashboard') }}"
-       class="sidebar-link {% if request.endpoint == 'hr.dashboard' %}active{% endif %}">
-      <i class="bi bi-person-badge"></i> HR Dashboard
-    </a>
-    <a href="{{ url_for('hr.employee_list') }}"
-       class="sidebar-link {% if request.endpoint in ['hr.employee_list','hr.employee_new','hr.employee_detail','hr.employee_entitlements'] %}active{% endif %}">
-      <i class="bi bi-people"></i> พนักงาน
-    </a>
-    <a href="{{ url_for('hr.leave_list') }}"
-       class="sidebar-link {% if request.endpoint in ['hr.leave_list','hr.leave_new'] %}active{% endif %}">
-      <i class="bi bi-calendar-x"></i> การลา
-    </a>
-    <a href="{{ url_for('hr.advance_list') }}"
-       class="sidebar-link {% if request.endpoint == 'hr.advance_list' %}active{% endif %}">
-      <i class="bi bi-cash"></i> เบิกล่วงหน้า
-    </a>
-    <a href="{{ url_for('hr.payroll_list') }}"
-       class="sidebar-link {% if (request.endpoint or '').startswith('hr.payroll') or request.endpoint == 'hr.payslip' %}active{% endif %}">
-      <i class="bi bi-cash-coin"></i> Payroll
-    </a>
-    {% endif %}
-
-    {# ── บัญชีรับ-จ่าย — admin/manager/shareholder (all can view + edit cashbook) ── #}
-    {% if active_module == 'cashbook' and session.role in ['admin', 'manager', 'shareholder'] %}
-    <div class="sidebar-section">บัญชีรับ-จ่าย</div>
-    <a href="{{ url_for('cashbook.dashboard', vat='novat') }}"
-       class="sidebar-link {% if request.endpoint == 'cashbook.dashboard' %}active{% endif %}">
-      <i class="bi bi-speedometer2"></i> Dashboard
-    </a>
-    {% endif %}
-
-    {# ── นำเข้าข้อมูล ── #}
-    {% if active_module == 'data' %}
-    <div class="sidebar-section">นำเข้าข้อมูล</div>
-    {# Single import entry — /import-data handles ขาย/ซื้อ/AR/AP/payments/CN
-       (superset of the old /import-weekly). Visible to staff too (they can import). #}
-    <a href="{{ url_for('bsn.unified_import') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('bsn.unified_import') %}active{% endif %}">
-      <i class="bi bi-box-arrow-in-down"></i> นำเข้าข้อมูล
-    </a>
-    <a href="{{ url_for('bsn.express_dbf_import') }}"
-       class="sidebar-link {% if request.endpoint == 'bsn.express_dbf_import' %}active{% endif %}">
-      <i class="bi bi-file-earmark-arrow-up"></i> นำเข้า Express (DBF)
-    </a>
-    <a href="{{ url_for('bsn.mapping') }}"
-       class="sidebar-link {% if request.endpoint == 'bsn.mapping' %}active{% endif %}">
-      <i class="bi bi-tags"></i> ผูกรหัส BSN
-      {% if is_manager and pending_suggestions_count %}
-      <span class="badge bg-danger ms-auto">{{ pending_suggestions_count }}</span>
-      {% endif %}
-    </a>
-    <a href="{{ url_for('bsn.unit_conversions') }}"
-       class="sidebar-link {% if request.endpoint == 'bsn.unit_conversions' %}active{% endif %}">
-      <i class="bi bi-arrow-left-right"></i> แปลงหน่วย
-    </a>
-    <a href="{{ url_for('customer_review.normalize_list') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('customer_review.') %}active{% endif %}">
-      <i class="bi bi-person-check"></i> ตรวจข้อมูลลูกค้า
-    </a>
-    {% if is_manager %}
-    <a href="{{ url_for('naming.index') }}"
-       class="sidebar-link {% if (request.endpoint or '').startswith('naming.') %}active{% endif %}">
-      <i class="bi bi-pencil-square"></i> ตั้งชื่อสินค้า
-    </a>
-    {% endif %}
-    {% endif %}
-
-    {# ── ระบบ — admin only ── #}
-    {% if active_module == 'admin_module' and is_admin %}
-    <div class="sidebar-section">ระบบ</div>
-    <a href="{{ url_for('admin.user_list') }}"
-       class="sidebar-link {% if request.endpoint in ['admin.user_list','admin.user_new','admin.user_edit'] %}active{% endif %}">
-      <i class="bi bi-people"></i> จัดการผู้ใช้
-    </a>
-    <a href="{{ url_for('admin.cashbook_account_list') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('admin.cashbook_account') %}active{% endif %}">
-      <i class="bi bi-bank"></i> จัดการบัญชีเงินสด/ธนาคาร
-    </a>
-    <a href="{{ url_for('admin.backups_list') }}"
-       class="sidebar-link {% if request.endpoint and request.endpoint.startswith('admin.backup') %}active{% endif %}">
-      <i class="bi bi-clock-history"></i> สำรอง/กู้คืนข้อมูล
-    </a>
-    <form method="post" action="{{ url_for('admin.toggle_db_routes') }}" class="d-grid px-2 mt-1">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <button type="submit" class="btn btn-sm {% if db_routes_enabled %}btn-warning{% else %}btn-outline-secondary{% endif %}">
-        <i class="bi bi-database{% if db_routes_enabled %}-fill{% endif %}"></i>
-        {% if db_routes_enabled %}
-          ปิด Upload/Download DB
-        {% else %}
-          เปิด Upload/Download DB
+       The DB-routes ON/OFF toggle is a POST form, not a link — it is
+       deliberately NOT in NAV (see nav.py's 'ระบบ' section comment) and stays
+       hand-coded here, injected right after admin.backups_list to preserve the
+       original visual position (before the conditional Upload/Download links). #}
+    {% set _sidebar_badge_counts = {'alert_count': alert_count, 'suspicious_count': suspicious_count,
+                                     'pending_suggestions_count': pending_suggestions_count} %}
+    {% for section in sidebar_sections %}
+    <div class="sidebar-section">{{ section.section }}</div>
+    {% for link in section.links %}
+      {% if not link.condition or session.get(link.condition) %}
+      <a href="{{ url_for(link.ep, **(link.url_kwargs or {})) }}"
+         class="sidebar-link {% if link.ep == sidebar_active_ep %}active{% endif %}">
+        <i class="bi {{ link.icon }}"></i> {{ link.label }}
+        {% if link.badge and (not link.badge.roles or session.role in link.badge.roles) %}
+          {% set bval = _sidebar_badge_counts.get(link.badge.key, 0) %}
+          {% if bval > 0 %}<span class="{{ link.badge.css or 'badge-count' }}">{{ bval }}</span>{% endif %}
         {% endif %}
-      </button>
-    </form>
-    {% if db_routes_enabled %}
-    <a href="{{ url_for('admin.upload_db') }}"
-       class="sidebar-link {% if request.endpoint == 'admin.upload_db' %}active{% endif %}">
-      <i class="bi bi-cloud-upload"></i> Upload Database
-    </a>
-    <a href="{{ url_for('admin.download_db') }}" class="sidebar-link">
-      <i class="bi bi-cloud-download"></i> Download Database
-    </a>
-    {% endif %}
-    {% endif %}
-
+      </a>
+      {% endif %}
+      {% if link.ep == 'admin.backups_list' %}
+      <form method="post" action="{{ url_for('admin.toggle_db_routes') }}" class="d-grid px-2 mt-1">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-sm {% if db_routes_enabled %}btn-warning{% else %}btn-outline-secondary{% endif %}">
+          <i class="bi bi-database{% if db_routes_enabled %}-fill{% endif %}"></i>
+          {% if db_routes_enabled %}
+            ปิด Upload/Download DB
+          {% else %}
+            เปิด Upload/Download DB
+          {% endif %}
+        </button>
+      </form>
+      {% endif %}
+    {% endfor %}
+    {% endfor %}
   </nav>
 </aside>
 

@@ -25,10 +25,18 @@ subtracts specific roles from an otherwise-open link — used once, for
 mobile.sales_trip, which bounces for general even though the แอป section it
 lives in is open to general (for help_install).
 
-`badge` is a dict `{'key': <context var name>, 'roles': <optional set>}`, never a
-bare string — one badge (bsn.mapping's pending_suggestions_count) is role-gated
-in base.html (`is_manager` there = admin/manager, excluding shareholder), so a
-bare-string model would silently leak that count to a role that shouldn't see it.
+`badge` is a dict `{'key': <context var name>, 'roles': <optional set>, 'css':
+<optional CSS class>}`, never a bare string — one badge (bsn.mapping's
+pending_suggestions_count) is role-gated in base.html (`is_manager` there =
+admin/manager, excluding shareholder), so a bare-string model would silently
+leak that count to a role that shouldn't see it. `css` exists because the
+sidebar uses TWO different badge styles (`badge-count` for alert_count/
+suspicious_count, `badge bg-danger ms-auto` for pending_suggestions_count) —
+the desktop refactor must reproduce both exactly, even though neither
+tests/test_nav_snapshot.py's snapshots capture badges at all (their counts are
+live DB values, so including them would make the snapshot non-deterministic —
+see that file's `_SidebarParser` docstring). Defaults to `'badge-count'` if
+omitted.
 
 Active-link matching (`active_link()`, no live consumer yet) mirrors base.html's
 existing heterogeneous matchers 1:1:
@@ -53,9 +61,9 @@ NAV = [
         'links': [
             {'ep': 'dashboard', 'label': 'Dashboard', 'icon': 'bi-speedometer2'},
             {'ep': 'inventory.alerts_view', 'label': 'แจ้งเตือน', 'icon': 'bi-exclamation-triangle',
-             'badge': {'key': 'alert_count'}},
+             'badge': {'key': 'alert_count', 'css': 'badge-count'}},
             {'ep': 'review.index', 'label': 'ตรวจบิล', 'icon': 'bi-clipboard-check',
-             'badge': {'key': 'suspicious_count'}, 'match_prefix': ['review.']},
+             'badge': {'key': 'suspicious_count', 'css': 'badge-count'}, 'match_prefix': ['review.']},
         ],
     },
     {
@@ -150,7 +158,8 @@ NAV = [
              'match_prefix': ['bsn.unified_import']},
             {'ep': 'bsn.express_dbf_import', 'label': 'นำเข้า Express (DBF)', 'icon': 'bi-file-earmark-arrow-up'},
             {'ep': 'bsn.mapping', 'label': 'ผูกรหัส BSN', 'icon': 'bi-tags',
-             'badge': {'key': 'pending_suggestions_count', 'roles': {'admin', 'manager'}}},
+             'badge': {'key': 'pending_suggestions_count', 'roles': {'admin', 'manager'},
+              'css': 'badge bg-danger ms-auto'}},
             {'ep': 'bsn.unit_conversions', 'label': 'แปลงหน่วย', 'icon': 'bi-arrow-left-right'},
             {'ep': 'customer_review.normalize_list', 'label': 'ตรวจข้อมูลลูกค้า', 'icon': 'bi-person-check',
              'match_prefix': ['customer_review.']},
