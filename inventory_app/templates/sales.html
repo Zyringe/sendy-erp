@@ -83,7 +83,7 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
-        <a href="{{ url_for('sales.sales_view', product_id=product_id or '', doc_no=doc_no or '') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+        <a href="{{ url_for('sales.sales_view', product_id=product_id or '') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
       </div>
     </form>
     {% if doc_no %}
