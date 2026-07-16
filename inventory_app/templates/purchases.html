@@ -15,9 +15,47 @@
 {% endblock %}
 
 {% block content %}
+<!-- Summary Cards -->
+<div class="row g-3 mb-3">
+  <div class="col-md-4">
+    <div class="stat-card" style="border-left:4px solid #2e7d3a">
+      <div class="stat-card-label"><i class="bi bi-receipt me-1"></i>รวม VAT &nbsp;<span class="badge badge-success">Type 1</span></div>
+      <div class="stat-card-value text-success mt-2">
+        ฿{{ vat_summary.get(1, {}).get('total_net', 0) | fmt_price }}
+      </div>
+      <div class="stat-card-sub">{{ vat_summary.get(1, {}).get('txn_count', 0) | fmt_qty }} รายการ</div>
+      <div class="vat-bar" style="background:#2e7d3a"></div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="stat-card" style="border-left:4px solid #38bdf8">
+      <div class="stat-card-label"><i class="bi bi-receipt-cutoff me-1"></i>แยก VAT &nbsp;<span class="badge badge-info">Type 2</span></div>
+      <div class="stat-card-value mt-2" style="color:#0369a1">
+        ฿{{ vat_summary.get(2, {}).get('total_net', 0) | fmt_price }}
+      </div>
+      <div class="stat-card-sub">{{ vat_summary.get(2, {}).get('txn_count', 0) | fmt_qty }} รายการ</div>
+      <div class="vat-bar" style="background:#38bdf8"></div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="stat-card" style="border-left:4px solid #94a3b8">
+      <div class="stat-card-label"><i class="bi bi-dash-circle me-1"></i>ยกเว้น VAT &nbsp;<span class="badge badge-gray">Type 0</span></div>
+      <div class="stat-card-value text-subtle mt-2">
+        ฿{{ vat_summary.get(0, {}).get('total_net', 0) | fmt_price }}
+      </div>
+      <div class="stat-card-sub">{{ vat_summary.get(0, {}).get('txn_count', 0) | fmt_qty }} รายการ</div>
+      <div class="vat-bar" style="background:#94a3b8"></div>
+    </div>
+  </div>
+</div>
+
 <div class="card mb-3">
   <div class="card-body py-2">
     <form method="get" class="row g-2 align-items-end">
+      <div class="col-md-2">
+        <label class="form-label small mb-1">เลขที่เอกสาร</label>
+        <input type="text" name="doc_no" class="form-control form-control-sm" value="{{ doc_no or '' }}" placeholder="เช่น HP6900037">
+      </div>
       <div class="col-md-2">
         <label class="form-label small mb-1">ตั้งแต่วันที่</label>
         <input type="date" name="date_from" class="form-control form-control-sm" value="{{ date_from or '' }}">
@@ -26,11 +64,23 @@
         <label class="form-label small mb-1">ถึงวันที่</label>
         <input type="date" name="date_to" class="form-control form-control-sm" value="{{ date_to or '' }}">
       </div>
+      <div class="col-md-2">
+        <label class="form-label small mb-1">VAT</label>
+        <select name="vat_type" class="form-select form-select-sm">
+          <option value="">ทั้งหมด</option>
+          <option value="1" {% if vat_type == 1 %}selected{% endif %}>รวม VAT (1)</option>
+          <option value="2" {% if vat_type == 2 %}selected{% endif %}>แยก VAT (2)</option>
+          <option value="0" {% if vat_type == 0 %}selected{% endif %}>ยกเว้น VAT (0)</option>
+        </select>
+      </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
-        <a href="{{ url_for('sales.purchases_view') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
+        <a href="{{ url_for('sales.purchases_view', doc_no=doc_no or '') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
       </div>
     </form>
+    {% if doc_no %}
+    <div class="small text-subtle mt-2">ค้นด้วยเลขที่เอกสาร (ค้นทุกช่วงเวลา, ข้ามตัวกรองวันที่)</div>
+    {% endif %}
   </div>
 </div>
 
@@ -82,7 +132,7 @@
       <ul class="pagination pagination-sm mb-0 justify-content-center flex-wrap">
         {% set ns = namespace(prev=0) %}
         <li class="page-item {% if page == 1 %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('sales.purchases_view', page=page-1, date_from=date_from or '', date_to=date_to or '') }}">&laquo;</a>
+          <a class="page-link" href="{{ url_for('sales.purchases_view', page=page-1, date_from=date_from or '', date_to=date_to or '', vat_type=vat_type if vat_type is not none else '', doc_no=doc_no or '') }}">&laquo;</a>
         </li>
         {% for p in range(1, pages+1) %}
           {% if p == 1 or p == pages or (p >= page-2 and p <= page+2) %}
@@ -90,13 +140,13 @@
             <li class="page-item disabled"><span class="page-link">…</span></li>
             {% endif %}
             <li class="page-item {% if p == page %}active{% endif %}">
-              <a class="page-link" href="{{ url_for('sales.purchases_view', page=p, date_from=date_from or '', date_to=date_to or '') }}">{{ p }}</a>
+              <a class="page-link" href="{{ url_for('sales.purchases_view', page=p, date_from=date_from or '', date_to=date_to or '', vat_type=vat_type if vat_type is not none else '', doc_no=doc_no or '') }}">{{ p }}</a>
             </li>
             {% set ns.prev = p %}
           {% endif %}
         {% endfor %}
         <li class="page-item {% if page == pages %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('sales.purchases_view', page=page+1, date_from=date_from or '', date_to=date_to or '') }}">&raquo;</a>
+          <a class="page-link" href="{{ url_for('sales.purchases_view', page=page+1, date_from=date_from or '', date_to=date_to or '', vat_type=vat_type if vat_type is not none else '', doc_no=doc_no or '') }}">&raquo;</a>
         </li>
       </ul>
     </nav>

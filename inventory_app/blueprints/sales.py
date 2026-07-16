@@ -40,6 +40,7 @@ def sales_view():
     date_to   = request.args.get('date_to',   '').strip() or default_to
     vat_raw   = request.args.get('vat_type',  '').strip()
     vat_type  = int(vat_raw) if vat_raw.isdigit() else None
+    doc_no    = request.args.get('doc_no', '').strip() or None
     page      = int(request.args.get('page', 1))
     per_page  = current_app.config['ITEMS_PER_PAGE']
 
@@ -47,9 +48,10 @@ def sales_view():
 
     rows, total = models.get_sales(
         product_id=product_id, date_from=date_from, date_to=date_to,
-        vat_type=vat_type, page=page, per_page=per_page
+        vat_type=vat_type, page=page, per_page=per_page, doc_no=doc_no
     )
-    summary = models.get_sales_summary(date_from=date_from, date_to=date_to)
+    summary = models.get_sales_summary(date_from=date_from, date_to=date_to,
+                                        doc_no=doc_no)
     pages   = (total + per_page - 1) // per_page
 
     # Build summary dict keyed by vat_type (convert Row → plain dict)
@@ -59,6 +61,7 @@ def sales_view():
                            rows=rows, total=total, pages=pages, page=page,
                            date_from=date_from, date_to=date_to,
                            vat_type=vat_type, vat_summary=vat_summary,
+                           doc_no=doc_no,
                            product_id=product_id, filter_product=filter_product,
                            pending_map=len(models.get_pending_mappings()))
 
@@ -85,19 +88,27 @@ def purchases_view():
     default_to   = today.isoformat()
     date_from = request.args.get('date_from', '').strip() or default_from
     date_to   = request.args.get('date_to',   '').strip() or default_to
+    vat_raw   = request.args.get('vat_type',  '').strip()
+    vat_type  = int(vat_raw) if vat_raw.isdigit() else None
+    doc_no    = request.args.get('doc_no', '').strip() or None
     page      = int(request.args.get('page', 1))
     per_page  = current_app.config['ITEMS_PER_PAGE']
 
     rows, total = models.get_purchases(
         date_from=date_from, date_to=date_to,
-        page=page, per_page=per_page
+        page=page, per_page=per_page, vat_type=vat_type, doc_no=doc_no
     )
     pages = (total + per_page - 1) // per_page
-    summary = models.get_purchases_summary(date_from=date_from, date_to=date_to)
+    summary = models.get_purchases_summary(date_from=date_from, date_to=date_to,
+                                            doc_no=doc_no)
+    vat_summary = {r['vat_type']: dict(r) for r in
+                   models.get_purchases_summary_by_vat(date_from, date_to, doc_no)}
 
     return render_template('purchases.html',
                            rows=rows, total=total, pages=pages, page=page,
                            date_from=date_from, date_to=date_to,
+                           vat_type=vat_type, vat_summary=vat_summary,
+                           doc_no=doc_no,
                            summary=summary,
                            pending_map=len(models.get_pending_mappings()))
 
