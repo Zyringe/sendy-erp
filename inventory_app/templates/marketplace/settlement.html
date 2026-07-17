@@ -5,9 +5,17 @@
   <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
     <h4 class="mb-0">Settlement — {{ platform | capitalize }}</h4>
     <form method="post" action="{{ url_for('marketplace.upload') }}"
-          enctype="multipart/form-data" class="d-flex gap-2 align-items-center">
+          enctype="multipart/form-data" class="d-flex gap-2 align-items-start flex-wrap">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="file" name="files" accept=".xlsx,.csv" multiple class="form-control form-control-sm">
+      <div>
+        <input type="file" name="files" accept=".xlsx,.csv" multiple
+               id="mkt-upload-files" class="form-control form-control-sm">
+        {# Confirms the multi-select actually took before she submits — pick all
+           the week's files together (Ctrl+click), not one at a time. #}
+        <div id="mkt-upload-picked" class="form-text small mt-1">
+          เลือกได้หลายไฟล์พร้อมกัน (กด Ctrl ค้างแล้วคลิกทีละไฟล์)
+        </div>
+      </div>
       <button type="submit" class="btn btn-sm btn-primary">นำเข้าไฟล์ (Order/การเงิน/Balance)</button>
     </form>
   </div>
@@ -299,6 +307,22 @@
 <script>
 document.addEventListener('DOMContentLoaded', function () {
   const platform = {{ platform | tojson }};
+
+  // ---- Show what the file picker actually took, before submitting ----
+  const pick = document.getElementById('mkt-upload-files');
+  const picked = document.getElementById('mkt-upload-picked');
+  if (pick && picked) {
+    pick.addEventListener('change', function () {
+      const names = Array.from(pick.files).map(f => f.name);
+      if (!names.length) {
+        picked.className = 'form-text small mt-1';
+        picked.textContent = 'เลือกได้หลายไฟล์พร้อมกัน (กด Ctrl ค้างแล้วคลิกทีละไฟล์)';
+        return;
+      }
+      picked.className = 'form-text small mt-1 text-success';
+      picked.textContent = 'เลือกแล้ว ' + names.length + ' ไฟล์: ' + names.join(' · ');
+    });
+  }
 
   // ---- Lazy-load a deposit's order rows on expand (deposits tab) ----
   const fmtN = n => (n == null ? '0.00' : Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}));
