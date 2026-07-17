@@ -127,15 +127,40 @@ def test_no_duplicate_endpoints_within_a_section():
         assert len(eps) == len(set(eps)), section['section']
 
 
-@pytest.mark.parametrize('role', ['admin', 'manager', 'staff', 'shareholder', 'general'])
+@pytest.mark.parametrize('role', ['admin', 'manager', 'staff', 'shareholder'])
 def test_module_scoped_is_subset_of_flat(role):
-    """module='x' scoping (the future desktop consumer) never surfaces a link
-    that module=None (the drawer) doesn't already have."""
+    """module='x' scoping (the desktop) never surfaces a link that module=None
+    (the drawer) doesn't already have — true for every role EXCEPT 'general'
+    (see the next test): the drawer is a NEW, tighter fix for general (this
+    project's whole point), while the desktop sidebar faithfully reproduces
+    code that never restricted general at the section level to begin with."""
     flat_eps = {link['ep'] for s in nav_sections(role) for link in s['links']}
     modules = {s['module'] for s in NAV if s['module']}
     for module in modules:
         scoped_eps = {link['ep'] for s in nav_sections(role, module) for link in s['links']}
         assert scoped_eps <= flat_eps, (role, module, scoped_eps - flat_eps)
+
+
+def test_general_module_scoped_shows_more_than_flat_drawer():
+    """The deliberate asymmetry: general's flat drawer (module=None) is locked
+    to ONLY ของฉัน + แอป (test_general_drawer_is_only_of_chan_and_app), but
+    module-scoped calls (nav_sections('general', 'operation') etc.) reproduce
+    base.html's PRE-EXISTING behavior faithfully — it never gated these
+    sections by role at all, only by active_module (general just could never
+    reach them in practice, via require_login's redirect, not via the sidebar).
+    Verified against tests/nav_snapshot.json's general|operation/trade/data/
+    overview entries (captured pre-refactor) — these exact eps, in this exact
+    count, is what the frozen desktop snapshot requires."""
+    assert {l['ep'] for s in nav_sections('general', 'operation') for l in s['links']} == \
+        {'products.product_list', 'inventory.transaction_history', 'inventory.conversion_list',
+         'me.leave', 'me.payslip_list'}
+    assert {l['ep'] for s in nav_sections('general', 'overview') for l in s['links']} == \
+        {'dashboard', 'inventory.alerts_view', 'review.index', 'me.leave', 'me.payslip_list'}
+    # finance/hr/cashbook/admin_module DO keep general out (explicit roles sets,
+    # not roles=None, so the flat-vs-scoped asymmetry doesn't apply to them).
+    for module in ('finance', 'hr', 'cashbook', 'admin_module'):
+        eps = {l['ep'] for s in nav_sections('general', module) for l in s['links']}
+        assert eps == {'me.leave', 'me.payslip_list'}, (module, eps)
 
 
 def test_desktop_false_sections_dropped_when_module_scoped():
