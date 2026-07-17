@@ -387,79 +387,173 @@ def balance_import():
     return redirect(url_for('marketplace.settlement'))
 
 
+# Processing order within one batch. Order files MUST land before the files that
+# stamp them: settlements are applied with `UPDATE marketplace_orders ... WHERE
+# order_sn = ?`, so an income/statement file parsed before its order file matches
+# nothing and every payout in it is dropped with no row kept to replay from.
+# Arrival order can't be trusted — the browser hands files over in the OS file
+# dialog's display order, which is alphabetical, and Shopee's own export names
+# put `Income.*` ahead of `Order.*`.
+_KIND_ORDER = {'order': 0, 'income': 1, 'laz_statement': 1,
+               'balance': 2, 'laz_wallet': 2}
+
+
+def _log_import(conn, filename, rows=0, skipped=0, notes=None):
+    """Record one import_log row. Never let bookkeeping break an import."""
+    try:
+        conn.execute(
+            "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes)"
+            " VALUES (?,?,?,?)", (filename, rows, skipped, notes))
+        conn.commit()
+    except Exception:
+        pass
+
+
+def _log_upload_batch(files):
+    """Durable trace of a batch, written on entry BEFORE any parsing.
+
+    Railway's container logs are lost on restart and every per-file handler
+    below turns its error into a flash rather than a traceback, so this row is
+    the only evidence a failed upload leaves behind. Written on its own
+    connection so it survives whatever the batch does next.
+    """
+    try:
+        conn = get_connection()
+        try:
+            _log_import(conn, 'marketplace:upload', notes=(
+                f'{len(files)} ไฟล์: ' + ' | '.join(f.filename for f in files)))
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 @bp_marketplace.route('/marketplace/upload', methods=['POST'])
 def upload():
-    """One box for all marketplace files; detects kind+platform and routes."""
+    """One box for all marketplace files; detects kind+platform and routes.
+
+    Each file is imported independently: one bad file reports itself and the
+    rest of the batch still lands. Only files that actually imported something
+    are reported as success — anything skipped or failed gets its own warning.
+    """
     files = request.files.getlist('files')
     files = [f for f in files if f and f.filename]
+    _log_upload_batch(files)
     if not files:
         flash('กรุณาเลือกไฟล์ค่ะ', 'warning')
         return redirect(url_for('marketplace.settlement'))
     _info, _err = db_backup.safe_create_backup(
         'marketplace_upload', db_path=config.DATABASE_PATH,
         backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
-    msgs, reconcile_platforms = [], set()
+
+    # Detect every file up front so the batch can be ordered by dependency
+    # rather than by however the browser happened to send it.
+    staged = []
+    for f in files:
+        data = f.read()
+        kind, platform = detect_file(io.BytesIO(data))
+        staged.append((f.filename, data, kind, platform))
+    staged.sort(key=lambda s: _KIND_ORDER.get(s[2], 9))
+
+    # `done` counts FILES imported; `tail` holds batch-level notes (reconcile)
+    # that must not inflate that count.
+    done, tail, problems = [], [], []
+    reconcile_platforms, automatch_platforms = set(), set()
     conn = get_connection()
     try:
-        for f in files:
-            data = f.read()
-            kind, platform = detect_file(io.BytesIO(data))
+        for name, data, kind, platform in staged:
             if kind is None:
-                msgs.append(f'⚠️ {f.filename}: ไม่รู้จักชนิดไฟล์'); continue
-            if kind == 'order':
-                df = pd.read_excel(io.BytesIO(data), sheet_name=0, header=0, dtype=str)
-                orders = (parse_shopee_orders(df) if platform == 'shopee'
-                          else parse_lazada_orders(df))
-                s = models.import_marketplace_orders(conn, orders, f.filename)
-                msgs.append(f'📦 {f.filename}: ออเดอร์ {s["orders"]} (ใหม่), จับคู่ {s["lines_resolved"]}')
-            elif kind == 'income':
-                df = load_income_sheet(io.BytesIO(data))
-                models.upsert_marketplace_settlements(conn, parse_shopee_income(df), f.filename)
-                fn = models.upsert_marketplace_fees(conn, parse_shopee_income_fees(df), f.filename)
-                marketplace_match.run_automatch(conn, 'shopee')
-                msgs.append(f'💰 {f.filename}: ค่าธรรมเนียม+ยอดโอน {fn} ออเดอร์')
-            elif kind == 'balance':
-                ins = models.import_wallet_txns(
-                    conn, parse_shopee_balance(load_balance_sheet(io.BytesIO(data))), f.filename)
-                reconcile_platforms.add('shopee')
-                msgs.append(f'🏦 {f.filename}: รายการกระเป๋าเงิน +{ins}')
-            elif kind == 'laz_statement':
-                df = load_lazada_statement_csv(io.BytesIO(data))
-                parsed = parse_lazada_statement(df)
-                ss = models.upsert_marketplace_settlements(
-                    conn, parsed['settlements'], f.filename, platform='lazada')
-                fn = models.upsert_marketplace_fees(
-                    conn, parsed['fee_rows'], f.filename, platform='lazada')
-                models.import_wallet_txns(
-                    conn, parsed['income_rows'], f.filename, platform='lazada')
-                marketplace_match.run_automatch(conn, 'lazada')
-                reconcile_platforms.add('lazada')
-                warn = (f' · ⚠ ค่าธรรมเนียมชื่อใหม่: {", ".join(parsed["unmapped_fee_names"])}'
-                        if parsed['unmapped_fee_names'] else '')
-                msgs.append(f'💰 {f.filename}: Lazada ยอดโอน+ค่าธรรมเนียม {fn} ออเดอร์ '
-                            f'(stamp {ss["updated"]}, ไม่พบออเดอร์ {ss["not_found"]}){warn}')
-            elif kind == 'laz_wallet':
-                parsed = parse_lazada_wallet(load_lazada_wallet_csv(io.BytesIO(data)))
-                ins = models.import_wallet_txns(
-                    conn, parsed['withdrawals'], f.filename, platform='lazada')
-                # Per-statement settlement times re-anchor income for accurate reconcile.
-                models.upsert_lazada_settlements(conn, parsed['settlements'])
-                reconcile_platforms.add('lazada')
-                msgs.append(f'🏦 {f.filename}: Lazada เงินเข้าบัญชี +{ins} รายการ '
-                            f'(settlement {len(parsed["settlements"])} รอบบิล)')
+                problems.append(('warning', f'⚠️ {name}: ไม่รู้จักชนิดไฟล์ — ต้องเป็นไฟล์ '
+                                            'Order / Income / Balance จาก Shopee หรือ Lazada ค่ะ'))
+                _log_import(conn, name, notes='marketplace:UNKNOWN')
+                continue
+            try:
+                if kind == 'order':
+                    df = pd.read_excel(io.BytesIO(data), sheet_name=0, header=0, dtype=str)
+                    orders = (parse_shopee_orders(df) if platform == 'shopee'
+                              else parse_lazada_orders(df))
+                    s = models.import_marketplace_orders(conn, orders, name)
+                    done.append(f'📦 {name}: ออเดอร์ {s["orders"]} (ใหม่), จับคู่ {s["lines_resolved"]}')
+                    _log_import(conn, name, rows=s['orders'], notes=f'marketplace:order:{platform}')
+                elif kind == 'income':
+                    df = load_income_sheet(io.BytesIO(data))
+                    ss = models.upsert_marketplace_settlements(
+                        conn, parse_shopee_income(df), name)
+                    fn = models.upsert_marketplace_fees(
+                        conn, parse_shopee_income_fees(df), name)
+                    automatch_platforms.add('shopee')
+                    done.append(f'💰 {name}: ยอดโอน {ss["updated"]} · ค่าธรรมเนียม {fn} ออเดอร์')
+                    _log_import(conn, name, rows=ss['updated'], skipped=ss['not_found'],
+                                notes='marketplace:income:shopee')
+                    if ss['not_found']:
+                        problems.append(('warning',
+                            f'⚠️ {name}: ไม่พบออเดอร์ {ss["not_found"]} รายการ — ยอดโอนของออเดอร์'
+                            ' เหล่านี้ยังไม่ถูกบันทึก กรุณาอัปโหลดไฟล์ Order ของช่วงเดียวกัน'
+                            ' แล้วอัปโหลดไฟล์ Income นี้ซ้ำอีกครั้งค่ะ'))
+                elif kind == 'balance':
+                    ins = models.import_wallet_txns(
+                        conn, parse_shopee_balance(load_balance_sheet(io.BytesIO(data))), name)
+                    reconcile_platforms.add('shopee')
+                    done.append(f'🏦 {name}: รายการกระเป๋าเงิน +{ins}')
+                    _log_import(conn, name, rows=ins, notes='marketplace:balance:shopee')
+                elif kind == 'laz_statement':
+                    df = load_lazada_statement_csv(io.BytesIO(data))
+                    parsed = parse_lazada_statement(df)
+                    ss = models.upsert_marketplace_settlements(
+                        conn, parsed['settlements'], name, platform='lazada')
+                    fn = models.upsert_marketplace_fees(
+                        conn, parsed['fee_rows'], name, platform='lazada')
+                    models.import_wallet_txns(
+                        conn, parsed['income_rows'], name, platform='lazada')
+                    automatch_platforms.add('lazada')
+                    reconcile_platforms.add('lazada')
+                    done.append(f'💰 {name}: Lazada ยอดโอน {ss["updated"]} · ค่าธรรมเนียม {fn} ออเดอร์')
+                    _log_import(conn, name, rows=ss['updated'], skipped=ss['not_found'],
+                                notes='marketplace:laz_statement')
+                    if ss['not_found']:
+                        problems.append(('warning',
+                            f'⚠️ {name}: ไม่พบออเดอร์ {ss["not_found"]} รายการ — กรุณาอัปโหลด'
+                            ' ไฟล์ Order ของช่วงเดียวกัน แล้วอัปโหลดไฟล์นี้ซ้ำอีกครั้งค่ะ'))
+                    if parsed['unmapped_fee_names']:
+                        problems.append(('warning',
+                            f'⚠️ {name}: ค่าธรรมเนียมชื่อใหม่ที่ยังไม่รู้จัก: '
+                            + ', '.join(parsed['unmapped_fee_names'])))
+                elif kind == 'laz_wallet':
+                    parsed = parse_lazada_wallet(load_lazada_wallet_csv(io.BytesIO(data)))
+                    ins = models.import_wallet_txns(
+                        conn, parsed['withdrawals'], name, platform='lazada')
+                    # Per-statement settlement times re-anchor income for accurate reconcile.
+                    models.upsert_lazada_settlements(conn, parsed['settlements'])
+                    reconcile_platforms.add('lazada')
+                    done.append(f'🏦 {name}: Lazada เงินเข้าบัญชี +{ins} รายการ '
+                                f'(settlement {len(parsed["settlements"])} รอบบิล)')
+                    _log_import(conn, name, rows=ins, notes='marketplace:laz_wallet')
+            except Exception as e:
+                problems.append(('danger', f'❌ {name}: นำเข้าไม่สำเร็จ — {e}'))
+                _log_import(conn, name, notes=f'marketplace:{kind}:ERROR {e}')
+
+        # Deferred to once per platform: run_automatch rebuilds every 'auto' row
+        # on each call, so running it per-file re-did the same work N times.
+        for plat in sorted(automatch_platforms):
+            try:
+                marketplace_match.run_automatch(conn, plat)
+            except Exception as e:
+                problems.append(('warning', f'⚠️ {plat}: จับคู่ใบกำกับอัตโนมัติไม่สำเร็จ: {e}'))
         for plat in sorted(reconcile_platforms):
             try:
                 rec = marketplace_reconcile.reconcile_payouts(conn, plat)
-                msgs.append(f'↔ {plat}: กระทบยอดโอน {rec["payouts"]} ก้อน '
-                            f'({rec["orders_linked"]} ออเดอร์)'
-                            + (f', ⚠ {rec["unbalanced"]} ก้อนยอดไม่ตรง'
-                               if rec.get('unbalanced') else ''))
+                tail.append(f'↔ {plat}: กระทบยอดโอน {rec["payouts"]} ก้อน '
+                            f'({rec["orders_linked"]} ออเดอร์)')
+                if rec.get('unbalanced'):
+                    problems.append(('warning',
+                        f'⚠️ {plat}: {rec["unbalanced"]} ก้อนยอดไม่ตรง รอตรวจค่ะ'))
             except marketplace_reconcile.ReconcileError as e:
-                msgs.append(f'⚠️ {plat}: กระทบยอดไม่ลงตัว: {e}')
-    except Exception as e:
+                problems.append(('warning', f'⚠️ {plat}: กระทบยอดไม่ลงตัว: {e}'))
+    finally:
         conn.close()
-        flash(f'นำเข้าไม่สำเร็จ: {e}', 'danger')
-        return redirect(url_for('marketplace.settlement'))
-    conn.close()
-    flash(' · '.join(msgs), 'success')
+
+    if done:
+        flash(f'✓ นำเข้า {len(done)} ไฟล์สำเร็จ · ' + ' · '.join(done + tail), 'success')
+    for category, message in problems:
+        flash(message, category)
     return redirect(url_for('marketplace.settlement'))
