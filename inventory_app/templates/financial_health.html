@@ -4,6 +4,18 @@
 
 {% block content %}
 
+{# ── Tab navigation ──────────────────────────────────────────────────────── #}
+<ul class="nav nav-tabs mb-4">
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'summary' %}active{% endif %}"
+       href="{{ url_for('accounting.accounting_summary') }}">สรุปกำไร-ขาดทุน</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'health' %}active{% endif %}"
+       href="{{ url_for('accounting.financial_health') }}">สุขภาพการเงิน</a>
+  </li>
+</ul>
+
 {# ── Runway caveat (REQUIRED — design.md S2) ──────────────────────────────── #}
 <div class="alert alert-warning py-2 mb-3 small">
   <i class="bi bi-exclamation-triangle me-1"></i>

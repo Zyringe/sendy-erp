@@ -189,7 +189,51 @@ def accounting_summary():
             year_month = None
 
     summary = models.get_accounting_summary(date_from, date_to)
-    return render_template('accounting.html', s=summary)
+    return render_template('accounting.html', s=summary, active_tab='summary')
+
+
+# ── Financial-health pace panel (v1) ──────────────────────────────────────────
+
+@bp_accounting.route('/financial-health')
+def financial_health():
+    """"เดือนนี้รอดไหม?" — break-even pace check for the CURRENT month.
+
+    v1 = pace panel only (design.md, locked S1/S2): no P&L, no projection,
+    no cash/runway. Money math lives in models/financial_health.py, kept
+    separate from the pre-existing /accounting computation.
+    """
+    if session.get('role') not in ('admin', 'manager', 'shareholder'):
+        flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
+        return redirect(url_for('dashboard'))
+
+    break_even = models.get_break_even()
+    pace = models.get_current_month_pace()
+
+    # Pace status (display-only derivation, NOT a projection — see design.md
+    # S1: this compares mtd_revenue to the FIXED floor target prorated by
+    # elapsed days, it never extrapolates future performance).
+    pace_pct = None
+    pace_status = None
+    floor_be = break_even.get('break_even_floor')
+    if floor_be and pace.get('days_in_month'):
+        expected_by_now = floor_be * pace['day_of_month'] / pace['days_in_month']
+        if expected_by_now > 0:
+            ratio = pace['mtd_revenue'] / expected_by_now
+            pace_pct = min(ratio, 1.0) * 100
+            if ratio < 0.6:
+                pace_status = 'red'
+            elif ratio < 1.0:
+                pace_status = 'yellow'
+            else:
+                pace_status = 'green'
+
+    trailing_months = break_even.get('trailing_months') or []
+    all_below_floor = bool(trailing_months) and floor_be is not None and all(
+        m['revenue'] < floor_be for m in trailing_months)
+
+    return render_template('financial_health.html', be=break_even, pace=pace,
+                            pace_pct=pace_pct, pace_status=pace_status,
+                            all_below_floor=all_below_floor, active_tab='health')
 
 
 # ── Unified AR page ───────────────────────────────────────────────────────────
