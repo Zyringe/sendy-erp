@@ -126,6 +126,7 @@ from .conversions import (
     derive_pair_from_formula, get_recent_conversion_runs, run_conversion,
 )
 from .accounting import get_accounting_summary
+from .financial_health import get_break_even, get_current_month_pace
 from .ecommerce import (
     import_ecommerce_listings, get_ecommerce_listing_summary,
     get_ecommerce_listings, get_listing_mapping_data, apply_listing_mapping,
