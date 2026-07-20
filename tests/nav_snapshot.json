@@ -494,9 +494,9 @@
    },
    {
     "href": "/accounting",
-    "icon": "bi-heart-pulse",
+    "icon": "bi-calculator",
     "kind": "link",
-    "label": "สุขภาพการเงิน"
+    "label": "สรุปกำไร-ขาดทุน"
    },
    {
     "href": "/cashflow",
@@ -1194,9 +1194,9 @@
    },
    {
     "href": "/accounting",
-    "icon": "bi-heart-pulse",
+    "icon": "bi-calculator",
     "kind": "link",
-    "label": "สุขภาพการเงิน"
+    "label": "สรุปกำไร-ขาดทุน"
    },
    {
     "href": "/cashflow",
@@ -1513,9 +1513,9 @@
    },
    {
     "href": "/accounting",
-    "icon": "bi-heart-pulse",
+    "icon": "bi-calculator",
     "kind": "link",
-    "label": "สุขภาพการเงิน"
+    "label": "สรุปกำไร-ขาดทุน"
    },
    {
     "href": "/cashflow",
