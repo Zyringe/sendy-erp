@@ -95,12 +95,11 @@
       </div>
       {% if pace_pct is not none %}
       <div class="progress mt-2" style="height:8px">
-        <div class="progress-bar {% if pace_status == 'green' %}bg-success{% elif pace_status == 'yellow' %}bg-warning{% else %}bg-danger{% endif %}"
+        <div class="progress-bar {% if all_below_floor %}bg-danger{% else %}bg-success{% endif %}"
              style="width:{{ pace_pct }}%"></div>
       </div>
-      <div class="mt-1 small">
-        {% if pace_status == 'green' %}🟢{% elif pace_status == 'yellow' %}🟡{% else %}🔴{% endif %}
-        เทียบจังหวะเป้าขั้นต่ำถึงวันนี้
+      <div class="mt-1 small text-subtle">
+        {{ pace_pct | round(0, 'floor') | int }}% ของเป้าขั้นต่ำทั้งเดือน · ผ่านไป {{ pace.day_of_month }}/{{ pace.days_in_month }} วัน
       </div>
       {% else %}
       <div class="mt-2 text-subtle small">ยังคำนวณจุดคุ้มทุนไม่ได้ (ไม่มีข้อมูลยอดขายย้อนหลัง)</div>
