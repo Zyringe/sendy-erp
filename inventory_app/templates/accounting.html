@@ -19,12 +19,29 @@
 {# ── Disclaimer ──────────────────────────────────────────────────────────── #}
 <div class="alert alert-secondary py-2 mb-3 small">
   <i class="bi bi-info-circle me-1"></i>
-  <strong>ข้อมูลเฉพาะ บุญสวัสดิ์ นำชัย (BSN)</strong> &nbsp;·&nbsp;
-  รายได้ = <code>net</code> (ก่อน VAT, หลังหัก discount) &nbsp;·&nbsp;
+  <strong>รายได้ / COGS = BSN</strong> &nbsp;·&nbsp;
+  <strong>ค่าใช้จ่าย = สมุดรับ-จ่าย (BSN+SD รวมกัน)</strong> &nbsp;·&nbsp;
+  รายได้ = <code>net</code> (ก่อน VAT, หลังหัก discount, หักยอดคืน SR แล้ว) &nbsp;·&nbsp;
   COGS = qty × cost_price ปัจจุบัน (<strong>ประมาณการ</strong>) &nbsp;·&nbsp;
   ไม่รวม VAT &nbsp;·&nbsp;
-  กำไรสุทธิโดยประมาณ = กำไรขั้นต้น − ค่าใช้จ่าย − ค่าคอมมิชชั่น
+  กำไรสุทธิโดยประมาณ = กำไรขั้นต้น − ค่าใช้จ่าย (รวมค่าคอมมิชชั่นแล้ว ไม่หักซ้ำ)
 </div>
+
+{% if s.note_march_anomaly %}
+<div class="alert alert-warning py-2 mb-3 small">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  ⚠ มี.ค. 69 มีของแถมวรสวัสดิ์ ~฿154,000 ปนอยู่ในยอดขาย + โบนัสปี 68 ฿400,000 ในค่าใช้จ่าย — เดือนนี้ตัวเลขผิดปกติ
+  (จะแก้เองเมื่อฝ่ายบัญชีลงใบลดหนี้ย้อนกลับ)
+</div>
+{% endif %}
+
+{% if s.expenses is none %}
+<div class="alert alert-danger py-2 mb-3 small">
+  <i class="bi bi-slash-circle me-1"></i>
+  ⚠ ช่วงนี้ยังไม่มีข้อมูลค่าใช้จ่ายในสมุดรับ-จ่าย → กำไรสุทธิคำนวณไม่ได้
+  (สมุดรับ-จ่ายเริ่มมีข้อมูลตั้งแต่ มี.ค. 2569 — รายได้/COGS/กำไรขั้นต้นยังใช้ได้ตามปกติ)
+</div>
+{% endif %}
 
 {# ── Period selector ──────────────────────────────────────────────────────── #}
 <div class="card mb-4">
@@ -146,14 +163,16 @@
         </div>
         <div>
           <div class="stat-card-label">ค่าใช้จ่าย</div>
-          <div class="stat-card-value" style="color:#7e22ce">{{ s.expenses | fmt_price }}</div>
+          <div class="stat-card-value" style="color:#7e22ce">
+            {% if s.expenses is none %}—{% else %}{{ s.expenses | fmt_price }}{% endif %}
+          </div>
         </div>
       </div>
       <div class="mt-2 text-subtle small">
-        {% if s.expenses == 0 %}
-        ยังไม่มีข้อมูลค่าใช้จ่าย
+        {% if s.expenses is none %}
+        ไม่มีข้อมูลสมุดรับ-จ่ายในช่วงนี้
         {% else %}
-        รวม expense_log ช่วงนี้
+        รวมสมุดรับ-จ่าย (รวมค่าคอมมิชชั่นแล้ว) ช่วงนี้
         {% endif %}
       </div>
     </div>
@@ -164,50 +183,32 @@
 {# ── KPI Cards — row 2 ────────────────────────────────────────────────────── #}
 <div class="row g-3 mb-4">
 
-  {# ค่าคอมมิชชั่น #}
-  <div class="col-sm-6 col-xl-4">
-    <div class="stat-card">
-      <div class="d-flex align-items-center gap-3">
-        <div class="stat-card-icon" style="background:#fff3e0">
-          <i class="bi bi-person-check" style="color:#d97706"></i>
-        </div>
-        <div>
-          <div class="stat-card-label">ค่าคอมมิชชั่น (จ่ายแล้ว)</div>
-          <div class="stat-card-value text-warning">{{ s.commission_total | fmt_price }}</div>
-        </div>
-      </div>
-      <div class="mt-2 text-subtle small">
-        SUM(commission_payouts) เดือนที่ตรงกัน
-        <a href="{{ url_for('commission.commission_dashboard') }}" class="ms-1">ดูรายละเอียด →</a>
-      </div>
-    </div>
-  </div>
-
   {# กำไรสุทธิโดยประมาณ #}
-  <div class="col-sm-6 col-xl-8">
-    <div class="stat-card h-100" style="border-left: 4px solid {% if s.net_profit >= 0 %}#2e7d3a{% else %}#c41e2a{% endif %}">
+  <div class="col-12">
+    <div class="stat-card h-100" style="border-left: 4px solid {% if s.net_profit is none %}#adb5bd{% elif s.net_profit >= 0 %}#2e7d3a{% else %}#c41e2a{% endif %}">
       <div class="d-flex align-items-center gap-3">
         <div class="stat-card-icon"
-             style="background:{% if s.net_profit >= 0 %}#e8f5e9{% else %}#fdecee{% endif %}; width:3rem; height:3rem">
+             style="background:{% if s.net_profit is none %}#e9ecef{% elif s.net_profit >= 0 %}#e8f5e9{% else %}#fdecee{% endif %}; width:3rem; height:3rem">
           <i class="bi bi-bank"
-             style="color:{% if s.net_profit >= 0 %}#2e7d3a{% else %}#c41e2a{% endif %}; font-size:1.4rem"></i>
+             style="color:{% if s.net_profit is none %}#6c757d{% elif s.net_profit >= 0 %}#2e7d3a{% else %}#c41e2a{% endif %}; font-size:1.4rem"></i>
         </div>
         <div>
           <div class="stat-card-label fw-bold">กำไรสุทธิโดยประมาณ</div>
-          <div class="stat-card-value {% if s.net_profit >= 0 %}text-success{% else %}text-danger{% endif %}"
+          <div class="stat-card-value {% if s.net_profit is none %}text-subtle{% elif s.net_profit >= 0 %}text-success{% else %}text-danger{% endif %}"
                style="font-size:1.6rem">
-            {{ s.net_profit | fmt_price }}
+            {% if s.net_profit is none %}คำนวณไม่ได้{% else %}{{ s.net_profit | fmt_price }}{% endif %}
           </div>
         </div>
+        {% if s.net_profit is not none %}
         <div class="ms-auto text-end text-subtle small">
           <div>= กำไรขั้นต้น {{ s.gross_profit | fmt_price }}</div>
-          <div>− ค่าใช้จ่าย {{ s.expenses | fmt_price }}</div>
-          <div>− ค่าคอมฯ {{ s.commission_total | fmt_price }}</div>
+          <div>− ค่าใช้จ่าย (รวมค่าคอมฯ) {{ s.expenses | fmt_price }}</div>
         </div>
+        {% endif %}
       </div>
       <div class="mt-2">
         <span class="badge bg-warning text-dark">ประมาณการ</span>
-        <span class="text-subtle small ms-2">COGS ใช้ cost_price ปัจจุบัน · ไม่รวม VAT · BSN เท่านั้น</span>
+        <span class="text-subtle small ms-2">COGS ใช้ cost_price ปัจจุบัน · ไม่รวม VAT · รายได้/COGS = BSN, ค่าใช้จ่าย = BSN+SD</span>
       </div>
     </div>
   </div>
@@ -285,12 +286,17 @@
 {# ── Expenses by category ──────────────────────────────────────────────────── #}
 <div class="card mb-4">
   <div class="card-header">
-    <i class="bi bi-receipt-cutoff me-2 text-accent"></i>ค่าใช้จ่ายแยกตามหมวด (BSN)
+    <i class="bi bi-receipt-cutoff me-2 text-accent"></i>ค่าใช้จ่ายแยกตามหมวด (สมุดรับ-จ่าย BSN+SD)
   </div>
-  {% if s.expenses == 0 %}
+  {% if s.expenses is none %}
   <div class="card-body text-subtle text-center py-4">
     <i class="bi bi-inbox fs-3 d-block mb-2"></i>
-    ยังไม่มีข้อมูลค่าใช้จ่าย — กรอกผ่านหน้าบันทึกค่าใช้จ่ายเมื่อพร้อม
+    ไม่มีข้อมูลสมุดรับ-จ่ายในช่วงนี้
+  </div>
+  {% elif s.expenses_by_category|length == 0 %}
+  <div class="card-body text-subtle text-center py-4">
+    <i class="bi bi-inbox fs-3 d-block mb-2"></i>
+    ไม่มีรายจ่ายในช่วงนี้
   </div>
   {% else %}
   <div class="table-responsive">
@@ -298,17 +304,15 @@
       <thead>
         <tr>
           <th>หมวดค่าใช้จ่าย</th>
-          <th class="text-end">ยอดรวม (ก่อน VAT)</th>
+          <th class="text-end">ยอดรวม</th>
         </tr>
       </thead>
       <tbody>
         {% for cat in s.expenses_by_category %}
-        {% if cat.total > 0 %}
         <tr>
           <td>{{ cat.category_name }}</td>
           <td class="text-end">{{ cat.total | fmt_price }}</td>
         </tr>
-        {% endif %}
         {% endfor %}
       </tbody>
       <tfoot class="table-secondary fw-bold">
@@ -326,12 +330,14 @@
 <div class="card border-0 bg-light mb-2">
   <div class="card-body py-2 small text-subtle">
     <strong>ข้อสมมติฐาน:</strong>
-    รายได้ใช้ <code>net</code> (pre-VAT, post-discount) จาก <code>sales_transactions</code> ·
+    รายได้ใช้ <code>net</code> (pre-VAT, post-discount) จาก <code>sales_transactions</code>
+    หักยอดคืน (SR, เก็บเป็นบวกในระบบตามปกติ — หักออกเฉพาะตอนแสดงผล) ·
     COGS = qty × <code>products.cost_price</code> ปัจจุบัน (ไม่ใช่ WACC ณ วันขาย — ค่าประมาณ) ·
     สินค้าที่ยังไม่มี <code>cost_price</code> นับ COGS = 0 (understate) ·
-    ค่าคอมมิชชั่น = ยอดที่จ่ายจริงใน <code>commission_payouts</code> เดือนที่ตรงกัน ·
+    ค่าใช้จ่าย = <code>cashbook_transactions</code> (ไม่รวมหมวด เงินทุน/เงินโอน และ ซื้อสินค้า ที่นับใน COGS แล้ว)
+    — ค่าคอมมิชชั่นรวมอยู่ในค่าใช้จ่ายนี้แล้ว ไม่หักซ้ำ ·
     ไม่รวม VAT ทั้งด้านรายได้และต้นทุน ·
-    ข้อมูล BSN (company_id = 1) เท่านั้น · Sendai Trading = ไม่มีข้อมูลในระบบ
+    รายได้/COGS = BSN เท่านั้น · ค่าใช้จ่าย = BSN+SD รวมกัน (สมุดรับ-จ่ายไม่แยกบริษัท)
   </div>
 </div>
 

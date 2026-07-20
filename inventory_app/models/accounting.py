@@ -1,27 +1,72 @@
 """Accounting-summary reader — extracted verbatim from models.py
 (behavior-preserving split, Phase 12) — see models/__init__.py's module
-docstring for the overall file-split rationale. No behavior changes.
+docstring for the overall file-split rationale.
+
+V2 (2026-07-20, design.md "V2 — /accounting P&L honesty"): wired expenses to
+the real cashbook, replacing the dead `expense_log`/`expense_categories`
+(always 0 rows). Revenue nets out SR (return) rows at the REPORTING layer
+only — SR rows stay stored POSITIVE in sales_transactions (they sync to the
+stock ledger as an IN; do NOT touch storage, see
+.claude/rules/erp-engineering-discipline.md). Commission is no longer
+subtracted a second time — cashbook opex already includes the
+จ่ายค่าคอมมิชชั่น category (design.md Q5); `commission_total` is dropped.
 """
 
 from datetime import date
 
 from database import get_connection
 
+# Cashbook opex exclusions — mirrors models/financial_health.py's
+# _NON_OPEX_CATEGORIES / design.md's "Expense formula (opex, closed-month)".
+# Unlike the pace panel (financial_health.py), this P&L wants salary IN opex
+# (no separate deterministic-salary calc here), so เงินเดือน is NOT excluded.
+_NON_OPEX_CATEGORIES = ('เงินทุน/เงินโอน', 'ซื้อสินค้า')
+
+# 2026-03 giveaway (วรสวัสดิ์) distorts that month's revenue/COGS — flagged
+# as a note, not hard-coded out of the numbers (design.md step 5: no
+# doc_base tuple; self-corrects once the accountant lands the ใบลดหนี้
+# reversal). Just the calendar window it can overlap.
+_MARCH_2026_START = '2026-03-01'
+_MARCH_2026_END = '2026-03-31'
+
+
+def _signed_net_sql(alias=None):
+    """SQL expression that nets SR (return) rows out of a `net` sum.
+
+    SR rows are stored POSITIVE in sales_transactions on purpose (they sync
+    to the stock ledger as an IN — returned goods back in stock). The fix
+    belongs at the REPORTING layer only: net revenue = Σnet(non-SR) −
+    Σnet(SR), matching Ranpo's GL-verified identity
+    `Sendy SUM(net) − SR == GL 41-01`.
+    """
+    net = f'{alias}.net' if alias else 'net'
+    doc = f'{alias}.doc_no' if alias else 'doc_no'
+    return f"CASE WHEN {doc} LIKE 'SR%' THEN -{net} ELSE {net} END"
+
+
+def _overlaps(date_from, date_to, lo, hi):
+    """True if the [date_from, date_to] period overlaps [lo, hi] (ISO dates)."""
+    return date_from <= hi and date_to >= lo
+
 
 def get_accounting_summary(date_from=None, date_to=None):
     """
-    Aggregate profit / cost / expenses / commission for the /accounting page.
+    Aggregate profit / cost / expenses for the /accounting page.
 
     date_from / date_to: 'YYYY-MM-DD' strings.
     Defaults to the most recent month that has sales data.
 
-    Revenue  = SUM(net) from sales_transactions          — pre-VAT, post-doc-discount
+    Revenue  = Σnet from sales_transactions, SR (return) rows netted out —
+               pre-VAT, post-doc-discount.
     COGS     = SUM(qty * cost_price) from products        — current cost_price (WACC basis)
                Lines where product has no cost_price are counted separately (no_cost_lines)
-    Expenses = SUM(amount_pre_vat) from expense_log       — 0 rows currently, shown as 0
-    Commission = SUM(amount_paid) from commission_payouts — actual paid, by year_month overlap
-
-    company_id = 1 (BSN) is the only scope in this DB.
+    Expenses = cashbook_transactions opex (direction='expense', non-transfer
+               account, category not in COGS/transfer categories) — BSN+SD
+               (cashbook is not company-scoped). None when the period has
+               ZERO qualifying cashbook rows (pre-cashbook-era months, e.g.
+               before 2026-03) so the page can't show a fake profit.
+    Commission is NOT subtracted separately — cashbook opex already
+    includes it (see module docstring).
     """
     import calendar as _cal
 
@@ -51,9 +96,9 @@ def get_accounting_summary(date_from=None, date_to=None):
     elif date_to and not date_from:
         date_from = '2000-01-01'
 
-    # ── Revenue (sales net) ───────────────────────────────────────────────────
-    s = conn.execute("""
-        SELECT COALESCE(SUM(net), 0)  AS total_net,
+    # ── Revenue (sales net, SR return rows netted out — see _signed_net_sql) ──
+    s = conn.execute(f"""
+        SELECT COALESCE(SUM({_signed_net_sql()}), 0) AS total_net,
                COUNT(*)               AS line_count,
                COUNT(DISTINCT doc_no) AS doc_count
           FROM sales_transactions
@@ -78,52 +123,50 @@ def get_accounting_summary(date_from=None, date_to=None):
     gross_profit = sales_net - cogs
     margin_pct = (gross_profit / sales_net * 100.0) if sales_net > 0 else 0.0
 
-    # ── Expenses (expense_log, BSN = company_id 1) ────────────────────────────
-    exp_total = conn.execute("""
-        SELECT COALESCE(SUM(amount_pre_vat), 0) AS total
-          FROM expense_log
-         WHERE company_id = 1
-           AND date_iso >= ? AND date_iso <= ?
-    """, (date_from, date_to)).fetchone()
-    expenses = float(exp_total['total'])
+    # ── Expenses (cashbook opex — replaces the dead expense_log) ──────────────
+    # Count ROWS (not just sum) so a period with zero cashbook coverage is
+    # distinguishable from a real month that happens to net to zero.
+    excl_placeholders = ','.join('?' * len(_NON_OPEX_CATEGORIES))
+    exp_rows = conn.execute(f"""
+        SELECT COALESCE(ct.category, '(ไม่ระบุหมวด)') AS category_name,
+               SUM(ct.amount)                          AS total
+          FROM cashbook_transactions ct
+          JOIN cashbook_accounts ca ON ca.id = ct.account_id
+         WHERE ct.direction = 'expense'
+           AND ca.is_transfer = 0
+           AND ct.txn_date >= ? AND ct.txn_date <= ?
+           AND COALESCE(ct.category, '') NOT IN ({excl_placeholders})
+         GROUP BY ct.category
+         ORDER BY total DESC
+    """, (date_from, date_to, *_NON_OPEX_CATEGORIES)).fetchall()
 
-    # Expenses by category
-    exp_by_cat = conn.execute("""
-        SELECT ec.name_th AS category_name,
-               ec.code    AS category_code,
-               COALESCE(SUM(el.amount_pre_vat), 0) AS total
-          FROM expense_categories ec
-          LEFT JOIN expense_log el ON el.category_id = ec.id
-                AND el.company_id = 1
-                AND el.date_iso >= ? AND el.date_iso <= ?
-         WHERE ec.is_active = 1
-         GROUP BY ec.id, ec.code, ec.name_th, ec.sort_order
-         ORDER BY ec.sort_order
-    """, (date_from, date_to)).fetchall()
-
-    # ── Commission (actual paid, overlapping the period's months) ─────────────
-    # Extract YYYY-MM range from the date filter, match commission_payouts.year_month
-    ym_from = date_from[:7]
-    ym_to = date_to[:7]
-    comm_row = conn.execute("""
-        SELECT COALESCE(SUM(amount_paid), 0) AS total
-          FROM commission_payouts
-         WHERE year_month >= ? AND year_month <= ?
-    """, (ym_from, ym_to)).fetchone()
-    commission_total = float(comm_row['total'])
-
-    # ── Net profit (approximate) ──────────────────────────────────────────────
-    net_profit = gross_profit - expenses - commission_total
+    has_expense_coverage = len(exp_rows) > 0
+    if has_expense_coverage:
+        expenses_by_category = [
+            {'category_name': r['category_name'], 'total': float(r['total'] or 0)}
+            for r in exp_rows
+        ]
+        expenses = float(sum(c['total'] for c in expenses_by_category))
+        # ── Net profit — NO separate commission subtraction: cashbook opex
+        # above already includes จ่ายค่าคอมมิชชั่น (design.md Q5, avoids
+        # double-counting commission_payouts on top of it).
+        net_profit = gross_profit - expenses
+    else:
+        expenses_by_category = []
+        expenses = None
+        net_profit = None
 
     # ── Brand breakdown (own-brands first per CLAUDE.md priority) ────────────
     # Own-brand order: Golden Lion (sort 10) → A-SPEC (sort 20) → Sendai (sort 30)
-    # then 3rd-party by sort_order → finally NULL brand rows
-    brand_rows = conn.execute("""
+    # then 3rd-party by sort_order → finally NULL brand rows. SR rows netted
+    # out per-brand too (same _signed_net_sql identity as total revenue).
+    signed_net_st = _signed_net_sql('st')
+    brand_rows = conn.execute(f"""
         SELECT
           COALESCE(b.name_th, b.name, '(ไม่ระบุแบรนด์)') AS brand_label,
           b.is_own_brand,
           COALESCE(b.sort_order, 9999)                    AS sort_ord,
-          ROUND(SUM(st.net), 2)                           AS sales_net,
+          ROUND(SUM({signed_net_st}), 2)                  AS sales_net,
           ROUND(SUM(st.qty * COALESCE(p.cost_price, 0)), 2) AS cogs_approx,
           COUNT(st.id)                                    AS line_count,
           COUNT(CASE WHEN p.cost_price IS NULL OR p.cost_price = 0 THEN 1 END)
@@ -135,7 +178,7 @@ def get_accounting_summary(date_from=None, date_to=None):
         GROUP BY b.id, b.name, b.name_th, b.is_own_brand, b.sort_order
         ORDER BY COALESCE(b.is_own_brand, 0) DESC,
                  COALESCE(b.sort_order, 9999),
-                 SUM(st.net) DESC
+                 SUM({signed_net_st}) DESC
     """, (date_from, date_to)).fetchall()
 
     brand_breakdown = []
@@ -164,6 +207,9 @@ def get_accounting_summary(date_from=None, date_to=None):
     """).fetchall()
     available_months = [r['ym'] for r in months_rows]
 
+    # ── March 2026 giveaway anomaly note (date-overlap only) ──────────────────
+    note_march_anomaly = _overlaps(date_from, date_to, _MARCH_2026_START, _MARCH_2026_END)
+
     conn.close()
 
     return {
@@ -178,9 +224,10 @@ def get_accounting_summary(date_from=None, date_to=None):
         'gross_profit': gross_profit,
         'margin_pct': margin_pct,
         'expenses': expenses,
-        'expenses_by_category': [dict(r) for r in exp_by_cat],
-        'commission_total': commission_total,
+        'expenses_by_category': expenses_by_category,
+        'has_expense_coverage': has_expense_coverage,
         'net_profit': net_profit,
+        'note_march_anomaly': note_march_anomaly,
         'brand_breakdown': brand_breakdown,
         'available_months': available_months,
     }
