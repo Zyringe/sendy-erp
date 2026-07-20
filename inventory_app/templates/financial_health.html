@@ -1,0 +1,150 @@
+{% extends 'base.html' %}
+{% block title %}สุขภาพการเงิน – Sendy{% endblock %}
+{% block page_title %}{{ pace.month_label }} — เดือนนี้รอดไหม?{% endblock %}
+
+{% block content %}
+
+{# ── Runway caveat (REQUIRED — design.md S2) ──────────────────────────────── #}
+<div class="alert alert-warning py-2 mb-3 small">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  หน้านี้แสดง <strong>อัตราการขายเทียบจุดคุ้มทุน</strong> ไม่ใช่เงินสดคงเหลือ —
+  ระบบยังไม่มียอดยกมาของแต่ละบัญชี ห้ามอ่าน 🔴 เป็น "เหลืออีกกี่สัปดาห์"
+</div>
+
+{# ── Header line ──────────────────────────────────────────────────────────── #}
+<div class="mb-3 text-subtle small">
+  ผ่านไป <strong>{{ pace.day_of_month }}/{{ pace.days_in_month }}</strong> วัน
+  &nbsp;·&nbsp; ยอดขายถึง <strong>{{ pace.data_as_of or '—' }}</strong>
+</div>
+
+{# ── KPI cards — lead with the FLOOR ──────────────────────────────────────── #}
+<div class="row g-3 mb-3">
+
+  {# ต้องขายให้ถึง (ขั้นต่ำ ไม่รวมเจ้าของ) — LEAD, first + biggest #}
+  <div class="col-12 col-xl-4">
+    <div class="stat-card h-100">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#fdecee">
+          <i class="bi bi-flag" style="color:#c41e2a"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">ต้องขายให้ถึง (ขั้นต่ำ ไม่รวมเจ้าของ)</div>
+          <div class="stat-card-value text-danger" style="font-size:2rem">
+            {% if be.break_even_floor is not none %}
+              ฿{{ be.break_even_floor | fmt_price }}
+            {% else %}—{% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="mt-2 text-subtle small">
+        พนักงาน (ไม่รวมเจ้าของ) ฿{{ be.salary_floor | fmt_price }}
+        + ค่าใช้จ่ายคงที่ ฿{{ be.overhead | fmt_price }}
+        &divide; มาร์จิ้น {% if be.margin is not none %}{{ "%.1f"|format(be.margin * 100) }}%{% else %}—{% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ต้องขายให้ถึง (รวมเงินเดือนเจ้าของ) #}
+  <div class="col-12 col-xl-4">
+    <div class="stat-card h-100">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#fdf3dd">
+          <i class="bi bi-flag-fill" style="color:#b45309"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">ต้องขายให้ถึง (รวมเงินเดือนเจ้าของ)</div>
+          <div class="stat-card-value text-warning" style="font-size:1.6rem">
+            {% if be.break_even_full is not none %}
+              ฿{{ be.break_even_full | fmt_price }}
+            {% else %}—{% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="mt-2 text-subtle small">
+        พนักงานทั้งหมด (รวมเจ้าของ) ฿{{ be.salary_full | fmt_price }}
+        + ค่าใช้จ่ายคงที่ ฿{{ be.overhead | fmt_price }}
+      </div>
+    </div>
+  </div>
+
+  {# ได้จริงเดือนนี้ #}
+  <div class="col-12 col-xl-4">
+    <div class="stat-card h-100">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#dcf2e0">
+          <i class="bi bi-graph-up-arrow" style="color:#2e7d3a"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">ได้จริงเดือนนี้ (ถึง {{ pace.data_as_of or '—' }})</div>
+          <div class="stat-card-value text-success" style="font-size:1.6rem">
+            ฿{{ pace.mtd_revenue | fmt_price }}
+          </div>
+        </div>
+      </div>
+      {% if pace_pct is not none %}
+      <div class="progress mt-2" style="height:8px">
+        <div class="progress-bar {% if pace_status == 'green' %}bg-success{% elif pace_status == 'yellow' %}bg-warning{% else %}bg-danger{% endif %}"
+             style="width:{{ pace_pct }}%"></div>
+      </div>
+      <div class="mt-1 small">
+        {% if pace_status == 'green' %}🟢{% elif pace_status == 'yellow' %}🟡{% else %}🔴{% endif %}
+        เทียบจังหวะเป้าขั้นต่ำถึงวันนี้
+      </div>
+      {% else %}
+      <div class="mt-2 text-subtle small">ยังคำนวณจุดคุ้มทุนไม่ได้ (ไม่มีข้อมูลยอดขายย้อนหลัง)</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{# ── Trailing strip ────────────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <span class="text-subtle small">3 เดือนหลัง:</span>
+    {% for m in be.trailing_months %}
+      <strong>{{ m.month_label }}</strong> ฿{{ m.revenue | fmt_price }}{% if not loop.last %} &nbsp;·&nbsp; {% endif %}
+    {% endfor %}
+    {% if all_below_floor %}
+    <span class="text-subtle small">(ทุกเดือน &lt; floor)</span>
+    {% endif %}
+  </div>
+</div>
+
+{# ── โครงสร้างต้นทุนคงที่ ─────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-header py-2"><strong>โครงสร้างต้นทุนคงที่</strong></div>
+  <div class="card-body">
+    <table class="table table-sm mb-0">
+      <tbody>
+        <tr>
+          <td>เงินเดือนพนักงาน (ไม่รวมเจ้าของ)</td>
+          <td class="text-end">฿{{ be.salary_floor | fmt_price }}</td>
+        </tr>
+        <tr>
+          <td>เงินเดือนเจ้าของ (Put + แม่)</td>
+          <td class="text-end">฿{{ (be.salary_full - be.salary_floor) | fmt_price }}</td>
+        </tr>
+        <tr>
+          <td>ค่าใช้จ่ายดำเนินงาน (median 3 เดือนหลัง ไม่รวมเงินเดือน)</td>
+          <td class="text-end">฿{{ be.overhead | fmt_price }}</td>
+        </tr>
+        <tr class="fw-bold border-top">
+          <td>รวม (ขั้นต่ำ ไม่รวมเจ้าของ)</td>
+          <td class="text-end">฿{{ be.fixed_base_floor | fmt_price }}</td>
+        </tr>
+        <tr class="fw-bold">
+          <td>รวม (รวมเจ้าของ)</td>
+          <td class="text-end">฿{{ be.fixed_base_full | fmt_price }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="alert alert-secondary py-2 mb-0 small">
+  <i class="bi bi-info-circle me-1"></i>
+  จุดคุ้มทุน = ต้นทุนคงที่ &divide; มาร์จิ้นขั้นต้น (เฉลี่ย 3 เดือนหลัง) &nbsp;·&nbsp;
+  รายได้ = <code>net</code> (BSN) &nbsp;·&nbsp; ไม่มีการคาดการณ์/พยากรณ์ยอดสิ้นเดือน
+</div>
+
+{% endblock %}
