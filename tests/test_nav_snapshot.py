@@ -95,6 +95,7 @@ B_SAMPLES = [
     ('admin', 'labels.print_page', False),                # ...EXCLUDED from labels.manage
     ('staff', 'labels.print_page', False),                # staff sees พิมพ์ป้าย but not จัดการป้าย
     # finance
+    ('admin', 'accounting.financial_health', False),
     ('admin', 'accounting.accounting_summary', False),
     ('admin', 'accounting.cashflow_dashboard', False),
     ('admin', 'accounting.ar_dashboard', False),

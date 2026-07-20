@@ -106,6 +106,7 @@ NAV = [
     {
         'module': 'finance', 'section': 'การเงิน', 'roles': {'admin', 'manager', 'shareholder'},
         'links': [
+            {'ep': 'accounting.financial_health', 'label': 'สุขภาพการเงิน', 'icon': 'bi-heart-pulse'},
             {'ep': 'accounting.accounting_summary', 'label': 'สรุปกำไร-ขาดทุน', 'icon': 'bi-calculator'},
             {'ep': 'accounting.cashflow_dashboard', 'label': 'กระแสเงินสด', 'icon': 'bi-cash-stack'},
             {'ep': 'accounting.ar_dashboard', 'label': 'ลูกหนี้ (AR)', 'icon': 'bi-receipt-cutoff',

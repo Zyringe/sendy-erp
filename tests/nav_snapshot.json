@@ -493,6 +493,12 @@
     "label": "การเงิน"
    },
    {
+    "href": "/financial-health",
+    "icon": "bi-heart-pulse",
+    "kind": "link",
+    "label": "สุขภาพการเงิน"
+   },
+   {
     "href": "/accounting",
     "icon": "bi-calculator",
     "kind": "link",
@@ -1193,6 +1199,12 @@
     "label": "การเงิน"
    },
    {
+    "href": "/financial-health",
+    "icon": "bi-heart-pulse",
+    "kind": "link",
+    "label": "สุขภาพการเงิน"
+   },
+   {
     "href": "/accounting",
     "icon": "bi-calculator",
     "kind": "link",
@@ -1510,6 +1522,12 @@
    {
     "kind": "section",
     "label": "การเงิน"
+   },
+   {
+    "href": "/financial-health",
+    "icon": "bi-heart-pulse",
+    "kind": "link",
+    "label": "สุขภาพการเงิน"
    },
    {
     "href": "/accounting",
@@ -1993,6 +2011,7 @@
   "admin|accounting.ar_followup_customer|0": "/ar",
   "admin|accounting.ar_followup|0": "/ar",
   "admin|accounting.cashflow_dashboard|0": "/cashflow",
+  "admin|accounting.financial_health|0": "/financial-health",
   "admin|admin.backup_restore|0": "/admin/backups",
   "admin|admin.backups_list|0": "/admin/backups",
   "admin|admin.cashbook_account_list|0": "/cashbook-accounts",
