@@ -243,7 +243,6 @@ _ENDPOINT_MODULE = {
     'labels.print_page': 'operation',
     'labels.search_api': 'operation',
     # finance (formerly 'accounting': accounting.* + commission.* + sales.payment_*)
-    'accounting.financial_health': 'finance',
     'accounting.accounting_summary': 'finance',
     'accounting.cashflow_dashboard': 'finance',
     'accounting.revenue_dashboard': 'finance',
