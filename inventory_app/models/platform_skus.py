@@ -217,6 +217,32 @@ def get_platform_skus_all(platform):
     return rows
 
 
+def get_marketplace_price_history(product_id, limit=50):
+    """Marketplace (Shopee/Lazada) price-change timeline for one product.
+
+    Rows from platform_price_history — captured by the mig-137 trigger on
+    platform_skus (import upsert / in-app edit) plus the mig-138 campaign seed.
+    Newest first. NOTE: an import-diff log — changed_at is the import time, not
+    necessarily when the price changed on the platform.
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT h.platform, h.variation_id, h.field_name,
+                  h.old_value, h.new_value, h.changed_at, h.source,
+                  ps.variation_name, ps.seller_sku, ps.qty_per_sale
+             FROM platform_price_history h
+             LEFT JOIN platform_skus ps
+                    ON ps.platform = h.platform
+                   AND ps.variation_id = h.variation_id
+            WHERE h.internal_product_id = ?
+            ORDER BY h.changed_at DESC, h.id DESC
+            LIMIT ?""",
+        (product_id, limit),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
 def get_platform_summary():
     conn = get_connection()
     rows = conn.execute("""

@@ -945,6 +945,18 @@ CREATE TABLE pending_product_suggestions (
     reviewed_at         TEXT
 , brand_other_name      TEXT, color_code_other      TEXT, packaging_other       TEXT, bsn_unit              TEXT, unit_conversion_ratio REAL);
 
+CREATE TABLE platform_price_history (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform            TEXT    NOT NULL,
+    variation_id        TEXT,
+    internal_product_id INTEGER REFERENCES products(id),
+    field_name          TEXT    NOT NULL CHECK(field_name IN ('price','special_price')),
+    old_value           REAL,
+    new_value           REAL,
+    changed_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    source              TEXT
+);
+
 CREATE TABLE platform_products (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     platform          TEXT    NOT NULL CHECK(platform IN ('shopee','lazada')),
@@ -1688,6 +1700,12 @@ CREATE INDEX idx_payroll_runs_company ON payroll_runs(company_id);
 CREATE INDEX idx_pcl_product ON product_cost_ledger(product_id, event_date, id);
 
 CREATE INDEX idx_pi_doc_no ON paid_invoices(doc_no);
+
+CREATE INDEX idx_plat_price_hist_product
+    ON platform_price_history(internal_product_id, changed_at DESC);
+
+CREATE INDEX idx_plat_price_hist_variation
+    ON platform_price_history(platform, variation_id, changed_at DESC);
 
 CREATE INDEX idx_platform_products_parent_sku
     ON platform_products(platform, parent_sku);
@@ -3665,6 +3683,22 @@ BEGIN
         UNION ALL SELECT 'reference_no',    OLD.reference_no,    NEW.reference_no    WHERE OLD.reference_no    IS NOT NEW.reference_no
         UNION ALL SELECT 'note',            OLD.note,            NEW.note            WHERE OLD.note            IS NOT NEW.note
         UNION ALL SELECT 'created_at',      OLD.created_at,      NEW.created_at      WHERE OLD.created_at      IS NOT NEW.created_at
+    );
+END;
+
+CREATE TRIGGER platform_skus_price_history_update
+AFTER UPDATE ON platform_skus
+WHEN (
+       OLD.price         IS NOT NEW.price
+    OR OLD.special_price IS NOT NEW.special_price
+)
+BEGIN
+    INSERT INTO platform_price_history
+        (platform, variation_id, internal_product_id, field_name, old_value, new_value, source)
+    SELECT NEW.platform, NEW.variation_id, NEW.internal_product_id, field, old_v, new_v, 'platform_skus.update'
+    FROM (
+                  SELECT 'price'         AS field, OLD.price         AS old_v, NEW.price         AS new_v WHERE OLD.price         IS NOT NEW.price
+        UNION ALL SELECT 'special_price',          OLD.special_price,          NEW.special_price          WHERE OLD.special_price IS NOT NEW.special_price
     );
 END;
 
