@@ -227,11 +227,15 @@ def get_marketplace_price_history(product_id, limit=50):
     """
     conn = get_connection()
     rows = conn.execute(
-        """SELECT platform, variation_id, field_name, old_value, new_value,
-                  changed_at, source
-             FROM platform_price_history
-            WHERE internal_product_id = ?
-            ORDER BY changed_at DESC, id DESC
+        """SELECT h.platform, h.variation_id, h.field_name,
+                  h.old_value, h.new_value, h.changed_at, h.source,
+                  ps.variation_name, ps.seller_sku, ps.qty_per_sale
+             FROM platform_price_history h
+             LEFT JOIN platform_skus ps
+                    ON ps.platform = h.platform
+                   AND ps.variation_id = h.variation_id
+            WHERE h.internal_product_id = ?
+            ORDER BY h.changed_at DESC, h.id DESC
             LIMIT ?""",
         (product_id, limit),
     ).fetchall()

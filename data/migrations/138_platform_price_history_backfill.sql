@@ -14,13 +14,27 @@
 -- PROD-SAFE: INNER JOIN products drops any pid not present, so a master-data
 -- mismatch on prod skips that row instead of FK-failing boot.
 --
+-- variation_id is RESOLVED by matching the recorded old_value against the
+-- pre-reprice platform_skus snapshot (special_price for special rows, price for
+-- price rows). This disambiguates products with several variations — e.g. pid
+-- 133 lazada has a 1-ตัว listing (special 9→10) and a 12-ตัว แผง listing
+-- (special 95→119); matching old 9 vs 95 pins each to its variation. Unresolved
+-- rows keep NULL (best-effort).
+--
 -- Rollback: 138_platform_price_history_backfill.rollback.sql (deletes by source tag)
 
 BEGIN;
 
 INSERT INTO platform_price_history
     (platform, variation_id, internal_product_id, field_name, old_value, new_value, changed_at, source)
-SELECT b.platform, NULL, b.pid, b.field, b.old_v, b.new_v, b.changed_at,
+SELECT b.platform,
+       (SELECT ps.variation_id FROM platform_skus ps
+         WHERE ps.platform = b.platform
+           AND ps.internal_product_id = b.pid
+           AND ( (b.field = 'special_price' AND ps.special_price = b.old_v)
+              OR (b.field = 'price'         AND ps.price         = b.old_v) )
+         LIMIT 1),
+       b.pid, b.field, b.old_v, b.new_v, b.changed_at,
        'backfill:campaign-2026-07 (best-effort)'
 FROM (
     -- Shopee 2026-07-16 (main price)

@@ -321,6 +321,8 @@ def product_detail(product_id):
     locations = models.get_product_locations(product_id)
     bsn_pricing = models.get_product_pricing_summary(product_id)
     mkt_price_history = models.get_marketplace_price_history(product_id)
+    mkt_hist_shopee = [h for h in mkt_price_history if h['platform'] == 'shopee']
+    mkt_hist_lazada = [h for h in mkt_price_history if h['platform'] == 'lazada']
     brands = models.get_brands()
     current_brand = models.get_brand(product['brand_id']) if product['brand_id'] else None
     # pack/unpack true-availability: extra units obtainable by running a conversion
@@ -346,7 +348,8 @@ def product_detail(product_id):
                            txn_total=txn_total,
                            locations=locations,
                            bsn_pricing=bsn_pricing,
-                           mkt_price_history=mkt_price_history,
+                           mkt_hist_shopee=mkt_hist_shopee,
+                           mkt_hist_lazada=mkt_hist_lazada,
                            brands=brands,
                            current_brand=current_brand)
 

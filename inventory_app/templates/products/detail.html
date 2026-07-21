@@ -93,44 +93,72 @@
     </div>
 
     <!-- Marketplace price-change history (mig 137 trigger + 138 seed) -->
+    {% macro mkt_hist_table(rows, platform_label) %}
+      {% if rows %}
+      <table class="table table-sm mb-0 small align-middle">
+        <thead>
+          <tr>
+            <th>วันที่</th><th>ตัวเลือก</th><th>รายการ</th>
+            <th class="text-end">เดิม</th><th class="text-end">→ ใหม่</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for h in rows %}
+          {% set label = h.variation_name or h.seller_sku %}
+          <tr>
+            <td class="text-subtle text-nowrap">{{ h.changed_at[:10] }}</td>
+            <td>
+              {% if label %}{{ label }}{% else %}<span class="text-subtle">ตัวเลือกเดียว</span>{% endif %}
+              {% if h.qty_per_sale and h.qty_per_sale != 1 %}
+              <span class="badge rounded-pill" style="background:#eef2ff;color:#4338ca">×{{ h.qty_per_sale | int }}</span>
+              {% endif %}
+            </td>
+            <td>{% if h.field_name == 'special_price' %}ราคาพิเศษ{% else %}ราคา{% endif %}</td>
+            <td class="text-end text-subtle">{{ h.old_value | fmt_price }}</td>
+            <td class="text-end fw-600">{{ h.new_value | fmt_price }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="px-3 py-3 text-subtle small">
+        <i class="bi bi-inbox me-1"></i>ยังไม่มีประวัติราคา{{ platform_label }} — บันทึกเมื่อ import ไฟล์ราคาเข้า Sendy แล้วราคาต่างจากเดิม
+      </div>
+      {% endif %}
+    {% endmacro %}
     <div class="card mb-3">
       <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-graph-up-arrow me-2 text-accent"></i>ประวัติราคา marketplace</span>
         <span class="text-subtle" style="font-size:.72rem">ราคา ณ แต่ละครั้งที่นำเข้า</span>
       </div>
+      <ul class="nav nav-tabs px-2 pt-2" role="tablist" style="border-bottom:1px solid #e2e8f0">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active py-1 px-3 fw-600" data-bs-toggle="tab"
+                  data-bs-target="#mkt-shopee" type="button" role="tab" style="color:#ea580c">
+            <i class="bi bi-bag-fill me-1"></i>Shopee
+            <span class="badge rounded-pill ms-1" style="background:#fff7ed;color:#c2410c">{{ mkt_hist_shopee|length }}</span>
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link py-1 px-3 fw-600" data-bs-toggle="tab"
+                  data-bs-target="#mkt-lazada" type="button" role="tab" style="color:#2563eb">
+            <i class="bi bi-cart-fill me-1"></i>Lazada
+            <span class="badge rounded-pill ms-1" style="background:#eff6ff;color:#1d4ed8">{{ mkt_hist_lazada|length }}</span>
+          </button>
+        </li>
+      </ul>
       <div class="card-body p-0">
-        {% if mkt_price_history %}
-        <table class="table table-sm mb-0 small">
-          <thead>
-            <tr>
-              <th>วันที่</th><th>ช่องทาง</th><th>รายการ</th>
-              <th class="text-end">เดิม</th><th class="text-end">→ ใหม่</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for h in mkt_price_history %}
-            <tr>
-              <td class="text-subtle">{{ h.changed_at[:10] }}</td>
-              <td>
-                {% if h.platform == 'shopee' %}<span style="color:#ea580c">Shopee</span>
-                {% elif h.platform == 'lazada' %}<span style="color:#2563eb">Lazada</span>
-                {% else %}{{ h.platform }}{% endif %}
-              </td>
-              <td>{% if h.field_name == 'special_price' %}ราคาพิเศษ{% else %}ราคา{% endif %}</td>
-              <td class="text-end text-subtle">{{ h.old_value | fmt_price }}</td>
-              <td class="text-end fw-600">{{ h.new_value | fmt_price }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+        <div class="tab-content">
+          <div class="tab-pane fade show active" id="mkt-shopee" role="tabpanel">
+            {{ mkt_hist_table(mkt_hist_shopee, ' Shopee') }}
+          </div>
+          <div class="tab-pane fade" id="mkt-lazada" role="tabpanel">
+            {{ mkt_hist_table(mkt_hist_lazada, ' Lazada') }}
+          </div>
+        </div>
         <div class="px-3 py-2 text-subtle" style="font-size:.72rem;border-top:1px solid #f1f5f9">
-          <i class="bi bi-info-circle me-1"></i>บันทึกตอน import ไฟล์ราคาเข้า Sendy (ไม่ใช่ทุกการเปลี่ยนบน Seller Center) · Shopee/Lazada เท่านั้น
+          <i class="bi bi-info-circle me-1"></i>บันทึกตอน import ไฟล์ราคาเข้า Sendy (ไม่ใช่ทุกการเปลี่ยนบน Seller Center) · <span class="fw-600">×N</span> = จำนวนต่อแพ็ค
         </div>
-        {% else %}
-        <div class="px-3 py-3 text-subtle small">
-          <i class="bi bi-inbox me-1"></i>ยังไม่มีประวัติ — จะบันทึกเมื่อ import ไฟล์ราคา Shopee/Lazada เข้า Sendy แล้วราคาต่างจากเดิม
-        </div>
-        {% endif %}
       </div>
     </div>
 
