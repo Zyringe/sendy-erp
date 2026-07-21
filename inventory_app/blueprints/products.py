@@ -320,6 +320,7 @@ def product_detail(product_id):
     txn_pages = (txn_total + per_page - 1) // per_page
     locations = models.get_product_locations(product_id)
     bsn_pricing = models.get_product_pricing_summary(product_id)
+    mkt_price_history = models.get_marketplace_price_history(product_id)
     brands = models.get_brands()
     current_brand = models.get_brand(product['brand_id']) if product['brand_id'] else None
     # pack/unpack true-availability: extra units obtainable by running a conversion
@@ -345,6 +346,7 @@ def product_detail(product_id):
                            txn_total=txn_total,
                            locations=locations,
                            bsn_pricing=bsn_pricing,
+                           mkt_price_history=mkt_price_history,
                            brands=brands,
                            current_brand=current_brand)
 
