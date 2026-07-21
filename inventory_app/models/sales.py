@@ -126,6 +126,7 @@ def get_trade_dashboard(date_from=None, date_to=None):
                COALESCE(SUM(qty), 0)  AS total_qty
         FROM sales_transactions
         WHERE date_iso >= ? AND date_iso <= ?
+          AND doc_no NOT LIKE 'SR%' AND doc_no NOT LIKE 'HS%'
     """, (date_from, date_to)).fetchone()
 
     p = conn.execute("""
@@ -142,6 +143,7 @@ def get_trade_dashboard(date_from=None, date_to=None):
                COALESCE(SUM(net), 0) AS net
         FROM sales_transactions
         WHERE date_iso >= ? AND date_iso <= ?
+          AND doc_no NOT LIKE 'SR%' AND doc_no NOT LIKE 'HS%'
         GROUP BY week ORDER BY week
     """, (date_from, date_to)).fetchall()
 
@@ -171,6 +173,7 @@ def get_trade_dashboard(date_from=None, date_to=None):
         FROM sales_transactions s
         LEFT JOIN products pr ON pr.id = s.product_id
         WHERE s.date_iso >= ? AND s.date_iso <= ?
+          AND s.doc_no NOT LIKE 'SR%' AND s.doc_no NOT LIKE 'HS%'
         GROUP BY s.product_id, s.product_name_raw
         ORDER BY total_net DESC
         LIMIT 10
@@ -183,6 +186,7 @@ def get_trade_dashboard(date_from=None, date_to=None):
                SUM(net)               AS total_net
         FROM sales_transactions
         WHERE date_iso >= ? AND date_iso <= ?
+          AND doc_no NOT LIKE 'SR%' AND doc_no NOT LIKE 'HS%'
           AND customer IS NOT NULL AND customer != ''
         GROUP BY customer
         ORDER BY total_net DESC

@@ -30,18 +30,13 @@ _MARCH_2026_START = '2026-03-01'
 _MARCH_2026_END = '2026-03-31'
 
 
-def _signed_net_sql(alias=None):
-    """SQL expression that nets SR (return) rows out of a `net` sum.
-
-    SR rows are stored POSITIVE in sales_transactions on purpose (they sync
-    to the stock ledger as an IN — returned goods back in stock). The fix
-    belongs at the REPORTING layer only: net revenue = Σnet(non-SR) −
-    Σnet(SR), matching Ranpo's GL-verified identity
-    `Sendy SUM(net) − SR == GL 41-01`.
-    """
-    net = f'{alias}.net' if alias else 'net'
-    doc = f'{alias}.doc_no' if alias else 'doc_no'
-    return f"CASE WHEN {doc} LIKE 'SR%' THEN -{net} ELSE {net} END"
+# Revenue convention (Put 2026-07-21): match revenue.py's canonical sales
+# universe = GL 41-01 (ยอดขาย). EXCLUDE SR (returns — not a sale, live in the
+# GL 41-02 contra account) AND HS (historical opening-balance, not a sale).
+# Ranpo's GL-verified identity: `SUM(net) − Σ SR == GL 41-01` (non-SR rows).
+# Every sales_transactions query in this P&L carries
+# `AND doc_no NOT LIKE 'SR%' AND doc_no NOT LIKE 'HS%'`.
+# (SR/HS rows stay stored as-is — SR syncs to stock as an IN; NEVER flip that.)
 
 
 def _overlaps(date_from, date_to, lo, hi):
@@ -96,13 +91,14 @@ def get_accounting_summary(date_from=None, date_to=None):
     elif date_to and not date_from:
         date_from = '2000-01-01'
 
-    # ── Revenue (sales net, SR return rows netted out — see _signed_net_sql) ──
-    s = conn.execute(f"""
-        SELECT COALESCE(SUM({_signed_net_sql()}), 0) AS total_net,
+    # ── Revenue (SR return rows EXCLUDED — = GL 41-01, see convention above) ──
+    s = conn.execute("""
+        SELECT COALESCE(SUM(net), 0) AS total_net,
                COUNT(*)               AS line_count,
                COUNT(DISTINCT doc_no) AS doc_count
           FROM sales_transactions
          WHERE date_iso >= ? AND date_iso <= ?
+           AND doc_no NOT LIKE 'SR%' AND doc_no NOT LIKE 'HS%'
     """, (date_from, date_to)).fetchone()
     sales_net = float(s['total_net'])
 
@@ -114,6 +110,7 @@ def get_accounting_summary(date_from=None, date_to=None):
           FROM sales_transactions st
           LEFT JOIN products p ON p.id = st.product_id
          WHERE st.date_iso >= ? AND st.date_iso <= ?
+           AND st.doc_no NOT LIKE 'SR%' AND st.doc_no NOT LIKE 'HS%'
     """, (date_from, date_to)).fetchone()
     cogs = float(cogs_row['cogs'])
     no_cost_lines = cogs_row['no_cost_lines'] or 0
@@ -158,15 +155,14 @@ def get_accounting_summary(date_from=None, date_to=None):
 
     # ── Brand breakdown (own-brands first per CLAUDE.md priority) ────────────
     # Own-brand order: Golden Lion (sort 10) → A-SPEC (sort 20) → Sendai (sort 30)
-    # then 3rd-party by sort_order → finally NULL brand rows. SR rows netted
-    # out per-brand too (same _signed_net_sql identity as total revenue).
-    signed_net_st = _signed_net_sql('st')
-    brand_rows = conn.execute(f"""
+    # then 3rd-party by sort_order → finally NULL brand rows. SR rows EXCLUDED
+    # per-brand too (same GL-41-01 convention as total revenue, see top of file).
+    brand_rows = conn.execute("""
         SELECT
           COALESCE(b.name_th, b.name, '(ไม่ระบุแบรนด์)') AS brand_label,
           b.is_own_brand,
           COALESCE(b.sort_order, 9999)                    AS sort_ord,
-          ROUND(SUM({signed_net_st}), 2)                  AS sales_net,
+          ROUND(SUM(st.net), 2)                           AS sales_net,
           ROUND(SUM(st.qty * COALESCE(p.cost_price, 0)), 2) AS cogs_approx,
           COUNT(st.id)                                    AS line_count,
           COUNT(CASE WHEN p.cost_price IS NULL OR p.cost_price = 0 THEN 1 END)
@@ -175,10 +171,11 @@ def get_accounting_summary(date_from=None, date_to=None):
         LEFT JOIN products  p ON p.id = st.product_id
         LEFT JOIN brands    b ON b.id = p.brand_id
         WHERE st.date_iso >= ? AND st.date_iso <= ?
+          AND st.doc_no NOT LIKE 'SR%' AND st.doc_no NOT LIKE 'HS%'
         GROUP BY b.id, b.name, b.name_th, b.is_own_brand, b.sort_order
         ORDER BY COALESCE(b.is_own_brand, 0) DESC,
                  COALESCE(b.sort_order, 9999),
-                 SUM({signed_net_st}) DESC
+                 SUM(st.net) DESC
     """, (date_from, date_to)).fetchall()
 
     brand_breakdown = []

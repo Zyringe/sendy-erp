@@ -91,20 +91,23 @@ def _mk_commission_payout(conn, year_month, amount_paid, salesperson_code='00'):
         (year_month, salesperson_code, amount_paid, year_month + '-01'))
 
 
-# ── 1. Revenue nets out SR (return) rows ────────────────────────────────────
+# ── 1. Revenue EXCLUDES SR (return) rows (= GL 41-01, Put 2026-07-21) ────────
+# A return is not a sale: the SR row is dropped entirely (NOT subtracted a
+# second time). Revenue = Σnet of non-SR rows. So IV 1000 + SR 200 → 1000, not
+# 800 (which double-counted the return: 1000 − 200).
 
-def test_revenue_nets_out_sr_rows(empty_db):
+def test_revenue_excludes_sr_rows(empty_db):
     conn = _conn(empty_db)
     _mk_sale(conn, '2026-06-10', 'IV001', net=1000.0)
-    _mk_sale(conn, '2026-06-15', 'SR001', net=200.0)  # stored POSITIVE on purpose
+    _mk_sale(conn, '2026-06-15', 'SR001', net=200.0)  # stored POSITIVE; EXCLUDED from revenue
     conn.commit()
     conn.close()
 
     summary = models.get_accounting_summary('2026-06-01', '2026-06-30')
-    assert summary['sales_net'] == pytest.approx(800.0)
+    assert summary['sales_net'] == pytest.approx(1000.0)
 
 
-def test_brand_breakdown_also_nets_out_sr_rows(empty_db):
+def test_brand_breakdown_also_excludes_sr_rows(empty_db):
     conn = _conn(empty_db)
     brand_id = _mk_brand(conn, 'GL', 'สิงห์ทอง', is_own_brand=1)
     pid = _mk_product(conn, cost_price=0.0, brand_id=brand_id)
@@ -115,7 +118,7 @@ def test_brand_breakdown_also_nets_out_sr_rows(empty_db):
 
     summary = models.get_accounting_summary('2026-06-01', '2026-06-30')
     rows = {r['brand_label']: r for r in summary['brand_breakdown']}
-    assert rows['สิงห์ทอง']['sales_net'] == pytest.approx(800.0)
+    assert rows['สิงห์ทอง']['sales_net'] == pytest.approx(1000.0)
 
 
 # ── 2. Expenses from cashbook opex ──────────────────────────────────────────
