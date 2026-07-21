@@ -1,0 +1,122 @@
+"""Behavior tests for the marketplace price-history trigger (mig 137).
+
+The trigger `platform_skus_price_history_update` fires AFTER UPDATE ON
+platform_skus and records one platform_price_history row per changed price
+field (price / special_price), gated by a WHEN clause so stock- or
+mapping-only updates never log. This mirrors 008_product_price_history for
+internal prices.
+
+Tests run against `empty_db_conn` (a clone of the live schema, which now
+carries the mig-137 table + trigger).
+"""
+
+
+def _insert_sku(conn, variation_id='V1', price=100, special_price=90,
+                internal_product_id=None, platform='shopee'):
+    cur = conn.execute(
+        """INSERT INTO platform_skus
+               (platform, variation_id, product_name, price, special_price,
+                stock, internal_product_id)
+           VALUES (?,?,?,?,?,?,?)""",
+        (platform, variation_id, 'test', price, special_price, 5,
+         internal_product_id),
+    )
+    return cur.lastrowid
+
+
+def _hist(conn):
+    return conn.execute(
+        """SELECT platform, variation_id, internal_product_id, field_name,
+                  old_value, new_value, source
+             FROM platform_price_history ORDER BY id"""
+    ).fetchall()
+
+
+def test_insert_alone_logs_nothing(empty_db_conn):
+    conn = empty_db_conn
+    _insert_sku(conn)
+    conn.commit()
+    assert _hist(conn) == []  # first-seen listing is not a "change"
+
+
+def test_price_change_logs_one_row(empty_db_conn):
+    conn = empty_db_conn
+    sku_id = _insert_sku(conn, price=100)
+    conn.commit()
+    conn.execute('UPDATE platform_skus SET price=117 WHERE id=?', (sku_id,))
+    conn.commit()
+    rows = _hist(conn)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r['field_name'] == 'price'
+    assert r['old_value'] == 100
+    assert r['new_value'] == 117
+    assert r['platform'] == 'shopee'
+    assert r['variation_id'] == 'V1'
+    assert r['source'] == 'platform_skus.update'
+
+
+def test_special_price_change_logs_one_row(empty_db_conn):
+    conn = empty_db_conn
+    sku_id = _insert_sku(conn, special_price=90)
+    conn.commit()
+    conn.execute('UPDATE platform_skus SET special_price=103 WHERE id=?', (sku_id,))
+    conn.commit()
+    rows = _hist(conn)
+    assert len(rows) == 1
+    assert rows[0]['field_name'] == 'special_price'
+    assert rows[0]['old_value'] == 90
+    assert rows[0]['new_value'] == 103
+
+
+def test_stock_only_update_logs_nothing(empty_db_conn):
+    conn = empty_db_conn
+    sku_id = _insert_sku(conn)
+    conn.commit()
+    conn.execute('UPDATE platform_skus SET stock=999 WHERE id=?', (sku_id,))
+    conn.commit()
+    assert _hist(conn) == []  # WHEN gate: non-price update must not fire
+
+
+def test_reimport_same_price_logs_nothing(empty_db_conn):
+    conn = empty_db_conn
+    sku_id = _insert_sku(conn, price=100)
+    conn.commit()
+    # simulate an import that writes the SAME price (upsert always touches the row)
+    conn.execute('UPDATE platform_skus SET price=100, imported_at=datetime("now") WHERE id=?', (sku_id,))
+    conn.commit()
+    assert _hist(conn) == []  # IS NOT gate: unchanged price must not fire
+
+
+def test_both_fields_change_logs_two_rows(empty_db_conn):
+    conn = empty_db_conn
+    sku_id = _insert_sku(conn, price=100, special_price=90)
+    conn.commit()
+    conn.execute('UPDATE platform_skus SET price=120, special_price=110 WHERE id=?', (sku_id,))
+    conn.commit()
+    fields = sorted(r['field_name'] for r in _hist(conn))
+    assert fields == ['price', 'special_price']
+
+
+def test_null_special_price_transition_logs(empty_db_conn):
+    conn = empty_db_conn
+    sku_id = _insert_sku(conn, special_price=None)
+    conn.commit()
+    conn.execute('UPDATE platform_skus SET special_price=50 WHERE id=?', (sku_id,))
+    conn.commit()
+    rows = _hist(conn)
+    assert len(rows) == 1
+    assert rows[0]['old_value'] is None
+    assert rows[0]['new_value'] == 50
+
+
+def test_internal_product_id_propagates(empty_db_conn):
+    conn = empty_db_conn
+    conn.execute("INSERT INTO products (id, product_name) VALUES (9001, 'mapped')")
+    sku_id = _insert_sku(conn, internal_product_id=9001)
+    conn.commit()
+    conn.execute('UPDATE platform_skus SET price=200 WHERE id=?', (sku_id,))
+    conn.commit()
+    rows = _hist(conn)
+    assert len(rows) == 1
+    assert rows[0]['internal_product_id'] == 9001
