@@ -105,12 +105,15 @@
         <tbody>
           {% for h in rows %}
           {% set label = h.variation_name or h.seller_sku %}
+          {% set qps = h.qty_per_sale %}
           <tr>
             <td class="text-subtle text-nowrap">{{ h.changed_at[:10] }}</td>
             <td>
-              {% if label %}{{ label }}{% else %}<span class="text-subtle">ตัวเลือกเดียว</span>{% endif %}
-              {% if h.qty_per_sale and h.qty_per_sale != 1 %}
-              <span class="badge rounded-pill" style="background:#eef2ff;color:#4338ca">×{{ h.qty_per_sale | int }}</span>
+              {% if label %}{{ label }}
+              {% elif h.variation_id %}<span class="text-subtle">รหัส {{ h.variation_id[:12] }}</span>
+              {% else %}<span class="text-subtle">–</span>{% endif %}
+              {% if qps and qps != 1 %}
+              <span class="badge rounded-pill" style="background:#eef2ff;color:#4338ca">×{{ qps | int if qps == qps | int else qps }}</span>
               {% endif %}
             </td>
             <td>{% if h.field_name == 'special_price' %}ราคาพิเศษ{% else %}ราคา{% endif %}</td>
