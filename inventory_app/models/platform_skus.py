@@ -7,9 +7,15 @@ No behavior changes.
 brief).
 """
 
+from datetime import datetime
+
 from database import get_connection
 
 from ._shared import _clean_for_match
+
+# Product-wide cap on marketplace price-history rows fetched + embedded per
+# product-detail load (bounds page weight / modal DOM as history accumulates).
+_MKT_HISTORY_CAP = 500
 
 
 def import_platform_skus(platform, records):
@@ -217,30 +223,101 @@ def get_platform_skus_all(platform):
     return rows
 
 
-def get_marketplace_price_history(product_id, limit=50):
-    """Marketplace (Shopee/Lazada) price-change timeline for one product.
+def get_marketplace_listings_with_history(product_id, now=None):
+    """Current marketplace listings (Shopee/Lazada) for a product, each with its
+    price-change history — powers the 'ราคา marketplace' card + click→history modal.
 
-    Rows from platform_price_history — captured by the mig-137 trigger on
-    platform_skus (import upsert / in-app edit) plus the mig-138 campaign seed.
-    Newest first. NOTE: an import-diff log — changed_at is the import time, not
-    necessarily when the price changed on the platform.
+    Returns {'shopee': {...}, 'lazada': {...}} where each is
+    {'listings': [listing, ...], 'last_import': <str|None>}. Each listing dict:
+      variation_id, label, qps, price, special_price,
+      effective (display price), list_price (struck list price, or None),
+      has_history (bool), last_changed (YYYY-MM-DD str|None),
+      history: [{field, field_label, old, new, date}, ...] newest-first (capped).
+
+    `special_price` counts as the effective price only when it is genuinely lower
+    AND its promotion window (`special_price_start`/`_end`, NULL bound = open) is
+    active at `now` — an expired/scheduled promo shows the list price instead.
+    `now` is a 'YYYY-MM-DD HH:MM:SS' string (defaults to local now); injectable for tests.
+
+    ⚠ Prices are the LAST-IMPORTED values (platform_skus snapshot), NOT live — the
+    card surfaces `last_import` as an "as of import" cue. `last_changed` is the last
+    recorded CHANGE date (an import-diff log), which is a different thing from freshness.
     """
+    if now is None:
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    FIELD_LABEL = {'price': 'ราคาตั้ง', 'special_price': 'ราคาพิเศษ'}
     conn = get_connection()
-    rows = conn.execute(
-        """SELECT h.platform, h.variation_id, h.field_name,
-                  h.old_value, h.new_value, h.changed_at, h.source,
-                  ps.variation_name, ps.seller_sku, ps.qty_per_sale
-             FROM platform_price_history h
-             LEFT JOIN platform_skus ps
-                    ON ps.platform = h.platform
-                   AND ps.variation_id = h.variation_id
-            WHERE h.internal_product_id = ?
-            ORDER BY h.changed_at DESC, h.id DESC
+    skus = conn.execute(
+        """SELECT platform, variation_id, variation_name, seller_sku, product_name,
+                  price, special_price, special_price_start, special_price_end,
+                  qty_per_sale, imported_at
+             FROM platform_skus
+            WHERE internal_product_id = ? AND is_ignored = 0
+            ORDER BY platform, price""",
+        (product_id,),
+    ).fetchall()
+    hist = conn.execute(
+        """SELECT platform, variation_id, field_name, old_value, new_value, changed_at
+             FROM platform_price_history
+            WHERE internal_product_id = ?
+            ORDER BY changed_at DESC, id DESC
             LIMIT ?""",
-        (product_id, limit),
+        (product_id, _MKT_HISTORY_CAP),
     ).fetchall()
     conn.close()
-    return rows
+
+    by_key = {}
+    for h in hist:
+        by_key.setdefault((h['platform'], h['variation_id']), []).append(h)
+
+    out = {'shopee': {'listings': [], 'last_import': None},
+           'lazada': {'listings': [], 'last_import': None}}
+    for s in skus:
+        plat = s['platform']
+        if plat not in out:
+            continue
+        imp = s['imported_at']
+        if imp and (out[plat]['last_import'] is None or imp > out[plat]['last_import']):
+            out[plat]['last_import'] = imp
+        # Label fallback: option name → seller SKU → Shopee/Lazada listing title
+        # → variation code. The title fallback is meaningful when a product is
+        # posted as several separate listings that have no per-option name.
+        label = ((s['variation_name'] or '').strip()
+                 or (s['seller_sku'] or '').strip()
+                 or (s['product_name'] or '').strip())
+        if not label:
+            vid = s['variation_id'] or ''
+            label = ('รหัส ' + vid[:12]) if vid else '(ไม่ระบุตัวเลือก)'
+        price, sp = s['price'], s['special_price']
+        st, en = s['special_price_start'], s['special_price_end']
+        # special counts only if genuinely lower AND its promo window is active now
+        special_active = (
+            sp is not None and price is not None and sp < price
+            and (not st or st <= now)
+            and (not en or en >= now)
+        )
+        if special_active:
+            effective, list_price = sp, price
+        else:
+            effective, list_price = price, None
+        rows = by_key.get((plat, s['variation_id']), [])
+        history = [{
+            'field': r['field_name'],
+            'field_label': FIELD_LABEL.get(r['field_name'], r['field_name']),
+            'old': r['old_value'], 'new': r['new_value'],
+            'date': (r['changed_at'] or '')[:10],   # date only (handles date & datetime rows)
+        } for r in rows]
+        out[plat]['listings'].append({
+            'variation_id': s['variation_id'],
+            'label': label,
+            'qps': s['qty_per_sale'],
+            'price': price, 'special_price': sp,
+            'effective': effective, 'list_price': list_price,
+            'has_history': bool(history),
+            'last_changed': history[0]['date'] if history else None,
+            'history': history,
+        })
+    return out
 
 
 def get_platform_summary():

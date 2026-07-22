@@ -92,76 +92,62 @@
       {% endif %}
     </div>
 
-    <!-- Marketplace price-change history (mig 137 trigger + 138 seed) -->
-    {% macro mkt_hist_table(rows, platform_label) %}
-      {% if rows %}
-      <table class="table table-sm mb-0 small align-middle">
-        <thead>
-          <tr>
-            <th>วันที่</th><th>ตัวเลือก</th><th>รายการ</th>
-            <th class="text-end">เดิม</th><th class="text-end">→ ใหม่</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for h in rows %}
-          {% set label = h.variation_name or h.seller_sku %}
-          {% set qps = h.qty_per_sale %}
-          <tr>
-            <td class="text-subtle text-nowrap">{{ h.changed_at[:10] }}</td>
-            <td>
-              {% if label %}{{ label }}
-              {% elif h.variation_id %}<span class="text-subtle">รหัส {{ h.variation_id[:12] }}</span>
-              {% else %}<span class="text-subtle">–</span>{% endif %}
-              {% if qps and qps != 1 %}
-              <span class="badge rounded-pill" style="background:#eef2ff;color:#4338ca">×{{ qps | int if qps == qps | int else qps }}</span>
-              {% endif %}
-            </td>
-            <td>{% if h.field_name == 'special_price' %}ราคาพิเศษ{% else %}ราคา{% endif %}</td>
-            <td class="text-end text-subtle">{{ h.old_value | fmt_price }}</td>
-            <td class="text-end fw-600">{{ h.new_value | fmt_price }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <div class="px-3 py-3 text-subtle small">
-        <i class="bi bi-inbox me-1"></i>ยังไม่มีประวัติราคา{{ platform_label }} — บันทึกเมื่อ import ไฟล์ราคาเข้า Sendy แล้วราคาต่างจากเดิม
+    <!-- Marketplace current price (per listing) + click→history modal -->
+    {% macro mkt_price_list(block, plat, platform_label) %}
+      {% if block.listings %}
+      <div class="px-2 pt-1">
+        {% for l in block.listings %}
+        <div class="d-flex justify-content-between align-items-start py-1" style="border-top:1px solid #f5f5f5">
+          <div class="me-2" style="min-width:0">
+            <div class="mkt-label text-truncate small" style="max-width:170px;cursor:pointer" title="{{ l.label }} (แตะดูเต็ม)">{{ l.label }}{% if l.qps and l.qps != 1 %} <span class="badge rounded-pill" style="background:#eef2ff;color:#4338ca">×{{ l.qps|int if l.qps == l.qps|int else l.qps }}</span>{% endif %}</div>
+            {% if l.has_history %}<div class="text-subtle" style="font-size:.66rem">แก้ล่าสุด {{ l.last_changed | thaidate }}</div>{% endif %}
+          </div>
+          <div class="text-end text-nowrap">
+            {% if l.has_history %}
+            <a href="javascript:void(0)" class="mkt-price-link fw-700 text-decoration-none" data-key="{{ plat }}|{{ l.variation_id }}">฿{{ l.effective | fmt_price }}<i class="bi bi-chevron-right ms-1" style="font-size:.6rem"></i></a>
+            {% else %}
+            <span class="fw-700">฿{{ l.effective | fmt_price }}</span>
+            {% endif %}
+            {% if l.list_price %}<div class="text-subtle" style="font-size:.66rem"><s>฿{{ l.list_price | fmt_price }}</s></div>{% endif %}
+          </div>
+        </div>
+        {% endfor %}
       </div>
+      {% if block.last_import %}<div class="px-3 py-2 text-subtle" style="font-size:.64rem;border-top:1px solid #f1f5f9"><i class="bi bi-clock-history me-1"></i>ราคา ณ import ล่าสุด {{ block.last_import | thaidate }}</div>{% endif %}
+      {% else %}
+      <div class="px-3 py-3 text-subtle small"><i class="bi bi-inbox me-1"></i>ไม่มี listing บน {{ platform_label }}</div>
       {% endif %}
     {% endmacro %}
     <div class="card mb-3">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-graph-up-arrow me-2 text-accent"></i>ประวัติราคา marketplace</span>
-        <span class="text-subtle" style="font-size:.72rem">ราคา ณ แต่ละครั้งที่นำเข้า</span>
+      <div class="card-header">
+        <i class="bi bi-tags me-2 text-accent"></i>ราคา marketplace
       </div>
       <ul class="nav nav-tabs px-2 pt-2" role="tablist" style="border-bottom:1px solid #e2e8f0">
         <li class="nav-item" role="presentation">
           <button class="nav-link active py-1 px-3 fw-600" data-bs-toggle="tab"
-                  data-bs-target="#mkt-shopee" type="button" role="tab" style="color:#ea580c">
+                  data-bs-target="#mktp-shopee" type="button" role="tab" style="color:#ea580c">
             <i class="bi bi-bag-fill me-1"></i>Shopee
-            <span class="badge rounded-pill ms-1" style="background:#fff7ed;color:#c2410c">{{ mkt_hist_shopee|length }}</span>
+            <span class="badge rounded-pill ms-1" style="background:#fff7ed;color:#c2410c">{{ mkt.shopee.listings|length }}</span>
           </button>
         </li>
         <li class="nav-item" role="presentation">
           <button class="nav-link py-1 px-3 fw-600" data-bs-toggle="tab"
-                  data-bs-target="#mkt-lazada" type="button" role="tab" style="color:#2563eb">
+                  data-bs-target="#mktp-lazada" type="button" role="tab" style="color:#2563eb">
             <i class="bi bi-cart-fill me-1"></i>Lazada
-            <span class="badge rounded-pill ms-1" style="background:#eff6ff;color:#1d4ed8">{{ mkt_hist_lazada|length }}</span>
+            <span class="badge rounded-pill ms-1" style="background:#eff6ff;color:#1d4ed8">{{ mkt.lazada.listings|length }}</span>
           </button>
         </li>
       </ul>
       <div class="card-body p-0">
+        {% if not mkt.shopee.listings and not mkt.lazada.listings %}
+        <div class="px-3 py-3 text-subtle small"><i class="bi bi-inbox me-1"></i>ยังไม่มี listing marketplace</div>
+        {% else %}
         <div class="tab-content">
-          <div class="tab-pane fade show active" id="mkt-shopee" role="tabpanel">
-            {{ mkt_hist_table(mkt_hist_shopee, ' Shopee') }}
-          </div>
-          <div class="tab-pane fade" id="mkt-lazada" role="tabpanel">
-            {{ mkt_hist_table(mkt_hist_lazada, ' Lazada') }}
-          </div>
+          <div class="tab-pane fade show active" id="mktp-shopee" role="tabpanel">{{ mkt_price_list(mkt.shopee, 'shopee', 'Shopee') }}</div>
+          <div class="tab-pane fade" id="mktp-lazada" role="tabpanel">{{ mkt_price_list(mkt.lazada, 'lazada', 'Lazada') }}</div>
         </div>
-        <div class="px-3 py-2 text-subtle" style="font-size:.72rem;border-top:1px solid #f1f5f9">
-          <i class="bi bi-info-circle me-1"></i>บันทึกตอน import ไฟล์ราคาเข้า Sendy (ไม่ใช่ทุกการเปลี่ยนบน Seller Center) · <span class="fw-600">×N</span> = จำนวนต่อแพ็ค
-        </div>
+        {% endif %}
+        <div class="px-3 py-2 text-subtle" style="font-size:.66rem;border-top:1px solid #f1f5f9"><i class="bi bi-info-circle me-1"></i>คลิกราคาที่มี <i class="bi bi-chevron-right"></i> เพื่อดูประวัติการเปลี่ยน · <span class="fw-600">×N</span> = จำนวนต่อแพ็ค</div>
       </div>
     </div>
 
@@ -785,6 +771,30 @@
     </div>
   </div>
 </div>
+
+{# ── Marketplace price-history modal (shared; populated by JS on price click) ── #}
+<div class="modal fade" id="mktPriceModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h6 class="modal-title mb-0" id="mktPriceModalTitle">ประวัติราคา</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm mb-0 small align-middle">
+            <thead><tr><th class="ps-3">วันที่</th><th>รายการ</th><th class="text-end">เดิม</th><th class="text-end pe-3">→ ใหม่</th></tr></thead>
+            <tbody id="mktPriceModalBody"></tbody>
+          </table>
+        </div>
+        <div class="px-3 py-2 text-subtle" style="font-size:.7rem;border-top:1px solid #f1f5f9">
+          <i class="bi bi-info-circle me-1"></i>บันทึกตอน import ไฟล์ราคาเข้า Sendy (ไม่ใช่ทุกการเปลี่ยนบน Seller Center) — วันที่ = เวลานำเข้า
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script type="application/json" id="mkt-modal-data">{{ mkt_modal_data | tojson }}</script>
 {% endblock %}
 
 {% block scripts %}
@@ -911,6 +921,55 @@ document.getElementById('locationModal')?.addEventListener('shown.bs.modal', () 
       ).join('');
     }
   } catch (e) {}
+})();
+</script>
+
+<script>
+// ── Marketplace price card JS (own <script>: an earlier IIFE throw can't skip these listeners) ──
+// Modal: populate from embedded JSON on price click.
+(function () {
+  var el = document.getElementById('mkt-modal-data');
+  var data = {};
+  try { data = JSON.parse((el && el.textContent) || '{}'); } catch (e) {}
+  var modalEl = document.getElementById('mktPriceModal');
+  if (!modalEl) return;
+  var bsModal = new bootstrap.Modal(modalEl);
+  function fmtP(v) {
+    return (v === null || v === undefined) ? '-'
+      : Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  document.querySelectorAll('.mkt-price-link').forEach(function (a) {
+    a.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      var d = data[this.getAttribute('data-key')];
+      if (!d) return;
+      document.getElementById('mktPriceModalTitle').textContent = d.label + ' · ' + d.platform;
+      var body = document.getElementById('mktPriceModalBody');
+      body.textContent = '';
+      d.history.forEach(function (h) {
+        var tr = document.createElement('tr');
+        [['ps-3 text-subtle text-nowrap', h.date],
+         ['', h.field_label],
+         ['text-end text-subtle', fmtP(h.old)],
+         ['text-end fw-600 pe-3', fmtP(h.new)]].forEach(function (c) {
+          var td = document.createElement('td');
+          if (c[0]) td.className = c[0];
+          td.textContent = c[1];
+          tr.appendChild(td);
+        });
+        body.appendChild(tr);
+      });
+      bsModal.show();
+    });
+  });
+  // Tap/click a truncated listing name to expand it to full (mobile has no hover).
+  document.querySelectorAll('.mkt-label').forEach(function (el) {
+    el.addEventListener('click', function () {
+      var full = el.classList.toggle('mkt-label-full');
+      el.style.whiteSpace = full ? 'normal' : '';
+      el.style.maxWidth = full ? 'none' : '170px';
+    });
+  });
 })();
 </script>
 {% endblock %}
