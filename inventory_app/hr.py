@@ -32,8 +32,9 @@ from __future__ import annotations
 
 import calendar
 import json
+import math
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from config import DATABASE_PATH
@@ -153,6 +154,40 @@ def _service_years_at(start_date: Optional[date], at: date) -> float:
     return (at - start_date).days / 365.25
 
 
+def _round_half(x: float) -> float:
+    """Round to the nearest 0.5 (ties up). 4.2575 → 4.5, 5.49 → 5.5, 6.0 → 6.0."""
+    return math.floor(x * 2 + 0.5) / 2.0
+
+
+def _prorate_annual(start_date: Optional[date], probation_end: Optional[date],
+                    probation_days: Optional[int], quota: float,
+                    year: int) -> float:
+    """ANNUAL entitlement — prorated from hire date, granted after probation.
+
+    Put 2026-07-22: replaces the after_1yr all-or-nothing gate.
+      - no start_date                    → 0 (cannot prorate)
+      - probation not ended by year-end  → 0 (Model P: evaluated at year-end)
+      - else round_half(quota × days_worked_in_year / days_in_year), counting
+        from max(hire, Jan 1) to Dec 31 inclusive — so a full calendar year
+        yields the full quota (6) and the first partial year is prorated.
+    `probation_end` falls back to start_date + probation_days when the stored
+    probation_end_date is blank.
+    """
+    if start_date is None:
+        return 0.0
+    year_start, year_end = date(year, 1, 1), date(year, 12, 31)
+    if probation_end is None and probation_days is not None:
+        probation_end = start_date + timedelta(days=int(probation_days))
+    if probation_end is not None and probation_end > year_end:
+        return 0.0  # still on probation through year-end
+    accrual_start = max(start_date, year_start)
+    if accrual_start > year_end:
+        return 0.0  # hired after this year
+    days_in_year = (year_end - year_start).days + 1
+    days_worked = (year_end - accrual_start).days + 1
+    return _round_half(quota * days_worked / days_in_year)
+
+
 def leave_balance(employee_id: int, year: int,
                   conn: Optional[sqlite3.Connection] = None,
                   db_path: Optional[str] = None) -> dict:
@@ -161,9 +196,11 @@ def leave_balance(employee_id: int, year: int,
     entitlement = employee_leave_entitlements override for (emp, type, year)
                   else leave_types.default_quota_days (None → unlimited,
                   represented as float('inf')).
-                  ANNUAL special case (contract 5.3 / quota_basis
-                  'after_1yr'): if there is NO explicit override row and the
-                  employee has < 1 year of service at year-end → 0.
+                  ANNUAL (quota_basis 'prorate_probation', Put 2026-07-22):
+                  with NO override row → prorated from hire date via
+                  _prorate_annual (0 while still on probation at year-end,
+                  else round_half(6 × days_worked_in_year / days_in_year);
+                  a full calendar year → 6). Legacy 'after_1yr' still honoured.
     used        = SUM(days) of APPROVED leave_requests whose start_date is in
                   the calendar `year` (pending/rejected/cancelled excluded).
     remaining   = max(0, entitlement - used)  (inf if unlimited)
@@ -172,9 +209,12 @@ def leave_balance(employee_id: int, year: int,
     year_end = date(year, 12, 31)
     with _ConnCtx(conn, db_path) as c:
         emp = c.execute(
-            "SELECT start_date FROM employees WHERE id = ?", (employee_id,)
+            "SELECT start_date, probation_end_date, probation_days "
+            "FROM employees WHERE id = ?", (employee_id,)
         ).fetchone()
         start_date = _to_date(emp["start_date"]) if emp else None
+        probation_end = _to_date(emp["probation_end_date"]) if emp else None
+        probation_days = emp["probation_days"] if emp else None
 
         types = c.execute(
             "SELECT id, code, default_quota_days, quota_basis "
@@ -211,9 +251,14 @@ def leave_balance(employee_id: int, year: int,
             entitlement = float("inf")  # unlimited (e.g. UNPAID)
         else:
             entitlement = float(t["default_quota_days"])
-            if t["quota_basis"] == "after_1yr" and tid not in overrides:
-                if _service_years_at(start_date, year_end) < 1.0:
-                    entitlement = 0.0
+            if tid not in overrides:
+                if t["quota_basis"] == "after_1yr":
+                    if _service_years_at(start_date, year_end) < 1.0:
+                        entitlement = 0.0
+                elif t["quota_basis"] == "prorate_probation":
+                    entitlement = _prorate_annual(
+                        start_date, probation_end, probation_days,
+                        entitlement, year)
 
         used = float(used_map.get(tid, 0) or 0)
         if entitlement == float("inf"):
