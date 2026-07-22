@@ -99,7 +99,7 @@
         {% for l in block.listings %}
         <div class="d-flex justify-content-between align-items-start py-1" style="border-top:1px solid #f5f5f5">
           <div class="me-2" style="min-width:0">
-            <div class="text-truncate small" style="max-width:170px" title="{{ l.label }}">{{ l.label }}{% if l.qps and l.qps != 1 %} <span class="badge rounded-pill" style="background:#eef2ff;color:#4338ca">×{{ l.qps|int if l.qps == l.qps|int else l.qps }}</span>{% endif %}</div>
+            <div class="mkt-label text-truncate small" style="max-width:170px;cursor:pointer" title="{{ l.label }} (แตะดูเต็ม)">{{ l.label }}{% if l.qps and l.qps != 1 %} <span class="badge rounded-pill" style="background:#eef2ff;color:#4338ca">×{{ l.qps|int if l.qps == l.qps|int else l.qps }}</span>{% endif %}</div>
             {% if l.has_history %}<div class="text-subtle" style="font-size:.66rem">แก้ล่าสุด {{ l.last_changed | thaidate }}</div>{% endif %}
           </div>
           <div class="text-end text-nowrap">
@@ -957,6 +957,14 @@ document.getElementById('locationModal')?.addEventListener('shown.bs.modal', () 
         body.appendChild(tr);
       });
       bsModal.show();
+    });
+  });
+  // Tap/click a truncated listing name to expand it to full (mobile has no hover).
+  document.querySelectorAll('.mkt-label').forEach(function (el) {
+    el.addEventListener('click', function () {
+      var full = el.classList.toggle('mkt-label-full');
+      el.style.whiteSpace = full ? 'normal' : '';
+      el.style.maxWidth = full ? 'none' : '170px';
     });
   });
 })();
