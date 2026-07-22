@@ -186,6 +186,33 @@ def test_listings_helper_excludes_ignored(empty_db_conn):
     assert out['shopee']['listings'] == [] and out['lazada']['listings'] == []
 
 
+def test_listings_helper_label_fallback_chain(empty_db_conn):
+    """label = option name → seller SKU → listing title → variation code."""
+    import models
+    conn = empty_db_conn
+    conn.execute("INSERT INTO products (id, product_name) VALUES (503,'p')")
+
+    def ins(vid, vname, sku, pname):
+        conn.execute(
+            """INSERT INTO platform_skus (platform, variation_id, variation_name,
+                   seller_sku, product_name, price, stock, internal_product_id, qty_per_sale)
+               VALUES ('shopee',?,?,?,?,10,5,503,1)""",
+            (vid, vname, sku, pname))
+
+    ins('V_name', 'รุ่นหนา #666', None, 'listing title A')      # → option name
+    ins('V_sku',  None, '666-Pro', 'listing title B')          # → seller sku
+    ins('V_title', None, None, 'มือจับบัว 5นิ้ว SENDAI')        # → listing title
+    ins('V_code', None, None, '')                              # → variation code
+    conn.commit()
+
+    lst = {l['variation_id']: l
+           for l in models.get_marketplace_listings_with_history(503)['shopee']['listings']}
+    assert lst['V_name']['label'] == 'รุ่นหนา #666'
+    assert lst['V_sku']['label'] == '666-Pro'
+    assert lst['V_title']['label'] == 'มือจับบัว 5นิ้ว SENDAI'
+    assert lst['V_code']['label'].startswith('รหัส ')
+
+
 def test_thaidate_filter():
     from filters import thaidate
     assert thaidate('2026-07-16') == '16 ก.ค. 2026'

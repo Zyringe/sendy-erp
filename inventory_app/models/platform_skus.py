@@ -235,7 +235,7 @@ def get_marketplace_listings_with_history(product_id):
     FIELD_LABEL = {'price': 'ราคาตั้ง', 'special_price': 'ราคาพิเศษ'}
     conn = get_connection()
     skus = conn.execute(
-        """SELECT platform, variation_id, variation_name, seller_sku,
+        """SELECT platform, variation_id, variation_name, seller_sku, product_name,
                   price, special_price, qty_per_sale, imported_at
              FROM platform_skus
             WHERE internal_product_id = ? AND is_ignored = 0
@@ -264,7 +264,12 @@ def get_marketplace_listings_with_history(product_id):
         imp = s['imported_at']
         if imp and (out[plat]['last_import'] is None or imp > out[plat]['last_import']):
             out[plat]['last_import'] = imp
-        label = (s['variation_name'] or '').strip() or (s['seller_sku'] or '').strip()
+        # Label fallback: option name → seller SKU → Shopee/Lazada listing title
+        # → variation code. The title fallback is meaningful when a product is
+        # posted as several separate listings that have no per-option name.
+        label = ((s['variation_name'] or '').strip()
+                 or (s['seller_sku'] or '').strip()
+                 or (s['product_name'] or '').strip())
         if not label:
             vid = s['variation_id'] or ''
             label = ('รหัส ' + vid[:12]) if vid else '(ไม่ระบุตัวเลือก)'
