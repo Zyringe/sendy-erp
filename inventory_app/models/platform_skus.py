@@ -7,9 +7,15 @@ No behavior changes.
 brief).
 """
 
+from datetime import datetime
+
 from database import get_connection
 
 from ._shared import _clean_for_match
+
+# Product-wide cap on marketplace price-history rows fetched + embedded per
+# product-detail load (bounds page weight / modal DOM as history accumulates).
+_MKT_HISTORY_CAP = 500
 
 
 def import_platform_skus(platform, records):
@@ -217,7 +223,7 @@ def get_platform_skus_all(platform):
     return rows
 
 
-def get_marketplace_listings_with_history(product_id):
+def get_marketplace_listings_with_history(product_id, now=None):
     """Current marketplace listings (Shopee/Lazada) for a product, each with its
     price-change history — powers the 'ราคา marketplace' card + click→history modal.
 
@@ -226,17 +232,25 @@ def get_marketplace_listings_with_history(product_id):
       variation_id, label, qps, price, special_price,
       effective (display price), list_price (struck list price, or None),
       has_history (bool), last_changed (YYYY-MM-DD str|None),
-      history: [{field, field_label, old, new, date}, ...] newest-first.
+      history: [{field, field_label, old, new, date}, ...] newest-first (capped).
+
+    `special_price` counts as the effective price only when it is genuinely lower
+    AND its promotion window (`special_price_start`/`_end`, NULL bound = open) is
+    active at `now` — an expired/scheduled promo shows the list price instead.
+    `now` is a 'YYYY-MM-DD HH:MM:SS' string (defaults to local now); injectable for tests.
 
     ⚠ Prices are the LAST-IMPORTED values (platform_skus snapshot), NOT live — the
     card surfaces `last_import` as an "as of import" cue. `last_changed` is the last
     recorded CHANGE date (an import-diff log), which is a different thing from freshness.
     """
+    if now is None:
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     FIELD_LABEL = {'price': 'ราคาตั้ง', 'special_price': 'ราคาพิเศษ'}
     conn = get_connection()
     skus = conn.execute(
         """SELECT platform, variation_id, variation_name, seller_sku, product_name,
-                  price, special_price, qty_per_sale, imported_at
+                  price, special_price, special_price_start, special_price_end,
+                  qty_per_sale, imported_at
              FROM platform_skus
             WHERE internal_product_id = ? AND is_ignored = 0
             ORDER BY platform, price""",
@@ -246,8 +260,9 @@ def get_marketplace_listings_with_history(product_id):
         """SELECT platform, variation_id, field_name, old_value, new_value, changed_at
              FROM platform_price_history
             WHERE internal_product_id = ?
-            ORDER BY changed_at DESC, id DESC""",
-        (product_id,),
+            ORDER BY changed_at DESC, id DESC
+            LIMIT ?""",
+        (product_id, _MKT_HISTORY_CAP),
     ).fetchall()
     conn.close()
 
@@ -274,8 +289,14 @@ def get_marketplace_listings_with_history(product_id):
             vid = s['variation_id'] or ''
             label = ('รหัส ' + vid[:12]) if vid else '(ไม่ระบุตัวเลือก)'
         price, sp = s['price'], s['special_price']
-        # strike the list price ONLY when the special is genuinely lower
-        if sp is not None and price is not None and sp < price:
+        st, en = s['special_price_start'], s['special_price_end']
+        # special counts only if genuinely lower AND its promo window is active now
+        special_active = (
+            sp is not None and price is not None and sp < price
+            and (not st or st <= now)
+            and (not en or en >= now)
+        )
+        if special_active:
             effective, list_price = sp, price
         else:
             effective, list_price = price, None

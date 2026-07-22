@@ -104,7 +104,7 @@
           </div>
           <div class="text-end text-nowrap">
             {% if l.has_history %}
-            <a href="#" class="mkt-price-link fw-700 text-decoration-none" data-key="{{ plat }}|{{ l.variation_id }}">฿{{ l.effective | fmt_price }}<i class="bi bi-chevron-right ms-1" style="font-size:.6rem"></i></a>
+            <a href="javascript:void(0)" class="mkt-price-link fw-700 text-decoration-none" data-key="{{ plat }}|{{ l.variation_id }}">฿{{ l.effective | fmt_price }}<i class="bi bi-chevron-right ms-1" style="font-size:.6rem"></i></a>
             {% else %}
             <span class="fw-700">฿{{ l.effective | fmt_price }}</span>
             {% endif %}
@@ -922,8 +922,11 @@ document.getElementById('locationModal')?.addEventListener('shown.bs.modal', () 
     }
   } catch (e) {}
 })();
+</script>
 
-// ── Marketplace price-history modal: populate from embedded JSON on price click ──
+<script>
+// ── Marketplace price card JS (own <script>: an earlier IIFE throw can't skip these listeners) ──
+// Modal: populate from embedded JSON on price click.
 (function () {
   var el = document.getElementById('mkt-modal-data');
   var data = {};

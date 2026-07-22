@@ -213,6 +213,50 @@ def test_listings_helper_label_fallback_chain(empty_db_conn):
     assert lst['V_code']['label'].startswith('รหัส ')
 
 
+def test_listings_helper_special_price_window(empty_db_conn):
+    """special counts as effective only inside its active promo window."""
+    import models
+    conn = empty_db_conn
+    conn.execute("INSERT INTO products (id, product_name) VALUES (504,'p')")
+
+    def ins(vid, st, en):
+        conn.execute(
+            """INSERT INTO platform_skus (platform, variation_id, product_name, price,
+                   special_price, special_price_start, special_price_end,
+                   stock, internal_product_id, qty_per_sale)
+               VALUES ('lazada',?,'p',100,80,?,?,5,504,1)""",
+            (vid, st, en))
+
+    ins('A', '2026-01-01 00:00:00', '2026-12-31 00:00:00')   # active
+    ins('B', '2023-01-01 00:00:00', '2023-12-31 00:00:00')   # expired
+    ins('C', '2027-01-01 00:00:00', None)                    # future
+    ins('D', None, None)                                     # open (no window)
+    conn.commit()
+
+    lz = {l['variation_id']: l for l in
+          models.get_marketplace_listings_with_history(504, now='2026-07-22 12:00:00')['lazada']['listings']}
+    assert lz['A']['effective'] == 80 and lz['A']['list_price'] == 100    # active → special
+    assert lz['B']['effective'] == 100 and lz['B']['list_price'] is None  # expired → list price
+    assert lz['C']['effective'] == 100 and lz['C']['list_price'] is None  # future → list price
+    assert lz['D']['effective'] == 80 and lz['D']['list_price'] == 100    # open → special
+
+
+def test_listings_helper_caps_history(empty_db_conn, monkeypatch):
+    """History fetch/embed is bounded by _MKT_HISTORY_CAP."""
+    import models
+    import models.platform_skus as ps
+    monkeypatch.setattr(ps, '_MKT_HISTORY_CAP', 2)
+    conn = empty_db_conn
+    conn.execute("INSERT INTO products (id, product_name) VALUES (505,'p')")
+    _seed_listing(conn, 'shopee', 'S1', 50, None, 505)
+    for i in range(4):
+        _seed_hist(conn, 'shopee', 'S1', 505, 'price', 40 + i, 41 + i, f'2026-07-0{i + 1}')
+    conn.commit()
+    out = models.get_marketplace_listings_with_history(505)
+    total = sum(len(l['history']) for l in out['shopee']['listings'])
+    assert total == 2   # capped
+
+
 def test_thaidate_filter():
     from filters import thaidate
     assert thaidate('2026-07-16') == '16 ก.ค. 2026'
