@@ -320,9 +320,18 @@ def product_detail(product_id):
     txn_pages = (txn_total + per_page - 1) // per_page
     locations = models.get_product_locations(product_id)
     bsn_pricing = models.get_product_pricing_summary(product_id)
-    mkt_price_history = models.get_marketplace_price_history(product_id)
-    mkt_hist_shopee = [h for h in mkt_price_history if h['platform'] == 'shopee']
-    mkt_hist_lazada = [h for h in mkt_price_history if h['platform'] == 'lazada']
+    mkt = models.get_marketplace_listings_with_history(product_id)
+    # Flat map for the click→history modal (keyed "platform|variation_id").
+    mkt_modal_data = {}
+    _plat_label = {'shopee': 'Shopee', 'lazada': 'Lazada'}
+    for _plat, _blk in mkt.items():
+        for _l in _blk['listings']:
+            if _l['has_history']:
+                mkt_modal_data[f"{_plat}|{_l['variation_id']}"] = {
+                    'label': _l['label'],
+                    'platform': _plat_label.get(_plat, _plat),
+                    'history': _l['history'],
+                }
     brands = models.get_brands()
     current_brand = models.get_brand(product['brand_id']) if product['brand_id'] else None
     # pack/unpack true-availability: extra units obtainable by running a conversion
@@ -348,8 +357,8 @@ def product_detail(product_id):
                            txn_total=txn_total,
                            locations=locations,
                            bsn_pricing=bsn_pricing,
-                           mkt_hist_shopee=mkt_hist_shopee,
-                           mkt_hist_lazada=mkt_hist_lazada,
+                           mkt=mkt,
+                           mkt_modal_data=mkt_modal_data,
                            brands=brands,
                            current_brand=current_brand)
 

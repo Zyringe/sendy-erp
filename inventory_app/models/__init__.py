@@ -118,7 +118,7 @@ from .platform_skus import (
     _propagate_listings_to_platform_skus, get_platform_skus,
     get_platform_skus_all, get_platform_summary, update_platform_sku,
     get_platform_mapping_data, apply_platform_mapping,
-    suggest_platform_mapping, get_marketplace_price_history,
+    suggest_platform_mapping, get_marketplace_listings_with_history,
 )
 from .conversions import (
     get_conversion_formulas, get_conversion_formula, get_buildable,
