@@ -152,8 +152,8 @@ def test_over_quota_sick_becomes_unpaid(tmp_db_conn):
 def test_over_quota_personal_excess_unpaid(tmp_db_conn):
     eid = _mk_employee(tmp_db_conn, 'T_OQ2', 'overquota personal', '2025-01-01',
                        monthly_salary=15000.0)
-    # PERSONAL quota = 3. Log 5 PERSONAL days → 2 excess unpaid.
-    _add_leave(tmp_db_conn, eid, 'PERSONAL', '2026-03-01', '2026-03-05', 5)
+    # PERSONAL quota = 6 (Put 2026-07-22). Log 8 PERSONAL days → 2 excess unpaid.
+    _add_leave(tmp_db_conn, eid, 'PERSONAL', '2026-03-01', '2026-03-08', 8)
     run = hr.generate_run('2026-03', 1, created_by=1, conn=tmp_db_conn)
     it = _item(tmp_db_conn, run['id'], eid)
     assert it['unpaid_leave_days'] == 2

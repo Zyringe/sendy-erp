@@ -685,15 +685,15 @@ CREATE TABLE leave_requests (
     created_at       TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 , approved_by TEXT, approved_at TEXT);
 
-CREATE TABLE leave_types (
+CREATE TABLE "leave_types" (
     id                       INTEGER PRIMARY KEY AUTOINCREMENT,
     code                     TEXT    UNIQUE NOT NULL,
     name_th                  TEXT    NOT NULL,
-    default_quota_days       REAL,                       -- NULL = unlimited
+    default_quota_days       REAL,
     is_paid                  INTEGER NOT NULL DEFAULT 1 CHECK(is_paid IN (0,1)),
     affects_diligence        INTEGER NOT NULL DEFAULT 0 CHECK(affects_diligence IN (0,1)),
     requires_cert_after_days INTEGER,
-    quota_basis              TEXT    CHECK(quota_basis IN ('after_1yr') OR quota_basis IS NULL),
+    quota_basis              TEXT    CHECK(quota_basis IN ('after_1yr','prorate_probation') OR quota_basis IS NULL),
     max_paid_days            REAL,
     sort_order               INTEGER NOT NULL DEFAULT 100,
     is_active                INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
