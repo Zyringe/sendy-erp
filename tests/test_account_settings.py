@@ -20,7 +20,7 @@ ADMIN = (1, 'admin'); MANAGER = (3, 's'); STAFF = (2, 'l')
 SHARE = (10, 'mamaput'); GENERAL = (11, 'ballwtp1')
 
 
-def _client(role, uid, un='u', real_role=None, pw_fp=None):
+def _client(role, uid, un='u', real_role=None, real_uid=None, pw_fp=None):
     from app import app as flask_app
     flask_app.config['TESTING'] = True
     c = flask_app.test_client()
@@ -31,9 +31,17 @@ def _client(role, uid, un='u', real_role=None, pw_fp=None):
         s['role'] = role
         if real_role:
             s['_real_role'] = real_role
+            if real_uid is not None:
+                s['_real_user_id'] = real_uid
         if pw_fp is not None:          # None => no fingerprint (grandfathered)
             s['pw_fp'] = pw_fp
     return c
+
+
+def _set_active(db_path, uid, active):
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE users SET is_active=? WHERE id=?", (active, uid))
+    conn.commit(); conn.close()
 
 
 def _set_pw(db_path, uid, pw):
@@ -187,8 +195,32 @@ def test_admin_reset_evicts_target_sessions(tmp_db):
     assert _evicted(target.get('/me/account'))
 
 
-def test_impersonation_skips_staleness(tmp_db):
-    # While impersonating, session pw_fp is the real admin's (won't match the
-    # impersonated user's hash) — the check is skipped, so it must NOT evict.
-    r = _client('staff', 2, 'l', real_role='admin', pw_fp='deadbeef' * 4).get('/me/account')
-    assert r.status_code == 200
+def test_impersonation_valid_while_real_admin_ok(tmp_db):
+    # Impersonating: identity is staff(2), real admin is admin(1). pw_fp is the
+    # admin's and is validated against _real_user_id, so it reaches the route.
+    c = _client('staff', 2, 'l', real_role='admin', real_uid=1,
+                pw_fp=pw_fingerprint(_hash(tmp_db, 1)))
+    assert c.get('/me/account').status_code == 200
+
+
+def test_impersonation_evicted_when_real_admin_password_changes(tmp_db):
+    c = _client('staff', 2, 'l', real_role='admin', real_uid=1,
+                pw_fp=pw_fingerprint(_hash(tmp_db, 1)))
+    assert c.get('/me/account').status_code == 200     # ok before
+    _set_pw(tmp_db, 1, 'adminrotated9')                # real admin's password reset
+    assert _evicted(c.get('/me/account'))              # impersonation session dies too
+
+
+def test_impersonation_evicted_when_real_admin_disabled(tmp_db):
+    c = _client('staff', 2, 'l', real_role='admin', real_uid=1,
+                pw_fp=pw_fingerprint(_hash(tmp_db, 1)))
+    _set_active(tmp_db, 1, 0)                           # real admin deactivated
+    assert _evicted(c.get('/me/account'))
+
+
+def test_deactivated_user_session_is_evicted(tmp_db):
+    fp = pw_fingerprint(_hash(tmp_db, 2))
+    c = _client('staff', 2, 'l', pw_fp=fp)
+    assert c.get('/me/account').status_code == 200
+    _set_active(tmp_db, 2, 0)
+    assert _evicted(c.get('/me/account'))

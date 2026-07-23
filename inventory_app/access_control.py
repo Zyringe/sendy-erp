@@ -579,16 +579,23 @@ def require_login():
     # stale — evict it (a stolen 30-day cookie dies the moment the password is
     # changed). Only enforced for sessions that carry a fingerprint: pre-feature
     # sessions (and the test-client's injected sessions) have none and are left
-    # alone, so this never forces a mass re-login on deploy. Skipped while
-    # impersonating — session['pw_fp'] belongs to the real admin, not the
-    # impersonated user_id (the admin's own login already validated it).
+    # alone, so this never forces a mass re-login on deploy (the pre-feature
+    # window is closed by rotating SECRET_KEY at deploy, which invalidates every
+    # old cookie by signature). The fingerprint was stamped at the REAL account's
+    # login, so while impersonating we validate against _real_user_id (the admin),
+    # NOT the impersonated user_id — a real-admin reset or disable evicts the
+    # impersonation session too. is_active is checked so deactivating a user kills
+    # their live sessions.
     stamped_fp = session.get('pw_fp')
-    if stamped_fp is not None and not session.get('_real_role'):
+    if stamped_fp is not None:
+        check_uid = (session.get('_real_user_id') if session.get('_real_role')
+                     else session.get('user_id'))
         conn = get_connection()
-        row = conn.execute("SELECT password_hash FROM users WHERE id=?",
-                           (session.get('user_id'),)).fetchone()
+        row = conn.execute("SELECT password_hash, is_active FROM users WHERE id=?",
+                           (check_uid,)).fetchone()
         conn.close()
-        if row is None or pw_fingerprint(row['password_hash']) != stamped_fp:
+        if (row is None or row['is_active'] != 1
+                or pw_fingerprint(row['password_hash']) != stamped_fp):
             session.clear()
             flash('เซสชันหมดอายุ (มีการเปลี่ยนรหัสผ่าน) กรุณาเข้าสู่ระบบใหม่', 'warning')
             return redirect(url_for('login', next=request.url))
