@@ -125,6 +125,9 @@
             {% if not p.is_active %}
               <span class="badge badge-gray ms-1" title="สินค้าถูกปิดใช้งาน (เช่น ถูก merge/เลิกขาย)">ปิดใช้งาน</span>
             {% endif %}
+            {% if p.condition %}
+              <span class="badge badge-warning ms-1">{{ p.condition }}</span>
+            {% endif %}
           </td>
           <td class="text-center text-subtle">{{ p.unit_type }}</td>
           <td class="text-end text-subtle">{{ p.base_sell_price | fmt_price }}</td>
@@ -194,6 +197,7 @@
              class="stretched-link text-decoration-none fw-600 text-main">{{ p.product_name }}</a>
           {% if p.is_low %}<span class="badge badge-danger ms-1">สต็อกต่ำ</span>{% endif %}
           {% if not p.is_active %}<span class="badge badge-gray ms-1" title="สินค้าถูกปิดใช้งาน">ปิดใช้งาน</span>{% endif %}
+          {% if p.condition %}<span class="badge badge-warning ms-1">{{ p.condition }}</span>{% endif %}
           <div class="text-subtle font-mono mt-1" style="font-size:.72rem">ID {{ p.id }}</div>
         </div>
         {% if is_admin %}
