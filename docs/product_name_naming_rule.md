@@ -105,7 +105,6 @@
 | AC | สีรมดำ | `สีรมดำ (AC)` |
 | MAC | สีเมทัลลิกดำ | `สีเมทัลลิกดำ (MAC)` |
 | AB | สีทองแดงรมดำ | `สีทองแดงรมดำ (AB)` |
-| JBB | สีทองแดงรมดำ | `สีทองแดงรมดำ (JBB)` |
 | PAB | สีทองดำเงา | `สีทองดำเงา (PAB)` |
 | PB | สีทองเงา | `สีทองเงา (PB)` |
 | SB | สีทองด้าน | `สีทองด้าน (SB)` |
@@ -193,6 +192,7 @@
 - **สินค้าหลายขนาดในชื่อเดียว** (เช่น `M6x20mm`, `3x4นิ้ว`) → เก็บเดิมเป็นรูปแบบ `[w]x[h][unit]`
 - **สินค้ามี packaging แบบเดียว** (มีแค่ตัว) → ไม่ต้องใส่ `(ตัว)` — ใส่เฉพาะเมื่อมีทั้ง 2 แบบในกลุ่ม
 - **Color codes ที่ไม่อยู่ใน dictionary** → INSERT ใหม่เข้า `color_finish_codes` ก่อน
+- **ทับศัพท์ไทย + อังกฤษคู่กัน (precedent ลูกบิดคริสตรัล, Put 2026-07-22)**: เมื่ออยากให้ค้นหาได้ทั้งสองภาษา ใส่คำอังกฤษถัดจากคำไทยทับศัพท์: `ลูกบิดคริสตรัล Crystal บุศราคัม Sendai สีน้ำตาล (แผง)`
 
 ---
 
@@ -225,6 +225,17 @@
 
 > ใส่ "กล่องสี" หลัง brand ก่อน model — เป็น series classifier ของ Golden Lion
 
+## ซีรีส์ JBB (บานพับมียอด) — ไม่ใช่สี
+
+**JBB = บานพับที่มียอด (finial) — เป็น feature ไม่ใช่สี** (Put ยืนยัน 2026-07-23; ก่อนหน้านั้น dict เคยผิดเป็น "สีทองแดงรมดำ").
+- รูปแบบ: `บานพับสแตนเลสมียอด JBB Sendai #2543-4inx3inx2.5mm (แผง)` — JBB อยู่ตำแหน่ง series ตาม rule 20
+- structured: `series='JBB'`, `color_code=NULL` (กลุ่มนี้สแตนเลสเปลือย ไม่มีสี) — ห้ามใส่คำสี
+- โค้ด JBB ถูกถอนออกจาก `color_finish_codes` แล้ว (2026-07-23) — ห้ามเพิ่มกลับเป็นสี
+
+## Token `JAC` (บานพับ #410/#412) — สื่อทั้งสีและรุ่น
+
+Put ยืนยัน 2026-07-22: **JAC บอกทั้งสีและรุ่นในตัว** — เจอ JAC ในชื่อแล้ว อย่า flag ว่า "ขาดสี" หรือ "ขาดรุ่น" เพิ่ม
+
 ## Typos ที่แก้แล้ว
 
 | typo | correct | count | migration |
@@ -242,6 +253,7 @@
 
 ## Change log (เพิ่มเติม)
 
+- **2026-07-23** — **Naming Round 2** (projects/product-naming-round2): family-consistency + twins + sku/photo sync. 133+4 ops applied local+prod (ชื่อ 80 + fields 57 + sku regen 61 รวม drift), photo folders 6 + photo_meta re-key + reshoot batch.json sync. Policy ใหม่: JBB=มียอด (ถอนจาก color dict), JAC=สี+รุ่น, (ไม่สวย) ถอนจากชื่อ (tag=condition+`-BLM`), Crystal ทับศัพท์คู่, ฝักบัว/สายชำระรุ่นใหม่มีสี-รุ่นเก่าไม่มี. เครื่องมือ: `audit_family_consistency.py`, `compile_round2_ops.py` (generic decisions CSV), `diff_sku_map.py`, `_review/rename_sku_folders.py`.
 - **2026-07-07** — Product-naming audit ครั้งใหญ่ (projects/product-naming-audit): แก้ชื่อ 115 + fields 53 + SKU 77 ทั้ง local+prod. Rule 11 → soft limit; rule 13 → align mig087; typo dict + ปุ๊ก/บอร์น; JSN=สีนิกเกิ้ล; ลบ alias จระเข้→TOA; ตัวอย่างในเอกสารเปลี่ยน นิ้ว→in ตาม rule 7.
 
 ## Conditions (last bracket)
@@ -249,7 +261,7 @@
 | condition | meaning | example |
 |---|---|---|
 | `(เก่า)` | สินค้าค้างสต็อกนาน, ไม่ใหม่ | `... (แผง) (เก่า)` |
-| `(ไม่สวย)` | กล่อง/แพ็ค ตำหนิเล็กน้อย | `... (ตัว) (ไม่สวย)` |
+| ~~`(ไม่สวย)`~~ | **ถอนออกจากชื่อแล้ว (Put 2026-07-22, applied 07-23)** — tag อยู่ที่ `products.condition='ไม่สวย'` + sku ลงท้าย `-BLM`; ข้อยกเว้น pid 824 คงไว้จนสต็อกหมด (กันชื่อชนฝาแฝด 1664). Bracket อื่น (เก่า/ตำหนิ/หมดอายุ/ไม่สกรีน/ไม่มีน็อต) **ยังอยู่ในชื่อ** (safety-relevant) | — |
 | `(ตำหนิ)` | สินค้ามีรอยเสียหาย | `... (แผง) (ตำหนิ)` |
 | `(หมดอายุ)` | กาว/เคมีภัณฑ์ที่หมดอายุแล้ว | `... 3in (หมดอายุ)` |
 | `(ไม่สกรีน)` | ไม่ได้พิมพ์ลาย/โลโก้ | `... (ไม่สกรีน)` |
