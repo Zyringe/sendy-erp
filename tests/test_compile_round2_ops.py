@@ -952,3 +952,27 @@ def test_generic_mixed_csv_ambiguous_row_fails_the_whole_compile(tmp_path, empty
     result = cro.compile_files([generic_csv], empty_db)
     assert any("702" in e for e in result.errors)
     assert result.ops == []
+
+
+def test_generic_field_null_sentinel_translates_to_engine_convention(tmp_path):
+    """value='NULL' in a generic decisions CSV must compile to the apply
+    engine's real-NULL convention (value='', after='NULL') — passing the
+    literal string through wrote 'NULL' into an FK column (caught in the
+    2026-07-23 P3 simulation, sqlite3.IntegrityError)."""
+    import csv as _csv
+    p = tmp_path / "generic.csv"
+    with open(p, "w", newline="", encoding="utf-8-sig") as f:
+        w = _csv.DictWriter(f, fieldnames=[
+            "product_id", "current_name", "proposed_name", "field", "value",
+            "before", "decision"])
+        w.writeheader()
+        w.writerow({"product_id": "91", "current_name": "x", "proposed_name": "",
+                    "field": "color_code", "value": "NULL", "before": "JBB",
+                    "decision": "approved (test)"})
+    from compile_round2_ops import detect_kind, extract_op
+    rows = list(_csv.DictReader(open(p, encoding="utf-8-sig")))
+    kind = detect_kind(rows[0].keys())
+    res = extract_op(kind, rows[0], "generic.csv")
+    assert res.status == "approved"
+    assert res.op["value"] == "" and res.op["after"] == "NULL"
+    assert res.op["before"] == "JBB"

@@ -182,8 +182,17 @@ def extract_op(kind: str, row: dict, source_label: str) -> ExtractResult:
                 "error", None,
                 f"pid {pid}: decision starts with 'approved' but field/value is incomplete "
                 f"({source_label})")
-        op = {"op": "field", "product_id": pid, "field": field, "value": value,
-              "before": (row.get("before") or "").strip(), "after": value, "source": source_label}
+        # Value-side NULL sentinel: the apply engine sets a field to real NULL
+        # ONLY on (value=='' AND after=='NULL') — translate here; passing the
+        # literal string 'NULL' through would write 'NULL' and trip FK checks.
+        if value == "NULL":
+            op = {"op": "field", "product_id": pid, "field": field, "value": "",
+                  "before": (row.get("before") or "").strip(), "after": "NULL",
+                  "source": source_label}
+        else:
+            op = {"op": "field", "product_id": pid, "field": field, "value": value,
+                  "before": (row.get("before") or "").strip(), "after": value,
+                  "source": source_label}
         return ExtractResult("approved", op, None)
 
     raise ValueError(f"unknown kind {kind!r}")  # unreachable — unstamped never reaches here
