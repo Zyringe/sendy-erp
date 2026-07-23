@@ -12,13 +12,15 @@ import sqlite3
 import pytest
 from werkzeug.security import generate_password_hash, check_password_hash
 
+from access_control import pw_fingerprint
+
 
 # Real user rows carried in by the tmp_db copy of the live DB.
 ADMIN = (1, 'admin'); MANAGER = (3, 's'); STAFF = (2, 'l')
 SHARE = (10, 'mamaput'); GENERAL = (11, 'ballwtp1')
 
 
-def _client(role, uid, un='u', real_role=None):
+def _client(role, uid, un='u', real_role=None, pw_fp=None):
     from app import app as flask_app
     flask_app.config['TESTING'] = True
     c = flask_app.test_client()
@@ -29,6 +31,8 @@ def _client(role, uid, un='u', real_role=None):
         s['role'] = role
         if real_role:
             s['_real_role'] = real_role
+        if pw_fp is not None:          # None => no fingerprint (grandfathered)
+            s['pw_fp'] = pw_fp
     return c
 
 
@@ -136,3 +140,55 @@ def test_no_admin_nav_leak_on_account_page(tmp_db):
     r = _client('staff', 2, 'l').get('/me/account')
     assert 'ตั้งค่า'.encode() in r.data           # the new module is present
     assert 'จัดการผู้ใช้'.encode() not in r.data   # admin-only link is NOT
+
+
+# ── Cross-session invalidation (a password change evicts other sessions) ────
+def _evicted(resp):
+    return resp.status_code == 302 and '/login' in resp.headers.get('Location', '')
+
+
+def test_session_without_fp_is_grandfathered(tmp_db):
+    # Pre-feature / test-injected sessions carry no pw_fp → NOT evicted (so the
+    # deploy doesn't force a mass re-login and the existing suite is unaffected).
+    assert _client('staff', 2, 'l').get('/me/account').status_code == 200
+
+
+def test_session_with_current_fp_reaches_route(tmp_db):
+    fp = pw_fingerprint(_hash(tmp_db, 2))
+    assert _client('staff', 2, 'l', pw_fp=fp).get('/me/account').status_code == 200
+
+
+def test_stale_fp_session_is_evicted(tmp_db):
+    assert _evicted(_client('staff', 2, 'l', pw_fp='deadbeef' * 4).get('/me/account'))
+
+
+def test_password_change_evicts_others_keeps_changer(tmp_db):
+    _set_pw(tmp_db, 2, 'oldpass1')
+    old_fp = pw_fingerprint(_hash(tmp_db, 2))
+    changer = _client('staff', 2, 'l', pw_fp=old_fp)
+    r = changer.post('/me/change-password', data={
+        'current_password': 'oldpass1', 'new_password': 'newpass9',
+        'confirm_password': 'newpass9'})
+    assert r.status_code == 302
+    # changer's session was re-stamped → still reaches an authed route
+    assert changer.get('/me/account').status_code == 200
+    # a SECOND session for the same user, holding the OLD fingerprint, is evicted
+    assert _evicted(_client('staff', 2, 'l', pw_fp=old_fp).get('/me/account'))
+
+
+def test_admin_reset_evicts_target_sessions(tmp_db):
+    # Target logged in (stamped); an admin reset changes the hash out-of-band →
+    # the target's existing session is evicted on its next request (no me.py
+    # change needed — any password_hash rotation trips the fingerprint).
+    _set_pw(tmp_db, 2, 'oldpass1')
+    target = _client('staff', 2, 'l', pw_fp=pw_fingerprint(_hash(tmp_db, 2)))
+    assert target.get('/me/account').status_code == 200
+    _set_pw(tmp_db, 2, 'adminreset9')                 # simulates /users password reset
+    assert _evicted(target.get('/me/account'))
+
+
+def test_impersonation_skips_staleness(tmp_db):
+    # While impersonating, session pw_fp is the real admin's (won't match the
+    # impersonated user's hash) — the check is skipped, so it must NOT evict.
+    r = _client('staff', 2, 'l', real_role='admin', pw_fp='deadbeef' * 4).get('/me/account')
+    assert r.status_code == 200

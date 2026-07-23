@@ -4,11 +4,24 @@ and the sidebar/mobile-nav context processor.
 Extracted verbatim from app.py (behavior-preserving split) — see app.py's
 module docstring for the overall file-split rationale.
 """
+import hashlib
+
 from flask import session, request, redirect, url_for, flash, abort
 
 import models
 import review_rules as rr
+from database import get_connection
 from nav import active_link, nav_sections
+
+
+def pw_fingerprint(password_hash):
+    """Short fingerprint of a user's password_hash, stamped into the session at
+    login (session['pw_fp']). A password change — self-service OR admin reset —
+    rotates password_hash, so every OTHER session still carrying the old
+    fingerprint is detected as stale by require_login and evicted. This reuses
+    the existing password_hash as the 'session epoch', so no schema column is
+    needed and it covers every path that mutates a password automatically."""
+    return hashlib.sha256((password_hash or '').encode()).hexdigest()[:32]
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -561,6 +574,24 @@ def require_login():
     if not role:
         flash('กรุณาเข้าสู่ระบบก่อน', 'warning')
         return redirect(url_for('login', next=request.url))
+    # Cross-session invalidation: a password change (self-service or admin reset)
+    # rotates password_hash, so any session still carrying the OLD fingerprint is
+    # stale — evict it (a stolen 30-day cookie dies the moment the password is
+    # changed). Only enforced for sessions that carry a fingerprint: pre-feature
+    # sessions (and the test-client's injected sessions) have none and are left
+    # alone, so this never forces a mass re-login on deploy. Skipped while
+    # impersonating — session['pw_fp'] belongs to the real admin, not the
+    # impersonated user_id (the admin's own login already validated it).
+    stamped_fp = session.get('pw_fp')
+    if stamped_fp is not None and not session.get('_real_role'):
+        conn = get_connection()
+        row = conn.execute("SELECT password_hash FROM users WHERE id=?",
+                           (session.get('user_id'),)).fetchone()
+        conn.close()
+        if row is None or pw_fingerprint(row['password_hash']) != stamped_fp:
+            session.clear()
+            flash('เซสชันหมดอายุ (มีการเปลี่ยนรหัสผ่าน) กรุณาเข้าสู่ระบบใหม่', 'warning')
+            return redirect(url_for('login', next=request.url))
     # While impersonating, the impersonation controls must ALWAYS be reachable,
     # whatever the impersonated role's gates do (general redirects everything to
     # stock-search; shareholder may only POST logout). 'exit' returns to the real

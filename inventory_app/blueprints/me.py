@@ -22,6 +22,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import hr as hr_mod
 import hr_queries as hrq
+from access_control import pw_fingerprint
 from database import get_connection
 
 bp_me = Blueprint("me", __name__, url_prefix="/me")
@@ -240,11 +241,14 @@ def change_password():
         return redirect(url_for("me.account"))
 
     # pbkdf2:sha256 — matches admin.py user create/edit (the local box has no scrypt).
+    new_hash = generate_password_hash(new, method="pbkdf2:sha256")
     conn.execute(
-        "UPDATE users SET password_hash=? WHERE id=?",
-        (generate_password_hash(new, method="pbkdf2:sha256"), user["id"]),
+        "UPDATE users SET password_hash=? WHERE id=?", (new_hash, user["id"]),
     )
     conn.commit()
     conn.close()
+    # Re-stamp THIS session so the changer stays logged in; every OTHER session
+    # for this user now carries a stale pw_fp and is evicted by require_login.
+    session["pw_fp"] = pw_fingerprint(new_hash)
     flash("เปลี่ยนรหัสผ่านเรียบร้อยแล้ว", "success")
     return redirect(url_for("me.account"))
