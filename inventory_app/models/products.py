@@ -45,7 +45,7 @@ def get_products(search=None, low_stock=False, hard_to_sell=False,
     sql = f"""
         SELECT p.id, p.sku_code, p.product_name, p.units_per_carton, p.units_per_box,
                p.unit_type, p.hard_to_sell, p.cost_price, p.base_sell_price,
-               p.low_stock_threshold, p.is_active, p.brand_id, p.category_id,
+               p.low_stock_threshold, p.is_active, p.brand_id, p.category_id, p.condition,
                p.created_at, p.updated_at,
                COALESCE(s.quantity, 0) AS quantity,
                CASE WHEN COALESCE(s.quantity, 0) <= p.low_stock_threshold THEN 1 ELSE 0 END AS is_low,
