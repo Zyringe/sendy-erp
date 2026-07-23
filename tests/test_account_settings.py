@@ -77,6 +77,16 @@ def test_account_page_shows_identity(tmp_db):
     assert 'พนักงานออฟฟิศ'.encode() in r.data   # role label
 
 
+def test_login_page_has_forgot_password_note(tmp_db):
+    # The locked-out path: unauthenticated /login must carry the "contact admin"
+    # note (Q6). /login is auth-exempt, so no session needed.
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    r = flask_app.test_client().get('/login')
+    assert r.status_code == 200
+    assert 'ลืมรหัสผ่าน'.encode() in r.data
+
+
 # ── change password: happy path + every guard ─────────────────────────────
 def test_change_password_success(tmp_db):
     _set_pw(tmp_db, 2, 'oldpass1')
