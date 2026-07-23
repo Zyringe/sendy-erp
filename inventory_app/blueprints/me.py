@@ -18,9 +18,11 @@ from datetime import date
 from flask import (
     Blueprint, abort, flash, redirect, render_template, request, session, url_for,
 )
+from werkzeug.security import check_password_hash, generate_password_hash
 
 import hr as hr_mod
 import hr_queries as hrq
+from access_control import pw_fingerprint
 from database import get_connection
 
 bp_me = Blueprint("me", __name__, url_prefix="/me")
@@ -189,3 +191,64 @@ def leave_cancel(rid):
     conn.close()
     flash("ยกเลิกคำขอลาแล้ว", "success")
     return redirect(url_for("me.leave"))
+
+
+# ── Account settings + self-service change password ───────────────────────────
+#
+# Its own all-roles 'settings' module (nav.py + access_control._MODULE_DEFS), so
+# EVERY logged-in role reaches this page. Identity comes from the session only —
+# NOT _my_employee() — so admin/shareholder (who have no employee row) are
+# included. Reset-when-locked-out is admin-driven via /users (the "ลืมรหัสผ่าน"
+# note points there); this page is the everyday self-service path.
+
+@bp_me.route("/account")
+def account():
+    return render_template(
+        "me/account.html",
+        # While impersonating, the current-password the form needs belongs to the
+        # impersonated user (unknown to the real admin) — so hide the form.
+        impersonating=bool(session.get("_real_role")),
+    )
+
+
+@bp_me.route("/change-password", methods=["POST"])
+def change_password():
+    # Never let an impersonating admin rewrite the impersonated user's credential.
+    if session.get("_real_role"):
+        flash("อยู่ในโหมดจำลองผู้ใช้ ไม่สามารถเปลี่ยนรหัสผ่านได้", "warning")
+        return redirect(url_for("me.account"))
+
+    current = request.form.get("current_password", "")
+    new = request.form.get("new_password", "")
+    confirm = request.form.get("confirm_password", "")
+
+    conn = get_connection()
+    user = conn.execute(
+        "SELECT id, password_hash FROM users WHERE id=?", (session.get("user_id"),)
+    ).fetchone()
+
+    if not user or not check_password_hash(user["password_hash"], current):
+        conn.close()
+        flash("รหัสผ่านปัจจุบันไม่ถูกต้อง", "danger")
+        return redirect(url_for("me.account"))
+    if len(new) < 6:
+        conn.close()
+        flash("รหัสผ่านใหม่ต้องยาวอย่างน้อย 6 ตัวอักษร", "danger")
+        return redirect(url_for("me.account"))
+    if new != confirm:
+        conn.close()
+        flash("รหัสผ่านใหม่กับการยืนยันไม่ตรงกัน", "danger")
+        return redirect(url_for("me.account"))
+
+    # pbkdf2:sha256 — matches admin.py user create/edit (the local box has no scrypt).
+    new_hash = generate_password_hash(new, method="pbkdf2:sha256")
+    conn.execute(
+        "UPDATE users SET password_hash=? WHERE id=?", (new_hash, user["id"]),
+    )
+    conn.commit()
+    conn.close()
+    # Re-stamp THIS session so the changer stays logged in; every OTHER session
+    # for this user now carries a stale pw_fp and is evicted by require_login.
+    session["pw_fp"] = pw_fingerprint(new_hash)
+    flash("เปลี่ยนรหัสผ่านเรียบร้อยแล้ว", "success")
+    return redirect(url_for("me.account"))

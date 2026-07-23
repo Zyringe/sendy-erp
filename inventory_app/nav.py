@@ -187,6 +187,17 @@ NAV = [
         ],
     },
     {
+        # ตั้งค่า — self-service account, EVERY role (roles=ALL_ROLES so general
+        # gets it in the "เพิ่มเติม" drawer too). Its own module 'settings' (all
+        # roles) — separate from admin_module, so the admin-only ระบบ tools above
+        # stay hidden AND route-locked for non-admins.
+        'module': 'settings', 'section': 'ตั้งค่า', 'roles': ALL_ROLES,
+        'links': [
+            {'ep': 'me.account', 'label': 'บัญชีของฉัน', 'icon': 'bi-person-gear',
+             'match': ['me.account', 'me.change_password']},
+        ],
+    },
+    {
         # Mobile-only tail — never appears on desktop (desktop:False), only in
         # the drawer. Open to every role including general at the SECTION level;
         # mobile.sales_trip is excluded per-LINK because it bounces for general

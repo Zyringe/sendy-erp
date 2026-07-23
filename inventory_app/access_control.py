@@ -4,11 +4,24 @@ and the sidebar/mobile-nav context processor.
 Extracted verbatim from app.py (behavior-preserving split) — see app.py's
 module docstring for the overall file-split rationale.
 """
+import hashlib
+
 from flask import session, request, redirect, url_for, flash, abort
 
 import models
 import review_rules as rr
+from database import get_connection
 from nav import active_link, nav_sections
+
+
+def pw_fingerprint(password_hash):
+    """Short fingerprint of a user's password_hash, stamped into the session at
+    login (session['pw_fp']). A password change — self-service OR admin reset —
+    rotates password_hash, so every OTHER session still carrying the old
+    fingerprint is detected as stale by require_login and evicted. This reuses
+    the existing password_hash as the 'session epoch', so no schema column is
+    needed and it covers every path that mutates a password automatically."""
+    return hashlib.sha256((password_hash or '').encode()).hexdigest()[:32]
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -47,6 +60,9 @@ _STAFF_POST_OK = frozenset([
     # (employee_id never read from form/URL); this gate only permits the POST to
     # reach the route. The 'general' kiosk role's wiring is added in Task 5.6.
     'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
+    # Self-service change-password (every role; own account only). Manager inherits
+    # via _MANAGER_POST_OK below; general + shareholder add it explicitly.
+    'me.change_password',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'partners.customer_reassign', 'partners.customer_bulk_reassign',
@@ -82,6 +98,7 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
 _GENERAL_POST_OK = frozenset([
     'logout',
     'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
+    'me.change_password',
 ])
 _ROLE_POST_OK = {
     'manager':     _MANAGER_POST_OK,
@@ -96,6 +113,7 @@ _ROLE_POST_OK = {
         'logout',
         'cashbook.new_transaction', 'cashbook.txn_edit', 'cashbook.txn_delete',
         'hr.payroll_item_pay', 'hr.payroll_item_unpay',
+        'me.change_password',
     ]),
 }
 
@@ -106,6 +124,7 @@ _GENERAL_ALLOWED = frozenset([
     'logout',
     'me.leave', 'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
     'me.payslip_list', 'me.payslip_detail',   # Phase 6: self-service payslip
+    'me.account', 'me.change_password',        # self-service account (all roles)
 ])
 
 # ── Roles: the single source of role display (label / badge / description) ─────
@@ -193,6 +212,17 @@ _MODULE_DEFS = [
         'icon': 'bi-gear',
         'first_endpoint': 'admin.user_list',
         'roles': ('admin',),
+    },
+    {
+        # Self-service settings — every role manages its OWN account here. A
+        # SEPARATE module from admin_module (ระบบ): all-roles by design, so it
+        # never touches the admin-only 403 gate. general is mobile-only, so it
+        # reaches this via the "เพิ่มเติม" drawer, not this desktop switcher.
+        'key': 'settings',
+        'name': 'ตั้งค่า',
+        'icon': 'bi-sliders',
+        'first_endpoint': 'me.account',
+        'roles': None,
     },
 ]
 
@@ -316,6 +346,8 @@ _ENDPOINT_MODULE = {
     'me.leave': 'overview',
     'me.payslip_list': 'overview',
     'me.payslip_detail': 'overview',
+    # ── ตั้งค่า (self-service account) — its own all-roles module.
+    'me.account': 'settings',
     # ── mobile-only PWA pages → the 'mobile' sentinel (no desktop module nav).
     'mobile.stock_search': 'mobile',
     'mobile.sales_trip': 'mobile',
@@ -542,6 +574,31 @@ def require_login():
     if not role:
         flash('กรุณาเข้าสู่ระบบก่อน', 'warning')
         return redirect(url_for('login', next=request.url))
+    # Cross-session invalidation: a password change (self-service or admin reset)
+    # rotates password_hash, so any session still carrying the OLD fingerprint is
+    # stale — evict it (a stolen 30-day cookie dies the moment the password is
+    # changed). Only enforced for sessions that carry a fingerprint: pre-feature
+    # sessions (and the test-client's injected sessions) have none and are left
+    # alone, so this never forces a mass re-login on deploy (the pre-feature
+    # window is closed by rotating SECRET_KEY at deploy, which invalidates every
+    # old cookie by signature). The fingerprint was stamped at the REAL account's
+    # login, so while impersonating we validate against _real_user_id (the admin),
+    # NOT the impersonated user_id — a real-admin reset or disable evicts the
+    # impersonation session too. is_active is checked so deactivating a user kills
+    # their live sessions.
+    stamped_fp = session.get('pw_fp')
+    if stamped_fp is not None:
+        check_uid = (session.get('_real_user_id') if session.get('_real_role')
+                     else session.get('user_id'))
+        conn = get_connection()
+        row = conn.execute("SELECT password_hash, is_active FROM users WHERE id=?",
+                           (check_uid,)).fetchone()
+        conn.close()
+        if (row is None or row['is_active'] != 1
+                or pw_fingerprint(row['password_hash']) != stamped_fp):
+            session.clear()
+            flash('เซสชันหมดอายุ (มีการเปลี่ยนรหัสผ่าน) กรุณาเข้าสู่ระบบใหม่', 'warning')
+            return redirect(url_for('login', next=request.url))
     # While impersonating, the impersonation controls must ALWAYS be reachable,
     # whatever the impersonated role's gates do (general redirects everything to
     # stock-search; shareholder may only POST logout). 'exit' returns to the real

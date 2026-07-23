@@ -79,7 +79,8 @@ from blueprints.admin import bp_admin
 # _ENDPOINT_MODULE, _MODULE_DEFS, build_mobile_nav_slots).
 from access_control import (_STAFF_POST_OK, _MANAGER_POST_OK, _ENDPOINT_MODULE,
                             _MODULE_DEFS, ROLE_ORDER, _role_home,
-                            build_mobile_nav_slots, init_access_control)
+                            build_mobile_nav_slots, init_access_control,
+                            pw_fingerprint)
 from filters import register_filters
 
 app = Flask(__name__)
@@ -232,6 +233,7 @@ def login():
             session['username']     = user['username']
             session['display_name'] = user['display_name'] or user['username']
             session['role']         = user['role']
+            session['pw_fp']        = pw_fingerprint(user['password_hash'])  # cross-session invalidation
             session.permanent       = remember   # 30-day cookie when checked
             flash(f'ยินดีต้อนรับ {session["display_name"]}', 'success')
             return redirect(request.args.get('next') or _role_home(session['role']))
