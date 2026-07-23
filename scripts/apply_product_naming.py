@@ -29,7 +29,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(_HERE, '..', 'inventory_app')))
 from sku_code_utils import build_sku_code  # noqa: E402
 
 DATE = '2026-07-07'
-_FIELD_WHITELIST = ('color_code', 'brand_id', 'model')
+# 'size'..'sub_category_short_code' added product-naming-round2 (2026-07-22):
+# the sku-driving structured columns compile_round2_ops.py syncs from an
+# approved rename's proposed_name (parsed, not free-text).
+_FIELD_WHITELIST = ('color_code', 'brand_id', 'model',
+                     'size', 'packaging_th', 'packaging_short', 'series',
+                     'condition', 'pack_variant', 'sub_category_short_code')
 
 
 class ApplyError(Exception):
@@ -109,9 +114,24 @@ def validate_ops(db_path, ops):
         elif o['op'] == 'field':
             if o['field'] not in _FIELD_WHITELIST:
                 errs.append(f"pid {o['product_id']}: field {o['field']} not whitelisted")
-            elif conn.execute('SELECT 1 FROM products WHERE id=?',
-                              (o['product_id'],)).fetchone() is None:
+                continue
+            row = conn.execute(f"SELECT {o['field']} FROM products WHERE id=?",  # field whitelisted above
+                               (o['product_id'],)).fetchone()
+            if row is None:
                 errs.append(f"pid {o['product_id']}: not in DB")
+            else:
+                # Optimistic lock, same NULL-sentinel convention as apply_ops
+                # (round-2, 2026-07-22). Empty 'before' = no lock requested —
+                # round-1's legacy field ops never populated it and must keep
+                # working unchanged; 'NULL' asserts the current value IS NULL.
+                before = o.get('before', '')
+                if before == 'NULL':
+                    if row[0] is not None:
+                        errs.append(f"pid {o['product_id']}: stale before "
+                                    f"(DB {o['field']}={row[0]!r} != ops NULL)")
+                elif before != '' and str(row[0]) != before:
+                    errs.append(f"pid {o['product_id']}: stale before "
+                                f"(DB {o['field']}={row[0]!r} != ops {before!r})")
         elif o['op'] == 'brand_name_th':
             if conn.execute('SELECT 1 FROM brands WHERE id=?', (o['field'],)).fetchone() is None:
                 errs.append(f"brand {o['field']}: not in DB")
@@ -145,9 +165,22 @@ def apply_ops(db_path, ops, dry_run=True, backup_dir=None):
                     (o['after'], o['product_id'], o['before']))
             elif o['op'] == 'field':
                 val = None if o['value'] == '' and o['after'] == 'NULL' else o['value']
-                cur = conn.execute(
-                    f"UPDATE products SET {o['field']}=? WHERE id=?",  # field whitelisted above
-                    (val, o['product_id']))
+                # Same optimistic lock as 'name' — empty before = no lock
+                # (round-1 legacy field ops), 'NULL' asserts current IS NULL,
+                # anything else must match the live value exactly.
+                before = o.get('before', '')
+                if before == '':
+                    cur = conn.execute(
+                        f"UPDATE products SET {o['field']}=? WHERE id=?",  # field whitelisted above
+                        (val, o['product_id']))
+                elif before == 'NULL':
+                    cur = conn.execute(
+                        f"UPDATE products SET {o['field']}=? WHERE id=? AND {o['field']} IS NULL",
+                        (val, o['product_id']))
+                else:
+                    cur = conn.execute(
+                        f"UPDATE products SET {o['field']}=? WHERE id=? AND {o['field']}=?",
+                        (val, o['product_id'], before))
             elif o['op'] == 'brand_name_th':
                 cur = conn.execute('UPDATE brands SET name_th=? WHERE id=?',
                                    (o['value'], o['field']))

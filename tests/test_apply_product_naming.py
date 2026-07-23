@@ -226,3 +226,99 @@ def test_compiler_fails_loud_on_unknown_shape():
              'decision': 'approved', 'proposed_fix': 'do something mysterious', 'triage': 'CLEAR'}]
     ops, errors = cao.compile_judgment(rows)
     assert errors and '9' in errors[0]
+
+
+# ── round-2 fixes: extended whitelist + field-op optimistic lock ────────────
+# (product-naming-round2, code-review fix package, item 8)
+
+def test_whitelist_extended_to_structured_sync_columns():
+    for col in ('size', 'packaging_th', 'packaging_short', 'series',
+                'condition', 'pack_variant', 'sub_category_short_code'):
+        assert col in apn._FIELD_WHITELIST
+    # originals still present
+    for col in ('color_code', 'brand_id', 'model'):
+        assert col in apn._FIELD_WHITELIST
+
+
+def test_field_op_empty_before_is_backward_compatible_no_lock(db):
+    """Round-1 legacy field ops always leave 'before' empty (cosmetic/preview
+    only, never an assertion) — this must keep working unchanged even though
+    field ops now support an optimistic lock. Pins the exact scenario
+    test_apply_name_field_dict_ops already covers, isolated to the field op."""
+    _add_product(db, 10, 'x', 'S10')  # color_code is NULL
+    ops = [{'op': 'field', 'product_id': '10', 'field': 'color_code', 'value': 'SB',
+            'before': '', 'after': 'SB', 'source': 't'}]
+    res = apn.apply_ops(db, ops, dry_run=False, backup_dir=os.path.dirname(db))
+    assert res['applied'] == 1
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT color_code FROM products WHERE id=10").fetchone()[0] == 'SB'
+
+
+def test_field_op_populated_before_stale_rolls_back(db):
+    """A field op that DOES carry a real 'before' now gets the same
+    optimistic lock name ops already have: current DB value must match."""
+    _add_product(db, 10, 'x', 'S10', color='AC')  # DB actually has AC, not the SN the op expects
+    ops = [{'op': 'field', 'product_id': '10', 'field': 'color_code', 'value': 'SB',
+            'before': 'SN', 'after': 'SB', 'source': 't'}]
+    with pytest.raises(apn.ApplyError):
+        apn.apply_ops(db, ops, dry_run=False, backup_dir=os.path.dirname(db))
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT color_code FROM products WHERE id=10").fetchone()[0] == 'AC'
+    assert conn.execute("SELECT COUNT(*) FROM import_log").fetchone()[0] == 0
+
+
+def test_field_op_populated_before_matching_current_succeeds(db):
+    _add_product(db, 10, 'x', 'S10', color='AC')
+    ops = [{'op': 'field', 'product_id': '10', 'field': 'color_code', 'value': 'SB',
+            'before': 'AC', 'after': 'SB', 'source': 't'}]
+    res = apn.apply_ops(db, ops, dry_run=False, backup_dir=os.path.dirname(db))
+    assert res['applied'] == 1
+
+
+def test_field_op_null_sentinel_before_matches_genuine_null(db):
+    _add_product(db, 10, 'x', 'S10')  # color_code NULL
+    ops = [{'op': 'field', 'product_id': '10', 'field': 'color_code', 'value': 'SB',
+            'before': 'NULL', 'after': 'SB', 'source': 't'}]
+    res = apn.apply_ops(db, ops, dry_run=False, backup_dir=os.path.dirname(db))
+    assert res['applied'] == 1
+
+
+def test_field_op_null_sentinel_before_rejects_non_null_current(db):
+    _add_product(db, 10, 'x', 'S10', color='AC')  # NOT null
+    ops = [{'op': 'field', 'product_id': '10', 'field': 'color_code', 'value': 'SB',
+            'before': 'NULL', 'after': 'SB', 'source': 't'}]
+    with pytest.raises(apn.ApplyError):
+        apn.apply_ops(db, ops, dry_run=False, backup_dir=os.path.dirname(db))
+
+
+def test_validate_ops_dry_run_catches_stale_field_before():
+    """validate_ops (the --dry-run path) must catch a stale field 'before'
+    too, mirroring its existing name-op staleness check — same coverage,
+    earlier surfacing."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 't.db')
+        conn = sqlite3.connect(path)
+        conn.executescript(SCHEMA)
+        conn.execute("INSERT INTO products (id, product_name, color_code) VALUES (10, 'x', 'AC')")
+        conn.commit()
+        conn.close()
+        ops = [{'op': 'field', 'product_id': '10', 'field': 'color_code', 'value': 'SB',
+                'before': 'SN', 'after': 'SB', 'source': 't'}]
+        errs = apn.validate_ops(path, ops)
+        assert errs and '10' in errs[0]
+
+
+def test_validate_ops_dry_run_passes_empty_before_field_op():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 't.db')
+        conn = sqlite3.connect(path)
+        conn.executescript(SCHEMA)
+        conn.execute("INSERT INTO products (id, product_name, color_code) VALUES (10, 'x', 'AC')")
+        conn.commit()
+        conn.close()
+        ops = [{'op': 'field', 'product_id': '10', 'field': 'color_code', 'value': 'SB',
+                'before': '', 'after': 'SB', 'source': 't'}]
+        errs = apn.validate_ops(path, ops)
+        assert errs == []
