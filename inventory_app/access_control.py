@@ -47,6 +47,9 @@ _STAFF_POST_OK = frozenset([
     # (employee_id never read from form/URL); this gate only permits the POST to
     # reach the route. The 'general' kiosk role's wiring is added in Task 5.6.
     'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
+    # Self-service change-password (every role; own account only). Manager inherits
+    # via _MANAGER_POST_OK below; general + shareholder add it explicitly.
+    'me.change_password',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'partners.customer_reassign', 'partners.customer_bulk_reassign',
@@ -82,6 +85,7 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
 _GENERAL_POST_OK = frozenset([
     'logout',
     'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
+    'me.change_password',
 ])
 _ROLE_POST_OK = {
     'manager':     _MANAGER_POST_OK,
@@ -96,6 +100,7 @@ _ROLE_POST_OK = {
         'logout',
         'cashbook.new_transaction', 'cashbook.txn_edit', 'cashbook.txn_delete',
         'hr.payroll_item_pay', 'hr.payroll_item_unpay',
+        'me.change_password',
     ]),
 }
 
@@ -106,6 +111,7 @@ _GENERAL_ALLOWED = frozenset([
     'logout',
     'me.leave', 'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
     'me.payslip_list', 'me.payslip_detail',   # Phase 6: self-service payslip
+    'me.account', 'me.change_password',        # self-service account (all roles)
 ])
 
 # ── Roles: the single source of role display (label / badge / description) ─────
@@ -193,6 +199,17 @@ _MODULE_DEFS = [
         'icon': 'bi-gear',
         'first_endpoint': 'admin.user_list',
         'roles': ('admin',),
+    },
+    {
+        # Self-service settings — every role manages its OWN account here. A
+        # SEPARATE module from admin_module (ระบบ): all-roles by design, so it
+        # never touches the admin-only 403 gate. general is mobile-only, so it
+        # reaches this via the "เพิ่มเติม" drawer, not this desktop switcher.
+        'key': 'settings',
+        'name': 'ตั้งค่า',
+        'icon': 'bi-sliders',
+        'first_endpoint': 'me.account',
+        'roles': None,
     },
 ]
 
@@ -316,6 +333,8 @@ _ENDPOINT_MODULE = {
     'me.leave': 'overview',
     'me.payslip_list': 'overview',
     'me.payslip_detail': 'overview',
+    # ── ตั้งค่า (self-service account) — its own all-roles module.
+    'me.account': 'settings',
     # ── mobile-only PWA pages → the 'mobile' sentinel (no desktop module nav).
     'mobile.stock_search': 'mobile',
     'mobile.sales_trip': 'mobile',

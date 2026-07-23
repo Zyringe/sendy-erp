@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% block title %}บัญชีของฉัน – Sendy{% endblock %}
+{% block page_title %}บัญชีของฉัน{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column gap-3" style="max-width:640px">
+
+  {# ── Account identity (read-only) ─────────────────────────────────────── #}
+  <div class="card">
+    <div class="card-header fw-semibold"><i class="bi bi-person me-2"></i>ข้อมูลบัญชี</div>
+    <div class="card-body">
+      <dl class="row mb-0">
+        <dt class="col-sm-4 text-muted small">ชื่อที่แสดง</dt>
+        <dd class="col-sm-8">{{ current_user }}</dd>
+        <dt class="col-sm-4 text-muted small">ชื่อผู้ใช้</dt>
+        <dd class="col-sm-8">{{ session.username }}</dd>
+        <dt class="col-sm-4 text-muted small">บทบาท</dt>
+        <dd class="col-sm-8">
+          {% set rm = roles.get(current_role) %}
+          <span class="badge {{ rm.badge if rm else 'bg-secondary' }}">{{ rm.label if rm else current_role }}</span>
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  {# ── Change password ──────────────────────────────────────────────────── #}
+  <div class="card">
+    <div class="card-header fw-semibold"><i class="bi bi-key me-2"></i>เปลี่ยนรหัสผ่าน</div>
+    <div class="card-body">
+      {% if impersonating %}
+        <div class="text-muted mb-0"><i class="bi bi-info-circle me-2"></i>อยู่ในโหมดจำลองผู้ใช้ — ไม่สามารถเปลี่ยนรหัสผ่านได้</div>
+      {% else %}
+      <form method="post" action="{{ url_for('me.change_password') }}" autocomplete="off" style="max-width:420px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="mb-3">
+          <label class="form-label">รหัสผ่านปัจจุบัน</label>
+          <input type="password" name="current_password" class="form-control" required autocomplete="current-password">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">รหัสผ่านใหม่</label>
+          <input type="password" name="new_password" class="form-control" required minlength="6" autocomplete="new-password">
+          <div class="form-text">อย่างน้อย 6 ตัวอักษร</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">ยืนยันรหัสผ่านใหม่</label>
+          <input type="password" name="confirm_password" class="form-control" required minlength="6" autocomplete="new-password">
+        </div>
+        <button type="submit" class="btn btn-primary">บันทึกรหัสผ่านใหม่</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Locked out? (admin-driven reset) ─────────────────────────────────── #}
+  <div class="alert alert-light border small mb-0">
+    <i class="bi bi-question-circle me-2"></i>ลืมรหัสผ่านจนเข้าไม่ได้? ติดต่อผู้ดูแลระบบ (พุธ) ทาง LINE เพื่อรีเซ็ตรหัสผ่าน
+  </div>
+
+</div>
+{% endblock %}

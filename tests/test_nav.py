@@ -66,16 +66,16 @@ def test_nav_endpoints_in_endpoint_module():
 
 # ── test 5: role filtering ────────────────────────────────────────────────────
 
-def test_general_drawer_is_only_of_chan_and_app():
+def test_general_drawer_is_only_of_chan_settings_and_app():
     """general's flat drawer (nav_sections('general'), module=None) must be
-    EXACTLY ของฉัน (leave/payslip) + แอป's help_install — nothing that would
-    bounce back to stock search. mobile.sales_trip is the one link excluded
-    from แอป for general specifically (roles_exclude), matching
-    access_control._GENERAL_ALLOWED."""
+    EXACTLY ของฉัน (leave/payslip) + ตั้งค่า (บัญชีของฉัน — self-service account)
+    + แอป's help_install — nothing that would bounce back to stock search.
+    mobile.sales_trip is the one link excluded from แอป for general specifically
+    (roles_exclude), matching access_control._GENERAL_ALLOWED."""
     eps = {link['ep'] for section in nav_sections('general') for link in section['links']}
     allowed = _GENERAL_ALLOWED | {'help_install'}
     assert eps <= allowed, f"general drawer leaks dead links: {eps - allowed}"
-    assert eps == {'me.leave', 'me.payslip_list', 'help_install'}
+    assert eps == {'me.leave', 'me.payslip_list', 'me.account', 'help_install'}
 
 
 def test_finance_hidden_from_staff():

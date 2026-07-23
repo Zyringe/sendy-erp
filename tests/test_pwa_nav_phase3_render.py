@@ -97,12 +97,13 @@ def test_drawer_href_set_matches_nav_sections(tmp_db, role, landing):
     assert got == expected, (role, 'extra=', got - expected, 'missing=', expected - got)
 
 
-def test_general_drawer_render_is_only_3_links(tmp_db):
+def test_general_drawer_render_is_only_4_links(tmp_db):
+    # ของฉัน (ลาของฉัน, สลิป) + ตั้งค่า (บัญชีของฉัน — self-service account) + แอป (ติดตั้งแอป).
     from app import app as flask_app
     flask_app.config['TESTING'] = True
     html = _client('general').get('/m/stock').get_data(as_text=True)
     hrefs = _hrefs(_drawer_block(html))
-    assert len(hrefs) == 3, hrefs
+    assert len(hrefs) == 4, hrefs
     # mobile.sales_trip must never leak in for general (it bounces).
     from flask import url_for
     with flask_app.test_request_context('/'):
