@@ -298,3 +298,113 @@ def test_product_detail_shows_buildable(admin_client, tmp_db):
     resp = admin_client.get(f'/products/{target}')
     assert resp.status_code == 200, resp.data[:500]
     assert 'แกะ/แพ็คเพิ่มได้'.encode() in resp.data
+
+
+# ── Phase-2 UI: ทุนซื้อล่าสุด + margin-vs-last-cost flag (2026-07-24) ──────────
+
+def _pid_with_purchase_event(tmp_db) -> int:
+    row = sqlite3.connect(tmp_db).execute(
+        "SELECT product_id FROM product_cost_ledger WHERE event_type='PURCHASE'"
+        " ORDER BY product_id LIMIT 1"
+    ).fetchone()
+    if row is None:
+        pytest.skip("No PURCHASE events in live DB clone")
+    return row[0]
+
+
+def test_cost_history_last_purchase_matches_ledger(admin_client, tmp_db):
+    """last_purchase must be the latest PURCHASE event — verified against an
+    independent ledger query, not the endpoint's own ordering."""
+    pid = _pid_with_purchase_event(tmp_db)
+    resp = admin_client.get(f'/products/{pid}/cost-history')
+    assert resp.status_code == 200, resp.data[:500]
+    lp = resp.get_json()['last_purchase']
+    assert lp is not None
+    assert lp['event_type'] == 'PURCHASE'
+    want = sqlite3.connect(tmp_db).execute(
+        "SELECT unit_cost, event_date FROM product_cost_ledger"
+        " WHERE product_id=? AND event_type='PURCHASE'"
+        " ORDER BY event_date DESC, id DESC LIMIT 1", (pid,)
+    ).fetchone()
+    assert lp['unit_cost'] == pytest.approx(want[0])
+    assert lp['event_date'] == want[1]
+
+
+def test_cost_history_last_purchase_none_without_purchases(admin_client, tmp_db):
+    """A product with no purchase history reports last_purchase = None
+    (the UI renders '–' for the 258/700-style coverage gap)."""
+    row = sqlite3.connect(tmp_db).execute(
+        "SELECT p.id FROM products p WHERE p.is_active = 1"
+        " AND NOT EXISTS (SELECT 1 FROM product_cost_ledger l"
+        "                 WHERE l.product_id = p.id AND l.event_type = 'PURCHASE')"
+        " AND NOT EXISTS (SELECT 1 FROM purchase_transactions pt"
+        "                 WHERE pt.product_id = p.id)"
+        " ORDER BY p.id LIMIT 1"
+    ).fetchone()
+    if row is None:
+        pytest.skip("Every product has purchase history in live DB clone")
+    resp = admin_client.get(f'/products/{row[0]}/cost-history')
+    assert resp.status_code == 200, resp.data[:500]
+    assert resp.get_json()['last_purchase'] is None
+
+
+def test_detail_last_cost_row_gated_by_role(admin_client, tmp_db):
+    """Manager sees the ทุนซื้อล่าสุด row; staff must NOT (cost leak via the
+    margin flag would let staff derive cost from base_sell). The neutral VAT
+    tooltip on ราคาขายปกติ ships to everyone."""
+    pid = _first_active_product_id(tmp_db)
+    resp = admin_client.get(f'/products/{pid}')
+    assert resp.status_code == 200, resp.data[:500]
+    html = resp.data.decode('utf-8')
+    assert 'last-cost-display' in html
+    assert 'ทุนซื้อล่าสุด' in html
+    assert 'ทั้งรับและไม่รับ VAT' in html
+
+    from app import app as flask_app
+    staff = flask_app.test_client()
+    with staff.session_transaction() as sess:
+        sess['user_id']  = 2
+        sess['username'] = 'test-staff'
+        sess['role']     = 'staff'
+    sresp = staff.get(f'/products/{pid}')
+    assert sresp.status_code == 200, sresp.data[:500]
+    shtml = sresp.data.decode('utf-8')
+    # The row itself is is_manager-gated. (The 'last-cost-display' string still
+    # appears in the shared JS block for staff — data-free, and the cost-history
+    # endpoint 403s staff, matching the page's existing WACC-JS pattern.)
+    assert 'ทุนซื้อล่าสุด' not in shtml
+    assert 'ทั้งรับและไม่รับ VAT' in shtml
+
+
+@pytest.fixture
+def staff_client(tmp_db):
+    """Same session-injection pattern as admin_client but role=staff."""
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id']  = 2
+        sess['username'] = 'test-staff'
+        sess['role']     = 'staff'
+    return c
+
+
+def test_last_cost_hidden_from_staff(staff_client, tmp_db):
+    """Cost surfaces must not leak to staff: no ทุนซื้อล่าสุด row on detail
+    (margin flag + base_sell would let staff derive cost) and the
+    cost-history endpoint 403s outright."""
+    pid = _first_active_product_id(tmp_db)
+    resp = staff_client.get(f'/products/{pid}')
+    assert resp.status_code == 200, resp.data[:500]
+    html = resp.data.decode('utf-8')
+    # the JS helper text ships to everyone; the leak surface is the RENDERED row —
+    # assert on its markup, not on strings that also appear in script source
+    assert 'id="last-cost-display"' not in html
+    assert '<td class="text-subtle">ทุนซื้อล่าสุด</td>' not in html
+    assert staff_client.get(f'/products/{pid}/cost-history').status_code == 403
+
+
+def test_products_list_price_header_tooltip(admin_client, tmp_db):
+    resp = admin_client.get('/products')
+    assert resp.status_code == 200, resp.data[:500]
+    assert 'ลูกค้าจ่ายเท่านี้ทั้งรับและไม่รับ VAT'.encode() in resp.data
