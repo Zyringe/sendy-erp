@@ -241,9 +241,18 @@
                 </span>
               </td>
             </tr>
+            <tr>
+              <td class="text-subtle">ทุนซื้อล่าสุด</td>
+              <td class="fw-500">
+                <span id="last-cost-display" data-base-sell="{{ product.base_sell_price or 0 }}">…</span>
+              </td>
+            </tr>
             {% endif %}
             <tr>
-              <td class="text-subtle">ราคาขายปกติ</td>
+              <td class="text-subtle">ราคาขายปกติ
+                <i class="bi bi-info-circle text-muted" style="font-size:11px"
+                   title="ราคาที่ลูกค้าจ่ายจริง เท่ากันทั้งรับและไม่รับ VAT (บิล VAT แยกภาษีในบิล ไม่บวกเพิ่มจากราคานี้)"></i>
+              </td>
               <td class="fw-500">
                 {% if product.base_sell_price and product.base_sell_price > 0 %}
                   ฿{{ product.base_sell_price | fmt_price }}
@@ -874,12 +883,41 @@ document.getElementById('locationModal')?.addEventListener('shown.bs.modal', () 
       </tr>`).join('');
   }
 
+  // Last-purchase-cost row + margin-vs-last-cost flag. Flag compares base_sell
+  // to the LAST PURCHASE cost (not WACC): a WACC flag self-clears after a restock
+  // while the sell price is still below what the newest bill costs.
+  function renderLastCost(lp) {
+    const el = document.getElementById('last-cost-display');
+    if (!el) return;
+    if (!lp) { el.textContent = '–'; el.classList.add('text-subtle'); return; }
+    const baseSell = parseFloat(el.dataset.baseSell || '0');
+    let html = `฿${fmt(lp.unit_cost)}` +
+      ` <span class="text-muted" style="font-size:12px">(${thaiDate(lp.event_date)}` +
+      `${lp.reference_no ? ' · ' + lp.reference_no : ''})</span>`;
+    if (baseSell > 0 && lp.unit_cost > 0) {
+      const margin = (baseSell - lp.unit_cost) / baseSell * 100;
+      if (margin <= 0) {
+        html += ` <span class="badge badge-danger ms-1">ต่ำกว่าทุนล่าสุด</span>`;
+      } else if (margin < 10) {
+        // 10% = own-brand discount floor (quoting rule); below it the list price
+        // can't absorb the standard discount against the newest bill cost.
+        html += ` <span class="badge badge-warning ms-1">margin บาง ${fmt(margin)}%</span>`;
+      } else {
+        html += ` <span class="text-muted ms-1" style="font-size:12px">margin ${fmt(margin)}%</span>`;
+      }
+    }
+    // simplify: tier-only products (base_sell = 0) get no flag; upgrade path =
+    // compare each price tier ÷ pack ratio if Put wants tier coverage later.
+    el.innerHTML = html;
+  }
+
   async function loadWacc(forceModal) {
     try {
       const res = await fetch(`/products/${productId}/cost-history`);
       const data = await res.json();
       historyCache = data;
       waccValue.textContent = `฿${fmt(data.wacc)}`;
+      renderLastCost(data.last_purchase);
       if (forceModal) renderHistory(data);
     } catch (e) {
       waccValue.textContent = 'ข้อผิดพลาด';

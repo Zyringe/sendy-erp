@@ -402,7 +402,13 @@ def product_cost_history(product_id):
         abort(403)
     history = models.get_cost_history(product_id)
     current_wacc = history[-1]['wacc_after'] if history else 0.0
-    return jsonify({'wacc': current_wacc, 'history': history})
+    # ทุนซื้อล่าสุด: latest real PURCHASE event (history is ordered by event_date, id).
+    # Deliberately NOT the WACC — a margin flag vs WACC self-clears after a restock,
+    # while last purchase cost keeps flagging a sell price the next bill outgrew.
+    purchases = [h for h in history if h['event_type'] == 'PURCHASE']
+    last_purchase = purchases[-1] if purchases else None
+    return jsonify({'wacc': current_wacc, 'history': history,
+                    'last_purchase': last_purchase})
 
 
 @bp_products.route('/products/<int:product_id>/pricing')
