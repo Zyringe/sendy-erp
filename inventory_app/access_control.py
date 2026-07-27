@@ -70,7 +70,7 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'partners.customer_geocode',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
     'products.product_packaging_save',
-    'bsn.mapping_suggestion_approve',
+    'bsn.mapping_suggestion_approve', 'bsn.mapping_split_save',
     'products.photos_review_assign', 'products.photos_review_delete',
     # Acknowledging a billed≠payout discrepancy is a manager+ action (not staff).
     'marketplace.review_amount',
@@ -375,6 +375,7 @@ _ENDPOINT_MODULE = {
     'bsn.mapping_save': 'data',
     'bsn.mapping_suggest': 'data',
     'bsn.mapping_suggestion_approve': 'data',
+    'bsn.mapping_split_save': 'data',
     'bsn.unit_conversions': 'data',
     'bsn.unit_conversions_save': 'data',
     'bsn.unit_conversions_edit': 'data',

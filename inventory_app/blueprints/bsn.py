@@ -35,6 +35,16 @@ def import_weekly():
 
 # ── Unit Conversions ──────────────────────────────────────────────────────────
 
+def _flash_unit_hazard(b):
+    if b['kind'] == 'pair':
+        flash(f'"{b["product_name"]}" หน่วย {b["bsn_unit"]}: ห้ามตั้ง ratio ข้ามหน่วย — '
+              f'บิลหน่วยนี้ต้อง map ไปที่ "{b["partner_name"]}" '
+              f'(ใช้ "แยก mapping ตามหน่วย" ในหน้า mapping)', 'danger')
+    else:  # pack_piece
+        flash(f'"{b["product_name"]}" หน่วย {b["bsn_unit"]}: สินค้าสต็อกเป็น{b["product_unit"]} '
+              f'บันทึกได้เฉพาะ ratio 1 (ขายทั้ง{b["product_unit"]} แต่บิลเขียนหน่วยต่าง) — '
+              f'ถ้าขายแกะเป็นชิ้นจริง ต้องแยก mapping/สร้าง SKU ชิ้น', 'danger')
+
 @bp_bsn.route('/unit-conversions')
 def unit_conversions():
     search = request.args.get('q', '').strip()
@@ -85,12 +95,15 @@ def unit_conversions_save():
                 except (ValueError, IndexError):
                     pass
     if items:
-        models.save_unit_conversions(items)
-        msg = f'บันทึกการแปลงหน่วย {len(items)} รายการเรียบร้อย'
-        if learned:
-            msg += (f'  |  เรียนรู้หน่วยใหม่ {len(learned)} ตัว '
-                    f'(จำไว้ใช้ครั้งต่อไป)')
-        flash(msg, 'success')
+        result = models.save_unit_conversions(items)
+        if result['saved']:
+            msg = f'บันทึกการแปลงหน่วย {result["saved"]} รายการเรียบร้อย'
+            if learned:
+                msg += (f'  |  เรียนรู้หน่วยใหม่ {len(learned)} ตัว '
+                        f'(จำไว้ใช้ครั้งต่อไป)')
+            flash(msg, 'success')
+        for b in result['blocked']:
+            _flash_unit_hazard(b)
     return redirect(url_for('bsn.unit_conversions'))
 
 
@@ -100,8 +113,11 @@ def unit_conversions_edit():
     bsn_unit   = request.form.get('bsn_unit', '').strip()
     new_ratio  = request.form.get('ratio', type=float)
     if product_id and bsn_unit and new_ratio and new_ratio > 0:
-        models.update_unit_conversion_ratio(product_id, bsn_unit, new_ratio)
-        flash(f'อัปเดต ratio สำหรับ {bsn_unit} เรียบร้อย (re-sync แล้ว)', 'success')
+        result = models.update_unit_conversion_ratio(product_id, bsn_unit, new_ratio)
+        if 'blocked' in result:
+            _flash_unit_hazard(result['blocked'])
+        else:
+            flash(f'อัปเดต ratio สำหรับ {bsn_unit} เรียบร้อย (re-sync แล้ว)', 'success')
     return redirect(url_for('bsn.unit_conversions'))
 
 
@@ -156,6 +172,7 @@ def mapping():
         'mapping.html',
         pending=pending,
         pending_suggestions=pending_suggestions,
+        pending_splits=models.get_pending_split_mappings(),
         all_products=all_products,
         brands=brands,
         color_codes=color_codes,
@@ -254,6 +271,31 @@ def mapping_save():
     pending_sugg = models.count_pending_suggestions()
     return jsonify({'ok': True, 'pending_left': pending_left,
                     'pending_suggestions': pending_sugg})
+
+
+@bp_bsn.route('/mapping/split-save', methods=['POST'])
+def mapping_split_save():
+    """Repoint one unit-slice of a BSN code (the /mapping split-section row)
+    onto a different product — the fix for a cross_unit_hazard-blocked row
+    that /unit-conversions can't resolve with a ratio."""
+    if session.get('role') not in ('admin', 'manager'):
+        abort(403)
+    bsn_code = (request.form.get('bsn_code') or '').strip()
+    bsn_unit = (request.form.get('bsn_unit') or '').strip()
+    product_id = request.form.get('product_id', type=int)
+    conn = get_connection()
+    product = (conn.execute("SELECT 1 FROM products WHERE id=?", (product_id,)).fetchone()
+               if product_id else None)
+    conn.close()
+    if not bsn_code or not bsn_unit or not product:
+        flash('ข้อมูลไม่ครบ — เลือกสินค้าปลายทางก่อนบันทึก', 'danger')
+        return redirect(url_for('bsn.mapping') + '#split-section')
+    report = models.repoint_bsn_code(None, bsn_code, product_id, bsn_unit=bsn_unit)
+    moved = report['rows_moved']['sales'] + report['rows_moved']['purchase']
+    flash(f'ย้ายบิลหน่วย "{bsn_unit}" ของรหัส {bsn_code} ไปสินค้าใหม่แล้ว ({moved} แถว)', 'success')
+    if report['orphan_rows_after'] != 0:
+        flash(f'⚠ พบ ledger orphan {report["orphan_rows_after"]} แถวหลังย้าย — ตรวจสอบด้วย', 'danger')
+    return redirect(url_for('bsn.mapping') + '#split-section')
 
 
 @bp_bsn.route('/mapping/suggestions/<int:sid>/approve', methods=['POST'])

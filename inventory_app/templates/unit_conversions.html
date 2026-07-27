@@ -82,6 +82,25 @@
             <td class="text-center"><span class="badge badge-info">{{ p.unit_type }}</span></td>
             <td class="text-center text-subtle">{{ p.row_count }}</td>
             <td class="text-center">
+              {% if p.hazard and p.hazard.kind == 'pair' %}
+              <div class="text-danger small">
+                ห้ามตั้ง ratio ข้ามหน่วย — ต้อง map ไปที่ "{{ p.hazard.partner_name }}"<br>
+                <a href="{{ url_for('bsn.mapping') }}#split-section">แยก mapping ตามหน่วย</a>
+              </div>
+              {% elif p.hazard and p.hazard.kind == 'pack_piece' %}
+              <div class="input-group input-group-sm justify-content-center" style="max-width:170px;margin:auto">
+                <span class="input-group-text">1
+                  {%- if p.is_acronym %} หน่วยเต็ม{% else %} {{ p.bsn_unit }}{% endif %} =</span>
+                <input type="number" step="0.01" min="0.01"
+                       name="ratio_{{ p.product_id }}_{{ p.bsn_unit }}"
+                       class="form-control text-center" value="1" readonly>
+                <span class="input-group-text">{{ p.unit_type }}</span>
+              </div>
+              <div class="text-warning small mt-1">
+                ratio 1 = ขายทั้ง{{ p.unit_type }} (บิลแค่เขียนหน่วยต่าง) —
+                ถ้าขายแกะจริง ใช้ <a href="{{ url_for('bsn.mapping') }}#split-section">แยก mapping ตามหน่วย</a>
+              </div>
+              {% else %}
               <div class="input-group input-group-sm justify-content-center" style="max-width:170px;margin:auto">
                 <span class="input-group-text">1
                   {%- if p.is_acronym %} หน่วยเต็ม{% else %} {{ p.bsn_unit }}{% endif %} =</span>
@@ -90,6 +109,7 @@
                        class="form-control text-center" value="1" required>
                 <span class="input-group-text">{{ p.unit_type }}</span>
               </div>
+              {% endif %}
             </td>
             <td class="text-center">
               <button type="submit"

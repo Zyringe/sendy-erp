@@ -12,6 +12,79 @@ import bsn_units
 
 from .wacc import recalculate_product_wacc
 
+# Unit classes for the pack/loose guard (decisions/log.md 2026-07-26/27):
+# a bill in a piece unit must never deduct a pack-stocked SKU fractionally,
+# and a product with an active pack/unpack pair must never get a cross-unit
+# ratio in either direction — split mapping is the fix there.
+_PIECE_UNITS = frozenset(('ตัว', 'อัน', 'ชิ้น'))
+_PACK_UNITS = frozenset(('แผง', 'แพ็ค'))
+
+
+def cross_unit_hazard(conn, product_id, bsn_unit):
+    """None when (product, bsn_unit) may take a unit_conversions ratio.
+    {'kind': 'pair', 'partner_id', 'partner_name', 'partner_unit'} when the
+    product has an active [แพ็ค]/[แกะ] pair whose partner's unit_type equals
+    the (normalized) bsn_unit — ANY ratio is forbidden, map the unit to the
+    partner SKU instead.
+    {'kind': 'pack_piece', 'product_unit'} when bsn_unit is a piece unit and
+    the product's unit_type is a pack unit with NO such pair — only ratio 1
+    (unit alias) is allowed; a real loose sale needs a loose SKU + split
+    mapping."""
+    norm = bsn_units.normalize_unit(bsn_unit) or ''
+    product = conn.execute(
+        "SELECT product_name, unit_type FROM products WHERE id = ?", (product_id,)
+    ).fetchone()
+    if product is None or norm == (product['unit_type'] or '').strip():
+        return None
+
+    # Pair check, both directions: product as the OUTPUT of a pack/unpack
+    # half (partner = its single input) and product as the (single) INPUT
+    # of a pack/unpack half (partner = that half's output).
+    partner_ids = set()
+    for f in conn.execute("""
+        SELECT id FROM conversion_formulas
+         WHERE is_active = 1 AND output_product_id = ?
+           AND (name LIKE '[แพ็ค]%' OR name LIKE '[แกะ]%')
+    """, (product_id,)).fetchall():
+        ins = conn.execute(
+            "SELECT product_id FROM conversion_formula_inputs WHERE formula_id = ?",
+            (f['id'],)).fetchall()
+        if len(ins) == 1:
+            partner_ids.add(ins[0]['product_id'])
+    for f in conn.execute("""
+        SELECT cf.id, cf.output_product_id
+          FROM conversion_formulas cf
+          JOIN conversion_formula_inputs cfi ON cfi.formula_id = cf.id
+         WHERE cf.is_active = 1 AND cfi.product_id = ?
+           AND (cf.name LIKE '[แพ็ค]%' OR cf.name LIKE '[แกะ]%')
+    """, (product_id,)).fetchall():
+        ins = conn.execute(
+            "SELECT product_id FROM conversion_formula_inputs WHERE formula_id = ?",
+            (f['id'],)).fetchall()
+        if len(ins) == 1:
+            partner_ids.add(f['output_product_id'])
+
+    for pid in sorted(partner_ids):
+        partner = conn.execute(
+            "SELECT product_name, unit_type FROM products WHERE id = ?", (pid,)
+        ).fetchone()
+        if partner and (partner['unit_type'] or '').strip() == norm:
+            return {'kind': 'pair', 'partner_id': pid,
+                    'partner_name': partner['product_name'],
+                    'partner_unit': partner['unit_type']}
+
+    if norm in _PIECE_UNITS and (product['unit_type'] or '').strip() in _PACK_UNITS:
+        return {'kind': 'pack_piece', 'product_unit': product['unit_type']}
+
+    return None
+
+
+def _product_name(conn, product_id):
+    row = conn.execute(
+        "SELECT product_name FROM products WHERE id = ?", (product_id,)
+    ).fetchone()
+    return row['product_name'] if row else None
+
 
 def to_base_units(quantity: int, mode: str, product) -> int:
     if mode == 'carton':
@@ -225,14 +298,15 @@ def get_pending_unit_conversions(search=None):
         params += [f"%{search}%", f"%{search}%"]
     sql += " GROUP BY t.product_id, t.bsn_unit ORDER BY p.product_name"
     rows = conn.execute(sql, params).fetchall()
-    conn.close()
     # Flag rows whose bsn_unit is still an UNKNOWN acronym (import already
     # normalises known ones) so the UI can ask Put for the full unit name.
     out = []
     for r in rows:
         d = dict(r)
         d['is_acronym'] = not bsn_units.is_known(d['bsn_unit'])
+        d['hazard'] = cross_unit_hazard(conn, d['product_id'], d['bsn_unit'])
         out.append(d)
+    conn.close()
     return out
 
 
@@ -253,17 +327,28 @@ def learn_acronyms_normalize(pairs: dict):
 
 def save_unit_conversions(items: list):
     conn = get_connection()
+    saved = 0
+    blocked = []
     for item in items:
+        hazard = cross_unit_hazard(conn, item['product_id'], item['bsn_unit'])
+        if hazard is not None and (hazard['kind'] == 'pair' or float(item['ratio']) != 1):
+            blocked.append(dict(hazard, product_id=item['product_id'],
+                                 bsn_unit=item['bsn_unit'],
+                                 product_name=_product_name(conn, item['product_id'])))
+            continue
         conn.execute("""
             INSERT INTO unit_conversions (product_id, bsn_unit, ratio)
             VALUES (?, ?, ?)
             ON CONFLICT(product_id, bsn_unit) DO UPDATE SET ratio = excluded.ratio
         """, (item['product_id'], item['bsn_unit'], item['ratio']))
+        saved += 1
     # After saving, re-run sync for both tables
-    _sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
-    _sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
+    if saved:
+        _sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
+        _sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
     conn.commit()
     conn.close()
+    return {'saved': saved, 'blocked': blocked}
 
 
 def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str) -> int:
@@ -286,6 +371,13 @@ def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str) -> int:
 def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
     """อัปเดต ratio ที่มีอยู่แล้ว แล้ว re-sync BSN transactions ที่เกี่ยวข้อง"""
     conn = get_connection()
+
+    hazard = cross_unit_hazard(conn, product_id, bsn_unit)
+    if hazard is not None and (hazard['kind'] == 'pair' or float(new_ratio) != 1):
+        blocked = dict(hazard, product_id=product_id, bsn_unit=bsn_unit,
+                       product_name=_product_name(conn, product_id))
+        conn.close()
+        return {'blocked': blocked}
 
     # Update ratio
     conn.execute("""
@@ -333,6 +425,7 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
     recalculate_product_wacc(product_id)
 
     conn.close()
+    return {'ok': True}
 
 
 def get_all_unit_conversions(search=None, page=1, per_page=50):
@@ -382,8 +475,12 @@ def upsert_unit_conversion(product_id: int, bsn_unit: str, ratio: float):
     """Set unit_conversion ratio for a (product, bsn_unit) pair.
     UNIQUE constraint on (product_id, bsn_unit) ensures upsert semantics."""
     if not bsn_unit or not ratio or float(ratio) <= 0:
-        return
+        return False
     conn = get_connection()
+    hazard = cross_unit_hazard(conn, product_id, bsn_unit)
+    if hazard is not None and (hazard['kind'] == 'pair' or float(ratio) != 1):
+        conn.close()
+        return False
     conn.execute("""
         INSERT INTO unit_conversions (product_id, bsn_unit, ratio)
         VALUES (?, ?, ?)
@@ -392,3 +489,4 @@ def upsert_unit_conversion(product_id: int, bsn_unit: str, ratio: float):
     """, (product_id, bsn_unit, float(ratio)))
     conn.commit()
     conn.close()
+    return True

@@ -234,6 +234,65 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
 {% else %}
 {# ── Tab 1: Pending mappings — Suggest button only (old dropdown removed) #}
 
+{% if pending_splits %}
+<div class="card mb-4" id="split-section">
+  <div class="card-header">
+    <span class="fw-600">แยก mapping ตามหน่วย</span>
+  </div>
+  <div class="card-body py-2 small text-subtle">
+    บิลหน่วยนี้ตกไปเกาะสินค้าที่หน่วยไม่ตรง — เลือกสินค้าปลายทางของ "หน่วยนี้" แล้วระบบจะย้ายบิล + ledger ให้
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0 table-sm">
+      <thead>
+        <tr>
+          <th>รหัส BSN</th>
+          <th class="text-center">หน่วย</th>
+          <th>สินค้าปัจจุบัน (ผิด)</th>
+          <th class="text-center">จำนวนแถว</th>
+          <th>ตัวอย่างเอกสาร</th>
+          <th>เลือกสินค้าปลายทาง</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in pending_splits %}
+        {% set frm = 'split-form-' ~ loop.index %}
+        <form id="{{ frm }}" method="post" action="{{ url_for('bsn.mapping_split_save') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="bsn_code" value="{{ row.bsn_code }}">
+          <input type="hidden" name="bsn_unit" value="{{ row.bsn_unit }}">
+        </form>
+        <tr>
+          <td><span class="badge badge-gray font-mono">{{ row.bsn_code }}</span></td>
+          <td class="text-center"><span class="badge badge-warning font-mono">{{ row.bsn_unit }}</span></td>
+          <td class="small">{{ row.product_name }} ({{ row.unit_type }})</td>
+          <td class="text-center">{{ row.row_count }}</td>
+          <td class="small font-mono">{{ row.example_doc }}</td>
+          <td>
+            <select form="{{ frm }}" name="product_id" class="form-select form-select-sm">
+              {% for ap in all_products %}
+              <option value="{{ ap.id }}"
+                {% if row.hazard.kind == 'pair' and ap.id == row.hazard.partner_id %}selected{% endif %}>
+                {{ ap.id }} — {{ ap.product_name }} ({{ ap.unit_type }})
+              </option>
+              {% endfor %}
+            </select>
+          </td>
+          <td>
+            <button type="submit" form="{{ frm }}" class="btn btn-sm btn-primary"
+                    onclick="return confirm('ย้ายบิลหน่วยนี้ไปสินค้าที่เลือก? ระบบจะ rebuild ledger และ WACC ของสินค้าที่เกี่ยวข้อง')">
+              บันทึก
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 {% if not pending %}
 <div class="card">
   <div class="card-body text-center py-5">
