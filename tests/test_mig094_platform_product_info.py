@@ -94,7 +94,14 @@ def test_platform_products_columns(tmp_db):
 
 
 def test_platform_check_constraint(tmp_db):
-    """platform restricted to shopee/lazada."""
+    """platform restricted to the known set.
+
+    'tiktok' moved from the invalid probe to a valid-platform assertion in
+    migration 140 (2026-07-27, ecommerce-revamp Phase 1), which widened this
+    CHECK schema-wide — `_apply_094` no-ops on a live-clone tmp_db that
+    already has `platform_products` (which it does, post-140), so this test
+    exercises the ACTUAL current constraint, not migration 094's original
+    2-value one. 'ebay' is the still-genuinely-invalid probe."""
     conn = sqlite3.connect(tmp_db)
     _apply_094(conn)
 
@@ -103,12 +110,14 @@ def test_platform_check_constraint(tmp_db):
                  "VALUES ('shopee', 'S1')")
     conn.execute("INSERT INTO platform_products(platform, product_id_str) "
                  "VALUES ('lazada', 'L1')")
+    conn.execute("INSERT INTO platform_products(platform, product_id_str) "
+                 "VALUES ('tiktok', 'T1')")
     conn.commit()
 
     # invalid platform rejected
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("INSERT INTO platform_products(platform, product_id_str) "
-                     "VALUES ('tiktok', 'T1')")
+                     "VALUES ('ebay', 'E1')")
         conn.commit()
     conn.rollback()
     conn.close()
