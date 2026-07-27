@@ -22,7 +22,8 @@ import models
 from parse_platform import (parse_shopee, parse_lazada, export_shopee, export_lazada,
                             export_mapping, parse_mapping,
                             parse_shopee_orders, parse_lazada_orders,
-                            export_listing_mapping, parse_listing_mapping)
+                            export_listing_mapping, parse_listing_mapping,
+                            parse_shopee_basic_info, parse_lazada_basic_info)
 
 bp_ecommerce = Blueprint('ecommerce', __name__)
 
@@ -100,6 +101,47 @@ def ecommerce_import():
         flash(f'เกิดข้อผิดพลาด: {e}', 'danger')
 
     return redirect(url_for('ecommerce.ecommerce', tab=platform))
+
+
+@bp_ecommerce.route('/ecommerce/import-info', methods=['POST'])
+def ecommerce_import_info():
+    """Import item-grain 'basic info' exports (description/status/warranty)
+    into platform_products. Platform is detected PER FILE by filename, not
+    by a form field, so a batch of mixed Shopee+Lazada basic-info files can
+    be dropped in one multi-file upload."""
+    files = request.files.getlist('info_files')
+    if not files or not any(f.filename for f in files):
+        flash('กรุณาเลือกไฟล์ .xlsx', 'danger')
+        return redirect(url_for('ecommerce.ecommerce'))
+
+    last_platform = 'shopee'
+    for f in files:
+        if not f.filename:
+            continue
+        fname = f.filename.lower()
+        file_bytes = io.BytesIO(f.read())
+        try:
+            if 'mass_update_basic_info' in fname:
+                platform = 'shopee'
+                records = parse_shopee_basic_info(file_bytes)
+            elif fname.startswith('basic') and fname.endswith('.xlsx'):
+                platform = 'lazada'
+                records = parse_lazada_basic_info(file_bytes)
+            else:
+                flash(f'ข้าม {f.filename} — ไม่ตรงรูปแบบไฟล์ basic info ที่รองรับ', 'warning')
+                continue
+
+            if not records:
+                flash(f'{f.filename}: ไม่พบข้อมูลในไฟล์', 'warning')
+                continue
+
+            count = models.import_platform_products(platform, records)
+            last_platform = platform
+            flash(f'{f.filename}: นำเข้า {count} รายการ ({platform})', 'success')
+        except Exception as e:
+            flash(f'{f.filename}: เกิดข้อผิดพลาด: {e}', 'danger')
+
+    return redirect(url_for('ecommerce.ecommerce', tab=last_platform))
 
 
 @bp_ecommerce.route('/ecommerce/export/<platform>')

@@ -621,6 +621,70 @@ def parse_lazada_product_files(folder):
     return product_records, variation_records
 
 
+# ── Single-file basic-info parsers (item grain, refresh description/status) ──
+
+def parse_shopee_basic_info(file_obj):
+    """
+    Parse a single Shopee 'mass_update_basic_info_*.xlsx' export (item grain).
+    Reuses `_read_shopee_file` — the module-level Pane.activePane monkeypatch
+    above already handles this exporter's non-standard sheetViews value
+    (verified against every real basic_info file on record, 2026-07-27).
+
+    Returns list of dicts for platform_products: product_id_str, parent_sku,
+    product_name, description, raw_json. No image/status/warranty columns —
+    this file doesn't carry them (platform_products COALESCEs those in on
+    upsert, so a basic-info-only import never wipes them).
+    """
+    df = _read_shopee_file(file_obj)
+    records = []
+    for _, row in df.iterrows():
+        raw = {k: (None if pd.isna(v) else v) for k, v in row.items()}
+        records.append({
+            'product_id_str': raw.get('รหัสสินค้า'),
+            'parent_sku':     raw.get('Parent SKU'),
+            'product_name':   raw.get('ชื่อสินค้า') or '',
+            'description':    raw.get('รายละเอียดสินค้า'),
+            'raw_json':       json.dumps(raw, ensure_ascii=False),
+        })
+    return records
+
+
+def parse_lazada_basic_info(file_obj):
+    """
+    Parse a single Lazada 'basic*.xlsx' product export (item grain, sheet
+    'template'). Reuses `_read_lazada_file` — header row 0, the 3 help/
+    instruction rows are dropped by its existing all-digits Product ID filter.
+
+    Returns list of dicts for platform_products: product_id_str,
+    product_name, name_en, description, warranty_policy, warranty_period,
+    status, cover_image_url, image_urls (JSON array, always set — this file
+    does carry รูปภาพสินค้า1..8, so an empty gallery here is a real "no
+    images" state, not an absent field), raw_json.
+    """
+    df = _read_lazada_file(file_obj)
+    records = []
+    for _, row in df.iterrows():
+        raw = {k: (None if pd.isna(v) else str(v)) for k, v in row.items()}
+        gallery = []
+        for i in range(1, 9):
+            v = raw.get(f'รูปภาพสินค้า{i}')
+            if v and v.startswith('http'):
+                gallery.append(v)
+        records.append({
+            'product_id_str':  raw.get('Product ID'),
+            'product_name':    raw.get('ชื่อสินค้า') or '',
+            'name_en':         raw.get('ชื่อสินค้าใน En'),
+            'description':     raw.get('คำอธิบายหลัก'),
+            'warranty_policy': raw.get('เงื่อนไขการรับประกัน'),
+            'warranty_period': raw.get('ระยะเวลาการรับประกัน'),
+            'status':          raw.get('สถานะสินค้า'),
+            'cover_image_url': gallery[0] if gallery else None,
+            'image_urls':      json.dumps(gallery, ensure_ascii=False),
+            'raw_json':        json.dumps(raw, ensure_ascii=False),
+        })
+    return records
+
+
 def export_lazada(rows):
     """
     Generate Lazada Price/Stock update xlsx (BytesIO).

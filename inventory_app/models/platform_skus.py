@@ -84,8 +84,15 @@ def import_platform_skus(platform, records):
 def import_platform_products(platform, records):
     """Upsert product-grain records into platform_products.
 
-    Keyed on (platform, product_id_str). All columns overwrite on conflict
-    (no internal mapping to preserve at the product grain — spec §3.2).
+    Keyed on (platform, product_id_str). Most columns overwrite on conflict
+    (no internal mapping to preserve at the product grain — spec §3.2), but
+    `status` and `image_urls` COALESCE onto the existing value when the
+    record omits the key (r.get returns None) — a single-file basic-info-only
+    import (ecommerce-revamp Phase 2, e.g. Shopee mass_update_basic_info,
+    which never carries image data) must not wipe fields a fuller multi-file
+    import previously populated. A record that DOES explicitly parse an empty
+    gallery (e.g. Lazada basic-info's own image columns, genuinely empty for
+    that product) still overwrites — only an ABSENT key preserves.
 
     Returns count of records processed.
     """
@@ -111,9 +118,9 @@ def import_platform_products(platform, records):
               material        = COALESCE(excluded.material, material),
               warranty_policy = COALESCE(excluded.warranty_policy, warranty_policy),
               warranty_period = COALESCE(excluded.warranty_period, warranty_period),
-              status          = excluded.status,
+              status          = COALESCE(excluded.status, status),
               cover_image_url = COALESCE(excluded.cover_image_url, cover_image_url),
-              image_urls      = excluded.image_urls,
+              image_urls      = COALESCE(excluded.image_urls, image_urls),
               dts_info        = COALESCE(excluded.dts_info, dts_info),
               raw_json        = excluded.raw_json,
               imported_at     = datetime('now','localtime')
@@ -126,7 +133,7 @@ def import_platform_products(platform, records):
             r.get('place_of_origin'), r.get('material'),
             r.get('warranty_policy'), r.get('warranty_period'),
             r.get('status'),
-            r.get('cover_image_url'), r.get('image_urls', '[]'),
+            r.get('cover_image_url'), r.get('image_urls'),
             r.get('dts_info'),        r.get('raw_json'),
         ))
         count += 1
