@@ -346,18 +346,19 @@ CREATE TABLE customers (
     imported_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 , region_id INTEGER REFERENCES regions(id), plus_code    TEXT, gmap_name    TEXT, gmap_address TEXT, fax                   TEXT, nickname              TEXT, contact_orig_json     TEXT, contact_normalized_at TEXT, contact_normalized_by TEXT, contact_note TEXT);
 
-CREATE TABLE ecommerce_listings (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                platform     TEXT    NOT NULL CHECK(platform IN ('shopee','lazada')),
-                item_name    TEXT    NOT NULL,
-                variation    TEXT,
-                seller_sku   TEXT,
-                listing_key  TEXT    NOT NULL UNIQUE,
-                sample_price REAL,
-                product_id   INTEGER REFERENCES products(id),
-                is_ignored   INTEGER NOT NULL DEFAULT 0,
-                created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-            , qty_per_sale REAL NOT NULL DEFAULT 1);
+CREATE TABLE "ecommerce_listings" (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform     TEXT    NOT NULL CHECK(platform IN ('shopee','lazada','tiktok')),
+    item_name    TEXT    NOT NULL,
+    variation    TEXT,
+    seller_sku   TEXT,
+    listing_key  TEXT    NOT NULL UNIQUE,
+    sample_price REAL,
+    product_id   INTEGER REFERENCES products(id),
+    is_ignored   INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    qty_per_sale REAL    NOT NULL DEFAULT 1
+);
 
 CREATE TABLE employee_leave_entitlements (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -957,9 +958,9 @@ CREATE TABLE platform_price_history (
     source              TEXT
 );
 
-CREATE TABLE platform_products (
+CREATE TABLE "platform_products" (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    platform          TEXT    NOT NULL CHECK(platform IN ('shopee','lazada')),
+    platform          TEXT    NOT NULL CHECK(platform IN ('shopee','lazada','tiktok')),
     product_id_str    TEXT    NOT NULL,
     parent_sku        TEXT,
     product_name      TEXT,
@@ -974,16 +975,16 @@ CREATE TABLE platform_products (
     warranty_period   TEXT,
     status            TEXT,
     cover_image_url   TEXT,
-    image_urls        TEXT,    -- JSON array of gallery image URLs
+    image_urls        TEXT,
     dts_info          TEXT,
     raw_json          TEXT,
     imported_at       TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
     UNIQUE(platform, product_id_str)
 );
 
-CREATE TABLE platform_skus (
+CREATE TABLE "platform_skus" (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    platform             TEXT    NOT NULL CHECK(platform IN ('shopee','lazada')),
+    platform             TEXT    NOT NULL CHECK(platform IN ('shopee','lazada','tiktok')),
     product_id_str       TEXT,
     product_name         TEXT    NOT NULL,
     variation_id         TEXT,
@@ -996,7 +997,16 @@ CREATE TABLE platform_skus (
     internal_product_id  INTEGER REFERENCES products(id),
     qty_per_sale         REAL    NOT NULL DEFAULT 1,
     raw_json             TEXT,
-    imported_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime')), weight_kg REAL, length_cm REAL, width_cm REAL, height_cm REAL, gtin TEXT, special_price_start TEXT, special_price_end TEXT, variation_image_url TEXT, is_ignored INTEGER NOT NULL DEFAULT 0,
+    imported_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    weight_kg            REAL,
+    length_cm            REAL,
+    width_cm             REAL,
+    height_cm            REAL,
+    gtin                 TEXT,
+    special_price_start  TEXT,
+    special_price_end    TEXT,
+    variation_image_url  TEXT,
+    is_ignored           INTEGER NOT NULL DEFAULT 0,
     UNIQUE(platform, variation_id)
 );
 
