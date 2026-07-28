@@ -15,6 +15,7 @@ from database import get_connection
 
 from .products import create_structured_product
 from .mapping import resolve_pending_mappings
+from .bsn_sync import cross_unit_hazard
 
 
 def count_pending_suggestions() -> int:
@@ -205,12 +206,14 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         ratio = d.get('unit_conversion_ratio')
         product_unit = d.get('suggested_unit_type') or 'ตัว'
         if bsn_unit and ratio and float(ratio) > 0 and bsn_unit != product_unit:
-            conn.execute("""
-                INSERT INTO unit_conversions (product_id, bsn_unit, ratio)
-                VALUES (?, ?, ?)
-                ON CONFLICT(product_id, bsn_unit) DO UPDATE SET
-                    ratio = excluded.ratio
-            """, (new_pid, bsn_unit, float(ratio)))
+            hz = cross_unit_hazard(conn, new_pid, bsn_unit)
+            if hz is None or (hz['kind'] == 'pack_piece' and float(ratio) == 1):
+                conn.execute("""
+                    INSERT INTO unit_conversions (product_id, bsn_unit, ratio)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(product_id, bsn_unit) DO UPDATE SET
+                        ratio = excluded.ratio
+                """, (new_pid, bsn_unit, float(ratio)))
 
         # Backfill product_id on existing unlinked transaction rows
         resolve_pending_mappings(conn)
