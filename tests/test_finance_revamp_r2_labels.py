@@ -36,12 +36,13 @@ def test_marketplace_index_unmatched_orders_label(tmp_db):
     assert 'รายการยังไม่จับคู่' not in body
 
 
-def test_ecommerce_listing_mapping_label(tmp_db):
+def test_ecommerce_unmapped_banner_label(tmp_db):
+    # ecommerce-revamp Phase 4 replaced the old 3-tab page (with its "Listing
+    # Mapping" stat card) with a product-centric overview whose unmapped
+    # banner carries the equivalent context-labeled count.
     c = _admin(tmp_db)
     r = c.get('/ecommerce')
     assert r.status_code == 200
     body = r.data.decode()
-    # Only asserts the label wording when the "ยังไม่ผูก" line actually
-    # renders (ltotal > 0 branch) — otherwise the page shows "ยังไม่มีข้อมูล".
-    if 'รายการ' in body:
-        assert 'listing ยังไม่ผูกสินค้า' in body
+    if 'ยังไม่ผูกกับสินค้า Sendy' in body:
+        assert 'listing' in body
