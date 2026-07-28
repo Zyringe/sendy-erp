@@ -10,7 +10,7 @@ for every affected product) — acyclic, flagged in the Phase 12 report.
 from database import get_connection
 import bsn_units
 
-from .bsn_sync import _sync_bsn_to_stock
+from .bsn_sync import _sync_bsn_to_stock, cross_unit_hazard
 from .wacc import recalculate_product_wacc
 
 
@@ -55,6 +55,67 @@ def get_pending_mappings():
     """).fetchall()
     conn.close()
     return rows
+
+
+def get_pending_split_mappings():
+    """BSN codes whose UNSYNCED ledger rows sit on a product whose unit_type
+    disagrees with the row's (normalized) unit in a way cross_unit_hazard()
+    forbids a ratio for (pair or pack_piece) — the wrong-unit-catch-all-mapping
+    case /unit-conversions can't fix with a ratio. Grouped by
+    (bsn_code, normalized unit, product_id) across sales+purchase so the
+    /mapping split-section can offer a per-unit split mapping instead."""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT bsn_code, unit, product_id,
+               COUNT(*) AS row_count,
+               MIN(doc_no) AS example_doc,
+               MIN(NULLIF(product_name_raw, '')) AS bsn_raw_name
+          FROM sales_transactions
+         WHERE product_id IS NOT NULL AND bsn_code IS NOT NULL AND synced_to_stock = 0
+         GROUP BY bsn_code, unit, product_id
+        UNION ALL
+        SELECT bsn_code, unit, product_id,
+               COUNT(*) AS row_count,
+               MIN(doc_no) AS example_doc,
+               MIN(NULLIF(product_name_raw, '')) AS bsn_raw_name
+          FROM purchase_transactions
+         WHERE product_id IS NOT NULL AND bsn_code IS NOT NULL AND synced_to_stock = 0
+         GROUP BY bsn_code, unit, product_id
+    """).fetchall()
+
+    groups = {}
+    for r in rows:
+        norm_unit = bsn_units.normalize_unit(r['unit']) or ''
+        key = (r['bsn_code'], norm_unit, r['product_id'])
+        g = groups.setdefault(key, {'row_count': 0, 'example_doc': None, 'bsn_raw_name': None})
+        g['row_count'] += r['row_count']
+        if g['example_doc'] is None or (r['example_doc'] and r['example_doc'] < g['example_doc']):
+            g['example_doc'] = r['example_doc']
+        if g['bsn_raw_name'] is None and r['bsn_raw_name']:
+            g['bsn_raw_name'] = r['bsn_raw_name']
+
+    out = []
+    for (bsn_code, norm_unit, product_id), g in groups.items():
+        hazard = cross_unit_hazard(conn, product_id, norm_unit)
+        if hazard is None:
+            continue
+        product = conn.execute(
+            "SELECT product_name, unit_type FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        out.append({
+            'bsn_code': bsn_code,
+            'bsn_unit': norm_unit,
+            'product_id': product_id,
+            'product_name': product['product_name'] if product else None,
+            'unit_type': product['unit_type'] if product else None,
+            'row_count': g['row_count'],
+            'example_doc': g['example_doc'],
+            'bsn_raw_name': g['bsn_raw_name'],
+            'hazard': hazard,
+        })
+    conn.close()
+    out.sort(key=lambda d: d['bsn_code'])
+    return out
 
 
 def resolve_pending_mappings(conn):
