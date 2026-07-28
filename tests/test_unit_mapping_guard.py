@@ -304,3 +304,64 @@ def test_mapping_page_renders_split_section(admin_client, empty_db_conn):
     html = resp.get_data(as_text=True)
     assert 'split-section' in html
     assert 'C001' in html
+
+
+# ── Phase F: approve_pending_suggestion's own unit_conversion write ────────────
+# (4th write path found by /scrutinize 2026-07-29 — bypassed cross_unit_hazard)
+
+@pytest.fixture
+def suggestion_uid(empty_db_conn):
+    """pending_product_suggestions.suggested_by_user_id/reviewed_by_user_id
+    are real FKs to users(id) — insert one real user row to satisfy them."""
+    empty_db_conn.execute(
+        "INSERT INTO users (username, password_hash, display_name, role, is_active) "
+        "VALUES ('phasef-tester', 'x', 'Tester', 'admin', 1)")
+    empty_db_conn.commit()
+    return empty_db_conn.execute(
+        "SELECT id FROM users WHERE username='phasef-tester'").fetchone()[0]
+
+
+def _suggestion_payload(bsn_code, *, suggested_unit_type='ตัว', bsn_unit=None, ratio=None):
+    return {
+        'bsn_code': bsn_code,
+        'bsn_name': f'raw {bsn_code}',
+        'suggested_name': f'product for {bsn_code}',
+        'category': None, 'series': None, 'brand_id': None,
+        'model': None, 'size': None, 'color_th': None, 'color_code': None,
+        'packaging': None, 'condition': None, 'pack_variant': None,
+        'suggested_cost': 10.0,
+        'suggested_unit_type': suggested_unit_type,
+        'units_per_carton': None, 'units_per_box': None,
+        'bsn_unit': bsn_unit,
+        'unit_conversion_ratio': ratio,
+    }
+
+
+def test_approve_suggestion_blocks_pack_piece_ratio(empty_db_conn, suggestion_uid):
+    """A manager staging a NEW แผง SKU from a code whose bills arrive in ตัว,
+    typing ratio 0.5 at stage time, must NOT get a unit_conversions row —
+    that recreates the pack/loose bug through the approve door."""
+    sid = models.save_pending_suggestion(
+        _suggestion_payload('SUGF01', suggested_unit_type='แผง', bsn_unit='ตัว', ratio=0.5),
+        user_id=suggestion_uid)
+    new_pid = models.approve_pending_suggestion(sid, edits={}, reviewer_id=suggestion_uid)
+
+    row = empty_db_conn.execute(
+        "SELECT 1 FROM unit_conversions WHERE product_id=? AND bsn_unit=?",
+        (new_pid, 'ตัว')).fetchone()
+    assert row is None
+
+
+def test_approve_suggestion_writes_safe_ratio(empty_db_conn, suggestion_uid):
+    """Positive control: a real bulk-unit ratio (โหล=12 on a ตัว product) has
+    no hazard and must still be written by approve."""
+    sid = models.save_pending_suggestion(
+        _suggestion_payload('SUGF02', suggested_unit_type='ตัว', bsn_unit='โหล', ratio=12),
+        user_id=suggestion_uid)
+    new_pid = models.approve_pending_suggestion(sid, edits={}, reviewer_id=suggestion_uid)
+
+    row = empty_db_conn.execute(
+        "SELECT ratio FROM unit_conversions WHERE product_id=? AND bsn_unit=?",
+        (new_pid, 'โหล')).fetchone()
+    assert row is not None
+    assert row['ratio'] == 12
