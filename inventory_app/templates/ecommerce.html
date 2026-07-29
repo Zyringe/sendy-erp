@@ -52,41 +52,27 @@ tr.ecom-row-dim    td { opacity:.55; }
 <div class="collapse mb-3" id="uploadArea">
   <div class="card border-0 shadow-sm">
     <div class="card-body">
-      <div class="row g-4">
-        <div class="col-md-6">
-          <h6 class="fw-semibold"><i class="bi bi-file-earmark-spreadsheet me-1"></i>ไฟล์รายสัปดาห์ (ราคา/สต็อก)</h6>
-          <form method="POST" action="{{ url_for('ecommerce.ecommerce_import') }}" enctype="multipart/form-data"
-                class="d-flex flex-wrap gap-2 align-items-end">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <div>
-              <label class="form-label form-label-sm mb-1">Platform</label>
-              <select name="platform" class="form-select form-select-sm" style="width:120px" required>
-                <option value="shopee">Shopee</option>
-                <option value="lazada">Lazada</option>
-              </select>
-            </div>
-            <div class="flex-fill">
-              <label class="form-label form-label-sm mb-1">ไฟล์ .xlsx</label>
-              <input type="file" class="form-control form-control-sm" name="platform_file" accept=".xlsx" required>
-            </div>
-            <button type="submit" class="btn btn-sm btn-warning"><i class="bi bi-upload me-1"></i>นำเข้า</button>
-          </form>
-          <p class="text-subtle small mt-2 mb-0">แทนที่ราคา/สต็อกทั้งหมดของ platform ที่เลือก — ไม่กระทบการผูกสินค้า</p>
+      <h6 class="fw-semibold"><i class="bi bi-file-earmark-spreadsheet me-1"></i>นำเข้าไฟล์ Shopee / Lazada</h6>
+      <form method="POST" action="{{ url_for('ecommerce.ecommerce_import') }}" enctype="multipart/form-data"
+            class="d-flex flex-wrap gap-2 align-items-end">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="flex-fill">
+          <label class="form-label form-label-sm mb-1">ไฟล์ .xlsx (ลากใส่ได้หลายไฟล์พร้อมกัน)</label>
+          <input type="file" class="form-control form-control-sm" name="files" accept=".xlsx" multiple required>
         </div>
-        <div class="col-md-6">
-          <h6 class="fw-semibold"><i class="bi bi-card-text me-1"></i>ข้อมูลสินค้า (รายละเอียด/สถานะ)</h6>
-          <form method="POST" action="{{ url_for('ecommerce.ecommerce_import_info') }}" enctype="multipart/form-data"
-                class="d-flex flex-wrap gap-2 align-items-end">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <div class="flex-fill">
-              <label class="form-label form-label-sm mb-1">ไฟล์ .xlsx (เลือกได้หลายไฟล์)</label>
-              <input type="file" class="form-control form-control-sm" name="info_files" accept=".xlsx" multiple required>
-            </div>
-            <button type="submit" class="btn btn-sm btn-warning"><i class="bi bi-upload me-1"></i>นำเข้า</button>
-          </form>
-          <p class="text-subtle small mt-2 mb-0">Shopee: mass_update_basic_info_*.xlsx · Lazada: basic*.xlsx (ตรวจ platform อัตโนมัติจากชื่อไฟล์)</p>
-        </div>
-      </div>
+        <button type="submit" class="btn btn-sm btn-warning"><i class="bi bi-upload me-1"></i>นำเข้า</button>
+      </form>
+      <p class="text-subtle small mt-2 mb-1">
+        ระบบตรวจเองว่าเป็นไฟล์อะไร จาก<strong>เนื้อหาในไฟล์</strong> ไม่ใช่ชื่อไฟล์ — ใส่ปนกันได้เลย:
+      </p>
+      <ul class="text-subtle small mb-1 ps-4">
+        <li><strong>สต็อก/ราคา</strong> — Shopee <code>mass_update_sales_info_*</code> · Lazada <code>pricestock*</code></li>
+        <li><strong>ข้อมูลสินค้า</strong> (ชื่อ/รายละเอียด) — Shopee <code>mass_update_basic_info_*</code> · Lazada <code>basic*</code></li>
+      </ul>
+      <p class="text-subtle small mb-0">
+        ไฟล์สต็อกแทนที่ราคา/สต็อกทั้ง platform นั้น — ไม่กระทบการผูกสินค้า.
+        ไฟล์ที่ระบบไม่รู้จัก (เช่น ไฟล์คำสั่งซื้อ, freight) จะถูก<strong>ปฏิเสธพร้อมบอกเหตุผล</strong> ไม่นำเข้ามั่ว
+      </p>
     </div>
   </div>
 </div>

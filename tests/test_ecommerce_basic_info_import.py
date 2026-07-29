@@ -391,13 +391,48 @@ def test_import_info_route_lazada_file(admin_client, tmp_db):
     assert row == ('สินค้า Lazada', 'คำอธิบาย Lazada')
 
 
-def test_import_info_route_unrecognized_filename_skipped(admin_client, tmp_db):
+def test_import_route_ignores_filename_and_routes_by_content(admin_client, tmp_db):
+    """Contract change 2026-07-30 (unified import box): routing is by file
+    CONTENT, so a correctly-shaped export imports under any filename. The old
+    behaviour — skip unless the filename matched — is what let the reverse
+    mistake through (a basic-info file accepted as a stock file)."""
     xlsx = _build_shopee_basic_info_xlsx([('900000020', 'P20', 'ชื่อ', 'desc')])
     resp = admin_client.post('/ecommerce/import-info', data={
         'info_files': (xlsx, 'random_export.xlsx'),
+    }, content_type='multipart/form-data', follow_redirects=False)
+    assert resp.status_code == 302
+
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute(
+        "SELECT product_name, description FROM platform_products "
+        "WHERE platform='shopee' AND product_id_str='900000020'"
+    ).fetchone()
+    conn.close()
+    assert row == ('ชื่อ', 'desc')
+
+
+def test_import_route_refuses_unrecognized_content(admin_client, tmp_db):
+    """A file whose CONTENT matches nothing is refused, and nothing is written."""
+    import openpyxl
+    wb = openpyxl.Workbook()
+    wb.active.append(['ก', 'ข', 'ค'])
+    wb.active.append([1, 2, 3])
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    import sqlite3
+    count = lambda: sqlite3.connect(tmp_db).execute(
+        "SELECT COUNT(*) FROM platform_products").fetchone()[0]
+    before = count()   # tmp_db is module-scoped — earlier tests already wrote rows
+
+    resp = admin_client.post('/ecommerce/import-info', data={
+        'info_files': (buf, 'mass_update_basic_info_looks_legit.xlsx'),
     }, content_type='multipart/form-data', follow_redirects=True)
     assert resp.status_code == 200
-    assert 'ไม่ตรงรูปแบบ'.encode() in resp.data
+    assert 'ไม่รู้จักรูปแบบไฟล์'.encode() in resp.data
+    assert count() == before
 
     import sqlite3
     conn = sqlite3.connect(tmp_db)

@@ -23,7 +23,8 @@ from parse_platform import (parse_shopee, parse_lazada, export_shopee, export_la
                             export_mapping, parse_mapping,
                             parse_shopee_orders, parse_lazada_orders,
                             export_listing_mapping, parse_listing_mapping,
-                            parse_shopee_basic_info, parse_lazada_basic_info)
+                            parse_shopee_basic_info, parse_lazada_basic_info,
+                            detect_platform_file)
 
 bp_ecommerce = Blueprint('ecommerce', __name__)
 
@@ -70,76 +71,72 @@ def ecommerce_product(product_id):
     return render_template('ecommerce_product.html', detail=detail, status_row=status_row)
 
 
-@bp_ecommerce.route('/ecommerce/import', methods=['POST'])
-def ecommerce_import():
-    platform = request.form.get('platform', '').lower()
-    if platform not in ('shopee', 'lazada'):
-        flash('ระบุ platform ไม่ถูกต้อง', 'danger')
-        return redirect(url_for('ecommerce.ecommerce'))
-
-    f = request.files.get('platform_file')
-    if not f or not f.filename.endswith('.xlsx'):
-        flash('กรุณาเลือกไฟล์ .xlsx', 'danger')
-        return redirect(url_for('ecommerce.ecommerce'))
-
-    try:
-        file_bytes = io.BytesIO(f.read())
-        if platform == 'shopee':
-            records = parse_shopee(file_bytes)
-        else:
-            records = parse_lazada(file_bytes)
-
-        if not records:
-            flash('ไม่พบข้อมูลในไฟล์', 'warning')
-            return redirect(url_for('ecommerce.ecommerce'))
-
-        count, propagated = models.import_platform_skus(platform, records)
-        flash(f'นำเข้าข้อมูล {platform.capitalize()} สำเร็จ {count} รายการ '
-              f'(restore mapping {propagated} รายการ จาก ecommerce_listings)',
-              'success')
-    except Exception as e:
-        flash(f'เกิดข้อผิดพลาด: {e}', 'danger')
-
-    return redirect(url_for('ecommerce.ecommerce'))
+# (platform, kind) -> (parser, importer). `kind` comes from
+# detect_platform_file sniffing the file's CONTENT, never a form field or the
+# filename — see parse_platform.detect_platform_file for why.
+_PARSERS = {
+    ('shopee', 'stock'): parse_shopee,
+    ('lazada', 'stock'): parse_lazada,
+    ('shopee', 'basic'): parse_shopee_basic_info,
+    ('lazada', 'basic'): parse_lazada_basic_info,
+}
+_PLATFORM_TH = {'shopee': 'Shopee', 'lazada': 'Lazada'}
+_KIND_TH = {'stock': 'สต็อก/ราคา', 'basic': 'ข้อมูลสินค้า'}
 
 
-@bp_ecommerce.route('/ecommerce/import-info', methods=['POST'])
-def ecommerce_import_info():
-    """Import item-grain 'basic info' exports (description/status/warranty)
-    into platform_products. Platform is detected PER FILE by filename, not
-    by a form field, so a batch of mixed Shopee+Lazada basic-info files can
-    be dropped in one multi-file upload."""
-    files = request.files.getlist('info_files')
-    if not files or not any(f.filename for f in files):
+def _import_platform_files(files):
+    """Shared handler for the unified import box: sniff each file, route it to
+    the right parser+importer, and report per file. One bad file never aborts
+    the rest of the batch."""
+    files = [f for f in files if f and f.filename]
+    if not files:
         flash('กรุณาเลือกไฟล์ .xlsx', 'danger')
         return redirect(url_for('ecommerce.ecommerce'))
 
     for f in files:
-        if not f.filename:
+        if not f.filename.lower().endswith('.xlsx'):
+            flash(f'ข้าม {f.filename} — ต้องเป็นไฟล์ .xlsx', 'warning')
             continue
-        fname = f.filename.lower()
-        file_bytes = io.BytesIO(f.read())
         try:
-            if 'mass_update_basic_info' in fname:
-                platform = 'shopee'
-                records = parse_shopee_basic_info(file_bytes)
-            elif fname.startswith('basic') and fname.endswith('.xlsx'):
-                platform = 'lazada'
-                records = parse_lazada_basic_info(file_bytes)
-            else:
-                flash(f'ข้าม {f.filename} — ไม่ตรงรูปแบบไฟล์ basic info ที่รองรับ', 'warning')
-                continue
+            file_bytes = io.BytesIO(f.read())
+            platform, kind = detect_platform_file(file_bytes)
+            records = _PARSERS[(platform, kind)](file_bytes)
+            label = f'{_PLATFORM_TH[platform]} · {_KIND_TH[kind]}'
 
             if not records:
-                flash(f'{f.filename}: ไม่พบข้อมูลในไฟล์', 'warning')
+                flash(f'{f.filename} ({label}): ไม่พบข้อมูลในไฟล์', 'warning')
                 continue
 
-            count = models.import_platform_products(platform, records)
-            flash(f'{f.filename}: นำเข้า {count} รายการ ({platform})', 'success')
+            if kind == 'stock':
+                count, propagated = models.import_platform_skus(platform, records)
+                extra = f' · restore mapping {propagated} รายการ' if propagated else ''
+            else:
+                count = models.import_platform_products(platform, records)
+                extra = ''
+            flash(f'{f.filename} → {label}: นำเข้า {count} รายการ{extra}', 'success')
+        except ValueError as e:                 # unrecognised file — refuse, don't guess
+            flash(f'{f.filename}: {e}', 'danger')
         except Exception as e:
             flash(f'{f.filename}: เกิดข้อผิดพลาด: {e}', 'danger')
 
     return redirect(url_for('ecommerce.ecommerce'))
+
+
+@bp_ecommerce.route('/ecommerce/import', methods=['POST'])
+def ecommerce_import():
+    """Unified import box — any mix of Shopee/Lazada stock or product-info
+    exports in one upload. `platform_file` is the pre-2026-07-30 single-file
+    field name, kept so an old cached page still works."""
+    return _import_platform_files(request.files.getlist('files')
+                                  or request.files.getlist('platform_file'))
+
+
+@bp_ecommerce.route('/ecommerce/import-info', methods=['POST'])
+def ecommerce_import_info():
+    """Legacy basic-info endpoint — now the same content-sniffing handler, so
+    it accepts any supported export (and no longer routes by filename)."""
+    return _import_platform_files(request.files.getlist('info_files')
+                                  or request.files.getlist('files'))
 
 
 @bp_ecommerce.route('/ecommerce/export/<platform>')
