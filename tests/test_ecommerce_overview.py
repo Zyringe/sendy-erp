@@ -468,6 +468,71 @@ def test_product_detail_sold_since_per_platform(empty_db_conn):
     assert detail['platforms']['lazada']['sold_since'] == 0
 
 
+# ── display quantization (fix/ecom-display-qty) ──────────────────────────────
+
+def test_whole_float_est_collapses_to_int(empty_db_conn):
+    """qty_per_sale is REAL (1.0, 2.0, 12.0) so est comes out of SQL as float —
+    whole values must reach the template as int (44, not 44.0)."""
+    conn = empty_db_conn
+    _product(conn, 1, 'A')
+    _stock(conn, 1, 100)
+    _ps(conn, 'shopee', 1, stock=22, qty_per_sale=2.0)
+    conn.commit()
+    rows, _, _ = models.get_marketplace_overview()
+    r = _row(rows, 1)
+    assert r['platforms']['shopee']['est'] == 44
+    assert isinstance(r['platforms']['shopee']['est'], int)
+    assert isinstance(r['combined_open'], int)
+
+
+def test_real_fraction_preserved_kg_pack_case(empty_db_conn):
+    """พุกแบบกิโล shape (prod pid 415): kg-unit product sold as 250g/500g/1kg
+    packs — a genuinely fractional est (19.5) must stay fractional; Put wants
+    real decimals shown as-is (2026-07-29)."""
+    conn = empty_db_conn
+    _product(conn, 1, 'พุกพลาสติกแบบกิโล #8', unit_type='กิโลกรัม')
+    _stock(conn, 1, 240)
+    _ps(conn, 'shopee', 1, stock=20, qty_per_sale=0.25)
+    _ps(conn, 'shopee', 1, stock=19, qty_per_sale=0.5)
+    _ps(conn, 'shopee', 1, stock=5, qty_per_sale=1.0)
+    conn.commit()
+    rows, _, _ = models.get_marketplace_overview()
+    r = _row(rows, 1)
+    assert r['platforms']['shopee']['est'] == 19.5
+    assert r['combined_open'] == 19.5
+
+
+def test_ieee_noise_does_not_cause_phantom_amber(empty_db_conn):
+    """stock 30 × qty_per_sale 0.1 = 3.0000000000000004 in double math; with
+    true_available exactly 3 a raw float compare would flag a phantom 🟠 whose
+    badge reads 'เปิดขายรวม 3 > Sendy 3'. Quantized est must not."""
+    conn = empty_db_conn
+    _product(conn, 1, 'สกรูดำ', unit_type='กิโลกรัม')
+    _stock(conn, 1, 3)
+    _ps(conn, 'shopee', 1, stock=30, qty_per_sale=0.1)
+    conn.commit()
+    rows, _, _ = models.get_marketplace_overview()
+    r = _row(rows, 1)
+    assert r['status'] == 'ok'
+    assert r['combined_open'] == 3
+    assert isinstance(r['combined_open'], int)
+
+
+def test_detail_sold_since_whole_float_collapses_to_int(empty_db_conn):
+    """Detail header's 'ขายไปแล้ว N หลังวันไฟล์' — unit-converted sold_since
+    (1 โหล × ratio 12.0 = 12.0) must render as 12, not 12.0."""
+    conn = empty_db_conn
+    _product(conn, 1, 'A')
+    _stock(conn, 1, 10)
+    _ps(conn, 'shopee', 1, stock=5, qty_per_sale=1.0, imported_at='2026-07-01 08:00:00')
+    _uc(conn, 1, 'โหล', 12.0)
+    _sale(conn, 1, '2026-07-05', 1, unit='โหล')
+    conn.commit()
+    d = models.get_product_marketplace_detail(1)
+    assert d['platforms']['shopee']['sold_since'] == 12
+    assert isinstance(d['platforms']['shopee']['sold_since'], int)
+
+
 # ── independent-oracle spot-check against the live local DB (skips cleanly) ──
 
 def test_pid22_true_available_matches_stock_plus_buildable_on_live_db(tmp_db):
