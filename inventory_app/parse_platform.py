@@ -656,10 +656,13 @@ def parse_lazada_basic_info(file_obj):
     instruction rows are dropped by its existing all-digits Product ID filter.
 
     Returns list of dicts for platform_products: product_id_str,
-    product_name, name_en, description, warranty_policy, warranty_period,
-    status, cover_image_url, image_urls (JSON array, always set — this file
-    does carry รูปภาพสินค้า1..8, so an empty gallery here is a real "no
-    images" state, not an absent field), raw_json.
+    product_name, name_en, description (คำอธิบายหลัก, falling back to
+    จุดเด่นของสินค้า — the export fills คำอธิบายหลัก for only ~74/179
+    products, matching parse_lazada_product_files' Main-or-Highlights rule),
+    warranty_policy, warranty_period, status, cover_image_url, image_urls
+    (JSON array, always set — this file does carry รูปภาพสินค้า1..8, so an
+    empty gallery here is a real "no images" state, not an absent field),
+    raw_json.
     """
     df = _read_lazada_file(file_obj)
     records = []
@@ -674,7 +677,7 @@ def parse_lazada_basic_info(file_obj):
             'product_id_str':  raw.get('Product ID'),
             'product_name':    raw.get('ชื่อสินค้า') or '',
             'name_en':         raw.get('ชื่อสินค้าใน En'),
-            'description':     raw.get('คำอธิบายหลัก'),
+            'description':     raw.get('คำอธิบายหลัก') or raw.get('จุดเด่นของสินค้า'),
             'warranty_policy': raw.get('เงื่อนไขการรับประกัน'),
             'warranty_period': raw.get('ระยะเวลาการรับประกัน'),
             'status':          raw.get('สถานะสินค้า'),

@@ -105,6 +105,56 @@ def test_product_detail_renders_pid4_pack_unpack(admin_client, tmp_db):
     assert resp.status_code == 200, resp.data[:500]
 
 
+def test_product_detail_lazada_desc_shown_as_text_not_markup(admin_client, tmp_db):
+    # Lazada descriptions are HTML — the page must show readable text, not
+    # escaped tag soup (&lt;article class=...&gt;).
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute("""
+        SELECT DISTINCT ps.internal_product_id FROM platform_skus ps
+          JOIN platform_products pp
+            ON pp.platform = ps.platform AND pp.product_id_str = ps.product_id_str
+         WHERE ps.platform = 'lazada' AND ps.is_ignored = 0
+           AND ps.internal_product_id IS NOT NULL
+           AND pp.description LIKE '<%'
+         LIMIT 1
+    """).fetchone()
+    if row is None:
+        pytest.skip("no lazada listing with an HTML description in this DB snapshot")
+    html = admin_client.get(f'/ecommerce/product/{row[0]}').data.decode('utf-8')
+    assert '&lt;article' not in html
+    assert '&lt;p' not in html
+    assert 'รายละเอียดสินค้า' in html
+
+
+def test_product_detail_lazada_highlights_box_renders_when_differing(admin_client, tmp_db):
+    # A lazada listing whose จุดเด่นของสินค้า text differs from its
+    # description must get its own จุดเด่น box on the page.
+    import json as _json
+    import re as _re
+
+    def _norm(s):
+        return _re.sub(r'\s+', '', _re.sub(r'<[^>]+>', '', s or ''))
+
+    conn = sqlite3.connect(tmp_db)
+    pid = None
+    for ipid, desc, raw_json in conn.execute("""
+        SELECT DISTINCT ps.internal_product_id, pp.description, pp.raw_json
+          FROM platform_skus ps
+          JOIN platform_products pp
+            ON pp.platform = ps.platform AND pp.product_id_str = ps.product_id_str
+         WHERE ps.platform = 'lazada' AND ps.is_ignored = 0
+           AND ps.internal_product_id IS NOT NULL AND pp.raw_json IS NOT NULL
+    """):
+        hl = _json.loads(raw_json).get('จุดเด่นของสินค้า')
+        if hl and _norm(hl) != _norm(desc):
+            pid = ipid
+            break
+    if pid is None:
+        pytest.skip("no lazada listing with differing จุดเด่น in this DB snapshot")
+    html = admin_client.get(f'/ecommerce/product/{pid}').data.decode('utf-8')
+    assert '<summary>จุดเด่นของสินค้า</summary>' in html
+
+
 def test_product_detail_404_when_no_listings(admin_client, tmp_db):
     pid = _product_with_no_listings(tmp_db)
     resp = admin_client.get(f'/ecommerce/product/{pid}')

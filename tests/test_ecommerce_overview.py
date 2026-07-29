@@ -532,6 +532,58 @@ def test_detail_sold_since_whole_float_collapses_to_int(empty_db_conn):
     assert d['platforms']['shopee']['sold_since'] == 12
     assert isinstance(d['platforms']['shopee']['sold_since'], int)
 
+def _pp_lazada(conn, product_id_str, description, highlights_html):
+    import json as _json
+    raw = {'คำอธิบายหลัก': description, 'จุดเด่นของสินค้า': highlights_html}
+    conn.execute(
+        "INSERT INTO platform_products (platform, product_id_str, description, raw_json) "
+        "VALUES ('lazada', ?, ?, ?)",
+        (product_id_str, description, _json.dumps(raw, ensure_ascii=False)),
+    )
+
+
+def test_product_detail_lazada_highlights_exposed_when_content_differs(empty_db_conn):
+    c = empty_db_conn
+    _product(c, 92, 'กรอบพระ highlights')
+    _stock(c, 92, 1)
+    _ps(c, 'lazada', 92, product_id_str='LZ92', stock=2, product_name='listing ลาซาด้า')
+    _pp_lazada(c, 'LZ92', '<p>รายละเอียดยาว</p>', '<p>จุดเด่นพิเศษ ต่างจากรายละเอียด</p>')
+    c.commit()
+    detail = models.get_product_marketplace_detail(92)
+    item = next(g for g in detail['platforms']['lazada']['items'] if g['item'] is not None)['item']
+    assert item['highlights'] == '<p>จุดเด่นพิเศษ ต่างจากรายละเอียด</p>'
+
+
+def test_product_detail_lazada_highlights_suppressed_when_same_text(empty_db_conn):
+    # Same text, different markup/whitespace (the 56/กรอบพระ case) → no duplicate box.
+    c = empty_db_conn
+    _product(c, 93, 'กรอบพระ duplicate')
+    _stock(c, 93, 1)
+    _ps(c, 'lazada', 93, product_id_str='LZ93', stock=2, product_name='listing ลาซาด้า')
+    _pp_lazada(c, 'LZ93',
+               '<article class="lzd-article"><p><span>ข้อความ เดียวกัน</span></p></article>',
+               '<article><p>ข้อความ  เดียวกัน</p></article>')
+    c.commit()
+    detail = models.get_product_marketplace_detail(93)
+    item = next(g for g in detail['platforms']['lazada']['items'] if g['item'] is not None)['item']
+    assert item['highlights'] is None
+
+
+def test_product_detail_shopee_item_highlights_is_none(empty_db_conn):
+    # Shopee raw_json has no จุดเด่น field; the key must still exist (template-safe).
+    c = empty_db_conn
+    _product(c, 94, 'สินค้า shopee')
+    _stock(c, 94, 1)
+    _ps(c, 'shopee', 94, product_id_str='SP94', stock=2, product_name='listing ช้อปปี้')
+    c.execute(
+        "INSERT INTO platform_products (platform, product_id_str, description, raw_json) "
+        "VALUES ('shopee', 'SP94', 'รายละเอียดธรรมดา', '{\"รหัสสินค้า\": \"SP94\"}')"
+    )
+    c.commit()
+    detail = models.get_product_marketplace_detail(94)
+    item = next(g for g in detail['platforms']['shopee']['items'] if g['item'] is not None)['item']
+    assert item['highlights'] is None
+
 
 # ── independent-oracle spot-check against the live local DB (skips cleanly) ──
 

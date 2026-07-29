@@ -99,12 +99,20 @@
           {{ grp.item.product_name | truncate(70) }}
           <span class="tag">{{ grp.item.product_id_str }}</span>
         </div>
-        {% if grp.item.description %}
+        {% if grp.item.description or grp.item.highlights %}
         <div class="ecom-listing py-2">
+          {% if grp.item.description %}
           <details class="ecom-desc">
             <summary>รายละเอียดสินค้า{% if grp.item.imported_at %} (import {{ grp.item.imported_at | thaidate }}){% endif %}</summary>
-            {{ grp.item.description }}
+            {{ grp.item.description | html_text }}
           </details>
+          {% endif %}
+          {% if grp.item.highlights %}
+          <details class="ecom-desc">
+            <summary>จุดเด่นของสินค้า</summary>
+            {{ grp.item.highlights | html_text }}
+          </details>
+          {% endif %}
         </div>
         {% endif %}
         {% else %}
