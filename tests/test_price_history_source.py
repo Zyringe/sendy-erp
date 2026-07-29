@@ -96,8 +96,6 @@ def _product_data(conn, pid, **overrides):
         "cost_price": r["cost_price"],
         "base_sell_price": r["base_sell_price"],
         "low_stock_threshold": r["low_stock_threshold"],
-        "shopee_stock": r["shopee_stock"],
-        "lazada_stock": r["lazada_stock"],
     }
     data.update(overrides)
     return data

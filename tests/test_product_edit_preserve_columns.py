@@ -10,6 +10,11 @@ edit clobbered them.
 Fix: models.update_product now builds its SET clause only from whitelisted keys
 actually present in `data`, and product_edit stops including the three fields
 it can't actually collect. Money/schema-adjacent write path → TDD (project rule).
+
+shopee_stock/lazada_stock were dropped from `products` entirely in migration
+141 (2026-07-29, Phase 2b of the products-page-improve plan) — they were
+write-only from the start. hard_to_sell alone still proves the whitelist
+mechanism (the thing this file guards).
 """
 import sqlite3
 
@@ -25,10 +30,6 @@ def _seed_product(db_path):
         "                     low_stock_threshold, sku_code) "
         "VALUES ('สินค้าทดสอบแก้ไข', 1, 1, 'ตัว', 1, 10.0, 20.0, 10, 'SK-EDIT-TEST')"
     ).lastrowid
-    conn.execute(
-        "UPDATE products SET shopee_stock = 50, lazada_stock = 30 WHERE id = ?",
-        (pid,),
-    )
     conn.commit()
     conn.close()
     return pid
@@ -42,7 +43,7 @@ def test_update_product_preserves_omitted_columns(empty_db):
     pid = _seed_product(empty_db)
 
     # Mirrors what product_edit now sends: the fields the edit form actually
-    # renders, WITHOUT hard_to_sell / shopee_stock / lazada_stock.
+    # renders, WITHOUT hard_to_sell.
     models.update_product(pid, {
         'product_name': 'สินค้าทดสอบแก้ไข',
         'units_per_carton': 1,
@@ -56,7 +57,7 @@ def test_update_product_preserves_omitted_columns(empty_db):
     conn = sqlite3.connect(empty_db)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT hard_to_sell, shopee_stock, lazada_stock, cost_price, base_sell_price "
+        "SELECT hard_to_sell, cost_price, base_sell_price "
         "FROM products WHERE id = ?", (pid,)
     ).fetchone()
     hist = conn.execute(
@@ -69,10 +70,8 @@ def test_update_product_preserves_omitted_columns(empty_db):
     # updated
     assert row['cost_price'] == 15.0
     assert row['base_sell_price'] == 25.0
-    # preserved — NOT zeroed by the omitted keys
+    # preserved — NOT zeroed by the omitted key
     assert row['hard_to_sell'] == 1
-    assert row['shopee_stock'] == 50
-    assert row['lazada_stock'] == 30
     # the price-history trigger still fires and still gets source-stamped
     assert hist is not None
     assert hist['source'] == 'manual:tester'
@@ -88,13 +87,11 @@ def test_update_product_no_whitelisted_keys_is_noop(empty_db):
     conn = sqlite3.connect(empty_db)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT hard_to_sell, shopee_stock, lazada_stock, cost_price, base_sell_price "
+        "SELECT hard_to_sell, cost_price, base_sell_price "
         "FROM products WHERE id = ?", (pid,)
     ).fetchone()
     conn.close()
     assert row['hard_to_sell'] == 1
-    assert row['shopee_stock'] == 50
-    assert row['lazada_stock'] == 30
     assert row['cost_price'] == 10.0
     assert row['base_sell_price'] == 20.0
 
@@ -113,13 +110,13 @@ def admin_client(empty_db):
     return c, empty_db
 
 
-def test_edit_post_does_not_clobber_hard_to_sell_and_marketplace_stock(admin_client):
+def test_edit_post_does_not_clobber_hard_to_sell(admin_client):
     c, db = admin_client
     pid = _seed_product(db)
 
     # Exactly the fields the edit form actually renders (see
-    # templates/products/form.html's {% if action == 'edit' %} block) — no
-    # hard_to_sell / shopee_stock / lazada_stock inputs exist there.
+    # templates/products/form.html's {% if action == 'edit' %} block) —
+    # no hard_to_sell input exists there.
     resp = c.post(f'/products/{pid}/edit', data={
         'product_name': 'ignored-name',
         'unit_type': 'ตัว',
@@ -134,12 +131,10 @@ def test_edit_post_does_not_clobber_hard_to_sell_and_marketplace_stock(admin_cli
     conn = sqlite3.connect(db)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT base_sell_price, hard_to_sell, shopee_stock, lazada_stock "
+        "SELECT base_sell_price, hard_to_sell "
         "FROM products WHERE id = ?", (pid,)
     ).fetchone()
     conn.close()
 
     assert row['base_sell_price'] == 99  # the actually-edited field saved
     assert row['hard_to_sell'] == 1      # preserved, not zeroed
-    assert row['shopee_stock'] == 50     # preserved, not zeroed
-    assert row['lazada_stock'] == 30     # preserved, not zeroed
