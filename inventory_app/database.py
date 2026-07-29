@@ -525,6 +525,13 @@ def init_db():
     if 'ref_invoice' not in cols:
         conn.execute("ALTER TABLE sales_transactions ADD COLUMN ref_invoice TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_st_ref_invoice ON sales_transactions(ref_invoice)")
+    # Indexes for get_products()'s locations/bsn_codes subqueries (products/list.html) —
+    # without these both subqueries full-scan; costs commission_bp's per_page=10000 calls
+    # (which use neither new column) ~84ms extra. See products-page-improve plan P1 1d.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_product_locations_pid "
+                 "ON product_locations(product_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pcm_pid "
+                 "ON product_code_mapping(product_id)")
     # Migration: create conversion tables if missing
     existing_tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if 'conversion_formulas' not in existing_tables:

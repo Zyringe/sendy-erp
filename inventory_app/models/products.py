@@ -17,8 +17,11 @@ def get_products(search=None, low_stock=False, hard_to_sell=False,
     conditions = [] if include_inactive else ["p.is_active = 1"]
     params = []
     if search:
-        conditions.append("(p.product_name LIKE ? OR CAST(p.id AS TEXT) LIKE ? OR p.sku_code LIKE ?)")
-        params += [f"%{search}%", f"%{search}%", f"%{search}%"]
+        conditions.append(
+            "(p.product_name LIKE ? OR CAST(p.id AS TEXT) LIKE ? OR p.sku_code LIKE ?"
+            " OR EXISTS (SELECT 1 FROM product_code_mapping m"
+            "            WHERE m.product_id = p.id AND m.bsn_code LIKE ?))")
+        params += [f"%{search}%"] * 4
     if hard_to_sell:
         conditions.append("p.hard_to_sell = 1")
     if location:
@@ -52,7 +55,11 @@ def get_products(search=None, low_stock=False, hard_to_sell=False,
                COALESCE((SELECT SUM(stock) FROM platform_skus
                           WHERE platform='shopee' AND internal_product_id=p.id), 0) AS shopee_stock,
                COALESCE((SELECT SUM(stock) FROM platform_skus
-                          WHERE platform='lazada' AND internal_product_id=p.id), 0) AS lazada_stock
+                          WHERE platform='lazada' AND internal_product_id=p.id), 0) AS lazada_stock,
+               (SELECT GROUP_CONCAT(pl.floor_no, ', ') FROM product_locations pl
+                 WHERE pl.product_id = p.id) AS locations,
+               (SELECT GROUP_CONCAT(m.bsn_code, ', ') FROM product_code_mapping m
+                 WHERE m.product_id = p.id) AS bsn_codes
         FROM products p
         LEFT JOIN stock_levels s ON s.product_id = p.id
         WHERE {where}

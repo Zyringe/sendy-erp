@@ -12,7 +12,7 @@
 
 {% block content %}
 {# Active-filter count (location + 4 checkboxes; search stays always-visible so it doesn't count) #}
-{% set filters_count = (1 if low_stock else 0) + (1 if in_stock else 0) + (1 if show_alt else 0) + (1 if show_inactive else 0) + (1 if location else 0) %}
+{% set filters_count = (1 if low_stock else 0) + (1 if in_stock else 0) + (1 if restock else 0) + (1 if show_inactive else 0) + (1 if location else 0) %}
 {% set filters_active = filters_count > 0 %}
 
 {# Back-to-filtered-list URL (built in the route, also stashed in session) carried
@@ -65,10 +65,10 @@
               <label class="form-check-label small" for="chkInStock">มีสต็อก &gt; 0</label>
             </div>
             <div class="form-check form-check-inline mb-1">
-              <input class="form-check-input" type="checkbox" name="show_alt" value="1"
-                     id="chkShowAlt" {% if show_alt %}checked{% endif %}>
-              <label class="form-check-label small" for="chkShowAlt"
-                     title="แสดงจำนวนที่เติมได้จากการแกะแพ็ค/แพ็คตัวหลวม (ทางเลือก)">เติมได้จากแพ็ค</label>
+              <input class="form-check-input" type="checkbox" name="restock" value="1"
+                     id="chkRestock" {% if restock %}checked{% endif %}>
+              <label class="form-check-label small" for="chkRestock"
+                     title="หมดสต็อกแต่ขายได้ใน 30 วันล่าสุด">ต้องสั่งเพิ่ม</label>
             </div>
             <div class="form-check form-check-inline mb-1">
               <input class="form-check-input" type="checkbox" name="show_inactive" value="1"
@@ -98,12 +98,11 @@
         <tr>
           <th style="width:200px; white-space:nowrap">ID</th>
           <th>ชื่อสินค้า</th>
+          <th style="width:110px">ที่เก็บ</th>
           <th class="text-center">หน่วย</th>
           <th class="text-end" title="ราคาตั้ง (list price) ต่อหน่วยของสินค้า — ลูกค้าจ่ายเท่านี้ทั้งรับและไม่รับ VAT · 0 = ยังไม่ตั้งราคา">ราคาขาย <i class="bi bi-info-circle text-muted" style="font-size:10px"></i></th>
           <th class="text-end">สต็อก</th>
           <th class="text-end">ต้นทุน</th>
-          <th class="text-end">Shopee</th>
-          <th class="text-end">Lazada</th>
           <th class="text-center" style="width:110px"></th>
         </tr>
       </thead>
@@ -114,6 +113,9 @@
             <span class="badge badge-gray font-mono">{{ p.id }}</span>
             {% if p.sku_code %}
             <div class="font-mono text-subtle small mt-1" style="font-size:.7rem; white-space:nowrap">{{ p.sku_code }}</div>
+            {% endif %}
+            {% if p.bsn_codes %}
+            <div class="font-mono text-subtle mt-1" style="font-size:.63rem; white-space:nowrap">{{ p.bsn_codes }}</div>
             {% endif %}
           </td>
           <td>
@@ -129,14 +131,13 @@
               <span class="badge badge-warning ms-1">{{ p.condition }}</span>
             {% endif %}
           </td>
+          <td class="font-mono">{% if p.locations %}{{ p.locations }}{% else %}<span class="text-subtle">—</span>{% endif %}</td>
           <td class="text-center text-subtle">{{ p.unit_type }}</td>
           <td class="text-end text-subtle">{{ p.base_sell_price | fmt_price }}</td>
           <td class="text-end fw-600 {% if p.is_low %}text-danger{% else %}text-main{% endif %}">
-            {{ p.quantity | fmt_qty }}{% if show_alt and buildable.get(p.id) %} <span class="text-subtle fw-500" title="เติมได้อีก {{ buildable.get(p.id) | fmt_qty }} จากการแกะ/แพ็ค (ตัวหลวม↔แผง) — ทางเลือก ไม่ใช่สต๊อกจริง">(+{{ buildable.get(p.id) | fmt_qty }})</span>{% endif %}
+            {{ p.quantity | fmt_qty }}{% if buildable.get(p.id) %} <span class="text-subtle fw-500" title="เติมได้อีก {{ buildable.get(p.id) | fmt_qty }} จากการแกะ/แพ็ค (ตัวหลวม↔แผง) — ทางเลือก ไม่ใช่สต๊อกจริง">(+{{ buildable.get(p.id) | fmt_qty }})</span>{% endif %}
           </td>
           <td class="text-end text-subtle">{% if is_manager %}{{ p.cost_price | fmt_price }}{% else %}—{% endif %}</td>
-          <td class="text-end text-subtle">{{ p.shopee_stock | fmt_qty }}</td>
-          <td class="text-end text-subtle">{{ p.lazada_stock | fmt_qty }}</td>
           <td class="text-center">
             {% if is_admin %}
             <a href="{{ url_for('products.product_edit', product_id=p.id) }}"
@@ -147,7 +148,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="9" class="text-center text-subtle py-5">ไม่พบสินค้า</td></tr>
+        <tr><td colspan="8" class="text-center text-subtle py-5">ไม่พบสินค้า</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -159,7 +160,7 @@
       <ul class="pagination pagination-sm mb-0 justify-content-center flex-wrap">
         {% set ns = namespace(prev=0) %}
         <li class="page-item {% if page == 1 %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('products.product_list', page=page-1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_alt=1 if show_alt else '', show_inactive=1 if show_inactive else '') }}">&laquo;</a>
+          <a class="page-link" href="{{ url_for('products.product_list', page=page-1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', restock=1 if restock else '', show_inactive=1 if show_inactive else '') }}">&laquo;</a>
         </li>
         {% for p in range(1, pages+1) %}
           {% if p == 1 or p == pages or (p >= page-2 and p <= page+2) %}
@@ -167,13 +168,13 @@
             <li class="page-item disabled"><span class="page-link">…</span></li>
             {% endif %}
             <li class="page-item {% if p == page %}active{% endif %}">
-              <a class="page-link" href="{{ url_for('products.product_list', page=p, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_alt=1 if show_alt else '', show_inactive=1 if show_inactive else '') }}">{{ p }}</a>
+              <a class="page-link" href="{{ url_for('products.product_list', page=p, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', restock=1 if restock else '', show_inactive=1 if show_inactive else '') }}">{{ p }}</a>
             </li>
             {% set ns.prev = p %}
           {% endif %}
         {% endfor %}
         <li class="page-item {% if page == pages %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('products.product_list', page=page+1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_alt=1 if show_alt else '', show_inactive=1 if show_inactive else '') }}">&raquo;</a>
+          <a class="page-link" href="{{ url_for('products.product_list', page=page+1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', restock=1 if restock else '', show_inactive=1 if show_inactive else '') }}">&raquo;</a>
         </li>
       </ul>
     </nav>
@@ -198,7 +199,7 @@
           {% if p.is_low %}<span class="badge badge-danger ms-1">สต็อกต่ำ</span>{% endif %}
           {% if not p.is_active %}<span class="badge badge-gray ms-1" title="สินค้าถูกปิดใช้งาน">ปิดใช้งาน</span>{% endif %}
           {% if p.condition %}<span class="badge badge-warning ms-1">{{ p.condition }}</span>{% endif %}
-          <div class="text-subtle font-mono mt-1" style="font-size:.72rem">ID {{ p.id }}</div>
+          <div class="text-subtle font-mono mt-1" style="font-size:.72rem">ID {{ p.id }}{% if p.locations %} · 📍{{ p.locations }}{% endif %}</div>
         </div>
         {% if is_admin %}
         <a href="{{ url_for('products.product_edit', product_id=p.id) }}"
@@ -212,7 +213,7 @@
         <div>
           <span class="fs-4 fw-bold {% if p.is_low %}text-danger{% else %}text-main{% endif %}">{{ p.quantity | fmt_qty }}</span>
           <span class="text-subtle small">{{ p.unit_type }}</span>
-          {% if show_alt and buildable.get(p.id) %}<span class="text-subtle small" title="เติมได้อีก {{ buildable.get(p.id) | fmt_qty }} จากการแกะ/แพ็ค (ตัวหลวม↔แผง) — ทางเลือก ไม่ใช่สต๊อกจริง">(+{{ buildable.get(p.id) | fmt_qty }})</span>{% endif %}
+          {% if buildable.get(p.id) %}<span class="text-subtle small" title="เติมได้อีก {{ buildable.get(p.id) | fmt_qty }} จากการแกะ/แพ็ค (ตัวหลวม↔แผง) — ทางเลือก ไม่ใช่สต๊อกจริง">(+{{ buildable.get(p.id) | fmt_qty }})</span>{% endif %}
         </div>
         <div class="text-end">
           <span class="text-subtle small">ราคา</span>
@@ -228,13 +229,13 @@
   {% if pages > 1 %}
   <div class="d-flex justify-content-between align-items-center mt-3">
     {% if page > 1 %}
-    <a class="btn btn-outline-secondary btn-touch" href="{{ url_for('products.product_list', page=page-1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_alt=1 if show_alt else '', show_inactive=1 if show_inactive else '') }}"><i class="bi bi-chevron-left"></i> ก่อนหน้า</a>
+    <a class="btn btn-outline-secondary btn-touch" href="{{ url_for('products.product_list', page=page-1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', restock=1 if restock else '', show_inactive=1 if show_inactive else '') }}"><i class="bi bi-chevron-left"></i> ก่อนหน้า</a>
     {% else %}
     <span class="btn btn-outline-secondary disabled"><i class="bi bi-chevron-left"></i> ก่อนหน้า</span>
     {% endif %}
     <span class="text-subtle small">หน้า {{ page }} / {{ pages }}</span>
     {% if page < pages %}
-    <a class="btn btn-outline-secondary btn-touch" href="{{ url_for('products.product_list', page=page+1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', show_alt=1 if show_alt else '', show_inactive=1 if show_inactive else '') }}">ถัดไป <i class="bi bi-chevron-right"></i></a>
+    <a class="btn btn-outline-secondary btn-touch" href="{{ url_for('products.product_list', page=page+1, q=search, location=location, low_stock=1 if low_stock else '', in_stock=1 if in_stock else '', restock=1 if restock else '', show_inactive=1 if show_inactive else '') }}">ถัดไป <i class="bi bi-chevron-right"></i></a>
     {% else %}
     <span class="btn btn-outline-secondary disabled">ถัดไป <i class="bi bi-chevron-right"></i></span>
     {% endif %}

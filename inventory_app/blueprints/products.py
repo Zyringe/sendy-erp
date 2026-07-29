@@ -146,7 +146,6 @@ def product_list():
     hard_to_sell = request.args.get('hard_to_sell') == '1'
     in_stock = request.args.get('in_stock') == '1'
     restock = request.args.get('restock') == '1'
-    show_alt = request.args.get('show_alt') == '1'
     show_inactive = request.args.get('show_inactive') == '1'
     page = int(request.args.get('page', 1))
     per_page = current_app.config['ITEMS_PER_PAGE']
@@ -167,7 +166,7 @@ def product_list():
     # extra units each product on this page could be obtained by running a
     # conversion (unpack a แผง / pack ตัว). Display-only (see get_buildable).
     buildable = {}
-    if show_alt and products:
+    if products:
         buildable = {pid: info['buildable']
                      for pid, info in models.get_buildable([p['id'] for p in products]).items()
                      if info['buildable'] > 0}
@@ -180,7 +179,6 @@ def product_list():
                          q=search or None, location=location or None,
                          low_stock='1' if low_stock else None,
                          in_stock='1' if in_stock else None,
-                         show_alt='1' if show_alt else None,
                          show_inactive='1' if show_inactive else None,
                          hard_to_sell='1' if hard_to_sell else None,
                          restock='1' if restock else None,
@@ -192,7 +190,7 @@ def product_list():
                            search=search, low_stock=low_stock,
                            hard_to_sell=hard_to_sell,
                            location=location, in_stock=in_stock,
-                           restock=restock, show_alt=show_alt, buildable=buildable,
+                           restock=restock, buildable=buildable,
                            show_inactive=show_inactive, return_url=return_url)
 
 
