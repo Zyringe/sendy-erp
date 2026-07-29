@@ -52,6 +52,18 @@ PLATFORM_CUSTOMERS = {
 _STATUS_RANK = {'red': 0, 'amber': 1, 'ok': 2, 'dead': 3}
 
 
+def _display_qty(v):
+    """Quantize a computed quantity for display AND alert comparison: round
+    off IEEE noise from REAL qty_per_sale/ratio math (30 × 0.1 =
+    3.0000000000000004 would otherwise render verbatim and flag a phantom 🟠
+    against a true_available of exactly 3), then collapse whole floats to int
+    (44.0 → 44). Genuine fractions survive — kg-unit products sold as
+    250g/500g packs legitimately show 19.5 (Put, 2026-07-29)."""
+    v = round(v, 6)
+    iv = int(v)
+    return iv if v == iv else v
+
+
 def _snapshot_dates(conn):
     """{platform: 'YYYY-MM-DD' or None} from MAX(imported_at) per platform."""
     rows = conn.execute(
@@ -187,9 +199,9 @@ def get_marketplace_overview(search=None, flt=None, page=1, per_page=50):
         prod = product_by_pid.get(pid)
         if prod is None:
             continue  # mapped listing points at a since-deleted product row
-        stock = stock_by_pid.get(pid) or 0
+        stock = _display_qty(stock_by_pid.get(pid) or 0)
         b = buildable.get(pid)
-        build_qty = b['buildable'] if b else 0
+        build_qty = _display_qty(b['buildable']) if b else 0
         true_available = stock + build_qty
 
         platforms = {}
@@ -200,14 +212,14 @@ def get_marketplace_overview(search=None, flt=None, page=1, per_page=50):
                 continue
             sold = sold_by_platform[platform].get(pid, 0)
             platforms[platform] = {
-                'est': max(fu['file_units'] - sold, 0),
+                'est': _display_qty(max(fu['file_units'] - sold, 0)),
                 'listing_count': fu['listing_count'],
-                'file_units': fu['file_units'],
-                'sold_since': sold,
+                'file_units': _display_qty(fu['file_units']),
+                'sold_since': _display_qty(sold),
                 'stub_only': fu['stub_only'],
             }
 
-        combined_open = sum(v['est'] for v in platforms.values() if v)
+        combined_open = _display_qty(sum(v['est'] for v in platforms.values() if v))
         # stub_only platforms (every ps row is a propagated order-file stub —
         # NULL variation_id, no real weekly-file data) never trigger RED: we
         # have no real information on that platform's actual stock, only
@@ -232,7 +244,7 @@ def get_marketplace_overview(search=None, flt=None, page=1, per_page=50):
             'combined_open': combined_open,
             'red_platforms': red_platforms,
             'status': status,
-            'amber_excess': max(combined_open - true_available, 0) if is_amber else 0,
+            'amber_excess': _display_qty(max(combined_open - true_available, 0)) if is_amber else 0,
         })
 
     if search:
@@ -330,7 +342,7 @@ def get_product_marketplace_detail(product_id):
         stock_row = conn.execute(
             "SELECT quantity FROM stock_levels WHERE product_id = ?", (product_id,)
         ).fetchone()
-        stock = stock_row['quantity'] if stock_row else 0
+        stock = _display_qty(stock_row['quantity'] if stock_row else 0)
 
         sku_rows = conn.execute("""
             SELECT * FROM platform_skus
@@ -340,7 +352,8 @@ def get_product_marketplace_detail(product_id):
 
         snapshots = _snapshot_dates(conn)
         sold_since = {
-            platform: _sold_since_by_pid(conn, platform, snapshots[platform], [product_id]).get(product_id, 0)
+            platform: _display_qty(
+                _sold_since_by_pid(conn, platform, snapshots[platform], [product_id]).get(product_id, 0))
             for platform in PLATFORMS
         }
 
@@ -371,7 +384,7 @@ def get_product_marketplace_detail(product_id):
         conn.close()
 
     buildable = get_buildable([product_id]).get(product_id)
-    build_qty = buildable['buildable'] if buildable else 0
+    build_qty = _display_qty(buildable['buildable']) if buildable else 0
 
     return {
         'product': {
