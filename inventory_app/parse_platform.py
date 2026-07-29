@@ -44,8 +44,16 @@ warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 # Lazada exports are the only family with a 'template' sheet; header on row 0.
 # Thai and English header variants both occur (Lazada has localized at least once).
 _LAZADA_BASIC_MARKERS = {'รูปภาพสินค้า1', 'Product Images1', 'ชื่อสินค้าใน En', 'สถานะสินค้า'}
-_LAZADA_STOCK_MARKERS = {'ร้าน sku', 'Shop SKU'}
+_LAZADA_SHOPSKU_MARKERS = {'ร้าน sku', 'Shop SKU'}
+# A Shop-SKU column alone does NOT mean pricestock — skuimg carries one too.
+# SpecialPrice is what actually separates them: present in all five real
+# pricestock exports on record (Thai and English headers), absent from
+# skuimg/freight/basic. Getting this wrong is destructive, not just noisy —
+# import_platform_skus assigns price/stock with no COALESCE, so a skuimg
+# routed here would blank both on every Lazada row.
+_LAZADA_PRICE_MARKERS = {'SpecialPrice'}
 _LAZADA_FREIGHT_MARKERS = {'Package Weight (kg)', 'Pre-Order(by Days) Enable'}
+_LAZADA_SKUIMG_MARKERS = {'Images1'}
 
 # Shopee mass-update exports put a machine-readable `et_title_*` code row above
 # the Thai header. Match on EITHER, so detection survives both Shopee localizing
@@ -72,20 +80,24 @@ def detect_platform_file(file_obj):
     parser.
     """
     file_obj.seek(0)
+    xl = None
     try:
         xl = pd.ExcelFile(file_obj)
         sheets = list(xl.sheet_names)
 
-        # ── Lazada ──
+        # ── Lazada ── reject the look-alike siblings BEFORE matching pricestock:
+        # skuimg and freight also live in the standard 5-file export folder.
         if 'template' in sheets:
             head = {str(c) for c in
                     pd.read_excel(xl, sheet_name='template', header=0, nrows=0).columns}
-            if head & _LAZADA_BASIC_MARKERS:
-                return 'lazada', 'basic'
-            if head & _LAZADA_STOCK_MARKERS:
-                return 'lazada', 'stock'
+            if head & _LAZADA_SKUIMG_MARKERS:
+                raise ValueError('เป็นไฟล์ Lazada skuimg (รูปภาพรายตัวเลือก) — ยังไม่รองรับ')
             if head & _LAZADA_FREIGHT_MARKERS:
                 raise ValueError('เป็นไฟล์ Lazada freight (ขนาด/น้ำหนักพัสดุ) — ยังไม่รองรับ')
+            if head & _LAZADA_BASIC_MARKERS:
+                return 'lazada', 'basic'
+            if (head & _LAZADA_SHOPSKU_MARKERS) and (head & _LAZADA_PRICE_MARKERS):
+                return 'lazada', 'stock'
             raise ValueError('ไฟล์ Lazada ชนิดนี้ยังไม่รองรับ — รองรับเฉพาะ pricestock และ basic')
 
         # ── Shopee ── the header row's index varies by export, so scan the top
@@ -108,6 +120,8 @@ def detect_platform_file(file_obj):
     except Exception as e:
         raise ValueError(f'อ่านไฟล์ไม่สำเร็จ: {e}')
     finally:
+        if xl is not None:
+            xl.close()          # openpyxl keeps the workbook open otherwise
         file_obj.seek(0)
 
     raise ValueError('ไม่รู้จักรูปแบบไฟล์ — ต้องเป็นไฟล์ export สินค้า/สต็อก จาก Shopee หรือ Lazada')

@@ -117,6 +117,20 @@ def _lazada_freight_xlsx():
     ]})
 
 
+def _lazada_skuimg_xlsx():
+    """skuimg*.xlsx — per-variation image URLs. Carries 'Shop SKU' exactly like
+    pricestock does but NO price/stock columns, so a Shop-SKU-only rule would
+    route it to parse_lazada and NULL out price+stock on every Lazada row."""
+    headers = ['Product ID', 'catId', 'Product Name', 'sku.skuId', 'sku.auditStatus',
+               'Shop SKU', 'sku.skuStatus', 'Images1', 'Images2', 'SellerSKU',
+               'Variations Combo']
+    return _xlsx({'template': [
+        headers, ['optional'] * len(headers), ['help'] * len(headers),
+        ['421038989', '62556202', 'Door knob', '803226494', 'PASS',
+         '421038989_TH-803226494', 'active', 'http://img1', '', 'Brown', 'Brown'],
+    ]})
+
+
 def _shopee_order_xlsx():
     """Order.all.*.xlsx — order export, belongs to /marketplace not /ecommerce."""
     return _xlsx({'orders': [
@@ -178,12 +192,35 @@ def test_lazada_english_headers_still_detected():
 
 @pytest.mark.parametrize('builder, must_mention', [
     (_lazada_freight_xlsx, 'freight'),
+    (_lazada_skuimg_xlsx, 'skuimg'),
     (_shopee_order_xlsx, 'คำสั่งซื้อ'),
 ])
 def test_rejects_known_but_unsupported_exports(builder, must_mention):
     with pytest.raises(ValueError) as e:
         pp.detect_platform_file(builder())
     assert must_mention in str(e.value)
+
+
+def test_skuimg_must_not_be_taken_for_a_stock_file():
+    """Regression pin, /scrutinize 2026-07-30. skuimg is part of Lazada's
+    standard 5-file product export, so it lands in the same download folder as
+    pricestock and WILL get dropped into the one box. It shares 'Shop SKU' with
+    pricestock but has no price/stock columns, and import_platform_skus assigns
+    `price = excluded.price` / `stock = excluded.stock` WITHOUT a COALESCE — so
+    misrouting it would blank price+stock on every Lazada listing and bump
+    imported_at, collapsing every Lazada estimate on /ecommerce to zero. Worse
+    than the incident this whole change exists to prevent."""
+    with pytest.raises(ValueError):
+        pp.detect_platform_file(_lazada_skuimg_xlsx())
+
+
+def test_lazada_stock_requires_a_price_column():
+    """What separates pricestock from its siblings is SpecialPrice — verified
+    present in all five real pricestock exports on record (Thai and English
+    header variants) and absent from skuimg/freight/basic."""
+    no_price = ['Product ID', 'catId', 'ชื่อสินค้า', 'sku.skuId', 'ร้าน sku']
+    with pytest.raises(ValueError):
+        pp.detect_platform_file(_lazada_stock_xlsx(no_price))
 
 
 def test_rejects_unrelated_spreadsheet():
