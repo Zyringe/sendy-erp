@@ -212,6 +212,27 @@ def test_parse_lazada_basic_info_maps_fields():
     ]
 
 
+def test_parse_lazada_basic_info_fails_loud_on_missing_thai_headers():
+    # Lazada localized its template headers at least once (Thai <-> English,
+    # see _build_lazada_basic_xlsx docstring). An English-headered file must
+    # raise -- silently parsing it yields product_name '' for every row and
+    # the upsert would overwrite all names (product_name is not COALESCEd).
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'template'
+    cols = ['Product ID', 'catId', 'Product Name', 'Main Description']
+    ws.append(cols)
+    for _ in range(3):
+        ws.append(['help text'] + [''] * (len(cols) - 1))
+    ws.append(['421038989', '12080', 'SENDAI Door Knob', 'desc'])
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    with pytest.raises(ValueError, match='ชื่อสินค้า'):
+        pp.parse_lazada_basic_info(buf)
+
+
 def test_parse_lazada_basic_info_desc_falls_back_to_highlights():
     # The real basic*.xlsx carries คำอธิบายหลัก for only ~74/179 products —
     # the live content for the rest sits in จุดเด่นของสินค้า. Must mirror

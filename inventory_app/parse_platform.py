@@ -665,6 +665,14 @@ def parse_lazada_basic_info(file_obj):
     raw_json.
     """
     df = _read_lazada_file(file_obj)
+    if 'ชื่อสินค้า' not in df.columns:
+        # Lazada localized this template's headers at least once (Thai <->
+        # English). Parsing on without the Thai headers would yield '' for
+        # every product_name and the upsert would overwrite all stored names.
+        raise ValueError(
+            "ไฟล์ Lazada basic ไม่มีหัวคอลัมน์ 'ชื่อสินค้า' — "
+            "รูปแบบหัวคอลัมน์อาจเปลี่ยน (Thai/English) ต้องอัปเดต parser ก่อน import"
+        )
     records = []
     for _, row in df.iterrows():
         raw = {k: (None if pd.isna(v) else str(v)) for k, v in row.items()}
