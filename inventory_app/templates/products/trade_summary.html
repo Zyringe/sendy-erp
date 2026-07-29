@@ -36,6 +36,20 @@
   </div>
 </div>
 
+{# ── Unit filter chips (one product can sell in more than one bill unit) ─── #}
+{% if data.units %}
+<div class="btn-group btn-group-sm mb-3" role="group">
+  <a href="{{ url_for('products.product_trade_summary', product_id=data.product.id,
+                      date_from=data.date_from, date_to=data.date_to) }}"
+     class="btn btn-outline-secondary {% if not data.unit %}active{% endif %}">ทั้งหมด {{ data.units | sum(attribute='doc_count') }}</a>
+  {% for u in data.units %}
+  <a href="{{ url_for('products.product_trade_summary', product_id=data.product.id,
+                      date_from=data.date_from, date_to=data.date_to, unit=u.unit) }}"
+     class="btn btn-outline-secondary {% if data.unit == u.unit %}active{% endif %}">{{ u.unit }} {{ u.doc_count }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+
 {# ── Summary cards ───────────────────────────────────────────────────────── #}
 <div class="row g-3 mb-4">
   <div class="col-sm-6 col-xl-3">
@@ -164,6 +178,7 @@
               <th>วันที่</th>
               <th>เลขเอกสาร</th>
               <th>ลูกค้า</th>
+              <th>หน่วย</th>
               <th class="text-end">จำนวน</th>
               <th class="text-end">ยอด</th>
             </tr>
@@ -184,11 +199,12 @@
                      class="text-decoration-none text-subtle">{{ r.customer }}</a>
                 {% else %}—{% endif %}
               </td>
+              <td class="small text-subtle">{{ r.unit or '—' }}</td>
               <td class="text-end small text-subtle">{{ r.total_qty | fmt_qty }}</td>
               <td class="text-end fw-600 text-success small">{{ r.total_net | fmt_price }}</td>
             </tr>
             {% else %}
-            <tr><td colspan="5" class="text-center text-subtle py-4">ไม่มีข้อมูล</td></tr>
+            <tr><td colspan="6" class="text-center text-subtle py-4">ไม่มีข้อมูล</td></tr>
             {% endfor %}
           </tbody>
         </table>

@@ -584,7 +584,8 @@ def product_regen_sku_code(product_id):
 def product_trade_summary(product_id):
     date_from = request.args.get('date_from') or None
     date_to   = request.args.get('date_to')   or None
-    data = models.get_product_trade_summary(product_id, date_from, date_to)
+    unit      = request.args.get('unit')      or None
+    data = models.get_product_trade_summary(product_id, date_from, date_to, unit)
     if not data['product']:
         flash('ไม่พบสินค้า', 'danger')
         return redirect(url_for('sales.trade_dashboard'))
