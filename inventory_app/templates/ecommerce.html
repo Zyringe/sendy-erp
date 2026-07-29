@@ -188,8 +188,7 @@ tr.ecom-row-dim    td { opacity:.55; }
             <div class="text-subtle" style="font-size:.72rem">{{ r.sku_code or '—' }} · {{ r.unit_type }}</div>
           </td>
           <td data-label="Sendy" class="text-end">
-            {{ r.stock | fmt_qty }}
-            {% if r.buildable > 0 %}<div class="text-subtle" style="font-size:.7rem">+แพ็ค {{ r.buildable | fmt_qty }}</div>{% endif %}
+            {{ r.stock | fmt_qty }}{% if r.buildable > 0 %} <span class="text-subtle" title="เติมได้อีก {{ r.buildable | fmt_qty }} จากการแกะ/แพ็ค (ตัวหลวม↔แผง) — ทางเลือก ไม่ใช่สต๊อกจริง">(+{{ r.buildable | fmt_qty }})</span>{% endif %}
           </td>
           {% for p in ['shopee', 'lazada', 'tiktok'] %}
           {% set pv = r.platforms[p] %}
@@ -247,8 +246,8 @@ tr.ecom-row-dim    td { opacity:.55; }
 <p class="text-subtle small mt-3">
   * สต็อก Shopee/Lazada/TikTok = <b>ประมาณการปัจจุบัน</b>: ตัวเลขในไฟล์ − ยอดขายจากบิล Express (หน้าร้านS/หน้าร้านL) หลังวันที่ไฟล์
   · แปลงเป็นหน่วย Sendy ด้วยอัตราต่อครั้งขายของแต่ละ listing แล้ว (เช่น listing ขายเป็นโหล ×12)
-  · จำนวนในวงเล็บ = จำนวน listing/ตัวเลือกบน platform นั้น<br>
-  คอลัมน์ Sendy: ตัวเลขหลัก = สต็อกของสินค้านั้นเอง · <b>+แพ็ค</b> = เติมได้จากการแกะแพ็ค/แพ็คตัวหลวม
-  (สูตร [แกะ]/[แพ็ค] เดียวกับช่อง "เติมได้จากแพ็ค" หน้าสินค้า) · <b>alert คิดจากยอดรวมทั้งสองก้อน</b>
+  · (N listing) = จำนวน listing/ตัวเลือกบน platform นั้น<br>
+  คอลัมน์ Sendy: ตัวเลขหลัก = สต็อกของสินค้านั้นเอง · <b>(+N)</b> = เติมได้จากการแกะแพ็ค/แพ็คตัวหลวม
+  (สูตร [แกะ]/[แพ็ค] เดียวกับหน้าสินค้า) · <b>alert คิดจากยอดรวมทั้งสองก้อน</b>
 </p>
 {% endblock %}

@@ -40,8 +40,7 @@
     <div class="d-flex flex-wrap gap-4 mt-3">
       <div>
         <div class="fs-5 fw-bold">
-          {{ p.stock | fmt_qty }}
-          {% if p.buildable > 0 %}<span class="text-subtle" style="font-size:.7rem">+แพ็ค {{ p.buildable | fmt_qty }}</span>{% endif %}
+          {{ p.stock | fmt_qty }}{% if p.buildable > 0 %} <span class="text-subtle fw-normal" title="เติมได้อีก {{ p.buildable | fmt_qty }} จากการแกะ/แพ็ค (ตัวหลวม↔แผง) — ทางเลือก ไม่ใช่สต๊อกจริง">(+{{ p.buildable | fmt_qty }})</span>{% endif %}
         </div>
         <div class="text-subtle small">Sendy stock ({{ p.unit_type }})</div>
       </div>
