@@ -1168,8 +1168,6 @@ CREATE TABLE "products" (
     is_active                INTEGER NOT NULL DEFAULT 1,
     created_at               TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at               TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
-    shopee_stock             INTEGER NOT NULL DEFAULT 0,
-    lazada_stock             INTEGER NOT NULL DEFAULT 0,
     brand_id                 INTEGER REFERENCES brands(id),
     category_id              INTEGER REFERENCES categories(id),
     family_id                INTEGER REFERENCES product_families(id),
@@ -1185,8 +1183,10 @@ CREATE TABLE "products" (
     sku_code_locked          INTEGER NOT NULL DEFAULT 0
                                   CHECK(sku_code_locked IN (0, 1)),
     sub_category_short_code  TEXT,
-    packaging_short          TEXT
-, opening_cost REAL NOT NULL DEFAULT 0.0, created_via TEXT);
+    packaging_short          TEXT,
+    opening_cost             REAL    NOT NULL DEFAULT 0.0,
+    created_via              TEXT
+);
 
 CREATE TABLE "promotions" (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1709,6 +1709,8 @@ CREATE INDEX idx_payroll_runs_company ON payroll_runs(company_id);
 
 CREATE INDEX idx_pcl_product ON product_cost_ledger(product_id, event_date, id);
 
+CREATE INDEX idx_pcm_pid ON product_code_mapping(product_id);
+
 CREATE INDEX idx_pi_doc_no ON paid_invoices(doc_no);
 
 CREATE INDEX idx_plat_price_hist_product
@@ -1758,6 +1760,8 @@ CREATE INDEX idx_product_labels_brand        ON product_labels(brand);
 CREATE INDEX idx_product_labels_needs_review ON product_labels(needs_review);
 
 CREATE INDEX idx_product_labels_product_id   ON product_labels(product_id);
+
+CREATE INDEX idx_product_locations_pid ON product_locations(product_id);
 
 CREATE INDEX idx_product_price_tiers_product ON product_price_tiers(product_id);
 
@@ -3844,7 +3848,6 @@ SELECT
     p.family_id, p.unit_type, p.units_per_carton, p.units_per_box,
     p.cost_price, p.base_sell_price, p.hard_to_sell, p.is_active,
     COALESCE(s.quantity, 0) AS stock,
-    p.shopee_stock, p.lazada_stock,
     p.created_at, p.updated_at
 FROM products p
 LEFT JOIN brands b              ON b.id   = p.brand_id
