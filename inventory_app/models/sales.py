@@ -229,10 +229,16 @@ def get_trade_dashboard(date_from=None, date_to=None):
     }
 
 
-def get_product_trade_summary(product_id, date_from=None, date_to=None):
+def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=None):
     """
     Returns sales summary for a specific product:
     top customers, monthly trend, recent docs.
+
+    `unit`: bill-unit filter (e.g. แผง/ตัว) — one product can sell in more
+    than one unit, so this narrows summary/top_customers/monthly/docs to just
+    that unit. The unit-chips breakdown (`units`) is always computed from the
+    product+dates conds WITHOUT the unit cond, so the chips keep showing
+    every unit's count even while one is active.
     """
     conn = get_connection()
     conds = ['s.product_id = ?']
@@ -241,6 +247,10 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None):
         conds.append('s.date_iso >= ?'); params.append(date_from)
     if date_to:
         conds.append('s.date_iso <= ?'); params.append(date_to)
+    base_where = ' AND '.join(conds)
+    base_params = list(params)
+    if unit:
+        conds.append('s.unit = ?'); params.append(unit)
     where = ' AND '.join(conds)
 
     product = conn.execute(
@@ -284,7 +294,8 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None):
     docs = conn.execute(f"""
         SELECT s.date_iso, s.doc_no, s.customer,
                SUM(s.qty) AS total_qty,
-               SUM(s.net) AS total_net
+               SUM(s.net) AS total_net,
+               MIN(s.unit) AS unit
         FROM sales_transactions s
         WHERE {where}
         GROUP BY s.doc_no
@@ -292,11 +303,21 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None):
         LIMIT 200
     """, params).fetchall()
 
+    units = conn.execute(f"""
+        SELECT s.unit, COUNT(DISTINCT s.doc_no) AS doc_count
+        FROM sales_transactions s
+        WHERE {base_where}
+        GROUP BY s.unit
+        ORDER BY doc_count DESC
+    """, base_params).fetchall()
+
     conn.close()
     return {
         'product':    dict(product) if product else {},
         'date_from':  date_from,
         'date_to':    date_to,
+        'unit':       unit,
+        'units':      [dict(r) for r in units],
         'summary':    dict(summary),
         'top_customers': [dict(r) for r in top_customers],
         'monthly':    [dict(r) for r in monthly],
