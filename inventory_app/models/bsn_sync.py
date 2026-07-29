@@ -203,16 +203,8 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str):
                 platform = None
                 if customer == 'หน้าร้านL':
                     platform = 'lazada'
-                    conn.execute(
-                        "UPDATE products SET lazada_stock = MAX(0, lazada_stock - ?) WHERE id = ?",
-                        (base_qty, row['product_id'])
-                    )
                 elif customer == 'หน้าร้านS':
                     platform = 'shopee'
-                    conn.execute(
-                        "UPDATE products SET shopee_stock = MAX(0, shopee_stock - ?) WHERE id = ?",
-                        (base_qty, row['product_id'])
-                    )
 
                 # Also deduct platform_skus.stock if mapped
                 if platform and row['product_id']:

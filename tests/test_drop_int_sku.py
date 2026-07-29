@@ -84,7 +84,6 @@ def test_create_product_without_sku(migrated_db):
         'product_name': 'pytest no-sku', 'units_per_carton': 1, 'units_per_box': 1,
         'unit_type': 'ตัว', 'hard_to_sell': 0, 'cost_price': 0.0,
         'base_sell_price': 0.0, 'low_stock_threshold': 10,
-        'shopee_stock': 0, 'lazada_stock': 0,
     })
     assert isinstance(pid, int) and pid > 0
     p = models.get_product(pid)
@@ -99,7 +98,6 @@ def test_update_product_without_sku(migrated_db):
         'product_name': 'pytest renamed', 'units_per_carton': 1, 'units_per_box': 1,
         'unit_type': 'ตัว', 'hard_to_sell': 0, 'cost_price': 1.0,
         'base_sell_price': 2.0, 'low_stock_threshold': 5,
-        'shopee_stock': 0, 'lazada_stock': 0,
     })
     assert models.get_product(pid)['product_name'] == 'pytest renamed'
 
@@ -117,7 +115,6 @@ def test_create_product_inserts_new_row_keyed_by_product_id(migrated_db):
         'product_name': 'created-new-row', 'units_per_carton': 1, 'units_per_box': 1,
         'unit_type': 'ตัว', 'hard_to_sell': 0, 'cost_price': 0.0,
         'base_sell_price': 0.0, 'low_stock_threshold': 10,
-        'shopee_stock': 0, 'lazada_stock': 0,
     })
     after = sqlite3.connect(migrated_db).execute(
         "SELECT COUNT(*) FROM products").fetchone()[0]

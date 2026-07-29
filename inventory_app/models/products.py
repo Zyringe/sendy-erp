@@ -111,11 +111,9 @@ def create_product(data: dict) -> int:
     conn = get_connection()
     cur = conn.execute("""
         INSERT INTO products (product_name, units_per_carton, units_per_box,
-            unit_type, hard_to_sell, cost_price, opening_cost, base_sell_price, low_stock_threshold,
-            shopee_stock, lazada_stock)
+            unit_type, hard_to_sell, cost_price, opening_cost, base_sell_price, low_stock_threshold)
         VALUES (:product_name, :units_per_carton, :units_per_box,
-            :unit_type, :hard_to_sell, :cost_price, :cost_price, :base_sell_price, :low_stock_threshold,
-            :shopee_stock, :lazada_stock)
+            :unit_type, :hard_to_sell, :cost_price, :cost_price, :base_sell_price, :low_stock_threshold)
     """, data)
     # ensure stock_levels row exists
     conn.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (cur.lastrowid,))
@@ -162,7 +160,6 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
       cost_price (default 0.0) -- also seeds opening_cost
       base_sell_price (default 0.0)
       low_stock_threshold (default config.LOW_STOCK_DEFAULT_THRESHOLD)
-      shopee_stock, lazada_stock (default 0)
       units_per_carton, units_per_box (default 1)
 
     Returns the new product id. Raises on any error, e.g. an invalid
@@ -221,12 +218,12 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
             INSERT INTO products
               (product_name, units_per_carton, units_per_box,
                unit_type, hard_to_sell, cost_price, opening_cost, base_sell_price,
-               low_stock_threshold, shopee_stock, lazada_stock,
+               low_stock_threshold,
                brand_id, category_id, sub_category, color_code,
                packaging_th, packaging_short,
                series, model, size, condition, pack_variant, created_via)
             VALUES
-              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             d.get('product_name') or '',
             d.get('units_per_carton') or 1,
@@ -238,8 +235,6 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
             d.get('base_sell_price') or 0.0,
             d.get('low_stock_threshold') if d.get('low_stock_threshold') is not None
                 else config.LOW_STOCK_DEFAULT_THRESHOLD,
-            d.get('shopee_stock') or 0,
-            d.get('lazada_stock') or 0,
             d.get('brand_id'),
             category_id,
             d.get('sub_category') or None,
@@ -288,13 +283,12 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
 # whichever of these keys are actually present in `data` — callers (currently
 # just product_edit) may omit fields their form doesn't collect, and those
 # columns are left untouched rather than clobbered to 0/NULL. See PR fixing
-# the product-edit form silently zeroing hard_to_sell/shopee_stock/lazada_stock
-# (those three aren't rendered by the edit form, so they were always absent
-# from `data` and a fixed full-column UPDATE wiped them on every save).
+# the product-edit form silently zeroing hard_to_sell
+# (it isn't rendered by the edit form, so it was always absent from `data`
+# and a fixed full-column UPDATE wiped it on every save).
 _UPDATABLE_PRODUCT_COLUMNS = (
     'product_name', 'units_per_carton', 'units_per_box', 'unit_type',
     'hard_to_sell', 'cost_price', 'base_sell_price', 'low_stock_threshold',
-    'shopee_stock', 'lazada_stock',
 )
 
 
