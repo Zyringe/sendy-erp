@@ -233,9 +233,10 @@ def ecommerce_sku_edit(sku_id):
         flash(f'เกิดข้อผิดพลาด: {e}', 'danger')
     # `next` lets the detail page's inline qty_per_sale edit redirect back to
     # itself instead of the overview; only a same-site relative path is
-    # honored (never an attacker-supplied absolute/protocol-relative URL).
+    # honored (never an attacker-supplied absolute/protocol-relative URL —
+    # incl. the '/\' variant browsers normalize to '//').
     next_url = request.form.get('next', '')
-    if next_url.startswith('/') and not next_url.startswith('//'):
+    if next_url.startswith('/') and not next_url.startswith('//') and '\\' not in next_url:
         return redirect(next_url)
     return redirect(url_for('ecommerce.ecommerce',
                             page=request.form.get('page', 1),

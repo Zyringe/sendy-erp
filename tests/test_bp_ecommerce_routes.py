@@ -185,6 +185,73 @@ def test_sku_edit_rejects_offsite_next(admin_client, tmp_db):
     assert 'evil.example.com' not in resp.headers['Location']
 
 
+def test_sku_edit_does_not_bump_imported_at(admin_client, tmp_db):
+    """A manual qty_per_sale edit is NOT a file import: it must never touch
+    imported_at. _snapshot_dates() (ecommerce_overview) reads the per-platform
+    file date as MAX(imported_at) — one bumped row would shift the whole
+    platform's snapshot to today, zeroing sold_since and faking the freshness
+    pill (found in the P4 review: the PR's own live-test edit did exactly
+    that to the local DB's shopee snapshot)."""
+    _skip_if_missing(tmp_db, 225)
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    sku = conn.execute(
+        "SELECT id, platform, price, special_price, stock, qty_per_sale, imported_at "
+        "FROM platform_skus WHERE internal_product_id=225 "
+        "AND platform='shopee' AND variation_id IS NOT NULL"
+    ).fetchone()
+    snap_before = conn.execute(
+        "SELECT date(MAX(imported_at)) FROM platform_skus WHERE platform='shopee'"
+    ).fetchone()[0]
+    conn.close()
+    if sku is None:
+        pytest.skip("pid 225 has no real (non-stub) shopee sku in this DB snapshot")
+
+    resp = admin_client.post(f"/ecommerce/sku/{sku['id']}/edit", data={
+        'price': '' if sku['price'] is None else str(sku['price']),
+        'special_price': '' if sku['special_price'] is None else str(sku['special_price']),
+        'stock': '' if sku['stock'] is None else str(sku['stock']),
+        'qty_per_sale': '5',
+    }, follow_redirects=False)
+    assert resp.status_code == 302
+
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute(
+        "SELECT qty_per_sale, imported_at FROM platform_skus WHERE id=?", (sku['id'],)
+    ).fetchone()
+    snap_after = conn.execute(
+        "SELECT date(MAX(imported_at)) FROM platform_skus WHERE platform='shopee'"
+    ).fetchone()[0]
+    conn.close()
+    assert row[0] == 5.0                       # the edit itself landed
+    assert row[1] == sku['imported_at']        # file stamp untouched
+    assert snap_after == snap_before           # platform snapshot unmoved
+
+
+def test_sku_edit_rejects_backslash_next(admin_client, tmp_db):
+    """Browsers normalize '\\' to '/' in URLs, so '/\\evil.com' would become
+    protocol-relative '//evil.com' — the plain '//' check alone misses it."""
+    _skip_if_missing(tmp_db, 225)
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    sku = conn.execute(
+        "SELECT id FROM platform_skus WHERE internal_product_id=225 "
+        "AND platform='shopee' AND variation_id IS NOT NULL"
+    ).fetchone()
+    conn.close()
+    if sku is None:
+        pytest.skip("pid 225 has no real (non-stub) shopee sku in this DB snapshot")
+
+    resp = admin_client.post(f"/ecommerce/sku/{sku['id']}/edit", data={
+        'qty_per_sale': '2',
+        'next': '/\\evil.example.com/steal',
+    }, follow_redirects=False)
+    assert resp.status_code == 302
+    # must fall back to the overview, not redirect into the backslash path
+    assert resp.headers['Location'].startswith('/ecommerce')
+    assert 'evil.example.com' not in resp.headers['Location']
+
+
 def test_sku_edit_falls_back_to_overview_without_next(admin_client, tmp_db):
     _skip_if_missing(tmp_db, 225)
     conn = sqlite3.connect(tmp_db)

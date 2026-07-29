@@ -344,10 +344,13 @@ def get_platform_summary():
 
 def update_platform_sku(sku_id, price, special_price, stock, qty_per_sale):
     conn = get_connection()
+    # imported_at deliberately NOT touched: it is the platform-file stamp that
+    # ecommerce_overview._snapshot_dates() reads as MAX(imported_at) — a manual
+    # edit bumping it would shift the whole platform's snapshot to today
+    # (freshness pill lies, sold_since window collapses to zero).
     conn.execute("""
         UPDATE platform_skus
-        SET price=?, special_price=?, stock=?, qty_per_sale=?,
-            imported_at=datetime('now','localtime')
+        SET price=?, special_price=?, stock=?, qty_per_sale=?
         WHERE id=?
     """, (price, special_price, stock, qty_per_sale, sku_id))
     conn.commit()
