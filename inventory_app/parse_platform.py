@@ -39,6 +39,80 @@ import pandas as pd
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 
+# ── File sniffing (unified /ecommerce import box) ─────────────────────────────
+
+# Lazada exports are the only family with a 'template' sheet; header on row 0.
+# Thai and English header variants both occur (Lazada has localized at least once).
+_LAZADA_BASIC_MARKERS = {'รูปภาพสินค้า1', 'Product Images1', 'ชื่อสินค้าใน En', 'สถานะสินค้า'}
+_LAZADA_STOCK_MARKERS = {'ร้าน sku', 'Shop SKU'}
+_LAZADA_FREIGHT_MARKERS = {'Package Weight (kg)', 'Pre-Order(by Days) Enable'}
+
+# Shopee mass-update exports put a machine-readable `et_title_*` code row above
+# the Thai header. Match on EITHER, so detection survives both Shopee localizing
+# the visible header AND a file re-saved without the code row.
+_SHOPEE_ANY = {'รหัสสินค้า'}                     # present in every product export
+_SHOPEE_STOCK_MARKERS = {'et_title_variation_stock', 'คลัง'}
+_SHOPEE_BASIC_MARKERS = {'et_title_product_description', 'รายละเอียดสินค้า'}
+_SHOPEE_ORDER_MARKERS = {'หมายเลขคำสั่งซื้อ', 'orderNumber'}
+
+_HEADER_SCAN_ROWS = 8   # Shopee's code row, Thai header and instruction rows all sit here
+
+
+def detect_platform_file(file_obj):
+    """Sniff a Shopee/Lazada product export by CONTENT and return
+    ``(platform, kind)`` — kind is 'stock' (variation grain → platform_skus)
+    or 'basic' (item grain → platform_products).
+
+    Raises ValueError, in Thai, for anything not positively identified.
+    Refusing is the point: the old dropdown-driven path let a Shopee
+    basic-info file through `parse_shopee`, which requires only a numeric
+    `รหัสสินค้า`, and wrote 288 junk stub rows (2026-07-30 incident).
+
+    Leaves the stream rewound so the caller can hand the same object to a
+    parser.
+    """
+    file_obj.seek(0)
+    try:
+        xl = pd.ExcelFile(file_obj)
+        sheets = list(xl.sheet_names)
+
+        # ── Lazada ──
+        if 'template' in sheets:
+            head = {str(c) for c in
+                    pd.read_excel(xl, sheet_name='template', header=0, nrows=0).columns}
+            if head & _LAZADA_BASIC_MARKERS:
+                return 'lazada', 'basic'
+            if head & _LAZADA_STOCK_MARKERS:
+                return 'lazada', 'stock'
+            if head & _LAZADA_FREIGHT_MARKERS:
+                raise ValueError('เป็นไฟล์ Lazada freight (ขนาด/น้ำหนักพัสดุ) — ยังไม่รองรับ')
+            raise ValueError('ไฟล์ Lazada ชนิดนี้ยังไม่รองรับ — รองรับเฉพาะ pricestock และ basic')
+
+        # ── Shopee ── the header row's index varies by export, so scan the top
+        # few rows as a flat cell set instead of assuming one.
+        top = pd.read_excel(xl, sheet_name=sheets[0], header=None, dtype=str,
+                            nrows=_HEADER_SCAN_ROWS)
+        cells = {str(v).strip() for v in top.values.ravel()}
+        if cells & _SHOPEE_ORDER_MARKERS:
+            raise ValueError('เป็นไฟล์คำสั่งซื้อ — ให้นำเข้าที่หน้า Marketplace แทน')
+        if (cells & _SHOPEE_ANY) or any(c.startswith('et_title_') for c in cells):
+            if cells & _SHOPEE_STOCK_MARKERS:
+                return 'shopee', 'stock'
+            if cells & _SHOPEE_BASIC_MARKERS:
+                return 'shopee', 'basic'
+            raise ValueError(
+                'ไฟล์ Shopee ชนิดนี้ยังไม่รองรับ — รองรับเฉพาะ mass update '
+                '"ข้อมูลการขาย" (สต็อก/ราคา) และ "ข้อมูลพื้นฐาน" (ชื่อ/รายละเอียด)')
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f'อ่านไฟล์ไม่สำเร็จ: {e}')
+    finally:
+        file_obj.seek(0)
+
+    raise ValueError('ไม่รู้จักรูปแบบไฟล์ — ต้องเป็นไฟล์ export สินค้า/สต็อก จาก Shopee หรือ Lazada')
+
+
 # ── Shopee ────────────────────────────────────────────────────────────────────
 
 SHOPEE_METADATA_ROWS = 2   # rows before Thai header (rows 0-1)
