@@ -278,8 +278,6 @@ def product_new():
                 'cost_price': float(f.get('cost_price') or 0),
                 'base_sell_price': float(f.get('base_sell_price') or 0),
                 'low_stock_threshold': int(f.get('low_stock_threshold') or config.LOW_STOCK_DEFAULT_THRESHOLD),
-                'shopee_stock': int(f.get('shopee_stock') or 0),
-                'lazada_stock': int(f.get('lazada_stock') or 0),
             }
         except ValueError as e:
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')

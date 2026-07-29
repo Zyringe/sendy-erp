@@ -498,12 +498,6 @@ def init_db():
             conn.execute(
                 f"ALTER TABLE {tbl} ADD COLUMN synced_to_stock INTEGER NOT NULL DEFAULT 0"
             )
-    # Migration: add shopee_stock and lazada_stock if missing
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(products)").fetchall()]
-    if 'shopee_stock' not in cols:
-        conn.execute("ALTER TABLE products ADD COLUMN shopee_stock INTEGER NOT NULL DEFAULT 0")
-    if 'lazada_stock' not in cols:
-        conn.execute("ALTER TABLE products ADD COLUMN lazada_stock INTEGER NOT NULL DEFAULT 0")
     # Migration: add doc_base column + indexes for payment status performance
     cols = [r[1] for r in conn.execute("PRAGMA table_info(sales_transactions)").fetchall()]
     if 'doc_base' not in cols:

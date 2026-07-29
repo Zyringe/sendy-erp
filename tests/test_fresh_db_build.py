@@ -51,7 +51,7 @@ def test_schema_sql_in_sync_with_live(tmp_path, monkeypatch):
     Without this guard a stale schema.sql would silently build fresh DBs with
     the wrong schema while the runner stamps every migration as already-applied
     — so the missing change would never self-heal. (Blind spot: the few columns/
-    tables init_db re-adds inline — synced_to_stock, shopee/lazada_stock,
+    tables init_db re-adds inline — synced_to_stock,
     doc_base, ref_invoice, conversion_formulas/customers/*_cost_* — are
     self-healed regardless, so drift in those is harmless and not flagged.)
     """
