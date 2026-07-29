@@ -34,6 +34,9 @@ catalog view. `ecommerce_listings` is NOT joined: platform_skus already
 contains the propagated freebie/bundle stub rows (see plan's verified facts),
 so it is the complete listing set for this purpose.
 """
+import json
+import re
+
 from database import get_connection
 
 from .conversions import get_buildable
@@ -318,6 +321,26 @@ def get_unmapped_rows():
     return out
 
 
+def _norm_html_text(s):
+    """Tag- and whitespace-insensitive text for duplicate detection only
+    (display formatting is filters.html_text's job)."""
+    return re.sub(r'\s+', '', re.sub(r'<[^>]+>', '', s or ''))
+
+
+def _lazada_highlights(item):
+    """จุดเด่นของสินค้า from the Lazada raw_json, or None when absent or a
+    markup-only duplicate of the description (the basic*.xlsx export fills
+    คำอธิบายหลัก for only ~74/179 products; จุดเด่น often carries the rest,
+    and for some products both hold the same text in different markup)."""
+    try:
+        hl = json.loads(item.get('raw_json') or '{}').get('จุดเด่นของสินค้า')
+    except (ValueError, TypeError):
+        return None
+    if not hl or _norm_html_text(hl) == _norm_html_text(item.get('description')):
+        return None
+    return hl
+
+
 def get_product_marketplace_detail(product_id):
     """Per-product detail for /ecommerce/product/<id> (Phase 4). Source =
     platform_skus ONLY (contains the propagated el stubs). Returns None when
@@ -374,10 +397,14 @@ def get_product_marketplace_detail(product_id):
             if pid_str:
                 cache_key = (platform, pid_str)
                 if cache_key not in item_cache:
-                    item_cache[cache_key] = conn.execute(
+                    row = conn.execute(
                         "SELECT * FROM platform_products WHERE platform = ? AND product_id_str = ?",
                         (platform, pid_str),
                     ).fetchone()
+                    if row is not None:
+                        row = dict(row)
+                        row['highlights'] = _lazada_highlights(row) if platform == 'lazada' else None
+                    item_cache[cache_key] = row
                 item = item_cache[cache_key]
             platforms[platform]['items'].append({'item': item, 'skus': groups[(platform, pid_str)]})
     finally:

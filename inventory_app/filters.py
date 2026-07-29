@@ -3,6 +3,11 @@
 Extracted verbatim from app.py (behavior-preserving split).
 """
 import json
+import re
+from html import unescape
+
+_HTML_BLOCK_RE = re.compile(r'(?i)<\s*(?:br|/p|/div|/li|/tr|/h[1-6]|/article|/ul|/ol)\s*/?>')
+_HTML_TAG_RE = re.compile(r'<[^>]+>')
 
 
 def fmt_price(v):
@@ -48,8 +53,25 @@ def from_json(v):
         return None
 
 
+def html_text(v):
+    """Marketplace HTML (Lazada descriptions) -> readable plain text:
+    <br>/block-closing tags become newlines, other tags drop, entities
+    unescape. Plain text (Shopee) passes through with its blank lines kept.
+    Output is meant for an autoescaped element with white-space:pre-line."""
+    if not v:
+        return ''
+    s = _HTML_BLOCK_RE.sub('\n', str(v))
+    s = _HTML_TAG_RE.sub('', s)
+    s = unescape(s)
+    s = re.sub(r'[ \t]+', ' ', s)
+    s = re.sub(r' ?\n ?', '\n', s)
+    s = re.sub(r'\n{3,}', '\n\n', s)
+    return s.strip()
+
+
 def register_filters(app):
     app.template_filter('fmt_price')(fmt_price)
     app.template_filter('fmt_qty')(fmt_qty)
     app.template_filter('thaidate')(thaidate)
     app.template_filter('from_json')(from_json)
+    app.template_filter('html_text')(html_text)

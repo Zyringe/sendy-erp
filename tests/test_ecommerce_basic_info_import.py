@@ -111,7 +111,7 @@ def _build_lazada_basic_xlsx(rows):
     ws.title = 'template'
     cols = ['Product ID', 'catId', 'ชื่อสินค้า', 'ชื่อสินค้าใน En', 'สถานะสินค้า',
             'รูปภาพสินค้า1', 'รูปภาพสินค้า2', 'เงื่อนไขการรับประกัน',
-            'ระยะเวลาการรับประกัน', 'คำอธิบายหลัก']
+            'ระยะเวลาการรับประกัน', 'คำอธิบายหลัก', 'จุดเด่นของสินค้า']
     ws.append(cols)
     ws.append(['ไม่บังคับการกรอกข้อมูล'] + [''] * (len(cols) - 1))
     ws.append(['คำอธิบาย'] + [''] * (len(cols) - 1))
@@ -210,6 +210,22 @@ def test_parse_lazada_basic_info_maps_fields():
         'https://th-live.slatic.net/p/img1.jpg',
         'https://th-live.slatic.net/p/img2.jpg',
     ]
+
+
+def test_parse_lazada_basic_info_desc_falls_back_to_highlights():
+    # The real basic*.xlsx carries คำอธิบายหลัก for only ~74/179 products —
+    # the live content for the rest sits in จุดเด่นของสินค้า. Must mirror
+    # parse_lazada_product_files' Main-or-Highlights fallback so a
+    # basic-only re-import still carries edited Highlights content.
+    xlsx = _build_lazada_basic_xlsx([
+        {'Product ID': '421100001', 'ชื่อสินค้า': 'มีแต่จุดเด่น',
+         'คำอธิบายหลัก': None, 'จุดเด่นของสินค้า': '<p>จุดเด่นเท่านั้น</p>'},
+        {'Product ID': '421100002', 'ชื่อสินค้า': 'มีทั้งคู่',
+         'คำอธิบายหลัก': 'คำอธิบายหลักชนะ', 'จุดเด่นของสินค้า': 'จุดเด่นแพ้'},
+    ])
+    r1, r2 = pp.parse_lazada_basic_info(xlsx)
+    assert r1['description'] == '<p>จุดเด่นเท่านั้น</p>'
+    assert r2['description'] == 'คำอธิบายหลักชนะ'
 
 
 def test_parse_lazada_basic_info_empty_gallery_is_explicit_empty_list():
