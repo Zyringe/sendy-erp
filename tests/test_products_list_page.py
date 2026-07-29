@@ -143,6 +143,72 @@ def test_products_page_restock_checkbox_persists(admin_client):
     assert re.search(r'<input[^>]*name="restock"[^>]*checked[^>]*>', html)
 
 
+def test_get_products_dedupes_bsn_code_across_units(tmp_db):
+    """A bsn_code mapped twice under different bsn_unit values (e.g. the
+    catch-all '' plus 'ตัว') must render once, not once per mapping row.
+    Found on prod after P1 shipped (pid 2000: '041ม3315, 041ม3315, 041ม3350').
+    Look the pair up dynamically — do not hardcode a pid."""
+    import models
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("""
+        SELECT m.product_id FROM product_code_mapping m
+          JOIN products p ON p.id = m.product_id AND p.is_active = 1
+         WHERE m.product_id IS NOT NULL
+         GROUP BY m.product_id
+        HAVING COUNT(m.bsn_code) > COUNT(DISTINCT m.bsn_code)
+         LIMIT 1
+    """).fetchone()
+    if not row:
+        conn.close()
+        pytest.skip("no active product with a duplicated bsn_code in the live clone")
+    pid = row['product_id']
+    dup_code = conn.execute("""
+        SELECT bsn_code FROM product_code_mapping
+         WHERE product_id = ?
+         GROUP BY bsn_code
+        HAVING COUNT(*) > 1
+         LIMIT 1
+    """, (pid,)).fetchone()[0]
+    conn.close()
+
+    products, total = models.get_products(search=str(pid), per_page=50)
+    match = next(p for p in products if p['id'] == pid)
+    codes = match['bsn_codes'].split(', ')
+    assert codes.count(dup_code) == 1
+
+
+def test_products_page_dedupes_bsn_code_render(admin_client, tmp_db):
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("""
+        SELECT m.product_id FROM product_code_mapping m
+          JOIN products p ON p.id = m.product_id AND p.is_active = 1
+         WHERE m.product_id IS NOT NULL
+         GROUP BY m.product_id
+        HAVING COUNT(m.bsn_code) > COUNT(DISTINCT m.bsn_code)
+         LIMIT 1
+    """).fetchone()
+    if not row:
+        conn.close()
+        pytest.skip("no active product with a duplicated bsn_code in the live clone")
+    pid = row['product_id']
+    dup_code = conn.execute("""
+        SELECT bsn_code FROM product_code_mapping
+         WHERE product_id = ?
+         GROUP BY bsn_code
+        HAVING COUNT(*) > 1
+         LIMIT 1
+    """, (pid,)).fetchone()[0]
+    conn.close()
+
+    resp = admin_client.get('/products', query_string={'q': str(pid)})
+    assert resp.status_code == 200
+    html = resp.data.decode('utf-8')
+    # the GROUP_CONCAT-duplicate bug emits "<code>, <code>" back to back
+    assert f'{dup_code}, {dup_code}' not in html
+
+
 def test_products_page_buildable_badge_default_on(admin_client, tmp_db):
     import models
     res = models.get_buildable()

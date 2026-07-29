@@ -58,8 +58,9 @@ def get_products(search=None, low_stock=False, hard_to_sell=False,
                           WHERE platform='lazada' AND internal_product_id=p.id), 0) AS lazada_stock,
                (SELECT GROUP_CONCAT(pl.floor_no, ', ') FROM product_locations pl
                  WHERE pl.product_id = p.id) AS locations,
-               (SELECT GROUP_CONCAT(m.bsn_code, ', ') FROM product_code_mapping m
-                 WHERE m.product_id = p.id) AS bsn_codes
+               (SELECT GROUP_CONCAT(c, ', ') FROM
+                  (SELECT DISTINCT bsn_code AS c FROM product_code_mapping
+                    WHERE product_id = p.id ORDER BY bsn_code)) AS bsn_codes
         FROM products p
         LEFT JOIN stock_levels s ON s.product_id = p.id
         WHERE {where}
