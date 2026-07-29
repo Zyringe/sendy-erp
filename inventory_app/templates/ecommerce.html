@@ -198,7 +198,7 @@ tr.ecom-row-dim    td { opacity:.55; }
             <span class="text-subtle">—</span>
             {% else %}
             <span class="{% if pv.est == 0 %}text-danger fw-semibold{% endif %}">{{ pv.est | fmt_qty }}</span>
-            <div class="text-subtle" style="font-size:.7rem">({{ pv.listing_count | fmt_qty }})</div>
+            <div class="text-subtle" style="font-size:.7rem">({{ pv.listing_count | fmt_qty }} listing)</div>
             {% endif %}
           </td>
           {% endfor %}
