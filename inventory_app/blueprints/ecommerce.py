@@ -32,42 +32,42 @@ bp_ecommerce = Blueprint('ecommerce', __name__)
 
 @bp_ecommerce.route('/ecommerce')
 def ecommerce():
-    tab      = request.args.get('tab', 'shopee')
     search   = request.args.get('q', '').strip()
+    flt      = request.args.get('flt') or None
     page     = int(request.args.get('page', 1))
     per_page = current_app.config['ITEMS_PER_PAGE']
 
-    listing_summary = models.get_ecommerce_listing_summary()
-
-    if tab == 'mapping':
-        mapped_filter = request.args.get('mapped')
-        mapped = True if mapped_filter == '1' else (False if mapped_filter == '0' else None)
-        platform_filter = request.args.get('platform')
-        rows, total = models.get_ecommerce_listings(
-            platform=platform_filter or None,
-            search=search or None,
-            mapped=mapped,
-            page=page,
-            per_page=per_page,
-        )
-        pages   = max(1, (total + per_page - 1) // per_page)
-        summary = models.get_platform_summary()
-        return render_template('ecommerce.html',
-                               tab=tab, rows=rows, total=total,
-                               search=search, page=page, pages=pages,
-                               summary=summary, listing_summary=listing_summary,
-                               mapped_filter=mapped_filter, platform_filter=platform_filter or '')
-
-    platform = tab if tab in ('shopee', 'lazada') else 'shopee'
-    rows, total = models.get_platform_skus(platform, search or None, page, per_page)
-    pages   = max(1, (total + per_page - 1) // per_page)
-    summary = models.get_platform_summary()
+    rows, total, counts = models.get_marketplace_overview(
+        search=search or None, flt=flt, page=page, per_page=per_page)
+    pages = max(1, (total + per_page - 1) // per_page)
+    freshness = models.get_marketplace_freshness()
+    unmapped_counts = models.get_unmapped_counts()
+    unmapped_rows = (models.get_unmapped_rows()
+                     if unmapped_counts['platform_skus'] or unmapped_counts['ecommerce_listings']
+                     else [])
 
     return render_template('ecommerce.html',
-                           tab=tab, rows=rows, total=total,
-                           search=search, page=page, pages=pages,
-                           summary=summary, listing_summary=listing_summary,
-                           mapped_filter=None, platform_filter='')
+                           rows=rows, total=total, counts=counts,
+                           search=search, flt=flt, page=page, pages=pages,
+                           freshness=freshness, unmapped_counts=unmapped_counts,
+                           unmapped_rows=unmapped_rows)
+
+
+@bp_ecommerce.route('/ecommerce/product/<int:product_id>')
+def ecommerce_product(product_id):
+    detail = models.get_product_marketplace_detail(product_id)
+    if detail is None or not any(pf['items'] for pf in detail['platforms'].values()):
+        abort(404)
+
+    # Reuse get_marketplace_overview verbatim for the alert/combined-stock math
+    # (single source of truth, see plan) rather than re-deriving it here.
+    # simplify: O(all listed products) per detail-page hit — fine at ~560 rows
+    # / single-operator traffic; add a dedicated per-product query if the
+    # catalog or traffic grows enough to make that cost matter.
+    overview_rows, _, _ = models.get_marketplace_overview(per_page=100000)
+    status_row = next((r for r in overview_rows if r['product_id'] == product_id), None)
+
+    return render_template('ecommerce_product.html', detail=detail, status_row=status_row)
 
 
 @bp_ecommerce.route('/ecommerce/import', methods=['POST'])
@@ -80,7 +80,7 @@ def ecommerce_import():
     f = request.files.get('platform_file')
     if not f or not f.filename.endswith('.xlsx'):
         flash('กรุณาเลือกไฟล์ .xlsx', 'danger')
-        return redirect(url_for('ecommerce.ecommerce', tab=platform))
+        return redirect(url_for('ecommerce.ecommerce'))
 
     try:
         file_bytes = io.BytesIO(f.read())
@@ -91,7 +91,7 @@ def ecommerce_import():
 
         if not records:
             flash('ไม่พบข้อมูลในไฟล์', 'warning')
-            return redirect(url_for('ecommerce.ecommerce', tab=platform))
+            return redirect(url_for('ecommerce.ecommerce'))
 
         count, propagated = models.import_platform_skus(platform, records)
         flash(f'นำเข้าข้อมูล {platform.capitalize()} สำเร็จ {count} รายการ '
@@ -100,7 +100,7 @@ def ecommerce_import():
     except Exception as e:
         flash(f'เกิดข้อผิดพลาด: {e}', 'danger')
 
-    return redirect(url_for('ecommerce.ecommerce', tab=platform))
+    return redirect(url_for('ecommerce.ecommerce'))
 
 
 @bp_ecommerce.route('/ecommerce/import-info', methods=['POST'])
@@ -114,7 +114,6 @@ def ecommerce_import_info():
         flash('กรุณาเลือกไฟล์ .xlsx', 'danger')
         return redirect(url_for('ecommerce.ecommerce'))
 
-    last_platform = 'shopee'
     for f in files:
         if not f.filename:
             continue
@@ -136,12 +135,11 @@ def ecommerce_import_info():
                 continue
 
             count = models.import_platform_products(platform, records)
-            last_platform = platform
             flash(f'{f.filename}: นำเข้า {count} รายการ ({platform})', 'success')
         except Exception as e:
             flash(f'{f.filename}: เกิดข้อผิดพลาด: {e}', 'danger')
 
-    return redirect(url_for('ecommerce.ecommerce', tab=last_platform))
+    return redirect(url_for('ecommerce.ecommerce'))
 
 
 @bp_ecommerce.route('/ecommerce/export/<platform>')
@@ -152,7 +150,7 @@ def ecommerce_export(platform):
     rows = models.get_platform_skus_all(platform)
     if not rows:
         flash(f'ยังไม่มีข้อมูล {platform.capitalize()} ในระบบ', 'warning')
-        return redirect(url_for('ecommerce.ecommerce', tab=platform))
+        return redirect(url_for('ecommerce.ecommerce'))
 
     from flask import send_file
     import datetime
@@ -222,7 +220,6 @@ def ecommerce_mapping_import():
 
 @bp_ecommerce.route('/ecommerce/sku/<int:sku_id>/edit', methods=['POST'])
 def ecommerce_sku_edit(sku_id):
-    platform = request.form.get('platform', 'shopee')
     try:
         models.update_platform_sku(
             sku_id,
@@ -234,7 +231,14 @@ def ecommerce_sku_edit(sku_id):
         flash('อัปเดตเรียบร้อย', 'success')
     except Exception as e:
         flash(f'เกิดข้อผิดพลาด: {e}', 'danger')
-    return redirect(url_for('ecommerce.ecommerce', tab=platform,
+    # `next` lets the detail page's inline qty_per_sale edit redirect back to
+    # itself instead of the overview; only a same-site relative path is
+    # honored (never an attacker-supplied absolute/protocol-relative URL —
+    # incl. the '/\' variant browsers normalize to '//').
+    next_url = request.form.get('next', '')
+    if next_url.startswith('/') and not next_url.startswith('//') and '\\' not in next_url:
+        return redirect(next_url)
+    return redirect(url_for('ecommerce.ecommerce',
                             page=request.form.get('page', 1),
                             q=request.form.get('q', '')))
 
@@ -247,12 +251,12 @@ def ecommerce_listings_import():
     platform = request.form.get('platform', '').lower()
     if platform not in ('shopee', 'lazada'):
         flash('ระบุ platform ไม่ถูกต้อง', 'danger')
-        return redirect(url_for('ecommerce.ecommerce', tab='mapping'))
+        return redirect(url_for('ecommerce.ecommerce'))
 
     files = request.files.getlist('order_files')
     if not files or all(not f.filename for f in files):
         flash('กรุณาเลือกไฟล์', 'danger')
-        return redirect(url_for('ecommerce.ecommerce', tab='mapping'))
+        return redirect(url_for('ecommerce.ecommerce'))
 
     total_added = total_skipped = 0
     errors = []
@@ -276,7 +280,7 @@ def ecommerce_listings_import():
         flash(' | '.join(errors), 'danger')
     if total_added or total_skipped:
         flash(f'นำเข้า {platform.capitalize()} สำเร็จ: เพิ่มใหม่ {total_added} รายการ, ซ้ำข้าม {total_skipped} รายการ', 'success')
-    return redirect(url_for('ecommerce.ecommerce', tab='mapping'))
+    return redirect(url_for('ecommerce.ecommerce'))
 
 
 @bp_ecommerce.route('/ecommerce/listings/mapping-export')
@@ -285,7 +289,7 @@ def ecommerce_listings_mapping_export():
     rows = models.get_listing_mapping_data(unmatched_only=unmatched_only)
     if not rows:
         flash('ยังไม่มีข้อมูล listing ในระบบ', 'warning')
-        return redirect(url_for('ecommerce.ecommerce', tab='mapping'))
+        return redirect(url_for('ecommerce.ecommerce'))
 
     from flask import send_file
     import datetime
@@ -310,7 +314,7 @@ def ecommerce_listings_mapping_import():
     f = request.files.get('listing_mapping_file')
     if not f or not f.filename.endswith('.xlsx'):
         flash('กรุณาเลือกไฟล์ .xlsx', 'danger')
-        return redirect(url_for('ecommerce.ecommerce', tab='mapping'))
+        return redirect(url_for('ecommerce.ecommerce'))
     try:
         file_bytes = io.BytesIO(f.read())
         records = parse_listing_mapping(file_bytes)
@@ -320,4 +324,4 @@ def ecommerce_listings_mapping_import():
               'success' if not_found == 0 else 'warning')
     except Exception as e:
         flash(f'เกิดข้อผิดพลาด: {e}', 'danger')
-    return redirect(url_for('ecommerce.ecommerce', tab='mapping'))
+    return redirect(url_for('ecommerce.ecommerce'))

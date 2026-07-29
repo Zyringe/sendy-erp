@@ -165,6 +165,65 @@ def test_red_alert_is_per_platform(empty_db_conn):
     assert counts['red'] == 1
 
 
+def test_stub_only_platform_excluded_from_red(empty_db_conn):
+    """P4 pick-up of a P3 review finding: a platform where EVERY ps row is a
+    propagated order-file stub (NULL variation_id, no real weekly-file data)
+    must not trigger RED -- we have no real stock signal, just leftovers that
+    may be delisted."""
+    c = empty_db_conn
+    _product(c, 12, 'สินค้า stub-only lazada')
+    _stock(c, 12, 5)
+    _ps(c, 'shopee', 12, stock=20, qty_per_sale=1, imported_at='2026-07-01 00:00:00')
+    # a genuine NULL-variation_id stub row (bypass _ps's auto-vid default)
+    c.execute(
+        "INSERT INTO platform_skus (platform, variation_id, product_id_str, product_name, "
+        "internal_product_id, stock, qty_per_sale, is_ignored, imported_at) "
+        "VALUES ('lazada', NULL, '', 'ของแถม stub', 12, NULL, 1, 0, '2026-07-01 00:00:00')"
+    )
+    c.commit()
+    rows, total, counts = models.get_marketplace_overview()
+    r = _row(rows, 12)
+    assert r['platforms']['lazada']['stub_only'] is True
+    assert 'lazada' not in r['red_platforms']
+    assert r['status'] != 'red'
+
+
+def test_platform_with_real_and_stub_rows_not_treated_as_stub_only(empty_db_conn):
+    """A platform with at least one REAL (non-NULL variation_id) row plus stub
+    rows is a genuine RED candidate if it's truly sold out -- only ALL-stub
+    platforms are excluded."""
+    c = empty_db_conn
+    _product(c, 13, 'สินค้า real+stub lazada')
+    _stock(c, 13, 5)
+    _ps(c, 'lazada', 13, stock=0, qty_per_sale=1, imported_at='2026-07-01 00:00:00')  # real, sold out
+    c.execute(
+        "INSERT INTO platform_skus (platform, variation_id, product_id_str, product_name, "
+        "internal_product_id, stock, qty_per_sale, is_ignored, imported_at) "
+        "VALUES ('lazada', NULL, '', 'ของแถม stub', 13, NULL, 1, 0, '2026-07-01 00:00:00')"
+    )
+    c.commit()
+    rows, total, counts = models.get_marketplace_overview()
+    r = _row(rows, 13)
+    assert r['platforms']['lazada']['stub_only'] is False
+    assert r['red_platforms'] == ['lazada']
+    assert r['status'] == 'red'
+
+
+def test_freshness_days_old_uses_localtime(empty_db_conn):
+    """P4 pick-up of a P3 review finding: days_old must compare against
+    localtime 'now', not UTC -- else Thai mornings (UTC+7, before UTC
+    midnight rolls) can read 1 day older than they are."""
+    c = empty_db_conn
+    _product(c, 81, 'p localtime')
+    today_local = c.execute("SELECT date('now', 'localtime')").fetchone()[0]
+    _ps(c, 'shopee', 81, stock=1, imported_at=f'{today_local} 00:00:01')
+    c.commit()
+    fresh = models.get_marketplace_freshness()
+    # snapshot is "today" in localtime -> days_old must be 0, not 1 (which a
+    # UTC-based julianday('now') could read depending on time-of-day/TZ).
+    assert fresh['shopee']['days_old'] == 0
+
+
 def test_no_red_when_sendy_also_out_of_stock(empty_db_conn):
     """RED requires true_available > 0 -- a listing at 0 while Sendy is ALSO
     at 0 is DEAD territory, not RED (nothing to restock the listing from)."""

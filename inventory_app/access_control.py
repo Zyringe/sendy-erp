@@ -316,6 +316,7 @@ _ENDPOINT_MODULE = {
     'partners.supplier_list': 'trade',
     'partners.supplier_summary': 'trade',
     'ecommerce.ecommerce': 'trade',
+    'ecommerce.ecommerce_product': 'trade',
     'ecommerce.ecommerce_import': 'trade',
     'ecommerce.ecommerce_import_info': 'trade',
     'ecommerce.ecommerce_sku_edit': 'trade',

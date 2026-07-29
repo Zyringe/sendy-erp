@@ -19,8 +19,12 @@ Core-math invariants (see projects/ecommerce-revamp/plan.md — do not re-derive
     true_available(p)          = stock_levels.quantity + buildable     -- models.get_buildable()
     combined_open(p)           = sum(platform_est(p, pf)) over platforms
 
-    RED(p)   = exists pf with >=1 active listing AND platform_est(p,pf) <= 0,
+    RED(p)   = exists pf with >=1 active NON-stub-only listing AND platform_est(p,pf) <= 0,
                AND true_available(p) > 0
+               -- stub_only(p,pf): every ps row for (p,pf) has variation_id IS NULL
+               -- (propagated order-file stub, no real weekly-file data -- possibly
+               -- delisted). Excluded from RED (P4 pick-up of a P3 review finding):
+               -- we have no real stock signal for that platform, just leftovers.
     AMBER(p) = not RED, not DEAD, and true_available(p) < combined_open(p)
     DEAD(p)  = true_available(p) <= 0 AND combined_open(p) <= 0   -- dim, no alert
 
@@ -99,7 +103,7 @@ def get_marketplace_freshness():
             snap = snapshots[platform]
             if snap:
                 days_old = conn.execute(
-                    "SELECT CAST(julianday('now') - julianday(?) AS INTEGER)", (snap,)
+                    "SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER)", (snap,)
                 ).fetchone()[0]
             else:
                 days_old = None
@@ -124,8 +128,8 @@ def get_marketplace_overview(search=None, flt=None, page=1, per_page=50):
 
     rows[i] = {product_id, product_name, sku_code, unit_type, stock, buildable,
                true_available, platforms: {platform: None | {est, listing_count,
-               file_units, sold_since}}, combined_open, red_platforms, status
-               ('red'|'amber'|'dead'|'ok'), amber_excess}
+               file_units, sold_since, stub_only}}, combined_open, red_platforms,
+               status ('red'|'amber'|'dead'|'ok'), amber_excess}
 
     `total` = count after search + flt. `counts` = {'all','red','amber','dead',
     <platform>...} tallied over the search-filtered set, BEFORE flt narrows it
@@ -138,7 +142,8 @@ def get_marketplace_overview(search=None, flt=None, page=1, per_page=50):
         file_rows = conn.execute("""
             SELECT internal_product_id AS pid, platform,
                    SUM(MAX(COALESCE(stock, 0), 0) * qty_per_sale) AS file_units,
-                   COUNT(*) AS listing_count
+                   COUNT(*) AS listing_count,
+                   SUM(CASE WHEN variation_id IS NOT NULL THEN 1 ELSE 0 END) AS real_count
               FROM platform_skus
              WHERE internal_product_id IS NOT NULL AND is_ignored = 0
              GROUP BY internal_product_id, platform
@@ -174,6 +179,7 @@ def get_marketplace_overview(search=None, flt=None, page=1, per_page=50):
     for r in file_rows:
         file_by_pid.setdefault(r['pid'], {})[r['platform']] = {
             'file_units': r['file_units'] or 0, 'listing_count': r['listing_count'],
+            'stub_only': r['real_count'] == 0,
         }
 
     rows = []
@@ -198,10 +204,15 @@ def get_marketplace_overview(search=None, flt=None, page=1, per_page=50):
                 'listing_count': fu['listing_count'],
                 'file_units': fu['file_units'],
                 'sold_since': sold,
+                'stub_only': fu['stub_only'],
             }
 
         combined_open = sum(v['est'] for v in platforms.values() if v)
-        red_platforms = [pf for pf, v in platforms.items() if v and v['est'] <= 0]
+        # stub_only platforms (every ps row is a propagated order-file stub —
+        # NULL variation_id, no real weekly-file data) never trigger RED: we
+        # have no real information on that platform's actual stock, only
+        # leftover order stubs that may well be delisted (P3 review finding b).
+        red_platforms = [pf for pf, v in platforms.items() if v and v['est'] <= 0 and not v['stub_only']]
         is_red = bool(red_platforms) and true_available > 0
         # DEAD is checked before AMBER: with a negative true_available (stock
         # drift), AMBER's "<" would also fire — DEAD (dim, no alert) wins.

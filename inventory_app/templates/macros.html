@@ -67,3 +67,42 @@
   <span class="text-muted">— ไม่มีโปรโมชัน</span>
 {%- endif -%}
 {% endmacro %}
+
+
+{# ecommerce-revamp (Phase 4): red/amber/dead/ok alert badge for a
+   get_marketplace_overview() row -- shared by templates/ecommerce.html
+   (list) and templates/ecommerce_product.html (detail header). #}
+{% macro ecom_status_badge(r) %}
+{%- set PLAT_SHORT = {'shopee': 'SP', 'lazada': 'LZ', 'tiktok': 'TT'} -%}
+{%- set PLAT_LABEL = {'shopee': 'Shopee', 'lazada': 'Lazada', 'tiktok': 'TikTok'} -%}
+{%- if r.status == 'red' -%}
+  {% set ns = namespace(parts=[]) %}
+  {% for pf in r.red_platforms %}{% set ns.parts = ns.parts + [PLAT_SHORT[pf]] %}{% endfor %}
+  <span class="badge" style="background:#fdecee;color:#a8181f">
+    🔴 หมดบน {{ ns.parts | join(' + ') }} · Sendy {{ 'เหลือ' if r.true_available <= 5 else 'มี' }} {{ r.true_available | fmt_qty }}
+  </span>
+{%- elif r.status == 'amber' -%}
+  {% if r.true_available <= 0 %}
+    {% set ns = namespace(parts=[]) %}
+    {% for pf in ['shopee', 'lazada', 'tiktok'] %}
+      {% set pv = r.platforms[pf] %}
+      {% if pv and pv.est > 0 %}{% set ns.parts = ns.parts + [PLAT_LABEL[pf]] %}{% endif %}
+    {% endfor %}
+    <span class="badge" style="background:#fff4e5;color:#9a5b00">
+      🟠 Sendy หมด แต่ {{ ns.parts | join(' + ') }} ยังเปิดขายรวม {{ r.combined_open | fmt_qty }}
+    </span>
+  {% else %}
+    <span class="badge" style="background:#fff4e5;color:#9a5b00">
+      🟠 เปิดขายรวม {{ r.combined_open | fmt_qty }} &gt; Sendy {{ r.true_available | fmt_qty }}
+    </span>
+  {% endif %}
+{%- elif r.status == 'dead' -%}
+  <span class="badge bg-secondary">⚫ หมดทุกช่อง</span>
+{%- else -%}
+  {% if r.buildable > 0 %}
+  <span class="badge bg-success">ปกติ — ขายได้จากแพ็ค (+{{ r.buildable | fmt_qty }})</span>
+  {% else %}
+  <span class="badge bg-success">ปกติ</span>
+  {% endif %}
+{%- endif -%}
+{% endmacro %}
