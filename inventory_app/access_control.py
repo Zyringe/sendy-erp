@@ -300,6 +300,11 @@ _ENDPOINT_MODULE = {
     'commission.commission_overrides_edit': 'finance',
     'commission.commission_overrides_toggle': 'finance',
     'commission.commission_overrides_delete': 'finance',
+    'commission.commission_reassign_list': 'finance',
+    'commission.commission_reassign_new': 'finance',
+    'commission.commission_reassign_edit': 'finance',
+    'commission.commission_reassign_toggle': 'finance',
+    'commission.commission_reassign_delete': 'finance',
     'sales.payment_status': 'finance',
     'sales.payment_customers': 'finance',
     # trade (formerly 'accounting': sales trade/purchases + partners + call + ecommerce + marketplace)

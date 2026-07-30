@@ -18,6 +18,9 @@
       <a href="{{ url_for('commission.commission_overrides_list') }}" class="btn btn-sm btn-outline-secondary">
         <i class="bi bi-sliders"></i> จัดการ rule
       </a>
+      <a href="{{ url_for('commission.commission_reassign_list') }}" class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-person-gear"></i> ย้ายลูกค้า
+      </a>
       {% endif %}
       <a href="{{ url_for('commission.commission_payouts_list', month=year_month) }}" class="btn btn-sm btn-outline-secondary">
         <i class="bi bi-clock-history"></i> ประวัติการจ่าย

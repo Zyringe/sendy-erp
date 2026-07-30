@@ -512,3 +512,118 @@ def commission_overrides_delete(override_id):
     else:
         flash(f'ไม่สามารถลบ: {result["error"]}', 'danger')
     return redirect(url_for('commission.commission_overrides_list'))
+
+
+# ── Customer reassignment (migration 143) ────────────────────────────────────
+# Deliberately mounted UNDER /commission/ rather than as a new top-level page:
+# a navigable top-level page needs its link in three surfaces (base.html,
+# _mobile_drawer.html, and access_control._ENDPOINT_MODULE), and missing the
+# third silently collapses the whole module sidebar on that page. Nested under
+# an existing commission endpoint, it inherits the module mapping already in
+# place.
+
+def _flash_master_sync(result):
+    """Tell Put when the customer master moved with the rule. Silent when it
+    was already correct — a no-op message every save is noise."""
+    to = result.get('master_synced_to')
+    if to:
+        flash(f'อัปเดตทะเบียนลูกค้าให้เป็นเซลส์ {to} ตามกฎนี้ด้วยแล้ว', 'info')
+
+
+def _flash_paid_cycle_warnings(result):
+    """A reassignment never rewrites commission_payouts, so a rule dated back
+    into an already-paid cycle silently turns it into an overpayment. Put may
+    want that, so warn loudly rather than block."""
+    for w in result.get('paid_cycle_warnings') or []:
+        flash(
+            f'⚠️ กฎนี้ดึงยอดออกจากรอบ {w["year_month"]} ของเซลส์ {w["losing_rep"]} '
+            f'ซึ่งจ่ายคอมไปแล้ว ฿{w["amount_paid"]:,.2f} — รอบนั้นจะกลายเป็น "จ่ายเกิน". '
+            f'ถ้าไม่ได้ตั้งใจ ให้เลื่อนวันเริ่มมีผลให้หลังรอบนั้น',
+            'warning')
+
+
+def _reassign_customer_choices():
+    """Every customer, for the form's <datalist>. ~1,500 rows is small enough to
+    inline (it renders as plain <option> text) and avoids adding a search
+    endpoint for one admin-only form."""
+    rows, _ = models.get_customers_master(per_page=100000)
+    return rows
+
+
+@bp_commission.route('/commission/reassign')
+def commission_reassign_list():
+    _require_admin()
+    return render_template(
+        'commission_reassign_list.html',
+        rules=models.list_customer_reassignments(active_only=False),
+    )
+
+
+@bp_commission.route('/commission/reassign/new', methods=['GET', 'POST'])
+def commission_reassign_new():
+    _require_admin()
+    if request.method == 'POST':
+        result = models.create_customer_reassignment(request.form)
+        if result['ok']:
+            flash(f'เพิ่มกฎย้ายลูกค้า #{result["id"]} เรียบร้อย', 'success')
+            _flash_paid_cycle_warnings(result)
+            _flash_master_sync(result)
+            return redirect(url_for('commission.commission_reassign_list'))
+        flash(f'ไม่สามารถบันทึก: {result["error"]}', 'danger')
+
+    return render_template(
+        'commission_reassign_form.html',
+        rule=None,
+        form=request.form if request.method == 'POST' else None,
+        salespersons=models.get_active_salespersons(),
+        customers=_reassign_customer_choices(),
+    )
+
+
+@bp_commission.route('/commission/reassign/<int:reassign_id>/edit', methods=['GET', 'POST'])
+def commission_reassign_edit(reassign_id):
+    _require_admin()
+    rule = models.get_customer_reassignment(reassign_id)
+    if not rule:
+        abort(404)
+
+    if request.method == 'POST':
+        result = models.update_customer_reassignment(reassign_id, request.form)
+        if result['ok']:
+            flash(f'อัปเดตกฎ #{reassign_id} เรียบร้อย', 'success')
+            _flash_paid_cycle_warnings(result)
+            _flash_master_sync(result)
+            return redirect(url_for('commission.commission_reassign_list'))
+        flash(f'ไม่สามารถบันทึก: {result["error"]}', 'danger')
+
+    return render_template(
+        'commission_reassign_form.html',
+        rule=rule,
+        form=request.form if request.method == 'POST' else None,
+        salespersons=models.get_active_salespersons(),
+        customers=_reassign_customer_choices(),
+    )
+
+
+@bp_commission.route('/commission/reassign/<int:reassign_id>/toggle', methods=['POST'])
+def commission_reassign_toggle(reassign_id):
+    _require_admin()
+    result = models.toggle_customer_reassignment(reassign_id)
+    if result['ok']:
+        flash(f'กฎ #{reassign_id} → {"active" if result["is_active"] else "inactive"}', 'success')
+        _flash_master_sync(result)
+    else:
+        flash(f'ไม่สามารถ toggle: {result["error"]}', 'danger')
+    return redirect(url_for('commission.commission_reassign_list'))
+
+
+@bp_commission.route('/commission/reassign/<int:reassign_id>/delete', methods=['POST'])
+def commission_reassign_delete(reassign_id):
+    _require_admin()
+    result = models.delete_customer_reassignment(reassign_id)
+    if result['ok']:
+        flash(f'ลบกฎ #{reassign_id} เรียบร้อย', 'success')
+        _flash_master_sync(result)
+    else:
+        flash(f'ไม่สามารถลบ: {result["error"]}', 'danger')
+    return redirect(url_for('commission.commission_reassign_list'))
