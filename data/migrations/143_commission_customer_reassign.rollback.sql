@@ -1,9 +1,27 @@
 -- ============================================================================
 -- Rollback for 143 — drop commission_customer_reassign.
 --
--- Dropping the table restores the pre-143 behaviour exactly: the commission
--- engine falls back to `received_payments.salesperson` verbatim, so the four
--- reassigned customers feed rep 31's base again.
+-- ⛔ CODE-COUPLED. Run this ONLY together with (or after) reverting the 143
+-- application code. The engine does not degrade gracefully: `commission.py`
+-- and `blueprints/accounting.py` reference this table in five queries, so
+-- dropping it under the deployed code makes EVERY commission page and the AR
+-- customer page fail with:
+--     OperationalError: no such table: commission_customer_reassign
+-- (verified 2026-07-30 by running this file against a copy of the live DB and
+-- then calling get_commission_for_month). An earlier version of this header
+-- claimed the engine "falls back to received_payments.salesperson verbatim" —
+-- that was wrong, and it was wrong on the emergency path.
+--
+-- ✅ WANT THE FEATURE OFF *WITHOUT* A DEPLOY? Do NOT drop the table. Neutralise
+-- the rules instead — this restores pre-143 BEHAVIOUR with the patched code
+-- still running, takes effect on the next page load, and is reversible:
+--     UPDATE commission_customer_reassign SET is_active = 0;
+-- That is the lever to reach for during an incident. DROP TABLE is for after
+-- the code revert, when the feature is genuinely being abandoned.
+--
+-- Once the code is reverted, dropping the table restores the pre-143 data
+-- behaviour: the engine reads `received_payments.salesperson` verbatim again,
+-- so the four reassigned customers feed rep 31's base.
 --
 -- No snapshot to restore from: the table is created by the forward migration,
 -- so rows written after it are the only rows it has ever had. They are

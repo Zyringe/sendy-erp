@@ -411,14 +411,33 @@ def test_effective_from_must_be_a_real_date(empty_db, empty_db_conn):
 # an oversight.
 RAW_REP_READ = re.compile(r"rp\.salesperson\b|rcv\.salesperson_code\b")
 
+# Every file in the app that reads the Express-stamped rep column. Adding a
+# read anywhere else is exactly what this sweep is for — but a sweep only sees
+# the files it is pointed at, so this list IS the coverage. It was found
+# incomplete once already (models/commission.py shipped unscanned in the same
+# PR that added the sweep), which is why the whole-repo assertion below exists.
+SCANNED = (
+    "commission.py",
+    "blueprints/accounting.py",
+    "models/commission.py",
+)
+
+# Keyed on the REPO-RELATIVE path, never the basename: `commission.py` and
+# `models/commission.py` share a basename, so a basename key would let an
+# exemption for one silently excuse a same-named function in the other.
 EXEMPT = {
     ("commission.py", "_BASE_QUERY"):
         "Defines the resolution — the inner subquery legitimately reads the raw "
         "rp.salesperson before the outer SELECT resolves it.",
-    ("accounting.py", "express_ar_customer"):
+    ("blueprints/accounting.py", "express_ar_customer"):
         "AR page HEADER badge reads express_ar_outstanding, a re-stamped Express "
         "snapshot, and is deliberately out of scope (option C, Put 2026-07-30). "
         "The per-receipt badge in the same view IS resolved.",
+    ("models/commission.py", "paid_cycles_affected_by_reassign"):
+        "Must read the RAW stamped code on purpose: it answers 'which rep is "
+        "currently credited and would LOSE base if this rule were created'. "
+        "Resolving it would compare the rule against its own result and the "
+        "already-paid-cycle warning would never fire.",
 }
 
 
@@ -445,19 +464,63 @@ def _sites_reading_raw_rep(path):
 
 
 def test_every_site_reading_the_raw_rep_code_is_resolved_or_exempt():
-    for filename, path in (("commission.py", os.path.join(APP, "commission.py")),
-                           ("accounting.py", os.path.join(APP, "blueprints", "accounting.py"))):
+    for rel in SCANNED:
+        path = os.path.join(APP, rel)
         assert os.path.exists(path), path
         for name, seg in _sites_reading_raw_rep(path).items():
-            key = (filename, name)
+            key = (rel, name)
             if key in EXEMPT:
                 assert EXEMPT[key].strip(), f"{key} exempted without a reason"
                 continue
             assert "commission_attribution" in seg or "resolved_salesperson" in seg, (
-                f"{filename}::{name} reads the Express-stamped rep code without "
+                f"{rel}::{name} reads the Express-stamped rep code without "
                 f"resolving it through commission_attribution, and is not in EXEMPT. "
                 f"Either resolve it, or add it to EXEMPT with a written reason."
             )
+
+
+def test_scanned_list_covers_every_file_in_the_app_that_reads_the_raw_rep_code():
+    """The sweep above only sees the files SCANNED points at. This walks the
+    WHOLE app so a new module reading the Express-stamped rep code cannot slip
+    in unnoticed — the failure mode that shipped `models/commission.py`
+    unscanned in the very PR that introduced the sweep."""
+    found = set()
+    for root, dirs, files in os.walk(APP):
+        dirs[:] = [d for d in dirs if d not in ("__pycache__", "instance", "static")]
+        for fn in files:
+            if not fn.endswith(".py"):
+                continue
+            path = os.path.join(root, fn)
+            rel = os.path.relpath(path, APP)
+            if rel == "commission_attribution.py":
+                continue  # defines the resolution; its docstring names the column
+            try:
+                src = open(path, encoding="utf-8").read()
+            except OSError:
+                continue
+            if RAW_REP_READ.search(src):
+                found.add(rel)
+
+    missing = found - set(SCANNED)
+    assert not missing, (
+        f"these files read the Express-stamped rep code but are NOT in SCANNED, "
+        f"so the sweep never inspects them: {sorted(missing)}. Add them to "
+        f"SCANNED (and exempt any legitimate raw read with a reason)."
+    )
+
+
+def test_exempt_keys_are_relative_paths_not_basenames():
+    """`commission.py` and `models/commission.py` share a basename. Keying
+    EXEMPT on the basename would let an exemption for one silently excuse a
+    same-named function in the other."""
+    for rel, _name in EXEMPT:
+        assert rel in SCANNED, f"EXEMPT key {rel!r} is not a scanned relative path"
+    basenames = [os.path.basename(r) for r in SCANNED]
+    assert len(set(basenames)) < len(basenames), (
+        "SCANNED no longer contains a basename collision — if that is "
+        "deliberate this test can go, but until then it documents why the keys "
+        "are relative paths."
+    )
 
 
 def test_sweep_detects_an_unguarded_site():
