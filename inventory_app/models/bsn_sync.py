@@ -12,6 +12,17 @@ import bsn_units
 
 from .wacc import recalculate_product_wacc
 
+# หน้าร้าน customer codes whose synced sales ALSO decrement platform_skus.stock
+# (see _sync_bsn_to_stock below). ONE definition, imported — ecommerce_overview
+# must know exactly which sales are already baked into platform_skus.stock so
+# its sold_since adjustment does not deduct the same sale a second time.
+# ⚠ หน้าร้านB (the closed second Shopee shop) is deliberately ABSENT: its sales
+# book to Shopee but were never deducted here, so they must still be adjusted.
+PLATFORM_STOCK_DEDUCT_CUSTOMERS = {
+    'หน้าร้านL': 'lazada',
+    'หน้าร้านS': 'shopee',
+}
+
 # Unit classes for the pack/loose guard (decisions/log.md 2026-07-26/27):
 # a bill in a piece unit must never deduct a pack-stocked SKU fractionally,
 # and a product with an active pack/unpack pair must never get a cross-unit
@@ -200,11 +211,7 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str):
             # marketplace sync rather than guess on returns).
             if txn_type == 'OUT' and not is_sales_return:
                 customer = (row['customer'] or '').strip()
-                platform = None
-                if customer == 'หน้าร้านL':
-                    platform = 'lazada'
-                elif customer == 'หน้าร้านS':
-                    platform = 'shopee'
+                platform = PLATFORM_STOCK_DEDUCT_CUSTOMERS.get(customer)
 
                 # Also deduct platform_skus.stock if mapped
                 if platform and row['product_id']:

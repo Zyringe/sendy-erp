@@ -49,11 +49,12 @@ def _ps(conn, platform, pid, product_id_str='P1', stock=0, qty_per_sale=1,
     )
 
 
-def _sale(conn, pid, date_iso, qty, unit='ตัว', customer='หน้าร้านS', doc_no='IV1'):
+def _sale(conn, pid, date_iso, qty, unit='ตัว', customer='หน้าร้านS', doc_no='IV1',
+          synced_to_stock=0):
     conn.execute(
-        "INSERT INTO sales_transactions (date_iso, doc_no, product_id, customer, qty, unit) "
-        "VALUES (?,?,?,?,?,?)",
-        (date_iso, doc_no, pid, customer, qty, unit),
+        "INSERT INTO sales_transactions (date_iso, doc_no, product_id, customer, qty, unit,"
+        " synced_to_stock) VALUES (?,?,?,?,?,?,?)",
+        (date_iso, doc_no, pid, customer, qty, unit, synced_to_stock),
     )
 
 
@@ -127,6 +128,77 @@ def test_sale_on_or_before_snapshot_date_not_deducted(empty_db_conn):
     rows, total, counts = models.get_marketplace_overview()
     r = _row(rows, 4)
     assert r['platforms']['shopee']['est'] == 30
+
+
+def test_synced_marketplace_sale_not_deducted_twice(empty_db_conn):
+    """_sync_bsn_to_stock ALREADY decremented platform_skus.stock for this sale
+    (see bsn_sync.PLATFORM_STOCK_DEDUCT_CUSTOMERS), so file_units reflects it.
+    Counting it in sold_since as well deducts the same sale twice."""
+    c = empty_db_conn
+    _product(c, 60, 'สินค้า synced')
+    # file_units 40 = the 50 the file said, minus the 10 the sync already took
+    _ps(c, 'shopee', 60, stock=40, qty_per_sale=1, imported_at='2026-07-01 00:00:00')
+    _sale(c, 60, '2026-07-05', qty=10, customer='หน้าร้านS', synced_to_stock=1)
+    c.commit()
+    r = _row(models.get_marketplace_overview()[0], 60)
+    assert r['platforms']['shopee']['sold_since'] == 0
+    assert r['platforms']['shopee']['est'] == 40
+
+
+def test_unsynced_marketplace_sale_still_deducted(empty_db_conn):
+    """The row landed but the stock sync has not applied it (e.g. no unit ratio
+    defined yet), so platform_skus.stock does NOT reflect it -> still deduct."""
+    c = empty_db_conn
+    _product(c, 61, 'สินค้า pending sync')
+    _ps(c, 'shopee', 61, stock=50, qty_per_sale=1, imported_at='2026-07-01 00:00:00')
+    _sale(c, 61, '2026-07-05', qty=10, customer='หน้าร้านS', synced_to_stock=0)
+    c.commit()
+    r = _row(models.get_marketplace_overview()[0], 61)
+    assert r['platforms']['shopee']['sold_since'] == 10
+    assert r['platforms']['shopee']['est'] == 40
+
+
+def test_synced_sale_on_a_non_deducting_customer_is_still_counted(empty_db_conn):
+    """หน้าร้านB (the closed second Shopee shop) books Shopee sales but is NOT
+    in bsn_sync's deduct map, so the sync never touched platform_skus for it.
+    Suppressing it on synced_to_stock alone would under-deduct."""
+    c = empty_db_conn
+    _product(c, 62, 'สินค้า หน้าร้านB')
+    _ps(c, 'shopee', 62, stock=50, qty_per_sale=1, imported_at='2026-07-01 00:00:00')
+    _sale(c, 62, '2026-07-05', qty=10, customer='หน้าร้านB', synced_to_stock=1)
+    c.commit()
+    r = _row(models.get_marketplace_overview()[0], 62)
+    assert r['platforms']['shopee']['sold_since'] == 10
+    assert r['platforms']['shopee']['est'] == 40
+
+
+def test_hs_opening_balance_excluded_from_sold_since(empty_db_conn):
+    """HS = historical opening balance, not trade (same exclusion sales_filters
+    applies to every money page). It must not deduct marketplace units."""
+    c = empty_db_conn
+    _product(c, 63, 'สินค้า HS')
+    _ps(c, 'shopee', 63, stock=50, qty_per_sale=1, imported_at='2026-07-01 00:00:00')
+    _sale(c, 63, '2026-07-05', qty=10, customer='หน้าร้านS', doc_no='HS12345')
+    c.commit()
+    r = _row(models.get_marketplace_overview()[0], 63)
+    assert r['platforms']['shopee']['est'] == 50
+
+
+def test_snapshot_date_ignores_is_ignored_rows(empty_db_conn):
+    """The snapshot must describe the rows that actually build file_units.
+    An is_ignored row with a NEWER imported_at would push the date forward and
+    silently suppress real deductions -> est too HIGH -> oversell direction."""
+    c = empty_db_conn
+    _product(c, 64, 'สินค้า ignored-newer')
+    _ps(c, 'shopee', 64, stock=50, qty_per_sale=1, imported_at='2026-07-01 00:00:00')
+    _ps(c, 'shopee', 64, stock=999, qty_per_sale=1, is_ignored=1,
+        imported_at='2026-07-20 00:00:00')
+    _sale(c, 64, '2026-07-05', qty=10, customer='หน้าร้านS')
+    c.commit()
+    r = _row(models.get_marketplace_overview()[0], 64)
+    # ignored row contributes no units, and must not move the snapshot to 07-20
+    assert r['platforms']['shopee']['file_units'] == 50
+    assert r['platforms']['shopee']['sold_since'] == 10
 
 
 def test_estimate_clamped_at_zero_not_negative(empty_db_conn):

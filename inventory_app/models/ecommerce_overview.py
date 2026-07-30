@@ -13,8 +13,14 @@ Core-math invariants (see projects/ecommerce-revamp/plan.md — do not re-derive
     sold_since(p, pf)          = sum(st.qty * COALESCE(uc.ratio, 1))
                                   FROM sales_transactions st WHERE st.product_id=p
                                   AND st.date_iso > snapshot_date(pf)   -- strict: same-day
-                                  AND st.doc_no NOT LIKE 'SR%'          -- pre-export orders
-                                  AND st.customer IN <platform's หน้าร้าน set>  -- already counted
+                                  AND st.doc_no NOT LIKE 'SR%'          -- returns
+                                  AND st.doc_no NOT LIKE 'HS%'          -- opening balances
+                                  AND st.customer IN <platform's หน้าร้าน set>
+                                  AND NOT already-deducted-from-platform_skus
+                                  -- ^ _sync_bsn_to_stock ALREADY takes synced
+                                  -- หน้าร้านS/L sales off platform_skus.stock, so
+                                  -- counting them here deducts the sale twice.
+                                  -- See _sold_since_by_pid for the full note.
     platform_est(p, pf)        = max(platform_file_units - sold_since, 0)
     true_available(p)          = stock_levels.quantity + buildable     -- models.get_buildable()
     combined_open(p)           = sum(platform_est(p, pf)) over platforms
@@ -39,6 +45,7 @@ import re
 
 from database import get_connection
 
+from .bsn_sync import PLATFORM_STOCK_DEDUCT_CUSTOMERS
 from .conversions import get_buildable
 
 PLATFORMS = ('shopee', 'lazada', 'tiktok')
@@ -68,9 +75,16 @@ def _display_qty(v):
 
 
 def _snapshot_dates(conn):
-    """{platform: 'YYYY-MM-DD' or None} from MAX(imported_at) per platform."""
+    """{platform: 'YYYY-MM-DD' or None} from MAX(imported_at) per platform.
+
+    Ignored rows are excluded so this describes the SAME row set that builds
+    file_units. An is_ignored row with a newer imported_at would otherwise push
+    the snapshot forward and silently suppress real sold_since deductions,
+    leaving est too HIGH — the oversell direction.
+    """
     rows = conn.execute(
-        "SELECT platform, date(MAX(imported_at)) AS snap FROM platform_skus GROUP BY platform"
+        "SELECT platform, date(MAX(imported_at)) AS snap FROM platform_skus"
+        " WHERE is_ignored = 0 GROUP BY platform"
     ).fetchall()
     by_platform = {r['platform']: r['snap'] for r in rows}
     return {p: by_platform.get(p) for p in PLATFORMS}
@@ -78,12 +92,35 @@ def _snapshot_dates(conn):
 
 def _sold_since_by_pid(conn, platform, snapshot_date, pids=None):
     """{product_id: sold_units} for one platform's หน้าร้าน customers, sold
-    strictly AFTER snapshot_date, SR returns excluded, unit-converted via
-    unit_conversions (default ratio 1 when no row). Empty dict when the
-    platform has no booking customers yet or no snapshot to compare against."""
+    strictly AFTER snapshot_date, unit-converted via unit_conversions (default
+    ratio 1 when no row). Empty dict when the platform has no booking customers
+    yet or no snapshot to compare against.
+
+    Excluded, and why:
+      SR%  sales returns — goods came back, they are not a deduction
+      HS%  historical opening balances, not trade (same exclusion every money
+           page applies via sales_filters)
+      rows already applied to platform_skus.stock by _sync_bsn_to_stock — see
+           the guard below
+
+    ⚠ THE DOUBLE-DEDUCTION GUARD. `_sync_bsn_to_stock` decrements
+    platform_skus.stock for the customers in PLATFORM_STOCK_DEDUCT_CUSTOMERS
+    when it marks a row synced, so once synced the sale is ALREADY inside
+    file_units. Counting it here too subtracts the same sale twice: one 100-unit
+    Shopee sale made est fall by 200, which shows as a false RED (listing looks
+    closed while it is open). Only rows NOT yet folded into platform_skus.stock
+    belong in this adjustment: unsynced rows (e.g. the sync skipped them because
+    no unit ratio is defined) and rows on booking customers the sync never
+    deducts for (หน้าร้านB, the closed second Shopee shop).
+
+    `excludes_revenue` is deliberately NOT applied: those goods physically left
+    the warehouse, so they must still come off marketplace stock. Same reasoning
+    that keeps COGS unfiltered in sales_filters.
+    """
     customers = PLATFORM_CUSTOMERS[platform]
     if not customers or not snapshot_date:
         return {}
+    deducted = [c for c in customers if c in PLATFORM_STOCK_DEDUCT_CUSTOMERS]
     params = [snapshot_date, *customers]
     pid_filter = ""
     if pids is not None:
@@ -91,6 +128,13 @@ def _sold_since_by_pid(conn, platform, snapshot_date, pids=None):
             return {}
         pid_filter = f" AND st.product_id IN ({','.join('?' * len(pids))})"
         params = [snapshot_date, *customers, *pids]
+    already_applied = ""
+    if deducted:
+        dph = ",".join("?" * len(deducted))
+        already_applied = (
+            f" AND NOT (st.synced_to_stock = 1 AND st.customer IN ({dph}))"
+        )
+        params = [*params, *deducted]
     ph = ",".join("?" * len(customers))
     rows = conn.execute(f"""
         SELECT st.product_id AS pid, SUM(st.qty * COALESCE(uc.ratio, 1)) AS sold
@@ -99,8 +143,10 @@ def _sold_since_by_pid(conn, platform, snapshot_date, pids=None):
                  ON uc.product_id = st.product_id AND uc.bsn_unit = st.unit
          WHERE st.date_iso > ?
            AND st.doc_no NOT LIKE 'SR%'
+           AND st.doc_no NOT LIKE 'HS%'
            AND st.customer IN ({ph})
            {pid_filter}
+           {already_applied}
          GROUP BY st.product_id
     """, params).fetchall()
     return {r['pid']: (r['sold'] or 0) for r in rows}
