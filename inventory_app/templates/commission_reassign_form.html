@@ -1,0 +1,99 @@
+{% extends 'base.html' %}
+{% block title %}{{ 'แก้ไข' if rule else 'เพิ่ม' }}กฎย้ายลูกค้า – ERP{% endblock %}
+{% block page_title %}{{ 'แก้ไข' if rule else 'เพิ่ม' }}กฎย้ายลูกค้าให้เซลส์อื่น{% endblock %}
+
+{% block content %}
+
+{% set f = form or rule or {} %}
+
+<div class="alert alert-secondary py-2 mb-3 small">
+  <i class="bi bi-lightbulb me-1"></i>
+  <strong>วันเริ่มมีผล</strong> เทียบกับ <strong>วันที่ซื้อในบิล</strong>.
+  ตั้งเป็น <em>หนึ่งวันก่อนบิลใบแรกที่ต้องการให้เป็นของเซลส์ใหม่</em> —
+  บิลที่ขายก่อนหน้านั้นยังเป็นของเซลส์เดิม แม้จะเพิ่งเก็บเงินได้.
+  <br>
+  ⚠️ ถ้าตั้งวันย้อนไปถึงรอบที่ <strong>จ่ายคอมไปแล้ว</strong> รอบนั้นจะกลายเป็น "จ่ายเกิน".
+  ตรวจก่อนบันทึกด้วย <code>scripts/verify_commission_reassign.py</code>.
+</div>
+
+<div class="card">
+  <div class="card-body">
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="mb-3">
+        <label class="form-label">ลูกค้า <span class="text-danger">*</span></label>
+        <input type="text" name="customer_code" class="form-control font-mono"
+               list="customer_codes" required
+               placeholder="รหัสลูกค้า เช่น 62ห007"
+               value="{{ f.customer_code or '' }}">
+        <datalist id="customer_codes">
+          {% for c in customers %}
+          <option value="{{ c.code }}">{{ c.name }}</option>
+          {% endfor %}
+        </datalist>
+        <div class="form-text">
+          พิมพ์รหัสหรือชื่อเพื่อค้นหา
+          {%- if rule and rule.customer_name %} · ปัจจุบัน: {{ rule.customer_name }}{% endif %}
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label">ย้ายไปเซลส์ <span class="text-danger">*</span></label>
+        <select name="to_salesperson" class="form-select" required>
+          <option value="">— เลือก —</option>
+          {% for s in salespersons %}
+          <option value="{{ s.code }}"
+            {{ 'selected' if f.to_salesperson == s.code else '' }}>
+            {{ s.code }} — {{ s.name }}
+          </option>
+          {% endfor %}
+        </select>
+        <div class="form-text">
+          เลือก <span class="font-mono">00</span> (บุญสวัสดิ์ นำชัย) เพื่อให้เป็นของบริษัท —
+          เซลส์ที่ไม่มี tier จะไม่ได้คอมมิชชั่นเลย
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label">เริ่มมีผล (วันที่ซื้อ) <span class="text-danger">*</span></label>
+        <input type="date" name="effective_from" class="form-control" required
+               value="{{ f.effective_from or '' }}">
+      </div>
+
+      <div class="form-check mb-3">
+        <input type="checkbox" class="form-check-input" id="is_active" name="is_active"
+               value="1" {{ 'checked' if (not rule and not form) or f.is_active else '' }}>
+        <label class="form-check-label" for="is_active">ใช้งานกฎนี้</label>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label">หมายเหตุ</label>
+        <textarea name="note" class="form-control" rows="2"
+                  placeholder="เหตุผล เช่น เซลส์ลาออก / ลูกค้าย้ายมาบริษัทดูแลเอง">{{ f.note or '' }}</textarea>
+      </div>
+
+      <div class="d-flex">
+        <a href="{{ url_for('commission.commission_reassign_list') }}"
+           class="btn btn-outline-secondary">ยกเลิก</a>
+        <button type="submit" class="btn btn-primary ms-auto">บันทึก</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% if rule %}
+<div class="card mt-3">
+  <div class="card-body py-2 d-flex align-items-center">
+    <span class="text-subtle small">ลบกฎนี้ถาวร (คอมมิชชั่นจะกลับไปเป็นของเซลส์เดิมทันที)</span>
+    <form method="post" class="ms-auto"
+          action="{{ url_for('commission.commission_reassign_delete', reassign_id=rule.id) }}"
+          onsubmit="return confirm('ลบกฎนี้? คอมมิชชั่นของลูกค้ารายนี้จะกลับไปเป็นของเซลส์เดิม');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn btn-sm btn-outline-danger">ลบ</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

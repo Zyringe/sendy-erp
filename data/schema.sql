@@ -155,6 +155,18 @@ CREATE TABLE commission_assignments (
     updated_at       TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+CREATE TABLE commission_customer_reassign (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_code  TEXT    NOT NULL REFERENCES customers(code),
+    to_salesperson TEXT    NOT NULL REFERENCES salespersons(code),
+    effective_from TEXT    NOT NULL,                    -- YYYY-MM-DD, vs INVOICE date
+    is_active      INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
+    note           TEXT,
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at     TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(customer_code, effective_from)
+);
+
 CREATE TABLE commission_overrides (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id            INTEGER REFERENCES products(id),
@@ -1570,6 +1582,9 @@ CREATE UNIQUE INDEX idx_categories_short_code ON categories(short_code) WHERE sh
 
 CREATE UNIQUE INDEX idx_ccr_customer ON customer_contact_review(customer_code);
 
+CREATE INDEX idx_ccr_lookup
+    ON commission_customer_reassign(customer_code, effective_from DESC);
+
 CREATE INDEX idx_ccr_status ON customer_contact_review(status, confidence);
 
 CREATE INDEX idx_cna_ref_invoice ON credit_note_amounts(ref_invoice);
@@ -1995,6 +2010,52 @@ BEGIN
     FROM (
                   SELECT 'tier_id'        AS field, OLD.tier_id        AS old_v, NEW.tier_id        AS new_v WHERE OLD.tier_id        IS NOT NEW.tier_id
         UNION ALL SELECT 'effective_from',          OLD.effective_from,          NEW.effective_from          WHERE OLD.effective_from IS NOT NEW.effective_from
+        UNION ALL SELECT 'note',                    OLD.note,                    NEW.note                    WHERE OLD.note           IS NOT NEW.note
+    );
+END;
+
+CREATE TRIGGER audit_commission_customer_reassign_delete
+BEFORE DELETE ON commission_customer_reassign
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES ('commission_customer_reassign', OLD.id, 'DELETE',
+        json_object('customer_code',  OLD.customer_code,
+                    'to_salesperson', OLD.to_salesperson,
+                    'effective_from', OLD.effective_from));
+END;
+
+CREATE TRIGGER audit_commission_customer_reassign_insert
+AFTER INSERT ON commission_customer_reassign
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES ('commission_customer_reassign', NEW.id, 'INSERT',
+        json_object(
+            'customer_code',  NEW.customer_code,
+            'to_salesperson', NEW.to_salesperson,
+            'effective_from', NEW.effective_from,
+            'is_active',      NEW.is_active,
+            'note',           NEW.note
+        ));
+END;
+
+CREATE TRIGGER audit_commission_customer_reassign_update
+AFTER UPDATE ON commission_customer_reassign
+WHEN (
+       OLD.customer_code  IS NOT NEW.customer_code
+    OR OLD.to_salesperson IS NOT NEW.to_salesperson
+    OR OLD.effective_from IS NOT NEW.effective_from
+    OR OLD.is_active      IS NOT NEW.is_active
+    OR OLD.note           IS NOT NEW.note
+)
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    SELECT 'commission_customer_reassign', NEW.id, 'UPDATE',
+           json_group_object(field, json_array(old_v, new_v))
+    FROM (
+                  SELECT 'customer_code'  AS field, OLD.customer_code  AS old_v, NEW.customer_code  AS new_v WHERE OLD.customer_code  IS NOT NEW.customer_code
+        UNION ALL SELECT 'to_salesperson',          OLD.to_salesperson,          NEW.to_salesperson          WHERE OLD.to_salesperson IS NOT NEW.to_salesperson
+        UNION ALL SELECT 'effective_from',          OLD.effective_from,          NEW.effective_from          WHERE OLD.effective_from IS NOT NEW.effective_from
+        UNION ALL SELECT 'is_active',               OLD.is_active,               NEW.is_active               WHERE OLD.is_active      IS NOT NEW.is_active
         UNION ALL SELECT 'note',                    OLD.note,                    NEW.note                    WHERE OLD.note           IS NOT NEW.note
     );
 END;

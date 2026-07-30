@@ -54,6 +54,7 @@ import re
 import sqlite3
 from collections import defaultdict
 
+import commission_attribution
 import sales_filters
 from config import DATABASE_PATH
 
@@ -159,8 +160,18 @@ def _load_tiers(conn):
 # Strategy: split the receipt's allocated invoice payment proportional to the
 # sales lines' net for that invoice. This way commission base = net actually
 # collected per product (subset of total invoice if partially paid).
+#
+# The rep Express stamped on the receipt is the DEFAULT, not the last word: a
+# `commission_customer_reassign` rule (migration 143) can move a customer's
+# orders to another rep from a given sale date onward. `_RESOLVED_SP` is the
+# single definition of that resolution — WHERE clauses must repeat the
+# expression (SQLite cannot reference a SELECT alias in WHERE), so they
+# reference this constant rather than re-spelling the logic.
+_RESOLVED_SP = commission_attribution.resolved_salesperson(
+    'es.customer_code', 'es.date_iso', 'rcv.salesperson_code')
+
 _BASE_QUERY = """
-    SELECT rcv.salesperson_code,
+    SELECT """ + _RESOLVED_SP + """ AS salesperson_code,
            rcv.receipt_no,
            rcv.receipt_date,
            rcv.customer_name,
@@ -570,12 +581,16 @@ def get_invoice_cycle_month(salesperson_code, invoice_no, db_path=None):
     """
     conn = _connect(db_path)
     try:
+        # Match on the RESOLVED rep so a reassigned invoice resolves its cycle
+        # for the NEW rep (and stops resolving for the old one). Unpatched,
+        # record_payout would fall back to its own year_month for the new rep.
         row = conn.execute("""
             SELECT MIN(rp.date_iso) AS d
               FROM paid_invoices pi
               JOIN received_payments rp ON rp.id = pi.re_id
              WHERE pi.doc_no = ?
-               AND rp.salesperson = ?
+               AND """ + commission_attribution.resolved_salesperson_for_doc(
+                   'pi.doc_no', 'rp.salesperson') + """ = ?
                AND pi.doc_kind = 'IV'
                AND pi.amount IS NOT NULL AND pi.amount <> 0
                AND rp.cancelled = 0
@@ -718,6 +733,11 @@ def get_invoices_for_salesperson(year_month, salesperson_code, db_path=None):
         SELECT s.doc_base                                       AS doc_no,
                CASE WHEN s.doc_base LIKE 'HS%' THEN 'HS' ELSE 'IV' END AS doc_type,
                MIN(s.date_iso)                                  AS date_iso,
+               -- Reassignment rule for this document, or NULL when none
+               -- applies. Resolved from doc_base (a GROUP BY key) so it stays
+               -- deterministic under the aggregation.
+               """ + commission_attribution.resolved_salesperson_for_doc(
+                   's.doc_base', 'NULL') + """ AS reassigned_sp,
                s.customer_code,
                s.customer                                       AS customer_name,
                ROUND(SUM(s.net), 2)   AS total_net,
@@ -780,6 +800,13 @@ def get_invoices_for_salesperson(year_month, salesperson_code, db_path=None):
             ).fetchone()
             if cust_sp and cust_sp['salesperson']:
                 owning_sp = cust_sp['salesperson']
+
+        # A reassignment rule is the FINAL authority, overriding all three
+        # sources above (receipt collector / AR snapshot / customer master).
+        # Applied last so this view cannot contradict the commission pages,
+        # which resolve the same rule inside _BASE_QUERY.
+        if r['reassigned_sp']:
+            owning_sp = r['reassigned_sp']
 
         if owning_sp != salesperson_code:
             continue
@@ -858,7 +885,8 @@ def get_invoice_line_breakdown(year_month, salesperson_code, invoice_no, db_path
         SELECT rp.re_no AS doc_no, rp.date_iso, rp.customer AS customer_name
           FROM paid_invoices pi
           JOIN received_payments rp ON rp.id = pi.re_id
-         WHERE rp.salesperson = ? AND pi.doc_no = ?
+         WHERE """ + commission_attribution.resolved_salesperson_for_doc(
+             'pi.doc_no', 'rp.salesperson') + """ = ? AND pi.doc_no = ?
            AND pi.doc_kind = 'IV' AND pi.amount IS NOT NULL
          LIMIT 1
     """, (salesperson_code, invoice_no)).fetchone()
@@ -1125,7 +1153,11 @@ def get_lines_for_salesperson(year_month, salesperson_code, db_path=None,
         # widen lower bound to "everything we have"; keep upper bound at
         # end of selected month
         start = '2000-01-01'
-    rows = conn.execute(_BASE_QUERY + " AND rcv.salesperson_code = ?",
+    # Filter on the RESOLVED rep, not the code Express stamped — otherwise a
+    # reassigned invoice is counted under the new rep by the dashboard
+    # (_BASE_QUERY's SELECT) but listed under the old one here, and the two
+    # screens disagree by exactly the amount the reassignment moved.
+    rows = conn.execute(_BASE_QUERY + " AND " + _RESOLVED_SP + " = ?",
                         (start, end, salesperson_code)).fetchall()
     out = [dict(r) for r in rows]
     # Resolve fallback brand_kind for any NULL rows so the template doesn't

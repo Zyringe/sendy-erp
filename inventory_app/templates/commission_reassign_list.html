@@ -1,0 +1,97 @@
+{% extends 'base.html' %}
+{% block title %}ย้ายลูกค้าให้เซลส์อื่น – ERP{% endblock %}
+{% block page_title %}ย้ายลูกค้าให้เซลส์อื่น ({{ rules|length }}){% endblock %}
+
+{% block content %}
+
+<div class="alert alert-secondary py-2 mb-3 small">
+  <i class="bi bi-info-circle me-1"></i>
+  ใช้เมื่อ <strong>เซลส์เดิมไม่ได้ดูแลลูกค้ารายนี้แล้ว</strong> — ระบบ Express ยังพิมพ์รหัสเซลส์เดิมบนใบเสร็จเสมอ
+  ทำให้เซลส์ที่ออกไปแล้วยังได้คอมมิชชั่นต่อ. กฎตรงนี้เขียนทับให้.
+  <br>
+  ⚠️ ยึดตาม <strong>วันที่ซื้อ (วันที่ในบิล)</strong> ไม่ใช่วันที่รับเงิน — บิลที่ขายก่อนวันเริ่มมีผล
+  ยังเป็นของเซลส์เดิมเสมอ แม้จะเก็บเงินได้ทีหลัง (ขายเอง = ได้เอง) ทำให้
+  <strong>รอบที่จ่ายคอมไปแล้วไม่ถูกกระทบ</strong>.
+  <br>
+  ถ้าลูกค้ามีหลายกฎ ระบบใช้กฎที่ <em>วันเริ่มมีผลใหม่ที่สุดแต่ไม่เกินวันที่ในบิล</em>.
+  ทุกการเปลี่ยนถูกบันทึกใน <code>audit_log</code>.
+</div>
+
+<div class="card mb-3">
+  <div class="card-body py-2 d-flex align-items-center">
+    <a href="{{ url_for('commission.commission_dashboard') }}"
+       class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-left me-1"></i>กลับ commission
+    </a>
+    <a href="{{ url_for('commission.commission_reassign_new') }}"
+       class="btn btn-sm btn-primary ms-auto">
+      <i class="bi bi-plus-lg me-1"></i>เพิ่มกฎ
+    </a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0 align-middle">
+      <thead>
+        <tr>
+          <th style="width:48px">#</th>
+          <th>ลูกค้า</th>
+          <th>ย้ายไปเซลส์</th>
+          <th>เริ่มมีผล (วันที่ซื้อ)</th>
+          <th>สถานะ</th>
+          <th>หมายเหตุ</th>
+          <th style="width:150px"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rules %}
+        <tr class="{{ '' if r.is_active else 'text-subtle' }}">
+          <td class="font-mono">{{ r.id }}</td>
+          <td>
+            {{ r.customer_name or '(ไม่พบชื่อ)' }}
+            <span class="badge badge-gray font-mono ms-1">{{ r.customer_code }}</span>
+            {% if r.customer_master_salesperson and r.customer_master_salesperson != r.to_salesperson %}
+              <div class="text-subtle small">
+                <i class="bi bi-exclamation-triangle me-1"></i>
+                ทะเบียนลูกค้ายังเป็นเซลส์ <span class="font-mono">{{ r.customer_master_salesperson }}</span>
+              </div>
+            {% endif %}
+          </td>
+          <td>
+            <span class="badge badge-gray font-mono">{{ r.to_salesperson }}</span>
+            {{ r.to_salesperson_name or '' }}
+            {% if not r.to_has_tier %}
+              <div class="text-subtle small">ไม่มี tier → ไม่มีคอมมิชชั่น</div>
+            {% endif %}
+          </td>
+          <td class="font-mono">{{ r.effective_from }}</td>
+          <td>
+            {% if r.is_active %}
+              <span class="badge bg-success">ใช้งาน</span>
+            {% else %}
+              <span class="badge bg-secondary">ปิดอยู่</span>
+            {% endif %}
+          </td>
+          <td class="small">{{ r.note or '' }}</td>
+          <td class="text-end">
+            <a href="{{ url_for('commission.commission_reassign_edit', reassign_id=r.id) }}"
+               class="btn btn-sm btn-outline-secondary">แก้ไข</a>
+            <form method="post" class="d-inline"
+                  action="{{ url_for('commission.commission_reassign_toggle', reassign_id=r.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-sm btn-outline-secondary">
+                {{ 'ปิด' if r.is_active else 'เปิด' }}
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-subtle py-4">ยังไม่มีกฎ</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

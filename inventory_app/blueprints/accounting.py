@@ -13,6 +13,7 @@ from datetime import date
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, current_app)
 
+import commission_attribution
 import models
 from database import get_connection
 import cashflow as cf_mod
@@ -74,11 +75,18 @@ def express_ar_customer(customer_code):
     # (the express_payments_in twin is frozen / being retired). received_payments
     # has no customer_code FK, so match by name; it carries a single `total`
     # rather than a cash/cheque/discount split.
+    # The per-receipt เซลส์ badge shows the RESOLVED rep: a customer moved to
+    # the company by `commission_customer_reassign` is collected by the company
+    # now, even though Express keeps stamping the departed rep's route code on
+    # the receipt (Put, 2026-07-30). The HEADER badge above still reads the
+    # express_ar_outstanding snapshot — deliberately out of scope here, it
+    # changes every customer's page and ships on its own (option C).
     recent_payments = conn.execute("""
         SELECT rp.re_no       AS doc_no,
                rp.date_iso,
                rp.total,
-               rp.salesperson AS salesperson_code
+               """ + commission_attribution.resolved_salesperson_for_receipt(
+                   'rp.id', 'rp.salesperson') + """ AS salesperson_code
           FROM received_payments rp
          WHERE rp.cancelled = 0
            AND rp.customer = ?
