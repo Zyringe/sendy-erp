@@ -14,6 +14,7 @@ subtracted a second time — cashbook opex already includes the
 
 from datetime import date
 
+import sales_filters
 from database import get_connection
 
 # Cashbook opex exclusions — mirrors models/financial_health.py's
@@ -99,7 +100,8 @@ def get_accounting_summary(date_from=None, date_to=None):
           FROM sales_transactions
          WHERE date_iso >= ? AND date_iso <= ?
            AND doc_no NOT LIKE 'SR%' AND doc_no NOT LIKE 'HS%'
-    """, (date_from, date_to)).fetchone()
+           AND {not_a_sale}
+    """.format(not_a_sale=sales_filters.not_a_sale_clause()), (date_from, date_to)).fetchone()
     sales_net = float(s['total_net'])
 
     # ── COGS (current cost_price × qty; unmapped lines counted separately) ────
@@ -111,6 +113,9 @@ def get_accounting_summary(date_from=None, date_to=None):
           LEFT JOIN products p ON p.id = st.product_id
          WHERE st.date_iso >= ? AND st.date_iso <= ?
            AND st.doc_no NOT LIKE 'SR%' AND st.doc_no NOT LIKE 'HS%'
+           -- NO excludes_revenue filter here, on purpose: a giveaway's goods
+           -- really left the warehouse, so their cost is a real expense.
+           -- Dropping it too would hand the margin back. See sales_filters.
     """, (date_from, date_to)).fetchone()
     cogs = float(cogs_row['cogs'])
     no_cost_lines = cogs_row['no_cost_lines'] or 0
@@ -172,6 +177,7 @@ def get_accounting_summary(date_from=None, date_to=None):
         LEFT JOIN brands    b ON b.id = p.brand_id
         WHERE st.date_iso >= ? AND st.date_iso <= ?
           AND st.doc_no NOT LIKE 'SR%' AND st.doc_no NOT LIKE 'HS%'
+          AND """ + sales_filters.not_a_sale_clause('st') + """
         GROUP BY b.id, b.name, b.name_th, b.is_own_brand, b.sort_order
         ORDER BY COALESCE(b.is_own_brand, 0) DESC,
                  COALESCE(b.sort_order, 9999),

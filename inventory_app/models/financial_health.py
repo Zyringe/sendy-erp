@@ -15,6 +15,7 @@ import statistics
 from datetime import date
 from typing import Optional
 
+import sales_filters
 from database import get_connection
 
 # กรรมการ + ผู้ถือหุ้น ที่ไม่นับใน "floor" (ขั้นต่ำไม่รวมเจ้าของ) — Put + แม่.
@@ -84,7 +85,8 @@ def get_trailing_months(n=3, conn=None, as_of_date=None):
             row = conn.execute(
                 """SELECT COALESCE(SUM(net), 0) AS rev
                      FROM sales_transactions
-                    WHERE date_iso >= ? AND date_iso <= ?""",
+                    WHERE date_iso >= ? AND date_iso <= ?
+                      AND """ + sales_filters.not_a_sale_clause(),
                 (d_from, d_to)).fetchone()
             out.append({
                 'year': y,
@@ -118,7 +120,8 @@ def get_current_month_pace(as_of_date=None, conn=None):
         row = conn.execute(
             """SELECT COALESCE(SUM(net), 0) AS rev
                  FROM sales_transactions
-                WHERE date_iso >= ? AND date_iso <= ?""",
+                WHERE date_iso >= ? AND date_iso <= ?
+                      AND """ + sales_filters.not_a_sale_clause(),
             (month_start, cutoff)).fetchone()
         mtd_revenue = float(row['rev'] or 0)
 
@@ -150,7 +153,8 @@ def _trailing_margin(conn, as_of):
                   COALESCE(SUM(st.qty * COALESCE(p.cost_price, 0)), 0) AS cogs
              FROM sales_transactions st
              LEFT JOIN products p ON p.id = st.product_id
-            WHERE st.date_iso >= ? AND st.date_iso <= ?""",
+            WHERE st.date_iso >= ? AND st.date_iso <= ?
+                 AND """ + sales_filters.not_a_sale_clause("st"),
         (d_from, d_to)).fetchone()
     rev = float(row['rev'] or 0)
     cogs = float(row['cogs'] or 0)

@@ -4,6 +4,7 @@ models/__init__.py's module docstring for the overall file-split
 rationale. No behavior changes.
 """
 import json
+import sales_filters
 from database import get_connection
 
 
@@ -18,6 +19,9 @@ def get_customer_summary(customer, date_from=None, date_to=None):
         conds.append('date_iso >= ?'); params.append(date_from)
     if date_to:
         conds.append('date_iso <= ?'); params.append(date_to)
+    # Documents invoiced in error are not purchases — วรสวัสดิ์ never bought the
+    # giveaway, so it must not show on their page either (see sales_filters).
+    conds.append(sales_filters.not_a_sale_clause())
     where = ' AND '.join(conds)
 
     summary = conn.execute(f"""
@@ -175,6 +179,9 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50)
         conds.append("c.region_id = ?")
         params.append(rid_int)
 
+    # Same exclusion as the customer DETAIL page — without it the list and the
+    # detail disagree by the giveaway (proved: วรสวัสดิ์ ฿499,577.31 vs ฿345,454.51).
+    conds.append(sales_filters.not_a_sale_clause('s'))
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
 
     sql = f"""

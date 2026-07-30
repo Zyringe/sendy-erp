@@ -51,7 +51,8 @@ CREATE TABLE ar_writeoffs (
     type           TEXT    NOT NULL CHECK(type IN ('expense','writeback')),
     writeoff_date  TEXT    NOT NULL,            -- ISO date the decision was recorded
     reason         TEXT,                        -- e.g. 'legacy 2014 dead account', 'Put 2026-06-05'
-    created_at     TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now','localtime')), excludes_revenue INTEGER NOT NULL DEFAULT 0
+        CHECK (excludes_revenue IN (0, 1)),
     UNIQUE(doc_no)                              -- one write-off decision per doc
 );
 

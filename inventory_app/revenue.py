@@ -25,6 +25,7 @@ from __future__ import annotations
 import sqlite3
 from typing import List, Optional
 
+import sales_filters
 from config import DATABASE_PATH
 
 
@@ -58,11 +59,13 @@ class _ConnCtx:
         return False
 
 
-_SALES_FILTER = (
-    "doc_base IS NOT NULL "
-    "AND doc_base NOT LIKE 'SR%' "
-    "AND doc_base NOT LIKE 'HS%'"
-)
+# Canonical revenue-row definition, shared with /accounting and the customer
+# pages so they cannot drift apart (see sales_filters for the full rationale).
+# `_SALES_FILTER_ST` is the aliased form: the filter now contains a subquery,
+# so the old `.replace('doc_base', 'st.doc_base')` trick would rewrite only
+# part of it and leave `doc_no` unqualified.
+_SALES_FILTER = sales_filters.revenue_filter()
+_SALES_FILTER_ST = sales_filters.revenue_filter('st')
 
 
 def _date_conds(date_from: Optional[str], date_to: Optional[str]):
@@ -201,7 +204,7 @@ def top_brands_by_revenue(date_from: Optional[str] = None,
           FROM sales_transactions st
           LEFT JOIN products p ON p.id = st.product_id
           LEFT JOIN brands   b ON b.id = p.brand_id
-         WHERE {_SALES_FILTER.replace('doc_base', 'st.doc_base')}
+         WHERE {_SALES_FILTER_ST}
                {date_where.replace('date_iso', 'st.date_iso')}
          GROUP BY b.id
          ORDER BY revenue DESC
@@ -247,7 +250,7 @@ def unmapped_revenue_drilldown(date_from: Optional[str] = None,
     }] sorted by revenue DESC, capped at `limit`.
     """
     date_where, params = _date_conds(date_from, date_to)
-    base_filter = _SALES_FILTER.replace('doc_base', 'st.doc_base')
+    base_filter = _SALES_FILTER_ST
     date_filter = date_where.replace('date_iso', 'st.date_iso')
 
     # Case A covers BOTH `product_id IS NULL` AND orphan rows where
