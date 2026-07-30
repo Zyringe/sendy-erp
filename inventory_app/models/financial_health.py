@@ -86,7 +86,7 @@ def get_trailing_months(n=3, conn=None, as_of_date=None):
                 """SELECT COALESCE(SUM(net), 0) AS rev
                      FROM sales_transactions
                     WHERE date_iso >= ? AND date_iso <= ?
-                      AND """ + sales_filters.not_a_sale_clause(),
+                      AND """ + sales_filters.revenue_filter(),
                 (d_from, d_to)).fetchone()
             out.append({
                 'year': y,
@@ -121,7 +121,7 @@ def get_current_month_pace(as_of_date=None, conn=None):
             """SELECT COALESCE(SUM(net), 0) AS rev
                  FROM sales_transactions
                 WHERE date_iso >= ? AND date_iso <= ?
-                      AND """ + sales_filters.not_a_sale_clause(),
+                      AND """ + sales_filters.revenue_filter(),
             (month_start, cutoff)).fetchone()
         mtd_revenue = float(row['rev'] or 0)
 
@@ -154,7 +154,7 @@ def _trailing_margin(conn, as_of):
              FROM sales_transactions st
              LEFT JOIN products p ON p.id = st.product_id
             WHERE st.date_iso >= ? AND st.date_iso <= ?
-                 AND """ + sales_filters.not_a_sale_clause("st"),
+                 AND """ + sales_filters.revenue_filter("st"),
         (d_from, d_to)).fetchone()
     rev = float(row['rev'] or 0)
     cogs = float(row['cogs'] or 0)

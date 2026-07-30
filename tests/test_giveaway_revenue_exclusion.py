@@ -154,20 +154,13 @@ def test_all_revenue_surfaces_report_the_same_march(live_conn):
     # by two different filters before migration 142 and disagreed on the page.
     cf = cashflow.revenue_by_month(date_from=MARCH[0], date_to=MARCH[1])[0]['revenue']
 
-    assert round(rev, 2) == round(acc, 2) == round(cf, 2) == oracle
-
-    # financial_health is NOT in that set, on purpose. It has never filtered
-    # returns or opening balances — a pre-existing gap, separate from the
-    # giveaway and not in this change's scope (Put chose option A: giveaway
-    # only). Pinned here so the difference stays visible and intentional
-    # rather than quietly drifting; delete this once the SR/HS gap is fixed.
+    # financial_health joined this set on 2026-07-30 (Put, option ข). It had
+    # never filtered returns or opening balances, so its trend read ฿3,688 high
+    # on March alone — the last page still disagreeing after the giveaway fix.
     fin = financial_health.get_trailing_months(
         n=1, as_of_date=datetime.date(2026, 4, 15))[0]['revenue']
-    sr_hs = live_conn.execute("""
-        SELECT ROUND(COALESCE(SUM(net), 0), 2) FROM sales_transactions
-         WHERE date_iso >= ? AND date_iso <= ?
-           AND (doc_base LIKE 'SR%' OR doc_base LIKE 'HS%')""", MARCH).fetchone()[0]
-    assert round(fin - rev, 2) == sr_hs, "financial_health must differ ONLY by the known SR/HS gap"
+
+    assert round(rev, 2) == round(acc, 2) == round(cf, 2) == round(fin, 2) == oracle
 
 
 def test_cash_in_is_deliberately_not_revenue(live_conn):
