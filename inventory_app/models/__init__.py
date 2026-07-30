@@ -104,7 +104,7 @@ from .commission import (
     list_commission_overrides, get_commission_override,
     create_commission_override, update_commission_override,
     toggle_commission_override, delete_commission_override,
-    paid_cycles_affected_by_reassign,
+    paid_cycles_affected_by_reassign, sync_customer_master_salesperson,
     list_customer_reassignments, get_customer_reassignment,
     create_customer_reassignment, update_customer_reassignment,
     toggle_customer_reassignment, delete_customer_reassignment,

@@ -522,6 +522,14 @@ def commission_overrides_delete(override_id):
 # an existing commission endpoint, it inherits the module mapping already in
 # place.
 
+def _flash_master_sync(result):
+    """Tell Put when the customer master moved with the rule. Silent when it
+    was already correct — a no-op message every save is noise."""
+    to = result.get('master_synced_to')
+    if to:
+        flash(f'อัปเดตทะเบียนลูกค้าให้เป็นเซลส์ {to} ตามกฎนี้ด้วยแล้ว', 'info')
+
+
 def _flash_paid_cycle_warnings(result):
     """A reassignment never rewrites commission_payouts, so a rule dated back
     into an already-paid cycle silently turns it into an overpayment. Put may
@@ -559,6 +567,7 @@ def commission_reassign_new():
         if result['ok']:
             flash(f'เพิ่มกฎย้ายลูกค้า #{result["id"]} เรียบร้อย', 'success')
             _flash_paid_cycle_warnings(result)
+            _flash_master_sync(result)
             return redirect(url_for('commission.commission_reassign_list'))
         flash(f'ไม่สามารถบันทึก: {result["error"]}', 'danger')
 
@@ -583,6 +592,7 @@ def commission_reassign_edit(reassign_id):
         if result['ok']:
             flash(f'อัปเดตกฎ #{reassign_id} เรียบร้อย', 'success')
             _flash_paid_cycle_warnings(result)
+            _flash_master_sync(result)
             return redirect(url_for('commission.commission_reassign_list'))
         flash(f'ไม่สามารถบันทึก: {result["error"]}', 'danger')
 
@@ -601,6 +611,7 @@ def commission_reassign_toggle(reassign_id):
     result = models.toggle_customer_reassignment(reassign_id)
     if result['ok']:
         flash(f'กฎ #{reassign_id} → {"active" if result["is_active"] else "inactive"}', 'success')
+        _flash_master_sync(result)
     else:
         flash(f'ไม่สามารถ toggle: {result["error"]}', 'danger')
     return redirect(url_for('commission.commission_reassign_list'))
@@ -612,6 +623,7 @@ def commission_reassign_delete(reassign_id):
     result = models.delete_customer_reassignment(reassign_id)
     if result['ok']:
         flash(f'ลบกฎ #{reassign_id} เรียบร้อย', 'success')
+        _flash_master_sync(result)
     else:
         flash(f'ไม่สามารถลบ: {result["error"]}', 'danger')
     return redirect(url_for('commission.commission_reassign_list'))

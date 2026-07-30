@@ -402,6 +402,76 @@ def test_effective_from_must_be_a_real_date(empty_db, empty_db_conn):
     assert ok["ok"], ok
 
 
+# ── Customer master stays in step with the rule ─────────────────────────────
+def _master(conn, code="CUST-A"):
+    return conn.execute("SELECT salesperson FROM customers WHERE code = ?",
+                        (code,)).fetchone()[0]
+
+
+def test_creating_a_rule_moves_the_customer_master_too(empty_db, empty_db_conn):
+    """A rule is only ever created because the rep really did change, so the
+    master must follow (Put, 2026-07-30). Leaving it stale is what produced the
+    original bug: three customers read '00' from 2026-04-24 while their
+    commission still went to rep 31 for months."""
+    import models
+
+    _seed(empty_db_conn)
+    assert _master(empty_db_conn) == "31"
+
+    result = models.create_customer_reassignment(
+        {"customer_code": "CUST-A", "to_salesperson": "00",
+         "effective_from": "2026-05-10"})
+    assert result["ok"], result
+    assert result["master_synced_to"] == "00"
+    assert _master(empty_db_conn) == "00"
+    assert _master(empty_db_conn, "CUST-B") == "31", "other customers untouched"
+
+
+def test_master_follows_the_latest_rule_when_a_customer_moves_twice(empty_db, empty_db_conn):
+    import models
+
+    empty_db_conn.execute("INSERT INTO salespersons (code, name) VALUES ('02', 'ทดสอบ 02')")
+    _seed(empty_db_conn)
+    models.create_customer_reassignment(
+        {"customer_code": "CUST-A", "to_salesperson": "00", "effective_from": "2026-05-10"})
+    assert _master(empty_db_conn) == "00"
+    models.create_customer_reassignment(
+        {"customer_code": "CUST-A", "to_salesperson": "02", "effective_from": "2026-09-01"})
+    assert _master(empty_db_conn) == "02", "latest rule wins, matching the engine"
+
+
+def test_deactivating_the_last_rule_leaves_the_master_alone(empty_db, empty_db_conn):
+    """The pre-rule value is not stored anywhere, so reverting would mean
+    guessing — and guessing overwrites a correct value with a wrong one. The
+    list page surfaces the resulting mismatch instead."""
+    import models
+
+    _seed(empty_db_conn)
+    r = models.create_customer_reassignment(
+        {"customer_code": "CUST-A", "to_salesperson": "00", "effective_from": "2026-05-10"})
+    assert _master(empty_db_conn) == "00"
+
+    models.toggle_customer_reassignment(r["id"])
+    assert _master(empty_db_conn) == "00", "must NOT guess its way back to 31"
+    # ...and commission really did revert, so the two are legitimately out of step
+    import commission
+    rows = commission.get_commission_for_month("2026-06", db_path=empty_db)
+    assert _net(rows, "31") == 3500.00, "deactivating the rule reverts attribution"
+
+
+def test_reactivating_a_rule_restores_the_master(empty_db, empty_db_conn):
+    import models
+
+    _seed(empty_db_conn)
+    r = models.create_customer_reassignment(
+        {"customer_code": "CUST-A", "to_salesperson": "00", "effective_from": "2026-05-10"})
+    models.toggle_customer_reassignment(r["id"])
+    empty_db_conn.execute("UPDATE customers SET salesperson='31' WHERE code='CUST-A'")
+    empty_db_conn.commit()
+    models.toggle_customer_reassignment(r["id"])
+    assert _master(empty_db_conn) == "00"
+
+
 # ── Cross-cutting coverage sweep ────────────────────────────────────────────
 # Mechanical completeness is a build-time concern, not a review-time one. This
 # fails the suite when a NEW site reads the Express-stamped rep code without

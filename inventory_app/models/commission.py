@@ -343,6 +343,44 @@ def paid_cycles_affected_by_reassign(conn, customer_code, effective_from, to_sal
     return [dict(r) for r in rows]
 
 
+def sync_customer_master_salesperson(conn, customer_code):
+    """Point `customers.salesperson` at the customer's CURRENT owner, derived
+    from its latest active reassignment rule. Returns the new code, or None
+    when nothing changed.
+
+    Why this exists (Put, 2026-07-30): the two fields answer different
+    questions — `customers.salesperson` is "who looks after this customer"
+    (display, zoning, sales trips) and the rule table is "who earns the
+    commission" — but in practice they move together: a rule is only ever
+    created because the rep really did change. Leaving the master stale is what
+    produced the original bug, where three customers read '00' from 2026-04-24
+    while their commission still went to rep 31 for months.
+
+    Latest rule wins, matching how the engine resolves attribution, so a
+    customer that moves 31 -> 00 -> 02 ends up on 02.
+
+    ⚠ Deliberately NOT reverted when the last rule is deleted or deactivated:
+    the pre-rule value is not stored anywhere, and guessing would overwrite a
+    correct value with a wrong one. The list page flags any customer whose
+    master disagrees with its rule, so the mismatch stays visible.
+
+    Caller owns the transaction — this does not commit.
+    """
+    row = conn.execute("""
+        SELECT to_salesperson FROM commission_customer_reassign
+         WHERE customer_code = ? AND is_active = 1
+         ORDER BY effective_from DESC, id DESC
+         LIMIT 1
+    """, (customer_code,)).fetchone()
+    if row is None:
+        return None                      # no active rule left — leave it alone
+    target = row['to_salesperson']
+    cur = conn.execute(
+        "UPDATE customers SET salesperson = ? WHERE code = ? AND "
+        "COALESCE(salesperson, '') <> ?", (target, customer_code, target))
+    return target if cur.rowcount else None
+
+
 def list_customer_reassignments(active_only=False):
     conn = get_connection()
     where = "WHERE r.is_active = 1" if active_only else ""
@@ -398,9 +436,10 @@ def create_customer_reassignment(form_data):
                 (customer_code, to_salesperson, effective_from, is_active, note)
             VALUES (:customer_code, :to_salesperson, :effective_from, :is_active, :note)
         """, payload)
+        synced = sync_customer_master_salesperson(conn, payload['customer_code'])
         conn.commit()
         return {'ok': True, 'id': cur.lastrowid, 'error': None,
-                'paid_cycle_warnings': warnings}
+                'paid_cycle_warnings': warnings, 'master_synced_to': synced}
     except sqlite3.IntegrityError as e:
         return {'ok': False, 'id': None, 'paid_cycle_warnings': [],
                 'error': f'มีกฎของลูกค้ารายนี้ที่วันที่เดียวกันอยู่แล้ว ({e})'}
@@ -435,7 +474,10 @@ def update_customer_reassignment(reassign_id, form_data):
         if cur.rowcount == 0:
             return {'ok': False, 'error': f'ไม่พบกฎ id {reassign_id}',
                     'paid_cycle_warnings': []}
-        return {'ok': True, 'error': None, 'paid_cycle_warnings': warnings}
+        synced = sync_customer_master_salesperson(conn, payload['customer_code'])
+        conn.commit()
+        return {'ok': True, 'error': None, 'paid_cycle_warnings': warnings,
+                'master_synced_to': synced}
     except sqlite3.IntegrityError as e:
         return {'ok': False, 'paid_cycle_warnings': [],
                 'error': f'มีกฎของลูกค้ารายนี้ที่วันที่เดียวกันอยู่แล้ว ({e})'}
@@ -456,8 +498,12 @@ def toggle_customer_reassignment(reassign_id):
             "UPDATE commission_customer_reassign SET is_active = ?, "
             "updated_at = datetime('now','localtime') WHERE id = ?",
             (new_state, reassign_id))
+        cc = conn.execute("SELECT customer_code FROM commission_customer_reassign "
+                          "WHERE id = ?", (reassign_id,)).fetchone()
+        synced = sync_customer_master_salesperson(conn, cc['customer_code']) if cc else None
         conn.commit()
-        return {'ok': True, 'is_active': new_state, 'error': None}
+        return {'ok': True, 'is_active': new_state, 'error': None,
+                'master_synced_to': synced}
     finally:
         conn.close()
 
@@ -465,11 +511,14 @@ def toggle_customer_reassignment(reassign_id):
 def delete_customer_reassignment(reassign_id):
     conn = get_connection()
     try:
+        cc = conn.execute("SELECT customer_code FROM commission_customer_reassign "
+                          "WHERE id = ?", (reassign_id,)).fetchone()
         cur = conn.execute(
             "DELETE FROM commission_customer_reassign WHERE id = ?", (reassign_id,))
-        conn.commit()
         if cur.rowcount == 0:
             return {'ok': False, 'error': f'ไม่พบกฎ id {reassign_id}'}
-        return {'ok': True, 'error': None}
+        synced = sync_customer_master_salesperson(conn, cc['customer_code']) if cc else None
+        conn.commit()
+        return {'ok': True, 'error': None, 'master_synced_to': synced}
     finally:
         conn.close()
