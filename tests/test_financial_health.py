@@ -39,17 +39,24 @@ def _mk_employee(conn, emp_code, full_name, monthly_salary,
     return eid
 
 
-def _mk_sale(conn, date_iso, net, cost_price, qty=1):
-    """One product + one sales_transactions line so qty*cost_price is exact."""
+def _mk_sale(conn, date_iso, net, cost_price, qty=1, doc_no='IV1'):
+    """One product + one sales_transactions line so qty*cost_price is exact.
+
+    `doc_base` is set because every real row has it — the BSN importer fills it
+    on insert (19,805/19,805 non-NULL in the live DB), and the revenue filter
+    keys off it. A fixture leaving it NULL builds a row that cannot exist in
+    production, which is why these tests used to pass against an unfiltered
+    query and broke the moment the canonical filter was applied.
+    """
     cur = conn.execute(
         "INSERT INTO products (product_name, cost_price) VALUES ('t', ?)",
         (cost_price,))
     pid = cur.lastrowid
     conn.execute(
         """INSERT INTO sales_transactions
-             (date_iso, doc_no, product_id, qty, unit_price, net, total)
-           VALUES (?, 'IV1', ?, ?, ?, ?, ?)""",
-        (date_iso, pid, qty, net / qty, net, net))
+             (date_iso, doc_no, doc_base, product_id, qty, unit_price, net, total)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (date_iso, doc_no, doc_no, pid, qty, net / qty, net, net))
 
 
 def _mk_account(conn, code='OP'):
@@ -216,6 +223,40 @@ def test_get_current_month_pace_no_data(empty_db_conn):
 
 
 # ── trailing months ────────────────────────────────────────────────────────────
+
+def test_trailing_months_excludes_returns_and_opening_balances(empty_db_conn):
+    """This page counted SR (credit notes) and HS (opening balances) as revenue
+    for its whole life, so its trend disagreed with /revenue and /accounting by
+    ฿3,688 on March 2026 alone. It now uses the same canonical filter they do
+    (Put, 2026-07-30, option ข)."""
+    import models.financial_health as fh
+
+    conn = empty_db_conn
+    _mk_sale(conn, '2026-04-15', net=100000.0, cost_price=0.0, doc_no='IV900')
+    _mk_sale(conn, '2026-04-16', net=2436.0, cost_price=0.0, doc_no='SR900')
+    _mk_sale(conn, '2026-04-17', net=1252.0, cost_price=0.0, doc_no='HS900')
+    conn.commit()
+
+    months = fh.get_trailing_months(n=1, conn=conn, as_of_date=date(2026, 5, 15))
+    assert months[0]['revenue'] == pytest.approx(100000.0), \
+        'SR/HS must not count as revenue'
+
+
+def test_trailing_months_excludes_giveaway_documents(empty_db_conn):
+    """The migration-142 flag reaches this page too."""
+    import models.financial_health as fh
+
+    conn = empty_db_conn
+    _mk_sale(conn, '2026-04-15', net=100000.0, cost_price=0.0, doc_no='IV901')
+    _mk_sale(conn, '2026-04-16', net=55000.0, cost_price=0.0, doc_no='IV902')
+    conn.execute(
+        "INSERT INTO ar_writeoffs (doc_no, amount, type, writeoff_date, excludes_revenue) "
+        "VALUES ('IV902', 55000.0, 'expense', '2026-04-20', 1)")
+    conn.commit()
+
+    months = fh.get_trailing_months(n=1, conn=conn, as_of_date=date(2026, 5, 15))
+    assert months[0]['revenue'] == pytest.approx(100000.0)
+
 
 def test_get_trailing_months(empty_db_conn):
     import models.financial_health as fh

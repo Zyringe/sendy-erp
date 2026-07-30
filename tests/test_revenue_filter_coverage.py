@@ -43,10 +43,11 @@ ALLOWED = {
         'report; left with the ledger for consistency with /sales.',
 }
 # NOTE: models/accounting.py, models/customers.py and models/financial_health.py
-# are NOT listed — they carry the guard. Their per-query nuances (COGS left
-# unfiltered on purpose; financial_health's pre-existing SR/HS gap) are pinned
-# by test_giveaway_revenue_exclusion.py, which asserts on actual numbers rather
-# than on the presence of a token.
+# are NOT listed — they carry the guard. The one per-query nuance (accounting's
+# COGS query left unfiltered on purpose) is pinned by
+# test_giveaway_revenue_exclusion.py, which asserts on actual numbers rather
+# than on the presence of a token. All four revenue surfaces now report the
+# same figure; that agreement is itself a test.
 
 GUARD_TOKENS = ('excludes_revenue', 'not_a_sale_clause', 'revenue_filter',
                 '_SALES_FILTER')
