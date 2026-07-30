@@ -2,7 +2,15 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "gunicorn --chdir inventory_app -w 2 --timeout 60 -b 0.0.0.0:$PORT app:app"
+# --preload is LOAD-BEARING, not a tuning knob. Without it each worker imports
+# app.py independently, so `init_db()` (app.py, module level) runs once PER
+# WORKER and both race the migration runner: one applies and stamps, the other
+# hits the same DDL a moment later, raises, and takes the gunicorn master down
+# ("Reason: Worker failed to boot"). It self-heals on the next restart because
+# the migration is stamped by then, which is why it went unnoticed for so long
+# — 2026-07-30, migration 143, is simply the first time anyone watched the log.
+# See tests/test_gunicorn_preload.py.
+startCommand = "gunicorn --chdir inventory_app -w 2 --preload --timeout 60 -b 0.0.0.0:$PORT app:app"
 healthcheckPath = "/healthz"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
