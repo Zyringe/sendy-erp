@@ -50,6 +50,7 @@ import sqlite3
 from datetime import date
 from typing import List, Optional
 
+import sales_filters
 from config import DATABASE_PATH
 import payments_alloc as pa
 
@@ -292,9 +293,9 @@ def revenue_by_month(date_from: Optional[str] = None,
 
     Phase-3 Revenue-dashboard hook — cheap to compute alongside cash flow.
     """
-    conds = ["doc_base IS NOT NULL",
-             "doc_base NOT LIKE 'SR%'",
-             "doc_base NOT LIKE 'HS%'"]
+    # Shared with revenue.py / models.accounting so the /revenue page cannot
+    # show this series and its own KPI disagreeing (see sales_filters).
+    conds = [sales_filters.revenue_filter()]
     params = []
     if date_from:
         conds.append("date_iso >= ?")

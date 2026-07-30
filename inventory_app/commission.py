@@ -54,6 +54,7 @@ import re
 import sqlite3
 from collections import defaultdict
 
+import sales_filters
 from config import DATABASE_PATH
 
 # Commission earned on receipts COLLECTED on or before this date is settled in
@@ -725,6 +726,11 @@ def get_invoices_for_salesperson(year_month, salesperson_code, db_path=None):
           FROM sales_transactions s
          WHERE s.date_iso BETWEEN ? AND ?
            AND (s.doc_base LIKE 'IV%' OR s.doc_base LIKE 'HS%')
+           -- Goods given away free earn no commission (Put, 2026-07-30). The
+           -- วรสวัสดิ์ giveaway invoices carry salesperson 02 and ฿154,122.80
+           -- of net, so without this they sit in the payable-commission base
+           -- for a sale that never happened. See sales_filters.
+           AND """ + sales_filters.not_a_sale_clause('s') + """
          GROUP BY s.doc_base
     """, (start, end)).fetchall()
 
