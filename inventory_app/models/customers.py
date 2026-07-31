@@ -571,6 +571,29 @@ def import_customers_from_bsn(customers):
                           out_phone, c['tax_id'], c['credit_days'], out_contact))
                 inserted += 1
 
+    # Re-apply commission reassignments on top of the refreshed master.
+    #
+    # This import overwrites `salesperson` from the source file on every path,
+    # and Express still lists departed reps as the owner — น้อย /02 is on 168
+    # customers there. Without this, one import silently undoes migrations
+    # 143/144 and every rule created through /commission/reassign.
+    #
+    # Same failure shape the reassignment table exists to solve:
+    # `received_payments.salesperson` is UPSERT-ed by the weekly import, which
+    # is why the decision lives in its own table instead of being edited into
+    # the imported row. The rule is a decision made AFTER the file was
+    # produced, so it wins; name/address/contact still refresh normally.
+    conn.execute("""
+        UPDATE customers
+           SET salesperson = (
+               SELECT r.to_salesperson FROM commission_customer_reassign r
+                WHERE r.customer_code = customers.code AND r.is_active = 1
+                ORDER BY r.effective_from DESC, r.id DESC LIMIT 1)
+         WHERE EXISTS (
+               SELECT 1 FROM commission_customer_reassign r
+                WHERE r.customer_code = customers.code AND r.is_active = 1)
+    """)
+
     conn.commit()
     conn.close()
     return inserted, updated, protected
