@@ -50,6 +50,24 @@ def _months_with_payment_activity():
     return [r['ym'] for r in rows]
 
 
+def _payable_split(year_month, sp_code):
+    """(payable_this_month, excluded_because_settled) for one salesperson.
+
+    ONE definition, imported — the dashboard and the CSV export must not answer
+    "how much commission this month" differently. They already did once: #335
+    changed the screen to the payable figure and left `/commission/export`
+    writing the raw `total_commission`, so June 2026 rep 31 read ฿130.00 on
+    screen and ฿2,036.88 in the CSV. Same class of bug as the two screens the
+    reassignment work was built to keep in step.
+    """
+    invoices = commission_mod.get_invoice_commission_for_sp(year_month, sp_code)
+    payable = round(sum(i['commission_due'] for i in invoices
+                        if i['paid_status'] != 'settled'), 2)
+    settled = round(sum(i['commission_due'] for i in invoices
+                        if i['paid_status'] == 'settled'), 2)
+    return payable, settled
+
+
 @bp_commission.route('/commission')
 def commission_dashboard():
     months = _months_with_payment_activity()
@@ -121,17 +139,17 @@ def commission_dashboard():
         # ฿6,362.40 vs ฿4,927.13 across its invoices — a ฿1,435.27 bonus with no
         # row to sit on. That gap is pre-existing and NOT decided here; the
         # column is named for what it is rather than pretending to be the total.
-        month_invoices = commission_mod.get_invoice_commission_for_sp(
+        (r['commission_month_payable'],
+         r['commission_settled_excluded']) = _payable_split(
             year_month, r['salesperson_code'])
-        r['commission_month_payable'] = round(
-            sum(i['commission_due'] for i in month_invoices
-                if i['paid_status'] != 'settled'), 2)
-        r['commission_settled_excluded'] = round(
-            sum(i['commission_due'] for i in month_invoices
-                if i['paid_status'] == 'settled'), 2)
 
         if r['remaining'] <= 0.05:
-            if r['total_commission'] and r['total_commission'] > 0:
+            # "จ่ายครบ" must mean money moved or was genuinely owed and cleared.
+            # Keying this on `total_commission` claimed จ่ายครบ for 4 rows in
+            # 2026 where nothing was owed AND nothing was paid — it is the raw
+            # aggregate, which counts settled invoices (and leaks per-product
+            # overrides to zero-rate tiers).
+            if paid > 0 or r['commission_month_payable'] > 0:
                 r['payout_status'] = 'paid'
             else:
                 r['payout_status'] = 'none'
@@ -425,14 +443,23 @@ def commission_export():
     rows = commission_mod.get_commission_for_month(year_month)
     buf = io.StringIO()
     w = csv.writer(buf)
+    # `commission_month_payable` FIRST: it is the number the page shows and the
+    # number that can actually be paid. `total_commission` is kept after it as
+    # audit detail (raw tier formula, counts settled invoices) — dropping it
+    # would lose the reconciliation trail, but leading with it is what made the
+    # CSV disagree with the screen.
     w.writerow(['salesperson_code', 'tier', 'own_net', 'third_net', 'total_net',
-                'threshold', 'commission_below', 'commission_above_own',
-                'commission_above_third', 'total_commission',
+                'threshold', 'commission_month_payable',
+                'commission_settled_excluded',
+                'commission_below', 'commission_above_own',
+                'commission_above_third', 'total_commission_raw',
                 'receipts', 'invoices', 'lines'])
     for r in rows:
+        payable, settled = _payable_split(year_month, r['salesperson_code'])
         w.writerow([r['salesperson_code'], r['tier_code'],
                     f"{r['own_net']:.2f}", f"{r['third_net']:.2f}",
                     f"{r['total_net']:.2f}", r['threshold_amount'] or '',
+                    f"{payable:.2f}", f"{settled:.2f}",
                     f"{r['commission_below']:.2f}",
                     f"{r['commission_above_own']:.2f}",
                     f"{r['commission_above_third']:.2f}",
