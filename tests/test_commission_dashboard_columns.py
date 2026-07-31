@@ -221,22 +221,69 @@ def test_ar_header_falls_back_when_customer_missing_from_master(empty_db, empty_
 
 
 # ── CSV export must agree with the screen ───────────────────────────────────
-def test_csv_export_and_dashboard_share_one_definition():
-    """#335 changed the screen to the payable figure and left the CSV writing
-    the raw `total_commission`: June 2026 rep 31 read ฿130.00 on screen and
-    ฿2,036.88 in the export. Both now call `_payable_split`, so they cannot
-    drift — this asserts the shared call rather than the number, because the
-    number is live data."""
-    src = open(os.path.join(APP, "blueprints", "commission_bp.py"), encoding="utf-8").read()
-    assert "def _payable_split(" in src, "shared definition must exist"
-    # exactly one place computes it, and both consumers call it
-    assert src.count("_payable_split(") >= 3, (
-        "expected the definition plus a call from BOTH the dashboard and the "
-        "CSV export")
-    export_fn = src.split("def commission_export(")[1].split("\n@bp_commission")[0]
-    assert "_payable_split(" in export_fn, "CSV export must use the shared helper"
-    assert "'commission_month_payable'" in export_fn, (
+def _authed_client(tmp_db):
+    """Real Flask client against the live-DB clone, admin session injected
+    (no password round-trip — see CLAUDE.local.md)."""
+    import os
+    os.environ.setdefault("WTF_CSRF_ENABLED", "False")
+    from app import app as flask_app
+
+    flask_app.config["TESTING"] = True
+    flask_app.config["WTF_CSRF_ENABLED"] = False
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess["user_id"] = 1
+        sess["username"] = "test-admin"
+        sess["role"] = "admin"
+    return c
+
+
+def test_csv_export_and_dashboard_render_the_same_number(tmp_db):
+    """BEHAVIOURAL parity, not a source grep.
+
+    #335 changed the screen to the payable figure and left the CSV writing the
+    raw total: June 2026 rep 31 read ฿130.00 on screen and ฿2,036.88 in the
+    export. A test that only greps for a shared helper name would pass even if
+    a caller ignored its return value — so this renders BOTH surfaces and
+    compares the actual numbers.
+    """
+    import csv as _csv
+    import io
+    import re
+
+    c = _authed_client(tmp_db)
+    month = "2026-06"
+
+    page = c.get(f"/commission?month={month}")
+    assert page.status_code == 200
+    html = page.get_data(as_text=True)
+
+    export = c.get(f"/commission/export?month={month}")
+    assert export.status_code == 200
+    rows = list(_csv.DictReader(
+        io.StringIO(export.get_data(as_text=True).lstrip("\ufeff"))))
+    assert rows, "CSV export produced no rows"
+    assert "commission_month_payable" in rows[0], (
         "CSV must carry the payable column the page displays")
+
+    compared = 0
+    for r in rows:
+        sp = r["salesperson_code"]
+        payable = float(r["commission_month_payable"])
+        if payable <= 0:
+            continue
+        # find that rep's row in the rendered table and pull its numbers out
+        row_html = next((m for m in re.findall(r"<tr[^>]*>.*?</tr>", html, re.S)
+                         if f"sp/{sp}?" in m), None)
+        assert row_html, f"rep {sp} missing from the rendered table"
+        nums = {n.replace(",", "") for n in
+                re.findall(r"[\d,]+\.\d\d", re.sub(r"<[^>]+>", " ", row_html))}
+        assert f"{payable:.2f}" in nums, (
+            f"rep {sp}: CSV says commission_month_payable={payable:.2f} but the "
+            f"page row renders {sorted(nums)} — screen and export disagree")
+        compared += 1
+
+    assert compared > 0, "no rep with non-zero payable — parity was not exercised"
 
 
 def test_csv_export_leads_with_payable_not_the_raw_total():
