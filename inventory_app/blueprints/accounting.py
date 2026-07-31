@@ -66,7 +66,18 @@ def express_ar_customer(customer_code):
 
     customer_name = rows[0]['customer_name']
     customer_type = rows[0]['customer_type']
-    salesperson_code = rows[0]['salesperson_code']
+    # "Who looks after this customer" comes from the customers MASTER, not from
+    # express_ar_outstanding. The snapshot is re-stamped by Express on every
+    # import and drifts: on 2026-07-30 all four reassigned customers read '31'
+    # in the snapshot while the master already said '00'. The master is the
+    # field Sendy actually maintains (/partners, and the commission
+    # reassignment flow keeps it in step), so it is the one to display.
+    # Falls back to the snapshot when the customer is not in the master.
+    master = conn.execute(
+        "SELECT salesperson FROM customers WHERE code = ?", (customer_code,)
+    ).fetchone()
+    salesperson_code = ((master['salesperson'] if master else None)
+                        or rows[0]['salesperson_code'])
     total_outstanding = sum((r['outstanding_amount'] or 0) for r in rows)
     total_billed = sum((r['bill_amount'] or 0) for r in rows)
     oldest = min((r['doc_date_iso'] or '9999-12-31') for r in rows)
