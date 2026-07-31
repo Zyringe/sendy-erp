@@ -105,6 +105,31 @@ def commission_dashboard():
             year_month, r['salesperson_code'],
             through_month=True, only_unpaid=True)
         r['remaining'] = round(sum(i['remaining'] for i in unpaid), 2)
+
+        # THIS MONTH's payable commission, excluding invoices closed by business
+        # rule (SOLD_SETTLED_BEFORE / SETTLED_THROUGH). `total_commission` is the
+        # raw tier formula over everything collected this month, so it counts
+        # commission on old invoices that were settled in the employee era and
+        # will never be paid again: June 2026 read ฿2,036.88 of which ฿1,906.88
+        # was two 2025 invoices. Put, 2026-07-30: that number "มีค่าทางธุรกิจน้อย
+        # มาก" and the page should lead with what is actually owed.
+        #
+        # ⚠ Per-invoice by construction, so it excludes the Tier-B
+        # above-threshold bonus, which lives only at month level and has never
+        # been payable through this page (the จะจ่าย box defaults to
+        # `remaining`, also per-invoice). Feb 2026 rep 31: total_commission
+        # ฿6,362.40 vs ฿4,927.13 across its invoices — a ฿1,435.27 bonus with no
+        # row to sit on. That gap is pre-existing and NOT decided here; the
+        # column is named for what it is rather than pretending to be the total.
+        month_invoices = commission_mod.get_invoice_commission_for_sp(
+            year_month, r['salesperson_code'])
+        r['commission_month_payable'] = round(
+            sum(i['commission_due'] for i in month_invoices
+                if i['paid_status'] != 'settled'), 2)
+        r['commission_settled_excluded'] = round(
+            sum(i['commission_due'] for i in month_invoices
+                if i['paid_status'] == 'settled'), 2)
+
         if r['remaining'] <= 0.05:
             if r['total_commission'] and r['total_commission'] > 0:
                 r['payout_status'] = 'paid'
@@ -118,6 +143,10 @@ def commission_dashboard():
     summary = {
         'total_collected_net': sum(r['total_net'] for r in full_rows),
         'total_commission':    sum(r['total_commission'] for r in full_rows),
+        # Headline card mirrors the table's "คอมเดือนนี้" so the two cannot
+        # disagree — the whole point of the 2026-07-30 redesign.
+        'total_commission_payable': round(
+            sum(r['commission_month_payable'] for r in full_rows), 2),
         'total_paid':          sum(r['paid_amount'] for r in full_rows),
         'total_remaining':     sum(r['remaining'] for r in full_rows),
         'breached_threshold':  sum(1 for r in full_rows
