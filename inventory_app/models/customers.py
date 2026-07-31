@@ -458,7 +458,38 @@ def import_customers_from_bsn(customers):
     conn = get_connection()
     inserted = updated = protected = 0
 
+    # Commission reassignments override the source file's owner.
+    #
+    # This import refreshes `customers.salesperson` from the file on every
+    # path, and Express still lists departed reps as the owner — น้อย /02 is on
+    # 168 customers there. Without this, one import silently undoes migrations
+    # 143/144 and every rule created through /commission/reassign.
+    #
+    # Same failure shape the reassignment table exists to solve:
+    # `received_payments.salesperson` is UPSERT-ed by the weekly import, which
+    # is why the decision lives in its own table rather than being edited into
+    # the imported row. The rule is a decision made AFTER the file was
+    # produced, so it wins; name/address/contact still refresh normally.
+    #
+    # Applied BEFORE the write, not corrected after: writing the file's value
+    # and fixing it afterwards lands the right data but fires the
+    # audit_customers_update trigger twice, recording a change that never
+    # happened. The first cut of this guard did exactly that and put 936
+    # phantom rows (468 out, 468 back) into a 2,718-row import — 34% noise in
+    # the trail people rely on to answer "who changed this customer".
+    reassigned = {r['customer_code']: r['to_salesperson'] for r in conn.execute("""
+        SELECT customer_code, to_salesperson FROM commission_customer_reassign r
+         WHERE is_active = 1
+           AND effective_from = (SELECT MAX(r2.effective_from)
+                                   FROM commission_customer_reassign r2
+                                  WHERE r2.customer_code = r.customer_code
+                                    AND r2.is_active = 1)
+    """)}
+
     for c in customers:
+        if c['code'] in reassigned:
+            c = dict(c)
+            c['salesperson'] = reassigned[c['code']]
         existing = conn.execute(
             "SELECT code, contact_normalized_at FROM customers WHERE code=?",
             (c['code'],)
