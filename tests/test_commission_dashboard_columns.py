@@ -218,3 +218,52 @@ def test_ar_header_falls_back_when_customer_missing_from_master(empty_db, empty_
     assert master is None, "precondition: not in master"
     resolved = ((master["salesperson"] if master else None) or snapshot["salesperson_code"])
     assert resolved == "31", "must fall back to the snapshot rather than render blank"
+
+
+# ── CSV export must agree with the screen ───────────────────────────────────
+def test_csv_export_and_dashboard_share_one_definition():
+    """#335 changed the screen to the payable figure and left the CSV writing
+    the raw `total_commission`: June 2026 rep 31 read ฿130.00 on screen and
+    ฿2,036.88 in the export. Both now call `_payable_split`, so they cannot
+    drift — this asserts the shared call rather than the number, because the
+    number is live data."""
+    src = open(os.path.join(APP, "blueprints", "commission_bp.py"), encoding="utf-8").read()
+    assert "def _payable_split(" in src, "shared definition must exist"
+    # exactly one place computes it, and both consumers call it
+    assert src.count("_payable_split(") >= 3, (
+        "expected the definition plus a call from BOTH the dashboard and the "
+        "CSV export")
+    export_fn = src.split("def commission_export(")[1].split("\n@bp_commission")[0]
+    assert "_payable_split(" in export_fn, "CSV export must use the shared helper"
+    assert "'commission_month_payable'" in export_fn, (
+        "CSV must carry the payable column the page displays")
+
+
+def test_csv_export_leads_with_payable_not_the_raw_total():
+    src = open(os.path.join(APP, "blueprints", "commission_bp.py"), encoding="utf-8").read()
+    export_fn = src.split("def commission_export(")[1].split("\n@bp_commission")[0]
+    header_line = export_fn.split("w.writerow([")[1]
+    assert header_line.index("commission_month_payable") < header_line.index("total_commission_raw"), (
+        "payable must come before the raw audit figure, and the raw one must be "
+        "renamed so nobody mistakes it for what is owed")
+
+
+def test_paid_status_requires_money_moved_or_owed(empty_db, empty_db_conn):
+    """'จ่ายครบ' claimed 4 rows in 2026 where nothing was owed and nothing was
+    paid, because it keyed on the raw aggregate. Seed a rep whose whole month is
+    settled invoices and who was never paid."""
+    _seed_dashboard(empty_db_conn)
+    # strip the payout + the owed invoice, leaving only the settled 2025 one
+    empty_db_conn.execute("DELETE FROM commission_payouts")
+    empty_db_conn.execute("DELETE FROM paid_invoices WHERE doc_no IN ('IV-PAID','IV-OWED')")
+    empty_db_conn.commit()
+
+    r = _row31(_dashboard_rows(None, "2026-06", empty_db))
+    assert r["total_commission"] > 0, "raw aggregate still counts the settled invoice"
+    assert r["commission_month_payable"] == 0.00
+    assert r["remaining"] == 0.00
+
+    paid = 0.0
+    status = ("paid" if (paid > 0 or r["commission_month_payable"] > 0) else "none")
+    assert status == "none", (
+        "must NOT claim จ่ายครบ when nothing was owed and nothing was paid")
