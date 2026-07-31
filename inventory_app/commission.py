@@ -445,6 +445,21 @@ def get_commission_for_month(year_month, salesperson_code=None, db_path=None):
             r_own = tier['rate_own_pct'] / 100.0
             r_third = tier['rate_third_pct'] / 100.0
 
+            # A zero-rate placeholder tier (Tier C — "รอตัดสินใจ", described as
+            # "ทุกอย่าง 0%") earns nothing at all: per-product / per-brand
+            # overrides must NOT leak commission to it. Same rule, same shape as
+            # `tier_pays_commission` in get_invoice_line_breakdown — that path
+            # has always enforced it, and it is the path that governs what
+            # actually gets paid.
+            #
+            # Until 2026-07-31 the override term below was added unconditionally,
+            # so the aggregate disagreed with the drill-down for exactly these
+            # reps: ฿7,044.06 across 2026 (reps 02 and 03) shown on /commission
+            # AND on the drilldown header, against ฿0.00 per invoice. That broke
+            # the invariant this block's own comment promises.
+            tier_pays_commission = (
+                r_own > 0 or r_third > 0 or (threshold or 0) > 0)
+
             # Per-invoice base commission — sum of (own_inv × r_own +
             # third_inv × r_third + override) rounded each. This is the
             # canonical base value: it always equals what the user pays
@@ -456,7 +471,7 @@ def get_commission_for_month(year_month, salesperson_code=None, db_path=None):
             for inv_key in invoice_keys:
                 base_per_invoice += round(
                     own_inv[sp][inv_key] * r_own + third_inv[sp][inv_key] * r_third
-                    + override_inv[sp][inv_key],
+                    + (override_inv[sp][inv_key] if tier_pays_commission else 0.0),
                     2,
                 )
 
