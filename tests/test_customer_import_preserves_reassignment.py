@@ -88,3 +88,29 @@ def test_inactive_rule_does_not_protect(empty_db, empty_db_conn):
 
     assert _owner(empty_db_conn) == '02', (
         "an inactive rule must not keep protecting the customer")
+
+
+def test_import_does_not_churn_the_audit_trail(empty_db, empty_db_conn):
+    """The rule must be applied BEFORE the write, not corrected afterwards.
+
+    Writing the file's value and fixing it after lands the right data but fires
+    `audit_customers_update` twice, recording a change that never happened. The
+    first cut of this guard did exactly that: 936 phantom rows (468 out, 468
+    back) inside a 2,718-row import — 34% noise in the trail people rely on to
+    answer "who changed this customer".
+    """
+    import models
+
+    _seed(empty_db_conn)
+    empty_db_conn.execute("DELETE FROM audit_log")
+    empty_db_conn.commit()
+
+    # Express still says น้อย owns it; nothing about the customer actually changes.
+    models.import_customers_from_bsn([_bsn_row('C-MOVED', '02')])
+
+    rows = empty_db_conn.execute(
+        "SELECT changed_fields FROM audit_log WHERE table_name='customers'").fetchall()
+    touching_sp = [r[0] for r in rows if 'salesperson' in (r[0] or '')]
+    assert not touching_sp, (
+        f"import recorded a salesperson change that never happened: {touching_sp}")
+    assert _owner(empty_db_conn) == '00'
