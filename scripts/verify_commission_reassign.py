@@ -116,21 +116,31 @@ def main():
 
     # 2 — no rule restates an already-paid cycle
     print("\nPaid cycles touched by a rule:")
+    # commission_payouts holds one row PER INVOICE, so joining it directly
+    # reports the same cycle once per payout (2026-04 appeared twice, 224.64 +
+    # 124.31, instead of once at 348.95). Collapse to distinct cycles first,
+    # then total each — same fix as models.paid_cycles_affected_by_reassign.
     touched = conn.execute("""
-        SELECT DISTINCT substr(rp.date_iso, 1, 7) AS ym,
-               rp.salesperson AS losing_rep,
-               cp.amount_paid
-          FROM commission_customer_reassign r
-          JOIN sales_transactions st ON st.customer_code = r.customer_code
-                                    AND st.date_iso >= r.effective_from
-          JOIN paid_invoices pi ON pi.doc_no = st.doc_base
-                               AND pi.doc_kind = 'IV'
-                               AND pi.amount IS NOT NULL AND pi.amount <> 0
-          JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
-          JOIN commission_payouts cp ON cp.salesperson_code = rp.salesperson
-                                    AND cp.year_month = substr(rp.date_iso, 1, 7)
-         WHERE r.is_active = 1
-           AND rp.salesperson <> r.to_salesperson
+        SELECT a.ym, a.losing_rep,
+               (SELECT ROUND(SUM(cp.amount_paid), 2) FROM commission_payouts cp
+                 WHERE cp.salesperson_code = a.losing_rep
+                   AND cp.year_month = a.ym) AS amount_paid
+          FROM (SELECT DISTINCT substr(rp.date_iso, 1, 7) AS ym,
+                       rp.salesperson                     AS losing_rep
+                  FROM commission_customer_reassign r
+                  JOIN sales_transactions st ON st.customer_code = r.customer_code
+                                            AND st.date_iso >= r.effective_from
+                  JOIN paid_invoices pi ON pi.doc_no = st.doc_base
+                                       AND pi.doc_kind = 'IV'
+                                       AND pi.amount IS NOT NULL AND pi.amount <> 0
+                  JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
+                 WHERE r.is_active = 1
+                   AND rp.salesperson <> r.to_salesperson
+                   AND EXISTS (SELECT 1 FROM commission_payouts cp2
+                                WHERE cp2.salesperson_code = rp.salesperson
+                                  AND cp2.year_month = substr(rp.date_iso, 1, 7))
+               ) a
+         ORDER BY a.ym DESC
     """).fetchall()
     if touched:
         for t in touched:
