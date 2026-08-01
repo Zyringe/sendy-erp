@@ -241,8 +241,14 @@ def test_search_and_region_filter_work_with_flag_on(tmp_db):
 
 def test_customers_page_default_omits_billless_customer(tmp_db):
     c = _client(tmp_db, role='admin')
-    html = c.get('/customers').data.decode()
+    # Narrow with a search that matches ONLY the known bill-less customer —
+    # an unfiltered page-1 check would false-pass by coincidence of
+    # alphabetical pagination (caught by break-it-once: forcing
+    # include_billless=True in the route did NOT turn this test red until
+    # it was narrowed like this).
+    html = c.get('/customers?q=' + quote('กรีน ดิสทธิบิวชั่น')).data.decode()
     assert 'หจก. กรีน ดิสทธิบิวชั่น (สิทธิกร)' not in html
+    assert 'ไม่พบลูกค้าที่ตรงกับการค้นหา' in html
 
 
 def test_customers_page_toggle_on_shows_billless_customer_linked_by_code(tmp_db):
