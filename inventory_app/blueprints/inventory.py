@@ -8,6 +8,7 @@ prefix.
 """
 import math
 from datetime import date, datetime
+from uuid import uuid4
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, abort, current_app)
@@ -97,17 +98,15 @@ def stock_adjust(product_id):
                 return redirect(_safe_next('products.product_detail', product_id=product_id))
             created_at = None if adj == today else f'{adj} 00:00:00'
 
-        # diff
-        current = models.get_current_stock(product_id)
-        # Round the subtraction: 11.4 − 12 is −0.5999999999999996 in IEEE-754,
-        # and the stock triggers accumulate whatever we hand them.
-        diff = round(new_qty - current, 4)
+        # "Make it new_qty" — the diff must be computed from stock read inside
+        # the transaction that writes it. Reading here and writing after leaves
+        # a window for another worker's movement, and the count silently lands
+        # on new_qty ± that movement.
+        diff = models.set_stock_to(product_id, new_qty, note=note, created_at=created_at)
         if diff == 0:
             flash('จำนวนเท่าเดิม ไม่มีการเปลี่ยนแปลง', 'info')
-            return redirect(_safe_next('products.product_detail', product_id=product_id))
-
-        models.add_transaction(product_id, 'ADJUST', diff, 'unit', note=note, created_at=created_at)
-        flash(f'ปรับยอดสต็อกเป็น {new_qty:g} {product["unit_type"]} เรียบร้อย', 'success')
+        else:
+            flash(f'ปรับยอดสต็อกเป็น {new_qty:g} {product["unit_type"]} เรียบร้อย', 'success')
         return redirect(_safe_next('products.product_detail', product_id=product_id))
 
     return render_template('transactions/adjust_form.html', product=product,
@@ -260,12 +259,24 @@ def conversion_run(formula_id):
         if writeoff_qty and wo_reason:
             extra_note = (extra_note + ' | ' if extra_note else '') + f'ของเสีย: {wo_reason}'
 
-        success, message, _ = models.run_conversion(formula_id, multiplier, reference_no, extra_note, writeoff_qty)
-        flash(message, 'success' if success else 'danger')
-        if success:
-            return redirect(url_for('inventory.conversion_list'))
+        # No token means the run cannot be deduped, so a re-submit would convert
+        # twice. Refuse rather than run it unguarded — the same stance the app
+        # already takes for a missing CSRF token. Costs a stale tab one reload.
+        run_token = request.form.get('run_token', '').strip()
+        if not run_token:
+            flash('ฟอร์มหมดอายุ กรุณาโหลดหน้านี้ใหม่แล้วทำรายการอีกครั้ง', 'danger')
+        else:
+            success, message, _ = models.run_conversion(
+                formula_id, multiplier, reference_no, extra_note, writeoff_qty,
+                run_token=run_token)
+            flash(message, 'success' if success else 'danger')
+            if success:
+                return redirect(url_for('inventory.conversion_list'))
 
-    return render_template('conversions/run.html', formula=formula, inputs=inputs)
+    # Fresh nonce per render: it is what makes a re-submitted POST recognisable
+    # as the same run. A reused one would refuse the next genuine run.
+    return render_template('conversions/run.html', formula=formula, inputs=inputs,
+                           run_token=f'CONV{formula_id}-{uuid4().hex[:12]}')
 
 
 @bp_inventory.route('/conversions/<int:formula_id>/delete', methods=['POST'])

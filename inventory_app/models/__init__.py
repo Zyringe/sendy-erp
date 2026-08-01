@@ -57,7 +57,7 @@ from .stock import (
     count_in_stock,
 )
 from .transactions import (
-    add_transaction, get_current_stock, get_transactions,
+    add_transaction, get_current_stock, set_stock_to, get_transactions,
     get_recent_transactions, delete_transactions_by_ids,
 )
 from .promotions import (
