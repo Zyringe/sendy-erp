@@ -5,6 +5,7 @@ Extracted verbatim from app.py (behavior-preserving split) — see app.py's
 module docstring for the overall file-split rationale. No URL changes;
 route rules are unchanged, only their endpoint names gain a `bsn.` prefix.
 """
+import math
 import os
 import shutil
 import sys
@@ -85,7 +86,10 @@ def unit_conversions_save():
             if len(parts) == 2:
                 try:
                     ratio = float(val)
-                    if ratio > 0:
+                    # isfinite: `inf > 0` is True, and a ratio multiplies
+                    # straight into quantity_change, so inf would poison the
+                    # ledger and stock_levels beyond repair.
+                    if math.isfinite(ratio) and ratio > 0:
                         pid_s, bsn_unit = parts[0], parts[1]
                         # if Put named this acronym, store conv under the
                         # FULL unit (ledger was just normalised to match)
@@ -112,7 +116,8 @@ def unit_conversions_edit():
     product_id = request.form.get('product_id', type=int)
     bsn_unit   = request.form.get('bsn_unit', '').strip()
     new_ratio  = request.form.get('ratio', type=float)
-    if product_id and bsn_unit and new_ratio and new_ratio > 0:
+    if (product_id and bsn_unit and new_ratio
+            and math.isfinite(new_ratio) and new_ratio > 0):
         result = models.update_unit_conversion_ratio(product_id, bsn_unit, new_ratio)
         if 'blocked' in result:
             _flash_unit_hazard(result['blocked'])
