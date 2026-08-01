@@ -36,13 +36,29 @@
 </div>
 
 {# ── Customer info ───────────────────────────────────────────────────────── #}
+{% set ci = data.customer_info %}
 <div class="card mb-4">
+  <div class="card-header py-2 d-flex justify-content-between align-items-center">
+    <span class="fw-600"><i class="bi bi-person-vcard me-2 text-accent"></i>ข้อมูลลูกค้า</span>
+    {% if is_manager and master %}
+    <button type="button" class="btn btn-sm btn-outline-primary"
+            data-bs-toggle="modal" data-bs-target="#customerEditModal">
+      <i class="bi bi-pencil-square me-1"></i>แก้ไข
+    </button>
+    {% endif %}
+  </div>
   <div class="card-body py-2">
     <div class="d-flex flex-wrap gap-4 align-items-start">
       <div>
         <div class="text-subtle small mb-1">ชื่อลูกค้า</div>
         <div class="fw-600">{{ data.customer }}</div>
       </div>
+      {% if ci and ci.name and ci.name != data.customer %}
+      <div>
+        <div class="text-subtle small mb-1">ชื่อในทะเบียน</div>
+        <div class="fw-500">{{ ci.name }}</div>
+      </div>
+      {% endif %}
       {% if data.customer_code %}
       <div>
         <div class="text-subtle small mb-1">รหัสลูกค้า</div>
@@ -77,7 +93,6 @@
         <div><span class="badge bg-warning text-dark">⚠️ ยังไม่มีใน master</span></div>
       </div>
       {% endif %}
-      {% set ci = data.customer_info %}
       {% if ci %}
         {% if ci.customer_type %}
         <div>
@@ -120,54 +135,116 @@
   </div>
 </div>
 
-{# ── Reassign salesperson + region (manager+ only) ──────────────────────── #}
+{# ── Edit-customer modal (manager+ only) ─────────────────────────────────── #}
+{# Replaces the old standalone "เปลี่ยน salesperson / เขตการขาย" card — one
+   modal now edits group 1 (salesperson/region_id) + group 2 (contact
+   fields) together, opened from the card header's แก้ไข button above.
+   `code` and `name` are read-only (plan.md decision 2/3); the operational
+   columns (customer_type/credit_days/tax_id/zone) aren't editable here
+   either — import_customers_from_bsn always overwrites them, so a form for
+   them would lie. #}
 {% if is_manager and master %}
-<div class="card mb-4 border-primary">
-  <div class="card-header py-2 d-flex align-items-center">
-    <i class="bi bi-person-gear me-2"></i>
-    <span class="fw-600">เปลี่ยน salesperson / เขตการขาย</span>
-    <span class="badge bg-secondary ms-2">master record</span>
-  </div>
-  <div class="card-body py-3">
-    <form method="post"
-          action="{{ url_for('partners.customer_reassign', customer_code=master.code) }}"
-          class="row g-2 align-items-end">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="col-md-4">
-        <label class="form-label small mb-1">Salesperson</label>
-        <select name="salesperson" class="form-select form-select-sm">
-          <option value="">— ไม่กำหนด —</option>
-          {% for sp in salespersons %}
-            <option value="{{ sp.code }}"
-              {% if master.salesperson == sp.code %}selected{% endif %}>
-              {{ sp.code }} — {{ sp.name }}
-            </option>
-          {% endfor %}
-          {% if master.salesperson and master.salesperson in orphan_codes %}
-            <option value="{{ master.salesperson }}" selected>
-              {{ master.salesperson }} ⚠️ (orphan — ไม่อยู่ใน master)
-            </option>
-          {% endif %}
-        </select>
-      </div>
-      <div class="col-md-4">
-        <label class="form-label small mb-1">Region</label>
-        <select name="region_id" class="form-select form-select-sm">
-          <option value="">— ไม่กำหนด —</option>
-          {% for r in regions %}
-            <option value="{{ r.id }}"
-              {% if master.region_id == r.id %}selected{% endif %}>
-              {{ r.code }}{% if r.name_th %} — {{ r.name_th }}{% endif %}
-            </option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="col-auto">
-        <button type="submit" class="btn btn-primary btn-sm">
-          <i class="bi bi-save me-1"></i>บันทึก
-        </button>
-      </div>
-    </form>
+<div class="modal fade" id="customerEditModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post"
+            action="{{ url_for('partners.customer_reassign', customer_code=master.code) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="bi bi-pencil-square me-1"></i>แก้ไขข้อมูลลูกค้า</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label small mb-1">รหัสลูกค้า</label>
+              <input type="text" class="form-control form-control-sm font-mono"
+                     value="{{ master.code }}" disabled>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small mb-1">ชื่อในทะเบียน</label>
+              <input type="text" class="form-control form-control-sm"
+                     value="{{ master.name }}" disabled>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small mb-1">Salesperson</label>
+              <select name="salesperson" class="form-select form-select-sm">
+                <option value="">— ไม่กำหนด —</option>
+                {% for sp in salespersons %}
+                  <option value="{{ sp.code }}"
+                    {% if master.salesperson == sp.code %}selected{% endif %}>
+                    {{ sp.code }} — {{ sp.name }}
+                  </option>
+                {% endfor %}
+                {% if master.salesperson and master.salesperson in orphan_codes %}
+                  <option value="{{ master.salesperson }}" selected>
+                    {{ master.salesperson }} ⚠️ (orphan — ไม่อยู่ใน master)
+                  </option>
+                {% endif %}
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small mb-1">เขตการขาย</label>
+              <select name="region_id" class="form-select form-select-sm">
+                <option value="">— ไม่กำหนด —</option>
+                {% for r in regions %}
+                  <option value="{{ r.id }}"
+                    {% if master.region_id == r.id %}selected{% endif %}>
+                    {{ r.code }}{% if r.name_th %} — {{ r.name_th }}{% endif %}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="col-12"><hr class="my-1"></div>
+
+            <div class="col-md-6">
+              <label class="form-label small mb-1">ชื่อเล่น</label>
+              <input type="text" name="nickname" class="form-control form-control-sm"
+                     value="{{ ci.nickname or '' }}">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small mb-1">โทรศัพท์</label>
+              <input type="text" name="phone" class="form-control form-control-sm"
+                     value="{{ ci.phone or '' }}">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small mb-1">แฟกซ์</label>
+              <input type="text" name="fax" class="form-control form-control-sm"
+                     value="{{ ci.fax or '' }}">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small mb-1">ผู้ติดต่อ</label>
+              <input type="text" name="contact" class="form-control form-control-sm"
+                     value="{{ ci.contact or '' }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label small mb-1">ที่อยู่</label>
+              <textarea name="address" class="form-control form-control-sm" rows="2">{{ ci.address or '' }}</textarea>
+            </div>
+            <div class="col-12">
+              <label class="form-label small mb-1">หมายเหตุติดต่อ</label>
+              <textarea name="contact_note" class="form-control form-control-sm" rows="2">{{ ci.contact_note or '' }}</textarea>
+            </div>
+          </div>
+
+          <div class="alert alert-warning small mt-3 mb-0">
+            <i class="bi bi-exclamation-triangle me-1"></i>
+            นี่เปลี่ยนแค่ทะเบียนลูกค้า คอมมิชชั่นไม่ขยับตาม
+            {% if is_admin %}
+            — ถ้าต้องการย้ายคอมมิชชั่นด้วย
+            <a href="{{ url_for('commission.commission_reassign_new', customer_code=master.code) }}">สร้างกฎย้ายคอมมิชชั่น</a>
+            {% endif %}
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i class="bi bi-save me-1"></i>บันทึก
+          </button>
+        </div>
+      </form>
+    </div>
   </div>
 </div>
 {% endif %}

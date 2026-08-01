@@ -479,6 +479,144 @@ def update_customer_assignment(customer_code, salesperson_code, region_id):
         conn.close()
 
 
+# Group 2 (customer_summary.html plan.md terminology): the contact fields the
+# customer-edit modal writes, alongside group 1 (salesperson/region_id above).
+# NOT `name` (locked — see plan.md decision 3) and NOT the group-3 operational
+# columns (customer_type/credit_days/tax_id/zone), which import_customers_from_bsn
+# always overwrites even on a protected row — a form for those would lie.
+CUSTOMER_CONTACT_FIELDS = ('nickname', 'phone', 'fax', 'contact', 'address', 'contact_note')
+
+# customers column -> its customer_contact_review.proposed_* twin. Note the last
+# pair is NOT a mechanical `proposed_` + name: the review column is
+# `proposed_note`, not `proposed_contact_note`.
+_REVIEW_COL = {
+    'nickname':     'proposed_nickname',
+    'phone':        'proposed_phone',
+    'fax':          'proposed_fax',
+    'contact':      'proposed_contact',
+    'address':      'proposed_address',
+    'contact_note': 'proposed_note',
+}
+
+
+def update_customer_edit(customer_code, salesperson_code, region_id, contact, username):
+    """Customer-edit modal's save path: group 1 (salesperson/region_id) +
+    group 2 (contact fields), one UPDATE per save.
+
+    `contact` is a dict with `CUSTOMER_CONTACT_FIELDS` keys, raw form strings (blank
+    means "clear this field" — the modal always echoes the live value back,
+    so blank only happens when the field was already blank or Put cleared it
+    on purpose).
+
+    `contact_normalized_at`/`_by` are stamped ONLY when a contact field
+    actually changed vs the live row — that stamp is what protects the row
+    from the next BSN import overwriting it (import_customers_from_bsn checks
+    `contact_normalized_at IS NOT NULL`). Stamping on every save, including a
+    salesperson-only edit, would over-protect rows nobody touched contact on.
+
+    When a contact field changed and a `customer_contact_review` row exists
+    with status='pending', its proposed_* columns are updated to match —
+    otherwise a later click on ยืนยัน in that queue silently reverts this
+    edit (that page prefills from the frozen proposed_* snapshot, not the
+    live row; 17 billing customers are in that state as of 2026-08-01).
+    """
+    sp = (salesperson_code or '').strip() or None
+    rid = region_id if region_id not in ('', None, 'null') else None
+    if rid is not None:
+        try:
+            rid = int(rid)
+        except (ValueError, TypeError):
+            return {'ok': False, 'error': 'region_id ไม่ถูกต้อง'}
+
+    # A short payload is a caller bug, never "clear the rest". The route already
+    # branches on this, but this function is exported through the models facade,
+    # so a future caller that skips the route would otherwise silently wipe the
+    # keys it forgot — the exact failure this whole path was hardened against.
+    # Re-checking here is a data-mutation invariant, not defensive decoration:
+    # `contact[k]` below then cannot raise, and cannot default to blank.
+    missing = [k for k in CUSTOMER_CONTACT_FIELDS if k not in contact]
+    if missing:
+        return {'ok': False,
+                'error': f'contact payload ไม่ครบ (ขาด: {", ".join(missing)})'}
+
+    new_contact = {k: (contact[k] or '').strip() or None for k in CUSTOMER_CONTACT_FIELDS}
+
+    conn = get_connection()
+    try:
+        current = conn.execute(
+            "SELECT * FROM customers WHERE code = ?", (customer_code,)
+        ).fetchone()
+        if current is None:
+            return {'ok': False, 'error': f'ไม่พบ customer code "{customer_code}"'}
+
+        if sp is not None and sp != current['salesperson']:
+            if not conn.execute(
+                "SELECT 1 FROM salespersons WHERE code = ? AND is_active = 1", (sp,)
+            ).fetchone():
+                return {'ok': False, 'error': f'ไม่พบ salesperson code "{sp}" (หรือ inactive)'}
+        if rid is not None:
+            if not conn.execute("SELECT 1 FROM regions WHERE id = ?", (rid,)).fetchone():
+                return {'ok': False, 'error': f'ไม่พบ region id {rid}'}
+
+        changed_fields = [k for k in CUSTOMER_CONTACT_FIELDS if new_contact[k] != current[k]]
+        contact_changed = bool(changed_fields)
+
+        if contact_changed:
+            # Freeze the pre-edit values ONCE, so the state before the first
+            # manual edit is always recoverable even if audit_log is ever
+            # pruned. COALESCE means an existing snapshot is never clobbered.
+            # ⚠ This is "before the first MANUAL edit", not "as Express sent
+            # it" — if the normalizer already rewrote the row, its output is
+            # what gets frozen. Same 4-key shape the import and the review
+            # page write, so any reader sees one format. 1,674 of 2,665 rows
+            # have no snapshot at all today.
+            orig_json = json.dumps({
+                'name':    current['name'],
+                'phone':   current['phone'] or '',
+                'contact': current['contact'] or '',
+                'address': current['address'] or '',
+            }, ensure_ascii=False)
+            conn.execute("""
+                UPDATE customers
+                   SET salesperson = ?, region_id = ?,
+                       nickname = ?, phone = ?, fax = ?, contact = ?,
+                       address = ?, contact_note = ?,
+                       contact_orig_json = COALESCE(contact_orig_json, ?),
+                       contact_normalized_at = datetime('now','localtime'),
+                       contact_normalized_by = ?
+                 WHERE code = ?
+            """, (sp, rid, *[new_contact[k] for k in CUSTOMER_CONTACT_FIELDS],
+                  orig_json, username, customer_code))
+        else:
+            conn.execute(
+                "UPDATE customers SET salesperson = ?, region_id = ? WHERE code = ?",
+                (sp, rid, customer_code),
+            )
+
+        if contact_changed:
+            pending = conn.execute("""
+                SELECT id FROM customer_contact_review
+                 WHERE customer_code = ? AND status = 'pending'
+            """, (customer_code,)).fetchone()
+            if pending:
+                # ONLY the fields that actually changed. Writing all six would
+                # destroy the normalizer's un-reviewed proposals for the fields
+                # this edit never touched — 53 of the 62 pending rows have at
+                # least one proposed_* that differs from the live value
+                # (measured 2026-08-01), e.g. 11ม06's proposed_address carries a
+                # postcode the live row lacks. Editing only the phone must not
+                # silently drop that.
+                sets = ', '.join(f'{_REVIEW_COL[k]} = ?' for k in changed_fields)
+                conn.execute(
+                    f"UPDATE customer_contact_review SET {sets} WHERE id = ?",
+                    [new_contact[k] for k in changed_fields] + [pending['id']])
+
+        conn.commit()
+        return {'ok': True, 'error': None, 'contact_changed': contact_changed}
+    finally:
+        conn.close()
+
+
 def bulk_reassign_customers(customer_codes, salesperson_code, region_id, mode='both'):
     if mode not in ('salesperson', 'region', 'both'):
         return {'ok': False, 'updated': 0, 'error': 'mode ไม่ถูกต้อง'}
