@@ -290,3 +290,57 @@ def test_customers_page_checkbox_checked_when_toggle_on(tmp_db):
     import re
     m = re.search(r'<input[^>]*id="billless-cb"[^>]*>', html)
     assert m and 'checked' in m.group(0)
+
+
+# ── Every page must render, not just page 1 ────────────────────────────────
+# Review finding (2026-08-01): switching the row link to `customer_detail`
+# 500'd the whole page for any row whose customer_code is NULL. Sales rows with
+# a blank customer_code (21 rows / 8 names today) collapse into ONE bucket under
+# `GROUP BY s.customer_code`, and `url_for(..., customer_code=None)` raises
+# BuildError. That bucket sorts to page 5 of the DEFAULT view, so /customers
+# page 5 was a hard 500 with the toggle untouched. Every test here passed
+# because none of them rendered past page 1.
+
+def _codeless_bucket_exists(tmp_db):
+    conn = _raw_conn(tmp_db)
+    n = conn.execute(
+        "SELECT COUNT(*) FROM sales_transactions WHERE COALESCE(customer_code,'') = ''"
+    ).fetchone()[0]
+    conn.close()
+    return n > 0
+
+
+def test_every_customers_page_renders_in_both_modes(tmp_db):
+    import models
+    assert _codeless_bucket_exists(tmp_db), \
+        'fixture has no code-less sales rows — this test could not catch the bug it exists for'
+
+    c = _client(tmp_db)
+    for flag, qs in ((False, ''), (True, '&include_billless=1')):
+        _, total = models.get_customers(include_billless=flag)
+        pages = (total + 49) // 50
+        assert pages > 1, 'fixture must span multiple pages or this asserts nothing'
+        bad = [p for p in range(1, pages + 1)
+               if c.get(f'/customers?page={p}{qs}').status_code != 200]
+        assert not bad, f'include_billless={flag}: pages {bad} did not render 200'
+
+
+def test_codeless_row_links_by_name_not_a_broken_code_url(tmp_db):
+    """The bucket has no code to link by; it must fall back to the name shim
+    (which lands on a /customers search) rather than build an invalid URL."""
+    import models, re
+    rows, _ = models.get_customers(per_page=100000)
+    codeless = [r for r in rows if not r['customer_code']]
+    if not codeless:
+        import pytest; pytest.skip('no code-less bucket in this snapshot')
+    target = codeless[0]
+    idx = rows.index(target)
+    page = idx // 50 + 1
+
+    c = _client(tmp_db)
+    r = c.get(f'/customers?page={page}')
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert '/customer/code/None' not in html and "customer_code=None" not in html
+    # its row links through the name shim
+    assert quote(target['customer']) in html or target['customer'] in html

@@ -77,8 +77,14 @@
       </thead>
       <tbody>
         {% for c in customers %}
+        {# Not every row HAS a code: sales_transactions rows with a blank
+           customer_code (21 today, 8 distinct names) collapse into one bucket
+           whose customer_code is NULL, and url_for would raise BuildError and
+           500 the whole page — which it did, on page 5 of the default view.
+           Fall back to the name shim there; it lands on a /customers search,
+           which is the honest answer for a bucket of unmatched customers. #}
         <tr style="cursor:pointer"
-            onclick="window.location='{{ url_for('partners.customer_detail', customer_code=c.customer_code) }}'">
+            onclick="window.location='{% if c.customer_code %}{{ url_for('partners.customer_detail', customer_code=c.customer_code) }}{% else %}{{ url_for('partners.customer_summary', customer_name=c.customer) }}{% endif %}'">
           <td class="td-primary fw-500">
             {{ c.customer }}
             <span class="d-mobile-only badge badge-gray font-mono ms-1">{{ c.customer_code }}</span>
