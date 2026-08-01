@@ -111,12 +111,25 @@ def customer_summary(customer_name):
 
 @bp_partners.route('/customer/<customer_code>/reassign', methods=['POST'])
 def customer_reassign(customer_code):
+    """Save handler for the customer-edit modal (customer_summary.html):
+    group 1 (salesperson/region_id) + group 2 contact fields in one POST.
+    See models.update_customer_edit for the field-group + stamping rules.
+    """
     salesperson = request.form.get('salesperson', '').strip()
     region_id   = request.form.get('region_id', '').strip()
+    contact = {
+        'nickname':     request.form.get('nickname', ''),
+        'phone':        request.form.get('phone', ''),
+        'fax':          request.form.get('fax', ''),
+        'contact':      request.form.get('contact', ''),
+        'address':      request.form.get('address', ''),
+        'contact_note': request.form.get('contact_note', ''),
+    }
 
-    result = models.update_customer_assignment(customer_code, salesperson, region_id)
+    result = models.update_customer_edit(
+        customer_code, salesperson, region_id, contact, session.get('username'))
     if result['ok']:
-        flash('บันทึก salesperson / region เรียบร้อย (master record)', 'success')
+        flash('บันทึกข้อมูลลูกค้าเรียบร้อย', 'success')
     else:
         flash(f'ไม่สามารถบันทึก: {result["error"]}', 'danger')
 

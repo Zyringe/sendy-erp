@@ -626,11 +626,18 @@ def commission_reassign_new():
             _flash_master_sync(result)
             return redirect(url_for('commission.commission_reassign_list'))
         flash(f'ไม่สามารถบันทึก: {result["error"]}', 'danger')
+        form = request.form
+    else:
+        # The customer-edit modal (customer_summary.html) links here with
+        # ?customer_code=<code> for admins so the form arrives prefilled —
+        # without this the link only worked after a failed POST.
+        code = request.args.get('customer_code')
+        form = {'customer_code': code} if code else None
 
     return render_template(
         'commission_reassign_form.html',
         rule=None,
-        form=request.form if request.method == 'POST' else None,
+        form=form,
         salespersons=models.get_active_salespersons(),
         customers=_reassign_customer_choices(),
     )
