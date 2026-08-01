@@ -136,11 +136,19 @@ def _get_base_qty(conn, product_id: int, product_unit_type: str, bsn_unit: str, 
     return None  # ratio not defined yet
 
 
-def _sync_bsn_to_stock(conn, table: str, file_type: str):
+def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True):
     """
     สร้าง transaction ย้อนหลังสำหรับแถว BSN ที่มี product_id แล้ว
     แต่ยังไม่ถูก sync (synced_to_stock = 0)
     file_type: 'sales' → OUT,  'purchase' → IN
+
+    deduct_platform: pass False on a REPLAY (update_unit_conversion_ratio /
+    repoint_bsn_code re-post a product's whole ledger). The platform_skus.stock
+    deduction below belongs to a row FIRST becoming synced — i.e. an import —
+    and is NOT reversed when the ledger rows are deleted, so replaying it walks
+    marketplace stock down by the product's entire sales history every time.
+    Measured before the guard existed: a no-op ratio edit on pid 456 took 93
+    units off four live listings while the warehouse ledger stayed correct.
     """
     txn_type = 'IN' if file_type == 'purchase' else 'OUT'
 
@@ -225,7 +233,7 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str):
             # genuine sales OUT, never for a sales return (a return would have to
             # ADD platform stock back, not deduct; we leave platform stock to the
             # marketplace sync rather than guess on returns).
-            if txn_type == 'OUT' and not is_sales_return:
+            if deduct_platform and txn_type == 'OUT' and not is_sales_return:
                 customer = (row['customer'] or '').strip()
                 platform = PLATFORM_STOCK_DEDUCT_CUSTOMERS.get(customer)
 
@@ -385,7 +393,12 @@ def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str) -> int:
 
 def _synced_source_rows(conn, product_id):
     """How many BSN source rows for `product_id` currently hold a ledger
-    movement (synced_to_stock=1), across both tables."""
+    movement (synced_to_stock=1), across both tables.
+
+    Counts ROWS, not movements: _sync_bsn_to_stock stamps synced=1 even when it
+    posts nothing (base_qty <= 0, or the product is gone). Both write paths
+    require ratio > 0 and only qty > 0 rows ever posted, so a row cannot
+    currently re-sync without its movement — revisit if either stops holding."""
     return sum(
         conn.execute(
             f"SELECT COUNT(*) FROM {table}"
@@ -434,8 +447,8 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
             " OR ".join("note LIKE ?" for _ in _BSN_LEDGER_NOTE_PATTERNS)),
         (product_id, *_BSN_LEDGER_NOTE_PATTERNS))
 
-    _sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
-    _sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
+    _sync_bsn_to_stock(conn, 'sales_transactions', 'sales', deduct_platform=False)
+    _sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase', deduct_platform=False)
 
     # Every row that was synced must have re-synced. A shortfall means some
     # row's ratio is gone (the ad-hoc scripts under scripts/ can delete

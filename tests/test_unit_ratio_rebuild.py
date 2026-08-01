@@ -53,6 +53,24 @@ def _purchase(conn, doc, pid, qty, unit):
         (doc, doc, pid, qty, unit))
 
 
+def _mkt_sale(conn, doc, pid, qty, unit, customer='หน้าร้านS'):
+    """A marketplace sale — the customer name is what makes _sync_bsn_to_stock
+    deduct platform_skus.stock (PLATFORM_STOCK_DEDUCT_CUSTOMERS)."""
+    conn.execute(
+        "INSERT INTO sales_transactions"
+        " (batch_id,date_iso,doc_no,doc_base,product_id,bsn_code,product_name_raw,"
+        "  customer,customer_code,qty,unit,unit_price,vat_type,discount,total,net,"
+        "  synced_to_stock)"
+        " VALUES (NULL,'2025-01-01',?,?,?,'C1','raw',?,'S1',?,?,10,0,0,0,0,0)",
+        (doc, doc, pid, customer, qty, unit))
+
+
+def _platform_stock(conn, pid=PID):
+    return conn.execute(
+        "SELECT stock FROM platform_skus WHERE internal_product_id=?", (pid,)
+    ).fetchone()['stock']
+
+
 def _stock(conn, pid=PID):
     """Read stock_levels directly — an independent signal, not the app's own
     accessor that the code under test also uses."""
@@ -117,6 +135,29 @@ def test_ratio_edit_on_a_product_with_an_empty_ledger(empty_db_conn):
         "SELECT COUNT(*) FROM stock_levels"
         " WHERE product_id NOT IN (SELECT id FROM products)").fetchone()[0]
     assert orphans == 0
+
+
+def test_replay_does_not_re_deduct_platform_stock(empty_db_conn):
+    """Defect 4: deleting a ledger row does NOT put back the platform_skus.stock
+    that posting it took off, so a rebuild must not run that deduction again.
+    The deduction belongs to a row FIRST becoming synced (an import), not to a
+    replay. 327 products / 5,220 synced marketplace sales rows were exposed."""
+    _seed(empty_db_conn)
+    empty_db_conn.execute(
+        "INSERT INTO platform_skus (platform, product_name, variation_id,"
+        " internal_product_id, qty_per_sale, stock)"
+        " VALUES ('shopee','listing','V1',?,1,100)", (PID,))
+    _mkt_sale(empty_db_conn, 'IV001', PID, 1, 'โหล')   # 1 โหล = 12 อัน
+    empty_db_conn.commit()
+
+    models.save_unit_conversions([{'product_id': PID, 'bsn_unit': 'โหล', 'ratio': 12}])
+    # The import-time deduction is correct and must still happen.
+    assert _platform_stock(empty_db_conn) == 88
+
+    assert models.update_unit_conversion_ratio(PID, 'โหล', 12) == {'ok': True}
+
+    assert _platform_stock(empty_db_conn) == 88, 'replay re-deducted platform stock'
+    assert _stock(empty_db_conn) == -12
 
 
 def test_stock_adjust_accepts_a_fractional_count(admin_client, empty_db_conn):
