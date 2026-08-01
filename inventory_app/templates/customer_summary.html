@@ -135,58 +135,6 @@
   </div>
 </div>
 
-{# ── Change history (manager+) ───────────────────────────────────────────── #}
-{# The audit_customers_* triggers have always recorded {field: [old, new]},
-   but no page read them — the trail existed only for someone willing to open
-   SQL. Collapsed by default so it costs nothing on a normal visit.
-   NOTE: audit_log.user is NULL on every customers row (SQL triggers cannot
-   see the logged-in user), so this deliberately says WHEN and WHAT, never
-   WHO. Do not add a "โดย" column here without first populating that column. #}
-{% if is_manager and audit_history %}
-<div class="card mb-4">
-  <div class="card-header py-2">
-    <a class="text-decoration-none d-flex align-items-center" data-bs-toggle="collapse"
-       href="#customerAuditHistory" role="button">
-      <i class="bi bi-clock-history me-2"></i>
-      <span class="fw-600">ประวัติการแก้ไข</span>
-      <span class="badge badge-gray ms-2">{{ audit_history|length }}</span>
-      <i class="bi bi-chevron-down ms-auto"></i>
-    </a>
-  </div>
-  <div class="collapse" id="customerAuditHistory">
-    <div class="table-responsive">
-      <table class="table table-sm mb-0 align-middle">
-        <thead>
-          <tr><th style="width:150px">เมื่อ</th><th style="width:90px">การกระทำ</th><th>เปลี่ยนอะไร</th></tr>
-        </thead>
-        <tbody>
-          {% for h in audit_history %}
-          <tr>
-            <td class="small font-mono">{{ h.created_at }}</td>
-            <td class="small">{{ h.action }}</td>
-            <td class="small">
-              {% for ch in h.changes %}
-              <div>
-                <span class="text-subtle">{{ ch.label }}:</span>
-                <span class="text-danger">{{ ch.old if ch.old != '' else '—' }}</span>
-                <i class="bi bi-arrow-right mx-1"></i>
-                <span class="text-success">{{ ch.new if ch.new != '' else '—' }}</span>
-              </div>
-              {% endfor %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    <div class="card-body py-2 text-subtle small">
-      บันทึกโดยระบบอัตโนมัติ · แสดง {{ audit_history|length }} รายการล่าสุด ·
-      ไม่ได้เก็บว่าใครเป็นคนแก้
-    </div>
-  </div>
-</div>
-{% endif %}
-
 {# ── Edit-customer modal (manager+ only) ─────────────────────────────────── #}
 {# Replaces the old standalone "เปลี่ยน salesperson / เขตการขาย" card — one
    modal now edits group 1 (salesperson/region_id) + group 2 (contact

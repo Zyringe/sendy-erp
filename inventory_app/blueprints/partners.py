@@ -76,7 +76,6 @@ def customer_detail(customer_code):
     master = models.get_customer_master(customer_code)
     return render_template('customer_summary.html',
                            data=data,
-                           audit_history=models.get_customer_audit_history(customer_code),
                            unpaid_bills=unpaid_bills, unpaid_total=unpaid_total,
                            unpaid_snapshot_date=unpaid_snapshot_date,
                            master=master,
@@ -118,17 +117,32 @@ def customer_reassign(customer_code):
     """
     salesperson = request.form.get('salesperson', '').strip()
     region_id   = request.form.get('region_id', '').strip()
-    contact = {
-        'nickname':     request.form.get('nickname', ''),
-        'phone':        request.form.get('phone', ''),
-        'fax':          request.form.get('fax', ''),
-        'contact':      request.form.get('contact', ''),
-        'address':      request.form.get('address', ''),
-        'contact_note': request.form.get('contact_note', ''),
-    }
 
-    result = models.update_customer_edit(
-        customer_code, salesperson, region_id, contact, session.get('username'))
+    # MISSING is not CLEAR. This URL is unchanged from the pre-modal card, which
+    # POSTed salesperson + region_id and nothing else — a page rendered before
+    # this deploy and submitted after it is a real caller, not a hypothetical
+    # one. Reading its absent contact keys as blanks wipes phone/contact/address,
+    # stamps the row as curated, and pushes NULLs into the pending review row
+    # (reproduced against a live copy on 2026-08-01 for 11ม06 — all three
+    # columns went to NULL). So branch on what the request actually carried.
+    present = [k for k in models.CUSTOMER_CONTACT_FIELDS if k in request.form]
+
+    if not present:
+        # Legacy assignment-only form. Same behaviour it always had.
+        result = models.update_customer_assignment(
+            customer_code, salesperson, region_id)
+    elif len(present) == len(models.CUSTOMER_CONTACT_FIELDS):
+        contact = {k: request.form.get(k, '') for k in models.CUSTOMER_CONTACT_FIELDS}
+        result = models.update_customer_edit(
+            customer_code, salesperson, region_id, contact,
+            session.get('username'))
+    else:
+        # Neither shape — refuse rather than guess which half to trust.
+        missing = [k for k in models.CUSTOMER_CONTACT_FIELDS if k not in request.form]
+        result = {'ok': False,
+                  'error': f'ฟอร์มส่งข้อมูลไม่ครบ (ขาด: {", ".join(missing)}) — '
+                           'ลองรีเฟรชหน้าแล้วบันทึกใหม่'}
+
     if result['ok']:
         flash('บันทึกข้อมูลลูกค้าเรียบร้อย', 'success')
     else:

@@ -484,7 +484,7 @@ def update_customer_assignment(customer_code, salesperson_code, region_id):
 # NOT `name` (locked — see plan.md decision 3) and NOT the group-3 operational
 # columns (customer_type/credit_days/tax_id/zone), which import_customers_from_bsn
 # always overwrites even on a protected row — a form for those would lie.
-_CONTACT_FIELDS = ('nickname', 'phone', 'fax', 'contact', 'address', 'contact_note')
+CUSTOMER_CONTACT_FIELDS = ('nickname', 'phone', 'fax', 'contact', 'address', 'contact_note')
 
 # customers column -> its customer_contact_review.proposed_* twin. Note the last
 # pair is NOT a mechanical `proposed_` + name: the review column is
@@ -503,7 +503,7 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
     """Customer-edit modal's save path: group 1 (salesperson/region_id) +
     group 2 (contact fields), one UPDATE per save.
 
-    `contact` is a dict with `_CONTACT_FIELDS` keys, raw form strings (blank
+    `contact` is a dict with `CUSTOMER_CONTACT_FIELDS` keys, raw form strings (blank
     means "clear this field" — the modal always echoes the live value back,
     so blank only happens when the field was already blank or Put cleared it
     on purpose).
@@ -528,7 +528,7 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
         except (ValueError, TypeError):
             return {'ok': False, 'error': 'region_id ไม่ถูกต้อง'}
 
-    new_contact = {k: (contact.get(k) or '').strip() or None for k in _CONTACT_FIELDS}
+    new_contact = {k: (contact.get(k) or '').strip() or None for k in CUSTOMER_CONTACT_FIELDS}
 
     conn = get_connection()
     try:
@@ -547,7 +547,7 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
             if not conn.execute("SELECT 1 FROM regions WHERE id = ?", (rid,)).fetchone():
                 return {'ok': False, 'error': f'ไม่พบ region id {rid}'}
 
-        changed_fields = [k for k in _CONTACT_FIELDS if new_contact[k] != current[k]]
+        changed_fields = [k for k in CUSTOMER_CONTACT_FIELDS if new_contact[k] != current[k]]
         contact_changed = bool(changed_fields)
 
         if contact_changed:
@@ -574,7 +574,7 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
                        contact_normalized_at = datetime('now','localtime'),
                        contact_normalized_by = ?
                  WHERE code = ?
-            """, (sp, rid, *[new_contact[k] for k in _CONTACT_FIELDS],
+            """, (sp, rid, *[new_contact[k] for k in CUSTOMER_CONTACT_FIELDS],
                   orig_json, username, customer_code))
         else:
             conn.execute(
@@ -604,70 +604,6 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
         return {'ok': True, 'error': None, 'contact_changed': contact_changed}
     finally:
         conn.close()
-
-
-_AUDIT_FIELD_LABEL = {
-    'name': 'ชื่อในทะเบียน', 'nickname': 'ชื่อเล่น', 'salesperson': 'เซลส์',
-    'region_id': 'เขตการขาย', 'zone': 'โซน', 'address': 'ที่อยู่',
-    'phone': 'โทรศัพท์', 'fax': 'แฟกซ์', 'contact': 'ผู้ติดต่อ',
-    'contact_note': 'หมายเหตุ', 'tax_id': 'Tax ID', 'credit_days': 'เครดิต (วัน)',
-    'lat': 'พิกัด lat', 'lng': 'พิกัด lng',
-}
-
-
-def get_customer_audit_history(customer_code, limit=15):
-    """Recent changes to this customer's master row, newest first.
-
-    `audit_customers_update` already records `{field: [old, new]}` for every
-    change (2,050 UPDATE rows as of 2026-08-01) — but NO page in the app read
-    it, so the trail was only reachable by opening SQL. This makes it visible
-    where the edits happen.
-
-    ⚠ `audit_log.user` is NULL on every customers row (1,188 INSERT + 2,050
-    UPDATE, checked 2026-08-01): the trigger is SQL-level and cannot see the
-    logged-in user. So this answers "when + what", never "who" — the template
-    must not imply otherwise.
-
-    ⚠ Joined on `customers.rowid`, which is what the trigger stores. That is
-    an implicit rowid (the PK is TEXT `code`), so a VACUUM could renumber it
-    and re-point historical rows. Pre-existing property of the audit table,
-    not introduced here; all 3,238 rows resolve today.
-
-    Returns [{created_at, action, changes: [{field, label, old, new}]}].
-    """
-    conn = get_connection()
-    rows = conn.execute("""
-        SELECT a.created_at, a.action, a.changed_fields
-          FROM audit_log a
-         WHERE a.table_name = 'customers'
-           AND a.row_id = (SELECT rowid FROM customers WHERE code = ?)
-         ORDER BY a.id DESC
-         LIMIT ?
-    """, (customer_code, limit)).fetchall()
-    conn.close()
-
-    out = []
-    for r in rows:
-        try:
-            parsed = json.loads(r['changed_fields'] or '{}')
-        except (ValueError, TypeError):
-            parsed = {}
-        changes = []
-        for field, val in parsed.items():
-            # UPDATE rows carry [old, new]; INSERT rows carry a bare value.
-            if isinstance(val, list) and len(val) == 2:
-                old, new = val
-            else:
-                old, new = None, val
-            changes.append({
-                'field': field,
-                'label': _AUDIT_FIELD_LABEL.get(field, field),
-                'old': '' if old is None else old,
-                'new': '' if new is None else new,
-            })
-        out.append({'created_at': r['created_at'], 'action': r['action'],
-                    'changes': changes})
-    return out
 
 
 def bulk_reassign_customers(customer_codes, salesperson_code, region_id, mode='both'):

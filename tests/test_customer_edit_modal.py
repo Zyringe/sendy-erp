@@ -401,34 +401,53 @@ def test_salesperson_only_edit_does_not_freeze_a_snapshot(tmp_db):
     assert oj is None
 
 
-# ── B: the change-history card ─────────────────────────────────────────────
+# ── MISSING is not CLEAR: the legacy assignment-only form ──────────────────
+# Codex review (2026-08-01): /customer/<code>/reassign is the SAME url the
+# pre-modal card posted to, with only salesperson + region_id. A page rendered
+# before this deploy and submitted after it reached the new full-edit path and
+# read its absent contact keys as blanks. Reproduced on a live copy for 11ม06:
+# phone/contact/address all went NULL, the row was stamped as curated, and the
+# pending review row's proposed_* were NULLed too.
 
-def test_change_history_card_shows_the_edit_and_is_manager_gated(tmp_db):
-    before = _customer_row(tmp_db, '11ค09')
+def test_legacy_assignment_only_post_does_not_clear_contact(tmp_db):
+    import sqlite3
+    before = _customer_row(tmp_db, '11ม06')
+    assert (before['phone'] or before['contact'] or before['address']), \
+        'fixture has no contact data — this test would be vacuous'
+
     c = _client(tmp_db, role='admin')
-    c.post('/customer/11ค09/reassign', data={
-        'salesperson': before['salesperson'] or '',
-        'region_id': str(before['region_id'] or ''),
-        'nickname': before['nickname'] or '', 'phone': '02-777-6666',
-        'fax': before['fax'] or '', 'contact': before['contact'] or '',
-        'address': before['address'] or '', 'contact_note': before['contact_note'] or '',
-    })
-    html = c.get(f'/customer/code/{quote("11ค09")}').data.decode()
-    assert 'id="customerAuditHistory"' in html
-    assert '02-777-6666' in html, 'the new value must appear in the history'
-    assert (before['phone'] or '') in html, 'the old value must appear too'
+    # EXACTLY the old form's payload: no contact keys at all.
+    assert c.post('/customer/11ม06/reassign',
+                  data={'salesperson': '00', 'region_id': '3'}).status_code == 302
 
-    staff = _client(tmp_db, role='staff').get(
-        f'/customer/code/{quote("11ค09")}').data.decode()
-    assert 'id="customerAuditHistory"' not in staff
+    after = _customer_row(tmp_db, '11ม06')
+    for f in ('phone', 'contact', 'address', 'nickname', 'fax', 'contact_note'):
+        assert after[f] == before[f], f'legacy POST cleared {f}'
+    assert after['contact_normalized_at'] == before['contact_normalized_at'], \
+        'legacy POST must not stamp the row as curated'
+    assert after['salesperson'] == '00' and after['region_id'] == 3, \
+        'the assignment it DID send must still be applied'
+
+    conn = sqlite3.connect(tmp_db)
+    prop = conn.execute(
+        "SELECT proposed_phone, proposed_contact FROM customer_contact_review "
+        " WHERE customer_code='11ม06' AND status='pending'").fetchone()
+    conn.close()
+    if prop is not None:
+        assert prop[0] is not None or prop[1] is not None, \
+            'legacy POST must not push NULLs into the pending review row'
 
 
-def test_change_history_never_claims_who_made_the_edit(tmp_db):
-    """audit_log.user is NULL on all 3,238 customers rows (SQL triggers cannot
-    see the session user), so the card must not grow a 'by whom' column."""
-    html = _client(tmp_db, role='admin').get(
-        f'/customer/code/{quote("11ค09")}').data.decode()
-    import re
-    card = re.search(r'id="customerAuditHistory".*?</div>\s*</div>', html, re.S)
-    assert card, 'history card not found'
-    assert '<th>โดย' not in card.group(0) and '>ผู้แก้ไข<' not in card.group(0)
+def test_partial_contact_post_is_rejected_not_guessed(tmp_db):
+    """Half a contact payload is neither shape — refuse rather than pick a half."""
+    before = _customer_row(tmp_db, '11ม06')
+    c = _client(tmp_db, role='admin')
+    r = c.post('/customer/11ม06/reassign',
+               data={'salesperson': before['salesperson'] or '',
+                     'region_id': str(before['region_id'] or ''),
+                     'phone': '02-000-0000'},          # phone only, 5 keys missing
+               follow_redirects=True)
+    assert r.status_code == 200
+    after = _customer_row(tmp_db, '11ม06')
+    assert after['phone'] == before['phone'], 'a partial payload must not be applied'
+    assert after['contact'] == before['contact']
