@@ -136,7 +136,8 @@ def _get_base_qty(conn, product_id: int, product_unit_type: str, bsn_unit: str, 
     return None  # ratio not defined yet
 
 
-def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True):
+def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
+                       product_ids=None):
     """
     สร้าง transaction ย้อนหลังสำหรับแถว BSN ที่มี product_id แล้ว
     แต่ยังไม่ถูก sync (synced_to_stock = 0)
@@ -149,6 +150,13 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True):
     marketplace stock down by the product's entire sales history every time.
     Measured before the guard existed: a no-op ratio edit on pid 456 took 93
     units off four live listings while the warehouse ledger stayed correct.
+
+    product_ids: restrict the scan to these products. This function otherwise
+    picks up EVERY unsynced mapped row in the table, which a replay must not do
+    — an unrelated product's pending marketplace sale would first-sync under
+    the caller's deduct_platform=False and lose the platform deduction it is
+    owed and will never be offered again. Always pass it alongside
+    deduct_platform=False.
     """
     txn_type = 'IN' if file_type == 'purchase' else 'OUT'
 
@@ -158,10 +166,16 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True):
     # purchase_transactions row of that doc, by position, so the posting order
     # has to match the source id order rather than whatever a bare table scan
     # happens to hand back.
-    rows = conn.execute(
-        f"SELECT * FROM {table} WHERE product_id IS NOT NULL AND synced_to_stock = 0"
-        f" ORDER BY id"
-    ).fetchall()
+    sql = (f"SELECT * FROM {table}"
+           f" WHERE product_id IS NOT NULL AND synced_to_stock = 0")
+    params = []
+    if product_ids is not None:
+        ids = list(product_ids)
+        if not ids:
+            return
+        sql += f" AND product_id IN ({','.join('?' * len(ids))})"
+        params = ids
+    rows = conn.execute(sql + " ORDER BY id", params).fetchall()
 
     for row in rows:
         product = conn.execute(
@@ -391,20 +405,22 @@ def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str) -> int:
     return deleted
 
 
-def _synced_source_rows(conn, product_id):
-    """How many BSN source rows for `product_id` currently hold a ledger
-    movement (synced_to_stock=1), across both tables.
+def _synced_source_ids(conn, product_id):
+    """The exact `(table, row id)` pairs for `product_id` that currently hold a
+    ledger movement (synced_to_stock=1).
 
-    Counts ROWS, not movements: _sync_bsn_to_stock stamps synced=1 even when it
-    posts nothing (base_qty <= 0, or the product is gone). Both write paths
-    require ratio > 0 and only qty > 0 rows ever posted, so a row cannot
-    currently re-sync without its movement — revisit if either stops holding."""
-    return sum(
-        conn.execute(
-            f"SELECT COUNT(*) FROM {table}"
-            f" WHERE product_id=? AND synced_to_stock=1", (product_id,)
-        ).fetchone()[0]
-        for table in ('sales_transactions', 'purchase_transactions'))
+    A SET, not a count. A count lets a row that first-syncs DURING the replay
+    silently compensate for one that can no longer replay: a synced โหล row
+    whose unit_conversions entry was later deleted (scripts/ do that) plus a
+    still-pending กล่อง row give before=1, after=1 while the โหล movement is
+    gone for good. Compare identities and that cancellation cannot happen."""
+    return {
+        (table, row[0])
+        for table in ('sales_transactions', 'purchase_transactions')
+        for row in conn.execute(
+            f"SELECT id FROM {table} WHERE product_id=? AND synced_to_stock=1",
+            (product_id,)).fetchall()
+    }
 
 
 def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
@@ -438,7 +454,7 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
     # the loss by recomputing stock from the truncated ledger, leaving nothing
     # for a drift check to find. Deleting and replaying the SAME set keeps the
     # two halves symmetric by construction.
-    synced_before = _synced_source_rows(conn, product_id)
+    synced_before = _synced_source_ids(conn, product_id)
     for table in ('sales_transactions', 'purchase_transactions'):
         conn.execute(f"UPDATE {table} SET synced_to_stock=0 WHERE product_id=?",
                      (product_id,))
@@ -447,14 +463,16 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
             " OR ".join("note LIKE ?" for _ in _BSN_LEDGER_NOTE_PATTERNS)),
         (product_id, *_BSN_LEDGER_NOTE_PATTERNS))
 
-    _sync_bsn_to_stock(conn, 'sales_transactions', 'sales', deduct_platform=False)
-    _sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase', deduct_platform=False)
+    _sync_bsn_to_stock(conn, 'sales_transactions', 'sales',
+                       deduct_platform=False, product_ids=(product_id,))
+    _sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase',
+                       deduct_platform=False, product_ids=(product_id,))
 
-    # Every row that was synced must have re-synced. A shortfall means some
-    # row's ratio is gone (the ad-hoc scripts under scripts/ can delete
-    # unit_conversions rows) and its movement would silently vanish — bail
-    # WITHOUT committing rather than lose it.
-    if _synced_source_rows(conn, product_id) < synced_before:
+    # EVERY row that was synced must be synced again — identity by identity.
+    # A shortfall means some row's ratio is gone (the ad-hoc scripts under
+    # scripts/ can delete unit_conversions rows) and its movement would
+    # silently vanish, so bail WITHOUT committing rather than lose it.
+    if synced_before - _synced_source_ids(conn, product_id):
         conn.close()          # nothing committed → sqlite rolls the lot back
         return {'error': 'อัปเดตไม่สำเร็จ: มีแถว BSN ของสินค้านี้ที่หา ratio '
                          'ไม่เจอ (หน่วยถูกลบไป) ระบบยกเลิกการแก้ไขทั้งหมด '

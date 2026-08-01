@@ -30,13 +30,14 @@ import models
 
 PID = 960001    # unit_type อัน, two BSN units on one doc
 EMPTY = 960002  # unit_type อัน, has a conversion but an empty ledger
+OTHER = 960003  # unit_type อัน, an UNRELATED product with a pending row
 
 
 def _seed(conn):
     # batch_id is left NULL (it FKs import_log, which these rows never
     # populate) so the seed needs no FK games — models.* opens its own
     # connections with foreign_keys=ON and must stay happy.
-    for pid, name in ((PID, 'TWOUNIT'), (EMPTY, 'NOLEDGER')):
+    for pid, name in ((PID, 'TWOUNIT'), (EMPTY, 'NOLEDGER'), (OTHER, 'UNRELATED')):
         conn.execute(
             "INSERT INTO products (id, product_name, unit_type, sku_code, is_active)"
             " VALUES (?, ?, 'อัน', ?, 1)", (pid, name, f'SKU-{pid}'))
@@ -65,7 +66,7 @@ def _mkt_sale(conn, doc, pid, qty, unit, customer='หน้าร้านS'):
         (doc, doc, pid, customer, qty, unit))
 
 
-def _platform_stock(conn, pid=PID):
+def _platform_stock(conn, pid=PID):  # noqa: D401
     return conn.execute(
         "SELECT stock FROM platform_skus WHERE internal_product_id=?", (pid,)
     ).fetchone()['stock']
@@ -158,6 +159,90 @@ def test_replay_does_not_re_deduct_platform_stock(empty_db_conn):
 
     assert _platform_stock(empty_db_conn) == 88, 'replay re-deducted platform stock'
     assert _stock(empty_db_conn) == -12
+
+
+def test_a_newly_synced_row_cannot_compensate_for_a_lost_one(empty_db_conn):
+    """Defect 5 (Codex, 2026-08-01): the rebuild guard compared synced-row
+    COUNTS, so a row that first-syncs during the replay masks one that can no
+    longer replay. Setup: a โหล purchase already on the ledger whose conversion
+    was later deleted by an ad-hoc script, plus a still-pending กล่อง purchase.
+    Editing the กล่อง ratio takes the โหล movement out and puts a กล่อง one in;
+    before=1, after=1, so a count-based guard commits the loss."""
+    _seed(empty_db_conn)
+    _purchase(empty_db_conn, 'RR001', PID, 1, 'โหล')
+    empty_db_conn.commit()
+    models.save_unit_conversions([{'product_id': PID, 'bsn_unit': 'โหล', 'ratio': 12}])
+    assert _stock(empty_db_conn) == 12
+
+    # The โหล ratio is deleted (scripts/ do this), stranding its synced row.
+    empty_db_conn.execute(
+        "DELETE FROM unit_conversions WHERE product_id=? AND bsn_unit='โหล'", (PID,))
+    # A กล่อง purchase arrives and its conversion exists, but nothing has
+    # synced it yet — the row is still pending.
+    _purchase(empty_db_conn, 'RR002', PID, 1, 'กล่อง')
+    empty_db_conn.execute(
+        "INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?,'กล่อง',10)",
+        (PID,))
+    empty_db_conn.commit()
+
+    result = models.update_unit_conversion_ratio(PID, 'กล่อง', 10)
+
+    assert 'error' in result, f'guard let the โหล movement vanish: {result}'
+    assert _stock(empty_db_conn) == 12, 'stock changed despite the bail'
+    assert empty_db_conn.execute(
+        "SELECT synced_to_stock FROM purchase_transactions WHERE doc_no='RR001'"
+    ).fetchone()['synced_to_stock'] == 1
+
+
+def test_replay_does_not_sweep_in_another_products_pending_row(empty_db_conn):
+    """Defect 6 (Codex, 2026-08-01): _sync_bsn_to_stock scans EVERY unsynced
+    mapped row, so a replay (deduct_platform=False) would first-sync an
+    unrelated product's pending marketplace sale and skip its platform-stock
+    deduction — the deduction that row is owed and will never get again."""
+    _seed(empty_db_conn)
+    _purchase(empty_db_conn, 'RR001', PID, 1, 'โหล')
+    empty_db_conn.commit()
+    models.save_unit_conversions([{'product_id': PID, 'bsn_unit': 'โหล', 'ratio': 12}])
+
+    # OTHER's marketplace sale lands AFTER that (unit == unit_type, so it needs
+    # no conversion and will sync the moment anything scans for pending rows).
+    # It is still owed its platform deduction when the replay below runs.
+    empty_db_conn.execute(
+        "INSERT INTO platform_skus (platform, product_name, variation_id,"
+        " internal_product_id, qty_per_sale, stock)"
+        " VALUES ('shopee','other','V9',?,1,100)", (OTHER,))
+    _mkt_sale(empty_db_conn, 'IV900', OTHER, 5, 'อัน')
+    empty_db_conn.commit()
+
+    assert models.update_unit_conversion_ratio(PID, 'โหล', 6) == {'ok': True}
+
+    row = empty_db_conn.execute(
+        "SELECT synced_to_stock FROM sales_transactions WHERE doc_no='IV900'").fetchone()
+    assert row['synced_to_stock'] == 0, "replay swept in another product's row"
+    assert _platform_stock(empty_db_conn, OTHER) == 100
+
+
+def test_ratio_routes_reject_a_non_finite_ratio(admin_client, empty_db_conn):
+    """Defect 7 (Codex, 2026-08-01): `ratio > 0` is True for inf, so both the
+    save and the edit path would store it and multiply it into the ledger."""
+    _seed(empty_db_conn)
+    _purchase(empty_db_conn, 'RR001', PID, 1, 'โหล')
+    empty_db_conn.commit()
+
+    admin_client.post('/unit-conversions/save',
+                      data={f'ratio_{PID}_โหล': 'inf'})
+    assert empty_db_conn.execute(
+        "SELECT COUNT(*) FROM unit_conversions WHERE product_id=?", (PID,)
+    ).fetchone()[0] == 0
+
+    models.save_unit_conversions([{'product_id': PID, 'bsn_unit': 'โหล', 'ratio': 12}])
+    admin_client.post('/unit-conversions/edit',
+                      data={'product_id': PID, 'bsn_unit': 'โหล', 'ratio': 'inf'})
+
+    assert empty_db_conn.execute(
+        "SELECT ratio FROM unit_conversions WHERE product_id=?", (PID,)
+    ).fetchone()['ratio'] == 12
+    assert _stock(empty_db_conn) == 12
 
 
 def test_stock_adjust_accepts_a_fractional_count(admin_client, empty_db_conn):
