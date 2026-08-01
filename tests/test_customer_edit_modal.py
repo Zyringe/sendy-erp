@@ -474,19 +474,34 @@ def test_model_rejects_a_short_contact_payload(tmp_db):
 
 def test_full_payload_of_blanks_clears_deliberately(tmp_db):
     """All six keys present with empty values IS the modal saying "clear these".
-    Pins the destructive path end to end: live fields cleared, stamp set,
-    snapshot freezes the PRE-clear values, and only the proposals whose field
-    actually changed are synced — a proposal whose live field was already NULL
-    counts as unchanged and must survive."""
-    import json, sqlite3
-    before = _customer_row(tmp_db, '11ม06')
-    assert before['phone'], 'fixture must start with a phone or this is vacuous'
 
+    Pins the destructive path across EVERY contact field, not a sample of two:
+    a regression that left `contact`/`nickname`/`fax`/`contact_note` populated,
+    or that skipped syncing a changed proposal, must turn this red.
+
+    The field -> proposed_* map is restated here on purpose rather than imported
+    from models: a test that reuses the mapping under test cannot catch a bug in
+    it. Note `contact_note` -> `proposed_note`, which is NOT the mechanical
+    `proposed_` + name the other five follow.
+    """
+    import json, sqlite3
+    FIELDS = ('nickname', 'phone', 'fax', 'contact', 'address', 'contact_note')
+    REVIEW_COL = {'nickname': 'proposed_nickname', 'phone': 'proposed_phone',
+                  'fax': 'proposed_fax', 'contact': 'proposed_contact',
+                  'address': 'proposed_address', 'contact_note': 'proposed_note'}
+
+    before = _customer_row(tmp_db, '11ม06')
+    populated = [f for f in FIELDS if before[f]]
+    assert len(populated) >= 2, \
+        f'fixture only has {populated} populated — this test would barely assert anything'
+
+    cols = ', '.join(REVIEW_COL[f] for f in FIELDS)
     conn = sqlite3.connect(tmp_db)
-    prop_before = conn.execute(
-        "SELECT proposed_phone, proposed_contact FROM customer_contact_review"
+    row = conn.execute(
+        f"SELECT {cols} FROM customer_contact_review"
         " WHERE customer_code='11ม06' AND status='pending'").fetchone()
     conn.close()
+    prop_before = dict(zip(FIELDS, row)) if row else None
 
     c = _client(tmp_db, role='admin')
     assert c.post('/customer/11ม06/reassign', data={
@@ -497,19 +512,28 @@ def test_full_payload_of_blanks_clears_deliberately(tmp_db):
     }).status_code == 302
 
     after = _customer_row(tmp_db, '11ม06')
-    assert after['phone'] is None and after['address'] is None
+    for f in FIELDS:
+        assert after[f] is None, f'{f} was not cleared'
     assert after['contact_normalized_at'] is not None, 'a deliberate clear still stamps'
 
+    # The snapshot schema carries name + the three contact values.
     snap = json.loads(after['contact_orig_json'] or '{}')
-    assert snap.get('phone') == before['phone'], 'snapshot must hold the PRE-clear value'
+    assert snap.get('name') == before['name']
+    for f in ('phone', 'contact', 'address'):
+        assert snap.get(f) == (before[f] or ''), \
+            f'snapshot must hold the PRE-clear {f}'
 
+    if prop_before is None:
+        return
     conn = sqlite3.connect(tmp_db)
-    prop_after = conn.execute(
-        "SELECT proposed_phone, proposed_contact FROM customer_contact_review"
+    row = conn.execute(
+        f"SELECT {cols} FROM customer_contact_review"
         " WHERE customer_code='11ม06' AND status='pending'").fetchone()
     conn.close()
-    if prop_before is not None:
-        assert prop_after[0] is None, 'phone changed → its proposal syncs to NULL'
-        if not before['contact']:
-            assert prop_after[1] == prop_before[1], \
-                'contact was already NULL → unchanged → its proposal must survive'
+    prop_after = dict(zip(FIELDS, row))
+    for f in FIELDS:
+        if before[f]:                      # changed nonblank -> NULL, so it syncs
+            assert prop_after[f] is None, f'{f} changed but its proposal did not sync'
+        else:                              # already NULL = unchanged, proposal survives
+            assert prop_after[f] == prop_before[f], \
+                f'{f} did not change but its proposal was overwritten'
