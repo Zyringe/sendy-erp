@@ -24,7 +24,23 @@ bp_inventory = Blueprint('inventory', __name__)
 @bp_inventory.route('/alerts')
 def alerts_view():
     alerts = models.get_stock_alerts()
-    return render_template('alerts.html', alerts=alerts)
+    system_alerts = models.get_open_system_alerts()
+    return render_template('alerts.html', alerts=alerts,
+                           system_alerts=system_alerts)
+
+
+@bp_inventory.route('/alerts/<int:alert_id>/resolve', methods=['POST'])
+def alert_resolve(alert_id):
+    """Acknowledge a system alert.
+
+    Deliberately admin/manager only (see _MANAGER_POST_OK). The whole reason
+    this table exists is that a transient flash message never reaches Put —
+    letting anyone who can VIEW the page also CLEAR it would reintroduce
+    exactly that failure, one step removed.
+    """
+    models.resolve_system_alert(alert_id, session.get('username') or '')
+    flash('รับทราบแจ้งเตือนแล้ว', 'success')
+    return redirect(url_for('inventory.alerts_view'))
 
 
 @bp_inventory.route('/products/<int:product_id>/adjust', methods=['GET', 'POST'])

@@ -67,6 +67,10 @@ MOVED_NAMES = {
         'get_cost_history', 'recalculate_waccs_for_products',
         'WaccIdentityError', 'preflight_source_identity', 'preflight_batch',
     ],
+    'system_alerts': [
+        'KIND_WACC_IDENTITY', 'create_system_alert', 'record_wacc_identity_alert',
+        'get_open_system_alerts', 'count_open_system_alerts', 'resolve_system_alert',
+    ],
     # ── Phase 12 ──────────────────────────────────────────────────────────
     'bsn_sync': [
         'to_base_units', '_get_base_qty', '_sync_bsn_to_stock',

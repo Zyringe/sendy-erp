@@ -81,6 +81,10 @@ from .wacc import (
     get_cost_history, recalculate_waccs_for_products,
     WaccIdentityError, preflight_source_identity, preflight_batch,
 )
+from .system_alerts import (
+    KIND_WACC_IDENTITY, create_system_alert, record_wacc_identity_alert,
+    get_open_system_alerts, count_open_system_alerts, resolve_system_alert,
+)
 from .bsn_sync import (
     to_base_units, _get_base_qty, _sync_bsn_to_stock,
     get_pending_unit_conversions, learn_acronyms_normalize,
