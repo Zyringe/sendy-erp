@@ -392,19 +392,24 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
     """
     rows = conn.execute(sql, params + [per_page, (page - 1) * per_page]).fetchall()
 
-    # `total` for the billing half is computed the SAME way as before this
-    # function unioned in a second branch: COUNT(DISTINCT s.customer_code),
-    # NOT COUNT(*) over the GROUP BY. A handful of sales_transactions rows
-    # carry customer_code IS NULL (unmatched historical rows); GROUP BY
-    # buckets those into one row, but COUNT(DISTINCT ...) — like the
-    # pre-Phase-3 count query — does not count NULL. Using COUNT(*) on the
-    # grouped subquery would silently change the default
-    # (include_billless=False) total by +1.
+    # `total` counts the ROWS this function can paginate, so it must be built
+    # from the same GROUP BY the row query uses — not `COUNT(DISTINCT
+    # s.customer_code)`, which the pre-Phase-3 code used and which SQL makes
+    # skip NULL. ~21 sales_transactions rows carry a blank customer_code and
+    # GROUP BY collapses them into one real, rendered row, so the old count was
+    # one short of what the page shows (275 vs 276 today). That is a lie the
+    # pagination maths is built on: the moment the undercount lands on a
+    # multiple of per_page, the last row becomes unreachable. Fixing it moves
+    # the displayed default figure 275 -> 276, which is the number of rows the
+    # list actually has.
     billing_total = conn.execute(f"""
-        SELECT COUNT(DISTINCT s.customer_code)
-        FROM sales_transactions s
-        LEFT JOIN customers c ON c.code = s.customer_code
-        {where}
+        SELECT COUNT(*) FROM (
+            SELECT 1
+            FROM sales_transactions s
+            LEFT JOIN customers c ON c.code = s.customer_code
+            {where}
+            GROUP BY s.customer_code
+        )
     """, billing_params).fetchone()[0]
 
     total = billing_total

@@ -171,10 +171,16 @@ def test_bulk_template_has_no_salesperson_or_mode_inputs(tmp_db):
 def test_default_billing_only_matches_independent_count(tmp_db):
     import models
     conn = _raw_conn(tmp_db)
+    # Ground truth = the number of ROWS the list renders, i.e. one per distinct
+    # customer_code PLUS one bucket for the code-less rows. Deriving it from
+    # COUNT(DISTINCT customer_code) would restate the very bug this counts
+    # against: SQL's DISTINCT skips NULL, so that misses the bucket entirely.
     expected = conn.execute("""
-        SELECT COUNT(DISTINCT customer_code) FROM sales_transactions
-        WHERE COALESCE(doc_base, doc_no) NOT IN (
-            SELECT doc_no FROM ar_writeoffs WHERE excludes_revenue = 1)
+        SELECT COUNT(*) FROM (
+            SELECT 1 FROM sales_transactions
+            WHERE COALESCE(doc_base, doc_no) NOT IN (
+                SELECT doc_no FROM ar_writeoffs WHERE excludes_revenue = 1)
+            GROUP BY customer_code)
     """).fetchone()[0]
     conn.close()
 
@@ -187,9 +193,11 @@ def test_include_billless_unions_master_rows_with_zero_sales(tmp_db):
     import models
     conn = _raw_conn(tmp_db)
     billing_count = conn.execute("""
-        SELECT COUNT(DISTINCT customer_code) FROM sales_transactions
-        WHERE COALESCE(doc_base, doc_no) NOT IN (
-            SELECT doc_no FROM ar_writeoffs WHERE excludes_revenue = 1)
+        SELECT COUNT(*) FROM (
+            SELECT 1 FROM sales_transactions
+            WHERE COALESCE(doc_base, doc_no) NOT IN (
+                SELECT doc_no FROM ar_writeoffs WHERE excludes_revenue = 1)
+            GROUP BY customer_code)
     """).fetchone()[0]
     billless_master_count = conn.execute("""
         SELECT COUNT(*) FROM customers c
@@ -344,3 +352,49 @@ def test_codeless_row_links_by_name_not_a_broken_code_url(tmp_db):
     assert '/customer/code/None' not in html and "customer_code=None" not in html
     # its row links through the name shim
     assert quote(target['customer']) in html or target['customer'] in html
+
+
+# ── total must equal the number of rows the list can actually paginate ──────
+# Codex review (2026-08-01): the count query and the row query disagreed by one.
+# The row query GROUPs BY customer_code, so the ~21 sales rows with a blank code
+# collapse into one REAL rendered row; the old count used COUNT(DISTINCT
+# customer_code), and SQL's DISTINCT skips NULL. `pages` is derived from `total`,
+# so an undercount that lands on a multiple of per_page makes the last row
+# unreachable. This asserts the invariant directly, by walking the pages and
+# counting what comes back — no reuse of the count query being tested.
+
+def test_total_equals_the_rows_you_can_actually_page_through(tmp_db):
+    import models
+    for include in (False, True):
+        rows_all, total = models.get_customers(
+            include_billless=include, per_page=100000)
+        assert total == len(rows_all), (
+            f'include_billless={include}: total={total} but the query returns '
+            f'{len(rows_all)} rows — pagination is built on this number')
+
+        per_page = 50
+        pages = (total + per_page - 1) // per_page
+        seen = 0
+        for p in range(1, pages + 1):
+            seen += len(models.get_customers(
+                include_billless=include, page=p, per_page=per_page)[0])
+        assert seen == total, (
+            f'include_billless={include}: paging returned {seen} of {total} rows')
+
+
+def test_codeless_bucket_is_counted_not_dropped(tmp_db):
+    """The specific row the old count missed. Independent ground truth: it is a
+    real row in the result set, so it must be inside `total`."""
+    import models
+    rows, total = models.get_customers(per_page=100000)
+    codeless = [r for r in rows if not r['customer_code']]
+    if not codeless:
+        import pytest; pytest.skip('no code-less bucket in this snapshot')
+    assert len(codeless) == 1, 'GROUP BY should collapse them into exactly one row'
+    conn = _raw_conn(tmp_db)
+    distinct_codes = conn.execute(
+        "SELECT COUNT(DISTINCT customer_code) FROM sales_transactions"
+        " WHERE COALESCE(customer_code,'') <> ''").fetchone()[0]
+    conn.close()
+    # total = the distinct real codes PLUS the one code-less bucket
+    assert total == distinct_codes + 1
