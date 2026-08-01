@@ -29,6 +29,44 @@ def get_current_stock(product_id: int) -> int:
     return row['quantity'] if row else 0
 
 
+def set_stock_to(product_id: int, new_qty, note=None, created_at=None):
+    """Set stock to an ABSOLUTE quantity. Returns the movement written
+    (0 = already there, nothing written).
+
+    The read and the write are one `BEGIN IMMEDIATE` transaction on one
+    connection. The caller's intent is "make it N", and a diff computed from a
+    read that another worker has already invalidated silently lands on
+    N ± whatever moved in between — Railway runs gunicorn -w 2, so that second
+    worker is real. Reproduced 2026-08-01 on a clone of live: "set to 12"
+    landed on 9 after a -3 sale interleaved.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT quantity FROM stock_levels WHERE product_id = ?", (product_id,)
+        ).fetchone()
+        current = row['quantity'] if row else 0
+        # Round the subtraction: 11.4 − 12 is −0.5999999999999996 in IEEE-754,
+        # and the stock triggers accumulate whatever we hand them.
+        diff = round(new_qty - current, 4)
+        if diff:
+            if created_at is None:
+                conn.execute("""
+                    INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode, note)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (product_id, 'ADJUST', diff, 'unit', note))
+            else:
+                conn.execute("""
+                    INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode, note, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (product_id, 'ADJUST', diff, 'unit', note, created_at))
+        conn.commit()
+        return diff
+    finally:
+        conn.close()
+
+
 def get_transactions(product_id=None, txn_type=None, date_from=None, date_to=None, page=1, per_page=50):
     conn = get_connection()
     conditions = ["1=1"]

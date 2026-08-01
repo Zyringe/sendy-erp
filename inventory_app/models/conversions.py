@@ -330,14 +330,29 @@ def get_recent_conversion_runs(limit=5):
     return rows
 
 
-def run_conversion(formula_id, multiplier, reference_no='', extra_note='', writeoff_qty=0):
+def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
+                   writeoff_qty=0, run_token=None):
     """Run a conversion. `writeoff_qty` = output units scrapped during the run
     (ของเสีย, e.g. 10 แผง → 20 ตัว but 1 broke). Inputs are still fully consumed;
     only GOOD units (expected − writeoff) enter stock; input cost spreads over
     the good units (scrap raises good-unit cost). Broken units never enter stock.
+
+    Everything from the shortage check to the last INSERT runs in one
+    `BEGIN IMMEDIATE` transaction. The check is only meaningful if the stock it
+    read cannot move before the OUT rows land — without the lock a consumer
+    slips in between and the run oversells (reproduced 2026-08-01: an input
+    with exactly enough stock for one run ended at −2).
+
+    `run_token` is the per-form nonce from the run page. It stands in for a
+    blank เลขที่เอกสาร, so a replayed POST arrives carrying the SAME
+    reference_no and is refused. A TYPED เลขที่เอกสาร is never deduped (Put,
+    2026-08-01) — reusing one across two real runs has to keep working.
     """
     from datetime import datetime as _dt
     conn = get_connection()
+    # Take the write lock before reading anything we then act on. Every early
+    # return below closes the connection, which rolls the empty transaction back.
+    conn.execute("BEGIN IMMEDIATE")
     formula = conn.execute("""
         SELECT cf.*, p.product_name AS output_product_name
           FROM conversion_formulas cf
@@ -347,6 +362,20 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='', write
     if not formula:
         conn.close()
         return False, 'ไม่พบสูตรการแปลง', {}
+
+    # ── Replay guard ─────────────────────────────────────────────────────────
+    # A re-submitted POST carries the same nonce, so this run is already logged.
+    # Asked of conversion_cost_log, not transactions: the cost log gets exactly
+    # one row per successful run unconditionally, while the ledger rows are
+    # conditional (no inputs → no OUT rows; good_qty 0 → no IN row), so a run
+    # can exist with nothing in `transactions` to recognise it by. A failed run
+    # writes neither, so a retry after a genuine failure still goes through.
+    conv_ref = reference_no or run_token or f'CONV{formula_id}-{_dt.now().strftime("%Y%m%d%H%M%S")}'
+    if run_token and not reference_no and conn.execute(
+            "SELECT 1 FROM conversion_cost_log WHERE reference_no = ? LIMIT 1",
+            (conv_ref,)).fetchone():
+        conn.close()
+        return False, 'รายการนี้ถูกบันทึกไปแล้ว (กดซ้ำ) — ตรวจสอบสต็อกก่อนแปลงใหม่', {}
 
     # write-off (ของเสีย) — output units scrapped this run
     try:
@@ -388,9 +417,6 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='', write
 
     # cost spreads over GOOD output only (scrap loss raises good-unit cost)
     output_unit_cost = total_input_cost / good_qty if good_qty > 0 else 0.0
-
-    # ใช้ reference_no ที่ user ส่งมา หรือ generate ใหม่
-    conv_ref = reference_no or f'CONV{formula_id}-{_dt.now().strftime("%Y%m%d%H%M%S")}'
 
     note_text = f'แปลง: {formula["name"]}'
     if extra_note:

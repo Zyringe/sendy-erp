@@ -68,8 +68,9 @@
     {# ── ฟอร์มรัน ── #}
     <div class="card">
       <div class="card-body">
-        <form method="post">
+        <form method="post" id="runForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="run_token" value="{{ run_token }}">
           <div class="mb-3">
             <label class="form-label fw-500">จำนวนรอบ <span class="text-danger">*</span></label>
             <div class="input-group">
@@ -207,5 +208,17 @@ function updatePreview() {
 }
 
 updatePreview();
+
+// Double-tap guard. A slow connection invites a second tap, and each POST is a
+// real conversion — the server refuses the replay by nonce, this just stops the
+// user sending it. Never re-enabled: on success we redirect away, on refusal
+// the server re-renders a fresh form.
+document.getElementById('runForm').addEventListener('submit', function (e) {
+  if (this.dataset.submitted) { e.preventDefault(); return; }
+  this.dataset.submitted = '1';
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>กำลังบันทึก...';
+});
 </script>
 {% endblock %}
