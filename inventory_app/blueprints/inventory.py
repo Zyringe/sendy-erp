@@ -259,12 +259,19 @@ def conversion_run(formula_id):
         if writeoff_qty and wo_reason:
             extra_note = (extra_note + ' | ' if extra_note else '') + f'ของเสีย: {wo_reason}'
 
-        success, message, _ = models.run_conversion(
-            formula_id, multiplier, reference_no, extra_note, writeoff_qty,
-            run_token=request.form.get('run_token', '').strip() or None)
-        flash(message, 'success' if success else 'danger')
-        if success:
-            return redirect(url_for('inventory.conversion_list'))
+        # No token means the run cannot be deduped, so a re-submit would convert
+        # twice. Refuse rather than run it unguarded — the same stance the app
+        # already takes for a missing CSRF token. Costs a stale tab one reload.
+        run_token = request.form.get('run_token', '').strip()
+        if not run_token:
+            flash('ฟอร์มหมดอายุ กรุณาโหลดหน้านี้ใหม่แล้วทำรายการอีกครั้ง', 'danger')
+        else:
+            success, message, _ = models.run_conversion(
+                formula_id, multiplier, reference_no, extra_note, writeoff_qty,
+                run_token=run_token)
+            flash(message, 'success' if success else 'danger')
+            if success:
+                return redirect(url_for('inventory.conversion_list'))
 
     # Fresh nonce per render: it is what makes a re-submitted POST recognisable
     # as the same run. A reused one would refuse the next genuine run.

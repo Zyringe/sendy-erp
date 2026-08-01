@@ -343,10 +343,13 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
     slips in between and the run oversells (reproduced 2026-08-01: an input
     with exactly enough stock for one run ended at −2).
 
-    `run_token` is the per-form nonce from the run page. It stands in for a
-    blank เลขที่เอกสาร, so a replayed POST arrives carrying the SAME
-    reference_no and is refused. A TYPED เลขที่เอกสาร is never deduped (Put,
-    2026-08-01) — reusing one across two real runs has to keep working.
+    `run_token` is the per-render nonce from the run page and is the ONLY
+    replay key: one page render, one run. It is stored in its own column
+    (mig 147) rather than folded into reference_no, because the two are
+    different things — reference_no is the operator's business document
+    number and may legitimately repeat across separate runs (Put,
+    2026-08-01), while a token never repeats. Passing no token means no
+    replay protection; the web route requires one.
     """
     from datetime import datetime as _dt
     conn = get_connection()
@@ -364,16 +367,21 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
         return False, 'ไม่พบสูตรการแปลง', {}
 
     # ── Replay guard ─────────────────────────────────────────────────────────
-    # A re-submitted POST carries the same nonce, so this run is already logged.
-    # Asked of conversion_cost_log, not transactions: the cost log gets exactly
-    # one row per successful run unconditionally, while the ledger rows are
-    # conditional (no inputs → no OUT rows; good_qty 0 → no IN row), so a run
-    # can exist with nothing in `transactions` to recognise it by. A failed run
-    # writes neither, so a retry after a genuine failure still goes through.
-    conv_ref = reference_no or run_token or f'CONV{formula_id}-{_dt.now().strftime("%Y%m%d%H%M%S")}'
-    if run_token and not reference_no and conn.execute(
-            "SELECT 1 FROM conversion_cost_log WHERE reference_no = ? LIMIT 1",
-            (conv_ref,)).fetchone():
+    # Keyed on the form token and NOTHING else: one page render, one run.
+    # reference_no is the operator's document number and may legitimately
+    # repeat across separate runs, so it can neither be the key nor gate the
+    # check — an earlier version switched the guard off whenever a document
+    # number was typed, and a re-submitted POST converted twice.
+    #
+    # Asked of conversion_cost_log because it gets exactly one row per
+    # successful run unconditionally, while ledger rows are conditional (no
+    # inputs → no OUT rows; good_qty 0 → no IN row). A failed run writes
+    # neither, so retrying after a genuine shortage still goes through.
+    # Read inside the IMMEDIATE transaction so two simultaneous copies cannot
+    # both find it absent; mig 147's unique index is the backstop.
+    if run_token and conn.execute(
+            "SELECT 1 FROM conversion_cost_log WHERE run_token = ? LIMIT 1",
+            (run_token,)).fetchone():
         conn.close()
         return False, 'รายการนี้ถูกบันทึกไปแล้ว (กดซ้ำ) — ตรวจสอบสต็อกก่อนแปลงใหม่', {}
 
@@ -418,6 +426,9 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
     # cost spreads over GOOD output only (scrap loss raises good-unit cost)
     output_unit_cost = total_input_cost / good_qty if good_qty > 0 else 0.0
 
+    # ใช้ reference_no ที่ user ส่งมา หรือ generate ใหม่
+    conv_ref = reference_no or f'CONV{formula_id}-{_dt.now().strftime("%Y%m%d%H%M%S")}'
+
     note_text = f'แปลง: {formula["name"]}'
     if extra_note:
         note_text += f' | {extra_note}'
@@ -443,9 +454,10 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
     # บันทึก conversion cost log (ใช้ตอน recalculate WACC output)
     conn.execute(
         "INSERT INTO conversion_cost_log"
-        " (output_product_id, reference_no, event_date, output_qty, total_input_cost, unit_cost, writeoff_qty)"
-        " VALUES (?,?,date('now'),?,?,?,?)",
-        (formula['output_product_id'], conv_ref, good_qty, total_input_cost, output_unit_cost, writeoff_qty)
+        " (output_product_id, reference_no, event_date, output_qty, total_input_cost, unit_cost, writeoff_qty, run_token)"
+        " VALUES (?,?,date('now'),?,?,?,?,?)",
+        (formula['output_product_id'], conv_ref, good_qty, total_input_cost, output_unit_cost,
+         writeoff_qty, run_token)
     )
 
     conn.commit()

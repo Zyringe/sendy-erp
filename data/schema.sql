@@ -242,7 +242,7 @@ CREATE TABLE conversion_cost_log (
                 total_input_cost  REAL    NOT NULL,
                 unit_cost         REAL    NOT NULL,
                 created_at        TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-            , writeoff_qty INTEGER NOT NULL DEFAULT 0);
+            , writeoff_qty INTEGER NOT NULL DEFAULT 0, run_token TEXT);
 
 CREATE TABLE conversion_formula_inputs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1598,6 +1598,10 @@ CREATE INDEX idx_co_brand   ON commission_overrides(brand_id);
 CREATE INDEX idx_co_product ON commission_overrides(product_id);
 
 CREATE INDEX idx_company_holidays_company ON company_holidays(company_id);
+
+CREATE UNIQUE INDEX idx_conversion_cost_log_run_token
+    ON conversion_cost_log(run_token)
+ WHERE run_token IS NOT NULL;
 
 CREATE INDEX idx_cp_invoice_sp ON commission_payouts(invoice_no, salesperson_code);
 

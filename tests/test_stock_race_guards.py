@@ -263,17 +263,66 @@ def test_a_failed_run_does_not_burn_its_token(tmp_db):
     assert ok2, f'the token was burned by a failed run: {msg2}'
 
 
+def test_replayed_post_runs_once_even_with_a_typed_reference_no(tmp_db, admin_client):
+    """The replay key is the form token, independent of the business document
+    number. One submission re-sent carries BOTH the same token AND the same
+    typed เลขที่เอกสาร — the presence of a document number must not switch the
+    guard off (Codex, PR #345 review)."""
+    f = _a_formula(tmp_db)
+    _force_stock(tmp_db, f['in_pid'], f['in_qty'] * 10)
+    before_in, before_out = _stock(tmp_db, f['in_pid']), _stock(tmp_db, f['out_pid'])
+
+    payload = {'multiplier': '1', 'run_token': 'CONV-test-typed-replay',
+               'reference_no': 'ใบผลิต-001'}
+    admin_client.post(f"/conversions/{f['id']}/run", data=dict(payload))
+    admin_client.post(f"/conversions/{f['id']}/run", data=dict(payload))
+
+    assert _stock(tmp_db, f['in_pid']) == before_in - f['in_qty'], "input consumed twice"
+    assert _stock(tmp_db, f['out_pid']) == before_out + f['output_qty'], "output produced twice"
+
+
 def test_typed_reference_no_is_never_deduped(tmp_db):
     """Put, 2026-08-01: reusing a typed เลขที่เอกสาร across two real runs must
-    keep working. Only the auto-generated token is treated as a replay key."""
+    keep working. Two real runs come from two page loads, so they carry two
+    DIFFERENT tokens — only the token decides."""
     import models
     f = _a_formula(tmp_db)
     _force_stock(tmp_db, f['in_pid'], f['in_qty'] * 10)
     before_in = _stock(tmp_db, f['in_pid'])
 
-    ok1, msg1, _ = models.run_conversion(f['id'], 1, reference_no='ใบผลิต-001')
-    ok2, msg2, _ = models.run_conversion(f['id'], 1, reference_no='ใบผลิต-001')
+    ok1, msg1, _ = models.run_conversion(f['id'], 1, reference_no='ใบผลิต-001',
+                                         run_token='CONV-tok-A')
+    ok2, msg2, _ = models.run_conversion(f['id'], 1, reference_no='ใบผลิต-001',
+                                         run_token='CONV-tok-B')
 
     assert ok1, msg1
     assert ok2, f'a typed reference_no was wrongly deduped: {msg2}'
     assert _stock(tmp_db, f['in_pid']) == before_in - f['in_qty'] * 2
+
+
+def test_typed_reference_no_is_still_what_lands_on_the_ledger(tmp_db):
+    """The token is bookkeeping for the guard, not a document number. What the
+    operator typed must remain the reference_no on the rows."""
+    import models
+    f = _a_formula(tmp_db)
+    _force_stock(tmp_db, f['in_pid'], f['in_qty'] * 4)
+    ok, msg, _ = models.run_conversion(f['id'], 1, reference_no='ใบผลิต-777',
+                                       run_token='CONV-tok-visible')
+    assert ok, msg
+    row = _q(tmp_db, "SELECT reference_no FROM transactions WHERE product_id=?"
+                     " ORDER BY id DESC LIMIT 1", f['in_pid'])[0]
+    assert row['reference_no'] == 'ใบผลิต-777', \
+        f"the token leaked into the document number: {row['reference_no']}"
+
+
+def test_web_post_without_a_token_is_refused(tmp_db, admin_client):
+    """A conversion POST carrying no token cannot be deduped, so the route must
+    not run it — same stance the app already takes for a missing CSRF token.
+    A stale tab gets one reload, not a silent unguarded conversion."""
+    f = _a_formula(tmp_db)
+    _force_stock(tmp_db, f['in_pid'], f['in_qty'] * 4)
+    before_in = _stock(tmp_db, f['in_pid'])
+
+    admin_client.post(f"/conversions/{f['id']}/run", data={'multiplier': '1'})
+
+    assert _stock(tmp_db, f['in_pid']) == before_in, "a tokenless POST converted"
