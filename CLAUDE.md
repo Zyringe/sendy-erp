@@ -119,7 +119,9 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 ### transactions (stock ledger)
 `id, product_id, txn_type(IN/OUT/ADJUST), quantity_change(REAL), unit_mode, reference_no, note, created_at`
 - Trigger `after_transaction_insert` อัปเดต `stock_levels` อัตโนมัติ
-- qty เป็น REAL (ไม่ปัดทศนิยม)
+- qty รับทศนิยมได้ (บิล BSN มีขายแบ่งแพ็คจริง เช่น 0.4 กล่อง / 0.5 โหล). คอลัมน์ประกาศเป็น
+  `INTEGER` แต่ SQLite เป็น type *affinity* จึงเก็บค่าที่ไม่ลงตัวไว้เป็น REAL ตามเดิม —
+  ปัดที่ 4 ตำแหน่ง (`_get_base_qty` + trigger `ROUND(...,4)`) ห้าม `int()` ค่าที่รับจากผู้ใช้
 
 ### stock_levels
 `product_id, quantity` — ยอดสต็อกปัจจุบัน

@@ -30,6 +30,15 @@ PLATFORM_STOCK_DEDUCT_CUSTOMERS = {
 _PIECE_UNITS = frozenset(('ตัว', 'อัน', 'ชิ้น'))
 _PACK_UNITS = frozenset(('แผง', 'แพ็ค'))
 
+# Ledger note prefixes a BSN sync ever writes: the 'BSN ขาย/ซื้อ(-คืน)' rows
+# plus the paired "ประวัติขาย (ไม่นับสต็อค)" IN that _sync_bsn_to_stock creates
+# alongside every history_import OUT (net-0 pairing so a historical bill never
+# moves real stock). Both must be wiped together before a resync — deleting
+# only the 'BSN%' half would duplicate the pairing once the resync recreates
+# it fresh. Lives here because _sync_bsn_to_stock is what writes them;
+# models/mapping.py imports it for the same rebuild.
+_BSN_LEDGER_NOTE_PATTERNS = ("BSN%", "ประวัติขาย%")
+
 
 def cross_unit_hazard(conn, product_id, bsn_unit):
     """None when (product, bsn_unit) may take a unit_conversions ratio.
@@ -135,8 +144,15 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str):
     """
     txn_type = 'IN' if file_type == 'purchase' else 'OUT'
 
+    # ORDER BY id is load-bearing on a REPLAY (update_unit_conversion_ratio /
+    # repoint_bsn_code delete a product's ledger and re-post it): recalculate_
+    # product_wacc pairs the Nth 'BSN ซื้อ' IN under a doc_no with the Nth
+    # purchase_transactions row of that doc, by position, so the posting order
+    # has to match the source id order rather than whatever a bare table scan
+    # happens to hand back.
     rows = conn.execute(
         f"SELECT * FROM {table} WHERE product_id IS NOT NULL AND synced_to_stock = 0"
+        f" ORDER BY id"
     ).fetchall()
 
     for row in rows:
@@ -367,8 +383,23 @@ def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str) -> int:
     return deleted
 
 
+def _synced_source_rows(conn, product_id):
+    """How many BSN source rows for `product_id` currently hold a ledger
+    movement (synced_to_stock=1), across both tables."""
+    return sum(
+        conn.execute(
+            f"SELECT COUNT(*) FROM {table}"
+            f" WHERE product_id=? AND synced_to_stock=1", (product_id,)
+        ).fetchone()[0]
+        for table in ('sales_transactions', 'purchase_transactions'))
+
+
 def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
-    """อัปเดต ratio ที่มีอยู่แล้ว แล้ว re-sync BSN transactions ที่เกี่ยวข้อง"""
+    """อัปเดต ratio ที่มีอยู่แล้ว แล้ว re-sync BSN transactions ที่เกี่ยวข้อง
+
+    Returns {'ok': True}, {'blocked': <hazard>} when the pack/loose guard
+    refuses the ratio, or {'error': <msg>} when the rebuild could not replay
+    every movement it removed (nothing is committed in that case)."""
     conn = get_connection()
 
     hazard = cross_unit_hazard(conn, product_id, bsn_unit)
@@ -383,41 +414,42 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
         UPDATE unit_conversions SET ratio=? WHERE product_id=? AND bsn_unit=?
     """, (new_ratio, product_id, bsn_unit))
 
-    # Delete old BSN-generated stock transactions for this product
-    conn.execute("""
-        DELETE FROM transactions
-        WHERE product_id=? AND note LIKE 'BSN %'
-          AND reference_no IN (
-              SELECT doc_no FROM sales_transactions
-              WHERE product_id=? AND unit=? AND synced_to_stock=1
-              UNION ALL
-              SELECT doc_no FROM purchase_transactions
-              WHERE product_id=? AND unit=? AND synced_to_stock=1
-          )
-    """, (product_id, product_id, bsn_unit, product_id, bsn_unit))
+    # Rebuild this product's WHOLE BSN ledger — the same Reconciliation
+    # Procedure mapping.repoint_bsn_code runs (reset synced → delete every
+    # ledger row a BSN sync wrote → re-sync → recompute WACC).
+    #
+    # Per PRODUCT, not per (unit, doc): the old code deleted ledger rows by
+    # (product_id, doc_no) but reset synced_to_stock for `bsn_unit` alone, so a
+    # doc carrying this product in TWO units lost the other unit's movement for
+    # good — and the stock_levels re-derivation that used to sit at the end hid
+    # the loss by recomputing stock from the truncated ledger, leaving nothing
+    # for a drift check to find. Deleting and replaying the SAME set keeps the
+    # two halves symmetric by construction.
+    synced_before = _synced_source_rows(conn, product_id)
+    for table in ('sales_transactions', 'purchase_transactions'):
+        conn.execute(f"UPDATE {table} SET synced_to_stock=0 WHERE product_id=?",
+                     (product_id,))
+    conn.execute(
+        "DELETE FROM transactions WHERE product_id=? AND ({})".format(
+            " OR ".join("note LIKE ?" for _ in _BSN_LEDGER_NOTE_PATTERNS)),
+        (product_id, *_BSN_LEDGER_NOTE_PATTERNS))
 
-    # Reset synced_to_stock for affected BSN rows
-    conn.execute("""
-        UPDATE sales_transactions SET synced_to_stock=0
-        WHERE product_id=? AND unit=?
-    """, (product_id, bsn_unit))
-    conn.execute("""
-        UPDATE purchase_transactions SET synced_to_stock=0
-        WHERE product_id=? AND unit=?
-    """, (product_id, bsn_unit))
-
-    # Re-sync
     _sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
     _sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
 
-    # Recalculate stock_levels
-    conn.execute("DELETE FROM stock_levels WHERE product_id=?", (product_id,))
-    conn.execute("""
-        INSERT INTO stock_levels (product_id, quantity)
-        SELECT product_id, COALESCE(SUM(quantity_change), 0)
-        FROM transactions WHERE product_id=?
-    """, (product_id,))
+    # Every row that was synced must have re-synced. A shortfall means some
+    # row's ratio is gone (the ad-hoc scripts under scripts/ can delete
+    # unit_conversions rows) and its movement would silently vanish — bail
+    # WITHOUT committing rather than lose it.
+    if _synced_source_rows(conn, product_id) < synced_before:
+        conn.close()          # nothing committed → sqlite rolls the lot back
+        return {'error': 'อัปเดตไม่สำเร็จ: มีแถว BSN ของสินค้านี้ที่หา ratio '
+                         'ไม่เจอ (หน่วยถูกลบไป) ระบบยกเลิกการแก้ไขทั้งหมด '
+                         'เพื่อไม่ให้ยอดสต็อกหาย'}
 
+    # stock_levels needs no manual rebuild here: the mig-080 triggers maintain
+    # it through the delete + re-sync above (same reason repoint_bsn_code does
+    # no stock surgery of its own).
     conn.commit()
 
     # WACC: recalculate after ratio change

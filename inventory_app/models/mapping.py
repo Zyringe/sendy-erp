@@ -10,7 +10,8 @@ for every affected product) — acyclic, flagged in the Phase 12 report.
 from database import get_connection
 import bsn_units
 
-from .bsn_sync import _sync_bsn_to_stock, cross_unit_hazard
+from .bsn_sync import (_BSN_LEDGER_NOTE_PATTERNS, _sync_bsn_to_stock,
+                       cross_unit_hazard)
 from .wacc import recalculate_product_wacc
 
 
@@ -183,13 +184,9 @@ def _resolve_mapping(conn, code, unit=''):
     return (m['product_id'] if m else None, m['is_ignored'] if m else 0, bool(m))
 
 
-# Ledger note prefixes a BSN sync ever writes (see _sync_bsn_to_stock) plus the
-# paired "ประวัติขาย (ไม่นับสต็อค)" IN row _sync_bsn_to_stock creates alongside
-# every history_import OUT (net-0 pairing so a historical bill never moves real
-# stock). Both must be wiped together before a resync — deleting only the
-# 'BSN%' half and leaving the old 'ประวัติขาย%' half behind would duplicate the
-# pairing once the resync recreates it fresh.
-_BSN_LEDGER_NOTE_PATTERNS = ("BSN%", "ประวัติขาย%")
+# _BSN_LEDGER_NOTE_PATTERNS is imported from models/bsn_sync.py (the module that
+# WRITES those notes) so this rebuild and update_unit_conversion_ratio's cannot
+# drift apart — they did: the ratio rebuild used to delete only the 'BSN%' half.
 
 
 def _bsn_code_ledger_orphans(conn, bsn_code):

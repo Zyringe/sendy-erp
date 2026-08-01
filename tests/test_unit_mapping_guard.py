@@ -137,12 +137,13 @@ def test_save_blocks_pair_and_fractional_pack_piece(empty_db_conn):
 
 def test_update_ratio_blocked(empty_db_conn):
     _seed(empty_db_conn)
-    # A real ledger row for PLAIN/โหล is required here: update_unit_conversion_ratio's
-    # stock_levels rebuild does `SELECT product_id, SUM(...) FROM transactions
-    # WHERE product_id=?` with no GROUP BY — with zero matching rows sqlite
-    # returns one row with product_id=NULL (a pre-existing landmine, unrelated
-    # to this guard), which then fails the stock_levels FK. Seeding a synced
-    # sale gives it a real transactions row to rebuild from.
+    # A synced sale for PLAIN/โหล, so the allowed branch below rebuilds a real
+    # ledger rather than an empty one. This used to be MANDATORY: the old
+    # stock_levels re-derivation ran `SELECT product_id, SUM(...) WHERE
+    # product_id=?` with no GROUP BY and blew up on the FK when the product had
+    # no ledger rows. That re-derivation is gone (the mig-080 triggers already
+    # maintain stock_levels); the empty-ledger case is pinned directly in
+    # tests/test_unit_ratio_rebuild.py.
     _sale(empty_db_conn, 'IVPLAIN', PLAIN, 'CPLAIN', 1, 'โหล')
     empty_db_conn.commit()
     models.save_unit_conversions([{'product_id': PLAIN, 'bsn_unit': 'โหล', 'ratio': 12}])

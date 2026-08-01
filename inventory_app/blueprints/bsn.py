@@ -116,6 +116,8 @@ def unit_conversions_edit():
         result = models.update_unit_conversion_ratio(product_id, bsn_unit, new_ratio)
         if 'blocked' in result:
             _flash_unit_hazard(result['blocked'])
+        elif 'error' in result:
+            flash(result['error'], 'danger')
         else:
             flash(f'อัปเดต ratio สำหรับ {bsn_unit} เรียบร้อย (re-sync แล้ว)', 'success')
     return redirect(url_for('bsn.unit_conversions'))

@@ -6,6 +6,7 @@ module docstring for the overall file-split rationale. No URL changes;
 route rules are unchanged, only their endpoint names gain an `inventory.`
 prefix.
 """
+import math
 from datetime import date, datetime
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
@@ -52,9 +53,15 @@ def stock_adjust(product_id):
 
     if request.method == 'POST':
         f = request.form
-        # quantity
+        # quantity — decimal, because stock genuinely is: BSN bills carry
+        # part-pack lines (0.1 / 0.4 กล่อง, 0.5 โหล) and _get_base_qty stores
+        # them to 4 dp, so a hand count must be able to say what the ledger
+        # already holds. isfinite() keeps 'nan'/'inf' out of the ledger —
+        # float() accepts both and nan slips past every comparison.
         try:
-            new_qty = int(f['new_quantity'])
+            new_qty = round(float(f['new_quantity']), 4)
+            if not math.isfinite(new_qty):
+                raise ValueError('จำนวนไม่ถูกต้อง')
             if new_qty < 0:
                 raise ValueError('จำนวนต้องไม่ติดลบ')
         except (KeyError, ValueError) as e:
@@ -92,13 +99,15 @@ def stock_adjust(product_id):
 
         # diff
         current = models.get_current_stock(product_id)
-        diff = new_qty - current
+        # Round the subtraction: 11.4 − 12 is −0.5999999999999996 in IEEE-754,
+        # and the stock triggers accumulate whatever we hand them.
+        diff = round(new_qty - current, 4)
         if diff == 0:
             flash('จำนวนเท่าเดิม ไม่มีการเปลี่ยนแปลง', 'info')
             return redirect(_safe_next('products.product_detail', product_id=product_id))
 
         models.add_transaction(product_id, 'ADJUST', diff, 'unit', note=note, created_at=created_at)
-        flash(f'ปรับยอดสต็อกเป็น {new_qty} {product["unit_type"]} เรียบร้อย', 'success')
+        flash(f'ปรับยอดสต็อกเป็น {new_qty:g} {product["unit_type"]} เรียบร้อย', 'success')
         return redirect(_safe_next('products.product_detail', product_id=product_id))
 
     return render_template('transactions/adjust_form.html', product=product,
