@@ -211,3 +211,210 @@ def test_no_partial_provenance_written(empty_db_conn):
         " WHERE (source_bsn_code IS NULL) <> (source_line_seq IS NULL)"
     ).fetchone()['c']
     assert bad == 0, f"{bad} rows have exactly one provenance column set"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PR2 — the read path: resolve by identity, validate before mutating
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _insert_purchase_in(conn, pid, doc, qty, *, bsn_code, line_seq,
+                        created='2026-04-24 00:00:00'):
+    """Post a 'BSN ซื้อ' IN directly, so a test can control INSERT ORDER (and
+    therefore transactions.id) independently of the source rows."""
+    conn.execute(
+        "INSERT INTO transactions"
+        " (product_id, txn_type, quantity_change, unit_mode, reference_no,"
+        "  note, created_at, source_bsn_code, source_line_seq)"
+        " VALUES (?, 'IN', ?, 'unit', ?, 'BSN ซื้อ', ?, ?, ?)",
+        (pid, qty, doc, created, bsn_code, line_seq),
+    )
+
+
+def _build_freebie_doc(conn, name, *, reversed_order, linked):
+    """The pid 988 / RR6700096 shape: one doc, a paid line and a free แถม line,
+    both INs sharing a created_at so only transactions.id separates them.
+
+    reversed_order flips which IN gets the lower id.
+    linked=False writes NULL provenance (the pre-mig-148 state).
+    """
+    pid = _seed_product(conn, name)
+    doc = f"RR{abs(hash(name)) % 9000000 + 1000000}"
+    _seed_purchase(conn, pid, doc, qty=23, net=1278.22, bsn_code='PAID', line_seq=1)
+    _seed_purchase(conn, pid, doc, qty=1, net=0.0, bsn_code='FREE', line_seq=2)
+
+    lines = [(23, 'PAID', 1), (1, 'FREE', 2)]
+    if reversed_order:
+        lines.reverse()
+    for qty, code, seq in lines:
+        _insert_purchase_in(conn, pid, doc, qty,
+                            bsn_code=(code if linked else None),
+                            line_seq=(seq if linked else None))
+    conn.commit()
+    return pid
+
+
+def test_linked_purchase_source_association_is_stable(empty_db_conn):
+    """Reordering transactions.id must not change which net attaches to which
+    quantity. Asserts the SOURCE ASSOCIATION, not final-WACC invariance in
+    general — the zero/negative-stock branches are non-commutative and that is
+    deliberately out of scope.
+    """
+    import models
+
+    natural = _build_freebie_doc(empty_db_conn, "Linked Natural",
+                                 reversed_order=False, linked=True)
+    flipped = _build_freebie_doc(empty_db_conn, "Linked Flipped",
+                                 reversed_order=True, linked=True)
+
+    w_natural = models.recalculate_product_wacc(natural, empty_db_conn)
+    w_flipped = models.recalculate_product_wacc(flipped, empty_db_conn)
+    empty_db_conn.commit()
+
+    assert abs(w_natural - 55.5748) < 1e-3, w_natural
+    assert abs(w_natural - w_flipped) < 1e-9, (
+        f"id order changed the cost: {w_natural} vs {w_flipped}")
+
+
+def test_unlinked_rows_still_depend_on_id_order(empty_db_conn):
+    """The bug, still reproducible on legacy NULL-provenance rows.
+
+    This is what makes the test above meaningful: without provenance the same
+    two documents disagree by ~23x, because qty 1 gets paired with the paid
+    line's net. Legacy behaviour is deliberately preserved unchanged.
+    """
+    import models
+
+    natural = _build_freebie_doc(empty_db_conn, "Legacy Natural",
+                                 reversed_order=False, linked=False)
+    flipped = _build_freebie_doc(empty_db_conn, "Legacy Flipped",
+                                 reversed_order=True, linked=False)
+
+    w_natural = models.recalculate_product_wacc(natural, empty_db_conn)
+    w_flipped = models.recalculate_product_wacc(flipped, empty_db_conn)
+    empty_db_conn.commit()
+
+    assert abs(w_natural - 55.5748) < 1e-3, w_natural
+    assert abs(w_flipped - 1278.22) < 1e-2, w_flipped
+    assert w_natural != w_flipped
+
+
+def _ledger_snapshot(conn, pid):
+    rows = conn.execute(
+        "SELECT event_type, event_date, qty_change, unit_cost, stock_after,"
+        " wacc_after, reference_no FROM product_cost_ledger"
+        " WHERE product_id=? ORDER BY id", (pid,)
+    ).fetchall()
+    cost = conn.execute(
+        "SELECT cost_price FROM products WHERE id=?", (pid,)
+    ).fetchone()['cost_price']
+    return [tuple(r) for r in rows], cost
+
+
+def test_linked_but_missing_raises_and_persists_nothing(empty_db_conn):
+    """A link to a purchase line that no longer exists must RAISE, leaving the
+    cost ledger and products.cost_price byte-identical.
+
+    Skipping the row instead would fall through to `current_stock += qty` —
+    adding the quantity UNCOSTED and then writing that incomplete result to
+    products.cost_price.
+    """
+    import models
+
+    pid = _build_freebie_doc(empty_db_conn, "Missing Link",
+                             reversed_order=False, linked=True)
+    models.recalculate_product_wacc(pid, empty_db_conn)
+    empty_db_conn.commit()
+    before = _ledger_snapshot(empty_db_conn, pid)
+    assert before[0], "precondition: ledger should be populated"
+
+    empty_db_conn.execute(
+        "DELETE FROM purchase_transactions WHERE product_id=? AND bsn_code='PAID'",
+        (pid,))
+    empty_db_conn.commit()
+
+    try:
+        models.recalculate_product_wacc(pid, empty_db_conn)
+        raise AssertionError("expected WaccIdentityError")
+    except models.WaccIdentityError as e:
+        assert e.product_id == pid
+        assert e.source_bsn_code == 'PAID'
+
+    empty_db_conn.commit()
+    assert _ledger_snapshot(empty_db_conn, pid) == before, \
+        "a failed recalculation must not change the cost ledger or cost_price"
+
+
+def test_partial_provenance_raises(empty_db_conn):
+    """Exactly one provenance column set is invalid — never treat it as legacy."""
+    import models
+
+    pid = _build_freebie_doc(empty_db_conn, "Partial Prov",
+                             reversed_order=False, linked=True)
+    empty_db_conn.execute(
+        "UPDATE transactions SET source_line_seq=NULL"
+        " WHERE product_id=? AND source_bsn_code='PAID'", (pid,))
+    empty_db_conn.commit()
+
+    try:
+        models.recalculate_product_wacc(pid, empty_db_conn)
+        raise AssertionError("expected WaccIdentityError")
+    except models.WaccIdentityError as e:
+        assert 'partial' in e.reason
+
+
+def test_duplicate_business_key_raises(empty_db_conn):
+    """Two purchase rows sharing (doc_no, bsn_code, line_seq) must fail loudly
+    rather than silently picking one cost."""
+    import models
+
+    pid = _build_freebie_doc(empty_db_conn, "Dup Key",
+                             reversed_order=False, linked=True)
+    # Duplicate the PAID line. mig 148's partial unique index makes this
+    # impossible going forward; a DB predating it must still refuse.
+    empty_db_conn.execute("DROP INDEX IF EXISTS idx_purchase_txn_doc_code_line")
+    _seed_purchase(empty_db_conn, pid,
+                   empty_db_conn.execute(
+                       "SELECT reference_no FROM transactions WHERE product_id=? LIMIT 1",
+                       (pid,)).fetchone()['reference_no'],
+                   qty=23, net=999.0, bsn_code='PAID', line_seq=1)
+    empty_db_conn.commit()
+
+    try:
+        models.recalculate_product_wacc(pid, empty_db_conn)
+        raise AssertionError("expected WaccIdentityError")
+    except models.WaccIdentityError as e:
+        assert 'duplicate' in e.reason
+
+
+def test_batch_failure_leaves_every_product_unchanged(empty_db_conn):
+    """Per-product validation does not protect a loop.
+
+    Product A is valid, B is broken. Without a batch pre-flight, A is rebuilt
+    and committed before B's failure is discovered — leaving an
+    iteration-order-dependent subset recalculated.
+    """
+    import models
+
+    a = _build_freebie_doc(empty_db_conn, "Batch A", reversed_order=False, linked=True)
+    b = _build_freebie_doc(empty_db_conn, "Batch B", reversed_order=False, linked=True)
+    models.recalculate_product_wacc(a, empty_db_conn)
+    models.recalculate_product_wacc(b, empty_db_conn)
+    empty_db_conn.commit()
+
+    # Break B, and make A stale so a rebuild would visibly change it.
+    empty_db_conn.execute(
+        "DELETE FROM purchase_transactions WHERE product_id=? AND bsn_code='PAID'", (b,))
+    empty_db_conn.execute("DELETE FROM product_cost_ledger WHERE product_id=?", (a,))
+    empty_db_conn.commit()
+    a_before = _ledger_snapshot(empty_db_conn, a)
+    assert a_before[0] == [], "precondition: A's ledger was cleared"
+
+    try:
+        models.preflight_batch(empty_db_conn, [a, b], operation='test_batch')
+        raise AssertionError("expected WaccIdentityError from the batch pre-flight")
+    except models.WaccIdentityError as e:
+        assert e.product_id == b
+        assert e.operation == 'test_batch'
+
+    assert _ledger_snapshot(empty_db_conn, a) == a_before, \
+        "A must not have been rebuilt before B's failure was discovered"
