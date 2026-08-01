@@ -8,13 +8,15 @@ import sales_filters
 from database import get_connection
 
 
-def get_customer_summary(customer, date_from=None, date_to=None):
+def _customer_sales_scope(key_col, key_value, date_from, date_to):
+    """WHERE clause + params selecting one customer's sales rows.
+
+    `key_col` is `customer` (the bill name) or `customer_code` (the master code)
+    — a literal chosen by the caller at the call site, never user input, so it is
+    safe to interpolate. `key_value` stays a bound parameter.
     """
-    Returns summary + top products + monthly trend for a specific customer.
-    """
-    conn = get_connection()
-    conds = ['customer = ?']
-    params = [customer]
+    conds = [f'{key_col} = ?']
+    params = [key_value]
     if date_from:
         conds.append('date_iso >= ?'); params.append(date_from)
     if date_to:
@@ -22,8 +24,18 @@ def get_customer_summary(customer, date_from=None, date_to=None):
     # Documents invoiced in error are not purchases — วรสวัสดิ์ never bought the
     # giveaway, so it must not show on their page either (see sales_filters).
     conds.append(sales_filters.not_a_sale_clause())
-    where = ' AND '.join(conds)
+    return ' AND '.join(conds), params
 
+
+def _customer_sales_aggregates(conn, where, params):
+    """The four per-customer sales aggregates, defined ONCE.
+
+    The name-keyed and code-keyed summaries below differ only in their WHERE, and
+    two copies of these queries drift invisibly — the same reason `sales_filters`
+    and `commission_attribution` exist as single definitions.
+
+    Returns (summary, top_products, monthly, docs).
+    """
     summary = conn.execute(f"""
         SELECT COUNT(DISTINCT doc_no) AS doc_count,
                COALESCE(SUM(net), 0)  AS total_net,
@@ -72,6 +84,23 @@ def get_customer_summary(customer, date_from=None, date_to=None):
         LIMIT 200
     """, params).fetchall()
 
+    return summary, top_products, monthly, docs
+
+
+def get_customer_summary(customer, date_from=None, date_to=None):
+    """
+    Returns summary + top products + monthly trend for a specific customer.
+
+    Keyed on the BILL name. One bill name can span >1 physical company (BUG 2 —
+    ทรัพย์ทวี), so this merges them; `get_customer_summary_by_code` is the
+    unambiguous form and is what the customer page uses. This one survives for
+    `call_card.py`, which only ever has a name.
+    """
+    conn = get_connection()
+    where, params = _customer_sales_scope('customer', customer, date_from, date_to)
+    summary, top_products, monthly, docs = _customer_sales_aggregates(
+        conn, where, params)
+
     # Pull region + salesperson from customers MASTER (post-D1 view migration).
     # 3-way fallback: salespersons.name → customers.salesperson code → '(ไม่กำหนด)'.
     # Same for region: regions.name_th → regions.code → '(ไม่ระบุ)'.
@@ -118,6 +147,110 @@ def get_customer_summary(customer, date_from=None, date_to=None):
     conn.close()
     return {
         'customer': customer,
+        'customer_code': customer_code,
+        'region': region_display,
+        'region_code': region_code,
+        'salesperson': salesperson_display,
+        'salesperson_code': salesperson_code,
+        'salesperson_orphan': salesperson_orphan,
+        'customer_info': customer_info,
+        'date_from': date_from,
+        'date_to': date_to,
+        'summary': dict(summary),
+        'top_products': [dict(r) for r in top_products],
+        'monthly': [dict(r) for r in monthly],
+        'docs': [dict(r) for r in docs],
+    }
+
+
+def resolve_customer_codes(name):
+    """Bill names can span >1 physical company (BUG 2, 2026-08 grilling —
+    e.g. 'ทรัพย์ทวี' is both 43ท013 'ร้าน ทรัพย์ทวี' and 01พ14 'บจก. พงศ์ทรัพย์ทวี').
+    Callers must never silently pick one — this just reports what's there.
+    """
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT DISTINCT customer_code
+        FROM sales_transactions
+        WHERE customer = ? AND customer_code IS NOT NULL
+        ORDER BY customer_code
+    """, [name]).fetchall()
+    conn.close()
+    return [r['customer_code'] for r in rows]
+
+
+def get_customer_summary_by_code(customer_code, date_from=None, date_to=None):
+    """Code-keyed counterpart to get_customer_summary().
+
+    Unlike get_customer_summary (keyed on the bill name in sales_transactions),
+    this resolves the master row DIRECTLY from `customers` by code, so the
+    2,390 customers with no sales_transactions rows still render, and the two
+    companies that share a bill name (BUG 2) never merge into one page.
+    Returns the same dict shape; `data['customer']` is the bill name when one
+    exists for this code, else the master name.
+    """
+    conn = get_connection()
+    where, params = _customer_sales_scope(
+        'customer_code', customer_code, date_from, date_to)
+    summary, top_products, monthly, docs = _customer_sales_aggregates(
+        conn, where, params)
+
+    # Bill (short) name for THIS code specifically — most recent sale wins.
+    # This is what distinguishes ทรัพย์ทวี's two codes; a name-keyed lookup
+    # cannot (BUG 2).
+    bill_name_row = conn.execute("""
+        SELECT customer FROM sales_transactions
+        WHERE customer_code = ? AND customer IS NOT NULL
+        ORDER BY date_iso DESC LIMIT 1
+    """, [customer_code]).fetchone()
+    bill_name = bill_name_row['customer'] if bill_name_row else None
+
+    # Master row is the anchor — resolves even when this code has zero sales.
+    master_row = conn.execute("""
+        SELECT c.code AS master_code, c.name AS master_name,
+               c.salesperson AS sp_code, c.region_id,
+               sp.name AS sp_name, sp.is_active AS sp_active,
+               r.code AS region_code, r.name_th AS region_name
+        FROM customers c
+        LEFT JOIN salespersons sp ON sp.code = c.salesperson
+        LEFT JOIN regions r ON r.id = c.region_id
+        WHERE c.code = ?
+    """, [customer_code]).fetchone()
+
+    customer_info = None
+    salesperson_code = None
+    salesperson_display = None
+    salesperson_orphan = False
+    region_code = None
+    region_display = None
+    display_name = bill_name or customer_code
+
+    if master_row:
+        row = conn.execute(
+            "SELECT * FROM customers WHERE code=?", [customer_code]
+        ).fetchone()
+        if row:
+            customer_info = dict(row)
+        if not bill_name:
+            display_name = master_row['master_name']
+        salesperson_code = master_row['sp_code']
+        if salesperson_code:
+            if master_row['sp_name']:
+                salesperson_display = master_row['sp_name']
+            else:
+                salesperson_display = salesperson_code
+                salesperson_orphan = True
+        region_code = master_row['region_code']
+        region_display = master_row['region_name'] or master_row['region_code']
+
+    conn.close()
+    return {
+        # Date-INDEPENDENT: both source queries above ignore date_from/date_to, so
+        # a customer whose filter excludes every bill still reads exists=True. The
+        # route 404s on False; keying that off the filtered rows would 404 real
+        # customers mid-filter.
+        'exists': bool(master_row or bill_name_row),
+        'customer': display_name,
         'customer_code': customer_code,
         'region': region_display,
         'region_code': region_code,

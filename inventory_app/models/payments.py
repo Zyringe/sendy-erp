@@ -493,23 +493,25 @@ def find_payment_candidates(amount, tolerance_pct=5):
     return results[:20]
 
 
-def get_customer_unpaid_bills(customer_name):
-    """รายการบิลค้างชำระของลูกค้าคนนี้.
+def _unpaid_bills(match_sql, match_params):
+    """Outstanding-bill rows for one customer, defined ONCE.
 
-    Sourced from express_ar_outstanding (latest snapshot, doc_date >= 2024).
-    Customer matched first by customers.name → customer_code, then falls
-    back to ao.customer_name LIKE for legacy/typo cases.
+    `match_sql` is the caller's identity predicate (by name or by code) — a
+    literal chosen at the call site, never user input; its placeholders are
+    filled from `match_params`. Everything else (BSN entity, latest snapshot,
+    doc_date >= 2024, outstanding > 0, column list, ordering) is shared, so the
+    two entry points below cannot drift apart.
 
-    Returns (rows, snapshot_date) — snapshot_date is the latest BSN AR
-    snapshot date (same value other AR widgets show as "ณ {snapshot_date}",
-    e.g. cashflow.ar_aging()['as_of']), so callers can disclose data
-    freshness instead of leaving it unstated.
+    Returns (rows, snapshot_date) — snapshot_date is the latest BSN AR snapshot
+    date (same value other AR widgets show as "ณ {snapshot_date}", e.g.
+    cashflow.ar_aging()['as_of']), so callers can disclose data freshness
+    instead of leaving it unstated.
     """
     conn = get_connection()
     snapshot_date = conn.execute(
         "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding WHERE entity = 'BSN'"
     ).fetchone()['d']
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT
             ao.doc_no                    AS doc_base,
             ao.doc_date_iso              AS bill_date,
@@ -526,12 +528,34 @@ def get_customer_unpaid_bills(customer_name):
         WHERE ao.entity = 'BSN'
           AND ao.snapshot_date_iso = (SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding WHERE entity = 'BSN')
           AND ao.doc_date_iso >= '2024-01-01'
-          AND (
-                COALESCE(c.name, '') = ?
-             OR ao.customer_name = ?
-          )
+          AND {match_sql}
           AND ao.outstanding_amount > 0
         ORDER BY ao.doc_date_iso DESC
-    """, [customer_name, customer_name]).fetchall()
+    """, match_params).fetchall()
     conn.close()
     return rows, snapshot_date
+
+
+def get_customer_unpaid_bills(customer_name):
+    """รายการบิลค้างชำระของลูกค้าคนนี้ — matched by NAME.
+
+    Customer matched first by customers.name → customer_code, then falls
+    back to ao.customer_name for legacy/typo cases.
+    """
+    return _unpaid_bills(
+        "(COALESCE(c.name, '') = ? OR ao.customer_name = ?)",
+        [customer_name, customer_name])
+
+
+def get_customer_unpaid_bills_by_code(customer_code):
+    """Code-keyed counterpart to get_customer_unpaid_bills().
+
+    Matches express_ar_outstanding.customer_code directly instead of by name,
+    so two companies that share a bill name (BUG 2, e.g. ทรัพย์ทวี = 43ท013 +
+    01พ14) never merge each other's outstanding bills. Same return shape.
+
+    Verified 2026-08-01 on the live snapshot: all 114 outstanding rows carry a
+    customer_code that exists in `customers`, and zero rows match by name only —
+    so this loses no bill the name path would have found.
+    """
+    return _unpaid_bills("ao.customer_code = ?", [customer_code])

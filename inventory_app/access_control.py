@@ -315,6 +315,7 @@ _ENDPOINT_MODULE = {
     'sales.purchases_doc': 'trade',
     'partners.customer_list': 'trade',
     'partners.customer_summary': 'trade',
+    'partners.customer_detail': 'trade',
     'partners.customer_map': 'trade',
     'partners.customer_bulk_reassign': 'trade',
     'partners.regions_admin': 'trade',
