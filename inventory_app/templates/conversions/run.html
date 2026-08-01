@@ -210,15 +210,30 @@ function updatePreview() {
 updatePreview();
 
 // Double-tap guard. A slow connection invites a second tap, and each POST is a
-// real conversion — the server refuses the replay by nonce, this just stops the
-// user sending it. Never re-enabled: on success we redirect away, on refusal
-// the server re-renders a fresh form.
+// real conversion — the server refuses the replay by token, this just stops the
+// user sending it.
 document.getElementById('runForm').addEventListener('submit', function (e) {
   if (this.dataset.submitted) { e.preventDefault(); return; }
   this.dataset.submitted = '1';
   const btn = document.getElementById('submitBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>กำลังบันทึก...';
+});
+
+// Pressing Back restores this page from the browser's bfcache with the DOM
+// exactly as it was left — frozen mid-submit, button greyed and still reading
+// "กำลังบันทึก...", which reads as a hung app (Put, 2026-08-01).
+// Put the form back in a usable state. The token is already spent, so a
+// re-submit is still refused SERVER-side with a clear message instead of
+// converting twice — this only fixes the appearance, it does not reopen the
+// replay. updatePreview() restores the correct enabled/disabled state.
+window.addEventListener('pageshow', function (e) {
+  if (!e.persisted) return;
+  const form = document.getElementById('runForm');
+  if (form) delete form.dataset.submitted;
+  const btn = document.getElementById('submitBtn');
+  if (btn) btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>ยืนยันแปลงสินค้า';
+  updatePreview();
 });
 </script>
 {% endblock %}

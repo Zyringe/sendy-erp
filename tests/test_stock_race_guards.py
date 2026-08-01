@@ -315,6 +315,23 @@ def test_typed_reference_no_is_still_what_lands_on_the_ledger(tmp_db):
         f"the token leaked into the document number: {row['reference_no']}"
 
 
+def test_run_page_resets_the_button_when_restored_from_bfcache(tmp_db, admin_client):
+    """Back-button restore hands the page back with the DOM frozen mid-submit,
+    so without a reset the button reads "กำลังบันทึก..." forever and the page
+    looks hung (Put, 2026-08-01).
+
+    This only pins the wiring — pytest cannot drive bfcache. The behaviour
+    itself was verified in a real browser: after Back the button returned to
+    "ยืนยันแปลงสินค้า", re-submitting was refused server-side, and the spent
+    token still logged exactly one run.
+    """
+    f = _a_formula(tmp_db)
+    html = admin_client.get(f"/conversions/{f['id']}/run").get_data(as_text=True)
+    assert "addEventListener('pageshow'" in html, 'no bfcache reset handler'
+    assert 'e.persisted' in html, 'the reset must fire only on a bfcache restore'
+    assert 'delete form.dataset.submitted' in html, 'the submitted flag is never cleared'
+
+
 def test_web_post_without_a_token_is_refused(tmp_db, admin_client):
     """A conversion POST carrying no token cannot be deduped, so the route must
     not run it — same stance the app already takes for a missing CSRF token.
