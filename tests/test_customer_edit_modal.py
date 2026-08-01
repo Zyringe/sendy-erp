@@ -271,3 +271,64 @@ def test_commission_reassign_new_get_without_arg_renders_blank(tmp_db):
     assert r.status_code == 200
     html = r.data.decode()
     assert 'value=""' in html or "placeholder=" in html
+
+
+# ── The review sync must be PER FIELD, not all six ─────────────────────────
+# Review finding (2026-08-01): the first cut wrote all six proposed_* columns
+# on any contact change, so editing just the phone destroyed the normalizer's
+# un-reviewed proposals for the other fields. 53 of the 62 pending rows have at
+# least one proposed_* that differs from the live value, so this was routine
+# data loss, e.g. 11ม06's proposed_address carries a postcode the live row lacks.
+
+def test_review_sync_touches_only_the_fields_that_changed(tmp_db):
+    import sqlite3
+    before_row = _customer_row(tmp_db, '11ม06')
+    conn = sqlite3.connect(tmp_db)
+    prop_before = conn.execute(
+        "SELECT proposed_contact, proposed_address, proposed_nickname "
+        "FROM customer_contact_review WHERE customer_code='11ม06' AND status='pending'"
+    ).fetchone()
+    conn.close()
+    assert prop_before is not None
+    # The fixture must actually contain a proposal that differs from the live
+    # row, or this test cannot fail.
+    assert (prop_before[0] or '') != (before_row['contact'] or '') \
+        or (prop_before[1] or '') != (before_row['address'] or ''), \
+        'fixture no longer has a divergent proposal — this test would be vacuous'
+
+    c = _client(tmp_db, role='admin')
+    r = c.post('/customer/11ม06/reassign', data={
+        'salesperson': before_row['salesperson'] or '',
+        'region_id': str(before_row['region_id'] or ''),
+        'nickname': before_row['nickname'] or '',
+        'phone': '02-111-2222',                    # the ONLY change
+        'fax': before_row['fax'] or '',
+        'contact': before_row['contact'] or '',
+        'address': before_row['address'] or '',
+        'contact_note': before_row['contact_note'] or '',
+    })
+    assert r.status_code == 302
+
+    conn = sqlite3.connect(tmp_db)
+    prop_after = conn.execute(
+        "SELECT proposed_contact, proposed_address, proposed_nickname, proposed_phone "
+        "FROM customer_contact_review WHERE customer_code='11ม06' AND status='pending'"
+    ).fetchone()
+    conn.close()
+    assert prop_after[3] == '02-111-2222', 'the changed field must sync'
+    assert prop_after[0] == prop_before[0], 'proposed_contact was not edited — must survive'
+    assert prop_after[1] == prop_before[1], 'proposed_address was not edited — must survive'
+    assert prop_after[2] == prop_before[2], 'proposed_nickname was not edited — must survive'
+
+
+def test_clear_filter_link_still_uses_the_code_after_phase2(tmp_db):
+    """Phase 1's blocker: a link built from data.customer ejects the user on
+    ambiguous and bill-less customers. Phase 2 rewrote most of this template."""
+    import re
+    c = _client(tmp_db, role='admin')
+    html = c.get(f'/customer/code/{quote("43ท013")}').data.decode()
+    m = re.search(
+        r'href="([^"]*)"\s*\n?\s*class="btn btn-sm btn-outline-secondary ms-1"', html)
+    assert m, 'clear-filter link not found'
+    from urllib.parse import unquote
+    assert unquote(m.group(1)) == '/customer/code/43ท013'

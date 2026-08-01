@@ -486,6 +486,18 @@ def update_customer_assignment(customer_code, salesperson_code, region_id):
 # always overwrites even on a protected row — a form for those would lie.
 _CONTACT_FIELDS = ('nickname', 'phone', 'fax', 'contact', 'address', 'contact_note')
 
+# customers column -> its customer_contact_review.proposed_* twin. Note the last
+# pair is NOT a mechanical `proposed_` + name: the review column is
+# `proposed_note`, not `proposed_contact_note`.
+_REVIEW_COL = {
+    'nickname':     'proposed_nickname',
+    'phone':        'proposed_phone',
+    'fax':          'proposed_fax',
+    'contact':      'proposed_contact',
+    'address':      'proposed_address',
+    'contact_note': 'proposed_note',
+}
+
 
 def update_customer_edit(customer_code, salesperson_code, region_id, contact, username):
     """Customer-edit modal's save path: group 1 (salesperson/region_id) +
@@ -535,9 +547,8 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
             if not conn.execute("SELECT 1 FROM regions WHERE id = ?", (rid,)).fetchone():
                 return {'ok': False, 'error': f'ไม่พบ region id {rid}'}
 
-        contact_changed = any(
-            new_contact[k] != current[k] for k in _CONTACT_FIELDS
-        )
+        changed_fields = [k for k in _CONTACT_FIELDS if new_contact[k] != current[k]]
+        contact_changed = bool(changed_fields)
 
         if contact_changed:
             conn.execute("""
@@ -562,16 +573,17 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
                  WHERE customer_code = ? AND status = 'pending'
             """, (customer_code,)).fetchone()
             if pending:
-                conn.execute("""
-                    UPDATE customer_contact_review
-                       SET proposed_nickname = ?, proposed_phone = ?,
-                           proposed_fax = ?, proposed_contact = ?,
-                           proposed_address = ?, proposed_note = ?
-                     WHERE id = ?
-                """, (new_contact['nickname'], new_contact['phone'],
-                      new_contact['fax'], new_contact['contact'],
-                      new_contact['address'], new_contact['contact_note'],
-                      pending['id']))
+                # ONLY the fields that actually changed. Writing all six would
+                # destroy the normalizer's un-reviewed proposals for the fields
+                # this edit never touched — 53 of the 62 pending rows have at
+                # least one proposed_* that differs from the live value
+                # (measured 2026-08-01), e.g. 11ม06's proposed_address carries a
+                # postcode the live row lacks. Editing only the phone must not
+                # silently drop that.
+                sets = ', '.join(f'{_REVIEW_COL[k]} = ?' for k in changed_fields)
+                conn.execute(
+                    f"UPDATE customer_contact_review SET {sets} WHERE id = ?",
+                    [new_contact[k] for k in changed_fields] + [pending['id']])
 
         conn.commit()
         return {'ok': True, 'error': None, 'contact_changed': contact_changed}
