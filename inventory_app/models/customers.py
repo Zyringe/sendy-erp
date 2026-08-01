@@ -295,10 +295,10 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
     """
     conn = get_connection()
     conds = []
-    params = []
+    billing_params = []
     if search:
         conds.append("(s.customer LIKE ? OR s.customer_code LIKE ?)")
-        params += [f"%{search}%", f"%{search}%"]
+        billing_params += [f"%{search}%", f"%{search}%"]
 
     rid_int = None
     if region_id is not None and str(region_id).strip():
@@ -316,7 +316,7 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
             rid_int = match['id']
     if rid_int is not None:
         conds.append("c.region_id = ?")
-        params.append(rid_int)
+        billing_params.append(rid_int)
 
     # Same exclusion as the customer DETAIL page — without it the list and the
     # detail disagree by the giveaway (proved: วรสวัสดิ์ ฿499,577.31 vs ฿345,454.51).
@@ -346,11 +346,12 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
         GROUP BY s.customer_code
     """
     union_parts = [billing_sql]
+    params = list(billing_params)
+    bl_params = []
 
     if include_billless:
         bl_conds = ["NOT EXISTS (SELECT 1 FROM sales_transactions s2 "
                     "WHERE s2.customer_code = c.code)"]
-        bl_params = []
         if search:
             bl_conds.append("(c.name LIKE ? OR c.code LIKE ?)")
             bl_params += [f"%{search}%", f"%{search}%"]
@@ -391,8 +392,28 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
     """
     rows = conn.execute(sql, params + [per_page, (page - 1) * per_page]).fetchall()
 
-    count_sql = f"SELECT COUNT(*) FROM ({union_sql})"
-    total = conn.execute(count_sql, params).fetchone()[0]
+    # `total` for the billing half is computed the SAME way as before this
+    # function unioned in a second branch: COUNT(DISTINCT s.customer_code),
+    # NOT COUNT(*) over the GROUP BY. A handful of sales_transactions rows
+    # carry customer_code IS NULL (unmatched historical rows); GROUP BY
+    # buckets those into one row, but COUNT(DISTINCT ...) — like the
+    # pre-Phase-3 count query — does not count NULL. Using COUNT(*) on the
+    # grouped subquery would silently change the default
+    # (include_billless=False) total by +1.
+    billing_total = conn.execute(f"""
+        SELECT COUNT(DISTINCT s.customer_code)
+        FROM sales_transactions s
+        LEFT JOIN customers c ON c.code = s.customer_code
+        {where}
+    """, billing_params).fetchone()[0]
+
+    total = billing_total
+    if include_billless:
+        billless_total = conn.execute(f"""
+            SELECT COUNT(*) FROM customers c {bl_where}
+        """, bl_params).fetchone()[0]
+        total += billless_total
+
     conn.close()
     return [dict(r) for r in rows], total
 
