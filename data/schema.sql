@@ -1483,7 +1483,7 @@ CREATE TABLE transactions (
     reference_no    TEXT,
     note            TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-);
+, source_bsn_code TEXT, source_line_seq INTEGER);
 
 CREATE TABLE txn_review_docs (
     doc_base        TEXT PRIMARY KEY,
@@ -1809,6 +1809,10 @@ CREATE INDEX idx_pt_date_iso
 CREATE INDEX idx_pt_doc_base ON purchase_transactions(doc_base);
 
 CREATE INDEX idx_pt_supplier_id ON purchase_transactions(supplier_id);
+
+CREATE UNIQUE INDEX idx_purchase_txn_doc_code_line
+    ON purchase_transactions(doc_no, bsn_code, line_seq)
+ WHERE bsn_code IS NOT NULL;
 
 CREATE INDEX idx_quick_updates_supplier
     ON supplier_quick_updates(supplier_id, effective_date);
