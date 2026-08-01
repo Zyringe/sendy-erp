@@ -201,3 +201,66 @@ def test_endpoint_module_break_it_once():
     finally:
         access_control._ENDPOINT_MODULE['partners.customer_detail'] = saved
     assert access_control._ENDPOINT_MODULE['partners.customer_detail'] == 'trade'
+
+
+# ── The page's OWN links must keep you on the page ──────────────────────────
+# Review gap (2026-08-01): every test above checked that the shim redirects
+# correctly, but none checked where the RENDERED page points. The clear-filter
+# button was still built with url_for('partners.customer_summary', name=...),
+# so on both ทรัพย์ทวี companies — the pair this phase exists to split — and on
+# every bill-less customer it bounced through the shim and ejected the user to
+# /customers. Assert on the href, never the Thai label: a bare substring check
+# passes on an unchanged page.
+
+def _clear_filter_href(html):
+    """The 'ล้าง' button's href, located by its class, not by its label."""
+    import re
+    m = re.search(
+        r'href="([^"]*)"[^>]*class="btn btn-sm btn-outline-secondary ms-1"', html)
+    assert m, 'clear-filter link not found on the page'
+    return unquote(m.group(1))
+
+
+def test_clear_filter_link_stays_on_the_code_page_ambiguous_name(tmp_db):
+    """43ท013 and 01พ14 share the bill name ทรัพย์ทวี. A name-built link here
+    resolves to 2 codes → the shim refuses to guess → user is ejected."""
+    c = _client(tmp_db)
+    for code in ('43ท013', '01พ14'):
+        html = c.get(f'/customer/code/{quote(code)}').data.decode()
+        assert _clear_filter_href(html) == f'/customer/code/{code}'
+
+
+def test_clear_filter_link_stays_on_the_code_page_billless(tmp_db):
+    """A bill-less customer's data.customer is the MASTER name, which resolves
+    to zero codes — a name-built link ejects with 'ไม่พบรหัสลูกค้า'."""
+    c = _client(tmp_db)
+    html = c.get(f'/customer/code/{quote("01ก01")}').data.decode()
+    assert _clear_filter_href(html) == '/customer/code/01ก01'
+
+
+def test_clear_filter_link_actually_round_trips(tmp_db):
+    """Follow the link for real: 200 on the same URL, not a 302 to /customers."""
+    c = _client(tmp_db)
+    start = f'/customer/code/{quote("43ท013")}'
+    html = c.get(f'{start}?date_from=2025-01-01').data.decode()
+    r = c.get(quote(_clear_filter_href(html), safe='/?=&'))
+    assert r.status_code == 200, f'clear-filter link left the page: {r.status_code} {r.headers.get("Location")}'
+    assert 'ทรัพย์ทวี' in r.data.decode()
+
+
+# ── Unknown code must not render a page titled after the URL ────────────────
+
+def test_unknown_code_404s(tmp_db):
+    c = _client(tmp_db)
+    assert c.get('/customer/code/NOPE999').status_code == 404
+
+
+def test_known_code_survives_a_date_filter_that_excludes_every_bill(tmp_db):
+    """The 404 guard reads a date-INDEPENDENT `exists` flag. Keying it off the
+    filtered rows instead would 404 a real customer mid-filter — this pins that."""
+    c = _client(tmp_db)
+    r = c.get(f'/customer/code/{quote("43ท013")}?date_from=2099-01-01')
+    assert r.status_code == 200
+    import models
+    d = models.get_customer_summary_by_code('43ท013', '2099-01-01', None)
+    assert d['exists'] is True and d['summary']['doc_count'] == 0
