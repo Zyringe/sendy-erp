@@ -8,13 +8,15 @@ import sales_filters
 from database import get_connection
 
 
-def get_customer_summary(customer, date_from=None, date_to=None):
+def _customer_sales_scope(key_col, key_value, date_from, date_to):
+    """WHERE clause + params selecting one customer's sales rows.
+
+    `key_col` is `customer` (the bill name) or `customer_code` (the master code)
+    — a literal chosen by the caller at the call site, never user input, so it is
+    safe to interpolate. `key_value` stays a bound parameter.
     """
-    Returns summary + top products + monthly trend for a specific customer.
-    """
-    conn = get_connection()
-    conds = ['customer = ?']
-    params = [customer]
+    conds = [f'{key_col} = ?']
+    params = [key_value]
     if date_from:
         conds.append('date_iso >= ?'); params.append(date_from)
     if date_to:
@@ -22,8 +24,18 @@ def get_customer_summary(customer, date_from=None, date_to=None):
     # Documents invoiced in error are not purchases — วรสวัสดิ์ never bought the
     # giveaway, so it must not show on their page either (see sales_filters).
     conds.append(sales_filters.not_a_sale_clause())
-    where = ' AND '.join(conds)
+    return ' AND '.join(conds), params
 
+
+def _customer_sales_aggregates(conn, where, params):
+    """The four per-customer sales aggregates, defined ONCE.
+
+    The name-keyed and code-keyed summaries below differ only in their WHERE, and
+    two copies of these queries drift invisibly — the same reason `sales_filters`
+    and `commission_attribution` exist as single definitions.
+
+    Returns (summary, top_products, monthly, docs).
+    """
     summary = conn.execute(f"""
         SELECT COUNT(DISTINCT doc_no) AS doc_count,
                COALESCE(SUM(net), 0)  AS total_net,
@@ -71,6 +83,23 @@ def get_customer_summary(customer, date_from=None, date_to=None):
         ORDER BY date_iso DESC, doc_no
         LIMIT 200
     """, params).fetchall()
+
+    return summary, top_products, monthly, docs
+
+
+def get_customer_summary(customer, date_from=None, date_to=None):
+    """
+    Returns summary + top products + monthly trend for a specific customer.
+
+    Keyed on the BILL name. One bill name can span >1 physical company (BUG 2 —
+    ทรัพย์ทวี), so this merges them; `get_customer_summary_by_code` is the
+    unambiguous form and is what the customer page uses. This one survives for
+    `call_card.py`, which only ever has a name.
+    """
+    conn = get_connection()
+    where, params = _customer_sales_scope('customer', customer, date_from, date_to)
+    summary, top_products, monthly, docs = _customer_sales_aggregates(
+        conn, where, params)
 
     # Pull region + salesperson from customers MASTER (post-D1 view migration).
     # 3-way fallback: salespersons.name → customers.salesperson code → '(ไม่กำหนด)'.
@@ -161,61 +190,10 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None):
     exists for this code, else the master name.
     """
     conn = get_connection()
-    conds = ['customer_code = ?']
-    params = [customer_code]
-    if date_from:
-        conds.append('date_iso >= ?'); params.append(date_from)
-    if date_to:
-        conds.append('date_iso <= ?'); params.append(date_to)
-    conds.append(sales_filters.not_a_sale_clause())
-    where = ' AND '.join(conds)
-
-    summary = conn.execute(f"""
-        SELECT COUNT(DISTINCT doc_no) AS doc_count,
-               COALESCE(SUM(net), 0)  AS total_net,
-               COALESCE(SUM(qty), 0)  AS total_qty,
-               MIN(date_iso)          AS first_date,
-               MAX(date_iso)          AS last_date
-        FROM sales_transactions
-        WHERE {where}
-    """, params).fetchone()
-
-    top_products = conn.execute(f"""
-        SELECT COALESCE(p.product_name, s.product_name_raw) AS name,
-               p.id AS product_id,
-               s.unit,
-               SUM(s.qty)  AS total_qty,
-               SUM(s.net)  AS total_net,
-               COUNT(DISTINCT s.doc_no) AS doc_count
-        FROM sales_transactions s
-        LEFT JOIN products p ON p.id = s.product_id
-        WHERE {where}
-        GROUP BY s.product_id, s.product_name_raw
-        ORDER BY total_net DESC
-        LIMIT 20
-    """, params).fetchall()
-
-    monthly = conn.execute(f"""
-        SELECT strftime('%Y-%m', date_iso) AS month,
-               COUNT(DISTINCT doc_no) AS doc_count,
-               SUM(net) AS total_net
-        FROM sales_transactions
-        WHERE {where}
-        GROUP BY month
-        ORDER BY month
-    """, params).fetchall()
-
-    docs = conn.execute(f"""
-        SELECT date_iso, doc_no,
-               COUNT(*) AS line_count,
-               SUM(qty) AS total_qty,
-               SUM(net) AS total_net
-        FROM sales_transactions
-        WHERE {where}
-        GROUP BY doc_no
-        ORDER BY date_iso DESC, doc_no
-        LIMIT 200
-    """, params).fetchall()
+    where, params = _customer_sales_scope(
+        'customer_code', customer_code, date_from, date_to)
+    summary, top_products, monthly, docs = _customer_sales_aggregates(
+        conn, where, params)
 
     # Bill (short) name for THIS code specifically — most recent sale wins.
     # This is what distinguishes ทรัพย์ทวี's two codes; a name-keyed lookup
@@ -267,6 +245,11 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None):
 
     conn.close()
     return {
+        # Date-INDEPENDENT: both source queries above ignore date_from/date_to, so
+        # a customer whose filter excludes every bill still reads exists=True. The
+        # route 404s on False; keying that off the filtered rows would 404 real
+        # customers mid-filter.
+        'exists': bool(master_row or bill_name_row),
         'customer': display_name,
         'customer_code': customer_code,
         'region': region_display,

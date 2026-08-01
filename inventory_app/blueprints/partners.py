@@ -60,6 +60,16 @@ def customer_detail(customer_code):
     date_from = request.args.get('date_from') or None
     date_to   = request.args.get('date_to')   or None
     data = models.get_customer_summary_by_code(customer_code, date_from, date_to)
+
+    # A code with no master row AND no sales at all is not a customer — 404 rather
+    # than render a page titled after whatever was typed into the URL. A code that
+    # has sales but no master row IS a real state here (the page flags it with the
+    # "ยังไม่มีใน master" badge), so only the both-missing case is a 404.
+    # `exists` is deliberately date-INDEPENDENT: keying it off the filtered rows
+    # would 404 a real customer whose date filter happens to exclude every bill.
+    if not data['exists']:
+        abort(404)
+
     unpaid_bills, unpaid_snapshot_date = models.get_customer_unpaid_bills_by_code(customer_code)
     unpaid_total = sum(b['total_net'] or 0 for b in unpaid_bills)
 

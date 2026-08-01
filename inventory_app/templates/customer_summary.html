@@ -20,7 +20,10 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">กรอง</button>
-        <a href="{{ url_for('partners.customer_summary', customer_name=data.customer) }}"
+        {# By CODE, never by name: routing back through the name shim ejects you off
+           this page whenever the bill name is ambiguous (ทรัพย์ทวี = 2 companies) or
+           absent (bill-less customers, where data.customer is the master name). #}
+        <a href="{{ url_for('partners.customer_detail', customer_code=data.customer_code) }}"
            class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
       </div>
       <div class="col-auto ms-auto">
