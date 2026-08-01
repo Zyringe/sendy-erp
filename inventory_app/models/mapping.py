@@ -412,8 +412,11 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None) -> dict:
             )
 
         # ── 5. Re-sync via the real app function ────────────────────────────
-        _sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
-        _sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
+        # deduct_platform=False: this is a REPLAY of rows that already deducted
+        # platform_skus.stock when they were first imported, and deleting their
+        # ledger rows in step 4 did not put that stock back.
+        _sync_bsn_to_stock(conn, 'sales_transactions', 'sales', deduct_platform=False)
+        _sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase', deduct_platform=False)
 
         # ── 6. Recompute WACC for every affected product ────────────────────
         for pid in affected:
