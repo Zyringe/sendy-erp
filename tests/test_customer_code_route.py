@@ -173,6 +173,19 @@ def test_endpoint_module_maps_customer_detail_to_trade():
     assert _ENDPOINT_MODULE['partners.customer_detail'] == 'trade'
 
 
+def test_nav_match_list_highlights_customer_link_on_detail_page():
+    """nav.py:90's match list — the 'ลูกค้า' sidebar link must highlight on
+    the new code-keyed page too, same as it already does for customer_summary.
+    Deliberately NOT touching tests/nav_snapshot.json for this (regenerating
+    it re-captures every role x module snapshot in one shot — out of
+    proportion for a cosmetic highlight check); this pins the underlying
+    match-list DATA directly instead."""
+    import nav
+    assert (nav.active_link('partners.customer_detail', 'trade')
+            == nav.active_link('partners.customer_summary', 'trade')
+            == ('trade', 'partners.customer_list'))
+
+
 def test_endpoint_module_break_it_once():
     """Proves the guard this entry exists for actually catches its absence:
     per erp-engineering-discipline's 'A navigable page lives in THREE nav
