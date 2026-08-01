@@ -528,7 +528,18 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
         except (ValueError, TypeError):
             return {'ok': False, 'error': 'region_id ไม่ถูกต้อง'}
 
-    new_contact = {k: (contact.get(k) or '').strip() or None for k in CUSTOMER_CONTACT_FIELDS}
+    # A short payload is a caller bug, never "clear the rest". The route already
+    # branches on this, but this function is exported through the models facade,
+    # so a future caller that skips the route would otherwise silently wipe the
+    # keys it forgot — the exact failure this whole path was hardened against.
+    # Re-checking here is a data-mutation invariant, not defensive decoration:
+    # `contact[k]` below then cannot raise, and cannot default to blank.
+    missing = [k for k in CUSTOMER_CONTACT_FIELDS if k not in contact]
+    if missing:
+        return {'ok': False,
+                'error': f'contact payload ไม่ครบ (ขาด: {", ".join(missing)})'}
+
+    new_contact = {k: (contact[k] or '').strip() or None for k in CUSTOMER_CONTACT_FIELDS}
 
     conn = get_connection()
     try:

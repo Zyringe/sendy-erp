@@ -451,3 +451,65 @@ def test_partial_contact_post_is_rejected_not_guessed(tmp_db):
     after = _customer_row(tmp_db, '11ม06')
     assert after['phone'] == before['phone'], 'a partial payload must not be applied'
     assert after['contact'] == before['contact']
+
+
+# ── Codex round 2 ──────────────────────────────────────────────────────────
+
+def test_model_rejects_a_short_contact_payload(tmp_db):
+    """update_customer_edit is public through the models facade, so the route's
+    0/6/partial branch is not the only entry point. A caller that skips the
+    route and passes a short dict must be refused, not have its missing keys
+    read as blanks."""
+    import models
+    before = _customer_row(tmp_db, '11ม06')
+    r = models.update_customer_edit(
+        '11ม06', before['salesperson'], before['region_id'],
+        {'phone': '02-000-0000'}, 'tester')          # 5 keys missing
+    assert r['ok'] is False
+    assert 'ไม่ครบ' in r['error']
+    after = _customer_row(tmp_db, '11ม06')
+    for f in ('phone', 'contact', 'address', 'nickname', 'fax', 'contact_note'):
+        assert after[f] == before[f], f'a rejected payload still changed {f}'
+
+
+def test_full_payload_of_blanks_clears_deliberately(tmp_db):
+    """All six keys present with empty values IS the modal saying "clear these".
+    Pins the destructive path end to end: live fields cleared, stamp set,
+    snapshot freezes the PRE-clear values, and only the proposals whose field
+    actually changed are synced — a proposal whose live field was already NULL
+    counts as unchanged and must survive."""
+    import json, sqlite3
+    before = _customer_row(tmp_db, '11ม06')
+    assert before['phone'], 'fixture must start with a phone or this is vacuous'
+
+    conn = sqlite3.connect(tmp_db)
+    prop_before = conn.execute(
+        "SELECT proposed_phone, proposed_contact FROM customer_contact_review"
+        " WHERE customer_code='11ม06' AND status='pending'").fetchone()
+    conn.close()
+
+    c = _client(tmp_db, role='admin')
+    assert c.post('/customer/11ม06/reassign', data={
+        'salesperson': before['salesperson'] or '',
+        'region_id': str(before['region_id'] or ''),
+        'nickname': '', 'phone': '', 'fax': '',
+        'contact': '', 'address': '', 'contact_note': '',
+    }).status_code == 302
+
+    after = _customer_row(tmp_db, '11ม06')
+    assert after['phone'] is None and after['address'] is None
+    assert after['contact_normalized_at'] is not None, 'a deliberate clear still stamps'
+
+    snap = json.loads(after['contact_orig_json'] or '{}')
+    assert snap.get('phone') == before['phone'], 'snapshot must hold the PRE-clear value'
+
+    conn = sqlite3.connect(tmp_db)
+    prop_after = conn.execute(
+        "SELECT proposed_phone, proposed_contact FROM customer_contact_review"
+        " WHERE customer_code='11ม06' AND status='pending'").fetchone()
+    conn.close()
+    if prop_before is not None:
+        assert prop_after[0] is None, 'phone changed → its proposal syncs to NULL'
+        if not before['contact']:
+            assert prop_after[1] == prop_before[1], \
+                'contact was already NULL → unchanged → its proposal must survive'
