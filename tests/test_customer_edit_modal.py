@@ -332,3 +332,103 @@ def test_clear_filter_link_still_uses_the_code_after_phase2(tmp_db):
     assert m, 'clear-filter link not found'
     from urllib.parse import unquote
     assert unquote(m.group(1)) == '/customer/code/43ท013'
+
+
+# ── C: freeze the pre-edit state once ──────────────────────────────────────
+# 1,674 of 2,665 customers have contact_orig_json NULL, i.e. no record of what
+# the row looked like before anyone touched it. The first modal edit fills it.
+
+def test_first_contact_edit_freezes_pre_edit_snapshot(tmp_db):
+    import json, sqlite3
+    conn = sqlite3.connect(tmp_db)
+    code, before_phone = conn.execute(
+        "SELECT code, phone FROM customers "
+        " WHERE contact_orig_json IS NULL AND COALESCE(phone,'') <> '' LIMIT 1"
+    ).fetchone()
+    conn.close()
+    before = _customer_row(tmp_db, code)
+
+    c = _client(tmp_db, role='admin')
+    payload = {
+        'salesperson': before['salesperson'] or '',
+        'region_id': str(before['region_id'] or ''),
+        'nickname': before['nickname'] or '', 'fax': before['fax'] or '',
+        'contact': before['contact'] or '', 'address': before['address'] or '',
+        'contact_note': before['contact_note'] or '',
+        'phone': '02-000-1111',
+    }
+    assert c.post(f'/customer/{code}/reassign', data=payload).status_code == 302
+
+    conn = sqlite3.connect(tmp_db)
+    oj = conn.execute(
+        "SELECT contact_orig_json FROM customers WHERE code=?", (code,)).fetchone()[0]
+    conn.close()
+    assert oj, 'the first contact edit must freeze a snapshot'
+    assert json.loads(oj)['phone'] == before_phone, 'must freeze the PRE-edit value'
+
+    # A second edit must NOT clobber it (COALESCE).
+    payload['phone'] = '02-222-3333'
+    c.post(f'/customer/{code}/reassign', data=payload)
+    conn = sqlite3.connect(tmp_db)
+    oj2 = conn.execute(
+        "SELECT contact_orig_json FROM customers WHERE code=?", (code,)).fetchone()[0]
+    conn.close()
+    assert oj2 == oj, 'an existing snapshot must never be overwritten'
+
+
+def test_salesperson_only_edit_does_not_freeze_a_snapshot(tmp_db):
+    """The snapshot exists to protect CONTACT data; a rep change must not
+    consume the one-shot freeze with values nobody edited."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute(
+        "SELECT code FROM customers WHERE contact_orig_json IS NULL LIMIT 1").fetchone()
+    conn.close()
+    code = row[0]
+    before = _customer_row(tmp_db, code)
+    c = _client(tmp_db, role='admin')
+    c.post(f'/customer/{code}/reassign', data={
+        'salesperson': '00',
+        'region_id': str(before['region_id'] or ''),
+        'nickname': before['nickname'] or '', 'phone': before['phone'] or '',
+        'fax': before['fax'] or '', 'contact': before['contact'] or '',
+        'address': before['address'] or '', 'contact_note': before['contact_note'] or '',
+    })
+    conn = sqlite3.connect(tmp_db)
+    oj = conn.execute(
+        "SELECT contact_orig_json FROM customers WHERE code=?", (code,)).fetchone()[0]
+    conn.close()
+    assert oj is None
+
+
+# ── B: the change-history card ─────────────────────────────────────────────
+
+def test_change_history_card_shows_the_edit_and_is_manager_gated(tmp_db):
+    before = _customer_row(tmp_db, '11ค09')
+    c = _client(tmp_db, role='admin')
+    c.post('/customer/11ค09/reassign', data={
+        'salesperson': before['salesperson'] or '',
+        'region_id': str(before['region_id'] or ''),
+        'nickname': before['nickname'] or '', 'phone': '02-777-6666',
+        'fax': before['fax'] or '', 'contact': before['contact'] or '',
+        'address': before['address'] or '', 'contact_note': before['contact_note'] or '',
+    })
+    html = c.get(f'/customer/code/{quote("11ค09")}').data.decode()
+    assert 'id="customerAuditHistory"' in html
+    assert '02-777-6666' in html, 'the new value must appear in the history'
+    assert (before['phone'] or '') in html, 'the old value must appear too'
+
+    staff = _client(tmp_db, role='staff').get(
+        f'/customer/code/{quote("11ค09")}').data.decode()
+    assert 'id="customerAuditHistory"' not in staff
+
+
+def test_change_history_never_claims_who_made_the_edit(tmp_db):
+    """audit_log.user is NULL on all 3,238 customers rows (SQL triggers cannot
+    see the session user), so the card must not grow a 'by whom' column."""
+    html = _client(tmp_db, role='admin').get(
+        f'/customer/code/{quote("11ค09")}').data.decode()
+    import re
+    card = re.search(r'id="customerAuditHistory".*?</div>\s*</div>', html, re.S)
+    assert card, 'history card not found'
+    assert '<th>โดย' not in card.group(0) and '>ผู้แก้ไข<' not in card.group(0)

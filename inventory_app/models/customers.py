@@ -551,16 +551,31 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
         contact_changed = bool(changed_fields)
 
         if contact_changed:
+            # Freeze the pre-edit values ONCE, so the state before the first
+            # manual edit is always recoverable even if audit_log is ever
+            # pruned. COALESCE means an existing snapshot is never clobbered.
+            # ⚠ This is "before the first MANUAL edit", not "as Express sent
+            # it" — if the normalizer already rewrote the row, its output is
+            # what gets frozen. Same 4-key shape the import and the review
+            # page write, so any reader sees one format. 1,674 of 2,665 rows
+            # have no snapshot at all today.
+            orig_json = json.dumps({
+                'name':    current['name'],
+                'phone':   current['phone'] or '',
+                'contact': current['contact'] or '',
+                'address': current['address'] or '',
+            }, ensure_ascii=False)
             conn.execute("""
                 UPDATE customers
                    SET salesperson = ?, region_id = ?,
                        nickname = ?, phone = ?, fax = ?, contact = ?,
                        address = ?, contact_note = ?,
+                       contact_orig_json = COALESCE(contact_orig_json, ?),
                        contact_normalized_at = datetime('now','localtime'),
                        contact_normalized_by = ?
                  WHERE code = ?
             """, (sp, rid, *[new_contact[k] for k in _CONTACT_FIELDS],
-                  username, customer_code))
+                  orig_json, username, customer_code))
         else:
             conn.execute(
                 "UPDATE customers SET salesperson = ?, region_id = ? WHERE code = ?",
@@ -589,6 +604,70 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
         return {'ok': True, 'error': None, 'contact_changed': contact_changed}
     finally:
         conn.close()
+
+
+_AUDIT_FIELD_LABEL = {
+    'name': 'ชื่อในทะเบียน', 'nickname': 'ชื่อเล่น', 'salesperson': 'เซลส์',
+    'region_id': 'เขตการขาย', 'zone': 'โซน', 'address': 'ที่อยู่',
+    'phone': 'โทรศัพท์', 'fax': 'แฟกซ์', 'contact': 'ผู้ติดต่อ',
+    'contact_note': 'หมายเหตุ', 'tax_id': 'Tax ID', 'credit_days': 'เครดิต (วัน)',
+    'lat': 'พิกัด lat', 'lng': 'พิกัด lng',
+}
+
+
+def get_customer_audit_history(customer_code, limit=15):
+    """Recent changes to this customer's master row, newest first.
+
+    `audit_customers_update` already records `{field: [old, new]}` for every
+    change (2,050 UPDATE rows as of 2026-08-01) — but NO page in the app read
+    it, so the trail was only reachable by opening SQL. This makes it visible
+    where the edits happen.
+
+    ⚠ `audit_log.user` is NULL on every customers row (1,188 INSERT + 2,050
+    UPDATE, checked 2026-08-01): the trigger is SQL-level and cannot see the
+    logged-in user. So this answers "when + what", never "who" — the template
+    must not imply otherwise.
+
+    ⚠ Joined on `customers.rowid`, which is what the trigger stores. That is
+    an implicit rowid (the PK is TEXT `code`), so a VACUUM could renumber it
+    and re-point historical rows. Pre-existing property of the audit table,
+    not introduced here; all 3,238 rows resolve today.
+
+    Returns [{created_at, action, changes: [{field, label, old, new}]}].
+    """
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT a.created_at, a.action, a.changed_fields
+          FROM audit_log a
+         WHERE a.table_name = 'customers'
+           AND a.row_id = (SELECT rowid FROM customers WHERE code = ?)
+         ORDER BY a.id DESC
+         LIMIT ?
+    """, (customer_code, limit)).fetchall()
+    conn.close()
+
+    out = []
+    for r in rows:
+        try:
+            parsed = json.loads(r['changed_fields'] or '{}')
+        except (ValueError, TypeError):
+            parsed = {}
+        changes = []
+        for field, val in parsed.items():
+            # UPDATE rows carry [old, new]; INSERT rows carry a bare value.
+            if isinstance(val, list) and len(val) == 2:
+                old, new = val
+            else:
+                old, new = None, val
+            changes.append({
+                'field': field,
+                'label': _AUDIT_FIELD_LABEL.get(field, field),
+                'old': '' if old is None else old,
+                'new': '' if new is None else new,
+            })
+        out.append({'created_at': r['created_at'], 'action': r['action'],
+                    'changes': changes})
+    return out
 
 
 def bulk_reassign_customers(customer_codes, salesperson_code, region_id, mode='both'):

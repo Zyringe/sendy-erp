@@ -76,6 +76,7 @@ def customer_detail(customer_code):
     master = models.get_customer_master(customer_code)
     return render_template('customer_summary.html',
                            data=data,
+                           audit_history=models.get_customer_audit_history(customer_code),
                            unpaid_bills=unpaid_bills, unpaid_total=unpaid_total,
                            unpaid_snapshot_date=unpaid_snapshot_date,
                            master=master,
