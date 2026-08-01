@@ -134,6 +134,156 @@ def get_customer_summary(customer, date_from=None, date_to=None):
     }
 
 
+def resolve_customer_codes(name):
+    """Bill names can span >1 physical company (BUG 2, 2026-08 grilling —
+    e.g. 'ทรัพย์ทวี' is both 43ท013 'ร้าน ทรัพย์ทวี' and 01พ14 'บจก. พงศ์ทรัพย์ทวี').
+    Callers must never silently pick one — this just reports what's there.
+    """
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT DISTINCT customer_code
+        FROM sales_transactions
+        WHERE customer = ? AND customer_code IS NOT NULL
+        ORDER BY customer_code
+    """, [name]).fetchall()
+    conn.close()
+    return [r['customer_code'] for r in rows]
+
+
+def get_customer_summary_by_code(customer_code, date_from=None, date_to=None):
+    """Code-keyed counterpart to get_customer_summary().
+
+    Unlike get_customer_summary (keyed on the bill name in sales_transactions),
+    this resolves the master row DIRECTLY from `customers` by code, so the
+    2,390 customers with no sales_transactions rows still render, and the two
+    companies that share a bill name (BUG 2) never merge into one page.
+    Returns the same dict shape; `data['customer']` is the bill name when one
+    exists for this code, else the master name.
+    """
+    conn = get_connection()
+    conds = ['customer_code = ?']
+    params = [customer_code]
+    if date_from:
+        conds.append('date_iso >= ?'); params.append(date_from)
+    if date_to:
+        conds.append('date_iso <= ?'); params.append(date_to)
+    conds.append(sales_filters.not_a_sale_clause())
+    where = ' AND '.join(conds)
+
+    summary = conn.execute(f"""
+        SELECT COUNT(DISTINCT doc_no) AS doc_count,
+               COALESCE(SUM(net), 0)  AS total_net,
+               COALESCE(SUM(qty), 0)  AS total_qty,
+               MIN(date_iso)          AS first_date,
+               MAX(date_iso)          AS last_date
+        FROM sales_transactions
+        WHERE {where}
+    """, params).fetchone()
+
+    top_products = conn.execute(f"""
+        SELECT COALESCE(p.product_name, s.product_name_raw) AS name,
+               p.id AS product_id,
+               s.unit,
+               SUM(s.qty)  AS total_qty,
+               SUM(s.net)  AS total_net,
+               COUNT(DISTINCT s.doc_no) AS doc_count
+        FROM sales_transactions s
+        LEFT JOIN products p ON p.id = s.product_id
+        WHERE {where}
+        GROUP BY s.product_id, s.product_name_raw
+        ORDER BY total_net DESC
+        LIMIT 20
+    """, params).fetchall()
+
+    monthly = conn.execute(f"""
+        SELECT strftime('%Y-%m', date_iso) AS month,
+               COUNT(DISTINCT doc_no) AS doc_count,
+               SUM(net) AS total_net
+        FROM sales_transactions
+        WHERE {where}
+        GROUP BY month
+        ORDER BY month
+    """, params).fetchall()
+
+    docs = conn.execute(f"""
+        SELECT date_iso, doc_no,
+               COUNT(*) AS line_count,
+               SUM(qty) AS total_qty,
+               SUM(net) AS total_net
+        FROM sales_transactions
+        WHERE {where}
+        GROUP BY doc_no
+        ORDER BY date_iso DESC, doc_no
+        LIMIT 200
+    """, params).fetchall()
+
+    # Bill (short) name for THIS code specifically — most recent sale wins.
+    # This is what distinguishes ทรัพย์ทวี's two codes; a name-keyed lookup
+    # cannot (BUG 2).
+    bill_name_row = conn.execute("""
+        SELECT customer FROM sales_transactions
+        WHERE customer_code = ? AND customer IS NOT NULL
+        ORDER BY date_iso DESC LIMIT 1
+    """, [customer_code]).fetchone()
+    bill_name = bill_name_row['customer'] if bill_name_row else None
+
+    # Master row is the anchor — resolves even when this code has zero sales.
+    master_row = conn.execute("""
+        SELECT c.code AS master_code, c.name AS master_name,
+               c.salesperson AS sp_code, c.region_id,
+               sp.name AS sp_name, sp.is_active AS sp_active,
+               r.code AS region_code, r.name_th AS region_name
+        FROM customers c
+        LEFT JOIN salespersons sp ON sp.code = c.salesperson
+        LEFT JOIN regions r ON r.id = c.region_id
+        WHERE c.code = ?
+    """, [customer_code]).fetchone()
+
+    customer_info = None
+    salesperson_code = None
+    salesperson_display = None
+    salesperson_orphan = False
+    region_code = None
+    region_display = None
+    display_name = bill_name or customer_code
+
+    if master_row:
+        row = conn.execute(
+            "SELECT * FROM customers WHERE code=?", [customer_code]
+        ).fetchone()
+        if row:
+            customer_info = dict(row)
+        if not bill_name:
+            display_name = master_row['master_name']
+        salesperson_code = master_row['sp_code']
+        if salesperson_code:
+            if master_row['sp_name']:
+                salesperson_display = master_row['sp_name']
+            else:
+                salesperson_display = salesperson_code
+                salesperson_orphan = True
+        region_code = master_row['region_code']
+        region_display = master_row['region_name'] or master_row['region_code']
+
+    conn.close()
+    return {
+        'customer': display_name,
+        'customer_code': customer_code,
+        'region': region_display,
+        'region_code': region_code,
+        'salesperson': salesperson_display,
+        'salesperson_code': salesperson_code,
+        'salesperson_orphan': salesperson_orphan,
+        'customer_info': customer_info,
+        'date_from': date_from,
+        'date_to': date_to,
+        'summary': dict(summary),
+        'top_products': [dict(r) for r in top_products],
+        'monthly': [dict(r) for r in monthly],
+        'docs': [dict(r) for r in docs],
+    }
+
+
 def get_regions():
     """Region list for filter dropdowns. Returns [{id, code, name_th}].
     Driven by the regions master (migration 010), not the legacy

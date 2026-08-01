@@ -79,7 +79,9 @@ def test_customer_summary_route_shows_snapshot_date(tmp_db):
     customer_name = row[0]
 
     c = _admin(tmp_db)
-    r = c.get(f'/customer/{quote(customer_name)}')
+    # /customer/<name> is a redirect shim to the code-keyed page (Phase 1,
+    # projects/customer-edit-card/plan.md) — follow it to reach the render.
+    r = c.get(f'/customer/{quote(customer_name)}', follow_redirects=True)
     assert r.status_code == 200
     body = r.data.decode()
     assert f'ณ {snap}' in body

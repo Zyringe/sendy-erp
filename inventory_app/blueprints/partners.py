@@ -55,15 +55,15 @@ def customer_list():
                            regions=regions)
 
 
-@bp_partners.route('/customer/<path:customer_name>')
-def customer_summary(customer_name):
+@bp_partners.route('/customer/code/<customer_code>')
+def customer_detail(customer_code):
     date_from = request.args.get('date_from') or None
     date_to   = request.args.get('date_to')   or None
-    data = models.get_customer_summary(customer_name, date_from, date_to)
-    unpaid_bills, unpaid_snapshot_date = models.get_customer_unpaid_bills(customer_name)
+    data = models.get_customer_summary_by_code(customer_code, date_from, date_to)
+    unpaid_bills, unpaid_snapshot_date = models.get_customer_unpaid_bills_by_code(customer_code)
     unpaid_total = sum(b['total_net'] or 0 for b in unpaid_bills)
 
-    master = models.get_customer_master(data['customer_code']) if data.get('customer_code') else None
+    master = models.get_customer_master(customer_code)
     return render_template('customer_summary.html',
                            data=data,
                            unpaid_bills=unpaid_bills, unpaid_total=unpaid_total,
@@ -72,6 +72,31 @@ def customer_summary(customer_name):
                            salespersons=models.get_active_salespersons(),
                            regions=models.get_all_regions(),
                            orphan_codes=models.get_orphan_salesperson_codes())
+
+
+@bp_partners.route('/customer/<path:customer_name>')
+def customer_summary(customer_name):
+    """Shim: `/customer/<name>` is keyed on the BILL name, which is ambiguous
+    (BUG 2 — one bill name can span >1 physical company, e.g. ทรัพย์ทวี).
+    Resolve to the code-keyed page instead of rendering here directly.
+    """
+    date_from = request.args.get('date_from') or None
+    date_to   = request.args.get('date_to')   or None
+    codes = models.resolve_customer_codes(customer_name)
+
+    if len(codes) == 1:
+        redirect_args = {'customer_code': codes[0]}
+        if date_from:
+            redirect_args['date_from'] = date_from
+        if date_to:
+            redirect_args['date_to'] = date_to
+        return redirect(url_for('partners.customer_detail', **redirect_args))
+
+    if len(codes) > 1:
+        flash(f'ชื่อ "{customer_name}" มี {len(codes)} รหัสลูกค้า เลือกรายที่ต้องการ', 'warning')
+    else:
+        flash(f'ไม่พบรหัสลูกค้าสำหรับ "{customer_name}"', 'warning')
+    return redirect(url_for('partners.customer_list', q=customer_name))
 
 
 @bp_partners.route('/customer/<customer_code>/reassign', methods=['POST'])
@@ -85,12 +110,10 @@ def customer_reassign(customer_code):
     else:
         flash(f'ไม่สามารถบันทึก: {result["error"]}', 'danger')
 
-    # Use the canonical name from the master record so the post-redirect
-    # destination can never be steered by a hostile form value.
-    master = models.get_customer_master(customer_code)
-    if master:
-        return redirect(url_for('partners.customer_summary', customer_name=master['name']))
-    return redirect(url_for('partners.customer_list'))
+    # Redirect by CODE — customer_code is already the trusted route param
+    # (not a hostile form value), and the code-keyed page can never diverge
+    # from it the way the old master-NAME redirect could (BUG 1).
+    return redirect(url_for('partners.customer_detail', customer_code=customer_code))
 
 
 @bp_partners.route('/customers/bulk-reassign', methods=['GET', 'POST'])

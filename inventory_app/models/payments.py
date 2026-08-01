@@ -535,3 +535,39 @@ def get_customer_unpaid_bills(customer_name):
     """, [customer_name, customer_name]).fetchall()
     conn.close()
     return rows, snapshot_date
+
+
+def get_customer_unpaid_bills_by_code(customer_code):
+    """Code-keyed counterpart to get_customer_unpaid_bills().
+
+    Matches express_ar_outstanding.customer_code directly instead of by name,
+    so two companies that share a bill name (BUG 2, e.g. ทรัพย์ทวี = 43ท013 +
+    01พ14) never merge each other's outstanding bills. Same return shape.
+    """
+    conn = get_connection()
+    snapshot_date = conn.execute(
+        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding WHERE entity = 'BSN'"
+    ).fetchone()['d']
+    rows = conn.execute("""
+        SELECT
+            ao.doc_no                    AS doc_base,
+            ao.doc_date_iso              AS bill_date,
+            COALESCE(c.name, ao.customer_name) AS customer,
+            ao.customer_code,
+            NULL                         AS vat_type,    -- placeholder; Express totals are already as-billed
+            ao.outstanding_amount        AS total_net,
+            ao.bill_amount,
+            ao.paid_amount,
+            ao.is_anomalous,
+            ao.has_warning
+        FROM express_ar_outstanding ao
+        LEFT JOIN customers c ON c.code = ao.customer_code
+        WHERE ao.entity = 'BSN'
+          AND ao.snapshot_date_iso = (SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding WHERE entity = 'BSN')
+          AND ao.doc_date_iso >= '2024-01-01'
+          AND ao.customer_code = ?
+          AND ao.outstanding_amount > 0
+        ORDER BY ao.doc_date_iso DESC
+    """, [customer_code]).fetchall()
+    conn.close()
+    return rows, snapshot_date
