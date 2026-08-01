@@ -279,13 +279,19 @@ def get_regions():
     return [dict(r) for r in rows]
 
 
-def get_customers(search=None, region=None, region_id=None, page=1, per_page=50):
+def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
+                   include_billless=False):
     """Customer list backed by customers master + salespersons + regions.
 
     Filter precedence: region_id (FK, new) > region (text, legacy URL).
     Returns customer rows with display fields:
         salesperson  → name from salespersons master, or raw code if orphan
         region       → name_th from regions, or code as fallback
+
+    `include_billless=True` unions in `customers` master rows with NO
+    sales_transactions row at all (doc_count 0, total_net 0, last_date NULL)
+    — 2,390 of 2,665 customers, invisible here otherwise. Default False keeps
+    today's billing-only, 275-row view unchanged.
     """
     conn = get_connection()
     conds = []
@@ -317,37 +323,75 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50)
     conds.append(sales_filters.not_a_sale_clause('s'))
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
 
-    sql = f"""
-        SELECT s.customer, s.customer_code,
-               COALESCE(r.name_th, r.code)              AS region,
-               r.code                                   AS region_code,
-               c.region_id,
-               COALESCE(sp.name, c.salesperson)         AS salesperson,
-               c.salesperson                            AS salesperson_code,
+    billing_sql = f"""
+        SELECT s.customer                                AS customer,
+               s.customer_code                            AS customer_code,
+               COALESCE(r.name_th, r.code)                AS region,
+               r.code                                     AS region_code,
+               c.region_id                                AS region_id,
+               COALESCE(sp.name, c.salesperson)           AS salesperson,
+               c.salesperson                              AS salesperson_code,
                (c.salesperson IS NOT NULL
                   AND c.salesperson != ''
-                  AND sp.code IS NULL)                  AS salesperson_orphan,
-               COUNT(DISTINCT s.doc_no)                 AS doc_count,
-               COALESCE(SUM(s.net), 0)                  AS total_net,
-               MAX(s.date_iso)                          AS last_date,
-               (c.code IS NULL)                         AS missing_master
+                  AND sp.code IS NULL)                    AS salesperson_orphan,
+               COUNT(DISTINCT s.doc_no)                   AS doc_count,
+               COALESCE(SUM(s.net), 0)                    AS total_net,
+               MAX(s.date_iso)                            AS last_date,
+               (c.code IS NULL)                           AS missing_master
         FROM sales_transactions s
         LEFT JOIN customers     c  ON c.code  = s.customer_code
         LEFT JOIN salespersons  sp ON sp.code = c.salesperson
         LEFT JOIN regions       r  ON r.id    = c.region_id
         {where}
         GROUP BY s.customer_code
-        ORDER BY s.customer
+    """
+    union_parts = [billing_sql]
+
+    if include_billless:
+        bl_conds = ["NOT EXISTS (SELECT 1 FROM sales_transactions s2 "
+                    "WHERE s2.customer_code = c.code)"]
+        bl_params = []
+        if search:
+            bl_conds.append("(c.name LIKE ? OR c.code LIKE ?)")
+            bl_params += [f"%{search}%", f"%{search}%"]
+        if rid_int is not None:
+            bl_conds.append("c.region_id = ?")
+            bl_params.append(rid_int)
+        bl_where = "WHERE " + " AND ".join(bl_conds)
+
+        billless_sql = f"""
+            SELECT c.name                                 AS customer,
+                   c.code                                  AS customer_code,
+                   COALESCE(r.name_th, r.code)              AS region,
+                   r.code                                   AS region_code,
+                   c.region_id                              AS region_id,
+                   COALESCE(sp.name, c.salesperson)         AS salesperson,
+                   c.salesperson                            AS salesperson_code,
+                   (c.salesperson IS NOT NULL
+                      AND c.salesperson != ''
+                      AND sp.code IS NULL)                  AS salesperson_orphan,
+                   0                                         AS doc_count,
+                   0                                         AS total_net,
+                   NULL                                      AS last_date,
+                   0                                         AS missing_master
+            FROM customers c
+            LEFT JOIN salespersons sp ON sp.code = c.salesperson
+            LEFT JOIN regions      r  ON r.id    = c.region_id
+            {bl_where}
+        """
+        union_parts.append(billless_sql)
+        params = params + bl_params
+
+    union_sql = "\nUNION ALL\n".join(union_parts)
+
+    sql = f"""
+        SELECT * FROM ({union_sql})
+        ORDER BY customer
         LIMIT ? OFFSET ?
     """
     rows = conn.execute(sql, params + [per_page, (page - 1) * per_page]).fetchall()
 
-    count_sql = f"""
-        SELECT COUNT(DISTINCT s.customer_code)
-        FROM sales_transactions s
-        LEFT JOIN customers c ON c.code = s.customer_code
-        {where}
-    """
+    count_sql = f"SELECT COUNT(*) FROM ({union_sql})"
     total = conn.execute(count_sql, params).fetchone()[0]
     conn.close()
     return [dict(r) for r in rows], total
@@ -617,53 +661,45 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
         conn.close()
 
 
-def bulk_reassign_customers(customer_codes, salesperson_code, region_id, mode='both'):
-    if mode not in ('salesperson', 'region', 'both'):
-        return {'ok': False, 'updated': 0, 'error': 'mode ไม่ถูกต้อง'}
+def bulk_reassign_customers(customer_codes, region_id, salesperson_code=None):
+    """Region-only bulk reassignment of the customers master.
+
+    Put's decision (plan Phase 3): no UI may move `customers.salesperson` for
+    many customers in one click — commission rules (models/commission.py) do
+    NOT follow a master-record salesperson change, and 472 customers carry an
+    active commission rule perfectly aligned with their master today. A bulk
+    click that silently drifted even a few of those would be very hard to
+    notice. A request that still carries a salesperson target (e.g. a stale
+    page rendered before this deploy) is REJECTED, not silently dropped —
+    same "missing/extra is not clear, ask again" spirit as Phase 2's
+    customer_reassign.
+    """
+    if (salesperson_code or '').strip():
+        return {'ok': False, 'updated': 0,
+                'error': 'เปลี่ยน salesperson แบบกลุ่มถูกปิดแล้ว — คอมมิชชั่นไม่ขยับตาม '
+                         'master record; แก้ทีละรายที่หน้าลูกค้า หรือใช้ /commission/reassign'}
     if not customer_codes:
         return {'ok': False, 'updated': 0, 'error': 'ไม่มีลูกค้าที่เลือก'}
     if len(customer_codes) > _BULK_MAX:
         return {'ok': False, 'updated': 0,
                 'error': f'เลือกได้สูงสุด {_BULK_MAX} ลูกค้า (เลือก {len(customer_codes)})'}
 
-    sp = (salesperson_code or '').strip() or None
     rid = region_id if region_id not in ('', None, 'null') else None
-    if rid is not None:
-        try:
-            rid = int(rid)
-        except (ValueError, TypeError):
-            return {'ok': False, 'updated': 0, 'error': 'region_id ไม่ถูกต้อง'}
-
-    # Block silent mass-NULL clearing: when a column is in scope it must have a
-    # non-empty target. (Future feature can add an explicit "clear" mode.)
-    if mode in ('salesperson', 'both') and sp is None:
-        return {'ok': False, 'updated': 0, 'error': 'กรุณาเลือก salesperson ปลายทาง'}
-    if mode in ('region', 'both') and rid is None:
+    if rid is None:
         return {'ok': False, 'updated': 0, 'error': 'กรุณาเลือก region ปลายทาง'}
+    try:
+        rid = int(rid)
+    except (ValueError, TypeError):
+        return {'ok': False, 'updated': 0, 'error': 'region_id ไม่ถูกต้อง'}
 
     conn = get_connection()
     try:
-        if mode in ('salesperson', 'both'):
-            if not conn.execute(
-                "SELECT 1 FROM salespersons WHERE code = ? AND is_active = 1", (sp,)
-            ).fetchone():
-                return {'ok': False, 'updated': 0,
-                        'error': f'ไม่พบ salesperson code "{sp}" (หรือ inactive)'}
-        if mode in ('region', 'both'):
-            if not conn.execute("SELECT 1 FROM regions WHERE id = ?", (rid,)).fetchone():
-                return {'ok': False, 'updated': 0, 'error': f'ไม่พบ region id {rid}'}
+        if not conn.execute("SELECT 1 FROM regions WHERE id = ?", (rid,)).fetchone():
+            return {'ok': False, 'updated': 0, 'error': f'ไม่พบ region id {rid}'}
 
         placeholders = ','.join(['?'] * len(customer_codes))
-        if mode == 'salesperson':
-            sql = f"UPDATE customers SET salesperson = ? WHERE code IN ({placeholders})"
-            params = [sp, *customer_codes]
-        elif mode == 'region':
-            sql = f"UPDATE customers SET region_id = ? WHERE code IN ({placeholders})"
-            params = [rid, *customer_codes]
-        else:
-            sql = (f"UPDATE customers SET salesperson = ?, region_id = ? "
-                   f"WHERE code IN ({placeholders})")
-            params = [sp, rid, *customer_codes]
+        sql = f"UPDATE customers SET region_id = ? WHERE code IN ({placeholders})"
+        params = [rid, *customer_codes]
 
         with conn:
             cur = conn.execute(sql, params)

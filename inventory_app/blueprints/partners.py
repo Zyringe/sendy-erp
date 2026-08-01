@@ -21,11 +21,12 @@ bp_partners = Blueprint('partners', __name__)
 
 @bp_partners.route('/customers')
 def customer_list():
-    search    = request.args.get('q', '').strip()
-    region_id = request.args.get('region_id', '').strip()
-    region    = request.args.get('region', '').strip()  # legacy bookmarks
-    page      = request.args.get('page', 1, type=int) or 1
-    per_page  = current_app.config['ITEMS_PER_PAGE']
+    search           = request.args.get('q', '').strip()
+    region_id        = request.args.get('region_id', '').strip()
+    region           = request.args.get('region', '').strip()  # legacy bookmarks
+    include_billless = request.args.get('include_billless') == '1'
+    page             = request.args.get('page', 1, type=int) or 1
+    per_page         = current_app.config['ITEMS_PER_PAGE']
 
     # Legacy ?region=<text>: warn the user when it doesn't resolve so we don't
     # silently show all customers and look like the filter is broken.
@@ -45,6 +46,7 @@ def customer_list():
         region=region or None,
         region_id=region_id or None,
         page=page, per_page=per_page,
+        include_billless=include_billless,
     )
     pages   = (total + per_page - 1) // per_page
     regions = models.get_regions()
@@ -52,6 +54,7 @@ def customer_list():
                            customers=customers, total=total,
                            page=page, pages=pages,
                            search=search, region=region, region_id=region_id,
+                           include_billless=include_billless,
                            regions=regions)
 
 
@@ -161,11 +164,14 @@ def customer_bulk_reassign():
 
     if request.method == 'POST':
         codes       = request.form.getlist('customer_codes')
-        salesperson = request.form.get('salesperson', '').strip()
         region_id   = request.form.get('region_id', '').strip()
-        mode        = request.form.get('mode', 'salesperson')
+        # Still read `salesperson` (no longer rendered by the template) so a
+        # page loaded before this deploy can be REJECTED with a clear error
+        # rather than having its salesperson choice silently dropped.
+        salesperson = request.form.get('salesperson', '').strip()
 
-        result = models.bulk_reassign_customers(codes, salesperson, region_id, mode=mode)
+        result = models.bulk_reassign_customers(codes, region_id,
+                                                 salesperson_code=salesperson)
         if result['ok']:
             flash(f'อัปเดต {result["updated"]} ลูกค้าเรียบร้อย (master record)', 'success')
         else:

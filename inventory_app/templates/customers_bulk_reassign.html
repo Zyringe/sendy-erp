@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
-{% block title %}Bulk Reassign – ลูกค้า{% endblock %}
-{% block page_title %}เปลี่ยน salesperson / region แบบกลุ่ม{% endblock %}
+{% block title %}กำหนดเขตการขายหลายราย – ลูกค้า{% endblock %}
+{% block page_title %}กำหนดเขตการขายหลายราย{% endblock %}
 
 {% block content %}
 
@@ -89,15 +89,6 @@
     <div class="card-body py-3">
       <div class="row g-2 align-items-end">
         <div class="col-md-3">
-          <label class="form-label small mb-1">เปลี่ยนเป็น salesperson</label>
-          <select name="salesperson" class="form-select form-select-sm">
-            <option value="">— ไม่กำหนด —</option>
-            {% for sp in salespersons %}
-            <option value="{{ sp.code }}">{{ sp.code }} — {{ sp.name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="col-md-3">
           <label class="form-label small mb-1">เปลี่ยนเป็น region</label>
           <select name="region_id" class="form-select form-select-sm">
             <option value="">— ไม่กำหนด —</option>
@@ -106,14 +97,6 @@
               {{ r.code }}{% if r.name_th %} — {{ r.name_th }}{% endif %}
             </option>
             {% endfor %}
-          </select>
-        </div>
-        <div class="col-md-3">
-          <label class="form-label small mb-1">โหมด</label>
-          <select name="mode" class="form-select form-select-sm">
-            <option value="salesperson">เฉพาะ salesperson</option>
-            <option value="region">เฉพาะ region</option>
-            <option value="both">ทั้งคู่</option>
           </select>
         </div>
         <div class="col-auto">
@@ -229,7 +212,7 @@
 function confirmBulk() {
   var n = document.querySelectorAll('.row-cb:checked').length;
   if (n === 0) { alert('กรุณาเลือกลูกค้าอย่างน้อย 1 ราย'); return false; }
-  return confirm('ยืนยันเปลี่ยน salesperson/region ของ ' + n + ' ลูกค้า?');
+  return confirm('ยืนยันเปลี่ยนเขตการขายของ ' + n + ' ลูกค้า?');
 }
 </script>
 
