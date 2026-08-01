@@ -44,14 +44,22 @@ def _seed(conn):
     conn.commit()
 
 
-def _purchase(conn, doc, pid, qty, unit):
+def _purchase(conn, doc, pid, qty, unit, line_seq=1):
+    """line_seq defaults to 1, matching the column default.
+
+    Pass a distinct value when seeding TWO lines of one document for the same
+    bsn_code — real Express purchase docs number their lines (mig 091), and
+    mig 148's partial unique index on (doc_no, bsn_code, line_seq) now enforces
+    that. Live example RR6700090: one bsn_code, units อน and หล, line_seq 1
+    and 2.
+    """
     conn.execute(
         "INSERT INTO purchase_transactions"
-        " (batch_id,date_iso,doc_no,doc_base,product_id,bsn_code,product_name_raw,"
-        "  supplier,supplier_code,qty,unit,unit_price,vat_type,discount,total,net,"
-        "  synced_to_stock)"
-        " VALUES (NULL,'2025-01-01',?,?,?,'C1','raw','S','S1',?,?,10,0,0,0,0,0)",
-        (doc, doc, pid, qty, unit))
+        " (batch_id,date_iso,doc_no,doc_base,product_id,bsn_code,line_seq,"
+        "  product_name_raw,supplier,supplier_code,qty,unit,unit_price,vat_type,"
+        "  discount,total,net,synced_to_stock)"
+        " VALUES (NULL,'2025-01-01',?,?,?,'C1',?,'raw','S','S1',?,?,10,0,0,0,0,0)",
+        (doc, doc, pid, line_seq, qty, unit))
 
 
 def _mkt_sale(conn, doc, pid, qty, unit, customer='หน้าร้านS'):
@@ -102,8 +110,8 @@ def test_ratio_edit_keeps_the_other_unit_on_the_same_doc(empty_db_conn):
     """Defect 1: one purchase doc, same product, two units. Editing one
     unit's ratio must not delete the other unit's movement."""
     _seed(empty_db_conn)
-    _purchase(empty_db_conn, 'RR001', PID, 2, 'โหล')    # 2 × 12 = 24 อัน
-    _purchase(empty_db_conn, 'RR001', PID, 120, 'อัน')  # unit == unit_type → 120 อัน
+    _purchase(empty_db_conn, 'RR001', PID, 2, 'โหล', line_seq=1)    # 2 × 12 = 24 อัน
+    _purchase(empty_db_conn, 'RR001', PID, 120, 'อัน', line_seq=2)  # unit == unit_type → 120 อัน
     empty_db_conn.commit()
 
     models.save_unit_conversions([{'product_id': PID, 'bsn_unit': 'โหล', 'ratio': 12}])
