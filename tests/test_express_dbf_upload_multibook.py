@@ -103,6 +103,35 @@ def _upload(client, entries):
                        follow_redirects=False)
 
 
+def test_single_dataset_without_isinfo_stays_legacy_bsn(tmp_db, monkeypatch):
+    """The team's existing daily zip carries no ISINFO.DBF — it must keep
+    importing as the BSN book exactly like before this feature."""
+    called = []
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(
+        bsn.import_router, 'commit_express_dbf',
+        lambda *a, **k: (called.append(1) or {
+            t: {'imported': 0} for t in
+            ('sales', 'purchase', 'payments_in', 'payments_out')}
+            | {'credit_notes_ar': {'upserted': 0},
+               'credit_notes_ap': {'imported': 0}}))
+    r = _upload(_client(), [('data/ARTRN.DBF', b'x')])
+    assert r.status_code == 302
+    assert called == [1]
+
+
+def test_multi_dataset_with_missing_isinfo_rejects_all(tmp_db, monkeypatch):
+    kinds = {'bsn5657': 'bsn', 'xp5': 'missing'}
+    monkeypatch.setattr(bsn, '_classify_dataset',
+                        lambda d: kinds[os.path.basename(d)])
+    called = []
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: called.append(1))
+    r = _upload(_client(), [('bsn5657/ARTRN.DBF', b'x'), ('xp5/ARTRN.DBF', b'x')])
+    assert r.status_code == 302
+    assert called == []
+
+
 def test_unknown_dataset_rejects_whole_upload(tmp_db, monkeypatch):
     called = []
     monkeypatch.setattr(bsn, '_classify_dataset', lambda d: None)

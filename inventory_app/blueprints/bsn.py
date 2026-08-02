@@ -539,16 +539,22 @@ def _find_express_dbf_dataset_dirs(root):
 
 
 def _classify_dataset(dataset_dir):
-    """'bsn' | 'vat' | None from the dataset's own ISINFO identity —
-    registry-driven, never guessed from folder names."""
+    """'bsn' | 'vat' | 'missing' | None from the dataset's own ISINFO
+    identity — registry-driven, never guessed from folder names.
+
+    'missing' = no readable ISINFO.DBF. The team's existing daily zip has
+    never been required to carry ISINFO, so a SINGLE missing dataset falls
+    back to the legacy meaning ('bsn' — the route decides); an ISINFO that
+    IS present but matches no registered book is a hard None (wrong company
+    file — reject, never guess)."""
     import book_registry
     import express_dbf_source as eds
     try:
         rows = eds.open_table(dataset_dir, 'ISINFO')
     except Exception:
-        return None
+        return 'missing'
     if not rows:
-        return None
+        return 'missing'
     sig = {'THINAM': str(rows[0].get('THINAM') or '').strip(),
            'TAXID': str(rows[0].get('TAXID') or '').strip()}
     if sig == _BSN5657_SIGNATURE:
@@ -654,9 +660,20 @@ def express_dbf_upload():
 
         # Classify EVERY dataset before importing ANY (plan rev 3 P3):
         # an unknown or duplicated company file rejects the whole upload.
+        # Legacy compatibility: the daily zip predates ISINFO shipping — a
+        # SINGLE dataset without ISINFO keeps its historical meaning (the
+        # BSN5657 book). Multiple datasets must all self-identify.
         classified = {}
         for d in dataset_dirs:
             kind = _classify_dataset(d)
+            if kind == 'missing':
+                if len(dataset_dirs) == 1:
+                    kind = 'bsn'
+                else:
+                    flash('zip มีหลายชุดข้อมูลแต่บางชุดไม่มี ISINFO.DBF — '
+                          'แนบ ISINFO.DBF ของทุกชุด แล้วอัปโหลดใหม่ (ยกเลิกทั้งไฟล์)',
+                          'danger')
+                    return redirect(redirect_to)
             if kind is None:
                 flash('มีชุดข้อมูลที่ไม่รู้จักใน zip (ISINFO ไม่ตรงกับ BSN5657/xp5) '
                       '— ยกเลิกทั้งไฟล์ ไม่มีการนำเข้าใดๆ', 'danger')
