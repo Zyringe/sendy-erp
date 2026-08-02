@@ -203,37 +203,37 @@ def test_staff_cannot_resolve_a_system_alert(empty_db_conn, monkeypatch):
     assert _open(empty_db_conn) == [], "admin should be able to resolve"
 
 
-def test_ratio_replay_failure_alerts_and_closes(empty_db_conn, monkeypatch):
-    """The caller Codex found missing from the chain.
+def test_ratio_replay_failure_leaves_exactly_one_alert(empty_db_conn):
+    """The caller Codex found missing from the chain — now an INTEGRATION test.
 
-    update_unit_conversion_ratio commits the ratio change and rebuilt ledger,
-    then recalculates WACC on a SEPARATE connection. A failure there must still
-    (a) release that connection and (b) leave a durable alert — otherwise the
-    ratio edit's cost impact is invisible to Put once the request ends.
+    The earlier version monkeypatched recalculate_product_wacc to raise, which
+    bypassed the owning wrapper entirely and so could not see that ratio replay
+    recorded a SECOND alert on top of the wrapper's. `operation` is part of the
+    dedupe key, so the partial unique index did NOT collapse them.
 
-    Injected at the seam rather than by constructing a real identity failure:
-    the contract under test is the caller's rollback/close/alert ordering.
+    Note the failure has to be a duplicate business key rather than a dangling
+    link: update_unit_conversion_ratio deletes and REBUILDS the product's BSN
+    ledger from source, so a hand-broken link is simply repaired by the replay.
     """
     import models
     from models import bsn_sync
 
-    pid = empty_db_conn.execute(
-        "INSERT INTO products (product_name, unit_type) VALUES ('RatioReplay','ตัว')"
-    ).lastrowid
-    empty_db_conn.execute(
-        "INSERT INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
+    pid = _seed_product_min(empty_db_conn, 'Ratio Replay Integration')
     empty_db_conn.execute(
         "INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?, 'โหล', 12)",
         (pid,))
+    # Two source lines sharing (doc_no, bsn_code, line_seq). mig 148's partial
+    # unique index makes this impossible going forward; drop it to model a DB
+    # that predates the index, which is exactly what pre-flight must refuse.
+    empty_db_conn.execute("DROP INDEX IF EXISTS idx_purchase_txn_doc_code_line")
+    for _ in range(2):
+        empty_db_conn.execute(
+            "INSERT INTO purchase_transactions (date_iso, doc_no, product_id, bsn_code,"
+            " line_seq, product_name_raw, supplier, supplier_code, qty, unit,"
+            " unit_price, vat_type, discount, total, net, synced_to_stock)"
+            " VALUES ('2026-04-24','RRDUP',?,'DUP',1,'r','s','s1',2,'โหล',1.0,0,'',100,100,0)",
+            (pid,))
     empty_db_conn.commit()
-
-    boom = models.WaccIdentityError(
-        'linked purchase line no longer exists', product_id=pid,
-        reference_no='RRZ', source_bsn_code='Z1', source_line_seq=1)
-
-    def _raise(product_id, conn=None):
-        raise boom
-    monkeypatch.setattr(bsn_sync, 'recalculate_product_wacc', _raise)
 
     try:
         bsn_sync.update_unit_conversion_ratio(pid, 'โหล', 6)
@@ -242,9 +242,17 @@ def test_ratio_replay_failure_alerts_and_closes(empty_db_conn, monkeypatch):
         pass
 
     rows = _open(empty_db_conn)
-    assert len(rows) == 1, "ratio replay must leave a durable alert"
-    ctx = rows[0]['context_json'] or ''
-    assert 'ratio_replay' in ctx, ctx
+    assert len(rows) == 1, f"exactly one alert per incident, got {len(rows)}"
+    assert 'ratio_replay' in (rows[0]['context_json'] or ''), rows[0]['context_json']
+
+
+def _seed_product_min(conn, name):
+    pid = conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES (?, 'ตัว')",
+        (name,)).lastrowid
+    conn.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)",
+                 (pid,))
+    return pid
 
 
 def _broken_product(conn, name):

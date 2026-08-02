@@ -8,8 +8,26 @@ WHY THIS EXISTS
     flash-only failure is effectively SILENT to the one person who can fix it.
 
 OWNERSHIP RULE — read before wiring a new caller
-    recalculate_product_wacc NEVER writes an alert. Writing one is the CALLER's
-    job, and only AFTER it has rolled back and CLOSED the failed transaction:
+    The rule is "whoever OWNS the failed connection records the alert", exactly
+    once:
+
+      * recalculate_product_wacc(pid)            → it owns the connection, so
+                                                    IT alerts. Pass `operation`
+                                                    so the alert carries your
+                                                    business action, and do NOT
+                                                    record a second one after
+                                                    catching — `operation` is
+                                                    part of the dedupe key, so
+                                                    two alerts would survive.
+      * recalculate_product_wacc(pid, conn)      → YOU own conn, so YOU alert,
+                                                    after rolling back and
+                                                    closing it.
+
+    (This used to read "recalculate_product_wacc NEVER writes an alert". That
+    stopped being true once the owning wrapper gained its own cleanup, and the
+    stale wording is what produced duplicate ratio-replay alerts.)
+
+    The owner's sequence is always:
 
         WACC pre-flight fails
           → raise WaccIdentityError (carrying structured context)

@@ -29,9 +29,10 @@ class WaccIdentityError(Exception):
     the incomplete result is then written to products.cost_price. That is a
     silently wrong cost basis feeding margin, COGS, pricing and conversions.
 
-    Carries structured context so the caller (PR3) can persist an actionable
-    alert after it has rolled back and released its transaction. This class
-    NEVER writes an alert itself — see models/wacc.py's callers.
+    Carries structured context so whoever OWNS the failed connection can
+    persist an actionable alert after rolling back and releasing it. The
+    exception class never writes one itself; see the ownership rule in
+    models/system_alerts.py.
     """
 
     def __init__(self, reason, *, product_id=None, reference_no=None,
@@ -126,8 +127,14 @@ def preflight_batch(conn, product_ids, operation=None):
         preflight_source_identity(conn, pid, operation=operation)
 
 
-def recalculate_product_wacc(product_id, conn=None):
+def recalculate_product_wacc(product_id, conn=None, operation=None):
     """คำนวณ WACC ใหม่ทั้งหมดสำหรับสินค้า แล้วบันทึกลง product_cost_ledger
+
+    `operation` names the business action for the durable alert this function
+    records when it OWNS the connection (e.g. 'ratio_replay'). A caller that
+    lets this function own the connection must pass its operation here rather
+    than record its own alert afterwards — two alerts for one incident
+    otherwise, since `operation` is part of the dedupe key.
 
     When called WITHOUT a connection this owns one, and must therefore clean it
     up on failure as well as on success. The pre-flight below raises
@@ -160,7 +167,8 @@ def recalculate_product_wacc(product_id, conn=None):
         conn.rollback()
         conn.close()
         _closed = True
-        record_wacc_identity_alert(e, operation=e.operation or 'wacc_recalculate')
+        record_wacc_identity_alert(
+            e, operation=operation or e.operation or 'wacc_recalculate')
         raise
     except Exception:
         conn.rollback()
