@@ -18,6 +18,15 @@
 <a href="{{ back_url }}" class="btn btn-outline-secondary btn-touch mb-3">
   <i class="bi bi-arrow-left me-1"></i>รายการสินค้า
 </a>
+{% if active_book == 'vat' and xp5_mapping %}
+{# Cross-book badge: name+id only, deliberately NOT a link — /products/<id>
+   in VAT mode would resolve the id in the VAT book (unrelated namespace). #}
+<div class="alert alert-info py-2 small">
+  <i class="bi bi-link-45deg me-1"></i>
+  สินค้านี้ตรงกับสมุดปัจจุบัน: <strong>{{ xp5_mapping.product_name }}</strong>
+  (#{{ xp5_mapping.product_id }}{% if xp5_mapping.status == 'auto' %} · จับคู่อัตโนมัติ รอรีวิว{% endif %})
+</div>
+{% endif %}
 
 <div class="row g-3">
   <!-- Left column -->

@@ -337,6 +337,26 @@ def product_detail(product_id):
     brands = models.get_brands(conn=book_conn)
     current_brand = (models.get_brand(product['brand_id'], conn=book_conn)
                      if product['brand_id'] else None)
+    # Cross-book badge (VAT view only): this VAT-book product's xp5 code →
+    # main-DB xp5_product_mapping → main product. Two connections on purpose:
+    # the mapping is durable main-DB knowledge, the product is book data, and
+    # the cross-book key is the CODE — ids of the two books never join.
+    xp5_mapping = None
+    if book_registry.active_book() == 'vat':
+        code_row = book_conn.execute(
+            "SELECT bsn_code FROM product_code_mapping WHERE product_id = ?",
+            (product_id,)).fetchone()
+        if code_row:
+            main_conn = get_connection()
+            try:
+                xp5_mapping = main_conn.execute(
+                    "SELECT m.product_id, m.status, p.product_name "
+                    "FROM xp5_product_mapping m "
+                    "JOIN products p ON p.id = m.product_id "
+                    "WHERE m.xp5_code = ? AND m.status != 'ignored'",
+                    (code_row['bsn_code'],)).fetchone()
+            finally:
+                main_conn.close()
     # pack/unpack true-availability: extra units obtainable by running a conversion
     buildable = models.get_buildable([product_id], conn=book_conn).get(product_id)
     # "Back to filtered list": prefer the ?back= the list link carried; fall back
@@ -349,6 +369,7 @@ def product_detail(product_id):
     return render_template('products/detail.html',
                            product=product,
                            back_url=back_url,
+                           xp5_mapping=xp5_mapping,
                            buildable=buildable,
                            promotions=promotions,
                            active_promo=active_promo,

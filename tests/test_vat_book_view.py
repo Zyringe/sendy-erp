@@ -37,6 +37,8 @@ def vat_db(tmp_db):
     c.execute("INSERT INTO book_meta VALUES ('built_at', '2026-08-02T12:00:00')")
     c.execute("INSERT INTO products (id, product_name, unit_type) "
               "VALUES (901, 'สินค้าสมุดVAT ทดสอบ', 'ตัว')")
+    c.execute("INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id) "
+              "VALUES ('X901', 'สินค้าสมุดVAT ทดสอบ', 901)")
     c.execute("INSERT INTO sales_transactions "
               "(date_iso, doc_no, doc_base, product_id, bsn_code, product_name_raw,"
               " customer, qty, unit, unit_price, vat_type, total, net) "
@@ -82,6 +84,27 @@ def test_novat_default_unchanged_and_offers_toggle(vat_db):
     assert r.status_code == 200
     assert 'IV2600042' not in html            # vat row must NOT leak into main
     assert 'ดูสมุด VAT (xp5)' in html         # toggle offer (file exists)
+
+
+def test_vat_product_badge_from_main_mapping(vat_db, tmp_db):
+    """Dual-read: xp5 code (VAT book) → xp5_product_mapping + product name
+    (MAIN db). Seed the mapping in main; badge appears on the VAT page."""
+    import config
+    main = sqlite3.connect(config.DATABASE_PATH)
+    main_name = main.execute(
+        "SELECT product_name FROM products WHERE id=1").fetchone()[0]
+    main.execute("INSERT INTO xp5_product_mapping "
+                 "(xp5_code, product_id, xp5_name, match_layer) "
+                 "VALUES ('X901', 1, 'สินค้าสมุดVAT ทดสอบ', 'code+name')")
+    main.commit(); main.close()
+    html = _client('vat').get('/products/901').get_data(as_text=True)
+    assert 'สินค้านี้ตรงกับสมุดปัจจุบัน' in html
+    assert main_name in html
+
+
+def test_vat_product_no_badge_when_unmapped(vat_db):
+    html = _client('vat').get('/products/901').get_data(as_text=True)
+    assert 'สินค้านี้ตรงกับสมุดปัจจุบัน' not in html
 
 
 # ── block policy ────────────────────────────────────────────────────────────
