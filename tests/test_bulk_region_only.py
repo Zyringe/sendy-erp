@@ -1,0 +1,400 @@
+"""TDD for Phase 3 of projects/customer-edit-card/plan.md — bulk page →
+region-only + customer-list "include bill-less" toggle.
+
+Two independent pieces:
+
+  A. Bulk reassign loses its salesperson mode. Put's decision: no UI may
+     change `customers.salesperson` for many customers at once — commission
+     rules (models/commission.py) do not follow a master-record salesperson
+     change, and 472 customers carry an active commission rule perfectly
+     aligned with their master today (P1/P2 baton). `bulk_reassign_customers`
+     is now region-only; a request that still carries a salesperson target
+     is REJECTED, not silently ignored.
+
+  B. `/customers` gets an opt-in "รวมลูกค้าที่ไม่มีบิล" checkbox.
+     `get_customers` is `FROM sales_transactions LEFT JOIN customers`, so the
+     page shows only customers with a bill. `include_billless=True` UNIONs in
+     `customers` master rows with no sales_transactions row at all (doc_count
+     0, total_net 0, last_date NULL). Default OFF, so today's view/totals are
+     unchanged.
+
+Baseline note (verified 2026-08-01 against the live DB copied by the `tmp_db`
+fixture): the plan text cites 275 billing customers / 2,665 total — that has
+already drifted to 276 / 2,666 by the time this file was written (one more
+customer has since billed). Counts below are derived from an INDEPENDENT SQL
+query against the SAME tmp_db snapshot the test runs against, not hardcoded
+to either figure, so this file can't rot the way a literal would.
+"""
+import os
+os.environ.setdefault('SKIP_DB_INIT', '1')
+
+import sqlite3
+from urllib.parse import quote
+
+
+def _client(tmp_db, role='admin'):
+    from app import app as a
+    a.config['TESTING'] = True
+    c = a.test_client()
+    with c.session_transaction() as s:
+        s['user_id'] = 1
+        s['username'] = role
+        s['role'] = role
+    return c
+
+
+def _raw_conn(tmp_db):
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# ── A. bulk_reassign_customers is region-only ───────────────────────────────
+
+def test_region_only_bulk_still_updates_customers(tmp_db):
+    import models
+    conn = _raw_conn(tmp_db)
+    before = conn.execute(
+        "SELECT region_id FROM customers WHERE code IN ('01ก01','01ค01')"
+    ).fetchall()
+    assert {r['region_id'] for r in before} == {3, 17}  # sanity: distinct, known start state
+
+    result = models.bulk_reassign_customers(['01ก01', '01ค01'], region_id=1)
+    assert result['ok'] is True
+    assert result['updated'] == 2
+
+    after = conn.execute(
+        "SELECT code, region_id FROM customers WHERE code IN ('01ก01','01ค01')"
+    ).fetchall()
+    conn.close()
+    assert {r['region_id'] for r in after} == {1}
+
+
+def test_bulk_rejects_a_request_carrying_a_salesperson_target(tmp_db):
+    """A stale page rendered before this deploy could still POST a
+    `salesperson` value. It must be REJECTED with a clear error, and the
+    master rows must be untouched — not silently dropped and applied
+    region-only anyway (that would look like partial success)."""
+    import models
+    conn = _raw_conn(tmp_db)
+    before = dict(conn.execute(
+        "SELECT code, salesperson, region_id FROM customers WHERE code = '01ก01'"
+    ).fetchone())
+
+    result = models.bulk_reassign_customers(
+        ['01ก01'], region_id=1, salesperson_code='13')
+    assert result['ok'] is False
+    assert result['updated'] == 0
+    assert 'salesperson' in result['error'] or 'คอมมิชชั่น' in result['error']
+
+    after = dict(conn.execute(
+        "SELECT code, salesperson, region_id FROM customers WHERE code = '01ก01'"
+    ).fetchone())
+    conn.close()
+    assert after == before  # nothing moved, not even the region
+
+
+def test_bulk_no_mode_kwarg_left_in_signature(tmp_db):
+    """The function no longer accepts a mode — region-only was the only mode
+    that survives. Calling with the old `mode=` kwarg must fail loudly
+    (TypeError), not be silently ignored."""
+    import models
+    import inspect
+    sig = inspect.signature(models.bulk_reassign_customers)
+    assert 'mode' not in sig.parameters
+
+
+def test_bulk_still_rejects_empty_selection_and_bad_region(tmp_db):
+    import models
+    r1 = models.bulk_reassign_customers([], region_id=1)
+    assert r1['ok'] is False
+    r2 = models.bulk_reassign_customers(['01ก01'], region_id='')
+    assert r2['ok'] is False
+    r3 = models.bulk_reassign_customers(['01ก01'], region_id=999999)
+    assert r3['ok'] is False
+
+
+# ── A2. Route level: /customers/bulk-reassign POST ──────────────────────────
+
+def test_route_region_only_post_updates_master(tmp_db):
+    c = _client(tmp_db, role='admin')
+    r = c.post('/customers/bulk-reassign', data={
+        'customer_codes': ['01ก01'],
+        'region_id': '1',
+    }, follow_redirects=True)
+    assert r.status_code == 200
+    assert 'อัปเดต 1 ลูกค้าเรียบร้อย' in r.data.decode()
+
+    conn = _raw_conn(tmp_db)
+    row = conn.execute("SELECT region_id FROM customers WHERE code='01ก01'").fetchone()
+    conn.close()
+    assert row['region_id'] == 1
+
+
+def test_route_rejects_salesperson_field_when_present(tmp_db):
+    """Simulates a stale pre-deploy form still submitting `salesperson`."""
+    conn = _raw_conn(tmp_db)
+    before = conn.execute("SELECT salesperson, region_id FROM customers WHERE code='01ก01'").fetchone()
+    before = dict(before)
+    conn.close()
+
+    c = _client(tmp_db, role='admin')
+    r = c.post('/customers/bulk-reassign', data={
+        'customer_codes': ['01ก01'],
+        'region_id': '1',
+        'salesperson': '13',
+    }, follow_redirects=True)
+    assert r.status_code == 200
+    assert 'ไม่สามารถบันทึก' in r.data.decode()
+
+    conn = _raw_conn(tmp_db)
+    after = dict(conn.execute("SELECT salesperson, region_id FROM customers WHERE code='01ก01'").fetchone())
+    conn.close()
+    assert after == before
+
+
+# ── A3. Template: salesperson dropdown + mode selector gone ─────────────────
+
+def test_bulk_template_has_no_salesperson_or_mode_inputs(tmp_db):
+    c = _client(tmp_db, role='admin')
+    html = c.get('/customers/bulk-reassign').data.decode()
+    # The bulk ASSIGNMENT dropdown named exactly "salesperson" (distinct from
+    # the read-only "salesperson_filter" current-value filter, which stays).
+    assert html.count('name="salesperson"') == 0
+    assert html.count('name="mode"') == 0
+    assert html.count('name="region_id"') == 1  # the one bulk-target select
+    assert '>กำหนดเขตการขายหลายราย<' in html
+
+
+# ── B. get_customers(include_billless=...) ──────────────────────────────────
+
+def test_default_billing_only_matches_independent_count(tmp_db):
+    import models
+    conn = _raw_conn(tmp_db)
+    # Ground truth = the number of ROWS the list renders, i.e. one per distinct
+    # customer_code PLUS one bucket for the code-less rows. Deriving it from
+    # COUNT(DISTINCT customer_code) would restate the very bug this counts
+    # against: SQL's DISTINCT skips NULL, so that misses the bucket entirely.
+    expected = conn.execute("""
+        SELECT COUNT(*) FROM (
+            SELECT 1 FROM sales_transactions
+            WHERE COALESCE(doc_base, doc_no) NOT IN (
+                SELECT doc_no FROM ar_writeoffs WHERE excludes_revenue = 1)
+            GROUP BY customer_code)
+    """).fetchone()[0]
+    conn.close()
+
+    rows, total = models.get_customers()
+    assert total == expected
+    assert len(rows) == min(expected, 50)  # default per_page
+
+
+def test_include_billless_unions_master_rows_with_zero_sales(tmp_db):
+    import models
+    conn = _raw_conn(tmp_db)
+    billing_count = conn.execute("""
+        SELECT COUNT(*) FROM (
+            SELECT 1 FROM sales_transactions
+            WHERE COALESCE(doc_base, doc_no) NOT IN (
+                SELECT doc_no FROM ar_writeoffs WHERE excludes_revenue = 1)
+            GROUP BY customer_code)
+    """).fetchone()[0]
+    billless_master_count = conn.execute("""
+        SELECT COUNT(*) FROM customers c
+        WHERE NOT EXISTS (SELECT 1 FROM sales_transactions s WHERE s.customer_code = c.code)
+    """).fetchone()[0]
+    conn.close()
+
+    rows, total = models.get_customers(include_billless=True, per_page=5000)
+    assert total == billing_count + billless_master_count
+
+    by_code = {r['customer_code']: r for r in rows}
+    known = by_code['01ก01']
+    assert known['customer'] == 'หจก. กรีน ดิสทธิบิวชั่น (สิทธิกร)'
+    assert known['doc_count'] == 0
+    assert known['total_net'] == 0
+    assert known['last_date'] is None
+
+
+def test_include_billless_false_omits_known_billless_customer(tmp_db):
+    import models
+    rows, total = models.get_customers(include_billless=False, per_page=5000)
+    codes = {r['customer_code'] for r in rows}
+    assert '01ก01' not in codes
+
+
+def test_search_and_region_filter_work_with_flag_on(tmp_db):
+    import models
+    # Search narrows to exactly the known bill-less customer.
+    rows, total = models.get_customers(
+        search='กรีน ดิสทธิบิวชั่น', include_billless=True)
+    assert total == 1
+    assert rows[0]['customer_code'] == '01ก01'
+
+    # Region filter (region_id=3, the customer's real region) still includes it.
+    rows2, total2 = models.get_customers(
+        region_id=3, include_billless=True, per_page=5000)
+    codes2 = {r['customer_code'] for r in rows2}
+    assert '01ก01' in codes2
+    assert all(r['region_id'] == 3 for r in rows2)
+
+    # A region that is NOT its region excludes it.
+    rows3, total3 = models.get_customers(
+        region_id=17, include_billless=True, per_page=5000)
+    codes3 = {r['customer_code'] for r in rows3}
+    assert '01ก01' not in codes3
+
+
+# ── B2. Route + template: /customers toggle ─────────────────────────────────
+
+def test_customers_page_default_omits_billless_customer(tmp_db):
+    c = _client(tmp_db, role='admin')
+    # Narrow with a search that matches ONLY the known bill-less customer —
+    # an unfiltered page-1 check would false-pass by coincidence of
+    # alphabetical pagination (caught by break-it-once: forcing
+    # include_billless=True in the route did NOT turn this test red until
+    # it was narrowed like this).
+    html = c.get('/customers?q=' + quote('กรีน ดิสทธิบิวชั่น')).data.decode()
+    assert 'หจก. กรีน ดิสทธิบิวชั่น (สิทธิกร)' not in html
+    assert 'ไม่พบลูกค้าที่ตรงกับการค้นหา' in html
+
+
+def test_customers_page_toggle_on_shows_billless_customer_linked_by_code(tmp_db):
+    c = _client(tmp_db, role='admin')
+    html = c.get(
+        '/customers?include_billless=1&q=' + quote('กรีน ดิสทธิบิวชั่น')
+    ).data.decode()
+    assert 'หจก. กรีน ดิสทธิบิวชั่น (สิทธิกร)' in html
+    # Bill-less rows have no bill name to link by — must be code-keyed, never
+    # a name-built link (that would route through the shim and eject the
+    # user, per the plan's non-obvious requirement).
+    assert f"/customer/code/{quote('01ก01')}" in html
+
+
+def test_customers_page_existing_row_also_linked_by_code(tmp_db):
+    """P1's non-obvious requirement applies to every row this template
+    renders, not just the new bill-less ones — pin the regression."""
+    c = _client(tmp_db, role='admin')
+    html = c.get('/customers?q=' + quote('คิมเฮง')).data.decode()
+    assert f"/customer/code/{quote('11ค09')}" in html
+    assert "partners.customer_summary" not in html  # no name-built href leaked
+
+
+def test_customers_page_checkbox_present_and_default_unchecked(tmp_db):
+    c = _client(tmp_db, role='admin')
+    html = c.get('/customers').data.decode()
+    assert 'name="include_billless"' in html
+    assert 'id="billless-cb" name="include_billless" value="1" ' in html \
+        or 'id="billless-cb"\n                 name="include_billless" value="1" ' in html
+    # unchecked by default: no "checked" token right after the billless input
+    import re
+    m = re.search(r'<input[^>]*id="billless-cb"[^>]*>', html)
+    assert m and 'checked' not in m.group(0)
+
+
+def test_customers_page_checkbox_checked_when_toggle_on(tmp_db):
+    c = _client(tmp_db, role='admin')
+    html = c.get('/customers?include_billless=1').data.decode()
+    import re
+    m = re.search(r'<input[^>]*id="billless-cb"[^>]*>', html)
+    assert m and 'checked' in m.group(0)
+
+
+# ── Every page must render, not just page 1 ────────────────────────────────
+# Review finding (2026-08-01): switching the row link to `customer_detail`
+# 500'd the whole page for any row whose customer_code is NULL. Sales rows with
+# a blank customer_code (21 rows / 8 names today) collapse into ONE bucket under
+# `GROUP BY s.customer_code`, and `url_for(..., customer_code=None)` raises
+# BuildError. That bucket sorts to page 5 of the DEFAULT view, so /customers
+# page 5 was a hard 500 with the toggle untouched. Every test here passed
+# because none of them rendered past page 1.
+
+def _codeless_bucket_exists(tmp_db):
+    conn = _raw_conn(tmp_db)
+    n = conn.execute(
+        "SELECT COUNT(*) FROM sales_transactions WHERE COALESCE(customer_code,'') = ''"
+    ).fetchone()[0]
+    conn.close()
+    return n > 0
+
+
+def test_every_customers_page_renders_in_both_modes(tmp_db):
+    import models
+    assert _codeless_bucket_exists(tmp_db), \
+        'fixture has no code-less sales rows — this test could not catch the bug it exists for'
+
+    c = _client(tmp_db)
+    for flag, qs in ((False, ''), (True, '&include_billless=1')):
+        _, total = models.get_customers(include_billless=flag)
+        pages = (total + 49) // 50
+        assert pages > 1, 'fixture must span multiple pages or this asserts nothing'
+        bad = [p for p in range(1, pages + 1)
+               if c.get(f'/customers?page={p}{qs}').status_code != 200]
+        assert not bad, f'include_billless={flag}: pages {bad} did not render 200'
+
+
+def test_codeless_row_links_by_name_not_a_broken_code_url(tmp_db):
+    """The bucket has no code to link by; it must fall back to the name shim
+    (which lands on a /customers search) rather than build an invalid URL."""
+    import models, re
+    rows, _ = models.get_customers(per_page=100000)
+    codeless = [r for r in rows if not r['customer_code']]
+    if not codeless:
+        import pytest; pytest.skip('no code-less bucket in this snapshot')
+    target = codeless[0]
+    idx = rows.index(target)
+    page = idx // 50 + 1
+
+    c = _client(tmp_db)
+    r = c.get(f'/customers?page={page}')
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert '/customer/code/None' not in html and "customer_code=None" not in html
+    # its row links through the name shim
+    assert quote(target['customer']) in html or target['customer'] in html
+
+
+# ── total must equal the number of rows the list can actually paginate ──────
+# Codex review (2026-08-01): the count query and the row query disagreed by one.
+# The row query GROUPs BY customer_code, so the ~21 sales rows with a blank code
+# collapse into one REAL rendered row; the old count used COUNT(DISTINCT
+# customer_code), and SQL's DISTINCT skips NULL. `pages` is derived from `total`,
+# so an undercount that lands on a multiple of per_page makes the last row
+# unreachable. This asserts the invariant directly, by walking the pages and
+# counting what comes back — no reuse of the count query being tested.
+
+def test_total_equals_the_rows_you_can_actually_page_through(tmp_db):
+    import models
+    for include in (False, True):
+        rows_all, total = models.get_customers(
+            include_billless=include, per_page=100000)
+        assert total == len(rows_all), (
+            f'include_billless={include}: total={total} but the query returns '
+            f'{len(rows_all)} rows — pagination is built on this number')
+
+        per_page = 50
+        pages = (total + per_page - 1) // per_page
+        seen = 0
+        for p in range(1, pages + 1):
+            seen += len(models.get_customers(
+                include_billless=include, page=p, per_page=per_page)[0])
+        assert seen == total, (
+            f'include_billless={include}: paging returned {seen} of {total} rows')
+
+
+def test_codeless_bucket_is_counted_not_dropped(tmp_db):
+    """The specific row the old count missed. Independent ground truth: it is a
+    real row in the result set, so it must be inside `total`."""
+    import models
+    rows, total = models.get_customers(per_page=100000)
+    codeless = [r for r in rows if not r['customer_code']]
+    if not codeless:
+        import pytest; pytest.skip('no code-less bucket in this snapshot')
+    assert len(codeless) == 1, 'GROUP BY should collapse them into exactly one row'
+    conn = _raw_conn(tmp_db)
+    distinct_codes = conn.execute(
+        "SELECT COUNT(DISTINCT customer_code) FROM sales_transactions"
+        " WHERE COALESCE(customer_code,'') <> ''").fetchone()[0]
+    conn.close()
+    # total = the distinct real codes PLUS the one code-less bucket
+    assert total == distinct_codes + 1

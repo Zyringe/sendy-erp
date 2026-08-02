@@ -25,8 +25,17 @@
         </select>
       </div>
       <div class="col-auto">
+        <div class="form-check mt-3">
+          <input type="checkbox" class="form-check-input" id="billless-cb"
+                 name="include_billless" value="1" {% if include_billless %}checked{% endif %}>
+          <label class="form-check-label small" for="billless-cb">
+            รวมลูกค้าที่ไม่มีบิล
+          </label>
+        </div>
+      </div>
+      <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-touch">ค้นหา</button>
-        {% if search or region_id or region %}
+        {% if search or region_id or region or include_billless %}
         <a href="{{ url_for('partners.customer_list') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
         {% endif %}
       </div>
@@ -37,7 +46,7 @@
       <div class="col-auto align-self-center">
         <a href="{{ url_for('partners.customer_bulk_reassign') }}"
            class="btn btn-sm btn-outline-primary">
-          <i class="bi bi-people-fill me-1"></i>Bulk reassign
+          <i class="bi bi-geo-alt me-1"></i>กำหนดเขตหลายราย
         </a>
         {% if is_admin %}
         <a href="{{ url_for('partners.regions_admin') }}"
@@ -68,8 +77,14 @@
       </thead>
       <tbody>
         {% for c in customers %}
+        {# Not every row HAS a code: sales_transactions rows with a blank
+           customer_code (21 today, 8 distinct names) collapse into one bucket
+           whose customer_code is NULL, and url_for would raise BuildError and
+           500 the whole page — which it did, on page 5 of the default view.
+           Fall back to the name shim there; it lands on a /customers search,
+           which is the honest answer for a bucket of unmatched customers. #}
         <tr style="cursor:pointer"
-            onclick="window.location='{{ url_for('partners.customer_summary', customer_name=c.customer) }}'">
+            onclick="window.location='{% if c.customer_code %}{{ url_for('partners.customer_detail', customer_code=c.customer_code) }}{% else %}{{ url_for('partners.customer_summary', customer_name=c.customer) }}{% endif %}'">
           <td class="td-primary fw-500">
             {{ c.customer }}
             <span class="d-mobile-only badge badge-gray font-mono ms-1">{{ c.customer_code }}</span>
@@ -114,17 +129,17 @@
     <nav>
       <ul class="pagination pagination-sm mb-0">
         <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, page=page-1) }}">‹</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, include_billless=('1' if include_billless else ''), page=page-1) }}">‹</a>
         </li>
         <li class="page-item {% if page == 1 %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, page=1) }}">1</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, include_billless=('1' if include_billless else ''), page=1) }}">1</a>
         </li>
         {% if p_start > 2 %}
         <li class="page-item disabled"><span class="page-link">…</span></li>
         {% endif %}
         {% for p in range(p_start, p_end+1) %}
         <li class="page-item {% if p == page %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, page=p) }}">{{ p }}</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, include_billless=('1' if include_billless else ''), page=p) }}">{{ p }}</a>
         </li>
         {% endfor %}
         {% if p_end < pages-1 %}
@@ -132,11 +147,11 @@
         {% endif %}
         {% if pages > 1 %}
         <li class="page-item {% if page == pages %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, page=pages) }}">{{ pages }}</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, include_billless=('1' if include_billless else ''), page=pages) }}">{{ pages }}</a>
         </li>
         {% endif %}
         <li class="page-item {% if page >= pages %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, page=page+1) }}">›</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, include_billless=('1' if include_billless else ''), page=page+1) }}">›</a>
         </li>
       </ul>
     </nav>
