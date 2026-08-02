@@ -34,6 +34,19 @@ from datetime import datetime
 import bsn_units
 
 
+def seed_companies(conn):
+    """Fresh schema.sql builds carry no seed rows; scripts/import_express's
+    payments/credit-notes importers require companies code='BSN' (originally
+    seeded by mig 011, which the bootstrap runner stamps without executing).
+    Mirror that seed here."""
+    conn.executemany(
+        "INSERT INTO companies (code, name_th, short_name) VALUES (?, ?, ?) "
+        "ON CONFLICT(code) DO NOTHING",
+        [('BSN', 'บุญสวัสดิ์ นำชัย', 'BSN'),
+         ('SD', 'เซ็นไดเทรดดิ้ง', 'Sendai Trading')])
+    conn.commit()
+
+
 def seed_products_from_stmas(conn, stmas_rows):
     """Create one product + one catch-all mapping row per STMAS code.
     Returns {stkcod: product_id}. Blank STKDES falls back to the code itself
@@ -191,6 +204,7 @@ def build(source_dir):
 
     conn = database.get_connection()
     try:
+        seed_companies(conn)
         code_to_pid = seed_products_from_stmas(conn, stmas)
         per_type = import_router.commit_express_dbf(
             source_dir, db_path=db_path, since_days=None)
@@ -214,9 +228,73 @@ def build(source_dir):
     return {'db_path': db_path, 'counts': counts}
 
 
+def publish(built_path, target_path):
+    """Copy the finished artifact next to the live target and swap atomically.
+    A plain copy first because the build dir (/tmp) and the data volume are
+    different filesystems on Railway — os.replace cannot cross devices."""
+    import shutil
+    tmp_target = target_path + '.publish'
+    shutil.copyfile(built_path, tmp_target)
+    fd = os.open(tmp_target, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp_target, target_path)
+    dfd = os.open(os.path.dirname(target_path) or '.', os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def _report_result(result_db, result_row, vat_result):
+    """Update the upload's persisted last-run record (import_log row created
+    by the route with vat status 'building') in the MAIN db. Narrow contract:
+    one UPDATE of one pre-existing row's notes JSON, nothing else."""
+    conn = sqlite3.connect(result_db, timeout=10)
+    try:
+        conn.execute("PRAGMA busy_timeout=10000")
+        row = conn.execute("SELECT notes FROM import_log WHERE id=?",
+                           (result_row,)).fetchone()
+        notes = json.loads(row[0]) if row and row[0] else {}
+        notes['vat'] = vat_result
+        conn.execute("UPDATE import_log SET notes=? WHERE id=?",
+                     (json.dumps(notes, ensure_ascii=False), result_row))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--source', required=True,
                    help='directory holding the xp5 DBF tables')
+    p.add_argument('--publish-to',
+                   help='live vat_book.db path to atomically replace on success')
+    p.add_argument('--result-db',
+                   help='MAIN db path holding the import_log last-run row to update')
+    p.add_argument('--result-row', type=int,
+                   help='import_log row id to update with the outcome')
+    p.add_argument('--cleanup-dir',
+                   help='scratch dir (dataset copy + build dir) to delete at exit')
     args = p.parse_args()
-    print(json.dumps(build(args.source), ensure_ascii=False, indent=1))
+    try:
+        try:
+            summary = build(args.source)
+            if args.publish_to:
+                publish(summary['db_path'], args.publish_to)
+            outcome = {'ok': True, 'counts': summary['counts'],
+                       'built_at': datetime.now().isoformat(timespec='seconds')}
+            print(json.dumps(summary, ensure_ascii=False, indent=1))
+        except BaseException as exc:
+            outcome = {'ok': False, 'error': f'{type(exc).__name__}: {exc}'[:400]}
+            if args.result_db and args.result_row:
+                _report_result(args.result_db, args.result_row, outcome)
+            raise
+        if args.result_db and args.result_row:
+            _report_result(args.result_db, args.result_row, outcome)
+    finally:
+        if args.cleanup_dir:
+            import shutil
+            shutil.rmtree(args.cleanup_dir, ignore_errors=True)

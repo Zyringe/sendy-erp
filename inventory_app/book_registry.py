@@ -22,6 +22,7 @@ journal_mode=delete; a WAL switch would need write access). os.replace during
 an in-flight request is safe: this request keeps reading its already-open
 inode; the next request opens the new file.
 """
+import json
 import os
 import sqlite3
 
@@ -116,6 +117,29 @@ def _read_book_meta(conn):
         return dict(conn.execute("SELECT key, value FROM book_meta"))
     except sqlite3.Error:
         return {}
+
+
+def vat_book_freshness():
+    """book_meta of the PUBLISHED vat_book.db, or None if never built.
+    Short-lived ro connection — main-book pages (the import screen) show
+    this, so it deliberately does not touch the g-cached book connection."""
+    path = book_db_path('vat')
+    if not os.path.exists(path):
+        return None
+    try:
+        conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=5)
+        try:
+            meta = dict(conn.execute("SELECT key, value FROM book_meta"))
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    if 'counts' in meta:
+        try:
+            meta['counts'] = json.loads(meta['counts'])
+        except ValueError:
+            pass
+    return meta
 
 
 def _wants_json():

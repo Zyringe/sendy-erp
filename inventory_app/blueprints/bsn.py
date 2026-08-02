@@ -5,9 +5,11 @@ Extracted verbatim from app.py (behavior-preserving split) — see app.py's
 module docstring for the overall file-split rationale. No URL changes;
 route rules are unchanged, only their endpoint names gain a `bsn.` prefix.
 """
+import json
 import math
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import zipfile
@@ -494,21 +496,88 @@ def unified_import_confirm():
 _EXPRESS_DBF_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 
-def _find_express_dbf_dataset_dir(root):
-    """Locate the directory that directly holds the .DBF tables inside an
-    extracted zip — root itself, or however deep Compress-Archive happened
-    to nest it. ARTRN.DBF is mandatory for every import type, so its
-    location pins the dataset dir express_dbf_source.open_table() expects."""
+_EXPRESS_DBF_MAX_MEMBERS = 800
+_EXPRESS_DBF_MAX_MEMBER_BYTES = 300 * 1024 * 1024        # BSN5657 STCRD ≈ 119MB
+_EXPRESS_DBF_MAX_TOTAL_BYTES = 1536 * 1024 * 1024
+
+# ISINFO identity → which import path a dataset dir feeds. Values verified
+# against the real company files 2026-08-02 (BSN5657's TAXID is literally
+# thirteen zeros — never classify by TAXID alone, always the pair).
+_BSN5657_SIGNATURE = {'THINAM': '(BSN)บจก.บุญสวัสดิ์นำชัย', 'TAXID': '0000000000000'}
+
+
+def _zip_preflight(zf):
+    """Reject a hostile/oversized zip BEFORE extraction: path traversal,
+    absolute members, member count, per-file and total uncompressed size.
+    Returns an error string or None."""
+    infos = zf.infolist()
+    if len(infos) > _EXPRESS_DBF_MAX_MEMBERS:
+        return f'zip มีไฟล์เกิน {_EXPRESS_DBF_MAX_MEMBERS} รายการ'
+    total = 0
+    for zi in infos:
+        name = zi.filename.replace('\\', '/')
+        if name.startswith('/') or '..' in name.split('/'):
+            return f'zip มี path ไม่ปลอดภัย: {zi.filename[:80]}'
+        total += zi.file_size
+        if zi.file_size > _EXPRESS_DBF_MAX_MEMBER_BYTES:
+            return f'ไฟล์ใน zip ใหญ่เกินไป: {zi.filename[:80]}'
+        if total > _EXPRESS_DBF_MAX_TOTAL_BYTES:
+            return 'ขนาดรวมหลังแตก zip ใหญ่เกินไป'
+    return None
+
+
+def _find_express_dbf_dataset_dirs(root):
+    """ALL directories that directly hold .DBF tables inside an extracted
+    zip (one per company file — the daily zip may carry BSN5657 and xp5
+    together). ARTRN.DBF is mandatory for every import type, so its location
+    pins each dataset dir express_dbf_source.open_table() expects."""
+    dirs = []
     for dirpath, _dirnames, filenames in os.walk(root):
         if any(fn.upper() == 'ARTRN.DBF' for fn in filenames):
-            return dirpath
+            dirs.append(dirpath)
+    return dirs
+
+
+def _classify_dataset(dataset_dir):
+    """'bsn' | 'vat' | None from the dataset's own ISINFO identity —
+    registry-driven, never guessed from folder names."""
+    import book_registry
+    import express_dbf_source as eds
+    try:
+        rows = eds.open_table(dataset_dir, 'ISINFO')
+    except Exception:
+        return None
+    if not rows:
+        return None
+    sig = {'THINAM': str(rows[0].get('THINAM') or '').strip(),
+           'TAXID': str(rows[0].get('TAXID') or '').strip()}
+    if sig == _BSN5657_SIGNATURE:
+        return 'bsn'
+    if sig == book_registry.BOOKS['vat']['isinfo_signature']:
+        return 'vat'
     return None
 
 
 @bp_bsn.route('/import-express-dbf')
 def express_dbf_import():
+    import book_registry
     freshness = models.get_express_dbf_freshness()
-    return render_template('import_express_dbf.html', freshness=freshness)
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT imported_at, notes FROM import_log "
+        "WHERE filename='express-dbf-upload' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    last_run = None
+    if row:
+        try:
+            last_run = {'at': row['imported_at'],
+                        'results': json.loads(row['notes'] or '{}')}
+        except ValueError:
+            last_run = {'at': row['imported_at'], 'results': {}}
+    return render_template('import_express_dbf.html', freshness=freshness,
+                           vat_freshness=book_registry.vat_book_freshness(),
+                           last_run=last_run)
 
 
 def _express_dbf_summary_message(per_type):
@@ -558,23 +627,119 @@ def express_dbf_upload():
         if not zipfile.is_zipfile(zip_path):
             flash('ไฟล์ไม่ใช่ zip ที่ถูกต้อง', 'danger')
             return redirect(redirect_to)
-        extract_dir = os.path.join(tmpdir, 'extracted')
         with zipfile.ZipFile(zip_path) as zf:
+            err = _zip_preflight(zf)
+            if err:
+                flash(f'ปฏิเสธไฟล์: {err}', 'danger')
+                return redirect(redirect_to)
+            extract_dir = os.path.join(tmpdir, 'extracted')
             zf.extractall(extract_dir)
-        dataset_dir = _find_express_dbf_dataset_dir(extract_dir)
-        if dataset_dir is None:
+
+        dataset_dirs = _find_express_dbf_dataset_dirs(extract_dir)
+        if not dataset_dirs:
             flash('ไม่พบ ARTRN.DBF ใน zip ที่อัปโหลด', 'danger')
             return redirect(redirect_to)
 
-        # since_days defaults to 60 inside commit_express_dbf — a daily
-        # upload of the full Express history only ever needs the recent
-        # window; leave the default rather than duplicating it here.
-        per_type = import_router.commit_express_dbf(dataset_dir, db_path=config.DATABASE_PATH)
+        # Classify EVERY dataset before importing ANY (plan rev 3 P3):
+        # an unknown or duplicated company file rejects the whole upload.
+        classified = {}
+        for d in dataset_dirs:
+            kind = _classify_dataset(d)
+            if kind is None:
+                flash('มีชุดข้อมูลที่ไม่รู้จักใน zip (ISINFO ไม่ตรงกับ BSN5657/xp5) '
+                      '— ยกเลิกทั้งไฟล์ ไม่มีการนำเข้าใดๆ', 'danger')
+                return redirect(redirect_to)
+            if kind in classified:
+                flash('zip มีชุดข้อมูลของสมุดเดียวกันซ้ำกัน — ยกเลิกทั้งไฟล์', 'danger')
+                return redirect(redirect_to)
+            classified[kind] = d
+
+        # Per-dataset outcomes, reported separately (partial success is a
+        # legitimate, honestly-reported state — the BSN path is idempotent,
+        # so retrying the same zip after a VAT failure is safe).
+        results = {}
+        flashes = []
+        if 'bsn' in classified:
+            try:
+                # since_days defaults to 60 inside commit_express_dbf — a
+                # daily upload only ever needs the recent window.
+                per_type = import_router.commit_express_dbf(
+                    classified['bsn'], db_path=config.DATABASE_PATH)
+                results['bsn'] = {'ok': True,
+                                  'summary': _express_dbf_summary_message(per_type)}
+                flashes.append(('success', f"BSN5657: {results['bsn']['summary']}"))
+            except Exception as exc:
+                results['bsn'] = {'ok': False, 'error': str(exc)[:400]}
+                flashes.append(('danger', f'BSN5657 นำเข้าไม่สำเร็จ: {exc}'))
+        if 'vat' in classified:
+            results['vat'] = {'ok': None, 'status': 'building'}
+
+        # Persist the run record FIRST so the async builder can update it.
+        conn = get_connection()
+        cur = conn.execute(
+            "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes) "
+            "VALUES ('express-dbf-upload', 0, 0, ?)",
+            (json.dumps(results, ensure_ascii=False),))
+        run_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+
+        if 'vat' in classified:
+            try:
+                _spawn_vat_rebuild(classified['vat'], run_id)
+                flashes.append(('info',
+                                'สมุด VAT (xp5): เริ่ม rebuild เบื้องหลังแล้ว (~2-5 นาที) '
+                                '— ดูสถานะที่บรรทัด "ผลการนำเข้าล่าสุด" ด้านล่าง'))
+            except Exception as exc:
+                _update_run_result(run_id, 'vat',
+                                   {'ok': False, 'error': str(exc)[:400]})
+                flashes.append(('danger', f'สมุด VAT เริ่ม rebuild ไม่สำเร็จ: {exc}'))
     except Exception as exc:
         flash(f'นำเข้าไม่สำเร็จ: {exc}', 'danger')
         return redirect(redirect_to)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    flash(_express_dbf_summary_message(per_type), 'success')
+    for cat, msg in flashes:
+        flash(msg, cat)
     return redirect(redirect_to)
+
+
+def _update_run_result(run_id, key, value):
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT notes FROM import_log WHERE id=?",
+                           (run_id,)).fetchone()
+        notes = json.loads(row['notes']) if row and row['notes'] else {}
+        notes[key] = value
+        conn.execute("UPDATE import_log SET notes=? WHERE id=?",
+                     (json.dumps(notes, ensure_ascii=False), run_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _spawn_vat_rebuild(dataset_dir, run_id):
+    """Detached full rebuild of vat_book.db (minutes — far beyond gunicorn's
+    60s worker timeout, so NEVER in-request). The dataset is copied out of
+    the request's tmpdir so it survives this request's cleanup; the builder
+    publishes atomically, updates the run record, and removes the scratch."""
+    import book_registry
+    run_root = tempfile.mkdtemp(prefix='vat_book_run_')
+    src = os.path.join(run_root, 'dataset')
+    shutil.copytree(dataset_dir, src)
+    data_dir = os.path.join(run_root, 'build')
+    os.makedirs(data_dir)
+    builder = os.path.abspath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), '..', 'vat_book_builder.py'))
+    env = {**os.environ, 'DATA_DIR': data_dir, 'VAT_BOOK_BUILD': '1'}
+    subprocess.Popen(
+        [sys.executable, builder,
+         '--source', src,
+         '--publish-to', book_registry.book_db_path('vat'),
+         '--result-db', config.DATABASE_PATH,
+         '--result-row', str(run_id),
+         '--cleanup-dir', run_root],
+        cwd=os.path.dirname(builder), env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)
