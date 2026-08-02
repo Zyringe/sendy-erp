@@ -44,6 +44,7 @@
           <li class="{{ 'text-warning' if last_run.results.vat.status == 'building'
                         else ('text-success' if last_run.results.vat.ok else 'text-danger') }}">
             สมุด VAT: {% if last_run.results.vat.status == 'building' %}กำลัง rebuild… (รีเฟรชหน้านี้เพื่อดูผล)
+            {% elif last_run.results.vat.status == 'stalled' %}rebuild ไม่ตอบสนอง (>30 นาที) — อัปโหลด zip เดิมซ้ำได้ ปลอดภัย
             {% elif last_run.results.vat.ok %}สำเร็จ {{ (last_run.results.vat.built_at or '')[:16]|replace('T', ' ') }}
             {% else %}ไม่สำเร็จ — {{ last_run.results.vat.error }}
             · <em>อัปโหลด zip เดิมซ้ำได้ ปลอดภัย (ฝั่ง BSN นำเข้าซ้ำไม่มีผล)</em>{% endif %}

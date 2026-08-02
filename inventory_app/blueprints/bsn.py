@@ -575,6 +575,18 @@ def express_dbf_import():
                         'results': json.loads(row['notes'] or '{}')}
         except ValueError:
             last_run = {'at': row['imported_at'], 'results': {}}
+        # A builder that died before reporting leaves 'building' forever —
+        # after 30 minutes show it as stalled (retrying the upload is safe).
+        vat_res = (last_run['results'].get('vat')
+                   if isinstance(last_run['results'], dict) else None)
+        if isinstance(vat_res, dict) and vat_res.get('status') == 'building':
+            from datetime import datetime, timedelta
+            try:
+                started = datetime.strptime(last_run['at'], '%Y-%m-%d %H:%M:%S')
+                if datetime.now() - started > timedelta(minutes=30):
+                    vat_res['status'] = 'stalled'
+            except (TypeError, ValueError):
+                pass
     return render_template('import_express_dbf.html', freshness=freshness,
                            vat_freshness=book_registry.vat_book_freshness(),
                            last_run=last_run)
