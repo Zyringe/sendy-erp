@@ -64,7 +64,7 @@ CREATE TABLE audit_log (
     changed_fields  TEXT,           -- JSON: {"field": [old, new], ...}
     user            TEXT,           -- session username (nullable for system writes)
     created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-);
+, row_key TEXT);
 
 CREATE TABLE brands (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1984,16 +1984,16 @@ END;
 CREATE TRIGGER audit_commission_assignments_delete
 BEFORE DELETE ON commission_assignments
 BEGIN
-    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
-    VALUES ('commission_assignments', OLD.rowid, 'DELETE',
+    INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields)
+    VALUES ('commission_assignments', OLD.rowid, OLD.salesperson_code, 'DELETE',
         json_object('salesperson_code', OLD.salesperson_code, 'tier_id', OLD.tier_id));
 END;
 
 CREATE TRIGGER audit_commission_assignments_insert
 AFTER INSERT ON commission_assignments
 BEGIN
-    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
-    VALUES ('commission_assignments', NEW.rowid, 'INSERT',
+    INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields)
+    VALUES ('commission_assignments', NEW.rowid, NEW.salesperson_code, 'INSERT',
         json_object('salesperson_code', NEW.salesperson_code,
                     'tier_id', NEW.tier_id,
                     'effective_from', NEW.effective_from,
@@ -2008,8 +2008,8 @@ WHEN (
     OR OLD.note           IS NOT NEW.note
 )
 BEGIN
-    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
-    SELECT 'commission_assignments', NEW.rowid, 'UPDATE',
+    INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields)
+    SELECT 'commission_assignments', NEW.rowid, NEW.salesperson_code, 'UPDATE',
            json_group_object(field, json_array(old_v, new_v))
     FROM (
                   SELECT 'tier_id'        AS field, OLD.tier_id        AS old_v, NEW.tier_id        AS new_v WHERE OLD.tier_id        IS NOT NEW.tier_id
@@ -2334,10 +2334,11 @@ END;
 CREATE TRIGGER audit_customer_crm_delete
 BEFORE DELETE ON customer_crm
 BEGIN
-    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields)
     VALUES (
         'customer_crm',
         (SELECT rowid FROM customer_crm WHERE customer_code = OLD.customer_code),
+        OLD.customer_code,
         'DELETE',
         json_object(
             'customer_code', OLD.customer_code,
@@ -2351,10 +2352,11 @@ END;
 CREATE TRIGGER audit_customer_crm_insert
 AFTER INSERT ON customer_crm
 BEGIN
-    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields)
     VALUES (
         'customer_crm',
         (SELECT MAX(rowid) FROM customer_crm WHERE customer_code = NEW.customer_code),
+        NEW.customer_code,
         'INSERT',
         json_object(
             'customer_code', NEW.customer_code,
@@ -2374,9 +2376,10 @@ WHEN (
     OR OLD.call_target_days IS NOT NEW.call_target_days
 )
 BEGIN
-    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields)
     SELECT 'customer_crm',
            (SELECT rowid FROM customer_crm WHERE customer_code = NEW.customer_code),
+           NEW.customer_code,
            'UPDATE',
            json_group_object(field, json_array(old_v, new_v))
     FROM (
@@ -2389,10 +2392,11 @@ END;
 CREATE TRIGGER audit_customers_delete
 BEFORE DELETE ON customers
 BEGIN
-    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields)
     VALUES (
         'customers',
         (SELECT rowid FROM customers WHERE code = OLD.code),
+        OLD.code,
         'DELETE',
         json_object(
             'code', OLD.code, 'name', OLD.name, 'phone', OLD.phone,
@@ -2404,10 +2408,11 @@ END;
 CREATE TRIGGER audit_customers_insert
 AFTER INSERT ON customers
 BEGIN
-    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields)
     VALUES (
         'customers',
         (SELECT MAX(rowid) FROM customers WHERE code = NEW.code),
+        NEW.code,
         'INSERT',
         json_object(
             'code', NEW.code, 'name', NEW.name,
@@ -2436,9 +2441,10 @@ WHEN (
     OR OLD.lng          IS NOT NEW.lng
 )
 BEGIN
-    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields)
     SELECT 'customers',
            (SELECT rowid FROM customers WHERE code = NEW.code),
+           NEW.code,
            'UPDATE',
            json_group_object(field, json_array(old_v, new_v))
     FROM (
@@ -3620,9 +3626,9 @@ END;
 CREATE TRIGGER audit_salespersons_delete
 BEFORE DELETE ON salespersons
 BEGIN
-    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields)
     VALUES (
-        'salespersons', OLD.rowid, 'DELETE',
+        'salespersons', OLD.rowid, OLD.code, 'DELETE',
         json_object('code', OLD.code, 'name', OLD.name)
     );
 END;
@@ -3630,9 +3636,9 @@ END;
 CREATE TRIGGER audit_salespersons_insert
 AFTER INSERT ON salespersons
 BEGIN
-    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields)
     VALUES (
-        'salespersons', NEW.rowid, 'INSERT',
+        'salespersons', NEW.rowid, NEW.code, 'INSERT',
         json_object('code', NEW.code, 'name', NEW.name, 'is_active', NEW.is_active)
     );
 END;
@@ -3646,8 +3652,8 @@ WHEN (
     OR OLD.note      IS NOT NEW.note
 )
 BEGIN
-    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
-    SELECT 'salespersons', NEW.rowid, 'UPDATE',
+    INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields)
+    SELECT 'salespersons', NEW.rowid, NEW.code, 'UPDATE',
            json_group_object(field, json_array(old_v, new_v))
     FROM (
                   SELECT 'code'      AS field, OLD.code      AS old_v, NEW.code      AS new_v WHERE OLD.code      IS NOT NEW.code
