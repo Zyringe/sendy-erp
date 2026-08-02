@@ -267,17 +267,23 @@ def apply_auto(conn, rows, xp5_products):
 
         # Verify BEFORE commit (Codex R5): the same connection sees the
         # pending writes, and a mismatch rolls everything back instead of
-        # leaving a bad batch durable.
+        # leaving a bad batch durable. A batch row that collided with a row
+        # that became human-owned since load_locked_codes() is counted as
+        # SKIPPED, never certified as applied (Codex R6).
+        landed, skipped_conflicts = [], []
         after = {r['xp5_code']: r for r in conn.execute(
             "SELECT xp5_code, product_id, status, match_layer, evidence_count, note "
             "FROM xp5_product_mapping")}
         for r in rows:
             got = after.get(r['xp5_code'])
             assert got is not None, f"batch row missing after apply: {r['xp5_code']}"
-            if got['status'] == 'auto':
-                assert (got['product_id'], got['match_layer'], got['evidence_count']) == \
-                    (r['product_id'], r['match_layer'], r['evidence_count']), \
-                    f"applied row mismatch: {r['xp5_code']}"
+            if got['status'] != 'auto':
+                skipped_conflicts.append(r['xp5_code'])
+                continue
+            assert (got['product_id'], got['match_layer'], got['evidence_count']) == \
+                (r['product_id'], r['match_layer'], r['evidence_count']), \
+                f"applied row mismatch: {r['xp5_code']}"
+            landed.append(r)
         after_human = {r['xp5_code']: tuple(r) for r in conn.execute(
             "SELECT xp5_code, product_id, status, match_layer, note "
             "FROM xp5_product_mapping WHERE status != 'auto'")}
@@ -286,7 +292,8 @@ def apply_auto(conn, rows, xp5_products):
         conn.rollback()
         raise
     conn.commit()
-    return len(before_human)
+    return {'human_rows': len(before_human), 'landed': landed,
+            'skipped_conflicts': skipped_conflicts}
 
 
 def write_sheet(review_rows, out_base):
@@ -338,15 +345,29 @@ def main():
         | {r['xp5_code'] for r in review1} | {r['xp5_code'] for r in review2}
     review3 = layer3(xp5_products, product_names, taken | locked)
 
+    # Dual-key survivors are STRONG CANDIDATES, not auto-applies (Codex R6:
+    # the predicate never evaluates names or units-per-pack, so equal
+    # qty/price/unit-label cannot prove the physical SKU) — they go to the
+    # sheet pre-filled with their evidence for fast human confirmation.
+    # Only layer-1 (code AND normalized-name agreement) auto-applies.
+    for r in auto2:
+        review2.append({'xp5_code': r['xp5_code'],
+                        'xp5_name': xp5_products.get(r['xp5_code'], ''),
+                        'layer': 'dualkey-candidate',
+                        'suggest_pid': r['product_id'],
+                        'suggest_name': product_names.get(r['product_id'], ''),
+                        'evidence': ('ผ่านเกณฑ์ dualkey ครบ '
+                                     f"({r['evidence_count']} คู่เอกสาร) — ยืนยันชื่อ/แพ็ค")})
+
     # Human decisions are final: never re-propose or re-sheet a locked code.
-    auto_rows = [r for r in auto1 + auto2 if r['xp5_code'] not in locked]
+    auto_rows = [r for r in auto1 if r['xp5_code'] not in locked]
     review_rows = [r for r in review1 + review2 + review3
                    if r['xp5_code'] not in locked]
     print(json.dumps({
         'locked_human_rows': len(locked),
         'xp5_products': len(xp5_products),
         'layer1_auto': len(auto1), 'layer1_review': len(review1),
-        'layer2_auto': len(auto2), 'layer2_review': len(review2),
+        'layer2_candidates': len(auto2), 'layer2_review': len(review2),
         'layer2_doc_pairs': l2stats['doc_pairs'],
         'layer3_suggestions': len(review3),
         'unmapped_no_suggestion': len(xp5_products) - len(auto_rows) - len(review_rows),
@@ -359,11 +380,12 @@ def main():
         dst = sqlite3.connect(backup)
         src.backup(dst)
         dst.close(); src.close()
-        human_n = apply_auto(conn, auto_rows, xp5_products)
+        result = apply_auto(conn, auto_rows, xp5_products)
         n = conn.execute("SELECT COUNT(*) FROM xp5_product_mapping "
                          "WHERE status='auto'").fetchone()[0]
-        print(f'applied {len(auto_rows)} auto rows (field-exact verified); '
-              f'{human_n} human rows untouched; auto rows in table: {n} '
+        print(f"applied {len(result['landed'])} auto rows (field-exact verified); "
+              f"{len(result['skipped_conflicts'])} skipped (human-owned); "
+              f"{result['human_rows']} human rows untouched; auto rows in table: {n} "
               f'(backup: {backup})')
     else:
         print('dry-run only — rerun with --apply to write auto rows')
@@ -373,22 +395,22 @@ def main():
     csv_path, html_path = write_sheet(review_rows, out)
     print(f'review sheet: {csv_path}\n              {html_path}')
 
-    # Audit file of the APPLIED autos (Codex R5: dual-key survivors are not
-    # proven by the predicate alone — give Put a spot-check list; the price-
-    # equality screen argues same-label-different-pack pairs are already
-    # excluded, see codex-review-r5-resolution.md).
-    import csv as _csv
-    audit = REPORT_DIR / f'xp5_mapping_auto_applied_{date.today().isoformat()}.csv'
-    with open(audit, 'w', newline='', encoding='utf-8-sig') as fh:
-        w = _csv.writer(fh)
-        w.writerow(['xp5_code', 'xp5_name', 'layer', 'evidence',
-                    'product_id', 'main_product_name'])
-        for r in sorted(auto_rows, key=lambda x: x['match_layer']):
-            w.writerow([r['xp5_code'],
-                        r['xp5_name'] or xp5_products.get(r['xp5_code'], ''),
-                        r['match_layer'], r['evidence_count'], r['product_id'],
-                        product_names.get(r['product_id'], '')])
-    print(f'auto-applied audit: {audit}')
+    if args.apply:
+        # Audit of what actually LANDED as auto this run — apply-only and
+        # landed-only (Codex R6: a dry run must not emit an "applied" file,
+        # and skipped conflicts must not appear as applied).
+        import csv as _csv
+        audit = REPORT_DIR / f'xp5_mapping_auto_applied_{date.today().isoformat()}.csv'
+        with open(audit, 'w', newline='', encoding='utf-8-sig') as fh:
+            w = _csv.writer(fh)
+            w.writerow(['xp5_code', 'xp5_name', 'layer', 'evidence',
+                        'product_id', 'main_product_name'])
+            for r in sorted(result['landed'], key=lambda x: x['match_layer']):
+                w.writerow([r['xp5_code'],
+                            r['xp5_name'] or xp5_products.get(r['xp5_code'], ''),
+                            r['match_layer'], r['evidence_count'], r['product_id'],
+                            product_names.get(r['product_id'], '')])
+        print(f'auto-applied audit: {audit}')
 
 
 if __name__ == '__main__':

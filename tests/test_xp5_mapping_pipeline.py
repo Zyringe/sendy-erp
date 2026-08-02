@@ -66,6 +66,14 @@ def test_locked_codes_excluded_from_proposals(conn):
     assert pl.load_locked_codes(conn) == {'X1', 'X2'}
 
 
+def test_apply_counts_conflicting_row_as_skipped_not_applied(conn):
+    """A code that became human-owned between load_locked_codes and apply
+    must be reported as skipped — never certified as applied (Codex R6)."""
+    res = pl.apply_auto(conn, [_row('X1', 20), _row('X5', 9)], {})
+    assert res['skipped_conflicts'] == ['X1']
+    assert [r['xp5_code'] for r in res['landed']] == ['X5']
+
+
 def test_layer2_signature_requires_same_unit(monkeypatch, tmp_path):
     """Same qty+price in DIFFERENT units must never produce a product pair."""
     import express_dbf_source as eds

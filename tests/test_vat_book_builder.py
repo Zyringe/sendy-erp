@@ -170,35 +170,41 @@ def test_publish_rejects_corrupt_copy_and_keeps_target(tmp_path):
     c.close()
 
 
-def test_publish_lock_excludes_second_runner(tmp_path):
+def test_publish_lock_excludes_second_holder_and_reacquires(tmp_path):
     target = str(tmp_path / 'vat_book.db')
-    lock, token = vb.acquire_publish_lock(target)
-    assert os.path.exists(lock)
+    fd = vb.acquire_publish_lock(target)
     with pytest.raises(RuntimeError, match='already running'):
-        vb.acquire_publish_lock(target)
-    vb.release_publish_lock(lock, token)
-    assert not os.path.exists(lock)
+        vb.acquire_publish_lock(target)        # separate fd, same-process: flock conflicts
+    vb.release_publish_lock(fd)
+    fd2 = vb.acquire_publish_lock(target)      # released → reacquirable
+    vb.release_publish_lock(fd2)
+    assert os.path.exists(target + '.lock')    # lockfile persists, NEVER unlinked
 
 
-def test_release_only_unlinks_own_token(tmp_path):
-    """Codex R5 blocker interleaving: A's lock is declared stale and
-    replaced by B; when A finally exits, it must NOT unlink B's lock."""
+def test_lock_released_by_kernel_when_owner_dies(tmp_path):
+    """The R6-blocker property flock buys us: a crashed builder frees the
+    lock with no stale-recovery logic (and thus nothing left to race)."""
+    import subprocess
+    import sys as _sys
     target = str(tmp_path / 'vat_book.db')
-    lock_a, token_a = vb.acquire_publish_lock(target)
-    os.remove(lock_a)                          # stale recovery removed A's lock
-    lock_b, token_b = vb.acquire_publish_lock(target)
-    vb.release_publish_lock(lock_a, token_a)   # A exits late
-    assert os.path.exists(lock_b)              # B still owns the lock
-    tok, pid = vb.read_lock(lock_b)
-    assert tok == token_b and pid == os.getpid()
-    vb.release_publish_lock(lock_b, token_b)
-    assert not os.path.exists(lock_b)
-
-
-def test_read_lock_garbage_returns_none(tmp_path):
-    p = tmp_path / 'x.lock'
-    p.write_text('not a lock')
-    assert vb.read_lock(str(p)) == ('not', None) or vb.read_lock(str(p))[1] is None
+    lock_path = target + '.lock'
+    child_code = (
+        "import fcntl, os, sys, time\n"
+        "fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "print('locked', flush=True)\n"
+        "time.sleep(30)\n")
+    p = subprocess.Popen([_sys.executable, '-c', child_code, lock_path],
+                         stdout=subprocess.PIPE)
+    try:
+        assert p.stdout.readline().strip() == b'locked'
+        with pytest.raises(RuntimeError, match='already running'):
+            vb.acquire_publish_lock(target)    # child holds it
+    finally:
+        p.kill()
+        p.wait()
+    fd = vb.acquire_publish_lock(target)       # kernel auto-released on death
+    vb.release_publish_lock(fd)
 
 
 # ── subprocess guard ────────────────────────────────────────────────────────

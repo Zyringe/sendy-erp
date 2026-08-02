@@ -191,7 +191,15 @@ def test_vat_detail_renders_no_mutation_controls(vat_db):
     for f in forms:
         assert ('/logout' in f or '/book/toggle' in f), f'unexpected POST form: {f}'
     assert 'ปรับยอดสต็อก' not in html            # stock-adjust modal
-    assert 'data-bs-target="#brandModal"' not in html
+    # No mutation-modal triggers besides the read-only price-history modal,
+    # and no GET-backed edit/deactivate links. (Scope: this pins the known
+    # mutation surfaces of detail.html — POST forms are the hard invariant.)
+    triggers = _re.findall(r'data-bs-target="#(\w+)"', html)
+    # mktPriceModal = read-only history viewer; mobileDrawer = nav offcanvas
+    assert set(triggers) <= {'mktPriceModal', 'mobileDrawer'}, \
+        f'unexpected modal triggers: {triggers}'
+    assert '/edit' not in html and '/deactivate' not in html
+    assert '/stock-in' not in html and '/stock-out' not in html
 
 
 def test_novat_detail_keeps_operational_cards(tmp_db):

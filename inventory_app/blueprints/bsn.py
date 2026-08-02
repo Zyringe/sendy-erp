@@ -754,16 +754,6 @@ def _update_run_result(run_id, key, value):
 _VAT_BUILD_PROCS = []
 
 
-def _pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-
-
 def _spawn_vat_rebuild(dataset_dir, run_id):
     """Detached full rebuild of vat_book.db (minutes — far beyond gunicorn's
     60s worker timeout, so NEVER in-request). The dataset is copied out of
@@ -773,22 +763,24 @@ def _spawn_vat_rebuild(dataset_dir, run_id):
     import book_registry
     _VAT_BUILD_PROCS[:] = [p for p in _VAT_BUILD_PROCS if p.poll() is None]
 
+    # Advisory busy-probe only — the BUILDER's flock is the real gate
+    # (acquisition is atomic and the kernel releases it the instant the
+    # owner dies, so there is NO stale-lock recovery and nothing ever
+    # unlinks the lockfile — Codex R6: every check-then-act variant here
+    # had a TOCTOU). If two spawns slip past this probe, the second
+    # builder fails its own flock and reports that into its run record.
+    import fcntl
     lock_path = book_registry.book_db_path('vat') + '.lock'
     if os.path.exists(lock_path):
-        # Stale recovery decides by OWNER LIVENESS, never by age (Codex R5
-        # blocker: an age rule steals the lock from a slow-but-alive builder,
-        # whose exit then unlinked the NEW owner's lock — token-verified
-        # release closes the second half; this closes the first).
-        import vat_book_builder as vb
-        _token, owner_pid = vb.read_lock(lock_path)
-        age_min = int((time.time() - os.path.getmtime(lock_path)) // 60)
-        # Backstop: after a container redeploy the stored pid may coincide
-        # with an unrelated live process — no build takes 6h, so a lock that
-        # old is stale no matter what liveness says.
-        if age_min < 360 and owner_pid and _pid_alive(owner_pid):
+        probe = os.open(lock_path, os.O_RDWR)
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(probe, fcntl.LOCK_UN)
+        except OSError:
             raise RuntimeError('มี rebuild สมุด VAT กำลังทำงานอยู่ '
-                               f'(~{age_min} นาที) — รอให้เสร็จก่อนแล้วค่อยอัปโหลดใหม่')
-        os.remove(lock_path)          # owner dead/unreadable/ancient → stale
+                               '— รอให้เสร็จก่อนแล้วค่อยอัปโหลดใหม่')
+        finally:
+            os.close(probe)
 
     run_root = tempfile.mkdtemp(prefix='vat_book_run_')
     src = os.path.join(run_root, 'dataset')

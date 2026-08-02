@@ -191,22 +191,24 @@ def test_bsn_failure_still_reported_and_vat_spawned(tmp_db, monkeypatch):
     assert len(spawned) == 1                  # BSN failing doesn't block VAT
 
 
-def test_spawn_refuses_while_owner_alive(tmp_db, tmp_path):
+def test_spawn_refuses_while_lock_held(tmp_db, tmp_path):
     import book_registry as br
     import vat_book_builder as vb
-    lock, token = vb.acquire_publish_lock(br.book_db_path('vat'))
+    fd = vb.acquire_publish_lock(br.book_db_path('vat'))
     try:
         with pytest.raises(RuntimeError, match='กำลังทำงาน'):
-            bsn._spawn_vat_rebuild(str(tmp_path), 1)   # our own pid is alive
+            bsn._spawn_vat_rebuild(str(tmp_path), 1)
     finally:
-        vb.release_publish_lock(lock, token)
+        vb.release_publish_lock(fd)
 
 
-def test_spawn_clears_dead_owner_lock_and_proceeds(tmp_db, tmp_path, monkeypatch):
+def test_spawn_proceeds_past_unheld_lockfile(tmp_db, tmp_path, monkeypatch):
+    """A lockfile from a dead builder is UNflocked (kernel released it) —
+    the probe passes without any removal, and the file is left in place."""
     import book_registry as br
     lock = br.book_db_path('vat') + '.lock'
     with open(lock, 'w') as fh:
-        fh.write('deadtoken 999999 2026-08-02T00:00:00')   # pid never alive
+        fh.write('99999 2026-08-02T00:00:00')  # breadcrumb from a dead run
     dataset = tmp_path / 'ds'
     dataset.mkdir()
     (dataset / 'ARTRN.DBF').write_bytes(b'')
@@ -215,7 +217,7 @@ def test_spawn_clears_dead_owner_lock_and_proceeds(tmp_db, tmp_path, monkeypatch
         bsn.subprocess, 'Popen',
         lambda *a, **k: spawned.append(a) or type('P', (), {'poll': lambda s: 0})())
     bsn._spawn_vat_rebuild(str(dataset), 7)
-    assert not os.path.exists(lock)            # dead owner's lock cleared
+    assert os.path.exists(lock)                # never unlinked
     assert len(spawned) == 1
 
 
