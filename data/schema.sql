@@ -1553,6 +1553,8 @@ CREATE INDEX idx_ar_writeoffs_customer ON ar_writeoffs(customer_code);
 
 CREATE INDEX idx_ar_writeoffs_doc      ON ar_writeoffs(doc_no);
 
+CREATE INDEX idx_audit_log_table_row_key ON audit_log(table_name, row_key);
+
 CREATE INDEX idx_audit_log_table_time
     ON audit_log(table_name, created_at DESC);
 
@@ -3797,6 +3799,30 @@ BEGIN
     );
 END;
 
+CREATE TRIGGER commission_assignments_salesperson_code_immutable
+BEFORE UPDATE ON commission_assignments
+WHEN NEW.salesperson_code IS NOT OLD.salesperson_code
+BEGIN
+    SELECT RAISE(ABORT,
+        'ห้ามเปลี่ยน salesperson_code ของกฎคอมมิชชั่นนี้ (เป็น primary key) — ให้ลบกฎเดิมแล้วสร้างกฎใหม่ให้พนักงานขายที่ถูกต้องแทน');
+END;
+
+CREATE TRIGGER customer_crm_customer_code_immutable
+BEFORE UPDATE ON customer_crm
+WHEN NEW.customer_code IS NOT OLD.customer_code
+BEGIN
+    SELECT RAISE(ABORT,
+        'ห้ามเปลี่ยน customer_code ของ CRM row นี้ (เป็น primary key) — ให้ลบ row เดิมแล้วสร้างใหม่ให้ลูกค้าที่ถูกต้องแทน');
+END;
+
+CREATE TRIGGER customers_code_immutable
+BEFORE UPDATE ON customers
+WHEN NEW.code IS NOT OLD.code
+BEGIN
+    SELECT RAISE(ABORT,
+        'ห้ามเปลี่ยนรหัสลูกค้า (customers.code) เพราะเป็น key ที่ผูกกับ commission_customer_reassign, product_code_mapping, การนำเข้า Express และประวัติ audit_log — ถ้าต้องการเปลี่ยนรหัส ให้สร้างลูกค้าใหม่ด้วยรหัสที่ต้องการแล้วย้ายข้อมูล/ประวัติไปแทน');
+END;
+
 CREATE TRIGGER platform_skus_price_history_update
 AFTER UPDATE ON platform_skus
 WHEN (
@@ -3896,6 +3922,14 @@ CREATE TRIGGER products_packaging_th_check_update
         SELECT RAISE(ABORT,
             'packaging_th must be NULL or one of: แผง, ตัว, ถุง, แพ็คหัว, แพ็คถุง, ซอง, อัดแผง, แพ็ค, แบบหลอด, โหล, 1กลมี60ใบ');
     END;
+
+CREATE TRIGGER salespersons_code_immutable
+BEFORE UPDATE ON salespersons
+WHEN NEW.code IS NOT OLD.code
+BEGIN
+    SELECT RAISE(ABORT,
+        'ห้ามเปลี่ยนรหัสพนักงานขาย (salespersons.code) เพราะเป็น key ที่ผูกกับ commission_assignments, customers.salesperson และประวัติคอมมิชชั่น — ถ้าต้องการเปลี่ยนรหัส ให้สร้างพนักงานขายใหม่ด้วยรหัสที่ต้องการแล้วย้ายลูกค้า/กฎคอมมิชชั่นไปแทน');
+END;
 
 CREATE TRIGGER update_color_finish_codes_timestamp
     AFTER UPDATE ON color_finish_codes

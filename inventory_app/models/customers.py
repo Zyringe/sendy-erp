@@ -687,6 +687,76 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
         conn.close()
 
 
+_AUDIT_FIELD_LABEL = {
+    'name': 'ชื่อในทะเบียน', 'nickname': 'ชื่อเล่น', 'salesperson': 'เซลส์',
+    'region_id': 'เขตการขาย', 'zone': 'โซน', 'address': 'ที่อยู่',
+    'phone': 'โทรศัพท์', 'fax': 'แฟกซ์', 'contact': 'ผู้ติดต่อ',
+    'contact_note': 'หมายเหตุ', 'tax_id': 'Tax ID', 'credit_days': 'เครดิต (วัน)',
+    'lat': 'พิกัด lat', 'lng': 'พิกัด lng',
+}
+
+
+def get_customer_audit_history(customer_code, limit=15):
+    """Recent changes to this customer's master row, newest first.
+
+    `audit_customers_update` records `{field: [old, new]}` for every change
+    (2,050 UPDATE rows as of 2026-08-01) — no page in the app read it, so the
+    trail was only reachable by opening SQL. This makes it visible where the
+    edits happen.
+
+    Joined on `audit_log.row_key` (migration 150), NOT `customers.rowid`.
+    `row_id` stores the SQLite rowid, which is IMPLICIT for this table (PK
+    is TEXT `code`) — VACUUM is explicitly permitted to renumber an implicit
+    rowid, and a renumber would re-point old rows at whatever customer now
+    holds that rowid, confidently showing ANOTHER customer's history. That
+    is why the card was pulled from #346 rather than shipped with a comment.
+    `row_key` stores the business key (`customers.code`) directly at write
+    time, so this query needs no join back through `customers` at all — and
+    migration 151 both made `code` itself immutable and added the
+    `(table_name, row_key)` index this query uses.
+
+    ⚠ `audit_log.user` is NULL on every customers row (1,188 INSERT + 2,050
+    UPDATE, checked 2026-08-01): the trigger is SQL-level and cannot see the
+    logged-in user. So this answers "when + what", never "who" — the
+    template must not imply otherwise.
+
+    Returns [{created_at, action, changes: [{field, label, old, new}]}].
+    """
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT a.created_at, a.action, a.changed_fields
+          FROM audit_log a
+         WHERE a.table_name = 'customers'
+           AND a.row_key = ?
+         ORDER BY a.id DESC
+         LIMIT ?
+    """, (customer_code, limit)).fetchall()
+    conn.close()
+
+    out = []
+    for r in rows:
+        try:
+            parsed = json.loads(r['changed_fields'] or '{}')
+        except (ValueError, TypeError):
+            parsed = {}
+        changes = []
+        for field, val in parsed.items():
+            # UPDATE rows carry [old, new]; INSERT rows carry a bare value.
+            if isinstance(val, list) and len(val) == 2:
+                old, new = val
+            else:
+                old, new = None, val
+            changes.append({
+                'field': field,
+                'label': _AUDIT_FIELD_LABEL.get(field, field),
+                'old': '' if old is None else old,
+                'new': '' if new is None else new,
+            })
+        out.append({'created_at': r['created_at'], 'action': r['action'],
+                    'changes': changes})
+    return out
+
+
 def bulk_reassign_customers(customer_codes, region_id, salesperson_code=None):
     """Region-only bulk reassignment of the customers master.
 
