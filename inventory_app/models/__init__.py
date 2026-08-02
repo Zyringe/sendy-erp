@@ -69,7 +69,7 @@ from .customers import (
     get_all_regions_with_counts, update_region, get_active_salespersons,
     get_all_regions, get_orphan_salesperson_codes, get_customer_master,
     _BULK_MAX, update_customer_assignment, update_customer_edit,
-    CUSTOMER_CONTACT_FIELDS,
+    CUSTOMER_CONTACT_FIELDS, get_customer_audit_history,
     bulk_reassign_customers,
     get_customers_master, import_customers_from_bsn, get_customers_for_map,
     save_customer_geocode, get_customer_zones, get_customer_types,
