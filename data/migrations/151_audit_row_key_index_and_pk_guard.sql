@@ -33,11 +33,18 @@
 
 PRAGMA busy_timeout = 10000;
 
+-- Drop-first, matching migration 150: every CREATE here is preceded by a
+-- DROP ... IF EXISTS so the file is re-runnable. The runner stamps a migration
+-- and will not repeat it, but a hand-applied or partially-recovered DB otherwise
+-- fails on 'index already exists' — which is exactly what happened while
+-- rehearsing this migration on a copy.
 BEGIN IMMEDIATE;
 
+DROP INDEX IF EXISTS idx_audit_log_table_row_key;
 CREATE INDEX idx_audit_log_table_row_key ON audit_log(table_name, row_key);
 
 -- ── customers.code is immutable ─────────────────────────────────────────
+DROP TRIGGER IF EXISTS customers_code_immutable;
 CREATE TRIGGER customers_code_immutable
 BEFORE UPDATE ON customers
 WHEN NEW.code IS NOT OLD.code
@@ -47,6 +54,7 @@ BEGIN
 END;
 
 -- ── salespersons.code is immutable ──────────────────────────────────────
+DROP TRIGGER IF EXISTS salespersons_code_immutable;
 CREATE TRIGGER salespersons_code_immutable
 BEFORE UPDATE ON salespersons
 WHEN NEW.code IS NOT OLD.code
@@ -56,6 +64,7 @@ BEGIN
 END;
 
 -- ── commission_assignments.salesperson_code is immutable ────────────────
+DROP TRIGGER IF EXISTS commission_assignments_salesperson_code_immutable;
 CREATE TRIGGER commission_assignments_salesperson_code_immutable
 BEFORE UPDATE ON commission_assignments
 WHEN NEW.salesperson_code IS NOT OLD.salesperson_code
@@ -65,6 +74,7 @@ BEGIN
 END;
 
 -- ── customer_crm.customer_code is immutable ─────────────────────────────
+DROP TRIGGER IF EXISTS customer_crm_customer_code_immutable;
 CREATE TRIGGER customer_crm_customer_code_immutable
 BEFORE UPDATE ON customer_crm
 WHEN NEW.customer_code IS NOT OLD.customer_code
