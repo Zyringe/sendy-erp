@@ -102,6 +102,16 @@
     </div>
 
     <!-- Marketplace current price (per listing) + click→history modal -->
+    {% if active_book == 'vat' %}
+    {# Operational cards (marketplace / โปรโมชัน / ราคาแพ็ค / สถานที่เก็บ /
+       pack-unpack) belong to the CURRENT book — shown as explicitly
+       unavailable in the VAT view, never as plausible emptiness. #}
+    <div class="alert alert-secondary py-2 small mb-3">
+      <i class="bi bi-journals me-1"></i>
+      ราคา marketplace · โปรโมชัน · ราคาแพ็ค · สถานที่เก็บ มีเฉพาะสมุดปัจจุบัน
+      — สมุด VAT แสดงเฉพาะข้อมูลสินค้า สต็อกตามบัญชี และประวัติของสมุดนี้
+    </div>
+    {% endif %}
     {% macro mkt_price_list(block, plat, platform_label) %}
       {% if block.listings %}
       <div class="px-2 pt-1">
@@ -127,6 +137,7 @@
       <div class="px-3 py-3 text-subtle small"><i class="bi bi-inbox me-1"></i>ไม่มี listing บน {{ platform_label }}</div>
       {% endif %}
     {% endmacro %}
+    {% if active_book != 'vat' %}
     <div class="card mb-3">
       <div class="card-header">
         <i class="bi bi-tags me-2 text-accent"></i>ราคา marketplace
@@ -159,6 +170,7 @@
         <div class="px-3 py-2 text-subtle" style="font-size:.66rem;border-top:1px solid #f1f5f9"><i class="bi bi-info-circle me-1"></i>คลิกราคาที่มี <i class="bi bi-chevron-right"></i> เพื่อดูประวัติการเปลี่ยน · <span class="fw-600">×N</span> = จำนวนต่อแพ็ค</div>
       </div>
     </div>
+    {% endif %}
 
     <!-- Info card -->
     <div class="card mb-3">
@@ -605,6 +617,7 @@
     {% endif %}
 
     <!-- Promotions -->
+    {% if active_book != 'vat' %}
     <div class="card mb-3">
       <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-percent me-2 text-accent"></i>โปรโมชัน</span>
@@ -686,6 +699,7 @@
         </table>
       </div>
     </div>
+    {% endif %}
 
     <!-- Transaction history -->
     <div class="card">

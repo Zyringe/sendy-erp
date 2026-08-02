@@ -138,6 +138,48 @@ def test_finalize_rejects_corrupt_file(tmp_path):
         vb.finalize(str(db))
 
 
+# ── publish + lock (Codex R4 P0) ────────────────────────────────────────────
+
+def _valid_book(path):
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE book_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    c.execute("INSERT INTO book_meta VALUES ('built_at', 'T')")
+    c.commit()
+    c.close()
+
+
+def test_publish_swaps_and_leaves_no_staging(tmp_path):
+    built = str(tmp_path / 'built.db')
+    target = str(tmp_path / 'vat_book.db')
+    _valid_book(built)
+    vb.publish(built, target)
+    assert os.path.exists(target)
+    leftovers = [f for f in os.listdir(tmp_path) if '.publish' in f]
+    assert leftovers == []
+
+
+def test_publish_rejects_corrupt_copy_and_keeps_target(tmp_path):
+    built = tmp_path / 'built.db'
+    built.write_bytes(b'SQLite format 3\x00' + b'\x00' * 64)   # truncated junk
+    target = str(tmp_path / 'vat_book.db')
+    _valid_book(target)                     # existing live book must survive
+    with pytest.raises((RuntimeError, sqlite3.DatabaseError)):
+        vb.publish(str(built), target)
+    c = sqlite3.connect(f'file:{target}?mode=ro', uri=True)
+    assert c.execute("SELECT value FROM book_meta").fetchone()[0] == 'T'
+    c.close()
+
+
+def test_publish_lock_excludes_second_runner(tmp_path):
+    target = str(tmp_path / 'vat_book.db')
+    lock = vb.acquire_publish_lock(target)
+    assert os.path.exists(lock)
+    with pytest.raises(RuntimeError, match='already running'):
+        vb.acquire_publish_lock(target)
+    os.remove(lock)
+    assert os.path.exists(vb.acquire_publish_lock(target))
+
+
 # ── subprocess guard ────────────────────────────────────────────────────────
 
 def test_guard_refuses_without_env_flag(monkeypatch):

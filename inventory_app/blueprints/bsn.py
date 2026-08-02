@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
@@ -748,12 +749,29 @@ def _update_run_result(run_id, key, value):
         conn.close()
 
 
+# Not business state — bookkeeping so finished detached builders get reaped
+# (poll() collects the zombie); bounded by in-flight builds per worker.
+_VAT_BUILD_PROCS = []
+_VAT_LOCK_STALE_SECONDS = 45 * 60
+
+
 def _spawn_vat_rebuild(dataset_dir, run_id):
     """Detached full rebuild of vat_book.db (minutes — far beyond gunicorn's
     60s worker timeout, so NEVER in-request). The dataset is copied out of
     the request's tmpdir so it survives this request's cleanup; the builder
-    publishes atomically, updates the run record, and removes the scratch."""
+    acquires the publish lock (serializing concurrent rebuilds), publishes
+    atomically, updates the run record, and removes the scratch."""
     import book_registry
+    _VAT_BUILD_PROCS[:] = [p for p in _VAT_BUILD_PROCS if p.poll() is None]
+
+    lock_path = book_registry.book_db_path('vat') + '.lock'
+    if os.path.exists(lock_path):
+        age = time.time() - os.path.getmtime(lock_path)
+        if age < _VAT_LOCK_STALE_SECONDS:
+            raise RuntimeError('มี rebuild สมุด VAT ค้างทำงานอยู่ '
+                               f'(~{int(age // 60)} นาที) — รอให้เสร็จก่อนแล้วค่อยอัปโหลดใหม่')
+        os.remove(lock_path)          # crashed builder left it behind
+
     run_root = tempfile.mkdtemp(prefix='vat_book_run_')
     src = os.path.join(run_root, 'dataset')
     shutil.copytree(dataset_dir, src)
@@ -762,7 +780,7 @@ def _spawn_vat_rebuild(dataset_dir, run_id):
     builder = os.path.abspath(os.path.join(
         os.path.dirname(os.path.abspath(__file__)), '..', 'vat_book_builder.py'))
     env = {**os.environ, 'DATA_DIR': data_dir, 'VAT_BOOK_BUILD': '1'}
-    subprocess.Popen(
+    proc = subprocess.Popen(
         [sys.executable, builder,
          '--source', src,
          '--publish-to', book_registry.book_db_path('vat'),
@@ -772,3 +790,4 @@ def _spawn_vat_rebuild(dataset_dir, run_id):
         cwd=os.path.dirname(builder), env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True)
+    _VAT_BUILD_PROCS.append(proc)

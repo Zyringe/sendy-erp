@@ -82,8 +82,13 @@ def book_db_path(book):
 
 def active_book():
     """The session's selected book, validated; 'novat' outside a request
-    context (scripts, cron) and for any unknown session value."""
+    context (scripts, cron), for any unknown session value, and ALWAYS for
+    the 'general' kiosk role — its only allowed page (/m/stock) is outside
+    the parity set, so a stuck VAT session would redirect-loop it against
+    access_control's GET allowlist (Codex R4 P1)."""
     if not has_request_context():
+        return DEFAULT_BOOK
+    if session.get('role') == 'general':
         return DEFAULT_BOOK
     book = session.get('active_book', DEFAULT_BOOK)
     return book if book in BOOKS else DEFAULT_BOOK
@@ -182,6 +187,11 @@ def init_book_registry(app):
 
     @app.post('/book/toggle')
     def toggle_book():
+        if session.get('role') == 'general':
+            # kiosk role: no book concept (see active_book) — belt for the
+            # POST-whitelist suspenders in access_control.
+            session['active_book'] = DEFAULT_BOOK
+            return redirect(url_for('mobile.stock_search'))
         target = request.form.get('book', DEFAULT_BOOK)
         if target not in BOOKS:
             target = DEFAULT_BOOK

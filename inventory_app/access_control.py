@@ -102,7 +102,8 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
 
 _GENERAL_POST_OK = frozenset([
     'logout',
-    'toggle_book',
+    # NO toggle_book: the kiosk role's only page (/m/stock) is outside the
+    # VAT parity set, so VAT mode would redirect-loop it (Codex R4 P1).
     'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
     'me.change_password',
 ])

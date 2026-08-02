@@ -9,11 +9,11 @@ the vat book.
       normalized names agree. A code match with a conflicting name NEVER
       auto-applies (Put, grilling Q4).
   Layer 2 'dualkey': xp5 IV docs paired 1:1 to BSN5657 docs by
-      (DOCDAT, amount); line items matched by (qty, unit_price); a product
-      pair auto-applies only when: doc pairing 1:1 both ways, >= 2
-      independent doc pairs, no competing candidate on either side, and
-      zero contradictions. (Quantities compare raw+price equal, which pins
-      the unit implicitly.)
+      (DOCDAT, amount); line items matched by (qty, unit_price,
+      normalized TQUCOD unit — equal numbers in different units never
+      pair); a product pair auto-applies only when: doc pairing 1:1 both
+      ways, >= 2 independent doc pairs, no competing candidate on either
+      side, and zero contradictions.
   Layer 3 'name': difflib similarity of normalized names — suggestions for
       the sheet ONLY, never auto.
 
@@ -38,6 +38,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / 'inventory_app'))
 
+import bsn_units                               # noqa: E402
 import config                                  # noqa: E402
 import express_dbf_source as eds               # noqa: E402
 
@@ -114,6 +115,10 @@ def _doc_headers(dbf_dir):
 
 
 def _doc_lines(dbf_dir, wanted_docs):
+    """Line tuples (qty, price, unit_norm, code). The unit (STCRD.TQUCOD,
+    normalized through bsn_units so both books' acronyms compare equal) is
+    part of the match signature — equal numbers in DIFFERENT units must
+    never pair (plan's unit-normalized rule; Codex R4)."""
     lines = defaultdict(list)
     for r in eds.open_table(dbf_dir, 'STCRD'):
         doc = str(r.get('DOCNUM') or '').strip()
@@ -122,8 +127,9 @@ def _doc_lines(dbf_dir, wanted_docs):
         code = str(r.get('STKCOD') or '').strip()
         qty = round(float(r.get('TRNQTY') or 0), 4)
         price = round(float(r.get('UNITPR') or 0), 4)
+        unit = bsn_units.normalize_unit(str(r.get('TQUCOD') or '').strip()) or ''
         if code:
-            lines[doc].append((qty, price, code))
+            lines[doc].append((qty, price, unit, code))
     return lines
 
 
@@ -152,11 +158,11 @@ def layer2(xp5_dir, bsn_dir, code_map, product_names, already):
     for xdoc, bdoc in pairs:
         xl, bl = xlines.get(xdoc, []), blines.get(bdoc, [])
         bl_by_sig = defaultdict(list)
-        for qty, price, code in bl:
-            bl_by_sig[(qty, price)].append(code)
-        xl_sig = Counter((qty, price) for qty, price, _ in xl)
-        for qty, price, xcode in xl:
-            sig = (qty, price)
+        for qty, price, unit, code in bl:
+            bl_by_sig[(qty, price, unit)].append(code)
+        xl_sig = Counter((qty, price, unit) for qty, price, unit, _ in xl)
+        for qty, price, unit, xcode in xl:
+            sig = (qty, price, unit)
             # the line signature must be unique WITHIN both documents
             if xl_sig[sig] != 1 or len(bl_by_sig.get(sig, [])) != 1:
                 continue
@@ -230,20 +236,50 @@ def layer3(xp5_products, product_names, taken, threshold=0.78):
     return review
 
 
+def load_locked_codes(conn):
+    """Human-decided rows (reviewed/ignored) are DURABLE: the pipeline never
+    updates them, never re-proposes them, never re-sheets them."""
+    return {r['xp5_code'] for r in conn.execute(
+        "SELECT xp5_code FROM xp5_product_mapping WHERE status != 'auto'")}
+
+
 def apply_auto(conn, rows, xp5_products):
+    """auto rows are a DERIVED layer: refresh = delete old autos + insert the
+    new set. Human rows survive both steps structurally (delete filters on
+    status; insert uses DO NOTHING so a conflict with a human row is a no-op).
+    Verification (Codex R4): snapshot human rows before, assert byte-equality
+    after; assert every batch row landed with exact field values."""
+    before_human = {r['xp5_code']: tuple(r) for r in conn.execute(
+        "SELECT xp5_code, product_id, status, match_layer, note "
+        "FROM xp5_product_mapping WHERE status != 'auto'")}
+
+    conn.execute("DELETE FROM xp5_product_mapping WHERE status = 'auto'")
     for r in rows:
         conn.execute(
             "INSERT INTO xp5_product_mapping "
             "(xp5_code, product_id, xp5_name, match_layer, status, evidence_count) "
             "VALUES (?, ?, ?, ?, 'auto', ?) "
-            "ON CONFLICT(xp5_code) DO UPDATE SET "
-            "product_id=excluded.product_id, match_layer=excluded.match_layer, "
-            "evidence_count=excluded.evidence_count, "
-            "updated_at=datetime('now','localtime')",
+            "ON CONFLICT(xp5_code) DO NOTHING",
             (r['xp5_code'], r['product_id'],
              r['xp5_name'] or xp5_products.get(r['xp5_code'], ''),
              r['match_layer'], r['evidence_count']))
     conn.commit()
+
+    after = {r['xp5_code']: r for r in conn.execute(
+        "SELECT xp5_code, product_id, status, match_layer, evidence_count, note "
+        "FROM xp5_product_mapping")}
+    for r in rows:
+        got = after.get(r['xp5_code'])
+        assert got is not None, f"batch row missing after apply: {r['xp5_code']}"
+        if got['status'] == 'auto':
+            assert (got['product_id'], got['match_layer'], got['evidence_count']) == \
+                (r['product_id'], r['match_layer'], r['evidence_count']), \
+                f"applied row mismatch: {r['xp5_code']}"
+    after_human = {r['xp5_code']: tuple(r) for r in conn.execute(
+        "SELECT xp5_code, product_id, status, match_layer, note "
+        "FROM xp5_product_mapping WHERE status != 'auto'")}
+    assert after_human == before_human, "human-reviewed rows were modified"
+    return len(before_human)
 
 
 def write_sheet(review_rows, out_base):
@@ -285,6 +321,7 @@ def main():
 
     xp5_products = load_xp5_products(args.xp5)
     code_map, product_names = load_main(conn)
+    locked = load_locked_codes(conn)
 
     auto1, review1 = layer1(xp5_products, code_map, product_names)
     already = {r['xp5_code'] for r in auto1}
@@ -292,11 +329,14 @@ def main():
                                      product_names, already)
     taken = already | {r['xp5_code'] for r in auto2} \
         | {r['xp5_code'] for r in review1} | {r['xp5_code'] for r in review2}
-    review3 = layer3(xp5_products, product_names, taken)
+    review3 = layer3(xp5_products, product_names, taken | locked)
 
-    auto_rows = auto1 + auto2
-    review_rows = review1 + review2 + review3
+    # Human decisions are final: never re-propose or re-sheet a locked code.
+    auto_rows = [r for r in auto1 + auto2 if r['xp5_code'] not in locked]
+    review_rows = [r for r in review1 + review2 + review3
+                   if r['xp5_code'] not in locked]
     print(json.dumps({
+        'locked_human_rows': len(locked),
         'xp5_products': len(xp5_products),
         'layer1_auto': len(auto1), 'layer1_review': len(review1),
         'layer2_auto': len(auto2), 'layer2_review': len(review2),
@@ -312,10 +352,11 @@ def main():
         dst = sqlite3.connect(backup)
         src.backup(dst)
         dst.close(); src.close()
-        apply_auto(conn, auto_rows, xp5_products)
+        human_n = apply_auto(conn, auto_rows, xp5_products)
         n = conn.execute("SELECT COUNT(*) FROM xp5_product_mapping "
                          "WHERE status='auto'").fetchone()[0]
-        print(f'applied auto rows, re-read verify: {n} auto rows in table '
+        print(f'applied {len(auto_rows)} auto rows (field-exact verified); '
+              f'{human_n} human rows untouched; auto rows in table: {n} '
               f'(backup: {backup})')
     else:
         print('dry-run only — rerun with --apply to write auto rows')

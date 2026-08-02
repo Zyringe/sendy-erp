@@ -168,6 +168,49 @@ def test_matching_expected_book_passes_guard(vat_db):
     assert r.status_code == 400
 
 
+MKT_CARD_HEADER = '<i class="bi bi-tags me-2 text-accent"></i>ราคา marketplace'
+PROMO_CARD_HEADER = '<i class="bi bi-percent me-2 text-accent"></i>โปรโมชัน'
+
+
+def test_vat_detail_hides_operational_cards_with_notice(vat_db):
+    html = _client('vat').get('/products/901').get_data(as_text=True)
+    assert 'มีเฉพาะสมุดปัจจุบัน' in html            # explicit-unavailable notice
+    # assert on the card-header ELEMENTS — the notice text itself names the
+    # cards, so a bare substring check cannot distinguish them
+    assert MKT_CARD_HEADER not in html
+    assert PROMO_CARD_HEADER not in html
+
+
+def test_novat_detail_keeps_operational_cards(tmp_db):
+    html = _client().get('/products/1').get_data(as_text=True)
+    assert MKT_CARD_HEADER in html
+    assert PROMO_CARD_HEADER in html
+    assert 'มีเฉพาะสมุดปัจจุบัน' not in html
+
+
+# ── general (kiosk) role never enters VAT mode (Codex R4 P1) ────────────────
+
+def test_general_role_with_stuck_vat_session_forced_novat(vat_db):
+    """A general session that somehow carries active_book='vat' must behave
+    as novat everywhere — no /sales↔/m/stock redirect loop."""
+    c = _client('vat', role='general')
+    r = c.get('/m/stock')
+    assert r.status_code == 200               # kiosk page renders, no loop
+    from app import app as flask_app
+    with flask_app.test_request_context('/'):
+        from flask import session
+        session['role'] = 'general'
+        session['active_book'] = 'vat'
+        assert br.active_book() == 'novat'
+
+
+def test_general_role_cannot_toggle(vat_db):
+    c = _client(role='general')
+    c.post('/book/toggle', data={'book': 'vat'}, follow_redirects=False)
+    with c.session_transaction() as s:
+        assert s.get('active_book', 'novat') == 'novat'
+
+
 # ── toggle route ────────────────────────────────────────────────────────────
 
 def test_toggle_to_vat_and_back(vat_db):

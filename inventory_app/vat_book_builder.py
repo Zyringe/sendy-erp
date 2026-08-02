@@ -231,21 +231,55 @@ def build(source_dir):
 def publish(built_path, target_path):
     """Copy the finished artifact next to the live target and swap atomically.
     A plain copy first because the build dir (/tmp) and the data volume are
-    different filesystems on Railway — os.replace cannot cross devices."""
+    different filesystems on Railway — os.replace cannot cross devices.
+    Staging name is per-process (two concurrent publishers must never share a
+    staging file), and the STAGED copy is integrity-checked again before the
+    swap — the bytes that survived the cross-device copy are what goes live."""
     import shutil
-    tmp_target = target_path + '.publish'
-    shutil.copyfile(built_path, tmp_target)
-    fd = os.open(tmp_target, os.O_RDONLY)
+    tmp_target = f'{target_path}.publish.{os.getpid()}'
     try:
-        os.fsync(fd)
+        shutil.copyfile(built_path, tmp_target)
+        conn = sqlite3.connect(f'file:{tmp_target}?mode=ro', uri=True)
+        try:
+            ok = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            meta = conn.execute(
+                "SELECT value FROM book_meta WHERE key='built_at'").fetchone()
+        finally:
+            conn.close()
+        if ok != 'ok' or not meta:
+            raise RuntimeError(f'staged copy failed verification: {ok!r}')
+        fd = os.open(tmp_target, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp_target, target_path)
     finally:
-        os.close(fd)
-    os.replace(tmp_target, target_path)
+        if os.path.exists(tmp_target):
+            os.remove(tmp_target)
     dfd = os.open(os.path.dirname(target_path) or '.', os.O_RDONLY)
     try:
         os.fsync(dfd)
     finally:
         os.close(dfd)
+
+
+def acquire_publish_lock(target_path):
+    """Serialize the whole rebuild→publish lifecycle across workers and
+    processes: O_CREAT|O_EXCL lockfile beside the live target (same volume).
+    Returns the lock path; raises RuntimeError when another rebuild owns it.
+    The spawner clears stale locks (crashed builder) before spawning."""
+    lock_path = target_path + '.lock'
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise RuntimeError('another VAT rebuild is already running '
+                           f'(lock: {lock_path})')
+    try:
+        os.write(fd, f'{os.getpid()} {datetime.now().isoformat()}'.encode())
+    finally:
+        os.close(fd)
+    return lock_path
 
 
 def _report_result(result_db, result_row, vat_result):
@@ -279,8 +313,13 @@ if __name__ == '__main__':
     p.add_argument('--cleanup-dir',
                    help='scratch dir (dataset copy + build dir) to delete at exit')
     args = p.parse_args()
+    lock_path = None
     try:
         try:
+            # The lock spans build AND publish (P0: two workers spawning two
+            # rebuilds must serialize the entire lifecycle, not just the swap).
+            if args.publish_to:
+                lock_path = acquire_publish_lock(args.publish_to)
             summary = build(args.source)
             if args.publish_to:
                 publish(summary['db_path'], args.publish_to)
@@ -295,6 +334,8 @@ if __name__ == '__main__':
         if args.result_db and args.result_row:
             _report_result(args.result_db, args.result_row, outcome)
     finally:
+        if lock_path and os.path.exists(lock_path):
+            os.remove(lock_path)
         if args.cleanup_dir:
             import shutil
             shutil.rmtree(args.cleanup_dir, ignore_errors=True)

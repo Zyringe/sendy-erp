@@ -307,22 +307,35 @@ def product_new():
 @bp_products.route('/products/<int:product_id>')
 def product_detail(product_id):
     book_conn = book_registry.get_book_connection()
+    vat_mode = book_registry.active_book() != 'novat'
     product = models.get_product(product_id, conn=book_conn)
     if not product:
         flash('ไม่พบสินค้า', 'danger')
         return redirect(url_for('products.product_list'))
-    promotions = models.get_promotions(product_id, conn=book_conn)
-    active_promo = models.get_active_promotion(product_id, conn=book_conn)
-    price_tiers = models.get_product_price_tiers(product_id, conn=book_conn)
-    sell_price = models.effective_price(product, conn=book_conn)
+    # Operational datasets (promotions, tiers, marketplace, shelf locations,
+    # pack/unpack) belong to the CURRENT book only — in VAT mode they are
+    # explicitly unavailable, never rendered as plausible emptiness
+    # (Codex R4; plan rev 3 unavailable-policy). The tax book keeps: product
+    # master, tax-book stock, its own transaction history, its own
+    # sales-derived pricing summary, and the cross-book badge.
+    if vat_mode:
+        promotions, active_promo, price_tiers = [], None, []
+        locations = []
+        sell_price = product['base_sell_price']
+    else:
+        promotions = models.get_promotions(product_id, conn=book_conn)
+        active_promo = models.get_active_promotion(product_id, conn=book_conn)
+        price_tiers = models.get_product_price_tiers(product_id, conn=book_conn)
+        sell_price = models.effective_price(product, conn=book_conn)
+        locations = models.get_product_locations(product_id, conn=book_conn)
     txn_page = int(request.args.get('txn_page', 1))
     per_page = 20
     txns, txn_total = models.get_transactions(product_id=product_id, page=txn_page,
                                               per_page=per_page, conn=book_conn)
     txn_pages = (txn_total + per_page - 1) // per_page
-    locations = models.get_product_locations(product_id, conn=book_conn)
     bsn_pricing = models.get_product_pricing_summary(product_id, conn=book_conn)
-    mkt = models.get_marketplace_listings_with_history(product_id, conn=book_conn)
+    mkt = {} if vat_mode else models.get_marketplace_listings_with_history(
+        product_id, conn=book_conn)
     # Flat map for the click→history modal (keyed "platform|variation_id").
     mkt_modal_data = {}
     _plat_label = {'shopee': 'Shopee', 'lazada': 'Lazada'}
@@ -334,9 +347,9 @@ def product_detail(product_id):
                     'platform': _plat_label.get(_plat, _plat),
                     'history': _l['history'],
                 }
-    brands = models.get_brands(conn=book_conn)
+    brands = [] if vat_mode else models.get_brands(conn=book_conn)
     current_brand = (models.get_brand(product['brand_id'], conn=book_conn)
-                     if product['brand_id'] else None)
+                     if product['brand_id'] and not vat_mode else None)
     # Cross-book badge (VAT view only): this VAT-book product's xp5 code →
     # main-DB xp5_product_mapping → main product. Two connections on purpose:
     # the mapping is durable main-DB knowledge, the product is book data, and
@@ -358,7 +371,8 @@ def product_detail(product_id):
             finally:
                 main_conn.close()
     # pack/unpack true-availability: extra units obtainable by running a conversion
-    buildable = models.get_buildable([product_id], conn=book_conn).get(product_id)
+    buildable = (None if vat_mode else
+                 models.get_buildable([product_id], conn=book_conn).get(product_id))
     # "Back to filtered list": prefer the ?back= the list link carried; fall back
     # to the last list view remembered in session so the back button still returns
     # to the filter even after a detail-page action redirects without ?back=.
