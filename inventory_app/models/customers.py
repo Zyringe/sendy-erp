@@ -284,6 +284,9 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
     """Customer list backed by customers master + salespersons + regions.
 
     Filter precedence: region_id (FK, new) > region (text, legacy URL).
+    `search` matches the code, the name on the bill, and the name on the
+    customers master — on BOTH halves of the union, so a customer answers to
+    the same search before and after its first bill.
     Returns customer rows with display fields:
         salesperson  → name from salespersons master, or raw code if orphan
         region       → name_th from regions, or code as fallback
@@ -297,8 +300,17 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
     conds = []
     billing_params = []
     if search:
-        conds.append("(s.customer LIKE ? OR s.customer_code LIKE ?)")
-        billing_params += [f"%{search}%", f"%{search}%"]
+        # Match the master name here too, not just the bill name. The two
+        # disagree for 198 of the 276 billing customers — the master carries a
+        # legal prefix the bill drops ('หจก. ไทยทวีกิจ' vs 'ไทยทวีกิจ') — and
+        # the bill-less half below matches on `c.name`. Without this, a
+        # customer found by its registered name while bill-less stops
+        # answering to that same search the moment its first bill lands.
+        # No `c.code` predicate: the join pins `c.code = s.customer_code`, so
+        # it could only ever match rows `s.customer_code` already matches.
+        conds.append(
+            "(s.customer LIKE ? OR s.customer_code LIKE ? OR c.name LIKE ?)")
+        billing_params += [f"%{search}%"] * 3
 
     rid_int = None
     if region_id is not None and str(region_id).strip():
