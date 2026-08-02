@@ -82,7 +82,7 @@ MOVED_NAMES = {
     'mapping': [
         'upsert_mapping', 'get_pending_mappings', 'resolve_pending_mappings',
         '_resolve_mapping', '_BSN_LEDGER_NOTE_PATTERNS',
-        '_bsn_code_ledger_orphans', 'repoint_bsn_code',
+        '_bsn_code_ledger_orphans', 'repoint_bsn_code', 'missing_unit_ratios',
     ],
     'imports': [
         '_detect_removed_lines', 'preview_import', 'import_weekly',

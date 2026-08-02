@@ -192,14 +192,33 @@ def _resolve_mapping(conn, code, unit=''):
 
 
 def _bsn_code_ledger_orphans(conn, bsn_code):
-    """Ledger rows (transactions.note LIKE 'BSN%') that were posted for one of
-    `bsn_code`'s docs but now sit on a product_id the CURRENT source row
-    (sales_transactions/purchase_transactions) disagrees with — the exact
-    "orphan" shape scripts/remap_bsn_code.py's old bug produced (source moved
-    to the new product, ledger stranded on the old one). Independent of
+    """Ledger rows (transactions.note LIKE 'BSN%') on one of `bsn_code`'s docs
+    that NO source row on that doc can account for — the exact "orphan" shape
+    scripts/remap_bsn_code.py's old bug produced (source moved to the new
+    product, ledger stranded on the old one). Independent of
     repoint_bsn_code's own bookkeeping — re-derived fresh from the ledger +
     source tables so it also catches orphans from OUTSIDE this function
     (e.g. left over from the old buggy script) for the same bsn_code.
+
+    The NOT EXISTS deliberately does NOT filter on bsn_code. A BSN document is
+    a multi-line bill: one doc_no carries many codes, each posting its own
+    ledger row on its own product. Requiring the source row to ALSO match
+    `bsn_code` flagged every sibling line on a shared bill as an orphan, so
+    the count could never reach 0 for a code that shares bills with anything —
+    measured 2026-08-03 on an UNTOUCHED database: code 999ล2030 reported 14
+    "orphans", all of them other products' lines (กิ๊ปรัด ORBIT, สายยูตราจิงโจ้,
+    ตะไบแทงเลื่อย, ...). That made repoint_bsn_code's documented
+    "orphan_rows_after must be 0" invariant unsatisfiable, which is worse than
+    a missing check: it trains the reader to ignore a real alarm.
+
+    "Explained by SOME source row on this doc at this product" is the property
+    that actually distinguishes a stranded row from a sibling line.
+
+    Known limit of that property: a stranded row is MASKED if the product it
+    was stranded on happens to carry another line of the same document. That
+    trade is deliberate — the previous form reported a false alarm on every
+    shared bill, which is a check nobody can act on, whereas this one only
+    misses a narrow overlap case.
     """
     sales_orphans = conn.execute(
         """
@@ -208,10 +227,10 @@ def _bsn_code_ledger_orphans(conn, bsn_code):
           AND t.reference_no IN (SELECT doc_no FROM sales_transactions WHERE bsn_code=?)
           AND NOT EXISTS (
               SELECT 1 FROM sales_transactions s
-              WHERE s.doc_no = t.reference_no AND s.bsn_code = ? AND s.product_id = t.product_id
+              WHERE s.doc_no = t.reference_no AND s.product_id = t.product_id
           )
         """,
-        (bsn_code, bsn_code),
+        (bsn_code,),
     ).fetchall()
     purchase_orphans = conn.execute(
         """
@@ -220,15 +239,54 @@ def _bsn_code_ledger_orphans(conn, bsn_code):
           AND t.reference_no IN (SELECT doc_no FROM purchase_transactions WHERE bsn_code=?)
           AND NOT EXISTS (
               SELECT 1 FROM purchase_transactions p
-              WHERE p.doc_no = t.reference_no AND p.bsn_code = ? AND p.product_id = t.product_id
+              WHERE p.doc_no = t.reference_no AND p.product_id = t.product_id
           )
         """,
-        (bsn_code, bsn_code),
+        (bsn_code,),
     ).fetchall()
     return len(sales_orphans) + len(purchase_orphans)
 
 
-def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None) -> dict:
+def missing_unit_ratios(conn, new_pid: int, rows) -> list:
+    """BSN units among `rows` that product `new_pid` could NOT convert, sorted.
+
+    _sync_bsn_to_stock SKIPS a row whose (product, bsn_unit) has no ratio —
+    silently, and without marking it — so a destination missing the conversion
+    swallows that side of the history while the other side posts. Measured
+    2026-08-03 re-pointing 999ล2030 onto pid 791, which had no unit_conversions
+    row at all: all 9 purchase rows vanished, the 13 sales rows landed, and
+    stock went 24 -> -558.
+
+    Mirrors bsn_sync._get_base_qty's resolution exactly — unit_type match
+    first, then the unit_conversions lookup — so this check cannot disagree
+    with the sync it guards. Shared by repoint_bsn_code (which refuses) and
+    scripts/remap_bsn_code.py's dry-run (which warns), so a preview can never
+    say "fine" about a move that the apply will reject.
+    """
+    product = conn.execute(
+        "SELECT unit_type FROM products WHERE id=?", (new_pid,)
+    ).fetchone()
+    if product is None:
+        # repoint_bsn_code validates this before calling, but the CLI dry-run
+        # calls us directly — without this it dies on a bare TypeError.
+        raise ValueError(f"missing_unit_ratios: product {new_pid} not found")
+    unit_type = product['unit_type']
+    missing = set()
+    for r in rows:
+        unit = r['unit']
+        if unit is not None and unit.strip() == (unit_type or '').strip():
+            continue
+        if conn.execute(
+            "SELECT 1 FROM unit_conversions WHERE product_id=? AND bsn_unit=?",
+            (new_pid, unit),
+        ).fetchone():
+            continue
+        missing.add(unit)
+    return sorted(missing)
+
+
+def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
+                     preserve_stock: bool = False) -> dict:
     """Canonical single bsn_code re-point — moves the mapping AND the code's
     FULL historical ledger onto `new_pid`, not just the source tables.
 
@@ -269,12 +327,30 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None) -> dict:
     UPDATE-then-INSERT logic directly on `conn` instead (p2p3's proven
     pattern).
 
+    preserve_stock: hold every affected product's stock level exactly where it
+    was. Re-pointing moves a code's whole IN/OUT history to another product,
+    but each product's OPENING stock was seeded while the code was still
+    mis-attributed — so the origin product's opening balance silently covers
+    goods that physically belong to the destination. Moving the history alone
+    therefore drives one side negative (measured 2026-08-03: 532ข6740's 4-inch
+    history moving 594 -> 1795 put 1795 at -12; 999ล2030 put 790 at -14).
+    Nobody has re-counted the shelf, so inventing new stock numbers would be a
+    guess: this posts one ADJUST per product that re-allocates exactly the
+    quantity that moved, leaving every level untouched and the total across the
+    affected set conserved. The ADJUST is backdated to the head of the affected
+    set's ledger — it is an OPENING-balance re-allocation, the goods were on
+    the shelf all along under the wrong product — so the WACC replay this
+    function then runs never sees a phantom deficit. ADJUST is otherwise
+    WACC-neutral (models/wacc.py treats it as a stock-only event).
+    Raises RuntimeError if any level still moved once the ADJUSTs are posted.
+
     Returns a report dict:
         {
           'affected_pids': sorted list[int],
           'rows_moved': {'sales': int, 'purchase': int},
           'orphan_rows_after': int (must be 0),
           'stock_before': {pid: qty}, 'stock_after': {pid: qty},
+          'stock_adjustments': {pid: qty} (only when preserve_stock),
         }
 
     Idempotent: re-running with the same args is a no-op (mapping already
@@ -318,6 +394,21 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None) -> dict:
 
         sales_rows = _unit_scoped_source_rows('sales_transactions')
         purchase_rows = _unit_scoped_source_rows('purchase_transactions')
+
+        # ── 1a. The destination must be able to CONVERT every unit it is about
+        # to receive — refuse up front, while nothing has been written ───────
+        missing_units = missing_unit_ratios(
+            conn, new_pid, sales_rows + purchase_rows)
+        if missing_units:
+            new_unit_type = conn.execute(
+                "SELECT unit_type FROM products WHERE id=?", (new_pid,)
+            ).fetchone()['unit_type']
+            raise ValueError(
+                f"repoint_bsn_code: product {new_pid} has no unit_conversions "
+                f"ratio for {missing_units!r} (its unit_type is "
+                f"{new_unit_type!r}). Those rows would be silently skipped by "
+                f"the re-sync and their stock lost. Define the ratio first."
+            )
 
         affected = {new_pid}
         for r in mapping_rows:
@@ -426,6 +517,58 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None) -> dict:
             _sync_bsn_to_stock(conn, _t, _ft, deduct_platform=False,
                                product_ids=affected)
 
+        # ── 5b. Optionally hold every stock level where it was ──────────────
+        # Runs BEFORE the WACC recompute so the ledger step 6 reads is final.
+        # See the preserve_stock paragraph in this function's docstring for why
+        # a re-point moves stock at all, and why re-allocating it beats
+        # inventing counts nobody has taken.
+        stock_adjustments = {}
+        if preserve_stock:
+            # Backdated to the head of the affected set's ledger, because this
+            # IS an opening-balance re-allocation: the quantity was on the
+            # shelf the whole time, just filed under the wrong product. Dating
+            # it "today" instead leaves the replay short for the entire span of
+            # history, which sends models/wacc.py down its `current_stock < 0`
+            # branch and FREEZES the weighted average at a stale value — an
+            # earlier revision of this code did exactly that and left pid 1795
+            # at a frozen 18.2604 with stock_after -12 in its cost ledger.
+            opening_at = conn.execute(
+                f"SELECT MIN(created_at) m FROM transactions WHERE product_id IN ({ph})",
+                tuple(affected),
+            ).fetchone()['m']
+            for pid in sorted(affected):
+                delta = round(stock_before[pid] - _stock(pid), 4)
+                if not delta:
+                    continue
+                note = (f'ปรับยอดยกมา: ย้ายรหัส {bsn_code} '
+                        f'(ยอดคงเหลือคงเดิมที่ {stock_before[pid]:g})')
+                if opening_at:
+                    conn.execute(
+                        "INSERT INTO transactions (product_id, txn_type,"
+                        " quantity_change, unit_mode, reference_no, note, created_at)"
+                        " VALUES (?, 'ADJUST', ?, 'unit', NULL, ?, ?)",
+                        (pid, delta, note, opening_at),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO transactions (product_id, txn_type,"
+                        " quantity_change, unit_mode, reference_no, note)"
+                        " VALUES (?, 'ADJUST', ?, 'unit', NULL, ?)",
+                        (pid, delta, note),
+                    )
+                stock_adjustments[pid] = delta
+
+            # Compare at 4 dp, the precision the stock triggers themselves round
+            # to (mig 092). stock_levels.quantity is REAL, so a bare != can fire
+            # on IEEE-754 noise alone and abort a correct operation.
+            drifted = {pid: (stock_before[pid], _stock(pid)) for pid in affected
+                       if round(_stock(pid), 4) != round(stock_before[pid], 4)}
+            if drifted:
+                raise RuntimeError(
+                    f"repoint_bsn_code({bsn_code!r}, preserve_stock=True): stock "
+                    f"still moved after compensation — {drifted}"
+                )
+
         # ── 6. Recompute WACC for every affected product ────────────────────
         # Pre-flight the whole set first, against the ledger this transaction
         # has just rebuilt (SQLite lets these reads see our own uncommitted
@@ -451,6 +594,7 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None) -> dict:
             'orphan_rows_after': orphan_rows_after,
             'stock_before': stock_before,
             'stock_after': stock_after,
+            'stock_adjustments': stock_adjustments,
         }
     except WaccIdentityError as e:
         # The whole remap unwinds (unlike the import/conversion paths, nothing

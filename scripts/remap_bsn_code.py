@@ -54,6 +54,12 @@ def main(argv=None):
                           "code (mig 124). Omit to re-point the whole code.")
     ap.add_argument("--db", type=Path, default=DB_PATH)
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--preserve-stock", dest="preserve_stock", action="store_true",
+                    help="Hold every affected product's stock level exactly "
+                         "where it was, by re-allocating the moved quantity "
+                         "through a dated ADJUST. Use when the opening balances "
+                         "were seeded while the code was still mis-attributed "
+                         "and nobody has re-counted the shelf.")
     a = ap.parse_args(argv)
     EXPORTS.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
@@ -98,6 +104,14 @@ def main(argv=None):
           f"{[(r['bsn_unit'], r['product_id']) for r in mapping_rows] or 'NONE'}")
     print(f"  source rows by product: {sorted(by_pid.items())}")
 
+    # Same check repoint_bsn_code refuses on, run here so the DRY-RUN cannot
+    # report a clean preview for a move the apply will reject.
+    missing = models.missing_unit_ratios(conn, a.dst, ledger_rows)
+    if missing:
+        print(f"  ⛔ product {a.dst} has NO unit_conversions ratio for {missing!r}"
+              f" — --apply will refuse. Define the ratio first, otherwise those"
+              f" rows would be silently skipped by the re-sync and their stock lost.")
+
     arch = EXPORTS / f"remap_{a.code}_to_{a.dst}_{ts}.csv"
     with open(arch, "w", newline="") as f:
         w = csv.writer(f)
@@ -113,7 +127,8 @@ def main(argv=None):
         return 0
 
     try:
-        report = models.repoint_bsn_code(conn, a.code, a.dst, bsn_unit=norm_unit)
+        report = models.repoint_bsn_code(conn, a.code, a.dst, bsn_unit=norm_unit,
+                                         preserve_stock=a.preserve_stock)
         conn.commit()
     except models.WaccIdentityError as e:
         # This script SUPPLIES the connection, so repoint_bsn_code does not own
@@ -138,6 +153,18 @@ def main(argv=None):
           f"purchase={report['rows_moved']['purchase']}")
     print(f"  stock before: {report['stock_before']}")
     print(f"  stock after:  {report['stock_after']}")
+    if report['stock_adjustments']:
+        net = sum(report['stock_adjustments'].values())
+        print(f"  stock held by ADJUST: {report['stock_adjustments']}")
+        # A pure re-attribution nets to zero: whatever one product gives up the
+        # other takes on. A non-zero net means total quantity across the
+        # affected set actually CHANGED — legitimate when the two products
+        # carry different unit_conversions ratios (5 หล is 60 pieces at ratio
+        # 12 and 5 at ratio 1), but it is also what a replay that silently
+        # dropped rows looks like. Worth a human eye either way.
+        print(f"  net across affected : {net:g}"
+              + ("" if net == 0 else "   <<< NOT a pure re-attribution — check "
+                                     "the two products' unit_conversions ratios"))
 
     # Verification — checks BOTH surfaces, not just the source table (the old
     # bug's final check only looked at sales_transactions/purchase_transactions
