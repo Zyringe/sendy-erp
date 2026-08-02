@@ -4,7 +4,10 @@
 -- is the xp5 CODE (TEXT PK) — never a product id (the two books' id
 -- namespaces are unrelated). vat_book.db is regenerable, so this durable
 -- knowledge lives in the MAIN DB (plan rev 3, decision #5).
-CREATE TABLE xp5_product_mapping (
+-- Re-runnable shape (erp-engineering-discipline): IF NOT EXISTS on the
+-- table (it carries human-reviewed rows — never drop-first), drop-first on
+-- the stateless index.
+CREATE TABLE IF NOT EXISTS xp5_product_mapping (
     xp5_code       TEXT PRIMARY KEY,
     product_id     INTEGER REFERENCES products(id),
     xp5_name       TEXT    NOT NULL DEFAULT '',
@@ -18,4 +21,5 @@ CREATE TABLE xp5_product_mapping (
     updated_at     TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+DROP INDEX IF EXISTS idx_xp5_mapping_product;
 CREATE INDEX idx_xp5_mapping_product ON xp5_product_mapping(product_id);
