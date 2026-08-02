@@ -231,16 +231,33 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
                 change = base_qty if txn_type == 'IN' else -base_qty
                 label = 'ซื้อ' if file_type == 'purchase' else 'ขาย'
                 note = f'BSN {label}'
+            # Source-line provenance (mig 148). recalculate_product_wacc used to
+            # pair the Nth 'BSN ซื้อ' IN of a doc with the Nth purchase row BY
+            # POSITION, so a reissued transactions.id could re-cost the row.
+            # Recording which line it actually came from lets WACC look the
+            # purchase line up directly. Only a genuine purchase IN has one:
+            # sales_transactions has no line_seq at all (its doc_no carries the
+            # printed "-N" suffix instead — see mig 091), so reading it on the
+            # sales path would raise.
+            if note == 'BSN ซื้อ':
+                src_bsn_code = row['bsn_code']
+                src_line_seq = row['line_seq']
+            else:
+                src_bsn_code = None
+                src_line_seq = None
+
             conn.execute("""
                 INSERT INTO transactions
                     (product_id, txn_type, quantity_change, unit_mode,
-                     reference_no, note, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                     reference_no, note, created_at,
+                     source_bsn_code, source_line_seq)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 row['product_id'], row_txn_type, change, 'unit',
                 row['doc_no'],
                 note,
                 row['date_iso'] + ' 00:00:00',
+                src_bsn_code, src_line_seq,
             ))
 
             # Deduct online stock for Shopee/Lazada store customers — only for
