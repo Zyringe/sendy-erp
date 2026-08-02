@@ -12,7 +12,7 @@ import bsn_units
 
 from .mapping import _resolve_mapping
 from .bsn_sync import _sync_bsn_to_stock
-from .wacc import recalculate_product_wacc
+from .wacc import recalculate_product_wacc, preflight_batch
 
 
 def _detect_removed_lines(conn, table: str, file_type: str, entries: list) -> list:
@@ -318,10 +318,25 @@ def import_weekly(entries: list, file_type: str, filename: str,
     conn.commit()
 
     # WACC: recalculate for the products whose ledger actually changed.
+    #
+    # Pre-flight the WHOLE batch before rebuilding any of it. Without this, an
+    # early product could be rebuilt and a later one raise, leaving an
+    # iteration-order-dependent subset recalculated with the rest stale — and
+    # the source/stock import above is ALREADY COMMITTED, so there is no outer
+    # transaction to unwind it. On failure every product keeps its previous
+    # WACC, the connection is rolled back and closed, and the error propagates
+    # so the import cannot report plain success (the caller surfaces it as
+    # "นำเข้าสำเร็จ แต่คำนวณต้นทุนไม่สำเร็จ").
     if affected_pids:
-        for pid in affected_pids:
-            recalculate_product_wacc(pid, conn)
-        conn.commit()
+        try:
+            preflight_batch(conn, sorted(affected_pids), operation='purchase_import')
+            for pid in sorted(affected_pids):
+                recalculate_product_wacc(pid, conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            conn.close()
+            raise
 
     conn.close()
 

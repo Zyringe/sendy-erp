@@ -79,6 +79,7 @@ from .suppliers import get_suppliers, get_supplier_summary
 from .wacc import (
     _WACC_INITIAL_DATE, recalculate_product_wacc, get_current_wacc,
     get_cost_history, recalculate_waccs_for_products,
+    WaccIdentityError, preflight_source_identity, preflight_batch,
 )
 from .bsn_sync import (
     to_base_units, _get_base_qty, _sync_bsn_to_stock,

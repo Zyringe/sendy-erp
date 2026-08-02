@@ -65,6 +65,7 @@ MOVED_NAMES = {
     'wacc': [
         '_WACC_INITIAL_DATE', 'recalculate_product_wacc', 'get_current_wacc',
         'get_cost_history', 'recalculate_waccs_for_products',
+        'WaccIdentityError', 'preflight_source_identity', 'preflight_batch',
     ],
     # ── Phase 12 ──────────────────────────────────────────────────────────
     'bsn_sync': [

@@ -418,10 +418,21 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
 
     # ── WACC: คำนวณต้นทุน output จาก input WACCs ──────────────────────────
     total_input_cost = 0.0
-    for inp in inputs:
-        needed   = inp['quantity'] * multiplier
-        inp_wacc = get_current_wacc(inp['product_id'], conn)
-        total_input_cost += needed * inp_wacc
+    # get_current_wacc lazily recalculates when an input has no cost ledger, so
+    # this loop can now raise WaccIdentityError — and it runs INSIDE the
+    # BEGIN IMMEDIATE opened above, before any of the cleanup below exists.
+    # run_conversion has no try/except around its body (it relies on early
+    # returns each closing the connection), so an escape here would strand the
+    # WRITE LOCK, not merely leak a connection.
+    try:
+        for inp in inputs:
+            needed   = inp['quantity'] * multiplier
+            inp_wacc = get_current_wacc(inp['product_id'], conn)
+            total_input_cost += needed * inp_wacc
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
 
     # cost spreads over GOOD output only (scrap loss raises good-unit cost)
     output_unit_cost = total_input_cost / good_qty if good_qty > 0 else 0.0
@@ -462,11 +473,19 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
 
     conn.commit()
 
-    # Recalculate WACC for all involved products
+    # Recalculate WACC for all involved products.
+    #
+    # The conversion is ALREADY COMMITTED above, so this is the same shape as
+    # the purchase import: a WaccIdentityError here leaves real stock movement
+    # committed against a stale cost basis. That failure must reach the caller
+    # (it must NOT be swallowed into the success message below), and this
+    # connection must be closed either way — previously the close() sat only on
+    # the success path, so a raise leaked it on top of the batch helper's own.
     involved = [inp['product_id'] for inp in inputs] + [formula['output_product_id']]
-    recalculate_waccs_for_products(involved)
-
-    conn.close()
+    try:
+        recalculate_waccs_for_products(involved, operation='conversion_recalc')
+    finally:
+        conn.close()
     msg = f'แปลงสำเร็จ: ได้ {good_qty:,} {formula["output_product_name"]}'
     if writeoff_qty:
         msg += f' (ตัดของเสีย {writeoff_qty:,})'

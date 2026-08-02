@@ -12,7 +12,7 @@ import bsn_units
 
 from .bsn_sync import (_BSN_LEDGER_NOTE_PATTERNS, _sync_bsn_to_stock,
                        cross_unit_hazard)
-from .wacc import recalculate_product_wacc
+from .wacc import recalculate_product_wacc, preflight_batch
 
 
 def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
@@ -424,7 +424,16 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None) -> dict:
                                product_ids=affected)
 
         # ── 6. Recompute WACC for every affected product ────────────────────
-        for pid in affected:
+        # Pre-flight the whole set first, against the ledger this transaction
+        # has just rebuilt (SQLite lets these reads see our own uncommitted
+        # changes). Validating here rather than per-product stops a later
+        # product's failure from leaving an earlier one rebuilt. Unlike the
+        # import and conversion paths, a raise here unwinds the WHOLE remap:
+        # the web caller passes conn=None so this function owns and rolls back
+        # the transaction, and scripts/remap_bsn_code.py:115 already catches,
+        # rolls back and closes.
+        preflight_batch(conn, sorted(affected), operation='mapping_repoint')
+        for pid in sorted(affected):
             recalculate_product_wacc(pid, conn)
 
         stock_after = {pid: _stock(pid) for pid in affected}

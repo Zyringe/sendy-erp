@@ -500,10 +500,19 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
     # no stock surgery of its own).
     conn.commit()
 
-    # WACC: recalculate after ratio change
-    recalculate_product_wacc(product_id)
-
-    conn.close()
+    # WACC: recalculate after ratio change.
+    #
+    # try/finally because recalculate_product_wacc can now raise
+    # WaccIdentityError. The ratio change and the rebuilt ledger are ALREADY
+    # COMMITTED above, so this connection must be released either way —
+    # previously the close() sat only on the success path and a raise leaked
+    # it. The error itself must keep propagating so the caller cannot report
+    # the ratio edit as fully successful while the cost basis is stale.
+    # (Durable alerting for this path is wired by the system_alerts PR.)
+    try:
+        recalculate_product_wacc(product_id)
+    finally:
+        conn.close()
     return {'ok': True}
 
 
