@@ -431,6 +431,15 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
             needed   = inp['quantity'] * multiplier
             inp_wacc = get_current_wacc(inp['product_id'], conn)
             total_input_cost += needed * inp_wacc
+    except WaccIdentityError as e:
+        # Release the write lock FIRST, then alert on a fresh connection —
+        # same ownership rule as every other caller.
+        conn.rollback()
+        conn.close()
+        record_wacc_identity_alert(
+            e, operation='conversion_input_cost',
+            extra={'formula_id': formula_id})
+        raise
     except Exception:
         conn.rollback()
         conn.close()

@@ -245,3 +245,59 @@ def test_ratio_replay_failure_alerts_and_closes(empty_db_conn, monkeypatch):
     assert len(rows) == 1, "ratio replay must leave a durable alert"
     ctx = rows[0]['context_json'] or ''
     assert 'ratio_replay' in ctx, ctx
+
+
+def _broken_product(conn, name):
+    """A product whose ledger row links to a purchase line that does not exist."""
+    pid = conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES (?, 'ตัว')",
+        (name,)).lastrowid
+    conn.execute("INSERT INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
+    conn.execute(
+        "INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode,"
+        " reference_no, note, created_at, source_bsn_code, source_line_seq)"
+        " VALUES (?,'IN',5,'unit','RRGHOST','BSN ซื้อ','2026-04-24 00:00:00','GHOST',1)",
+        (pid,))
+    conn.commit()
+    return pid
+
+
+def test_owning_recalculate_alerts_and_releases(empty_db_conn):
+    """recalculate_product_wacc(pid) — no connection passed — owns the one that
+    actually raises, so it must roll back, close and alert.
+
+    Closing the CALLER's connection does not cover this: the leaking connection
+    is the one opened inside recalculate_product_wacc itself.
+    """
+    import models
+
+    pid = _broken_product(empty_db_conn, 'Owning Recalc')
+    try:
+        models.recalculate_product_wacc(pid)      # no conn → owns one
+        raise AssertionError('expected WaccIdentityError')
+    except models.WaccIdentityError:
+        pass
+
+    rows = _open(empty_db_conn)
+    assert len(rows) == 1, "an owning recalculate must leave a durable alert"
+    # The connection it opened was released, so this write is not blocked.
+    empty_db_conn.execute("UPDATE products SET product_name=? WHERE id=?",
+                          ('Owning Recalc 2', pid))
+    empty_db_conn.commit()
+
+
+def test_cost_history_lazy_failure_alerts(empty_db_conn):
+    """/products/<id>/cost-history lazily recalculates. Without an alert the
+    failure is a 500 seen only by whoever clicked."""
+    import models
+
+    pid = _broken_product(empty_db_conn, 'Lazy CostHistory')
+    try:
+        models.get_cost_history(pid)
+        raise AssertionError('expected WaccIdentityError')
+    except models.WaccIdentityError:
+        pass
+
+    rows = _open(empty_db_conn)
+    assert len(rows) == 1, "the lazy cost-history read must leave a durable alert"
+    assert 'wacc_lazy_read' in (rows[0]['context_json'] or '')
