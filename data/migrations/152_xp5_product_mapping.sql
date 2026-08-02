@@ -1,4 +1,7 @@
--- 151: cross-book product mapping — xp5 (VAT company file) STKCOD → main
+-- 152: cross-book product mapping — xp5 (VAT company file) STKCOD → main
+-- (renumbered from 151 — origin/main took 151 for the audit row-key index
+-- while this branch was in review; safe re-run shape made the renumbered
+-- apply a no-op on DBs that ran it as 151)
 -- products.id. Written by the vat-book mapping pipeline (auto layers) and the
 -- review-sheet apply; read by the VAT-view product badge. The cross-book key
 -- is the xp5 CODE (TEXT PK) — never a product id (the two books' id

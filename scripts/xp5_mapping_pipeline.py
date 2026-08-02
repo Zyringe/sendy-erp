@@ -11,9 +11,11 @@ the vat book.
   Layer 2 'dualkey': xp5 IV docs paired 1:1 to BSN5657 docs by
       (DOCDAT, amount); line items matched by (qty, unit_price,
       normalized TQUCOD unit — equal numbers in different units never
-      pair); a product pair auto-applies only when: doc pairing 1:1 both
-      ways, >= 2 independent doc pairs, no competing candidate on either
-      side, and zero contradictions.
+      pair). Survivors of the full predicate (doc pairing 1:1 both ways,
+      >= 2 independent doc pairs, no competing candidate, zero
+      contradictions) are REVIEW-SHEET CANDIDATES ('dualkey-candidate'),
+      NEVER auto-applied — the predicate proves consistent invoice
+      correspondence, not the physical SKU/pack (Codex R6).
   Layer 3 'name': difflib similarity of normalized names — suggestions for
       the sheet ONLY, never auto.
 
