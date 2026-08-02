@@ -70,6 +70,16 @@ def preflight_source_identity(conn, product_id, operation=None):
     validation alone does not protect a loop: without this, product A can be
     rebuilt and committed before product B's failure is discovered, leaving an
     iteration-order-dependent subset of the batch recalculated.
+
+    ⚠ RESIDUAL INVARIANT — NULL/NULL provenance is a deliberate escape hatch.
+    A row with neither column set is treated as legacy and takes the old
+    positional path, which is what keeps pre-mig-148 data working. mig 148
+    linked every existing positive 'BSN ซื้อ' IN and _sync_bsn_to_stock links
+    every new one, so nothing reaches that path today. But a hand-written
+    script that INSERTs a 'BSN ซื้อ' IN without source identity would silently
+    reintroduce the original position-pairing bug. So: never create a
+    'BSN ซื้อ' IN outside _sync_bsn_to_stock without setting both columns. A
+    CHECK constraint or trigger could close this properly later.
     """
     pt_idents = set()
     dup_identities = set()
