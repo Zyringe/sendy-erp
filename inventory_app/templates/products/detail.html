@@ -87,12 +87,14 @@
         </div>
       </div>
 
+      {% if active_book != 'vat' %}
       <div class="card-footer d-flex gap-2">
         <button type="button" class="btn btn-sm flex-fill fw-500"
                 data-bs-toggle="modal" data-bs-target="#adjustModal"
                 style="background:#f1f5f9;color:#475569;border:none">
           <i class="bi bi-sliders me-1"></i>ปรับ</button>
       </div>
+      {% endif %}
 
       {% if is_admin %}
       {# Online stock (Shopee/Lazada) is shown above from platform_skus and is
@@ -338,7 +340,7 @@
                 {% else %}
                   <span class="text-subtle">–</span>
                 {% endif %}
-                {% if current_role in ('admin', 'manager', 'staff') %}
+                {% if current_role in ('admin', 'manager', 'staff') and active_book != 'vat' %}
                 <button type="button" class="btn btn-sm btn-link p-0 ms-1 text-muted"
                         data-bs-toggle="modal" data-bs-target="#locationModal"
                         title="แก้ไขสถานที่เก็บ">
@@ -351,7 +353,7 @@
         </table>
       </div>
 
-      {% if current_role in ('admin', 'manager', 'staff') %}
+      {% if current_role in ('admin', 'manager', 'staff') and active_book != 'vat' %}
       {# ── Brand picker modal ───────────────────────────────────────────── #}
       <div class="modal fade" id="brandModal" tabindex="-1">
         <div class="modal-dialog">
@@ -771,7 +773,8 @@
   </div>
 </div>
 
-{# ── Adjust modal (all logged-in roles) ── #}
+{# ── Adjust modal (all logged-in roles; never in the read-only VAT book) ── #}
+{% if active_book != 'vat' %}
 <div class="modal fade" id="adjustModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
@@ -803,6 +806,7 @@
     </div>
   </div>
 </div>
+{% endif %}
 
 {# ── Marketplace price-history modal (shared; populated by JS on price click) ── #}
 <div class="modal fade" id="mktPriceModal" tabindex="-1" aria-hidden="true">

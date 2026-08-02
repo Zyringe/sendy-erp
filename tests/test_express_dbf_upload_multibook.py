@@ -191,6 +191,34 @@ def test_bsn_failure_still_reported_and_vat_spawned(tmp_db, monkeypatch):
     assert len(spawned) == 1                  # BSN failing doesn't block VAT
 
 
+def test_spawn_refuses_while_owner_alive(tmp_db, tmp_path):
+    import book_registry as br
+    import vat_book_builder as vb
+    lock, token = vb.acquire_publish_lock(br.book_db_path('vat'))
+    try:
+        with pytest.raises(RuntimeError, match='กำลังทำงาน'):
+            bsn._spawn_vat_rebuild(str(tmp_path), 1)   # our own pid is alive
+    finally:
+        vb.release_publish_lock(lock, token)
+
+
+def test_spawn_clears_dead_owner_lock_and_proceeds(tmp_db, tmp_path, monkeypatch):
+    import book_registry as br
+    lock = br.book_db_path('vat') + '.lock'
+    with open(lock, 'w') as fh:
+        fh.write('deadtoken 999999 2026-08-02T00:00:00')   # pid never alive
+    dataset = tmp_path / 'ds'
+    dataset.mkdir()
+    (dataset / 'ARTRN.DBF').write_bytes(b'')
+    spawned = []
+    monkeypatch.setattr(
+        bsn.subprocess, 'Popen',
+        lambda *a, **k: spawned.append(a) or type('P', (), {'poll': lambda s: 0})())
+    bsn._spawn_vat_rebuild(str(dataset), 7)
+    assert not os.path.exists(lock)            # dead owner's lock cleared
+    assert len(spawned) == 1
+
+
 def test_import_page_shows_vat_freshness_and_last_run(tmp_db, monkeypatch):
     import book_registry as br
     path = br.book_db_path('vat')

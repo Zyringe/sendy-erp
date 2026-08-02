@@ -29,6 +29,7 @@ import json
 import os
 import re
 import sqlite3
+import uuid
 from datetime import datetime
 
 import bsn_units
@@ -228,15 +229,17 @@ def build(source_dir):
     return {'db_path': db_path, 'counts': counts}
 
 
-def publish(built_path, target_path):
+def publish(built_path, target_path, token=None):
     """Copy the finished artifact next to the live target and swap atomically.
     A plain copy first because the build dir (/tmp) and the data volume are
     different filesystems on Railway — os.replace cannot cross devices.
-    Staging name is per-process (two concurrent publishers must never share a
-    staging file), and the STAGED copy is integrity-checked again before the
-    swap — the bytes that survived the cross-device copy are what goes live."""
+    Staging name is per-run (the lock token — pids can repeat across
+    container restarts), and the STAGED copy is integrity-checked again
+    before the swap — the bytes that survived the cross-device copy are what
+    goes live."""
     import shutil
-    tmp_target = f'{target_path}.publish.{os.getpid()}'
+    run_id = (token or uuid.uuid4().hex)[:12]
+    tmp_target = f'{target_path}.publish.{run_id}'
     try:
         shutil.copyfile(built_path, tmp_target)
         conn = sqlite3.connect(f'file:{tmp_target}?mode=ro', uri=True)
@@ -267,19 +270,49 @@ def publish(built_path, target_path):
 def acquire_publish_lock(target_path):
     """Serialize the whole rebuild→publish lifecycle across workers and
     processes: O_CREAT|O_EXCL lockfile beside the live target (same volume).
-    Returns the lock path; raises RuntimeError when another rebuild owns it.
-    The spawner clears stale locks (crashed builder) before spawning."""
+    Returns (lock_path, token); raises RuntimeError when another rebuild
+    owns it.
+
+    Ownership is the TOKEN, not the path (Codex R5 blocker): a builder may
+    only remove the lock while it still holds it — release_publish_lock
+    verifies the stored token first, so a builder whose lock was declared
+    stale and replaced can never unlink the new owner's lock. Stale
+    recovery (the spawner) decides by OWNER LIVENESS (stored pid), never by
+    age alone."""
     lock_path = target_path + '.lock'
+    token = uuid.uuid4().hex
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
         raise RuntimeError('another VAT rebuild is already running '
                            f'(lock: {lock_path})')
     try:
-        os.write(fd, f'{os.getpid()} {datetime.now().isoformat()}'.encode())
+        os.write(fd, f'{token} {os.getpid()} '
+                     f'{datetime.now().isoformat()}'.encode())
     finally:
         os.close(fd)
-    return lock_path
+    return lock_path, token
+
+
+def read_lock(lock_path):
+    """(token, pid) stored in a lockfile — (None, None) if unreadable."""
+    try:
+        with open(lock_path) as fh:
+            parts = fh.read().split()
+        return parts[0], int(parts[1])
+    except (OSError, IndexError, ValueError):
+        return None, None
+
+
+def release_publish_lock(lock_path, token):
+    """Unlink ONLY while we still own the lock — a token mismatch means a
+    stale-recovery replaced it and the lock now belongs to someone else."""
+    cur, _pid = read_lock(lock_path)
+    if cur == token:
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
 
 
 def _report_result(result_db, result_row, vat_result):
@@ -313,16 +346,16 @@ if __name__ == '__main__':
     p.add_argument('--cleanup-dir',
                    help='scratch dir (dataset copy + build dir) to delete at exit')
     args = p.parse_args()
-    lock_path = None
+    lock_path = lock_token = None
     try:
         try:
             # The lock spans build AND publish (P0: two workers spawning two
             # rebuilds must serialize the entire lifecycle, not just the swap).
             if args.publish_to:
-                lock_path = acquire_publish_lock(args.publish_to)
+                lock_path, lock_token = acquire_publish_lock(args.publish_to)
             summary = build(args.source)
             if args.publish_to:
-                publish(summary['db_path'], args.publish_to)
+                publish(summary['db_path'], args.publish_to, lock_token)
             outcome = {'ok': True, 'counts': summary['counts'],
                        'built_at': datetime.now().isoformat(timespec='seconds')}
             print(json.dumps(summary, ensure_ascii=False, indent=1))
@@ -334,8 +367,8 @@ if __name__ == '__main__':
         if args.result_db and args.result_row:
             _report_result(args.result_db, args.result_row, outcome)
     finally:
-        if lock_path and os.path.exists(lock_path):
-            os.remove(lock_path)
+        if lock_path:
+            release_publish_lock(lock_path, lock_token)
         if args.cleanup_dir:
             import shutil
             shutil.rmtree(args.cleanup_dir, ignore_errors=True)

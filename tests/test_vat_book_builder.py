@@ -172,12 +172,33 @@ def test_publish_rejects_corrupt_copy_and_keeps_target(tmp_path):
 
 def test_publish_lock_excludes_second_runner(tmp_path):
     target = str(tmp_path / 'vat_book.db')
-    lock = vb.acquire_publish_lock(target)
+    lock, token = vb.acquire_publish_lock(target)
     assert os.path.exists(lock)
     with pytest.raises(RuntimeError, match='already running'):
         vb.acquire_publish_lock(target)
-    os.remove(lock)
-    assert os.path.exists(vb.acquire_publish_lock(target))
+    vb.release_publish_lock(lock, token)
+    assert not os.path.exists(lock)
+
+
+def test_release_only_unlinks_own_token(tmp_path):
+    """Codex R5 blocker interleaving: A's lock is declared stale and
+    replaced by B; when A finally exits, it must NOT unlink B's lock."""
+    target = str(tmp_path / 'vat_book.db')
+    lock_a, token_a = vb.acquire_publish_lock(target)
+    os.remove(lock_a)                          # stale recovery removed A's lock
+    lock_b, token_b = vb.acquire_publish_lock(target)
+    vb.release_publish_lock(lock_a, token_a)   # A exits late
+    assert os.path.exists(lock_b)              # B still owns the lock
+    tok, pid = vb.read_lock(lock_b)
+    assert tok == token_b and pid == os.getpid()
+    vb.release_publish_lock(lock_b, token_b)
+    assert not os.path.exists(lock_b)
+
+
+def test_read_lock_garbage_returns_none(tmp_path):
+    p = tmp_path / 'x.lock'
+    p.write_text('not a lock')
+    assert vb.read_lock(str(p)) == ('not', None) or vb.read_lock(str(p))[1] is None
 
 
 # ── subprocess guard ────────────────────────────────────────────────────────

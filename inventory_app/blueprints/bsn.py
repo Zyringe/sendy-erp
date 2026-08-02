@@ -752,7 +752,16 @@ def _update_run_result(run_id, key, value):
 # Not business state — bookkeeping so finished detached builders get reaped
 # (poll() collects the zombie); bounded by in-flight builds per worker.
 _VAT_BUILD_PROCS = []
-_VAT_LOCK_STALE_SECONDS = 45 * 60
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
 
 
 def _spawn_vat_rebuild(dataset_dir, run_id):
@@ -766,11 +775,20 @@ def _spawn_vat_rebuild(dataset_dir, run_id):
 
     lock_path = book_registry.book_db_path('vat') + '.lock'
     if os.path.exists(lock_path):
-        age = time.time() - os.path.getmtime(lock_path)
-        if age < _VAT_LOCK_STALE_SECONDS:
-            raise RuntimeError('มี rebuild สมุด VAT ค้างทำงานอยู่ '
-                               f'(~{int(age // 60)} นาที) — รอให้เสร็จก่อนแล้วค่อยอัปโหลดใหม่')
-        os.remove(lock_path)          # crashed builder left it behind
+        # Stale recovery decides by OWNER LIVENESS, never by age (Codex R5
+        # blocker: an age rule steals the lock from a slow-but-alive builder,
+        # whose exit then unlinked the NEW owner's lock — token-verified
+        # release closes the second half; this closes the first).
+        import vat_book_builder as vb
+        _token, owner_pid = vb.read_lock(lock_path)
+        age_min = int((time.time() - os.path.getmtime(lock_path)) // 60)
+        # Backstop: after a container redeploy the stored pid may coincide
+        # with an unrelated live process — no build takes 6h, so a lock that
+        # old is stale no matter what liveness says.
+        if age_min < 360 and owner_pid and _pid_alive(owner_pid):
+            raise RuntimeError('มี rebuild สมุด VAT กำลังทำงานอยู่ '
+                               f'(~{age_min} นาที) — รอให้เสร็จก่อนแล้วค่อยอัปโหลดใหม่')
+        os.remove(lock_path)          # owner dead/unreadable/ancient → stale
 
     run_root = tempfile.mkdtemp(prefix='vat_book_run_')
     src = os.path.join(run_root, 'dataset')

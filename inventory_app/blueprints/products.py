@@ -380,6 +380,13 @@ def product_detail(product_id):
     list_root = url_for('products.product_list')
     back = request.args.get('back') or session.get('products_return', '')
     back_url = back if (back == list_root or back.startswith(list_root + '?')) else list_root
+    # In VAT mode the page renders as the lowest-privilege viewer: explicit
+    # kwargs override inject_auth's context (Codex R5 — the read-only book
+    # must not render edit links, modals, adjust buttons, or manager cost
+    # fields; every mutation control in this template is role-gated, so
+    # dropping the role flags for THIS render hides them all at one seam).
+    role_overrides = ({'is_admin': False, 'is_manager': False}
+                      if vat_mode else {})
     return render_template('products/detail.html',
                            product=product,
                            back_url=back_url,
@@ -398,7 +405,8 @@ def product_detail(product_id):
                            mkt=mkt,
                            mkt_modal_data=mkt_modal_data,
                            brands=brands,
-                           current_brand=current_brand)
+                           current_brand=current_brand,
+                           **role_overrides)
 
 
 @bp_products.route('/products/<int:product_id>/brand', methods=['POST'])

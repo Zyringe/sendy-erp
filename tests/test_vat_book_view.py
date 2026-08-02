@@ -181,6 +181,19 @@ def test_vat_detail_hides_operational_cards_with_notice(vat_db):
     assert PROMO_CARD_HEADER not in html
 
 
+def test_vat_detail_renders_no_mutation_controls(vat_db):
+    """Structural: a read-only book page may carry ONLY the logout and
+    book-toggle POST forms — any other form/modal trigger is a mutation
+    control leaking into the VAT view (Codex R5)."""
+    import re as _re
+    html = _client('vat').get('/products/901').get_data(as_text=True)
+    forms = _re.findall(r'<form[^>]*method="post"[^>]*>', html, _re.I)
+    for f in forms:
+        assert ('/logout' in f or '/book/toggle' in f), f'unexpected POST form: {f}'
+    assert 'ปรับยอดสต็อก' not in html            # stock-adjust modal
+    assert 'data-bs-target="#brandModal"' not in html
+
+
 def test_novat_detail_keeps_operational_cards(tmp_db):
     html = _client().get('/products/1').get_data(as_text=True)
     assert MKT_CARD_HEADER in html

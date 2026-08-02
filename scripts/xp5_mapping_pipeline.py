@@ -253,32 +253,39 @@ def apply_auto(conn, rows, xp5_products):
         "SELECT xp5_code, product_id, status, match_layer, note "
         "FROM xp5_product_mapping WHERE status != 'auto'")}
 
-    conn.execute("DELETE FROM xp5_product_mapping WHERE status = 'auto'")
-    for r in rows:
-        conn.execute(
-            "INSERT INTO xp5_product_mapping "
-            "(xp5_code, product_id, xp5_name, match_layer, status, evidence_count) "
-            "VALUES (?, ?, ?, ?, 'auto', ?) "
-            "ON CONFLICT(xp5_code) DO NOTHING",
-            (r['xp5_code'], r['product_id'],
-             r['xp5_name'] or xp5_products.get(r['xp5_code'], ''),
-             r['match_layer'], r['evidence_count']))
-    conn.commit()
+    try:
+        conn.execute("DELETE FROM xp5_product_mapping WHERE status = 'auto'")
+        for r in rows:
+            conn.execute(
+                "INSERT INTO xp5_product_mapping "
+                "(xp5_code, product_id, xp5_name, match_layer, status, evidence_count) "
+                "VALUES (?, ?, ?, ?, 'auto', ?) "
+                "ON CONFLICT(xp5_code) DO NOTHING",
+                (r['xp5_code'], r['product_id'],
+                 r['xp5_name'] or xp5_products.get(r['xp5_code'], ''),
+                 r['match_layer'], r['evidence_count']))
 
-    after = {r['xp5_code']: r for r in conn.execute(
-        "SELECT xp5_code, product_id, status, match_layer, evidence_count, note "
-        "FROM xp5_product_mapping")}
-    for r in rows:
-        got = after.get(r['xp5_code'])
-        assert got is not None, f"batch row missing after apply: {r['xp5_code']}"
-        if got['status'] == 'auto':
-            assert (got['product_id'], got['match_layer'], got['evidence_count']) == \
-                (r['product_id'], r['match_layer'], r['evidence_count']), \
-                f"applied row mismatch: {r['xp5_code']}"
-    after_human = {r['xp5_code']: tuple(r) for r in conn.execute(
-        "SELECT xp5_code, product_id, status, match_layer, note "
-        "FROM xp5_product_mapping WHERE status != 'auto'")}
-    assert after_human == before_human, "human-reviewed rows were modified"
+        # Verify BEFORE commit (Codex R5): the same connection sees the
+        # pending writes, and a mismatch rolls everything back instead of
+        # leaving a bad batch durable.
+        after = {r['xp5_code']: r for r in conn.execute(
+            "SELECT xp5_code, product_id, status, match_layer, evidence_count, note "
+            "FROM xp5_product_mapping")}
+        for r in rows:
+            got = after.get(r['xp5_code'])
+            assert got is not None, f"batch row missing after apply: {r['xp5_code']}"
+            if got['status'] == 'auto':
+                assert (got['product_id'], got['match_layer'], got['evidence_count']) == \
+                    (r['product_id'], r['match_layer'], r['evidence_count']), \
+                    f"applied row mismatch: {r['xp5_code']}"
+        after_human = {r['xp5_code']: tuple(r) for r in conn.execute(
+            "SELECT xp5_code, product_id, status, match_layer, note "
+            "FROM xp5_product_mapping WHERE status != 'auto'")}
+        assert after_human == before_human, "human-reviewed rows were modified"
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
     return len(before_human)
 
 
@@ -365,6 +372,23 @@ def main():
     out = REPORT_DIR / f'xp5_mapping_review_{date.today().isoformat()}'
     csv_path, html_path = write_sheet(review_rows, out)
     print(f'review sheet: {csv_path}\n              {html_path}')
+
+    # Audit file of the APPLIED autos (Codex R5: dual-key survivors are not
+    # proven by the predicate alone — give Put a spot-check list; the price-
+    # equality screen argues same-label-different-pack pairs are already
+    # excluded, see codex-review-r5-resolution.md).
+    import csv as _csv
+    audit = REPORT_DIR / f'xp5_mapping_auto_applied_{date.today().isoformat()}.csv'
+    with open(audit, 'w', newline='', encoding='utf-8-sig') as fh:
+        w = _csv.writer(fh)
+        w.writerow(['xp5_code', 'xp5_name', 'layer', 'evidence',
+                    'product_id', 'main_product_name'])
+        for r in sorted(auto_rows, key=lambda x: x['match_layer']):
+            w.writerow([r['xp5_code'],
+                        r['xp5_name'] or xp5_products.get(r['xp5_code'], ''),
+                        r['match_layer'], r['evidence_count'], r['product_id'],
+                        product_names.get(r['product_id'], '')])
+    print(f'auto-applied audit: {audit}')
 
 
 if __name__ == '__main__':
