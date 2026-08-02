@@ -669,3 +669,185 @@ def test_missing_unit_ratios_rejects_an_unknown_product(empty_db_conn):
 
     with pytest.raises(ValueError, match='not found'):
         models.missing_unit_ratios(empty_db_conn, 999999, [])
+
+
+def test_compensation_precedes_an_IN_that_shares_the_head_timestamp(empty_db_conn):
+    """Backdating must clear the head STRICTLY, not tie with it.
+
+    models/wacc.py orders `created_at, CASE WHEN txn_type='IN' THEN 0 ELSE 1
+    END, id` — so an IN stamped with the same timestamp as the compensation
+    sorts FIRST and is costed against the deficit the compensation exists to
+    remove. 21 products in the live catalogue have an IN at their earliest
+    timestamp, so the tie is reachable, and asserting only `created_at ==
+    head` would pass while the replay is still wrong.
+    """
+    import models
+
+    conn = empty_db_conn
+    OLD = _product(conn, 'Old product', 'ชิ้น')
+    NEW = _product(conn, 'New product', 'ชิ้น')
+    CODE = 'ZHEADIN1'
+    _mapping(conn, CODE, OLD)
+    _opening(conn, OLD, 30)
+    # The destination's very first transaction is a PURCHASE, at the same
+    # timestamp the head of the affected ledger will resolve to.
+    _purchase(conn, 'ZHP0', NEW, 'ZOTHER01', qty=4, unit='ชิ้น', net=40,
+              date_iso='2024-01-03')
+    _mapping(conn, 'ZOTHER01', NEW)
+    _purchase(conn, 'ZHP1', OLD, CODE, qty=5, unit='ชิ้น', net=50)
+    _sale(conn, 'ZHS1', OLD, CODE, qty=8, unit='ชิ้น')
+    conn.commit()
+    models._sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
+    models._sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
+    conn.commit()
+
+    models.repoint_bsn_code(conn, CODE, NEW, preserve_stock=True)
+    conn.commit()
+
+    comp = conn.execute(
+        "SELECT created_at FROM transactions WHERE product_id=? AND note LIKE 'ปรับยอดยกมา:%'",
+        (NEW,)).fetchone()['created_at']
+    others = [r['created_at'] for r in conn.execute(
+        "SELECT created_at FROM transactions WHERE product_id=? AND note NOT LIKE 'ปรับยอดยกมา:%'",
+        (NEW,))]
+    assert others, 'fixture must give NEW some history to precede'
+    assert all(comp < o for o in others), (
+        f"compensation {comp} must be STRICTLY before every other row {sorted(set(others))}"
+    )
+    # And the replay never sees a phantom deficit on the destination.
+    assert not conn.execute(
+        "SELECT 1 FROM product_cost_ledger WHERE product_id=? AND stock_after < 0",
+        (NEW,)).fetchone()
+
+
+def test_orphan_detector_uses_purchase_line_provenance(empty_db_conn):
+    """With mig-148 provenance, a stranded purchase row is caught even when the
+    product it stranded on still carries ANOTHER line of the same document —
+    the blind spot the doc+product fallback has."""
+    import models
+
+    conn = empty_db_conn
+    OLD = _product(conn, 'Old product', 'ชิ้น')
+    NEW = _product(conn, 'New product', 'ชิ้น')
+    CODE, OTHER = 'ZPROV001', 'ZPROV002'
+    _mapping(conn, CODE, OLD)
+    _mapping(conn, OTHER, OLD)
+    # Both lines of doc ZPD1 post onto OLD.
+    _purchase(conn, 'ZPD1', OLD, CODE, qty=5, unit='ชิ้น', net=50)
+    _purchase(conn, 'ZPD1', OLD, OTHER, qty=3, unit='ชิ้น', net=30)
+    conn.commit()
+    models._sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
+    conn.commit()
+    assert models._bsn_code_ledger_orphans(conn, CODE) == 0
+
+    # Old-buggy-script shape: move only CODE's source row. OLD still holds
+    # OTHER's line on the same doc, so the doc+product fallback alone would
+    # report a clean 0 — provenance must still see the stranding.
+    conn.execute("UPDATE purchase_transactions SET product_id=? WHERE bsn_code=?",
+                 (NEW, CODE))
+    conn.commit()
+
+    assert models._bsn_code_ledger_orphans(conn, CODE) == 1
+
+
+def test_repoint_owns_its_transaction_when_conn_is_none(empty_db, monkeypatch):
+    """The web route (blueprints/bsn.py) calls this with conn=None, so the
+    function opens, locks, commits and closes its own connection. That path is
+    where BEGIN IMMEDIATE has to live: stock_before is read at the top and the
+    compensating ADJUST is written near the bottom, and Railway runs
+    gunicorn -w 2, so a second worker moving stock in between would otherwise
+    be silently reverted by the compensation."""
+    import sqlite3
+
+    import database
+    import models
+
+    monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
+
+    setup = sqlite3.connect(str(empty_db))
+    setup.row_factory = sqlite3.Row
+    OLD, NEW, MOVE = _preserve_stock_fixture(setup)
+    setup.commit()
+    models._sync_bsn_to_stock(setup, 'sales_transactions', 'sales')
+    models._sync_bsn_to_stock(setup, 'purchase_transactions', 'purchase')
+    setup.commit()
+    before = (_stock(setup, OLD), _stock(setup, NEW))
+    setup.close()
+
+    report = models.repoint_bsn_code(None, MOVE, NEW, preserve_stock=True)
+
+    assert report['stock_adjustments'] == {OLD: -3, NEW: 3}
+    # Committed and closed by the function itself — re-open to confirm it stuck.
+    check = sqlite3.connect(str(empty_db))
+    check.row_factory = sqlite3.Row
+    try:
+        assert (_stock(check, OLD), _stock(check, NEW)) == before
+        assert check.execute(
+            "SELECT product_id FROM product_code_mapping WHERE bsn_code=?", (MOVE,)
+        ).fetchone()['product_id'] == NEW
+    finally:
+        check.close()
+
+
+def test_repoint_takes_the_write_lock_before_it_reads_stock(empty_db, monkeypatch):
+    """BEGIN IMMEDIATE must be held from BEFORE the first read that feeds the
+    decision — not merely by the time the first write happens.
+
+    stock_before is read at the top and the compensating ADJUST that restores
+    it is written near the bottom. Under gunicorn -w 2 a second worker can move
+    stock in that window, and with preserve_stock the compensation would then
+    "restore" a level a legitimate sale had already changed — silently
+    reverting it. The seam here is deliberately EARLY (before any write): a
+    deferred transaction holds no lock yet at that point, so this test can tell
+    BEGIN IMMEDIATE apart from "a write happened to escalate the lock later".
+    """
+    import sqlite3
+
+    import database
+    import models
+    from models import mapping as mapping_mod
+
+    monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
+
+    setup = sqlite3.connect(str(empty_db))
+    setup.row_factory = sqlite3.Row
+    OLD, NEW, MOVE = _preserve_stock_fixture(setup)
+    setup.commit()
+    models._sync_bsn_to_stock(setup, 'sales_transactions', 'sales')
+    models._sync_bsn_to_stock(setup, 'purchase_transactions', 'purchase')
+    setup.commit()
+    before = (_stock(setup, OLD), _stock(setup, NEW))
+    setup.close()
+
+    seen = {}
+    real = mapping_mod.missing_unit_ratios
+
+    def spy(conn, new_pid, rows):
+        # A short timeout makes "locked out" a fast, certain answer.
+        other = sqlite3.connect(str(empty_db), timeout=0.1)
+        try:
+            other.execute(
+                "INSERT INTO transactions (product_id, txn_type, quantity_change,"
+                " unit_mode, note) VALUES (?, 'OUT', -1, 'unit', 'interloper')",
+                (OLD,))
+            other.commit()
+            seen['excluded'] = False
+        except sqlite3.OperationalError as e:
+            seen['excluded'] = 'locked' in str(e).lower()
+        finally:
+            other.close()
+        return real(conn, new_pid, rows)
+
+    monkeypatch.setattr(mapping_mod, 'missing_unit_ratios', spy)
+    models.repoint_bsn_code(None, MOVE, NEW, preserve_stock=True)
+
+    assert seen.get('excluded') is True, (
+        "a concurrent writer got in before repoint_bsn_code had read stock — "
+        "the write lock is not spanning the check-then-write"
+    )
+    check = sqlite3.connect(str(empty_db))
+    check.row_factory = sqlite3.Row
+    try:
+        assert (_stock(check, OLD), _stock(check, NEW)) == before
+    finally:
+        check.close()

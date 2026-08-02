@@ -214,11 +214,16 @@ def _bsn_code_ledger_orphans(conn, bsn_code):
     "Explained by SOME source row on this doc at this product" is the property
     that actually distinguishes a stranded row from a sibling line.
 
-    Known limit of that property: a stranded row is MASKED if the product it
-    was stranded on happens to carry another line of the same document. That
-    trade is deliberate — the previous form reported a false alarm on every
-    shared bill, which is a check nobody can act on, whereas this one only
-    misses a narrow overlap case.
+    Purchase rows do better than that. mig 148 records which line each IN came
+    from (`source_bsn_code` / `source_line_seq`, 4,005 of 4,049 rows), so for
+    those the exact line is checked instead — no sibling can explain a stranded
+    row away, and a sibling's own stranding is caught too. Rows without
+    provenance fall back to the doc+product test: every sales row (by design —
+    sales_transactions has no line_seq, see bsn_sync) and the 44 legacy
+    GR/'BSN ซื้อ-คืน' purchase rows. Those keep the narrow blind spot: a
+    stranded row is masked if its product happens to carry another line of the
+    same document. That trade is deliberate — the previous form reported a
+    false alarm on every shared bill, which is a check nobody can act on.
     """
     sales_orphans = conn.execute(
         """
@@ -237,10 +242,20 @@ def _bsn_code_ledger_orphans(conn, bsn_code):
         SELECT t.id FROM transactions t
         WHERE t.note LIKE 'BSN ซื้อ%'
           AND t.reference_no IN (SELECT doc_no FROM purchase_transactions WHERE bsn_code=?)
-          AND NOT EXISTS (
-              SELECT 1 FROM purchase_transactions p
-              WHERE p.doc_no = t.reference_no AND p.product_id = t.product_id
-          )
+          AND CASE WHEN t.source_bsn_code IS NOT NULL THEN
+                   NOT EXISTS (
+                       SELECT 1 FROM purchase_transactions p
+                       WHERE p.doc_no = t.reference_no
+                         AND p.bsn_code = t.source_bsn_code
+                         AND p.line_seq = t.source_line_seq
+                         AND p.product_id = t.product_id
+                   )
+              ELSE
+                   NOT EXISTS (
+                       SELECT 1 FROM purchase_transactions p
+                       WHERE p.doc_no = t.reference_no AND p.product_id = t.product_id
+                   )
+              END
         """,
         (bsn_code,),
     ).fetchall()
@@ -366,6 +381,19 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
         conn = get_connection()
     _conn_closed = False
     try:
+        if own:
+            # The whole operation is a check-then-write on stock: stock_before
+            # is read up here and the compensating ADJUST that restores it is
+            # written much further down. Railway runs gunicorn -w 2, so a
+            # second worker moving stock in between is real — and with
+            # preserve_stock that is actively harmful, because the ADJUST would
+            # "restore" a level that a legitimate concurrent sale had already
+            # changed, silently reverting it. Take the write lock before the
+            # first read that feeds the decision (models/transactions.py
+            # set_stock_to is the same pattern). Callers that supply `conn` own
+            # the transaction and must have taken the lock themselves —
+            # scripts/remap_bsn_code.py does.
+            conn.execute("BEGIN IMMEDIATE")
         if not conn.execute("SELECT 1 FROM products WHERE id=?", (new_pid,)).fetchone():
             raise ValueError(f"repoint_bsn_code: product {new_pid} not found")
 
@@ -532,8 +560,17 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
             # branch and FREEZES the weighted average at a stale value — an
             # earlier revision of this code did exactly that and left pid 1795
             # at a frozen 18.2604 with stock_after -12 in its cost ledger.
+            # STRICTLY earlier than the head, not equal to it. WACC sorts
+            # `ORDER BY created_at, CASE WHEN txn_type='IN' THEN 0 ELSE 1 END,
+            # id` (models/wacc.py) — so an IN sharing the head timestamp would
+            # be costed BEFORE this ADJUST and see the deficit anyway, which is
+            # the whole failure the backdating exists to avoid. 21 products in
+            # the live catalogue have an IN at their earliest timestamp, so the
+            # tie is reachable; a second's clearance removes the ordering
+            # question entirely.
             opening_at = conn.execute(
-                f"SELECT MIN(created_at) m FROM transactions WHERE product_id IN ({ph})",
+                f"SELECT datetime(MIN(created_at), '-1 second') m"
+                f" FROM transactions WHERE product_id IN ({ph})",
                 tuple(affected),
             ).fetchone()['m']
             for pid in sorted(affected):

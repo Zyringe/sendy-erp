@@ -127,6 +127,11 @@ def main(argv=None):
         return 0
 
     try:
+        # This script SUPPLIES the connection, so it owns the transaction —
+        # including the write lock that has to span repoint_bsn_code's
+        # stock read and the compensating write. See that function's own
+        # BEGIN IMMEDIATE for the conn=None path.
+        conn.execute("BEGIN IMMEDIATE")
         report = models.repoint_bsn_code(conn, a.code, a.dst, bsn_unit=norm_unit,
                                          preserve_stock=a.preserve_stock)
         conn.commit()
