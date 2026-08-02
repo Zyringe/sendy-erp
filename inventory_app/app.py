@@ -52,6 +52,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import book_registry
 import config
 import models
 from database import init_db, get_connection
@@ -214,6 +215,7 @@ def bootstrap_upload_db():
 # as before (after CSRF setup + blueprint registration).
 init_access_control(app)
 register_filters(app)
+book_registry.init_book_registry(app)
 
 
 @app.route('/login', methods=['GET', 'POST'])
