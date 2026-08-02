@@ -126,17 +126,42 @@ def preflight_batch(conn, product_ids, operation=None):
 
 
 def recalculate_product_wacc(product_id, conn=None):
-    """คำนวณ WACC ใหม่ทั้งหมดสำหรับสินค้า แล้วบันทึกลง product_cost_ledger"""
-    close_conn = conn is None
-    if conn is None:
-        conn = get_connection()
+    """คำนวณ WACC ใหม่ทั้งหมดสำหรับสินค้า แล้วบันทึกลง product_cost_ledger
 
+    When called WITHOUT a connection this owns one, and must therefore clean it
+    up on failure as well as on success. The pre-flight below raises
+    WaccIdentityError, and the commit/close used to sit only on the success
+    path — so every `recalculate_product_wacc(pid)` call site leaked its
+    connection when a cost-identity failure fired. Closing the CALLER's
+    connection (as the ratio-replay path does) does not help: the connection
+    that actually raised is the one opened here.
+
+    When a connection is PASSED IN the caller owns rollback and close; this
+    function only propagates.
+    """
+    if conn is not None:
+        return _recalculate_product_wacc(product_id, conn)
+
+    conn = get_connection()
+    try:
+        wacc = _recalculate_product_wacc(product_id, conn)
+        conn.commit()
+        return wacc
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _recalculate_product_wacc(product_id, conn):
+    """The real work. Never commits, never closes — connection lifecycle
+    belongs to recalculate_product_wacc above, or to the caller that supplied
+    the connection."""
     product = conn.execute(
         "SELECT id, unit_type, cost_price, opening_cost FROM products WHERE id=?", (product_id,)
     ).fetchone()
     if not product:
-        if close_conn:
-            conn.close()
         return 0.0
 
     # Seed the ledger's INITIAL ("ยอดยกมา") entry from opening_cost, the immutable cost
@@ -350,10 +375,6 @@ def recalculate_product_wacc(product_id, conn=None):
             "UPDATE products SET cost_price=? WHERE id=?", (current_wacc, product_id)
         )
         _set_price_change_source(conn, None)
-
-    if close_conn:
-        conn.commit()
-        conn.close()
 
     return current_wacc
 

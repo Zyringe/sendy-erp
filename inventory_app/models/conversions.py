@@ -418,10 +418,21 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
 
     # ── WACC: คำนวณต้นทุน output จาก input WACCs ──────────────────────────
     total_input_cost = 0.0
-    for inp in inputs:
-        needed   = inp['quantity'] * multiplier
-        inp_wacc = get_current_wacc(inp['product_id'], conn)
-        total_input_cost += needed * inp_wacc
+    # get_current_wacc lazily recalculates when an input has no cost ledger, so
+    # this loop can now raise WaccIdentityError — and it runs INSIDE the
+    # BEGIN IMMEDIATE opened above, before any of the cleanup below exists.
+    # run_conversion has no try/except around its body (it relies on early
+    # returns each closing the connection), so an escape here would strand the
+    # WRITE LOCK, not merely leak a connection.
+    try:
+        for inp in inputs:
+            needed   = inp['quantity'] * multiplier
+            inp_wacc = get_current_wacc(inp['product_id'], conn)
+            total_input_cost += needed * inp_wacc
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
 
     # cost spreads over GOOD output only (scrap loss raises good-unit cost)
     output_unit_cost = total_input_cost / good_qty if good_qty > 0 else 0.0
