@@ -115,6 +115,18 @@ def main(argv=None):
     try:
         report = models.repoint_bsn_code(conn, a.code, a.dst, bsn_unit=norm_unit)
         conn.commit()
+    except models.WaccIdentityError as e:
+        # This script SUPPLIES the connection, so repoint_bsn_code does not own
+        # the rollback and cannot record the alert — that responsibility lands
+        # here. Roll back and CLOSE first, then alert on a fresh connection.
+        conn.rollback()
+        conn.close()
+        models.record_wacc_identity_alert(
+            e, operation='mapping_repoint',
+            extra={'bsn_code': a.code, 'new_product_id': a.dst,
+                   'via': 'scripts/remap_bsn_code.py'})
+        print(f"ROLLED BACK: {e}", file=sys.stderr)
+        return 1
     except Exception as e:
         conn.rollback()
         print(f"ROLLED BACK: {e}", file=sys.stderr)

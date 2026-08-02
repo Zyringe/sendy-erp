@@ -12,7 +12,9 @@ import bsn_units
 
 from .bsn_sync import (_BSN_LEDGER_NOTE_PATTERNS, _sync_bsn_to_stock,
                        cross_unit_hazard)
-from .wacc import recalculate_product_wacc, preflight_batch
+from .wacc import (recalculate_product_wacc, preflight_batch,
+                   WaccIdentityError)
+from .system_alerts import record_wacc_identity_alert
 
 
 def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
@@ -286,6 +288,7 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None) -> dict:
     own = conn is None
     if own:
         conn = get_connection()
+    _conn_closed = False
     try:
         if not conn.execute("SELECT 1 FROM products WHERE id=?", (new_pid,)).fetchone():
             raise ValueError(f"repoint_bsn_code: product {new_pid} not found")
@@ -449,10 +452,28 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None) -> dict:
             'stock_before': stock_before,
             'stock_after': stock_after,
         }
+    except WaccIdentityError as e:
+        # The whole remap unwinds (unlike the import/conversion paths, nothing
+        # of this operation stays committed). Record the alert only once the
+        # failed transaction is rolled back AND closed, on a fresh connection —
+        # writing it on `conn` would roll back with the failure, and opening a
+        # second connection while this one still holds the write lock risks
+        # "database is locked". When we do NOT own the connection we cannot
+        # roll back or close it, so the alert is the supplying caller's
+        # responsibility — scripts/remap_bsn_code.py does exactly that in its
+        # own WaccIdentityError handler.
+        if own:
+            conn.rollback()
+            conn.close()
+            _conn_closed = True
+            record_wacc_identity_alert(e, operation='mapping_repoint',
+                                       extra={'bsn_code': bsn_code,
+                                              'new_product_id': new_pid})
+        raise
     except Exception:
         if own:
             conn.rollback()
         raise
     finally:
-        if own:
+        if own and not _conn_closed:
             conn.close()

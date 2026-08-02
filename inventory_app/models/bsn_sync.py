@@ -508,9 +508,19 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
     # previously the close() sat only on the success path and a raise leaked
     # it. The error itself must keep propagating so the caller cannot report
     # the ratio edit as fully successful while the cost basis is stale.
-    # (Durable alerting for this path is wired by the system_alerts PR.)
+    # Durable alerting follows the same caller-owned rule as the import and
+    # conversion paths: close this connection FIRST, then record the alert on a
+    # fresh one, then re-raise. Writing the alert before the close would risk
+    # "database is locked"; not writing one at all would leave the failure
+    # visible only to whoever happened to trigger the ratio edit.
+    # ONE alert per incident: this call lets recalculate_product_wacc own its
+    # own connection, so that function records the alert. Recording a second
+    # one here produced TWO rows for a single failure -- `operation` is part of
+    # the dedupe key, so the partial unique index did not collapse them. We
+    # pass the operation name down instead. All this needs to do is release
+    # its own connection.
     try:
-        recalculate_product_wacc(product_id)
+        recalculate_product_wacc(product_id, operation='ratio_replay')
     finally:
         conn.close()
     return {'ok': True}

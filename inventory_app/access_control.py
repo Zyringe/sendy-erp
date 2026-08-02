@@ -76,6 +76,10 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'marketplace.review_amount',
     # Acknowledging a no-IV-exists order on /marketplace/review (mig 135).
     'marketplace.review_dismiss',
+    # Acknowledging a system alert (mig 149). Manager+ ONLY: the point of the
+    # table is that a transient flash never reaches Put, so the people who fail
+    # to relay a failure must not be able to clear it before he sees it.
+    'inventory.alert_resolve',
     # Master Naming cascade — preview is read-only but POSTed (JSON body);
     # apply mutates product_name in bulk. Manager/admin only.
     'naming.dict_preview', 'naming.dict_apply',
@@ -245,6 +249,7 @@ _ENDPOINT_MODULE = {
     # overview
     'dashboard': 'overview',
     'inventory.alerts_view': 'overview',
+    'inventory.alert_resolve': 'overview',
     'review.index': 'overview',
     'review.scan': 'overview',
     # operation
@@ -542,7 +547,9 @@ def inject_auth():
         'simulating_as': session.get('display_name') if real_role else None,
         'simulating_as_role': (ROLES.get(role, {}).get('label', role)) if real_role else None,
         'real_role':     real_role,
-        'alert_count':   models.count_stock_alerts(),
+        # Negative stock + unresolved system alerts share one badge, so an
+        # operational failure is visible without opening the page.
+        'alert_count':   models.count_stock_alerts() + models.count_open_system_alerts(),
         'suspicious_count': rr.suspicious_count(since_date=rr.default_since()),
         'db_routes_enabled': session.get('db_routes_enabled', False),
         'pending_suggestions_count': models.count_pending_suggestions(),

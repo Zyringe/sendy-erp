@@ -1474,6 +1474,19 @@ CREATE TABLE suppliers (
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 , code TEXT, tax_id TEXT, payment_terms_days INTEGER, default_currency TEXT NOT NULL DEFAULT 'THB');
 
+CREATE TABLE system_alerts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind         TEXT NOT NULL,
+    severity     TEXT NOT NULL DEFAULT 'error'
+                 CHECK (severity IN ('error', 'warning')),
+    message      TEXT NOT NULL,
+    dedupe_key   TEXT NOT NULL,
+    context_json TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    resolved_at  TEXT,
+    resolved_by  TEXT
+);
+
 CREATE TABLE transactions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id      INTEGER NOT NULL REFERENCES products(id),
@@ -1852,6 +1865,14 @@ CREATE INDEX idx_supplier_mapping_product ON supplier_product_mapping(product_id
 CREATE INDEX idx_supplier_mapping_purchase ON supplier_product_mapping(supplier_id, purchase_name_raw);
 
 CREATE UNIQUE INDEX idx_suppliers_code ON suppliers(code) WHERE code IS NOT NULL;
+
+CREATE INDEX idx_system_alerts_open
+    ON system_alerts(resolved_at)
+ WHERE resolved_at IS NULL;
+
+CREATE UNIQUE INDEX idx_system_alerts_open_dedupe
+    ON system_alerts(kind, dedupe_key)
+ WHERE resolved_at IS NULL;
 
 CREATE INDEX idx_txn_created_at
     ON transactions(created_at);

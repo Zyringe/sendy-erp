@@ -12,7 +12,9 @@ import bsn_units
 
 from .mapping import _resolve_mapping
 from .bsn_sync import _sync_bsn_to_stock
-from .wacc import recalculate_product_wacc, preflight_batch
+from .wacc import (recalculate_product_wacc, preflight_batch,
+                   WaccIdentityError)
+from .system_alerts import record_wacc_identity_alert
 
 
 def _detect_removed_lines(conn, table: str, file_type: str, entries: list) -> list:
@@ -333,6 +335,20 @@ def import_weekly(entries: list, file_type: str, filename: str,
             for pid in sorted(affected_pids):
                 recalculate_product_wacc(pid, conn)
             conn.commit()
+        except WaccIdentityError as e:
+            # Roll back and CLOSE first, then alert on a fresh connection: an
+            # alert written on `conn` would be rolled back with the failure,
+            # and a second connection opened while this one still holds the
+            # write lock risks "database is locked". Alerting is best-effort
+            # and never masks this error, which must propagate so the import
+            # cannot report plain success.
+            conn.rollback()
+            conn.close()
+            record_wacc_identity_alert(
+                e, operation='purchase_import',
+                extra={'filename': filename, 'file_type': file_type,
+                       'batch_id': batch_id})
+            raise
         except Exception:
             conn.rollback()
             conn.close()

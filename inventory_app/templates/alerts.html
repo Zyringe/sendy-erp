@@ -3,6 +3,53 @@
 {% block page_title %}แจ้งเตือน{% endblock %}
 
 {% block content %}
+{% if system_alerts %}
+<!-- Durable operational alerts (mig 149). A WACC cost-identity failure shows a
+     flash to whoever ran the import; this section is how it reaches Put. -->
+<div class="card mb-4 border-danger">
+  <div class="card-header d-flex align-items-center gap-2">
+    <i class="bi bi-shield-exclamation text-danger"></i>
+    <span class="fw-600">ปัญหาระบบที่ยังไม่ได้แก้ — ต้องตรวจสอบ</span>
+    <span class="badge badge-danger ms-1">{{ system_alerts | length }}</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th style="width:150px">เมื่อ</th>
+          <th>รายละเอียด</th>
+          <th style="width:120px"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in system_alerts %}
+        <tr>
+          <td class="text-muted small">{{ a['created_at'] }}</td>
+          <td>
+            {{ a['message'] }}
+            {% if a['context_json'] %}
+            <div class="text-muted small font-monospace">{{ a['context_json'] }}</div>
+            {% endif %}
+          </td>
+          <td class="text-end">
+            {% if current_role in ('admin', 'manager') %}
+            <form method="post"
+                  action="{{ url_for('inventory.alert_resolve', alert_id=a['id']) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-check-lg me-1"></i>รับทราบแล้ว
+              </button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 <div class="mb-3 d-flex align-items-center gap-2">
   <i class="bi bi-exclamation-triangle-fill text-warning" style="font-size:1.3rem"></i>
   <span class="fw-600">พบ <strong class="text-danger">{{ alerts | length }}</strong> รายการสต็อกติดลบ</span>

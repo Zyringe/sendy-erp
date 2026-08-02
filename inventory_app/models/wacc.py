@@ -11,6 +11,7 @@ from collections import defaultdict
 from database import get_connection
 
 from ._shared import _set_price_change_source
+from .system_alerts import record_wacc_identity_alert
 
 
 _WACC_INITIAL_DATE = '2026-03-03'
@@ -28,9 +29,10 @@ class WaccIdentityError(Exception):
     the incomplete result is then written to products.cost_price. That is a
     silently wrong cost basis feeding margin, COGS, pricing and conversions.
 
-    Carries structured context so the caller (PR3) can persist an actionable
-    alert after it has rolled back and released its transaction. This class
-    NEVER writes an alert itself — see models/wacc.py's callers.
+    Carries structured context so whoever OWNS the failed connection can
+    persist an actionable alert after rolling back and releasing it. The
+    exception class never writes one itself; see the ownership rule in
+    models/system_alerts.py.
     """
 
     def __init__(self, reason, *, product_id=None, reference_no=None,
@@ -125,8 +127,14 @@ def preflight_batch(conn, product_ids, operation=None):
         preflight_source_identity(conn, pid, operation=operation)
 
 
-def recalculate_product_wacc(product_id, conn=None):
+def recalculate_product_wacc(product_id, conn=None, operation=None):
     """คำนวณ WACC ใหม่ทั้งหมดสำหรับสินค้า แล้วบันทึกลง product_cost_ledger
+
+    `operation` names the business action for the durable alert this function
+    records when it OWNS the connection (e.g. 'ratio_replay'). A caller that
+    lets this function own the connection must pass its operation here rather
+    than record its own alert afterwards — two alerts for one incident
+    otherwise, since `operation` is part of the dedupe key.
 
     When called WITHOUT a connection this owns one, and must therefore clean it
     up on failure as well as on success. The pre-flight below raises
@@ -143,15 +151,31 @@ def recalculate_product_wacc(product_id, conn=None):
         return _recalculate_product_wacc(product_id, conn)
 
     conn = get_connection()
+    _closed = False          # bound BEFORE the try: the success path returns
+                             # from inside the try, so `finally` must always
+                             # find this defined
     try:
         wacc = _recalculate_product_wacc(product_id, conn)
         conn.commit()
         return wacc
+    except WaccIdentityError as e:
+        # We own this connection, so we own the durable alert too: roll back
+        # and close FIRST, then record on a fresh connection. This is the
+        # backstop for every owning entry point — including the lazy readers
+        # get_current_wacc()/get_cost_history(), which would otherwise raise a
+        # 500 that nobody but the person clicking ever sees.
+        conn.rollback()
+        conn.close()
+        _closed = True
+        record_wacc_identity_alert(
+            e, operation=operation or e.operation or 'wacc_recalculate')
+        raise
     except Exception:
         conn.rollback()
         raise
     finally:
-        conn.close()
+        if not _closed:
+            conn.close()
 
 
 def _recalculate_product_wacc(product_id, conn):
@@ -389,6 +413,8 @@ def get_current_wacc(product_id, conn=None):
     # this wrapper OWNS the connection it created while passing it in — so
     # recalculate_product_wacc will not close it. Without this the commit/close
     # sat only on the success path and a raise leaked the connection.
+    _closed = False          # bound before the try — success returns from
+                             # inside it, so `finally` must find this defined
     try:
         row = conn.execute(
             "SELECT wacc_after FROM product_cost_ledger WHERE product_id=? ORDER BY event_date DESC, id DESC LIMIT 1",
@@ -403,12 +429,23 @@ def get_current_wacc(product_id, conn=None):
             return wacc
 
         return row['wacc_after']
+    except WaccIdentityError as e:
+        # Only alert when we OWN the connection. With a caller-supplied one we
+        # cannot roll back or close, so the alert is the owner's to record —
+        # otherwise a nested caller (run_conversion's input-cost loop) would
+        # raise a duplicate for the same incident.
+        if close_conn:
+            conn.rollback()
+            conn.close()
+            _closed = True
+            record_wacc_identity_alert(e, operation='wacc_lazy_read')
+        raise
     except Exception:
         if close_conn:
             conn.rollback()
         raise
     finally:
-        if close_conn:
+        if close_conn and not _closed:
             conn.close()
 
 
@@ -419,6 +456,7 @@ def get_cost_history(product_id):
     # try/finally for the same reason as get_current_wacc: this wrapper owns
     # the connection but passes it in, so a WaccIdentityError from the lazy
     # recalculate would otherwise skip the close() at the end and leak it.
+    _closed = False
     try:
         exists = conn.execute(
             "SELECT 1 FROM product_cost_ledger WHERE product_id=? LIMIT 1", (product_id,)
@@ -433,11 +471,21 @@ def get_cost_history(product_id):
             (product_id,)
         ).fetchall()
         return [dict(r) for r in rows]
+    except WaccIdentityError as e:
+        # This wrapper always owns its connection, so it owns the alert too.
+        # Without this the /products/<id>/cost-history page just 500s and the
+        # failure is seen only by whoever happened to click it.
+        conn.rollback()
+        conn.close()
+        _closed = True
+        record_wacc_identity_alert(e, operation='wacc_lazy_read')
+        raise
     except Exception:
         conn.rollback()
         raise
     finally:
-        conn.close()
+        if not _closed:
+            conn.close()
 
 
 def recalculate_waccs_for_products(product_ids, operation=None):

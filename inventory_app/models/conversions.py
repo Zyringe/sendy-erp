@@ -8,7 +8,9 @@ Imports `get_current_wacc` + `recalculate_waccs_for_products` from `.wacc`
 
 from database import get_connection
 
-from .wacc import get_current_wacc, recalculate_waccs_for_products
+from .wacc import (get_current_wacc, recalculate_waccs_for_products,
+                   WaccIdentityError)
+from .system_alerts import record_wacc_identity_alert
 
 
 def get_conversion_formulas():
@@ -429,6 +431,15 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
             needed   = inp['quantity'] * multiplier
             inp_wacc = get_current_wacc(inp['product_id'], conn)
             total_input_cost += needed * inp_wacc
+    except WaccIdentityError as e:
+        # Release the write lock FIRST, then alert on a fresh connection —
+        # same ownership rule as every other caller.
+        conn.rollback()
+        conn.close()
+        record_wacc_identity_alert(
+            e, operation='conversion_input_cost',
+            extra={'formula_id': formula_id})
+        raise
     except Exception:
         conn.rollback()
         conn.close()
@@ -482,10 +493,23 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
     # connection must be closed either way — previously the close() sat only on
     # the success path, so a raise leaked it on top of the batch helper's own.
     involved = [inp['product_id'] for inp in inputs] + [formula['output_product_id']]
+    _conv_closed = False
     try:
         recalculate_waccs_for_products(involved, operation='conversion_recalc')
-    finally:
+    except WaccIdentityError as e:
+        # Same ownership rule as the purchase import: close this (already
+        # committed) connection FIRST, then alert on a fresh one, then let the
+        # error propagate so the conversion cannot report success.
         conn.close()
+        _conv_closed = True
+        record_wacc_identity_alert(
+            e, operation='conversion_recalc',
+            extra={'formula_id': formula['id'],
+                   'output_product_id': formula['output_product_id']})
+        raise
+    finally:
+        if not _conv_closed:
+            conn.close()
     msg = f'แปลงสำเร็จ: ได้ {good_qty:,} {formula["output_product_name"]}'
     if writeoff_qty:
         msg += f' (ตัดของเสีย {writeoff_qty:,})'
