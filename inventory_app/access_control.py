@@ -36,6 +36,7 @@ def pw_fingerprint(password_hash):
 # POST whitelist by role
 _STAFF_POST_OK = frozenset([
     'login', 'logout',
+    'toggle_book',                       # book view switch — all roles (Q6: C)
     'bsn.mapping_save', 'bsn.unit_conversions_save', 'bsn.unit_conversions_edit',
     'bsn.unit_conversions_dismiss',
     # Decision B — staff may import everything; the unified box (/import-data)
@@ -101,6 +102,7 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
 
 _GENERAL_POST_OK = frozenset([
     'logout',
+    'toggle_book',
     'me.leave_submit', 'me.leave_edit', 'me.leave_cancel',
     'me.change_password',
 ])
@@ -115,6 +117,7 @@ _ROLE_POST_OK = {
     # she makes; _require_pay_role in blueprints/hr.py mirrors this set).
     'shareholder': frozenset([
         'logout',
+        'toggle_book',
         'cashbook.new_transaction', 'cashbook.txn_edit', 'cashbook.txn_delete',
         'hr.payroll_item_pay', 'hr.payroll_item_unpay',
         'me.change_password',

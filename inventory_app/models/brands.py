@@ -5,22 +5,28 @@ file-split rationale. No behavior changes.
 from database import get_connection
 
 
-def get_brands():
+def get_brands(conn=None):
     """All brands sorted: own brands first (sort_order, then name)."""
-    conn = get_connection()
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     rows = conn.execute("""
         SELECT id, code, name, name_th, is_own_brand, sort_order
           FROM brands
          ORDER BY is_own_brand DESC, sort_order, name
     """).fetchall()
-    conn.close()
+    if owned:
+        conn.close()
     return [dict(r) for r in rows]
 
 
-def get_brand(brand_id):
-    conn = get_connection()
+def get_brand(brand_id, conn=None):
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     row = conn.execute("SELECT * FROM brands WHERE id = ?", (brand_id,)).fetchone()
-    conn.close()
+    if owned:
+        conn.close()
     return dict(row) if row else None
 
 

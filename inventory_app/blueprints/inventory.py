@@ -13,6 +13,7 @@ from uuid import uuid4
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, abort, current_app)
 
+import book_registry
 import models
 from database import get_connection
 
@@ -142,7 +143,8 @@ def transaction_history():
     txns, total = models.get_transactions(
         product_id=product_id, txn_type=txn_type,
         date_from=date_from, date_to=date_to,
-        page=page, per_page=current_app.config['ITEMS_PER_PAGE']
+        page=page, per_page=current_app.config['ITEMS_PER_PAGE'],
+        conn=book_registry.get_book_connection()
     )
     pages = (total + current_app.config['ITEMS_PER_PAGE'] - 1) // current_app.config['ITEMS_PER_PAGE']
     return render_template('transactions/history.html',

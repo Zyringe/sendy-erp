@@ -12,8 +12,10 @@ from ._shared import _set_price_change_source
 
 def get_products(search=None, low_stock=False, hard_to_sell=False,
                  location=None, in_stock=False, restock=False, page=1, per_page=50,
-                 include_inactive=False):
-    conn = get_connection()
+                 include_inactive=False, conn=None):
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     conditions = [] if include_inactive else ["p.is_active = 1"]
     params = []
     if search:
@@ -79,12 +81,15 @@ def get_products(search=None, low_stock=False, hard_to_sell=False,
         {having.replace('HAVING','AND') if having else ''}
     """
     total = conn.execute(count_sql, params[:-2]).fetchone()[0]
-    conn.close()
+    if owned:
+        conn.close()
     return rows, total
 
 
-def get_product(product_id):
-    conn = get_connection()
+def get_product(product_id, conn=None):
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     row = conn.execute("""
         SELECT p.id, p.sku_code, p.sku_code_locked,
                p.product_name, p.units_per_carton, p.units_per_box,
@@ -104,7 +109,8 @@ def get_product(product_id):
         LEFT JOIN stock_levels s ON s.product_id = p.id
         WHERE p.id = ?
     """, (product_id,)).fetchone()
-    conn.close()
+    if owned:
+        conn.close()
     return row
 
 

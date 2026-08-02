@@ -5,6 +5,7 @@ import sqlite3
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort, current_app, send_file)
 
+import book_registry
 import config
 import models
 from database import get_connection
@@ -150,6 +151,7 @@ def product_list():
     page = int(request.args.get('page', 1))
     per_page = current_app.config['ITEMS_PER_PAGE']
 
+    book_conn = book_registry.get_book_connection()
     products, total = models.get_products(
         search=search or None,
         low_stock=low_stock,
@@ -160,6 +162,7 @@ def product_list():
         page=page,
         per_page=per_page,
         include_inactive=show_inactive,
+        conn=book_conn,
     )
     pages = (total + per_page - 1) // per_page
     # Pack/unpack "true availability": only when the tick is on, compute how many
@@ -168,7 +171,8 @@ def product_list():
     buildable = {}
     if products:
         buildable = {pid: info['buildable']
-                     for pid, info in models.get_buildable([p['id'] for p in products]).items()
+                     for pid, info in models.get_buildable(
+                         [p['id'] for p in products], conn=book_conn).items()
                      if info['buildable'] > 0}
     # Remember this filtered view so a product's back button can return here even
     # after a detail-page action redirects without the ?back= param. Stored per
@@ -302,21 +306,23 @@ def product_new():
 
 @bp_products.route('/products/<int:product_id>')
 def product_detail(product_id):
-    product = models.get_product(product_id)
+    book_conn = book_registry.get_book_connection()
+    product = models.get_product(product_id, conn=book_conn)
     if not product:
         flash('ไม่พบสินค้า', 'danger')
         return redirect(url_for('products.product_list'))
-    promotions = models.get_promotions(product_id)
-    active_promo = models.get_active_promotion(product_id)
-    price_tiers = models.get_product_price_tiers(product_id)
-    sell_price = models.effective_price(product)
+    promotions = models.get_promotions(product_id, conn=book_conn)
+    active_promo = models.get_active_promotion(product_id, conn=book_conn)
+    price_tiers = models.get_product_price_tiers(product_id, conn=book_conn)
+    sell_price = models.effective_price(product, conn=book_conn)
     txn_page = int(request.args.get('txn_page', 1))
     per_page = 20
-    txns, txn_total = models.get_transactions(product_id=product_id, page=txn_page, per_page=per_page)
+    txns, txn_total = models.get_transactions(product_id=product_id, page=txn_page,
+                                              per_page=per_page, conn=book_conn)
     txn_pages = (txn_total + per_page - 1) // per_page
-    locations = models.get_product_locations(product_id)
-    bsn_pricing = models.get_product_pricing_summary(product_id)
-    mkt = models.get_marketplace_listings_with_history(product_id)
+    locations = models.get_product_locations(product_id, conn=book_conn)
+    bsn_pricing = models.get_product_pricing_summary(product_id, conn=book_conn)
+    mkt = models.get_marketplace_listings_with_history(product_id, conn=book_conn)
     # Flat map for the click→history modal (keyed "platform|variation_id").
     mkt_modal_data = {}
     _plat_label = {'shopee': 'Shopee', 'lazada': 'Lazada'}
@@ -328,10 +334,11 @@ def product_detail(product_id):
                     'platform': _plat_label.get(_plat, _plat),
                     'history': _l['history'],
                 }
-    brands = models.get_brands()
-    current_brand = models.get_brand(product['brand_id']) if product['brand_id'] else None
+    brands = models.get_brands(conn=book_conn)
+    current_brand = (models.get_brand(product['brand_id'], conn=book_conn)
+                     if product['brand_id'] else None)
     # pack/unpack true-availability: extra units obtainable by running a conversion
-    buildable = models.get_buildable([product_id]).get(product_id)
+    buildable = models.get_buildable([product_id], conn=book_conn).get(product_id)
     # "Back to filtered list": prefer the ?back= the list link carried; fall back
     # to the last list view remembered in session so the back button still returns
     # to the filter even after a detail-page action redirects without ?back=.
@@ -920,6 +927,16 @@ def api_products_search():
 def api_product_barcodes(product_id):
     if not session.get('role'):
         abort(403)
+    if request.method == 'GET':
+        # Book-scoped read: the product detail page fetches this in BOTH books,
+        # and a VAT-book product_id must never join into the main book's
+        # barcodes (unrelated id namespaces). Borrowed conn — do not close.
+        rows = book_registry.get_book_connection().execute(
+            "SELECT id, barcode, is_primary, source FROM product_barcodes "
+            "WHERE product_id=? ORDER BY is_primary DESC, id ASC",
+            (product_id,)
+        ).fetchall()
+        return jsonify({'items': [dict(r) for r in rows]})
     conn = get_connection()
     if request.method == 'POST':
         data = request.get_json(silent=True) or {}

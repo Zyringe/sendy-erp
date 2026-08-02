@@ -6,8 +6,10 @@ from database import get_connection
 from datetime import date
 
 
-def get_promotions(product_id: int, active_only=False):
-    conn = get_connection()
+def get_promotions(product_id: int, active_only=False, conn=None):
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     try:
         cond = "WHERE product_id = ?"
         params = [product_id]
@@ -17,12 +19,15 @@ def get_promotions(product_id: int, active_only=False):
             f"SELECT * FROM promotions {cond} ORDER BY created_at DESC", params
         ).fetchall()
     finally:
-        conn.close()
+        if owned:
+            conn.close()
 
 
-def get_active_promotion(product_id: int):
+def get_active_promotion(product_id: int, conn=None):
     today = date.today().isoformat()
-    conn = get_connection()
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     try:
         return conn.execute("""
             SELECT * FROM promotions
@@ -33,10 +38,11 @@ def get_active_promotion(product_id: int):
             LIMIT 1
         """, (product_id, today, today)).fetchone()
     finally:
-        conn.close()
+        if owned:
+            conn.close()
 
 
-def effective_price(product) -> float:
+def effective_price(product, conn=None) -> float:
     """Return the effective per-unit selling price for this product.
 
     Behavior per promo_type:
@@ -51,7 +57,7 @@ def effective_price(product) -> float:
                     the order total. Per-unit display price is the catalog
                     price. Cart-level bundle resolution is out of scope here.
     """
-    promo = get_active_promotion(product['id'])
+    promo = get_active_promotion(product['id'], conn=conn)
     if promo is None:
         return product['base_sell_price']
     if promo['promo_type'] == 'percent':
@@ -117,9 +123,11 @@ def deactivate_promotion(promo_id: int):
         conn.close()
 
 
-def get_product_price_tiers(product_id: int):
+def get_product_price_tiers(product_id: int, conn=None):
     """Return all tier rows for this product, ordered by sort_order then price."""
-    conn = get_connection()
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     try:
         return conn.execute(
             "SELECT id, qty_label, price, note, sort_order "
@@ -129,4 +137,5 @@ def get_product_price_tiers(product_id: int):
             (product_id,)
         ).fetchall()
     finally:
-        conn.close()
+        if owned:
+            conn.close()

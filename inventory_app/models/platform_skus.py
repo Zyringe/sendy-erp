@@ -230,7 +230,7 @@ def get_platform_skus_all(platform):
     return rows
 
 
-def get_marketplace_listings_with_history(product_id, now=None):
+def get_marketplace_listings_with_history(product_id, now=None, conn=None):
     """Current marketplace listings (Shopee/Lazada) for a product, each with its
     price-change history — powers the 'ราคา marketplace' card + click→history modal.
 
@@ -253,7 +253,9 @@ def get_marketplace_listings_with_history(product_id, now=None):
     if now is None:
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     FIELD_LABEL = {'price': 'ราคาตั้ง', 'special_price': 'ราคาพิเศษ'}
-    conn = get_connection()
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     skus = conn.execute(
         """SELECT platform, variation_id, variation_name, seller_sku, product_name,
                   price, special_price, special_price_start, special_price_end,
@@ -271,7 +273,8 @@ def get_marketplace_listings_with_history(product_id, now=None):
             LIMIT ?""",
         (product_id, _MKT_HISTORY_CAP),
     ).fetchall()
-    conn.close()
+    if owned:
+        conn.close()
 
     by_key = {}
     for h in hist:
