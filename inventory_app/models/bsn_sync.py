@@ -10,7 +10,8 @@ report.
 from database import get_connection
 import bsn_units
 
-from .wacc import recalculate_product_wacc
+from .wacc import recalculate_product_wacc, WaccIdentityError
+from .system_alerts import record_wacc_identity_alert
 
 # หน้าร้าน customer codes whose synced sales ALSO decrement platform_skus.stock
 # (see _sync_bsn_to_stock below). ONE definition, imported — ecommerce_overview
@@ -508,11 +509,25 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
     # previously the close() sat only on the success path and a raise leaked
     # it. The error itself must keep propagating so the caller cannot report
     # the ratio edit as fully successful while the cost basis is stale.
-    # (Durable alerting for this path is wired by the system_alerts PR.)
+    # Durable alerting follows the same caller-owned rule as the import and
+    # conversion paths: close this connection FIRST, then record the alert on a
+    # fresh one, then re-raise. Writing the alert before the close would risk
+    # "database is locked"; not writing one at all would leave the failure
+    # visible only to whoever happened to trigger the ratio edit.
+    _closed = False          # set before the try: any other exception type
+                             # must still find this defined in `finally`
     try:
         recalculate_product_wacc(product_id)
-    finally:
+    except WaccIdentityError as e:
         conn.close()
+        _closed = True
+        record_wacc_identity_alert(
+            e, operation='ratio_replay',
+            extra={'product_id': product_id, 'bsn_unit': bsn_unit})
+        raise
+    finally:
+        if not _closed:
+            conn.close()
     return {'ok': True}
 
 

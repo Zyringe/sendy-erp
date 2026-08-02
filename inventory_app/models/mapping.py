@@ -458,8 +458,10 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None) -> dict:
         # failed transaction is rolled back AND closed, on a fresh connection —
         # writing it on `conn` would roll back with the failure, and opening a
         # second connection while this one still holds the write lock risks
-        # "database is locked". When we do not own the connection the caller
-        # (scripts/remap_bsn_code.py) owns the rollback, so it owns the alert.
+        # "database is locked". When we do NOT own the connection we cannot
+        # roll back or close it, so the alert is the supplying caller's
+        # responsibility — scripts/remap_bsn_code.py does exactly that in its
+        # own WaccIdentityError handler.
         if own:
             conn.rollback()
             conn.close()

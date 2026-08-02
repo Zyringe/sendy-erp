@@ -201,3 +201,47 @@ def test_staff_cannot_resolve_a_system_alert(empty_db_conn, monkeypatch):
     admin = _client(monkeypatch, 'admin')
     admin.post(f'/alerts/{alert_id}/resolve')
     assert _open(empty_db_conn) == [], "admin should be able to resolve"
+
+
+def test_ratio_replay_failure_alerts_and_closes(empty_db_conn, monkeypatch):
+    """The caller Codex found missing from the chain.
+
+    update_unit_conversion_ratio commits the ratio change and rebuilt ledger,
+    then recalculates WACC on a SEPARATE connection. A failure there must still
+    (a) release that connection and (b) leave a durable alert — otherwise the
+    ratio edit's cost impact is invisible to Put once the request ends.
+
+    Injected at the seam rather than by constructing a real identity failure:
+    the contract under test is the caller's rollback/close/alert ordering.
+    """
+    import models
+    from models import bsn_sync
+
+    pid = empty_db_conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES ('RatioReplay','ตัว')"
+    ).lastrowid
+    empty_db_conn.execute(
+        "INSERT INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
+    empty_db_conn.execute(
+        "INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?, 'โหล', 12)",
+        (pid,))
+    empty_db_conn.commit()
+
+    boom = models.WaccIdentityError(
+        'linked purchase line no longer exists', product_id=pid,
+        reference_no='RRZ', source_bsn_code='Z1', source_line_seq=1)
+
+    def _raise(product_id, conn=None):
+        raise boom
+    monkeypatch.setattr(bsn_sync, 'recalculate_product_wacc', _raise)
+
+    try:
+        bsn_sync.update_unit_conversion_ratio(pid, 'โหล', 6)
+        raise AssertionError('expected WaccIdentityError to propagate')
+    except models.WaccIdentityError:
+        pass
+
+    rows = _open(empty_db_conn)
+    assert len(rows) == 1, "ratio replay must leave a durable alert"
+    ctx = rows[0]['context_json'] or ''
+    assert 'ratio_replay' in ctx, ctx
