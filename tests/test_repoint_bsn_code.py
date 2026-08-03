@@ -442,11 +442,15 @@ def test_orphan_detector_still_catches_a_stranded_ledger_row(empty_db_conn):
 # preserve_stock — opening balances were seeded while the code was mis-attributed
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _opening(conn, pid, qty):
+def _opening(conn, pid, qty, created_at='2024-01-03 00:00:00'):
+    """An opening balance, dated BEFORE the movements — the shape real data has
+    (every ยอดยกมา row on prod is stamped 2024-01-03). Letting it default to
+    `now` would put the opening AFTER the history and make the whole fixture
+    behave like a product that starts at zero."""
     conn.execute(
         "INSERT INTO transactions (product_id, txn_type, quantity_change, "
-        "unit_mode, note) VALUES (?, 'ADJUST', ?, 'unit', 'ยอดยกมา')",
-        (pid, qty),
+        "unit_mode, note, created_at) VALUES (?, 'ADJUST', ?, 'unit', 'ยอดยกมา', ?)",
+        (pid, qty, created_at),
     )
 
 
@@ -851,3 +855,108 @@ def test_repoint_takes_the_write_lock_before_it_reads_stock(empty_db, monkeypatc
         assert (_stock(check, OLD), _stock(check, NEW)) == before
     finally:
         check.close()
+
+
+def _new_destination_fixture(conn):
+    """The pid-2054 shape: a BRAND-NEW destination whose incoming history nets
+    POSITIVE while its real stock is 0, so the compensation is negative and
+    larger than anything the destination can absorb at the head of its ledger."""
+    OLD = _product(conn, 'Old blended product', 'ชิ้น')
+    NEW = _product(conn, 'Brand new product', 'ชิ้น')   # no ledger of its own
+    MOVE, STAY = 'ZNEWD001', 'ZNEWD002'
+    _mapping(conn, MOVE, OLD)
+    _mapping(conn, STAY, OLD)
+    _opening(conn, OLD, 40)
+    # MOVE's own history nets +30 (bought 40, sold 10) but NEW really holds 0.
+    _purchase(conn, 'ZND1', OLD, MOVE, qty=40, unit='ชิ้น', net=400)   # 10.00 each
+    _sale(conn, 'ZND2', OLD, MOVE, qty=10, unit='ชิ้น')
+    _purchase(conn, 'ZND3', OLD, STAY, qty=5, unit='ชิ้น', net=100)
+    return OLD, NEW, MOVE
+
+
+def test_compensation_does_not_freeze_a_new_destination_wacc(empty_db_conn):
+    """A negative compensation must not be backdated into a destination that
+    cannot absorb it — doing so starts the replay under water, every purchase
+    hits models/wacc.py's `current_stock < 0` freeze, and cost_price is left at
+    0.00 despite real priced purchases.
+
+    Measured on prod 2026-08-03: pid 2054 (แปรงทาสีขนดำ KP 1/2in) came out of
+    exactly this shape with cost 0.00 and two negative cost-ledger events, from
+    three purchases totalling ฿453. Repaired by hand to ฿5.8611; this pins the
+    code so the next re-point cannot repeat it.
+    """
+    import models
+
+    conn = empty_db_conn
+    OLD, NEW, MOVE = _new_destination_fixture(conn)
+    conn.commit()
+    models._sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
+    models._sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
+    conn.commit()
+    before = (_stock(conn, OLD), _stock(conn, NEW))
+
+    report = models.repoint_bsn_code(conn, MOVE, NEW, preserve_stock=True)
+    conn.commit()
+
+    assert (_stock(conn, OLD), _stock(conn, NEW)) == before, 'stock must not move'
+    assert sum(report['stock_adjustments'].values()) == 0
+
+    assert NEW in report['compensations_moved_late'], (
+        'the relocation must be reported, not silent — remap_bsn_code.py prints it'
+    )
+    cost = conn.execute("SELECT cost_price FROM products WHERE id=?", (NEW,)).fetchone()['cost_price']
+    assert cost > 0, (
+        f"destination cost_price froze at {cost} — the compensation was placed "
+        f"where it drove the WACC replay below zero"
+    )
+    assert cost == pytest.approx(10.0), 'the only priced lot was 40 @ 10.00'
+    assert not conn.execute(
+        "SELECT 1 FROM product_cost_ledger WHERE product_id=? AND stock_after < 0",
+        (NEW,)).fetchone(), 'no purchase may be costed while stock is negative'
+
+
+def test_a_positive_compensation_is_never_relocated(empty_db_conn):
+    """The late-placement fallback must consider NEGATIVE compensations only.
+
+    A positive compensation at the head can only raise the running balance, so
+    it cannot be what put a purchase under water — but a destination whose own
+    sales predate its own purchases already has such a purchase. Letting the
+    fallback fire on that evidence strips the help the backdating provides and
+    re-creates the original deficit: measured while building this, it moved pid
+    1795's cost_price from 17.5898 to 16.0311.
+    """
+    import models
+
+    conn = empty_db_conn
+    OLD = _product(conn, 'Old product', 'ชิ้น')
+    NEW = _product(conn, 'Destination', 'ชิ้น')
+    MOVE, OWN = 'ZPOSC001', 'ZPOSC002'
+    _mapping(conn, MOVE, OLD)
+    _mapping(conn, OWN, NEW)
+    _opening(conn, OLD, 60)
+    # NEW's OWN history sells before it buys, so its ledger carries a purchase
+    # costed at negative stock no matter where the compensation goes.
+    _sale(conn, 'ZPC1', NEW, OWN, qty=9, unit='ชิ้น', date_iso='2024-02-01')
+    _purchase(conn, 'ZPC2', NEW, OWN, qty=6, unit='ชิ้น', net=60, date_iso='2024-03-01')
+    _purchase(conn, 'ZPC3', OLD, MOVE, qty=10, unit='ชิ้น', net=200, date_iso='2024-04-01')
+    _sale(conn, 'ZPC4', OLD, MOVE, qty=25, unit='ชิ้น', date_iso='2024-05-01')
+    conn.commit()
+    models._sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
+    models._sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
+    conn.commit()
+    before = (_stock(conn, OLD), _stock(conn, NEW))
+
+    report = models.repoint_bsn_code(conn, MOVE, NEW, preserve_stock=True)
+    conn.commit()
+
+    assert report['stock_adjustments'][NEW] > 0, 'fixture must give NEW a positive compensation'
+    assert NEW not in report['compensations_moved_late'], (
+        'a positive compensation must stay at the head even when the product '
+        'already has a purchase costed at negative stock'
+    )
+    row = conn.execute(
+        "SELECT created_at FROM transactions WHERE product_id=? AND note LIKE 'ปรับยอดยกมา:%'",
+        (NEW,)).fetchone()
+    today = conn.execute("SELECT date('now','localtime') d").fetchone()['d']
+    assert not row['created_at'].startswith(today), 'positive compensation was relocated to today'
+    assert (_stock(conn, OLD), _stock(conn, NEW)) == before
