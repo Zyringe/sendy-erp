@@ -960,3 +960,99 @@ def test_a_positive_compensation_is_never_relocated(empty_db_conn):
     today = conn.execute("SELECT date('now','localtime') d").fetchone()['d']
     assert not row['created_at'].startswith(today), 'positive compensation was relocated to today'
     assert (_stock(conn, OLD), _stock(conn, NEW)) == before
+
+
+def test_a_negative_compensation_is_not_relocated_on_someone_elses_freeze(empty_db_conn):
+    """The relocation must be attributable, not merely correlated.
+
+    A product can already carry a purchase costed at negative stock for reasons
+    that predate the re-point. Relocating on that evidence is NOT harmless:
+    lifting the ADJUST off the ledger head raises current_stock for the whole
+    replay, so every later purchase blends at a different weight and cost_price
+    moves. The measure has to be "does moving THIS row fix one", not "does a
+    frozen purchase exist".
+    """
+    import models
+
+    conn = empty_db_conn
+    OLD = _product(conn, 'Old product', 'ชิ้น')
+    NEW = _product(conn, 'Destination', 'ชิ้น')
+    MOVE, OWN = 'ZATTR001', 'ZATTR002'
+    _mapping(conn, MOVE, OLD)
+    _mapping(conn, OWN, NEW)
+    _opening(conn, OLD, 80)
+    _opening(conn, NEW, 200)
+    # NEW's OWN history sells before it buys — a frozen purchase the re-point
+    # has nothing to do with, and one a small negative compensation cannot fix.
+    _sale(conn, 'ZAT1', NEW, OWN, qty=260, unit='ชิ้น', date_iso='2024-02-01')
+    _purchase(conn, 'ZAT2', NEW, OWN, qty=20, unit='ชิ้น', net=200, date_iso='2024-03-01')
+    _purchase(conn, 'ZAT3', NEW, OWN, qty=40, unit='ชิ้น', net=800, date_iso='2024-06-01')
+    # The moving code nets POSITIVE into NEW, so NEW's compensation is negative.
+    _purchase(conn, 'ZAT4', OLD, MOVE, qty=30, unit='ชิ้น', net=300, date_iso='2024-04-01')
+    _sale(conn, 'ZAT5', OLD, MOVE, qty=10, unit='ชิ้น', date_iso='2024-05-01')
+    conn.commit()
+    models._sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
+    models._sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
+    conn.commit()
+    before = (_stock(conn, OLD), _stock(conn, NEW))
+
+    report = models.repoint_bsn_code(conn, MOVE, NEW, preserve_stock=True)
+    conn.commit()
+
+    assert report['stock_adjustments'][NEW] < 0, 'fixture must give NEW a negative compensation'
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM product_cost_ledger WHERE product_id=?"
+        " AND event_type='PURCHASE' AND stock_after - qty_change < 0", (NEW,)
+    ).fetchone()['c'] > 0, 'fixture must leave a frozen purchase the move cannot fix'
+    assert NEW not in report['compensations_moved_late'], (
+        'relocated on a freeze it did not cause — that silently re-weights every '
+        'later purchase in the WACC replay'
+    )
+    row = conn.execute(
+        "SELECT created_at FROM transactions WHERE product_id=? AND note LIKE 'ปรับยอดยกมา:%'",
+        (NEW,)).fetchone()
+    today = conn.execute("SELECT date('now','localtime') d").fetchone()['d']
+    assert not row['created_at'].startswith(today), 'compensation must still sit at the head'
+    assert (_stock(conn, OLD), _stock(conn, NEW)) == before
+
+
+def test_relocated_compensation_survives_a_re_run(empty_db_conn):
+    """Re-running a repoint whose compensation was relocated must leave it
+    where it was — not re-post it at the head and freeze the WACC again.
+
+    Codex flagged this as untested on #357. It holds by construction (the
+    second run finds stock already correct, so `delta` is 0 and the 6b loop
+    never runs) but "by construction" is the claim, not the evidence.
+    """
+    import models
+
+    conn = empty_db_conn
+    OLD, NEW, MOVE = _new_destination_fixture(conn)
+    conn.commit()
+    models._sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
+    models._sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
+    conn.commit()
+    before = (_stock(conn, OLD), _stock(conn, NEW))
+
+    r1 = models.repoint_bsn_code(conn, MOVE, NEW, preserve_stock=True)
+    conn.commit()
+    assert NEW in r1['compensations_moved_late'], 'fixture must trigger a relocation'
+    cost1 = conn.execute("SELECT cost_price FROM products WHERE id=?", (NEW,)).fetchone()['cost_price']
+    stamp1 = conn.execute(
+        "SELECT created_at FROM transactions WHERE product_id=? AND note LIKE 'ปรับยอดยกมา:%'",
+        (NEW,)).fetchone()['created_at']
+
+    r2 = models.repoint_bsn_code(conn, MOVE, NEW, preserve_stock=True)
+    conn.commit()
+
+    assert r2['stock_adjustments'] == {}, 'second run must not compensate again'
+    assert r2['compensations_moved_late'] == []
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM transactions WHERE product_id=? AND note LIKE 'ปรับยอดยกมา:%'",
+        (NEW,)).fetchone()['c'] == 1, 'exactly one compensation row, not stacked'
+    assert conn.execute(
+        "SELECT created_at FROM transactions WHERE product_id=? AND note LIKE 'ปรับยอดยกมา:%'",
+        (NEW,)).fetchone()['created_at'] == stamp1, 'the relocated row must not move back'
+    assert conn.execute(
+        "SELECT cost_price FROM products WHERE id=?", (NEW,)).fetchone()['cost_price'] == cost1
+    assert (_stock(conn, OLD), _stock(conn, NEW)) == before

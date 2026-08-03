@@ -556,6 +556,7 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
         stock_adjustments = {}
         compensations_moved_late = []
         compensation_rowid = {}
+        opening_at = None
         if preserve_stock:
             # Backdated to the head of the affected set's ledger, because this
             # IS an opening-balance re-allocation: the quantity was on the
@@ -649,6 +650,13 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
         # saw BEFORE costing that lot, so a negative value is exactly the
         # `current_stock < 0` freeze having fired. Move that product's
         # compensation to today and recompute just that product.
+        def _frozen_purchases(product_id):
+            return conn.execute(
+                "SELECT COUNT(*) c FROM product_cost_ledger"
+                " WHERE product_id=? AND event_type='PURCHASE'"
+                " AND stock_after - qty_change < 0", (product_id,),
+            ).fetchone()['c']
+
         for pid, delta in sorted(stock_adjustments.items()):
             if delta > 0:
                 # A positive compensation at the head can only RAISE the running
@@ -659,19 +667,23 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
                 # building this: letting the fallback touch positive
                 # compensations moved pid 1795's cost from 17.5898 to 16.0311.
                 continue
-            broke = conn.execute(
-                "SELECT 1 FROM product_cost_ledger WHERE product_id=?"
-                " AND event_type='PURCHASE'"
-                " AND ROUND(stock_after - qty_change, 4) < 0 LIMIT 1",
-                (pid,),
-            ).fetchone()
-            if not broke:
+            # Not "does a frozen purchase exist" — "does MOVING THIS ROW fix
+            # one". A product can already carry a purchase costed at negative
+            # stock for reasons that predate the re-point, and relocating on
+            # that evidence is not harmless: lifting the ADJUST off the head
+            # raises current_stock for the whole replay, so every later
+            # purchase blends at a different weight and cost_price moves
+            # (models/wacc.py's `(current_stock * current_wacc + qty *
+            # unit_cost) / (current_stock + qty)`). So measure both placements
+            # and keep the late one only if it strictly reduces the count.
+            #
+            # No ROUND here: wacc.py freezes on a bare `current_stock < 0`, so
+            # rounding to 4 dp would hide a real freeze at -0.00004. A float
+            # residue producing a phantom hit is harmless — it just triggers
+            # the comparison below, which then finds no improvement.
+            at_head = _frozen_purchases(pid)
+            if not at_head:
                 continue
-            # Note this errs toward relocating: a product that ALREADY had a
-            # negative-stock purchase before the re-point also matches here.
-            # Moving a negative compensation late is safe either way — it can
-            # only raise the running balance during history, never lower it —
-            # so a false positive costs semantics, not correctness.
             # Move the row we just wrote, by rowid. Matching it back by note
             # would mean LIKE-ing a bsn_code straight into the pattern, where a
             # literal _ or % in a code silently widens the match onto another
@@ -681,6 +693,15 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
                 "UPDATE transactions SET created_at = datetime('now','localtime')"
                 " WHERE id = ?", (compensation_rowid[pid],))
             recalculate_product_wacc(pid, conn)
+            if _frozen_purchases(pid) >= at_head:
+                # The compensation was not the cause — put it back where it
+                # belongs and leave this product's WACC exactly as it was.
+                conn.execute(
+                    "UPDATE transactions SET created_at = COALESCE(?, datetime('now','localtime'))"
+                    " WHERE id = ?",
+                    (opening_at, compensation_rowid[pid]))
+                recalculate_product_wacc(pid, conn)
+                continue
             compensations_moved_late.append(pid)
 
         if compensations_moved_late:
