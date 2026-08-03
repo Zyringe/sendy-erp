@@ -7,9 +7,11 @@ No behavior changes.
 from database import get_connection
 
 
-def get_product_pricing_summary(product_id):
+def get_product_pricing_summary(product_id, conn=None):
     """สรุปราคา BSN สำหรับหน้า product detail (avg_list_price, avg_effective)"""
-    conn = get_connection()
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     row = conn.execute("""
         SELECT
             SUM(unit_price * qty) / NULLIF(SUM(qty), 0) AS avg_list_price,
@@ -19,7 +21,8 @@ def get_product_pricing_summary(product_id):
         FROM sales_transactions
         WHERE product_id = ? AND qty > 0 AND unit_price > 0
     """, [product_id]).fetchone()
-    conn.close()
+    if owned:
+        conn.close()
     return {
         'avg_list_price': row['avg_list_price'] or 0.0,
         'avg_effective':  row['avg_effective']  or 0.0,

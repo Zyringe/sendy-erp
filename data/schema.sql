@@ -1542,6 +1542,20 @@ CREATE TABLE "users" (
     created_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 , default_cashbook_account_id INTEGER REFERENCES cashbook_accounts(id));
 
+CREATE TABLE xp5_product_mapping (
+    xp5_code       TEXT PRIMARY KEY,
+    product_id     INTEGER REFERENCES products(id),
+    xp5_name       TEXT    NOT NULL DEFAULT '',
+    match_layer    TEXT    NOT NULL DEFAULT 'manual'
+                   CHECK (match_layer IN ('code+name', 'dualkey', 'name', 'manual')),
+    status         TEXT    NOT NULL DEFAULT 'auto'
+                   CHECK (status IN ('auto', 'reviewed', 'ignored')),
+    evidence_count INTEGER NOT NULL DEFAULT 0,
+    note           TEXT,
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at     TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
 CREATE INDEX idx_ar_followup_customer       ON ar_followup_log(customer);
 
 CREATE INDEX idx_ar_followup_log_date       ON ar_followup_log(log_date DESC);
@@ -1887,6 +1901,8 @@ CREATE INDEX idx_txn_review_docs_date ON txn_review_docs(date_iso DESC);
 CREATE INDEX idx_txn_review_flags_doc ON txn_review_flags(doc_base);
 
 CREATE INDEX idx_wallet_txns_platform_time ON marketplace_wallet_txns(platform, txn_time, id);
+
+CREATE INDEX idx_xp5_mapping_product ON xp5_product_mapping(product_id);
 
 CREATE TRIGGER after_transaction_delete
 AFTER DELETE ON transactions

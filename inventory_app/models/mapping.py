@@ -48,15 +48,18 @@ def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
     conn.close()
 
 
-def get_pending_mappings():
+def get_pending_mappings(conn=None):
     """Return all BSN codes not yet mapped and not ignored."""
-    conn = get_connection()
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     rows = conn.execute("""
         SELECT * FROM product_code_mapping
         WHERE product_id IS NULL AND is_ignored = 0
         ORDER BY bsn_code
     """).fetchall()
-    conn.close()
+    if owned:
+        conn.close()
     return rows
 
 

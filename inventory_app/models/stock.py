@@ -33,13 +33,16 @@ def count_stock_alerts():
     return n
 
 
-def get_product_locations(product_id: int):
-    conn = get_connection()
+def get_product_locations(product_id: int, conn=None):
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     rows = conn.execute(
         "SELECT floor_no FROM product_locations WHERE product_id = ? ORDER BY floor_no",
         (product_id,)
     ).fetchall()
-    conn.close()
+    if owned:
+        conn.close()
     return [r[0] for r in rows]
 
 

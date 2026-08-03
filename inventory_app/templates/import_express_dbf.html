@@ -18,6 +18,40 @@
         {% else %}
         <p class="mb-0 text-danger"><i class="bi bi-exclamation-triangle me-1"></i>ยังไม่เคยนำเข้าข้อมูลจาก Express (DBF)</p>
         {% endif %}
+        {% if vat_freshness %}
+        <p class="mb-0 mt-2 text-success">
+          <i class="bi bi-journal-bookmark me-1"></i>
+          สมุด VAT (xp5): rebuild ล่าสุด <strong>{{ (vat_freshness.built_at or '')[:16]|replace('T', ' ') }}</strong>
+          {% if vat_freshness.counts %}<span class="text-muted">· ขาย {{ vat_freshness.counts.sales_imported }} แถว · สินค้า {{ vat_freshness.counts.products }}</span>{% endif %}
+        </p>
+        {% else %}
+        <p class="mb-0 mt-2 text-muted">
+          <i class="bi bi-journal-bookmark me-1"></i>
+          สมุด VAT (xp5): ยังไม่เคยสร้าง — แนบโฟลเดอร์ xp5 มากับ zip รายวันเพื่อเปิดใช้
+        </p>
+        {% endif %}
+        {% if last_run %}
+        <hr class="my-2">
+        <p class="mb-0 small text-muted">ผลการนำเข้าล่าสุด ({{ (last_run.at or '')[:16] }}):</p>
+        <ul class="mb-0 small">
+          {% if last_run.results.bsn %}
+          <li class="{{ 'text-success' if last_run.results.bsn.ok else 'text-danger' }}">
+            BSN5657: {{ last_run.results.bsn.summary if last_run.results.bsn.ok
+                        else 'ไม่สำเร็จ — ' ~ last_run.results.bsn.error }}
+          </li>
+          {% endif %}
+          {% if last_run.results.vat %}
+          <li class="{{ 'text-warning' if last_run.results.vat.status == 'building'
+                        else ('text-success' if last_run.results.vat.ok else 'text-danger') }}">
+            สมุด VAT: {% if last_run.results.vat.status == 'building' %}กำลัง rebuild… (รีเฟรชหน้านี้เพื่อดูผล)
+            {% elif last_run.results.vat.status == 'stalled' %}rebuild ไม่ตอบสนอง (>30 นาที) — อัปโหลด zip เดิมซ้ำได้ ปลอดภัย
+            {% elif last_run.results.vat.ok %}สำเร็จ {{ (last_run.results.vat.built_at or '')[:16]|replace('T', ' ') }}
+            {% else %}ไม่สำเร็จ — {{ last_run.results.vat.error }}
+            · <em>อัปโหลด zip เดิมซ้ำได้ ปลอดภัย (ฝั่ง BSN นำเข้าซ้ำไม่มีผล)</em>{% endif %}
+          </li>
+          {% endif %}
+        </ul>
+        {% endif %}
       </div>
     </div>
 

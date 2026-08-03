@@ -67,8 +67,10 @@ def set_stock_to(product_id: int, new_qty, note=None, created_at=None):
         conn.close()
 
 
-def get_transactions(product_id=None, txn_type=None, date_from=None, date_to=None, page=1, per_page=50):
-    conn = get_connection()
+def get_transactions(product_id=None, txn_type=None, date_from=None, date_to=None, page=1, per_page=50, conn=None):
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     conditions = ["1=1"]
     params = []
     if product_id:
@@ -95,7 +97,8 @@ def get_transactions(product_id=None, txn_type=None, date_from=None, date_to=Non
     """
     rows = conn.execute(sql, params + [per_page, (page - 1) * per_page]).fetchall()
     total = conn.execute(f"SELECT COUNT(*) FROM transactions t WHERE {where}", params).fetchone()[0]
-    conn.close()
+    if owned:
+        conn.close()
     return rows, total
 
 

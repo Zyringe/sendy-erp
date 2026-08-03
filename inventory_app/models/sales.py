@@ -9,8 +9,10 @@ from database import get_connection
 
 
 def get_sales(product_id=None, date_from=None, date_to=None,
-              vat_type=None, page=1, per_page=50, doc_no=None):
-    conn = get_connection()
+              vat_type=None, page=1, per_page=50, doc_no=None, conn=None):
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     conds = ['1=1']
     params = []
     if product_id:
@@ -39,13 +41,16 @@ def get_sales(product_id=None, date_from=None, date_to=None,
     total = conn.execute(
         f"SELECT COUNT(*) FROM sales_transactions s WHERE {where}", params
     ).fetchone()[0]
-    conn.close()
+    if owned:
+        conn.close()
     return rows, total
 
 
-def get_purchases_by_doc(doc_base):
+def get_purchases_by_doc(doc_base, conn=None):
     """ดึงทุก line item ของใบสั่งซื้อ (เช่น HP6900017 → HP6900017-1, -2, ...)"""
-    conn = get_connection()
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     rows = conn.execute("""
         SELECT p2.*,
                COALESCE(p.product_name, p2.product_name_raw) AS display_name
@@ -54,13 +59,16 @@ def get_purchases_by_doc(doc_base):
         WHERE p2.doc_no LIKE ? OR p2.doc_no = ?
         ORDER BY p2.doc_no
     """, (doc_base + '-%', doc_base)).fetchall()
-    conn.close()
+    if owned:
+        conn.close()
     return rows
 
 
-def get_sales_summary(date_from=None, date_to=None, doc_no=None):
+def get_sales_summary(date_from=None, date_to=None, doc_no=None, conn=None):
     """Returns totals split by vat_type."""
-    conn = get_connection()
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     conds = ['1=1']
     params = []
     if doc_no:
@@ -81,13 +89,16 @@ def get_sales_summary(date_from=None, date_to=None, doc_no=None):
         WHERE {where}
         GROUP BY vat_type
     """, params).fetchall()
-    conn.close()
+    if owned:
+        conn.close()
     return rows
 
 
-def get_sales_by_doc(doc_base):
+def get_sales_by_doc(doc_base, conn=None):
     """ดึงทุก line item ของ invoice (เช่น IV6900394 → IV6900394-1, -2, ...)"""
-    conn = get_connection()
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     rows = conn.execute("""
         SELECT s.*,
                COALESCE(p.product_name, s.product_name_raw) AS display_name
@@ -96,11 +107,12 @@ def get_sales_by_doc(doc_base):
         WHERE s.doc_no LIKE ? OR s.doc_no = ?
         ORDER BY CAST(SUBSTR(s.doc_no, INSTR(s.doc_no, '-') + 1) AS INTEGER)
     """, (doc_base + '-%', doc_base)).fetchall()
-    conn.close()
+    if owned:
+        conn.close()
     return rows
 
 
-def get_trade_dashboard(date_from=None, date_to=None):
+def get_trade_dashboard(date_from=None, date_to=None, conn=None):
     """
     date_from / date_to: 'YYYY-MM-DD' strings.
     Defaults to the most recent month that has actual data.
@@ -108,8 +120,11 @@ def get_trade_dashboard(date_from=None, date_to=None):
     """
     import calendar as _cal
 
-    conn = get_connection()
+    owned = conn is None
 
+    if owned:
+
+        conn = get_connection()
     if not date_from and not date_to:
         today = date.today()
         date_from = today.strftime('%Y-%m-01')
@@ -206,8 +221,9 @@ def get_trade_dashboard(date_from=None, date_to=None):
         LIMIT 10
     """, (date_from, date_to)).fetchall()
 
-    conn.close()
+    if owned:
 
+        conn.close()
     return {
         'date_from': date_from,
         'date_to': date_to,
@@ -326,8 +342,10 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
 
 
 def get_purchases(product_id=None, date_from=None, date_to=None, page=1,
-                   per_page=50, vat_type=None, doc_no=None):
-    conn = get_connection()
+                   per_page=50, vat_type=None, doc_no=None, conn=None):
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     conds = ['1=1']
     params = []
     if product_id:
@@ -356,18 +374,21 @@ def get_purchases(product_id=None, date_from=None, date_to=None, page=1,
     total = conn.execute(
         f"SELECT COUNT(*) FROM purchase_transactions p2 WHERE {where}", params
     ).fetchone()[0]
-    conn.close()
+    if owned:
+        conn.close()
     return rows, total
 
 
-def get_purchases_summary(date_from=None, date_to=None, doc_no=None):
+def get_purchases_summary(date_from=None, date_to=None, doc_no=None, conn=None):
     """Range-total summary for purchases_view (mirrors get_sales_summary's
     pattern). purchases.html used to show `rows | sum(attribute='net')`,
     which only summed the CURRENT PAGE of a paginated list — this gives the
     real total across the whole filtered date range instead. Same WHERE
     filters as get_purchases (date only; purchases_view never passes
     product_id, so this doesn't need to accept it either)."""
-    conn = get_connection()
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     conds = ['1=1']
     params = []
     if doc_no:
@@ -385,14 +406,17 @@ def get_purchases_summary(date_from=None, date_to=None, doc_no=None):
         FROM purchase_transactions
         WHERE {where}
     """, params).fetchone()
-    conn.close()
+    if owned:
+        conn.close()
     return {'txn_count': row['txn_count'] or 0, 'total_net': row['total_net'] or 0.0}
 
 
-def get_purchases_summary_by_vat(date_from=None, date_to=None, doc_no=None):
+def get_purchases_summary_by_vat(date_from=None, date_to=None, doc_no=None, conn=None):
     """Returns purchase totals split by vat_type (mirrors get_sales_summary),
     backing the 3 VAT summary cards on purchases.html."""
-    conn = get_connection()
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     conds = ['1=1']
     params = []
     if doc_no:
@@ -413,5 +437,6 @@ def get_purchases_summary_by_vat(date_from=None, date_to=None, doc_no=None):
         WHERE {where}
         GROUP BY vat_type
     """, params).fetchall()
-    conn.close()
+    if owned:
+        conn.close()
     return rows

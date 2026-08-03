@@ -158,6 +158,36 @@
     </div>
   </header>
 
+  <!-- VAT-book banner (read-only view of the xp5 company file) -->
+  {% if current_role and active_book == 'vat' %}
+  <div style="background:#7f1d1d;color:#fee2e2;padding:.5rem 1.5rem;display:flex;align-items:center;gap:.75rem;font-size:.875rem;font-weight:600;flex-wrap:wrap">
+    <i class="bi bi-journal-bookmark-fill"></i>
+    กำลังดูสมุด VAT (xp5) — อ่านอย่างเดียว · สต็อกตามบัญชี ไม่ใช่ของจริงในคลัง
+    {% if vat_book_meta and vat_book_meta.built_at %}
+      <span style="opacity:.8">· ข้อมูล ณ {{ vat_book_meta.built_at[:16]|replace('T', ' ') }}</span>
+    {% endif %}
+    <form method="post" action="{{ url_for('toggle_book') }}" class="ms-auto mb-0">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="book" value="novat">
+      <button type="submit" class="btn btn-sm" style="background:#fee2e2;color:#7f1d1d;border:none;font-size:.8rem">
+        <i class="bi bi-arrow-left-right me-1"></i>กลับสมุดปัจจุบัน
+      </button>
+    </form>
+  </div>
+  {% elif current_role and vat_book_available %}
+  <div style="background:#f1f5f9;color:#475569;padding:.35rem 1.5rem;display:flex;align-items:center;gap:.75rem;font-size:.8rem">
+    <i class="bi bi-journals"></i>
+    สมุดบัญชี: {{ active_book_label }}
+    <form method="post" action="{{ url_for('toggle_book') }}" class="ms-auto mb-0">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="book" value="vat">
+      <button type="submit" class="btn btn-sm btn-outline-secondary" style="font-size:.75rem">
+        <i class="bi bi-journal-bookmark me-1"></i>ดูสมุด VAT (xp5)
+      </button>
+    </form>
+  </div>
+  {% endif %}
+
   <!-- Simulation banner -->
   {% if simulating_as %}
   <div style="background:#f5a800;color:#1c1917;padding:.5rem 1.5rem;display:flex;align-items:center;gap:1rem;font-size:.875rem;font-weight:600">
@@ -230,6 +260,34 @@
   })();
 </script>
 {% block scripts %}{% endblock %}
+<script>
+  // expected_book binding (stale-tab guard): every POST form and mutating
+  // fetch carries the book this page was RENDERED under; the server rejects
+  // a mismatch with 409 so a tab left open across a book switch can never
+  // write into the wrong book. One choke point for the whole app.
+  (function() {
+    var RENDER_BOOK = {{ active_book|default('novat')|tojson }};
+    document.addEventListener('submit', function(e) {
+      var f = e.target;
+      if (!f || (f.method || '').toLowerCase() !== 'post') return;
+      if (f.querySelector('input[name="expected_book"]')) return;
+      var i = document.createElement('input');
+      i.type = 'hidden'; i.name = 'expected_book'; i.value = RENDER_BOOK;
+      f.appendChild(i);
+    }, true);
+    var _fetch = window.fetch;
+    window.fetch = function(input, init) {
+      init = init || {};
+      var m = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+      if (m !== 'GET' && m !== 'HEAD' && m !== 'OPTIONS') {
+        var h = new Headers((init && init.headers) || (input && input.headers) || undefined);
+        if (!h.has('X-Expected-Book')) h.set('X-Expected-Book', RENDER_BOOK);
+        init.headers = h;
+      }
+      return _fetch.call(this, input, init);
+    };
+  })();
+</script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js');
