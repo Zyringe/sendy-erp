@@ -554,6 +554,9 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
         # a re-point moves stock at all, and why re-allocating it beats
         # inventing counts nobody has taken.
         stock_adjustments = {}
+        compensations_moved_late = []
+        compensation_rowid = {}
+        opening_at = None
         if preserve_stock:
             # Backdated to the head of the affected set's ledger, because this
             # IS an opening-balance re-allocation: the quantity was on the
@@ -571,31 +574,49 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
             # the live catalogue have an IN at their earliest timestamp, so the
             # tie is reachable; a second's clearance removes the ordering
             # question entirely.
+            #
+            # The head is not always ABSORBABLE, though. When the compensation
+            # is negative and larger than anything the product holds early on —
+            # the shape a brand-new destination lands in — backdating starts the
+            # replay under water instead, every purchase hits that same
+            # `current_stock < 0` freeze, and cost_price is left at 0.00 despite
+            # real priced purchases. Measured on prod 2026-08-03: pid 2054 came
+            # out at 0.00 from ฿453 of purchases and had to be repaired by hand.
+            # So: place at the head, then MEASURE, and fall back to today for
+            # any product the head placement broke. Predicting it instead does
+            # not work — pid 594's running balance also dips to -24 and its head
+            # placement is perfectly fine, because the dip lands between
+            # purchases and only a purchase costed while negative freezes WACC.
             opening_at = conn.execute(
                 f"SELECT datetime(MIN(created_at), '-1 second') m"
                 f" FROM transactions WHERE product_id IN ({ph})",
                 tuple(affected),
             ).fetchone()['m']
-            for pid in sorted(affected):
-                delta = round(stock_before[pid] - _stock(pid), 4)
-                if not delta:
-                    continue
+
+            def _post_compensation(pid, delta, created_at):
                 note = (f'ปรับยอดยกมา: ย้ายรหัส {bsn_code} '
                         f'(ยอดคงเหลือคงเดิมที่ {stock_before[pid]:g})')
-                if opening_at:
-                    conn.execute(
+                if created_at:
+                    cur = conn.execute(
                         "INSERT INTO transactions (product_id, txn_type,"
                         " quantity_change, unit_mode, reference_no, note, created_at)"
                         " VALUES (?, 'ADJUST', ?, 'unit', NULL, ?, ?)",
-                        (pid, delta, note, opening_at),
+                        (pid, delta, note, created_at),
                     )
                 else:
-                    conn.execute(
+                    cur = conn.execute(
                         "INSERT INTO transactions (product_id, txn_type,"
                         " quantity_change, unit_mode, reference_no, note)"
                         " VALUES (?, 'ADJUST', ?, 'unit', NULL, ?)",
                         (pid, delta, note),
                     )
+                return cur.lastrowid
+
+            for pid in sorted(affected):
+                delta = round(stock_before[pid] - _stock(pid), 4)
+                if not delta:
+                    continue
+                compensation_rowid[pid] = _post_compensation(pid, delta, opening_at)
                 stock_adjustments[pid] = delta
 
             # Compare at 4 dp, the precision the stock triggers themselves round
@@ -622,6 +643,78 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
         for pid in sorted(affected):
             recalculate_product_wacc(pid, conn)
 
+        # ── 6b. Did the backdated compensation break the replay? ─────────────
+        # See 5b: the head is the right place semantically, but a negative
+        # compensation the product cannot absorb there puts every purchase
+        # under water. `stock_after - qty_change` is the stock the WACC engine
+        # saw BEFORE costing that lot, so a negative value is exactly the
+        # `current_stock < 0` freeze having fired. Move that product's
+        # compensation to today and recompute just that product.
+        def _frozen_purchases(product_id):
+            return conn.execute(
+                "SELECT COUNT(*) c FROM product_cost_ledger"
+                " WHERE product_id=? AND event_type='PURCHASE'"
+                " AND stock_after - qty_change < 0", (product_id,),
+            ).fetchone()['c']
+
+        for pid, delta in sorted(stock_adjustments.items()):
+            if delta > 0:
+                # A positive compensation at the head can only RAISE the running
+                # balance, so it can never be what put a purchase under water —
+                # any such purchase was already there. Relocating it late would
+                # instead REMOVE the help it is giving and re-create the very
+                # deficit the backdating exists to close. Measured while
+                # building this: letting the fallback touch positive
+                # compensations moved pid 1795's cost from 17.5898 to 16.0311.
+                continue
+            # Not "does a frozen purchase exist" — "does MOVING THIS ROW fix
+            # one". A product can already carry a purchase costed at negative
+            # stock for reasons that predate the re-point, and relocating on
+            # that evidence is not harmless: lifting the ADJUST off the head
+            # raises current_stock for the whole replay, so every later
+            # purchase blends at a different weight and cost_price moves
+            # (models/wacc.py's `(current_stock * current_wacc + qty *
+            # unit_cost) / (current_stock + qty)`). So measure both placements
+            # and keep the late one only if it strictly reduces the count.
+            #
+            # No ROUND here: wacc.py freezes on a bare `current_stock < 0`, so
+            # rounding to 4 dp would hide a real freeze at -0.00004. A float
+            # residue producing a phantom hit is harmless — it just triggers
+            # the comparison below, which then finds no improvement.
+            at_head = _frozen_purchases(pid)
+            if not at_head:
+                continue
+            # Move the row we just wrote, by rowid. Matching it back by note
+            # would mean LIKE-ing a bsn_code straight into the pattern, where a
+            # literal _ or % in a code silently widens the match onto another
+            # code's compensation. mig-080's after_transaction_update reconciles
+            # stock_levels; a timestamp-only change nets to zero there.
+            conn.execute(
+                "UPDATE transactions SET created_at = datetime('now','localtime')"
+                " WHERE id = ?", (compensation_rowid[pid],))
+            recalculate_product_wacc(pid, conn)
+            if _frozen_purchases(pid) >= at_head:
+                # The compensation was not the cause — put it back where it
+                # belongs and leave this product's WACC exactly as it was.
+                conn.execute(
+                    "UPDATE transactions SET created_at = COALESCE(?, datetime('now','localtime'))"
+                    " WHERE id = ?",
+                    (opening_at, compensation_rowid[pid]))
+                recalculate_product_wacc(pid, conn)
+                continue
+            compensations_moved_late.append(pid)
+
+        if compensations_moved_late:
+            # The stock guard above ran against the head placement; re-assert
+            # it now that some rows carry a different timestamp.
+            drifted = {pid: (stock_before[pid], _stock(pid)) for pid in affected
+                       if round(_stock(pid), 4) != round(stock_before[pid], 4)}
+            if drifted:
+                raise RuntimeError(
+                    f"repoint_bsn_code({bsn_code!r}): stock moved while relocating "
+                    f"a compensation — {drifted}"
+                )
+
         stock_after = {pid: _stock(pid) for pid in affected}
         orphan_rows_after = _bsn_code_ledger_orphans(conn, bsn_code)
 
@@ -635,6 +728,7 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
             'stock_before': stock_before,
             'stock_after': stock_after,
             'stock_adjustments': stock_adjustments,
+            'compensations_moved_late': compensations_moved_late,
         }
     except WaccIdentityError as e:
         # The whole remap unwinds (unlike the import/conversion paths, nothing

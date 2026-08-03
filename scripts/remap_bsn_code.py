@@ -158,6 +158,11 @@ def main(argv=None):
           f"purchase={report['rows_moved']['purchase']}")
     print(f"  stock before: {report['stock_before']}")
     print(f"  stock after:  {report['stock_after']}")
+    if report.get('compensations_moved_late'):
+        # A negative compensation the product could not absorb at the head of
+        # its ledger; left there it would freeze that product's WACC at 0.00.
+        print(f"  compensation dated today instead of at the ledger head, for: "
+              f"{report['compensations_moved_late']}")
     if report['stock_adjustments']:
         net = sum(report['stock_adjustments'].values())
         print(f"  stock held by ADJUST: {report['stock_adjustments']}")
