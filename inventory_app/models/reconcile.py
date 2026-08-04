@@ -429,7 +429,19 @@ def _ledger_check(conn, payload_rows):
     'BSN ขาย'/'BSN ขาย-คืน' transactions row whose magnitude matches; every
     unsynced line has none; and NO other transactions row references any of
     this doc's doc_nos at all (catches history_import compensator legs and
-    anything else unexpected)."""
+    anything else unexpected).
+
+    Known, deliberate limitation: when 2+ sales_transactions rows share the
+    SAME literal doc_no (a real Express data shape — e.g. two STCRD lines
+    reusing one SEQNUM, seen live on IV6900582-1), _sync_bsn_to_stock wrote
+    a transactions row per line, both stamped with that identical
+    reference_no. This function has no way to tell WHICH row belongs to
+    WHICH payload line (they key identically), so `len(bsn_rows) != 1`
+    fires for every payload row sharing that doc_no and the whole doc
+    refuses with "มี ledger แปลกปลอม" — even though nothing is actually
+    wrong. This is the safe direction (never a wrong delete): such docs
+    stay flagged forever as `deleted`-but-apply-refused and need จัดการมือ.
+    Not a bug to fix here; documented so it isn't mistaken for one."""
     doc_nos = sorted({r['doc_no'] for r in payload_rows})
     if not doc_nos:
         return None

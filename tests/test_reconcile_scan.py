@@ -969,3 +969,33 @@ def test_reconcile_page_shows_active_apply_for_non_platform_deleted_flag(route_c
     _login(route_client, role='manager')
     html = route_client.get('/reconcile').get_data(as_text=True)
     assert f'action="/reconcile/{flag_id}/apply"' in html
+
+
+# ── FIX 4 (documented, not fixed): 2+ lines sharing one literal doc_no ─────
+
+def test_two_lines_sharing_one_doc_no_always_refuses_ledger_check(empty_db_conn):
+    """Pin the documented limitation in _ledger_check's docstring: a real
+    Express data shape (two STCRD lines reusing one SEQNUM — seen live on
+    IV6900582-1) writes two 'BSN ขาย' transactions rows under the identical
+    reference_no. The check cannot disambiguate which belongs to which
+    payload line, so it conservatively refuses BOTH — safe direction, never
+    a wrong delete, but such a doc can never auto-apply."""
+    c = empty_db_conn
+    pid1 = _seed_product(c, name='สินค้า A')
+    pid2 = _seed_product(c, name='สินค้า B')
+    shared_doc_no = 'IV6900582-1'
+    _insert_sale(c, doc_no=shared_doc_no, date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid1,
+                 bsn_code='CODE-A', synced=1)
+    _insert_sale(c, doc_no=shared_doc_no, date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid2,
+                 bsn_code='CODE-B', synced=1)
+    _insert_bsn_txn(c, product_id=pid1, doc_no=shared_doc_no, note='BSN ขาย', quantity_change=-1.0)
+    _insert_bsn_txn(c, product_id=pid2, doc_no=shared_doc_no, note='BSN ขาย', quantity_change=-1.0)
+    c.commit()
+    flag_id = _make_flag(c, 'IV6900582')
+
+    result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
+
+    assert result['ok'] is False
+    assert 'ledger แปลกปลอม' in result['error']
+    assert c.execute("SELECT COUNT(*) FROM sales_transactions WHERE doc_base='IV6900582'"
+                     ).fetchone()[0] == 2
