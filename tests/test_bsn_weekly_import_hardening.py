@@ -286,3 +286,54 @@ def test_unreadable_header_message_tells_the_operator_what_to_do(no_date_filter_
         import_router.preview_file(no_date_filter_csv, 'sales')
     assert 'วันที่จาก' in str(exc.value), \
         'the message must name the header field that is missing'
+
+
+# ── orphan transaction row (Codex follow-up on 93e4472) ────────────────────
+#
+# A transaction line that appears BEFORE any product heading was counted as a
+# candidate and then silently dropped. _validate_parse only noticed when the
+# WHOLE file produced zero entries, so an orphan row sitting above otherwise
+# valid data vanished and the import still reported success — precisely the
+# silent partial-import this guard exists to prevent.
+
+_ORPHAN_THEN_VALID = (
+    SALES_SAMPLE_LINES[:6] + [
+        '"      04/04/69   IV6900999-  1        99.00 ใบ          160.00  1                 15840.00                 15840.00"',
+    ] + SALES_SAMPLE_LINES[6:]
+)
+
+
+@pytest.fixture
+def orphan_then_valid_csv(tmp_path):
+    return _write(tmp_path, "ขาย_orphan.csv", _ORPHAN_THEN_VALID)
+
+
+def test_transaction_before_its_product_heading_blocks_the_file(orphan_then_valid_csv):
+    """The rest of the file parses fine, so `entries` is non-empty and the
+    zero-parse rule never fires. The orphan must be reported as a rejected row."""
+    with pytest.raises(ValueError) as exc:
+        parse_weekly.parse_sales(orphan_then_valid_csv)
+    msg = str(exc.value)
+    assert 'ขาย_orphan.csv' in msg
+    assert 'IV6900999' in msg, 'the error must quote the orphaned line'
+
+
+def test_orphan_row_is_not_silently_dropped(orphan_then_valid_csv):
+    """Companion to the above, stated as the data property that matters: the
+    parser must never return a partial result for this file."""
+    try:
+        entries = parse_weekly.parse_sales(orphan_then_valid_csv)
+    except ValueError:
+        return                                   # refused outright: correct
+    assert any(e['doc_no'].startswith('IV6900999') for e in entries), \
+        'parsed successfully but lost the orphan row'
+
+
+def test_sr_row_before_any_product_heading_is_still_exempt(tmp_path):
+    """The SR exemption must survive the fix: a ใบลดหนี้ row has no product
+    context either, and it is skipped by design, not rejected."""
+    lines = (SALES_SAMPLE_LINES[:6] + [
+        '"      30/03/69   SR6900010-  1         1.00 ผน Y          0.00  2                     0.00                     0.00"',
+    ] + SALES_SAMPLE_LINES[6:])
+    path = _write(tmp_path, "ขาย_sr_first.csv", lines)
+    assert len(parse_weekly.parse_sales(path)) == 6

@@ -87,6 +87,17 @@ def _validate_parse(filepath: str, entries: list, rejected: list, candidates: in
     posting straight to confirm.
     """
     name = os.path.basename(filepath)
+    # Order matters. Every candidate now ends up either an entry or a rejection,
+    # so "nothing parsed at all" is a strict subset of "something was rejected" —
+    # check it FIRST so that case keeps its own, more actionable message (a file
+    # that yields zero rows is nearly always the wrong report type, not a handful
+    # of bad lines).
+    if candidates and not entries:
+        raise ValueError(
+            f"อ่านไฟล์ {name} ไม่ได้เลย — พบบรรทัดที่หน้าตาเป็นรายการ {candidates} บรรทัด "
+            f"แต่แปลงได้ 0 รายการ. อาจเลือกประเภทรายงานผิด หรือรูปแบบไฟล์เปลี่ยน — "
+            f"ตรวจไฟล์ก่อนนำเข้าใหม่"
+        )
     if rejected:
         shown = "\n".join(f"  บรรทัด {ln}: {text[:100]}" for ln, text in rejected[:5])
         more = f"\n  … และอีก {len(rejected) - 5} บรรทัด" if len(rejected) > 5 else ""
@@ -94,12 +105,6 @@ def _validate_parse(filepath: str, entries: list, rejected: list, candidates: in
             f"อ่านไฟล์ {name} ไม่ครบ — มี {len(rejected)} บรรทัดรายการที่แปลงไม่ได้ "
             f"(อ่านสำเร็จ {len(entries)} บรรทัด). ยกเลิกการนำเข้าไว้ก่อน "
             f"เพราะนำเข้าแค่บางส่วนจะทำให้ยอดขาย/สต็อกขาด:\n" + shown + more
-        )
-    if candidates and not entries:
-        raise ValueError(
-            f"อ่านไฟล์ {name} ไม่ได้เลย — พบบรรทัดที่หน้าตาเป็นรายการ {candidates} บรรทัด "
-            f"แต่แปลงได้ 0 รายการ. อาจเลือกประเภทรายงานผิด หรือรูปแบบไฟล์เปลี่ยน — "
-            f"ตรวจไฟล์ก่อนนำเข้าใหม่"
         )
 
 
@@ -191,8 +196,14 @@ def _parse(filepath: str, tx_pat, file_type: str) -> list:
                 continue
             candidates += 1
             if not current_prod_name:
-                continue                    # counted, but only _validate_parse's zero-parse
-                                            # rule acts on it (see its docstring)
+                # An orphan row: a transaction before any product heading. It
+                # can never become an entry, so it is a REJECTION, not a skip.
+                # Counting it and moving on meant _validate_parse only noticed
+                # when the whole file produced zero entries — so an orphan above
+                # otherwise-valid data was silently dropped and the import still
+                # reported success (Codex follow-up on 93e4472).
+                rejected.append((lineno, f"{stripped[:90]}  [ไม่พบบรรทัดชื่อสินค้าก่อนหน้า]"))
+                continue
             m = tx_pat.search(line)
             if m:
                 try:
