@@ -402,7 +402,7 @@ def _cas_compare(expected_rows, live_rows):
                 return f'ข้อมูลเปลี่ยนไปตั้งแต่สแกนล่าสุด ({field} ของ {k}) — สแกนใหม่ก่อน apply'
         if bsn_units.normalize_unit(exp.get('unit') or '') != bsn_units.normalize_unit(live.get('unit') or ''):
             return f'ข้อมูลเปลี่ยนไปตั้งแต่สแกนล่าสุด (unit ของ {k}) — สแกนใหม่ก่อน apply'
-        for field in ('product_id', 'customer', 'synced_to_stock', 'ref_invoice'):
+        for field in ('id', 'product_id', 'customer', 'synced_to_stock', 'ref_invoice'):
             if (exp.get(field) or None) != (live.get(field) or None):
                 return f'ข้อมูลเปลี่ยนไปตั้งแต่สแกนล่าสุด ({field} ของ {k}) — สแกนใหม่ก่อน apply'
     return None

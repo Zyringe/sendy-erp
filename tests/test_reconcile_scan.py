@@ -881,3 +881,38 @@ def test_dismiss_requires_a_note(empty_db_conn):
 
     assert result['ok'] is False
     assert _flag_row(c, flag_id)['state'] == 'open'
+
+
+# ── FIX 2: CAS must compare row id (plan §2c "exhaustive: id, ...") ────────
+
+def test_row_deleted_and_reinserted_with_new_id_refuses_apply(empty_db_conn):
+    """A row deleted+reinserted with IDENTICAL field values but a NEW id
+    (outside the DBF import path — e.g. a manual data-quality fix) must fail
+    CAS, not silently pass because every OTHER field still matches. Before
+    FIX 2, apply would delete the ledger by doc_no (unaffected by row id)
+    but delete 0 sales_transactions rows (stale id), leaving the flag marked
+    'applied' while the doc's row is still live."""
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000034-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid,
+                 synced=1)
+    _insert_bsn_txn(c, product_id=pid, doc_no='IV1000034-1', note='BSN ขาย', quantity_change=-1.0)
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000034')   # payload snapshot captures the ORIGINAL row id
+
+    # Delete + reinsert with identical field values -> same everything except id.
+    c.execute("DELETE FROM sales_transactions WHERE doc_base='IV1000034'")
+    _insert_sale(c, doc_no='IV1000034-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid,
+                 synced=1)
+    c.commit()
+
+    result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
+
+    assert result['ok'] is False
+    assert 'สแกนใหม่' in result['error']
+    # Zero mutation: the reinserted row is still there, ledger untouched.
+    assert c.execute(
+        "SELECT COUNT(*) FROM sales_transactions WHERE doc_base='IV1000034'").fetchone()[0] == 1
+    assert c.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no='IV1000034-1'").fetchone()[0] == 1
+    assert _flag_row(c, flag_id)['state'] == 'open'
