@@ -154,7 +154,14 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 ### product_code_mapping
 `id, bsn_code, bsn_name, product_id, is_ignored, created_at`
 - Authoritative — อย่าเดา SKU จาก raw_name หรือ "(1ขีด)" suffix
-- Duplicate import check: `(doc_base + bsn_code + unit_price)` weekly / `(doc_no + bsn_code)` history
+- Duplicate import check (verified against `models/imports.py::import_weekly`, 2026-08-04 reconcile-scan branch —
+  the description here previously said `(doc_base + bsn_code + unit_price)`, which is stale): line identity is
+  `(doc_no, bsn_code)` for sales — `doc_no` already carries the printed "-N" line suffix — and `(doc_no, bsn_code,
+  line_seq)` for purchase (no suffix, so `line_seq` disambiguates multiple lines of one product on one doc). A
+  re-upload of an identical line is detected by comparing ALL of `qty, unit (normalized), unit_price, net,
+  product_id` against the stored row — any difference replaces the row (rebuilds its ledger); no difference is a
+  true no-op (`unchanged`). This is the same key `_detect_removed_lines` uses to reverse lines that vanished from
+  a re-uploaded doc.
 
 ### unit_conversions
 `id, product_id, bsn_unit, ratio, created_at` — UNIQUE(product_id, bsn_unit)
@@ -178,7 +185,7 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 - **Purchase orders**: `purchase_orders`, `purchase_order_lines`, `po_receipts`, `po_sequences`
 - **Express (Sendai Trading)**: `express_sales`, `express_ar_outstanding`, `express_credit_notes(_lines)`, `express_payments_in/out`, `express_payment_in_invoice_refs`, `express_payment_out_receive_refs`, `express_import_log`
 - **Ecommerce**: `ecommerce_listings`, `platform_skus`, `listing_bundles`
-- **Receivables/Payables**: `received_payments`, `paid_invoices`; per-IV upsert via mig 058 (adds `received_payments.amount_applied` for per-invoice allocation); `credit_note_imports` (mig 059), `credit_note_amounts` (mig 062 — authoritative per-SR from ใบลดหนี้ master, replaces `sales_transactions.SR.net` for credit math), `sr_writeoffs` (mig 060)
+- **Receivables/Payables**: `received_payments` (id, re_no, total, ...) linked to `paid_invoices` (id, re_id → received_payments.id, doc_no, doc_kind IN ('IV','SR'), amount) — mig 058 added the money columns (`paid_invoices.amount`, `received_payments.total`); both tables predate it and no `payment_amounts` table exists. `paid_invoices.doc_no = sales_transactions.doc_base`. `credit_note_imports` (mig 059), `credit_note_amounts` (mig 062 — authoritative per-SR from ใบลดหนี้ master, replaces `sales_transactions.SR.net` for credit math), `sr_writeoffs` (mig 060)
 - **HR** (mig 054 — 9 tables): `employees`, `employee_salary_history`, `leave_types`, `employee_leave_entitlements`, `leave_requests`, `payroll_runs`, `payroll_items`, `hr_config`, `company_holidays`; `salary_advances` added mig 057
 - **Cashbook** (mig 055–056): `cashbook_accounts`, `cashbook_categories`, `cashbook_transactions` (`is_transfer` flag added mig 056)
 - **Unit aliases** (mig 064): `bsn_unit_alias` — normalizes Express unit strings before resolver matching
@@ -196,10 +203,18 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 
 Two tables hold derived values that the app must keep in sync with their source ledger. Drift here causes silent finance bugs.
 
-### `payment_amounts` (mig 058)
-- **Source of truth:** `received_payments` per-IV allocations.
-- **Invariant:** for every `received_payments` row with allocations, there is exactly one `payment_amounts` row per (payment_id, doc_no) with `amount_applied` summing to the payment.
-- **Drift signal:** `SUM(payment_amounts.amount_applied) ≠ received_payments.amount` for the same payment_id.
+### `paid_invoices.amount` / `received_payments.total` (mig 058)
+> ⚠ Corrected 2026-08-04 (reconcile-scan branch) — this section used to describe a `payment_amounts`
+> table with an `amount_applied` column. Neither exists. Mig 058 only `ALTER TABLE`'d two money
+> columns onto the pre-existing `paid_invoices` / `received_payments` tables (see the migration file's
+> own header comment) — there is no separate allocation table.
+- **Source of truth:** `paid_invoices` — one row per (receipt, invoice) link, `re_id → received_payments.id`,
+  `doc_no = sales_transactions.doc_base`, `doc_kind IN ('IV','SR')` (SR = credit-note netting, carries a
+  negative `amount`). `received_payments.total` is the RE-header receipt total when Express provides one.
+- **Invariant:** for every `received_payments` row, `SUM(paid_invoices.amount)` over its linked rows should
+  reconcile to `received_payments.total` when both are non-NULL. Both columns are nullable ON PURPOSE — NULL
+  means "amount unknown / legacy binary link" (rows imported before mig 058), deliberately distinct from a
+  real zero-baht line; `payments_alloc.py` treats NULL as 0 via `COALESCE`/`CASE WHEN ... IS NOT NULL`.
 - **Recovery:** rerun `payments_alloc.allocate_fifo()` for the affected customer; it is idempotent and recomputes from scratch.
 - **History:** drift caused phantom-credit ฿446k bug (fixed by VAT-aware `billed` formula, commit 339e92a in PR #27).
 
@@ -301,7 +316,7 @@ List ครบดูได้จาก `git grep -nE "@.*\.route" inventory_app/
 | **055** | 2026-05-18 | **Cashbook (accounts/categories/transactions)** |
 | 056 | 2026-05-18 | cashbook.is_transfer |
 | 057 | 2026-05-18 | salary_advances |
-| **058** | 2026-05-18 | **payment_amounts (per-IV allocation) → enables /cashflow** |
+| **058** | 2026-05-18 | **paid_invoices.amount + received_payments.total (per-IV allocation money columns) → enables /cashflow** |
 | 059 | 2026-05-18 | credit_note_imports |
 | 060 | 2026-05-18 | sr_writeoffs |
 | 061 | 2026-05-19 | mapping_unit_aware (rebuilds product_code_mapping with unit awareness) |
