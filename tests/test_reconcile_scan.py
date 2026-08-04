@@ -791,6 +791,85 @@ def test_dismiss_then_list_resolved_then_reopen_clears_suppression(empty_db_conn
     assert counts2['out_of_scope'] == 1
 
 
+def test_reappearance_clears_suppression_on_dismissed_flag(empty_db_conn):
+    """Plan §2 epoch-end way 2: a doc reappearing in the file is new
+    evidence — suppression on its dismissed flags must clear automatically,
+    with an audited event, so a LATER genuine deletion is not silently
+    swallowed by stale suppression."""
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000031-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid)
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000031', cls='out_of_scope')
+    mr.dismiss_reconcile_flag(flag_id, 'putty', 'เก็บไว้ก่อน', conn=c)
+    c.commit()
+    assert _flag_row(c, flag_id)['suppression_active'] == 1
+    events_before = len(_events(c, flag_id))
+
+    # Doc reappears (present in the file again).
+    mr.scan_reconcile([_entry('IV1000031-1')], [_hdr('IV1000031', docdat=IN_WINDOW_DATE)],
+                      CUTOFF, conn=c)
+    c.commit()
+
+    row = _flag_row(c, flag_id)
+    assert row['suppression_active'] == 0
+    assert row['state'] == 'dismissed'   # the row itself is untouched, only the flag clears
+    events_after = _events(c, flag_id)
+    assert len(events_after) == events_before + 1
+    assert events_after[-1]['actor'] == 'system'
+    assert events_after[-1]['from_state'] == 'dismissed' and events_after[-1]['to_state'] == 'dismissed'
+
+
+def test_reappearance_then_fresh_disappearance_opens_a_new_flag(empty_db_conn):
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000032-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid)
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000032', cls='out_of_scope')
+    mr.dismiss_reconcile_flag(flag_id, 'putty', 'เก็บไว้ก่อน', conn=c)
+    c.commit()
+
+    # Reappears, clearing suppression.
+    mr.scan_reconcile([_entry('IV1000032-1')], [_hdr('IV1000032', docdat=IN_WINDOW_DATE)],
+                      CUTOFF, conn=c)
+    c.commit()
+
+    # Disappears again — with suppression cleared, this must open a FRESH
+    # 'deleted' flag (the old dismissed row stays dismissed/closed).
+    counts = mr.scan_reconcile([], [], CUTOFF, conn=c)
+    c.commit()
+
+    assert counts['deleted'] == 1
+    new_row = c.execute(
+        "SELECT id, class, state FROM express_reconcile_flags "
+        "WHERE doc_base='IV1000032' AND state='open'").fetchone()
+    assert new_row is not None
+    assert new_row['class'] == 'deleted'
+    assert new_row['id'] != flag_id
+
+
+def test_dismiss_then_repeated_scans_with_doc_still_absent_no_churn(empty_db_conn):
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000033-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid)
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000033', cls='out_of_scope')
+    mr.dismiss_reconcile_flag(flag_id, 'putty', 'เก็บไว้ก่อน', conn=c)
+    c.commit()
+
+    oos_hdr = [_hdr('IV1000033', rectyp='7', docdat=IN_WINDOW_DATE)]
+    events_before = len(_events(c, flag_id))
+    for _ in range(3):
+        counts = mr.scan_reconcile([], oos_hdr, CUTOFF, conn=c)
+        c.commit()
+        assert counts['out_of_scope'] == 0
+
+    assert c.execute(
+        "SELECT COUNT(*) FROM express_reconcile_flags WHERE doc_base='IV1000033'"
+    ).fetchone()[0] == 1   # still just the one dismissed row — no new flag
+    assert len(_events(c, flag_id)) == events_before   # no churn
+
+
 def test_dismiss_requires_a_note(empty_db_conn):
     c = empty_db_conn
     pid = _seed_product(c)

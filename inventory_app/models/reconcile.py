@@ -185,6 +185,28 @@ def _close_as_reappeared(conn, doc_base, actor):
     return True
 
 
+def _clear_suppression_on_reappear(conn, doc_base, actor):
+    """A doc reappearing in the file is new evidence — a LATER disappearance
+    must be free to open a fresh flag, so suppression on EVERY dismissed+
+    suppressed flag for this doc_base (any class — plan §2: "A different
+    class was never suppressed and opens normally" implies suppression is
+    genuinely per (doc_base, class), and reappearance is doc-level evidence
+    that clears all of them) is cleared automatically, each write audited.
+    The flag row itself stays 'dismissed' — only the column that gates
+    re-detection changes (plan §2 epoch-end way 2)."""
+    rows = conn.execute(
+        "SELECT id, class FROM express_reconcile_flags "
+        "WHERE doc_base=? AND state='dismissed' AND suppression_active=1",
+        (doc_base,)).fetchall()
+    for r in rows:
+        conn.execute(
+            "UPDATE express_reconcile_flags SET suppression_active=0 WHERE id=?",
+            (r['id'],))
+        _write_event(conn, r['id'], 'dismissed', 'dismissed', r['class'], r['class'],
+                    actor, 'เอกสารกลับมาปรากฏใน Express — ยกเลิก suppression')
+    return len(rows)
+
+
 def scan_reconcile(sales_entries, artrn_rows, cutoff, actor='system', conn=None):
     """Whole-document-disappearance detection for one commit_express_dbf run.
 
@@ -227,6 +249,7 @@ def scan_reconcile(sales_entries, artrn_rows, cutoff, actor='system', conn=None)
             if cls is None:
                 if _close_as_reappeared(c, doc_base, actor):
                     counts['reappeared'] += 1
+                _clear_suppression_on_reappear(c, doc_base, actor)
                 continue
             outcome = _upsert_flag(c, doc_base, cls, evidence, actor)
             if outcome in ('opened', 'refreshed'):
