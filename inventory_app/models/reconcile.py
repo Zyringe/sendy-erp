@@ -335,6 +335,15 @@ def _linked_records(conn, doc_base):
     return out
 
 
+def _linked_records_summary(linked):
+    """Short human-readable summary of §4's linked-records panel, recorded
+    into the flag's resolution_note (and the apply event's note) so what was
+    shown BEFORE apply is preserved AFTER the doc's own rows are gone
+    (plan §4: 'shown BEFORE apply, recorded in the resolution note')."""
+    parts = [f'{k}={len(v)}' for k, v in linked.items() if v]
+    return f"อ้างอิง: {', '.join(parts)}" if parts else 'ไม่มีข้อมูลอ้างอิง'
+
+
 def get_reconcile_flag(flag_id, conn=None):
     with _ConnCtx(conn) as c:
         row = c.execute(
@@ -547,7 +556,11 @@ def apply_reconcile_flag(flag_id, resolved_by, conn=None):
             c.rollback()
             return {'ok': False, 'error': ledger_err}
 
-        # All refusal checks passed — mutate.
+        # All refusal checks passed — capture the linked-records panel AS
+        # SHOWN before mutating anything (plan §4), then mutate.
+        linked = _linked_records(c, row['doc_base'])
+        note = f"ยืนยันลบตาม Express | {_linked_records_summary(linked)}"
+
         doc_nos = [r['doc_no'] for r in payload_rows]
         row_ids = [r['id'] for r in payload_rows]
         _delete_stock_sync_txns(c, doc_nos)
@@ -555,10 +568,10 @@ def apply_reconcile_flag(flag_id, resolved_by, conn=None):
         _clean_review_docs(c, row['doc_base'])
         c.execute(
             "UPDATE express_reconcile_flags SET state='applied', resolved_by=?, "
-            "resolved_at=datetime('now','localtime') WHERE id=?",
-            (resolved_by, flag_id))
+            "resolved_at=datetime('now','localtime'), resolution_note=? WHERE id=?",
+            (resolved_by, note, flag_id))
         _write_event(c, flag_id, 'open', 'applied', 'deleted', 'deleted',
-                    resolved_by, 'ยืนยันลบตาม Express')
+                    resolved_by, note)
         c.commit()
         return {'ok': True}
     except Exception:

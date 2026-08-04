@@ -999,3 +999,49 @@ def test_two_lines_sharing_one_doc_no_always_refuses_ledger_check(empty_db_conn)
     assert 'ledger แปลกปลอม' in result['error']
     assert c.execute("SELECT COUNT(*) FROM sales_transactions WHERE doc_base='IV6900582'"
                      ).fetchone()[0] == 2
+
+
+# ── FIX 5: apply records a linked-records summary in resolution_note ───────
+
+def test_apply_records_linked_records_summary_in_resolution_note(empty_db_conn):
+    """Plan §4: the linked-records panel is 'shown BEFORE apply, recorded
+    in the resolution note'."""
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000038-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid,
+                 synced=1)
+    _insert_bsn_txn(c, product_id=pid, doc_no='IV1000038-1', note='BSN ขาย', quantity_change=-1.0)
+    cur = c.execute(
+        "INSERT INTO received_payments (re_no, date_iso, customer) VALUES (?, ?, ?)",
+        ('RE0001TEST', IN_WINDOW_DATE.isoformat(), 'ลูกค้าทดสอบ'))
+    re_id = cur.lastrowid
+    c.execute(
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?, ?, 'IV', 100.0)",
+        (re_id, 'IV1000038'))
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000038')
+
+    result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
+
+    assert result == {'ok': True}
+    row = _flag_row(c, flag_id)
+    assert row['resolution_note'] is not None
+    assert 'paid_invoices=1' in row['resolution_note']
+    evs = _events(c, flag_id)
+    assert 'paid_invoices=1' in evs[-1]['note']
+
+
+def test_apply_resolution_note_says_no_linked_records_when_none(empty_db_conn):
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000039-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid,
+                 synced=1)
+    _insert_bsn_txn(c, product_id=pid, doc_no='IV1000039-1', note='BSN ขาย', quantity_change=-1.0)
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000039')
+
+    result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
+
+    assert result == {'ok': True}
+    row = _flag_row(c, flag_id)
+    assert 'ไม่มีข้อมูลอ้างอิง' in row['resolution_note']
