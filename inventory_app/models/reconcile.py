@@ -43,9 +43,24 @@ _CAS_NUMERIC = ('qty', 'unit_price', 'net')
 
 _BSN_SALE_NOTES = ('BSN ขาย', 'BSN ขาย-คืน')
 
-_PLATFORM_REFUSAL_MSG = (
+# Public (no leading underscore): the /reconcile template renders this
+# verbatim next to the disabled apply button, so both the UI button state
+# AND the POST guard show/enforce the identical message (plan §2 step 3).
+PLATFORM_REFUSAL_MSG = (
     'บิลนี้เคยหักสต็อกแพลตฟอร์ม — ระบบย้อนให้อัตโนมัติไม่ได้ '
     'ต้องจัดการ platform stock เองก่อน แล้ว dismiss พร้อมโน้ต')
+
+
+def is_platform_doc(payload_rows):
+    """True when ANY row's customer — normalized the SAME way the sync's
+    deduction lookup does, `(customer or '').strip()` — is a platform-
+    stock-deducting customer (PLATFORM_STOCK_DEDUCT_CUSTOMERS). The ONE
+    shared helper driving BOTH the /reconcile page's button state and the
+    apply POST guard (plan §2 step 3, Codex r6): a whitespace-bearing
+    customer that deducted stock at sync time must grey the button, not
+    just refuse server-side after the click."""
+    return any((r.get('customer') or '').strip() in PLATFORM_STOCK_DEDUCT_CUSTOMERS
+               for r in payload_rows)
 
 
 class _ConnCtx:
@@ -275,6 +290,7 @@ def list_open_reconcile_flags(conn=None):
             d = _row_to_dict(r)
             d['latest_payload'] = json.loads(d.pop('latest_payload_json'))
             d['linked_records'] = _linked_records(c, d['doc_base'])
+            d['platform_blocked'] = is_platform_doc(d['latest_payload']['rows'])
             out.append(d)
         return out
 
@@ -504,11 +520,9 @@ def apply_reconcile_flag(flag_id, resolved_by, conn=None):
         payload = json.loads(row['latest_payload_json'])
         payload_rows = payload['rows']
 
-        for r in payload_rows:
-            customer = (r.get('customer') or '').strip()
-            if customer in PLATFORM_STOCK_DEDUCT_CUSTOMERS:
-                c.rollback()
-                return {'ok': False, 'error': _PLATFORM_REFUSAL_MSG}
+        if is_platform_doc(payload_rows):
+            c.rollback()
+            return {'ok': False, 'error': PLATFORM_REFUSAL_MSG}
 
         live_rows = _payload_for_doc(c, row['doc_base'])
         cas_err = _cas_compare(payload_rows, live_rows)

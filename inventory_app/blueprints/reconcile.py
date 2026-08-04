@@ -40,7 +40,8 @@ def index():
     open_flags = models.list_open_reconcile_flags()
     resolved_flags = models.list_resolved_reconcile_flags() if show_all else []
     return render_template('reconcile/index.html', open_flags=open_flags,
-                           resolved_flags=resolved_flags, show_all=show_all)
+                           resolved_flags=resolved_flags, show_all=show_all,
+                           platform_refusal_msg=models.PLATFORM_REFUSAL_MSG)
 
 
 @bp_reconcile.route('/<int:flag_id>/apply', methods=['POST'])

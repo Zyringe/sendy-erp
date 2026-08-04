@@ -916,3 +916,56 @@ def test_row_deleted_and_reinserted_with_new_id_refuses_apply(empty_db_conn):
     assert c.execute(
         "SELECT COUNT(*) FROM transactions WHERE reference_no='IV1000034-1'").fetchone()[0] == 1
     assert _flag_row(c, flag_id)['state'] == 'open'
+
+
+# ── FIX 3: is_platform_doc() drives BOTH the UI button state and the guard ──
+
+def test_is_platform_doc_shopee_lazada_true_closed_shop_b_false():
+    assert mr.is_platform_doc([{'customer': 'หน้าร้านS'}]) is True
+    assert mr.is_platform_doc([{'customer': 'หน้าร้านS '}]) is True   # trailing space
+    assert mr.is_platform_doc([{'customer': 'หน้าร้านL'}]) is True
+    assert mr.is_platform_doc([{'customer': 'หน้าร้านB'}]) is False   # deliberately exempt
+    assert mr.is_platform_doc([{'customer': 'ลูกค้าทั่วไป'}]) is False
+    assert mr.is_platform_doc([]) is False
+
+
+def test_list_open_flags_marks_platform_blocked(empty_db_conn):
+    c = empty_db_conn
+    pid_s = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000035-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid_s,
+                 customer='หน้าร้านS', synced=1)
+    c.commit()
+    flag_s = _make_flag(c, 'IV1000035')
+
+    pid_ws = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000036-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid_ws,
+                 customer='หน้าร้านS ', synced=1)
+    c.commit()
+    flag_s_ws = _make_flag(c, 'IV1000036')
+
+    pid_b = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000037-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid_b,
+                 customer='หน้าร้านB', synced=1)
+    c.commit()
+    flag_b = _make_flag(c, 'IV1000037')
+
+    flags = {f['id']: f for f in mr.list_open_reconcile_flags(conn=c)}
+    assert flags[flag_s]['platform_blocked'] is True
+    assert flags[flag_s_ws]['platform_blocked'] is True
+    assert flags[flag_b]['platform_blocked'] is False
+
+
+def test_reconcile_page_shows_disabled_button_for_platform_blocked_flag(route_client, tmp_db):
+    flag_id = _seed_flag_via_sqlite3(tmp_db, doc_no='IVRECROUTE004-1', customer='หน้าร้านS')
+    _login(route_client, role='manager')
+    html = route_client.get('/reconcile').get_data(as_text=True)
+    assert 'แพลตฟอร์ม' in html
+    assert f'action="/reconcile/{flag_id}/apply"' not in html
+    assert 'disabled' in html
+
+
+def test_reconcile_page_shows_active_apply_for_non_platform_deleted_flag(route_client, tmp_db):
+    flag_id = _seed_flag_via_sqlite3(tmp_db, doc_no='IVRECROUTE005-1', customer='ลูกค้าทั่วไป')
+    _login(route_client, role='manager')
+    html = route_client.get('/reconcile').get_data(as_text=True)
+    assert f'action="/reconcile/{flag_id}/apply"' in html
