@@ -141,6 +141,8 @@ B_SAMPLES = [
     ('admin', 'customer_review.normalize_list', False),
     ('admin', 'customer_review.normalize_detail', False),  # prefix 'customer_review.'
     ('admin', 'naming.index', False),
+    ('admin', 'reconcile.index', False),
+    ('admin', 'reconcile.apply', False),                   # prefix 'reconcile.'
     ('staff', 'bsn.mapping', False),                       # staff: no ตั้งชื่อสินค้า link
     # admin_module (upload/download only exist with the DB-routes toggle armed)
     ('admin', 'admin.user_list', False),

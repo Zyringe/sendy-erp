@@ -75,6 +75,7 @@ from blueprints.commission_bp import bp_commission
 from blueprints.ecommerce import bp_ecommerce
 from blueprints.accounting import bp_accounting
 from blueprints.admin import bp_admin
+from blueprints.reconcile import bp_reconcile
 # Re-exported below for app.py's own remaining code (_role_home) and
 # for tests that import these off `app` (_STAFF_POST_OK, _MANAGER_POST_OK,
 # _ENDPOINT_MODULE, _MODULE_DEFS, build_mobile_nav_slots).
@@ -137,6 +138,7 @@ app.register_blueprint(bp_commission)
 app.register_blueprint(bp_ecommerce)
 app.register_blueprint(bp_accounting)
 app.register_blueprint(bp_admin)
+app.register_blueprint(bp_reconcile)
 
 with app.app_context():
     # SKIP_DB_INIT=1 lets the app boot without touching the database. Used

@@ -162,6 +162,8 @@ NAV = [
              'badge': {'key': 'pending_suggestions_count', 'roles': {'admin', 'manager'},
               'css': 'badge bg-danger ms-auto'}},
             {'ep': 'bsn.unit_conversions', 'label': 'แปลงหน่วย', 'icon': 'bi-arrow-left-right'},
+            {'ep': 'reconcile.index', 'label': 'ตรวจสอบบิลหายจาก Express', 'icon': 'bi-file-earmark-excel',
+             'roles': {'admin', 'manager', 'shareholder'}, 'match_prefix': ['reconcile.']},
             {'ep': 'customer_review.normalize_list', 'label': 'ตรวจข้อมูลลูกค้า', 'icon': 'bi-person-check',
              'match_prefix': ['customer_review.']},
             {'ep': 'naming.index', 'label': 'ตั้งชื่อสินค้า', 'icon': 'bi-pencil-square',

@@ -238,11 +238,34 @@ def scan_reconcile(sales_entries, artrn_rows, cutoff, actor='system', conn=None)
 # ── Read / lifecycle ─────────────────────────────────────────────────────────
 
 def list_open_reconcile_flags(conn=None):
+    """Every open flag, enriched with its latest payload + linked-records
+    panel — the /reconcile page renders straight off this, no separate
+    detail route (plan §2: "New small page")."""
     with _ConnCtx(conn) as c:
         rows = c.execute(
-            "SELECT id, doc_base, class, first_seen_at, last_seen_at, state "
-            "FROM express_reconcile_flags WHERE state='open' "
+            "SELECT id, doc_base, class, first_seen_at, last_seen_at, state, "
+            "latest_payload_json FROM express_reconcile_flags WHERE state='open' "
             "ORDER BY class = 'deleted' DESC, last_seen_at DESC"
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = _row_to_dict(r)
+            d['latest_payload'] = json.loads(d.pop('latest_payload_json'))
+            d['linked_records'] = _linked_records(c, d['doc_base'])
+            out.append(d)
+        return out
+
+
+def list_resolved_reconcile_flags(conn=None, limit=200):
+    """Applied/dismissed/reappeared flags — history view (?all=1). Summary
+    fields only; the forensic payloads are on get_reconcile_flag() if a
+    future page needs the full detail."""
+    with _ConnCtx(conn) as c:
+        rows = c.execute(
+            "SELECT id, doc_base, class, state, first_seen_at, last_seen_at, "
+            "resolved_by, resolved_at, resolution_note, suppression_active "
+            "FROM express_reconcile_flags WHERE state != 'open' "
+            "ORDER BY resolved_at DESC LIMIT ?", (limit,)
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
 

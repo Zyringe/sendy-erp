@@ -11,7 +11,6 @@ import datetime
 import json
 import os
 import sqlite3
-import threading
 
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
@@ -635,3 +634,92 @@ def test_apply_holds_lock_before_first_write(tmp_db, monkeypatch):
 
     assert seen.get('locked') is True
     assert result == {'ok': True}
+
+
+# ── Route: /reconcile (manager+ view, manager-whitelist POSTs, nav wiring) ──
+
+def _login(client, role='admin', user_id=1):
+    with client.session_transaction() as sess:
+        sess['user_id'] = user_id
+        sess['username'] = f'test-{role}'
+        sess['role'] = role
+
+
+@pytest.fixture
+def route_client(tmp_db):
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    with flask_app.test_client() as c:
+        yield c
+
+
+def _seed_flag_via_sqlite3(tmp_db_path, doc_no='IVRECROUTE001-1', customer='ลูกค้าทดสอบ'):
+    c = sqlite3.connect(tmp_db_path)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    pid = _seed_product(c, name='สินค้า route test')
+    _insert_sale(c, doc_no=doc_no, date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid,
+                 customer=customer, synced=1)
+    _insert_bsn_txn(c, product_id=pid, doc_no=doc_no, note='BSN ขาย', quantity_change=-1.0)
+    c.commit()
+    flag_id = _make_flag(c, doc_no.rsplit('-', 1)[0])
+    c.close()
+    return flag_id
+
+
+def test_reconcile_index_requires_manager(route_client, tmp_db):
+    _login(route_client, role='staff')
+    resp = route_client.get('/reconcile', follow_redirects=False)
+    assert resp.status_code == 302   # bounced by _require_manager, not a 200 page
+
+
+def test_reconcile_index_renders_for_manager(route_client, tmp_db):
+    _seed_flag_via_sqlite3(tmp_db)
+    _login(route_client, role='manager')
+    resp = route_client.get('/reconcile')
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert 'IVRECROUTE001' in html
+    assert '>ลบจาก Express<' in html
+
+
+def test_reconcile_nav_wiring_sidebar_and_drawer(route_client, tmp_db):
+    from access_control import _ENDPOINT_MODULE
+    assert _ENDPOINT_MODULE.get('reconcile.index') == 'data'
+
+    _login(route_client, role='manager')
+    html = route_client.get('/reconcile').get_data(as_text=True)
+    assert html.count('href="/reconcile"') >= 2, \
+        "reconcile link missing from a nav surface (sidebar or mobile drawer)"
+
+
+def test_reconcile_apply_post_staff_forbidden(route_client, tmp_db):
+    flag_id = _seed_flag_via_sqlite3(tmp_db, doc_no='IVRECROUTE002-1')
+    _login(route_client, role='staff')
+    resp = route_client.post(f'/reconcile/{flag_id}/apply', follow_redirects=False)
+    assert resp.status_code == 302
+    # Whitelist bounce (access_control) redirects to the role's home, not /reconcile.
+    assert resp.headers.get('Location', '').rstrip('/') != f'/reconcile/{flag_id}/apply'
+
+    import config
+    c = sqlite3.connect(config.DATABASE_PATH)
+    row = c.execute("SELECT state FROM express_reconcile_flags WHERE id=?", (flag_id,)).fetchone()
+    c.close()
+    assert row[0] == 'open', "staff POST must not have applied the flag"
+
+
+def test_reconcile_apply_post_manager_end_to_end(route_client, tmp_db):
+    flag_id = _seed_flag_via_sqlite3(tmp_db, doc_no='IVRECROUTE003-1')
+    _login(route_client, role='manager')
+    resp = route_client.post(f'/reconcile/{flag_id}/apply', data={}, follow_redirects=True)
+    assert resp.status_code == 200
+
+    import config
+    c = sqlite3.connect(config.DATABASE_PATH)
+    c.row_factory = sqlite3.Row
+    row = c.execute("SELECT state FROM express_reconcile_flags WHERE id=?", (flag_id,)).fetchone()
+    remaining = c.execute(
+        "SELECT COUNT(*) FROM sales_transactions WHERE doc_base='IVRECROUTE003'").fetchone()[0]
+    c.close()
+    assert row['state'] == 'applied'
+    assert remaining == 0

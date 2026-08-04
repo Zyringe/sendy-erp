@@ -95,6 +95,10 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'cashbook.new_transaction', 'cashbook.txn_edit', 'cashbook.txn_delete',
     # Salary pay-event posting (Phase 4) — manager can mark จ่ายแล้ว/ยกเลิกการจ่าย.
     'hr.payroll_item_pay', 'hr.payroll_item_unpay',
+    # reconcile-scan (reconcile-scan-plan.md §2) — confirm-apply/dismiss/reopen
+    # for a doc deleted at the Express source. Manager+ ONLY: staff can upload
+    # (detection runs) but must never be able to delete a doc's ledger.
+    'reconcile.apply', 'reconcile.dismiss', 'reconcile.reopen',
 ])
 # partners.regions_admin POST is intentionally admin-only — gated inline at
 # the top of the route. Other admin-only writes use _require_admin().
@@ -401,6 +405,10 @@ _ENDPOINT_MODULE = {
     'naming.dict_apply': 'data',
     'naming.product_preview_name': 'data',
     'naming.product_save': 'data',
+    'reconcile.index': 'data',
+    'reconcile.apply': 'data',
+    'reconcile.dismiss': 'data',
+    'reconcile.reopen': 'data',
     # cashbook
     'cashbook.dashboard':     'cashbook',
     'cashbook.account_ledger': 'cashbook',

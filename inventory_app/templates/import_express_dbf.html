@@ -39,6 +39,20 @@
             BSN5657: {{ last_run.results.bsn.summary if last_run.results.bsn.ok
                         else 'ไม่สำเร็จ — ' ~ last_run.results.bsn.error }}
           </li>
+          {% set rc = last_run.results.bsn.reconcile %}
+          {% if rc %}
+          <li class="{{ 'text-danger' if rc.deleted else 'text-muted' }}">
+            ตรวจสอบบิลหายจาก Express:
+            ลบ {{ rc.deleted or 0 }} ·
+            นอกขอบเขต {{ rc.out_of_scope or 0 }} ·
+            วันที่อ่านไม่ได้ {{ rc.parse_gap or 0 }} ·
+            วันที่ย้าย {{ rc.date_moved or 0 }} ·
+            ข้อมูลไม่ครบ {{ rc.data_gap or 0 }}
+            {% if rc.deleted %}
+              — <a href="{{ url_for('reconcile.index') }}">ตรวจที่นี่</a>
+            {% endif %}
+          </li>
+          {% endif %}
           {% endif %}
           {% if last_run.results.vat %}
           <li class="{{ 'text-warning' if last_run.results.vat.status == 'building'

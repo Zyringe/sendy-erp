@@ -696,8 +696,14 @@ def express_dbf_upload():
                 per_type = import_router.commit_express_dbf(
                     classified['bsn'], db_path=config.DATABASE_PATH)
                 results['bsn'] = {'ok': True,
-                                  'summary': _express_dbf_summary_message(per_type)}
+                                  'summary': _express_dbf_summary_message(per_type),
+                                  'reconcile': per_type.get('reconcile', {})}
                 flashes.append(('success', f"BSN5657: {results['bsn']['summary']}"))
+                _reconcile_deleted = results['bsn']['reconcile'].get('deleted', 0)
+                if _reconcile_deleted:
+                    flashes.append(('warning',
+                                    f'พบบิล {_reconcile_deleted} ใบที่หายไปจาก Express — '
+                                    f'ตรวจที่หน้า "ตรวจสอบบิลหายจาก Express" (เมนูนำเข้าข้อมูล)'))
             except Exception as exc:
                 results['bsn'] = {'ok': False, 'error': str(exc)[:400]}
                 flashes.append(('danger', f'BSN5657 นำเข้าไม่สำเร็จ: {exc}'))
