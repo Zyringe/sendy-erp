@@ -206,6 +206,12 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60):
     label = f"express_dbf:{os.path.basename(os.path.normpath(dataset_dir))}"
     sales_stats = models.import_weekly(sales_entries, "sales", label)
     purchase_stats = models.import_weekly(purchase_entries, "purchase", label)
+    # reconcile-scan (reconcile-scan-plan.md §2): read-only detection AFTER
+    # the normal sales import, reusing the SAME sales_entries/artrn already
+    # built above — no second parse. Safe post-import because the import
+    # never touches a doc absent from the file; this is the one thing that
+    # scans for exactly that gap.
+    reconcile_counts = models.scan_reconcile(sales_entries, artrn, cutoff)
     refs_upserted = _upsert_invoice_refs(refs, db_path)
     payments_in_stats = models.import_payment_records(payments_in_records)
     # Never silent: a skipped DR-type ARRCPIT line (or any future unsupported
@@ -224,7 +230,8 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60):
             "payments_in": payments_in_stats,
             "payments_out": payments_out_stats,
             "credit_notes_ar": credit_notes_ar_stats,
-            "credit_notes_ap": credit_notes_ap_stats}
+            "credit_notes_ap": credit_notes_ap_stats,
+            "reconcile": reconcile_counts}
 
 
 def _upsert_invoice_refs(refs, db_path):
