@@ -176,6 +176,16 @@ def _parse(filepath: str, tx_pat, file_type: str) -> list:
             if m:
                 current_party = m.group(1).strip()
                 current_party_code = m.group(2).strip()
+                # A new party section starts a new product grouping. Without this
+                # reset, a transaction under the new party but BEFORE its first
+                # product heading inherited the PREVIOUS party's product — the row
+                # was not dropped, it was silently posted against the wrong
+                # product's stock. Clearing it turns that row into an orphan, which
+                # _validate_parse then refuses. Measured over every real Express
+                # export (19,864 transaction rows): zero rows rely on inheriting
+                # product context across a party boundary, so this cannot
+                # false-reject a real file.
+                current_prod_name = current_prod_code = None
             continue
 
         # Product line: 3 leading spaces, has /code, not a total

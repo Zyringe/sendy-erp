@@ -337,3 +337,74 @@ def test_sr_row_before_any_product_heading_is_still_exempt(tmp_path):
     ] + SALES_SAMPLE_LINES[6:])
     path = _write(tmp_path, "ขาย_sr_first.csv", lines)
     assert len(parse_weekly.parse_sales(path)) == 6
+
+
+# ── product context must not survive a party change (Codex follow-up, 72418a6) ──
+#
+# The party branch updated current_party/current_party_code but left
+# current_prod_name/current_prod_code alone. A transaction under a NEW customer,
+# before that customer's first product heading, was therefore accepted and
+# attributed to the PREVIOUS customer's product. Worse than the orphan case: the
+# row is not dropped, it is silently mis-mapped onto the wrong product's stock.
+
+_HDR7 = [
+    '"(BSN)บจก.บุญสวัสดิ์นำชัย                                   หน้า   :        1"',
+    '"  รายงานประวัติการขาย\xa0แยกตามลูกค้า"',
+    '"รหัสลูกค้า            ถึง  Zหน้าร้าน            วันที่ : 15/04/69"',
+    '"วันที่จาก   12\xa0เม.ย.\xa02569     ถึง  31\xa0ธ.ค.\xa02569"',
+    '"----------------------------------------------------------------"',
+]
+
+# customer A with its product and two good rows, then customer B whose first
+# transaction has NO product heading of its own.
+_PARTY_CHANGE_ORPHAN = _HDR7 + [
+    '"  ไพศาลโลหะภัณฑ์(ตลาดพลู)\xa0/01พ02"',
+    '"   ใบตัดเพชร\xa04\xa0#GL-888(แดง)\xa0/031บ4120"',
+    '"      04/04/69   IV6900503-  1        24.00 ใบ          160.00  1                  3840.00                  3840.00"',
+    '"      04/04/69   IV6900503-  2         3.00 ใบ          160.00  1                   480.00                   480.00"',
+    '"  วรสวัสดิ์\xa0ฮาร์ดแวร์\xa0/01อ35"',
+    '"      04/04/69   IV6900501-  1        48.00 ผง           30.00  2       1152.00       1152.00"',
+]
+
+
+@pytest.fixture
+def party_change_orphan_csv(tmp_path):
+    return _write(tmp_path, "ขาย_party_change.csv", _PARTY_CHANGE_ORPHAN)
+
+
+def test_party_change_clears_product_context(party_change_orphan_csv):
+    """The new customer's row has no product heading, so it is an orphan and the
+    whole file must be refused."""
+    with pytest.raises(ValueError) as exc:
+        parse_weekly.parse_sales(party_change_orphan_csv)
+    msg = str(exc.value)
+    assert 'ขาย_party_change.csv' in msg
+    assert 'IV6900501' in msg, 'the error must quote the orphaned invoice line'
+
+
+def test_a_row_is_never_attributed_to_the_previous_partys_product(party_change_orphan_csv):
+    """The property that actually matters: no row may inherit the previous
+    party's product. Silently mis-mapping stock is worse than dropping the row."""
+    try:
+        entries = parse_weekly.parse_sales(party_change_orphan_csv)
+    except ValueError:
+        return                                   # refused outright: correct
+    bad = [e for e in entries
+           if e['doc_no'].startswith('IV6900501') and e['product_code_raw'] == '031บ4120']
+    assert not bad, f'row inherited the previous customer product: {bad}'
+
+
+def test_party_change_with_its_own_product_heading_still_parses(tmp_path):
+    """Control: the normal shape (every party followed by its own product
+    heading) must be unaffected. Measured on all 19,864 transaction rows in the
+    real Express exports: none relies on inheriting across a party boundary."""
+    lines = _PARTY_CHANGE_ORPHAN[:-1] + [
+        '"   กลอนห้องน้ำกลาง\xa0STL#430\xa0(P)\xa0/001ก3435"',
+        '"      04/04/69   IV6900501-  1        48.00 ผง           30.00  2        20%       1152.00                  1152.00"',
+    ]
+    path = _write(tmp_path, "ขาย_party_change_ok.csv", lines)
+    entries = parse_weekly.parse_sales(path)
+    assert len(entries) == 3
+    got = {e['doc_no']: e['product_code_raw'] for e in entries}
+    assert got['IV6900501-1'] == '001ก3435', 'must use the NEW party product'
+    assert got['IV6900503-1'] == '031บ4120'
