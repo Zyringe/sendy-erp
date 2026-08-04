@@ -723,3 +723,82 @@ def test_reconcile_apply_post_manager_end_to_end(route_client, tmp_db):
     c.close()
     assert row['state'] == 'applied'
     assert remaining == 0
+
+
+# ── get_reconcile_flag / list_resolved_reconcile_flags / dismiss+reopen ─────
+
+def test_get_reconcile_flag_returns_payload_linked_records_and_events(empty_db_conn):
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000028-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid, synced=1)
+    _insert_bsn_txn(c, product_id=pid, doc_no='IV1000028-1', note='BSN ขาย', quantity_change=-1.0)
+    c.commit()
+    mr.scan_reconcile([], [], CUTOFF, conn=c)
+    c.commit()
+    flag_id = c.execute(
+        "SELECT id FROM express_reconcile_flags WHERE doc_base='IV1000028'").fetchone()[0]
+
+    detail = mr.get_reconcile_flag(flag_id, conn=c)
+
+    assert detail['doc_base'] == 'IV1000028'
+    assert detail['class'] == 'deleted'
+    assert len(detail['latest_payload']['rows']) == 1
+    assert set(detail['linked_records']) == {
+        'paid_invoices', 'commission_payouts', 'credit_note_amounts',
+        'credit_note_imports', 'marketplace_order_invoice',
+        'marketplace_amount_review', 'express_invoice_refs', 'sr_ref_rows',
+    }
+    assert len(detail['events']) == 1
+
+
+def test_get_reconcile_flag_unknown_id_returns_none(empty_db_conn):
+    assert mr.get_reconcile_flag(999999, conn=empty_db_conn) is None
+
+
+def test_dismiss_then_list_resolved_then_reopen_clears_suppression(empty_db_conn):
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000029-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid)
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000029', cls='out_of_scope')
+
+    result = mr.dismiss_reconcile_flag(flag_id, 'putty', 'ตั้งใจไว้ก่อน รอทีมยืนยัน', conn=c)
+    c.commit()
+    assert result == {'ok': True}
+
+    resolved = mr.list_resolved_reconcile_flags(conn=c)
+    assert len(resolved) == 1
+    assert resolved[0]['state'] == 'dismissed' and resolved[0]['suppression_active'] == 1
+
+    # Suppressed — a re-scan with the SAME evidence (still out_of_scope) must
+    # NOT open a new flag for the same (doc_base, class).
+    oos_hdr = [_hdr('IV1000029', rectyp='7', docdat=IN_WINDOW_DATE)]
+    counts = mr.scan_reconcile([], oos_hdr, CUTOFF, conn=c)
+    c.commit()
+    assert counts['out_of_scope'] == 0
+    assert c.execute(
+        "SELECT COUNT(*) FROM express_reconcile_flags WHERE doc_base='IV1000029' AND state='open'"
+    ).fetchone()[0] == 0
+
+    reopen_result = mr.reopen_reconcile_flag(flag_id, 'putty', conn=c)
+    c.commit()
+    assert reopen_result == {'ok': True}
+    assert _flag_row(c, flag_id)['suppression_active'] == 0
+
+    # Now a re-scan may re-flag it.
+    counts2 = mr.scan_reconcile([], oos_hdr, CUTOFF, conn=c)
+    c.commit()
+    assert counts2['out_of_scope'] == 1
+
+
+def test_dismiss_requires_a_note(empty_db_conn):
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000030-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid)
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000030', cls='data_gap')
+
+    result = mr.dismiss_reconcile_flag(flag_id, 'putty', '   ', conn=c)
+
+    assert result['ok'] is False
+    assert _flag_row(c, flag_id)['state'] == 'open'
