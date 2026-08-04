@@ -621,6 +621,54 @@ CREATE TABLE express_payments_out (
     UNIQUE(batch_id, doc_no)
 );
 
+CREATE TABLE express_reconcile_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    flag_id    INTEGER NOT NULL REFERENCES express_reconcile_flags(id),
+    at         TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    from_state TEXT,
+    to_state   TEXT    NOT NULL,
+    from_class TEXT,
+    to_class   TEXT,
+    actor      TEXT,
+    note       TEXT
+);
+
+CREATE TABLE express_reconcile_flags (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_base             TEXT    NOT NULL,
+    class                TEXT    NOT NULL
+                          CHECK (class IN ('deleted', 'out_of_scope', 'parse_gap',
+                                            'date_moved', 'data_gap')),
+    -- Forensic snapshot from the FIRST time this doc_base was flagged.
+    -- Immutable after insert (trigger below).
+    first_payload_json   TEXT    NOT NULL,
+    -- Refreshed on every re-detection scan; apply()'s CAS reference.
+    latest_payload_json  TEXT    NOT NULL,
+    first_seen_at        TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    last_seen_at         TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    state                TEXT    NOT NULL DEFAULT 'open'
+                          CHECK (state IN ('open', 'applied', 'dismissed', 'reappeared')),
+    -- Only a 'dismissed' row may carry suppression_active=1 — a later
+    -- explicit reopen or a doc reappearing in Express clears it back to 0
+    -- (state stays 'dismissed'; only the flag governing re-detection moves).
+    suppression_active   INTEGER NOT NULL DEFAULT 0 CHECK (suppression_active IN (0, 1)),
+    resolved_by          TEXT,
+    resolved_at          TEXT,
+    resolution_note      TEXT,
+    CHECK (suppression_active = 0 OR state = 'dismissed'),
+    CHECK (
+        (state = 'open'
+            AND resolved_by IS NULL AND resolved_at IS NULL AND resolution_note IS NULL)
+        OR (state = 'applied'
+            AND resolved_by IS NOT NULL AND resolved_at IS NOT NULL)
+        OR (state = 'dismissed'
+            AND resolved_by IS NOT NULL AND resolved_at IS NOT NULL
+            AND resolution_note IS NOT NULL AND resolution_note <> '')
+        OR (state = 'reappeared'
+            AND resolved_by = 'system' AND resolved_at IS NOT NULL)
+    )
+);
+
 CREATE TABLE express_sales (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     batch_id          INTEGER NOT NULL REFERENCES express_import_log(id) ON DELETE CASCADE,
@@ -1647,6 +1695,18 @@ CREATE INDEX idx_employees_active    ON employees(is_active);
 CREATE INDEX idx_employees_company  ON employees(company_id);
 
 CREATE INDEX idx_employees_user      ON employees(user_id);
+
+CREATE INDEX idx_ere_flag_id ON express_reconcile_events(flag_id);
+
+CREATE INDEX idx_erf_doc_base ON express_reconcile_flags(doc_base);
+
+CREATE UNIQUE INDEX idx_erf_open_doc_base
+    ON express_reconcile_flags(doc_base) WHERE state = 'open';
+
+CREATE INDEX idx_erf_state ON express_reconcile_flags(state);
+
+CREATE INDEX idx_erf_suppression_lookup
+    ON express_reconcile_flags(doc_base, class) WHERE suppression_active = 1;
 
 CREATE INDEX idx_expense_log_category ON expense_log(category_id);
 
@@ -3837,6 +3897,26 @@ WHEN NEW.code IS NOT OLD.code
 BEGIN
     SELECT RAISE(ABORT,
         'ห้ามเปลี่ยนรหัสลูกค้า (customers.code) เพราะเป็น key ที่ผูกกับ commission_customer_reassign, product_code_mapping, การนำเข้า Express และประวัติ audit_log — ถ้าต้องการเปลี่ยนรหัส ให้สร้างลูกค้าใหม่ด้วยรหัสที่ต้องการแล้วย้ายข้อมูล/ประวัติไปแทน');
+END;
+
+CREATE TRIGGER express_reconcile_events_no_delete
+BEFORE DELETE ON express_reconcile_events
+BEGIN
+    SELECT RAISE(ABORT, 'express_reconcile_events เป็น append-only log ห้ามลบ');
+END;
+
+CREATE TRIGGER express_reconcile_events_no_update
+BEFORE UPDATE ON express_reconcile_events
+BEGIN
+    SELECT RAISE(ABORT, 'express_reconcile_events เป็น append-only log ห้ามแก้ไข');
+END;
+
+CREATE TRIGGER express_reconcile_flags_first_payload_immutable
+BEFORE UPDATE ON express_reconcile_flags
+WHEN NEW.first_payload_json IS NOT OLD.first_payload_json
+BEGIN
+    SELECT RAISE(ABORT,
+        'first_payload_json คือหลักฐานต้นฉบับตอน flag ครั้งแรก ห้ามแก้ไข');
 END;
 
 CREATE TRIGGER platform_skus_price_history_update
