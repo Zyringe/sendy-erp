@@ -10,14 +10,14 @@ sys.path.insert(0, os.path.join(REPO, "inventory_app"))
 import models  # noqa: E402
 import bsn_units  # noqa: E402
 
-MIG_124 = os.path.join(REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+from tests import mapping_fixture  # noqa: E402  (idempotent mig-124 replay)
 
 PID = 906201
 
 
 def _migrate124(conn):
-    with open(MIG_124, encoding="utf-8") as f:
-        conn.executescript(f.read())
+    # Idempotent — see tests/mapping_fixture.py.
+    mapping_fixture.apply_mig124_if_needed(conn)
 
 
 def _entry(code, unit):

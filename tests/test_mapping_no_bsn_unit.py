@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(REPO, "inventory_app"))
 import models  # noqa: E402
 import database  # noqa: E402
 
-MIG_124 = os.path.join(REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+from tests import mapping_fixture  # noqa: E402  (idempotent mig-124 replay)
 
 PA = 907201
 PB = 907202
@@ -36,8 +36,9 @@ CODE = "ZNBU100"
 
 
 def _migrate124(conn):
-    with open(MIG_124, encoding="utf-8") as f:
-        conn.executescript(f.read())
+    # Idempotent: applies mig 124 only if this DB copy predates it. See
+    # tests/mapping_fixture.py for why a blind replay now breaks.
+    mapping_fixture.apply_mig124_if_needed(conn)
     # mig 124's own trailer turns foreign_keys back ON; some tests below seed
     # transactions with a placeholder batch_id=0 (no real import_log row), so
     # restore the ambient OFF state they were written against.

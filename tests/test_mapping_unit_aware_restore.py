@@ -4,11 +4,13 @@ TDD spec per projects/pack-loose-sku-split/plan.md Phase 1. Mig 112 (2026-06-09)
 dropped bsn_unit; this restores it via a NEW forward migration (mig 124), NOT
 by running 112's rollback (that would desync applied_migrations on prod).
 
-`tmp_db` is a straight copy of the LIVE local DB, which does not have mig 124
-applied on this machine (implementer session never touches the live DB — see
-erp-engineering-discipline.md). Every test here applies 124_restore_mapping_
-bsn_unit.sql to its own tmp_db copy before exercising the resolver, mirroring
-tests/test_migration_061_mapping_unit_aware.py's pattern.
+`tmp_db` is a straight copy of the LIVE local DB. When this file was written
+that copy did NOT have mig 124 applied, so every test replayed
+124_restore_mapping_bsn_unit.sql onto it first. The live DB has had mig 124
+since 2026-07-02 and now carries real split rows, so a blind replay collapses
+them to bsn_unit='' and trips the composite UNIQUE during setup. The replay is
+idempotent now (tests/mapping_fixture.py), and the one test that exercises the
+migration's own mechanics reconstructs the pre-124 state via the rollback.
 
 (a) split rows resolve by exact unit
 (b) a code with only a blank bsn_unit row resolves for ANY unit
@@ -28,14 +30,23 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(REPO, "inventory_app"))
 import models  # noqa: E402
 
-MIG = os.path.join(REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+from tests import mapping_fixture  # noqa: E402
 
 PA, PB = 907301, 907302
 
+# The real split code these tests exercise. tmp_db copies the LIVE DB, which
+# already carries production rows for it (แผง→81 / ตัว→111 as of 2026-08-03), so
+# the fixture clears them before seeding its own — otherwise the seed trips the
+# composite UNIQUE the tests exist to prove.
+SPLIT_CODE = '030บ3412'
 
-def _migrate(conn):
-    with open(MIG, encoding="utf-8") as f:
-        conn.executescript(f.read())
+
+def _migrate(conn, *reset_codes):
+    """Ensure the schema is unit-aware (idempotent — see tests/mapping_fixture.py)
+    and clear any production rows for the codes this test is about to seed."""
+    mapping_fixture.apply_mig124_if_needed(conn)
+    if reset_codes:
+        mapping_fixture.reset_codes(conn, *reset_codes)
 
 
 def _seed_products(conn):
@@ -54,7 +65,7 @@ def _seed_products(conn):
 def test_split_code_resolves_by_exact_unit(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
-    _migrate(conn)
+    _migrate(conn, SPLIT_CODE)
     _seed_products(conn)
     conn.execute(
         "INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id,bsn_unit) "
@@ -97,7 +108,7 @@ def test_unit_normalization_hits_split_row(tmp_db):
     — bsn_units.normalize_unit is the same helper import_weekly uses."""
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
-    _migrate(conn)
+    _migrate(conn, SPLIT_CODE)
     _seed_products(conn)
     conn.execute(
         "INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id,bsn_unit) "
@@ -183,16 +194,25 @@ def test_unknown_code_still_unmapped(tmp_db):
 # ── migration mechanics: row/id preservation + composite UNIQUE ─────────────
 
 def test_migration_preserves_rows_and_ids_and_enforces_composite_unique(tmp_db):
+    """This is the ONE test that exercises the migration itself, so it must run
+    it for real. tmp_db copies the live DB, which has had mig 124 since
+    2026-07-02 — so reconstruct the genuine pre-124 state by running the
+    rollback first, exactly the drop-first pattern used by
+    tests/test_mig134_product_generic_standins.py::pre134_conn.
+    """
     conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    mapping_fixture.rollback_mig124(conn)
+    assert not mapping_fixture.has_bsn_unit(conn), \
+        "rollback must leave a genuine pre-124 table, or this proves nothing"
+
     pre = conn.execute(
         "SELECT id, bsn_code, bsn_name, product_id, is_ignored, ignore_reason "
         "FROM product_code_mapping ORDER BY id"
     ).fetchall()
-    conn.close()
+    assert pre, "pre-state must carry real rows for the preservation asserts"
 
-    conn = sqlite3.connect(tmp_db)
-    conn.row_factory = sqlite3.Row
-    _migrate(conn)
+    mapping_fixture.apply_mig124(conn)
 
     cols = {r[1] for r in conn.execute("PRAGMA table_info(product_code_mapping)")}
     assert "bsn_unit" in cols
@@ -287,8 +307,8 @@ def test_resolve_pending_mappings_split_code_routes_by_unit(tmp_db):
     normalization must still hit the 'ตัว' split row."""
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
-    _migrate(conn)
-    conn.execute("PRAGMA foreign_keys = OFF")  # mig 124's own trailer turns it ON
+    _migrate(conn, SPLIT_CODE)
+    conn.execute("PRAGMA foreign_keys = OFF")  # mig 124's trailer turns it ON
     _seed_two_products(conn)
     conn.execute(
         "INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id,bsn_unit) "
@@ -357,3 +377,53 @@ def test_resolve_pending_mappings_nonsplit_code_still_backfills(tmp_db):
     conn.close()
 
     assert pid == PC
+
+
+# ── the fixture repair itself (Codex review finding 4) ─────────────────────
+
+def test_mig124_replay_is_idempotent_on_a_current_schema(tmp_db):
+    """The repair: on a DB that already has mig 124 the replay must be a no-op
+    and must NOT collapse split rows. Before this, 26 tests died here with
+    'UNIQUE constraint failed: product_code_mapping_new.bsn_code,
+    product_code_mapping_new.bsn_unit' during setup.
+
+    Seeds its OWN split pair rather than asserting the live copy happens to
+    carry one: the production split rows are an environmental accident (a DB
+    restored from a pre-2026-07-02 snapshot, or one where those codes were
+    merged away, has none), and this is the only test that proves the repair —
+    it must not go red for a reason that has nothing to do with the code.
+    """
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _migrate(conn, 'ZIDEM1')
+    _seed_products(conn)
+    for unit, pid in (('แผง', PA), ('ตัว', PB)):
+        conn.execute(
+            "INSERT INTO product_code_mapping (bsn_code,bsn_name,product_id,bsn_unit) "
+            "VALUES ('ZIDEM1','idem',?,?)", (pid, unit))
+    conn.commit()
+
+    def _pairs():
+        return {r['bsn_unit']: r['product_id'] for r in conn.execute(
+            "SELECT bsn_unit, product_id FROM product_code_mapping "
+            "WHERE bsn_code='ZIDEM1'")}
+
+    before = _pairs()
+    assert before == {'แผง': PA, 'ตัว': PB}
+
+    assert mapping_fixture.apply_mig124_if_needed(conn) is False
+    assert _pairs() == before, 'the replay collapsed a split code'
+    conn.close()
+
+
+def test_mig124_replay_still_applies_when_the_column_is_missing(tmp_db):
+    """…and it must still DO its job on a genuinely pre-124 schema, otherwise
+    the idempotence guard would just be silently disabling the fixture."""
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    mapping_fixture.rollback_mig124(conn)
+    assert not mapping_fixture.has_bsn_unit(conn)
+
+    assert mapping_fixture.apply_mig124_if_needed(conn) is True
+    assert mapping_fixture.has_bsn_unit(conn)
+    conn.close()

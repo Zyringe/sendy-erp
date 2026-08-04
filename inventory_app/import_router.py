@@ -21,6 +21,51 @@ REPORT_TYPES = (
 )
 
 
+class HistoryExportBlocked(ValueError):
+    """A full-history Express export was dropped on the weekly importer.
+
+    Put's policy A (2026-08-03): full-history data goes through the separate
+    Express ZIP module only. Re-running a history dump through the weekly path
+    re-writes months of stock movements; there is no second history-import mode.
+    """
+
+
+# Thai, because the operator reads it. Names the report kind that was rejected
+# and where to go instead — the route turns this into a link to
+# bsn.express_dbf_import.
+_HISTORY_BLOCK_MSG = (
+    "ไฟล์นี้เป็นรายงาน \"ประวัติ\" (export ย้อนหลังทั้งช่วง) ไม่ใช่ไฟล์รายสัปดาห์ — "
+    "นำเข้าทางหน้านี้ไม่ได้ เพราะจะเขียนทับสต็อกและยอดขายย้อนหลังทั้งก้อน. "
+    "ถ้าต้องการข้อมูลย้อนหลัง ให้ใช้หน้า \"นำเข้า Express (zip)\" แทน"
+)
+
+
+# Second refusal reason: the header carries no usable date range, so we cannot
+# tell a weekly from a history dump at all. Under policy A the safe answer is to
+# refuse and let the operator re-export (see parse_weekly.date_filter_is_readable).
+_UNREADABLE_HEADER_MSG = (
+    "อ่านช่วงวันที่ของไฟล์นี้ไม่ได้ — ไม่มีบรรทัด \"วันที่จาก ... ถึง ...\" "
+    "หรือเว้นว่างไว้ ระบบจึงแยกไม่ออกว่าเป็นไฟล์รายสัปดาห์หรือ export ย้อนหลังทั้งหมด. "
+    "กรุณา export ใหม่จาก Express โดยระบุ \"วันที่จาก\" ให้ชัดเจน "
+    "(ถ้าตั้งใจจะนำเข้าข้อมูลย้อนหลัง ให้ใช้หน้า \"นำเข้า Express (zip)\" แทน)"
+)
+
+
+def _reject_history_export(path):
+    """Gate for the weekly sales/purchase path — called by BOTH preview_file and
+    commit_file so a stale tab or crafted POST straight to /confirm cannot slip
+    a history dump past the preview.
+
+    Two distinct refusals, each with its own operator message: the dates say
+    history, or the dates cannot be read at all.
+    """
+    from parse_weekly import date_filter_is_readable, is_history_export
+    if is_history_export(path):
+        raise HistoryExportBlocked(_HISTORY_BLOCK_MSG)
+    if not date_filter_is_readable(path):
+        raise HistoryExportBlocked(_UNREADABLE_HEADER_MSG)
+
+
 def detect_express_report(path):
     """Classify an Express export by its title line. Returns a REPORT_TYPES
     value or 'unknown'. Never raises — an unreadable file is 'unknown'."""
@@ -65,13 +110,20 @@ _EXPRESS_KIND = {
 }
 
 
-def commit_file(path, report_type, filename=None, db_path=None):
+def commit_file(path, report_type, filename=None, db_path=None,
+                apply_removals=False):
     """Dispatch one detected file to its CANONICAL importer and commit.
 
     Returns a uniform summary: {type, ok, summary}. Raises ValueError for an
     unknown report_type (a programmer/detection error); importer runtime errors
     propagate so the caller can isolate per-file. Importers are reused as-is —
     sales/payments_in go to their canonical homes, never the express twins.
+
+    apply_removals defaults to **False** (sales/purchase only): a รหัสสินค้า- or
+    พนักงานขาย-FILTERED Express export yields partial invoices whose filtered-out
+    lines look deleted, and reversing them mass-deletes real stock. The operator
+    opts in per-file on the preview page by confirming the file is a complete
+    weekly export.
     """
     if report_type == "payments_in":
         import models
@@ -84,8 +136,11 @@ def commit_file(path, report_type, filename=None, db_path=None):
     if report_type in ("sales", "purchase"):
         import models
         from parse_weekly import parse_sales, parse_purchases
+        _reject_history_export(path)
         entries = parse_sales(path) if report_type == "sales" else parse_purchases(path)
-        stats = models.import_weekly(entries, report_type, filename or os.path.basename(path))
+        stats = models.import_weekly(entries, report_type,
+                                     filename or os.path.basename(path),
+                                     apply_removals=apply_removals)
         return {"type": report_type, "ok": True, "summary": stats}
 
     if report_type in _EXPRESS_KIND:
@@ -107,6 +162,7 @@ def preview_file(path, report_type, db_path=None):
     if report_type in ("sales", "purchase"):
         import models
         from parse_weekly import parse_sales, parse_purchases
+        _reject_history_export(path)
         entries = parse_sales(path) if report_type == "sales" else parse_purchases(path)
         plan = models.preview_import(entries, report_type)
         return {"type": report_type, "ok": True, "count": len(entries), "detail": plan}

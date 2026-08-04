@@ -1,0 +1,193 @@
+"""Route-level wiring for the BSN weekly-import hardening (findings 1–3).
+
+The unit-level contracts live in test_bsn_weekly_import_hardening.py; this file
+pins what the OPERATOR actually sees and can do on /import-data:
+
+  * a full-history CSV is refused in preview AND on a direct confirm POST, with
+    a Thai explanation and a link to the Express ZIP importer;
+  * source-line removal is off unless the per-file "complete weekly export"
+    checkbox is ticked, and that choice rides the confirm FORM (not the signed
+    session, which is ~4KB and already had to be slimmed once);
+  * one bad file in a multi-file drop does not sink the good ones.
+"""
+import os
+import re
+
+os.environ.setdefault('SKIP_DB_INIT', '1')
+
+from io import BytesIO                                             # noqa: E402
+
+import pytest                                                      # noqa: E402
+
+from tests.conftest import SALES_SAMPLE_LINES                      # noqa: E402
+from tests.test_bsn_weekly_import_hardening import (               # noqa: E402
+    _HISTORY_SALES, _PARTIAL_SALES,
+)
+
+
+def _csv(lines):
+    return BytesIO(("\n".join(lines) + "\n").encode('cp874'))
+
+
+@pytest.fixture
+def admin_client(tmp_db):
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 1
+        sess['username'] = 'test-admin'
+        sess['role'] = 'admin'
+    return c
+
+
+@pytest.fixture
+def spy_import_weekly(monkeypatch):
+    import models
+    calls = []
+
+    def _spy(entries, file_type, filename, apply_removals=True):
+        calls.append({'file_type': file_type, 'filename': filename,
+                      'apply_removals': apply_removals, 'n': len(entries)})
+        return {'imported': len(entries), 'batch_id': None}
+
+    monkeypatch.setattr(models, 'import_weekly', _spy)
+    return calls
+
+
+def _stage(client, files):
+    resp = client.post('/import-data', data={'files': files},
+                       content_type='multipart/form-data')
+    assert resp.status_code == 200
+    with client.session_transaction() as sess:
+        token = sess['import_stage']['token']
+    return resp.data.decode('utf-8'), token
+
+
+# The page chrome ALREADY links /import-express-dbf twice (sidebar + mobile
+# drawer), so a bare `'/import-express-dbf' in body` assert can never fail.
+# Scope every assertion to the block panel itself. The panel deliberately
+# contains no nested <div>, so the non-greedy match is exact.
+_BLOCK_RE = re.compile(r'<div[^>]*data-block="history"[^>]*>(.*?)</div>', re.S)
+
+
+def _history_block(body):
+    m = _BLOCK_RE.search(body)
+    assert m, 'no history-block panel was rendered'
+    return m.group(1)
+
+
+# ── finding 1: history blocked, explained, and routed to the ZIP importer ───
+
+def test_preview_shows_thai_block_and_express_zip_link(admin_client):
+    body, _ = _stage(admin_client, [(_csv(_HISTORY_SALES), 'ประวัติการขาย.csv')])
+    panel = _history_block(body)
+    assert 'ประวัติ' in panel, 'panel must explain the rejection in Thai'
+    assert '/import-express-dbf' in panel, \
+        'the operator must be sent to the Express ZIP importer'
+
+
+def test_normal_weekly_preview_has_no_history_block(admin_client):
+    """Control for the two asserts above: the marker must be absent on a good
+    file, so the block assertions are capable of failing."""
+    body, _ = _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
+    assert _BLOCK_RE.search(body) is None
+
+
+def test_direct_confirm_of_history_file_is_refused(admin_client, spy_import_weekly):
+    """Bypassing the preview (stale tab / crafted POST) must not import."""
+    _, token = _stage(admin_client, [(_csv(_HISTORY_SALES), 'ประวัติการขาย.csv')])
+    resp = admin_client.post('/import-data/confirm',
+                             data={'token': token, 'type_0': 'sales'})
+    body = resp.data.decode('utf-8')
+    assert resp.status_code == 200
+    assert spy_import_weekly == [], 'history file must never reach import_weekly'
+    panel = _history_block(body)
+    assert 'ประวัติ' in panel
+    assert '/import-express-dbf' in panel
+
+
+# ── finding 2: removal opt-in rides the form, not the session ──────────────
+
+def test_preview_offers_the_complete_export_checkbox(admin_client):
+    body, _ = _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
+    assert 'name="removals_0"' in body, 'per-file removal opt-in must be exposed'
+
+
+def test_confirm_without_checkbox_does_not_remove(admin_client, spy_import_weekly):
+    _, token = _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
+    admin_client.post('/import-data/confirm',
+                      data={'token': token, 'type_0': 'sales'})
+    assert spy_import_weekly[0]['apply_removals'] is False
+
+
+def test_confirm_with_checkbox_applies_removals(admin_client, spy_import_weekly):
+    _, token = _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
+    admin_client.post('/import-data/confirm',
+                      data={'token': token, 'type_0': 'sales', 'removals_0': 'on'})
+    assert spy_import_weekly[0]['apply_removals'] is True
+
+
+def test_staged_session_stays_slim(admin_client):
+    """The choice must NOT be persisted into the signed cookie — it is made on
+    the preview page and submitted with the confirm form."""
+    _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
+    with admin_client.session_transaction() as sess:
+        row = sess['import_stage']['rows'][0]
+    assert set(row) == {'idx', 'filename', 'saved', 'detected'}
+
+
+# ── mixed multi-file isolation ─────────────────────────────────────────────
+
+def test_mixed_drop_isolates_bad_files(admin_client, spy_import_weekly):
+    body, token = _stage(admin_client, [
+        (_csv(SALES_SAMPLE_LINES), 'ขาย_good.csv'),
+        (_csv(_HISTORY_SALES), 'ประวัติการขาย.csv'),
+        (_csv(_PARTIAL_SALES), 'ขาย_partial.csv'),
+    ])
+    assert 'ขาย_good.csv' in body and 'ประวัติการขาย.csv' in body
+
+    resp = admin_client.post('/import-data/confirm', data={
+        'token': token, 'type_0': 'sales', 'type_1': 'sales', 'type_2': 'sales',
+    })
+    assert resp.status_code == 200
+    assert [c['filename'] for c in spy_import_weekly] == ['ขาย_good.csv'], \
+        'only the good file may commit; the other two must be isolated'
+
+
+# ── the safe default's own failure mode must not itself be silent ──────────
+#
+# Independent review, 2026-08-03: with removals off by default, source-deleted
+# lines now SURVIVE. That is the intended safe behaviour, but it was reported
+# only as `removed_skipped: N` inside the raw dict repr of {{ r.summary }} —
+# the least prominent text on the results page. A voided invoice line would
+# silently over-state stock, week after week, with no alert.
+
+@pytest.fixture
+def spy_with_skipped_removals(monkeypatch):
+    import models
+    monkeypatch.setattr(models, 'import_weekly',
+                        lambda entries, kind, fn, apply_removals=True: {
+                            'imported': len(entries), 'batch_id': None,
+                            'removed': 0, 'removed_skipped': 0 if apply_removals else 3})
+    return None
+
+
+def test_skipped_removals_get_their_own_warning(admin_client, spy_with_skipped_removals):
+    _, token = _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
+    res = admin_client.post('/import-data/confirm',
+                            data={'token': token, 'type_0': 'sales'}).data.decode('utf-8')
+    assert 'data-warn="skipped-removals"' in res, \
+        'lines left un-reversed must be flagged, not buried in the summary dict'
+    assert '3' in re.search(r'data-warn="skipped-removals"[^>]*>(.*?)</div>',
+                            res, re.S).group(1), 'the warning must state how many'
+
+
+def test_no_warning_when_the_operator_opted_in(admin_client, spy_with_skipped_removals):
+    """Control: ticking the box reverses them, so there is nothing to warn about
+    — without this the assertion above could pass on an always-on banner."""
+    _, token = _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
+    res = admin_client.post('/import-data/confirm',
+                            data={'token': token, 'type_0': 'sales',
+                                  'removals_0': 'on'}).data.decode('utf-8')
+    assert 'data-warn="skipped-removals"' not in res

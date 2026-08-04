@@ -3,6 +3,7 @@ Parser for BSN weekly sales (ขาย) and purchase (ซื้อ) fixed-width 
 Encoding: cp874  |  Lines are CSV-quoted  |  Non-breaking spaces (\xa0) used as padding
 """
 import datetime
+import os
 import re
 
 
@@ -61,6 +62,47 @@ def _is_skip(s: str) -> bool:
            bool(re.match(r'^[-=\s]+$', s))
 
 
+# Return / credit-note (ใบลดหนี้) rows are interleaved into the SAME ขาย report
+# but carry an extra Y/N clearing marker between the unit and the unit price, so
+# _TX_SALES can never match them. They are imported by import_credit_notes.py
+# (the ใบลดหนี้ path) — skipping them here is by design, not a parse failure.
+#
+# Measured 2026-08-03 over every real Express CSV in inventory_app/imports/:
+# 269 of 272 unmatched transaction-candidate lines were SR docs. The other 3
+# were IV lines with a NEGATIVE unit price, which _validate_parse now surfaces
+# instead of dropping silently.
+_SR_DOC_LINE = re.compile(r'\d{2}/\d{2}/\d{2}\s+SR\d')
+
+
+def _validate_parse(filepath: str, entries: list, rejected: list, candidates: int):
+    """Fail loudly on a zero/partial parse.
+
+    `rejected` = transaction-candidate lines that had product context but could
+    not be turned into an entry. `candidates` = every line that reached the
+    transaction branch, product context or not — so a file whose product
+    headings never matched (0 entries, 0 rejections) is still caught.
+
+    Called from `_parse`, which is the single code path behind BOTH
+    `preview_file` and `commit_file`, so the check cannot be bypassed by
+    posting straight to confirm.
+    """
+    name = os.path.basename(filepath)
+    if rejected:
+        shown = "\n".join(f"  บรรทัด {ln}: {text[:100]}" for ln, text in rejected[:5])
+        more = f"\n  … และอีก {len(rejected) - 5} บรรทัด" if len(rejected) > 5 else ""
+        raise ValueError(
+            f"อ่านไฟล์ {name} ไม่ครบ — มี {len(rejected)} บรรทัดรายการที่แปลงไม่ได้ "
+            f"(อ่านสำเร็จ {len(entries)} บรรทัด). ยกเลิกการนำเข้าไว้ก่อน "
+            f"เพราะนำเข้าแค่บางส่วนจะทำให้ยอดขาย/สต็อกขาด:\n" + shown + more
+        )
+    if candidates and not entries:
+        raise ValueError(
+            f"อ่านไฟล์ {name} ไม่ได้เลย — พบบรรทัดที่หน้าตาเป็นรายการ {candidates} บรรทัด "
+            f"แต่แปลงได้ 0 รายการ. อาจเลือกประเภทรายงานผิด หรือรูปแบบไฟล์เปลี่ยน — "
+            f"ตรวจไฟล์ก่อนนำเข้าใหม่"
+        )
+
+
 # Brand-name typos in BSN's source data.
 # Pattern → replacement. Case-insensitive, word-boundary safe.
 # Add new aliases here when discovered; matching happens at parse time so
@@ -108,7 +150,13 @@ def _parse(filepath: str, tx_pat, file_type: str) -> list:
             "ห้าม import เข้า Sendy ใช้ไฟล์ของ (BSN)บจก.บุญสวัสดิ์นำชัย เท่านั้น"
         )
 
-    for line in lines:
+    # Parse-integrity accounting (see _validate_parse): `candidates` counts every
+    # line that reaches the transaction branch; `rejected` holds the ones that
+    # had product context but produced no entry.
+    candidates = 0
+    rejected = []
+
+    for lineno, line in enumerate(lines, 1):
         if not line.strip():
             continue
         stripped = line.strip()
@@ -134,7 +182,17 @@ def _parse(filepath: str, tx_pat, file_type: str) -> list:
             continue
 
         # Transaction line: contains a date
-        if re.search(r'\d{2}/\d{2}/\d{2}', line) and current_prod_name:
+        if re.search(r'\d{2}/\d{2}/\d{2}', line):
+            # ใบลดหนี้ row — owned by import_credit_notes. Skipped BEFORE the
+            # candidate count, otherwise a quiet week whose only rows are returns
+            # would look like "candidates but zero entries" and be wrongly
+            # blocked as a failed parse.
+            if _SR_DOC_LINE.search(stripped):
+                continue
+            candidates += 1
+            if not current_prod_name:
+                continue                    # counted, but only _validate_parse's zero-parse
+                                            # rule acts on it (see its docstring)
             m = tx_pat.search(line)
             if m:
                 try:
@@ -159,9 +217,12 @@ def _parse(filepath: str, tx_pat, file_type: str) -> list:
                         'party_code':       current_party_code,
                     }
                     entries.append(entry)
-                except (ValueError, IndexError):
-                    pass
+                except (ValueError, IndexError) as exc:
+                    rejected.append((lineno, f"{stripped[:90]}  [{exc}]"))
+            else:
+                rejected.append((lineno, stripped))
 
+    _validate_parse(filepath, entries, rejected, candidates)
     return entries
 
 
@@ -197,11 +258,19 @@ _DATE_FROM_RE = re.compile(
 _REPORT_DATE_RE = re.compile(r'วันที่\s*:\s*(\d{2})/(\d{2})/(\d{2})')
 
 # A normal weekly import reaches back only a handful of days; a full-history
-# export reaches back to the start of the data (months–years). Treat anything
-# that reaches back further than this as a history dump. The asymmetry is
-# deliberate: wrongly rejecting a wide weekly is a harmless flash + re-check,
-# while wrongly accepting a history dump silently re-corrupts stock.
-_HISTORY_REACH_BACK_DAYS = 31
+# export reaches back to the start of the data (months–years).
+#
+# 42 is MEASURED, not guessed (2026-08-03, every real Express export in
+# inventory_app/imports/): the widest genuine weekly reaches back 36 days
+# (ขาย_4.5.69.csv / ซื้อ_4.5.69.csv — 243/243 and 16/16 of their doc_nos are
+# live in the ERP, so they really were imported), and the narrowest single-year
+# history export reaches back 50 (ประวัติการขาย_1.3.69-19.4.69.csv). Anything in
+# 37..49 separates them; 42 leaves ~6 days of headroom on each side.
+#
+# It was 31 while this guard had no production caller, which refused those two
+# real weeklies the moment it became load-bearing. Put chose to widen it rather
+# than make the team re-export (2026-08-03).
+_HISTORY_REACH_BACK_DAYS = 42
 
 
 def _thai_be_date(day, thai_month, be_year):
@@ -215,46 +284,21 @@ def _thai_be_date(day, thai_month, be_year):
         return None
 
 
-def is_history_export(filepath: str) -> bool:
+def _read_header_dates(filepath: str):
+    """Pull the export's date evidence out of the header (first ~15 lines).
+
+    Returns (filter_start, report_date, filter_year_span); any element is None
+    when that part could not be read. Shared by is_history_export() and
+    date_filter_is_readable() so the two can never disagree about a file.
     """
-    Return True when the file is a full-history Express export
-    (ประวัติการขาย_แยกตามลูกค้า / ประวัติการซื้อ_…) rather than a
-    normal weekly BSN file.
-
-    Weekly and history files are the SAME Express report ("รายงานประวัติ…
-    แยกตาม…"), so the title alone cannot tell them apart. The real difference
-    is how far back the export reaches:
-
-    Signal 1 (gate) — title line contains both "ประวัติ" and "แยกตาม".
-
-    Signal 2 — the "วันที่จาก" filter START is far before the export's report
-               date ("วันที่ :"). filter-start is the earliest data the export
-               includes, so a large (report_date − filter_start) means the file
-               carries old data = a history dump. A weekly increment starts a
-               few days before it was run. We measure start-vs-report, NOT the
-               filter span, because Express defaults the "ถึง" end to 31 ธ.ค.
-               even on weekly exports (so the end is meaningless). A multi-year
-               filter span is history outright (it necessarily pulls old data).
-
-    Requires the title gate AND Signal 2 so a valid weekly file is never
-    rejected. If the header dates can't be parsed, errs toward allowing the
-    import (returns False) — the danger is silent acceptance, and an
-    unparseable header is not the known history shape.
-
-    Only the first ~15 lines are read (the header section).
-    """
-    title_match = False
     filter_start = report_date = None
     filter_year_span = None  # end_BEyear − start_BEyear (set even if a month is unparseable)
-
     try:
         with open(filepath, encoding='cp874') as f:
             for i, raw in enumerate(f):
                 if i >= 15:
                     break
                 c = _clean(raw)
-                if 'ประวัติ' in c and 'แยกตาม' in c:
-                    title_match = True
                 if report_date is None:
                     rm = _REPORT_DATE_RE.search(c)
                     if rm:
@@ -273,19 +317,72 @@ def is_history_export(filepath: str) -> bool:
                         # is not in the map (so a multi-year dump is still caught).
                         filter_year_span = int(ey) - int(sy)
     except (OSError, UnicodeDecodeError):
-        return False
+        return None, None, None
+    return filter_start, report_date, filter_year_span
 
-    if not title_match:
-        return False
 
-    # Multi-year filter span → pulls data across >1 year → history.
+def date_filter_is_readable(filepath: str) -> bool:
+    """True when the header carries a usable "วันที่จาก" range AND report date.
+
+    The weekly importer REFUSES a sales/purchase file for which this is False
+    (Put's policy A, tightened 2026-08-03). Rationale: the guard's only job is
+    to make silent acceptance of a history dump impossible, and a header we
+    cannot read is exactly the shape a "give me everything" export produces —
+    a blank filter, or no filter line at all. Erring toward acceptance there
+    pointed the fallback at the one outcome the guard exists to prevent.
+    Refusing costs the operator a re-export; accepting rewrites months of stock.
+    """
+    filter_start, report_date, _span = _read_header_dates(filepath)
+    return bool(filter_start and report_date)
+
+
+def is_history_export(filepath: str) -> bool:
+    """
+    Return True when the file is a full-history Express export
+    (ประวัติการขาย_แยกตามลูกค้า / ประวัติการซื้อ_…) rather than a
+    normal weekly BSN file.
+
+    Weekly and history files are the SAME Express report, so the title cannot
+    tell them apart. The DATES do: the "วันที่จาก" filter START is far before the
+    export's report date ("วันที่ :") for a history dump, and a few days before
+    it for a weekly increment. We measure start-vs-report, NOT the filter span,
+    because Express defaults the "ถึง" end to 31 ธ.ค. even on weekly exports (so
+    the end is meaningless on its own).
+
+    ⚠ There is deliberately NO title gate. It used to require a line containing
+    both "ประวัติ" AND "แยกตาม", which is NARROWER than what
+    import_router.detect_express_report() accepts for the stock-writing path
+    ("ประวัติการขาย" / "รายงานการขาย" / "ประวัติการซื้อ" / "รายงานการซื้อ"). A
+    full-history export titled "รายงานการขาย แยกตามลูกค้า" or "รายงานประวัติการขาย
+    เรียงตามวันที่" therefore routed to sales and was never gated, no matter how
+    far back it reached. The caller already knows the report type; the dates are
+    the evidence. (Independent review, 2026-08-03.)
+
+    A header whose dates cannot be read is NOT reported as history here — it is
+    refused separately via date_filter_is_readable(), so the two failure modes
+    keep distinct operator messages.
+
+    Only the first ~15 lines are read (the header section).
+    """
+    filter_start, report_date, filter_year_span = _read_header_dates(filepath)
+
+    # Reach-back is the PRIMARY signal: filter starts well before the export was
+    # run → history. When it is computable it decides on its own — a multi-year
+    # span always implies a large reach-back, so the span rule adds nothing here.
+    #
+    # ⚠ The span rule must NOT short-circuit this. Express defaults the "ถึง" end
+    # to 31 ธ.ค. of the CURRENT year, so a weekly exported in early January runs
+    # from the old BE year into the new one (span = 1) with a reach-back of a few
+    # days. Checking the span first hard-blocked every January weekly import —
+    # deterministic, once a year. See test_january_weekly_is_not_history.
+    if filter_start and report_date:
+        return (report_date - filter_start).days > _HISTORY_REACH_BACK_DAYS
+
+    # FALLBACK only — reach-back could not be computed (e.g. a Thai month
+    # abbreviation outside _THAI_MONTH_ABBR). The year span survives that, and a
+    # multi-year span necessarily pulls old data.
     if filter_year_span is not None and filter_year_span > 0:
         return True
-
-    # Reach-back: filter starts well before the export was run → history.
-    if filter_start and report_date:
-        if (report_date - filter_start).days > _HISTORY_REACH_BACK_DAYS:
-            return True
 
     return False
 

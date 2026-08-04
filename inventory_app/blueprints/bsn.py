@@ -417,6 +417,12 @@ def unified_import():
                     prev = import_router.preview_file(path, rtype)
                     row['count'] = prev.get('count')
                     row['detail'] = prev.get('detail') or {}
+                except import_router.HistoryExportBlocked as exc:
+                    # Policy A: full history goes through the Express ZIP module
+                    # only. Flagged (not just errored) so the template can point
+                    # the operator at that page.
+                    row['error'] = str(exc)
+                    row['blocked'] = 'history'
                 except Exception as exc:   # preview failure isolates to this file
                     row['error'] = str(exc)
             rows.append(row)
@@ -455,8 +461,14 @@ def unified_import_confirm():
             results.append({'filename': row['filename'], 'ok': False,
                             'msg': 'ข้าม — ไม่ได้เลือกประเภท'})
             continue
+        # Source-line removal is OFF unless the operator ticked this file's
+        # "complete weekly export" box on the preview page. The choice rides the
+        # confirm FORM, not the signed session (which is ~4KB and already had to
+        # be slimmed once). Ignored by every non-sales/purchase importer.
+        apply_removals = bool(request.form.get(f'removals_{i}'))
         try:
-            out = import_router.commit_file(path, rtype, filename=row['filename'])
+            out = import_router.commit_file(path, rtype, filename=row['filename'],
+                                            apply_removals=apply_removals)
             result_row = {'filename': row['filename'], 'ok': True,
                           'label': _REPORT_LABELS.get(rtype, rtype),
                           'summary': out.get('summary')}
@@ -469,6 +481,9 @@ def unified_import_confirm():
                     except Exception as _scan_exc:
                         flash(f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}', 'warning')
             results.append(result_row)
+        except import_router.HistoryExportBlocked as exc:
+            results.append({'filename': row['filename'], 'ok': False,
+                            'msg': str(exc), 'blocked': 'history'})
         except Exception as exc:   # per-file isolation — one bad file doesn't sink the batch
             results.append({'filename': row['filename'], 'ok': False, 'msg': str(exc)})
     session.pop('import_stage', None)
