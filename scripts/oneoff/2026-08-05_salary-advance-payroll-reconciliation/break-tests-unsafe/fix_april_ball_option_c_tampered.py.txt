@@ -1,0 +1,144 @@
+"""Overwrite บอล's first month (April 2026) so the ERP matches what was paid.
+OPTION C (post-scrutinize): patch the ONE payroll_items row and nothing else.
+
+Why not touch employees.start_date (04-17 -> 04-18): traced its consumers —
+_build_item proration only fires on a regenerate of run 4, which is proven
+destructive (deletes ริน's row, un-stamps her advance, adds 3 people, wrong
+SSO); probation_end_date is past and Put confirmed no post-probation raise.
+The ONE live effect left was _prorate_annual, which costs บอล 0.5 day of
+annual leave (measured 4.5 -> 4.0).  So the start_date stays and the
+explanation goes in the row's own note instead.
+
+NO cash touched.  NO employees row touched.  run 4 stays finalized.
+
+Usage:  python fix_april_ball_C.py <db_path> <rehearse|live>
+"""
+import sqlite3
+import sys
+
+sys.path.insert(0, "/app/inventory_app")
+
+DB, MODE = sys.argv[1], sys.argv[2]
+assert MODE in ("rehearse", "live"), MODE
+
+EMP, RUN = 5, 4
+RATE, DIVISOR, DAYS = 13000.0, 30, 13
+NEW_BASE = round(RATE / DIVISOR * DAYS, 2)          # 5633.33
+NEW_NOTE = ("จ่ายจริง 13 วัน (18-30 เม.ย.) = 5,633.33 — start_date ในระบบ 4/17 "
+            "ต่างกัน 1 วัน; ดู analysis report 2026-08-05")
+
+c = sqlite3.connect(DB, timeout=15)
+c.row_factory = sqlite3.Row
+c.execute("PRAGMA busy_timeout=15000")
+
+ITEM_FIELDS = ("run_id", "employee_id", "salary_rate", "base_amount",
+               "unpaid_leave_deduction", "diligence_allowance", "diligence_forfeited",
+               "bonus", "other_additions", "other_deductions", "sso_employee",
+               "sso_employer", "commission_amount", "salary_advance_deduction",
+               "gross", "net_pay", "note")
+
+
+def all_items():
+    return {r["id"]: {f: r[f] for f in ITEM_FIELDS}
+            for r in c.execute("SELECT * FROM payroll_items")}
+
+
+def fingerprint(sql):
+    return hash(tuple(tuple(r) for r in c.execute(sql)))
+
+
+def leave_2026():
+    import hr as hr_mod
+    b = hr_mod.leave_balance(EMP, 2026, db_path=DB)
+    return {code: (v["entitlement"], v["used"], v["remaining"]) for code, v in b.items()}
+
+
+FP_CASH = "SELECT id,account_id,txn_date,amount,category,salary_advance_id FROM cashbook_transactions ORDER BY id"
+FP_ADV = "SELECT id,employee_id,advance_date,amount,deducted_in_run_id FROM salary_advances ORDER BY id"
+FP_EMP = ("SELECT id,start_date,probation_end_date,end_date,is_active,on_payroll,"
+          "sso_enrolled,diligence_allowance FROM employees ORDER BY id")
+
+# ── guards ──────────────────────────────────────────────────────────────────
+emp = c.execute("SELECT * FROM employees WHERE id=?", (EMP,)).fetchone()
+if emp["start_date"] != "2026-04-17":
+    sys.exit(f"ABORT: start_date is {emp['start_date']}, expected 2026-04-17 (option C must NOT change it)")
+
+item = c.execute("SELECT * FROM payroll_items WHERE run_id=? AND employee_id=?",
+                 (RUN, EMP)).fetchone()
+if item is None:
+    sys.exit("ABORT: run 4 item for บอล not found")
+if (round(item["base_amount"], 2), round(item["gross"], 2), round(item["net_pay"], 2),
+        round(item["sso_employee"], 2), round(item["salary_advance_deduction"], 2)) != (
+        6066.67, 6066.67, 2166.67, 0.0, 3900.0):
+    sys.exit(f"ABORT: run 4 item not in the expected pre-state (already applied?): {dict(item)}")
+
+NEW_NET = round(NEW_BASE - item["unpaid_leave_deduction"] - item["sso_employee"]
+                - item["other_deductions"] - item["salary_advance_deduction"], 2)
+
+before_items = all_items()
+before = dict(cash=fingerprint(FP_CASH), adv=fingerprint(FP_ADV), emp=fingerprint(FP_EMP),
+              status=c.execute("SELECT status FROM payroll_runs WHERE id=?", (RUN,)).fetchone()["status"])
+before_leave = leave_2026()
+print("BEFORE  run4=%s | บอล base=%.2f gross=%.2f net=%.2f" %
+      (before["status"], item["base_amount"], item["gross"], item["net_pay"]))
+print("        leave ANNUAL =", before_leave["ANNUAL"])
+print("        target base=%.2f net=%.2f" % (NEW_BASE, NEW_NET))
+
+# ── apply: ONE row, four columns ────────────────────────────────────────────
+c.execute("BEGIN IMMEDIATE")
+c.execute("UPDATE payroll_items SET base_amount=?, gross=?, net_pay=?, note=?"
+          " WHERE run_id=? AND employee_id=?",
+          (NEW_BASE, NEW_BASE, NEW_NET, NEW_NOTE, RUN, EMP))
+c.execute("UPDATE employees SET start_date='2026-04-18' WHERE id=5")
+c.commit()
+c.close()
+
+# ── verify on a fresh connection ────────────────────────────────────────────
+c = sqlite3.connect(DB, timeout=15)
+c.row_factory = sqlite3.Row
+after_items = all_items()
+after = dict(cash=fingerprint(FP_CASH), adv=fingerprint(FP_ADV), emp=fingerprint(FP_EMP),
+             status=c.execute("SELECT status FROM payroll_runs WHERE id=?", (RUN,)).fetchone()["status"])
+after_leave = leave_2026()
+
+changed = [k for k in set(before_items) | set(after_items)
+           if before_items.get(k) != after_items.get(k)]
+tid = item["id"]
+ni = c.execute("SELECT * FROM payroll_items WHERE id=?", (tid,)).fetchone()
+e2 = c.execute("SELECT * FROM employees WHERE id=?", (EMP,)).fetchone()
+ct324 = c.execute("SELECT amount FROM cashbook_transactions WHERE id=324").fetchone()["amount"]
+
+checks = [
+    ("payroll_items: เปลี่ยนแถวเดียว = แถวบอล run4", changed == [tid]),
+    ("ไม่มีแถว payroll_items ถูกเพิ่ม/ลบ", set(before_items) == set(after_items)),
+    ("ตาราง employees ไม่ขยับเลย (option C)", after["emp"] == before["emp"]),
+    ("start_date ยังเป็น 2026-04-17", e2["start_date"] == "2026-04-17"),
+    ("probation_end_date ยัง 2026-07-16", e2["probation_end_date"] == "2026-07-16"),
+    ("โควตาลาพักผ่อน 2026 ไม่เปลี่ยน (ยัง 4.5)",
+     after_leave == before_leave and after_leave["ANNUAL"][0] == 4.5),
+    ("cashbook ไม่ขยับเลย", after["cash"] == before["cash"]),
+    ("salary_advances ไม่ขยับเลย", after["adv"] == before["adv"]),
+    ("run 4 ยัง finalized", after["status"] == before["status"] == "finalized"),
+    ("base_amount = 5,633.33", round(ni["base_amount"], 2) == 5633.33),
+    ("gross = 5,633.33", round(ni["gross"], 2) == 5633.33),
+    ("net_pay = 1,733.33", round(ni["net_pay"], 2) == 1733.33),
+    ("net = gross - หักทั้งหมด (คณิตศาสตร์ปิด)",
+     round(ni["gross"] - ni["sso_employee"] - ni["salary_advance_deduction"]
+           - ni["other_deductions"] - ni["unpaid_leave_deduction"], 2) == round(ni["net_pay"], 2)),
+    ("net ตรงเงินสดจริง ct 324 (<1 สตางค์)", abs(ni["net_pay"] - ct324) < 0.01),
+    ("sso ยัง 0", ni["sso_employee"] == 0.0),
+    ("advance deduction ยัง 3,900", ni["salary_advance_deduction"] == 3900.0),
+    ("note อธิบายส่วนต่างไว้", "13 วัน" in (ni["note"] or "") and "4/17" in (ni["note"] or "")),
+]
+ok = True
+for name, passed in checks:
+    print(("  PASS  " if passed else "  FAIL  ") + name)
+    ok &= passed
+if changed and changed != [tid]:
+    print("  !! แถวที่เปลี่ยนโดยไม่ตั้งใจ:", [k for k in changed if k != tid])
+print("  leave ANNUAL AFTER =", after_leave["ANNUAL"])
+print("  บอล AFTER -> base %.2f gross %.2f sso %.2f adv %.2f net %.2f | ct324 %.6f"
+      % (ni["base_amount"], ni["gross"], ni["sso_employee"],
+         ni["salary_advance_deduction"], ni["net_pay"], ct324))
+print(("VERIFY OK  " if ok else "VERIFY FAILED  ") + MODE)
+sys.exit(0 if ok else 1)
