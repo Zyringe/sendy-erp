@@ -348,3 +348,20 @@ def test_detected_sales_removals_still_work(admin_client, spy_import_weekly):
     admin_client.post('/import-data/confirm',
                       data={'token': token, 'type_0': 'sales', 'removals_0': 'on'})
     assert spy_import_weekly[0]['apply_removals'] is True
+
+
+@pytest.mark.parametrize('classified_as', [
+    'payments_in', 'payments_out', 'credit_notes_ar', 'credit_notes_ap',
+    'ar_snapshot', 'ap_snapshot',
+])
+def test_unknown_classified_as_a_non_weekly_type_never_applies_removals(
+        admin_client, spy_all_importers, classified_as):
+    """Completing the review's required matrix. `removals_ok` is False for an
+    unpreviewed row, so no classification can turn removals on — but the gate
+    being structurally impossible is not the same as it being pinned."""
+    _, token = _stage(admin_client, [(_csv(_UNKNOWN_TITLE_WEEKLY), 'ไม่รู้จัก.csv')])
+    admin_client.post('/import-data/confirm',
+                      data={'token': token, 'type_0': classified_as,
+                            'removals_0': 'on'})
+    assert 'import_weekly' not in spy_all_importers, \
+        'a non-weekly classification must not reach the weekly importer'
