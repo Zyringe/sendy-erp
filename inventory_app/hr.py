@@ -786,17 +786,24 @@ def _regenerate_would_add(c, run_id: int, active_ids):
     """employee_ids in the CURRENT active set that hold no payroll_items row in
     this run — i.e. who a regenerate would invent a payslip for.
 
-    The mirror of `_regenerate_would_drop`, and it is only ever consulted at the
-    reopen door. On a DRAFT run absorbing a new hire is the whole point of
-    regenerating, so this must not be checked there; `generate_run` returns a
-    finalized run untouched, which makes `reopen_run` the sole path from a
-    closed month to a rebuild.
+    The mirror of `_regenerate_would_drop`, consulted at BOTH ends of the
+    reopen→regenerate sequence: unconditionally in `reopen_run`, and in
+    `generate_run` only when `_was_reopened` says this draft holds reopened
+    history. Unlike the drop check it cannot be unconditional in `generate_run`
+    — on a draft that was never finalized, absorbing a new hire is the whole
+    point of regenerating.
 
     2026-08-05 (why this exists): the drop guard shipped that morning is
     one-directional. Measured on prod the same evening, run 3 (พ.ค. 2026) passed
     it cleanly while a regenerate would have ADDED เซี้ยม and ปู้ to a finalized
     month neither was ever part of — inventing rows is the same class of damage
     as deleting them, and the reopen button was live.
+
+    The first version guarded only the reopen door, on the argument that
+    `generate_run` returns a finalized run untouched so `reopen_run` is the sole
+    path from a closed month to a rebuild. True, but the two are separate
+    transactions: a hire landing between them met no check at all (Codex review
+    of PR #367). Hence the second call site.
     """
     existing = {r["employee_id"] for r in c.execute(
         "SELECT employee_id FROM payroll_items WHERE run_id = ?", (run_id,)
@@ -1134,9 +1141,12 @@ def reopen_run(run_id: int, reason: str, actor: str,
             )
 
         # Stop at the door. Reopening is only ever a prelude to regenerating,
-        # and generate_run refuses when that would drop a departed employee's
-        # row — so checking here too avoids stranding the run in 'draft' with
-        # finalized figures, a state nothing else repairs.
+        # and generate_run refuses a rebuild that would drop a departed
+        # employee's row (or, for a run that was reopened, add one) — so
+        # checking here too avoids stranding the run in 'draft' with finalized
+        # figures, a state nothing else repairs. Both ends are needed: this one
+        # keeps the run out of a dead state, and generate_run's covers a roster
+        # that drifts in the window between the two transactions.
         period_start, period_end = _month_bounds(run["year_month"])
         active_ids = {e["id"] for e in _active_employees_for_month(
             c, run["company_id"], period_start, period_end)}
