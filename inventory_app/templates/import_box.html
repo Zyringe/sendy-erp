@@ -18,12 +18,37 @@
               {% if r.ok %}
                 <span class="text-success fw-600"><i class="bi bi-check-lg"></i> {{ r.label }}</span>
                 <span class="text-subtle small font-mono">{{ r.summary }}</span>
+                {# Removals default to OFF, so lines deleted at source SURVIVE. That
+                   is the safe behaviour, but silence about it is how stock drifts
+                   week after week — surface it instead of burying it in the summary
+                   dict. No nested <div>: tests match this block whole. #}
+                {% if r.summary and r.summary.removed_skipped %}
+                <div class="alert alert-warning small mb-0 mt-2" data-warn="skipped-removals">
+                  <i class="bi bi-exclamation-triangle me-1"></i>
+                  <strong>{{ r.summary.removed_skipped }} บรรทัด</strong>
+                  หายไปจากไฟล์ต้นทาง แต่ <strong>ยังไม่ได้ลบ</strong> ออกจากระบบ
+                  (ยอด/สต็อกของบรรทัดพวกนี้ยังนับอยู่).
+                  ถ้าไฟล์นี้เป็น export ครบทั้งสัปดาห์จริง ให้นำเข้าซ้ำแล้วติ๊ก
+                  "ครบทั้งสัปดาห์" เพื่อลบออก — ถ้าเป็น export แบบกรอง (เลือกรหัสสินค้า/พนักงานขาย)
+                  ให้ปล่อยไว้แบบนี้ ถูกต้องแล้ว
+                </div>
+                {% endif %}
                 {% if r.review_flagged %}
                 <a href="{{ url_for('review.index') }}"
                    class="btn btn-sm btn-outline-warning ms-2">
                   <i class="bi bi-clipboard-check me-1"></i>ไปตรวจบิล ({{ r.review_flagged }} ใบ)
                 </a>
                 {% endif %}
+              {% elif r.blocked == 'history' %}
+                {# Keep this panel free of nested <div> — tests match it as one
+                   block via data-block="history". #}
+                <div class="alert alert-danger small mb-0" data-block="history">
+                  <i class="bi bi-slash-circle me-1"></i>{{ r.msg }}
+                  <a href="{{ url_for('bsn.express_dbf_import') }}"
+                     class="btn btn-sm btn-outline-danger mt-2">
+                    <i class="bi bi-file-zip me-1"></i>ไปหน้านำเข้า Express (zip)
+                  </a>
+                </div>
               {% else %}
                 <span class="text-danger"><i class="bi bi-x-lg"></i> {{ r.msg }}</span>
               {% endif %}
@@ -47,7 +72,7 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="token" value="{{ token }}">
         <table class="table align-middle">
-          <thead><tr><th>ไฟล์</th><th>ประเภท (แก้ได้)</th><th class="text-end">รายการ</th><th>หมายเหตุ</th></tr></thead>
+          <thead><tr><th>ไฟล์</th><th>ประเภท (แก้ได้)</th><th class="text-end">รายการ</th><th>ไฟล์ครบทั้งสัปดาห์?</th><th>หมายเหตุ</th></tr></thead>
           <tbody>
           {% for row in rows %}
             <tr>
@@ -59,6 +84,14 @@
                     <option value="{{ key }}" {% if key == row.detected %}selected{% endif %}>{{ label }}</option>
                     {% endif %}
                   {% endfor %}
+                  {# A blocked file keeps its DETECTED type selected. Pre-selecting
+                     "ข้ามไฟล์นี้" made a plain confirm take the unknown-type
+                     early-continue, so the operator was told "ข้าม — ไม่ได้เลือก
+                     ประเภท" for a file whose type was in fact detected: it reads
+                     as "you forgot to choose" and invites a pointless re-upload.
+                     Keeping the type means confirm reaches commit_file, whose
+                     guard refuses it and renders the real reason. The block is
+                     enforced server-side either way. #}
                   <option value="unknown" {% if row.detected == 'unknown' %}selected{% endif %}>— ข้ามไฟล์นี้ —</option>
                 </select>
               </td>
@@ -78,8 +111,41 @@
                   {% endif %}
                 {% else %}—{% endif %}
               </td>
+              {# Source-line removal opt-in. Only sales/purchase reverse lines
+                 that vanished from the source, and only when the operator says
+                 this export is COMPLETE — a filtered export's missing lines are
+                 not deletions. Unticked = detect and report, never reverse. #}
+              <td class="small">
+                {# Only a row whose sales/purchase preview SUCCEEDED may ask for
+                   deletions: `removals_ok` means the operator can see the parsed
+                   count and the deletion count right here. An unknown row is never
+                   previewed, so offering it there would let them reverse lines they
+                   never saw — the confirm handler enforces the same rule, so this is
+                   not display-only. #}
+                {% if row.removals_ok and not row.blocked %}
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox"
+                           name="removals_{{ row.idx }}" id="removals_{{ row.idx }}">
+                    <label class="form-check-label text-subtle" for="removals_{{ row.idx }}">
+                      ครบทั้งสัปดาห์ — ลบบรรทัดที่หายไปจากต้นทาง
+                      {% if row.detail and row.detail.removed %}
+                        <span class="text-danger fw-600">({{ row.detail.removed }} บรรทัดจะถูกลบ)</span>
+                      {% endif %}
+                    </label>
+                  </div>
+                {% else %}<span class="text-subtle">—</span>{% endif %}
+              </td>
               <td class="small text-subtle">
-                {% if row.detected == 'unknown' %}<span class="text-warning">⚠ ตรวจไม่พบชนิด — เลือกเอง หรือข้าม</span>
+                {% if row.blocked == 'history' %}
+                {# No nested <div> inside this panel — see the results block. #}
+                <div class="alert alert-danger small mb-0 py-1" data-block="history">
+                  {{ row.error }}
+                  <a href="{{ url_for('bsn.express_dbf_import') }}"
+                     class="btn btn-sm btn-outline-danger mt-1">
+                    <i class="bi bi-file-zip me-1"></i>ไปหน้านำเข้า Express (zip)
+                  </a>
+                </div>
+                {% elif row.detected == 'unknown' %}<span class="text-warning">⚠ ตรวจไม่พบชนิด — เลือกเอง หรือข้าม</span>
                 {% elif row.error %}{{ row.error }}{% endif %}
               </td>
             </tr>

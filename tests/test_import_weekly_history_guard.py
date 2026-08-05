@@ -151,3 +151,148 @@ def test_weekly_purch_not_history(sample_purchase_file):
 def test_weekly_purch_same_year_not_history(weekly_purch_file):
     """Weekly purchase with same-year วันที่จาก must return False."""
     assert parse_weekly.is_history_export(weekly_purch_file) is False
+
+
+# ── year-boundary regression (independent review, 2026-08-03) ───────────────
+#
+# Express defaults the "ถึง" end of the filter to 31 ธ.ค. of the CURRENT year, so
+# a weekly exported in early January starts in the old BE year and ends in the
+# new one. The year-span rule fired before the reach-back rule, so every
+# January weekly was hard-blocked as "history" — deterministic, once a year.
+
+_JAN_WEEKLY = [
+    '"(BSN)บจก.บุญสวัสดิ์นำชัย                                  หน้า   :        1"',
+    '"  รายงานประวัติการขาย\xa0แยกตามลูกค้า"',
+    '"รหัสลูกค้า                       ถึง  Zหน้าร้าน            วันที่ : 03/01/70"',
+    '"วันที่จาก   28\xa0ธ.ค.\xa02569        ถึง  31\xa0ธ.ค.\xa02570"',
+    '"------------------------------------------------------------------"',
+]
+
+# A start date whose Thai month abbreviation is NOT in _THAI_MONTH_ABBR, so the
+# reach-back cannot be computed and only the year span is available.
+_UNPARSEABLE_MONTH_MULTIYEAR = [
+    '"(BSN)บจก.บุญสวัสดิ์นำชัย                                  หน้า   :        1"',
+    '"  รายงานประวัติการขาย\xa0แยกตามลูกค้า"',
+    '"รหัสลูกค้า                       ถึง  Zหน้าร้าน            วันที่ : 29/05/69"',
+    '"วันที่จาก   1\xa0XX.\xa02567        ถึง  31\xa0ธ.ค.\xa02569"',
+    '"------------------------------------------------------------------"',
+]
+
+
+@pytest.fixture
+def jan_weekly_file(tmp_path):
+    p = tmp_path / "ขาย_3.1.70.csv"
+    p.write_text("\n".join(_JAN_WEEKLY) + "\n", encoding="cp874")
+    return str(p)
+
+
+@pytest.fixture
+def unparseable_month_multiyear_file(tmp_path):
+    p = tmp_path / "ประวัติการขาย_badmonth.csv"
+    p.write_text("\n".join(_UNPARSEABLE_MONTH_MULTIYEAR) + "\n", encoding="cp874")
+    return str(p)
+
+
+def test_january_weekly_is_not_history(jan_weekly_file):
+    """Reach-back 6 days (28 ธ.ค. 2569 → 3 ม.ค. 2570) is a weekly by any
+    threshold; crossing the BE year boundary must not by itself mean history."""
+    assert parse_weekly.is_history_export(jan_weekly_file) is False
+
+
+def test_multiyear_still_history_when_reach_back_is_uncomputable(
+        unparseable_month_multiyear_file):
+    """The year-span signal must survive as the FALLBACK it was written to be:
+    when the Thai month can't be parsed there is no reach-back to test, and a
+    multi-year span is history outright."""
+    assert parse_weekly.is_history_export(unparseable_month_multiyear_file) is True
+
+
+# ── Put's policy-A tightening (2026-08-03, after the independent review) ────
+#
+# Measured on every real Express export in inventory_app/imports/: the widest
+# genuine weekly reaches back 36 days, the narrowest single-year history export
+# reaches back 50. The threshold sits between them.
+
+def _hdr(report_ddmmyy, start_day, start_month, start_be, end_be='2569',
+         title='รายงานประวัติการขาย\xa0แยกตามลูกค้า'):
+    return [
+        '"(BSN)บจก.บุญสวัสดิ์นำชัย                          หน้า   :        1"',
+        f'"  {title}"',
+        f'"รหัสลูกค้า            ถึง  Zหน้าร้าน         วันที่ : {report_ddmmyy}"',
+        f'"วันที่จาก   {start_day}\xa0{start_month}\xa0{start_be}   ถึง  31\xa0ธ.ค.\xa0{end_be}"',
+        '"--------------------------------------------------------------"',
+    ]
+
+
+def _write_hdr(tmp_path, name, lines):
+    p = tmp_path / name
+    p.write_text("\n".join(lines) + "\n", encoding="cp874")
+    return str(p)
+
+
+def test_reach_back_just_under_the_threshold_is_weekly(tmp_path):
+    """41 days back from a 12 พ.ค. export = 1 เม.ย. — still a (wide) weekly."""
+    p = _write_hdr(tmp_path, 'ขาย_wide.csv', _hdr('12/05/69', 1, 'เม.ย.', '2569'))
+    assert parse_weekly.is_history_export(p) is False
+
+
+def test_reach_back_just_over_the_threshold_is_history(tmp_path):
+    """43 days back from a 12 พ.ค. export = 30 มี.ค. — over the line."""
+    p = _write_hdr(tmp_path, 'ประวัติ_narrow.csv', _hdr('12/05/69', 30, 'มี.ค.', '2569'))
+    assert parse_weekly.is_history_export(p) is True
+
+
+def test_the_widest_real_weekly_shape_is_allowed(tmp_path):
+    """ขาย_4.5.69.csv / ซื้อ_4.5.69.csv: exported 4 พ.ค., filter from 29 มี.ค.
+    (36 days). Both are real weeklies whose rows are already live in the ERP."""
+    p = _write_hdr(tmp_path, 'ขาย_4.5.69.csv', _hdr('04/05/69', 29, 'มี.ค.', '2569'))
+    assert parse_weekly.is_history_export(p) is False
+
+
+def test_the_narrowest_real_history_shape_is_still_blocked(tmp_path):
+    """ประวัติการขาย_1.3.69-19.4.69.csv: exported 20 เม.ย., filter from 1 มี.ค.
+    (50 days)."""
+    p = _write_hdr(tmp_path, 'ประวัติการขาย.csv', _hdr('20/04/69', 1, 'มี.ค.', '2569'))
+    assert parse_weekly.is_history_export(p) is True
+
+
+# ── the title gate is gone: dates alone decide ─────────────────────────────
+
+def test_history_dates_are_blocked_even_without_the_แยกตาม_title(tmp_path):
+    """detect_express_report routes 'รายงานประวัติการขาย เรียงตามวันที่' to sales,
+    but the old title gate needed BOTH 'ประวัติ' AND 'แยกตาม' — so this shape
+    reached the stock ledger ungated no matter how far back it reached."""
+    p = _write_hdr(tmp_path, 'x.csv', _hdr('29/05/69', 1, 'ม.ค.', '2567'),)
+    assert parse_weekly.is_history_export(p) is True
+    p2 = _write_hdr(tmp_path, 'y.csv',
+                    _hdr('29/05/69', 1, 'ม.ค.', '2567',
+                         title='รายงานประวัติการขาย\xa0เรียงตามวันที่'))
+    assert parse_weekly.is_history_export(p2) is True
+
+
+def test_history_dates_are_blocked_without_the_ประวัติ_word(tmp_path):
+    p = _write_hdr(tmp_path, 'z.csv',
+                   _hdr('29/05/69', 1, 'ม.ค.', '2567',
+                        title='รายงานการขาย\xa0แยกตามลูกค้า'))
+    assert parse_weekly.is_history_export(p) is True
+
+
+# ── fail CLOSED on a header we cannot read ─────────────────────────────────
+
+def test_absent_date_filter_is_not_readable(tmp_path):
+    lines = _hdr('29/05/69', 1, 'ม.ค.', '2569')
+    del lines[3]                                   # drop the วันที่จาก line
+    p = _write_hdr(tmp_path, 'no_filter.csv', lines)
+    assert parse_weekly.date_filter_is_readable(p) is False
+
+
+def test_blank_date_filter_is_not_readable(tmp_path):
+    lines = _hdr('29/05/69', 1, 'ม.ค.', '2569')
+    lines[3] = '"วันที่จาก                        ถึง"'
+    p = _write_hdr(tmp_path, 'blank_filter.csv', lines)
+    assert parse_weekly.date_filter_is_readable(p) is False
+
+
+def test_a_real_weekly_header_is_readable(tmp_path):
+    p = _write_hdr(tmp_path, 'ขาย_ok.csv', _hdr('12/05/69', 8, 'พ.ค.', '2569'))
+    assert parse_weekly.date_filter_is_readable(p) is True

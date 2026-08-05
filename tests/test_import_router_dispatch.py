@@ -18,6 +18,26 @@ sys.path.insert(0, os.path.join(REPO, "inventory_app"))
 
 PATH = "/tmp/whatever.csv"
 
+# sales/purchase now pass through import_router._reject_history_export(), which
+# REFUSES a file whose "วันที่จาก … ถึง …" header cannot be read (Put's policy A,
+# 2026-08-03) — and an unopenable stub path cannot be read. These two dispatch
+# tests care about WHICH importer is called, not about the guard, so they get a
+# real minimal weekly header instead of the stub.
+_WEEKLY_HEADER = [
+    '"(BSN)บจก.บุญสวัสดิ์นำชัย                       หน้า   :        1"',
+    '"  รายงานประวัติการขาย\xa0แยกตามลูกค้า"',
+    '"รหัสลูกค้า        ถึง  Zหน้าร้าน      วันที่ : 24/04/69"',
+    '"วันที่จาก   23\xa0เม.ย.\xa02569   ถึง  31\xa0ธ.ค.\xa02569"',
+    '"--------------------------------------------------------"',
+]
+
+
+@pytest.fixture
+def weekly_path(tmp_path):
+    p = tmp_path / "ขาย_weekly.csv"
+    p.write_text("\n".join(_WEEKLY_HEADER) + "\n", encoding="cp874")
+    return str(p)
+
 
 def test_payments_in_routes_to_models_import_payments(monkeypatch):
     import import_router, models
@@ -39,7 +59,7 @@ def test_credit_notes_ar_routes_to_import_credit_notes(monkeypatch):
     assert seen["path"] == PATH and out["type"] == "credit_notes_ar"
 
 
-def test_sales_routes_to_import_weekly_canonical(monkeypatch):
+def test_sales_routes_to_import_weekly_canonical(monkeypatch, weekly_path):
     """sales must go through parse_weekly → models.import_weekly (sales_transactions),
     NEVER parse_express_sales (express_sales twin)."""
     import import_router, models
@@ -47,9 +67,13 @@ def test_sales_routes_to_import_weekly_canonical(monkeypatch):
     seen = {}
     monkeypatch.setattr(parse_weekly, "parse_sales", lambda p: ["e1", "e2"])
     monkeypatch.setattr(models, "import_weekly",
-                        lambda entries, kind, fn: seen.update(kind=kind, n=len(entries)) or {"inserted": 2})
-    out = import_router.commit_file(PATH, "sales", filename="ขาย_x.csv")
+                        lambda entries, kind, fn, apply_removals=True:
+                        seen.update(kind=kind, n=len(entries), rm=apply_removals)
+                        or {"inserted": 2})
+    out = import_router.commit_file(weekly_path, "sales", filename="ขาย_x.csv")
     assert seen["kind"] == "sales" and seen["n"] == 2 and out["ok"] is True
+    # …and never with the destructive removal default (Codex review finding 2).
+    assert seen["rm"] is False
 
 
 @pytest.mark.parametrize("rtype,express_kind", [
@@ -102,14 +126,14 @@ def test_preview_payments_in_counts_new_vs_existing_and_is_readonly(tmp_db, monk
     assert after == before, "preview must not write"
 
 
-def test_preview_sales_uses_preview_import(monkeypatch):
+def test_preview_sales_uses_preview_import(monkeypatch, weekly_path):
     import import_router, models
     import parse_weekly
     seen = {}
     monkeypatch.setattr(parse_weekly, "parse_sales", lambda p: ["e1", "e2", "e3"])
     monkeypatch.setattr(models, "preview_import",
                         lambda entries, ft: seen.update(ft=ft, n=len(entries)) or {"new": 3})
-    out = import_router.preview_file(PATH, "sales")
+    out = import_router.preview_file(weekly_path, "sales")
     assert seen == {"ft": "sales", "n": 3} and out["count"] == 3
 
 

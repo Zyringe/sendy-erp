@@ -411,12 +411,24 @@ def unified_import():
             rtype = import_router.detect_express_report(path)
             row = {'idx': i, 'filename': f.filename, 'saved': saved,
                    'detected': rtype, 'label': _REPORT_LABELS.get(rtype, rtype),
-                   'count': None, 'detail': {}, 'error': None}
+                   'count': None, 'detail': {}, 'error': None,
+                   # Set only by a SUCCESSFUL sales/purchase preview. Source-line
+                   # removal is offered and honoured only for such a row: the
+                   # operator must have seen the parsed count and the deletion
+                   # count before they can ask for deletions.
+                   'removals_ok': False}
             if rtype != 'unknown':
                 try:
                     prev = import_router.preview_file(path, rtype)
                     row['count'] = prev.get('count')
                     row['detail'] = prev.get('detail') or {}
+                    row['removals_ok'] = rtype in ('sales', 'purchase')
+                except import_router.HistoryExportBlocked as exc:
+                    # Policy A: full history goes through the Express ZIP module
+                    # only. Flagged (not just errored) so the template can point
+                    # the operator at that page.
+                    row['error'] = str(exc)
+                    row['blocked'] = 'history'
                 except Exception as exc:   # preview failure isolates to this file
                     row['error'] = str(exc)
             rows.append(row)
@@ -425,8 +437,15 @@ def unified_import():
         # silently dropped and /confirm 'เซสชันหมดอายุ'. The staged preview is
         # rendered from the in-memory `rows` (full detail) in THIS request;
         # /confirm only needs idx/filename/saved/detected, so store slim rows.
+        # `blocked` and `removals_ok` are the PREVIEW'S VERDICT and must survive
+        # into /confirm: the type dropdown is operator-supplied, so a decision
+        # keyed on the submitted type alone can be re-routed around (a blocked
+        # history file submitted as payments_in reached models.import_payments).
+        # Both are small scalars — the ~4KB cookie limit that forced this list to
+        # be slimmed was about per-row diff LISTS, not flags.
         slim = [{'idx': r['idx'], 'filename': r['filename'], 'saved': r['saved'],
-                 'detected': r['detected']} for r in rows]
+                 'detected': r['detected'], 'blocked': r.get('blocked'),
+                 'removals_ok': r['removals_ok']} for r in rows]
         session['import_stage'] = {'token': token, 'rows': slim}
         return render_template('import_box.html', staged=True, rows=rows, token=token,
                                report_labels=_REPORT_LABELS, results=None)
@@ -451,12 +470,41 @@ def unified_import_confirm():
         # Put can override a detected/unknown type via the per-row dropdown.
         rtype = request.form.get(f'type_{i}', row['detected'])
         path = os.path.join(base, row['saved'])
+        # A row the PREVIEW refused stays refused, whatever type is submitted
+        # now. The guard inside commit_file only runs for sales/purchase, so
+        # without this the dropdown could re-route a blocked history file to
+        # another importer entirely (verified: submitted as payments_in it
+        # reached models.import_payments). The guard cannot simply run for every
+        # type — a legitimate การรับชำระหนี้ export carries a wide วันที่จาก range
+        # and would be blocked as history — so the verdict is remembered instead.
+        if row.get('blocked'):
+            results.append({
+                'filename': row['filename'], 'ok': False,
+                'msg': import_router.history_block_reason(path) or
+                       'ไฟล์นี้ถูกปฏิเสธตั้งแต่ตอนตรวจสอบ — นำเข้าไม่ได้',
+                'blocked': row['blocked']})
+            continue
         if rtype == 'unknown' or not os.path.isfile(path):
             results.append({'filename': row['filename'], 'ok': False,
                             'msg': 'ข้าม — ไม่ได้เลือกประเภท'})
             continue
+        # Source-line removal is OFF unless the operator ticked this file's
+        # "complete weekly export" box on the preview page. The choice rides the
+        # confirm FORM, not the signed session.
+        #
+        # It is honoured ONLY for a row whose sales/purchase preview succeeded
+        # AND whose type has not changed since. An unpreviewed row has no parsed
+        # count and no deletion count, so enabling deletions there would reverse
+        # lines the operator never saw; and a sales preview's removal plan is
+        # meaningless once the row is switched to purchase. The checkbox is not
+        # rendered in those cases, so a `removals_N` arriving anyway is a stale
+        # tab or a hand-built POST — ignored, not trusted.
+        apply_removals = (bool(request.form.get(f'removals_{i}'))
+                          and bool(row.get('removals_ok'))
+                          and rtype == row.get('detected'))
         try:
-            out = import_router.commit_file(path, rtype, filename=row['filename'])
+            out = import_router.commit_file(path, rtype, filename=row['filename'],
+                                            apply_removals=apply_removals)
             result_row = {'filename': row['filename'], 'ok': True,
                           'label': _REPORT_LABELS.get(rtype, rtype),
                           'summary': out.get('summary')}
@@ -469,6 +517,9 @@ def unified_import_confirm():
                     except Exception as _scan_exc:
                         flash(f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}', 'warning')
             results.append(result_row)
+        except import_router.HistoryExportBlocked as exc:
+            results.append({'filename': row['filename'], 'ok': False,
+                            'msg': str(exc), 'blocked': 'history'})
         except Exception as exc:   # per-file isolation — one bad file doesn't sink the batch
             results.append({'filename': row['filename'], 'ok': False, 'msg': str(exc)})
     session.pop('import_stage', None)

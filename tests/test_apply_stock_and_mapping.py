@@ -16,15 +16,17 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 import apply_stock_and_mapping_csv as app  # noqa: E402
 
-MIG_124 = os.path.join(REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+from tests import mapping_fixture  # noqa: E402  (idempotent mig-124 replay)
 
 
 def _migrate124(conn):
-    """tmp_db clones the live DB, which doesn't have mig 124 (bsn_unit
-    restore) applied on this machine yet — apply it so app.main()'s call to
-    models.resolve_pending_mappings doesn't hit 'no such column: bsn_unit'."""
-    with open(MIG_124, encoding="utf-8") as f:
-        conn.executescript(f.read())
+    """Ensure product_code_mapping is unit-aware so app.main()'s call to
+    models.resolve_pending_mappings doesn't hit 'no such column: bsn_unit'.
+
+    tmp_db clones the live DB, which HAS had mig 124 since 2026-07-02 — the
+    blind replay this used to do now trips the composite UNIQUE. Idempotent
+    now; see tests/mapping_fixture.py."""
+    mapping_fixture.apply_mig124_if_needed(conn)
 
 
 def _seed(conn, pid, sku, base_unit):
