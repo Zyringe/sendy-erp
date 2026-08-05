@@ -367,25 +367,32 @@ def list_all_groups(main_conn, book_conn):
         "SELECT id, label, created_at, updated_at FROM vat_sub_groups ORDER BY id").fetchall()
     out = []
     for g in groups:
-        codes = [r['xp5_code'] for r in main_conn.execute(
-            "SELECT DISTINCT xp5_code FROM vat_sub_members WHERE group_id=?", (g['id'],))]
+        member_rows = main_conn.execute(
+            "SELECT xp5_code, added_from FROM vat_sub_members WHERE group_id=?",
+            (g['id'],)).fetchall()
         linked = main_conn.execute(
             "SELECT p.id, p.product_name AS name FROM vat_sub_product_links l "
             "JOIN products p ON p.id = l.product_id WHERE l.group_id=? ORDER BY p.product_name",
             (g['id'],)).fetchall()
         members = []
         total_stock = 0.0
-        if book_conn is not None:
-            for code in codes:
-                row = _fetch_book_row(book_conn, code)
-                if row is not None:
-                    members.append(row)
-                    if row['stock'] >= STOCK_THRESHOLD and row['vatcod'] == '1':
-                        total_stock += row['stock']
+        for m in member_rows:
+            row = _fetch_book_row(book_conn, m['xp5_code']) if book_conn is not None else None
+            if row is None:
+                # Stale member (code no longer in the published book, or the
+                # book was never built) — still shown so it can be removed,
+                # just carries no book data and never counts toward the total.
+                row = {'xp5_code': m['xp5_code'], 'product_name': None,
+                      'unit_type': None, 'cost_price': None, 'stock': 0,
+                      'stkgrp': '', 'vatcod': ''}
+            else:
+                if row['stock'] >= STOCK_THRESHOLD and row['vatcod'] == '1':
+                    total_stock += row['stock']
+            members.append({**row, 'added_from': m['added_from']})
         out.append({
             'id': g['id'], 'label': g['label'],
             'created_at': g['created_at'], 'updated_at': g['updated_at'],
-            'member_count': len(codes), 'product_count': len(linked),
+            'member_count': len(member_rows), 'product_count': len(linked),
             'total_stock': total_stock,
             'members': members,
             'linked_products': [dict(r) for r in linked],

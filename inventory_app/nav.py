@@ -93,6 +93,8 @@ NAV = [
              'match': ['partners.supplier_list', 'partners.supplier_summary']},
             {'ep': 'call.call_list', 'label': 'โทรหาลูกค้า', 'icon': 'bi-telephone-outbound',
              'match_prefix': ['call.']},
+            {'ep': 'vat_sub.index', 'label': 'สินค้าทดแทน (สมุด VAT)', 'icon': 'bi-arrow-left-right',
+             'roles': {'admin', 'manager', 'shareholder'}, 'match_prefix': ['vat_sub.']},
         ],
     },
     {

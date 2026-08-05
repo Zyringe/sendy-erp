@@ -42,6 +42,12 @@
     "label": "โทรหาลูกค้า"
    },
    {
+    "href": "/vat-sub",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "สินค้าทดแทน (สมุด VAT)"
+   },
+   {
     "kind": "section",
     "label": "ขายออนไลน์"
    },
@@ -107,6 +113,12 @@
     "label": "โทรหาลูกค้า"
    },
    {
+    "href": "/vat-sub",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "สินค้าทดแทน (สมุด VAT)"
+   },
+   {
     "kind": "section",
     "label": "ขายออนไลน์"
    },
@@ -169,6 +181,12 @@
     "icon": "bi-telephone-outbound",
     "kind": "link",
     "label": "โทรหาลูกค้า"
+   },
+   {
+    "href": "/vat-sub",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "สินค้าทดแทน (สมุด VAT)"
    },
    {
     "kind": "section",
@@ -665,6 +683,12 @@
     "icon": "bi-telephone-outbound",
     "kind": "link",
     "label": "โทรหาลูกค้า"
+   },
+   {
+    "href": "/vat-sub",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "สินค้าทดแทน (สมุด VAT)"
    },
    {
     "kind": "section",
@@ -1431,6 +1455,12 @@
     "label": "โทรหาลูกค้า"
    },
    {
+    "href": "/vat-sub",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "สินค้าทดแทน (สมุด VAT)"
+   },
+   {
     "kind": "section",
     "label": "ขายออนไลน์"
    },
@@ -1649,6 +1679,12 @@
     "icon": "bi-telephone-outbound",
     "kind": "link",
     "label": "โทรหาลูกค้า"
+   },
+   {
+    "href": "/vat-sub",
+    "icon": "bi-arrow-left-right",
+    "kind": "link",
+    "label": "สินค้าทดแทน (สมุด VAT)"
    },
    {
     "kind": "section",
@@ -2073,6 +2109,8 @@
   "admin|sales.purchases_view|0": "/purchases",
   "admin|sales.sales_view|0": "/sales",
   "admin|sales.trade_dashboard|0": "/trade-dashboard",
+  "admin|vat_sub.index|0": "/vat-sub",
+  "admin|vat_sub.planning|0": "/vat-sub",
   "general|mobile.stock_search|0": null,
   "manager|me.leave|0": "/me/leave",
   "manager|me.payslip_detail|0": "/me/payslip",

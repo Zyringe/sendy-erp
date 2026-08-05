@@ -113,7 +113,23 @@ def test_get_group_detail_includes_members_and_linked_products(empty_db_conn, bo
     assert detail['linked_products'][0]['name'] == 'สินค้าเชื่อม'
     assert detail['linked_products'][0]['id'] == pid
     assert detail['members'][0]['xp5_code'] == 'A'
+    assert detail['members'][0]['added_from'] == 'manual'
 
 
 def test_get_group_detail_none_when_group_missing(empty_db_conn, book_conn):
     assert vs.get_group_detail(99999, empty_db_conn, book_conn) is None
+
+
+def test_group_members_include_stale_code_not_in_current_book(empty_db_conn, book_conn):
+    """A member whose xp5_code has left the published book must still show
+    up (so it can be removed from the group management page) — just with no
+    book data and never counted toward total_stock."""
+    gid = empty_db_conn.execute("INSERT INTO vat_sub_groups (label) VALUES ('g')").lastrowid
+    empty_db_conn.execute(
+        "INSERT INTO vat_sub_members (group_id, xp5_code, added_from) VALUES (?, 'GONE', 'manual')", (gid,))
+    empty_db_conn.commit()
+    groups = vs.list_all_groups(empty_db_conn, book_conn)
+    assert groups[0]['member_count'] == 1
+    assert groups[0]['members'][0]['xp5_code'] == 'GONE'
+    assert groups[0]['members'][0]['added_from'] == 'manual'
+    assert groups[0]['total_stock'] == 0

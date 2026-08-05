@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}{{ product.product_name }} — สินค้าทดแทน — ERP{% endblock %}
+{% block page_title %}สินค้าทดแทน: {{ product.product_name }}{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-2 px-lg-4 mt-3">
+  {% include "vat_sub/_freshness.html" %}
+
+  <div class="d-flex flex-wrap gap-2 mb-3">
+    <a href="{{ url_for('vat_sub.index') }}" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-left me-1"></i>ค้นหาสินค้าอื่น
+    </a>
+    <a href="{{ url_for('vat_sub.planning') }}" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-diagram-3 me-1"></i>ดูทุกกลุ่ม
+    </a>
+  </div>
+
+  {# ── Price/unit input driving every badge on this page (decision 9) ── #}
+  <div class="card mb-3">
+    <div class="card-body py-2">
+      <div class="row g-2 align-items-end">
+        <div class="col-auto">
+          <label class="form-label small mb-0">ราคาที่ลูกค้าจ่ายจริง (รวม VAT) ต่อ</label>
+          <div class="input-group input-group-sm">
+            <span class="input-group-text">฿</span>
+            <input type="number" step="0.01" id="vs-price" class="form-control"
+                   value="{{ '%.2f'|format(product.base_sell_price or 0) }}">
+          </div>
+        </div>
+        <div class="col-auto">
+          <label class="form-label small mb-0">หน่วย</label>
+          <select id="vs-unit" class="form-select form-select-sm">
+            {% for u in unit_options %}
+              <option value="{{ u.unit }}" data-ratio="{{ u.ratio }}">{{ u.unit }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-auto text-muted small">
+          ราคาจ่ายจริง ÷ 1.07 (ไม่รวม VAT) ÷ อัตราแปลงหน่วย แล้วเทียบกับต้นทุนในสมุด VAT
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Own-stock card (§4.1, always shown when identity-mapped) ── #}
+  {% if own_card %}
+  <div class="card mb-3 border-{{ 'success' if own_card.eligible else 'secondary' }}">
+    <div class="card-header py-2 {{ 'bg-success-subtle' if own_card.eligible else '' }}">
+      <strong>ใช้ตัวเองก่อน</strong>
+      {% if own_card.eligible %}
+        <span class="badge bg-success ms-2">พร้อมใช้</span>
+      {% else %}
+        <span class="badge bg-secondary ms-2">{{ own_card.reason }}</span>
+      {% endif %}
+    </div>
+    <div class="card-body py-2">
+      <div class="d-flex flex-wrap gap-3 align-items-center">
+        <span>รหัส xp5: <strong>{{ own_card.xp5_code }}</strong></span>
+        {% if own_card.product_name %}
+          <span>{{ own_card.product_name }}</span>
+          <span>สต็อกกระดาษ: <strong>{{ own_card.stock }}</strong> {{ own_card.unit_type }}</span>
+          <span class="vs-badge" data-unit="{{ own_card.unit_type }}" data-cost="{{ own_card.cost_price or 0 }}"
+                data-cost-raw="{{ '%.4f'|format(own_card.cost_price or 0) }}">คำนวณ...</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Candidate pool (§5) ── #}
+  <h6 class="mt-4">สินค้าทดแทน (จากกลุ่มที่ตั้งไว้)</h6>
+  {% if not candidates %}
+    <div class="text-muted small mb-3">ยังไม่มีสินค้าทดแทนในกลุ่ม — ดูรายการ "เดาเพิ่มเติม" ด้านล่างเพื่อเพิ่มเข้ากลุ่ม</div>
+  {% else %}
+    <div class="table-responsive mb-3">
+      <table class="table table-sm align-middle">
+        <thead><tr>
+          <th>รหัส xp5</th><th>ชื่อ</th><th>หน่วย</th><th>สต็อก</th><th>เทียบราคา</th><th></th>
+        </tr></thead>
+        <tbody>
+          {% for c in candidates %}
+          <tr>
+            <td>{{ c.xp5_code }}</td>
+            <td>{{ c.product_name }}</td>
+            <td>{{ c.unit_type }}</td>
+            <td>{{ c.stock }}</td>
+            <td><span class="vs-badge" data-unit="{{ c.unit_type }}" data-cost="{{ c.cost_price or 0 }}">คำนวณ...</span></td>
+            <td>{% include "vat_sub/_promote_form.html" %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+  {# ── Guess section (§5, always its own labeled section) ── #}
+  <h6 class="mt-4">เดาเพิ่มเติม — ยังไม่ยืนยัน</h6>
+  {% if guesses.empty %}
+    <div class="text-muted small mb-3">{{ guesses.reason }}</div>
+  {% elif not guesses.items %}
+    <div class="text-muted small mb-3">ไม่พบตัวแทนที่เดาได้เพิ่มเติม</div>
+  {% else %}
+    <div class="table-responsive mb-3">
+      <table class="table table-sm align-middle">
+        <thead><tr>
+          <th>รหัส xp5</th><th>ชื่อ</th><th>หน่วย</th><th>สต็อก</th><th>เทียบราคา</th><th></th>
+        </tr></thead>
+        <tbody>
+          {% for c in guesses.items %}
+          <tr>
+            <td>{{ c.xp5_code }}</td>
+            <td>{{ c.product_name }}</td>
+            <td>{{ c.unit_type }}</td>
+            <td>{{ c.stock }}</td>
+            <td><span class="vs-badge" data-unit="{{ c.unit_type }}" data-cost="{{ c.cost_price or 0 }}">คำนวณ...</span></td>
+            <td>{% include "vat_sub/_promote_form.html" %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  const xUnit = document.getElementById('vs-unit');
+  const xPrice = document.getElementById('vs-price');
+
+  function computeBadge(pricePerUnit, unitRatio, xu, candUnit, candCost) {
+    if (!pricePerUnit || !unitRatio) return {label: 'เทียบไม่ได้', cls: 'bg-secondary'};
+    const exVat = pricePerUnit / 1.07;
+    const perBase = exVat / unitRatio;
+    if (!xu || !candUnit || xu !== candUnit) {
+      return {label: (xu && candUnit) ? 'เทียบไม่ได้ (หน่วยต่างกัน)' : 'เทียบไม่ได้', cls: 'bg-secondary'};
+    }
+    if (!candCost || candCost <= 0) return {label: '❓ ไม่ทราบต้นทุน', cls: 'bg-secondary'};
+    if (perBase > candCost) return {label: '✅ คุ้ม (' + perBase.toFixed(2) + ' > ' + candCost.toFixed(2) + ')', cls: 'bg-success'};
+    return {label: '⚠️ ไม่คุ้ม (' + perBase.toFixed(2) + ' ≤ ' + candCost.toFixed(2) + ')', cls: 'bg-warning text-dark'};
+  }
+
+  function recompute() {
+    const price = parseFloat(xPrice.value) || 0;
+    const opt = xUnit.options[xUnit.selectedIndex];
+    const ratio = opt ? parseFloat(opt.getAttribute('data-ratio')) : 1;
+    const xu = opt ? opt.value : '';
+    document.querySelectorAll('.vs-badge').forEach(el => {
+      const candUnit = el.getAttribute('data-unit');
+      const candCost = parseFloat(el.getAttribute('data-cost')) || 0;
+      const r = computeBadge(price, ratio, xu, candUnit, candCost);
+      el.textContent = r.label;
+      el.className = 'vs-badge badge ' + r.cls;
+    });
+  }
+
+  xPrice.addEventListener('input', recompute);
+  xUnit.addEventListener('change', recompute);
+  recompute();
+})();
+</script>
+{% endblock %}

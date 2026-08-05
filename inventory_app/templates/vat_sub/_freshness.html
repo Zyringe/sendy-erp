@@ -1,0 +1,12 @@
+{# vat_freshness = book_registry.vat_book_freshness() dict or None — shown in
+   the header of every vat-substitute page so staleness is always visible
+   (plan §4.9). #}
+{% if vat_freshness %}
+  <div class="text-muted small mb-2">
+    <i class="bi bi-clock-history me-1"></i>สมุด VAT อัปเดตล่าสุด {{ vat_freshness.built_at[:16] }}
+  </div>
+{% else %}
+  <div class="alert alert-warning py-2 px-3 small mb-3">
+    <i class="bi bi-exclamation-triangle me-1"></i>สมุด VAT ยังไม่ถูกสร้าง — อัปโหลดชุดข้อมูล xp5 ที่หน้า Import ก่อนค่ะ
+  </div>
+{% endif %}
