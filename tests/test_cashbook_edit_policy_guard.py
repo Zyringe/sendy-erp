@@ -64,15 +64,19 @@ def _plain_row(db):
     return acct, txn_id
 
 
-def _post_edit(client, acct, txn_id, category):
+def _post_edit(client, acct, txn_id, category, user_category="หลุย"):
+    """Follows the redirect so the response body carries the flash — a refusal
+    the operator cannot SEE is barely better than no refusal, and the status
+    code alone cannot tell refusal from success (both are 302 before the
+    redirect is followed)."""
     return client.post(
         f"/cashbook/txn/{txn_id}/edit",
         data={
             "account_id": str(acct), "txn_date": "2026-08-04", "direction": "expense",
-            "category": category, "user_category": "หลุย", "amount": "250",
+            "category": category, "user_category": user_category, "amount": "250",
             "description": "ค่าใช้จ่ายทั่วไป", "note": "",
         },
-        follow_redirects=False,
+        follow_redirects=True,
     )
 
 
@@ -101,7 +105,9 @@ def test_edit_into_advance_category_is_refused(migrated_db):
     assert row["category"] == 'อื่นๆ', "category must be unchanged"
     assert row["salary_advance_id"] is None
     assert adv_after == adv_before, "no salary_advances row may be created by an edit"
-    assert resp.status_code in (302, 403)
+    # The operator must SEE why. Distinctive fragment — 'เบิกล่วงหน้า' alone
+    # appears ~14 times on this page and could never fail.
+    assert "ให้ลบรายการนี้แล้ว" in resp.get_data(as_text=True)
 
 
 def test_edit_into_manual_salary_category_is_refused(migrated_db):
@@ -113,7 +119,7 @@ def test_edit_into_manual_salary_category_is_refused(migrated_db):
 
     row, _ = _read(migrated_db, txn_id)
     assert row["category"] == 'อื่นๆ', "category must be unchanged"
-    assert resp.status_code in (302, 403)
+    assert "เงินเดือนบันทึกที่หน้าเงินเดือน" in resp.get_data(as_text=True)
 
 
 def test_edit_into_in_engine_commission_is_refused(migrated_db):
@@ -129,19 +135,12 @@ def test_edit_into_in_engine_commission_is_refused(migrated_db):
         pytest.skip("no active salesperson in this DB")
 
     acct, txn_id = _plain_row(migrated_db)
-    resp = _admin_client().post(
-        f"/cashbook/txn/{txn_id}/edit",
-        data={
-            "account_id": str(acct), "txn_date": "2026-08-04", "direction": "expense",
-            "category": COMMISSION_CATEGORY, "user_category": rep["name"],
-            "amount": "250", "description": "x", "note": "",
-        },
-        follow_redirects=False,
-    )
+    resp = _post_edit(_admin_client(), acct, txn_id, COMMISSION_CATEGORY,
+                      user_category=rep["name"])
 
     row, _ = _read(migrated_db, txn_id)
     assert row["category"] == 'อื่นๆ', "category must be unchanged"
-    assert resp.status_code in (302, 403)
+    assert "คอมมิชชั่นของเซลส์ในระบบบันทึก" in resp.get_data(as_text=True)
 
 
 def test_ordinary_edit_still_works(migrated_db):
@@ -152,4 +151,5 @@ def test_ordinary_edit_still_works(migrated_db):
 
     row, _ = _read(migrated_db, txn_id)
     assert row["category"] == 'ค่าน้ำมัน', "an ordinary category change must still apply"
-    assert resp.status_code == 302
+    assert resp.status_code == 200
+    assert "ให้ลบรายการนี้แล้ว" not in resp.get_data(as_text=True)
