@@ -20,7 +20,8 @@ def conn(tmp_path):
         CREATE TABLE products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product_name TEXT NOT NULL,
-            unit_type TEXT NOT NULL DEFAULT 'ตัว');
+            unit_type TEXT NOT NULL DEFAULT 'ตัว',
+            cost_price REAL NOT NULL DEFAULT 0.0);
         CREATE TABLE product_code_mapping (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             bsn_code TEXT NOT NULL,
@@ -37,8 +38,11 @@ def conn(tmp_path):
     c.close()
 
 
-def _stmas(code, des='ของทดสอบ', qucod='ตว', totbal=0):
-    return {'STKCOD': code, 'STKDES': des, 'QUCOD': qucod, 'TOTBAL': totbal}
+def _stmas(code, des='ของทดสอบ', qucod='ตว', totbal=0, unitpr=None):
+    row = {'STKCOD': code, 'STKDES': des, 'QUCOD': qucod, 'TOTBAL': totbal}
+    if unitpr is not None:
+        row['UNITPR'] = unitpr
+    return row
 
 
 # ── seed_products_from_stmas ────────────────────────────────────────────────
@@ -60,6 +64,29 @@ def test_seed_blank_name_falls_back_to_code_and_dups_keep_first(conn):
         _stmas('X1', des='  '), _stmas('X1', des='ตัวซ้ำ'), _stmas('', des='ไร้รหัส')])
     rows = conn.execute("SELECT product_name FROM products").fetchall()
     assert [r['product_name'] for r in rows] == ['X1']   # blank→code, dup+blank skipped
+
+
+# ── seed_products_from_stmas: cost_price := STMAS.UNITPR (plan §4.2) ───────
+
+def test_seed_cost_price_from_unitpr(conn):
+    """The 001ก1040 example from the plan (§2): builder's old WACC-from-
+    purchases gave cost 0 while STMAS carries UNITPR ฿7.59 — the fix seeds
+    cost_price straight from Express's own maintained average cost."""
+    vb.seed_products_from_stmas(conn, [_stmas('001ก1040', 'กลอนเหล็ก#511-4นิ้ว AC', unitpr=7.59)])
+    cost = conn.execute("SELECT cost_price FROM products").fetchone()[0]
+    assert cost == 7.59
+
+
+def test_seed_cost_price_nonpositive_or_blank_unitpr_stays_zero(conn):
+    vb.seed_products_from_stmas(conn, [
+        _stmas('Z1', des='สินค้า Z1', unitpr=0),
+        _stmas('Z2', des='สินค้า Z2', unitpr=-3.5),
+        _stmas('Z3', des='สินค้า Z3'),                    # no UNITPR key at all
+        _stmas('Z4', des='สินค้า Z4', unitpr=''),         # blank string (as DBF can yield)
+    ])
+    costs = {r['product_name']: r['cost_price'] for r in
+              conn.execute("SELECT product_name, cost_price FROM products")}
+    assert costs == {'สินค้า Z1': 0.0, 'สินค้า Z2': 0.0, 'สินค้า Z3': 0.0, 'สินค้า Z4': 0.0}
 
 
 # ── overwrite_stock_from_stmas ──────────────────────────────────────────────

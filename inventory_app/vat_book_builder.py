@@ -49,10 +49,24 @@ def seed_companies(conn):
     conn.commit()
 
 
+def _stmas_cost(r):
+    """STMAS.UNITPR (Express's own maintained average unit cost, ex-VAT) —
+    the VAT book's cost_price source (plan §4.2, replacing the old partial-
+    coverage WACC-from-imported-purchases). Blank/non-numeric/<=0 -> 0.0;
+    nothing invents a cost."""
+    try:
+        val = float(r.get('UNITPR') or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return val if val > 0 else 0.0
+
+
 def seed_products_from_stmas(conn, stmas_rows):
     """Create one product + one catch-all mapping row per STMAS code.
     Returns {stkcod: product_id}. Blank STKDES falls back to the code itself
-    (product_name is NOT NULL); duplicate STKCOD keeps the first row."""
+    (product_name is NOT NULL); duplicate STKCOD keeps the first row.
+    cost_price := STMAS.UNITPR (plan §4.2) — the VAT book is a mirror of
+    Express, so Express's own valuation is the truth everywhere it shows."""
     code_to_pid = {}
     for r in stmas_rows:
         code = str(r.get('STKCOD') or '').strip()
@@ -60,9 +74,10 @@ def seed_products_from_stmas(conn, stmas_rows):
             continue
         name = str(r.get('STKDES') or '').strip() or code
         unit = bsn_units.normalize_unit(str(r.get('QUCOD') or '').strip()) or 'ตัว'
+        cost = _stmas_cost(r)
         cur = conn.execute(
-            "INSERT INTO products (product_name, unit_type) VALUES (?, ?)",
-            (name, unit))
+            "INSERT INTO products (product_name, unit_type, cost_price) VALUES (?, ?, ?)",
+            (name, unit, cost))
         pid = cur.lastrowid
         conn.execute(
             "INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, bsn_unit) "
