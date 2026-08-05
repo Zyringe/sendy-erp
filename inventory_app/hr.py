@@ -782,17 +782,53 @@ def _regenerate_would_drop(c, run_id: int, active_ids):
     return existing - set(active_ids)
 
 
-def _dropped_employees_message(c, dropped_ids) -> str:
+def _regenerate_would_add(c, run_id: int, active_ids):
+    """employee_ids in the CURRENT active set that hold no payroll_items row in
+    this run — i.e. who a regenerate would invent a payslip for.
+
+    The mirror of `_regenerate_would_drop`, and it is only ever consulted at the
+    reopen door. On a DRAFT run absorbing a new hire is the whole point of
+    regenerating, so this must not be checked there; `generate_run` returns a
+    finalized run untouched, which makes `reopen_run` the sole path from a
+    closed month to a rebuild.
+
+    2026-08-05 (why this exists): the drop guard shipped that morning is
+    one-directional. Measured on prod the same evening, run 3 (พ.ค. 2026) passed
+    it cleanly while a regenerate would have ADDED เซี้ยม and ปู้ to a finalized
+    month neither was ever part of — inventing rows is the same class of damage
+    as deleting them, and the reopen button was live.
+    """
+    existing = {r["employee_id"] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id = ?", (run_id,)
+    )}
+    return set(active_ids) - existing
+
+
+def _employee_names(c, ids) -> str:
     rows = c.execute(
         "SELECT id, COALESCE(nickname, full_name) AS name FROM employees"
-        f" WHERE id IN ({','.join('?' * len(dropped_ids))})",
-        tuple(sorted(dropped_ids)),
+        f" WHERE id IN ({','.join('?' * len(ids))})",
+        tuple(sorted(ids)),
     ).fetchall()
-    names = ", ".join(f"{r['name']} (id {r['id']})" for r in rows) or \
-        ", ".join(str(i) for i in sorted(dropped_ids))
+    return ", ".join(f"{r['name']} (id {r['id']})" for r in rows) or \
+        ", ".join(str(i) for i in sorted(ids))
+
+
+def _added_employees_message(c, added_ids) -> str:
+    return (
+        f"เปิดรอบนี้ใหม่ไม่ได้ — มีพนักงาน {len(added_ids)} คนที่อยู่ในชุดพนักงานปัจจุบัน "
+        f"แต่ไม่มีรายการอยู่ในรอบนี้ ({_employee_names(c, added_ids)}) "
+        f"การเปิดรอบแล้วสร้างใหม่จะเพิ่มรายการเงินเดือนของเขาเข้าไปในเดือนที่ปิดไปแล้ว "
+        f"ทั้งที่เดือนนั้นไม่เคยจ่ายให้เขา "
+        f"· ถ้าเขาเพิ่งเข้างานทีหลัง ให้ตรวจวันเริ่มงาน (start_date) ว่าตรงกับความจริงไหม "
+        f"· ถ้าต้องแก้ตัวเลขของคนที่อยู่ในรอบอยู่แล้ว ให้แก้รายบุคคลแทนการสร้างรอบใหม่"
+    )
+
+
+def _dropped_employees_message(c, dropped_ids) -> str:
     return (
         f"สร้างรอบนี้ใหม่ไม่ได้ — มีพนักงาน {len(dropped_ids)} คนที่มีรายการอยู่ในรอบนี้ "
-        f"แต่ไม่อยู่ในชุดพนักงานปัจจุบันแล้ว ({names}) "
+        f"แต่ไม่อยู่ในชุดพนักงานปัจจุบันแล้ว ({_employee_names(c, dropped_ids)}) "
         f"การสร้างใหม่จะลบรายการเงินเดือนของเขาในเดือนนี้ทิ้ง "
         f"และปลดการหักเบิกล่วงหน้าไปงวดอื่น "
         f"· ถ้าเขาลาออกกลางเดือน ให้ใส่วันสิ้นสุดการทำงาน (end_date) แทนการปิดใช้งาน "
@@ -1072,13 +1108,17 @@ def reopen_run(run_id: int, reason: str, actor: str,
         # row — so checking here too avoids stranding the run in 'draft' with
         # finalized figures, a state nothing else repairs.
         period_start, period_end = _month_bounds(run["year_month"])
-        dropped = _regenerate_would_drop(
-            c, run_id,
-            {e["id"] for e in _active_employees_for_month(
-                c, run["company_id"], period_start, period_end)},
-        )
+        active_ids = {e["id"] for e in _active_employees_for_month(
+            c, run["company_id"], period_start, period_end)}
+        dropped = _regenerate_would_drop(c, run_id, active_ids)
         if dropped:
             raise ValueError(_dropped_employees_message(c, dropped))
+        # ...and the same door refuses the opposite drift. generate_run cannot
+        # check this one: on a draft run, absorbing a new hire is exactly what
+        # a regenerate is for.
+        added = _regenerate_would_add(c, run_id, active_ids)
+        if added:
+            raise ValueError(_added_employees_message(c, added))
 
         c.execute(
             "UPDATE payroll_runs SET status='draft', finalized_at=NULL WHERE id=?",

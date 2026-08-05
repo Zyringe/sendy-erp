@@ -122,3 +122,39 @@ def test_leave_route_defaults_to_current_month(tmp_db_conn_hr_clean):
 
     html_all = cl.get('/hr/leave?month=').get_data(as_text=True)
     assert 'CURMONTHMARK' in html_all and 'OLDMONTHMARK' in html_all, "?month= (blank) shows all months"
+
+
+# ── account name falls back to the code ─────────────────────────────────────
+
+def test_advance_account_name_falls_back_to_the_account_code(tmp_db_conn_hr_clean):
+    """`cashbook_accounts.display_name` is NULL for every account on prod, and
+    the /admin form has no field that writes it — so this query, the only
+    consumer that read it WITHOUT a fallback, rendered '—' in the โอนจากบัญชี
+    column for all 28 advances (verified in the browser 2026-08-05).
+
+    Everywhere else already falls back: COALESCE(ca.display_name, ca.code) in
+    get_employees, `{{ acct.display_name or acct.code }}` in the cashbook
+    templates. Both directions are asserted so the test cannot pass by always
+    returning one of them.
+    """
+    c = tmp_db_conn_hr_clean
+    emp, _ = _two_emps(c)
+    acct = c.execute(
+        "SELECT id, code FROM cashbook_accounts ORDER BY id LIMIT 1").fetchone()
+    assert acct is not None, "fixture must have an account, or this pins nothing"
+    c.execute("UPDATE cashbook_accounts SET display_name=NULL WHERE id=?",
+              (acct["id"],))
+    adv_id = c.execute(
+        "INSERT INTO salary_advances (employee_id, advance_date, amount, from_account_id)"
+        " VALUES (?, '2026-10-05', 500, ?)", (emp, acct["id"])).lastrowid
+    c.commit()
+
+    row = next(r for r in hrq.get_salary_advances(conn=c) if r["id"] == adv_id)
+    assert row["account_name"] == acct["code"]
+
+    # ...and a real display_name still wins over the code
+    c.execute("UPDATE cashbook_accounts SET display_name='ชื่อจริงของบัญชี' WHERE id=?",
+              (acct["id"],))
+    c.commit()
+    row = next(r for r in hrq.get_salary_advances(conn=c) if r["id"] == adv_id)
+    assert row["account_name"] == 'ชื่อจริงของบัญชี'
