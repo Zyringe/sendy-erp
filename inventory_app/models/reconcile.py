@@ -434,30 +434,46 @@ def _cas_compare(expected_rows, live_rows):
 
 
 def _ledger_check(conn, payload_rows):
-    """Both directions (plan §2d): every synced line has exactly one
-    'BSN ขาย'/'BSN ขาย-คืน' transactions row whose magnitude matches; every
-    unsynced line has none; and NO other transactions row references any of
-    this doc's doc_nos at all (catches history_import compensator legs and
-    anything else unexpected).
+    """Both directions (plan §2d), mirroring _sync_bsn_to_stock's writer
+    rule EXACTLY (bsn_sync.py ~215-233) instead of trusting a row that
+    merely shares reference_no+note: every synced line must have exactly
+    ONE transactions row whose product_id, exact note, txn_type, AND signed
+    quantity_change (sign unconditionally, magnitude whenever
+    _get_base_qty can compute it) all match what the writer would have
+    produced for THAT line; every unsynced line has none; and NO other
+    transactions row references any of this doc's doc_nos at all (catches
+    history_import compensator legs and anything else unexpected).
+
+    A corrupted/stale row that happens to share reference_no+note but has
+    the WRONG product_id, direction, or note-type (e.g. a plain 'BSN ขาย'
+    row sitting where an SR line's 'BSN ขาย-คืน' belongs) must NEVER be
+    silently trusted — deleting it would fire the mig-080 stock trigger
+    against the wrong product or in the wrong direction.
+
+    Returns (error_message, None) on refusal, or (None, matched_ids) on
+    success — matched_ids is the EXACT set of transactions.id verified to
+    belong to this doc's synced lines. The caller must delete ONLY those
+    ids, never a broader reference_no+note sweep (see apply_reconcile_flag).
 
     Known, deliberate limitation: when 2+ sales_transactions rows share the
     SAME literal doc_no (a real Express data shape — e.g. two STCRD lines
     reusing one SEQNUM, seen live on IV6900582-1), _sync_bsn_to_stock wrote
     a transactions row per line, both stamped with that identical
     reference_no. This function has no way to tell WHICH row belongs to
-    WHICH payload line (they key identically), so `len(bsn_rows) != 1`
-    fires for every payload row sharing that doc_no and the whole doc
-    refuses with "มี ledger แปลกปลอม" — even though nothing is actually
-    wrong. This is the safe direction (never a wrong delete): such docs
-    stay flagged forever as `deleted`-but-apply-refused and need จัดการมือ.
-    Not a bug to fix here; documented so it isn't mistaken for one."""
+    WHICH payload line (they key identically on reference_no+note), so the
+    exact-match count fires for every payload row sharing that doc_no and
+    the whole doc refuses with "มี ledger แปลกปลอม" — even though nothing
+    is actually wrong. This is the safe direction (never a wrong delete):
+    such docs stay flagged forever as `deleted`-but-apply-refused and need
+    จัดการมือ. Not a bug to fix here; documented so it isn't mistaken for
+    one."""
     doc_nos = sorted({r['doc_no'] for r in payload_rows})
     if not doc_nos:
-        return None
+        return None, set()
     ph = ','.join('?' * len(doc_nos))
     all_txns = conn.execute(
-        f"SELECT id, reference_no, note, quantity_change FROM transactions "
-        f"WHERE reference_no IN ({ph})", doc_nos).fetchall()
+        f"SELECT id, reference_no, note, quantity_change, product_id, txn_type "
+        f"FROM transactions WHERE reference_no IN ({ph})", doc_nos).fetchall()
     by_doc_no = defaultdict(list)
     for t in all_txns:
         by_doc_no[t['reference_no']].append(t)
@@ -466,38 +482,59 @@ def _ledger_check(conn, payload_rows):
     for r in payload_rows:
         doc_no = r['doc_no']
         candidates = by_doc_no.get(doc_no, [])
-        bsn_rows = [t for t in candidates if t['note'] in _BSN_SALE_NOTES]
+        # Mirrors bsn_sync.py's is_sales_return / row_txn_type / note
+        # derivation exactly — the ONLY two shapes a real sales sync ever
+        # writes: a normal line (OUT, negative, 'BSN ขาย') or an SR return
+        # line (IN, positive, 'BSN ขาย-คืน').
+        is_sr = doc_no.startswith('SR')
+        expected_note = 'BSN ขาย-คืน' if is_sr else 'BSN ขาย'
+        expected_txn_type = 'IN' if is_sr else 'OUT'
+        exact_rows = [t for t in candidates if t['note'] == expected_note]
+
         if r.get('synced_to_stock'):
-            if len(bsn_rows) != 1:
-                return f'มี ledger แปลกปลอมสำหรับ {doc_no} — จัดการมือ'
-            txn = bsn_rows[0]
+            if len(exact_rows) != 1:
+                return f'มี ledger แปลกปลอมสำหรับ {doc_no} — จัดการมือ', None
+            txn = exact_rows[0]
+            if txn['product_id'] != r['product_id']:
+                return f'ledger ไม่ตรงกับข้อมูลของ {doc_no} (สินค้าไม่ตรง) — จัดการมือ', None
+            if txn['txn_type'] != expected_txn_type:
+                return f'ledger ไม่ตรงกับข้อมูลของ {doc_no} (ทิศทางไม่ตรง) — จัดการมือ', None
+            qty_sign_ok = (txn['quantity_change'] < 0) == (not is_sr)
+            if not qty_sign_ok:
+                return f'ledger ไม่ตรงกับข้อมูลของ {doc_no} (เครื่องหมายไม่ตรง) — จัดการมือ', None
             product = conn.execute(
                 "SELECT unit_type FROM products WHERE id=?", (r['product_id'],)).fetchone()
             if product is not None:
                 expected_base = _get_base_qty(
                     conn, r['product_id'], product['unit_type'] or '', r['unit'], r['qty'] or 0)
-                if expected_base is not None and abs(abs(txn['quantity_change']) - abs(expected_base)) >= 1e-9:
-                    return f'ledger ไม่ตรงกับข้อมูลของ {doc_no} (qty ไม่ตรง) — จัดการมือ'
+                if expected_base is not None:
+                    expected_signed = expected_base if is_sr else -expected_base
+                    if abs(txn['quantity_change'] - expected_signed) >= 1e-9:
+                        return f'ledger ไม่ตรงกับข้อมูลของ {doc_no} (qty ไม่ตรง) — จัดการมือ', None
             matched_ids.add(txn['id'])
         else:
-            if bsn_rows:
-                return f'มี ledger แปลกปลอมสำหรับ {doc_no} — จัดการมือ'
+            if exact_rows:
+                return f'มี ledger แปลกปลอมสำหรับ {doc_no} — จัดการมือ', None
 
     for doc_no, candidates in by_doc_no.items():
         for t in candidates:
             if t['id'] not in matched_ids:
                 return (f'มี ledger แปลกปลอมสำหรับ {doc_no} — จัดการมือ '
-                        '(อาจเป็น history_import compensator หรืออื่นๆ)')
-    return None
+                        '(อาจเป็น history_import compensator หรืออื่นๆ)'), None
+    return None, matched_ids
 
 
-def _delete_stock_sync_txns(conn, doc_nos):
-    if not doc_nos:
+def _delete_verified_txns(conn, txn_ids):
+    """Delete EXACTLY the transactions rows _ledger_check verified belong to
+    this doc's synced lines — by id, never by a broader reference_no+note
+    sweep. A row that shares reference_no+note but has the wrong product_id/
+    txn_type/sign was already refused by _ledger_check and is NOT in
+    txn_ids, so it is never touched here either."""
+    if not txn_ids:
         return
-    ph = ','.join('?' * len(doc_nos))
-    conn.execute(
-        f"DELETE FROM transactions WHERE reference_no IN ({ph}) "
-        f"AND note IN ('BSN ขาย','BSN ขาย-คืน')", doc_nos)
+    ids = list(txn_ids)
+    ph = ','.join('?' * len(ids))
+    conn.execute(f"DELETE FROM transactions WHERE id IN ({ph})", ids)
 
 
 def _delete_sales_rows(conn, row_ids):
@@ -551,7 +588,7 @@ def apply_reconcile_flag(flag_id, resolved_by, conn=None):
             c.rollback()
             return {'ok': False, 'error': cas_err}
 
-        ledger_err = _ledger_check(c, payload_rows)
+        ledger_err, verified_txn_ids = _ledger_check(c, payload_rows)
         if ledger_err:
             c.rollback()
             return {'ok': False, 'error': ledger_err}
@@ -561,9 +598,12 @@ def apply_reconcile_flag(flag_id, resolved_by, conn=None):
         linked = _linked_records(c, row['doc_base'])
         note = f"ยืนยันลบตาม Express | {_linked_records_summary(linked)}"
 
-        doc_nos = [r['doc_no'] for r in payload_rows]
         row_ids = [r['id'] for r in payload_rows]
-        _delete_stock_sync_txns(c, doc_nos)
+        # Delete by the EXACT ids _ledger_check verified (product_id/note/
+        # txn_type/sign/magnitude all checked) — never a broader reference_
+        # no+note sweep that could catch a corrupted/stale row sharing those
+        # two fields but pointing at the wrong product or direction.
+        _delete_verified_txns(c, verified_txn_ids)
         _delete_sales_rows(c, row_ids)
         _clean_review_docs(c, row['doc_base'])
         c.execute(

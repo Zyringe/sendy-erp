@@ -1045,3 +1045,133 @@ def test_apply_resolution_note_says_no_linked_records_when_none(empty_db_conn):
     assert result == {'ok': True}
     row = _flag_row(c, flag_id)
     assert 'ไม่มีข้อมูลอ้างอิง' in row['resolution_note']
+
+
+# ── P0 (Codex NO-GO, round 4): ledger-check must verify product_id/txn_type
+# /exact-note/signed-magnitude before trusting a row, mirroring bsn_sync.py's
+# writer rule exactly (~215-233), and delete by the exact verified ids ─────
+
+def _assert_refused_zero_mutation(c, flag_id, doc_base, doc_no, result):
+    assert result['ok'] is False
+    assert c.execute(
+        "SELECT COUNT(*) FROM sales_transactions WHERE doc_base=?", (doc_base,)
+    ).fetchone()[0] == 1
+    assert c.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no=?", (doc_no,)
+    ).fetchone()[0] == 1
+    assert _flag_row(c, flag_id)['state'] == 'open'
+    assert len(_events(c, flag_id)) == 0
+
+
+def test_ledger_check_refuses_wrong_product_id(empty_db_conn):
+    """A corrupt/stale row that shares reference_no+note but points at the
+    WRONG product must never be trusted — deleting it would fire the
+    mig-080 trigger against the wrong product's stock."""
+    c = empty_db_conn
+    pid_correct = _seed_product(c, name='สินค้าถูก')
+    pid_wrong = _seed_product(c, name='สินค้าผิด')
+    _insert_sale(c, doc_no='IV1000040-1', date_iso=IN_WINDOW_DATE.isoformat(),
+                 product_id=pid_correct, synced=1, qty=1.0)
+    _insert_bsn_txn(c, product_id=pid_wrong, doc_no='IV1000040-1', note='BSN ขาย',
+                    quantity_change=-1.0)   # right note/txn_type/sign, WRONG product
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000040')
+
+    result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
+
+    _assert_refused_zero_mutation(c, flag_id, 'IV1000040', 'IV1000040-1', result)
+
+
+def test_ledger_check_refuses_wrong_sign(empty_db_conn):
+    """txn_type label says OUT (correct for a normal IV line) but the actual
+    signed quantity_change is POSITIVE — internally inconsistent. The sign
+    check must catch this independently of the txn_type check (constructed
+    via raw SQL, not the _insert_bsn_txn helper, which would tie txn_type to
+    the sign and hide this exact mismatch)."""
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000041-1', date_iso=IN_WINDOW_DATE.isoformat(),
+                 product_id=pid, synced=1, qty=1.0)
+    c.execute("""
+        INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode,
+                                  reference_no, note, created_at)
+        VALUES (?, 'OUT', 1.0, 'unit', 'IV1000041-1', 'BSN ขาย', '2026-07-15 00:00:00')
+    """, (pid,))
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000041')
+
+    result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
+
+    _assert_refused_zero_mutation(c, flag_id, 'IV1000041', 'IV1000041-1', result)
+
+
+def test_ledger_check_refuses_wrong_note_on_sr_line(empty_db_conn):
+    """A plain 'BSN ขาย' row must NOT satisfy an SR payload line, which
+    requires the return-specific 'BSN ขาย-คืน' note — even though txn_type
+    (IN) and sign (+) happen to be correct for a return."""
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='SR6900099-1', date_iso=IN_WINDOW_DATE.isoformat(),
+                 product_id=pid, synced=1, qty=1.0)
+    c.execute("""
+        INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode,
+                                  reference_no, note, created_at)
+        VALUES (?, 'IN', 1.0, 'unit', 'SR6900099-1', 'BSN ขาย', '2026-07-15 00:00:00')
+    """, (pid,))
+    c.commit()
+    flag_id = _make_flag(c, 'SR6900099')
+
+    result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
+
+    _assert_refused_zero_mutation(c, flag_id, 'SR6900099', 'SR6900099-1', result)
+
+
+def test_ledger_check_refuses_wrong_txn_type(empty_db_conn):
+    """txn_type says IN (wrong — a normal IV line must post OUT) but the
+    quantity_change sign (-1) happens to be correct for OUT. The txn_type
+    check must catch this independently of the sign check."""
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000042-1', date_iso=IN_WINDOW_DATE.isoformat(),
+                 product_id=pid, synced=1, qty=1.0)
+    c.execute("""
+        INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode,
+                                  reference_no, note, created_at)
+        VALUES (?, 'IN', -1.0, 'unit', 'IV1000042-1', 'BSN ขาย', '2026-07-15 00:00:00')
+    """, (pid,))
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000042')
+
+    result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
+
+    _assert_refused_zero_mutation(c, flag_id, 'IV1000042', 'IV1000042-1', result)
+
+
+def test_apply_sr_line_correct_shape_applies_stock_moves_down(empty_db_conn):
+    """Positive control: a correctly-shaped SR line (IN/+qty/'BSN ขาย-คืน')
+    applies cleanly. Deleting an IN ledger row means the mig-080 trigger
+    reverses it — stock goes DOWN, not up. Asserted explicitly, not just
+    'changed', per the review ask."""
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='SR6900100-1', date_iso=IN_WINDOW_DATE.isoformat(),
+                 product_id=pid, synced=1, qty=2.0)
+    _insert_bsn_txn(c, product_id=pid, doc_no='SR6900100-1', note='BSN ขาย-คืน',
+                    quantity_change=2.0)
+    c.commit()
+    stock_before = c.execute(
+        "SELECT quantity FROM stock_levels WHERE product_id=?", (pid,)).fetchone()[0]
+    flag_id = _make_flag(c, 'SR6900100')
+
+    result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
+
+    assert result == {'ok': True}
+    stock_after = c.execute(
+        "SELECT quantity FROM stock_levels WHERE product_id=?", (pid,)).fetchone()[0]
+    assert stock_after == stock_before - 2.0
+    assert c.execute(
+        "SELECT COUNT(*) FROM sales_transactions WHERE doc_base='SR6900100'"
+    ).fetchone()[0] == 0
+    assert c.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no='SR6900100-1'"
+    ).fetchone()[0] == 0
