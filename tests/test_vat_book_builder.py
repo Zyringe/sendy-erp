@@ -120,6 +120,34 @@ def test_stock_oracle_sums_multi_location(conn):
     assert conn.execute("SELECT quantity FROM stock_levels").fetchone()[0] == 12
 
 
+# ── dump_stmas_meta (vat-substitute: STKGRP + VATCOD per code) ─────────────
+# Book-only artifact (same footing as isvat_raw — not in data/schema.sql):
+# the candidate/guess filters (plan §2/§5, decision 8) need Express's own
+# category (STKGRP) and tax-type (VATCOD) per code, which seed_products_from_
+# stmas' Sendy-shape products table has no column for.
+
+def test_dump_stmas_meta_creates_lookup_table(conn):
+    n = vb.dump_stmas_meta(conn, [
+        {'STKCOD': 'A1', 'STKGRP': '57', 'VATCOD': '1'},
+        {'STKCOD': 'A2', 'STKGRP': '93', 'VATCOD': '0'},
+    ])
+    assert n == 2
+    rows = {r['stkcod']: (r['stkgrp'], r['vatcod']) for r in
+            conn.execute("SELECT stkcod, stkgrp, vatcod FROM stmas_meta")}
+    assert rows == {'A1': ('57', '1'), 'A2': ('93', '0')}
+
+
+def test_dump_stmas_meta_blank_fields_and_dup_codes(conn):
+    n = vb.dump_stmas_meta(conn, [
+        {'STKCOD': 'B1'},                                   # no STKGRP/VATCOD at all
+        {'STKCOD': 'B1', 'STKGRP': 'ignored-dup'},          # dup code keeps first
+        {'STKCOD': '', 'STKGRP': '99'},                     # blank code skipped
+    ])
+    assert n == 1
+    row = conn.execute("SELECT stkgrp, vatcod FROM stmas_meta WHERE stkcod='B1'").fetchone()
+    assert (row['stkgrp'], row['vatcod']) == ('', '')
+
+
 # ── dump_isvat / book_meta ──────────────────────────────────────────────────
 
 def test_isvat_dump_sanitizes_columns_and_iso_dates(conn):

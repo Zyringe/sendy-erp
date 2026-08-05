@@ -121,6 +121,34 @@ def overwrite_stock_from_stmas(conn, stmas_rows, stloc_rows, code_to_pid):
     conn.commit()
 
 
+def dump_stmas_meta(conn, stmas_rows):
+    """Per-STKCOD STKGRP (Express's own category) + VATCOD (tax type at
+    invoice time) — needed by the vat-substitute candidate/guess filters
+    (plan §2/§5, decision 8: VATCOD != '1' is excluded from suggestions;
+    STKGRP is the category bridge for identity-mapped guesses) but with no
+    column on the Sendy-shape `products` table seed_products_from_stmas
+    writes. Book-only artifact, same footing as isvat_raw: NOT part of the
+    shared migration-managed schema.sql (no analog in the main book), so it
+    is created directly here rather than via a migration. Duplicate STKCOD
+    keeps the first row, matching seed_products_from_stmas' own dedup rule."""
+    conn.execute("DROP TABLE IF EXISTS stmas_meta")
+    conn.execute(
+        "CREATE TABLE stmas_meta (stkcod TEXT PRIMARY KEY, stkgrp TEXT NOT NULL, "
+        "vatcod TEXT NOT NULL)")
+    seen = set()
+    rows = []
+    for r in stmas_rows:
+        code = str(r.get('STKCOD') or '').strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        rows.append((code, str(r.get('STKGRP') or '').strip(),
+                     str(r.get('VATCOD') or '').strip()))
+    conn.executemany("INSERT INTO stmas_meta VALUES (?, ?, ?)", rows)
+    conn.commit()
+    return len(rows)
+
+
 _IDENT = re.compile(r'[^A-Za-z0-9_]')
 
 
@@ -227,9 +255,11 @@ def build(source_dir):
             source_dir, db_path=db_path, since_days=None)
         overwrite_stock_from_stmas(conn, stmas, stloc, code_to_pid)
         isvat_n = dump_isvat(conn, isvat)
+        stmas_meta_n = dump_stmas_meta(conn, stmas)
         counts = {
             'products': len(code_to_pid),
             'isvat_rows': isvat_n,
+            'stmas_meta_rows': stmas_meta_n,
             'sales_imported': per_type['sales']['imported'],
             'purchase_imported': per_type['purchase']['imported'],
             'payments_in': per_type['payments_in']['imported'],
