@@ -340,12 +340,78 @@ def write_sheet(review_rows, out_base):
     return csv_path, html_path
 
 
+def read_substitution_rows(csv_path):
+    """Rows marked 's' (ไม่ใช่แต่ใช้แทนกันได้ — vat-substitute plan decision
+    5's 3-way decision column) on a FILLED review sheet -> {'product_id':
+    suggest_pid, 'xp5_code': xp5_code} pairs, the input shape
+    models.vat_sub.apply_substitution_sheet expects (plan §4.7)."""
+    import csv
+    rows = []
+    with open(csv_path, encoding='utf-8-sig') as fh:
+        for r in csv.DictReader(fh):
+            decision = (r.get(_DECISION_COL) or '').strip().lower()
+            if decision != 's':
+                continue
+            xp5_code = (r.get('xp5_code') or '').strip()
+            try:
+                pid = int((r.get('suggest_pid') or '').strip())
+            except ValueError:
+                continue
+            if xp5_code:
+                rows.append({'product_id': pid, 'xp5_code': xp5_code})
+    return rows
+
+
+def apply_substitution_sheet_from_csv(csv_path, apply=False):
+    """Wraps models.vat_sub.apply_substitution_sheet with the pipeline's own
+    apply-entrypoint conventions: dry-run by default, `.backup` first on
+    --apply, printed summary. The `.backup` is THIS caller's job — the model
+    function's transaction covers apply+verify only (same division as
+    apply_reconcile_flag)."""
+    rows = read_substitution_rows(csv_path)
+    print(f"{len(rows)} rows marked 's' (ไม่ใช่แต่ใช้แทนกันได้) in {csv_path}")
+    if not apply:
+        print('dry-run only — rerun with --apply-sub to write')
+        return {'dry_run': True, 'would_apply': len(rows)}
+
+    backup = str(REPORT_DIR / f'_main_db_backup_pre_substitution_apply_{date.today().isoformat()}.db')
+    src = sqlite3.connect(config.DATABASE_PATH, timeout=10)
+    dst = sqlite3.connect(backup)
+    src.backup(dst)
+    dst.close()
+    src.close()
+
+    import models  # inventory_app already on sys.path (see module header)
+    conn = sqlite3.connect(config.DATABASE_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=10000")
+    try:
+        result = models.apply_substitution_sheet(rows, conn=conn)
+    finally:
+        conn.close()
+    if result['ok']:
+        print(f"applied {result['applied']} pairs (field-exact verified; backup: {backup})")
+    else:
+        print(f"REFUSED — {len(result['mismatches'])} pair(s) failed the independent re-verify, "
+              f"rolled back the WHOLE batch: {result['mismatches']}")
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--xp5', required=True)
-    ap.add_argument('--bsn', required=True)
+    ap.add_argument('--xp5')
+    ap.add_argument('--bsn')
     ap.add_argument('--apply', action='store_true')
+    ap.add_argument('--apply-sub', metavar='FILLED_SHEET_CSV',
+                    help='apply the "s" (ใช้แทนกันได้) rows of a Put-reviewed sheet '
+                         'into vat_sub_groups (plan §4.7); dry-run unless --apply too')
     args = ap.parse_args()
+
+    if args.apply_sub:
+        apply_substitution_sheet_from_csv(args.apply_sub, apply=args.apply)
+        return
+    if not args.xp5 or not args.bsn:
+        ap.error('--xp5 and --bsn are required unless --apply-sub is given')
 
     conn = sqlite3.connect(config.DATABASE_PATH, timeout=10)
     conn.row_factory = sqlite3.Row

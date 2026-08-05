@@ -722,6 +722,87 @@ def delete_group(group_id, conn=None):
             c.close()
 
 
+def apply_substitution_sheet(rows, conn=None):
+    """§4.7 sheet apply — the executable algorithm for rows marked
+    "ใช้แทนกันได้" on the review sheet. `rows`: iterable of {'product_id':
+    int, 'xp5_code': str}. Deduplicated + sorted here (deterministic order:
+    product_id, xp5_code) so callers need not pre-sort. ONE transaction; the
+    caller is responsible for the `.backup` (plan §4.7 — this function only
+    owns the apply+verify step, same division as apply_reconcile_flag).
+
+    Per pair (X, Y):
+      1. X already linked to >=1 group -> target = X's lowest-id group; add
+         Y as member (added_from='sheet', ON CONFLICT no-op).
+      2. Else Y already a member of >=1 group -> target = Y's lowest-id
+         group; link X (ON CONFLICT no-op).
+      3. Else -> create a group (label = X's category noun, set ONLY at
+         creation) with X linked + Y as member.
+    Groups are NEVER merged (existing groups always survive; a bridging row
+    resolves at step 1). Idempotent, rename-stable, additive-only.
+
+    Independent re-verify in the SAME transaction: every processed pair
+    must be co-resident (a group containing X's link AND Y's membership) —
+    ANY mismatch rolls back the WHOLE transaction, not just the bad row."""
+    own = conn is None
+    c = conn if conn is not None else get_connection()
+    dedup_rows = sorted({(r['product_id'], r['xp5_code']) for r in rows})
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        for product_id, xp5_code in dedup_rows:
+            x_groups = [r['group_id'] for r in c.execute(
+                "SELECT group_id FROM vat_sub_product_links WHERE product_id=? ORDER BY group_id",
+                (product_id,)).fetchall()]
+            if x_groups:
+                gid = x_groups[0]
+                c.execute(
+                    "INSERT INTO vat_sub_members (group_id, xp5_code, added_from) "
+                    "VALUES (?, ?, 'sheet') ON CONFLICT(group_id, xp5_code) DO NOTHING",
+                    (gid, xp5_code))
+                continue
+            y_groups = [r['group_id'] for r in c.execute(
+                "SELECT group_id FROM vat_sub_members WHERE xp5_code=? ORDER BY group_id",
+                (xp5_code,)).fetchall()]
+            if y_groups:
+                gid = y_groups[0]
+                c.execute(
+                    "INSERT INTO vat_sub_product_links (group_id, product_id) VALUES (?, ?) "
+                    "ON CONFLICT DO NOTHING", (gid, product_id))
+                continue
+            prod = c.execute(
+                "SELECT product_name FROM products WHERE id=?", (product_id,)).fetchone()
+            prod_name = prod['product_name'] if prod else str(product_id)
+            label = extract_category_noun(prod_name) or prod_name
+            gid = c.execute("INSERT INTO vat_sub_groups (label) VALUES (?)", (label,)).lastrowid
+            c.execute(
+                "INSERT INTO vat_sub_product_links (group_id, product_id) VALUES (?, ?) "
+                "ON CONFLICT DO NOTHING", (gid, product_id))
+            c.execute(
+                "INSERT INTO vat_sub_members (group_id, xp5_code, added_from) "
+                "VALUES (?, ?, 'sheet') ON CONFLICT(group_id, xp5_code) DO NOTHING",
+                (gid, xp5_code))
+
+        mismatches = []
+        for product_id, xp5_code in dedup_rows:
+            ok = c.execute("""
+                SELECT 1 FROM vat_sub_product_links l
+                JOIN vat_sub_members m ON m.group_id = l.group_id
+                WHERE l.product_id = ? AND m.xp5_code = ?
+            """, (product_id, xp5_code)).fetchone()
+            if not ok:
+                mismatches.append((product_id, xp5_code))
+        if mismatches:
+            c.rollback()
+            return {'ok': False, 'applied': 0, 'mismatches': mismatches}
+        c.commit()
+        return {'ok': True, 'applied': len(dedup_rows), 'mismatches': []}
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        if own:
+            c.close()
+
+
 def get_unit_options(product_id, main_conn):
     """X's unit selector options for the badge input (§5 badge formula):
     the base unit_type (ratio 1.0) plus every unit_conversions row."""

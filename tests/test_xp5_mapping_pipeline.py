@@ -118,6 +118,23 @@ def test_write_sheet_has_three_way_decision_column(tmp_path):
     assert 'ใช้แทนกันได้' in html
 
 
+def test_read_substitution_rows_filters_s_decision_only(tmp_path):
+    """vat-substitute plan §4.7 sheet-apply entrypoint: only rows marked 's'
+    (ไม่ใช่แต่ใช้แทนกันได้) feed the substitution apply — 'pid' (identity)
+    and 'x' (unrelated) rows, and blank/undecided rows, are all excluded."""
+    csv_path = tmp_path / 'filled.csv'
+    csv_path.write_text(
+        'xp5_code,xp5_name,layer,suggest_pid,suggest_name,evidence,' + pl._DECISION_COL + '\n'
+        'X1,ชื่อ1,name-similar,10,หลัก1,ev,s\n'
+        'X2,ชื่อ2,name-similar,20,หลัก2,ev,42\n'   # pid decision -> identity, not substitution
+        'X3,ชื่อ3,name-similar,30,หลัก3,ev,x\n'    # unrelated
+        'X4,ชื่อ4,name-similar,40,หลัก4,ev,\n'     # undecided
+        'X5,ชื่อ5,name-similar,50,หลัก5,ev,S\n',   # case-insensitive
+        encoding='utf-8-sig')
+    rows = pl.read_substitution_rows(str(csv_path))
+    assert rows == [{'product_id': 10, 'xp5_code': 'X1'}, {'product_id': 50, 'xp5_code': 'X5'}]
+
+
 def test_layer2_signature_same_unit_pairs(monkeypatch, tmp_path):
     import express_dbf_source as eds
     import datetime

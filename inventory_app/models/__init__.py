@@ -179,6 +179,6 @@ from .vat_sub import (
     open_vat_book, get_own_stock_card, get_candidates, get_guesses,
     get_unit_options, compute_badge, list_all_groups, get_group_detail,
     promote, add_member, move_member, remove_member, link_product,
-    unlink_product, rename_group, delete_group,
+    unlink_product, rename_group, delete_group, apply_substitution_sheet,
 )
 
