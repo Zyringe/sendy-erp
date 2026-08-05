@@ -51,6 +51,7 @@ import sys
 from database import get_connection
 
 KIND_WACC_IDENTITY = 'wacc_identity'
+KIND_IMPORT_IGNORED_LINES = 'import_ignored_lines'
 
 
 def _dedupe_key(parts):
@@ -90,6 +91,49 @@ def create_system_alert(kind, message, *, dedupe_key, severity='error',
     finally:
         if own:
             conn.close()
+
+
+def record_ignored_import_lines_alert(ignored_detail, *, file_type, filename):
+    """A weekly import SKIPPED lines whose รหัส is marked ไม่นำเข้า.
+
+    Not an error — the import succeeded — but it silently drops the REVENUE of
+    those lines along with their stock. ฿592 of ค่าขนส่ง (888ค8888) disappeared
+    that way over two years before anyone noticed, ฿480 of it billed to named
+    B2B customers.
+
+    PR #364 already shows this on the import results page. That page is seen by
+    whoever ran the import, which is the precise failure this module exists to
+    fix (see the docstring above): the team clicks past it and Put never hears.
+    An alert on /alerts stays until someone acknowledges it.
+
+    Dedupe key is the bsn_code ALONE, per _dedupe_key's rule: filename and batch
+    are diagnostics and live in context. So a code that keeps being skipped week
+    after week holds ONE open alert rather than stacking, and a recurrence after
+    acknowledgement is allowed to alert again.
+
+    Best-effort. Callers invoke this AFTER their own connection is closed, and
+    must not let an alert failure sink an import that really succeeded.
+    """
+    if not ignored_detail:
+        return []
+    ids = []
+    for d in ignored_detail:
+        msg = ("นำเข้า{ft} ข้าม {lines} บรรทัด รหัส {code} ({name}) "
+               "รวม {net:,.2f} บาท — รหัสนี้ตั้งเป็น \"ไม่นำเข้า\" "
+               "ยอดขายส่วนนี้จึงไม่ถูกบันทึก. ถ้าเป็นค่าบริการที่เก็บเงินลูกค้าจริง "
+               "(เช่น ค่าขนส่ง) ต้องแก้วิธีบันทึกก่อน ไม่ใช่แค่เปิดรหัสกลับ"
+               ).format(ft='ขาย' if file_type == 'sales' else 'ซื้อ',
+                        lines=d.get('lines'), code=d.get('bsn_code'),
+                        name=d.get('name') or '-', net=d.get('net') or 0)
+        aid = create_system_alert(
+            KIND_IMPORT_IGNORED_LINES, msg,
+            dedupe_key=_dedupe_key([d.get('bsn_code')]),
+            severity='warning',
+            context={'file_type': file_type, 'filename': filename,
+                     'ignored_detail': ignored_detail})
+        if aid:
+            ids.append(aid)
+    return ids
 
 
 def record_wacc_identity_alert(exc, *, operation=None, extra=None):

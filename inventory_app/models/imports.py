@@ -14,7 +14,8 @@ from .mapping import _resolve_mapping
 from .bsn_sync import _sync_bsn_to_stock
 from .wacc import (recalculate_product_wacc, preflight_batch,
                    WaccIdentityError)
-from .system_alerts import record_wacc_identity_alert
+from .system_alerts import (record_wacc_identity_alert,
+                            record_ignored_import_lines_alert)
 
 
 def _detect_removed_lines(conn, table: str, file_type: str, entries: list) -> list:
@@ -374,6 +375,30 @@ def import_weekly(entries: list, file_type: str, filename: str,
 
     conn.close()
 
+    # A skipped billable line must reach Put, not just whoever ran the import.
+    # The results page (PR #364) shows it to the operator; this is the durable
+    # half. Recorded HERE rather than in the route so the Express-DBF path gets
+    # it too, and only after `conn` is closed above — system_alerts' ownership
+    # rule: never write the alert on the connection that did the work.
+    #
+    # Best-effort by design. An alert-table problem must not make an import that
+    # actually succeeded look failed (same stance as the WACC caller).
+    # KNOWN GAP, accepted: if the WACC block above raised, both of its except
+    # branches close and re-raise, so we never get here — an import can commit
+    # its source rows, skip billable lines, and produce no skip alert. Not fixed
+    # by moving this earlier: `conn` still holds a write transaction there, and
+    # system_alerts' docstring warns that opening a second connection in that
+    # state risks `database is locked`. It self-heals — the dedupe key is the
+    # bsn_code, so the next import alerts — and the trigger is a rare error that
+    # is already alerting loudly on its own.
+    ignored_rows = sorted(ignored_detail.values(), key=lambda d: -abs(d['net']))
+    if ignored_rows:
+        try:
+            record_ignored_import_lines_alert(
+                ignored_rows, file_type=file_type, filename=filename)
+        except Exception as _alert_exc:      # noqa: BLE001 - observability only
+            print('[import] could not record ignored-lines alert: %s' % _alert_exc)
+
     return {
         'imported': imported,
         # `skipped_dup` is GONE, not aliased: a repo-wide sweep (with a control
@@ -381,7 +406,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
         # renders this dict verbatim — so keeping the old key would keep showing
         # the operator the word that hid the problem.
         'ignored': ignored,
-        'ignored_detail': sorted(ignored_detail.values(), key=lambda d: -abs(d['net'])),
+        'ignored_detail': ignored_rows,
         'overwritten': overwritten,
         'unchanged': unchanged,
         'removed': removed,
