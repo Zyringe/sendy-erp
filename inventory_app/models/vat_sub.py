@@ -353,6 +353,56 @@ def get_guesses(product_id, main_conn, book_conn, exclude_codes=frozenset()):
     return {'empty': False, 'items': order_candidates(rows, x_size, x_color)}
 
 
+# ── Planning mode / all-groups view (§4.9) ──────────────────────────────────
+
+def list_all_groups(main_conn, book_conn):
+    """§4.9: every group, sorted by total VAT stock desc — a group's total
+    = Σ over its DISTINCT member codes passing the same eligibility filters
+    as candidate lists (stock >= threshold, VATCOD = '1'). Zero-total groups
+    sink to the bottom but stay in the list (they answer "nothing to drain
+    here", never hidden). member_count/product_count are raw membership
+    counts (NOT eligibility-filtered) — the group-management surface needs
+    to show every row, eligible or not."""
+    groups = main_conn.execute(
+        "SELECT id, label, created_at, updated_at FROM vat_sub_groups ORDER BY id").fetchall()
+    out = []
+    for g in groups:
+        codes = [r['xp5_code'] for r in main_conn.execute(
+            "SELECT DISTINCT xp5_code FROM vat_sub_members WHERE group_id=?", (g['id'],))]
+        linked = main_conn.execute(
+            "SELECT p.id, p.product_name AS name FROM vat_sub_product_links l "
+            "JOIN products p ON p.id = l.product_id WHERE l.group_id=? ORDER BY p.product_name",
+            (g['id'],)).fetchall()
+        members = []
+        total_stock = 0.0
+        if book_conn is not None:
+            for code in codes:
+                row = _fetch_book_row(book_conn, code)
+                if row is not None:
+                    members.append(row)
+                    if row['stock'] >= STOCK_THRESHOLD and row['vatcod'] == '1':
+                        total_stock += row['stock']
+        out.append({
+            'id': g['id'], 'label': g['label'],
+            'created_at': g['created_at'], 'updated_at': g['updated_at'],
+            'member_count': len(codes), 'product_count': len(linked),
+            'total_stock': total_stock,
+            'members': members,
+            'linked_products': [dict(r) for r in linked],
+        })
+    out.sort(key=lambda x: -x['total_stock'])
+    return out
+
+
+def get_group_detail(group_id, main_conn, book_conn):
+    """One group's full detail (members + linked products) for the group-
+    management surface. None if the group doesn't exist."""
+    for g in list_all_groups(main_conn, book_conn):
+        if g['id'] == group_id:
+            return g
+    return None
+
+
 # ── Curation writes (§4.5/§4.6/§5) ──────────────────────────────────────────
 # Every write below: ONE `BEGIN IMMEDIATE` transaction, every refusal check
 # runs BEFORE any mutation, `conn=None` (the route path) opens+owns its own
