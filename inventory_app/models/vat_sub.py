@@ -353,6 +353,318 @@ def get_guesses(product_id, main_conn, book_conn, exclude_codes=frozenset()):
     return {'empty': False, 'items': order_candidates(rows, x_size, x_color)}
 
 
+# ── Curation writes (§4.5/§4.6/§5) ──────────────────────────────────────────
+# Every write below: ONE `BEGIN IMMEDIATE` transaction, every refusal check
+# runs BEFORE any mutation, `conn=None` (the route path) opens+owns its own
+# connection so the lock is acquired the instant the call starts (mirrors
+# models/reconcile.py::apply_reconcile_flag). `book_conn=None` (promote/
+# add_member, the two that validate against the book) opens a fresh
+# open_vat_book() and closes it before returning — tests inject their own.
+
+def promote(product_id, xp5_code, target_group_id=None, conn=None, book_conn=None):
+    """§4.5 promote = idempotent add-membership. target_group_id: None =
+    default (X's lowest existing group id, or cold-start create if X has
+    none); an int = that specific existing group (validated); 'new' =
+    force-create a new group even if X already has groups (many-to-many,
+    decision 11). Validation, in order, ALL inside the write lock: X is an
+    existing active product; target group exists (when a specific int is
+    given); Y exists in the published book; Y's VATCOD = '1'. Category
+    compatibility is NOT server-enforced (curation is human judgment) and
+    stock level is NOT rechecked (zero-stock membership is legitimate)."""
+    own = conn is None
+    own_book = book_conn is None
+    c = conn if conn is not None else get_connection()
+    bc = book_conn if book_conn is not None else open_vat_book()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prod = c.execute(
+            "SELECT product_name FROM products WHERE id=? AND is_active=1",
+            (product_id,)).fetchone()
+        if prod is None:
+            c.rollback()
+            return {'ok': False, 'error': 'ไม่พบสินค้านี้ หรือถูกปิดใช้งานแล้ว'}
+        if bc is None:
+            c.rollback()
+            return {'ok': False, 'error': 'สมุด VAT ยังไม่ถูกสร้าง'}
+        y_row = _fetch_book_row(bc, xp5_code)
+        if y_row is None:
+            c.rollback()
+            return {'ok': False, 'error': 'ไม่พบรหัสนี้ในสมุด VAT ปัจจุบัน'}
+        if y_row['vatcod'] != '1':
+            c.rollback()
+            return {'ok': False, 'error': 'รหัสนี้ VAT code ไม่ใช่ 1 — ใช้แทนไม่ได้'}
+
+        existing_group_ids = [r['group_id'] for r in c.execute(
+            "SELECT group_id FROM vat_sub_product_links WHERE product_id=? ORDER BY group_id",
+            (product_id,))]
+        force_new = target_group_id == 'new'
+        created_group = False
+        if force_new or (target_group_id is None and not existing_group_ids):
+            label = extract_category_noun(prod['product_name']) or prod['product_name']
+            gid = c.execute(
+                "INSERT INTO vat_sub_groups (label) VALUES (?)", (label,)).lastrowid
+            c.execute(
+                "INSERT INTO vat_sub_product_links (group_id, product_id) VALUES (?, ?) "
+                "ON CONFLICT DO NOTHING", (gid, product_id))
+            created_group = True
+        elif target_group_id is None:
+            gid = existing_group_ids[0]
+        else:
+            grp = c.execute("SELECT 1 FROM vat_sub_groups WHERE id=?", (target_group_id,)).fetchone()
+            if grp is None:
+                c.rollback()
+                return {'ok': False, 'error': 'ไม่พบกลุ่มที่ระบุ'}
+            gid = target_group_id
+            c.execute(
+                "INSERT INTO vat_sub_product_links (group_id, product_id) VALUES (?, ?) "
+                "ON CONFLICT DO NOTHING", (gid, product_id))
+
+        already = c.execute(
+            "SELECT 1 FROM vat_sub_members WHERE group_id=? AND xp5_code=?",
+            (gid, xp5_code)).fetchone()
+        c.execute(
+            "INSERT INTO vat_sub_members (group_id, xp5_code, added_from) "
+            "VALUES (?, ?, 'promote') ON CONFLICT(group_id, xp5_code) DO NOTHING",
+            (gid, xp5_code))
+        c.commit()
+        return {'ok': True, 'group_id': gid, 'created_group': created_group,
+                'noop': already is not None}
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        if own:
+            c.close()
+        if own_book and bc is not None:
+            bc.close()
+
+
+def add_member(group_id, xp5_code, conn=None, book_conn=None):
+    """§5 Routes: group-page search-and-add. Validation: target group
+    exists + Y exists in the published book + Y's VATCOD='1' — no X in this
+    flow. Zero-stock codes are accepted on purpose (only the guess section's
+    >= threshold filter hides them, not this write)."""
+    own = conn is None
+    own_book = book_conn is None
+    c = conn if conn is not None else get_connection()
+    bc = book_conn if book_conn is not None else open_vat_book()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        grp = c.execute("SELECT 1 FROM vat_sub_groups WHERE id=?", (group_id,)).fetchone()
+        if grp is None:
+            c.rollback()
+            return {'ok': False, 'error': 'ไม่พบกลุ่ม'}
+        if bc is None:
+            c.rollback()
+            return {'ok': False, 'error': 'สมุด VAT ยังไม่ถูกสร้าง'}
+        y_row = _fetch_book_row(bc, xp5_code)
+        if y_row is None:
+            c.rollback()
+            return {'ok': False, 'error': 'ไม่พบรหัสนี้ในสมุด VAT ปัจจุบัน'}
+        if y_row['vatcod'] != '1':
+            c.rollback()
+            return {'ok': False, 'error': 'รหัสนี้ VAT code ไม่ใช่ 1 — ใช้แทนไม่ได้'}
+        already = c.execute(
+            "SELECT 1 FROM vat_sub_members WHERE group_id=? AND xp5_code=?",
+            (group_id, xp5_code)).fetchone()
+        c.execute(
+            "INSERT INTO vat_sub_members (group_id, xp5_code, added_from) "
+            "VALUES (?, ?, 'manual') ON CONFLICT(group_id, xp5_code) DO NOTHING",
+            (group_id, xp5_code))
+        c.commit()
+        return {'ok': True, 'noop': already is not None}
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        if own:
+            c.close()
+        if own_book and bc is not None:
+            bc.close()
+
+
+def move_member(source_group_id, target_group_id, xp5_code, conn=None):
+    """§5 Routes: re-home a member in ONE transaction. Four membership
+    states, all defined (plan §5): source-only = normal move (insert target
+    preserving source's added_from, delete source); both = keep the
+    EXISTING target row + its provenance, delete source; target-only =
+    friendly no-op; neither = reject."""
+    own = conn is None
+    c = conn if conn is not None else get_connection()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        if target_group_id == source_group_id:
+            c.rollback()
+            return {'ok': False, 'error': 'กลุ่มต้นทางและปลายทางต้องไม่เหมือนกัน'}
+        target_exists = c.execute(
+            "SELECT 1 FROM vat_sub_groups WHERE id=?", (target_group_id,)).fetchone()
+        if target_exists is None:
+            c.rollback()
+            return {'ok': False, 'error': 'ไม่พบกลุ่มปลายทาง'}
+        source_row = c.execute(
+            "SELECT added_from FROM vat_sub_members WHERE group_id=? AND xp5_code=?",
+            (source_group_id, xp5_code)).fetchone()
+        target_row = c.execute(
+            "SELECT 1 FROM vat_sub_members WHERE group_id=? AND xp5_code=?",
+            (target_group_id, xp5_code)).fetchone()
+        if source_row is None and target_row is None:
+            c.rollback()
+            return {'ok': False, 'error': 'ไม่พบสินค้าทดแทนนี้ในกลุ่มต้นทางหรือปลายทาง'}
+        if source_row is None and target_row is not None:
+            c.commit()
+            return {'ok': True, 'noop': True, 'message': 'ย้ายแล้ว'}
+        if source_row is not None and target_row is not None:
+            c.execute(
+                "DELETE FROM vat_sub_members WHERE group_id=? AND xp5_code=?",
+                (source_group_id, xp5_code))
+            c.commit()
+            return {'ok': True, 'message': 'ย้ายแล้ว — ปลายทางมีอยู่แล้ว'}
+        c.execute(
+            "INSERT INTO vat_sub_members (group_id, xp5_code, added_from) VALUES (?, ?, ?)",
+            (target_group_id, xp5_code, source_row['added_from']))
+        c.execute(
+            "DELETE FROM vat_sub_members WHERE group_id=? AND xp5_code=?",
+            (source_group_id, xp5_code))
+        c.commit()
+        return {'ok': True}
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        if own:
+            c.close()
+
+
+def remove_member(group_id, xp5_code, conn=None):
+    own = conn is None
+    c = conn if conn is not None else get_connection()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        existed = c.execute(
+            "SELECT 1 FROM vat_sub_members WHERE group_id=? AND xp5_code=?",
+            (group_id, xp5_code)).fetchone()
+        c.execute(
+            "DELETE FROM vat_sub_members WHERE group_id=? AND xp5_code=?",
+            (group_id, xp5_code))
+        c.commit()
+        return {'ok': True, 'noop': existed is None}
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        if own:
+            c.close()
+
+
+def link_product(group_id, product_id, conn=None):
+    """The inverse of unlink_product. Rejects now-inactive products even on
+    re-link (safety condition, documented — plan §4.7 reversibility)."""
+    own = conn is None
+    c = conn if conn is not None else get_connection()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        grp = c.execute("SELECT 1 FROM vat_sub_groups WHERE id=?", (group_id,)).fetchone()
+        if grp is None:
+            c.rollback()
+            return {'ok': False, 'error': 'ไม่พบกลุ่ม'}
+        prod = c.execute(
+            "SELECT 1 FROM products WHERE id=? AND is_active=1", (product_id,)).fetchone()
+        if prod is None:
+            c.rollback()
+            return {'ok': False, 'error': 'ไม่พบสินค้านี้ หรือถูกปิดใช้งานแล้ว'}
+        existed = c.execute(
+            "SELECT 1 FROM vat_sub_product_links WHERE group_id=? AND product_id=?",
+            (group_id, product_id)).fetchone()
+        c.execute(
+            "INSERT INTO vat_sub_product_links (group_id, product_id) VALUES (?, ?) "
+            "ON CONFLICT DO NOTHING", (group_id, product_id))
+        c.commit()
+        return {'ok': True, 'noop': existed is not None}
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        if own:
+            c.close()
+
+
+def unlink_product(group_id, product_id, conn=None):
+    own = conn is None
+    c = conn if conn is not None else get_connection()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        existed = c.execute(
+            "SELECT 1 FROM vat_sub_product_links WHERE group_id=? AND product_id=?",
+            (group_id, product_id)).fetchone()
+        c.execute(
+            "DELETE FROM vat_sub_product_links WHERE group_id=? AND product_id=?",
+            (group_id, product_id))
+        c.commit()
+        return {'ok': True, 'noop': existed is None}
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        if own:
+            c.close()
+
+
+def rename_group(group_id, label, conn=None):
+    own = conn is None
+    c = conn if conn is not None else get_connection()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        label = (label or '').strip()
+        if not label:
+            c.rollback()
+            return {'ok': False, 'error': 'ต้องระบุชื่อกลุ่ม'}
+        grp = c.execute("SELECT 1 FROM vat_sub_groups WHERE id=?", (group_id,)).fetchone()
+        if grp is None:
+            c.rollback()
+            return {'ok': False, 'error': 'ไม่พบกลุ่ม'}
+        c.execute(
+            "UPDATE vat_sub_groups SET label=?, updated_at=datetime('now','localtime') WHERE id=?",
+            (label, group_id))
+        c.commit()
+        return {'ok': True}
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        if own:
+            c.close()
+
+
+def delete_group(group_id, conn=None):
+    """Empty groups only (zero members AND zero links, verified inside the
+    transaction). Repeat/stale deletes are a defined no-op — a group is
+    label-only, so deleting an already-gone one loses nothing (plan §4.7)."""
+    own = conn is None
+    c = conn if conn is not None else get_connection()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        grp = c.execute("SELECT 1 FROM vat_sub_groups WHERE id=?", (group_id,)).fetchone()
+        if grp is None:
+            c.commit()
+            return {'ok': True, 'noop': True, 'message': 'กลุ่มถูกลบไปแล้ว'}
+        member_count = c.execute(
+            "SELECT COUNT(*) AS n FROM vat_sub_members WHERE group_id=?", (group_id,)).fetchone()['n']
+        link_count = c.execute(
+            "SELECT COUNT(*) AS n FROM vat_sub_product_links WHERE group_id=?", (group_id,)).fetchone()['n']
+        if member_count > 0 or link_count > 0:
+            c.rollback()
+            return {'ok': False, 'error': 'ลบไม่ได้ — กลุ่มนี้ยังมีสมาชิกหรือสินค้าเชื่อมอยู่'}
+        c.execute("DELETE FROM vat_sub_groups WHERE id=?", (group_id,))
+        c.commit()
+        return {'ok': True}
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        if own:
+            c.close()
+
+
 def get_unit_options(product_id, main_conn):
     """X's unit selector options for the badge input (§5 badge formula):
     the base unit_type (ratio 1.0) plus every unit_conversions row."""
