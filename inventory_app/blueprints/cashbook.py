@@ -1105,6 +1105,29 @@ def _advance_link_id(row):
         return None
 
 
+def _edit_policy_blocked_reason(conn, category, user_category):
+    """Thai reason why `category` may not be set via txn_edit, or None.
+
+    `_reject_if_advance_edit` only guards rows that are ALREADY linked, so
+    without this an ORDINARY unlinked row could be edited INTO the advance
+    category and would sit there with `salary_advance_id` NULL — invisible to
+    payroll, never deducted. That is precisely how a ฿1,000 advance escaped
+    run 6 (2026-08-05 clean-up). Edit deliberately does NOT write back:
+    /cashbook/new stays the SOLE live writer of salary_advances (plan.md C5c /
+    finding #4), so the answer is to refuse and point at delete + re-add —
+    the same correction path an already-linked row gets.
+
+    The salary / commission families defer to the create path's own gate so the
+    two routes cannot drift.
+    """
+    if category == ADVANCE_CATEGORY:
+        return ("เปลี่ยนเป็นหมวดเบิกล่วงหน้าที่นี่ไม่ได้ — ให้ลบรายการนี้แล้ว"
+                "เพิ่มใหม่ที่หน้าบันทึกรายการ เพื่อให้ระบบผูกกับรายการเบิกของพนักงานให้")
+    return _policy_blocked_reason(
+        conn, {"category": category, "user_category": user_category}
+    )
+
+
 def _reject_if_advance_edit(row):
     """Advance-linked rows (salary_advance_id set) are NOT editable in place —
     the cashbook is their source of truth, and a correction is delete + re-add
@@ -1188,6 +1211,11 @@ def txn_edit(txn_id):
         if errors:
             for msg in errors:
                 flash(msg, "danger")
+            return redirect(url_for("cashbook.account_ledger", account_id=row["account_id"]))
+
+        blocked = _edit_policy_blocked_reason(conn, category, user_category)
+        if blocked:
+            flash(blocked, "danger")
             return redirect(url_for("cashbook.account_ledger", account_id=row["account_id"]))
 
         _upsert_category(conn, category, direction)

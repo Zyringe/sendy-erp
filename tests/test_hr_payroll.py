@@ -465,40 +465,52 @@ def test_reopen_run_missing_id_returns_none(tmp_db_conn_hr_clean):
 
 # ── 8. generate_run reconciles orphaned advance stamps ──────────────────────
 
-def test_regenerate_unstamps_advances_for_dropped_employees(tmp_db_conn_hr_clean):
-    """Scenario: run finalized → advances stamped → reopen → employee X
-    set inactive → regenerate drops X. Without the reconcile, X's advance
-    stays stamped to this run forever and is never deducted. With the
-    reconcile, the stamp is cleared so X's advance follows them to the
-    next paid run."""
+def test_regenerate_refuses_to_drop_a_deactivated_employee(tmp_db_conn_hr_clean):
+    """SUPERSEDES `test_regenerate_unstamps_advances_for_dropped_employees`
+    (2026-08-05).
+
+    That test pinned a MITIGATION: let the regenerate drop employee X, then
+    un-stamp X's advance so it "follows them to the next paid run". Measured on
+    a prod snapshot, the drop itself is the damage — it deletes X's payslip
+    record for that month, and a deactivated employee has no next paid run for
+    the advance to follow them to. `generate_run` now REFUSES instead, so the
+    mitigation is unreachable by this path.
+
+    Note the correct flag for someone leaving mid-month is `end_date` (which
+    keeps them in the run with a prorated amount), not `is_active = 0` — the
+    latter means "gone", and is normally set only after their final payroll.
+    """
     eid = _mk_employee(tmp_db_conn_hr_clean, 'T_ORPH', 'orphan-target',
                        '2026-01-01', monthly_salary=15000.0)
     _add_advance(tmp_db_conn_hr_clean, eid, '2026-09-05', 500.0)
     run = hr.generate_run('2026-09', 1, created_by=1, conn=tmp_db_conn_hr_clean)
     rid = run['id']
     hr.finalize_run(rid, conn=tmp_db_conn_hr_clean)
-    # Advance is now stamped to this run.
     stamped = tmp_db_conn_hr_clean.execute(
         "SELECT deducted_in_run_id FROM salary_advances WHERE employee_id=?",
         (eid,),
     ).fetchone()[0]
     assert stamped == rid
-    # Reopen + deactivate employee + regenerate
+
     hr.reopen_run(rid, reason='need to drop X', actor='admin',
                   conn=tmp_db_conn_hr_clean)
     tmp_db_conn_hr_clean.execute(
         "UPDATE employees SET is_active=0 WHERE id=?", (eid,)
     )
     tmp_db_conn_hr_clean.commit()
-    hr.generate_run('2026-09', 1, created_by=1, conn=tmp_db_conn_hr_clean)
-    # X's advance must be un-stamped (NULL), not orphan-stamped to rid.
-    after = tmp_db_conn_hr_clean.execute(
+
+    with pytest.raises(ValueError):
+        hr.generate_run('2026-09', 1, created_by=1, conn=tmp_db_conn_hr_clean)
+
+    # X keeps their row AND their stamp — nothing was destroyed or released.
+    assert tmp_db_conn_hr_clean.execute(
+        "SELECT COUNT(*) FROM payroll_items WHERE run_id=? AND employee_id=?",
+        (rid, eid),
+    ).fetchone()[0] == 1
+    assert tmp_db_conn_hr_clean.execute(
         "SELECT deducted_in_run_id FROM salary_advances WHERE employee_id=?",
         (eid,),
-    ).fetchone()[0]
-    assert after is None, (
-        f"orphaned advance still stamped to run {after} — would never deduct"
-    )
+    ).fetchone()[0] == rid
 
 
 def test_regenerate_keeps_stamps_for_employees_still_in_run(tmp_db_conn_hr_clean):
