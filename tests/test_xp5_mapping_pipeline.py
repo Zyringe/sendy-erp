@@ -135,6 +135,24 @@ def test_read_substitution_rows_filters_s_decision_only(tmp_path):
     assert rows == [{'product_id': 10, 'xp5_code': 'X1'}, {'product_id': 50, 'xp5_code': 'X5'}]
 
 
+def test_read_substitution_rows_warns_on_s_without_pid(tmp_path, capsys):
+    """An 's' mark whose suggest_pid is blank/non-numeric is a HUMAN decision
+    that cannot be auto-applied — it must be surfaced loudly (fix via the
+    group page), never silently dropped (reviewer finding, round 1)."""
+    csv_path = tmp_path / 'filled.csv'
+    csv_path.write_text(
+        'xp5_code,xp5_name,layer,suggest_pid,suggest_name,evidence,' + pl._DECISION_COL + '\n'
+        'X1,ชื่อ1,name-similar,10,หลัก1,ev,s\n'
+        'X6,ชื่อ6,category,,ไม่มี,ev,s\n'          # 's' but no suggest_pid
+        'X7,ชื่อ7,category,abc,เพี้ยน,ev,s\n',     # 's' but non-numeric pid
+        encoding='utf-8-sig')
+    rows = pl.read_substitution_rows(str(csv_path))
+    assert rows == [{'product_id': 10, 'xp5_code': 'X1'}]
+    out = capsys.readouterr().out
+    assert "2 's' row(s) skipped" in out
+    assert 'X6' in out and 'X7' in out
+
+
 def test_layer2_signature_same_unit_pairs(monkeypatch, tmp_path):
     import express_dbf_source as eds
     import datetime

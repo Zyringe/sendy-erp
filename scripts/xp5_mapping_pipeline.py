@@ -347,6 +347,7 @@ def read_substitution_rows(csv_path):
     models.vat_sub.apply_substitution_sheet expects (plan §4.7)."""
     import csv
     rows = []
+    skipped = []
     with open(csv_path, encoding='utf-8-sig') as fh:
         for r in csv.DictReader(fh):
             decision = (r.get(_DECISION_COL) or '').strip().lower()
@@ -356,9 +357,20 @@ def read_substitution_rows(csv_path):
             try:
                 pid = int((r.get('suggest_pid') or '').strip())
             except ValueError:
+                # An 's' mark with no usable suggest_pid cannot seed a pair —
+                # but Put DID mark it, so dropping it silently would eat a
+                # human decision. Surface every one (fix these by adding the
+                # pair via the group page's add-member/link-product instead).
+                skipped.append(xp5_code or '(no xp5_code)')
                 continue
             if xp5_code:
                 rows.append({'product_id': pid, 'xp5_code': xp5_code})
+            else:
+                skipped.append('(no xp5_code)')
+    if skipped:
+        print(f"⚠ {len(skipped)} 's' row(s) skipped — no usable suggest_pid/xp5_code, "
+              f"จัดการมือผ่านหน้ากลุ่ม: {', '.join(skipped[:20])}"
+              + (' …' if len(skipped) > 20 else ''))
     return rows
 
 
