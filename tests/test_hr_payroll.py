@@ -534,3 +534,71 @@ def test_regenerate_keeps_stamps_for_employees_still_in_run(tmp_db_conn_hr_clean
         "stamp must persist when employee is still in regenerated run"
     )
 
+
+
+# ── 9. reopen refuses a roster change in BOTH directions ────────────────────
+
+def test_reopen_refuses_when_a_new_employee_would_be_added(tmp_db_conn_hr_clean):
+    """The drop guard (2026-08-05) is one-directional, and the damage is not.
+
+    Measured on prod the same day: `generate_run` returns untouched on a
+    finalized run, so `reopen_run` is the ONLY door to a regenerate — and run 3
+    (พ.ค. 2026) passed the drop check while regenerating it would have ADDED
+    เซี้ยม and ปู้ to a closed month they were never part of. Inventing payslip
+    rows in a finalized month is the same class of history damage as deleting
+    them, so the door refuses both.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-10', 1, created_by=1, conn=c)
+    rid = run['id']
+    before = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert len(before) >= 1, "fixture must produce a non-empty run, or this pins nothing"
+    hr.finalize_run(rid, conn=c)
+
+    # hired afterwards, but start_date lands inside the now-closed month
+    newbie = _mk_employee(c, 'T_ADD', 'added-later', '2026-10-01')
+    assert newbie not in before
+
+    with pytest.raises(ValueError):
+        hr.reopen_run(rid, reason='ขอแก้ตัวเลข', actor='admin', conn=c)
+
+    # refused at the door: still finalized, roster untouched
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'finalized'
+    assert {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))} == before
+
+
+def test_reopen_still_allowed_when_the_roster_is_unchanged(tmp_db_conn_hr_clean):
+    """Control for the test above — the guard must distinguish, not always fire.
+
+    Without this, making `reopen_run` raise unconditionally would pass the
+    refusal test.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-10', 1, created_by=1, conn=c)
+    rid = run['id']
+    hr.finalize_run(rid, conn=c)
+
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft'
+
+
+def test_regenerating_a_draft_run_still_picks_up_a_new_hire(tmp_db_conn_hr_clean):
+    """The legitimate flow the guard must NOT break: a run still in draft is a
+    working document, so regenerating it to pick up someone hired mid-month is
+    the intended use. Only a run that reached 'finalized' has history to
+    protect, and that one is reachable solely through the guarded reopen door.
+    """
+    c = tmp_db_conn_hr_clean
+    hr.generate_run('2026-10', 1, created_by=1, conn=c)   # left in draft
+    newbie = _mk_employee(c, 'T_HIRE', 'new-hire', '2026-10-01')
+
+    run = hr.generate_run('2026-10', 1, created_by=1, conn=c)
+
+    roster = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (run['id'],))}
+    assert newbie in roster, "a draft run must still absorb a new hire"

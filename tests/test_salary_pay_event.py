@@ -319,10 +319,16 @@ def test_unpay_noop_when_nothing_posted(tmp_db_conn_hr_clean):
 # ── 6. reopen blocked while any item paid; allowed after all unpaid ────────
 
 def test_reopen_blocked_while_paid_then_allowed_after_unpay(tmp_db_conn_hr_clean):
+    # company 2 (เซ็นไดเทรดดิ้ง) has no employees of its own in the copied live
+    # DB, so this hand-built run's roster IS the active set for its month.
+    # Under company 1 the eight seeded staff are active but absent from a run
+    # assembled by _mk_item, and reopen_run refuses a roster change in either
+    # direction (2026-08-05) — which would block this test on a condition it
+    # is not about. The subject here is paid-state, not the roster.
     conn = tmp_db_conn_hr_clean
-    eid1 = _mk_employee(conn, 'T_PAY6A', 'จ่ายแล้วคนที่1')
-    eid2 = _mk_employee(conn, 'T_PAY6B', 'ยังไม่จ่าย')
-    run_id = _mk_run(conn, '2026-09')
+    eid1 = _mk_employee(conn, 'T_PAY6A', 'จ่ายแล้วคนที่1', company_id=2)
+    eid2 = _mk_employee(conn, 'T_PAY6B', 'ยังไม่จ่าย', company_id=2)
+    run_id = _mk_run(conn, '2026-09', company_id=2)
     item1 = _mk_item(conn, run_id, eid1, net_pay=11000.0)
     item2 = _mk_item(conn, run_id, eid2, net_pay=13000.0)
     account_id = _account_id(conn, '392')
