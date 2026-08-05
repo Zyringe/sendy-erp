@@ -292,9 +292,10 @@ def test_blocked_row_stays_blocked_under_any_type_override(
     assert _history_block(res.data.decode('utf-8'))
 
 
-def test_blocked_row_refusal_survives_a_stale_session_row(admin_client, spy_all_importers):
-    """Defence in depth: the refusal must come from the STAGED verdict, not from
-    re-detecting at confirm time."""
+def test_blocked_verdict_is_persisted_on_the_staged_row(admin_client, spy_all_importers):
+    """Narrow: only that the preview's verdict is carried in the signed session,
+    which is what lets confirm refuse without re-detecting. The REFUSAL itself is
+    proven by test_blocked_row_stays_blocked_under_any_type_override above."""
     _, token = _stage(admin_client, [(_csv(_HISTORY_SALES), 'ประวัติการขาย.csv')])
     with admin_client.session_transaction() as sess:
         assert sess['import_stage']['rows'][0].get('blocked'), \
@@ -327,19 +328,29 @@ def test_crafted_removals_on_an_unpreviewed_row_is_ignored(admin_client, spy_imp
         'removals must not apply to a row that was never previewed as sales'
 
 
-def test_removals_ignored_when_the_type_changed_after_preview(admin_client, spy_import_weekly):
+def test_removals_ignored_when_the_type_changed_after_preview(
+        admin_client, spy_import_weekly, monkeypatch):
     """A sales preview's removal plan is meaningless if the operator switches the
     row to purchase — it was computed against sales_transactions.
 
-    Asserted as a property rather than a call signature: in practice the parser
-    refuses a ขาย file read with the ซื้อ pattern before import_weekly is reached,
-    so the importer may legitimately not be called at all. What must never happen
-    is removals being APPLIED after a type switch."""
+    parse_purchases is STUBBED so the switched-type request actually reaches
+    import_weekly. Without the stub the ซื้อ parser refuses the ขาย-shaped file
+    first, the importer is never called, and an `all(...)` over an empty list is
+    vacuously True — the previous version of this test stayed green even with the
+    `rtype == row['detected']` guard deleted, so it pinned nothing.
+    """
+    import parse_weekly
+    monkeypatch.setattr(parse_weekly, 'parse_purchases', lambda p: [{'stub': 1}])
+
     _, token = _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
     admin_client.post('/import-data/confirm',
                       data={'token': token, 'type_0': 'purchase', 'removals_0': 'on'})
-    assert all(c['apply_removals'] is False for c in spy_import_weekly), \
-        f'removals applied after a type switch: {spy_import_weekly}'
+
+    assert len(spy_import_weekly) == 1, \
+        f'the stub must let exactly one import through, got {spy_import_weekly}'
+    assert spy_import_weekly[0]['file_type'] == 'purchase'
+    assert spy_import_weekly[0]['apply_removals'] is False, \
+        'removals must not survive a type switch away from the previewed type'
 
 
 def test_detected_sales_removals_still_work(admin_client, spy_import_weekly):
