@@ -533,6 +533,63 @@ def _recompute_totals(d: dict) -> dict:
     return d
 
 
+# ── regenerate blast-radius guard ────────────────────────────────────────────
+# ONE definition of "who belongs on this run", shared by generate_run and the
+# reopen guard, so the two cannot drift apart (a second copy is exactly how the
+# check would silently stop matching what the DELETE+INSERT actually does).
+def _active_employees_for_month(c, company_id: int, period_start, period_end):
+    """Employees of `company_id` on payroll during the month — the set
+    generate_run rebuilds payroll_items from."""
+    return c.execute(
+        """SELECT * FROM employees
+             WHERE company_id = ? AND is_active = 1 AND on_payroll = 1
+               AND (start_date IS NULL OR start_date <= ?)
+               AND (end_date   IS NULL OR end_date   >= ?)""",
+        (company_id, period_end.isoformat(), period_start.isoformat()),
+    ).fetchall()
+
+
+def _regenerate_would_drop(c, run_id: int, active_ids):
+    """employee_ids holding a payroll_items row in this run that the CURRENT
+    active set no longer contains.
+
+    generate_run rebuilds a run with `DELETE FROM payroll_items WHERE run_id=?`
+    followed by an INSERT per active employee. So anyone who has since gone
+    `is_active=0` / `on_payroll=0` (or acquired an end_date) loses their row for
+    that month — and the orphaned-advance reconcile at the end of generate_run
+    then un-stamps their advances, releasing them into a future run.
+
+    2026-08-05 (why this exists): measured on a snapshot of prod, regenerating
+    April 2026 deleted a departed employee's row, un-stamped her ฿400 advance,
+    and added three people who were never on that month's payroll. The reopen
+    button that leads here is live in the UI for any run with no posted payment
+    rows.
+    """
+    existing = {r["employee_id"] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id = ?", (run_id,)
+    )}
+    return existing - set(active_ids)
+
+
+def _dropped_employees_message(c, dropped_ids) -> str:
+    rows = c.execute(
+        "SELECT id, COALESCE(nickname, full_name) AS name FROM employees"
+        f" WHERE id IN ({','.join('?' * len(dropped_ids))})",
+        tuple(sorted(dropped_ids)),
+    ).fetchall()
+    names = ", ".join(f"{r['name']} (id {r['id']})" for r in rows) or \
+        ", ".join(str(i) for i in sorted(dropped_ids))
+    return (
+        f"สร้างรอบนี้ใหม่ไม่ได้ — มีพนักงาน {len(dropped_ids)} คนที่มีรายการอยู่ในรอบนี้ "
+        f"แต่ไม่อยู่ในชุดพนักงานปัจจุบันแล้ว ({names}) "
+        f"การสร้างใหม่จะลบรายการเงินเดือนของเขาในเดือนนี้ทิ้ง "
+        f"และปลดการหักเบิกล่วงหน้าไปงวดอื่น "
+        f"· ถ้าเขาลาออกกลางเดือน ให้ใส่วันสิ้นสุดการทำงาน (end_date) แทนการปิดใช้งาน "
+        f"ระบบจะคงเขาไว้ในรอบนี้และคิดเงินตามสัดส่วนวันที่ทำงานให้ "
+        f"· ถ้าตั้งใจจะเอาเขาออกจากรอบนี้จริง ต้องแก้ที่ฐานข้อมูลโดยตรงและสำรองข้อมูลก่อน"
+    )
+
+
 # ── generate / upsert a payroll run ──────────────────────────────────────────
 def generate_run(year_month: str, company_id: int, created_by: int,
                   conn: Optional[sqlite3.Connection] = None,
@@ -571,13 +628,15 @@ def generate_run(year_month: str, company_id: int, created_by: int,
                 ).fetchone()
 
         # active employees of this company who overlap the payroll month
-        emps = c.execute(
-            """SELECT * FROM employees
-                 WHERE company_id = ? AND is_active = 1 AND on_payroll = 1
-                   AND (start_date IS NULL OR start_date <= ?)
-                   AND (end_date   IS NULL OR end_date   >= ?)""",
-            (company_id, period_end.isoformat(), period_start.isoformat()),
-        ).fetchall()
+        emps = _active_employees_for_month(c, company_id, period_start, period_end)
+
+        # Refuse rather than silently erase history. Raised BEFORE any mutation
+        # and before any commit, so _ConnCtx closing the connection rolls back a
+        # freshly-inserted payroll_runs row (an empty new run has no items, so
+        # this can only fire on a REgenerate).
+        dropped = _regenerate_would_drop(c, run_id, {e["id"] for e in emps})
+        if dropped:
+            raise ValueError(_dropped_employees_message(c, dropped))
 
         c.execute("DELETE FROM payroll_items WHERE run_id = ?", (run_id,))
         for emp in emps:
@@ -781,6 +840,20 @@ def reopen_run(run_id: int, reason: str, actor: str,
                 f"มี {paid_count} รายการจ่ายเงินเดือนที่บันทึกไว้แล้ว — "
                 f"กรุณายกเลิกการจ่ายทั้งหมดก่อนจึงจะ reopen ได้"
             )
+
+        # Stop at the door. Reopening is only ever a prelude to regenerating,
+        # and generate_run refuses when that would drop a departed employee's
+        # row — so checking here too avoids stranding the run in 'draft' with
+        # finalized figures, a state nothing else repairs.
+        period_start, period_end = _month_bounds(run["year_month"])
+        dropped = _regenerate_would_drop(
+            c, run_id,
+            {e["id"] for e in _active_employees_for_month(
+                c, run["company_id"], period_start, period_end)},
+        )
+        if dropped:
+            raise ValueError(_dropped_employees_message(c, dropped))
+
         c.execute(
             "UPDATE payroll_runs SET status='draft', finalized_at=NULL WHERE id=?",
             (run_id,),
