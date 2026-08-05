@@ -418,6 +418,16 @@ def get_group_detail(group_id, main_conn, book_conn):
 # add_member, the two that validate against the book) opens a fresh
 # open_vat_book() and closes it before returning — tests inject their own.
 
+def _x_group_ids(c, product_id):
+    """X's current group ids, lowest first. Pulled out as its own function
+    so it can be the concurrency-test seam: it is the LAST read before
+    promote's create-vs-add decision — and thus before its first possible
+    write — matching the check-then-write span rule (plan §4.6)."""
+    return [r['group_id'] for r in c.execute(
+        "SELECT group_id FROM vat_sub_product_links WHERE product_id=? ORDER BY group_id",
+        (product_id,)).fetchall()]
+
+
 def promote(product_id, xp5_code, target_group_id=None, conn=None, book_conn=None):
     """§4.5 promote = idempotent add-membership. target_group_id: None =
     default (X's lowest existing group id, or cold-start create if X has
@@ -451,9 +461,7 @@ def promote(product_id, xp5_code, target_group_id=None, conn=None, book_conn=Non
             c.rollback()
             return {'ok': False, 'error': 'รหัสนี้ VAT code ไม่ใช่ 1 — ใช้แทนไม่ได้'}
 
-        existing_group_ids = [r['group_id'] for r in c.execute(
-            "SELECT group_id FROM vat_sub_product_links WHERE product_id=? ORDER BY group_id",
-            (product_id,))]
+        existing_group_ids = _x_group_ids(c, product_id)
         force_new = target_group_id == 'new'
         created_group = False
         if force_new or (target_group_id is None and not existing_group_ids):
@@ -540,6 +548,19 @@ def add_member(group_id, xp5_code, conn=None, book_conn=None):
             bc.close()
 
 
+def _member_state(c, source_group_id, target_group_id, xp5_code):
+    """(source_row, target_row) — the LAST read before move_member's four-
+    state branch, and thus before its first possible write. Concurrency-
+    test seam, same role as _x_group_ids for promote."""
+    source_row = c.execute(
+        "SELECT added_from FROM vat_sub_members WHERE group_id=? AND xp5_code=?",
+        (source_group_id, xp5_code)).fetchone()
+    target_row = c.execute(
+        "SELECT 1 FROM vat_sub_members WHERE group_id=? AND xp5_code=?",
+        (target_group_id, xp5_code)).fetchone()
+    return source_row, target_row
+
+
 def move_member(source_group_id, target_group_id, xp5_code, conn=None):
     """§5 Routes: re-home a member in ONE transaction. Four membership
     states, all defined (plan §5): source-only = normal move (insert target
@@ -558,12 +579,7 @@ def move_member(source_group_id, target_group_id, xp5_code, conn=None):
         if target_exists is None:
             c.rollback()
             return {'ok': False, 'error': 'ไม่พบกลุ่มปลายทาง'}
-        source_row = c.execute(
-            "SELECT added_from FROM vat_sub_members WHERE group_id=? AND xp5_code=?",
-            (source_group_id, xp5_code)).fetchone()
-        target_row = c.execute(
-            "SELECT 1 FROM vat_sub_members WHERE group_id=? AND xp5_code=?",
-            (target_group_id, xp5_code)).fetchone()
+        source_row, target_row = _member_state(c, source_group_id, target_group_id, xp5_code)
         if source_row is None and target_row is None:
             c.rollback()
             return {'ok': False, 'error': 'ไม่พบสินค้าทดแทนนี้ในกลุ่มต้นทางหรือปลายทาง'}
