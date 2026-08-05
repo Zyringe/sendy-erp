@@ -242,3 +242,43 @@ def test_import_page_shows_vat_freshness_and_last_run(tmp_db, monkeypatch):
     html = _client().get('/import-express-dbf').get_data(as_text=True)
     assert 'สมุด VAT (xp5): rebuild ล่าสุด' in html
     assert 'ผลการนำเข้าล่าสุด' in html
+
+
+def test_import_page_shows_reconcile_scan_error_line(tmp_db):
+    """FIX 6: scan_reconcile's isolated failure ({'error': ...}) must render
+    as its OWN distinct line, not silently disappear and not be mistaken for
+    a class-count of zero. Asserted on the element (its class marker), not a
+    bare Thai substring — a substring match on 'ตรวจสอบบิลหายจาก Express'
+    would also match the healthy summary line."""
+    import config
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    conn.execute(
+        "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes) "
+        "VALUES ('express-dbf-upload', 0, 0, ?)",
+        (json.dumps({'bsn': {'ok': True, 'summary': 'นำเข้าสำเร็จ',
+                             'reconcile': {'error': 'db locked'}}},
+                    ensure_ascii=False),))
+    conn.commit()
+    conn.close()
+    html = _client().get('/import-express-dbf').get_data(as_text=True)
+    assert 'reconcile-scan-error' in html
+    assert 'db locked' in html
+    assert 'การนำเข้าปกติไม่กระทบ' in html
+
+
+def test_import_page_shows_reconcile_reappeared_count(tmp_db):
+    import config
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    conn.execute(
+        "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes) "
+        "VALUES ('express-dbf-upload', 0, 0, ?)",
+        (json.dumps({'bsn': {'ok': True, 'summary': 'นำเข้าสำเร็จ',
+                             'reconcile': {'deleted': 0, 'out_of_scope': 0,
+                                          'parse_gap': 0, 'date_moved': 0,
+                                          'data_gap': 0, 'reappeared': 3}}},
+                    ensure_ascii=False),))
+    conn.commit()
+    conn.close()
+    html = _client().get('/import-express-dbf').get_data(as_text=True)
+    assert 'กลับมาแล้ว 3' in html
+    assert 'reconcile-scan-error' not in html

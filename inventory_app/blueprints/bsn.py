@@ -699,10 +699,17 @@ def express_dbf_upload():
                                   'summary': _express_dbf_summary_message(per_type),
                                   'reconcile': per_type.get('reconcile', {})}
                 flashes.append(('success', f"BSN5657: {results['bsn']['summary']}"))
-                _reconcile_deleted = results['bsn']['reconcile'].get('deleted', 0)
-                if _reconcile_deleted:
+                _reconcile = results['bsn']['reconcile']
+                if _reconcile.get('error'):
+                    # scan_reconcile failed but the money import above already
+                    # committed fine — say so, don't call the whole upload
+                    # failed (import_router.commit_express_dbf isolates this).
+                    flashes.append(('danger',
+                                    f'ตรวจสอบบิลหายจาก Express ล้มเหลว: {_reconcile["error"]} '
+                                    f'— การนำเข้าปกติไม่กระทบ'))
+                elif _reconcile.get('deleted', 0):
                     flashes.append(('warning',
-                                    f'พบบิล {_reconcile_deleted} ใบที่หายไปจาก Express — '
+                                    f'พบบิล {_reconcile["deleted"]} ใบที่หายไปจาก Express — '
                                     f'ตรวจที่หน้า "ตรวจสอบบิลหายจาก Express" (เมนูนำเข้าข้อมูล)'))
             except Exception as exc:
                 results['bsn'] = {'ok': False, 'error': str(exc)[:400]}

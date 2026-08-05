@@ -467,6 +467,57 @@ def test_commit_express_dbf_wires_sales_purchase_and_refs(empty_db, monkeypatch)
     assert row['remark'] == 'แถม'
 
 
+def test_commit_express_dbf_isolates_scan_reconcile_failure(empty_db, monkeypatch):
+    """FIX 6 (reconcile-scan review round 3): a scan_reconcile exception must
+    NEVER break the money pipeline. Before this fix the call sat BETWEEN the
+    purchase import and payments_in/payments_out/credit_notes_ar/credit_
+    notes_ap/invoice_refs, unwrapped — an exception here skipped ALL of
+    those for the day and made the route report the whole upload as failed
+    even though sales+purchase had already committed (import_weekly commits
+    internally). The read-only observer must be isolated from the pipeline
+    it observes."""
+    import sys
+    _scripts = os.path.join(_REPO, "scripts")
+    if _scripts not in sys.path:
+        sys.path.insert(0, _scripts)
+
+    import express_dbf_source as eds
+    import import_router
+    import models
+
+    _seed_product(empty_db, 'PsaleScanFail', '804ข1108scanfail')
+    _seed_company(empty_db, 'BSN')
+
+    fake_tables = {
+        'ARTRN': [_artrn('IV6900940', '3', cuscod='C001')],
+        'APTRN': [],
+        'STCRD': [
+            _stcrd('IV6900940', 1, stkcod='804ข1108scanfail', qty=1.0,
+                   unitpr=45.0, trnval=45.0, netval=45.0),
+        ],
+        'ARMAS': [],
+        'APMAS': [],
+        'ARTRNRM': [],
+        'ARRCPIT': [],
+        'APRCPIT': [],
+    }
+    monkeypatch.setattr(eds, 'open_table', lambda dataset_dir, name: fake_tables[name])
+
+    def _boom(*a, **k):
+        raise RuntimeError('scan boom')
+    monkeypatch.setattr(models, 'scan_reconcile', _boom)
+
+    result = import_router.commit_express_dbf('/fake/dataset', since_days=None)
+
+    # Every OTHER stat key must still be present — the scan failure must not
+    # have short-circuited anything downstream of it.
+    assert result['sales']['imported'] == 1
+    assert 'invoice_refs_upserted' in result
+    assert 'payments_in' in result and 'payments_out' in result
+    assert 'credit_notes_ar' in result and 'credit_notes_ap' in result
+    assert result['reconcile'] == {'error': 'scan boom'}
+
+
 # ── payments_in (→ models.import_payment_records) ───────────────────────────
 
 def test_build_payments_in_records_line_sum_not_header():
