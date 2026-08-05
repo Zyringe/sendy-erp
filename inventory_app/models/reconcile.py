@@ -310,7 +310,16 @@ def list_resolved_reconcile_flags(conn=None, limit=200):
 
 
 _LINKED_QUERIES = {
-    'paid_invoices':        ("SELECT * FROM paid_invoices WHERE doc_no = ?", 'doc_base'),
+    # Joined to received_payments (plan §4's receipt context, not a bare
+    # count): re_no/date_iso/cancelled come from the receipt itself,
+    # doc_kind/amount from the per-invoice allocation. Only REAL columns
+    # (verified via PRAGMA table_info(received_payments) — no salesperson/
+    # total needed here, and no invented status column).
+    'paid_invoices': (
+        "SELECT pi.id, pi.doc_no, pi.doc_kind, pi.amount, "
+        "rp.re_no, rp.date_iso, rp.cancelled "
+        "FROM paid_invoices pi JOIN received_payments rp ON rp.id = pi.re_id "
+        "WHERE pi.doc_no = ?", 'doc_base'),
     'commission_payouts':   ("SELECT * FROM commission_payouts WHERE invoice_no = ?", 'doc_base'),
     'credit_note_amounts':  ("SELECT * FROM credit_note_amounts WHERE ref_invoice = ?", 'doc_base'),
     'credit_note_imports':  ("SELECT * FROM credit_note_imports WHERE ref_invoice = ?", 'doc_base'),

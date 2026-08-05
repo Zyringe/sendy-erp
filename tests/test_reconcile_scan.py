@@ -1175,3 +1175,51 @@ def test_apply_sr_line_correct_shape_applies_stock_moves_down(empty_db_conn):
     assert c.execute(
         "SELECT COUNT(*) FROM transactions WHERE reference_no='SR6900100-1'"
     ).fetchone()[0] == 0
+
+
+# ── P2 (Codex NO-GO, round 4): linked-payment panel implements the plan's
+# receipt join — paid_invoices JOIN received_payments, not a bare count ────
+
+def test_linked_records_paid_invoices_joins_receipt_context(empty_db_conn):
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000043-1', date_iso=IN_WINDOW_DATE.isoformat(), product_id=pid)
+    cur = c.execute(
+        "INSERT INTO received_payments (re_no, date_iso, customer, cancelled) "
+        "VALUES (?, ?, ?, 0)",
+        ('RE0002TEST', '2026-07-16', 'ลูกค้าทดสอบ'))
+    re_id = cur.lastrowid
+    c.execute(
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?, ?, 'IV', 250.5)",
+        (re_id, 'IV1000043'))
+    c.commit()
+
+    linked = mr._linked_records(c, 'IV1000043')
+
+    assert len(linked['paid_invoices']) == 1
+    p = linked['paid_invoices'][0]
+    assert p['re_no'] == 'RE0002TEST'
+    assert p['date_iso'] == '2026-07-16'
+    assert p['amount'] == 250.5
+    assert p['doc_kind'] == 'IV'
+    assert p['cancelled'] == 0
+
+
+def test_reconcile_page_shows_receipt_line_for_flagged_doc_with_payment(route_client, tmp_db):
+    flag_id = _seed_flag_via_sqlite3(tmp_db, doc_no='IVRECROUTE006-1')
+    import config
+    c = sqlite3.connect(config.DATABASE_PATH)
+    cur = c.execute(
+        "INSERT INTO received_payments (re_no, date_iso, customer, cancelled) "
+        "VALUES (?, ?, ?, 0)",
+        ('RE0003TEST', '2026-07-17', 'ลูกค้าทดสอบ'))
+    re_id = cur.lastrowid
+    c.execute(
+        "INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?, 'IVRECROUTE006', 'IV', 99.5)",
+        (re_id,))
+    c.commit()
+    c.close()
+
+    _login(route_client, role='manager')
+    html = route_client.get('/reconcile').get_data(as_text=True)
+    assert 'RE0003TEST' in html

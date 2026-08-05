@@ -71,7 +71,9 @@
           <div class="alert alert-warning py-2 px-3 small mb-2">
             <i class="bi bi-exclamation-triangle me-1"></i>มีข้อมูลอื่นอ้างอิงบิลนี้อยู่ — ตรวจสอบก่อน apply:
             <ul class="mb-0">
-              {% if lr.paid_invoices %}<li>รับชำระแล้ว {{ lr.paid_invoices|length }} รายการ</li>{% endif %}
+              {% for p in lr.paid_invoices %}
+                <li>รับชำระ: RE {{ p.re_no }} · {{ p.date_iso }} · ฿{{ '%.2f'|format(p.amount or 0) }} · {{ p.doc_kind }}{% if p.cancelled %} (ยกเลิก){% endif %}</li>
+              {% endfor %}
               {% if lr.commission_payouts %}<li>จ่ายคอมมิชชั่นแล้ว {{ lr.commission_payouts|length }} รายการ</li>{% endif %}
               {% if lr.credit_note_amounts or lr.credit_note_imports %}<li>มีใบลดหนี้อ้างอิงบิลนี้</li>{% endif %}
               {% if lr.marketplace_order_invoice %}<li>ผูกกับออเดอร์ marketplace {{ lr.marketplace_order_invoice|length }} รายการ</li>{% endif %}
