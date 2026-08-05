@@ -593,6 +593,26 @@ def _regenerate_would_add(c, run_id: int, active_ids):
     return set(active_ids) - existing
 
 
+def _was_reopened(c, run_id: int) -> bool:
+    """True if this run was ever un-finalized by `reopen_run`.
+
+    Distinguishes a draft holding REOPENED HISTORY from an ordinary working
+    draft — the difference that decides whether absorbing a new employee is
+    damage or the intended behaviour. `reopen_run` writes its audit_log row in
+    the same transaction as the status flip, so the marker cannot lag the state,
+    and `prune_audit_log` can never remove it (`_AUDIT_PRUNE_PREDICATE` is
+    `transactions` INSERT/DELETE only — this row is `payroll_runs`/UPDATE).
+    """
+    return c.execute(
+        """SELECT 1 FROM audit_log
+            WHERE table_name = 'payroll_runs' AND row_id = ?
+              AND action = 'UPDATE'
+              AND changed_fields LIKE '%"reopen_reason"%'
+            LIMIT 1""",
+        (run_id,),
+    ).fetchone() is not None
+
+
 def _employee_names(c, ids) -> str:
     rows = c.execute(
         "SELECT id, COALESCE(nickname, full_name) AS name FROM employees"
@@ -670,9 +690,19 @@ def generate_run(year_month: str, company_id: int, created_by: int,
         # and before any commit, so _ConnCtx closing the connection rolls back a
         # freshly-inserted payroll_runs row (an empty new run has no items, so
         # this can only fire on a REgenerate).
-        dropped = _regenerate_would_drop(c, run_id, {e["id"] for e in emps})
+        active_ids = {e["id"] for e in emps}
+        dropped = _regenerate_would_drop(c, run_id, active_ids)
         if dropped:
             raise ValueError(_dropped_employees_message(c, dropped))
+        # The reopen door checks the roster too, but it is a SEPARATE
+        # transaction from this rebuild — anyone hired in between passed no
+        # check at all. So re-check here, but only for a run that was reopened:
+        # on a draft that was never finalized, absorbing a new hire is the whole
+        # point of regenerating.
+        if _was_reopened(c, run_id):
+            added = _regenerate_would_add(c, run_id, active_ids)
+            if added:
+                raise ValueError(_added_employees_message(c, added))
 
         c.execute("DELETE FROM payroll_items WHERE run_id = ?", (run_id,))
         for emp in emps:
