@@ -130,6 +130,9 @@ def group_detail(group_id):
     book_conn = models.open_vat_book()
     try:
         group = models.get_group_detail(group_id, conn, book_conn)
+        other_groups = conn.execute(
+            "SELECT id, label FROM vat_sub_groups WHERE id != ? ORDER BY id",
+            (group_id,)).fetchall()
     finally:
         conn.close()
         if book_conn is not None:
@@ -137,7 +140,7 @@ def group_detail(group_id):
     if group is None:
         flash('ไม่พบกลุ่มนี้', 'danger')
         return redirect(url_for('vat_sub.planning'))
-    return render_template('vat_sub/group_detail.html', group=group,
+    return render_template('vat_sub/group_detail.html', group=group, other_groups=other_groups,
                            vat_freshness=book_registry.vat_book_freshness())
 
 

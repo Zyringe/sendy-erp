@@ -67,11 +67,25 @@
             <td>{{ m.stock }}</td>
             <td><span class="badge bg-light text-dark">{{ m.added_from }}</span></td>
             <td class="text-end">
-              <form method="post" action="{{ url_for('vat_sub.group_remove_member', group_id=group.id) }}" class="d-inline">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <input type="hidden" name="xp5_code" value="{{ m.xp5_code }}">
-                <button type="submit" class="btn btn-sm btn-outline-danger">ลบ</button>
-              </form>
+              <div class="d-flex gap-1 justify-content-end">
+                {% if other_groups %}
+                <form method="post" action="{{ url_for('vat_sub.group_move_member', group_id=group.id) }}" class="d-flex gap-1">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="xp5_code" value="{{ m.xp5_code }}">
+                  <select name="target_group_id" class="form-select form-select-sm" style="width:auto">
+                    {% for g in other_groups %}
+                      <option value="{{ g.id }}">ย้ายไป: {{ g.label }}</option>
+                    {% endfor %}
+                  </select>
+                  <button type="submit" class="btn btn-sm btn-outline-secondary">ย้าย</button>
+                </form>
+                {% endif %}
+                <form method="post" action="{{ url_for('vat_sub.group_remove_member', group_id=group.id) }}" class="d-inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="xp5_code" value="{{ m.xp5_code }}">
+                  <button type="submit" class="btn btn-sm btn-outline-danger">ลบ</button>
+                </form>
+              </div>
             </td>
           </tr>
           {% else %}

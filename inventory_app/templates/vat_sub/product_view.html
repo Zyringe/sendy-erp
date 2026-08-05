@@ -95,9 +95,12 @@
 
   {# ── Guess section (§5, always its own labeled section) ── #}
   <h6 class="mt-4">เดาเพิ่มเติม — ยังไม่ยืนยัน</h6>
+  {# ⚠ 'items' collides with dict.items() under Jinja's attribute-then-
+     subscript lookup (foo.items resolves to the BOUND METHOD, not the key)
+     — always subscript, never dot, for this one key. #}
   {% if guesses.empty %}
     <div class="text-muted small mb-3">{{ guesses.reason }}</div>
-  {% elif not guesses.items %}
+  {% elif not guesses['items'] %}
     <div class="text-muted small mb-3">ไม่พบตัวแทนที่เดาได้เพิ่มเติม</div>
   {% else %}
     <div class="table-responsive mb-3">
@@ -106,7 +109,7 @@
           <th>รหัส xp5</th><th>ชื่อ</th><th>หน่วย</th><th>สต็อก</th><th>เทียบราคา</th><th></th>
         </tr></thead>
         <tbody>
-          {% for c in guesses.items %}
+          {% for c in guesses['items'] %}
           <tr>
             <td>{{ c.xp5_code }}</td>
             <td>{{ c.product_name }}</td>
