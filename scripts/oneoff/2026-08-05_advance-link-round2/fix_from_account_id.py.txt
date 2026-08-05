@@ -1,0 +1,168 @@
+#!/usr/bin/env python
+"""ปิดครึ่งหลังของการผูกคู่รอบ 2 — เติม `salary_advances.from_account_id` (prod).
+
+รอบ 2 ผูก `cashbook_transactions.salary_advance_id` ไปแล้ว แต่ปล่อยฝั่ง advance
+ว่างไว้ ทั้งที่ writer ของแอปเองใส่ `from_account_id = account_id` ใน INSERT
+เดียวกับที่สร้างลิงก์ (`blueprints/cashbook.py:1037-1043`) ผลคือ `/hr/advances`
+โชว์คอลัมน์บัญชีเป็น "—" เฉพาะ 16 แถวนี้ (`hr_queries.py:706` LEFT JOIN
+`from_account_id` → `templates/hr/advances.html:85` render `account_name or '—'`)
+
+สาเหตุ: สคริปต์รอบ 2 assert ว่า fingerprint ของ `salary_advances` ห้ามเปลี่ยน —
+ข้อจำกัดที่ตั้งเอง แล้วมันบล็อกคอลัมน์เดียวที่*เป็นส่วนหนึ่งของการผูกคู่*
+บทเรียน: ตรวจ invariant ที่ตัวเองเลือก ไม่ได้แปลว่าตรวจสิ่งที่ผู้ใช้เห็น
+
+ไม่แตะคอลัมน์เงินใด ๆ · ไม่แตะ `cashbook_transactions` แม้แต่แถวเดียว
+เป้าหมายเลือกจากลิงก์เอง (advance ที่มีแถวเงินสดผูกอยู่แต่ from_account_id ว่าง)
+ไม่ได้ hardcode id — แล้ว assert ว่าได้ 16 ตัวตามที่ตั้งใจ
+
+    /opt/venv/bin/python fix_from_account_id.py --db /data/inventory.db
+"""
+import argparse
+import hashlib
+import sqlite3
+import sys
+
+EXPECTED = 16
+
+
+class Abort(Exception):
+    pass
+
+
+def check(cond, msg):
+    if not cond:
+        raise Abort(msg)
+
+
+def fingerprint(conn, sql):
+    h = hashlib.sha256()
+    for row in conn.execute(sql):
+        h.update(repr(tuple(row)).encode("utf-8"))
+    return h.hexdigest()
+
+
+# from_account_id เว้นไว้ตั้งใจ — คอลัมน์เดียวที่ตั้งใจให้เปลี่ยน
+ADV_MONEY_FP = ("SELECT id, employee_id, advance_date, amount, note,"
+                " deducted_in_run_id FROM salary_advances ORDER BY id")
+CASH_FP = ("SELECT id, account_id, txn_date, direction, category, user_category,"
+           " amount, description, note, salary_advance_id"
+           " FROM cashbook_transactions ORDER BY id")
+
+
+def apply(conn):
+    # FK enforcement เปิดจริง (sqlite3.connect default = OFF, แอปเปิดใน
+    # get_connection) — รอบ 2 เขียนคอลัมน์ FK โดยไม่เปิด ตรวจเองล้วน ๆ
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=10000")
+    check(conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1,
+          "เปิด foreign_keys ไม่สำเร็จ")
+    conn.execute("BEGIN IMMEDIATE")
+
+    before = {"adv_money": fingerprint(conn, ADV_MONEY_FP),
+              "cash": fingerprint(conn, CASH_FP)}
+
+    targets = conn.execute(
+        """SELECT a.id AS adv_id, ct.id AS ct_id, ct.account_id, ct.direction
+             FROM salary_advances a
+             JOIN cashbook_transactions ct ON ct.salary_advance_id = a.id
+            WHERE a.from_account_id IS NULL
+            ORDER BY a.id""").fetchall()
+    check(len(targets) == EXPECTED,
+          "คาดว่าจะเจอ %d แถว เจอ %d — สถานะเปลี่ยนไปจากที่ตรวจไว้ หยุดก่อน"
+          % (EXPECTED, len(targets)))
+
+    for t in targets:
+        # รอบ 2 ไม่ได้ assert ข้อนี้ (โชคดีที่ทั้ง 16 เป็น expense จริง)
+        check(t["direction"] == "expense",
+              "ct %d เป็น '%s' ไม่ใช่ expense — เบิกล่วงหน้าต้องเป็นเงินออก"
+              % (t["ct_id"], t["direction"]))
+        acct = conn.execute("SELECT id FROM cashbook_accounts WHERE id=?",
+                            (t["account_id"],)).fetchone()
+        check(acct is not None, "ct %d ชี้บัญชี %s ที่ไม่มีอยู่"
+              % (t["ct_id"], t["account_id"]))
+        cur = conn.execute(
+            "UPDATE salary_advances SET from_account_id=? WHERE id=? AND from_account_id IS NULL",
+            (t["account_id"], t["adv_id"]))
+        check(cur.rowcount == 1,
+              "adv %d อัปเดตได้ %d แถว" % (t["adv_id"], cur.rowcount))
+
+    # ── invariants ในทรานแซกชัน ────────────────────────────────────────────
+    check(fingerprint(conn, ADV_MONEY_FP) == before["adv_money"],
+          "คอลัมน์เงิน/วัน/คน/รอบหัก ของ salary_advances เปลี่ยน — ห้าม")
+    check(fingerprint(conn, CASH_FP) == before["cash"],
+          "cashbook_transactions เปลี่ยน — ห้ามแตะเลย")
+    left = conn.execute(
+        """SELECT COUNT(*) FROM salary_advances a
+            JOIN cashbook_transactions ct ON ct.salary_advance_id = a.id
+           WHERE a.from_account_id IS NULL""").fetchone()[0]
+    check(left == 0, "ยังเหลือ advance ที่ผูกแล้วแต่ไม่มีบัญชี %d แถว" % left)
+    mismatch = conn.execute(
+        """SELECT a.id FROM salary_advances a
+            JOIN cashbook_transactions ct ON ct.salary_advance_id = a.id
+           WHERE a.from_account_id <> ct.account_id""").fetchall()
+    check(not mismatch, "บัญชีสองฝั่งไม่ตรงกัน: %s" % [r[0] for r in mismatch])
+
+    conn.commit()
+    return len(targets)
+
+
+def verify(db):
+    """สัญญาณอิสระ: เรียก query จริงที่หน้า /hr/advances ใช้ (hr_queries.py:700)
+    ไม่ใช่ query ที่เขียนขึ้นใหม่ให้ตรงกับสิ่งที่เพิ่งเขียนลงไป
+
+    ⚠ ห้าม assert บน `account_name` — `cashbook_accounts.display_name` เป็น NULL
+    ทุกบัญชีบน prod (มีแต่ `code`) หน้านี้จึงโชว์ '—' ทั้ง 28 แถวมาตลอด รวม 12 แถว
+    ที่แอปเขียนเอง การ assert ว่ามันไม่ว่างคือ check ที่ *ผ่านไม่ได้เลย* —
+    ตระกูลกลับด้านของ assert ที่ *แดงไม่ได้เลย* สิ่งที่งานนี้แก้จริงคือ
+    `from_account_id` ต้องมีค่าและตรงกับแถวเงินสดที่ผูกอยู่ จึง assert อันนั้น
+    """
+    c = sqlite3.connect(db)
+    c.row_factory = sqlite3.Row
+    rows = c.execute(
+        """SELECT sa.id, sa.from_account_id, ct.id AS ct_id, ct.account_id,
+                  ca.code AS account_code, ca.display_name AS account_name
+             FROM salary_advances sa
+             JOIN cashbook_transactions ct ON ct.salary_advance_id = sa.id
+             LEFT JOIN cashbook_accounts ca ON ca.id = sa.from_account_id
+            ORDER BY sa.id""").fetchall()
+    missing = [r["id"] for r in rows if r["from_account_id"] is None]
+    wrong = [r["id"] for r in rows if r["from_account_id"] != r["account_id"]]
+    by_code = {}
+    for r in rows:
+        by_code[r["account_code"]] = by_code.get(r["account_code"], 0) + 1
+    print("  คู่ที่ผูกกันทั้งหมด %d · ไม่มีบัญชี %d (ต้อง 0) · บัญชีไม่ตรงกับแถวเงินสด %d (ต้อง 0)"
+          % (len(rows), len(missing), len(wrong)))
+    print("  แยกตามรหัสบัญชี: %s" % by_code)
+    print("  หมายเหตุ: display_name ว่างทุกบัญชี → /hr/advances โชว์ '—' ทั้ง %d แถว "
+          "(เป็นมาก่อนแล้ว คนละเรื่องกับงานนี้)"
+          % sum(1 for r in rows if not r["account_name"]))
+    c.close()
+    return not missing and not wrong
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--db", required=True)
+    args = p.parse_args()
+
+    conn = sqlite3.connect(args.db)
+    conn.row_factory = sqlite3.Row
+    try:
+        n = apply(conn)
+    except Abort as e:
+        conn.rollback()
+        print("ยกเลิกทั้งชุด (rollback) — %s" % e)
+        return 1
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    print("เติม from_account_id แล้ว %d แถว" % n)
+    print("อ่านซ้ำด้วย connection ใหม่ ผ่าน query ของหน้า /hr/advances:")
+    return 0 if verify(args.db) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
