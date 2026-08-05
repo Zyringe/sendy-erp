@@ -1223,3 +1223,53 @@ def test_reconcile_page_shows_receipt_line_for_flagged_doc_with_payment(route_cl
     _login(route_client, role='manager')
     html = route_client.get('/reconcile').get_data(as_text=True)
     assert 'RE0003TEST' in html
+
+
+# ── Reviewer layer-isolation pins (round-4 verification): probes showed the
+# sign gate and the signed-magnitude comparison were each untestable in
+# isolation — stripping either alone left the suite green because the other
+# layer overlaps on the common fixtures. These two tests sit in the regions
+# where only ONE layer can catch the corruption. ─────────────────────────────
+
+def test_ledger_check_refuses_wrong_magnitude_correct_sign(empty_db_conn):
+    """Correct product/note/txn_type/SIGN but quantity_change -5.0 where the
+    line's converted base qty is -1.0 — only the signed-magnitude comparison
+    can refuse this (the sign gate is satisfied). Stripping that comparison
+    must turn THIS test red."""
+    c = empty_db_conn
+    pid = _seed_product(c)
+    _insert_sale(c, doc_no='IV1000044-1', date_iso=IN_WINDOW_DATE.isoformat(),
+                 product_id=pid, synced=1, qty=1.0)
+    c.execute("""
+        INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode,
+                                  reference_no, note, created_at)
+        VALUES (?, 'OUT', -5.0, 'unit', 'IV1000044-1', 'BSN ขาย', '2026-07-15 00:00:00')
+    """, (pid,))
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000044')
+
+    result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
+
+    _assert_refused_zero_mutation(c, flag_id, 'IV1000044', 'IV1000044-1', result)
+
+
+def test_ledger_check_refuses_wrong_sign_when_magnitude_uncomputable(empty_db_conn):
+    """Wrong sign on a line whose unit has NO unit_conversions row
+    (_get_base_qty returns None, magnitude comparison skipped entirely) — only
+    the unconditional sign gate can refuse this. Stripping `if not qty_sign_ok`
+    must turn THIS test red."""
+    c = empty_db_conn
+    pid = _seed_product(c)  # unit_type 'ตัว'
+    _insert_sale(c, doc_no='IV1000045-1', date_iso=IN_WINDOW_DATE.isoformat(),
+                 product_id=pid, synced=1, qty=1.0, unit='โหล')
+    c.execute("""
+        INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode,
+                                  reference_no, note, created_at)
+        VALUES (?, 'OUT', 12.0, 'unit', 'IV1000045-1', 'BSN ขาย', '2026-07-15 00:00:00')
+    """, (pid,))
+    c.commit()
+    flag_id = _make_flag(c, 'IV1000045')
+
+    result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
+
+    _assert_refused_zero_mutation(c, flag_id, 'IV1000045', 'IV1000045-1', result)
