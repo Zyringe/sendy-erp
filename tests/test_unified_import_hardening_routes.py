@@ -191,3 +191,65 @@ def test_no_warning_when_the_operator_opted_in(admin_client, spy_with_skipped_re
                             data={'token': token, 'type_0': 'sales',
                                   'removals_0': 'on'}).data.decode('utf-8')
     assert 'data-warn="skipped-removals"' not in res
+
+
+# ── affordance gaps found by the independent review ────────────────────────
+
+# A file whose TITLE the detector cannot classify, but which is otherwise a
+# perfectly good weekly: it carries the "วันที่ :" + "วันที่จาก" pair the history
+# guard requires, plus a real party/product/transaction grouping. Without the
+# date header the guard refuses it outright (correctly), which would exercise
+# the wrong thing here — this test is about the operator classifying a file by
+# hand, not about the header guard.
+_UNKNOWN_TITLE_WEEKLY = [
+    '"(BSN)บจก.บุญสวัสดิ์นำชัย                       หน้า   :        1"',
+    '"  รายงานสรุปพิเศษของทางร้าน"',
+    '"รหัสลูกค้า        ถึง  Zหน้าร้าน       วันที่ : 15/04/69"',
+    '"วันที่จาก   12\xa0เม.ย.\xa02569    ถึง  31\xa0ธ.ค.\xa02569"',
+    '"--------------------------------------------------------"',
+    '"  ไพศาลโลหะภัณฑ์(ตลาดพลู)\xa0/01พ02"',
+    '"   ใบตัดเพชร\xa04\xa0#GL-888(แดง)\xa0/031บ4120"',
+    '"      04/04/69   IV6900503-  1        24.00 ใบ          160.00  1                  3840.00                  3840.00"',
+]
+
+
+def test_removal_optin_is_offered_for_a_manually_typed_row(admin_client):
+    """The checkbox was gated on row.detected, but the type DROPDOWN lets the
+    operator classify a file the detector could not. For those rows no
+    removals_N control existed in the DOM at all, so the deletion-detection
+    feature was silently unreachable for exactly the files that needed a human
+    to classify them."""
+    body, _ = _stage(admin_client, [(_csv(_UNKNOWN_TITLE_WEEKLY), 'ไม่รู้จัก.csv')])
+    assert 'ตรวจไม่พบชนิด' in body, 'fixture must actually detect as unknown'
+    assert 'name="removals_0"' in body, \
+        'a row the operator must classify by hand still needs the removal opt-in'
+
+
+def test_manually_typed_row_can_actually_apply_removals(admin_client, spy_import_weekly):
+    """…and the choice must reach import_weekly, not just render."""
+    _, token = _stage(admin_client, [(_csv(_UNKNOWN_TITLE_WEEKLY), 'ไม่รู้จัก.csv')])
+    admin_client.post('/import-data/confirm',
+                      data={'token': token, 'type_0': 'sales', 'removals_0': 'on'})
+    assert spy_import_weekly and spy_import_weekly[0]['apply_removals'] is True
+
+
+def test_confirming_a_blocked_row_as_is_shows_the_history_reason(admin_client):
+    """A blocked row used to pre-select "ข้ามไฟล์นี้", so confirming without
+    touching the dropdown hit the unknown-type early-continue and reported
+    "ข้าม — ไม่ได้เลือกประเภท" for a file whose type WAS detected. That reads as
+    "you forgot to choose" and invites a pointless re-upload."""
+    body, token = _stage(admin_client, [(_csv(_HISTORY_SALES), 'ประวัติการขาย.csv')])
+    # Submit exactly what the form has pre-selected, i.e. no operator edit.
+    # Assert there is EXACTLY ONE selected option first: taking the first match
+    # silently picked the wrong value when two options were both marked
+    # selected, which made this test unable to fail.
+    sel = re.search(r'<select name="type_0".*?</select>', body, re.S).group(0)
+    chosen = re.findall(r'<option value="([^"]+)"[^>]*\bselected\b', sel)
+    assert len(chosen) == 1, f'exactly one option must be preselected, got {chosen}'
+    res = admin_client.post('/import-data/confirm',
+                            data={'token': token, 'type_0': chosen[0]})
+    body2 = res.data.decode('utf-8')
+    assert 'ไม่ได้เลือกประเภท' not in body2, \
+        'a detected-then-blocked file must not report as "no type chosen"'
+    panel = _history_block(body2)
+    assert 'ประวัติ' in panel and '/import-express-dbf' in panel

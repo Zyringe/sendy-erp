@@ -81,13 +81,18 @@
                 <select name="type_{{ row.idx }}" class="form-select form-select-sm{% if row.detected == 'unknown' %} border-warning{% endif %}">
                   {% for key, label in report_labels.items() %}
                     {% if key != 'unknown' %}
-                    <option value="{{ key }}" {% if key == row.detected and not row.blocked %}selected{% endif %}>{{ label }}</option>
+                    <option value="{{ key }}" {% if key == row.detected %}selected{% endif %}>{{ label }}</option>
                     {% endif %}
                   {% endfor %}
-                  {# A blocked file pre-selects "ข้ามไฟล์นี้" so a careless confirm
-                     is a no-op; the server-side guard in commit_file is what
-                     actually enforces it. #}
-                  <option value="unknown" {% if row.detected == 'unknown' or row.blocked %}selected{% endif %}>— ข้ามไฟล์นี้ —</option>
+                  {# A blocked file keeps its DETECTED type selected. Pre-selecting
+                     "ข้ามไฟล์นี้" made a plain confirm take the unknown-type
+                     early-continue, so the operator was told "ข้าม — ไม่ได้เลือก
+                     ประเภท" for a file whose type was in fact detected: it reads
+                     as "you forgot to choose" and invites a pointless re-upload.
+                     Keeping the type means confirm reaches commit_file, whose
+                     guard refuses it and renders the real reason. The block is
+                     enforced server-side either way. #}
+                  <option value="unknown" {% if row.detected == 'unknown' %}selected{% endif %}>— ข้ามไฟล์นี้ —</option>
                 </select>
               </td>
               <td class="text-end font-mono">
@@ -111,7 +116,11 @@
                  this export is COMPLETE — a filtered export's missing lines are
                  not deletions. Unticked = detect and report, never reverse. #}
               <td class="small">
-                {% if row.detected in ('sales', 'purchase') and not row.blocked %}
+                {# 'unknown' is included: the dropdown invites the operator to classify a
+                   file the detector could not, and such a row needs the opt-in as
+                   much as a detected one. Blocked rows are excluded — nothing will
+                   import. #}
+                {% if row.detected in ('sales', 'purchase', 'unknown') and not row.blocked %}
                   <div class="form-check">
                     <input class="form-check-input" type="checkbox"
                            name="removals_{{ row.idx }}" id="removals_{{ row.idx }}">
