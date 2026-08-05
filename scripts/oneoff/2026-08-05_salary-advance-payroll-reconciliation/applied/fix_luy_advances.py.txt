@@ -1,0 +1,154 @@
+"""Fix หลุย (emp 4) advance bookkeeping on Sendy prod.
+
+Op 1  cashbook_transactions id 638: category เงินเดือน -> เงินเดือน (เบิกล่วงหน้า),
+      user_category วิภา -> หลุย, salary_advance_id -> 27.  No money column touched.
+Op 2  Two new advance PAIRS on account 5 (กิติยา), ฿3,100 each, 2026-07-01 and
+      2026-08-01, left un-deducted so the August payroll run sweeps them.
+
+Usage:  python fix_luy_advances.py <db_path> <rehearse|live>
+"""
+import sqlite3
+import sys
+
+DB, MODE = sys.argv[1], sys.argv[2]
+assert MODE in ("rehearse", "live"), MODE
+
+EMP = 4
+ACCT_KITIYA = 5
+ACCT_392 = 1
+ADV_CAT = "เงินเดือน (เบิกล่วงหน้า)"
+NEW = [("2026-07-01", "เงินรายวันทั้งเดือน ก.ค."),
+       ("2026-08-01", "เงินรายวันทั้งเดือน ส.ค.")]
+AMOUNT = 3100.0
+
+c = sqlite3.connect(DB, timeout=15)
+c.row_factory = sqlite3.Row
+c.execute("PRAGMA busy_timeout=15000")
+c.execute("PRAGMA foreign_keys=ON")
+
+
+def bal(acct):
+    r = c.execute(
+        "SELECT COALESCE(SUM(CASE WHEN direction='income' THEN amount ELSE -amount END),0) b"
+        "  FROM cashbook_transactions WHERE account_id=?", (acct,)).fetchone()
+    return round(r["b"], 2)
+
+
+def undeducted():
+    r = c.execute(
+        "SELECT COALESCE(SUM(amount),0) s FROM salary_advances"
+        " WHERE employee_id=? AND deducted_in_run_id IS NULL", (EMP,)).fetchone()
+    return round(r["s"], 2)
+
+
+def july_salary_cat():
+    r = c.execute(
+        "SELECT COALESCE(SUM(amount),0) s FROM cashbook_transactions"
+        " WHERE category='เงินเดือน' AND txn_date BETWEEN '2026-07-01' AND '2026-07-31'"
+    ).fetchone()
+    return round(r["s"], 2)
+
+
+def run7_deduction():
+    r = c.execute(
+        "SELECT salary_advance_deduction d FROM payroll_items"
+        " WHERE run_id=7 AND employee_id=?", (EMP,)).fetchone()
+    return round(r["d"], 2)
+
+
+def dup_links():
+    """advances carrying MORE THAN ONE linked cashbook row (must always be 0)."""
+    return c.execute(
+        "SELECT COUNT(*) FROM (SELECT salary_advance_id FROM cashbook_transactions"
+        "  WHERE salary_advance_id IS NOT NULL"
+        "  GROUP BY salary_advance_id HAVING COUNT(*) > 1)").fetchone()[0]
+
+
+# ── guards: refuse to run twice, refuse on unexpected state ──────────────────
+already = c.execute(
+    "SELECT COUNT(*) FROM salary_advances WHERE employee_id=? AND amount=?"
+    "   AND advance_date IN ('2026-07-01','2026-08-01')", (EMP, AMOUNT)).fetchone()[0]
+if already:
+    sys.exit(f"ABORT: {already} matching ฿3,100 advance row(s) already exist — already applied?")
+
+r638 = c.execute("SELECT * FROM cashbook_transactions WHERE id=638").fetchone()
+if r638 is None:
+    sys.exit("ABORT: cashbook row 638 not found")
+if (r638["category"], r638["amount"], r638["txn_date"], r638["account_id"],
+        r638["salary_advance_id"]) != ("เงินเดือน", 7000.0, "2026-07-01", 1, None):
+    sys.exit(f"ABORT: row 638 not in the expected pre-state: {dict(r638)}")
+
+adv27 = c.execute("SELECT * FROM salary_advances WHERE id=27").fetchone()
+if adv27 is None or adv27["employee_id"] != EMP or adv27["amount"] != 7000.0 \
+        or adv27["advance_date"] != "2026-07-01":
+    sys.exit(f"ABORT: advance 27 not as expected: {dict(adv27) if adv27 else None}")
+if c.execute("SELECT COUNT(*) FROM cashbook_transactions WHERE salary_advance_id=27").fetchone()[0]:
+    sys.exit("ABORT: advance 27 is already linked to a cashbook row")
+
+before = dict(b1=bal(ACCT_392), b5=bal(ACCT_KITIYA), und=undeducted(),
+              jul=july_salary_cat(), run7=run7_deduction(), dup=dup_links())
+print("BEFORE", before)
+assert before["dup"] == 0, "pre-existing duplicate advance links — investigate first"
+
+# ── apply ───────────────────────────────────────────────────────────────────
+c.execute("BEGIN IMMEDIATE")
+c.execute("UPDATE cashbook_transactions"
+          "   SET category=?, user_category='หลุย', salary_advance_id=27"
+          " WHERE id=638", (ADV_CAT,))
+for day, desc in NEW:
+    adv_id = c.execute(
+        "INSERT INTO salary_advances (employee_id, advance_date, amount, from_account_id, note)"
+        " VALUES (?,?,?,?,'ค่าอาหาร')", (EMP, day, AMOUNT, ACCT_KITIYA)).lastrowid
+    c.execute(
+        "INSERT INTO cashbook_transactions"
+        " (account_id, txn_date, direction, category, user_category, amount,"
+        "  description, note, created_by, salary_advance_id)"
+        " VALUES (?,?,'expense',?,'หลุย',?,?,'ค่าอาหาร','Put/Claudy',?)",
+        (ACCT_KITIYA, day, ADV_CAT, AMOUNT, desc, adv_id))
+    print(f"  inserted advance {adv_id} + linked cashbook row for {day}")
+c.commit()
+
+# ── verify by INDEPENDENT re-read on a fresh connection ─────────────────────
+c.close()
+v = sqlite3.connect(DB, timeout=15)
+v.row_factory = sqlite3.Row
+c = v  # helpers above close over `c`
+
+after = dict(b1=bal(ACCT_392), b5=bal(ACCT_KITIYA), und=undeducted(),
+             jul=july_salary_cat(), run7=run7_deduction(), dup=dup_links())
+print("AFTER ", after)
+
+checks = [
+    ("acct 392 balance unchanged", after["b1"] == before["b1"]),
+    ("acct กิติยา balance -6,200", round(before["b5"] - after["b5"], 2) == 6200.0),
+    ("run 7 deduction still 12,200", after["run7"] == before["run7"] == 12200.0),
+    ("undeducted advances now 9,200", after["und"] == 9200.0),
+    ("July หมวดเงินเดือน -7,000", round(before["jul"] - after["jul"], 2) == 7000.0),
+    ("no duplicate advance links", after["dup"] == 0),
+]
+row = v.execute("SELECT * FROM cashbook_transactions WHERE id=638").fetchone()
+checks += [
+    ("638 category fixed", row["category"] == ADV_CAT),
+    ("638 linked to advance 27", row["salary_advance_id"] == 27),
+    ("638 tag = หลุย", row["user_category"] == "หลุย"),
+    ("638 amount untouched", row["amount"] == 7000.0),
+    ("638 date/account untouched", (row["txn_date"], row["account_id"]) == ("2026-07-01", 1)),
+]
+pairs = v.execute(
+    "SELECT sa.id, sa.advance_date, sa.amount, sa.note, sa.deducted_in_run_id,"
+    "       ct.id ct_id, ct.account_id, ct.category, ct.user_category, ct.description"
+    "  FROM salary_advances sa JOIN cashbook_transactions ct ON ct.salary_advance_id=sa.id"
+    " WHERE sa.employee_id=? AND sa.amount=? AND sa.advance_date IN ('2026-07-01','2026-08-01')"
+    " ORDER BY sa.advance_date", (EMP, AMOUNT)).fetchall()
+checks.append(("2 new linked pairs exist", len(pairs) == 2))
+for p in pairs:
+    print("  PAIR", dict(p))
+    checks.append((f"{p['advance_date']} un-deducted", p["deducted_in_run_id"] is None))
+    checks.append((f"{p['advance_date']} on acct 5", p["account_id"] == ACCT_KITIYA))
+
+ok = True
+for name, passed in checks:
+    print(("  PASS  " if passed else "  FAIL  ") + name)
+    ok &= passed
+print(("VERIFY OK  " if ok else "VERIFY FAILED  ") + MODE)
+sys.exit(0 if ok else 1)

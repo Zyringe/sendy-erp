@@ -1,0 +1,147 @@
+"""Recover the ฿1,000 advance for บอล (emp 5) that run 6 never deducted.
+
+ct 634 (2026-06-27, ฿1,000, SCB 392) is a REAL advance payment whose
+salary_advances row was never created — the cashbook row was keyed 2026-07-03,
+after run 6 closed on 06-30, so whoever keyed the advances could not see it.
+
+The cash is ALREADY recorded in ct 634.  So this creates ONLY the
+salary_advances row and LINKS it to the existing cashbook row — creating a new
+cashbook row would double-count the June expense.
+
+Left un-deducted so the August payroll run sweeps it
+(advance_date <= period_end AND deducted_in_run_id IS NULL).
+
+Usage:  python fix_ball_1000.py <db_path> <rehearse|live>
+"""
+import sqlite3
+import sys
+
+DB, MODE = sys.argv[1], sys.argv[2]
+assert MODE in ("rehearse", "live"), MODE
+
+EMP = 5
+CT = 634
+ACCT_392 = 1
+AMOUNT = 1000.0
+DAY = "2026-06-27"
+ADV_CAT = "เงินเดือน (เบิกล่วงหน้า)"
+NOTE = "เบิกล่วงหน้า 27 มิ.ย. — ตกหล่นตอนปิด run 6, ยกมาหักรอบ ส.ค."
+
+c = sqlite3.connect(DB, timeout=15)
+c.row_factory = sqlite3.Row
+c.execute("PRAGMA busy_timeout=15000")
+c.execute("PRAGMA foreign_keys=ON")
+
+
+def bal(acct):
+    return round(c.execute(
+        "SELECT COALESCE(SUM(CASE WHEN direction='income' THEN amount ELSE -amount END),0) b"
+        "  FROM cashbook_transactions WHERE account_id=?", (acct,)).fetchone()["b"], 2)
+
+
+def undeducted(emp):
+    return round(c.execute(
+        "SELECT COALESCE(SUM(amount),0) s FROM salary_advances"
+        " WHERE employee_id=? AND deducted_in_run_id IS NULL", (emp,)).fetchone()["s"], 2)
+
+
+def run_ded(run):
+    return round(c.execute(
+        "SELECT salary_advance_deduction d FROM payroll_items"
+        " WHERE run_id=? AND employee_id=?", (run, EMP)).fetchone()["d"], 2)
+
+
+def june_salary_cat():
+    return round(c.execute(
+        "SELECT COALESCE(SUM(amount),0) s FROM cashbook_transactions"
+        " WHERE category='เงินเดือน' AND txn_date BETWEEN '2026-06-01' AND '2026-06-30'"
+    ).fetchone()["s"], 2)
+
+
+def june_ball_cash():
+    """Total cash out tagged to บอล in June — must NOT move (we add no cash row)."""
+    return round(c.execute(
+        "SELECT COALESCE(SUM(amount),0) s FROM cashbook_transactions"
+        " WHERE txn_date LIKE '2026-06%' AND user_category IN ('บอล','วุฒิพงษ์')"
+    ).fetchone()["s"], 2)
+
+
+def dup_links():
+    return c.execute(
+        "SELECT COUNT(*) FROM (SELECT salary_advance_id FROM cashbook_transactions"
+        "  WHERE salary_advance_id IS NOT NULL"
+        "  GROUP BY salary_advance_id HAVING COUNT(*) > 1)").fetchone()[0]
+
+
+# ── guards ──────────────────────────────────────────────────────────────────
+if c.execute("SELECT COUNT(*) FROM salary_advances WHERE employee_id=? AND advance_date=?"
+             "   AND amount=?", (EMP, DAY, AMOUNT)).fetchone()[0]:
+    sys.exit("ABORT: an advance for emp 5 on 2026-06-27 @ ฿1,000 already exists — already applied?")
+
+row = c.execute("SELECT * FROM cashbook_transactions WHERE id=?", (CT,)).fetchone()
+if row is None:
+    sys.exit(f"ABORT: cashbook row {CT} not found")
+if (row["category"], row["amount"], row["txn_date"], row["account_id"],
+        row["salary_advance_id"], row["payroll_run_id"]) != (
+        "เงินเดือน", AMOUNT, DAY, ACCT_392, None, None):
+    sys.exit(f"ABORT: row {CT} not in the expected pre-state: {dict(row)}")
+
+before = dict(b1=bal(ACCT_392), und=undeducted(EMP), r6=run_ded(6), r7=run_ded(7),
+              jun=june_salary_cat(), ball=june_ball_cash(), dup=dup_links())
+print("BEFORE", before)
+assert before["dup"] == 0, "pre-existing duplicate advance links — investigate first"
+
+# ── apply: salary_advances row ONLY, linked to the existing cashbook row ─────
+c.execute("BEGIN IMMEDIATE")
+adv_id = c.execute(
+    "INSERT INTO salary_advances (employee_id, advance_date, amount, from_account_id, note)"
+    " VALUES (?,?,?,?,?)", (EMP, DAY, AMOUNT, ACCT_392, NOTE)).lastrowid
+c.execute("UPDATE cashbook_transactions"
+          "   SET category=?, user_category='บอล', salary_advance_id=?"
+          " WHERE id=?", (ADV_CAT, adv_id, CT))
+c.commit()
+print(f"  created advance {adv_id}, linked to cashbook {CT} (NO new cashbook row)")
+
+# ── verify on a fresh connection ────────────────────────────────────────────
+c.close()
+v = sqlite3.connect(DB, timeout=15)
+v.row_factory = sqlite3.Row
+c = v
+
+after = dict(b1=bal(ACCT_392), und=undeducted(EMP), r6=run_ded(6), r7=run_ded(7),
+             jun=june_salary_cat(), ball=june_ball_cash(), dup=dup_links())
+print("AFTER ", after)
+
+r = v.execute("SELECT * FROM cashbook_transactions WHERE id=?", (CT,)).fetchone()
+a = v.execute("SELECT * FROM salary_advances WHERE id=?", (adv_id,)).fetchone()
+checks = [
+    ("acct 392 balance UNCHANGED (no new cash row)", after["b1"] == before["b1"]),
+    ("June cash tagged บอล UNCHANGED (13,350)", after["ball"] == before["ball"] == 13350.0),
+    ("run 6 deduction still 4,000", after["r6"] == before["r6"] == 4000.0),
+    ("run 7 deduction still 5,000", after["r7"] == before["r7"] == 5000.0),
+    ("undeducted for บอล now 1,000", after["und"] == 1000.0 and before["und"] == 0.0),
+    ("June หมวดเงินเดือน -1,000", round(before["jun"] - after["jun"], 2) == 1000.0),
+    ("no duplicate advance links", after["dup"] == 0),
+    ("ct 634 category fixed", r["category"] == ADV_CAT),
+    ("ct 634 linked to new advance", r["salary_advance_id"] == adv_id),
+    ("ct 634 tag = บอล", r["user_category"] == "บอล"),
+    ("ct 634 amount/date/account untouched",
+     (r["amount"], r["txn_date"], r["account_id"]) == (AMOUNT, DAY, ACCT_392)),
+    ("advance un-deducted", a["deducted_in_run_id"] is None),
+    ("advance dated 2026-06-27 <= Aug period_end", a["advance_date"] == DAY),
+    ("exactly ONE cashbook row links to it",
+     v.execute("SELECT COUNT(*) FROM cashbook_transactions WHERE salary_advance_id=?",
+               (adv_id,)).fetchone()[0] == 1),
+]
+ok = True
+for name, passed in checks:
+    print(("  PASS  " if passed else "  FAIL  ") + name)
+    ok &= passed
+
+sim = v.execute(
+    "SELECT COALESCE(SUM(amount),0) d FROM salary_advances"
+    " WHERE employee_id=? AND advance_date<='2026-08-31'"
+    "   AND deducted_in_run_id IS NULL", (EMP,)).fetchone()["d"]
+print("  AUGUST run will deduct for บอล: %.2f  -> net %.2f" % (sim, 13000 - 650 - sim))
+print(("VERIFY OK  " if ok else "VERIFY FAILED  ") + MODE)
+sys.exit(0 if ok else 1)
