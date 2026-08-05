@@ -397,15 +397,21 @@ def apply_substitution_sheet_from_csv(csv_path, apply=False):
     conn = sqlite3.connect(config.DATABASE_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=10000")
+    # Codex r1: the app's get_connection() turns FKs on; a raw connection
+    # must too, or an orphan product link would insert cleanly here.
+    conn.execute("PRAGMA foreign_keys=ON")
     try:
         result = models.apply_substitution_sheet(rows, conn=conn)
     finally:
         conn.close()
-    if result['ok']:
+    if result.get('ok'):
         print(f"applied {result['applied']} pairs (field-exact verified; backup: {backup})")
+    elif result.get('invalid'):
+        print(f"REFUSED — {len(result['invalid'])} invalid row(s) (X inactive / Y not in the "
+              f"current book / VATCOD != 1), nothing written. แก้ sheet แล้วรันใหม่: "
+              f"{result['invalid'][:10]}")
     else:
-        print(f"REFUSED — {len(result['mismatches'])} pair(s) failed the independent re-verify, "
-              f"rolled back the WHOLE batch: {result['mismatches']}")
+        print(f"REFUSED — {result.get('error') or result.get('mismatches')}")
     return result
 
 

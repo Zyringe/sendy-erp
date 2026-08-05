@@ -26,6 +26,7 @@ Short version:
 Conventions: raw SQL via sqlite3 (see database.py), no ORM. Every connection
 this module touches must have row_factory = sqlite3.Row.
 """
+import functools
 import os
 import re
 import sqlite3
@@ -418,6 +419,24 @@ def get_group_detail(group_id, main_conn, book_conn):
 # add_member, the two that validate against the book) opens a fresh
 # open_vat_book() and closes it before returning — tests inject their own.
 
+
+def _busy_to_result(fn):
+    """§4.6 timeout behavior (Codex r1): a writer lock that outlives
+    busy_timeout surfaces as sqlite3.OperationalError('database is locked')
+    AFTER the function's own rollback — convert it into the standard busy
+    result so every POST route flashes "ระบบกำลังยุ่ง ลองใหม่อีกครั้ง" and
+    redirects instead of 500ing. Any other OperationalError re-raises."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except sqlite3.OperationalError as exc:
+            if 'locked' in str(exc).lower():
+                return {'ok': False, 'error': 'ระบบกำลังยุ่ง ลองใหม่อีกครั้ง'}
+            raise
+    return wrapper
+
+
 def _x_group_ids(c, product_id):
     """X's current group ids, lowest first. Pulled out as its own function
     so it can be the concurrency-test seam: it is the LAST read before
@@ -428,6 +447,7 @@ def _x_group_ids(c, product_id):
         (product_id,)).fetchall()]
 
 
+@_busy_to_result
 def promote(product_id, xp5_code, target_group_id=None, conn=None, book_conn=None):
     """§4.5 promote = idempotent add-membership. target_group_id: None =
     default (X's lowest existing group id, or cold-start create if X has
@@ -504,6 +524,7 @@ def promote(product_id, xp5_code, target_group_id=None, conn=None, book_conn=Non
             bc.close()
 
 
+@_busy_to_result
 def add_member(group_id, xp5_code, conn=None, book_conn=None):
     """§5 Routes: group-page search-and-add. Validation: target group
     exists + Y exists in the published book + Y's VATCOD='1' — no X in this
@@ -561,6 +582,7 @@ def _member_state(c, source_group_id, target_group_id, xp5_code):
     return source_row, target_row
 
 
+@_busy_to_result
 def move_member(source_group_id, target_group_id, xp5_code, conn=None):
     """§5 Routes: re-home a member in ONE transaction. Four membership
     states, all defined (plan §5): source-only = normal move (insert target
@@ -608,6 +630,7 @@ def move_member(source_group_id, target_group_id, xp5_code, conn=None):
             c.close()
 
 
+@_busy_to_result
 def remove_member(group_id, xp5_code, conn=None):
     own = conn is None
     c = conn if conn is not None else get_connection()
@@ -629,6 +652,7 @@ def remove_member(group_id, xp5_code, conn=None):
             c.close()
 
 
+@_busy_to_result
 def link_product(group_id, product_id, conn=None):
     """The inverse of unlink_product. Rejects now-inactive products even on
     re-link (safety condition, documented — plan §4.7 reversibility)."""
@@ -661,6 +685,7 @@ def link_product(group_id, product_id, conn=None):
             c.close()
 
 
+@_busy_to_result
 def unlink_product(group_id, product_id, conn=None):
     own = conn is None
     c = conn if conn is not None else get_connection()
@@ -682,6 +707,7 @@ def unlink_product(group_id, product_id, conn=None):
             c.close()
 
 
+@_busy_to_result
 def rename_group(group_id, label, conn=None):
     own = conn is None
     c = conn if conn is not None else get_connection()
@@ -708,6 +734,7 @@ def rename_group(group_id, label, conn=None):
             c.close()
 
 
+@_busy_to_result
 def delete_group(group_id, conn=None):
     """Empty groups only (zero members AND zero links, verified inside the
     transaction). Repeat/stale deletes are a defined no-op — a group is
@@ -738,7 +765,8 @@ def delete_group(group_id, conn=None):
             c.close()
 
 
-def apply_substitution_sheet(rows, conn=None):
+@_busy_to_result
+def apply_substitution_sheet(rows, conn=None, book_conn=None):
     """§4.7 sheet apply — the executable algorithm for rows marked
     "ใช้แทนกันได้" on the review sheet. `rows`: iterable of {'product_id':
     int, 'xp5_code': str}. Deduplicated + sorted here (deterministic order:
@@ -760,10 +788,39 @@ def apply_substitution_sheet(rows, conn=None):
     must be co-resident (a group containing X's link AND Y's membership) —
     ANY mismatch rolls back the WHOLE transaction, not just the bad row."""
     own = conn is None
+    own_book = book_conn is None
     c = conn if conn is not None else get_connection()
+    bc = book_conn if book_conn is not None else open_vat_book()
     dedup_rows = sorted({(r['product_id'], r['xp5_code']) for r in rows})
     try:
         c.execute("BEGIN IMMEDIATE")
+        # Codex r1 finding 3: validate the WHOLE batch BEFORE the first
+        # write — X must exist and be active, Y must be in the CURRENTLY
+        # published book with VATCOD='1' (same eligibility promote/
+        # add_member enforce). A stale or hand-edited CSV must never seed
+        # orphan or book-invalid rows; ANY invalid row refuses the whole
+        # batch (consistent with the mismatch-rollback stance below) so
+        # Put fixes the sheet once instead of silently applying a subset.
+        if bc is None:
+            c.rollback()
+            return {'ok': False, 'applied': 0, 'mismatches': [],
+                    'invalid': [(pid, code, 'สมุด VAT ยังไม่ถูกสร้าง')
+                                for pid, code in dedup_rows]}
+        invalid = []
+        for product_id, xp5_code in dedup_rows:
+            if c.execute("SELECT 1 FROM products WHERE id=? AND is_active=1",
+                         (product_id,)).fetchone() is None:
+                invalid.append((product_id, xp5_code, 'X ไม่พบหรือถูกปิดใช้งาน'))
+                continue
+            y = _fetch_book_row(bc, xp5_code)
+            if y is None:
+                invalid.append((product_id, xp5_code, 'Y ไม่อยู่ในสมุด VAT ปัจจุบัน'))
+            elif y['vatcod'] != '1':
+                invalid.append((product_id, xp5_code, 'VATCOD ไม่ใช่ 1'))
+        if invalid:
+            c.rollback()
+            return {'ok': False, 'applied': 0, 'mismatches': [], 'invalid': invalid}
+
         for product_id, xp5_code in dedup_rows:
             x_groups = [r['group_id'] for r in c.execute(
                 "SELECT group_id FROM vat_sub_product_links WHERE product_id=? ORDER BY group_id",
@@ -808,15 +865,17 @@ def apply_substitution_sheet(rows, conn=None):
                 mismatches.append((product_id, xp5_code))
         if mismatches:
             c.rollback()
-            return {'ok': False, 'applied': 0, 'mismatches': mismatches}
+            return {'ok': False, 'applied': 0, 'mismatches': mismatches, 'invalid': []}
         c.commit()
-        return {'ok': True, 'applied': len(dedup_rows), 'mismatches': []}
+        return {'ok': True, 'applied': len(dedup_rows), 'mismatches': [], 'invalid': []}
     except Exception:
         c.rollback()
         raise
     finally:
         if own:
             c.close()
+        if own_book and bc is not None:
+            bc.close()
 
 
 def get_unit_options(product_id, main_conn):

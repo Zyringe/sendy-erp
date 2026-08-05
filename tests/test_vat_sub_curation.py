@@ -355,3 +355,20 @@ def test_delete_already_gone_group_is_idempotent_noop(empty_db_conn):
     result = vs.delete_group(99999, conn=empty_db_conn)
     assert result['ok'] is True
     assert result.get('noop') is True
+
+
+def test_write_busy_timeout_returns_busy_result_not_500(empty_db_conn, book_conn, monkeypatch):
+    """Codex r1 finding 2 (§4.6): a writer lock that outlives busy_timeout
+    raises sqlite3.OperationalError('database is locked') — the model must
+    convert that into the standard busy result so every POST route flashes
+    "ระบบกำลังยุ่ง ลองใหม่อีกครั้ง" + redirect instead of a 500."""
+    pid = _seed_product(empty_db_conn)
+    _seed_book(book_conn, 'YBUSY')
+
+    def boom(*_a, **_k):
+        raise sqlite3.OperationalError('database is locked')
+    monkeypatch.setattr(vs, '_x_group_ids', boom)
+
+    result = vs.promote(pid, 'YBUSY', conn=empty_db_conn, book_conn=book_conn)
+    assert result == {'ok': False, 'error': 'ระบบกำลังยุ่ง ลองใหม่อีกครั้ง'}
+    assert empty_db_conn.execute("SELECT COUNT(*) FROM vat_sub_groups").fetchone()[0] == 0

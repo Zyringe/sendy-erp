@@ -129,6 +129,11 @@
 (function () {
   const xUnit = document.getElementById('vs-unit');
   const xPrice = document.getElementById('vs-price');
+  // Unit COMPATIBILITY always compares X's BASE unit (the price below is
+  // divided back to per-base-unit) — the selected deal unit supplies the
+  // RATIO only (decision 10; Codex r1 finding 1: passing the selected
+  // unit here wrongly flipped โหล→ตัว deals to "เทียบไม่ได้").
+  const X_BASE_UNIT = {{ product.unit_type|tojson }};
 
   function computeBadge(pricePerUnit, unitRatio, xu, candUnit, candCost) {
     if (!pricePerUnit || !unitRatio) return {label: 'เทียบไม่ได้', cls: 'bg-secondary'};
@@ -146,11 +151,10 @@
     const price = parseFloat(xPrice.value) || 0;
     const opt = xUnit.options[xUnit.selectedIndex];
     const ratio = opt ? parseFloat(opt.getAttribute('data-ratio')) : 1;
-    const xu = opt ? opt.value : '';
     document.querySelectorAll('.vs-badge').forEach(el => {
       const candUnit = el.getAttribute('data-unit');
       const candCost = parseFloat(el.getAttribute('data-cost')) || 0;
-      const r = computeBadge(price, ratio, xu, candUnit, candCost);
+      const r = computeBadge(price, ratio, X_BASE_UNIT, candUnit, candCost);
       el.textContent = r.label;
       el.className = 'vs-badge badge ' + r.cls;
     });

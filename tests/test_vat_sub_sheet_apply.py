@@ -2,7 +2,53 @@
 3-step deterministic targeting for rows marked "ใช้แทนกันได้" on the review
 sheet. ONE transaction; idempotent; merge-free; independent re-verify with
 rollback-on-mismatch."""
+import sqlite3
+
+import pytest
+
 import models.vat_sub as vs
+
+
+@pytest.fixture(autouse=True)
+def _default_book(monkeypatch, tmp_path):
+    """apply_substitution_sheet now validates Y against the published book
+    (Codex r1 finding 3). The pre-existing algorithm tests in this file are
+    about TARGETING/idempotency, not eligibility — give them a standard fake
+    book carrying every code they use (all VATCOD='1') via open_vat_book,
+    so a test that passes its own book_conn (the refusal tests below) is
+    unaffected. Reopened per call: the function closes the conn it opens."""
+    path = tmp_path / 'std_book.db'
+    c = sqlite3.connect(path)
+    c.executescript("""
+        CREATE TABLE products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_name TEXT NOT NULL,
+            unit_type TEXT NOT NULL DEFAULT 'ตัว',
+            cost_price REAL NOT NULL DEFAULT 0.0);
+        CREATE TABLE product_code_mapping (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bsn_code TEXT NOT NULL, bsn_name TEXT NOT NULL,
+            product_id INTEGER, bsn_unit TEXT NOT NULL DEFAULT '');
+        CREATE TABLE stock_levels (
+            product_id INTEGER PRIMARY KEY, quantity REAL NOT NULL DEFAULT 0);
+        CREATE TABLE stmas_meta (
+            stkcod TEXT PRIMARY KEY, stkgrp TEXT NOT NULL, vatcod TEXT NOT NULL);
+    """)
+    for code in ('Y1', 'Y2', 'A', 'B', 'NEW', 'OLD'):
+        pid = c.execute("INSERT INTO products (product_name) VALUES (?)",
+                        (f'ตัวแทน {code}',)).lastrowid
+        c.execute("INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id) "
+                  "VALUES (?, ?, ?)", (code, f'ตัวแทน {code}', pid))
+        c.execute("INSERT INTO stock_levels (product_id, quantity) VALUES (?, 1.0)", (pid,))
+        c.execute("INSERT INTO stmas_meta (stkcod, stkgrp, vatcod) VALUES (?, '', '1')", (code,))
+    c.commit()
+    c.close()
+
+    def _open():
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        return conn
+    monkeypatch.setattr(vs, 'open_vat_book', _open)
 
 
 def _seed_product(conn, name='สินค้า X'):
@@ -196,3 +242,83 @@ def test_verify_mismatch_rolls_back_entire_transaction(empty_db_conn):
     # Y2's pair (which WAS written correctly) must also be gone — whole-txn rollback
     assert empty_db_conn.execute("SELECT COUNT(*) FROM vat_sub_groups").fetchone()[0] == 0
     assert empty_db_conn.execute("SELECT COUNT(*) FROM vat_sub_members").fetchone()[0] == 0
+
+
+# ── Codex r1 finding 3: batch validation (X active, Y in current book with
+# VATCOD='1') BEFORE the first write — a stale/edited CSV must never seed
+# orphan or book-invalid curation rows. Whole-batch refusal, zero writes. ──
+import sqlite3
+import pytest
+
+
+@pytest.fixture
+def sheet_book(tmp_path):
+    c = sqlite3.connect(tmp_path / 'sheet_book.db')
+    c.row_factory = sqlite3.Row
+    c.executescript("""
+        CREATE TABLE products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_name TEXT NOT NULL,
+            unit_type TEXT NOT NULL DEFAULT 'ตัว',
+            cost_price REAL NOT NULL DEFAULT 0.0);
+        CREATE TABLE product_code_mapping (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bsn_code TEXT NOT NULL, bsn_name TEXT NOT NULL,
+            product_id INTEGER, bsn_unit TEXT NOT NULL DEFAULT '');
+        CREATE TABLE stock_levels (
+            product_id INTEGER PRIMARY KEY, quantity REAL NOT NULL DEFAULT 0);
+        CREATE TABLE stmas_meta (
+            stkcod TEXT PRIMARY KEY, stkgrp TEXT NOT NULL, vatcod TEXT NOT NULL);
+    """)
+    yield c
+    c.close()
+
+
+def _seed_sheet_book(conn, code, vatcod='1'):
+    pid = conn.execute(
+        "INSERT INTO products (product_name) VALUES (?)", (f'ตัวแทน {code}',)).lastrowid
+    conn.execute("INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id) "
+                 "VALUES (?, ?, ?)", (code, f'ตัวแทน {code}', pid))
+    conn.execute("INSERT INTO stock_levels (product_id, quantity) VALUES (?, 1.0)", (pid,))
+    conn.execute("INSERT INTO stmas_meta (stkcod, stkgrp, vatcod) VALUES (?, '', ?)",
+                 (code, vatcod))
+    conn.commit()
+
+
+def test_apply_refuses_inactive_x_whole_batch(empty_db_conn, sheet_book):
+    ok_pid = _seed_product(empty_db_conn, name='สินค้าดี')
+    bad_pid = empty_db_conn.execute(
+        "INSERT INTO products (product_name, is_active) VALUES ('ปิดใช้งานแล้ว', 0)").lastrowid
+    empty_db_conn.commit()
+    for code in ('Y1', 'Y2'):
+        _seed_sheet_book(sheet_book, code)
+    result = vs.apply_substitution_sheet(
+        [{'product_id': ok_pid, 'xp5_code': 'Y1'},
+         {'product_id': bad_pid, 'xp5_code': 'Y2'}],
+        conn=empty_db_conn, book_conn=sheet_book)
+    assert result['ok'] is False
+    assert any(pid == bad_pid for pid, _code, _why in result['invalid'])
+    assert _counts(empty_db_conn) == {'groups': 0, 'members': 0, 'links': 0}
+
+
+def test_apply_refuses_y_not_in_current_book(empty_db_conn, sheet_book):
+    pid = _seed_product(empty_db_conn)
+    _seed_sheet_book(sheet_book, 'Y1')
+    result = vs.apply_substitution_sheet(
+        [{'product_id': pid, 'xp5_code': 'Y1'},
+         {'product_id': pid, 'xp5_code': 'GONE'}],
+        conn=empty_db_conn, book_conn=sheet_book)
+    assert result['ok'] is False
+    assert any(code == 'GONE' for _pid, code, _why in result['invalid'])
+    assert _counts(empty_db_conn) == {'groups': 0, 'members': 0, 'links': 0}
+
+
+def test_apply_refuses_y_vatcod_not_1(empty_db_conn, sheet_book):
+    pid = _seed_product(empty_db_conn)
+    _seed_sheet_book(sheet_book, 'Y0', vatcod='0')
+    result = vs.apply_substitution_sheet(
+        [{'product_id': pid, 'xp5_code': 'Y0'}],
+        conn=empty_db_conn, book_conn=sheet_book)
+    assert result['ok'] is False
+    assert any(code == 'Y0' for _pid, code, _why in result['invalid'])
+    assert _counts(empty_db_conn) == {'groups': 0, 'members': 0, 'links': 0}

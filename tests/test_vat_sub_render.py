@@ -166,3 +166,25 @@ def test_staff_cannot_post_promote(route_client, tmp_db):
     r = route_client.post('/vat-sub/promote', data={'product_id': '1', 'xp5_code': 'X1'})
     # access_control redirects (not 403) for a POST outside the role whitelist
     assert r.status_code in (302, 403)
+
+
+def test_badge_js_compares_base_unit_not_selected_unit(route_client, tmp_db):
+    """Codex r1 finding 1 (decision 10): the price is divided back to X's
+    BASE unit before comparing, so the unit-compatibility check must use
+    products.unit_type — the SELECTED deal unit only supplies the ratio.
+    Selecting โหล (ratio 12) against a ตัว candidate must NOT flip the badge
+    to "เทียบไม่ได้"."""
+    import sqlite3
+    import config
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    conn.row_factory = sqlite3.Row
+    pid = _seed_identity_mapped_product(conn)
+    conn.close()
+    _login(route_client)
+    html = route_client.get(f'/vat-sub/product/{pid}').get_data(as_text=True)
+    # tojson escapes Thai to \uXXXX (Flask ensure_ascii) — assert the WIRING:
+    # a base-unit constant exists, feeds computeBadge, and the old
+    # selected-unit variable is gone entirely.
+    assert 'const X_BASE_UNIT = ' in html
+    assert 'computeBadge(price, ratio, X_BASE_UNIT,' in html
+    assert 'opt.value' not in html
