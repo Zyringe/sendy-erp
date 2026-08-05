@@ -408,3 +408,130 @@ def test_party_change_with_its_own_product_heading_still_parses(tmp_path):
     got = {e['doc_no']: e['product_code_raw'] for e in entries}
     assert got['IV6900501-1'] == '001ก3435', 'must use the NEW party product'
     assert got['IV6900503-1'] == '031บ4120'
+
+
+# ── structural headings must fail CLOSED (Codex follow-up on d9484ca) ──────
+#
+# Both structural branches `continue` even when their regex fails, so a
+# malformed heading left the PREVIOUS context in place and the next transaction
+# was attributed to it. Same silent mis-mapping as the party-boundary bug, via a
+# different door. A product heading before any party also let a row parse with
+# party=None.
+#
+# Invariant now: a non-SR transaction requires BOTH a valid party and a valid
+# product. Measured over every real Express export (19,864 transaction rows):
+# zero rows lack either, and there are zero malformed party/product lines, so
+# this cannot false-reject a real import.
+
+# after '/' there is a space, so `^(.+?)\s*/(\S+)\s*$` cannot match
+_BAD_PARTY_LINE = '"  ร้านค้าเสีย\xa0/รหัส ที่มีช่องว่าง"'
+_BAD_PROD_LINE = '"   สินค้าเสีย\xa0/รหัส ที่มีช่องว่าง"'
+
+
+def _sales_file(*body):
+    return _HDR7 + list(body)
+
+
+@pytest.fixture
+def malformed_party_csv(tmp_path):
+    return _write(tmp_path, "ขาย_bad_party.csv", _sales_file(
+        '"  ไพศาลโลหะภัณฑ์(ตลาดพลู)\xa0/01พ02"',
+        '"   ใบตัดเพชร\xa04\xa0#GL-888(แดง)\xa0/031บ4120"',
+        '"      04/04/69   IV6900503-  1        24.00 ใบ          160.00  1                  3840.00                  3840.00"',
+        _BAD_PARTY_LINE,
+        '"      04/04/69   IV6900998-  1        10.00 ใบ          160.00  1                  1600.00                  1600.00"',
+    ))
+
+
+@pytest.fixture
+def malformed_product_csv(tmp_path):
+    return _write(tmp_path, "ขาย_bad_prod.csv", _sales_file(
+        '"  ไพศาลโลหะภัณฑ์(ตลาดพลู)\xa0/01พ02"',
+        '"   ใบตัดเพชร\xa04\xa0#GL-888(แดง)\xa0/031บ4120"',
+        '"      04/04/69   IV6900503-  1        24.00 ใบ          160.00  1                  3840.00                  3840.00"',
+        _BAD_PROD_LINE,
+        '"      04/04/69   IV6900997-  1        10.00 ใบ          160.00  1                  1600.00                  1600.00"',
+    ))
+
+
+@pytest.fixture
+def product_before_any_party_csv(tmp_path):
+    """Product heading + transaction before any party, THEN a valid grouping.
+
+    The trailing valid grouping is deliberate: without it the file parses to
+    zero entries and _validate_parse's zero-parse branch fires first (correctly
+    — see the ordering note there), whose message does not quote lines. The
+    dangerous real shape is a context-less row hidden among good ones, which is
+    what this fixture builds, and there the partial-parse message must name it.
+    """
+    return _write(tmp_path, "ขาย_no_party.csv", _sales_file(
+        '"   ใบตัดเพชร\xa04\xa0#GL-888(แดง)\xa0/031บ4120"',
+        '"      04/04/69   IV6900996-  1        10.00 ใบ          160.00  1                  1600.00                  1600.00"',
+        '"  ไพศาลโลหะภัณฑ์(ตลาดพลู)\xa0/01พ02"',
+        '"   ใบตัดเพชร\xa04\xa0#GL-888(แดง)\xa0/031บ4120"',
+        '"      04/04/69   IV6900503-  1        24.00 ใบ          160.00  1                  3840.00                  3840.00"',
+    ))
+
+
+@pytest.fixture
+def only_a_context_less_row_csv(tmp_path):
+    """The same defect with NO valid rows at all: still refused, via the
+    zero-parse branch."""
+    return _write(tmp_path, "ขาย_no_party_only.csv", _sales_file(
+        '"   ใบตัดเพชร\xa04\xa0#GL-888(แดง)\xa0/031บ4120"',
+        '"      04/04/69   IV6900996-  1        10.00 ใบ          160.00  1                  1600.00                  1600.00"',
+    ))
+
+
+def test_a_context_less_row_alone_still_blocks_the_file(only_a_context_less_row_csv):
+    with pytest.raises(ValueError) as exc:
+        parse_weekly.parse_sales(only_a_context_less_row_csv)
+    assert 'ขาย_no_party_only.csv' in str(exc.value)
+
+
+def test_malformed_party_heading_blocks_the_file(malformed_party_csv):
+    with pytest.raises(ValueError) as exc:
+        parse_weekly.parse_sales(malformed_party_csv)
+    assert 'IV6900998' in str(exc.value)
+
+
+def test_malformed_product_heading_blocks_the_file(malformed_product_csv):
+    with pytest.raises(ValueError) as exc:
+        parse_weekly.parse_sales(malformed_product_csv)
+    assert 'IV6900997' in str(exc.value)
+
+
+def test_transaction_before_any_party_blocks_the_file(product_before_any_party_csv):
+    """Even with a valid product heading, a row with no customer/supplier must
+    not parse — it would land with party=None."""
+    with pytest.raises(ValueError) as exc:
+        parse_weekly.parse_sales(product_before_any_party_csv)
+    assert 'IV6900996' in str(exc.value)
+
+
+def test_no_row_ever_inherits_context_across_a_malformed_heading(
+        malformed_party_csv, malformed_product_csv):
+    """The property, not the message: a malformed heading must never leave a row
+    attached to the previous party or product."""
+    for path, doc in ((malformed_party_csv, 'IV6900998'),
+                      (malformed_product_csv, 'IV6900997')):
+        try:
+            entries = parse_weekly.parse_sales(path)
+        except ValueError:
+            continue                             # refused outright: correct
+        stale = [e for e in entries if e['doc_no'].startswith(doc)
+                 and (e['product_code_raw'] == '031บ4120' or e['party_code'] == '01พ02')]
+        assert not stale, f'{doc} inherited stale context: {stale}'
+
+
+def test_normal_sales_and_purchase_groupings_still_parse(
+        sample_sales_file, sample_purchase_file):
+    """Control for all three asserts above: the ordinary Express shape must be
+    unaffected, with every row carrying its OWN party and product."""
+    sales = parse_weekly.parse_sales(sample_sales_file)
+    purch = parse_weekly.parse_purchases(sample_purchase_file)
+    assert len(sales) == 6 and len(purch) == 2
+    assert all(e['party_code'] and e['product_code_raw'] for e in sales + purch)
+    by_doc = {e['doc_no']: (e['party_code'], e['product_code_raw']) for e in sales}
+    assert by_doc['IV6900503-1'] == ('01พ02', '031บ4120')
+    assert by_doc['IV6900501-1'] == ('01อ35', '001ก3435')

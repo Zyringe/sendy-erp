@@ -172,24 +172,28 @@ def _parse(filepath: str, tx_pat, file_type: str) -> list:
 
         # Party line (customer / supplier): 2 leading spaces, has /code
         if lead == 2 and '/' in stripped and not stripped.startswith('รวม'):
+            # FAIL CLOSED. Entering a party heading ends the previous grouping,
+            # so drop the whole context BEFORE trying to read the new one. Two
+            # bugs came from not doing this: a new party kept the previous
+            # party's product (a row silently posted against the wrong product's
+            # stock), and a MALFORMED party line kept both, so the next
+            # transaction was attributed to the previous customer entirely.
+            # Clearing first turns either case into a rejected row, which
+            # _validate_parse then refuses.
+            current_party = current_party_code = None
+            current_prod_name = current_prod_code = None
             m = re.match(r'^(.+?)\s*/(\S+)\s*$', stripped)
             if m:
                 current_party = m.group(1).strip()
                 current_party_code = m.group(2).strip()
-                # A new party section starts a new product grouping. Without this
-                # reset, a transaction under the new party but BEFORE its first
-                # product heading inherited the PREVIOUS party's product — the row
-                # was not dropped, it was silently posted against the wrong
-                # product's stock. Clearing it turns that row into an orphan, which
-                # _validate_parse then refuses. Measured over every real Express
-                # export (19,864 transaction rows): zero rows rely on inheriting
-                # product context across a party boundary, so this cannot
-                # false-reject a real file.
-                current_prod_name = current_prod_code = None
             continue
 
         # Product line: 3 leading spaces, has /code, not a total
         if lead == 3 and '/' in stripped and not stripped.startswith('รวม'):
+            # Fail closed, same reasoning as the party branch above: a malformed
+            # product heading must not leave the PREVIOUS product in place for
+            # the rows that follow it.
+            current_prod_name = current_prod_code = None
             m = re.match(r'^(.+?)\s*/(\S+)\s*$', stripped)
             if m:
                 current_prod_name = _apply_brand_aliases(m.group(1).strip())
@@ -205,14 +209,21 @@ def _parse(filepath: str, tx_pat, file_type: str) -> list:
             if _SR_DOC_LINE.search(stripped):
                 continue
             candidates += 1
+            # A transaction is only meaningful inside a valid party AND product
+            # grouping. Anything missing means the row would be attributed to
+            # whatever happened to be in scope, so it is a REJECTION, not a skip:
+            # counting it and moving on meant _validate_parse only noticed when
+            # the whole file produced zero entries, so such a row above
+            # otherwise-valid data was silently dropped (or worse, silently
+            # mis-attributed) while the import reported success.
+            missing = []
+            if not current_party:
+                missing.append('ชื่อลูกค้า/ผู้จำหน่าย')
             if not current_prod_name:
-                # An orphan row: a transaction before any product heading. It
-                # can never become an entry, so it is a REJECTION, not a skip.
-                # Counting it and moving on meant _validate_parse only noticed
-                # when the whole file produced zero entries — so an orphan above
-                # otherwise-valid data was silently dropped and the import still
-                # reported success (Codex follow-up on 93e4472).
-                rejected.append((lineno, f"{stripped[:90]}  [ไม่พบบรรทัดชื่อสินค้าก่อนหน้า]"))
+                missing.append('ชื่อสินค้า')
+            if missing:
+                reason = 'ไม่พบบรรทัด' + ' และ '.join(missing) + 'ก่อนหน้า'
+                rejected.append((lineno, f"{stripped[:90]}  [{reason}]"))
                 continue
             m = tx_pat.search(line)
             if m:
