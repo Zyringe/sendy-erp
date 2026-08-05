@@ -99,6 +99,25 @@ def test_layer2_signature_requires_same_unit(monkeypatch, tmp_path):
     assert auto == [] and review == []        # but the lines never match
 
 
+def test_write_sheet_has_three_way_decision_column(tmp_path):
+    """vat-substitute plan decision 5: the review sheet's decision column must
+    let Put mark THREE outcomes in one pass — ตัวเดียวกัน (identity, existing
+    pid semantics) / ใช้แทนกันได้ (substitution seed, new) / ไม่เกี่ยวกัน
+    (unrelated, existing 'x' semantics) — so one filled sheet drives two
+    downstream applies without a second review round."""
+    rows = [{'xp5_code': 'X1', 'xp5_name': 'ชื่อ xp5', 'layer': 'name-similar',
+             'suggest_pid': 42, 'suggest_name': 'ชื่อ main', 'evidence': 'similarity 0.80'}]
+    csv_path, html_path = pl.write_sheet(rows, tmp_path / 'sheet')
+    import csv
+    with open(csv_path, encoding='utf-8-sig') as fh:
+        header = next(csv.reader(fh))
+    decision_col = [c for c in header if 'ตัวเดียวกัน' in c]
+    assert decision_col, f"no 3-way decision column in header: {header}"
+    assert 'ใช้แทนกันได้' in decision_col[0] and 'ไม่เกี่ยวกัน' in decision_col[0]
+    html = html_path.read_text(encoding='utf-8')
+    assert 'ใช้แทนกันได้' in html
+
+
 def test_layer2_signature_same_unit_pairs(monkeypatch, tmp_path):
     import express_dbf_source as eds
     import datetime

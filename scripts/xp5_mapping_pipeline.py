@@ -298,10 +298,23 @@ def apply_auto(conn, rows, xp5_products):
             'skipped_conflicts': skipped_conflicts}
 
 
+# The sheet's decision column (vat-substitute plan decision 5): ONE column,
+# THREE choices, so one review pass drives two downstream applies — the
+# existing identity-mapping apply (unchanged pid/x semantics) plus the new
+# substitution-seed apply (§4.7). Values Put may type:
+#   <pid number>  → ตัวเดียวกัน (identity: applies to xp5_product_mapping,
+#                   same as the historical "pid" meaning)
+#   s             → ไม่ใช่แต่ใช้แทนกันได้ (substitution seed: this xp5_code
+#                   becomes a candidate member for suggest_pid's group,
+#                   applied via the sheet-apply algorithm)
+#   x             → ไม่เกี่ยวกัน (unrelated — same as the historical "x")
+_DECISION_COL = 'คำตัดสิน (pid=ตัวเดียวกัน / s=ใช้แทนกันได้ / x=ไม่เกี่ยวกัน)'
+
+
 def write_sheet(review_rows, out_base):
     import csv
     cols = ['xp5_code', 'xp5_name', 'layer', 'suggest_pid', 'suggest_name',
-            'evidence', 'คำตัดสิน (pid หรือ x)']
+            'evidence', _DECISION_COL]
     csv_path = out_base.with_suffix('.csv')
     with open(csv_path, 'w', newline='', encoding='utf-8-sig') as fh:
         w = csv.writer(fh)
@@ -317,8 +330,10 @@ def write_sheet(review_rows, out_base):
             "<style>body{font-family:sans-serif}table{border-collapse:collapse}"
             "td,th{border:1px solid #ccc;padding:4px 8px;font-size:13px}</style>"
             f"<h2>xp5 ↔ Sendy mapping — review ({date.today().isoformat()})</h2>"
-            f"<p>{len(review_rows)} รายการรอเคาะ · คอลัมน์สุดท้าย: ใส่ product id "
-            "ที่ถูกต้อง หรือ x = ไม่ map</p>"
+            f"<p>{len(review_rows)} รายการรอเคาะ · คอลัมน์สุดท้าย ใส่ 1 ใน 3: "
+            "<b>pid</b> = ตัวเดียวกัน (product id ที่ถูกต้อง) · "
+            "<b>s</b> = ไม่ใช่ตัวเดียวกันแต่ใช้แทนกันได้ (สร้าง/เข้ากลุ่มสินค้าทดแทน) · "
+            "<b>x</b> = ไม่เกี่ยวกัน</p>"
             f"<table><tr>{''.join(f'<th>{c}</th>' for c in cols)}</tr>{rows_html}</table>")
     html_path = out_base.with_suffix('.html')
     html_path.write_text(html, encoding='utf-8')

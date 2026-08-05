@@ -1590,6 +1590,30 @@ CREATE TABLE "users" (
     created_at    TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 , default_cashbook_account_id INTEGER REFERENCES cashbook_accounts(id));
 
+CREATE TABLE vat_sub_groups (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    label      TEXT    NOT NULL,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE vat_sub_members (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id   INTEGER NOT NULL REFERENCES vat_sub_groups(id) ON DELETE CASCADE,
+    xp5_code   TEXT    NOT NULL,
+    added_from TEXT    NOT NULL CHECK (added_from IN ('sheet', 'promote', 'manual')),
+    created_at TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE (group_id, xp5_code)
+);
+
+CREATE TABLE vat_sub_product_links (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id   INTEGER NOT NULL REFERENCES vat_sub_groups(id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    created_at TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE (group_id, product_id)
+);
+
 CREATE TABLE xp5_product_mapping (
     xp5_code       TEXT PRIMARY KEY,
     product_id     INTEGER REFERENCES products(id),
@@ -1959,6 +1983,14 @@ CREATE INDEX idx_txn_product_id
 CREATE INDEX idx_txn_review_docs_date ON txn_review_docs(date_iso DESC);
 
 CREATE INDEX idx_txn_review_flags_doc ON txn_review_flags(doc_base);
+
+CREATE INDEX idx_vat_sub_members_group ON vat_sub_members(group_id);
+
+CREATE INDEX idx_vat_sub_members_xp5_code ON vat_sub_members(xp5_code);
+
+CREATE INDEX idx_vat_sub_product_links_group ON vat_sub_product_links(group_id);
+
+CREATE INDEX idx_vat_sub_product_links_product ON vat_sub_product_links(product_id);
 
 CREATE INDEX idx_wallet_txns_platform_time ON marketplace_wallet_txns(platform, txn_time, id);
 
@@ -3873,6 +3905,65 @@ BEGIN
         UNION ALL SELECT 'note',            OLD.note,            NEW.note            WHERE OLD.note            IS NOT NEW.note
         UNION ALL SELECT 'created_at',      OLD.created_at,      NEW.created_at      WHERE OLD.created_at      IS NOT NEW.created_at
     );
+END;
+
+CREATE TRIGGER audit_vat_sub_groups_delete
+BEFORE DELETE ON vat_sub_groups
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES ('vat_sub_groups', OLD.id, 'DELETE',
+        json_object('label', OLD.label));
+END;
+
+CREATE TRIGGER audit_vat_sub_groups_insert
+AFTER INSERT ON vat_sub_groups
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES ('vat_sub_groups', NEW.id, 'INSERT',
+        json_object('label', NEW.label));
+END;
+
+CREATE TRIGGER audit_vat_sub_groups_update
+AFTER UPDATE ON vat_sub_groups
+WHEN OLD.label IS NOT NEW.label
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES ('vat_sub_groups', NEW.id, 'UPDATE',
+        json_object('label', json_array(OLD.label, NEW.label)));
+END;
+
+CREATE TRIGGER audit_vat_sub_members_delete
+BEFORE DELETE ON vat_sub_members
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES ('vat_sub_members', OLD.id, 'DELETE',
+        json_object('group_id', OLD.group_id, 'xp5_code', OLD.xp5_code,
+                    'added_from', OLD.added_from));
+END;
+
+CREATE TRIGGER audit_vat_sub_members_insert
+AFTER INSERT ON vat_sub_members
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES ('vat_sub_members', NEW.id, 'INSERT',
+        json_object('group_id', NEW.group_id, 'xp5_code', NEW.xp5_code,
+                    'added_from', NEW.added_from));
+END;
+
+CREATE TRIGGER audit_vat_sub_product_links_delete
+BEFORE DELETE ON vat_sub_product_links
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES ('vat_sub_product_links', OLD.id, 'DELETE',
+        json_object('group_id', OLD.group_id, 'product_id', OLD.product_id));
+END;
+
+CREATE TRIGGER audit_vat_sub_product_links_insert
+AFTER INSERT ON vat_sub_product_links
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES ('vat_sub_product_links', NEW.id, 'INSERT',
+        json_object('group_id', NEW.group_id, 'product_id', NEW.product_id));
 END;
 
 CREATE TRIGGER commission_assignments_salesperson_code_immutable
