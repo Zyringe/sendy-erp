@@ -508,7 +508,13 @@ def _ledger_check(conn, payload_rows):
                 return f'ledger ไม่ตรงกับข้อมูลของ {doc_no} (สินค้าไม่ตรง) — จัดการมือ', None
             if txn['txn_type'] != expected_txn_type:
                 return f'ledger ไม่ตรงกับข้อมูลของ {doc_no} (ทิศทางไม่ตรง) — จัดการมือ', None
-            qty_sign_ok = (txn['quantity_change'] < 0) == (not is_sr)
+            # Strict per-direction (Codex r2 P1): the writer never produces a
+            # ZERO movement (bsn_sync base_qty > 0 gate), so zero is corrupt in
+            # BOTH directions — the symmetric (qc < 0) == (not is_sr) form
+            # accepted 0 on the SR side when magnitude was uncomputable.
+            qty_sign_ok = (
+                txn['quantity_change'] > 0 if is_sr
+                else txn['quantity_change'] < 0)
             if not qty_sign_ok:
                 return f'ledger ไม่ตรงกับข้อมูลของ {doc_no} (เครื่องหมายไม่ตรง) — จัดการมือ', None
             product = conn.execute(

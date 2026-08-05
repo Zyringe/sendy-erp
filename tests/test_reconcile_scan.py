@@ -1273,3 +1273,27 @@ def test_ledger_check_refuses_wrong_sign_when_magnitude_uncomputable(empty_db_co
     result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
 
     _assert_refused_zero_mutation(c, flag_id, 'IV1000045', 'IV1000045-1', result)
+
+
+def test_ledger_check_refuses_sr_zero_movement_uncomputable(empty_db_conn):
+    """Codex r2 P1: an SR ledger row with quantity_change=0 passed the sign
+    gate ((0 < 0) == False == (not is_sr)) and, when the line's unit has no
+    conversion row (_get_base_qty returns None), the magnitude comparison is
+    skipped — so a zero movement was trusted as an authentic SR row. The
+    writer never produces zero (bsn_sync base_qty > 0 gate), so it must
+    refuse. Strict per-direction sign check pins this."""
+    c = empty_db_conn
+    pid = _seed_product(c)  # unit_type 'ตัว'
+    _insert_sale(c, doc_no='SR6900101-1', date_iso=IN_WINDOW_DATE.isoformat(),
+                 product_id=pid, synced=1, qty=1.0, unit='โหล')
+    c.execute("""
+        INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode,
+                                  reference_no, note, created_at)
+        VALUES (?, 'IN', 0.0, 'unit', 'SR6900101-1', 'BSN ขาย-คืน', '2026-07-15 00:00:00')
+    """, (pid,))
+    c.commit()
+    flag_id = _make_flag(c, 'SR6900101')
+
+    result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)
+
+    _assert_refused_zero_mutation(c, flag_id, 'SR6900101', 'SR6900101-1', result)
