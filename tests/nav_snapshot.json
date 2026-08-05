@@ -475,6 +475,12 @@
     "label": "แปลงหน่วย"
    },
    {
+    "href": "/reconcile",
+    "icon": "bi-file-earmark-excel",
+    "kind": "link",
+    "label": "ตรวจสอบบิลหายจาก Express"
+   },
+   {
     "href": "/customers/normalize",
     "icon": "bi-person-check",
     "kind": "link",
@@ -1175,6 +1181,12 @@
     "label": "แปลงหน่วย"
    },
    {
+    "href": "/reconcile",
+    "icon": "bi-file-earmark-excel",
+    "kind": "link",
+    "label": "ตรวจสอบบิลหายจาก Express"
+   },
+   {
     "href": "/customers/normalize",
     "icon": "bi-person-check",
     "kind": "link",
@@ -1498,6 +1510,12 @@
     "icon": "bi-arrow-left-right",
     "kind": "link",
     "label": "แปลงหน่วย"
+   },
+   {
+    "href": "/reconcile",
+    "icon": "bi-file-earmark-excel",
+    "kind": "link",
+    "label": "ตรวจสอบบิลหายจาก Express"
    },
    {
     "href": "/customers/normalize",
@@ -2048,6 +2066,8 @@
   "admin|products.product_pricing|0": "/products",
   "admin|products.product_trade_summary|0": "/products",
   "admin|products.promotion_new|0": "/products",
+  "admin|reconcile.apply|0": "/reconcile",
+  "admin|reconcile.index|0": "/reconcile",
   "admin|review.index|0": "/review",
   "admin|review.scan|0": "/review",
   "admin|sales.purchases_view|0": "/purchases",

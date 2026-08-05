@@ -169,4 +169,9 @@ from .marketplace import (
     assign_orders_to_batch, assign_orders_manual, get_deposit_batch_report,
     create_baseline_batch, unassign_batch, get_iv_match_worklist,
 )
+from .reconcile import (
+    scan_reconcile, list_open_reconcile_flags, get_reconcile_flag,
+    dismiss_reconcile_flag, reopen_reconcile_flag, apply_reconcile_flag,
+    is_platform_doc, PLATFORM_REFUSAL_MSG,
+)
 

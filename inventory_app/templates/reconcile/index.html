@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}ตรวจสอบบิลหายจาก Express — ERP{% endblock %}
+{% block page_title %}ตรวจสอบบิลหายจาก Express{% endblock %}
+{% block page_desc %}<div class="page-desc">บิลที่หายไปจากไฟล์ Express ทั้งหมด (ไม่ใช่แค่แก้ไข) — ตรวจก่อนลบออกจาก Sendy</div>{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-2 px-lg-4 mt-3">
+
+  {% set class_label = {
+    'deleted': 'ลบจาก Express', 'out_of_scope': 'นอกขอบเขต (RECTYP)',
+    'parse_gap': 'วันที่อ่านไม่ได้', 'date_moved': 'วันที่ย้ายนอกช่วง',
+    'data_gap': 'ข้อมูลไม่ครบ'
+  } %}
+  {% set class_badge = {
+    'deleted': 'bg-danger', 'out_of_scope': 'bg-secondary', 'parse_gap': 'bg-warning text-dark',
+    'date_moved': 'bg-info text-dark', 'data_gap': 'bg-warning text-dark'
+  } %}
+
+  <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+    {% if show_all %}
+      <a href="{{ url_for('reconcile.index') }}" class="btn btn-sm btn-link p-0 text-muted">ดูเฉพาะที่ยังเปิดอยู่</a>
+    {% else %}
+      <a href="{{ url_for('reconcile.index', all=1) }}" class="btn btn-sm btn-link p-0 text-muted">ดูประวัติที่ปิดแล้วด้วย</a>
+    {% endif %}
+    <span class="ms-auto text-muted small">{{ open_flags|length }} รายการเปิดอยู่</span>
+  </div>
+
+  {% if not open_flags %}
+    <div class="alert alert-success d-flex align-items-center gap-2">
+      <i class="bi bi-check-circle-fill"></i>
+      <span>ไม่พบบิลที่หายไปจาก Express</span>
+    </div>
+  {% else %}
+    {% for f in open_flags %}
+      {% set is_deleted = f.class == 'deleted' %}
+      <div class="card mb-2 border-{{ 'danger' if is_deleted else 'secondary' }} border-start border-3 border-top-0 border-bottom-0 border-end-0">
+        <div class="card-body py-2 px-3">
+          <div class="d-flex flex-wrap align-items-baseline gap-2 mb-2">
+            <a href="{{ url_for('sales.sales_doc', doc_base=f.doc_base) }}"
+               class="fw-semibold text-decoration-none text-main">{{ f.doc_base }}<i class="bi bi-box-arrow-up-right small text-muted ms-1"></i></a>
+            <span class="badge {{ class_badge.get(f.class, 'bg-secondary') }}">{{ class_label.get(f.class, f.class) }}</span>
+            <span class="text-muted small">พบครั้งแรก {{ f.first_seen_at[:16] }} · ล่าสุด {{ f.last_seen_at[:16] }}</span>
+          </div>
+
+          {% set rows = f.latest_payload.rows %}
+          <div class="table-responsive mb-2">
+            <table class="table table-sm mb-0 small">
+              <thead><tr>
+                <th>doc_no</th><th>รหัส BSN</th><th>ลูกค้า</th><th>จำนวน</th><th>หน่วย</th>
+                <th>ราคา/หน่วย</th><th>สุทธิ</th><th>sync แล้ว</th>
+              </tr></thead>
+              <tbody>
+                {% for r in rows %}
+                <tr>
+                  <td>{{ r.doc_no }}</td><td>{{ r.bsn_code }}</td><td>{{ r.customer }}</td>
+                  <td>{{ r.qty }}</td><td>{{ r.unit }}</td>
+                  <td>{{ '%.2f'|format(r.unit_price or 0) }}</td>
+                  <td>{{ '%.2f'|format(r.net or 0) }}</td>
+                  <td>{{ 'ใช่' if r.synced_to_stock else 'ไม่' }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          {% set lr = f.linked_records %}
+          {% set has_links = (lr.paid_invoices or lr.commission_payouts or lr.credit_note_amounts
+                              or lr.credit_note_imports or lr.marketplace_order_invoice
+                              or lr.marketplace_amount_review or lr.express_invoice_refs or lr.sr_ref_rows) %}
+          {% if has_links %}
+          <div class="alert alert-warning py-2 px-3 small mb-2">
+            <i class="bi bi-exclamation-triangle me-1"></i>มีข้อมูลอื่นอ้างอิงบิลนี้อยู่ — ตรวจสอบก่อน apply:
+            <ul class="mb-0">
+              {% for p in lr.paid_invoices %}
+                <li>รับชำระ: RE {{ p.re_no }} · {{ p.date_iso }} · ฿{{ '%.2f'|format(p.amount or 0) }} · {{ p.doc_kind }}{% if p.cancelled %} (ยกเลิก){% endif %}</li>
+              {% endfor %}
+              {% if lr.commission_payouts %}<li>จ่ายคอมมิชชั่นแล้ว {{ lr.commission_payouts|length }} รายการ</li>{% endif %}
+              {% if lr.credit_note_amounts or lr.credit_note_imports %}<li>มีใบลดหนี้อ้างอิงบิลนี้</li>{% endif %}
+              {% if lr.marketplace_order_invoice %}<li>ผูกกับออเดอร์ marketplace {{ lr.marketplace_order_invoice|length }} รายการ</li>{% endif %}
+              {% if lr.marketplace_amount_review %}<li>อยู่ในรายการตรวจสอบยอด marketplace</li>{% endif %}
+              {% if lr.sr_ref_rows %}<li>มีใบลดหนี้ (SR) อ้างถึงบิลนี้ {{ lr.sr_ref_rows|length }} รายการ</li>{% endif %}
+            </ul>
+          </div>
+          {% endif %}
+
+          <div class="d-flex flex-wrap gap-2">
+            {% if is_deleted and not f.platform_blocked %}
+              <form method="post" action="{{ url_for('reconcile.apply', flag_id=f.id) }}"
+                    onsubmit="return confirm('ยืนยันลบเอกสาร {{ f.doc_base }} ออกจาก Sendy ตาม Express?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-sm btn-danger">
+                  <i class="bi bi-trash me-1"></i>ยืนยันลบตาม Express
+                </button>
+              </form>
+            {% elif is_deleted and f.platform_blocked %}
+              {# UI button state driven by the SAME is_platform_doc() helper the
+                 POST guard uses (plan §2 step 3) — greyed out BEFORE any click,
+                 not discovered only after posting. #}
+              <div class="d-flex flex-column">
+                <button type="button" class="btn btn-sm btn-danger" disabled>
+                  <i class="bi bi-trash me-1"></i>ยืนยันลบตาม Express
+                </button>
+                <span class="text-danger small mt-1">{{ platform_refusal_msg }}</span>
+              </div>
+            {% else %}
+              <span class="text-muted small align-self-center">คลาสนี้ตรวจสอบได้อย่างเดียว — apply ไม่ได้</span>
+            {% endif %}
+            <form method="post" action="{{ url_for('reconcile.dismiss', flag_id=f.id) }}" class="d-flex gap-1">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="text" name="note" class="form-control form-control-sm" placeholder="เหตุผลที่เก็บไว้ (จำเป็น)" required style="min-width:220px">
+              <button type="submit" class="btn btn-sm btn-outline-secondary">ไม่ใช่ — เก็บไว้</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+  {% endif %}
+
+  {% if show_all %}
+    <hr class="my-4">
+    <h6 class="text-muted">ประวัติที่ปิดแล้ว</h6>
+    {% if not resolved_flags %}
+      <p class="text-muted small">ยังไม่มีประวัติ</p>
+    {% else %}
+    <div class="table-responsive">
+      <table class="table table-sm small">
+        <thead><tr>
+          <th>doc_base</th><th>คลาส</th><th>สถานะ</th><th>โดย</th><th>เมื่อ</th><th>หมายเหตุ</th><th></th>
+        </tr></thead>
+        <tbody>
+          {% for f in resolved_flags %}
+          <tr>
+            <td>{{ f.doc_base }}</td>
+            <td><span class="badge {{ class_badge.get(f.class, 'bg-secondary') }}">{{ class_label.get(f.class, f.class) }}</span></td>
+            <td>{{ {'applied': 'ลบแล้ว', 'dismissed': 'เก็บไว้', 'reappeared': 'กลับมาแล้ว'}.get(f.state, f.state) }}</td>
+            <td>{{ f.resolved_by }}</td>
+            <td>{{ (f.resolved_at or '')[:16] }}</td>
+            <td>{{ f.resolution_note }}</td>
+            <td>
+              {% if f.state == 'dismissed' and f.suppression_active %}
+              <form method="post" action="{{ url_for('reconcile.reopen', flag_id=f.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-sm btn-link p-0">เปิดพิจารณาใหม่</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  {% endif %}
+
+</div>
+{% endblock %}

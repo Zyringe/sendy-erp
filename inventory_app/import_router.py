@@ -219,12 +219,26 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60):
     credit_notes_ap_stats = import_express.run_import_records(
         "credit_notes", credit_notes_ap_records, db_path=db_path)
 
+    # reconcile-scan (reconcile-scan-plan.md §2): read-only detection, reusing
+    # the SAME sales_entries/artrn already built above (no second parse).
+    # Deliberately LAST and wrapped: this is a read-only observer over data
+    # the money pipeline above has ALREADY committed (import_weekly commits
+    # internally) — a scan bug must never make a daily upload look failed,
+    # skip payments/credit-notes/refs, or block retrying. Never re-raises;
+    # the failure is surfaced to the user via the upload result instead
+    # (blueprints/bsn.py + import_express_dbf.html render reconcile.error).
+    try:
+        reconcile_counts = models.scan_reconcile(sales_entries, artrn, cutoff)
+    except Exception as exc:
+        reconcile_counts = {'error': str(exc)[:200]}
+
     return {"sales": sales_stats, "purchase": purchase_stats,
             "invoice_refs_upserted": refs_upserted,
             "payments_in": payments_in_stats,
             "payments_out": payments_out_stats,
             "credit_notes_ar": credit_notes_ar_stats,
-            "credit_notes_ap": credit_notes_ap_stats}
+            "credit_notes_ap": credit_notes_ap_stats,
+            "reconcile": reconcile_counts}
 
 
 def _upsert_invoice_refs(refs, db_path):
