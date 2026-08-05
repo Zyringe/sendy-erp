@@ -1,0 +1,194 @@
+#!/usr/bin/env python
+"""รอบ 2 — ผูก cashbook ↔ salary_advances 16 คู่ที่ค้างจากยุคก่อน mig 128 (prod).
+
+คู่ทั้ง 16 มาจาก scripts/audit_salary_advance_links.py (รันบน prod, --json)
+15 คู่แรกคือข้อเสนอของ detector ที่ไม่กำกวมทั้งสองทาง · คู่ที่ 16 (ct 319 ↔ adv 13
+ของริน) detector จับให้อัตโนมัติไม่ได้เพราะ description ไม่มีคำว่า "เบิกล่วงหน้า"
+มันโผล่มาในช่อง "เบาะแส" แล้ว Put เคาะให้ผูก
+
+แก้แค่ 2 คอลัมน์: `category` → หมวดเบิกล่วงหน้า และ `salary_advance_id` → ลิงก์
+**ไม่แตะ `user_category`** (แท็กชื่อจริง/ชื่อเล่นปนกันทั้งเล่มอยู่แล้ว 11:10 — แก้
+16 แถวไม่ได้ทำให้ตรงขึ้น) ไม่แตะ amount / txn_date / account_id / direction
+ไม่แตะ salary_advances และ payroll_items เลยแม้แต่แถวเดียว
+
+กระทบเงิน = ศูนย์ — ทุกก้อนถูกหักไปแล้วในรอบเงินเดือนที่ finalize แล้ว
+เปลี่ยนแค่ว่ายอดไปนั่งอยู่หมวดไหนใน P&L กับหน้า /hr/advances เห็นคู่ของมัน
+
+รูปแบบ: BEGIN IMMEDIATE → แก้ → assert ทุกข้อ *ในทรานแซกชัน* → พังเมื่อไหร่
+rollback ทันที → ค่อย commit → เปิด connection ใหม่อ่านซ้ำเป็นสัญญาณอิสระ
+(assert หลัง commit = รายงานความเสียหาย ไม่ใช่การป้องกัน)
+
+    /opt/venv/bin/python apply_round2_links.py --db /data/inventory.db
+"""
+import argparse
+import hashlib
+import sqlite3
+import sys
+
+ADVANCE_CATEGORY = "เงินเดือน (เบิกล่วงหน้า)"
+
+# (cashbook_transactions.id, salary_advances.id)
+PAIRS = [
+    (315, 11), (316, 12), (320, 14), (322, 15), (333, 16), (337, 17),
+    (341, 18), (343, 19), (352, 20), (358, 22), (360, 21), (627, 23),
+    (628, 25), (629, 24), (642, 26),
+    (319, 13),   # ริน — เจอจากการกวาดยอด/เดือน ไม่ใช่จาก description
+]
+
+
+class Abort(Exception):
+    pass
+
+
+def check(cond, msg):
+    if not cond:
+        raise Abort(msg)
+
+
+def matches_employee(tag, emp):
+    """แท็ก ผู้ใช้ ↔ พนักงาน — รับชื่อเล่น, ชื่อเต็ม, หรือชื่อจริงคำแรก
+    (แถวเก่าคนคีย์ 'วิภา'/'วุฒิพงษ์' แต่ระบบเขียน 'หลุย'/'บอล')"""
+    t = (tag or "").strip()
+    full = emp["full_name"] or ""
+    return bool(t) and t in {emp["nickname"] or "", full, full.split(" ")[0]}
+
+
+def fingerprint(conn, sql):
+    h = hashlib.sha256()
+    for row in conn.execute(sql):
+        h.update(repr(tuple(row)).encode("utf-8"))
+    return h.hexdigest()
+
+
+ADV_FP = ("SELECT id, employee_id, advance_date, amount, note, deducted_in_run_id,"
+          " from_account_id FROM salary_advances ORDER BY id")
+PAYROLL_FP = ("SELECT id, run_id, employee_id, base_amount, gross, net_pay,"
+              " salary_advance_deduction FROM payroll_items ORDER BY id")
+CASH_MONEY_FP = ("SELECT id, account_id, txn_date, direction, amount, user_category"
+                 " FROM cashbook_transactions ORDER BY id")
+
+
+def apply(conn):
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("BEGIN IMMEDIATE")
+
+    before = {
+        "adv": fingerprint(conn, ADV_FP),
+        "payroll": fingerprint(conn, PAYROLL_FP),
+        "cash_money": fingerprint(conn, CASH_MONEY_FP),
+        "n_rows": conn.execute("SELECT COUNT(*) FROM cashbook_transactions").fetchone()[0],
+        "n_adv": conn.execute("SELECT COUNT(*) FROM salary_advances").fetchone()[0],
+    }
+    emps = {e["id"]: e for e in conn.execute("SELECT * FROM employees")}
+    moved = 0.0
+
+    for ct_id, adv_id in PAIRS:
+        ct = conn.execute("SELECT * FROM cashbook_transactions WHERE id=?",
+                          (ct_id,)).fetchone()
+        adv = conn.execute("SELECT * FROM salary_advances WHERE id=?",
+                           (adv_id,)).fetchone()
+        check(ct is not None, "ct %d ไม่มีอยู่จริง" % ct_id)
+        check(adv is not None, "adv %d ไม่มีอยู่จริง" % adv_id)
+        check(ct["salary_advance_id"] is None,
+              "ct %d ถูกลิงก์ไว้แล้ว (adv %s) — มีคนแก้ไปก่อนหน้า" % (ct_id, ct["salary_advance_id"]))
+        check(ct["payroll_item_id"] is None, "ct %d เป็นแถวจ่ายเงินเดือน ห้ามแตะ" % ct_id)
+        other = conn.execute(
+            "SELECT id FROM cashbook_transactions WHERE salary_advance_id=?",
+            (adv_id,)).fetchone()
+        check(other is None, "adv %d ถูก ct %s ลิงก์ไว้แล้ว" % (adv_id, other and other["id"]))
+        check(round(ct["amount"], 2) == round(adv["amount"], 2),
+              "ct %d ยอด %.2f ≠ adv %d ยอด %.2f" % (ct_id, ct["amount"], adv_id, adv["amount"]))
+        emp = emps.get(adv["employee_id"])
+        check(emp is not None, "adv %d ชี้ไปพนักงานที่ไม่มีอยู่" % adv_id)
+        check(matches_employee(ct["user_category"], emp),
+              "ct %d แท็ก '%s' ไม่ใช่ %s ของ adv %d"
+              % (ct_id, ct["user_category"], emp["full_name"], adv_id))
+
+        if ct["category"] != ADVANCE_CATEGORY:
+            moved += round(ct["amount"], 2)
+        cur = conn.execute(
+            "UPDATE cashbook_transactions SET category=?, salary_advance_id=? WHERE id=?",
+            (ADVANCE_CATEGORY, adv_id, ct_id))
+        check(cur.rowcount == 1, "ct %d อัปเดตได้ %d แถว" % (ct_id, cur.rowcount))
+
+    # ── invariants ในทรานแซกชัน — พังข้อไหนก็ rollback ทั้งชุด ──────────────
+    linked_now = conn.execute(
+        "SELECT COUNT(*) FROM cashbook_transactions WHERE salary_advance_id IS NOT NULL"
+    ).fetchone()[0]
+    check(linked_now == 12 + len(PAIRS),
+          "แถวที่ลิงก์แล้วควรเป็น %d ได้ %d" % (12 + len(PAIRS), linked_now))
+    dup = conn.execute(
+        """SELECT salary_advance_id, COUNT(*) c FROM cashbook_transactions
+            WHERE salary_advance_id IS NOT NULL GROUP BY 1 HAVING c > 1""").fetchall()
+    check(not dup, "advance ที่ถูกลิงก์ซ้ำ: %s" % [tuple(r) for r in dup])
+    dangling = conn.execute(
+        """SELECT ct.id FROM cashbook_transactions ct
+            WHERE ct.salary_advance_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM salary_advances a WHERE a.id=ct.salary_advance_id)"""
+    ).fetchall()
+    check(not dangling, "ลิงก์ไปหา advance ที่ไม่มีอยู่: %s" % [r["id"] for r in dangling])
+
+    check(fingerprint(conn, ADV_FP) == before["adv"], "salary_advances ถูกแก้ — ห้าม")
+    check(fingerprint(conn, PAYROLL_FP) == before["payroll"], "payroll_items ถูกแก้ — ห้าม")
+    check(fingerprint(conn, CASH_MONEY_FP) == before["cash_money"],
+          "เงิน/วันที่/บัญชี/แท็ก ในสมุดเงินสดถูกแก้ — ห้าม (ต้องแก้แค่ category + link)")
+    check(conn.execute("SELECT COUNT(*) FROM cashbook_transactions").fetchone()[0]
+          == before["n_rows"], "จำนวนแถวสมุดเงินสดเปลี่ยน")
+    check(conn.execute("SELECT COUNT(*) FROM salary_advances").fetchone()[0]
+          == before["n_adv"], "จำนวนแถว advance เปลี่ยน")
+
+    conn.commit()
+    return moved
+
+
+def verify(db):
+    """สัญญาณอิสระ: connection ใหม่ อ่านจากศูนย์ ไม่ใช้อะไรจากรอบเขียนเลย"""
+    c = sqlite3.connect(db)
+    c.row_factory = sqlite3.Row
+    ok = True
+    for ct_id, adv_id in PAIRS:
+        r = c.execute("SELECT category, salary_advance_id FROM cashbook_transactions"
+                      " WHERE id=?", (ct_id,)).fetchone()
+        if not r or r["category"] != ADVANCE_CATEGORY or r["salary_advance_id"] != adv_id:
+            print("  ✗ ct %d → %s" % (ct_id, tuple(r) if r else None))
+            ok = False
+    left_cash = c.execute(
+        "SELECT COUNT(*) FROM cashbook_transactions WHERE category=? AND salary_advance_id IS NULL",
+        (ADVANCE_CATEGORY,)).fetchone()[0]
+    left_adv = c.execute(
+        """SELECT COUNT(*) FROM salary_advances a
+            WHERE NOT EXISTS (SELECT 1 FROM cashbook_transactions ct
+                               WHERE ct.salary_advance_id = a.id)""").fetchone()[0]
+    print("  แถวเงินสดหมวดเบิกล่วงหน้าที่ยังไม่ลิงก์: %d (ต้องเป็น 0)" % left_cash)
+    print("  advance ที่ยังไม่มีแถวเงินสดคู่: %d (ต้องเป็น 0)" % left_adv)
+    c.close()
+    return ok and left_cash == 0 and left_adv == 0
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--db", required=True)
+    args = p.parse_args()
+
+    conn = sqlite3.connect(args.db)
+    conn.row_factory = sqlite3.Row
+    try:
+        moved = apply(conn)
+    except Abort as e:
+        conn.rollback()
+        print("ยกเลิกทั้งชุด (rollback) — %s" % e)
+        return 1
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    print("ผูกแล้ว %d คู่ · ย้ายออกจากหมวด 'เงินเดือน' ฿%s"
+          % (len(PAIRS), format(moved, ",.2f")))
+    print("อ่านซ้ำด้วย connection ใหม่:")
+    return 0 if verify(args.db) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
