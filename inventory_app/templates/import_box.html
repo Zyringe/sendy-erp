@@ -33,6 +33,24 @@
                   ให้ปล่อยไว้แบบนี้ ถูกต้องแล้ว
                 </div>
                 {% endif %}
+                {# Lines skipped because their รหัส is marked "ไม่นำเข้า". That is
+                   right for stock (a fee is not inventory) but it drops the REVENUE
+                   too — ฿592 of ค่าขนส่ง disappeared this way over two years, shown
+                   only as a "duplicate" count. Name the code and the money so the
+                   operator can judge it the week it happens. No nested <div>. #}
+                {% if r.summary and r.summary.ignored %}
+                <div class="alert alert-warning small mb-0 mt-2" data-warn="ignored-lines">
+                  <i class="bi bi-funnel me-1"></i>
+                  ข้าม <strong>{{ r.summary.ignored }} บรรทัด</strong>
+                  เพราะรหัสถูกตั้งเป็น "ไม่นำเข้า" — <strong>ยอดขายของบรรทัดพวกนี้ไม่ถูกบันทึก</strong>:
+                  {% for d in r.summary.ignored_detail %}
+                    <br><code>{{ d.bsn_code }}</code> {{ d.name }} ·
+                    {{ d.lines }} บรรทัด · <strong>{{ '{:,.2f}'.format(d.net) }} บาท</strong>
+                  {% endfor %}
+                  <br><span class="text-subtle">ถ้าเป็นค่าบริการที่เก็บเงินลูกค้าจริง (เช่น ค่าขนส่ง)
+                  แปลว่ารายได้ส่วนนี้หายไปจากระบบ — แจ้ง Put ก่อนปล่อยผ่าน</span>
+                </div>
+                {% endif %}
                 {% if r.review_flagged %}
                 <a href="{{ url_for('review.index') }}"
                    class="btn btn-sm btn-outline-warning ms-2">

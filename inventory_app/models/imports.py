@@ -162,7 +162,12 @@ def import_weekly(entries: list, file_type: str, filename: str,
     )
     batch_id = cur.lastrowid
 
-    imported = skipped_dup = overwritten = unchanged = removed = removed_skipped = 0
+    imported = ignored = overwritten = unchanged = removed = removed_skipped = 0
+    # Per-code detail for the lines we SKIP because the mapping says is_ignored.
+    # A bare count is not actionable: these are frequently billable service lines
+    # (ค่าขนส่ง, code 888ค8888) whose revenue is dropped along with their stock,
+    # so the operator needs the code and the money to decide whether it mattered.
+    ignored_detail = {}       # bsn_code -> {'bsn_code','name','lines','net'}
     new_bsn_codes = {}        # code → name for codes not yet in mapping table
     affected_pids = set()     # products whose ledger must be rebuilt in pass 2
 
@@ -188,7 +193,20 @@ def import_weekly(entries: list, file_type: str, filename: str,
 
         product_id, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'], e['unit'])
         if is_ignored:
-            skipped_dup += 1
+            # NOT a duplicate. This counter used to be `skipped_dup`, whose only
+            # increment in the whole module was right here — a true re-upload
+            # lands in `unchanged`, never here. So an ignored line was reported
+            # to the operator as a DUPLICATE, which reads as "fine, already have
+            # it". That is how ฿592 of ค่าขนส่ง revenue disappeared unnoticed
+            # over two years (฿480 of it billed to named B2B customers). Preview
+            # already called this `ignored`; commit now agrees with it.
+            ignored += 1
+            code = e['product_code_raw']
+            d = ignored_detail.setdefault(
+                code, {'bsn_code': code, 'name': e.get('product_name_raw'),
+                       'lines': 0, 'net': 0.0})
+            d['lines'] += 1
+            d['net'] = round(d['net'] + (e.get('net') or 0), 2)
             continue
 
         if file_type == 'purchase':
@@ -315,7 +333,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
     # Update batch log
     conn.execute(
         "UPDATE import_log SET rows_imported=?, rows_skipped=? WHERE id=?",
-        (imported, skipped_dup, batch_id)
+        (imported, ignored, batch_id)
     )
     conn.commit()
 
@@ -358,7 +376,12 @@ def import_weekly(entries: list, file_type: str, filename: str,
 
     return {
         'imported': imported,
-        'skipped_dup': skipped_dup,
+        # `skipped_dup` is GONE, not aliased: a repo-wide sweep (with a control
+        # search) found no reader outside this module, and the results page
+        # renders this dict verbatim — so keeping the old key would keep showing
+        # the operator the word that hid the problem.
+        'ignored': ignored,
+        'ignored_detail': sorted(ignored_detail.values(), key=lambda d: -abs(d['net'])),
         'overwritten': overwritten,
         'unchanged': unchanged,
         'removed': removed,

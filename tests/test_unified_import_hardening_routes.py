@@ -376,3 +376,42 @@ def test_unknown_classified_as_a_non_weekly_type_never_applies_removals(
                             'removals_0': 'on'})
     assert 'import_weekly' not in spy_all_importers, \
         'a non-weekly classification must not reach the weekly importer'
+
+
+# ── skipped billable lines must be visible on the results page ─────────────
+#
+# is_ignored exists to keep non-stock codes out of inventory, but it drops the
+# REVENUE with them. ฿592 of ค่าขนส่ง vanished this way, reported only as
+# `skipped_dup` inside a raw dict — a word that reads as "duplicate, fine".
+
+@pytest.fixture
+def spy_with_ignored_lines(monkeypatch):
+    import models
+    monkeypatch.setattr(models, 'import_weekly',
+                        lambda entries, kind, fn, apply_removals=True: {
+                            'imported': len(entries), 'batch_id': None, 'ignored': 2,
+                            'ignored_detail': [
+                                {'bsn_code': '888ค8888', 'name': 'ค่าขนส่ง',
+                                 'lines': 2, 'net': 218.0}]})
+    return None
+
+
+def test_skipped_ignored_lines_get_their_own_warning(admin_client, spy_with_ignored_lines):
+    _, token = _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
+    res = admin_client.post('/import-data/confirm',
+                            data={'token': token, 'type_0': 'sales'}).data.decode('utf-8')
+    assert 'data-warn="ignored-lines"' in res, \
+        'a skipped billable line must be flagged, not buried in the summary dict'
+    panel = re.search(r'data-warn="ignored-lines"[^>]*>(.*?)</div>', res, re.S).group(1)
+    assert '888ค8888' in panel, 'the operator must see WHICH code was skipped'
+    assert 'ค่าขนส่ง' in panel
+    assert '218' in panel, 'and how much money it was'
+
+
+def test_no_ignored_warning_on_a_clean_import(admin_client, spy_import_weekly):
+    """Control: an import with nothing skipped must not show the panel, so the
+    assertion above is capable of failing."""
+    _, token = _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
+    res = admin_client.post('/import-data/confirm',
+                            data={'token': token, 'type_0': 'sales'}).data.decode('utf-8')
+    assert 'data-warn="ignored-lines"' not in res
