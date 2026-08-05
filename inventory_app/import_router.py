@@ -51,6 +51,18 @@ _UNREADABLE_HEADER_MSG = (
 )
 
 
+def history_block_reason(path):
+    """The Thai refusal message if this file must not go through the weekly
+    importer, else None. Public counterpart of the guard below, so the route can
+    re-derive a blocked row's message at confirm time without carrying it in the
+    signed session."""
+    try:
+        _reject_history_export(path)
+    except HistoryExportBlocked as exc:
+        return str(exc)
+    return None
+
+
 def _reject_history_export(path):
     """Gate for the weekly sales/purchase path — called by BOTH preview_file and
     commit_file so a stale tab or crafted POST straight to /confirm cannot slip

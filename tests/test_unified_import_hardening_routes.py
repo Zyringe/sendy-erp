@@ -134,7 +134,13 @@ def test_staged_session_stays_slim(admin_client):
     _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
     with admin_client.session_transaction() as sess:
         row = sess['import_stage']['rows'][0]
-    assert set(row) == {'idx', 'filename', 'saved', 'detected'}
+    # `blocked` and `removals_ok` are the preview's VERDICT and must survive to
+    # /confirm (the submitted type cannot be trusted). Both are small scalars —
+    # the ~4KB limit that forced this slimming was about per-row diff LISTS.
+    assert set(row) == {'idx', 'filename', 'saved', 'detected',
+                        'blocked', 'removals_ok'}
+    assert all(not isinstance(v, (list, dict)) for v in row.values()), \
+        'staged rows must stay scalar — no diff lists back in the signed cookie'
 
 
 # ── mixed multi-file isolation ─────────────────────────────────────────────
@@ -213,24 +219,12 @@ _UNKNOWN_TITLE_WEEKLY = [
 ]
 
 
-def test_removal_optin_is_offered_for_a_manually_typed_row(admin_client):
-    """The checkbox was gated on row.detected, but the type DROPDOWN lets the
-    operator classify a file the detector could not. For those rows no
-    removals_N control existed in the DOM at all, so the deletion-detection
-    feature was silently unreachable for exactly the files that needed a human
-    to classify them."""
-    body, _ = _stage(admin_client, [(_csv(_UNKNOWN_TITLE_WEEKLY), 'ไม่รู้จัก.csv')])
-    assert 'ตรวจไม่พบชนิด' in body, 'fixture must actually detect as unknown'
-    assert 'name="removals_0"' in body, \
-        'a row the operator must classify by hand still needs the removal opt-in'
-
-
-def test_manually_typed_row_can_actually_apply_removals(admin_client, spy_import_weekly):
-    """…and the choice must reach import_weekly, not just render."""
-    _, token = _stage(admin_client, [(_csv(_UNKNOWN_TITLE_WEEKLY), 'ไม่รู้จัก.csv')])
-    admin_client.post('/import-data/confirm',
-                      data={'token': token, 'type_0': 'sales', 'removals_0': 'on'})
-    assert spy_import_weekly and spy_import_weekly[0]['apply_removals'] is True
+# NOTE: two tests here previously asserted that an `unknown` row offers the
+# removal opt-in. Codex rejected that as unsafe on b7d2934 — unknown files skip
+# preview_file() entirely, so enabling deletions there reverses lines the
+# operator never saw. Replaced by test_unknown_row_does_not_offer_removals and
+# test_crafted_removals_on_an_unpreviewed_row_is_ignored below. The affordance
+# gap they covered is a UX nicety and stays open by design.
 
 
 def test_confirming_a_blocked_row_as_is_shows_the_history_reason(admin_client):
@@ -253,3 +247,104 @@ def test_confirming_a_blocked_row_as_is_shows_the_history_reason(admin_client):
         'a detected-then-blocked file must not report as "no type chosen"'
     panel = _history_block(body2)
     assert 'ประวัติ' in panel and '/import-express-dbf' in panel
+
+
+# ── the staged row's verdict must survive the dropdown ─────────────────────
+#
+# Codex on b7d2934: unified_import_confirm() trusts the submitted type_N, and
+# commit_file() only runs the history guard for sales/purchase. So a file the
+# PREVIEW refused could be re-routed to another importer and accepted. Verified:
+# the history fixture submitted as payments_in reached models.import_payments().
+#
+# The guard cannot simply run for every type — a legitimate การรับชำระหนี้ export
+# carries a wide "วันที่จาก" range and would be blocked as history. The verdict
+# has to be remembered per staged row instead.
+
+@pytest.fixture
+def spy_all_importers(monkeypatch):
+    """Record ANY importer the confirm loop might dispatch to."""
+    import models, import_express
+    import import_credit_notes as icn
+    calls = []
+    monkeypatch.setattr(models, 'import_weekly',
+                        lambda e, k, f, apply_removals=True: calls.append('import_weekly') or {})
+    monkeypatch.setattr(models, 'import_payments',
+                        lambda p: calls.append('import_payments') or {})
+    monkeypatch.setattr(icn, 'import_credit_notes',
+                        lambda p, db_path=None: calls.append('import_credit_notes') or {})
+    monkeypatch.setattr(import_express, 'run_import',
+                        lambda ft, p, **kw: calls.append(f'express:{ft}'))
+    return calls
+
+
+@pytest.mark.parametrize('override', [
+    'payments_in', 'payments_out', 'credit_notes_ar', 'credit_notes_ap',
+    'ar_snapshot', 'ap_snapshot', 'purchase',
+])
+def test_blocked_row_stays_blocked_under_any_type_override(
+        admin_client, spy_all_importers, override):
+    _, token = _stage(admin_client, [(_csv(_HISTORY_SALES), 'ประวัติการขาย.csv')])
+    res = admin_client.post('/import-data/confirm',
+                            data={'token': token, 'type_0': override})
+    assert res.status_code == 200
+    assert spy_all_importers == [], \
+        f'blocked row reached an importer when re-typed as {override}'
+    assert _history_block(res.data.decode('utf-8'))
+
+
+def test_blocked_row_refusal_survives_a_stale_session_row(admin_client, spy_all_importers):
+    """Defence in depth: the refusal must come from the STAGED verdict, not from
+    re-detecting at confirm time."""
+    _, token = _stage(admin_client, [(_csv(_HISTORY_SALES), 'ประวัติการขาย.csv')])
+    with admin_client.session_transaction() as sess:
+        assert sess['import_stage']['rows'][0].get('blocked'), \
+            'the preview verdict must be persisted on the staged row'
+
+
+# ── removals require a successful typed preview ────────────────────────────
+#
+# Unknown files skip preview_file() entirely (bsn.py: `if rtype != 'unknown'`),
+# so they have no parsed count and no removal plan. Offering the checkbox there
+# let an operator classify AND request source-line deletion in one request,
+# reversing lines they never saw. Reverted, and enforced server-side so a stale
+# or crafted removals_N cannot re-open it.
+
+def test_unknown_row_does_not_offer_removals(admin_client):
+    body, _ = _stage(admin_client, [(_csv(_UNKNOWN_TITLE_WEEKLY), 'ไม่รู้จัก.csv')])
+    assert 'ตรวจไม่พบชนิด' in body, 'fixture must detect as unknown'
+    assert 'name="removals_0"' not in body, \
+        'no removal opt-in without a typed preview showing the deletion count'
+
+
+def test_crafted_removals_on_an_unpreviewed_row_is_ignored(admin_client, spy_import_weekly):
+    """The checkbox is gone from the DOM, so this can only arrive from a stale
+    tab or a hand-built POST. It must not take effect."""
+    _, token = _stage(admin_client, [(_csv(_UNKNOWN_TITLE_WEEKLY), 'ไม่รู้จัก.csv')])
+    admin_client.post('/import-data/confirm',
+                      data={'token': token, 'type_0': 'sales', 'removals_0': 'on'})
+    assert spy_import_weekly, 'the file itself should still import'
+    assert spy_import_weekly[0]['apply_removals'] is False, \
+        'removals must not apply to a row that was never previewed as sales'
+
+
+def test_removals_ignored_when_the_type_changed_after_preview(admin_client, spy_import_weekly):
+    """A sales preview's removal plan is meaningless if the operator switches the
+    row to purchase — it was computed against sales_transactions.
+
+    Asserted as a property rather than a call signature: in practice the parser
+    refuses a ขาย file read with the ซื้อ pattern before import_weekly is reached,
+    so the importer may legitimately not be called at all. What must never happen
+    is removals being APPLIED after a type switch."""
+    _, token = _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
+    admin_client.post('/import-data/confirm',
+                      data={'token': token, 'type_0': 'purchase', 'removals_0': 'on'})
+    assert all(c['apply_removals'] is False for c in spy_import_weekly), \
+        f'removals applied after a type switch: {spy_import_weekly}'
+
+
+def test_detected_sales_removals_still_work(admin_client, spy_import_weekly):
+    """Control: the supported path is unchanged."""
+    _, token = _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
+    admin_client.post('/import-data/confirm',
+                      data={'token': token, 'type_0': 'sales', 'removals_0': 'on'})
+    assert spy_import_weekly[0]['apply_removals'] is True
