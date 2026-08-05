@@ -329,6 +329,12 @@ def test_reopen_blocked_while_paid_then_allowed_after_unpay(tmp_db_conn_hr_clean
     eid1 = _mk_employee(conn, 'T_PAY6A', 'จ่ายแล้วคนที่1', company_id=2)
     eid2 = _mk_employee(conn, 'T_PAY6B', 'ยังไม่จ่าย', company_id=2)
     run_id = _mk_run(conn, '2026-09', company_id=2)
+    # Assert the isolation instead of assuming it: if company 2 ever gains staff
+    # in the live DB this copy is made from, that must fail loudly here rather
+    # than resurface as a confusing roster refusal below (Codex, 2026-08-05).
+    assert {r[0] for r in conn.execute(
+        "SELECT id FROM employees WHERE company_id=2 AND is_active=1 AND on_payroll=1"
+    )} == {eid1, eid2}, "company 2 must hold only this test's employees"
     item1 = _mk_item(conn, run_id, eid1, net_pay=11000.0)
     item2 = _mk_item(conn, run_id, eid2, net_pay=13000.0)
     account_id = _account_id(conn, '392')

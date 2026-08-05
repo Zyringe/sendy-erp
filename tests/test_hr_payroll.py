@@ -700,3 +700,43 @@ def test_regenerating_a_draft_run_still_picks_up_a_new_hire(tmp_db_conn_hr_clean
     roster = {r[0] for r in c.execute(
         "SELECT employee_id FROM payroll_items WHERE run_id=?", (run['id'],))}
     assert newbie in roster, "a draft run must still absorb a new hire"
+
+
+def test_regenerate_after_reopen_refuses_a_roster_that_drifted_since(tmp_db_conn_hr_clean):
+    """The reopen door is not atomic with the rebuild it precedes (Codex, 2026-08-05).
+
+    `reopen_run` checks the roster and flips the run to draft; `generate_run`
+    does the destructive `DELETE FROM payroll_items` + re-INSERT later, in a
+    separate transaction. Anyone hired in between lands in the active set, and
+    the add-check at the door has already passed — so the exact history damage
+    this guard exists to prevent reappears one step further along.
+
+    A run that was reopened carries an audit_log row holding `reopen_reason`
+    (written in the same transaction as the status flip, and exempt from
+    `prune_audit_log`, whose predicate is transactions/INSERT+DELETE only). That
+    marker is what lets generate_run tell reopened history apart from an
+    ordinary working draft, with no migration.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-11', 1, created_by=1, conn=c)
+    rid = run['id']
+    before = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert len(before) >= 1
+    hr.finalize_run(rid, conn=c)
+
+    # roster still matches, so the door lets it through
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft'
+
+    # ...and only now does the roster drift
+    newbie = _mk_employee(c, 'T_DRIFT', 'hired-after-reopen', '2026-11-01')
+
+    with pytest.raises(ValueError):
+        hr.generate_run('2026-11', 1, created_by=1, conn=c)
+
+    roster = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert roster == before, "the rebuild must not have run"
+    assert newbie not in roster
