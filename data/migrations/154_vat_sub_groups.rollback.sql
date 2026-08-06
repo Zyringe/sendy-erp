@@ -1,0 +1,14 @@
+DROP TRIGGER IF EXISTS audit_vat_sub_groups_insert;
+DROP TRIGGER IF EXISTS audit_vat_sub_groups_update;
+DROP TRIGGER IF EXISTS audit_vat_sub_groups_delete;
+DROP TRIGGER IF EXISTS audit_vat_sub_members_insert;
+DROP TRIGGER IF EXISTS audit_vat_sub_members_delete;
+DROP TRIGGER IF EXISTS audit_vat_sub_product_links_insert;
+DROP TRIGGER IF EXISTS audit_vat_sub_product_links_delete;
+DROP INDEX IF EXISTS idx_vat_sub_members_xp5_code;
+DROP INDEX IF EXISTS idx_vat_sub_members_group;
+DROP INDEX IF EXISTS idx_vat_sub_product_links_product;
+DROP INDEX IF EXISTS idx_vat_sub_product_links_group;
+DROP TABLE IF EXISTS vat_sub_product_links;
+DROP TABLE IF EXISTS vat_sub_members;
+DROP TABLE IF EXISTS vat_sub_groups;

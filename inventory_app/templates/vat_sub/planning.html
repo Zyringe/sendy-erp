@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}วางแผนเบิกสต็อกกระดาษ — สินค้าทดแทน — ERP{% endblock %}
+{% block page_title %}ทุกกลุ่มสินค้าทดแทน{% endblock %}
+{% block page_desc %}<div class="page-desc">เรียงตามสต็อกกระดาษรวมที่ใช้ได้จริง (มาก→น้อย) — สำหรับวางแผนดึงสต็อกกระดาษ / ยอดขาย ภพ.30</div>{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-2 px-lg-4 mt-3">
+  {% include "vat_sub/_freshness.html" %}
+
+  <div class="d-flex flex-wrap gap-2 mb-3">
+    <a href="{{ url_for('vat_sub.index') }}" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-search me-1"></i>ค้นหาสินค้า
+    </a>
+  </div>
+
+  {% if not groups %}
+    <div class="alert alert-secondary">ยังไม่มีกลุ่มสินค้าทดแทน — เริ่มจากค้นหาสินค้าแล้วกด "เพิ่มเข้ากลุ่ม" บนหน้าเดี่ยวสินค้า</div>
+  {% else %}
+    <div class="table-responsive">
+      <table class="table table-sm align-middle">
+        <thead><tr>
+          <th>กลุ่ม</th><th>สินค้าที่เชื่อม</th><th>จำนวนตัวแทน</th>
+          <th>สต็อกกระดาษรวม (ใช้ได้จริง)</th><th></th>
+        </tr></thead>
+        <tbody>
+          {% for g in groups %}
+          <tr class="{{ 'text-muted' if g.total_stock == 0 else '' }}">
+            <td>{{ g.label }}</td>
+            <td>
+              {% for p in g.linked_products %}
+                <a href="{{ url_for('vat_sub.product_view', product_id=p.id) }}">{{ p.name }}</a>{% if not loop.last %}, {% endif %}
+              {% else %}
+                <span class="text-muted">ไม่มี</span>
+              {% endfor %}
+            </td>
+            <td>{{ g.member_count }}</td>
+            <td>{{ g.total_stock }}</td>
+            <td><a href="{{ url_for('vat_sub.group_detail', group_id=g.id) }}" class="btn btn-sm btn-outline-secondary">จัดการกลุ่ม</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

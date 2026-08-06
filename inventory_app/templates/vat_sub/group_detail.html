@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}{{ group.label }} — สินค้าทดแทน — ERP{% endblock %}
+{% block page_title %}จัดการกลุ่ม: {{ group.label }}{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-2 px-lg-4 mt-3">
+  {% include "vat_sub/_freshness.html" %}
+
+  <div class="d-flex flex-wrap gap-2 mb-3">
+    <a href="{{ url_for('vat_sub.planning') }}" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-left me-1"></i>ทุกกลุ่ม
+    </a>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <form method="post" action="{{ url_for('vat_sub.group_rename', group_id=group.id) }}" class="d-flex gap-2 align-items-end">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div>
+          <label class="form-label small mb-0">ชื่อกลุ่ม</label>
+          <input type="text" name="label" value="{{ group.label }}" class="form-control form-control-sm">
+        </div>
+        <button type="submit" class="btn btn-sm btn-outline-primary">เปลี่ยนชื่อ</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="col-md-6">
+      <h6>สินค้าที่เชื่อมกับกลุ่มนี้ ({{ group.linked_products|length }})</h6>
+      <table class="table table-sm">
+        <tbody>
+          {% for p in group.linked_products %}
+          <tr>
+            <td><a href="{{ url_for('vat_sub.product_view', product_id=p.id) }}">{{ p.name }}</a></td>
+            <td class="text-end">
+              <form method="post" action="{{ url_for('vat_sub.group_unlink_product', group_id=group.id) }}" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="product_id" value="{{ p.id }}">
+                <button type="submit" class="btn btn-sm btn-outline-danger">เลิกเชื่อม</button>
+              </form>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td class="text-muted">ยังไม่มีสินค้าเชื่อมกับกลุ่มนี้</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <form method="post" action="{{ url_for('vat_sub.group_link_product', group_id=group.id) }}" class="d-flex gap-2">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="text" id="vs-link-search" class="form-control form-control-sm" placeholder="ค้นหาสินค้าเพื่อเชื่อม...">
+        <input type="hidden" name="product_id" id="vs-link-product-id">
+        <button type="submit" class="btn btn-sm btn-outline-primary">เชื่อม</button>
+      </form>
+      <div id="vs-link-results" class="list-group mt-1 small"></div>
+    </div>
+
+    <div class="col-md-6">
+      <h6>สินค้าทดแทน (สมาชิกกลุ่ม) ({{ group.members|length }})</h6>
+      <table class="table table-sm">
+        <thead><tr><th>รหัส xp5</th><th>ชื่อ</th><th>สต็อก</th><th>มาจาก</th><th></th></tr></thead>
+        <tbody>
+          {% for m in group.members %}
+          <tr>
+            <td>{{ m.xp5_code }}</td>
+            <td>{{ m.product_name }}</td>
+            <td>{{ m.stock }}</td>
+            <td><span class="badge bg-light text-dark">{{ m.added_from }}</span></td>
+            <td class="text-end">
+              <div class="d-flex gap-1 justify-content-end">
+                {% if other_groups %}
+                <form method="post" action="{{ url_for('vat_sub.group_move_member', group_id=group.id) }}" class="d-flex gap-1">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="xp5_code" value="{{ m.xp5_code }}">
+                  <select name="target_group_id" class="form-select form-select-sm" style="width:auto">
+                    {% for g in other_groups %}
+                      <option value="{{ g.id }}">ย้ายไป: {{ g.label }}</option>
+                    {% endfor %}
+                  </select>
+                  <button type="submit" class="btn btn-sm btn-outline-secondary">ย้าย</button>
+                </form>
+                {% endif %}
+                <form method="post" action="{{ url_for('vat_sub.group_remove_member', group_id=group.id) }}" class="d-inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="xp5_code" value="{{ m.xp5_code }}">
+                  <button type="submit" class="btn btn-sm btn-outline-danger">ลบ</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="text-muted">ยังไม่มีสมาชิกในกลุ่มนี้</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <form method="post" action="{{ url_for('vat_sub.group_add_member', group_id=group.id) }}" class="d-flex gap-2">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="text" name="xp5_code" class="form-control form-control-sm" placeholder="รหัส xp5 ที่จะเพิ่ม">
+        <button type="submit" class="btn btn-sm btn-outline-primary">เพิ่มสมาชิก</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="mt-3">
+    <form method="post" action="{{ url_for('vat_sub.group_delete', group_id=group.id) }}"
+          onsubmit="return confirm('ลบกลุ่มนี้? (ลบได้เฉพาะกลุ่มว่าง)');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-sm btn-outline-danger"
+              {% if group.member_count > 0 or group.product_count > 0 %}disabled title="ลบไม่ได้ — กลุ่มนี้ยังมีสมาชิกหรือสินค้าเชื่อมอยู่"{% endif %}>
+        ลบกลุ่มนี้ (เฉพาะกลุ่มว่าง)
+      </button>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  const $search = document.getElementById('vs-link-search');
+  const $results = document.getElementById('vs-link-results');
+  const $pid = document.getElementById('vs-link-product-id');
+  let timer;
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  $search.addEventListener('input', () => {
+    clearTimeout(timer);
+    const q = $search.value.trim();
+    if (!q) { $results.innerHTML = ''; return; }
+    timer = setTimeout(async () => {
+      const r = await fetch(`/api/products/search?q=${encodeURIComponent(q)}&limit=10`);
+      const j = await r.json();
+      $results.innerHTML = (j.items || []).map(it => `
+        <button type="button" class="list-group-item list-group-item-action" data-id="${it.id}">${escapeHtml(it.name)}</button>
+      `).join('');
+      $results.querySelectorAll('[data-id]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          $pid.value = btn.getAttribute('data-id');
+          $search.value = btn.textContent;
+          $results.innerHTML = '';
+        });
+      });
+    }, 200);
+  });
+})();
+</script>
+{% endblock %}

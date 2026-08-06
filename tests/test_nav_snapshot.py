@@ -113,6 +113,8 @@ B_SAMPLES = [
     ('admin', 'partners.supplier_summary', False),        # or-list → supplier_list
     ('admin', 'call.call_list', False),
     ('admin', 'call.call_card', False),                   # prefix 'call.'
+    ('admin', 'vat_sub.index', False),
+    ('admin', 'vat_sub.planning', False),                 # prefix 'vat_sub.'
     ('admin', 'ecommerce.ecommerce', False),
     ('admin', 'marketplace.dashboard', False),
     ('admin', 'marketplace.unmapped', False),             # prefix 'marketplace.'

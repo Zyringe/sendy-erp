@@ -1,0 +1,16 @@
+{# Promote one xp5 candidate/guess row into a group. `c` = the row, `product`
+   = X, `group_choices` = X's existing groups (may be empty -> cold start). #}
+<form method="post" action="{{ url_for('vat_sub.promote') }}" class="d-flex gap-1">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="product_id" value="{{ product.id }}">
+  <input type="hidden" name="xp5_code" value="{{ c.xp5_code }}">
+  {% if group_choices %}
+    <select name="target_group_id" class="form-select form-select-sm" style="width:auto">
+      {% for g in group_choices %}
+        <option value="{{ g.id }}">{{ g.label }}</option>
+      {% endfor %}
+      <option value="new">สร้างกลุ่มใหม่</option>
+    </select>
+  {% endif %}
+  <button type="submit" class="btn btn-sm btn-outline-primary">เพิ่มเข้ากลุ่ม</button>
+</form>

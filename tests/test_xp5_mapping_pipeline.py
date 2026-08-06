@@ -99,6 +99,60 @@ def test_layer2_signature_requires_same_unit(monkeypatch, tmp_path):
     assert auto == [] and review == []        # but the lines never match
 
 
+def test_write_sheet_has_three_way_decision_column(tmp_path):
+    """vat-substitute plan decision 5: the review sheet's decision column must
+    let Put mark THREE outcomes in one pass — ตัวเดียวกัน (identity, existing
+    pid semantics) / ใช้แทนกันได้ (substitution seed, new) / ไม่เกี่ยวกัน
+    (unrelated, existing 'x' semantics) — so one filled sheet drives two
+    downstream applies without a second review round."""
+    rows = [{'xp5_code': 'X1', 'xp5_name': 'ชื่อ xp5', 'layer': 'name-similar',
+             'suggest_pid': 42, 'suggest_name': 'ชื่อ main', 'evidence': 'similarity 0.80'}]
+    csv_path, html_path = pl.write_sheet(rows, tmp_path / 'sheet')
+    import csv
+    with open(csv_path, encoding='utf-8-sig') as fh:
+        header = next(csv.reader(fh))
+    decision_col = [c for c in header if 'ตัวเดียวกัน' in c]
+    assert decision_col, f"no 3-way decision column in header: {header}"
+    assert 'ใช้แทนกันได้' in decision_col[0] and 'ไม่เกี่ยวกัน' in decision_col[0]
+    html = html_path.read_text(encoding='utf-8')
+    assert 'ใช้แทนกันได้' in html
+
+
+def test_read_substitution_rows_filters_s_decision_only(tmp_path):
+    """vat-substitute plan §4.7 sheet-apply entrypoint: only rows marked 's'
+    (ไม่ใช่แต่ใช้แทนกันได้) feed the substitution apply — 'pid' (identity)
+    and 'x' (unrelated) rows, and blank/undecided rows, are all excluded."""
+    csv_path = tmp_path / 'filled.csv'
+    csv_path.write_text(
+        'xp5_code,xp5_name,layer,suggest_pid,suggest_name,evidence,' + pl._DECISION_COL + '\n'
+        'X1,ชื่อ1,name-similar,10,หลัก1,ev,s\n'
+        'X2,ชื่อ2,name-similar,20,หลัก2,ev,42\n'   # pid decision -> identity, not substitution
+        'X3,ชื่อ3,name-similar,30,หลัก3,ev,x\n'    # unrelated
+        'X4,ชื่อ4,name-similar,40,หลัก4,ev,\n'     # undecided
+        'X5,ชื่อ5,name-similar,50,หลัก5,ev,S\n',   # case-insensitive
+        encoding='utf-8-sig')
+    rows = pl.read_substitution_rows(str(csv_path))
+    assert rows == [{'product_id': 10, 'xp5_code': 'X1'}, {'product_id': 50, 'xp5_code': 'X5'}]
+
+
+def test_read_substitution_rows_warns_on_s_without_pid(tmp_path, capsys):
+    """An 's' mark whose suggest_pid is blank/non-numeric is a HUMAN decision
+    that cannot be auto-applied — it must be surfaced loudly (fix via the
+    group page), never silently dropped (reviewer finding, round 1)."""
+    csv_path = tmp_path / 'filled.csv'
+    csv_path.write_text(
+        'xp5_code,xp5_name,layer,suggest_pid,suggest_name,evidence,' + pl._DECISION_COL + '\n'
+        'X1,ชื่อ1,name-similar,10,หลัก1,ev,s\n'
+        'X6,ชื่อ6,category,,ไม่มี,ev,s\n'          # 's' but no suggest_pid
+        'X7,ชื่อ7,category,abc,เพี้ยน,ev,s\n',     # 's' but non-numeric pid
+        encoding='utf-8-sig')
+    rows = pl.read_substitution_rows(str(csv_path))
+    assert rows == [{'product_id': 10, 'xp5_code': 'X1'}]
+    out = capsys.readouterr().out
+    assert "2 's' row(s) skipped" in out
+    assert 'X6' in out and 'X7' in out
+
+
 def test_layer2_signature_same_unit_pairs(monkeypatch, tmp_path):
     import express_dbf_source as eds
     import datetime

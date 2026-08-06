@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}สินค้าทดแทน (สมุด VAT) — ERP{% endblock %}
+{% block page_title %}สินค้าทดแทน (สมุด VAT){% endblock %}
+{% block page_desc %}<div class="page-desc">ค้นหาสินค้าที่จะขาย เพื่อดูสต็อกกระดาษของตัวเอง หรือสินค้าที่ใช้แทนกันได้ในสมุด VAT</div>{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-2 px-lg-4 mt-3">
+  {% include "vat_sub/_freshness.html" %}
+
+  <div class="d-flex flex-wrap gap-2 mb-3">
+    <a href="{{ url_for('vat_sub.planning') }}" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-diagram-3 me-1"></i>ดูทุกกลุ่ม / วางแผนเบิกสต็อกกระดาษ
+    </a>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <label class="form-label">ค้นหาสินค้าที่จะขาย</label>
+      <input type="text" id="vs-search" class="form-control" placeholder="พิมพ์ชื่อสินค้า...">
+      <div id="vs-results" class="list-group mt-2"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const $search = document.getElementById('vs-search');
+  const $results = document.getElementById('vs-results');
+  let searchTimer;
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  $search.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    const q = $search.value.trim();
+    if (!q) { $results.innerHTML = ''; return; }
+    searchTimer = setTimeout(async () => {
+      const r = await fetch(`/api/products/search?q=${encodeURIComponent(q)}&limit=15`);
+      const j = await r.json();
+      $results.innerHTML = (j.items || []).map(it => `
+        <a href="/vat-sub/product/${it.id}" class="list-group-item list-group-item-action">
+          <div class="fw-600">${escapeHtml(it.name)}</div>
+          <div class="small text-muted">ID ${it.id} · ${escapeHtml(it.unit || '')}</div>
+        </a>
+      `).join('');
+    }, 200);
+  });
+})();
+</script>
+{% endblock %}

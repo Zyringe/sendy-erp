@@ -99,6 +99,12 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     # for a doc deleted at the Express source. Manager+ ONLY: staff can upload
     # (detection runs) but must never be able to delete a doc's ledger.
     'reconcile.apply', 'reconcile.dismiss', 'reconcile.reopen',
+    # vat-substitute (projects/vat-substitute/plan.md decision 12) — manager+
+    # ONLY, no staff variant: this is a cost-sensitive curation surface, not
+    # a read. Every write (promote + the 7 group-management actions).
+    'vat_sub.promote', 'vat_sub.group_add_member', 'vat_sub.group_move_member',
+    'vat_sub.group_remove_member', 'vat_sub.group_link_product',
+    'vat_sub.group_unlink_product', 'vat_sub.group_rename', 'vat_sub.group_delete',
 ])
 # partners.regions_admin POST is intentionally admin-only — gated inline at
 # the top of the route. Other admin-only writes use _require_admin().
@@ -435,6 +441,13 @@ _ENDPOINT_MODULE = {
     'call.call_list': 'trade',
     'call.call_card': 'trade',
     'call.call_mark_called': 'trade',
+    # vat-substitute (projects/vat-substitute/plan.md) — invoice-time lookup +
+    # paper-stock planning, manager+/shareholder only (link-level roles override
+    # in nav.py; module itself stays 'trade' like reconcile sits in 'data').
+    'vat_sub.index': 'trade',
+    'vat_sub.product_view': 'trade',
+    'vat_sub.planning': 'trade',
+    'vat_sub.group_detail': 'trade',
     # customer contact review
     'customer_review.normalize_list':    'data',
     'customer_review.normalize_detail':  'data',

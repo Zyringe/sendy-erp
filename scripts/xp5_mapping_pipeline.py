@@ -298,10 +298,23 @@ def apply_auto(conn, rows, xp5_products):
             'skipped_conflicts': skipped_conflicts}
 
 
+# The sheet's decision column (vat-substitute plan decision 5): ONE column,
+# THREE choices, so one review pass drives two downstream applies — the
+# existing identity-mapping apply (unchanged pid/x semantics) plus the new
+# substitution-seed apply (§4.7). Values Put may type:
+#   <pid number>  → ตัวเดียวกัน (identity: applies to xp5_product_mapping,
+#                   same as the historical "pid" meaning)
+#   s             → ไม่ใช่แต่ใช้แทนกันได้ (substitution seed: this xp5_code
+#                   becomes a candidate member for suggest_pid's group,
+#                   applied via the sheet-apply algorithm)
+#   x             → ไม่เกี่ยวกัน (unrelated — same as the historical "x")
+_DECISION_COL = 'คำตัดสิน (pid=ตัวเดียวกัน / s=ใช้แทนกันได้ / x=ไม่เกี่ยวกัน)'
+
+
 def write_sheet(review_rows, out_base):
     import csv
     cols = ['xp5_code', 'xp5_name', 'layer', 'suggest_pid', 'suggest_name',
-            'evidence', 'คำตัดสิน (pid หรือ x)']
+            'evidence', _DECISION_COL]
     csv_path = out_base.with_suffix('.csv')
     with open(csv_path, 'w', newline='', encoding='utf-8-sig') as fh:
         w = csv.writer(fh)
@@ -317,20 +330,106 @@ def write_sheet(review_rows, out_base):
             "<style>body{font-family:sans-serif}table{border-collapse:collapse}"
             "td,th{border:1px solid #ccc;padding:4px 8px;font-size:13px}</style>"
             f"<h2>xp5 ↔ Sendy mapping — review ({date.today().isoformat()})</h2>"
-            f"<p>{len(review_rows)} รายการรอเคาะ · คอลัมน์สุดท้าย: ใส่ product id "
-            "ที่ถูกต้อง หรือ x = ไม่ map</p>"
+            f"<p>{len(review_rows)} รายการรอเคาะ · คอลัมน์สุดท้าย ใส่ 1 ใน 3: "
+            "<b>pid</b> = ตัวเดียวกัน (product id ที่ถูกต้อง) · "
+            "<b>s</b> = ไม่ใช่ตัวเดียวกันแต่ใช้แทนกันได้ (สร้าง/เข้ากลุ่มสินค้าทดแทน) · "
+            "<b>x</b> = ไม่เกี่ยวกัน</p>"
             f"<table><tr>{''.join(f'<th>{c}</th>' for c in cols)}</tr>{rows_html}</table>")
     html_path = out_base.with_suffix('.html')
     html_path.write_text(html, encoding='utf-8')
     return csv_path, html_path
 
 
+def read_substitution_rows(csv_path):
+    """Rows marked 's' (ไม่ใช่แต่ใช้แทนกันได้ — vat-substitute plan decision
+    5's 3-way decision column) on a FILLED review sheet -> {'product_id':
+    suggest_pid, 'xp5_code': xp5_code} pairs, the input shape
+    models.vat_sub.apply_substitution_sheet expects (plan §4.7)."""
+    import csv
+    rows = []
+    skipped = []
+    with open(csv_path, encoding='utf-8-sig') as fh:
+        for r in csv.DictReader(fh):
+            decision = (r.get(_DECISION_COL) or '').strip().lower()
+            if decision != 's':
+                continue
+            xp5_code = (r.get('xp5_code') or '').strip()
+            try:
+                pid = int((r.get('suggest_pid') or '').strip())
+            except ValueError:
+                # An 's' mark with no usable suggest_pid cannot seed a pair —
+                # but Put DID mark it, so dropping it silently would eat a
+                # human decision. Surface every one (fix these by adding the
+                # pair via the group page's add-member/link-product instead).
+                skipped.append(xp5_code or '(no xp5_code)')
+                continue
+            if xp5_code:
+                rows.append({'product_id': pid, 'xp5_code': xp5_code})
+            else:
+                skipped.append('(no xp5_code)')
+    if skipped:
+        print(f"⚠ {len(skipped)} 's' row(s) skipped — no usable suggest_pid/xp5_code, "
+              f"จัดการมือผ่านหน้ากลุ่ม: {', '.join(skipped[:20])}"
+              + (' …' if len(skipped) > 20 else ''))
+    return rows
+
+
+def apply_substitution_sheet_from_csv(csv_path, apply=False):
+    """Wraps models.vat_sub.apply_substitution_sheet with the pipeline's own
+    apply-entrypoint conventions: dry-run by default, `.backup` first on
+    --apply, printed summary. The `.backup` is THIS caller's job — the model
+    function's transaction covers apply+verify only (same division as
+    apply_reconcile_flag)."""
+    rows = read_substitution_rows(csv_path)
+    print(f"{len(rows)} rows marked 's' (ไม่ใช่แต่ใช้แทนกันได้) in {csv_path}")
+    if not apply:
+        print('dry-run only — rerun with --apply-sub to write')
+        return {'dry_run': True, 'would_apply': len(rows)}
+
+    backup = str(REPORT_DIR / f'_main_db_backup_pre_substitution_apply_{date.today().isoformat()}.db')
+    src = sqlite3.connect(config.DATABASE_PATH, timeout=10)
+    dst = sqlite3.connect(backup)
+    src.backup(dst)
+    dst.close()
+    src.close()
+
+    import models  # inventory_app already on sys.path (see module header)
+    conn = sqlite3.connect(config.DATABASE_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=10000")
+    # Codex r1: the app's get_connection() turns FKs on; a raw connection
+    # must too, or an orphan product link would insert cleanly here.
+    conn.execute("PRAGMA foreign_keys=ON")
+    try:
+        result = models.apply_substitution_sheet(rows, conn=conn)
+    finally:
+        conn.close()
+    if result.get('ok'):
+        print(f"applied {result['applied']} pairs (field-exact verified; backup: {backup})")
+    elif result.get('invalid'):
+        print(f"REFUSED — {len(result['invalid'])} invalid row(s) (X inactive / Y not in the "
+              f"current book / VATCOD != 1), nothing written. แก้ sheet แล้วรันใหม่: "
+              f"{result['invalid'][:10]}")
+    else:
+        print(f"REFUSED — {result.get('error') or result.get('mismatches')}")
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--xp5', required=True)
-    ap.add_argument('--bsn', required=True)
+    ap.add_argument('--xp5')
+    ap.add_argument('--bsn')
     ap.add_argument('--apply', action='store_true')
+    ap.add_argument('--apply-sub', metavar='FILLED_SHEET_CSV',
+                    help='apply the "s" (ใช้แทนกันได้) rows of a Put-reviewed sheet '
+                         'into vat_sub_groups (plan §4.7); dry-run unless --apply too')
     args = ap.parse_args()
+
+    if args.apply_sub:
+        apply_substitution_sheet_from_csv(args.apply_sub, apply=args.apply)
+        return
+    if not args.xp5 or not args.bsn:
+        ap.error('--xp5 and --bsn are required unless --apply-sub is given')
 
     conn = sqlite3.connect(config.DATABASE_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
