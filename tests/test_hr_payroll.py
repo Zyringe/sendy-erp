@@ -534,3 +534,170 @@ def test_regenerate_keeps_stamps_for_employees_still_in_run(tmp_db_conn_hr_clean
         "stamp must persist when employee is still in regenerated run"
     )
 
+
+
+# ── 9. reopen refuses a roster change in BOTH directions ────────────────────
+
+def test_reopen_warns_and_holds_when_a_new_employee_would_be_added(tmp_db_conn_hr_clean):
+    """The drop guard (2026-08-05) is one-directional, and the damage is not.
+
+    Measured on prod the same day: `generate_run` returns untouched on a
+    finalized run, so `reopen_run` is the ONLY door to a regenerate — and run 3
+    (พ.ค. 2026) passed the drop check while regenerating it would have ADDED
+    เซี้ยม and ปู้ to a closed month they were never part of. Inventing payslip
+    rows in a finalized month is the same class of history damage as deleting
+    them, so the door refuses both.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-10', 1, created_by=1, conn=c)
+    rid = run['id']
+    before = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert len(before) >= 1, "fixture must produce a non-empty run, or this pins nothing"
+    hr.finalize_run(rid, conn=c)
+
+    # hired afterwards, but start_date lands inside the now-closed month
+    newbie = _mk_employee(c, 'T_ADD', 'added-later', '2026-10-01')
+    assert newbie not in before
+
+    with pytest.raises(hr.RosterDriftWarning):
+        hr.reopen_run(rid, reason='ขอแก้ตัวเลข', actor='admin', conn=c)
+
+    # not acknowledged: still finalized, roster untouched
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'finalized'
+    assert {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))} == before
+
+
+def test_reopen_still_allowed_when_the_roster_is_unchanged(tmp_db_conn_hr_clean):
+    """Control for the test above — the guard must distinguish, not always fire.
+
+    Without this, making `reopen_run` raise unconditionally would pass the
+    refusal test.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-10', 1, created_by=1, conn=c)
+    rid = run['id']
+    hr.finalize_run(rid, conn=c)
+
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft'
+
+
+def test_regenerating_a_draft_run_still_picks_up_a_new_hire(tmp_db_conn_hr_clean):
+    """The legitimate flow the guard must NOT break: a run still in draft is a
+    working document, so regenerating it to pick up someone hired mid-month is
+    the intended use. Only a run that reached 'finalized' has history to
+    protect, and that one is reachable solely through the guarded reopen door.
+    """
+    c = tmp_db_conn_hr_clean
+    hr.generate_run('2026-10', 1, created_by=1, conn=c)   # left in draft
+    newbie = _mk_employee(c, 'T_HIRE', 'new-hire', '2026-10-01')
+
+    run = hr.generate_run('2026-10', 1, created_by=1, conn=c)
+
+    roster = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (run['id'],))}
+    assert newbie in roster, "a draft run must still absorb a new hire"
+
+
+def test_regenerate_after_reopen_refuses_a_roster_that_drifted_since(tmp_db_conn_hr_clean):
+    """The reopen door is not atomic with the rebuild it precedes (Codex, 2026-08-05).
+
+    `reopen_run` checks the roster and flips the run to draft; `generate_run`
+    does the destructive `DELETE FROM payroll_items` + re-INSERT later, in a
+    separate transaction. Anyone hired in between lands in the active set, and
+    the add-check at the door has already passed — so the exact history damage
+    this guard exists to prevent reappears one step further along.
+
+    A run that was reopened carries an audit_log row holding `reopen_reason`
+    (written in the same transaction as the status flip, and exempt from
+    `prune_audit_log`, whose predicate is transactions/INSERT+DELETE only). That
+    marker is what lets generate_run tell reopened history apart from an
+    ordinary working draft, with no migration.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-11', 1, created_by=1, conn=c)
+    rid = run['id']
+    before = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert len(before) >= 1
+    hr.finalize_run(rid, conn=c)
+
+    # roster still matches, so the door lets it through
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft'
+
+    # ...and only now does the roster drift
+    newbie = _mk_employee(c, 'T_DRIFT', 'hired-after-reopen', '2026-11-01')
+
+    with pytest.raises(ValueError):
+        hr.generate_run('2026-11', 1, created_by=1, conn=c)
+
+    roster = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert roster == before, "the rebuild must not have run"
+    assert newbie not in roster
+
+
+def test_confirmed_reopen_opens_the_run_and_per_item_repair_then_works(tmp_db_conn_hr_clean):
+    """The recovery path the refusal text promises must actually exist.
+
+    Per-item repair is gated on `status != 'finalized'`
+    (blueprints/hr.py::payroll_item_edit) and `reopen_run` is the only door to
+    draft — so a hard refusal there left runs 3 and 4 on prod unfixable through
+    the UI while the message told the operator to fix them per item. Codex
+    review of PR #367. Reopen now warns and proceeds on acknowledgement;
+    generate_run keeps its hard refusal, so the destructive path stays shut.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-12', 1, created_by=1, conn=c)
+    rid = run['id']
+    before = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert len(before) >= 1
+    hr.finalize_run(rid, conn=c)
+    newbie = _mk_employee(c, 'T_CONF', 'hired-later', '2026-12-01')
+
+    dropped, added = hr.roster_drift(rid, conn=c)
+    assert added == {newbie} and not dropped
+    assert hr.roster_drift_note(rid, conn=c), "the page must have something to show"
+
+    hr.reopen_run(rid, reason='แก้ตัวเลขรายคน', actor='admin', conn=c,
+                  confirm_roster_change=True)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft'
+    assert {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))} == before, \
+        "reopening must not have touched the roster"
+
+    # the repair itself now works...
+    item_id, = c.execute(
+        "SELECT id FROM payroll_items WHERE run_id=? LIMIT 1", (rid,)).fetchone()
+    hr.update_payroll_item(item_id, bonus=500.0, conn=c)
+    assert c.execute("SELECT bonus FROM payroll_items WHERE id=?",
+                     (item_id,)).fetchone()[0] == 500.0
+
+    # ...while the destructive path stays shut
+    with pytest.raises(ValueError):
+        hr.generate_run('2026-12', 1, created_by=1, conn=c)
+    assert newbie not in {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+
+
+def test_reopen_without_drift_needs_no_confirmation(tmp_db_conn_hr_clean):
+    """Control: the acknowledgement must be demanded only when it means
+    something, or every reopen grows a checkbox nobody reads."""
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-12', 1, created_by=1, conn=c)
+    rid = run['id']
+    hr.finalize_run(rid, conn=c)
+    assert hr.roster_drift_note(rid, conn=c) is None
+
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft'

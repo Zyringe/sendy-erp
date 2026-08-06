@@ -122,3 +122,79 @@ def test_leave_route_defaults_to_current_month(tmp_db_conn_hr_clean):
 
     html_all = cl.get('/hr/leave?month=').get_data(as_text=True)
     assert 'CURMONTHMARK' in html_all and 'OLDMONTHMARK' in html_all, "?month= (blank) shows all months"
+
+
+# ── account name falls back to the code ─────────────────────────────────────
+
+def test_advance_account_name_falls_back_to_the_account_code(tmp_db_conn_hr_clean):
+    """`cashbook_accounts.display_name` is NULL for every account on prod, and
+    the /admin form has no field that writes it — so this query, the only
+    consumer that read it WITHOUT a fallback, rendered '—' in the โอนจากบัญชี
+    column for all 28 advances (verified in the browser 2026-08-05).
+
+    Everywhere else already falls back: COALESCE(ca.display_name, ca.code) in
+    get_employees, `{{ acct.display_name or acct.code }}` in the cashbook
+    templates. Both directions are asserted so the test cannot pass by always
+    returning one of them.
+
+    BOTH consumers are asserted: the production fix touched `get_salary_advances`
+    AND `get_salary_advance`, and a test covering only the list query would let
+    the single-row one be reverted without going red (Codex review of PR #367).
+    """
+    c = tmp_db_conn_hr_clean
+    emp, _ = _two_emps(c)
+    acct = c.execute(
+        "SELECT id, code FROM cashbook_accounts ORDER BY id LIMIT 1").fetchone()
+    assert acct is not None, "fixture must have an account, or this pins nothing"
+    c.execute("UPDATE cashbook_accounts SET display_name=NULL WHERE id=?",
+              (acct["id"],))
+    adv_id = c.execute(
+        "INSERT INTO salary_advances (employee_id, advance_date, amount, from_account_id)"
+        " VALUES (?, '2026-10-05', 500, ?)", (emp, acct["id"])).lastrowid
+    c.commit()
+
+    row = next(r for r in hrq.get_salary_advances(conn=c) if r["id"] == adv_id)
+    assert row["account_name"] == acct["code"], "list query"
+    assert hrq.get_salary_advance(adv_id, conn=c)["account_name"] == acct["code"], \
+        "single-row query"
+
+    # ...and a real display_name still wins over the code
+    c.execute("UPDATE cashbook_accounts SET display_name='ชื่อจริงของบัญชี' WHERE id=?",
+              (acct["id"],))
+    c.commit()
+    row = next(r for r in hrq.get_salary_advances(conn=c) if r["id"] == adv_id)
+    assert row["account_name"] == 'ชื่อจริงของบัญชี', "list query"
+    assert hrq.get_salary_advance(adv_id, conn=c)["account_name"] == 'ชื่อจริงของบัญชี', \
+        "single-row query"
+
+
+def test_advance_with_no_account_still_reports_no_account_name(tmp_db_conn_hr_clean):
+    """`from_account_id IS NULL` must keep `account_name` NULL so /hr/advances
+    still renders '—' for an advance that has no cash account behind it.
+
+    COALESCE could plausibly have been read as "always produce something", and
+    I asserted this behaviour to the reviewer from the LEFT JOIN semantics
+    without anything pinning it — the join miss makes both `ca.display_name`
+    and `ca.code` NULL, so COALESCE returns NULL. That reasoning is right, but
+    reasoning is not a test: nothing would have caught a later change to
+    `COALESCE(ca.display_name, ca.code, sa.id)` or a switch to an inner join.
+
+    The 16 rows linked on prod on 2026-08-05 all carry an account, so this
+    state is currently rare — which is exactly when an invariant rots unnoticed.
+    """
+    c = tmp_db_conn_hr_clean
+    emp, _ = _two_emps(c)
+    adv_id = c.execute(
+        "INSERT INTO salary_advances (employee_id, advance_date, amount, from_account_id)"
+        " VALUES (?, '2026-10-06', 700, NULL)", (emp,)).lastrowid
+    c.commit()
+
+    row = next(r for r in hrq.get_salary_advances(conn=c) if r["id"] == adv_id)
+    assert row["from_account_id"] is None, "fixture precondition"
+    assert row["account_name"] is None, "list query"
+    assert hrq.get_salary_advance(adv_id, conn=c)["account_name"] is None, \
+        "single-row query"
+
+    # the row itself must still be returned — a NULL account cannot make an
+    # advance disappear from the page (an inner join would do exactly that)
+    assert adv_id in {r["id"] for r in hrq.get_salary_advances(conn=c)}

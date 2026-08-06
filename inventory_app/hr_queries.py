@@ -699,7 +699,7 @@ def get_salary_advances(employee_id: Optional[int] = None,
         return c.execute(
             f"""SELECT sa.*,
                       e.full_name, e.emp_code,
-                      ca.display_name AS account_name,
+                      COALESCE(ca.display_name, ca.code) AS account_name,
                       pr.year_month   AS deducted_ym
                  FROM salary_advances sa
                  JOIN employees e ON e.id = sa.employee_id
@@ -721,7 +721,7 @@ def get_salary_advance(adv_id: int, conn: Optional[sqlite3.Connection] = None):
         return c.execute(
             """SELECT sa.*,
                       e.full_name, e.emp_code,
-                      ca.display_name AS account_name,
+                      COALESCE(ca.display_name, ca.code) AS account_name,
                       pr.year_month   AS deducted_ym
                  FROM salary_advances sa
                  JOIN employees e ON e.id = sa.employee_id
