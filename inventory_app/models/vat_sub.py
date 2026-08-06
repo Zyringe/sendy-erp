@@ -194,6 +194,14 @@ def open_vat_book():
     conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA query_only=ON")
+    # A book built by the pre-#368 builder has no stmas_meta (and its
+    # cost_price is the old partial WACC, not UNITPR) — every read path here
+    # LEFT JOINs stmas_meta, so treat such a book as NOT READY rather than
+    # 500ing a nav-reachable page. Self-heals on the next team upload, which
+    # rebuilds the book with the current builder.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='stmas_meta'").fetchone() is None:
+        conn.close()
+        return None
     return conn
 
 
