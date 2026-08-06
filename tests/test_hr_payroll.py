@@ -538,7 +538,7 @@ def test_regenerate_keeps_stamps_for_employees_still_in_run(tmp_db_conn_hr_clean
 
 # ── 9. reopen refuses a roster change in BOTH directions ────────────────────
 
-def test_reopen_refuses_when_a_new_employee_would_be_added(tmp_db_conn_hr_clean):
+def test_reopen_warns_and_holds_when_a_new_employee_would_be_added(tmp_db_conn_hr_clean):
     """The drop guard (2026-08-05) is one-directional, and the damage is not.
 
     Measured on prod the same day: `generate_run` returns untouched on a
@@ -560,10 +560,10 @@ def test_reopen_refuses_when_a_new_employee_would_be_added(tmp_db_conn_hr_clean)
     newbie = _mk_employee(c, 'T_ADD', 'added-later', '2026-10-01')
     assert newbie not in before
 
-    with pytest.raises(ValueError):
+    with pytest.raises(hr.RosterDriftWarning):
         hr.reopen_run(rid, reason='ขอแก้ตัวเลข', actor='admin', conn=c)
 
-    # refused at the door: still finalized, roster untouched
+    # not acknowledged: still finalized, roster untouched
     assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
                      (rid,)).fetchone()[0] == 'finalized'
     assert {r[0] for r in c.execute(
@@ -642,3 +642,62 @@ def test_regenerate_after_reopen_refuses_a_roster_that_drifted_since(tmp_db_conn
         "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
     assert roster == before, "the rebuild must not have run"
     assert newbie not in roster
+
+
+def test_confirmed_reopen_opens_the_run_and_per_item_repair_then_works(tmp_db_conn_hr_clean):
+    """The recovery path the refusal text promises must actually exist.
+
+    Per-item repair is gated on `status != 'finalized'`
+    (blueprints/hr.py::payroll_item_edit) and `reopen_run` is the only door to
+    draft — so a hard refusal there left runs 3 and 4 on prod unfixable through
+    the UI while the message told the operator to fix them per item. Codex
+    review of PR #367. Reopen now warns and proceeds on acknowledgement;
+    generate_run keeps its hard refusal, so the destructive path stays shut.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-12', 1, created_by=1, conn=c)
+    rid = run['id']
+    before = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert len(before) >= 1
+    hr.finalize_run(rid, conn=c)
+    newbie = _mk_employee(c, 'T_CONF', 'hired-later', '2026-12-01')
+
+    dropped, added = hr.roster_drift(rid, conn=c)
+    assert added == {newbie} and not dropped
+    assert hr.roster_drift_note(rid, conn=c), "the page must have something to show"
+
+    hr.reopen_run(rid, reason='แก้ตัวเลขรายคน', actor='admin', conn=c,
+                  confirm_roster_change=True)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft'
+    assert {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))} == before, \
+        "reopening must not have touched the roster"
+
+    # the repair itself now works...
+    item_id, = c.execute(
+        "SELECT id FROM payroll_items WHERE run_id=? LIMIT 1", (rid,)).fetchone()
+    hr.update_payroll_item(item_id, bonus=500.0, conn=c)
+    assert c.execute("SELECT bonus FROM payroll_items WHERE id=?",
+                     (item_id,)).fetchone()[0] == 500.0
+
+    # ...while the destructive path stays shut
+    with pytest.raises(ValueError):
+        hr.generate_run('2026-12', 1, created_by=1, conn=c)
+    assert newbie not in {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+
+
+def test_reopen_without_drift_needs_no_confirmation(tmp_db_conn_hr_clean):
+    """Control: the acknowledgement must be demanded only when it means
+    something, or every reopen grows a checkbox nobody reads."""
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-12', 1, created_by=1, conn=c)
+    rid = run['id']
+    hr.finalize_run(rid, conn=c)
+    assert hr.roster_drift_note(rid, conn=c) is None
+
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft'

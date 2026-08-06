@@ -160,3 +160,65 @@ def test_hr_payroll_reopen_missing_id_404(admin_client):
     resp = admin_client.post('/hr/payroll/999999/reopen',
                              data={'reason': 'x'})
     assert resp.status_code == 404
+
+
+# ── roster-drift warning + confirmation in the reopen dialog ────────────────
+
+def _add_employee_after_finalize(tmp_db, month_start='2026-09-01'):
+    """A hire whose start_date lands inside an already-closed month, so the
+    active set for that month now contains someone the run does not."""
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    try:
+        eid = conn.execute(
+            """INSERT INTO employees
+                 (emp_code, full_name, gender, company_id, start_date,
+                  probation_days, sso_enrolled, diligence_allowance, is_active)
+               VALUES ('T_DRIFT2','drift-route','M',1,?,90,0,0,1)""",
+            (month_start,)).lastrowid
+        conn.execute(
+            "INSERT INTO employee_salary_history "
+            "(employee_id, effective_date, monthly_salary, reason) "
+            "VALUES (?, ?, 12000.0, 'initial')", (eid, month_start))
+        conn.commit()
+        return eid
+    finally:
+        conn.close()
+
+
+def test_payroll_detail_shows_the_roster_warning_and_confirm_box(admin_client, tmp_db):
+    """The page must say what will happen BEFORE the dialog is opened.
+
+    reopen_run demands an acknowledgement when the roster drifted; without
+    this the operator meets that demand only as a rejected submit.
+    """
+    rid = _make_finalized_run(tmp_db)
+    clean = admin_client.get(f'/hr/payroll/{rid}').get_data(as_text=True)
+    assert 'data-warn="roster-drift"' not in clean, "no drift yet — no warning"
+    assert 'name="confirm_roster_change"' not in clean
+
+    _add_employee_after_finalize(tmp_db)
+    drifted = admin_client.get(f'/hr/payroll/{rid}').get_data(as_text=True)
+    assert 'data-warn="roster-drift"' in drifted
+    assert 'name="confirm_roster_change"' in drifted
+    assert 'drift-route' in drifted, "the warning must name who would be added"
+
+
+def test_reopen_needs_the_confirm_box_when_the_roster_drifted(admin_client, tmp_db):
+    rid = _make_finalized_run(tmp_db)
+    _add_employee_after_finalize(tmp_db)
+
+    def status():
+        return sqlite3.connect(tmp_db).execute(
+            "SELECT status FROM payroll_runs WHERE id=?", (rid,)).fetchone()[0]
+
+    resp = admin_client.post(f'/hr/payroll/{rid}/reopen',
+                             data={'reason': 'แก้รายคน'}, follow_redirects=True)
+    assert resp.status_code == 200
+    assert status() == 'finalized', "unconfirmed reopen must not un-finalize"
+
+    resp = admin_client.post(
+        f'/hr/payroll/{rid}/reopen',
+        data={'reason': 'แก้รายคน', 'confirm_roster_change': '1'},
+        follow_redirects=True)
+    assert resp.status_code == 200
+    assert status() == 'draft', "confirmed reopen must proceed"
