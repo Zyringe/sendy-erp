@@ -811,6 +811,64 @@ def _regenerate_would_add(c, run_id: int, active_ids):
     return set(active_ids) - existing
 
 
+class RosterDriftWarning(Exception):
+    """Reopening this run is allowed, but a later regenerate would change WHO
+    is in it. Distinct from ValueError so the route can offer a confirmation
+    instead of a dead end — reopening itself mutates no payroll_items."""
+
+
+def roster_drift(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                 db_path: Optional[str] = None):
+    """(dropped_ids, added_ids) for `run_id` against today's active set.
+
+    Public because the payroll page renders the warning from it before the
+    operator opens the reopen dialog — the server still enforces the
+    confirmation, this only lets the UI say what will happen.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        run = c.execute("SELECT * FROM payroll_runs WHERE id = ?",
+                        (run_id,)).fetchone()
+        if run is None:
+            return set(), set()
+        period_start, period_end = _month_bounds(run["year_month"])
+        active_ids = {e["id"] for e in _active_employees_for_month(
+            c, run["company_id"], period_start, period_end)}
+        return (_regenerate_would_drop(c, run_id, active_ids),
+                _regenerate_would_add(c, run_id, active_ids))
+
+
+def roster_drift_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                      db_path: Optional[str] = None):
+    """The reopen warning for `run_id`, or None when the roster still matches.
+
+    Same text `reopen_run` raises, so the page and the refusal cannot drift
+    apart — the operator reads it before opening the dialog, not after a
+    rejected submit.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        dropped, added = roster_drift(run_id, conn=c)
+        if not dropped and not added:
+            return None
+        return _roster_drift_message(c, dropped, added)
+
+
+def _roster_drift_message(c, dropped_ids, added_ids) -> str:
+    """Warning shown before a reopen whose later regenerate would change the
+    roster. Says what reopening is FOR in that situation — per-item repair —
+    because regenerating will be refused."""
+    parts = []
+    if dropped_ids:
+        parts.append(f"หายไป {len(dropped_ids)} คน ({_employee_names(c, dropped_ids)})")
+    if added_ids:
+        parts.append(f"เพิ่มมา {len(added_ids)} คน ({_employee_names(c, added_ids)})")
+    return (
+        "รอบนี้เปิดใหม่ได้ แต่รายชื่อพนักงานตอนนี้ไม่ตรงกับตอนที่ปิดรอบ: "
+        + " · ".join(parts)
+        + " · เปิดรอบเฉย ๆ ไม่กระทบตัวเลขใคร แต่ถ้ากด \"สร้างรอบใหม่\" ระบบจะปฏิเสธ "
+        "เพื่อกันไม่ให้ประวัติเดือนนี้ถูกเขียนทับ — ให้แก้ตัวเลขรายบุคคลแทน แล้ว finalize ใหม่"
+    )
+
+
 def _was_reopened(c, run_id: int) -> bool:
     """True if this run was ever un-finalized by `reopen_run`.
 
@@ -843,12 +901,13 @@ def _employee_names(c, ids) -> str:
 
 def _added_employees_message(c, added_ids) -> str:
     return (
-        f"เปิดรอบนี้ใหม่ไม่ได้ — มีพนักงาน {len(added_ids)} คนที่อยู่ในชุดพนักงานปัจจุบัน "
+        f"สร้างรอบนี้ใหม่ไม่ได้ — มีพนักงาน {len(added_ids)} คนที่อยู่ในชุดพนักงานปัจจุบัน "
         f"แต่ไม่มีรายการอยู่ในรอบนี้ ({_employee_names(c, added_ids)}) "
-        f"การเปิดรอบแล้วสร้างใหม่จะเพิ่มรายการเงินเดือนของเขาเข้าไปในเดือนที่ปิดไปแล้ว "
+        f"การสร้างรอบใหม่จะเพิ่มรายการเงินเดือนของเขาเข้าไปในเดือนที่ปิดไปแล้ว "
         f"ทั้งที่เดือนนั้นไม่เคยจ่ายให้เขา "
         f"· ถ้าเขาเพิ่งเข้างานทีหลัง ให้ตรวจวันเริ่มงาน (start_date) ว่าตรงกับความจริงไหม "
-        f"· ถ้าต้องแก้ตัวเลขของคนที่อยู่ในรอบอยู่แล้ว ให้แก้รายบุคคลแทนการสร้างรอบใหม่"
+        f"· ถ้าต้องแก้ตัวเลขของคนที่อยู่ในรอบอยู่แล้ว ให้แก้รายบุคคลแทน "
+        f"(รอบนี้ reopen ได้ ระบบจะถามยืนยันก่อน แล้วแก้ทีละคนได้เลย)"
     )
 
 
@@ -858,6 +917,7 @@ def _dropped_employees_message(c, dropped_ids) -> str:
         f"แต่ไม่อยู่ในชุดพนักงานปัจจุบันแล้ว ({_employee_names(c, dropped_ids)}) "
         f"การสร้างใหม่จะลบรายการเงินเดือนของเขาในเดือนนี้ทิ้ง "
         f"และปลดการหักเบิกล่วงหน้าไปงวดอื่น "
+        f"· ถ้าจะแก้ตัวเลขในรอบนี้ ให้ reopen แล้วแก้รายบุคคล แทนการสร้างรอบใหม่ "
         f"· ถ้าเขาลาออกกลางเดือน ให้ใส่วันสิ้นสุดการทำงาน (end_date) แทนการปิดใช้งาน "
         f"ระบบจะคงเขาไว้ในรอบนี้และคิดเงินตามสัดส่วนวันที่ทำงานให้ "
         f"· ถ้าตั้งใจจะเอาเขาออกจากรอบนี้จริง ต้องแก้ที่ฐานข้อมูลโดยตรงและสำรองข้อมูลก่อน"
@@ -1103,7 +1163,8 @@ def finalize_run(run_id: int,
 # ── reopen a finalized run (admin escape hatch) ──────────────────────────────
 def reopen_run(run_id: int, reason: str, actor: str,
                conn: Optional[sqlite3.Connection] = None,
-               db_path: Optional[str] = None):
+               db_path: Optional[str] = None,
+               confirm_roster_change: bool = False):
     """Un-finalize a finalized run. Records an explicit audit_log entry with
     the actor + human reason so the "why" survives (mig 071's UPDATE trigger
     captures the field diff with user=NULL).
@@ -1143,22 +1204,17 @@ def reopen_run(run_id: int, reason: str, actor: str,
         # Stop at the door. Reopening is only ever a prelude to regenerating,
         # and generate_run refuses a rebuild that would drop a departed
         # employee's row (or, for a run that was reopened, add one) — so
-        # checking here too avoids stranding the run in 'draft' with finalized
-        # figures, a state nothing else repairs. Both ends are needed: this one
-        # keeps the run out of a dead state, and generate_run's covers a roster
-        # that drifts in the window between the two transactions.
-        period_start, period_end = _month_bounds(run["year_month"])
-        active_ids = {e["id"] for e in _active_employees_for_month(
-            c, run["company_id"], period_start, period_end)}
-        dropped = _regenerate_would_drop(c, run_id, active_ids)
-        if dropped:
-            raise ValueError(_dropped_employees_message(c, dropped))
-        # ...and the same door refuses the opposite drift. generate_run cannot
-        # check this one: on a draft run, absorbing a new hire is exactly what
-        # a regenerate is for.
-        added = _regenerate_would_add(c, run_id, active_ids)
-        if added:
-            raise ValueError(_added_employees_message(c, added))
+        # WARN here, REFUSE at the rebuild. Reopening mutates no payroll_items;
+        # only generate_run does, and it refuses roster drift outright. A hard
+        # refusal here looked safer and was not: per-item repair is gated on
+        # `status != 'finalized'` (blueprints/hr.py::payroll_item_edit), so
+        # blocking the only door to draft left runs 3 and 4 unfixable through
+        # the UI while the refusal text told the operator to fix them per item.
+        # Codex review of PR #367 caught the contradiction.
+        dropped, added = roster_drift(run_id, conn=c)
+        if (dropped or added) and not confirm_roster_change:
+            raise RosterDriftWarning(
+                _roster_drift_message(c, dropped, added))
 
         c.execute(
             "UPDATE payroll_runs SET status='draft', finalized_at=NULL WHERE id=?",

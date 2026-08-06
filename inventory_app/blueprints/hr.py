@@ -544,6 +544,11 @@ def payroll_detail(run_id: int):
     pay_accounts = hrq.get_active_cashbook_accounts(non_transfer_only=True)
     dup_manual_salary_count = hrq.count_manual_salary_rows_for_month(run["year_month"])
     any_paid = any(item["paid_txn_id"] is not None for item in items)
+    # Only a finalized run can be reopened, so only that one needs the warning.
+    # The server still enforces the confirmation in reopen_run — this exists so
+    # the operator is told BEFORE opening the dialog, not after a refusal.
+    roster_drift_note = (hr_mod.roster_drift_note(run_id)
+                         if run["status"] == "finalized" else None)
     return render_template(
         "hr/payroll_detail.html",
         run=run,
@@ -551,6 +556,7 @@ def payroll_detail(run_id: int):
         pay_accounts=pay_accounts,
         dup_manual_salary_count=dup_manual_salary_count,
         any_paid=any_paid,
+        roster_drift_note=roster_drift_note,
         today_iso=date.today().isoformat(),
         be_year=_be_year,
         fmt_baht=_fmt_baht,
@@ -678,9 +684,17 @@ def payroll_reopen(run_id: int):
         flash("ต้องระบุเหตุผลในการ reopen run นี้", "danger")
         return redirect(url_for("hr.payroll_detail", run_id=run_id))
     try:
-        hr_mod.reopen_run(run_id, reason=reason,
-                          actor=session.get("username") or "unknown")
+        hr_mod.reopen_run(
+            run_id, reason=reason,
+            actor=session.get("username") or "unknown",
+            confirm_roster_change=(request.form.get("confirm_roster_change") == "1"),
+        )
         flash(f"Reopened run #{run_id} แล้ว — แก้ไขเสร็จอย่าลืม finalize ใหม่", "success")
+    except hr_mod.RosterDriftWarning as w:
+        # Not an error: reopening is permitted, it just needs an explicit ack.
+        # The page renders the same warning + a required checkbox, so a normal
+        # operator never reaches this branch — it catches a stale form.
+        flash(f"{w} — ติ๊กยืนยันในกล่อง Reopen แล้วกดอีกครั้ง", "warning")
     except Exception as e:
         flash(f"ไม่สามารถ reopen: {e}", "danger")
     return redirect(url_for("hr.payroll_detail", run_id=run_id))
