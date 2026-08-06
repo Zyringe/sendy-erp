@@ -188,3 +188,32 @@ def test_badge_js_compares_base_unit_not_selected_unit(route_client, tmp_db):
     assert 'const X_BASE_UNIT = ' in html
     assert 'computeBadge(price, ratio, X_BASE_UNIT,' in html
     assert 'opt.value' not in html
+
+
+def test_product_view_renders_200_when_book_predates_stmas_meta(route_client, tmp_db, tmp_path, monkeypatch):
+    """A vat_book built by the pre-#368 builder has no stmas_meta table —
+    exactly prod's state between the merge and the next team upload. Every
+    read path LEFT JOINs stmas_meta, so such a book must be treated as
+    NOT READY (open_vat_book -> None => graceful 'ยังไม่ถูกสร้าง/ยังไม่พร้อม'
+    states), never a 500 on a nav-reachable page."""
+    import sqlite3
+    import config
+    import models.vat_sub as vs
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    conn.row_factory = sqlite3.Row
+    pid = _seed_identity_mapped_product(conn)
+    conn.close()
+
+    old_book = tmp_path / 'old_book.db'
+    c = sqlite3.connect(old_book)
+    c.executescript("""
+        CREATE TABLE products (id INTEGER PRIMARY KEY, product_name TEXT, unit_type TEXT, cost_price REAL);
+        CREATE TABLE product_code_mapping (id INTEGER PRIMARY KEY, bsn_code TEXT, bsn_name TEXT, product_id INTEGER);
+        CREATE TABLE stock_levels (product_id INTEGER PRIMARY KEY, quantity REAL);
+    """)
+    c.close()
+    monkeypatch.setattr(vs.book_registry, 'book_db_path', lambda kind: str(old_book))
+
+    _login(route_client)
+    r = route_client.get(f'/vat-sub/product/{pid}')
+    assert r.status_code == 200
