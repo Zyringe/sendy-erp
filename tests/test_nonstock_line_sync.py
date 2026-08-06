@@ -106,6 +106,12 @@ def test_non_stock_line_is_imported_as_revenue(tmp_db_conn):
     assert len(rows) == 1, rows                 # count BEFORE the property
     assert rows[0]['net'] == 30.0
     assert rows[0]['product_id'] == pid
+    # is_ignored=1 on the mapping for a non-stock code is a contradiction —
+    # the constant wins, but Task 7's alert needs it recorded, not silently
+    # honoured.
+    contradictions = stats['ignored_contradictions']
+    assert len(contradictions) == 1, contradictions     # count BEFORE the property
+    assert contradictions == ['888ค8888']
 
 
 def test_vat_code_is_still_dropped_entirely(tmp_db_conn):
@@ -124,3 +130,31 @@ def test_vat_code_is_still_dropped_entirely(tmp_db_conn):
     n = conn.execute(
         "SELECT COUNT(*) FROM sales_transactions WHERE bsn_code='888ค8887'").fetchone()[0]
     assert n == 0
+
+
+def test_preview_agrees_with_commit_for_non_stock_codes(tmp_db_conn):
+    conn = tmp_db_conn
+    # Force fixture state exactly like the commit-path tests above — the
+    # clone's own history for these codes must not leak into the preview
+    # counts either.
+    conn.execute(
+        "DELETE FROM sales_transactions WHERE bsn_code IN ('888ค8888', '888ค8887')")
+    pid_ship = conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES ('ค่าขนส่ง', 'ตัว')"
+    ).lastrowid
+    pid_vat = conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES ('ค่าVAT', 'ตัว')"
+    ).lastrowid
+    conn.commit()
+    _map(conn, '888ค8888', 'ค่าขนส่ง', pid_ship, is_ignored=1)
+    _map(conn, '888ค8887', 'ค่าVAT', pid_vat, is_ignored=1)
+
+    ship_preview = models.preview_import(
+        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9003-1', 30.0)], 'sales')
+    assert ship_preview['non_stock'] == 1, ship_preview
+    assert ship_preview['ignored'] == 0, ship_preview
+
+    vat_preview = models.preview_import(
+        [_entry('888ค8887', 'ค่าVAT', 'IV9004-1', 70.0)], 'sales')
+    assert vat_preview['ignored'] == 1, vat_preview
+    assert vat_preview['non_stock'] == 0, vat_preview
