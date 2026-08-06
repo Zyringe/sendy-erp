@@ -30,16 +30,22 @@ def test_non_stock_clause_filters_rows(tmp_db_conn):
             " (batch_id, date_iso, doc_no, doc_base, bsn_code, qty, net)"
             " VALUES (1, '2026-06-15', ?, ?, ?, 1, 100)",
             (f'IV900{i}-1', f'IV900{i}', code))
+    # Insert a NULL row (unmapped legacy case) — must be KEPT by non_stock_clause
+    conn.execute(
+        "INSERT INTO sales_transactions"
+        " (batch_id, date_iso, doc_no, doc_base, bsn_code, qty, net)"
+        " VALUES (1, '2026-06-15', ?, ?, ?, 1, 100)",
+        ('IV9004-1', 'IV9004', None))
     rows = conn.execute(
         f"SELECT bsn_code FROM sales_transactions WHERE {non_stock_clause()}").fetchall()
-    codes = sorted(r['bsn_code'] for r in rows)
-    assert len(codes) == 2, codes          # count BEFORE the property
-    assert codes == ['036ผ7110', '888ค8887']
+    codes = sorted(c or '' for c in (r['bsn_code'] for r in rows))
+    assert len(codes) == 3, codes          # count BEFORE the property
+    assert codes == ['', '036ผ7110', '888ค8887']
 
     aliased = conn.execute(
         f"SELECT st.bsn_code FROM sales_transactions st WHERE {non_stock_clause('st')}"
     ).fetchall()
-    assert len(aliased) == 2
+    assert len(aliased) == 3
 
 
 def test_non_stock_code_error_is_a_value_error():
