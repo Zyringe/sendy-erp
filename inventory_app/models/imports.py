@@ -16,6 +16,7 @@ from .wacc import (recalculate_product_wacc, preflight_batch,
                    WaccIdentityError)
 from .system_alerts import (record_wacc_identity_alert,
                             record_ignored_import_lines_alert)
+from .stock_filters import is_non_stock_code
 
 
 def _detect_removed_lines(conn, table: str, file_type: str, entries: list) -> list:
@@ -71,7 +72,8 @@ def preview_import(entries: list, file_type: str) -> dict:
     assert file_type in ('sales', 'purchase')
     table = 'sales_transactions' if file_type == 'sales' else 'purchase_transactions'
     conn = get_connection()
-    counts = {'new': 0, 'changed': 0, 'unchanged': 0, 'ignored': 0, 'unmapped': 0}
+    counts = {'new': 0, 'changed': 0, 'unchanged': 0, 'ignored': 0, 'unmapped': 0,
+              'non_stock': 0}
     new_codes = {}
     changes = []
     try:
@@ -80,7 +82,9 @@ def preview_import(entries: list, file_type: str) -> dict:
             doc_no = e['doc_no']
             line_seq = e.get('line_seq', 1)
             pid, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'], unit)
-            if is_ignored:
+            if is_non_stock_code(e['product_code_raw']):
+                counts['non_stock'] += 1
+            elif is_ignored:
                 counts['ignored'] += 1
                 continue
             if file_type == 'purchase':
@@ -164,6 +168,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
     batch_id = cur.lastrowid
 
     imported = ignored = overwritten = unchanged = removed = removed_skipped = 0
+    non_stock = 0
     # Per-code detail for the lines we SKIP because the mapping says is_ignored.
     # A bare count is not actionable: these are frequently billable service lines
     # (ค่าขนส่ง, code 888ค8888) whose revenue is dropped along with their stock,
@@ -171,6 +176,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
     ignored_detail = {}       # bsn_code -> {'bsn_code','name','lines','net'}
     new_bsn_codes = {}        # code → name for codes not yet in mapping table
     affected_pids = set()     # products whose ledger must be rebuilt in pass 2
+    contradictions = set()    # non-stock codes whose mapping row still says is_ignored=1
 
     # Ledger notes this file_type owns. The pass-2 re-sync deletes ONLY these
     # for affected products, so a sales re-import never wipes a product's
@@ -193,7 +199,8 @@ def import_weekly(entries: list, file_type: str, filename: str,
         line_seq = e.get('line_seq', 1)
 
         product_id, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'], e['unit'])
-        if is_ignored:
+        non_stock_line = is_non_stock_code(e['product_code_raw'])
+        if is_ignored and not non_stock_line:
             # NOT a duplicate. This counter used to be `skipped_dup`, whose only
             # increment in the whole module was right here — a true re-upload
             # lands in `unchanged`, never here. So an ignored line was reported
@@ -209,6 +216,16 @@ def import_weekly(entries: list, file_type: str, filename: str,
             d['lines'] += 1
             d['net'] = round(d['net'] + (e.get('net') or 0), 2)
             continue
+        if non_stock_line:
+            # The constant is the authority. A mapping row that still says
+            # is_ignored=1 for one of these codes (a restored pre-mig-155
+            # backup is the realistic way) must NOT drop the revenue — but it
+            # must not pass silently either. Task 7 raises the alert; here we
+            # only record it so the alert is written after conn closes.
+            non_stock += 1
+            if is_ignored:
+                contradictions.add(e['product_code_raw'])
+        # ... falls through to the normal insert path unchanged ...
 
         if file_type == 'purchase':
             old = conn.execute(
@@ -414,6 +431,8 @@ def import_weekly(entries: list, file_type: str, filename: str,
         'new_unmapped': len(new_bsn_codes),
         'affected_products': len(affected_pids),
         'batch_id': batch_id,
+        'non_stock': non_stock,
+        'ignored_contradictions': sorted(contradictions),
     }
 
 

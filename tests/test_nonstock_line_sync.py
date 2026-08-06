@@ -50,3 +50,77 @@ def test_non_stock_clause_filters_rows(tmp_db_conn):
 
 def test_non_stock_code_error_is_a_value_error():
     assert issubclass(NonStockCodeError, ValueError)
+
+
+import models
+
+
+def _entry(code, name, doc_no, net, qty=1.0, unit='ใบ', date='2026-06-15'):
+    return {
+        'date_iso': date, 'doc_no': doc_no, 'product_code_raw': code,
+        'product_name_raw': name, 'party': 'วรสวัสดิ์ ฮาร์ดแวร์',
+        'party_code': '01อ35', 'qty': qty, 'unit': unit, 'unit_price': net / qty,
+        'vat_type': 2, 'discount': '', 'total': net, 'net': net, 'line_seq': 1,
+    }
+
+
+def _map(conn, code, name, pid, is_ignored=0):
+    # tmp_db_conn is a full clone of the LIVE dev DB (no wipe) — it already has
+    # real product_code_mapping rows for these two codes (bsn_unit=''), so a
+    # plain INSERT hits the (bsn_code, bsn_unit) UNIQUE constraint. Worse: even
+    # after that's fixed, migration 155 (Task 8, same plan) flips their
+    # is_ignored to 0 — so once that migration is applied, the clone's rows
+    # would silently stop representing the pre-mig-155 state this test exists
+    # to cover, while still passing green. Force the state instead of
+    # inheriting it: delete every row for this bsn_code (any bsn_unit), then
+    # insert exactly what the test asked for.
+    conn.execute("DELETE FROM product_code_mapping WHERE bsn_code=?", (code,))
+    conn.execute(
+        "INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id,"
+        " is_ignored, bsn_unit) VALUES (?, ?, ?, ?, '')",
+        (code, name, pid, is_ignored))
+    conn.commit()
+
+
+def test_non_stock_line_is_imported_as_revenue(tmp_db_conn):
+    conn = tmp_db_conn
+    # Same live-clone hazard as _map() above, one table over: the cloned DB
+    # already carries 26 real historical rows for this bsn_code (two years of
+    # actual ค่าขนส่ง billing), which would blow up the `len(rows) == 1` count
+    # below. Force this bsn_code's row set to empty rather than inherit it.
+    conn.execute("DELETE FROM sales_transactions WHERE bsn_code='888ค8888'")
+    pid = conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES ('ค่าขนส่ง', 'ตัว')"
+    ).lastrowid
+    conn.commit()
+    _map(conn, '888ค8888', 'ค่าขนส่ง', pid, is_ignored=1)   # pre-mig state
+
+    stats = models.import_weekly(
+        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9001-1', 30.0)], 'sales', 'test.csv')
+
+    assert stats['non_stock'] == 1, stats
+    assert stats['ignored'] == 0, stats
+    rows = conn.execute(
+        "SELECT net, product_id, synced_to_stock FROM sales_transactions"
+        " WHERE bsn_code='888ค8888'").fetchall()
+    assert len(rows) == 1, rows                 # count BEFORE the property
+    assert rows[0]['net'] == 30.0
+    assert rows[0]['product_id'] == pid
+
+
+def test_vat_code_is_still_dropped_entirely(tmp_db_conn):
+    conn = tmp_db_conn
+    pid = conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES ('ค่าVAT', 'ตัว')"
+    ).lastrowid
+    conn.commit()
+    _map(conn, '888ค8887', 'ค่าVAT', pid, is_ignored=1)
+
+    stats = models.import_weekly(
+        [_entry('888ค8887', 'ค่าVAT', 'IV9002-1', 70.0)], 'sales', 'test.csv')
+
+    assert stats['ignored'] == 1, stats
+    assert stats['non_stock'] == 0, stats
+    n = conn.execute(
+        "SELECT COUNT(*) FROM sales_transactions WHERE bsn_code='888ค8887'").fetchone()[0]
+    assert n == 0
