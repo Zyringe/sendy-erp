@@ -434,9 +434,22 @@ def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str) -> int:
     docstring's "never touched stock so deletion is safe" does not apply to
     them. Returns 0 without deleting anything — deliberately all-or-nothing,
     so a mixed group is never half-deleted.
+
+    The protected-row check and the DELETE are one `BEGIN IMMEDIATE`
+    transaction on one connection (same shape as models/transactions.py's
+    set_stock_to and models/conversions.py's run_conversion). A plain SELECT
+    takes no lock under Python sqlite3's default deferred isolation, so a
+    check-then-write split across two implicit transactions leaves a window:
+    under gunicorn -w 2, a concurrent BSN import could insert a new
+    protected row into this exact (product_id, unit) between the read and
+    the DELETE. The DELETE's own predicate still guarantees the protected
+    row itself is never removed, but the ordinary rows in the group WOULD be
+    deleted despite the group being mixed at commit time — silently breaking
+    the all-or-nothing contract this docstring promises.
     """
     conn = get_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         for table in ('sales_transactions', 'purchase_transactions'):
             protected = conn.execute(
                 f"SELECT COUNT(*) FROM {table}"

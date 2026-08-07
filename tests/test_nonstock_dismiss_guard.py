@@ -5,7 +5,12 @@ with synced_to_stock=0, documented as "they have never touched stock so
 deletion is safe". Non-stock rows are permanently synced_to_stock=0 AND hold
 real revenue, so that premise no longer holds.
 """
+import sqlite3
+
+import pytest
+
 import models
+import models.bsn_sync as bsn_sync
 
 
 def _seed(conn, code, name, unit):
@@ -112,6 +117,61 @@ def test_dismiss_still_works_for_ordinary_products(tmp_db_conn):
 
     deleted = models.dismiss_pending_unit_conversion(real_pid, 'แผ่น')
 
+    assert deleted == 1
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM sales_transactions WHERE product_id=?",
+        (real_pid,)).fetchone()[0]
+    assert remaining == 0
+
+
+def test_dismiss_holds_lock_before_first_read(tmp_db_conn, monkeypatch):
+    """Concurrency seam BEFORE the first write (fix round 1 finding).
+
+    Under SQLite's default deferred isolation a connection holds no lock
+    until it writes, so a probe injected AFTER the first write would be
+    excluded either way — with or without BEGIN IMMEDIATE — and prove
+    nothing (erp-engineering-discipline.md, "A concurrency test whose seam
+    sits AFTER the first write proves nothing"). `non_stock_clause` is
+    called by dismiss_pending_unit_conversion's very first statement (the
+    protected-row read), strictly before any DELETE, so patching it is the
+    earliest available seam. Open a SECOND connection with a short timeout
+    and assert the concurrent writer is excluded — this is the exact
+    scenario the finding describes: a concurrent BSN import inserting a new
+    protected row into the same (product_id, unit) between the read and the
+    DELETE.
+    """
+    conn = tmp_db_conn
+    conn.execute("DELETE FROM sales_transactions")
+    conn.commit()
+    real_pid = _seed(conn, '036ผ7110', 'แผ่นตัด 14 นิ้ว', 'แผ่น')
+
+    import config
+    seen = {}
+    real_fn = bsn_sync.non_stock_clause
+
+    def _spy(*args, **kwargs):
+        if not seen:
+            seen['fired'] = True
+            probe = sqlite3.connect(config.DATABASE_PATH, timeout=0.1)
+            try:
+                with pytest.raises(sqlite3.OperationalError, match='database is locked'):
+                    probe.execute(
+                        "INSERT INTO sales_transactions (batch_id, date_iso, doc_no,"
+                        " doc_base, product_id, bsn_code, customer, qty, unit, net,"
+                        " synced_to_stock) VALUES"
+                        " (1,'2026-06-15','INTRUDER-1','INTRUDER',?,'888ค8888',"
+                        "'intruder',1,?,30.0,0)", (real_pid, 'แผ่น'))
+                seen['locked'] = True
+            finally:
+                probe.close()
+        return real_fn(*args, **kwargs)
+
+    monkeypatch.setattr(bsn_sync, 'non_stock_clause', _spy)
+    deleted = bsn_sync.dismiss_pending_unit_conversion(real_pid, 'แผ่น')
+
+    assert seen.get('locked') is True
+    # The intruder was locked out, so the group never became mixed — the
+    # ordinary row still dismisses normally.
     assert deleted == 1
     remaining = conn.execute(
         "SELECT COUNT(*) FROM sales_transactions WHERE product_id=?",
