@@ -12,6 +12,7 @@ import bsn_units
 
 from .bsn_sync import (_BSN_LEDGER_NOTE_PATTERNS, _sync_bsn_to_stock,
                        cross_unit_hazard)
+from .stock_filters import non_stock_clause
 from .wacc import (recalculate_product_wacc, preflight_batch,
                    WaccIdentityError)
 from .system_alerts import record_wacc_identity_alert
@@ -71,13 +72,16 @@ def get_pending_split_mappings():
     (bsn_code, normalized unit, product_id) across sales+purchase so the
     /mapping split-section can offer a per-unit split mapping instead."""
     conn = get_connection()
-    rows = conn.execute("""
+    non_stock = non_stock_clause()
+    rows = conn.execute(f"""
         SELECT bsn_code, unit, product_id,
                COUNT(*) AS row_count,
                MIN(doc_no) AS example_doc,
                MIN(NULLIF(product_name_raw, '')) AS bsn_raw_name
           FROM sales_transactions
-         WHERE product_id IS NOT NULL AND bsn_code IS NOT NULL AND synced_to_stock = 0
+         WHERE product_id IS NOT NULL AND bsn_code IS NOT NULL
+           AND synced_to_stock = 0
+           AND {non_stock}
          GROUP BY bsn_code, unit, product_id
         UNION ALL
         SELECT bsn_code, unit, product_id,
@@ -85,7 +89,9 @@ def get_pending_split_mappings():
                MIN(doc_no) AS example_doc,
                MIN(NULLIF(product_name_raw, '')) AS bsn_raw_name
           FROM purchase_transactions
-         WHERE product_id IS NOT NULL AND bsn_code IS NOT NULL AND synced_to_stock = 0
+         WHERE product_id IS NOT NULL AND bsn_code IS NOT NULL
+           AND synced_to_stock = 0
+           AND {non_stock}
          GROUP BY bsn_code, unit, product_id
     """).fetchall()
 
