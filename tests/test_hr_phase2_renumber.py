@@ -132,19 +132,47 @@ def test_renumber_aligns_id_and_preserves_attribution(tmp_path):
 # ── Task 2.2: create_employee assigns explicit id from emp_code ──────────────
 
 def test_create_employee_sets_id_from_emp_code(tmp_db):
-    """EMP009 → id 9. Current seq=6, so autoincrement gives 7 — tests explicit path."""
+    """EMP<n> → id n, taking the explicit-id path rather than autoincrement.
+
+    `n` is allocated from the fixture instead of being hard-coded. The original
+    test assumed EMP009 was free; the live snapshot this fixture copies has
+    since grown an EMP009, so it failed on a UNIQUE collision that said nothing
+    about the behaviour under test (HR review finding 6, 2026-08-06).
+
+    ⚠ The GAP is load-bearing, and is why this is MAX(id)+GAP and not MAX(id)+1:
+    autoincrement would itself hand out MAX(id)+1, so a +1 allocation passes
+    whether or not the explicit-id path runs at all — it cannot fail, which is
+    no test. Leaving a gap makes the two paths produce different ids, so this
+    goes red the moment create_employee stops honouring the emp_code suffix.
+    """
+    import sqlite3
+
     import hr_queries as hrq
+
+    GAP = 5
+    conn = sqlite3.connect(tmp_db)
+    max_id = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM employees").fetchone()[0]
+    n = max_id + GAP
+    code = "EMP%03d" % n
+    assert conn.execute(
+        "SELECT 1 FROM employees WHERE emp_code=?", (code,)
+    ).fetchone() is None, f"{code} was expected to be unused"
+    assert n != max_id + 1, "the id must not be one autoincrement would also pick"
+    conn.close()
+
     new_id = hrq.create_employee({
-        "emp_code": "EMP009",
+        "emp_code": code,
         "full_name": "ทดสอบ ไอดี",
         "company_id": 1,
     })
-    assert new_id == 9, f"expected id=9 from EMP009, got {new_id}"
-    import sqlite3
+    assert new_id == n, f"expected id={n} from {code}, got {new_id}"
     conn = sqlite3.connect(tmp_db)
-    row = conn.execute("SELECT id FROM employees WHERE emp_code='EMP009'").fetchone()
-    assert row is not None, "EMP009 row not found"
-    assert row[0] == 9, f"DB id={row[0]}, expected 9"
+    row = conn.execute(
+        "SELECT id FROM employees WHERE emp_code=?", (code,)).fetchone()
+    conn.close()
+    assert row is not None, f"{code} row not found"
+    assert row[0] == n, f"DB id={row[0]}, expected {n}"
 
 
 def test_create_employee_non_emp_code_uses_autoincrement(tmp_db):

@@ -75,7 +75,13 @@ def leave_submit():
         "reason": request.form.get("reason", ""),
         "status": "pending",
     }
-    new_rid = hrq.create_leave_request(data, created_by=session.get("username"))
+    try:
+        new_rid = hrq.create_leave_request(data, created_by=session.get("username"))
+    except ValueError as e:
+        # Write-layer validation (hr_queries.validate_leave_payload). Flash the
+        # Thai reason instead of 500ing on a payload the employee typed.
+        flash(str(e), "danger")
+        return redirect(url_for("me.leave"))
     conn = get_connection()
     conn.execute(
         "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
@@ -108,7 +114,11 @@ def leave_edit(rid):
         "has_medical_cert": req["has_medical_cert"],
         "status": "pending",                   # stays pending after a self-edit
     }
-    hrq.update_leave_request(rid, data)
+    try:
+        hrq.update_leave_request(rid, data)
+    except ValueError as e:
+        flash(str(e), "danger")
+        return redirect(url_for("me.leave"))
     conn = get_connection()
     conn.execute(
         "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
@@ -168,17 +178,12 @@ def leave_cancel(rid):
     req = hrq.get_leave_request(rid)
     if not req or req["employee_id"] != emp["id"] or req["status"] != "pending":
         abort(403)
-    data = {
-        "employee_id": req["employee_id"],
-        "leave_type_id": req["leave_type_id"],
-        "start_date": req["start_date"],
-        "end_date": req["end_date"],
-        "days": req["days"],
-        "reason": req["reason"],
-        "has_medical_cert": req["has_medical_cert"],
-        "status": "cancelled",
-    }
-    hrq.update_leave_request(rid, data)
+    # Status only — deliberately NOT the full row. Cancelling has no business
+    # rewriting dates/days, and resending them ran the row back through the
+    # write-layer validator, which 500s on a row that predates it (precisely
+    # the rows a user wants to cancel). This takes update_leave_request's
+    # partial branch, same as approve/reject.
+    hrq.update_leave_request(rid, {"status": "cancelled"})
     conn = get_connection()
     conn.execute(
         "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"

@@ -186,16 +186,15 @@ def employee_new():
         # Calculate probation_end_date if start_date provided
         _fill_probation_end(data)
         try:
-            emp_id = hrq.create_employee(data)
-            # Seed initial salary if provided
-            salary = request.form.get("initial_salary", "").strip()
-            if salary:
-                hrq.add_salary_history(
-                    emp_id,
-                    data.get("start_date") or date.today().isoformat(),
-                    float(salary),
-                    "initial",
-                )
+            # Employee + initial salary in ONE transaction: the salary used to
+            # be parsed and inserted AFTER create_employee had already
+            # committed, so a bad value left a real employee row behind while
+            # this page said saving failed.
+            emp_id = hrq.create_employee_with_initial_salary(
+                data,
+                request.form.get("initial_salary", ""),
+                data.get("start_date") or date.today().isoformat(),
+            )
             flash("เพิ่มพนักงานเรียบร้อย", "success")
             return redirect(url_for("hr.employee_detail", id=emp_id))
         except Exception as e:
@@ -608,7 +607,15 @@ def payroll_item_unpay(run_id: int, item_id: int):
 def payroll_item_edit(run_id: int, item_id: int):
     _require_admin()
     run = hrq.get_payroll_run(run_id)
-    if not run or run["status"] == "finalized":
+    if not run:
+        abort(404)
+    # The item must belong to THIS run — same ownership check the pay/unpay
+    # routes already make. Without it any draft run_id in the URL unlocked any
+    # item, finalized ones included, and the edit rewrites gross/net_pay.
+    item = hrq.get_payroll_item(item_id)
+    if not item or item["run_id"] != run_id:
+        abort(404)
+    if run["status"] == "finalized":
         flash("ไม่สามารถแก้ไข payroll ที่ finalized แล้ว", "danger")
         return redirect(url_for("hr.payroll_detail", run_id=run_id))
 
