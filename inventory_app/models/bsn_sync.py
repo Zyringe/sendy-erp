@@ -10,7 +10,7 @@ report.
 from database import get_connection
 import bsn_units
 
-from .stock_filters import is_non_stock_code
+from .stock_filters import is_non_stock_code, non_stock_clause
 from .wacc import recalculate_product_wacc
 
 # หน้าร้าน customer codes whose synced sales ALSO decrement platform_skus.stock
@@ -346,6 +346,7 @@ def get_pending_unit_conversions(search=None):
                    MIN(NULLIF(product_name_raw, '')) AS bsn_raw_name
             FROM sales_transactions
             WHERE product_id IS NOT NULL AND synced_to_stock = 0
+              AND {non_stock}
             GROUP BY product_id, unit
             UNION ALL
             SELECT product_id, unit AS bsn_unit,
@@ -354,6 +355,7 @@ def get_pending_unit_conversions(search=None):
                    MIN(NULLIF(product_name_raw, '')) AS bsn_raw_name
             FROM purchase_transactions
             WHERE product_id IS NOT NULL AND synced_to_stock = 0
+              AND {non_stock}
             GROUP BY product_id, unit
         ) t
         JOIN products p ON p.id = t.product_id
@@ -362,7 +364,7 @@ def get_pending_unit_conversions(search=None):
               SELECT 1 FROM unit_conversions uc
               WHERE uc.product_id = t.product_id AND uc.bsn_unit = t.bsn_unit
           )
-    """
+    """.format(non_stock=non_stock_clause())
     params = []
     if search:
         sql += " AND (p.product_name LIKE ? OR CAST(p.id AS TEXT) LIKE ?)"
@@ -425,18 +427,36 @@ def save_unit_conversions(items: list):
 def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str) -> int:
     """Delete all synced_to_stock=0 rows for (product_id, bsn_unit) from both
     ledger tables. Used when the team entered a wrong unit and the rows are
-    stale — they have never touched stock so deletion is safe."""
+    stale — they have never touched stock so deletion is safe.
+
+    ⛔ REFUSES when the group contains a non-stock billable line. Those rows
+    are permanently synced_to_stock=0 by design and hold real revenue, so the
+    docstring's "never touched stock so deletion is safe" does not apply to
+    them. Returns 0 without deleting anything — deliberately all-or-nothing,
+    so a mixed group is never half-deleted.
+    """
     conn = get_connection()
-    deleted = 0
-    for table in ('sales_transactions', 'purchase_transactions'):
-        cur = conn.execute(
-            f"DELETE FROM {table} WHERE product_id=? AND unit=? AND synced_to_stock=0",
-            (product_id, bsn_unit),
-        )
-        deleted += cur.rowcount
-    conn.commit()
-    conn.close()
-    return deleted
+    try:
+        for table in ('sales_transactions', 'purchase_transactions'):
+            protected = conn.execute(
+                f"SELECT COUNT(*) FROM {table}"
+                f" WHERE product_id=? AND unit=? AND synced_to_stock=0"
+                f"   AND NOT ({non_stock_clause()})",
+                (product_id, bsn_unit)).fetchone()[0]
+            if protected:
+                return 0
+        deleted = 0
+        for table in ('sales_transactions', 'purchase_transactions'):
+            cur = conn.execute(
+                f"DELETE FROM {table} WHERE product_id=? AND unit=?"
+                f" AND synced_to_stock=0 AND {non_stock_clause()}",
+                (product_id, bsn_unit),
+            )
+            deleted += cur.rowcount
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()
 
 
 def _synced_source_ids(conn, product_id):
