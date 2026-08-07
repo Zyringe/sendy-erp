@@ -10,6 +10,7 @@ report.
 from database import get_connection
 import bsn_units
 
+from .stock_filters import is_non_stock_code
 from .wacc import recalculate_product_wacc
 
 # หน้าร้าน customer codes whose synced sales ALSO decrement platform_skus.stock
@@ -178,6 +179,22 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
     rows = conn.execute(sql + " ORDER BY id", params).fetchall()
 
     for row in rows:
+        if is_non_stock_code(row['bsn_code']):
+            # A billable service/discount line: real money, no goods. Skip the
+            # ledger and deliberately LEAVE synced_to_stock = 0.
+            #
+            # Do NOT "helpfully" mark it 1. That flag means "a ledger movement
+            # exists": _synced_source_ids treats every synced row as holding
+            # one, and reconcile.py:503 aborts the whole scan if a synced row
+            # has no matching ledger line. Leaving it 0 is what makes
+            # reconcile.py:530's else-branch ("unsynced ⇒ no ledger") true.
+            #
+            # This is also why the guard lives HERE and not at insert time:
+            # imports.py pass 2 resets synced_to_stock=0 for every affected
+            # product and re-runs this function, so any insert-time marking is
+            # undone within the same import.
+            continue
+
         product = conn.execute(
             "SELECT * FROM products WHERE id = ?", (row['product_id'],)
         ).fetchone()
