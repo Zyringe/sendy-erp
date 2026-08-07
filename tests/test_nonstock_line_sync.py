@@ -158,3 +158,78 @@ def test_preview_agrees_with_commit_for_non_stock_codes(tmp_db_conn):
         [_entry('888ค8887', 'ค่าVAT', 'IV9004-1', 70.0)], 'sales')
     assert vat_preview['ignored'] == 1, vat_preview
     assert vat_preview['non_stock'] == 0, vat_preview
+
+
+def test_non_stock_line_creates_no_ledger_row(tmp_db_conn):
+    conn = tmp_db_conn
+    # tmp_db_conn clones the LIVE dev DB: 26 real historical 888ค8888 rows are
+    # already there. Force the state (same rule as _map) or the assertions
+    # below read someone else's data. Per-test, matching the pattern already
+    # established in this file.
+    conn.execute("DELETE FROM sales_transactions WHERE bsn_code='888ค8888'")
+    conn.commit()
+    pid = conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES ('ค่าขนส่ง', 'ตัว')"
+    ).lastrowid
+    # A conversion EXISTS on purpose: the guard must not depend on a missing
+    # ratio. This is the ค่าขนส่ง phantom-stock trap.
+    conn.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio)"
+                 " VALUES (?, 'ใบ', 1.0)", (pid,))
+    conn.commit()
+    _map(conn, '888ค8888', 'ค่าขนส่ง', pid)
+
+    before = conn.execute(
+        "SELECT COALESCE(quantity, 0) FROM stock_levels WHERE product_id=?",
+        (pid,)).fetchone()
+    before = before[0] if before else 0
+
+    models.import_weekly(
+        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9003-1', 30.0)], 'sales', 'test.csv')
+
+    ledger = conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE product_id=?", (pid,)).fetchone()[0]
+    assert ledger == 0
+
+    after = conn.execute(
+        "SELECT COALESCE(quantity, 0) FROM stock_levels WHERE product_id=?",
+        (pid,)).fetchone()
+    after = after[0] if after else 0
+    assert after == before
+
+    flag = conn.execute(
+        "SELECT synced_to_stock FROM sales_transactions WHERE bsn_code='888ค8888'"
+    ).fetchone()[0]
+    assert flag == 0, "must stay 0 — reconcile.py requires unsynced rows to be ledger-free"
+
+
+def test_non_stock_row_survives_pass_2_rebuild(tmp_db_conn):
+    """imports.py adds every inserted mapped pid to affected_pids; pass 2 then
+    DELETEs that product's BSN ledger, resets its source rows to
+    synced_to_stock=0 and re-syncs. Design v1 died here."""
+    conn = tmp_db_conn
+    conn.execute("DELETE FROM sales_transactions WHERE bsn_code='888ค8888'")
+    conn.commit()
+    pid = conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES ('ค่าขนส่ง', 'ตัว')"
+    ).lastrowid
+    conn.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio)"
+                 " VALUES (?, 'ใบ', 1.0)", (pid,))
+    conn.commit()
+    _map(conn, '888ค8888', 'ค่าขนส่ง', pid)
+
+    models.import_weekly(
+        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9004-1', 30.0)], 'sales', 'test.csv')
+    # Second import on the SAME pid with a CHANGED net forces affected_pids
+    # to include pid, which triggers the pass-2 delete/reset/re-sync.
+    models.import_weekly(
+        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9004-1', 45.0)], 'sales', 'test.csv')
+
+    rows = conn.execute(
+        "SELECT net, synced_to_stock FROM sales_transactions WHERE bsn_code='888ค8888'"
+    ).fetchall()
+    assert len(rows) == 1, rows
+    assert rows[0]['net'] == 45.0
+    assert rows[0]['synced_to_stock'] == 0
+    ledger = conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE product_id=?", (pid,)).fetchone()[0]
+    assert ledger == 0
