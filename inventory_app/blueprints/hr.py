@@ -552,7 +552,11 @@ def payroll_detail(run_id: int):
     # stamp, and vice versa.
     finalized = run["status"] == "finalized"
     roster_drift_note = hr_mod.roster_drift_note(run_id) if finalized else None
-    pending_advance_note = hr_mod.pending_advance_note(run_id) if finalized else None
+    # NOT gated on `finalized`: after a reopen the run is draft, and that is
+    # exactly when the operator reaches the Finalize button — the one action
+    # that stamps the money. Gating this on finalized made the banner vanish
+    # at the only moment it matters (Codex review of PR #367).
+    pending_advance_note = hr_mod.pending_advance_note(run_id)
     return render_template(
         "hr/payroll_detail.html",
         run=run,
@@ -668,8 +672,13 @@ def payroll_finalize(run_id: int):
         flash("Run นี้ finalized แล้ว", "warning")
         return redirect(url_for("hr.payroll_detail", run_id=run_id))
     try:
-        hr_mod.finalize_run(run_id)
+        hr_mod.finalize_run(
+            run_id,
+            confirm_advance_stamp=(request.form.get("confirm_advance_stamp") == "1"),
+        )
         flash(f"Finalized payroll run #{run_id} เรียบร้อย", "success")
+    except hr_mod.PendingAdvanceStampWarning as w:
+        flash(f"{w} — ติ๊กยืนยันข้างปุ่ม Finalize แล้วกดอีกครั้ง", "warning")
     except Exception as e:
         flash(f"ไม่สามารถ finalize: {e}", "danger")
     return redirect(url_for("hr.payroll_detail", run_id=run_id))

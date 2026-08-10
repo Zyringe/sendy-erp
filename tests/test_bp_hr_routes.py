@@ -248,3 +248,47 @@ def test_reopen_dialog_warns_about_advances_even_with_a_clean_roster(admin_clien
     assert 'data-warn="pending-advance-stamp"' in html
     assert '640' in html
     assert 'data-warn="roster-drift"' not in html, "roster is clean — only the advance warning"
+
+
+def test_finalize_is_refused_until_the_advance_stamp_is_acknowledged(admin_client, tmp_db):
+    """End to end at the boundary that moves money.
+
+    The reopen-time banner is gone by now (the run is draft), so this is the
+    operator's only warning — and the POST must refuse without it, not merely
+    render a notice.
+    """
+    rid = _make_finalized_run(tmp_db)
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    try:
+        import hr as hr_mod
+        conn.row_factory = sqlite3.Row
+        hr_mod.reopen_run(rid, reason='แก้ตัวเลข', actor='t', conn=conn)
+        emp = conn.execute(
+            "SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+            (rid,)).fetchone()[0]
+        conn.execute(
+            "INSERT INTO salary_advances (employee_id, advance_date, amount) "
+            "VALUES (?, '2026-09-18', 555)", (emp,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    def status():
+        return sqlite3.connect(tmp_db).execute(
+            "SELECT status FROM payroll_runs WHERE id=?", (rid,)).fetchone()[0]
+    assert status() == 'draft'
+
+    page = admin_client.get(f'/hr/payroll/{rid}').get_data(as_text=True)
+    assert 'data-warn="pending-advance-stamp"' in page, "draft page must carry the warning"
+    assert 'name="confirm_advance_stamp"' in page
+    assert '555' in page
+
+    admin_client.post(f'/hr/payroll/{rid}/finalize', data={}, follow_redirects=True)
+    assert status() == 'draft', "unacknowledged finalize must not proceed"
+    assert sqlite3.connect(tmp_db).execute(
+        "SELECT deducted_in_run_id FROM salary_advances WHERE amount=555"
+    ).fetchone()[0] is None, "and must not stamp the advance"
+
+    admin_client.post(f'/hr/payroll/{rid}/finalize',
+                      data={'confirm_advance_stamp': '1'}, follow_redirects=True)
+    assert status() == 'finalized'

@@ -811,6 +811,15 @@ def _regenerate_would_add(c, run_id: int, active_ids):
     return set(active_ids) - existing
 
 
+class PendingAdvanceStampWarning(Exception):
+    """Re-finalizing this reopened run would mark back-dated advances deducted
+    in a month that has already been paid out — money the app would then never
+    withhold from anyone. Raised at `finalize_run`, the boundary where the
+    money actually changes state, not at the reopen door: an advance can be
+    keyed or back-dated at any point in between, and the reopen page cannot
+    know about it (Codex review of PR #367)."""
+
+
 class RosterDriftWarning(Exception):
     """Reopening this run is allowed, but a later regenerate would change WHO
     is in it. Distinct from ValueError so the route can offer a confirmation
@@ -865,6 +874,17 @@ def pending_advance_stamp(run_id: int, conn: Optional[sqlite3.Connection] = None
         return int(row["n"]), float(row["total"])
 
 
+def _pending_advance_message(n: int, total: float) -> str:
+    """One text for the banner AND the refusal, so the page cannot promise
+    something the finalize boundary then contradicts."""
+    return (
+        f"⚠ การ finalize รอบนี้จะประทับเงินเบิกล่วงหน้า {n} รายการ "
+        f"(รวม ฿{total:,.2f}) ว่าหักในรอบนี้ — แต่รอบนี้ปิดไปแล้วครั้งหนึ่ง "
+        f"ถ้าจ่ายเงินเดือนรอบนี้ไปแล้ว เงินก้อนนั้นจะไม่ถูกหักจากใครจริง ๆ "
+        f"· ถ้าไม่ได้ตั้งใจ ให้แก้วันที่ของรายการเบิกให้ตรงเดือนที่จะหักจริงก่อน"
+    )
+
+
 def pending_advance_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
                          db_path: Optional[str] = None):
     """Warning for the advances a re-finalize would swallow, or None.
@@ -879,12 +899,7 @@ def pending_advance_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
         n, total = pending_advance_stamp(run_id, conn=c)
         if not n:
             return None
-        return (
-            f"⚠ ถ้า finalize รอบนี้ใหม่ ระบบจะประทับเงินเบิกล่วงหน้า {n} รายการ "
-            f"(รวม ฿{total:,.2f}) ว่าหักในรอบนี้ — แต่รอบนี้จ่ายเงินไปแล้ว "
-            f"เงินก้อนนั้นจึงจะไม่ถูกหักจากใครจริง ๆ "
-            f"· ถ้าไม่ได้ตั้งใจ ให้แก้วันที่ของรายการเบิกให้ตรงเดือนที่จะหักจริงก่อน"
-        )
+        return _pending_advance_message(n, total)
 
 
 def roster_drift_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
@@ -1162,7 +1177,8 @@ def update_payroll_item(item_id: int,
 # ── finalize a payroll run (stamps salary advances) ──────────────────────────
 def finalize_run(run_id: int,
                   conn: Optional[sqlite3.Connection] = None,
-                  db_path: Optional[str] = None):
+                  db_path: Optional[str] = None,
+                  confirm_advance_stamp: bool = False):
     """Mark a draft run finalized and STAMP the salary advances it consumed.
 
     If the run is already finalized this is a no-op (returns the row; does
@@ -1183,6 +1199,16 @@ def finalize_run(run_id: int,
             return None
         if run["status"] == "finalized":
             return run  # no-op: no re-mark, no re-stamp
+
+        # Gate ONLY a re-finalize. Stamping advances is the whole job of a
+        # first finalize, so keying on "advances exist" would stop monthly
+        # payroll for everyone; keying on `_was_reopened` isolates the case
+        # where the month was already closed — and, for a run that had been
+        # paid, already paid out.
+        if _was_reopened(c, run_id) and not confirm_advance_stamp:
+            n, total = pending_advance_stamp(run_id, conn=c)
+            if n:
+                raise PendingAdvanceStampWarning(_pending_advance_message(n, total))
 
         _, period_end = _month_bounds(run["year_month"])
 

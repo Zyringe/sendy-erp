@@ -846,3 +846,77 @@ def test_pending_advance_stamp_ignores_advances_after_the_month(tmp_db_conn_hr_c
     _add_advance(c, emp, '2027-02-05', 900.0)
     assert hr.pending_advance_stamp(rid, conn=c) == (0, 0.0)
     assert hr.pending_advance_note(rid, conn=c) is None
+
+
+# ── enforcement sits at the money boundary, not at the reopen door ──────────
+
+def test_first_finalize_still_stamps_advances_without_any_confirmation(tmp_db_conn_hr_clean):
+    """CONTROL, and the most important test here: stamping advances IS the job
+    of a first finalize. If the new guard fires on this path, monthly payroll
+    stops working for everyone. It must key on the run having been REOPENED,
+    not on advances merely existing.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2027-03', 1, created_by=1, conn=c)
+    rid = run['id']
+    emp = c.execute("SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+                    (rid,)).fetchone()[0]
+    _add_advance(c, emp, '2027-03-10', 800.0)
+    adv = c.execute("SELECT MAX(id) FROM salary_advances").fetchone()[0]
+    assert hr.pending_advance_stamp(rid, conn=c) == (1, 800.0)
+
+    hr.finalize_run(rid, conn=c)          # no confirmation passed
+
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'finalized'
+    assert c.execute("SELECT deducted_in_run_id FROM salary_advances WHERE id=?",
+                     (adv,)).fetchone()[0] == rid, "the normal stamp must still happen"
+
+
+def test_refinalize_after_reopen_refuses_to_swallow_a_backdated_advance(tmp_db_conn_hr_clean):
+    """The hazard, pinned where it actually happens.
+
+    The reopen-time banner disappears the moment the run turns draft
+    (blueprints/hr.py::payroll_detail computed it for finalized runs only), and
+    the Finalize button called finalize_run with no check at all — so an
+    advance added or back-dated AFTER the reopen was stamped silently, at the
+    exact moment the money changed state. Codex review of PR #367.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2027-04', 1, created_by=1, conn=c)
+    rid = run['id']
+    emp = c.execute("SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+                    (rid,)).fetchone()[0]
+    hr.finalize_run(rid, conn=c)
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+
+    # keyed only now, back-dated into the month that already closed
+    _add_advance(c, emp, '2027-04-11', 650.0)
+    adv = c.execute("SELECT MAX(id) FROM salary_advances").fetchone()[0]
+
+    with pytest.raises(hr.PendingAdvanceStampWarning):
+        hr.finalize_run(rid, conn=c)
+
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft', "refused before any mutation"
+    assert c.execute("SELECT deducted_in_run_id FROM salary_advances WHERE id=?",
+                     (adv,)).fetchone()[0] is None, "and the advance is untouched"
+
+    # explicit acknowledgement lets it through
+    hr.finalize_run(rid, conn=c, confirm_advance_stamp=True)
+    assert c.execute("SELECT deducted_in_run_id FROM salary_advances WHERE id=?",
+                     (adv,)).fetchone()[0] == rid
+
+
+def test_refinalize_after_reopen_with_nothing_pending_needs_no_confirmation(tmp_db_conn_hr_clean):
+    """Control: the demand must be tied to money actually being at stake."""
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2027-05', 1, created_by=1, conn=c)
+    rid = run['id']
+    hr.finalize_run(rid, conn=c)
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+    assert hr.pending_advance_stamp(rid, conn=c) == (0, 0.0)
+
+    hr.finalize_run(rid, conn=c)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'finalized'
