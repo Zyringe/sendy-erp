@@ -85,7 +85,15 @@
           <td class="text-end small">{{ r.total | fmt_price }}</td>
           <td class="text-end fw-600">{{ r.net | fmt_price }}</td>
           <td class="text-center">
-            {% if r.synced_to_stock %}
+            {# A billable non-stock code (ค่าขนส่ง / ส่วนลดพิเศษ) never posts a
+               ledger row by design, so it is permanently synced_to_stock = 0.
+               'รอ' would then read as an unfinished job to chase — forever, on
+               every bill carrying one. Third neutral state instead. The code
+               list comes from models.NON_STOCK_BSN_CODES via the route; never
+               hard-code it here (design.md §3.3: one definition, imported). #}
+            {% if r.bsn_code in non_stock_codes %}
+              <span class="badge badge-info">ไม่นับสต็อก</span>
+            {% elif r.synced_to_stock %}
               <span class="badge badge-success"><i class="bi bi-check2"></i></span>
             {% else %}
               <span class="badge badge-gray">รอ</span>

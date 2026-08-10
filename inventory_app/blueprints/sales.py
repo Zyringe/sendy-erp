@@ -81,6 +81,7 @@ def sales_doc(doc_base):
     total_net = sum(r['net'] or 0 for r in rows)
     return render_template('sales_doc.html', rows=rows, doc_base=doc_base,
                            total_net=total_net,
+                           non_stock_codes=sorted(models.NON_STOCK_BSN_CODES),
                            pending_map=len(models.get_pending_mappings(conn=conn)))
 
 
@@ -132,6 +133,7 @@ def purchases_doc(doc_base):
     total_net = sum(r['net'] or 0 for r in rows)
     return render_template('purchases_doc.html', rows=rows, doc_base=doc_base,
                            total_net=total_net,
+                           non_stock_codes=sorted(models.NON_STOCK_BSN_CODES),
                            pending_map=len(models.get_pending_mappings(conn=conn)))
 
 
