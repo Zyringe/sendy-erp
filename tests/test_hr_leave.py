@@ -126,17 +126,20 @@ def test_entitlement_override(tmp_db_conn):
 
 
 # ── ANNUAL prorate-after-probation (Put 2026-07-22: replaces after_1yr) ──────
-# entitlement = round_half(6 × days_from_hire_in_year / days_in_year), available
-# once probation ends within the year (Model P, evaluated at year-end). Prorate
-# base = hire date. Later full calendar years → 6.
+# entitlement = floor(6 × days_from_hire_in_year / days_in_year), available once
+# probation ends within the year (Model P, evaluated at year-end). Prorate base
+# = hire date. Later full calendar years → 6.
+# ⚠ Rounding is FLOOR to a whole day (Put, 2026-08-10: "I don't want to have
+# half day, let's just round down"). It used to round to the nearest 0.5, which
+# is where the old 3.5 / 4.5 / 5.5 expectations came from.
 
 def test_annual_prorate_when_hired_this_year(tmp_db_conn):
     # start 2026-06-01, probation_end NULL → derive from +90d ≈ 2026-08-30
-    # (≤ year-end) → 6×214/365 = 3.52 → nearest 0.5 = 3.5 (was 0 under after_1yr)
+    # (≤ year-end) → 6×214/365 = 3.5178 → floor = 3
     eid = _mk_employee(tmp_db_conn, 'L_NEW', '2026-06-01')
     bal = hr.leave_balance(eid, 2026, conn=tmp_db_conn)
-    assert bal['ANNUAL']['entitlement'] == 3.5
-    assert bal['ANNUAL']['remaining'] == 3.5
+    assert bal['ANNUAL']['entitlement'] == 3
+    assert bal['ANNUAL']['remaining'] == 3
 
 
 def test_annual_default_when_over_one_year(tmp_db_conn):
@@ -163,31 +166,31 @@ def test_annual_override_applies_even_under_one_year(tmp_db_conn):
 # ── seeded employees sanity ──────────────────────────────────────────────────
 
 def test_seeded_emp002_annual_prorated(tmp_db_conn):
-    # EMP002 = เซียง, started 2026-02-01 → prorate 6×334/365 = 5.49 → 5.5
-    # (was 0 under after_1yr; probation ends within 2026 either way)
+    # EMP002 = เซียง, started 2026-02-01 → prorate 6×334/365 = 5.4904 → floor 5
     eid = tmp_db_conn.execute(
         "SELECT id FROM employees WHERE emp_code='EMP002'"
     ).fetchone()['id']
     bal = hr.leave_balance(eid, 2026, conn=tmp_db_conn)
-    assert bal['ANNUAL']['entitlement'] == 5.5
+    assert bal['ANNUAL']['entitlement'] == 5
 
 
 # ── ANNUAL proration — explicit cases ────────────────────────────────────────
 
 def test_annual_prorate_first_year_from_hire(tmp_db_conn):
-    # hire 2026-04-01 → 6×275/365 = 4.52 → 4.5
+    # hire 2026-04-01 → 6×275/365 = 4.5205 → floor 4
     eid = _mk_employee(tmp_db_conn, 'L_PR1', '2026-04-01')
     _set_emp(tmp_db_conn, eid, probation_end='2026-06-29')
     bal = hr.leave_balance(eid, 2026, conn=tmp_db_conn)
-    assert bal['ANNUAL']['entitlement'] == 4.5
+    assert bal['ANNUAL']['entitlement'] == 4
 
 
-def test_annual_prorate_rounds_to_nearest_half(tmp_db_conn):
-    # hire 2026-04-17 → 6×259/365 = 4.2575 → nearest 0.5 = 4.5
+def test_annual_prorate_rounds_down_to_whole_days(tmp_db_conn):
+    # hire 2026-04-17 → 6×259/365 = 4.2575 → floor 4. This is บอล's real hire
+    # date (EMP005); /hr/employees/5 must show สิทธิ์ 4, not 4.5.
     eid = _mk_employee(tmp_db_conn, 'L_PR3', '2026-04-17')
     _set_emp(tmp_db_conn, eid, probation_end='2026-07-16')
     bal = hr.leave_balance(eid, 2026, conn=tmp_db_conn)
-    assert bal['ANNUAL']['entitlement'] == 4.5
+    assert bal['ANNUAL']['entitlement'] == 4
 
 
 def test_annual_full_six_in_later_full_year(tmp_db_conn):
@@ -216,10 +219,10 @@ def test_annual_zero_when_probation_ends_after_yearend(tmp_db_conn):
 
 def test_annual_prorate_derives_probation_end_when_null(tmp_db_conn):
     # probation_end_date blank → derive from start + probation_days (90);
-    # 2026-04-01 + 90d ≈ 2026-06-30 ≤ year-end → prorated 4.5, not 0
+    # 2026-04-01 + 90d ≈ 2026-06-30 ≤ year-end → prorated 4, not 0
     eid = _mk_employee(tmp_db_conn, 'L_PR7', '2026-04-01')
     bal = hr.leave_balance(eid, 2026, conn=tmp_db_conn)
-    assert bal['ANNUAL']['entitlement'] == 4.5
+    assert bal['ANNUAL']['entitlement'] == 4
 
 
 def test_annual_override_still_wins_over_prorate(tmp_db_conn):

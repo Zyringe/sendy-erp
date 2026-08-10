@@ -154,9 +154,22 @@ def _service_years_at(start_date: Optional[date], at: date) -> float:
     return (at - start_date).days / 365.25
 
 
-def _round_half(x: float) -> float:
-    """Round to the nearest 0.5 (ties up). 4.2575 → 4.5, 5.49 → 5.5, 6.0 → 6.0."""
-    return math.floor(x * 2 + 0.5) / 2.0
+def _round_down_days(x: float) -> float:
+    """Round a prorated entitlement DOWN to a whole day. 4.2575 → 4, 5.49 → 5.
+
+    Put, 2026-08-10: "I don't want to have half day, let's just round down."
+    This replaced round-to-nearest-0.5, so the first partial year now grants up
+    to half a day less than it did before (e.g. a 17 Apr hire: 4.5 → 4). A full
+    calendar year is unaffected — 6.0 floors to 6.
+
+    ⚠ Lowering an entitlement is a MONEY path, not just a display change: days
+    past the entitlement become unpaid leave and are deducted from net pay
+    (`_compute_unpaid_days` → `_build_item`). Someone who has already taken
+    more than the floored figure loses the difference — 0.5 day is ฿250 at a
+    ฿15,000 salary. Pinned by
+    tests/test_hr_payroll.py::test_floored_annual_entitlement_deducts_the_excess.
+    """
+    return float(math.floor(x))
 
 
 def _prorate_annual(start_date: Optional[date], probation_end: Optional[date],
@@ -167,7 +180,7 @@ def _prorate_annual(start_date: Optional[date], probation_end: Optional[date],
     Put 2026-07-22: replaces the after_1yr all-or-nothing gate.
       - no start_date                    → 0 (cannot prorate)
       - probation not ended by year-end  → 0 (Model P: evaluated at year-end)
-      - else round_half(quota × days_worked_in_year / days_in_year), counting
+      - else floor(quota × days_worked_in_year / days_in_year), counting
         from max(hire, Jan 1) to Dec 31 inclusive — so a full calendar year
         yields the full quota (6) and the first partial year is prorated.
     `probation_end` falls back to start_date + probation_days when the stored
@@ -185,7 +198,7 @@ def _prorate_annual(start_date: Optional[date], probation_end: Optional[date],
         return 0.0  # hired after this year
     days_in_year = (year_end - year_start).days + 1
     days_worked = (year_end - accrual_start).days + 1
-    return _round_half(quota * days_worked / days_in_year)
+    return _round_down_days(quota * days_worked / days_in_year)
 
 
 def leave_balance(employee_id: int, year: int,
@@ -199,8 +212,8 @@ def leave_balance(employee_id: int, year: int,
                   ANNUAL (quota_basis 'prorate_probation', Put 2026-07-22):
                   with NO override row → prorated from hire date via
                   _prorate_annual (0 while still on probation at year-end,
-                  else round_half(6 × days_worked_in_year / days_in_year);
-                  a full calendar year → 6). Legacy 'after_1yr' still honoured.
+                  else floor(6 × days_worked_in_year / days_in_year); a full
+                  calendar year → 6). Legacy 'after_1yr' still honoured.
     used        = SUM(days) of APPROVED leave_requests whose start_date is in
                   the calendar `year` (pending/rejected/cancelled excluded).
     remaining   = max(0, entitlement - used)  (inf if unlimited)
