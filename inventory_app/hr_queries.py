@@ -8,6 +8,7 @@ Python 3.9 — Optional[...] not `X | None`.
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 from typing import Optional
 
 from database import get_connection
@@ -152,82 +153,161 @@ def _blank_dates_to_none(data: dict) -> None:
             data[k] = None
 
 
+def _insert_employee(c: sqlite3.Connection, data: dict) -> int:
+    """INSERT the employee row on `c` and return its id — WITHOUT committing.
+
+    Split out of create_employee so it can share a transaction with the initial
+    salary insert (see create_employee_with_initial_salary); create_employee
+    keeps the commit for every other caller.
+    """
+    import re
+    _blank_dates_to_none(data)
+    code = (data.get("emp_code") or "").strip()
+    m = re.fullmatch(r"EMP(\d+)", code)
+    explicit_id = int(m.group(1)) if m else None
+
+    on_payroll = int(data.get("on_payroll") or 0) if "on_payroll" in data else 1
+    # The employee↔login link (user_id) is NOT set here — new employees start
+    # unlinked; the link is managed solely on /users. Column defaults to NULL.
+    dcai = _coerce_optional_int(data.get("default_cashbook_account_id"))
+
+    if explicit_id is not None:
+        cur = c.execute(
+            """INSERT INTO employees
+                 (id, emp_code, full_name, nickname, national_id, gender, phone,
+                  address, position, company_id, employment_type, start_date,
+                  probation_days, probation_end_date, end_date, sso_enrolled,
+                  diligence_allowance, bank_name, bank_branch, bank_account_no,
+                  bank_account_name, salesperson_code, is_active,
+                  on_payroll, note, default_cashbook_account_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                explicit_id,
+                data.get("emp_code"), data.get("full_name"),
+                data.get("nickname"), data.get("national_id"),
+                data.get("gender"), data.get("phone"),
+                data.get("address"), data.get("position"),
+                data.get("company_id"), data.get("employment_type", "monthly"),
+                data.get("start_date"), data.get("probation_days", 90),
+                data.get("probation_end_date"), data.get("end_date"),
+                int(data.get("sso_enrolled", 1)),
+                float(data.get("diligence_allowance") or 0),
+                data.get("bank_name"), data.get("bank_branch"),
+                data.get("bank_account_no"), data.get("bank_account_name"),
+                data.get("salesperson_code"),
+                int(data.get("is_active", 1)), on_payroll, data.get("note"),
+                dcai,
+            ),
+        )
+    else:
+        cur = c.execute(
+            """INSERT INTO employees
+                 (emp_code, full_name, nickname, national_id, gender, phone,
+                  address, position, company_id, employment_type, start_date,
+                  probation_days, probation_end_date, end_date, sso_enrolled,
+                  diligence_allowance, bank_name, bank_branch, bank_account_no,
+                  bank_account_name, salesperson_code, is_active,
+                  on_payroll, note, default_cashbook_account_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                data.get("emp_code"), data.get("full_name"),
+                data.get("nickname"), data.get("national_id"),
+                data.get("gender"), data.get("phone"),
+                data.get("address"), data.get("position"),
+                data.get("company_id"), data.get("employment_type", "monthly"),
+                data.get("start_date"), data.get("probation_days", 90),
+                data.get("probation_end_date"), data.get("end_date"),
+                int(data.get("sso_enrolled", 1)),
+                float(data.get("diligence_allowance") or 0),
+                data.get("bank_name"), data.get("bank_branch"),
+                data.get("bank_account_no"), data.get("bank_account_name"),
+                data.get("salesperson_code"),
+                int(data.get("is_active", 1)), on_payroll, data.get("note"),
+                dcai,
+            ),
+        )
+    return cur.lastrowid
+
+
 def create_employee(data: dict, conn: Optional[sqlite3.Connection] = None):
     """Insert a new employee row. Returns new id.
 
     When emp_code matches ^EMP\\d+$, sets id explicitly to the numeric suffix
     so id==emp_code is preserved on every new hire (Phase 2 invariant).
     """
-    import re
-    _blank_dates_to_none(data)
     c, owned = _conn(conn)
     try:
-        code = (data.get("emp_code") or "").strip()
-        m = re.fullmatch(r"EMP(\d+)", code)
-        explicit_id = int(m.group(1)) if m else None
-
-        on_payroll = int(data.get("on_payroll") or 0) if "on_payroll" in data else 1
-        # The employee↔login link (user_id) is NOT set here — new employees start
-        # unlinked; the link is managed solely on /users. Column defaults to NULL.
-        dcai = _coerce_optional_int(data.get("default_cashbook_account_id"))
-
-        if explicit_id is not None:
-            cur = c.execute(
-                """INSERT INTO employees
-                     (id, emp_code, full_name, nickname, national_id, gender, phone,
-                      address, position, company_id, employment_type, start_date,
-                      probation_days, probation_end_date, end_date, sso_enrolled,
-                      diligence_allowance, bank_name, bank_branch, bank_account_no,
-                      bank_account_name, salesperson_code, is_active,
-                      on_payroll, note, default_cashbook_account_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    explicit_id,
-                    data.get("emp_code"), data.get("full_name"),
-                    data.get("nickname"), data.get("national_id"),
-                    data.get("gender"), data.get("phone"),
-                    data.get("address"), data.get("position"),
-                    data.get("company_id"), data.get("employment_type", "monthly"),
-                    data.get("start_date"), data.get("probation_days", 90),
-                    data.get("probation_end_date"), data.get("end_date"),
-                    int(data.get("sso_enrolled", 1)),
-                    float(data.get("diligence_allowance") or 0),
-                    data.get("bank_name"), data.get("bank_branch"),
-                    data.get("bank_account_no"), data.get("bank_account_name"),
-                    data.get("salesperson_code"),
-                    int(data.get("is_active", 1)), on_payroll, data.get("note"),
-                    dcai,
-                ),
-            )
-        else:
-            cur = c.execute(
-                """INSERT INTO employees
-                     (emp_code, full_name, nickname, national_id, gender, phone,
-                      address, position, company_id, employment_type, start_date,
-                      probation_days, probation_end_date, end_date, sso_enrolled,
-                      diligence_allowance, bank_name, bank_branch, bank_account_no,
-                      bank_account_name, salesperson_code, is_active,
-                      on_payroll, note, default_cashbook_account_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    data.get("emp_code"), data.get("full_name"),
-                    data.get("nickname"), data.get("national_id"),
-                    data.get("gender"), data.get("phone"),
-                    data.get("address"), data.get("position"),
-                    data.get("company_id"), data.get("employment_type", "monthly"),
-                    data.get("start_date"), data.get("probation_days", 90),
-                    data.get("probation_end_date"), data.get("end_date"),
-                    int(data.get("sso_enrolled", 1)),
-                    float(data.get("diligence_allowance") or 0),
-                    data.get("bank_name"), data.get("bank_branch"),
-                    data.get("bank_account_no"), data.get("bank_account_name"),
-                    data.get("salesperson_code"),
-                    int(data.get("is_active", 1)), on_payroll, data.get("note"),
-                    dcai,
-                ),
-            )
+        new_id = _insert_employee(c, data)
         c.commit()
-        return cur.lastrowid
+        return new_id
+    finally:
+        if owned:
+            c.close()
+
+
+def _parse_initial_salary(raw) -> Optional[float]:
+    """Blank/missing → None ('no initial salary row'); anything else must be a
+    positive number. Parsed BEFORE any write so a bad value cannot leave a
+    half-made employee behind."""
+    text = "" if raw is None else str(raw).strip()
+    if not text:
+        return None
+    try:
+        salary = float(text)
+    except ValueError:
+        raise ValueError("เงินเดือนตั้งต้นต้องเป็นตัวเลข")
+    if salary <= 0:
+        raise ValueError("เงินเดือนตั้งต้นต้องมากกว่า 0")
+    return salary
+
+
+def create_employee_with_initial_salary(
+        data: dict, initial_salary, effective_date: str,
+        conn: Optional[sqlite3.Connection] = None):
+    """Create the employee and seed their first salary in ONE transaction.
+
+    These used to be two separately-committed steps, so an unparseable salary
+    (or any error in the second step) left a real employee row behind while the
+    page reported that saving had failed — the retry then collided on the
+    UNIQUE emp_code, and the half-made employee could enter payroll resolving
+    to a zero salary. The salary is parsed first; both inserts then share one
+    connection and are rolled back together.
+
+    A blank `initial_salary` means "no salary row yet" and is not an error.
+
+    ⚠ Transaction contract, unlike the other writers in this module: when you
+    pass `conn`, YOU own the transaction and must commit — this function only
+    commits a connection it opened itself. That is deliberate; committing a
+    borrowed connection would publish whatever else the caller had pending.
+    """
+    salary = _parse_initial_salary(initial_salary)
+    c, owned = _conn(conn)
+    try:
+        # SAVEPOINT, not rollback(): on a caller-supplied connection a bare
+        # rollback would also discard whatever the CALLER had pending. This
+        # undoes exactly our two inserts either way.
+        #
+        # ⚠ RELEASE of an OUTERMOST savepoint COMMITS. On a borrowed connection
+        # sitting idle, that published the rows the moment we returned — the
+        # caller's later rollback could not take them back, breaking the
+        # contract below. Open an outer transaction first so ours is always a
+        # nested savepoint and the caller keeps control.
+        if not owned and not c.in_transaction:
+            c.execute("BEGIN")
+        c.execute("SAVEPOINT create_employee_with_salary")
+        try:
+            emp_id = _insert_employee(c, data)
+            if salary is not None:
+                _insert_salary_history(c, emp_id, effective_date, salary,
+                                       "initial")
+        except Exception:
+            c.execute("ROLLBACK TO SAVEPOINT create_employee_with_salary")
+            c.execute("RELEASE SAVEPOINT create_employee_with_salary")
+            raise
+        c.execute("RELEASE SAVEPOINT create_employee_with_salary")
+        if owned:
+            c.commit()
+        return emp_id
     finally:
         if owned:
             c.close()
@@ -317,18 +397,26 @@ def get_linkable_employees(user_id: Optional[int] = None,
             c.close()
 
 
+def _insert_salary_history(c: sqlite3.Connection, emp_id: int,
+                           effective_date: str, monthly_salary: float,
+                           reason: str, note: Optional[str] = None) -> None:
+    """INSERT the salary row on `c` — WITHOUT committing (see _insert_employee)."""
+    c.execute(
+        """INSERT OR REPLACE INTO employee_salary_history
+             (employee_id, effective_date, monthly_salary, reason, note)
+           VALUES (?,?,?,?,?)""",
+        (emp_id, effective_date, monthly_salary, reason, note),
+    )
+
+
 def add_salary_history(emp_id: int, effective_date: str,
                        monthly_salary: float, reason: str,
                        note: Optional[str] = None,
                        conn: Optional[sqlite3.Connection] = None):
     c, owned = _conn(conn)
     try:
-        c.execute(
-            """INSERT OR REPLACE INTO employee_salary_history
-                 (employee_id, effective_date, monthly_salary, reason, note)
-               VALUES (?,?,?,?,?)""",
-            (emp_id, effective_date, monthly_salary, reason, note),
-        )
+        _insert_salary_history(c, emp_id, effective_date, monthly_salary,
+                               reason, note)
         c.commit()
     finally:
         if owned:
@@ -428,8 +516,64 @@ def get_leave_request(req_id: int, conn: Optional[sqlite3.Connection] = None):
             c.close()
 
 
+def _parse_leave_date(raw, label: str) -> date:
+    text = "" if raw is None else str(raw).strip()
+    if not text:
+        raise ValueError(f"กรุณาระบุ{label}")
+    try:
+        # The WHOLE string, not text[:10]: slicing accepted anything with a
+        # valid date prefix ('2026-03-10junk', '2026-03-10T09:00:00') and threw
+        # the remainder away, so the stored row disagreed with what was sent.
+        return date.fromisoformat(text)
+    except ValueError:
+        raise ValueError(f"{label}ไม่ถูกต้อง (ต้องเป็นรูปแบบ YYYY-MM-DD)")
+
+
+def validate_leave_payload(data: dict) -> dict:
+    """Validate a leave create / full-edit payload; return the normalized values.
+
+    THE gate for leave data. `leave_requests` (mig 054) stores the dates as
+    unconstrained TEXT and `days REAL NOT NULL`, and both the admin routes and
+    self-service `/me/leave/*` passed form values through untouched — so a
+    blank, malformed or reversed range could be stored, and
+    `hr._compute_unpaid_days` later parses those dates while generating payroll
+    for the WHOLE company. A non-positive `days` is the other half: once
+    approved it silently evades the unpaid-leave deduction.
+
+    Rules:
+      - both dates present and ISO 'YYYY-MM-DD'
+      - start_date <= end_date
+      - days > 0
+      - days <= the inclusive calendar span — a half-day (0.5 over one day)
+        stays legal, but a 1-day absence cannot claim 9 days.
+
+    Raises ValueError with a Thai message; the routes flash it.
+    """
+    start = _parse_leave_date(data.get("start_date"), "วันที่เริ่มลา")
+    end = _parse_leave_date(data.get("end_date"), "วันที่สิ้นสุดการลา")
+    if start > end:
+        raise ValueError("วันที่เริ่มลาต้องไม่เกินวันที่สิ้นสุดการลา")
+
+    raw_days = data.get("days", 1)
+    try:
+        days = float(str(raw_days).strip())
+    except (TypeError, ValueError):
+        raise ValueError("จำนวนวันลาต้องเป็นตัวเลข")
+    if days <= 0:
+        raise ValueError("จำนวนวันลาต้องมากกว่า 0")
+    span = (end - start).days + 1
+    if days > span:
+        raise ValueError(
+            f"จำนวนวันลา ({days:g}) มากกว่าช่วงวันที่ที่ระบุ ({span} วัน)"
+        )
+
+    return {"start_date": start.isoformat(), "end_date": end.isoformat(),
+            "days": days}
+
+
 def create_leave_request(data: dict, created_by: int,
                          conn: Optional[sqlite3.Connection] = None):
+    valid = validate_leave_payload(data)
     c, owned = _conn(conn)
     try:
         cur = c.execute(
@@ -439,8 +583,7 @@ def create_leave_request(data: dict, created_by: int,
                VALUES (?,?,?,?,?,?,?,?,?)""",
             (
                 data["employee_id"], data["leave_type_id"],
-                data["start_date"], data["end_date"],
-                float(data.get("days", 1)),
+                valid["start_date"], valid["end_date"], valid["days"],
                 data.get("reason"), int(data.get("has_medical_cert", 0)),
                 data.get("status", "approved"), created_by,
             ),
@@ -457,7 +600,11 @@ def update_leave_request(req_id: int, data: dict,
     c, owned = _conn(conn)
     try:
         if "employee_id" in data:
-            # Full-edit path (admin leave_edit modal): all standard fields present.
+            # Full-edit path (admin leave_edit modal, /me self-edit + cancel):
+            # all standard fields present, so the same write-layer validation
+            # applies. Raised BEFORE the UPDATE, so a rejected edit leaves the
+            # row exactly as it was.
+            valid = validate_leave_payload(data)
             c.execute(
                 """UPDATE leave_requests SET
                      employee_id=?, leave_type_id=?, start_date=?, end_date=?,
@@ -465,8 +612,8 @@ def update_leave_request(req_id: int, data: dict,
                    WHERE id=?""",
                 (
                     data["employee_id"], data["leave_type_id"],
-                    data["start_date"], data["end_date"],
-                    float(data.get("days", 1)), data.get("reason"),
+                    valid["start_date"], valid["end_date"], valid["days"],
+                    data.get("reason"),
                     int(data.get("has_medical_cert", 0)),
                     data.get("status", "approved"), req_id,
                 ),

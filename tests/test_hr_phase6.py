@@ -128,13 +128,42 @@ def test_general_can_access_payslip(tmp_db):
     assert _client('general', 9).get('/me/payslip').status_code == 200
 
 
-def test_payslip_slot_in_mobile_nav():
-    """build_mobile_nav_slots includes me.payslip_list for general, staff, and manager."""
+def test_payslip_reachable_on_mobile_for_every_self_service_role():
+    """Every role that HAS payslips can reach them on mobile.
+
+    Rewritten for the current navigation contract (HR review finding 6,
+    2026-08-06). The pwa-nav redesign (2026-07-16) slimmed the bottom bar to 3
+    module slots for the office roles and moved ลาของฉัน/สลิป into the
+    เพิ่มเติม drawer — Put: "if they want payslip or leave just go see in
+    เพิ่มเติม tab". `general` (บอล's kiosk role) kept its own 3-slot bar with
+    สลิป on it.
+
+    So the access path differs by role, and this asserts each role's ACTUAL
+    path rather than the retired three-slot layout — accessibility coverage is
+    unchanged: all three roles must still be able to get there.
+    """
     os.environ.setdefault('SKIP_DB_INIT', '1')
-    from app import build_mobile_nav_slots
+    from access_control import build_mobile_nav_slots
+    from nav import nav_sections
+
+    # general — สลิป is a bottom-nav slot on the kiosk bar
+    general_eps = [s['endpoint'] for s in build_mobile_nav_slots('general')]
+    assert 'me.payslip_list' in general_eps, "general lost its สลิป nav slot"
+
     for role in ('general', 'staff', 'manager'):
+        # every role reaches it through the เพิ่มเติม drawer's ของฉัน section
+        drawer_eps = [link['ep']
+                      for section in nav_sections(role)
+                      for link in section['links']]
+        assert 'me.payslip_list' in drawer_eps, (
+            f"role={role} cannot reach สลิป from the เพิ่มเติม drawer")
+
+    # office roles: the bottom bar is the 3 module slots, payslip is NOT there
+    for role in ('staff', 'manager'):
         eps = [s['endpoint'] for s in build_mobile_nav_slots(role)]
-        assert 'me.payslip_list' in eps, f"role={role} missing สลิป nav slot"
+        assert eps == ['dashboard', 'products.product_list',
+                       'sales.trade_dashboard'], (
+            f"role={role} bottom-nav slots drifted from the 3-slot contract")
 
 
 # ── Task 6.5 — per-actor security matrix (the proof) ─────────────────────────

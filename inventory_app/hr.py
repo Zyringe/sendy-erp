@@ -292,13 +292,14 @@ def _sso(rate: float, sso_enrolled: int, cfg: dict) -> float:
 
 
 # ── per-month unpaid-day computation ─────────────────────────────────────────
-def _overlap_days(req_start: date, req_end: date, period_start: date,
-                   period_end: date, total_days: float) -> float:
-    """Portion of a leave request's `days` that falls in the payroll month.
+def _overlap_days_exact(req_start: date, req_end: date, period_start: date,
+                        period_end: date, total_days: float) -> float:
+    """Unrounded portion of a leave request's `days` inside a window.
 
-    If the whole request lies inside the month → its full `days` (preserves
-    half-days). If it straddles the boundary → prorate by the inclusive
-    calendar-day overlap fraction.
+    Kept separate from `_overlap_days` because rounding each portion to 4dp
+    makes the portions of one request sum to slightly MORE than its `days`, and
+    the allowance walk in `_allocate_excess_by_month` reads that drift as a
+    real over-quota day.
     """
     lo = max(req_start, period_start)
     hi = min(req_end, period_end)
@@ -308,7 +309,132 @@ def _overlap_days(req_start: date, req_end: date, period_start: date,
     inside = (hi - lo).days + 1
     if inside >= span:
         return float(total_days)
-    return round(total_days * inside / span, 4)
+    return total_days * inside / span
+
+
+def _overlap_days(req_start: date, req_end: date, period_start: date,
+                   period_end: date, total_days: float) -> float:
+    """Portion of a leave request's `days` that falls in the payroll month.
+
+    If the whole request lies inside the month → its full `days`. If it
+    straddles the boundary → prorate by the inclusive calendar-day overlap
+    fraction. Rounded to 4dp, which preserves every `days` value the app can
+    actually produce (integers and half-days, and in fact anything at 4dp or
+    coarser); only a value with more than 4 decimals would shift, by at most
+    5e-5 of a day.
+    """
+    return round(
+        _overlap_days_exact(req_start, req_end, period_start, period_end,
+                            total_days),
+        4,
+    )
+
+
+# Leave days below this are float noise from _split_by_month's 4dp rounding,
+# not a real absence.
+_DAY_EPS = 1e-6
+
+# Maternity rows this far apart (or closer) belong to the SAME leave and share
+# one paid cap; a bigger gap starts a new leave with a fresh cap. Put's call,
+# 2026-08-10. The DB cannot tell "one pregnancy entered as several rows" from
+# "two pregnancies", and the two need opposite treatment: sharing the cap across
+# a calendar year underpaid a second pregnancy by up to 45 days of salary, while
+# a per-row cap would let a leave split month-by-month escape the cap entirely.
+# A pregnancy's rows are contiguous or days apart; two pregnancies are ~9 months
+# apart, so the threshold only has to sit between those two scales.
+_MATERNITY_EPISODE_GAP_DAYS = 30
+
+
+def _maternity_episodes(requests):
+    """Group maternity requests into distinct leaves — [[(start, end, days)…]…].
+
+    `requests` may be in any order; episodes come back in date order, each
+    holding the rows of one leave.
+    """
+    episodes = []
+    running_end = None
+    for req in sorted(requests, key=lambda q: (q[0], q[1])):
+        start, end, _days = req
+        if (running_end is not None
+                and (start - running_end).days <= _MATERNITY_EPISODE_GAP_DAYS):
+            episodes[-1].append(req)
+            running_end = max(running_end, end)
+        else:
+            episodes.append([req])
+            running_end = end
+    return episodes
+
+
+def _fmt_days(x: float) -> str:
+    """Trim a day count for display: 31.0 → '31', 0.5 → '0.5'."""
+    return f"{x:g}"
+
+
+def _month_key(d: date) -> str:
+    return f"{d.year:04d}-{d.month:02d}"
+
+
+def _split_by_month(req_start: date, req_end: date, total_days: float):
+    """One leave request's `days` as chronological [(year_month, portion)].
+
+    Uses the same inclusive-calendar-day proration as `_overlap_days`, so a
+    request sitting wholly inside one month keeps its exact `days` (half-days
+    included) and a straddling one is divided by its day count in each month.
+    Deliberately the UNROUNDED variant: the portions must sum back to `days`,
+    or the allowance walk sees the rounding drift as an over-quota day.
+    """
+    out = []
+    cursor = date(req_start.year, req_start.month, 1)
+    while cursor <= req_end:
+        last = date(cursor.year, cursor.month,
+                    calendar.monthrange(cursor.year, cursor.month)[1])
+        portion = _overlap_days_exact(req_start, req_end, cursor, last,
+                                      total_days)
+        if portion > 0:
+            out.append((_month_key(cursor), portion))
+        cursor = last + timedelta(days=1)
+    return out
+
+
+def _allocate_excess_by_month(requests, allowance: float) -> dict:
+    """{year_month: days past `allowance`}, charged chronologically.
+
+    `requests` is a chronologically ordered [(start, end, days)]. Each is split
+    into its per-month portions, the portions are walked oldest-first, and the
+    part of a month's portion that falls past the allowance is attributed to
+    THAT month. So the allowance is consumed in date order and its excess is
+    deducted exactly once, by the month whose own days crossed the line.
+
+    This is the single mechanism behind both paid-leave allowances — the annual
+    over-quota deduction and the maternity paid-day cap differ only in the
+    population fed in and the size of the allowance. Charging the whole annual
+    excess to every month that touched the leave type (and comparing the
+    maternity cap against one month's days alone) were the two defects it
+    replaced.
+
+    `allowance` may be float('inf') for an unlimited type → nothing is unpaid.
+    """
+    units = []
+    for req_start, req_end, days in requests:
+        units.extend(_split_by_month(req_start, req_end, days))
+    # Stable sort → strictly chronological across requests, while two requests
+    # landing in the same month keep their own (start_date, id) order.
+    units.sort(key=lambda u: u[0])
+
+    used = 0.0
+    out = {}
+    for ym, portion in units:
+        room = max(0.0, allowance - used)
+        excess = portion - room
+        # _split_by_month rounds each portion to 4dp, so the portions of a
+        # straddling request can sum to `days` + 2e-4. Without the epsilon that
+        # drift becomes a real deduction for someone who used EXACTLY their
+        # quota (measured: 0.0001 days → ฿0.05 and a "เกินสิทธิ 0.0001 วัน" note
+        # on the payslip).
+        if excess > _DAY_EPS:
+            out[ym] = round(out.get(ym, 0.0) + excess, 4)
+        used += portion
+    return out
 
 
 def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
@@ -318,16 +444,45 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
 
     Unpaid days in the month =
       - all UNPAID-type leave days in the month, PLUS
-      - over-quota days of paid leave types that affect the month, PLUS
-      - MATERNITY days beyond max_paid_days (45).
-    Over-quota is judged on the YEAR's cumulative approved usage per type;
-    the excess is attributed to (and deducted in) the month whose leave
-    pushed usage past the entitlement — here we attribute the whole
-    over-quota amount to a run if that type's leave overlaps the month
-    (sufficient for v1 single-run-per-month payroll; documented decision).
+      - this month's share of paid-leave days past their allowance:
+          * paid types (SICK / PERSONAL / ANNUAL …) → the calendar-year
+            entitlement from `leave_balance`
+          * MATERNITY                               → `leave_types.max_paid_days`
+            (45), the employer-paid cap; the 98-day entitlement is the leave
+            length, not the paid part.
+
+    The share comes from `_allocate_excess_by_month`, so an allowance is
+    consumed in date order and its excess is deducted once, in the month that
+    actually crossed it.
+
+    Both allowances are judged over a COHORT — the whole set of requests the
+    allowance applies to — never over one payroll month's slice, and the excess
+    is deducted in the month it actually falls in, even when that month belongs
+    to the following calendar year. The two differ only in how the cohort is
+    picked:
+      * annual quota — the cohort is a calendar YEAR, and a request belongs to
+        the year it STARTED in (exactly what `leave_balance` counts as `used`,
+        so the deductions reconcile with the balance shown on /hr). A leave
+        straddling 31 December is therefore judged against the quota it
+        actually consumes, while its over-quota days are still deducted in
+        January where they were taken.
+      * maternity cap — the cohort is the leave itself, so it is every
+        maternity request overlapping the year. A leave straddling 31 December
+        keeps counting toward its 45 paid days instead of restarting, and a
+        later pregnancy (a separate leave in a later year) gets its own 45.
+        Several rows describing ONE maternity leave in the same year correctly
+        share one 45-day cap.
     """
     y, _ = _parse_ym(year_month)
-    bal = leave_balance(employee_id, y, conn=c)
+    year_start, year_end = date(y, 1, 1), date(y, 12, 31)
+
+    _bal_cache = {}
+
+    def _entitlement(code: str, year: int) -> float:
+        """The `code` quota for `year` — the same figure /hr shows."""
+        if year not in _bal_cache:
+            _bal_cache[year] = leave_balance(employee_id, year, conn=c)
+        return _bal_cache[year].get(code, {}).get("entitlement", float("inf"))
 
     types = {
         r["id"]: r
@@ -335,56 +490,82 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
             "SELECT id, code, is_paid, max_paid_days FROM leave_types"
         ).fetchall()
     }
-    code_by_id = {tid: r["code"] for tid, r in types.items()}
+    type_by_code = {r["code"]: r for r in types.values()}
 
     reqs = c.execute(
         """SELECT leave_type_id, start_date, end_date, days
              FROM leave_requests
-             WHERE employee_id = ? AND status = 'approved'""",
+             WHERE employee_id = ? AND status = 'approved'
+             ORDER BY start_date, id""",
         (employee_id,),
     ).fetchall()
 
     unpaid = 0.0
     notes = []
-    # codes whose leave overlaps THIS month (drives over-quota attribution)
-    overlapping_codes = set()
-    maternity_in_month = 0.0
+    by_code = {}
 
     for r in reqs:
-        rs, re_ = _to_date(r["start_date"]), _to_date(r["end_date"])
-        portion = _overlap_days(rs, re_, period_start, period_end, r["days"])
-        if portion <= 0:
+        try:
+            rs, re_ = _to_date(r["start_date"]), _to_date(r["end_date"])
+        except ValueError:
+            # A malformed date raises rather than returning None, so this MUST
+            # catch: otherwise one bad legacy row 500s payroll generation for
+            # every employee in the company. The write layer refuses these now
+            # (hr_queries.validate_leave_payload); this covers rows that
+            # predate it or were inserted directly.
             continue
+        if rs is None or re_ is None or re_ < rs:
+            continue
+        days = float(r["days"] or 0)
         t = types[r["leave_type_id"]]
         code = t["code"]
-        overlapping_codes.add(code)
         if not t["is_paid"]:
-            unpaid += portion  # UNPAID type → directly unpaid
-        if code == "MATERNITY":
-            maternity_in_month += portion
-
-    # over-quota of paid leave types (SICK/PERSONAL/ANNUAL ...)
-    for code, b in bal.items():
-        if code == "UNPAID":
+            # UNPAID type → unconditionally unpaid, no allowance involved.
+            unpaid += _overlap_days(rs, re_, period_start, period_end, days)
             continue
-        if code in overlapping_codes and b["over"] > 0:
-            if code == "MATERNITY":
-                continue  # handled via max_paid_days below
-            unpaid += b["over"]
-            notes.append(
-                f"{code} เกินสิทธิ {b['over']:g} วัน → หักเป็นลาไม่รับค่าจ้าง"
-            )
+        by_code.setdefault(code, []).append((rs, re_, days))
 
-    # MATERNITY beyond max_paid_days (45)
-    mat_type = next((r for r in types.values() if r["code"] == "MATERNITY"),
-                    None)
-    if maternity_in_month > 0 and mat_type and mat_type["max_paid_days"]:
-        excess = max(0.0, maternity_in_month - float(mat_type["max_paid_days"]))
-        if excess > 0:
-            unpaid += excess
+    for code in sorted(by_code):
+        requests = by_code[code]
+        # Only a leave touching THIS month can put unpaid days in it, so the
+        # cohorts worth evaluating are the ones such a leave belongs to.
+        touching = [q for q in requests
+                    if q[0] <= period_end and q[1] >= period_start]
+        if not touching:
+            continue
+
+        share = 0.0
+        if code == "MATERNITY":
+            allowance = float(type_by_code[code]["max_paid_days"] or 0) or float("inf")
+            if allowance != float("inf"):
+                # One cap per LEAVE. Not per calendar year (that made a second
+                # pregnancy share the first one's 45 days) and not per row
+                # (that let a leave split across rows escape the cap).
+                for episode in _maternity_episodes(requests):
+                    if not any(q[0] <= period_end and q[1] >= period_start
+                               for q in episode):
+                        continue
+                    share += _allocate_excess_by_month(
+                        episode, allowance).get(year_month, 0.0)
+        else:
+            for cohort_year in sorted({q[0].year for q in touching}):
+                allowance = _entitlement(code, cohort_year)
+                if allowance == float("inf"):
+                    continue
+                cohort = [q for q in requests if q[0].year == cohort_year]
+                share += _allocate_excess_by_month(cohort, allowance).get(
+                    year_month, 0.0)
+
+        if share <= _DAY_EPS:
+            continue
+        unpaid += share
+        if code == "MATERNITY":
             notes.append(
-                f"ลาคลอดเกิน {mat_type['max_paid_days']:g} วันที่จ่าย "
-                f"→ หัก {excess:g} วัน"
+                f"ลาคลอดเกิน {allowance:g} วันที่จ่าย → หัก {share:g} วัน"
+            )
+        else:
+            notes.append(
+                f"{code} เกินสิทธิ {share:g} วัน → หักเป็นลาไม่รับค่าจ้าง"
             )
 
     return round(unpaid, 4), notes
@@ -415,7 +596,24 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
     unpaid_days, unpaid_notes = _compute_unpaid_days(
         c, emp["id"], year_month, period_start, period_end
     )
-    unpaid_deduction = round(rate / divisor * unpaid_days, 2)
+    # A month cannot deduct more than it pays. unpaid_days counts CALENDAR days
+    # (31 in a 31-day month) while the deduction divides by the fixed 30-day
+    # divisor that also caps base_amount — so an unclamped full month of unpaid
+    # leave deducted 31/30 of salary (฿15,500 against a ฿15,000 base). The
+    # worst honest case is a zero-wage month.
+    #
+    # The cap is on the MONEY, not on unpaid_days: the day count stays a true
+    # record of the absence, so it still reconciles with the leave request and
+    # with the allocation total (Put's call, 2026-08-06). That does mean
+    # deduction < unpaid_days × daily rate on a capped month, which would read
+    # as an arithmetic error on the payslip — hence the note.
+    uncapped_deduction = round(rate / divisor * unpaid_days, 2)
+    unpaid_deduction = min(uncapped_deduction, base_amount)
+    if uncapped_deduction > unpaid_deduction:
+        unpaid_notes.append(
+            f"ขาดงานทั้งเดือน — หักได้ไม่เกินฐานเงินเดือนของเดือนนี้ "
+            f"({_fmt_days(unpaid_days)} วัน แต่หักเพียง {divisor:g} วัน)"
+        )
 
     # diligence — must work the FULL month (started by period_start AND
     # still employed at period_end). Applied BEFORE leave-forfeit so the
@@ -702,14 +900,29 @@ def update_payroll_item(item_id: int,
     `late=False` → clear a 'late'-reason forfeit (a 'leave' forfeit, being
                    data-derived, is NOT cleared by toggling late off).
     Returns the updated payroll_items row.
+
+    Refuses when the item's parent run is finalized. The route gates that too,
+    but this is the invariant that keeps an issued payslip agreeing with the
+    approved payroll (and with any cashbook payment already posted against it),
+    so it must hold for every caller — not only the one that goes through the
+    URL. Same defense-in-depth as post_salary_payment's finalized check.
     """
     with _ConnCtx(conn, db_path) as c:
         row = c.execute(
-            "SELECT * FROM payroll_items WHERE id = ?", (item_id,)
+            """SELECT pi.*, pr.status AS run_status
+                 FROM payroll_items pi
+                 JOIN payroll_runs pr ON pr.id = pi.run_id
+                WHERE pi.id = ?""",
+            (item_id,),
         ).fetchone()
         if row is None:
             raise ValueError(f"payroll_items id {item_id} not found")
         d = dict(row)
+        if d.pop("run_status") == "finalized":
+            raise ValueError(
+                "ไม่สามารถแก้ไขรายการในรอบเงินเดือนที่ finalized แล้ว — "
+                "ต้อง reopen รอบนี้ก่อนจึงจะแก้ไขได้"
+            )
 
         if bonus is not None:
             d["bonus"] = float(bonus)

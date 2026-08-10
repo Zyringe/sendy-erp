@@ -138,15 +138,65 @@ def test_unpaid_leave_deduction(tmp_db_conn):
 def test_over_quota_sick_becomes_unpaid(tmp_db_conn):
     eid = _mk_employee(tmp_db_conn, 'T_OQ1', 'overquota sick', '2025-01-01',
                        monthly_salary=15000.0)
-    # SICK quota = 30. Log 32 SICK days in the year. 30 within March (the run
-    # month) carries the over-quota detection in that month: 32 used → 2 unpaid.
+    # SICK quota = 30. This request spans 1 Mar – 1 Apr = 32 days: 31 of them
+    # are March's, the 32nd is April's. The 2-day excess is therefore allocated
+    # chronologically — day 31 (31 Mar) to March, day 32 (1 Apr) to April — so
+    # THIS month deducts 1, not the whole annual excess.
+    #
+    # Updated 2026-08-06 (HR review finding 3). The old expectation of 2 here
+    # was the bug: April's run matched the same leave type and deducted the
+    # full 2 again, so a 2-day excess cost 4 days of pay. Cross-month
+    # allocation and its totals are proven in
+    # tests/test_leave_chronological_allocation.py.
     _add_leave(tmp_db_conn, eid, 'SICK', '2026-03-01', '2026-04-01', 32)
     run = hr.generate_run('2026-03', 1, created_by=1, conn=tmp_db_conn)
     it = _item(tmp_db_conn, run['id'], eid)
-    # 32 - 30 quota = 2 over-quota paid-leave days → auto unpaid
-    assert it['unpaid_leave_days'] == 2
-    assert it['unpaid_leave_deduction'] == round(15000 / 30 * 2, 2)
+    assert it['unpaid_leave_days'] == 1
+    assert it['unpaid_leave_deduction'] == round(15000 / 30 * 1, 2)
     assert it['note'] is not None and 'เกินสิทธิ' in it['note']
+
+
+def test_unpaid_deduction_never_exceeds_the_month_base(tmp_db_conn):
+    """A month cannot deduct more than it pays.
+
+    `unpaid_leave_days` is a CALENDAR-day count (31 in a 31-day month) but the
+    deduction divides by the fixed 30-day divisor, while `base_amount` caps
+    worked_days at that same divisor. So a full 31-day month of unpaid leave
+    deducted 15,500 against a 15,000 base — arithmetically impossible; the
+    worst honest case is a zero-wage month.
+
+    Put, 2026-08-06: cap the MONEY, not the day count — 31 stays on the record
+    as the true absence, and a note explains why only 30 days were deducted.
+    """
+    eid = _mk_employee(tmp_db_conn, 'T_CLAMP1', 'full month unpaid', '2024-01-01',
+                       monthly_salary=15000.0)
+    _add_leave(tmp_db_conn, eid, 'UNPAID', '2027-03-01', '2027-03-31', 31)
+    run = hr.generate_run('2027-03', 1, created_by=1, conn=tmp_db_conn)
+    it = _item(tmp_db_conn, run['id'], eid)
+
+    assert it['unpaid_leave_days'] == 31, "the day count stays truthful"
+    assert it['unpaid_leave_deduction'] == it['base_amount'] == 15000.00, \
+        "but the money is capped at the month's base pay"
+    assert it['gross'] - it['unpaid_leave_deduction'] == 0
+    assert it['note'] and 'ไม่เกินฐานเงินเดือน' in it['note'], \
+        "the payslip must explain why 31 days deducted only 30"
+
+
+def test_long_maternity_month_does_not_deduct_more_than_base(tmp_db_conn):
+    """The same clamp on the path the maternity cap newly reaches: a calendar
+    month falling wholly past the 45 paid days is a zero-wage month, not a
+    negative-wage one."""
+    eid = _mk_employee(tmp_db_conn, 'T_CLAMP2', 'long maternity', '2024-01-01',
+                       monthly_salary=15000.0)
+    _add_leave(tmp_db_conn, eid, 'MATERNITY', '2026-11-15', '2027-02-20', 98)
+    run = hr.generate_run('2027-01', 1, created_by=1, conn=tmp_db_conn)
+    it = _item(tmp_db_conn, run['id'], eid)
+
+    assert it['unpaid_leave_days'] == 31
+    assert it['unpaid_leave_deduction'] == it['base_amount'] == 15000.00
+    # SSO is still charged (a separate policy question raised with Put's
+    # accountant), so net is -sso rather than 0 — but never worse than that.
+    assert it['net_pay'] == -it['sso_employee']
 
 
 def test_over_quota_personal_excess_unpaid(tmp_db_conn):
