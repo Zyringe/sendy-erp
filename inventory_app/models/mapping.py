@@ -442,8 +442,22 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
 
         # ── 1a. The destination must be able to CONVERT every unit it is about
         # to receive — refuse up front, while nothing has been written ───────
-        missing_units = missing_unit_ratios(
-            conn, new_pid, sales_rows + purchase_rows)
+        # Non-stock billable codes (ZZZ / 888ค8888, stock_filters.py) never
+        # post to stock — _sync_bsn_to_stock's is_non_stock_code guard skips
+        # them before any ratio lookup — so a missing ratio can never lose
+        # their quantity. Migration 155 deliberately deleted their
+        # unit_conversions rows as unsafe; demanding one back here would
+        # block repointing a real protected line for a conversion that must
+        # not exist. Skip the whole-call preflight rather than filtering row
+        # by row: sales_rows/purchase_rows above are already scoped to THIS
+        # bsn_code alone (`WHERE bsn_code=?` in _unit_scoped_source_rows), so
+        # a single call can never mix a protected row with an ordinary one —
+        # there is nothing to filter out.
+        if is_non_stock_code(bsn_code):
+            missing_units = []
+        else:
+            missing_units = missing_unit_ratios(
+                conn, new_pid, sales_rows + purchase_rows)
         if missing_units:
             new_unit_type = conn.execute(
                 "SELECT unit_type FROM products WHERE id=?", (new_pid,)

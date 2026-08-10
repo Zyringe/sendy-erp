@@ -1129,3 +1129,100 @@ def test_repoint_survives_a_non_stock_row_sharing_the_source_product(empty_db_co
     assert conn.execute(
         "SELECT COUNT(*) FROM transactions WHERE reference_no='ZN-SHIP1'"
     ).fetchone()[0] == 0, "must never gain a ledger row"
+
+
+def test_repoint_of_a_protected_code_skips_the_unit_ratio_preflight(empty_db_conn):
+    """Codex I1: missing_unit_ratios() must not block repointing a non-stock
+    billable code (888ค8888/ZZZ) onto a destination with no unit_conversions
+    row for its unit. _sync_bsn_to_stock's is_non_stock_code guard means
+    these rows never consume a ratio — refusing to repoint them over a
+    missing one is refusing a real ค่าขนส่ง/ZZZ line for a conversion
+    migration 155 deliberately deleted as unsafe (stock_filters.py).
+
+    Deliberately mismatched unit ('ใบ' vs NEW's unit_type 'ตัว') and NO
+    unit_conversions row for NEW — before the I1 fix this raised
+    'has no unit_conversions ratio ... Define the ratio first' (see the
+    break-it-once note in the fix report)."""
+    import models
+
+    conn = empty_db_conn
+    OLD = _product(conn, 'Old (protected)', 'ตัว')
+    NEW = _product(conn, 'New', 'ตัว')     # deliberately NO unit_conversions row
+    CODE = '888ค8888'
+    _mapping(conn, CODE, OLD)
+    conn.execute(
+        "INSERT INTO sales_transactions"
+        " (date_iso, doc_no, doc_base, product_id, bsn_code, product_name_raw,"
+        "  customer, customer_code, qty, unit, unit_price, vat_type, discount,"
+        "  total, net, synced_to_stock)"
+        " VALUES ('2026-06-01','ZP-SHIP1','ZP-SHIP1',?,'888ค8888','น้ำหนักเกิน',"
+        "  'ลูกค้าทดสอบ','C1',1,'ใบ',30.0,0,'',30.0,30.0,0)", (OLD,))
+    conn.commit()
+
+    # Pre-existing CORRECT state: unsynced, no ledger — exactly what import
+    # leaves a protected line in.
+    models._sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
+    conn.commit()
+    assert conn.execute(
+        "SELECT synced_to_stock FROM sales_transactions WHERE doc_no='ZP-SHIP1'"
+    ).fetchone()['synced_to_stock'] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no='ZP-SHIP1'"
+    ).fetchone()[0] == 0
+
+    report = models.repoint_bsn_code(conn, CODE, NEW)
+    conn.commit()
+
+    assert 'error' not in report, report
+
+    row = conn.execute(
+        "SELECT product_id, net, synced_to_stock FROM sales_transactions"
+        " WHERE doc_no='ZP-SHIP1'").fetchone()
+    assert row['product_id'] == NEW, "the protected row must move with its code"
+    assert row['net'] == 30.0, "revenue must survive the repoint"
+    assert row['synced_to_stock'] == 0, "must stay unsynced — no ratio was ever needed"
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no='ZP-SHIP1'"
+    ).fetchone()[0] == 0, "must never gain a ledger row on either product"
+    assert conn.execute(
+        "SELECT product_id FROM product_code_mapping WHERE bsn_code=?", (CODE,)
+    ).fetchone()['product_id'] == NEW
+
+
+def test_repoint_of_an_ordinary_code_still_refuses_missing_ratio_with_a_protected_sibling(empty_db_conn):
+    """I1 fix scope check: the preflight skip is keyed on the bsn_code THIS
+    call is repointing, not on whether a protected code happens to exist
+    anywhere in the DB. repoint_bsn_code's sales_rows/purchase_rows are
+    always scoped to one bsn_code via `WHERE bsn_code=?`
+    (_unit_scoped_source_rows in models/mapping.py), so a single call can
+    never see a mix of protected + ordinary rows — proven here by adding an
+    unrelated protected line on the SAME source product and confirming the
+    ordinary code's missing-ratio refusal still fires exactly as before."""
+    import models
+
+    conn = empty_db_conn
+    OLD = _product(conn, 'Old (mixed)', 'โหล')
+    NEW = _product(conn, 'New', 'ชิ้น')     # deliberately NO unit_conversions
+    CODE = 'ZORD01'
+    _mapping(conn, CODE, OLD)
+    _sale(conn, 'ZO-S1', OLD, CODE, qty=3, unit='โหล')
+
+    # Unrelated protected line, same OLD product, different bsn_code — must
+    # not leak the I1 skip onto the ordinary repoint below.
+    conn.execute(
+        "INSERT INTO sales_transactions"
+        " (date_iso, doc_no, doc_base, product_id, bsn_code, product_name_raw,"
+        "  customer, customer_code, qty, unit, unit_price, vat_type, discount,"
+        "  total, net, synced_to_stock)"
+        " VALUES ('2026-06-01','ZO-SHIP1','ZO-SHIP1',?,'888ค8888','น้ำหนักเกิน',"
+        "  'ลูกค้าทดสอบ','C1',1,'ตัว',30.0,0,'',30.0,30.0,0)", (OLD,))
+    conn.commit()
+
+    with pytest.raises(ValueError, match='unit_conversions'):
+        models.repoint_bsn_code(conn, CODE, NEW)
+    conn.rollback()
+
+    assert conn.execute(
+        "SELECT product_id FROM product_code_mapping WHERE bsn_code=?", (CODE,)
+    ).fetchone()['product_id'] == OLD, "refused before any mutation, as before"
