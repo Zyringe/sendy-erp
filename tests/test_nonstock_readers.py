@@ -131,6 +131,9 @@ def test_reconcile_accepts_a_doc_containing_a_non_stock_line(tmp_db_conn):
     conn.commit()
 
     payload_rows = reconcile._payload_for_doc(conn, 'IV9400')
+    # Count first: _ledger_check returns (None, set()) on an EMPTY payload, so
+    # `err is None` alone cannot tell "accepted the doc" from "checked nothing".
+    assert len(payload_rows) == 2, payload_rows      # ordinary synced + non-stock unsynced
     err, matched_ids = reconcile._ledger_check(conn, payload_rows)
-
     assert err is None, err
+    assert len(matched_ids) == 1, matched_ids        # only the ordinary line holds a ledger row
