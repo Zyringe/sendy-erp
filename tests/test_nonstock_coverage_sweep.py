@@ -16,24 +16,57 @@ exist fails the sweep too).
 IDENTITY GRANULARITY: EXPECTED is keyed (relative path, enclosing function),
 matching design §7(a)'s own worked example. To still catch a NEW (or removed)
 synced_to_stock statement appearing INSIDE an already-classified function —
-the exact shape file-level identity missed twice — EXPECTED_SNIPPETS records
-the exact MULTISET of synced_to_stock-bearing literal text the scan currently
-finds per key, not just a count. A bare count is not enough: swapping one
-occurrence for a different, unguarded one inside the same function (delete
-one literal, add a new one, net count unchanged) would leave a count-only
-check green — this is exactly the class of evasion a fix-round review found
-against the first version of this file (task-9-report.md, "Fix round 1").
-Comparing the sorted literal text itself closes that hole, and as a bonus
-tells the next person WHICH literal changed rather than just "something did".
-This is DELIBERATELY brittle: reflowing a SQL string with no behaviour change
-will also turn this red. That is the correct trade here — any edit to a
-synced_to_stock literal is exactly what a human should be made to look at.
-Both dicts are compared against a fresh scan, in both directions, every run.
+the exact shape file-level identity missed twice — EXPECTED_SEQUENCE records
+the exact source-ORDERED sequence of synced_to_stock-bearing literal text the
+scan currently finds per key (sorted by lineno, ties broken by scan-visit
+order), not a bare count and not a sorted multiset. A bare count is not
+enough: swapping one occurrence for a different, unguarded one inside the
+same function (delete one literal, add a new one, net count unchanged) left
+a count-only check green (task-9-report.md, "Fix round 1"). A sorted-multiset
+fix closed THAT hole but is still blind to occurrence IDENTITY: when a
+function contains a genuine text DUPLICATE (bsn_sync.py::_sync_bsn_to_stock
+has two identical 'SET synced_to_stock=1 WHERE id=?' literals), removing one
+copy and inserting a new, unguarded write using the SAME exact text leaves
+the sorted multiset byte-identical (task-9-report.md, "Fix round 2"). Source
+order is NOT fooled by that: an unguarded write injected before this
+function's is_non_stock_code guard necessarily sorts earlier than the writes
+after it, which shifts the relative sequence even when the text multiset
+doesn't change — see "Fix round 2" for the worked proof. Both dicts are
+compared against a fresh scan, in both directions, every run. This is
+DELIBERATELY brittle: reflowing a SQL string, or reordering two DIFFERENT
+statements with no behaviour change, will also turn this red. That is the
+correct trade here — any edit to a synced_to_stock literal, or to where one
+sits relative to its neighbours, is exactly what a human should be made to
+look at.
 
 Bucket (i) "guarded" entries get one more check: the function's actual source
 must still contain a call to the shared predicate (is_non_stock_code( or
 non_stock_clause() — a "guarded" claim that stops being true (guard deleted,
 renamed) turns red even when the synced_to_stock literal itself is untouched.
+
+WHAT THIS SWEEP CANNOT CATCH (documented limitation, not a TODO — team-lead
+decision, task-9-report.md "Fix round 2": this sweep's threat model is
+ACCIDENT, not adversary; a static text/order net that a sufficiently precise
+same-edit swap can defeat is an acceptable, DOCUMENTED limit, not worth
+trading legibility for AST-path fingerprinting or per-occurrence hashing):
+  - It has NO control-flow awareness. It tracks the ORDER of
+    synced_to_stock-bearing literals among THEMSELVES, not each literal's
+    position relative to the guard call that is supposed to protect it. The
+    guard call itself (is_non_stock_code(...)/non_stock_clause(...)) never
+    contains the substring 'synced_to_stock', so it is invisible to this
+    scanner entirely. Relocating an EXISTING guarded write to before its
+    function's guard check (or moving the guard check to after a write it
+    used to protect) changes NOTHING this sweep looks at — same literal
+    text, same relative order among literals, guard token still present
+    somewhere in the function's source (the positive-control check in
+    test_every_guarded_entry_still_calls_the_shared_predicate only checks
+    the token EXISTS in the function, not where). Verified genuinely green
+    on a scratch copy, reported honestly rather than silently left unproven
+    (task-9-report.md "Fix round 2", variant 2).
+  - It is per-(path, function) and per-literal; it says nothing about
+    whether a NEW function that itself calls an EXISTING guarded function
+    is safe by construction, only about literals matching what a human
+    already read and classified.
 """
 import ast
 import os
@@ -148,27 +181,32 @@ EXPECTED = {
         'function twice)',
 }
 
-# The exact MULTISET (sorted, duplicates preserved — a plain sorted list
-# already compares as a multiset) of synced_to_stock-bearing literal TEXT the
-# scan currently finds inside each EXPECTED key's function — not just a
-# count. A count lets one occurrence be swapped for a different, unguarded
-# one in the same edit (delete + add, net count unchanged) slide through;
-# comparing the literal text itself cannot be fooled that way. lineno is
-# deliberately excluded (line numbers shift for innocuous reasons; the
-# literal text is the thing). Truncated to 80 chars by _scan(), matching
-# what it stores — generated by running _scan() itself and hand-copying the
-# output (never regenerate this from a live scan at test time — see the
-# module docstring: EXPECTED* must stay hardcoded).
-EXPECTED_SNIPPETS = {
+# The exact source-ORDERED SEQUENCE (sorted by lineno; ties broken by scan-
+# visit order — occurs only within one multi-interpolation f-string, e.g.
+# get_pending_split_mappings' two {non_stock} slots, where Python 3.9's
+# JoinedStr AST gives every constant segment the SAME outer lineno) of
+# synced_to_stock-bearing literal TEXT inside each EXPECTED key's function.
+# Order matters, NOT just membership: a genuine text duplicate (the two
+# identical 'SET synced_to_stock=1 WHERE id=?' literals in
+# _sync_bsn_to_stock) means a sorted-multiset comparison cannot tell "delete
+# copy A, insert an unguarded copy of the same text before the guard" from a
+# no-op — see the module docstring and task-9-report.md "Fix round 2".
+# Comparing the SEQUENCE catches that: an insertion before the guard sorts
+# earlier than the occurrences after it, which shifts everyone's relative
+# position even when the multiset of text doesn't change.
+# Truncated to 80 chars by _scan(), matching what it stores — generated by
+# running _scan() itself and hand-copying the output, never regenerated at
+# test time (see the module docstring: EXPECTED* must stay hardcoded).
+EXPECTED_SEQUENCE = {
     ('database.py', 'init_db'): [
-        'ADD COLUMN synced_to_stock INTEGER NOT NULL DEFAULT 0',
         'synced_to_stock',
+        'ADD COLUMN synced_to_stock INTEGER NOT NULL DEFAULT 0',
     ],
     ('models/bsn_sync.py', '_sync_bsn_to_stock'): [
-        'SET synced_to_stock=1 WHERE id=?',
-        'SET synced_to_stock=1 WHERE id=?',
-        'WHERE product_id IS NOT NULL AND synced_to_stock = 0',
         'สร้าง transaction ย้อนหลังสำหรับแถว BSN ที่มี product_id แล้ว     แต่ยังไม่ถูก s',
+        'WHERE product_id IS NOT NULL AND synced_to_stock = 0',
+        'SET synced_to_stock=1 WHERE id=?',
+        'SET synced_to_stock=1 WHERE id=?',
     ],
     ('models/bsn_sync.py', '_synced_source_ids'): [
         'The exact `(table, row id)` pairs for `product_id` that currently hold a     led',
@@ -195,8 +233,8 @@ EXPECTED_SNIPPETS = {
         'SET product_id=?, synced_to_stock=0 WHERE id=?',
     ],
     ('models/mapping.py', 'get_pending_split_mappings'): [
-        'GROUP BY bsn_code, unit, product_id         UNION ALL         SELECT bsn_code, u',
         'SELECT bsn_code, unit, product_id,                COUNT(*) AS row_count,        ',
+        'GROUP BY bsn_code, unit, product_id         UNION ALL         SELECT bsn_code, u',
     ],
     ('models/mapping.py', 'repoint_bsn_code'): [
         "Canonical single bsn_code re-point — moves the mapping AND the code's     FULL h",
@@ -334,39 +372,42 @@ def test_every_occurrence_is_classified_or_allowlisted():
         + "\n".join(_describe(k) for k in sorted(gone)))
 
 
-def test_occurrence_snippets_match_expected_per_function():
+def test_occurrence_sequence_matches_expected_per_function():
     """A NEW (or removed) synced_to_stock statement inside an ALREADY-covered
     function must not slide through just because the (path, function) key is
     already in EXPECTED — this is the identity-granularity fix (rule 1).
 
-    Compares the sorted MULTISET of literal text, not a bare count. A count
-    alone lets one occurrence be deleted and a different, unguarded one added
-    in the same edit — net count unchanged, count-only check stays green.
-    Comparing the text itself cannot be fooled that way, and a mismatch names
-    exactly which literal(s) differ (task-9-report.md, "Fix round 1")."""
+    Compares the source-ORDERED SEQUENCE of literal text, not a sorted
+    multiset. A sorted multiset is blind to a genuine text duplicate: delete
+    one copy, insert a new unguarded copy of the SAME text before the guard
+    — the multiset is unchanged (task-9-report.md, "Fix round 2"). Comparing
+    order catches it: an insertion before the guard sorts earlier than the
+    occurrences after it, shifting the sequence even when the text multiset
+    doesn't change. A mismatch still names exactly which position/literal
+    differs."""
     found = _scan()
     mismatches = []
-    for key, expected_snippets in EXPECTED_SNIPPETS.items():
-        actual_snippets = sorted(snip for _, snip in found.get(key, []))
-        expected_sorted = sorted(expected_snippets)
-        if actual_snippets != expected_sorted:
+    for key, expected_seq in EXPECTED_SEQUENCE.items():
+        actual_seq = [snip for _, snip in sorted(found.get(key, []), key=lambda t: t[0])]
+        if actual_seq != expected_seq:
             mismatches.append(
                 f'  {key[0]}::{key[1]}\n'
-                f'    expected: {expected_sorted}\n'
-                f'    found:    {actual_snippets}')
+                f'    expected: {expected_seq}\n'
+                f'    found:    {actual_seq}')
     assert not mismatches, (
-        "Occurrence snippet(s) drifted inside an already-classified function "
-        "— a statement was added, removed, or changed. Re-read the function "
-        "and update both EXPECTED's reason (if the change affects the guard) "
-        "and EXPECTED_SNIPPETS:\n" + "\n".join(mismatches))
+        "Occurrence sequence drifted inside an already-classified function — "
+        "a statement was added, removed, changed, or REORDERED relative to "
+        "its neighbours. Re-read the function and update both EXPECTED's "
+        "reason (if the change affects the guard) and EXPECTED_SEQUENCE:\n"
+        + "\n".join(mismatches))
 
 
 def test_expected_dicts_share_the_same_keys():
-    """Internal consistency: every EXPECTED entry needs a snippet list, and
-    vice versa — a maintenance slip here would silently blind one of the two
+    """Internal consistency: every EXPECTED entry needs a sequence, and vice
+    versa — a maintenance slip here would silently blind one of the two
     checks above."""
-    assert set(EXPECTED) == set(EXPECTED_SNIPPETS), (
-        set(EXPECTED) ^ set(EXPECTED_SNIPPETS))
+    assert set(EXPECTED) == set(EXPECTED_SEQUENCE), (
+        set(EXPECTED) ^ set(EXPECTED_SEQUENCE))
 
 
 def test_every_allowlist_entry_names_a_real_test():
