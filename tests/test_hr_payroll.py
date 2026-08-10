@@ -902,10 +902,54 @@ def test_refinalize_after_reopen_refuses_to_swallow_a_backdated_advance(tmp_db_c
     assert c.execute("SELECT deducted_in_run_id FROM salary_advances WHERE id=?",
                      (adv,)).fetchone()[0] is None, "and the advance is untouched"
 
-    # explicit acknowledgement lets it through
-    hr.finalize_run(rid, conn=c, confirm_advance_stamp=True)
+    # There is NO override. Stamping without deducting is not a thing an
+    # operator can consent to, because consent cannot make the money move:
+    # salary_advance_deduction and net_pay are computed in _build_item during
+    # generate_run, and generate_run is refused on a reopened run whose roster
+    # drifted. An earlier version offered a confirm_advance_stamp checkbox
+    # whose label promised a deduction it could not perform (Codex).
+    import inspect
+    assert 'confirm_advance_stamp' not in inspect.signature(hr.finalize_run).parameters
+
+    # The way out is to fix the DATA: re-date the advance to a month that is
+    # still open, so a real generate_run can put it into someone's net pay.
+    c.execute("UPDATE salary_advances SET advance_date='2027-05-11' WHERE id=?", (adv,))
+    c.commit()
+    assert hr.pending_advance_stamp(rid, conn=c) == (0, 0.0)
+    hr.finalize_run(rid, conn=c)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'finalized'
     assert c.execute("SELECT deducted_in_run_id FROM salary_advances WHERE id=?",
-                     (adv,)).fetchone()[0] == rid
+                     (adv,)).fetchone()[0] is None, \
+        "re-dated out of the month, so this run must not claim it"
+
+
+def test_the_stamp_a_first_finalize_writes_is_actually_in_the_payslip(tmp_db_conn_hr_clean):
+    """The invariant the refusal exists to protect, stated positively.
+
+    A stamp is only honest when the same advance is inside that item's
+    salary_advance_deduction — _build_item computes it during generate_run,
+    finalize_run only marks it. Asserting the stamp alone (which the first
+    version of these tests did) pins the broken state just as happily as the
+    correct one.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2027-06', 1, created_by=1, conn=c)
+    rid = run['id']
+    emp = c.execute("SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+                    (rid,)).fetchone()[0]
+    _add_advance(c, emp, '2027-06-09', 400.0)
+    run = hr.generate_run('2027-06', 1, created_by=1, conn=c)   # rebuild to pick it up
+    hr.finalize_run(rid, conn=c)
+
+    item = c.execute(
+        "SELECT salary_advance_deduction, gross, net_pay FROM payroll_items"
+        " WHERE run_id=? AND employee_id=?", (rid, emp)).fetchone()
+    assert item['salary_advance_deduction'] == 400.0, "the money must be in the payslip"
+    assert round(item['gross'] - item['net_pay'], 2) >= 400.0
+    assert c.execute(
+        "SELECT deducted_in_run_id FROM salary_advances WHERE employee_id=? AND amount=400",
+        (emp,)).fetchone()[0] == rid
 
 
 def test_refinalize_after_reopen_with_nothing_pending_needs_no_confirmation(tmp_db_conn_hr_clean):

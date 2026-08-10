@@ -878,10 +878,11 @@ def _pending_advance_message(n: int, total: float) -> str:
     """One text for the banner AND the refusal, so the page cannot promise
     something the finalize boundary then contradicts."""
     return (
-        f"⚠ การ finalize รอบนี้จะประทับเงินเบิกล่วงหน้า {n} รายการ "
-        f"(รวม ฿{total:,.2f}) ว่าหักในรอบนี้ — แต่รอบนี้ปิดไปแล้วครั้งหนึ่ง "
-        f"ถ้าจ่ายเงินเดือนรอบนี้ไปแล้ว เงินก้อนนั้นจะไม่ถูกหักจากใครจริง ๆ "
-        f"· ถ้าไม่ได้ตั้งใจ ให้แก้วันที่ของรายการเบิกให้ตรงเดือนที่จะหักจริงก่อน"
+        f"finalize รอบนี้ไม่ได้ — มีเงินเบิกล่วงหน้า {n} รายการ (รวม ฿{total:,.2f}) "
+        f"ที่จะถูกประทับว่า \"หักแล้ว\" ในรอบนี้ ทั้งที่ยอดหักในสลิปไม่ได้รวมมันไว้ "
+        f"(ยอดหักคำนวณตอนสร้างรอบ ไม่ใช่ตอน finalize) เงินก้อนนี้จึงจะไม่ถูกหักจากใครเลย "
+        f"· ทางแก้: เข้าไปแก้วันที่ของรายการเบิกให้เป็นเดือนที่ยังไม่ปิด "
+        f"แล้วเดือนนั้นจะหักให้จริงตอนสร้างรอบ"
     )
 
 
@@ -1177,8 +1178,7 @@ def update_payroll_item(item_id: int,
 # ── finalize a payroll run (stamps salary advances) ──────────────────────────
 def finalize_run(run_id: int,
                   conn: Optional[sqlite3.Connection] = None,
-                  db_path: Optional[str] = None,
-                  confirm_advance_stamp: bool = False):
+                  db_path: Optional[str] = None):
     """Mark a draft run finalized and STAMP the salary advances it consumed.
 
     If the run is already finalized this is a no-op (returns the row; does
@@ -1205,7 +1205,14 @@ def finalize_run(run_id: int,
         # payroll for everyone; keying on `_was_reopened` isolates the case
         # where the month was already closed — and, for a run that had been
         # paid, already paid out.
-        if _was_reopened(c, run_id) and not confirm_advance_stamp:
+        #
+        # No override. A stamp only means "collected" when the same advance is
+        # inside the item's salary_advance_deduction, and that is computed in
+        # _build_item during generate_run — which is refused on a reopened run
+        # whose roster drifted. So on this path consent cannot make the money
+        # move; it can only mark uncollected money as collected. The operator
+        # fixes the DATA instead (see the message).
+        if _was_reopened(c, run_id):
             n, total = pending_advance_stamp(run_id, conn=c)
             if n:
                 raise PendingAdvanceStampWarning(_pending_advance_message(n, total))

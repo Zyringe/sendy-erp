@@ -250,12 +250,14 @@ def test_reopen_dialog_warns_about_advances_even_with_a_clean_roster(admin_clien
     assert 'data-warn="roster-drift"' not in html, "roster is clean — only the advance warning"
 
 
-def test_finalize_is_refused_until_the_advance_stamp_is_acknowledged(admin_client, tmp_db):
+def test_finalize_is_refused_while_an_advance_would_be_stamped_uncollected(admin_client, tmp_db):
     """End to end at the boundary that moves money.
 
-    The reopen-time banner is gone by now (the run is draft), so this is the
-    operator's only warning — and the POST must refuse without it, not merely
-    render a notice.
+    The reopen-time banner is gone by now (the run is draft), so this page is
+    the operator's only warning — and the POST must REFUSE, not merely render
+    a notice. There is no acknowledgement to give: the deduction is computed
+    in _build_item during generate_run, which a reopened drifted run cannot
+    run, so nothing the operator clicks can put this money into a payslip.
     """
     rid = _make_finalized_run(tmp_db)
     conn = sqlite3.connect(tmp_db, timeout=10)
@@ -280,15 +282,25 @@ def test_finalize_is_refused_until_the_advance_stamp_is_acknowledged(admin_clien
 
     page = admin_client.get(f'/hr/payroll/{rid}').get_data(as_text=True)
     assert 'data-warn="pending-advance-stamp"' in page, "draft page must carry the warning"
-    assert 'name="confirm_advance_stamp"' in page
     assert '555' in page
 
     admin_client.post(f'/hr/payroll/{rid}/finalize', data={}, follow_redirects=True)
-    assert status() == 'draft', "unacknowledged finalize must not proceed"
+    assert status() == 'draft', "finalize must not proceed"
     assert sqlite3.connect(tmp_db).execute(
         "SELECT deducted_in_run_id FROM salary_advances WHERE amount=555"
     ).fetchone()[0] is None, "and must not stamp the advance"
 
+    # A crafted or stale POST carrying the old override field must NOT get
+    # through: there is no override, because consent cannot make the money
+    # move (Codex). The page shows no checkbox for the same reason.
     admin_client.post(f'/hr/payroll/{rid}/finalize',
                       data={'confirm_advance_stamp': '1'}, follow_redirects=True)
+    assert status() == 'draft', "no override exists"
+    assert 'name="confirm_advance_stamp"' not in page
+
+    # Fixing the DATA is the way out: re-date the advance to an open month.
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.execute("UPDATE salary_advances SET advance_date='2026-11-05' WHERE amount=555")
+    conn.commit(); conn.close()
+    admin_client.post(f'/hr/payroll/{rid}/finalize', data={}, follow_redirects=True)
     assert status() == 'finalized'

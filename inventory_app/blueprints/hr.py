@@ -672,13 +672,10 @@ def payroll_finalize(run_id: int):
         flash("Run นี้ finalized แล้ว", "warning")
         return redirect(url_for("hr.payroll_detail", run_id=run_id))
     try:
-        hr_mod.finalize_run(
-            run_id,
-            confirm_advance_stamp=(request.form.get("confirm_advance_stamp") == "1"),
-        )
+        hr_mod.finalize_run(run_id)
         flash(f"Finalized payroll run #{run_id} เรียบร้อย", "success")
     except hr_mod.PendingAdvanceStampWarning as w:
-        flash(f"{w} — ติ๊กยืนยันข้างปุ่ม Finalize แล้วกดอีกครั้ง", "warning")
+        flash(str(w), "danger")
     except Exception as e:
         flash(f"ไม่สามารถ finalize: {e}", "danger")
     return redirect(url_for("hr.payroll_detail", run_id=run_id))
