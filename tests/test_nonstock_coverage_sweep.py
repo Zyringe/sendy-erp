@@ -28,16 +28,22 @@ function contains a genuine text DUPLICATE (bsn_sync.py::_sync_bsn_to_stock
 has two identical 'SET synced_to_stock=1 WHERE id=?' literals), removing one
 copy and inserting a new, unguarded write using the SAME exact text leaves
 the sorted multiset byte-identical (task-9-report.md, "Fix round 2"). Source
-order is NOT fooled by that: an unguarded write injected before this
-function's is_non_stock_code guard necessarily sorts earlier than the writes
-after it, which shifts the relative sequence even when the text multiset
-doesn't change — see "Fix round 2" for the worked proof. Both dicts are
+order NARROWS this hole but does NOT close it in general: it only catches an
+insertion that lands in a DIFFERENT relative sorted-by-line slot than the
+occurrence it replaced. A same-edit swap of a text-IDENTICAL occurrence can
+still land in the SAME slot and stay invisible — see "WHAT THIS SWEEP CANNOT
+CATCH" below for the live, reachable-today instance. (An earlier version of
+this comment overclaimed that any insertion "before the guard" necessarily
+shifts the sequence; that is false whenever an earlier, unrelated literal —
+e.g. this function's own SELECT — already sits between the guard and the
+duplicate being replaced. Corrected in "Fix round 3".) Both dicts are
 compared against a fresh scan, in both directions, every run. This is
-DELIBERATELY brittle: reflowing a SQL string, or reordering two DIFFERENT
-statements with no behaviour change, will also turn this red. That is the
-correct trade here — any edit to a synced_to_stock literal, or to where one
-sits relative to its neighbours, is exactly what a human should be made to
-look at.
+DELIBERATELY brittle where it DOES bite: reflowing a SQL string, or
+reordering two DIFFERENT (non-duplicate) statements with no behaviour
+change, will also turn this red. That is the correct trade here — any edit
+to a synced_to_stock literal, or to where one sits relative to its
+DIFFERENT-text neighbours, is exactly what a human should be made to look
+at.
 
 Bucket (i) "guarded" entries get one more check: the function's actual source
 must still contain a call to the shared predicate (is_non_stock_code( or
@@ -49,6 +55,26 @@ decision, task-9-report.md "Fix round 2": this sweep's threat model is
 ACCIDENT, not adversary; a static text/order net that a sufficiently precise
 same-edit swap can defeat is an acceptable, DOCUMENTED limit, not worth
 trading legibility for AST-path fingerprinting or per-occurrence hashing):
+  - A same-edit SWAP of a text-IDENTICAL occurrence, when the replacement
+    lands in the SAME relative sorted-by-line position the deleted one
+    vacated. Ordered comparison only catches a position CHANGE; if a
+    function has two byte-identical synced_to_stock literals, deleting one
+    and inserting a new, unguarded occurrence using the exact same text
+    compares equal whenever the insertion point still sorts into that same
+    slot. This is reachable TODAY, no contrived text collision required:
+    _sync_bsn_to_stock already carries two identical
+    'SET synced_to_stock=1 WHERE id=?' literals (bsn_sync.py:203 and :334).
+    Deleting the line-203 one and inserting an unguarded copy of the same
+    text anywhere between the line-170 SELECT and the surviving line-334
+    UPDATE — e.g. immediately inside `for row in rows:`, before the
+    is_non_stock_code guard — leaves BOTH the multiset and the ordered
+    sequence unchanged, because the guard sits AFTER that SELECT, not
+    before it: "before the guard" is a weaker constraint than "before every
+    earlier literal", so it does not force a different sorted slot. Proved
+    by construction (not by a single test run) in task-9-report.md "Fix
+    round 3" — an earlier round of this file claimed order-based comparison
+    closes any before-the-guard insertion; that claim was wrong and is
+    corrected there.
   - It has NO control-flow awareness. It tracks the ORDER of
     synced_to_stock-bearing literals among THEMSELVES, not each literal's
     position relative to the guard call that is supposed to protect it. The
@@ -189,11 +215,15 @@ EXPECTED = {
 # Order matters, NOT just membership: a genuine text duplicate (the two
 # identical 'SET synced_to_stock=1 WHERE id=?' literals in
 # _sync_bsn_to_stock) means a sorted-multiset comparison cannot tell "delete
-# copy A, insert an unguarded copy of the same text before the guard" from a
-# no-op — see the module docstring and task-9-report.md "Fix round 2".
-# Comparing the SEQUENCE catches that: an insertion before the guard sorts
-# earlier than the occurrences after it, which shifts everyone's relative
-# position even when the multiset of text doesn't change.
+# copy A, insert an unguarded copy of the same text elsewhere" from a no-op
+# — see the module docstring and task-9-report.md "Fix round 2". Comparing
+# the SEQUENCE catches that WHEN the insertion lands in a different relative
+# sorted-by-line slot than the deletion vacated — but NOT when it lands in
+# the SAME slot (e.g. an insertion still sorts between the same two
+# neighbouring literals the deleted duplicate sat between). That residual
+# gap is real, reachable today via this exact function, and documented (not
+# silently left) in the module docstring's "WHAT THIS SWEEP CANNOT CATCH"
+# and in task-9-report.md "Fix round 3".
 # Truncated to 80 chars by _scan(), matching what it stores — generated by
 # running _scan() itself and hand-copying the output, never regenerated at
 # test time (see the module docstring: EXPECTED* must stay hardcoded).
@@ -379,12 +409,16 @@ def test_occurrence_sequence_matches_expected_per_function():
 
     Compares the source-ORDERED SEQUENCE of literal text, not a sorted
     multiset. A sorted multiset is blind to a genuine text duplicate: delete
-    one copy, insert a new unguarded copy of the SAME text before the guard
-    — the multiset is unchanged (task-9-report.md, "Fix round 2"). Comparing
-    order catches it: an insertion before the guard sorts earlier than the
-    occurrences after it, shifting the sequence even when the text multiset
-    doesn't change. A mismatch still names exactly which position/literal
-    differs."""
+    one copy, insert a new unguarded copy of the SAME text elsewhere — the
+    multiset is unchanged (task-9-report.md, "Fix round 2"). Comparing order
+    catches that WHEN the insertion lands in a different relative sorted-by-
+    line slot than the deletion vacated. It does NOT catch a same-slot swap
+    (e.g. an insertion that still sorts between the same two neighbouring,
+    DIFFERENT-text literals the deleted duplicate sat between) — a real,
+    documented residual gap, not silently assumed closed (module docstring's
+    "WHAT THIS SWEEP CANNOT CATCH"; task-9-report.md "Fix round 3"). A
+    mismatch, when this test DOES catch one, still names exactly which
+    position/literal differs."""
     found = _scan()
     mismatches = []
     for key, expected_seq in EXPECTED_SEQUENCE.items():
