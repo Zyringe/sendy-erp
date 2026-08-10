@@ -417,6 +417,24 @@ def import_weekly(entries: list, file_type: str, filename: str,
         except Exception as _alert_exc:      # noqa: BLE001 - observability only
             print('[import] could not record ignored-lines alert: %s' % _alert_exc)
 
+    # Same ownership rule, same connection, one over: a non-stock code whose
+    # mapping row still says is_ignored=1 (a restored pre-mig-155 backup is
+    # the realistic way) is a contradiction the constant just overrode. The
+    # revenue is kept either way (see the non_stock_line branch above) — this
+    # alert is the only thing standing between that and it being silent.
+    # Best-effort, same as above: must not roll back the revenue just kept,
+    # and must not turn a successful import into a reported failure.
+    for code in sorted(contradictions):
+        try:
+            create_system_alert(
+                'nonstock_ignored_contradiction',
+                f'รหัส {code} ถูกตั้งเป็น "ไม่นำเข้า" ในตารางแมป แต่เป็นรายการที่มีมูลค่าจริง '
+                f'— ระบบยังเก็บยอดให้ตามปกติ แต่ควรแก้ธงในตารางแมปให้ตรง',
+                dedupe_key=code, severity='warning',
+                context={'bsn_code': code, 'source': 'import_weekly'})
+        except Exception as _alert_exc:      # noqa: BLE001 - observability only
+            print('[import] could not record non-stock contradiction alert: %s' % _alert_exc)
+
     return {
         'imported': imported,
         # `skipped_dup` is GONE, not aliased: a repo-wide sweep (with a control

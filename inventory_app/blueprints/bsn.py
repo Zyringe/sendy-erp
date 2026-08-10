@@ -194,6 +194,7 @@ def mapping():
         unit_suggestions=unit_suggestions,
         condition_suggestions=condition_suggestions,
         active_tab=tab,
+        non_stock_codes=sorted(models.NON_STOCK_BSN_CODES),
     )
 
 
