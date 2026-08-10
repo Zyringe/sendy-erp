@@ -799,3 +799,50 @@ def test_reopen_without_drift_needs_no_confirmation(tmp_db_conn_hr_clean):
     hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
     assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
                      (rid,)).fetchone()[0] == 'draft'
+
+
+def test_pending_advance_stamp_is_independent_of_roster_drift(tmp_db_conn_hr_clean):
+    """Re-finalizing a reopened run stamps every un-deducted advance dated on or
+    before that month's end (finalize_run) — for employees in the run. On a
+    month whose payslips were already PAID that marks the advance deducted
+    without any cash ever being withheld, so the money is silently never
+    collected.
+
+    That hazard has nothing to do with the roster, so it must not be reported
+    through `roster_drift_note`: this run has NO drift and still needs the
+    warning. The trigger is the bug class this whole arc started from — บอล's
+    ฿1,000 was keyed 2026-07-03 but dated 2026-06-27, landing inside a month
+    that had already closed.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2027-01', 1, created_by=1, conn=c)
+    rid = run['id']
+    emp = c.execute("SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+                    (rid,)).fetchone()[0]
+    hr.finalize_run(rid, conn=c)
+    assert hr.roster_drift_note(rid, conn=c) is None, "no drift — the other warning must stay silent"
+    assert hr.pending_advance_stamp(rid, conn=c) == (0, 0.0)
+
+    # an advance keyed late, back-dated into the closed month
+    _add_advance(c, emp, '2027-01-20', 750.0)
+    assert hr.pending_advance_stamp(rid, conn=c) == (1, 750.0)
+    note = hr.pending_advance_note(rid, conn=c)
+    assert note and '750' in note
+    assert hr.roster_drift_note(rid, conn=c) is None, "still no roster drift"
+
+
+def test_pending_advance_stamp_ignores_advances_after_the_month(tmp_db_conn_hr_clean):
+    """Control: finalize_run bounds the stamp at period_end, so a LATER advance
+    is not at risk and must not be warned about — otherwise every run carries a
+    permanent scary banner. This is why prod shows 0 today: all five un-stamped
+    advances are dated after both closed months."""
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2027-01', 1, created_by=1, conn=c)
+    rid = run['id']
+    emp = c.execute("SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+                    (rid,)).fetchone()[0]
+    hr.finalize_run(rid, conn=c)
+
+    _add_advance(c, emp, '2027-02-05', 900.0)
+    assert hr.pending_advance_stamp(rid, conn=c) == (0, 0.0)
+    assert hr.pending_advance_note(rid, conn=c) is None

@@ -222,3 +222,29 @@ def test_reopen_needs_the_confirm_box_when_the_roster_drifted(admin_client, tmp_
         follow_redirects=True)
     assert resp.status_code == 200
     assert status() == 'draft', "confirmed reopen must proceed"
+
+
+def test_reopen_dialog_warns_about_advances_even_with_a_clean_roster(admin_client, tmp_db):
+    """The advance hazard is independent of the roster one.
+
+    Folding it into the roster warning would have hidden it on exactly the runs
+    that look safest — a matching roster says nothing about whether a
+    re-finalize would swallow a back-dated advance.
+    """
+    rid = _make_finalized_run(tmp_db)
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    try:
+        emp = conn.execute(
+            "SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+            (rid,)).fetchone()[0]
+        conn.execute(
+            "INSERT INTO salary_advances (employee_id, advance_date, amount) "
+            "VALUES (?, '2026-09-20', 640)", (emp,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    html = admin_client.get(f'/hr/payroll/{rid}').get_data(as_text=True)
+    assert 'data-warn="pending-advance-stamp"' in html
+    assert '640' in html
+    assert 'data-warn="roster-drift"' not in html, "roster is clean — only the advance warning"

@@ -547,8 +547,12 @@ def payroll_detail(run_id: int):
     # Only a finalized run can be reopened, so only that one needs the warning.
     # The server still enforces the confirmation in reopen_run — this exists so
     # the operator is told BEFORE opening the dialog, not after a refusal.
-    roster_drift_note = (hr_mod.roster_drift_note(run_id)
-                         if run["status"] == "finalized" else None)
+    # Two independent hazards of reopening a closed month. Computed separately
+    # because a run with a matching roster is just as exposed to the advance
+    # stamp, and vice versa.
+    finalized = run["status"] == "finalized"
+    roster_drift_note = hr_mod.roster_drift_note(run_id) if finalized else None
+    pending_advance_note = hr_mod.pending_advance_note(run_id) if finalized else None
     return render_template(
         "hr/payroll_detail.html",
         run=run,
@@ -557,6 +561,7 @@ def payroll_detail(run_id: int):
         dup_manual_salary_count=dup_manual_salary_count,
         any_paid=any_paid,
         roster_drift_note=roster_drift_note,
+        pending_advance_note=pending_advance_note,
         today_iso=date.today().isoformat(),
         be_year=_be_year,
         fmt_baht=_fmt_baht,

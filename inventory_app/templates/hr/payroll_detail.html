@@ -351,6 +351,11 @@
             <strong>Reopen จะปลดสถานะกลับเป็น draft</strong> เพื่อให้แก้ไข items หรือ regenerate ได้.
             Advance stamps จะคงอยู่ — กด <strong>Finalize ใหม่</strong> เมื่อแก้เสร็จเพื่อ lock อีกครั้ง.
           </div>
+          {% if pending_advance_note %}
+          <div class="alert alert-danger small mb-3" data-warn="pending-advance-stamp">
+            <i class="bi bi-cash-coin me-1"></i>{{ pending_advance_note }}
+          </div>
+          {% endif %}
           {% if roster_drift_note %}
           <div class="alert alert-danger small mb-3" data-warn="roster-drift">
             <i class="bi bi-people me-1"></i>{{ roster_drift_note }}

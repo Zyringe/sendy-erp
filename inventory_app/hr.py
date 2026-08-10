@@ -837,6 +837,56 @@ def roster_drift(run_id: int, conn: Optional[sqlite3.Connection] = None,
                 _regenerate_would_add(c, run_id, active_ids))
 
 
+def pending_advance_stamp(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                          db_path: Optional[str] = None):
+    """(count, total) of advances a re-finalize of `run_id` would stamp.
+
+    Mirrors `finalize_run`'s UPDATE exactly — un-deducted, dated on or before
+    the run month's period_end, employee already in the run. Kept as its own
+    query rather than folded into the roster warning because the two hazards
+    are unrelated: a run with a perfectly matching roster is equally exposed.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        run = c.execute("SELECT * FROM payroll_runs WHERE id = ?",
+                        (run_id,)).fetchone()
+        if run is None:
+            return 0, 0.0
+        _, period_end = _month_bounds(run["year_month"])
+        row = c.execute(
+            """SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total
+                 FROM salary_advances
+                WHERE deducted_in_run_id IS NULL
+                  AND advance_date <= :period_end
+                  AND employee_id IN (
+                      SELECT employee_id FROM payroll_items WHERE run_id = :run_id
+                  )""",
+            {"run_id": run_id, "period_end": period_end.isoformat()},
+        ).fetchone()
+        return int(row["n"]), float(row["total"])
+
+
+def pending_advance_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                         db_path: Optional[str] = None):
+    """Warning for the advances a re-finalize would swallow, or None.
+
+    2026-08-07 (why this exists): reopening a closed month became possible
+    again, and the flow tells the operator to finalize afterwards. On a month
+    whose payslips are already paid, that stamp marks an advance deducted while
+    no cash is ever withheld — the money is simply never collected. Nothing in
+    the app said so.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        n, total = pending_advance_stamp(run_id, conn=c)
+        if not n:
+            return None
+        return (
+            f"⚠ ถ้า finalize รอบนี้ใหม่ ระบบจะประทับเงินเบิกล่วงหน้า {n} รายการ "
+            f"(รวม ฿{total:,.2f}) ว่าหักในรอบนี้ — แต่รอบนี้จ่ายเงินไปแล้ว "
+            f"เงินก้อนนั้นจึงจะไม่ถูกหักจากใครจริง ๆ "
+            f"· ถ้าไม่ได้ตั้งใจ ให้แก้วันที่ของรายการเบิกให้ตรงเดือนที่จะหักจริงก่อน"
+        )
+
+
 def roster_drift_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
                       db_path: Optional[str] = None):
     """The reopen warning for `run_id`, or None when the roster still matches.
@@ -864,7 +914,7 @@ def _roster_drift_message(c, dropped_ids, added_ids) -> str:
     return (
         "รอบนี้เปิดใหม่ได้ แต่รายชื่อพนักงานตอนนี้ไม่ตรงกับตอนที่ปิดรอบ: "
         + " · ".join(parts)
-        + " · เปิดรอบเฉย ๆ ไม่กระทบตัวเลขใคร แต่ถ้ากด \"สร้างรอบใหม่\" ระบบจะปฏิเสธ "
+        + " · การกดเปิดรอบเองไม่แก้ตัวเลขของใคร แต่ถ้ากด \"สร้างรอบใหม่\" ระบบจะปฏิเสธ "
         "เพื่อกันไม่ให้ประวัติเดือนนี้ถูกเขียนทับ — ให้แก้ตัวเลขรายบุคคลแทน แล้ว finalize ใหม่"
     )
 
