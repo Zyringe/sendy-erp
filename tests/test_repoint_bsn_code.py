@@ -1056,3 +1056,76 @@ def test_relocated_compensation_survives_a_re_run(empty_db_conn):
     assert conn.execute(
         "SELECT cost_price FROM products WHERE id=?", (NEW,)).fetchone()['cost_price'] == cost1
     assert (_stock(conn, OLD), _stock(conn, NEW)) == before
+
+
+def test_repoint_survives_a_non_stock_row_sharing_the_source_product(empty_db_conn):
+    """Task 9 (coverage sweep) gap: repoint_bsn_code resets synced_to_stock=0
+    for EVERY source row on an affected product — not just the bsn_code being
+    moved — then deletes and re-syncs that product's whole 'BSN%' ledger
+    (docstring: "not just this bsn_code's"). A non-stock billable line
+    (888ค8888/ZZZ) sharing OLD's product_id under a DIFFERENT bsn_code sits
+    right in that blast radius. It must come out the other side with its
+    revenue row intact, unsynced, and ledger-free — the ONLY thing protecting
+    it is _sync_bsn_to_stock's own is_non_stock_code guard firing again on
+    the replay, since repoint_bsn_code itself has no non-stock-aware code.
+    """
+    import models
+
+    conn = empty_db_conn
+    OLD = _product(conn, 'Old (mixed)', 'ตัว')
+    NEW = _product(conn, 'New', 'ตัว')
+    CODE = 'ZNONSTOCK01'
+    _mapping(conn, CODE, OLD)
+    _sale(conn, 'ZN-S1', OLD, CODE, qty=4, unit='ตัว')
+
+    # The non-stock line: a DIFFERENT bsn_code, same OLD product, real revenue.
+    conn.execute(
+        "INSERT INTO sales_transactions"
+        " (date_iso, doc_no, doc_base, product_id, bsn_code, product_name_raw,"
+        "  customer, customer_code, qty, unit, unit_price, vat_type, discount,"
+        "  total, net, synced_to_stock)"
+        " VALUES ('2026-06-01','ZN-SHIP1','ZN-SHIP1',?,'888ค8888','ค่าขนส่ง',"
+        # unit == OLD's own unit_type ('ตัว') on purpose: _get_base_qty short-
+        # circuits on that equality with no unit_conversions lookup at all, so
+        # the ONLY thing that can skip this row is the is_non_stock_code guard
+        # — a mismatched unit would ALSO skip it via the separate "ratio not
+        # defined yet" branch, which would make this test pass for the wrong
+        # reason (caught by the break-it-once proof — see task-9-report.md).
+        "  'ลูกค้าทดสอบ','C1',1,'ตัว',30.0,0,'',30.0,30.0,0)", (OLD,))
+    conn.commit()
+
+    # Pre-existing CORRECT state, same setup every sibling test in this file
+    # uses: sync once so OLD's ordinary line has a real ledger row, and
+    # confirm the non-stock line is already left unsynced with no ledger
+    # (exactly the state _sync_bsn_to_stock's guard leaves it in on import).
+    models._sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
+    conn.commit()
+    assert conn.execute(
+        "SELECT synced_to_stock FROM sales_transactions WHERE doc_no='ZN-SHIP1'"
+    ).fetchone()['synced_to_stock'] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no='ZN-SHIP1'"
+    ).fetchone()[0] == 0
+
+    report = models.repoint_bsn_code(conn, CODE, NEW)
+    conn.commit()
+
+    assert 'error' not in report, report      # replay must not report a shortfall
+    assert report['orphan_rows_after'] == 0
+
+    # The ordinary line actually moved (sanity control — the repoint did work).
+    assert conn.execute(
+        "SELECT product_id FROM sales_transactions WHERE doc_no='ZN-S1'"
+    ).fetchone()['product_id'] == NEW
+
+    # The non-stock row survives untouched on OLD: count first, then value.
+    ship_rows = conn.execute(
+        "SELECT product_id, net, synced_to_stock FROM sales_transactions"
+        " WHERE doc_no='ZN-SHIP1'").fetchall()
+    assert len(ship_rows) == 1, ship_rows
+    assert ship_rows[0]['product_id'] == OLD, "non-stock row must not move with the code"
+    assert ship_rows[0]['net'] == 30.0, "revenue must survive the replay"
+    assert ship_rows[0]['synced_to_stock'] == 0, "must stay unsynced"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no='ZN-SHIP1'"
+    ).fetchone()[0] == 0, "must never gain a ledger row"
