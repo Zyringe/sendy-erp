@@ -115,7 +115,17 @@ def test_non_stock_line_is_imported_as_revenue(tmp_db_conn):
 
 
 def test_vat_code_is_still_dropped_entirely(tmp_db_conn):
+    """Design §7(b) #13 — BOTH halves.
+
+    The "still alerts" half was unasserted until the final review (I4). It
+    matters: the whole `import_ignored_lines` mechanism stays live only for
+    888ค8887 after mig 155 unignores the other two, so if unignoring them had
+    also broken the alert path, nothing would have noticed.
+    `system_alerts` is wiped first — the live clone carries unrelated open
+    alerts, and inheriting them would make the count assertion meaningless.
+    """
     conn = tmp_db_conn
+    conn.execute("DELETE FROM system_alerts")
     pid = conn.execute(
         "INSERT INTO products (product_name, unit_type) VALUES ('ค่าVAT', 'ตัว')"
     ).lastrowid
@@ -130,6 +140,14 @@ def test_vat_code_is_still_dropped_entirely(tmp_db_conn):
     n = conn.execute(
         "SELECT COUNT(*) FROM sales_transactions WHERE bsn_code='888ค8887'").fetchone()[0]
     assert n == 0
+
+    # ── "still alerts" ──
+    alerts = conn.execute(
+        "SELECT kind, dedupe_key, message FROM system_alerts"
+        " WHERE resolved_at IS NULL").fetchall()
+    assert len(alerts) == 1, alerts             # count BEFORE the property
+    assert alerts[0]['kind'] == 'import_ignored_lines', dict(alerts[0])
+    assert '888ค8887' in alerts[0]['message'], alerts[0]['message']
 
 
 def test_preview_agrees_with_commit_for_non_stock_codes(tmp_db_conn):
@@ -233,3 +251,75 @@ def test_non_stock_row_survives_pass_2_rebuild(tmp_db_conn):
     ledger = conn.execute(
         "SELECT COUNT(*) FROM transactions WHERE product_id=?", (pid,)).fetchone()[0]
     assert ledger == 0
+
+
+def test_reimport_identical_non_stock_file_is_a_true_no_op(tmp_db_conn):
+    """Design §7(b) #15 — implemented at final review (I4).
+
+    Idempotency of the weekly import is the most-exercised property in this
+    app (test_import_weekly_idempotent.py covers ordinary codes), and the
+    non-stock branch now sits directly above the `same` comparison at
+    imports.py:262. Re-uploading the identical file must be a genuine no-op
+    for these codes too: `unchanged`, no duplicate row, no ledger row.
+
+    The row's **id** is asserted stable, not just the row COUNT — a
+    DELETE + re-INSERT would keep the count at 1 while churning the ledger
+    through pass 2, which is exactly the failure this pins. `overwritten == 0`
+    is the second, independent witness of the same thing.
+
+    Note `non_stock` is NOT terminal: it overlaps `unchanged` rather than
+    partitioning against it (final review §2), so the second import reports
+    both. Asserted here so a future refactor that "tidies" that has to make
+    the change deliberately.
+    """
+    conn = tmp_db_conn
+    conn.execute("DELETE FROM sales_transactions WHERE bsn_code='888ค8888'")
+    conn.commit()
+    pid = conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES ('ค่าขนส่ง', 'ตัว')"
+    ).lastrowid
+    conn.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio)"
+                 " VALUES (?, 'ใบ', 1.0)", (pid,))
+    conn.commit()
+    _map(conn, '888ค8888', 'ค่าขนส่ง', pid)
+
+    entry = _entry('888ค8888', 'ค่าขนส่ง', 'IV9005-1', 30.0)
+
+    first = models.import_weekly([dict(entry)], 'sales', 'test.csv')
+    assert first['non_stock'] == 1, first
+    assert first['imported'] == 1, first
+    rows1 = conn.execute(
+        "SELECT id, net FROM sales_transactions WHERE bsn_code='888ค8888'"
+    ).fetchall()
+    assert len(rows1) == 1, rows1               # count BEFORE the property
+    assert rows1[0]['net'] == 30.0
+    ledger1 = conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE product_id=?", (pid,)).fetchone()[0]
+    assert ledger1 == 0, 'first import already posted a ledger row'
+    stock1 = conn.execute(
+        "SELECT COALESCE(quantity, 0) FROM stock_levels WHERE product_id=?",
+        (pid,)).fetchone()
+    stock1 = stock1[0] if stock1 else 0
+
+    second = models.import_weekly([dict(entry)], 'sales', 'test.csv')
+
+    assert second['unchanged'] == 1, second
+    assert second['imported'] == 0, second
+    assert second['overwritten'] == 0, second   # no DELETE + re-INSERT
+    assert second['non_stock'] == 1, second     # overlaps `unchanged`, by design
+
+    rows2 = conn.execute(
+        "SELECT id, net FROM sales_transactions WHERE bsn_code='888ค8888'"
+    ).fetchall()
+    assert len(rows2) == 1, rows2               # no duplicate
+    assert rows2[0]['id'] == rows1[0]['id'], 'row was replaced, not left alone'
+    assert rows2[0]['net'] == 30.0
+
+    ledger2 = conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE product_id=?", (pid,)).fetchone()[0]
+    assert ledger2 == 0, 'the re-import posted a ledger row'
+    stock2 = conn.execute(
+        "SELECT COALESCE(quantity, 0) FROM stock_levels WHERE product_id=?",
+        (pid,)).fetchone()
+    stock2 = stock2[0] if stock2 else 0
+    assert stock2 == stock1
