@@ -12,7 +12,7 @@ import bsn_units
 
 from .bsn_sync import (_BSN_LEDGER_NOTE_PATTERNS, _sync_bsn_to_stock,
                        cross_unit_hazard)
-from .stock_filters import non_stock_clause
+from .stock_filters import non_stock_clause, is_non_stock_code, NonStockCodeError
 from .wacc import (recalculate_product_wacc, preflight_batch,
                    WaccIdentityError)
 from .system_alerts import record_wacc_identity_alert
@@ -28,7 +28,15 @@ def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
 
     Uses UPDATE-then-INSERT to avoid dependency on which UNIQUE constraint is
     currently active (compatible across the mig-112/mig-124 boundary).
+
+    Refuses is_ignored=1 for a NON_STOCK_BSN_CODES code: ignoring one drops its
+    revenue. Raising (rather than silently coercing to 0) keeps the DB and the
+    importer telling the same story.
     """
+    if is_ignored and is_non_stock_code(bsn_code):
+        raise NonStockCodeError(
+            f'รหัส {bsn_code} เป็นรายการที่มีมูลค่าจริง (ค่าบริการ/ส่วนลด) '
+            f'ตั้งเป็น "ไม่นำเข้า" ไม่ได้ เพราะยอดจะหายจากบัญชี')
     bsn_unit = bsn_unit or ''
     conn = get_connection()
     updated = conn.execute("""

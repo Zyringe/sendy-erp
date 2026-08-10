@@ -15,7 +15,8 @@ from .bsn_sync import _sync_bsn_to_stock
 from .wacc import (recalculate_product_wacc, preflight_batch,
                    WaccIdentityError)
 from .system_alerts import (record_wacc_identity_alert,
-                            record_ignored_import_lines_alert)
+                            record_ignored_import_lines_alert,
+                            create_system_alert)
 from .stock_filters import is_non_stock_code
 
 
