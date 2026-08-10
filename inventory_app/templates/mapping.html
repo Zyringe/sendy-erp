@@ -954,7 +954,12 @@ function saveSingle(entry) {
     if (d.ok) {
       window.location.reload();
     } else {
-      alert('Save failed');
+      // Surface the server's own message. bsn.py::mapping_save returns a 400
+      // whose `error` NAMES the refused code (e.g. a non-stock billable code
+      // that cannot be ไม่นำเข้า) — swallowing it and printing a generic
+      // "Save failed" throws away the whole point of that refusal. Same shape
+      // as the approve-suggestion handler ~700 lines above.
+      alert(d.error || 'Save failed');
     }
   });
 }

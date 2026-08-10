@@ -132,3 +132,51 @@ def test_dismiss_flash_is_honest_for_a_protected_group(admin_client, tmp_db_conn
     body = resp.get_data(as_text=True)
     assert 'ไม่ได้ยกเลิกรายการใด' in body, body
     assert 'ยกเลิก 0 แถว' not in body, body
+
+
+def test_saveSingle_surfaces_the_route_error_to_the_operator():
+    """I3 (final review): the 400 that names the code must reach the operator.
+
+    `mapping_save` returns {'ok': False, 'error': '<message naming the code>'}
+    and the test above pins that. `saveSingle` in templates/mapping.html is
+    its ONLY caller, and it used to do `alert('Save failed')` — discarding
+    `d.error`, so design §9b's "a clear refusal naming the code" was satisfied
+    at the route and thrown away at the client. A route-level test cannot see
+    that layer; this one reads the template.
+
+    ⚠ Scoped to the saveSingle FUNCTION BODY on purpose. A file-wide
+    `'d.error' in body` could not fail: the approve-suggestion handler ~700
+    lines above already contains `alert('Error: ' + (d.error || 'unknown'))`,
+    so the whole-file check is satisfied by a sibling and says nothing about
+    the handler under test. Same substring trap the rules file warns about.
+    """
+    import os
+    tpl = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'inventory_app', 'templates', 'mapping.html')
+    with open(tpl, encoding='utf-8') as f:
+        body = f.read()
+
+    marker = 'function saveSingle('
+    start = body.find(marker)
+    assert start != -1, 'saveSingle no longer exists in mapping.html'
+    assert body.count(marker) == 1, 'more than one saveSingle — rescope this test'
+    # closing brace at column 0 — saveSingle is the last `function` in the
+    # file, so scanning for the next one finds nothing.
+    end = body.find('\n}', start)
+    assert end != -1, 'could not find the end of saveSingle'
+    fn = body[start:end + 2]
+
+    # controls: the slice really is the handler, and it did not swallow the
+    # rest of the file (which would re-open the sibling-handler substring trap)
+    assert 'mapping_save' in fn, 'sliced the wrong function'
+    assert 'd.ok' in fn, 'sliced the wrong function'
+    assert len(fn) < 1500, 'slice too large — it may include a sibling handler'
+    assert 'unknown' not in fn, (
+        'slice reached the approve-suggestion handler — rescope')
+
+    assert 'd.error' in fn, (
+        "saveSingle discards the server's error message — the 400 naming the "
+        "refused code never reaches the operator")
+    assert "alert('Save failed')" not in fn, (
+        'saveSingle still shows the generic message instead of d.error')
