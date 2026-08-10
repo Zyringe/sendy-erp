@@ -106,6 +106,37 @@ EXPECTED = {
         "allowlisted: module DOCSTRING prose only (\"every reader of "
         "synced_to_stock has to agree\") — not executable code, never reads or "
         "writes the column. NOT EXECUTABLE — no behaviour test applies.",
+
+    ('models/bsn_sync.py', 'update_unit_conversion_ratio'):
+        'allowlisted: resets synced_to_stock=0 for the WHOLE product then '
+        'replays through the real _sync_bsn_to_stock (same chokepoint guard as '
+        'above) — no non-stock-aware code of its own. Traced by two independent '
+        'reviewers per the design, and now DEMONSTRATED (not just traced): '
+        'break-it-once against is_non_stock_code inside _sync_bsn_to_stock turns '
+        'this red '
+        '(tests/test_unit_ratio_rebuild.py::test_ratio_edit_survives_a_non_stock_row_on_the_same_product)',
+
+    ('models/mapping.py', 'repoint_bsn_code'):
+        'allowlisted: resets synced_to_stock=0 for every AFFECTED product (not '
+        "just the moved bsn_code's — see the function's own docstring), deletes "
+        'their ledger, replays through the real _sync_bsn_to_stock (same '
+        'chokepoint guard). Demonstrated via break-it-once, same as above '
+        '(tests/test_repoint_bsn_code.py::test_repoint_survives_a_non_stock_row_sharing_the_source_product)',
+
+    ('models/mapping.py', '_repoint_rows'):
+        'allowlisted: nested helper inside repoint_bsn_code doing the actual '
+        'UPDATE ... synced_to_stock=0 — covered by the same replay and the same '
+        'test as its enclosing function '
+        '(tests/test_repoint_bsn_code.py::test_repoint_survives_a_non_stock_row_sharing_the_source_product)',
+
+    ('models/bsn_sync.py', '_synced_source_ids'):
+        'allowlisted: read-only set builder, only caller is '
+        'update_unit_conversion_ratio; selects WHERE synced_to_stock=1 — a '
+        'non-stock row is PERMANENTLY 0, so it can never appear in this set '
+        'regardless of the replay outcome '
+        '(tests/test_unit_ratio_rebuild.py::test_ratio_edit_survives_a_non_stock_row_on_the_same_product '
+        "exercises update_unit_conversion_ratio's full path, which calls this "
+        'function twice)',
 }
 
 # How many DISTINCT synced_to_stock-bearing string literals the scan currently
@@ -126,6 +157,10 @@ EXPECTED_OCCURRENCE_COUNTS = {
     ('models/reconcile.py', '_ledger_check'): 1,
     ('models/reconcile.py', '_cas_compare'): 1,
     ('models/stock_filters.py', MODULE_LEVEL): 1,
+    ('models/bsn_sync.py', 'update_unit_conversion_ratio'): 1,
+    ('models/mapping.py', 'repoint_bsn_code'): 2,
+    ('models/mapping.py', '_repoint_rows'): 1,
+    ('models/bsn_sync.py', '_synced_source_ids'): 2,
 }
 
 # Sentinel for the rare allowlist entry where NO behaviour test can apply
