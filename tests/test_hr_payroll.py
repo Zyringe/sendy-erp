@@ -199,6 +199,46 @@ def test_long_maternity_month_does_not_deduct_more_than_base(tmp_db_conn):
     assert it['net_pay'] == -it['sso_employee']
 
 
+def test_floored_annual_entitlement_deducts_the_excess(tmp_db_conn_hr_clean):
+    """Rounding the ANNUAL entitlement DOWN is a money path, not a display change.
+
+    Put chose floor over round-to-nearest-0.5 on 2026-08-10. The consequence
+    Codex flagged on PR #371: an employee whose entitlement drops below the days
+    they have already taken has the difference deducted as UNPAID leave.
+
+    Hire 2026-04-17 → 6 × 259/365 = 4.2575. Under the old rule that rounded to
+    4.5 and 4.5 days taken was exactly on quota — nothing unpaid. Under floor it
+    is 4, so the last half day crosses and costs 15,000/30 × 0.5 = ฿250.
+
+    This test is the one that goes red if the rounding is ever reverted, because
+    a 4.5 entitlement makes the excess zero.
+    """
+    conn = tmp_db_conn_hr_clean
+    eid = _mk_employee(conn, 'T_FLOOR', 'floored annual', '2026-04-17',
+                       monthly_salary=15000.0)
+    assert hr.leave_balance(eid, 2026, conn=conn)['ANNUAL']['entitlement'] == 4, \
+        "precondition: the floored entitlement, not 4.5"
+
+    _add_leave(conn, eid, 'ANNUAL', '2026-05-04', '2026-05-07', 4)    # exactly on quota
+    _add_leave(conn, eid, 'ANNUAL', '2026-06-01', '2026-06-01', 0.5)  # crosses it
+
+    bal = hr.leave_balance(eid, 2026, conn=conn)
+    assert bal['ANNUAL']['used'] == 4.5
+    assert bal['ANNUAL']['over'] == 0.5
+
+    # May sits inside the entitlement — nothing deducted there.
+    may = _item(conn, hr.generate_run('2026-05', 1, created_by=1, conn=conn)['id'], eid)
+    assert may['unpaid_leave_days'] == 0
+    assert may['unpaid_leave_deduction'] == 0
+
+    # June is the month that crossed, so June carries the whole excess.
+    jun = _item(conn, hr.generate_run('2026-06', 1, created_by=1, conn=conn)['id'], eid)
+    assert jun['unpaid_leave_days'] == 0.5
+    assert jun['unpaid_leave_deduction'] == 250.00 == round(15000 / 30 * 0.5, 2)
+    assert jun['net_pay'] == round(jun['gross'] - 250.00 - jun['sso_employee'], 2)
+    assert jun['note'] and 'เกินสิทธิ' in jun['note']
+
+
 def test_over_quota_personal_excess_unpaid(tmp_db_conn):
     eid = _mk_employee(tmp_db_conn, 'T_OQ2', 'overquota personal', '2025-01-01',
                        monthly_salary=15000.0)

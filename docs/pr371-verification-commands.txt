@@ -1,0 +1,68 @@
+# Exact commands behind the numbers claimed on PR #371.
+# Codex could not execute pytest (its sandbox had no writable temp dir);
+# these let it rerun rather than take the counts on trust.
+
+cd /Users/putty/Sendai-Boonsawat-wt/hr-payroll-review
+
+# 0. REQUIRED FIRST — a suite run leaves an EMPTY inventory_app/instance/inventory.db
+#    that conftest.LIVE_DB then binds to, making every later run fail 'no such table'.
+rm -f inventory_app/instance/inventory.db* inventory_app/data/backups/*.db
+
+# 1. HR/payroll suite  -> expect 670 passed / 0 failed
+~/.virtualenvs/erp/bin/pytest \
+  tests/test_account_settings.py \
+  tests/test_audit_hr_rollback.py \
+  tests/test_audit_salary_advance_links.py \
+  tests/test_bp_hr_routes.py \
+  tests/test_cashbook_account_management.py \
+  tests/test_cashbook_advance_history.py \
+  tests/test_cashbook_advance_lock_and_delete.py \
+  tests/test_cashbook_advance_writeback.py \
+  tests/test_cashbook_edit_policy_guard.py \
+  tests/test_cashbook_manual_entry.py \
+  tests/test_cashbook_overspend_advance_exclusion.py \
+  tests/test_cashbook_salary_and_commission_block.py \
+  tests/test_commission_override_cache_invalidation.py \
+  tests/test_commission_settled_through.py \
+  tests/test_endpoint_module_coverage.py \
+  tests/test_financial_health.py \
+  tests/test_hr_advances_filter.py \
+  tests/test_hr_advances_readonly.py \
+  tests/test_hr_employee_blank_dates.py \
+  tests/test_hr_leave.py \
+  tests/test_hr_pay_checklist.py \
+  tests/test_hr_payroll.py \
+  tests/test_hr_phase1.py \
+  tests/test_hr_phase2_renumber.py \
+  tests/test_hr_phase3_5_shareholder_reads.py \
+  tests/test_hr_phase3_roles.py \
+  tests/test_hr_phase4.py \
+  tests/test_hr_phase5.py \
+  tests/test_hr_phase6.py \
+  tests/test_hr_phase7.py \
+  tests/test_hr_phase8.py \
+  tests/test_hr_salary_advance.py \
+  tests/test_impersonate_user.py \
+  tests/test_migration_123_cashbook_manual_entry.py \
+  tests/test_migration_126_users_default_cashbook_account.py \
+  tests/test_migration_128_cashbook_advance_writeback.py \
+  tests/test_migration_129_cashbook_commission_writeback.py \
+  tests/test_mobile_nav.py \
+  tests/test_nav.py \
+  tests/test_nav_snapshot.py \
+  tests/test_payroll_regenerate_guard.py \
+  tests/test_post_whitelist.py \
+  tests/test_pwa_nav_phase3_render.py \
+  tests/test_salary_pay_event.py \
+  tests/test_users_employee_link.py \
+  tests/test_payroll_item_run_ownership.py \
+  tests/test_leave_chronological_allocation.py \
+  tests/test_leave_payload_validation.py \
+  tests/test_employee_creation_atomicity.py -q
+
+# 2. Full suite, then diff the failure NAME SET against origin/main
+rm -f inventory_app/instance/inventory.db* inventory_app/data/backups/*.db
+~/.virtualenvs/erp/bin/pytest > /tmp/branch.log 2>&1
+grep -E '^(FAILED|ERROR) ' /tmp/branch.log | sed 's/ - .*//' | sort -u > /tmp/branch.names
+# same two commands in a worktree at origin/main -> /tmp/base.names, then:
+comm -13 /tmp/base.names /tmp/branch.names   # must be EMPTY

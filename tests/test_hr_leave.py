@@ -219,7 +219,7 @@ def test_annual_zero_when_probation_ends_after_yearend(tmp_db_conn):
 
 def test_annual_prorate_derives_probation_end_when_null(tmp_db_conn):
     # probation_end_date blank → derive from start + probation_days (90);
-    # 2026-04-01 + 90d ≈ 2026-06-30 ≤ year-end → prorated 4.5, not 0
+    # 2026-04-01 + 90d ≈ 2026-06-30 ≤ year-end → prorated 4, not 0
     eid = _mk_employee(tmp_db_conn, 'L_PR7', '2026-04-01')
     bal = hr.leave_balance(eid, 2026, conn=tmp_db_conn)
     assert bal['ANNUAL']['entitlement'] == 4

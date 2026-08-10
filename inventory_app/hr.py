@@ -158,9 +158,16 @@ def _round_down_days(x: float) -> float:
     """Round a prorated entitlement DOWN to a whole day. 4.2575 → 4, 5.49 → 5.
 
     Put, 2026-08-10: "I don't want to have half day, let's just round down."
-    This replaced round-to-nearest-0.5, which is why the first partial year now
-    grants one fewer day than it did before (e.g. a 17 Apr hire: 4.5 → 4). A
-    full calendar year is unaffected — 6.0 floors to 6.
+    This replaced round-to-nearest-0.5, so the first partial year now grants up
+    to half a day less than it did before (e.g. a 17 Apr hire: 4.5 → 4). A full
+    calendar year is unaffected — 6.0 floors to 6.
+
+    ⚠ Lowering an entitlement is a MONEY path, not just a display change: days
+    past the entitlement become unpaid leave and are deducted from net pay
+    (`_compute_unpaid_days` → `_build_item`). Someone who has already taken
+    more than the floored figure loses the difference — 0.5 day is ฿250 at a
+    ฿15,000 salary. Pinned by
+    tests/test_hr_payroll.py::test_floored_annual_entitlement_deducts_the_excess.
     """
     return float(math.floor(x))
 
