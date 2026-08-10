@@ -53,4 +53,6 @@ DROP TABLE IF EXISTS migration_156_deleted_ledger;
 DROP TABLE IF EXISTS migration_156_synced_sources;
 DROP TABLE IF EXISTS migration_156_deleted_cost_ledger;
 
+DELETE FROM applied_migrations WHERE filename = '156_nonstock_transition.sql';
+
 COMMIT;
