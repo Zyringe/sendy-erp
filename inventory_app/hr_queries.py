@@ -286,6 +286,14 @@ def create_employee_with_initial_salary(
         # SAVEPOINT, not rollback(): on a caller-supplied connection a bare
         # rollback would also discard whatever the CALLER had pending. This
         # undoes exactly our two inserts either way.
+        #
+        # ⚠ RELEASE of an OUTERMOST savepoint COMMITS. On a borrowed connection
+        # sitting idle, that published the rows the moment we returned — the
+        # caller's later rollback could not take them back, breaking the
+        # contract below. Open an outer transaction first so ours is always a
+        # nested savepoint and the caller keeps control.
+        if not owned and not c.in_transaction:
+            c.execute("BEGIN")
         c.execute("SAVEPOINT create_employee_with_salary")
         try:
             emp_id = _insert_employee(c, data)
@@ -513,7 +521,10 @@ def _parse_leave_date(raw, label: str) -> date:
     if not text:
         raise ValueError(f"กรุณาระบุ{label}")
     try:
-        return date.fromisoformat(text[:10])
+        # The WHOLE string, not text[:10]: slicing accepted anything with a
+        # valid date prefix ('2026-03-10junk', '2026-03-10T09:00:00') and threw
+        # the remainder away, so the stored row disagreed with what was sent.
+        return date.fromisoformat(text)
     except ValueError:
         raise ValueError(f"{label}ไม่ถูกต้อง (ต้องเป็นรูปแบบ YYYY-MM-DD)")
 

@@ -61,6 +61,12 @@ INVALID = [
     pytest.param({"start_date": None}, id="null-start"),
     pytest.param({"start_date": "10/03/2026"}, id="non-iso-start"),
     pytest.param({"end_date": "2026-13-40"}, id="impossible-end"),
+    # Parsing only the first 10 characters silently accepted anything with a
+    # valid date prefix and threw the rest away, so the stored row disagreed
+    # with what was submitted. The validator promises exact YYYY-MM-DD.
+    pytest.param({"start_date": "2026-03-10junk"}, id="trailing-junk"),
+    pytest.param({"start_date": "2026-03-10T09:00:00"}, id="timestamp-not-a-date"),
+    pytest.param({"end_date": "2026-03-12-extra"}, id="trailing-junk-end"),
     pytest.param({"start_date": "2026-03-12", "end_date": "2026-03-10"},
                  id="reversed-range"),
     pytest.param({"days": 0}, id="zero-days"),

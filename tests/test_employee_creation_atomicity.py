@@ -108,6 +108,64 @@ def test_second_step_failure_rolls_back_the_employee(tmp_db_conn, monkeypatch):
     assert _counts(tmp_db_conn, code) == (0, 0)
 
 
+def test_borrowed_connection_is_left_for_the_caller_to_commit(tmp_db_conn):
+    """The documented contract: with a caller-supplied connection the CALLER
+    owns the transaction.
+
+    Releasing an OUTERMOST savepoint commits, so on an idle borrowed connection
+    the rows were published the moment this function returned — the caller's
+    later rollback could not take them back, and a second connection could
+    already see them.
+    """
+    conn = tmp_db_conn          # path, so we can open an independent connection
+    import config
+    c = sqlite3.connect(config.DATABASE_PATH)
+    c.row_factory = sqlite3.Row
+    try:
+        code, _ = _free_emp_code(c)
+        assert not c.in_transaction, "precondition: the borrowed conn is idle"
+
+        hrq.create_employee_with_initial_salary(
+            _payload(code), "15000", "2026-03-01", conn=c)
+
+        assert c.in_transaction, (
+            "the work must still be pending — this function must not commit a "
+            "connection it does not own")
+        c.rollback()
+
+        other = sqlite3.connect(config.DATABASE_PATH)
+        try:
+            assert _counts(other, code) == (0, 0), (
+                "the caller rolled back, so neither row may survive")
+        finally:
+            other.close()
+    finally:
+        c.close()
+
+
+def test_borrowed_connection_keeps_the_callers_pending_work(tmp_db_conn):
+    """A failure inside this function must undo ONLY its own two inserts."""
+    import config
+    c = sqlite3.connect(config.DATABASE_PATH)
+    c.row_factory = sqlite3.Row
+    try:
+        code, _ = _free_emp_code(c)
+        # The caller's own pending work, uncommitted.
+        c.execute("INSERT INTO leave_types(code, name_th, is_paid, is_active)"
+                  " VALUES('ZZTEST', 'ทดสอบ', 1, 0)")
+
+        with pytest.raises(ValueError):
+            hrq.create_employee_with_initial_salary(
+                _payload(code), "-5", "2026-03-01", conn=c)
+
+        assert c.execute(
+            "SELECT COUNT(*) FROM leave_types WHERE code='ZZTEST'"
+        ).fetchone()[0] == 1, "the caller's pending row must survive"
+        assert _counts(c, code) == (0, 0)
+    finally:
+        c.close()
+
+
 def test_valid_submission_creates_both_rows(tmp_db_conn):
     code, expected_id = _free_emp_code(tmp_db_conn)
 

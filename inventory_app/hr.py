@@ -334,6 +334,36 @@ def _overlap_days(req_start: date, req_end: date, period_start: date,
 # not a real absence.
 _DAY_EPS = 1e-6
 
+# Maternity rows this far apart (or closer) belong to the SAME leave and share
+# one paid cap; a bigger gap starts a new leave with a fresh cap. Put's call,
+# 2026-08-10. The DB cannot tell "one pregnancy entered as several rows" from
+# "two pregnancies", and the two need opposite treatment: sharing the cap across
+# a calendar year underpaid a second pregnancy by up to 45 days of salary, while
+# a per-row cap would let a leave split month-by-month escape the cap entirely.
+# A pregnancy's rows are contiguous or days apart; two pregnancies are ~9 months
+# apart, so the threshold only has to sit between those two scales.
+_MATERNITY_EPISODE_GAP_DAYS = 30
+
+
+def _maternity_episodes(requests):
+    """Group maternity requests into distinct leaves — [[(start, end, days)…]…].
+
+    `requests` may be in any order; episodes come back in date order, each
+    holding the rows of one leave.
+    """
+    episodes = []
+    running_end = None
+    for req in sorted(requests, key=lambda q: (q[0], q[1])):
+        start, end, _days = req
+        if (running_end is not None
+                and (start - running_end).days <= _MATERNITY_EPISODE_GAP_DAYS):
+            episodes[-1].append(req)
+            running_end = max(running_end, end)
+        else:
+            episodes.append([req])
+            running_end = end
+    return episodes
+
 
 def _fmt_days(x: float) -> str:
     """Trim a day count for display: 31.0 → '31', 0.5 → '0.5'."""
@@ -508,10 +538,15 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
         if code == "MATERNITY":
             allowance = float(type_by_code[code]["max_paid_days"] or 0) or float("inf")
             if allowance != float("inf"):
-                cohort = [q for q in requests
-                          if q[0] <= year_end and q[1] >= year_start]
-                share = _allocate_excess_by_month(cohort, allowance).get(
-                    year_month, 0.0)
+                # One cap per LEAVE. Not per calendar year (that made a second
+                # pregnancy share the first one's 45 days) and not per row
+                # (that let a leave split across rows escape the cap).
+                for episode in _maternity_episodes(requests):
+                    if not any(q[0] <= period_end and q[1] >= period_start
+                               for q in episode):
+                        continue
+                    share += _allocate_excess_by_month(
+                        episode, allowance).get(year_month, 0.0)
         else:
             for cohort_year in sorted({q[0].year for q in touching}):
                 allowance = _entitlement(code, cohort_year)

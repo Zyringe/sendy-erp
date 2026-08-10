@@ -151,6 +151,68 @@ def test_maternity_cap_counts_across_a_year_boundary(tmp_db_conn_hr_clean):
     assert _unpaid(conn, '2027-01', eid) == 31    # days 48-78
 
 
+def test_two_separate_maternity_leaves_each_get_their_own_cap(
+        tmp_db_conn_hr_clean):
+    """Two DISTINCT maternity leaves in one calendar year must not share a cap.
+
+    46 days in January and another 46 in September is one unpaid day each — the
+    second pregnancy is not paid out of the first one's 45 days. Sharing the cap
+    across the year underpaid the second leave by 45 days of salary (measured:
+    47 unpaid days instead of 2).
+
+    Episodes are separated by the gap between consecutive maternity rows
+    (Put, 2026-08-10: >30 days apart = a new leave). Thai maternity leave is 98
+    days per pregnancy and two pregnancies are ~9 months apart, so the threshold
+    only has to beat the largest gap inside one leave and lose to the smallest
+    gap between two.
+    """
+    conn = tmp_db_conn_hr_clean
+    eid = _mk_employee(conn, 'M_TWO', '2024-01-01')
+    _add_leave(conn, eid, 'MATERNITY', '2026-01-01', '2026-02-15', 46)
+    _add_leave(conn, eid, 'MATERNITY', '2026-09-01', '2026-10-16', 46)
+
+    months = {ym: _unpaid(conn, ym, eid)
+              for ym in ('2026-01', '2026-02', '2026-09', '2026-10')}
+
+    assert months == {'2026-01': 0, '2026-02': 1, '2026-09': 0, '2026-10': 1}
+    assert sum(months.values()) == 2, "one unpaid day per leave, not 47"
+
+
+def test_one_leave_split_across_rows_still_shares_one_cap(
+        tmp_db_conn_hr_clean):
+    """The case the gap rule must NOT break: a single 98-day maternity leave
+    entered month by month is still ONE episode with ONE 45-day cap.
+
+    Per-row caps would give every row its own 45 and nothing would ever be
+    unpaid — the original defect in a new form.
+    """
+    conn = tmp_db_conn_hr_clean
+    eid = _mk_employee(conn, 'M_SPLIT', '2024-01-01')
+    _add_leave(conn, eid, 'MATERNITY', '2026-01-01', '2026-01-31', 31)
+    _add_leave(conn, eid, 'MATERNITY', '2026-02-01', '2026-02-28', 28)
+    _add_leave(conn, eid, 'MATERNITY', '2026-03-01', '2026-03-31', 31)
+    _add_leave(conn, eid, 'MATERNITY', '2026-04-01', '2026-04-08', 8)
+
+    months = {ym: _unpaid(conn, ym, eid)
+              for ym in ('2026-01', '2026-02', '2026-03', '2026-04')}
+
+    assert months == {'2026-01': 0, '2026-02': 14, '2026-03': 31, '2026-04': 8}
+    assert round(sum(months.values()), 4) == 53, "= 98 - 45, one shared cap"
+
+
+def test_maternity_episode_still_spans_a_year_boundary(tmp_db_conn_hr_clean):
+    """The gap rule must not resurrect the year-boundary bug: two adjacent rows
+    either side of 31 December are still one episode."""
+    conn = tmp_db_conn_hr_clean
+    eid = _mk_employee(conn, 'M_XYS', '2024-01-01')
+    _add_leave(conn, eid, 'MATERNITY', '2026-11-15', '2026-12-31', 47)
+    _add_leave(conn, eid, 'MATERNITY', '2027-01-01', '2027-02-20', 51)
+
+    assert _unpaid(conn, '2026-11', eid) == 0     # days 1-16
+    assert _unpaid(conn, '2026-12', eid) == 2     # days 17-47 → 46,47 unpaid
+    assert _unpaid(conn, '2027-01', eid) == 31    # wholly past the cap
+
+
 def test_maternity_regeneration_is_stable(tmp_db_conn_hr_clean):
     """Regenerating a draft must not accumulate — the allocation is derived
     from the leave rows, not from the previous run."""
