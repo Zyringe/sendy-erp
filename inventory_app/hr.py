@@ -79,19 +79,42 @@ class _ConnCtx:
             self._owned = _connect(self._db_path)
             c = self._owned
         if self._lock:
-            _begin_immediate(c)      # raises if the caller already had one open
+            try:
+                # Raises if the caller already had one open, and can raise on
+                # its own when another writer holds the lock past the timeout.
+                _begin_immediate(c)
+            except BaseException:
+                # __exit__ never runs when __enter__ raises, so an owned
+                # connection would leak here.
+                if self._owned is not None:
+                    self._owned.close()
+                    self._owned = None
+                raise
             self._locked = True
         return c
 
     def __exit__(self, exc_type, exc, tb):
         c = self._given if self._given is not None else self._owned
-        if self._locked and c is not None and c.in_transaction:
-            if exc_type is not None:
-                c.rollback()
-            else:
-                c.commit()
-        if self._owned is not None:
-            self._owned.close()
+        try:
+            if self._locked and c is not None and c.in_transaction:
+                if exc_type is not None:
+                    try:
+                        c.rollback()
+                    except Exception:
+                        # The body's exception is what the operator needs; a
+                        # rollback that fails while unwinding must not replace
+                        # it. The transaction dies with the connection anyway.
+                        pass
+                else:
+                    # Deliberately NOT swallowed: a commit that fails means the
+                    # write did not land, and the caller must hear about it.
+                    c.commit()
+        finally:
+            # Runs even when the commit above raises — otherwise a failing
+            # commit leaks the connection, and under gunicorn that accumulates
+            # until the worker is recycled (Codex review of PR #367).
+            if self._owned is not None:
+                self._owned.close()
         return False
 
 

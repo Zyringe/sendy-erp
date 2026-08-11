@@ -1371,3 +1371,126 @@ def test_no_writer_leaves_the_caller_connection_holding_the_lock(tmp_db):
     finally:
         c.rollback()
         c.close()
+
+
+# ── _ConnCtx cleanup contract ──────────────────────────────────────────────
+
+class _FlakyConn:
+    """Wraps a real connection and fails one chosen method, so the cleanup
+    path can be exercised without waiting for a real disk error."""
+
+    def __init__(self, real, fail_on):
+        self._real, self._fail_on, self.closed = real, fail_on, False
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    @property
+    def in_transaction(self):
+        return self._real.in_transaction
+
+    def commit(self):
+        if self._fail_on == 'commit':
+            raise sqlite3.OperationalError('disk I/O error')
+        return self._real.commit()
+
+    def rollback(self):
+        if self._fail_on == 'rollback':
+            raise sqlite3.OperationalError('disk I/O error')
+        return self._real.rollback()
+
+    def close(self):
+        self.closed = True
+        return self._real.close()
+
+
+def test_connctx_closes_its_connection_even_when_commit_fails(tmp_db, monkeypatch):
+    """A failing commit must not skip close(). The previous __exit__ called
+    commit() before close() with nothing between them, so a raising commit
+    leaked the connection — and under gunicorn that leak accumulates until the
+    process is recycled (Codex)."""
+    import hr as hr_mod
+    flaky = {}
+
+    def fake_connect(db_path=None):
+        real = sqlite3.connect(tmp_db, timeout=10)
+        real.row_factory = sqlite3.Row
+        real.execute("PRAGMA foreign_keys = ON")
+        flaky['c'] = _FlakyConn(real, 'commit')
+        return flaky['c']
+
+    monkeypatch.setattr(hr_mod, '_connect', fake_connect)
+    # reopen_run on a missing id returns cleanly WITHOUT committing, so the
+    # commit under test is the one __exit__ performs. Picking a function that
+    # commits inside its own body would route through the exception path and
+    # prove nothing about __exit__.
+    with pytest.raises(sqlite3.OperationalError):
+        hr_mod.reopen_run(999999, reason='x', actor='a')
+
+    assert flaky['c'].closed is True, "the connection leaked when commit failed"
+
+
+def test_connctx_rollback_failure_does_not_mask_the_real_error(tmp_db, monkeypatch):
+    """The body's exception is the one the operator needs. A rollback that
+    fails while unwinding must not replace it (Codex)."""
+    import hr as hr_mod
+    flaky = {}
+
+    def fake_connect(db_path=None):
+        real = sqlite3.connect(tmp_db, timeout=10)
+        real.row_factory = sqlite3.Row
+        real.execute("PRAGMA foreign_keys = ON")
+        flaky['c'] = _FlakyConn(real, 'rollback')
+        return flaky['c']
+
+    monkeypatch.setattr(hr_mod, '_connect', fake_connect)
+    # a run id that does not exist -> update_payroll_item raises ValueError
+    with pytest.raises(ValueError):
+        hr_mod.update_payroll_item(999999, bonus=1.0)
+    assert flaky['c'].closed is True
+
+
+def test_connctx_closes_when_the_lock_cannot_be_taken(tmp_db, monkeypatch):
+    """BEGIN IMMEDIATE can fail on its own (another writer holds the lock past
+    the timeout). __enter__ raises then, so __exit__ never runs and the owned
+    connection has to be closed on the way out (Codex)."""
+    import hr as hr_mod
+    flaky = {}
+
+    def fake_connect(db_path=None):
+        real = sqlite3.connect(tmp_db, timeout=10)
+        real.row_factory = sqlite3.Row
+        flaky['c'] = _FlakyConn(real, None)
+        return flaky['c']
+
+    def boom(c):
+        raise sqlite3.OperationalError('database is locked')
+
+    monkeypatch.setattr(hr_mod, '_connect', fake_connect)
+    monkeypatch.setattr(hr_mod, '_begin_immediate', boom)
+    with pytest.raises(sqlite3.OperationalError):
+        hr_mod.generate_run('2028-09', 1, created_by=1)
+    assert flaky['c'].closed is True, "connection leaked when the lock could not be taken"
+
+
+def test_a_successful_owned_run_commits_and_closes(tmp_db, monkeypatch):
+    """Control for the three above: the ordinary path must still commit its
+    work and close, or the cleanup tests would pass on a function that never
+    does anything."""
+    import hr as hr_mod
+    flaky = {}
+
+    def fake_connect(db_path=None):
+        real = sqlite3.connect(tmp_db, timeout=10)
+        real.row_factory = sqlite3.Row
+        real.execute("PRAGMA foreign_keys = ON")
+        flaky['c'] = _FlakyConn(real, None)
+        return flaky['c']
+
+    monkeypatch.setattr(hr_mod, '_connect', fake_connect)
+    run = hr_mod.generate_run('2028-10', 1, created_by=1)
+    assert run is not None
+    assert flaky['c'].closed is True
+    n = sqlite3.connect(tmp_db).execute(
+        "SELECT COUNT(*) FROM payroll_items WHERE run_id=?", (run['id'],)).fetchone()[0]
+    assert n >= 1, "the work must actually be committed, not just cleaned up"
