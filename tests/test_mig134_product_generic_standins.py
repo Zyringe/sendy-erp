@@ -186,8 +186,15 @@ def test_invariant_no_consumer_outside_marketplace_match_yet():
     never consulted by stock-deduction paths — see the migration's own
     invariant note)."""
     app_dir = os.path.join(REPO, "inventory_app")
+    # -I skips BINARY files. Without it this matched the .db snapshots that
+    # other tests drop in inventory_app/data/backups/ — every one contains the
+    # table name in its schema page — so the invariant failed on its own test
+    # litter rather than on a real consumer. It fails identically on origin/main
+    # whenever a backup happens to be sitting there, which made a full-suite run
+    # pass or fail depending on run order. Deliberately NOT --include=*.py: a
+    # template or config referencing the table should still trip this.
     result = subprocess.run(
-        ["grep", "-rl", "product_generic_standins", app_dir],
+        ["grep", "-rlI", "product_generic_standins", app_dir],
         capture_output=True, text=True,
     )
     hits = [
