@@ -48,6 +48,23 @@ def _connect(db_path: Optional[str] = None) -> sqlite3.Connection:
     return conn
 
 
+class ConnectionCleanupError(RuntimeError):
+    """Cleanup failed on the way out of a payroll write.
+
+    `primary_error` is what actually went wrong — the body's exception, or a
+    commit that would not land. `cleanup_error` is what failed while unwinding
+    (a rollback or a close). Both are typed attributes rather than a traceback
+    chain, because `raise X from Y` reads "X was caused by Y" and here the
+    order is the reverse: the cleanup failure is a consequence, never the cause
+    (Codex review of PR #367). Python 3.9, so no ExceptionGroup.
+    """
+
+    def __init__(self, primary_error, cleanup_error):
+        super().__init__(f"{primary_error} · ตามด้วยการเก็บกวาดที่ล้มเหลว: {cleanup_error}")
+        self.primary_error = primary_error
+        self.cleanup_error = cleanup_error
+
+
 class _ConnCtx:
     """Use the caller's connection if given (no close); else open/own one.
 
@@ -83,11 +100,15 @@ class _ConnCtx:
                 # Raises if the caller already had one open, and can raise on
                 # its own when another writer holds the lock past the timeout.
                 _begin_immediate(c)
-            except BaseException:
+            except BaseException as lock_err:
                 # __exit__ never runs when __enter__ raises, so an owned
                 # connection would leak here.
                 if self._owned is not None:
-                    self._owned.close()
+                    try:
+                        self._owned.close()
+                    except Exception as close_err:
+                        self._owned = None
+                        raise ConnectionCleanupError(lock_err, close_err)
                     self._owned = None
                 raise
             self._locked = True
@@ -95,41 +116,41 @@ class _ConnCtx:
 
     def __exit__(self, exc_type, exc, tb):
         c = self._given if self._given is not None else self._owned
+        primary = exc                      # what the caller actually needs to hear
         try:
             if self._locked and c is not None and c.in_transaction:
                 if exc_type is not None:
                     try:
                         c.rollback()
-                    except Exception:
-                        # An OWNED connection is closed in the finally below,
-                        # so its transaction dies regardless and the body's
-                        # exception — what the operator actually needs — is
-                        # left to propagate. A BORROWED one is handed back to
-                        # the caller still holding the lock, so that failure
-                        # cannot be silent (Codex review of PR #367).
+                    except Exception as rollback_err:
+                        # An OWNED connection is closed below, so its
+                        # transaction dies regardless and the body's exception
+                        # stays the headline. A BORROWED one goes back to the
+                        # caller still holding the write lock, so that cannot
+                        # be silent.
                         if self._owned is None:
-                            raise
+                            raise ConnectionCleanupError(primary, rollback_err)
                 else:
                     try:
                         c.commit()
                     except BaseException as commit_err:
-                        # The commit failing is the primary fact and must reach
-                        # the caller. But a borrowed connection would go back
-                        # still inside our transaction, holding SQLite's write
-                        # lock, so try to release it first.
+                        primary = commit_err
                         try:
                             c.rollback()
                         except Exception as rollback_err:
-                            # Surface the cleanup failure without demoting the
-                            # cause: the exception raised is still the commit's.
-                            raise commit_err from rollback_err
+                            raise ConnectionCleanupError(commit_err, rollback_err)
                         raise
         finally:
-            # Runs even when the commit above raises — otherwise a failing
-            # commit leaks the connection, and under gunicorn that accumulates
-            # until the worker is recycled (Codex review of PR #367).
             if self._owned is not None:
-                self._owned.close()
+                try:
+                    self._owned.close()
+                except Exception as close_err:
+                    # close() sits in a finally, so raising here would REPLACE
+                    # whatever went wrong in the body — telling the operator
+                    # about the wrong failure entirely.
+                    if primary is not None:
+                        raise ConnectionCleanupError(primary, close_err)
+                    raise
         return False
 
 

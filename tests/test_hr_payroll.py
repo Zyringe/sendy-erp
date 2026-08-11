@@ -1379,8 +1379,12 @@ class _FlakyConn:
     """Wraps a real connection and fails one chosen method, so the cleanup
     path can be exercised without waiting for a real disk error."""
 
-    def __init__(self, real, fail_on):
+    def __init__(self, real, fail_on, also_fail=None):
         self._real, self._fail_on, self.closed = real, fail_on, False
+        self._also = also_fail
+
+    def _should_fail(self, name):
+        return name == self._fail_on or name == self._also
 
     def __getattr__(self, name):
         return getattr(self._real, name)
@@ -1390,17 +1394,19 @@ class _FlakyConn:
         return self._real.in_transaction
 
     def commit(self):
-        if self._fail_on == 'commit':
+        if self._should_fail('commit'):
             raise sqlite3.OperationalError('disk I/O error')
         return self._real.commit()
 
     def rollback(self):
-        if self._fail_on == 'rollback':
+        if self._should_fail('rollback'):
             raise sqlite3.OperationalError('disk I/O error')
         return self._real.rollback()
 
     def close(self):
         self.closed = True
+        if self._should_fail('close'):
+            raise sqlite3.OperationalError('cannot close')
         return self._real.close()
 
 
@@ -1628,12 +1634,72 @@ def test_a_failing_rollback_on_a_borrowed_connection_is_not_silent(tmp_db):
     try:
         # update_payroll_item raises ValueError on a missing id, inside the
         # locked block — so __exit__ takes its exception path and rollback fails
-        with pytest.raises(sqlite3.OperationalError) as caught:
+        with pytest.raises(hr_mod.ConnectionCleanupError) as caught:
             hr_mod.update_payroll_item(999999, bonus=1.0, conn=borrowed)
-        assert 'disk I/O error' in str(caught.value)
-        # the original cause must still be reachable, not erased
-        assert isinstance(caught.value.__context__, ValueError), (
-            "the body's error was lost instead of chained")
+        # typed attributes, not implicit chaining: `raise X from Y` reads
+        # "X caused by Y" and the order here is the reverse (Codex).
+        assert isinstance(caught.value.primary_error, ValueError), (
+            "the body's error must stay identifiable as the real cause")
+        assert isinstance(caught.value.cleanup_error, sqlite3.OperationalError)
         assert borrowed.closed is False, "a borrowed connection must not be closed"
     finally:
         real_conn.close()
+
+
+def _owned_flaky(monkeypatch, hr_mod, tmp_db, fail_on, also=None, holder=None):
+    def fake_connect(db_path=None):
+        real = sqlite3.connect(tmp_db, timeout=10)
+        real.row_factory = sqlite3.Row
+        real.execute("PRAGMA foreign_keys = ON")
+        f = _FlakyConn(real, fail_on, also)
+        if holder is not None:
+            holder['c'] = f
+        return f
+    monkeypatch.setattr(hr_mod, '_connect', fake_connect)
+
+
+def test_close_failure_never_replaces_the_error_that_actually_happened(tmp_db, monkeypatch):
+    """The blocker: close() lives in a finally, so if IT raises it replaces the
+    body's exception and the operator is told about the wrong thing (Codex).
+
+    Both failures must survive, and the one that matters must be identifiable
+    without reading a traceback."""
+    import hr as hr_mod
+    holder = {}
+    _owned_flaky(monkeypatch, hr_mod, tmp_db, 'close', holder=holder)
+    with pytest.raises(hr_mod.ConnectionCleanupError) as caught:
+        hr_mod.update_payroll_item(999999, bonus=1.0)     # body raises ValueError
+    assert isinstance(caught.value.primary_error, ValueError), \
+        "the real cause must be reachable as a typed attribute"
+    assert isinstance(caught.value.cleanup_error, sqlite3.OperationalError)
+    assert holder['c'].closed is True, "close was still attempted"
+
+
+def test_lock_failure_plus_close_failure_reports_both(tmp_db, monkeypatch):
+    """__enter__'s own cleanup path has the same hazard: the lock could not be
+    taken AND the connection could not be closed."""
+    import hr as hr_mod
+    holder = {}
+    _owned_flaky(monkeypatch, hr_mod, tmp_db, 'close', holder=holder)
+    monkeypatch.setattr(hr_mod, '_begin_immediate',
+                        lambda c: (_ for _ in ()).throw(
+                            sqlite3.OperationalError('database is locked')))
+    with pytest.raises(hr_mod.ConnectionCleanupError) as caught:
+        hr_mod.generate_run('2029-03', 1, created_by=1)
+    assert 'locked' in str(caught.value.primary_error)
+    assert isinstance(caught.value.cleanup_error, sqlite3.OperationalError)
+    assert holder['c'].closed is True
+
+
+def test_commit_failure_plus_close_failure_keeps_the_commit_as_primary(tmp_db, monkeypatch):
+    """A clean body, a failing commit, and a failing close. The commit failure
+    is what the caller must act on; the close failure is noise that must not
+    bury it."""
+    import hr as hr_mod
+    holder = {}
+    _owned_flaky(monkeypatch, hr_mod, tmp_db, 'commit', also='close', holder=holder)
+    with pytest.raises(hr_mod.ConnectionCleanupError) as caught:
+        hr_mod.reopen_run(999999, reason='x', actor='a')   # clean return, __exit__ commits
+    assert isinstance(caught.value.primary_error, sqlite3.OperationalError)
+    assert 'disk I/O' in str(caught.value.primary_error)
+    assert holder['c'].closed is True
