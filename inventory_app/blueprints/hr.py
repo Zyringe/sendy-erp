@@ -544,6 +544,19 @@ def payroll_detail(run_id: int):
     pay_accounts = hrq.get_active_cashbook_accounts(non_transfer_only=True)
     dup_manual_salary_count = hrq.count_manual_salary_rows_for_month(run["year_month"])
     any_paid = any(item["paid_txn_id"] is not None for item in items)
+    # Only a finalized run can be reopened, so only that one needs the warning.
+    # The server still enforces the confirmation in reopen_run — this exists so
+    # the operator is told BEFORE opening the dialog, not after a refusal.
+    # Two independent hazards of reopening a closed month. Computed separately
+    # because a run with a matching roster is just as exposed to the advance
+    # stamp, and vice versa.
+    finalized = run["status"] == "finalized"
+    roster_drift_note = hr_mod.roster_drift_note(run_id) if finalized else None
+    # NOT gated on `finalized`: after a reopen the run is draft, and that is
+    # exactly when the operator reaches the Finalize button — the one action
+    # that stamps the money. Gating this on finalized made the banner vanish
+    # at the only moment it matters (Codex review of PR #367).
+    pending_advance_note = hr_mod.pending_advance_note(run_id)
     return render_template(
         "hr/payroll_detail.html",
         run=run,
@@ -551,6 +564,8 @@ def payroll_detail(run_id: int):
         pay_accounts=pay_accounts,
         dup_manual_salary_count=dup_manual_salary_count,
         any_paid=any_paid,
+        roster_drift_note=roster_drift_note,
+        pending_advance_note=pending_advance_note,
         today_iso=date.today().isoformat(),
         be_year=_be_year,
         fmt_baht=_fmt_baht,
@@ -659,6 +674,8 @@ def payroll_finalize(run_id: int):
     try:
         hr_mod.finalize_run(run_id)
         flash(f"Finalized payroll run #{run_id} เรียบร้อย", "success")
+    except hr_mod.PendingAdvanceStampWarning as w:
+        flash(str(w), "danger")
     except Exception as e:
         flash(f"ไม่สามารถ finalize: {e}", "danger")
     return redirect(url_for("hr.payroll_detail", run_id=run_id))
@@ -678,9 +695,17 @@ def payroll_reopen(run_id: int):
         flash("ต้องระบุเหตุผลในการ reopen run นี้", "danger")
         return redirect(url_for("hr.payroll_detail", run_id=run_id))
     try:
-        hr_mod.reopen_run(run_id, reason=reason,
-                          actor=session.get("username") or "unknown")
+        hr_mod.reopen_run(
+            run_id, reason=reason,
+            actor=session.get("username") or "unknown",
+            confirm_roster_change=(request.form.get("confirm_roster_change") == "1"),
+        )
         flash(f"Reopened run #{run_id} แล้ว — แก้ไขเสร็จอย่าลืม finalize ใหม่", "success")
+    except hr_mod.RosterDriftWarning as w:
+        # Not an error: reopening is permitted, it just needs an explicit ack.
+        # The page renders the same warning + a required checkbox, so a normal
+        # operator never reaches this branch — it catches a stale form.
+        flash(f"{w} — ติ๊กยืนยันในกล่อง Reopen แล้วกดอีกครั้ง", "warning")
     except Exception as e:
         flash(f"ไม่สามารถ reopen: {e}", "danger")
     return redirect(url_for("hr.payroll_detail", run_id=run_id))

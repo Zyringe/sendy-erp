@@ -46,6 +46,16 @@ def _mk_employee(conn, emp_code, full_name, nickname=None, company_id=1):
     return cur.lastrowid
 
 
+def _mk_company(conn, code):
+    """A throwaway company so a test's roster owes nothing to the live snapshot."""
+    cur = conn.execute(
+        "INSERT INTO companies (code, name_th) VALUES (?, ?)",
+        (code, f"บริษัททดสอบ {code}"),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
 def _mk_run(conn, year_month, status='finalized', company_id=1):
     cur = conn.execute(
         """INSERT INTO payroll_runs (year_month, company_id, status, run_date, created_by)
@@ -319,10 +329,23 @@ def test_unpay_noop_when_nothing_posted(tmp_db_conn_hr_clean):
 # ── 6. reopen blocked while any item paid; allowed after all unpaid ────────
 
 def test_reopen_blocked_while_paid_then_allowed_after_unpay(tmp_db_conn_hr_clean):
+    # This run is assembled by hand (_mk_item), so its roster is whatever this
+    # test puts in it — while reopen_run refuses a roster change in either
+    # direction (2026-08-05). Under company 1 the seeded staff are active but
+    # absent from the run, blocking this test on a condition it is not about;
+    # its subject is paid-state. So it gets a company of its OWN rather than
+    # borrowing เซ็นไดเทรดดิ้ง, which is a real entity that may hire someone
+    # (Codex review of PR #367 — asserting the isolation still left the test
+    # coupled to live data).
     conn = tmp_db_conn_hr_clean
-    eid1 = _mk_employee(conn, 'T_PAY6A', 'จ่ายแล้วคนที่1')
-    eid2 = _mk_employee(conn, 'T_PAY6B', 'ยังไม่จ่าย')
-    run_id = _mk_run(conn, '2026-09')
+    cid = _mk_company(conn, 'T_PAY6CO')
+    eid1 = _mk_employee(conn, 'T_PAY6A', 'จ่ายแล้วคนที่1', company_id=cid)
+    eid2 = _mk_employee(conn, 'T_PAY6B', 'ยังไม่จ่าย', company_id=cid)
+    run_id = _mk_run(conn, '2026-09', company_id=cid)
+    assert {r[0] for r in conn.execute(
+        "SELECT id FROM employees WHERE company_id=? AND is_active=1 AND on_payroll=1",
+        (cid,),
+    )} == {eid1, eid2}, "the test's own company must hold only its own employees"
     item1 = _mk_item(conn, run_id, eid1, net_pay=11000.0)
     item2 = _mk_item(conn, run_id, eid2, net_pay=13000.0)
     account_id = _account_id(conn, '392')

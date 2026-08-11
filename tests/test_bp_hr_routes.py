@@ -160,3 +160,147 @@ def test_hr_payroll_reopen_missing_id_404(admin_client):
     resp = admin_client.post('/hr/payroll/999999/reopen',
                              data={'reason': 'x'})
     assert resp.status_code == 404
+
+
+# ── roster-drift warning + confirmation in the reopen dialog ────────────────
+
+def _add_employee_after_finalize(tmp_db, month_start='2026-09-01'):
+    """A hire whose start_date lands inside an already-closed month, so the
+    active set for that month now contains someone the run does not."""
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    try:
+        eid = conn.execute(
+            """INSERT INTO employees
+                 (emp_code, full_name, gender, company_id, start_date,
+                  probation_days, sso_enrolled, diligence_allowance, is_active)
+               VALUES ('T_DRIFT2','drift-route','M',1,?,90,0,0,1)""",
+            (month_start,)).lastrowid
+        conn.execute(
+            "INSERT INTO employee_salary_history "
+            "(employee_id, effective_date, monthly_salary, reason) "
+            "VALUES (?, ?, 12000.0, 'initial')", (eid, month_start))
+        conn.commit()
+        return eid
+    finally:
+        conn.close()
+
+
+def test_payroll_detail_shows_the_roster_warning_and_confirm_box(admin_client, tmp_db):
+    """The page must say what will happen BEFORE the dialog is opened.
+
+    reopen_run demands an acknowledgement when the roster drifted; without
+    this the operator meets that demand only as a rejected submit.
+    """
+    rid = _make_finalized_run(tmp_db)
+    clean = admin_client.get(f'/hr/payroll/{rid}').get_data(as_text=True)
+    assert 'data-warn="roster-drift"' not in clean, "no drift yet — no warning"
+    assert 'name="confirm_roster_change"' not in clean
+
+    _add_employee_after_finalize(tmp_db)
+    drifted = admin_client.get(f'/hr/payroll/{rid}').get_data(as_text=True)
+    assert 'data-warn="roster-drift"' in drifted
+    assert 'name="confirm_roster_change"' in drifted
+    assert 'drift-route' in drifted, "the warning must name who would be added"
+
+
+def test_reopen_needs_the_confirm_box_when_the_roster_drifted(admin_client, tmp_db):
+    rid = _make_finalized_run(tmp_db)
+    _add_employee_after_finalize(tmp_db)
+
+    def status():
+        return sqlite3.connect(tmp_db).execute(
+            "SELECT status FROM payroll_runs WHERE id=?", (rid,)).fetchone()[0]
+
+    resp = admin_client.post(f'/hr/payroll/{rid}/reopen',
+                             data={'reason': 'แก้รายคน'}, follow_redirects=True)
+    assert resp.status_code == 200
+    assert status() == 'finalized', "unconfirmed reopen must not un-finalize"
+
+    resp = admin_client.post(
+        f'/hr/payroll/{rid}/reopen',
+        data={'reason': 'แก้รายคน', 'confirm_roster_change': '1'},
+        follow_redirects=True)
+    assert resp.status_code == 200
+    assert status() == 'draft', "confirmed reopen must proceed"
+
+
+def test_reopen_dialog_warns_about_advances_even_with_a_clean_roster(admin_client, tmp_db):
+    """The advance hazard is independent of the roster one.
+
+    Folding it into the roster warning would have hidden it on exactly the runs
+    that look safest — a matching roster says nothing about whether a
+    re-finalize would swallow a back-dated advance.
+    """
+    rid = _make_finalized_run(tmp_db)
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    try:
+        emp = conn.execute(
+            "SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+            (rid,)).fetchone()[0]
+        conn.execute(
+            "INSERT INTO salary_advances (employee_id, advance_date, amount) "
+            "VALUES (?, '2026-09-20', 640)", (emp,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    html = admin_client.get(f'/hr/payroll/{rid}').get_data(as_text=True)
+    assert 'data-warn="pending-advance-stamp"' in html
+    assert '640' in html
+    assert 'data-warn="roster-drift"' not in html, "roster is clean — only the advance warning"
+
+
+def test_finalize_is_refused_while_an_advance_would_be_stamped_uncollected(admin_client, tmp_db):
+    """End to end at the boundary that moves money.
+
+    The reopen-time banner is gone by now (the run is draft), so this page is
+    the operator's only warning — and the POST must REFUSE, not merely render
+    a notice. There is no acknowledgement to give: the deduction is computed
+    in _build_item during generate_run, which a reopened drifted run cannot
+    run, so nothing the operator clicks can put this money into a payslip.
+    """
+    rid = _make_finalized_run(tmp_db)
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    try:
+        import hr as hr_mod
+        conn.row_factory = sqlite3.Row
+        hr_mod.reopen_run(rid, reason='แก้ตัวเลข', actor='t', conn=conn)
+        emp = conn.execute(
+            "SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+            (rid,)).fetchone()[0]
+        conn.execute(
+            "INSERT INTO salary_advances (employee_id, advance_date, amount) "
+            "VALUES (?, '2026-09-18', 555)", (emp,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    def status():
+        return sqlite3.connect(tmp_db).execute(
+            "SELECT status FROM payroll_runs WHERE id=?", (rid,)).fetchone()[0]
+    assert status() == 'draft'
+
+    page = admin_client.get(f'/hr/payroll/{rid}').get_data(as_text=True)
+    assert 'data-warn="pending-advance-stamp"' in page, "draft page must carry the warning"
+    assert '555' in page
+
+    admin_client.post(f'/hr/payroll/{rid}/finalize', data={}, follow_redirects=True)
+    assert status() == 'draft', "finalize must not proceed"
+    assert sqlite3.connect(tmp_db).execute(
+        "SELECT deducted_in_run_id FROM salary_advances WHERE amount=555"
+    ).fetchone()[0] is None, "and must not stamp the advance"
+
+    # A crafted or stale POST carrying the old override field must NOT get
+    # through: there is no override, because consent cannot make the money
+    # move (Codex). The page shows no checkbox for the same reason.
+    admin_client.post(f'/hr/payroll/{rid}/finalize',
+                      data={'confirm_advance_stamp': '1'}, follow_redirects=True)
+    assert status() == 'draft', "no override exists"
+    assert 'name="confirm_advance_stamp"' not in page
+
+    # Fixing the DATA is the way out: re-date the advance to an open month.
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.execute("UPDATE salary_advances SET advance_date='2026-11-05' WHERE amount=555")
+    conn.commit(); conn.close()
+    admin_client.post(f'/hr/payroll/{rid}/finalize', data={}, follow_redirects=True)
+    assert status() == 'finalized'

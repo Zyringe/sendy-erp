@@ -632,3 +632,1074 @@ def test_regenerate_keeps_stamps_for_employees_still_in_run(tmp_db_conn_hr_clean
         "stamp must persist when employee is still in regenerated run"
     )
 
+
+
+# ── 9. reopen refuses a roster change in BOTH directions ────────────────────
+
+def test_reopen_warns_and_holds_when_a_new_employee_would_be_added(tmp_db_conn_hr_clean):
+    """The drop guard (2026-08-05) is one-directional, and the damage is not.
+
+    Measured on prod the same day: `generate_run` returns untouched on a
+    finalized run, so `reopen_run` is the ONLY door to a regenerate — and run 3
+    (พ.ค. 2026) passed the drop check while regenerating it would have ADDED
+    เซี้ยม and ปู้ to a closed month they were never part of. Inventing payslip
+    rows in a finalized month is the same class of history damage as deleting
+    them, so the door refuses both.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-10', 1, created_by=1, conn=c)
+    rid = run['id']
+    before = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert len(before) >= 1, "fixture must produce a non-empty run, or this pins nothing"
+    hr.finalize_run(rid, conn=c)
+
+    # hired afterwards, but start_date lands inside the now-closed month
+    newbie = _mk_employee(c, 'T_ADD', 'added-later', '2026-10-01')
+    assert newbie not in before
+
+    with pytest.raises(hr.RosterDriftWarning):
+        hr.reopen_run(rid, reason='ขอแก้ตัวเลข', actor='admin', conn=c)
+
+    # not acknowledged: still finalized, roster untouched
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'finalized'
+    assert {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))} == before
+
+
+def test_reopen_still_allowed_when_the_roster_is_unchanged(tmp_db_conn_hr_clean):
+    """Control for the test above — the guard must distinguish, not always fire.
+
+    Without this, making `reopen_run` raise unconditionally would pass the
+    refusal test.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-10', 1, created_by=1, conn=c)
+    rid = run['id']
+    hr.finalize_run(rid, conn=c)
+
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft'
+
+
+def test_regenerating_a_draft_run_still_picks_up_a_new_hire(tmp_db_conn_hr_clean):
+    """The legitimate flow the guard must NOT break: a run still in draft is a
+    working document, so regenerating it to pick up someone hired mid-month is
+    the intended use. Only a run that reached 'finalized' has history to
+    protect, and that one is reachable solely through the guarded reopen door.
+    """
+    c = tmp_db_conn_hr_clean
+    hr.generate_run('2026-10', 1, created_by=1, conn=c)   # left in draft
+    newbie = _mk_employee(c, 'T_HIRE', 'new-hire', '2026-10-01')
+
+    run = hr.generate_run('2026-10', 1, created_by=1, conn=c)
+
+    roster = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (run['id'],))}
+    assert newbie in roster, "a draft run must still absorb a new hire"
+
+
+def test_regenerate_after_reopen_refuses_a_roster_that_drifted_since(tmp_db_conn_hr_clean):
+    """The reopen door is not atomic with the rebuild it precedes (Codex, 2026-08-05).
+
+    `reopen_run` checks the roster and flips the run to draft; `generate_run`
+    does the destructive `DELETE FROM payroll_items` + re-INSERT later, in a
+    separate transaction. Anyone hired in between lands in the active set, and
+    the add-check at the door has already passed — so the exact history damage
+    this guard exists to prevent reappears one step further along.
+
+    A run that was reopened carries an audit_log row holding `reopen_reason`
+    (written in the same transaction as the status flip, and exempt from
+    `prune_audit_log`, whose predicate is transactions/INSERT+DELETE only). That
+    marker is what lets generate_run tell reopened history apart from an
+    ordinary working draft, with no migration.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-11', 1, created_by=1, conn=c)
+    rid = run['id']
+    before = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert len(before) >= 1
+    hr.finalize_run(rid, conn=c)
+
+    # roster still matches, so the door lets it through
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft'
+
+    # ...and only now does the roster drift
+    newbie = _mk_employee(c, 'T_DRIFT', 'hired-after-reopen', '2026-11-01')
+
+    with pytest.raises(ValueError):
+        hr.generate_run('2026-11', 1, created_by=1, conn=c)
+
+    roster = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert roster == before, "the rebuild must not have run"
+    assert newbie not in roster
+
+
+def test_confirmed_reopen_opens_the_run_and_per_item_repair_then_works(tmp_db_conn_hr_clean):
+    """The recovery path the refusal text promises must actually exist.
+
+    Per-item repair is gated on `status != 'finalized'`
+    (blueprints/hr.py::payroll_item_edit) and `reopen_run` is the only door to
+    draft — so a hard refusal there left runs 3 and 4 on prod unfixable through
+    the UI while the message told the operator to fix them per item. Codex
+    review of PR #367. Reopen now warns and proceeds on acknowledgement;
+    generate_run keeps its hard refusal, so the destructive path stays shut.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-12', 1, created_by=1, conn=c)
+    rid = run['id']
+    before = {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert len(before) >= 1
+    hr.finalize_run(rid, conn=c)
+    newbie = _mk_employee(c, 'T_CONF', 'hired-later', '2026-12-01')
+
+    dropped, added = hr.roster_drift(rid, conn=c)
+    assert added == {newbie} and not dropped
+    assert hr.roster_drift_note(rid, conn=c), "the page must have something to show"
+
+    hr.reopen_run(rid, reason='แก้ตัวเลขรายคน', actor='admin', conn=c,
+                  confirm_roster_change=True)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft'
+    assert {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))} == before, \
+        "reopening must not have touched the roster"
+
+    # the repair itself now works...
+    item_id, = c.execute(
+        "SELECT id FROM payroll_items WHERE run_id=? LIMIT 1", (rid,)).fetchone()
+    hr.update_payroll_item(item_id, bonus=500.0, conn=c)
+    assert c.execute("SELECT bonus FROM payroll_items WHERE id=?",
+                     (item_id,)).fetchone()[0] == 500.0
+
+    # ...while the destructive path stays shut
+    with pytest.raises(ValueError):
+        hr.generate_run('2026-12', 1, created_by=1, conn=c)
+    assert newbie not in {r[0] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id=?", (rid,))}
+
+
+def test_reopen_without_drift_needs_no_confirmation(tmp_db_conn_hr_clean):
+    """Control: the acknowledgement must be demanded only when it means
+    something, or every reopen grows a checkbox nobody reads."""
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2026-12', 1, created_by=1, conn=c)
+    rid = run['id']
+    hr.finalize_run(rid, conn=c)
+    assert hr.roster_drift_note(rid, conn=c) is None
+
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft'
+
+
+def test_pending_advance_stamp_is_independent_of_roster_drift(tmp_db_conn_hr_clean):
+    """Re-finalizing a reopened run stamps every un-deducted advance dated on or
+    before that month's end (finalize_run) — for employees in the run. On a
+    month whose payslips were already PAID that marks the advance deducted
+    without any cash ever being withheld, so the money is silently never
+    collected.
+
+    That hazard has nothing to do with the roster, so it must not be reported
+    through `roster_drift_note`: this run has NO drift and still needs the
+    warning. The trigger is the bug class this whole arc started from — บอล's
+    ฿1,000 was keyed 2026-07-03 but dated 2026-06-27, landing inside a month
+    that had already closed.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2027-01', 1, created_by=1, conn=c)
+    rid = run['id']
+    emp = c.execute("SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+                    (rid,)).fetchone()[0]
+    hr.finalize_run(rid, conn=c)
+    assert hr.roster_drift_note(rid, conn=c) is None, "no drift — the other warning must stay silent"
+    assert hr.pending_advance_stamp(rid, conn=c) == (0, 0.0)
+
+    # an advance keyed late, back-dated into the closed month
+    _add_advance(c, emp, '2027-01-20', 750.0)
+    assert hr.pending_advance_stamp(rid, conn=c) == (1, 750.0)
+    note = hr.pending_advance_note(rid, conn=c)
+    assert note and '750' in note
+    assert hr.roster_drift_note(rid, conn=c) is None, "still no roster drift"
+
+
+def test_pending_advance_stamp_ignores_advances_after_the_month(tmp_db_conn_hr_clean):
+    """Control: finalize_run bounds the stamp at period_end, so a LATER advance
+    is not at risk and must not be warned about — otherwise every run carries a
+    permanent scary banner. This is why prod shows 0 today: all five un-stamped
+    advances are dated after both closed months."""
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2027-01', 1, created_by=1, conn=c)
+    rid = run['id']
+    emp = c.execute("SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+                    (rid,)).fetchone()[0]
+    hr.finalize_run(rid, conn=c)
+
+    _add_advance(c, emp, '2027-02-05', 900.0)
+    assert hr.pending_advance_stamp(rid, conn=c) == (0, 0.0)
+    assert hr.pending_advance_note(rid, conn=c) is None
+
+
+# ── enforcement sits at the money boundary, not at the reopen door ──────────
+
+def test_first_finalize_still_stamps_advances_without_any_confirmation(tmp_db_conn_hr_clean):
+    """CONTROL, and the most important test here: stamping advances IS the job
+    of a first finalize. If the new guard fires on this path, monthly payroll
+    stops working for everyone. It must key on the run having been REOPENED,
+    not on advances merely existing.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2027-03', 1, created_by=1, conn=c)
+    rid = run['id']
+    emp = c.execute("SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+                    (rid,)).fetchone()[0]
+    _add_advance(c, emp, '2027-03-10', 800.0)
+    adv = c.execute("SELECT MAX(id) FROM salary_advances").fetchone()[0]
+    assert hr.pending_advance_stamp(rid, conn=c) == (1, 800.0)
+
+    hr.finalize_run(rid, conn=c)          # no confirmation passed
+
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'finalized'
+    assert c.execute("SELECT deducted_in_run_id FROM salary_advances WHERE id=?",
+                     (adv,)).fetchone()[0] == rid, "the normal stamp must still happen"
+
+
+def test_refinalize_after_reopen_refuses_to_swallow_a_backdated_advance(tmp_db_conn_hr_clean):
+    """The hazard, pinned where it actually happens.
+
+    The reopen-time banner disappears the moment the run turns draft
+    (blueprints/hr.py::payroll_detail computed it for finalized runs only), and
+    the Finalize button called finalize_run with no check at all — so an
+    advance added or back-dated AFTER the reopen was stamped silently, at the
+    exact moment the money changed state. Codex review of PR #367.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2027-04', 1, created_by=1, conn=c)
+    rid = run['id']
+    emp = c.execute("SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+                    (rid,)).fetchone()[0]
+    hr.finalize_run(rid, conn=c)
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+
+    # keyed only now, back-dated into the month that already closed
+    _add_advance(c, emp, '2027-04-11', 650.0)
+    adv = c.execute("SELECT MAX(id) FROM salary_advances").fetchone()[0]
+
+    with pytest.raises(hr.PendingAdvanceStampWarning):
+        hr.finalize_run(rid, conn=c)
+
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'draft', "refused before any mutation"
+    assert c.execute("SELECT deducted_in_run_id FROM salary_advances WHERE id=?",
+                     (adv,)).fetchone()[0] is None, "and the advance is untouched"
+
+    # There is NO override. Stamping without deducting is not a thing an
+    # operator can consent to, because consent cannot make the money move:
+    # salary_advance_deduction and net_pay are computed in _build_item during
+    # generate_run, and generate_run is refused on a reopened run whose roster
+    # drifted. An earlier version offered a confirm_advance_stamp checkbox
+    # whose label promised a deduction it could not perform (Codex).
+    import inspect
+    assert 'confirm_advance_stamp' not in inspect.signature(hr.finalize_run).parameters
+
+    # The way out is to fix the DATA: re-date the advance to a month that is
+    # still open, so a real generate_run can put it into someone's net pay.
+    c.execute("UPDATE salary_advances SET advance_date='2027-05-11' WHERE id=?", (adv,))
+    c.commit()
+    assert hr.pending_advance_stamp(rid, conn=c) == (0, 0.0)
+    hr.finalize_run(rid, conn=c)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'finalized'
+    assert c.execute("SELECT deducted_in_run_id FROM salary_advances WHERE id=?",
+                     (adv,)).fetchone()[0] is None, \
+        "re-dated out of the month, so this run must not claim it"
+
+
+def test_the_stamp_a_first_finalize_writes_is_actually_in_the_payslip(tmp_db_conn_hr_clean):
+    """The invariant the refusal exists to protect, stated positively.
+
+    A stamp is only honest when the same advance is inside that item's
+    salary_advance_deduction — _build_item computes it during generate_run,
+    finalize_run only marks it. Asserting the stamp alone (which the first
+    version of these tests did) pins the broken state just as happily as the
+    correct one.
+    """
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2027-06', 1, created_by=1, conn=c)
+    rid = run['id']
+    emp = c.execute("SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+                    (rid,)).fetchone()[0]
+    _add_advance(c, emp, '2027-06-09', 400.0)
+    run = hr.generate_run('2027-06', 1, created_by=1, conn=c)   # rebuild to pick it up
+    hr.finalize_run(rid, conn=c)
+
+    item = c.execute(
+        "SELECT salary_advance_deduction, gross, net_pay FROM payroll_items"
+        " WHERE run_id=? AND employee_id=?", (rid, emp)).fetchone()
+    assert item['salary_advance_deduction'] == 400.0, "the money must be in the payslip"
+    assert round(item['gross'] - item['net_pay'], 2) >= 400.0
+    assert c.execute(
+        "SELECT deducted_in_run_id FROM salary_advances WHERE employee_id=? AND amount=400",
+        (emp,)).fetchone()[0] == rid
+
+
+def test_refinalize_after_reopen_with_nothing_pending_needs_no_confirmation(tmp_db_conn_hr_clean):
+    """Control: the demand must be tied to money actually being at stake."""
+    c = tmp_db_conn_hr_clean
+    run = hr.generate_run('2027-05', 1, created_by=1, conn=c)
+    rid = run['id']
+    hr.finalize_run(rid, conn=c)
+    hr.reopen_run(rid, reason='แก้ตัวเลข', actor='admin', conn=c)
+    assert hr.pending_advance_stamp(rid, conn=c) == (0, 0.0)
+
+    hr.finalize_run(rid, conn=c)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (rid,)).fetchone()[0] == 'finalized'
+
+
+# ── the decision and the write must be one transaction ─────────────────────
+
+def _concurrent_insert_blocked(db_path, employee_id, advance_date, amount):
+    """Try to write an advance from a SECOND connection with a short timeout.
+
+    Returns True if the writer was locked out. `timeout` is deliberately tiny
+    so "excluded" is a fast, certain answer instead of a stall.
+    """
+    other = sqlite3.connect(db_path, timeout=0.1)
+    try:
+        other.execute(
+            "INSERT INTO salary_advances (employee_id, advance_date, amount)"
+            " VALUES (?,?,?)", (employee_id, advance_date, amount))
+        other.commit()
+        return False
+    except sqlite3.OperationalError as e:
+        return "locked" in str(e).lower()
+    finally:
+        other.close()
+
+
+def test_finalize_holds_the_write_lock_across_the_pending_check(tmp_db, monkeypatch):
+    """The pending check and the stamp must be one BEGIN IMMEDIATE transaction.
+
+    Under the default deferred isolation the connection holds no lock until it
+    writes, so the sequence Codex described was live: A reads pending = 0, B
+    inserts a back-dated advance and commits, A flips the run to finalized, and
+    A's UPDATE then stamps B's advance as deducted while no payslip carries it.
+    Railway runs gunicorn -w 2, so the second worker is real.
+
+    The seam is patched BEFORE the first write — a probe placed after it would
+    be excluded either way and would pass with the fix removed.
+    """
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        eid = _mk_employee(conn, 'T_RACE', 'race-target', '2027-07-01')
+        run = hr_mod.generate_run('2027-07', 1, created_by=1, conn=conn)
+        rid = run['id']
+        conn.commit()
+    finally:
+        conn.close()
+
+    seen = {}
+    real = hr_mod._was_reopened
+
+    def probe(c, run_id):
+        # _was_reopened is consulted on EVERY finalize and before every write,
+        # so the probe lands in the window the fix is meant to close.
+        seen['blocked'] = _concurrent_insert_blocked(tmp_db, eid, '2027-07-10', 500.0)
+        return real(c, run_id)
+
+    monkeypatch.setattr(hr_mod, '_was_reopened', probe)
+    hr_mod.finalize_run(rid, db_path=tmp_db)
+
+    assert seen, "the probe never ran — the seam moved, so this test proves nothing"
+    assert seen['blocked'] is True, (
+        "a concurrent writer got in between the pending check and the stamp")
+
+
+def test_generate_holds_the_write_lock_across_the_roster_check(tmp_db, monkeypatch):
+    """Same shape, same hazard: generate_run decides from the active set and
+    then DELETEs every payroll_item of the run. An employee deactivated between
+    the two makes the guard decide on a roster that no longer exists."""
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        eid = _mk_employee(conn, 'T_RACE2', 'race-target-2', '2027-08-01')
+        conn.commit()
+    finally:
+        conn.close()
+    # Create the run FIRST. On a brand-new month generate_run INSERTs the
+    # payroll_runs row before the roster check, which takes the write lock for
+    # unrelated reasons — the probe would then be excluded with or without the
+    # fix and the test would pass for the wrong reason.
+    hr_mod.generate_run('2027-08', 1, created_by=1, db_path=tmp_db)
+
+    seen = {}
+    real = hr_mod._active_employees_for_month
+
+    def probe(c, company_id, period_start, period_end):
+        seen['blocked'] = _concurrent_insert_blocked(tmp_db, eid, '2027-08-10', 100.0)
+        return real(c, company_id, period_start, period_end)
+
+    monkeypatch.setattr(hr_mod, '_active_employees_for_month', probe)
+    hr_mod.generate_run('2027-08', 1, created_by=1, db_path=tmp_db)
+
+    assert seen, "the probe never ran — the seam moved"
+    assert seen['blocked'] is True, (
+        "a concurrent writer got in between the roster check and the rebuild")
+
+
+def test_generate_rereads_the_run_after_taking_the_lock(tmp_db, monkeypatch):
+    """A worker that finalizes while we wait for the lock must not have its run
+    rebuilt underneath it.
+
+    The status read happened BEFORE _begin_immediate, so the decision "this run
+    is a draft, I may DELETE its items" rested on a value another worker could
+    invalidate before we ever acquired the lock (Codex).
+    """
+    import hr as hr_mod
+    hr_mod.generate_run('2027-09', 1, created_by=1, db_path=tmp_db)
+    rid = sqlite3.connect(tmp_db).execute(
+        "SELECT id FROM payroll_runs WHERE year_month='2027-09'").fetchone()[0]
+    # item IDs, not employee IDs: a rebuild produces the SAME employees with
+    # NEW rows, so comparing the employee set cannot see the DELETE+INSERT.
+    before = {r[0] for r in sqlite3.connect(tmp_db).execute(
+        "SELECT id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert before, "fixture must produce items, or this pins nothing"
+
+    fired = {}
+    real = hr_mod._begin_immediate
+
+    def finalize_first(c):
+        # the interleaving worker, committing before we hold the lock
+        if not fired:
+            fired['yes'] = True
+            other = sqlite3.connect(tmp_db, timeout=5)
+            other.execute("UPDATE payroll_runs SET status='finalized' WHERE id=?", (rid,))
+            other.commit()
+            other.close()
+        return real(c)
+
+    monkeypatch.setattr(hr_mod, '_begin_immediate', finalize_first)
+    hr_mod.generate_run('2027-09', 1, created_by=1, db_path=tmp_db)
+
+    assert fired, "the seam never ran"
+    conn = sqlite3.connect(tmp_db)
+    assert conn.execute("SELECT status FROM payroll_runs WHERE id=?",
+                        (rid,)).fetchone()[0] == 'finalized'
+    assert {r[0] for r in conn.execute(
+        "SELECT id FROM payroll_items WHERE run_id=?", (rid,))} == before, \
+        "a finalized run must not be rebuilt"
+
+
+def test_generate_reads_config_inside_the_lock(tmp_db, monkeypatch):
+    """_load_config feeds _build_item for every employee, so reading it before
+    the lock lets a config change land mid-decision (Codex)."""
+    import hr as hr_mod
+    seen = {}
+    real = hr_mod._load_config
+
+    def probe(c):
+        seen['in_txn'] = c.in_transaction
+        return real(c)
+
+    monkeypatch.setattr(hr_mod, '_load_config', probe)
+    hr_mod.generate_run('2027-10', 1, created_by=1, db_path=tmp_db)
+
+    assert seen, "the probe never ran"
+    assert seen['in_txn'] is True, "config was read outside the write transaction"
+
+
+def test_money_paths_refuse_a_caller_transaction_already_in_flight(tmp_db):
+    """Silently downgrading the guarantee is worse than refusing: the caller
+    believes the payroll write is serialized and it is not (Codex)."""
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN")
+        conn.execute("UPDATE hr_config SET value = value WHERE key='sso_rate'")
+        assert conn.in_transaction
+        with pytest.raises(hr_mod.CallerTransactionInFlight):
+            hr_mod.generate_run('2027-11', 1, created_by=1, conn=conn)
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+# ── the serialization boundary must cover the whole state machine ──────────
+
+def _payroll_state_machine_writers():
+    """The functions that read payroll_runs.status (or a row's parent status)
+    and then write based on it. Every one must hold the write lock across that
+    pair, or the other side of any pairing decides from state it no longer has."""
+    return ('generate_run', 'finalize_run', 'reopen_run',
+            'post_salary_payment', 'update_payroll_item')
+
+
+def test_reopen_and_post_cannot_interleave(tmp_db, monkeypatch):
+    """The paired race Codex found by sweeping the writers.
+
+      reopen_run sees paid_count = 0
+          post_salary_payment sees the run as finalized
+      reopen flips the run to draft
+          post inserts the payment row
+
+    Result: a draft run with money already posted against it — and a draft run
+    is editable, so those figures can then be changed underneath a payment that
+    has already left the account. Locking only reopen_run does not help: post
+    still decides from a status it read before the flip.
+    """
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        eid = _mk_employee(conn, 'T_PAIR', 'pair-race', '2027-12-01')
+        run = hr_mod.generate_run('2027-12', 1, created_by=1, conn=conn)
+        rid = run['id']
+        hr_mod.finalize_run(rid, conn=conn)
+        item_id = conn.execute(
+            "SELECT id FROM payroll_items WHERE run_id=? AND employee_id=?",
+            (rid, eid)).fetchone()[0]
+        acct = conn.execute(
+            "SELECT id FROM cashbook_accounts WHERE is_transfer=0 LIMIT 1").fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+
+    seen = {}
+    real = hr_mod._begin_immediate
+
+    def probe(c):
+        # BEGIN IMMEDIATE *is* the first write, so the window that matters is
+        # right after it and before the status read: lock held, decision not
+        # yet made. Probing before it would merely flip the run to draft for
+        # real and prove nothing about serialization.
+        out = real(c)
+        if 'blocked' not in seen:
+            seen['blocked'] = _concurrent_update_blocked(
+                tmp_db, "UPDATE payroll_runs SET status='draft' WHERE id=%d" % rid)
+        return out
+
+    monkeypatch.setattr(hr_mod, '_begin_immediate', probe)
+    hr_mod.post_salary_payment(item_id, acct, '2027-12-28', 'admin', db_path=tmp_db)
+
+    assert seen, "post_salary_payment never took the lock — the seam never ran"
+    assert seen['blocked'] is True, (
+        "another worker could reopen the run while a payment was being posted")
+
+
+def _concurrent_update_blocked(db_path, sql):
+    other = sqlite3.connect(db_path, timeout=0.1)
+    try:
+        other.execute(sql)
+        other.commit()
+        return False
+    except sqlite3.OperationalError as e:
+        return "locked" in str(e).lower()
+    finally:
+        other.close()
+
+
+def test_edit_and_finalize_cannot_interleave(tmp_db, monkeypatch):
+    """update_payroll_item refuses a finalized parent, but read the status and
+    then wrote without holding the lock — so a finalize landing in between let
+    an issued payslip be rewritten."""
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        _mk_employee(conn, 'T_EDITRACE', 'edit-race', '2028-01-01')
+        run = hr_mod.generate_run('2028-01', 1, created_by=1, conn=conn)
+        rid = run['id']
+        item_id = conn.execute(
+            "SELECT id FROM payroll_items WHERE run_id=? LIMIT 1", (rid,)).fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+
+    seen = {}
+    real = hr_mod._begin_immediate
+
+    def probe(c):
+        out = real(c)
+        if 'blocked' not in seen:
+            seen['blocked'] = _concurrent_update_blocked(
+                tmp_db, "UPDATE payroll_runs SET status='finalized' WHERE id=%d" % rid)
+        return out
+
+    monkeypatch.setattr(hr_mod, '_begin_immediate', probe)
+    hr_mod.update_payroll_item(item_id, bonus=100.0, db_path=tmp_db)
+
+    assert seen, "update_payroll_item never took the lock"
+    assert seen['blocked'] is True, (
+        "a finalize could land between the status check and the edit")
+
+
+def test_every_state_machine_writer_refuses_a_caller_transaction(tmp_db):
+    """The contract must hold across the whole boundary, not just where it was
+    introduced — a writer that silently accepts an unknown transaction is the
+    hole the others are guarding.
+
+    Each writer is given state that makes it REACH its lock. finalize_run is
+    the one that needs it: its "already finalized" exit is a read-only no-op
+    taken before the lock, and Codex ruled that path should not be refused —
+    so testing it with an arbitrary id would assert the opposite of the agreed
+    contract.
+    """
+    import hr as hr_mod
+    setup = sqlite3.connect(tmp_db, timeout=10)
+    setup.row_factory = sqlite3.Row
+    try:
+        _mk_employee(setup, 'T_CONTRACT', 'contract-probe', '2028-03-01')
+        draft = hr_mod.generate_run('2028-03', 1, created_by=1, conn=setup)
+        draft_id = draft['id']
+        item_id = setup.execute(
+            "SELECT id FROM payroll_items WHERE run_id=? LIMIT 1", (draft_id,)).fetchone()[0]
+        acct = setup.execute(
+            "SELECT id FROM cashbook_accounts WHERE is_transfer=0 LIMIT 1").fetchone()[0]
+        setup.commit()
+    finally:
+        setup.close()
+
+    calls = {
+        'generate_run':        lambda c: hr_mod.generate_run('2028-04', 1, created_by=1, conn=c),
+        'finalize_run':        lambda c: hr_mod.finalize_run(draft_id, conn=c),
+        'reopen_run':          lambda c: hr_mod.reopen_run(draft_id, reason='x', actor='a', conn=c),
+        'post_salary_payment': lambda c: hr_mod.post_salary_payment(item_id, acct, '2028-03-28', 'a', conn=c),
+        'update_payroll_item': lambda c: hr_mod.update_payroll_item(item_id, bonus=1.0, conn=c),
+    }
+    assert set(calls) == set(_payroll_state_machine_writers())
+
+    for name, call in calls.items():
+        conn = sqlite3.connect(tmp_db, timeout=10)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("BEGIN")
+            conn.execute("UPDATE hr_config SET value = value WHERE key='sso_rate'")
+            assert conn.in_transaction
+            with pytest.raises(hr_mod.CallerTransactionInFlight):
+                call(conn)
+        finally:
+            conn.rollback()
+            conn.close()
+
+
+def test_no_writer_leaves_the_caller_connection_holding_the_lock(tmp_db):
+    """A refusal or a no-op must not leave the caller inside our transaction.
+
+    _begin_immediate opens the transaction, but _ConnCtx deliberately does not
+    manage a caller-supplied connection — so every raise and every early return
+    after the lock left it in_transaction=True, holding SQLite's single
+    database-wide write lock until the caller happened to commit or close.
+    Every other writer would block meanwhile, and a later unrelated commit
+    would silently include whatever we had done (Codex review of PR #367).
+
+    Safe to fix precisely because the helper REFUSES a pre-existing
+    transaction: anything open at that point is ours to end.
+    """
+    import hr as hr_mod
+    setup = sqlite3.connect(tmp_db, timeout=10)
+    setup.row_factory = sqlite3.Row
+    try:
+        _mk_employee(setup, 'T_LEAK', 'leak-probe', '2028-06-01')
+        draft = hr_mod.generate_run('2028-06', 1, created_by=1, conn=setup)
+        draft_id = draft['id']
+        item_id = setup.execute(
+            "SELECT id FROM payroll_items WHERE run_id=? LIMIT 1", (draft_id,)).fetchone()[0]
+        gone = hr_mod.generate_run('2028-07', 1, created_by=1, conn=setup)
+        hr_mod.finalize_run(gone['id'], conn=setup)
+        setup.commit()
+    finally:
+        setup.close()
+
+    # (label, callable, expects_raise) — each hits a rejection or a no-op
+    # AFTER the lock is taken, which is where the leak lived.
+    cases = [
+        ('reopen_run/not-found',
+         lambda c: hr_mod.reopen_run(999999, reason='x', actor='a', conn=c), False),
+        ('reopen_run/already-draft',
+         lambda c: hr_mod.reopen_run(draft_id, reason='x', actor='a', conn=c), False),
+        ('finalize_run/already-finalized',
+         lambda c: hr_mod.finalize_run(gone['id'], conn=c), False),
+        ('update_payroll_item/not-found',
+         lambda c: hr_mod.update_payroll_item(999999, bonus=1.0, conn=c), True),
+        ('post_salary_payment/not-found',
+         lambda c: hr_mod.post_salary_payment(999999, 1, '2028-06-28', 'a', conn=c), True),
+        ('post_salary_payment/draft-parent',
+         lambda c: hr_mod.post_salary_payment(item_id, 1, '2028-06-28', 'a', conn=c), True),
+    ]
+
+    for label, call, expects_raise in cases:
+        c = sqlite3.connect(tmp_db, timeout=10)
+        c.row_factory = sqlite3.Row
+        try:
+            assert not c.in_transaction, label
+            if expects_raise:
+                with pytest.raises(Exception):
+                    call(c)
+            else:
+                call(c)
+            assert c.in_transaction is False, (
+                f"{label}: the caller was left holding our transaction")
+        finally:
+            c.rollback()
+            c.close()
+
+    # ...and a writer that RAISES its own guard must release it too
+    c = sqlite3.connect(tmp_db, timeout=10)
+    c.row_factory = sqlite3.Row
+    try:
+        emp = c.execute("SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+                        (draft_id,)).fetchone()[0]
+        c.execute("UPDATE employees SET is_active=0 WHERE id=?", (emp,))
+        c.commit()
+        with pytest.raises(ValueError):
+            hr_mod.generate_run('2028-06', 1, created_by=1, conn=c)   # roster guard
+        assert c.in_transaction is False, "generate_run's roster refusal leaked the lock"
+    finally:
+        c.rollback()
+        c.close()
+
+
+# ── _ConnCtx cleanup contract ──────────────────────────────────────────────
+
+class _FlakyConn:
+    """Wraps a real connection and fails one chosen method, so the cleanup
+    path can be exercised without waiting for a real disk error."""
+
+    def __init__(self, real, fail_on, also_fail=None):
+        self._real, self._fail_on, self.closed = real, fail_on, False
+        self._also = also_fail
+
+    def _should_fail(self, name):
+        return name == self._fail_on or name == self._also
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    @property
+    def in_transaction(self):
+        return self._real.in_transaction
+
+    def commit(self):
+        if self._should_fail('commit'):
+            raise sqlite3.OperationalError('disk I/O error')
+        return self._real.commit()
+
+    def rollback(self):
+        if self._should_fail('rollback'):
+            raise sqlite3.OperationalError('disk I/O error')
+        return self._real.rollback()
+
+    def close(self):
+        self.closed = True
+        if self._should_fail('close'):
+            raise sqlite3.OperationalError('cannot close')
+        return self._real.close()
+
+
+def test_connctx_closes_its_connection_even_when_commit_fails(tmp_db, monkeypatch):
+    """A failing commit must not skip close(). The previous __exit__ called
+    commit() before close() with nothing between them, so a raising commit
+    leaked the connection — and under gunicorn that leak accumulates until the
+    process is recycled (Codex)."""
+    import hr as hr_mod
+    flaky = {}
+
+    def fake_connect(db_path=None):
+        real = sqlite3.connect(tmp_db, timeout=10)
+        real.row_factory = sqlite3.Row
+        real.execute("PRAGMA foreign_keys = ON")
+        flaky['c'] = _FlakyConn(real, 'commit')
+        return flaky['c']
+
+    monkeypatch.setattr(hr_mod, '_connect', fake_connect)
+    # reopen_run on a missing id returns cleanly WITHOUT committing, so the
+    # commit under test is the one __exit__ performs. Picking a function that
+    # commits inside its own body would route through the exception path and
+    # prove nothing about __exit__.
+    with pytest.raises(sqlite3.OperationalError):
+        hr_mod.reopen_run(999999, reason='x', actor='a')
+
+    assert flaky['c'].closed is True, "the connection leaked when commit failed"
+
+
+def test_connctx_rollback_failure_does_not_mask_the_real_error(tmp_db, monkeypatch):
+    """The body's exception is the one the operator needs. A rollback that
+    fails while unwinding must not replace it (Codex)."""
+    import hr as hr_mod
+    flaky = {}
+
+    def fake_connect(db_path=None):
+        real = sqlite3.connect(tmp_db, timeout=10)
+        real.row_factory = sqlite3.Row
+        real.execute("PRAGMA foreign_keys = ON")
+        flaky['c'] = _FlakyConn(real, 'rollback')
+        return flaky['c']
+
+    monkeypatch.setattr(hr_mod, '_connect', fake_connect)
+    # a run id that does not exist -> update_payroll_item raises ValueError
+    with pytest.raises(ValueError):
+        hr_mod.update_payroll_item(999999, bonus=1.0)
+    assert flaky['c'].closed is True
+
+
+def test_connctx_closes_when_the_lock_cannot_be_taken(tmp_db, monkeypatch):
+    """BEGIN IMMEDIATE can fail on its own (another writer holds the lock past
+    the timeout). __enter__ raises then, so __exit__ never runs and the owned
+    connection has to be closed on the way out (Codex)."""
+    import hr as hr_mod
+    flaky = {}
+
+    def fake_connect(db_path=None):
+        real = sqlite3.connect(tmp_db, timeout=10)
+        real.row_factory = sqlite3.Row
+        flaky['c'] = _FlakyConn(real, None)
+        return flaky['c']
+
+    def boom(c):
+        raise sqlite3.OperationalError('database is locked')
+
+    monkeypatch.setattr(hr_mod, '_connect', fake_connect)
+    monkeypatch.setattr(hr_mod, '_begin_immediate', boom)
+    with pytest.raises(sqlite3.OperationalError):
+        hr_mod.generate_run('2028-09', 1, created_by=1)
+    assert flaky['c'].closed is True, "connection leaked when the lock could not be taken"
+
+
+def test_a_successful_owned_run_commits_and_closes(tmp_db, monkeypatch):
+    """Control for the three above: the ordinary path must still commit its
+    work and close, or the cleanup tests would pass on a function that never
+    does anything."""
+    import hr as hr_mod
+    flaky = {}
+
+    def fake_connect(db_path=None):
+        real = sqlite3.connect(tmp_db, timeout=10)
+        real.row_factory = sqlite3.Row
+        real.execute("PRAGMA foreign_keys = ON")
+        flaky['c'] = _FlakyConn(real, None)
+        return flaky['c']
+
+    monkeypatch.setattr(hr_mod, '_connect', fake_connect)
+    run = hr_mod.generate_run('2028-10', 1, created_by=1)
+    assert run is not None
+    assert flaky['c'].closed is True
+    n = sqlite3.connect(tmp_db).execute(
+        "SELECT COUNT(*) FROM payroll_items WHERE run_id=?", (run['id'],)).fetchone()[0]
+    assert n >= 1, "the work must actually be committed, not just cleaned up"
+
+
+def test_an_exception_after_a_partial_mutation_rolls_the_whole_thing_back(tmp_db, monkeypatch):
+    """The gap Codex listed that the other cleanup tests do not reach.
+
+    generate_run DELETEs every payroll_item of the run and then rebuilds them
+    one employee at a time. If anything raises partway, the run must not be
+    left with the DELETE applied and only some rows back — that is a payroll
+    month silently missing people. Nothing else in the suite forces a failure
+    *between* the destructive step and the end of the rebuild.
+    """
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        _mk_employee(conn, 'T_PART1', 'partial-one', '2028-11-01')
+        _mk_employee(conn, 'T_PART2', 'partial-two', '2028-11-01')
+        run = hr_mod.generate_run('2028-11', 1, created_by=1, conn=conn)
+        rid = run['id']
+        conn.commit()
+        before = {r[0] for r in conn.execute(
+            "SELECT id FROM payroll_items WHERE run_id=?", (rid,))}
+        assert len(before) >= 2, "need several rows, or a partial rebuild cannot show"
+    finally:
+        conn.close()
+
+    calls = {'n': 0}
+    real = hr_mod._build_item
+
+    def boom(c, emp, year_month, cfg, run_id=None):
+        calls['n'] += 1
+        if calls['n'] == 2:          # after the DELETE and at least one INSERT
+            raise sqlite3.OperationalError('disk I/O error')
+        return real(c, emp, year_month, cfg, run_id=run_id)
+
+    monkeypatch.setattr(hr_mod, '_build_item', boom)
+    with pytest.raises(sqlite3.OperationalError):
+        hr_mod.generate_run('2028-11', 1, created_by=1, db_path=tmp_db)
+
+    assert calls['n'] >= 2, "the failure never landed mid-rebuild"
+    after = {r[0] for r in sqlite3.connect(tmp_db).execute(
+        "SELECT id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert after == before, (
+        "the DELETE and the partial rebuild were not rolled back — "
+        "the month is left missing rows")
+
+
+def test_borrowed_connection_is_rolled_back_and_still_usable(tmp_db, monkeypatch):
+    """Replaces what the owned-connection version of this test could not prove.
+
+    On an OWNED connection close() rolls back by itself, so asserting the data
+    afterwards passes whether or not __exit__ ever called rollback. A BORROWED
+    connection is never closed here, so its state after the call is entirely
+    __exit__'s doing (Codex).
+    """
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        _mk_employee(conn, 'T_BORROW1', 'borrow-one', '2029-01-01')
+        _mk_employee(conn, 'T_BORROW2', 'borrow-two', '2029-01-01')
+        run = hr_mod.generate_run('2029-01', 1, created_by=1, conn=conn)
+        rid = run['id']
+        conn.commit()
+        before = {r[0] for r in conn.execute(
+            "SELECT id FROM payroll_items WHERE run_id=?", (rid,))}
+        assert len(before) >= 2
+
+        calls = {'n': 0}
+        real = hr_mod._build_item
+
+        def boom(c, emp, year_month, cfg, run_id=None):
+            calls['n'] += 1
+            if calls['n'] == 2:
+                raise sqlite3.OperationalError('disk I/O error')
+            return real(c, emp, year_month, cfg, run_id=run_id)
+
+        monkeypatch.setattr(hr_mod, '_build_item', boom)
+        with pytest.raises(sqlite3.OperationalError):
+            hr_mod.generate_run('2029-01', 1, created_by=1, conn=conn)
+        assert calls['n'] >= 2, "the failure never landed mid-rebuild"
+
+        # the three things only __exit__ can be responsible for here
+        assert conn.in_transaction is False, "the caller was left inside our transaction"
+        assert {r[0] for r in conn.execute(
+            "SELECT id FROM payroll_items WHERE run_id=?", (rid,))} == before, \
+            "the DELETE and partial rebuild were not rolled back"
+        assert conn.execute("SELECT 1").fetchone()[0] == 1, "connection unusable"
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def test_a_failing_commit_on_a_borrowed_connection_releases_the_transaction(tmp_db, monkeypatch):
+    """A commit that fails must still hand the connection back clean.
+
+    The caller keeps using it — leaving it inside our transaction hands them
+    SQLite's write lock indefinitely. The commit failure is what propagates;
+    the rollback is cleanup (Codex)."""
+    import hr as hr_mod
+    real_conn = sqlite3.connect(tmp_db, timeout=10)
+    real_conn.row_factory = sqlite3.Row
+    borrowed = _FlakyConn(real_conn, 'commit')
+    try:
+        # reopen_run on a missing id returns cleanly without committing itself,
+        # so the failing commit is the one __exit__ performs.
+        with pytest.raises(sqlite3.OperationalError):
+            hr_mod.reopen_run(999999, reason='x', actor='a', conn=borrowed)
+        assert real_conn.in_transaction is False, (
+            "a failing commit left the caller holding the transaction")
+        assert borrowed.closed is False, "a borrowed connection must not be closed"
+        assert real_conn.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        real_conn.rollback()
+        real_conn.close()
+
+
+def test_a_failing_rollback_on_a_borrowed_connection_is_not_silent(tmp_db):
+    """Swallowing it would hand the caller a connection still holding the lock
+    while telling them only about the original error — they would never learn
+    the cleanup failed (Codex).
+
+    An OWNED connection is the opposite case: the finally closes it, so the
+    transaction dies regardless and the body's exception is the more useful
+    thing to propagate. That asymmetry is the point, and it is why this test
+    exists — break-it-once showed that swallowing here changed no test at all.
+    """
+    import hr as hr_mod
+    real_conn = sqlite3.connect(tmp_db, timeout=10)
+    real_conn.row_factory = sqlite3.Row
+    borrowed = _FlakyConn(real_conn, 'rollback')
+    try:
+        # update_payroll_item raises ValueError on a missing id, inside the
+        # locked block — so __exit__ takes its exception path and rollback fails
+        with pytest.raises(hr_mod.ConnectionCleanupError) as caught:
+            hr_mod.update_payroll_item(999999, bonus=1.0, conn=borrowed)
+        # typed attributes, not implicit chaining: `raise X from Y` reads
+        # "X caused by Y" and the order here is the reverse (Codex).
+        assert isinstance(caught.value.primary_error, ValueError), (
+            "the body's error must stay identifiable as the real cause")
+        assert isinstance(caught.value.cleanup_error, sqlite3.OperationalError)
+        assert borrowed.closed is False, "a borrowed connection must not be closed"
+    finally:
+        real_conn.close()
+
+
+def _owned_flaky(monkeypatch, hr_mod, tmp_db, fail_on, also=None, holder=None):
+    def fake_connect(db_path=None):
+        real = sqlite3.connect(tmp_db, timeout=10)
+        real.row_factory = sqlite3.Row
+        real.execute("PRAGMA foreign_keys = ON")
+        f = _FlakyConn(real, fail_on, also)
+        if holder is not None:
+            holder['c'] = f
+        return f
+    monkeypatch.setattr(hr_mod, '_connect', fake_connect)
+
+
+def test_close_failure_never_replaces_the_error_that_actually_happened(tmp_db, monkeypatch):
+    """The blocker: close() lives in a finally, so if IT raises it replaces the
+    body's exception and the operator is told about the wrong thing (Codex).
+
+    Both failures must survive, and the one that matters must be identifiable
+    without reading a traceback."""
+    import hr as hr_mod
+    holder = {}
+    _owned_flaky(monkeypatch, hr_mod, tmp_db, 'close', holder=holder)
+    with pytest.raises(hr_mod.ConnectionCleanupError) as caught:
+        hr_mod.update_payroll_item(999999, bonus=1.0)     # body raises ValueError
+    assert isinstance(caught.value.primary_error, ValueError), \
+        "the real cause must be reachable as a typed attribute"
+    assert isinstance(caught.value.cleanup_error, sqlite3.OperationalError)
+    assert holder['c'].closed is True, "close was still attempted"
+
+
+def test_lock_failure_plus_close_failure_reports_both(tmp_db, monkeypatch):
+    """__enter__'s own cleanup path has the same hazard: the lock could not be
+    taken AND the connection could not be closed."""
+    import hr as hr_mod
+    holder = {}
+    _owned_flaky(monkeypatch, hr_mod, tmp_db, 'close', holder=holder)
+    monkeypatch.setattr(hr_mod, '_begin_immediate',
+                        lambda c: (_ for _ in ()).throw(
+                            sqlite3.OperationalError('database is locked')))
+    with pytest.raises(hr_mod.ConnectionCleanupError) as caught:
+        hr_mod.generate_run('2029-03', 1, created_by=1)
+    assert 'locked' in str(caught.value.primary_error)
+    assert isinstance(caught.value.cleanup_error, sqlite3.OperationalError)
+    assert holder['c'].closed is True
+
+
+def test_commit_failure_plus_close_failure_keeps_the_commit_as_primary(tmp_db, monkeypatch):
+    """A clean body, a failing commit, and a failing close. The commit failure
+    is what the caller must act on; the close failure is noise that must not
+    bury it."""
+    import hr as hr_mod
+    holder = {}
+    _owned_flaky(monkeypatch, hr_mod, tmp_db, 'commit', also='close', holder=holder)
+    with pytest.raises(hr_mod.ConnectionCleanupError) as caught:
+        hr_mod.reopen_run(999999, reason='x', actor='a')   # clean return, __exit__ commits
+    assert isinstance(caught.value.primary_error, sqlite3.OperationalError)
+    assert 'disk I/O' in str(caught.value.primary_error)
+    assert holder['c'].closed is True

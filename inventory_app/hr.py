@@ -48,23 +48,109 @@ def _connect(db_path: Optional[str] = None) -> sqlite3.Connection:
     return conn
 
 
-class _ConnCtx:
-    """Use the caller's connection if given (no close); else open/own one."""
+class ConnectionCleanupError(RuntimeError):
+    """Cleanup failed on the way out of a payroll write.
 
-    def __init__(self, conn: Optional[sqlite3.Connection], db_path: Optional[str]):
+    `primary_error` is what actually went wrong — the body's exception, or a
+    commit that would not land. `cleanup_error` is what failed while unwinding
+    (a rollback or a close). Both are typed attributes rather than a traceback
+    chain, because `raise X from Y` reads "X was caused by Y" and here the
+    order is the reverse: the cleanup failure is a consequence, never the cause
+    (Codex review of PR #367). Python 3.9, so no ExceptionGroup.
+    """
+
+    def __init__(self, primary_error, cleanup_error):
+        super().__init__(f"{primary_error} · ตามด้วยการเก็บกวาดที่ล้มเหลว: {cleanup_error}")
+        self.primary_error = primary_error
+        self.cleanup_error = cleanup_error
+
+
+class _ConnCtx:
+    """Use the caller's connection if given (no close); else open/own one.
+
+    `lock=True` takes the write lock on entry, for a body whose decision and
+    write must not be split by another worker. It then OWNS that transaction
+    and ends it on every exit — commit on a clean return, rollback on an
+    exception — because a caller's connection is never closed here and would
+    otherwise be left holding SQLite's single database-wide write lock after a
+    refusal or an early return, blocking every other writer until the caller
+    happened to commit (Codex review of PR #367).
+
+    Ending it is safe precisely because `_begin_immediate` REFUSES a
+    pre-existing transaction: anything open at exit is ours. An owned
+    connection was never at risk — closing it rolls back — but it goes through
+    the same path so the two cannot drift.
+    """
+
+    def __init__(self, conn: Optional[sqlite3.Connection], db_path: Optional[str],
+                 lock: bool = False):
         self._given = conn
         self._db_path = db_path
+        self._lock = lock
         self._owned: Optional[sqlite3.Connection] = None
+        self._locked = False
 
     def __enter__(self) -> sqlite3.Connection:
-        if self._given is not None:
-            return self._given
-        self._owned = _connect(self._db_path)
-        return self._owned
+        c = self._given
+        if c is None:
+            self._owned = _connect(self._db_path)
+            c = self._owned
+        if self._lock:
+            try:
+                # Raises if the caller already had one open, and can raise on
+                # its own when another writer holds the lock past the timeout.
+                _begin_immediate(c)
+            except BaseException as lock_err:
+                # __exit__ never runs when __enter__ raises, so an owned
+                # connection would leak here.
+                if self._owned is not None:
+                    try:
+                        self._owned.close()
+                    except Exception as close_err:
+                        self._owned = None
+                        raise ConnectionCleanupError(lock_err, close_err)
+                    self._owned = None
+                raise
+            self._locked = True
+        return c
 
-    def __exit__(self, *exc):
-        if self._owned is not None:
-            self._owned.close()
+    def __exit__(self, exc_type, exc, tb):
+        c = self._given if self._given is not None else self._owned
+        primary = exc                      # what the caller actually needs to hear
+        try:
+            if self._locked and c is not None and c.in_transaction:
+                if exc_type is not None:
+                    try:
+                        c.rollback()
+                    except Exception as rollback_err:
+                        # An OWNED connection is closed below, so its
+                        # transaction dies regardless and the body's exception
+                        # stays the headline. A BORROWED one goes back to the
+                        # caller still holding the write lock, so that cannot
+                        # be silent.
+                        if self._owned is None:
+                            raise ConnectionCleanupError(primary, rollback_err)
+                else:
+                    try:
+                        c.commit()
+                    except BaseException as commit_err:
+                        primary = commit_err
+                        try:
+                            c.rollback()
+                        except Exception as rollback_err:
+                            raise ConnectionCleanupError(commit_err, rollback_err)
+                        raise
+        finally:
+            if self._owned is not None:
+                try:
+                    self._owned.close()
+                except Exception as close_err:
+                    # close() sits in a finally, so raising here would REPLACE
+                    # whatever went wrong in the body — telling the operator
+                    # about the wrong failure entirely.
+                    if primary is not None:
+                        raise ConnectionCleanupError(primary, close_err)
+                    raise
         return False
 
 
@@ -760,6 +846,37 @@ def _active_employees_for_month(c, company_id: int, period_start, period_end):
     ).fetchall()
 
 
+class CallerTransactionInFlight(RuntimeError):
+    """A payroll write was asked to run on a connection that already has a
+    transaction open, so this function cannot guarantee its check and its write
+    are serialized. Refused rather than downgraded: the caller would otherwise
+    believe a money path is protected when it is not (Codex review of PR #367).
+    Commit or roll back before calling, or pass no connection at all."""
+
+
+def _begin_immediate(c) -> None:
+    """Take the write lock NOW, before anything is read that a decision rests on.
+
+    Under the default deferred isolation a connection holds no lock until its
+    first write, so a check-then-write pair is two separate transactions and
+    another worker fits between them. Railway runs `gunicorn -w 2`, so that
+    worker is real (see `.claude/rules/erp-engineering-discipline.md`).
+
+    Raises `CallerTransactionInFlight` when the connection is already inside a
+    transaction. We cannot tell a caller's DEFERRED transaction from an
+    IMMEDIATE one, and on a money path the difference is the whole guarantee —
+    so an unknown boundary is refused, not assumed. Opening one anyway and
+    committing would also flush the caller's unrelated work.
+    """
+    if c.in_transaction:
+        raise CallerTransactionInFlight(
+            "ทำรายการเงินเดือนบน connection ที่เปิด transaction ค้างไว้ไม่ได้ — "
+            "commit หรือ rollback ให้เรียบร้อยก่อน (หรือไม่ต้องส่ง conn มา) "
+            "เพราะการตรวจกับการเขียนต้องอยู่ใน transaction เดียวกันจึงจะกันการชนกันได้"
+        )
+    c.execute("BEGIN IMMEDIATE")
+
+
 def _regenerate_would_drop(c, run_id: int, active_ids):
     """employee_ids holding a payroll_items row in this run that the CURRENT
     active set no longer contains.
@@ -782,19 +899,208 @@ def _regenerate_would_drop(c, run_id: int, active_ids):
     return existing - set(active_ids)
 
 
-def _dropped_employees_message(c, dropped_ids) -> str:
+def _regenerate_would_add(c, run_id: int, active_ids):
+    """employee_ids in the CURRENT active set that hold no payroll_items row in
+    this run — i.e. who a regenerate would invent a payslip for.
+
+    The mirror of `_regenerate_would_drop`, consulted at BOTH ends of the
+    reopen→regenerate sequence: unconditionally in `reopen_run`, and in
+    `generate_run` only when `_was_reopened` says this draft holds reopened
+    history. Unlike the drop check it cannot be unconditional in `generate_run`
+    — on a draft that was never finalized, absorbing a new hire is the whole
+    point of regenerating.
+
+    2026-08-05 (why this exists): the drop guard shipped that morning is
+    one-directional. Measured on prod the same evening, run 3 (พ.ค. 2026) passed
+    it cleanly while a regenerate would have ADDED เซี้ยม and ปู้ to a finalized
+    month neither was ever part of — inventing rows is the same class of damage
+    as deleting them, and the reopen button was live.
+
+    The first version guarded only the reopen door, on the argument that
+    `generate_run` returns a finalized run untouched so `reopen_run` is the sole
+    path from a closed month to a rebuild. True, but the two are separate
+    transactions: a hire landing between them met no check at all (Codex review
+    of PR #367). Hence the second call site.
+    """
+    existing = {r["employee_id"] for r in c.execute(
+        "SELECT employee_id FROM payroll_items WHERE run_id = ?", (run_id,)
+    )}
+    return set(active_ids) - existing
+
+
+class PendingAdvanceStampWarning(Exception):
+    """Re-finalizing this reopened run would mark back-dated advances deducted
+    in a month that has already been paid out — money the app would then never
+    withhold from anyone. Raised at `finalize_run`, the boundary where the
+    money actually changes state, not at the reopen door: an advance can be
+    keyed or back-dated at any point in between, and the reopen page cannot
+    know about it (Codex review of PR #367)."""
+
+
+class RosterDriftWarning(Exception):
+    """Reopening this run is allowed, but a later regenerate would change WHO
+    is in it. Distinct from ValueError so the route can offer a confirmation
+    instead of a dead end — reopening itself mutates no payroll_items."""
+
+
+def roster_drift(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                 db_path: Optional[str] = None):
+    """(dropped_ids, added_ids) for `run_id` against today's active set.
+
+    Public because the payroll page renders the warning from it before the
+    operator opens the reopen dialog — the server still enforces the
+    confirmation, this only lets the UI say what will happen.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        run = c.execute("SELECT * FROM payroll_runs WHERE id = ?",
+                        (run_id,)).fetchone()
+        if run is None:
+            return set(), set()
+        period_start, period_end = _month_bounds(run["year_month"])
+        active_ids = {e["id"] for e in _active_employees_for_month(
+            c, run["company_id"], period_start, period_end)}
+        return (_regenerate_would_drop(c, run_id, active_ids),
+                _regenerate_would_add(c, run_id, active_ids))
+
+
+def pending_advance_stamp(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                          db_path: Optional[str] = None):
+    """(count, total) of advances a re-finalize of `run_id` would stamp.
+
+    Mirrors `finalize_run`'s UPDATE exactly — un-deducted, dated on or before
+    the run month's period_end, employee already in the run. Kept as its own
+    query rather than folded into the roster warning because the two hazards
+    are unrelated: a run with a perfectly matching roster is equally exposed.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        run = c.execute("SELECT * FROM payroll_runs WHERE id = ?",
+                        (run_id,)).fetchone()
+        if run is None:
+            return 0, 0.0
+        _, period_end = _month_bounds(run["year_month"])
+        row = c.execute(
+            """SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total
+                 FROM salary_advances
+                WHERE deducted_in_run_id IS NULL
+                  AND advance_date <= :period_end
+                  AND employee_id IN (
+                      SELECT employee_id FROM payroll_items WHERE run_id = :run_id
+                  )""",
+            {"run_id": run_id, "period_end": period_end.isoformat()},
+        ).fetchone()
+        return int(row["n"]), float(row["total"])
+
+
+def _pending_advance_message(n: int, total: float) -> str:
+    """One text for the banner AND the refusal, so the page cannot promise
+    something the finalize boundary then contradicts."""
+    return (
+        f"finalize รอบนี้ไม่ได้ — มีเงินเบิกล่วงหน้า {n} รายการ (รวม ฿{total:,.2f}) "
+        f"ที่จะถูกประทับว่า \"หักแล้ว\" ในรอบนี้ ทั้งที่ยอดหักในสลิปไม่ได้รวมมันไว้ "
+        f"(ยอดหักคำนวณตอนสร้างรอบ ไม่ใช่ตอน finalize) เงินก้อนนี้จึงจะไม่ถูกหักจากใครเลย "
+        f"· ทางแก้: เข้าไปแก้วันที่ของรายการเบิกให้เป็นเดือนที่ยังไม่ปิด "
+        f"แล้วเดือนนั้นจะหักให้จริงตอนสร้างรอบ"
+    )
+
+
+def pending_advance_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                         db_path: Optional[str] = None):
+    """Warning for the advances a re-finalize would swallow, or None.
+
+    2026-08-07 (why this exists): reopening a closed month became possible
+    again, and the flow tells the operator to finalize afterwards. On a month
+    whose payslips are already paid, that stamp marks an advance deducted while
+    no cash is ever withheld — the money is simply never collected. Nothing in
+    the app said so.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        n, total = pending_advance_stamp(run_id, conn=c)
+        if not n:
+            return None
+        return _pending_advance_message(n, total)
+
+
+def roster_drift_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                      db_path: Optional[str] = None):
+    """The reopen warning for `run_id`, or None when the roster still matches.
+
+    Same text `reopen_run` raises, so the page and the refusal cannot drift
+    apart — the operator reads it before opening the dialog, not after a
+    rejected submit.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        dropped, added = roster_drift(run_id, conn=c)
+        if not dropped and not added:
+            return None
+        return _roster_drift_message(c, dropped, added)
+
+
+def _roster_drift_message(c, dropped_ids, added_ids) -> str:
+    """Warning shown before a reopen whose later regenerate would change the
+    roster. Says what reopening is FOR in that situation — per-item repair —
+    because regenerating will be refused."""
+    parts = []
+    if dropped_ids:
+        parts.append(f"หายไป {len(dropped_ids)} คน ({_employee_names(c, dropped_ids)})")
+    if added_ids:
+        parts.append(f"เพิ่มมา {len(added_ids)} คน ({_employee_names(c, added_ids)})")
+    return (
+        "รอบนี้เปิดใหม่ได้ แต่รายชื่อพนักงานตอนนี้ไม่ตรงกับตอนที่ปิดรอบ: "
+        + " · ".join(parts)
+        + " · การกดเปิดรอบเองไม่แก้ตัวเลขของใคร แต่ถ้ากด \"สร้างรอบใหม่\" ระบบจะปฏิเสธ "
+        "เพื่อกันไม่ให้ประวัติเดือนนี้ถูกเขียนทับ — ให้แก้ตัวเลขรายบุคคลแทน แล้ว finalize ใหม่"
+    )
+
+
+def _was_reopened(c, run_id: int) -> bool:
+    """True if this run was ever un-finalized by `reopen_run`.
+
+    Distinguishes a draft holding REOPENED HISTORY from an ordinary working
+    draft — the difference that decides whether absorbing a new employee is
+    damage or the intended behaviour. `reopen_run` writes its audit_log row in
+    the same transaction as the status flip, so the marker cannot lag the state,
+    and `prune_audit_log` can never remove it (`_AUDIT_PRUNE_PREDICATE` is
+    `transactions` INSERT/DELETE only — this row is `payroll_runs`/UPDATE).
+    """
+    return c.execute(
+        """SELECT 1 FROM audit_log
+            WHERE table_name = 'payroll_runs' AND row_id = ?
+              AND action = 'UPDATE'
+              AND changed_fields LIKE '%"reopen_reason"%'
+            LIMIT 1""",
+        (run_id,),
+    ).fetchone() is not None
+
+
+def _employee_names(c, ids) -> str:
     rows = c.execute(
         "SELECT id, COALESCE(nickname, full_name) AS name FROM employees"
-        f" WHERE id IN ({','.join('?' * len(dropped_ids))})",
-        tuple(sorted(dropped_ids)),
+        f" WHERE id IN ({','.join('?' * len(ids))})",
+        tuple(sorted(ids)),
     ).fetchall()
-    names = ", ".join(f"{r['name']} (id {r['id']})" for r in rows) or \
-        ", ".join(str(i) for i in sorted(dropped_ids))
+    return ", ".join(f"{r['name']} (id {r['id']})" for r in rows) or \
+        ", ".join(str(i) for i in sorted(ids))
+
+
+def _added_employees_message(c, added_ids) -> str:
+    return (
+        f"สร้างรอบนี้ใหม่ไม่ได้ — มีพนักงาน {len(added_ids)} คนที่อยู่ในชุดพนักงานปัจจุบัน "
+        f"แต่ไม่มีรายการอยู่ในรอบนี้ ({_employee_names(c, added_ids)}) "
+        f"การสร้างรอบใหม่จะเพิ่มรายการเงินเดือนของเขาเข้าไปในเดือนที่ปิดไปแล้ว "
+        f"ทั้งที่เดือนนั้นไม่เคยจ่ายให้เขา "
+        f"· ถ้าเขาเพิ่งเข้างานทีหลัง ให้ตรวจวันเริ่มงาน (start_date) ว่าตรงกับความจริงไหม "
+        f"· ถ้าต้องแก้ตัวเลขของคนที่อยู่ในรอบอยู่แล้ว ให้แก้รายบุคคลแทน "
+        f"(รอบนี้ reopen ได้ ระบบจะถามยืนยันก่อน แล้วแก้ทีละคนได้เลย)"
+    )
+
+
+def _dropped_employees_message(c, dropped_ids) -> str:
     return (
         f"สร้างรอบนี้ใหม่ไม่ได้ — มีพนักงาน {len(dropped_ids)} คนที่มีรายการอยู่ในรอบนี้ "
-        f"แต่ไม่อยู่ในชุดพนักงานปัจจุบันแล้ว ({names}) "
+        f"แต่ไม่อยู่ในชุดพนักงานปัจจุบันแล้ว ({_employee_names(c, dropped_ids)}) "
         f"การสร้างใหม่จะลบรายการเงินเดือนของเขาในเดือนนี้ทิ้ง "
         f"และปลดการหักเบิกล่วงหน้าไปงวดอื่น "
+        f"· ถ้าจะแก้ตัวเลขในรอบนี้ ให้ reopen แล้วแก้รายบุคคล แทนการสร้างรอบใหม่ "
         f"· ถ้าเขาลาออกกลางเดือน ให้ใส่วันสิ้นสุดการทำงาน (end_date) แทนการปิดใช้งาน "
         f"ระบบจะคงเขาไว้ในรอบนี้และคิดเงินตามสัดส่วนวันที่ทำงานให้ "
         f"· ถ้าตั้งใจจะเอาเขาออกจากรอบนี้จริง ต้องแก้ที่ฐานข้อมูลโดยตรงและสำรองข้อมูลก่อน"
@@ -815,7 +1121,11 @@ def generate_run(year_month: str, company_id: int, created_by: int,
     """
     period_start, period_end = _month_bounds(year_month)
 
-    with _ConnCtx(conn, db_path) as c:
+    with _ConnCtx(conn, db_path, lock=True) as c:
+        # Lock BEFORE every read a decision rests on — the run's status, and
+        # the config that _build_item applies to each employee. Reading either
+        # outside the transaction lets another worker invalidate it before the
+        # DELETE + rebuild below (Codex review of PR #367).
         cfg = _load_config(c)
 
         run = c.execute(
@@ -845,9 +1155,19 @@ def generate_run(year_month: str, company_id: int, created_by: int,
         # and before any commit, so _ConnCtx closing the connection rolls back a
         # freshly-inserted payroll_runs row (an empty new run has no items, so
         # this can only fire on a REgenerate).
-        dropped = _regenerate_would_drop(c, run_id, {e["id"] for e in emps})
+        active_ids = {e["id"] for e in emps}
+        dropped = _regenerate_would_drop(c, run_id, active_ids)
         if dropped:
             raise ValueError(_dropped_employees_message(c, dropped))
+        # The reopen door checks the roster too, but it is a SEPARATE
+        # transaction from this rebuild — anyone hired in between passed no
+        # check at all. So re-check here, but only for a run that was reopened:
+        # on a draft that was never finalized, absorbing a new hire is the whole
+        # point of regenerating.
+        if _was_reopened(c, run_id):
+            added = _regenerate_would_add(c, run_id, active_ids)
+            if added:
+                raise ValueError(_added_employees_message(c, added))
 
         c.execute("DELETE FROM payroll_items WHERE run_id = ?", (run_id,))
         for emp in emps:
@@ -920,7 +1240,10 @@ def update_payroll_item(item_id: int,
     so it must hold for every caller — not only the one that goes through the
     URL. Same defense-in-depth as post_salary_payment's finalized check.
     """
-    with _ConnCtx(conn, db_path) as c:
+    with _ConnCtx(conn, db_path, lock=True) as c:
+        # Refusing a finalized parent is only a guarantee while the status
+        # cannot change between the read and the write — otherwise a finalize
+        # landing in between lets an issued payslip be rewritten.
         row = c.execute(
             """SELECT pi.*, pr.status AS run_status
                  FROM payroll_items pi
@@ -992,7 +1315,7 @@ def finalize_run(run_id: int,
          deducted_in_run_id = run_id so a later month never re-deducts it.
     Returns the payroll_runs row (or None if run_id unknown).
     """
-    with _ConnCtx(conn, db_path) as c:
+    with _ConnCtx(conn, db_path, lock=True) as c:
         run = c.execute(
             "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
         ).fetchone()
@@ -1000,6 +1323,32 @@ def finalize_run(run_id: int,
             return None
         if run["status"] == "finalized":
             return run  # no-op: no re-mark, no re-stamp
+
+        # Lock before the pending check: the check and the stamp below must be
+        # ONE transaction, or an advance inserted in between is stamped as
+        # deducted while no payslip carries it (Codex review of PR #367).
+        run = c.execute(
+            "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        if run["status"] == "finalized":
+            return run  # someone else finalized it while we waited for the lock
+
+        # Gate ONLY a re-finalize. Stamping advances is the whole job of a
+        # first finalize, so keying on "advances exist" would stop monthly
+        # payroll for everyone; keying on `_was_reopened` isolates the case
+        # where the month was already closed — and, for a run that had been
+        # paid, already paid out.
+        #
+        # No override. A stamp only means "collected" when the same advance is
+        # inside the item's salary_advance_deduction, and that is computed in
+        # _build_item during generate_run — which is refused on a reopened run
+        # whose roster drifted. So on this path consent cannot make the money
+        # move; it can only mark uncollected money as collected. The operator
+        # fixes the DATA instead (see the message).
+        if _was_reopened(c, run_id):
+            n, total = pending_advance_stamp(run_id, conn=c)
+            if n:
+                raise PendingAdvanceStampWarning(_pending_advance_message(n, total))
 
         _, period_end = _month_bounds(run["year_month"])
 
@@ -1030,7 +1379,8 @@ def finalize_run(run_id: int,
 # ── reopen a finalized run (admin escape hatch) ──────────────────────────────
 def reopen_run(run_id: int, reason: str, actor: str,
                conn: Optional[sqlite3.Connection] = None,
-               db_path: Optional[str] = None):
+               db_path: Optional[str] = None,
+               confirm_roster_change: bool = False):
     """Un-finalize a finalized run. Records an explicit audit_log entry with
     the actor + human reason so the "why" survives (mig 071's UPDATE trigger
     captures the field diff with user=NULL).
@@ -1047,7 +1397,12 @@ def reopen_run(run_id: int, reason: str, actor: str,
     """
     if not reason or not reason.strip():
         raise ValueError("reason is required")
-    with _ConnCtx(conn, db_path) as c:
+    with _ConnCtx(conn, db_path, lock=True) as c:
+        # Lock before the status and paid-count reads. Both decide whether this
+        # run may go back to draft, and post_salary_payment decides the mirror
+        # question from the same status — leaving either unlocked lets the pair
+        # interleave into "a draft run with money already posted against it",
+        # which is then editable (Codex review of PR #367).
         run = c.execute(
             "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
         ).fetchone()
@@ -1068,17 +1423,19 @@ def reopen_run(run_id: int, reason: str, actor: str,
             )
 
         # Stop at the door. Reopening is only ever a prelude to regenerating,
-        # and generate_run refuses when that would drop a departed employee's
-        # row — so checking here too avoids stranding the run in 'draft' with
-        # finalized figures, a state nothing else repairs.
-        period_start, period_end = _month_bounds(run["year_month"])
-        dropped = _regenerate_would_drop(
-            c, run_id,
-            {e["id"] for e in _active_employees_for_month(
-                c, run["company_id"], period_start, period_end)},
-        )
-        if dropped:
-            raise ValueError(_dropped_employees_message(c, dropped))
+        # and generate_run refuses a rebuild that would drop a departed
+        # employee's row (or, for a run that was reopened, add one) — so
+        # WARN here, REFUSE at the rebuild. Reopening mutates no payroll_items;
+        # only generate_run does, and it refuses roster drift outright. A hard
+        # refusal here looked safer and was not: per-item repair is gated on
+        # `status != 'finalized'` (blueprints/hr.py::payroll_item_edit), so
+        # blocking the only door to draft left runs 3 and 4 unfixable through
+        # the UI while the refusal text told the operator to fix them per item.
+        # Codex review of PR #367 caught the contradiction.
+        dropped, added = roster_drift(run_id, conn=c)
+        if (dropped or added) and not confirm_roster_change:
+            raise RosterDriftWarning(
+                _roster_drift_message(c, dropped, added))
 
         c.execute(
             "UPDATE payroll_runs SET status='draft', finalized_at=NULL WHERE id=?",
@@ -1116,7 +1473,9 @@ def post_salary_payment(item_id: int, account_id: int,
 
     Returns the new cashbook_transactions.id.
     """
-    with _ConnCtx(conn, db_path) as c:
+    with _ConnCtx(conn, db_path, lock=True) as c:
+        # The other half of the reopen pairing: this decides from the run's
+        # status, so it must hold the lock across that read and the insert.
         item = c.execute(
             "SELECT * FROM payroll_items WHERE id = ?", (item_id,)
         ).fetchone()

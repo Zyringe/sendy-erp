@@ -15,6 +15,11 @@
         class="d-inline ms-1"
         onsubmit="return confirm('Finalize payroll run #{{ run.id }}? ไม่สามารถแก้ไขได้อีก')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if pending_advance_note %}
+    <div class="alert alert-danger small my-2" data-warn="pending-advance-stamp">
+      <i class="bi bi-cash-coin me-1"></i>{{ pending_advance_note }}
+    </div>
+    {% endif %}
     <button type="submit" class="btn btn-sm btn-success">
       <i class="bi bi-check-circle me-1"></i>Finalize
     </button>
@@ -351,6 +356,23 @@
             <strong>Reopen จะปลดสถานะกลับเป็น draft</strong> เพื่อให้แก้ไข items หรือ regenerate ได้.
             Advance stamps จะคงอยู่ — กด <strong>Finalize ใหม่</strong> เมื่อแก้เสร็จเพื่อ lock อีกครั้ง.
           </div>
+          {% if pending_advance_note %}
+          <div class="alert alert-danger small mb-3" data-warn="pending-advance-stamp">
+            <i class="bi bi-cash-coin me-1"></i>{{ pending_advance_note }}
+          </div>
+          {% endif %}
+          {% if roster_drift_note %}
+          <div class="alert alert-danger small mb-3" data-warn="roster-drift">
+            <i class="bi bi-people me-1"></i>{{ roster_drift_note }}
+          </div>
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" value="1" required
+                   name="confirm_roster_change" id="confirmRosterChange">
+            <label class="form-check-label small" for="confirmRosterChange">
+              เข้าใจแล้ว — เปิดรอบเพื่อ<strong>แก้รายบุคคล</strong> ไม่ใช่เพื่อสร้างรอบใหม่
+            </label>
+          </div>
+          {% endif %}
           <label class="form-label small">เหตุผล (จำเป็น) <span class="text-danger">*</span></label>
           <textarea name="reason" class="form-control" rows="3" required
                     placeholder="เช่น: แก้ไขเบี้ยขยันของบอลที่ลืมหัก / เพิ่ม advance ที่ตกหล่น"></textarea>
