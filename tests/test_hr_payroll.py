@@ -964,3 +964,97 @@ def test_refinalize_after_reopen_with_nothing_pending_needs_no_confirmation(tmp_
     hr.finalize_run(rid, conn=c)
     assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
                      (rid,)).fetchone()[0] == 'finalized'
+
+
+# ── the decision and the write must be one transaction ─────────────────────
+
+def _concurrent_insert_blocked(db_path, employee_id, advance_date, amount):
+    """Try to write an advance from a SECOND connection with a short timeout.
+
+    Returns True if the writer was locked out. `timeout` is deliberately tiny
+    so "excluded" is a fast, certain answer instead of a stall.
+    """
+    other = sqlite3.connect(db_path, timeout=0.1)
+    try:
+        other.execute(
+            "INSERT INTO salary_advances (employee_id, advance_date, amount)"
+            " VALUES (?,?,?)", (employee_id, advance_date, amount))
+        other.commit()
+        return False
+    except sqlite3.OperationalError as e:
+        return "locked" in str(e).lower()
+    finally:
+        other.close()
+
+
+def test_finalize_holds_the_write_lock_across_the_pending_check(tmp_db, monkeypatch):
+    """The pending check and the stamp must be one BEGIN IMMEDIATE transaction.
+
+    Under the default deferred isolation the connection holds no lock until it
+    writes, so the sequence Codex described was live: A reads pending = 0, B
+    inserts a back-dated advance and commits, A flips the run to finalized, and
+    A's UPDATE then stamps B's advance as deducted while no payslip carries it.
+    Railway runs gunicorn -w 2, so the second worker is real.
+
+    The seam is patched BEFORE the first write — a probe placed after it would
+    be excluded either way and would pass with the fix removed.
+    """
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        eid = _mk_employee(conn, 'T_RACE', 'race-target', '2027-07-01')
+        run = hr_mod.generate_run('2027-07', 1, created_by=1, conn=conn)
+        rid = run['id']
+        conn.commit()
+    finally:
+        conn.close()
+
+    seen = {}
+    real = hr_mod._was_reopened
+
+    def probe(c, run_id):
+        # _was_reopened is consulted on EVERY finalize and before every write,
+        # so the probe lands in the window the fix is meant to close.
+        seen['blocked'] = _concurrent_insert_blocked(tmp_db, eid, '2027-07-10', 500.0)
+        return real(c, run_id)
+
+    monkeypatch.setattr(hr_mod, '_was_reopened', probe)
+    hr_mod.finalize_run(rid, db_path=tmp_db)
+
+    assert seen, "the probe never ran — the seam moved, so this test proves nothing"
+    assert seen['blocked'] is True, (
+        "a concurrent writer got in between the pending check and the stamp")
+
+
+def test_generate_holds_the_write_lock_across_the_roster_check(tmp_db, monkeypatch):
+    """Same shape, same hazard: generate_run decides from the active set and
+    then DELETEs every payroll_item of the run. An employee deactivated between
+    the two makes the guard decide on a roster that no longer exists."""
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        eid = _mk_employee(conn, 'T_RACE2', 'race-target-2', '2027-08-01')
+        conn.commit()
+    finally:
+        conn.close()
+    # Create the run FIRST. On a brand-new month generate_run INSERTs the
+    # payroll_runs row before the roster check, which takes the write lock for
+    # unrelated reasons — the probe would then be excluded with or without the
+    # fix and the test would pass for the wrong reason.
+    hr_mod.generate_run('2027-08', 1, created_by=1, db_path=tmp_db)
+
+    seen = {}
+    real = hr_mod._active_employees_for_month
+
+    def probe(c, company_id, period_start, period_end):
+        seen['blocked'] = _concurrent_insert_blocked(tmp_db, eid, '2027-08-10', 100.0)
+        return real(c, company_id, period_start, period_end)
+
+    monkeypatch.setattr(hr_mod, '_active_employees_for_month', probe)
+    hr_mod.generate_run('2027-08', 1, created_by=1, db_path=tmp_db)
+
+    assert seen, "the probe never ran — the seam moved"
+    assert seen['blocked'] is True, (
+        "a concurrent writer got in between the roster check and the rebuild")

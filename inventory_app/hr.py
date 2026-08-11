@@ -760,6 +760,26 @@ def _active_employees_for_month(c, company_id: int, period_start, period_end):
     ).fetchall()
 
 
+def _begin_immediate(c) -> bool:
+    """Take the write lock NOW, before anything is read that a decision rests on.
+
+    Under the default deferred isolation a connection holds no lock until its
+    first write, so a check-then-write pair is two separate transactions and
+    another worker fits between them. Railway runs `gunicorn -w 2`, so that
+    worker is real (see `.claude/rules/erp-engineering-discipline.md`).
+
+    Returns True if we opened the transaction. On a CALLER-OWNED connection
+    that is already inside one we return False and take nothing: the caller
+    owns that boundary and silently widening it would let our commit flush
+    their unrelated work. Callers that need the guarantee should hand us a
+    connection with no transaction in flight, or none at all.
+    """
+    if c.in_transaction:
+        return False
+    c.execute("BEGIN IMMEDIATE")
+    return True
+
+
 def _regenerate_would_drop(c, run_id: int, active_ids):
     """employee_ids holding a payroll_items row in this run that the CURRENT
     active set no longer contains.
@@ -1027,6 +1047,11 @@ def generate_run(year_month: str, company_id: int, created_by: int,
                     "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
                 ).fetchone()
 
+        # Lock before reading the roster: the guards below decide from it and
+        # then DELETE every payroll_item of the run, so the read and the
+        # rebuild must be one transaction.
+        _begin_immediate(c)
+
         # active employees of this company who overlap the payroll month
         emps = _active_employees_for_month(c, company_id, period_start, period_end)
 
@@ -1199,6 +1224,16 @@ def finalize_run(run_id: int,
             return None
         if run["status"] == "finalized":
             return run  # no-op: no re-mark, no re-stamp
+
+        # Lock before the pending check: the check and the stamp below must be
+        # ONE transaction, or an advance inserted in between is stamped as
+        # deducted while no payslip carries it (Codex review of PR #367).
+        _begin_immediate(c)
+        run = c.execute(
+            "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        if run["status"] == "finalized":
+            return run  # someone else finalized it while we waited for the lock
 
         # Gate ONLY a re-finalize. Stamping advances is the whole job of a
         # first finalize, so keying on "advances exist" would stop monthly
