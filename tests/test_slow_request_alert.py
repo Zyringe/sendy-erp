@@ -24,6 +24,7 @@ TWO LEVELS ON PURPOSE
     still open.
 """
 import os
+import sqlite3
 
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
@@ -174,6 +175,39 @@ def test_a_slow_request_actually_reaches_put_on_the_alerts_page(
     html = page.get_data(as_text=True)
     assert 'healthz' in html
     assert 'Internal Server Error' in html      # the actionable warning text
+
+
+def test_a_locked_db_makes_the_alert_give_up_fast_instead_of_stalling(empty_db):
+    """The self-defeating failure: an already-slow request must not be pushed
+    OVER the 60s line by the act of filing its own warning.
+
+    ⚠ This pins the OUTCOME (fast + quiet), not the mechanism. A review claimed
+    get_connection()'s pre-`busy_timeout` statements could add ~10s here;
+    measuring said otherwise — `sqlite3.connect` takes no lock and
+    `PRAGMA journal_mode=WAL` under a held lock raises in 0.00s rather than
+    waiting — so this test deliberately passes on both connection shapes. Do
+    not read a green here as proof of the connect-time ordering; it proves the
+    recorder cannot stall or throw, which is the property that matters.
+    """
+    import time
+    blocker = sqlite3.connect(empty_db, timeout=10)
+    try:
+        blocker.execute("BEGIN IMMEDIATE")            # hold the write lock
+        blocker.execute(
+            "INSERT INTO system_alerts (kind, severity, message, dedupe_key)"
+            " VALUES ('x', 'warning', 'holding the lock', 'x')")
+
+        t0 = time.monotonic()
+        result = models.record_slow_request_alert('marketplace.upload', 'POST', 33.0)
+        elapsed = time.monotonic() - t0
+
+        assert result is None                          # best-effort: no crash
+        # Wide margin on purpose: the bug waits ~10s, the fix ~2s. Anything
+        # under 5s can only be the short timeout.
+        assert elapsed < 5.0, f'alert path stalled {elapsed:.1f}s on a locked DB'
+    finally:
+        blocker.rollback()
+        blocker.close()
 
 
 def test_recording_is_best_effort_and_never_raises(empty_db_conn, monkeypatch):

@@ -212,7 +212,14 @@ def record_slow_request_alert(endpoint, method, seconds, *, conn=None):
             conn = get_connection()
             # An already-slow request must not wait another 10s on a write lock
             # just to file its own warning — that would push it toward the very
-            # timeout this is warning about.
+            # timeout this is warning about. This line is the only protection
+            # needed: nothing get_connection() does BEFORE it can block, which
+            # was measured, not assumed. `sqlite3.connect` takes no lock, and
+            # `PRAGMA journal_mode=WAL` under a held write lock RAISES
+            # "database is locked" in 0.00s rather than waiting out the 10s
+            # connect timeout (and on prod the DB is already WAL, so it is a
+            # no-op read). A review flagged the ordering here as able to add
+            # ~10s; reproducing it showed it cannot.
             conn.execute("PRAGMA busy_timeout=2000")
         try:
             aid = create_system_alert(
