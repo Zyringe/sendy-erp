@@ -423,6 +423,49 @@ def add_salary_history(emp_id: int, effective_date: str,
             c.close()
 
 
+def get_employee_wht_history(emp_id: int,
+                             conn: Optional[sqlite3.Connection] = None):
+    """Copy of get_employee_salary_history against employee_wht_history —
+    same effective-dated shape (P1, migration 155)."""
+    c, owned = _conn(conn)
+    try:
+        return c.execute(
+            """SELECT * FROM employee_wht_history
+                WHERE employee_id = ?
+                ORDER BY effective_date DESC, id DESC""",
+            (emp_id,),
+        ).fetchall()
+    finally:
+        if owned:
+            c.close()
+
+
+def _insert_wht_history(c: sqlite3.Connection, emp_id: int,
+                        effective_date: str, monthly_wht: float,
+                        reason: str, note: Optional[str] = None) -> None:
+    """INSERT the WHT row on `c` — WITHOUT committing (see _insert_salary_history)."""
+    c.execute(
+        """INSERT OR REPLACE INTO employee_wht_history
+             (employee_id, effective_date, monthly_wht, reason, note)
+           VALUES (?,?,?,?,?)""",
+        (emp_id, effective_date, monthly_wht, reason, note),
+    )
+
+
+def add_wht_history(emp_id: int, effective_date: str,
+                    monthly_wht: float, reason: str,
+                    note: Optional[str] = None,
+                    conn: Optional[sqlite3.Connection] = None):
+    c, owned = _conn(conn)
+    try:
+        _insert_wht_history(c, emp_id, effective_date, monthly_wht,
+                            reason, note)
+        c.commit()
+    finally:
+        if owned:
+            c.close()
+
+
 # ── Leave entitlements ───────────────────────────────────────────────────────
 
 def get_employee_entitlements(emp_id: int, year: int,

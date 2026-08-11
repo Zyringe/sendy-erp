@@ -90,6 +90,7 @@
           <th class="text-end">รายการเพิ่ม</th>
           <th class="text-end">หักลา</th>
           <th class="text-end">ประกันสังคม</th>
+          <th class="text-end">ภาษี</th>
           <th class="text-end">เบิกล่วงหน้า</th>
           <th class="text-end">รายการหัก</th>
           <th class="text-end fw-bold">เงินสุทธิ</th>
@@ -127,6 +128,9 @@
             {% else %}–{% endif %}
           </td>
           <td class="text-end small text-danger">{{ fmt_baht(item.sso_employee) }}</td>
+          <td class="text-end small {% if item.wht_amount > 0 %}text-danger{% endif %}">
+            {% if item.wht_amount > 0 %}-{{ fmt_baht(item.wht_amount) }}{% else %}–{% endif %}
+          </td>
           <td class="text-end small {% if item.salary_advance_deduction > 0 %}text-danger{% endif %}">
             {% if item.salary_advance_deduction > 0 %}-{{ fmt_baht(item.salary_advance_deduction) }}{% else %}–{% endif %}
           </td>
@@ -149,7 +153,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="{% if session.role == 'admin' and run.status == 'draft' %}14{% else %}13{% endif %}" class="text-center text-muted py-4">ไม่มีรายการพนักงาน</td>
+          <td colspan="{% if session.role == 'admin' and run.status == 'draft' %}15{% else %}14{% endif %}" class="text-center text-muted py-4">ไม่มีรายการพนักงาน</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -163,6 +167,7 @@
           <td class="text-end small">{{ fmt_baht(items | sum(attribute='other_additions')) }}</td>
           <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='unpaid_leave_deduction')) }}</td>
           <td class="text-end small text-danger">{{ fmt_baht(items | sum(attribute='sso_employee')) }}</td>
+          <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='wht_amount')) }}</td>
           <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='salary_advance_deduction')) }}</td>
           <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='other_deductions')) }}</td>
           <td class="text-end fw-bold">{{ fmt_baht(items | sum(attribute='net_pay')) }}</td>
@@ -309,6 +314,11 @@
               <label class="form-label small">รายละเอียดรายการหัก</label>
               <input type="text" name="other_deductions_note" class="form-control form-control-sm"
                      value="{{ item.other_deductions_note or '' }}">
+            </div>
+            <div class="col-6">
+              <label class="form-label small">ภาษี (฿)</label>
+              <input type="number" name="wht_amount" class="form-control form-control-sm"
+                     value="{{ item.wht_amount or 0 }}" step="0.01" min="0">
             </div>
             <div class="col-12">
               <label class="form-label small">มาสาย (late toggle)</label>
