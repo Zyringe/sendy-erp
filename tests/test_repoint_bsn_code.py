@@ -1226,3 +1226,94 @@ def test_repoint_of_an_ordinary_code_still_refuses_missing_ratio_with_a_protecte
     assert conn.execute(
         "SELECT product_id FROM product_code_mapping WHERE bsn_code=?", (CODE,)
     ).fetchone()['product_id'] == OLD, "refused before any mutation, as before"
+
+
+def test_protected_repoint_refuses_when_it_would_drop_an_ordinary_siblings_replay(empty_db_conn):
+    """Codex round-2 I1: skipping the missing_unit_ratios preflight for a
+    protected code (previous test) is correct in isolation, but step 4's
+    reset+replay is PRODUCT-WIDE, not code-scoped — it resets
+    synced_to_stock=0 and rebuilds the ledger for every source row on every
+    AFFECTED product, "regardless of code" (mapping.py step 4's own comment).
+    An ordinary sibling code sharing OLD with the protected code is squarely
+    in that blast radius: if its unit_conversions ratio has since gone
+    missing, _sync_bsn_to_stock's `if base_qty is None: continue` silently
+    leaves it unsynced on the replay — its ledger row and stock movement are
+    gone — while repoint_bsn_code still reports success, because nothing
+    upstream of this test's guard ever inspected a row outside this
+    bsn_code's own scope.
+
+    Reproduces Codex's EXECUTED repro from the round-2 brief: an ordinary
+    sibling already synced (here at -24, matching their number) on a product
+    that also hosts a protected code, its ratio deleted out from under it,
+    then the protected code repointed. Must now be REFUSED wholesale, with
+    the sibling's synced_to_stock and ledger row left exactly as they were."""
+    import models
+
+    conn = empty_db_conn
+    OLD = _product(conn, 'Old (mixed, hosts a protected line too)', 'ตัว')
+    NEW = _product(conn, 'New', 'ตัว')
+    SIB_CODE = 'ZSIB01'
+    PROTECTED_CODE = '888ค8888'
+
+    _mapping(conn, SIB_CODE, OLD)
+    _mapping(conn, PROTECTED_CODE, OLD)
+    conn.execute(
+        "INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?, 'โหล', 12)",
+        (OLD,),
+    )
+    _sale(conn, 'ZS-S1', OLD, SIB_CODE, qty=2, unit='โหล')  # -> -24 base units
+    conn.execute(
+        "INSERT INTO sales_transactions"
+        " (date_iso, doc_no, doc_base, product_id, bsn_code, product_name_raw,"
+        "  customer, customer_code, qty, unit, unit_price, vat_type, discount,"
+        "  total, net, synced_to_stock)"
+        " VALUES ('2026-06-01','ZP-SHIP1','ZP-SHIP1',?,'888ค8888','น้ำหนักเกิน',"
+        "  'ลูกค้าทดสอบ','C1',1,'ใบ',30.0,0,'',30.0,30.0,0)", (OLD,))
+    conn.commit()
+
+    # Pre-existing CORRECT state: sync once. The ordinary sibling gets a real
+    # ledger row and synced_to_stock=1; the protected line stays unsynced with
+    # none — the same starting point every other test in this file uses.
+    models._sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
+    conn.commit()
+    assert conn.execute(
+        "SELECT synced_to_stock FROM sales_transactions WHERE doc_no='ZS-S1'"
+    ).fetchone()['synced_to_stock'] == 1
+    sib_ledger_before = conn.execute(
+        "SELECT quantity_change FROM transactions WHERE reference_no='ZS-S1'"
+    ).fetchall()
+    assert len(sib_ledger_before) == 1
+    assert sib_ledger_before[0]['quantity_change'] == -24
+    assert _stock(conn, OLD) == -24
+
+    # The ratio the sibling's replay depends on has since gone missing —
+    # simulates the exact gap Codex exploited (a scripts/ ratio deletion, or
+    # any path that removes a unit_conversions row after rows already synced
+    # against it).
+    conn.execute(
+        "DELETE FROM unit_conversions WHERE product_id=? AND bsn_unit='โหล'", (OLD,)
+    )
+    conn.commit()
+
+    with pytest.raises(RuntimeError, match='unit_conversions ratio is missing'):
+        models.repoint_bsn_code(conn, PROTECTED_CODE, NEW)
+    conn.rollback()
+
+    # The sibling's synced state and ledger row must be untouched — this is
+    # the whole point of the guard.
+    assert conn.execute(
+        "SELECT synced_to_stock FROM sales_transactions WHERE doc_no='ZS-S1'"
+    ).fetchone()['synced_to_stock'] == 1, "sibling must not be left desynced"
+    sib_ledger_after = conn.execute(
+        "SELECT quantity_change FROM transactions WHERE reference_no='ZS-S1'"
+    ).fetchall()
+    assert len(sib_ledger_after) == 1, "sibling's ledger row must survive"
+    assert sib_ledger_after[0]['quantity_change'] == -24
+    assert _stock(conn, OLD) == -24, "OLD's stock must be exactly what it was"
+
+    # And the protected code's mapping must not have moved either — a whole-
+    # or-nothing refusal, not a partial one.
+    assert conn.execute(
+        "SELECT product_id FROM product_code_mapping WHERE bsn_code=?",
+        (PROTECTED_CODE,),
+    ).fetchone()['product_id'] == OLD

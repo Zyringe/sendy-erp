@@ -11,7 +11,7 @@ from database import get_connection
 import bsn_units
 
 from .bsn_sync import (_BSN_LEDGER_NOTE_PATTERNS, _sync_bsn_to_stock,
-                       cross_unit_hazard)
+                       _synced_source_ids, cross_unit_hazard)
 from .stock_filters import non_stock_clause, is_non_stock_code, NonStockCodeError
 from .wacc import (recalculate_product_wacc, preflight_batch,
                    WaccIdentityError)
@@ -376,6 +376,22 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
     WACC-neutral (models/wacc.py treats it as a stock-only event).
     Raises RuntimeError if any level still moved once the ADJUSTs are posted.
 
+    Step 4 below resets synced_to_stock=0 for EVERY source row on an affected
+    product, not just this bsn_code's — because the ledger DELETE that
+    precedes it wipes ALL 'BSN%' ledger on those products regardless of code
+    (see the comment there). An ordinary sibling row that was already synced
+    can therefore fail to replay if its unit_conversions ratio has since gone
+    missing (_sync_bsn_to_stock's `if base_qty is None: continue` at
+    bsn_sync.py silently leaves it unsynced) — losing its stock movement for
+    good, with this call still reporting success. Codex found this live by
+    execution: an ordinary sibling synced at -24 on a product that also hosted
+    a protected code, its ratio deleted, then the protected code repointed —
+    the call succeeded, the sibling's synced_to_stock flipped 1->0 and its
+    ledger row vanished. Guarded below (step 5a) the same way
+    update_unit_conversion_ratio guards its own single-product replay:
+    snapshot every affected product's synced row identities before anything
+    moves, compare after the resync, and raise rather than lose one.
+
     Returns a report dict:
         {
           'affected_pids': sorted list[int],
@@ -485,6 +501,15 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
 
         stock_before = {pid: _stock(pid) for pid in affected}
 
+        # Snapshot of every affected product's synced-row identities, taken
+        # before anything moves (mirrors update_unit_conversion_ratio's own
+        # synced_before/synced_after pattern, generalised across the whole
+        # affected set — see step 5a below for why this is one union rather
+        # than a per-product check).
+        synced_before = set()
+        for pid in affected:
+            synced_before |= _synced_source_ids(conn, pid)
+
         # ── 2. Re-point product_code_mapping (reproduces upsert_mapping) ───
         existing_name_row = conn.execute(
             "SELECT bsn_name, is_ignored, ignore_reason FROM product_code_mapping "
@@ -575,6 +600,33 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
                         ('purchase_transactions', 'purchase')):
             _sync_bsn_to_stock(conn, _t, _ft, deduct_platform=False,
                                product_ids=affected)
+
+        # ── 5a. Refuse if the product-wide reset+replay silently dropped a
+        # row that was synced before we touched anything ──────────────────
+        # Step 4 reset synced_to_stock=0 for EVERY row on an affected product
+        # (any bsn_code, not just this one). Most replay cleanly; a row whose
+        # unit_conversions ratio has since gone missing does not —
+        # _sync_bsn_to_stock's `if base_qty is None: continue` leaves it
+        # unsynced rather than raising, so nothing above this line would ever
+        # notice. Compare identities (not counts) across the WHOLE affected
+        # set as one union, same reason _synced_source_ids's own docstring
+        # gives for a single product: a row that first-syncs during this
+        # replay could otherwise numerically mask one that can no longer
+        # replay. Must run before 5b/6 below — a lost row's stock is already
+        # gone from this connection's view, so any compensation or WACC
+        # computed past this point would be built on a wrong ledger.
+        synced_after = set()
+        for pid in affected:
+            synced_after |= _synced_source_ids(conn, pid)
+        lost = synced_before - synced_after
+        if lost:
+            raise RuntimeError(
+                f"repoint_bsn_code({bsn_code!r}): {len(lost)} previously-synced "
+                f"row(s) on the affected product set ({sorted(affected)}) could "
+                f"not be replayed — a unit_conversions ratio is missing for at "
+                f"least one of them. Refusing to lose their stock movement: "
+                f"{sorted(lost)}"
+            )
 
         # ── 5b. Optionally hold every stock level where it was ──────────────
         # Runs BEFORE the WACC recompute so the ledger step 6 reads is final.
