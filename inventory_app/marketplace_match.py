@@ -40,6 +40,7 @@ Manual links are never clobbered and their IV is never reused.
 import logging
 from collections import deque
 from datetime import datetime
+from functools import lru_cache
 
 # Customer code per platform (sales_transactions.customer_code).
 _CUST_CODE = {'shopee': 'Zหน้าร้าน', 'lazada': 'Lหน้าร้าน'}
@@ -67,13 +68,25 @@ _GAP_WEIGHT = 10 ** 9
 _VAT_NET = "CASE WHEN vat_type=2 THEN net*1.07 ELSE net END"
 
 
+@lru_cache(maxsize=4096)
+def _day_ordinal(value):
+    """Calendar-day number for a 'YYYY-MM-DD…' date value.
+
+    Cached because ``_build_edges`` asks for a date gap on every (order, IV)
+    pair: parsing per call made date parsing O(pairs), not O(dates) — 12.7M
+    strptime calls / ~50s of a 58s prod profile, which is what pushed the
+    settlement import past gunicorn's 60s timeout (see tests/
+    test_marketplace_match_perf.py). Distinct dates are bounded by the
+    calendar, so the cache stays small and never needs invalidating.
+    """
+    return datetime.strptime(str(value)[:10], '%Y-%m-%d').toordinal()
+
+
 def _signed_gap(iv_date, order_date):
     """Days from order_date to iv_date (positive = IV dated after the order)."""
     if not iv_date or not order_date:
         return None
-    di = datetime.strptime(str(iv_date)[:10], '%Y-%m-%d')
-    do = datetime.strptime(str(order_date)[:10], '%Y-%m-%d')
-    return (di - do).days
+    return _day_ordinal(iv_date) - _day_ordinal(order_date)
 
 
 def _ivs_for(conn, customer_code):
@@ -442,21 +455,82 @@ def _build_edges(orders, free_ivs, iv_prod, o_prod, window_days):
     return edges_by_order
 
 
+def _candidate_components(edges_by_order):
+    """Split the candidate graph into its connected components, preserving the
+    caller's order both between and within components.
+
+    An augmenting path can never leave a component — by definition there is no
+    edge to cross — so solving each component on its own yields exactly the
+    global optimum: both objectives (first cardinality, then total cost) are
+    plain sums over components, and no constraint couples two of them (each
+    order and each doc_base has capacity 1 and lives in exactly one component).
+
+    This is what keeps the matcher out of gunicorn's 60s timeout. The solver
+    below re-walks its whole graph on every augmentation, so one big graph
+    costs O(orders x nodes) — measured quadratic on real data: 630 orders
+    0.31s, 1,234 → 1.25s, 1,863 → 2.88s, 2,498 → 5.10s. The same data splits
+    into 1,542 components (largest 136 nodes, median 2), so per-component the
+    walk is bounded by the component, not by the whole book.
+    """
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:            # path compression
+            parent[x], x = root, parent[x]
+        return root
+
+    for sn, edges in edges_by_order.items():
+        for _gap, _adiff, db in edges:
+            ra, rb = find(('o', sn)), find(('d', db))
+            if ra != rb:
+                parent[ra] = rb
+
+    # dict preserves insertion order (Python 3.7+), so each component keeps the
+    # caller's relative order — which is what makes the split's result
+    # identical to the monolithic solve, ties included, not merely equal-cost.
+    groups = {}
+    for sn, edges in edges_by_order.items():
+        if not edges:
+            continue                        # no candidate — nothing to solve
+        groups.setdefault(find(('o', sn)), {})[sn] = edges
+    return list(groups.values())
+
+
 def _min_cost_bipartite_match(edges_by_order):
     """Global assignment: maximize the number of matched orders, then minimize
     total cost (date-gap primary, amount secondary — see ``_GAP_WEIGHT``) among
-    all maximum matchings. A min-cost max-flow over a bipartite graph with
-    unit-capacity edges, solved via successive shortest augmenting paths
-    (SPFA/Bellman-Ford — correct here despite the negative-cost reverse residual
-    edges the algorithm creates, since always augmenting along the shortest path
-    is exactly what keeps a min-cost-flow network free of negative cycles).
+    all maximum matchings.
+
+    Solved per connected component (see ``_candidate_components``) — same
+    result as one monolithic solve, because no augmenting path can span two
+    components, but without the quadratic blow-up of re-walking the whole book
+    on every augmentation.
 
     ``edges_by_order``: order_sn -> [(gap, adiff, doc_base), ...].
     Returns order_sn -> doc_base for every matched order.
+    """
+    match = {}
+    for component in _candidate_components(edges_by_order):
+        match.update(_match_one_component(component))
+    return match
 
-    Dataset is small and sparse (verified on prod: ~1,500-2,500 orders/platform,
-    ~1.6-1.8 candidate edges/order, max ~11) — plain SPFA per augmentation is
-    comfortably fast; no need for Dijkstra+potentials.
+
+def _match_one_component(edges_by_order):
+    """Min-cost max-cardinality matching for ONE connected component.
+
+    A min-cost max-flow over a bipartite graph with unit-capacity edges, solved
+    via successive shortest augmenting paths (SPFA/Bellman-Ford — correct here
+    despite the negative-cost reverse residual edges the algorithm creates,
+    since always augmenting along the shortest path is exactly what keeps a
+    min-cost-flow network free of negative cycles).
+
+    Components are small and sparse (verified on prod: ~1.9 candidate edges per
+    order, largest component 136 nodes) — plain SPFA per augmentation is
+    comfortably fast at that size; no need for Dijkstra+potentials.
     """
     order_ids = list(edges_by_order.keys())
     doc_bases = sorted({db for edges in edges_by_order.values() for (_g, _a, db) in edges})
