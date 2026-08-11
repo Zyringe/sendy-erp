@@ -69,17 +69,31 @@ _VAT_NET = "CASE WHEN vat_type=2 THEN net*1.07 ELSE net END"
 
 
 @lru_cache(maxsize=4096)
-def _day_ordinal(value):
-    """Calendar-day number for a 'YYYY-MM-DD…' date value.
+def _parse_day(day):
+    """Calendar-day number for an already-normalized 'YYYY-MM-DD' string.
 
     Cached because ``_build_edges`` asks for a date gap on every (order, IV)
     pair: parsing per call made date parsing O(pairs), not O(dates) — 12.7M
     strptime calls / ~50s of a 58s prod profile, which is what pushed the
     settlement import past gunicorn's 60s timeout (see tests/
-    test_marketplace_match_perf.py). Distinct dates are bounded by the
+    test_marketplace_match_perf.py). Distinct days are bounded by the
     calendar, so the cache stays small and never needs invalidating.
+
+    ⚠ Keep the `str(...)[:10]` normalization OUTSIDE this function, in
+    ``_day_ordinal``. Caching the RAW value instead would make hashability a
+    new precondition (lru_cache hashes its argument before the body runs), so
+    a date-like object that only defines ``__str__`` — accepted before —
+    would start raising TypeError. It also keys '2026-07-10 05:41' and
+    '2026-07-10' separately, halving the hit rate for no gain.
     """
-    return datetime.strptime(str(value)[:10], '%Y-%m-%d').toordinal()
+    return datetime.strptime(day, '%Y-%m-%d').toordinal()
+
+
+def _day_ordinal(value):
+    """Calendar-day number for a 'YYYY-MM-DD…' date value (str, date, or any
+    object whose ``str()`` starts with an ISO date) — same input contract as
+    before the cache existed."""
+    return _parse_day(str(value)[:10])
 
 
 def _signed_gap(iv_date, order_date):

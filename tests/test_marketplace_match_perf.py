@@ -74,9 +74,10 @@ def test_build_edges_parses_each_date_once_not_once_per_pair(monkeypatch):
     """
     orders, ivs, iv_prod, o_prod = _mk(60, 60)
 
-    # No cache priming needed: a warm cache can only LOWER the count, and the
-    # per-pair version parses 7,200 times whatever the cache state — so this
-    # assertion cannot false-pass on a broken implementation.
+    # Start cold, so the patched parser is provably reached (a warm cache from
+    # an earlier test would drive the count to 0 and the upper bound alone
+    # would then prove nothing about THIS run).
+    mm._parse_day.cache_clear()
     calls = []
     real_datetime = mm.datetime
 
@@ -93,6 +94,9 @@ def test_build_edges_parses_each_date_once_not_once_per_pair(monkeypatch):
     # Guard against a vacuous pass: the loop really did produce candidate work.
     assert len(edges) == 60
     assert sum(len(v) for v in edges.values()) > 100
+    # Lower bound FIRST: prove the patched parser actually ran, so the upper
+    # bound is a real measurement and not an artifact of a warm cache.
+    assert len(calls) >= 20, f'parser reached only {len(calls)}x — cache not cold?'
     # 20 distinct dates in the fixture. Allow slack for implementation detail,
     # but stay far below the 7,200 the per-pair parsing did.
     assert len(calls) <= 100, f'date parsed {len(calls)}x for 3,600 pairs'
@@ -203,6 +207,40 @@ def test_candidate_components_separates_disjoint_clusters():
     comps = mm._candidate_components(edges)
 
     assert sorted(sorted(c) for c in comps) == [['A1', 'A2', 'A3'], ['B1']]
+
+
+def test_signed_gap_still_accepts_a_date_like_object_that_is_not_hashable():
+    """Caching must not add hashability to the input contract.
+
+    ``lru_cache`` hashes its argument BEFORE the function body runs, so
+    decorating a function that takes the raw value would reject any date-like
+    object defining only ``__str__`` — accepted before the cache existed.
+    Codex caught exactly this on review; the normalization now happens outside
+    the cached function. Guard it so nobody re-decorates ``_day_ordinal``.
+    """
+    class _UnhashableDate:
+        __hash__ = None                      # e.g. a mutable date wrapper
+
+        def __init__(self, iso):
+            self._iso = iso
+
+        def __str__(self):
+            return self._iso
+
+    assert mm._signed_gap(_UnhashableDate('2026-07-12'),
+                          _UnhashableDate('2026-07-10')) == 2
+
+
+def test_day_ordinal_normalizes_before_caching_so_a_timestamp_hits_the_same_entry():
+    """'2026-07-10 05:41' and '2026-07-10' are the same calendar day and must
+    share one cache entry — the normalization being outside the cache is what
+    keeps the hit rate high on real rows, which carry both shapes."""
+    mm._parse_day.cache_clear()
+    mm._day_ordinal('2026-07-10')
+    mm._day_ordinal('2026-07-10 05:41')
+
+    info = mm._parse_day.cache_info()
+    assert (info.misses, info.hits, info.currsize) == (1, 1, 1), info
 
 
 def test_signed_gap_still_returns_none_on_a_missing_date():
