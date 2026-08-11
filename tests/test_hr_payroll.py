@@ -1058,3 +1058,81 @@ def test_generate_holds_the_write_lock_across_the_roster_check(tmp_db, monkeypat
     assert seen, "the probe never ran — the seam moved"
     assert seen['blocked'] is True, (
         "a concurrent writer got in between the roster check and the rebuild")
+
+
+def test_generate_rereads_the_run_after_taking_the_lock(tmp_db, monkeypatch):
+    """A worker that finalizes while we wait for the lock must not have its run
+    rebuilt underneath it.
+
+    The status read happened BEFORE _begin_immediate, so the decision "this run
+    is a draft, I may DELETE its items" rested on a value another worker could
+    invalidate before we ever acquired the lock (Codex).
+    """
+    import hr as hr_mod
+    hr_mod.generate_run('2027-09', 1, created_by=1, db_path=tmp_db)
+    rid = sqlite3.connect(tmp_db).execute(
+        "SELECT id FROM payroll_runs WHERE year_month='2027-09'").fetchone()[0]
+    # item IDs, not employee IDs: a rebuild produces the SAME employees with
+    # NEW rows, so comparing the employee set cannot see the DELETE+INSERT.
+    before = {r[0] for r in sqlite3.connect(tmp_db).execute(
+        "SELECT id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert before, "fixture must produce items, or this pins nothing"
+
+    fired = {}
+    real = hr_mod._begin_immediate
+
+    def finalize_first(c):
+        # the interleaving worker, committing before we hold the lock
+        if not fired:
+            fired['yes'] = True
+            other = sqlite3.connect(tmp_db, timeout=5)
+            other.execute("UPDATE payroll_runs SET status='finalized' WHERE id=?", (rid,))
+            other.commit()
+            other.close()
+        return real(c)
+
+    monkeypatch.setattr(hr_mod, '_begin_immediate', finalize_first)
+    hr_mod.generate_run('2027-09', 1, created_by=1, db_path=tmp_db)
+
+    assert fired, "the seam never ran"
+    conn = sqlite3.connect(tmp_db)
+    assert conn.execute("SELECT status FROM payroll_runs WHERE id=?",
+                        (rid,)).fetchone()[0] == 'finalized'
+    assert {r[0] for r in conn.execute(
+        "SELECT id FROM payroll_items WHERE run_id=?", (rid,))} == before, \
+        "a finalized run must not be rebuilt"
+
+
+def test_generate_reads_config_inside_the_lock(tmp_db, monkeypatch):
+    """_load_config feeds _build_item for every employee, so reading it before
+    the lock lets a config change land mid-decision (Codex)."""
+    import hr as hr_mod
+    seen = {}
+    real = hr_mod._load_config
+
+    def probe(c):
+        seen['in_txn'] = c.in_transaction
+        return real(c)
+
+    monkeypatch.setattr(hr_mod, '_load_config', probe)
+    hr_mod.generate_run('2027-10', 1, created_by=1, db_path=tmp_db)
+
+    assert seen, "the probe never ran"
+    assert seen['in_txn'] is True, "config was read outside the write transaction"
+
+
+def test_money_paths_refuse_a_caller_transaction_already_in_flight(tmp_db):
+    """Silently downgrading the guarantee is worse than refusing: the caller
+    believes the payroll write is serialized and it is not (Codex)."""
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN")
+        conn.execute("UPDATE hr_config SET value = value WHERE key='sso_rate'")
+        assert conn.in_transaction
+        with pytest.raises(hr_mod.CallerTransactionInFlight):
+            hr_mod.generate_run('2027-11', 1, created_by=1, conn=conn)
+    finally:
+        conn.rollback()
+        conn.close()

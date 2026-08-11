@@ -760,7 +760,15 @@ def _active_employees_for_month(c, company_id: int, period_start, period_end):
     ).fetchall()
 
 
-def _begin_immediate(c) -> bool:
+class CallerTransactionInFlight(RuntimeError):
+    """A payroll write was asked to run on a connection that already has a
+    transaction open, so this function cannot guarantee its check and its write
+    are serialized. Refused rather than downgraded: the caller would otherwise
+    believe a money path is protected when it is not (Codex review of PR #367).
+    Commit or roll back before calling, or pass no connection at all."""
+
+
+def _begin_immediate(c) -> None:
     """Take the write lock NOW, before anything is read that a decision rests on.
 
     Under the default deferred isolation a connection holds no lock until its
@@ -768,16 +776,19 @@ def _begin_immediate(c) -> bool:
     another worker fits between them. Railway runs `gunicorn -w 2`, so that
     worker is real (see `.claude/rules/erp-engineering-discipline.md`).
 
-    Returns True if we opened the transaction. On a CALLER-OWNED connection
-    that is already inside one we return False and take nothing: the caller
-    owns that boundary and silently widening it would let our commit flush
-    their unrelated work. Callers that need the guarantee should hand us a
-    connection with no transaction in flight, or none at all.
+    Raises `CallerTransactionInFlight` when the connection is already inside a
+    transaction. We cannot tell a caller's DEFERRED transaction from an
+    IMMEDIATE one, and on a money path the difference is the whole guarantee —
+    so an unknown boundary is refused, not assumed. Opening one anyway and
+    committing would also flush the caller's unrelated work.
     """
     if c.in_transaction:
-        return False
+        raise CallerTransactionInFlight(
+            "ทำรายการเงินเดือนบน connection ที่เปิด transaction ค้างไว้ไม่ได้ — "
+            "commit หรือ rollback ให้เรียบร้อยก่อน (หรือไม่ต้องส่ง conn มา) "
+            "เพราะการตรวจกับการเขียนต้องอยู่ใน transaction เดียวกันจึงจะกันการชนกันได้"
+        )
     c.execute("BEGIN IMMEDIATE")
-    return True
 
 
 def _regenerate_would_drop(c, run_id: int, active_ids):
@@ -1025,6 +1036,11 @@ def generate_run(year_month: str, company_id: int, created_by: int,
     period_start, period_end = _month_bounds(year_month)
 
     with _ConnCtx(conn, db_path) as c:
+        # Lock BEFORE every read a decision rests on — the run's status, and
+        # the config that _build_item applies to each employee. Reading either
+        # outside the transaction lets another worker invalidate it before the
+        # DELETE + rebuild below (Codex review of PR #367).
+        _begin_immediate(c)
         cfg = _load_config(c)
 
         run = c.execute(
@@ -1046,11 +1062,6 @@ def generate_run(year_month: str, company_id: int, created_by: int,
                 return c.execute(
                     "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
                 ).fetchone()
-
-        # Lock before reading the roster: the guards below decide from it and
-        # then DELETE every payroll_item of the run, so the read and the
-        # rebuild must be one transaction.
-        _begin_immediate(c)
 
         # active employees of this company who overlap the payroll month
         emps = _active_employees_for_month(c, company_id, period_start, period_end)
