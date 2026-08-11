@@ -1056,3 +1056,264 @@ def test_relocated_compensation_survives_a_re_run(empty_db_conn):
     assert conn.execute(
         "SELECT cost_price FROM products WHERE id=?", (NEW,)).fetchone()['cost_price'] == cost1
     assert (_stock(conn, OLD), _stock(conn, NEW)) == before
+
+
+def test_repoint_survives_a_non_stock_row_sharing_the_source_product(empty_db_conn):
+    """Task 9 (coverage sweep) gap: repoint_bsn_code resets synced_to_stock=0
+    for EVERY source row on an affected product — not just the bsn_code being
+    moved — then deletes and re-syncs that product's whole 'BSN%' ledger
+    (docstring: "not just this bsn_code's"). A non-stock billable line
+    (888ค8888/ZZZ) sharing OLD's product_id under a DIFFERENT bsn_code sits
+    right in that blast radius. It must come out the other side with its
+    revenue row intact, unsynced, and ledger-free — the ONLY thing protecting
+    it is _sync_bsn_to_stock's own is_non_stock_code guard firing again on
+    the replay, since repoint_bsn_code itself has no non-stock-aware code.
+    """
+    import models
+
+    conn = empty_db_conn
+    OLD = _product(conn, 'Old (mixed)', 'ตัว')
+    NEW = _product(conn, 'New', 'ตัว')
+    CODE = 'ZNONSTOCK01'
+    _mapping(conn, CODE, OLD)
+    _sale(conn, 'ZN-S1', OLD, CODE, qty=4, unit='ตัว')
+
+    # The non-stock line: a DIFFERENT bsn_code, same OLD product, real revenue.
+    conn.execute(
+        "INSERT INTO sales_transactions"
+        " (date_iso, doc_no, doc_base, product_id, bsn_code, product_name_raw,"
+        "  customer, customer_code, qty, unit, unit_price, vat_type, discount,"
+        "  total, net, synced_to_stock)"
+        " VALUES ('2026-06-01','ZN-SHIP1','ZN-SHIP1',?,'888ค8888','ค่าขนส่ง',"
+        # unit == OLD's own unit_type ('ตัว') on purpose: _get_base_qty short-
+        # circuits on that equality with no unit_conversions lookup at all, so
+        # the ONLY thing that can skip this row is the is_non_stock_code guard
+        # — a mismatched unit would ALSO skip it via the separate "ratio not
+        # defined yet" branch, which would make this test pass for the wrong
+        # reason (caught by the break-it-once proof — see task-9-report.md).
+        "  'ลูกค้าทดสอบ','C1',1,'ตัว',30.0,0,'',30.0,30.0,0)", (OLD,))
+    conn.commit()
+
+    # Pre-existing CORRECT state, same setup every sibling test in this file
+    # uses: sync once so OLD's ordinary line has a real ledger row, and
+    # confirm the non-stock line is already left unsynced with no ledger
+    # (exactly the state _sync_bsn_to_stock's guard leaves it in on import).
+    models._sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
+    conn.commit()
+    assert conn.execute(
+        "SELECT synced_to_stock FROM sales_transactions WHERE doc_no='ZN-SHIP1'"
+    ).fetchone()['synced_to_stock'] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no='ZN-SHIP1'"
+    ).fetchone()[0] == 0
+
+    report = models.repoint_bsn_code(conn, CODE, NEW)
+    conn.commit()
+
+    assert 'error' not in report, report      # replay must not report a shortfall
+    assert report['orphan_rows_after'] == 0
+
+    # The ordinary line actually moved (sanity control — the repoint did work).
+    assert conn.execute(
+        "SELECT product_id FROM sales_transactions WHERE doc_no='ZN-S1'"
+    ).fetchone()['product_id'] == NEW
+
+    # The non-stock row survives untouched on OLD: count first, then value.
+    ship_rows = conn.execute(
+        "SELECT product_id, net, synced_to_stock FROM sales_transactions"
+        " WHERE doc_no='ZN-SHIP1'").fetchall()
+    assert len(ship_rows) == 1, ship_rows
+    assert ship_rows[0]['product_id'] == OLD, "non-stock row must not move with the code"
+    assert ship_rows[0]['net'] == 30.0, "revenue must survive the replay"
+    assert ship_rows[0]['synced_to_stock'] == 0, "must stay unsynced"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no='ZN-SHIP1'"
+    ).fetchone()[0] == 0, "must never gain a ledger row"
+
+
+def test_repoint_of_a_protected_code_skips_the_unit_ratio_preflight(empty_db_conn):
+    """Codex I1: missing_unit_ratios() must not block repointing a non-stock
+    billable code (888ค8888/ZZZ) onto a destination with no unit_conversions
+    row for its unit. _sync_bsn_to_stock's is_non_stock_code guard means
+    these rows never consume a ratio — refusing to repoint them over a
+    missing one is refusing a real ค่าขนส่ง/ZZZ line for a conversion
+    migration 155 deliberately deleted as unsafe (stock_filters.py).
+
+    Deliberately mismatched unit ('ใบ' vs NEW's unit_type 'ตัว') and NO
+    unit_conversions row for NEW — before the I1 fix this raised
+    'has no unit_conversions ratio ... Define the ratio first' (see the
+    break-it-once note in the fix report)."""
+    import models
+
+    conn = empty_db_conn
+    OLD = _product(conn, 'Old (protected)', 'ตัว')
+    NEW = _product(conn, 'New', 'ตัว')     # deliberately NO unit_conversions row
+    CODE = '888ค8888'
+    _mapping(conn, CODE, OLD)
+    conn.execute(
+        "INSERT INTO sales_transactions"
+        " (date_iso, doc_no, doc_base, product_id, bsn_code, product_name_raw,"
+        "  customer, customer_code, qty, unit, unit_price, vat_type, discount,"
+        "  total, net, synced_to_stock)"
+        " VALUES ('2026-06-01','ZP-SHIP1','ZP-SHIP1',?,'888ค8888','น้ำหนักเกิน',"
+        "  'ลูกค้าทดสอบ','C1',1,'ใบ',30.0,0,'',30.0,30.0,0)", (OLD,))
+    conn.commit()
+
+    # Pre-existing CORRECT state: unsynced, no ledger — exactly what import
+    # leaves a protected line in.
+    models._sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
+    conn.commit()
+    assert conn.execute(
+        "SELECT synced_to_stock FROM sales_transactions WHERE doc_no='ZP-SHIP1'"
+    ).fetchone()['synced_to_stock'] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no='ZP-SHIP1'"
+    ).fetchone()[0] == 0
+
+    report = models.repoint_bsn_code(conn, CODE, NEW)
+    conn.commit()
+
+    assert 'error' not in report, report
+
+    row = conn.execute(
+        "SELECT product_id, net, synced_to_stock FROM sales_transactions"
+        " WHERE doc_no='ZP-SHIP1'").fetchone()
+    assert row['product_id'] == NEW, "the protected row must move with its code"
+    assert row['net'] == 30.0, "revenue must survive the repoint"
+    assert row['synced_to_stock'] == 0, "must stay unsynced — no ratio was ever needed"
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no='ZP-SHIP1'"
+    ).fetchone()[0] == 0, "must never gain a ledger row on either product"
+    assert conn.execute(
+        "SELECT product_id FROM product_code_mapping WHERE bsn_code=?", (CODE,)
+    ).fetchone()['product_id'] == NEW
+
+
+def test_repoint_of_an_ordinary_code_still_refuses_missing_ratio_with_a_protected_sibling(empty_db_conn):
+    """I1 fix scope check: the preflight skip is keyed on the bsn_code THIS
+    call is repointing, not on whether a protected code happens to exist
+    anywhere in the DB. repoint_bsn_code's sales_rows/purchase_rows are
+    always scoped to one bsn_code via `WHERE bsn_code=?`
+    (_unit_scoped_source_rows in models/mapping.py), so a single call can
+    never see a mix of protected + ordinary rows — proven here by adding an
+    unrelated protected line on the SAME source product and confirming the
+    ordinary code's missing-ratio refusal still fires exactly as before."""
+    import models
+
+    conn = empty_db_conn
+    OLD = _product(conn, 'Old (mixed)', 'โหล')
+    NEW = _product(conn, 'New', 'ชิ้น')     # deliberately NO unit_conversions
+    CODE = 'ZORD01'
+    _mapping(conn, CODE, OLD)
+    _sale(conn, 'ZO-S1', OLD, CODE, qty=3, unit='โหล')
+
+    # Unrelated protected line, same OLD product, different bsn_code — must
+    # not leak the I1 skip onto the ordinary repoint below.
+    conn.execute(
+        "INSERT INTO sales_transactions"
+        " (date_iso, doc_no, doc_base, product_id, bsn_code, product_name_raw,"
+        "  customer, customer_code, qty, unit, unit_price, vat_type, discount,"
+        "  total, net, synced_to_stock)"
+        " VALUES ('2026-06-01','ZO-SHIP1','ZO-SHIP1',?,'888ค8888','น้ำหนักเกิน',"
+        "  'ลูกค้าทดสอบ','C1',1,'ตัว',30.0,0,'',30.0,30.0,0)", (OLD,))
+    conn.commit()
+
+    with pytest.raises(ValueError, match='unit_conversions'):
+        models.repoint_bsn_code(conn, CODE, NEW)
+    conn.rollback()
+
+    assert conn.execute(
+        "SELECT product_id FROM product_code_mapping WHERE bsn_code=?", (CODE,)
+    ).fetchone()['product_id'] == OLD, "refused before any mutation, as before"
+
+
+def test_protected_repoint_refuses_when_it_would_drop_an_ordinary_siblings_replay(empty_db_conn):
+    """Codex round-2 I1: skipping the missing_unit_ratios preflight for a
+    protected code (previous test) is correct in isolation, but step 4's
+    reset+replay is PRODUCT-WIDE, not code-scoped — it resets
+    synced_to_stock=0 and rebuilds the ledger for every source row on every
+    AFFECTED product, "regardless of code" (mapping.py step 4's own comment).
+    An ordinary sibling code sharing OLD with the protected code is squarely
+    in that blast radius: if its unit_conversions ratio has since gone
+    missing, _sync_bsn_to_stock's `if base_qty is None: continue` silently
+    leaves it unsynced on the replay — its ledger row and stock movement are
+    gone — while repoint_bsn_code still reports success, because nothing
+    upstream of this test's guard ever inspected a row outside this
+    bsn_code's own scope.
+
+    Reproduces Codex's EXECUTED repro from the round-2 brief: an ordinary
+    sibling already synced (here at -24, matching their number) on a product
+    that also hosts a protected code, its ratio deleted out from under it,
+    then the protected code repointed. Must now be REFUSED wholesale, with
+    the sibling's synced_to_stock and ledger row left exactly as they were."""
+    import models
+
+    conn = empty_db_conn
+    OLD = _product(conn, 'Old (mixed, hosts a protected line too)', 'ตัว')
+    NEW = _product(conn, 'New', 'ตัว')
+    SIB_CODE = 'ZSIB01'
+    PROTECTED_CODE = '888ค8888'
+
+    _mapping(conn, SIB_CODE, OLD)
+    _mapping(conn, PROTECTED_CODE, OLD)
+    conn.execute(
+        "INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?, 'โหล', 12)",
+        (OLD,),
+    )
+    _sale(conn, 'ZS-S1', OLD, SIB_CODE, qty=2, unit='โหล')  # -> -24 base units
+    conn.execute(
+        "INSERT INTO sales_transactions"
+        " (date_iso, doc_no, doc_base, product_id, bsn_code, product_name_raw,"
+        "  customer, customer_code, qty, unit, unit_price, vat_type, discount,"
+        "  total, net, synced_to_stock)"
+        " VALUES ('2026-06-01','ZP-SHIP1','ZP-SHIP1',?,'888ค8888','น้ำหนักเกิน',"
+        "  'ลูกค้าทดสอบ','C1',1,'ใบ',30.0,0,'',30.0,30.0,0)", (OLD,))
+    conn.commit()
+
+    # Pre-existing CORRECT state: sync once. The ordinary sibling gets a real
+    # ledger row and synced_to_stock=1; the protected line stays unsynced with
+    # none — the same starting point every other test in this file uses.
+    models._sync_bsn_to_stock(conn, 'sales_transactions', 'sales')
+    conn.commit()
+    assert conn.execute(
+        "SELECT synced_to_stock FROM sales_transactions WHERE doc_no='ZS-S1'"
+    ).fetchone()['synced_to_stock'] == 1
+    sib_ledger_before = conn.execute(
+        "SELECT quantity_change FROM transactions WHERE reference_no='ZS-S1'"
+    ).fetchall()
+    assert len(sib_ledger_before) == 1
+    assert sib_ledger_before[0]['quantity_change'] == -24
+    assert _stock(conn, OLD) == -24
+
+    # The ratio the sibling's replay depends on has since gone missing —
+    # simulates the exact gap Codex exploited (a scripts/ ratio deletion, or
+    # any path that removes a unit_conversions row after rows already synced
+    # against it).
+    conn.execute(
+        "DELETE FROM unit_conversions WHERE product_id=? AND bsn_unit='โหล'", (OLD,)
+    )
+    conn.commit()
+
+    with pytest.raises(RuntimeError, match='unit_conversions ratio is missing'):
+        models.repoint_bsn_code(conn, PROTECTED_CODE, NEW)
+    conn.rollback()
+
+    # The sibling's synced state and ledger row must be untouched — this is
+    # the whole point of the guard.
+    assert conn.execute(
+        "SELECT synced_to_stock FROM sales_transactions WHERE doc_no='ZS-S1'"
+    ).fetchone()['synced_to_stock'] == 1, "sibling must not be left desynced"
+    sib_ledger_after = conn.execute(
+        "SELECT quantity_change FROM transactions WHERE reference_no='ZS-S1'"
+    ).fetchall()
+    assert len(sib_ledger_after) == 1, "sibling's ledger row must survive"
+    assert sib_ledger_after[0]['quantity_change'] == -24
+    assert _stock(conn, OLD) == -24, "OLD's stock must be exactly what it was"
+
+    # And the protected code's mapping must not have moved either — a whole-
+    # or-nothing refusal, not a partial one.
+    assert conn.execute(
+        "SELECT product_id FROM product_code_mapping WHERE bsn_code=?",
+        (PROTECTED_CODE,),
+    ).fetchone()['product_id'] == OLD

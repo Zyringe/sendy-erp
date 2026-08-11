@@ -253,6 +253,65 @@ def test_ratio_routes_reject_a_non_finite_ratio(admin_client, empty_db_conn):
     assert _stock(empty_db_conn) == 12
 
 
+def test_ratio_edit_survives_a_non_stock_row_on_the_same_product(empty_db_conn):
+    """Task 9 (coverage sweep) gap: update_unit_conversion_ratio resets
+    synced_to_stock=0 for the WHOLE product (both tables), deletes its
+    'BSN%' ledger, and re-syncs — a rebuild, same shape as the pass-2 rebuild
+    Task 4 already pins, but nothing has ever pushed a non-stock billable
+    line (888ค8888/ZZZ) through THIS specific replay path. The only thing
+    protecting it is _sync_bsn_to_stock's own is_non_stock_code guard firing
+    again on the replay; update_unit_conversion_ratio has no non-stock-aware
+    code of its own.
+    """
+    _seed(empty_db_conn)
+    conn = empty_db_conn
+    _purchase(conn, 'RR001', PID, 2, 'โหล')     # ordinary line that needs the ratio
+
+    # The non-stock line: same product, real revenue, permanently unsynced.
+    conn.execute(
+        "INSERT INTO sales_transactions"
+        " (batch_id,date_iso,doc_no,doc_base,product_id,bsn_code,product_name_raw,"
+        "  customer,customer_code,qty,unit,unit_price,vat_type,discount,total,net,"
+        "  synced_to_stock)"
+        " VALUES (NULL,'2025-01-01','SHIP001','SHIP001',?,'888ค8888','ค่าขนส่ง',"
+        # unit == PID's own unit_type ('อัน') on purpose: _get_base_qty short-
+        # circuits on that equality with no unit_conversions lookup at all, so
+        # the ONLY thing that can skip this row is the is_non_stock_code guard
+        # — a mismatched unit would ALSO skip it via the separate "ratio not
+        # defined yet" branch, which would make this test pass for the wrong
+        # reason (caught by the break-it-once proof — see task-9-report.md).
+        "  'ลูกค้าทดสอบ','C1',1,'อัน',30.0,0,0,30.0,30.0,0)", (PID,))
+    conn.commit()
+
+    models.save_unit_conversions([{'product_id': PID, 'bsn_unit': 'โหล', 'ratio': 12}])
+    # Confirm the pre-existing state before the edit: the non-stock line has
+    # already been left unsynced with no ledger row by the first sync above
+    # (exactly what a real import would have done).
+    assert _stock(conn) == 24
+    assert conn.execute(
+        "SELECT synced_to_stock FROM sales_transactions WHERE doc_no='SHIP001'"
+    ).fetchone()['synced_to_stock'] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no='SHIP001'"
+    ).fetchone()[0] == 0
+
+    result = models.update_unit_conversion_ratio(PID, 'โหล', 6)
+
+    assert result == {'ok': True}, result      # replay must not error or report a shortfall
+
+    ship_rows = conn.execute(
+        "SELECT net, synced_to_stock FROM sales_transactions WHERE doc_no='SHIP001'"
+    ).fetchall()
+    assert len(ship_rows) == 1, ship_rows       # count first, then the property
+    assert ship_rows[0]['net'] == 30.0, "revenue must survive the ratio-edit replay"
+    assert ship_rows[0]['synced_to_stock'] == 0, "must stay unsynced"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE reference_no='SHIP001'"
+    ).fetchone()[0] == 0, "must never gain a ledger row"
+    # The ordinary line actually replayed under the new ratio (sanity control).
+    assert _stock(conn) == 12
+
+
 def test_stock_adjust_accepts_a_fractional_count(admin_client, empty_db_conn):
     """Defect 3: a fractional balance must be countable by hand."""
     _seed(empty_db_conn)

@@ -506,7 +506,12 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
           </div>
 
           {# ── Card C — skip with reason ─────────────────── #}
-          <div class="card">
+          {# Hidden (not just disabled) for a NON_STOCK_BSN_CODES code — see
+             openSuggest(): the code is a billable line (ค่าบริการ/ส่วนลด),
+             not stock, and models.upsert_mapping refuses is_ignored=1 for it
+             anyway. This is convenience only; that server-side refusal is the
+             real guard. #}
+          <div class="card" id="sm-ignore-card">
             <div class="card-header py-2 bg-light">
               <i class="bi bi-x-circle me-1"></i><strong>(C) ข้าม / ไม่ใช้</strong>
               <span class="text-subtle small">— BSN code นี้ไม่ใช่ stock (เช่น ค่าใช้จ่าย, ซ้ำ)</span>
@@ -518,6 +523,10 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                 <i class="bi bi-x-circle me-1"></i>ข้าม BSN code นี้
               </button>
             </div>
+          </div>
+          <div class="alert alert-info py-2 px-3 small mb-0" id="sm-ignore-protected-note" style="display:none">
+            <i class="bi bi-shield-check me-1"></i>รหัสนี้เป็นรายการที่มีมูลค่าจริง (ค่าบริการ/ส่วนลด) —
+            ระบบไม่ให้ตั้งเป็น "ไม่นำเข้า" เพราะยอดจะหายจากบัญชี
           </div>
         </div>
       </div>
@@ -551,6 +560,10 @@ let _smCurrentBsn = null;
 let _smCurrentName = null;
 let _smBsnUnit = null;     // unit from latest_purchase
 
+// Passed from the route (models.NON_STOCK_BSN_CODES), not hard-coded here —
+// see openSuggest()'s Card C toggle below.
+const NON_STOCK_BSN_CODES = {{ non_stock_codes | tojson }};
+
 function openSuggest(idx, bsnCode) {
   _smCurrentBsn = bsnCode;
   const row = document.getElementById('row-' + idx);
@@ -560,6 +573,13 @@ function openSuggest(idx, bsnCode) {
   document.getElementById('sm-bsn-name-header').textContent = _smCurrentName;
   document.getElementById('sm-loading').style.display = 'block';
   document.getElementById('sm-content').style.display = 'none';
+
+  // Card C (ข้าม / ไม่ใช้) is a real revenue line for these codes — the
+  // server refuses is_ignored=1 for them anyway (upsert_mapping), this just
+  // avoids the round-trip and the 400.
+  const isProtected = NON_STOCK_BSN_CODES.includes(bsnCode);
+  document.getElementById('sm-ignore-card').style.display = isProtected ? 'none' : '';
+  document.getElementById('sm-ignore-protected-note').style.display = isProtected ? '' : 'none';
 
   // Reset modal state
   document.getElementById('sm-product-id').value = '';
@@ -934,7 +954,12 @@ function saveSingle(entry) {
     if (d.ok) {
       window.location.reload();
     } else {
-      alert('Save failed');
+      // Surface the server's own message. bsn.py::mapping_save returns a 400
+      // whose `error` NAMES the refused code (e.g. a non-stock billable code
+      // that cannot be ไม่นำเข้า) — swallowing it and printing a generic
+      // "Save failed" throws away the whole point of that refusal. Same shape
+      // as the approve-suggestion handler ~700 lines above.
+      alert(d.error || 'Save failed');
     }
   });
 }

@@ -181,4 +181,7 @@ from .vat_sub import (
     promote, add_member, move_member, remove_member, link_product,
     unlink_product, rename_group, delete_group, apply_substitution_sheet,
 )
+from .stock_filters import (
+    NON_STOCK_BSN_CODES, NonStockCodeError, is_non_stock_code, non_stock_clause,
+)
 

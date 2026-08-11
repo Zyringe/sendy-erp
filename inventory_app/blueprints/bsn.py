@@ -137,7 +137,11 @@ def unit_conversions_dismiss():
     bsn_unit   = request.form.get('bsn_unit', '').strip()
     if product_id and bsn_unit:
         deleted = models.dismiss_pending_unit_conversion(product_id, bsn_unit)
-        flash(f'ยกเลิก {deleted} แถวที่ยังไม่ sync ออกแล้ว (หน่วย "{bsn_unit}")', 'success')
+        if deleted:
+            flash(f'ยกเลิก {deleted} แถวที่ยังไม่ sync ออกแล้ว (หน่วย "{bsn_unit}")', 'success')
+        else:
+            flash('ไม่ได้ยกเลิกรายการใด — กลุ่มนี้อาจมีบรรทัดที่เป็นรายได้จริง '
+                  '(ค่าบริการ/ส่วนลด) ซึ่งระบบป้องกันไว้ไม่ให้ลบ', 'warning')
     return redirect(url_for('bsn.unit_conversions'))
 
 
@@ -190,6 +194,7 @@ def mapping():
         unit_suggestions=unit_suggestions,
         condition_suggestions=condition_suggestions,
         active_tab=tab,
+        non_stock_codes=sorted(models.NON_STOCK_BSN_CODES),
     )
 
 
@@ -266,11 +271,14 @@ def mapping_save():
             }
             models.save_pending_suggestion(payload, user_id)
         elif action == 'ignore':
-            models.upsert_mapping(
-                bsn_code, item['bsn_name'],
-                is_ignored=1,
-                ignore_reason=item.get('ignore_reason') or None,
-            )
+            try:
+                models.upsert_mapping(
+                    bsn_code, item['bsn_name'],
+                    is_ignored=1,
+                    ignore_reason=item.get('ignore_reason') or None,
+                )
+            except models.NonStockCodeError as exc:
+                return jsonify({'ok': False, 'error': str(exc)}), 400
 
     # Backfill product_id on existing unlinked rows
     conn = get_connection()

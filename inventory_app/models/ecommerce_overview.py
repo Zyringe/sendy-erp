@@ -47,6 +47,7 @@ from database import get_connection
 
 from .bsn_sync import PLATFORM_STOCK_DEDUCT_CUSTOMERS
 from .conversions import get_buildable
+from .stock_filters import non_stock_clause
 
 PLATFORMS = ('shopee', 'lazada', 'tiktok')
 
@@ -144,6 +145,7 @@ def _sold_since_by_pid(conn, platform, snapshot_date, pids=None):
          WHERE st.date_iso > ?
            AND st.doc_no NOT LIKE 'SR%'
            AND st.doc_no NOT LIKE 'HS%'
+           AND {non_stock_clause('st')}
            AND st.customer IN ({ph})
            {pid_filter}
            {already_applied}
