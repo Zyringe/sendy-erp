@@ -68,7 +68,7 @@ _GAP_WEIGHT = 10 ** 9
 _VAT_NET = "CASE WHEN vat_type=2 THEN net*1.07 ELSE net END"
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=None)
 def _parse_day(day):
     """Calendar-day number for an already-normalized 'YYYY-MM-DD' string.
 
@@ -76,8 +76,20 @@ def _parse_day(day):
     pair: parsing per call made date parsing O(pairs), not O(dates) — 12.7M
     strptime calls / ~50s of a 58s prod profile, which is what pushed the
     settlement import past gunicorn's 60s timeout (see tests/
-    test_marketplace_match_perf.py). Distinct days are bounded by the
-    calendar, so the cache stays small and never needs invalidating.
+    test_marketplace_match_perf.py).
+
+    ⚠ Unbounded (`maxsize=None`) ON PURPOSE. A bounded LRU has a capacity
+    cliff here, because `_build_edges` walks EVERY invoice date for every
+    order and touches that order's own date in between — the exact
+    alternating pattern that makes an LRU evict the entry it is about to
+    need again. Once the distinct-date working set passes the cap, the hit
+    rate collapses and parsing reverts toward O(pairs), i.e. the timeout
+    comes back. `_ivs_for` selects the whole invoice history with no date
+    restriction, so that set grows forever. Unbounded is safe because the
+    key is a normalized calendar day: the key space is one entry per real
+    date in the book (~365/year, a few thousand today), an invalid date
+    raises before it is ever cached, and the mapping day→ordinal is
+    immutable so an entry can never go stale.
 
     ⚠ Keep the `str(...)[:10]` normalization OUTSIDE this function, in
     ``_day_ordinal``. Caching the RAW value instead would make hashability a

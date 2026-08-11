@@ -18,6 +18,7 @@ Two properties are pinned here:
 Both are deterministic (call counts / set equality), never wall-clock, so they
 can't go flaky on a loaded CI box.
 """
+import datetime
 import os
 import random
 
@@ -241,6 +242,38 @@ def test_day_ordinal_normalizes_before_caching_so_a_timestamp_hits_the_same_entr
 
     info = mm._parse_day.cache_info()
     assert (info.misses, info.hits, info.currsize) == (1, 1, 1), info
+
+
+def test_date_cache_does_not_thrash_once_the_date_set_gets_large():
+    """A BOUNDED cache would re-parse forever here, silently undoing the fix.
+
+    ``_build_edges`` walks every invoice date for each order and touches that
+    order's own date in between — the alternating pattern that makes an LRU
+    evict exactly the entry it is about to need again. Codex found this on
+    review: with maxsize=4096 and 4,097 distinct dates the second pass missed
+    on every single one. ``_ivs_for`` has no date restriction, so the date set
+    only grows.
+
+    Two passes over a date set deliberately larger than the old 4,096 cap: the
+    second pass must produce ZERO new misses.
+    """
+    mm._parse_day.cache_clear()
+    base = datetime.date(2015, 1, 1)
+    dates = [(base + datetime.timedelta(days=i)).isoformat() for i in range(5000)]
+    order_date = '2040-01-01'                      # deliberately outside `dates`
+    passes = 2
+
+    for _ in range(passes):
+        for d in dates:
+            mm._signed_gap(d, order_date)
+
+    # Derive the expectations from the fixture rather than hand-typing them.
+    distinct = len(set(dates) | {order_date})
+    lookups = passes * len(dates) * 2               # two _parse_day calls per gap
+
+    info = mm._parse_day.cache_info()
+    assert info.misses == distinct, f'cache thrashed: {info} (expected {distinct} misses)'
+    assert info.hits == lookups - distinct, info
 
 
 def test_signed_gap_still_returns_none_on_a_missing_date():
