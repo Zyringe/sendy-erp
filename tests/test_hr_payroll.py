@@ -90,14 +90,22 @@ def _item(conn, run_id, employee_id):
 
 # ── 1. SSO ───────────────────────────────────────────────────────────────────
 
-def test_sso_cap_at_750(tmp_db_conn):
+def test_sso_cap_at_875(tmp_db_conn):
+    """The ceiling is 17,500 from 1 ม.ค. 2569 (mig 155), so a high salary caps
+    at 875, not the old 750.
+
+    ⚠ The figure comes from hr_config.sso_max_base in the copied live DB, not
+    from a constant here — the ceiling is set by กฎกระทรวง and already has two
+    more increases scheduled (20,000 in 2572, 23,000 in 2575). When those land,
+    this expectation moves with them.
+    """
     eid = _mk_employee(tmp_db_conn, 'T_SSO1', 'sso cap', '2026-01-01',
                        monthly_salary=30000.0)
     run = hr.generate_run('2026-03', 1, created_by=1, conn=tmp_db_conn)
     it = _item(tmp_db_conn, run['id'], eid)
-    # min(max(30000, 1650), 15000) * 0.05 = 15000*0.05 = 750
-    assert it['sso_employee'] == 750
-    assert it['sso_employer'] == 750
+    # min(max(30000, 1650), 17500) * 0.05 = 17500*0.05 = 875
+    assert it['sso_employee'] == 875
+    assert it['sso_employer'] == 875
 
 
 def test_sso_min_base_floor(tmp_db_conn):
@@ -400,7 +408,7 @@ def test_combined_net_pay_diligence_kept(tmp_db_conn):
     it = _item(tmp_db_conn, run['id'], eid)
 
     base = 20000.00
-    sso = 750                                    # capped
+    sso = 875                                    # capped at 17,500 (mig 155)
     gross = round(base + 500.0 + 2000.0, 2)
     net = round(gross - 0 - sso - 0, 2)
     assert it['diligence_forfeited'] == 0
