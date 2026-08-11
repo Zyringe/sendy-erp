@@ -965,12 +965,27 @@ def roster_drift(run_id: int, conn: Optional[sqlite3.Connection] = None,
 
 def pending_advance_stamp(run_id: int, conn: Optional[sqlite3.Connection] = None,
                           db_path: Optional[str] = None):
-    """(count, total) of advances a re-finalize of `run_id` would stamp.
+    """(count, total) of advances this run would stamp but does NOT withhold.
 
-    Mirrors `finalize_run`'s UPDATE exactly — un-deducted, dated on or before
-    the run month's period_end, employee already in the run. Kept as its own
-    query rather than folded into the roster warning because the two hazards
-    are unrelated: a run with a perfectly matching roster is equally exposed.
+    The SHORTFALL, not every pending advance. A stamp means "collected" only
+    when the same money is inside the item's `salary_advance_deduction`, which
+    `_build_item` computes at generate time. So the hazard is precisely:
+
+        would-be-stamped  −  already-deducted        (per employee, floored at 0)
+
+    Counting every un-deducted advance instead was wrong in both directions
+    (2026-08-11):
+      * advances stay un-deducted until finalize BY DESIGN, so an ordinary
+        draft that correctly withholds them still reported the full amount —
+        prod run 8 deducted exactly the ฿12,500 it was warned about;
+      * and it over-reported the figure whenever it was right, quoting the
+        total pending rather than the part nobody pays.
+
+    Per EMPLOYEE, never netted across the run: one colleague's already-deducted
+    advance must not mask another's uncollected one.
+
+    The stamped set mirrors `finalize_run`'s UPDATE exactly — un-deducted,
+    dated on or before the run month's period_end, employee already in the run.
     """
     with _ConnCtx(conn, db_path) as c:
         run = c.execute("SELECT * FROM payroll_runs WHERE id = ?",
@@ -978,17 +993,47 @@ def pending_advance_stamp(run_id: int, conn: Optional[sqlite3.Connection] = None
         if run is None:
             return 0, 0.0
         _, period_end = _month_bounds(run["year_month"])
-        row = c.execute(
-            """SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total
-                 FROM salary_advances
-                WHERE deducted_in_run_id IS NULL
-                  AND advance_date <= :period_end
-                  AND employee_id IN (
+        rows = c.execute(
+            """SELECT sa.employee_id,
+                      COUNT(*)                  AS n,
+                      COALESCE(SUM(sa.amount), 0) AS stamped,
+                      COALESCE((SELECT pi.salary_advance_deduction
+                                  FROM payroll_items pi
+                                 WHERE pi.run_id = :run_id
+                                   AND pi.employee_id = sa.employee_id), 0) AS deducted
+                 FROM salary_advances sa
+                WHERE sa.deducted_in_run_id IS NULL
+                  AND sa.advance_date <= :period_end
+                  AND sa.employee_id IN (
                       SELECT employee_id FROM payroll_items WHERE run_id = :run_id
-                  )""",
+                  )
+                GROUP BY sa.employee_id""",
             {"run_id": run_id, "period_end": period_end.isoformat()},
-        ).fetchone()
-        return int(row["n"]), float(row["total"])
+        ).fetchall()
+
+        n_total = 0
+        shortfall = 0.0
+        for r in rows:
+            gap = round(float(r["stamped"]) - float(r["deducted"]), 2)
+            if gap > 0:
+                shortfall += gap
+                # How many of this employee's advances the gap accounts for —
+                # newest first, since the oldest are the ones the run was built
+                # from and therefore the ones already withheld.
+                remaining = gap
+                for amt in [float(a["amount"]) for a in c.execute(
+                        """SELECT amount FROM salary_advances
+                            WHERE deducted_in_run_id IS NULL
+                              AND advance_date <= :period_end
+                              AND employee_id = :emp
+                            ORDER BY advance_date DESC, id DESC""",
+                        {"period_end": period_end.isoformat(),
+                         "emp": r["employee_id"]})]:
+                    if remaining <= 0:
+                        break
+                    n_total += 1
+                    remaining -= amt
+        return n_total, round(shortfall, 2)
 
 
 def _pending_advance_message(n: int, total: float) -> str:
@@ -996,10 +1041,12 @@ def _pending_advance_message(n: int, total: float) -> str:
     something the finalize boundary then contradicts."""
     return (
         f"finalize รอบนี้ไม่ได้ — มีเงินเบิกล่วงหน้า {n} รายการ (รวม ฿{total:,.2f}) "
-        f"ที่จะถูกประทับว่า \"หักแล้ว\" ในรอบนี้ ทั้งที่ยอดหักในสลิปไม่ได้รวมมันไว้ "
-        f"(ยอดหักคำนวณตอนสร้างรอบ ไม่ใช่ตอน finalize) เงินก้อนนี้จึงจะไม่ถูกหักจากใครเลย "
-        f"· ทางแก้: เข้าไปแก้วันที่ของรายการเบิกให้เป็นเดือนที่ยังไม่ปิด "
-        f"แล้วเดือนนั้นจะหักให้จริงตอนสร้างรอบ"
+        f"ที่จะถูกประทับว่า \"หักแล้ว\" ในรอบนี้ ทั้งที่ยอดหักในสลิปยังไม่ได้รวมมันไว้ "
+        f"(ยอดหักคำนวณตอนสร้างรอบ ไม่ใช่ตอน finalize — รายการนี้ถูกคีย์เข้ามาทีหลัง) "
+        f"เงินก้อนนี้จึงจะไม่ถูกหักจากใครเลย "
+        f"· ทางแก้: กด \"สร้างรอบใหม่\" (regenerate) รอบนี้ก่อน แล้วยอดหักจะรวมรายการนี้ให้เอง "
+        f"· ถ้าระบบไม่ยอมให้สร้างรอบใหม่ (รายชื่อพนักงานเปลี่ยนไปแล้ว) "
+        f"ให้แก้วันที่ของรายการเบิกเป็นเดือนที่ยังไม่ปิดแทน"
     )
 
 
@@ -1333,22 +1380,22 @@ def finalize_run(run_id: int,
         if run["status"] == "finalized":
             return run  # someone else finalized it while we waited for the lock
 
-        # Gate ONLY a re-finalize. Stamping advances is the whole job of a
-        # first finalize, so keying on "advances exist" would stop monthly
-        # payroll for everyone; keying on `_was_reopened` isolates the case
-        # where the month was already closed — and, for a run that had been
-        # paid, already paid out.
+        # No `_was_reopened` gate: `pending_advance_stamp` now reports the
+        # SHORTFALL (would-be-stamped minus already-deducted), so an ordinary
+        # first finalize reports 0 and is never blocked — which is what that
+        # gate was protecting against. Dropping it closes the case the gate
+        # missed: generate a draft, key an advance afterwards, finalize without
+        # regenerating. `_was_reopened` is false there, so nothing stopped the
+        # stamp from marking real money collected (measured: ฿9,999).
         #
         # No override. A stamp only means "collected" when the same advance is
-        # inside the item's salary_advance_deduction, and that is computed in
-        # _build_item during generate_run — which is refused on a reopened run
-        # whose roster drifted. So on this path consent cannot make the money
-        # move; it can only mark uncollected money as collected. The operator
-        # fixes the DATA instead (see the message).
-        if _was_reopened(c, run_id):
-            n, total = pending_advance_stamp(run_id, conn=c)
-            if n:
-                raise PendingAdvanceStampWarning(_pending_advance_message(n, total))
+        # inside the item's salary_advance_deduction, computed by _build_item
+        # during generate_run — so consent cannot make the money move, only
+        # mislabel it. The operator regenerates (which recomputes the
+        # deduction), or fixes the dates when a drifted roster blocks that.
+        n, total = pending_advance_stamp(run_id, conn=c)
+        if n:
+            raise PendingAdvanceStampWarning(_pending_advance_message(n, total))
 
         _, period_end = _month_bounds(run["year_month"])
 
