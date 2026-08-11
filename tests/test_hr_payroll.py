@@ -1539,3 +1539,101 @@ def test_an_exception_after_a_partial_mutation_rolls_the_whole_thing_back(tmp_db
     assert after == before, (
         "the DELETE and the partial rebuild were not rolled back — "
         "the month is left missing rows")
+
+
+def test_borrowed_connection_is_rolled_back_and_still_usable(tmp_db, monkeypatch):
+    """Replaces what the owned-connection version of this test could not prove.
+
+    On an OWNED connection close() rolls back by itself, so asserting the data
+    afterwards passes whether or not __exit__ ever called rollback. A BORROWED
+    connection is never closed here, so its state after the call is entirely
+    __exit__'s doing (Codex).
+    """
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        _mk_employee(conn, 'T_BORROW1', 'borrow-one', '2029-01-01')
+        _mk_employee(conn, 'T_BORROW2', 'borrow-two', '2029-01-01')
+        run = hr_mod.generate_run('2029-01', 1, created_by=1, conn=conn)
+        rid = run['id']
+        conn.commit()
+        before = {r[0] for r in conn.execute(
+            "SELECT id FROM payroll_items WHERE run_id=?", (rid,))}
+        assert len(before) >= 2
+
+        calls = {'n': 0}
+        real = hr_mod._build_item
+
+        def boom(c, emp, year_month, cfg, run_id=None):
+            calls['n'] += 1
+            if calls['n'] == 2:
+                raise sqlite3.OperationalError('disk I/O error')
+            return real(c, emp, year_month, cfg, run_id=run_id)
+
+        monkeypatch.setattr(hr_mod, '_build_item', boom)
+        with pytest.raises(sqlite3.OperationalError):
+            hr_mod.generate_run('2029-01', 1, created_by=1, conn=conn)
+        assert calls['n'] >= 2, "the failure never landed mid-rebuild"
+
+        # the three things only __exit__ can be responsible for here
+        assert conn.in_transaction is False, "the caller was left inside our transaction"
+        assert {r[0] for r in conn.execute(
+            "SELECT id FROM payroll_items WHERE run_id=?", (rid,))} == before, \
+            "the DELETE and partial rebuild were not rolled back"
+        assert conn.execute("SELECT 1").fetchone()[0] == 1, "connection unusable"
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def test_a_failing_commit_on_a_borrowed_connection_releases_the_transaction(tmp_db, monkeypatch):
+    """A commit that fails must still hand the connection back clean.
+
+    The caller keeps using it — leaving it inside our transaction hands them
+    SQLite's write lock indefinitely. The commit failure is what propagates;
+    the rollback is cleanup (Codex)."""
+    import hr as hr_mod
+    real_conn = sqlite3.connect(tmp_db, timeout=10)
+    real_conn.row_factory = sqlite3.Row
+    borrowed = _FlakyConn(real_conn, 'commit')
+    try:
+        # reopen_run on a missing id returns cleanly without committing itself,
+        # so the failing commit is the one __exit__ performs.
+        with pytest.raises(sqlite3.OperationalError):
+            hr_mod.reopen_run(999999, reason='x', actor='a', conn=borrowed)
+        assert real_conn.in_transaction is False, (
+            "a failing commit left the caller holding the transaction")
+        assert borrowed.closed is False, "a borrowed connection must not be closed"
+        assert real_conn.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        real_conn.rollback()
+        real_conn.close()
+
+
+def test_a_failing_rollback_on_a_borrowed_connection_is_not_silent(tmp_db):
+    """Swallowing it would hand the caller a connection still holding the lock
+    while telling them only about the original error — they would never learn
+    the cleanup failed (Codex).
+
+    An OWNED connection is the opposite case: the finally closes it, so the
+    transaction dies regardless and the body's exception is the more useful
+    thing to propagate. That asymmetry is the point, and it is why this test
+    exists — break-it-once showed that swallowing here changed no test at all.
+    """
+    import hr as hr_mod
+    real_conn = sqlite3.connect(tmp_db, timeout=10)
+    real_conn.row_factory = sqlite3.Row
+    borrowed = _FlakyConn(real_conn, 'rollback')
+    try:
+        # update_payroll_item raises ValueError on a missing id, inside the
+        # locked block — so __exit__ takes its exception path and rollback fails
+        with pytest.raises(sqlite3.OperationalError) as caught:
+            hr_mod.update_payroll_item(999999, bonus=1.0, conn=borrowed)
+        assert 'disk I/O error' in str(caught.value)
+        # the original cause must still be reachable, not erased
+        assert isinstance(caught.value.__context__, ValueError), (
+            "the body's error was lost instead of chained")
+        assert borrowed.closed is False, "a borrowed connection must not be closed"
+    finally:
+        real_conn.close()

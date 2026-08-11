@@ -101,14 +101,29 @@ class _ConnCtx:
                     try:
                         c.rollback()
                     except Exception:
-                        # The body's exception is what the operator needs; a
-                        # rollback that fails while unwinding must not replace
-                        # it. The transaction dies with the connection anyway.
-                        pass
+                        # An OWNED connection is closed in the finally below,
+                        # so its transaction dies regardless and the body's
+                        # exception — what the operator actually needs — is
+                        # left to propagate. A BORROWED one is handed back to
+                        # the caller still holding the lock, so that failure
+                        # cannot be silent (Codex review of PR #367).
+                        if self._owned is None:
+                            raise
                 else:
-                    # Deliberately NOT swallowed: a commit that fails means the
-                    # write did not land, and the caller must hear about it.
-                    c.commit()
+                    try:
+                        c.commit()
+                    except BaseException as commit_err:
+                        # The commit failing is the primary fact and must reach
+                        # the caller. But a borrowed connection would go back
+                        # still inside our transaction, holding SQLite's write
+                        # lock, so try to release it first.
+                        try:
+                            c.rollback()
+                        except Exception as rollback_err:
+                            # Surface the cleanup failure without demoting the
+                            # cause: the exception raised is still the commit's.
+                            raise commit_err from rollback_err
+                        raise
         finally:
             # Runs even when the commit above raises — otherwise a failing
             # commit leaks the connection, and under gunicorn that accumulates
