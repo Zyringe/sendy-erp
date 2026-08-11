@@ -852,9 +852,18 @@ def test_pending_advance_stamp_ignores_advances_after_the_month(tmp_db_conn_hr_c
 
 def test_first_finalize_still_stamps_advances_without_any_confirmation(tmp_db_conn_hr_clean):
     """CONTROL, and the most important test here: stamping advances IS the job
-    of a first finalize. If the new guard fires on this path, monthly payroll
-    stops working for everyone. It must key on the run having been REOPENED,
-    not on advances merely existing.
+    of a first finalize. If the guard fires on this path, monthly payroll stops
+    working for everyone.
+
+    ⚠ Rewritten 2026-08-11. It used to add the advance AFTER generate and never
+    regenerate, then assert the finalize succeeded — which asserted the money
+    leak rather than the control: the payslip's deduction is computed at
+    generate time, so that ฿800 was stamped "หักแล้ว" while no payslip withheld
+    it. The guard now keys on the SHORTFALL (would-be-stamped minus
+    already-deducted), which is what makes it safe to run on a first finalize:
+    an advance the run actually deducts reports 0 and is never blocked. The
+    leaky ordering is pinned separately by
+    test_warns_and_refuses_when_an_advance_lands_after_generate.
     """
     c = tmp_db_conn_hr_clean
     run = hr.generate_run('2027-03', 1, created_by=1, conn=c)
@@ -863,7 +872,10 @@ def test_first_finalize_still_stamps_advances_without_any_confirmation(tmp_db_co
                     (rid,)).fetchone()[0]
     _add_advance(c, emp, '2027-03-10', 800.0)
     adv = c.execute("SELECT MAX(id) FROM salary_advances").fetchone()[0]
-    assert hr.pending_advance_stamp(rid, conn=c) == (1, 800.0)
+    hr.generate_run('2027-03', 1, created_by=1, conn=c)      # the normal month-end refresh
+    assert _item(c, rid, emp)['salary_advance_deduction'] == 800.0, \
+        "precondition: the payslip now withholds it"
+    assert hr.pending_advance_stamp(rid, conn=c) == (0, 0.0), "nothing uncollected"
 
     hr.finalize_run(rid, conn=c)          # no confirmation passed
 
@@ -1011,15 +1023,18 @@ def test_finalize_holds_the_write_lock_across_the_pending_check(tmp_db, monkeypa
         conn.close()
 
     seen = {}
-    real = hr_mod._was_reopened
+    real = hr_mod.pending_advance_stamp
 
-    def probe(c, run_id):
-        # _was_reopened is consulted on EVERY finalize and before every write,
-        # so the probe lands in the window the fix is meant to close.
+    def probe(run_id, conn=None, db_path=None):
+        # The pending check runs on EVERY finalize and before every write, so
+        # the probe lands in the window the fix is meant to close. (Was
+        # _was_reopened until 2026-08-11; that gate was removed when the check
+        # became shortfall-based, and this test correctly went red saying its
+        # seam had moved rather than passing vacuously.)
         seen['blocked'] = _concurrent_insert_blocked(tmp_db, eid, '2027-07-10', 500.0)
-        return real(c, run_id)
+        return real(run_id, conn=conn, db_path=db_path)
 
-    monkeypatch.setattr(hr_mod, '_was_reopened', probe)
+    monkeypatch.setattr(hr_mod, 'pending_advance_stamp', probe)
     hr_mod.finalize_run(rid, db_path=tmp_db)
 
     assert seen, "the probe never ran — the seam moved, so this test proves nothing"
@@ -1703,3 +1718,99 @@ def test_commit_failure_plus_close_failure_keeps_the_commit_as_primary(tmp_db, m
     assert isinstance(caught.value.primary_error, sqlite3.OperationalError)
     assert 'disk I/O' in str(caught.value.primary_error)
     assert holder['c'].closed is True
+
+
+# ── advance-stamp warning: shortfall, not "any pending" (2026-08-11) ─────────
+# The guard's question was "are there unstamped advances?" — but advances stay
+# unstamped until finalize BY DESIGN, so that fires on every ordinary draft
+# while missing the case that actually loses money. The real question is
+# "would finalizing mark money collected that no payslip withholds?", i.e.
+# per employee: what would be stamped, minus what the item already deducts.
+
+def test_no_warning_when_the_draft_already_deducts_the_advance(tmp_db_conn_hr_clean):
+    """The ordinary monthly flow: the advance exists before the run is
+    generated, so the payslip already withholds it. Nothing is uncollected and
+    finalizing is correct — the operator must not be told otherwise.
+
+    Prod case, 2026-08-11: run 8 deducted exactly the ฿12,500 it was warned
+    about, and the banner still said "finalize รอบนี้ไม่ได้".
+    """
+    c = tmp_db_conn_hr_clean
+    emp = _mk_employee(c, 'T_ADVOK', 'advance ok', '2024-01-01', monthly_salary=20000.0)
+    _add_advance(c, emp, '2026-03-05', 2000.0)
+
+    run = hr.generate_run('2026-03', 1, created_by=1, conn=c)
+    it = _item(c, run['id'], emp)
+    assert it['salary_advance_deduction'] == 2000.0, "precondition: the payslip DOES withhold it"
+
+    assert hr.pending_advance_stamp(run['id'], conn=c) == (0, 0.0)
+    assert hr.pending_advance_note(run['id'], conn=c) is None
+    hr.finalize_run(run['id'], conn=c)          # must not raise
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (run['id'],)).fetchone()[0] == 'finalized'
+
+
+def test_warns_and_refuses_when_an_advance_lands_after_generate(tmp_db_conn_hr_clean):
+    """The case that actually loses money, and was NOT refused: generate a
+    draft, add an advance afterwards, finalize without regenerating. The stamp
+    marks it collected while the payslip — computed earlier — withholds nothing.
+
+    Reported figure must be the SHORTFALL, not the total pending.
+    """
+    c = tmp_db_conn_hr_clean
+    emp = _mk_employee(c, 'T_ADVLATE', 'advance late', '2024-01-01', monthly_salary=20000.0)
+    _add_advance(c, emp, '2026-04-02', 1500.0)
+
+    run = hr.generate_run('2026-04', 1, created_by=1, conn=c)
+    assert _item(c, run['id'], emp)['salary_advance_deduction'] == 1500.0
+
+    _add_advance(c, emp, '2026-04-20', 9999.0)          # keyed after the run was built
+
+    n, total = hr.pending_advance_stamp(run['id'], conn=c)
+    assert (n, total) == (1, 9999.0), "only the uncollected part, not 1500+9999"
+    note = hr.pending_advance_note(run['id'], conn=c)
+    assert note and '9,999' in note
+    assert '12,500' not in note and '11,499' not in note
+
+    with pytest.raises(hr.PendingAdvanceStampWarning):
+        hr.finalize_run(run['id'], conn=c)
+    assert c.execute("SELECT status FROM payroll_runs WHERE id=?",
+                     (run['id'],)).fetchone()[0] == 'draft', "refused, so still a draft"
+    assert c.execute(
+        "SELECT COUNT(*) FROM salary_advances WHERE deducted_in_run_id=?",
+        (run['id'],)).fetchone()[0] == 0, "and nothing was stamped"
+
+
+def test_regenerating_clears_the_warning(tmp_db_conn_hr_clean):
+    """The remedy the message should give. Regenerating recomputes the
+    deduction to include the late advance, after which finalize is correct —
+    no data edit required."""
+    c = tmp_db_conn_hr_clean
+    emp = _mk_employee(c, 'T_ADVREG', 'advance regen', '2024-01-01', monthly_salary=20000.0)
+    run = hr.generate_run('2026-05', 1, created_by=1, conn=c)
+    _add_advance(c, emp, '2026-05-10', 800.0)
+    assert hr.pending_advance_stamp(run['id'], conn=c)[1] == 800.0
+
+    hr.generate_run('2026-05', 1, created_by=1, conn=c)          # regenerate
+
+    assert _item(c, run['id'], emp)['salary_advance_deduction'] == 800.0
+    assert hr.pending_advance_stamp(run['id'], conn=c) == (0, 0.0)
+    hr.finalize_run(run['id'], conn=c)          # must not raise
+
+
+def test_one_employees_surplus_cannot_mask_anothers_shortfall(tmp_db_conn_hr_clean):
+    """The shortfall is per EMPLOYEE. Netting totals across the run would let a
+    colleague's already-deducted advance hide real uncollected money."""
+    c = tmp_db_conn_hr_clean
+    a = _mk_employee(c, 'T_ADV_A', 'covered', '2024-01-01', monthly_salary=20000.0)
+    b = _mk_employee(c, 'T_ADV_B', 'exposed', '2024-01-01', monthly_salary=20000.0)
+    _add_advance(c, a, '2026-06-03', 5000.0)                     # in the run
+
+    run = hr.generate_run('2026-06', 1, created_by=1, conn=c)
+    assert _item(c, run['id'], a)['salary_advance_deduction'] == 5000.0
+    assert _item(c, run['id'], b)['salary_advance_deduction'] == 0.0
+
+    _add_advance(c, b, '2026-06-25', 400.0)                      # added after
+
+    n, total = hr.pending_advance_stamp(run['id'], conn=c)
+    assert (n, total) == (1, 400.0), "B's 400 must not be netted against A's covered 5000"
