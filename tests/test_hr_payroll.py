@@ -1136,3 +1136,161 @@ def test_money_paths_refuse_a_caller_transaction_already_in_flight(tmp_db):
     finally:
         conn.rollback()
         conn.close()
+
+
+# ── the serialization boundary must cover the whole state machine ──────────
+
+def _payroll_state_machine_writers():
+    """The functions that read payroll_runs.status (or a row's parent status)
+    and then write based on it. Every one must hold the write lock across that
+    pair, or the other side of any pairing decides from state it no longer has."""
+    return ('generate_run', 'finalize_run', 'reopen_run',
+            'post_salary_payment', 'update_payroll_item')
+
+
+def test_reopen_and_post_cannot_interleave(tmp_db, monkeypatch):
+    """The paired race Codex found by sweeping the writers.
+
+      reopen_run sees paid_count = 0
+          post_salary_payment sees the run as finalized
+      reopen flips the run to draft
+          post inserts the payment row
+
+    Result: a draft run with money already posted against it — and a draft run
+    is editable, so those figures can then be changed underneath a payment that
+    has already left the account. Locking only reopen_run does not help: post
+    still decides from a status it read before the flip.
+    """
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        eid = _mk_employee(conn, 'T_PAIR', 'pair-race', '2027-12-01')
+        run = hr_mod.generate_run('2027-12', 1, created_by=1, conn=conn)
+        rid = run['id']
+        hr_mod.finalize_run(rid, conn=conn)
+        item_id = conn.execute(
+            "SELECT id FROM payroll_items WHERE run_id=? AND employee_id=?",
+            (rid, eid)).fetchone()[0]
+        acct = conn.execute(
+            "SELECT id FROM cashbook_accounts WHERE is_transfer=0 LIMIT 1").fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+
+    seen = {}
+    real = hr_mod._begin_immediate
+
+    def probe(c):
+        # BEGIN IMMEDIATE *is* the first write, so the window that matters is
+        # right after it and before the status read: lock held, decision not
+        # yet made. Probing before it would merely flip the run to draft for
+        # real and prove nothing about serialization.
+        out = real(c)
+        if 'blocked' not in seen:
+            seen['blocked'] = _concurrent_update_blocked(
+                tmp_db, "UPDATE payroll_runs SET status='draft' WHERE id=%d" % rid)
+        return out
+
+    monkeypatch.setattr(hr_mod, '_begin_immediate', probe)
+    hr_mod.post_salary_payment(item_id, acct, '2027-12-28', 'admin', db_path=tmp_db)
+
+    assert seen, "post_salary_payment never took the lock — the seam never ran"
+    assert seen['blocked'] is True, (
+        "another worker could reopen the run while a payment was being posted")
+
+
+def _concurrent_update_blocked(db_path, sql):
+    other = sqlite3.connect(db_path, timeout=0.1)
+    try:
+        other.execute(sql)
+        other.commit()
+        return False
+    except sqlite3.OperationalError as e:
+        return "locked" in str(e).lower()
+    finally:
+        other.close()
+
+
+def test_edit_and_finalize_cannot_interleave(tmp_db, monkeypatch):
+    """update_payroll_item refuses a finalized parent, but read the status and
+    then wrote without holding the lock — so a finalize landing in between let
+    an issued payslip be rewritten."""
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        _mk_employee(conn, 'T_EDITRACE', 'edit-race', '2028-01-01')
+        run = hr_mod.generate_run('2028-01', 1, created_by=1, conn=conn)
+        rid = run['id']
+        item_id = conn.execute(
+            "SELECT id FROM payroll_items WHERE run_id=? LIMIT 1", (rid,)).fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+
+    seen = {}
+    real = hr_mod._begin_immediate
+
+    def probe(c):
+        out = real(c)
+        if 'blocked' not in seen:
+            seen['blocked'] = _concurrent_update_blocked(
+                tmp_db, "UPDATE payroll_runs SET status='finalized' WHERE id=%d" % rid)
+        return out
+
+    monkeypatch.setattr(hr_mod, '_begin_immediate', probe)
+    hr_mod.update_payroll_item(item_id, bonus=100.0, db_path=tmp_db)
+
+    assert seen, "update_payroll_item never took the lock"
+    assert seen['blocked'] is True, (
+        "a finalize could land between the status check and the edit")
+
+
+def test_every_state_machine_writer_refuses_a_caller_transaction(tmp_db):
+    """The contract must hold across the whole boundary, not just where it was
+    introduced — a writer that silently accepts an unknown transaction is the
+    hole the others are guarding.
+
+    Each writer is given state that makes it REACH its lock. finalize_run is
+    the one that needs it: its "already finalized" exit is a read-only no-op
+    taken before the lock, and Codex ruled that path should not be refused —
+    so testing it with an arbitrary id would assert the opposite of the agreed
+    contract.
+    """
+    import hr as hr_mod
+    setup = sqlite3.connect(tmp_db, timeout=10)
+    setup.row_factory = sqlite3.Row
+    try:
+        _mk_employee(setup, 'T_CONTRACT', 'contract-probe', '2028-03-01')
+        draft = hr_mod.generate_run('2028-03', 1, created_by=1, conn=setup)
+        draft_id = draft['id']
+        item_id = setup.execute(
+            "SELECT id FROM payroll_items WHERE run_id=? LIMIT 1", (draft_id,)).fetchone()[0]
+        acct = setup.execute(
+            "SELECT id FROM cashbook_accounts WHERE is_transfer=0 LIMIT 1").fetchone()[0]
+        setup.commit()
+    finally:
+        setup.close()
+
+    calls = {
+        'generate_run':        lambda c: hr_mod.generate_run('2028-04', 1, created_by=1, conn=c),
+        'finalize_run':        lambda c: hr_mod.finalize_run(draft_id, conn=c),
+        'reopen_run':          lambda c: hr_mod.reopen_run(draft_id, reason='x', actor='a', conn=c),
+        'post_salary_payment': lambda c: hr_mod.post_salary_payment(item_id, acct, '2028-03-28', 'a', conn=c),
+        'update_payroll_item': lambda c: hr_mod.update_payroll_item(item_id, bonus=1.0, conn=c),
+    }
+    assert set(calls) == set(_payroll_state_machine_writers())
+
+    for name, call in calls.items():
+        conn = sqlite3.connect(tmp_db, timeout=10)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("BEGIN")
+            conn.execute("UPDATE hr_config SET value = value WHERE key='sso_rate'")
+            assert conn.in_transaction
+            with pytest.raises(hr_mod.CallerTransactionInFlight):
+                call(conn)
+        finally:
+            conn.rollback()
+            conn.close()

@@ -1156,6 +1156,10 @@ def update_payroll_item(item_id: int,
     URL. Same defense-in-depth as post_salary_payment's finalized check.
     """
     with _ConnCtx(conn, db_path) as c:
+        # Refusing a finalized parent is only a guarantee while the status
+        # cannot change between the read and the write — otherwise a finalize
+        # landing in between lets an issued payslip be rewritten.
+        _begin_immediate(c)
         row = c.execute(
             """SELECT pi.*, pr.status AS run_status
                  FROM payroll_items pi
@@ -1311,6 +1315,12 @@ def reopen_run(run_id: int, reason: str, actor: str,
     if not reason or not reason.strip():
         raise ValueError("reason is required")
     with _ConnCtx(conn, db_path) as c:
+        # Lock before the status and paid-count reads. Both decide whether this
+        # run may go back to draft, and post_salary_payment decides the mirror
+        # question from the same status — leaving either unlocked lets the pair
+        # interleave into "a draft run with money already posted against it",
+        # which is then editable (Codex review of PR #367).
+        _begin_immediate(c)
         run = c.execute(
             "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
         ).fetchone()
@@ -1382,6 +1392,9 @@ def post_salary_payment(item_id: int, account_id: int,
     Returns the new cashbook_transactions.id.
     """
     with _ConnCtx(conn, db_path) as c:
+        # The other half of the reopen pairing: this decides from the run's
+        # status, so it must hold the lock across that read and the insert.
+        _begin_immediate(c)
         item = c.execute(
             "SELECT * FROM payroll_items WHERE id = ?", (item_id,)
         ).fetchone()
