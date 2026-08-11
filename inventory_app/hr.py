@@ -49,20 +49,47 @@ def _connect(db_path: Optional[str] = None) -> sqlite3.Connection:
 
 
 class _ConnCtx:
-    """Use the caller's connection if given (no close); else open/own one."""
+    """Use the caller's connection if given (no close); else open/own one.
 
-    def __init__(self, conn: Optional[sqlite3.Connection], db_path: Optional[str]):
+    `lock=True` takes the write lock on entry, for a body whose decision and
+    write must not be split by another worker. It then OWNS that transaction
+    and ends it on every exit — commit on a clean return, rollback on an
+    exception — because a caller's connection is never closed here and would
+    otherwise be left holding SQLite's single database-wide write lock after a
+    refusal or an early return, blocking every other writer until the caller
+    happened to commit (Codex review of PR #367).
+
+    Ending it is safe precisely because `_begin_immediate` REFUSES a
+    pre-existing transaction: anything open at exit is ours. An owned
+    connection was never at risk — closing it rolls back — but it goes through
+    the same path so the two cannot drift.
+    """
+
+    def __init__(self, conn: Optional[sqlite3.Connection], db_path: Optional[str],
+                 lock: bool = False):
         self._given = conn
         self._db_path = db_path
+        self._lock = lock
         self._owned: Optional[sqlite3.Connection] = None
+        self._locked = False
 
     def __enter__(self) -> sqlite3.Connection:
-        if self._given is not None:
-            return self._given
-        self._owned = _connect(self._db_path)
-        return self._owned
+        c = self._given
+        if c is None:
+            self._owned = _connect(self._db_path)
+            c = self._owned
+        if self._lock:
+            _begin_immediate(c)      # raises if the caller already had one open
+            self._locked = True
+        return c
 
-    def __exit__(self, *exc):
+    def __exit__(self, exc_type, exc, tb):
+        c = self._given if self._given is not None else self._owned
+        if self._locked and c is not None and c.in_transaction:
+            if exc_type is not None:
+                c.rollback()
+            else:
+                c.commit()
         if self._owned is not None:
             self._owned.close()
         return False
@@ -1035,12 +1062,11 @@ def generate_run(year_month: str, company_id: int, created_by: int,
     """
     period_start, period_end = _month_bounds(year_month)
 
-    with _ConnCtx(conn, db_path) as c:
+    with _ConnCtx(conn, db_path, lock=True) as c:
         # Lock BEFORE every read a decision rests on — the run's status, and
         # the config that _build_item applies to each employee. Reading either
         # outside the transaction lets another worker invalidate it before the
         # DELETE + rebuild below (Codex review of PR #367).
-        _begin_immediate(c)
         cfg = _load_config(c)
 
         run = c.execute(
@@ -1155,11 +1181,10 @@ def update_payroll_item(item_id: int,
     so it must hold for every caller — not only the one that goes through the
     URL. Same defense-in-depth as post_salary_payment's finalized check.
     """
-    with _ConnCtx(conn, db_path) as c:
+    with _ConnCtx(conn, db_path, lock=True) as c:
         # Refusing a finalized parent is only a guarantee while the status
         # cannot change between the read and the write — otherwise a finalize
         # landing in between lets an issued payslip be rewritten.
-        _begin_immediate(c)
         row = c.execute(
             """SELECT pi.*, pr.status AS run_status
                  FROM payroll_items pi
@@ -1231,7 +1256,7 @@ def finalize_run(run_id: int,
          deducted_in_run_id = run_id so a later month never re-deducts it.
     Returns the payroll_runs row (or None if run_id unknown).
     """
-    with _ConnCtx(conn, db_path) as c:
+    with _ConnCtx(conn, db_path, lock=True) as c:
         run = c.execute(
             "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
         ).fetchone()
@@ -1243,7 +1268,6 @@ def finalize_run(run_id: int,
         # Lock before the pending check: the check and the stamp below must be
         # ONE transaction, or an advance inserted in between is stamped as
         # deducted while no payslip carries it (Codex review of PR #367).
-        _begin_immediate(c)
         run = c.execute(
             "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
         ).fetchone()
@@ -1314,13 +1338,12 @@ def reopen_run(run_id: int, reason: str, actor: str,
     """
     if not reason or not reason.strip():
         raise ValueError("reason is required")
-    with _ConnCtx(conn, db_path) as c:
+    with _ConnCtx(conn, db_path, lock=True) as c:
         # Lock before the status and paid-count reads. Both decide whether this
         # run may go back to draft, and post_salary_payment decides the mirror
         # question from the same status — leaving either unlocked lets the pair
         # interleave into "a draft run with money already posted against it",
         # which is then editable (Codex review of PR #367).
-        _begin_immediate(c)
         run = c.execute(
             "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
         ).fetchone()
@@ -1391,10 +1414,9 @@ def post_salary_payment(item_id: int, account_id: int,
 
     Returns the new cashbook_transactions.id.
     """
-    with _ConnCtx(conn, db_path) as c:
+    with _ConnCtx(conn, db_path, lock=True) as c:
         # The other half of the reopen pairing: this decides from the run's
         # status, so it must hold the lock across that read and the insert.
-        _begin_immediate(c)
         item = c.execute(
             "SELECT * FROM payroll_items WHERE id = ?", (item_id,)
         ).fetchone()

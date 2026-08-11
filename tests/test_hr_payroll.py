@@ -1294,3 +1294,80 @@ def test_every_state_machine_writer_refuses_a_caller_transaction(tmp_db):
         finally:
             conn.rollback()
             conn.close()
+
+
+def test_no_writer_leaves_the_caller_connection_holding_the_lock(tmp_db):
+    """A refusal or a no-op must not leave the caller inside our transaction.
+
+    _begin_immediate opens the transaction, but _ConnCtx deliberately does not
+    manage a caller-supplied connection — so every raise and every early return
+    after the lock left it in_transaction=True, holding SQLite's single
+    database-wide write lock until the caller happened to commit or close.
+    Every other writer would block meanwhile, and a later unrelated commit
+    would silently include whatever we had done (Codex review of PR #367).
+
+    Safe to fix precisely because the helper REFUSES a pre-existing
+    transaction: anything open at that point is ours to end.
+    """
+    import hr as hr_mod
+    setup = sqlite3.connect(tmp_db, timeout=10)
+    setup.row_factory = sqlite3.Row
+    try:
+        _mk_employee(setup, 'T_LEAK', 'leak-probe', '2028-06-01')
+        draft = hr_mod.generate_run('2028-06', 1, created_by=1, conn=setup)
+        draft_id = draft['id']
+        item_id = setup.execute(
+            "SELECT id FROM payroll_items WHERE run_id=? LIMIT 1", (draft_id,)).fetchone()[0]
+        gone = hr_mod.generate_run('2028-07', 1, created_by=1, conn=setup)
+        hr_mod.finalize_run(gone['id'], conn=setup)
+        setup.commit()
+    finally:
+        setup.close()
+
+    # (label, callable, expects_raise) — each hits a rejection or a no-op
+    # AFTER the lock is taken, which is where the leak lived.
+    cases = [
+        ('reopen_run/not-found',
+         lambda c: hr_mod.reopen_run(999999, reason='x', actor='a', conn=c), False),
+        ('reopen_run/already-draft',
+         lambda c: hr_mod.reopen_run(draft_id, reason='x', actor='a', conn=c), False),
+        ('finalize_run/already-finalized',
+         lambda c: hr_mod.finalize_run(gone['id'], conn=c), False),
+        ('update_payroll_item/not-found',
+         lambda c: hr_mod.update_payroll_item(999999, bonus=1.0, conn=c), True),
+        ('post_salary_payment/not-found',
+         lambda c: hr_mod.post_salary_payment(999999, 1, '2028-06-28', 'a', conn=c), True),
+        ('post_salary_payment/draft-parent',
+         lambda c: hr_mod.post_salary_payment(item_id, 1, '2028-06-28', 'a', conn=c), True),
+    ]
+
+    for label, call, expects_raise in cases:
+        c = sqlite3.connect(tmp_db, timeout=10)
+        c.row_factory = sqlite3.Row
+        try:
+            assert not c.in_transaction, label
+            if expects_raise:
+                with pytest.raises(Exception):
+                    call(c)
+            else:
+                call(c)
+            assert c.in_transaction is False, (
+                f"{label}: the caller was left holding our transaction")
+        finally:
+            c.rollback()
+            c.close()
+
+    # ...and a writer that RAISES its own guard must release it too
+    c = sqlite3.connect(tmp_db, timeout=10)
+    c.row_factory = sqlite3.Row
+    try:
+        emp = c.execute("SELECT employee_id FROM payroll_items WHERE run_id=? LIMIT 1",
+                        (draft_id,)).fetchone()[0]
+        c.execute("UPDATE employees SET is_active=0 WHERE id=?", (emp,))
+        c.commit()
+        with pytest.raises(ValueError):
+            hr_mod.generate_run('2028-06', 1, created_by=1, conn=c)   # roster guard
+        assert c.in_transaction is False, "generate_run's roster refusal leaked the lock"
+    finally:
+        c.rollback()
+        c.close()
