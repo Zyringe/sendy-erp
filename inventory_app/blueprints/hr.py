@@ -218,6 +218,7 @@ def employee_detail(id: int):
     if not emp:
         abort(404)
     salary_history = hrq.get_employee_salary_history(id)
+    wht_history = hrq.get_employee_wht_history(id)
     year = date.today().year
     try:
         leave_bal = hr_mod.leave_balance(id, year)
@@ -228,6 +229,7 @@ def employee_detail(id: int):
         "hr/employee_detail.html",
         employee=emp,
         salary_history=salary_history,
+        wht_history=wht_history,
         leave_balance=leave_bal,
         leave_types=leave_types,
         banks=BANK_OPTIONS,
@@ -273,6 +275,42 @@ def employee_salary_add(id: int):
     try:
         hrq.add_salary_history(id, effective_date, float(salary), reason, note)
         flash("บันทึกประวัติเงินเดือนเรียบร้อย", "success")
+    except Exception as e:
+        flash(f"ไม่สามารถบันทึก: {e}", "danger")
+    return redirect(url_for("hr.employee_detail", id=id))
+
+
+@bp_hr.route("/employees/<int:id>/wht", methods=["POST"])
+def employee_wht_add(id: int):
+    """Set the employee's standing WHT rate from a given date onward — same
+    UX as employee_salary_add, writing an employee_wht_history row that
+    hr.resolve_wht() picks up for every payroll run generated afterward."""
+    _require_admin()
+    emp = hrq.get_employee(id)
+    if not emp:
+        abort(404)
+    effective_date = request.form.get("effective_date", "").strip()
+    wht = request.form.get("monthly_wht", "").strip()
+    reason = request.form.get("reason", "adjust").strip()
+    note = request.form.get("note", "").strip() or None
+    if not effective_date or not wht:
+        flash("กรุณาระบุวันที่มีผลและจำนวนภาษี", "danger")
+        return redirect(url_for("hr.employee_detail", id=id))
+    # The form has min=0, but a direct POST bypasses it. WHT is SUBTRACTED in
+    # _recompute_totals, so a negative rate would quietly raise net_pay.
+    # (employee_wht_history also CHECKs monthly_wht >= 0 — this is the friendly
+    # half of the same guard.)
+    try:
+        wht_value = float(wht)
+    except ValueError:
+        flash("จำนวนภาษีต้องเป็นตัวเลข", "danger")
+        return redirect(url_for("hr.employee_detail", id=id))
+    if wht_value < 0:
+        flash("จำนวนภาษีติดลบไม่ได้ (ใส่ 0 เพื่อหยุดหักภาษี)", "danger")
+        return redirect(url_for("hr.employee_detail", id=id))
+    try:
+        hrq.add_wht_history(id, effective_date, wht_value, reason, note)
+        flash("บันทึกประวัติภาษีหัก ณ ที่จ่ายเรียบร้อย", "success")
     except Exception as e:
         flash(f"ไม่สามารถบันทึก: {e}", "danger")
     return redirect(url_for("hr.employee_detail", id=id))
@@ -654,6 +692,7 @@ def payroll_item_edit(run_id: int, item_id: int):
             other_additions_note=request.form.get("other_additions_note") or None,
             other_deductions=_float_or_none("other_deductions"),
             other_deductions_note=request.form.get("other_deductions_note") or None,
+            wht_amount=_float_or_none("wht_amount"),
             late=_bool_or_none("late"),
         )
         flash("อัปเดตรายการเรียบร้อย", "success")
@@ -725,7 +764,7 @@ def payroll_export(run_id: int):
         "เงินเดือน", "ฐานคำนวณ",
         "วันลาไม่รับค่าจ้าง", "หักลา",
         "เบี้ยขยัน", "โบนัส", "รายการเพิ่มอื่น",
-        "หักอื่น", "ประกันสังคม (ลูกจ้าง)",
+        "หักอื่น", "ภาษี", "ประกันสังคม (ลูกจ้าง)",
         "เบิกล่วงหน้า",
         "รวมก่อนหัก", "เงินสุทธิ",
         "หมายเหตุ",
@@ -737,7 +776,7 @@ def payroll_export(run_id: int):
             item["unpaid_leave_days"], item["unpaid_leave_deduction"],
             item["diligence_allowance"] if not item["diligence_forfeited"] else 0,
             item["bonus"], item["other_additions"],
-            item["other_deductions"], item["sso_employee"],
+            item["other_deductions"], item["wht_amount"], item["sso_employee"],
             item["salary_advance_deduction"],
             item["gross"], item["net_pay"],
             item["note"] or "",

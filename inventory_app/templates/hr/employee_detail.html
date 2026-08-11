@@ -313,6 +313,77 @@
       {% endif %}
     </div>
 
+    {# ── WHT (ภาษีหัก ณ ที่จ่าย) history ──── #}
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-receipt me-1"></i>ประวัติภาษีหัก ณ ที่จ่าย</span>
+      </div>
+      <div class="card-body p-0">
+        {% if wht_history %}
+        <table class="table table-sm mb-0">
+          <thead><tr><th>วันที่มีผล</th><th>ภาษี</th><th>เหตุผล</th><th>หมายเหตุ</th></tr></thead>
+          <tbody>
+            {% for wh in wht_history %}
+            <tr>
+              <td class="small">{{ be_year(wh.effective_date) }}</td>
+              <td class="fw-semibold">{{ fmt_baht(wh.monthly_wht) }}</td>
+              <td class="small text-muted">
+                {% set wht_reason_map = {'initial': 'เริ่มต้น', 'adjust': 'ปรับปรุง'} %}
+                {{ wht_reason_map.get(wh.reason, wh.reason) }}
+              </td>
+              <td class="small text-muted">{{ wh.note or '–' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="text-muted p-3 text-center small">ยังไม่มีประวัติภาษีหัก ณ ที่จ่าย</div>
+        {% endif %}
+      </div>
+      {% if session.role == 'admin' %}
+      <div class="card-footer">
+        <button class="btn btn-sm btn-outline-secondary" type="button"
+                data-bs-toggle="collapse" data-bs-target="#addWhtForm">
+          <i class="bi bi-plus me-1"></i>เพิ่มรายการ
+        </button>
+        <div class="collapse mt-2" id="addWhtForm">
+          <form method="post" action="{{ url_for('hr.employee_wht_add', id=employee.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="row g-2">
+              <div class="col-md-4">
+                <label class="form-label small">วันที่มีผล</label>
+                <input type="date" name="effective_date" class="form-control form-control-sm" required>
+                <div class="form-text small">มีผล<strong>ทั้งเดือน</strong>ของวันที่ที่เลือก (รอบเงินเดือนคิดเป็นรายเดือน) — เลือกวันที่ 1 เพื่อความชัดเจน</div>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">ภาษี (฿)</label>
+                <input type="number" name="monthly_wht" class="form-control form-control-sm"
+                       step="0.01" min="0" required>
+                <div class="form-text small">ใส่ <strong>0</strong> เพื่อหยุดหักภาษีตั้งแต่เดือนนั้น</div>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">เหตุผล</label>
+                <select name="reason" class="form-select form-select-sm">
+                  <option value="adjust">ปรับปรุง</option>
+                  <option value="initial">เริ่มต้น</option>
+                </select>
+              </div>
+              <div class="col-12">
+                <label class="form-label small">หมายเหตุ</label>
+                <input type="text" name="note" class="form-control form-control-sm">
+              </div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-sm btn-primary">
+                  <i class="bi bi-save me-1"></i>บันทึก
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
     {# ── Leave balance this year ──── #}
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">

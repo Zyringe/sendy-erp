@@ -233,6 +233,27 @@ def resolve_salary(employee_id: int, year_month: str,
         ).fetchone()
 
 
+def resolve_wht(employee_id: int, year_month: str,
+                conn: Optional[sqlite3.Connection] = None,
+                db_path: Optional[str] = None):
+    """Effective employee_wht_history row for the given month.
+
+    Copy of resolve_salary against the WHT table: the row with
+    max(effective_date) <= last day of the month, tie-broken by id. Returns
+    None if no WHT row precedes the month (employee has never had a standing
+    WHT set — _build_item defaults wht_amount to 0 in that case).
+    """
+    _, last = _month_bounds(year_month)
+    with _ConnCtx(conn, db_path) as c:
+        return c.execute(
+            """SELECT * FROM employee_wht_history
+                 WHERE employee_id = ? AND effective_date <= ?
+                 ORDER BY effective_date DESC, id DESC
+                 LIMIT 1""",
+            (employee_id, last.isoformat()),
+        ).fetchone()
+
+
 # ── leave balance ────────────────────────────────────────────────────────────
 def _service_years_at(start_date: Optional[date], at: date) -> float:
     if start_date is None:
@@ -679,6 +700,9 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
     sal = resolve_salary(emp["id"], year_month, conn=c)
     rate = float(sal["monthly_salary"]) if sal else 0.0
 
+    wht = resolve_wht(emp["id"], year_month, conn=c)
+    wht_amount = float(wht["monthly_wht"]) if wht else 0.0
+
     start_date = _to_date(emp["start_date"])
     end_date = _to_date(emp["end_date"])
 
@@ -792,6 +816,7 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
         "other_additions_note": None,
         "other_deductions": 0.0,
         "other_deductions_note": None,
+        "wht_amount": wht_amount,
         "salary_advance_deduction": salary_advance_deduction,
         "sso_employee": sso_emp,
         "sso_employer": sso_empr,
@@ -805,7 +830,7 @@ def _recompute_totals(d: dict) -> dict:
 
     gross = base + (diligence if kept) + bonus + other_additions
     net   = gross - unpaid_leave_deduction - sso_employee - other_deductions
-            - salary_advance_deduction
+            - wht_amount - salary_advance_deduction
     """
     diligence = 0.0
     if not d["diligence_forfeited"]:
@@ -822,6 +847,7 @@ def _recompute_totals(d: dict) -> dict:
         - float(d["unpaid_leave_deduction"] or 0)
         - float(d["sso_employee"] or 0)
         - float(d["other_deductions"] or 0)
+        - float(d.get("wht_amount", 0) or 0)
         - float(d.get("salary_advance_deduction", 0) or 0),
         2,
     )
@@ -1180,17 +1206,18 @@ def generate_run(year_month: str, company_id: int, created_by: int,
                       diligence_allowance, diligence_forfeited,
                       diligence_forfeit_reason, bonus, other_additions,
                       other_additions_note, other_deductions,
-                      other_deductions_note, salary_advance_deduction,
+                      other_deductions_note, wht_amount,
+                      salary_advance_deduction,
                       sso_employee, sso_employer,
                       commission_amount, gross, net_pay, note)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (run_id, d["employee_id"], d["salary_rate"], d["base_amount"],
                  d["unpaid_leave_days"], d["unpaid_leave_deduction"],
                  d["diligence_allowance"], d["diligence_forfeited"],
                  d["diligence_forfeit_reason"], d["bonus"],
                  d["other_additions"], d["other_additions_note"],
                  d["other_deductions"], d["other_deductions_note"],
-                 d["salary_advance_deduction"],
+                 d["wht_amount"], d["salary_advance_deduction"],
                  d["sso_employee"], d["sso_employer"],
                  d["commission_amount"], d["gross"], d["net_pay"], d["note"]),
             )
@@ -1222,11 +1249,12 @@ def update_payroll_item(item_id: int,
                         other_additions_note: Optional[str] = None,
                         other_deductions: Optional[float] = None,
                         other_deductions_note: Optional[str] = None,
+                        wht_amount: Optional[float] = None,
                         late: Optional[bool] = None,
                         conn: Optional[sqlite3.Connection] = None,
                         db_path: Optional[str] = None):
     """Admin edit of a single payroll line: bonus / other additions /
-    other deductions / manual "มาสาย" (late) toggle. Recomputes gross +
+    other deductions / WHT / manual "มาสาย" (late) toggle. Recomputes gross +
     net_pay. Only the params passed (non-None) are changed.
 
     `late=True`  → force diligence forfeited, reason 'late'
@@ -1270,6 +1298,15 @@ def update_payroll_item(item_id: int,
             d["other_deductions"] = float(other_deductions)
         if other_deductions_note is not None:
             d["other_deductions_note"] = other_deductions_note
+        if wht_amount is not None:
+            # SUBTRACTED by _recompute_totals — a negative value raises net_pay.
+            # The DB enforces this too (CHECK on payroll_items.wht_amount, and on
+            # employee_wht_history.monthly_wht which _build_item reads); this is
+            # the friendly half, so the UI flashes instead of surfacing an
+            # IntegrityError.
+            if float(wht_amount) < 0:
+                raise ValueError("ภาษีหัก ณ ที่จ่ายติดลบไม่ได้ (ใส่ 0 เพื่อไม่หักภาษี)")
+            d["wht_amount"] = float(wht_amount)
 
         if late is True:
             d["diligence_forfeited"] = 1
@@ -1285,11 +1322,13 @@ def update_payroll_item(item_id: int,
             """UPDATE payroll_items
                   SET bonus = ?, other_additions = ?, other_additions_note = ?,
                       other_deductions = ?, other_deductions_note = ?,
+                      wht_amount = ?,
                       diligence_forfeited = ?, diligence_forfeit_reason = ?,
                       gross = ?, net_pay = ?
                 WHERE id = ?""",
             (d["bonus"], d["other_additions"], d["other_additions_note"],
              d["other_deductions"], d["other_deductions_note"],
+             d["wht_amount"],
              d["diligence_forfeited"], d["diligence_forfeit_reason"],
              d["gross"], d["net_pay"], item_id),
         )

@@ -133,6 +133,12 @@
             <td class="text-end text-danger">-{{ fmt_baht(item.sso_employee) }}</td>
           </tr>
           {% endif %}
+          {% if item.wht_amount and item.wht_amount > 0 %}
+          <tr>
+            <td>ภาษีหัก ณ ที่จ่าย</td>
+            <td class="text-end text-danger">-{{ fmt_baht(item.wht_amount) }}</td>
+          </tr>
+          {% endif %}
           {% if item.salary_advance_deduction and item.salary_advance_deduction > 0 %}
           <tr>
             <td>เบิกล่วงหน้า</td>
