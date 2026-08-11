@@ -11,8 +11,9 @@
 -- reconcile._ledger_check and _delete_verified_txns key on transactions.id,
 -- and audit_log rows already reference those ids.
 --
--- Re-runnable: DELETE is a no-op the second time, INSERT OR IGNORE cannot
--- duplicate, the UPDATEs are idempotent, and the DROPs use IF EXISTS.
+-- One-shot, not re-runnable: step 5 drops the three snapshot tables, so a
+-- second run's steps 2/4 (SELECT ... FROM migration_156_deleted_*) fail with
+-- "no such table". Steps 1 and 3 alone are idempotent; the DROPs are not.
 
 PRAGMA busy_timeout = 10000;
 
