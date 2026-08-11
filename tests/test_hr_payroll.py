@@ -1494,3 +1494,48 @@ def test_a_successful_owned_run_commits_and_closes(tmp_db, monkeypatch):
     n = sqlite3.connect(tmp_db).execute(
         "SELECT COUNT(*) FROM payroll_items WHERE run_id=?", (run['id'],)).fetchone()[0]
     assert n >= 1, "the work must actually be committed, not just cleaned up"
+
+
+def test_an_exception_after_a_partial_mutation_rolls_the_whole_thing_back(tmp_db, monkeypatch):
+    """The gap Codex listed that the other cleanup tests do not reach.
+
+    generate_run DELETEs every payroll_item of the run and then rebuilds them
+    one employee at a time. If anything raises partway, the run must not be
+    left with the DELETE applied and only some rows back — that is a payroll
+    month silently missing people. Nothing else in the suite forces a failure
+    *between* the destructive step and the end of the rebuild.
+    """
+    import hr as hr_mod
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        _mk_employee(conn, 'T_PART1', 'partial-one', '2028-11-01')
+        _mk_employee(conn, 'T_PART2', 'partial-two', '2028-11-01')
+        run = hr_mod.generate_run('2028-11', 1, created_by=1, conn=conn)
+        rid = run['id']
+        conn.commit()
+        before = {r[0] for r in conn.execute(
+            "SELECT id FROM payroll_items WHERE run_id=?", (rid,))}
+        assert len(before) >= 2, "need several rows, or a partial rebuild cannot show"
+    finally:
+        conn.close()
+
+    calls = {'n': 0}
+    real = hr_mod._build_item
+
+    def boom(c, emp, year_month, cfg, run_id=None):
+        calls['n'] += 1
+        if calls['n'] == 2:          # after the DELETE and at least one INSERT
+            raise sqlite3.OperationalError('disk I/O error')
+        return real(c, emp, year_month, cfg, run_id=run_id)
+
+    monkeypatch.setattr(hr_mod, '_build_item', boom)
+    with pytest.raises(sqlite3.OperationalError):
+        hr_mod.generate_run('2028-11', 1, created_by=1, db_path=tmp_db)
+
+    assert calls['n'] >= 2, "the failure never landed mid-rebuild"
+    after = {r[0] for r in sqlite3.connect(tmp_db).execute(
+        "SELECT id FROM payroll_items WHERE run_id=?", (rid,))}
+    assert after == before, (
+        "the DELETE and the partial rebuild were not rolled back — "
+        "the month is left missing rows")
