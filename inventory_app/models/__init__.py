@@ -82,8 +82,9 @@ from .wacc import (
     WaccIdentityError, preflight_source_identity, preflight_batch,
 )
 from .system_alerts import (
-    KIND_WACC_IDENTITY, create_system_alert, record_wacc_identity_alert,
-    record_ignored_import_lines_alert,
+    KIND_WACC_IDENTITY, KIND_SLOW_REQUEST,
+    create_system_alert, record_wacc_identity_alert,
+    record_ignored_import_lines_alert, record_slow_request_alert,
     get_open_system_alerts, count_open_system_alerts, resolve_system_alert,
 )
 from .bsn_sync import (

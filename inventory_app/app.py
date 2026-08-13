@@ -44,7 +44,7 @@ time.tzset()
 from datetime import date, datetime
 
 from flask import (Flask, render_template, request, redirect, url_for,
-                   flash, session, abort,
+                   flash, session, abort, g,
                    send_from_directory)
 from flask_wtf.csrf import CSRFProtect, CSRFError
 from werkzeug.security import check_password_hash
@@ -116,6 +116,34 @@ csrf = CSRFProtect(app)
 def _csrf_error(e):
     flash(f'เซสชันหมดอายุ กรุณารีเฟรชหน้าและลองอีกครั้ง ({e.description})', 'danger')
     return redirect(request.referrer or url_for('dashboard'))
+
+
+# ── Slow-request early warning ───────────────────────────────────────────────
+# Prod runs `gunicorn --timeout 60`; a request that exceeds it is SIGABRT'd, so
+# it cannot log or flash anything — the user just gets a bare Internal Server
+# Error. On 2026-08-11 the marketplace import died that way, after a MONTH of
+# 40-55s runs that all succeeded and nobody measured. These two hooks turn that
+# silent window into an alert on /alerts. See models/system_alerts.py
+# ::record_slow_request_alert for the thresholds and why there are two.
+
+@app.before_request
+def _stamp_request_start():
+    g._started_at = time.monotonic()
+
+
+@app.after_request
+def _warn_if_request_was_slow(response):
+    # Wrapped whole: monitoring must never be able to break a request that
+    # otherwise worked. Only fires above the threshold, so normal traffic costs
+    # one subtraction and no DB write.
+    try:
+        started = g.pop('_started_at', None)
+        if started is not None and request.endpoint:
+            models.record_slow_request_alert(
+                request.endpoint, request.method, time.monotonic() - started)
+    except Exception as exc:                  # noqa: BLE001
+        print(f"[slow-request] alert hook failed: {exc}", file=sys.stderr)
+    return response
 
 
 os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
