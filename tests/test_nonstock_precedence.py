@@ -99,8 +99,12 @@ def test_restored_backup_contradiction_keeps_revenue_and_alerts(tmp_db_conn):
     ).fetchone()[0]
     assert n == 1, "revenue must be kept despite the stale is_ignored flag"
 
+    # Scoped to the kind under test: an import can raise several kinds now (the
+    # orphan-ledger sweep is the third), and the clone carries rows others fire
+    # on, so counting every open row would fail on unrelated correct behaviour.
     alerts = conn.execute(
         "SELECT kind, message FROM system_alerts WHERE resolved_at IS NULL"
+        "   AND kind = 'nonstock_ignored_contradiction'"
     ).fetchall()
     assert len(alerts) == 1, alerts
     assert '888ค8888' in alerts[0]['message']

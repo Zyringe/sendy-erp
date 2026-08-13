@@ -142,9 +142,12 @@ def test_vat_code_is_still_dropped_entirely(tmp_db_conn):
     assert n == 0
 
     # ── "still alerts" ──
+    # Scoped to the kind under test: an import can raise several kinds now (the
+    # orphan-ledger sweep is the third), and the clone carries rows others fire
+    # on, so counting every open row would fail on unrelated correct behaviour.
     alerts = conn.execute(
         "SELECT kind, dedupe_key, message FROM system_alerts"
-        " WHERE resolved_at IS NULL").fetchall()
+        " WHERE resolved_at IS NULL AND kind = 'import_ignored_lines'").fetchall()
     assert len(alerts) == 1, alerts             # count BEFORE the property
     assert alerts[0]['kind'] == 'import_ignored_lines', dict(alerts[0])
     assert '888ค8887' in alerts[0]['message'], alerts[0]['message']

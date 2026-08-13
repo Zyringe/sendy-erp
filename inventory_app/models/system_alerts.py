@@ -53,6 +53,7 @@ from database import get_connection
 KIND_WACC_IDENTITY = 'wacc_identity'
 KIND_IMPORT_IGNORED_LINES = 'import_ignored_lines'
 KIND_SLOW_REQUEST = 'slow_request'
+KIND_ORPHAN_BSN_LEDGER = 'orphan_bsn_ledger'
 
 # Prod runs `gunicorn --timeout 60` (Procfile / railway.toml). A request that
 # exceeds it is SIGABRT'd mid-flight, so it cannot report itself — the warning
@@ -140,6 +141,125 @@ def record_ignored_import_lines_alert(ignored_detail, *, file_type, filename):
             severity='warning',
             context={'file_type': file_type, 'filename': filename,
                      'ignored_detail': ignored_detail})
+        if aid:
+            ids.append(aid)
+    return ids
+
+
+def record_orphan_bsn_ledger_alerts(*, file_type, filename):
+    """A ledger row that LOOKS like a BSN sync row but no sync will ever manage it.
+
+    THE FAILURE THIS CATCHES
+        models/imports.py deletes `note IN (<this file_type's two notes>)` before
+        re-posting — exact-match, and right to be (see BSN_SYNC_EXACT_NOTES in
+        bsn_sync.py). So a hand-written `BSN …` row is immortal: the genuine row
+        beside it is deleted and recreated by every import, the orphan is not,
+        and one bill deducts twice from then on.
+
+        Nothing else in the app can see this. The ledger stays internally
+        consistent — SUM(quantity_change) still equals stock_levels — so every
+        drift check passes. Only a comparison against the SOURCE tables shows the
+        gap, and nothing runs that comparison. Found on 2026-08-13 only because
+        Put noticed his ถุงหิ้ว count was short; by then it had been wrong for two
+        months across three products.
+
+    WHY THE WHOLE LEDGER, NOT JUST THIS IMPORT'S PRODUCTS
+        The first version scanned only `affected_pids`, reasoning that the
+        re-post is when the damage happens. Both halves of that were wrong,
+        measured on the real 26,848-row ledger:
+
+          * It was SLOWER — 6.0ms scoped vs 3.8ms unscoped (best of 5). The
+            `product_id IN (…)` list on a full-history import is 1,755
+            parameters, which costs more than the scan it was meant to avoid.
+          * It missed the case that matters. An ad-hoc script that writes an
+            orphan onto a product whose canonical row ALREADY exists does its
+            damage immediately, with no import involved. Scoped, that product
+            only ever alerts if some later import happens to touch it — which
+            is exactly what saved us in June, by luck, not by design.
+
+        So: sweep everything, every import. It is cheap, and "cheap and total"
+        beats "cheap and conditional" for a check whose whole purpose is that
+        nobody is looking.
+
+    SEVERITY
+        error   — a canonical row shares its reference_no, so stock is wrong NOW.
+        warning — no collision yet; the row is still immortal and will collide
+                  the day that document is re-imported.
+
+    Dedupe key is the ORPHAN ROW'S transactions.id, and that choice is
+    load-bearing (Codex review, 2026-08-13). The obvious key, (product_id,
+    reference_no), collapses two rogue rows on the same document into ONE alert
+    — whose message names a single id to delete. Put deletes that one, marks the
+    alert acknowledged, and the second orphan is still there, still double-
+    deducting, with nothing open to say so. Each orphan row IS the incident.
+
+    That does not contradict _dedupe_key's "identity, not diagnostics" rule: the
+    row id is this incident's identity, and it is stable precisely because
+    nothing deletes these rows — the immortality that makes them a bug is what
+    makes them a reliable key. Filename/batch stay in context.
+
+    Best-effort, like every caller here: never let a monitoring problem sink an
+    import that actually succeeded. Call it AFTER your connection is closed.
+    """
+    # Local import ON PURPOSE — do not hoist. bsn_sync imports wacc, and wacc
+    # imports this module (record_wacc_identity_alert), so a module-level
+    # import here closes the cycle and breaks `import models` outright.
+    from .bsn_sync import BSN_SYNC_EXACT_NOTES, BSN_SYNC_HISTORY_NOTE_PREFIX
+    ids = []
+    conn = get_connection()
+    try:
+        n_ph = ','.join('?' * len(BSN_SYNC_EXACT_NOTES))
+        # LEFT JOIN, not JOIN: an inner join would silently DROP an orphan
+        # sitting on a product_id with no products row. Zero such rows today,
+        # but a check that exists because nobody is looking must not have a
+        # path where it quietly returns less than it found.
+        rows = conn.execute(
+            f"""SELECT t.id, t.product_id, t.reference_no, t.quantity_change,
+                       t.note, COALESCE(p.product_name, '(ไม่พบสินค้า)') AS product_name,
+                       (SELECT COUNT(*) FROM transactions c
+                         WHERE c.product_id = t.product_id
+                           AND t.reference_no IS NOT NULL
+                           AND c.reference_no = t.reference_no
+                           AND c.note IN ({n_ph})) AS canonical_siblings
+                  FROM transactions t
+                  LEFT JOIN products p ON p.id = t.product_id
+                 WHERE (t.note LIKE 'BSN%' OR t.note LIKE 'ประวัติขาย%')
+                   AND t.note NOT IN ({n_ph})
+                   AND t.note NOT LIKE ?
+                 ORDER BY t.product_id, t.id""",
+            (*BSN_SYNC_EXACT_NOTES, *BSN_SYNC_EXACT_NOTES,
+             BSN_SYNC_HISTORY_NOTE_PREFIX + '%'),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    for r in rows:
+        doubled = r['canonical_siblings'] > 0
+        if doubled:
+            msg = (f"สต็อกถูกตัดซ้ำ: {r['product_name']} (#{r['product_id']}) "
+                   f"เอกสาร {r['reference_no']} มีรายการสต็อก 2 แถวสำหรับบิลใบเดียว "
+                   f"({r['quantity_change']:+g}) แถวหนึ่งเขียนใส่ไว้เองด้วยโน้ต "
+                   f"\"{r['note']}\" ซึ่งการนำเข้ารายสัปดาห์ลบไม่ได้ "
+                   f"ยอดคงเหลือจึงน้อยกว่าความจริง "
+                   f"แก้โดยลบแถวที่เขียนเอง (id {r['id']}) แล้วสต็อกจะกลับมาเอง")
+        else:
+            msg = (f"พบรายการสต็อกที่เขียนใส่ไว้เอง: {r['product_name']} "
+                   f"(#{r['product_id']}) เอกสาร {r['reference_no']} โน้ต "
+                   f"\"{r['note']}\" ระบบนำเข้าไม่รู้จักแถวนี้และลบไม่ได้ "
+                   f"ถ้าเอกสารใบนี้ถูกนำเข้าอีกครั้งจะกลายเป็นตัดสต็อกซ้ำ "
+                   f"ควรตรวจว่าควรลบทิ้ง (id {r['id']}) หรือไม่")
+        aid = create_system_alert(
+            KIND_ORPHAN_BSN_LEDGER, msg,
+            dedupe_key=_dedupe_key([r['id']]),
+            severity='error' if doubled else 'warning',
+            context={'transaction_id': r['id'], 'product_id': r['product_id'],
+                     'reference_no': r['reference_no'], 'note': r['note'],
+                     'quantity_change': r['quantity_change'],
+                     'canonical_siblings': r['canonical_siblings'],
+                     # The import that RAN the sweep, not necessarily the one
+                     # that caused the row — the scan is unscoped (see above).
+                     'found_during_file_type': file_type,
+                     'found_during_filename': filename})
         if aid:
             ids.append(aid)
     return ids
