@@ -16,6 +16,7 @@ from .wacc import (recalculate_product_wacc, preflight_batch,
                    WaccIdentityError)
 from .system_alerts import (record_wacc_identity_alert,
                             record_ignored_import_lines_alert,
+                            record_orphan_bsn_ledger_alerts,
                             create_system_alert)
 from .stock_filters import is_non_stock_code
 
@@ -416,6 +417,18 @@ def import_weekly(entries: list, file_type: str, filename: str,
                 ignored_rows, file_type=file_type, filename=filename)
         except Exception as _alert_exc:      # noqa: BLE001 - observability only
             print('[import] could not record ignored-lines alert: %s' % _alert_exc)
+
+    # Same ownership rule again. Pass 2's DELETE is exact-match by note, so a
+    # hand-written `BSN …` row survives it forever and silently doubles a
+    # deduction. Sweep the WHOLE ledger for those — deliberately not just this
+    # import's products; see record_orphan_bsn_ledger_alerts for why scoping it
+    # was both slower and less complete. Measured at 3.8ms, and the import is
+    # simply the most reliable thing that runs regularly.
+    # Best-effort, same stance as above.
+    try:
+        record_orphan_bsn_ledger_alerts(file_type=file_type, filename=filename)
+    except Exception as _alert_exc:          # noqa: BLE001 - observability only
+        print('[import] could not record orphan-ledger alert: %s' % _alert_exc)
 
     # Same ownership rule, same connection, one over: a non-stock code whose
     # mapping row still says is_ignored=1 (a restored pre-mig-155 backup is

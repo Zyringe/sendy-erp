@@ -40,6 +40,23 @@ _PACK_UNITS = frozenset(('แผง', 'แพ็ค'))
 # models/mapping.py imports it for the same rebuild.
 _BSN_LEDGER_NOTE_PATTERNS = ("BSN%", "ประวัติขาย%")
 
+# The notes _sync_bsn_to_stock actually writes — the EXACT set, plus the one
+# prefix whose tail is the product name. Everything else matching the patterns
+# above is a hand-written row that no sync will ever manage.
+#
+# Why that distinction is load-bearing: models/imports.py rebuilds a product's
+# ledger by deleting `note IN (this file_type's two notes)` — exact, and
+# correctly so, since a sales re-import must not wipe 'BSN ซื้อ' rows nothing
+# would re-post. The side effect is that any OTHER 'BSN…' note is immortal: it
+# survives every re-import while the real row beside it is deleted and
+# recreated, so one bill deducts twice, forever, and the ledger still sums to
+# stock_levels so no drift check can see it. Three such rows from a 2026-06-16
+# ad-hoc reconcile cost 5 แพ็ค of ถุงหิ้ว over two months.
+# Keep in step with the `note =` assignments in _sync_bsn_to_stock;
+# tests/test_orphan_bsn_ledger_alert.py pins the list.
+BSN_SYNC_EXACT_NOTES = ('BSN ขาย', 'BSN ขาย-คืน', 'BSN ซื้อ', 'BSN ซื้อ-คืน')
+BSN_SYNC_HISTORY_NOTE_PREFIX = 'ประวัติขาย (ไม่นับสต็อค):'
+
 
 def cross_unit_hazard(conn, product_id, bsn_unit):
     """None when (product, bsn_unit) may take a unit_conversions ratio.

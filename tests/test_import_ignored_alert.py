@@ -60,10 +60,19 @@ def seeded(tmp_db, patch_models_conn):
 
 
 def _alerts(db):
+    """Scoped to THIS file's alert kind, deliberately.
+
+    An import can now raise more than one kind of alert (the orphan-ledger
+    sweep is the third), so "count every open row" would make these tests fail
+    on unrelated, correct behaviour — and tmp_db clones the live DB, which
+    really does carry rows other kinds fire on. Kind-scoping is the pattern
+    already used in tests/test_slow_request_alert.py:47.
+    """
     c = sqlite3.connect(db)
     c.row_factory = sqlite3.Row
     rows = [dict(r) for r in c.execute(
-        "SELECT * FROM system_alerts WHERE resolved_at IS NULL ORDER BY id")]
+        "SELECT * FROM system_alerts WHERE resolved_at IS NULL"
+        " AND kind = 'import_ignored_lines' ORDER BY id")]
     c.close()
     return rows
 
