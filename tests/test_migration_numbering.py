@@ -107,9 +107,37 @@ def test_the_duplicate_allowlist_has_not_gone_stale():
         'remove them from KNOWN_DUPLICATE_NUMBERS')
 
 
+def test_every_migration_number_is_three_digit_padded():
+    """Padding is load-bearing, not cosmetic: the runner sorts by FILENAME
+    (`database.py::_list_migration_files` ends in `return sorted(files)`), so an
+    unpadded number executes out of numeric order and nobody is told.
+
+        sorted(['055_a', '155_b', '55_c', '9_d'])
+          -> 055_a, 155_b, 55_c, 9_d      # 55 and 9 run LAST
+
+    Enforcing the width also makes duplicate detection exact: with every number
+    the same width, '0155' cannot masquerade as a different number from '155'.
+    All 157 existing migrations already comply.
+    """
+    names = _forward_migrations()
+    assert len(names) > 100, 'control: the sweep actually read the directory'
+
+    bad = [n for n in names if not re.match(r'^\d{3}_', n)]
+
+    assert not bad, (
+        f'migration filenames must start with a 3-digit number: {bad}. '
+        'The runner sorts by filename, so a differently-padded number runs out '
+        'of numeric order.')
+
+
 def test_every_allowlist_entry_gives_a_reason():
-    """The reason is what makes an entry a decision rather than a shrug."""
-    assert KNOWN_DUPLICATE_NUMBERS, 'control: the allowlist is not empty'
+    """The reason is what makes an entry a decision rather than a shrug.
+
+    Deliberately NO "allowlist is non-empty" control here: an empty allowlist is
+    the desired end state (it means no number is duplicated any more), and an
+    empty loop has nothing to validate. Vacuity is guarded on the tests above,
+    which check real files.
+    """
     for number, reason in KNOWN_DUPLICATE_NUMBERS.items():
         assert isinstance(reason, str) and len(reason.strip()) >= 40, (
             f'allowlist entry {number} needs a real reason, got: {reason!r}')
