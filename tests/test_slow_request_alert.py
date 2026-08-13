@@ -210,6 +210,36 @@ def test_a_locked_db_makes_the_alert_give_up_fast_instead_of_stalling(empty_db):
         blocker.close()
 
 
+def test_the_timeout_constant_matches_the_real_gunicorn_timeout():
+    """`REQUEST_TIMEOUT_SECONDS` is QUOTED TO PUT in the alert text ("เพดานของ
+    เซิร์ฟเวอร์คือ 60 วินาที"), but the real limit lives in the Procfile /
+    railway.toml `--timeout`. Nothing else keeps the two in step, so changing
+    the deploy without this constant would make every alert state a number
+    that is not true — worse than no alert, because it is confidently wrong.
+
+    Same class of reason as tests/test_gunicorn_preload.py pinning --preload.
+    """
+    import re
+
+    repo = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    checked = 0
+    for name in ('Procfile', 'railway.toml'):
+        text = open(os.path.join(repo, name), encoding='utf-8').read()
+        # Ignore comments so a rationale note can't satisfy this by accident.
+        live = '\n'.join(l for l in text.splitlines() if not l.strip().startswith('#'))
+        m = re.search(r'--timeout\s+(\d+)', live)
+        assert m, f'{name}: no --timeout found in the gunicorn start command'
+        assert int(m.group(1)) == sa.REQUEST_TIMEOUT_SECONDS, (
+            f'{name} says --timeout {m.group(1)} but REQUEST_TIMEOUT_SECONDS is '
+            f'{sa.REQUEST_TIMEOUT_SECONDS}; the alert text would lie to Put')
+        checked += 1
+    assert checked == 2, 'both deploy files must be checked'
+
+    # The whole point is warning BEFORE the kill, so the order must hold.
+    assert 0 < sa.SLOW_REQUEST_WARN_SECONDS < sa.SLOW_REQUEST_CRITICAL_SECONDS \
+        < sa.REQUEST_TIMEOUT_SECONDS
+
+
 def test_recording_is_best_effort_and_never_raises(empty_db_conn, monkeypatch):
     """An alerting problem must never become the user's problem. Same stance as
     record_wacc_identity_alert."""
