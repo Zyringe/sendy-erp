@@ -169,3 +169,84 @@ def test_staff_cannot_access_naming(empty_db):
     r = c.get('/naming')
     assert r.status_code == 302
     assert '/login' not in r.headers.get('Location', '')   # blocked to dashboard, not logged out
+
+
+# ── สภาพ dropdown must be lossless ────────────────────────────────────────────
+#
+# The dropdown was built from CONDITION_SHORT alone — a closed 10-value list that
+# also generates the sku segment. Any condition outside it (34 rows on prod:
+# แบบหุล 19 · แบบมิล 8 · มียอด 7) could not be represented, so `set()` in
+# master_naming.html left the <select> blank, the save payload sent
+# `condition: null`, and _clean_updates wrote NULL — wiping the value AND dropping
+# the word from the rebuilt product_name in the same transaction.
+#
+# ⚠ Assert on the OPTION ELEMENT inside the ed-condition <select>, never a bare
+# substring: master_naming.html:138 already prints `p.condition` in the row's สภาพ
+# cell, so `'มียอด' in body` is true with the bug fully present.
+
+def _condition_select(body):
+    """The <select id="ed-condition"> block only, so a match elsewhere can't pass."""
+    start = body.index('id="ed-condition"')
+    return body[start:body.index('</select>', start)]
+
+
+def test_condition_dropdown_offers_values_already_in_the_db(manager_client, empty_db):
+    from inventory_app.sku_code_utils import CONDITION_SHORT
+    conn = sqlite3.connect(empty_db)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        "INSERT INTO products(product_name, condition, sku_code, is_active) "
+        "VALUES ('ทดสอบ สภาพนอกลิสต์', 'ทดสอบสภาพเฉพาะกิจ', 'ZZ-COND-TEST', 1)")
+    conn.commit()
+    conn.close()
+
+    c, _ = manager_client
+    select = _condition_select(c.get('/naming?tab=workbench').get_data(as_text=True))
+
+    # CONTROL first: without it, an empty <select> would satisfy the real assertion.
+    assert '<option value="ตำหนิ">' in select, "known condition missing — dropdown is empty"
+    assert len(CONDITION_SHORT) > 1
+
+    assert '<option value="ทดสอบสภาพเฉพาะกิจ">' in select, (
+        "a condition already stored in the DB cannot be selected — opening that product "
+        "in the editor and saving would silently null it")
+
+
+def test_condition_dropdown_has_no_duplicate_options(manager_client, empty_db):
+    """A value in BOTH CONDITION_SHORT and the DB must appear once, not twice."""
+    conn = sqlite3.connect(empty_db)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        "INSERT INTO products(product_name, condition, sku_code, is_active) "
+        "VALUES ('ทดสอบ ซ้ำ', 'ตำหนิ', 'ZZ-COND-DUP', 1)")
+    conn.commit()
+    conn.close()
+
+    c, _ = manager_client
+    select = _condition_select(c.get('/naming?tab=workbench').get_data(as_text=True))
+    assert select.count('<option value="ตำหนิ">') == 1
+
+
+def test_condition_dropdown_offers_stored_exp_dates(manager_client, empty_db):
+    """EXP:MM/YYYY is the case where the old bug also broke sku_code.
+
+    `_condition_segment` maps EXP dates to a real sku segment (EXP0727), unlike
+    แบบหุล/มียอด which map to "". So for the 10 EXP products on prod, an editor save
+    that nulled the condition regenerated the sku WITHOUT that segment —
+    `DSC-CUT-AS-S5048-14in-GRN-EXP0727` → `DSC-CUT-AS-S5048-14in-GRN`. sku_code is a
+    cross-system join key, and that exact SKU is a variant in a TikTok listing file.
+    """
+    conn = sqlite3.connect(empty_db)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        "INSERT INTO products(product_name, condition, sku_code, is_active) "
+        "VALUES ('ทดสอบ หมดอายุ', 'EXP:07/2027', 'ZZ-COND-EXP', 1)")
+    conn.commit()
+    conn.close()
+
+    c, _ = manager_client
+    select = _condition_select(c.get('/naming?tab=workbench').get_data(as_text=True))
+    assert '<option value="ตำหนิ">' in select                     # control
+    assert '<option value="EXP:07/2027">' in select, (
+        "an EXP condition cannot be re-selected — saving that product would drop the "
+        "EXP segment from its sku_code")
