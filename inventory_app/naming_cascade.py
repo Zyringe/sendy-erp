@@ -24,7 +24,7 @@ import sqlite3
 
 import db_backup
 import name_builder
-from sku_code_utils import PACKAGING_SHORT, regenerate_for_product
+from sku_code_utils import PACKAGING_SHORT
 
 KIND_COLOR = "color"
 KIND_BRAND = "brand"
@@ -264,12 +264,33 @@ def _clean_updates(fields):
 
 def save_product(db_path, pid, fields, *, backup_dir=None,
                  reason="master_naming_edit"):
-    """Update a product's structured naming columns, rebuild product_name, and
-    regenerate sku_code (unless sku_code_locked).
+    """Update a product's structured naming columns and rebuild product_name.
 
-    Returns {old_name, new_name, old_sku, new_sku, sku_locked_skipped}. Backs up
-    first, then BEGIN IMMEDIATE + invariant asserts → commit or rollback. Raises
-    ProductNotFound if `pid` doesn't exist.
+    ⚠ **sku_code is deliberately NOT regenerated here** (issue #383). It used to
+    be, lock-aware. The two fields are different kinds of thing:
+
+        product_name  derived display text — rebuilding it IS this function's job
+        sku_code      a stable EXTERNAL identity key, joining the ERP to
+                      photo-library folder names, reshoot batch.json, and the
+                      Seller SKU typed into TikTok
+
+    Because stored codes and the generator had drifted, saving an unrelated typo
+    silently moved that key for 14 products, 6 of them live TikTok SKUs — and
+    nothing errored, because a stale code does not fail, it just stops resolving
+    (`plan_all_batches.py` then drops the product as out-of-stock).
+
+    Warning-then-confirming could not fix it: this function COMMITs before its
+    caller can serialise a response, so any confirmation is after the fact.
+    Lock-by-default could not either — `/products/<id>/regen-sku-code` sets
+    `sku_code_locked = 0`, so one legitimate rename re-arms the hazard.
+
+    Moving a code is now only ever explicit: `/products/<id>/regen-sku-code`.
+    `apply()` above already took this position (it rolls back on "sku_code
+    changed"); this function was the inconsistent one.
+
+    Returns {old_name, new_name, sku_code}. Backs up first, then BEGIN IMMEDIATE
+    + invariant asserts → commit or rollback. Raises ProductNotFound if `pid`
+    doesn't exist.
     """
     if backup_dir is None:
         backup_dir = db_backup.default_backup_dir(db_path)
@@ -288,13 +309,12 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
         conn.execute("BEGIN IMMEDIATE")
 
         cur = conn.execute(
-            "SELECT product_name, sku_code, sku_code_locked FROM products WHERE id=?",
+            "SELECT product_name, sku_code FROM products WHERE id=?",
             (pid,)).fetchone()
         if cur is None:
             conn.execute("ROLLBACK")
             raise ProductNotFound(f"product {pid} not found")
-        old_name, old_sku, locked = (cur["product_name"], cur["sku_code"],
-                                     cur["sku_code_locked"])
+        old_name, old_sku = cur["product_name"], cur["sku_code"]
         before_active = _active_count(conn)
 
         if updates:
@@ -306,13 +326,15 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
         conn.execute("UPDATE products SET product_name=? WHERE id=?",
                      (new_name, pid))
 
-        if locked:
-            new_sku, sku_skipped = old_sku, True
-        else:
-            _, new_sku = regenerate_for_product(conn, pid)
-            sku_skipped = False
-
         problems = []
+        # Structural, not merely "we don't call the generator any more": if any
+        # future edit re-introduces a mutation path, the transaction rolls back
+        # instead of silently moving the key. Same stance, and the same phrasing,
+        # as apply()'s _sku_map check above.
+        after_sku = conn.execute("SELECT sku_code FROM products WHERE id=?",
+                                 (pid,)).fetchone()["sku_code"]
+        if after_sku != old_sku:
+            problems.append("sku_code changed")
         if not _sku_unique_ok(conn):
             problems.append("sku_code uniqueness broken")
         if _orphan_mappings(conn):
@@ -324,9 +346,7 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
             raise CascadeInvariantError("; ".join(problems))
 
         conn.execute("COMMIT")
-        return {"old_name": old_name, "new_name": new_name,
-                "old_sku": old_sku, "new_sku": new_sku,
-                "sku_locked_skipped": sku_skipped}
+        return {"old_name": old_name, "new_name": new_name, "sku_code": old_sku}
     except Exception:
         try:
             conn.execute("ROLLBACK")

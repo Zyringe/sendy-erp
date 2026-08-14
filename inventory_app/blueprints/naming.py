@@ -289,8 +289,13 @@ def product_preview_name():
 
 @bp_naming.route('/naming/product/<int:pid>/save', methods=['POST'])
 def product_save(pid):
-    """Apply edited structured columns to one product → rebuild name +
-    regenerate sku_code (lock-aware). Returns old/new name + sku."""
+    """Apply edited structured columns to one product → rebuild product_name.
+
+    Does NOT touch sku_code (issue #383): it is an external identity key, and a
+    naming save moving it silently broke the ERP↔photo-library↔TikTok join for
+    14 products. Renaming a code is an explicit act — /products/<id>/regen-sku-code.
+
+    Returns old/new name plus the (unchanged) sku_code."""
     fields = request.get_json(silent=True) or {}
     db_path = _db_path()
     try:

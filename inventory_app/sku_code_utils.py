@@ -152,6 +152,26 @@ def regenerate_for_product(conn, product_id: int) -> tuple:
     """Recompute sku_code for one product. Returns (old, new).
     Caller is responsible for COMMIT and for honoring sku_code_locked
     (this helper does NOT check the lock — invoke at higher level).
+
+    ⚠ **This function MUTATES** — it writes the new code. Read-only callers
+    (audits) must run it against a throwaway copy, and must visit each product
+    at most ONCE: a second visit reads back the value the first one wrote and
+    reports "clean". Both mistakes produced wrong counts while diagnosing #383.
+
+    ⚠ **`stored == regenerate_for_product(...)` is NOT an invariant of this
+    system, and an audit must not report a difference as drift-to-be-fixed**
+    (issue #383, 2026-08-14, decided with Codex). `sku_code` is an external
+    identity key — photo-library folder names, reshoot batch.json, the Seller
+    SKU typed into TikTok — so the stored value is the one every consumer
+    agrees on. 14 products currently differ from what this function would emit;
+    they are **accepted legacy codes**, deliberately left alone, because the
+    regenerated form has zero consumers and renaming to reach it would
+    re-create the 2026-08-10 incident (a rename downstream did not follow →
+    products silently read as out-of-stock for 4 days).
+
+    Moving a code is legitimate only as an explicit, downstream-aware act:
+    `/products/<id>/regen-sku-code`. `naming_cascade.save_product` deliberately
+    does not call this.
     """
     row = conn.execute("""
         SELECT p.id, p.sku_code, p.model, p.size, p.series,
