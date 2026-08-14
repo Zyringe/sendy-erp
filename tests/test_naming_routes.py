@@ -250,3 +250,79 @@ def test_condition_dropdown_offers_stored_exp_dates(manager_client, empty_db):
     assert '<option value="EXP:07/2027">' in select, (
         "an EXP condition cannot be re-selected — saving that product would drop the "
         "EXP segment from its sku_code")
+
+
+def _browser_payload_condition(select_html, stored):
+    """What master_naming.html would actually POST for a product whose condition is `stored`.
+
+    `set = (id, val) => el.value = val || ''` — assigning a <select> a value with no
+    matching <option> leaves it ''. The payload is then `condition: v(...) || null`.
+    So the posted value is the stored one ONLY IF the dropdown offers it.
+    """
+    return stored if '<option value="{}">'.format(stored) in select_html else None
+
+
+def test_off_list_condition_survives_the_round_trip_a_browser_would_make(manager_client, empty_db):
+    """The OUTCOME the dropdown fix exists for, across BOTH halves.
+
+    ⚠ The first version of this test posted `condition: 'มียอด'` as a literal and passed
+    with the fix removed — it proved the cascade preserves what it is given, which was
+    never in doubt. The destructive step is that the browser had nothing to give. So the
+    posted value is DERIVED from the rendered <select> here; narrowing the dropdown makes
+    this test post None and go red, which is the only version that pins the real bug.
+    """
+    conn = sqlite3.connect(empty_db)
+    conn.execute("PRAGMA foreign_keys=ON")
+    pid = conn.execute(
+        "INSERT INTO products(product_name, sub_category, condition, sku_code, is_active) "
+        "VALUES ('บานพับทดสอบมียอด', 'บานพับทดสอบ', 'มียอด', 'ZZ-SAVE-TEST', 1)"
+    ).lastrowid
+    conn.commit()
+    conn.close()
+
+    c, _ = manager_client
+    select = _condition_select(c.get('/naming?tab=workbench').get_data(as_text=True))
+    assert '<option value="ตำหนิ">' in select              # control: dropdown not empty
+
+    posted = _browser_payload_condition(select, 'มียอด')
+    assert posted == 'มียอด', "the editor cannot offer this product's own condition"
+
+    r = c.post('/naming/product/{}/save'.format(pid),
+               json={'sub_category': 'บานพับทดสอบ', 'condition': posted})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert r.get_json()['ok'] is True
+
+    conn = sqlite3.connect(empty_db)
+    cond, name = conn.execute(
+        "SELECT condition, product_name FROM products WHERE id=?", (pid,)).fetchone()
+    conn.close()
+    assert cond == 'มียอด', "save dropped the condition column"
+    assert 'มียอด' in name, "rebuilt product_name lost the word: {!r}".format(name)
+
+
+def test_a_null_condition_still_destroys_it(manager_client, empty_db):
+    """Control for the test above: the destructive path must still BE destructive.
+
+    If this ever stops wiping the value, the round-trip test is no longer proving
+    anything and both need re-deriving.
+    """
+    conn = sqlite3.connect(empty_db)
+    conn.execute("PRAGMA foreign_keys=ON")
+    pid = conn.execute(
+        "INSERT INTO products(product_name, sub_category, condition, sku_code, is_active) "
+        "VALUES ('บานพับทดสอบมียอดสอง', 'บานพับทดสอบ', 'มียอด', 'ZZ-SAVE-NULL', 1)"
+    ).lastrowid
+    conn.commit()
+    conn.close()
+
+    c, _ = manager_client
+    r = c.post('/naming/product/{}/save'.format(pid),
+               json={'sub_category': 'บานพับทดสอบ', 'condition': None})
+    assert r.status_code == 200
+
+    conn = sqlite3.connect(empty_db)
+    cond, name = conn.execute(
+        "SELECT condition, product_name FROM products WHERE id=?", (pid,)).fetchone()
+    conn.close()
+    assert cond is None
+    assert 'มียอด' not in name
