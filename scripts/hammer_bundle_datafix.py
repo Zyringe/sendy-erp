@@ -153,7 +153,14 @@ def _w1_state(conn, target):
     if row is None:
         raise CheckpointBaselineError(f"W1 pid {target['pid']}: product not found")
     current = {c: row[c] for c in cols}
-    if current == target["fields"] and row["product_name"] == target["new_name"]:
+    # sku_code must NEVER move (W1's single most important invariant) — so
+    # DONE checks it too, not just OLD: "renamed correctly, then some other
+    # process moved the sku" must refuse on a re-run, not read as "already
+    # applied". sku_code has one value across the whole OLD/DONE lifecycle
+    # (save_product never touches it), so DONE compares against the same
+    # old_sku_code the OLD branch below checks.
+    if (current == target["fields"] and row["product_name"] == target["new_name"]
+            and row["sku_code"] == target["old_sku_code"]):
         return "done", row
     old_expected = {c: target["old_fields"][c] for c in cols
                     if c in target["old_fields"]}
@@ -248,6 +255,26 @@ W2_TARGETS = [
 ]
 
 
+def _w2_ledger_replayed(conn, target):
+    """True iff product_cost_ledger PROVES the replay actually happened at
+    the target cost — an INITIAL row seeded at the target unit cost/WACC,
+    AND the ledger's own tail (the same ordering get_current_wacc uses)
+    also reads the target WACC. products.cost_price matching alone does not
+    prove this: the column could be right while the ledger backing it is
+    missing (never replayed) or stale (a partial/corrupted write)."""
+    initial = conn.execute(
+        "SELECT unit_cost, wacc_after FROM product_cost_ledger"
+        " WHERE product_id=? AND event_type='INITIAL'"
+        " ORDER BY id DESC LIMIT 1", (target["pid"],)).fetchone()
+    if (initial is None or initial["unit_cost"] != target["expected_cost_price"]
+            or initial["wacc_after"] != target["expected_cost_price"]):
+        return False
+    tail = conn.execute(
+        "SELECT wacc_after FROM product_cost_ledger WHERE product_id=?"
+        " ORDER BY event_date DESC, id DESC LIMIT 1", (target["pid"],)).fetchone()
+    return tail is not None and tail["wacc_after"] == target["expected_cost_price"]
+
+
 def _w2_state(conn, target):
     row = conn.execute(
         "SELECT opening_cost, cost_price FROM products WHERE id=?",
@@ -256,7 +283,14 @@ def _w2_state(conn, target):
         raise CheckpointBaselineError(f"W2 pid {target['pid']}: product not found")
     if (row["opening_cost"] == target["new_opening_cost"]
             and row["cost_price"] == target["expected_cost_price"]):
-        return "done", row
+        # Columns alone are not proof of a replay: require product_cost_ledger
+        # to back them up too, or a product whose columns happen to match
+        # while its ledger is missing/stale gets silently skipped on a
+        # re-run — and W4 then proceeds on a stale cost history. Refuse
+        # rather than silently re-replay; a human has to look.
+        if _w2_ledger_replayed(conn, target):
+            return "done", row
+        return "unknown", row
     # opening_cost matching alone is not enough for OLD: cost_price must also
     # match the documented old value, or a drifted cost_price (e.g. from an
     # unrelated WACC recompute since the plan was written) would be silently
@@ -396,10 +430,31 @@ def _w3_matches_target(rows, target):
             and pack["product_id"] == target["packaging_pid"] and pack["quantity"] == 1)
 
 
+def _w3_fresh_matches(row, inputs, target):
+    """The independent post-commit verification must prove the SAME complete
+    contract _w3_state's DONE gate checks — name, is_active, output_qty, and
+    the role/input shape — not a subset. A partial check here (e.g. skipping
+    `name`) would let a committed row with the right inputs but a wrong name
+    (drifted between the write and this re-read) pass as verified."""
+    return (row is not None and row["name"] == target["name"]
+            and row["is_active"] == 1 and row["output_qty"] == 1
+            and _w3_matches_target(inputs, target))
+
+
 def _w3_state(conn, target):
+    # Deliberately NOT filtered to `[แพ็ค]%` names: this checkpoint's
+    # documented OLD baseline (plan §3) is "no formula at all" for 268/269,
+    # and mig 158's unique index only covers `[แพ็ค]`-prefixed names — a
+    # generic active formula for the same output is not blocked by any DB
+    # constraint, and get_buildable sums both. So ANY active formula for
+    # this output — not just [แพ็ค]-prefixed ones — must refuse rather than
+    # let this checkpoint add a second recipe alongside it. This is scoped
+    # to the OUTPUT side only: 270/271/869 as INPUTS of some OTHER recipe
+    # are untouched and unrestricted (a loose hammer or a card may
+    # legitimately appear in other formulas).
     existing = conn.execute(
         "SELECT id, name, output_qty FROM conversion_formulas"
-        " WHERE output_product_id=? AND is_active=1 AND name LIKE '[แพ็ค]%'",
+        " WHERE output_product_id=? AND is_active=1",
         (target["output_pid"],)).fetchall()
     if not existing:
         return "old", None
@@ -527,9 +582,7 @@ def run_w3(db_path, backup_dir, reason):
                 "SELECT name, is_active, output_qty FROM conversion_formulas WHERE id=?",
                 (fid,)).fetchone()
             inputs = _w3_inputs(fresh, fid)
-            ok = (row is not None and row["is_active"] == 1 and row["output_qty"] == 1
-                  and _w3_matches_target(inputs, target))
-            if not ok:
+            if not _w3_fresh_matches(row, inputs, target):
                 raise CheckpointPostconditionError(
                     f"W3 formula {fid}: fresh re-read does not match the target "
                     f"shape")

@@ -258,6 +258,34 @@ def test_w1_refuses_when_columns_match_old_but_sku_code_does_not(hammer_db, tmp_
     assert after == before
 
 
+def test_w1_refuses_done_when_name_and_columns_match_but_sku_code_moved(hammer_db, tmp_path):
+    """DONE must check sku_code too, not just OLD: apply W1 for real, then
+    simulate some OTHER process moving 268's sku_code afterward (the exact
+    failure W1 exists to prevent — sku_code is the join key to photo
+    folders and live TikTok SKUs). A re-run must refuse, not read the
+    correct name + matching structured columns as 'already applied' and
+    silently skip past a moved sku_code."""
+    bdir = _backup_dir(tmp_path)
+    r1 = datafix.run_w1(hammer_db, bdir, "test")
+    assert {r["status"] for r in r1} == {"applied"}
+
+    conn = sqlite3.connect(hammer_db)
+    conn.execute("UPDATE products SET sku_code='HMR-DRIFTED-AFTER-RENAME' WHERE id=268")
+    conn.commit()
+    conn.close()
+
+    before = _snap(hammer_db)
+    with pytest.raises(datafix.CheckpointBaselineError):
+        datafix.run_w1(hammer_db, bdir, "test")
+    after = _snap(hammer_db)
+
+    # 268 still holds the drifted sku (not silently accepted, not "fixed"),
+    # and — because 268 is first in W1_TARGETS — 269/271 (already correctly
+    # applied) were never even re-examined for a write.
+    assert after["products"][268]["sku_code"] == 'HMR-DRIFTED-AFTER-RENAME'
+    assert after == before
+
+
 # ── W2 ───────────────────────────────────────────────────────────────────
 
 def test_w2_happy_path_sets_opening_cost_and_replays_wacc(hammer_db, tmp_path):
@@ -353,10 +381,18 @@ def test_w2_rolls_back_fully_on_failed_postcondition(hammer_db, tmp_path, monkey
 
 
 def test_w2_partial_resume_only_touches_the_unfinished_product(hammer_db, tmp_path):
-    """869 already applied by hand (e.g. a prior interrupted run); 268/269
-    still at baseline. A resume must apply only what is left."""
+    """869 already applied by hand (e.g. a prior interrupted run) — REALLY
+    applied: opening_cost written AND the ledger replayed via the real
+    recalculate_product_wacc, not just the columns hand-edited (a
+    columns-only edit is a DIFFERENT scenario, now correctly refused by the
+    DONE gate's ledger check — see
+    test_w2_refuses_done_when_columns_match_but_ledger_is_missing /
+    ..._is_stale below). 268/269 still at baseline. A resume must apply
+    only what is left."""
     conn = sqlite3.connect(hammer_db)
-    conn.execute("UPDATE products SET opening_cost=5.0, cost_price=5.0 WHERE id=869")
+    conn.row_factory = sqlite3.Row
+    conn.execute("UPDATE products SET opening_cost=5.0 WHERE id=869")
+    datafix.recalculate_product_wacc(869, conn=conn)
     conn.commit()
     conn.close()
 
@@ -365,6 +401,69 @@ def test_w2_partial_resume_only_touches_the_unfinished_product(hammer_db, tmp_pa
     assert by_pid[869]["status"] == "skipped (already applied)"
     assert by_pid[268]["status"] == "applied"
     assert by_pid[269]["status"] == "applied"
+
+
+def test_w2_refuses_done_when_columns_match_but_ledger_is_missing(hammer_db, tmp_path):
+    """BLOCKER fix: columns matching the target alone is not proof of a
+    replay. 268's opening_cost/cost_price are hand-set to the target NEW
+    values, but product_cost_ledger for 268 is still empty (hammer_db wipes
+    it) — the exact 'columns right, ledger missing' shape a re-run must
+    catch, not silently skip as done."""
+    conn = sqlite3.connect(hammer_db)
+    conn.execute("UPDATE products SET opening_cost=71.0, cost_price=71.0 WHERE id=268")
+    conn.commit()
+    conn.close()
+
+    before = _snap(hammer_db)
+    with pytest.raises(datafix.CheckpointBaselineError):
+        datafix.run_w2(hammer_db, _backup_dir(tmp_path), "test")
+    after = _snap(hammer_db)
+
+    assert after["products"][268]["opening_cost"] == 71.0
+    assert after["products"][268]["cost_price"] == 71.0
+    assert after == before
+
+    conn = sqlite3.connect(hammer_db)
+    ledger_count = conn.execute(
+        "SELECT COUNT(*) FROM product_cost_ledger WHERE product_id=268").fetchone()[0]
+    conn.close()
+    assert ledger_count == 0, "still no ledger — not silently created either"
+
+
+def test_w2_refuses_done_when_columns_match_but_ledger_is_stale(hammer_db, tmp_path):
+    """Same shape as above but the ledger is not EMPTY, it is WRONG: an
+    INITIAL row exists for 268 but at the OLD cost (76), not the target
+    (71) — e.g. a partial/corrupted write, or a ledger nobody ever
+    re-replayed after the columns were hand-fixed. Must refuse, not treat
+    a stale ledger as proof of a real replay."""
+    conn = sqlite3.connect(hammer_db)
+    conn.execute("UPDATE products SET opening_cost=71.0, cost_price=71.0 WHERE id=268")
+    conn.execute(
+        "INSERT INTO product_cost_ledger(product_id, event_type, event_date,"
+        " qty_change, unit_cost, stock_after, wacc_after, reference_no, note)"
+        " VALUES (268, 'INITIAL', '2026-03-03', 0, 76.0, 0, 76.0, NULL, 'stale')")
+    conn.commit()
+    conn.close()
+
+    before = _snap(hammer_db)
+    with pytest.raises(datafix.CheckpointBaselineError):
+        datafix.run_w2(hammer_db, _backup_dir(tmp_path), "test")
+    after = _snap(hammer_db)
+
+    assert after["products"][268]["opening_cost"] == 71.0
+    assert after["products"][268]["cost_price"] == 71.0
+    assert after == before
+
+    conn = sqlite3.connect(hammer_db)
+    conn.row_factory = sqlite3.Row
+    ledger = conn.execute(
+        "SELECT unit_cost, wacc_after FROM product_cost_ledger"
+        " WHERE product_id=268").fetchall()
+    conn.close()
+    # The stale row is untouched, not replaced/repaired by the refused run.
+    assert len(ledger) == 1
+    assert ledger[0]["unit_cost"] == 76.0
+    assert ledger[0]["wacc_after"] == 76.0
 
 
 # ── W2 prod-shaped: real transaction history, not the clean slate ─────────
@@ -609,6 +708,69 @@ def test_w3_refuses_on_conflicting_existing_formula(hammer_db, tmp_path):
     # 269's formula was never created either.
     assert len(after_count) == 1
     assert after_count == before_count
+
+
+def test_w3_refuses_when_a_generic_non_pack_formula_already_exists_for_output(hammer_db, tmp_path):
+    """mig 158's unique index only covers `[แพ็ค]`-prefixed names
+    (`ux_conv_active_pack_per_output ... WHERE ... name LIKE '[แพ็ค]%'`), so
+    nothing in the DB stops a GENERIC active formula from coexisting for the
+    same output, and get_buildable sums both. This checkpoint's documented
+    OLD baseline (plan §3) is 'no formula at all' for 268/269 — so ANY
+    active formula for the output, not just [แพ็ค]-prefixed ones, must
+    refuse rather than let this add a second recipe alongside it."""
+    conn = sqlite3.connect(hammer_db)
+    cur = conn.execute(
+        "INSERT INTO conversion_formulas(name, output_product_id, output_qty, is_active)"
+        " VALUES ('สูตรแปลงทั่วไป (ไม่ใช่แพ็ค)', 268, 1, 1)")
+    fid = cur.lastrowid
+    conn.execute(
+        "INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity, role)"
+        " VALUES (?, 270, 1, NULL)", (fid,))
+    conn.commit()
+    conn.close()
+
+    before = _snap(hammer_db)
+    with pytest.raises(datafix.CheckpointBaselineError):
+        datafix.run_w3(hammer_db, _backup_dir(tmp_path), "test")
+    after = _snap(hammer_db)
+
+    assert len(after["formulas"]) == 1
+    assert after["formulas"][0]["name"] == 'สูตรแปลงทั่วไป (ไม่ใช่แพ็ค)'
+    assert after == before
+
+
+def test_w3_state_old_when_output_has_no_active_formula_of_any_kind(hammer_db):
+    """Control for the test above: confirm `_w3_state` still classifies as
+    OLD (not unknown) when there is truly no active formula at all for the
+    output — otherwise the "any active formula refuses" fix could have
+    been written too broadly and always refuse."""
+    conn = sqlite3.connect(hammer_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        state, info = datafix._w3_state(conn, datafix.W3_TARGETS[0])
+    finally:
+        conn.close()
+    assert state == "old"
+    assert info is None
+
+
+def test_w3_fresh_matches_rejects_wrong_name():
+    """Pins the independent post-commit verification to the SAME complete
+    contract _w3_state's DONE gate checks — name, is_active, output_qty,
+    and input shape — not a subset. Direct unit test of the extracted
+    helper: run_w3's own INSERT always writes the correct name, so the
+    integration path cannot itself produce a mismatch between the write
+    and the fresh re-read; this pins the comparison logic directly."""
+    target = datafix.W3_TARGETS[0]
+    inputs = [
+        {"product_id": target["component_pid"], "quantity": 1, "role": "component"},
+        {"product_id": target["packaging_pid"], "quantity": 1, "role": "packaging"},
+    ]
+    right_row = {"name": target["name"], "is_active": 1, "output_qty": 1}
+    wrong_row = {"name": "ชื่อผิด ไม่ตรงเป้าหมาย", "is_active": 1, "output_qty": 1}
+
+    assert datafix._w3_fresh_matches(right_row, inputs, target) is True
+    assert datafix._w3_fresh_matches(wrong_row, inputs, target) is False
 
 
 def test_w3_refuses_when_existing_formula_has_correct_inputs_but_stale_name(hammer_db, tmp_path):
