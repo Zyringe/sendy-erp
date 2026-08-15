@@ -510,3 +510,52 @@ def test_main_full_run_is_idempotent(hammer_db, tmp_path):
     snap2 = _snap(hammer_db)
 
     assert snap1 == snap2
+
+
+# ── rehearse must refuse a real DB ───────────────────────────────────────────
+# Without this guard the two modes differ ONLY in whether --confirm is typed,
+# which makes `rehearse` an unguarded write path onto the real DB. Break-it-once:
+# neutering is_protected_db_path() turns both tests below red (rc 0, prod path
+# mutated) — verified before shipping.
+
+def test_rehearse_refuses_the_prod_path_and_opens_nothing(tmp_path, monkeypatch):
+    """The prod path is never even opened, so this asserts on a path that does
+    not exist: a run that got past the guard would fail loudly instead."""
+    ghost = str(tmp_path / "no-such-dir" / "inventory.db")
+    monkeypatch.setattr(datafix, "_PROTECTED_DB_PATHS", (ghost,))
+    rc = datafix.main(["--db-path", ghost, "--mode", "rehearse",
+                       "--backup-dir", _backup_dir(tmp_path)])
+    assert rc == 2
+    assert not os.path.exists(ghost), "guard let the run open/create the protected DB"
+
+
+def test_rehearse_refuses_a_protected_path_and_touches_nothing(hammer_db, tmp_path, monkeypatch):
+    """Control: the SAME db that rehearses fine above is refused once it is
+    listed as protected — so this pins the guard, not some unrelated failure."""
+    before = _snap(hammer_db)
+    monkeypatch.setattr(datafix, "_PROTECTED_DB_PATHS", (hammer_db,))
+    rc = datafix.main(["--db-path", hammer_db, "--mode", "rehearse",
+                       "--backup-dir", _backup_dir(tmp_path)])
+    assert rc == 2
+    assert _snap(hammer_db) == before
+
+
+def test_live_with_confirm_still_allowed_on_a_protected_path(hammer_db, tmp_path, monkeypatch):
+    """The guard must not lock out the intended prod flow: live + matching
+    --confirm still runs on a protected path."""
+    monkeypatch.setattr(datafix, "_PROTECTED_DB_PATHS", (hammer_db,))
+    rc = datafix.main(["--db-path", hammer_db, "--mode", "live",
+                       "--confirm", hammer_db,
+                       "--backup-dir", _backup_dir(tmp_path)])
+    assert rc == 0
+    conn = sqlite3.connect(hammer_db)
+    row = conn.execute("SELECT cost_price FROM products WHERE id=268").fetchone()
+    conn.close()
+    assert row[0] == 71.0
+
+
+def test_real_prod_path_is_protected_by_default():
+    """The shipped constant must actually cover the path this script will be
+    pointed at on prod — the test above monkeypatches, this one does not."""
+    assert datafix.is_protected_db_path("/data/inventory.db")
+    assert not datafix.is_protected_db_path("/tmp/rehearsal-snapshot.db")

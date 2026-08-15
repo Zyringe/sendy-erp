@@ -77,6 +77,25 @@ from models import conversion_roles  # noqa: E402
 from models.wacc import recalculate_product_wacc  # noqa: E402
 
 
+# Paths this script refuses to mutate in `rehearse` mode. Without this the two
+# modes differ only in whether --confirm is required, which makes `rehearse` an
+# UNGUARDED write path onto the real DB — the "a rehearse|live flag that only
+# changes printed output is a lie" trap in .claude/rules/verification-discipline.md.
+# `/data/inventory.db` is prod (the Railway volume); the second is the shared dev
+# DB other tabs run against. Rehearsals belong on a `.backup` snapshot.
+_PROTECTED_DB_PATHS = (
+    '/data/inventory.db',
+    os.path.expanduser('~/Sendai-Boonsawat/sendy_erp/inventory_app/instance/inventory.db'),
+)
+
+
+def is_protected_db_path(path):
+    """True when `path` resolves to a DB that `rehearse` must refuse."""
+    resolved = os.path.realpath(os.path.abspath(path))
+    return any(resolved == os.path.realpath(os.path.abspath(p))
+               for p in _PROTECTED_DB_PATHS)
+
+
 class CheckpointBaselineError(RuntimeError):
     """Current DB state matches neither the documented OLD baseline nor the
     already-applied NEW state — refuses to guess, changes nothing."""
@@ -516,6 +535,18 @@ def main(argv=None):
         print(
             "REFUSED: --mode live requires --confirm to repeat --db-path exactly.\n"
             f"  --db-path {args.db_path!r}\n  --confirm  {args.confirm!r}\n"
+            "Nothing was opened, nothing changed.", file=sys.stderr)
+        return 2
+
+    # Without this, `rehearse` and `live` would differ only in whether --confirm
+    # is typed — i.e. rehearse would be an unguarded write path onto the real DB.
+    # A rehearsal belongs on a snapshot; mutating the real thing is `live`, which
+    # costs the operator a deliberate second typing of the path.
+    if args.mode == "rehearse" and is_protected_db_path(args.db_path):
+        print(
+            "REFUSED: --mode rehearse will not touch a real database.\n"
+            f"  --db-path {args.db_path!r} resolves to a protected path.\n"
+            "Rehearse against a .backup snapshot, or use --mode live --confirm <path>.\n"
             "Nothing was opened, nothing changed.", file=sys.stderr)
         return 2
 
