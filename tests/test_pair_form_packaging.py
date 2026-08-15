@@ -199,6 +199,112 @@ def test_switching_plain_pair_to_bundle_does_not_violate_unique_index(empty_db_c
     assert len(fs) == 1
 
 
+# ── [แพ็ค] dedup must never silently re-point to a different component ─────
+# Codex review finding 2 (blocker on PR #388): dedup now matches on (output,
+# name LIKE '[แพ็ค]%') alone, so saving with a DIFFERENT loose product would
+# silently rewire an existing stock recipe onto a different SKU. Allowed
+# in-place updates are only: same component with a changed packaging/ratio/
+# note, plain<->bundle of the SAME component. A different component must
+# refuse — the operator has to delete/deactivate the existing formula first.
+
+OTHER_LOOSE, OTHER_CARD = 104, 105
+
+
+def _seed_second_loose_and_card(conn):
+    _seed_product(conn, OTHER_LOOSE, "other loose", "อัน")
+    _seed_product(conn, OTHER_CARD, "other card", "แผง")
+    conn.commit()
+
+
+def test_dedup_refuses_repoint_plain_pair_to_different_loose(empty_db_conn):
+    c = empty_db_conn
+    _seed_bundle_products(c)
+    _seed_second_loose_and_card(c)
+    models.upsert_pack_unpack_pair(PACK, LOOSE, 1, direction='pack', conn=c)
+    c.commit()
+    pack_fid = next(f['id'] for f in _active_formulas(c) if f['output_product_id'] == PACK)
+
+    with pytest.raises(ConversionRoleError):
+        models.upsert_pack_unpack_pair(PACK, OTHER_LOOSE, 1, direction='pack', conn=c)
+    c.rollback()
+
+    # nothing rewired — the existing formula still points at the ORIGINAL loose
+    assert _inputs(c, pack_fid) == {LOOSE: (1, None)}
+
+
+def test_dedup_refuses_repoint_bundle_to_different_loose(empty_db_conn):
+    c = empty_db_conn
+    _seed_bundle_products(c)
+    _seed_second_loose_and_card(c)
+    res = models.upsert_pack_unpack_pair(PACK, LOOSE, 1, direction='pack', conn=c, packaging_id=CARD)
+    c.commit()
+    pack_fid = res['formula_ids'][0]
+
+    with pytest.raises(ConversionRoleError):
+        models.upsert_pack_unpack_pair(PACK, OTHER_LOOSE, 1, direction='pack', conn=c, packaging_id=CARD)
+    c.rollback()
+
+    assert _inputs(c, pack_fid) == {LOOSE: (1, ROLE_COMPONENT), CARD: (1, ROLE_PACKAGING)}
+
+
+def test_dedup_allows_changing_packaging_same_component(empty_db_conn):
+    """The one legitimate in-place edit this guard must NOT block: same
+    component (LOOSE), only the packaging material changes."""
+    c = empty_db_conn
+    _seed_bundle_products(c)
+    _seed_second_loose_and_card(c)
+    res1 = models.upsert_pack_unpack_pair(PACK, LOOSE, 1, direction='pack', conn=c, packaging_id=CARD)
+    c.commit()
+    fid = res1['formula_ids'][0]
+
+    res2 = models.upsert_pack_unpack_pair(PACK, LOOSE, 1, direction='pack', conn=c, packaging_id=OTHER_CARD)
+    c.commit()
+    assert res2['created'] == 0 and res2['updated'] == 1
+    assert res2['formula_ids'] == [fid]
+    assert _inputs(c, fid) == {LOOSE: (1, ROLE_COMPONENT), OTHER_CARD: (1, ROLE_PACKAGING)}
+
+
+def test_dedup_allows_bundle_to_plain_same_component(empty_db_conn):
+    """The other legitimate in-place edit: dropping packaging_id (bundle ->
+    plain pair) on the SAME component must still be an update, not a refusal."""
+    c = empty_db_conn
+    _seed_bundle_products(c)
+    res1 = models.upsert_pack_unpack_pair(PACK, LOOSE, 1, direction='pack', conn=c, packaging_id=CARD)
+    c.commit()
+    fid = res1['formula_ids'][0]
+
+    res2 = models.upsert_pack_unpack_pair(PACK, LOOSE, 1, direction='pack', conn=c)
+    c.commit()
+    assert res2['created'] == 0 and res2['updated'] == 1
+    assert res2['formula_ids'] == [fid]
+    assert _inputs(c, fid) == {LOOSE: (1, None)}
+
+
+def test_route_rejects_repoint_to_different_loose_reshows_not_500(admin_client, tmp_db):
+    pack_pid, loose_pid, other_loose_pid = 900461, 900462, 900463
+    _seed_route_products(tmp_db, pack_pid, loose_pid, 900464)
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("INSERT INTO products (id, product_name, unit_type, is_active) VALUES (?,?,?,1)",
+                (other_loose_pid, f"ROTHERLOOSE{other_loose_pid}", "อัน"))
+    conn.commit()
+    conn.close()
+    import models as _m
+    res0 = _m.upsert_pack_unpack_pair(pack_pid, loose_pid, 1, 'pack')
+    fid_before = res0['formula_ids'][0]
+
+    resp = admin_client.post('/conversions/pair', data={
+        'pack_id': str(pack_pid), 'loose_id': str(other_loose_pid), 'packaging_id': '',
+        'ratio': '1', 'direction': 'pack',
+    }, follow_redirects=True)
+    assert resp.status_code == 200, resp.data[:500]            # reshow, never a 500
+
+    conn = sqlite3.connect(tmp_db)
+    roles = {r[0]: r[1] for r in conn.execute(
+        "SELECT product_id, role FROM conversion_formula_inputs WHERE formula_id=?", (fid_before,))}
+    conn.close()
+    assert roles == {loose_pid: None}                          # untouched — never rewired
+
+
 # ── cross_unit_hazard — bundle-aware ────────────────────────────────────────
 
 def test_cross_unit_hazard_bundle_pack_side_partner_is_component(empty_db_conn):

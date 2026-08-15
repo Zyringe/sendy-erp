@@ -161,7 +161,10 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
     violate that index the instant a second one is inserted — matching by
     output finds the existing [แพ็ค] (plain pair or bundle) and updates it
     in place instead, so switching a pair into a bundle (or back) is always
-    an UPDATE, never a duplicate INSERT.
+    an UPDATE, never a duplicate INSERT — but ONLY of the SAME component
+    (loose_id). A different loose_id than the existing [แพ็ค]'s component
+    raises ConversionRoleError rather than silently re-pointing an existing
+    stock recipe at a different SKU.
 
     Converting an existing plain pair into a bundle (packaging_id given) also
     auto-deactivates its reciprocal [แกะ], in the same transaction — a
@@ -213,10 +216,39 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
                 # At most one active [แพ็ค] per output (mig 158) — the existing
                 # one (plain pair OR bundle) is always the row to update.
                 row = conn.execute(
-                    "SELECT id FROM conversion_formulas"
+                    "SELECT id, name FROM conversion_formulas"
                     " WHERE output_product_id=? AND is_active=1 AND name LIKE '[แพ็ค]%'",
                     (spec['output_pid'],)).fetchone()
                 existing = row['id'] if row else None
+                # Dedup-by-output-alone (above) matches ANY active [แพ็ค] for
+                # this output, plain or bundle — it does not know whether the
+                # caller means to edit that SAME recipe or has pointed a
+                # DIFFERENT loose product at an output that already has one.
+                # Silently rewriting the component would rewire an existing
+                # stock recipe onto a different SKU. Allowed in-place edits:
+                # same component with a changed packaging/ratio/note, or
+                # switching plain<->bundle of that SAME component. Anything
+                # else refuses — raises BEFORE any write this call — never
+                # guess (same fail-closed stance as conversion_roles).
+                if existing is not None:
+                    existing_inputs = conn.execute(
+                        "SELECT product_id, quantity, role FROM conversion_formula_inputs"
+                        " WHERE formula_id=?", (existing,)).fetchall()
+                    if len(existing_inputs) == 1:
+                        existing_component = existing_inputs[0]['product_id']
+                    else:
+                        try:
+                            existing_component = component_product_id(
+                                row['name'], True, existing_inputs)
+                        except ConversionRoleError:
+                            existing_component = None   # malformed — can't tell, refuse below
+                    if existing_component != loose_id:
+                        existing_component_name, _u = _pinfo(existing_component) \
+                            if existing_component is not None else ('ไม่ทราบ (สูตรผิดรูปแบบ)', '')
+                        raise ConversionRoleError(
+                            f'สินค้าแพ็ค "{pack_name}" มีสูตร [แพ็ค] ที่ใช้ "{existing_component_name}" '
+                            f'เป็นวัสดุหลักอยู่แล้ว — เปลี่ยนเป็น "{_loose_name}" ผ่านฟอร์มนี้ไม่ได้ '
+                            f'ต้องลบหรือปิดใช้งานสูตรเดิมก่อน')
                 # Converting a plain pair into a bundle (packaging_id given)
                 # must not leave the OLD [แกะ] active and runnable — a
                 # blister card is destroyed on opening, so there is no real
