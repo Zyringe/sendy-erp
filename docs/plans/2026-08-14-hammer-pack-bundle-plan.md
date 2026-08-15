@@ -219,21 +219,54 @@ partial-success window**, because the post-commit recalc can still fail on somet
 Independent post-run verification is therefore mandatory, not optional.
 
 *Then Put, one submit at a time:*
-1. `/products/869` → adjust stock **+18**, note `การ์ดที่ใช้แพ็คย้อนหลัง (ไม่มีบิลซื้อ) — ต้นทุน ฿5 ตามที่เจ้าของกำหนด`
-2. `/conversions` → run the 268 formula ×**6**
-3. `/conversions` → run the 269 formula ×**12**
+
+**Step 0 — immediately before starting**, not "earlier today": re-run the WACC identity preflight for all
+five products. A preflight from hours ago is stale — imports and ledger writes happen in between.
+
+**Step 1 — card stock.** ⚠ The ปรับ flow on `/products/869` is **"set stock to N", not "add N"**
+(`models/transactions.py::set_stock_to` is absolute by design: a diff computed from an earlier read lands on
+N ± whatever moved, and prod runs two workers). So fresh-read 869's stock first:
+- reads **0** → set it to **18**, note `การ์ดที่ใช้แพ็คย้อนหลัง (ไม่มีบิลซื้อ) — ต้นทุน ฿5 ตามที่เจ้าของกำหนด`
+- reads **anything else** → **STOP** and reconcile whether that is real card stock or drift. Do not reuse the
+  number 18 from this document; it was derived when the stock read 0.
+
+**Step 2** — run the 268 formula ×**6**. **Step 3** — run the 269 formula ×**12**. Type a genuinely unique
+`reference_no` per run — `W4-HAMMER-268-<YYYYMMDD>-<random6>`, not just a date, since a date can repeat if a
+step is retried — so the ledger can be queried by that exact reference instead of by "the newest row".
+
+**Before anything**: record the exact before-state of all five SKUs (stock, `cost_price`, ledger tail, and
+`MAX(id)` of `conversion_cost_log`). Every after-state below is compared against **those measured values**,
+never against the numbers printed in this document.
 
 **Runbook — applies to every submit, whether the screen says success or error:**
 
-- **Stop after each submit.** Do not reload, do not retry, do not run the second formula yet.
-- Claude fresh-reads, on a new connection: `conversion_cost_log` (newest row), the `transactions` rows for
-  that `reference_no`, and `stock_levels` for all three products involved.
+- **Stop after each submit.** Do not reload, do not retry, do not start the next step.
+- **Before** each conversion run, fresh-read: the formula's id / name / output / input roles and quantities,
+  the input stocks, the input WACCs (expect 66 / 68 / 5), the target pack cost (71 / 73), and that no earlier
+  W4 run already used that reference.
+- **After** each submit, Claude fresh-reads on a new connection — and what to read differs by step:
+  - **Step 1 (ADJUST)** writes **no** `conversion_cost_log` row. Verify the `transactions` row (exact note and
+    delta) plus `stock_levels`, and assert no cost row appeared by comparing `COUNT(*)` / `MAX(id)` of
+    `conversion_cost_log` **against the before-value** — the table already holds historical rows, so "the
+    table has no rows" would be the wrong check and would pass vacuously.
+  - **Steps 2–3 (conversions)** verify `conversion_cost_log` **by the typed reference_no**, the `transactions`
+    rows carrying that reference, and `stock_levels` for all three products involved.
+- ⚠ **Those three are all committed BEFORE `recalculate_waccs_for_products` runs**, so all three can be
+  correct while the costing that follows them failed — which is the exact partial-success window this runbook
+  exists to catch. After steps 2–3 also verify, on the same fresh read:
+  - `product_cost_ledger` for the output has a `CONVERSION_IN` row carrying **that reference_no**;
+  - its `unit_cost` = 71 / 73, its `wacc_after` = 71 / 73 (frozen — stock is negative at that point), and its
+    `stock_after` matches the walk;
+  - `products.cost_price` for the output is still 71 / 73;
+  - the input products and the card still carry their expected WACC after the batch recalculation;
+  - **no open WACC system alert** was raised by this run (`system_alerts`).
+- **If the cost log and transactions exist but the ledger row for that reference does not**, do not call it a
+  failed run and do not re-submit: it is precisely **stock committed, costing failed**. Say so in those words,
+  stop the whole sequence, and repair the costing.
 - A run counts as **committed** if those rows exist — even if the browser showed an exception. In that case
   the correct next action is to repair costing, never to re-submit.
-- Only once the read confirms the expected before → after values does the next submit happen, and the
-  expected values for run 2 are computed from the **verified** state after run 1, not from this document.
-- If a run is committed but costing failed, stop the whole sequence and re-derive from the ledger before
-  touching anything else.
+- Only once the read confirms the expected before → after values does the next submit happen, and the expected
+  values for the next run come from the **verified** state after the previous one, not from this document.
 
 ⚠ An `ADJUST` is a non-purchase IN: it moves quantity and creates **no cost event**. The card's ฿5 comes
 entirely from the synthetic `INITIAL` seed in W2, so the audit trail reads "no purchase bill, cost held at ฿5
