@@ -119,18 +119,24 @@ W1_TARGETS = [
     dict(
         pid=268,
         old_fields={"series": None, "model": None},
+        old_name="ฆ้อนด้ามไฟเบอร์ Sendai (แผง)",
+        old_sku_code="HMR-HFBRV573-SD-PN",
         fields={"model": "#BSN01"},
         new_name="ฆ้อนด้ามไฟเบอร์ Sendai #BSN01 (แผง)",
     ),
     dict(
         pid=269,
         old_fields={"series": "ตารางกันลื่น", "model": None},
+        old_name="ฆ้อนด้ามไฟเบอร์ตารางกันลื่น Sendai (แผง)",
+        old_sku_code="HMR-HFBRGRID-SD-SD028-PN",
         fields={"model": "#BSN02", "series": "ตารางกันลื่น FN"},
         new_name="ฆ้อนด้ามไฟเบอร์ตารางกันลื่น FN Sendai #BSN02 (แผง)",
     ),
     dict(
         pid=271,
         old_fields={"series": "ตารางกันลื่น_FN"},
+        old_name="ฆ้อนด้ามไฟเบอร์ตารางกันลื่น FN Sendai #BSN02",  # unchanged text
+        old_sku_code="HMR-HFBR-SD-S6F4B-#BSN02",
         fields={"series": "ตารางกันลื่น FN"},
         new_name="ฆ้อนด้ามไฟเบอร์ตารางกันลื่น FN Sendai #BSN02",  # unchanged text
     ),
@@ -154,7 +160,13 @@ def _w1_state(conn, target):
     # old_fields may cover a subset of `fields`' columns (pid 271 only
     # documents `series` as OLD even though `fields` only sets `series`
     # too) — every documented column must match for an OLD classification.
-    if len(old_expected) == len(cols) and current == old_expected:
+    # product_name/sku_code must ALSO match the documented OLD baseline: the
+    # structured columns matching alone does not prove this is the exact
+    # untouched row the plan was written against (e.g. a stale product_name
+    # left by some other process). A mismatch here is UNKNOWN, not OLD.
+    if (len(old_expected) == len(cols) and current == old_expected
+            and row["product_name"] == target["old_name"]
+            and row["sku_code"] == target["old_sku_code"]):
         return "old", row
     return "unknown", row
 
@@ -227,9 +239,12 @@ def run_w1(db_path, backup_dir, reason):
 
 # ── W2 — cost basis (869 -> 5, 268 -> 71, 269 -> 73) ────────────────────────
 W2_TARGETS = [
-    dict(pid=869, old_opening_cost=0.0, new_opening_cost=5.0, expected_cost_price=5.0),
-    dict(pid=268, old_opening_cost=76.0, new_opening_cost=71.0, expected_cost_price=71.0),
-    dict(pid=269, old_opening_cost=0.0, new_opening_cost=73.0, expected_cost_price=73.0),
+    dict(pid=869, old_opening_cost=0.0, old_cost_price=0.0,
+        new_opening_cost=5.0, expected_cost_price=5.0),
+    dict(pid=268, old_opening_cost=76.0, old_cost_price=76.0,
+        new_opening_cost=71.0, expected_cost_price=71.0),
+    dict(pid=269, old_opening_cost=0.0, old_cost_price=0.0,
+        new_opening_cost=73.0, expected_cost_price=73.0),
 ]
 
 
@@ -242,7 +257,12 @@ def _w2_state(conn, target):
     if (row["opening_cost"] == target["new_opening_cost"]
             and row["cost_price"] == target["expected_cost_price"]):
         return "done", row
-    if row["opening_cost"] == target["old_opening_cost"]:
+    # opening_cost matching alone is not enough for OLD: cost_price must also
+    # match the documented old value, or a drifted cost_price (e.g. from an
+    # unrelated WACC recompute since the plan was written) would be silently
+    # carried through as though it were the untouched baseline.
+    if (row["opening_cost"] == target["old_opening_cost"]
+            and row["cost_price"] == target["old_cost_price"]):
         return "old", row
     return "unknown", row
 
@@ -378,12 +398,20 @@ def _w3_matches_target(rows, target):
 
 def _w3_state(conn, target):
     existing = conn.execute(
-        "SELECT id, name FROM conversion_formulas"
+        "SELECT id, name, output_qty FROM conversion_formulas"
         " WHERE output_product_id=? AND is_active=1 AND name LIKE '[แพ็ค]%'",
         (target["output_pid"],)).fetchall()
     if not existing:
         return "old", None
-    if len(existing) == 1 and _w3_matches_target(_w3_inputs(conn, existing[0]["id"]), target):
+    # "done" requires the COMPLETE target contract, not just the inputs: a
+    # formula with the right component/packaging shape but a stale `name`
+    # (e.g. built through the Phase 2 form before W1 renamed the product) or
+    # a wrong `output_qty` is NOT the documented target — it is UNKNOWN, and
+    # this refuses rather than silently treating a near-miss as done.
+    if (len(existing) == 1
+            and existing[0]["name"] == target["name"]
+            and existing[0]["output_qty"] == 1
+            and _w3_matches_target(_w3_inputs(conn, existing[0]["id"]), target)):
         return "done", existing[0]["id"]
     return "unknown", existing
 

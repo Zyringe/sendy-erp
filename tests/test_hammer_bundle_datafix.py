@@ -216,6 +216,48 @@ def test_w1_postcondition_gate_is_not_vacuous(hammer_db, tmp_path, monkeypatch):
         datafix.run_w1(hammer_db, _backup_dir(tmp_path), "test")
 
 
+def test_w1_refuses_when_columns_match_old_but_product_name_does_not(hammer_db, tmp_path):
+    """The structured columns (series/model) alone are not the full OLD
+    contract: 268's series/model already match the documented old_fields,
+    but product_name is a stale/drifted string neither the documented OLD
+    nor NEW name (e.g. left by some other process). Must refuse, not treat
+    this as the untouched baseline and rename it anyway."""
+    conn = sqlite3.connect(hammer_db)
+    conn.execute(
+        "UPDATE products SET product_name='ชื่อค้างเก่าที่ไม่ตรงเอกสาร' WHERE id=268")
+    conn.commit()
+    conn.close()
+
+    before = _snap(hammer_db)
+    with pytest.raises(datafix.CheckpointBaselineError):
+        datafix.run_w1(hammer_db, _backup_dir(tmp_path), "test")
+    after = _snap(hammer_db)
+
+    assert after["products"][268]["product_name"] == 'ชื่อค้างเก่าที่ไม่ตรงเอกสาร'
+    assert after == before
+
+
+def test_w1_refuses_when_columns_match_old_but_sku_code_does_not(hammer_db, tmp_path):
+    """Same shape as above, but for sku_code: columns and product_name both
+    match the documented OLD baseline for 268, but sku_code has drifted.
+    Must refuse rather than silently proceed on a partial match — a stale
+    sku_code here means this is NOT the exact row the plan was written
+    against, and save_product's own "sku_code moved" guard only fires
+    AFTER the rename already committed."""
+    conn = sqlite3.connect(hammer_db)
+    conn.execute("UPDATE products SET sku_code='HMR-DRIFTED-CODE' WHERE id=268")
+    conn.commit()
+    conn.close()
+
+    before = _snap(hammer_db)
+    with pytest.raises(datafix.CheckpointBaselineError):
+        datafix.run_w1(hammer_db, _backup_dir(tmp_path), "test")
+    after = _snap(hammer_db)
+
+    assert after["products"][268]["sku_code"] == 'HMR-DRIFTED-CODE'
+    assert after == before
+
+
 # ── W2 ───────────────────────────────────────────────────────────────────
 
 def test_w2_happy_path_sets_opening_cost_and_replays_wacc(hammer_db, tmp_path):
@@ -265,6 +307,27 @@ def test_w2_refuses_on_unknown_baseline_and_touches_nothing(hammer_db, tmp_path)
     assert after == before
 
 
+def test_w2_refuses_when_opening_cost_matches_old_but_cost_price_does_not(hammer_db, tmp_path):
+    """opening_cost matching the documented OLD value alone is not enough:
+    268's opening_cost is still 76.0 (OLD), but cost_price has drifted to
+    999.0 (e.g. an unrelated WACC recompute since the plan's baseline table
+    was written). Must refuse rather than silently overwrite a cost_price
+    that is no longer the documented starting point."""
+    conn = sqlite3.connect(hammer_db)
+    conn.execute("UPDATE products SET cost_price=999.0 WHERE id=268")
+    conn.commit()
+    conn.close()
+
+    before = _snap(hammer_db)
+    with pytest.raises(datafix.CheckpointBaselineError):
+        datafix.run_w2(hammer_db, _backup_dir(tmp_path), "test")
+    after = _snap(hammer_db)
+
+    assert after["products"][268]["opening_cost"] == 76.0
+    assert after["products"][268]["cost_price"] == 999.0
+    assert after == before
+
+
 def test_w2_rolls_back_fully_on_failed_postcondition(hammer_db, tmp_path, monkeypatch):
     """break-it-once: force recalculate_product_wacc to write a WRONG
     cost_price. The whole checkpoint (including the opening_cost UPDATE)
@@ -302,6 +365,169 @@ def test_w2_partial_resume_only_touches_the_unfinished_product(hammer_db, tmp_pa
     assert by_pid[869]["status"] == "skipped (already applied)"
     assert by_pid[268]["status"] == "applied"
     assert by_pid[269]["status"] == "applied"
+
+
+# ── W2 prod-shaped: real transaction history, not the clean slate ─────────
+# `hammer_db` deletes transactions/purchase_transactions/conversion_cost_log/
+# product_cost_ledger for 268/269/869 so the OTHER W2 tests above get a
+# deterministic INITIAL-only walk. That clean slate proves "no history +
+# opening_cost X ⇒ cost_price X" — it does NOT prove W2 survives the actual
+# reason it exists: on prod, 268 and 269 carry real sales that outrun a
+# later stock-in and drive the WACC walk negative, where
+# models/wacc.py::_recalculate_product_wacc's negative-stock branch FREEZES
+# WACC instead of blending in the new cost. Each test below seeds that shape
+# directly on top of the (already-cleaned) fixture and asserts the ledger
+# ROWS (event types + order), wacc_after, stock_after, and the final
+# products.cost_price SEPARATELY — cost_price alone could be right while the
+# ledger it came from is wrong.
+
+def test_w2_prod_shaped_268_negative_stock_freeze_survives_real_history(hammer_db, tmp_path):
+    """268: a -9 sale (unlogged — plain OUT rows never append a
+    product_cost_ledger entry) drives stock to -9 before a +3 conversion
+    arrives. -9 + 3 = -6. The conversion IS logged, and because stock is
+    negative when it lands, WACC must FREEZE at the seeded 71 rather than
+    blend in the conversion's own unit_cost of 80."""
+    conn = sqlite3.connect(hammer_db)
+    conn.execute(
+        "INSERT INTO transactions(product_id, txn_type, quantity_change, unit_mode,"
+        " reference_no, note, created_at) VALUES"
+        " (268,'OUT',-9,'unit','SO-268-A','BSN ขาย','2026-03-05 10:00:00')")
+    conn.execute(
+        "INSERT INTO transactions(product_id, txn_type, quantity_change, unit_mode,"
+        " reference_no, note, created_at) VALUES"
+        " (268,'IN',3,'unit','PACK-268-A','แปลง: PACK-268-A','2026-03-06 10:00:00')")
+    conn.execute(
+        "INSERT INTO conversion_cost_log(output_product_id, reference_no, event_date,"
+        " output_qty, total_input_cost, unit_cost) VALUES"
+        " (268,'PACK-268-A','2026-03-06',3,240.0,80.0)")
+    conn.commit()
+    conn.close()
+
+    results = datafix.run_w2(hammer_db, _backup_dir(tmp_path), "test")
+    by_pid = {r["pid"]: r for r in results}
+    assert by_pid[268]["status"] == "applied"
+    assert by_pid[268]["cost_price"] == 71.0
+
+    conn = sqlite3.connect(hammer_db)
+    conn.row_factory = sqlite3.Row
+    ledger = conn.execute(
+        "SELECT event_type, unit_cost, wacc_after, stock_after"
+        " FROM product_cost_ledger WHERE product_id=268 ORDER BY id").fetchall()
+    row = conn.execute(
+        "SELECT opening_cost, cost_price FROM products WHERE id=268").fetchone()
+    conn.close()
+
+    assert [r["event_type"] for r in ledger] == ["INITIAL", "CONVERSION_IN"]
+    assert ledger[0]["wacc_after"] == 71.0
+    assert ledger[1]["unit_cost"] == 80.0
+    # Frozen, not blended: 71 survives the negative-stock conversion untouched.
+    assert ledger[1]["wacc_after"] == 71.0
+    assert ledger[1]["stock_after"] == -6.0
+    assert row["opening_cost"] == 71.0
+    assert row["cost_price"] == 71.0
+
+
+def test_w2_prod_shaped_269_no_initial_before_seed_then_negative_stock_freeze(hammer_db, tmp_path):
+    """269's real prod shape is the sharper case: opening_cost is 0 (the
+    documented OLD baseline) so recalculating WACC on this exact history
+    BEFORE W2 produces NO INITIAL ledger row at all (`if cost_price > 0`
+    never passes) and a real 90-baht/unit conversion cost is thrown away —
+    WACC stuck at 0 forever. That is the concrete failure W2's seed exists
+    to prevent. -15 sale then +3 conversion = -12."""
+    conn = sqlite3.connect(hammer_db)
+    conn.row_factory = sqlite3.Row  # recalculate_product_wacc needs Row access
+    conn.execute(
+        "INSERT INTO transactions(product_id, txn_type, quantity_change, unit_mode,"
+        " reference_no, note, created_at) VALUES"
+        " (269,'OUT',-15,'unit','SO-269-A','BSN ขาย','2026-03-05 09:00:00')")
+    conn.execute(
+        "INSERT INTO transactions(product_id, txn_type, quantity_change, unit_mode,"
+        " reference_no, note, created_at) VALUES"
+        " (269,'IN',3,'unit','PACK-269-A','แปลง: PACK-269-A','2026-03-06 09:00:00')")
+    conn.execute(
+        "INSERT INTO conversion_cost_log(output_product_id, reference_no, event_date,"
+        " output_qty, total_input_cost, unit_cost) VALUES"
+        " (269,'PACK-269-A','2026-03-06',3,270.0,90.0)")
+    conn.commit()
+
+    # BEFORE the fix (opening_cost still 0, the documented OLD baseline):
+    # confirm the "no INITIAL at all" / frozen-at-0 shape is real, on THIS
+    # seeded history, before relying on it as the premise for the "after"
+    # assertions below.
+    datafix.recalculate_product_wacc(269, conn=conn)
+    conn.commit()
+    before_ledger = conn.execute(
+        "SELECT event_type, wacc_after FROM product_cost_ledger"
+        " WHERE product_id=269 ORDER BY id").fetchall()
+    conn.close()
+    assert [r[0] for r in before_ledger] == ["CONVERSION_IN"]  # no INITIAL row
+    assert before_ledger[0][1] == 0.0  # frozen at 0, the 90 cost never absorbed
+
+    results = datafix.run_w2(hammer_db, _backup_dir(tmp_path), "test")
+    by_pid = {r["pid"]: r for r in results}
+    assert by_pid[269]["status"] == "applied"
+    assert by_pid[269]["cost_price"] == 73.0
+
+    conn = sqlite3.connect(hammer_db)
+    conn.row_factory = sqlite3.Row
+    ledger = conn.execute(
+        "SELECT event_type, unit_cost, wacc_after, stock_after"
+        " FROM product_cost_ledger WHERE product_id=269 ORDER BY id").fetchall()
+    row = conn.execute(
+        "SELECT opening_cost, cost_price FROM products WHERE id=269").fetchone()
+    conn.close()
+
+    assert [r["event_type"] for r in ledger] == ["INITIAL", "CONVERSION_IN"]
+    assert ledger[0]["wacc_after"] == 73.0
+    assert ledger[1]["unit_cost"] == 90.0
+    # Frozen at the seeded 73, not blended with the conversion's 90.
+    assert ledger[1]["wacc_after"] == 73.0
+    assert ledger[1]["stock_after"] == -12.0
+    assert row["opening_cost"] == 73.0
+    assert row["cost_price"] == 73.0
+
+
+def test_w2_prod_shaped_869_real_purchase_history_not_just_clean_slate(hammer_db, tmp_path):
+    """869 (the packaging product) has no negative-stock hazard on prod, but
+    the seed still needs to work correctly ALONGSIDE a real purchase instead
+    of only on an empty ledger: a 20-unit purchase at net 100 (5/unit,
+    matching the seeded opening_cost) fully sold back out."""
+    conn = sqlite3.connect(hammer_db)
+    conn.execute(
+        "INSERT INTO purchase_transactions(date_iso, doc_no, product_id, qty, net)"
+        " VALUES ('2026-03-05','PO-869-A',869,20,100.0)")
+    conn.execute(
+        "INSERT INTO transactions(product_id, txn_type, quantity_change, unit_mode,"
+        " reference_no, note, created_at) VALUES"
+        " (869,'IN',20,'unit','PO-869-A','BSN ซื้อ','2026-03-05 08:00:00')")
+    conn.execute(
+        "INSERT INTO transactions(product_id, txn_type, quantity_change, unit_mode,"
+        " reference_no, note, created_at) VALUES"
+        " (869,'OUT',-20,'unit','SO-869-A','BSN ขาย','2026-03-07 08:00:00')")
+    conn.commit()
+    conn.close()
+
+    results = datafix.run_w2(hammer_db, _backup_dir(tmp_path), "test")
+    by_pid = {r["pid"]: r for r in results}
+    assert by_pid[869]["status"] == "applied"
+    assert by_pid[869]["cost_price"] == 5.0
+
+    conn = sqlite3.connect(hammer_db)
+    conn.row_factory = sqlite3.Row
+    ledger = conn.execute(
+        "SELECT event_type, unit_cost, wacc_after, stock_after"
+        " FROM product_cost_ledger WHERE product_id=869 ORDER BY id").fetchall()
+    row = conn.execute(
+        "SELECT opening_cost, cost_price FROM products WHERE id=869").fetchone()
+    conn.close()
+
+    assert [r["event_type"] for r in ledger] == ["INITIAL", "PURCHASE"]
+    assert ledger[0]["wacc_after"] == 5.0
+    assert ledger[1]["unit_cost"] == 5.0
+    assert ledger[1]["wacc_after"] == 5.0
+    assert ledger[1]["stock_after"] == 20.0
+    assert row["opening_cost"] == 5.0
+    assert row["cost_price"] == 5.0
 
 
 # ── W3 ───────────────────────────────────────────────────────────────────
@@ -383,6 +609,68 @@ def test_w3_refuses_on_conflicting_existing_formula(hammer_db, tmp_path):
     # 269's formula was never created either.
     assert len(after_count) == 1
     assert after_count == before_count
+
+
+def test_w3_refuses_when_existing_formula_has_correct_inputs_but_stale_name(hammer_db, tmp_path):
+    """A [แพ็ค] formula for 268 with EXACTLY the right component/packaging
+    shape (270 qty1 component, 869 qty1 packaging) but a NAME that still
+    references the pre-W1 product name — e.g. built through the Phase 2 form
+    before W1 renamed the product. Inputs matching alone must NOT read as
+    "done": the name is part of the documented target contract, and a
+    formula whose name references the old product name is exactly the
+    silent-leftover this gate exists to catch."""
+    conn = sqlite3.connect(hammer_db)
+    cur = conn.execute(
+        "INSERT INTO conversion_formulas(name, output_product_id, output_qty, is_active)"
+        " VALUES (?, 268, 1, 1)",
+        ("[แพ็ค] ฆ้อนด้ามไฟเบอร์ Sendai (แผง) ⟵ 1 อัน + แผงฆ้อนหงอน",))  # missing #BSN01
+    fid = cur.lastrowid
+    conn.execute(
+        "INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity, role)"
+        " VALUES (?, 270, 1, 'component')", (fid,))
+    conn.execute(
+        "INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity, role)"
+        " VALUES (?, 869, 1, 'packaging')", (fid,))
+    conn.commit()
+    conn.close()
+
+    before = _snap(hammer_db)
+    with pytest.raises(datafix.CheckpointBaselineError):
+        datafix.run_w3(hammer_db, _backup_dir(tmp_path), "test")
+    after = _snap(hammer_db)
+
+    # Not silently "fixed" or renamed, not skipped as done, not touched at all.
+    assert after == before
+    assert len(after["formulas"]) == 1
+    assert after["formulas"][0]["name"] == "[แพ็ค] ฆ้อนด้ามไฟเบอร์ Sendai (แผง) ⟵ 1 อัน + แผงฆ้อนหงอน"
+
+
+def test_w3_refuses_when_existing_formula_has_correct_inputs_but_wrong_output_qty(hammer_db, tmp_path):
+    """Same shape as above but for output_qty: name and inputs are exactly
+    the target, output_qty is 2 instead of 1. Must refuse, not skip."""
+    conn = sqlite3.connect(hammer_db)
+    cur = conn.execute(
+        "INSERT INTO conversion_formulas(name, output_product_id, output_qty, is_active)"
+        " VALUES (?, 268, 2, 1)",
+        ("[แพ็ค] ฆ้อนด้ามไฟเบอร์ Sendai #BSN01 (แผง) ⟵ 1 อัน + แผงฆ้อนหงอน",))
+    fid = cur.lastrowid
+    conn.execute(
+        "INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity, role)"
+        " VALUES (?, 270, 1, 'component')", (fid,))
+    conn.execute(
+        "INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity, role)"
+        " VALUES (?, 869, 1, 'packaging')", (fid,))
+    conn.commit()
+    conn.close()
+
+    before = _snap(hammer_db)
+    with pytest.raises(datafix.CheckpointBaselineError):
+        datafix.run_w3(hammer_db, _backup_dir(tmp_path), "test")
+    after = _snap(hammer_db)
+
+    assert after == before
+    assert len(after["formulas"]) == 1
+    assert after["formulas"][0]["output_qty"] == 2
 
 
 def test_w3_rolls_back_fully_on_failed_postcondition(hammer_db, tmp_path, monkeypatch):
