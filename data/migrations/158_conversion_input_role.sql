@@ -52,7 +52,12 @@ CREATE UNIQUE INDEX ux_conv_active_pack_per_output
     ON conversion_formulas(output_product_id)
     WHERE is_active = 1 AND name LIKE '[แพ็ค]%';
 
-INSERT OR IGNORE INTO applied_migrations (filename, applied_by)
-VALUES ('158_conversion_input_role.sql', 'auto');
+-- NOTE: this file does NOT stamp its own applied_migrations row. The runner
+-- (database.py::run_pending_migrations) inserts it with `sha256` and
+-- `duration_ms`; a self-INSERT here wins the filename PRIMARY KEY and makes
+-- the runner's `INSERT OR IGNORE` a no-op, so the row lands with sha256 NULL
+-- and applied_by 'auto' (measured on a dev-DB snapshot rehearsal, 2026-08-15).
+-- 18 of the last 19 migrations leave it to the runner; only 157 self-stamps.
+-- The rollback still DELETEs the row — that half matches 155/156/157.
 
 COMMIT;
