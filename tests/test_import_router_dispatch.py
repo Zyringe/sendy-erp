@@ -43,10 +43,29 @@ def test_payments_in_routes_to_models_import_payments(monkeypatch):
     import import_router, models
     seen = {}
     monkeypatch.setattr(models, "import_payments",
-                        lambda p: seen.update(path=p) or {"imported": 5})
+                        lambda p, apply_removals=False:
+                            seen.update(path=p, apply_removals=apply_removals)
+                            or {"imported": 5})
     out = import_router.commit_file(PATH, "payments_in")
     assert seen["path"] == PATH
     assert out["ok"] is True and out["type"] == "payments_in"
+
+
+def test_payments_in_removals_default_off_and_opt_in_is_threaded(monkeypatch):
+    """Stale-link removal is destructive, so it rides the SAME per-file opt-in
+    the weekly importer uses — a filtered export must never remove links just
+    because it was uploaded."""
+    import import_router, models
+    seen = {}
+    monkeypatch.setattr(models, "import_payments",
+                        lambda p, apply_removals=False:
+                            seen.update(apply_removals=apply_removals) or {"imported": 0})
+
+    import_router.commit_file(PATH, "payments_in")
+    assert seen["apply_removals"] is False, 'removals must be OFF by default'
+
+    import_router.commit_file(PATH, "payments_in", apply_removals=True)
+    assert seen["apply_removals"] is True, "the operator's opt-in never reached the importer"
 
 
 def test_credit_notes_ar_routes_to_import_credit_notes(monkeypatch):

@@ -131,15 +131,20 @@ def commit_file(path, report_type, filename=None, db_path=None,
     propagate so the caller can isolate per-file. Importers are reused as-is —
     sales/payments_in go to their canonical homes, never the express twins.
 
-    apply_removals defaults to **False** (sales/purchase only): a รหัสสินค้า- or
-    พนักงานขาย-FILTERED Express export yields partial invoices whose filtered-out
-    lines look deleted, and reversing them mass-deletes real stock. The operator
-    opts in per-file on the preview page by confirming the file is a complete
-    weekly export.
+    apply_removals defaults to **False** (sales/purchase AND payments_in): a
+    รหัสสินค้า- or พนักงานขาย-FILTERED Express export yields partial invoices whose
+    filtered-out lines look deleted, and reversing them mass-deletes real stock
+    (for payments_in: real receipt→invoice links). The operator opts in per-file
+    on the preview page by confirming the file is a complete weekly export.
     """
     if report_type == "payments_in":
         import models
-        return {"type": report_type, "ok": True, "summary": models.import_payments(path)}
+        # Same opt-in as sales/purchase: a receipt's iv_list is only the
+        # AUTHORITATIVE complete allocation set when the operator confirms the
+        # export is unfiltered, so stale-link removal rides the same checkbox.
+        return {"type": report_type, "ok": True,
+                "summary": models.import_payments(path,
+                                                  apply_removals=apply_removals)}
 
     if report_type == "credit_notes_ar":
         from import_credit_notes import import_credit_notes as _icn

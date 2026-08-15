@@ -149,3 +149,64 @@ def test_b2a_count_invariant_holds(payment_file, tmp_db_conn):
         assert result["imported"] + result["updated"] + result["skipped"] == result["total"], (
             f"Count invariant violated: {result}"
         )
+
+
+# ── Finding 2: a corrected re-export replaces the allocation set ─────────────
+
+# Same three receipts, but RE6990001 now settles only IV6990001 (the operator
+# reallocated IV6990002 elsewhere in Express and re-exported).
+PAYMENT_LINES_V2 = [
+    l for l in PAYMENT_LINES
+    if 'IV6990002' not in l
+]
+
+
+@pytest.fixture
+def payment_file_v2(tmp_path):
+    p = tmp_path / "b2a_regression_v2.csv"
+    p.write_text("\n".join(PAYMENT_LINES_V2) + "\n", encoding="cp874")
+    return str(p)
+
+
+def test_reexport_drops_the_stale_invoice_link(payment_file, payment_file_v2, tmp_db_conn):
+    conn = tmp_db_conn
+    # Force the pre-state — tmp_db clones the live dev DB, never inherit it.
+    conn.execute("DELETE FROM paid_invoices WHERE re_id IN "
+                 "(SELECT id FROM received_payments WHERE re_no LIKE 'RE6990%')")
+    conn.execute("DELETE FROM received_payments WHERE re_no LIKE 'RE6990%'")
+    conn.commit()
+
+    models.import_payments(payment_file, apply_removals=True)
+    assert conn.execute(
+        """SELECT COUNT(*) FROM paid_invoices pi JOIN received_payments rp ON rp.id=pi.re_id
+            WHERE rp.re_no='RE6990001'""").fetchone()[0] == 2
+
+    r2 = models.import_payments(payment_file_v2, apply_removals=True)
+    assert r2['skipped'] == 0, r2
+    assert r2['removed_links'] == 1, r2
+
+    docs = [r[0] for r in conn.execute(
+        """SELECT pi.doc_no FROM paid_invoices pi JOIN received_payments rp ON rp.id=pi.re_id
+            WHERE rp.re_no='RE6990001' ORDER BY pi.doc_no""").fetchall()]
+    assert docs == ['IV6990001'], 'stale IV6990002 link survived the corrected export'
+    # the other receipts are untouched by RE6990001's replacement
+    assert conn.execute(
+        """SELECT COUNT(*) FROM paid_invoices pi JOIN received_payments rp ON rp.id=pi.re_id
+            WHERE rp.re_no IN ('RE6990002','RE6990003')""").fetchone()[0] == 3
+
+
+def test_reexport_without_opt_in_keeps_the_stale_link(payment_file, payment_file_v2, tmp_db_conn):
+    """Control: the file-level default is still additive."""
+    conn = tmp_db_conn
+    conn.execute("DELETE FROM paid_invoices WHERE re_id IN "
+                 "(SELECT id FROM received_payments WHERE re_no LIKE 'RE6990%')")
+    conn.execute("DELETE FROM received_payments WHERE re_no LIKE 'RE6990%'")
+    conn.commit()
+
+    models.import_payments(payment_file)
+    models.import_payments(payment_file_v2)
+
+    docs = [r[0] for r in conn.execute(
+        """SELECT pi.doc_no FROM paid_invoices pi JOIN received_payments rp ON rp.id=pi.re_id
+            WHERE rp.re_no='RE6990001' ORDER BY pi.doc_no""").fetchall()]
+    assert docs == ['IV6990001', 'IV6990002']
