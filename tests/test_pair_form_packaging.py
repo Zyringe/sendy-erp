@@ -199,16 +199,67 @@ def test_cross_unit_hazard_bundle_loose_side_partner_is_pack(empty_db_conn):
     assert hz['partner_id'] == PACK
 
 
+def test_cross_unit_hazard_bundle_reverse_row_order_still_finds_component(empty_db_conn):
+    """Row order must never carry meaning here either (same proof as
+    test_bundle_input_rows_reverse_order_still_derives_same_component, but
+    for cross_unit_hazard's OWN partner lookup — upsert_pack_unpack_pair
+    always inserts loose-before-packaging, so that helper alone cannot
+    prove this direction is order-independent). Build the formula by hand
+    with the packaging row inserted FIRST, both directions."""
+    c = empty_db_conn
+    _seed_bundle_products(c)
+    fid = c.execute(
+        "INSERT INTO conversion_formulas(name, output_product_id, output_qty) VALUES (?,?,?)",
+        ("[แพ็ค] hammer pack ⟵ 1 อัน + blister card", PACK, 1)).lastrowid
+    c.execute("INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity, role) VALUES (?,?,?,?)",
+              (fid, CARD, 1, ROLE_PACKAGING))                # packaging inserted FIRST
+    c.execute("INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity, role) VALUES (?,?,?,?)",
+              (fid, LOOSE, 1, ROLE_COMPONENT))
+    c.commit()
+
+    hz_pack = models.cross_unit_hazard(c, PACK, 'อัน')
+    assert hz_pack is not None and hz_pack['kind'] == 'pair' and hz_pack['partner_id'] == LOOSE
+
+    hz_loose = models.cross_unit_hazard(c, LOOSE, 'แผง')
+    assert hz_loose is not None and hz_loose['kind'] == 'pair' and hz_loose['partner_id'] == PACK
+
+
 def test_cross_unit_hazard_packaging_side_never_reports_pair(empty_db_conn):
     """The card plays 'packaging', not 'component' — it must never itself
     resolve to a 'pair' hazard via this bundle (that relationship belongs to
-    PACK <-> LOOSE only)."""
+    PACK <-> LOOSE only). With CARD's own unit_type ('แผง') matching the
+    bundle's OUTPUT unit, a naive 'any multi-input membership counts'
+    implementation would report a false 'pair' with partner=PACK the moment
+    CARD is checked in any OTHER unit — this is the shape that actually
+    distinguishes role-aware from role-blind (querying CARD in its own unit
+    'แผง' would short-circuit on the same-unit check before reaching this
+    logic at all, so it proves nothing)."""
     c = empty_db_conn
     _seed_bundle_products(c)
     models.upsert_pack_unpack_pair(PACK, LOOSE, 1, direction='pack', conn=c, packaging_id=CARD)
     c.commit()
     hz = models.cross_unit_hazard(c, CARD, 'อัน')
     assert hz is None or hz['kind'] != 'pair'
+
+
+def test_cross_unit_hazard_packaging_side_no_false_pair_even_when_units_align(empty_db_conn):
+    """The distinguishing case for the direction-2 role check: CARD2's own
+    unit ('ชิ้น') differs from the bundle output's unit ('แผง'), so the
+    same-unit short-circuit does NOT apply — and PACK2 (the wrongly-guessed
+    partner under a role-blind 'any multi-input membership' bug) DOES share
+    its unit with the queried bsn_unit. A role-blind implementation reports
+    a false 'pair' here; the role-aware one must not, because CARD2 plays
+    'packaging', not 'component'."""
+    c = empty_db_conn
+    pack2, loose2, card2 = 111, 112, 113
+    _seed_product(c, pack2, "pack2", "แผง")
+    _seed_product(c, loose2, "loose2", "อัน")
+    _seed_product(c, card2, "card2", "ชิ้น")
+    c.commit()
+    models.upsert_pack_unpack_pair(pack2, loose2, 1, direction='pack', conn=c, packaging_id=card2)
+    c.commit()
+    hz = models.cross_unit_hazard(c, card2, 'แผง')             # PACK2's own unit — the trap
+    assert hz is None
 
 
 def test_cross_unit_hazard_fails_closed_on_roleless_multi_input(empty_db_conn):
