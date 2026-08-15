@@ -362,11 +362,20 @@ def test_route_rejects_packaging_same_as_pack_reshows_not_500(admin_client, tmp_
 def test_route_switch_existing_pair_to_bundle_no_500_no_duplicate(admin_client, tmp_db):
     """The exact failure this task exists to prevent at the web boundary: an
     operator adding a packaging component to an output that already has an
-    active [แพ็ค] must not hit a raw IntegrityError / 500."""
+    active [แพ็ค] must not hit a raw IntegrityError / 500.
+
+    302 + 'count still 1' is NOT enough evidence on its own — a route that
+    silently did nothing (bailed at some guard, swallowed an exception) would
+    ALSO redirect 302 and leave count at 1, since a plain-pair formula for
+    pack_pid already exists before the POST (see 'A 302 from a Sendy route is
+    not evidence the write happened', erp-engineering-discipline.md). The
+    positive signal that could only come from the update actually running is
+    the ROLE assignment on the formula's inputs."""
     pack_pid, loose_pid, card_pid = 900421, 900422, 900423
     _seed_route_products(tmp_db, pack_pid, loose_pid, card_pid)
     import models as _m
-    _m.upsert_pack_unpack_pair(pack_pid, loose_pid, 1, 'pack')
+    res0 = _m.upsert_pack_unpack_pair(pack_pid, loose_pid, 1, 'pack')
+    fid_before = res0['formula_ids'][0]
 
     resp = admin_client.post('/conversions/pair', data={
         'pack_id': str(pack_pid), 'loose_id': str(loose_pid), 'packaging_id': str(card_pid),
@@ -375,11 +384,18 @@ def test_route_switch_existing_pair_to_bundle_no_500_no_duplicate(admin_client, 
     assert resp.status_code == 302, resp.data[:500]
 
     conn = sqlite3.connect(tmp_db)
-    n = conn.execute(
-        "SELECT COUNT(*) FROM conversion_formulas WHERE output_product_id=? AND is_active=1", (pack_pid,)
-    ).fetchone()[0]
+    rows = conn.execute(
+        "SELECT id FROM conversion_formulas WHERE output_product_id=? AND is_active=1", (pack_pid,)
+    ).fetchall()
+    assert len(rows) == 1
+    fid_after = rows[0][0]
+    assert fid_after == fid_before                            # same formula, updated in place
+    roles = {r[0]: r[1] for r in conn.execute(
+        "SELECT product_id, role FROM conversion_formula_inputs WHERE formula_id=?", (fid_after,))}
     conn.close()
-    assert n == 1
+    # ONLY true if the bundle write actually ran — the pre-existing plain pair
+    # had a single role=NULL input, not this role-tagged pair.
+    assert roles == {loose_pid: ROLE_COMPONENT, card_pid: ROLE_PACKAGING}
 
 
 def test_route_edit_prefills_packaging_field(admin_client, tmp_db):
