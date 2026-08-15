@@ -7,6 +7,7 @@ route rules are unchanged, only their endpoint names gain an `inventory.`
 prefix.
 """
 import math
+import sqlite3
 from datetime import date, datetime
 from uuid import uuid4
 
@@ -188,7 +189,7 @@ def conversion_history():
     return render_template('conversions/history.html', runs=runs)
 
 
-def _pair_prefill(pack_id, loose_id, ratio, direction, note):
+def _pair_prefill(pack_id, loose_id, ratio, direction, note, packaging_id=None):
     """Build a pair_form prefill dict from raw submitted strings, so a validation
     error re-shows the form without losing the user's input."""
     def _name(pid):
@@ -202,7 +203,9 @@ def _pair_prefill(pack_id, loose_id, ratio, direction, note):
         return r['product_name'] if r else ''
     return {'pack_id': pack_id, 'loose_id': loose_id,
             'pack_name': _name(pack_id), 'loose_name': _name(loose_id),
-            'ratio': ratio, 'direction': direction or 'both', 'note': note, 'editing': False}
+            'ratio': ratio, 'direction': direction or 'both', 'note': note,
+            'packaging_id': packaging_id, 'packaging_name': _name(packaging_id),
+            'editing': False}
 
 
 @bp_inventory.route('/conversions/pair', methods=['GET', 'POST'])
@@ -210,24 +213,34 @@ def conversion_pair():
     """Pack↔loose pairing — the single place to create OR edit a conversion
     formula (the advanced builder was removed; see docs/adr/0001). Idempotent via
     models.upsert_pack_unpack_pair, so re-saving an existing pair edits it.
-    GET ?from_formula=<id> reopens that pair prefilled (the list's แก้ไข button)."""
+    GET ?from_formula=<id> reopens that pair prefilled (the list's แก้ไข button).
+
+    The optional วัสดุแพ็ค (packaging_id) field adds a second, role='packaging'
+    input to the [แพ็ค] formula (mig 158) and forces pack-only — a blister
+    card cannot be recovered by opening the pack, so [แกะ] is never authored
+    for a bundle."""
     if not session.get('role'):
         abort(403)
     if request.method == 'POST':
-        pack_id   = request.form.get('pack_id', '').strip()
-        loose_id  = request.form.get('loose_id', '').strip()
-        ratio     = request.form.get('ratio', '').strip()
-        direction = request.form.get('direction', 'both').strip()
-        note      = request.form.get('note', '').strip()
+        pack_id      = request.form.get('pack_id', '').strip()
+        loose_id     = request.form.get('loose_id', '').strip()
+        ratio        = request.form.get('ratio', '').strip()
+        direction    = request.form.get('direction', 'both').strip()
+        note         = request.form.get('note', '').strip()
+        packaging_id = request.form.get('packaging_id', '').strip()
 
         def _reshow():
             return render_template('conversions/pair_form.html',
-                                   prefill=_pair_prefill(pack_id, loose_id, ratio, direction, note))
+                                   prefill=_pair_prefill(pack_id, loose_id, ratio, direction, note,
+                                                          packaging_id))
         if not pack_id or not loose_id or not ratio:
             flash('กรุณาเลือกสินค้าแพ็ค สินค้าตัวหลวม และจำนวนตัวต่อแพ็ค', 'danger')
             return _reshow()
         if pack_id == loose_id:
             flash('สินค้าแพ็คและตัวหลวมต้องไม่ใช่ตัวเดียวกัน', 'danger')
+            return _reshow()
+        if packaging_id and packaging_id in (pack_id, loose_id):
+            flash('วัสดุแพ็คต้องไม่ใช่สินค้าแพ็คหรือสินค้าตัวหลวม', 'danger')
             return _reshow()
         try:
             ratio_i = int(ratio)
@@ -238,7 +251,15 @@ def conversion_pair():
             return _reshow()
         if direction not in ('both', 'pack', 'unpack'):
             direction = 'both'
-        res = models.upsert_pack_unpack_pair(int(pack_id), int(loose_id), ratio_i, direction, note)
+        packaging_id_i = int(packaging_id) if packaging_id else None
+        if packaging_id_i is not None:
+            direction = 'pack'                   # server-side backstop for the JS lock
+        try:
+            res = models.upsert_pack_unpack_pair(int(pack_id), int(loose_id), ratio_i, direction, note,
+                                                  packaging_id=packaging_id_i)
+        except (models.ConversionRoleError, sqlite3.IntegrityError) as e:
+            flash(f'บันทึกไม่สำเร็จ: {e}', 'danger')
+            return _reshow()
         flash(f'บันทึกคู่แพ็ค-ตัวหลวมแล้ว (สร้าง {res["created"]} · อัปเดต {res["updated"]} สูตร)', 'success')
         return redirect(url_for('inventory.conversion_list'))
 

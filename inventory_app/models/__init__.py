@@ -138,6 +138,7 @@ from .conversions import (
     upsert_pack_unpack_pair, delete_conversion_formula, find_pair_partner,
     derive_pair_from_formula, get_recent_conversion_runs, run_conversion,
 )
+from .conversion_roles import ConversionRoleError
 from .ecommerce_overview import (
     get_marketplace_freshness, get_marketplace_overview, get_unmapped_counts,
     get_unmapped_rows, get_product_marketplace_detail,

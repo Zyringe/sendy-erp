@@ -12,6 +12,7 @@ import bsn_units
 
 from .stock_filters import is_non_stock_code, non_stock_clause
 from .wacc import recalculate_product_wacc
+from .conversion_roles import component_product_id
 
 # หน้าร้าน customer codes whose synced sales ALSO decrement platform_skus.stock
 # (see _sync_bsn_to_stock below). ONE definition, imported — ecommerce_overview
@@ -76,31 +77,44 @@ def cross_unit_hazard(conn, product_id, bsn_unit):
         return None
 
     # Pair check, both directions: product as the OUTPUT of a pack/unpack
-    # half (partner = its single input) and product as the (single) INPUT
-    # of a pack/unpack half (partner = that half's output).
+    # half (partner = its single input, or — for a multi-input [แพ็ค]
+    # bundle — the role='component' input; never the role='packaging' one)
+    # and product as an INPUT of a pack/unpack half playing the component
+    # role (partner = that half's output). A role-less or ambiguous
+    # multi-input [แพ็ค] fails closed via component_product_id — never guess
+    # a partner by row position.
     partner_ids = set()
     for f in conn.execute("""
-        SELECT id FROM conversion_formulas
+        SELECT id, name FROM conversion_formulas
          WHERE is_active = 1 AND output_product_id = ?
            AND (name LIKE '[แพ็ค]%' OR name LIKE '[แกะ]%')
     """, (product_id,)).fetchall():
         ins = conn.execute(
-            "SELECT product_id FROM conversion_formula_inputs WHERE formula_id = ?",
+            "SELECT product_id, quantity, role FROM conversion_formula_inputs WHERE formula_id = ?",
             (f['id'],)).fetchall()
         if len(ins) == 1:
             partner_ids.add(ins[0]['product_id'])
+        elif f['name'].startswith('[แพ็ค]'):
+            partner_ids.add(component_product_id(f['name'], True, ins))
+        # a multi-input [แกะ] never happens (no [แกะ] bundle is ever
+        # created) — left unmatched rather than guessed, as before.
     for f in conn.execute("""
-        SELECT cf.id, cf.output_product_id
+        SELECT cf.id, cf.name, cf.output_product_id
           FROM conversion_formulas cf
           JOIN conversion_formula_inputs cfi ON cfi.formula_id = cf.id
          WHERE cf.is_active = 1 AND cfi.product_id = ?
            AND (cf.name LIKE '[แพ็ค]%' OR cf.name LIKE '[แกะ]%')
     """, (product_id,)).fetchall():
         ins = conn.execute(
-            "SELECT product_id FROM conversion_formula_inputs WHERE formula_id = ?",
+            "SELECT product_id, quantity, role FROM conversion_formula_inputs WHERE formula_id = ?",
             (f['id'],)).fetchall()
         if len(ins) == 1:
             partner_ids.add(f['output_product_id'])
+        elif f['name'].startswith('[แพ็ค]'):
+            # product_id is one of >1 inputs — only the component row is the
+            # pack/loose partner; the packaging row is not.
+            if component_product_id(f['name'], True, ins) == product_id:
+                partner_ids.add(f['output_product_id'])
 
     for pid in sorted(partner_ids):
         partner = conn.execute(
