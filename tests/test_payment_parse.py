@@ -932,6 +932,9 @@ def test_failed_record_rolls_back_the_deleted_children(tmp_db_conn):
     assert result['skipped'] == 1, result
     assert _links(tmp_db_conn, _REPLACE_RE) == [('IV-DROP', 200.0), ('IV-KEEP', 100.0)], \
         'the savepoint did not restore the deleted children'
+    assert result['removed_links'] == 0, \
+        'reported removals the savepoint rolled back — the count must only ' \
+        'accrue after RELEASE, or the operator is told links vanished that did not'
     hdr = tmp_db_conn.execute(
         "SELECT date_iso, total FROM received_payments WHERE re_no=?", (_REPLACE_RE,)
     ).fetchone()

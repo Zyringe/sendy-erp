@@ -298,7 +298,27 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60):
     sales_stats = models.import_weekly(sales_entries, "sales", label)
     purchase_stats = models.import_weekly(purchase_entries, "purchase", label)
     refs_upserted = _upsert_invoice_refs(refs, db_path)
-    payments_in_stats = models.import_payment_records(payments_in_records)
+    # The daily DBF read IS the authoritative complete allocation set: `cutoff`
+    # filters RECEIPTS, never lines within one, so every receipt it includes
+    # carries all of its ARRCPIT lines. That makes this the one payments_in
+    # path that can replace stale links without an operator preview — and it
+    # has no preview to offer, so it is also the only path that can keep Sendy
+    # in step with Express on its own.
+    #
+    # EXCEPT a receipt that lost a line to an unmapped RECTYP: its iv_list is
+    # PARTIAL, and replacing from a partial set deletes a real link. Those
+    # receipts import additively, exactly as before. Real data carries one such
+    # line (RE0041138 / DR0000003 / RECTYP='4' / ฿600).
+    _tainted = {s.get('re_no') for s in payments_in_skipped}
+    _complete = [r for r in payments_in_records if r['re_no'] not in _tainted]
+    _partial = [r for r in payments_in_records if r['re_no'] in _tainted]
+    payments_in_stats = models.import_payment_records(_complete, apply_removals=True)
+    if _partial:
+        _extra = models.import_payment_records(_partial)
+        for _k in ('imported', 'updated', 'skipped', 'merged', 'removed_links', 'total'):
+            payments_in_stats[_k] = payments_in_stats.get(_k, 0) + _extra.get(_k, 0)
+        payments_in_stats['errors'] = (
+            payments_in_stats['errors'] + _extra['errors'])[:5]
     # Never silent: a skipped DR-type ARRCPIT line (or any future unsupported
     # RECTYP) always surfaces here, count and detail, even when the list is
     # empty — so the route's JSON response has a stable shape either way.

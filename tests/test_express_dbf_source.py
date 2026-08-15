@@ -937,3 +937,109 @@ def test_commit_express_dbf_surfaces_skipped_dr_line_in_payments_in(empty_db, mo
     assert result['payments_in']['skipped_rectyp'] == [
         {'re_no': 'RE0041138', 'doc': 'DR0000003', 'rectyp': '4', 'amount': 600.0}
     ]
+
+
+# ── Finding 2 follow-up: the DAILY DBF path is the authoritative complete set ──
+#
+# commit_express_dbf() reads every ARRCPIT line for each receipt it includes —
+# `cutoff` filters RECEIPTS, never lines within one — so each record's iv_list
+# IS the complete allocation set and stale links must be removed there. It is
+# also the only payments_in path with no operator preview, which is exactly why
+# it must not need one.
+
+def _commit_with(monkeypatch, empty_db, arrcpit, artrn=None):
+    import sys
+    _scripts = os.path.join(_REPO, "scripts")
+    if _scripts not in sys.path:
+        sys.path.insert(0, _scripts)
+    import express_dbf_source as eds
+    import import_router
+    c = _conn(empty_db)
+    have = c.execute("SELECT 1 FROM companies WHERE code='BSN'").fetchone()
+    c.close()
+    if not have:                      # these tests commit twice; seed once
+        _seed_company(empty_db, 'BSN')
+    fake = {
+        'ARTRN': artrn if artrn is not None else [_artrn_re('RE-DBF-1', cuscod='C001')],
+        'APTRN': [], 'STCRD': [], 'ARMAS': [{'CUSCOD': 'C001', 'CUSNAM': 'ลูกค้า DBF'}],
+        'APMAS': [], 'ARTRNRM': [], 'ARRCPIT': arrcpit, 'APRCPIT': [],
+    }
+    monkeypatch.setattr(eds, 'open_table', lambda dataset_dir, name: fake[name])
+    return import_router.commit_express_dbf('/fake/dataset', since_days=None)
+
+
+def _pi_links(db, re_no):
+    c = _conn(db)
+    rows = [(r['doc_no'], r['amount']) for r in c.execute(
+        """SELECT pi.doc_no, pi.amount FROM paid_invoices pi
+             JOIN received_payments rp ON rp.id = pi.re_id
+            WHERE rp.re_no = ? ORDER BY pi.doc_no""", (re_no,))]
+    c.close()
+    return rows
+
+
+def test_commit_express_dbf_removes_stale_receipt_links(empty_db, monkeypatch):
+    """v1 settles IV-A and IV-B; the next daily run settles only IV-A."""
+    v1 = [_arrcpit('RE-DBF-1', 'IV-DBF-A', '3', 100.0),
+          _arrcpit('RE-DBF-1', 'IV-DBF-B', '3', 200.0)]
+    _commit_with(monkeypatch, empty_db, v1)
+    assert _pi_links(empty_db, 'RE-DBF-1') == [('IV-DBF-A', 100.0), ('IV-DBF-B', 200.0)]
+
+    result = _commit_with(monkeypatch, empty_db,
+                          [_arrcpit('RE-DBF-1', 'IV-DBF-A', '3', 100.0)])
+
+    assert _pi_links(empty_db, 'RE-DBF-1') == [('IV-DBF-A', 100.0)], \
+        'the daily DBF path left a stale receipt link behind'
+    assert result['payments_in']['removed_links'] == 1, result['payments_in']
+
+
+def test_commit_express_dbf_reports_zero_removals_on_an_unchanged_replay(empty_db, monkeypatch):
+    """Control: the daily run is idempotent, so removal must not churn."""
+    lines = [_arrcpit('RE-DBF-1', 'IV-DBF-A', '3', 100.0),
+             _arrcpit('RE-DBF-1', 'IV-DBF-B', '3', 200.0)]
+    _commit_with(monkeypatch, empty_db, lines)
+    result = _commit_with(monkeypatch, empty_db, lines)
+
+    assert result['payments_in']['removed_links'] == 0
+    assert _pi_links(empty_db, 'RE-DBF-1') == [('IV-DBF-A', 100.0), ('IV-DBF-B', 200.0)]
+
+
+def test_commit_express_dbf_keeps_links_when_a_line_was_skipped(empty_db, monkeypatch):
+    """A receipt carrying an unmapped RECTYP has a PARTIAL iv_list (the skipped
+    line never reaches it), so its set is not authoritative and removal must be
+    withheld for that receipt only. Real data has exactly one such line:
+    RE0041138 / DR0000003 / RECTYP='4' / ฿600."""
+    _commit_with(monkeypatch, empty_db,
+                 [_arrcpit('RE-DBF-1', 'IV-DBF-A', '3', 100.0),
+                  _arrcpit('RE-DBF-1', 'IV-DBF-B', '3', 200.0)])
+    assert len(_pi_links(empty_db, 'RE-DBF-1')) == 2          # control
+
+    result = _commit_with(monkeypatch, empty_db,
+                          [_arrcpit('RE-DBF-1', 'IV-DBF-A', '3', 100.0),
+                           _arrcpit('RE-DBF-1', 'DR-DBF-X', '4', 600.0)])
+
+    assert _pi_links(empty_db, 'RE-DBF-1') == [('IV-DBF-A', 100.0), ('IV-DBF-B', 200.0)], \
+        'a partial iv_list (skipped RECTYP) was treated as authoritative'
+    assert result['payments_in']['removed_links'] == 0
+    assert [s['doc'] for s in result['payments_in']['skipped_rectyp']] == ['DR-DBF-X']
+
+
+def test_commit_express_dbf_still_removes_on_untainted_receipts(empty_db, monkeypatch):
+    """Control for the guard above: one tainted receipt must not switch removal
+    off for the others in the same run."""
+    artrn = [_artrn_re('RE-DBF-1', cuscod='C001'), _artrn_re('RE-DBF-2', cuscod='C001')]
+    _commit_with(monkeypatch, empty_db,
+                 [_arrcpit('RE-DBF-1', 'IV-DBF-A', '3', 100.0),
+                  _arrcpit('RE-DBF-1', 'IV-DBF-B', '3', 200.0),
+                  _arrcpit('RE-DBF-2', 'IV-DBF-C', '3', 300.0),
+                  _arrcpit('RE-DBF-2', 'IV-DBF-D', '3', 400.0)], artrn=artrn)
+
+    result = _commit_with(monkeypatch, empty_db,
+                          [_arrcpit('RE-DBF-1', 'IV-DBF-A', '3', 100.0),
+                           _arrcpit('RE-DBF-1', 'DR-DBF-X', '4', 600.0),
+                           _arrcpit('RE-DBF-2', 'IV-DBF-C', '3', 300.0)], artrn=artrn)
+
+    assert _pi_links(empty_db, 'RE-DBF-1') == [('IV-DBF-A', 100.0), ('IV-DBF-B', 200.0)]
+    assert _pi_links(empty_db, 'RE-DBF-2') == [('IV-DBF-C', 300.0)], \
+        'a tainted receipt suppressed removal on an untainted one'
+    assert result['payments_in']['removed_links'] == 1

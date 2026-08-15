@@ -223,6 +223,7 @@ def import_payment_records(records, apply_removals=False):
 
     for i, r in enumerate(records):
         sp = f"sp_re_{i}"
+        record_removed = 0
         try:
             conn.execute(f"SAVEPOINT {sp}")
 
@@ -279,7 +280,12 @@ def import_payment_records(records, apply_removals=False):
                     )
                 if incoming_doc_nos:
                     placeholders = ','.join('?' for _ in incoming_doc_nos)
-                    removed_links += conn.execute(
+                    # Counted into a per-record local, NOT the running total:
+                    # anything after this can still raise and ROLLBACK TO
+                    # SAVEPOINT, which puts these rows back. Reporting them as
+                    # removed would tell the operator links vanished that did
+                    # not. The total accrues after RELEASE.
+                    record_removed = conn.execute(
                         f"DELETE FROM paid_invoices WHERE re_id=? AND doc_no NOT IN ({placeholders})",
                         (re_id, *incoming_doc_nos),
                     ).rowcount
@@ -307,6 +313,8 @@ def import_payment_records(records, apply_removals=False):
                 )
 
             conn.execute(f"RELEASE SAVEPOINT {sp}")
+            # Durable now — the rollback path below can no longer undo it.
+            removed_links += record_removed
 
             if is_new:
                 imported += 1
