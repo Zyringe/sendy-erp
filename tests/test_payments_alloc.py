@@ -793,3 +793,169 @@ def test_vat2_pure_legacy_cash_in_is_grossed_and_reconciles(empty_db_conn):
         sum(x['collected'] for x in pa.invoice_settlement(conn=c)), 2)
     total_cash = round(sum(x['amount'] for x in pa.cash_in_rows(conn=c)), 2)
     assert total_cash == pytest.approx(total_collected)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Findings 3 & 4 — legacy invoice STATUS must be computed at one-invoice grain
+# from ACTIVE (non-cancelled) receipts.
+#
+# These exercise models.* (not payments_alloc) but reuse this file's synthetic
+# builders; empty_db patches database.DATABASE_PATH so models' get_connection()
+# lands on the schema clone.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _seed_one_bill(c, doc='IV-G1', net=1000.0):
+    _ins_sale(c, doc, 'ลูกค้า A', 'C-A', '2026-07-01', net)
+    return doc
+
+
+def test_summary_counts_a_multi_receipt_invoice_once(empty_db_conn):
+    """Two ACTIVE receipts settling one invoice must not multiply it."""
+    import models
+    c = empty_db_conn
+    doc = _seed_one_bill(c)
+    r1 = _ins_receipt(c, 'RE-M1', 'ลูกค้า A', '2026-07-05')
+    r2 = _ins_receipt(c, 'RE-M2', 'ลูกค้า A', '2026-07-06')
+    _ins_paid(c, r1, doc, 600.0)
+    _ins_paid(c, r2, doc, 400.0)
+    c.commit()
+
+    summary = dict(models.get_payment_summary())
+
+    assert summary['total_bills'] == 1
+    assert summary['paid_count'] == 1
+    assert summary['unpaid_count'] == 0
+    assert summary['paid_count'] + summary['unpaid_count'] == summary['total_bills']
+    assert summary['paid_count'] <= summary['total_bills']
+    assert summary['paid_amount'] == pytest.approx(1000.0)
+
+
+def test_invoice_list_does_not_multiply_amount_across_receipts(empty_db_conn):
+    """/ar?tab=invoices row for a two-receipt invoice bills 1000, not 2000."""
+    import models
+    c = empty_db_conn
+    doc = _seed_one_bill(c)
+    r1 = _ins_receipt(c, 'RE-M1', 'ลูกค้า A', '2026-07-05')
+    r2 = _ins_receipt(c, 'RE-M2', 'ลูกค้า A', '2026-07-06')
+    _ins_paid(c, r1, doc, 600.0)
+    _ins_paid(c, r2, doc, 400.0)
+    c.commit()
+
+    rows, total = models.get_payment_status()
+
+    assert total == 1, 'pagination count multiplied by receipt links'
+    assert len(rows) == 1
+    assert rows[0]['total_net'] == pytest.approx(1000.0)
+    assert rows[0]['is_paid'] == 1
+    assert rows[0]['re_no'] in ('RE-M1', 'RE-M2')
+
+
+def test_cancelled_only_receipt_leaves_invoice_unpaid_everywhere(empty_db_conn):
+    """A cancelled receipt is not a payment — in EVERY legacy reader."""
+    import models
+    c = empty_db_conn
+    doc = _seed_one_bill(c)
+    rc = _ins_receipt(c, 'RE-CANCELLED', 'ลูกค้า A', '2026-07-05', cancelled=1)
+    _ins_paid(c, rc, doc, 1000.0)
+    c.commit()
+
+    # 1. get_payment_summary
+    summary = dict(models.get_payment_summary())
+    assert summary['paid_count'] == 0
+    assert summary['unpaid_count'] == 1
+    assert summary['unpaid_amount'] == pytest.approx(1000.0)
+
+    # 2. get_payment_status — both the row flag and the unpaid filter
+    rows, _ = models.get_payment_status()
+    assert rows[0]['is_paid'] == 0
+    unpaid_rows, unpaid_total = models.get_payment_status(status='unpaid')
+    assert unpaid_total == 1 and unpaid_rows[0]['doc_base'] == doc
+
+    # 3. get_ar_reconciliation — the ledger side must still owe this
+    rec = models.get_ar_reconciliation()
+    assert rec['ledger_total'] == pytest.approx(1000.0)
+
+    # 4. find_payment_candidates — the bill is still chaseable
+    cands = models.find_payment_candidates(1000.0)
+    assert any(b['doc_base'] == doc
+               for cand in cands for b in cand['matched_bills'])
+
+
+def test_mixed_cancelled_and_active_receipt_stays_paid(empty_db_conn):
+    """Control: one cancelled + one ACTIVE link is still paid, exactly once."""
+    import models
+    c = empty_db_conn
+    doc = _seed_one_bill(c)
+    rc = _ins_receipt(c, 'RE-CANCELLED', 'ลูกค้า A', '2026-07-05', cancelled=1)
+    ra = _ins_receipt(c, 'RE-ACTIVE', 'ลูกค้า A', '2026-07-06')
+    _ins_paid(c, rc, doc, 1000.0)
+    _ins_paid(c, ra, doc, 1000.0)
+    c.commit()
+
+    summary = dict(models.get_payment_summary())
+    assert summary['total_bills'] == 1
+    assert summary['paid_count'] == 1
+    assert summary['unpaid_count'] == 0
+    assert summary['paid_amount'] == pytest.approx(1000.0)
+
+    rows, total = models.get_payment_status()
+    assert total == 1 and rows[0]['is_paid'] == 1
+    assert rows[0]['re_no'] == 'RE-ACTIVE', 'display picked the cancelled receipt'
+    assert rows[0]['paid_date'] == '2026-07-06'
+
+    rec = models.get_ar_reconciliation()
+    assert rec['ledger_total'] == pytest.approx(0.0)
+
+    assert models.find_payment_candidates(1000.0) == []
+
+
+def test_summary_invariants_hold_on_a_mixed_population(empty_db_conn):
+    """paid + unpaid == total and paid <= total across every link shape."""
+    import models
+    c = empty_db_conn
+    _ins_sale(c, 'IV-P1', 'A', 'C-A', '2026-07-01', 100.0)     # single active link
+    _ins_sale(c, 'IV-P2', 'A', 'C-A', '2026-07-01', 200.0)     # two active links
+    _ins_sale(c, 'IV-U1', 'A', 'C-A', '2026-07-01', 300.0)     # no link
+    _ins_sale(c, 'IV-U2', 'A', 'C-A', '2026-07-01', 400.0)     # cancelled-only link
+    r1 = _ins_receipt(c, 'RE-1', 'A', '2026-07-05')
+    r2 = _ins_receipt(c, 'RE-2', 'A', '2026-07-06')
+    rc = _ins_receipt(c, 'RE-C', 'A', '2026-07-07', cancelled=1)
+    _ins_paid(c, r1, 'IV-P1', 100.0)
+    _ins_paid(c, r1, 'IV-P2', 120.0)
+    _ins_paid(c, r2, 'IV-P2', 80.0)
+    _ins_paid(c, rc, 'IV-U2', 400.0)
+    c.commit()
+
+    s = dict(models.get_payment_summary())
+    assert s['total_bills'] == 4
+    assert s['paid_count'] == 2
+    assert s['unpaid_count'] == 2
+    assert s['paid_count'] + s['unpaid_count'] == s['total_bills']
+    assert s['paid_count'] <= s['total_bills']
+    assert s['paid_amount'] == pytest.approx(300.0)
+    assert s['unpaid_amount'] == pytest.approx(700.0)
+
+
+def test_display_payment_picks_the_NEWEST_receipt_not_the_max_string(empty_db_conn):
+    """Pins the ROW_NUMBER display CTE specifically.
+
+    `MAX(re_no)` and "the newest receipt" disagree here on purpose: RE-Z is
+    the larger string but the OLDER receipt. Independent `MAX(date_iso),
+    MAX(re_no)` would also pair a date from one receipt with a number from
+    another — this asserts both fields come from the SAME (newest) receipt.
+    """
+    import models
+    c = empty_db_conn
+    doc = _seed_one_bill(c, 'IV-DISP')
+    rz = _ins_receipt(c, 'RE-Z', 'ลูกค้า A', '2026-07-05')   # larger string, older
+    ra = _ins_receipt(c, 'RE-A', 'ลูกค้า A', '2026-07-09')   # smaller string, newer
+    _ins_paid(c, rz, doc, 400.0)
+    _ins_paid(c, ra, doc, 600.0)
+    c.commit()
+
+    rows, total = models.get_payment_status()
+
+    assert total == 1
+    assert rows[0]['re_no'] == 'RE-A', 'display took MAX(re_no), not the newest receipt'
+    assert rows[0]['paid_date'] == '2026-07-09'
+    assert rows[0]['total_net'] == pytest.approx(1000.0)

@@ -324,6 +324,51 @@ def import_payment_records(records, apply_removals=False):
     }
 
 
+# ── Active-receipt payment status (Findings 3 & 4) ──────────────────────────
+#
+# ONE definition of "this invoice has at least one ACTIVE (non-cancelled)
+# receipt link", shared by every legacy status reader so they cannot drift.
+# Two properties are load-bearing:
+#
+#   * DISTINCT collapses the several links one invoice can legitimately carry
+#     (183 invoices live), so joining this can never multiply a bill's count or
+#     its baht. The old link-grain join reported 7,908 paid out of 7,899 total
+#     bills and ฿24,129,799.79 paid (a payment rate above 100%); the same data
+#     at one-invoice grain is 7,723 paid / ฿21,499,826.74.
+#
+#   * the JOIN to received_payments carries `cancelled = 0` INSIDE the CTE. The
+#     old idiom left-joined received_payments and then tested `pi.doc_no IS NOT
+#     NULL` — which stays non-null even when the cancelled-receipt join
+#     produced no row, so a cancelled receipt still marked the invoice paid.
+_ACTIVE_PAID_DOCS_CTE = """
+    active_paid_docs AS (
+        SELECT DISTINCT pi.doc_no
+          FROM paid_invoices pi
+          JOIN received_payments rp ON rp.id = pi.re_id
+         WHERE rp.cancelled = 0
+    )
+"""
+
+# DISPLAY ONLY — the latest active receipt per invoice, one row per doc_no so
+# it cannot multiply the bill either. Taking the whole row of the newest
+# receipt (rather than MAX(date), MAX(re_no) independently) keeps the shown
+# date and receipt number from belonging to two different receipts.
+_ACTIVE_PAYMENT_DISPLAY_CTE = """
+    active_payment_display AS (
+        SELECT doc_no, paid_date, re_no FROM (
+            SELECT pi.doc_no,
+                   rp.date_iso AS paid_date,
+                   rp.re_no,
+                   ROW_NUMBER() OVER (PARTITION BY pi.doc_no
+                                      ORDER BY rp.date_iso DESC, rp.id DESC) AS rn
+              FROM paid_invoices pi
+              JOIN received_payments rp ON rp.id = pi.re_id
+             WHERE rp.cancelled = 0
+        ) WHERE rn = 1
+    )
+"""
+
+
 def get_payment_status(status='all', search='', date_from='', date_to='', page=1, per_page=50):
     """Get IV invoices with payment status.
     Uses pre-computed doc_base column + index for performance.
@@ -352,17 +397,18 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
     where = ' AND '.join(conds)
 
     sql = f"""
+        WITH {_ACTIVE_PAID_DOCS_CTE}, {_ACTIVE_PAYMENT_DISPLAY_CTE}
         SELECT
             st.doc_base,
             MIN(st.date_iso) AS bill_date,
             st.customer,
             SUM(CASE WHEN st.vat_type = 2 THEN st.net * 1.07 ELSE st.net END) AS total_net,
-            MAX(CASE WHEN pi.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
-            MAX(rp.date_iso) AS paid_date,
-            MAX(rp.re_no) AS re_no
+            MAX(CASE WHEN apd.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
+            MAX(apay.paid_date) AS paid_date,
+            MAX(apay.re_no) AS re_no
         FROM sales_transactions st
-        LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
-        LEFT JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
+        LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
+        LEFT JOIN active_payment_display apay ON apay.doc_no = st.doc_base
         WHERE {where}
         GROUP BY st.doc_base
         {paid_filter}
@@ -372,13 +418,13 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
     rows = conn.execute(sql, params + [per_page, (page - 1) * per_page]).fetchall()
 
     count_sql = f"""
+        WITH {_ACTIVE_PAID_DOCS_CTE}
         SELECT COUNT(*) FROM (
             SELECT st.doc_base,
-                MAX(CASE WHEN pi.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
+                MAX(CASE WHEN apd.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
                 SUM(CASE WHEN st.vat_type = 2 THEN st.net * 1.07 ELSE st.net END) AS total_net
             FROM sales_transactions st
-            LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
-            LEFT JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
+            LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
             WHERE {where}
             GROUP BY st.doc_base
             {paid_filter}
@@ -390,15 +436,22 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
 
 
 def get_payment_summary():
-    """Quick stats for payment status page."""
+    """Quick stats for payment status page.
+
+    Invariants (Finding 3): `paid_count + unpaid_count == total_bills` and
+    `paid_count <= total_bills` hold structurally — the inner query is already
+    one row per doc_base, and active_paid_docs is one row per invoice, so no
+    join here can multiply a bill.
+    """
     conn = get_connection()
-    row = conn.execute("""
+    row = conn.execute(f"""
+        WITH {_ACTIVE_PAID_DOCS_CTE}
         SELECT
-            COUNT(DISTINCT st.doc_base) AS total_bills,
-            SUM(CASE WHEN pi.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS paid_count,
-            SUM(CASE WHEN pi.doc_no IS NULL THEN 1 ELSE 0 END) AS unpaid_count,
-            SUM(CASE WHEN pi.doc_no IS NOT NULL THEN st.net ELSE 0 END) AS paid_amount,
-            SUM(CASE WHEN pi.doc_no IS NULL THEN st.net ELSE 0 END) AS unpaid_amount
+            COUNT(*) AS total_bills,
+            SUM(CASE WHEN apd.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS paid_count,
+            SUM(CASE WHEN apd.doc_no IS NULL THEN 1 ELSE 0 END) AS unpaid_count,
+            SUM(CASE WHEN apd.doc_no IS NOT NULL THEN st.net ELSE 0 END) AS paid_amount,
+            SUM(CASE WHEN apd.doc_no IS NULL THEN st.net ELSE 0 END) AS unpaid_amount
         FROM (
             SELECT doc_base,
                    SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) AS net
@@ -407,8 +460,7 @@ def get_payment_summary():
             GROUP BY doc_base
             HAVING SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) > 0
         ) st
-        LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
-        LEFT JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
+        LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
     """).fetchone()
     conn.close()
     return row
@@ -471,7 +523,8 @@ def get_ar_reconciliation():
     # get_payment_summary groups by doc_base, sums vat-aware net, then marks unpaid
     # where paid_invoices has no matching row (rp.cancelled=0 check for received_payments).
     conn = get_connection()
-    led_rows = conn.execute("""
+    led_rows = conn.execute(f"""
+        WITH {_ACTIVE_PAID_DOCS_CTE}
         SELECT st.customer_code AS code,
                MAX(st.customer)  AS name,
                ROUND(SUM(bill_net), 2) AS unpaid
@@ -485,9 +538,8 @@ def get_ar_reconciliation():
                GROUP BY doc_base
               HAVING bill_net > 0
           ) st
-          LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
-          LEFT JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
-         WHERE pi.doc_no IS NULL
+          LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
+         WHERE apd.doc_no IS NULL
          GROUP BY st.customer_code
     """).fetchall()
     conn.close()
@@ -530,15 +582,16 @@ def find_payment_candidates(amount, tolerance_pct=5):
 
     conn = get_connection()
     # ดึงบิลค้างชำระทั้งหมดแยกรายบิล (รวม vat_type ที่พบมากที่สุดในบิล)
-    bill_rows = conn.execute("""
+    bill_rows = conn.execute(f"""
+        WITH {_ACTIVE_PAID_DOCS_CTE}
         SELECT st.customer, st.customer_code, st.doc_base,
                SUM(CASE WHEN st.vat_type=2 THEN st.net*1.07 ELSE st.net END) AS bill_net,
                MAX(st.vat_type) AS vat_type
         FROM sales_transactions st
-        LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
+        LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
         WHERE st.doc_base IS NOT NULL
           AND st.doc_base NOT LIKE 'SR%' AND st.doc_base NOT LIKE 'HS%'
-          AND pi.doc_no IS NULL
+          AND apd.doc_no IS NULL
         GROUP BY st.customer, st.customer_code, st.doc_base
         HAVING bill_net > 0
         ORDER BY st.customer, st.doc_base
