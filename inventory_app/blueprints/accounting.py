@@ -258,8 +258,12 @@ def ar_dashboard():
     tab = request.args.get('tab', 'overview')
     is_ar_manager = session.get('role') in ('admin', 'manager')
     is_ar_admin = session.get('role') == 'admin'   # dunning log writes are admin-only
+    # ONE aging read for the whole request — the overview tab reuses this same
+    # object, and every tab gets the freshness verdict for the stale banner.
+    aging = cf_mod.ar_aging()
     ctx = {'tab': tab,
-           'snapshot_date': cf_mod.ar_aging().get('as_of'),
+           'aging': aging,
+           'snapshot_date': aging.get('as_of'),
            'is_ar_manager': is_ar_manager,
            'is_ar_admin': is_ar_admin}
 
@@ -276,7 +280,6 @@ def ar_dashboard():
             ledger_unpaid=ledger_unpaid,
             unpaid_count=summ['unpaid_count'],
             diff_amount=diff_amount,
-            aging=cf_mod.ar_aging(),
             top_customers=debt[:8],
         )
     elif tab == 'customers':
@@ -628,6 +631,7 @@ def ar_followup_customer(customer_key):
         invoices=invoices,
         followups=followups,
         total_outstanding=total_outstanding,
+        aging=cf_mod.ar_aging(),
         today=date.today().isoformat(),
     )
 

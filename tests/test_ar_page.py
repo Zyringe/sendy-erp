@@ -10,6 +10,8 @@ Task 6: redirects + access
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
+import pytest
+
 
 # ── Task 1 ────────────────────────────────────────────────────────────────────
 
@@ -191,3 +193,45 @@ def test_whitelist_and_module_keys_valid(tmp_db):
     from app import app as a, _ENDPOINT_MODULE
     eps = {r.endpoint for r in a.url_map.iter_rules()}
     assert not (set(_ENDPOINT_MODULE) - eps)
+
+
+# ── AR snapshot staleness banner (Finding 1) ─────────────────────────────────
+
+STALE_AR_WARNING = 'ข้อมูลลูกหนี้เก่าเกิน 1 วัน'
+
+
+def _force_bsn_snapshot_date(tmp_db, snap_date):
+    """Rewrite every BSN AR snapshot row to one known date so the staleness
+    assertions are deterministic instead of depending on today's date vs the
+    real dev-DB snapshot."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    changed = conn.execute(
+        "UPDATE express_ar_outstanding SET snapshot_date_iso = ? WHERE entity = 'BSN'",
+        (snap_date,),
+    ).rowcount
+    conn.commit()
+    conn.close()
+    # control: without BSN rows the banner takes its "no snapshot" branch and
+    # the assertions below would pass/fail for the wrong reason.
+    assert changed > 0, 'live-clone fixture has no BSN AR rows to date-stamp'
+
+
+@pytest.mark.parametrize('tab', ['overview', 'customers', 'invoices', 'reconcile'])
+def test_every_ar_tab_warns_when_snapshot_is_stale(tmp_db, tab):
+    _force_bsn_snapshot_date(tmp_db, '2020-01-02')
+    r = _admin(tmp_db).get(f'/ar?tab={tab}')
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert STALE_AR_WARNING in body, f'tab={tab} served a stale AR snapshot silently'
+    assert '2020-01-02' in body, f'tab={tab} did not disclose the snapshot date'
+
+
+def test_ar_tabs_do_not_warn_when_snapshot_is_fresh(tmp_db):
+    """Control: the banner must be conditional, not decoration."""
+    from datetime import date as _date
+    _force_bsn_snapshot_date(tmp_db, _date.today().isoformat())
+    c = _admin(tmp_db)
+    for tab in ('overview', 'customers', 'invoices', 'reconcile'):
+        body = c.get(f'/ar?tab={tab}').data.decode()
+        assert STALE_AR_WARNING not in body, f'tab={tab} warned about a fresh snapshot'

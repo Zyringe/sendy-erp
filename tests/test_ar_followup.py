@@ -577,3 +577,63 @@ def test_get_customer_ar_detail_live(tmp_db_conn):
     detail_total = round(sum(d['outstanding'] for d in detail), 2)
     assert detail_total == pytest.approx(top['outstanding'], abs=0.01), \
         f"Detail total {detail_total} != ranking outstanding {top['outstanding']}"
+
+
+# ── route-level: AR snapshot staleness banner (Finding 1) ────────────────────
+
+STALE_AR_WARNING = 'ข้อมูลลูกหนี้เก่าเกิน 1 วัน'
+
+
+def _admin_client(tmp_db):
+    from app import app as a
+    a.config['TESTING'] = True
+    c = a.test_client()
+    with c.session_transaction() as s:
+        s['user_id'] = 1
+        s['username'] = 'admin'
+        s['role'] = 'admin'
+    return c
+
+
+def _force_bsn_snapshot_date(tmp_db, snap_date):
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    changed = conn.execute(
+        "UPDATE express_ar_outstanding SET snapshot_date_iso = ? WHERE entity = 'BSN'",
+        (snap_date,),
+    ).rowcount
+    conn.commit()
+    conn.close()
+    assert changed > 0, 'live-clone fixture has no BSN AR rows to date-stamp'
+
+
+def _a_live_customer_code(tmp_db):
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute(
+        "SELECT customer_code FROM express_ar_outstanding"
+        " WHERE entity='BSN' AND TRIM(COALESCE(customer_code,'')) != ''"
+        " LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert row, 'live-clone fixture has no BSN AR rows to route to'
+    return row[0]
+
+
+def test_followup_detail_warns_when_snapshot_is_stale(tmp_db):
+    code = _a_live_customer_code(tmp_db)
+    _force_bsn_snapshot_date(tmp_db, '2020-01-02')
+    r = _admin_client(tmp_db).get(f'/accounting/ar-followup/customer/{code}')
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert STALE_AR_WARNING in body
+    assert '2020-01-02' in body
+
+
+def test_followup_detail_does_not_warn_when_snapshot_is_fresh(tmp_db):
+    """Control: the detail banner is conditional, not decoration."""
+    code = _a_live_customer_code(tmp_db)
+    _force_bsn_snapshot_date(tmp_db, date.today().isoformat())
+    r = _admin_client(tmp_db).get(f'/accounting/ar-followup/customer/{code}')
+    assert r.status_code == 200
+    assert STALE_AR_WARNING not in r.data.decode()

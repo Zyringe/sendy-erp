@@ -4,6 +4,10 @@
 
 {% block content %}
 
+{# The AR card below serves the same authoritative snapshot as /ar, so it
+   carries the same freshness contract. #}
+{% include '_ar_snapshot_banner.html' %}
+
 {# ── Disclaimer ──────────────────────────────────────────────────────────── #}
 <div class="alert alert-secondary py-2 mb-3 small">
   <i class="bi bi-info-circle me-1"></i>
@@ -170,7 +174,7 @@
     เงินเข้า = รับรู้ตามวันใบเสร็จรับเงิน (RE) ที่ไม่ถูกยกเลิก ·
     ใบที่ import ก่อนระบบเก็บยอด (legacy) ถือว่าชำระเต็มใบ ·
     BSN เท่านั้น · ไม่รวม VAT ·
-    ยอด AR คงค้าง คำนวณ ณ วันปัจจุบัน ({{ aging.as_of }}) — รายละเอียด/aging/กระทบยอดเต็มอยู่ที่
+    ยอด AR คงค้าง = Express snapshot ณ {{ aging.as_of }} (ไม่ใช่ยอดวันนี้) — รายละเอียด/aging/กระทบยอดเต็มอยู่ที่
     <a href="{{ url_for('accounting.ar_dashboard') }}">ลูกหนี้ (AR)</a> ·
     รายได้ Accrual = <code>net</code> จาก <code>sales_transactions</code> ตามวันที่ขาย
   </div>

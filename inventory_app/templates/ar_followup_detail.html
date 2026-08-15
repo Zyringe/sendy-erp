@@ -4,6 +4,9 @@
 
 {% block content %}
 
+{# ── AR snapshot freshness — same contract as /ar's banner ───────────────── #}
+{% include '_ar_snapshot_banner.html' %}
+
 <div class="mb-3">
   <a href="{{ url_for('accounting.ar_followup') }}" class="btn btn-sm btn-outline-secondary">
     <i class="bi bi-arrow-left"></i> กลับรายการ

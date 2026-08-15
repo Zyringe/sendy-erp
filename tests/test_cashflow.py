@@ -664,3 +664,94 @@ def test_cash_vs_revenue_date_filter_respected(empty_db_conn):
 
 def test_cash_vs_revenue_empty_dataset_returns_empty_list(empty_db_conn):
     assert cf.cash_vs_revenue_by_month(conn=empty_db_conn) == []
+
+
+# ── AR snapshot freshness contract (Finding 1) ───────────────────────────────
+#
+# `ar_aging()` keeps the SNAPSHOT date as the aging reference for the invoice
+# buckets (unchanged), and uses `as_of` purely as the OBSERVATION date so the
+# caller can ask "how old is the authoritative AR snapshot right now?".
+
+def test_ar_aging_reports_snapshot_staleness(empty_db_conn):
+    _ins_express_snap(empty_db_conn, '2026-06-05', 'C-ST', 'ร้านเก่า',
+                      'IV-ST', '2026-06-01', 1000, 0, 1000)
+    empty_db_conn.commit()
+
+    result = cf.ar_aging(as_of='2026-08-15', conn=empty_db_conn)
+
+    assert result['as_of'] == '2026-06-05'
+    assert result['age_days'] == 71
+    assert result['is_stale'] is True
+
+
+def test_ar_aging_fresh_snapshot_is_not_stale(empty_db_conn):
+    """Control: a one-day-old snapshot is inside the freshness contract."""
+    _ins_express_snap(empty_db_conn, '2026-08-14', 'C-FR', 'ร้านใหม่',
+                      'IV-FR', '2026-08-01', 1000, 0, 1000)
+    empty_db_conn.commit()
+
+    result = cf.ar_aging(as_of='2026-08-15', conn=empty_db_conn)
+
+    assert result['as_of'] == '2026-08-14'
+    assert result['age_days'] == 1
+    assert result['is_stale'] is False
+
+
+def test_ar_aging_empty_snapshot_is_stale(empty_db_conn):
+    """No snapshot at all is the WORST case, never the fresh case."""
+    result = cf.ar_aging(as_of='2026-08-15', conn=empty_db_conn)
+
+    assert result['age_days'] is None
+    assert result['is_stale'] is True
+
+
+def test_ar_aging_snapshot_still_drives_bucket_ages(empty_db_conn):
+    """`as_of` must NOT leak into bucket aging — the buckets stay point-in-time
+    against the snapshot date (otherwise every stale snapshot would silently
+    re-age every invoice into 90+)."""
+    _ins_express_snap(empty_db_conn, '2026-06-05', 'C-BK', 'ร้านบักเก็ต',
+                      'IV-BK', '2026-06-01', 1000, 0, 1000)
+    empty_db_conn.commit()
+
+    result = cf.ar_aging(as_of='2026-08-15', conn=empty_db_conn)
+
+    by_label = {b['label']: b for b in result['buckets']}
+    assert by_label['0-30']['amount'] == pytest.approx(1000.0)
+    assert by_label['90+']['amount'] == pytest.approx(0.0)
+
+
+def test_ar_aging_two_day_old_snapshot_is_stale(empty_db_conn):
+    """Boundary: pins the threshold at 1, not merely 'somewhere under 71'."""
+    _ins_express_snap(empty_db_conn, '2026-08-13', 'C-B2', 'ร้านสองวัน',
+                      'IV-B2', '2026-08-01', 1000, 0, 1000)
+    empty_db_conn.commit()
+
+    result = cf.ar_aging(as_of='2026-08-15', conn=empty_db_conn)
+
+    assert result['age_days'] == 2
+    assert result['is_stale'] is True
+
+
+def test_ar_aging_future_dated_snapshot_is_stale(empty_db_conn):
+    """A snapshot stamped ahead of today is a DATA ERROR, never the freshest
+    possible verdict — clamping the age at 0 would silently green-light it."""
+    _ins_express_snap(empty_db_conn, '2026-09-01', 'C-FU', 'ร้านอนาคต',
+                      'IV-FU', '2026-08-01', 1000, 0, 1000)
+    empty_db_conn.commit()
+
+    result = cf.ar_aging(as_of='2026-08-15', conn=empty_db_conn)
+
+    assert result['age_days'] == -17
+    assert result['is_stale'] is True
+
+
+def test_ar_aging_publishes_its_own_threshold(empty_db_conn):
+    """Page copy renders this instead of hardcoding '1 วัน', so the banner text
+    cannot drift away from the contract it describes."""
+    _ins_express_snap(empty_db_conn, '2026-08-14', 'C-TH', 'ร้าน', 'IV-TH',
+                      '2026-08-01', 1, 0, 1)
+    empty_db_conn.commit()
+    assert cf.ar_aging(as_of='2026-08-15', conn=empty_db_conn)['stale_after_days'] \
+        == cf.AR_SNAPSHOT_STALE_AFTER_DAYS
+    # also present on the empty-snapshot path
+    assert 'stale_after_days' in cf.ar_aging(conn=empty_db_conn)

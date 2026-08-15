@@ -414,3 +414,43 @@ def test_freshness_ignores_other_source_filenames(empty_db_conn):
     freshness = models.get_express_dbf_freshness()
     assert freshness['last_at'] is None
     assert freshness['is_stale'] is True
+
+
+# ── dashboard copy: DBF freshness is TRANSACTIONS, never the AR snapshot ─────
+#
+# Finding 1's seam: commit_express_dbf() imports six TRANSACTIONAL types and no
+# AR snapshot, so a fresh DBF badge must not read as "AR is current".
+
+def test_dashboard_freshness_badge_names_transactions_not_ar(client, tmp_db):
+    """The badge must name TRANSACTIONS and disclaim AR.
+
+    Forces the `last_at` branch rather than inheriting whatever the live-DB
+    clone happens to hold — the else branch ("ยังไม่เคยนำเข้าข้อมูลธุรกรรมจาก
+    Express") contains the same substring, so an unforced assertion could pass
+    without the changed line ever rendering.
+    """
+    import sqlite3
+    import models
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM express_import_log WHERE source_filename='express_dbf'")
+    conn.execute(
+        "INSERT INTO express_import_log (file_type, source_filename, record_count,"
+        " line_count, status, imported_at)"
+        " VALUES ('payments_in','express_dbf',0,0,'imported','2026-08-14 09:30:00')")
+    conn.commit()
+    conn.close()
+
+    _login(client)
+    fresh = models.get_express_dbf_freshness()
+    assert fresh['last_at'] == '2026-08-14 09:30:00'
+
+    html = client.get('/').get_data(as_text=True)
+
+    # control: the last_at branch really rendered on this page
+    assert '2026-08-14 09:30' in html, 'freshness badge did not render its date'
+    assert 'ข้อมูลธุรกรรมจาก Express (DBF) ล่าสุด' in html
+    # the load-bearing disclaimer, absent from the else branch
+    assert 'ยอดลูกหนี้คงค้างไม่ได้อัปเดตจากรายการนี้' in html
+    assert 'อัปเดตล่าสุดจาก Express' not in html, \
+        'old copy still claims a blanket "last updated from Express"'
+    assert 'ยอด AR' not in html, 'dashboard badge must not claim AR was refreshed'
