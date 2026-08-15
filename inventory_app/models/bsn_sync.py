@@ -12,7 +12,8 @@ import bsn_units
 
 from .stock_filters import is_non_stock_code, non_stock_clause
 from .wacc import recalculate_product_wacc
-from .conversion_roles import component_product_id
+from .conversion_roles import component_product_id, ConversionRoleError
+from .system_alerts import record_conversion_role_alert
 
 # หน้าร้าน customer codes whose synced sales ALSO decrement platform_skus.stock
 # (see _sync_bsn_to_stock below). ONE definition, imported — ecommerce_overview
@@ -59,6 +60,13 @@ BSN_SYNC_EXACT_NOTES = ('BSN ขาย', 'BSN ขาย-คืน', 'BSN ซื�
 BSN_SYNC_HISTORY_NOTE_PREFIX = 'ประวัติขาย (ไม่นับสต็อค):'
 
 
+# Kinds a WRITE caller (unit_conversions save/edit, suggestion approval) must
+# block unconditionally, regardless of the submitted ratio — same stance as
+# the pre-existing 'pair' kind. Shared so every write call site stays in
+# step (see tests/test_cross_unit_hazard_configuration_error_coverage.py).
+_UNCONDITIONAL_BLOCK_KINDS = frozenset(('pair', 'configuration_error'))
+
+
 def cross_unit_hazard(conn, product_id, bsn_unit):
     """None when (product, bsn_unit) may take a unit_conversions ratio.
     {'kind': 'pair', 'partner_id', 'partner_name', 'partner_unit'} when the
@@ -68,7 +76,21 @@ def cross_unit_hazard(conn, product_id, bsn_unit):
     {'kind': 'pack_piece', 'product_unit'} when bsn_unit is a piece unit and
     the product's unit_type is a pack unit with NO such pair — only ratio 1
     (unit alias) is allowed; a real loose sale needs a loose SKU + split
-    mapping."""
+    mapping.
+    {'kind': 'configuration_error', 'formula_id', 'message'} when a [แพ็ค]
+    formula this check must consult is itself malformed (multi-input, no
+    role or an invalid role combination) — conversion_roles.
+    component_product_id fails closed there by RAISING ConversionRoleError;
+    this function catches it and returns a hazard instead of propagating.
+    Deliberately NOT a raise here: this function has 6 call sites across
+    both WRITE paths (which must block unconditionally, see
+    _UNCONDITIONAL_BLOCK_KINDS above) and READ/LIST paths (get_pending_
+    unit_conversions, mapping.get_pending_split_mappings) — a raise from a
+    list-builder loop would 500 the WHOLE page over one bad formula instead
+    of flagging just that one row. The malformed formula also gets a
+    durable system_alerts row (system_alerts.record_conversion_role_alert,
+    dedupe-keyed on the formula id) so it surfaces on /alerts even though a
+    read path found it and nobody is watching that page."""
     norm = bsn_units.normalize_unit(bsn_unit) or ''
     product = conn.execute(
         "SELECT product_name, unit_type FROM products WHERE id = ?", (product_id,)
@@ -82,7 +104,7 @@ def cross_unit_hazard(conn, product_id, bsn_unit):
     # and product as an INPUT of a pack/unpack half playing the component
     # role (partner = that half's output). A role-less or ambiguous
     # multi-input [แพ็ค] fails closed via component_product_id — never guess
-    # a partner by row position.
+    # a partner by row position; caught below and returned as a hazard.
     partner_ids = set()
     for f in conn.execute("""
         SELECT id, name FROM conversion_formulas
@@ -95,7 +117,11 @@ def cross_unit_hazard(conn, product_id, bsn_unit):
         if len(ins) == 1:
             partner_ids.add(ins[0]['product_id'])
         elif f['name'].startswith('[แพ็ค]'):
-            partner_ids.add(component_product_id(f['name'], True, ins))
+            try:
+                partner_ids.add(component_product_id(f['name'], True, ins))
+            except ConversionRoleError as e:
+                record_conversion_role_alert(f['id'], e)
+                return {'kind': 'configuration_error', 'formula_id': f['id'], 'message': str(e)}
         # a multi-input [แกะ] never happens (no [แกะ] bundle is ever
         # created) — left unmatched rather than guessed, as before.
     for f in conn.execute("""
@@ -113,7 +139,12 @@ def cross_unit_hazard(conn, product_id, bsn_unit):
         elif f['name'].startswith('[แพ็ค]'):
             # product_id is one of >1 inputs — only the component row is the
             # pack/loose partner; the packaging row is not.
-            if component_product_id(f['name'], True, ins) == product_id:
+            try:
+                is_component = component_product_id(f['name'], True, ins) == product_id
+            except ConversionRoleError as e:
+                record_conversion_role_alert(f['id'], e)
+                return {'kind': 'configuration_error', 'formula_id': f['id'], 'message': str(e)}
+            if is_component:
                 partner_ids.add(f['output_product_id'])
 
     for pid in sorted(partner_ids):
@@ -435,7 +466,7 @@ def save_unit_conversions(items: list):
     blocked = []
     for item in items:
         hazard = cross_unit_hazard(conn, item['product_id'], item['bsn_unit'])
-        if hazard is not None and (hazard['kind'] == 'pair' or float(item['ratio']) != 1):
+        if hazard is not None and (hazard['kind'] in _UNCONDITIONAL_BLOCK_KINDS or float(item['ratio']) != 1):
             blocked.append(dict(hazard, product_id=item['product_id'],
                                  bsn_unit=item['bsn_unit'],
                                  product_name=_product_name(conn, item['product_id'])))
@@ -530,7 +561,7 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
     conn = get_connection()
 
     hazard = cross_unit_hazard(conn, product_id, bsn_unit)
-    if hazard is not None and (hazard['kind'] == 'pair' or float(new_ratio) != 1):
+    if hazard is not None and (hazard['kind'] in _UNCONDITIONAL_BLOCK_KINDS or float(new_ratio) != 1):
         blocked = dict(hazard, product_id=product_id, bsn_unit=bsn_unit,
                        product_name=_product_name(conn, product_id))
         conn.close()
@@ -657,7 +688,7 @@ def upsert_unit_conversion(product_id: int, bsn_unit: str, ratio: float):
         return False
     conn = get_connection()
     hazard = cross_unit_hazard(conn, product_id, bsn_unit)
-    if hazard is not None and (hazard['kind'] == 'pair' or float(ratio) != 1):
+    if hazard is not None and (hazard['kind'] in _UNCONDITIONAL_BLOCK_KINDS or float(ratio) != 1):
         conn.close()
         return False
     conn.execute("""

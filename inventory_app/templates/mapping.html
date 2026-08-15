@@ -270,6 +270,12 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
           <td class="text-center">{{ row.row_count }}</td>
           <td class="small font-mono">{{ row.example_doc }}</td>
           <td>
+            {% if row.hazard.kind == 'configuration_error' %}
+            <div class="text-danger small mb-1">
+              สูตรแปลงสินค้า (id {{ row.hazard.formula_id }}) ของสินค้าปัจจุบันผิดรูปแบบ —
+              เลือกสินค้าปลายทางอื่นที่ไม่ติดสูตรนี้
+            </div>
+            {% endif %}
             <select form="{{ frm }}" name="product_id" class="form-select form-select-sm">
               {% for ap in all_products %}
               <option value="{{ ap.id }}"

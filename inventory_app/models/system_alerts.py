@@ -54,6 +54,7 @@ KIND_WACC_IDENTITY = 'wacc_identity'
 KIND_IMPORT_IGNORED_LINES = 'import_ignored_lines'
 KIND_SLOW_REQUEST = 'slow_request'
 KIND_ORPHAN_BSN_LEDGER = 'orphan_bsn_ledger'
+KIND_CONVERSION_ROLE_ERROR = 'conversion_role_error'
 
 # Prod runs `gunicorn --timeout 60` (Procfile / railway.toml). A request that
 # exceeds it is SIGABRT'd mid-flight, so it cannot report itself — the warning
@@ -290,6 +291,39 @@ def record_wacc_identity_alert(exc, *, operation=None, extra=None):
     except Exception as alert_exc:            # noqa: BLE001
         # Never let alerting replace the money-path error it was reporting.
         print(f"[system_alerts] failed to record alert: {alert_exc}",
+              file=sys.stderr)
+        return None
+
+
+def record_conversion_role_alert(formula_id, exc):
+    """Persist a ConversionRoleError caught inside cross_unit_hazard.
+
+    cross_unit_hazard itself never raises this past its own boundary (see its
+    docstring) — a malformed multi-input [แพ็ค] formula (no roles, or roles
+    that don't match the contract) is failed closed as a returned
+    {'kind': 'configuration_error', ...} hazard instead, because that
+    function has 6 call sites spanning WRITE paths (must block unconditionally)
+    and READ/LIST paths (a raise there would 500 a whole page over one bad
+    row). This module is the one durable place the operator actually sees it.
+
+    Best-effort, on a FRESH connection — cross_unit_hazard is called mid
+    read-only query loops on the caller's own connection, and this must never
+    interfere with (or be rolled back by) whatever that caller does next.
+
+    Dedupe key is the formula id ALONE. Load-bearing: cross_unit_hazard can
+    be called many times for the SAME malformed formula within one request
+    (once per pending row that happens to partner with it, from a list-
+    builder loop) — without this every one of those calls would try to file
+    a fresh open alert for what is really one incident.
+    """
+    try:
+        return create_system_alert(
+            KIND_CONVERSION_ROLE_ERROR, str(exc),
+            dedupe_key=_dedupe_key([formula_id]),
+            severity='error',
+            context={'formula_id': formula_id})
+    except Exception as alert_exc:            # noqa: BLE001
+        print(f"[system_alerts] failed to record conversion-role alert: {alert_exc}",
               file=sys.stderr)
         return None
 

@@ -394,8 +394,18 @@ def test_cross_unit_hazard_packaging_side_no_false_pair_even_when_units_align(em
 
 def test_cross_unit_hazard_fails_closed_on_roleless_multi_input(empty_db_conn):
     """Break-it-once target for the 'never guess' rule: a hand-corrupted
-    active [แพ็ค] formula with 2 inputs and NO roles must raise, never fall
-    back to guessing a partner by row position."""
+    active [แพ็ค] formula with 2 inputs and NO roles must fail closed, never
+    fall back to guessing a partner by row position.
+
+    Codex review finding 3 (PR #388) changed WHAT 'fail closed' means at this
+    boundary: component_product_id (the primitive) still raises
+    ConversionRoleError — but cross_unit_hazard (this function, one of 6
+    callers, some of them read/list paths) now CATCHES it and returns a
+    {'kind': 'configuration_error', ...} hazard VALUE instead of letting the
+    exception propagate and 500 a whole page. See
+    tests/test_cross_unit_hazard_configuration_error.py for the full
+    configuration_error coverage (write-caller blocking, alerting, the
+    read/list paths)."""
     c = empty_db_conn
     _seed_bundle_products(c)
     fid = c.execute(
@@ -406,8 +416,10 @@ def test_cross_unit_hazard_fails_closed_on_roleless_multi_input(empty_db_conn):
     c.execute("INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity, role) VALUES (?,?,?,NULL)",
               (fid, CARD, 1))
     c.commit()
-    with pytest.raises(ConversionRoleError):
-        models.cross_unit_hazard(c, PACK, 'อัน')
+    hz = models.cross_unit_hazard(c, PACK, 'อัน')                 # must not raise
+    assert hz is not None
+    assert hz['kind'] == 'configuration_error'
+    assert hz['formula_id'] == fid
 
 
 def test_cross_unit_hazard_unaffected_for_plain_single_input_pairs(empty_db_conn):

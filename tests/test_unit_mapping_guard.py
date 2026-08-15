@@ -366,3 +366,27 @@ def test_approve_suggestion_writes_safe_ratio(empty_db_conn, suggestion_uid):
         (new_pid, 'โหล')).fetchone()
     assert row is not None
     assert row['ratio'] == 12
+
+
+def test_approve_suggestion_blocks_configuration_error(empty_db_conn, suggestion_uid, monkeypatch):
+    """Codex review finding 3 (PR #388): a real 'configuration_error' hazard
+    can't be constructed here — new_pid does not exist until the moment of
+    approval, so it can never already be part of a malformed formula. Prove
+    the allowlist shape (`hz is None or (kind=='pack_piece' and ratio==1)`)
+    still refuses it by monkeypatching cross_unit_hazard's return, the same
+    interception point models/suggestions.py's own module docstring
+    documents for this exact call (models.suggestions.resolve_pending_mappings
+    is patched the same way in test_apply_stock_and_mapping.py)."""
+    def _fake_configuration_error(conn, product_id, bsn_unit):
+        return {'kind': 'configuration_error', 'formula_id': 999999, 'message': 'test'}
+    monkeypatch.setattr('models.suggestions.cross_unit_hazard', _fake_configuration_error)
+
+    sid = models.save_pending_suggestion(
+        _suggestion_payload('SUGF03', suggested_unit_type='แผง', bsn_unit='ตัว', ratio=1),
+        user_id=suggestion_uid)
+    new_pid = models.approve_pending_suggestion(sid, edits={}, reviewer_id=suggestion_uid)
+
+    row = empty_db_conn.execute(
+        "SELECT 1 FROM unit_conversions WHERE product_id=? AND bsn_unit=?",
+        (new_pid, 'ตัว')).fetchone()
+    assert row is None
