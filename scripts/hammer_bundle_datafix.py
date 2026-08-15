@@ -368,6 +368,19 @@ def run_w2(db_path, backup_dir, reason):
                 problems.append(
                     f"pid {target['pid']}: cost_price={row['cost_price']}, "
                     f"expected {target['expected_cost_price']}")
+            # The LEDGER is what W2 exists to rebuild; cost_price is only its
+            # derived output. Checking the columns alone would let a replay
+            # that set cost_price correctly while writing no ledger (or a
+            # wrong one) COMMIT on the first run — the rerun gate would then
+            # refuse, but prod would already have been mutated. Assert the
+            # real invariant INSIDE the transaction, where refusing still
+            # costs nothing (verification-discipline: the post-commit re-read
+            # is confirmation, not protection).
+            if not _w2_ledger_replayed(conn, target):
+                problems.append(
+                    f"pid {target['pid']}: product_cost_ledger does not prove the "
+                    f"replay at {target['expected_cost_price']} (missing INITIAL, "
+                    f"wrong unit_cost/wacc_after, or a tail that disagrees)")
         if problems:
             conn.execute("ROLLBACK")
             raise CheckpointPostconditionError("W2: " + "; ".join(problems))
@@ -397,6 +410,13 @@ def run_w2(db_path, backup_dir, reason):
                     f"{row['opening_cost']} cost_price={row['cost_price']}, "
                     f"expected {target['new_opening_cost']}/"
                     f"{target['expected_cost_price']}")
+            # The independent read must prove the SAME contract as the
+            # pre-commit assert and the DONE gate, not a weaker one.
+            if not _w2_ledger_replayed(fresh, target):
+                raise CheckpointPostconditionError(
+                    f"W2 pid {target['pid']}: committed, but the fresh re-read "
+                    f"cannot prove product_cost_ledger was replayed at "
+                    f"{target['expected_cost_price']} — STOP, do not run W3")
             results.append({"pid": target["pid"], "status": "applied",
                             "cost_price": row["cost_price"]})
     finally:

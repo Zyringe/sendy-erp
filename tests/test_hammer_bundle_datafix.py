@@ -1009,3 +1009,53 @@ def test_real_prod_path_is_protected_by_default():
     pointed at on prod — the test above monkeypatches, this one does not."""
     assert datafix.is_protected_db_path("/data/inventory.db")
     assert not datafix.is_protected_db_path("/tmp/rehearsal-snapshot.db")
+
+
+def test_w2_rolls_back_when_cost_price_is_right_but_the_ledger_was_never_written(
+        hammer_db, tmp_path, monkeypatch):
+    """The round-5 blocker, as a mutation test.
+
+    A replay that sets `cost_price` to EXACTLY the target while writing no
+    `product_cost_ledger` rows is the one shape the column checks cannot
+    see. Before the fix this committed on the first run — the rerun gate
+    would then classify it UNKNOWN and refuse, but prod would already have
+    been mutated. The ledger is what W2 exists to rebuild; cost_price is
+    only its derived output.
+
+    Assert the FULL rollback, not merely that it raised: opening_cost and
+    cost_price back at baseline for all three products, and no ledger rows
+    conjured for them.
+    """
+    def fake_wacc_no_ledger(pid, conn=None, operation=None):
+        expected = {t["pid"]: t["expected_cost_price"] for t in datafix.W2_TARGETS}[pid]
+        # Exactly the target the postcondition's column check wants...
+        conn.execute("UPDATE products SET cost_price=? WHERE id=?", (expected, pid))
+        # ...and deliberately NO product_cost_ledger write.
+        return expected
+
+    # Control: the ledger really is absent for these pids to begin with, so
+    # a passing assertion below cannot be an artifact of pre-existing rows.
+    conn = sqlite3.connect(hammer_db)
+    before_ledger = conn.execute(
+        "SELECT COUNT(*) FROM product_cost_ledger WHERE product_id IN (268,269,869)"
+    ).fetchone()[0]
+    conn.close()
+    assert before_ledger == 0
+
+    monkeypatch.setattr(datafix, "recalculate_product_wacc", fake_wacc_no_ledger)
+    with pytest.raises(datafix.CheckpointPostconditionError) as exc:
+        datafix.run_w2(hammer_db, _backup_dir(tmp_path), "test")
+    assert "product_cost_ledger" in str(exc.value)
+
+    conn = sqlite3.connect(hammer_db)
+    conn.row_factory = sqlite3.Row
+    for pid in (268, 269, 869):
+        row = conn.execute(
+            "SELECT opening_cost, cost_price FROM products WHERE id=?", (pid,)).fetchone()
+        assert row["opening_cost"] == BASELINE[pid]["opening_cost"], pid
+        assert row["cost_price"] == BASELINE[pid]["cost_price"], pid
+    n = conn.execute(
+        "SELECT COUNT(*) FROM product_cost_ledger WHERE product_id IN (268,269,869)"
+    ).fetchone()[0]
+    conn.close()
+    assert n == 0, "rolled back, so no ledger rows should exist either"
