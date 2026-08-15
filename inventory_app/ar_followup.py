@@ -536,7 +536,10 @@ def update_outreach(log_id: int, *,
     fields.append("updated_at = datetime('now','localtime')")
     params.append(log_id)
     with _ConnCtx(conn, db_path) as c:
-        c.execute(f"UPDATE ar_followup_log SET {', '.join(fields)} WHERE id = ?", params)
+        # `deleted_at IS NULL` here too: editing a soft-deleted row would
+        # silently revive collection history someone removed.
+        c.execute(f"UPDATE ar_followup_log SET {', '.join(fields)}"
+                  f" WHERE id = ? AND deleted_at IS NULL", params)
         if conn is None:
             c.commit()
 

@@ -138,7 +138,9 @@ def test_preview_payments_in_counts_new_vs_existing_and_is_readonly(tmp_db, monk
                         lambda p: [{"re_no": existing_re}, {"re_no": "RE-NEW-9999"}])
     out = import_router.preview_file(PATH, "payments_in", db_path=tmp_db)
     assert out["count"] == 2
-    assert out["detail"] == {"new": 1, "existing": 1}
+    # `removed` joined the contract so the preview page can show what the
+    # removals checkbox would delete before the operator ticks it.
+    assert out["detail"] == {"new": 1, "existing": 1, "removed": 0}
     conn = sqlite3.connect(tmp_db)
     after = conn.execute("SELECT COUNT(*) FROM received_payments").fetchone()[0]
     conn.close()
@@ -200,3 +202,60 @@ def test_detect_express_report_classifies(tmp_path):
     assert d(w('cnar.csv', 'ใบลดหนี้ รับคืนสินค้า')) == 'credit_notes_ar'
     assert d(w('cnap.csv', 'ใบลดหนี้ ส่งคืนสินค้า')) == 'credit_notes_ap'
     assert d(w('x.csv',    'ขายเงินเชื่อ เรียงตามเลขที่')) == 'unknown'
+
+
+# ── Finding 2: the operator's removal opt-in must be REACHABLE for payments_in
+
+def test_payments_in_preview_reports_the_removal_count(tmp_db, tmp_path, monkeypatch):
+    """The opt-in checkbox is only offered when the preview can show what would
+    be removed — the same rule sales/purchase follow. Without this count the
+    checkbox would ask the operator to approve a deletion they cannot see."""
+    import import_router, models, sqlite3
+    base = {'re_no': 'RE-PREVIEW-1', 'date_iso': '2026-08-01',
+            'customer': 'ลูกค้าทดสอบ', 'salesperson': '00', 'cancelled': False}
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM paid_invoices WHERE re_id IN "
+                 "(SELECT id FROM received_payments WHERE re_no='RE-PREVIEW-1')")
+    conn.execute("DELETE FROM received_payments WHERE re_no='RE-PREVIEW-1'")
+    conn.commit(); conn.close()
+    models.import_payment_records([{**base, 'total': 300.0, 'iv_list': [
+        {'iv_no': 'IV-KEEP', 'kind': 'IV', 'amount': 100.0},
+        {'iv_no': 'IV-DROP', 'kind': 'IV', 'amount': 200.0}]}], apply_removals=True)
+
+    # a re-export that no longer settles IV-DROP
+    monkeypatch.setattr(models, 'parse_payment_csv', lambda p: [
+        {**base, 'total': 100.0,
+         'iv_list': [{'iv_no': 'IV-KEEP', 'kind': 'IV', 'amount': 100.0}]}])
+    prev = import_router.preview_file('ignored.csv', 'payments_in', db_path=tmp_db)
+
+    assert prev['detail']['removed'] == 1, prev
+    assert prev['detail']['existing'] == 1 and prev['detail']['new'] == 0
+
+
+def test_preview_removal_count_is_zero_for_an_unchanged_replay(tmp_db, monkeypatch):
+    """Control: an identical re-export removes nothing, so the checkbox says 0."""
+    import import_router, models, sqlite3
+    base = {'re_no': 'RE-PREVIEW-2', 'date_iso': '2026-08-01',
+            'customer': 'ลูกค้าทดสอบ', 'salesperson': '00', 'cancelled': False}
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM paid_invoices WHERE re_id IN "
+                 "(SELECT id FROM received_payments WHERE re_no='RE-PREVIEW-2')")
+    conn.execute("DELETE FROM received_payments WHERE re_no='RE-PREVIEW-2'")
+    conn.commit(); conn.close()
+    rec = {**base, 'total': 100.0,
+           'iv_list': [{'iv_no': 'IV-KEEP', 'kind': 'IV', 'amount': 100.0}]}
+    models.import_payment_records([rec], apply_removals=True)
+    monkeypatch.setattr(models, 'parse_payment_csv', lambda p: [rec])
+
+    assert import_router.preview_file('x.csv', 'payments_in',
+                                      db_path=tmp_db)['detail']['removed'] == 0
+
+
+def test_payments_in_offers_the_removals_checkbox_on_the_preview_page():
+    """Without payments_in in this list the whole opt-in is unreachable and the
+    stale-allocation fix ships inert."""
+    import inspect
+    import blueprints.bsn as bsn_mod
+    src = inspect.getsource(bsn_mod.unified_import)
+    assert "'sales', 'purchase', 'payments_in'" in src, \
+        'payments_in cannot reach the removals checkbox'

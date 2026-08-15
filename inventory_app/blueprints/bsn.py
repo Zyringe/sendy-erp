@@ -434,7 +434,11 @@ def unified_import():
                     prev = import_router.preview_file(path, rtype)
                     row['count'] = prev.get('count')
                     row['detail'] = prev.get('detail') or {}
-                    row['removals_ok'] = rtype in ('sales', 'purchase')
+                    # payments_in joins the list once its preview also reports a
+                    # removal count — without that the operator would be opting
+                    # into a deletion they cannot see (Task 2 shipped inert
+                    # until this line included it).
+                    row['removals_ok'] = rtype in ('sales', 'purchase', 'payments_in')
                 except import_router.HistoryExportBlocked as exc:
                     # Policy A: full history goes through the Express ZIP module
                     # only. Flagged (not just errored) so the template can point

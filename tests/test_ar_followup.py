@@ -917,3 +917,125 @@ def test_resolve_customer_target_accepts_a_code_whose_name_is_blank(empty_db_con
         'a real but nameless customer code must still resolve'
     # control: an invented code with no evidence anywhere is still refused
     assert arf.resolve_customer_target('NO-SUCH-CODE', conn=c) is None
+
+
+# ── every deleted_at reader, pinned individually ────────────────────────────
+# The final review proved 6 of these filters could be deleted with the suite
+# staying green. One test per filter, each reaching a DIFFERENT query.
+
+def test_ranking_last_log_detail_ignores_a_deleted_row_on_the_same_date(empty_db_conn):
+    """Pins the ranking DETAIL subquery (not the MAX(log_date) one): two logs
+    share a date, so only the detail lookup decides which result is shown."""
+    c = empty_db_conn
+    _ins_express(c, 'IV-DT', 'C-DT', 'ร้าน', '2026-05-01', 5000)
+    _log(c, 'ร้าน', 'C-DT', log_date='2026-07-01', result='no_answer')
+    newer = _log(c, 'ร้าน', 'C-DT', log_date='2026-07-01', result='paid_full')
+    c.commit()
+    assert arf.customer_ranking(conn=c)[0]['last_log_result'] == 'paid_full'  # control
+
+    arf.delete_outreach(newer, deleted_by='siang', conn=c)
+    c.commit()
+
+    assert arf.customer_ranking(conn=c)[0]['last_log_result'] == 'no_answer'
+
+
+def test_history_by_NAME_excludes_deleted_rows(empty_db_conn):
+    """Pins get_customer_followups' name branch — a walk-in with no code."""
+    c = empty_db_conn
+    keep = _log(c, 'ลูกค้าเดินเข้า', None, log_date='2026-07-01')
+    drop = _log(c, 'ลูกค้าเดินเข้า', None, log_date='2026-07-02')
+    c.commit()
+    assert len(arf.get_customer_followups('ลูกค้าเดินเข้า', conn=c)) == 2   # control
+
+    arf.delete_outreach(drop, deleted_by='siang', conn=c)
+    c.commit()
+
+    assert [r['id'] for r in arf.get_customer_followups('ลูกค้าเดินเข้า', conn=c)] == [keep]
+
+
+def test_overdue_ignores_a_deleted_plan(empty_db_conn):
+    """Pins latest_with_action specifically: the deleted row is the one that
+    carries next_action_date, and a live non-terminal log remains."""
+    c = empty_db_conn
+    plan = _log(c, 'ร้าน', 'C-OD', log_date='2026-07-01',
+                result='promised', next_action_date='2026-07-10')
+    _log(c, 'ร้าน', 'C-OD', log_date='2026-07-05', result='no_answer')
+    c.commit()
+    assert len(arf.list_overdue_followups(as_of='2026-08-01', conn=c)) == 1   # control
+
+    arf.delete_outreach(plan, deleted_by='siang', conn=c)
+    c.commit()
+
+    assert arf.list_overdue_followups(as_of='2026-08-01', conn=c) == [], \
+        'a deleted follow-up plan still shows as overdue'
+
+
+def test_name_to_code_resolution_ignores_a_deleted_log(empty_db_conn):
+    """Pins _customer_group's code lookup — the log is the ONLY place that
+    ties this name to a code, so a deleted log must not resolve it."""
+    c = empty_db_conn
+    log_id = _log(c, 'ชื่อเดียว', 'C-NM')
+    c.commit()
+    assert arf._resolve_target(c, 'ชื่อเดียว')[0] == 'C-NM'                  # control
+
+    arf.delete_outreach(log_id, deleted_by='siang', conn=c)
+    c.commit()
+
+    assert arf._resolve_target(c, 'ชื่อเดียว')[0] is None, \
+        'a deleted log still supplies a customer code'
+
+
+def test_code_to_names_union_ignores_a_deleted_log(empty_db_conn):
+    """Pins the two name UNIONs: the log is the only source of this name."""
+    c = empty_db_conn
+    _ins_express(c, 'IV-UN', 'C-UN', '', '2026-05-01', 100)   # blank snapshot name
+    log_id = _log(c, 'ชื่อจากล็อก', 'C-UN')
+    c.commit()
+    assert 'ชื่อจากล็อก' in arf._resolve_target(c, 'C-UN')[1]                 # control
+
+    arf.delete_outreach(log_id, deleted_by='siang', conn=c)
+    c.commit()
+
+    assert 'ชื่อจากล็อก' not in arf._resolve_target(c, 'C-UN')[1]
+
+
+def test_resolve_target_name_fallback_ignores_a_deleted_log(empty_db_conn):
+    """Pins resolve_customer_target's log-name fallback: the code is real (AR
+    rows) but its only NAME comes from a log that has been deleted."""
+    c = empty_db_conn
+    _ins_express(c, 'IV-FB', 'C-FB', '', '2026-05-01', 100)
+    log_id = _log(c, 'ชื่อที่ถูกลบ', 'C-FB')
+    c.commit()
+    assert arf.resolve_customer_target('C-FB', conn=c)['customer'] == 'ชื่อที่ถูกลบ'  # control
+
+    arf.delete_outreach(log_id, deleted_by='siang', conn=c)
+    c.commit()
+
+    got = arf.resolve_customer_target('C-FB', conn=c)
+    assert got == {'customer_code': 'C-FB', 'customer': 'C-FB'}, \
+        'a deleted log still names the customer'
+
+
+def test_update_outreach_cannot_revive_a_deleted_row(empty_db_conn):
+    c = empty_db_conn
+    log_id = _log(c, 'ร้าน', 'C-UP', result='promised')
+    c.commit()
+    arf.delete_outreach(log_id, deleted_by='siang', conn=c)
+    c.commit()
+
+    arf.update_outreach(log_id, notes='แก้หลังลบ', conn=c)
+    c.commit()
+
+    row = c.execute("SELECT notes, deleted_at FROM ar_followup_log WHERE id=?",
+                    (log_id,)).fetchone()
+    assert row['notes'] != 'แก้หลังลบ', 'edited a soft-deleted row'
+    assert row['deleted_at'] is not None
+
+
+@pytest.mark.parametrize('bad', ['inf', '-inf', 'nan', 'Infinity'])
+def test_non_finite_promised_amount_is_refused(tmp_db, bad):
+    """float() accepts these; only the isfinite guard stops them reaching a
+    money column."""
+    _seed_two_customers(tmp_db)
+    _post_log(tmp_db, promised_amount=bad)
+    assert _logs_for(tmp_db, 'C-KEYA') == [], f'{bad!r} was stored as a promised amount'

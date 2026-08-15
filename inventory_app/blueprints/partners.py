@@ -271,6 +271,11 @@ _CUSTOMER_CANDIDATE_RE = re.compile(r'  (\S+)\s{2,}\S')
 # indent in the real export is a customer row or a `ประเภท :` section header.
 _COLUMN_HEADER_RE = re.compile(r'\s*รหัส\s.*ส่วนลด')
 
+# A customer NAME never contains a 3+-space run — that gap is a column
+# separator. Seeing one inside the captured name means the row has more
+# trailing columns than the regex counts back from EOL.
+_COLUMN_RUN_RE = re.compile(r'\s{3,}')
+
 
 def _parse_bsn_customers(csv_path=None):
     """Parse the BSN customer-master export into a list of customer dicts.
@@ -328,6 +333,14 @@ def _parse_bsn_customers(csv_path=None):
             i += 1; continue
 
         cust_match = _CUSTOMER_RE.match(line)
+        if cust_match and _COLUMN_RUN_RE.search(cust_match.group(2)):
+            # The regex counts three tokens back from EOL, so if the
+            # ประเภทราคา column is ever populated the lazy name group
+            # swallows the real salesperson and every field shifts one
+            # right — writing a zone code into customers.salesperson.
+            # A 3+-space run inside the NAME is the tell. Refuse loudly
+            # instead: it lands in `rejected` below.
+            cust_match = None
         if cust_match:
             code = cust_match.group(1)
             name = cust_match.group(2).strip()

@@ -886,8 +886,11 @@ def test_mixed_cancelled_and_active_receipt_stays_paid(empty_db_conn):
     import models
     c = empty_db_conn
     doc = _seed_one_bill(c)
-    rc = _ins_receipt(c, 'RE-CANCELLED', 'ลูกค้า A', '2026-07-05', cancelled=1)
+    # The CANCELLED receipt is deliberately the NEWEST and the larger string,
+    # so the display CTE's own `cancelled = 0` is what keeps it off the page —
+    # dating it earlier would let rn=1 pick the right row for the wrong reason.
     ra = _ins_receipt(c, 'RE-ACTIVE', 'ลูกค้า A', '2026-07-06')
+    rc = _ins_receipt(c, 'RE-ZCANCELLED', 'ลูกค้า A', '2026-07-20', cancelled=1)
     _ins_paid(c, rc, doc, 1000.0)
     _ins_paid(c, ra, doc, 1000.0)
     c.commit()
@@ -901,7 +904,7 @@ def test_mixed_cancelled_and_active_receipt_stays_paid(empty_db_conn):
     rows, total = models.get_payment_status()
     assert total == 1 and rows[0]['is_paid'] == 1
     assert rows[0]['re_no'] == 'RE-ACTIVE', 'display picked the cancelled receipt'
-    assert rows[0]['paid_date'] == '2026-07-06'
+    assert rows[0]['paid_date'] == '2026-07-06', 'display showed the cancelled receipt date'
 
     rec = models.get_ar_reconciliation()
     assert rec['ledger_total'] == pytest.approx(0.0)

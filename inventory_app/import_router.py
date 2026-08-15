@@ -192,11 +192,29 @@ def preview_file(path, report_type, db_path=None):
         conn = sqlite3.connect(db_path or config.DATABASE_PATH)
         try:
             existing = {row[0] for row in conn.execute("SELECT re_no FROM received_payments")}
+            # Removal plan, read-only: links this file's receipts currently have
+            # that the file no longer lists. The operator must see this count
+            # BEFORE the opt-in checkbox is worth offering — same rule the
+            # sales/purchase preview follows.
+            removed = 0
+            for r in models._merge_duplicate_receipts(recs):
+                if r.get("re_no") not in existing:
+                    continue
+                incoming = [iv["iv_no"] for iv in (r.get("iv_list") or [])]
+                if not incoming:
+                    continue          # refused at import time, never a removal
+                marks = ",".join("?" for _ in incoming)
+                removed += conn.execute(
+                    f"""SELECT COUNT(*) FROM paid_invoices pi
+                          JOIN received_payments rp ON rp.id = pi.re_id
+                         WHERE rp.re_no = ? AND pi.doc_no NOT IN ({marks})""",
+                    (r["re_no"], *incoming)).fetchone()[0]
         finally:
             conn.close()
         new = sum(1 for r in recs if r["re_no"] not in existing)
         return {"type": report_type, "ok": True, "count": len(recs),
-                "detail": {"new": new, "existing": len(recs) - new}}
+                "detail": {"new": new, "existing": len(recs) - new,
+                           "removed": removed}}
 
     if report_type == "credit_notes_ar":
         # import_credit_notes uses internal SAVEPOINT/RELEASE, so a manual

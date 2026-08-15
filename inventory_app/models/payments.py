@@ -118,8 +118,17 @@ def _merge_duplicate_receipts(records):
     later header wins, exactly as the ON CONFLICT upsert already did.
     """
     order, by_re = [], {}
+    passthrough = []
     for r in records:
-        key = r['re_no']
+        try:
+            key = r['re_no']
+            r['iv_list']
+        except (KeyError, TypeError):
+            # Malformed record: leave it for the per-record SAVEPOINT to
+            # isolate into `skipped`, exactly as before this merge step
+            # existed. Raising here would abort the whole batch.
+            passthrough.append(r)
+            continue
         if key not in by_re:
             merged = dict(r)
             merged['iv_list'] = list(r['iv_list'])
@@ -132,7 +141,7 @@ def _merge_duplicate_receipts(records):
         merged = dict(r)                      # later header wins
         merged['iv_list'] = list(links.values())
         by_re[key] = merged
-    return [by_re[k] for k in order]
+    return [by_re[k] for k in order] + passthrough
 
 
 def import_payment_records(records, apply_removals=False):

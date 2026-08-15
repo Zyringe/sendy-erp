@@ -491,3 +491,29 @@ def test_real_export_parses_every_express_code():
     # the shapes the old regex dropped are present
     for code in ('032ท03', '1101ค01', '23ทธ01', 'L1004ค01', 'Bหน้าร้าน'):
         assert code in codes, f'{code} still missing'
+
+
+def test_extra_trailing_column_is_refused_not_silently_shifted(tmp_path):
+    """The row regex counts THREE tokens back from EOL. The report has six
+    columns; ประเภทราคา is empty in every row today. If it is ever populated
+    the lazy name group swallows the real salesperson and every field shifts
+    one right — writing a ZONE code into customers.salesperson with no error.
+    A 3+-space run inside the captured name is the tell."""
+    from blueprints.partners import _parse_bsn_customers
+    shifted = [
+        '"  01ก01      ร้านทดสอบ                                                     01          กท    A2       0"',
+        '"      ที่อยู่  : 233\xa0ซ.ทดสอบ                                    ผู้ติดต่อ : คุณเอ"',
+        '',
+    ]
+    path = _write_cp874(tmp_path, 'sixcol.csv', _HDR + shifted + _FOOTER)
+
+    with pytest.raises(ValueError) as exc:
+        _parse_bsn_customers(path)
+    assert 'อ่านข้อมูลลูกค้าไม่ครบ' in str(exc.value)
+
+
+def test_a_normal_row_is_not_mistaken_for_a_shifted_one(valid_customer_file):
+    """Control: real names contain single spaces, never a column-width gap."""
+    from blueprints.partners import _parse_bsn_customers
+    rows = _parse_bsn_customers(valid_customer_file)
+    assert [r['salesperson'] for r in rows] == ['01', '03']
