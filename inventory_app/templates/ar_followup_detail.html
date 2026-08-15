@@ -49,8 +49,9 @@
   <div class="card-body py-3">
     <form method="post" action="{{ url_for('accounting.ar_followup_log_new') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="hidden" name="customer" value="{{ customer_name }}">
-      <input type="hidden" name="customer_code" value="{{ customer_code or '' }}">
+      {# ONE identity field. The server resolves name + code from this key —
+         posting them separately let a stale tab file history against the
+         wrong customer group. #}
       <input type="hidden" name="customer_key" value="{{ customer_key }}">
       <div class="row g-2">
         <div class="col-md-2">

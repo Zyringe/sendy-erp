@@ -637,3 +637,266 @@ def test_followup_detail_does_not_warn_when_snapshot_is_fresh(tmp_db):
     r = _admin_client(tmp_db).get(f'/accounting/ar-followup/customer/{code}')
     assert r.status_code == 200
     assert STALE_AR_WARNING not in r.data.decode()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Finding 5 — AR follow-up history is SOFT-deleted and attributed
+# (mirrors the call-card pattern in call_card.py::soft_delete_log)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _log(conn, customer, code=None, log_date='2026-08-01', result='promised',
+         next_action_date=None, created_by='admin'):
+    return arf.log_outreach(customer=customer, customer_code=code,
+                            log_date=log_date, channel='phone', result=result,
+                            next_action_date=next_action_date,
+                            created_by=created_by, conn=conn)
+
+
+def test_delete_outreach_stamps_actor_and_time(empty_db_conn):
+    c = empty_db_conn
+    log_id = _log(c, 'ร้านทดสอบ', 'C-D1')
+    c.commit()
+
+    assert arf.delete_outreach(log_id, deleted_by='siang', conn=c) is True
+    c.commit()
+
+    row = c.execute("SELECT * FROM ar_followup_log WHERE id=?", (log_id,)).fetchone()
+    assert row is not None, 'the physical row must survive — this is a SOFT delete'
+    assert row['deleted_at'] is not None
+    assert row['deleted_by'] == 'siang'
+
+
+def test_delete_outreach_is_idempotent_and_reports_it(empty_db_conn):
+    c = empty_db_conn
+    log_id = _log(c, 'ร้านทดสอบ', 'C-D2')
+    c.commit()
+
+    assert arf.delete_outreach(log_id, deleted_by='siang', conn=c) is True
+    assert arf.delete_outreach(log_id, deleted_by='siang', conn=c) is False, \
+        'a second delete changed nothing and must say so'
+    assert arf.delete_outreach(999999, deleted_by='siang', conn=c) is False
+
+
+def test_deleted_log_disappears_from_history(empty_db_conn):
+    c = empty_db_conn
+    keep = _log(c, 'ร้านทดสอบ', 'C-D3', log_date='2026-08-01')
+    drop = _log(c, 'ร้านทดสอบ', 'C-D3', log_date='2026-08-02')
+    c.commit()
+    assert len(arf.get_customer_followups('C-D3', conn=c)) == 2   # control
+
+    arf.delete_outreach(drop, deleted_by='siang', conn=c)
+    c.commit()
+
+    ids = [r['id'] for r in arf.get_customer_followups('C-D3', conn=c)]
+    assert ids == [keep]
+
+
+def test_deleted_log_disappears_from_ranking(empty_db_conn):
+    c = empty_db_conn
+    _ins_express(c, 'IV-D4', 'C-D4', 'ร้านทดสอบ', '2026-05-01', 5000)
+    older = _log(c, 'ร้านทดสอบ', 'C-D4', log_date='2026-07-01', result='no_answer')
+    newer = _log(c, 'ร้านทดสอบ', 'C-D4', log_date='2026-07-20', result='promised')
+    c.commit()
+    ranked = {r['customer_code']: r for r in arf.customer_ranking(conn=c)}
+    assert ranked['C-D4']['last_log_date'] == '2026-07-20'        # control
+
+    arf.delete_outreach(newer, deleted_by='siang', conn=c)
+    c.commit()
+
+    ranked = {r['customer_code']: r for r in arf.customer_ranking(conn=c)}
+    assert ranked['C-D4']['last_log_date'] == '2026-07-01', \
+        'ranking still reports a deleted follow-up as the latest contact'
+    assert ranked['C-D4']['last_log_result'] == 'no_answer'
+    assert older  # referenced
+
+
+def test_deleted_log_disappears_from_overdue(empty_db_conn):
+    c = empty_db_conn
+    log_id = _log(c, 'ร้านทดสอบ', 'C-D5', log_date='2026-07-01',
+                  result='promised', next_action_date='2026-07-10')
+    c.commit()
+    assert len(arf.list_overdue_followups(as_of='2026-08-01', conn=c)) == 1   # control
+
+    arf.delete_outreach(log_id, deleted_by='siang', conn=c)
+    c.commit()
+
+    assert arf.list_overdue_followups(as_of='2026-08-01', conn=c) == []
+
+
+def test_deleted_log_does_not_resurrect_a_closed_account_as_overdue(empty_db_conn):
+    """The overdue query has TWO subqueries (latest_with_action + latest_overall);
+    filtering only one of them would let a deleted terminal log stop hiding a
+    stale plan, or vice versa."""
+    c = empty_db_conn
+    _log(c, 'ร้านทดสอบ', 'C-D6', log_date='2026-07-01',
+         result='promised', next_action_date='2026-07-10')
+    terminal = _log(c, 'ร้านทดสอบ', 'C-D6', log_date='2026-07-20', result='paid_full')
+    c.commit()
+    assert arf.list_overdue_followups(as_of='2026-08-01', conn=c) == []       # control
+
+    arf.delete_outreach(terminal, deleted_by='siang', conn=c)
+    c.commit()
+
+    overdue = arf.list_overdue_followups(as_of='2026-08-01', conn=c)
+    assert len(overdue) == 1, 'deleting the terminal log must re-expose the open plan'
+
+
+# ── route level ─────────────────────────────────────────────────────────────
+
+def _seed_log_in(tmp_db, customer='ร้านเทสรูท', code='C-RT1'):
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    cur = conn.execute(
+        """INSERT INTO ar_followup_log
+             (customer, customer_code, log_date, channel, result, created_by)
+           VALUES (?,?,?,'phone','promised','admin')""",
+        (customer, code, '2026-08-01'))
+    conn.commit()
+    log_id = cur.lastrowid
+    conn.close()
+    return log_id
+
+
+def test_delete_route_records_the_session_username(tmp_db):
+    import sqlite3
+    log_id = _seed_log_in(tmp_db)
+    c = _admin_client(tmp_db)
+    r = c.post(f'/accounting/ar-followup/log/{log_id}/delete',
+               data={'customer_key': 'C-RT1'}, follow_redirects=False)
+    assert r.status_code == 302
+
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute("SELECT deleted_at, deleted_by FROM ar_followup_log WHERE id=?",
+                       (log_id,)).fetchone()
+    conn.close()
+    assert row[0] is not None
+    assert row[1] == 'admin', 'actor must be the session USERNAME, not display text'
+
+
+def test_delete_route_does_not_flash_success_when_nothing_changed(tmp_db):
+    log_id = _seed_log_in(tmp_db, code='C-RT2')
+    c = _admin_client(tmp_db)
+    # follow_redirects so the FIRST delete's success flash is consumed here —
+    # an unconsumed flash would render on the next page and make the assertion
+    # below fail for the wrong reason.
+    first = c.post(f'/accounting/ar-followup/log/{log_id}/delete',
+                   data={'customer_key': 'C-RT2'}, follow_redirects=True)
+    assert 'ลบรายการแล้ว' in first.get_data(as_text=True)   # control
+
+    r = c.post(f'/accounting/ar-followup/log/{log_id}/delete',
+               data={'customer_key': 'C-RT2'}, follow_redirects=True)
+    body = r.get_data(as_text=True)
+    assert 'ลบรายการแล้ว' not in body, 'flashed success for a no-op delete'
+    assert 'ถูกลบไปแล้ว' in body or 'ไม่พบรายการ' in body
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Task 5 — follow-up identity resolved SERVER-SIDE; invalid input refused
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_resolve_customer_target_prefers_the_master_name(empty_db_conn):
+    c = empty_db_conn
+    c.execute("INSERT INTO customers (code, name) VALUES ('C-R1','ชื่อใน master')")
+    _ins_express(c, 'IV-R1', 'C-R1', 'ชื่อเก่าใน snapshot', '2026-05-01', 100)
+    c.commit()
+
+    got = arf.resolve_customer_target('C-R1', conn=c)
+
+    assert got == {'customer_code': 'C-R1', 'customer': 'ชื่อใน master'}
+
+
+def test_resolve_customer_target_falls_back_to_snapshot_then_log(empty_db_conn):
+    c = empty_db_conn
+    _ins_express(c, 'IV-R2', 'C-R2', 'ชื่อใน snapshot', '2026-05-01', 100)
+    c.commit()
+    assert arf.resolve_customer_target('C-R2', conn=c)['customer'] == 'ชื่อใน snapshot'
+
+    _log(c, 'ชื่อในล็อก', 'C-R3')
+    c.commit()
+    assert arf.resolve_customer_target('C-R3', conn=c) == {
+        'customer_code': 'C-R3', 'customer': 'ชื่อในล็อก'}
+
+
+def test_resolve_customer_target_returns_none_for_an_unknown_key(empty_db_conn):
+    assert arf.resolve_customer_target('NOPE-404', conn=empty_db_conn) is None
+    assert arf.resolve_customer_target('', conn=empty_db_conn) is None
+
+
+def _seed_two_customers(tmp_db):
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM customers WHERE code IN ('C-KEYA','C-KEYB')")
+    conn.execute("INSERT INTO customers (code, name) VALUES ('C-KEYA','ลูกค้า A')")
+    conn.execute("INSERT INTO customers (code, name) VALUES ('C-KEYB','ลูกค้า B')")
+    conn.execute("DELETE FROM ar_followup_log WHERE customer_code IN ('C-KEYA','C-KEYB')")
+    conn.commit()
+    conn.close()
+
+
+def _logs_for(tmp_db, code):
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    rows = conn.execute(
+        "SELECT customer, customer_code, promised_amount, log_date"
+        "  FROM ar_followup_log WHERE customer_code=?", (code,)).fetchall()
+    conn.close()
+    return rows
+
+
+def _post_log(tmp_db, **form):
+    data = {'customer_key': 'C-KEYA', 'log_date': '2026-08-10',
+            'channel': 'phone', 'result': 'promised'}
+    data.update(form)
+    return _admin_client(tmp_db).post('/accounting/ar-followup/log/new',
+                                      data=data, follow_redirects=False)
+
+
+def test_forged_customer_fields_cannot_reattach_history(tmp_db):
+    _seed_two_customers(tmp_db)
+    r = _post_log(tmp_db, customer='ลูกค้า B', customer_code='C-KEYB')
+    assert r.status_code == 302
+
+    assert _logs_for(tmp_db, 'C-KEYB') == [], 'forged code attached history to the wrong customer'
+    rows = _logs_for(tmp_db, 'C-KEYA')
+    assert len(rows) == 1
+    assert rows[0][0] == 'ลูกค้า A', 'stored name came from the form, not the server'
+
+
+def test_unknown_customer_key_refuses_without_inserting(tmp_db):
+    import sqlite3
+    _seed_two_customers(tmp_db)
+    conn = sqlite3.connect(tmp_db)
+    before = conn.execute("SELECT COUNT(*) FROM ar_followup_log").fetchone()[0]
+    conn.close()
+
+    r = _admin_client(tmp_db).post('/accounting/ar-followup/log/new', data={
+        'customer_key': 'NOPE-404', 'log_date': '2026-08-10',
+        'channel': 'phone', 'result': 'promised'}, follow_redirects=False)
+    assert r.status_code == 302
+
+    conn = sqlite3.connect(tmp_db)
+    after = conn.execute("SELECT COUNT(*) FROM ar_followup_log").fetchone()[0]
+    conn.close()
+    assert after == before
+
+
+@pytest.mark.parametrize('bad', ['abc', '-1', '1,0,0,0.5.5'])
+def test_invalid_promised_amount_refuses_without_inserting(tmp_db, bad):
+    _seed_two_customers(tmp_db)
+    _post_log(tmp_db, promised_amount=bad)
+    assert _logs_for(tmp_db, 'C-KEYA') == [], f'{bad!r} was accepted'
+
+
+def test_comma_formatted_promised_amount_is_stored(tmp_db):
+    """Control: the money guard must not reject the normal input shape."""
+    _seed_two_customers(tmp_db)
+    _post_log(tmp_db, promised_amount='12,500.50')
+    rows = _logs_for(tmp_db, 'C-KEYA')
+    assert len(rows) == 1 and rows[0][2] == pytest.approx(12500.50)
+
+
+@pytest.mark.parametrize('field', ['log_date', 'promised_date', 'next_action_date'])
+def test_malformed_dates_refuse_without_inserting(tmp_db, field):
+    _seed_two_customers(tmp_db)
+    _post_log(tmp_db, **{field: '31/08/2569'})
+    assert _logs_for(tmp_db, 'C-KEYA') == [], f'{field} accepted a malformed date'
