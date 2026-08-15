@@ -219,19 +219,36 @@ partial-success window**, because the post-commit recalc can still fail on somet
 Independent post-run verification is therefore mandatory, not optional.
 
 *Then Put, one submit at a time:*
-1. `/products/869` → adjust stock **+18**, note `การ์ดที่ใช้แพ็คย้อนหลัง (ไม่มีบิลซื้อ) — ต้นทุน ฿5 ตามที่เจ้าของกำหนด`
-2. `/conversions` → run the 268 formula ×**6**
-3. `/conversions` → run the 269 formula ×**12**
+
+**Step 0 — immediately before starting**, not "earlier today": re-run the WACC identity preflight for all
+five products. A preflight from hours ago is stale — imports and ledger writes happen in between.
+
+**Step 1 — card stock.** ⚠ The ปรับ flow on `/products/869` is **"set stock to N", not "add N"**
+(`models/transactions.py::set_stock_to` is absolute by design: a diff computed from an earlier read lands on
+N ± whatever moved, and prod runs two workers). So fresh-read 869's stock first:
+- reads **0** → set it to **18**, note `การ์ดที่ใช้แพ็คย้อนหลัง (ไม่มีบิลซื้อ) — ต้นทุน ฿5 ตามที่เจ้าของกำหนด`
+- reads **anything else** → **STOP** and reconcile whether that is real card stock or drift. Do not reuse the
+  number 18 from this document; it was derived when the stock read 0.
+
+**Step 2** — run the 268 formula ×**6**. **Step 3** — run the 269 formula ×**12**. Type an explicit unique
+`reference_no` per run (e.g. `W4-268-<date>`) so the ledger can be queried by that exact reference instead of
+by "the newest row".
 
 **Runbook — applies to every submit, whether the screen says success or error:**
 
-- **Stop after each submit.** Do not reload, do not retry, do not run the second formula yet.
-- Claude fresh-reads, on a new connection: `conversion_cost_log` (newest row), the `transactions` rows for
-  that `reference_no`, and `stock_levels` for all three products involved.
+- **Stop after each submit.** Do not reload, do not retry, do not start the next step.
+- **Before** each conversion run, fresh-read: the formula's id / name / output / input roles and quantities,
+  the input stocks, the input WACCs (expect 66 / 68 / 5), the target pack cost (71 / 73), and that no earlier
+  W4 run already used that reference.
+- **After** each submit, Claude fresh-reads on a new connection — and what to read differs by step:
+  - **Step 1 (ADJUST)** writes **no** `conversion_cost_log` row. Verify the `transactions` row (exact note and
+    delta) plus `stock_levels`, and assert that **no** conversion-cost row appeared.
+  - **Steps 2–3 (conversions)** verify `conversion_cost_log` **by the typed reference_no**, the `transactions`
+    rows carrying that reference, and `stock_levels` for all three products involved.
 - A run counts as **committed** if those rows exist — even if the browser showed an exception. In that case
   the correct next action is to repair costing, never to re-submit.
-- Only once the read confirms the expected before → after values does the next submit happen, and the
-  expected values for run 2 are computed from the **verified** state after run 1, not from this document.
+- Only once the read confirms the expected before → after values does the next submit happen, and the expected
+  values for the next run come from the **verified** state after the previous one, not from this document.
 - If a run is committed but costing failed, stop the whole sequence and re-derive from the ledger before
   touching anything else.
 
