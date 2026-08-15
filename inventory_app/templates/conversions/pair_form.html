@@ -69,6 +69,18 @@
             <div class="conv-results"></div>
           </div>
 
+          <div class="mb-3 conv-combo" id="packagingCombo">
+            <label class="form-label fw-500">วัสดุแพ็ค <span class="text-subtle">(ไม่บังคับ — เช่น การ์ด/แผงเปล่าที่ใช้ห่อ)</span></label>
+            <input type="hidden" name="packaging_id" value="{{ prefill.packaging_id if prefill else '' }}">
+            <input type="text" class="form-control conv-search" autocomplete="off"
+                   placeholder="พิมพ์ชื่อ / รหัส / บาร์โค้ด เพื่อค้นหา… (ไม่ต้องเลือกก็ได้)"
+                   value="{{ prefill.packaging_name if prefill else '' }}">
+            <div class="conv-results"></div>
+            <div class="form-text text-subtle">
+              ถ้าเลือก ระบบจะบังคับทิศทางเป็น "แพ็คอย่างเดียว" — แกะแพ็คแล้วดึงวัสดุแพ็คคืนไม่ได้ จึงไม่มีสูตรแกะ
+            </div>
+          </div>
+
           <div class="row g-3">
             <div class="col-sm-6">
               <label class="form-label fw-500">กี่ตัวต่อ 1 แพ็ค <span class="text-danger">*</span></label>
@@ -79,11 +91,14 @@
             <div class="col-sm-6">
               <label class="form-label fw-500">ทิศทาง</label>
               {% set dir = prefill.direction if prefill else 'both' %}
-              <select name="direction" class="form-select">
+              <select name="direction" id="directionSelect" class="form-select">
                 <option value="both"   {{ 'selected' if dir == 'both'   else '' }}>ทั้ง 2 ทาง (แพ็ค + แกะ)</option>
                 <option value="unpack" {{ 'selected' if dir == 'unpack' else '' }}>แกะอย่างเดียว (แผง → ตัว)</option>
                 <option value="pack"   {{ 'selected' if dir == 'pack'   else '' }}>แพ็คอย่างเดียว (ตัว → แผง)</option>
               </select>
+              <div class="form-text text-warning-emphasis d-none" id="directionLockNote">
+                <i class="bi bi-lock-fill me-1"></i>ล็อกเป็น "แพ็คอย่างเดียว" เพราะเลือกวัสดุแพ็คไว้
+              </div>
             </div>
           </div>
 
@@ -185,9 +200,36 @@
 
   document.querySelectorAll('.conv-combo').forEach(initCombo);
 
-  // Block submit if either product wasn't actually picked from the list.
+  // วัสดุแพ็ค is optional — selecting/clearing it locks/unlocks "ทิศทาง" to
+  // pack-only client-side (the route also forces this server-side, since a
+  // stale tab or a disabled JS environment must not silently ignore the
+  // user's choice — see erp-engineering-discipline.md).
+  (function () {
+    var packagingHidden = document.querySelector('#packagingCombo input[type=hidden]');
+    var directionSelect = document.getElementById('directionSelect');
+    var lockNote = document.getElementById('directionLockNote');
+    if (!packagingHidden || !directionSelect) return;
+
+    function sync() {
+      var locked = !!packagingHidden.value;
+      Array.prototype.forEach.call(directionSelect.options, function (opt) {
+        if (opt.value !== 'pack') opt.disabled = locked;
+      });
+      if (locked) directionSelect.value = 'pack';
+      lockNote.classList.toggle('d-none', !locked);
+    }
+    sync();
+    var packagingInput = document.querySelector('#packagingCombo .conv-search');
+    packagingInput.addEventListener('input', sync);           // typing clears the hidden value
+    document.getElementById('packagingCombo').addEventListener('mousedown', function () {
+      setTimeout(sync, 0);                                     // pick() sets hidden.value on mousedown
+    });
+  })();
+
+  // Block submit if a REQUIRED product combo wasn't actually picked from the
+  // list. วัสดุแพ็ค is optional — skip it here.
   document.getElementById('pairForm').addEventListener('submit', function (e) {
-    var combos = document.querySelectorAll('.conv-combo');
+    var combos = document.querySelectorAll('.conv-combo:not(#packagingCombo)');
     for (var i = 0; i < combos.length; i++) {
       var hidden = combos[i].querySelector('input[type=hidden]');
       if (!hidden.value) {

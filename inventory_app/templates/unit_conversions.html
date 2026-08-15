@@ -87,6 +87,11 @@
                 ห้ามตั้ง ratio ข้ามหน่วย — ต้อง map ไปที่ "{{ p.hazard.partner_name }}"<br>
                 <a href="{{ url_for('bsn.mapping') }}#split-section">แยก mapping ตามหน่วย</a>
               </div>
+              {% elif p.hazard and p.hazard.kind == 'configuration_error' %}
+              <div class="text-danger small">
+                สูตรแปลงสินค้า (id {{ p.hazard.formula_id }}) ผิดรูปแบบ — บันทึกไม่ได้จนกว่าจะแก้สูตร<br>
+                <a href="{{ url_for('inventory.conversion_list') }}">ไปหน้าสูตรแปลงสินค้า</a>
+              </div>
               {% elif p.hazard and p.hazard.kind == 'pack_piece' %}
               <div class="input-group input-group-sm justify-content-center" style="max-width:170px;margin:auto">
                 <span class="input-group-text">1

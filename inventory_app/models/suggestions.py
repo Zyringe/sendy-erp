@@ -207,6 +207,12 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         product_unit = d.get('suggested_unit_type') or 'ตัว'
         if bsn_unit and ratio and float(ratio) > 0 and bsn_unit != product_unit:
             hz = cross_unit_hazard(conn, new_pid, bsn_unit)
+            # Allowlist, not a blocklist: only a clean None or a ratio-1
+            # pack_piece alias inserts. Any OTHER kind — 'pair',
+            # 'configuration_error' (cross_unit_hazard never raises this past
+            # its own boundary, see its docstring), or a kind added later —
+            # already falls through to "do not insert" without needing to be
+            # named here.
             if hz is None or (hz['kind'] == 'pack_piece' and float(ratio) == 1):
                 conn.execute("""
                     INSERT INTO unit_conversions (product_id, bsn_unit, ratio)

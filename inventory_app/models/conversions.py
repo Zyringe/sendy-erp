@@ -11,6 +11,8 @@ from database import get_connection
 from .wacc import (get_current_wacc, recalculate_waccs_for_products,
                    WaccIdentityError)
 from .system_alerts import record_wacc_identity_alert
+from .conversion_roles import (ROLE_COMPONENT, ROLE_PACKAGING, ConversionRoleError,
+                               component_product_id, validate_pack_inputs)
 
 
 def get_conversion_formulas():
@@ -131,7 +133,8 @@ def get_buildable(product_ids=None, conn=None):
     return result
 
 
-def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='', conn=None):
+def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='', conn=None,
+                            packaging_id=None):
     """Create or update the conversion formula(s) for a pack↔loose pair, in one
     call (the /conversions pair-mode form). Idempotent — re-running updates the
     matching formula instead of duplicating.
@@ -139,11 +142,42 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
         PACK   : output=pack_id,  output_qty=1,     inputs=[(loose_id, ratio)]
         UNPACK : output=loose_id, output_qty=ratio, inputs=[(pack_id, 1)]
 
-    direction: 'both' | 'pack' | 'unpack'. Dedup key = (output_product_id,
-    frozenset(input_product_ids)) over ACTIVE formulas. Returns
-    {'created': int, 'updated': int, 'formula_ids': [...]}.
+    `packaging_id`: optional extra component (e.g. a blister card destroyed
+    on opening). When given, the [แพ็ค] formula gets TWO inputs —
+    (loose_id, ratio, role='component') and (packaging_id, 1,
+    role='packaging') — validated through conversion_roles before any write
+    — and `direction` is forced to 'pack': a blister card cannot be
+    recovered by opening the pack, so there is no real [แกะ] to author.
+    Omitting it is byte-identical to before: a single input, role NULL.
+
+    direction: 'both' | 'pack' | 'unpack' (forced to 'pack' when
+    packaging_id is given, regardless of what was passed). Dedup key for the
+    [แกะ] half = (output_product_id, frozenset(input_product_ids)) over
+    ACTIVE formulas — a loose product can be the [แกะ] output of several
+    packs (a shared loose), so the input set must disambiguate. The [แพ็ค]
+    half dedups on OUTPUT ALONE: mig 158's ux_conv_active_pack_per_output
+    allows at most one active [แพ็ค] per output, so matching by input set
+    would let a plain pair and a bundle for the same output coexist and
+    violate that index the instant a second one is inserted — matching by
+    output finds the existing [แพ็ค] (plain pair or bundle) and updates it
+    in place instead, so switching a pair into a bundle (or back) is always
+    an UPDATE, never a duplicate INSERT — but ONLY of the SAME component
+    (loose_id). A different loose_id than the existing [แพ็ค]'s component
+    raises ConversionRoleError rather than silently re-pointing an existing
+    stock recipe at a different SKU.
+
+    Converting an existing plain pair into a bundle (packaging_id given) also
+    auto-deactivates its reciprocal [แกะ], in the same transaction — a
+    blister card cannot be recovered by opening the pack, so the old [แกะ]
+    would otherwise survive active and runnable. Deactivated, never deleted,
+    so its audit history survives.
+
+    Returns {'created': int, 'updated': int, 'formula_ids': [...],
+             'deactivated': int, 'deactivated_ids': [...]}.
     """
     ratio = int(ratio)
+    if packaging_id is not None:
+        direction = 'pack'
     own = conn is None
     if own:
         conn = get_connection()
@@ -156,24 +190,91 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
 
         specs = []
         if direction in ('both', 'pack'):
-            specs.append(dict(name=f"[แพ็ค] {pack_name} ⟵ {ratio} {loose_unit}",
-                              output_pid=pack_id, output_qty=1, inputs=[(loose_id, ratio)]))
+            if packaging_id is not None:
+                packaging_name, _pkg_unit = _pinfo(packaging_id)
+                pack_name_full = f"[แพ็ค] {pack_name} ⟵ {ratio} {loose_unit} + {packaging_name}"
+                pack_inputs = [
+                    {'product_id': loose_id, 'quantity': ratio, 'role': ROLE_COMPONENT},
+                    {'product_id': packaging_id, 'quantity': 1, 'role': ROLE_PACKAGING},
+                ]
+            else:
+                pack_name_full = f"[แพ็ค] {pack_name} ⟵ {ratio} {loose_unit}"
+                pack_inputs = [{'product_id': loose_id, 'quantity': ratio, 'role': None}]
+            validate_pack_inputs(pack_name_full, True, pack_inputs)  # raises before any write
+            specs.append(dict(kind='pack', name=pack_name_full,
+                              output_pid=pack_id, output_qty=1, inputs=pack_inputs))
         if direction in ('both', 'unpack'):
-            specs.append(dict(name=f"[แกะ] {pack_name} ⟶ {ratio} {loose_unit}",
-                              output_pid=loose_id, output_qty=ratio, inputs=[(pack_id, 1)]))
+            specs.append(dict(kind='unpack', name=f"[แกะ] {pack_name} ⟶ {ratio} {loose_unit}",
+                              output_pid=loose_id, output_qty=ratio,
+                              inputs=[{'product_id': pack_id, 'quantity': 1, 'role': None}]))
 
         created = updated = 0
         formula_ids = []
+        deactivated_ids = []
         for spec in specs:
-            want_inputs = frozenset(p for p, _ in spec['inputs'])
-            existing = None
-            for f in conn.execute("SELECT id FROM conversion_formulas WHERE output_product_id=? AND is_active=1",
-                                  (spec['output_pid'],)).fetchall():
-                ins = frozenset(r[0] for r in conn.execute(
-                    "SELECT product_id FROM conversion_formula_inputs WHERE formula_id=?", (f["id"],)))
-                if ins == want_inputs:
-                    existing = f["id"]
-                    break
+            if spec['kind'] == 'pack':
+                # At most one active [แพ็ค] per output (mig 158) — the existing
+                # one (plain pair OR bundle) is always the row to update.
+                row = conn.execute(
+                    "SELECT id, name FROM conversion_formulas"
+                    " WHERE output_product_id=? AND is_active=1 AND name LIKE '[แพ็ค]%'",
+                    (spec['output_pid'],)).fetchone()
+                existing = row['id'] if row else None
+                # Dedup-by-output-alone (above) matches ANY active [แพ็ค] for
+                # this output, plain or bundle — it does not know whether the
+                # caller means to edit that SAME recipe or has pointed a
+                # DIFFERENT loose product at an output that already has one.
+                # Silently rewriting the component would rewire an existing
+                # stock recipe onto a different SKU. Allowed in-place edits:
+                # same component with a changed packaging/ratio/note, or
+                # switching plain<->bundle of that SAME component. Anything
+                # else refuses — raises BEFORE any write this call — never
+                # guess (same fail-closed stance as conversion_roles).
+                if existing is not None:
+                    existing_inputs = conn.execute(
+                        "SELECT product_id, quantity, role FROM conversion_formula_inputs"
+                        " WHERE formula_id=?", (existing,)).fetchall()
+                    if len(existing_inputs) == 1:
+                        existing_component = existing_inputs[0]['product_id']
+                    else:
+                        try:
+                            existing_component = component_product_id(
+                                row['name'], True, existing_inputs)
+                        except ConversionRoleError:
+                            existing_component = None   # malformed — can't tell, refuse below
+                    if existing_component != loose_id:
+                        existing_component_name, _u = _pinfo(existing_component) \
+                            if existing_component is not None else ('ไม่ทราบ (สูตรผิดรูปแบบ)', '')
+                        raise ConversionRoleError(
+                            f'สินค้าแพ็ค "{pack_name}" มีสูตร [แพ็ค] ที่ใช้ "{existing_component_name}" '
+                            f'เป็นวัสดุหลักอยู่แล้ว — เปลี่ยนเป็น "{_loose_name}" ผ่านฟอร์มนี้ไม่ได้ '
+                            f'ต้องลบหรือปิดใช้งานสูตรเดิมก่อน')
+                # Converting a plain pair into a bundle (packaging_id given)
+                # must not leave the OLD [แกะ] active and runnable — a
+                # blister card is destroyed on opening, so there is no real
+                # recovery path once this call lands. Look up the reciprocal
+                # from `existing`'s STILL-single-input state (find_pair_partner
+                # requires that shape) — this runs BEFORE the mutation below
+                # touches `existing`'s inputs, in the same transaction as the
+                # [แพ็ค] update. Deactivate, never delete, so the formula's
+                # audit history (conversion_cost_log runs against it) survives.
+                if packaging_id is not None and existing is not None:
+                    partner = find_pair_partner(existing, conn=conn)
+                    if partner is not None:
+                        conn.execute(
+                            "UPDATE conversion_formulas SET is_active=0 WHERE id=?",
+                            (partner['id'],))
+                        deactivated_ids.append(partner['id'])
+            else:
+                want_inputs = frozenset(i['product_id'] for i in spec['inputs'])
+                existing = None
+                for f in conn.execute("SELECT id FROM conversion_formulas WHERE output_product_id=? AND is_active=1",
+                                      (spec['output_pid'],)).fetchall():
+                    ins = frozenset(r[0] for r in conn.execute(
+                        "SELECT product_id FROM conversion_formula_inputs WHERE formula_id=?", (f["id"],)))
+                    if ins == want_inputs:
+                        existing = f["id"]
+                        break
             if existing is not None:
                 conn.execute("UPDATE conversion_formulas SET name=?, output_qty=?, note=? WHERE id=?",
                              (spec['name'], spec['output_qty'], note or None, existing))
@@ -186,13 +287,15 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
                     (spec['name'], spec['output_pid'], spec['output_qty'], note or None))
                 fid = cur.lastrowid
                 created += 1
-            for ipid, iqty in spec['inputs']:
-                conn.execute("INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity) VALUES (?,?,?)",
-                             (fid, ipid, iqty))
+            for inp in spec['inputs']:
+                conn.execute(
+                    "INSERT INTO conversion_formula_inputs(formula_id, product_id, quantity, role) VALUES (?,?,?,?)",
+                    (fid, inp['product_id'], inp['quantity'], inp['role']))
             formula_ids.append(fid)
         if own:
             conn.commit()
-        return {'created': created, 'updated': updated, 'formula_ids': formula_ids}
+        return {'created': created, 'updated': updated, 'formula_ids': formula_ids,
+               'deactivated': len(deactivated_ids), 'deactivated_ids': deactivated_ids}
     finally:
         if own:
             conn.close()
@@ -267,23 +370,35 @@ def find_pair_partner(formula_id, conn=None):
 
 
 def derive_pair_from_formula(formula_id, conn=None):
-    """Recover the (pack, loose, ratio, direction) that built a [แพ็ค]/[แกะ]
-    pair-half, so the pair form can reopen it prefilled for editing.
+    """Recover the (pack, loose, ratio, direction[, packaging]) that built a
+    [แพ็ค]/[แกะ] pair-half — or a [แพ็ค] pack+packaging bundle — so the pair
+    form can reopen it prefilled for editing.
 
-        PACK   half: output=pack qty1, input=(loose, ratio)  → ratio = input qty
-        UNPACK half: output=loose qty ratio, input=(pack, 1)  → ratio = output_qty
+        PACK   half:   output=pack qty1, input=(loose, ratio)  → ratio = input qty
+        UNPACK half:   output=loose qty ratio, input=(pack, 1)  → ratio = output_qty
+        PACK bundle:   output=pack qty1, inputs=(loose role='component', qty=ratio)
+                       + (packaging role='packaging', qty=1) — the component row
+                       (found BY ROLE via conversion_roles.component_product_id,
+                       never by row position) plays the loose role above.
 
-    Returns {'pack_id','loose_id','ratio','direction','pack_name','loose_name'},
-    or None for anything that is NOT a clean pair-half (missing, no [แพ็ค]/[แกะ]
-    prefix, or != 1 input — i.e. a generic/advanced formula has no pair form).
-    `direction` is 'both' when the reciprocal partner is present, else the single
-    side this formula represents ('pack' or 'unpack')."""
+    Returns {'pack_id','loose_id','ratio','direction','pack_name','loose_name','note'
+    [,'packaging_id','packaging_name']}, or None for anything that is NOT a clean
+    pair-half or pack+packaging bundle: missing formula, no [แพ็ค]/[แกะ] prefix, a
+    role-less/malformed multi-input shape (fails closed rather than guess), a
+    >2-input formula, or a 2-input [แกะ] (no [แกะ] bundle is ever created, so
+    that shape is not this function's to interpret).
+
+    `direction` is 'both' when the reciprocal partner is present, else the
+    single side this formula represents ('pack' or 'unpack') — a bundle never
+    has a reciprocal partner (find_pair_partner rejects >1-input formulas), so
+    a bundle always derives direction='pack'."""
     own = conn is None
     if own:
         conn = get_connection()
     try:
         f = conn.execute(
-            "SELECT id, name, output_product_id, output_qty, note FROM conversion_formulas WHERE id=?",
+            "SELECT id, name, output_product_id, output_qty, note, is_active"
+            " FROM conversion_formulas WHERE id=?",
             (formula_id,)).fetchone()
         if f is None:
             return None
@@ -291,12 +406,23 @@ def derive_pair_from_formula(formula_id, conn=None):
         is_pack, is_unpack = name.startswith('[แพ็ค]'), name.startswith('[แกะ]')
         if not (is_pack or is_unpack):
             return None                          # generic/advanced formula — no pair form
-        ins = [(r["product_id"], r["quantity"]) for r in conn.execute(
-            "SELECT product_id, quantity FROM conversion_formula_inputs WHERE formula_id=?",
-            (formula_id,)).fetchall()]
-        if len(ins) != 1:
-            return None                          # not a clean 1-input pair half
-        in_pid, in_qty = ins[0]
+        rows = conn.execute(
+            "SELECT product_id, quantity, role FROM conversion_formula_inputs WHERE formula_id=?",
+            (formula_id,)).fetchall()
+
+        packaging_id = None
+        if len(rows) == 1:
+            in_pid, in_qty = rows[0]["product_id"], rows[0]["quantity"]
+        elif len(rows) == 2 and is_pack:
+            try:
+                in_pid = component_product_id(name, bool(f["is_active"]), rows)
+            except ConversionRoleError:
+                return None                      # malformed bundle — fail closed, not a guess
+            in_qty = next(r["quantity"] for r in rows if r["product_id"] == in_pid)
+            packaging_id = next(r["product_id"] for r in rows if r["role"] == ROLE_PACKAGING)
+        else:
+            return None                          # not a clean 1-input half, or a 2-input [แกะ]
+
         if is_pack:
             pack_id, loose_id, ratio = f["output_product_id"], in_pid, in_qty
         else:                                    # [แกะ]
@@ -308,9 +434,13 @@ def derive_pair_from_formula(formula_id, conn=None):
             r = conn.execute("SELECT product_name FROM products WHERE id=?", (pid,)).fetchone()
             return r["product_name"] if r else str(pid)
 
-        return {'pack_id': pack_id, 'loose_id': loose_id, 'ratio': int(ratio),
-                'direction': direction, 'pack_name': _name(pack_id), 'loose_name': _name(loose_id),
-                'note': f["note"] or ''}
+        result = {'pack_id': pack_id, 'loose_id': loose_id, 'ratio': int(ratio),
+                  'direction': direction, 'pack_name': _name(pack_id), 'loose_name': _name(loose_id),
+                  'note': f["note"] or ''}
+        if packaging_id is not None:
+            result['packaging_id'] = packaging_id
+            result['packaging_name'] = _name(packaging_id)
+        return result
     finally:
         if own:
             conn.close()

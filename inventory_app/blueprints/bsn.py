@@ -44,6 +44,10 @@ def _flash_unit_hazard(b):
         flash(f'"{b["product_name"]}" หน่วย {b["bsn_unit"]}: ห้ามตั้ง ratio ข้ามหน่วย — '
               f'บิลหน่วยนี้ต้อง map ไปที่ "{b["partner_name"]}" '
               f'(ใช้ "แยก mapping ตามหน่วย" ในหน้า mapping)', 'danger')
+    elif b['kind'] == 'configuration_error':
+        flash(f'"{b["product_name"]}" หน่วย {b["bsn_unit"]}: '
+              f'บันทึกไม่ได้ — สูตรแปลงสินค้า (id {b["formula_id"]}) ผิดรูปแบบ: '
+              f'{b["message"]} — แก้สูตรที่หน้าสูตรแปลงสินค้าก่อน', 'danger')
     else:  # pack_piece
         flash(f'"{b["product_name"]}" หน่วย {b["bsn_unit"]}: สินค้าสต็อกเป็น{b["product_unit"]} '
               f'บันทึกได้เฉพาะ ratio 1 (ขายทั้ง{b["product_unit"]} แต่บิลเขียนหน่วยต่าง) — '
