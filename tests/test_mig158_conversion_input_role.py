@@ -190,6 +190,12 @@ def test_index_break_it_once(pre158_conn):
     ).fetchall()
     assert len(rows) == 2, "guard removed: duplicate active [แพ็ค] silently succeeded"
 
+    # Remove the duplicate the missing guard let through before restoring the
+    # index, or CREATE UNIQUE INDEX itself fails on the very row we just proved
+    # got past the missing guard.
+    pre158_conn.execute(
+        "DELETE FROM conversion_formulas WHERE name='[แพ็ค] second' AND output_product_id=933"
+    )
     pre158_conn.execute(
         "CREATE UNIQUE INDEX ux_conv_active_pack_per_output "
         "ON conversion_formulas(output_product_id) "
