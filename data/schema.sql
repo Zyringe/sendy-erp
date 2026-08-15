@@ -249,7 +249,8 @@ CREATE TABLE conversion_formula_inputs (
     formula_id  INTEGER NOT NULL REFERENCES conversion_formulas(id) ON DELETE CASCADE,
     product_id  INTEGER NOT NULL REFERENCES products(id),
     quantity    INTEGER NOT NULL
-);
+, role TEXT
+    CHECK (role IS NULL OR role IN ('component', 'packaging')));
 
 CREATE TABLE conversion_formulas (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2013,6 +2014,10 @@ CREATE INDEX idx_wallet_txns_platform_time ON marketplace_wallet_txns(platform, 
 CREATE INDEX idx_wht_hist_emp ON employee_wht_history(employee_id);
 
 CREATE INDEX idx_xp5_mapping_product ON xp5_product_mapping(product_id);
+
+CREATE UNIQUE INDEX ux_conv_active_pack_per_output
+    ON conversion_formulas(output_product_id)
+    WHERE is_active = 1 AND name LIKE '[แพ็ค]%';
 
 CREATE TRIGGER after_transaction_delete
 AFTER DELETE ON transactions
