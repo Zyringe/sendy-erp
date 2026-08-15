@@ -689,9 +689,9 @@ def payroll_item_edit(run_id: int, item_id: int):
             item_id,
             bonus=_float_or_none("bonus"),
             other_additions=_float_or_none("other_additions"),
-            other_additions_note=request.form.get("other_additions_note") or None,
+            other_additions_note=request.form.get("other_additions_note"),
             other_deductions=_float_or_none("other_deductions"),
-            other_deductions_note=request.form.get("other_deductions_note") or None,
+            other_deductions_note=request.form.get("other_deductions_note"),
             wht_amount=_float_or_none("wht_amount"),
             late=_bool_or_none("late"),
         )

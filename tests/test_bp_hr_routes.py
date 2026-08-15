@@ -304,3 +304,106 @@ def test_finalize_is_refused_while_an_advance_would_be_stamped_uncollected(admin
     conn.commit(); conn.close()
     admin_client.post(f'/hr/payroll/{rid}/finalize', data={}, follow_redirects=True)
     assert status() == 'finalized'
+
+
+# ── /hr/payroll/<id>/item/<id> — blank note means CLEAR, absent means KEEP ──
+#
+# The model contract is `None` preserves / `""` clears; these two pin the route
+# boundary that has to carry that distinction through, in both directions. The
+# pair is the point: a fix that clears on blank is only correct if it still
+# preserves on an omitted key.
+
+
+def test_payroll_item_edit_clears_explicitly_blank_notes(admin_client, tmp_db):
+    rid = _make_finalized_run(tmp_db)
+    admin_client.post(
+        f'/hr/payroll/{rid}/reopen',
+        data={'reason': 'prepare note-clear route test'},
+    )
+
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    try:
+        item_id = conn.execute(
+            "SELECT id FROM payroll_items WHERE run_id=? ORDER BY id LIMIT 1",
+            (rid,),
+        ).fetchone()[0]
+        conn.execute(
+            """UPDATE payroll_items
+                  SET other_additions_note='temporary addition note',
+                      other_deductions_note='temporary deduction note'
+                WHERE id=?""",
+            (item_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    resp = admin_client.post(
+        f'/hr/payroll/{rid}/item/{item_id}',
+        data={
+            'other_additions_note': '',
+            'other_deductions_note': '',
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+
+    conn = sqlite3.connect(tmp_db)
+    try:
+        notes = conn.execute(
+            """SELECT other_additions_note, other_deductions_note
+                 FROM payroll_items WHERE id=?""",
+            (item_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert notes == ('', '')
+
+
+def test_payroll_item_edit_preserves_notes_when_keys_are_omitted(admin_client, tmp_db):
+    rid = _make_finalized_run(tmp_db)
+    admin_client.post(
+        f'/hr/payroll/{rid}/reopen',
+        data={'reason': 'prepare omitted-note route test'},
+    )
+
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    try:
+        item_id = conn.execute(
+            "SELECT id FROM payroll_items WHERE run_id=? ORDER BY id LIMIT 1",
+            (rid,),
+        ).fetchone()[0]
+        conn.execute(
+            """UPDATE payroll_items
+                  SET other_additions_note='keep addition note',
+                      other_deductions_note='keep deduction note'
+                WHERE id=?""",
+            (item_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    resp = admin_client.post(
+        f'/hr/payroll/{rid}/item/{item_id}',
+        data={'bonus': '12345'},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+
+    conn = sqlite3.connect(tmp_db)
+    try:
+        bonus, *notes = conn.execute(
+            """SELECT bonus, other_additions_note, other_deductions_note
+                 FROM payroll_items WHERE id=?""",
+            (item_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    # CONTROL first: the route redirects (302) on its error path AND on the
+    # finalized-run bail-out too, so "notes unchanged" alone is satisfied by a
+    # request that never reached update_payroll_item. The bonus is the proof
+    # that it did — verified by deleting the reopen POST above, which leaves
+    # the run finalized and made this assertion the only one that went red.
+    assert bonus == 12345.0
+    assert tuple(notes) == ('keep addition note', 'keep deduction note')
