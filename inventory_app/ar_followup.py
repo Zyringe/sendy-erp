@@ -329,6 +329,24 @@ def resolve_customer_target(target: str,
             if row:
                 code = row['code']
                 names = [row['name']] if row['name'] else []
+        if not code:
+            # …and so is a code whose name is BLANK everywhere. _resolve_target
+            # builds its name union with `customer_name != ''`, so a code like
+            # 038ก01 — real AR rows, empty snapshot name, no master row —
+            # resolves to nothing there. Refusing it would make a genuine
+            # customer un-loggable; Put ruled 2026-08-15 that every code
+            # present in Express is legitimate.
+            for sql in (
+                "SELECT 1 FROM express_ar_outstanding"
+                " WHERE TRIM(customer_code) = ? LIMIT 1",
+                "SELECT 1 FROM sales_transactions"
+                " WHERE TRIM(customer_code) = ? LIMIT 1",
+                "SELECT 1 FROM ar_followup_log"
+                " WHERE TRIM(customer_code) = ? AND deleted_at IS NULL LIMIT 1",
+            ):
+                if c.execute(sql, (target,)).fetchone():
+                    code, names = target, []
+                    break
 
         if code:
             row = c.execute(
@@ -355,7 +373,9 @@ def resolve_customer_target(target: str,
                 return {'customer_code': code, 'customer': row['customer']}
             if names:
                 return {'customer_code': code, 'customer': names[0]}
-            return None
+            # Real code, no name anywhere — display the code rather than trust
+            # whatever the form posted.
+            return {'customer_code': code, 'customer': code}
 
         # Orphan / walk-in keyed by name — accept ONLY with real evidence, so a
         # typo'd or invented key cannot open a new history group.

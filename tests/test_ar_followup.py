@@ -900,3 +900,20 @@ def test_malformed_dates_refuse_without_inserting(tmp_db, field):
     _seed_two_customers(tmp_db)
     _post_log(tmp_db, **{field: '31/08/2569'})
     assert _logs_for(tmp_db, 'C-KEYA') == [], f'{field} accepted a malformed date'
+
+
+def test_resolve_customer_target_accepts_a_code_whose_name_is_blank(empty_db_conn):
+    """Regression, found by the running-app check: 038ก01 has real AR rows whose
+    customer_name is EMPTY and no master row, so _resolve_target's name union
+    (`customer_name != ''`) finds nothing. Refusing it made a genuine customer
+    un-loggable. Put ruled every Express code is legitimate."""
+    c = empty_db_conn
+    _ins_express(c, 'IV-BLANK', '038ก01', '', '2026-05-01', 500)
+    c.commit()
+
+    got = arf.resolve_customer_target('038ก01', conn=c)
+
+    assert got == {'customer_code': '038ก01', 'customer': '038ก01'}, \
+        'a real but nameless customer code must still resolve'
+    # control: an invented code with no evidence anywhere is still refused
+    assert arf.resolve_customer_target('NO-SUCH-CODE', conn=c) is None
