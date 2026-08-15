@@ -7,6 +7,7 @@ route rules are unchanged, only their endpoint names gain a `partners.`
 prefix.
 """
 import os
+import re
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort, current_app)
@@ -240,15 +241,80 @@ def supplier_summary(supplier_name):
 
 # ── Customer Map ──────────────────────────────────────────────────────────────
 
-def _parse_bsn_customers():
-    import re
-    csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            '..', '..', 'data', 'source', 'bsn_customer_info.csv')
+# Customer rows live in the CODE COLUMN — exactly two leading spaces — and end
+# with the salesperson / zone / discount trio. Put ruled 2026-08-15 that EVERY
+# customer code present in Express is legitimate and must be imported with all
+# its information, so the code token is `\S+` rather than a digit pattern.
+#
+# Verified against data/source/bsn_customer_info.csv + ARMAS.DBF (2026-08-15):
+# this matches 2,663 rows, every one of them a real ARMAS customer code, with
+# zero codes matched that ARMAS does not have and zero duplicate code lines.
+# The old `\d{2}[ก-ฮA-Za-z]\d{2,3}` shape matched only 1,477 — it silently
+# dropped 1,186 real customers (three- and four-digit prefixes like `032ท03` /
+# `1101ค01`, two-Thai-letter `23ทธ01`, and the 280 Laos `L…` codes plus
+# `Bหน้าร้าน` / `S…` / `Z…`).
+_CUSTOMER_RE = re.compile(r'  (\S+)\s{2,}(.+?)\s{3,}(\S+)\s+(\S+)\s+(\d+)\s*$')
+
+# A CANDIDATE is any line in that same column with a token and more text after
+# it. Anything candidate-shaped that the strict row regex refuses is a format
+# shift and must fail loud rather than be skipped.
+#
+# Anchoring on the column is load-bearing: measured on the same file, an
+# unanchored "lstrip() starts with two digits" rule also matches 434
+# address-continuation lines (postcodes like `10240`, phone numbers) sitting
+# ~17 columns to the right — first at line 51 — so every real import would
+# refuse for the wrong reason.
+_CUSTOMER_CANDIDATE_RE = re.compile(r'  (\S+)\s{2,}\S')
+
+# The only structural line that shares the code column: the per-page column
+# header (529 occurrences, one per page break). Everything else at two-space
+# indent in the real export is a customer row or a `ประเภท :` section header.
+_COLUMN_HEADER_RE = re.compile(r'\s*รหัส\s.*ส่วนลด')
+
+
+def _parse_bsn_customers(csv_path=None):
+    """Parse the BSN customer-master export into a list of customer dicts.
+
+    Raises ValueError — never returns a short list — when the file is not the
+    customer report, when it yields zero customers, or when any line in the
+    customer-code column fails the strict row regex. A partial parse used to be
+    reported to the operator as "นำเข้าสำเร็จ".
+
+    SCOPE (Put, 2026-08-15): every customer code present in Express is
+    legitimate and must be imported with all of its information. The strict
+    row regex therefore accepts ANY code token in the code column, not a digit
+    pattern. Verified against data/source/bsn_customer_info.csv joined to
+    ARMAS.DBF on 2026-08-15: 2,663 rows parse, all 2,663 codes exist in ARMAS,
+    no code is matched that ARMAS lacks, and no code line is matched twice.
+
+    Before that ruling the regex required `\d{2}[ก-ฮA-Za-z]\d{2,3}` and matched
+    only 1,477 rows, silently dropping 1,186 real customers: 899 three-digit
+    prefixes (`032ท03`), `042บ021`, `1101ค01`, `23ทธ01`, the 280 Laos `L…`
+    codes, `Bหน้าร้าน`, and the `S…` / `Z…` shop codes. Every one of them
+    already existed in `customers` from another path, which is exactly why
+    nobody noticed.
+    """
+    if csv_path is None:
+        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                '..', '..', 'data', 'source', 'bsn_customer_info.csv')
     with open(csv_path, encoding='cp874', errors='replace') as f:
         content = f.read()
     lines = [l.strip('"').replace('\xa0', ' ') for l in content.split('\n')]
 
+    # "Is this even the right report" gate, before the shape accounting below
+    # can produce a confusing error. Deliberately POSITIONAL: a bare
+    # "contains รายงาน anywhere" only passed on the real file by way of its
+    # ">>>> จบรายงาน <<<<" trailer, so any Express report mentioning ลูกค้า
+    # would clear it — and a sales-by-customer report also carries codes in a
+    # left column, which is worse than a clean refusal (the row regex would
+    # match wrongly-positioned fields and write garbage name/zone).
+    if 'รายละเอียดลูกค้า' not in '\n'.join(lines[:10]):
+        raise ValueError(
+            'ไฟล์ผิดประเภท: ไม่ใช่รายงานรายละเอียดลูกค้าของ BSN (ไม่พบหัวรายงาน)'
+        )
+
     customers = []
+    rejected = []          # (line_number, excerpt) for candidate-shaped misses
     current_type = ''
     i = 0
     while i < len(lines):
@@ -257,8 +323,11 @@ def _parse_bsn_customers():
         if type_match:
             current_type = type_match.group(1).strip()
             i += 1; continue
+        if _COLUMN_HEADER_RE.match(line):
+            # Repeats once per page break; structural, never a customer row.
+            i += 1; continue
 
-        cust_match = re.match(r'  (\d{2}[ก-ฮA-Za-z]\d{2,3})\s+(.+?)\s{3,}(\S+)\s+(\S+)\s+\d+', line)
+        cust_match = _CUSTOMER_RE.match(line)
         if cust_match:
             code = cust_match.group(1)
             name = cust_match.group(2).strip()
@@ -274,7 +343,11 @@ def _parse_bsn_customers():
             j = i + 1
             while j < len(lines) and j < i + 10:
                 nl = lines[j]
-                if re.match(r'  \d{2}[ก-ฮA-Za-z]\d{2,3}\s', nl): break
+                # Break on the CANDIDATE shape, not just the strict one: a
+                # format-shifted customer row must end this block and return to
+                # the main loop (where it is recorded as rejected) instead of
+                # being silently swallowed as address text.
+                if _CUSTOMER_CANDIDATE_RE.match(nl): break
                 if re.match(r'\(BSN\)', nl.strip()): j += 5; break
                 am = re.match(r'\s+ที่อยู่\s*:\s*(.*?)\s+ผู้ติดต่อ\s*:\s*(.*)', nl)
                 if am:
@@ -294,7 +367,20 @@ def _parse_bsn_customers():
             customer['address'] = ' '.join(addr_parts)
             customers.append(customer)
             i = j; continue
+        if _CUSTOMER_CANDIDATE_RE.match(line):
+            # Sits in the customer-code column but the strict regex refused it:
+            # the format shifted. Record it — do NOT skip on.
+            rejected.append((i + 1, line.strip()))
         i += 1
+
+    if rejected:
+        line_no, excerpt = rejected[0]
+        raise ValueError(
+            f'อ่านข้อมูลลูกค้าไม่ครบ: บรรทัด {line_no}: {excerpt[:120]}'
+            f' (พบทั้งหมด {len(rejected)} บรรทัด)'
+        )
+    if not customers:
+        raise ValueError('ไม่พบรายการลูกค้าในรายงาน — ไฟล์ผิดประเภทหรือรูปแบบเปลี่ยน')
     return customers
 
 
@@ -323,6 +409,11 @@ def customer_import_bsn():
         customers = _parse_bsn_customers()
     except FileNotFoundError:
         flash('ไม่พบไฟล์ bsn_customer_info.csv ใน data/source/ กรุณาวางไฟล์ก่อนนำเข้า', 'danger')
+        return redirect(url_for('partners.customer_map'))
+    except ValueError as e:
+        # Zero/partial parse — refuse the whole import rather than write a
+        # silent subset and flash "นำเข้าสำเร็จ" over it.
+        flash(str(e), 'danger')
         return redirect(url_for('partners.customer_map'))
     inserted, updated, protected = models.import_customers_from_bsn(customers)
     flash(

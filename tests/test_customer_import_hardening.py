@@ -300,3 +300,194 @@ def test_existing_unnormalized_row_updates_normally(tmp_db, run_import):
     # Zone and credit_days updated
     assert row['zone'] == 'NEW_ZONE'
     assert row['credit_days'] == 15
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Finding 6 — the customer-master parser imports EVERY Express code and
+# refuses a zero/partial parse.
+#
+# Put ruled 2026-08-15: every customer code present in Express is legitimate
+# and must be imported with all of its information. Fixtures are written in
+# real cp874 with the real column geometry, because the whole defect class is
+# "the format shifted and nobody noticed".
+# ═══════════════════════════════════════════════════════════════════════════
+
+_HDR = [
+    '"(BSN)บจก.บุญสวัสดิ์นำชัย                                                                                 หน้า   :        1"',
+    '"  รายละเอียดลูกค้า\xa0แยกตามประเภทลูกค้า"',
+    '"ประเภทลูกค้าจาก                  ถึง  ๙๙                                                                 วันที่ : 24/04/69"',
+    '"--------------------------------------------------------------------------------------------------------------------------"',
+    '"  รหัส       คำนำหน้า+ชื่อลูกค้า                                                 พนักงานขาย  เขต   ประเภทราคา     ส่วนลด"',
+    '"--------------------------------------------------------------------------------------------------------------------------"',
+    '"  ประเภท : ลูกค้าประจำ"',
+]
+_FOOTER = ['">>>> จบรายงาน <<<<"']
+
+# The real hazard line for the column anchor: a bare postcode ~39 columns in,
+# followed by the เครดิต field. Verbatim geometry from line 51 of the real
+# export. `lstrip()` on it starts with two digits, so the plan's unanchored
+# candidate rule would read it as a broken customer row.
+_POSTCODE_CONTINUATION = (
+    '"                                       10240                         '
+    'เครดิต    :  60  วัน        วงเงิน    :          0.00"')
+
+
+def _cust_block(code, name, sp='01', zone='กท', tail_discount='0'):
+    return [
+        f'"  {code}      {name}                                                     {sp}          {zone}       {tail_discount}"',
+        '"      ที่อยู่  : 233\xa0ซ.ทดสอบ\xa07                                    ผู้ติดต่อ : คุณเอ"',
+        '"                 เขตทดสอบ\xa0กรุงเทพ                                     เลขที่บ/ช : 11-02-01-00     ขนส่งโดย  : 01"',
+        _POSTCODE_CONTINUATION,
+        '"      โทร.     : 02-7303880-1,F:02-7303882                           เงื่อนไข  :"',
+        '"      Tax ID   : 0103544032448         \xa0สำนักงานใหญ่\xa0"',
+        '',
+    ]
+
+
+def _write_cp874(tmp_path, name, lines):
+    p = tmp_path / name
+    p.write_text('\n'.join(lines) + '\n', encoding='cp874')
+    return str(p)
+
+
+@pytest.fixture
+def valid_customer_file(tmp_path):
+    return _write_cp874(tmp_path, 'ok.csv',
+                        _HDR + _cust_block('01ก01', 'หจก.\xa0ทดสอบหนึ่ง')
+                        + _cust_block('01ก02', '\xa0ทดสอบสอง', sp='03') + _FOOTER)
+
+
+def test_valid_file_parses_every_customer(valid_customer_file):
+    from blueprints.partners import _parse_bsn_customers
+    rows = _parse_bsn_customers(valid_customer_file)
+    assert [r['code'] for r in rows] == ['01ก01', '01ก02']
+    assert rows[0]['salesperson'] == '01' and rows[0]['zone'] == 'กท'
+    assert rows[0]['credit_days'] == 60
+    assert rows[0]['contact'] == 'คุณเอ'
+    assert rows[0]['tax_id'] == '0103544032448'
+
+
+# Every code shape Express actually holds — Put's ruling is that all of them
+# are legitimate. The pre-ruling regex (`\d{2}[ก-ฮA-Za-z]\d{2,3}`) matched only
+# the first of these and silently dropped 1,186 real customers.
+@pytest.mark.parametrize('code', [
+    '01ก01',        # two-digit prefix (the only shape the old regex allowed)
+    '032ท03',       # three-digit prefix — 899 rows in the real export
+    '042บ021',      # three-digit prefix, three-digit suffix
+    '1101ค01',      # four-digit prefix
+    '23ทธ01',       # two Thai letters
+    'L1004ค01',     # Laos branch code — 280 rows
+    'Bหน้าร้าน',     # shop-front code, no digits at all
+    'S02',          # short salesperson-style code
+    'Zหน้าร้าน',
+])
+def test_every_express_code_shape_is_imported(tmp_path, code):
+    from blueprints.partners import _parse_bsn_customers
+    path = _write_cp874(tmp_path, 'shapes.csv',
+                        _HDR + _cust_block(code, 'ร้านทดสอบ') + _FOOTER)
+    rows = _parse_bsn_customers(path)
+    assert [r['code'] for r in rows] == [code]
+    assert rows[0]['name'] == 'ร้านทดสอบ'
+    assert rows[0]['salesperson'] == '01' and rows[0]['zone'] == 'กท'
+
+
+def test_format_shifted_customer_row_is_refused_with_its_source_line(tmp_path):
+    """The second row still sits in the code column but has lost its trailing
+    discount field, so the strict row regex refuses it. Silently dropping it is
+    the defect."""
+    from blueprints.partners import _parse_bsn_customers
+    shifted = _cust_block('01ก02', '\xa0ทดสอบสอง', sp='03')
+    shifted[0] = shifted[0].rstrip('"').rstrip().rstrip('0').rstrip() + '"'
+    path = _write_cp874(tmp_path, 'shifted.csv',
+                        _HDR + _cust_block('01ก01', 'หจก.\xa0ทดสอบหนึ่ง') + shifted + _FOOTER)
+
+    with pytest.raises(ValueError) as exc:
+        _parse_bsn_customers(path)
+
+    msg = str(exc.value)
+    assert 'อ่านข้อมูลลูกค้าไม่ครบ' in msg
+    assert '01ก02' in msg, 'error must quote the offending source line'
+    # the shifted row is line 15: 7 header lines + a 7-line customer block + 1
+    assert 'บรรทัด 15:' in msg, f'error must name the source line number: {msg}'
+
+
+def test_report_shaped_file_with_zero_customers_is_refused(tmp_path):
+    from blueprints.partners import _parse_bsn_customers
+    path = _write_cp874(tmp_path, 'empty_report.csv', _HDR + _FOOTER)
+    with pytest.raises(ValueError) as exc:
+        _parse_bsn_customers(path)
+    assert 'ไม่พบรายการลูกค้าในรายงาน' in str(exc.value)
+
+
+def test_non_report_file_is_refused(tmp_path):
+    """A DIFFERENT Express report that still mentions ลูกค้า and carries codes
+    in a left column — the shape a bare "contains รายงาน" gate would wave
+    through, and the one that would write garbage name/zone."""
+    from blueprints.partners import _parse_bsn_customers
+    path = _write_cp874(tmp_path, 'ar_report.csv', [
+        '"(BSN)บจก.บุญสวัสดิ์นำชัย                                    หน้า   :        1"',
+        '"  รายงานลูกหนี้คงค้าง\xa0แยกตามลูกค้า"',
+        '"  01ก01      ลูกค้าทดสอบ                                     01          กท       0"',
+        '">>>> จบรายงาน <<<<"',
+    ])
+    with pytest.raises(ValueError) as exc:
+        _parse_bsn_customers(path)
+    assert 'ไฟล์ผิดประเภท' in str(exc.value)
+
+
+def test_address_continuation_lines_are_not_customer_candidates(tmp_path):
+    """Pins the COLUMN ANCHOR, the one deviation from the plan's rule.
+
+    The fixture contains a real postcode-continuation line whose `lstrip()`
+    starts with two digits. The plan's unanchored rule flags 434 such lines in
+    the real export (first at line 51) and would refuse every real import.
+    """
+    from blueprints.partners import (_parse_bsn_customers,
+                                     _CUSTOMER_CANDIDATE_RE, _CUSTOMER_RE)
+    hazard = _POSTCODE_CONTINUATION.strip('"').replace('\xa0', ' ')
+
+    # control: the hazard line IS the shape the unanchored rule would catch
+    assert hazard.lstrip()[:2].isdigit(), 'fixture lost its postcode line'
+    assert not _CUSTOMER_RE.match(hazard), 'hazard line must not parse as a row'
+    # …and the anchored rule correctly ignores it
+    assert not _CUSTOMER_CANDIDATE_RE.match(hazard), \
+        'an address continuation was read as a broken customer row'
+
+    path = _write_cp874(tmp_path, 'ok2.csv',
+                        _HDR + _cust_block('01ก01', 'ร้านหนึ่ง') + _FOOTER)
+    assert len(_parse_bsn_customers(path)) == 1
+
+
+def test_repeated_page_column_header_is_not_a_candidate(tmp_path):
+    """The column header repeats once per page break (529× in the real export)
+    and sits in the code column — it must be structural, not a broken row."""
+    from blueprints.partners import _parse_bsn_customers
+    # Verbatim page-break geometry from the real export (lines 40-45): banner,
+    # title, range, dashes, column header, dashes. The 6-line shape is
+    # load-bearing — the parser's `(BSN)` handler skips a fixed 5 lines.
+    page_two = _HDR[:6]
+    path = _write_cp874(tmp_path, 'paged.csv',
+                        _HDR + _cust_block('01ก01', 'ร้านหนึ่ง')
+                        + page_two + _cust_block('01ก02', 'ร้านสอง') + _FOOTER)
+    assert [r['code'] for r in _parse_bsn_customers(path)] == ['01ก01', '01ก02']
+
+
+@pytest.mark.skipif(
+    not os.path.exists('/Users/putty/Sendai-Boonsawat/sendy_erp/data/source/bsn_customer_info.csv'),
+    reason='real BSN customer export not present')
+def test_real_export_parses_every_express_code():
+    """Integration anchor for Put's ruling. Shifts when the export is
+    refreshed — recompute against ARMAS.DBF, do not guess."""
+    from blueprints.partners import _parse_bsn_customers
+    rows = _parse_bsn_customers(
+        '/Users/putty/Sendai-Boonsawat/sendy_erp/data/source/bsn_customer_info.csv')
+    assert len(rows) == 2663, f'expected 2,663 customer rows, got {len(rows)}'
+    codes = {r['code'] for r in rows}
+    assert len(codes) == len(rows), 'a code was parsed twice'
+    # every row carries its identifying information, not just a code
+    assert all(r['name'] and r['salesperson'] and r['zone'] and r['customer_type']
+               for r in rows)
+    # the shapes the old regex dropped are present
+    for code in ('032ท03', '1101ค01', '23ทธ01', 'L1004ค01', 'Bหน้าร้าน'):
+        assert code in codes, f'{code} still missing'
