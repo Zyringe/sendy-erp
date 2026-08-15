@@ -412,6 +412,37 @@ def test_route_edit_prefills_packaging_field(admin_client, tmp_db):
     assert f'value="{card_pid}"' in body                      # hidden packaging_id prefilled
 
 
+def test_route_nonnumeric_packaging_id_reshows_not_500(admin_client, tmp_db):
+    """Codex review finding 4 (blocker on PR #388): a hidden field carrying a
+    non-numeric value (stale tab, hand-edited form) is not a trust boundary —
+    the route must reshow with a flash, never 500 on a bare ValueError."""
+    pack_pid, loose_pid = 900451, 900452
+    _seed_route_products(tmp_db, pack_pid, loose_pid, 900453)
+    before = sqlite3.connect(tmp_db).execute(
+        "SELECT COUNT(*) FROM conversion_formulas WHERE is_active=1").fetchone()[0]
+
+    resp = admin_client.post('/conversions/pair', data={
+        'pack_id': str(pack_pid), 'loose_id': str(loose_pid), 'packaging_id': 'abc',
+        'ratio': '1', 'direction': 'both',
+    }, follow_redirects=True)
+    assert resp.status_code == 200, resp.data[:500]            # reshow, never a 500
+
+    after = sqlite3.connect(tmp_db).execute(
+        "SELECT COUNT(*) FROM conversion_formulas WHERE is_active=1").fetchone()[0]
+    assert after == before                                     # nothing written
+
+
+def test_route_nonnumeric_pack_id_reshows_not_500(admin_client, tmp_db):
+    """Same trust-boundary gap on pack_id itself (the first int() the route
+    calls, previously outside the try/except that catches ConversionRoleError
+    / IntegrityError)."""
+    resp = admin_client.post('/conversions/pair', data={
+        'pack_id': 'abc', 'loose_id': '1', 'packaging_id': '',
+        'ratio': '1', 'direction': 'both',
+    }, follow_redirects=True)
+    assert resp.status_code == 200, resp.data[:500]
+
+
 def test_route_no_packaging_still_creates_plain_pair(admin_client, tmp_db):
     """Regression control: leaving the new field blank must behave exactly
     as before (pinned already by test_conversion_routes.py, repeated here

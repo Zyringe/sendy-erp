@@ -251,11 +251,20 @@ def conversion_pair():
             return _reshow()
         if direction not in ('both', 'pack', 'unpack'):
             direction = 'both'
-        packaging_id_i = int(packaging_id) if packaging_id else None
+        # A hidden field is not a trust boundary — a stale tab or a hand-edited
+        # form can carry a non-numeric id here, and the ValueError from a bare
+        # int() must not escape as a 500. Parse all three together, inside the
+        # same reshow-on-error contract as every other validation check above.
+        try:
+            pack_id_i, loose_id_i = int(pack_id), int(loose_id)
+            packaging_id_i = int(packaging_id) if packaging_id else None
+        except ValueError:
+            flash('รหัสสินค้าไม่ถูกต้อง', 'danger')
+            return _reshow()
         if packaging_id_i is not None:
             direction = 'pack'                   # server-side backstop for the JS lock
         try:
-            res = models.upsert_pack_unpack_pair(int(pack_id), int(loose_id), ratio_i, direction, note,
+            res = models.upsert_pack_unpack_pair(pack_id_i, loose_id_i, ratio_i, direction, note,
                                                   packaging_id=packaging_id_i)
         except (models.ConversionRoleError, sqlite3.IntegrityError) as e:
             flash(f'บันทึกไม่สำเร็จ: {e}', 'danger')
