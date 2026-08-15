@@ -65,6 +65,15 @@ def test_single_input_role_component_is_valid():
     validate_pack_inputs('[แพ็ค] pack', True, inputs)
 
 
+def test_single_input_role_packaging_raises():
+    """A lone input row is the component (single-input pair-half shape) —
+    'packaging' there is a configuration error, not a silently accepted
+    third shape."""
+    inputs = [{'product_id': 869, 'quantity': 1, 'role': ROLE_PACKAGING}]
+    with pytest.raises(ConversionRoleError):
+        validate_pack_inputs('[แพ็ค] pack', True, inputs)
+
+
 def test_valid_bundle_two_inputs():
     inputs = [
         {'product_id': 270, 'quantity': 1, 'role': ROLE_COMPONENT},
@@ -105,6 +114,35 @@ def test_multi_input_two_packaging_raises():
     inputs = [
         {'product_id': 869, 'quantity': 1, 'role': ROLE_PACKAGING},
         {'product_id': 870, 'quantity': 1, 'role': ROLE_PACKAGING},
+    ]
+    with pytest.raises(ConversionRoleError):
+        validate_pack_inputs('[แพ็ค] pack', True, inputs)
+
+
+def test_multi_input_one_component_two_packaging_raises():
+    """Isolates the packaging-count check from the component-count check:
+    exactly 1 component (satisfies that clause) + 2 packaging + 0 unroled.
+    test_multi_input_two_packaging_raises above is confounded (0 components
+    there too, so the component-count clause alone would already catch it)
+    — this is the one that actually exercises 'packaging != 1'."""
+    inputs = [
+        {'product_id': 270, 'quantity': 1, 'role': ROLE_COMPONENT},
+        {'product_id': 869, 'quantity': 1, 'role': ROLE_PACKAGING},
+        {'product_id': 870, 'quantity': 1, 'role': ROLE_PACKAGING},
+    ]
+    with pytest.raises(ConversionRoleError):
+        validate_pack_inputs('[แพ็ค] pack', True, inputs)
+
+
+def test_multi_input_valid_pair_plus_stray_unroled_third_row_raises():
+    """1 component + 1 packaging + 1 EXTRA row with no role at all. A count
+    check that only asserts 'exactly one component AND exactly one
+    packaging' (ignoring leftover rows) would wrongly accept this — the
+    unroled-rows check is what closes that hole."""
+    inputs = [
+        {'product_id': 270, 'quantity': 1, 'role': ROLE_COMPONENT},
+        {'product_id': 869, 'quantity': 1, 'role': ROLE_PACKAGING},
+        {'product_id': 999, 'quantity': 1, 'role': None},
     ]
     with pytest.raises(ConversionRoleError):
         validate_pack_inputs('[แพ็ค] pack', True, inputs)
