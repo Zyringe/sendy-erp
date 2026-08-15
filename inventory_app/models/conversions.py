@@ -163,7 +163,14 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
     in place instead, so switching a pair into a bundle (or back) is always
     an UPDATE, never a duplicate INSERT.
 
-    Returns {'created': int, 'updated': int, 'formula_ids': [...]}.
+    Converting an existing plain pair into a bundle (packaging_id given) also
+    auto-deactivates its reciprocal [แกะ], in the same transaction — a
+    blister card cannot be recovered by opening the pack, so the old [แกะ]
+    would otherwise survive active and runnable. Deactivated, never deleted,
+    so its audit history survives.
+
+    Returns {'created': int, 'updated': int, 'formula_ids': [...],
+             'deactivated': int, 'deactivated_ids': [...]}.
     """
     ratio = int(ratio)
     if packaging_id is not None:
@@ -200,6 +207,7 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
 
         created = updated = 0
         formula_ids = []
+        deactivated_ids = []
         for spec in specs:
             if spec['kind'] == 'pack':
                 # At most one active [แพ็ค] per output (mig 158) — the existing
@@ -209,6 +217,22 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
                     " WHERE output_product_id=? AND is_active=1 AND name LIKE '[แพ็ค]%'",
                     (spec['output_pid'],)).fetchone()
                 existing = row['id'] if row else None
+                # Converting a plain pair into a bundle (packaging_id given)
+                # must not leave the OLD [แกะ] active and runnable — a
+                # blister card is destroyed on opening, so there is no real
+                # recovery path once this call lands. Look up the reciprocal
+                # from `existing`'s STILL-single-input state (find_pair_partner
+                # requires that shape) — this runs BEFORE the mutation below
+                # touches `existing`'s inputs, in the same transaction as the
+                # [แพ็ค] update. Deactivate, never delete, so the formula's
+                # audit history (conversion_cost_log runs against it) survives.
+                if packaging_id is not None and existing is not None:
+                    partner = find_pair_partner(existing, conn=conn)
+                    if partner is not None:
+                        conn.execute(
+                            "UPDATE conversion_formulas SET is_active=0 WHERE id=?",
+                            (partner['id'],))
+                        deactivated_ids.append(partner['id'])
             else:
                 want_inputs = frozenset(i['product_id'] for i in spec['inputs'])
                 existing = None
@@ -238,7 +262,8 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
             formula_ids.append(fid)
         if own:
             conn.commit()
-        return {'created': created, 'updated': updated, 'formula_ids': formula_ids}
+        return {'created': created, 'updated': updated, 'formula_ids': formula_ids,
+               'deactivated': len(deactivated_ids), 'deactivated_ids': deactivated_ids}
     finally:
         if own:
             conn.close()

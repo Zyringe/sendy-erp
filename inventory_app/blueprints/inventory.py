@@ -269,7 +269,10 @@ def conversion_pair():
         except (models.ConversionRoleError, sqlite3.IntegrityError) as e:
             flash(f'บันทึกไม่สำเร็จ: {e}', 'danger')
             return _reshow()
-        flash(f'บันทึกคู่แพ็ค-ตัวหลวมแล้ว (สร้าง {res["created"]} · อัปเดต {res["updated"]} สูตร)', 'success')
+        msg = f'บันทึกคู่แพ็ค-ตัวหลวมแล้ว (สร้าง {res["created"]} · อัปเดต {res["updated"]} สูตร)'
+        if res.get('deactivated'):
+            msg += f' · ปิดใช้งานสูตรแกะเดิม {res["deactivated"]} สูตร (แพ็คนี้เปิดไม่ได้แล้ว)'
+        flash(msg, 'success')
         return redirect(url_for('inventory.conversion_list'))
 
     # GET — blank (create) or prefilled from an existing formula (edit)

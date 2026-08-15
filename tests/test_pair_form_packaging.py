@@ -137,7 +137,12 @@ def test_bundle_input_rows_reverse_order_still_derives_same_component(empty_db_c
     assert derived['packaging_id'] == CARD
 
 
-def test_switching_plain_pair_to_bundle_updates_same_formula_not_duplicate(empty_db_conn):
+def test_switching_plain_pair_to_bundle_deactivates_reciprocal_unpack(empty_db_conn):
+    """Codex review finding 1 (blocker on PR #388): a blister card is
+    destroyed on opening, so a bundle has no real [แกะ] to recover through —
+    converting a plain pair into a bundle must not leave the OLD [แกะ] active
+    and runnable. Deactivate (never delete — the audit history survives),
+    in the SAME transaction as the [แพ็ค] update."""
     c = empty_db_conn
     _seed_bundle_products(c)
     models.upsert_pack_unpack_pair(PACK, LOOSE, 1, direction='both', conn=c)
@@ -149,14 +154,33 @@ def test_switching_plain_pair_to_bundle_updates_same_formula_not_duplicate(empty
     res2 = models.upsert_pack_unpack_pair(PACK, LOOSE, 1, direction='both', conn=c, packaging_id=CARD)
     c.commit()
     assert res2['created'] == 0 and res2['updated'] == 1
+    assert res2['deactivated'] == 1                            # reported so the flash can say what happened
+    assert res2['deactivated_ids'] == unpack_before
 
     pack_rows = [f for f in _active_formulas(c) if f['output_product_id'] == PACK]
     assert len(pack_rows) == 1                                # never two active [แพ็ค] for one output
     assert pack_rows[0]['id'] == pack_fid                     # same formula, updated in place
     assert _inputs(c, pack_fid) == {LOOSE: (1, ROLE_COMPONENT), CARD: (1, ROLE_PACKAGING)}
-    # the pre-existing [แกะ] half (direction='both' from the first call) is untouched
-    unpack_after = [f['id'] for f in _active_formulas(c) if f['output_product_id'] == LOOSE]
-    assert unpack_after == unpack_before
+
+    # the pre-existing [แกะ] half must no longer be active/runnable...
+    unpack_after_active = [f['id'] for f in _active_formulas(c) if f['output_product_id'] == LOOSE]
+    assert unpack_after_active == []
+    # ...but it must still EXIST (deactivated, not deleted) for audit history.
+    row = c.execute("SELECT is_active FROM conversion_formulas WHERE id=?",
+                    (unpack_before[0],)).fetchone()
+    assert row is not None and row['is_active'] == 0
+
+
+def test_new_bundle_with_no_prior_pack_leaves_deactivated_count_zero(empty_db_conn):
+    """Control: a bundle created where no [แพ็ค] existed before (a fresh
+    INSERT, not an UPDATE) has nothing to deactivate."""
+    c = empty_db_conn
+    _seed_bundle_products(c)
+    res = models.upsert_pack_unpack_pair(PACK, LOOSE, 1, direction='both', conn=c, packaging_id=CARD)
+    c.commit()
+    assert res['created'] == 1
+    assert res.get('deactivated', 0) == 0
+    assert res.get('deactivated_ids', []) == []
 
 
 def test_switching_plain_pair_to_bundle_does_not_violate_unique_index(empty_db_conn):
