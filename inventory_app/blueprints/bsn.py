@@ -667,6 +667,39 @@ def express_dbf_import():
                            last_run=last_run)
 
 
+def _zip_export_datetime(zf):
+    """When Express was exported, read from the zip's own member timestamps.
+
+    The team's .bat stamps the export time into the FILENAME, but a filename is
+    operator-editable and easy to lose; the per-member mtimes zipfile preserves
+    are written by Express itself. Verified on the real 2026-08-15 upload:
+    BSN5657/ARTRN.DBF reads (2026, 8, 15, 16, 50, 30), matching the export.
+
+    MAX across members, not any single table: Express only rewrites the tables a
+    day actually touched, so ARTRNRM in that same zip still read 08-04.
+
+    Returns a datetime, or None when the zip carries no .DBF member (the caller
+    then falls back to the clock and says so).
+    """
+    stamps = [zi.date_time for zi in zf.infolist()
+              if zi.filename.upper().endswith('.DBF') and zi.date_time]
+    if not stamps:
+        return None
+    return datetime.datetime(*max(stamps))
+
+
+def _latest_stored_snapshot_date(conn):
+    """The newest outstanding snapshot already stored for BSN, across both
+    sides. What an incoming zip has to be at least as fresh as."""
+    row = conn.execute(
+        "SELECT MAX(d) FROM ("
+        "  SELECT MAX(snapshot_date_iso) d FROM express_ar_outstanding WHERE entity='BSN'"
+        "  UNION ALL"
+        "  SELECT MAX(snapshot_date_iso) d FROM express_ap_outstanding WHERE entity='BSN')"
+    ).fetchone()
+    return row[0] if row else None
+
+
 def _express_dbf_summary_message(per_type):
     """Thai one-liner for the post-upload flash — the per-type 'imported'
     (or 'upserted', for credit_notes_ar) count from commit_express_dbf()'s
@@ -737,6 +770,17 @@ def express_dbf_upload():
     try:
         zip_path = os.path.join(tmpdir, 'upload.zip')
         f.save(zip_path)
+        # Identity of the file we are about to act on. Recorded so that "was
+        # today's upload today's export?" is answerable afterwards — import_log
+        # used to store only the constant 'express-dbf-upload'.
+        import hashlib
+        _h = hashlib.sha256()
+        with open(zip_path, 'rb') as _fh:
+            for _chunk in iter(lambda: _fh.read(1 << 20), b''):
+                _h.update(_chunk)
+        upload_meta = {'filename': os.path.basename(f.filename),
+                       'bytes': os.path.getsize(zip_path),
+                       'sha256': _h.hexdigest()}
         if not zipfile.is_zipfile(zip_path):
             flash('ไฟล์ไม่ใช่ zip ที่ถูกต้อง', 'danger')
             return redirect(redirect_to)
@@ -745,8 +789,36 @@ def express_dbf_upload():
             if err:
                 flash(f'ปฏิเสธไฟล์: {err}', 'danger')
                 return redirect(redirect_to)
+            export_at = _zip_export_datetime(zf)
             extract_dir = os.path.join(tmpdir, 'extracted')
             zf.extractall(extract_dir)
+
+        # An OLD zip is not a harmless replay. Three separate things act on
+        # "what this file says is true right now": models/payments.py DELETEs
+        # receipt->invoice links the file no longer lists (money path),
+        # scan_reconcile flags Sendy docs absent from it as vanished, and the
+        # outstanding snapshots replace their whole (entity, date). So a stale
+        # upload is refused ENTIRELY rather than partly honoured.
+        #
+        # STRICTLY older: re-uploading the SAME day's zip is the team's normal
+        # recovery move when something looked wrong, and must keep working.
+        stale_msg = None
+        if export_at is not None:
+            _c = get_connection()
+            try:
+                _latest = _latest_stored_snapshot_date(_c)
+            finally:
+                _c.close()
+            _exp_date = export_at.date().isoformat()
+            if _latest and _exp_date < _latest:
+                stale_msg = (
+                    f'ไฟล์นี้ export จาก Express เมื่อ {_exp_date} '
+                    f'ซึ่งเก่ากว่ายอดคงค้างที่มีอยู่แล้ว ({_latest}) — ยกเลิกทั้งไฟล์ '
+                    f'ไม่มีการนำเข้าใดๆ. อัปโหลดไฟล์ล่าสุดจากแฟลชไดรฟ์แทน '
+                    f'(ถ้าตั้งใจจะนำเข้าทับจริงๆ ให้ติ๊ก "นำเข้าทับแม้ไฟล์เก่ากว่า")')
+        if stale_msg and not request.form.get('force_older'):
+            flash(stale_msg, 'danger')
+            return redirect(redirect_to)
 
         dataset_dirs = _find_express_dbf_dataset_dirs(extract_dir)
         if not dataset_dirs:
@@ -787,7 +859,15 @@ def express_dbf_upload():
         # The VAT half runs in a detached subprocess that starts minutes later and
         # can cross midnight, so letting each side call date.today() for itself is
         # how the two books end up stamped on different days.
-        snapshot_date = datetime.date.today().isoformat()
+        upload_meta['export_at'] = export_at.isoformat() if export_at else None
+        results['upload'] = upload_meta
+        if export_at is not None:
+            snapshot_date = export_at.date().isoformat()
+        else:
+            snapshot_date = datetime.date.today().isoformat()
+            flashes.append(('warning',
+                            'อ่านเวลา export จากไฟล์ zip ไม่ได้ — ใช้วันที่วันนี้แทน '
+                            'ยอดคงค้างอาจลงวันที่ไม่ตรงกับตอน export จริง'))
         if 'bsn' in classified:
             try:
                 # since_days defaults to 60 inside commit_express_dbf — a

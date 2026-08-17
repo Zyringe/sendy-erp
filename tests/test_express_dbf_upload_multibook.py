@@ -336,3 +336,159 @@ def test_vat_rebuild_is_launched_with_the_snapshot_date_argument(tmp_db, monkeyp
 
     assert '--snapshot-date' in argv['cmd']
     assert argv['cmd'][argv['cmd'].index('--snapshot-date') + 1].count('-') == 2
+
+
+# ── stale-zip guard (Phase 1: the export stamp) ─────────────────────────────
+#
+# Re-uploading an OLD zip is not merely a no-op. Three separate things act on
+# "what the file says is true right now":
+#   * models/payments.py DELETEs paid_invoices links a newer receipt no longer
+#     lists — an older ARRCPIT erases links added since (money path),
+#   * scan_reconcile flags Sendy docs absent from the file as vanished,
+#   * the outstanding snapshots replace the whole (entity, date).
+# So the whole upload is refused, not just the snapshot half.
+
+import datetime as _dt
+
+
+def _zip_bytes_dated(entries, when):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as zf:
+        for name, data in entries:
+            zi = zipfile.ZipInfo(name, date_time=when)
+            zf.writestr(zi, data)
+    buf.seek(0)
+    return buf
+
+
+def _upload_dated(client, entries, when):
+    return client.post('/import-express-dbf/upload',
+                       data={'file': (_zip_bytes_dated(entries, when), 'daily.zip')},
+                       content_type='multipart/form-data',
+                       follow_redirects=False)
+
+
+def _set_snapshot(db_path, date_iso):
+    """Force the stored-snapshot state this test needs, rather than inheriting
+    whatever the cloned live DB happens to hold. Both tables, because the guard
+    takes MAX across them — seeding only AR would leave a stale AP date able to
+    decide the outcome. batch_id is NOT NULL, so a log row comes first."""
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM express_ar_outstanding WHERE entity='BSN'")
+    conn.execute("DELETE FROM express_ap_outstanding WHERE entity='BSN'")
+    batch = conn.execute(
+        "INSERT INTO express_import_log (file_type, source_filename, status) "
+        "VALUES ('ar_snapshot', 'test-fixture', 'imported')").lastrowid
+    conn.execute(
+        "INSERT INTO express_ar_outstanding (batch_id, entity, snapshot_date_iso, doc_no, "
+        " customer_code, customer_name, bill_amount, paid_amount, outstanding_amount,"
+        " is_anomalous, has_warning, doc_date_iso) "
+        "VALUES (?, 'BSN', ?, 'IV1', 'C1', 'x', 10, 0, 10, 0, 0, '2026-01-01')",
+        (batch, date_iso))
+    conn.commit()
+    conn.close()
+
+
+def test_zip_export_datetime_is_the_newest_dbf_member():
+    """The zip already carries each member's mtime, and Express only rewrites
+    the tables it touched — so the export time is the MAX across members, not
+    any single table's."""
+    with zipfile.ZipFile(_zip_bytes_dated(
+            [('b/ARTRN.DBF', b'x'), ('b/ARTRNRM.DBF', b'y')], (2026, 8, 4, 16, 32, 0))) as zf:
+        old = bsn._zip_export_datetime(zf)
+    assert old == _dt.datetime(2026, 8, 4, 16, 32, 0)
+
+
+def test_older_zip_is_refused_and_imports_nothing(tmp_db, monkeypatch):
+    import config
+    _set_snapshot(config.DATABASE_PATH, '2026-08-17')
+    called = []
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: called.append(1) or _fake_per_type())
+
+    r = _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 15, 16, 50, 0))
+
+    assert r.status_code == 302
+    assert called == [], 'a stale zip must not reach the importer at all'
+
+
+def test_same_day_reupload_is_still_accepted(tmp_db, monkeypatch):
+    """The team re-uploads the same day's zip whenever something looked wrong.
+    The comparison is strictly-older, so that recovery path keeps working."""
+    import config
+    _set_snapshot(config.DATABASE_PATH, '2026-08-17')
+    called = []
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: called.append(1) or _fake_per_type())
+
+    r = _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 9, 0, 0))
+
+    assert r.status_code == 302
+    assert called == [1]
+
+
+def test_stale_zip_can_be_forced_through_deliberately(tmp_db, monkeypatch):
+    import config
+    _set_snapshot(config.DATABASE_PATH, '2026-08-17')
+    called = []
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: called.append(1) or _fake_per_type())
+
+    r = _client().post('/import-express-dbf/upload',
+                       data={'file': (_zip_bytes_dated([('data/ARTRN.DBF', b'x')],
+                                                       (2026, 8, 15, 16, 50, 0)), 'daily.zip'),
+                             'force_older': '1'},
+                       content_type='multipart/form-data', follow_redirects=False)
+
+    assert r.status_code == 302
+    assert called == [1], 'an explicit override must still be able to import'
+
+
+def test_snapshot_date_comes_from_the_zip_not_the_clock(tmp_db, monkeypatch):
+    """The whole point: the as-of date describes when Express was exported, not
+    when someone got round to uploading it.
+
+    The zip is deliberately dated YESTERDAY. Stamping it with today's date is the
+    bug being fixed, and a fixture dated today could not tell the two apart — it
+    would pass against `date.today()` just as well."""
+    yesterday = _dt.date.today() - _dt.timedelta(days=1)
+    _set_snapshot(__import__('config').DATABASE_PATH,
+                  (yesterday - _dt.timedelta(days=7)).isoformat())
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    seen = {}
+
+    def _cap(*a, **k):
+        seen['date'] = k.get('snapshot_date')
+        return _fake_per_type()
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf', _cap)
+
+    _upload_dated(_client(), [('data/ARTRN.DBF', b'x')],
+                  (yesterday.year, yesterday.month, yesterday.day, 16, 50, 0))
+
+    assert seen['date'] == yesterday.isoformat()
+    assert seen['date'] != _dt.date.today().isoformat()
+
+
+def test_upload_records_the_file_it_actually_imported(tmp_db, monkeypatch):
+    """import_log used to store the constant 'express-dbf-upload', so nothing
+    could answer "was today's upload today's export?" after the fact."""
+    import config
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _fake_per_type())
+
+    _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0))
+
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    notes = json.loads(conn.execute(
+        "SELECT notes FROM import_log WHERE filename='express-dbf-upload' "
+        "ORDER BY id DESC LIMIT 1").fetchone()[0])
+    conn.close()
+    up = notes['upload']
+    assert up['filename'] == 'daily.zip'
+    assert up['bytes'] > 0
+    assert len(up['sha256']) == 64
+    assert up['export_at'].startswith('2026-08-17')
