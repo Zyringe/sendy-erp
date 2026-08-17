@@ -221,3 +221,51 @@ def test_b7_delete_survives_cache_clear_exception(client, tmp_db, monkeypatch):
     ).fetchone()
     conn.close()
     assert row is None, 'the DB delete must still have gone through despite the cache-clear error'
+
+
+# ── Finding 6: a refused parse must not reach import_customers_from_bsn ─────
+
+def test_partial_parse_flashes_actionable_error_and_imports_nothing(client, monkeypatch):
+    import blueprints.partners as partners_module
+    import models
+
+    def _raise_partial(csv_path=None):
+        raise ValueError('อ่านข้อมูลลูกค้าไม่ครบ: บรรทัด 1295: 032ท03 ร้าน ทรัพย์ไพศาล')
+    monkeypatch.setattr(partners_module, '_parse_bsn_customers', _raise_partial)
+
+    called = []
+    monkeypatch.setattr(models, 'import_customers_from_bsn',
+                        lambda *a, **k: called.append(a) or (0, 0, 0))
+
+    _login(client, 'admin')
+    resp = client.post('/customers/import-bsn', follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers.get('Location', '').endswith('/customers/map')
+    assert called == [], 'a refused parse must never reach the importer'
+
+    page = client.get(resp.headers['Location'], follow_redirects=False).get_data(as_text=True)
+    assert 'อ่านข้อมูลลูกค้าไม่ครบ' in page
+    assert 'บรรทัด 1295' in page, 'flash must carry the actionable source line'
+    assert 'นำเข้าสำเร็จ' not in page
+
+
+def test_zero_parse_flashes_and_imports_nothing(client, monkeypatch):
+    import blueprints.partners as partners_module
+    import models
+
+    def _raise_zero(csv_path=None):
+        raise ValueError('ไม่พบรายการลูกค้าในรายงาน — ไฟล์ผิดประเภทหรือรูปแบบเปลี่ยน')
+    monkeypatch.setattr(partners_module, '_parse_bsn_customers', _raise_zero)
+
+    called = []
+    monkeypatch.setattr(models, 'import_customers_from_bsn',
+                        lambda *a, **k: called.append(a) or (0, 0, 0))
+
+    _login(client, 'admin')
+    resp = client.post('/customers/import-bsn', follow_redirects=False)
+    assert resp.status_code == 302
+    assert called == []
+    page = client.get(resp.headers['Location'], follow_redirects=False).get_data(as_text=True)
+    assert 'ไม่พบรายการลูกค้าในรายงาน' in page
+    assert 'นำเข้าสำเร็จ' not in page

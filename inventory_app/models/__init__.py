@@ -120,7 +120,8 @@ from .commission import (
     toggle_customer_reassignment, delete_customer_reassignment,
 )
 from .payments import (
-    parse_payment_csv, import_payments, import_payment_records, get_payment_status,
+    parse_payment_csv, import_payments, import_payment_records,
+    _merge_duplicate_receipts, get_payment_status,
     get_payment_summary, get_customer_debt_summary, get_ar_reconciliation,
     find_payment_candidates, get_customer_unpaid_bills, get_customer_unpaid_bills_by_code,
 )

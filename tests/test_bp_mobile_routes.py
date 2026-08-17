@@ -56,3 +56,40 @@ def test_mobile_sales_trip_renders(admin_client):
     the customers + salespersons + regions + sales_transactions JOIN."""
     resp = admin_client.get('/m/sales-trip')
     assert resp.status_code == 200, resp.data[:500]
+
+
+def test_sales_trip_outstanding_ignores_cancelled_receipts(tmp_db):
+    """/m/sales-trip shows a customer-facing amount owed. Its old
+    `LEFT JOIN paid_invoices ... IS NULL` had no received_payments join at all,
+    so a cancelled receipt erased real debt from it."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM customers WHERE code='C-MOB'")
+    conn.execute("DELETE FROM regions WHERE code='ZMOB'")
+    rid = conn.execute("INSERT INTO regions (code, name_th) VALUES ('ZMOB','เขตทดสอบมือถือ')").lastrowid
+    # Region-scoped: the page LIMITs to 300 customers and the live-DB clone has
+    # thousands, so an unscoped request would not render this row at all.
+    conn.execute("INSERT INTO customers (code, name, region_id) VALUES ('C-MOB','ร้านมือถือทดสอบ',?)",
+                 (rid,))
+    conn.execute("""INSERT INTO sales_transactions
+                      (date_iso, doc_no, doc_base, customer, customer_code,
+                       qty, unit, unit_price, vat_type, total, net)
+                    VALUES ('2026-07-01','IV-MOB-1','IV-MOB','ร้านมือถือทดสอบ','C-MOB',
+                            1,'ตัว',900.0,1,900.0,900.0)""")
+    cur = conn.execute("""INSERT INTO received_payments
+                            (re_no, date_iso, customer, salesperson, cancelled, total)
+                          VALUES ('RE-MOB-CANCELLED','2026-07-05','ร้านมือถือทดสอบ','S1',1,900.0)""")
+    conn.execute("INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?,?,?,?)",
+                 (cur.lastrowid, 'IV-MOB', 'IV', 900.0))
+    conn.commit()
+    conn.close()
+
+    from app import app
+    app.config['TESTING'] = True
+    c = app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 1; sess['username'] = 'admin'; sess['role'] = 'admin'
+    body = c.get(f'/m/sales-trip?region_id={rid}').get_data(as_text=True)
+
+    assert 'ร้านมือถือทดสอบ' in body, 'control — the seeded customer is on the page'
+    assert '900' in body, 'a cancelled receipt erased a real debt from /m/sales-trip'

@@ -178,6 +178,7 @@ def customer_ranking(conn: Optional[sqlite3.Connection] = None,
                   COALESCE(NULLIF(TRIM(customer_code), ''), customer) AS group_key,
                   MAX(log_date) AS last_log_date
                 FROM ar_followup_log
+                WHERE deleted_at IS NULL
                 GROUP BY group_key
             """).fetchall()
             for lr in log_rows:
@@ -189,6 +190,7 @@ def customer_ranking(conn: Optional[sqlite3.Connection] = None,
                     FROM ar_followup_log
                     WHERE COALESCE(NULLIF(TRIM(customer_code), ''), customer) = ?
                       AND log_date = ?
+                      AND deleted_at IS NULL
                     ORDER BY id DESC LIMIT 1
                 """, (key, lr['last_log_date'])).fetchone()
                 agg[key]['last_log_date'] = lr['last_log_date']
@@ -227,7 +229,7 @@ def _customer_group(conn, customer: str) -> tuple:
         row = conn.execute("""
             SELECT customer_code FROM ar_followup_log
             WHERE customer = ? AND customer_code IS NOT NULL
-              AND TRIM(customer_code) != ''
+              AND TRIM(customer_code) != '' AND deleted_at IS NULL
             LIMIT 1
         """, (customer,)).fetchone()
         code = (row['customer_code'].strip() if row and row['customer_code'] else None)
@@ -248,6 +250,7 @@ def _customer_group(conn, customer: str) -> tuple:
         UNION
         SELECT DISTINCT customer FROM ar_followup_log
         WHERE TRIM(customer_code) = ? AND customer IS NOT NULL AND customer != ''
+          AND deleted_at IS NULL
         UNION
         SELECT DISTINCT customer_name FROM express_ar_outstanding
         WHERE TRIM(customer_code) = ? AND customer_name IS NOT NULL AND customer_name != ''
@@ -281,6 +284,7 @@ def _resolve_target(conn, target: str) -> tuple:
         UNION
         SELECT DISTINCT customer FROM ar_followup_log
         WHERE TRIM(customer_code) = ? AND customer IS NOT NULL AND customer != ''
+          AND deleted_at IS NULL
         UNION
         SELECT DISTINCT customer_name FROM express_ar_outstanding
         WHERE TRIM(customer_code) = ? AND customer_name IS NOT NULL
@@ -290,6 +294,101 @@ def _resolve_target(conn, target: str) -> tuple:
         return (target, [r[0] for r in name_rows])
     # Fall back to name-based resolution (legacy bookmarks / orphan customers).
     return _customer_group(conn, target)
+
+
+def resolve_customer_target(target: str,
+                            conn: Optional[sqlite3.Connection] = None,
+                            db_path: Optional[str] = None) -> Optional[dict]:
+    """Resolve ONE stable key to the canonical identity to store on a log row.
+
+    `target` is the `customer_key` the detail page routes on — a customer_code
+    (preferred, stable) or a legacy name. Returns
+    ``{'customer_code': str|None, 'customer': str}``, or ``None`` when no
+    customer / snapshot / log evidence exists for the key.
+
+    Name preference: the CURRENT master name, else the newest snapshot name,
+    else the newest surviving log name — so a since-corrected typo does not get
+    re-frozen onto every new follow-up row.
+
+    Why this exists: the outreach form used to post `customer` and
+    `customer_code` as independent hidden fields, so a stale tab or a tampered
+    request could file collection history against a different customer group.
+    Callers must resolve identity here and ignore those posted fields.
+    """
+    if not target or not target.strip():
+        return None
+    target = target.strip()
+    with _ConnCtx(conn, db_path) as c:
+        code, names = _resolve_target(c, target)
+        if not code:
+            # A code that exists only in the customer master (no sales,
+            # snapshot or log yet) is still a real customer.
+            row = c.execute(
+                "SELECT code, name FROM customers WHERE code = ?", (target,)
+            ).fetchone()
+            if row:
+                code = row['code']
+                names = [row['name']] if row['name'] else []
+        if not code:
+            # …and so is a code whose name is BLANK everywhere. _resolve_target
+            # builds its name union with `customer_name != ''`, so a code like
+            # 038ก01 — real AR rows, empty snapshot name, no master row —
+            # resolves to nothing there. Refusing it would make a genuine
+            # customer un-loggable; Put ruled 2026-08-15 that every code
+            # present in Express is legitimate.
+            for sql in (
+                "SELECT 1 FROM express_ar_outstanding"
+                " WHERE TRIM(customer_code) = ? LIMIT 1",
+                "SELECT 1 FROM sales_transactions"
+                " WHERE TRIM(customer_code) = ? LIMIT 1",
+                "SELECT 1 FROM ar_followup_log"
+                " WHERE TRIM(customer_code) = ? AND deleted_at IS NULL LIMIT 1",
+            ):
+                if c.execute(sql, (target,)).fetchone():
+                    code, names = target, []
+                    break
+
+        if code:
+            row = c.execute(
+                "SELECT name FROM customers"
+                " WHERE code = ? AND name IS NOT NULL AND TRIM(name) != ''",
+                (code,)).fetchone()
+            if row:
+                return {'customer_code': code, 'customer': row['name']}
+            row = c.execute(
+                "SELECT customer_name FROM express_ar_outstanding"
+                " WHERE TRIM(customer_code) = ? AND customer_name IS NOT NULL"
+                "   AND TRIM(customer_name) != ''"
+                " ORDER BY snapshot_date_iso DESC, id DESC LIMIT 1",
+                (code,)).fetchone()
+            if row:
+                return {'customer_code': code, 'customer': row['customer_name']}
+            row = c.execute(
+                "SELECT customer FROM ar_followup_log"
+                " WHERE TRIM(customer_code) = ? AND deleted_at IS NULL"
+                "   AND customer IS NOT NULL AND TRIM(customer) != ''"
+                " ORDER BY log_date DESC, id DESC LIMIT 1",
+                (code,)).fetchone()
+            if row:
+                return {'customer_code': code, 'customer': row['customer']}
+            if names:
+                return {'customer_code': code, 'customer': names[0]}
+            # Real code, no name anywhere — display the code rather than trust
+            # whatever the form posted.
+            return {'customer_code': code, 'customer': code}
+
+        # Orphan / walk-in keyed by name — accept ONLY with real evidence, so a
+        # typo'd or invented key cannot open a new history group.
+        for sql in (
+            "SELECT 1 FROM customers WHERE name = ? LIMIT 1",
+            "SELECT 1 FROM express_ar_outstanding WHERE customer_name = ? LIMIT 1",
+            "SELECT 1 FROM sales_transactions WHERE customer = ? LIMIT 1",
+            "SELECT 1 FROM ar_followup_log"
+            " WHERE customer = ? AND deleted_at IS NULL LIMIT 1",
+        ):
+            if c.execute(sql, (target,)).fetchone():
+                return {'customer_code': None, 'customer': target}
+        return None
 
 
 def get_customer_ar_detail(customer: str,
@@ -437,18 +536,38 @@ def update_outreach(log_id: int, *,
     fields.append("updated_at = datetime('now','localtime')")
     params.append(log_id)
     with _ConnCtx(conn, db_path) as c:
-        c.execute(f"UPDATE ar_followup_log SET {', '.join(fields)} WHERE id = ?", params)
+        # `deleted_at IS NULL` here too: editing a soft-deleted row would
+        # silently revive collection history someone removed.
+        c.execute(f"UPDATE ar_followup_log SET {', '.join(fields)}"
+                  f" WHERE id = ? AND deleted_at IS NULL", params)
         if conn is None:
             c.commit()
 
 
 def delete_outreach(log_id: int,
+                    deleted_by: str,
                     conn: Optional[sqlite3.Connection] = None,
-                    db_path: Optional[str] = None) -> None:
+                    db_path: Optional[str] = None) -> bool:
+    """SOFT-delete one outreach row; returns True only if a row changed.
+
+    A promise-to-pay is collection evidence — a hard DELETE left no trace of
+    what was removed or by whom (mig 160). Same pattern as
+    call_card.soft_delete_log. Every reader filters `deleted_at IS NULL`, so
+    the row disappears from the UI while staying auditable in SQL.
+
+    Returns False for an already-deleted or nonexistent id so the caller can
+    avoid flashing success over a no-op.
+    """
     with _ConnCtx(conn, db_path) as c:
-        c.execute("DELETE FROM ar_followup_log WHERE id = ?", (log_id,))
+        cur = c.execute(
+            """UPDATE ar_followup_log
+                  SET deleted_at = datetime('now','localtime'), deleted_by = ?
+                WHERE id = ? AND deleted_at IS NULL""",
+            (deleted_by, log_id),
+        )
         if conn is None:
             c.commit()
+        return cur.rowcount == 1
 
 
 def get_customer_followups(customer: str,
@@ -465,13 +584,14 @@ def get_customer_followups(customer: str,
             placeholders = ','.join('?' * len(names))
             rows = c.execute(f"""
                 SELECT * FROM ar_followup_log
-                WHERE TRIM(customer_code) = ? OR customer IN ({placeholders})
+                WHERE (TRIM(customer_code) = ? OR customer IN ({placeholders}))
+                  AND deleted_at IS NULL
                 ORDER BY log_date DESC, id DESC
             """, (code, *names)).fetchall()
         else:
             rows = c.execute("""
                 SELECT * FROM ar_followup_log
-                WHERE customer = ?
+                WHERE customer = ? AND deleted_at IS NULL
                 ORDER BY log_date DESC, id DESC
             """, (customer,)).fetchall()
         return [dict(r) for r in rows]
@@ -510,6 +630,7 @@ def list_overdue_followups(as_of: Optional[str] = None,
                          ORDER BY log_date DESC, id DESC
                        ) AS rn
                 FROM ar_followup_log
+                WHERE deleted_at IS NULL
             ),
             latest_with_action AS (
                 SELECT *,
@@ -519,6 +640,7 @@ def list_overdue_followups(as_of: Optional[str] = None,
                        ) AS rn_action
                 FROM ar_followup_log
                 WHERE next_action_date IS NOT NULL
+                  AND deleted_at IS NULL
             )
             SELECT la.*
             FROM latest_with_action la

@@ -758,3 +758,228 @@ def test_import_sr_receipt_link_idempotent(tmp_path, tmp_db_conn):
            WHERE rp.re_no='RE6900208' AND pi.doc_no='SR6900009'"""
     ).fetchone()["amount"]
     assert sr == pytest.approx(-2293.20)
+
+
+
+# ── Finding 2: an OPTED-IN receipt import replaces its whole allocation set ──
+#
+# Express is authoritative for what a receipt settles, but only when the export
+# is complete — so removal rides the same per-file `apply_removals` opt-in the
+# weekly importer already uses (import_router.commit_file). Default is OFF.
+
+_REPLACE_RE = 'RE-REPLACE-1'
+_OTHER_RE = 'RE-REPLACE-OTHER'
+
+
+def _purge_re(conn, *re_nos):
+    """Force the pre-state: tmp_db is a clone of the live dev DB, so never
+    inherit whatever it happens to hold for these receipt numbers."""
+    marks = ','.join('?' * len(re_nos))
+    conn.execute(
+        f"DELETE FROM paid_invoices WHERE re_id IN "
+        f"(SELECT id FROM received_payments WHERE re_no IN ({marks}))", re_nos)
+    conn.execute(
+        f"DELETE FROM received_payments WHERE re_no IN ({marks})", re_nos)
+    conn.commit()
+
+
+def _links(conn, re_no):
+    return [tuple(r) for r in conn.execute(
+        """SELECT pi.doc_no, pi.amount
+             FROM paid_invoices pi JOIN received_payments rp ON rp.id=pi.re_id
+            WHERE rp.re_no=? ORDER BY pi.doc_no""",
+        (re_no,)).fetchall()]
+
+
+def _base(re_no=_REPLACE_RE):
+    return {'re_no': re_no, 'date_iso': '2026-08-01',
+            'customer': 'ลูกค้าทดสอบ', 'salesperson': '00', 'cancelled': False}
+
+
+_V1 = [{'iv_no': 'IV-KEEP', 'kind': 'IV', 'amount': 100.0},
+       {'iv_no': 'IV-DROP', 'kind': 'IV', 'amount': 200.0}]
+_V2 = [{'iv_no': 'IV-KEEP', 'kind': 'IV', 'amount': 100.0}]
+
+
+def test_reimport_removes_invoice_links_absent_from_authoritative_receipt(tmp_db_conn):
+    import models
+    _purge_re(tmp_db_conn, _REPLACE_RE)
+    base = _base()
+    models.import_payment_records([{**base, 'total': 300.0, 'iv_list': _V1}],
+                                  apply_removals=True)
+    assert _links(tmp_db_conn, _REPLACE_RE) == [('IV-DROP', 200.0), ('IV-KEEP', 100.0)]
+
+    result = models.import_payment_records(
+        [{**base, 'total': 100.0, 'iv_list': _V2}], apply_removals=True)
+
+    assert _links(tmp_db_conn, _REPLACE_RE) == [('IV-KEEP', 100.0)]
+    assert result['removed_links'] == 1, 'a money-path removal must be reported'
+
+
+def test_removal_is_opt_in_and_off_by_default(tmp_db_conn):
+    """Without the operator's per-file confirmation the import stays additive —
+    a FILTERED export must not read as 'these links were deleted'."""
+    import models
+    _purge_re(tmp_db_conn, _REPLACE_RE)
+    base = _base()
+    models.import_payment_records([{**base, 'total': 300.0, 'iv_list': _V1}])
+    result = models.import_payment_records([{**base, 'total': 100.0, 'iv_list': _V2}])
+
+    assert _links(tmp_db_conn, _REPLACE_RE) == [('IV-DROP', 200.0), ('IV-KEEP', 100.0)]
+    assert result['removed_links'] == 0
+
+
+def test_reimport_identical_record_is_unchanged(tmp_db_conn):
+    """Control: replacement must not disturb an unchanged replay."""
+    import models
+    _purge_re(tmp_db_conn, _REPLACE_RE)
+    rec = {**_base(), 'total': 300.0, 'iv_list': _V1}
+    models.import_payment_records([rec], apply_removals=True)
+    before = _links(tmp_db_conn, _REPLACE_RE)
+    result = models.import_payment_records([rec], apply_removals=True)
+
+    assert result['updated'] == 1 and result['skipped'] == 0
+    assert result['removed_links'] == 0
+    assert _links(tmp_db_conn, _REPLACE_RE) == before == [('IV-DROP', 200.0), ('IV-KEEP', 100.0)]
+
+
+def test_empty_iv_list_refuses_to_wipe_an_existing_receipt(tmp_db_conn):
+    """An empty authoritative list is indistinguishable from a total parse gap
+    (parse_payment_csv drops unrecognised sub-rows silently), so it is REFUSED
+    and reported rather than removing every link."""
+    import models
+    _purge_re(tmp_db_conn, _REPLACE_RE)
+    base = _base()
+    models.import_payment_records([{**base, 'total': 300.0, 'iv_list': _V1}],
+                                  apply_removals=True)
+
+    result = models.import_payment_records(
+        [{**base, 'total': 0.0, 'iv_list': []}], apply_removals=True)
+
+    assert result['skipped'] == 1, result
+    assert result['removed_links'] == 0
+    assert any('refusing to remove' in e for e in result['errors']), result['errors']
+    assert _links(tmp_db_conn, _REPLACE_RE) == [('IV-DROP', 200.0), ('IV-KEEP', 100.0)]
+
+
+def test_empty_iv_list_on_a_brand_new_receipt_is_fine(tmp_db_conn):
+    """Control: a receipt that never had links is not a wipe."""
+    import models
+    _purge_re(tmp_db_conn, _REPLACE_RE)
+    result = models.import_payment_records(
+        [{**_base(), 'total': 0.0, 'iv_list': []}], apply_removals=True)
+    assert result['skipped'] == 0 and result['imported'] == 1
+    assert _links(tmp_db_conn, _REPLACE_RE) == []
+
+
+def test_blank_doc_no_refuses_instead_of_silently_not_deleting(tmp_db_conn):
+    """A NULL inside `NOT IN` makes the whole predicate NULL — the delete would
+    become a no-op that looks like success."""
+    import models
+    _purge_re(tmp_db_conn, _REPLACE_RE)
+    base = _base()
+    models.import_payment_records([{**base, 'total': 300.0, 'iv_list': _V1}],
+                                  apply_removals=True)
+
+    result = models.import_payment_records([{**base, 'total': 100.0, 'iv_list': [
+        {'iv_no': None, 'kind': 'IV', 'amount': 100.0}]}], apply_removals=True)
+
+    assert result['skipped'] == 1
+    assert any('empty doc_no' in e for e in result['errors']), result['errors']
+    assert _links(tmp_db_conn, _REPLACE_RE) == [('IV-DROP', 200.0), ('IV-KEEP', 100.0)]
+
+
+def test_duplicate_re_no_in_one_batch_merges_instead_of_destroying(tmp_db_conn):
+    """A re-printed RE header (page break) or two RECTYP='9' rows sharing a
+    DOCNUM must not make the second record delete the first one's links."""
+    import models
+    _purge_re(tmp_db_conn, _REPLACE_RE)
+    base = _base()
+    result = models.import_payment_records([
+        {**base, 'total': 100.0, 'iv_list': [{'iv_no': 'IV-A', 'kind': 'IV', 'amount': 100.0}]},
+        {**base, 'total': 200.0, 'iv_list': [{'iv_no': 'IV-B', 'kind': 'IV', 'amount': 200.0}]},
+    ], apply_removals=True)
+
+    assert _links(tmp_db_conn, _REPLACE_RE) == [('IV-A', 100.0), ('IV-B', 200.0)]
+    assert result['merged'] == 1
+    assert result['removed_links'] == 0
+    assert result['imported'] + result['updated'] + result['skipped'] + result['merged'] \
+        == result['total'] == 2
+
+
+def test_failed_record_rolls_back_the_deleted_children(tmp_db_conn):
+    """A record that raises AFTER the delete must restore the removed rows.
+
+    The failing record's iv_list deliberately EXCLUDES both pre-existing docs,
+    so the delete really removes two rows before the failure — asserting only
+    the header would test a neighbour (it rolls back with or without the
+    delete).
+    """
+    import models
+    _purge_re(tmp_db_conn, _REPLACE_RE)
+    base = _base()
+    models.import_payment_records([{**base, 'total': 300.0, 'iv_list': _V1}],
+                                  apply_removals=True)
+
+    # doc_kind 'XX' violates the paid_invoices CHECK → the record blows up
+    # after the delete has already removed IV-KEEP and IV-DROP.
+    result = models.import_payment_records(
+        [{**base, 'date_iso': '2026-09-09', 'total': 999.0, 'iv_list': [
+            {'iv_no': 'IV-OTHER', 'kind': 'IV', 'amount': 1.0},
+            {'iv_no': 'IV-BAD', 'kind': 'XX', 'amount': 1.0},
+        ]}], apply_removals=True)
+
+    assert result['skipped'] == 1, result
+    assert _links(tmp_db_conn, _REPLACE_RE) == [('IV-DROP', 200.0), ('IV-KEEP', 100.0)], \
+        'the savepoint did not restore the deleted children'
+    assert result['removed_links'] == 0, \
+        'reported removals the savepoint rolled back — the count must only ' \
+        'accrue after RELEASE, or the operator is told links vanished that did not'
+    hdr = tmp_db_conn.execute(
+        "SELECT date_iso, total FROM received_payments WHERE re_no=?", (_REPLACE_RE,)
+    ).fetchone()
+    assert hdr['date_iso'] == '2026-08-01' and hdr['total'] == pytest.approx(300.0)
+
+
+def test_replacement_is_scoped_to_its_own_receipt(tmp_db_conn):
+    """Another receipt's link to the SAME invoice must survive — the delete is
+    scoped by re_id, never by doc_no globally."""
+    import models
+    _purge_re(tmp_db_conn, _REPLACE_RE, _OTHER_RE)
+    models.import_payment_records([
+        {**_base(_OTHER_RE), 'total': 200.0, 'iv_list': [
+            {'iv_no': 'IV-DROP', 'kind': 'IV', 'amount': 200.0}]},
+        {**_base(), 'total': 300.0, 'iv_list': _V1},
+    ], apply_removals=True)
+
+    models.import_payment_records([{**_base(), 'total': 100.0, 'iv_list': _V2}],
+                                  apply_removals=True)
+
+    assert _links(tmp_db_conn, _REPLACE_RE) == [('IV-KEEP', 100.0)]
+    assert _links(tmp_db_conn, _OTHER_RE) == [('IV-DROP', 200.0)]
+
+
+def test_removed_link_is_written_to_the_audit_log(tmp_db_conn):
+    """The delete must flow through the existing BEFORE DELETE audit trigger,
+    so a vanished allocation leaves evidence naming the doc that went."""
+    import models
+    _purge_re(tmp_db_conn, _REPLACE_RE)
+    base = _base()
+    models.import_payment_records([{**base, 'total': 300.0, 'iv_list': _V1}],
+                                  apply_removals=True)
+    before = tmp_db_conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE table_name='paid_invoices' AND action='DELETE'"
+    ).fetchone()[0]
+
+    models.import_payment_records([{**base, 'total': 100.0, 'iv_list': _V2}],
+                                  apply_removals=True)
+
+    rows = tmp_db_conn.execute(
+        "SELECT changed_fields FROM audit_log"
+        " WHERE table_name='paid_invoices' AND action='DELETE'"
+        " ORDER BY id DESC LIMIT 1").fetchall()
+    after = tmp_db_conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE table_name='paid_invoices' AND action='DELETE'"
+    ).fetchone()[0]
+    assert after == before + 1
+    assert 'IV-DROP' in rows[0][0], 'audit payload must name the removed invoice'

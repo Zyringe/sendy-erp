@@ -131,15 +131,20 @@ def commit_file(path, report_type, filename=None, db_path=None,
     propagate so the caller can isolate per-file. Importers are reused as-is —
     sales/payments_in go to their canonical homes, never the express twins.
 
-    apply_removals defaults to **False** (sales/purchase only): a รหัสสินค้า- or
-    พนักงานขาย-FILTERED Express export yields partial invoices whose filtered-out
-    lines look deleted, and reversing them mass-deletes real stock. The operator
-    opts in per-file on the preview page by confirming the file is a complete
-    weekly export.
+    apply_removals defaults to **False** (sales/purchase AND payments_in): a
+    รหัสสินค้า- or พนักงานขาย-FILTERED Express export yields partial invoices whose
+    filtered-out lines look deleted, and reversing them mass-deletes real stock
+    (for payments_in: real receipt→invoice links). The operator opts in per-file
+    on the preview page by confirming the file is a complete weekly export.
     """
     if report_type == "payments_in":
         import models
-        return {"type": report_type, "ok": True, "summary": models.import_payments(path)}
+        # Same opt-in as sales/purchase: a receipt's iv_list is only the
+        # AUTHORITATIVE complete allocation set when the operator confirms the
+        # export is unfiltered, so stale-link removal rides the same checkbox.
+        return {"type": report_type, "ok": True,
+                "summary": models.import_payments(path,
+                                                  apply_removals=apply_removals)}
 
     if report_type == "credit_notes_ar":
         from import_credit_notes import import_credit_notes as _icn
@@ -187,11 +192,29 @@ def preview_file(path, report_type, db_path=None):
         conn = sqlite3.connect(db_path or config.DATABASE_PATH)
         try:
             existing = {row[0] for row in conn.execute("SELECT re_no FROM received_payments")}
+            # Removal plan, read-only: links this file's receipts currently have
+            # that the file no longer lists. The operator must see this count
+            # BEFORE the opt-in checkbox is worth offering — same rule the
+            # sales/purchase preview follows.
+            removed = 0
+            for r in models._merge_duplicate_receipts(recs):
+                if r.get("re_no") not in existing:
+                    continue
+                incoming = [iv["iv_no"] for iv in (r.get("iv_list") or [])]
+                if not incoming:
+                    continue          # refused at import time, never a removal
+                marks = ",".join("?" for _ in incoming)
+                removed += conn.execute(
+                    f"""SELECT COUNT(*) FROM paid_invoices pi
+                          JOIN received_payments rp ON rp.id = pi.re_id
+                         WHERE rp.re_no = ? AND pi.doc_no NOT IN ({marks})""",
+                    (r["re_no"], *incoming)).fetchone()[0]
         finally:
             conn.close()
         new = sum(1 for r in recs if r["re_no"] not in existing)
         return {"type": report_type, "ok": True, "count": len(recs),
-                "detail": {"new": new, "existing": len(recs) - new}}
+                "detail": {"new": new, "existing": len(recs) - new,
+                           "removed": removed}}
 
     if report_type == "credit_notes_ar":
         # import_credit_notes uses internal SAVEPOINT/RELEASE, so a manual
@@ -275,7 +298,27 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60):
     sales_stats = models.import_weekly(sales_entries, "sales", label)
     purchase_stats = models.import_weekly(purchase_entries, "purchase", label)
     refs_upserted = _upsert_invoice_refs(refs, db_path)
-    payments_in_stats = models.import_payment_records(payments_in_records)
+    # The daily DBF read IS the authoritative complete allocation set: `cutoff`
+    # filters RECEIPTS, never lines within one, so every receipt it includes
+    # carries all of its ARRCPIT lines. That makes this the one payments_in
+    # path that can replace stale links without an operator preview — and it
+    # has no preview to offer, so it is also the only path that can keep Sendy
+    # in step with Express on its own.
+    #
+    # EXCEPT a receipt that lost a line to an unmapped RECTYP: its iv_list is
+    # PARTIAL, and replacing from a partial set deletes a real link. Those
+    # receipts import additively, exactly as before. Real data carries one such
+    # line (RE0041138 / DR0000003 / RECTYP='4' / ฿600).
+    _tainted = {s.get('re_no') for s in payments_in_skipped}
+    _complete = [r for r in payments_in_records if r['re_no'] not in _tainted]
+    _partial = [r for r in payments_in_records if r['re_no'] in _tainted]
+    payments_in_stats = models.import_payment_records(_complete, apply_removals=True)
+    if _partial:
+        _extra = models.import_payment_records(_partial)
+        for _k in ('imported', 'updated', 'skipped', 'merged', 'removed_links', 'total'):
+            payments_in_stats[_k] = payments_in_stats.get(_k, 0) + _extra.get(_k, 0)
+        payments_in_stats['errors'] = (
+            payments_in_stats['errors'] + _extra['errors'])[:5]
     # Never silent: a skipped DR-type ARRCPIT line (or any future unsupported
     # RECTYP) always surfaces here, count and detail, even when the list is
     # empty — so the route's JSON response has a stable shape either way.

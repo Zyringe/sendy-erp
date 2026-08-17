@@ -7,6 +7,7 @@ module docstring for the overall file-split rationale. No URL changes;
 route rules are unchanged, only their endpoint names gain an `accounting.`
 prefix.
 """
+import math
 import sqlite3
 from datetime import date
 
@@ -22,6 +23,11 @@ import ar_followup as arf_mod
 import payments_alloc as pa_mod
 
 bp_accounting = Blueprint('accounting', __name__)
+
+# Upper bound for the /ar invoices page parameter. Far beyond any real page
+# count (~158 today) but well inside SQLite's INTEGER range, so a hostile or
+# fat-fingered value cannot overflow the OFFSET bind.
+_MAX_INVOICE_PAGE = 1_000_000
 
 
 @bp_accounting.route('/express/import')
@@ -258,8 +264,12 @@ def ar_dashboard():
     tab = request.args.get('tab', 'overview')
     is_ar_manager = session.get('role') in ('admin', 'manager')
     is_ar_admin = session.get('role') == 'admin'   # dunning log writes are admin-only
+    # ONE aging read for the whole request — the overview tab reuses this same
+    # object, and every tab gets the freshness verdict for the stale banner.
+    aging = cf_mod.ar_aging()
     ctx = {'tab': tab,
-           'snapshot_date': cf_mod.ar_aging().get('as_of'),
+           'aging': aging,
+           'snapshot_date': aging.get('as_of'),
            'is_ar_manager': is_ar_manager,
            'is_ar_admin': is_ar_admin}
 
@@ -276,7 +286,6 @@ def ar_dashboard():
             ledger_unpaid=ledger_unpaid,
             unpaid_count=summ['unpaid_count'],
             diff_amount=diff_amount,
-            aging=cf_mod.ar_aging(),
             top_customers=debt[:8],
         )
     elif tab == 'customers':
@@ -315,7 +324,12 @@ def ar_dashboard():
         inv_search = request.args.get('q', '').strip()
         date_from = request.args.get('date_from', '').strip()
         date_to = request.args.get('date_to', '').strip()
-        page = int(request.args.get('page', 1))
+        # A bare int() raised ValueError on 'abc' (→ 500), and an out-of-range
+        # value overflowed the SQLite OFFSET bind. Anything not a usable page
+        # number resolves to page 1.
+        page = request.args.get('page', 1, type=int) or 1
+        if page < 1 or page > _MAX_INVOICE_PAGE:
+            page = 1
         per_page = current_app.config['ITEMS_PER_PAGE']
         rows, total = models.get_payment_status(
             status=inv_status, search=inv_search,
@@ -628,6 +642,7 @@ def ar_followup_customer(customer_key):
         invoices=invoices,
         followups=followups,
         total_outstanding=total_outstanding,
+        aging=cf_mod.ar_aging(),
         today=date.today().isoformat(),
     )
 
@@ -638,40 +653,63 @@ def ar_followup_log_new():
     if redirect_:
         return redirect_
 
-    customer = request.form.get('customer', '').strip()
-    customer_code = (request.form.get('customer_code') or '').strip() or None
-    # Redirect target = URL slug of the detail page. Prefer customer_code
-    # (stable) over name; fall back to customer_key form field for legacy
-    # bookmarks; finally fall back to the name.
-    customer_key = (request.form.get('customer_key') or '').strip() \
-                   or customer_code or customer
-    if not customer:
-        flash('ระบุชื่อลูกค้าไม่ถูกต้อง', 'danger')
+    # ONE identity input. The posted `customer` / `customer_code` fields are
+    # display-only and deliberately ignored — resolving them independently let
+    # a stale tab or a tampered request file collection history against a
+    # different customer group.
+    customer_key = (request.form.get('customer_key') or '').strip()
+    target = arf_mod.resolve_customer_target(customer_key) if customer_key else None
+    if not target:
+        flash('ระบุลูกค้าไม่ถูกต้อง', 'danger')
         return redirect(url_for('accounting.ar_dashboard', tab='customers'))
 
     def _f(name):
         v = request.form.get(name, '').strip()
         return v or None
 
-    promised_amount = _f('promised_amount')
+    def _refuse(message):
+        """Refuse BEFORE any insert — a bad value must not be silently
+        coerced to NULL and saved as success."""
+        flash(message, 'danger')
+        return redirect(url_for('accounting.ar_followup_customer',
+                                customer_key=customer_key))
+
+    raw_amount = (request.form.get('promised_amount') or '').strip()
     try:
-        promised_amount = float(promised_amount.replace(',', '')) if promised_amount else None
+        promised_amount = float(raw_amount.replace(',', '')) if raw_amount else None
     except ValueError:
-        promised_amount = None
+        return _refuse('ยอดที่นัดจ่ายต้องเป็นตัวเลข')
+    if promised_amount is not None:
+        if not math.isfinite(promised_amount):
+            return _refuse('ยอดที่นัดจ่ายต้องเป็นตัวเลข')
+        if promised_amount < 0:
+            return _refuse('ยอดที่นัดจ่ายห้ามติดลบ')
+
+    log_date = _f('log_date') or date.today().isoformat()
+    promised_date = _f('promised_date')
+    next_action_date = _f('next_action_date')
+    for label, value in (('วันที่', log_date),
+                         ('วันที่นัดจ่าย', promised_date),
+                         ('วันนัดติดตาม', next_action_date)):
+        if value:
+            try:
+                date.fromisoformat(value)
+            except ValueError:
+                return _refuse(f'{label}ต้องเป็นวันที่รูปแบบ YYYY-MM-DD')
 
     try:
         arf_mod.log_outreach(
-            customer=customer,
-            customer_code=customer_code,
-            log_date=_f('log_date') or date.today().isoformat(),
+            customer=target['customer'],
+            customer_code=target['customer_code'],
+            log_date=log_date,
             channel=request.form.get('channel', 'phone'),
             contact_person=_f('contact_person'),
             result=request.form.get('result', 'other'),
             promised_amount=promised_amount,
-            promised_date=_f('promised_date'),
-            next_action_date=_f('next_action_date'),
+            promised_date=promised_date,
+            next_action_date=next_action_date,
             notes=_f('notes'),
-            created_by=session.get('display_name') or session.get('role') or 'admin',
+            created_by=session.get('username') or session.get('role') or 'admin',
         )
         flash('บันทึกการติดตามแล้ว', 'success')
     except sqlite3.IntegrityError as e:
@@ -687,8 +725,13 @@ def ar_followup_log_delete(log_id):
         return redirect_
 
     customer_key = (request.form.get('customer_key') or '').strip()
-    arf_mod.delete_outreach(log_id=log_id)
-    flash('ลบรายการแล้ว', 'success')
+    # Soft delete (mig 160): attribute it to the login, not to display text,
+    # and only claim success when a row actually changed.
+    if arf_mod.delete_outreach(log_id=log_id,
+                               deleted_by=session.get('username') or 'unknown'):
+        flash('ลบรายการแล้ว', 'success')
+    else:
+        flash('ไม่พบรายการ หรือถูกลบไปแล้ว', 'warning')
     if customer_key:
         return redirect(url_for('accounting.ar_followup_customer', customer_key=customer_key))
     return redirect(url_for('accounting.ar_dashboard', tab='customers'))

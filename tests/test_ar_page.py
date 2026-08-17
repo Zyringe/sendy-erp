@@ -10,6 +10,8 @@ Task 6: redirects + access
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
+import pytest
+
 
 # ── Task 1 ────────────────────────────────────────────────────────────────────
 
@@ -191,3 +193,116 @@ def test_whitelist_and_module_keys_valid(tmp_db):
     from app import app as a, _ENDPOINT_MODULE
     eps = {r.endpoint for r in a.url_map.iter_rules()}
     assert not (set(_ENDPOINT_MODULE) - eps)
+
+
+# ── AR snapshot staleness banner (Finding 1) ─────────────────────────────────
+
+STALE_AR_WARNING = 'ข้อมูลลูกหนี้เก่าเกิน 1 วัน'
+
+
+def _force_bsn_snapshot_date(tmp_db, snap_date):
+    """Rewrite every BSN AR snapshot row to one known date so the staleness
+    assertions are deterministic instead of depending on today's date vs the
+    real dev-DB snapshot."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    changed = conn.execute(
+        "UPDATE express_ar_outstanding SET snapshot_date_iso = ? WHERE entity = 'BSN'",
+        (snap_date,),
+    ).rowcount
+    conn.commit()
+    conn.close()
+    # control: without BSN rows the banner takes its "no snapshot" branch and
+    # the assertions below would pass/fail for the wrong reason.
+    assert changed > 0, 'live-clone fixture has no BSN AR rows to date-stamp'
+
+
+@pytest.mark.parametrize('tab', ['overview', 'customers', 'invoices', 'reconcile'])
+def test_every_ar_tab_warns_when_snapshot_is_stale(tmp_db, tab):
+    _force_bsn_snapshot_date(tmp_db, '2020-01-02')
+    r = _admin(tmp_db).get(f'/ar?tab={tab}')
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert STALE_AR_WARNING in body, f'tab={tab} served a stale AR snapshot silently'
+    assert '2020-01-02' in body, f'tab={tab} did not disclose the snapshot date'
+
+
+def test_ar_tabs_do_not_warn_when_snapshot_is_fresh(tmp_db):
+    """Control: the banner must be conditional, not decoration."""
+    from datetime import date as _date
+    _force_bsn_snapshot_date(tmp_db, _date.today().isoformat())
+    c = _admin(tmp_db)
+    for tab in ('overview', 'customers', 'invoices', 'reconcile'):
+        body = c.get(f'/ar?tab={tab}').data.decode()
+        assert STALE_AR_WARNING not in body, f'tab={tab} warned about a fresh snapshot'
+
+
+# ── Findings 3 & 4: invoice summary invariants on real-shaped data ───────────
+
+def test_payment_summary_invariants_on_live_clone(tmp_db):
+    """The live clone carries 183 invoices with multiple receipt links, which
+    is what used to report MORE paid bills than total bills."""
+    import models
+    import sqlite3
+    s = dict(models.get_payment_summary())
+    assert s['paid_count'] + s['unpaid_count'] == s['total_bills']
+    assert s['paid_count'] <= s['total_bills']
+
+    # Conservation of baht: the split must account for every billed satang and
+    # invent none. This is the assertion that actually pins "no amount
+    # multiplication" — derived independently of get_payment_summary().
+    conn = sqlite3.connect(tmp_db)
+    billed = conn.execute('''
+        SELECT ROUND(SUM(net), 2) FROM (
+            SELECT SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) AS net
+              FROM sales_transactions
+             WHERE doc_base IS NOT NULL AND doc_base NOT LIKE 'SR%'
+               AND doc_base NOT LIKE 'HS%'
+             GROUP BY doc_base
+            HAVING SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) > 0)
+    ''').fetchone()[0]
+    conn.close()
+    assert s['paid_amount'] + s['unpaid_amount'] == pytest.approx(billed, abs=0.01)
+
+    # control: the fixture really does contain the multi-link shape
+    conn = sqlite3.connect(tmp_db)
+    multi = conn.execute(
+        """SELECT COUNT(*) FROM (
+               SELECT pi.doc_no FROM paid_invoices pi
+                 JOIN received_payments rp ON rp.id = pi.re_id
+                WHERE rp.cancelled = 0
+                GROUP BY pi.doc_no HAVING COUNT(*) > 1)"""
+    ).fetchone()[0]
+    conn.close()
+    assert multi > 0, 'fixture has no multi-receipt invoice — invariant untested'
+
+
+def test_invoices_tab_payment_rate_never_exceeds_100(tmp_db):
+    import re
+    body = _admin(tmp_db).get('/ar?tab=invoices').data.decode()
+    rates = [float(m) for m in re.findall(r'>\s*([\d.]+)%\s*<', body)]
+    assert rates, 'payment-rate figure not found on the invoices tab'
+    assert max(rates) <= 100.0, f'payment rate above 100%: {rates}'
+
+
+def test_invoices_tab_pagination_count_matches_summary(tmp_db):
+    """The paginated total and the summary must count the same population."""
+    import models
+    _rows, total = models.get_payment_status()
+    s = dict(models.get_payment_summary())
+    assert total == s['total_bills']
+
+
+# ── Secondary hardening: /ar?tab=invoices&page=<junk> must not 500 ──────────
+
+@pytest.mark.parametrize('raw', ['abc', '0', '-2', '', '1.5', '9999999999999999999999'])
+def test_ar_invoice_page_invalid_values_fall_back_to_one(tmp_db, raw):
+    response = _admin(tmp_db).get(f'/ar?tab=invoices&page={raw}')
+    assert response.status_code == 200
+    assert 'หน้า 1/' in response.get_data(as_text=True)
+
+
+def test_ar_invoice_page_valid_value_still_paginates(tmp_db):
+    """Control: the clamp must not pin every request to page 1."""
+    body = _admin(tmp_db).get('/ar?tab=invoices&page=2').get_data(as_text=True)
+    assert 'หน้า 2/' in body

@@ -483,6 +483,14 @@ def get_express_dbf_freshness(stale_after_hours=26):
     """Last full Express-DBF-direct import + staleness, for the dashboard
     freshness badge (projects/express-integration/plan.md Phase 2).
 
+    ⚠ SCOPE: TRANSACTIONS ONLY. commit_express_dbf() imports six transactional
+    types and NO AR snapshot, so a fresh verdict here says nothing about how
+    old `express_ar_outstanding` is. The authoritative AR balance carries its
+    own contract — `cashflow.ar_aging()['age_days'] / ['is_stale']`. Keep the
+    dashboard copy explicit about that (Finding 1, 2026-08-15): a fresh DBF
+    badge next to a 71-day-old AR snapshot is how staff ended up chasing
+    balances that predated ฿494k of later sales.
+
     import_router.commit_express_dbf() always runs payments_out and
     credit_notes_ap through import_express.run_import_records(), which
     INSERTs an express_import_log row (source_filename='express_dbf')

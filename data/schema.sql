@@ -40,7 +40,7 @@ CREATE TABLE ar_followup_log (
     created_by        TEXT    NOT NULL,
     created_at        TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at        TEXT
-);
+, deleted_at TEXT, deleted_by TEXT);
 
 CREATE TABLE ar_writeoffs (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1650,6 +1650,10 @@ CREATE TABLE xp5_product_mapping (
     created_at     TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at     TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 );
+
+CREATE INDEX idx_ar_followup_active_customer
+    ON ar_followup_log(customer_code, customer, log_date DESC)
+    WHERE deleted_at IS NULL;
 
 CREATE INDEX idx_ar_followup_customer       ON ar_followup_log(customer);
 

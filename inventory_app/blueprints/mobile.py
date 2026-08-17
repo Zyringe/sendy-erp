@@ -193,12 +193,21 @@ def sales_trip():
                (SELECT MAX(date_iso) FROM sales_transactions s WHERE s.customer = c.name) AS last_sale,
                (SELECT ROUND(SUM(CASE WHEN s.vat_type = 2 THEN s.net * 1.07 ELSE s.net END), 2)
                   FROM sales_transactions s
-                  LEFT JOIN paid_invoices pi ON pi.doc_no = s.doc_base
                   WHERE s.customer = c.name
                     AND s.doc_base IS NOT NULL
                     AND s.doc_base NOT LIKE 'SR%'
                     AND s.doc_base NOT LIKE 'HS%'
-                    AND pi.doc_no IS NULL
+                    -- "paid" means an ACTIVE receipt, same contract as
+                    -- models.payments._ACTIVE_PAID_DOCS_CTE. The old
+                    -- `LEFT JOIN paid_invoices ... IS NULL` had no
+                    -- received_payments join at all, so a cancelled receipt
+                    -- erased real debt from this customer-facing figure.
+                    AND NOT EXISTS (
+                        SELECT 1
+                          FROM paid_invoices pi
+                          JOIN received_payments rp ON rp.id = pi.re_id
+                         WHERE pi.doc_no = s.doc_base
+                           AND rp.cancelled = 0)
                ) AS outstanding
           FROM customers c
      LEFT JOIN salespersons sp ON sp.code = c.salesperson

@@ -95,16 +95,56 @@ def parse_payment_csv(filepath):
     return records
 
 
-def import_payments(filepath):
+def import_payments(filepath, apply_removals=False):
     """Import payment CSV file into received_payments + paid_invoices — thin
     file-path wrapper around import_payment_records(). See that function's
     docstring for the actual write logic (shared with the Express DBF-direct
     path, which builds the same record shape without a CSV file — see
     express_dbf_source.py::build_payments_in_records)."""
-    return import_payment_records(parse_payment_csv(filepath))
+    return import_payment_records(parse_payment_csv(filepath),
+                                  apply_removals=apply_removals)
 
 
-def import_payment_records(records):
+def _merge_duplicate_receipts(records):
+    """Collapse records that share a re_no into ONE record per receipt.
+
+    Two rows for the same receipt in a single batch are real: a re-printed RE
+    header across a page break in the CSV report, or two RECTYP='9' ARTRN rows
+    sharing a DOCNUM. Before replacement semantics that was harmless (the
+    upserts were additive); with them, the second record would DELETE the
+    first one's links and the batch would silently lose money links.
+
+    Child links are unioned by doc_no (a later line wins on amount/kind); the
+    later header wins, exactly as the ON CONFLICT upsert already did.
+    """
+    order, by_re = [], {}
+    passthrough = []
+    for r in records:
+        try:
+            key = r['re_no']
+            r['iv_list']
+        except (KeyError, TypeError):
+            # Malformed record: leave it for the per-record SAVEPOINT to
+            # isolate into `skipped`, exactly as before this merge step
+            # existed. Raising here would abort the whole batch.
+            passthrough.append(r)
+            continue
+        if key not in by_re:
+            merged = dict(r)
+            merged['iv_list'] = list(r['iv_list'])
+            by_re[key] = merged
+            order.append(key)
+            continue
+        links = {iv['iv_no']: iv for iv in by_re[key]['iv_list']}
+        for iv in r['iv_list']:
+            links[iv['iv_no']] = iv
+        merged = dict(r)                      # later header wins
+        merged['iv_list'] = list(links.values())
+        by_re[key] = merged
+    return [by_re[k] for k in order] + passthrough
+
+
+def import_payment_records(records, apply_removals=False):
     """Import already-parsed payment records into received_payments +
     paid_invoices tables. records: list of dicts shaped like
     parse_payment_csv()'s output (re_no, cancelled, date_iso, customer,
@@ -113,6 +153,28 @@ def import_payment_records(records):
     Uses idempotent upserts (ON CONFLICT DO UPDATE) so re-importing the same
     records any number of times leaves row counts and every amount/total
     identical after the first successful run.
+
+    Replacement semantics — OPT-IN (Finding 2, 2026-08-15)
+    ------------------------------------------------------
+    With ``apply_removals=True``, each record's ``iv_list`` is treated as the
+    AUTHORITATIVE and COMPLETE set of invoices that receipt settles: links for
+    that ``re_id`` absent from ``iv_list`` are deleted before the upserts, so a
+    corrected re-export cannot leave an invoice marked paid by an allocation
+    Express no longer reports.
+
+    It defaults to **False**, matching the identical contract the weekly
+    importer already states (``import_router.commit_file``): a FILTERED Express
+    export yields partial documents whose filtered-out lines look deleted, so
+    removals are something the operator confirms per file, never a default.
+
+    Two removals are refused even when opted in:
+      * an EMPTY incoming ``iv_list`` for a receipt that already has children —
+        indistinguishable from a total parse gap (``parse_payment_csv`` drops
+        unrecognised sub-rows silently, and the DBF builder skips any RECTYP
+        outside {3,5}), so the record is SKIPPED and reported instead of
+        wiping every link;
+      * a falsy ``iv_no`` — a NULL inside ``NOT IN`` makes the whole predicate
+        NULL, silently turning the delete into a no-op.
 
     Re_id resolution
     ----------------
@@ -135,23 +197,33 @@ def import_payment_records(records):
       imported  — brand-new RE rows (did not exist before this run)
       updated   — existing RE rows refreshed (upsert took the UPDATE path)
       skipped   — RE records that raised an exception (isolated, rolled back)
+      merged    — duplicate re_no records folded into an earlier one
+      removed_links — paid_invoices rows deleted by replacement (0 unless
+                  apply_removals); a money-path removal must never be silent
       total     — total RE records parsed from the file
       errors    — list of up to 5 distinct exception reprs from skipped records
                   (empty list when all records imported cleanly)
 
-    Invariant: ``imported + updated + skipped == total`` always holds.
+    Invariant: ``imported + updated + skipped + merged == total`` always holds
+    (``merged`` is 0 unless the batch repeated a re_no, so the older
+    three-term form still holds for every ordinary import).
 
     Note: legacy rows imported before migration 058 have amount/total = NULL;
     they are updated to carry real amounts the first time that RE is re-imported.
     """
+    input_total = len(records)
+    records = _merge_duplicate_receipts(records)
+
     conn = get_connection()
     imported = 0
     updated = 0
     skipped = 0
+    removed_links = 0
     errors = []          # up to 5 distinct repr strings
 
     for i, r in enumerate(records):
         sp = f"sp_re_{i}"
+        record_removed = 0
         try:
             conn.execute(f"SAVEPOINT {sp}")
 
@@ -185,6 +257,51 @@ def import_payment_records(records):
             re_id = row[0]
             assert re_id, f"re_id resolved to falsy value for re_no={r['re_no']!r}"
 
+            # --- Synchronize this receipt's COMPLETE child-link set ---
+            # Express is authoritative for what a receipt settles, so a link
+            # that vanished from a corrected re-export must vanish here too.
+            # Scoped by re_id — NEVER by doc_no, which would rip out another
+            # receipt's legitimate link to the same invoice. Runs inside the
+            # per-record SAVEPOINT (so a later failure restores the deleted
+            # rows) and as a plain DELETE (so the BEFORE DELETE audit trigger
+            # records what was removed).
+            #
+            # NB the live IV6900907 / IV6900976 double-฿35 links are CROSS-
+            # receipt, so this delete cannot remove them — deduplicating an
+            # invoice across receipts is the active-doc CTE in get_payment_*.
+            # What this fixes is the receipt whose own allocation changed.
+            if apply_removals:
+                incoming_doc_nos = [iv['iv_no'] for iv in r['iv_list']]
+                if any(not doc_no for doc_no in incoming_doc_nos):
+                    raise ValueError(
+                        f"re_no={r['re_no']!r}: a receipt line has an empty doc_no; "
+                        f"refusing to synchronize (a NULL inside NOT IN would make "
+                        f"the delete a silent no-op)"
+                    )
+                if incoming_doc_nos:
+                    placeholders = ','.join('?' for _ in incoming_doc_nos)
+                    # Counted into a per-record local, NOT the running total:
+                    # anything after this can still raise and ROLLBACK TO
+                    # SAVEPOINT, which puts these rows back. Reporting them as
+                    # removed would tell the operator links vanished that did
+                    # not. The total accrues after RELEASE.
+                    record_removed = conn.execute(
+                        f"DELETE FROM paid_invoices WHERE re_id=? AND doc_no NOT IN ({placeholders})",
+                        (re_id, *incoming_doc_nos),
+                    ).rowcount
+                else:
+                    existing = conn.execute(
+                        "SELECT COUNT(*) FROM paid_invoices WHERE re_id=?", (re_id,)
+                    ).fetchone()[0]
+                    if existing:
+                        # Empty incoming set on a receipt that HAS links is the
+                        # exact shape a total parse gap produces. Refuse.
+                        raise ValueError(
+                            f"re_no={r['re_no']!r}: authoritative record lists no "
+                            f"invoices but {existing} link(s) exist; refusing to "
+                            f"remove them — re-export the receipt or clear it by hand"
+                        )
+
             for iv in r['iv_list']:
                 conn.execute(
                     """INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount)
@@ -196,6 +313,8 @@ def import_payment_records(records):
                 )
 
             conn.execute(f"RELEASE SAVEPOINT {sp}")
+            # Durable now — the rollback path below can no longer undo it.
+            removed_links += record_removed
 
             if is_new:
                 imported += 1
@@ -215,9 +334,56 @@ def import_payment_records(records):
         'imported': imported,
         'updated': updated,
         'skipped': skipped,
-        'total': len(records),
+        'merged': input_total - len(records),
+        'removed_links': removed_links,
+        'total': input_total,
         'errors': errors,
     }
+
+
+# ── Active-receipt payment status (Findings 3 & 4) ──────────────────────────
+#
+# ONE definition of "this invoice has at least one ACTIVE (non-cancelled)
+# receipt link", shared by every legacy status reader so they cannot drift.
+# Two properties are load-bearing:
+#
+#   * DISTINCT collapses the several links one invoice can legitimately carry
+#     (183 invoices live), so joining this can never multiply a bill's count or
+#     its baht. The old link-grain join reported 7,908 paid out of 7,899 total
+#     bills and ฿24,129,799.79 paid (a payment rate above 100%); the same data
+#     at one-invoice grain is 7,723 paid / ฿21,499,826.74.
+#
+#   * the JOIN to received_payments carries `cancelled = 0` INSIDE the CTE. The
+#     old idiom left-joined received_payments and then tested `pi.doc_no IS NOT
+#     NULL` — which stays non-null even when the cancelled-receipt join
+#     produced no row, so a cancelled receipt still marked the invoice paid.
+_ACTIVE_PAID_DOCS_CTE = """
+    active_paid_docs AS (
+        SELECT DISTINCT pi.doc_no
+          FROM paid_invoices pi
+          JOIN received_payments rp ON rp.id = pi.re_id
+         WHERE rp.cancelled = 0
+    )
+"""
+
+# DISPLAY ONLY — the latest active receipt per invoice, one row per doc_no so
+# it cannot multiply the bill either. Taking the whole row of the newest
+# receipt (rather than MAX(date), MAX(re_no) independently) keeps the shown
+# date and receipt number from belonging to two different receipts.
+_ACTIVE_PAYMENT_DISPLAY_CTE = """
+    active_payment_display AS (
+        SELECT doc_no, paid_date, re_no FROM (
+            SELECT pi.doc_no,
+                   rp.date_iso AS paid_date,
+                   rp.re_no,
+                   ROW_NUMBER() OVER (PARTITION BY pi.doc_no
+                                      ORDER BY rp.date_iso DESC, rp.id DESC) AS rn
+              FROM paid_invoices pi
+              JOIN received_payments rp ON rp.id = pi.re_id
+             WHERE rp.cancelled = 0
+        ) WHERE rn = 1
+    )
+"""
 
 
 def get_payment_status(status='all', search='', date_from='', date_to='', page=1, per_page=50):
@@ -248,17 +414,18 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
     where = ' AND '.join(conds)
 
     sql = f"""
+        WITH {_ACTIVE_PAID_DOCS_CTE}, {_ACTIVE_PAYMENT_DISPLAY_CTE}
         SELECT
             st.doc_base,
             MIN(st.date_iso) AS bill_date,
             st.customer,
             SUM(CASE WHEN st.vat_type = 2 THEN st.net * 1.07 ELSE st.net END) AS total_net,
-            MAX(CASE WHEN pi.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
-            MAX(rp.date_iso) AS paid_date,
-            MAX(rp.re_no) AS re_no
+            MAX(CASE WHEN apd.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
+            MAX(apay.paid_date) AS paid_date,
+            MAX(apay.re_no) AS re_no
         FROM sales_transactions st
-        LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
-        LEFT JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
+        LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
+        LEFT JOIN active_payment_display apay ON apay.doc_no = st.doc_base
         WHERE {where}
         GROUP BY st.doc_base
         {paid_filter}
@@ -268,13 +435,13 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
     rows = conn.execute(sql, params + [per_page, (page - 1) * per_page]).fetchall()
 
     count_sql = f"""
+        WITH {_ACTIVE_PAID_DOCS_CTE}
         SELECT COUNT(*) FROM (
             SELECT st.doc_base,
-                MAX(CASE WHEN pi.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
+                MAX(CASE WHEN apd.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
                 SUM(CASE WHEN st.vat_type = 2 THEN st.net * 1.07 ELSE st.net END) AS total_net
             FROM sales_transactions st
-            LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
-            LEFT JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
+            LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
             WHERE {where}
             GROUP BY st.doc_base
             {paid_filter}
@@ -286,15 +453,22 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
 
 
 def get_payment_summary():
-    """Quick stats for payment status page."""
+    """Quick stats for payment status page.
+
+    Invariants (Finding 3): `paid_count + unpaid_count == total_bills` and
+    `paid_count <= total_bills` hold structurally — the inner query is already
+    one row per doc_base, and active_paid_docs is one row per invoice, so no
+    join here can multiply a bill.
+    """
     conn = get_connection()
-    row = conn.execute("""
+    row = conn.execute(f"""
+        WITH {_ACTIVE_PAID_DOCS_CTE}
         SELECT
-            COUNT(DISTINCT st.doc_base) AS total_bills,
-            SUM(CASE WHEN pi.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS paid_count,
-            SUM(CASE WHEN pi.doc_no IS NULL THEN 1 ELSE 0 END) AS unpaid_count,
-            SUM(CASE WHEN pi.doc_no IS NOT NULL THEN st.net ELSE 0 END) AS paid_amount,
-            SUM(CASE WHEN pi.doc_no IS NULL THEN st.net ELSE 0 END) AS unpaid_amount
+            COUNT(*) AS total_bills,
+            SUM(CASE WHEN apd.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS paid_count,
+            SUM(CASE WHEN apd.doc_no IS NULL THEN 1 ELSE 0 END) AS unpaid_count,
+            SUM(CASE WHEN apd.doc_no IS NOT NULL THEN st.net ELSE 0 END) AS paid_amount,
+            SUM(CASE WHEN apd.doc_no IS NULL THEN st.net ELSE 0 END) AS unpaid_amount
         FROM (
             SELECT doc_base,
                    SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) AS net
@@ -303,8 +477,7 @@ def get_payment_summary():
             GROUP BY doc_base
             HAVING SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) > 0
         ) st
-        LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
-        LEFT JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
+        LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
     """).fetchone()
     conn.close()
     return row
@@ -367,7 +540,8 @@ def get_ar_reconciliation():
     # get_payment_summary groups by doc_base, sums vat-aware net, then marks unpaid
     # where paid_invoices has no matching row (rp.cancelled=0 check for received_payments).
     conn = get_connection()
-    led_rows = conn.execute("""
+    led_rows = conn.execute(f"""
+        WITH {_ACTIVE_PAID_DOCS_CTE}
         SELECT st.customer_code AS code,
                MAX(st.customer)  AS name,
                ROUND(SUM(bill_net), 2) AS unpaid
@@ -381,9 +555,8 @@ def get_ar_reconciliation():
                GROUP BY doc_base
               HAVING bill_net > 0
           ) st
-          LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
-          LEFT JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
-         WHERE pi.doc_no IS NULL
+          LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
+         WHERE apd.doc_no IS NULL
          GROUP BY st.customer_code
     """).fetchall()
     conn.close()
@@ -426,15 +599,16 @@ def find_payment_candidates(amount, tolerance_pct=5):
 
     conn = get_connection()
     # ดึงบิลค้างชำระทั้งหมดแยกรายบิล (รวม vat_type ที่พบมากที่สุดในบิล)
-    bill_rows = conn.execute("""
+    bill_rows = conn.execute(f"""
+        WITH {_ACTIVE_PAID_DOCS_CTE}
         SELECT st.customer, st.customer_code, st.doc_base,
                SUM(CASE WHEN st.vat_type=2 THEN st.net*1.07 ELSE st.net END) AS bill_net,
                MAX(st.vat_type) AS vat_type
         FROM sales_transactions st
-        LEFT JOIN paid_invoices pi ON pi.doc_no = st.doc_base
+        LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
         WHERE st.doc_base IS NOT NULL
           AND st.doc_base NOT LIKE 'SR%' AND st.doc_base NOT LIKE 'HS%'
-          AND pi.doc_no IS NULL
+          AND apd.doc_no IS NULL
         GROUP BY st.customer, st.customer_code, st.doc_base
         HAVING bill_net > 0
         ORDER BY st.customer, st.doc_base

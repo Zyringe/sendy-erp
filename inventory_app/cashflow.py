@@ -76,6 +76,11 @@ BSN_AR_PREDICATE = (
     "AND doc_no NOT IN (SELECT doc_no FROM ar_writeoffs)"
 )
 
+# The Express AR snapshot is exported approximately daily, so anything older
+# than one day is no longer safe to chase with. Deliberately NOT the DBF
+# transaction badge's 26-hour rule — that import carries no AR snapshot.
+AR_SNAPSHOT_STALE_AFTER_DAYS = 1
+
 
 # ── DB helpers (mirrors payments_alloc._ConnCtx) ──────────────────────────────
 
@@ -172,13 +177,24 @@ def ar_aging(as_of: Optional[str] = None,
     it captures RE-doc receivables and legacy IV4* rows that the old derived
     engine (invoice_settlement) missed.
 
-    `as_of` is accepted for API compatibility but ignored: the snapshot date
-    is always used as the reference point so bucket ages match what Express
-    published on that date (same convention as ar_followup.customer_ranking).
+    `as_of` is the OBSERVATION date only — an ISO `YYYY-MM-DD` string, defaults
+    to today (it is parsed now, where it used to be ignored outright). Invoice bucket
+    ages are still measured from the snapshot date, so they match what Express
+    published on that date (same convention as ar_followup.customer_ranking);
+    `as_of` is used solely to age the SNAPSHOT itself (`age_days`/`is_stale`).
+
+    Freshness contract (Finding 1, 2026-08-15): this snapshot is the
+    AUTHORITATIVE collection balance, so callers must be able to tell how old
+    it is. `models.get_express_dbf_freshness()` does NOT answer that question —
+    it measures the transactional DBF import, which carries no AR snapshot.
 
     Returns:
       {
         'as_of': 'YYYY-MM-DD',          # snapshot_date_iso
+        'age_days': int | None,         # observation date − snapshot date
+                                        # (signed: negative = future-dated)
+        'is_stale': bool,               # age > threshold, future-dated, or none
+        'stale_after_days': int,        # the threshold, so page copy can't drift
         'buckets': [
             {'label':'0-30',  'from':0,  'to':30,  'amount':float, 'count':int},
             {'label':'31-60', 'from':31, 'to':60,  'amount':float, 'count':int},
@@ -213,11 +229,29 @@ def ar_aging(as_of: Optional[str] = None,
             " FROM express_ar_outstanding WHERE entity='BSN'"
         ).fetchone()['snap']
 
+        # Observation date — how old the snapshot is RIGHT NOW. Never feeds
+        # the invoice buckets below (those stay point-in-time on `snap`).
+        observation_date = date.fromisoformat(as_of or _today_iso())
+        # NOT clamped at 0: a future-dated snapshot (BE year typo, clock skew)
+        # is a data error, and clamping would report it as the FRESHEST
+        # possible verdict on the one banner whose job is to fail loud.
+        snapshot_age_days = (
+            None if not snap
+            else (observation_date - date.fromisoformat(snap)).days
+        )
+        # No snapshot, and a future-dated one, are both worse than stale.
+        is_stale = (snapshot_age_days is None
+                    or snapshot_age_days < 0
+                    or snapshot_age_days > AR_SNAPSHOT_STALE_AFTER_DAYS)
+
         if not snap:
             # No snapshot yet — return empty structure so the dashboard
             # renders gracefully (AR Aging section shows zeros).
             return {
                 'as_of':              as_of or _today_iso(),
+                'age_days':           snapshot_age_days,
+                'is_stale':           is_stale,
+                'stale_after_days':   AR_SNAPSHOT_STALE_AFTER_DAYS,
                 'buckets':            buckets,
                 'total_outstanding':  0.0,
                 'total_billed':       0.0,
@@ -268,6 +302,9 @@ def ar_aging(as_of: Optional[str] = None,
 
     return {
         'as_of':              snap,
+        'age_days':           snapshot_age_days,
+        'is_stale':           is_stale,
+        'stale_after_days':   AR_SNAPSHOT_STALE_AFTER_DAYS,
         'buckets':            buckets,
         'total_outstanding':  round(total_outstanding, 2),
         'total_billed':       round(total_billed, 2),

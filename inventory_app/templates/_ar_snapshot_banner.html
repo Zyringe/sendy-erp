@@ -1,0 +1,26 @@
+{# ── Express AR snapshot freshness banner (Finding 1, 2026-08-15) ──────────
+   Included by EVERY page that serves the authoritative collection balance:
+   /ar (all four tabs), the AR follow-up detail page, and /cashflow's AR card.
+   One copy on purpose — three hand-maintained copies would drift, and the
+   threshold text is rendered from cashflow.AR_SNAPSHOT_STALE_AFTER_DAYS so
+   the copy cannot disagree with the contract.
+   Expects `aging` = cashflow.ar_aging().
+#}
+{% if aging and aging.is_stale %}
+<div class="alert alert-danger d-flex flex-wrap align-items-center gap-2 mb-3" role="alert">
+  <i class="bi bi-exclamation-octagon-fill fs-5"></i>
+  <span class="flex-grow-1" style="min-width:0">
+    {% if aging.age_days is none %}
+    <strong>ยังไม่มี snapshot ลูกหนี้จาก Express</strong> — ตัวเลขในหน้านี้ยังใช้ทวงหนี้ไม่ได้
+    {% elif aging.age_days < 0 %}
+    <strong>วันที่ snapshot ลูกหนี้อยู่ในอนาคต ({{ aging.as_of }})</strong> —
+    ข้อมูลผิดพลาด ห้ามใช้ทวงหนี้ ตรวจไฟล์ที่นำเข้าก่อน
+    {% else %}
+    <strong>ข้อมูลลูกหนี้เก่าเกิน {{ aging.stale_after_days }} วัน</strong> —
+    snapshot ล่าสุด {{ aging.as_of }} (เก่า {{ aging.age_days }} วัน)
+    ยอดค้างจริงอาจเปลี่ยนไปแล้ว ห้ามใช้ทวงหนี้ก่อนนำเข้าใหม่
+    {% endif %}
+  </span>
+  <a href="{{ url_for('bsn.unified_import') }}" class="btn btn-sm btn-danger ms-auto">นำเข้า AR snapshot ใหม่</a>
+</div>
+{% endif %}
