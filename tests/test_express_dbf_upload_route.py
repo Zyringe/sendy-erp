@@ -454,3 +454,92 @@ def test_dashboard_freshness_badge_names_transactions_not_ar(client, tmp_db):
     assert 'อัปเดตล่าสุดจาก Express' not in html, \
         'old copy still claims a blanket "last updated from Express"'
     assert 'ยอด AR' not in html, 'dashboard badge must not claim AR was refreshed'
+
+
+# ── the daily run DELETES receipt links; the operator must be told ──────────
+#
+# commit_express_dbf applies replacement (import_router.py), so a normal daily
+# upload can remove paid_invoices rows. The post-upload flash used to report
+# only per-type `imported` counts, so a run that deleted links showed
+# "รับชำระ 0" and nothing else.
+
+def _summary(**over):
+    from blueprints.bsn import _express_dbf_summary_message
+    per_type = {
+        'sales': {'imported': 1}, 'purchase': {'imported': 2},
+        'payments_in': {'imported': 3, 'removed_links': 0, 'skipped_rectyp': []},
+        'payments_out': {'imported': 4},
+        'credit_notes_ar': {'upserted': 5}, 'credit_notes_ap': {'imported': 6},
+    }
+    per_type['payments_in'].update(over)
+    return _express_dbf_summary_message(per_type)
+
+
+def test_summary_reports_removed_links():
+    msg = _summary(removed_links=6)
+    assert 'ลบลิงก์' in msg, msg
+    assert '6' in msg
+
+
+def test_summary_reports_skipped_lines():
+    msg = _summary(skipped_rectyp=[{'re_no': 'RE0041138', 'doc': 'DR0000003',
+                                    'rectyp': '4', 'amount': 600.0}])
+    assert 'ข้ามบรรทัด' in msg, msg
+    assert '1' in msg
+
+
+def test_summary_stays_quiet_when_nothing_was_removed_or_skipped():
+    """Control: the ordinary daily message must not gain permanent noise."""
+    msg = _summary()
+    assert 'ลบลิงก์' not in msg and 'ข้ามบรรทัด' not in msg
+    assert msg.startswith('นำเข้าสำเร็จ')
+
+
+def test_summary_survives_a_result_dict_without_the_new_keys():
+    """import_express / older callers build per-type dicts without these keys."""
+    from blueprints.bsn import _express_dbf_summary_message
+    msg = _express_dbf_summary_message({
+        'sales': {'imported': 0}, 'purchase': {'imported': 0},
+        'payments_in': {'imported': 0},
+        'payments_out': {'imported': 0},
+        'credit_notes_ar': {'upserted': 0}, 'credit_notes_ap': {'imported': 0},
+    })
+    assert msg.startswith('นำเข้าสำเร็จ')
+
+
+def test_upload_flash_names_the_links_it_deleted(client, tmp_path, monkeypatch):
+    """End to end: seed a link this upload's ARRCPIT no longer lists, then
+    assert the operator is told it went."""
+    import sqlite3
+    import config
+    _login(client)
+    _patch_open_table(monkeypatch)
+
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    conn.execute("DELETE FROM paid_invoices WHERE re_id IN "
+                 "(SELECT id FROM received_payments WHERE re_no='RE7000400')")
+    conn.execute("DELETE FROM received_payments WHERE re_no='RE7000400'")
+    cur = conn.execute(
+        """INSERT INTO received_payments (re_no, date_iso, customer, salesperson,
+                                          cancelled, total)
+           VALUES ('RE7000400','2026-08-01','ลูกค้าทดสอบ route','3',0,45.0)""")
+    conn.execute("INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) "
+                 "VALUES (?,?,?,?)", (cur.lastrowid, 'IV-GONE-FROM-SOURCE', 'IV', 99.0))
+    conn.commit()
+    conn.close()
+
+    zpath = _make_zip(tmp_path)
+    with open(zpath, 'rb') as f:
+        resp = client.post('/import-express-dbf/upload',
+                           data={'file': (f, 'upload.zip')},
+                           content_type='multipart/form-data', follow_redirects=True)
+
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert 'ลบลิงก์' in body, 'the daily import deleted a link and said nothing'
+
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    gone = conn.execute(
+        "SELECT 1 FROM paid_invoices WHERE doc_no='IV-GONE-FROM-SOURCE'").fetchone()
+    conn.close()
+    assert gone is None, 'control — the link really was removed'

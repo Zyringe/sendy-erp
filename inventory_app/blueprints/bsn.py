@@ -676,9 +676,23 @@ def _express_dbf_summary_message(per_type):
     pay_out = per_type['payments_out']['imported']
     cn_ar = per_type['credit_notes_ar']['upserted']
     cn_ap = per_type['credit_notes_ap']['imported']
-    return (f'นำเข้าสำเร็จ — ขาย {sales}, ซื้อ {purchase}, '
-            f'รับชำระ {pay_in}, จ่ายเงิน {pay_out}, '
-            f'ลดหนี้ขาย {cn_ar}, ลดหนี้ซื้อ {cn_ap} รายการ')
+    msg = (f'นำเข้าสำเร็จ — ขาย {sales}, ซื้อ {purchase}, '
+           f'รับชำระ {pay_in}, จ่ายเงิน {pay_out}, '
+           f'ลดหนี้ขาย {cn_ar}, ลดหนี้ซื้อ {cn_ap} รายการ')
+
+    # This import DELETES receipt→invoice links whose receipt no longer lists
+    # them (import_router.commit_express_dbf applies replacement), and it skips
+    # any ARRCPIT line with an unsupported RECTYP. Both are money-path events
+    # with no preview step in front of them, so neither may be silent. Appended
+    # only when non-zero: the ordinary daily message must not grow permanent
+    # noise, or the exceptional one stops standing out.
+    removed = per_type['payments_in'].get('removed_links') or 0
+    if removed:
+        msg += f' · ลบลิงก์ที่ต้นทางไม่มีแล้ว {removed} รายการ'
+    skipped = per_type['payments_in'].get('skipped_rectyp') or []
+    if skipped:
+        msg += f' · ข้ามบรรทัดที่อ่านไม่ได้ {len(skipped)} บรรทัด'
+    return msg
 
 
 @bp_bsn.route('/import-express-dbf/upload', methods=['POST'])
