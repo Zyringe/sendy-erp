@@ -468,3 +468,171 @@ def build_credit_notes_ap_records(aptrn_rows, stcrd_rows, apmas_rows, cutoff=Non
             ],
         })
     return records
+
+
+# ── AR / AP outstanding snapshots ────────────────────────────────────────────
+#
+# The daily zip's "ลูกหนี้คงค้าง / เจ้าหนี้คงค้าง" side. Mapping verified against
+# the 2026-06-05 prod snapshot (95 comparable rows tied field-for-field) — see
+# docs/plans/2026-08-17-daily-ar-ap-snapshot-from-dbf.md.
+#
+# Deliberately NO cutoff parameter, unlike every builder above: an outstanding
+# balance is as-of-now regardless of the document's age, and the real snapshot
+# carries unpaid docs dated 2009. Passing one is a caller bug, so it raises.
+
+# Express prints a Thai label for the customer/supplier TYPE code; the DBF
+# stores only the code. These maps are read back off the text-report snapshots
+# Express itself produced, and cover 100% of the open rows in both books. An
+# unmapped code falls through to the raw code rather than blanking the column —
+# wrong-looking beats silently-empty, and no total depends on it.
+_AR_CUSTOMER_TYPE_LABELS = {
+    '00': 'ลูกค้าประจำ',
+    '01': 'ลูกค้าประจำ (ซาปั้ว)',
+    '02': 'ตัวแทนจำหน่าย(ยี่ปั้ว)',
+    '05': 'ซื้อภายใน',
+}
+_AP_SUPPLIER_TYPE_LABELS = {
+    '00': 'ผู้จำหน่ายประจำ',
+    '03': 'ผู้ค้าส่ง',
+}
+
+# RE (sales) / PS (purchase) receipt rows. Their header money fields are 0
+# (MAPPING trap #4), so ยอดบิล has to be rebuilt from paid + remaining, and
+# Express flags them in the report with both a leading '!' and a trailing '***'.
+_RECEIPT_RECTYP = '9'
+# SR/GR credit notes sit positive in the DBF but REDUCE the balance. Same code as
+# _CREDIT_NOTE_RECTYP above — aliased rather than redefined so the two can't drift.
+_CREDIT_RECTYP = _CREDIT_NOTE_RECTYP
+
+
+def _open_balance(row, paid_field='RCVAMT'):
+    """(paid, outstanding_raw) rounded to satang, or None when the doc is
+    settled. Rounding before the zero-test is load-bearing: REMAMT is a double
+    and its float noise otherwise reports ~1,100 settled docs as outstanding.
+
+    paid_field: which column actually holds "how much of this document is
+    settled". It is RCVAMT everywhere EXCEPT purchase credit notes — see
+    _ap_paid_field."""
+    remaining = round(_num(row, 'REMAMT'), 2)
+    if remaining == 0:
+        return None
+    return round(_num(row, paid_field), 2), remaining
+
+
+def _ap_paid_field(row):
+    """APTRN stores the settled amount in different columns by RECTYP, and using
+    the wrong one produces a plausible number rather than an error.
+
+    Observed on GR6900005 (BSN5657, 2026-07-31): a purchase credit note carries
+    NETAMT == RCVAMT == REMAMT == 1040.25 with PAYAMT 0 — RCVAMT mirrors the credit
+    instead of recording a payment, so `bill = paid + remaining` only balances
+    against PAYAMT. On ordinary RR invoices the opposite holds: RCVAMT is the paid
+    amount (the reading that tied 7/7 to the 2026-05-29 prod snapshot).
+
+    Same family as MAPPING trap #5 on payments_out, where PAYAMT is the unreliable
+    one on PS rows. Neither field is safe to use blind; pick by RECTYP.
+    """
+    return 'PAYAMT' if row.get('RECTYP') == _CREDIT_RECTYP else 'RCVAMT'
+
+
+def _billed(row, paid, remaining, doc_no):
+    """ยอดบิล. NETAMT everywhere except receipt rows, where it is 0 and the
+    report prints paid + remaining instead.
+
+    For every other RECTYP `NETAMT == RCVAMT + REMAMT` is an invariant that held
+    on 100% of open rows in both books, so a file that breaks it is format
+    drift — refuse it rather than publish a wrong ยอดบิล into AR."""
+    if row.get('RECTYP') == _RECEIPT_RECTYP:
+        return round(paid + remaining, 2)
+    billed = round(_num(row, 'NETAMT'), 2)
+    if abs(billed - (paid + remaining)) > 0.005:
+        raise ValueError(
+            f'{doc_no}: NETAMT {billed} != RCVAMT {paid} + REMAMT {remaining} '
+            f'— Express format drift, refusing to publish a wrong bill amount')
+    return billed
+
+
+def _reject_duplicate(seen, doc_no, side):
+    """ARTRN/APTRN can hold more than one header for the same DOCNUM —
+    models/reconcile.py builds on exactly that ("every DOCNUM header as Express
+    actually wrote it, including duplicates"). Neither snapshot table has a unique
+    constraint, so two OPEN rows for one document would post that balance twice and
+    nothing downstream could tell. Refuse instead: a reported failure keeps
+    yesterday's snapshot (see _commit_snapshot), a double-count silently inflates
+    what we chase."""
+    if doc_no in seen:
+        raise ValueError(
+            f'{doc_no}: appears more than once among open {side} documents — '
+            f'refusing rather than counting the balance twice')
+    seen.add(doc_no)
+
+
+def build_ar_snapshot_records(artrn_rows, armas_rows):
+    """One record per outstanding AR document, shaped like
+    parse_express_ar_snapshot.AROutstanding (minus the snapshot date, which the
+    importer stamps)."""
+    customers = {(r.get('CUSCOD') or '').strip(): r for r in armas_rows}
+    records = []
+    seen = set()
+    for row in artrn_rows:
+        balance = _open_balance(row)
+        if balance is None:
+            continue
+        paid, remaining = balance
+        doc_no = (row.get('DOCNUM') or '').strip()
+        _reject_duplicate(seen, doc_no, 'AR')
+        rectyp = row.get('RECTYP')
+        is_receipt = rectyp == _RECEIPT_RECTYP
+        code = (row.get('CUSCOD') or '').strip()
+        master = customers.get(code)
+        type_code = ((master.get('CUSTYP') or '').strip() if master else '')
+        records.append({
+            'customer_code': code,
+            'customer_name': ((master.get('CUSNAM') or '').strip() if master else ''),
+            'customer_type': _AR_CUSTOMER_TYPE_LABELS.get(type_code, type_code),
+            'doc_date_iso': _header_date_iso(row),
+            'doc_no': doc_no,
+            'is_anomalous': is_receipt,
+            'salesperson_code': (row.get('SLMCOD') or '').strip(),
+            'bill_amount': _billed(row, paid, remaining, doc_no),
+            'paid_amount': paid,
+            # Credit notes reduce the receivable; the report prints them negative.
+            'outstanding_amount': -remaining if rectyp == _CREDIT_RECTYP else remaining,
+            'has_warning': is_receipt,
+        })
+    return records
+
+
+def build_ap_snapshot_records(aptrn_rows, apmas_rows):
+    """One record per outstanding AP document, shaped like
+    parse_express_ap_snapshot's APOutstanding (minus the snapshot date)."""
+    suppliers = {(r.get('SUPCOD') or '').strip(): r for r in apmas_rows}
+    records = []
+    seen = set()
+    for row in aptrn_rows:
+        balance = _open_balance(row, _ap_paid_field(row))
+        if balance is None:
+            continue
+        paid, remaining = balance
+        doc_no = (row.get('DOCNUM') or '').strip()
+        _reject_duplicate(seen, doc_no, 'AP')
+        code = (row.get('SUPCOD') or '').strip()
+        master = suppliers.get(code)
+        type_code = ((master.get('SUPTYP') or '').strip() if master else '')
+        records.append({
+            'supplier_type': _AP_SUPPLIER_TYPE_LABELS.get(type_code, type_code),
+            'supplier_name': ((master.get('SUPNAM') or '').strip() if master else ''),
+            'supplier_code': code,
+            'doc_no': doc_no,
+            # REFNUM, not YOUREF: YOUREF is blank on every open AP row observed,
+            # while REFNUM tied 7/7 to the prod snapshot's supplier_invoice_no.
+            'supplier_invoice_no': (row.get('REFNUM') or '').strip(),
+            'doc_date_iso': _header_date_iso(row),
+            'bill_amount': _billed(row, paid, remaining, doc_no),
+            'paid_amount': paid,
+            # A purchase credit note reduces what we owe — same sign convention
+            # the AR side uses for SR, which is tied to the Express report.
+            'outstanding_amount': (-remaining if row.get('RECTYP') == _CREDIT_RECTYP
+                                   else remaining),
+        })
+    return records

@@ -5,6 +5,7 @@ Extracted verbatim from app.py (behavior-preserving split) — see app.py's
 module docstring for the overall file-split rationale. No URL changes;
 route rules are unchanged, only their endpoint names gain a `bsn.` prefix.
 """
+import datetime
 import json
 import math
 import os
@@ -680,6 +681,18 @@ def _express_dbf_summary_message(per_type):
            f'รับชำระ {pay_in}, จ่ายเงิน {pay_out}, '
            f'ลดหนี้ขาย {cn_ar}, ลดหนี้ซื้อ {cn_ap} รายการ')
 
+    # Outstanding balances, appended only when this caller actually produced
+    # them. Read with .get on purpose: scripts/import_express and older callers
+    # build a per-type dict without these keys, and
+    # test_summary_survives_a_result_dict_without_the_new_keys pins that
+    # tolerance — a KeyError here turns a SUCCESSFUL import into a reported
+    # failure, which is the opposite of what this message is for.
+    ar_snap = (per_type.get('ar_snapshot') or {}).get('imported')
+    ap_snap = (per_type.get('ap_snapshot') or {}).get('imported')
+    if ar_snap is not None or ap_snap is not None:
+        msg += (f' · ลูกหนี้คงค้าง {ar_snap or 0}, เจ้าหนี้คงค้าง {ap_snap or 0} ใบ '
+                f'(ณ {per_type.get("snapshot_date") or "-"})')
+
     # This import DELETES receipt→invoice links whose receipt no longer lists
     # them (import_router.commit_express_dbf applies replacement), and it skips
     # any ARRCPIT line with an unsupported RECTYP. Both are money-path events
@@ -770,16 +783,37 @@ def express_dbf_upload():
         # so retrying the same zip after a VAT failure is safe).
         results = {}
         flashes = []
+        # ONE as-of date for this upload, decided here and handed to both books.
+        # The VAT half runs in a detached subprocess that starts minutes later and
+        # can cross midnight, so letting each side call date.today() for itself is
+        # how the two books end up stamped on different days.
+        snapshot_date = datetime.date.today().isoformat()
         if 'bsn' in classified:
             try:
                 # since_days defaults to 60 inside commit_express_dbf — a
-                # daily upload only ever needs the recent window.
+                # daily upload only ever needs the recent window, and that window
+                # is what keeps this import fast. It scopes the LEDGER only; the
+                # outstanding snapshots deliberately ignore it (a balance is owed
+                # regardless of the invoice's age).
                 per_type = import_router.commit_express_dbf(
-                    classified['bsn'], db_path=config.DATABASE_PATH)
+                    classified['bsn'], db_path=config.DATABASE_PATH,
+                    snapshot_date=snapshot_date)
                 results['bsn'] = {'ok': True,
                                   'summary': _express_dbf_summary_message(per_type),
                                   'reconcile': per_type.get('reconcile', {})}
                 flashes.append(('success', f"BSN5657: {results['bsn']['summary']}"))
+                # A snapshot that refused is isolated from the money import
+                # (import_router._commit_snapshot) — the ledger above is fine,
+                # but AR/AP silently keep showing YESTERDAY's balances, so say
+                # so loudly rather than letting the green flash imply otherwise.
+                for _key, _label in (('ar_snapshot', 'ลูกหนี้คงค้าง'),
+                                     ('ap_snapshot', 'เจ้าหนี้คงค้าง')):
+                    _err = (per_type.get(_key) or {}).get('error')
+                    if _err:
+                        results['bsn'][_key + '_error'] = _err
+                        flashes.append(('warning',
+                                        f'{_label}: สร้างยอดคงค้างรอบนี้ไม่สำเร็จ ({_err}) '
+                                        f'— ยอดขาย/ซื้อเข้าปกติ แต่หน้ายอดคงค้างจะยังเป็นของรอบก่อน'))
                 _reconcile = results['bsn']['reconcile']
                 if _reconcile.get('error'):
                     # scan_reconcile failed but the money import above already
@@ -810,7 +844,7 @@ def express_dbf_upload():
 
         if 'vat' in classified:
             try:
-                _spawn_vat_rebuild(classified['vat'], run_id)
+                _spawn_vat_rebuild(classified['vat'], run_id, snapshot_date)
                 flashes.append(('info',
                                 'สมุด VAT (xp5): เริ่ม rebuild เบื้องหลังแล้ว (~2-5 นาที) '
                                 '— ดูสถานะที่บรรทัด "ผลการนำเข้าล่าสุด" ด้านล่าง'))
@@ -848,7 +882,7 @@ def _update_run_result(run_id, key, value):
 _VAT_BUILD_PROCS = []
 
 
-def _spawn_vat_rebuild(dataset_dir, run_id):
+def _spawn_vat_rebuild(dataset_dir, run_id, snapshot_date=None):
     """Detached full rebuild of vat_book.db (minutes — far beyond gunicorn's
     60s worker timeout, so NEVER in-request). The dataset is copied out of
     the request's tmpdir so it survives this request's cleanup; the builder
@@ -890,7 +924,8 @@ def _spawn_vat_rebuild(dataset_dir, run_id):
          '--publish-to', book_registry.book_db_path('vat'),
          '--result-db', config.DATABASE_PATH,
          '--result-row', str(run_id),
-         '--cleanup-dir', run_root],
+         '--cleanup-dir', run_root]
+        + (['--snapshot-date', snapshot_date] if snapshot_date else []),
         cwd=os.path.dirname(builder), env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True)

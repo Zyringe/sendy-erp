@@ -208,10 +208,27 @@ def ar_aging(as_of: Optional[str] = None,
       }
 
     RECONCILE IDENTITY:
-      total_billed - total_collected == total_outstanding  (within ฿0.01).
-      (total_credit_notes is always 0 here — Express already netted CNs into
-      outstanding_amount and paid_amount, so the old three-term identity
-      collapses to the two-term form.)
+      total_billed - total_collected == total_outstanding  (within ฿0.01)
+      ONLY when the population holds no standalone SR document.
+
+      ⚠ A standalone credit note (its own SR row, not one Express netted into
+      an invoice) carries bill = +amount and outstanding = -amount, so each one
+      skews the two-term identity by 2x its amount. Express's own ลูกหนี้คงค้าง
+      report prints them exactly that way, and `total_outstanding` — the number
+      every AR surface actually reconciles on — stays correct: a credit note
+      REDUCES what is owed. Do not "fix" the sign to make this line balance.
+      Measured 2026-08-17 on the first DBF-built snapshot: 3 SR docs (฿346 in
+      total) put a ฿692 gap between billed-collected and outstanding, while
+      ar_aging / customer_ranking / get_customer_debt_summary and the
+      canonical-plus-excluded recombination all still tied to the satang.
+
+      Historically this read as an unconditional identity because the only two
+      SR rows in the snapshot were dated 2014 and fell outside the >= 2024 leg
+      of BSN_AR_PREDICATE.
+
+      (total_credit_notes is always 0 here — it counts CNs Express netted into
+      an invoice's own paid_amount, which is a different thing from the
+      standalone SR rows above.)
 
     NOTE: invoice_settlement() is preserved as a diagnostic. It is no longer
     called by ar_aging() but remains importable for reconciliation tooling.

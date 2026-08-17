@@ -103,6 +103,19 @@ def _upload(client, entries):
                        follow_redirects=False)
 
 
+def _fake_per_type(n=0):
+    """A stand-in for commit_express_dbf()'s return value. ONE definition, so a
+    new key in that contract is a single edit here rather than a hunt through
+    every stub — the summary builder reads it with [], and a missing key makes
+    the route report the whole import as failed."""
+    return ({t: {'imported': n} for t in
+             ('sales', 'purchase', 'payments_in', 'payments_out',
+              'ar_snapshot', 'ap_snapshot')}
+            | {'credit_notes_ar': {'upserted': n},
+               'credit_notes_ap': {'imported': n},
+               'snapshot_date': '2026-08-17'})
+
+
 def test_single_dataset_without_isinfo_stays_legacy_bsn(tmp_db, monkeypatch):
     """The team's existing daily zip carries no ISINFO.DBF — it must keep
     importing as the BSN book exactly like before this feature."""
@@ -110,11 +123,7 @@ def test_single_dataset_without_isinfo_stays_legacy_bsn(tmp_db, monkeypatch):
     monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
     monkeypatch.setattr(
         bsn.import_router, 'commit_express_dbf',
-        lambda *a, **k: (called.append(1) or {
-            t: {'imported': 0} for t in
-            ('sales', 'purchase', 'payments_in', 'payments_out')}
-            | {'credit_notes_ar': {'upserted': 0},
-               'credit_notes_ap': {'imported': 0}}))
+        lambda *a, **k: (called.append(1) or _fake_per_type()))
     r = _upload(_client(), [('data/ARTRN.DBF', b'x')])
     assert r.status_code == 302
     assert called == [1]
@@ -146,14 +155,11 @@ def test_both_datasets_import_and_persist_results(tmp_db, monkeypatch):
     kinds = {'bsn5657': 'bsn', 'xp5': 'vat'}
     monkeypatch.setattr(bsn, '_classify_dataset',
                         lambda d: kinds[os.path.basename(d)])
-    monkeypatch.setattr(
-        bsn.import_router, 'commit_express_dbf',
-        lambda *a, **k: {t: {'imported': 1} for t in
-                         ('sales', 'purchase', 'payments_in', 'payments_out')}
-        | {'credit_notes_ar': {'upserted': 0}, 'credit_notes_ap': {'imported': 0}})
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _fake_per_type(1))
     spawned = []
     monkeypatch.setattr(bsn, '_spawn_vat_rebuild',
-                        lambda d, rid: spawned.append((d, rid)))
+                        lambda d, rid, sd=None: spawned.append((d, rid, sd)))
     r = _upload(_client(), [('bsn5657/ARTRN.DBF', b'x'), ('xp5/ARTRN.DBF', b'x')])
     assert r.status_code == 302
     assert len(spawned) == 1
@@ -178,7 +184,7 @@ def test_bsn_failure_still_reported_and_vat_spawned(tmp_db, monkeypatch):
     monkeypatch.setattr(bsn.import_router, 'commit_express_dbf', _boom)
     spawned = []
     monkeypatch.setattr(bsn, '_spawn_vat_rebuild',
-                        lambda d, rid: spawned.append(rid))
+                        lambda d, rid, sd=None: spawned.append(rid))
     r = _upload(_client(), [('bsn5657/ARTRN.DBF', b'x'), ('xp5/ARTRN.DBF', b'x')])
     assert r.status_code == 302
     import config
@@ -282,3 +288,51 @@ def test_import_page_shows_reconcile_reappeared_count(tmp_db):
     html = _client().get('/import-express-dbf').get_data(as_text=True)
     assert 'กลับมาแล้ว 3' in html
     assert 'reconcile-scan-error' not in html
+
+
+def test_both_books_get_the_same_snapshot_date(tmp_db, monkeypatch):
+    """One upload, one as-of date. The VAT half runs in a detached subprocess that
+    starts minutes later and can cross midnight, so each side calling date.today()
+    for itself is how the two books end up stamped on different days (Codex P2)."""
+    kinds = {'bsn5657': 'bsn', 'xp5': 'vat'}
+    monkeypatch.setattr(bsn, '_classify_dataset',
+                        lambda d: kinds[os.path.basename(d)])
+    seen = {}
+
+    def _bsn(*a, **k):
+        seen['bsn'] = k.get('snapshot_date')
+        return _fake_per_type(1)
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf', _bsn)
+    monkeypatch.setattr(bsn, '_spawn_vat_rebuild',
+                        lambda d, rid, sd=None: seen.__setitem__('vat', sd))
+
+    r = _upload(_client(), [('bsn5657/ARTRN.DBF', b'x'), ('xp5/ARTRN.DBF', b'x')])
+
+    assert r.status_code == 302
+    assert seen['bsn'] is not None, 'the route must decide the date, not the importer'
+    assert seen['vat'] == seen['bsn']
+
+
+def test_vat_rebuild_is_launched_with_the_snapshot_date_argument(tmp_db, monkeypatch):
+    """The date has to survive as far as the subprocess argv — a value the route
+    computes and then drops on the floor looks identical from inside the route."""
+    kinds = {'bsn5657': 'bsn', 'xp5': 'vat'}
+    monkeypatch.setattr(bsn, '_classify_dataset',
+                        lambda d: kinds[os.path.basename(d)])
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _fake_per_type(1))
+    argv = {}
+
+    class _Proc:
+        def poll(self):
+            return 0
+
+    def _popen(cmd, **kw):
+        argv['cmd'] = cmd
+        return _Proc()
+    monkeypatch.setattr(bsn.subprocess, 'Popen', _popen)
+
+    _upload(_client(), [('bsn5657/ARTRN.DBF', b'x'), ('xp5/ARTRN.DBF', b'x')])
+
+    assert '--snapshot-date' in argv['cmd']
+    assert argv['cmd'][argv['cmd'].index('--snapshot-date') + 1].count('-') == 2
