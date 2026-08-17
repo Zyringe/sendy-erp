@@ -599,6 +599,19 @@ def build_ar_snapshot_records(artrn_rows, armas_rows):
             # Credit notes reduce the receivable; the report prints them negative.
             'outstanding_amount': -remaining if rectyp == _CREDIT_RECTYP else remaining,
             'has_warning': is_receipt,
+            # Doc-level attributes ARTRN has always carried and this adapter used
+            # to drop. They live HERE rather than on express_invoice_refs because
+            # that table is built inside the 60-day ledger window, which covered
+            # only 132 of the 170 invoices /ar chases — the snapshot is windowless
+            # by design, so it is the only place every open document is present.
+            'due_date_iso': (row['DUEDAT'].isoformat()
+                             if row.get('DUEDAT') is not None else None),
+            'pay_terms': (int(row['PAYTRM'])
+                          if row.get('PAYTRM') not in (None, '') else None),
+            # Express writes '~' for "not billed"; stored verbatim it would make
+            # every unbilled invoice look like it was already on a ใบวางบิล.
+            'bill_no': (lambda b: b if b and b != '~' else None)(
+                (row.get('BILNUM') or '').strip()),
         })
     return records
 
