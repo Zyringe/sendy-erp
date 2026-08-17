@@ -242,6 +242,22 @@ def preview_file(path, report_type, db_path=None):
     raise ValueError(f"unknown report_type: {report_type!r}")
 
 
+def _open_optional(eds, dataset_dir, name):
+    """Read a table the zip MAY not contain. The team's .bat only started
+    carrying ARBIL/BKTRN/OESO/GL on 2026-08-17, and a flash drive that has not
+    been refreshed yet still produces the old 9-table zip. A missing optional
+    table is a thinner import, not a failed one — the ledger and the outstanding
+    snapshots do not depend on any of them.
+
+    ONLY FileNotFoundError. A file that is present but unreadable is a real
+    problem and must reach the caller's error branch, not be reported as absent.
+    """
+    try:
+        return eds.open_table(dataset_dir, name)
+    except FileNotFoundError:
+        return None
+
+
 def _commit_snapshot(kind, build, db_path, snapshot_date):
     """Build + import one outstanding snapshot, converting a failure into a
     reported one instead of an exception (see the call site's rationale).
@@ -370,6 +386,26 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     # current — but it is never SILENT: the error rides the result dict up to
     # the upload page, because a silently stale AR is the exact bug this
     # feature exists to end.
+    # ใบวางบิล. Whole table, no window (the bills open invoices point at run back
+    # to 2014), and isolated like the snapshots: it is reference data, so a
+    # failure must not make a committed ledger import read as failed.
+    try:
+        arbil = _open_optional(eds, dataset_dir, "ARBIL")
+        if arbil is None:
+            billing_notes_stats = {"upserted": 0, "skipped": "ARBIL not in this zip"}
+        else:
+            # 'BSN' matches what the snapshots use: each book tags its own rows
+            # 'BSN' inside its own DB (the VAT book is BSN's VAT entity), which
+            # is what keeps a book's figures on that book.
+            billing_notes_stats = {"upserted": _upsert_billing_notes(
+                eds.build_billing_note_records(arbil, armas), "BSN", db_path)}
+    except Exception as exc:
+        # Reading happens INSIDE this block on purpose. A present-but-corrupt
+        # ARBIL raises from dbfread rather than returning None, and outside the
+        # block that would kill a ledger import that has already committed — and
+        # be reported as "not in this zip", which is a different thing and a lie.
+        billing_notes_stats = {"upserted": 0, "error": str(exc)[:300]}
+
     ar_snapshot_stats = _commit_snapshot(
         "ar_snapshot", lambda: eds.build_ar_snapshot_records(artrn, armas),
         db_path, snapshot_date)
@@ -392,6 +428,7 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
 
     return {"sales": sales_stats, "purchase": purchase_stats,
             "invoice_refs_upserted": refs_upserted,
+            "billing_notes": billing_notes_stats,
             "payments_in": payments_in_stats,
             "payments_out": payments_out_stats,
             "credit_notes_ar": credit_notes_ar_stats,
@@ -400,6 +437,46 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
             "ap_snapshot": ap_snapshot_stats,
             "snapshot_date": snapshot_date,
             "reconcile": reconcile_counts}
+
+
+def _upsert_billing_notes(records, entity, db_path):
+    """ใบวางบิล (mig 162). Same shape as _upsert_invoice_refs: a bulk upsert on
+    a plain connection with NO express_import_log batch row.
+
+    Deliberately not a run_import_records file_type — that table's file_type
+    carries a CHECK over six literal values, so adding a seventh would mean
+    rebuilding express_import_log, which two other tables hold foreign keys
+    into. A billing note has no batch to trace anyway: it is upserted by
+    identity (entity, bill_no), not replaced per import.
+    """
+    if not records:
+        return 0
+    import sqlite3
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.executemany(
+            "INSERT INTO express_billing_notes "
+            " (entity, bill_no, bill_date_iso, sent_date_iso, approved_date_iso,"
+            "  customer_code, customer_name, pay_cond, net_amount, is_cancelled,"
+            "  remark, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) "
+            "ON CONFLICT(entity, bill_no) DO UPDATE SET "
+            " bill_date_iso=excluded.bill_date_iso, sent_date_iso=excluded.sent_date_iso,"
+            " approved_date_iso=excluded.approved_date_iso,"
+            " customer_code=excluded.customer_code, customer_name=excluded.customer_name,"
+            " pay_cond=excluded.pay_cond, net_amount=excluded.net_amount,"
+            " is_cancelled=excluded.is_cancelled, remark=excluded.remark,"
+            " updated_at=excluded.updated_at",
+            [(entity, r['bill_no'], r['bill_date_iso'], r['sent_date_iso'],
+              r['approved_date_iso'], r['customer_code'], r['customer_name'],
+              r['pay_cond'], r['net_amount'], int(r['is_cancelled']), r['remark'])
+             for r in records]
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(records)
 
 
 def _upsert_invoice_refs(refs, db_path):
