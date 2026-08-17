@@ -1,6 +1,6 @@
--- Rollback for 159_ar_followup_soft_delete.sql.
+-- Rollback for 160_ar_followup_soft_delete.sql.
 --
--- Restores ar_followup_log to its pre-159 shape: drops the partial index and
+-- Restores ar_followup_log to its pre-160 shape: drops the partial index and
 -- both soft-delete columns. Purely structural — the forward migration ran no
 -- backfill and transformed no data, so there is no reverse-backfill here.
 --
@@ -10,7 +10,7 @@
 -- rewrites the live table in place, so they do: only the two dropped columns'
 -- values are lost, every other column of every row is untouched. Verified on
 -- sqlite3.sqlite_version 3.51.0 (DROP COLUMN has existed since 3.35.0), and
--- pinned by tests/test_mig159_ar_followup_soft_delete.py.
+-- pinned by tests/test_mig160_ar_followup_soft_delete.py.
 --
 -- ORDER IS LOAD-BEARING: SQLite refuses to DROP a column that a partial
 -- index's WHERE clause references ("error in index ... after drop column").
@@ -32,6 +32,6 @@ DROP INDEX IF EXISTS idx_ar_followup_active_customer;
 ALTER TABLE ar_followup_log DROP COLUMN deleted_by;
 ALTER TABLE ar_followup_log DROP COLUMN deleted_at;
 
-DELETE FROM applied_migrations WHERE filename='159_ar_followup_soft_delete.sql';
+DELETE FROM applied_migrations WHERE filename='160_ar_followup_soft_delete.sql';
 
 COMMIT;

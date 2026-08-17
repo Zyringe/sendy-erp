@@ -551,7 +551,7 @@ def delete_outreach(log_id: int,
     """SOFT-delete one outreach row; returns True only if a row changed.
 
     A promise-to-pay is collection evidence — a hard DELETE left no trace of
-    what was removed or by whom (mig 159). Same pattern as
+    what was removed or by whom (mig 160). Same pattern as
     call_card.soft_delete_log. Every reader filters `deleted_at IS NULL`, so
     the row disappears from the UI while staying auditable in SQL.
 

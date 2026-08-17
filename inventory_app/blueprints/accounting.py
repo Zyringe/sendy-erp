@@ -725,7 +725,7 @@ def ar_followup_log_delete(log_id):
         return redirect_
 
     customer_key = (request.form.get('customer_key') or '').strip()
-    # Soft delete (mig 159): attribute it to the login, not to display text,
+    # Soft delete (mig 160): attribute it to the login, not to display text,
     # and only claim success when a row actually changed.
     if arf_mod.delete_outreach(log_id=log_id,
                                deleted_by=session.get('username') or 'unknown'):

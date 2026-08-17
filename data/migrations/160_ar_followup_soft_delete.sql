@@ -1,5 +1,5 @@
 -- ============================================================================
--- 159 — ar_followup_log soft delete (deleted_at / deleted_by) + active index.
+-- 160 — ar_followup_log soft delete (deleted_at / deleted_by) + active index.
 --
 -- See docs/superpowers/plans/2026-08-15-customers-ar-review-fixes.md Task 4.
 -- Deleting an AR outreach row today is a hard DELETE, so the collection
@@ -45,13 +45,13 @@
 --
 -- Apply: the runner applies it (database.py::run_pending_migrations) on the
 -- next `init_db()` — i.e. restart the app. To apply by hand against a
--- disposable clone: `sqlite3 <clone.db> ".read data/migrations/159_ar_followup_soft_delete.sql"`
--- Rollback file: `159_ar_followup_soft_delete.rollback.sql`.
+-- disposable clone: `sqlite3 <clone.db> ".read data/migrations/160_ar_followup_soft_delete.sql"`
+-- Rollback file: `160_ar_followup_soft_delete.rollback.sql`.
 --
 -- ⚠ NOT re-runnable on its own: `ALTER TABLE ... ADD COLUMN` has no IF NOT
 -- EXISTS form, so a second apply fails with `duplicate column name:
 -- deleted_at`. The index half IS drop-first, and to re-apply the whole file
--- run 159_ar_followup_soft_delete.rollback.sql FIRST — same shape as
+-- run 160_ar_followup_soft_delete.rollback.sql FIRST — same shape as
 -- migrations 157/158 and their `pre157_conn` / `pre158_conn` test fixtures.
 --
 -- Rehearsed forward + rollback on a `sqlite3 .backup` copy of a disposable
