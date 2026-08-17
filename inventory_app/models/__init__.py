@@ -45,7 +45,7 @@ from ._shared import (
 )
 from .products import (
     get_products, get_product, create_product, create_structured_product,
-    update_product, deactivate_product,
+    update_product, deactivate_product, weight_edit_fields, WEIGHT_SOURCES,
 )
 from .brands import (
     get_brands, get_brand, set_product_brand, _topup_pre_feb_for_product,

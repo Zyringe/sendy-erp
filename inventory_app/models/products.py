@@ -296,7 +296,46 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
 _UPDATABLE_PRODUCT_COLUMNS = (
     'product_name', 'units_per_carton', 'units_per_box', 'unit_type',
     'hard_to_sell', 'cost_price', 'base_sell_price', 'low_stock_threshold',
+    'weight_kg', 'weight_source',
 )
+
+# Where a products.weight_kg came from. Mirrored by the CHECK added in
+# migration 159 — change one and you must change the other.
+WEIGHT_SOURCES = ('measured', 'marketplace', 'estimated')
+
+
+def weight_edit_fields(form, source='measured'):
+    """Translate a product form's weight box into columns for update_product.
+
+    Three cases, and collapsing any two of them is the bug:
+
+      * the key is ABSENT      -> {}, i.e. preserve whatever is stored. A form
+        that does not render the box must never clear a weight someone weighed.
+      * the key is PRESENT and blank -> both columns to NULL, i.e. clear it.
+      * the key is PRESENT with a number -> the weight and its provenance.
+
+    `(form.get('weight_kg') or '').strip()` cannot express this: it turns a
+    missing key into a blank one and silently destroys the stored value. That
+    exact shape cleared payroll notes in PR #386, so guard on membership.
+
+    `weight_kg` is the weight of ONE `unit_type` unit, not of one piece and not
+    of a parcel — a parcel is `weight_kg * qty_per_sale`.
+
+    Raises ValueError on a non-numeric, zero, or negative weight, matching the
+    CHECK in migration 159 so the caller sees a Thai flash rather than an
+    IntegrityError 500.
+    """
+    if 'weight_kg' not in form:
+        return {}
+    raw = (form['weight_kg'] or '').strip()
+    if not raw:
+        return {'weight_kg': None, 'weight_source': None}
+    kg = float(raw)
+    if kg <= 0:
+        raise ValueError('น้ำหนักต้องมากกว่า 0')
+    if source not in WEIGHT_SOURCES:
+        raise ValueError('ที่มาของน้ำหนักไม่ถูกต้อง: {}'.format(source))
+    return {'weight_kg': kg, 'weight_source': source}
 
 
 def update_product(product_id: int, data: dict, source=None):
