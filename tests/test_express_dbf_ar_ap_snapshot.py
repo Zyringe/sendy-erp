@@ -125,6 +125,9 @@ def test_ar_snapshot_iv_row_maps_every_field():
         'paid_amount': 4000.0,
         'outstanding_amount': 10544.38,
         'has_warning': False,
+        'due_date_iso': None,
+        'pay_terms': None,
+        'bill_no': None,
     }
 
 
@@ -508,3 +511,65 @@ def test_commit_express_dbf_snapshot_ignores_the_sales_date_window(empty_db, mon
     ar = _rows(empty_db, 'express_ar_outstanding')
     assert [r['doc_no'] for r in ar] == ['IV0900001']
     assert ar[0]['outstanding_amount'] == 500.0
+
+
+# ── doc-level AR attributes (mig 161) ───────────────────────────────────────
+#
+# DUEDAT, PAYTRM and BILNUM ride in ARTRN and were being dropped. Measured on
+# the 2026-08-17 export against the 170 invoices /ar actually chases: every one
+# carries a DUEDAT, 18 of them (฿116,850) were NOT YET DUE — Sendy ages by
+# document date — and 17 (฿107,845) were already on a ใบวางบิล.
+#
+# They live on the SNAPSHOT, not on express_invoice_refs: that table is built
+# inside the 60-day ledger window and covered only 132 of the 170, while the
+# snapshot is windowless and therefore has every open document.
+
+def test_ar_snapshot_captures_due_date_terms_and_billing_note():
+    artrn = [dict(_ar('IV6901215', '3', docdat=datetime.date(2026, 7, 31),
+                      netamt=38057.25, remamt=38057.25),
+                  DUEDAT=datetime.date(2026, 8, 30), PAYTRM=30, BILNUM='BI6800409')]
+
+    r = _one(build_ar_snapshot_records(artrn, []), 'IV6901215')
+
+    assert r['due_date_iso'] == '2026-08-30'
+    assert r['pay_terms'] == 30
+    assert r['bill_no'] == 'BI6800409'
+    assert r['doc_date_iso'] == '2026-07-31', 'the document date is still recorded too'
+
+
+def test_ar_snapshot_treats_the_tilde_placeholder_as_not_billed():
+    """Express writes '~' in BILNUM for a document that has not been billed.
+    Stored verbatim it would make every unbilled invoice look already billed —
+    the exact distinction the field is being captured for."""
+    artrn = [dict(_ar('IV6901300', '3', netamt=100.0, remamt=100.0), BILNUM='~')]
+
+    assert _one(build_ar_snapshot_records(artrn, []), 'IV6901300')['bill_no'] is None
+
+
+def test_ar_snapshot_leaves_the_attributes_null_when_express_has_none():
+    """CONTROL: cash documents carry no PAYTRM, and NULL must stay NULL rather
+    than becoming 0 days — "no terms" and "due immediately" are not the same."""
+    artrn = [_ar('IV6901301', '3', netamt=100.0, remamt=100.0)]
+
+    r = _one(build_ar_snapshot_records(artrn, []), 'IV6901301')
+
+    assert r['due_date_iso'] is None and r['pay_terms'] is None and r['bill_no'] is None
+
+
+def test_commit_express_dbf_stores_the_due_date_on_the_snapshot_row(empty_db, monkeypatch):
+    """End to end: the columns are useless unless the importer writes them."""
+    import import_router
+
+    _seed_company(empty_db)
+    _patch_tables(monkeypatch, {
+        'ARTRN': [dict(_ar('IV6901215', '3', netamt=100.0, remamt=100.0),
+                       DUEDAT=datetime.date(2026, 8, 30), PAYTRM=30, BILNUM='BI6800409')],
+        'ARMAS': [_armas('C001', 'ลูกค้า ก')],
+    })
+
+    import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+
+    row = _rows(empty_db, 'express_ar_outstanding')[0]
+    assert row['due_date_iso'] == '2026-08-30'
+    assert row['pay_terms'] == 30
+    assert row['bill_no'] == 'BI6800409'

@@ -331,13 +331,18 @@ def _import_ar_snapshot_records(conn, records, batch_id, company_id,
             INSERT INTO express_ar_outstanding
                 (batch_id, entity, snapshot_date_iso, customer_code, customer_name,
                  customer_id, customer_type, doc_date_iso, doc_no, is_anomalous,
-                 salesperson_code, bill_amount, paid_amount, outstanding_amount, has_warning)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 salesperson_code, bill_amount, paid_amount, outstanding_amount, has_warning,
+                 due_date_iso, pay_terms, bill_no)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             batch_id, entity, snapshot_date, code, r['customer_name'], cust_id,
             r['customer_type'], r['doc_date_iso'], r['doc_no'], int(r['is_anomalous']),
             r['salesperson_code'], r['bill_amount'], r['paid_amount'],
             r['outstanding_amount'], int(r['has_warning']),
+            # mig 161 — .get() so a caller still on the old record shape (the
+            # text-report path builds AROutstanding objects, not these dicts)
+            # keeps working instead of raising mid-import.
+            r.get('due_date_iso'), r.get('pay_terms'), r.get('bill_no'),
         ))
     conn.execute('UPDATE express_import_log SET snapshot_date_iso = ? WHERE id = ?',
                  (snapshot_date, batch_id))
