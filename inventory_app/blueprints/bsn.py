@@ -685,7 +685,16 @@ def _zip_export_datetime(zf):
               if zi.filename.upper().endswith('.DBF') and zi.date_time]
     if not stamps:
         return None
-    return datetime.datetime(*max(stamps))
+    latest = datetime.datetime(*max(stamps))
+    # A FUTURE stamp means the LAN PC's clock is wrong — Express cannot export
+    # tomorrow. Trusting it is the one input that can lock the team out
+    # completely: the snapshot would be dated ahead, and since the staleness
+    # guard compares against MAX(snapshot_date_iso), every later upload would be
+    # refused as "older" until the calendar caught up. Treat it as unreadable so
+    # the caller falls back to today and warns.
+    if latest.date() > datetime.date.today():
+        return None
+    return latest
 
 
 def _latest_stored_snapshot_date(conn):

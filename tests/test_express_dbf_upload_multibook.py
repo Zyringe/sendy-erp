@@ -492,3 +492,32 @@ def test_upload_records_the_file_it_actually_imported(tmp_db, monkeypatch):
     assert up['bytes'] > 0
     assert len(up['sha256']) == 64
     assert up['export_at'].startswith('2026-08-17')
+
+
+def test_a_future_dated_zip_falls_back_to_today_instead_of_poisoning_the_guard(
+        tmp_db, monkeypatch):
+    """A wrong clock on the LAN PC is the one input that can lock the team out.
+
+    Express cannot produce a future export, so a future member date means the
+    machine's clock is off. Trusting it would stamp the snapshot in the future,
+    and because the staleness guard compares against MAX(snapshot_date_iso),
+    EVERY later upload would then be refused as 'older' until the calendar caught
+    up. Fall back to today and say so — a wrong date is recoverable, a locked-out
+    daily import is not."""
+    import config
+    _set_snapshot(config.DATABASE_PATH, '2026-01-01')
+    future = _dt.date.today() + _dt.timedelta(days=30)
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    seen = {}
+
+    def _cap(*a, **k):
+        seen['date'] = k.get('snapshot_date')
+        return _fake_per_type()
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf', _cap)
+
+    r = _upload_dated(_client(), [('data/ARTRN.DBF', b'x')],
+                      (future.year, future.month, future.day, 9, 0, 0))
+
+    assert r.status_code == 302
+    assert seen['date'] == _dt.date.today().isoformat(), (
+        'a future export stamp must not reach the snapshot')
