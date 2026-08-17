@@ -495,6 +495,11 @@ def product_edit(product_id):
                 'base_sell_price': float(f.get('base_sell_price') or 0),
                 'low_stock_threshold': int(f.get('low_stock_threshold') or config.LOW_STOCK_DEFAULT_THRESHOLD),
             }
+            # Typing a weight here IS the scale reading, so it is stamped
+            # 'measured'. Returns {} when the form carries no weight box at
+            # all, so a caller that doesn't render one cannot blank a real
+            # weight; a box submitted EMPTY does clear it, deliberately.
+            data.update(models.weight_edit_fields(f))
         except ValueError as e:
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
             return render_template('products/form.html', product=f, action='edit', product_id=product_id)

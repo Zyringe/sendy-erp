@@ -78,6 +78,25 @@
                 <span class="input-group-text">{{ product.unit_type or 'หน่วย' }}</span>
               </div>
             </div>
+
+            <div class="col-md-4">
+              <label class="form-label">
+                น้ำหนัก ต่อ 1 {{ product.unit_type or 'หน่วย' }}
+                {% if product.weight_source and product.weight_source != 'measured' %}
+                  <span class="badge bg-warning text-dark">ยังไม่ได้ชั่ง</span>
+                {% endif %}
+              </label>
+              <div class="input-group">
+                <input type="number" name="weight_kg" class="form-control"
+                       value="{{ product.weight_kg or '' }}" step="0.001" min="0"
+                       placeholder="เช่น 0.850">
+                <span class="input-group-text">กก.</span>
+              </div>
+              <div class="form-text">
+                ชั่ง 1 {{ product.unit_type or 'หน่วย' }} แล้วกรอกเป็นกิโลกรัม
+                ใช้คิดค่าส่ง TikTok / Shopee · เว้นว่าง = ลบน้ำหนักที่เก็บไว้
+              </div>
+            </div>
           </div>
 
             <div class="col-12"><hr class="my-1"></div>

@@ -1264,7 +1264,13 @@ CREATE TABLE "products" (
     packaging_short          TEXT,
     opening_cost             REAL    NOT NULL DEFAULT 0.0,
     created_via              TEXT
-);
+, weight_kg REAL
+    CHECK (weight_kg IS NULL OR weight_kg > 0), weight_source TEXT
+    CHECK (
+        (weight_kg IS NULL     AND weight_source IS NULL)
+     OR (weight_kg IS NOT NULL AND weight_source IS NOT NULL
+         AND weight_source IN ('measured', 'marketplace', 'estimated'))
+    ));
 
 CREATE TABLE "promotions" (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3430,7 +3436,9 @@ BEGIN
             'unit_type', OLD.unit_type,
             'cost_price', OLD.cost_price,
             'base_sell_price', OLD.base_sell_price,
-            'is_active', OLD.is_active
+            'is_active', OLD.is_active,
+            'weight_kg', OLD.weight_kg,
+            'weight_source', OLD.weight_source
         )
     );
 END;
@@ -3447,7 +3455,9 @@ BEGIN
             'cost_price', NEW.cost_price,
             'base_sell_price', NEW.base_sell_price,
             'low_stock_threshold', NEW.low_stock_threshold,
-            'is_active', NEW.is_active
+            'is_active', NEW.is_active,
+            'weight_kg', NEW.weight_kg,
+            'weight_source', NEW.weight_source
         )
     );
 END;
@@ -3464,6 +3474,8 @@ WHEN (
     OR OLD.low_stock_threshold IS NOT NEW.low_stock_threshold
     OR OLD.hard_to_sell        IS NOT NEW.hard_to_sell
     OR OLD.is_active           IS NOT NEW.is_active
+    OR OLD.weight_kg           IS NOT NEW.weight_kg
+    OR OLD.weight_source       IS NOT NEW.weight_source
 )
 BEGIN
     INSERT INTO audit_log (table_name, row_id, action, changed_fields)
@@ -3479,6 +3491,8 @@ BEGIN
         UNION ALL SELECT 'low_stock_threshold', OLD.low_stock_threshold, NEW.low_stock_threshold WHERE OLD.low_stock_threshold IS NOT NEW.low_stock_threshold
         UNION ALL SELECT 'hard_to_sell',        OLD.hard_to_sell,        NEW.hard_to_sell        WHERE OLD.hard_to_sell        IS NOT NEW.hard_to_sell
         UNION ALL SELECT 'is_active',           OLD.is_active,           NEW.is_active           WHERE OLD.is_active           IS NOT NEW.is_active
+        UNION ALL SELECT 'weight_kg',           OLD.weight_kg,           NEW.weight_kg           WHERE OLD.weight_kg           IS NOT NEW.weight_kg
+        UNION ALL SELECT 'weight_source',       OLD.weight_source,       NEW.weight_source       WHERE OLD.weight_source       IS NOT NEW.weight_source
     );
 END;
 
