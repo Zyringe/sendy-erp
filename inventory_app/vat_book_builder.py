@@ -232,8 +232,38 @@ def _guard_subprocess_target():
     return config.DATABASE_PATH
 
 
-def build(source_dir):
-    """Full build at config.DATABASE_PATH (guarded). Returns a summary dict."""
+_SNAPSHOT_LABELS = {'ar_snapshot': 'ลูกหนี้คงค้าง', 'ap_snapshot': 'เจ้าหนี้คงค้าง'}
+
+
+def _require_snapshots_ok(per_type):
+    """Fail the build when either outstanding snapshot refused.
+
+    import_router._commit_snapshot deliberately reports a snapshot failure instead
+    of raising, because on the DAILY BSN import the ledger has already committed and
+    the previous day's snapshot is still there to read. Neither is true here: this
+    builds a whole book from scratch and then REPLACES the live one, so a refused
+    snapshot would publish a VAT book with no balances at all — and `counts` would
+    read `ar_snapshot: 0`, indistinguishable from a book that owes nothing.
+
+    Raising here is what keeps publish() from running: main() wraps build() in
+    `except BaseException`, records ok:False on the run row, and never reaches the
+    publish call.
+    """
+    for key, label in _SNAPSHOT_LABELS.items():
+        err = (per_type.get(key) or {}).get('error')
+        if err:
+            raise RuntimeError(
+                f'{label}: สร้างไม่สำเร็จ — ไม่ publish สมุด VAT รอบนี้ ({err})')
+
+
+def build(source_dir, snapshot_date=None):
+    """Full build at config.DATABASE_PATH (guarded). Returns a summary dict.
+
+    snapshot_date: the as-of date for this book's outstanding snapshots, decided
+    ONCE by the upload request and passed down, so both books carry the same date.
+    Letting it default here would stamp the VAT book from this subprocess's own
+    clock — it starts minutes after the request and can cross midnight.
+    """
     db_path = _guard_subprocess_target()
 
     import database
@@ -252,7 +282,9 @@ def build(source_dir):
         seed_companies(conn)
         code_to_pid = seed_products_from_stmas(conn, stmas)
         per_type = import_router.commit_express_dbf(
-            source_dir, db_path=db_path, since_days=None)
+            source_dir, db_path=db_path, since_days=None,
+            snapshot_date=snapshot_date)
+        _require_snapshots_ok(per_type)
         overwrite_stock_from_stmas(conn, stmas, stloc, code_to_pid)
         isvat_n = dump_isvat(conn, isvat)
         stmas_meta_n = dump_stmas_meta(conn, stmas)
@@ -266,6 +298,11 @@ def build(source_dir):
             'payments_out': per_type['payments_out']['imported'],
             'credit_notes_ar': per_type['credit_notes_ar']['upserted'],
             'credit_notes_ap': per_type['credit_notes_ap']['imported'],
+            # This book's OWN outstanding balances (xp5's RR26/IV series) —
+            # kept here, never merged into the main book's figures.
+            'ar_snapshot': per_type['ar_snapshot']['imported'],
+            'ap_snapshot': per_type['ap_snapshot']['imported'],
+            'snapshot_date': per_type['snapshot_date'],
         }
         write_book_meta(conn, source_dir, isinfo, counts)
     finally:
@@ -375,6 +412,9 @@ if __name__ == '__main__':
                    help='import_log row id to update with the outcome')
     p.add_argument('--cleanup-dir',
                    help='scratch dir (dataset copy + build dir) to delete at exit')
+    p.add_argument('--snapshot-date',
+                   help='as-of date (ISO) for this book\'s outstanding snapshots, '
+                        'decided by the upload request so both books agree')
     args = p.parse_args()
     lock_fd = None
     try:
@@ -383,7 +423,7 @@ if __name__ == '__main__':
             # rebuilds must serialize the entire lifecycle, not just the swap).
             if args.publish_to:
                 lock_fd = acquire_publish_lock(args.publish_to)
-            summary = build(args.source)
+            summary = build(args.source, snapshot_date=args.snapshot_date)
             if args.publish_to:
                 publish(summary['db_path'], args.publish_to)
             outcome = {'ok': True, 'counts': summary['counts'],

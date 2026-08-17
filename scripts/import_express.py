@@ -275,6 +275,105 @@ def _import_ap_snapshot(conn, path, batch_id, company_id, incremental=True,
     return len(records), 0
 
 
+def _refuse_empty_overwrite(conn, table, records, entity, snapshot_date, label):
+    """Guard the full-replacement write against a parse that yielded nothing.
+
+    A snapshot replaces its whole (entity, date), so an EMPTY record list deletes
+    the rows and writes none. On a fresh date that is harmless — readers take
+    MAX(snapshot_date_iso) and simply keep the previous day. On a SAME-DAY retry it
+    destroys the good snapshot written hours earlier and silently drops AR/AP back a
+    day, which is the exact failure the daily import exists to prevent.
+
+    "Express has no outstanding documents" and "the parse went wrong" are
+    indistinguishable here, so refuse rather than guess. Returns True when the caller
+    should write nothing (nothing to lose), raises when there IS something to lose.
+    """
+    if records:
+        return False
+    existing = conn.execute(
+        f"SELECT COUNT(*) FROM {table} WHERE entity = ? AND snapshot_date_iso = ?",
+        (entity, snapshot_date)).fetchone()[0]
+    if existing:
+        raise ValueError(
+            f'{label}: parsed 0 open documents but {existing} rows already exist for '
+            f'{entity} {snapshot_date} — refusing to erase them. '
+            f'ถ้าหนี้หมดจริง ให้ลบ snapshot ของวันนี้ด้วยมือก่อนแล้วนำเข้าใหม่')
+    return True
+
+
+def _import_ar_snapshot_records(conn, records, batch_id, company_id,
+                                incremental=True, entity='BSN', snapshot_date=None):
+    """Records-first twin of _import_ar_snapshot (the text-report path), used by
+    the daily Express DBF zip via express_dbf_source.build_ar_snapshot_records.
+
+    Same full-replacement semantics: a snapshot is the complete picture for one
+    (entity, date), so re-running the same day REPLACES rather than appends —
+    otherwise a retried upload doubles the day's AR.
+    """
+    if not snapshot_date:
+        raise ValueError('ar_snapshot needs an explicit snapshot_date')
+    if _refuse_empty_overwrite(conn, 'express_ar_outstanding', records,
+                               entity, snapshot_date, 'ลูกหนี้คงค้าง'):
+        conn.execute('UPDATE express_import_log SET snapshot_date_iso = ? WHERE id = ?',
+                     (snapshot_date, batch_id))
+        return 0, 0
+    conn.execute("DELETE FROM express_ar_outstanding WHERE entity = ? AND snapshot_date_iso = ?",
+                 (entity, snapshot_date))
+    for r in records:
+        code = r['customer_code']
+        cust_id = None
+        if code:
+            row = conn.execute('SELECT code FROM customers WHERE code = ?', (code,)).fetchone()
+            cust_id = row[0] if row else _customer_code_by_name(conn, r['customer_name'])
+        else:
+            cust_id = _customer_code_by_name(conn, r['customer_name'])
+        conn.execute("""
+            INSERT INTO express_ar_outstanding
+                (batch_id, entity, snapshot_date_iso, customer_code, customer_name,
+                 customer_id, customer_type, doc_date_iso, doc_no, is_anomalous,
+                 salesperson_code, bill_amount, paid_amount, outstanding_amount, has_warning)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            batch_id, entity, snapshot_date, code, r['customer_name'], cust_id,
+            r['customer_type'], r['doc_date_iso'], r['doc_no'], int(r['is_anomalous']),
+            r['salesperson_code'], r['bill_amount'], r['paid_amount'],
+            r['outstanding_amount'], int(r['has_warning']),
+        ))
+    conn.execute('UPDATE express_import_log SET snapshot_date_iso = ? WHERE id = ?',
+                 (snapshot_date, batch_id))
+    return len(records), 0
+
+
+def _import_ap_snapshot_records(conn, records, batch_id, company_id,
+                                incremental=True, entity='BSN', snapshot_date=None):
+    """Records-first twin of _import_ap_snapshot — see the AR docstring above."""
+    if not snapshot_date:
+        raise ValueError('ap_snapshot needs an explicit snapshot_date')
+    if _refuse_empty_overwrite(conn, 'express_ap_outstanding', records,
+                               entity, snapshot_date, 'เจ้าหนี้คงค้าง'):
+        conn.execute('UPDATE express_import_log SET snapshot_date_iso = ? WHERE id = ?',
+                     (snapshot_date, batch_id))
+        return 0, 0
+    conn.execute("DELETE FROM express_ap_outstanding WHERE entity = ? AND snapshot_date_iso = ?",
+                 (entity, snapshot_date))
+    for r in records:
+        conn.execute("""
+            INSERT INTO express_ap_outstanding
+                (batch_id, entity, snapshot_date_iso, supplier_type, supplier_name,
+                 supplier_code, supplier_id, doc_no, supplier_invoice_no,
+                 doc_date_iso, bill_amount, paid_amount, outstanding_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            batch_id, entity, snapshot_date, r['supplier_type'], r['supplier_name'],
+            r['supplier_code'], _supplier_id_by_name(conn, r['supplier_name']),
+            r['doc_no'], r['supplier_invoice_no'], r['doc_date_iso'],
+            r['bill_amount'], r['paid_amount'], r['outstanding_amount'],
+        ))
+    conn.execute('UPDATE express_import_log SET snapshot_date_iso = ? WHERE id = ?',
+                 (snapshot_date, batch_id))
+    return len(records), 0
+
+
 def _import_payments_out_records(conn, records, batch_id, company_id, incremental=True):
     """Shared write step behind _import_payments_out (text-report path,
     which converts p_pout.parse_payments_out()'s APPayment objects to dicts
@@ -459,18 +558,25 @@ def run_import(file_type, path, company_code='BSN', dry_run=False, incremental=T
         conn.close()
 
 
-# Records-first importers — the two file_types with a records-based writer
-# (Phase 1 slice B). ar_snapshot/ap_snapshot/sales/payments_in stay path-only
-# (out of scope for this slice; sales/payments_in flow through models.py
-# instead of this module — see import_router.py::commit_express_dbf).
+# Records-first importers — the file_types with a records-based writer, fed by
+# the Express DBF-direct path. ar_snapshot/ap_snapshot joined payments_out and
+# credit_notes on 2026-08-17 so the daily zip carries ลูกหนี้/เจ้าหนี้คงค้าง too.
+# sales/payments_in stay path-only here (they flow through models.py instead —
+# see import_router.py::commit_express_dbf).
 _RECORDS_IMPORTERS = {
     'payments_out': _import_payments_out_records,
     'credit_notes': _import_credit_notes_records,
+    'ar_snapshot': _import_ar_snapshot_records,
+    'ap_snapshot': _import_ap_snapshot_records,
 }
+
+# Records-first snapshot importers take the entity tag + the as-of date, the
+# same way _SNAPSHOT_IMPORTERS does on the text-report path.
+_SNAPSHOT_RECORDS_IMPORTERS = {'ar_snapshot', 'ap_snapshot'}
 
 
 def run_import_records(file_type, records, company_code='BSN', db_path=None,
-                        incremental=True):
+                        incremental=True, snapshot_date=None):
     """Records-first entry point — the Express DBF-direct path
     (express_dbf_source.py::build_payments_out_records /
     build_credit_notes_ap_records) calls this with already-built records,
@@ -496,8 +602,13 @@ def run_import_records(file_type, records, company_code='BSN', db_path=None,
     batch_id = cur.lastrowid
 
     try:
-        record_count, line_count = _RECORDS_IMPORTERS[file_type](
-            conn, records, batch_id, company_id, incremental=incremental)
+        if file_type in _SNAPSHOT_RECORDS_IMPORTERS:
+            record_count, line_count = _RECORDS_IMPORTERS[file_type](
+                conn, records, batch_id, company_id, incremental=incremental,
+                entity=company_code, snapshot_date=snapshot_date)
+        else:
+            record_count, line_count = _RECORDS_IMPORTERS[file_type](
+                conn, records, batch_id, company_id, incremental=incremental)
         conn.execute("""
             UPDATE express_import_log
             SET record_count = ?, line_count = ?

@@ -280,3 +280,81 @@ def test_guard_refuses_existing_target(monkeypatch):
         pytest.skip('no DB at config.DATABASE_PATH in this env')
     with pytest.raises(SystemExit, match='already exists'):
         vb._guard_subprocess_target()
+
+
+# ── snapshot outcomes gate the publish (Codex P1, 2026-08-17) ────────────────
+
+def test_require_snapshots_ok_raises_when_a_snapshot_failed():
+    """A fresh VAT build has no previous snapshot to fall back on, so a snapshot
+    that refused must fail the BUILD — otherwise main() goes straight on to
+    publish() and a book with no ลูกหนี้/เจ้าหนี้คงค้าง at all replaces the live
+    one while reporting ok:True.
+
+    Deliberately NOT the same policy as the daily BSN import, where the ledger has
+    already committed and yesterday's snapshot is still readable — there,
+    _commit_snapshot's report-and-continue is correct."""
+    per_type = {'ar_snapshot': {'imported': 0, 'error': 'boom'},
+                'ap_snapshot': {'imported': 3}}
+
+    with pytest.raises(RuntimeError, match='ลูกหนี้คงค้าง'):
+        vb._require_snapshots_ok(per_type)
+
+
+def test_require_snapshots_ok_raises_for_the_ap_side_too():
+    per_type = {'ar_snapshot': {'imported': 5},
+                'ap_snapshot': {'imported': 0, 'error': 'boom'}}
+
+    with pytest.raises(RuntimeError, match='เจ้าหนี้คงค้าง'):
+        vb._require_snapshots_ok(per_type)
+
+
+def test_require_snapshots_ok_accepts_a_book_with_no_open_documents():
+    """CONTROL, and the reason the gate keys on `error` rather than on a zero count:
+    a book that genuinely owes and is owed nothing is valid, not a failure."""
+    per_type = {'ar_snapshot': {'imported': 0}, 'ap_snapshot': {'imported': 0}}
+
+    vb._require_snapshots_ok(per_type)   # must not raise
+
+
+def test_builder_cli_accepts_a_snapshot_date():
+    """The date is decided once at upload time and handed to the detached builder;
+    without this the subprocess would stamp the VAT book from its own clock, minutes
+    later and possibly on the next day (Codex P2)."""
+    import subprocess
+    import sys
+    out = subprocess.run([sys.executable, vb.__file__, '--help'],
+                         capture_output=True, text=True)
+    assert '--snapshot-date' in out.stdout
+
+
+def test_build_refuses_to_return_when_a_snapshot_failed(tmp_path, monkeypatch):
+    """The gate above is only worth anything if build() actually calls it — a test
+    that invokes the helper directly stays green with the call deleted, which is
+    testing the neighbour and not the subject.
+
+    Drives build() with its dependencies stubbed out so the only thing that can
+    stop it is the snapshot check. main() wraps build() in `except BaseException`
+    and never reaches publish(), so "build raises" IS "the book is not published".
+    """
+    import database
+    import express_dbf_source as eds
+    import import_router
+
+    db_path = str(tmp_path / 'built.db')
+    monkeypatch.setattr(vb, '_guard_subprocess_target', lambda: db_path)
+    monkeypatch.setattr(database, 'init_db', lambda *a, **k: None)
+    monkeypatch.setattr(database, 'get_connection', lambda *a, **k: sqlite3.connect(db_path))
+    monkeypatch.setattr(eds, 'open_table', lambda *a, **k: [])
+    monkeypatch.setattr(vb, 'seed_companies', lambda conn: None)
+    monkeypatch.setattr(vb, 'seed_products_from_stmas', lambda conn, rows: {})
+    reached = []
+    monkeypatch.setattr(vb, 'overwrite_stock_from_stmas',
+                        lambda *a, **k: reached.append('stock'))
+    monkeypatch.setattr(import_router, 'commit_express_dbf',
+                        lambda *a, **k: {'ar_snapshot': {'imported': 0, 'error': 'boom'},
+                                         'ap_snapshot': {'imported': 0}})
+
+    with pytest.raises(RuntimeError, match='ลูกหนี้คงค้าง'):
+        vb.build('/nonexistent')
+
+    assert reached == [], 'build must stop AT the gate, before finishing the book'

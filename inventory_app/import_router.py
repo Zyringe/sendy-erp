@@ -242,13 +242,38 @@ def preview_file(path, report_type, db_path=None):
     raise ValueError(f"unknown report_type: {report_type!r}")
 
 
-def commit_express_dbf(dataset_dir, db_path=None, since_days=60):
-    """Import all 6 Express DBF transactional types for one dataset
+def _commit_snapshot(kind, build, db_path, snapshot_date):
+    """Build + import one outstanding snapshot, converting a failure into a
+    reported one instead of an exception (see the call site's rationale).
+    Returns run_import_records' stats dict, or {'imported': 0, 'error': ...}."""
+    import import_express
+    try:
+        return import_express.run_import_records(
+            kind, build(), db_path=db_path, snapshot_date=snapshot_date)
+    except Exception as exc:
+        return {"imported": 0, "skipped": 0, "total": 0, "lines": 0,
+                "error": str(exc)[:300]}
+
+
+def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
+                       snapshot_date=None):
+    """Import all 8 Express DBF transactional types for one dataset
     directory into Sendy — the DBF branch parallel to the text-report path
     above (Phase 1 slices A+B — payments/credit-notes join sales/purchase
     here). Reads the needed tables straight off disk and feeds each type's
     SAME downstream importer the text-report path uses, so idempotency/
     dedup is unchanged.
+
+    Also lands the two OUTSTANDING snapshots (ลูกหนี้คงค้าง / เจ้าหนี้คงค้าง),
+    which used to arrive only as hand-exported text reports and had gone 73 and
+    80 days stale. Because vat_book_builder calls this same function against
+    vat_book.db, each book gets its OWN snapshot from its own dataset — BSN5657
+    into the main DB, xp5 into the VAT book (Put, 2026-08-17: import both books,
+    keep each book's figures on that book).
+
+    snapshot_date: the as-of date stamped on both snapshots (ISO). Defaults to
+    today — the DBF has no "as of" header the way the printed report does, and
+    an export is by definition current as of the day it was taken.
 
     since_days: recency window (Put's call, Phase 2 follow-up) — only docs
     with DOCDAT within the last `since_days` days are imported. None means
@@ -274,6 +299,7 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60):
     db_path = db_path or config.DATABASE_PATH
     cutoff = (datetime.date.today() - datetime.timedelta(days=since_days)
               if since_days is not None else None)
+    snapshot_date = snapshot_date or datetime.date.today().isoformat()
 
     artrn = eds.open_table(dataset_dir, "ARTRN")
     aptrn = eds.open_table(dataset_dir, "APTRN")
@@ -330,6 +356,27 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60):
     credit_notes_ap_stats = import_express.run_import_records(
         "credit_notes", credit_notes_ap_records, db_path=db_path)
 
+    # Outstanding snapshots. Built from the SAME already-read ARTRN/APTRN rows,
+    # and deliberately WITHOUT `cutoff`: since_days scopes the ledger, but a
+    # balance is owed regardless of the invoice's age (the real snapshot carries
+    # unpaid docs dated 2009). Passing a cutoff here would silently drop the
+    # oldest — and largest — debts from AR aging and the dunning list.
+    #
+    # Isolated per side, like scan_reconcile below: the money import above has
+    # already committed, so a snapshot that refuses (the NETAMT invariant guard)
+    # must not make the whole upload read as failed and send the team into a
+    # retry loop. Degrading is safe — every AR/AP reader takes
+    # MAX(snapshot_date_iso), so the previous day's snapshot simply stays
+    # current — but it is never SILENT: the error rides the result dict up to
+    # the upload page, because a silently stale AR is the exact bug this
+    # feature exists to end.
+    ar_snapshot_stats = _commit_snapshot(
+        "ar_snapshot", lambda: eds.build_ar_snapshot_records(artrn, armas),
+        db_path, snapshot_date)
+    ap_snapshot_stats = _commit_snapshot(
+        "ap_snapshot", lambda: eds.build_ap_snapshot_records(aptrn, apmas),
+        db_path, snapshot_date)
+
     # reconcile-scan (reconcile-scan-plan.md §2): read-only detection, reusing
     # the SAME sales_entries/artrn already built above (no second parse).
     # Deliberately LAST and wrapped: this is a read-only observer over data
@@ -349,6 +396,9 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60):
             "payments_out": payments_out_stats,
             "credit_notes_ar": credit_notes_ar_stats,
             "credit_notes_ap": credit_notes_ap_stats,
+            "ar_snapshot": ar_snapshot_stats,
+            "ap_snapshot": ap_snapshot_stats,
+            "snapshot_date": snapshot_date,
             "reconcile": reconcile_counts}
 
 

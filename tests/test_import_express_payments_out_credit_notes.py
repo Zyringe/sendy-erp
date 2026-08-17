@@ -254,7 +254,19 @@ def test_run_import_records_idempotent_across_calls(tmp_db):
 
 
 def test_run_import_records_unknown_file_type_raises(tmp_db):
+    # 'sales' is a real run_import() file_type with NO records-first writer —
+    # it flows through models.py. (This used to use 'ar_snapshot', which gained
+    # a records importer on 2026-08-17 when the daily DBF zip started carrying
+    # the outstanding snapshots.)
     with pytest.raises(SystemExit):
+        ie.run_import_records('sales', [], db_path=tmp_db)
+
+
+def test_run_import_records_snapshot_without_a_date_raises(tmp_db):
+    """A snapshot with no as-of date would land under snapshot_date_iso NULL,
+    where MAX(snapshot_date_iso) can never see it — the rows would import
+    'successfully' and be invisible to every AR/AP reader."""
+    with pytest.raises(ValueError, match='snapshot_date'):
         ie.run_import_records('ar_snapshot', [], db_path=tmp_db)
 
 
@@ -266,6 +278,18 @@ def test_run_import_records_rolls_back_whole_batch_on_error(tmp_db):
     good = _payment_out_record(doc_no='PS0009999')
     bad = dict(good)
     bad['doc_no'] = None   # NOT NULL violation on express_payments_out.doc_no
+
+    # tmp_db CLONES THE LIVE DEV DB *WITH ITS DATA* (tests/conftest.py does a
+    # shutil.copy2, there is no wipe), so this DB already carries every
+    # express_dbf batch row the machine has ever imported — 26 of them today.
+    # Asserting a global COUNT == 0 therefore failed on any developer machine
+    # that had run a daily import, permanently, for a reason having nothing to
+    # do with rollback. Force the state instead of inheriting it.
+    seed = sqlite3.connect(tmp_db)
+    seed.execute("DELETE FROM express_import_log "
+                 "WHERE source_filename='express_dbf' AND file_type='payments_out'")
+    seed.commit()
+    seed.close()
 
     with pytest.raises(sqlite3.IntegrityError):
         ie.run_import_records('payments_out', [good, bad], db_path=tmp_db)
