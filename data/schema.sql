@@ -3436,7 +3436,9 @@ BEGIN
             'unit_type', OLD.unit_type,
             'cost_price', OLD.cost_price,
             'base_sell_price', OLD.base_sell_price,
-            'is_active', OLD.is_active
+            'is_active', OLD.is_active,
+            'weight_kg', OLD.weight_kg,
+            'weight_source', OLD.weight_source
         )
     );
 END;
@@ -3453,7 +3455,9 @@ BEGIN
             'cost_price', NEW.cost_price,
             'base_sell_price', NEW.base_sell_price,
             'low_stock_threshold', NEW.low_stock_threshold,
-            'is_active', NEW.is_active
+            'is_active', NEW.is_active,
+            'weight_kg', NEW.weight_kg,
+            'weight_source', NEW.weight_source
         )
     );
 END;

@@ -37,12 +37,17 @@
 --   * NULL/NULL is accepted, which is every existing row — no backfill runs
 --     here, so the ~2,000 products stay untouched and simply read "unknown".
 --
--- AUDIT. `audit_products_update` enumerates its columns explicitly, so a new
--- column is invisible to it until the trigger is rewritten — a weight could be
--- changed with no audit row. The trigger is recreated below with both columns
--- added to the WHEN guard and to the changed-fields list. This is the whole
--- blast radius: grepping the schema for the other two products audit triggers
--- shows INSERT and DELETE log the row id only and do not enumerate columns.
+-- AUDIT. All THREE products audit triggers enumerate their columns explicitly,
+-- so a new column is invisible to each of them until it is rewritten. All
+-- three are recreated below.
+--   * UPDATE — both columns added to the WHEN guard and the changed-fields list,
+--     or a weight edit would leave no audit row at all.
+--   * INSERT — both added to the json_object payload.
+--   * DELETE — both added, so deleting a weighed product does not lose the last
+--     known weight and its provenance from the record.
+-- ⚠ The DELETE payload deliberately does NOT carry `low_stock_threshold` even
+-- though INSERT does. That asymmetry is pre-existing and is preserved here
+-- verbatim; do not "tidy" it in this migration.
 --
 -- ⚠ NOT re-runnable on its own: `ALTER TABLE ... ADD COLUMN` has no IF NOT
 -- EXISTS form, so a second apply fails with `duplicate column name: weight_kg`.
@@ -81,6 +86,47 @@ ALTER TABLE products ADD COLUMN weight_source TEXT
      OR (weight_kg IS NOT NULL AND weight_source IS NOT NULL
          AND weight_source IN ('measured', 'marketplace', 'estimated'))
     );
+
+DROP TRIGGER IF EXISTS audit_products_insert;
+
+CREATE TRIGGER audit_products_insert
+AFTER INSERT ON products
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES (
+        'products', NEW.id, 'INSERT',
+        json_object(
+            'product_name', NEW.product_name,
+            'unit_type', NEW.unit_type,
+            'cost_price', NEW.cost_price,
+            'base_sell_price', NEW.base_sell_price,
+            'low_stock_threshold', NEW.low_stock_threshold,
+            'is_active', NEW.is_active,
+            'weight_kg', NEW.weight_kg,
+            'weight_source', NEW.weight_source
+        )
+    );
+END;
+
+DROP TRIGGER IF EXISTS audit_products_delete;
+
+CREATE TRIGGER audit_products_delete
+BEFORE DELETE ON products
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES (
+        'products', OLD.id, 'DELETE',
+        json_object(
+            'product_name', OLD.product_name,
+            'unit_type', OLD.unit_type,
+            'cost_price', OLD.cost_price,
+            'base_sell_price', OLD.base_sell_price,
+            'is_active', OLD.is_active,
+            'weight_kg', OLD.weight_kg,
+            'weight_source', OLD.weight_source
+        )
+    );
+END;
 
 DROP TRIGGER IF EXISTS audit_products_update;
 

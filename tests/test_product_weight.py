@@ -75,6 +75,20 @@ def test_a_weight_that_the_check_would_refuse_raises_first(raw):
         _fn()({'weight_kg': raw})
 
 
+@pytest.mark.parametrize('raw', ['1e309', '-1e309', 'inf', '-inf', 'Infinity', 'nan'])
+def test_a_non_finite_weight_is_refused(raw):
+    """The CHECK cannot catch these, so Python is the only place that can.
+
+    `float('1e309')` is `inf`, which is > 0 and therefore satisfies
+    `weight_kg > 0` — SQLite stores a REAL infinity and every parcel cost
+    derived from it is infinite. `nan` is stored by SQLite as NULL, landing the
+    row as (NULL, 'measured') and tripping the pair CHECK as a 500 instead of a
+    Thai flash. SQLite has no portable isfinite() for a constraint.
+    """
+    with pytest.raises(ValueError):
+        _fn()({'weight_kg': raw})
+
+
 def test_an_unknown_source_is_refused():
     with pytest.raises(ValueError):
         _fn()({'weight_kg': '1.0'}, source='shopee')
@@ -165,6 +179,61 @@ def test_a_weight_change_leaves_an_audit_row(tmp_db_conn):
     assert len(rows) == 1, rows          # count first — an empty list proves nothing
     assert 'weight_kg' in rows[0][0]
     assert 'weight_source' in rows[0][0]
+
+
+def test_inserting_a_weighed_product_audits_the_weight(tmp_db_conn):
+    """All THREE products audit triggers enumerate their columns, so INSERT
+    needed rewriting too — my review brief wrongly claimed it logged only the
+    row id, and Codex caught it."""
+    tmp_db_conn.execute(
+        "INSERT INTO products (product_name, unit_type, weight_kg, weight_source) "
+        "VALUES ('เทสต์น้ำหนัก', 'ตัว', 1.5, 'measured')")
+    pid = tmp_db_conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    rows = tmp_db_conn.execute(
+        "SELECT changed_fields FROM audit_log "
+        "WHERE table_name='products' AND row_id=? AND action='INSERT'", (pid,)).fetchall()
+    assert len(rows) == 1, rows
+    assert '"weight_kg":1.5' in rows[0][0].replace(' ', '')
+    assert 'measured' in rows[0][0]
+
+
+def test_deleting_a_weighed_product_keeps_its_weight_on_the_record(tmp_db_conn):
+    """Otherwise the last known weight and its provenance vanish with the row."""
+    tmp_db_conn.execute(
+        "INSERT INTO products (product_name, unit_type, weight_kg, weight_source) "
+        "VALUES ('เทสต์น้ำหนักลบ', 'ตัว', 2.25, 'marketplace')")
+    pid = tmp_db_conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    tmp_db_conn.execute("DELETE FROM audit_log WHERE table_name='products' AND row_id=?",
+                        (pid,))
+    tmp_db_conn.execute("DELETE FROM products WHERE id=?", (pid,))
+    rows = tmp_db_conn.execute(
+        "SELECT changed_fields FROM audit_log "
+        "WHERE table_name='products' AND row_id=? AND action='DELETE'", (pid,)).fetchall()
+    assert len(rows) == 1, rows
+    assert '"weight_kg":2.25' in rows[0][0].replace(' ', '')
+    assert 'marketplace' in rows[0][0]
+
+
+def test_the_delete_payload_keeps_its_pre_existing_asymmetry(tmp_db_conn):
+    """CONTROL against tidying: DELETE has never carried low_stock_threshold
+    while INSERT does. Migration 159 reproduces that verbatim, and the rollback
+    depends on it to come back byte-identical."""
+    tmp_db_conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES ('เทสต์ asym', 'ตัว')")
+    pid = tmp_db_conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    # ⚠ table_name is load-bearing: audit_log row_ids are per-table, and
+    # without it this read a commission_payouts row that shared the id.
+    ins = tmp_db_conn.execute(
+        "SELECT changed_fields FROM audit_log "
+        "WHERE table_name='products' AND row_id=? AND action='INSERT'",
+        (pid,)).fetchone()[0]
+    tmp_db_conn.execute("DELETE FROM products WHERE id=?", (pid,))
+    dele = tmp_db_conn.execute(
+        "SELECT changed_fields FROM audit_log "
+        "WHERE table_name='products' AND row_id=? AND action='DELETE'",
+        (pid,)).fetchone()[0]
+    assert 'low_stock_threshold' in ins
+    assert 'low_stock_threshold' not in dele
 
 
 def test_the_audit_trigger_still_logs_the_columns_it_always_did(tmp_db_conn):
@@ -293,3 +362,111 @@ def test_the_edit_form_renders_the_weight_box(admin_client, tmp_db_conn):
     # assert on the ELEMENT, not a bare Thai substring that the page chrome
     # could already contain
     assert 'name="weight_kg"' in html
+
+
+# --------------------------------------------------------------------------
+# migration 159 round trip — rollback THEN forward, so this still works on a
+# machine where 159 is already applied (the `pre134_conn` shape; a fixture that
+# only ran the forward would die with "duplicate column name")
+# --------------------------------------------------------------------------
+
+_TRIGGERS = ('audit_products_insert', 'audit_products_delete', 'audit_products_update')
+
+
+def _read(path):
+    from pathlib import Path
+    return Path(__file__).resolve().parents[1].joinpath(path).read_text()
+
+
+def _bodies(conn):
+    return {n: conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (n,)
+    ).fetchone()[0] for n in _TRIGGERS}
+
+
+@pytest.fixture
+def pre159_conn(tmp_db_conn):
+    """A connection whose DB has been rolled back to its pre-159 state."""
+    tmp_db_conn.executescript(_read('data/migrations/159_product_parcel_weight.rollback.sql'))
+    cols = {r[1] for r in tmp_db_conn.execute("PRAGMA table_info(products)")}
+    assert 'weight_kg' not in cols, "rollback did not drop the column"
+    return tmp_db_conn
+
+
+def test_rollback_restores_all_three_triggers_byte_for_byte(pre159_conn):
+    """The whole point of capturing the pre-159 bodies. If a future edit
+    'tidies' the DELETE payload, this goes red — which is correct."""
+    before = _bodies(pre159_conn)
+    pre159_conn.executescript(_read('data/migrations/159_product_parcel_weight.sql'))
+    after_fwd = _bodies(pre159_conn)
+    for n in _TRIGGERS:
+        assert 'weight_kg' in after_fwd[n], f"{n} does not mention the new column"
+        assert after_fwd[n] != before[n], f"{n} was not actually rewritten"
+
+    pre159_conn.executescript(_read('data/migrations/159_product_parcel_weight.rollback.sql'))
+    restored = _bodies(pre159_conn)
+    for n in _TRIGGERS:
+        assert restored[n] == before[n], f"{n} did not come back byte-identical"
+
+
+_PRE159_INSERT_KEYS = frozenset({
+    'product_name', 'unit_type', 'cost_price', 'base_sell_price',
+    'low_stock_threshold', 'is_active'})
+_PRE159_DELETE_KEYS = _PRE159_INSERT_KEYS - {'low_stock_threshold'}
+
+
+def _payload_keys(body):
+    """The json_object keys a trigger writes, i.e. the quoted names followed by
+    a column reference.
+
+    `'products', NEW.id` — the audit_log table_name argument — matches the same
+    shape, so it is excluded by name rather than by a cleverer regex.
+    """
+    import re
+    return frozenset(re.findall(r"'([a-z_]+)',\s*(?:NEW|OLD)\.", body)) - {'products'}
+
+
+def test_the_restored_triggers_match_the_pre159_field_lists(pre159_conn):
+    """INDEPENDENT ORACLE for the byte-identity test below.
+
+    That test compares the rollback's output against the rollback's own output,
+    so it is self-consistent and blind to the rollback drifting from the real
+    pre-159 definitions — proved by mutation: adding low_stock_threshold to the
+    rollback's DELETE payload left it green. These literal key sets are the
+    pre-159 state on the record, and they are what actually goes red.
+    """
+    bodies = _bodies(pre159_conn)
+    assert _payload_keys(bodies['audit_products_insert']) == _PRE159_INSERT_KEYS
+    assert _payload_keys(bodies['audit_products_delete']) == _PRE159_DELETE_KEYS
+    for name, body in bodies.items():
+        assert 'weight' not in body, f"{name} still mentions the 159 columns"
+
+
+def test_the_forward_migration_adds_the_weight_keys_to_all_three(pre159_conn):
+    pre159_conn.executescript(_read('data/migrations/159_product_parcel_weight.sql'))
+    bodies = _bodies(pre159_conn)
+    assert _payload_keys(bodies['audit_products_insert']) == (
+        _PRE159_INSERT_KEYS | {'weight_kg', 'weight_source'})
+    assert _payload_keys(bodies['audit_products_delete']) == (
+        _PRE159_DELETE_KEYS | {'weight_kg', 'weight_source'})
+    assert 'weight_kg' in bodies['audit_products_update']
+
+
+def test_forward_applies_again_after_a_rollback(pre159_conn):
+    pre159_conn.executescript(_read('data/migrations/159_product_parcel_weight.sql'))
+    pre159_conn.executescript(_read('data/migrations/159_product_parcel_weight.rollback.sql'))
+    pre159_conn.executescript(_read('data/migrations/159_product_parcel_weight.sql'))
+    cols = {r[1] for r in pre159_conn.execute("PRAGMA table_info(products)")}
+    assert {'weight_kg', 'weight_source'} <= cols
+
+
+def test_the_rollback_preserves_rows_written_after_the_forward_ran(pre159_conn):
+    pre159_conn.executescript(_read('data/migrations/159_product_parcel_weight.sql'))
+    pre159_conn.execute(
+        "INSERT INTO products (product_name, unit_type, weight_kg, weight_source) "
+        "VALUES ('หลังไมเกรชัน', 'ตัว', 3.0, 'measured')")
+    pid = pre159_conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    pre159_conn.executescript(_read('data/migrations/159_product_parcel_weight.rollback.sql'))
+    row = pre159_conn.execute(
+        "SELECT product_name FROM products WHERE id=?", (pid,)).fetchone()
+    assert row is not None and row[0] == 'หลังไมเกรชัน'

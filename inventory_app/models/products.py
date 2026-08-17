@@ -2,6 +2,8 @@
 split, Phase 11) — see models/__init__.py's module docstring for the
 overall file-split rationale. No behavior changes.
 """
+import math
+
 import config
 from database import get_connection
 import name_builder
@@ -321,9 +323,18 @@ def weight_edit_fields(form, source='measured'):
     `weight_kg` is the weight of ONE `unit_type` unit, not of one piece and not
     of a parcel — a parcel is `weight_kg * qty_per_sale`.
 
-    Raises ValueError on a non-numeric, zero, or negative weight, matching the
-    CHECK in migration 159 so the caller sees a Thai flash rather than an
-    IntegrityError 500.
+    Raises ValueError on a non-numeric, zero, negative, or NON-FINITE weight,
+    matching the CHECK in migration 159 so the caller sees a Thai flash rather
+    than an IntegrityError 500.
+
+    ⚠ `math.isfinite` is not belt-and-braces, it is the only guard there is.
+    `float('1e309')` is `inf`, which passes `kg > 0` AND satisfies the column's
+    `weight_kg > 0` CHECK, and SQLite stores it as a REAL infinity — every
+    parcel cost derived from it is then infinite. `float('nan')` is worse in a
+    different way: SQLite silently stores NaN as NULL, so the row lands as
+    (NULL, 'measured') and trips the pair CHECK as a 500. SQLite has no
+    portable isfinite() to express in a constraint, so this application
+    boundary is where it has to be caught. (Codex, 2026-08-17.)
     """
     if 'weight_kg' not in form:
         return {}
@@ -331,8 +342,8 @@ def weight_edit_fields(form, source='measured'):
     if not raw:
         return {'weight_kg': None, 'weight_source': None}
     kg = float(raw)
-    if kg <= 0:
-        raise ValueError('น้ำหนักต้องมากกว่า 0')
+    if not math.isfinite(kg) or kg <= 0:
+        raise ValueError('น้ำหนักต้องเป็นตัวเลขปกติและมากกว่า 0')
     if source not in WEIGHT_SOURCES:
         raise ValueError('ที่มาของน้ำหนักไม่ถูกต้อง: {}'.format(source))
     return {'weight_kg': kg, 'weight_source': source}

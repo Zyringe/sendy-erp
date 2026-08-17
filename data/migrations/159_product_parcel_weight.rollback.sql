@@ -1,7 +1,13 @@
 -- Rollback for 159_product_parcel_weight.sql.
 --
 -- Restores products to its pre-159 shape (drops both weight columns) and puts
--- `audit_products_update` back to its pre-159 body, byte-identical.
+-- ALL THREE products audit triggers back to their pre-159 bodies,
+-- byte-identical. Pinned by
+-- tests/test_product_weight.py::test_rollback_restores_all_three_triggers_byte_for_byte.
+--
+-- ⚠ The DELETE payload has no `low_stock_threshold` while INSERT does. That
+-- asymmetry is pre-159 reality, reproduced verbatim — "fixing" it here would
+-- make the rollback fail its byte-identity test, correctly.
 --
 -- ⚠ DROP ORDER IS LOAD-BEARING. `weight_source`'s CHECK references
 -- `weight_kg`, so dropping `weight_kg` first fails with
@@ -24,10 +30,45 @@ PRAGMA busy_timeout = 10000;
 
 BEGIN IMMEDIATE;
 
+DROP TRIGGER IF EXISTS audit_products_insert;
+DROP TRIGGER IF EXISTS audit_products_delete;
 DROP TRIGGER IF EXISTS audit_products_update;
 
 ALTER TABLE products DROP COLUMN weight_source;
 ALTER TABLE products DROP COLUMN weight_kg;
+
+CREATE TRIGGER audit_products_insert
+AFTER INSERT ON products
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES (
+        'products', NEW.id, 'INSERT',
+        json_object(
+            'product_name', NEW.product_name,
+            'unit_type', NEW.unit_type,
+            'cost_price', NEW.cost_price,
+            'base_sell_price', NEW.base_sell_price,
+            'low_stock_threshold', NEW.low_stock_threshold,
+            'is_active', NEW.is_active
+        )
+    );
+END;
+
+CREATE TRIGGER audit_products_delete
+BEFORE DELETE ON products
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields)
+    VALUES (
+        'products', OLD.id, 'DELETE',
+        json_object(
+            'product_name', OLD.product_name,
+            'unit_type', OLD.unit_type,
+            'cost_price', OLD.cost_price,
+            'base_sell_price', OLD.base_sell_price,
+            'is_active', OLD.is_active
+        )
+    );
+END;
 
 CREATE TRIGGER audit_products_update
 AFTER UPDATE ON products
