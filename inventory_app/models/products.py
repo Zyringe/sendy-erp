@@ -341,18 +341,47 @@ def weight_edit_fields(form, source='measured'):
     raw = (form['weight_kg'] or '').strip()
     if not raw:
         return {'weight_kg': None, 'weight_source': None}
-    kg = float(raw)
-    if not math.isfinite(kg) or kg <= 0:
-        raise ValueError('น้ำหนักต้องเป็นตัวเลขปกติและมากกว่า 0')
-    if source not in WEIGHT_SOURCES:
-        raise ValueError('ที่มาของน้ำหนักไม่ถูกต้อง: {}'.format(source))
-    return {'weight_kg': kg, 'weight_source': source}
+    # Validate HERE too, not only in update_product: the route wraps this call
+    # in the try/except that turns a ValueError into a Thai flash, while
+    # update_product is called outside it — so leaving the check to the model
+    # alone would turn a typo'd weight into a 500.
+    out = {'weight_kg': float(raw), 'weight_source': source}
+    _validate_weight_fields(out)
+    return out
+
+
+def _validate_weight_fields(fields):
+    """Guard the weight columns at the MODEL write boundary, not just the form.
+
+    `weight_edit_fields` protects the HTML path, but `weight_kg` is in
+    `_UPDATABLE_PRODUCT_COLUMNS`, so any caller — a future marketplace or
+    estimated-weight importer, a script — can hand `update_product` a raw value
+    and never touch the form helper. This is the boundary all of them cross.
+
+    Deliberately split with the DB:
+      * PYTHON checks what a CHECK cannot express — `inf` satisfies
+        `weight_kg > 0` and SQLite stores a REAL infinity; `nan` is stored as
+        NULL. There is no portable isfinite() for a constraint.
+      * The CHECK owns PAIR coherence, because a caller may legitimately send
+        `weight_kg` alone and the resulting pair depends on the row already
+        stored, which this function cannot see.
+    """
+    if 'weight_kg' in fields and fields['weight_kg'] is not None:
+        kg = fields['weight_kg']
+        if not isinstance(kg, (int, float)) or isinstance(kg, bool):
+            raise ValueError('น้ำหนักต้องเป็นตัวเลข')
+        if not math.isfinite(kg) or kg <= 0:
+            raise ValueError('น้ำหนักต้องเป็นตัวเลขปกติและมากกว่า 0')
+    if fields.get('weight_source') is not None \
+            and fields['weight_source'] not in WEIGHT_SOURCES:
+        raise ValueError('ที่มาของน้ำหนักไม่ถูกต้อง: {}'.format(fields['weight_source']))
 
 
 def update_product(product_id: int, data: dict, source=None):
     fields = {k: data[k] for k in _UPDATABLE_PRODUCT_COLUMNS if k in data}
     if not fields:
         return
+    _validate_weight_fields(fields)
     conn = get_connection()
     # set source BEFORE the UPDATE so the price-history trigger can stamp it;
     # reset to NULL AFTER so a later write on this connection defaults to NULL.

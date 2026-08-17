@@ -109,6 +109,71 @@ def test_update_product_is_allowed_to_write_the_columns():
     assert 'weight_source' in _UPDATABLE_PRODUCT_COLUMNS
 
 
+@pytest.mark.parametrize('kg', [float('inf'), float('-inf'), float('nan'), 0, -1])
+def test_the_model_boundary_refuses_a_bad_weight_without_the_form_helper(kg):
+    """`weight_kg` is in the allowlist, so a caller that never touches
+    `weight_edit_fields` — a future marketplace or estimated-weight importer, a
+    one-off script — reaches the column directly. That path needs its own
+    guard, or `inf` gets stored by anything except the HTML form.
+    (Codex, second pass.)
+    """
+    from models.products import _validate_weight_fields
+    with pytest.raises(ValueError):
+        _validate_weight_fields({'weight_kg': kg, 'weight_source': 'measured'})
+
+
+def test_the_model_boundary_refuses_an_unknown_source():
+    from models.products import _validate_weight_fields
+    with pytest.raises(ValueError):
+        _validate_weight_fields({'weight_kg': 1.0, 'weight_source': 'shopee'})
+
+
+def test_update_product_itself_refuses_a_non_finite_weight(tmp_db, tmp_db_conn):
+    """Calls the REAL entry point, not the validator it delegates to.
+
+    The parametrized tests above call `_validate_weight_fields` directly, so
+    they stay green if the CALL is deleted from `update_product` — proved by
+    mutation, and it is the "test exercises a neighbour, not the subject"
+    trap. This one goes red for that edit.
+    """
+    import models
+    pid = _pid(tmp_db_conn)
+    tmp_db_conn.execute(
+        "UPDATE products SET weight_kg=?, weight_source=? WHERE id=?",
+        (1.5, 'measured', pid))
+    tmp_db_conn.commit()
+
+    with pytest.raises(ValueError):
+        models.update_product(pid, {'weight_kg': float('inf'),
+                                    'weight_source': 'measured'})
+
+    got = tmp_db_conn.execute(
+        "SELECT weight_kg FROM products WHERE id=?", (pid,)).fetchone()[0]
+    assert got == 1.5, "the refused write must not have landed"
+
+
+def test_update_product_still_writes_a_good_weight(tmp_db, tmp_db_conn):
+    """CONTROL for the test above: if update_product could not write a weight
+    at all, that test would pass for the wrong reason."""
+    import models
+    pid = _pid(tmp_db_conn)
+    models.update_product(pid, {'weight_kg': 3.25, 'weight_source': 'estimated'})
+    got = tmp_db_conn.execute(
+        "SELECT weight_kg, weight_source FROM products WHERE id=?", (pid,)).fetchone()
+    assert (got[0], got[1]) == (3.25, 'estimated')
+
+
+def test_the_model_boundary_accepts_what_it_should():
+    """CONTROL: the guard above must be capable of passing, including the
+    clear-to-NULL case and a weight_kg sent on its own (whose pair coherence is
+    the CHECK's job, not this function's)."""
+    from models.products import _validate_weight_fields
+    _validate_weight_fields({'weight_kg': 0.85, 'weight_source': 'measured'})
+    _validate_weight_fields({'weight_kg': None, 'weight_source': None})
+    _validate_weight_fields({'weight_kg': 2.0})
+    _validate_weight_fields({'cost_price': 10})
+
+
 # --------------------------------------------------------------------------
 # migration 159 — schema, constraints, audit
 # --------------------------------------------------------------------------
@@ -413,6 +478,31 @@ _PRE159_INSERT_KEYS = frozenset({
     'product_name', 'unit_type', 'cost_price', 'base_sell_price',
     'low_stock_threshold', 'is_active'})
 _PRE159_DELETE_KEYS = _PRE159_INSERT_KEYS - {'low_stock_threshold'}
+# The UPDATE trigger tracks four columns the other two do not.
+_PRE159_UPDATE_FIELDS = _PRE159_INSERT_KEYS | {
+    'units_per_carton', 'units_per_box', 'hard_to_sell'}
+
+
+def _when_fields(body):
+    """Columns in the UPDATE trigger's WHEN guard — what makes it FIRE."""
+    import re
+    m = re.search(r"WHEN\s*\((.*?)\)\s*BEGIN", body, re.S)
+    assert m, "could not find the WHEN guard"
+    return frozenset(re.findall(r"OLD\.([a-z_]+)\s+IS NOT NEW\.", m.group(1)))
+
+
+def _update_payload_fields(body):
+    """Columns in the UPDATE trigger's body — what it RECORDS once it fires.
+
+    ⚠ Split from `_when_fields` deliberately. A single regex over the whole
+    body returns the union of the two, so deleting a column from just one of
+    them left the set unchanged and the assertion green — proved by mutation.
+    The two lists genuinely can drift apart: a column in WHEN but not the body
+    fires the trigger and logs nothing, and the reverse never logs at all.
+    """
+    import re
+    after = body.split('BEGIN', 1)[1]
+    return frozenset(re.findall(r"OLD\.([a-z_]+)\s+IS NOT NEW\.", after))
 
 
 def _payload_keys(body):
@@ -438,6 +528,12 @@ def test_the_restored_triggers_match_the_pre159_field_lists(pre159_conn):
     bodies = _bodies(pre159_conn)
     assert _payload_keys(bodies['audit_products_insert']) == _PRE159_INSERT_KEYS
     assert _payload_keys(bodies['audit_products_delete']) == _PRE159_DELETE_KEYS
+    # UPDATE needs its own literal too — pinning only INSERT/DELETE left a
+    # legacy column deletable from the rollback's UPDATE trigger while the
+    # byte-comparison stayed green, because that comparison takes both sides
+    # from the same rollback definition. (Codex, second pass.)
+    assert _when_fields(bodies['audit_products_update']) == _PRE159_UPDATE_FIELDS
+    assert _update_payload_fields(bodies['audit_products_update']) == _PRE159_UPDATE_FIELDS
     for name, body in bodies.items():
         assert 'weight' not in body, f"{name} still mentions the 159 columns"
 
@@ -449,7 +545,9 @@ def test_the_forward_migration_adds_the_weight_keys_to_all_three(pre159_conn):
         _PRE159_INSERT_KEYS | {'weight_kg', 'weight_source'})
     assert _payload_keys(bodies['audit_products_delete']) == (
         _PRE159_DELETE_KEYS | {'weight_kg', 'weight_source'})
-    assert 'weight_kg' in bodies['audit_products_update']
+    expected = _PRE159_UPDATE_FIELDS | {'weight_kg', 'weight_source'}
+    assert _when_fields(bodies['audit_products_update']) == expected
+    assert _update_payload_fields(bodies['audit_products_update']) == expected
 
 
 def test_forward_applies_again_after_a_rollback(pre159_conn):
