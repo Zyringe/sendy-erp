@@ -99,6 +99,13 @@ def _int(row, field, default=0):
     return int(v) if v is not None else default
 
 
+def _date_iso(d):
+    """An optional DBF date as ISO, or None. Unlike _header_date_iso this does
+    NOT fail loud: these are genuinely optional columns (a billing note that has
+    not been sent has no BILOUT), so a blank is data, not corruption."""
+    return d.isoformat() if d is not None else None
+
+
 def _header_date_iso(hdr):
     d = hdr.get('DOCDAT')
     if d is None:
@@ -647,5 +654,57 @@ def build_ap_snapshot_records(aptrn_rows, apmas_rows):
             # the AR side uses for SR, which is tied to the Express report.
             'outstanding_amount': (-remaining if row.get('RECTYP') == _CREDIT_RECTYP
                                    else remaining),
+        })
+    return records
+
+
+# ── ใบวางบิล (ARBIL) ────────────────────────────────────────────────────────
+#
+# `/ar` cannot otherwise tell an invoice nobody has billed yet from one that has
+# been formally billed and is sitting in the customer's payment run — two very
+# different phone calls. Measured on the 2026-08-17 export: 17 of the 170
+# invoices it would chase (฿107,845) were already on a ใบวางบิล.
+#
+# Deliberately takes NO cutoff. The bills that currently-open invoices point at
+# are dated 2014-02-01 .. 2026-07-25 and a 60-day window would miss 11 of the
+# 19. The whole table is 11,925 rows, so importing all of it costs nothing and
+# is the only way a bill_no on an old invoice ever resolves to a name and date.
+
+def build_billing_note_records(arbil_rows, armas_rows):
+    """One record per ใบวางบิล, keyed on BILNUM (unique across all 11,925 rows
+    in the book as of 2026-08-17, asserted below)."""
+    customers = {(r.get('CUSCOD') or '').strip(): (r.get('CUSNAM') or '').strip()
+                 for r in armas_rows}
+    records = []
+    seen = set()
+    for row in arbil_rows:
+        bill_no = (row.get('BILNUM') or '').strip()
+        if not bill_no:
+            continue
+        if bill_no in seen:
+            raise ValueError(
+                f'{bill_no}: appears more than once in ARBIL — refusing rather '
+                f'than letting the (entity, bill_no) upsert keep whichever row '
+                f'happened to come last')
+        seen.add(bill_no)
+        code = (row.get('CUSCOD') or '').strip()
+        records.append({
+            'bill_no': bill_no,
+            'bill_date_iso': _date_iso(row.get('BILDAT')),
+            # BILOUT is the date the note actually went out to the customer;
+            # APPDAT is when they acknowledged it. Both are commonly blank.
+            'sent_date_iso': _date_iso(row.get('BILOUT')),
+            'approved_date_iso': _date_iso(row.get('APPDAT')),
+            'customer_code': code,
+            'customer_name': customers.get(code, ''),
+            # Free Thai text as Express stores it ('เครดิต 30 วัน'), not a
+            # number — the same customer's terms are worded differently across
+            # bills and parsing them would invent precision that is not there.
+            'pay_cond': (row.get('PAYCOND') or '').strip(),
+            'net_amount': round(_num(row, 'NETAMT'), 2),
+            # 138 of 11,925 are DOCSTAT 'C'. Kept rather than dropped: an
+            # invoice pointing at a bill_no with no row reads as a data bug.
+            'is_cancelled': (row.get('DOCSTAT') or '').strip() == 'C',
+            'remark': (row.get('REMARK') or '').strip(),
         })
     return records

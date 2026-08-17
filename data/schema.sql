@@ -503,6 +503,23 @@ CREATE TABLE "express_ar_outstanding" (
     created_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 , entity TEXT NOT NULL DEFAULT 'SD', due_date_iso TEXT, pay_terms INTEGER, bill_no TEXT);
 
+CREATE TABLE express_billing_notes (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity            TEXT    NOT NULL,
+    bill_no           TEXT    NOT NULL,
+    bill_date_iso     TEXT,
+    sent_date_iso     TEXT,                          -- BILOUT: went out to the customer
+    approved_date_iso TEXT,                          -- APPDAT: customer acknowledged
+    customer_code     TEXT,
+    customer_name     TEXT,
+    pay_cond          TEXT,                          -- free Thai text, e.g. 'เครดิต 30 วัน'
+    net_amount        REAL    NOT NULL DEFAULT 0,
+    is_cancelled      INTEGER NOT NULL DEFAULT 0,    -- DOCSTAT 'C'
+    remark            TEXT,
+    updated_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (entity, bill_no)
+);
+
 CREATE TABLE express_credit_note_lines (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     credit_note_id    INTEGER NOT NULL REFERENCES express_credit_notes(id) ON DELETE CASCADE,
@@ -1674,6 +1691,9 @@ CREATE INDEX idx_audit_log_table_time
     ON audit_log(table_name, created_at DESC);
 
 CREATE INDEX idx_audit_table_row ON audit_log(table_name, row_id);
+
+CREATE INDEX idx_billing_notes_customer
+    ON express_billing_notes(entity, customer_code);
 
 CREATE UNIQUE INDEX idx_brands_short_code
     ON brands(short_code) WHERE short_code IS NOT NULL;
