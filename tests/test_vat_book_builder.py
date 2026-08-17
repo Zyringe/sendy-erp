@@ -358,3 +358,40 @@ def test_build_refuses_to_return_when_a_snapshot_failed(tmp_path, monkeypatch):
         vb.build('/nonexistent')
 
     assert reached == [], 'build must stop AT the gate, before finishing the book'
+
+
+def test_build_passes_the_snapshot_date_through_to_the_importer(tmp_path, monkeypatch):
+    """Closes the last link in the chain. The route decides one date, the CLI
+    accepts it and build() takes it — but none of that matters unless build()
+    hands it to commit_express_dbf, which is what actually stamps the rows.
+    Without this the argument could be accepted and silently dropped."""
+    import database
+    import express_dbf_source as eds
+    import import_router
+
+    db_path = str(tmp_path / 'built2.db')
+    monkeypatch.setattr(vb, '_guard_subprocess_target', lambda: db_path)
+    monkeypatch.setattr(database, 'init_db', lambda *a, **k: None)
+    monkeypatch.setattr(database, 'get_connection', lambda *a, **k: sqlite3.connect(db_path))
+    monkeypatch.setattr(eds, 'open_table', lambda *a, **k: [])
+    monkeypatch.setattr(vb, 'seed_companies', lambda conn: None)
+    monkeypatch.setattr(vb, 'seed_products_from_stmas', lambda conn, rows: {})
+    monkeypatch.setattr(vb, 'overwrite_stock_from_stmas', lambda *a, **k: None)
+    monkeypatch.setattr(vb, 'dump_isvat', lambda *a, **k: 0)
+    monkeypatch.setattr(vb, 'dump_stmas_meta', lambda *a, **k: 0)
+    monkeypatch.setattr(vb, 'write_book_meta', lambda *a, **k: None)
+    monkeypatch.setattr(vb, 'finalize', lambda *a, **k: None)
+    seen = {}
+
+    def _cap(*a, **k):
+        seen['date'] = k.get('snapshot_date')
+        return {'sales': {'imported': 0}, 'purchase': {'imported': 0},
+                'payments_in': {'imported': 0}, 'payments_out': {'imported': 0},
+                'credit_notes_ar': {'upserted': 0}, 'credit_notes_ap': {'imported': 0},
+                'ar_snapshot': {'imported': 0}, 'ap_snapshot': {'imported': 0},
+                'snapshot_date': k.get('snapshot_date')}
+    monkeypatch.setattr(import_router, 'commit_express_dbf', _cap)
+
+    vb.build('/nonexistent', snapshot_date='2026-08-15')
+
+    assert seen['date'] == '2026-08-15'

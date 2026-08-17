@@ -89,6 +89,17 @@
             <label class="form-label">ไฟล์ zip</label>
             <input type="file" name="file" accept=".zip" class="form-control" required>
           </div>
+          {# Escape hatch for the stale-zip guard. Deliberately unchecked and
+             plainly worded: the ordinary daily upload never needs it, and it is
+             the only way past a refusal, so it must be a conscious act. #}
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" value="1"
+                   name="force_older" id="force_older">
+            <label class="form-check-label small text-muted" for="force_older">
+              นำเข้าทับแม้ไฟล์เก่ากว่ายอดคงค้างที่มีอยู่
+              <span class="d-block">ปกติไม่ต้องติ๊ก — ติ๊กเฉพาะเมื่อตั้งใจย้อนข้อมูลกลับจริงๆ</span>
+            </label>
+          </div>
           <button type="submit" class="btn btn-primary"><i class="bi bi-cloud-upload me-1"></i>อัปโหลด</button>
         </form>
       </div>
