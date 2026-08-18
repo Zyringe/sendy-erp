@@ -627,3 +627,118 @@ def test_forcing_an_older_zip_is_recorded(tmp_db, monkeypatch):
     conn.close()
     assert notes['upload']['forced_older'] is True
     assert notes['upload']['forced_over'] == '2026-08-17'
+
+
+# ── serialization + the future-stamp hole (Codex round 2, 2026-08-18) ───────
+
+def test_a_second_upload_is_refused_while_one_is_still_importing(tmp_db, monkeypatch):
+    """The hole the pre-claim did NOT close.
+
+    Claiming the watermark and then releasing the DB lock before a 20s import
+    only orders the CLAIMS, not the work: worker A could claim 17 and start
+    importing, worker B claim 18 and finish first, and A then commit 17's data
+    over 18's — deleting payment links and replacing snapshots with older data.
+
+    The whole claim → import is now inside one cross-worker flock, so the second
+    upload is refused outright rather than racing.
+    """
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-08-10')
+    inner = {}
+
+    def _reentrant(*a, **k):
+        # Simulates the second worker arriving mid-import.
+        inner['second'] = _upload_dated(_client(), [('data/ARTRN.DBF', b'x')],
+                                        (2026, 8, 18, 9, 0, 0))
+        inner['calls'] = inner.get('calls', 0) + 1
+        return _fake_per_type()
+
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf', _reentrant)
+
+    _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0))
+
+    assert inner['calls'] == 1, 'the re-entrant upload must not have reached the importer'
+    assert _watermark(config.DATABASE_PATH) == '2026-08-17', \
+        'and must not have advanced the mark past the run in flight'
+
+
+def test_a_future_stamped_zip_still_claims_the_watermark(tmp_db, monkeypatch):
+    """The second hole. A future stamp falls back to today's date for the
+    snapshot, but used to skip the claim entirely because the route only claimed
+    when export_at was not None — so the mark never moved, and if the snapshots
+    also failed, the next day could accept an older file again."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-01-01')
+    future = _dt.date.today() + _dt.timedelta(days=30)
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _fake_per_type())
+
+    _upload_dated(_client(), [('data/ARTRN.DBF', b'x')],
+                  (future.year, future.month, future.day, 9, 0, 0))
+
+    assert _watermark(config.DATABASE_PATH) == _dt.date.today().isoformat(), \
+        'the fallback date must go through the same claim as a real stamp'
+
+
+def test_a_zip_with_no_dbf_stamp_at_all_also_claims(tmp_db, monkeypatch):
+    """Same path, different cause: a zip with no .DBF member has no stamp."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-01-01')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _fake_per_type())
+
+    _upload(_client(), [('data/ARTRN.DBF', b'x')])   # writestr -> today's stamp
+
+    assert _watermark(config.DATABASE_PATH) is not None
+
+
+def test_forcing_an_older_zip_is_audited_before_the_import_runs(tmp_db, monkeypatch):
+    """The run record is written only after the importer returns, and the
+    importer commits in several transactions — so a forced import that fails
+    half way left no evidence the guard had been overridden. The audit row now
+    goes in first."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-08-17')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+
+    def _boom(*a, **k):
+        raise RuntimeError('died half way')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf', _boom)
+
+    _client().post('/import-express-dbf/upload',
+                   data={'file': (_zip_bytes_dated([('data/ARTRN.DBF', b'x')],
+                                                   (2026, 8, 15, 16, 50, 0)), 'daily.zip'),
+                         'force_older': '1'},
+                   content_type='multipart/form-data', follow_redirects=False)
+
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    row = conn.execute(
+        "SELECT changed_fields, user FROM audit_log WHERE table_name='express_import_watermark' "
+        "ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
+    assert row is not None, 'an override that then failed still has to leave a trace'
+    fields = json.loads(row[0])
+    assert fields['incoming'] == '2026-08-15'
+    assert fields['overrode'] == '2026-08-17'
+    assert len(fields['sha256']) == 64
+
+
+def test_the_claim_survives_the_watermark_table_being_absent(tmp_db, monkeypatch):
+    """mig 166's rollback drops the table and its header promises the route
+    falls back to the old snapshot-derived mark. It has to actually do that."""
+    import config
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    conn.execute("DROP TABLE express_import_watermark")
+    conn.commit(); conn.close()
+    called = []
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: called.append(1) or _fake_per_type())
+
+    r = _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0))
+
+    assert r.status_code == 302
+    assert called == [1], 'the import still runs against the pre-166 fallback'
