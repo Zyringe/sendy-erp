@@ -840,3 +840,89 @@ def test_zip_export_datetime_is_none_when_there_is_no_dbf_member():
     stamp, so it proved nothing about the None path."""
     with zipfile.ZipFile(_zip_bytes_dated([('notes.txt', b'x')], (2026, 8, 15, 9, 0, 0))) as zf:
         assert bsn._zip_export_datetime(zf) is None
+
+
+# ── round-4 fix-forward (Codex, 2026-08-18) ─────────────────────────────────
+
+def test_forcing_a_future_stamped_zip_does_not_die_on_the_confirmation_flash(
+        tmp_db, monkeypatch):
+    """The escape hatch has to work in the state it exists for.
+
+    ONE wrong clock on the LAN PC produces both halves of this: the zip carries
+    a future stamp (so _zip_export_datetime refuses it and export_at is None),
+    and a pre-#394 upload could already have stamped the watermark ahead. The
+    forced-import flash reached back to the RAW export_at while every other line
+    in that block used the effective date, so the one path built to recover from
+    a poisoned watermark died on AttributeError before importing anything.
+
+    Asserting the importer RAN, not the status code: the route's outer handler
+    flashes and redirects on any exception, so 302 is what both versions return.
+    """
+    import config
+    ahead = _dt.date.today() + _dt.timedelta(days=60)
+    _set_watermark(config.DATABASE_PATH, ahead.isoformat())
+    future = _dt.date.today() + _dt.timedelta(days=30)
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    called = []
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: called.append(1) or _fake_per_type())
+
+    r = _client().post(
+        '/import-express-dbf/upload',
+        data={'file': (_zip_bytes_dated(
+                          [('data/ARTRN.DBF', b'x')],
+                          (future.year, future.month, future.day, 9, 0, 0)),
+                       'daily.zip'),
+              'force_older': '1'},
+        content_type='multipart/form-data', follow_redirects=True)
+
+    assert r.status_code == 200
+    assert called == [1], (
+        'the deliberately-forced import must actually run')
+    # The DATE in the confirmation is the point: it has to be the one the import
+    # actually used. Asserting the whole parenthesised pair, because either half
+    # alone appears elsewhere on the page.
+    body = r.get_data(as_text=True)
+    assert f'({_dt.date.today().isoformat()} ทับของ {ahead.isoformat()})' in body, (
+        'the forced-import confirmation must name the effective date it used')
+
+
+def test_a_different_missing_table_is_not_read_as_the_watermark_migration(
+        tmp_db, monkeypatch):
+    """'no such table' alone is wider than the condition the fallback documents.
+
+    Its comment ties it to migration 166 having been rolled back, so a DIFFERENT
+    missing table has to fail loud rather than silently import with the watermark
+    skipped. The snapshot is seeded OLD on purpose: that is the value the buggy
+    fallback would compare against, so it would accept and import — which is what
+    makes 'the importer never ran' mean the error was re-raised.
+    """
+    import config
+    import database
+    _set_snapshot(config.DATABASE_PATH, '2026-01-01')
+    real = database.get_connection
+
+    class _Boom:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a):
+            if 'express_import_watermark' in sql and sql.strip().upper().startswith('SELECT'):
+                raise sqlite3.OperationalError('no such table: some_other_table')
+            return self._inner.execute(sql, *a)
+
+        def __getattr__(self, n):
+            return getattr(self._inner, n)
+
+    monkeypatch.setattr(bsn, 'get_connection', lambda: _Boom(real()))
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    called = []
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: called.append(1) or _fake_per_type())
+
+    r = _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0))
+
+    assert r.status_code == 302
+    assert called == [], (
+        'a missing table that is NOT the watermark must not be read as mig 166 '
+        'having been rolled back')
