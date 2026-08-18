@@ -806,9 +806,14 @@ def _claim_export_date(export_at, entity='BSN'):
                 (entity,)).fetchone()
             previous = row['last_export_date'] if row else _snapshot_derived_watermark(conn)
             have_table = True
-        except sqlite3.OperationalError:
-            # mig 166 rolled back. Its header promises the route falls back to
-            # the pre-166 snapshot-derived mark, so it has to actually do that.
+        except sqlite3.OperationalError as exc:
+            # ONLY the one condition this fallback exists for: mig 166 rolled
+            # back, whose header promises exactly this behaviour. Catching every
+            # OperationalError would turn schema corruption or an I/O failure
+            # into a silent "import anyway and skip the watermark", which is the
+            # opposite of what a money-path guard should do when it is confused.
+            if 'no such table' not in str(exc).lower():
+                raise
             previous = _snapshot_derived_watermark(conn)
             have_table = False
         if previous and incoming < previous:
@@ -931,43 +936,6 @@ def express_dbf_upload():
         #
         # STRICTLY older: re-uploading the SAME day's zip is the team's normal
         # recovery move when something looked wrong, and must keep working.
-        # ONE effective date for every accepted upload. A future stamp (wrong LAN
-        # clock) and a zip with no .DBF member both fall back to today — and both
-        # used to skip the claim entirely, so the mark never moved and a stale
-        # file could be accepted again the next day (Codex, 2026-08-18).
-        effective_export_at = export_at or datetime.datetime.combine(
-            datetime.date.today(), datetime.time.min)
-
-        # Held across the claim AND the import: see _acquire_import_lock.
-        import_lock = _acquire_import_lock()
-        if import_lock is None:
-            flash('มีการนำเข้าอีกไฟล์กำลังทำงานอยู่ — รอให้เสร็จสักครู่แล้วอัปโหลดใหม่',
-                  'warning')
-            return redirect(redirect_to)
-
-        stale_msg = None
-        forced_over = None
-        _ok, _latest = _claim_export_date(effective_export_at)
-        _exp_date = effective_export_at.date().isoformat()
-        if not _ok:
-            forced_over = _latest
-            stale_msg = (
-                f'ไฟล์นี้ export จาก Express เมื่อ {_exp_date} '
-                f'ซึ่งเก่ากว่ายอดคงค้างที่มีอยู่แล้ว ({_latest}) — ยกเลิกทั้งไฟล์ '
-                f'ไม่มีการนำเข้าใดๆ. อัปโหลดไฟล์ล่าสุดจากแฟลชไดรฟ์แทน '
-                f'(ถ้าตั้งใจจะนำเข้าทับจริงๆ ให้ติ๊ก "นำเข้าทับแม้ไฟล์เก่ากว่า")')
-        if stale_msg and not request.form.get('force_older'):
-            flash(stale_msg, 'danger')
-            return redirect(redirect_to)
-        forced_older = bool(stale_msg)
-        if forced_older:
-            _audit_forced_import(_exp_date, forced_over, upload_meta)
-            # Deliberately overriding the guard. Say so in the run record: this
-            # is the one path that can let an older file rewrite newer state, so
-            # "who did this and over what" has to be answerable afterwards.
-            flash(f'นำเข้าทับด้วยไฟล์ที่เก่ากว่า ({export_at.date().isoformat()} '
-                  f'ทับของ {forced_over}) ตามที่ติ๊กยืนยัน', 'warning')
-
         dataset_dirs = _find_express_dbf_dataset_dirs(extract_dir)
         if not dataset_dirs:
             flash('ไม่พบ ARTRN.DBF ใน zip ที่อัปโหลด', 'danger')
@@ -997,6 +965,57 @@ def express_dbf_upload():
                 flash('zip มีชุดข้อมูลของสมุดเดียวกันซ้ำกัน — ยกเลิกทั้งไฟล์', 'danger')
                 return redirect(redirect_to)
             classified[kind] = d
+
+        # Everything above this line only VALIDATES. The watermark is only
+        # allowed to move for an upload that actually reaches the destructive
+        # BSN import, which is what it is defined to mean — "the newest zip
+        # accepted for the BSN import". It used to be claimed before discovery
+        # and classification, so every rejection path sat between the claim and
+        # the import: a zip with no ARTRN, an unknown or duplicated book, or a
+        # perfectly legitimate VAT-only zip could all advance it and lock out
+        # the correct daily file behind them (Codex, 2026-08-18).
+        #
+        # Validating first introduces no TOCTOU: the files were extracted into
+        # this request's own tempdir and nothing else can touch them.
+        # ONE effective date for this upload, used by both books. A future stamp
+        # (a wrong LAN clock) and a zip with no .DBF member both fall back to
+        # today, and both go through the same claim — skipping it left the mark
+        # unmoved, so a stale file could be accepted again the next day.
+        effective_export_at = export_at or datetime.datetime.combine(
+            datetime.date.today(), datetime.time.min)
+
+        import_lock = None
+        forced_older = False
+        if 'bsn' in classified:
+            # Held across the claim AND the import: see _acquire_import_lock.
+            import_lock = _acquire_import_lock()
+            if import_lock is None:
+                flash('มีการนำเข้าอีกไฟล์กำลังทำงานอยู่ — รอให้เสร็จสักครู่แล้วอัปโหลดใหม่',
+                      'warning')
+                return redirect(redirect_to)
+
+            stale_msg = None
+            forced_over = None
+            _ok, _latest = _claim_export_date(effective_export_at)
+            _exp_date = effective_export_at.date().isoformat()
+            if not _ok:
+                forced_over = _latest
+                stale_msg = (
+                    f'ไฟล์นี้ export จาก Express เมื่อ {_exp_date} '
+                    f'ซึ่งเก่ากว่ายอดคงค้างที่มีอยู่แล้ว ({_latest}) — ยกเลิกทั้งไฟล์ '
+                    f'ไม่มีการนำเข้าใดๆ. อัปโหลดไฟล์ล่าสุดจากแฟลชไดรฟ์แทน '
+                    f'(ถ้าตั้งใจจะนำเข้าทับจริงๆ ให้ติ๊ก "นำเข้าทับแม้ไฟล์เก่ากว่า")')
+            if stale_msg and not request.form.get('force_older'):
+                flash(stale_msg, 'danger')
+                return redirect(redirect_to)
+            forced_older = bool(stale_msg)
+            if forced_older:
+                _audit_forced_import(_exp_date, forced_over, upload_meta)
+                # Deliberately overriding the guard. Say so in the run record: this
+                # is the one path that can let an older file rewrite newer state, so
+                # "who did this and over what" has to be answerable afterwards.
+                flash(f'นำเข้าทับด้วยไฟล์ที่เก่ากว่า ({export_at.date().isoformat()} '
+                      f'ทับของ {forced_over}) ตามที่ติ๊กยืนยัน', 'warning')
 
         # Per-dataset outcomes, reported separately (partial success is a
         # legitimate, honestly-reported state — the BSN path is idempotent,

@@ -682,19 +682,6 @@ def test_a_future_stamped_zip_still_claims_the_watermark(tmp_db, monkeypatch):
         'the fallback date must go through the same claim as a real stamp'
 
 
-def test_a_zip_with_no_dbf_stamp_at_all_also_claims(tmp_db, monkeypatch):
-    """Same path, different cause: a zip with no .DBF member has no stamp."""
-    import config
-    _set_watermark(config.DATABASE_PATH, '2026-01-01')
-    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
-    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
-                        lambda *a, **k: _fake_per_type())
-
-    _upload(_client(), [('data/ARTRN.DBF', b'x')])   # writestr -> today's stamp
-
-    assert _watermark(config.DATABASE_PATH) is not None
-
-
 def test_forcing_an_older_zip_is_audited_before_the_import_runs(tmp_db, monkeypatch):
     """The run record is written only after the importer returns, and the
     importer commits in several transactions — so a forced import that fails
@@ -742,3 +729,114 @@ def test_the_claim_survives_the_watermark_table_being_absent(tmp_db, monkeypatch
 
     assert r.status_code == 302
     assert called == [1], 'the import still runs against the pre-166 fallback'
+
+
+# ── the watermark must only move for a real BSN import (Codex round 3) ──────
+#
+# The claim used to run before dataset discovery and classification, so every
+# rejection path sat BETWEEN the claim and the import. A zip that imported no
+# BSN data at all could still advance the BSN watermark and lock out the correct
+# daily zip behind it. That contradicts what the watermark is defined to be:
+# "the newest zip accepted for the destructive BSN import".
+
+def test_a_vat_only_zip_does_not_move_the_bsn_watermark(tmp_db, monkeypatch):
+    """The sharpest case: a legitimate zip that simply has no BSN book in it."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-08-10')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'vat')
+    monkeypatch.setattr(bsn, '_spawn_vat_rebuild', lambda d, rid, sd=None: None)
+    called = []
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: called.append(1) or _fake_per_type())
+
+    _upload_dated(_client(), [('xp5/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0))
+
+    assert called == [], 'no BSN import happened'
+    assert _watermark(config.DATABASE_PATH) == '2026-08-10', \
+        'so the BSN watermark must not have moved'
+
+
+def test_a_zip_with_no_dataset_does_not_move_the_watermark(tmp_db, monkeypatch):
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-08-10')
+
+    _upload_dated(_client(), [('notes.txt', b'x')], (2026, 8, 17, 16, 50, 0))
+
+    assert _watermark(config.DATABASE_PATH) == '2026-08-10'
+
+
+def test_an_unknown_book_does_not_move_the_watermark(tmp_db, monkeypatch):
+    """A malformed file carrying an abnormally new DBF timestamp would otherwise
+    lock out the correct, older BSN export behind it."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-08-10')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: None)
+
+    _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 12, 1, 9, 0, 0))
+
+    assert _watermark(config.DATABASE_PATH) == '2026-08-10'
+
+
+def test_a_duplicated_book_does_not_move_the_watermark(tmp_db, monkeypatch):
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-08-10')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'bsn')
+
+    _upload_dated(_client(), [('a/ARTRN.DBF', b'x'), ('b/ARTRN.DBF', b'x')],
+                  (2026, 8, 17, 16, 50, 0))
+
+    assert _watermark(config.DATABASE_PATH) == '2026-08-10'
+
+
+def test_a_real_bsn_zip_still_claims(tmp_db, monkeypatch):
+    """CONTROL for the four above — the claim must still happen on the normal
+    daily upload, or they would all pass with the watermark disabled."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-08-10')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _fake_per_type())
+
+    _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0))
+
+    assert _watermark(config.DATABASE_PATH) == '2026-08-17'
+
+
+def test_an_unexpected_sqlite_error_is_not_read_as_a_rolled_back_migration(tmp_db, monkeypatch):
+    """The fallback exists for exactly one condition — mig 166 rolled back.
+    Catching every OperationalError would turn schema corruption or an I/O
+    failure into a silent 'import anyway and skip the watermark'."""
+    import config
+    import database
+    real = database.get_connection
+
+    class _Boom:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a):
+            if 'express_import_watermark' in sql and sql.strip().upper().startswith('SELECT'):
+                raise sqlite3.OperationalError('disk I/O error')
+            return self._inner.execute(sql, *a)
+
+        def __getattr__(self, n):
+            return getattr(self._inner, n)
+
+    monkeypatch.setattr(bsn, 'get_connection', lambda: _Boom(real()))
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    called = []
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: called.append(1) or _fake_per_type())
+
+    r = _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0))
+
+    assert r.status_code == 302
+    assert called == [], 'an unexplained DB error must not quietly import anyway'
+
+
+def test_zip_export_datetime_is_none_when_there_is_no_dbf_member():
+    """Directly, because the route rejects such a zip before the stamp matters —
+    the previous test for this went through the route and its zip DID carry a
+    stamp, so it proved nothing about the None path."""
+    with zipfile.ZipFile(_zip_bytes_dated([('notes.txt', b'x')], (2026, 8, 15, 9, 0, 0))) as zf:
+        assert bsn._zip_export_datetime(zf) is None
