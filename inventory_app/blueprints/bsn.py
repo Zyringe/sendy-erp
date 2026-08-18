@@ -812,7 +812,7 @@ def _claim_export_date(export_at, entity='BSN'):
             # OperationalError would turn schema corruption or an I/O failure
             # into a silent "import anyway and skip the watermark", which is the
             # opposite of what a money-path guard should do when it is confused.
-            if 'no such table' not in str(exc).lower():
+            if 'no such table: express_import_watermark' not in str(exc).lower():
                 raise
             previous = _snapshot_derived_watermark(conn)
             have_table = False
@@ -1014,7 +1014,7 @@ def express_dbf_upload():
                 # Deliberately overriding the guard. Say so in the run record: this
                 # is the one path that can let an older file rewrite newer state, so
                 # "who did this and over what" has to be answerable afterwards.
-                flash(f'นำเข้าทับด้วยไฟล์ที่เก่ากว่า ({export_at.date().isoformat()} '
+                flash(f'นำเข้าทับด้วยไฟล์ที่เก่ากว่า ({_exp_date} '
                       f'ทับของ {forced_over}) ตามที่ติ๊กยืนยัน', 'warning')
 
         # Per-dataset outcomes, reported separately (partial success is a
