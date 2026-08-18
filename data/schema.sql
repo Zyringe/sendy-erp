@@ -503,6 +503,34 @@ CREATE TABLE "express_ar_outstanding" (
     created_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 , entity TEXT NOT NULL DEFAULT 'SD', due_date_iso TEXT, pay_terms INTEGER, bill_no TEXT);
 
+CREATE TABLE express_bank_cheques (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity           TEXT    NOT NULL,
+    kind             TEXT    NOT NULL,               -- 'received' (QR) / 'paid' (QP)
+    type_code        TEXT,                           -- BKTRNTYP verbatim
+    cheque_no        TEXT,                           -- CHQNUM (NOT unique: 38 repeats)
+    trn_date_iso     TEXT,                           -- TRNDAT
+    cheque_date_iso  TEXT,                           -- CHQDAT
+    received_date_iso TEXT,                          -- GETDAT
+    paid_in_date_iso TEXT,                           -- PAYINDAT
+    bank_code        TEXT,
+    branch           TEXT,
+    bank_account     TEXT,
+    party_code       TEXT,                           -- CUSCOD
+    party_name       TEXT,                           -- NAME
+    amount           REAL    NOT NULL DEFAULT 0,
+    charge           REAL    NOT NULL DEFAULT 0,
+    vat_amount       REAL    NOT NULL DEFAULT 0,
+    net_amount       REAL    NOT NULL DEFAULT 0,
+    remaining_amount REAL    NOT NULL DEFAULT 0,     -- REMAMT
+    status_code      TEXT,                           -- CHQSTAT verbatim, uninterpreted
+    remark           TEXT,
+    ref_doc          TEXT,
+    ref_no           TEXT,
+    voucher          TEXT,
+    imported_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE express_billing_notes (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     entity            TEXT    NOT NULL,
@@ -1691,6 +1719,12 @@ CREATE INDEX idx_audit_log_table_time
     ON audit_log(table_name, created_at DESC);
 
 CREATE INDEX idx_audit_table_row ON audit_log(table_name, row_id);
+
+CREATE INDEX idx_bank_cheques_due
+    ON express_bank_cheques(entity, kind, trn_date_iso);
+
+CREATE INDEX idx_bank_cheques_party
+    ON express_bank_cheques(entity, party_code);
 
 CREATE INDEX idx_billing_notes_customer
     ON express_billing_notes(entity, customer_code);

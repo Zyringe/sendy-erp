@@ -708,3 +708,68 @@ def build_billing_note_records(arbil_rows, armas_rows):
             'remark': (row.get('REMARK') or '').strip(),
         })
     return records
+
+
+# ── ทะเบียนเช็ค (BKTRN) ─────────────────────────────────────────────────────
+#
+# A customer who paid by post-dated cheque still reads as "owing" in Sendy until
+# it clears, so /ar would chase someone who has already paid — 9 such cheques
+# worth ฿69,814 on the 2026-08-17 export. It is also the only forward-looking
+# cash figure in the book: money whose arrival date is already known.
+#
+# ⚠ NOTHING here is interpreted. CHQSTAT's six values cannot be decoded from the
+# data (status 10 holds both long-cleared cheques and all 9 still in the future,
+# so it does not mean "cleared"), and TRNDAT/CHQDAT/GETDAT/PAYINDAT differ on
+# 5,451 rows with no consistent ordering. Everything is carried under its DBF
+# name; `kind` is the only derived field, and QR/QP is unambiguous. Label the
+# rest once someone who knows the book says what they mean.
+
+_BANK_KIND = {'QR': 'received', 'QP': 'paid'}
+
+# Express's "no reference" placeholder, same as in ARBIL.BILNUM and APTRN.REFNUM.
+_TILDE = '~'
+
+
+def _plain(row, field):
+    """A trimmed char field, with Express's '~' placeholder read as empty."""
+    v = (row.get(field) or '').strip()
+    return '' if v == _TILDE else v
+
+
+def build_bank_cheque_records(bktrn_rows):
+    """One record per cheque-register row.
+
+    No cutoff and no duplicate guard, both deliberate and both the opposite of
+    build_billing_note_records: post-dated cheques run months ahead so a window
+    would drop exactly the rows this exists for, and CHQNUM repeats on 38 of the
+    12,805 rows — which is why the importer replaces per entity instead of
+    upserting on a key that does not exist.
+    """
+    records = []
+    for row in bktrn_rows:
+        type_code = (row.get('BKTRNTYP') or '').strip()
+        records.append({
+            'kind': _BANK_KIND.get(type_code, 'other'),
+            'type_code': type_code,
+            'cheque_no': _plain(row, 'CHQNUM'),
+            'trn_date_iso': _date_iso(row.get('TRNDAT')),
+            'cheque_date_iso': _date_iso(row.get('CHQDAT')),
+            'received_date_iso': _date_iso(row.get('GETDAT')),
+            'paid_in_date_iso': _date_iso(row.get('PAYINDAT')),
+            'bank_code': _plain(row, 'BNKCOD'),
+            'branch': _plain(row, 'BRANCH'),
+            'bank_account': _plain(row, 'BNKACC'),
+            'party_code': _plain(row, 'CUSCOD'),
+            'party_name': _plain(row, 'NAME'),
+            'amount': round(_num(row, 'AMOUNT'), 2),
+            'charge': round(_num(row, 'CHARGE'), 2),
+            'vat_amount': round(_num(row, 'VATAMT'), 2),
+            'net_amount': round(_num(row, 'NETAMT'), 2),
+            'remaining_amount': round(_num(row, 'REMAMT'), 2),
+            'status_code': _plain(row, 'CHQSTAT'),
+            'remark': _plain(row, 'REMARK'),
+            'ref_doc': _plain(row, 'REFDOC'),
+            'ref_no': _plain(row, 'REFNUM'),
+            'voucher': _plain(row, 'VOUCHER'),
+        })
+    return records
