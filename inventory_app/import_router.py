@@ -389,6 +389,18 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     # ใบวางบิล. Whole table, no window (the bills open invoices point at run back
     # to 2014), and isolated like the snapshots: it is reference data, so a
     # failure must not make a committed ledger import read as failed.
+    # ทะเบียนเช็ค — same isolation and the same optional-table handling as the
+    # billing notes above; neither is something the ledger depends on.
+    try:
+        bktrn = _open_optional(eds, dataset_dir, "BKTRN")
+        if bktrn is None:
+            bank_cheques_stats = {"stored": 0, "skipped": "BKTRN not in this zip"}
+        else:
+            bank_cheques_stats = {"stored": _replace_bank_cheques(
+                eds.build_bank_cheque_records(bktrn), "BSN", db_path)}
+    except Exception as exc:
+        bank_cheques_stats = {"stored": 0, "error": str(exc)[:300]}
+
     try:
         arbil = _open_optional(eds, dataset_dir, "ARBIL")
         if arbil is None:
@@ -429,6 +441,7 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     return {"sales": sales_stats, "purchase": purchase_stats,
             "invoice_refs_upserted": refs_upserted,
             "billing_notes": billing_notes_stats,
+            "bank_cheques": bank_cheques_stats,
             "payments_in": payments_in_stats,
             "payments_out": payments_out_stats,
             "credit_notes_ar": credit_notes_ar_stats,
@@ -437,6 +450,52 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
             "ap_snapshot": ap_snapshot_stats,
             "snapshot_date": snapshot_date,
             "reconcile": reconcile_counts}
+
+
+def _replace_bank_cheques(records, entity, db_path):
+    """ทะเบียนเช็ค (mig 163). REPLACE per entity, not upsert: BKTRN has no unique
+    natural key (CHQNUM repeats on 38 of 12,805 rows), and the table is a mirror
+    of Express's register at export time — the same shape as the outstanding
+    snapshots.
+
+    Same empty-write guard the snapshots use, for the same reason: a parse that
+    yields nothing and a register that is genuinely empty are indistinguishable
+    here, and deleting a good register to write nothing is the one outcome that
+    cannot be undone by the next import.
+    """
+    import sqlite3
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        conn.execute("PRAGMA busy_timeout=10000")
+        if not records:
+            existing = conn.execute(
+                "SELECT COUNT(*) FROM express_bank_cheques WHERE entity = ?",
+                (entity,)).fetchone()[0]
+            if existing:
+                raise ValueError(
+                    f'ทะเบียนเช็ค: parsed 0 rows but {existing} already stored for '
+                    f'{entity} — refusing to erase them')
+            return 0
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM express_bank_cheques WHERE entity = ?", (entity,))
+        conn.executemany(
+            "INSERT INTO express_bank_cheques "
+            " (entity, kind, type_code, cheque_no, trn_date_iso, cheque_date_iso,"
+            "  received_date_iso, paid_in_date_iso, bank_code, branch, bank_account,"
+            "  party_code, party_name, amount, charge, vat_amount, net_amount,"
+            "  remaining_amount, status_code, remark, ref_doc, ref_no, voucher) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(entity, r['kind'], r['type_code'], r['cheque_no'], r['trn_date_iso'],
+              r['cheque_date_iso'], r['received_date_iso'], r['paid_in_date_iso'],
+              r['bank_code'], r['branch'], r['bank_account'], r['party_code'],
+              r['party_name'], r['amount'], r['charge'], r['vat_amount'],
+              r['net_amount'], r['remaining_amount'], r['status_code'], r['remark'],
+              r['ref_doc'], r['ref_no'], r['voucher']) for r in records]
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(records)
 
 
 def _upsert_billing_notes(records, entity, db_path):
