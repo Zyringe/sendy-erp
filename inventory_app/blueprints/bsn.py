@@ -391,6 +391,25 @@ _REPORT_LABELS = {
 }
 
 
+# Every dataset commit_express_dbf() isolates behind its own try/except, i.e.
+# every one that can come back as {'error': ...} while the ledger commits fine.
+# Each MUST be read back after the import or its failure is swallowed and the
+# upload flashes green over a register still holding the previous run's rows
+# (Codex round 5, 2026-08-18). The data itself is never at risk — each
+# _replace_* refuses to erase on an empty parse — so this is the alarm, not the
+# guard. Adding a seventh isolated register to import_router means adding it
+# here; test_every_isolated_register_is_covered_by_the_error_loop pins that.
+# The first two labels deliberately read the same as _REPORT_LABELS'.
+_ISOLATED_REGISTERS = (
+    ('ar_snapshot', 'ลูกหนี้คงค้าง'),
+    ('ap_snapshot', 'เจ้าหนี้คงค้าง'),
+    ('billing_notes', 'ใบวางบิล'),
+    ('bank_cheques', 'ทะเบียนเช็ค'),
+    ('sales_orders', 'ใบสั่งขาย'),
+    ('general_ledger', 'บัญชีแยกประเภท'),
+)
+
+
 @bp_bsn.route('/import-data', methods=['GET', 'POST'])
 def unified_import():
     # POST is gated by the _STAFF_POST_OK whitelist in before_request; GET is
@@ -875,6 +894,48 @@ def _express_dbf_summary_message(per_type):
     return msg
 
 
+def _heal_future_watermark(incoming_date, incoming_at, overrode, upload_meta):
+    """Clear an IMPOSSIBLE future watermark, once a forced import has SUCCEEDED.
+
+    Express cannot export tomorrow, so a mark in the future can only be damage (a
+    wrong LAN clock, pre-#394). Left alone it refuses every ordinary upload until
+    the calendar passes it — so the team ticks force_older daily and the guard
+    stops meaning anything.
+
+    Deliberately NOT done for an ordinary forced import: forcing a merely-older
+    file means "I accept replaying this", not "this old file is now the newest
+    state". Lowering the mark there would let the NEXT old file through without a
+    second confirmation.
+
+    Compare-and-set, under the import flock the caller still holds: the UPDATE
+    fires only while the stored value is BOTH the one we decided against and
+    still in the future, so a concurrent writer is never overwritten blind.
+    Returns True when the mark actually moved. (Codex round 5, 2026-08-18.)
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE express_import_watermark "
+            "SET last_export_date = ?, last_export_at = ?, updated_at = datetime('now') "
+            "WHERE entity = 'BSN' AND last_export_date = ? "
+            "      AND last_export_date > date('now')",
+            (incoming_date, incoming_at, overrode))
+        healed = cur.rowcount > 0
+        if healed:
+            conn.execute(
+                "INSERT INTO audit_log (table_name, row_id, action, changed_fields, user) "
+                "VALUES ('express_import_watermark', 0, 'UPDATE', ?, ?)",
+                (json.dumps({'event': 'future_watermark_healed',
+                             'healed_to': incoming_date, 'was': overrode,
+                             'filename': upload_meta.get('filename'),
+                             'sha256': upload_meta.get('sha256')}, ensure_ascii=False),
+                 session.get('username') or ''))
+        conn.commit()
+        return healed
+    finally:
+        conn.close()
+
+
 @bp_bsn.route('/import-express-dbf/upload', methods=['POST'])
 def express_dbf_upload():
     # A logged-in team member (require_login + staff POST whitelist, see
@@ -986,6 +1047,7 @@ def express_dbf_upload():
 
         import_lock = None
         forced_older = False
+        forced_over = None
         if 'bsn' in classified:
             # Held across the claim AND the import: see _acquire_import_lock.
             import_lock = _acquire_import_lock()
@@ -995,7 +1057,6 @@ def express_dbf_upload():
                 return redirect(redirect_to)
 
             stale_msg = None
-            forced_over = None
             _ok, _latest = _claim_export_date(effective_export_at)
             _exp_date = effective_export_at.date().isoformat()
             if not _ok:
@@ -1051,18 +1112,29 @@ def express_dbf_upload():
                                   'summary': _express_dbf_summary_message(per_type),
                                   'reconcile': per_type.get('reconcile', {})}
                 flashes.append(('success', f"BSN5657: {results['bsn']['summary']}"))
-                # A snapshot that refused is isolated from the money import
-                # (import_router._commit_snapshot) — the ledger above is fine,
-                # but AR/AP silently keep showing YESTERDAY's balances, so say
-                # so loudly rather than letting the green flash imply otherwise.
-                for _key, _label in (('ar_snapshot', 'ลูกหนี้คงค้าง'),
-                                     ('ap_snapshot', 'เจ้าหนี้คงค้าง')):
+                # Each register is isolated from the money import, so one that
+                # refused leaves the ledger above perfectly fine while that
+                # register silently keeps YESTERDAY's rows. The green summary
+                # flash means "the money landed" and must not be read as "all
+                # six datasets landed" — so say the difference out loud.
+                for _key, _label in _ISOLATED_REGISTERS:
                     _err = (per_type.get(_key) or {}).get('error')
                     if _err:
-                        results['bsn'][_key + '_error'] = _err
+                        results['bsn'].setdefault('register_errors', {})[_key] = _err
                         flashes.append(('warning',
-                                        f'{_label}: สร้างยอดคงค้างรอบนี้ไม่สำเร็จ ({_err}) '
-                                        f'— ยอดขาย/ซื้อเข้าปกติ แต่หน้ายอดคงค้างจะยังเป็นของรอบก่อน'))
+                                        f'{_label}: นำเข้ารอบนี้ไม่สำเร็จ ({_err}) '
+                                        f'— ยอดขาย/ซื้อ/รับชำระเข้าปกติ '
+                                        f'แต่ข้อมูลส่วนนี้ยังเป็นของรอบก่อน'))
+                # The import committed, so a future mark can now be retired.
+                if forced_older and _heal_future_watermark(
+                        _exp_date, effective_export_at.isoformat(),
+                        forced_over, upload_meta):
+                    results['bsn']['future_watermark_healed'] = {
+                        'was': forced_over, 'now': _exp_date}
+                    flashes.append(('warning',
+                                    f'วันที่อ้างอิงเดิมเป็นวันในอนาคต ({forced_over}) '
+                                    f'ซึ่งเป็นไปไม่ได้ — ปรับกลับเป็น {_exp_date} แล้ว '
+                                    f'พรุ่งนี้อัปโหลดได้ตามปกติ ไม่ต้องติ๊กข้ามอีก'))
                 _reconcile = results['bsn']['reconcile']
                 if _reconcile.get('error'):
                     # scan_reconcile failed but the money import above already
@@ -1177,6 +1249,13 @@ def _spawn_vat_rebuild(dataset_dir, run_id, snapshot_date=None):
          '--cleanup-dir', run_root]
         + (['--snapshot-date', snapshot_date] if snapshot_date else []),
         cwd=os.path.dirname(builder), env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        # INHERIT the container's stdout/stderr (Codex round 5). These were
+        # DEVNULL, so a builder killed before it could write its own result row
+        # left no trace anywhere and the run record sat on "building" forever.
+        # A file under the scratch dir would NOT have worked: the builder's
+        # finally: removes cleanup_dir on every exit, including the failure that
+        # re-raises after _report_result itself failed. Railway's application
+        # log costs no disk on a volume with 179MB free.
+        stdout=None, stderr=None,
         start_new_session=True)
     _VAT_BUILD_PROCS.append(proc)
