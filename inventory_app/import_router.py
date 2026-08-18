@@ -258,6 +258,34 @@ def _open_optional(eds, dataset_dir, name):
         return None
 
 
+def _open_table_group(eds, dataset_dir, names):
+    """Read a set of tables that only mean anything together. Returns a dict, or
+    None when the WHOLE group is absent (a flash drive still on the old .bat).
+
+    Raises when SOME are present and some are not. That combination is a
+    partially-copied or malformed zip, and treating the missing member as an
+    empty list is how a broken export silently replaces good stored data with an
+    incomplete one: GLJNL without GLJNLIT wrote vouchers with no lines, and OESO
+    without OESOIT wrote headers with no lines, both after deleting what was
+    there and both reporting success (Codex P1, 2026-08-18).
+    """
+    found, missing = {}, []
+    for n in names:
+        t = _open_optional(eds, dataset_dir, n)
+        if t is None:
+            missing.append(n)
+        else:
+            found[n] = t
+    if not found:
+        return None
+    if missing:
+        raise ValueError(
+            f'zip has {", ".join(sorted(found))} but not {", ".join(missing)} — '
+            f'these tables are only meaningful together, so this looks like a '
+            f'partially-copied export. Nothing was replaced.')
+    return found
+
+
 def _commit_snapshot(kind, build, db_path, snapshot_date):
     """Build + import one outstanding snapshot, converting a failure into a
     reported one instead of an exception (see the call site's rationale).
@@ -392,17 +420,14 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     # บัญชีแยกประเภท — windowed by whole calendar years (see gl_cutoff), unlike
     # the ledger's rolling since_days, and isolated like every register here.
     try:
-        gljnl = _open_optional(eds, dataset_dir, "GLJNL")
-        if gljnl is None:
+        group = _open_table_group(eds, dataset_dir, ("GLACC", "GLJNL", "GLJNLIT"))
+        if group is None:
             gl_stats = {"accounts": 0, "vouchers": 0, "lines": 0,
-                        "skipped": "GLJNL not in this zip"}
+                        "skipped": "GL tables not in this zip"}
         else:
             n_acc, n_vou, n_lin = _replace_general_ledger(
-                *eds.build_gl_records(
-                    _open_optional(eds, dataset_dir, "GLACC") or [],
-                    gljnl,
-                    _open_optional(eds, dataset_dir, "GLJNLIT") or [],
-                    eds.gl_cutoff()),
+                *eds.build_gl_records(group["GLACC"], group["GLJNL"],
+                                      group["GLJNLIT"], eds.gl_cutoff()),
                 "BSN", db_path)
             gl_stats = {"accounts": n_acc, "vouchers": n_vou, "lines": n_lin}
     except Exception as exc:
@@ -410,13 +435,14 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
 
     # ใบสั่งขาย — same isolation and optional-table handling as the two below.
     try:
-        oeso = _open_optional(eds, dataset_dir, "OESO")
-        if oeso is None:
-            sales_orders_stats = {"orders": 0, "lines": 0, "skipped": "OESO not in this zip"}
+        group = _open_table_group(eds, dataset_dir, ("OESO", "OESOIT"))
+        if group is None:
+            sales_orders_stats = {"orders": 0, "lines": 0,
+                                  "skipped": "OESO/OESOIT not in this zip"}
         else:
-            oesoit = _open_optional(eds, dataset_dir, "OESOIT") or []
             n_head, n_line = _replace_sales_orders(
-                *eds.build_sales_order_records(oeso, oesoit, armas), "BSN", db_path)
+                *eds.build_sales_order_records(group["OESO"], group["OESOIT"], armas),
+                "BSN", db_path)
             sales_orders_stats = {"orders": n_head, "lines": n_line}
     except Exception as exc:
         sales_orders_stats = {"orders": 0, "lines": 0, "error": str(exc)[:300]}

@@ -174,3 +174,33 @@ def test_a_zip_without_oeso_still_imports(empty_db, monkeypatch):
 
     assert 'skipped' in out['sales_orders'] and 'error' not in out['sales_orders']
     assert 'error' not in out['ar_snapshot']
+
+
+def test_a_missing_oesoit_must_not_erase_stored_order_lines(empty_db, monkeypatch):
+    """Codex P1, 2026-08-18 — same hole as the GL: OESO and OESOIT are one group.
+    OESO present with OESOIT missing used to delete every stored line and commit
+    headers-only, reporting success."""
+    import import_router
+    import express_dbf_source as eds
+
+    present = {'OESO': [_oeso('SO1')], 'OESOIT': [_oesoit('SO1', 1)]}
+
+    def fake(_dir, name):
+        key = name.upper()
+        if key in present:
+            return list(present[key])
+        if key in ('OESO', 'OESOIT', 'GLACC', 'GLJNL', 'GLJNLIT', 'BKTRN', 'ARBIL'):
+            raise FileNotFoundError(f'{key}.DBF')
+        return []
+    monkeypatch.setattr(eds, 'open_table', fake)
+    _seed_company(empty_db)
+
+    import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    assert len(_q(empty_db, 'SELECT * FROM express_sales_order_lines')) == 1   # CONTROL
+
+    del present['OESOIT']
+    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-18')
+
+    assert 'error' in out['sales_orders'] and 'OESOIT' in out['sales_orders']['error']
+    assert len(_q(empty_db, 'SELECT * FROM express_sales_order_lines')) == 1, \
+        'stored lines survived a partially-copied zip'

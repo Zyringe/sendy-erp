@@ -697,9 +697,10 @@ def _zip_export_datetime(zf):
     return latest
 
 
-def _latest_stored_snapshot_date(conn):
-    """The newest outstanding snapshot already stored for BSN, across both
-    sides. What an incoming zip has to be at least as fresh as."""
+def _snapshot_derived_watermark(conn):
+    """Pre-mig-166 fallback: the newest stored outstanding snapshot. Used only
+    when express_import_watermark has no row yet, so a DB that has not run 166's
+    seed is not treated as "never imported"."""
     row = conn.execute(
         "SELECT MAX(d) FROM ("
         "  SELECT MAX(snapshot_date_iso) d FROM express_ar_outstanding WHERE entity='BSN'"
@@ -707,6 +708,55 @@ def _latest_stored_snapshot_date(conn):
         "  SELECT MAX(snapshot_date_iso) d FROM express_ap_outstanding WHERE entity='BSN')"
     ).fetchone()
     return row[0] if row else None
+
+
+def _claim_export_date(export_at, entity='BSN'):
+    """Atomically decide whether this upload may proceed, and stake its claim.
+
+    Returns (ok, previous_date). When ok is False the caller must refuse.
+
+    Two failures this closes, both found by Codex on 2026-08-18:
+
+    1. The watermark used to be MAX(snapshot_date_iso). Snapshots are
+       deliberately isolated and can refuse while the ledger and payment import
+       commit, so a day where the money landed but the snapshot did not left the
+       mark a day behind — and yesterday's zip then read as same-date, was
+       accepted, and its ARRCPIT could DELETE paid_invoices links written since.
+       The mark is now its own row and moves on every accepted upload,
+       regardless of what any snapshot did.
+
+    2. Check-then-act across a 13-18s import with nothing shared between
+       gunicorn's two workers: an older and a newer upload could both pass
+       against the same prior state. Compare-and-advance now happen inside one
+       BEGIN IMMEDIATE that commits BEFORE the import starts, so the second
+       worker reads the advanced value.
+
+    Advancing before the import is deliberate. If the import then fails, a retry
+    of the SAME zip is still accepted (the comparison is strictly-older) while an
+    OLDER one stays refused — the right answer in both cases.
+    """
+    incoming = export_at.date().isoformat()
+    conn = get_connection()
+    try:
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT last_export_date FROM express_import_watermark WHERE entity = ?",
+            (entity,)).fetchone()
+        previous = row['last_export_date'] if row else _snapshot_derived_watermark(conn)
+        if previous and incoming < previous:
+            conn.rollback()
+            return False, previous
+        conn.execute(
+            "INSERT INTO express_import_watermark (entity, last_export_date, last_export_at, updated_at) "
+            "VALUES (?, ?, ?, datetime('now')) "
+            "ON CONFLICT(entity) DO UPDATE SET last_export_date=excluded.last_export_date, "
+            " last_export_at=excluded.last_export_at, updated_at=excluded.updated_at",
+            (entity, incoming, export_at.isoformat()))
+        conn.commit()
+        return True, previous
+    finally:
+        conn.close()
 
 
 def _express_dbf_summary_message(per_type):
@@ -812,14 +862,12 @@ def express_dbf_upload():
         # STRICTLY older: re-uploading the SAME day's zip is the team's normal
         # recovery move when something looked wrong, and must keep working.
         stale_msg = None
+        forced_over = None
         if export_at is not None:
-            _c = get_connection()
-            try:
-                _latest = _latest_stored_snapshot_date(_c)
-            finally:
-                _c.close()
+            _ok, _latest = _claim_export_date(export_at)
             _exp_date = export_at.date().isoformat()
-            if _latest and _exp_date < _latest:
+            if not _ok:
+                forced_over = _latest
                 stale_msg = (
                     f'ไฟล์นี้ export จาก Express เมื่อ {_exp_date} '
                     f'ซึ่งเก่ากว่ายอดคงค้างที่มีอยู่แล้ว ({_latest}) — ยกเลิกทั้งไฟล์ '
@@ -828,6 +876,13 @@ def express_dbf_upload():
         if stale_msg and not request.form.get('force_older'):
             flash(stale_msg, 'danger')
             return redirect(redirect_to)
+        forced_older = bool(stale_msg)
+        if forced_older:
+            # Deliberately overriding the guard. Say so in the run record: this
+            # is the one path that can let an older file rewrite newer state, so
+            # "who did this and over what" has to be answerable afterwards.
+            flash(f'นำเข้าทับด้วยไฟล์ที่เก่ากว่า ({export_at.date().isoformat()} '
+                  f'ทับของ {forced_over}) ตามที่ติ๊กยืนยัน', 'warning')
 
         dataset_dirs = _find_express_dbf_dataset_dirs(extract_dir)
         if not dataset_dirs:
@@ -869,6 +924,9 @@ def express_dbf_upload():
         # can cross midnight, so letting each side call date.today() for itself is
         # how the two books end up stamped on different days.
         upload_meta['export_at'] = export_at.isoformat() if export_at else None
+        if forced_older:
+            upload_meta['forced_older'] = True
+            upload_meta['forced_over'] = forced_over
         results['upload'] = upload_meta
         if export_at is not None:
             snapshot_date = export_at.date().isoformat()

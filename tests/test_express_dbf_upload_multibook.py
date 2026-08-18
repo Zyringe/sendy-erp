@@ -368,6 +368,27 @@ def _upload_dated(client, entries, when):
                        follow_redirects=False)
 
 
+def _watermark(db_path):
+    c = sqlite3.connect(db_path)
+    try:
+        r = c.execute("SELECT last_export_date FROM express_import_watermark "
+                      "WHERE entity='BSN'").fetchone()
+        return r[0] if r else None
+    finally:
+        c.close()
+
+
+def _set_watermark(db_path, date_iso):
+    c = sqlite3.connect(db_path)
+    try:
+        c.execute("INSERT INTO express_import_watermark (entity, last_export_date) "
+                  "VALUES ('BSN', ?) ON CONFLICT(entity) DO UPDATE SET "
+                  "last_export_date=excluded.last_export_date", (date_iso,))
+        c.commit()
+    finally:
+        c.close()
+
+
 def _set_snapshot(db_path, date_iso):
     """Force the stored-snapshot state this test needs, rather than inheriting
     whatever the cloned live DB happens to hold. Both tables, because the guard
@@ -401,7 +422,9 @@ def test_zip_export_datetime_is_the_newest_dbf_member():
 
 def test_older_zip_is_refused_and_imports_nothing(tmp_db, monkeypatch):
     import config
-    _set_snapshot(config.DATABASE_PATH, '2026-08-17')
+    # The guard reads express_import_watermark (mig 166), not the snapshot —
+    # see the watermark tests at the bottom of this file for why.
+    _set_watermark(config.DATABASE_PATH, '2026-08-17')
     called = []
     monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
     monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
@@ -417,7 +440,7 @@ def test_same_day_reupload_is_still_accepted(tmp_db, monkeypatch):
     """The team re-uploads the same day's zip whenever something looked wrong.
     The comparison is strictly-older, so that recovery path keeps working."""
     import config
-    _set_snapshot(config.DATABASE_PATH, '2026-08-17')
+    _set_watermark(config.DATABASE_PATH, '2026-08-17')
     called = []
     monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
     monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
@@ -431,7 +454,7 @@ def test_same_day_reupload_is_still_accepted(tmp_db, monkeypatch):
 
 def test_stale_zip_can_be_forced_through_deliberately(tmp_db, monkeypatch):
     import config
-    _set_snapshot(config.DATABASE_PATH, '2026-08-17')
+    _set_watermark(config.DATABASE_PATH, '2026-08-17')
     called = []
     monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
     monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
@@ -455,8 +478,8 @@ def test_snapshot_date_comes_from_the_zip_not_the_clock(tmp_db, monkeypatch):
     bug being fixed, and a fixture dated today could not tell the two apart — it
     would pass against `date.today()` just as well."""
     yesterday = _dt.date.today() - _dt.timedelta(days=1)
-    _set_snapshot(__import__('config').DATABASE_PATH,
-                  (yesterday - _dt.timedelta(days=7)).isoformat())
+    _set_watermark(__import__('config').DATABASE_PATH,
+                   (yesterday - _dt.timedelta(days=7)).isoformat())
     monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
     seen = {}
 
@@ -505,7 +528,7 @@ def test_a_future_dated_zip_falls_back_to_today_instead_of_poisoning_the_guard(
     up. Fall back to today and say so — a wrong date is recoverable, a locked-out
     daily import is not."""
     import config
-    _set_snapshot(config.DATABASE_PATH, '2026-01-01')
+    _set_watermark(config.DATABASE_PATH, '2026-01-01')
     future = _dt.date.today() + _dt.timedelta(days=30)
     monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
     seen = {}
@@ -521,3 +544,86 @@ def test_a_future_dated_zip_falls_back_to_today_instead_of_poisoning_the_guard(
     assert r.status_code == 302
     assert seen['date'] == _dt.date.today().isoformat(), (
         'a future export stamp must not reach the snapshot')
+
+
+# ── the watermark (Codex P1, 2026-08-18) ────────────────────────────────────
+#
+# The guard used to read MAX(snapshot_date_iso) off the AR/AP tables. Snapshots
+# are deliberately isolated and can refuse while the ledger and payment import
+# commit, so a day where the money landed but the snapshot did not left the
+# watermark a day behind — and yesterday's zip then read as same-date, was
+# accepted, and its ARRCPIT could DELETE paid_invoices links written since.
+
+def test_the_watermark_advances_even_when_the_snapshot_refuses(tmp_db, monkeypatch):
+    """The whole point. A day whose ledger imported but whose snapshot refused
+    must still move the watermark, or the next day's guard compares against a
+    stale date and lets an older zip back in."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-08-10')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    broken = _fake_per_type()
+    broken['ar_snapshot'] = {'imported': 0, 'error': 'refused'}
+    broken['ap_snapshot'] = {'imported': 0, 'error': 'refused'}
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf', lambda *a, **k: broken)
+
+    _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0))
+
+    assert _watermark(config.DATABASE_PATH) == '2026-08-17'
+
+
+def test_an_older_zip_is_refused_against_the_watermark_not_the_snapshot(tmp_db, monkeypatch):
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-08-17')
+    called = []
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: called.append(1) or _fake_per_type())
+
+    _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 15, 16, 50, 0))
+
+    assert called == [], 'a stale zip must not reach the importer'
+    assert _watermark(config.DATABASE_PATH) == '2026-08-17', 'and must not move the mark'
+
+
+def test_the_watermark_is_claimed_before_the_import_runs(tmp_db, monkeypatch):
+    """Closes the check-then-act race: the comparison used to run, then a 13-18s
+    import, with nothing shared between gunicorn's two workers. The mark is now
+    advanced and committed BEFORE the import, so a concurrent older upload sees
+    the new value."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-08-10')
+    seen = {}
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+
+    def _slow(*a, **k):
+        seen['during'] = _watermark(config.DATABASE_PATH)
+        return _fake_per_type()
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf', _slow)
+
+    _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0))
+
+    assert seen['during'] == '2026-08-17', \
+        'the mark must already be advanced while the import is still running'
+
+
+def test_forcing_an_older_zip_is_recorded(tmp_db, monkeypatch):
+    """force_older is unchecked and deliberate, so its use has to leave a trace."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-08-17')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _fake_per_type())
+
+    _client().post('/import-express-dbf/upload',
+                   data={'file': (_zip_bytes_dated([('data/ARTRN.DBF', b'x')],
+                                                   (2026, 8, 15, 16, 50, 0)), 'daily.zip'),
+                         'force_older': '1'},
+                   content_type='multipart/form-data', follow_redirects=False)
+
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    notes = json.loads(conn.execute(
+        "SELECT notes FROM import_log WHERE filename='express-dbf-upload' "
+        "ORDER BY id DESC LIMIT 1").fetchone()[0])
+    conn.close()
+    assert notes['upload']['forced_older'] is True
+    assert notes['upload']['forced_over'] == '2026-08-17'

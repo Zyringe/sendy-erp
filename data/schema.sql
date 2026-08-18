@@ -639,6 +639,13 @@ CREATE TABLE "express_import_log" (
     imported_at       TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+CREATE TABLE express_import_watermark (
+    entity           TEXT PRIMARY KEY,
+    last_export_date TEXT,                 -- ISO date of the newest zip accepted
+    last_export_at   TEXT,                 -- its full stamp, for support questions
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE "express_invoice_refs" (
     doc_base   TEXT PRIMARY KEY,
     youref     TEXT,

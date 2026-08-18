@@ -235,3 +235,56 @@ def test_debits_equal_credits_for_what_was_stored(empty_db, monkeypatch):
                         "GROUP BY entry_side ORDER BY entry_side")
     assert rows == [{'entry_side': 'credit', 't': 7800.0},
                     {'entry_side': 'debit', 't': 7800.0}]
+
+
+def test_a_missing_companion_table_must_not_erase_the_stored_ledger(empty_db, monkeypatch):
+    """Codex P1, 2026-08-18. GLJNL/GLACC/GLJNLIT are one indivisible group.
+
+    A zip where GLJNL copied but GLJNLIT did not used to slip through: the
+    missing table became [], the empty guard passed because VOUCHERS were
+    non-empty, and the replace then deleted all three stored tables and wrote
+    vouchers with no lines — reporting success. A partially-copied zip is a
+    broken export, not a ledger with no entries.
+    """
+    import import_router
+    import express_dbf_source as eds
+
+    good = {'GLACC': [_glacc('A')], 'GLJNL': [_gljnl('V1')],
+            'GLJNLIT': [_gljnlit('V1', 1, 'A', '0', 1.0)]}
+    present = dict(good)
+
+    def fake(_dir, name):
+        key = name.upper()
+        if key in present:
+            return list(present[key])
+        if key in ('GLACC', 'GLJNL', 'GLJNLIT', 'OESO', 'OESOIT', 'BKTRN', 'ARBIL'):
+            raise FileNotFoundError(f'{key}.DBF')
+        return []
+    monkeypatch.setattr(eds, 'open_table', fake)
+    _seed_company(empty_db)
+
+    import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    assert len(_q(empty_db, 'SELECT * FROM express_gl_lines')) == 1        # CONTROL
+
+    del present['GLJNLIT']                       # the companion did not copy
+    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-18')
+
+    assert 'error' in out['general_ledger']
+    assert 'GLJNLIT' in out['general_ledger']['error']
+    assert len(_q(empty_db, 'SELECT * FROM express_gl_lines')) == 1, \
+        'the stored ledger survived a broken export'
+    assert len(_q(empty_db, 'SELECT * FROM express_gl_vouchers')) == 1
+    assert len(_q(empty_db, 'SELECT * FROM express_gl_accounts')) == 1
+
+
+def test_the_whole_gl_group_absent_is_still_a_graceful_skip(empty_db, monkeypatch):
+    """CONTROL for the above: a flash drive on the pre-2026-08-17 .bat has NONE
+    of the three, and that is a thinner import rather than a broken one."""
+    import import_router
+
+    _patch(monkeypatch, {})
+    _seed_company(empty_db)
+
+    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+
+    assert 'skipped' in out['general_ledger'] and 'error' not in out['general_ledger']
