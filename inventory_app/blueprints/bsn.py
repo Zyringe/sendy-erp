@@ -10,6 +10,7 @@ import json
 import math
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -697,6 +698,65 @@ def _zip_export_datetime(zf):
     return latest
 
 
+def _acquire_import_lock():
+    """Serialize the WHOLE claim → import, across gunicorn's workers.
+
+    Claiming the watermark in its own transaction only ordered the CLAIMS, not
+    the work (Codex, 2026-08-18): worker A could claim 17 and start a 20s
+    import, worker B claim 18 and finish first, and A then commit 17's data over
+    18's — deleting payment links and replacing snapshots with older data. The
+    SQLite lock cannot be held across the import, because the importer opens its
+    own connections and would deadlock against it.
+
+    So: a kernel flock on a persistent lockfile, exactly the primitive and the
+    reasoning vat_book_builder.acquire_publish_lock already uses — acquisition
+    IS the atomic check-and-own, and the kernel releases it the instant the
+    owner dies, so there is no stale-lock recovery to get wrong.
+
+    Non-blocking: a second upload is refused with a "try again shortly" message
+    rather than parked, because gunicorn kills a request at 60s and an import
+    takes 13-20s. Returns the held fd, or None when another import holds it.
+    """
+    import fcntl
+    path = os.path.join(os.path.dirname(config.DATABASE_PATH), 'express_import.lock')
+    fd = os.open(path, os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _release_import_lock(fd):
+    if fd is not None:
+        try:
+            os.close(fd)          # closing drops the flock
+        except OSError:
+            pass
+
+
+def _audit_forced_import(incoming, overrode, upload_meta):
+    """Record a deliberate override BEFORE the import touches anything.
+
+    The run record is only written once the importer RETURNS, and the importer
+    commits in several transactions — so a forced import that died half way left
+    no evidence the guard had been overridden at all (Codex P2, 2026-08-18).
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO audit_log (table_name, row_id, action, changed_fields, user) "
+            "VALUES ('express_import_watermark', 0, 'UPDATE', ?, ?)",
+            (json.dumps({'event': 'forced_older_import', 'incoming': incoming,
+                         'overrode': overrode, 'filename': upload_meta.get('filename'),
+                         'sha256': upload_meta.get('sha256')}, ensure_ascii=False),
+             session.get('username') or ''))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _snapshot_derived_watermark(conn):
     """Pre-mig-166 fallback: the newest stored outstanding snapshot. Used only
     when express_import_watermark has no row yet, so a DB that has not run 166's
@@ -740,13 +800,23 @@ def _claim_export_date(export_at, entity='BSN'):
     try:
         conn.execute("PRAGMA busy_timeout=10000")
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT last_export_date FROM express_import_watermark WHERE entity = ?",
-            (entity,)).fetchone()
-        previous = row['last_export_date'] if row else _snapshot_derived_watermark(conn)
+        try:
+            row = conn.execute(
+                "SELECT last_export_date FROM express_import_watermark WHERE entity = ?",
+                (entity,)).fetchone()
+            previous = row['last_export_date'] if row else _snapshot_derived_watermark(conn)
+            have_table = True
+        except sqlite3.OperationalError:
+            # mig 166 rolled back. Its header promises the route falls back to
+            # the pre-166 snapshot-derived mark, so it has to actually do that.
+            previous = _snapshot_derived_watermark(conn)
+            have_table = False
         if previous and incoming < previous:
             conn.rollback()
             return False, previous
+        if not have_table:
+            conn.commit()
+            return True, previous
         conn.execute(
             "INSERT INTO express_import_watermark (entity, last_export_date, last_export_at, updated_at) "
             "VALUES (?, ?, ?, datetime('now')) "
@@ -861,23 +931,37 @@ def express_dbf_upload():
         #
         # STRICTLY older: re-uploading the SAME day's zip is the team's normal
         # recovery move when something looked wrong, and must keep working.
+        # ONE effective date for every accepted upload. A future stamp (wrong LAN
+        # clock) and a zip with no .DBF member both fall back to today — and both
+        # used to skip the claim entirely, so the mark never moved and a stale
+        # file could be accepted again the next day (Codex, 2026-08-18).
+        effective_export_at = export_at or datetime.datetime.combine(
+            datetime.date.today(), datetime.time.min)
+
+        # Held across the claim AND the import: see _acquire_import_lock.
+        import_lock = _acquire_import_lock()
+        if import_lock is None:
+            flash('มีการนำเข้าอีกไฟล์กำลังทำงานอยู่ — รอให้เสร็จสักครู่แล้วอัปโหลดใหม่',
+                  'warning')
+            return redirect(redirect_to)
+
         stale_msg = None
         forced_over = None
-        if export_at is not None:
-            _ok, _latest = _claim_export_date(export_at)
-            _exp_date = export_at.date().isoformat()
-            if not _ok:
-                forced_over = _latest
-                stale_msg = (
-                    f'ไฟล์นี้ export จาก Express เมื่อ {_exp_date} '
-                    f'ซึ่งเก่ากว่ายอดคงค้างที่มีอยู่แล้ว ({_latest}) — ยกเลิกทั้งไฟล์ '
-                    f'ไม่มีการนำเข้าใดๆ. อัปโหลดไฟล์ล่าสุดจากแฟลชไดรฟ์แทน '
-                    f'(ถ้าตั้งใจจะนำเข้าทับจริงๆ ให้ติ๊ก "นำเข้าทับแม้ไฟล์เก่ากว่า")')
+        _ok, _latest = _claim_export_date(effective_export_at)
+        _exp_date = effective_export_at.date().isoformat()
+        if not _ok:
+            forced_over = _latest
+            stale_msg = (
+                f'ไฟล์นี้ export จาก Express เมื่อ {_exp_date} '
+                f'ซึ่งเก่ากว่ายอดคงค้างที่มีอยู่แล้ว ({_latest}) — ยกเลิกทั้งไฟล์ '
+                f'ไม่มีการนำเข้าใดๆ. อัปโหลดไฟล์ล่าสุดจากแฟลชไดรฟ์แทน '
+                f'(ถ้าตั้งใจจะนำเข้าทับจริงๆ ให้ติ๊ก "นำเข้าทับแม้ไฟล์เก่ากว่า")')
         if stale_msg and not request.form.get('force_older'):
             flash(stale_msg, 'danger')
             return redirect(redirect_to)
         forced_older = bool(stale_msg)
         if forced_older:
+            _audit_forced_import(_exp_date, forced_over, upload_meta)
             # Deliberately overriding the guard. Say so in the run record: this
             # is the one path that can let an older file rewrite newer state, so
             # "who did this and over what" has to be answerable afterwards.
@@ -924,14 +1008,13 @@ def express_dbf_upload():
         # can cross midnight, so letting each side call date.today() for itself is
         # how the two books end up stamped on different days.
         upload_meta['export_at'] = export_at.isoformat() if export_at else None
+        upload_meta['effective_export_at'] = effective_export_at.isoformat()
         if forced_older:
             upload_meta['forced_older'] = True
             upload_meta['forced_over'] = forced_over
         results['upload'] = upload_meta
-        if export_at is not None:
-            snapshot_date = export_at.date().isoformat()
-        else:
-            snapshot_date = datetime.date.today().isoformat()
+        snapshot_date = effective_export_at.date().isoformat()
+        if export_at is None:
             flashes.append(('warning',
                             'อ่านเวลา export จากไฟล์ zip ไม่ได้ — ใช้วันที่วันนี้แทน '
                             'ยอดคงค้างอาจลงวันที่ไม่ตรงกับตอน export จริง'))
@@ -1003,6 +1086,7 @@ def express_dbf_upload():
         flash(f'นำเข้าไม่สำเร็จ: {exc}', 'danger')
         return redirect(redirect_to)
     finally:
+        _release_import_lock(locals().get('import_lock'))
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     for cat, msg in flashes:
