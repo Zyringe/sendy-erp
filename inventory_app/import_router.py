@@ -389,6 +389,25 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     # ใบวางบิล. Whole table, no window (the bills open invoices point at run back
     # to 2014), and isolated like the snapshots: it is reference data, so a
     # failure must not make a committed ledger import read as failed.
+    # บัญชีแยกประเภท — windowed by whole calendar years (see gl_cutoff), unlike
+    # the ledger's rolling since_days, and isolated like every register here.
+    try:
+        gljnl = _open_optional(eds, dataset_dir, "GLJNL")
+        if gljnl is None:
+            gl_stats = {"accounts": 0, "vouchers": 0, "lines": 0,
+                        "skipped": "GLJNL not in this zip"}
+        else:
+            n_acc, n_vou, n_lin = _replace_general_ledger(
+                *eds.build_gl_records(
+                    _open_optional(eds, dataset_dir, "GLACC") or [],
+                    gljnl,
+                    _open_optional(eds, dataset_dir, "GLJNLIT") or [],
+                    eds.gl_cutoff()),
+                "BSN", db_path)
+            gl_stats = {"accounts": n_acc, "vouchers": n_vou, "lines": n_lin}
+    except Exception as exc:
+        gl_stats = {"accounts": 0, "vouchers": 0, "lines": 0, "error": str(exc)[:300]}
+
     # ใบสั่งขาย — same isolation and optional-table handling as the two below.
     try:
         oeso = _open_optional(eds, dataset_dir, "OESO")
@@ -456,6 +475,7 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
             "billing_notes": billing_notes_stats,
             "bank_cheques": bank_cheques_stats,
             "sales_orders": sales_orders_stats,
+            "general_ledger": gl_stats,
             "payments_in": payments_in_stats,
             "payments_out": payments_out_stats,
             "credit_notes_ar": credit_notes_ar_stats,
@@ -464,6 +484,56 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
             "ap_snapshot": ap_snapshot_stats,
             "snapshot_date": snapshot_date,
             "reconcile": reconcile_counts}
+
+
+def _replace_general_ledger(accounts, vouchers, lines, entity, db_path):
+    """บัญชีแยกประเภท (mig 165). All three tables replaced in ONE transaction:
+    a line pointing at a voucher that has gone, or an account number that has
+    gone, is unreachable.
+
+    Same empty-write guard as the other registers, keyed on the vouchers — the
+    chart of accounts alone is not evidence the journal parsed.
+    """
+    import sqlite3
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        conn.execute("PRAGMA busy_timeout=10000")
+        if not vouchers:
+            existing = conn.execute(
+                "SELECT COUNT(*) FROM express_gl_vouchers WHERE entity = ?",
+                (entity,)).fetchone()[0]
+            if existing:
+                raise ValueError(
+                    f'บัญชีแยกประเภท: parsed 0 vouchers but {existing} already stored '
+                    f'for {entity} — refusing to erase them')
+            return 0, 0, 0
+        conn.execute("BEGIN IMMEDIATE")
+        for t in ("express_gl_lines", "express_gl_vouchers", "express_gl_accounts"):
+            conn.execute(f"DELETE FROM {t} WHERE entity = ?", (entity,))
+        conn.executemany(
+            "INSERT INTO express_gl_accounts "
+            " (entity, account_no, account_name, level, parent_no, account_type,"
+            "  nature, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(entity, a['account_no'], a['account_name'], a['level'], a['parent_no'],
+              a['account_type'], a['nature'], a['status']) for a in accounts])
+        conn.executemany(
+            "INSERT INTO express_gl_vouchers "
+            " (entity, voucher, voucher_date_iso, journal_type, reference_no,"
+            "  description, source_journal, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(entity, v['voucher'], v['voucher_date_iso'], v['journal_type'],
+              v['reference_no'], v['description'], v['source_journal'], v['status'])
+             for v in vouchers])
+        conn.executemany(
+            "INSERT INTO express_gl_lines "
+            " (entity, voucher, line_seq, voucher_date_iso, account_no, description,"
+            "  entry_side, type_code, amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(entity, l['voucher'], l['line_seq'], l['voucher_date_iso'],
+              l['account_no'], l['description'], l['entry_side'], l['type_code'],
+              l['amount']) for l in lines])
+        conn.commit()
+    finally:
+        conn.close()
+    return len(accounts), len(vouchers), len(lines)
 
 
 def _replace_sales_orders(heads, lines, entity, db_path):

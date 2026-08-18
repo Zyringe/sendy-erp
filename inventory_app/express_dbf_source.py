@@ -854,3 +854,107 @@ def build_sales_order_records(oeso_rows, oesoit_rows, armas_rows):
             'line_total': round(_num(row, 'TRNVAL'), 2),
         })
     return heads, lines
+
+
+# ── บัญชีแยกประเภท (GLACC + GLJNL + GLJNLIT) ────────────────────────────────
+#
+# Sendy's /accounting computes profit from sales minus cost, which is an
+# estimate. The GL is the book the accountant actually closes, so this makes an
+# independent figure available to check it against.
+#
+# ⚠ WINDOWED, and for a measured reason. The whole GL is 109,458 vouchers +
+# 359,003 lines = 62MB in SQLite. Prod's Railway volume is 434MB with 214MB free
+# (measured 2026-08-18); the full book across BOTH books would take ~87MB of
+# that before the app's gzip backups grow to match, and a full volume stops
+# Sendy writing at all. Three calendar years is ~12% of the rows (~7MB) and
+# covers the current and prior fiscal years, which is what checking against a
+# closed book needs.
+# UPGRADE PATH: raise _GL_SINCE_YEARS, or move the GL to its own book DB the way
+# vat_book.db works, once the volume has room.
+_GL_SINCE_YEARS = 3
+
+# TRNTYP → side. PROVEN, not guessed, which is why this one is derived while
+# CHQSTAT and DOCSTAT are carried raw: account 41-01-00-00 รายได้จากการขาย has
+# 53,764 lines and every single one is TRNTYP '1'. Income is credited, so
+# 1 = credit and 0 = debit; ลูกหนี้การค้า and เงินสด both agree. '0' and '1' are
+# the only values present across all 359,003 lines.
+_GL_SIDE = {'0': 'debit', '1': 'credit'}
+
+
+def gl_cutoff(today=None):
+    """1 January, _GL_SINCE_YEARS calendar years back. Separate from the
+    ledger's rolling since_days window: a fiscal comparison wants whole years,
+    not the last 60 days."""
+    import datetime as _dt
+    today = today or _dt.date.today()
+    return _dt.date(today.year - (_GL_SINCE_YEARS - 1), 1, 1)
+
+
+def build_gl_records(glacc_rows, gljnl_rows, gljnlit_rows, cutoff):
+    """(accounts, vouchers, lines).
+
+    cutoff is REQUIRED and applies to vouchers and their lines, never to the
+    chart of accounts — 135 rows that both old and new lines point at, so
+    windowing it would leave account numbers resolving to nothing.
+    """
+    accounts = [{
+        'account_no': _plain(r, 'ACCNUM'),
+        'account_name': _plain(r, 'ACCNAM'),
+        'level': _int(r, 'LEVEL', 0),
+        'parent_no': _plain(r, 'PARENT'),
+        'account_type': _plain(r, 'ACCTYP'),
+        'nature': _plain(r, 'NATURE'),
+        'status': _plain(r, 'STATUS'),
+    } for r in glacc_rows if _plain(r, 'ACCNUM')]
+
+    vouchers = []
+    kept = set()
+    for r in gljnl_rows:
+        voucher = _plain(r, 'VOUCHER')
+        if not voucher:
+            continue
+        d = r.get('VOUDAT')
+        if d is None or d < cutoff:
+            continue
+        if voucher in kept:
+            raise ValueError(f'{voucher}: appears more than once in GLJNL')
+        kept.add(voucher)
+        vouchers.append({
+            'voucher': voucher,
+            'voucher_date_iso': _date_iso(d),
+            'journal_type': _plain(r, 'JNLTYP'),
+            'reference_no': _plain(r, 'REFNUM'),
+            'description': _plain(r, 'DESCRP'),
+            'source_journal': _plain(r, 'SRCJNL'),
+            'status': _plain(r, 'DOCSTAT'),
+        })
+
+    lines = []
+    for r in gljnlit_rows:
+        voucher = _plain(r, 'VOUCHER')
+        # A line whose voucher was windowed out has nothing to hang from.
+        if voucher not in kept:
+            continue
+        code = _plain(r, 'TRNTYP')
+        side = _GL_SIDE.get(code)
+        if side is None:
+            # '0' and '1' are the only values across all 359,003 lines. A third
+            # means the proof above no longer holds, and labelling it anyway
+            # would put a wrong side on a money row.
+            raise ValueError(
+                f'{voucher} line {r.get("SEQIT")}: unknown TRNTYP {code!r} — '
+                f'debit/credit is only proven for 0 and 1')
+        lines.append({
+            'voucher': voucher,
+            # SEQIT repeats within a voucher on 3,367 pairs, so it is a label
+            # rather than a key — which is why the importer replaces lines
+            # wholesale instead of keying them.
+            'line_seq': _int(r, 'SEQIT', 0),
+            'voucher_date_iso': _date_iso(r.get('VOUDAT')),
+            'account_no': _plain(r, 'ACCNUM'),
+            'description': _plain(r, 'DESCRP'),
+            'entry_side': side,
+            'type_code': code,
+            'amount': round(_num(r, 'AMOUNT'), 2),
+        })
+    return accounts, vouchers, lines

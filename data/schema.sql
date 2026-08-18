@@ -584,6 +584,45 @@ CREATE TABLE express_credit_notes (
     UNIQUE(batch_id, doc_no)
 );
 
+CREATE TABLE express_gl_accounts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity      TEXT NOT NULL,
+    account_no  TEXT NOT NULL,                  -- ACCNUM, e.g. 11-01-02-01
+    account_name TEXT,                          -- ACCNAM
+    level       INTEGER,
+    parent_no   TEXT,
+    account_type TEXT,                          -- ACCTYP verbatim
+    nature      TEXT,                           -- NATURE verbatim
+    status      TEXT,
+    UNIQUE (entity, account_no)
+);
+
+CREATE TABLE express_gl_lines (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity      TEXT NOT NULL,
+    voucher     TEXT NOT NULL,
+    line_seq    INTEGER,                        -- SEQIT: NOT unique per voucher (3,367 repeats)
+    voucher_date_iso TEXT,
+    account_no  TEXT,
+    description TEXT,
+    entry_side  TEXT,                           -- 'debit' / 'credit', derived (proven, see above)
+    type_code   TEXT,                           -- TRNTYP verbatim
+    amount      REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE express_gl_vouchers (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity       TEXT NOT NULL,
+    voucher      TEXT NOT NULL,                 -- VOUCHER (unique across all 109,458)
+    voucher_date_iso TEXT,
+    journal_type TEXT,                          -- JNLTYP verbatim
+    reference_no TEXT,
+    description  TEXT,
+    source_journal TEXT,
+    status       TEXT,
+    UNIQUE (entity, voucher)
+);
+
 CREATE TABLE "express_import_log" (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     file_type         TEXT    NOT NULL CHECK(file_type IN
@@ -1922,6 +1961,15 @@ CREATE INDEX idx_express_sales_product ON express_sales(product_id);
 CREATE INDEX idx_generic_standins_generic ON product_generic_standins(generic_product_id);
 
 CREATE INDEX idx_generic_standins_variant ON product_generic_standins(variant_product_id);
+
+CREATE INDEX idx_gl_lines_account
+    ON express_gl_lines(entity, account_no, voucher_date_iso);
+
+CREATE INDEX idx_gl_lines_voucher
+    ON express_gl_lines(entity, voucher);
+
+CREATE INDEX idx_gl_vouchers_date
+    ON express_gl_vouchers(entity, voucher_date_iso);
 
 CREATE INDEX idx_leave_entl_emp ON employee_leave_entitlements(employee_id);
 
