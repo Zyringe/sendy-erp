@@ -759,6 +759,43 @@ CREATE TABLE express_sales (
     UNIQUE(batch_id, doc_no, line_no)
 );
 
+CREATE TABLE express_sales_order_lines (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity         TEXT    NOT NULL,
+    so_no          TEXT    NOT NULL,
+    line_seq       INTEGER NOT NULL,
+    product_code   TEXT,                        -- STKCOD (Express's own code)
+    product_name   TEXT,
+    ordered_qty    REAL    NOT NULL DEFAULT 0,
+    cancelled_qty  REAL    NOT NULL DEFAULT 0,
+    remaining_qty  REAL    NOT NULL DEFAULT 0,  -- REMQTY: what is still owed
+    unit           TEXT,
+    unit_price     REAL    NOT NULL DEFAULT 0,
+    line_total     REAL    NOT NULL DEFAULT 0,
+    UNIQUE (entity, so_no, line_seq)
+);
+
+CREATE TABLE express_sales_orders (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity         TEXT    NOT NULL,
+    so_no          TEXT    NOT NULL,            -- SONUM (unique across all 9,333)
+    so_date_iso    TEXT,
+    customer_code  TEXT,
+    customer_name  TEXT,
+    salesperson_code TEXT,
+    your_ref       TEXT,
+    pay_terms      INTEGER,
+    delivery_date_iso TEXT,
+    completed_date_iso TEXT,
+    total          REAL    NOT NULL DEFAULT 0,
+    discount_amount REAL   NOT NULL DEFAULT 0,
+    vat_amount     REAL    NOT NULL DEFAULT 0,
+    net_amount     REAL    NOT NULL DEFAULT 0,
+    status_code    TEXT,                        -- DOCSTAT verbatim, uninterpreted
+    imported_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (entity, so_no)
+);
+
 CREATE TABLE hr_config (
     key   TEXT PRIMARY KEY,
     value TEXT,
@@ -2019,6 +2056,12 @@ CREATE INDEX idx_salary_advances_emp ON salary_advances(employee_id);
 CREATE INDEX idx_salary_advances_run ON salary_advances(deducted_in_run_id);
 
 CREATE INDEX idx_salary_hist_emp ON employee_salary_history(employee_id);
+
+CREATE INDEX idx_sales_order_lines_remaining
+    ON express_sales_order_lines(entity, remaining_qty);
+
+CREATE INDEX idx_sales_orders_date
+    ON express_sales_orders(entity, so_date_iso);
 
 CREATE INDEX idx_srwo_doc_base ON sr_writeoffs(sr_doc_base);
 

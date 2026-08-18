@@ -773,3 +773,84 @@ def build_bank_cheque_records(bktrn_rows):
             'voucher': _plain(row, 'VOUCHER'),
         })
     return records
+
+
+# ── ใบสั่งขาย (OESO + OESOIT) ───────────────────────────────────────────────
+#
+# Customer demand that has been ordered but not yet invoiced. The ledger only
+# sees a sale once it becomes an IV, so an unfulfilled order is invisible today.
+#
+# ⚠ Know this before building any "open orders" view: 1,732 of the 9,333 orders
+# carry a remaining quantity, but only 20 are dated 2026 (฿112,464). The other
+# 1,712 run back to 2003 and are orders nobody ever closed out. Without a date
+# filter such a view reports ฿13.98M of demand that does not exist.
+#
+# DOCSTAT (M 7,545 / N 1,731 / C 57) is carried verbatim, same reasoning as
+# BKTRN.CHQSTAT: not decodable from the data, and a guessed label sticks.
+
+def build_sales_order_records(oeso_rows, oesoit_rows, armas_rows):
+    """(headers, lines) for ใบสั่งขาย.
+
+    SONUM is unique across all 9,333 rows and (SONUM, SEQNUM) across the 51,940
+    lines, so both are refused on collision rather than letting a keyed write
+    silently keep whichever row came last — the opposite of build_bank_cheque_
+    records, where CHQNUM genuinely repeats and the table is replaced instead.
+
+    No cutoff: orders stay open for years.
+    """
+    customers = {(r.get('CUSCOD') or '').strip(): (r.get('CUSNAM') or '').strip()
+                 for r in armas_rows}
+    heads = []
+    seen = set()
+    for row in oeso_rows:
+        so_no = _plain(row, 'SONUM')
+        if not so_no:
+            continue
+        if so_no in seen:
+            raise ValueError(f'{so_no}: appears more than once in OESO')
+        seen.add(so_no)
+        code = _plain(row, 'CUSCOD')
+        terms = row.get('PAYTRM')
+        heads.append({
+            'so_no': so_no,
+            'so_date_iso': _date_iso(row.get('SODAT')),
+            'customer_code': code,
+            'customer_name': customers.get(code, ''),
+            'salesperson_code': _plain(row, 'SLMCOD'),
+            'your_ref': _plain(row, 'YOUREF'),
+            'pay_terms': int(terms) if terms not in (None, '') else None,
+            'delivery_date_iso': _date_iso(row.get('DLVDAT')),
+            'completed_date_iso': _date_iso(row.get('CMPLDAT')),
+            'total': round(_num(row, 'TOTAL'), 2),
+            'discount_amount': round(_num(row, 'DISCAMT'), 2),
+            'vat_amount': round(_num(row, 'VATAMT'), 2),
+            'net_amount': round(_num(row, 'NETAMT'), 2),
+            'status_code': _plain(row, 'DOCSTAT'),
+        })
+
+    lines = []
+    line_seen = set()
+    for row in oesoit_rows:
+        so_no = _plain(row, 'SONUM')
+        # A line whose header is absent could never be shown against an order.
+        # Express should not produce one; dropping it keeps the (entity, so_no)
+        # shape honest rather than storing an orphan nobody can reach.
+        if so_no not in seen:
+            continue
+        seq = _int(row, 'SEQNUM', 1)
+        if (so_no, seq) in line_seen:
+            raise ValueError(f'{so_no} line {seq}: duplicated SEQNUM in OESOIT')
+        line_seen.add((so_no, seq))
+        lines.append({
+            'so_no': so_no,
+            'line_seq': seq,
+            'product_code': _plain(row, 'STKCOD'),
+            'product_name': _plain(row, 'STKDES'),
+            'ordered_qty': round(_num(row, 'ORDQTY'), 4),
+            'cancelled_qty': round(_num(row, 'CANCELQTY'), 4),
+            'remaining_qty': round(_num(row, 'REMQTY'), 4),
+            'unit': _plain(row, 'TQUCOD'),
+            'unit_price': round(_num(row, 'UNITPR'), 4),
+            'line_total': round(_num(row, 'TRNVAL'), 2),
+        })
+    return heads, lines

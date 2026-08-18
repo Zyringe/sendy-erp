@@ -389,6 +389,19 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     # ใบวางบิล. Whole table, no window (the bills open invoices point at run back
     # to 2014), and isolated like the snapshots: it is reference data, so a
     # failure must not make a committed ledger import read as failed.
+    # ใบสั่งขาย — same isolation and optional-table handling as the two below.
+    try:
+        oeso = _open_optional(eds, dataset_dir, "OESO")
+        if oeso is None:
+            sales_orders_stats = {"orders": 0, "lines": 0, "skipped": "OESO not in this zip"}
+        else:
+            oesoit = _open_optional(eds, dataset_dir, "OESOIT") or []
+            n_head, n_line = _replace_sales_orders(
+                *eds.build_sales_order_records(oeso, oesoit, armas), "BSN", db_path)
+            sales_orders_stats = {"orders": n_head, "lines": n_line}
+    except Exception as exc:
+        sales_orders_stats = {"orders": 0, "lines": 0, "error": str(exc)[:300]}
+
     # ทะเบียนเช็ค — same isolation and the same optional-table handling as the
     # billing notes above; neither is something the ledger depends on.
     try:
@@ -442,6 +455,7 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
             "invoice_refs_upserted": refs_upserted,
             "billing_notes": billing_notes_stats,
             "bank_cheques": bank_cheques_stats,
+            "sales_orders": sales_orders_stats,
             "payments_in": payments_in_stats,
             "payments_out": payments_out_stats,
             "credit_notes_ar": credit_notes_ar_stats,
@@ -450,6 +464,55 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
             "ap_snapshot": ap_snapshot_stats,
             "snapshot_date": snapshot_date,
             "reconcile": reconcile_counts}
+
+
+def _replace_sales_orders(heads, lines, entity, db_path):
+    """ใบสั่งขาย (mig 164). Replace per entity in ONE transaction so headers and
+    lines can never be seen half-swapped: a line whose header has been deleted is
+    unreachable, and a header whose lines have not landed reads as an empty order.
+
+    Same empty-write guard as the other registers.
+    """
+    import sqlite3
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        conn.execute("PRAGMA busy_timeout=10000")
+        if not heads:
+            existing = conn.execute(
+                "SELECT COUNT(*) FROM express_sales_orders WHERE entity = ?",
+                (entity,)).fetchone()[0]
+            if existing:
+                raise ValueError(
+                    f'ใบสั่งขาย: parsed 0 orders but {existing} already stored for '
+                    f'{entity} — refusing to erase them')
+            return 0, 0
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM express_sales_order_lines WHERE entity = ?", (entity,))
+        conn.execute("DELETE FROM express_sales_orders WHERE entity = ?", (entity,))
+        conn.executemany(
+            "INSERT INTO express_sales_orders "
+            " (entity, so_no, so_date_iso, customer_code, customer_name,"
+            "  salesperson_code, your_ref, pay_terms, delivery_date_iso,"
+            "  completed_date_iso, total, discount_amount, vat_amount, net_amount,"
+            "  status_code) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(entity, h['so_no'], h['so_date_iso'], h['customer_code'],
+              h['customer_name'], h['salesperson_code'], h['your_ref'],
+              h['pay_terms'], h['delivery_date_iso'], h['completed_date_iso'],
+              h['total'], h['discount_amount'], h['vat_amount'], h['net_amount'],
+              h['status_code']) for h in heads])
+        conn.executemany(
+            "INSERT INTO express_sales_order_lines "
+            " (entity, so_no, line_seq, product_code, product_name, ordered_qty,"
+            "  cancelled_qty, remaining_qty, unit, unit_price, line_total) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(entity, l['so_no'], l['line_seq'], l['product_code'], l['product_name'],
+              l['ordered_qty'], l['cancelled_qty'], l['remaining_qty'], l['unit'],
+              l['unit_price'], l['line_total']) for l in lines])
+        conn.commit()
+    finally:
+        conn.close()
+    return len(heads), len(lines)
 
 
 def _replace_bank_cheques(records, entity, db_path):
