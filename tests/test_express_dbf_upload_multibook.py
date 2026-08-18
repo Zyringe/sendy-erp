@@ -361,11 +361,11 @@ def _zip_bytes_dated(entries, when):
     return buf
 
 
-def _upload_dated(client, entries, when):
+def _upload_dated(client, entries, when, follow=False):
     return client.post('/import-express-dbf/upload',
                        data={'file': (_zip_bytes_dated(entries, when), 'daily.zip')},
                        content_type='multipart/form-data',
-                       follow_redirects=False)
+                       follow_redirects=follow)
 
 
 def _watermark(db_path):
@@ -926,3 +926,175 @@ def test_a_different_missing_table_is_not_read_as_the_watermark_migration(
     assert called == [], (
         'a missing table that is NOT the watermark must not be read as mig 166 '
         'having been rolled back')
+
+
+# ── round-5: register failure visibility + future-watermark self-heal ───────
+#
+# Codex, 2026-08-18. Three isolated registers (GL, ใบสั่งขาย, ทะเบียนเช็ค) and
+# ใบวางบิล each catch their own exception into {'error': ...}, but only
+# ar_snapshot/ap_snapshot had that error surfaced — so a corrupt ARBIL/BKTRN/
+# OESO/GLJNL flashed GREEN while the register silently kept the previous run's
+# rows. The data was never at risk (each _replace_* refuses to erase on an empty
+# parse); the alarm just could not be heard.
+
+def _per_type_with(**overrides):
+    """commit_express_dbf()'s return value, with specific registers overridden."""
+    return _fake_per_type() | {'reconcile': {}} | overrides
+
+
+def test_a_failing_register_warns_but_does_not_fail_the_money_import(tmp_db, monkeypatch):
+    """ok must stay True: the ledger DID commit. Saying otherwise sends the team
+    into a retry loop over a register that has nothing to do with the money."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-01-01')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _per_type_with(
+                            general_ledger={'vouchers': 0, 'error': 'GLJNL exploded'}))
+
+    r = _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0),
+                      follow=True)
+
+    body = r.get_data(as_text=True)
+    assert 'บัญชีแยกประเภท' in body and 'GLJNL exploded' in body, (
+        'a register failure must be visible to the operator')
+
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    notes = json.loads(conn.execute(
+        "SELECT notes FROM import_log WHERE filename='express-dbf-upload' "
+        "ORDER BY id DESC LIMIT 1").fetchone()[0])
+    conn.close()
+    assert notes['bsn']['ok'] is True, 'the money import succeeded — do not call it failed'
+    assert notes['bsn']['register_errors'] == {'general_ledger': 'GLJNL exploded'}
+
+
+def test_every_isolated_register_is_covered_by_the_error_loop():
+    """Completeness sweep as a test. commit_express_dbf isolates SIX datasets
+    behind their own try/except; each one it catches for must be read back here,
+    or the failure is swallowed. Adding a seventh register to import_router
+    without adding it here should turn this red."""
+    assert {k for k, _ in bsn._ISOLATED_REGISTERS} == {
+        'ar_snapshot', 'ap_snapshot', 'billing_notes',
+        'bank_cheques', 'sales_orders', 'general_ledger'}
+    # CONTROL: labels must be non-empty, or the warning names nothing.
+    assert all(label for _, label in bsn._ISOLATED_REGISTERS)
+
+
+def test_a_clean_run_records_no_register_errors(tmp_db, monkeypatch):
+    """The other half of the guard: when nothing failed, the key must be absent
+    rather than an empty dict that reads as 'we checked and found nothing'."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-01-01')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _per_type_with())
+
+    _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0))
+
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    notes = json.loads(conn.execute(
+        "SELECT notes FROM import_log WHERE filename='express-dbf-upload' "
+        "ORDER BY id DESC LIMIT 1").fetchone()[0])
+    conn.close()
+    assert 'register_errors' not in notes['bsn']
+
+
+def test_the_vat_builder_output_is_not_discarded(tmp_db, monkeypatch):
+    """DEVNULL on both streams means a builder that dies before it can write its
+    own result row leaves NO trace anywhere. Inherit the container's stdout/stderr
+    so the traceback lands in the Railway application log."""
+    seen = {}
+
+    class _P:
+        def __init__(self, *a, **k):
+            seen.update(k)
+        def poll(self): return None
+
+    monkeypatch.setattr(bsn.subprocess, 'Popen', _P)
+    monkeypatch.setattr(bsn.shutil, 'copytree', lambda *a, **k: None)
+    monkeypatch.setattr(bsn.os, 'makedirs', lambda *a, **k: None)
+    bsn._spawn_vat_rebuild('/nonexistent/dataset', 1, '2026-08-17')
+
+    assert seen.get('stdout') is None and seen.get('stderr') is None, (
+        f"builder output must reach the container log, got "
+        f"stdout={seen.get('stdout')!r} stderr={seen.get('stderr')!r}")
+
+
+def _audit_events(db_path):
+    c = sqlite3.connect(db_path)
+    try:
+        return [r[0] for r in c.execute(
+            "SELECT changed_fields FROM audit_log "
+            "WHERE table_name='express_import_watermark' ORDER BY id DESC LIMIT 5")]
+    finally:
+        c.close()
+
+
+def test_a_future_watermark_is_healed_after_a_successful_forced_import(tmp_db, monkeypatch):
+    """A future mark is an IMPOSSIBLE state (Express cannot export tomorrow), and
+    leaving it forces the team to tick force_older every single day until the
+    calendar catches up — which trains them to tick it always. Heal it, but only
+    after the import actually succeeded."""
+    import config
+    ahead = (_dt.date.today() + _dt.timedelta(days=60)).isoformat()
+    _set_watermark(config.DATABASE_PATH, ahead)
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _per_type_with())
+    today = _dt.date.today()
+
+    _client().post('/import-express-dbf/upload',
+                   data={'file': (_zip_bytes_dated(
+                             [('data/ARTRN.DBF', b'x')],
+                             (today.year, today.month, today.day, 9, 0, 0)), 'daily.zip'),
+                         'force_older': '1'},
+                   content_type='multipart/form-data', follow_redirects=False)
+
+    assert _watermark(config.DATABASE_PATH) == today.isoformat(), (
+        'an impossible future mark must not survive a deliberate forced import')
+    assert any('future_watermark_healed' in e for e in _audit_events(config.DATABASE_PATH)), (
+        'healing the guard is exactly the kind of act that has to be answerable later')
+
+
+def test_an_ordinary_forced_import_does_not_lower_the_watermark(tmp_db, monkeypatch):
+    """Forcing a merely-older file means 'I accept replaying this', NOT 'this old
+    file is now the newest state'. Lowering the mark there would let the NEXT old
+    file in without a second confirmation."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-08-17')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _per_type_with())
+
+    _client().post('/import-express-dbf/upload',
+                   data={'file': (_zip_bytes_dated([('data/ARTRN.DBF', b'x')],
+                                                   (2026, 8, 15, 16, 50, 0)), 'daily.zip'),
+                         'force_older': '1'},
+                   content_type='multipart/form-data', follow_redirects=False)
+
+    assert _watermark(config.DATABASE_PATH) == '2026-08-17', (
+        'a normal forced replay must leave the high-water mark where it was')
+
+
+def test_a_failed_import_does_not_heal_the_watermark(tmp_db, monkeypatch):
+    """If the import died half way, keeping the future mark forces an explicit
+    retry — which is the safe direction."""
+    import config
+    ahead = (_dt.date.today() + _dt.timedelta(days=60)).isoformat()
+    _set_watermark(config.DATABASE_PATH, ahead)
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+
+    def _boom(*a, **k):
+        raise RuntimeError('importer died')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf', _boom)
+    today = _dt.date.today()
+
+    _client().post('/import-express-dbf/upload',
+                   data={'file': (_zip_bytes_dated(
+                             [('data/ARTRN.DBF', b'x')],
+                             (today.year, today.month, today.day, 9, 0, 0)), 'daily.zip'),
+                         'force_older': '1'},
+                   content_type='multipart/form-data', follow_redirects=False)
+
+    assert _watermark(config.DATABASE_PATH) == ahead, (
+        'a half-done import must leave the guard armed')
