@@ -163,6 +163,14 @@ def create_commission_override(form_data):
         err = _validate_override_targets(conn, payload)
         if err:
             return {'ok': False, 'id': None, 'error': err}
+        # effective_from is a BUSINESS date -- it decides which sales this
+        # override applies to, i.e. what a rep gets paid. 'localtime' is
+        # load-bearing: app.py sets TZ='ICT-7'+tzset(), so it reads Bangkok,
+        # while a bare date('now') is always UTC and would back-date the
+        # override by a day for anything created between 00:00 and 07:00.
+        # (The column DEFAULT in mig 018/019 has the same UTC shape, but it
+        # only fires on an INSERT that omits the column; every write goes
+        # through this COALESCE. Not worth a table rebuild to change.)
         cur = conn.execute("""
             INSERT INTO commission_overrides
                 (product_id, brand_id, salesperson_code,
@@ -172,7 +180,7 @@ def create_commission_override(form_data):
             VALUES (:product_id, :brand_id, :salesperson_code,
                     :fixed_per_unit, :custom_rate_pct,
                     :apply_when_price_gt, :apply_when_price_lte,
-                    :is_active, COALESCE(:effective_from, date('now')), :note)
+                    :is_active, COALESCE(:effective_from, date('now','localtime')), :note)
         """, payload)
         conn.commit()
         return {'ok': True, 'id': cur.lastrowid, 'error': None}
