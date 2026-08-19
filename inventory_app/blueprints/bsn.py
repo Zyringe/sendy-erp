@@ -894,7 +894,8 @@ def _express_dbf_summary_message(per_type):
     return msg
 
 
-def _heal_future_watermark(incoming_date, incoming_at, overrode, upload_meta):
+def _heal_future_watermark(incoming_date, incoming_at, overrode, upload_meta,
+                           today_iso):
     """Clear an IMPOSSIBLE future watermark, once a forced import has SUCCEEDED.
 
     Express cannot export tomorrow, so a mark in the future can only be damage (a
@@ -911,6 +912,15 @@ def _heal_future_watermark(incoming_date, incoming_at, overrode, upload_meta):
     fires only while the stored value is BOTH the one we decided against and
     still in the future, so a concurrent writer is never overwritten blind.
     Returns True when the mark actually moved. (Codex round 5, 2026-08-18.)
+
+    today_iso is REQUIRED and comes from the caller rather than SQLite's
+    date('now'), which is UTC. The watermark holds a BUSINESS date taken from the
+    zip's DBF member mtimes — the LAN PC's Bangkok wall clock — so a UTC
+    comparison is a different calendar for the 7 hours between 00:00 and 07:00
+    Bangkok, during which a legitimate same-day mark reads as "in the future" and
+    could be lowered. Measured on prod within ONE request: the watermark's
+    updated_at (datetime('now')) read 10:24:31 while import_log.imported_at
+    (datetime('now','localtime')) read 17:25:07. No default, so no untested path.
     """
     conn = get_connection()
     try:
@@ -918,8 +928,8 @@ def _heal_future_watermark(incoming_date, incoming_at, overrode, upload_meta):
             "UPDATE express_import_watermark "
             "SET last_export_date = ?, last_export_at = ?, updated_at = datetime('now') "
             "WHERE entity = 'BSN' AND last_export_date = ? "
-            "      AND last_export_date > date('now')",
-            (incoming_date, incoming_at, overrode))
+            "      AND last_export_date > ?",
+            (incoming_date, incoming_at, overrode, today_iso))
         healed = cur.rowcount > 0
         if healed:
             conn.execute(
@@ -1128,7 +1138,8 @@ def express_dbf_upload():
                 # The import committed, so a future mark can now be retired.
                 if forced_older and _heal_future_watermark(
                         _exp_date, effective_export_at.isoformat(),
-                        forced_over, upload_meta):
+                        forced_over, upload_meta,
+                        datetime.date.today().isoformat()):
                     results['bsn']['future_watermark_healed'] = {
                         'was': forced_over, 'now': _exp_date}
                     flashes.append(('warning',
