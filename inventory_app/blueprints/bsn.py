@@ -1112,6 +1112,21 @@ def express_dbf_upload():
                             'อ่านเวลา export จากไฟล์ zip ไม่ได้ — ใช้วันที่วันนี้แทน '
                             'ยอดคงค้างอาจลงวันที่ไม่ตรงกับตอน export จริง'))
         if 'bsn' in classified:
+            # Rollback point, taken only now: everything above this line either
+            # validates or refuses, so a rejected upload never pays for a
+            # snapshot it cannot use. Below it the request starts deleting
+            # receipt→invoice links, replacing both outstanding snapshots and
+            # flagging vanished documents — the most destructive routine write
+            # in the app, and until now the only import with no way back.
+            # /import-data/confirm has done exactly this since day one.
+            #
+            # Cost is deliberate, not incidental: measured on prod, the sqlite
+            # snapshot is 0.16s and the gzip is the rest, so db_backup's
+            # DEFAULT_COMPRESSLEVEL (6, not python's 9) keeps this at ~2.3s of
+            # a route that already runs 36.8s against gunicorn's 60s ceiling.
+            # If that headroom ever gets tight, the compression level is the
+            # first dial — not this snapshot.
+            _snapshot_before_import('express_dbf')
             try:
                 # since_days defaults to 60 inside commit_express_dbf — a
                 # daily upload only ever needs the recent window, and that window

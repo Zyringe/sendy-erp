@@ -42,6 +42,21 @@ DEFAULT_MAX_KEEP = 2
 # Never write a snapshot when the volume is this close to full — a backup must
 # not be the thing that fills the disk and breaks the app.
 MIN_FREE_BYTES = 60 * 1024 * 1024
+# Every caller of this module sits on a REQUEST path, and prod runs
+# `gunicorn --timeout 60`, so compression time is a safety budget, not a
+# preference. Measured on prod 2026-08-19 against the live 144.5MB DB:
+#
+#     sqlite .backup   0.16s              (the snapshot itself is ~free)
+#     gzip level 9     7.34s → 19.6MB     (python's gzip default)
+#     gzip level 6     2.18s → 20.1MB
+#     gzip level 3     0.94s → 23.4MB
+#     gzip level 1     0.71s → 24.7MB
+#
+# Level 6 (zlib's own default; python's gzip module is the outlier at 9) buys
+# back 5.2 seconds for 0.5MB per snapshot — 1MB across the two kept by
+# DEFAULT_MAX_KEEP. That trade is what makes a pre-import snapshot affordable
+# on /import-express-dbf, which already measured 36.8s of the 60s budget.
+DEFAULT_COMPRESSLEVEL = 6
 
 
 def default_backup_dir(db_path):
@@ -59,7 +74,7 @@ def disk_usage_mb(path):
 
 def create_backup(reason, *, db_path, backup_dir,
                   keep_days=DEFAULT_KEEP_DAYS, max_keep=DEFAULT_MAX_KEEP,
-                  now=None):
+                  now=None, compresslevel=DEFAULT_COMPRESSLEVEL):
     """Snapshot ``db_path`` → ``backup_dir/auto-<reason>-<ts>.db.gz`` (gzipped
     online backup), then prune. Returns an info dict, or None if there is no DB
     to back up (so an import can still proceed on a fresh install)."""
@@ -99,7 +114,8 @@ def create_backup(reason, *, db_path, backup_dir,
                 dst.close()
         finally:
             src.close()
-        with open(tmp_db, "rb") as fi, gzip.open(part, "wb") as fo:
+        with open(tmp_db, "rb") as fi, \
+                gzip.open(part, "wb", compresslevel=compresslevel) as fo:
             shutil.copyfileobj(fi, fo)
         os.replace(part, final)          # atomic publish on the same filesystem
         part = None
