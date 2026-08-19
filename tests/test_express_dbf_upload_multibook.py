@@ -1098,3 +1098,53 @@ def test_a_failed_import_does_not_heal_the_watermark(tmp_db, monkeypatch):
 
     assert _watermark(config.DATABASE_PATH) == ahead, (
         'a half-done import must leave the guard armed')
+
+
+# ── the heal's "is it in the future" test must use the SAME clock as the import
+#
+# SQLite's date('now') is UTC. The watermark holds a BUSINESS date, derived from
+# the zip's DBF member mtimes — the LAN PC's Bangkok wall clock — and every other
+# date in this module comes from Python's date.today(), which follows the service
+# TZ. Measured on prod from ONE request (run 249): the watermark's updated_at read
+# 10:24:31 (datetime('now'), UTC) while import_log.imported_at read 17:25:07
+# (datetime('now','localtime')), 36 seconds apart. So for the 7 hours between
+# 00:00 and 07:00 Bangkok, date('now') is still YESTERDAY and a legitimate
+# same-day mark would compare as "in the future" and could be lowered.
+
+def _heal(**kw):
+    """_heal_future_watermark writes an audit row, which reads session -> needs a
+    request context."""
+    from app import app as flask_app
+    with flask_app.test_request_context():
+        return bsn._heal_future_watermark(**kw)
+
+
+def test_the_heal_treats_today_as_not_future(tmp_db):
+    """Boundary. today_iso is passed in, so this does not depend on when it runs —
+    which is the whole point: date('now') would have made the answer change at
+    17:00 UTC every day."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2030-06-15')
+
+    # Deliberately far from the real clock: if the code ever reads date('now')
+    # again, '2030-06-15' > today would be TRUE at EVERY hour and this goes red.
+    healed = _heal(incoming_date='2026-01-01', incoming_at='2026-01-01T00:00:00',
+                   overrode='2030-06-15', upload_meta={'filename': 'x'},
+                   today_iso='2030-06-15')
+
+    assert healed is False, 'a mark equal to today is not in the future'
+    assert _watermark(config.DATABASE_PATH) == '2030-06-15', 'and must be left alone'
+
+
+def test_the_heal_still_fires_one_day_into_the_future(tmp_db):
+    """CONTROL for the boundary test — without it, that test would also pass if
+    the heal had simply stopped working altogether."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2030-06-16')
+
+    healed = _heal(incoming_date='2026-01-01', incoming_at='2026-01-01T00:00:00',
+                   overrode='2030-06-16', upload_meta={'filename': 'x'},
+                   today_iso='2030-06-15')
+
+    assert healed is True
+    assert _watermark(config.DATABASE_PATH) == '2026-01-01'
