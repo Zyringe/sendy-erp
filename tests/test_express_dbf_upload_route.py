@@ -390,16 +390,37 @@ def test_freshness_recent_row_not_stale(empty_db_conn):
     assert freshness['is_stale'] is False
 
 
-def test_freshness_old_row_is_stale(empty_db_conn):
+def test_freshness_row_older_than_the_last_working_day_is_stale(empty_db_conn):
+    """The staleness rule is working-day based, not a fixed hour count, so the
+    calendar is pinned rather than left to whatever day the suite runs on.
+    2026-08-17 is a Monday; 08-12 is the Wednesday before it."""
     import models
     empty_db_conn.execute(
         "INSERT INTO express_import_log (file_type, source_filename, imported_at) "
-        "VALUES ('payments_out', 'express_dbf', datetime('now','localtime','-30 hours'))"
-    )
+        "VALUES ('payments_out', 'express_dbf', '2026-08-12 17:00:00')")
     empty_db_conn.commit()
-    freshness = models.get_express_dbf_freshness()
-    assert freshness['hours_stale'] > 26
+    freshness = models.get_express_dbf_freshness(today='2026-08-17',
+                                                 conn=empty_db_conn)
     assert freshness['is_stale'] is True
+    assert freshness['expected_since'] == '2026-08-15'   # Saturday
+
+
+def test_freshness_yesterday_is_no_longer_stale_at_30_hours(empty_db_conn):
+    """DELIBERATE BEHAVIOUR CHANGE, pinned so it cannot regress by accident.
+
+    The old rule was `hours_stale > 26`, which called a Monday morning stale
+    every single week because the team does not work Sundays (measured
+    2026-08-17: 38h, nothing wrong). Under the working-day rule an import from
+    the previous working day is fresh however many hours ago it was."""
+    import models
+    empty_db_conn.execute(
+        "INSERT INTO express_import_log (file_type, source_filename, imported_at) "
+        "VALUES ('payments_out', 'express_dbf', '2026-08-15 11:00:00')")
+    empty_db_conn.commit()
+    freshness = models.get_express_dbf_freshness(today='2026-08-17',
+                                                 conn=empty_db_conn)
+    assert freshness['hours_stale'] is not None
+    assert freshness['is_stale'] is False
 
 
 def test_freshness_ignores_other_source_filenames(empty_db_conn):

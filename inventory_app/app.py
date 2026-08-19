@@ -146,6 +146,33 @@ def _warn_if_request_was_slow(response):
     return response
 
 
+# ── Daily-import staleness ───────────────────────────────────────────────────
+# There is no scheduler on this app (the Procfile is gunicorn and nothing
+# else), so nothing can fire when an import fails to HAPPEN — an absence has no
+# event. The only way to notice is to have something that DID happen report on
+# it, which is exactly the shape above. Kept as its own hook, not folded into
+# the slow-request one, so a failure in either cannot skip the other.
+#
+# Honest limitation: if nobody opens Sendy, nothing is raised. The audience is
+# Put, who opens it daily. That is a real improvement on a badge that was red
+# every Monday for no reason — not a substitute for push.
+#
+# Cost: one connection + a MAX() over 116 rows on an index, measured on prod at
+# 0.025ms. Gated to real HTML pages so static assets and XHR do not pay it.
+@app.after_request
+def _warn_if_import_is_stale(response):
+    try:
+        if (request.endpoint not in (None, 'static', 'healthz', 'serve_sw')
+                and request.method == 'GET'
+                and response.status_code == 200
+                and response.mimetype == 'text/html'):
+            models.record_import_staleness_alert(
+                models.get_express_dbf_freshness())
+    except Exception as exc:                  # noqa: BLE001
+        print(f"[import-stale] alert hook failed: {exc}", file=sys.stderr)
+    return response
+
+
 os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
 
 app.register_blueprint(bp_products)
