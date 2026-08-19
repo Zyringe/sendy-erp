@@ -299,6 +299,18 @@ def _commit_snapshot(kind, build, db_path, snapshot_date):
                 "error": str(exc)[:300]}
 
 
+# The datasets commit_express_dbf() isolates behind their own try/except, i.e.
+# the ones that can come back as {'error': ...} while the ledger commits fine.
+# Declared HERE, next to the blocks that produce them, so adding a register and
+# declaring it are the same edit. blueprints/bsn.py must read every one of these
+# back or the failure is swallowed and the upload flashes green over a register
+# still holding the previous run's rows (Codex rounds 5-6, 2026-08-18/19).
+ISOLATED_REGISTER_KEYS = frozenset({
+    'ar_snapshot', 'ap_snapshot', 'billing_notes',
+    'bank_cheques', 'sales_orders', 'general_ledger',
+})
+
+
 def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
                        snapshot_date=None):
     """Import all 8 Express DBF transactional types for one dataset
