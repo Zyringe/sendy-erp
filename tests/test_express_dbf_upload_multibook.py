@@ -968,16 +968,43 @@ def test_a_failing_register_warns_but_does_not_fail_the_money_import(tmp_db, mon
     assert notes['bsn']['register_errors'] == {'general_ledger': 'GLJNL exploded'}
 
 
-def test_every_isolated_register_is_covered_by_the_error_loop():
-    """Completeness sweep as a test. commit_express_dbf isolates SIX datasets
-    behind their own try/except; each one it catches for must be read back here,
-    or the failure is swallowed. Adding a seventh register to import_router
-    without adding it here should turn this red."""
-    assert {k for k, _ in bsn._ISOLATED_REGISTERS} == {
-        'ar_snapshot', 'ap_snapshot', 'billing_notes',
-        'bank_cheques', 'sales_orders', 'general_ledger'}
+def test_the_blueprint_reads_back_every_register_import_router_declares():
+    """The source of truth is import_router's own constant, beside the try/except
+    blocks that create these dicts — NOT a literal restated here.
+
+    HONEST LIMIT (Codex round 6): the previous version of this test compared
+    _ISOLATED_REGISTERS against a literal written in the test itself, i.e. a
+    closed loop, while its docstring claimed it would catch a seventh register
+    added in import_router. It could not: both sides would still have said six.
+    What this DOES catch is the blueprint drifting from the declared set. What it
+    still cannot catch is someone adding a register in import_router without
+    declaring it — that needs the declaration to sit next to the code, which is
+    why the constant moved there."""
+    import import_router
+    assert {k for k, *_ in bsn._ISOLATED_REGISTERS} == import_router.ISOLATED_REGISTER_KEYS
     # CONTROL: labels must be non-empty, or the warning names nothing.
-    assert all(label for _, label in bsn._ISOLATED_REGISTERS)
+    assert all(label for _, label, *_ in bsn._ISOLATED_REGISTERS)
+
+
+def test_every_declared_register_key_exists_in_a_real_import_result(empty_db, monkeypatch):
+    """Catches the drift the set-comparison cannot: a key RENAMED in
+    commit_express_dbf's result dict. The blueprint looks registers up by key, so
+    a rename re-opens the silent-swallow bug with every test still green."""
+    import express_dbf_source as eds
+    import import_router
+    monkeypatch.setattr(eds, 'open_table', lambda _d, _n: [])
+    c = sqlite3.connect(empty_db)
+    c.execute("INSERT INTO companies (code, name_th, short_name) "
+              "VALUES ('BSN', 'บุญสวัสดิ์ นำชัย', 'BSN') ON CONFLICT(code) DO NOTHING")
+    c.commit(); c.close()
+
+    out = import_router.commit_express_dbf('/x', db_path=empty_db,
+                                           snapshot_date='2026-08-17')
+
+    missing = import_router.ISOLATED_REGISTER_KEYS - set(out)
+    assert not missing, f'declared register keys absent from the result: {missing}'
+    # CONTROL: the assertion above is over a non-empty set.
+    assert len(import_router.ISOLATED_REGISTER_KEYS) == 6
 
 
 def test_a_clean_run_records_no_register_errors(tmp_db, monkeypatch):
@@ -1148,3 +1175,63 @@ def test_the_heal_still_fires_one_day_into_the_future(tmp_db):
 
     assert healed is True
     assert _watermark(config.DATABASE_PATH) == '2026-01-01'
+
+
+
+def test_a_failing_heal_does_not_turn_a_committed_import_into_a_failure(tmp_db, monkeypatch):
+    """The heal is a maintenance step that runs AFTER commit_express_dbf has
+    already committed sales, purchases and payments. It used to sit inside the
+    same try, whose handler REPLACES results['bsn'] wholesale — so a failure in
+    it reported the money import as failed, threw away the summary, the register
+    errors and the reconcile result, and would send the team into a retry of a
+    file that had already landed. (Codex round 6.)"""
+    import config
+    ahead = (_dt.date.today() + _dt.timedelta(days=60)).isoformat()
+    _set_watermark(config.DATABASE_PATH, ahead)
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _per_type_with())
+
+    def _boom(*a, **k):
+        raise sqlite3.OperationalError('database is locked')
+    monkeypatch.setattr(bsn, '_heal_future_watermark', _boom)
+    today = _dt.date.today()
+
+    r = _client().post(
+        '/import-express-dbf/upload',
+        data={'file': (_zip_bytes_dated(
+                  [('data/ARTRN.DBF', b'x')],
+                  (today.year, today.month, today.day, 9, 0, 0)), 'daily.zip'),
+              'force_older': '1'},
+        content_type='multipart/form-data', follow_redirects=True)
+
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    notes = json.loads(conn.execute(
+        "SELECT notes FROM import_log WHERE filename='express-dbf-upload' "
+        "ORDER BY id DESC LIMIT 1").fetchone()[0])
+    conn.close()
+    assert notes['bsn']['ok'] is True, 'the money import committed — do not call it failed'
+    assert notes['bsn']['summary'], 'the summary must survive a failed maintenance step'
+    assert 'database is locked' in notes['bsn'].get('watermark_heal_error', '')
+    assert 'นำเข้าข้อมูลสำเร็จ' in r.get_data(as_text=True), (
+        'the operator has to be told the import DID land')
+
+
+def test_the_register_warning_tells_the_operator_what_to_do(tmp_db, monkeypatch):
+    """Non-technical team: the warning has to end in an action, and the two
+    registers that HAVE a page must name it (Codex round 6)."""
+    import config
+    _set_watermark(config.DATABASE_PATH, '2026-01-01')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _per_type_with(
+                            ar_snapshot={'imported': 0, 'error': 'NETAMT invariant'},
+                            general_ledger={'vouchers': 0, 'error': 'GLJNL exploded'}))
+
+    r = _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0),
+                      follow=True)
+    body = r.get_data(as_text=True)
+
+    assert 'หน้าลูกหนี้' in body, 'AR names the page that is now stale'
+    assert body.count('อัปโหลด zip เดิมอีกครั้ง') >= 2, (
+        'every register warning ends in the same concrete next step')

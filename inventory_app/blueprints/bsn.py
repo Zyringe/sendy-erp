@@ -400,13 +400,16 @@ _REPORT_LABELS = {
 # guard. Adding a seventh isolated register to import_router means adding it
 # here; test_every_isolated_register_is_covered_by_the_error_loop pins that.
 # The first two labels deliberately read the same as _REPORT_LABELS'.
+# Third field: the page that goes stale, named only for the two registers a page
+# actually reads today — the other four have no reader yet, so pointing at one
+# would be a lie (Codex round 6).
 _ISOLATED_REGISTERS = (
-    ('ar_snapshot', 'ลูกหนี้คงค้าง'),
-    ('ap_snapshot', 'เจ้าหนี้คงค้าง'),
-    ('billing_notes', 'ใบวางบิล'),
-    ('bank_cheques', 'ทะเบียนเช็ค'),
-    ('sales_orders', 'ใบสั่งขาย'),
-    ('general_ledger', 'บัญชีแยกประเภท'),
+    ('ar_snapshot', 'ลูกหนี้คงค้าง', 'หน้าลูกหนี้ยังเป็นของรอบก่อน'),
+    ('ap_snapshot', 'เจ้าหนี้คงค้าง', 'หน้าเจ้าหนี้ยังเป็นของรอบก่อน'),
+    ('billing_notes', 'ใบวางบิล', ''),
+    ('bank_cheques', 'ทะเบียนเช็ค', ''),
+    ('sales_orders', 'ใบสั่งขาย', ''),
+    ('general_ledger', 'บัญชีแยกประเภท', ''),
 )
 
 
@@ -1127,25 +1130,44 @@ def express_dbf_upload():
                 # register silently keeps YESTERDAY's rows. The green summary
                 # flash means "the money landed" and must not be read as "all
                 # six datasets landed" — so say the difference out loud.
-                for _key, _label in _ISOLATED_REGISTERS:
+                for _key, _label, _hint in _ISOLATED_REGISTERS:
                     _err = (per_type.get(_key) or {}).get('error')
                     if _err:
                         results['bsn'].setdefault('register_errors', {})[_key] = _err
                         flashes.append(('warning',
                                         f'{_label}: นำเข้ารอบนี้ไม่สำเร็จ ({_err}) '
-                                        f'— ยอดขาย/ซื้อ/รับชำระเข้าปกติ '
-                                        f'แต่ข้อมูลส่วนนี้ยังเป็นของรอบก่อน'))
+                                        f'— ยอดขาย/ซื้อ/รับชำระเข้าปกติ แต่'
+                                        f'{_hint or "ข้อมูลส่วนนี้ยังเป็นของรอบก่อน"} '
+                                        f'— ลองอัปโหลด zip เดิมอีกครั้ง '
+                                        f'ถ้ายังเตือนให้แจ้ง Put'))
                 # The import committed, so a future mark can now be retired.
-                if forced_older and _heal_future_watermark(
-                        _exp_date, effective_export_at.isoformat(),
-                        forced_over, upload_meta,
-                        datetime.date.today().isoformat()):
-                    results['bsn']['future_watermark_healed'] = {
-                        'was': forced_over, 'now': _exp_date}
-                    flashes.append(('warning',
-                                    f'วันที่อ้างอิงเดิมเป็นวันในอนาคต ({forced_over}) '
-                                    f'ซึ่งเป็นไปไม่ได้ — ปรับกลับเป็น {_exp_date} แล้ว '
-                                    f'พรุ่งนี้อัปโหลดได้ตามปกติ ไม่ต้องติ๊กข้ามอีก'))
+                # ISOLATED, like every other post-commit step here: the handler
+                # below REPLACES results['bsn'] wholesale, so letting a failure in
+                # this maintenance step reach it would report the money import as
+                # failed and discard the summary, the register errors and the
+                # reconcile result — sending the team to retry a file that already
+                # landed. ok stays True because the ledger did commit.
+                # (Codex round 6, 2026-08-19.)
+                if forced_older:
+                    try:
+                        _healed = _heal_future_watermark(
+                            _exp_date, effective_export_at.isoformat(),
+                            forced_over, upload_meta,
+                            datetime.date.today().isoformat())
+                    except Exception as _hexc:
+                        results['bsn']['watermark_heal_error'] = str(_hexc)[:300]
+                        flashes.append(('warning',
+                                        f'นำเข้าข้อมูลสำเร็จแล้ว แต่แก้วันที่อ้างอิง'
+                                        f'อัตโนมัติไม่สำเร็จ ({_hexc}) '
+                                        f'— ครั้งถัดไปอาจยังต้องติ๊กนำเข้าทับ'))
+                    else:
+                        if _healed:
+                            results['bsn']['future_watermark_healed'] = {
+                                'was': forced_over, 'now': _exp_date}
+                            flashes.append(('warning',
+                                            f'วันที่อ้างอิงเดิมเป็นวันในอนาคต ({forced_over}) '
+                                            f'ซึ่งเป็นไปไม่ได้ — ปรับกลับเป็น {_exp_date} แล้ว '
+                                            f'พรุ่งนี้อัปโหลดได้ตามปกติ ไม่ต้องติ๊กข้ามอีก'))
                 _reconcile = results['bsn']['reconcile']
                 if _reconcile.get('error'):
                     # scan_reconcile failed but the money import above already
