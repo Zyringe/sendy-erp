@@ -228,3 +228,31 @@ def test_after_request_hook_swallows_its_own_failure(tmp_db, monkeypatch):
         assert r.status_code == 200, r.status_code
     finally:
         flask_app.config['TESTING'] = True
+
+
+def test_repeat_calls_do_not_write_once_an_alert_is_open(empty_db_conn):
+    """The hook runs on EVERY html page view and a stale stretch lasts days, so
+    the steady state must not take a write lock for an INSERT the dedupe index
+    will discard anyway. Counts actual statements via sqlite3's own trace
+    callback -- a real signal, not elapsed time."""
+    _log_import(empty_db_conn, FRI)
+    fresh = models.get_express_dbf_freshness(today=MON, conn=empty_db_conn)
+
+    models.record_import_staleness_alert(fresh, conn=empty_db_conn)
+    empty_db_conn.commit()
+    assert len(_open_staleness_alerts(empty_db_conn)) == 1      # control
+
+    seen = []
+    empty_db_conn.set_trace_callback(seen.append)
+    try:
+        for _ in range(10):
+            models.record_import_staleness_alert(fresh, conn=empty_db_conn)
+    finally:
+        empty_db_conn.set_trace_callback(None)
+
+    # Control: the calls really did run and really did hit the DB.
+    assert len(seen) >= 10, seen
+    writes = [q for q in seen
+              if q.lstrip()[:6].upper() in ('INSERT', 'UPDATE', 'DELETE')]
+    assert writes == [], writes
+    assert len(_open_staleness_alerts(empty_db_conn)) == 1

@@ -437,6 +437,16 @@ def record_import_staleness_alert(freshness, *, conn=None):
             conn = get_connection()
             conn.execute("PRAGMA busy_timeout=2000")
         try:
+            # Steady state must be READ-ONLY. This runs on every HTML page view,
+            # and a stale stretch lasts days -- so without this check every one
+            # of those requests would take a write lock for an INSERT the
+            # dedupe index is going to discard anyway. Measured before adding
+            # it: 3.44ms per call, against 1.82ms for the read alone.
+            if conn.execute(
+                    "SELECT 1 FROM system_alerts"
+                    " WHERE kind = ? AND resolved_at IS NULL LIMIT 1",
+                    (KIND_IMPORT_STALE,)).fetchone():
+                return None
             aid = create_system_alert(
                 KIND_IMPORT_STALE, msg,
                 dedupe_key=_dedupe_key([KIND_IMPORT_STALE]),

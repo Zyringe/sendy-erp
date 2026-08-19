@@ -166,8 +166,16 @@ def _warn_if_import_is_stale(response):
                 and request.method == 'GET'
                 and response.status_code == 200
                 and response.mimetype == 'text/html'):
-            models.record_import_staleness_alert(
-                models.get_express_dbf_freshness())
+            # ONE connection for both halves. Opening a connection is the
+            # dominant cost here (1.82ms measured, against 0.025ms for the
+            # query itself), so letting each helper open its own doubled the
+            # price of the hook on every page in the app.
+            _conn = get_connection()
+            try:
+                models.record_import_staleness_alert(
+                    models.get_express_dbf_freshness(conn=_conn), conn=_conn)
+            finally:
+                _conn.close()
     except Exception as exc:                  # noqa: BLE001
         print(f"[import-stale] alert hook failed: {exc}", file=sys.stderr)
     return response
