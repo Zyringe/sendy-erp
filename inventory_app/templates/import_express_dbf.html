@@ -100,6 +100,18 @@
               <span class="d-block">ปกติไม่ต้องติ๊ก — ติ๊กเฉพาะเมื่อตั้งใจย้อนข้อมูลกลับจริงๆ</span>
             </label>
           </div>
+          {# Escape hatch for the backup guard. Same stance as the one above:
+             unchecked, plainly worded, and the only way past a refusal — a
+             full volume must not leave the team unable to import at all, but
+             it must not silently cost them their rollback point either. #}
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" value="1"
+                   name="force_no_backup" id="force_no_backup">
+            <label class="form-check-label small text-muted" for="force_no_backup">
+              นำเข้าต่อโดยไม่มีจุดกู้คืน (กรณีสำรองข้อมูลไม่สำเร็จ)
+              <span class="d-block">ปกติไม่ต้องติ๊ก — ถ้าพื้นที่เต็ม ให้ลบไฟล์สำรองเก่าก่อน ดีกว่านำเข้าโดยย้อนกลับไม่ได้</span>
+            </label>
+          </div>
           <button type="submit" class="btn btn-primary"><i class="bi bi-cloud-upload me-1"></i>อัปโหลด</button>
         </form>
       </div>

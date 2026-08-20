@@ -368,15 +368,19 @@ _IMPORT_STAGE_DIR = 'import-stage'   # under UPLOAD_FOLDER
 
 
 def _snapshot_before_import(reason):
-    """Best-effort full-DB snapshot right before an import commits, so an admin
-    can roll the whole DB back (see /admin/backups). Never blocks the import —
-    a backup-infra failure (e.g. disk full) is flashed as a warning, not fatal."""
-    info, err = db_backup.safe_create_backup(
+    """Full-DB snapshot right before an import commits, so an admin can roll
+    the whole DB back (see /admin/backups).
+
+    Returns (info, error) and FLASHES NOTHING. Callers decide what a failure
+    means — /import-data warns and continues (its legacy contract), while
+    /import-express-dbf refuses unless the operator explicitly overrides — so
+    the helper cannot announce an outcome it does not decide. It used to flash
+    "นำเข้าต่อโดยไม่มีจุดกู้คืน" unconditionally, which meant the refusing route
+    showed the user "carrying on" and "cancelled everything" in one response
+    (Codex round 8, P2)."""
+    return db_backup.safe_create_backup(
         reason, db_path=config.DATABASE_PATH,
         backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
-    if err:
-        flash(f'⚠️ สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ ({err}) — นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
-    return info
 
 _REPORT_LABELS = {
     'sales': 'ขาย',
@@ -502,7 +506,14 @@ def unified_import_confirm():
     if not token or request.form.get('token') != token:
         flash('เซสชันหมดอายุ กรุณาอัปโหลดใหม่', 'warning')
         return redirect(url_for('bsn.unified_import'))
-    _snapshot_before_import('unified')   # rollback point before the ledger writes
+    # Rollback point before the ledger writes. Warn-and-continue here is
+    # deliberate and unchanged: this box is a preview/confirm flow the operator
+    # drives file by file, not one destructive commit. The message lives here
+    # rather than in the helper because it states THIS route's decision.
+    _unified_info, _unified_err = _snapshot_before_import('unified')
+    if _unified_err:
+        flash(f'⚠️ สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ ({_unified_err}) — '
+              f'นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
     base = os.path.join(current_app.config['UPLOAD_FOLDER'], _IMPORT_STAGE_DIR, token)
     results = []
     for row in rows:
@@ -1119,6 +1130,41 @@ def express_dbf_upload():
                             'อ่านเวลา export จากไฟล์ zip ไม่ได้ — ใช้วันที่วันนี้แทน '
                             'ยอดคงค้างอาจลงวันที่ไม่ตรงกับตอน export จริง'))
         if 'bsn' in classified:
+            # Rollback point, taken only now: everything above this line either
+            # validates or refuses, so a rejected upload never pays for a
+            # snapshot it cannot use. Below it the request starts deleting
+            # receipt→invoice links, replacing both outstanding snapshots and
+            # flagging vanished documents — the most destructive routine write
+            # in the app, and until now the only import with no way back.
+            # /import-data/confirm has done exactly this since day one.
+            #
+            # Cost is deliberate, not incidental: measured on prod, the sqlite
+            # snapshot is 0.16s and the gzip is the rest, so db_backup's
+            # DEFAULT_COMPRESSLEVEL (6, not python's 9) keeps this at ~2.3s of
+            # a route that already runs 36.8s against gunicorn's 60s ceiling.
+            # If that headroom ever gets tight, the compression level is the
+            # first dial — not this snapshot.
+            #
+            # FAIL CLOSED. Best-effort is the wrong stance for the app's most
+            # destructive routine write: warning and then deleting receipt
+            # links anyway would promise a rollback point that does not exist,
+            # and the realistic trigger — a full volume — is one that can break
+            # the import itself. So a failed backup REFUSES the upload, and the
+            # operator gets the same deliberate escape hatch this route already
+            # uses for a stale export: tick it and proceed knowingly.
+            # (Codex round 7, P1.)
+            _info, _bkerr = _snapshot_before_import('express_dbf')
+            if _bkerr and not request.form.get('force_no_backup'):
+                flash(f'สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ ({_bkerr}) — ยกเลิกทั้งไฟล์ '
+                      f'ไม่มีการนำเข้าใดๆ. การนำเข้ารอบนี้จะลบ/เขียนทับข้อมูลจริง '
+                      f'จึงต้องมีจุดกู้คืนก่อน. ถ้าพื้นที่เต็ม ให้ลบไฟล์สำรองเก่าที่ '
+                      f'"สำรอง/กู้คืนข้อมูล" ก่อน แล้วอัปโหลดใหม่ '
+                      f'(ถ้าจำเป็นต้องนำเข้าตอนนี้จริงๆ ให้ติ๊ก '
+                      f'"นำเข้าต่อโดยไม่มีจุดกู้คืน")', 'danger')
+                return redirect(redirect_to)
+            if _bkerr:
+                flash(f'นำเข้าต่อโดยไม่มีจุดกู้คืนตามที่ติ๊กยืนยัน ({_bkerr}) — '
+                      f'ถ้าข้อมูลผิดพลาดรอบนี้จะย้อนกลับไม่ได้', 'warning')
             try:
                 # since_days defaults to 60 inside commit_express_dbf — a
                 # daily upload only ever needs the recent window, and that window

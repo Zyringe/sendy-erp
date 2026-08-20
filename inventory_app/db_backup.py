@@ -39,9 +39,31 @@ DEFAULT_KEEP_DAYS = 7
 # WAL-safe kits to ~/sendy-prod-backups/), so prod doesn't carry it. Raise if the
 # volume grows.
 DEFAULT_MAX_KEEP = 2
+# Reasons whose newest snapshot survives the global max_keep (see
+# prune_backups). Deliberately ONE entry: /import-express-dbf refuses to import
+# without a rollback point, so evicting that snapshot the same afternoon — two
+# marketplace uploads would do it — defeats the guard. Every other reason takes
+# its chances with max_keep. Keep this set small: each entry is ~20MB that the
+# count cap can no longer reclaim, on a 433MB volume (Codex round 9, P1).
+PROTECTED_REASONS = frozenset({"express_dbf"})
 # Never write a snapshot when the volume is this close to full — a backup must
 # not be the thing that fills the disk and breaks the app.
 MIN_FREE_BYTES = 60 * 1024 * 1024
+# Every caller of this module sits on a REQUEST path, and prod runs
+# `gunicorn --timeout 60`, so compression time is a safety budget, not a
+# preference. Measured on prod 2026-08-19 against the live 144.5MB DB:
+#
+#     sqlite .backup   0.16s              (the snapshot itself is ~free)
+#     gzip level 9     7.34s → 19.6MB     (python's gzip default)
+#     gzip level 6     2.18s → 20.1MB
+#     gzip level 3     0.94s → 23.4MB
+#     gzip level 1     0.71s → 24.7MB
+#
+# Level 6 (zlib's own default; python's gzip module is the outlier at 9) buys
+# back 5.2 seconds for 0.5MB per snapshot — 1MB across the two kept by
+# DEFAULT_MAX_KEEP. That trade is what makes a pre-import snapshot affordable
+# on /import-express-dbf, which already measured 36.8s of the 60s budget.
+DEFAULT_COMPRESSLEVEL = 6
 
 
 def default_backup_dir(db_path):
@@ -59,7 +81,7 @@ def disk_usage_mb(path):
 
 def create_backup(reason, *, db_path, backup_dir,
                   keep_days=DEFAULT_KEEP_DAYS, max_keep=DEFAULT_MAX_KEEP,
-                  now=None):
+                  now=None, compresslevel=DEFAULT_COMPRESSLEVEL):
     """Snapshot ``db_path`` → ``backup_dir/auto-<reason>-<ts>.db.gz`` (gzipped
     online backup), then prune. Returns an info dict, or None if there is no DB
     to back up (so an import can still proceed on a fresh install)."""
@@ -99,7 +121,8 @@ def create_backup(reason, *, db_path, backup_dir,
                 dst.close()
         finally:
             src.close()
-        with open(tmp_db, "rb") as fi, gzip.open(part, "wb") as fo:
+        with open(tmp_db, "rb") as fi, \
+                gzip.open(part, "wb", compresslevel=compresslevel) as fo:
             shutil.copyfileobj(fi, fo)
         os.replace(part, final)          # atomic publish on the same filesystem
         part = None
@@ -170,22 +193,80 @@ def list_backups(*, backup_dir):
 def prune_backups(*, backup_dir, keep_days=DEFAULT_KEEP_DAYS,
                   max_keep=DEFAULT_MAX_KEEP, now=None):
     """Delete auto-* snapshots older than ``keep_days`` OR beyond the newest
-    ``max_keep`` (whichever applies). Always keeps the single newest. Never
-    touches the live DB or any non-auto file. Returns the deleted names."""
+    ``max_keep`` (whichever applies). Never touches the live DB or any non-auto
+    file. Returns the deleted names.
+
+    FLOOR: the newest snapshot of a PROTECTED reason survives ``max_keep`` (see
+    PROTECTED_REASONS). Without it the newest two backups overall win outright,
+    and two marketplace uploads on the same afternoon would evict the
+    pre-import Express snapshot — precisely the rollback point that route
+    creates (Codex round 7, P2).
+
+    ⚠ THE FLOOR MUST NOT GROW WITH THE NUMBER OF REASONS (Codex round 9, P1).
+    An earlier version protected the newest of EVERY reason. There are ten
+    (unified, express_dbf, marketplace, marketplace_settlement,
+    marketplace_balance, marketplace_upload, pre-upload-full, pre-restore, and
+    naming_cascade's master_naming_cascade / master_naming_edit), so at ~20MB
+    each that pinned ~160MB on a 433MB volume with 166MB free. Worse, the
+    free-space guard is a PRE-check: a run could legally start at 65MB free,
+    write 20MB and finish at ~45MB — under MIN_FREE_BYTES. The requirement was
+    never "keep one of everything", it was "a marketplace upload must not evict
+    the Express rollback point", so the floor covers only that. Total stays
+    bounded at ``max_keep`` + 1.
+
+    ⚠ ORDER ALSO MATTERS, and getting it wrong made backups immortal (Codex
+    round 8, P1). The age check runs FIRST and beats the floor: the floor
+    exists to survive a busy afternoon, not to outlive ``keep_days``.
+
+    Also reclaims stale ``.part`` files. A crash or hard kill mid-write leaves
+    one behind, and it never matches _NAME_RE — which is what keeps a torn file
+    from being listed or restored, but also meant nothing could ever clean it
+    up. Only ones older than a day, so an in-flight write is never touched.
+    """
     now = now or datetime.now()
     backups = list_backups(backup_dir=backup_dir)   # newest first
+    newest_protected = {}
+    for b in backups:
+        if b["reason"] in PROTECTED_REASONS:
+            newest_protected.setdefault(b["reason"], b["name"])
     deleted = []
     for rank, b in enumerate(backups):
         if rank == 0:
-            continue                                # floor: keep newest
+            continue                                # floor: keep newest overall
         age_days = (now - b["created_at"]).total_seconds() / 86400.0
-        if age_days > keep_days or rank >= max_keep:
-            try:
-                os.remove(b["path"])
-                deleted.append(b["name"])
-            except OSError:
-                pass
+        if age_days <= keep_days:
+            # Still fresh: the per-reason floor may protect it from max_keep.
+            if newest_protected.get(b["reason"]) == b["name"]:
+                continue
+            if rank < max_keep:
+                continue
+        # Aged out, or beyond max_keep with no floor claim.
+        try:
+            os.remove(b["path"])
+            deleted.append(b["name"])
+        except OSError:
+            pass
+    deleted.extend(_prune_stale_parts(backup_dir, now=now))
     return deleted
+
+
+def _prune_stale_parts(backup_dir, *, now=None, older_than_hours=24):
+    """Remove abandoned ``*.db.gz.part`` temps (see prune_backups)."""
+    if not os.path.isdir(backup_dir):
+        return []
+    cutoff = (now or datetime.now()).timestamp() - older_than_hours * 3600
+    removed = []
+    for fn in os.listdir(backup_dir):
+        if not fn.endswith(SUFFIX + ".part"):
+            continue
+        path = os.path.join(backup_dir, fn)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed.append(fn)
+        except OSError:
+            pass
+    return removed
 
 
 # Held full-replace upload stashes written by /admin/upload-db onto the volume
