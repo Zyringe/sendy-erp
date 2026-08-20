@@ -580,7 +580,7 @@ CREATE TABLE express_credit_notes (
     is_void         INTEGER NOT NULL DEFAULT 0 CHECK(is_void IN (0,1)),
     type_code       INTEGER,
     note            TEXT,
-    created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')), note_source TEXT,
     UNIQUE(batch_id, doc_no)
 );
 
@@ -724,7 +724,7 @@ CREATE TABLE express_payments_out (
     bank            TEXT,
     cheque_status   TEXT,
     note            TEXT,                              -- "BBL ต๋อโอน", "สด", multi-line "VAT 16,894"
-    created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')), note_source TEXT,
     UNIQUE(batch_id, doc_no)
 );
 

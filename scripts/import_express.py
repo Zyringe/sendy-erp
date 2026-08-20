@@ -103,36 +103,72 @@ def _existing_doc_nos(conn, table, company_id):
         f'SELECT doc_no FROM {table} WHERE company_id = ?', (company_id,)).fetchall()}
 
 
-def _preserved_note(conn, header_table, company_id, doc_no, incoming):
-    """The note a refresh should write — never a worse one than is already stored.
+def _norm_note(text):
+    """Express's printed report and its DBF disagree on whitespace (the report
+    keeps \xa0 where the DBF has a space), so notes only compare meaningfully
+    once collapsed."""
+    return ' '.join((text or '').replace('\xa0', ' ').split())
 
-    Express keeps the operator's remark in one short APTRN.YOUREF field; the
-    printed report captured more. Measured against BSN5657 on 2026-08-20: of the
-    281 payments_out documents present in both, 233 agree exactly, 24 have a
-    stored note where YOUREF is blank, and 24 more are longer than YOUREF (the
-    report holds several lines, YOUREF only the first). On the GR side YOUREF is
-    non-empty on just 9 of 444. Replacing blindly would erase the team's own
-    handwriting on every one of those, silently, on the next daily zip.
 
-    So: keep what is stored when the incoming note is blank or is merely a
-    prefix of it; take the incoming note otherwise, so a real correction in
-    Express still reaches Sendy.
+def _youref_prefix_len(stored, youref):
+    """Length of the leading slice of `stored` that normalizes to `youref`, or -1
+    if no slice does. Longest match wins, and the RAW length is returned so the
+    caller can keep the operator's exact remaining text byte-for-byte."""
+    target = _norm_note(youref)
+    if not target:
+        return 0
+    for i in range(len(stored), 0, -1):
+        if _norm_note(stored[:i]) == target:
+            return i
+    return -1
 
-    # simplify: prefix test, not a merge. A correction that happens to be a
-    # prefix of the old note (฿5,000 → ฿500) would keep the stale text; upgrade
-    # to tracking note provenance per row if that ever shows up in real data.
+
+def _note_for_refresh(conn, header_table, company_id, doc_no, incoming):
+    """(note, note_source) for a DBF refresh — never losing what only Sendy holds.
+
+    `note` has two sources of different fidelity: the printed Express report
+    captured several lines, while the DBF carries one short `APTRN.YOUREF`. Given
+    only the stored note and an incoming YOUREF, a correction and a truncation are
+    indistinguishable — stored "711 โอน 37,635 / VAT 26,613 / อานี 37,635" against
+    incoming "712 โอน 37,635" is either Express fixing 711, or YOUREF having only
+    ever held the first line. Guessing by prefix answers the second and deletes two
+    lines in the first (the blocker Codex raised, 2026-08-20).
+
+    `note_source` removes the guess: it records the YOUREF this row's note was last
+    written with, so the YOUREF-derived part is replaced and the Sendy-only
+    remainder carries across.
+
+      note_source IS NULL   the note did not come from YOUREF (printed report, or a
+                            row older than mig 167). First DBF contact: split it on
+                            the YOUREF it matches, which preserves the 40 measured
+                            rows — 24 with a blank YOUREF behind a stored note,
+                            16 whose note runs longer than YOUREF.
+      note_source SET       stored == note_source + remainder by construction, so
+                            the split is exact, and a cleared YOUREF clears its own
+                            line without touching the remainder.
+
+    When the note cannot be split at all (nothing wrote it through this path and it
+    matches no YOUREF) the stored text is kept untouched — 0 rows today, and losing
+    an operator's note is the one outcome this function exists to prevent.
     """
-    if not (row := conn.execute(
-            f'SELECT note FROM {header_table} WHERE company_id = ? AND doc_no = ?',
-            (company_id, doc_no)).fetchone()):
-        return incoming
-    stored = row[0] or ''
-    norm = lambda t: ' '.join((t or '').replace('\xa0', ' ').split())   # noqa: E731
-    if not norm(incoming):
-        return stored
-    if norm(stored).startswith(norm(incoming)):
-        return stored
-    return incoming
+    row = conn.execute(
+        f'SELECT note, note_source FROM {header_table}'
+        f' WHERE company_id = ? AND doc_no = ?'
+        # UNIQUE(batch_id, doc_no) does not stop one document from sitting in two
+        # batches — a --full text-report re-import puts it there by design — so
+        # read the LATEST row rather than whichever one sqlite happens to return.
+        f' ORDER BY batch_id DESC, id DESC LIMIT 1',
+        (company_id, doc_no)).fetchone()
+    if row is None or not (row[0] or ''):
+        return incoming, incoming
+    stored, source = row[0], row[1]
+
+    cut = (_youref_prefix_len(stored, source) if source is not None
+           else _youref_prefix_len(stored, incoming))
+    if cut < 0:
+        return stored, source
+    merged = incoming + stored[cut:]
+    return (merged if incoming else merged.lstrip()), incoming
 
 
 def _delete_existing_doc(conn, header_table, child_table, child_fk, company_id, doc_no,
@@ -185,10 +221,10 @@ def _import_credit_notes_records(conn, records, batch_id, company_id, incrementa
         if r['doc_no'] in skip:
             skipped += 1
             continue
-        note = r['note']
+        note, note_source = r['note'], None
         if replace_existing:
-            note = _preserved_note(conn, 'express_credit_notes',
-                                   company_id, r['doc_no'], note)
+            note, note_source = _note_for_refresh(conn, 'express_credit_notes',
+                                                  company_id, r['doc_no'], r['note'])
             _delete_existing_doc(conn, 'express_credit_notes',
                                  'express_credit_note_lines', 'credit_note_id',
                                  company_id, r['doc_no'], batch_id)
@@ -196,13 +232,14 @@ def _import_credit_notes_records(conn, records, batch_id, company_id, incrementa
             INSERT INTO express_credit_notes
                 (batch_id, doc_no, date_iso, company_id, supplier_name, supplier_id,
                  ref_doc, discount_amount, vat_amount, total_amount,
-                 is_cleared, is_void, type_code, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_cleared, is_void, type_code, note, note_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             batch_id, r['doc_no'], r['date_iso'], company_id, r['supplier_name'],
             _supplier_id_by_name(conn, r['supplier_name']),
             r['ref_doc'], r['discount'], r['vat'], r['total'],
             int(r['is_cleared']), int(r['is_void']), r['type_code'], note,
+            note_source,
         ))
         cn_id = cur.lastrowid
         for ln in r['lines']:
@@ -480,10 +517,10 @@ def _import_payments_out_records(conn, records, batch_id, company_id, incrementa
         if r['doc_no'] in skip:
             skipped += 1
             continue
-        note = r['note']
+        note, note_source = r['note'], None
         if replace_existing:
-            note = _preserved_note(conn, 'express_payments_out',
-                                   company_id, r['doc_no'], note)
+            note, note_source = _note_for_refresh(conn, 'express_payments_out',
+                                                  company_id, r['doc_no'], r['note'])
             _delete_existing_doc(conn, 'express_payments_out',
                                  'express_payment_out_receive_refs', 'payment_out_id',
                                  company_id, r['doc_no'], batch_id)
@@ -493,18 +530,21 @@ def _import_payments_out_records(conn, records, batch_id, company_id, incrementa
                  supplier_name, supplier_id, is_void,
                  deposit_applied, invoice_amount, cash_amount, cheque_amount,
                  interest_amount, discount_amount, vat_amount,
-                 cheque_no, cheque_date_iso, bank, cheque_status, note)
+                 cheque_no, cheque_date_iso, bank, cheque_status, note,
+                 note_source)
             VALUES (?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?,
+                    ?)
         """, (
             batch_id, r['doc_no'], r['date_iso'], company_id,
             r['supplier_name'], _supplier_id_by_name(conn, r['supplier_name']), int(r['is_void']),
             r['deposit_applied'], r['invoice_amount'], r['cash_amount'], r['cheque_amount'],
             r['interest_amount'], r['discount_amount'], r['vat_amount'],
             r['cheque_no'], r['cheque_date_iso'], r['bank'], r['cheque_status'], note,
+            note_source,
         ))
         pid = cur.lastrowid
         for ref in r['receive_refs']:

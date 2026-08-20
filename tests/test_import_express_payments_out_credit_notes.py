@@ -574,9 +574,7 @@ def test_dbf_replay_keeps_a_richer_existing_note(tmp_db):
     """The printed report captured more than APTRN.YOUREF holds — 24 of 281
     shared documents. A refresh must not shorten the operator's own note."""
     _forget(tmp_db)
-    a = _payment_out_record(doc_no=_RPS,
-                            note='711\xa0โอน\xa037,635\nVAT 26,613\nอานี\xa037635')
-    ie.run_import_records('payments_out', [a], db_path=tmp_db)
+    _seed_report_row(tmp_db, RICH)
     assert 'VAT 26,613' in _pout_note(tmp_db), 'setup'
 
     b = _payment_out_record(doc_no=_RPS, note='711 โอน 37,635')
@@ -589,8 +587,7 @@ def test_dbf_replay_keeps_a_richer_existing_note(tmp_db):
 def test_dbf_replay_keeps_the_existing_note_when_the_dbf_has_none(tmp_db):
     """24 shared documents have a stored note against a blank YOUREF."""
     _forget(tmp_db)
-    a = _payment_out_record(doc_no=_RPS, note='V 12,643   สด 63,171')
-    ie.run_import_records('payments_out', [a], db_path=tmp_db)
+    _seed_report_row(tmp_db, 'V 12,643   สด 63,171')
 
     ie.run_import_records('payments_out', [_payment_out_record(doc_no=_RPS, note='')],
                           db_path=tmp_db)
@@ -598,9 +595,89 @@ def test_dbf_replay_keeps_the_existing_note_when_the_dbf_has_none(tmp_db):
     assert _pout_note(tmp_db) == 'V 12,643   สด 63,171'
 
 
-def test_dbf_replay_takes_a_genuinely_new_note(tmp_db):
-    """Preservation must not freeze the field: a note Express actually changed
-    still lands, or a correction could never reach Sendy."""
+def _seed_report_row(tmp_db, note, doc_no=_RPS, kind='payments_out'):
+    """Write the row the printed Express report would have produced — through the
+    real text-report path, so `note_source` is left NULL by production code rather
+    than by this test's own SQL."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute('PRAGMA foreign_keys = OFF')
+    batch_id, company_id = _new_batch(conn, kind)
+    if kind == 'payments_out':
+        ie._import_payments_out_records(
+            conn, [_payment_out_record(doc_no=doc_no, note=note)], batch_id, company_id)
+    else:
+        ie._import_credit_notes_records(
+            conn, [_credit_note_ap_record(doc_no=doc_no, note=note)], batch_id, company_id)
+    conn.commit()
+    stored = conn.execute(
+        f"SELECT note, note_source FROM express_{'payments_out' if kind == 'payments_out' else 'credit_notes'}"
+        f" WHERE doc_no = ?", (doc_no,)).fetchone()
+    conn.close()
+    assert stored[1] is None, 'setup: a printed-report note has no YOUREF behind it'
+    return stored[0]
+
+
+RICH = '711\xa0โอน\xa037,635\nVAT 26,613\nอานี\xa037635'
+
+
+def _pout_note_source(tmp_db, doc_no=_RPS):
+    conn = sqlite3.connect(tmp_db)
+    v = conn.execute("SELECT note_source FROM express_payments_out WHERE doc_no = ?",
+                     (doc_no,)).fetchone()[0]
+    conn.close()
+    return v
+
+
+def test_dbf_replay_keeps_sendy_only_lines_when_express_corrects_the_note(tmp_db):
+    """Codex's merge blocker, 2026-08-20. A note imported from the printed report
+    holds lines that never existed in YOUREF. When Express then CORRECTS YOUREF
+    (711 → 712) the correction must land WITHOUT deleting those lines — a prefix
+    test cannot tell a correction from a truncation, so the last YOUREF is stored
+    and the Sendy-only remainder is carried across."""
+    _forget(tmp_db)
+    _seed_report_row(tmp_db, RICH)          # 1. printed report: no YOUREF behind it
+    # 2. first DBF contact — YOUREF matches the first line, the rest is Sendy's
+    ie.run_import_records('payments_out',
+                          [_payment_out_record(doc_no=_RPS, note='711 โอน 37,635')],
+                          db_path=tmp_db)
+    assert 'VAT 26,613' in _pout_note(tmp_db), 'setup: first contact must preserve'
+    assert _pout_note_source(tmp_db) == '711 โอน 37,635', 'setup: YOUREF must be recorded'
+
+    # 3. Express corrects YOUREF
+    ie.run_import_records('payments_out',
+                          [_payment_out_record(doc_no=_RPS, note='712 โอน 37,635')],
+                          db_path=tmp_db)
+
+    note = _pout_note(tmp_db)
+    assert note.startswith('712 โอน 37,635'), 'the correction must land'
+    assert 'VAT 26,613' in note, 'a correction must not delete Sendy-only lines'
+    assert 'อานี' in note
+    assert '711' not in note, 'the corrected line must not linger alongside the new one'
+
+
+def test_dbf_replay_clearing_youref_leaves_the_sendy_only_lines(tmp_db):
+    """The mirror case. Blank YOUREF after a known one means Express cleared it —
+    the YOUREF-derived line goes, what Sendy alone held stays."""
+    _forget(tmp_db)
+    _seed_report_row(tmp_db, RICH)
+    ie.run_import_records('payments_out',
+                          [_payment_out_record(doc_no=_RPS, note='711 โอน 37,635')],
+                          db_path=tmp_db)
+
+    ie.run_import_records('payments_out', [_payment_out_record(doc_no=_RPS, note='')],
+                          db_path=tmp_db)
+
+    # RICH carries \xa0 between its words, so a bare `'711 โอน 37,635' not in note`
+    # could never fail — assert on the normalized text, and prove the control first.
+    note = ' '.join(_pout_note(tmp_db).replace('\xa0', ' ').split())
+    assert 'VAT 26,613' in note, 'a cleared YOUREF must not take Sendy-only lines with it'
+    assert '711 โอน 37,635' not in note, 'the YOUREF-derived line must actually clear'
+
+
+def test_dbf_replay_replaces_a_note_that_came_only_from_youref(tmp_db):
+    """No Sendy-only remainder: the note IS the YOUREF, so a correction replaces it
+    outright. Without this the field would freeze at its first value forever —
+    Sendy has no UI to edit a note, so Express is the only way to fix one."""
     _forget(tmp_db)
     ie.run_import_records('payments_out',
                           [_payment_out_record(doc_no=_RPS, note='พุธ392 โอน')],
@@ -611,6 +688,30 @@ def test_dbf_replay_takes_a_genuinely_new_note(tmp_db):
                           db_path=tmp_db)
 
     assert _pout_note(tmp_db) == 'ซ้อโอน'
+
+
+def test_dbf_replay_reads_the_newest_row_when_one_doc_no_spans_two_batches(tmp_db):
+    """express_payments_out has UNIQUE(batch_id, doc_no) but nothing on
+    (company_id, doc_no) — a --full text-report re-import legitimately leaves the
+    same document in two batches. The guard must read the LATEST of them, not
+    whichever row sqlite hands back first."""
+    _forget(tmp_db)
+    conn = sqlite3.connect(tmp_db)
+    conn.execute('PRAGMA foreign_keys = OFF')
+    cid = _company_id(conn)
+    for (batch, _), note in ((_new_batch(conn, 'payments_out'), 'หมายเหตุเก่า'),
+                             (_new_batch(conn, 'payments_out'), 'หมายเหตุใหม่')):
+        conn.execute("INSERT INTO express_payments_out (batch_id, doc_no, date_iso,"
+                     " company_id, supplier_name, is_void, invoice_amount, note)"
+                     " VALUES (?, ?, '2026-05-01', ?, 'ผู้ขาย', 0, 1.0, ?)",
+                     (batch, _RPS, cid, note))
+    conn.commit()
+    conn.close()
+
+    ie.run_import_records('payments_out', [_payment_out_record(doc_no=_RPS, note='')],
+                          db_path=tmp_db)
+
+    assert _pout_note(tmp_db) == 'หมายเหตุใหม่'
 
 
 def test_dbf_replay_writes_the_note_on_a_document_sendy_has_never_seen(tmp_db):
@@ -637,8 +738,7 @@ def test_dbf_replay_keeps_a_richer_existing_credit_note_note(tmp_db):
     """Same contract on the GR side — YOUREF is non-empty on only 9 of
     BSN5657's 444 credit notes, so a refresh would otherwise blank the rest."""
     _forget(tmp_db)
-    a = _credit_note_ap_record(doc_no=_RGR, note='คืนของชำรุด\nรับเครดิตแล้ว')
-    ie.run_import_records('credit_notes', [a], db_path=tmp_db)
+    _seed_report_row(tmp_db, 'คืนของชำรุด\nรับเครดิตแล้ว', doc_no=_RGR, kind='credit_notes')
     assert 'รับเครดิตแล้ว' in _cn_note(tmp_db), 'setup'
 
     ie.run_import_records('credit_notes', [_credit_note_ap_record(doc_no=_RGR, note='')],
