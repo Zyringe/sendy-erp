@@ -47,7 +47,7 @@ Python 3.9 — Optional[...] not X | None syntax.
 from __future__ import annotations
 
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Optional
 
 import sales_filters
@@ -169,6 +169,18 @@ def cash_in_by_month(date_from: Optional[str] = None,
 
 # Bucket identity, in the order the dunning page shows them. Keys are stable;
 # labels are Thai because the only consumer is a Thai-facing page.
+# How long a SENT ใบวางบิล stops the invoice appearing in the chase list.
+# Put's ruling, 2026-08-20, after measuring what "forever" was hiding: of the 17
+# billed rows on prod, 7 had bills sent more than 90 days earlier (four of them
+# 248 days, on "เครดิต 30 วัน" terms that expired in January) and 15 were already
+# past their own due date — ฿80,696.35 the page was telling nobody to chase.
+#
+# A flat 30 days, deliberately NOT read from express_billing_notes.pay_cond:
+# that column is populated on only 4 of the 17, so a terms-aware rule would fall
+# back to 30 days in most cases anyway and buy complexity for nothing. Revisit
+# if pay_cond ever becomes reliably filled.
+BILL_SUPPRESS_DAYS = 30
+
 AR_DUE_BUCKETS = (
     ('chase_now',      'ตามได้เลย'),
     ('not_yet_due',    'ยังไม่ถึงกำหนด'),
@@ -176,6 +188,14 @@ AR_DUE_BUCKETS = (
     ('credits',        'ใบลดหนี้ (หักออก)'),
 )
 
+
+
+def _suppress_cutoff(as_of_iso: str) -> str:
+    """Earliest `sent_date_iso` that still suppresses chasing, given the day
+    being asked about. Inclusive: a bill sent exactly BILL_SUPPRESS_DAYS ago is
+    still inside the window."""
+    return (date.fromisoformat(as_of_iso)
+            - timedelta(days=BILL_SUPPRESS_DAYS)).isoformat()
 
 
 def ar_due_buckets(as_of: Optional[str] = None,
@@ -264,10 +284,16 @@ def ar_due_buckets(as_of: Optional[str] = None,
         # it as "billed" would silently move rows out of the chase list. And a
         # bill number is only "billed" if its note was actually SENT and not
         # cancelled — see the docstring.
+        sent = (r['sent_date_iso'] or '').strip()[:10]
         billed = (bool((r['bill_no'] or '').strip())
                   and r['note_bill_no'] is not None
                   and not r['is_cancelled']
-                  and bool((r['sent_date_iso'] or '').strip()))
+                  and bool(sent)
+                  # ...and sent RECENTLY. A bill that went out months ago is
+                  # not evidence the customer is mid-cycle; it is evidence
+                  # nobody followed up. Falling out of this bucket returns the
+                  # row to the DUE-DATE rule, not straight to chase_now.
+                  and sent >= _suppress_cutoff(on))
         due = (r['due_date_iso'] or '').strip()
         if amt < 0:
             key = 'credits'

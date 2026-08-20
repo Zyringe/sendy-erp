@@ -269,3 +269,62 @@ def test_credit_notes_are_not_counted_as_chase_calls(empty_db_conn):
     assert by['credits']['count'] == 1 and by['credits']['amount'] == -120.50
     # money gate still holds across all four
     assert round(sum(b['amount'] for b in res['buckets']), 2) == 379.50
+
+
+# ── Put's ruling, 2026-08-20: a sent bill suppresses chasing for 30 days ─────
+
+def test_a_bill_sent_within_the_window_still_suppresses(empty_db_conn):
+    import datetime
+    today = datetime.date.today()
+    _clean(empty_db_conn)
+    _row(empty_db_conn, 'IV1', 500.00, due='2026-01-01', bill_no='BL_FRESH')
+    _note(empty_db_conn, 'BL_FRESH',
+          sent=(today - datetime.timedelta(days=10)).isoformat())
+    by = {b['key']: b for b in cf.ar_due_buckets(conn=empty_db_conn)['buckets']}
+    assert by['already_billed']['count'] == 1
+    assert by['chase_now']['count'] == 0
+
+
+def test_a_bill_sent_longer_ago_than_the_window_returns_to_the_chase_list(
+        empty_db_conn):
+    """THE ruling. "Forever" was not a policy: on prod, 7 bills had been sent
+    more than 90 days earlier -- four of them 248 days -- and the page was
+    telling nobody to chase ฿51,791.60 of them."""
+    import datetime
+    today = datetime.date.today()
+    _clean(empty_db_conn)
+    _row(empty_db_conn, 'IV1', 500.00, due='2026-01-01', bill_no='BL_STALE')
+    _note(empty_db_conn, 'BL_STALE',
+          sent=(today - datetime.timedelta(days=31)).isoformat())
+    by = {b['key']: b for b in cf.ar_due_buckets(conn=empty_db_conn)['buckets']}
+    assert by['already_billed']['count'] == 0, 'a stale bill must not suppress'
+    assert by['chase_now']['count'] == 1
+
+
+def test_the_window_boundary_is_inclusive(empty_db_conn):
+    """Exactly 30 days is still inside the window -- pinned so the comparison
+    cannot drift by one day unnoticed."""
+    import datetime
+    today = datetime.date.today()
+    _clean(empty_db_conn)
+    _row(empty_db_conn, 'IV1', 500.00, due='2026-01-01', bill_no='BL_EDGE')
+    _note(empty_db_conn, 'BL_EDGE',
+          sent=(today - datetime.timedelta(days=cf.BILL_SUPPRESS_DAYS)).isoformat())
+    by = {b['key']: b for b in cf.ar_due_buckets(conn=empty_db_conn)['buckets']}
+    assert by['already_billed']['count'] == 1
+
+
+def test_a_stale_bill_that_is_not_yet_due_is_still_not_due(empty_db_conn):
+    """Falling out of the billed bucket returns a row to the DUE-DATE rule, not
+    straight to chase_now. A bill sent long ago on an invoice that is not yet
+    due is still not chaseable."""
+    import datetime
+    today = datetime.date.today()
+    _clean(empty_db_conn)
+    _row(empty_db_conn, 'IV1', 500.00, bill_no='BL_OLD',
+         due=(today + datetime.timedelta(days=10)).isoformat())
+    _note(empty_db_conn, 'BL_OLD',
+          sent=(today - datetime.timedelta(days=200)).isoformat())
+    by = {b['key']: b for b in cf.ar_due_buckets(conn=empty_db_conn)['buckets']}
+    assert by['not_yet_due']['count'] == 1
+    assert by['chase_now']['count'] == 0
