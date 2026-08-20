@@ -20,6 +20,7 @@ midnight), then assert the stored value is the LOCAL one. That fails
 deterministically at any hour when the code reads the UTC clock.
 """
 import datetime
+import os
 import sqlite3
 import time
 
@@ -138,3 +139,48 @@ def test_conversion_cost_log_event_date_is_the_bangkok_date(empty_db_conn,
     assert rows[0]['event_date'] == local_date, (
         'event_date should be the Bangkok date %s, got %s (UTC date is %s)'
         % (local_date, rows[0]['event_date'], utc_date))
+
+
+# -- the migration default stays UTC, so prove nothing ever reaches it -------
+
+def test_no_write_path_ever_falls_through_to_the_column_default():
+    """Migrations 018/019 declare `effective_from TEXT NOT NULL DEFAULT
+    (date('now'))` -- the same bare-UTC shape fixed above. Changing a column
+    default in SQLite means rebuilding the table, which is not worth the risk
+    for a default no caller uses (Codex round 7 agreed).
+
+    What makes that safe is that every application write supplies the column,
+    so the default can never fire. That is the thing worth pinning: this test
+    fails the day someone adds an INSERT that omits it.
+    """
+    import re
+    src = open(os.path.join(os.path.dirname(__file__), '..', 'inventory_app',
+                            'models', 'commission.py'), encoding='utf-8').read()
+    inserts = re.findall(r'INSERT\s+INTO\s+commission_overrides(.*?)(?:VALUES|SELECT)',
+                         src, re.S | re.I)
+    assert inserts, 'no INSERT found -- the guard would be vacuous'   # control
+    for cols in inserts:
+        assert 'effective_from' in cols, (
+            'an INSERT into commission_overrides omits effective_from, so the '
+            'UTC column DEFAULT would fire: ' + cols.strip()[:200])
+
+
+def test_the_column_default_is_still_the_utc_one_this_guard_assumes():
+    """If someone ever DOES rebuild the table with a localtime default, the
+    guard above becomes unnecessary rather than wrong -- but silently keeping a
+    guard whose premise has changed is how stale rules survive. Fail loudly so
+    the pair gets revisited together."""
+    import sqlite3
+    import config
+    if not os.path.exists(config.DATABASE_PATH):
+        pytest.skip('no local DB')
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'commission_overrides'"
+    ).fetchone()
+    conn.close()
+    assert sql, 'table missing'
+    assert "date('now')" in sql[0], (
+        "commission_overrides.effective_from no longer defaults to bare UTC -- "
+        "re-read test_no_write_path_ever_falls_through_to_the_column_default, "
+        "it may now be redundant")
