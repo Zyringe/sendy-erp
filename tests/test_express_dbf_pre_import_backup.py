@@ -358,3 +358,41 @@ def test_the_refusal_does_not_also_say_it_is_carrying_on(tmp_db, monkeypatch,
     assert not any('— นำเข้าต่อโดยไม่มีจุดกู้คืน' in m for m in msgs), (
         'the refusal must not also flash that the import carried on: %s' % msgs)
     assert ('import', None) not in trace
+
+
+def test_retention_is_bounded_regardless_of_how_many_reasons_exist(tmp_path):
+    """Codex round 9, P1. A floor that protects the newest of EVERY reason
+    grows with the number of reasons, and there are 10 of them
+    (unified, express_dbf, marketplace, marketplace_settlement,
+    marketplace_balance, marketplace_upload, pre-upload-full, pre-restore,
+    master_naming_cascade, master_naming_edit).
+
+    At ~20MB each that is ~160MB pinned on a 433MB volume with 166MB free --
+    and because the free-space guard is a PRE-check, a run can legally start at
+    65MB free, write 20MB, and finish at ~45MB, under MIN_FREE_BYTES.
+
+    The requirement was never "keep one of everything". It was "a marketplace
+    upload must not evict the Express rollback point". So the floor covers only
+    express_dbf, and the total stays bounded at max_keep + 1.
+    """
+    import sqlite3
+    src = tmp_path / 'src.db'
+    sqlite3.connect(str(src)).execute('CREATE TABLE t (v)')
+    bdir = tmp_path / 'b'
+
+    import datetime
+    t0 = datetime.datetime(2026, 8, 20, 9, 0, 0)
+    reasons = ['express_dbf', 'unified', 'marketplace', 'marketplace_settlement',
+               'marketplace_balance', 'marketplace_upload', 'pre-upload-full',
+               'pre-restore', 'master_naming_cascade', 'master_naming_edit']
+    for i, reason in enumerate(reasons):
+        db_backup.create_backup(reason, db_path=str(src), backup_dir=str(bdir),
+                                now=t0 + datetime.timedelta(minutes=i))
+
+    kept = db_backup.list_backups(backup_dir=str(bdir))
+    assert kept, 'pruning emptied the directory'        # control
+    assert len(kept) <= db_backup.DEFAULT_MAX_KEEP + 1, (
+        'retention must not grow with the number of reasons: %s'
+        % [b['reason'] for b in kept])
+    assert 'express_dbf' in [b['reason'] for b in kept], (
+        'the Express rollback point is the one thing the floor exists for')

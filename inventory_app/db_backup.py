@@ -39,6 +39,13 @@ DEFAULT_KEEP_DAYS = 7
 # WAL-safe kits to ~/sendy-prod-backups/), so prod doesn't carry it. Raise if the
 # volume grows.
 DEFAULT_MAX_KEEP = 2
+# Reasons whose newest snapshot survives the global max_keep (see
+# prune_backups). Deliberately ONE entry: /import-express-dbf refuses to import
+# without a rollback point, so evicting that snapshot the same afternoon — two
+# marketplace uploads would do it — defeats the guard. Every other reason takes
+# its chances with max_keep. Keep this set small: each entry is ~20MB that the
+# count cap can no longer reclaim, on a 433MB volume (Codex round 9, P1).
+PROTECTED_REASONS = frozenset({"express_dbf"})
 # Never write a snapshot when the volume is this close to full — a backup must
 # not be the thing that fills the disk and breaks the app.
 MIN_FREE_BYTES = 60 * 1024 * 1024
@@ -189,19 +196,27 @@ def prune_backups(*, backup_dir, keep_days=DEFAULT_KEEP_DAYS,
     ``max_keep`` (whichever applies). Never touches the live DB or any non-auto
     file. Returns the deleted names.
 
-    FLOOR: the newest snapshot of each reason survives ``max_keep``. Without it
-    the newest two backups overall win outright, and two marketplace uploads on
-    the same afternoon would evict the pre-import Express snapshot — precisely
-    the rollback point that route creates (Codex round 7, P2).
+    FLOOR: the newest snapshot of a PROTECTED reason survives ``max_keep`` (see
+    PROTECTED_REASONS). Without it the newest two backups overall win outright,
+    and two marketplace uploads on the same afternoon would evict the
+    pre-import Express snapshot — precisely the rollback point that route
+    creates (Codex round 7, P2).
 
-    ⚠ ORDER MATTERS, and getting it wrong made backups immortal (Codex round 8,
-    P1). The age check runs FIRST and beats the floor. When the floor was
-    checked first, the newest snapshot of every reason lived forever: with the
-    reasons actually in use (unified, weekly, express_dbf, marketplace_upload,
-    pre-restore, plus naming_cascade's dynamic ones) at ~20MB each, that pins
-    ~100MB permanently on a 433MB volume and stops DEFAULT_MAX_KEEP being the
-    hard count cap its comment promises. The floor exists to survive a busy
-    afternoon, not to outlive ``keep_days``.
+    ⚠ THE FLOOR MUST NOT GROW WITH THE NUMBER OF REASONS (Codex round 9, P1).
+    An earlier version protected the newest of EVERY reason. There are ten
+    (unified, express_dbf, marketplace, marketplace_settlement,
+    marketplace_balance, marketplace_upload, pre-upload-full, pre-restore, and
+    naming_cascade's master_naming_cascade / master_naming_edit), so at ~20MB
+    each that pinned ~160MB on a 433MB volume with 166MB free. Worse, the
+    free-space guard is a PRE-check: a run could legally start at 65MB free,
+    write 20MB and finish at ~45MB — under MIN_FREE_BYTES. The requirement was
+    never "keep one of everything", it was "a marketplace upload must not evict
+    the Express rollback point", so the floor covers only that. Total stays
+    bounded at ``max_keep`` + 1.
+
+    ⚠ ORDER ALSO MATTERS, and getting it wrong made backups immortal (Codex
+    round 8, P1). The age check runs FIRST and beats the floor: the floor
+    exists to survive a busy afternoon, not to outlive ``keep_days``.
 
     Also reclaims stale ``.part`` files. A crash or hard kill mid-write leaves
     one behind, and it never matches _NAME_RE — which is what keeps a torn file
@@ -210,9 +225,10 @@ def prune_backups(*, backup_dir, keep_days=DEFAULT_KEEP_DAYS,
     """
     now = now or datetime.now()
     backups = list_backups(backup_dir=backup_dir)   # newest first
-    newest_per_reason = {}
+    newest_protected = {}
     for b in backups:
-        newest_per_reason.setdefault(b["reason"], b["name"])
+        if b["reason"] in PROTECTED_REASONS:
+            newest_protected.setdefault(b["reason"], b["name"])
     deleted = []
     for rank, b in enumerate(backups):
         if rank == 0:
@@ -220,7 +236,7 @@ def prune_backups(*, backup_dir, keep_days=DEFAULT_KEEP_DAYS,
         age_days = (now - b["created_at"]).total_seconds() / 86400.0
         if age_days <= keep_days:
             # Still fresh: the per-reason floor may protect it from max_keep.
-            if newest_per_reason.get(b["reason"]) == b["name"]:
+            if newest_protected.get(b["reason"]) == b["name"]:
                 continue
             if rank < max_keep:
                 continue
