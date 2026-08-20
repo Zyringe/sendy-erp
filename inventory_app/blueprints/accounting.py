@@ -14,6 +14,7 @@ from datetime import date
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, current_app)
 
+import book_registry
 import commission_attribution
 import models
 from database import get_connection
@@ -140,7 +141,12 @@ def ap_dashboard():
     tab = request.args.get('tab', 'overview')
     date_from = request.args.get('from') or '2024-01-01'
     date_to   = request.args.get('to')   or date.today().isoformat()
-    conn = get_connection()
+    # BOOK-SCOPED (parity endpoint). Every read below runs on this one
+    # connection, which is what makes the page safe to toggle: there is no
+    # second source that could stay on the operational book and put two books'
+    # payables on one screen. BORROWED and request-scoped -- the appcontext
+    # teardown closes it, so this route must not.
+    conn = book_registry.get_book_connection()
     ap = models.get_ap_outstanding(conn)
     summary = conn.execute("""
         SELECT COUNT(*) AS n_payments, COUNT(DISTINCT supplier_name) AS n_suppliers,
@@ -182,7 +188,6 @@ def ap_dashboard():
              ORDER BY date_iso DESC, doc_no DESC LIMIT 50
         """, (date_from, date_to)).fetchall()]
 
-    conn.close()
     return render_template('ap.html', **ctx)
 
 

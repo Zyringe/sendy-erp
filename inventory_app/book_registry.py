@@ -43,6 +43,15 @@ PARITY_ENDPOINTS = {
     'products.product_list', 'products.product_detail',
     'products.api_product_barcodes',      # GET only; unsafe methods denied below
     'inventory.transaction_history',
+    # Payables. Phase 0 started writing each book's AP snapshot into that
+    # book's own DB, which left xp5's payables written and unviewable
+    # (measured 2026-08-19: 14 rows, ฿95,708.77 in vat_book.db). The page is
+    # self-contained -- one connection, get_ap_outstanding plus three
+    # express_payments_out queries -- so it converts whole, which is the bar:
+    # a page where only some numbers follow the toggle would mix two books'
+    # money on one screen. /ar does NOT clear that bar yet; see
+    # tests/test_ap_book_aware.py for exactly what blocks it.
+    'accounting.ap_dashboard',
 }
 
 # Infra endpoints that must work regardless of the selected book.
