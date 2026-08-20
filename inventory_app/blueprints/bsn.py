@@ -660,6 +660,13 @@ def _classify_dataset(dataset_dir):
 def express_dbf_import():
     import book_registry
     freshness = models.get_express_dbf_freshness()
+    # Same reasoning as the dashboard: the verdict is already computed here, so
+    # raising the alert costs nothing extra, and this is the other page whose
+    # audience is exactly the person who needs to know.
+    try:
+        models.record_import_staleness_alert(freshness)
+    except Exception as _exc:                 # noqa: BLE001
+        print('[import-stale] alert failed: %s' % _exc)
     conn = get_connection()
     row = conn.execute(
         "SELECT imported_at, notes FROM import_log "
@@ -1168,6 +1175,12 @@ def express_dbf_upload():
                                             f'วันที่อ้างอิงเดิมเป็นวันในอนาคต ({forced_over}) '
                                             f'ซึ่งเป็นไปไม่ได้ — ปรับกลับเป็น {_exp_date} แล้ว '
                                             f'พรุ่งนี้อัปโหลดได้ตามปกติ ไม่ต้องติ๊กข้ามอีก'))
+                # The import happened, so retire any open staleness alert.
+                # Best-effort by construction (the helper swallows and reports
+                # its own failures), and only on THIS path: /import-data does
+                # not write an express_dbf row, so it does not make the DBF
+                # freshness verdict true and must not clear its alert.
+                models.clear_import_staleness_alert()
                 _reconcile = results['bsn']['reconcile']
                 if _reconcile.get('error'):
                     # scan_reconcile failed but the money import above already

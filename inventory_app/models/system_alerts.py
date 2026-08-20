@@ -55,6 +55,8 @@ KIND_IMPORT_IGNORED_LINES = 'import_ignored_lines'
 KIND_SLOW_REQUEST = 'slow_request'
 KIND_ORPHAN_BSN_LEDGER = 'orphan_bsn_ledger'
 KIND_CONVERSION_ROLE_ERROR = 'conversion_role_error'
+KIND_IMPORT_STALE = 'import_stale'
+KIND_UNMAPPED_CODES = 'unmapped_bsn_codes'
 
 # Prod runs `gunicorn --timeout 60` (Procfile / railway.toml). A request that
 # exceeds it is SIGABRT'd mid-flight, so it cannot report itself — the warning
@@ -393,6 +395,184 @@ def record_slow_request_alert(endpoint, method, seconds, *, conn=None):
     except Exception as alert_exc:            # noqa: BLE001
         # A monitoring problem must never become the user's problem.
         print(f"[system_alerts] slow-request alert failed: {alert_exc}",
+              file=sys.stderr)
+        return None
+
+
+def record_import_staleness_alert(freshness, *, conn=None):
+    """The daily Express import has not run since the last working day.
+
+    Raised BY A REQUEST, not by a scheduler -- there is no scheduler on this
+    app (the Procfile is gunicorn and nothing else), and an absence generates
+    no event of its own. Same shape as record_slow_request_alert: something
+    that DID happen reports on something that did not.
+
+    Accepts an honest limitation: if nobody opens Sendy, nothing is raised.
+    The audience is Put, who opens it daily, and this is a real improvement on
+    a badge that was red every Monday for no reason -- not a substitute for
+    push notification.
+
+    Dedupe key is the kind alone, per _dedupe_key's rule: the missed date is a
+    diagnostic and lives in context, so a long stale stretch holds ONE open
+    alert rather than one per page view. Best-effort; a monitoring failure must
+    never become the user's problem.
+
+    Returns the alert id, or None if fresh / already open / the write failed.
+    """
+    try:
+        if not freshness or not freshness.get('is_stale'):
+            return None
+        last = freshness.get('last_at')
+        expected = freshness.get('expected_since')
+        if last:
+            msg = (f"ยังไม่ได้นำเข้าข้อมูล Express ตั้งแต่ {last[:16]} — "
+                   f"ควรมีการนำเข้าของวันที่ {expected} แล้ว "
+                   f"(นับเฉพาะวันทำงาน ไม่รวมวันอาทิตย์) "
+                   f"ยอดขาย/ซื้อ/ลูกหนี้/เจ้าหนี้ในระบบยังเป็นของรอบก่อน")
+        else:
+            msg = ("ยังไม่เคยนำเข้าข้อมูล Express (DBF) เลย — "
+                   "ตัวเลขขาย/ซื้อ/ลูกหนี้/เจ้าหนี้ทั้งหมดยังไม่มีที่มา")
+        own = conn is None
+        if own:
+            conn = get_connection()
+            conn.execute("PRAGMA busy_timeout=2000")
+        try:
+            # Steady state must be READ-ONLY. This runs on every HTML page view,
+            # and a stale stretch lasts days -- so without this check every one
+            # of those requests would take a write lock for an INSERT the
+            # dedupe index is going to discard anyway. Measured before adding
+            # it: 3.44ms per call, against 1.82ms for the read alone.
+            if conn.execute(
+                    "SELECT 1 FROM system_alerts"
+                    " WHERE kind = ? AND resolved_at IS NULL LIMIT 1",
+                    (KIND_IMPORT_STALE,)).fetchone():
+                return None
+            aid = create_system_alert(
+                KIND_IMPORT_STALE, msg,
+                dedupe_key=_dedupe_key([KIND_IMPORT_STALE]),
+                severity='warning',
+                context={'last_at': last, 'expected_since': expected,
+                         'rule': freshness.get('rule')},
+                conn=conn)
+            if own:
+                conn.commit()
+            return aid
+        finally:
+            if own:
+                conn.close()
+    except Exception as alert_exc:            # noqa: BLE001
+        print(f"[system_alerts] staleness alert failed: {alert_exc}",
+              file=sys.stderr)
+        return None
+
+
+def clear_import_staleness_alert(*, conn=None):
+    """A successful import happened -- retire any open staleness alert.
+
+    Without this the alert can only be cleared by hand, and a warning that
+    needs a human click every time it fixes itself is exactly the signal people
+    learn to ignore (the wolf-crying this phase exists to stop). The row is
+    RESOLVED, not deleted, so a missed day stays on the record.
+
+    Returns how many alerts were resolved. Best-effort, like its counterpart.
+    """
+    try:
+        own = conn is None
+        if own:
+            conn = get_connection()
+        try:
+            cur = conn.execute(
+                "UPDATE system_alerts"
+                "   SET resolved_at = datetime('now','localtime'),"
+                "       resolved_by = 'auto: นำเข้าสำเร็จ'"
+                " WHERE kind = ? AND resolved_at IS NULL", (KIND_IMPORT_STALE,))
+            if own:
+                conn.commit()
+            return cur.rowcount
+        finally:
+            if own:
+                conn.close()
+    except Exception as alert_exc:            # noqa: BLE001
+        print(f"[system_alerts] staleness clear failed: {alert_exc}",
+              file=sys.stderr)
+        return 0
+
+
+def record_unmapped_bsn_codes_alert(*, conn=None):
+    """BSN codes registered by an import with no product behind them (plan F6).
+
+    A code in this state is not an error the import can report: the row is
+    written, the batch succeeds, the ledger stays internally consistent, and
+    the sales on that code simply never deduct stock. Nothing surfaces it, so
+    it accumulates -- 7 open on prod at 2026-08-17, oldest 2026-07-30, with
+    ฿5,804 of the 08-15 sales not moving stock.
+
+    Unlike staleness this event exists at import time, so the importer raises
+    it directly rather than through a request hook.
+
+    Dedupe key is the kind alone, per _dedupe_key's rule: the count and the
+    oldest date are diagnostics. So a backlog that persists across imports
+    holds ONE open alert rather than one per import.
+
+    But dedupe must not mean the NUMBER freezes at raise time -- an alert still
+    saying 1 while 12 codes wait is its own kind of lie (Codex round 7). So an
+    already-open alert is UPDATED in place with the current count and oldest
+    date: same incident, same row, current facts.
+
+    Clears itself the moment the backlog is empty (same reasoning as
+    clear_import_staleness_alert). Best-effort throughout.
+
+    Returns the alert id, None if there is nothing to raise or one is already
+    open, and resolves any open alert when the backlog has been cleared.
+    """
+    try:
+        own = conn is None
+        if own:
+            conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n, MIN(created_at) AS oldest"
+                "  FROM product_code_mapping"
+                " WHERE product_id IS NULL AND is_ignored = 0").fetchone()
+            n = row['n'] or 0
+            if not n:
+                conn.execute(
+                    "UPDATE system_alerts"
+                    "   SET resolved_at = datetime('now','localtime'),"
+                    "       resolved_by = 'auto: ไม่เหลือรหัสค้าง'"
+                    " WHERE kind = ? AND resolved_at IS NULL",
+                    (KIND_UNMAPPED_CODES,))
+                if own:
+                    conn.commit()
+                return None
+            oldest = (row['oldest'] or '')[:10]
+            msg = (f"มีรหัส BSN ค้างไม่ได้ผูกสินค้า {n} รหัส (เก่าสุด {oldest}) — "
+                   f"บิลที่ใช้รหัสเหล่านี้ขายได้แต่ไม่ตัดสต็อก สต็อกจะเพี้ยนขึ้นเรื่อยๆ "
+                   f"ผูกให้ครบที่หน้า \"จับคู่รหัส\" (/mapping)")
+            ctx = json.dumps({'count': n, 'oldest': oldest},
+                             ensure_ascii=False)
+            updated = conn.execute(
+                "UPDATE system_alerts SET message = ?, context_json = ?"
+                " WHERE kind = ? AND resolved_at IS NULL",
+                (msg, ctx, KIND_UNMAPPED_CODES)).rowcount
+            if updated:
+                if own:
+                    conn.commit()
+                return None            # same incident, refreshed in place
+            aid = create_system_alert(
+                KIND_UNMAPPED_CODES, msg,
+                dedupe_key=_dedupe_key([KIND_UNMAPPED_CODES]),
+                severity='warning',
+                context={'count': n, 'oldest': oldest},
+                conn=conn)
+            if own:
+                conn.commit()
+            return aid
+        finally:
+            if own:
+                conn.close()
+    except Exception as alert_exc:            # noqa: BLE001
+        print(f"[system_alerts] unmapped-codes alert failed: {alert_exc}",
               file=sys.stderr)
         return None
 

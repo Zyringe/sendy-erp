@@ -7,6 +7,9 @@ Imports `_resolve_mapping` from `.mapping` and `_sync_bsn_to_stock` from
 mapping, wacc}) plus `recalculate_product_wacc` from `.wacc`.
 """
 
+import datetime
+import sqlite3
+
 from database import get_connection
 import bsn_units
 
@@ -17,6 +20,7 @@ from .wacc import (recalculate_product_wacc, preflight_batch,
 from .system_alerts import (record_wacc_identity_alert,
                             record_ignored_import_lines_alert,
                             record_orphan_bsn_ledger_alerts,
+                            record_unmapped_bsn_codes_alert,
                             create_system_alert)
 from .stock_filters import is_non_stock_code
 
@@ -430,6 +434,16 @@ def import_weekly(entries: list, file_type: str, filename: str,
     except Exception as _alert_exc:          # noqa: BLE001 - observability only
         print('[import] could not record orphan-ledger alert: %s' % _alert_exc)
 
+    # Same ownership rule, same place, same reason: this import may have just
+    # registered brand-new BSN codes with no product behind them (the block
+    # above, "Register new BSN codes in mapping table"). Those sell fine and
+    # never deduct stock, and nothing else in the app says so — 7 had piled up
+    # on prod by 2026-08-17, the oldest since 07-30. The import is the event.
+    try:
+        record_unmapped_bsn_codes_alert()
+    except Exception as _alert_exc:          # noqa: BLE001 - observability only
+        print('[import] could not record unmapped-codes alert: %s' % _alert_exc)
+
     # Same ownership rule, same connection, one over: a non-stock code whose
     # mapping row still says is_ignored=1 (a restored pre-mig-155 backup is
     # the realistic way) is a contradiction the constant just overrode. The
@@ -479,38 +493,110 @@ def get_recent_imports(limit=5):
     return rows
 
 
-def get_express_dbf_freshness(stale_after_hours=26):
+# A working day is any day that is not a Sunday and not a configured company
+# holiday. The team works Mon-Sat, which is the whole reason the old flat
+# 26-hour rule was wrong: it called every Monday stale (measured 2026-08-17 at
+# 38h with nothing actually wrong), and a signal that is wrong one working day
+# in six is one nobody reads.
+_SUNDAY = 6
+# Defensive bound on the walk backwards. company_holidays is operator-entered;
+# a bad bulk insert marking a long stretch as holiday must not spin. 30 days
+# back is far past any real closure, and hitting the cap reports the oldest day
+# examined rather than silently claiming "fresh".
+_MAX_WORKING_DAY_LOOKBACK = 30
+
+
+def _configured_holidays(conn):
+    """Holiday dates as an ISO string set. Empty (the state on prod today)
+    means the rule degrades to Sunday-only, exactly as designed -- filling the
+    table in later upgrades the rule with no code change."""
+    try:
+        return {r[0] for r in conn.execute(
+            "SELECT holiday_date FROM company_holidays") if r[0]}
+    except sqlite3.Error:
+        return set()
+
+
+def last_working_day_before(day, holidays=()):
+    """The latest working day strictly before `day` (a datetime.date)."""
+    holidays = set(holidays)
+    d = day
+    for _ in range(_MAX_WORKING_DAY_LOOKBACK):
+        d -= datetime.timedelta(days=1)
+        if d.weekday() != _SUNDAY and d.isoformat() not in holidays:
+            return d
+    return d
+
+
+def get_express_dbf_freshness(today=None, conn=None):
     """Last full Express-DBF-direct import + staleness, for the dashboard
-    freshness badge (projects/express-integration/plan.md Phase 2).
+    freshness badge and the /alerts signal (import-flow-plan Phase 2, F5).
+
+    STALE means: no import since the last COMPLETED working day. Not a
+    fixed number of hours -- the team works Mon-Sat, so a Monday morning is
+    legitimately ~40h after Saturday's import and there is nothing wrong.
+    `expected_since` is the date an import was owed by; `rule` names which
+    calendar produced it, so the badge copy cannot drift from the logic.
 
     ⚠ SCOPE: TRANSACTIONS ONLY. commit_express_dbf() imports six transactional
-    types and NO AR snapshot, so a fresh verdict here says nothing about how
-    old `express_ar_outstanding` is. The authoritative AR balance carries its
-    own contract — `cashflow.ar_aging()['age_days'] / ['is_stale']`. Keep the
-    dashboard copy explicit about that (Finding 1, 2026-08-15): a fresh DBF
-    badge next to a 71-day-old AR snapshot is how staff ended up chasing
-    balances that predated ฿494k of later sales.
+    types; the AR/AP outstanding snapshots carry their own freshness contract
+    (`cashflow.ar_aging()['age_days'] / ['is_stale']`). Keep the dashboard copy
+    explicit about that (Finding 1, 2026-08-15): a fresh DBF badge next to a
+    71-day-old AR snapshot is how staff ended up chasing balances that predated
+    ฿494k of later sales.
 
-    import_router.commit_express_dbf() always runs payments_out and
-    credit_notes_ap through import_express.run_import_records(), which
-    INSERTs an express_import_log row (source_filename='express_dbf')
-    unconditionally at the start of each call — even when that particular
-    batch has zero of those records. So MAX(imported_at) filtered to
-    source_filename='express_dbf' is a reliable "last full DBF commit"
-    marker, not just a payments/credit-note-specific one. (Column is
-    `imported_at`, not `created_at`.)
+    ⚠ THE MARKER IS THE RUN RECORD, NOT A SUB-IMPORT ROW (Codex round 7, P1).
+    This used to read MAX(imported_at) over express_import_log rows with
+    source_filename='express_dbf', described as a "last full DBF commit"
+    marker. It is not one. commit_express_dbf() runs payments_out -- which
+    COMMITS its own express_import_log row -- before credit_notes_ap and the
+    six isolated registers. A failure after that point makes the route report
+    the BSN import as failed while that row already sits there under today's
+    timestamp, so the dashboard would say fresh about an import that failed and
+    the staleness alert could even clear itself.
+
+    So the marker is the RUN record that blueprints/bsn.py writes AFTER the
+    import returns, carrying its outcome: `import_log` where
+    filename='express-dbf-upload' and notes.bsn.ok is true. That row exists
+    only for a run that actually completed the ledger import, and a VAT-only
+    upload (no `bsn` key) correctly does not refresh this book. Verified on
+    prod 2026-08-19: every historical run carries bsn.ok=1, so this keeps
+    reading the real last import rather than going falsely stale on deploy.
+
+    `today` (ISO string or date) and `conn` exist so the rule can be tested
+    against a fixed calendar; both default to the live ones.
     """
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT MAX(imported_at) AS last_at, "
-        "(julianday('now','localtime') - julianday(MAX(imported_at))) * 24.0 AS hours_stale "
-        "FROM express_import_log WHERE source_filename = 'express_dbf'"
-    ).fetchone()
-    conn.close()
+    own = conn is None
+    if own:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT MAX(imported_at) AS last_at, "
+            "(julianday('now','localtime') - julianday(MAX(imported_at))) * 24.0 AS hours_stale "
+            "  FROM import_log "
+            " WHERE filename = 'express-dbf-upload' "
+            "   AND json_extract(notes, '$.bsn.ok') = 1"
+        ).fetchone()
+        holidays = _configured_holidays(conn)
+    finally:
+        if own:
+            conn.close()
+
     last_at = row['last_at']
     hours_stale = row['hours_stale']
+
+    if today is None:
+        today = datetime.date.today()          # Bangkok: app.py sets TZ+tzset
+    elif isinstance(today, str):
+        today = datetime.date.fromisoformat(today)
+
+    expected = last_working_day_before(today, holidays)
+    last_date = last_at[:10] if last_at else None
     return {
         'last_at': last_at,
+        'last_date': last_date,
         'hours_stale': hours_stale,
-        'is_stale': last_at is None or hours_stale > stale_after_hours,
+        'expected_since': expected.isoformat(),
+        'rule': 'sunday+holidays' if holidays else 'sunday',
+        'is_stale': last_date is None or last_date < expected.isoformat(),
     }

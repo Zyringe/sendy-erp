@@ -385,6 +385,17 @@ def dashboard():
         finally:
             conn.close()
     express_freshness = models.get_express_dbf_freshness()
+    # Raise the staleness alert HERE rather than from an after_request hook.
+    # This page already computed the verdict, so the alert costs no extra read
+    # — and an after_request hook charged every HTML page in the app +4.6ms for
+    # a signal that changes at most once a day (Codex round 7). The audience is
+    # whoever opens the dashboard or the import page, which is the same
+    # audience either way. /import-express-dbf raises it too, for the same
+    # free-because-already-computed reason.
+    try:
+        models.record_import_staleness_alert(express_freshness)
+    except Exception as exc:                  # noqa: BLE001
+        print(f"[import-stale] alert failed: {exc}", file=sys.stderr)
     return render_template('dashboard.html',
                            restock_count=restock_count,
                            recent_txns=recent_txns,
