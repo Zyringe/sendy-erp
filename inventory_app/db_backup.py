@@ -189,12 +189,19 @@ def prune_backups(*, backup_dir, keep_days=DEFAULT_KEEP_DAYS,
     ``max_keep`` (whichever applies). Never touches the live DB or any non-auto
     file. Returns the deleted names.
 
-    FLOOR: the newest snapshot OF EACH REASON always survives. ``max_keep`` is
-    global, so without this the newest two backups overall win outright — and
-    two marketplace uploads on the same afternoon would evict the pre-import
-    Express snapshot, deleting precisely the rollback point that route creates
-    (Codex round 7, P2). Reasons are few and each snapshot is ~20MB, so the
-    floor is bounded and cheap; ``keep_days`` still ages everything out.
+    FLOOR: the newest snapshot of each reason survives ``max_keep``. Without it
+    the newest two backups overall win outright, and two marketplace uploads on
+    the same afternoon would evict the pre-import Express snapshot — precisely
+    the rollback point that route creates (Codex round 7, P2).
+
+    ⚠ ORDER MATTERS, and getting it wrong made backups immortal (Codex round 8,
+    P1). The age check runs FIRST and beats the floor. When the floor was
+    checked first, the newest snapshot of every reason lived forever: with the
+    reasons actually in use (unified, weekly, express_dbf, marketplace_upload,
+    pre-restore, plus naming_cascade's dynamic ones) at ~20MB each, that pins
+    ~100MB permanently on a 433MB volume and stops DEFAULT_MAX_KEEP being the
+    hard count cap its comment promises. The floor exists to survive a busy
+    afternoon, not to outlive ``keep_days``.
 
     Also reclaims stale ``.part`` files. A crash or hard kill mid-write leaves
     one behind, and it never matches _NAME_RE — which is what keeps a torn file
@@ -209,16 +216,20 @@ def prune_backups(*, backup_dir, keep_days=DEFAULT_KEEP_DAYS,
     deleted = []
     for rank, b in enumerate(backups):
         if rank == 0:
-            continue                                # floor: keep newest
-        if newest_per_reason.get(b["reason"]) == b["name"]:
-            continue                                # floor: newest per reason
+            continue                                # floor: keep newest overall
         age_days = (now - b["created_at"]).total_seconds() / 86400.0
-        if age_days > keep_days or rank >= max_keep:
-            try:
-                os.remove(b["path"])
-                deleted.append(b["name"])
-            except OSError:
-                pass
+        if age_days <= keep_days:
+            # Still fresh: the per-reason floor may protect it from max_keep.
+            if newest_per_reason.get(b["reason"]) == b["name"]:
+                continue
+            if rank < max_keep:
+                continue
+        # Aged out, or beyond max_keep with no floor claim.
+        try:
+            os.remove(b["path"])
+            deleted.append(b["name"])
+        except OSError:
+            pass
     deleted.extend(_prune_stale_parts(backup_dir, now=now))
     return deleted
 

@@ -371,16 +371,16 @@ def _snapshot_before_import(reason):
     """Full-DB snapshot right before an import commits, so an admin can roll
     the whole DB back (see /admin/backups).
 
-    Returns (info, error). Callers decide what a failure means: /import-data
-    warns and continues (its legacy contract), while /import-express-dbf
-    REFUSES unless the operator explicitly overrides — see the call site there
-    for why the two differ."""
-    info, err = db_backup.safe_create_backup(
+    Returns (info, error) and FLASHES NOTHING. Callers decide what a failure
+    means — /import-data warns and continues (its legacy contract), while
+    /import-express-dbf refuses unless the operator explicitly overrides — so
+    the helper cannot announce an outcome it does not decide. It used to flash
+    "นำเข้าต่อโดยไม่มีจุดกู้คืน" unconditionally, which meant the refusing route
+    showed the user "carrying on" and "cancelled everything" in one response
+    (Codex round 8, P2)."""
+    return db_backup.safe_create_backup(
         reason, db_path=config.DATABASE_PATH,
         backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
-    if err:
-        flash(f'⚠️ สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ ({err}) — นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
-    return info, err
 
 _REPORT_LABELS = {
     'sales': 'ขาย',
@@ -506,9 +506,14 @@ def unified_import_confirm():
     if not token or request.form.get('token') != token:
         flash('เซสชันหมดอายุ กรุณาอัปโหลดใหม่', 'warning')
         return redirect(url_for('bsn.unified_import'))
-    _snapshot_before_import('unified')   # rollback point before the ledger writes
-    # (warn-and-continue here is deliberate and unchanged: this box is a
-    #  preview/confirm flow the operator drives file by file.)
+    # Rollback point before the ledger writes. Warn-and-continue here is
+    # deliberate and unchanged: this box is a preview/confirm flow the operator
+    # drives file by file, not one destructive commit. The message lives here
+    # rather than in the helper because it states THIS route's decision.
+    _unified_info, _unified_err = _snapshot_before_import('unified')
+    if _unified_err:
+        flash(f'⚠️ สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ ({_unified_err}) — '
+              f'นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
     base = os.path.join(current_app.config['UPLOAD_FOLDER'], _IMPORT_STAGE_DIR, token)
     results = []
     for row in rows:

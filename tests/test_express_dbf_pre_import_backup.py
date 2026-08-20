@@ -135,9 +135,22 @@ def test_import_data_keeps_its_warn_and_continue_contract(tmp_db, monkeypatch):
     from app import app as flask_app
     monkeypatch.setattr(_bsn.db_backup, 'safe_create_backup',
                         lambda reason, **kw: (None, 'ดิสก์เต็ม'))
-    with flask_app.test_request_context('/import-data'):   # flash() needs one
-        info, err = _bsn._snapshot_before_import('unified')
+    info, err = _bsn._snapshot_before_import('unified')
     assert info is None and err == 'ดิสก์เต็ม'
+
+    # And the warning must still REACH the user -- moving the flash out of the
+    # helper is only correct if the caller took it over. Drive the real confirm
+    # route with an empty stage: the snapshot runs before any file work.
+    # This route RENDERS (200) rather than redirecting, so the flash is
+    # consumed into the body -- read it there, not from the session queue.
+    # Unlike the express page, this phrase is not part of this page's chrome.
+    client = _client()
+    with client.session_transaction() as sess:
+        sess['import_stage'] = {'token': 'tok1', 'rows': []}
+    body = client.post('/import-data/confirm',
+                       data={'token': 'tok1'}).get_data(as_text=True)
+    assert 'ดิสก์เต็ม' in body, 'the backup error never reached the page'
+    assert 'นำเข้าต่อโดยไม่มีจุดกู้คืน' in body
 
 
 # -- the compression level that makes the above affordable -------------------
@@ -257,3 +270,91 @@ def test_the_override_checkbox_is_actually_on_the_page(tmp_db):
     html = _client().get('/import-express-dbf').get_data(as_text=True)
     assert 'name="force_no_backup"' in html
     assert 'id="force_no_backup"' in html
+
+
+def test_an_aged_out_snapshot_dies_even_if_it_is_newest_for_its_reason(tmp_path):
+    """Codex round 8, P1 -- my bug.
+
+    The per-reason floor `continue`d BEFORE the age check, so the newest
+    snapshot of every reason lived forever. My own commit message claimed
+    "keep_days still ages everything out"; it did not. With ~5 live reasons at
+    ~20MB each on a 433MB volume that is 100MB pinned permanently, and
+    DEFAULT_MAX_KEEP stops being the hard count cap its comment promises.
+
+    Age must beat the floor: the floor exists to stop a same-day marketplace
+    upload evicting the Express rollback point, not to make backups immortal.
+    """
+    import datetime
+    import sqlite3
+    src = tmp_path / 'src.db'
+    sqlite3.connect(str(src)).execute('CREATE TABLE t (v)')
+    bdir = tmp_path / 'b'
+
+    old = datetime.datetime(2026, 6, 1, 12, 0, 0)          # ~80 days before
+    now = datetime.datetime(2026, 8, 20, 12, 0, 0)
+    db_backup.create_backup('express_dbf', db_path=str(src),
+                            backup_dir=str(bdir), now=old)
+    # Control BEFORE anything can prune it: create_backup prunes on every call,
+    # so checking after the later ones would race the very behaviour under test.
+    assert [b['reason'] for b in db_backup.list_backups(backup_dir=str(bdir))] \
+        == ['express_dbf']
+
+    db_backup.create_backup('unified', db_path=str(src),
+                            backup_dir=str(bdir), now=now)
+    db_backup.create_backup('marketplace_upload', db_path=str(src),
+                            backup_dir=str(bdir), now=now)
+    db_backup.prune_backups(backup_dir=str(bdir), now=now)
+
+    reasons = [b['reason'] for b in db_backup.list_backups(backup_dir=str(bdir))]
+    assert 'express_dbf' not in reasons, (
+        'an 80-day-old snapshot must age out even as newest for its reason')
+    assert reasons, 'pruning must not empty the directory'
+
+
+def test_the_floor_still_protects_a_fresh_express_snapshot(tmp_path):
+    """Control for the test above: the age rule must not undo P2's fix. Same
+    setup, all three fresh."""
+    import datetime
+    import sqlite3
+    src = tmp_path / 'src.db'
+    sqlite3.connect(str(src)).execute('CREATE TABLE t (v)')
+    bdir = tmp_path / 'b'
+    t0 = datetime.datetime(2026, 8, 20, 12, 0, 0)
+    db_backup.create_backup('express_dbf', db_path=str(src),
+                            backup_dir=str(bdir), now=t0)
+    for i in (1, 2, 3):
+        db_backup.create_backup('marketplace_upload', db_path=str(src),
+                                backup_dir=str(bdir),
+                                now=t0 + datetime.timedelta(minutes=i))
+    db_backup.prune_backups(backup_dir=str(bdir),
+                            now=t0 + datetime.timedelta(minutes=4))
+    reasons = [b['reason'] for b in db_backup.list_backups(backup_dir=str(bdir))]
+    assert 'express_dbf' in reasons, reasons
+
+
+def test_the_refusal_does_not_also_say_it_is_carrying_on(tmp_db, monkeypatch,
+                                                         trace):
+    """Codex round 8, P2. The helper used to flash "นำเข้าต่อโดยไม่มีจุดกู้คืน"
+    unconditionally, so a refused upload showed the user BOTH that and
+    "ยกเลิกทั้งไฟล์ ไม่มีการนำเข้าใดๆ" in one response. Follow the redirect and
+    read the rendered flashes."""
+    monkeypatch.setattr(bsn.db_backup, 'safe_create_backup',
+                        lambda reason, **kw: (None, 'ดิสก์เต็ม'))
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    client = _client()
+    client.post('/import-express-dbf/upload',
+                data={'file': (_zip_bytes([('data/ARTRN.DBF', b'x')]),
+                               'daily.zip')},
+                content_type='multipart/form-data')
+
+    # Read the FLASH QUEUE, not the rendered page: the phrase under test is
+    # also the override checkbox's own label, so a body substring check would
+    # match the page chrome and could never fail. (It did exactly that on the
+    # first version of this test.)
+    with client.session_transaction() as sess:
+        msgs = [m for _cat, m in sess.get('_flashes', [])]
+    assert msgs, 'no flash at all -- the test is not reaching the guard'
+    assert any('ยกเลิกทั้งไฟล์' in m for m in msgs), msgs      # control: refused
+    assert not any('— นำเข้าต่อโดยไม่มีจุดกู้คืน' in m for m in msgs), (
+        'the refusal must not also flash that the import carried on: %s' % msgs)
+    assert ('import', None) not in trace
