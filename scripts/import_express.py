@@ -91,11 +91,49 @@ def _product_id_by_code(conn, code, unit=None):
 
 
 # ── per-file-type writers ────────────────────────────────────────────────────
-def _existing_doc_nos(conn, table):
-    return {r[0] for r in conn.execute(f'SELECT doc_no FROM {table}').fetchall()}
+def _existing_doc_nos(conn, table, company_id):
+    """Document numbers this COMPANY has already imported into `table`.
+
+    Scoped to company_id on purpose: the CLI advertises --company BSN|SD, and
+    Express numbers documents per company, so BSN's PS0001815 says nothing
+    about whether SD has one. An unscoped key silently skipped whichever
+    company imported second (Codex Express Integration review 2026-08-20, P2).
+    """
+    return {r[0] for r in conn.execute(
+        f'SELECT doc_no FROM {table} WHERE company_id = ?', (company_id,)).fetchall()}
 
 
-def _import_credit_notes_records(conn, records, batch_id, company_id, incremental=True):
+def _delete_existing_doc(conn, header_table, child_table, child_fk, company_id, doc_no,
+                        batch_id):
+    """Clear one (company_id, doc_no) document so it can be written afresh.
+
+    Children first, then the header, and BOTH explicitly: every Express import
+    runs under `PRAGMA foreign_keys = OFF` (matching app behaviour), so the
+    schema's ON DELETE CASCADE never fires and relying on it would strand the
+    child rows as orphans pointing at a header id that no longer exists.
+
+    Caller-scoped by company_id — a refresh of BSN's PS0001815 must not touch
+    SD's document of the same number.
+
+    Scoped to PRIOR batches (`batch_id <> ?`) as well: clearing the row this
+    same batch just wrote would make `UNIQUE(batch_id, doc_no)` unreachable, and
+    that constraint is the only structural duplicate guard these tables have.
+    Two records for one doc_no in a single import must still roll the batch back
+    loudly rather than silently becoming last-write-wins.
+    """
+    conn.execute(
+        f'DELETE FROM {child_table} WHERE {child_fk} IN '
+        f'(SELECT id FROM {header_table} '
+        f' WHERE company_id = ? AND doc_no = ? AND batch_id <> ?)',
+        (company_id, doc_no, batch_id))
+    conn.execute(
+        f'DELETE FROM {header_table} '
+        f' WHERE company_id = ? AND doc_no = ? AND batch_id <> ?',
+        (company_id, doc_no, batch_id))
+
+
+def _import_credit_notes_records(conn, records, batch_id, company_id, incremental=True,
+                                 replace_existing=False):
     """Shared write step behind _import_credit_notes (text-report path,
     which converts p_cn.parse_credit_notes()'s CreditNote objects to dicts
     via dataclasses.asdict) and the Express DBF-direct path
@@ -107,13 +145,18 @@ def _import_credit_notes_records(conn, records, batch_id, company_id, incrementa
     is_cleared, is_void, type_code, note, lines=[{line_no, product_code,
     product_name, qty, unit, unit_price, discount, line_total, is_cleared}].
     """
-    skip = _existing_doc_nos(conn, 'express_credit_notes') if incremental else set()
+    skip = (_existing_doc_nos(conn, 'express_credit_notes', company_id)
+            if incremental and not replace_existing else set())
     skipped = 0
     line_count = 0
     for r in records:
         if r['doc_no'] in skip:
             skipped += 1
             continue
+        if replace_existing:
+            _delete_existing_doc(conn, 'express_credit_notes',
+                                 'express_credit_note_lines', 'credit_note_id',
+                                 company_id, r['doc_no'], batch_id)
         cur = conn.execute("""
             INSERT INTO express_credit_notes
                 (batch_id, doc_no, date_iso, company_id, supplier_name, supplier_id,
@@ -151,7 +194,7 @@ def _import_credit_notes(conn, path, batch_id, company_id, incremental=True):
 
 def _import_payments_in(conn, path, batch_id, company_id, incremental=True):
     records = list(p_pin.parse_payments_in(path))
-    skip = _existing_doc_nos(conn, 'express_payments_in') if incremental else set()
+    skip = _existing_doc_nos(conn, 'express_payments_in', company_id) if incremental else set()
     skipped = 0
     line_count = 0
     for r in records:
@@ -379,7 +422,8 @@ def _import_ap_snapshot_records(conn, records, batch_id, company_id,
     return len(records), 0
 
 
-def _import_payments_out_records(conn, records, batch_id, company_id, incremental=True):
+def _import_payments_out_records(conn, records, batch_id, company_id, incremental=True,
+                                 replace_existing=False):
     """Shared write step behind _import_payments_out (text-report path,
     which converts p_pout.parse_payments_out()'s APPayment objects to dicts
     via dataclasses.asdict) and the Express DBF-direct path
@@ -393,13 +437,18 @@ def _import_payments_out_records(conn, records, batch_id, company_id, incrementa
     cheque_status, note, receive_refs=[{receive_doc, receive_date_iso,
     invoice_ref, amount}].
     """
-    skip = _existing_doc_nos(conn, 'express_payments_out') if incremental else set()
+    skip = (_existing_doc_nos(conn, 'express_payments_out', company_id)
+            if incremental and not replace_existing else set())
     skipped = 0
     line_count = 0
     for r in records:
         if r['doc_no'] in skip:
             skipped += 1
             continue
+        if replace_existing:
+            _delete_existing_doc(conn, 'express_payments_out',
+                                 'express_payment_out_receive_refs', 'payment_out_id',
+                                 company_id, r['doc_no'], batch_id)
         cur = conn.execute("""
             INSERT INTO express_payments_out
                 (batch_id, doc_no, date_iso, company_id,
@@ -440,8 +489,10 @@ def _import_sales(conn, path, batch_id, company_id, incremental=True):
     # sales: dedupe by (doc_no, line_no) since one invoice has many lines
     skip = set()
     if incremental:
+        # Company-scoped like every other dedup key here — see _existing_doc_nos.
         skip = {(r[0], r[1]) for r in conn.execute(
-            'SELECT doc_no, line_no FROM express_sales').fetchall()}
+            'SELECT doc_no, line_no FROM express_sales WHERE company_id = ?',
+            (company_id,)).fetchall()}
     skipped = 0
     for r in records:
         if (r.doc_no, r.line_no) in skip:
@@ -612,8 +663,17 @@ def run_import_records(file_type, records, company_code='BSN', db_path=None,
                 conn, records, batch_id, company_id, incremental=incremental,
                 entity=company_code, snapshot_date=snapshot_date)
         else:
+            # replace_existing: this entry point IS the Express DBF-direct path,
+            # and the daily zip is authoritative for the documents it carries —
+            # `cutoff` filters HEADERS, never the child rows within one, so every
+            # document present arrives with its COMPLETE child set. A corrected PS
+            # or GR must therefore overwrite what Sendy holds instead of being
+            # skipped forever (Codex Express Integration review 2026-08-20, P1).
+            # The text-report writers keep their incremental skip by default:
+            # a printed report can legitimately cover only part of a period.
             record_count, line_count = _RECORDS_IMPORTERS[file_type](
-                conn, records, batch_id, company_id, incremental=incremental)
+                conn, records, batch_id, company_id, incremental=incremental,
+                replace_existing=True)
         conn.execute("""
             UPDATE express_import_log
             SET record_count = ?, line_count = ?
