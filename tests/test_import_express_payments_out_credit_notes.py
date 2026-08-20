@@ -52,13 +52,13 @@ def _new_batch(conn, file_type, code='BSN'):
 # ── 1. _import_payments_out_records ─────────────────────────────────────────
 
 def _payment_out_record(doc_no='PS9999001', supplier_name='ซัพพลายเออร์ A',
-                         invoice_amount=8540.00, receive_refs=None):
+                         invoice_amount=8540.00, receive_refs=None, note=''):
     return {
         'doc_no': doc_no, 'date_iso': '2026-05-01', 'supplier_name': supplier_name,
         'is_void': False, 'deposit_applied': 0.0, 'invoice_amount': invoice_amount,
         'cash_amount': 0.0, 'cheque_amount': 0.0, 'interest_amount': 0.0,
         'discount_amount': 0.0, 'vat_amount': 0.0, 'cheque_no': '',
-        'cheque_date_iso': '', 'bank': '', 'cheque_status': '', 'note': '',
+        'cheque_date_iso': '', 'bank': '', 'cheque_status': '', 'note': note,
         'receive_refs': receive_refs or [
             {'receive_doc': 'RR6600291', 'receive_date_iso': None,
              'invoice_ref': None, 'amount': invoice_amount},
@@ -121,12 +121,12 @@ def test_import_payments_out_records_skips_existing_doc_no(tmp_db):
 # ── 2. _import_credit_notes_records (AP side: ใบลดหนี้ — ส่งคืน) ────────────
 
 def _credit_note_ap_record(doc_no='GR9999001', supplier_name='ซัพพลายเออร์ B',
-                            total=390.00, lines=None):
+                            total=390.00, lines=None, note=''):
     return {
         'doc_no': doc_no, 'date_iso': '2024-06-01', 'supplier_name': supplier_name,
         'ref_doc': 'RR9999001', 'v_flag': 0, 'discount': 0.0, 'vat': 0.0,
         'total': total, 'is_cleared': False, 'is_void': False, 'type_code': None,
-        'note': '',
+        'note': note,
         'lines': lines if lines is not None else [
             {'line_no': 1, 'product_code': '532ด6515', 'product_name': 'ดอกสว่าน',
              'qty': 3.0, 'unit': 'ดก', 'unit_price': 235.0, 'discount': '',
@@ -560,6 +560,91 @@ def test_dbf_replay_refreshes_a_corrected_credit_note(tmp_db):
     assert rows[0][1] == 'ผู้ขายที่แก้แล้ว'
     assert _cn_lines(tmp_db) == [(1, '999x9999', pytest.approx(1250.00))], \
         'the line set must be exactly B'
+
+
+def _pout_note(tmp_db, doc_no=_RPS):
+    conn = sqlite3.connect(tmp_db)
+    note = conn.execute("SELECT note FROM express_payments_out WHERE doc_no = ?",
+                        (doc_no,)).fetchone()[0]
+    conn.close()
+    return note
+
+
+def test_dbf_replay_keeps_a_richer_existing_note(tmp_db):
+    """The printed report captured more than APTRN.YOUREF holds — 24 of 281
+    shared documents. A refresh must not shorten the operator's own note."""
+    _forget(tmp_db)
+    a = _payment_out_record(doc_no=_RPS,
+                            note='711\xa0โอน\xa037,635\nVAT 26,613\nอานี\xa037635')
+    ie.run_import_records('payments_out', [a], db_path=tmp_db)
+    assert 'VAT 26,613' in _pout_note(tmp_db), 'setup'
+
+    b = _payment_out_record(doc_no=_RPS, note='711 โอน 37,635')
+    ie.run_import_records('payments_out', [b], db_path=tmp_db)
+
+    assert 'VAT 26,613' in _pout_note(tmp_db), \
+        'a truncated YOUREF must not overwrite the fuller stored note'
+
+
+def test_dbf_replay_keeps_the_existing_note_when_the_dbf_has_none(tmp_db):
+    """24 shared documents have a stored note against a blank YOUREF."""
+    _forget(tmp_db)
+    a = _payment_out_record(doc_no=_RPS, note='V 12,643   สด 63,171')
+    ie.run_import_records('payments_out', [a], db_path=tmp_db)
+
+    ie.run_import_records('payments_out', [_payment_out_record(doc_no=_RPS, note='')],
+                          db_path=tmp_db)
+
+    assert _pout_note(tmp_db) == 'V 12,643   สด 63,171'
+
+
+def test_dbf_replay_takes_a_genuinely_new_note(tmp_db):
+    """Preservation must not freeze the field: a note Express actually changed
+    still lands, or a correction could never reach Sendy."""
+    _forget(tmp_db)
+    ie.run_import_records('payments_out',
+                          [_payment_out_record(doc_no=_RPS, note='พุธ392 โอน')],
+                          db_path=tmp_db)
+
+    ie.run_import_records('payments_out',
+                          [_payment_out_record(doc_no=_RPS, note='ซ้อโอน')],
+                          db_path=tmp_db)
+
+    assert _pout_note(tmp_db) == 'ซ้อโอน'
+
+
+def test_dbf_replay_writes_the_note_on_a_document_sendy_has_never_seen(tmp_db):
+    """The ordinary case, and the reason YOUREF is mapped at all: a new PS
+    arrives from the daily zip carrying its note."""
+    _forget(tmp_db)
+
+    ie.run_import_records('payments_out',
+                          [_payment_out_record(doc_no=_RPS, note='ซ้อโอน')],
+                          db_path=tmp_db)
+
+    assert _pout_note(tmp_db) == 'ซ้อโอน'
+
+
+def _cn_note(tmp_db, doc_no=_RGR):
+    conn = sqlite3.connect(tmp_db)
+    note = conn.execute("SELECT note FROM express_credit_notes WHERE doc_no = ?",
+                        (doc_no,)).fetchone()[0]
+    conn.close()
+    return note
+
+
+def test_dbf_replay_keeps_a_richer_existing_credit_note_note(tmp_db):
+    """Same contract on the GR side — YOUREF is non-empty on only 9 of
+    BSN5657's 444 credit notes, so a refresh would otherwise blank the rest."""
+    _forget(tmp_db)
+    a = _credit_note_ap_record(doc_no=_RGR, note='คืนของชำรุด\nรับเครดิตแล้ว')
+    ie.run_import_records('credit_notes', [a], db_path=tmp_db)
+    assert 'รับเครดิตแล้ว' in _cn_note(tmp_db), 'setup'
+
+    ie.run_import_records('credit_notes', [_credit_note_ap_record(doc_no=_RGR, note='')],
+                          db_path=tmp_db)
+
+    assert 'รับเครดิตแล้ว' in _cn_note(tmp_db)
 
 
 def test_dbf_replay_drops_a_child_that_vanished(tmp_db):

@@ -76,17 +76,28 @@ def _arrcpit(rcpnum, docnum, rectyp, rcvamt):
     return {'RCPNUM': rcpnum, 'DOCNUM': docnum, 'RECTYP': rectyp, 'RCVAMT': rcvamt}
 
 
-def _aptrn_ps(docnum, *, supcod='S001', rcvamt=0.0, docdat=None):
+def _aptrn_ps(docnum, *, supcod='S001', rcvamt=0.0, docdat=None,
+              cshpay=0.0, chqpay=0.0, discamt=0.0, intpay=0.0,
+              docstat='N', youref=''):
     """APTRN PS header row (RECTYP='9', payments_out). RCVAMT is the correct
-    field per the trap — NOT PAYAMT."""
+    field per the trap — NOT PAYAMT.
+
+    The header also carries its own settlement breakdown, verified on
+    BSN5657's 1,985 PS headers (2026-08-20): CSHPAY + CHQPAY + DISCAMT
+    - INTPAY == RCVAMT holds 1985/1985."""
     return {
         'DOCNUM': docnum, 'RECTYP': '9', 'SUPCOD': supcod, 'RCVAMT': rcvamt,
         'DOCDAT': docdat or datetime.date(2026, 5, 1),
+        'CSHPAY': cshpay, 'CHQPAY': chqpay, 'DISCAMT': discamt, 'INTPAY': intpay,
+        'DOCSTAT': docstat, 'YOUREF': youref,
     }
 
 
-def _aprcpit(rcpnum, docnum, payamt):
-    return {'RCPNUM': rcpnum, 'DOCNUM': docnum, 'PAYAMT': payamt}
+def _aprcpit(rcpnum, docnum, payamt, rectyp='3'):
+    """APRCPIT allocation line. RECTYP '3' settles an RR invoice; '5' is a GR
+    credit applied to the payment and is stored UNSIGNED, like ARRCPIT's SR
+    lines."""
+    return {'RCPNUM': rcpnum, 'DOCNUM': docnum, 'PAYAMT': payamt, 'RECTYP': rectyp}
 
 
 def _artrn_sr(docnum, *, cuscod='C001', sonum=None, total=0.0, docdat=None):
@@ -97,13 +108,14 @@ def _artrn_sr(docnum, *, cuscod='C001', sonum=None, total=0.0, docdat=None):
     }
 
 
-def _aptrn_gr(docnum, *, supcod='S001', docdat=None):
+def _aptrn_gr(docnum, *, supcod='S001', docdat=None, docstat='N', youref=''):
     """APTRN GR header row (RECTYP='5', DOCNUM LIKE 'GR%' — credit_notes_ap).
     Own money fields are always 0 on GR rows; the real total is the STCRD
     line sum."""
     return {
         'DOCNUM': docnum, 'RECTYP': '5', 'SUPCOD': supcod,
         'DOCDAT': docdat or datetime.date(2024, 6, 1),
+        'DOCSTAT': docstat, 'YOUREF': youref,
     }
 
 
@@ -656,6 +668,88 @@ def test_build_payments_out_records_excludes_out_of_scope_rectyp():
     assert records == []
 
 
+def test_build_payments_out_records_splits_cash_and_cheque_from_header():
+    """APTRN PS headers carry their own settlement split. Leaving cash/cheque
+    at 0 made every DBF payment read as ฿0 on /ap."""
+    aptrn = [_aptrn_ps('PS0002091', rcvamt=7000.00, cshpay=5000.00, chqpay=2000.00)]
+
+    records = build_payments_out_records(aptrn, [], [])
+
+    assert records[0]['cash_amount'] == 5000.00
+    assert records[0]['cheque_amount'] == 2000.00
+
+
+def test_build_payments_out_records_carries_discount_and_interest():
+    aptrn = [_aptrn_ps('PS0002092', rcvamt=28964.81, cshpay=28964.00, discamt=0.81)]
+
+    records = build_payments_out_records(aptrn, [], [])
+
+    assert records[0]['discount_amount'] == 0.81
+    assert records[0]['interest_amount'] == 0.0
+
+
+def test_build_payments_out_records_settlement_split_reconciles_to_rcvamt():
+    """The header invariant, measured 1985/1985 on BSN5657:
+    CSHPAY + CHQPAY + DISCAMT - INTPAY == RCVAMT."""
+    aptrn = [_aptrn_ps('PS0002094', rcvamt=17631.34, cshpay=17631.00, discamt=0.34)]
+
+    r = build_payments_out_records(aptrn, [], [])[0]
+
+    assert (r['cash_amount'] + r['cheque_amount']
+            + r['discount_amount'] - r['interest_amount']) == r['invoice_amount']
+
+
+def test_build_payments_out_records_interest_offset_has_no_cash_split():
+    """PS0000E02's shape: an invoice netted against interest. No money moved as
+    cash or cheque, so BOTH stay 0 and the document is correctly worth ฿0 paid —
+    this is the population the /ap fallback was written to protect, and the
+    reason reading the header directly is safe."""
+    aptrn = [_aptrn_ps('PS0000E02', rcvamt=-2052.00, intpay=2052.00)]
+
+    r = build_payments_out_records(aptrn, [], [])[0]
+
+    assert r['cash_amount'] == 0.0
+    assert r['cheque_amount'] == 0.0
+    assert r['interest_amount'] == 2052.00
+    assert r['invoice_amount'] == -2052.00
+
+
+def test_build_payments_out_records_gr_allocation_is_negated():
+    """APRCPIT stores a GR credit (RECTYP='5') unsigned, like ARRCPIT's SR
+    lines. Summed as-stored the refs tie to RCVAMT on only 1719 of 1985 PS
+    headers; negated, 1985/1985."""
+    aptrn = [_aptrn_ps('PS0001357', rcvamt=1500.00, cshpay=1500.00)]
+    aprcpit = [_aprcpit('PS0001357', 'RR6600291', 2000.00),
+               _aprcpit('PS0001357', 'GR6700007', 500.00, rectyp='5')]
+
+    r = build_payments_out_records(aptrn, aprcpit, [])[0]
+
+    assert [ref['amount'] for ref in r['receive_refs']] == [2000.00, -500.00]
+    assert sum(ref['amount'] for ref in r['receive_refs']) == r['invoice_amount']
+
+
+def test_build_payments_out_records_cancelled_docstat_is_void():
+    """DOCSTAT 'C' is Express's cancelled flag. Hardcoding is_void False meant a
+    replay could silently un-void a cancelled payment."""
+    aptrn = [_aptrn_ps('PS0000942', rcvamt=0.0, docstat='C')]
+
+    assert build_payments_out_records(aptrn, [], [])[0]['is_void'] is True
+
+
+def test_build_payments_out_records_ordinary_docstat_is_not_void():
+    aptrn = [_aptrn_ps('PS0002097', rcvamt=8540.00, cshpay=8540.00, docstat='M')]
+
+    assert build_payments_out_records(aptrn, [], [])[0]['is_void'] is False
+
+
+def test_build_payments_out_records_note_from_youref():
+    """YOUREF is the operator's Thai note — it ties to the text report's own
+    note column on 233 of 281 shared documents."""
+    aptrn = [_aptrn_ps('PS0002103', rcvamt=8540.00, cshpay=8540.00, youref='ซ้อโอน')]
+
+    assert build_payments_out_records(aptrn, [], [])[0]['note'] == 'ซ้อโอน'
+
+
 # ── credit_notes_ar (→ import_credit_notes.import_credit_note_amounts_records) ──
 
 def test_build_credit_notes_ar_records_basic_mapping():
@@ -771,6 +865,21 @@ def test_build_credit_notes_ap_records_excludes_non_gr_docnum():
     records = build_credit_notes_ap_records(aptrn, [], [])
 
     assert records == []
+
+
+def test_build_credit_notes_ap_records_cancelled_docstat_is_void():
+    """Same DOCSTAT contract on GR headers: 10 of BSN5657's 444 are cancelled,
+    and the text report's own is_void agrees with DOCSTAT=='C' on 33/33 of the
+    credit notes present in both."""
+    aptrn = [_aptrn_gr('GR6700007', docstat='C')]
+
+    assert build_credit_notes_ap_records(aptrn, [], [])[0]['is_void'] is True
+
+
+def test_build_credit_notes_ap_records_note_from_youref():
+    aptrn = [_aptrn_gr('GR6700012', youref='คืนของชำรุด')]
+
+    assert build_credit_notes_ap_records(aptrn, [], [])[0]['note'] == 'คืนของชำรุด'
 
 
 def test_build_credit_notes_ap_records_excludes_out_of_scope_rectyp():

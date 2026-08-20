@@ -103,6 +103,38 @@ def _existing_doc_nos(conn, table, company_id):
         f'SELECT doc_no FROM {table} WHERE company_id = ?', (company_id,)).fetchall()}
 
 
+def _preserved_note(conn, header_table, company_id, doc_no, incoming):
+    """The note a refresh should write — never a worse one than is already stored.
+
+    Express keeps the operator's remark in one short APTRN.YOUREF field; the
+    printed report captured more. Measured against BSN5657 on 2026-08-20: of the
+    281 payments_out documents present in both, 233 agree exactly, 24 have a
+    stored note where YOUREF is blank, and 24 more are longer than YOUREF (the
+    report holds several lines, YOUREF only the first). On the GR side YOUREF is
+    non-empty on just 9 of 444. Replacing blindly would erase the team's own
+    handwriting on every one of those, silently, on the next daily zip.
+
+    So: keep what is stored when the incoming note is blank or is merely a
+    prefix of it; take the incoming note otherwise, so a real correction in
+    Express still reaches Sendy.
+
+    # simplify: prefix test, not a merge. A correction that happens to be a
+    # prefix of the old note (฿5,000 → ฿500) would keep the stale text; upgrade
+    # to tracking note provenance per row if that ever shows up in real data.
+    """
+    if not (row := conn.execute(
+            f'SELECT note FROM {header_table} WHERE company_id = ? AND doc_no = ?',
+            (company_id, doc_no)).fetchone()):
+        return incoming
+    stored = row[0] or ''
+    norm = lambda t: ' '.join((t or '').replace('\xa0', ' ').split())   # noqa: E731
+    if not norm(incoming):
+        return stored
+    if norm(stored).startswith(norm(incoming)):
+        return stored
+    return incoming
+
+
 def _delete_existing_doc(conn, header_table, child_table, child_fk, company_id, doc_no,
                         batch_id):
     """Clear one (company_id, doc_no) document so it can be written afresh.
@@ -153,7 +185,10 @@ def _import_credit_notes_records(conn, records, batch_id, company_id, incrementa
         if r['doc_no'] in skip:
             skipped += 1
             continue
+        note = r['note']
         if replace_existing:
+            note = _preserved_note(conn, 'express_credit_notes',
+                                   company_id, r['doc_no'], note)
             _delete_existing_doc(conn, 'express_credit_notes',
                                  'express_credit_note_lines', 'credit_note_id',
                                  company_id, r['doc_no'], batch_id)
@@ -167,7 +202,7 @@ def _import_credit_notes_records(conn, records, batch_id, company_id, incrementa
             batch_id, r['doc_no'], r['date_iso'], company_id, r['supplier_name'],
             _supplier_id_by_name(conn, r['supplier_name']),
             r['ref_doc'], r['discount'], r['vat'], r['total'],
-            int(r['is_cleared']), int(r['is_void']), r['type_code'], r['note'],
+            int(r['is_cleared']), int(r['is_void']), r['type_code'], note,
         ))
         cn_id = cur.lastrowid
         for ln in r['lines']:
@@ -445,7 +480,10 @@ def _import_payments_out_records(conn, records, batch_id, company_id, incrementa
         if r['doc_no'] in skip:
             skipped += 1
             continue
+        note = r['note']
         if replace_existing:
+            note = _preserved_note(conn, 'express_payments_out',
+                                   company_id, r['doc_no'], note)
             _delete_existing_doc(conn, 'express_payments_out',
                                  'express_payment_out_receive_refs', 'payment_out_id',
                                  company_id, r['doc_no'], batch_id)
@@ -466,7 +504,7 @@ def _import_payments_out_records(conn, records, batch_id, company_id, incrementa
             r['supplier_name'], _supplier_id_by_name(conn, r['supplier_name']), int(r['is_void']),
             r['deposit_applied'], r['invoice_amount'], r['cash_amount'], r['cheque_amount'],
             r['interest_amount'], r['discount_amount'], r['vat_amount'],
-            r['cheque_no'], r['cheque_date_iso'], r['bank'], r['cheque_status'], r['note'],
+            r['cheque_no'], r['cheque_date_iso'], r['bank'], r['cheque_status'], note,
         ))
         pid = cur.lastrowid
         for ref in r['receive_refs']:

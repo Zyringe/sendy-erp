@@ -134,30 +134,15 @@ def express_ap_dashboard():
 
 # ── Unified AP page ───────────────────────────────────────────────────────────
 
-# The one canonical "how much did we actually pay" expression for
-# express_payments_out. All three /ap surfaces below share it, because the
-# finding that produced it was three queries agreeing on a WRONG formula —
-# splitting them again is how the page drifts back apart.
-#
-# cash_amount + cheque_amount is the real split wherever Express's printed
-# report supplied it. The DBF-direct adapter cannot supply it: MAPPING.md §4
-# flags the APRCPCQ cash-vs-cheque split as unverified, so
-# express_dbf_source.build_payments_out_records() stores only the verified
-# APTRN.RCVAMT (into invoice_amount) and leaves the split at 0.0. For those
-# rows the verified amount IS the amount paid, and reading the split instead
-# put every new daily payment on this page at ฿0.
-#
-# Scoped by batch PROVENANCE, not by "the split happens to be 0": a manually
-# imported row can legitimately carry a 0/0 split without a missing split
-# (PS0000E02 nets an invoice against interest_amount and is correctly ฿0 paid).
-# Widening the rule to every zero-split row would silently restate it.
-_AP_PAID_AMOUNT = """
-        CASE WHEN (cash_amount + cheque_amount) = 0
-              AND batch_id IN (SELECT id FROM express_import_log
-                                WHERE source_filename = 'express_dbf')
-             THEN invoice_amount
-             ELSE cash_amount + cheque_amount
-         END"""
+# "How much did we actually pay" is `cash_amount + cheque_amount`, and all three
+# /ap surfaces below must keep saying it the same way: the 2026-08-20 finding was
+# three queries agreeing on one WRONG formula, and splitting them apart is how
+# the page drifts back. Every source populates the split — the DBF adapter reads
+# APTRN's own CSHPAY/CHQPAY, which reconcile to RCVAMT on 1985/1985 PS headers —
+# so a header with no split genuinely moved no cash (an interest offset, or a
+# ฿0.00 document) and correctly totals ฿0 here. Do NOT reintroduce a fallback to
+# invoice_amount: on BSN5657 that renders 7 interest offsets, −฿224,567.22, as
+# money paid.
 
 
 @bp_accounting.route('/ap')
@@ -176,7 +161,7 @@ def ap_dashboard():
     ap = models.get_ap_outstanding(conn)
     summary = conn.execute("""
         SELECT COUNT(*) AS n_payments, COUNT(DISTINCT supplier_name) AS n_suppliers,
-               ROUND(SUM(""" + _AP_PAID_AMOUNT + """), 2) AS total_paid
+               ROUND(SUM(cash_amount + cheque_amount), 2) AS total_paid
           FROM express_payments_out
          WHERE is_void = 0 AND date_iso BETWEEN ? AND ?
     """, (date_from, date_to)).fetchone()
@@ -187,7 +172,7 @@ def ap_dashboard():
         ctx['pay_rows'] = [dict(r) for r in conn.execute("""
             SELECT supplier_name, COUNT(*) AS payments,
                    ROUND(SUM(invoice_amount), 2) AS invoice_total,
-                   ROUND(SUM(""" + _AP_PAID_AMOUNT + """), 2) AS paid_total,
+                   ROUND(SUM(cash_amount + cheque_amount), 2) AS paid_total,
                    ROUND(SUM(discount_amount), 2) AS discount_total,
                    MAX(date_iso) AS last_paid
               FROM express_payments_out
@@ -208,7 +193,7 @@ def ap_dashboard():
     if tab == 'payments':
         ctx['recent'] = [dict(r) for r in conn.execute("""
             SELECT doc_no, date_iso, supplier_name, invoice_amount,
-                   (""" + _AP_PAID_AMOUNT + """) AS paid, note
+                   (cash_amount + cheque_amount) AS paid, note
               FROM express_payments_out
              WHERE is_void = 0 AND date_iso BETWEEN ? AND ?
              ORDER BY date_iso DESC, doc_no DESC LIMIT 50
