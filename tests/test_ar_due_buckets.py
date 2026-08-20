@@ -168,6 +168,9 @@ def test_the_ar_page_renders_the_buckets(tmp_db):
     assert 'ยังไม่รวมสมุด VAT' in body
     # and the page must not overclaim: it shows amounts, not a call list
     assert 'ยังไม่ได้บอกว่า' in body
+    # and it must NOT tell anyone these need no chasing -- 15 of 17 such rows
+    # on prod are already past their own due date (Codex round 13)
+    assert 'ไม่ต้องตามซ้ำ' not in body
 
 
 # ── Codex round 11 ───────────────────────────────────────────────────────────

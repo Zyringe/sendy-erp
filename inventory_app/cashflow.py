@@ -172,20 +172,10 @@ def cash_in_by_month(date_from: Optional[str] = None,
 AR_DUE_BUCKETS = (
     ('chase_now',      'ตามได้เลย'),
     ('not_yet_due',    'ยังไม่ถึงกำหนด'),
-    ('already_billed', 'วางบิลแล้ว'),
+    ('already_billed', 'วางบิลแล้ว — ติดตามรอบจ่าย'),
     ('credits',        'ใบลดหนี้ (หักออก)'),
 )
 
-# BSN_AR_PREDICATE with every column qualified to the outstanding table.
-# Its own docstring says bare names are safe "since only express_ar_outstanding
-# has these columns" — that stops being true the moment express_billing_notes
-# is joined, because it carries `entity` AND `bill_no` too (verified: the
-# unqualified form fails with "ambiguous column name: entity"). One definition,
-# derived from the canonical one so the two cannot drift.
-_BSN_AR_PREDICATE_A = (BSN_AR_PREDICATE
-                       .replace('is_anomalous', 'a.is_anomalous')
-                       .replace('doc_date_iso', 'a.doc_date_iso')
-                       .replace('doc_no NOT IN', 'a.doc_no NOT IN'))
 
 
 def ar_due_buckets(as_of: Optional[str] = None,
@@ -246,15 +236,23 @@ def ar_due_buckets(as_of: Optional[str] = None,
             "SELECT MAX(snapshot_date_iso) AS snap"
             " FROM express_ar_outstanding WHERE entity='BSN'"
         ).fetchone()['snap']
+        # Filter FIRST, join second. BSN_AR_PREDICATE uses bare column names,
+        # documented as safe "since only express_ar_outstanding has these
+        # columns" — express_billing_notes breaks that (it carries `entity` AND
+        # `bill_no`, and the unqualified form fails with "ambiguous column
+        # name: entity"). Inside the subquery there is only one table, so the
+        # canonical predicate applies verbatim and no second copy of it has to
+        # exist anywhere (Codex round 13).
         rows = [] if not snap else c.execute(
             f"""SELECT a.outstanding_amount, a.due_date_iso, a.bill_no,
                        b.sent_date_iso, b.is_cancelled,
                        b.bill_no AS note_bill_no
-                  FROM express_ar_outstanding a
+                  FROM (SELECT outstanding_amount, due_date_iso, bill_no, entity
+                          FROM express_ar_outstanding
+                         WHERE entity = 'BSN' AND snapshot_date_iso = ?
+                           AND {BSN_AR_PREDICATE}) a
                   LEFT JOIN express_billing_notes b
-                         ON b.entity = a.entity AND b.bill_no = a.bill_no
-                 WHERE a.entity = 'BSN' AND a.snapshot_date_iso = ?
-                   AND {_BSN_AR_PREDICATE_A}""",
+                         ON b.entity = a.entity AND b.bill_no = a.bill_no""",
             (snap,),
         ).fetchall()
 
