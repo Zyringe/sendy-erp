@@ -47,7 +47,7 @@ Python 3.9 — Optional[...] not X | None syntax.
 from __future__ import annotations
 
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Optional
 
 import sales_filters
@@ -163,6 +163,164 @@ def cash_in_by_month(date_from: Optional[str] = None,
             'receipts': len(entry['re_ids']),
         })
     return result
+
+
+# ── 1b. ar_due_buckets ────────────────────────────────────────────────────────
+
+# Bucket identity, in the order the dunning page shows them. Keys are stable;
+# labels are Thai because the only consumer is a Thai-facing page.
+# How long a SENT ใบวางบิล stops the invoice appearing in the chase list.
+# Put's ruling, 2026-08-20, after measuring what "forever" was hiding: of the 17
+# billed rows on prod, 7 had bills sent more than 90 days earlier (four of them
+# 248 days, on "เครดิต 30 วัน" terms that expired in January) and 15 were already
+# past their own due date — ฿80,696.35 the page was telling nobody to chase.
+#
+# A flat 30 days, deliberately NOT read from express_billing_notes.pay_cond:
+# that column is populated on only 4 of the 17, so a terms-aware rule would fall
+# back to 30 days in most cases anyway and buy complexity for nothing. Revisit
+# if pay_cond ever becomes reliably filled.
+BILL_SUPPRESS_DAYS = 30
+
+AR_DUE_BUCKETS = (
+    ('chase_now',      'ตามได้เลย'),
+    ('not_yet_due',    'ยังไม่ถึงกำหนด'),
+    ('already_billed', 'วางบิลแล้ว — ติดตามรอบจ่าย'),
+    ('credits',        'ใบลดหนี้ (หักออก)'),
+)
+
+
+
+def _suppress_cutoff(as_of_iso: str) -> str:
+    """Earliest `sent_date_iso` that still suppresses chasing, given the day
+    being asked about. Inclusive: a bill sent exactly BILL_SUPPRESS_DAYS ago is
+    still inside the window."""
+    return (date.fromisoformat(as_of_iso)
+            - timedelta(days=BILL_SUPPRESS_DAYS)).isoformat()
+
+
+def ar_due_buckets(as_of: Optional[str] = None,
+                   conn: Optional[sqlite3.Connection] = None,
+                   db_path: Optional[str] = None) -> dict:
+    """Collectable AR split by WHEN it is chaseable, for the dunning list.
+
+    `ar_aging` buckets by document age, which answers "how bad is the book".
+    This answers "who do I call today" — a different question, and the one the
+    dunning list actually needs. An invoice on 30-day terms issued last week is
+    7 days old and NOT yet owed; one on cash terms from the same week is
+    already overdue. Age cannot tell them apart; `due_date_iso` can.
+
+      already_billed  an ใบวางบิล has gone out (`bill_no` set), so the customer
+                      is on their own payment run — chasing again is noise.
+                      Deliberately wins over an elapsed due date.
+      not_yet_due     `due_date_iso` is still in the future.
+      chase_now       everything else.
+
+    ⚠ SAME POPULATION AS ar_aging — the canonical BSN_AR_PREDICATE on the
+    latest BSN snapshot. The three buckets MUST sum to
+    `ar_aging()['total_outstanding']` to the satang, and a test asserts it: a
+    dunning list that quietly drops rows is worse than no dunning list.
+
+    ⚠ THIS IS THE NOVAT BOOK ONLY, and that is not the whole debt. Measured on
+    prod 2026-08-20: 31 open invoices worth ฿144,593.16 exist ONLY in the xp5
+    VAT book and cannot be seen here, and 14 more (฿117,203.75) are the SAME
+    sales invoiced in both books — which Put ruled on 2026-08-20 are owed ONCE,
+    so the two books must never be summed. Merging them needs an invoice-level
+    identity map that does not exist yet: customer name, customer_code AND
+    doc_no all differ across the books (วรสวัสดิ์ is 01อ35 in one and 01ว10 in
+    the other). Until that exists, this reports one book and says so.
+
+    `as_of` is the date "due" is measured against and defaults to **today**,
+    not the snapshot date. The question is "who do I call today", so a snapshot
+    exported yesterday must not make an invoice that fell due this morning read
+    as not-yet-due (Codex round 11). `snapshot_date` is returned separately so
+    the page can still show how fresh the underlying figures are, and passing
+    `as_of` explicitly reproduces a historical verdict.
+
+    ⚠ `bill_no` ALONE IS NOT "BILLED". It only says a note was created. The
+    row is treated as billed only when its `express_billing_notes` row exists,
+    is not cancelled, and carries a `sent_date_iso` — otherwise a cancelled or
+    unsent bill would hide a debt nobody is chasing. Latent when written (all
+    19 live billed rows had sent, uncancelled notes, and 0 of 11,930 notes had
+    a blank sent date) but reachable: 138 cancelled notes exist on prod.
+
+    ⚠ A standalone credit note carries a NEGATIVE outstanding. It correctly
+    reduces what is owed and the canonical filter keeps it — but it is not a
+    document anyone phones about, so counting it as a chase call inflated the
+    invoice count. It gets its own bucket; all four still reconcile.
+    """
+    buckets = {k: {'key': k, 'label': lbl, 'amount': 0.0, 'count': 0}
+               for k, lbl in AR_DUE_BUCKETS}
+
+    with _ConnCtx(conn, db_path) as c:
+        snap = c.execute(
+            "SELECT MAX(snapshot_date_iso) AS snap"
+            " FROM express_ar_outstanding WHERE entity='BSN'"
+        ).fetchone()['snap']
+        # Filter FIRST, join second. BSN_AR_PREDICATE uses bare column names,
+        # documented as safe "since only express_ar_outstanding has these
+        # columns" — express_billing_notes breaks that (it carries `entity` AND
+        # `bill_no`, and the unqualified form fails with "ambiguous column
+        # name: entity"). Inside the subquery there is only one table, so the
+        # canonical predicate applies verbatim and no second copy of it has to
+        # exist anywhere (Codex round 13).
+        rows = [] if not snap else c.execute(
+            f"""SELECT a.outstanding_amount, a.due_date_iso, a.bill_no,
+                       b.sent_date_iso, b.is_cancelled,
+                       b.bill_no AS note_bill_no
+                  FROM (SELECT outstanding_amount, due_date_iso, bill_no, entity
+                          FROM express_ar_outstanding
+                         WHERE entity = 'BSN' AND snapshot_date_iso = ?
+                           AND {BSN_AR_PREDICATE}) a
+                  LEFT JOIN express_billing_notes b
+                         ON b.entity = a.entity AND b.bill_no = a.bill_no""",
+            (snap,),
+        ).fetchall()
+
+    on = as_of or _today_iso()
+    total = 0.0
+    for r in rows:
+        amt = float(r['outstanding_amount'] or 0)
+        # '' is not NULL: Express writes an empty string in places, and treating
+        # it as "billed" would silently move rows out of the chase list. And a
+        # bill number is only "billed" if its note was actually SENT and not
+        # cancelled — see the docstring.
+        sent = (r['sent_date_iso'] or '').strip()[:10]
+        billed = (bool((r['bill_no'] or '').strip())
+                  and r['note_bill_no'] is not None
+                  and not r['is_cancelled']
+                  and bool(sent)
+                  # ...and sent RECENTLY, within a CLOSED window. A bill that
+                  # went out months ago is not evidence the customer is
+                  # mid-cycle, it is evidence nobody followed up — and one
+                  # dated in the FUTURE has not been sent at all. The upper
+                  # bound is not hypothetical bookkeeping: without it a bill
+                  # stamped 2026-12-01 would suppress chasing until 30 days
+                  # after that, i.e. a data error silently buying the customer
+                  # months of quiet. This codebase already treats a future
+                  # accounting date as an error elsewhere — a wrong LAN-PC
+                  # clock produced a future EXPORT stamp once (#395).
+                  # Falling out of this bucket returns the row to the DUE-DATE
+                  # rule, not straight to chase_now.
+                  and _suppress_cutoff(on) <= sent <= on)
+        due = (r['due_date_iso'] or '').strip()
+        if amt < 0:
+            key = 'credits'
+        elif billed:
+            key = 'already_billed'
+        elif on and due and due > on:
+            key = 'not_yet_due'
+        else:
+            key = 'chase_now'
+        buckets[key]['amount'] = round(buckets[key]['amount'] + amt, 2)
+        buckets[key]['count'] += 1
+        total = round(total + amt, 2)
+
+    return {
+        'as_of': on,
+        'snapshot_date': snap,
+        'total': total,
+        'buckets': [buckets[k] for k, _ in AR_DUE_BUCKETS],
+    }
 
 
 # ── 2. ar_aging ───────────────────────────────────────────────────────────────

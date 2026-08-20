@@ -33,6 +33,45 @@
 {# ═══════════════════════════════════════════════════════════════════════════ #}
 {% if tab == 'overview' %}
 
+{# ── ตามหนี้ได้แค่ไหน ──────────────────────────────────────────────────
+   Splits the SAME money the snapshot card totals, by when it is chaseable.
+   Age says how bad the book is; this says who to call today. #}
+{% if due_buckets %}
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="text-subtle small mb-2">
+      <i class="bi bi-telephone me-1"></i>
+      ตามหนี้ได้แค่ไหน — แยกตามกำหนดชำระ (ยอด ณ {{ due_buckets.snapshot_date or '—' }})
+    </div>
+    <div class="row g-3">
+      {% for b in due_buckets.buckets %}{% if b.count or b.key != 'credits' %}
+      <div class="col-sm-3">
+        <div class="border rounded p-2 h-100 {% if b.key == 'chase_now' %}border-danger-subtle bg-danger-subtle{% endif %}">
+          <div class="text-subtle small">{{ b.label }}</div>
+          <div class="fs-4 fw-bold">฿{{ '{:,.0f}'.format(b.amount) }}</div>
+          <div class="text-subtle small">
+            {{ '{:,}'.format(b.count) }} ใบ
+            {%- if due_buckets.total %} · {{ '{:.0f}'.format(b.amount / due_buckets.total * 100) }}%{% endif %}
+          </div>
+        </div>
+      </div>
+      {% endif %}{% endfor %}
+    </div>
+    <div class="text-subtle small mt-2">
+      "วางบิลแล้ว" = ส่งใบวางบิลให้ลูกค้าแล้ว (ยังไม่ถูกยกเลิก) — <strong>ติดตามรอบจ่าย</strong> ไม่ใช่ตัดออกจากการตาม
+      <span class="text-danger">(บางใบเลยกำหนดชำระไปแล้ว ยังต้องตาม)</span> ·
+      รวมทุกก้อน = ฿{{ '{:,.0f}'.format(due_buckets.total) }} เท่ากับยอด AR หลักด้านล่าง ·
+      เทียบกำหนดชำระกับวันที่ {{ due_buckets.as_of }} ·
+      <span class="text-warning">เฉพาะสมุดปัจจุบัน (No-VAT) ยังไม่รวมสมุด VAT</span>
+    </div>
+    <div class="text-subtle small mt-1">
+      <i class="bi bi-info-circle me-1"></i>ตัวเลขนี้บอก<strong>ยอด</strong>ที่ตามได้ ยังไม่ได้บอกว่า<strong>ต้องโทรหาใคร</strong> —
+      รายชื่อลูกค้าอยู่แท็บ "รายลูกค้า" ซึ่งยังเรียงตามอายุหนี้ ไม่ใช่ตามกำหนดชำระ
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="row g-3 mb-4">
   {# Snapshot card #}
   <div class="col-sm-6">
