@@ -279,6 +279,11 @@ def ar_dashboard():
            'is_ar_admin': is_ar_admin}
 
     if tab == 'overview':
+        # WHEN each baht is chaseable, not how old it is. ar_aging answers "how
+        # bad is the book"; this answers "who do I call today", which is the
+        # question the dunning list is actually for. Same population as the
+        # aging total above — cashflow asserts they reconcile to the satang.
+        ctx['due_buckets'] = cf_mod.ar_due_buckets()
         debt = models.get_customer_debt_summary()
         summ = models.get_payment_summary()
         snapshot_total = sum(r['outstanding_amount'] or 0 for r in debt)

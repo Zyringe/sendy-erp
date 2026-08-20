@@ -165,6 +165,93 @@ def cash_in_by_month(date_from: Optional[str] = None,
     return result
 
 
+# ── 1b. ar_due_buckets ────────────────────────────────────────────────────────
+
+# Bucket identity, in the order the dunning page shows them. Keys are stable;
+# labels are Thai because the only consumer is a Thai-facing page.
+AR_DUE_BUCKETS = (
+    ('chase_now',      'ตามได้เลย'),
+    ('not_yet_due',    'ยังไม่ถึงกำหนด'),
+    ('already_billed', 'วางบิลแล้ว'),
+)
+
+
+def ar_due_buckets(as_of: Optional[str] = None,
+                   conn: Optional[sqlite3.Connection] = None,
+                   db_path: Optional[str] = None) -> dict:
+    """Collectable AR split by WHEN it is chaseable, for the dunning list.
+
+    `ar_aging` buckets by document age, which answers "how bad is the book".
+    This answers "who do I call today" — a different question, and the one the
+    dunning list actually needs. An invoice on 30-day terms issued last week is
+    7 days old and NOT yet owed; one on cash terms from the same week is
+    already overdue. Age cannot tell them apart; `due_date_iso` can.
+
+      already_billed  an ใบวางบิล has gone out (`bill_no` set), so the customer
+                      is on their own payment run — chasing again is noise.
+                      Deliberately wins over an elapsed due date.
+      not_yet_due     `due_date_iso` is still in the future.
+      chase_now       everything else.
+
+    ⚠ SAME POPULATION AS ar_aging — the canonical BSN_AR_PREDICATE on the
+    latest BSN snapshot. The three buckets MUST sum to
+    `ar_aging()['total_outstanding']` to the satang, and a test asserts it: a
+    dunning list that quietly drops rows is worse than no dunning list.
+
+    ⚠ THIS IS THE NOVAT BOOK ONLY, and that is not the whole debt. Measured on
+    prod 2026-08-20: 31 open invoices worth ฿144,593.16 exist ONLY in the xp5
+    VAT book and cannot be seen here, and 14 more (฿117,203.75) are the SAME
+    sales invoiced in both books — which Put ruled on 2026-08-20 are owed ONCE,
+    so the two books must never be summed. Merging them needs an invoice-level
+    identity map that does not exist yet: customer name, customer_code AND
+    doc_no all differ across the books (วรสวัสดิ์ is 01อ35 in one and 01ว10 in
+    the other). Until that exists, this reports one book and says so.
+
+    `as_of` is the date "due" is measured against; it defaults to the snapshot
+    date, NOT today, so the verdict matches the figures Express published.
+    """
+    buckets = {k: {'key': k, 'label': lbl, 'amount': 0.0, 'count': 0}
+               for k, lbl in AR_DUE_BUCKETS}
+
+    with _ConnCtx(conn, db_path) as c:
+        snap = c.execute(
+            "SELECT MAX(snapshot_date_iso) AS snap"
+            " FROM express_ar_outstanding WHERE entity='BSN'"
+        ).fetchone()['snap']
+        rows = [] if not snap else c.execute(
+            f"""SELECT outstanding_amount, due_date_iso, bill_no
+                  FROM express_ar_outstanding
+                 WHERE entity = 'BSN' AND snapshot_date_iso = ?
+                   AND {BSN_AR_PREDICATE}""",
+            (snap,),
+        ).fetchall()
+
+    on = as_of or snap
+    total = 0.0
+    for r in rows:
+        amt = float(r['outstanding_amount'] or 0)
+        # '' is not NULL: Express writes an empty string in places, and treating
+        # it as "billed" would silently move rows out of the chase list.
+        billed = bool((r['bill_no'] or '').strip())
+        due = (r['due_date_iso'] or '').strip()
+        if billed:
+            key = 'already_billed'
+        elif on and due and due > on:
+            key = 'not_yet_due'
+        else:
+            key = 'chase_now'
+        buckets[key]['amount'] = round(buckets[key]['amount'] + amt, 2)
+        buckets[key]['count'] += 1
+        total = round(total + amt, 2)
+
+    return {
+        'as_of': on,
+        'snapshot_date': snap,
+        'total': total,
+        'buckets': [buckets[k] for k, _ in AR_DUE_BUCKETS],
+    }
+
+
 # ── 2. ar_aging ───────────────────────────────────────────────────────────────
 
 def ar_aging(as_of: Optional[str] = None,
