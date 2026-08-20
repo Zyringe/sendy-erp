@@ -256,3 +256,39 @@ def test_repeat_calls_do_not_write_once_an_alert_is_open(empty_db_conn):
               if q.lstrip()[:6].upper() in ('INSERT', 'UPDATE', 'DELETE')]
     assert writes == [], writes
     assert len(_open_staleness_alerts(empty_db_conn)) == 1
+
+
+def test_a_real_page_request_actually_persists_the_alert(tmp_db):
+    """END-TO-END, through the real hook, with NO hand-managed connection.
+
+    This exists because every unit test above passes its own `conn` and commits
+    it itself -- so all sixteen stayed green while the hook was, in the real
+    app, inserting into a connection nobody ever committed and closing it. The
+    feature was completely dead and pytest could not see it. Assert the ROW,
+    from a separate connection, after a real request.
+    """
+    import sqlite3
+    import config
+    from app import app as flask_app
+
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM express_import_log")          # force: no import
+    conn.execute("DELETE FROM system_alerts WHERE kind = 'import_stale'")
+    conn.commit()
+    conn.close()
+
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as s:
+        s['user_id'] = 1
+        s['username'] = 'u'
+        s['role'] = 'admin'
+    r = c.get('/alerts')
+    assert r.status_code == 200                              # control
+
+    check = sqlite3.connect(config.DATABASE_PATH)
+    n = check.execute(
+        "SELECT COUNT(*) FROM system_alerts"
+        " WHERE kind = 'import_stale' AND resolved_at IS NULL").fetchone()[0]
+    check.close()
+    assert n == 1, f'the request did not persist an alert (got {n})'

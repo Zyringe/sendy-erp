@@ -172,8 +172,15 @@ def _warn_if_import_is_stale(response):
             # price of the hook on every page in the app.
             _conn = get_connection()
             try:
-                models.record_import_staleness_alert(
-                    models.get_express_dbf_freshness(conn=_conn), conn=_conn)
+                if models.record_import_staleness_alert(
+                        models.get_express_dbf_freshness(conn=_conn),
+                        conn=_conn) is not None:
+                    # The helper commits only when it OWNS the connection, and
+                    # here the caller owns it -- so without this the INSERT is
+                    # rolled back on close and the alert silently never appears.
+                    # Only on an actual insert: the steady state stays a pure
+                    # read, which is the point of the short-circuit inside.
+                    _conn.commit()
             finally:
                 _conn.close()
     except Exception as exc:                  # noqa: BLE001
