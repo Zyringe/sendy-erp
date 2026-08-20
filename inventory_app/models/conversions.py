@@ -604,10 +604,14 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
         )
 
     # บันทึก conversion cost log (ใช้ตอน recalculate WACC output)
+    # event_date is a BUSINESS date the WACC walk costs this output on, so it
+    # must read the Bangkok clock ('localtime' -- app.py sets TZ='ICT-7'), not
+    # SQLite's bare UTC one, which would stamp yesterday for any run started
+    # between 00:00 and 07:00 local.
     conn.execute(
         "INSERT INTO conversion_cost_log"
         " (output_product_id, reference_no, event_date, output_qty, total_input_cost, unit_cost, writeoff_qty, run_token)"
-        " VALUES (?,?,date('now'),?,?,?,?,?)",
+        " VALUES (?,?,date('now','localtime'),?,?,?,?,?)",
         (formula['output_product_id'], conv_ref, good_qty, total_input_cost, output_unit_cost,
          writeoff_qty, run_token)
     )
