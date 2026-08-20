@@ -688,6 +688,47 @@ def test_dbf_replay_clearing_youref_leaves_the_sendy_only_lines(tmp_db):
     assert _pout_note(tmp_db) == 'VAT 26,613\nอานี\xa037635'
 
 
+def test_dbf_replay_blank_then_populated_youref_does_not_duplicate(tmp_db):
+    """Codex, 2026-08-21. A blank YOUREF at first contact records note_source='',
+    meaning "no YOUREF backs this note". If Express then TYPES one, splitting the
+    stored note against '' yields offset 0, so the whole note becomes the
+    remainder and the new YOUREF is prepended to text that already contains it.
+
+    The battery could not see this: its two passes replay the same blank YOUREF,
+    and the forced-correction check filters on note_source <> ''. 24 rows carry a
+    blank YOUREF today, so this is the population that transition would hit."""
+    _forget(tmp_db)
+    _seed_report_row(tmp_db, RICH)
+    ie.run_import_records('payments_out', [_payment_out_record(doc_no=_RPS, note='')],
+                          db_path=tmp_db)
+    assert _pout_note(tmp_db) == RICH, 'setup: a blank YOUREF must preserve'
+    assert _pout_note_source(tmp_db) == '', "setup: '' records an observed-blank YOUREF"
+
+    # Express now types the YOUREF the report already showed on the first line
+    ie.run_import_records('payments_out',
+                          [_payment_out_record(doc_no=_RPS, note='711 โอน 37,635')],
+                          db_path=tmp_db)
+
+    assert _pout_note(tmp_db) == RICH, 'the note already held that text — do not repeat it'
+    assert _pout_note_source(tmp_db) == '711\xa0โอน\xa037,635', 'and record what matched'
+
+
+def test_dbf_replay_a_youref_the_note_never_had_is_added_on_its_own_line(tmp_db):
+    """The other half of that transition: Express types something Sendy's note
+    does NOT contain. Dropping it would repeat the freeze this design exists to
+    avoid, and concatenating it bare would glue two notes together."""
+    _forget(tmp_db)
+    _seed_report_row(tmp_db, 'VAT 12,643')
+    ie.run_import_records('payments_out', [_payment_out_record(doc_no=_RPS, note='')],
+                          db_path=tmp_db)
+
+    ie.run_import_records('payments_out',
+                          [_payment_out_record(doc_no=_RPS, note='สด 63,171')],
+                          db_path=tmp_db)
+
+    assert _pout_note(tmp_db) == 'สด 63,171\nVAT 12,643'
+
+
 def test_dbf_replay_replaces_a_note_that_came_only_from_youref(tmp_db):
     """No Sendy-only remainder: the note IS the YOUREF, so a correction replaces it
     outright. Without this the field would freeze at its first value forever —

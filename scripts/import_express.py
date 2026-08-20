@@ -172,13 +172,28 @@ def _note_for_refresh(conn, header_table, company_id, doc_no, incoming):
         return incoming, incoming
     stored, source = row[0], row[1]
 
-    if source is None:
-        # First DBF contact only OBSERVES: keep the operator's note byte-for-byte
-        # and record the RAW slice YOUREF matched as its provenance. Writing
-        # `incoming` here instead would silently renormalize the report's
-        # whitespace (\xa0 -> space) on a line nobody asked us to touch.
+    if not source:
+        # No YOUREF backs this note yet — NULL means we have never looked, '' means
+        # we looked and Express had none. Both re-OBSERVE: keep the operator's note
+        # byte-for-byte and record the RAW slice YOUREF matches. Writing `incoming`
+        # here instead would renormalize the report's whitespace (\xa0 -> space) on
+        # a line nobody asked us to touch.
+        #
+        # Treating '' as a set provenance is what duplicated text: splitting against
+        # '' yields offset 0, so the WHOLE note became the remainder and a later
+        # YOUREF was prepended to text that already contained it — '711 โอน 37,635'
+        # onto a note starting '711 โอน 37,635'. 24 rows carry a blank YOUREF, so
+        # that is exactly the population an operator typing one would hit.
         cut = _youref_prefix_len(stored, incoming)
-        return (stored, stored[:cut]) if cut >= 0 else (stored, None)
+        if cut >= 0:
+            return stored, stored[:cut]
+        if not incoming:
+            return stored, source
+        # Express has a YOUREF this note has never held. Freezing it would repeat
+        # the staleness this design exists to remove, and concatenating it bare
+        # would glue two notes together, so it goes on its own line — the same
+        # convention the printed report already uses.
+        return incoming + '\n' + stored, incoming
 
     cut = _youref_prefix_len(stored, source)
     if cut < 0:
