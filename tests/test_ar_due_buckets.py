@@ -328,3 +328,37 @@ def test_a_stale_bill_that_is_not_yet_due_is_still_not_due(empty_db_conn):
     by = {b['key']: b for b in cf.ar_due_buckets(conn=empty_db_conn)['buckets']}
     assert by['not_yet_due']['count'] == 1
     assert by['chase_now']['count'] == 0
+
+
+def test_a_future_dated_bill_does_not_suppress_chasing(empty_db_conn):
+    """Codex round 14. The window check was one-sided (`sent >= cutoff`), so a
+    bill dated in the future passed it and suppressed chasing until 30 days
+    AFTER that future date -- failing in the direction that loses money.
+
+    Latent when found (0 future-dated notes on prod, max sent_date_iso
+    2026-08-04) but the trigger is real: this codebase already carries a guard
+    for a future EXPORT stamp because a wrong clock on the LAN PC produced one
+    (#395). A future date is a data error, and the safe reading of a data error
+    here is "not sent" -- which drops the row back to the due-date rule, exactly
+    like a missing, cancelled or unsent note."""
+    import datetime
+    today = datetime.date.today()
+    _clean(empty_db_conn)
+    _row(empty_db_conn, 'IV1', 500.00, due='2026-01-01', bill_no='BL_FUTURE')
+    _note(empty_db_conn, 'BL_FUTURE',
+          sent=(today + datetime.timedelta(days=103)).isoformat())
+    by = {b['key']: b for b in cf.ar_due_buckets(conn=empty_db_conn)['buckets']}
+    assert by['already_billed']['count'] == 0, (
+        'a bill dated in the future has not been sent yet')
+    assert by['chase_now']['count'] == 1
+
+
+def test_a_bill_sent_today_still_suppresses(empty_db_conn):
+    """Control for the upper bound: it must exclude the FUTURE, not today.
+    Without this the fix could pass by rejecting everything recent."""
+    import datetime
+    _clean(empty_db_conn)
+    _row(empty_db_conn, 'IV1', 500.00, due='2026-01-01', bill_no='BL_TODAY')
+    _note(empty_db_conn, 'BL_TODAY', sent=datetime.date.today().isoformat())
+    by = {b['key']: b for b in cf.ar_due_buckets(conn=empty_db_conn)['buckets']}
+    assert by['already_billed']['count'] == 1

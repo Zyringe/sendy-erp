@@ -289,11 +289,19 @@ def ar_due_buckets(as_of: Optional[str] = None,
                   and r['note_bill_no'] is not None
                   and not r['is_cancelled']
                   and bool(sent)
-                  # ...and sent RECENTLY. A bill that went out months ago is
-                  # not evidence the customer is mid-cycle; it is evidence
-                  # nobody followed up. Falling out of this bucket returns the
-                  # row to the DUE-DATE rule, not straight to chase_now.
-                  and sent >= _suppress_cutoff(on))
+                  # ...and sent RECENTLY, within a CLOSED window. A bill that
+                  # went out months ago is not evidence the customer is
+                  # mid-cycle, it is evidence nobody followed up — and one
+                  # dated in the FUTURE has not been sent at all. The upper
+                  # bound is not hypothetical bookkeeping: without it a bill
+                  # stamped 2026-12-01 would suppress chasing until 30 days
+                  # after that, i.e. a data error silently buying the customer
+                  # months of quiet. This codebase already treats a future
+                  # accounting date as an error elsewhere — a wrong LAN-PC
+                  # clock produced a future EXPORT stamp once (#395).
+                  # Falling out of this bucket returns the row to the DUE-DATE
+                  # rule, not straight to chase_now.
+                  and _suppress_cutoff(on) <= sent <= on)
         due = (r['due_date_iso'] or '').strip()
         if amt < 0:
             key = 'credits'
