@@ -640,19 +640,35 @@ def test_dbf_replay_keeps_sendy_only_lines_when_express_corrects_the_note(tmp_db
     ie.run_import_records('payments_out',
                           [_payment_out_record(doc_no=_RPS, note='711 โอน 37,635')],
                           db_path=tmp_db)
-    assert 'VAT 26,613' in _pout_note(tmp_db), 'setup: first contact must preserve'
-    assert _pout_note_source(tmp_db) == '711 โอน 37,635', 'setup: YOUREF must be recorded'
+    # first contact only OBSERVES: the note is kept byte-for-byte and the raw slice
+    # YOUREF matched is recorded as its provenance.
+    assert _pout_note(tmp_db) == RICH, 'setup: first contact must not rewrite the note'
+    assert _pout_note_source(tmp_db) == '711\xa0โอน\xa037,635', 'setup: raw slice recorded'
 
     # 3. Express corrects YOUREF
     ie.run_import_records('payments_out',
                           [_payment_out_record(doc_no=_RPS, note='712 โอน 37,635')],
                           db_path=tmp_db)
 
-    note = _pout_note(tmp_db)
-    assert note.startswith('712 โอน 37,635'), 'the correction must land'
-    assert 'VAT 26,613' in note, 'a correction must not delete Sendy-only lines'
-    assert 'อานี' in note
-    assert '711' not in note, 'the corrected line must not linger alongside the new one'
+    # EXACT text, not startswith + substring: those pass even when the newline
+    # separating the corrected line from the Sendy-only ones has been eaten
+    # (Codex, 2026-08-20 — the reason this assertion is spelled out in full).
+    assert _pout_note(tmp_db) == '712 โอน 37,635\nVAT 26,613\nอานี\xa037635'
+
+
+def test_dbf_replay_with_an_unchanged_youref_leaves_the_note_byte_identical(tmp_db):
+    """A daily zip that carries the same YOUREF as yesterday must be a true no-op
+    on the note. Rebuilding it as `incoming + remainder` would quietly renormalize
+    the report's whitespace (\xa0 -> space) on a line Express never changed, so the
+    text would keep shifting on every import."""
+    _forget(tmp_db)
+    _seed_report_row(tmp_db, RICH)
+    for _ in range(3):
+        ie.run_import_records('payments_out',
+                              [_payment_out_record(doc_no=_RPS, note='711 โอน 37,635')],
+                              db_path=tmp_db)
+
+    assert _pout_note(tmp_db) == RICH, 'three identical imports must not move a byte'
 
 
 def test_dbf_replay_clearing_youref_leaves_the_sendy_only_lines(tmp_db):
@@ -667,11 +683,9 @@ def test_dbf_replay_clearing_youref_leaves_the_sendy_only_lines(tmp_db):
     ie.run_import_records('payments_out', [_payment_out_record(doc_no=_RPS, note='')],
                           db_path=tmp_db)
 
-    # RICH carries \xa0 between its words, so a bare `'711 โอน 37,635' not in note`
-    # could never fail — assert on the normalized text, and prove the control first.
-    note = ' '.join(_pout_note(tmp_db).replace('\xa0', ' ').split())
-    assert 'VAT 26,613' in note, 'a cleared YOUREF must not take Sendy-only lines with it'
-    assert '711 โอน 37,635' not in note, 'the YOUREF-derived line must actually clear'
+    # EXACT text again: the YOUREF-derived line goes, the Sendy-only lines survive
+    # with their own separator, and no leading blank line is left behind.
+    assert _pout_note(tmp_db) == 'VAT 26,613\nอานี\xa037635'
 
 
 def test_dbf_replay_replaces_a_note_that_came_only_from_youref(tmp_db):

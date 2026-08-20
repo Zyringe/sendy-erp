@@ -112,13 +112,22 @@ def _norm_note(text):
 
 def _youref_prefix_len(stored, youref):
     """Length of the leading slice of `stored` that normalizes to `youref`, or -1
-    if no slice does. Longest match wins, and the RAW length is returned so the
-    caller can keep the operator's exact remaining text byte-for-byte."""
+    if no slice does. The RAW length is returned so the caller keeps the
+    operator's remaining text byte-for-byte.
+
+    The slice stops at the last non-space character of the match. `_norm_note`
+    collapses trailing whitespace, so the longest matching prefix also swallows
+    the newline BETWEEN the YOUREF-derived line and the Sendy-only ones — and
+    eating that separator glues them together ("712 โอน 37,635VAT 26,613"),
+    which `ap.html` renders literally under white-space: pre-wrap.
+    """
     target = _norm_note(youref)
     if not target:
         return 0
     for i in range(len(stored), 0, -1):
         if _norm_note(stored[:i]) == target:
+            while i > 0 and stored[i - 1].isspace():
+                i -= 1
             return i
     return -1
 
@@ -163,9 +172,22 @@ def _note_for_refresh(conn, header_table, company_id, doc_no, incoming):
         return incoming, incoming
     stored, source = row[0], row[1]
 
-    cut = (_youref_prefix_len(stored, source) if source is not None
-           else _youref_prefix_len(stored, incoming))
+    if source is None:
+        # First DBF contact only OBSERVES: keep the operator's note byte-for-byte
+        # and record the RAW slice YOUREF matched as its provenance. Writing
+        # `incoming` here instead would silently renormalize the report's
+        # whitespace (\xa0 -> space) on a line nobody asked us to touch.
+        cut = _youref_prefix_len(stored, incoming)
+        return (stored, stored[:cut]) if cut >= 0 else (stored, None)
+
+    cut = _youref_prefix_len(stored, source)
     if cut < 0:
+        return stored, source
+    if _norm_note(incoming) == _norm_note(source):
+        # Express has not touched YOUREF since this note was written, so there is
+        # nothing to restate. Rebuilding it anyway would renormalize the report's
+        # whitespace on a line nobody changed, and the text would shift a little
+        # on every daily import.
         return stored, source
     merged = incoming + stored[cut:]
     return (merged if incoming else merged.lstrip()), incoming
