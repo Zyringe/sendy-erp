@@ -148,7 +148,7 @@ def _note_for_refresh(conn, header_table, company_id, doc_no, incoming):
     remainder carries across.
 
       note_source IS NULL   the note did not come from YOUREF (printed report, or a
-                            row older than mig 167). First DBF contact: split it on
+                            row older than mig 168). First DBF contact: split it on
                             the YOUREF it matches, which preserves the 40 measured
                             rows — 24 with a blank YOUREF behind a stored note,
                             16 whose note runs longer than YOUREF.

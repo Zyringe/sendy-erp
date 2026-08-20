@@ -1,5 +1,5 @@
 -- ============================================================================
--- 167 — express_payments_out.note_source / express_credit_notes.note_source.
+-- 168 — express_payments_out.note_source / express_credit_notes.note_source.
 --
 -- WHY. `note` has two sources with different fidelity. The printed Express
 -- report captured several lines; the DBF carries one short APTRN.YOUREF. So a
