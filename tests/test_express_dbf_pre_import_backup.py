@@ -124,18 +124,20 @@ def test_vat_only_upload_takes_no_backup(tmp_db, monkeypatch, trace):
     assert trace == []
 
 
-def test_backup_failure_warns_but_does_not_block_the_import(tmp_db, monkeypatch):
-    """A backup-infra failure (disk full) must not cost the team its import --
-    same contract _snapshot_before_import already gives /import-data."""
-    imported = []
-    monkeypatch.setattr(bsn.db_backup, 'safe_create_backup',
+def test_import_data_keeps_its_warn_and_continue_contract(tmp_db, monkeypatch):
+    """The two import boxes deliberately differ, so pin it.
+
+    /import-data is a preview/confirm flow the operator drives file by file and
+    has warned-and-continued since day one; changing that is not this branch's
+    business. /import-express-dbf refuses (see the fail-closed tests below),
+    because it is a single destructive commit with no per-file preview."""
+    import blueprints.bsn as _bsn
+    from app import app as flask_app
+    monkeypatch.setattr(_bsn.db_backup, 'safe_create_backup',
                         lambda reason, **kw: (None, 'ดิสก์เต็ม'))
-    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
-    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
-                        lambda *a, **k: (imported.append(1), _fake_per_type())[1])
-    r = _upload(_client(), [('data/ARTRN.DBF', b'x')])
-    assert r.status_code == 302
-    assert imported == [1]
+    with flask_app.test_request_context('/import-data'):   # flash() needs one
+        info, err = _bsn._snapshot_before_import('unified')
+    assert info is None and err == 'ดิสก์เต็ม'
 
 
 # -- the compression level that makes the above affordable -------------------
@@ -161,3 +163,97 @@ def test_backup_honours_the_compresslevel(tmp_path):
     hi = db_backup.create_backup('lvl9', db_path=str(src),
                                  backup_dir=str(tmp_path / 'b'), compresslevel=9)
     assert lo['size'] > hi['size'] * 5, (lo['size'], hi['size'])
+
+
+# -- fail closed: a promised rollback point must actually exist --------------
+
+def test_backup_failure_refuses_the_import(tmp_db, monkeypatch, trace):
+    """Codex round 7, P1. Best-effort is the wrong stance for the app's most
+    destructive routine write: warning and then deleting receipt links anyway
+    means the feature promises a rollback point it did not create. Disk-full is
+    the realistic trigger, and it can break the import itself too."""
+    monkeypatch.setattr(bsn.db_backup, 'safe_create_backup',
+                        lambda reason, **kw: (None, 'ดิสก์เต็ม'))
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    r = _upload(_client(), [('data/ARTRN.DBF', b'x')])
+    assert r.status_code == 302
+    assert ('import', None) not in trace, 'the import must not run'
+
+
+def test_explicit_override_lets_the_import_proceed_without_a_backup(
+        tmp_db, monkeypatch, trace):
+    """The escape hatch has to exist -- a team that cannot import at all
+    because the volume is full is worse off. Same shape as force_older on this
+    route: refuse by default, proceed only on a deliberate tick."""
+    monkeypatch.setattr(bsn.db_backup, 'safe_create_backup',
+                        lambda reason, **kw: (None, 'ดิสก์เต็ม'))
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    r = _upload(_client(), [('data/ARTRN.DBF', b'x')],
+                force_no_backup='1')
+    assert r.status_code == 302
+    assert ('import', None) in trace, 'the tick must let it through'
+
+
+def test_a_working_backup_needs_no_override(tmp_db, monkeypatch, trace):
+    """Control: the refusal is keyed on the backup FAILING, not on the tick
+    being absent."""
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    r = _upload(_client(), [('data/ARTRN.DBF', b'x')])
+    assert r.status_code == 302
+    assert [c[0] for c in trace] == ['backup', 'import'], trace
+
+
+# -- retention must keep the Express rollback point ---------------------------
+
+def test_newest_snapshot_per_reason_survives_pruning(tmp_path):
+    """Codex round 7, P2. max_keep is global, so two marketplace uploads after
+    the daily import could evict the only Express rollback point the same day
+    -- deleting exactly what this branch exists to create."""
+    import sqlite3
+    src = tmp_path / 'src.db'
+    sqlite3.connect(str(src)).execute('CREATE TABLE t (v)')
+    bdir = tmp_path / 'b'
+
+    # Explicit, increasing timestamps: the filename carries only whole seconds,
+    # so four backups made in the same second sort unstably and this test would
+    # pass by accident. (It did, before this line.)
+    import datetime
+    t0 = datetime.datetime(2026, 8, 19, 17, 0, 0)
+    db_backup.create_backup('express_dbf', db_path=str(src),
+                            backup_dir=str(bdir), now=t0)
+    for i in range(1, 4):
+        db_backup.create_backup('marketplace_upload', db_path=str(src),
+                                backup_dir=str(bdir),
+                                now=t0 + datetime.timedelta(minutes=i))
+
+    reasons = [b['reason'] for b in db_backup.list_backups(backup_dir=str(bdir))]
+    assert 'express_dbf' in reasons, reasons
+    assert reasons.count('marketplace_upload') >= 1, reasons
+
+
+def test_prune_removes_stale_part_files(tmp_path):
+    """A hard kill mid-write leaves a .part that never matches _NAME_RE, so
+    list_backups and prune could not see it and it sat on the volume forever."""
+    import time
+    bdir = tmp_path / 'b'
+    bdir.mkdir()
+    stale = bdir / 'auto-x-20260101_000000.db.gz.part'
+    stale.write_bytes(b'x' * 1024)
+    old = time.time() - 48 * 3600
+    os.utime(stale, (old, old))
+    fresh = bdir / 'auto-y-20260101_000001.db.gz.part'
+    fresh.write_bytes(b'y')
+
+    db_backup.prune_backups(backup_dir=str(bdir))
+    assert not stale.exists(), 'a stale .part must be reclaimed'
+    assert fresh.exists(), 'an in-flight .part must be left alone'
+
+
+def test_the_override_checkbox_is_actually_on_the_page(tmp_db):
+    """A fail-closed guard whose only escape hatch is invisible is a dead end
+    for the team. Assert the ELEMENT, not a bare substring — the Thai wording
+    appears in the flash text too, so a substring check could pass on a page
+    that never rendered the input."""
+    html = _client().get('/import-express-dbf').get_data(as_text=True)
+    assert 'name="force_no_backup"' in html
+    assert 'id="force_no_backup"' in html

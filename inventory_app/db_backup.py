@@ -186,14 +186,32 @@ def list_backups(*, backup_dir):
 def prune_backups(*, backup_dir, keep_days=DEFAULT_KEEP_DAYS,
                   max_keep=DEFAULT_MAX_KEEP, now=None):
     """Delete auto-* snapshots older than ``keep_days`` OR beyond the newest
-    ``max_keep`` (whichever applies). Always keeps the single newest. Never
-    touches the live DB or any non-auto file. Returns the deleted names."""
+    ``max_keep`` (whichever applies). Never touches the live DB or any non-auto
+    file. Returns the deleted names.
+
+    FLOOR: the newest snapshot OF EACH REASON always survives. ``max_keep`` is
+    global, so without this the newest two backups overall win outright — and
+    two marketplace uploads on the same afternoon would evict the pre-import
+    Express snapshot, deleting precisely the rollback point that route creates
+    (Codex round 7, P2). Reasons are few and each snapshot is ~20MB, so the
+    floor is bounded and cheap; ``keep_days`` still ages everything out.
+
+    Also reclaims stale ``.part`` files. A crash or hard kill mid-write leaves
+    one behind, and it never matches _NAME_RE — which is what keeps a torn file
+    from being listed or restored, but also meant nothing could ever clean it
+    up. Only ones older than a day, so an in-flight write is never touched.
+    """
     now = now or datetime.now()
     backups = list_backups(backup_dir=backup_dir)   # newest first
+    newest_per_reason = {}
+    for b in backups:
+        newest_per_reason.setdefault(b["reason"], b["name"])
     deleted = []
     for rank, b in enumerate(backups):
         if rank == 0:
             continue                                # floor: keep newest
+        if newest_per_reason.get(b["reason"]) == b["name"]:
+            continue                                # floor: newest per reason
         age_days = (now - b["created_at"]).total_seconds() / 86400.0
         if age_days > keep_days or rank >= max_keep:
             try:
@@ -201,7 +219,27 @@ def prune_backups(*, backup_dir, keep_days=DEFAULT_KEEP_DAYS,
                 deleted.append(b["name"])
             except OSError:
                 pass
+    deleted.extend(_prune_stale_parts(backup_dir, now=now))
     return deleted
+
+
+def _prune_stale_parts(backup_dir, *, now=None, older_than_hours=24):
+    """Remove abandoned ``*.db.gz.part`` temps (see prune_backups)."""
+    if not os.path.isdir(backup_dir):
+        return []
+    cutoff = (now or datetime.now()).timestamp() - older_than_hours * 3600
+    removed = []
+    for fn in os.listdir(backup_dir):
+        if not fn.endswith(SUFFIX + ".part"):
+            continue
+        path = os.path.join(backup_dir, fn)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed.append(fn)
+        except OSError:
+            pass
+    return removed
 
 
 # Held full-replace upload stashes written by /admin/upload-db onto the volume
