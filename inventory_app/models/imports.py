@@ -545,14 +545,23 @@ def get_express_dbf_freshness(today=None, conn=None):
     71-day-old AR snapshot is how staff ended up chasing balances that predated
     ฿494k of later sales.
 
-    import_router.commit_express_dbf() always runs payments_out and
-    credit_notes_ap through import_express.run_import_records(), which
-    INSERTs an express_import_log row (source_filename='express_dbf')
-    unconditionally at the start of each call -- even when that particular
-    batch has zero of those records. So MAX(imported_at) filtered to
-    source_filename='express_dbf' is a reliable "last full DBF commit"
-    marker, not just a payments/credit-note-specific one. (Column is
-    `imported_at`, not `created_at`.)
+    ⚠ THE MARKER IS THE RUN RECORD, NOT A SUB-IMPORT ROW (Codex round 7, P1).
+    This used to read MAX(imported_at) over express_import_log rows with
+    source_filename='express_dbf', described as a "last full DBF commit"
+    marker. It is not one. commit_express_dbf() runs payments_out -- which
+    COMMITS its own express_import_log row -- before credit_notes_ap and the
+    six isolated registers. A failure after that point makes the route report
+    the BSN import as failed while that row already sits there under today's
+    timestamp, so the dashboard would say fresh about an import that failed and
+    the staleness alert could even clear itself.
+
+    So the marker is the RUN record that blueprints/bsn.py writes AFTER the
+    import returns, carrying its outcome: `import_log` where
+    filename='express-dbf-upload' and notes.bsn.ok is true. That row exists
+    only for a run that actually completed the ledger import, and a VAT-only
+    upload (no `bsn` key) correctly does not refresh this book. Verified on
+    prod 2026-08-19: every historical run carries bsn.ok=1, so this keeps
+    reading the real last import rather than going falsely stale on deploy.
 
     `today` (ISO string or date) and `conn` exist so the rule can be tested
     against a fixed calendar; both default to the live ones.
@@ -564,7 +573,9 @@ def get_express_dbf_freshness(today=None, conn=None):
         row = conn.execute(
             "SELECT MAX(imported_at) AS last_at, "
             "(julianday('now','localtime') - julianday(MAX(imported_at))) * 24.0 AS hours_stale "
-            "FROM express_import_log WHERE source_filename = 'express_dbf'"
+            "  FROM import_log "
+            " WHERE filename = 'express-dbf-upload' "
+            "   AND json_extract(notes, '$.bsn.ok') = 1"
         ).fetchone()
         holidays = _configured_holidays(conn)
     finally:

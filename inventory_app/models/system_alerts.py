@@ -511,11 +511,13 @@ def record_unmapped_bsn_codes_alert(*, conn=None):
     it directly rather than through a request hook.
 
     Dedupe key is the kind alone, per _dedupe_key's rule: the count and the
-    oldest date are diagnostics and live in the message and context. So a
-    backlog that persists across weekly imports holds ONE open alert, and the
-    live list stays where it belongs, on /mapping. Because of that the count in
-    the message is the one AT RAISE TIME and does not track later growth --
-    deliberate: the alert says "there is a backlog", the page says how big.
+    oldest date are diagnostics. So a backlog that persists across imports
+    holds ONE open alert rather than one per import.
+
+    But dedupe must not mean the NUMBER freezes at raise time -- an alert still
+    saying 1 while 12 codes wait is its own kind of lie (Codex round 7). So an
+    already-open alert is UPDATED in place with the current count and oldest
+    date: same incident, same row, current facts.
 
     Clears itself the moment the backlog is empty (same reasoning as
     clear_import_staleness_alert). Best-effort throughout.
@@ -547,6 +549,16 @@ def record_unmapped_bsn_codes_alert(*, conn=None):
             msg = (f"มีรหัส BSN ค้างไม่ได้ผูกสินค้า {n} รหัส (เก่าสุด {oldest}) — "
                    f"บิลที่ใช้รหัสเหล่านี้ขายได้แต่ไม่ตัดสต็อก สต็อกจะเพี้ยนขึ้นเรื่อยๆ "
                    f"ผูกให้ครบที่หน้า \"จับคู่รหัส\" (/mapping)")
+            ctx = json.dumps({'count': n, 'oldest': oldest},
+                             ensure_ascii=False)
+            updated = conn.execute(
+                "UPDATE system_alerts SET message = ?, context_json = ?"
+                " WHERE kind = ? AND resolved_at IS NULL",
+                (msg, ctx, KIND_UNMAPPED_CODES)).rowcount
+            if updated:
+                if own:
+                    conn.commit()
+                return None            # same incident, refreshed in place
             aid = create_system_alert(
                 KIND_UNMAPPED_CODES, msg,
                 dedupe_key=_dedupe_key([KIND_UNMAPPED_CODES]),

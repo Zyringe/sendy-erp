@@ -43,11 +43,27 @@ FRI = '2026-08-14'
 TUE = '2026-08-18'
 
 
-def _log_import(conn, when_iso, source='express_dbf'):
+def _log_import(conn, when_iso, filename='express-dbf-upload'):
+    """A COMPLETED run, as blueprints/bsn.py records it after the import
+    returns. This is the freshness marker -- see the P1 block at the bottom of
+    this file for why a sub-import row is not."""
+    import json
+    conn.execute(
+        "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes,"
+        " imported_at) VALUES (?, 0, 0, ?, ?)",
+        (filename, json.dumps({'bsn': {'ok': True, 'summary': 'x'}}),
+         when_iso + ' 17:00:00'))
+    conn.commit()
+
+
+def _sub_import_marker(conn, when_iso):
+    """The express_import_log row payments_out commits partway through the
+    import -- deliberately NOT a completion signal."""
     conn.execute(
         "INSERT INTO express_import_log (file_type, source_filename,"
         " record_count, line_count, status, imported_at)"
-        " VALUES ('sales', ?, 1, 1, 'imported', ?)", (source, when_iso + ' 17:00:00'))
+        " VALUES ('payments_out', 'express_dbf', 1, 1, 'imported', ?)",
+        (when_iso + ' 17:00:00',))
     conn.commit()
 
 
@@ -110,9 +126,16 @@ def test_no_import_at_all_is_stale(empty_db_conn):
 
 
 def test_a_non_dbf_import_does_not_count(empty_db_conn):
-    """Scope guard: only the DBF flow marks this fresh, matching the docstring
-    contract the dashboard copy relies on."""
-    _log_import(empty_db_conn, SAT, source='something_else')
+    """Scope guard: only the DBF upload flow marks this fresh. import_log is a
+    shared table -- other importers write their own rows into it."""
+    _log_import(empty_db_conn, SAT, filename='weekly-sales.csv')
+    assert _fresh(empty_db_conn, MON)['is_stale'] is True
+
+
+def test_a_sub_import_row_alone_does_not_count(empty_db_conn):
+    """Scope guard for P1 from the other side: the express_import_log row that
+    payments_out commits mid-import is not, on its own, evidence of anything."""
+    _sub_import_marker(empty_db_conn, SAT)
     assert _fresh(empty_db_conn, MON)['is_stale'] is True
 
 
@@ -205,29 +228,43 @@ def test_clear_is_a_no_op_when_nothing_is_open(empty_db_conn):
 
 # -- the request hook must never be able to break a page ---------------------
 
-def test_after_request_hook_swallows_its_own_failure(tmp_db, monkeypatch):
-    """Monitoring must not become the outage. Same stance as the slow-request
-    hook it sits beside: whole body in try/except, response returned regardless.
+def test_the_dashboard_raises_it_and_cannot_be_broken_by_it(tmp_db, monkeypatch):
+    """The alert is raised from the two pages that ALREADY compute freshness
+    (dashboard + import page), not from an after_request hook charging every
+    page in the app for a once-a-day signal (Codex round 7).
 
-    Break-it-once: removing that try/except turns this into a 500."""
+    Monitoring must still never become the outage, so the failure case is
+    asserted here too: break the helper, the page must still render."""
+    import sqlite3
+    import config
     from app import app as flask_app
     import models as models_mod
 
-    def _boom(*a, **k):
-        raise RuntimeError('alert subsystem down')
-    monkeypatch.setattr(models_mod, 'get_express_dbf_freshness', _boom)
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM import_log WHERE filename = 'express-dbf-upload'")
+    conn.execute("DELETE FROM system_alerts WHERE kind = 'import_stale'")
+    conn.commit()
+    conn.close()
 
-    flask_app.config['TESTING'] = False        # let the hook's except actually run
+    flask_app.config['TESTING'] = True
     c = flask_app.test_client()
     with c.session_transaction() as s:
         s['user_id'] = 1
         s['username'] = 'u'
         s['role'] = 'admin'
-    try:
-        r = c.get('/alerts')
-        assert r.status_code == 200, r.status_code
-    finally:
-        flask_app.config['TESTING'] = True
+
+    assert c.get('/').status_code == 200                       # control
+    check = sqlite3.connect(config.DATABASE_PATH)
+    n = check.execute(
+        "SELECT COUNT(*) FROM system_alerts"
+        " WHERE kind = 'import_stale' AND resolved_at IS NULL").fetchone()[0]
+    check.close()
+    assert n == 1, f'the dashboard did not persist an alert (got {n})'
+
+    def _boom(*a, **k):
+        raise RuntimeError('alert subsystem down')
+    monkeypatch.setattr(models_mod, 'record_import_staleness_alert', _boom)
+    assert c.get('/').status_code == 200, 'a broken alert must not break the page'
 
 
 def test_repeat_calls_do_not_write_once_an_alert_is_open(empty_db_conn):
@@ -258,37 +295,56 @@ def test_repeat_calls_do_not_write_once_an_alert_is_open(empty_db_conn):
     assert len(_open_staleness_alerts(empty_db_conn)) == 1
 
 
-def test_a_real_page_request_actually_persists_the_alert(tmp_db):
-    """END-TO-END, through the real hook, with NO hand-managed connection.
+# -- the marker must mean "the import COMPLETED", not "something committed" ---
 
-    This exists because every unit test above passes its own `conn` and commits
-    it itself -- so all sixteen stayed green while the hook was, in the real
-    app, inserting into a connection nobody ever committed and closing it. The
-    feature was completely dead and pytest could not see it. Assert the ROW,
-    from a separate connection, after a real request.
-    """
-    import sqlite3
-    import config
-    from app import app as flask_app
-
-    conn = sqlite3.connect(tmp_db)
-    conn.execute("DELETE FROM express_import_log")          # force: no import
-    conn.execute("DELETE FROM system_alerts WHERE kind = 'import_stale'")
+def _completed_run(conn, when_iso, bsn_ok=True, vat_only=False):
+    """A row exactly as blueprints/bsn.py writes it after an upload."""
+    import json
+    notes = {'upload': {'filename': 'daily.zip'}}
+    if vat_only:
+        notes['vat'] = {'ok': None, 'status': 'building'}
+    else:
+        notes['bsn'] = ({'ok': True, 'summary': 'x'} if bsn_ok
+                        else {'ok': False, 'error': 'parse died'})
+    conn.execute(
+        "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes,"
+        " imported_at) VALUES ('express-dbf-upload', 0, 0, ?, ?)",
+        (json.dumps(notes, ensure_ascii=False), when_iso + ' 17:00:00'))
     conn.commit()
-    conn.close()
 
-    flask_app.config['TESTING'] = True
-    c = flask_app.test_client()
-    with c.session_transaction() as s:
-        s['user_id'] = 1
-        s['username'] = 'u'
-        s['role'] = 'admin'
-    r = c.get('/alerts')
-    assert r.status_code == 200                              # control
 
-    check = sqlite3.connect(config.DATABASE_PATH)
-    n = check.execute(
-        "SELECT COUNT(*) FROM system_alerts"
-        " WHERE kind = 'import_stale' AND resolved_at IS NULL").fetchone()[0]
-    check.close()
-    assert n == 1, f'the request did not persist an alert (got {n})'
+def test_a_failed_import_is_not_reported_fresh(empty_db_conn):
+    """THE regression (Codex round 7, P1).
+
+    commit_express_dbf runs payments_out -- which commits its own
+    express_import_log row with source_filename='express_dbf' -- BEFORE
+    credit_notes_ap and the six isolated registers. If a later step raises, the
+    route reports the BSN import as FAILED while that sub-import marker is
+    already committed under today's timestamp. Reading MAX(imported_at) over
+    those rows therefore says "fresh" about an import that failed, and would
+    even let the staleness alert clear.
+
+    So the fixture writes BOTH: the sub-import marker (as payments_out leaves
+    it) and the run record saying the run failed. Fresh-by-sub-import must lose
+    to failed-by-run."""
+    _sub_import_marker(empty_db_conn, MON)       # payments_out got that far
+    _completed_run(empty_db_conn, MON, bsn_ok=False)
+    f = _fresh(empty_db_conn, TUE)
+    assert f['is_stale'] is True, f
+
+
+def test_a_completed_run_is_reported_fresh(empty_db_conn):
+    """Control for the test above: the same shape, only the outcome differs.
+    Without this the one above could pass by never reading anything."""
+    _sub_import_marker(empty_db_conn, MON)
+    _completed_run(empty_db_conn, MON, bsn_ok=True)
+    f = _fresh(empty_db_conn, TUE)
+    assert f['is_stale'] is False, f
+    assert f['last_date'] == MON
+
+
+def test_a_vat_only_upload_does_not_refresh_the_main_book(empty_db_conn):
+    """The VAT half rebuilds vat_book.db and writes nothing to this book's
+    ledger, so it must not make the main book look freshly imported."""
+    _completed_run(empty_db_conn, MON, vat_only=True)
+    assert _fresh(empty_db_conn, TUE)['is_stale'] is True

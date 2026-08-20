@@ -381,8 +381,9 @@ def test_freshness_no_rows_is_stale(empty_db_conn):
 def test_freshness_recent_row_not_stale(empty_db_conn):
     import models
     empty_db_conn.execute(
-        "INSERT INTO express_import_log (file_type, source_filename, imported_at) "
-        "VALUES ('payments_out', 'express_dbf', datetime('now','localtime'))"
+        "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes,"
+        " imported_at) VALUES ('express-dbf-upload', 0, 0,"
+        " '{\"bsn\": {\"ok\": true}}', datetime('now','localtime'))"
     )
     empty_db_conn.commit()
     freshness = models.get_express_dbf_freshness()
@@ -396,8 +397,9 @@ def test_freshness_row_older_than_the_last_working_day_is_stale(empty_db_conn):
     2026-08-17 is a Monday; 08-12 is the Wednesday before it."""
     import models
     empty_db_conn.execute(
-        "INSERT INTO express_import_log (file_type, source_filename, imported_at) "
-        "VALUES ('payments_out', 'express_dbf', '2026-08-12 17:00:00')")
+        "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes,"
+        " imported_at) VALUES ('express-dbf-upload', 0, 0,"
+        " '{\"bsn\": {\"ok\": true}}', '2026-08-12 17:00:00')")
     empty_db_conn.commit()
     freshness = models.get_express_dbf_freshness(today='2026-08-17',
                                                  conn=empty_db_conn)
@@ -414,8 +416,9 @@ def test_freshness_yesterday_is_no_longer_stale_at_30_hours(empty_db_conn):
     the previous working day is fresh however many hours ago it was."""
     import models
     empty_db_conn.execute(
-        "INSERT INTO express_import_log (file_type, source_filename, imported_at) "
-        "VALUES ('payments_out', 'express_dbf', '2026-08-15 11:00:00')")
+        "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes,"
+        " imported_at) VALUES ('express-dbf-upload', 0, 0,"
+        " '{\"bsn\": {\"ok\": true}}', '2026-08-15 11:00:00')")
     empty_db_conn.commit()
     freshness = models.get_express_dbf_freshness(today='2026-08-17',
                                                  conn=empty_db_conn)
@@ -424,12 +427,13 @@ def test_freshness_yesterday_is_no_longer_stale_at_30_hours(empty_db_conn):
 
 
 def test_freshness_ignores_other_source_filenames(empty_db_conn):
-    """A row from the text-report path (source_filename = the real
-    filename, not 'express_dbf') must not count as a DBF-direct import."""
+    """A row from another importer (import_log is shared -- `filename` is the
+    real file) must not count as a DBF-direct import."""
     import models
     empty_db_conn.execute(
-        "INSERT INTO express_import_log (file_type, source_filename, imported_at) "
-        "VALUES ('payments_out', 'some_report.txt', datetime('now','localtime'))"
+        "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes,"
+        " imported_at) VALUES ('some_report.txt', 0, 0,"
+        " '{\"bsn\": {\"ok\": true}}', datetime('now','localtime'))"
     )
     empty_db_conn.commit()
     freshness = models.get_express_dbf_freshness()
@@ -453,11 +457,11 @@ def test_dashboard_freshness_badge_names_transactions_not_ar(client, tmp_db):
     import sqlite3
     import models
     conn = sqlite3.connect(tmp_db)
-    conn.execute("DELETE FROM express_import_log WHERE source_filename='express_dbf'")
+    conn.execute("DELETE FROM import_log WHERE filename='express-dbf-upload'")
     conn.execute(
-        "INSERT INTO express_import_log (file_type, source_filename, record_count,"
-        " line_count, status, imported_at)"
-        " VALUES ('payments_in','express_dbf',0,0,'imported','2026-08-14 09:30:00')")
+        "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes,"
+        " imported_at) VALUES ('express-dbf-upload', 0, 0,"
+        " '{\"bsn\": {\"ok\": true}}', '2026-08-14 09:30:00')")
     conn.commit()
     conn.close()
 

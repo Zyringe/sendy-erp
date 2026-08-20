@@ -660,6 +660,13 @@ def _classify_dataset(dataset_dir):
 def express_dbf_import():
     import book_registry
     freshness = models.get_express_dbf_freshness()
+    # Same reasoning as the dashboard: the verdict is already computed here, so
+    # raising the alert costs nothing extra, and this is the other page whose
+    # audience is exactly the person who needs to know.
+    try:
+        models.record_import_staleness_alert(freshness)
+    except Exception as _exc:                 # noqa: BLE001
+        print('[import-stale] alert failed: %s' % _exc)
     conn = get_connection()
     row = conn.execute(
         "SELECT imported_at, notes FROM import_log "

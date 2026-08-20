@@ -94,3 +94,31 @@ def test_clearing_the_backlog_resolves_the_alert(empty_db_conn):
         "SELECT resolved_by FROM system_alerts WHERE kind = ?",
         (sa.KIND_UNMAPPED_CODES,)).fetchone()
     assert 'auto' in (row['resolved_by'] or '')
+
+
+def test_an_open_alert_refreshes_its_count_instead_of_going_stale(empty_db_conn):
+    """Codex round 7: dedupe must not mean the number freezes at raise time.
+
+    A second incident would be wrong (one backlog, one alert), but so is an
+    alert that still says 1 when 12 codes are waiting. The open row is UPDATED
+    in place -- same alert, current facts."""
+    import json
+    _unmapped(empty_db_conn, 'AAA1', '2026-07-30 17:00:48')
+    models.record_unmapped_bsn_codes_alert(conn=empty_db_conn)
+    empty_db_conn.commit()
+    rows = _open_alerts(empty_db_conn)
+    assert len(rows) == 1 and '1' in rows[0]['message']         # control
+    first_id = rows[0]['id']
+
+    for i in range(2, 6):
+        _unmapped(empty_db_conn, f'BBB{i}', '2026-08-19 17:08:04')
+    models.record_unmapped_bsn_codes_alert(conn=empty_db_conn)
+    empty_db_conn.commit()
+
+    rows = _open_alerts(empty_db_conn)
+    assert len(rows) == 1, [dict(r) for r in rows]              # still ONE
+    assert rows[0]['id'] == first_id, 'must update in place, not re-raise'
+    assert '5' in rows[0]['message'], rows[0]['message']
+    assert json.loads(rows[0]['context_json'])['count'] == 5
+    # the oldest must not drift forward as newer codes arrive
+    assert '2026-07-30' in rows[0]['message']

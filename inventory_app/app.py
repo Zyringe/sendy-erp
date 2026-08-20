@@ -146,48 +146,6 @@ def _warn_if_request_was_slow(response):
     return response
 
 
-# ── Daily-import staleness ───────────────────────────────────────────────────
-# There is no scheduler on this app (the Procfile is gunicorn and nothing
-# else), so nothing can fire when an import fails to HAPPEN — an absence has no
-# event. The only way to notice is to have something that DID happen report on
-# it, which is exactly the shape above. Kept as its own hook, not folded into
-# the slow-request one, so a failure in either cannot skip the other.
-#
-# Honest limitation: if nobody opens Sendy, nothing is raised. The audience is
-# Put, who opens it daily. That is a real improvement on a badge that was red
-# every Monday for no reason — not a substitute for push.
-#
-# Cost: one connection + a MAX() over 116 rows on an index, measured on prod at
-# 0.025ms. Gated to real HTML pages so static assets and XHR do not pay it.
-@app.after_request
-def _warn_if_import_is_stale(response):
-    try:
-        if (request.endpoint not in (None, 'static', 'healthz', 'serve_sw')
-                and request.method == 'GET'
-                and response.status_code == 200
-                and response.mimetype == 'text/html'):
-            # ONE connection for both halves. Opening a connection is the
-            # dominant cost here (1.82ms measured, against 0.025ms for the
-            # query itself), so letting each helper open its own doubled the
-            # price of the hook on every page in the app.
-            _conn = get_connection()
-            try:
-                if models.record_import_staleness_alert(
-                        models.get_express_dbf_freshness(conn=_conn),
-                        conn=_conn) is not None:
-                    # The helper commits only when it OWNS the connection, and
-                    # here the caller owns it -- so without this the INSERT is
-                    # rolled back on close and the alert silently never appears.
-                    # Only on an actual insert: the steady state stays a pure
-                    # read, which is the point of the short-circuit inside.
-                    _conn.commit()
-            finally:
-                _conn.close()
-    except Exception as exc:                  # noqa: BLE001
-        print(f"[import-stale] alert hook failed: {exc}", file=sys.stderr)
-    return response
-
-
 os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
 
 app.register_blueprint(bp_products)
@@ -427,6 +385,17 @@ def dashboard():
         finally:
             conn.close()
     express_freshness = models.get_express_dbf_freshness()
+    # Raise the staleness alert HERE rather than from an after_request hook.
+    # This page already computed the verdict, so the alert costs no extra read
+    # — and an after_request hook charged every HTML page in the app +4.6ms for
+    # a signal that changes at most once a day (Codex round 7). The audience is
+    # whoever opens the dashboard or the import page, which is the same
+    # audience either way. /import-express-dbf raises it too, for the same
+    # free-because-already-computed reason.
+    try:
+        models.record_import_staleness_alert(express_freshness)
+    except Exception as exc:                  # noqa: BLE001
+        print(f"[import-stale] alert failed: {exc}", file=sys.stderr)
     return render_template('dashboard.html',
                            restock_count=restock_count,
                            recent_txns=recent_txns,
