@@ -34,18 +34,27 @@ SNAP = '2026-08-20'
 
 
 def _row(conn, doc_no, outstanding, *, due=None, bill_no=None,
-         doc_date='2026-08-01', anomalous=0):
+         doc_date='2026-08-01', anomalous=0, snapshot=None):
     conn.execute(
         "INSERT INTO express_ar_outstanding (batch_id, entity, snapshot_date_iso,"
         " customer_code, customer_name, doc_date_iso, doc_no, is_anomalous,"
         " bill_amount, paid_amount, outstanding_amount, due_date_iso, bill_no)"
         " VALUES (1, 'BSN', ?, 'C1', 'ลูกค้าทดสอบ', ?, ?, ?, ?, 0, ?, ?, ?)",
-        (SNAP, doc_date, doc_no, anomalous, outstanding, outstanding,
+        (snapshot or SNAP, doc_date, doc_no, anomalous, outstanding, outstanding,
          due or doc_date, bill_no))
     conn.commit()
 
 
-def _clean(conn):
+def _note(conn, bill_no, *, sent='2026-08-05', cancelled=0):
+    conn.execute(
+        "INSERT INTO express_billing_notes (entity, bill_no, bill_date_iso,"
+        " sent_date_iso, customer_code, customer_name, net_amount, is_cancelled)"
+        " VALUES ('BSN', ?, '2026-08-05', ?, 'C1', 'ลูกค้าทดสอบ', 0, ?)",
+        (bill_no, sent, cancelled))
+    conn.commit()
+
+
+def _clean(conn, snapshot=None):
     """Force the state: tmp_db/empty_db carry real rows, and inheriting them
     would make every total below meaningless. Also seeds the batch the rows'
     FK points at (express_ar_outstanding.batch_id -> express_import_log.id)."""
@@ -79,6 +88,7 @@ def test_each_bucket_gets_the_right_rows(empty_db_conn):
     _row(empty_db_conn, 'IV1', 1000.00, due='2026-09-30')
     _row(empty_db_conn, 'IV2', 250.25,  due='2026-08-01')
     _row(empty_db_conn, 'IV3', 99.75,   due='2026-08-01', bill_no='BL1')
+    _note(empty_db_conn, 'BL1')            # a bill_no is only "billed" if sent
 
     by = {b['key']: b for b in cf.ar_due_buckets(as_of=SNAP,
                                                  conn=empty_db_conn)['buckets']}
@@ -92,6 +102,7 @@ def test_billed_wins_over_overdue(empty_db_conn):
     date has passed -- chasing it again is the noise this split removes."""
     _clean(empty_db_conn)
     _row(empty_db_conn, 'IV1', 500.00, due='2026-01-01', bill_no='BL9')
+    _note(empty_db_conn, 'BL9')
     by = {b['key']: b for b in cf.ar_due_buckets(as_of=SNAP,
                                                  conn=empty_db_conn)['buckets']}
     assert by['already_billed']['count'] == 1
@@ -132,7 +143,7 @@ def test_empty_snapshot_returns_zeroed_buckets_not_an_error(empty_db_conn):
     _clean(empty_db_conn)
     res = cf.ar_due_buckets(as_of=SNAP, conn=empty_db_conn)
     assert [b['key'] for b in res['buckets']] == \
-        ['chase_now', 'not_yet_due', 'already_billed']
+        ['chase_now', 'not_yet_due', 'already_billed', 'credits']
     assert all(b['amount'] == 0 and b['count'] == 0 for b in res['buckets'])
 
 
@@ -155,3 +166,103 @@ def test_the_ar_page_renders_the_buckets(tmp_db):
         assert '>%s<' % label in body or label in body, label
     # the cross-book caveat must be visible, not just in a docstring
     assert 'ยังไม่รวมสมุด VAT' in body
+    # and the page must not overclaim: it shows amounts, not a call list
+    assert 'ยังไม่ได้บอกว่า' in body
+
+
+# ── Codex round 11 ───────────────────────────────────────────────────────────
+
+def test_a_cancelled_billing_note_returns_the_invoice_to_the_chase_list(empty_db_conn):
+    """P1a. `bill_no` only says a note was CREATED. Treating that as "the
+    customer is on their payment run" hides a debt nobody is chasing when the
+    note was cancelled. Latent today (all 19 live billed rows have sent,
+    uncancelled notes) but reachable: 138 cancelled notes exist on prod."""
+    _clean(empty_db_conn)
+    _row(empty_db_conn, 'IV1', 500.00, due='2026-08-01', bill_no='BL_CANCELLED')
+    _note(empty_db_conn, 'BL_CANCELLED', cancelled=1)
+    by = {b['key']: b for b in cf.ar_due_buckets(as_of=SNAP, conn=empty_db_conn)['buckets']}
+    assert by['already_billed']['count'] == 0, 'a cancelled bill is not billed'
+    assert by['chase_now']['count'] == 1
+
+
+def test_an_unsent_billing_note_returns_the_invoice_to_the_chase_list(empty_db_conn):
+    """P1a, other half: created but never sent to the customer."""
+    _clean(empty_db_conn)
+    _row(empty_db_conn, 'IV1', 500.00, due='2026-08-01', bill_no='BL_UNSENT')
+    _note(empty_db_conn, 'BL_UNSENT', sent='')
+    by = {b['key']: b for b in cf.ar_due_buckets(as_of=SNAP, conn=empty_db_conn)['buckets']}
+    assert by['already_billed']['count'] == 0
+    assert by['chase_now']['count'] == 1
+
+
+def test_a_sent_live_note_still_counts_as_billed(empty_db_conn):
+    """Control: the guard must not empty the bucket outright."""
+    _clean(empty_db_conn)
+    _row(empty_db_conn, 'IV1', 500.00, due='2026-08-01', bill_no='BL_OK')
+    _note(empty_db_conn, 'BL_OK')
+    by = {b['key']: b for b in cf.ar_due_buckets(as_of=SNAP, conn=empty_db_conn)['buckets']}
+    assert by['already_billed']['count'] == 1
+    assert by['chase_now']['count'] == 0
+
+
+def test_a_bill_no_with_no_note_at_all_is_not_treated_as_billed(empty_db_conn):
+    _clean(empty_db_conn)
+    _row(empty_db_conn, 'IV1', 500.00, due='2026-08-01', bill_no='BL_MISSING')
+    by = {b['key']: b for b in cf.ar_due_buckets(as_of=SNAP, conn=empty_db_conn)['buckets']}
+    assert by['already_billed']['count'] == 0
+    assert by['chase_now']['count'] == 1
+
+
+def test_due_is_measured_against_TODAY_not_the_snapshot_date(empty_db_conn):
+    """P1b. The question is "who do I call today". A snapshot exported
+    yesterday must not make an invoice that came due this morning read as
+    not-yet-due."""
+    import datetime
+    today = datetime.date.today()
+    snap_date = (today - datetime.timedelta(days=1)).isoformat()
+
+    # THE CASE: snapshot exported yesterday, invoice falls due TODAY.
+    #   against the snapshot -> today > yesterday -> "not yet due"  (the bug)
+    #   against today        -> today > today is false -> "chase now" (correct)
+    # The fixture's snapshot MUST predate today or the two answers coincide and
+    # this test cannot fail -- which is exactly what it did when SNAP happened
+    # to equal today's date.
+    _clean(empty_db_conn, snapshot=snap_date)
+    _row(empty_db_conn, 'IV1', 500.00, due=today.isoformat(), snapshot=snap_date)
+    by = {b['key']: b for b in cf.ar_due_buckets(conn=empty_db_conn)['buckets']}
+    assert by['chase_now']['count'] == 1, (
+        'an invoice due today must be chaseable today, not deferred to the '
+        'snapshot date')
+
+    _clean(empty_db_conn, snapshot=snap_date)
+    _row(empty_db_conn, 'IV2', 500.00, snapshot=snap_date,
+         due=(today + datetime.timedelta(days=5)).isoformat())
+    by = {b['key']: b for b in cf.ar_due_buckets(conn=empty_db_conn)['buckets']}
+    assert by['not_yet_due']['count'] == 1
+
+
+def test_an_explicit_as_of_still_reproduces_a_historical_verdict(empty_db_conn):
+    """The default changed, but the ability to ask "what did this look like on
+    date X" must survive -- that is what as_of is for."""
+    _clean(empty_db_conn)
+    _row(empty_db_conn, 'IV1', 500.00, due='2026-08-19')
+    by = {b['key']: b for b in cf.ar_due_buckets(as_of='2026-08-01',
+                                                 conn=empty_db_conn)['buckets']}
+    assert by['not_yet_due']['count'] == 1
+
+
+def test_credit_notes_are_not_counted_as_chase_calls(empty_db_conn):
+    """P1c. A standalone SR carries a NEGATIVE outstanding -- it reduces what is
+    owed and the canonical filter deliberately keeps it. But it is not a
+    document anyone phones a customer about, and counting it inflated
+    "118 invoices to chase" by however many credits exist (3 on prod, -฿346.00).
+    It gets its own bucket so the reconcile still holds."""
+    _clean(empty_db_conn)
+    _row(empty_db_conn, 'IV1', 500.00, due='2026-08-01')
+    _row(empty_db_conn, 'SR1', -120.50, due='2026-08-01')
+    res = cf.ar_due_buckets(as_of=SNAP, conn=empty_db_conn)
+    by = {b['key']: b for b in res['buckets']}
+    assert by['chase_now']['count'] == 1 and by['chase_now']['amount'] == 500.00
+    assert by['credits']['count'] == 1 and by['credits']['amount'] == -120.50
+    # money gate still holds across all four
+    assert round(sum(b['amount'] for b in res['buckets']), 2) == 379.50

@@ -173,7 +173,19 @@ AR_DUE_BUCKETS = (
     ('chase_now',      'ตามได้เลย'),
     ('not_yet_due',    'ยังไม่ถึงกำหนด'),
     ('already_billed', 'วางบิลแล้ว'),
+    ('credits',        'ใบลดหนี้ (หักออก)'),
 )
+
+# BSN_AR_PREDICATE with every column qualified to the outstanding table.
+# Its own docstring says bare names are safe "since only express_ar_outstanding
+# has these columns" — that stops being true the moment express_billing_notes
+# is joined, because it carries `entity` AND `bill_no` too (verified: the
+# unqualified form fails with "ambiguous column name: entity"). One definition,
+# derived from the canonical one so the two cannot drift.
+_BSN_AR_PREDICATE_A = (BSN_AR_PREDICATE
+                       .replace('is_anomalous', 'a.is_anomalous')
+                       .replace('doc_date_iso', 'a.doc_date_iso')
+                       .replace('doc_no NOT IN', 'a.doc_no NOT IN'))
 
 
 def ar_due_buckets(as_of: Optional[str] = None,
@@ -207,8 +219,24 @@ def ar_due_buckets(as_of: Optional[str] = None,
     doc_no all differ across the books (วรสวัสดิ์ is 01อ35 in one and 01ว10 in
     the other). Until that exists, this reports one book and says so.
 
-    `as_of` is the date "due" is measured against; it defaults to the snapshot
-    date, NOT today, so the verdict matches the figures Express published.
+    `as_of` is the date "due" is measured against and defaults to **today**,
+    not the snapshot date. The question is "who do I call today", so a snapshot
+    exported yesterday must not make an invoice that fell due this morning read
+    as not-yet-due (Codex round 11). `snapshot_date` is returned separately so
+    the page can still show how fresh the underlying figures are, and passing
+    `as_of` explicitly reproduces a historical verdict.
+
+    ⚠ `bill_no` ALONE IS NOT "BILLED". It only says a note was created. The
+    row is treated as billed only when its `express_billing_notes` row exists,
+    is not cancelled, and carries a `sent_date_iso` — otherwise a cancelled or
+    unsent bill would hide a debt nobody is chasing. Latent when written (all
+    19 live billed rows had sent, uncancelled notes, and 0 of 11,930 notes had
+    a blank sent date) but reachable: 138 cancelled notes exist on prod.
+
+    ⚠ A standalone credit note carries a NEGATIVE outstanding. It correctly
+    reduces what is owed and the canonical filter keeps it — but it is not a
+    document anyone phones about, so counting it as a chase call inflated the
+    invoice count. It gets its own bucket; all four still reconcile.
     """
     buckets = {k: {'key': k, 'label': lbl, 'amount': 0.0, 'count': 0}
                for k, lbl in AR_DUE_BUCKETS}
@@ -219,22 +247,33 @@ def ar_due_buckets(as_of: Optional[str] = None,
             " FROM express_ar_outstanding WHERE entity='BSN'"
         ).fetchone()['snap']
         rows = [] if not snap else c.execute(
-            f"""SELECT outstanding_amount, due_date_iso, bill_no
-                  FROM express_ar_outstanding
-                 WHERE entity = 'BSN' AND snapshot_date_iso = ?
-                   AND {BSN_AR_PREDICATE}""",
+            f"""SELECT a.outstanding_amount, a.due_date_iso, a.bill_no,
+                       b.sent_date_iso, b.is_cancelled,
+                       b.bill_no AS note_bill_no
+                  FROM express_ar_outstanding a
+                  LEFT JOIN express_billing_notes b
+                         ON b.entity = a.entity AND b.bill_no = a.bill_no
+                 WHERE a.entity = 'BSN' AND a.snapshot_date_iso = ?
+                   AND {_BSN_AR_PREDICATE_A}""",
             (snap,),
         ).fetchall()
 
-    on = as_of or snap
+    on = as_of or _today_iso()
     total = 0.0
     for r in rows:
         amt = float(r['outstanding_amount'] or 0)
         # '' is not NULL: Express writes an empty string in places, and treating
-        # it as "billed" would silently move rows out of the chase list.
-        billed = bool((r['bill_no'] or '').strip())
+        # it as "billed" would silently move rows out of the chase list. And a
+        # bill number is only "billed" if its note was actually SENT and not
+        # cancelled — see the docstring.
+        billed = (bool((r['bill_no'] or '').strip())
+                  and r['note_bill_no'] is not None
+                  and not r['is_cancelled']
+                  and bool((r['sent_date_iso'] or '').strip()))
         due = (r['due_date_iso'] or '').strip()
-        if billed:
+        if amt < 0:
+            key = 'credits'
+        elif billed:
             key = 'already_billed'
         elif on and due and due > on:
             key = 'not_yet_due'
