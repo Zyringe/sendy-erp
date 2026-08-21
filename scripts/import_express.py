@@ -124,7 +124,16 @@ def _youref_prefix_len(stored, youref):
     target = _norm_note(youref)
     if not target:
         return 0
-    for i in range(len(stored), 0, -1):
+    # YOUREF is ONE fixed-width DBF char field and cannot hold a line break —
+    # measured on BSN5657: 0 of 2,429 PS+GR headers contain one, longest 30 chars.
+    # Normalizing collapses '\n' to a space, so without this bound 'PAY VAT' matches
+    # across the break in 'PAY\nVAT\nmanual' and claims two physical lines as
+    # YOUREF-derived; clearing then deletes the second one.
+    limit = len(stored)
+    for brk in ('\r', '\n'):
+        if brk in stored:
+            limit = min(limit, stored.index(brk))
+    for i in range(limit, 0, -1):
         if _norm_note(stored[:i]) == target:
             while i > 0 and stored[i - 1].isspace():
                 i -= 1
@@ -188,6 +197,12 @@ def _note_for_refresh(conn, header_table, company_id, doc_no, incoming):
         if cut >= 0:
             return stored, stored[:cut]
         if not incoming:
+            return stored, source
+        if _norm_note(incoming) in _norm_note(stored):
+            # Not a PREFIX is not the same as not PRESENT. The note already carries
+            # this text further down, so adding it again would duplicate exactly what
+            # this design exists to prevent — leave the note alone and claim no
+            # provenance, since we cannot say which occurrence YOUREF produced.
             return stored, source
         # Express has a YOUREF this note has never held. Freezing it would repeat
         # the staleness this design exists to remove, and concatenating it bare

@@ -759,6 +759,45 @@ def test_dbf_replay_clearing_youref_drops_exactly_one_separator(tmp_db):
     assert _pout_note(tmp_db) == '\nเว้นบรรทัดไว้เอง'
 
 
+def test_dbf_replay_youref_is_never_credited_with_two_physical_lines(tmp_db):
+    """Codex, 2026-08-21. YOUREF is one fixed-width DBF char field — 0 of BSN5657's
+    2,429 PS+GR headers contain a newline, and the longest is 30 chars — so the
+    YOUREF-derived part of a note can never span more than ONE line. Normalizing
+    collapses '\n' to a space, which let 'PAY VAT' match across the break and claim
+    two lines; clearing then deleted the second one."""
+    _forget(tmp_db)
+    _seed_report_row(tmp_db, 'PAY\nVAT\nงานทีม')
+    ie.run_import_records('payments_out',
+                          [_payment_out_record(doc_no=_RPS, note='PAY VAT')],
+                          db_path=tmp_db)
+
+    src = _pout_note_source(tmp_db)
+    assert src is None or '\n' not in src, 'provenance must not span a line break'
+
+    ie.run_import_records('payments_out', [_payment_out_record(doc_no=_RPS, note='')],
+                          db_path=tmp_db)
+
+    assert 'VAT' in _pout_note(tmp_db), 'clearing must not take a second line with it'
+    assert 'งานทีม' in _pout_note(tmp_db)
+
+
+def test_dbf_replay_does_not_repeat_a_youref_found_later_in_the_note(tmp_db):
+    """Codex, 2026-08-21. The own-line branch fires when YOUREF is not a PREFIX of
+    the note — but 'not a prefix' is not 'not present'. Prepending a YOUREF the note
+    already carries further down duplicates it, which is the exact outcome the whole
+    provenance design exists to prevent."""
+    _forget(tmp_db)
+    _seed_report_row(tmp_db, 'VAT 12,643\nสด 63,171')
+
+    ie.run_import_records('payments_out',
+                          [_payment_out_record(doc_no=_RPS, note='สด 63,171')],
+                          db_path=tmp_db)
+
+    note = _pout_note(tmp_db)
+    assert note.count('สด 63,171') == 1, f'text repeated: {note!r}'
+    assert note == 'VAT 12,643\nสด 63,171', 'and the note is left exactly as it was'
+
+
 def test_dbf_replay_replaces_a_note_that_came_only_from_youref(tmp_db):
     """No Sendy-only remainder: the note IS the YOUREF, so a correction replaces it
     outright. Without this the field would freeze at its first value forever —
