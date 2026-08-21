@@ -52,7 +52,7 @@ tr.ecom-row-dim    td { opacity:.55; }
 <div class="collapse mb-3" id="uploadArea">
   <div class="card border-0 shadow-sm">
     <div class="card-body">
-      <h6 class="fw-semibold"><i class="bi bi-file-earmark-spreadsheet me-1"></i>นำเข้าไฟล์ Shopee / Lazada</h6>
+      <h6 class="fw-semibold"><i class="bi bi-file-earmark-spreadsheet me-1"></i>นำเข้าไฟล์ Shopee / Lazada / TikTok</h6>
       <form method="POST" action="{{ url_for('ecommerce.ecommerce_import') }}" enctype="multipart/form-data"
             class="d-flex flex-wrap gap-2 align-items-end">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -68,6 +68,10 @@ tr.ecom-row-dim    td { opacity:.55; }
       <ul class="text-subtle small mb-1 ps-4">
         <li><strong>สต็อก/ราคา</strong> — Shopee <code>mass_update_sales_info_*</code> · Lazada <code>pricestock*</code></li>
         <li><strong>ข้อมูลสินค้า</strong> (ชื่อ/รายละเอียด) — Shopee <code>mass_update_basic_info_*</code> · Lazada <code>basic*</code></li>
+        <li><strong>TikTok</strong> — <code>Tiktoksellercenter_batchedit_*_all_information_template.xlsx</code>
+            เท่านั้น (ไฟล์เดียวมีครบทั้งข้อมูลสินค้าและตัวเลือก) อีก 5 ไฟล์พี่น้องจะถูกปฏิเสธพร้อมบอกให้ใช้ไฟล์ไหน<br>
+            <span class="text-warning">ตอน export ให้ติ๊กคอลัมน์ <strong>ปริมาณ</strong> ด้วย</span>
+            ไม่งั้นสต็อกจะไม่ถูกอัปเดต (ของเดิมถูกคงไว้ ไม่ถูกล้าง)</li>
       </ul>
       <p class="text-subtle small mb-0">
         ไฟล์สต็อกแทนที่ราคา/สต็อกทั้ง platform นั้น — ไม่กระทบการผูกสินค้า.

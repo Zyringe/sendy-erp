@@ -131,7 +131,7 @@ from .pricing_ap import (
     get_product_pricing_summary, get_product_pricing, get_ap_outstanding,
 )
 from .platform_skus import (
-    import_platform_skus, import_platform_products,
+    import_platform_skus, import_platform_products, import_tiktok_snapshot,
     _propagate_listings_to_platform_skus, get_platform_skus,
     get_platform_skus_all, get_platform_summary, update_platform_sku,
     get_platform_mapping_data, apply_platform_mapping,

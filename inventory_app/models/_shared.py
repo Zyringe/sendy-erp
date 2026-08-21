@@ -7,6 +7,13 @@ rationale. No behavior changes.
 from database import get_connection
 import re as _re_mod
 
+# The marketplaces the schema accepts — CHECK(platform IN (...)) on
+# platform_skus / platform_products / ecommerce_listings (mig 140).
+# One definition so a fourth platform is one edit, not a hunt: a list
+# hardcoded in a second place is how TikTok listings were silently
+# dropped from the product page (get_marketplace_listings_with_history).
+PLATFORMS = ('shopee', 'lazada', 'tiktok')
+
 
 def _set_price_change_source(conn, source):
     """Tell the product_price_history trigger WHY the next price change on

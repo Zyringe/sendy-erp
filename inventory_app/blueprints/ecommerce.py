@@ -24,6 +24,7 @@ from parse_platform import (parse_shopee, parse_lazada, export_shopee, export_la
                             parse_shopee_orders, parse_lazada_orders,
                             export_listing_mapping, parse_listing_mapping,
                             parse_shopee_basic_info, parse_lazada_basic_info,
+                            parse_tiktok,
                             detect_platform_file)
 
 bp_ecommerce = Blueprint('ecommerce', __name__)
@@ -79,9 +80,37 @@ _PARSERS = {
     ('lazada', 'stock'): parse_lazada,
     ('shopee', 'basic'): parse_shopee_basic_info,
     ('lazada', 'basic'): parse_lazada_basic_info,
+    ('tiktok', 'all'):   parse_tiktok,
 }
-_PLATFORM_TH = {'shopee': 'Shopee', 'lazada': 'Lazada'}
-_KIND_TH = {'stock': 'สต็อก/ราคา', 'basic': 'ข้อมูลสินค้า'}
+_PLATFORM_TH = {'shopee': 'Shopee', 'lazada': 'Lazada', 'tiktok': 'TikTok'}
+_KIND_TH = {'stock': 'สต็อก/ราคา', 'basic': 'ข้อมูลสินค้า',
+            'all': 'ข้อมูลสินค้า+สต็อก'}
+
+
+def _import_tiktok_snapshot_file(filename, label, parsed):
+    """One TikTok `all_information` file -> both grains, one transaction.
+
+    Two things are flashed as warnings rather than left silent, both by Put's
+    call (2026-08-21):
+      * an export with no `quantity` column keeps the stock already on record,
+        so the number on screen is older than the import that just ran;
+      * rows we hold that this file did not contain are REPORTED, never
+        auto-ignored — an `all_information` export cannot be told apart from a
+        category-filtered one, and auto-flagging a partial export would hide
+        listings that are still selling.
+    """
+    n_prod, n_sku, absent = models.import_tiktok_snapshot(parsed)
+    flash(f'{filename} → {label}: นำเข้า {n_sku} ตัวเลือก / {n_prod} listing', 'success')
+    if not parsed.get('stock_present'):
+        flash('ไฟล์นี้ไม่มีคอลัมน์สต็อก (ปริมาณ) — คงสต็อกเดิมไว้ ยังไม่ได้อัปเดต '
+              'ถ้าต้องการอัปสต็อกด้วย ให้ export ใหม่โดยติ๊กคอลัมน์ "ปริมาณ"', 'warning')
+    if absent:
+        names = ' · '.join(
+            f"{a['product_name']} ({a['variation_name'] or '-'})" for a in absent[:5])
+        more = f' และอีก {len(absent) - 5} รายการ' if len(absent) > 5 else ''
+        flash(f'มี {len(absent)} ตัวเลือกใน Sendy ที่ไม่อยู่ในไฟล์นี้ — '
+              f'ยังไม่ได้ซ่อนให้ ตรวจแล้วกดซ่อนเองที่หน้า mapping: {names}{more}',
+              'warning')
 
 
 def _import_platform_files(files):
@@ -107,6 +136,9 @@ def _import_platform_files(files):
                 flash(f'{f.filename} ({label}): ไม่พบข้อมูลในไฟล์', 'warning')
                 continue
 
+            if kind == 'all':
+                _import_tiktok_snapshot_file(f.filename, label, records)
+                continue
             if kind == 'stock':
                 count, propagated = models.import_platform_skus(platform, records)
                 extra = f' · restore mapping {propagated} รายการ' if propagated else ''

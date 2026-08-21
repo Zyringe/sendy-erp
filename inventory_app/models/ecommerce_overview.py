@@ -47,9 +47,8 @@ from database import get_connection
 
 from .bsn_sync import PLATFORM_STOCK_DEDUCT_CUSTOMERS
 from .conversions import get_buildable
+from ._shared import PLATFORMS
 from .stock_filters import non_stock_clause
-
-PLATFORMS = ('shopee', 'lazada', 'tiktok')
 
 # หน้าร้าน customer codes that book a platform's marketplace sales in
 # sales_transactions (see workspace-operating-manual.md). TikTok sales are

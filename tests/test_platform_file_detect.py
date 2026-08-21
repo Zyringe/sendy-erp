@@ -273,3 +273,148 @@ def test_real_exports_detected(path, expected):
         pytest.skip(f'real export not on this machine: {path}')
     with open(full, 'rb') as fh:
         assert pp.detect_platform_file(io.BytesIO(fh.read())) == expected
+
+
+# ── 5. TikTok Seller Center batch-edit exports ───────────────────────────────
+#
+# Discriminator: row 1 (0-indexed) carries a template version 'V4' in column 0
+# and the template KIND in column 1 ('All_Information', 'Basic_Information',
+# …). Both are machine-readable and survive TikTok localizing the Thai header
+# row underneath, exactly like Shopee's et_title_* row.
+#
+# Why this cannot key on the Thai header: TikTok's row 2 contains
+# 'รหัสสินค้า', which is _SHOPEE_ANY. Without a TikTok branch placed BEFORE
+# the Shopee one, every TikTok export falls into the Shopee family and dies
+# with a Shopee-flavoured error naming Shopee files (verified on all six real
+# exports, 2026-08-21).
+#
+# Only All_Information is supported: measured against two separate real
+# exports, it is a strict superset of the other five (the only differences
+# were CDN host / `idc=` query-param noise on otherwise identical image URLs).
+
+_TT_ALL_COLS = [
+    'product_id', 'category', 'product_name', 'product_status', 'sku_id',
+    'variation_value', 'product_description', 'brand', 'price', 'quantity',
+    'seller_sku', 'parcel_weight', 'parcel_length', 'parcel_width',
+    'parcel_height', 'cod', 'main_image', 'image_2', 'product_property/100107',
+]
+_TT_ALL_TH = [
+    'รหัสสินค้า', 'หมวดหมู่', 'ชื่อสินค้า', 'สถานะสินค้า', 'SKU ID',
+    'ตัวเลือกของตัวแปร', 'คำอธิบายสินค้า', 'แบรนด์', 'ราคาขายปลีก (สกุลเงินท้องถิ่น)',
+    'ปริมาณ', 'SKU ของผู้ขาย', 'น้ำหนักพัสดุ(g)', 'ความยาวของพัสดุ(cm)',
+    'ความกว้างของพัสดุ(cm)', 'ความสูงของพัสดุ(cm)',
+    'เลือกว่าจะรองรับการเก็บเงินปลายทางหรือไม่', 'ภาพหลัก', 'ภาพที่ 2',
+    'ประเภทของการรับประกัน',
+]
+_TT_ALL_ROW = [
+    '1736550249302361784', 'อุปกรณ์เสริมเครื่องมือไฟฟ้า (882952)',
+    'แผ่นตัดเหล็ก 14 นิ้ว Golden Lion', 'วางขายอยู่(1)', '1736551722754410168',
+    'ใย 1 ชั้น, 1 ใบ', '<p>แผ่นตัดเหล็ก</p>', 'golden lion (7072630204522563329)',
+    '115', '50', 'DSC-CUT-GL-S5048-14in-BLK', '900', '36', '36', '2', 'ใช่',
+    'https://p16-oec-sg.ibyteimg.com/a~tplv-x-origin-jpeg.jpeg?idc=my2',
+    'https://p16-oec-sg.ibyteimg.com/b~tplv-x-origin-jpeg.jpeg?idc=my2',
+    'ไม่รับประกัน',
+]
+
+
+def _tiktok_xlsx(kind='All_Information', cols=None, thai=None, row=None,
+                 sheets=('Instruction', 'HiddenStyle', 'TemplateConfig')):
+    """Tiktoksellercenter_batchedit_*_template.xlsx — 5 header rows, data at 5."""
+    cols = list(cols or _TT_ALL_COLS)
+    thai = list(thai or _TT_ALL_TH)
+    row = list(row or _TT_ALL_ROW)
+    n = len(cols)
+    book = {'Template': [
+        cols,
+        ['V4', kind, 'metric'] + [None] * (n - 3),
+        thai,
+        ['บังคับ'] * n,
+        ['ไม่สามารถแก้ไขได้'] * n,
+        row,
+    ]}
+    for s in sheets:
+        book[s] = [['x']]
+    return _xlsx(book)
+
+
+def _tiktok_all_no_quantity_xlsx():
+    """The 36-column variant — same export, `quantity` unticked at export time."""
+    keep = [i for i, c in enumerate(_TT_ALL_COLS) if c != 'quantity']
+    return _tiktok_xlsx(
+        cols=[_TT_ALL_COLS[i] for i in keep],
+        thai=[_TT_ALL_TH[i] for i in keep],
+        row=[_TT_ALL_ROW[i] for i in keep],
+    )
+
+
+def _tiktok_sibling_xlsx(kind, cols):
+    idx = [_TT_ALL_COLS.index(c) for c in cols]
+    return _tiktok_xlsx(kind=kind, cols=cols,
+                        thai=[_TT_ALL_TH[i] for i in idx],
+                        row=[_TT_ALL_ROW[i] for i in idx])
+
+
+_TT_SIBLINGS = {
+    'Basic_Information': ['product_id', 'category', 'brand', 'product_name',
+                          'product_status', 'product_description'],
+    'Sales_Information': ['product_id', 'category', 'product_name', 'sku_id',
+                          'variation_value', 'price', 'seller_sku'],
+    'Shipping_Information': ['product_id', 'category', 'product_name', 'sku_id',
+                             'variation_value', 'parcel_weight', 'parcel_length',
+                             'parcel_width', 'parcel_height', 'cod'],
+    'Media_Information': ['product_id', 'category', 'product_name', 'main_image',
+                          'image_2'],
+    'ProductProperty_Information': ['product_id', 'category', 'product_name',
+                                    'product_description',
+                                    'product_property/100107'],
+}
+
+
+@pytest.mark.parametrize('builder', [
+    _tiktok_xlsx,
+    _tiktok_all_no_quantity_xlsx,
+])
+def test_tiktok_all_information_detected(builder):
+    """Both shapes route the same. The quantity-less one is accepted on
+    purpose (Put, 2026-08-21) — the importer preserves the stock it already
+    holds rather than the file blanking it; see test_tiktok_import."""
+    assert pp.detect_platform_file(builder()) == ('tiktok', 'all')
+
+
+@pytest.mark.parametrize('kind, cols', sorted(_TT_SIBLINGS.items()))
+def test_tiktok_siblings_refused_by_name(kind, cols):
+    """Each sibling is refused individually and the message names both the
+    file it IS and the one to use instead — same stance as Lazada's
+    freight/skuimg rejections, so a wrong drag is self-correcting."""
+    with pytest.raises(ValueError) as e:
+        pp.detect_platform_file(_tiktok_sibling_xlsx(kind, cols))
+    msg = str(e.value)
+    assert kind in msg, f'refusal must name the file it got: {msg}'
+    assert 'all_information' in msg.lower(), f'refusal must name the fix: {msg}'
+
+
+def test_tiktok_is_not_mistaken_for_shopee():
+    """CONTROL for the branch-order bug. TikTok's Thai header row contains
+    'รหัสสินค้า' (= _SHOPEE_ANY), so a TikTok branch placed AFTER Shopee's
+    never runs. Pin the shape of the failure, not just the success: assert
+    the verdict is tiktok AND that no Shopee wording leaked into it."""
+    assert pp.detect_platform_file(_tiktok_xlsx()) == ('tiktok', 'all')
+    with pytest.raises(ValueError) as e:
+        pp.detect_platform_file(_tiktok_sibling_xlsx(
+            'Media_Information', _TT_SIBLINGS['Media_Information']))
+    assert 'Shopee' not in str(e.value)
+
+
+def test_shopee_and_lazada_still_route_after_tiktok_branch():
+    """CONTROL. Inserting a branch ahead of the others must not shadow them."""
+    assert pp.detect_platform_file(_shopee_stock_xlsx()) == ('shopee', 'stock')
+    assert pp.detect_platform_file(_shopee_basic_xlsx()) == ('shopee', 'basic')
+    assert pp.detect_platform_file(_lazada_stock_xlsx()) == ('lazada', 'stock')
+    assert pp.detect_platform_file(_lazada_basic_xlsx()) == ('lazada', 'basic')
+
+
+def test_tiktok_detection_does_not_consume_the_stream():
+    buf = _tiktok_xlsx()
+    assert pp.detect_platform_file(buf) == ('tiktok', 'all')
+    df = pd.read_excel(buf, sheet_name='Template', header=None, dtype=str)
+    assert df.iloc[5, 0] == '1736550249302361784'

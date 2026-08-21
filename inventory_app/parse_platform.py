@@ -63,6 +63,24 @@ _SHOPEE_STOCK_MARKERS = {'et_title_variation_stock', 'คลัง'}
 _SHOPEE_BASIC_MARKERS = {'et_title_product_description', 'รายละเอียดสินค้า'}
 _SHOPEE_ORDER_MARKERS = {'หมายเลขคำสั่งซื้อ', 'orderNumber'}
 
+# TikTok Seller Center batch-edit exports. Row 1 carries the template version
+# ('V4') in column 0 and the template KIND in column 1 ('All_Information',
+# 'Sales_Information', …); every one of the six real exports also ships a
+# hidden 'TemplateConfig' sheet. Either signal identifies the family, so a
+# version bump alone does not blind detection.
+#
+# ⚠ This must be tested BEFORE the Shopee branch: TikTok's Thai header row
+# contains 'รหัสสินค้า', which is _SHOPEE_ANY. Placed after, every TikTok file
+# is swallowed by the Shopee family and refused with a Shopee-flavoured message
+# naming Shopee files (reproduced on all six real exports, 2026-08-21).
+_TIKTOK_SHEET_MARKERS = {'TemplateConfig'}
+_TIKTOK_VERSION_MARKERS = {'V4'}
+_TIKTOK_KIND_RE = re.compile(r'^[A-Za-z]+_Information$')
+# All_Information is a strict superset of the other five — measured on two
+# separate real exports, the only differences were CDN host / `idc=` noise on
+# otherwise identical image URLs. Supporting one file keeps one parser honest.
+_TIKTOK_SUPPORTED_KIND = 'All_Information'
+
 _HEADER_SCAN_ROWS = 8   # Shopee's code row, Thai header and instruction rows all sit here
 
 
@@ -105,6 +123,18 @@ def detect_platform_file(file_obj):
         top = pd.read_excel(xl, sheet_name=sheets[0], header=None, dtype=str,
                             nrows=_HEADER_SCAN_ROWS)
         cells = {str(v).strip() for v in top.values.ravel()}
+
+        # ── TikTok ── before Shopee, see _TIKTOK_* above for why.
+        if (set(sheets) & _TIKTOK_SHEET_MARKERS) or (cells & _TIKTOK_VERSION_MARKERS):
+            kinds = sorted(c for c in cells if _TIKTOK_KIND_RE.match(c))
+            if _TIKTOK_SUPPORTED_KIND in kinds:
+                return 'tiktok', 'all'
+            if kinds:
+                raise ValueError(
+                    f'เป็นไฟล์ TikTok {kinds[0]} — รองรับเฉพาะ all_information '
+                    'ซึ่งมีข้อมูลครบทุกคอลัมน์ของอีก 5 ไฟล์อยู่แล้ว '
+                    '(ตอน export ให้เลือก "ข้อมูลทั้งหมด")')
+
         if cells & _SHOPEE_ORDER_MARKERS:
             raise ValueError('เป็นไฟล์คำสั่งซื้อ — ให้นำเข้าที่หน้า Marketplace แทน')
         if (cells & _SHOPEE_ANY) or any(c.startswith('et_title_') for c in cells):
@@ -854,6 +884,191 @@ def _find_stock_col_raw(raw_dict):
         if k not in known:
             return k
     return None
+
+
+# ── TikTok ────────────────────────────────────────────────────────────────────
+#
+# `all_information` batch-edit export. Row layout:
+#   0 english column names   1 'V4' + kind + unit-system   2 Thai headers
+#   3 mandatory flags        4 instruction text            5+ data
+#
+# One file feeds TWO grains, so this returns both plus `stock_present` — the
+# one fact the importer cannot recover afterwards. TikTok emits the same
+# template with or without `quantity`, and `import_platform_skus` overwrites
+# `stock` with no COALESCE, so the quantity-less shape would blank the stock of
+# every TikTok row and flip every mapped product to RED in /ecommerce.
+
+TIKTOK_HEADER_ROWS = 5
+
+_TIKTOK_REQUIRED_COLS = ('product_id', 'category', 'product_name', 'sku_id',
+                         'variation_value', 'product_description', 'price',
+                         'parcel_weight')
+# Listing-grain fields must agree across every variation row of one listing.
+_TIKTOK_LISTING_FIELDS = ('product_name', 'product_description', 'brand',
+                          'category', 'product_status')
+_TIKTOK_PAREN_ID_RE = re.compile(r'^(.*?)\s*\((\d+)\)\s*$')
+_TIKTOK_IMAGE_COL_RE = re.compile(r'^(main_image|image_\d+)$')
+_TIKTOK_URL_PATH_RE = re.compile(r'^https?://[^/]+(/[^?#]*)')
+
+
+def _tt_s(val):
+    """Cell -> stripped str, or None for blank / NaN."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    return None if not s or s.lower() == 'nan' else s
+
+
+def _tiktok_image_path(url):
+    """Keep only the URL path. TikTok rotates the CDN edge host (p16-/p19-) and
+    an `idc=` routing param between exports ten minutes apart, on every row,
+    while the object itself is unchanged — measured 2026-08-21. Storing the raw
+    URL makes every import look like all 47 images changed."""
+    s = _tt_s(url)
+    if s is None:
+        return None
+    m = _TIKTOK_URL_PATH_RE.match(s)
+    return m.group(1) if m else s
+
+
+def _tt_split_paren_id(val):
+    """'อุปกรณ์เสริมเครื่องมือไฟฟ้า (882952)' -> ('อุปกรณ์เสริมเครื่องมือไฟฟ้า', '882952').
+    Also how TikTok writes brands: 'golden lion (70726...)'. No id -> (val, None)."""
+    s = _tt_s(val)
+    if s is None:
+        return None, None
+    m = _TIKTOK_PAREN_ID_RE.match(s)
+    return (m.group(1).strip(), m.group(2)) if m else (s, None)
+
+
+def _tt_number(val, col, row_no, allow_blank=False, as_int=False):
+    """Numeric or refuse. A silent None here becomes a wrong price or a blanked
+    stock level, neither of which anything downstream can detect."""
+    s = _tt_s(val)
+    if s is None:
+        if allow_blank:
+            return None
+        raise ValueError(f'แถวที่ {row_no}: คอลัมน์ {col} ว่าง — ต้องมีค่า')
+    try:
+        n = float(s.replace(',', ''))
+    except ValueError:
+        raise ValueError(f'แถวที่ {row_no}: คอลัมน์ {col} ไม่ใช่ตัวเลข ({s!r})')
+    if n < 0:
+        raise ValueError(f'แถวที่ {row_no}: คอลัมน์ {col} ติดลบ ({s!r})')
+    if as_int:
+        # int(3.9) == 3 understates stock by a whole unit and leaves no trace,
+        # and stock feeds the RED/AMBER verdicts straight through. Refuse.
+        if n != int(n):
+            raise ValueError(
+                f'แถวที่ {row_no}: คอลัมน์ {col} ต้องเป็นจำนวนเต็ม ({s!r})')
+        return int(n)
+    return n
+
+
+def parse_tiktok(file_obj):
+    """Parse a TikTok `all_information` export into both grains.
+
+    Returns ``{}`` when the file carries no data rows (the route flashes
+    "ไม่พบข้อมูลในไฟล์" for that — it is not a refusal), otherwise
+    ``{'products': [...], 'skus': [...], 'stock_present': bool}``.
+
+    Raises ValueError, in Thai, for anything the importer must not be handed.
+    """
+    file_obj.seek(0)
+    df = pd.read_excel(file_obj, sheet_name='Template', header=None, dtype=str)
+    file_obj.seek(0)
+    if len(df) <= TIKTOK_HEADER_ROWS:
+        return {}
+
+    cols = [str(c).strip() for c in df.iloc[0].tolist()]
+    missing = [c for c in _TIKTOK_REQUIRED_COLS if c not in cols]
+    if missing:
+        raise ValueError('ไฟล์ TikTok ขาดคอลัมน์ที่จำเป็น: ' + ', '.join(missing))
+
+    stock_present = 'quantity' in cols
+    image_cols = [c for c in cols if _TIKTOK_IMAGE_COL_RE.match(c)]
+    data = df.iloc[TIKTOK_HEADER_ROWS:].reset_index(drop=True)
+    data.columns = cols
+
+    skus, products, seen_sku = [], {}, {}
+    for i, row in data.iterrows():
+        row_no = i + TIKTOK_HEADER_ROWS + 1          # 1-based, as the operator sees it
+        get = lambda c: _tt_s(row[c]) if c in cols else None   # noqa: E731
+
+        pid = get('product_id')
+        if pid is None:
+            raise ValueError(f'แถวที่ {row_no}: product_id ว่าง — ระบุ listing ไม่ได้')
+        vid = get('sku_id')
+        if vid is None:
+            # SQLite counts every NULL in UNIQUE(platform, variation_id) as
+            # distinct, so blank ids never conflict — they pile up as junk stub
+            # rows. That is the 2026-07-30 Shopee incident, 288 rows deep.
+            raise ValueError(f'แถวที่ {row_no}: sku_id ว่าง — ตัวเลือกนี้ไม่มีรหัส')
+        if vid in seen_sku:
+            raise ValueError(f'sku_id {vid} ซ้ำ (แถวที่ {seen_sku[vid]} และ {row_no})')
+        seen_sku[vid] = row_no
+
+        cat_name, cat_id = _tt_split_paren_id(get('category'))
+        brand_name, _ = _tt_split_paren_id(get('brand'))
+        grams = _tt_number(row.get('parcel_weight'), 'parcel_weight', row_no)
+
+        skus.append({
+            'product_id_str':  pid,
+            'variation_id':    vid,
+            'product_name':    get('product_name') or '',
+            'variation_name':  get('variation_value'),
+            'seller_sku':      get('seller_sku'),
+            'price':           _tt_number(row.get('price'), 'price', row_no),
+            'special_price':   None,
+            'stock':           _tt_number(row.get('quantity'), 'quantity', row_no,
+                                          as_int=True) if stock_present else None,
+            'weight_kg':       None if grams is None else round(grams / 1000.0, 4),
+            'length_cm':       _tt_number(row.get('parcel_length'), 'parcel_length',
+                                          row_no, allow_blank=True),
+            'width_cm':        _tt_number(row.get('parcel_width'), 'parcel_width',
+                                          row_no, allow_blank=True),
+            'height_cm':       _tt_number(row.get('parcel_height'), 'parcel_height',
+                                          row_no, allow_blank=True),
+            'raw_json':        json.dumps({c: _tt_s(row[c]) for c in cols},
+                                          ensure_ascii=False),
+        })
+
+        paths = [p for p in (_tiktok_image_path(row[c]) for c in image_cols) if p]
+        rec = {
+            'product_id_str':  pid,
+            'product_name':    get('product_name') or '',
+            'description':     get('product_description'),
+            'brand':           brand_name,
+            'category_id_str': cat_id,
+            'category_name':   cat_name,
+            'status':          get('product_status'),
+            'cover_image_url': paths[0] if paths else None,
+            'image_urls':      ','.join(paths) if paths else None,
+            'raw_json':        json.dumps({c: _tt_s(row[c]) for c in cols
+                                           if c in _TIKTOK_LISTING_FIELDS},
+                                          ensure_ascii=False),
+        }
+        if pid not in products:
+            products[pid] = (rec, row_no)
+            continue
+        # One listing, several variation rows: the listing-grain half must
+        # agree. A disagreement means the file was hand-edited, and silently
+        # keeping the first row would import a listing nobody approved.
+        first, first_row = products[pid]
+        for f in _TIKTOK_LISTING_FIELDS:
+            if f not in cols:
+                continue
+            key = {'product_name': 'product_name', 'product_description': 'description',
+                   'brand': 'brand', 'category': 'category_name',
+                   'product_status': 'status'}[f]
+            if first[key] != rec[key]:
+                raise ValueError(
+                    f'listing {pid}: คอลัมน์ {f} ไม่ตรงกันระหว่างแถวที่ '
+                    f'{first_row} กับ {row_no} — listing เดียวต้องมีค่าเดียว')
+
+    return {'products': [r for r, _ in products.values()],
+            'skus': skus,
+            'stock_present': stock_present}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
