@@ -205,7 +205,16 @@ def _note_for_refresh(conn, header_table, company_id, doc_no, incoming):
         # on every daily import.
         return stored, source
     merged = incoming + stored[cut:]
-    return (merged if incoming else merged.lstrip()), incoming
+    if not incoming:
+        # YOUREF was cleared, so its separator goes with it — the ONE that followed
+        # it, and nothing more. `.lstrip()` here also ate the remainder's own leading
+        # whitespace, which is the operator's formatting: 'OLD\n  manual' cleared to
+        # 'manual' instead of '  manual', and a blank line they left between the two
+        # parts would go the same way.
+        for sep in ('\r\n', '\n', '\r'):
+            if merged.startswith(sep):
+                return merged[len(sep):], incoming
+    return merged, incoming
 
 
 def _delete_existing_doc(conn, header_table, child_table, child_fk, company_id, doc_no,

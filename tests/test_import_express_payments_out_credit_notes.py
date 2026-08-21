@@ -729,6 +729,36 @@ def test_dbf_replay_a_youref_the_note_never_had_is_added_on_its_own_line(tmp_db)
     assert _pout_note(tmp_db) == 'สด 63,171\nVAT 12,643'
 
 
+def test_dbf_replay_clearing_youref_keeps_the_remainder_indentation(tmp_db):
+    """Codex, 2026-08-21. Clearing a known YOUREF has to drop the separator that
+    followed it — and nothing else. `.lstrip()` also ate the Sendy-only line's own
+    leading whitespace, which is the operator's formatting, not our separator."""
+    _forget(tmp_db)
+    _seed_report_row(tmp_db, 'OLD\n  ย่อหน้าของทีม')
+    ie.run_import_records('payments_out', [_payment_out_record(doc_no=_RPS, note='OLD')],
+                          db_path=tmp_db)
+    assert _pout_note_source(tmp_db) == 'OLD', 'setup'
+
+    ie.run_import_records('payments_out', [_payment_out_record(doc_no=_RPS, note='')],
+                          db_path=tmp_db)
+
+    assert _pout_note(tmp_db) == '  ย่อหน้าของทีม'
+
+
+def test_dbf_replay_clearing_youref_drops_exactly_one_separator(tmp_db):
+    """A blank line the operator left between the two parts is theirs to keep:
+    only the ONE separator that followed the YOUREF goes."""
+    _forget(tmp_db)
+    _seed_report_row(tmp_db, 'OLD\n\nเว้นบรรทัดไว้เอง')
+    ie.run_import_records('payments_out', [_payment_out_record(doc_no=_RPS, note='OLD')],
+                          db_path=tmp_db)
+
+    ie.run_import_records('payments_out', [_payment_out_record(doc_no=_RPS, note='')],
+                          db_path=tmp_db)
+
+    assert _pout_note(tmp_db) == '\nเว้นบรรทัดไว้เอง'
+
+
 def test_dbf_replay_replaces_a_note_that_came_only_from_youref(tmp_db):
     """No Sendy-only remainder: the note IS the YOUREF, so a correction replaces it
     outright. Without this the field would freeze at its first value forever —
