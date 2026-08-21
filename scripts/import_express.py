@@ -91,11 +91,178 @@ def _product_id_by_code(conn, code, unit=None):
 
 
 # ── per-file-type writers ────────────────────────────────────────────────────
-def _existing_doc_nos(conn, table):
-    return {r[0] for r in conn.execute(f'SELECT doc_no FROM {table}').fetchall()}
+def _existing_doc_nos(conn, table, company_id):
+    """Document numbers this COMPANY has already imported into `table`.
+
+    Scoped to company_id on purpose: the CLI advertises --company BSN|SD, and
+    Express numbers documents per company, so BSN's PS0001815 says nothing
+    about whether SD has one. An unscoped key silently skipped whichever
+    company imported second (Codex Express Integration review 2026-08-20, P2).
+    """
+    return {r[0] for r in conn.execute(
+        f'SELECT doc_no FROM {table} WHERE company_id = ?', (company_id,)).fetchall()}
 
 
-def _import_credit_notes_records(conn, records, batch_id, company_id, incremental=True):
+def _norm_note(text):
+    """Express's printed report and its DBF disagree on whitespace (the report
+    keeps \xa0 where the DBF has a space), so notes only compare meaningfully
+    once collapsed."""
+    return ' '.join((text or '').replace('\xa0', ' ').split())
+
+
+def _youref_prefix_len(stored, youref):
+    """Length of the leading slice of `stored` that normalizes to `youref`, or -1
+    if no slice does. The RAW length is returned so the caller keeps the
+    operator's remaining text byte-for-byte.
+
+    The slice stops at the last non-space character of the match. `_norm_note`
+    collapses trailing whitespace, so the longest matching prefix also swallows
+    the newline BETWEEN the YOUREF-derived line and the Sendy-only ones — and
+    eating that separator glues them together ("712 โอน 37,635VAT 26,613"),
+    which `ap.html` renders literally under white-space: pre-wrap.
+    """
+    target = _norm_note(youref)
+    if not target:
+        return 0
+    # YOUREF is ONE fixed-width DBF char field and cannot hold a line break —
+    # measured on BSN5657: 0 of 2,429 PS+GR headers contain one, longest 30 chars.
+    # Normalizing collapses '\n' to a space, so without this bound 'PAY VAT' matches
+    # across the break in 'PAY\nVAT\nmanual' and claims two physical lines as
+    # YOUREF-derived; clearing then deletes the second one.
+    limit = len(stored)
+    for brk in ('\r', '\n'):
+        if brk in stored:
+            limit = min(limit, stored.index(brk))
+    for i in range(limit, 0, -1):
+        if _norm_note(stored[:i]) == target:
+            while i > 0 and stored[i - 1].isspace():
+                i -= 1
+            return i
+    return -1
+
+
+def _note_for_refresh(conn, header_table, company_id, doc_no, incoming):
+    """(note, note_source) for a DBF refresh — never losing what only Sendy holds.
+
+    `note` has two sources of different fidelity: the printed Express report
+    captured several lines, while the DBF carries one short `APTRN.YOUREF`. Given
+    only the stored note and an incoming YOUREF, a correction and a truncation are
+    indistinguishable — stored "711 โอน 37,635 / VAT 26,613 / อานี 37,635" against
+    incoming "712 โอน 37,635" is either Express fixing 711, or YOUREF having only
+    ever held the first line. Guessing by prefix answers the second and deletes two
+    lines in the first (the blocker Codex raised, 2026-08-20).
+
+    `note_source` removes the guess: it records the YOUREF this row's note was last
+    written with, so the YOUREF-derived part is replaced and the Sendy-only
+    remainder carries across.
+
+      note_source IS NULL   the note did not come from YOUREF (printed report, or a
+                            row older than mig 168). First DBF contact: split it on
+                            the YOUREF it matches, which preserves the 40 measured
+                            rows — 24 with a blank YOUREF behind a stored note,
+                            16 whose note runs longer than YOUREF.
+      note_source SET       stored == note_source + remainder by construction, so
+                            the split is exact, and a cleared YOUREF clears its own
+                            line without touching the remainder.
+
+    When the note cannot be split at all (nothing wrote it through this path and it
+    matches no YOUREF) the stored text is kept untouched — 0 rows today, and losing
+    an operator's note is the one outcome this function exists to prevent.
+    """
+    row = conn.execute(
+        f'SELECT note, note_source FROM {header_table}'
+        f' WHERE company_id = ? AND doc_no = ?'
+        # UNIQUE(batch_id, doc_no) does not stop one document from sitting in two
+        # batches — a --full text-report re-import puts it there by design — so
+        # read the LATEST row rather than whichever one sqlite happens to return.
+        f' ORDER BY batch_id DESC, id DESC LIMIT 1',
+        (company_id, doc_no)).fetchone()
+    if row is None or not (row[0] or ''):
+        return incoming, incoming
+    stored, source = row[0], row[1]
+
+    if not source:
+        # No YOUREF backs this note yet — NULL means we have never looked, '' means
+        # we looked and Express had none. Both re-OBSERVE: keep the operator's note
+        # byte-for-byte and record the RAW slice YOUREF matches. Writing `incoming`
+        # here instead would renormalize the report's whitespace (\xa0 -> space) on
+        # a line nobody asked us to touch.
+        #
+        # Treating '' as a set provenance is what duplicated text: splitting against
+        # '' yields offset 0, so the WHOLE note became the remainder and a later
+        # YOUREF was prepended to text that already contained it — '711 โอน 37,635'
+        # onto a note starting '711 โอน 37,635'. 24 rows carry a blank YOUREF, so
+        # that is exactly the population an operator typing one would hit.
+        cut = _youref_prefix_len(stored, incoming)
+        if cut >= 0:
+            return stored, stored[:cut]
+        if not incoming:
+            return stored, source
+        if _norm_note(incoming) in _norm_note(stored):
+            # Not a PREFIX is not the same as not PRESENT. The note already carries
+            # this text further down, so adding it again would duplicate exactly what
+            # this design exists to prevent — leave the note alone and claim no
+            # provenance, since we cannot say which occurrence YOUREF produced.
+            return stored, source
+        # Express has a YOUREF this note has never held. Freezing it would repeat
+        # the staleness this design exists to remove, and concatenating it bare
+        # would glue two notes together, so it goes on its own line — the same
+        # convention the printed report already uses.
+        return incoming + '\n' + stored, incoming
+
+    cut = _youref_prefix_len(stored, source)
+    if cut < 0:
+        return stored, source
+    if _norm_note(incoming) == _norm_note(source):
+        # Express has not touched YOUREF since this note was written, so there is
+        # nothing to restate. Rebuilding it anyway would renormalize the report's
+        # whitespace on a line nobody changed, and the text would shift a little
+        # on every daily import.
+        return stored, source
+    merged = incoming + stored[cut:]
+    if not incoming:
+        # YOUREF was cleared, so its separator goes with it — the ONE that followed
+        # it, and nothing more. `.lstrip()` here also ate the remainder's own leading
+        # whitespace, which is the operator's formatting: 'OLD\n  manual' cleared to
+        # 'manual' instead of '  manual', and a blank line they left between the two
+        # parts would go the same way.
+        for sep in ('\r\n', '\n', '\r'):
+            if merged.startswith(sep):
+                return merged[len(sep):], incoming
+    return merged, incoming
+
+
+def _delete_existing_doc(conn, header_table, child_table, child_fk, company_id, doc_no,
+                        batch_id):
+    """Clear one (company_id, doc_no) document so it can be written afresh.
+
+    Children first, then the header, and BOTH explicitly: every Express import
+    runs under `PRAGMA foreign_keys = OFF` (matching app behaviour), so the
+    schema's ON DELETE CASCADE never fires and relying on it would strand the
+    child rows as orphans pointing at a header id that no longer exists.
+
+    Caller-scoped by company_id — a refresh of BSN's PS0001815 must not touch
+    SD's document of the same number.
+
+    Scoped to PRIOR batches (`batch_id <> ?`) as well: clearing the row this
+    same batch just wrote would make `UNIQUE(batch_id, doc_no)` unreachable, and
+    that constraint is the only structural duplicate guard these tables have.
+    Two records for one doc_no in a single import must still roll the batch back
+    loudly rather than silently becoming last-write-wins.
+    """
+    conn.execute(
+        f'DELETE FROM {child_table} WHERE {child_fk} IN '
+        f'(SELECT id FROM {header_table} '
+        f' WHERE company_id = ? AND doc_no = ? AND batch_id <> ?)',
+        (company_id, doc_no, batch_id))
+    conn.execute(
+        f'DELETE FROM {header_table} '
+        f' WHERE company_id = ? AND doc_no = ? AND batch_id <> ?',
+        (company_id, doc_no, batch_id))
+
+
+def _import_credit_notes_records(conn, records, batch_id, company_id, incremental=True,
+                                 replace_existing=False):
     """Shared write step behind _import_credit_notes (text-report path,
     which converts p_cn.parse_credit_notes()'s CreditNote objects to dicts
     via dataclasses.asdict) and the Express DBF-direct path
@@ -107,24 +274,33 @@ def _import_credit_notes_records(conn, records, batch_id, company_id, incrementa
     is_cleared, is_void, type_code, note, lines=[{line_no, product_code,
     product_name, qty, unit, unit_price, discount, line_total, is_cleared}].
     """
-    skip = _existing_doc_nos(conn, 'express_credit_notes') if incremental else set()
+    skip = (_existing_doc_nos(conn, 'express_credit_notes', company_id)
+            if incremental and not replace_existing else set())
     skipped = 0
     line_count = 0
     for r in records:
         if r['doc_no'] in skip:
             skipped += 1
             continue
+        note, note_source = r['note'], None
+        if replace_existing:
+            note, note_source = _note_for_refresh(conn, 'express_credit_notes',
+                                                  company_id, r['doc_no'], r['note'])
+            _delete_existing_doc(conn, 'express_credit_notes',
+                                 'express_credit_note_lines', 'credit_note_id',
+                                 company_id, r['doc_no'], batch_id)
         cur = conn.execute("""
             INSERT INTO express_credit_notes
                 (batch_id, doc_no, date_iso, company_id, supplier_name, supplier_id,
                  ref_doc, discount_amount, vat_amount, total_amount,
-                 is_cleared, is_void, type_code, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_cleared, is_void, type_code, note, note_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             batch_id, r['doc_no'], r['date_iso'], company_id, r['supplier_name'],
             _supplier_id_by_name(conn, r['supplier_name']),
             r['ref_doc'], r['discount'], r['vat'], r['total'],
-            int(r['is_cleared']), int(r['is_void']), r['type_code'], r['note'],
+            int(r['is_cleared']), int(r['is_void']), r['type_code'], note,
+            note_source,
         ))
         cn_id = cur.lastrowid
         for ln in r['lines']:
@@ -151,7 +327,7 @@ def _import_credit_notes(conn, path, batch_id, company_id, incremental=True):
 
 def _import_payments_in(conn, path, batch_id, company_id, incremental=True):
     records = list(p_pin.parse_payments_in(path))
-    skip = _existing_doc_nos(conn, 'express_payments_in') if incremental else set()
+    skip = _existing_doc_nos(conn, 'express_payments_in', company_id) if incremental else set()
     skipped = 0
     line_count = 0
     for r in records:
@@ -379,7 +555,8 @@ def _import_ap_snapshot_records(conn, records, batch_id, company_id,
     return len(records), 0
 
 
-def _import_payments_out_records(conn, records, batch_id, company_id, incremental=True):
+def _import_payments_out_records(conn, records, batch_id, company_id, incremental=True,
+                                 replace_existing=False):
     """Shared write step behind _import_payments_out (text-report path,
     which converts p_pout.parse_payments_out()'s APPayment objects to dicts
     via dataclasses.asdict) and the Express DBF-direct path
@@ -393,31 +570,42 @@ def _import_payments_out_records(conn, records, batch_id, company_id, incrementa
     cheque_status, note, receive_refs=[{receive_doc, receive_date_iso,
     invoice_ref, amount}].
     """
-    skip = _existing_doc_nos(conn, 'express_payments_out') if incremental else set()
+    skip = (_existing_doc_nos(conn, 'express_payments_out', company_id)
+            if incremental and not replace_existing else set())
     skipped = 0
     line_count = 0
     for r in records:
         if r['doc_no'] in skip:
             skipped += 1
             continue
+        note, note_source = r['note'], None
+        if replace_existing:
+            note, note_source = _note_for_refresh(conn, 'express_payments_out',
+                                                  company_id, r['doc_no'], r['note'])
+            _delete_existing_doc(conn, 'express_payments_out',
+                                 'express_payment_out_receive_refs', 'payment_out_id',
+                                 company_id, r['doc_no'], batch_id)
         cur = conn.execute("""
             INSERT INTO express_payments_out
                 (batch_id, doc_no, date_iso, company_id,
                  supplier_name, supplier_id, is_void,
                  deposit_applied, invoice_amount, cash_amount, cheque_amount,
                  interest_amount, discount_amount, vat_amount,
-                 cheque_no, cheque_date_iso, bank, cheque_status, note)
+                 cheque_no, cheque_date_iso, bank, cheque_status, note,
+                 note_source)
             VALUES (?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?,
+                    ?)
         """, (
             batch_id, r['doc_no'], r['date_iso'], company_id,
             r['supplier_name'], _supplier_id_by_name(conn, r['supplier_name']), int(r['is_void']),
             r['deposit_applied'], r['invoice_amount'], r['cash_amount'], r['cheque_amount'],
             r['interest_amount'], r['discount_amount'], r['vat_amount'],
-            r['cheque_no'], r['cheque_date_iso'], r['bank'], r['cheque_status'], r['note'],
+            r['cheque_no'], r['cheque_date_iso'], r['bank'], r['cheque_status'], note,
+            note_source,
         ))
         pid = cur.lastrowid
         for ref in r['receive_refs']:
@@ -440,8 +628,10 @@ def _import_sales(conn, path, batch_id, company_id, incremental=True):
     # sales: dedupe by (doc_no, line_no) since one invoice has many lines
     skip = set()
     if incremental:
+        # Company-scoped like every other dedup key here — see _existing_doc_nos.
         skip = {(r[0], r[1]) for r in conn.execute(
-            'SELECT doc_no, line_no FROM express_sales').fetchall()}
+            'SELECT doc_no, line_no FROM express_sales WHERE company_id = ?',
+            (company_id,)).fetchall()}
     skipped = 0
     for r in records:
         if (r.doc_no, r.line_no) in skip:
@@ -612,8 +802,17 @@ def run_import_records(file_type, records, company_code='BSN', db_path=None,
                 conn, records, batch_id, company_id, incremental=incremental,
                 entity=company_code, snapshot_date=snapshot_date)
         else:
+            # replace_existing: this entry point IS the Express DBF-direct path,
+            # and the daily zip is authoritative for the documents it carries —
+            # `cutoff` filters HEADERS, never the child rows within one, so every
+            # document present arrives with its COMPLETE child set. A corrected PS
+            # or GR must therefore overwrite what Sendy holds instead of being
+            # skipped forever (Codex Express Integration review 2026-08-20, P1).
+            # The text-report writers keep their incremental skip by default:
+            # a printed report can legitimately cover only part of a period.
             record_count, line_count = _RECORDS_IMPORTERS[file_type](
-                conn, records, batch_id, company_id, incremental=incremental)
+                conn, records, batch_id, company_id, incremental=incremental,
+                replace_existing=True)
         conn.execute("""
             UPDATE express_import_log
             SET record_count = ?, line_count = ?

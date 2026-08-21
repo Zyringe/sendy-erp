@@ -134,6 +134,17 @@ def express_ap_dashboard():
 
 # ── Unified AP page ───────────────────────────────────────────────────────────
 
+# "How much did we actually pay" is `cash_amount + cheque_amount`, and all three
+# /ap surfaces below must keep saying it the same way: the 2026-08-20 finding was
+# three queries agreeing on one WRONG formula, and splitting them apart is how
+# the page drifts back. Every source populates the split — the DBF adapter reads
+# APTRN's own CSHPAY/CHQPAY, which reconcile to RCVAMT on 1985/1985 PS headers —
+# so a header with no split genuinely moved no cash (an interest offset, or a
+# ฿0.00 document) and correctly totals ฿0 here. Do NOT reintroduce a fallback to
+# invoice_amount: on BSN5657 that renders 7 interest offsets, −฿224,567.22, as
+# money paid.
+
+
 @bp_accounting.route('/ap')
 def ap_dashboard():
     """Unified payables page. Tabs: overview | suppliers | payments.

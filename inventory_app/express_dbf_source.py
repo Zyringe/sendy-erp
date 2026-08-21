@@ -88,6 +88,14 @@ def open_table(dataset_dir, name):
 _SCOPE_RECTYP = ('3', '1', '5')
 _CREDIT_NOTE_RECTYP = '5'  # SR (sales) / GR (purchase): net = TRNVAL, not NETVAL
 
+# APTRN.DOCSTAT: 'N'/'M' are live documents, 'C' is cancelled. Verified on the
+# AP side only: of the credit notes present in both BSN5657 and Sendy, DOCSTAT
+# =='C' agrees with the text report's own is_void 33/33, including the one
+# genuinely voided GR6700007. ⚠ The AR side (ARTRN, payments_in) shows 49 DBF
+# 'C' against 2 Sendy cancelled rows — that question is still open and this
+# constant must NOT be wired there on the strength of the AP evidence.
+_CANCELLED_DOCSTAT = 'C'
+
 
 def _num(row, field):
     v = row.get(field)
@@ -321,14 +329,17 @@ def build_payments_out_records(aptrn_rows, aprcpit_rows, apmas_rows, cutoff=None
     (PAYAMT diverges arbitrarily on 6/24 matched docs, three of them
     exactly 2x the correct value).
 
-    Money breakdown beyond invoice_amount (cash/cheque/deposit/interest/
-    discount/vat) is left at the schema default (0.0) — MAPPING.md flags
-    the APRCPCQ-based cash-vs-cheque split "best-effort... not exercised
-    in this spike", i.e. unverified. invoice_amount is the only money field
-    Phase 0's reconciliation actually ties, and it's what dedup depends on.
-    receive_refs.receive_date_iso / invoice_ref are similarly not sourced
-    here (not in MAPPING.md's confirmed field map) — left None rather than
-    guessing a DBF field name that was never verified.
+    The settlement breakdown comes off the HEADER, not the APRCPCQ cheque
+    table MAPPING.md §4 flagged as unverified: CSHPAY + CHQPAY + DISCAMT
+    - INTPAY == RCVAMT on 1985/1985 of BSN5657's PS headers (verified
+    2026-08-20), and CSHPAY/CHQPAY tie to the text report's own split on
+    275/275 shared documents. 17 headers carry no split at all — 7 interest
+    offsets whose RCVAMT is negative, 10 ฿0.00 documents — and 0.0 is the
+    right answer for every one of them.
+
+    deposit_applied and vat_amount stay 0.0 (no confirmed field), and
+    receive_refs.receive_date_iso / invoice_ref are likewise left None
+    rather than guessing a DBF field name that was never verified.
     """
     headers = [r for r in aptrn_rows if r.get('RECTYP') == '9' and _in_window(r, cutoff)]
     lines_by_rcp = defaultdict(list)
@@ -344,7 +355,11 @@ def build_payments_out_records(aptrn_rows, aprcpit_rows, apmas_rows, cutoff=None
                 'receive_doc': line.get('DOCNUM'),
                 'receive_date_iso': None,
                 'invoice_ref': None,
-                'amount': _num(line, 'PAYAMT'),
+                # a GR credit applied to the payment is stored UNSIGNED, exactly
+                # like ARRCPIT's SR lines: Σ refs ties to RCVAMT on 1719/1985 PS
+                # headers as stored, 1985/1985 once negated.
+                'amount': (-_num(line, 'PAYAMT') if line.get('RECTYP') == _CREDIT_NOTE_RECTYP
+                           else _num(line, 'PAYAMT')),
             }
             for line in lines_by_rcp.get(doc_no, [])
         ]
@@ -352,19 +367,19 @@ def build_payments_out_records(aptrn_rows, aprcpit_rows, apmas_rows, cutoff=None
             'doc_no': doc_no,
             'date_iso': _header_date_iso(hdr),
             'supplier_name': names.get(hdr.get('SUPCOD')) or hdr.get('SUPCOD'),
-            'is_void': False,   # no void/DOCSTAT mapping confirmed for PS docs
+            'is_void': hdr.get('DOCSTAT') == _CANCELLED_DOCSTAT,
             'deposit_applied': 0.0,
             'invoice_amount': _num(hdr, 'RCVAMT'),   # RCVAMT, not PAYAMT — trap
-            'cash_amount': 0.0,
-            'cheque_amount': 0.0,
-            'interest_amount': 0.0,
-            'discount_amount': 0.0,
+            'cash_amount': _num(hdr, 'CSHPAY'),
+            'cheque_amount': _num(hdr, 'CHQPAY'),
+            'interest_amount': _num(hdr, 'INTPAY'),
+            'discount_amount': _num(hdr, 'DISCAMT'),
             'vat_amount': 0.0,
             'cheque_no': '',
             'cheque_date_iso': '',
             'bank': '',
             'cheque_status': '',
-            'note': '',
+            'note': hdr.get('YOUREF') or '',
             'receive_refs': receive_refs,
         })
     return records
@@ -456,9 +471,9 @@ def build_credit_notes_ap_records(aptrn_rows, stcrd_rows, apmas_rows, cutoff=Non
             'vat': 0.0,
             'total': sum(_num(l, 'TRNVAL') for l in lines),   # TRNVAL, not NETVAL — trap
             'is_cleared': False,
-            'is_void': False,
+            'is_void': hdr.get('DOCSTAT') == _CANCELLED_DOCSTAT,
             'type_code': None,
-            'note': '',
+            'note': hdr.get('YOUREF') or '',
             'lines': [
                 {
                     'line_no': _int(l, 'SEQNUM', 1),
