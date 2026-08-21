@@ -338,7 +338,7 @@ def product_detail(product_id):
         product_id, conn=book_conn)
     # Flat map for the click→history modal (keyed "platform|variation_id").
     mkt_modal_data = {}
-    _plat_label = {'shopee': 'Shopee', 'lazada': 'Lazada'}
+    _plat_label = {'shopee': 'Shopee', 'lazada': 'Lazada', 'tiktok': 'TikTok'}
     for _plat, _blk in mkt.items():
         for _l in _blk['listings']:
             if _l['has_history']:

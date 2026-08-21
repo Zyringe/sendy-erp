@@ -11,7 +11,7 @@ from datetime import datetime
 
 from database import get_connection
 
-from ._shared import _clean_for_match
+from ._shared import PLATFORMS, _clean_for_match
 
 # Product-wide cap on marketplace price-history rows fetched + embedded per
 # product-detail load (bounds page weight / modal DOM as history accumulates).
@@ -140,6 +140,129 @@ def import_platform_products(platform, records):
     conn.commit()
     conn.close()
     return count
+
+
+# ── TikTok snapshot ──────────────────────────────────────────────────────────
+#
+# TikTok's `all_information` export feeds BOTH grains from one file, so it gets
+# its own writer rather than two sequential calls that each open and commit
+# their own connection — a failure between them would leave platform_products
+# advertising listings whose prices and stock never landed.
+#
+# `import_platform_skus` is deliberately NOT reused. Its contract overwrites
+# `stock` and always bumps `imported_at`; TikTok needs both conditional, and
+# the Shopee/Lazada path must not be bent for a TikTok-only case (Put,
+# 2026-08-21). The SQL below differs from it in exactly the two CASE
+# expressions at the bottom.
+
+_TIKTOK_PRODUCT_UPSERT = """
+    INSERT INTO platform_products
+      (platform, product_id_str, product_name, description, category_id_str,
+       category_name, brand, status, cover_image_url, image_urls, raw_json)
+    VALUES ('tiktok',?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(platform, product_id_str) DO UPDATE SET
+      product_name    = excluded.product_name,
+      description     = COALESCE(excluded.description, description),
+      category_id_str = COALESCE(excluded.category_id_str, category_id_str),
+      category_name   = COALESCE(excluded.category_name, category_name),
+      brand           = COALESCE(excluded.brand, brand),
+      status          = COALESCE(excluded.status, status),
+      cover_image_url = COALESCE(excluded.cover_image_url, cover_image_url),
+      image_urls      = COALESCE(excluded.image_urls, image_urls),
+      raw_json        = excluded.raw_json,
+      imported_at     = datetime('now','localtime')
+"""
+
+_TIKTOK_SKU_UPSERT = """
+    INSERT INTO platform_skus
+      (platform, variation_id, product_id_str, product_name, variation_name,
+       seller_sku, price, special_price, stock, raw_json,
+       weight_kg, length_cm, width_cm, height_cm)
+    VALUES ('tiktok',?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(platform, variation_id) DO UPDATE SET
+      product_id_str = excluded.product_id_str,
+      product_name   = excluded.product_name,
+      variation_name = excluded.variation_name,
+      seller_sku     = excluded.seller_sku,
+      price          = excluded.price,
+      special_price  = excluded.special_price,
+      raw_json       = excluded.raw_json,
+      weight_kg      = COALESCE(excluded.weight_kg, weight_kg),
+      length_cm      = COALESCE(excluded.length_cm, length_cm),
+      width_cm       = COALESCE(excluded.width_cm, width_cm),
+      height_cm      = COALESCE(excluded.height_cm, height_cm),
+      -- An export with no `quantity` column must not blank the stock already
+      -- on record, and must not move the snapshot date either:
+      -- ecommerce_overview._snapshot_dates() reads MAX(imported_at) as "when
+      -- this platform's stock was last true", so bumping it would make a stale
+      -- number look like today's and collapse the sold_since window to zero.
+      stock       = CASE WHEN ? THEN excluded.stock ELSE stock END,
+      imported_at = CASE WHEN ? THEN datetime('now','localtime') ELSE imported_at END
+      -- internal_product_id and qty_per_sale are DELIBERATELY ABSENT, exactly
+      -- as in import_platform_skus: they are the operator's work, not the file's.
+"""
+
+
+def import_tiktok_snapshot(parsed):
+    """Write one `parse_tiktok` result — both grains — in ONE transaction.
+
+    Returns ``(n_products, n_skus, absent)`` where `absent` lists the active
+    TikTok rows already on record that this file did NOT contain. They are
+    reported, never auto-flagged: an `all_information` export cannot be told
+    apart from a category-filtered one, and auto-ignoring a partial export
+    would silently hide listings that are still selling (Put, 2026-08-21).
+    """
+    products = list(parsed.get('products') or [])
+    skus = list(parsed.get('skus') or [])
+    stock_present = 1 if parsed.get('stock_present') else 0
+
+    conn = get_connection()
+    conn.isolation_level = None          # manual transaction control
+    try:
+        conn.execute('PRAGMA busy_timeout=10000')
+        conn.execute('BEGIN IMMEDIATE')
+
+        seen = {s['variation_id'] for s in skus}
+        absent = [dict(r) for r in conn.execute(
+            "SELECT variation_id, product_id_str, product_name, variation_name, "
+            "       stock, imported_at "
+            "  FROM platform_skus "
+            " WHERE platform = 'tiktok' AND is_ignored = 0").fetchall()
+            if r['variation_id'] not in seen]
+
+        for p in products:
+            conn.execute(_TIKTOK_PRODUCT_UPSERT, (
+                p.get('product_id_str'), p.get('product_name', ''),
+                p.get('description'), p.get('category_id_str'),
+                p.get('category_name'), p.get('brand'), p.get('status'),
+                p.get('cover_image_url'), p.get('image_urls'), p.get('raw_json'),
+            ))
+        for s in skus:
+            conn.execute(_TIKTOK_SKU_UPSERT, (
+                s.get('variation_id'), s.get('product_id_str'),
+                s.get('product_name'), s.get('variation_name'),
+                s.get('seller_sku'), s.get('price'), s.get('special_price'),
+                s.get('stock'), s.get('raw_json'), s.get('weight_kg'),
+                s.get('length_cm'), s.get('width_cm'), s.get('height_cm'),
+                stock_present, stock_present,
+            ))
+
+        # No row-count assertion here on purpose: every record either INSERTs
+        # or UPDATEs (ON CONFLICT, no WHERE), so a short write is unreachable
+        # and a check for it can never go red — a green checkmark, not a test.
+        # The invariant that IS reachable is atomicity across the two grains,
+        # and that one is pinned by test_import_is_atomic_across_both_grains.
+        conn.execute('COMMIT')
+    except Exception:
+        try:
+            conn.execute('ROLLBACK')
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+    return len(products), len(skus), absent
 
 
 def _propagate_listings_to_platform_skus(conn, platform):
@@ -280,8 +403,7 @@ def get_marketplace_listings_with_history(product_id, now=None, conn=None):
     for h in hist:
         by_key.setdefault((h['platform'], h['variation_id']), []).append(h)
 
-    out = {'shopee': {'listings': [], 'last_import': None},
-           'lazada': {'listings': [], 'last_import': None}}
+    out = {p: {'listings': [], 'last_import': None} for p in PLATFORMS}
     for s in skus:
         plat = s['platform']
         if plat not in out:
