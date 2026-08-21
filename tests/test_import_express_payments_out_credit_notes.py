@@ -781,6 +781,20 @@ def test_dbf_replay_youref_is_never_credited_with_two_physical_lines(tmp_db):
     assert 'งานทีม' in _pout_note(tmp_db)
 
 
+def test_dbf_replay_adds_one_line_youref_that_only_matches_across_lines(tmp_db):
+    """YOUREF cannot contain a line break, so words split across two report lines
+    do not mean the one-line YOUREF is already present in the stored note."""
+    _forget(tmp_db)
+    _seed_report_row(tmp_db, 'PAY\nVAT\nงานทีม')
+
+    ie.run_import_records('payments_out',
+                          [_payment_out_record(doc_no=_RPS, note='PAY VAT')],
+                          db_path=tmp_db)
+
+    assert _pout_note(tmp_db) == 'PAY VAT\nPAY\nVAT\nงานทีม'
+    assert _pout_note_source(tmp_db) == 'PAY VAT'
+
+
 def test_dbf_replay_does_not_repeat_a_youref_found_later_in_the_note(tmp_db):
     """Codex, 2026-08-21. The own-line branch fires when YOUREF is not a PREFIX of
     the note — but 'not a prefix' is not 'not present'. Prepending a YOUREF the note
