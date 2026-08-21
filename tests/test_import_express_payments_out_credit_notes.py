@@ -858,6 +858,30 @@ def _cn_note(tmp_db, doc_no=_RGR):
     return note
 
 
+def test_dbf_replay_credit_note_correction_keeps_the_sendy_only_lines(tmp_db):
+    """Codex, 2026-08-21. Every state-machine test above drives payments_out, and
+    the two writers have SEPARATE call sites — so a credit-note-only error that
+    ignored the helper's result would pass the whole suite while the battery
+    reported that transition NOT EXERCISED. This is the credit-note half of
+    test_dbf_replay_keeps_sendy_only_lines_when_express_corrects_the_note."""
+    _forget(tmp_db)
+    _seed_report_row(tmp_db, 'GR711\nคืนของ 2 ชิ้น', doc_no=_RGR, kind='credit_notes')
+    ie.run_import_records('credit_notes',
+                          [_credit_note_ap_record(doc_no=_RGR, note='GR711')],
+                          db_path=tmp_db)
+    conn = sqlite3.connect(tmp_db)
+    src = conn.execute("SELECT note_source FROM express_credit_notes WHERE doc_no = ?",
+                       (_RGR,)).fetchone()[0]
+    conn.close()
+    assert src == 'GR711', 'setup: the credit-note writer must record provenance too'
+
+    ie.run_import_records('credit_notes',
+                          [_credit_note_ap_record(doc_no=_RGR, note='GR712')],
+                          db_path=tmp_db)
+
+    assert _cn_note(tmp_db) == 'GR712\nคืนของ 2 ชิ้น'
+
+
 def test_dbf_replay_keeps_a_richer_existing_credit_note_note(tmp_db):
     """Same contract on the GR side — YOUREF is non-empty on only 9 of
     BSN5657's 444 credit notes, so a refresh would otherwise blank the rest."""
