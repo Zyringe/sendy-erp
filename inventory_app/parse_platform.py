@@ -955,7 +955,14 @@ def _tt_number(val, col, row_no, allow_blank=False, as_int=False):
         raise ValueError(f'แถวที่ {row_no}: คอลัมน์ {col} ไม่ใช่ตัวเลข ({s!r})')
     if n < 0:
         raise ValueError(f'แถวที่ {row_no}: คอลัมน์ {col} ติดลบ ({s!r})')
-    return int(n) if as_int else n
+    if as_int:
+        # int(3.9) == 3 understates stock by a whole unit and leaves no trace,
+        # and stock feeds the RED/AMBER verdicts straight through. Refuse.
+        if n != int(n):
+            raise ValueError(
+                f'แถวที่ {row_no}: คอลัมน์ {col} ต้องเป็นจำนวนเต็ม ({s!r})')
+        return int(n)
+    return n
 
 
 def parse_tiktok(file_obj):

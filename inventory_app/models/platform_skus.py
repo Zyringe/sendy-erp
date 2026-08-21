@@ -223,12 +223,34 @@ def import_tiktok_snapshot(parsed):
         conn.execute('BEGIN IMMEDIATE')
 
         seen = {s['variation_id'] for s in skus}
-        absent = [dict(r) for r in conn.execute(
+        held = conn.execute(
             "SELECT variation_id, product_id_str, product_name, variation_name, "
-            "       stock, imported_at "
-            "  FROM platform_skus "
-            " WHERE platform = 'tiktok' AND is_ignored = 0").fetchall()
-            if r['variation_id'] not in seen]
+            "       stock, imported_at, is_ignored "
+            "  FROM platform_skus WHERE platform = 'tiktok'").fetchall()
+        known = {r['variation_id'] for r in held}
+        absent = [dict(r) for r in held
+                  if r['variation_id'] not in seen and not r['is_ignored']]
+
+        # A file with no `quantity` column may UPDATE what we already hold —
+        # the CASE expressions below keep that row's stock and snapshot date.
+        # It may NOT introduce a variation: on INSERT those CASEs do not apply,
+        # so the row would land with stock NULL and `imported_at` defaulted to
+        # now. ecommerce_overview then reads MAX(stock,0)=0 as "sold out on the
+        # platform" while MAX(imported_at) says the snapshot is today's, and
+        # every one of those rows turns RED the moment it is mapped. Measured
+        # on the real 36-column export, 2026-08-22: 47 rows, all NULL, snapshot
+        # stamped today, first mapped row RED against true_available 97.
+        if not stock_present:
+            fresh = [s for s in skus if s['variation_id'] not in known]
+            if fresh:
+                names = ' · '.join(
+                    f"{s.get('variation_name') or s['variation_id']}" for s in fresh[:3])
+                more = f' และอีก {len(fresh) - 3}' if len(fresh) > 3 else ''
+                raise ValueError(
+                    f'ไฟล์นี้ไม่มีคอลัมน์สต็อก (ปริมาณ) แต่มี {len(fresh)} ตัวเลือกที่ยังไม่เคย'
+                    f'นำเข้ามาก่อน ({names}{more}) — ตัวเลือกใหม่ต้องมาพร้อมสต็อก '
+                    'ไม่งั้นระบบจะเข้าใจว่าของหมดบนแพลตฟอร์ม '
+                    'ให้ export ใหม่โดยติ๊กคอลัมน์ "ปริมาณ" แล้วนำเข้าอีกครั้ง')
 
         for p in products:
             conn.execute(_TIKTOK_PRODUCT_UPSERT, (

@@ -517,8 +517,10 @@ def test_route_reports_rows_the_file_no_longer_contains(admin_client):
     _post(admin_client, _xlsx(COLS, ROWS))
     resp = _post(admin_client, _xlsx(COLS, ROWS[:2]))
     body = resp.data.decode('utf-8')
-    assert 'ไม่อยู่ในไฟล์' in body
-    assert '1' in body
+    # Assert the whole fragment, not a bare '1' — a page is full of digits, so
+    # `'1' in body` would survive an off-by-one in the absent count.
+    assert 'มี 1 ตัวเลือกใน Sendy ที่ไม่อยู่ในไฟล์นี้' in body
+    assert 'ใบเลื่อยคันธนู Sendai 30 นิ้ว' in body
 
 
 def test_route_refuses_a_sibling_export_and_writes_nothing(admin_client):
@@ -536,3 +538,71 @@ def test_route_refuses_a_sibling_export_and_writes_nothing(admin_client):
     conn.close()
     assert n == 0, 'a refused file must write nothing'
     assert 'all_information' in body
+
+
+# ── 9. The INSERT path of a quantity-less file ──────────────────────────────
+#
+# Section 3 only ever re-imports over variations that already exist, so the
+# CASE expressions in the UPSERT are exercised on their DO UPDATE side alone.
+# On INSERT those CASEs do not apply: `stock` goes in as NULL and `imported_at`
+# takes the table default = now. Measured on the real 36-column export against
+# an empty TikTok state (2026-08-22): 47 rows, all stock NULL, snapshot date
+# stamped today, and the first row mapped to a product came out RED with
+# true_available 97. That is the exact false alarm the flag exists to prevent.
+#
+# Rule: a file with no `quantity` column may UPDATE what we already hold, but
+# it cannot introduce a variation — it has nothing to say about the stock of
+# something we have never seen.
+
+def test_quantity_less_file_refuses_to_introduce_new_variations(db):
+    from database import get_connection
+    with pytest.raises(ValueError) as e:
+        db.import_tiktok_snapshot(_parsed(stock=False))
+    assert '17365501' in str(e.value) or 'ปริมาณ' in str(e.value)
+
+    conn = get_connection()
+    assert _tt(conn) == [], 'nothing may land'
+    assert _tt(conn, 'platform_products') == [], 'the product grain must roll back too'
+    conn.close()
+
+
+def test_quantity_less_file_still_updates_variations_we_already_hold(db):
+    """CONTROL — the refusal must be scoped to NEW rows only, or Put's decision
+    (accept the file, keep the stock, warn) is quietly cancelled."""
+    from database import get_connection
+    db.import_tiktok_snapshot(_parsed())
+    n_prod, n_sku, _ = db.import_tiktok_snapshot(
+        _parsed(_edit(0, 'price', '117'), stock=False))
+    assert (n_prod, n_sku) == (2, 3)
+
+    conn = get_connection()
+    rows = {r['variation_id']: r for r in _tt(conn)}
+    assert rows['17365501']['price'] == 117.0, 'the update must have run'
+    assert [rows[v]['stock'] for v in ('17365501', '17365502', '17369801')] == [50, 10, 50]
+    conn.close()
+
+
+def test_partly_new_quantity_less_file_lands_nothing_at_all(db):
+    """A file that is half known, half new is refused whole — a partial write
+    is what atomicity exists to prevent."""
+    from database import get_connection
+    db.import_tiktok_snapshot(_parsed(rows=ROWS[:2]))          # 17369801 unknown
+    conn = get_connection()
+    before = {r['variation_id']: r['price'] for r in _tt(conn)}
+    conn.close()
+
+    with pytest.raises(ValueError):
+        db.import_tiktok_snapshot(_parsed(_edit(0, 'price', '999'), stock=False))
+
+    conn = get_connection()
+    after = {r['variation_id']: r['price'] for r in _tt(conn)}
+    assert after == before, 'the known half must not have been updated either'
+    conn.close()
+
+
+def test_fractional_quantity_is_refused_not_truncated(db):
+    """int(3.9) == 3 understates stock by a whole unit with nothing to show for
+    it, and stock feeds the RED/AMBER verdicts directly."""
+    with pytest.raises(ValueError) as e:
+        pp.parse_tiktok(_xlsx(COLS, _edit(0, 'quantity', '3.9')))
+    assert 'quantity' in str(e.value)
