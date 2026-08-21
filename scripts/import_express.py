@@ -198,11 +198,13 @@ def _note_for_refresh(conn, header_table, company_id, doc_no, incoming):
             return stored, stored[:cut]
         if not incoming:
             return stored, source
-        if _norm_note(incoming) in _norm_note(stored):
+        if any(_norm_note(incoming) in _norm_note(line)
+               for line in stored.splitlines()):
             # Not a PREFIX is not the same as not PRESENT. The note already carries
-            # this text further down, so adding it again would duplicate exactly what
-            # this design exists to prevent — leave the note alone and claim no
-            # provenance, since we cannot say which occurrence YOUREF produced.
+            # this text further down ON ONE PHYSICAL LINE, so adding it again would
+            # duplicate exactly what this design exists to prevent. YOUREF cannot
+            # span report lines, so whole-note normalization must not join two lines
+            # into a false match here.
             return stored, source
         # Express has a YOUREF this note has never held. Freezing it would repeat
         # the staleness this design exists to remove, and concatenating it bare
