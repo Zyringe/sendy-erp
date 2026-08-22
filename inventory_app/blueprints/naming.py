@@ -23,12 +23,12 @@ app.before_request; the POST endpoints are in _MANAGER_POST_OK).
 """
 import database
 import db_backup
+import form_options
 import name_builder
 import naming_cascade as nc
 from flask import (Blueprint, render_template, request, jsonify)
 
 from database import get_connection
-from sku_code_utils import PACKAGING_SHORT, CONDITION_SHORT
 
 
 def _db_path():
@@ -43,60 +43,13 @@ _VALID_KINDS = (nc.KIND_COLOR, nc.KIND_BRAND)
 _PER_PAGE = 100
 
 
-def _condition_opts(conn):
-    """Canonical conditions PLUS every value already stored on a product.
-
-    The dropdown used to be `CONDITION_SHORT` alone. That list is closed (10 values)
-    and doubles as the sku-segment map, so any condition outside it could not be
-    represented in the editor — and the editor does not fail safe:
-    master_naming.html's `set()` leaves the <select> blank for an unknown value, the
-    save payload always carries `condition: <value> || null`, and `_clean_updates`
-    treats a present key as an instruction to write. So opening such a product and
-    saving NULLED the column and rebuilt product_name without the word, in one
-    transaction.
-
-    44 rows on prod were exposed (swept 2026-08-14), in two severities:
-      แบบหุล 19 · แบบมิล 8 · มียอด 7 — unmapped, so the sku survives; the word is lost.
-      EXP:* 10 rows            — `_condition_segment` DOES emit a segment for these, so
-                                 the regenerated sku loses it too:
-                                 `DSC-CUT-AS-S5048-14in-GRN-EXP0727` → `…-14in-GRN`.
-                                 That SKU is a live variant in a TikTok listing file, and
-                                 sku_code is the join key three other consumers look up by.
-
-    ⛔ Do NOT close the gap by adding those words to CONDITION_SHORT instead. That map
-    also generates the sku segment, so it would rename every affected product —
-    and `sku_code` is a cross-system join key (ERP ↔ photo folders ↔ batch.json ↔
-    listing Seller SKU). `_condition_segment()` returns "" for an unmapped word, which
-    is exactly why widening the dropdown alone leaves every sku_code untouched.
-
-    Canonical values keep their defined order (it is a meaningful ordering, not
-    alphabetical); DB-only extras are appended, sorted, de-duplicated.
-    """
-    stored = [r[0] for r in conn.execute(
-        "SELECT DISTINCT condition FROM products "
-        "WHERE TRIM(COALESCE(condition, '')) <> '' ORDER BY condition")]
-    known = list(CONDITION_SHORT)
-    return known + [c for c in stored if c not in CONDITION_SHORT]
-
-
 def _editor_options(conn):
     """Option lists for the Tab 1 inline editor's dropdowns."""
     return {
-        'brand_opts': conn.execute(
-            "SELECT id, name, name_th FROM brands "
-            "ORDER BY is_own_brand DESC, sort_order, name"
-        ).fetchall(),
-        'color_opts': conn.execute(
-            "SELECT code, name_th FROM color_finish_codes ORDER BY sort_order, code"
-        ).fetchall(),
-        # EXEMPT, deliberately: packaging_th has the identical closed-list shape, but
-        # (a) 0 products currently carry a value outside PACKAGING_SHORT (swept on prod
-        # 2026-08-14) and (b) unlike condition, an unmapped packaging_th is NOT sku-safe
-        # — `_clean_updates` derives packaging_short from PACKAGING_SHORT, so offering an
-        # unknown value would let a save blank packaging_short and change the sku_code.
-        # Widening this one needs that decision first; it is not the same fix.
-        'packaging_opts': list(PACKAGING_SHORT.keys()),
-        'condition_opts': _condition_opts(conn),
+        'brand_opts': form_options.brands(conn),
+        'color_opts': form_options.colors(conn),
+        'packaging_opts': form_options.packaging(),
+        'condition_opts': form_options.conditions(conn),
     }
 
 

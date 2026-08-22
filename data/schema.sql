@@ -1150,7 +1150,7 @@ CREATE TABLE pending_product_suggestions (
 
     created_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
     reviewed_at         TEXT
-, brand_other_name      TEXT, color_code_other      TEXT, packaging_other       TEXT, bsn_unit              TEXT, unit_conversion_ratio REAL);
+, brand_other_name      TEXT, color_code_other      TEXT, packaging_other       TEXT, bsn_unit              TEXT, unit_conversion_ratio REAL, sub_category TEXT, sub_category_short_code TEXT, category_id INTEGER REFERENCES categories(id), clone_source_pid INTEGER REFERENCES products(id));
 
 CREATE TABLE platform_price_history (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,

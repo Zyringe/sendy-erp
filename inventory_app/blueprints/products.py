@@ -7,9 +7,11 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 
 import book_registry
 import config
+import form_options
 import models
+import name_builder
+import sku_code_utils
 from database import get_connection
-from sku_code_utils import PACKAGING_SHORT
 
 bp_products = Blueprint('products', __name__)
 
@@ -203,18 +205,14 @@ def _new_form_context():
     validation error, for the /products/new structured form (category/brand/
     color selects)."""
     conn = get_connection()
-    categories = conn.execute(
-        "SELECT id, code, name_th FROM categories ORDER BY sort_order, name_th"
-    ).fetchall()
-    color_codes = conn.execute(
-        "SELECT code, name_th FROM color_finish_codes ORDER BY sort_order, code"
-    ).fetchall()
+    categories = form_options.categories(conn)
+    color_codes = form_options.colors(conn)
     conn.close()
     return {
         'categories': categories,
         'color_codes': color_codes,
         'brands': models.get_brands(),
-        'packaging_options': list(PACKAGING_SHORT.keys()),
+        'packaging_options': form_options.packaging(),
     }
 
 
@@ -249,6 +247,86 @@ def product_parse_name():
         'brand_id': brand_id,
         'color_code': parsed.get('color_code') or None,
     })
+
+
+@bp_products.route('/products/spec/<int:pid>')
+def product_spec(pid):
+    """Read-only spec dict for cloning an existing product as a template —
+    /mapping's Suggest-modal Card B (mapping-suggest-clone PR3) and PR4's
+    /products/new. Named generically under /products/ from the start so PR4
+    can reuse it unchanged.
+
+    Deliberately excludes:
+      - cost_price / base_sell_price / any money field. GET is fail-open for
+        every logged-in role (access_control.py's require_login only gates
+        POST beyond the module-prefix blocks), and staff is explicitly a
+        no-cost/GP role. The clone feature does not copy cost anyway (decision
+        Q4 — a sibling's WACC is not this product's cost) so there is no
+        reason to ship it here regardless of role.
+      - family_id. Decision Q14: a clone must NOT inherit the source's photo
+        family — sharing one would silently render the white variant's page
+        with the black sibling's photo the day product_images is repopulated
+        (it is 0 today, but that is exactly why this can't wait to be caught).
+    """
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT p.id, p.product_name, p.sub_category, p.sub_category_short_code,
+               p.category_id, p.series, p.brand_id, p.model, p.size,
+               p.color_code, cf.name_th AS color_th,
+               p.packaging_th, p.condition, p.pack_variant, p.unit_type,
+               p.units_per_carton, p.units_per_box
+          FROM products p
+          LEFT JOIN color_finish_codes cf ON cf.code = p.color_code
+         WHERE p.id = ?
+    """, (pid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'error': 'not found'}), 404
+    return jsonify(dict(row))
+
+
+@bp_products.route('/products/preview-identity', methods=['POST'])
+def preview_identity():
+    """Read-only: the ชื่อสินค้า + sku_code a NOT-YET-SAVED product with these
+    field values would get. Powers the live preview in /mapping's Suggest
+    modal Card B (mapping-suggest-clone PR3) and PR4's /products/new.
+
+    Deliberately its OWN endpoint, not /naming/product/preview-name, even
+    though that already does the name half:
+      - access_control.py redirects any naming.* endpoint for role=='staff'
+        (naming is bulk-cascade / manager+ work), and
+        naming.product_preview_name is _MANAGER_POST_OK only. staff IS a
+        real user of /mapping (bsn.mapping_save is staff-postable) — a staff
+        POST there would 302 to an HTML flash page, not JSON, silently
+        breaking the live preview for exactly the role most likely to be
+        staging a new SKU.
+      - One endpoint also makes this preview and create_now's duplicate
+        guard agree by construction: both resolve identity through
+        sku_code_utils.preview_sku_code, the same function
+        create_structured_product/regenerate_for_product's own resolution
+        mirrors.
+
+    `fields` (JSON body, all optional): category_id, sub_category,
+    sub_category_short_code, series, brand_id, model, size, color_code,
+    color_code_other, packaging_th, condition, pack_variant. Same key shapes
+    create_structured_product itself accepts (packaging_th, not the staging
+    table's `packaging` column name) — this is the create-shaped preview,
+    not the stage-shaped payload.
+
+    Known simplification: color_th and brand_other_name are NOT resolved
+    here (mirrors preview_name, which also ignores color_th — the canonical
+    Thai colour word always comes from color_code via color_finish_codes,
+    never from free text). A clone always carries real FK ids, so neither
+    gap is reachable from the clone flow that motivated this endpoint.
+    """
+    fields = request.get_json(silent=True) or {}
+    conn = get_connection()
+    try:
+        name = name_builder.preview_name(conn, fields)
+        sku_code = sku_code_utils.preview_sku_code(conn, fields)
+    finally:
+        conn.close()
+    return jsonify({'name': name, 'sku_code': sku_code})
 
 
 @bp_products.route('/products/new', methods=['GET', 'POST'])

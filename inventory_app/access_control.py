@@ -44,6 +44,13 @@ _STAFF_POST_OK = frozenset([
     'bsn.unified_import', 'bsn.unified_import_confirm', 'bsn.express_dbf_upload',
     'marketplace.import_orders', 'marketplace.settlement_import', 'marketplace.upload', 'marketplace.link_iv',
     'products.product_location_save',
+    # mapping-suggest-clone PR3: read-only name+sku_code preview for Card B's
+    # live preview — POST because it takes a JSON body, but writes nothing.
+    # staff IS a real user of /mapping (bsn.mapping_save above), and this
+    # endpoint exists specifically so a staff POST doesn't 302 into HTML the
+    # way naming.product_preview_name would (see blueprints/products.py's
+    # preview_identity docstring).
+    'products.preview_identity',
     'admin_exit_simulate',
     'inventory.conversion_pair', 'inventory.conversion_run', 'inventory.conversion_delete',
     'products.api_product_barcodes',
@@ -465,6 +472,11 @@ _NAV_EXEMPT_ENDPOINTS = frozenset([
     'marketplace.api_payout_orders', 'mobile.stock_search_api',
     'products.api_product_barcodes', 'products.api_products_search',
     'products.product_cost_history', 'products.product_parse_name',
+    # mapping-suggest-clone PR3: clone-source spec reader. JSON API, not a
+    # navigable page — exempt rather than given a module, same as
+    # product_parse_name above. (products.preview_identity is POST-only, so
+    # the GET-endpoint hygiene test never sees it.)
+    'products.product_spec',
     # file / binary responses
     'hr.payroll_export', 'products.serve_catalog_photo', 'serve_sw',
     # legacy redirect stubs kept so old bookmarks don't 404 (both → /import-data)

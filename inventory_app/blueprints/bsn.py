@@ -22,6 +22,7 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 
 import config
 import db_backup
+import form_options
 import models
 import review_rules as rr
 from database import get_connection
@@ -159,34 +160,27 @@ def mapping():
     pending_suggestions = models.get_pending_suggestions()
     conn = get_connection()
     all_products = conn.execute("""
-        SELECT p.id, p.product_name, p.unit_type,
+        SELECT p.id, p.product_name, p.unit_type, p.sku_code,
                COALESCE(s.quantity, 0) AS stock
           FROM products p
           LEFT JOIN stock_levels s ON s.product_id = p.id
          WHERE p.is_active = 1
          ORDER BY p.id
     """).fetchall()
-    brands = conn.execute(
-        "SELECT id, name, name_th FROM brands ORDER BY is_own_brand DESC, sort_order, name"
-    ).fetchall()
-    color_codes = conn.execute(
-        "SELECT code, name_th FROM color_finish_codes ORDER BY sort_order, code"
-    ).fetchall()
+    brands = form_options.brands(conn)
+    color_codes = form_options.colors(conn)
     # Standardised category master for the type-to-search picker in both the
     # approve form and the Suggest modal (replaces the old free-text field).
-    categories = conn.execute(
-        "SELECT id, code, name_th FROM categories ORDER BY sort_order, name_th"
-    ).fetchall()
+    categories = form_options.categories(conn)
+    packaging_options = form_options.packaging()
     # Suggestion sources for the free-text combo fields (unit_type / condition):
     # these stay free-text (any value allowed) but the dropdown offers the
     # values already in use so they stay consistent.
-    unit_suggestions = [r[0] for r in conn.execute(
-        "SELECT unit_type FROM products WHERE unit_type IS NOT NULL AND unit_type <> '' "
-        "GROUP BY unit_type ORDER BY COUNT(*) DESC"
-    ).fetchall()]
+    unit_suggestions = form_options.units(conn)
+    # drop_dated=True: a new product should not be offered a 2019 expiry.
+    # /naming keeps dated values (edit form, see form_options.conditions docstring).
+    condition_suggestions = form_options.conditions(conn, drop_dated=True)
     conn.close()
-    from sku_code_utils import CONDITION_SHORT
-    condition_suggestions = list(CONDITION_SHORT.keys())
     tab = request.args.get('tab', 'mapping')
     return render_template(
         'mapping.html',
@@ -197,6 +191,7 @@ def mapping():
         brands=brands,
         color_codes=color_codes,
         categories=categories,
+        packaging_options=packaging_options,
         unit_suggestions=unit_suggestions,
         condition_suggestions=condition_suggestions,
         active_tab=tab,
@@ -225,13 +220,65 @@ def mapping_suggest(bsn_code):
     return jsonify(out)
 
 
+def _build_suggestion_payload(bsn_code, item):
+    """Shared by mapping_save's 'stage' and 'create_now' actions — both send
+    the same Card-B field set, just to a different next step (park for
+    review vs. approve immediately). category_id: cast defensively (picker
+    resolves name -> id client-side, same as mapping_suggestion_approve
+    below) — a garbage value degrades to None rather than 400ing the whole
+    batch save."""
+    try:
+        category_id = int(item['category_id']) if item.get('category_id') else None
+    except (TypeError, ValueError):
+        category_id = None
+    try:
+        clone_source_pid = int(item['clone_source_pid']) if item.get('clone_source_pid') else None
+    except (TypeError, ValueError):
+        clone_source_pid = None
+    return {
+        'bsn_code': bsn_code,
+        'bsn_name': item['bsn_name'],
+        'suggested_name': item.get('suggested_name'),
+        'category': item.get('category'),
+        'category_id': category_id,
+        'sub_category': item.get('sub_category'),
+        'sub_category_short_code': item.get('sub_category_short_code'),
+        'series': item.get('series'),
+        'brand_id': item.get('brand_id') or None,
+        'model': item.get('model'),
+        'size': item.get('size'),
+        'color_th': item.get('color_th'),
+        'color_code': item.get('color_code') or None,
+        'packaging': item.get('packaging') or None,
+        'condition': item.get('condition'),
+        'pack_variant': item.get('pack_variant'),
+        'suggested_cost': float(item.get('suggested_cost') or 0),
+        'suggested_unit_type': item.get('suggested_unit_type') or 'ตัว',
+        'units_per_carton': item.get('units_per_carton'),
+        'units_per_box': item.get('units_per_box'),
+        # Round-2 extras (mig 037)
+        'brand_other_name': item.get('brand_other_name') or None,
+        'color_code_other': item.get('color_code_other') or None,
+        'packaging_other': item.get('packaging_other') or None,
+        'bsn_unit': item.get('bsn_unit') or None,
+        'unit_conversion_ratio': (
+            float(item['unit_conversion_ratio'])
+            if item.get('unit_conversion_ratio') else None
+        ),
+        # mapping-suggest-clone PR3 (Q11): which existing product Card B was
+        # cloned from, if any — carried on the staged row so it survives a
+        # stage-now/approve-later gap, not just create_now's one request.
+        'clone_source_pid': clone_source_pid,
+    }
+
+
 @bp_bsn.route('/mapping/save', methods=['POST'])
 def mapping_save():
     data = request.get_json()
     user_id = session.get('user_id')
     for item in data.get('mappings', []):
         bsn_code = item.get('bsn_code')
-        action   = item.get('action')       # 'map', 'ignore', 'stage'
+        action   = item.get('action')       # 'map', 'ignore', 'stage', 'create_now'
         if action == 'map':
             pid = int(item['product_id'])
             models.upsert_mapping(bsn_code, item['bsn_name'], product_id=pid)
@@ -247,35 +294,32 @@ def mapping_save():
                     models.upsert_unit_conversion(pid, bsn_unit, r)
         elif action == 'stage':
             # Smart-suggest flow: stage new SKU for manager/admin review
-            payload = {
-                'bsn_code': bsn_code,
-                'bsn_name': item['bsn_name'],
-                'suggested_name': item.get('suggested_name'),
-                'category': item.get('category'),
-                'series': item.get('series'),
-                'brand_id': item.get('brand_id') or None,
-                'model': item.get('model'),
-                'size': item.get('size'),
-                'color_th': item.get('color_th'),
-                'color_code': item.get('color_code') or None,
-                'packaging': item.get('packaging') or None,
-                'condition': item.get('condition'),
-                'pack_variant': item.get('pack_variant'),
-                'suggested_cost': float(item.get('suggested_cost') or 0),
-                'suggested_unit_type': item.get('suggested_unit_type') or 'ตัว',
-                'units_per_carton': item.get('units_per_carton'),
-                'units_per_box': item.get('units_per_box'),
-                # Round-2 extras (mig 037)
-                'brand_other_name': item.get('brand_other_name') or None,
-                'color_code_other': item.get('color_code_other') or None,
-                'packaging_other': item.get('packaging_other') or None,
-                'bsn_unit': item.get('bsn_unit') or None,
-                'unit_conversion_ratio': (
-                    float(item['unit_conversion_ratio'])
-                    if item.get('unit_conversion_ratio') else None
-                ),
-            }
+            payload = _build_suggestion_payload(bsn_code, item)
             models.save_pending_suggestion(payload, user_id)
+        elif action == 'create_now':
+            # mapping-suggest-clone PR3 (Q7): stage + approve in one request,
+            # admin/manager/shareholder only — mirrors
+            # bsn.mapping_suggestion_approve's role check (the "สร้างเลย"
+            # button itself is only rendered for admin/manager, but the
+            # server enforces this regardless of what the client sent).
+            if session.get('role') not in ('admin', 'manager', 'shareholder'):
+                return jsonify({'ok': False, 'error': 'ไม่มีสิทธิ์ดำเนินการนี้'}), 403
+            payload = _build_suggestion_payload(bsn_code, item)
+            try:
+                new_pid, dup_warning = models.create_now(
+                    payload, user_id,
+                    confirm_duplicate=bool(item.get('confirm_duplicate')),
+                )
+            except models.DuplicateSkuError as exc:
+                return jsonify({'ok': False, 'duplicate_of': exc.duplicate_of}), 409
+            except models.SuggestionAlreadyStagedError as exc:
+                return jsonify({'ok': False, 'error':
+                                f'{exc.bsn_code} มีการ stage/สร้างไปแล้ว (status={exc.existing_status}) '
+                                '— รีเฟรชหน้าแล้วลองใหม่'}), 409
+            resp = {'ok': True, 'product_id': new_pid}
+            if dup_warning:
+                resp['warning'] = dup_warning
+            return jsonify(resp)
         elif action == 'ignore':
             try:
                 models.upsert_mapping(

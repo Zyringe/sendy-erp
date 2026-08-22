@@ -200,7 +200,18 @@
                   {% endif %}
                 </td></tr>
             {% set _created_via_labels = {'manual': 'เพิ่มเอง', 'smart_mapping': 'จาก Smart Mapping', 'legacy': 'เดิม'} %}
-            {% set _created_via_label = _created_via_labels.get(product.created_via) %}
+            {# mapping-suggest-clone PR3: created_via='smart_mapping_clone_<source_pid>'
+               stamps which product Card B was cloned from — a PREFIX match
+               (not another exact-dict entry), since the source pid varies per
+               row. Everything else still falls through the exact-match dict
+               and renders nothing for an unknown/NULL value (pinned by
+               test_product_detail_created_via_badge). #}
+            {% set _cv = product.created_via or '' %}
+            {% if _cv.startswith('smart_mapping_clone_') %}
+              {% set _created_via_label = 'จาก Smart Mapping (คัดลอกจาก #' ~ _cv.replace('smart_mapping_clone_', '') ~ ')' %}
+            {% else %}
+              {% set _created_via_label = _created_via_labels.get(product.created_via) %}
+            {% endif %}
             {% if _created_via_label %}
             <tr><td class="text-subtle">ที่มา</td>
                 <td><span class="badge badge-gray" title="วิธีที่สินค้านี้ถูกสร้าง">{{ _created_via_label }}</span></td></tr>

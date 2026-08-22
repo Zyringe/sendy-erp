@@ -38,7 +38,7 @@
     categories: [{% for c in categories %}{v:{{ c.id }},label:{{ c.name_th|tojson }},hint:{{ c.code|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
     brands:     [{% for b in brands %}{v:"{{ b.id }}",label:{{ (b.name ~ (' / ' ~ b.name_th if b.name_th else ''))|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
     colorcodes: [{% for c in color_codes %}{v:{{ c.code|tojson }},label:{{ (c.code ~ ' — ' ~ c.name_th)|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
-    packaging:  [{% for p in ['แผง','ตัว','ถุง','แพ็คหัว','แพ็คถุง','ซอง','อัดแผง','แพ็ค','แบบหลอด','โหล','1กลมี60ใบ'] %}{v:{{ p|tojson }},label:{{ p|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
+    packaging:  [{% for p in packaging_options %}{v:{{ p|tojson }},label:{{ p|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
     units:      [{% for u in unit_suggestions %}{v:{{ u|tojson }},label:{{ u|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
     conditions: [{% for c in condition_suggestions %}{v:{{ c|tojson }},label:{{ c|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
   };
@@ -93,12 +93,24 @@
                    value="{{ s.suggested_name or s.bsn_name }}"></div>
           <div class="col-md-4"><label class="form-label mb-0">Category</label>
             <div class="combo" data-opts="categories">
+              {# FK combo (39-row categories master, feeds cat_short_code in
+                 sku_code): prefill the HIDDEN value from category_id, same
+                 pattern as Brand below — comboSyncLabel paints the visible
+                 label. Legacy rows staged before mig 169 have no category_id
+                 yet; for those only, fall back to the old free-text prefill
+                 so the manager still sees what the parser guessed. #}
               <input class="form-control form-control-sm combo-input" id="sug-cat-{{ s.id }}"
-                     autocomplete="off" value="{{ s.category or '' }}"
+                     autocomplete="off" value="{{ '' if s.category_id else (s.category or '') }}"
                      placeholder="พิมพ์ค้นหาหมวด เช่น กาว, บานพับ">
-              <input type="hidden" class="combo-value" id="sug-cat-id-{{ s.id }}">
+              <input type="hidden" class="combo-value" id="sug-cat-id-{{ s.id }}" value="{{ s.category_id or '' }}">
               <div class="ac-drop"></div>
             </div></div>
+          <div class="col-md-4"><label class="form-label mb-0">หมวดย่อย (sub_category)</label>
+            <input class="form-control form-control-sm" id="sug-subcat-{{ s.id }}"
+                   value="{{ s.sub_category or '' }}"></div>
+          <div class="col-md-2"><label class="form-label mb-0">รหัสย่อหมวดย่อย</label>
+            <input class="form-control form-control-sm" id="sug-subcat-short-{{ s.id }}"
+                   value="{{ s.sub_category_short_code or '' }}"></div>
           <div class="col-md-4"><label class="form-label mb-0">Series</label>
             <input class="form-control form-control-sm" id="sug-series-{{ s.id }}" value="{{ s.series or '' }}"></div>
           <div class="col-md-4"><label class="form-label mb-0">Brand</label>
@@ -193,6 +205,8 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
     suggested_name:      v('name'),
     category:            v('cat'),
     category_id:         v('cat-id') || null,
+    sub_category:        v('subcat'),
+    sub_category_short_code: v('subcat-short'),
     series:              v('series'),
     brand_id:            v('brand') || null,
     brand_other_name:    v('brand-other') || null,
@@ -424,9 +438,26 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
               <span class="text-subtle small">— manager review ก่อน auto-create</span>
             </div>
             <div class="card-body">
+              {# mapping-suggest-clone PR3: pick an EXISTING product as a
+                 template and overwrite every field below from it (decision
+                 Q1 — no merge, no undo; reopen the modal to reset). Cost is
+                 deliberately NOT copied (Q4) — the BSN code's own latest
+                 purchase already prefilled sm-cost above. #}
+              <div class="mb-2">
+                <label class="form-label mb-0 small">คัดลอกจาก SKU เดิม</label>
+                <div class="ac-wrap">
+                  <input type="text" id="sm-clone-search" class="form-control form-control-sm"
+                         placeholder="พิมพ์ SKU หรือชื่อสินค้าที่จะใช้เป็นแม่แบบ..." autocomplete="off">
+                  <div class="ac-drop" id="sm-clone-drop"></div>
+                </div>
+              </div>
               <div class="row g-2 small">
                 <div class="col-12"><label class="form-label mb-0">ชื่อสินค้า (proposed)</label>
                   <input class="form-control form-control-sm" id="sm-name"></div>
+                <div class="col-12">
+                  <span class="text-subtle small">sku_code (preview): </span>
+                  <span class="font-mono small" id="sm-sku-preview">—</span>
+                </div>
                 <div class="col-md-4"><label class="form-label mb-0">Category</label>
                   <div class="combo" data-opts="categories">
                     <input class="form-control form-control-sm combo-input" id="sm-cat"
@@ -434,6 +465,10 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                     <input type="hidden" class="combo-value" id="sm-cat-id">
                     <div class="ac-drop"></div>
                   </div></div>
+                <div class="col-md-4"><label class="form-label mb-0">หมวดย่อย (sub_category)</label>
+                  <input class="form-control form-control-sm" id="sm-subcat"></div>
+                <div class="col-md-2"><label class="form-label mb-0">รหัสย่อหมวดย่อย</label>
+                  <input class="form-control form-control-sm" id="sm-subcat-short"></div>
                 <div class="col-md-4"><label class="form-label mb-0">Series</label>
                   <input class="form-control form-control-sm" id="sm-series"></div>
                 <div class="col-md-4"><label class="form-label mb-0">Brand</label>
@@ -503,10 +538,22 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                   <div class="form-text small">เว้นว่างได้ ถ้าหน่วย BSN ตรงกับ Unit type</div>
                 </div>
               </div>
+              {# units_per_carton/box: copied hidden from a clone source
+                 (decision Q15) — they rarely differ between siblings, feed
+                 neither name nor sku_code, and are fixable later on the
+                 product page. No visible field existed for these before
+                 clone either (server already defaults to 1 when absent). #}
+              <input type="hidden" id="sm-units-per-carton">
+              <input type="hidden" id="sm-units-per-box">
               <div class="mt-3 d-flex gap-2">
                 <button class="btn btn-warning btn-sm" onclick="confirmStageNew()">
                   <i class="bi bi-clipboard-plus me-1"></i>ส่งให้ manager review
                 </button>
+                {% if is_manager %}
+                <button class="btn btn-success btn-sm" onclick="confirmCreateNow()">
+                  <i class="bi bi-lightning-charge me-1"></i>สร้างเลย
+                </button>
+                {% endif %}
               </div>
             </div>
           </div>
@@ -557,6 +604,7 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
 const allProducts = [
   {% for p in all_products %}
   { id: {{ p.id }}, name: {{ p.product_name | tojson }},
+    sku: {{ (p.sku_code or '') | tojson }},
     unit_type: {{ (p.unit_type or 'ตัว') | tojson }},
     stock: {{ p.stock or 0 }} },
   {% endfor %}
@@ -565,6 +613,13 @@ const allProducts = [
 let _smCurrentBsn = null;
 let _smCurrentName = null;
 let _smBsnUnit = null;     // unit from latest_purchase
+// mapping-suggest-clone PR3 — which existing product Card B was cloned
+// from (null = not cloned), and whether the manager has hand-edited the
+// name box (stops the live preview auto-rewriting it — decision Q2). Both
+// reset only when the modal is reopened (openSuggest), never by editing an
+// individual field — that matches decision Q1 ("close and reopen to reset").
+let _smCloneSourcePid = null;
+let _smNameDirty = false;
 
 // Passed from the route (models.NON_STOCK_BSN_CODES), not hard-coded here —
 // see openSuggest()'s Card C toggle below.
@@ -597,6 +652,14 @@ function openSuggest(idx, bsnCode) {
     const o = document.getElementById('sm-' + k + '-other');
     if (o) { o.value = ''; o.style.display = 'none'; }
   });
+  // mapping-suggest-clone PR3 — clone state resets ONLY here (decision Q1:
+  // close/reopen the modal, not per-field edits).
+  _smCloneSourcePid = null;
+  _smNameDirty = false;
+  document.getElementById('sm-clone-search').value = '';
+  document.getElementById('sm-sku-preview').textContent = '—';
+  document.getElementById('sm-units-per-carton').value = '';
+  document.getElementById('sm-units-per-box').value = '';
 
   // getOrCreateInstance avoids stacking orphaned Modal instances on the
   // element across repeated openSuggest() calls.
@@ -736,6 +799,8 @@ function populateSuggestModal(data) {
         <span class="badge bg-info text-dark" title="หน่วยของสินค้า">⚖️ ${m.unit_type}</span>
         <span class="badge ${stockBadgeCls}" title="สต็อกปัจจุบัน">📦 ${m.stock}</span>
         <span class="text-subtle small">${pct}%</span>
+        <button type="button" class="btn btn-link btn-sm p-0" title="คัดลอกเป็นแม่แบบใน (B)"
+                onclick="event.stopPropagation(); cloneFromProduct(${m.product_id});">📋</button>
       </div>`;
     }).join('');
   } else {
@@ -748,8 +813,15 @@ function populateSuggestModal(data) {
   const p = data.parsed || {};
   const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
   document.getElementById('sm-name').value     = data.proposed_name || data.bsn_name || '';
-  setVal('sm-cat', p.category || '');          // visible combo-input (text) → resolves to sm-cat-id
+  // Category (39-row master, feeds cat_short_code in sku_code) is a PICK-ONLY
+  // combo — it must NOT be seeded from p.category, which is the parser's
+  // fine-grained guess (e.g. 'แปรงทาสี', a sub_category shape, not one of the
+  // 39 rows). Leave it blank; the manager picks. p.category goes to the free-
+  // text sub_category field instead — that's the field it actually matches.
+  setVal('sm-cat', '');
   setVal('sm-cat-id', '');
+  document.getElementById('sm-subcat').value   = p.category || '';
+  document.getElementById('sm-subcat-short').value = '';   // no derivation table (decision Q3)
   document.getElementById('sm-series').value   = p.series || '';
   setVal('sm-brand', data.brand_id_suggested || '');     // hidden combo-value (brand_id)
   setVal('sm-brand-other', '');
@@ -788,6 +860,7 @@ function populateSuggestModal(data) {
   }
 
   refreshUnitConvVisibility();
+  fetchIdentityPreview();   // mapping-suggest-clone PR3 — seed the sku preview from the parser's guess
 }
 
 function refreshUnitConvVisibility() {
@@ -801,6 +874,144 @@ function refreshUnitConvVisibility() {
 document.addEventListener('change', e => {
   if (e.target.id === 'sm-unit') refreshUnitConvVisibility();
 });
+
+/* ── mapping-suggest-clone PR3: live name + sku_code preview ──────────────
+   Any Card-B field that FEEDS the identity (name/sku_code) re-fetches
+   /products/preview-identity. sm-colorth is deliberately EXCLUDED — like
+   name_builder.preview_name/rebuild_product_name, the canonical Thai colour
+   word always comes from color_code via color_finish_codes, never from the
+   free-text box, so editing it alone can never change the preview. */
+const SM_IDENTITY_FIELD_IDS = [
+  'sm-cat-id', 'sm-subcat', 'sm-subcat-short', 'sm-series', 'sm-brand',
+  'sm-model', 'sm-size', 'sm-colorcode', 'sm-pkg', 'sm-cond', 'sm-pv',
+];
+let _smPreviewTimer = null;
+function schedulePreview() {
+  clearTimeout(_smPreviewTimer);
+  _smPreviewTimer = setTimeout(fetchIdentityPreview, 250);
+}
+document.getElementById('suggestModal').addEventListener('input', e => {
+  if (e.target.id === 'sm-name') { _smNameDirty = true; return; }
+  if (SM_IDENTITY_FIELD_IDS.includes(e.target.id)) schedulePreview();
+});
+document.getElementById('suggestModal').addEventListener('change', e => {
+  if (SM_IDENTITY_FIELD_IDS.includes(e.target.id)) schedulePreview();
+});
+
+// Monotonic sequence for the identity preview. Responses can arrive out of
+// order, and this handler applies whatever lands last — so a slow reply for an
+// OLD field state could overwrite sm-name after a newer one already wrote it.
+// That name is submitted verbatim as suggested_name while sku_code is
+// regenerated from the CURRENT columns, i.e. exactly the name/sku divergence
+// this preview exists to prevent (plan decision Q2). Stamp each request and
+// drop any response that is not the newest. (Codex review, 2026-08-22.)
+let _smPreviewSeq = 0;
+
+function fetchIdentityPreview() {
+  const seq = ++_smPreviewSeq;
+  const v = (id) => { const el = document.getElementById('sm-' + id); return el ? el.value : null; };
+  const fields = {
+    category_id: v('cat-id') || null,
+    sub_category: v('subcat'),
+    sub_category_short_code: v('subcat-short'),
+    series: v('series'),
+    brand_id: v('brand') || null,
+    model: v('model'),
+    size: v('size'),
+    color_code: v('colorcode') || null,
+    packaging_th: v('pkg') || null,
+    condition: v('cond'),
+    pack_variant: v('pv'),
+  };
+  fetch('{{ url_for("products.preview_identity") }}', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+    },
+    body: JSON.stringify(fields)
+  }).then(r => r.json()).then(d => {
+    if (seq !== _smPreviewSeq) return;   // a newer request already answered
+    if (!_smNameDirty) document.getElementById('sm-name').value = d.name || '';
+    document.getElementById('sm-sku-preview').textContent = d.sku_code || '—';
+  }).catch(() => {});
+}
+
+/* ── mapping-suggest-clone PR3: clone-from-existing-SKU ────────────────── */
+function cloneFromProduct(pid) {
+  fetch('/products/spec/' + pid)
+    .then(r => r.json())
+    .then(spec => {
+      if (spec.error) { alert('โหลดข้อมูลสินค้าไม่สำเร็จ'); return; }
+      const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val ?? ''; };
+      // Overwrite EVERY Card B field (decision Q1 — no merge). Cost is
+      // deliberately left untouched (decision Q4 — the BSN code's own
+      // latest purchase, not a sibling's WACC).
+      setVal('sm-cat-id', spec.category_id || '');
+      setVal('sm-subcat', spec.sub_category || '');
+      setVal('sm-subcat-short', spec.sub_category_short_code || '');
+      setVal('sm-series', spec.series || '');
+      setVal('sm-brand', spec.brand_id || '');
+      setVal('sm-brand-other', '');
+      setVal('sm-model', spec.model || '');
+      setVal('sm-size', spec.size || '');
+      setVal('sm-colorth', spec.color_th || '');
+      setVal('sm-colorcode', spec.color_code || '');
+      setVal('sm-colorcode-other', '');
+      setVal('sm-pkg', spec.packaging_th || '');
+      setVal('sm-cond', spec.condition || '');
+      setVal('sm-pv', spec.pack_variant || '');
+      setVal('sm-unit', spec.unit_type || 'ตัว');
+      setVal('sm-units-per-carton', spec.units_per_carton || '');
+      setVal('sm-units-per-box', spec.units_per_box || '');
+      syncCombos(document.getElementById('suggestModal'));   // repaint combo labels from the new hidden values
+      _smCloneSourcePid = pid;
+      _smNameDirty = false;   // clone counts as a fresh start for the name box too
+      refreshUnitConvVisibility();
+      fetchIdentityPreview();
+    })
+    .catch(() => alert('โหลดข้อมูลสินค้าไม่สำเร็จ'));
+}
+
+/* ── Persistent clone-source search box at the top of Card B ── */
+(function setupCloneSearchAutocomplete() {
+  const input = document.getElementById('sm-clone-search');
+  const drop  = document.getElementById('sm-clone-drop');
+  if (!input) return;
+  function render(q) {
+    const hits = q
+      ? allProducts.filter(p => (String(p.id) + ' ' + (p.sku || '') + ' ' + p.name).toLowerCase().includes(q.toLowerCase())).slice(0, 60)
+      : allProducts.slice(0, 60);
+    drop.innerHTML = hits.length
+      ? hits.map(p => {
+          const div = document.createElement('div');
+          div.className = 'ac-item';
+          div.dataset.id = p.id;
+          div.innerHTML = `<span class="ac-sku">${p.id}</span>
+            <span class="flex-fill">${p.name}</span>`;
+          return div.outerHTML;
+        }).join('')
+      : '<div class="ac-item text-subtle">ไม่พบสินค้า</div>';
+  }
+  function open() {
+    const rect = input.getBoundingClientRect();
+    drop.style.left = rect.left + 'px';
+    drop.style.top = (rect.bottom + 2) + 'px';
+    drop.style.width = Math.max(rect.width, 260) + 'px';
+    drop.classList.add('open');
+  }
+  drop.addEventListener('mousedown', e => {
+    const item = e.target.closest('.ac-item[data-id]');
+    if (!item) return;
+    e.preventDefault();
+    input.value = item.querySelector('.flex-fill').textContent;
+    drop.classList.remove('open');
+    cloneFromProduct(item.dataset.id);
+  });
+  input.addEventListener('input', () => { render(input.value); open(); });
+  input.addEventListener('focus', () => { render(input.value); open(); });
+  input.addEventListener('blur', () => { setTimeout(() => drop.classList.remove('open'), 200); });
+})();
 
 function pickMatch(el) {
   document.querySelectorAll('.match-row').forEach(r => r.classList.remove('selected'));
@@ -843,7 +1054,7 @@ function showMapConv(productUnit) {
   if (!input) return;
   function render(q) {
     const hits = q
-      ? allProducts.filter(p => (String(p.id) + ' ' + p.name).toLowerCase().includes(q.toLowerCase())).slice(0, 60)
+      ? allProducts.filter(p => (String(p.id) + ' ' + (p.sku || '') + ' ' + p.name).toLowerCase().includes(q.toLowerCase())).slice(0, 60)
       : allProducts.slice(0, 60);
     drop.innerHTML = hits.length
       ? hits.map(p => {
@@ -906,15 +1117,21 @@ function confirmExistingMap() {
   saveSingle(entry);
 }
 
-function confirmStageNew() {
+// Shared by confirmStageNew() and confirmCreateNow() — both send the same
+// Card-B field set, just to a different next step (mapping-suggest-clone
+// PR3). clone_source_pid rides along so it survives a stage-now/
+// approve-later gap on the Tab-2 review list, not just create_now's one
+// request (mirrors _build_suggestion_payload in blueprints/bsn.py).
+function _smBuildStagePayload() {
   const v = (id) => { const el = document.getElementById('sm-' + id); return el ? el.value : null; };
-  const payload = {
+  return {
     bsn_code: _smCurrentBsn,
     bsn_name: _smCurrentName,
-    action: 'stage',
     suggested_name: v('name'),
     category: v('cat'),                 // combo-input text (staged as-is)
     category_id: v('cat-id') || null,   // resolved category id from the combo
+    sub_category: v('subcat'),
+    sub_category_short_code: v('subcat-short'),
     series: v('series'),
     brand_id: v('brand') || null,
     brand_other_name: v('brand-other') || null,
@@ -931,8 +1148,47 @@ function confirmStageNew() {
     suggested_unit_type: v('unit') || 'ตัว',
     bsn_unit: _smBsnUnit,
     unit_conversion_ratio: v('ratio') || null,
+    units_per_carton: v('units-per-carton') || null,
+    units_per_box: v('units-per-box') || null,
+    clone_source_pid: _smCloneSourcePid || null,
   };
-  saveSingle(payload);
+}
+
+function confirmStageNew() {
+  saveSingle(Object.assign({ action: 'stage' }, _smBuildStagePayload()));
+}
+
+function confirmCreateNow(confirmDuplicate) {
+  const entry = Object.assign({ action: 'create_now' }, _smBuildStagePayload());
+  if (confirmDuplicate) entry.confirm_duplicate = true;
+  fetch('{{ url_for("bsn.mapping_save") }}', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+    },
+    body: JSON.stringify({ mappings: [entry] })
+  }).then(r => r.json().then(body => ({ status: r.status, body })))
+    .then(({ status, body }) => {
+      if (status === 409 && body.duplicate_of) {
+        const dup = body.duplicate_of;
+        const msg = 'sku_code ซ้ำกับสินค้า #' + dup.id + ' "' + dup.product_name + '" (' +
+          dup.sku_code + (dup.is_active ? '' : ' — ปิดใช้งานแล้ว') + ') — สร้างต่อไปเลยไหม?';
+        if (confirm(msg)) confirmCreateNow(true);
+        return;
+      }
+      if (body.ok) {
+        // The server detects a sku collision that slipped past the duplicate
+        // guard (the two-connection race) and returns `warning`. Navigating
+        // straight to the product would keep the very thing it detected
+        // silent, so block on it first.
+        if (body.warning) alert(body.warning);
+        window.location.href = '/products/' + body.product_id;
+      } else {
+        alert(body.error || 'สร้างไม่สำเร็จ');
+      }
+    })
+    .catch(() => alert('สร้างไม่สำเร็จ (network)'));
 }
 
 function confirmIgnore() {
