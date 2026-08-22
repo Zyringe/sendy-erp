@@ -423,7 +423,7 @@ function parseRawName() {
    preview on any further edit -> a hand-typed name sets a dirty flag that
    stops the auto-rewrite (decision Q2). Deliberately does NOT touch
    parseRawName() above — the two flows are independent; parsing a raw name
-   still behaves exactly as before. #}
+   still behaves exactly as before. ── */
 const allProducts = [
   {% for p in all_products %}
   { id: {{ p.id }}, name: {{ p.product_name | tojson }} },
@@ -454,6 +454,13 @@ var PN_IDENTITY_FIELD_IDS = [
   'pack_variant',
 ];
 var _pnPreviewTimer = null;
+// The debounce only coalesces edits inside its own window; two edits either
+// side of it issue two requests that can come back out of order, and the older
+// answer would then overwrite product_name with a name regenerated from stale
+// columns — the exact name/sku divergence this preview exists to prevent
+// (plan decision Q2). Same guard mapping.html's fetchIdentityPreview() carries
+// (Codex review, 2026-08-22).
+var _pnPreviewSeq = 0;
 function schedulePnPreview() {
   clearTimeout(_pnPreviewTimer);
   _pnPreviewTimer = setTimeout(fetchPnIdentityPreview, 250);
@@ -467,6 +474,7 @@ _pnForm.addEventListener('change', function (e) {
 });
 
 function fetchPnIdentityPreview() {
+  var seq = ++_pnPreviewSeq;
   var v = function (id) { var el = document.getElementById(id); return el ? el.value : null; };
   var brandRaw = v('brand_id');
   var colorRaw = v('color_code');
@@ -491,6 +499,7 @@ function fetchPnIdentityPreview() {
     },
     body: JSON.stringify(fields)
   }).then(function (r) { return r.json(); }).then(function (d) {
+    if (seq !== _pnPreviewSeq) return;   // a newer request already answered
     if (!_pnNameDirty) document.getElementById('product_name').value = d.name || '';
     document.getElementById('sku-preview').textContent = d.sku_code || '—';
   }).catch(function () {});

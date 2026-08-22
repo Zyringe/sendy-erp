@@ -37,6 +37,7 @@ against a synthetic mismatch (no live product reaches this branch) — the
 function is short enough to review directly instead.
 """
 import os
+import re
 import sqlite3
 
 os.environ.setdefault('SKIP_DB_INIT', '1')
@@ -89,6 +90,32 @@ def clone_source_product(tmp_db):
 
 # ── GET /products/new renders the clone controls ────────────────────────────
 
+# ── the rendered <script>, with JS comments removed ─────────────────────────
+#
+# A bare `'function cloneFromProduct(' in html` passes just as happily when the
+# whole function sits inside a /* ... */ block. That is how PR4's first cut
+# shipped ~120 lines of dead JS past seven green tests: the block comment above
+# `const allProducts` was closed with Jinja's `#}` instead of `*/`, so
+# everything down to the next real `*/` rendered as a comment. Assert against
+# the comment-STRIPPED source, never the raw page.
+
+_BLOCK_COMMENT = re.compile(r'/\*.*?\*/', re.S)
+_LINE_COMMENT = re.compile(r'(?m)^[ \t]*//.*$')
+
+
+def _create_form_script(html):
+    """Body of the inline <script> that carries the create form's JS."""
+    anchor = html.index('function parseRawName(')
+    open_tag = html.rindex('<script', 0, anchor)
+    body_start = html.index('>', open_tag) + 1
+    return html[body_start:html.index('</script>', body_start)]
+
+
+def _live_js(html):
+    src = _create_form_script(html)
+    return _LINE_COMMENT.sub('', _BLOCK_COMMENT.sub('', src))
+
+
 def test_product_new_get_renders_clone_search_control(admin_client):
     client, _db = admin_client
     resp = client.get('/products/new')
@@ -98,7 +125,50 @@ def test_product_new_get_renders_clone_search_control(admin_client):
     assert 'id="clone-drop"' in html
     assert 'id="clone-status"' in html
     assert 'id="sku-preview"' in html
-    assert 'function cloneFromProduct(' in html
+    assert 'function cloneFromProduct(' in _live_js(html)
+
+
+def test_clone_js_is_live_code_not_commented_out(admin_client):
+    """Every clone symbol must survive comment-stripping.
+
+    The markup rendering is not the feature — the JS behind it is. When PR4's
+    block comment was closed with `#}` instead of `*/`, every id above was
+    still in the DOM, `function cloneFromProduct(` was still in the page
+    source, and the whole feature was inert."""
+    client, _db = admin_client
+    live = _live_js(client.get('/products/new').get_data(as_text=True))
+
+    # CONTROL: the strip helper leaves ordinary code alone. Without this the
+    # assertions below could pass by matching an empty-ish string, or fail for
+    # a reason that has nothing to do with comments.
+    assert 'function parseRawName(' in live
+
+    # An UNTERMINATED /* is invisible to the paired-delimiter regex, so it
+    # would leave commented-out code in `live` and make the loop vacuous.
+    assert '/*' not in live, "unterminated JS block comment in the create form's <script>"
+
+    for symbol in (
+        'const allProducts',
+        "getElementById('product_name').addEventListener('input'",
+        'function setSelectOrWarn(',
+        'function fetchPnIdentityPreview(',
+        'function cloneFromProduct(',
+        'setupCloneSearchAutocomplete',
+    ):
+        assert symbol in live, (
+            f"{symbol} renders but sits inside a comment — dead code on the page"
+        )
+
+
+def test_rendered_page_carries_no_jinja_comment_terminator(admin_client):
+    """A `#}` can never survive rendering — Jinja emits nothing for a real
+    comment — so one in the output is an unmatched terminator. Here it was a
+    JS block comment closed with the wrong delimiter."""
+    client, _db = admin_client
+    html = client.get('/products/new').get_data(as_text=True)
+    # CONTROL: Jinja comments really are stripped at render time.
+    assert 'New product: type raw name' not in html
+    assert '#}' not in html
 
 
 def test_product_new_get_renders_sub_category_short_code_field(admin_client):
@@ -264,6 +334,29 @@ def test_clone_round_trip_via_product_new_post_matches_preview_identity(admin_cl
 
 # ── select-fallback source pin (see module docstring — no live fixture) ─────
 
+def test_preview_drops_out_of_order_responses(admin_client):
+    """Structural pin (no JS runner in this repo, same as the test below).
+
+    /mapping's fetchIdentityPreview() stamps each request and drops any
+    response that is not the newest (Codex review of PR3). Without the same
+    guard here, two edits either side of the 250ms debounce race, and the
+    older answer overwrites product_name with a name built from stale
+    columns — the divergence this preview exists to prevent."""
+    client, _db = admin_client
+    live = _live_js(client.get('/products/new').get_data(as_text=True))
+    start = live.index('function fetchPnIdentityPreview(')
+    fn_src = live[start:live.index('\n}', start)]
+
+    stamp = fn_src.index('++_pnPreviewSeq')
+    guard = fn_src.index('seq !== _pnPreviewSeq')
+    write = fn_src.index("getElementById('product_name').value")
+    assert stamp < guard < write, (
+        "fetchPnIdentityPreview must stamp its request, then drop a stale "
+        "response BEFORE writing product_name"
+    )
+    assert 'return' in fn_src[guard:write], "the stale-response check must bail out"
+
+
 def test_set_select_or_warn_js_never_silently_leaves_blank(admin_client):
     """Structural pin only (see module docstring): the fallback branch must
     clear the select's stale value AND record a warning — not just return.
@@ -272,10 +365,10 @@ def test_set_select_or_warn_js_never_silently_leaves_blank(admin_client):
     was overwritten) both pass every OTHER test in this file, because no
     live product reaches this branch."""
     client, _db = admin_client
-    html = client.get('/products/new').get_data(as_text=True)
-    start = html.index('function setSelectOrWarn(')
-    end = html.index('\n}', start)
-    fn_src = html[start:end]
+    live = _live_js(client.get('/products/new').get_data(as_text=True))
+    start = live.index('function setSelectOrWarn(')
+    end = live.index('\n}', start)
+    fn_src = live[start:end]
 
     assert "sel.value = ''" in fn_src, (
         "setSelectOrWarn must clear the select on a miss, not leave a stale value"
