@@ -306,7 +306,7 @@ def mapping_save():
                 return jsonify({'ok': False, 'error': 'ไม่มีสิทธิ์ดำเนินการนี้'}), 403
             payload = _build_suggestion_payload(bsn_code, item)
             try:
-                new_pid = models.create_now(
+                new_pid, dup_warning = models.create_now(
                     payload, user_id,
                     confirm_duplicate=bool(item.get('confirm_duplicate')),
                 )
@@ -316,7 +316,10 @@ def mapping_save():
                 return jsonify({'ok': False, 'error':
                                 f'{exc.bsn_code} มีการ stage/สร้างไปแล้ว (status={exc.existing_status}) '
                                 '— รีเฟรชหน้าแล้วลองใหม่'}), 409
-            return jsonify({'ok': True, 'product_id': new_pid})
+            resp = {'ok': True, 'product_id': new_pid}
+            if dup_warning:
+                resp['warning'] = dup_warning
+            return jsonify(resp)
         elif action == 'ignore':
             try:
                 models.upsert_mapping(

@@ -324,7 +324,7 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         conn.close()
 
 
-def create_now(payload: dict, user_id: int, confirm_duplicate: bool = False) -> int:
+def create_now(payload: dict, user_id: int, confirm_duplicate: bool = False) -> tuple:
     """'สร้างเลย' (mapping-suggest-clone plan, PR3, decision Q7): stage then
     immediately approve, SERVER-SIDE, in one call — not two client requests.
     `bsn.py::mapping_save` used to discard the sid `save_pending_suggestion`
@@ -392,4 +392,33 @@ def create_now(payload: dict, user_id: int, confirm_duplicate: bool = False) -> 
         raise SuggestionAlreadyStagedError(
             payload['bsn_code'], existing['status'] if existing else 'unknown'
         )
-    return approve_pending_suggestion(sid, {}, user_id)
+    new_pid = approve_pending_suggestion(sid, {}, user_id)
+
+    # Post-create collision detection (Codex review, 2026-08-22).
+    #
+    # The guard above is a check-then-write across two connections, so two
+    # requests for DIFFERENT bsn_codes that resolve to the SAME sku_code can
+    # both pass it before either inserts. `UNIQUE(bsn_code)` serializes only
+    # same-code races, not this one. The loser then gets a `-<id>` suffix from
+    # regenerate_for_product without ever showing the operator a confirmation.
+    #
+    # Deliberately NOT fixed by wrapping the check and the insert in one
+    # transaction: the insert lives inside approve_pending_suggestion's own
+    # all-or-nothing block, and re-implementing that here is exactly what the
+    # plan (decision Q7) rules out. The suffix itself is the designed fallback
+    # and is not corruption — the real harm is that it happens SILENTLY. So we
+    # detect it after the fact and hand the caller a warning to surface.
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT sku_code FROM products WHERE id = ?", (new_pid,)
+        ).fetchone()
+    finally:
+        conn.close()
+    sku = (row['sku_code'] if row else '') or ''
+    if not confirm_duplicate and sku.endswith(f'-{new_pid}'):
+        return new_pid, (
+            f'สร้างสำเร็จ แต่ sku_code ชนกับสินค้าเดิม จึงได้ต่อท้ายเป็น {sku} '
+            '— ตรวจสอบว่าซ้ำกับตัวที่มีอยู่หรือไม่'
+        )
+    return new_pid, None

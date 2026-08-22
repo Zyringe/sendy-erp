@@ -266,7 +266,7 @@ def test_create_now_concurrent_second_call_refused(manager_client, monkeypatch):
 
     monkeypatch.setattr(sugg_mod, 'approve_pending_suggestion', fake_approve)
 
-    new_pid_a = sugg_mod.create_now(payload_a, user_id=1)
+    new_pid_a, _warn_a = sugg_mod.create_now(payload_a, user_id=1)
 
     assert 'b_succeeded' not in captured, \
         "B must NOT be allowed to approve alongside A for the same bsn_code"
@@ -287,3 +287,61 @@ def test_create_now_concurrent_second_call_refused(manager_client, monkeypatch):
         "the created product must be A's payload, not B's"
     # COUNT first (vacuity guard): exactly one suggestion row, not two.
     assert n_products == 1
+
+
+def test_create_now_surfaces_a_silent_collision_suffix(tmp_db, monkeypatch):
+    """Codex review 2026-08-22: the duplicate guard is a check-then-write across
+    two connections, so two DIFFERENT bsn_codes resolving to the SAME sku can
+    both pass it — `UNIQUE(bsn_code)` only serializes same-code races. The loser
+    then takes a `-<id>` suffix from regenerate_for_product. That suffix is the
+    designed fallback, not corruption; the harm is that it used to happen
+    SILENTLY. create_now must hand the caller a warning when it does.
+
+    Simulated by letting the guard pass and having the collision appear only at
+    insert time — which is exactly what the real race produces.
+    """
+    import sqlite3
+    import models
+    from models import suggestions as sugg_mod
+
+    bsn = 'ZZRACE99'
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM pending_product_suggestions WHERE bsn_code=?", (bsn,))
+    conn.execute("DELETE FROM product_code_mapping WHERE bsn_code=?", (bsn,))
+    conn.commit()
+    conn.close()
+
+    payload = {
+        'bsn_code': bsn, 'bsn_name': 'race raw name',
+        'suggested_name': 'race product', 'category': None, 'category_id': None,
+        'sub_category': None, 'sub_category_short_code': None, 'series': None,
+        'brand_id': None, 'model': 'ZZRACEMODEL', 'size': None, 'color_th': None,
+        'color_code': None, 'packaging': None, 'condition': None,
+        'pack_variant': None, 'suggested_cost': 0, 'suggested_unit_type': 'ตัว',
+        'units_per_carton': 1, 'units_per_box': 1,
+    }
+
+    # The guard runs BEFORE the insert; make it see no collision (the race).
+    monkeypatch.setattr(sugg_mod.sku_code_utils, 'preview_sku_code',
+                        lambda conn, p: '')
+
+    real_approve = sugg_mod.approve_pending_suggestion
+
+    def approve_then_collide(sid, edits, reviewer_id):
+        pid = real_approve(sid, edits, reviewer_id)
+        # Stand in for "the other request already took this sku": force the
+        # exact shape regenerate_for_product leaves behind on a collision.
+        c = sqlite3.connect(tmp_db)
+        c.execute("UPDATE products SET sku_code=? WHERE id=?", (f'ZZ-RACE-{pid}', pid))
+        c.commit()
+        c.close()
+        return pid
+
+    monkeypatch.setattr(sugg_mod, 'approve_pending_suggestion', approve_then_collide)
+
+    new_pid, warning = sugg_mod.create_now(payload, user_id=1)
+
+    assert new_pid, "control: a product must actually have been created"
+    assert warning is not None, \
+        "a collision suffix was applied but create_now returned no warning"
+    assert f'-{new_pid}' in warning, warning
