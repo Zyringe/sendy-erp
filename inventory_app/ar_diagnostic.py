@@ -37,10 +37,15 @@ _REASONS = [
      '(กติกาเดียวกับ cashflow.BSN_AR_PREDICATE)'),
     ('written_off',
      'นักบัญชีตัดหนี้สูญแล้ว (ar_writeoffs) — snapshot ยังโชว์ แต่เลิกตาม'),
+    ('credit_note_offset',
+     'บิลถูกใบลดหนี้ล้างพอดี และใบลดหนี้ยังเปิดค้างอยู่ใน snapshot เอง — '
+     'Express แยกเป็น 2 ใบ, Sendy หักกลบให้ ยอดรวมเท่ากัน ทั้งคู่ถูก'),
     ('credit_note',
      'ใบลดหนี้ SR — payments_alloc._settlement_rows กรอง SR% ออกโดยตั้งใจ'),
     ('cash_sale',
      'ขายสด HS — _settlement_rows กรอง HS% ออกโดยตั้งใจ'),
+    ('not_yet_imported',
+     'เอกสารใหม่กว่าที่ ledger มี — export ล่ำหน้า import ยังไม่ใช่ของหาย'),
     ('no_ledger_lines',
      '⚠ snapshot มีเอกสาร แต่ Sendy ไม่มีบรรทัดขายของใบนี้เลย — บิลหาย'),
     ('unallocated',
@@ -68,7 +73,8 @@ def _is_pre_era(snap_row, derived_row, era_start):
 
 
 def build_ar_reconciliation(snapshot_rows, derived_rows,
-                            writeoff_doc_nos=(), era_start='2024-01-01'):
+                            writeoff_doc_nos=(), era_start='2024-01-01',
+                            credit_note_refs=None, ledger_horizon=None):
     """Classify every disagreement between the two AR views.
 
     snapshot_rows: `express_ar_outstanding` rows for ONE entity at ONE
@@ -78,11 +84,36 @@ def build_ar_reconciliation(snapshot_rows, derived_rows,
         outstanding, invoice_date, customer.
     writeoff_doc_nos: `ar_writeoffs.doc_no`.
     era_start: the pre-Sendy boundary, matching cashflow.BSN_AR_PREDICATE.
+    credit_note_refs: {sr_doc_no: (ref_invoice, credited_amount)} from
+        `credit_note_amounts`. Lets an invoice whose derived balance is 0 ONLY
+        because a ใบลดหนี้ netted it be recognised when that same credit note is
+        itself still open in the snapshot — Express keeps the two documents
+        apart, Sendy nets them, the totals agree and neither is wrong.
+        ⚠ Reads the AUTHORITATIVE table only. `_settlement_rows` also nets an SR
+        FALLBACK over sales_transactions for SRs absent from that table; those
+        cannot be proven here and deliberately stay `unexplained` rather than
+        being classified on a guess (prod 2026-08-22: 3 fallback SRs exist, none
+        pointing at an open invoice, so the gap is latent — and loud when it
+        stops being).
+    ledger_horizon: the newest date the ledger actually contains
+        (MAX(sales_transactions.date_iso)). Snapshot documents dated AFTER it are
+        classified `not_yet_imported` instead of being reported as missing bills:
+        the export simply runs ahead of the import. Empty string is refused —
+        that is a ledger with no rows at all, where every document would be
+        excused and the comparison would mean nothing.
+        ⚠ It is a high-water mark, not proof of completeness: if one document
+        for the newest day imported and its siblings did not, they fall back
+        into `no_ledger_lines`. The report says so at the header rather than
+        letting the reader infer it.
 
     Raises on an EMPTY snapshot: with nothing to compare against, every derived
     row would read as a finding and every bucket as clean, which is the
     can't-fail shape this diagnostic exists to avoid.
     """
+    if ledger_horizon is not None and not ledger_horizon:
+        raise ValueError(
+            'ledger_horizon is empty — a ledger with no rows would excuse every '
+            'document in the snapshot and the comparison would prove nothing')
     if not snapshot_rows:
         raise ValueError(
             'AR reconciliation needs a snapshot to compare against — an empty '
@@ -103,6 +134,14 @@ def build_ar_reconciliation(snapshot_rows, derived_rows,
     # it as "no ledger lines".
     derived = {r['doc_base']: r for r in derived_rows}
     writeoffs = set(writeoff_doc_nos)
+    # Invoice -> the credited amount of a credit note that is ALSO open in this
+    # same snapshot. Built here rather than taken from the caller so the
+    # "still open" half is checked against the snapshot actually being compared.
+    offsets = {}
+    for sr_doc, (ref_iv, amount) in (credit_note_refs or {}).items():
+        sr = snap.get(sr_doc)
+        if sr is not None and _r2(sr['outstanding_amount']) == -_r2(amount):
+            offsets[ref_iv] = _r2(amount)
 
     population = set(snap) | {d for d, r in derived.items() if _r2(r['outstanding'])}
 
@@ -122,10 +161,21 @@ def build_ar_reconciliation(snapshot_rows, derived_rows,
             reason = 'pre_era'
         elif doc in writeoffs:
             reason = 'written_off'
+        elif (d is not None and d_amt == 0.0
+              and _r2(d.get('credit_notes')) == s_amt
+              and offsets.get(doc) == s_amt and s_amt):
+            reason = 'credit_note_offset'
         elif doc.startswith('SR'):
             reason = 'credit_note'
         elif doc.startswith('HS'):
             reason = 'cash_sale'
+        elif (ledger_horizon and s is not None
+              and (s['doc_date_iso'] or '') > ledger_horizon):
+            # AFTER every verdict that is already true regardless of the ledger:
+            # an RE never enters sales_transactions and SR/HS are filtered out of
+            # the derived population, so calling either "not yet imported" would
+            # promise an import that will never happen.
+            reason = 'not_yet_imported'
         elif s is not None and d is None:
             reason = 'no_ledger_lines'
         elif s is None:

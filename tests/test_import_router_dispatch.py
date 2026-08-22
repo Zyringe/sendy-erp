@@ -98,8 +98,6 @@ def test_sales_routes_to_import_weekly_canonical(monkeypatch, weekly_path):
 @pytest.mark.parametrize("rtype,express_kind", [
     ("payments_out", "payments_out"),
     ("credit_notes_ap", "credit_notes"),
-    ("ar_snapshot", "ar_snapshot"),
-    ("ap_snapshot", "ap_snapshot"),
 ])
 def test_express_family_routes_to_express_importer(monkeypatch, rtype, express_kind):
     import import_router

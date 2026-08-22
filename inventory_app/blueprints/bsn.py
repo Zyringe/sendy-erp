@@ -399,11 +399,12 @@ def mapping_suggestion_approve(sid):
     return jsonify({'ok': True, 'product_id': new_pid})
 
 
-# Make import_express's machinery available to the upload form. We inject
+# (was: "make import_express's machinery available to the upload form" — the
+# form never referenced it; the import is gone with the text-report AR/AP path.)
+# We inject
 # our own DB connection so the import shares this app's transaction
 # semantics (lights-on FK off etc).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'scripts'))
-import import_express as express_importer  # noqa: E402
 import import_router  # noqa: E402  (unified /import box: detect + preview + commit dispatch)
 
 
@@ -433,8 +434,6 @@ _REPORT_LABELS = {
     'payments_out': 'การจ่ายชำระหนี้ (เจ้าหนี้)',
     'credit_notes_ar': 'ใบลดหนี้ — รับคืน (ลูกค้า)',
     'credit_notes_ap': 'ใบลดหนี้ — ส่งคืน (ผู้ขาย)',
-    'ar_snapshot': 'ลูกหนี้คงค้าง',
-    'ap_snapshot': 'เจ้าหนี้คงค้าง',
     'unknown': '— ไม่รู้จัก (เลือกเอง) —',
 }
 

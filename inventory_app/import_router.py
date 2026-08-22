@@ -117,8 +117,6 @@ def detect_express_report(path):
 _EXPRESS_KIND = {
     "payments_out": "payments_out",
     "credit_notes_ap": "credit_notes",
-    "ar_snapshot": "ar_snapshot",
-    "ap_snapshot": "ap_snapshot",
 }
 
 
@@ -229,11 +227,7 @@ def preview_file(path, report_type, db_path=None):
     if report_type in _EXPRESS_KIND:
         import import_express as ie
         kind = _EXPRESS_KIND[report_type]
-        if kind == "ap_snapshot":
-            records = ie.p_ap.parse_ap_snapshot(path)[0]   # (records, total, subtotals)
-        elif kind == "ar_snapshot":
-            records = list(ie.p_ar.parse_ar_snapshot(path))
-        elif kind == "payments_out":
+        if kind == "payments_out":
             records = list(ie.p_pout.parse_payments_out(path))
         else:                                              # 'credit_notes' (AP side)
             records = list(ie.p_cn.parse_credit_notes(path))

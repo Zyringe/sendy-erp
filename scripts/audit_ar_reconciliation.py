@@ -35,6 +35,13 @@ ENTITY = 'BSN'
 ERA_START = '2024-01-01'               # cashflow.BSN_AR_PREDICATE's own boundary
 
 
+def _bucket_docs(rep, reason):
+    for b in rep['buckets']:
+        if b['reason'] == reason:
+            return b['docs']
+    return 0
+
+
 def _fmt(n):
     return f'{n:,.2f}'
 
@@ -100,8 +107,21 @@ def main():
         # the 2026-06-05 local snapshot: 76 phantom rows worth 173,091.77
         # before this argument existed.
         derived = pa.invoice_settlement(conn=conn, as_of=snap_date)
+        # {sr_doc: (ref_invoice, amount)} — lets an invoice that a still-open
+        # ใบลดหนี้ nets to zero be recognised instead of read as a disagreement.
+        cn_refs = {r['sr_doc_base']: (r['ref_invoice'], r['credited_amount'])
+                   for r in conn.execute(
+                       'SELECT sr_doc_base, ref_invoice, credited_amount '
+                       'FROM credit_note_amounts '
+                       'WHERE ref_invoice IS NOT NULL AND ref_invoice <> ""')}
+        # How far the ledger actually reaches. A snapshot exported today against
+        # a ledger that stops yesterday is not a book full of missing invoices.
+        horizon = conn.execute(
+            'SELECT MAX(date_iso) d FROM sales_transactions').fetchone()['d']
         rep = build_ar_reconciliation(snapshot, derived, writeoff_doc_nos=writeoffs,
-                                      era_start=args.era_start)
+                                      era_start=args.era_start,
+                                      credit_note_refs=cn_refs,
+                                      ledger_horizon=horizon)
         L = []
         L.append('# AR reconciliation — Express snapshot เทียบกับยอดที่ Sendy คำนวณเอง\n')
         L.append(f'- db (read-only): `{args.db}` · book **{ENTITY}**')
@@ -110,7 +130,11 @@ def main():
         L.append(f'- ฝั่ง derived: {len(derived):,} ใบแจ้งหนี้จาก '
                  f'`payments_alloc.invoice_settlement(as_of={snap_date!r})` — '
                  f'ตัดที่วันเดียวกับ snapshot\n')
-        L.append('> อ่านอย่างเดียว ไม่เปลี่ยนแหล่งข้อมูลของหน้าไหนทั้งนั้น — '
+        L.append(f'- ledger มีข้อมูลถึง: **{horizon}**'
+                 + ('' if horizon == snap_date else
+                    f' — **ช้ากว่า snapshot อยู่** เอกสารหลังวันนี้จะเข้ากลุ่ม '
+                    f'`not_yet_imported` ไม่ใช่ของหาย'))
+        L.append('\n> อ่านอย่างเดียว ไม่เปลี่ยนแหล่งข้อมูลของหน้าไหนทั้งนั้น — '
                  'Express REMAMT ยังเป็นตัวจริงของ AR\n')
 
         L.append('## ทุกเอกสารอยู่กลุ่มเดียว และรวมกลับเป็นยอด snapshot ได้พอดี\n')
@@ -121,6 +145,14 @@ def main():
                 continue
             L.append(f'| `{b["reason"]}` | {b["docs"]:,} | {_fmt(b["snapshot_amount"])} '
                      f'| {_fmt(b["derived_amount"])} | {b["why"]} |')
+        stale = _bucket_docs(rep, 'not_yet_imported')
+        ghosts = _bucket_docs(rep, 'no_ledger_lines')
+        if stale and ghosts:
+            L.append(f'\n> ⚠ ledger ช้ากว่า snapshot **และ** ยังมี {ghosts:,} เอกสารที่ลงวันที่ '
+                     f'**ไม่เกิน {horizon}** แต่ Sendy ไม่มีบรรทัดขาย — `MAX(date_iso)` เป็นแค่ '
+                     f'วันล่าสุดที่มี ไม่ได้แปลว่าวันนั้นเข้าครบ ดังนั้นอย่าเหมาว่าทั้งหมด '
+                     f'"แค่ยังไม่ได้ import" ต้องดูรายตัว')
+
         checksum = round(sum(b['snapshot_amount'] for b in rep['buckets']), 2)
         ok = 'ตรง ✅' if checksum == rep['snapshot_total'] else 'ไม่ตรง 🔴'
         L.append(f'\n**ตรวจยอด:** ผลรวมทุกกลุ่ม {_fmt(checksum)} '

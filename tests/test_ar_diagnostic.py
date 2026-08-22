@@ -505,3 +505,162 @@ def test_all_three_as_of_caps_apply_together(empty_db_conn):
                            r['outstanding']) for r in rows}
     # 1000 billed - 100 credited = 900 owed, 200 collected -> 700 outstanding.
     assert got == {'IV400': (1000.0, 100.0, 200.0, 700.0)}
+
+
+# ── Fix A: an invoice offset by an OPEN credit note is not a disagreement ────
+#
+# Express keeps a ใบลดหนี้ as its own open document; Sendy nets it into the
+# invoice. Both are right and the totals agree — on prod 2026-08-22 the same
+# ฿346.00 appeared as +346 in `unexplained` and −346 in `credit_note`. Reporting
+# that as unexplained trains the reader to skim the one bucket that must never
+# be skimmed.
+
+def _der_cn(doc_base, outstanding, credit_notes, **kw):
+    d = _der(doc_base, outstanding, **kw)
+    d['credit_notes'] = credit_notes
+    return d
+
+
+def test_an_invoice_fully_offset_by_an_open_credit_note_is_classified():
+    rep = build_ar_reconciliation(
+        [_snap('IV1', 196.0), _snap('SR1', -196.0)],
+        [_der_cn('IV1', 0.0, 196.0)],
+        credit_note_refs={'SR1': ('IV1', 196.0)}, era_start=ERA)
+
+    assert _reasons(rep) == {'credit_note_offset': 1, 'credit_note': 1}
+    assert rep['unexplained'] == []
+
+
+def test_the_offset_must_match_to_the_satang():
+    """One satang out and it is a real disagreement again — no tolerance."""
+    rep = build_ar_reconciliation(
+        [_snap('IV1', 196.0), _snap('SR1', -195.99)],
+        [_der_cn('IV1', 0.0, 195.99)],
+        credit_note_refs={'SR1': ('IV1', 195.99)}, era_start=ERA)
+
+    assert 'unexplained' in _reasons(rep)
+
+
+def test_the_credit_note_must_be_OPEN_in_the_same_snapshot():
+    """If Express has already settled the SR, it is absent from the snapshot —
+    and then the invoice standing open really is a disagreement, not a
+    presentation difference."""
+    rep = build_ar_reconciliation(
+        [_snap('IV1', 196.0)],                      # SR1 NOT in the snapshot
+        [_der_cn('IV1', 0.0, 196.0)],
+        credit_note_refs={'SR1': ('IV1', 196.0)}, era_start=ERA)
+
+    assert _reasons(rep) == {'unexplained': 1}
+
+
+def test_a_partly_credited_invoice_is_not_an_offset():
+    """Derived still owes something, so the two views genuinely differ."""
+    rep = build_ar_reconciliation(
+        [_snap('IV1', 196.0), _snap('SR1', -100.0)],
+        [_der_cn('IV1', 96.0, 100.0)],
+        credit_note_refs={'SR1': ('IV1', 100.0)}, era_start=ERA)
+
+    assert 'unexplained' in _reasons(rep)
+
+
+def test_a_credit_note_pointing_at_a_DIFFERENT_invoice_does_not_excuse_this_one():
+    rep = build_ar_reconciliation(
+        [_snap('IV1', 196.0), _snap('SR1', -196.0)],
+        [_der_cn('IV1', 0.0, 196.0)],
+        credit_note_refs={'SR1': ('IV_OTHER', 196.0)}, era_start=ERA)
+
+    assert 'unexplained' in _reasons(rep)
+
+
+def test_an_sr_absent_from_credit_note_amounts_stays_loud():
+    """The SR-fallback population nets through sales_transactions and has no
+    row in credit_note_amounts, so it cannot be proven and must NOT be quietly
+    classified. Measured on prod 2026-08-22: 3 such SRs exist and none points
+    at an open invoice, so this is latent — pinned so it surfaces loudly the
+    day it stops being."""
+    rep = build_ar_reconciliation(
+        [_snap('IV1', 196.0), _snap('SR1', -196.0)],
+        [_der_cn('IV1', 0.0, 196.0)],
+        credit_note_refs={}, era_start=ERA)          # SR1 not in the map
+
+    assert _reasons(rep) == {'unexplained': 1, 'credit_note': 1}
+
+
+def test_a_derived_row_without_a_credit_notes_field_is_handled():
+    """invoice_settlement always emits it, but the pure function must not blow
+    up on a caller that does not."""
+    rep = build_ar_reconciliation([_snap('IV1', 196.0), _snap('SR1', -196.0)],
+                                  [_der('IV1', 0.0)],
+                                  credit_note_refs={'SR1': ('IV1', 196.0)}, era_start=ERA)
+
+    assert 'unexplained' in _reasons(rep)
+
+
+# ── Fix B: do not judge documents the ledger cannot know about yet ──────────
+
+def test_a_document_newer_than_the_ledger_is_not_a_missing_bill():
+    """Prod 2026-08-22: 8 invoices dated that day (฿2,508.02) read as
+    `no_ledger_lines` purely because the ledger ended at 08-21."""
+    rep = build_ar_reconciliation([_snap('IV_NEW', 650.0, date='2026-08-22')],
+                                  [], ledger_horizon='2026-08-21', era_start=ERA)
+
+    assert _reasons(rep) == {'not_yet_imported': 1}
+
+
+def test_a_document_on_the_horizon_is_still_judged():
+    """The ledger reaches that date, so absence there IS a finding. Boundary is
+    inclusive, matching every other date test in this suite."""
+    rep = build_ar_reconciliation([_snap('IV_EDGE', 650.0, date='2026-08-21')],
+                                  [], ledger_horizon='2026-08-21', era_start=ERA)
+
+    assert _reasons(rep) == {'no_ledger_lines': 1}
+
+
+def test_without_a_horizon_nothing_is_excused():
+    rep = build_ar_reconciliation([_snap('IV_NEW', 650.0, date='2026-08-22')],
+                                  [], era_start=ERA)
+
+    assert _reasons(rep) == {'no_ledger_lines': 1}
+
+
+@pytest.mark.parametrize('doc_no,kw,expected', [
+    ('RE_NEW', {'anomalous': 1}, 're_anomaly'),
+    ('SR_NEW', {}, 'credit_note'),
+    ('HS_NEW', {}, 'cash_sale'),
+])
+def test_not_yet_imported_never_displaces_a_verdict_that_is_already_true(
+        doc_no, kw, expected):
+    """An RE never enters sales_transactions and SR/HS are filtered out of the
+    derived population by construction — labelling any of them "not yet
+    imported" promises an import that will never happen."""
+    rep = build_ar_reconciliation([_snap(doc_no, 100.0, date='2026-08-22', **kw)],
+                                  [], ledger_horizon='2026-08-21', era_start=ERA)
+
+    assert _reasons(rep) == {expected: 1}
+
+
+def test_a_written_off_doc_newer_than_the_horizon_stays_written_off():
+    rep = build_ar_reconciliation([_snap('IV_WO2', 100.0, date='2026-08-22')],
+                                  [], writeoff_doc_nos={'IV_WO2'},
+                                  ledger_horizon='2026-08-21', era_start=ERA)
+
+    assert _reasons(rep) == {'written_off': 1}
+
+
+def test_an_empty_ledger_horizon_is_refused_rather_than_excusing_everything():
+    with pytest.raises(ValueError):
+        build_ar_reconciliation([_snap('IV1', 1.0)], [], ledger_horizon='', era_start=ERA)
+
+
+def test_buckets_still_sum_to_the_snapshot_total_with_the_new_reasons():
+    snap = [_snap('IV1', 196.0), _snap('SR1', -196.0),
+            _snap('IV_NEW', 650.0, date='2026-08-22'), _snap('IV_OK', 500.0)]
+    rep = build_ar_reconciliation(
+        snap, [_der_cn('IV1', 0.0, 196.0), _der('IV_OK', 500.0)],
+        credit_note_refs={'SR1': ('IV1', 196.0)},
+        ledger_horizon='2026-08-21', era_start=ERA)
+
+    assert _reasons(rep) == {'credit_note_offset': 1, 'credit_note': 1,
+                             'not_yet_imported': 1, 'agrees': 1}
+    assert round(sum(b['snapshot_amount'] for b in rep['buckets']), 2) == rep['snapshot_total']
+    assert rep['unexplained'] == []
