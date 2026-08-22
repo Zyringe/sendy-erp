@@ -160,7 +160,7 @@ def mapping():
     pending_suggestions = models.get_pending_suggestions()
     conn = get_connection()
     all_products = conn.execute("""
-        SELECT p.id, p.product_name, p.unit_type,
+        SELECT p.id, p.product_name, p.unit_type, p.sku_code,
                COALESCE(s.quantity, 0) AS stock
           FROM products p
           LEFT JOIN stock_levels s ON s.product_id = p.id

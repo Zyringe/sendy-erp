@@ -604,6 +604,7 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
 const allProducts = [
   {% for p in all_products %}
   { id: {{ p.id }}, name: {{ p.product_name | tojson }},
+    sku: {{ (p.sku_code or '') | tojson }},
     unit_type: {{ (p.unit_type or 'ตัว') | tojson }},
     stock: {{ p.stock or 0 }} },
   {% endfor %}
@@ -968,7 +969,7 @@ function cloneFromProduct(pid) {
   if (!input) return;
   function render(q) {
     const hits = q
-      ? allProducts.filter(p => (String(p.id) + ' ' + p.name).toLowerCase().includes(q.toLowerCase())).slice(0, 60)
+      ? allProducts.filter(p => (String(p.id) + ' ' + (p.sku || '') + ' ' + p.name).toLowerCase().includes(q.toLowerCase())).slice(0, 60)
       : allProducts.slice(0, 60);
     drop.innerHTML = hits.length
       ? hits.map(p => {
@@ -1042,7 +1043,7 @@ function showMapConv(productUnit) {
   if (!input) return;
   function render(q) {
     const hits = q
-      ? allProducts.filter(p => (String(p.id) + ' ' + p.name).toLowerCase().includes(q.toLowerCase())).slice(0, 60)
+      ? allProducts.filter(p => (String(p.id) + ' ' + (p.sku || '') + ' ' + p.name).toLowerCase().includes(q.toLowerCase())).slice(0, 60)
       : allProducts.slice(0, 60);
     drop.innerHTML = hits.length
       ? hits.map(p => {
@@ -1166,6 +1167,11 @@ function confirmCreateNow(confirmDuplicate) {
         return;
       }
       if (body.ok) {
+        // The server detects a sku collision that slipped past the duplicate
+        // guard (the two-connection race) and returns `warning`. Navigating
+        // straight to the product would keep the very thing it detected
+        // silent, so block on it first.
+        if (body.warning) alert(body.warning);
         window.location.href = '/products/' + body.product_id;
       } else {
         alert(body.error || 'สร้างไม่สำเร็จ');

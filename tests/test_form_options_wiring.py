@@ -40,7 +40,7 @@ def seeded_client(tmp_db):
         conn.execute("DELETE FROM products WHERE sku_code = ?", (sku,))
         conn.execute(
             "INSERT INTO products (product_name, sku_code, condition, is_active) "
-            "VALUES (?, ?, ?, 1)", (f'wiring fixture {sku}', sku, cond)
+            "VALUES (?, ?, ?, 1)", (f'wiring fixture {cond}', sku, cond)
         )
     conn.commit()
     conn.close()
@@ -91,3 +91,30 @@ def test_mapping_packaging_comes_from_the_route_not_a_template_literal(seeded_cl
                            'packaging')
     assert len(rendered) == 11, rendered   # control: the group parsed at all
     assert rendered == form_options.packaging()
+
+
+def test_mapping_search_candidates_carry_sku_code(seeded_client):
+    """Codex review 2026-08-22: both search boxes on /mapping are labelled
+    "พิมพ์ SKU หรือชื่อสินค้า", but their candidate objects used to carry only
+    id + name, so typing a real sku_code (DSC-CUT-AS-...) matched nothing
+    unless the text happened to appear in the product name."""
+    import re
+    html = seeded_client.get('/mapping').get_data(as_text=True)
+
+    # CONTROL: the promise is actually made on the page (twice — Card A + clone).
+    assert html.count('พิมพ์ SKU') >= 2, "search placeholders missing; test is moot"
+
+    m = re.search(r'const allProducts = \[(.*?)\n\];', html, re.S)
+    assert m, "allProducts array not found"
+    body = m.group(1)
+    assert 'sku:' in body, "allProducts entries carry no sku — SKU search cannot work"
+
+    # the seeded sku must arrive in the sku FIELD. Asserting a bare substring
+    # would be vacuous — an earlier version of this test passed with the route's
+    # SELECT stripped, because the fixture's product_name contained the sku too.
+    assert re.search(r'sku:\s*"ZZ-WIRE-DATED"', body), \
+        "seeded sku_code did not reach the client in the sku field"
+
+    # and the filters must actually consult it
+    assert html.count("(p.sku || '')") == 2, \
+        "both search filters must match on sku, not just id + name"
