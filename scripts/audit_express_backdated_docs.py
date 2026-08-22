@@ -84,7 +84,9 @@ def _known(conn, sql):
 
 
 def _fmt(n):
-    return f"{n:,.2f}"
+    # None is an UNKNOWN amount, never 0.00 — a receipt whose lines are missing
+    # must not read as a document worth nothing.
+    return '—' if n is None else f"{n:,.2f}"
 
 
 def main():
@@ -126,18 +128,23 @@ def main():
         aptrn, eds.open_table(args.dataset, 'APRCPIT'),
         eds.open_table(args.dataset, 'APMAS'))
     for r in rows:
-        r['value'] = (receipts.get((r['source'], r['doc_no']), 0.0)
+        # None (not 0.0) when a receipt has no entry: unknown and worth-nothing
+        # are different answers and the report must not merge them.
+        r['value'] = (receipts.get((r['source'], r['doc_no']))
                       if r['rectyp'] == '9' else r['netamt'])
 
     missing = [r for r in rows if not r['in_sendy']]
     held = len(rows) - len(missing)
 
-    by_kind = defaultdict(lambda: {'held': 0, 'missing': 0, 'value': 0.0})
+    by_kind = defaultdict(lambda: {'held': 0, 'missing': 0, 'value': 0.0,
+                                   'unvalued': 0})
     for r in rows:
         k = by_kind[(r['source'], r['rectyp'], (r['doc_no'] or '')[:2])]
         k['missing' if not r['in_sendy'] else 'held'] += 1
         if not r['in_sendy']:
-            k['value'] += r['value']
+            k['value'] += r['value'] or 0.0
+            if r['rectyp'] == '9' and not r['value']:
+                k['unvalued'] += 1
     by_year = Counter((r['doc_date_iso'] or 'no-date')[:4] for r in missing)
 
     L = []
@@ -151,16 +158,24 @@ def main():
              f"· ไม่มีร่องรอยเลย {len(missing):,}**\n")
 
     L.append("## แยกตามชนิดเอกสาร\n")
-    L.append("| ฝั่ง | RECTYP | ชนิด | Sendy มีแล้ว | ไม่มีเลย | ยอดของที่ไม่มี |")
-    L.append("|---|---|---|--:|--:|--:|")
+    L.append("| ฝั่ง | RECTYP | ชนิด | Sendy มีแล้ว | ไม่มีเลย | ยอดของที่ไม่มี | ตีมูลค่าไม่ได้ |")
+    L.append("|---|---|---|--:|--:|--:|--:|")
     for (src, rectyp, pre), v in sorted(by_kind.items()):
         L.append(f"| {src} | {rectyp} | {_KIND.get(pre, pre)} | {v['held']:,} | "
-                 f"{v['missing']:,} | {_fmt(v['value'])} |")
-    L.append("\n> ยอด: IV/HS/SR/RR/HP/GR ใช้ header NETAMT (ผูกด้วย invariant "
-             "`NETAMT == RCVAMT + REMAMT` ใน `_billed`). RE/PS ใช้ยอดที่ build จาก "
-             "บรรทัด ARRCPIT/APRCPIT ด้วย builder ตัวเดียวกับที่ import ใช้ — header "
-             "ของใบเสร็จเชื่อไม่ได้ (NETAMT บน RE tie กับยอดจริงแค่ 95.01%, "
-             "ต่างสูงสุด ฿13,300/ใบ).\n")
+                 f"{v['missing']:,} | {_fmt(v['value'])} | "
+                 f"{v['unvalued']:,} |" if v['unvalued'] else
+                 f"| {src} | {rectyp} | {_KIND.get(pre, pre)} | {v['held']:,} | "
+                 f"{v['missing']:,} | {_fmt(v['value'])} | — |")
+    L.append("\n> **ยอด** มาจาก builder ตัวเดียวกับที่ import ใช้เสมอ ไม่คำนวณเองใหม่ "
+             "และสองฝั่ง**ไม่เหมือนกัน**: IV/HS/SR/RR/HP/GR ใช้ header `NETAMT` "
+             "(ผูกด้วย invariant `NETAMT == RCVAMT + REMAMT` ใน `_billed`) · "
+             "**RE ใช้ผลรวมบรรทัด ARRCPIT** เพราะ header เชื่อไม่ได้ "
+             "(`NETAMT` บน RE ไม่เป็น 0 ถึง 28,501/28,818 และ tie กับยอดจริงแค่ 95.01% "
+             "ต่างสูงสุด ฿13,300/ใบ) · **PS ใช้ header `RCVAMT`** เพราะฝั่งนั้น "
+             "`PAYAMT` คือตัวที่เชื่อไม่ได้ (MAPPING trap #5 บางใบเพี้ยน 2 เท่าพอดี).\n"
+             "> \n"
+             "> คอลัมน์ **ตีมูลค่าไม่ได้** = ใบเสร็จที่ได้ยอด 0 → แปลว่าบรรทัดหาย "
+             "ไม่ใช่ใบเปล่า ห้ามอ่านว่าไม่มีอะไรให้เก็บ\n")
 
     L.append("## เอกสารที่ไม่มีร่องรอยใน Sendy — แยกตามปีของเอกสาร\n")
     L.append("| ปีเอกสาร | จำนวน |")
@@ -168,21 +183,27 @@ def main():
     for y, n in sorted(by_year.items()):
         L.append(f"| {y} | {n:,} |")
 
-    era = sorted((r for r in missing
-                  if (r['doc_date_iso'] or '') >= _SENDY_ERA_START),
-                 key=lambda r: (r['doc_date_iso'], r['doc_no']))
-    era_valued = [r for r in era if r['value'] or r['remamt']]
-    era_empty = [r for r in era if not (r['value'] or r['remamt'])]
+    era_valued, era_unvalued, era_empty = eds.split_era_findings(
+        missing, _SENDY_ERA_START)
+    for group in (era_valued, era_unvalued, era_empty):
+        group.sort(key=lambda r: (r['doc_date_iso'] or '', r['doc_no']))
+    era_n = len(era_valued) + len(era_unvalued) + len(era_empty)
     L.append(f"\n## ⭐ ยุค Sendy (เอกสารตั้งแต่ {_SENDY_ERA_START}) ที่หายไป — "
-             f"{len(era):,} ฉบับ\n")
+             f"{era_n:,} ฉบับ\n")
     L.append(f"- **มียอดจริง {len(era_valued):,} ฉบับ รวม "
-             f"{_fmt(sum(r['value'] for r in era_valued))}** ← ส่วนที่เป็นของหายจริง")
+             f"{_fmt(sum(r['value'] or 0.0 for r in era_valued))}** ← ส่วนที่เป็นของหายจริง")
+    if era_unvalued:
+        L.append(f"- ⚠️ **ใบเสร็จที่ตีมูลค่าไม่ได้ {len(era_unvalued):,} ฉบับ** — "
+                 f"ยอดของใบเสร็จอยู่ในบรรทัด ARRCPIT/APRCPIT ยอด 0 จึงแปลว่า "
+                 f"**บรรทัดหาย ไม่ใช่ใบเปล่า**. ถือเป็นของหายจนกว่าจะตรวจ: "
+                 f"{', '.join(r['doc_no'] for r in era_unvalued[:20])}"
+                 f"{' …' if len(era_unvalued) > 20 else ''}")
     L.append(f"- ยอด 0 ทุกช่อง {len(era_empty):,} ฉบับ "
              f"(DOCSTAT: {', '.join(sorted(set(str(r['docstat']) for r in era_empty))) or '-'}) "
-             f"— ไม่มีอะไรให้เก็บ ไม่ใช่ของหาย\n")
+             f"— ไม่ใช่ใบเสร็จ และไม่มีอะไรให้เก็บ ไม่ใช่ของหาย\n")
     L.append("| วันที่ | ฝั่ง | เลขที่ | ชนิด | DOCSTAT | ยอด |")
     L.append("|---|---|---|---|---|--:|")
-    for r in era_valued:
+    for r in era_valued + era_unvalued:
         L.append(f"| {r['doc_date_iso']} | {r['source']} | {r['doc_no']} | "
                  f"{_KIND.get((r['doc_no'] or '')[:2], r['rectyp'])} | "
                  f"{r['docstat']} | {_fmt(r['value'])} |")

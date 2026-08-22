@@ -34,7 +34,8 @@ import datetime
 
 import pytest
 
-from express_dbf_source import build_out_of_window_docs, build_receipt_values
+from express_dbf_source import (build_out_of_window_docs, build_receipt_values,
+                                split_era_findings)
 
 
 CUTOFF = datetime.date(2026, 6, 1)
@@ -351,3 +352,79 @@ def test_a_PS_is_valued_from_its_header_RCVAMT_not_PAYAMT():
         aprcpit_rows=[_aprcpit('PS1', 'RR1', 2400.0)], apmas_rows=[])
 
     assert values[('APTRN', 'PS1')] == 1200.0
+
+
+# ── finding vs not-a-finding ────────────────────────────────────────────────
+#
+# The report's most load-bearing judgement, and the one place a false NEGATIVE
+# is cheap to create: calling a document "0 in every field, nothing to collect"
+# retires it from the reader's attention. A receipt is never eligible for that
+# verdict, because a receipt's money lives in its ARRCPIT/APRCPIT lines — a 0
+# means the lines are missing or unreadable, which is the very data loss the
+# audit exists to surface (Codex review round 3, 2026-08-22).
+
+def _row(doc_no, *, rectyp='3', value=0.0, remamt=0.0, date='2026-05-01',
+         source='ARTRN', docstat='N'):
+    return {'source': source, 'doc_no': doc_no, 'rectyp': rectyp, 'value': value,
+            'remamt': remamt, 'doc_date_iso': date, 'docstat': docstat,
+            'in_sendy': False}
+
+
+def test_a_document_with_a_real_amount_is_a_finding():
+    real, unvalued, empty = split_era_findings([_row('IV1', value=900.0)], '2024-01-01')
+    assert ([r['doc_no'] for r in real], unvalued, empty) == (['IV1'], [], [])
+
+
+def test_a_cancelled_zero_invoice_is_not_a_finding():
+    real, unvalued, empty = split_era_findings(
+        [_row('IV_C', value=0.0, docstat='C')], '2024-01-01')
+    assert ([r['doc_no'] for r in empty], real, unvalued) == (['IV_C'], [], [])
+
+
+def test_a_receipt_that_could_not_be_valued_is_NEVER_called_harmless():
+    """0 on a receipt means its lines are missing, not that it is empty."""
+    real, unvalued, empty = split_era_findings(
+        [_row('RE1', rectyp='9', value=0.0)], '2024-01-01')
+    assert ([r['doc_no'] for r in unvalued], real, empty) == (['RE1'], [], [])
+
+
+def test_a_receipt_whose_value_lookup_missed_entirely_is_unvalued_too():
+    """None (no entry in the values map) and 0.0 are the same unknown here."""
+    real, unvalued, empty = split_era_findings(
+        [_row('PS1', source='APTRN', rectyp='9', value=None)], '2024-01-01')
+    assert [r['doc_no'] for r in unvalued] == ['PS1']
+
+
+def test_a_receipt_with_a_real_amount_is_a_finding_like_any_other():
+    """CONTROL: without it, routing every receipt to `unvalued` would pass."""
+    real, unvalued, empty = split_era_findings(
+        [_row('PS2', source='APTRN', rectyp='9', value=4200.0)], '2024-01-01')
+    assert ([r['doc_no'] for r in real], unvalued) == (['PS2'], [])
+
+
+def test_a_zero_valued_doc_that_still_owes_remamt_is_a_finding():
+    real, unvalued, empty = split_era_findings(
+        [_row('IV_R', value=0.0, remamt=15.5)], '2024-01-01')
+    assert [r['doc_no'] for r in real] == ['IV_R']
+
+
+def test_pre_era_documents_are_out_of_scope_entirely():
+    real, unvalued, empty = split_era_findings(
+        [_row('IV_OLD', value=999.0, date='2019-01-01')], '2024-01-01')
+    assert (real, unvalued, empty) == ([], [], [])
+
+
+def test_an_undated_document_is_kept_rather_than_silently_dropped():
+    """A doc with no DOCDAT is dropped BY the window, so it must not also be
+    dropped by the era filter — that would hide it twice."""
+    real, unvalued, empty = split_era_findings(
+        [_row('IV_ND', value=50.0, date=None)], '2024-01-01')
+    assert [r['doc_no'] for r in real] == ['IV_ND']
+
+
+def test_the_three_groups_are_disjoint_and_cover_everything():
+    rows = [_row('IV1', value=900.0), _row('IV_C', value=0.0, docstat='C'),
+            _row('RE1', rectyp='9', value=0.0), _row('IV_OLD', value=9.0, date='2019-01-01')]
+    real, unvalued, empty = split_era_findings(rows, '2024-01-01')
+    got = [r['doc_no'] for r in real + unvalued + empty]
+    assert sorted(got) == ['IV1', 'IV_C', 'RE1'] and len(got) == len(set(got))

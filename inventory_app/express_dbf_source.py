@@ -1126,3 +1126,31 @@ def build_receipt_values(artrn_rows, arrcpit_rows, armas_rows,
                                           cutoff=None):
         values[('APTRN', rec['doc_no'])] = round(rec['invoice_amount'], 2)
     return values
+
+
+def split_era_findings(rows, era_start):
+    """(real, unvalued, empty) for the Sendy-era slice of build_out_of_window_docs.
+
+    This is the report's finding / not-a-finding judgement, so it is a tested
+    function rather than a line inside a script: calling a document "0 in every
+    field, nothing to collect" retires it from the reader's attention, and that
+    verdict has to be earned.
+
+    A RECEIPT (RECTYP '9') can never earn it. Its money lives in its
+    ARRCPIT/APRCPIT lines, so a 0 or a missing lookup means the lines are gone
+    or unreadable — the exact data loss this audit exists to surface, not
+    evidence the document is empty. Those go to `unvalued`, which the report
+    must show as a warning.
+
+    Rows dated before era_start are dropped: Sendy never imported that history
+    and its absence is expected. A row with NO date is KEPT — it was already
+    dropped once by the window (_in_window treats a missing DOCDAT as out), and
+    dropping it again here would hide it twice.
+    """
+    era = [r for r in rows
+           if r['doc_date_iso'] is None or r['doc_date_iso'] >= era_start]
+    unvalued = [r for r in era if r['rectyp'] == _RECEIPT_RECTYP and not r['value']]
+    rest = [r for r in era if not (r['rectyp'] == _RECEIPT_RECTYP and not r['value'])]
+    real = [r for r in rest if r['value'] or r['remamt']]
+    empty = [r for r in rest if not (r['value'] or r['remamt'])]
+    return real, unvalued, empty
