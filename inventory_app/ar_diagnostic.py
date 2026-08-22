@@ -134,14 +134,20 @@ def build_ar_reconciliation(snapshot_rows, derived_rows,
     # it as "no ledger lines".
     derived = {r['doc_base']: r for r in derived_rows}
     writeoffs = set(writeoff_doc_nos)
-    # Invoice -> the credited amount of a credit note that is ALSO open in this
-    # same snapshot. Built here rather than taken from the caller so the
-    # "still open" half is checked against the snapshot actually being compared.
+    # Invoice -> SUM of the credited amounts of the credit notes that are ALSO
+    # open in this same snapshot. Built here rather than taken from the caller so
+    # the "still open" half is checked against the snapshot actually being
+    # compared.
+    # ⚠ SUMMED, not assigned: `_settlement_rows`' `cn` CTE does
+    # `SUM(credit_notes) GROUP BY iv_no`, so an invoice offset by TWO open credit
+    # notes must add them here too. Assigning would let the second overwrite the
+    # first and a fully-offset invoice would be reported as a disagreement — 9
+    # invoices on prod already carry more than one credit note (2026-08-22).
     offsets = {}
     for sr_doc, (ref_iv, amount) in (credit_note_refs or {}).items():
         sr = snap.get(sr_doc)
         if sr is not None and _r2(sr['outstanding_amount']) == -_r2(amount):
-            offsets[ref_iv] = _r2(amount)
+            offsets[ref_iv] = round(offsets.get(ref_iv, 0.0) + _r2(amount), 2)
 
     population = set(snap) | {d for d, r in derived.items() if _r2(r['outstanding'])}
 

@@ -664,3 +664,30 @@ def test_buckets_still_sum_to_the_snapshot_total_with_the_new_reasons():
                              'not_yet_imported': 1, 'agrees': 1}
     assert round(sum(b['snapshot_amount'] for b in rep['buckets']), 2) == rep['snapshot_total']
     assert rep['unexplained'] == []
+
+
+def test_two_open_credit_notes_that_together_offset_one_invoice():
+    """`_settlement_rows` SUMs every authoritative credit note per invoice, so
+    the offset map must sum too. Keying by ref_invoice and assigning would let
+    the second SR overwrite the first, and a fully-offset invoice would be
+    reported as a disagreement (Codex review, 2026-08-22)."""
+    rep = build_ar_reconciliation(
+        [_snap('IV1', 300.0), _snap('SR_A', -100.0), _snap('SR_B', -200.0)],
+        [_der_cn('IV1', 0.0, 300.0)],
+        credit_note_refs={'SR_A': ('IV1', 100.0), 'SR_B': ('IV1', 200.0)},
+        era_start=ERA)
+
+    assert _reasons(rep) == {'credit_note_offset': 1, 'credit_note': 2}
+    assert rep['unexplained'] == []
+
+
+def test_one_of_two_credit_notes_already_settled_is_not_an_offset():
+    """CONTROL: only SR_A is still open, so the pair does NOT account for the
+    whole balance and the invoice must stay loud."""
+    rep = build_ar_reconciliation(
+        [_snap('IV1', 300.0), _snap('SR_A', -100.0)],
+        [_der_cn('IV1', 0.0, 300.0)],
+        credit_note_refs={'SR_A': ('IV1', 100.0), 'SR_B': ('IV1', 200.0)},
+        era_start=ERA)
+
+    assert 'unexplained' in _reasons(rep)
