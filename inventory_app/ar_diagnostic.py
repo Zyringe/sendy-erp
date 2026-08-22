@@ -55,6 +55,18 @@ def _r2(x):
     return round(x or 0.0, 2)
 
 
+def _is_pre_era(snap_row, derived_row, era_start):
+    """True only when a document carries a REAL date earlier than the boundary.
+
+    A missing date is not evidence of anything. Coercing it to '' makes the
+    comparison true against every ISO boundary, which files the document under
+    expected-legacy debt and lets a genuine missing-ledger or unexplained gap
+    disappear into a bucket nobody re-reads (Codex review, 2026-08-22)."""
+    date = (snap_row['doc_date_iso'] if snap_row
+            else derived_row.get('invoice_date'))
+    return bool(date) and date < era_start
+
+
 def build_ar_reconciliation(snapshot_rows, derived_rows,
                             writeoff_doc_nos=(), era_start='2024-01-01'):
     """Classify every disagreement between the two AR views.
@@ -106,7 +118,7 @@ def build_ar_reconciliation(snapshot_rows, derived_rows,
 
         if s is not None and s['is_anomalous']:
             reason = 're_anomaly'
-        elif ((s['doc_date_iso'] if s else d.get('invoice_date')) or '') < era_start:
+        elif _is_pre_era(s, d, era_start):
             reason = 'pre_era'
         elif doc in writeoffs:
             reason = 'written_off'

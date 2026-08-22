@@ -1095,3 +1095,34 @@ def build_out_of_window_docs(artrn_rows, aptrn_rows, cutoff,
             }
     return sorted(by_doc.values(),
                   key=lambda r: (r['source'], r['doc_date_iso'] or '', r['doc_no']))
+
+
+def build_receipt_values(artrn_rows, arrcpit_rows, armas_rows,
+                         aptrn_rows, aprcpit_rows, apmas_rows):
+    """{(source, DOCNUM): amount} for RE and PS, from the SAME builders the
+    import uses — never re-derived here, because the two sides do NOT agree on
+    where a receipt's amount lives and guessing picks a plausible wrong number.
+
+    RE comes from its LINES (Sigma ARRCPIT IV). Its header cannot be trusted:
+    MAPPING trap #4's "RE header money fields are always 0" holds for RCVAMT
+    (0 of 28,818 non-zero on BSN5657 2026-08-17) but NOT for NETAMT, which is
+    non-zero on 28,501 of them and reads exactly like a receipt total. It is
+    not one — against the line sum it ties on only 95.01%, off by up to 13,300
+    on a single document.
+
+    PS comes from its HEADER's RCVAMT, which is MAPPING trap #5: PAYAMT
+    diverges arbitrarily, sometimes by exactly 2x, so the line total is the
+    unreliable one on that side.
+
+    Keyed by (source, DOCNUM), never DOCNUM alone: DOCNUM is unique per book
+    side, and a collision would let the side read second overwrite the other's
+    amount — the same reason build_out_of_window_docs keeps two sets.
+    """
+    values = {}
+    for rec in build_payments_in_records(artrn_rows, arrcpit_rows, armas_rows,
+                                         cutoff=None, skipped=[]):
+        values[('ARTRN', rec['re_no'])] = round(rec['total'], 2)
+    for rec in build_payments_out_records(aptrn_rows, aprcpit_rows, apmas_rows,
+                                          cutoff=None):
+        values[('APTRN', rec['doc_no'])] = round(rec['invoice_amount'], 2)
+    return values

@@ -118,6 +118,34 @@ def test_pre_era_debt_is_classified_not_counted_as_a_ledger_defect():
     assert _reasons(rep) == {'pre_era': 1}
 
 
+def test_a_missing_date_is_not_evidence_of_pre_era_debt():
+    """`or ''` made a null date compare TRUE against any ISO boundary, so a
+    document with no date landed in the expected-legacy bucket and a real
+    missing-ledger or unexplained gap could hide there. A date nobody recorded
+    proves nothing about when the debt arose (Codex review round 2)."""
+    rep = build_ar_reconciliation([_snap('IV_NODATE', 800.0, date=None)],
+                                  [], era_start=ERA)
+
+    assert _reasons(rep) == {'no_ledger_lines': 1}
+
+
+def test_a_missing_date_does_not_hide_a_real_disagreement():
+    rep = build_ar_reconciliation([_snap('IV_NODATE', 800.0, date=None)],
+                                  [_der('IV_NODATE', 500.0)], era_start=ERA)
+
+    assert _reasons(rep) == {'unexplained': 1}
+    assert rep['unexplained'][0]['difference'] == 300.0
+
+
+def test_a_real_early_date_still_lands_in_pre_era():
+    """CONTROL for the two above — without it, refusing to classify anything as
+    pre_era would pass them both."""
+    rep = build_ar_reconciliation([_snap('IV_OLD2', 800.0, date='2023-12-31')],
+                                  [], era_start=ERA)
+
+    assert _reasons(rep) == {'pre_era': 1}
+
+
 def test_written_off_doc_is_its_own_bucket():
     rep = build_ar_reconciliation([_snap('IV_WO', 1500.0)], [],
                                   writeoff_doc_nos={'IV_WO'}, era_start=ERA)

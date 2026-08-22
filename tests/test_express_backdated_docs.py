@@ -34,7 +34,7 @@ import datetime
 
 import pytest
 
-from express_dbf_source import build_out_of_window_docs
+from express_dbf_source import build_out_of_window_docs, build_receipt_values
 
 
 CUTOFF = datetime.date(2026, 6, 1)
@@ -298,3 +298,56 @@ def test_output_order_is_stable_across_runs():
     second = build_out_of_window_docs(list(reversed(artrn)), aptrn, cutoff=CUTOFF)
 
     assert first == second
+
+
+# ── valuing RE/PS from their LINES, per book side ───────────────────────────
+#
+# A receipt header cannot be trusted for its own amount (MAPPING trap #4 holds
+# for RCVAMT but NOT for NETAMT, which is non-zero on 28,501 of 28,818 RE
+# headers and ties to the line sum only 95.01% of the time). So the report
+# values RE/PS from ARRCPIT/APRCPIT via the production builders — and the
+# lookup has to keep the two book sides apart for exactly the reason
+# build_out_of_window_docs does (Codex review round 2, 2026-08-22).
+
+def _arrcpit(rcpnum, docnum, rcvamt, rectyp='3'):
+    return {'RCPNUM': rcpnum, 'DOCNUM': docnum, 'RECTYP': rectyp, 'RCVAMT': rcvamt}
+
+
+def _aprcpit(rcpnum, docnum, payamt, rectyp='3'):
+    return {'RCPNUM': rcpnum, 'DOCNUM': docnum, 'RECTYP': rectyp, 'PAYAMT': payamt}
+
+
+def test_receipt_values_are_keyed_by_book_side_not_doc_number_alone():
+    """An RE and a PS that share a DOCNUM must each keep their OWN amount. A
+    flat doc_no key lets whichever side is read second overwrite the other, and
+    both rows in the report then publish that one amount."""
+    values = build_receipt_values(
+        artrn_rows=[_artrn('X9', '9')], arrcpit_rows=[_arrcpit('X9', 'IV1', 500.0)],
+        armas_rows=[],
+        aptrn_rows=[_aptrn('X9', '9', rcvamt=800.0)],
+        aprcpit_rows=[_aprcpit('X9', 'RR1', 800.0)], apmas_rows=[])
+
+    assert values[('ARTRN', 'X9')] == 500.0
+    assert values[('APTRN', 'X9')] == 800.0
+
+
+def test_an_RE_is_valued_from_its_LINES_not_its_header():
+    """NETAMT on an RE header looks like a receipt total and is not one."""
+    values = build_receipt_values(
+        artrn_rows=[_artrn('RE1', '9', netamt=99999.0)],
+        arrcpit_rows=[_arrcpit('RE1', 'IV1', 300.0), _arrcpit('RE1', 'IV2', 250.5)],
+        armas_rows=[], aptrn_rows=[], aprcpit_rows=[], apmas_rows=[])
+
+    assert values[('ARTRN', 'RE1')] == 550.5
+
+
+def test_a_PS_is_valued_from_its_header_RCVAMT_not_PAYAMT():
+    """The two sides do NOT work the same way, and assuming they do is
+    MAPPING trap #5: `build_payments_out_records` reads the PS header's RCVAMT
+    because PAYAMT diverges arbitrarily, sometimes by exactly 2x."""
+    values = build_receipt_values(
+        artrn_rows=[], arrcpit_rows=[], armas_rows=[],
+        aptrn_rows=[_aptrn('PS1', '9', rcvamt=1200.0)],
+        aprcpit_rows=[_aprcpit('PS1', 'RR1', 2400.0)], apmas_rows=[])
+
+    assert values[('APTRN', 'PS1')] == 1200.0

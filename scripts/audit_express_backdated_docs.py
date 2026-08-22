@@ -72,31 +72,6 @@ _KIND = {'IV': 'ขาย IV', 'HS': 'ขายสด HS', 'SR': 'ลดหน�
          'RR': 'ซื้อ RR', 'HP': 'ซื้อสด HP', 'GR': 'ลดหนี้ซื้อ GR', 'PS': 'จ่ายชำระ PS'}
 
 
-def _receipt_values(dataset_dir, artrn, aptrn):
-    """{DOCNUM: amount} for RE and PS, taken from the SAME builders the import
-    uses, because the header cannot be trusted for a receipt.
-
-    ⚠ MAPPING trap #4 says an RE header's money fields "are always 0". Measured
-    on BSN5657 2026-08-17 that holds for RCVAMT (0 on all 28,818 RE headers) and
-    very nearly for TOTAL/REMAMT — but NOT for NETAMT, which is non-zero on
-    28,501 of them and reads exactly like a receipt total. It is not one:
-    against Sigma(ARRCPIT IV lines) it ties on only 27,380/28,818 (95.01%), and
-    the gaps run to ฿13,300 on a single document. Valuing a receipt off the
-    header would therefore print a plausible wrong number, which is worse in a
-    report than printing none.
-    """
-    values = {}
-    for rec in eds.build_payments_in_records(
-            artrn, eds.open_table(dataset_dir, 'ARRCPIT'),
-            eds.open_table(dataset_dir, 'ARMAS'), cutoff=None, skipped=[]):
-        values[rec['re_no']] = round(rec['total'], 2)
-    for rec in eds.build_payments_out_records(
-            aptrn, eds.open_table(dataset_dir, 'APRCPIT'),
-            eds.open_table(dataset_dir, 'APMAS'), cutoff=None):
-        values[rec['doc_no']] = round(rec['invoice_amount'], 2)
-    return values
-
-
 # Sendy's own pre-history boundary, not a new one: cashflow.BSN_AR_PREDICATE
 # already excludes doc_date_iso < 2024-01-01 as "before the Sendy era" (Put,
 # 2026-06-04). Everything older being absent is expected and is not a finding;
@@ -141,11 +116,17 @@ def main():
     finally:
         conn.close()
 
-    # Receipts are valued off their lines, everything else off its header —
+    # Receipts are valued off their LINES, everything else off its header —
     # where NETAMT is pinned by _billed()'s NETAMT == RCVAMT + REMAMT invariant.
-    receipts = _receipt_values(args.dataset, artrn, aptrn)
+    # The lookup is keyed by (source, doc_no): a DOCNUM shared across the two
+    # books would otherwise take whichever side was read second.
+    receipts = eds.build_receipt_values(
+        artrn, eds.open_table(args.dataset, 'ARRCPIT'),
+        eds.open_table(args.dataset, 'ARMAS'),
+        aptrn, eds.open_table(args.dataset, 'APRCPIT'),
+        eds.open_table(args.dataset, 'APMAS'))
     for r in rows:
-        r['value'] = (receipts.get(r['doc_no'], 0.0)
+        r['value'] = (receipts.get((r['source'], r['doc_no']), 0.0)
                       if r['rectyp'] == '9' else r['netamt'])
 
     missing = [r for r in rows if not r['in_sendy']]
