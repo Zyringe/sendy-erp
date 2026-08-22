@@ -973,3 +973,102 @@ def build_gl_records(glacc_rows, gljnl_rows, gljnlit_rows, cutoff):
             'amount': round(_num(r, 'AMOUNT'), 2),
         })
     return accounts, vouchers, lines
+
+
+# ── F9: what the recency window drops ───────────────────────────────────────
+#
+# The inverse of _in_window, as a report. Every TRANSACTIONAL builder above is
+# scoped by `cutoff`, and each daily run's cutoff has moved FORWARD, so a
+# document dated before it is not merely skipped once — it can never be picked
+# up by any later run either. For ordinary history that is the intended trade
+# (BSN5657's ARTRN starts 2003-02-04 and both outstanding snapshots are
+# deliberately windowless, so no BALANCE is lost). For a document Express gains
+# *now* under
+# an old DOCDAT — a backdated invoice, a late-keyed receipt — it means the doc
+# is invisible to Sendy permanently and nothing says so.
+#
+# Detection only. This changes no window and feeds no page; it exists so the
+# evidence is on the table before anyone argues about since_days.
+
+# The RECTYPs `cutoff` actually filters: _SCOPE_RECTYP for sales/purchases/
+# invoice_refs/credit-notes, plus _RECEIPT_RECTYP for payments in and out.
+# '7' (OE) never reaches a windowed builder, so an old one is not a loss.
+_WINDOWED_RECTYP = frozenset(_SCOPE_RECTYP) | {_RECEIPT_RECTYP}
+
+
+def build_out_of_window_docs(artrn_rows, aptrn_rows, cutoff,
+                             known_ar_docs=(), known_ap_docs=()):
+    """One record per DOCUMENT that a run with this `cutoff` would drop.
+
+    cutoff (datetime.date, REQUIRED): the same value import_router derives from
+    since_days. None is refused rather than returning [] — a windowless run
+    drops nothing, so an empty list there would read as a clean bill of health
+    for a question that was never asked. Same stance as the snapshot builders,
+    which refuse a cutoff they must not honour.
+
+    known_ar_docs / known_ap_docs: DOCNUMs Sendy already holds on each side,
+    from any earlier import (text report, manual full-history backfill, an
+    earlier daily run). Out of window AND absent is the actionable finding;
+    out of window but held is just history that arrived by another road.
+    Deliberately TWO sets rather than one: DOCNUM is unique per book side, and
+    the direction a collision fails in is the bad one — an AP doc number that
+    happened to match an AR one would mark the AR document "already held" and
+    delete a real finding from the report. (Measured 2026-08-17 on BSN5657: 0
+    collisions, prefixes disjoint IV/RE/SR/HS vs RR/HP/PS/GR. That is today's
+    data, not a constraint the format promises.)
+
+    Money fields are carried RAW, and a caller must value RE/PS from their
+    LINES, not from what is returned here. NETAMT is ยอดบิล on IV/RR/SR/HS —
+    pinned there by _billed()'s NETAMT == RCVAMT + REMAMT invariant. On a
+    receipt it is neither 0 nor the receipt total: measured on BSN5657
+    2026-08-17, MAPPING trap #4's "RE header money fields are always 0" holds
+    for RCVAMT (0/28,818) and nearly for TOTAL (2) and REMAMT (43), but NETAMT
+    is non-zero on 28,501 of 28,818 and agrees with Sigma(ARRCPIT IV lines) on
+    only 95.01%, off by as much as ฿13,300 on one document. So it is carried
+    verbatim and labelled, never turned into a single derived 'amount'.
+
+    Sorted by (source, doc_date_iso, doc_no) so re-running produces a
+    byte-identical report to diff against the last one.
+    """
+    if cutoff is None:
+        raise ValueError(
+            'build_out_of_window_docs needs the run\'s cutoff — a windowless '
+            'run drops nothing, and reporting [] for it would claim otherwise')
+
+    by_doc = {}
+    for source, rows, known in (('ARTRN', artrn_rows, set(known_ar_docs)),
+                                ('APTRN', aptrn_rows, set(known_ap_docs))):
+        for row in rows:
+            if row.get('RECTYP') not in _WINDOWED_RECTYP:
+                continue
+            if _in_window(row, cutoff):
+                continue
+            doc_no = row.get('DOCNUM')
+            # DOCNUM is unique per book side, not across them.
+            key = (source, doc_no)
+            if key in by_doc:
+                # ARTRN/APTRN carry more than one header for some DOCNUMs
+                # (see _reject_duplicate). One document, not two.
+                by_doc[key]['header_count'] += 1
+                continue
+            docdat = row.get('DOCDAT')
+            by_doc[key] = {
+                'source': source,
+                'doc_no': doc_no,
+                'rectyp': row.get('RECTYP'),
+                # None is data here, not corruption: _in_window drops a header
+                # with no usable DOCDAT, so it is one of the losses.
+                'doc_date_iso': docdat.isoformat() if docdat is not None else None,
+                # RAW. On the AP side DOCSTAT='C' agreed with is_void 33/33,
+                # but the AR side is an OPEN question (49 DBF 'C' vs 2 Sendy
+                # cancelled — MAPPING.md §3, _CANCELLED_DOCSTAT's warning), so
+                # this is carried, never translated into "cancelled".
+                'docstat': row.get('DOCSTAT'),
+                'netamt': round(_num(row, 'NETAMT'), 2),
+                'rcvamt': round(_num(row, 'RCVAMT'), 2),
+                'remamt': round(_num(row, 'REMAMT'), 2),
+                'header_count': 1,
+                'in_sendy': doc_no in known,
+            }
+    return sorted(by_doc.values(),
+                  key=lambda r: (r['source'], r['doc_date_iso'] or '', r['doc_no']))
