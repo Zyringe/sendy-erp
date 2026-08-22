@@ -995,6 +995,12 @@ def build_gl_records(glacc_rows, gljnl_rows, gljnlit_rows, cutoff):
 # '7' (OE) never reaches a windowed builder, so an old one is not a loss.
 _WINDOWED_RECTYP = frozenset(_SCOPE_RECTYP) | {_RECEIPT_RECTYP}
 
+# DBF header field -> the key it is published under. Used to compare duplicate
+# headers on EVERY field the report emits: a field left out of this map is one a
+# duplicate could still change silently.
+_HEADER_FIELD = {'RECTYP': 'rectyp', 'DOCDAT': 'doc_date_iso', 'DOCSTAT': 'docstat',
+                 'NETAMT': 'netamt', 'RCVAMT': 'rcvamt', 'REMAMT': 'remamt'}
+
 
 def build_out_of_window_docs(artrn_rows, aptrn_rows, cutoff,
                              known_ar_docs=(), known_ap_docs=()):
@@ -1046,12 +1052,29 @@ def build_out_of_window_docs(artrn_rows, aptrn_rows, cutoff,
             doc_no = row.get('DOCNUM')
             # DOCNUM is unique per book side, not across them.
             key = (source, doc_no)
-            if key in by_doc:
-                # ARTRN/APTRN carry more than one header for some DOCNUMs
-                # (see _reject_duplicate). One document, not two.
-                by_doc[key]['header_count'] += 1
-                continue
             docdat = row.get('DOCDAT')
+            if key in by_doc:
+                # ARTRN/APTRN carry more than one header for some DOCNUMs (see
+                # _reject_duplicate). Identical ones are ONE document. Ones that
+                # DISAGREE are not mergeable: keeping the first would make both
+                # the classification and the value depend on DBF row order,
+                # which is exactly the determinism this function promises.
+                prev = by_doc[key]
+                clash = [f for f, now in (
+                    ('RECTYP', row.get('RECTYP')),
+                    ('DOCDAT', docdat.isoformat() if docdat is not None else None),
+                    ('DOCSTAT', row.get('DOCSTAT')),
+                    ('NETAMT', round(_num(row, 'NETAMT'), 2)),
+                    ('RCVAMT', round(_num(row, 'RCVAMT'), 2)),
+                    ('REMAMT', round(_num(row, 'REMAMT'), 2)),
+                ) if prev[_HEADER_FIELD[f]] != now]
+                if clash:
+                    raise ValueError(
+                        f'{source} {doc_no}: duplicate headers disagree on '
+                        f'{", ".join(clash)} — refusing rather than publishing '
+                        f'whichever row the file happened to list first')
+                prev['header_count'] += 1
+                continue
             by_doc[key] = {
                 'source': source,
                 'doc_no': doc_no,

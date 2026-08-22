@@ -358,3 +358,122 @@ def test_the_as_of_mismatch_is_what_turns_a_settled_invoice_into_a_finding(empty
 
     assert _reasons(wrong) == {'unexplained': 1}
     assert _reasons(right) == {'agrees': 1}
+
+
+# ── as_of must bound CREDIT NOTES too (Codex review, 2026-08-22) ─────────────
+#
+# `_settlement_rows` caps invoice dates and receipt dates. The `cn` CTE that
+# nets credit notes down against the bill was NOT capped, so a credit note
+# raised AFTER the snapshot still reduced the derived balance — the diagnostic
+# then reported a disagreement that is purely an as-of artefact, in the same
+# family as the receipt mismatch above.
+
+def _ins_cna(conn, sr_doc_base, ref_invoice, amount, sr_date_iso):
+    conn.execute(
+        """INSERT INTO credit_note_amounts
+           (sr_doc_base, ref_invoice, credited_amount, sr_date_iso, source)
+           VALUES (?,?,?,?,'test')""",
+        (sr_doc_base, ref_invoice, amount, sr_date_iso))
+
+
+def _ins_sr(conn, sr_doc_base, ref_invoice, date_iso, net, customer='ลูกค้า ก'):
+    conn.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, ref_invoice, customer, customer_code,
+            qty, unit, unit_price, vat_type, total, net)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (date_iso, f'{sr_doc_base}-1', sr_doc_base, ref_invoice, customer, 'C01',
+         1, 'ตัว', net, 1, net, net))
+
+
+def test_a_credit_note_raised_after_the_snapshot_does_not_reduce_the_balance(empty_db_conn):
+    import payments_alloc as pa
+    c = empty_db_conn
+    _ins_sale(c, 'IV300', '2026-05-01', 1000.0)
+    _ins_cna(c, 'SR300', 'IV300', 400.0, '2026-07-15')
+
+    rows = pa.invoice_settlement(conn=c, as_of='2026-06-05')
+    assert [(r['doc_base'], r['credit_notes'], r['outstanding']) for r in rows] \
+        == [('IV300', 0.0, 1000.0)]
+
+
+def test_a_credit_note_raised_before_the_snapshot_still_reduces_it(empty_db_conn):
+    """CONTROL for the test above — without this, capping everything would
+    pass just as well and the cap would be untested."""
+    import payments_alloc as pa
+    c = empty_db_conn
+    _ins_sale(c, 'IV301', '2026-05-01', 1000.0)
+    _ins_cna(c, 'SR301', 'IV301', 400.0, '2026-05-20')
+
+    rows = pa.invoice_settlement(conn=c, as_of='2026-06-05')
+    assert [(r['doc_base'], r['credit_notes'], r['outstanding']) for r in rows] \
+        == [('IV301', 400.0, 600.0)]
+
+
+def test_the_sr_fallback_branch_is_capped_as_well(empty_db_conn):
+    """An SR absent from credit_note_amounts nets via sales_transactions. Both
+    branches feed the same `cn` CTE, so capping only one leaves the hole open."""
+    import payments_alloc as pa
+    c = empty_db_conn
+    _ins_sale(c, 'IV302', '2026-05-01', 1000.0)
+    _ins_sr(c, 'SR302', 'IV302', '2026-07-15', 250.0)
+
+    rows = pa.invoice_settlement(conn=c, as_of='2026-06-05')
+    got = {r['doc_base']: (r['credit_notes'], r['outstanding']) for r in rows}
+    assert got['IV302'] == (0.0, 1000.0)
+
+
+def test_without_as_of_every_credit_note_still_counts(empty_db_conn):
+    """The pages pass no as_of and must keep netting credit notes as before."""
+    import payments_alloc as pa
+    c = empty_db_conn
+    _ins_sale(c, 'IV303', '2026-05-01', 1000.0)
+    _ins_cna(c, 'SR303', 'IV303', 400.0, '2026-07-15')
+
+    rows = pa.invoice_settlement(conn=c)
+    assert [(r['credit_notes'], r['outstanding']) for r in rows] == [(400.0, 600.0)]
+
+
+def test_a_late_credit_note_is_what_turns_an_agreeing_invoice_into_a_finding(empty_db_conn):
+    import payments_alloc as pa
+    c = empty_db_conn
+    _ins_sale(c, 'IV304', '2026-05-01', 1000.0)
+    _ins_cna(c, 'SR304', 'IV304', 400.0, '2026-07-15')
+    snap = [_snap('IV304', 1000.0, date='2026-05-01')]
+
+    wrong = build_ar_reconciliation(snap, pa.invoice_settlement(conn=c), era_start=ERA)
+    right = build_ar_reconciliation(snap, pa.invoice_settlement(conn=c, as_of='2026-06-05'),
+                                    era_start=ERA)
+
+    assert _reasons(wrong) == {'unexplained': 1}
+    assert _reasons(right) == {'agrees': 1}
+
+
+def test_all_three_as_of_caps_apply_together(empty_db_conn):
+    """The invoice / credit-note / receipt caps render into three different CTEs
+    and each is bound separately, so exercise all of them in one query with data
+    on both sides of the cut-off and assert the exact satang.
+
+    NOT an ordering test, deliberately: every bind carries the SAME value
+    (`as_of`), so swapping the order of the two `params.extend` calls is
+    unobservable and this stays green under that mutation — verified 2026-08-22.
+    What CAN break is the COUNT: binding one too few raises
+    `sqlite3.ProgrammingError` and turns every as_of test in this file red,
+    which is the guard that actually holds the placeholder arithmetic."""
+    import payments_alloc as pa
+    c = empty_db_conn
+    _ins_sale(c, 'IV400', '2026-05-01', 1000.0)     # in
+    _ins_sale(c, 'IV401', '2026-07-01', 500.0)      # out (invoice cap)
+    _ins_cna(c, 'SR400', 'IV400', 100.0, '2026-05-10')   # in
+    _ins_cna(c, 'SR401', 'IV400', 300.0, '2026-07-10')   # out (CNA cap)
+    _ins_sr(c, 'SR402', 'IV400', '2026-07-11', 50.0)     # out (SR-fallback cap)
+    early = _ins_receipt(c, 'RE_EARLY', '2026-05-15')
+    _ins_paid(c, early, 'IV400', 200.0)                  # in
+    late = _ins_receipt(c, 'RE_LATE', '2026-07-12')
+    _ins_paid(c, late, 'IV400', 400.0)                   # out (receipt cap)
+
+    rows = pa.invoice_settlement(conn=c, as_of='2026-06-05')
+    got = {r['doc_base']: (r['billed'], r['credit_notes'], r['collected'],
+                           r['outstanding']) for r in rows}
+    # 1000 billed - 100 credited = 900 owed, 200 collected -> 700 outstanding.
+    assert got == {'IV400': (1000.0, 100.0, 200.0, 700.0)}

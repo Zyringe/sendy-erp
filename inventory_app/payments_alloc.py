@@ -180,6 +180,20 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
     # so a late receipt simply doesn't count yet (point-in-time AR).
     pay_date_cap = "AND rp.date_iso <= ?" if as_of else ""
 
+    # CREDIT-NOTE date caps. Without these, `as_of` bounded the invoice and the
+    # receipt but NOT the credit note, so a ใบลดหนี้ raised after the cut-off
+    # still netted the bill down and the invoice looked more settled than it was
+    # at that date — the same as-of artefact as a late receipt, and the reason a
+    # snapshot comparison reported disagreements that were purely timing
+    # (Codex review, 2026-08-22).
+    # A row with no date cannot be placed in time, so it is EXCLUDED from a
+    # point-in-time view rather than assumed early: 0 such rows on prod and
+    # local as of 2026-08-22, and asserting a credit note existed on a date
+    # nobody recorded is the wrong direction to guess in.
+    cna_date_cap = "AND sr_date_iso IS NOT NULL AND sr_date_iso <= ?" if as_of else ""
+    sr_date_cap = "AND st.date_iso <= ?" if as_of else ""
+    sr_date_cap_bare = "AND date_iso <= ?" if as_of else ""
+
     has_cna = _has_cna(conn)
 
     if has_cna:
@@ -189,13 +203,14 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
         # kept ONLY as a fallback for SR docs ABSENT from
         # credit_note_amounts (legacy / SR not yet imported). A given SR is
         # counted on exactly ONE side, never both.
-        cn_cte = """
+        cn_cte = f"""
         sr_fallback AS (
             SELECT st.ref_invoice              AS iv_no,
                    st.doc_base                 AS sr_doc_base,
                    ROUND(SUM(st.net), 2)       AS sr_net
             FROM sales_transactions st
             WHERE st.doc_base LIKE 'SR%'
+              {sr_date_cap}
               AND st.ref_invoice IS NOT NULL
               AND st.ref_invoice <> ''
               AND st.doc_base NOT IN (SELECT sr_doc_base FROM credit_note_amounts)
@@ -209,6 +224,7 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
                        credited_amount AS credit_notes
                 FROM credit_note_amounts
                 WHERE ref_invoice IS NOT NULL AND ref_invoice <> ''
+                  {cna_date_cap}
                 UNION ALL
                 SELECT iv_no, sr_net AS credit_notes FROM sr_fallback
             )
@@ -281,12 +297,13 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
     else:
         # Pre-062 legacy path (schema-clone / old snapshots): byte-identical
         # to the original behaviour — cn = SR.net sum, no SR(-) netting.
-        cn_cte = """
+        cn_cte = f"""
         cn AS (
             SELECT ref_invoice                AS iv_no,
                    ROUND(SUM(net), 2)         AS credit_notes
             FROM sales_transactions
             WHERE doc_base LIKE 'SR%'
+              {sr_date_cap_bare}
               AND ref_invoice IS NOT NULL
               AND ref_invoice <> ''
             GROUP BY ref_invoice
@@ -340,9 +357,12 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
     """
     params = list(sale_params)
     if as_of:
-        # One bind per rendered `{pay_date_cap}` placeholder. The legacy
-        # `pay` CTE renders it once; the CNA-aware `pay` CTE renders it
-        # twice (IV branch + SR branch). Count, don't hardcode.
+        # Bind in the order the placeholders APPEAR in the SQL: inv (sale_params
+        # above), then cn_cte, then pay_cte. Count the RENDERED text rather than
+        # hardcoding — the CNA path emits two credit-note caps and two payment
+        # caps, the legacy path one and one. Counting '?' directly stays right
+        # if another cap is ever added; matching a column name would not.
+        params.extend([as_of] * cn_cte.count("?"))
         params.extend([as_of] * pay_cte.count("rp.date_iso <= ?"))
     return conn.execute(sql, params).fetchall()
 

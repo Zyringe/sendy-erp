@@ -179,6 +179,45 @@ def test_duplicate_headers_collapse_to_one_record_carrying_the_count():
     assert rows[0]['header_count'] == 2
 
 
+def test_conflicting_duplicate_headers_are_refused(sort_order_probe=None):
+    """Two headers for one DOCNUM that DISAGREE. Keeping whichever arrived
+    first makes the report depend on DBF row order, which contradicts the
+    determinism this file promises — and silently drops the other row's value.
+    Refuse, the same stance express_dbf_source._reject_duplicate takes on the
+    snapshot side (Codex review, 2026-08-22)."""
+    with pytest.raises(ValueError):
+        build_out_of_window_docs(
+            [_artrn('IV_X', '3', docdat=datetime.date(2026, 1, 1), netamt=100.0),
+             _artrn('IV_X', '3', docdat=datetime.date(2026, 1, 1), netamt=250.0)],
+            [], cutoff=CUTOFF)
+
+
+@pytest.mark.parametrize('field,value', [
+    ('docdat', datetime.date(2026, 2, 2)),
+    ('netamt', 999.0),
+    ('rcvamt', 999.0),
+    ('remamt', 999.0),
+    ('docstat', 'C'),
+])
+def test_a_disagreement_in_any_reported_field_is_a_conflict(field, value):
+    """Every field the report publishes has to participate, or a duplicate can
+    still change the output silently through whichever one was left out."""
+    base = dict(docdat=datetime.date(2026, 1, 1), netamt=100.0, rcvamt=1.0,
+                remamt=2.0, docstat='N')
+    other = {**base, field: value}
+    with pytest.raises(ValueError):
+        build_out_of_window_docs([_artrn('IV_X', '3', **base),
+                                  _artrn('IV_X', '3', **other)], [], cutoff=CUTOFF)
+
+
+def test_a_conflict_on_the_OTHER_side_is_refused_too():
+    with pytest.raises(ValueError):
+        build_out_of_window_docs(
+            [], [_aptrn('RR_X', '3', docdat=datetime.date(2026, 1, 1), netamt=1.0),
+                 _aptrn('RR_X', '3', docdat=datetime.date(2026, 1, 1), netamt=2.0)],
+            cutoff=CUTOFF)
+
+
 def test_a_single_header_reports_count_one():
     rows = build_out_of_window_docs(
         [_artrn('IV_ONE', '3', docdat=datetime.date(2026, 1, 1))],
