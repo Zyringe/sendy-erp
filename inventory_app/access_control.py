@@ -472,6 +472,11 @@ _NAV_EXEMPT_ENDPOINTS = frozenset([
     'marketplace.api_payout_orders', 'mobile.stock_search_api',
     'products.api_product_barcodes', 'products.api_products_search',
     'products.product_cost_history', 'products.product_parse_name',
+    # mapping-suggest-clone PR3: clone-source spec reader. JSON API, not a
+    # navigable page — exempt rather than given a module, same as
+    # product_parse_name above. (products.preview_identity is POST-only, so
+    # the GET-endpoint hygiene test never sees it.)
+    'products.product_spec',
     # file / binary responses
     'hr.payroll_export', 'products.serve_catalog_photo', 'serve_sw',
     # legacy redirect stubs kept so old bookmarks don't 404 (both → /import-data)
