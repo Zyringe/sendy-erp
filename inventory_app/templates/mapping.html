@@ -93,12 +93,24 @@
                    value="{{ s.suggested_name or s.bsn_name }}"></div>
           <div class="col-md-4"><label class="form-label mb-0">Category</label>
             <div class="combo" data-opts="categories">
+              {# FK combo (39-row categories master, feeds cat_short_code in
+                 sku_code): prefill the HIDDEN value from category_id, same
+                 pattern as Brand below — comboSyncLabel paints the visible
+                 label. Legacy rows staged before mig 169 have no category_id
+                 yet; for those only, fall back to the old free-text prefill
+                 so the manager still sees what the parser guessed. #}
               <input class="form-control form-control-sm combo-input" id="sug-cat-{{ s.id }}"
-                     autocomplete="off" value="{{ s.category or '' }}"
+                     autocomplete="off" value="{{ '' if s.category_id else (s.category or '') }}"
                      placeholder="พิมพ์ค้นหาหมวด เช่น กาว, บานพับ">
-              <input type="hidden" class="combo-value" id="sug-cat-id-{{ s.id }}">
+              <input type="hidden" class="combo-value" id="sug-cat-id-{{ s.id }}" value="{{ s.category_id or '' }}">
               <div class="ac-drop"></div>
             </div></div>
+          <div class="col-md-4"><label class="form-label mb-0">หมวดย่อย (sub_category)</label>
+            <input class="form-control form-control-sm" id="sug-subcat-{{ s.id }}"
+                   value="{{ s.sub_category or '' }}"></div>
+          <div class="col-md-2"><label class="form-label mb-0">รหัสย่อหมวดย่อย</label>
+            <input class="form-control form-control-sm" id="sug-subcat-short-{{ s.id }}"
+                   value="{{ s.sub_category_short_code or '' }}"></div>
           <div class="col-md-4"><label class="form-label mb-0">Series</label>
             <input class="form-control form-control-sm" id="sug-series-{{ s.id }}" value="{{ s.series or '' }}"></div>
           <div class="col-md-4"><label class="form-label mb-0">Brand</label>
@@ -193,6 +205,8 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
     suggested_name:      v('name'),
     category:            v('cat'),
     category_id:         v('cat-id') || null,
+    sub_category:        v('subcat'),
+    sub_category_short_code: v('subcat-short'),
     series:              v('series'),
     brand_id:            v('brand') || null,
     brand_other_name:    v('brand-other') || null,
@@ -434,6 +448,10 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                     <input type="hidden" class="combo-value" id="sm-cat-id">
                     <div class="ac-drop"></div>
                   </div></div>
+                <div class="col-md-4"><label class="form-label mb-0">หมวดย่อย (sub_category)</label>
+                  <input class="form-control form-control-sm" id="sm-subcat"></div>
+                <div class="col-md-2"><label class="form-label mb-0">รหัสย่อหมวดย่อย</label>
+                  <input class="form-control form-control-sm" id="sm-subcat-short"></div>
                 <div class="col-md-4"><label class="form-label mb-0">Series</label>
                   <input class="form-control form-control-sm" id="sm-series"></div>
                 <div class="col-md-4"><label class="form-label mb-0">Brand</label>
@@ -748,8 +766,15 @@ function populateSuggestModal(data) {
   const p = data.parsed || {};
   const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
   document.getElementById('sm-name').value     = data.proposed_name || data.bsn_name || '';
-  setVal('sm-cat', p.category || '');          // visible combo-input (text) → resolves to sm-cat-id
+  // Category (39-row master, feeds cat_short_code in sku_code) is a PICK-ONLY
+  // combo — it must NOT be seeded from p.category, which is the parser's
+  // fine-grained guess (e.g. 'แปรงทาสี', a sub_category shape, not one of the
+  // 39 rows). Leave it blank; the manager picks. p.category goes to the free-
+  // text sub_category field instead — that's the field it actually matches.
+  setVal('sm-cat', '');
   setVal('sm-cat-id', '');
+  document.getElementById('sm-subcat').value   = p.category || '';
+  document.getElementById('sm-subcat-short').value = '';   // no derivation table (decision Q3)
   document.getElementById('sm-series').value   = p.series || '';
   setVal('sm-brand', data.brand_id_suggested || '');     // hidden combo-value (brand_id)
   setVal('sm-brand-other', '');
@@ -915,6 +940,8 @@ function confirmStageNew() {
     suggested_name: v('name'),
     category: v('cat'),                 // combo-input text (staged as-is)
     category_id: v('cat-id') || null,   // resolved category id from the combo
+    sub_category: v('subcat'),
+    sub_category_short_code: v('subcat-short'),
     series: v('series'),
     brand_id: v('brand') || null,
     brand_other_name: v('brand-other') || null,

@@ -338,3 +338,54 @@ def test_stage_via_route_reload_approve_preserves_category_id(manager_client):
     assert prod['category_id'] == _CAT_ID
     assert prod['sku_code'].startswith(_CAT_SHORT), \
         f"created sku_code missing cat_short_code prefix: {prod['sku_code']!r}"
+
+
+# ── Render guard: the new fields actually reach both HTML surfaces ─────────
+# (curl/pytest sees markup only, not the live-browser prefill/JS — see the
+# Chrome MCP click-through in the final report for that half.)
+
+@pytest.fixture
+def render_client(db169):
+    conn = sqlite3.connect(db169)
+    conn.execute(
+        "INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, is_ignored) "
+        "VALUES (?, 'combo render test', NULL, 0)", (_TEST_BSN_CODE,)
+    )
+    cur = conn.execute(
+        "INSERT INTO pending_product_suggestions "
+        "(bsn_code, bsn_name, status, created_at, sub_category, sub_category_short_code, category_id) "
+        "VALUES (?, 'combo suggestion test', 'pending', datetime('now'), 'แปรงทาสี', 'BPNT', ?)",
+        (_TEST_BSN_CODE + '-SUG', _CAT_ID),
+    )
+    sid = cur.lastrowid
+    conn.commit()
+    conn.close()
+
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 1
+        sess['username'] = 'test-manager'
+        sess['role'] = 'manager'
+    return c, sid
+
+
+def test_suggest_modal_renders_subcategory_fields(render_client):
+    client, _sid = render_client
+    body = client.get('/mapping').get_data(as_text=True)
+    assert 'id="sm-subcat"' in body
+    assert 'id="sm-subcat-short"' in body
+
+
+def test_approve_form_renders_subcategory_fields_and_prefill(render_client):
+    client, sid = render_client
+    body = client.get('/mapping?tab=suggestions').get_data(as_text=True)
+    assert f'id="sug-subcat-{sid}"' in body
+    assert f'value="แปรงทาสี"' in body
+    assert f'id="sug-subcat-short-{sid}"' in body
+    assert 'value="BPNT"' in body
+    # category_id prefill reaches the hidden combo-value input for THIS row
+    # specifically — the exact wiring that was missing before (the id was
+    # rendered with no value= attribute at all pre-fix).
+    assert f'id="sug-cat-id-{sid}" value="{_CAT_ID}"' in body
