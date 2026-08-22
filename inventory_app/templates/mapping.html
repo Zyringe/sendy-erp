@@ -38,7 +38,7 @@
     categories: [{% for c in categories %}{v:{{ c.id }},label:{{ c.name_th|tojson }},hint:{{ c.code|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
     brands:     [{% for b in brands %}{v:"{{ b.id }}",label:{{ (b.name ~ (' / ' ~ b.name_th if b.name_th else ''))|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
     colorcodes: [{% for c in color_codes %}{v:{{ c.code|tojson }},label:{{ (c.code ~ ' — ' ~ c.name_th)|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
-    packaging:  [{% for p in ['แผง','ตัว','ถุง','แพ็คหัว','แพ็คถุง','ซอง','อัดแผง','แพ็ค','แบบหลอด','โหล','1กลมี60ใบ'] %}{v:{{ p|tojson }},label:{{ p|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
+    packaging:  [{% for p in packaging_options %}{v:{{ p|tojson }},label:{{ p|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
     units:      [{% for u in unit_suggestions %}{v:{{ u|tojson }},label:{{ u|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
     conditions: [{% for c in condition_suggestions %}{v:{{ c|tojson }},label:{{ c|tojson }},hint:""}{% if not loop.last %},{% endif %}{% endfor %}],
   };

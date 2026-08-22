@@ -7,9 +7,9 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 
 import book_registry
 import config
+import form_options
 import models
 from database import get_connection
-from sku_code_utils import PACKAGING_SHORT
 
 bp_products = Blueprint('products', __name__)
 
@@ -203,18 +203,14 @@ def _new_form_context():
     validation error, for the /products/new structured form (category/brand/
     color selects)."""
     conn = get_connection()
-    categories = conn.execute(
-        "SELECT id, code, name_th FROM categories ORDER BY sort_order, name_th"
-    ).fetchall()
-    color_codes = conn.execute(
-        "SELECT code, name_th FROM color_finish_codes ORDER BY sort_order, code"
-    ).fetchall()
+    categories = form_options.categories(conn)
+    color_codes = form_options.colors(conn)
     conn.close()
     return {
         'categories': categories,
         'color_codes': color_codes,
         'brands': models.get_brands(),
-        'packaging_options': list(PACKAGING_SHORT.keys()),
+        'packaging_options': form_options.packaging(),
     }
 
 

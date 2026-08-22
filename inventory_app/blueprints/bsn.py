@@ -22,6 +22,7 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 
 import config
 import db_backup
+import form_options
 import models
 import review_rules as rr
 from database import get_connection
@@ -166,27 +167,20 @@ def mapping():
          WHERE p.is_active = 1
          ORDER BY p.id
     """).fetchall()
-    brands = conn.execute(
-        "SELECT id, name, name_th FROM brands ORDER BY is_own_brand DESC, sort_order, name"
-    ).fetchall()
-    color_codes = conn.execute(
-        "SELECT code, name_th FROM color_finish_codes ORDER BY sort_order, code"
-    ).fetchall()
+    brands = form_options.brands(conn)
+    color_codes = form_options.colors(conn)
     # Standardised category master for the type-to-search picker in both the
     # approve form and the Suggest modal (replaces the old free-text field).
-    categories = conn.execute(
-        "SELECT id, code, name_th FROM categories ORDER BY sort_order, name_th"
-    ).fetchall()
+    categories = form_options.categories(conn)
+    packaging_options = form_options.packaging()
     # Suggestion sources for the free-text combo fields (unit_type / condition):
     # these stay free-text (any value allowed) but the dropdown offers the
     # values already in use so they stay consistent.
-    unit_suggestions = [r[0] for r in conn.execute(
-        "SELECT unit_type FROM products WHERE unit_type IS NOT NULL AND unit_type <> '' "
-        "GROUP BY unit_type ORDER BY COUNT(*) DESC"
-    ).fetchall()]
+    unit_suggestions = form_options.units(conn)
+    # drop_dated=True: a new product should not be offered a 2019 expiry.
+    # /naming keeps dated values (edit form, see form_options.conditions docstring).
+    condition_suggestions = form_options.conditions(conn, drop_dated=True)
     conn.close()
-    from sku_code_utils import CONDITION_SHORT
-    condition_suggestions = list(CONDITION_SHORT.keys())
     tab = request.args.get('tab', 'mapping')
     return render_template(
         'mapping.html',
@@ -197,6 +191,7 @@ def mapping():
         brands=brands,
         color_codes=color_codes,
         categories=categories,
+        packaging_options=packaging_options,
         unit_suggestions=unit_suggestions,
         condition_suggestions=condition_suggestions,
         active_tab=tab,
