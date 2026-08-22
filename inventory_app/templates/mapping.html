@@ -898,7 +898,17 @@ document.getElementById('suggestModal').addEventListener('change', e => {
   if (SM_IDENTITY_FIELD_IDS.includes(e.target.id)) schedulePreview();
 });
 
+// Monotonic sequence for the identity preview. Responses can arrive out of
+// order, and this handler applies whatever lands last — so a slow reply for an
+// OLD field state could overwrite sm-name after a newer one already wrote it.
+// That name is submitted verbatim as suggested_name while sku_code is
+// regenerated from the CURRENT columns, i.e. exactly the name/sku divergence
+// this preview exists to prevent (plan decision Q2). Stamp each request and
+// drop any response that is not the newest. (Codex review, 2026-08-22.)
+let _smPreviewSeq = 0;
+
 function fetchIdentityPreview() {
+  const seq = ++_smPreviewSeq;
   const v = (id) => { const el = document.getElementById('sm-' + id); return el ? el.value : null; };
   const fields = {
     category_id: v('cat-id') || null,
@@ -921,6 +931,7 @@ function fetchIdentityPreview() {
     },
     body: JSON.stringify(fields)
   }).then(r => r.json()).then(d => {
+    if (seq !== _smPreviewSeq) return;   // a newer request already answered
     if (!_smNameDirty) document.getElementById('sm-name').value = d.name || '';
     document.getElementById('sm-sku-preview').textContent = d.sku_code || '—';
   }).catch(() => {});
