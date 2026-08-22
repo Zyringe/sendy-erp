@@ -207,12 +207,21 @@ def _new_form_context():
     conn = get_connection()
     categories = form_options.categories(conn)
     color_codes = form_options.colors(conn)
+    # Clone-source search box (mapping-suggest-clone PR4) — same lightweight
+    # inline list /mapping's Card A + Card B search boxes already use
+    # (blueprints/bsn.py::mapping), so the client-side filter behaves
+    # identically on both pages. Deliberately id+name only: unit_type/stock
+    # aren't rendered by the dropdown item template either page uses.
+    all_products = conn.execute("""
+        SELECT id, product_name FROM products WHERE is_active = 1 ORDER BY id
+    """).fetchall()
     conn.close()
     return {
         'categories': categories,
         'color_codes': color_codes,
         'brands': models.get_brands(),
         'packaging_options': form_options.packaging(),
+        'all_products': all_products,
     }
 
 
@@ -343,6 +352,11 @@ def product_new():
                 'product_name': f['product_name'].strip(),
                 'category_id': int(f['category_id']) if f.get('category_id') else None,
                 'sub_category': f.get('sub_category', '').strip() or None,
+                # PR4 (mapping-suggest-clone): no derivation table for this one
+                # (decision Q3, same as Card B) — a colour/variant clone often
+                # must change it, so it's a plain editable field, not derived
+                # from sub_category.
+                'sub_category_short_code': f.get('sub_category_short_code', '').strip() or None,
                 'brand_id': int(brand_raw) if brand_raw and brand_raw != '__other__' else None,
                 'brand_other_name': f.get('brand_other_name', '').strip() or None,
                 'color_code': color_raw if color_raw and color_raw != '__other__' else None,
