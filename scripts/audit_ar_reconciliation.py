@@ -130,10 +130,17 @@ def main():
         L.append(f'- ฝั่ง derived: {len(derived):,} ใบแจ้งหนี้จาก '
                  f'`payments_alloc.invoice_settlement(as_of={snap_date!r})` — '
                  f'ตัดที่วันเดียวกับ snapshot\n')
-        L.append(f'- ledger มีข้อมูลถึง: **{horizon}**'
-                 + ('' if horizon == snap_date else
-                    f' — **ช้ากว่า snapshot อยู่** เอกสารหลังวันนี้จะเข้ากลุ่ม '
-                    f'`not_yet_imported` ไม่ใช่ของหาย'))
+        # Directional: the ledger can also run AHEAD of the snapshot (sales keep
+        # importing after the last AR export), and saying "behind" there tells the
+        # operator the opposite of the truth.
+        if horizon and horizon < snap_date:
+            lag = (f' — **ช้ากว่า snapshot อยู่** เอกสารหลังวันนี้จะเข้ากลุ่ม '
+                   f'`not_yet_imported` ไม่ใช่ของหาย')
+        elif horizon and horizon > snap_date:
+            lag = ' — **ใหม่กว่า snapshot** (ยอดขายเข้าต่อหลัง export ล่าสุด)'
+        else:
+            lag = ''
+        L.append(f'- ledger มีข้อมูลถึง: **{horizon}**{lag}')
         L.append('\n> อ่านอย่างเดียว ไม่เปลี่ยนแหล่งข้อมูลของหน้าไหนทั้งนั้น — '
                  'Express REMAMT ยังเป็นตัวจริงของ AR\n')
 

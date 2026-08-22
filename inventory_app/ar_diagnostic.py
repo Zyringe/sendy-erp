@@ -175,12 +175,15 @@ def build_ar_reconciliation(snapshot_rows, derived_rows,
             reason = 'credit_note'
         elif doc.startswith('HS'):
             reason = 'cash_sale'
-        elif (ledger_horizon and s is not None
+        elif (ledger_horizon and s is not None and d is None
               and (s['doc_date_iso'] or '') > ledger_horizon):
             # AFTER every verdict that is already true regardless of the ledger:
             # an RE never enters sales_transactions and SR/HS are filtered out of
             # the derived population, so calling either "not yet imported" would
             # promise an import that will never happen.
+            # ⚠ `d is None` is load-bearing: a derived row EXISTING proves the
+            # document was imported, so excusing it on freshness would hide a
+            # real balance disagreement behind a story about the ledger lagging.
             reason = 'not_yet_imported'
         elif s is not None and d is None:
             reason = 'no_ledger_lines'

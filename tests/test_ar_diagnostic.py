@@ -691,3 +691,26 @@ def test_one_of_two_credit_notes_already_settled_is_not_an_offset():
         era_start=ERA)
 
     assert 'unexplained' in _reasons(rep)
+
+
+def test_a_doc_the_ledger_DOES_have_is_still_judged_even_if_dated_late():
+    """`not_yet_imported` excuses a document the ledger has never seen. If a
+    derived row exists the document demonstrably WAS imported, so excusing it
+    would hide a real balance disagreement behind a freshness explanation
+    (Codex review, 2026-08-22)."""
+    rep = build_ar_reconciliation([_snap('IV_LATE', 500.0, date='2026-08-22')],
+                                  [_der('IV_LATE', 100.0, date='2026-08-22')],
+                                  ledger_horizon='2026-08-21', era_start=ERA)
+
+    assert _reasons(rep) == {'unexplained': 1}
+    assert rep['unexplained'][0]['difference'] == 400.0
+
+
+def test_a_doc_the_ledger_has_AND_agrees_on_is_not_excused_either():
+    """CONTROL — the branch must not swallow agreement any more than it swallows
+    disagreement."""
+    rep = build_ar_reconciliation([_snap('IV_LATE', 500.0, date='2026-08-22')],
+                                  [_der('IV_LATE', 500.0, date='2026-08-22')],
+                                  ledger_horizon='2026-08-21', era_start=ERA)
+
+    assert _reasons(rep) == {'agrees': 1}
