@@ -163,7 +163,8 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
       brand_id, brand_other_name
       color_code, color_code_other, color_th
       category_id, category (free-text, resolved only when category_id absent)
-      sub_category, series, model, size, condition, pack_variant
+      sub_category, sub_category_short_code, series, model, size, condition,
+      pack_variant
       packaging_th          -- must be NULL or one of the CHECK-trigger values
       unit_type (default 'ตัว'), hard_to_sell (default 0)
       cost_price (default 0.0) -- also seeds opening_cost
@@ -228,11 +229,11 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
               (product_name, units_per_carton, units_per_box,
                unit_type, hard_to_sell, cost_price, opening_cost, base_sell_price,
                low_stock_threshold,
-               brand_id, category_id, sub_category, color_code,
-               packaging_th, packaging_short,
+               brand_id, category_id, sub_category, sub_category_short_code,
+               color_code, packaging_th, packaging_short,
                series, model, size, condition, pack_variant, created_via)
             VALUES
-              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             d.get('product_name') or '',
             d.get('units_per_carton') or 1,
@@ -247,6 +248,7 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
             d.get('brand_id'),
             category_id,
             d.get('sub_category') or None,
+            d.get('sub_category_short_code') or None,
             d.get('color_code') or None,
             pkg_th,
             pkg_short,

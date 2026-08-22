@@ -59,7 +59,8 @@ def save_pending_suggestion(data: dict, user_id: int) -> int:
     packaging_other) and unit-conversion hints (bsn_unit, unit_conversion_ratio)."""
     # Default any missing extras to None so SQL params bind cleanly
     for k in ('brand_other_name', 'color_code_other', 'packaging_other',
-              'bsn_unit', 'unit_conversion_ratio'):
+              'bsn_unit', 'unit_conversion_ratio',
+              'sub_category', 'sub_category_short_code', 'category_id'):
         data.setdefault(k, None)
     conn = get_connection()
     cur = conn.execute("""
@@ -69,6 +70,7 @@ def save_pending_suggestion(data: dict, user_id: int) -> int:
            suggested_cost, suggested_unit_type, units_per_carton, units_per_box,
            brand_other_name, color_code_other, packaging_other,
            bsn_unit, unit_conversion_ratio,
+           sub_category, sub_category_short_code, category_id,
            suggested_by_user_id, status)
         VALUES
           (:bsn_code, :bsn_name, :suggested_name, :category, :series, :brand_id,
@@ -76,6 +78,7 @@ def save_pending_suggestion(data: dict, user_id: int) -> int:
            :suggested_cost, :suggested_unit_type, :units_per_carton, :units_per_box,
            :brand_other_name, :color_code_other, :packaging_other,
            :bsn_unit, :unit_conversion_ratio,
+           :sub_category, :sub_category_short_code, :category_id,
            :suggested_by_user_id, 'pending')
         ON CONFLICT(bsn_code) DO UPDATE SET
             bsn_name = excluded.bsn_name,
@@ -99,6 +102,9 @@ def save_pending_suggestion(data: dict, user_id: int) -> int:
             packaging_other = excluded.packaging_other,
             bsn_unit = excluded.bsn_unit,
             unit_conversion_ratio = excluded.unit_conversion_ratio,
+            sub_category = excluded.sub_category,
+            sub_category_short_code = excluded.sub_category_short_code,
+            category_id = excluded.category_id,
             suggested_by_user_id = excluded.suggested_by_user_id,
             status = 'pending'
     """, {**data, 'suggested_by_user_id': user_id})
@@ -157,6 +163,8 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
             'color_th': d.get('color_th'),
             'category_id': d.get('category_id'),
             'category': d.get('category'),
+            'sub_category': d.get('sub_category'),
+            'sub_category_short_code': d.get('sub_category_short_code'),
             'series': d.get('series'),
             'model': d.get('model'),
             'size': d.get('size'),

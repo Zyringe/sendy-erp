@@ -242,11 +242,22 @@ def mapping_save():
                     models.upsert_unit_conversion(pid, bsn_unit, r)
         elif action == 'stage':
             # Smart-suggest flow: stage new SKU for manager/admin review
+            # category_id: cast defensively (picker resolves name -> id
+            # client-side, same as mapping_suggestion_approve below) — a
+            # garbage value degrades to None rather than 400ing the whole
+            # batch save.
+            try:
+                category_id = int(item['category_id']) if item.get('category_id') else None
+            except (TypeError, ValueError):
+                category_id = None
             payload = {
                 'bsn_code': bsn_code,
                 'bsn_name': item['bsn_name'],
                 'suggested_name': item.get('suggested_name'),
                 'category': item.get('category'),
+                'category_id': category_id,
+                'sub_category': item.get('sub_category'),
+                'sub_category_short_code': item.get('sub_category_short_code'),
                 'series': item.get('series'),
                 'brand_id': item.get('brand_id') or None,
                 'model': item.get('model'),
