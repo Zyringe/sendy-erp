@@ -142,6 +142,23 @@
 
             <div class="col-12"><hr class="my-1"></div>
 
+            {# mapping-suggest-clone PR4: pick an EXISTING product as a
+               template and overwrite every spec field below from it (same
+               contract as /mapping Card B, decision Q1 — no merge, no undo;
+               retype or reload the page to reset). Cost is deliberately NOT
+               copied (Q4) — it stays whatever the office typed/leaves 0. #}
+            <div class="col-12">
+              <label class="form-label mb-0 small">คัดลอกจาก SKU เดิม</label>
+              <div class="ac-wrap">
+                <input type="text" id="clone-search" class="form-control form-control-sm"
+                       placeholder="พิมพ์ SKU หรือชื่อสินค้าที่จะใช้เป็นแม่แบบ..." autocomplete="off">
+                <div class="ac-drop" id="clone-drop"></div>
+              </div>
+              <div class="form-text small" id="clone-status"></div>
+            </div>
+
+            <div class="col-12"><hr class="my-1"></div>
+
             <div class="col-md-4">
               <label class="form-label">หมวดหมู่</label>
               <select name="category_id" id="category_id" class="form-select">
@@ -156,10 +173,19 @@
               <input type="text" name="sub_category" id="sub_category" class="form-control"
                      value="{{ product.sub_category or '' }}">
             </div>
-            <div class="col-md-4">
+            <div class="col-md-2">
+              <label class="form-label">รหัสย่อหมวดย่อย</label>
+              <input type="text" name="sub_category_short_code" id="sub_category_short_code" class="form-control"
+                     value="{{ product.sub_category_short_code or '' }}">
+            </div>
+            <div class="col-md-2">
               <label class="form-label">ซีรีส์</label>
               <input type="text" name="series" id="series" class="form-control"
                      value="{{ product.series or '' }}">
+            </div>
+            <div class="col-12">
+              <span class="text-subtle small">sku_code (preview): </span>
+              <span class="font-mono small" id="sku-preview">—</span>
             </div>
 
             <div class="col-md-4">
@@ -221,17 +247,17 @@
             </div>
             <div class="col-md-4">
               <label class="form-label">หน่วย</label>
-              <input type="text" name="unit_type" class="form-control"
+              <input type="text" name="unit_type" id="unit_type" class="form-control"
                      value="{{ product.unit_type or 'ตัว' }}" placeholder="ตัว / แผง / ชิ้น">
             </div>
             <div class="col-md-2">
               <label class="form-label">บรรจุ/ลัง</label>
-              <input type="number" name="units_per_carton" class="form-control"
+              <input type="number" name="units_per_carton" id="units_per_carton" class="form-control"
                      value="{{ product.units_per_carton or '' }}" min="1" placeholder="–">
             </div>
             <div class="col-md-2">
               <label class="form-label">บรรจุ/กล่อง</label>
-              <input type="number" name="units_per_box" class="form-control"
+              <input type="number" name="units_per_box" id="units_per_box" class="form-control"
                      value="{{ product.units_per_box or '' }}" min="1" placeholder="–">
             </div>
 
@@ -388,6 +414,171 @@ function parseRawName() {
       status.textContent = 'วิเคราะห์ไม่สำเร็จ — กรอก field เองได้';
     });
 }
+
+/* ── mapping-suggest-clone PR4: clone-from-existing-SKU ────────────────────
+   Reuses PR3's two endpoints (/products/spec/<pid>, /products/preview-
+   identity) with the SAME interaction contract as /mapping's Card B
+   (templates/mapping.html): pick a source -> overwrite every spec field
+   (decision Q1, no merge/undo) -> live server-computed name + sku_code
+   preview on any further edit -> a hand-typed name sets a dirty flag that
+   stops the auto-rewrite (decision Q2). Deliberately does NOT touch
+   parseRawName() above — the two flows are independent; parsing a raw name
+   still behaves exactly as before. ── */
+const allProducts = [
+  {% for p in all_products %}
+  { id: {{ p.id }}, name: {{ p.product_name | tojson }} },
+  {% endfor %}
+];
+
+let _pnNameDirty = false;
+document.getElementById('product_name').addEventListener('input', function () { _pnNameDirty = true; });
+
+// Selects with NO free-text "อื่นๆ" escape (category_id, packaging_th) —
+// silently leaving one on its blank default when a clone source's value
+// isn't among today's options is the /naming 44-row class of bug (see
+// verification-discipline.md); surface it via `warnings` instead.
+function setSelectOrWarn(selectId, value, label, warnings) {
+  var sel = document.getElementById(selectId);
+  if (!sel) return;
+  if (!value) { sel.value = ''; return; }
+  for (var i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === String(value)) { sel.value = String(value); return; }
+  }
+  sel.value = '';
+  warnings.push(label);
+}
+
+var PN_IDENTITY_FIELD_IDS = [
+  'category_id', 'sub_category', 'sub_category_short_code', 'series',
+  'brand_id', 'model', 'size', 'color_code', 'packaging_th', 'condition',
+  'pack_variant',
+];
+var _pnPreviewTimer = null;
+// The debounce only coalesces edits inside its own window; two edits either
+// side of it issue two requests that can come back out of order, and the older
+// answer would then overwrite product_name with a name regenerated from stale
+// columns — the exact name/sku divergence this preview exists to prevent
+// (plan decision Q2). Same guard mapping.html's fetchIdentityPreview() carries
+// (Codex review, 2026-08-22).
+var _pnPreviewSeq = 0;
+function schedulePnPreview() {
+  clearTimeout(_pnPreviewTimer);
+  _pnPreviewTimer = setTimeout(fetchPnIdentityPreview, 250);
+}
+var _pnForm = document.getElementById('product_name').closest('form');
+_pnForm.addEventListener('input', function (e) {
+  if (PN_IDENTITY_FIELD_IDS.indexOf(e.target.id) !== -1) schedulePnPreview();
+});
+_pnForm.addEventListener('change', function (e) {
+  if (PN_IDENTITY_FIELD_IDS.indexOf(e.target.id) !== -1) schedulePnPreview();
+});
+
+function fetchPnIdentityPreview() {
+  var seq = ++_pnPreviewSeq;
+  var v = function (id) { var el = document.getElementById(id); return el ? el.value : null; };
+  var brandRaw = v('brand_id');
+  var colorRaw = v('color_code');
+  var fields = {
+    category_id: v('category_id') || null,
+    sub_category: v('sub_category'),
+    sub_category_short_code: v('sub_category_short_code'),
+    series: v('series'),
+    brand_id: (brandRaw && brandRaw !== '__other__') ? brandRaw : null,
+    model: v('model'),
+    size: v('size'),
+    color_code: (colorRaw && colorRaw !== '__other__') ? colorRaw : null,
+    packaging_th: v('packaging_th') || null,
+    condition: v('condition'),
+    pack_variant: v('pack_variant'),
+  };
+  fetch('{{ url_for("products.preview_identity") }}', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+    },
+    body: JSON.stringify(fields)
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (seq !== _pnPreviewSeq) return;   // a newer request already answered
+    if (!_pnNameDirty) document.getElementById('product_name').value = d.name || '';
+    document.getElementById('sku-preview').textContent = d.sku_code || '—';
+  }).catch(function () {});
+}
+
+function cloneFromProduct(pid) {
+  var status = document.getElementById('clone-status');
+  fetch('/products/spec/' + pid)
+    .then(function (r) { return r.json(); })
+    .then(function (spec) {
+      if (spec.error) { status.textContent = 'โหลดข้อมูลสินค้าไม่สำเร็จ'; return; }
+      var setVal = function (id, val) { var el = document.getElementById(id); if (el) el.value = val == null ? '' : val; };
+      var warnings = [];
+      // Overwrite EVERY field (decision Q1 — no merge). Cost is deliberately
+      // untouched (decision Q4 — /products/spec never returns it anyway).
+      setSelectOrWarn('category_id', spec.category_id, 'หมวดหมู่', warnings);
+      setVal('sub_category', spec.sub_category);
+      setVal('sub_category_short_code', spec.sub_category_short_code);
+      setVal('series', spec.series);
+      setSelectOrWarn('brand_id', spec.brand_id, 'แบรนด์', warnings);
+      setVal('brand_other_name', '');
+      toggleOtherField('brand_id', 'brand_other_name');
+      setVal('model', spec.model);
+      setVal('size', spec.size);
+      setSelectOrWarn('color_code', spec.color_code, 'สี', warnings);
+      setVal('color_code_other', '');
+      toggleOtherField('color_code', 'color_code_other');
+      setSelectOrWarn('packaging_th', spec.packaging_th, 'บรรจุภัณฑ์', warnings);
+      setVal('condition', spec.condition);
+      setVal('pack_variant', spec.pack_variant);
+      setVal('unit_type', spec.unit_type || 'ตัว');
+      setVal('units_per_carton', spec.units_per_carton);
+      setVal('units_per_box', spec.units_per_box);
+      _pnNameDirty = false;   // clone counts as a fresh start for the name box too
+      status.textContent = warnings.length
+        ? 'คัดลอกจาก #' + pid + ' แล้ว — ' + warnings.join(', ') + ' ไม่มีในตัวเลือกปัจจุบัน กรุณาเลือกเอง'
+        : 'คัดลอกจาก #' + pid + ' แล้ว — ตรวจสอบก่อนบันทึก';
+      fetchPnIdentityPreview();
+    })
+    .catch(function () { status.textContent = 'โหลดข้อมูลสินค้าไม่สำเร็จ'; });
+}
+
+/* ── Clone-source search box (same client-side filter as /mapping's
+   Card A + Card B boxes — see templates/mapping.html) ── */
+(function setupCloneSearchAutocomplete() {
+  var input = document.getElementById('clone-search');
+  var drop  = document.getElementById('clone-drop');
+  if (!input) return;
+  function render(q) {
+    var hits = (q
+      ? allProducts.filter(function (p) { return (String(p.id) + ' ' + p.name).toLowerCase().indexOf(q.toLowerCase()) !== -1; })
+      : allProducts).slice(0, 60);
+    drop.innerHTML = hits.length
+      ? hits.map(function (p) {
+          return '<div class="ac-item" data-id="' + p.id + '">' +
+            '<span class="ac-sku">' + p.id + '</span>' +
+            '<span class="flex-fill">' + p.name + '</span></div>';
+        }).join('')
+      : '<div class="ac-item text-subtle">ไม่พบสินค้า</div>';
+  }
+  function open() {
+    var rect = input.getBoundingClientRect();
+    drop.style.left = rect.left + 'px';
+    drop.style.top = (rect.bottom + 2) + 'px';
+    drop.style.width = Math.max(rect.width, 260) + 'px';
+    drop.classList.add('open');
+  }
+  drop.addEventListener('mousedown', function (e) {
+    var item = e.target.closest('.ac-item[data-id]');
+    if (!item) return;
+    e.preventDefault();
+    input.value = item.querySelector('.flex-fill').textContent;
+    drop.classList.remove('open');
+    cloneFromProduct(item.dataset.id);
+  });
+  input.addEventListener('input', function () { render(input.value); open(); });
+  input.addEventListener('focus', function () { render(input.value); open(); });
+  input.addEventListener('blur', function () { setTimeout(function () { drop.classList.remove('open'); }, 200); });
+})();
 {% endif %}
 </script>
 {% endblock %}
