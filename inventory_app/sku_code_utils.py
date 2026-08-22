@@ -204,3 +204,47 @@ def regenerate_for_product(conn, product_id: int) -> tuple:
             (new_code, product_id)
         )
     return old_code, new_code
+
+
+def resolve_sku_fields(conn, fields: dict) -> dict:
+    """Resolve a NOT-YET-SAVED product's `category_id`/`brand_id` into the
+    `cat_short_code`/`brand_short_code` keys `build_sku_code` reads — the
+    same FK resolution `regenerate_for_product`'s SELECT does for a saved
+    row (categories.short_code via category_id, brands.short_code via
+    brand_id). Also derives a not-yet-inserted "other" color the same way
+    `create_structured_product` would (uppercase, first 10 chars) so the
+    color segment agrees with reality even before the new color row exists.
+    Everything else in `fields` passes through untouched — `build_sku_code`
+    already accepts `packaging_th` (or the legacy `packaging` key) directly.
+    """
+    out = dict(fields)
+    if fields.get('category_id'):
+        row = conn.execute("SELECT short_code FROM categories WHERE id=?",
+                           (fields['category_id'],)).fetchone()
+        out['cat_short_code'] = row['short_code'] if row else None
+    if fields.get('brand_id'):
+        row = conn.execute("SELECT short_code FROM brands WHERE id=?",
+                           (fields['brand_id'],)).fetchone()
+        out['brand_short_code'] = row['short_code'] if row else None
+    # brand_other_name: create_structured_product inserts the new brand row
+    # WITHOUT a short_code, so both preview and reality agree the segment is
+    # simply absent — nothing to resolve here.
+    if not out.get('color_code') and fields.get('color_code_other'):
+        out['color_code'] = fields['color_code_other'].strip().upper()[:10]
+    return out
+
+
+def preview_sku_code(conn, fields: dict) -> str:
+    """The sku_code a NOT-YET-SAVED product with these spec fields would get,
+    using the exact same `build_sku_code` call `create_structured_product`/
+    `regenerate_for_product` use — so a live preview and the create-now
+    duplicate guard describe the same row by construction.
+
+    A placeholder id (0) stands in for the real one so `build_sku_code`'s
+    "nothing structured" fallback (`INT-<id>`) never leaks `INT-0` into a
+    preview; that case reports "" (no identity yet) instead.
+    """
+    resolved = resolve_sku_fields(conn, fields)
+    resolved['id'] = 0
+    code = build_sku_code(resolved)
+    return '' if code.startswith('INT-') else code
