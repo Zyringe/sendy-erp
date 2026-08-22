@@ -399,11 +399,12 @@ def mapping_suggestion_approve(sid):
     return jsonify({'ok': True, 'product_id': new_pid})
 
 
-# Make import_express's machinery available to the upload form. We inject
+# (was: "make import_express's machinery available to the upload form" — the
+# form never referenced it; the import is gone with the text-report AR/AP path.)
+# We inject
 # our own DB connection so the import shares this app's transaction
 # semantics (lights-on FK off etc).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'scripts'))
-import import_express as express_importer  # noqa: E402
 import import_router  # noqa: E402  (unified /import box: detect + preview + commit dispatch)
 
 
@@ -433,8 +434,11 @@ _REPORT_LABELS = {
     'payments_out': 'การจ่ายชำระหนี้ (เจ้าหนี้)',
     'credit_notes_ar': 'ใบลดหนี้ — รับคืน (ลูกค้า)',
     'credit_notes_ap': 'ใบลดหนี้ — ส่งคืน (ผู้ขาย)',
-    'ar_snapshot': 'ลูกหนี้คงค้าง',
-    'ap_snapshot': 'เจ้าหนี้คงค้าง',
+    # Kept selectable ON PURPOSE even though nothing imports them: a blocked row
+    # keeps its DETECTED type selected, and a type the detector emits but the
+    # dropdown lacks makes the browser fall through to the FIRST option ('ขาย').
+    'ar_snapshot': 'ลูกหนี้คงค้าง — ปิดแล้ว ใช้ zip รายวัน',
+    'ap_snapshot': 'เจ้าหนี้คงค้าง — ปิดแล้ว ใช้ zip รายวัน',
     'unknown': '— ไม่รู้จัก (เลือกเอง) —',
 }
 
@@ -501,7 +505,14 @@ def unified_import():
                    # operator must have seen the parsed count and the deletion
                    # count before they can ask for deletions.
                    'removals_ok': False}
-            if rtype != 'unknown':
+            if rtype in import_router.RETIRED_REPORT_TYPES:
+                # Recognised, and refused with the reason. Marked `blocked` so the
+                # verdict rides the session into /confirm — the type dropdown is
+                # operator-supplied, so a decision keyed on the submitted type
+                # alone can be re-routed around.
+                row['error'] = import_router.RETIRED_REPORT_REASON
+                row['blocked'] = 'retired'
+            elif rtype != 'unknown':
                 try:
                     prev = import_router.preview_file(path, rtype)
                     row['count'] = prev.get('count')
@@ -575,8 +586,14 @@ def unified_import_confirm():
         if row.get('blocked'):
             results.append({
                 'filename': row['filename'], 'ok': False,
-                'msg': import_router.history_block_reason(path) or
-                       'ไฟล์นี้ถูกปฏิเสธตั้งแต่ตอนตรวจสอบ — นำเข้าไม่ได้',
+                # The reason has to match WHY it was blocked: history_block_reason
+                # reads the file's date range and returns None for a retired
+                # type, which would fall through to the generic line and leave
+                # the operator without the one instruction that helps.
+                'msg': (import_router.RETIRED_REPORT_REASON
+                        if row.get('blocked') == 'retired'
+                        else import_router.history_block_reason(path) or
+                        'ไฟล์นี้ถูกปฏิเสธตั้งแต่ตอนตรวจสอบ — นำเข้าไม่ได้'),
                 'blocked': row['blocked']})
             continue
         if rtype == 'unknown' or not os.path.isfile(path):

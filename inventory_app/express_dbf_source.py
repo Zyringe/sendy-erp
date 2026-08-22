@@ -591,8 +591,9 @@ def _reject_duplicate(seen, doc_no, side):
 
 def build_ar_snapshot_records(artrn_rows, armas_rows):
     """One record per outstanding AR document, shaped like
-    parse_express_ar_snapshot.AROutstanding (minus the snapshot date, which the
-    importer stamps)."""
+    _import_ar_snapshot_records expects (minus the snapshot date, which the
+    importer stamps). The text-report parser this shape was originally borrowed
+    from is gone — this builder is now the only producer."""
     customers = {(r.get('CUSCOD') or '').strip(): r for r in armas_rows}
     records = []
     seen = set()
@@ -640,7 +641,9 @@ def build_ar_snapshot_records(artrn_rows, armas_rows):
 
 def build_ap_snapshot_records(aptrn_rows, apmas_rows):
     """One record per outstanding AP document, shaped like
-    parse_express_ap_snapshot's APOutstanding (minus the snapshot date)."""
+    _import_ap_snapshot_records expects (minus the snapshot date). The
+    text-report parser this shape came from is gone — this is the only producer
+    now."""
     suppliers = {(r.get('SUPCOD') or '').strip(): r for r in apmas_rows}
     records = []
     seen = set()

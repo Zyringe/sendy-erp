@@ -114,11 +114,23 @@ def detect_express_report(path):
 # report_type → express_importer file_type (the express-family share one path).
 # credit_notes_ap is the supplier-side ใบลดหนี้; express_importer's 'credit_notes'
 # parser is supplier-keyed → express_credit_notes (a kept, single-source table).
+# Text-report types the detector still RECOGNISES but that no importer accepts
+# any more (F8, Put 2026-08-22: the daily DBF zip replaced them). Detection is
+# deliberately kept: the file is exactly what it says it is, and the operator
+# needs to be told so — silently returning "unknown" would render the dropdown
+# on "— ข้ามไฟล์นี้ —" with no reason given, and REMOVING the type from the
+# dropdown while the detector still emits it is worse still: no <option> matches,
+# so the browser selects the FIRST one ('ขาย') and an unchanged confirm would
+# feed a ลูกหนี้คงค้าง report to the SALES importer (Codex review, 2026-08-22).
+RETIRED_REPORT_TYPES = frozenset({"ar_snapshot", "ap_snapshot"})
+RETIRED_REPORT_REASON = (
+    "ทางนำเข้าแบบไฟล์รายงานสำหรับ ลูกหนี้/เจ้าหนี้คงค้าง ปิดแล้ว — "
+    "ยอดคงค้างมาจาก zip รายวันของ Express ที่หน้า นำเข้า Express (DBF) แทน"
+)
+
 _EXPRESS_KIND = {
     "payments_out": "payments_out",
     "credit_notes_ap": "credit_notes",
-    "ar_snapshot": "ar_snapshot",
-    "ap_snapshot": "ap_snapshot",
 }
 
 
@@ -229,11 +241,7 @@ def preview_file(path, report_type, db_path=None):
     if report_type in _EXPRESS_KIND:
         import import_express as ie
         kind = _EXPRESS_KIND[report_type]
-        if kind == "ap_snapshot":
-            records = ie.p_ap.parse_ap_snapshot(path)[0]   # (records, total, subtotals)
-        elif kind == "ar_snapshot":
-            records = list(ie.p_ar.parse_ar_snapshot(path))
-        elif kind == "payments_out":
+        if kind == "payments_out":
             records = list(ie.p_pout.parse_payments_out(path))
         else:                                              # 'credit_notes' (AP side)
             records = list(ie.p_cn.parse_credit_notes(path))
