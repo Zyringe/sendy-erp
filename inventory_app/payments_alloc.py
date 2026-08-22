@@ -561,16 +561,23 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
 
 # ── 1. invoice_settlement ────────────────────────────────────────────────────
 def invoice_settlement(customer=None, date_from=None, date_to=None,
-                       conn=None, db_path=None):
+                       conn=None, db_path=None, as_of=None):
     """Per-invoice settlement (read-only).
 
     Returns list[dict]: doc_base, customer, customer_code, invoice_date,
     billed, credit_notes, net_owed, collected, outstanding, status,
     over_credited, last_payment_date.
+
+    as_of (ISO date, default None = now): point-in-time AR, passed straight
+    through to `_settlement_rows` — only invoices raised on or before the date,
+    and only receipts banked on or before it. `customer_outstanding` has always
+    taken this; exposing it here is what lets a caller compare against an
+    Express snapshot, which is as-of ITS export date and not today. Every page
+    calls this with no as_of and is unaffected.
     """
     with _ConnCtx(conn, db_path) as c:
         raw = _settlement_rows(c, customer=customer,
-                               date_from=date_from, date_to=date_to)
+                               date_from=date_from, date_to=date_to, as_of=as_of)
     out = [_reconcile(r) for r in raw]
     out.sort(key=lambda d: (d['invoice_date'] or '', d['doc_base']))
     return out
