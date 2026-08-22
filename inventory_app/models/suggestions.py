@@ -11,11 +11,40 @@ binding here is load-bearing: a test patches `models.suggestions.resolve_pending
 report's monkeypatch-retarget section.
 """
 
+import sqlite3
+
+import sku_code_utils
 from database import get_connection
 
 from .products import create_structured_product
 from .mapping import resolve_pending_mappings
 from .bsn_sync import cross_unit_hazard
+
+
+class DuplicateSkuError(Exception):
+    """Raised by `create_now` when the proposed sku_code already belongs to
+    another product (active or inactive — sku_code is unique regardless of
+    is_active). `duplicate_of` is a dict of the colliding row for the
+    caller/client to show and confirm past."""
+    def __init__(self, duplicate_of: dict):
+        self.duplicate_of = duplicate_of
+        super().__init__(
+            f"sku_code collision with product #{duplicate_of['id']}"
+        )
+
+
+class SuggestionAlreadyStagedError(Exception):
+    """Raised by `create_now` when another request already holds
+    `pending_product_suggestions.bsn_code`'s UNIQUE slot for this code —
+    either a genuinely concurrent create_now (the case this guards) or an
+    unrelated pre-existing stage. Either way, create_now must never silently
+    clobber it (see `create_now`'s docstring)."""
+    def __init__(self, bsn_code: str, existing_status: str):
+        self.bsn_code = bsn_code
+        self.existing_status = existing_status
+        super().__init__(
+            f"{bsn_code} already has a {existing_status} suggestion"
+        )
 
 
 def count_pending_suggestions() -> int:
@@ -52,34 +81,28 @@ def get_pending_suggestion(suggestion_id: int):
     return row
 
 
-def save_pending_suggestion(data: dict, user_id: int) -> int:
+def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) -> int:
     """Insert a new staged SKU suggestion. Returns new suggestion id.
-    UPSERT on bsn_code so re-submitting overwrites the prior staged version.
+    UPSERT on bsn_code by default, so re-submitting overwrites the prior
+    staged version (the regular "ส่งให้ manager review" flow).
     `data` may include free-text overrides (brand_other_name, color_code_other,
-    packaging_other) and unit-conversion hints (bsn_unit, unit_conversion_ratio)."""
+    packaging_other) and unit-conversion hints (bsn_unit, unit_conversion_ratio).
+
+    `upsert=False` (used by `create_now`'s claim step) drops the ON CONFLICT
+    clause: a bsn_code that already holds a row (pending OR approved) raises
+    `sqlite3.IntegrityError` instead of silently overwriting it. That's the
+    difference between "re-submitting a stage overwrites the prior draft"
+    (fine, single human iterating) and "two concurrent create_now calls for
+    the same bsn_code" (must not let one clobber the other's payload before
+    it gets approved) — see `create_now`.
+    """
     # Default any missing extras to None so SQL params bind cleanly
     for k in ('brand_other_name', 'color_code_other', 'packaging_other',
               'bsn_unit', 'unit_conversion_ratio',
-              'sub_category', 'sub_category_short_code', 'category_id'):
+              'sub_category', 'sub_category_short_code', 'category_id',
+              'clone_source_pid'):
         data.setdefault(k, None)
-    conn = get_connection()
-    cur = conn.execute("""
-        INSERT INTO pending_product_suggestions
-          (bsn_code, bsn_name, suggested_name, category, series, brand_id,
-           model, size, color_th, color_code, packaging, condition, pack_variant,
-           suggested_cost, suggested_unit_type, units_per_carton, units_per_box,
-           brand_other_name, color_code_other, packaging_other,
-           bsn_unit, unit_conversion_ratio,
-           sub_category, sub_category_short_code, category_id,
-           suggested_by_user_id, status)
-        VALUES
-          (:bsn_code, :bsn_name, :suggested_name, :category, :series, :brand_id,
-           :model, :size, :color_th, :color_code, :packaging, :condition, :pack_variant,
-           :suggested_cost, :suggested_unit_type, :units_per_carton, :units_per_box,
-           :brand_other_name, :color_code_other, :packaging_other,
-           :bsn_unit, :unit_conversion_ratio,
-           :sub_category, :sub_category_short_code, :category_id,
-           :suggested_by_user_id, 'pending')
+    conflict_clause = """
         ON CONFLICT(bsn_code) DO UPDATE SET
             bsn_name = excluded.bsn_name,
             suggested_name = excluded.suggested_name,
@@ -105,15 +128,40 @@ def save_pending_suggestion(data: dict, user_id: int) -> int:
             sub_category = excluded.sub_category,
             sub_category_short_code = excluded.sub_category_short_code,
             category_id = excluded.category_id,
+            clone_source_pid = excluded.clone_source_pid,
             suggested_by_user_id = excluded.suggested_by_user_id,
             status = 'pending'
-    """, {**data, 'suggested_by_user_id': user_id})
-    conn.commit()
-    sid = cur.lastrowid or conn.execute(
-        "SELECT id FROM pending_product_suggestions WHERE bsn_code = ?",
-        (data['bsn_code'],)
-    ).fetchone()[0]
-    conn.close()
+    """ if upsert else ""
+    conn = get_connection()
+    try:
+        cur = conn.execute(f"""
+            INSERT INTO pending_product_suggestions
+              (bsn_code, bsn_name, suggested_name, category, series, brand_id,
+               model, size, color_th, color_code, packaging, condition, pack_variant,
+               suggested_cost, suggested_unit_type, units_per_carton, units_per_box,
+               brand_other_name, color_code_other, packaging_other,
+               bsn_unit, unit_conversion_ratio,
+               sub_category, sub_category_short_code, category_id, clone_source_pid,
+               suggested_by_user_id, status)
+            VALUES
+              (:bsn_code, :bsn_name, :suggested_name, :category, :series, :brand_id,
+               :model, :size, :color_th, :color_code, :packaging, :condition, :pack_variant,
+               :suggested_cost, :suggested_unit_type, :units_per_carton, :units_per_box,
+               :brand_other_name, :color_code_other, :packaging_other,
+               :bsn_unit, :unit_conversion_ratio,
+               :sub_category, :sub_category_short_code, :category_id, :clone_source_pid,
+               :suggested_by_user_id, 'pending'){conflict_clause}
+        """, {**data, 'suggested_by_user_id': user_id})
+        conn.commit()
+        sid = cur.lastrowid or conn.execute(
+            "SELECT id FROM pending_product_suggestions WHERE bsn_code = ?",
+            (data['bsn_code'],)
+        ).fetchone()[0]
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     return sid
 
 
@@ -147,6 +195,16 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         if not packaging_th and d.get('packaging_other'):
             packaging_th = d['packaging_other'].strip() or None
 
+        # Clone provenance: durable in created_via itself rather than a
+        # dedicated flag, matching how the rest of the app already stamps
+        # source ids into this free-text column (claude:split-...,
+        # script alias-round1 ...). clone_source_pid rode along on the
+        # STAGED row (models.suggestions.save_pending_suggestion) so it
+        # survives a stage-now/approve-later gap, not just the one-request
+        # create_now path.
+        created_via = ('smart_mapping_clone_' + str(d['clone_source_pid'])
+                       if d.get('clone_source_pid') else 'smart_mapping')
+
         # Row-insert + name + sku_code all go through the canonical create
         # path. It re-resolves brand_other_name/color_code_other into new FK
         # rows and free-text `category` into `category_id` itself (same
@@ -175,7 +233,7 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
             'cost_price': d.get('suggested_cost') or 0.0,
             'units_per_carton': d.get('units_per_carton') or 1,
             'units_per_box': d.get('units_per_box') or 1,
-        }, 'smart_mapping', conn=conn)
+        }, created_via, conn=conn)
 
         # Upsert mapping (bsn_code → new product) — the non-split catch-all row
         # (bsn_unit='', mig 124 restore). UPDATE-then-INSERT mirrors
@@ -239,3 +297,74 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         raise
     finally:
         conn.close()
+
+
+def create_now(payload: dict, user_id: int, confirm_duplicate: bool = False) -> int:
+    """'สร้างเลย' (mapping-suggest-clone plan, PR3, decision Q7): stage then
+    immediately approve, SERVER-SIDE, in one call — not two client requests.
+    `bsn.py::mapping_save` used to discard the sid `save_pending_suggestion`
+    returns and re-find the row by `bsn_code` before approving; that races
+    the UPSERT on `bsn_code`'s unique key (a second tab or a double-click
+    could approve data it never staged). Doing both here removes the window.
+
+    Still TWO commits under the hood: `save_pending_suggestion` commits, then
+    `approve_pending_suggestion` opens its own connection and commits again.
+    Deliberately NOT merged into one transaction — a failure between them
+    (e.g. the packaging_th CHECK trigger) leaves a pending row, visible and
+    recoverable on the Tab-2 review list, rather than reimplementing
+    approve's own all-or-nothing block here.
+
+    Duplicate guard (Q8/Q12): before staging anything, compute the would-be
+    sku_code the same way `create_structured_product`/`regenerate_for_product`
+    would, and check it against ALL products — active AND inactive.
+    `idx_products_sku_code` has no is_active filter and 49 inactive rows
+    hold sku_codes; an active-only check would pass here and then the new
+    row would silently take a `-<id>` collision suffix instead — the exact
+    event this guard exists to catch, whose collision partner is usually
+    something deliberately merged away. Raises DuplicateSkuError unless
+    `confirm_duplicate=True` (the client's confirmed retry) or there's
+    genuinely no collision. Never a hard block — `-<id>` suffixes exist
+    because genuine look-alikes are real; confirm_duplicate lets the caller
+    create anyway and take that suffix.
+
+    Concurrency guard (the "two create_now for the same bsn_code" case):
+    the CLAIM step below uses `save_pending_suggestion(..., upsert=False)` —
+    a plain INSERT, not the usual UPSERT — so `pending_product_suggestions
+    .bsn_code`'s own UNIQUE constraint is what serializes two overlapping
+    create_now calls: SQLite guarantees only one of two concurrent INSERTs
+    on the same key can ever commit, so the second raises IntegrityError
+    (surfaced here as SuggestionAlreadyStagedError) instead of silently
+    UPSERT-overwriting the first call's row out from under its own
+    approve_pending_suggestion read. This closes the gap the discarded-sid
+    bug (see docstring above) used to open even after fixing the sid itself:
+    passing the right sid means nothing if a second writer can still repoint
+    what that sid's row CONTAINS between save and approve.
+    """
+    if not confirm_duplicate:
+        conn = get_connection()
+        try:
+            proposed_sku = sku_code_utils.preview_sku_code(conn, payload)
+            if proposed_sku:
+                dup = conn.execute(
+                    "SELECT id, product_name, sku_code, is_active FROM products "
+                    "WHERE sku_code = ?",
+                    (proposed_sku,),
+                ).fetchone()
+                if dup:
+                    raise DuplicateSkuError(dict(dup))
+        finally:
+            conn.close()
+
+    try:
+        sid = save_pending_suggestion(payload, user_id, upsert=False)
+    except sqlite3.IntegrityError:
+        conn = get_connection()
+        existing = conn.execute(
+            "SELECT status FROM pending_product_suggestions WHERE bsn_code=?",
+            (payload['bsn_code'],),
+        ).fetchone()
+        conn.close()
+        raise SuggestionAlreadyStagedError(
+            payload['bsn_code'], existing['status'] if existing else 'unknown'
+        )
+    return approve_pending_suggestion(sid, {}, user_id)
