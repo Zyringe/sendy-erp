@@ -389,3 +389,66 @@ def test_approve_form_renders_subcategory_fields_and_prefill(render_client):
     # specifically — the exact wiring that was missing before (the id was
     # rendered with no value= attribute at all pre-fix).
     assert f'id="sug-cat-id-{sid}" value="{_CAT_ID}"' in body
+
+
+# ── Codex review 2026-08-22: clearing an FK picker at approval time ──────────
+
+def test_approve_honours_an_explicit_category_id_clear(tmp_db):
+    """The Tab-2 approve form sends `v('cat-id') || null`, so clearing the
+    Category picker submits an explicit null. That must CLEAR the staged
+    category_id, not be discarded as 'not edited' — otherwise the product is
+    created in the category the manager just removed, and its sku_code keeps
+    that category's short-code prefix."""
+    import sqlite3
+    import models
+
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    cat_id = conn.execute(
+        "SELECT id FROM categories WHERE short_code IS NOT NULL AND short_code <> '' LIMIT 1"
+    ).fetchone()['id']
+    conn.execute("DELETE FROM pending_product_suggestions WHERE bsn_code='ZZCLEAR01'")
+    conn.execute("DELETE FROM product_code_mapping WHERE bsn_code='ZZCLEAR01'")
+    conn.commit()
+    conn.close()
+
+    sid = models.save_pending_suggestion({
+        'bsn_code': 'ZZCLEAR01', 'bsn_name': 'clear-test raw',
+        'suggested_name': 'clear-test product',
+        'category': None, 'category_id': cat_id,
+        'sub_category': 'หมวดทดสอบเคลียร์', 'sub_category_short_code': 'ZCLR',
+        'series': None, 'brand_id': None, 'model': 'ZZC1', 'size': None,
+        'color_th': None, 'color_code': None, 'packaging': None,
+        'condition': None, 'pack_variant': None,
+        'suggested_cost': 0, 'suggested_unit_type': 'ตัว',
+        'units_per_carton': 1, 'units_per_box': 1,
+    }, user_id=1)
+
+    # CONTROL: the staged row really does carry the category we are about to clear.
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    staged = conn.execute(
+        "SELECT category_id FROM pending_product_suggestions WHERE id=?", (sid,)
+    ).fetchone()
+    conn.close()
+    assert staged['category_id'] == cat_id, "fixture did not stage a category_id"
+
+    # The manager clears the picker -> the form submits an explicit null.
+    new_pid = models.approve_pending_suggestion(sid, {'category_id': None}, reviewer_id=1)
+
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT category_id, sku_code FROM products WHERE id=?", (new_pid,)
+    ).fetchone()
+    short = conn.execute(
+        "SELECT short_code FROM categories WHERE id=?", (cat_id,)
+    ).fetchone()['short_code']
+    conn.close()
+
+    assert row['category_id'] is None, (
+        f"the cleared category survived approval as {row['category_id']}"
+    )
+    assert not row['sku_code'].startswith(short + '-'), (
+        f"sku_code {row['sku_code']!r} still carries the cleared category prefix {short!r}"
+    )

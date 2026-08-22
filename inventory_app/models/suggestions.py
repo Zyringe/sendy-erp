@@ -165,6 +165,14 @@ def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) ->
     return sid
 
 
+# Keys the Tab-2 approve form submits as `<value> || null`, so an explicit null
+# is a deliberate CLEAR rather than "not edited". See the merge in
+# approve_pending_suggestion.
+_CLEARABLE_EDIT_KEYS = frozenset({
+    'category_id', 'brand_id', 'color_code', 'packaging',
+})
+
+
 def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int) -> int:
     """Apply manager/admin edits → create product → map BSN code → mark approved.
     Returns the new product id. Single transaction (on `conn`) — the product
@@ -185,9 +193,26 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         if not sug:
             raise ValueError(f'suggestion {suggestion_id} not found or already approved')
 
-        # Merge: edits overrides suggestion
+        # Merge: edits overrides suggestion.
+        #
+        # `is not None` means an omitted key preserves the staged value — right
+        # for a partial edit payload. But the approve form sends its FK pickers
+        # as `v('cat-id') || null`, so CLEARING a picker submits an explicit
+        # null, which this filter would drop: the staged value survives and the
+        # product is created with the very category/brand the manager just
+        # removed (Codex review, 2026-08-22). Same membership-vs-truthiness trap
+        # as the payroll note-clearing bug — a key that is PRESENT is an
+        # instruction to write, even when its value is null.
+        #
+        # Scoped to the FK pickers the approve form can actually clear rather
+        # than applied to every key, so an omitted-vs-null distinction still
+        # protects the free-text fields (which submit '' for a clear, and ''
+        # already passes the filter below).
         d = dict(sug)
-        d.update({k: v for k, v in edits.items() if v is not None})
+        d.update({
+            k: v for k, v in edits.items()
+            if v is not None or k in _CLEARABLE_EDIT_KEYS
+        })
 
         # packaging: free-text override is stored if dropdown empty
         # (may fail CHECK trigger on products INSERT — admin must extend trigger first)
