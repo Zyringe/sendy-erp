@@ -60,18 +60,29 @@ def test_product_detail_renders(admin_client, tmp_db):
 def test_product_detail_created_via_badge(admin_client, tmp_db):
     """P5: the detail page's ที่มา badge maps products.created_via to a
     Thai label (manual/smart_mapping/legacy) and renders nothing for NULL.
-    Uses the isolated tmp_db copy so these writes never touch the live DB."""
+    Uses the isolated tmp_db copy so these writes never touch the live DB.
+
+    mapping-suggest-clone PR3 extends this: created_via=
+    'smart_mapping_clone_<source_pid>' is a PREFIX match, not another
+    exact-dict entry (the source pid varies per row) — pin that the row
+    still renders (doesn't silently vanish like the NULL case) and shows
+    the source pid, without breaking any of the three pre-existing exact
+    matches or the NULL-renders-nothing case above."""
     conn = sqlite3.connect(tmp_db)
     ids = [r[0] for r in conn.execute(
-        "SELECT id FROM products WHERE is_active = 1 ORDER BY id LIMIT 4"
+        "SELECT id FROM products WHERE is_active = 1 ORDER BY id LIMIT 5"
     ).fetchall()]
-    if len(ids) < 4:
-        pytest.skip("Need at least 4 active products in live DB clone")
-    pid_manual, pid_smart, pid_legacy, pid_null = ids
+    if len(ids) < 5:
+        pytest.skip("Need at least 5 active products in live DB clone")
+    pid_manual, pid_smart, pid_legacy, pid_null, pid_clone = ids
     conn.execute("UPDATE products SET created_via='manual' WHERE id=?", (pid_manual,))
     conn.execute("UPDATE products SET created_via='smart_mapping' WHERE id=?", (pid_smart,))
     conn.execute("UPDATE products SET created_via='legacy' WHERE id=?", (pid_legacy,))
     conn.execute("UPDATE products SET created_via=NULL WHERE id=?", (pid_null,))
+    conn.execute(
+        "UPDATE products SET created_via=? WHERE id=?",
+        (f'smart_mapping_clone_{pid_manual}', pid_clone),
+    )
     conn.commit()
     conn.close()
 
@@ -90,6 +101,12 @@ def test_product_detail_created_via_badge(admin_client, tmp_db):
     resp = admin_client.get(f'/products/{pid_null}')
     assert resp.status_code == 200
     assert 'ที่มา</td>' not in resp.data.decode('utf-8')
+
+    resp = admin_client.get(f'/products/{pid_clone}')
+    assert resp.status_code == 200
+    body = resp.data.decode('utf-8')
+    assert 'ที่มา</td>' in body, "clone provenance must still render, not vanish like NULL"
+    assert f'คัดลอกจาก #{pid_manual}' in body
 
 
 def test_product_cost_history_returns_json(admin_client, tmp_db):
