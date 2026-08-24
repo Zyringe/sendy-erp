@@ -640,9 +640,17 @@ def test_clone_status_server_renders_disarmed_state_on_failure_with_bad_pid(
 # ── Red #4: the hidden field + the live JS both arm and clear it ───────────
 
 def test_product_new_get_renders_clone_source_pid_hidden_input(admin_client):
+    """Review finding 2: checking only `id=` is satisfied even with
+    `name="clone_source_pid"` removed — every route test in this file POSTs
+    the field directly by name, so a missing `name` would only ever show up
+    in a real browser submit (which never reaches these tests). Assert the
+    attributes that actually make it a POSTed form field."""
     client, _db = admin_client
     html = client.get('/products/new').get_data(as_text=True)
-    assert 'id="clone_source_pid"' in html
+    tags = _HIDDEN_CLONE_PID_TAG_RE.findall(html)
+    assert len(tags) == 1, f"expected exactly one clone_source_pid input, found {len(tags)}"
+    assert 'type="hidden"' in tags[0], f"must be type=hidden: {tags[0]!r}"
+    assert 'name="clone_source_pid"' in tags[0], f"must POST as clone_source_pid: {tags[0]!r}"
 
 
 def test_clone_from_product_routes_state_through_set_clone_source(admin_client):
@@ -663,6 +671,17 @@ def test_clone_from_product_routes_state_through_set_clone_source(admin_client):
         "through setCloneSource() (D10a)"
     )
     assert 'function setCloneSource(' in live, "setCloneSource helper must exist"
+
+    # Review finding 2: the two assertions above are satisfied even with
+    # setCloneSource's ENTIRE BODY deleted (an empty function still matches
+    # 'function setCloneSource(' and still keeps cloneFromProduct free of a
+    # direct textContent write). Inspect the helper's own body for the
+    # three writes D10a actually requires — hidden value, status text, and
+    # clear-button visibility.
+    helper_src = _extract_js_function(live, 'setCloneSource')
+    assert 'hidden.value =' in helper_src, "setCloneSource must write the hidden clone_source_pid value"
+    assert 'text.textContent =' in helper_src, "setCloneSource must write the status text"
+    assert "classList.toggle('d-none'" in helper_src, "setCloneSource must toggle the clear button's visibility"
 
 
 def test_set_clone_source_call_shapes_are_unambiguous(admin_client):
@@ -700,6 +719,13 @@ def test_set_clone_source_call_shapes_are_unambiguous(admin_client):
         "a ล้าง listener wired to #clone-clear must exist to call "
         "setCloneSource(null, ...) — the only path that disarms (D10c)"
     )
+
+    # Review finding 2: 'setCloneSource(RETAIN' count == 2 still passes if
+    # `var RETAIN = {};` itself is deleted — the two call sites still read
+    # as literal text, but at runtime RETAIN is then undefined and every
+    # clone-failure path throws a ReferenceError before setCloneSource ever
+    # runs. Pin the declaration, not just its use.
+    assert 'var RETAIN = {}' in live, "RETAIN sentinel must be declared (undeclared use throws ReferenceError at runtime)"
 
 
 def test_clone_seq_guard_checked_before_state_write_in_then_and_catch(admin_client):
@@ -743,6 +769,12 @@ def test_clone_seq_increments_on_clone_start_and_on_clear(admin_client):
         "_cloneSeq must be incremented in exactly two places: clone-start "
         "(inside cloneFromProduct) and clear (the ล้าง handler) — D7"
     )
+    # Review finding 2: the count above still passes if `var _cloneSeq = 0;`
+    # itself is deleted — both `++_cloneSeq` occurrences are still literal
+    # text, but at runtime the first clone throws a ReferenceError before
+    # `fetch` is even called (reading an undeclared identifier to increment
+    # it is not the same as assigning one). Pin the declaration too.
+    assert 'var _cloneSeq = 0' in live, "_cloneSeq must be declared (undeclared use throws ReferenceError at runtime)"
 
 
 def test_retain_message_names_the_still_armed_source_on_failure(admin_client):
