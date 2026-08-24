@@ -751,14 +751,51 @@ def test_clone_seq_increments_on_clone_start_and_on_clear(admin_client):
 #    expected to be red now ─────────────────────────────────────────────
 
 def test_product_new_post_with_nonexistent_clone_source_pid_falls_back_to_manual(
-    admin_client, nonexistent_pid, caplog
+    admin_client, nonexistent_pid
 ):
-    """#6: a pid that resolves to no product still creates the row as
-    plain 'manual', and D4 requires a WARNING to be logged (so a real bug
-    stays visible instead of silently becoming indistinguishable from a
-    genuine hand-typed product)."""
+    """#6 (fallback half only — see the JUDGMENT CALL note on the sibling
+    test below): a pid that resolves to no product still creates the row
+    as plain 'manual'. This half is genuinely already green on
+    origin/main — :384 hardcodes 'manual' regardless of what
+    clone_source_pid carries."""
     client, db_path = admin_client
     product_name = 'pytest PR5 nonexistent pid fallback'
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM products WHERE product_name = ?", (product_name,))
+    conn.commit()
+    conn.close()
+
+    resp = client.post('/products/new', data={
+        'product_name': product_name,
+        'unit_type': 'ตัว',
+        'clone_source_pid': str(nonexistent_pid),
+    }, follow_redirects=False)
+    assert resp.status_code == 302, resp.data[:500]
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT created_via FROM products WHERE product_name = ?", (product_name,)
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row['created_via'] == 'manual'
+
+
+def test_product_new_post_with_nonexistent_clone_source_pid_logs_warning(
+    admin_client, nonexistent_pid, caplog
+):
+    """#6 (warning half) / D4: "log a warning when a non-blank value fails
+    to resolve." JUDGMENT CALL: the plan's verification contract lists this
+    warning as part of item #6 and buckets #6-9 together as "already
+    green," but the warning itself is NEW behavior — nothing on
+    origin/main calls current_app.logger.warning for clone_source_pid, so
+    this half is genuinely RED today, unlike the fallback half above.
+    Split into its own test so the "already green" claim in the sibling
+    test above is actually true as written, and this one is honestly
+    reported as red-first."""
+    client, db_path = admin_client
+    product_name = 'pytest PR5 nonexistent pid warning'
     conn = sqlite3.connect(db_path)
     conn.execute("DELETE FROM products WHERE product_name = ?", (product_name,))
     conn.commit()
@@ -771,15 +808,6 @@ def test_product_new_post_with_nonexistent_clone_source_pid_falls_back_to_manual
             'clone_source_pid': str(nonexistent_pid),
         }, follow_redirects=False)
     assert resp.status_code == 302, resp.data[:500]
-
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT created_via FROM products WHERE product_name = ?", (product_name,)
-    ).fetchone()
-    conn.close()
-    assert row is not None
-    assert row['created_via'] == 'manual'
 
     assert any(
         str(nonexistent_pid) in r.getMessage() and r.levelno >= logging.WARNING
