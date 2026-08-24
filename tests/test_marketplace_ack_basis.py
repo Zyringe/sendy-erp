@@ -96,9 +96,15 @@ def ack_conn(tmp_db_conn):
     _sale('IV9400001L', 120.0)
     laz = _order('lazada', PREFIX + 'LAZ', 'IV9400001L', payout=90.0, item_value=100.0)
 
-    # Shopee CONTROL: basis IS actual_payout, so both paths already agreed.
+    # Shopee CONTROL: basis IS actual_payout. It carries a DISTINCT item_total
+    # (77) on purpose — with that column NULL the control could not tell plain
+    # `actual_payout` apart from `COALESCE(item_total, actual_payout)`, so a
+    # regression that gave Shopee the Lazada treatment would stay invisible
+    # (Codex, 2026-08-24).
     _sale('IV9400002S', 120.0)
     shp = _order('shopee', PREFIX + 'SHP', 'IV9400002S', payout=90.0)
+    c.execute("UPDATE marketplace_orders SET item_total = 77.0 WHERE order_sn = ?",
+              (PREFIX + 'SHP',))
 
     c.commit()
     return c, laz, shp
@@ -168,10 +174,16 @@ def test_stored_d_bill_equals_the_page_value_on_both_platforms(ack_conn):
         assert abs(res['d_bill'] - page['d_bill']) < 0.005, (
             '%s: stored %r != page %r' % (platform, res['d_bill'], page['d_bill']))
 
-    # And they must not be the SAME number on both platforms — if they were, the
-    # fixture would not be distinguishing the two bases and every assertion above
-    # would pass for the wrong reason.
+    # ⚠ Round-trip agreement alone is NOT enough: both sides read the same
+    # constant, so a WRONG shared formula would still agree with itself. Pin the
+    # arithmetic each platform is supposed to do (Codex, 2026-08-24).
     laz_row = _row(conn, 'lazada', PREFIX + 'LAZ')
     shp_row = _row(conn, 'shopee', PREFIX + 'SHP')
-    assert abs(laz_row['d_bill'] - shp_row['d_bill']) > 0.005, (
-        'CONTROL: the two platforms must differ, else the test cannot see a basis bug')
+
+    # Lazada: basis = item_value 100 (NOT payout 90) -> 120 - 100 = 20
+    assert laz_row['basis'] == pytest.approx(100.0), 'Lazada must use item_value'
+    assert laz_row['d_bill'] == pytest.approx(20.0)
+    # Shopee: basis = payout 90, ignoring its item_total of 77 -> 120 - 90 = 30
+    assert shp_row['basis'] == pytest.approx(90.0), (
+        'Shopee must use actual_payout and ignore item_total')
+    assert shp_row['d_bill'] == pytest.approx(30.0)
