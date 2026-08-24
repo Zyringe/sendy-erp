@@ -26,8 +26,21 @@ import pytest
 _NAME_SOURCE = 'ทดสอบ badge PR5 — clone source — ห้ามลบมือ'
 _NAME_MANUAL = 'ทดสอบ badge PR5 — manual — ห้ามลบมือ'
 _NAME_MANUAL_CLONE = 'ทดสอบ badge PR5 — manual_clone — ห้ามลบมือ'
+_NAME_SMART_MAPPING = 'ทดสอบ badge PR5 — smart_mapping — ห้ามลบมือ'
+_NAME_LEGACY = 'ทดสอบ badge PR5 — legacy — ห้ามลบมือ'
+_NAME_NULL = 'ทดสอบ badge PR5 — null — ห้ามลบมือ'
+_NAME_SMART_MAPPING_CLONE = 'ทดสอบ badge PR5 — smart_mapping_clone — ห้ามลบมือ'
 
-_ALL_NAMES = [_NAME_SOURCE, _NAME_MANUAL, _NAME_MANUAL_CLONE]
+# Review finding 3 / plan.md:158: the OWNED fixture must cover all SIX
+# created_via shapes the badge renders — manual / smart_mapping / legacy /
+# NULL / smart_mapping_clone_ / manual_clone_ — not just the two new-token
+# rows. Before this, deleting the pre-existing smart_mapping_clone_ branch
+# from detail.html left this file's own test green; only the inherited,
+# skip-if-<5-rows test in test_bp_products_routes.py still covered it.
+_ALL_NAMES = [
+    _NAME_SOURCE, _NAME_MANUAL, _NAME_MANUAL_CLONE,
+    _NAME_SMART_MAPPING, _NAME_LEGACY, _NAME_NULL, _NAME_SMART_MAPPING_CLONE,
+]
 
 
 @pytest.fixture
@@ -44,9 +57,9 @@ def admin_client(tmp_db):
 
 @pytest.fixture
 def badge_rows(tmp_db):
-    """Owned rows for the two created_via shapes this test needs (a plain
-    'manual' CONTROL row + a 'manual_clone_<source pid>' row), keyed by
-    unique test product names — DELETE-then-INSERT, never inherited."""
+    """Owned rows for all SIX created_via shapes the badge renders (plan.md
+    :158), keyed by unique test product names — DELETE-then-INSERT, never
+    inherited."""
     conn = sqlite3.connect(tmp_db)
     for name in _ALL_NAMES:
         conn.execute("DELETE FROM products WHERE product_name = ?", (name,))
@@ -64,6 +77,10 @@ def badge_rows(tmp_db):
     pid_source = _insert(_NAME_SOURCE, 'manual')
     pid_manual = _insert(_NAME_MANUAL, 'manual')
     pid_manual_clone = _insert(_NAME_MANUAL_CLONE, f'manual_clone_{pid_source}')
+    pid_smart_mapping = _insert(_NAME_SMART_MAPPING, 'smart_mapping')
+    pid_legacy = _insert(_NAME_LEGACY, 'legacy')
+    pid_null = _insert(_NAME_NULL, None)
+    pid_smart_mapping_clone = _insert(_NAME_SMART_MAPPING_CLONE, f'smart_mapping_clone_{pid_source}')
     conn.commit()
 
     # Assert the row COUNT before asserting anything about the rows
@@ -82,7 +99,15 @@ def badge_rows(tmp_db):
         "insert/dedup bug in the fixture itself, not the feature under test"
     )
 
-    return {'source': pid_source, 'manual': pid_manual, 'manual_clone': pid_manual_clone}
+    return {
+        'source': pid_source,
+        'manual': pid_manual,
+        'manual_clone': pid_manual_clone,
+        'smart_mapping': pid_smart_mapping,
+        'legacy': pid_legacy,
+        'null': pid_null,
+        'smart_mapping_clone': pid_smart_mapping_clone,
+    }
 
 
 def test_manual_clone_badge_renders_label_with_source_pid(admin_client, badge_rows):
@@ -107,3 +132,31 @@ def test_manual_clone_badge_renders_label_with_source_pid(admin_client, badge_ro
     assert resp.status_code == 200, resp.data[:500]
     html = resp.data.decode('utf-8')
     assert f">เพิ่มเอง (คัดลอกจาก #{badge_rows['source']})<" in html
+
+
+def test_created_via_badge_covers_the_remaining_four_states(admin_client, badge_rows):
+    """Review finding 3 / plan.md:158: the two pre-existing exact-dict
+    labels (smart_mapping, legacy), the NULL-renders-nothing case, and the
+    pre-existing smart_mapping_clone_ prefix branch must ALSO be owned
+    here, not left to the inherited/skippable test in
+    test_bp_products_routes.py. Without this, deleting the
+    smart_mapping_clone_ branch from detail.html left this file's own test
+    green — the only thing that would have caught it was a test that can
+    itself be skipped (fewer than 5 active rows in whatever DB CI happens
+    to run against)."""
+    resp = admin_client.get(f"/products/{badge_rows['smart_mapping']}")
+    assert resp.status_code == 200, resp.data[:500]
+    assert '>จาก Smart Mapping<' in resp.data.decode('utf-8')
+
+    resp = admin_client.get(f"/products/{badge_rows['legacy']}")
+    assert resp.status_code == 200, resp.data[:500]
+    assert '>เดิม<' in resp.data.decode('utf-8')
+
+    resp = admin_client.get(f"/products/{badge_rows['null']}")
+    assert resp.status_code == 200, resp.data[:500]
+    assert 'ที่มา</td>' not in resp.data.decode('utf-8'), "NULL created_via must render no ที่มา row at all"
+
+    resp = admin_client.get(f"/products/{badge_rows['smart_mapping_clone']}")
+    assert resp.status_code == 200, resp.data[:500]
+    html = resp.data.decode('utf-8')
+    assert f">จาก Smart Mapping (คัดลอกจาก #{badge_rows['source']})<" in html
