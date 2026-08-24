@@ -36,10 +36,13 @@ not exercised at runtime. A real runtime demo needs a browser click-through
 against a synthetic mismatch (no live product reaches this branch) — the
 function is short enough to review directly instead.
 """
+import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
@@ -471,6 +474,196 @@ def _extract_callback_body(src, anchor):
     raise AssertionError(f"unbalanced braces extracting callback at {anchor!r}")
 
 
+def _extract_retain_declaration(live):
+    """`var RETAIN = {};` verbatim from the live source (not hardcoded) —
+    used to feed the executable contract test the REAL declaration rather
+    than a Python-side guess at its shape."""
+    start = live.index('var RETAIN')
+    end = live.index(';', start) + 1
+    return live[start:end]
+
+
+# ── Executable JS contract test for setCloneSource (Codex review: source-
+# substring pins on this function are provably vacuous under mutation —
+# `hidden.value =` still matches `hidden.value ==`, and 'hidden'/'​.value'
+# being merely PRESENT in the RETAIN branch doesn't pin WHICH branch reads
+# armedPid). Run the REAL rendered function under node with a tiny hand-
+# written DOM stub and assert OBSERVED STATE instead. ─────────────────────
+
+def _node_executable():
+    found = shutil.which('node')
+    if found:
+        return found
+    # This repo has no prior node precedent / no pinned PATH entry for it —
+    # fall back to the known Homebrew location noted in the dispatch brief.
+    fallback = '/opt/homebrew/bin/node'
+    return fallback if os.path.exists(fallback) else None
+
+
+# Fakes only the three DOM surfaces setCloneSource touches: a hidden input's
+# .value, a span's .textContent, and a button's classList.toggle. No jsdom —
+# real getElementById/classList semantics are a few lines each.
+_DOM_STUB = r"""
+function makeClassList(initial) {
+  var classes = {};
+  (initial || []).forEach(function (c) { classes[c] = true; });
+  return {
+    contains: function (c) { return !!classes[c]; },
+    toggle: function (c, force) {
+      if (force === undefined) {
+        if (classes[c]) { delete classes[c]; return false; }
+        classes[c] = true;
+        return true;
+      }
+      if (force) { classes[c] = true; } else { delete classes[c]; }
+      return !!force;
+    }
+  };
+}
+
+// A real <input>.value setter always coerces to string (setting it to the
+// number 23 reads back as "23") — reproduce that so a stub-only pass can't
+// hide `hidden.value = pid` losing the coercion a real input gives for free.
+function makeHiddenInput() {
+  var raw = '';
+  return {
+    get value() { return raw; },
+    set value(v) { raw = String(v); }
+  };
+}
+
+var elements = {
+  'clone_source_pid': makeHiddenInput(),
+  'clone-status-text': { textContent: '' },
+  'clone-clear': { classList: makeClassList(['d-none']) }
+};
+
+var document = {
+  getElementById: function (id) {
+    return Object.prototype.hasOwnProperty.call(elements, id) ? elements[id] : null;
+  }
+};
+"""
+
+# Drives setCloneSource through the four contract cases and prints one JSON
+# snapshot per case. Deliberately does NOT touch cloneFromProduct/fetch —
+# that needs a real network stub this repo has no precedent for; the
+# _cloneSeq ordering guard stays a scoped source pin (see the two tests
+# below this one).
+_CONTRACT_DRIVER = r"""
+var results = [];
+function snapshot(label) {
+  results.push({
+    label: label,
+    hiddenValue: elements['clone_source_pid'].value,
+    statusText: elements['clone-status-text'].textContent,
+    clearHidden: elements['clone-clear'].classList.contains('d-none')
+  });
+}
+
+setCloneSource(23, 'คัดลอกจาก #23 แล้ว — ตรวจสอบก่อนบันทึก');
+snapshot('armed');
+
+setCloneSource(null, '');
+snapshot('cleared');
+
+setCloneSource(23, 'คัดลอกจาก #23 แล้ว — ตรวจสอบก่อนบันทึก');
+setCloneSource(RETAIN, 'โหลดข้อมูลสินค้าไม่สำเร็จ');
+snapshot('retain_with_armed');
+
+setCloneSource(null, '');
+setCloneSource(RETAIN, 'โหลดข้อมูลสินค้าไม่สำเร็จ');
+snapshot('retain_with_nothing_armed');
+
+process.stdout.write(JSON.stringify(results));
+"""
+
+
+def test_set_clone_source_executable_contract(admin_client, tmp_path):
+    """Executable contract test (Codex review finding): runs the REAL
+    rendered setCloneSource under node with a tiny DOM stub and drives it
+    through all four call shapes, asserting OBSERVED STATE — not source
+    substrings. This is what actually catches the two mutations the
+    source-pin tests below (and the now-deleted
+    test_retain_message_names_the_still_armed_source_on_failure) could not:
+
+      1. `hidden.value =` -> `hidden.value ==` (a no-op comparison, thrown
+         away) — the old pin `'hidden.value =' in helper_src` still matches
+         `==` because it's a substring of it. Here, the 'armed' snapshot's
+         hiddenValue would stay '' instead of becoming '23'.
+      2. `var armedPid = hidden ? '' : hidden.value;` (the two ternary
+         branches swapped) — every source pin that only checked 'hidden'
+         and '.value' were *present* in the RETAIN section still passed,
+         because both identifiers are still there, just on the wrong side.
+         Here, armedPid becomes '' whenever a real element exists, so
+         'retain_with_armed' would show the plain fallback message instead
+         of naming #23.
+
+    Node-absent handling: if `node` is not on PATH (and not at the
+    Homebrew fallback), SKIP only this test — never fall back to a weaker
+    check silently. The remaining source-substring tests in this file
+    (test_clone_from_product_routes_state_through_set_clone_source,
+    test_set_clone_source_call_shapes_are_unambiguous, the two _cloneSeq
+    tests) still run unconditionally and catch outright DELETION of these
+    lines even with node unavailable — they just cannot catch a same-
+    length swap like this one.
+    """
+    node = _node_executable()
+    if not node:
+        pytest.skip(
+            "node not found on PATH or at /opt/homebrew/bin/node — "
+            "executable JS contract test skipped; the source-substring "
+            "pins for setCloneSource still run and catch outright deletion"
+        )
+
+    client, _db = admin_client
+    live = _live_js(client.get('/products/new').get_data(as_text=True))
+    retain_decl = _extract_retain_declaration(live)
+    fn_src = _extract_js_function(live, 'setCloneSource')
+
+    script = '\n'.join([_DOM_STUB, retain_decl, fn_src, _CONTRACT_DRIVER])
+    script_path = tmp_path / 'set_clone_source_contract.js'
+    script_path.write_text(script, encoding='utf-8')
+
+    proc = subprocess.run(
+        [node, str(script_path)], capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0, (
+        f"node execution of the extracted setCloneSource failed "
+        f"(stderr):\n{proc.stderr}\n\n--- extracted script ---\n{script}"
+    )
+    results = {row['label']: row for row in json.loads(proc.stdout)}
+
+    armed = results['armed']
+    assert armed['hiddenValue'] == '23', (
+        f"setCloneSource(23, ...) must write the hidden pid, got {armed!r} "
+        "(catches `hidden.value =` -> `hidden.value ==`)"
+    )
+    assert armed['statusText'] == 'คัดลอกจาก #23 แล้ว — ตรวจสอบก่อนบันทึก'
+    assert armed['clearHidden'] is False, "clear button must be shown once a source is armed"
+
+    cleared = results['cleared']
+    assert cleared['hiddenValue'] == ''
+    assert cleared['statusText'] == ''
+    assert cleared['clearHidden'] is True, "clear button must hide once disarmed"
+
+    retain_armed = results['retain_with_armed']
+    assert retain_armed['hiddenValue'] == '23', "RETAIN must keep whatever pid was armed"
+    assert 'ยังคัดลอกจาก #23' in retain_armed['statusText'], (
+        f"RETAIN with an armed source must name it in the message, got "
+        f"{retain_armed!r} (catches "
+        "`var armedPid = hidden ? '' : hidden.value;` — branches swapped, "
+        "which would read the plain fallback instead of naming #23)"
+    )
+    assert retain_armed['clearHidden'] is False, "RETAIN must not touch clear-button visibility"
+
+    retain_empty = results['retain_with_nothing_armed']
+    assert retain_empty['hiddenValue'] == ''
+    assert retain_empty['statusText'] == 'โหลดข้อมูลสินค้าไม่สำเร็จ', (
+        "RETAIN with nothing armed must fall back to the plain error message"
+    )
+
+
 @pytest.fixture
 def nonexistent_pid(tmp_db):
     """A pid guaranteed to name no product — derived from the live clone's
@@ -672,16 +865,15 @@ def test_clone_from_product_routes_state_through_set_clone_source(admin_client):
     )
     assert 'function setCloneSource(' in live, "setCloneSource helper must exist"
 
-    # Review finding 2: the two assertions above are satisfied even with
-    # setCloneSource's ENTIRE BODY deleted (an empty function still matches
-    # 'function setCloneSource(' and still keeps cloneFromProduct free of a
-    # direct textContent write). Inspect the helper's own body for the
-    # three writes D10a actually requires — hidden value, status text, and
-    # clear-button visibility.
-    helper_src = _extract_js_function(live, 'setCloneSource')
-    assert 'hidden.value =' in helper_src, "setCloneSource must write the hidden clone_source_pid value"
-    assert 'text.textContent =' in helper_src, "setCloneSource must write the status text"
-    assert "classList.toggle('d-none'" in helper_src, "setCloneSource must toggle the clear button's visibility"
+    # Review finding 2 originally added three "does the body CONTAIN these
+    # substrings" assertions here, because the two above are satisfied even
+    # with setCloneSource's ENTIRE BODY deleted. That's now proven the
+    # stronger way — by actually CALLING the helper and observing the
+    # hidden value / status text / clear-button visibility change — in
+    # test_set_clone_source_executable_contract below. An empty
+    # setCloneSource fails that test outright (every snapshot would show
+    # the untouched initial state), so the source-substring version here
+    # would be redundant with it and was removed.
 
 
 def test_set_clone_source_call_shapes_are_unambiguous(admin_client):
@@ -759,66 +951,54 @@ def test_clone_seq_guard_checked_before_state_write_in_then_and_catch(admin_clie
 
 
 def test_clone_seq_increments_on_clone_start_and_on_clear(admin_client):
-    """D7: _cloneSeq must be incremented on clone-START (invalidating any
-    in-flight older fetch) AND on CLEAR (so ล้าง mid-flight can't be undone
-    by a stale response landing after it) — same idiom as _pnPreviewSeq
-    (form.html:457-505), which this file already exercises above."""
+    """D7 + review finding (mutation 3): _cloneSeq must be incremented in
+    TWO DIFFERENT PLACES — once inside cloneFromProduct (clone-start) and
+    once inside the ล้าง click handler (clear) — same idiom as
+    _pnPreviewSeq (form.html:457-505), which this file already exercises
+    above.
+
+    A file-wide `live.count('++_cloneSeq') == 2` is satisfied even when
+    BOTH increments sit inside cloneFromProduct and the clear handler has
+    none: clicking ล้าง then no longer invalidates an in-flight clone
+    fetch, so a stale response landing after the clear silently re-arms
+    the source the operator just cleared. Scope each count to its own
+    function body so that move cannot hide."""
     client, _db = admin_client
     live = _live_js(client.get('/products/new').get_data(as_text=True))
-    assert live.count('++_cloneSeq') == 2, (
-        "_cloneSeq must be incremented in exactly two places: clone-start "
-        "(inside cloneFromProduct) and clear (the ล้าง handler) — D7"
+
+    clone_fn_src = _extract_js_function(live, 'cloneFromProduct')
+    assert clone_fn_src.count('++_cloneSeq') == 1, (
+        "cloneFromProduct must increment _cloneSeq exactly once (clone-start) — D7"
     )
-    # Review finding 2: the count above still passes if `var _cloneSeq = 0;`
-    # itself is deleted — both `++_cloneSeq` occurrences are still literal
+
+    clear_handler_src = _extract_callback_body(
+        live, "clearBtn.addEventListener('click', function ()"
+    )
+    assert clear_handler_src.count('++_cloneSeq') == 1, (
+        "the ล้าง click handler must increment _cloneSeq exactly once "
+        "(clear) — D7. A version that moves this increment next to the "
+        "clone-start one leaves the file-wide count at 2 while silently "
+        "losing clear's invalidation of an in-flight fetch."
+    )
+
+    # Review finding 2: the counts above still pass if `var _cloneSeq = 0;`
+    # itself is deleted — every `++_cloneSeq` occurrence is still literal
     # text, but at runtime the first clone throws a ReferenceError before
     # `fetch` is even called (reading an undeclared identifier to increment
     # it is not the same as assigning one). Pin the declaration too.
     assert 'var _cloneSeq = 0' in live, "_cloneSeq must be declared (undeclared use throws ReferenceError at runtime)"
 
 
-def test_retain_message_names_the_still_armed_source_on_failure(admin_client):
-    """Review finding 1: both clone-failure paths call
-    setCloneSource(RETAIN, 'โหลดข้อมูลสินค้าไม่สำเร็จ'). RETAIN correctly
-    KEEPS whatever pid is armed (D10b), but before this fix the message was
-    overwritten with that bare error unconditionally. Sequence: clone A
-    succeeds (hidden=A, fields=A's copy) -> clone B fails -> the operator
-    saw only 'โหลดข้อมูลสินค้าไม่สำเร็จ', with no sign A is still armed and
-    will be stamped on save. D10's whole point is "visible whenever it is
-    armed" — a silent bare error violates it.
-
-    Pinned structurally (no JS runner in this repo — same idiom as the
-    _cloneSeq/call-shape tests above): the code that only runs for a RETAIN
-    call must read the hidden input's CURRENT value and emit one of two
-    distinct message shapes depending on it."""
-    client, _db = admin_client
-    live = _live_js(client.get('/products/new').get_data(as_text=True))
-    fn_src = _extract_js_function(live, 'setCloneSource')
-
-    retain_guard = fn_src.index('pid !== RETAIN')
-    armed_msg = fn_src.index('ยังคัดลอกจาก #')
-    assert retain_guard < armed_msg, (
-        "the still-armed message must be built by code that only runs "
-        "AFTER the RETAIN check, not in the shared/non-RETAIN branch"
-    )
-
-    # Between the check and the message, the CURRENT hidden-input value
-    # must be read — not a value captured earlier, which would go stale
-    # the moment a later clear/clone changed it.
-    retain_section = fn_src[retain_guard:armed_msg]
-    assert 'hidden' in retain_section and '.value' in retain_section, (
-        "RETAIN handling must read the hidden input's current value to "
-        "know whether a source is still armed"
-    )
-
-    # Shape 2: nothing armed -> fall back to the plain error the caller
-    # passed in, claiming no provenance (D10b's other half) — a ternary
-    # or if/else, not an unconditional overwrite of the armed-pid message.
-    after_armed_msg = fn_src[armed_msg:]
-    assert ':' in after_armed_msg and 'message' in after_armed_msg, (
-        "the still-armed message must be conditional, with the plain "
-        "'message' argument as the fallback when nothing is armed"
-    )
+# test_retain_message_names_the_still_armed_source_on_failure (Review
+# finding 1) used to live here as a source-only pin on setCloneSource's
+# RETAIN branch. It only checked that 'hidden' and '.value' were PRESENT
+# between the RETAIN guard and the still-armed message — which stays true
+# even with the branches of `var armedPid = hidden ? '' : hidden.value;`
+# SWAPPED (both identifiers are still there, just on the wrong side).
+# test_set_clone_source_executable_contract above supersedes it by
+# actually calling setCloneSource(RETAIN, ...) with a source armed and
+# asserting the rendered message names it — which that swap DOES break.
+# Deleted rather than kept alongside the stronger executable test.
 
 
 # ── Regression / already-green (#6-#9): the fallback already exists on
