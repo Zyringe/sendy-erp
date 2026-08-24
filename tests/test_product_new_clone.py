@@ -727,7 +727,13 @@ _CLONE_FROM_PRODUCT_DRIVER = r"""
 function fetchPnIdentityPreview() {}
 
 var _fetchImpl = null;
-function fetch(url) { return _fetchImpl(url); }
+// Records the URL cloneFromProduct actually requested, so a mutation of the
+// '/products/spec/' + pid literal (review finding 2 — the stub used to
+// accept `url` and ignore it entirely, so any URL, even a broken one, left
+// every snapshot identical) is visible: the wrong URL shows up right here
+// instead of being thrown away unread.
+var _lastUrl = null;
+function fetch(url) { _lastUrl = url; return _fetchImpl(url); }
 
 var results = [];
 function snapshot(label) {
@@ -735,7 +741,8 @@ function snapshot(label) {
     label: label,
     hiddenValue: elements['clone_source_pid'].value,
     statusText: elements['clone-status-text'].textContent,
-    clearHidden: elements['clone-clear'].classList.contains('d-none')
+    clearHidden: elements['clone-clear'].classList.contains('d-none'),
+    requestedUrl: _lastUrl
   });
 }
 
@@ -842,11 +849,19 @@ def test_clone_from_product_executable_contract(admin_client, tmp_path):
         "provenance while the status shows nothing (D10)"
     )
     assert success['clearHidden'] is False, "clear button must show once a source is armed"
+    assert success['requestedUrl'] == '/products/spec/23', (
+        f"got {success!r} — cloneFromProduct must fetch /products/spec/<pid>, the "
+        "exact pid it was called with. Review finding 2: the stub used to accept "
+        "`url` and ignore it, so changing the request URL to a broken path left "
+        "every prior snapshot identical (the stub returned its configured "
+        "response regardless of what was actually requested)."
+    )
 
     spec_error = results['spec_error']
     assert spec_error['hiddenValue'] == '23', (
         "a spec.error response must RETAIN the already-armed pid, not disarm it"
     )
+    assert spec_error['requestedUrl'] == '/products/spec/23'
     assert spec_error['statusText'] == 'โหลดสินค้าใหม่ไม่สำเร็จ — ยังคัดลอกจาก #23', (
         f"got {spec_error!r} — the spec.error branch must call the REAL "
         "setCloneSource(RETAIN, ...) so the rendered message names the "
@@ -861,11 +876,13 @@ def test_clone_from_product_executable_contract(admin_client, tmp_path):
     # already left the identical RETAIN-shaped text sitting in statusText.
     rearm_99 = results['rearm_99']
     assert rearm_99['hiddenValue'] == '99', "sanity: re-arm before the .catch scenario must succeed"
+    assert rearm_99['requestedUrl'] == '/products/spec/99'
 
     fetch_rejected = results['fetch_rejected']
     assert fetch_rejected['hiddenValue'] == '99', (
         "a rejected fetch (.catch) must RETAIN the already-armed pid, not disarm it"
     )
+    assert fetch_rejected['requestedUrl'] == '/products/spec/99'
     assert fetch_rejected['statusText'] == 'โหลดสินค้าใหม่ไม่สำเร็จ — ยังคัดลอกจาก #99', (
         f"got {fetch_rejected!r} — the .catch branch must ALSO call the REAL "
         "setCloneSource(RETAIN, ...), not just the spec.error branch. Armed "
@@ -874,6 +891,224 @@ def test_clone_from_product_executable_contract(admin_client, tmp_path):
         "— it would show #99 for a success-shaped or blank message instead"
     )
     assert fetch_rejected['clearHidden'] is False, "RETAIN must not touch clear-button visibility"
+
+
+# ── Executable JS contract test for the _cloneSeq RACE guard (D7, review
+# finding, 2026-08-24) ───────────────────────────────────────────────────
+#
+# Every scenario in test_clone_from_product_executable_contract above runs
+# STRICTLY SEQUENTIALLY (`await run(...)` before starting the next) — it
+# never has two requests in flight at once, so it cannot exercise the guard
+# that decides what happens when responses land OUT OF ORDER. A mutation
+# that only checks staleness on the error branch,
+#     if (spec.error && seq !== _cloneSeq) return;
+# instead of
+#     if (seq !== _cloneSeq) return;
+# still passes every scenario above unchanged (the success paths there never
+# have a second in-flight request to be made stale by). Live, that mutation
+# lets a slow, stale response silently win over a newer clone the operator
+# already picked — the exact bug D7's _cloneSeq guard exists to prevent.
+#
+# This test drives the fetch stub with promises it resolves BY HAND, so it
+# can force the out-of-order landing the sequential driver above cannot:
+# start clone A, start clone B (B's `_cloneSeq` is newer), resolve B FIRST,
+# then resolve A LATE, and assert the stale A response changed nothing.
+
+_CLONE_FROM_PRODUCT_RACE_DRIVER = r"""
+function fetchPnIdentityPreview() {}
+
+// A promise this script resolves by hand, keyed by the exact URL
+// cloneFromProduct requested — lets the test control response ORDER
+// independently of call order, which is the whole point of a race test.
+var pending = {};
+function fetch(url) {
+  return new Promise(function (resolve, reject) {
+    pending[url] = { resolve: resolve, reject: reject };
+  });
+}
+function resolveSpecFor(pid, spec) {
+  pending['/products/spec/' + pid].resolve({ json: function () { return Promise.resolve(spec); } });
+}
+function flush() { return new Promise(function (r) { setImmediate(r); }); }
+
+function snapshot(label) {
+  return {
+    label: label,
+    hiddenValue: elements['clone_source_pid'].value,
+    statusText: elements['clone-status-text'].textContent,
+    clearHidden: elements['clone-clear'].classList.contains('d-none'),
+    model: elements['model'].value
+  };
+}
+
+// Distinct pids AND distinct spec payloads per scenario (verification-
+// discipline.md's vacuity trap) — if a skipped write silently left A's
+// state in place, `model` would read 'MODEL-A' instead of 'MODEL-B', not
+// merely "unchanged from the initial blank".
+var SPEC_A = {
+  category_id: 6, sub_category: 'x', sub_category_short_code: 'ZP4',
+  series: 's', brand_id: 1, model: 'MODEL-A', size: 'sz-A', color_code: 'AC',
+  packaging_th: 'ถุง', condition: 'ไม่สวย', pack_variant: 3,
+  unit_type: 'ตัว', units_per_carton: 24, units_per_box: 12
+};
+var SPEC_B = {
+  category_id: 6, sub_category: 'y', sub_category_short_code: 'ZP5',
+  series: 't', brand_id: 1, model: 'MODEL-B', size: 'sz-B', color_code: 'AC',
+  packaging_th: 'ถุง', condition: 'ไม่สวย', pack_variant: 3,
+  unit_type: 'ตัว', units_per_carton: 24, units_per_box: 12
+};
+var SPEC_C = {
+  category_id: 6, sub_category: 'z', sub_category_short_code: 'ZP6',
+  series: 'u', brand_id: 1, model: 'MODEL-C', size: 'sz-C', color_code: 'AC',
+  packaging_th: 'ถุง', condition: 'ไม่สวย', pack_variant: 3,
+  unit_type: 'ตัว', units_per_carton: 24, units_per_box: 12
+};
+
+(async function () {
+  var results = [];
+
+  // ── Race: select A (pid 23), then select B (pid 77) — B is the LATER
+  // call so it owns the newer _cloneSeq. Resolve B first (as if the
+  // network answered in call order), THEN resolve A late (as if A's
+  // response was merely slow) — this is the exact interleave D7 names.
+  cloneFromProduct('23');
+  cloneFromProduct('77');
+
+  resolveSpecFor('77', SPEC_B);
+  await flush();
+  results.push(snapshot('after_b_resolves'));
+
+  resolveSpecFor('23', SPEC_A);
+  await flush();
+  results.push(snapshot('after_stale_a_resolves_late'));
+
+  // ── Clear-during-in-flight: start a THIRD clone (pid 55), click ล้าง
+  // while its fetch is still pending, THEN let the stale response land.
+  // Without the guard, ล้าง's own _cloneSeq bump is what stops the stale
+  // response from silently RE-ARMING the source the operator just cleared.
+  cloneFromProduct('55');
+  clickClear();
+  results.push(snapshot('immediately_after_clear'));
+
+  resolveSpecFor('55', SPEC_C);
+  await flush();
+  results.push(snapshot('after_cleared_fetch_resolves_late'));
+
+  process.stdout.write(JSON.stringify(results));
+})();
+"""
+
+
+def test_clone_from_product_race_guard_ignores_stale_out_of_order_responses(admin_client, tmp_path):
+    """D7's executable proof (review finding 1, 2026-08-24): every scenario
+    in test_clone_from_product_executable_contract above runs sequentially
+    and never has two requests in flight, so a guard that only checks
+    staleness on the error branch —
+        if (spec.error && seq !== _cloneSeq) return;
+    instead of
+        if (seq !== _cloneSeq) return;
+    — passes that whole test unchanged. This test forces the actual race:
+    resolve a LATER clone's fetch (B, pid 77) before an EARLIER clone's
+    fetch (A, pid 23) lands, and asserts the stale A response changes
+    NEITHER the hidden clone_source_pid NOR an ordinary copied form field
+    (`model`) — both must stay B's. It also exercises D7's other named
+    hazard: clicking ล้าง while a clone fetch is still in flight must not
+    be undone when that stale fetch resolves afterward.
+
+    Node-absent handling: see `_require_node()` — FAILS, never skips.
+    """
+    node = _require_node()
+
+    client, _db = admin_client
+    live = _live_js(client.get('/products/new').get_data(as_text=True))
+    retain_decl = _extract_var_declaration(live, 'RETAIN')
+    cloneseq_decl = _extract_var_declaration(live, '_cloneSeq')
+    select_or_warn_src = _extract_js_function(live, 'setSelectOrWarn')
+    toggle_other_src = _extract_js_function(live, 'toggleOtherField')
+    set_clone_source_src = _extract_js_function(live, 'setCloneSource')
+    clone_from_product_src = _extract_js_function(live, 'cloneFromProduct')
+    # The REAL ล้าง click-handler body, not a reimplementation — same
+    # extractor test_clone_seq_increments_on_clone_start_and_on_clear
+    # already uses to pin its source-order assertions.
+    clear_handler_body = _extract_callback_body(
+        live, "clearBtn.addEventListener('click', function ()"
+    )
+    click_clear_fn = 'function clickClear() {\n' + clear_handler_body + '\n}'
+
+    script = '\n'.join([
+        _DOM_STUB,
+        "elements['model'] = { value: '' };",
+        select_or_warn_src,
+        toggle_other_src,
+        retain_decl,
+        cloneseq_decl,
+        set_clone_source_src,
+        clone_from_product_src,
+        click_clear_fn,
+        _CLONE_FROM_PRODUCT_RACE_DRIVER,
+    ])
+    script_path = tmp_path / 'clone_from_product_race_contract.js'
+    script_path.write_text(script, encoding='utf-8')
+
+    proc = subprocess.run(
+        [node, str(script_path)], capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0, (
+        f"node execution of the extracted race contract failed "
+        f"(stderr):\n{proc.stderr}\n\n--- extracted script ---\n{script}"
+    )
+    results = {row['label']: row for row in json.loads(proc.stdout)}
+
+    after_b = results['after_b_resolves']
+    assert after_b['hiddenValue'] == '77', (
+        f"got {after_b!r} — B (the later clone) must arm the hidden pid "
+        "once its own response lands"
+    )
+    assert after_b['model'] == 'MODEL-B', f"got {after_b!r} — B's fields must be copied in"
+
+    after_stale_a = results['after_stale_a_resolves_late']
+    assert after_stale_a['hiddenValue'] == '77', (
+        f"got {after_stale_a!r} — A's LATE, STALE response must be ignored: "
+        "the guard `if (seq !== _cloneSeq) return;` must fire before ANY "
+        "state write, not only inside the spec.error branch. A mutation to "
+        "`if (spec.error && seq !== _cloneSeq) return;` lets A win here "
+        "even though the operator's last action was selecting B."
+    )
+    assert after_stale_a['model'] == 'MODEL-B', (
+        f"got {after_stale_a!r} — an ORDINARY copied form field must also "
+        "still read B's value, not just the hidden provenance pid; a guard "
+        "that only protects clone_source_pid but lets the rest of A's "
+        "fields overwrite B's would save a row whose visible spec doesn't "
+        "match its stamped provenance"
+    )
+    assert after_stale_a['statusText'] == 'คัดลอกจาก #77 แล้ว — ตรวจสอบก่อนบันทึก', (
+        f"got {after_stale_a!r} — the status message must still name B, "
+        "not have been overwritten by A's stale success callback"
+    )
+
+    immediately_after_clear = results['immediately_after_clear']
+    assert immediately_after_clear['hiddenValue'] == '', (
+        f"got {immediately_after_clear!r} — ล้าง must disarm synchronously, "
+        "even with clone C's fetch still pending"
+    )
+    assert immediately_after_clear['clearHidden'] is True
+
+    after_cleared_late = results['after_cleared_fetch_resolves_late']
+    assert after_cleared_late['hiddenValue'] == '', (
+        f"got {after_cleared_late!r} — clone C's fetch resolving AFTER ล้าง "
+        "must not silently re-arm the source the operator just cleared. "
+        "This is D7's second named hazard: ล้าง must bump _cloneSeq so a "
+        "stale in-flight response can't undo it."
+    )
+    assert after_cleared_late['clearHidden'] is True, (
+        "the clear button must stay hidden — a stale response re-arming "
+        "would flip this back to visible"
+    )
+    assert after_cleared_late['model'] == 'MODEL-B', (
+        f"got {after_cleared_late!r} — C's fields must NOT have been copied "
+        "in either; the guard must block C's stale write to ordinary form "
+        "fields too, not just to clone_source_pid"
+    )
 
 
 @pytest.fixture
