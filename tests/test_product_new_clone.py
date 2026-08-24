@@ -474,11 +474,12 @@ def _extract_callback_body(src, anchor):
     raise AssertionError(f"unbalanced braces extracting callback at {anchor!r}")
 
 
-def _extract_retain_declaration(live):
-    """`var RETAIN = {};` verbatim from the live source (not hardcoded) —
-    used to feed the executable contract test the REAL declaration rather
-    than a Python-side guess at its shape."""
-    start = live.index('var RETAIN')
+def _extract_var_declaration(live, name):
+    """`var <name> = ...;` verbatim from the live source (not hardcoded) —
+    used to feed an executable contract test the REAL declaration (e.g.
+    `var RETAIN = {};`, `var _cloneSeq = 0;`) rather than a Python-side
+    guess at its shape."""
+    start = live.index('var ' + name)
     end = live.index(';', start) + 1
     return live[start:end]
 
@@ -498,6 +499,30 @@ def _node_executable():
     # fall back to the known Homebrew location noted in the dispatch brief.
     fallback = '/opt/homebrew/bin/node'
     return fallback if os.path.exists(fallback) else None
+
+
+def _require_node():
+    """node is a HARD PREREQUISITE for the executable JS contract tests in
+    this file — FAIL, never skip (Codex review finding 2, 2026-08-24). This
+    repo has no CI running pytest (nothing in `.github/workflows` invokes
+    it); the suite only ever runs on Put's machine and in worktrees, where
+    node is present at /opt/homebrew/bin/node. A skip here would silently
+    drop the ONLY executable behavioural guarantee these tests provide —
+    with node unavailable, an emptied-out setCloneSource/cloneFromProduct
+    body would stay green under the surviving source-substring pins alone.
+    """
+    node = _node_executable()
+    if not node:
+        pytest.fail(
+            "node not found on PATH or at /opt/homebrew/bin/node. node is "
+            "a HARD PREREQUISITE for this executable JS contract test, not "
+            "an optional extra — without it, the only executable "
+            "behavioural guarantee for this JS goes unverified (the "
+            "surviving source-substring pins alone would let an emptied-out "
+            "function body stay green). Install node or fix PATH; do not "
+            "weaken this back to a skip."
+        )
+    return node
 
 
 # Fakes only the three DOM surfaces setCloneSource touches: a hidden input's
@@ -546,10 +571,14 @@ var document = {
 """
 
 # Drives setCloneSource through the four contract cases and prints one JSON
-# snapshot per case. Deliberately does NOT touch cloneFromProduct/fetch —
-# that needs a real network stub this repo has no precedent for; the
-# _cloneSeq ordering guard stays a scoped source pin (see the two tests
-# below this one).
+# snapshot per case. Deliberately calls setCloneSource DIRECTLY, with a
+# test-authored message, so a mutation to what cloneFromProduct itself PASSES
+# setCloneSource (e.g. the message argument) cannot be caught here — that gap
+# is closed by test_clone_from_product_executable_contract below, which runs
+# the REAL cloneFromProduct (fetch included) and observes the same state
+# through the production call site. The _cloneSeq ordering guard stays a
+# scoped source pin (see the two tests below this one) — cloneFromProduct's
+# own callback ordering, not the DOM-state contract, is what those pin.
 _CONTRACT_DRIVER = r"""
 var results = [];
 function snapshot(label) {
@@ -599,26 +628,23 @@ def test_set_clone_source_executable_contract(admin_client, tmp_path):
          'retain_with_armed' would show the plain fallback message instead
          of naming #23.
 
-    Node-absent handling: if `node` is not on PATH (and not at the
-    Homebrew fallback), SKIP only this test — never fall back to a weaker
-    check silently. The remaining source-substring tests in this file
+    Node-absent handling: node is a HARD PREREQUISITE (Codex review finding
+    2, 2026-08-24) — `_require_node()` FAILS, never skips, if `node` is not
+    on PATH and not at the Homebrew fallback. A skip would make this test's
+    only-real guarantee optional depending on the machine it runs on; see
+    `_require_node()`'s docstring for why that is unacceptable here. The
+    remaining source-substring tests in this file
     (test_clone_from_product_routes_state_through_set_clone_source,
     test_set_clone_source_call_shapes_are_unambiguous, the two _cloneSeq
     tests) still run unconditionally and catch outright DELETION of these
-    lines even with node unavailable — they just cannot catch a same-
-    length swap like this one.
+    lines even without node — they just cannot catch a same-length swap
+    like this one.
     """
-    node = _node_executable()
-    if not node:
-        pytest.skip(
-            "node not found on PATH or at /opt/homebrew/bin/node — "
-            "executable JS contract test skipped; the source-substring "
-            "pins for setCloneSource still run and catch outright deletion"
-        )
+    node = _require_node()
 
     client, _db = admin_client
     live = _live_js(client.get('/products/new').get_data(as_text=True))
-    retain_decl = _extract_retain_declaration(live)
+    retain_decl = _extract_var_declaration(live, 'RETAIN')
     fn_src = _extract_js_function(live, 'setCloneSource')
 
     script = '\n'.join([_DOM_STUB, retain_decl, fn_src, _CONTRACT_DRIVER])
@@ -662,6 +688,192 @@ def test_set_clone_source_executable_contract(admin_client, tmp_path):
     assert retain_empty['statusText'] == 'โหลดข้อมูลสินค้าไม่สำเร็จ', (
         "RETAIN with nothing armed must fall back to the plain error message"
     )
+    assert retain_empty['clearHidden'] is True, (
+        "RETAIN must not touch clear-button visibility even when nothing is "
+        "armed (Codex review finding 3: a mutation moving the classList.toggle "
+        "call outside the `pid !== RETAIN` branch makes it fire unconditionally "
+        "— toggle('d-none', pid == null) with pid=RETAIN evaluates false, so "
+        "the clear button would wrongly show a meaningless ล้าง with nothing "
+        "armed to clear)"
+    )
+
+
+# ── Executable JS contract test for cloneFromProduct ITSELF (Codex review
+# finding 1): test_set_clone_source_executable_contract above proves
+# setCloneSource behaves correctly when CALLED, but it drives that call with
+# a test-authored message — it never executes the PRODUCTION call inside
+# cloneFromProduct. A mutation of the production success call to
+# `setCloneSource(pid, '')` still matches the source-substring pin
+# 'setCloneSource(pid' (test_set_clone_source_call_shapes_are_unambiguous)
+# and is invisible to the test above (which supplies its own message) — but
+# live, provenance would arm while the status shows nothing, violating D10.
+# This test runs the REAL cloneFromProduct under node with a resolved-fetch
+# stub and observes state through the production call site instead. ────────
+
+# Reuses `elements`/`document` from _DOM_STUB. cloneFromProduct also touches
+# many ordinary form-field ids via `setVal` (a closure defined INSIDE
+# cloneFromProduct itself, not an external symbol) — that closure no-ops
+# when `document.getElementById` returns null, so those fields need no stub
+# entries. `setSelectOrWarn` and `toggleOtherField` ARE external symbols
+# cloneFromProduct calls by name; both are extracted from the live source
+# below (real code, not a hand-written reimplementation) and both already
+# no-op safely when their target select isn't in `elements`.
+# `fetchPnIdentityPreview` is stubbed as a plain no-op: it fires its OWN
+# fetch() to a Jinja-templated URL and reads a CSRF meta tag, which is out
+# of scope for this contract (its own ordering guard is separately pinned by
+# test_preview_drops_out_of_order_responses) — this is the "stub out what
+# you must" the review called for, not the setCloneSource under test.
+_CLONE_FROM_PRODUCT_DRIVER = r"""
+function fetchPnIdentityPreview() {}
+
+var _fetchImpl = null;
+function fetch(url) { return _fetchImpl(url); }
+
+var results = [];
+function snapshot(label) {
+  results.push({
+    label: label,
+    hiddenValue: elements['clone_source_pid'].value,
+    statusText: elements['clone-status-text'].textContent,
+    clearHidden: elements['clone-clear'].classList.contains('d-none')
+  });
+}
+
+function run(label, pid, fetchImpl) {
+  return new Promise(function (resolve) {
+    _fetchImpl = fetchImpl;
+    cloneFromProduct(pid);   // dataset.id is always a STRING in the real click handler
+    setImmediate(function () { snapshot(label); resolve(); });
+  });
+}
+
+var SPEC = {
+  category_id: 6, sub_category: 'x', sub_category_short_code: 'ZP4',
+  series: 's', brand_id: 1, model: 'm', size: 'sz', color_code: 'AC',
+  packaging_th: 'ถุง', condition: 'ไม่สวย', pack_variant: 3,
+  unit_type: 'ตัว', units_per_carton: 24, units_per_box: 12
+};
+function resolvedSpecFetch() {
+  return function () { return Promise.resolve({ json: function () { return Promise.resolve(SPEC); } }); };
+}
+
+(async function () {
+  // Each RETAIN scenario is armed with its OWN pid (23, then 99) rather than
+  // reusing one pid across both — the two RETAIN branches render the exact
+  // SAME message text for the same armed pid, so if 'spec_error' ran right
+  // before 'fetch_rejected' on the SAME pid, a .catch that writes nothing at
+  // all would leave 'spec_error's leftover state sitting there looking
+  // identical to a correct write — the assertions could not tell the two
+  // apart ("a test that cannot fail", verification-discipline.md). Using a
+  // different pid per RETAIN scenario means a skipped write is visible: the
+  // leftover text would name the WRONG pid (or be success-shaped, not
+  // RETAIN-shaped).
+  await run('success', '23', resolvedSpecFetch());
+  await run('spec_error', '23', function () {
+    return Promise.resolve({ json: function () { return Promise.resolve({ error: 'not found' }); } });
+  });
+  await run('rearm_99', '99', resolvedSpecFetch());
+  await run('fetch_rejected', '99', function () {
+    return Promise.reject(new Error('network down'));
+  });
+  process.stdout.write(JSON.stringify(results));
+})();
+"""
+
+
+def test_clone_from_product_executable_contract(admin_client, tmp_path):
+    """Executable contract test (Codex review finding 1): runs the REAL
+    rendered cloneFromProduct under node — real fetch stub, real
+    setSelectOrWarn/toggleOtherField, real setCloneSource — through its
+    success path and both failure paths (a `spec.error` payload and a
+    rejected fetch), asserting OBSERVED STATE through the production call
+    site. Catches what test_set_clone_source_executable_contract's
+    test-authored `setCloneSource(23, '...')` calls cannot: a mutation of
+    the production success call to `setCloneSource(pid, '')` still matches
+    the source pin `'setCloneSource(pid' in fn_src`
+    (test_set_clone_source_call_shapes_are_unambiguous) and is invisible to
+    the direct-call test above (which supplies its own message) — but live,
+    provenance would arm while the status shows nothing (D10 violation).
+
+    Node-absent handling: see `_require_node()` — FAILS, never skips.
+    """
+    node = _require_node()
+
+    client, _db = admin_client
+    live = _live_js(client.get('/products/new').get_data(as_text=True))
+    retain_decl = _extract_var_declaration(live, 'RETAIN')
+    cloneseq_decl = _extract_var_declaration(live, '_cloneSeq')
+    select_or_warn_src = _extract_js_function(live, 'setSelectOrWarn')
+    toggle_other_src = _extract_js_function(live, 'toggleOtherField')
+    set_clone_source_src = _extract_js_function(live, 'setCloneSource')
+    clone_from_product_src = _extract_js_function(live, 'cloneFromProduct')
+
+    script = '\n'.join([
+        _DOM_STUB,
+        select_or_warn_src,
+        toggle_other_src,
+        retain_decl,
+        cloneseq_decl,
+        set_clone_source_src,
+        clone_from_product_src,
+        _CLONE_FROM_PRODUCT_DRIVER,
+    ])
+    script_path = tmp_path / 'clone_from_product_contract.js'
+    script_path.write_text(script, encoding='utf-8')
+
+    proc = subprocess.run(
+        [node, str(script_path)], capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0, (
+        f"node execution of the extracted cloneFromProduct failed "
+        f"(stderr):\n{proc.stderr}\n\n--- extracted script ---\n{script}"
+    )
+    results = {row['label']: row for row in json.loads(proc.stdout)}
+
+    success = results['success']
+    assert success['hiddenValue'] == '23', (
+        "cloneFromProduct's success path must arm the hidden pid through "
+        "the REAL setCloneSource(pid, ...) call site"
+    )
+    assert success['statusText'] == 'คัดลอกจาก #23 แล้ว — ตรวจสอบก่อนบันทึก', (
+        f"got {success!r} — catches the production success call being "
+        "mutated to setCloneSource(pid, ''): the source-substring pin "
+        "'setCloneSource(pid' still matches that, but live it would arm "
+        "provenance while the status shows nothing (D10)"
+    )
+    assert success['clearHidden'] is False, "clear button must show once a source is armed"
+
+    spec_error = results['spec_error']
+    assert spec_error['hiddenValue'] == '23', (
+        "a spec.error response must RETAIN the already-armed pid, not disarm it"
+    )
+    assert spec_error['statusText'] == 'โหลดสินค้าใหม่ไม่สำเร็จ — ยังคัดลอกจาก #23', (
+        f"got {spec_error!r} — the spec.error branch must call the REAL "
+        "setCloneSource(RETAIN, ...) so the rendered message names the "
+        "still-armed source (D10b), exercised through the production "
+        "call site, not a hand-typed one"
+    )
+    assert spec_error['clearHidden'] is False, "RETAIN must not touch clear-button visibility"
+
+    # rearm_99 re-arms with a DIFFERENT pid (99, not 23) before exercising
+    # .catch — see the JS driver comment: reusing pid 23 here would make a
+    # deleted .catch state-write invisible, because 'spec_error' just above
+    # already left the identical RETAIN-shaped text sitting in statusText.
+    rearm_99 = results['rearm_99']
+    assert rearm_99['hiddenValue'] == '99', "sanity: re-arm before the .catch scenario must succeed"
+
+    fetch_rejected = results['fetch_rejected']
+    assert fetch_rejected['hiddenValue'] == '99', (
+        "a rejected fetch (.catch) must RETAIN the already-armed pid, not disarm it"
+    )
+    assert fetch_rejected['statusText'] == 'โหลดสินค้าใหม่ไม่สำเร็จ — ยังคัดลอกจาก #99', (
+        f"got {fetch_rejected!r} — the .catch branch must ALSO call the REAL "
+        "setCloneSource(RETAIN, ...), not just the spec.error branch. Armed "
+        "with pid 99 here (not 23, reused from spec_error) so a .catch that "
+        "writes nothing at all can't hide behind spec_error's leftover text "
+        "— it would show #99 for a success-shaped or blank message instead"
+    )
+    assert fetch_rejected['clearHidden'] is False, "RETAIN must not touch clear-button visibility"
 
 
 @pytest.fixture
