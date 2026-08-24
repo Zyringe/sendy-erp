@@ -36,6 +36,8 @@ def db(tmp_path):
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("CREATE TABLE products (id INTEGER PRIMARY KEY, product_name TEXT,"
                  " packaging_th TEXT, packaging_short TEXT)")
+    conn.execute("CREATE TABLE applied_migrations (filename TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO applied_migrations VALUES ('171_backfill_packaging_th.sql')")
     conn.executemany("INSERT INTO products VALUES (?,?,?,?)",
                      [(r[0], r[1], r[2], r[3]) for r in ROWS])
     conn.commit()
@@ -118,3 +120,39 @@ def test_rollback_leaves_a_value_an_operator_curated_afterwards(db):
 
     assert _pkg(conn)[1] == "ถุง", "rollback destroyed a later curated value"
     assert _pkg(conn)[2] is None, "an untouched 171 row must still roll back"
+
+
+def test_rollback_un_records_the_migration_so_it_can_run_again(db):
+    """Reverting the DATA but leaving the filename in applied_migrations makes the
+    runner skip 171 forever — reverted and un-reappliable. Migration 170's rollback
+    deletes its own row for the same reason."""
+    conn, _ = db
+    conn.executescript(MIG.read_text(encoding="utf-8"))
+    # CONTROL: it is recorded before the rollback, so the assertion below can fail
+    assert conn.execute("SELECT 1 FROM applied_migrations WHERE filename="
+                        "'171_backfill_packaging_th.sql'").fetchall()
+    conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
+    assert not conn.execute("SELECT 1 FROM applied_migrations WHERE filename="
+                            "'171_backfill_packaging_th.sql'").fetchall()
+
+
+def test_a_failure_partway_through_leaves_NOTHING_behind(db, tmp_path):
+    """The runner uses executescript and relies on the migration's own transaction. A
+    forward migration without BEGIN/COMMIT would leave the CREATE TABLE committed while
+    171 is not recorded as applied, and the next boot retries against partial state."""
+    conn, path = db
+    broken = MIG.read_text(encoding="utf-8").replace(
+        "UPDATE products\n   SET packaging_th =",
+        "UPDATE products\n   SET no_such_column =")          # fails after the INSERT
+    assert "no_such_column" in broken, "failure injection did not patch the script"
+    conn.execute("DELETE FROM applied_migrations")
+    before = {r[0]: r[1] for r in conn.execute("SELECT id, packaging_th FROM products")}
+
+    with pytest.raises(sqlite3.OperationalError):
+        conn.executescript(broken)
+    conn.rollback()
+
+    assert {r[0]: r[1] for r in conn.execute("SELECT id, packaging_th FROM products")} == before
+    assert not conn.execute(
+        "SELECT name FROM sqlite_master WHERE name='mig171_packaging_th_backfill'").fetchall(), \
+        "the snapshot table survived a failed migration"

@@ -23,6 +23,12 @@
 -- Rows touched are recorded so the rollback is exact rather than a guess.
 PRAGMA busy_timeout=10000;
 
+-- The runner uses executescript and relies on each migration managing its own
+-- transaction (see database.py::run_pending_migrations, and migration 170). Without
+-- this, a failure after CREATE TABLE leaves the table committed while 171 is NOT
+-- recorded as applied — the next boot then retries against partial state.
+BEGIN;
+
 -- IF NOT EXISTS + OR IGNORE, deliberately NOT drop-first: a second run must be a
 -- no-op that PRESERVES the record of the first. Dropping the table would make a
 -- re-run forget what it filled, and the rollback would then silently restore
@@ -53,3 +59,5 @@ UPDATE products
    SET packaging_th = (SELECT b.packaging_th FROM mig171_packaging_th_backfill b
                         WHERE b.product_id = products.id)
  WHERE id IN (SELECT product_id FROM mig171_packaging_th_backfill);
+
+COMMIT;

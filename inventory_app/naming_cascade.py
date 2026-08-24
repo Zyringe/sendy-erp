@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import difflib
 import sqlite3
+import unicodedata
 
 import db_backup
 import name_builder
@@ -298,8 +299,12 @@ def _name_loss(old_name, new_name):
     for tag, i1, i2, _j1, _j2 in difflib.SequenceMatcher(
             None, a, b, autojunk=False).get_opcodes():
         if tag in ("delete", "replace"):
-            frag = a[i1:i2].strip(" ()[]-—·/,.")
-            if frag:
+            frag = a[i1:i2].strip()
+            # Content = has at least one letter or digit. A hand-picked punctuation
+            # allowlist misses '#', ':', '+', quotes and Thai punctuation, and
+            # SequenceMatcher leaves punctuation fragments at replacement boundaries —
+            # so formatting-only round-trips would 409 for no reason.
+            if any(unicodedata.category(ch)[0] in ("L", "N") for ch in frag):
                 lost.append(frag)
     return lost
 
@@ -324,6 +329,36 @@ def _clean_updates(fields):
         pth = updates["packaging_th"]
         updates["packaging_short"] = PACKAGING_SHORT.get(pth) if pth else None
     return updates
+
+
+_PREVIEW_FIELDS = ("brand_id", "sub_category", "series", "model", "size",
+                   "color_code", "packaging_th", "condition", "pack_variant")
+
+
+def unrepaired_name_loss(conn, pid, old_name, updates):
+    """Text `old_name` carries that the rebuild drops BOTH before and after `updates`.
+
+    ⚠ Two baselines, deliberately. Checking only the PRE-update rebuild refuses the very
+    repair the guard exists to encourage: an operator who moves the orphan 'TAYITA' into
+    `series` in the same save produces a candidate name that loses nothing, yet the
+    pre-update baseline still shows the loss, so the fix would have required the
+    destructive override to perform a NON-destructive repair (Codex, 2026-08-24).
+
+    Checking only the POST-update rebuild is wrong the other way: it would refuse an
+    operator who deliberately clears `condition`, which legitimately shortens the name.
+
+    So: refuse a fragment only when it is missing before the edit AND still missing
+    after it. Pre-existing drift the edit did not repair — nothing else.
+    """
+    baseline = name_builder.rebuild_product_name(conn, pid)
+    loss_base = _name_loss(old_name, baseline)
+    if not loss_base:
+        return [], baseline
+    row = conn.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+    proposed = {k: (updates[k] if k in updates else row[k]) for k in _PREVIEW_FIELDS}
+    candidate = name_builder.preview_name(conn, proposed)
+    loss_final = _name_loss(old_name, candidate)
+    return [f for f in loss_final if f in loss_base], candidate
 
 
 def save_product(db_path, pid, fields, *, backup_dir=None,
@@ -370,10 +405,10 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
             cur = probe.execute("SELECT product_name FROM products WHERE id=?",
                                 (pid,)).fetchone()
             if cur is not None:
-                base = name_builder.rebuild_product_name(probe, pid)
-                lost = _name_loss(cur["product_name"], base)
+                lost, cand = unrepaired_name_loss(
+                    probe, pid, cur["product_name"], _clean_updates(fields))
                 if lost:
-                    raise NameLossRefused(lost, cur["product_name"], base)
+                    raise NameLossRefused(lost, cur["product_name"], cand)
         finally:
             probe.close()
     info, err = db_backup.safe_create_backup(reason, db_path=db_path,
@@ -399,13 +434,14 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
         old_name, old_sku = cur["product_name"], cur["sku_code"]
         before_active = _active_count(conn)
 
-        # Rebuild from the CURRENT columns, before this caller's edits land, so
-        # what we measure is pre-existing drift and not the operator's own change.
-        baseline = name_builder.rebuild_product_name(conn, pid)
-        lost = _name_loss(old_name, baseline)
-        if lost and not allow_name_loss:
-            conn.execute("ROLLBACK")
-            raise NameLossRefused(lost, old_name, baseline)
+        # Authoritative check. The read-only probe above is only an optimisation that
+        # avoids paying for a backup on a refusal; a row that changed in between is
+        # caught here, inside the write lock.
+        if not allow_name_loss:
+            lost, cand = unrepaired_name_loss(conn, pid, old_name, updates)
+            if lost:
+                conn.execute("ROLLBACK")
+                raise NameLossRefused(lost, old_name, cand)
 
         if updates:
             set_clause = ", ".join(f"{k}=?" for k in updates)

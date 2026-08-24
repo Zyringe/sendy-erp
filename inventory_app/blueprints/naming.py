@@ -253,7 +253,14 @@ def product_save(pid):
     # Popped, never whitelisted into the columns: it is a caller INTENT flag, not a
     # product field. _clean_updates ignores unknown keys anyway; popping keeps the
     # two kinds of thing visibly separate.
-    allow_name_loss = bool(fields.pop('allow_name_loss', False))
+    # Strictly `true`, never bool(): the string "false", 0-length-checks on objects and
+    # arrays, and any non-empty number all read as approval under bool(), so a caller
+    # serialising an unchecked checkbox as "false" would silently disarm the guard.
+    raw_allow = fields.pop('allow_name_loss', False)
+    if raw_allow not in (True, False, None):
+        return jsonify({'ok': False,
+                        'error': 'allow_name_loss ต้องเป็น true/false เท่านั้น'}), 400
+    allow_name_loss = raw_allow is True
     db_path = _db_path()
     try:
         res = nc.save_product(db_path, pid, fields,

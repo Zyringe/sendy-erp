@@ -409,3 +409,53 @@ def test_the_ROUTE_returns_409_with_the_loss_and_changes_nothing(admin_client, t
                            json={"size": "6in", "allow_name_loss": True})
     assert r2.status_code == 200, r2.get_data(as_text=True)[:300]
     assert "TAYITA" not in r2.get_json()["new_name"]
+
+
+def test_an_edit_that_REPAIRS_the_drift_is_allowed_without_the_override(
+        orphan_token_product, tmp_path):
+    """The guard must not block the fix it exists to encourage. Moving the orphan
+    'TAYITA' into `series` produces a candidate name that loses nothing — but a check
+    against the PRE-update rebuild alone still shows the loss, so the operator would
+    have had to use the destructive override to perform a NON-destructive repair
+    (Codex, 2026-08-24)."""
+    path, pid, _ = orphan_token_product
+    res = nc.save_product(path, pid, {"series": "TAYITA"},
+                          backup_dir=str(tmp_path / "b"))
+    assert "TAYITA" in res["new_name"], res["new_name"]
+    assert "TAYITA" in _name(path, pid)
+
+
+def test_a_punctuation_only_delta_does_not_refuse(editable_product, tmp_path):
+    """A hand-picked strip list missed '#', ':', '+', quotes and Thai punctuation, so a
+    formatting-only round-trip 409'd for no reason. Content = has a letter or digit."""
+    path, pid, _ = editable_product
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE products SET product_name=? WHERE id=?",
+                 ("กลอน Sendai #230-4in สีรมดำ (AC) (แผง) #", pid))   # a bare stray '#'
+    conn.commit()
+    conn.close()
+    res = nc.save_product(path, pid, {"color_code": "CR"}, backup_dir=str(tmp_path / "b"))
+    assert "สีโครเมียม" in res["new_name"]
+
+
+def test_the_route_rejects_a_non_boolean_override(admin_client, tmp_db):
+    """bool("false") is True. A caller serialising an unchecked checkbox would have
+    disarmed the guard with the string "false"."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM products WHERE sku_code='ZZZ-BOOL-ROUTE'")
+    bid = conn.execute("SELECT id FROM brands WHERE short_code='SD'").fetchone()[0]
+    pid = conn.execute(
+        "INSERT INTO products(product_name, brand_id, sub_category, model, size,"
+        "                     packaging_th, packaging_short, sku_code, is_active)"
+        " VALUES ('กลอน TAYITA Sendai #901-4in (แผง)', ?, 'กลอน', '#901', '4in',"
+        "         'แผง', 'PN', 'ZZZ-BOOL-ROUTE', 1)", (bid,)).lastrowid
+    conn.commit()
+    conn.close()
+
+    r = admin_client.post(f'/naming/product/{pid}/save',
+                          json={"size": "6in", "allow_name_loss": "false"})
+    assert r.status_code == 400, r.get_data(as_text=True)[:200]
+    # CONTROL: the real boolean still works, so this is not just "everything 400s"
+    r2 = admin_client.post(f'/naming/product/{pid}/save',
+                           json={"size": "6in", "allow_name_loss": True})
+    assert r2.status_code == 200, r2.get_data(as_text=True)[:200]
