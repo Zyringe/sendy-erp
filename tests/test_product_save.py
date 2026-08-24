@@ -350,3 +350,62 @@ def test_an_underscore_only_difference_is_not_a_loss(editable_product, tmp_path)
     conn.close()
     nc.save_product(path, pid, {"color_code": "CR"}, backup_dir=str(tmp_path / "b"))
     assert "จัมโบ้" in _name(path, pid)
+
+
+def test_the_generated_name_never_gains_a_literal_underscore(editable_product, tmp_path):
+    """196 active `series` values hold a literal underscore (a storage convention that
+    keeps a multi-word series as one token) and the composer spliced it into the name
+    raw, so a save quietly moved a curated `DEAD LOCK` to `DEAD_LOCK` in a
+    customer-facing name. The guard could not see it — no information is LOST — which
+    is exactly why it needed fixing at the composer instead.
+
+    Safe rather than a judgement call: measured on the 2026-08-24 prod snapshot, ZERO
+    stored product_name values contain an underscore."""
+    path, pid, _ = editable_product
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE products SET series='DEAD_LOCK', "
+                 "product_name='กลอน DEAD LOCK Sendai #230-4in สีรมดำ (AC) (แผง)' WHERE id=?",
+                 (pid,))
+    conn.commit()
+    conn.close()
+
+    res = nc.save_product(path, pid, {"color_code": "CR"}, backup_dir=str(tmp_path / "b"))
+    assert "_" not in res["new_name"], res["new_name"]
+    assert "DEAD LOCK" in res["new_name"], res["new_name"]
+    assert "_" not in _name(path, pid)
+
+
+def test_the_ROUTE_returns_409_with_the_loss_and_changes_nothing(admin_client, tmp_db):
+    """Route level. `save_product` has its own tests, but the 409 body IS the contract
+    the workbench's confirm-and-retry reads — a route can diverge from the function it
+    wraps, and nothing else pins `name_loss` / `old_name` / `new_name`."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("DELETE FROM products WHERE sku_code='ZZZ-LOSS-ROUTE'")
+    bid = conn.execute("SELECT id FROM brands WHERE short_code='SD'").fetchone()[0]
+    pid = conn.execute(
+        "INSERT INTO products(product_name, brand_id, sub_category, model, size,"
+        "                     packaging_th, packaging_short, sku_code, is_active)"
+        " VALUES ('กลอน TAYITA Sendai #900-4in (แผง)', ?, 'กลอน', '#900', '4in',"
+        "         'แผง', 'PN', 'ZZZ-LOSS-ROUTE', 1)", (bid,)).lastrowid
+    conn.commit()
+    conn.close()
+
+    r = admin_client.post(f'/naming/product/{pid}/save', json={"size": "6in"})
+    assert r.status_code == 409, r.get_data(as_text=True)[:300]
+    body = r.get_json()
+    assert body["ok"] is False
+    assert body["name_loss"] == ["TAYITA"], body["name_loss"]
+    assert "TAYITA" in body["old_name"] and "TAYITA" not in body["new_name"]
+
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute("SELECT product_name, size FROM products WHERE id=?", (pid,)).fetchone()
+    conn.close()
+    assert row[0] == 'กลอน TAYITA Sendai #900-4in (แผง)'
+    assert row[1] == '4in', "the refused save must not have applied size"
+
+    # ...and the documented way through must actually work, or the 409 is a dead end.
+    r2 = admin_client.post(f'/naming/product/{pid}/save',
+                           json={"size": "6in", "allow_name_loss": True})
+    assert r2.status_code == 200, r2.get_data(as_text=True)[:300]
+    assert "TAYITA" not in r2.get_json()["new_name"]

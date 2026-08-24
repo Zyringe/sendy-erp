@@ -102,3 +102,19 @@ def test_the_migration_is_rerunnable(db):
     assert touched == set(FILLED), touched
     conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
     assert all(_pkg(conn)[pid] is None for pid in FILLED)
+
+
+def test_rollback_leaves_a_value_an_operator_curated_afterwards(db):
+    """Keying the rollback on product_id ALONE would blank a row someone has since
+    corrected through /naming — destroying the correction without even restoring what
+    171 put there. Only rows still holding 171's own value may be undone."""
+    conn, _ = db
+    conn.executescript(MIG.read_text(encoding="utf-8"))
+    assert _pkg(conn)[1] == "แผง"                      # CONTROL: 171 really filled it
+
+    conn.execute("UPDATE products SET packaging_th='ถุง' WHERE id=1")   # operator edit
+    conn.commit()
+    conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
+
+    assert _pkg(conn)[1] == "ถุง", "rollback destroyed a later curated value"
+    assert _pkg(conn)[2] is None, "an untouched 171 row must still roll back"

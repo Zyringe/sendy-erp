@@ -4,8 +4,14 @@
 -- every row that legitimately had both before the migration ran.
 PRAGMA busy_timeout=10000;
 
+-- ⚠ The value guard is load-bearing, not belt-and-braces. Keying on product_id ALONE
+-- would blank a row an operator has since CURATED through /naming: forward sets 'แผง',
+-- someone corrects it to 'ถุง', rollback then destroys 'ถุง' and does not even restore
+-- 'แผง'. Only undo rows that still hold exactly what this migration put there.
 UPDATE products
    SET packaging_th = NULL
- WHERE id IN (SELECT product_id FROM mig171_packaging_th_backfill);
+ WHERE id IN (SELECT product_id FROM mig171_packaging_th_backfill)
+   AND packaging_th = (SELECT b.packaging_th FROM mig171_packaging_th_backfill b
+                        WHERE b.product_id = products.id);
 
 DROP TABLE IF EXISTS mig171_packaging_th_backfill;

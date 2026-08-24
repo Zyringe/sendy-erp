@@ -173,6 +173,7 @@ def apply(db_path, kind, key, target, expected_count, *,
     """
     if backup_dir is None:
         backup_dir = db_backup.default_backup_dir(db_path)
+
     info, err = db_backup.safe_create_backup(reason, db_path=db_path,
                                              backup_dir=backup_dir)
     if err:
@@ -357,6 +358,24 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
     """
     if backup_dir is None:
         backup_dir = db_backup.default_backup_dir(db_path)
+    # Cheap read-only pre-check, BEFORE the backup. ~17% of active products are in the
+    # drift class, so a workbench cleanup pass would otherwise pay a full WAL backup +
+    # gzip for every refusal. This is an OPTIMISATION ONLY — the authoritative check is
+    # the identical one inside the write transaction below, so a row that changes
+    # between the two is still caught there rather than slipping through.
+    if not allow_name_loss:
+        probe = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        probe.row_factory = sqlite3.Row
+        try:
+            cur = probe.execute("SELECT product_name FROM products WHERE id=?",
+                                (pid,)).fetchone()
+            if cur is not None:
+                base = name_builder.rebuild_product_name(probe, pid)
+                lost = _name_loss(cur["product_name"], base)
+                if lost:
+                    raise NameLossRefused(lost, cur["product_name"], base)
+        finally:
+            probe.close()
     info, err = db_backup.safe_create_backup(reason, db_path=db_path,
                                              backup_dir=backup_dir)
     if err:
