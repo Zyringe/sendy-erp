@@ -24,8 +24,11 @@ already auto-suffixes `-<id>` on a `sku_code` collision) produces the derived na
 function, which closes the Smart-Suggest `sku_code` gap.
 
 Every product also gets a `created_via` provenance stamp (`manual` / `smart_mapping` /
-`legacy`), backfilled `legacy` for the ~1,958 existing rows and shown as a badge on the
-product detail page.
+`legacy` / `smart_mapping_clone_<pid>` / `manual_clone_<pid>`), backfilled `legacy` for
+the ~1,958 existing rows and shown as a badge on the product detail page. The two
+`*_clone_<pid>` forms record that the row was created by copying an existing product's
+spec fields rather than typing them from scratch — `smart_mapping_clone_` from Smart
+Suggest's Card B, `manual_clone_` from the hand form's clone-from-existing-SKU control.
 
 Removed in the same change: the legacy admin quick-create path, the CSV master importer
 entirely (button + `csv_import`/`csv_import_confirm` routes + `bulk_import_products` +

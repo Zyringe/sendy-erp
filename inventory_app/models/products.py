@@ -145,8 +145,10 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
     `INT-<id>` when no structured fields are present).
 
     Both real create entry points route through this: the `/products/new`
-    hand form (`created_via='manual'`) and Smart Suggest approval
-    (`created_via='smart_mapping'`).
+    hand form (`created_via='manual'`, or `'manual_clone_<pid>'` when the
+    form's clone-from-existing-SKU control armed a source product) and
+    Smart Suggest approval (`created_via='smart_mapping'`, or
+    `'smart_mapping_clone_<pid>'` for Card B's clone).
 
     Transaction ownership: when `conn` is omitted, this function opens its
     own connection and is a self-contained transaction (commits on success,
