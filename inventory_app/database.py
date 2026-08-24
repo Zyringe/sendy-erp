@@ -442,9 +442,17 @@ def run_pending_migrations(conn, verbose=True):
         try:
             conn.executescript(sql)
         except Exception as e:
-            # Migration files wrap their work in BEGIN/COMMIT; on failure
-            # SQLite will have rolled back the transaction. Surface the
-            # error loudly — boot will fail, which is the safe default.
+            # ⚠ The old comment here claimed SQLite had already rolled back. It has
+            # NOT: executescript runs statements until one fails, and a script that
+            # opened its own BEGIN leaves that transaction OPEN, holding the write
+            # lock until the connection is rolled back or closed. A caller that
+            # catches the boot failure then keeps the connection would block every
+            # writer. Roll back explicitly, then surface the error loudly — boot
+            # failing is the safe default (Codex, 2026-08-24).
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             print(f"[migration] FAILED {filename}: {e}")
             raise
         duration_ms = int((time.time() - t0) * 1000)

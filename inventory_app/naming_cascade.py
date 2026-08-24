@@ -282,31 +282,49 @@ def _norm_name(s):
     return " ".join((s or "").replace("_", " ").split())
 
 
-def _name_loss(old_name, new_name):
-    """The runs of text present in `old_name` that `new_name` does not have.
+def _loss_spans(old_name, new_name):
+    """Indices of `_norm_name(old_name)` whose characters `new_name` does not carry.
 
-    ⚠ CHARACTER diff, not word tokens. **Thai does not put spaces between words**, so a
-    whitespace tokeniser is structurally wrong here: the stored `บานพับทดสอบมียอด` is ONE
-    token while the rebuild produces `บานพับทดสอบ (มียอด)`, and comparing tokens calls
-    that a total loss when nothing is lost at all. The first version of this guard did
-    exactly that and two pre-existing route tests caught it.
-
-    Pure punctuation/whitespace deltas are dropped: `(x)` vs `x` is formatting, not
-    content, and reporting it would train operators to click through the warning.
+    POSITIONS, not fragments. Two loss sets must be comparable across different edits,
+    and SequenceMatcher's fragment BOUNDARIES move when the candidate changes: with an
+    orphan `TAYITA`, the pre-edit rebuild reports the fragment `TAYITA` while a
+    candidate that preserved only `TAYI` reports `TA`. Comparing those two strings for
+    equality finds no overlap and lets the save through, destroying the leftover — the
+    exact bypass this function exists to close (Codex, 2026-08-24). Character positions
+    intersect correctly no matter where the boundaries fall.
     """
     a, b = _norm_name(old_name), _norm_name(new_name)
-    lost = []
+    out = set()
     for tag, i1, i2, _j1, _j2 in difflib.SequenceMatcher(
             None, a, b, autojunk=False).get_opcodes():
         if tag in ("delete", "replace"):
-            frag = a[i1:i2].strip()
-            # Content = has at least one letter or digit. A hand-picked punctuation
-            # allowlist misses '#', ':', '+', quotes and Thai punctuation, and
-            # SequenceMatcher leaves punctuation fragments at replacement boundaries —
-            # so formatting-only round-trips would 409 for no reason.
-            if any(unicodedata.category(ch)[0] in ("L", "N") for ch in frag):
-                lost.append(frag)
-    return lost
+            out.update(range(i1, i2))
+    return out
+
+
+def _spans_to_fragments(old_name, spans):
+    """Contiguous runs of `spans` rendered as readable text, keeping only runs that
+    carry a letter or digit. A hand-picked punctuation allowlist missed '#', ':', '+',
+    quotes and Thai punctuation, so formatting-only round-trips were refused for no
+    reason."""
+    a = _norm_name(old_name)
+    frags, run = [], []
+    for i in sorted(spans):
+        if run and i == run[-1] + 1:
+            run.append(i)
+        else:
+            if run:
+                frags.append("".join(a[k] for k in run))
+            run = [i]
+    if run:
+        frags.append("".join(a[k] for k in run))
+    return [f.strip() for f in frags
+            if any(unicodedata.category(ch)[0] in ("L", "N") for ch in f)]
+
+
+def _name_loss(old_name, new_name):
+    """Readable fragments of `old_name` that `new_name` drops."""
+    return _spans_to_fragments(old_name, _loss_spans(old_name, new_name))
 
 
 def _clean_updates(fields):
@@ -351,14 +369,14 @@ def unrepaired_name_loss(conn, pid, old_name, updates):
     after it. Pre-existing drift the edit did not repair — nothing else.
     """
     baseline = name_builder.rebuild_product_name(conn, pid)
-    loss_base = _name_loss(old_name, baseline)
-    if not loss_base:
+    base_spans = _loss_spans(old_name, baseline)
+    if not base_spans:
         return [], baseline
     row = conn.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
     proposed = {k: (updates[k] if k in updates else row[k]) for k in _PREVIEW_FIELDS}
     candidate = name_builder.preview_name(conn, proposed)
-    loss_final = _name_loss(old_name, candidate)
-    return [f for f in loss_final if f in loss_base], candidate
+    still_lost = base_spans & _loss_spans(old_name, candidate)
+    return _spans_to_fragments(old_name, still_lost), candidate
 
 
 def save_product(db_path, pid, fields, *, backup_dir=None,

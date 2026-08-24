@@ -136,23 +136,42 @@ def test_rollback_un_records_the_migration_so_it_can_run_again(db):
                             "'171_backfill_packaging_th.sql'").fetchall()
 
 
-def test_a_failure_partway_through_leaves_NOTHING_behind(db, tmp_path):
-    """The runner uses executescript and relies on the migration's own transaction. A
-    forward migration without BEGIN/COMMIT would leave the CREATE TABLE committed while
-    171 is not recorded as applied, and the next boot retries against partial state."""
+def test_a_failure_partway_through_leaves_NOTHING_behind(db, tmp_path, monkeypatch):
+    """Through the REAL runner, and WITHOUT the test supplying the rollback.
+
+    The first version called conn.rollback() itself before asserting, which proved only
+    that the transaction was rollbackable — not that run_pending_migrations rolls it
+    back (Codex, 2026-08-24). The runner's own comment claimed SQLite had already done
+    so; it had not, and the open transaction kept the write lock.
+    """
+    import database
+
     conn, path = db
-    broken = MIG.read_text(encoding="utf-8").replace(
-        "UPDATE products\n   SET packaging_th =",
-        "UPDATE products\n   SET no_such_column =")          # fails after the INSERT
-    assert "no_such_column" in broken, "failure injection did not patch the script"
     conn.execute("DELETE FROM applied_migrations")
+    conn.execute("INSERT INTO applied_migrations VALUES ('000_seed.sql')")  # skip bootstrap
+    conn.commit()
     before = {r[0]: r[1] for r in conn.execute("SELECT id, packaging_th FROM products")}
 
-    with pytest.raises(sqlite3.OperationalError):
-        conn.executescript(broken)
-    conn.rollback()
+    broken_dir = tmp_path / "migs"
+    broken_dir.mkdir()
+    broken = MIG.read_text(encoding="utf-8").replace(
+        "UPDATE products\n   SET packaging_th =",
+        "UPDATE products\n   SET no_such_column =")
+    assert "no_such_column" in broken, "failure injection did not patch the script"
+    (broken_dir / "999_broken.sql").write_text(broken, encoding="utf-8")
+    monkeypatch.setattr(database, "MIGRATIONS_DIR", str(broken_dir))
 
-    assert {r[0]: r[1] for r in conn.execute("SELECT id, packaging_th FROM products")} == before
-    assert not conn.execute(
+    with pytest.raises(sqlite3.OperationalError):
+        database.run_pending_migrations(conn, verbose=False)
+
+    # the runner must have released the transaction itself
+    assert conn.in_transaction is False, "the runner left the write transaction OPEN"
+    # ...and an INDEPENDENT connection must see no partial state
+    other = sqlite3.connect(path)
+    assert {r[0]: r[1] for r in other.execute("SELECT id, packaging_th FROM products")} == before
+    assert not other.execute(
         "SELECT name FROM sqlite_master WHERE name='mig171_packaging_th_backfill'").fetchall(), \
         "the snapshot table survived a failed migration"
+    assert not other.execute(
+        "SELECT 1 FROM applied_migrations WHERE filename='999_broken.sql'").fetchall()
+    other.close()

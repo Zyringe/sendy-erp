@@ -459,3 +459,23 @@ def test_the_route_rejects_a_non_boolean_override(admin_client, tmp_db):
     r2 = admin_client.post(f'/naming/product/{pid}/save',
                            json={"size": "6in", "allow_name_loss": True})
     assert r2.status_code == 200, r2.get_data(as_text=True)[:200]
+
+
+def test_a_PARTIAL_repair_is_still_refused(orphan_token_product, tmp_path):
+    """The bypass that fragment-equality intersection allowed (Codex, 2026-08-24).
+
+    Moving only 'TAYI' into `series` leaves 'TA' with nowhere to live. The pre-edit
+    rebuild reports the fragment 'TAYITA'; the candidate reports 'TA'. Comparing those
+    two STRINGS finds no overlap, so the save committed and silently destroyed the
+    leftover. Character POSITIONS intersect correctly however the boundaries fall."""
+    path, pid, _ = orphan_token_product
+    before = _name(path, pid)
+
+    with pytest.raises(nc.NameLossRefused) as e:
+        nc.save_product(path, pid, {"series": "TAYI"}, backup_dir=str(tmp_path / "b"))
+    assert "TA" in "".join(e.value.lost), e.value.lost
+    assert _name(path, pid) == before
+
+    # CONTROL — the FULL repair must still go through, or this is just "refuse always".
+    res = nc.save_product(path, pid, {"series": "TAYITA"}, backup_dir=str(tmp_path / "c"))
+    assert "TAYITA" in res["new_name"]
