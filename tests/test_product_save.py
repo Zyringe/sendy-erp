@@ -497,6 +497,13 @@ def test_a_PARTIAL_repair_is_still_refused(orphan_token_product, tmp_path):
     ("กิ", "ก", ["ิ"]),                               # สระอิ destroyed
     ("ก่", "ก", ["่"]),                               # ไม้เอก destroyed
     ("สีรมดำ", "สีรมดา", ["ำ"]),                       # sanity: an Lo change was caught
+    # ZWJ/ZWNJ are Cf, not L/M/N. Dropping one changes shaping, so they are content —
+    # explicitly, not the whole Cf category (RLM/LRM and SOFT HYPHEN really are format).
+    ("ก\u200dข", "กข", ["\u200d"]),                   # ZERO WIDTH JOINER destroyed
+    ("ก\u200cข", "กข", ["\u200c"]),                   # ZERO WIDTH NON-JOINER destroyed
+    # Canonically EQUIVALENT, marks in a different order. Without NFC this reported a
+    # deleted mark and refused a save that could never have lost anything.
+    ("x\u0315\u0300", "x\u0300\u0315", []),
     ("  กลอน   Sendai  ", "กลอน Sendai", []),         # whitespace-only delta
     ("a_b", "a b", []),                              # underscore-only delta
 ])

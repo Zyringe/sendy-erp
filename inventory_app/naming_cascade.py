@@ -275,11 +275,26 @@ class NameLossRefused(Exception):
         )
 
 
+# ZERO WIDTH JOINER / NON-JOINER. Explicitly, NOT the whole Cf category: RLM/LRM and
+# SOFT HYPHEN really are formatting, but a dropped ZWJ/ZWNJ changes shaping.
+_ZW = ("\u200d", "\u200c")
+
+
 def _norm_name(s):
-    """`_` -> space, collapse runs of whitespace. `sub_category` legitimately stores
-    `แผ่นตัดเหล็กบาง_Super_Thin` while the stored name spells it with spaces; 137 active
-    products differ ONLY that way and none of them loses information."""
-    return " ".join((s or "").replace("_", " ").split())
+    """NFC, `_` -> space, collapse runs of whitespace.
+
+    `sub_category` legitimately stores `แผ่นตัดเหล็กบาง_Super_Thin` while the stored name
+    spells it with spaces; 137 active products differ ONLY that way, losing nothing.
+
+    NFC matters now that category M counts as content: without it, two names that are
+    canonically EQUIVALENT but order their combining marks differently compare unequal
+    by position, SequenceMatcher reports a mark deleted, and the operator is refused —
+    then pushed toward the DESTRUCTIVE override to save something that was never going
+    to lose anything (Codex, 2026-08-24). Measured on the prod snapshot, NFC changes
+    0 of 2,044 stored names, so it is pure insurance for imported text.
+    """
+    return " ".join(
+        unicodedata.normalize("NFC", (s or "")).replace("_", " ").split())
 
 
 def _loss_spans(old_name, new_name):
@@ -324,7 +339,8 @@ def _spans_to_fragments(old_name, spans):
     # loss span and an EMPTY fragment list, so both the probe and the authoritative
     # check waved the save through (Codex, 2026-08-24).
     return [f.strip() for f in frags
-            if any(unicodedata.category(ch)[0] in ("L", "M", "N") for ch in f)]
+            if any(unicodedata.category(ch)[0] in ("L", "M", "N") or ch in _ZW
+                   for ch in f)]
 
 
 def _name_loss(old_name, new_name):
