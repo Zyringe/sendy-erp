@@ -686,6 +686,26 @@ def get_order_margin(conn, order_id):
 _RECON_CUSTOMER = {'shopee': 'หน้าร้านS', 'lazada': 'หน้าร้านL'}
 
 
+# ONE definition of "what the IV should equal", shared by the reconciliation that
+# DISPLAYS a discrepancy and the acknowledgement that RECORDS it. They diverged
+# before: the write path used `mo.actual_payout` unconditionally, so acknowledging
+# a Lazada discrepancy stored a d_bill the read path could never reproduce, and
+# `reviewed` (a <0.01 comparison of the two) stayed False forever — the row
+# re-flagged on every reload.
+#
+# Shopee hid it: its basis IS actual_payout, so the two agreed by accident, and
+# all 29 acknowledgements on prod (2026-08-24) are Shopee. Measured the same day,
+# 1,706 of 1,707 settled Lazada orders have a basis that differs from the payout,
+# so the defect was latent across the whole platform waiting for the first Lazada
+# acknowledgement. Keeping it as a shared constant is what stops it recurring:
+# two copies of a formula in two functions is how it happened the first time.
+#
+# Requires the query to expose `mo` and to LEFT JOIN marketplace_order_fees AS f.
+_BILLED_BASIS_SQL = """CASE WHEN mo.platform='lazada'
+                            THEN COALESCE(f.item_value, mo.item_total, mo.actual_payout)
+                            ELSE mo.actual_payout END"""
+
+
 def get_marketplace_reconciliation(conn, platform='shopee'):
     """Reconcile, per settlement month, three numbers for the หน้าร้าน B2C books:
 
@@ -710,11 +730,9 @@ def get_marketplace_reconciliation(conn, platform='shopee'):
         (platform,))}
 
     rows = conn.execute(
-        """SELECT mo.id, mo.order_sn, mo.settled_at, mo.actual_payout,
+        f"""SELECT mo.id, mo.order_sn, mo.settled_at, mo.actual_payout,
                   moi.doc_base AS iv, moi.confidence AS iv_confidence,
-                  CASE WHEN mo.platform='lazada'
-                       THEN COALESCE(f.item_value, mo.item_total, mo.actual_payout)
-                       ELSE mo.actual_payout END AS billed_basis
+                  {_BILLED_BASIS_SQL} AS billed_basis
            FROM marketplace_orders mo
            LEFT JOIN marketplace_order_fees f
                   ON f.platform=mo.platform AND f.order_sn=mo.order_sn
@@ -826,10 +844,13 @@ def set_amount_review(conn, order_id, accept, reviewed_by=None):
     acknowledgement auto-invalidates if the match or amount later changes.
     Returns {'accepted': True} / {'cleared': True} / None if the order has no match."""
     o = conn.execute(
-        """SELECT mo.order_sn, mo.platform, mo.actual_payout, moi.doc_base
+        f"""SELECT mo.order_sn, mo.platform, moi.doc_base,
+                   {_BILLED_BASIS_SQL} AS billed_basis
            FROM marketplace_orders mo
            JOIN marketplace_order_invoice moi
              ON moi.platform = mo.platform AND moi.order_sn = mo.order_sn
+           LEFT JOIN marketplace_order_fees f
+                  ON f.platform = mo.platform AND f.order_sn = mo.order_sn
            WHERE mo.id = ?""",
         (order_id,)
     ).fetchone()
@@ -841,12 +862,17 @@ def set_amount_review(conn, order_id, accept, reviewed_by=None):
             (o['platform'], o['order_sn']))
         conn.commit()
         return {'cleared': True}
+    # Same VAT-aware sum payments_alloc._settlement_rows uses for `billed`, and
+    # the SAME basis the reconciliation subtracts from it — see _BILLED_BASIS_SQL.
+    # tests/test_marketplace_ack_basis.py asserts the two agree to the satang on
+    # both platforms, so a change to either half fails rather than silently
+    # making every acknowledgement un-clearable again.
     billed = conn.execute(
         """SELECT ROUND(SUM(CASE WHEN vat_type=2 THEN net*1.07 ELSE net END), 2) AS b
            FROM sales_transactions WHERE doc_base = ?""",
         (o['doc_base'],)
     ).fetchone()['b'] or 0.0
-    d_bill = round(billed - round(o['actual_payout'] or 0, 2), 2)
+    d_bill = round(billed - round(o['billed_basis'] or 0, 2), 2)
     conn.execute(
         """INSERT INTO marketplace_amount_review
                (platform, order_sn, doc_base, d_bill, reviewed_by)
