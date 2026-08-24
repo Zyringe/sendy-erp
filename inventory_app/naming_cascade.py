@@ -20,7 +20,7 @@ they unit-test without the Flask app.
 """
 from __future__ import annotations
 
-import collections
+import difflib
 import sqlite3
 
 import db_backup
@@ -256,23 +256,51 @@ class NameLossRefused(Exception):
     (clearing `condition`, blanking `packaging_th`) still goes through.
     """
 
-    def __init__(self, lost):
+    def __init__(self, lost, old_name="", new_name=""):
         self.lost = list(lost)
+        self.old_name = old_name
+        self.new_name = new_name
+        # ⚠ Carry BOTH names, not just the fragments. A clean suffix drop reads fine as
+        # a fragment ("(แผง)"), but a mid-word disagreement does not: pid 665's
+        # sub_category is misspelled 'ตะปูคอรีต' against a correctly spelled name, and
+        # the fragment alone renders as "นก" — true, and useless to the operator. The
+        # before/after pair is what makes every case actionable.
         super().__init__(
-            "ชื่อสินค้าจะสูญข้อความที่ไม่มีคอลัมน์ไหนเก็บไว้: "
+            "ชื่อสินค้าจะเปลี่ยนและสูญข้อความที่ไม่มีคอลัมน์ไหนเก็บไว้: "
             + " ".join(self.lost)
-            + " — กรอกข้อมูลลงคอลัมน์ก่อน หรือยืนยันว่ายอมให้ชื่อสั้นลง"
+            + f"\nเดิม: {old_name}\nใหม่: {new_name}"
+            + "\n— กรอกข้อมูลลงคอลัมน์ให้ตรงก่อน หรือยืนยันว่ายอมให้ชื่อเปลี่ยน"
         )
 
 
-def _name_tokens(s):
-    """Whitespace tokens, with `_` treated as a space.
+def _norm_name(s):
+    """`_` -> space, collapse runs of whitespace. `sub_category` legitimately stores
+    `แผ่นตัดเหล็กบาง_Super_Thin` while the stored name spells it with spaces; 137 active
+    products differ ONLY that way and none of them loses information."""
+    return " ".join((s or "").replace("_", " ").split())
 
-    `sub_category` legitimately stores `แผ่นตัดเหล็กบาง_Super_Thin` while the
-    stored name spells it with spaces; 137 active products differ ONLY that way
-    and none of them loses information. Comparing raw would flag every one.
+
+def _name_loss(old_name, new_name):
+    """The runs of text present in `old_name` that `new_name` does not have.
+
+    ⚠ CHARACTER diff, not word tokens. **Thai does not put spaces between words**, so a
+    whitespace tokeniser is structurally wrong here: the stored `บานพับทดสอบมียอด` is ONE
+    token while the rebuild produces `บานพับทดสอบ (มียอด)`, and comparing tokens calls
+    that a total loss when nothing is lost at all. The first version of this guard did
+    exactly that and two pre-existing route tests caught it.
+
+    Pure punctuation/whitespace deltas are dropped: `(x)` vs `x` is formatting, not
+    content, and reporting it would train operators to click through the warning.
     """
-    return collections.Counter((s or "").replace("_", " ").split())
+    a, b = _norm_name(old_name), _norm_name(new_name)
+    lost = []
+    for tag, i1, i2, _j1, _j2 in difflib.SequenceMatcher(
+            None, a, b, autojunk=False).get_opcodes():
+        if tag in ("delete", "replace"):
+            frag = a[i1:i2].strip(" ()[]-—·/,.")
+            if frag:
+                lost.append(frag)
+    return lost
 
 
 def _clean_updates(fields):
@@ -355,10 +383,10 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
         # Rebuild from the CURRENT columns, before this caller's edits land, so
         # what we measure is pre-existing drift and not the operator's own change.
         baseline = name_builder.rebuild_product_name(conn, pid)
-        lost = _name_tokens(old_name) - _name_tokens(baseline)
+        lost = _name_loss(old_name, baseline)
         if lost and not allow_name_loss:
             conn.execute("ROLLBACK")
-            raise NameLossRefused(sorted(lost.elements()))
+            raise NameLossRefused(lost, old_name, baseline)
 
         if updates:
             set_clause = ", ".join(f"{k}=?" for k in updates)

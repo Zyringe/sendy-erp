@@ -285,6 +285,13 @@ def test_save_refuses_when_the_rebuild_would_destroy_stored_text(
 
     # the message must NAME what would be lost, or the operator cannot act on it
     assert "TAYITA" in str(e.value), str(e.value)
+    # ...and carry BOTH names. A clean suffix drop reads fine as a bare fragment, but a
+    # mid-word disagreement does not — prod pid 665's misspelled sub_category renders as
+    # the fragment 'นก', which is true and useless. The before/after pair is what makes
+    # every case actionable, so it is part of the contract, not decoration.
+    assert e.value.old_name == before
+    assert "TAYITA" not in e.value.new_name and e.value.new_name
+    assert "เดิม:" in str(e.value) and "ใหม่:" in str(e.value)
     # nothing was written: neither the name nor the field the caller submitted
     conn = sqlite3.connect(path)
     row = conn.execute("SELECT product_name, color_code FROM products WHERE id=?",

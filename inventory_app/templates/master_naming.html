@@ -376,8 +376,10 @@ async function saveProduct(allowNameLoss) {
   // exactly what would go, and let the operator proceed on purpose.
   if (data.name_loss && data.name_loss.length && !allowNameLoss) {
     btn.disabled = false;
-    if (confirm('บันทึกแล้วชื่อจะหายคำนี้: ' + data.name_loss.join(' ')
-                + '\n\nกด OK เพื่อยืนยันให้ชื่อสั้นลง หรือ Cancel เพื่อไปกรอกคอลัมน์ให้ครบก่อน')) {
+    if (confirm('บันทึกแล้วชื่อจะเปลี่ยน และหายข้อความ: ' + data.name_loss.join(' ')
+                + '\n\nเดิม: ' + (data.old_name || '')
+                + '\nใหม่: ' + (data.new_name || '')
+                + '\n\nกด OK เพื่อยืนยันให้ชื่อเปลี่ยน หรือ Cancel เพื่อไปกรอกคอลัมน์ให้ตรงก่อน')) {
       return saveProduct(true);
     }
     return;

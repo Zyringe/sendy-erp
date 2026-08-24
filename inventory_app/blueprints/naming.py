@@ -262,7 +262,8 @@ def product_save(pid):
     except nc.NameLossRefused as e:
         # 409, not 400: the request is well-formed and the operator can proceed by
         # confirming. `name_loss` is what the UI needs to say WHAT would be lost.
-        return jsonify({'ok': False, 'error': str(e), 'name_loss': e.lost}), 409
+        return jsonify({'ok': False, 'error': str(e), 'name_loss': e.lost,
+                        'old_name': e.old_name, 'new_name': e.new_name}), 409
     except nc.ProductNotFound:
         return jsonify({'ok': False, 'error': f'ไม่พบสินค้า #{pid}'}), 404
     except nc.CascadeInvariantError as e:

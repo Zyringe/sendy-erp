@@ -316,8 +316,14 @@ def test_a_null_condition_still_destroys_it(manager_client, empty_db):
     conn.close()
 
     c, _ = manager_client
+    # `allow_name_loss` because this fixture's name ('บานพับทดสอบมียอดสอง') carries
+    # 'สอง', which no column holds — the 2026-08-24 name-loss guard refuses that with
+    # 409 by design. The subject of THIS test is the condition being wiped, not the
+    # name, so the flag keeps it testing its own thing (and covers the override at
+    # route level). Removing the flag must turn this into a 409, not a silent pass.
     r = c.post('/naming/product/{}/save'.format(pid),
-               json={'sub_category': 'บานพับทดสอบ', 'condition': None})
+               json={'sub_category': 'บานพับทดสอบ', 'condition': None,
+                     'allow_name_loss': True})
     assert r.status_code == 200
 
     conn = sqlite3.connect(empty_db)
