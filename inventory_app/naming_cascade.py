@@ -318,8 +318,13 @@ def _spans_to_fragments(old_name, spans):
             run = [i]
     if run:
         frags.append("".join(a[k] for k in run))
+    # L, M and N. **M is not optional for Thai**: สระ and วรรณยุกต์ (ิ ่ ้ ็ ...) are
+    # combining marks, category Mn — dropping one changes the word, but an L/N-only
+    # test reads it as punctuation and reports "nothing lost". `กิ` -> `ก` produced a
+    # loss span and an EMPTY fragment list, so both the probe and the authoritative
+    # check waved the save through (Codex, 2026-08-24).
     return [f.strip() for f in frags
-            if any(unicodedata.category(ch)[0] in ("L", "N") for ch in f)]
+            if any(unicodedata.category(ch)[0] in ("L", "M", "N") for ch in f)]
 
 
 def _name_loss(old_name, new_name):

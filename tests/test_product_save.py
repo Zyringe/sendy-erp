@@ -479,3 +479,29 @@ def test_a_PARTIAL_repair_is_still_refused(orphan_token_product, tmp_path):
     # CONTROL — the FULL repair must still go through, or this is just "refuse always".
     res = nc.save_product(path, pid, {"series": "TAYITA"}, backup_dir=str(tmp_path / "c"))
     assert "TAYITA" in res["new_name"]
+
+
+@pytest.mark.parametrize("stored,generated,expected", [
+    (None, "กลอน Sendai", []),                       # nothing stored -> nothing to lose
+    ("", "กลอน Sendai", []),
+    ("กลอน Sendai", None, ["กลอน Sendai"]),          # rebuild returned nothing at all
+    ("กลอน Sendai", "", ["กลอน Sendai"]),            # prod pid 1994 (OTH-FILER): every
+                                                     # naming column NULL -> empty name
+    ("ABC", "XYZ", ["ABC"]),                         # wholly replaced
+    ("กลอน", "กลอน Sendai #230 (แผง)", []),           # candidate LONGER: a gain, not a loss
+    ("###", "#", []),                                # punctuation-only delta
+    # Thai สระ/วรรณยุกต์ are combining marks (category Mn), NOT punctuation. Dropping
+    # one changes the word, and an L/N-only content test reported "nothing lost".
+    # The fragment is the MARK alone (only it was deleted); the refusal also carries
+    # old_name/new_name, which is what makes a bare diacritic readable to an operator.
+    ("กิ", "ก", ["ิ"]),                               # สระอิ destroyed
+    ("ก่", "ก", ["่"]),                               # ไม้เอก destroyed
+    ("สีรมดำ", "สีรมดา", ["ำ"]),                       # sanity: an Lo change was caught
+    ("  กลอน   Sendai  ", "กลอน Sendai", []),         # whitespace-only delta
+    ("a_b", "a b", []),                              # underscore-only delta
+])
+def test_name_loss_edge_cases(stored, generated, expected):
+    """`rebuild_product_name` returns None for a missing row and "" when every naming
+    column is NULL, and a candidate can be longer than the stored name. None of these
+    may raise, and none may be silently treated as "no loss" when text really goes."""
+    assert nc._name_loss(stored, generated) == expected
