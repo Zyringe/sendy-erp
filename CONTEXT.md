@@ -255,10 +255,13 @@
   **no** "create a bare product" path. See `docs/adr/0004`.
 
 - **created_via (product origin / provenance)** — a label recording **how** a product
-  entered the catalog: `manual` (hand form), `smart_mapping` (Smart Suggest approval), or
-  `legacy` (existed before origin tracking, incl. bulk-imported rows). A provenance tag
-  shown on the product page. It is **not** a permission, a status, or a lifecycle state.
-  _Avoid_: "source", "type", "created_by" (that would be a person, not a method).
+  entered the catalog: `manual` (hand form), `smart_mapping` (Smart Suggest approval),
+  `legacy` (existed before origin tracking, incl. bulk-imported rows),
+  `smart_mapping_clone_<pid>` (Smart Suggest's Card B, cloned from product `<pid>`), or
+  `manual_clone_<pid>` (the hand form's clone-from-existing-SKU, cloned from product
+  `<pid>`). A provenance tag shown on the product page. It is **not** a permission, a
+  status, or a lifecycle state. _Avoid_: "source", "type", "created_by" (that would be a
+  person, not a method).
 
 ## Product labels (ป้ายสินค้า — the `/labels` print feature)
 

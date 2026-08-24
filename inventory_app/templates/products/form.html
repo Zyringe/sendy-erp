@@ -154,7 +154,12 @@
                        placeholder="พิมพ์ SKU หรือชื่อสินค้าที่จะใช้เป็นแม่แบบ..." autocomplete="off">
                 <div class="ac-drop" id="clone-drop"></div>
               </div>
-              <div class="form-text small" id="clone-status"></div>
+              <input type="hidden" name="clone_source_pid" id="clone_source_pid"
+                     value="{{ clone_source_pid or '' }}">
+              <div class="form-text small" id="clone-status">
+                <span id="clone-status-text">{% if clone_source_pid %}คัดลอกจาก #{{ clone_source_pid }} แล้ว — ตรวจสอบก่อนบันทึก{% endif %}</span>
+                <button type="button" class="btn btn-link btn-sm p-0 ms-1{% if not clone_source_pid %} d-none{% endif %}" id="clone-clear">ล้าง</button>
+              </div>
             </div>
 
             <div class="col-12"><hr class="my-1"></div>
@@ -505,12 +510,52 @@ function fetchPnIdentityPreview() {
   }).catch(function () {});
 }
 
+// products-new-clone-provenance D10: clone-status is owned by JS
+// (cloneFromProduct used to write status.textContent directly, which wipes
+// EVERY child on each call) — so the hidden clone_source_pid value, the
+// status text and the clear button's visibility now route through this one
+// helper. RETAIN is a sentinel (never null) so "keep the armed pid, just
+// update the message" (D10b, a fetch failure must not blank a still-valid
+// clone from an earlier successful pick) can never be confused with
+// "disarm" at a glance or by a grep — only the ล้าง handler calls
+// setCloneSource(null, ...).
+var RETAIN = {};
+function setCloneSource(pid, message) {
+  var hidden = document.getElementById('clone_source_pid');
+  var text = document.getElementById('clone-status-text');
+  var clear = document.getElementById('clone-clear');
+  if (pid !== RETAIN) {
+    if (hidden) hidden.value = pid == null ? '' : pid;
+    if (clear) clear.classList.toggle('d-none', pid == null);
+    if (text) text.textContent = message || '';
+    return;
+  }
+  // RETAIN keeps the armed pid, but the message must say so — a bare "load
+  // failed" would hide that an earlier successful clone is still armed and
+  // will be stamped on save (review finding: clone A succeeds, clone B
+  // fails, status showed only the bare error with no sign A was still
+  // armed). Nothing armed -> fall through to the plain error message.
+  var armedPid = hidden ? hidden.value : '';
+  if (text) text.textContent = armedPid
+    ? 'โหลดสินค้าใหม่ไม่สำเร็จ — ยังคัดลอกจาก #' + armedPid
+    : (message || '');
+}
+
+// D7: fires an async fetch with no request guard by default — select A then
+// select B (B's response lands before A's) would arm A over B, and clicking
+// ล้าง mid-flight would be undone by a stale response landing after it. A
+// monotonic _cloneSeq (same idiom as _pnPreviewSeq above) is bumped on both
+// clone-start and clear; every callback captures it and bails out early if
+// stale, BEFORE writing any state.
+var _cloneSeq = 0;
+
 function cloneFromProduct(pid) {
-  var status = document.getElementById('clone-status');
+  var seq = ++_cloneSeq;
   fetch('/products/spec/' + pid)
     .then(function (r) { return r.json(); })
     .then(function (spec) {
-      if (spec.error) { status.textContent = 'โหลดข้อมูลสินค้าไม่สำเร็จ'; return; }
+      if (seq !== _cloneSeq) return;   // a newer clone/clear already answered
+      if (spec.error) { setCloneSource(RETAIN, 'โหลดข้อมูลสินค้าไม่สำเร็จ'); return; }
       var setVal = function (id, val) { var el = document.getElementById(id); if (el) el.value = val == null ? '' : val; };
       var warnings = [];
       // Overwrite EVERY field (decision Q1 — no merge). Cost is deliberately
@@ -534,13 +579,25 @@ function cloneFromProduct(pid) {
       setVal('units_per_carton', spec.units_per_carton);
       setVal('units_per_box', spec.units_per_box);
       _pnNameDirty = false;   // clone counts as a fresh start for the name box too
-      status.textContent = warnings.length
+      setCloneSource(pid, warnings.length
         ? 'คัดลอกจาก #' + pid + ' แล้ว — ' + warnings.join(', ') + ' ไม่มีในตัวเลือกปัจจุบัน กรุณาเลือกเอง'
-        : 'คัดลอกจาก #' + pid + ' แล้ว — ตรวจสอบก่อนบันทึก';
+        : 'คัดลอกจาก #' + pid + ' แล้ว — ตรวจสอบก่อนบันทึก');
       fetchPnIdentityPreview();
     })
-    .catch(function () { status.textContent = 'โหลดข้อมูลสินค้าไม่สำเร็จ'; });
+    .catch(function () {
+      if (seq !== _cloneSeq) return;
+      setCloneSource(RETAIN, 'โหลดข้อมูลสินค้าไม่สำเร็จ');
+    });
 }
+
+(function () {
+  var clearBtn = document.getElementById('clone-clear');
+  if (!clearBtn) return;
+  clearBtn.addEventListener('click', function () {
+    ++_cloneSeq;   // invalidate any clone fetch still in flight
+    setCloneSource(null, '');
+  });
+})();
 
 /* ── Clone-source search box (same client-side filter as /mapping's
    Card A + Card B boxes — see templates/mapping.html) ── */

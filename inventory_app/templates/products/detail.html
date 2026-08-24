@@ -209,6 +209,8 @@
             {% set _cv = product.created_via or '' %}
             {% if _cv.startswith('smart_mapping_clone_') %}
               {% set _created_via_label = 'จาก Smart Mapping (คัดลอกจาก #' ~ _cv.replace('smart_mapping_clone_', '') ~ ')' %}
+            {% elif _cv.startswith('manual_clone_') %}
+              {% set _created_via_label = 'เพิ่มเอง (คัดลอกจาก #' ~ _cv.replace('manual_clone_', '') ~ ')' %}
             {% else %}
               {% set _created_via_label = _created_via_labels.get(product.created_via) %}
             {% endif %}

@@ -338,10 +338,57 @@ def preview_identity():
     return jsonify({'name': name, 'sku_code': sku_code})
 
 
+def _resolve_clone_source(raw_value):
+    """products-new-clone-provenance D4: resolve /products/new's
+    clone_source_pid form field into (created_via, normalized_pid).
+
+    Advisory provenance, not audit-grade — an existence check proves the
+    pid names *a* product, never that a clone actually happened. Blank /
+    absent / non-int / out-of-range / no-such-product all fall back to
+    plain 'manual' and never block the create; a non-blank value that
+    fails to resolve logs a warning so a real bug stays visible instead of
+    silently becoming 'manual'.
+
+    Range-checked to SQLite's signed-64-bit range BEFORE any query:
+    int('9' * 100) parses fine (Python ints are arbitrary precision) and
+    only raises OverflowError once bound to a query parameter — which is
+    NOT a sqlite3.DatabaseError, so an unguarded query could 500 the page.
+    """
+    raw = (raw_value or '').strip()
+    if not raw:
+        return 'manual', ''
+
+    pid = None
+    try:
+        candidate = int(raw)
+        if 1 <= candidate <= 2**63 - 1:
+            pid = candidate
+    except ValueError:
+        pid = None
+
+    if pid is not None:
+        conn = get_connection()
+        try:
+            row = conn.execute('SELECT id FROM products WHERE id = ?', (pid,)).fetchone()
+        except sqlite3.DatabaseError:
+            row = None
+        finally:
+            conn.close()
+        if row:
+            return f'manual_clone_{pid}', pid
+
+    current_app.logger.warning(
+        "product_new: clone_source_pid=%r did not resolve to a product; falling back to 'manual'",
+        raw,
+    )
+    return 'manual', ''
+
+
 @bp_products.route('/products/new', methods=['GET', 'POST'])
 def product_new():
     if request.method == 'POST':
         f = request.form
+        created_via, clone_source_pid = _resolve_clone_source(f.get('clone_source_pid'))
         # brand_id / color_code selects carry a '__other__' sentinel when the
         # user picked "อื่นๆ (ระบุ)" — in that case the real value lives in
         # the paired *_other_name/*_other free-text field instead.
@@ -378,14 +425,16 @@ def product_new():
         except ValueError as e:
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
             return render_template('products/form.html', product=f, action='new',
-                                   locations=[], **_new_form_context())
+                                   locations=[], clone_source_pid=clone_source_pid,
+                                   **_new_form_context())
 
         try:
-            pid = models.create_structured_product(data, 'manual')
+            pid = models.create_structured_product(data, created_via)
         except sqlite3.DatabaseError as e:
             flash(f'บันทึกไม่สำเร็จ: {e}', 'danger')
             return render_template('products/form.html', product=f, action='new',
-                                   locations=[], **_new_form_context())
+                                   locations=[], clone_source_pid=clone_source_pid,
+                                   **_new_form_context())
 
         locations = request.form.getlist('floor_no')
         models.save_product_locations(pid, locations)
@@ -393,7 +442,7 @@ def product_new():
         return redirect(url_for('products.product_detail', product_id=pid))
 
     return render_template('products/form.html', product={}, action='new', locations=[],
-                           **_new_form_context())
+                           clone_source_pid='', **_new_form_context())
 
 
 @bp_products.route('/products/<int:product_id>')
