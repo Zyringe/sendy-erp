@@ -36,6 +36,7 @@ not exercised at runtime. A real runtime demo needs a browser click-through
 against a synthetic mismatch (no live product reaches this branch) — the
 function is short enough to review directly instead.
 """
+import logging
 import os
 import re
 import sqlite3
@@ -382,3 +383,494 @@ def test_set_select_or_warn_js_never_silently_leaves_blank(admin_client):
     loop_idx = fn_src.index('for (')
     warn_idx = fn_src.index('warnings.push(label)')
     assert warn_idx > loop_idx, "the warning must sit AFTER the match loop, not before it"
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# projects/products-new-clone-provenance/plan.md — created_via='manual_clone_<pid>'
+#
+# /products/new's clone (above) copies every spec field from a source
+# product but always stamps plain 'manual' — indistinguishable from a
+# hand-typed product. This section adds a second provenance token driven
+# by a new hidden `clone_source_pid` field the clone JS arms/clears, per
+# the plan's "Verification contract".
+# ═════════════════════════════════════════════════════════════════════════
+
+_HIDDEN_CLONE_PID_TAG_RE = re.compile(r'<input[^>]*\bid="clone_source_pid"[^>]*>')
+_VALUE_ATTR_RE = re.compile(r'\bvalue="([^"]*)"')
+_CLONE_CLEAR_TAG_RE = re.compile(r'<button[^>]*\bid="clone-clear"[^>]*>')
+_CLONE_STATUS_TEXT_RE = re.compile(r'<span[^>]*\bid="clone-status-text"[^>]*>(.*?)</span>', re.S)
+
+
+def _extract_clone_source_pid_input(html):
+    """The hidden clone_source_pid input, asserting there is EXACTLY ONE —
+    so a red here reads as 'wrong/missing value', never a None-dereference
+    from a selector that found nothing (Codex R2, verification contract #2)."""
+    matches = _HIDDEN_CLONE_PID_TAG_RE.findall(html)
+    assert len(matches) == 1, (
+        f"expected exactly one clone_source_pid hidden input, found "
+        f"{len(matches)}: {matches}"
+    )
+    m = _VALUE_ATTR_RE.search(matches[0])
+    return m.group(1) if m else ''
+
+
+def _extract_clone_status_text(html):
+    m = _CLONE_STATUS_TEXT_RE.search(html)
+    assert m is not None, "expected a #clone-status-text span (D10a stable children)"
+    return m.group(1)
+
+
+def _extract_clone_clear_tag(html):
+    matches = _CLONE_CLEAR_TAG_RE.findall(html)
+    assert len(matches) == 1, (
+        f"expected exactly one clone-clear button (D10a stable children), "
+        f"found {len(matches)}: {matches}"
+    )
+    return matches[0]
+
+
+def _extract_js_function(live, name):
+    """Brace-matched extraction of `function <name>(...) { ... }` from the
+    live (comment-stripped) JS — robust to nested `{ }` blocks (inline
+    callbacks etc.) that would break a naive search for the next bare
+    line-start '}' (the trick the pre-existing tests above use, which only
+    happens to work for fetchPnIdentityPreview/setSelectOrWarn because
+    neither has an earlier zero-indent '}')."""
+    marker = f'function {name}('
+    start = live.index(marker)
+    brace_start = live.index('{', start)
+    depth = 0
+    i = brace_start
+    while i < len(live):
+        if live[i] == '{':
+            depth += 1
+        elif live[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return live[start:i + 1]
+        i += 1
+    raise AssertionError(f"unbalanced braces while extracting function {name}")
+
+
+def _extract_callback_body(src, anchor):
+    """Brace-matched body (contents only, no braces) of the anonymous
+    function whose definition starts at `anchor` inside `src`, e.g.
+    '.then(function (spec)' or '.catch(function ('."""
+    start = src.index(anchor)
+    brace_start = src.index('{', start)
+    depth = 0
+    i = brace_start
+    while i < len(src):
+        if src[i] == '{':
+            depth += 1
+        elif src[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return src[brace_start + 1:i]
+        i += 1
+    raise AssertionError(f"unbalanced braces extracting callback at {anchor!r}")
+
+
+@pytest.fixture
+def nonexistent_pid(tmp_db):
+    """A pid guaranteed to name no product — derived from the live clone's
+    own MAX(id) rather than a hardcoded magic number (never assume DB state
+    blindly, verification-discipline.md)."""
+    conn = sqlite3.connect(tmp_db)
+    max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM products").fetchone()[0]
+    conn.close()
+    return max_id + 1_000_000
+
+
+# ── Red #1: a valid clone_source_pid stamps manual_clone_<pid> ─────────────
+
+def test_product_new_post_with_clone_source_pid_stamps_manual_clone(admin_client, clone_source_product):
+    client, db_path = admin_client
+    product_name = 'pytest PR5 clone stamps manual_clone'
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM products WHERE product_name = ?", (product_name,))
+    conn.commit()
+    conn.close()
+
+    resp = client.post('/products/new', data={
+        'product_name': product_name,
+        'unit_type': 'ตัว',
+        'clone_source_pid': str(clone_source_product),
+    }, follow_redirects=False)
+    assert resp.status_code == 302, resp.data[:500]
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT created_via FROM products WHERE product_name = ?", (product_name,)
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row['created_via'] == f'manual_clone_{clone_source_product}'
+
+
+# ── Red #2: carry-through on BOTH failure re-renders, resubmit with the
+#    EXTRACTED value (never the fixture's own pid — Codex R1 #7) ──────────
+
+@pytest.mark.parametrize('bad_field', ['packaging_th', 'cost_price'])
+def test_clone_source_pid_carries_through_validation_error_and_resubmit(
+    admin_client, clone_source_product, bad_field
+):
+    """End-to-end provenance with a carry-through guard (verification
+    contract #2). packaging_th fails at the DB layer (:387, DatabaseError
+    via the CHECK trigger); cost_price='not-a-number' fails float() (:380,
+    ValueError) — two DIFFERENT render call sites, both must carry the
+    hidden field (Codex R3 #2: v3 never reached the :380 branch, so a
+    missing kwarg there would have passed the whole suite silently)."""
+    client, db_path = admin_client
+    data = {
+        'product_name': 'pytest PR5 carry-through',
+        'unit_type': 'ตัว',
+        'clone_source_pid': str(clone_source_product),
+    }
+    if bad_field == 'packaging_th':
+        data['packaging_th'] = 'ไม่มีจริง'   # rejected by the CHECK trigger -> :387
+    else:
+        data['cost_price'] = 'not-a-number'   # float() raises -> :380
+
+    resp = client.post('/products/new', data=data, follow_redirects=False)
+    assert resp.status_code == 200, resp.data[:500]   # failure re-renders, never redirects
+    html = resp.get_data(as_text=True)
+
+    extracted_pid = _extract_clone_source_pid_input(html)
+    assert extracted_pid == str(clone_source_product), (
+        f"hidden clone_source_pid must carry the source pid through the "
+        f"{bad_field} validation error; expected {clone_source_product!r}, "
+        f"got {extracted_pid!r}"
+    )
+
+    # Resubmit with the EXTRACTED value, not the fixture's pid directly —
+    # re-sending the fixture pid would pass this half even if carry-through
+    # were removed entirely (Codex R1 #7).
+    product_name = f'pytest PR5 carry-through resubmit {bad_field}'
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM products WHERE product_name = ?", (product_name,))
+    conn.commit()
+    conn.close()
+
+    resp2 = client.post('/products/new', data={
+        'product_name': product_name,
+        'unit_type': 'ตัว',
+        'clone_source_pid': extracted_pid,
+    }, follow_redirects=False)
+    assert resp2.status_code == 302, resp2.data[:500]
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT created_via FROM products WHERE product_name = ?", (product_name,)
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row['created_via'] == f'manual_clone_{clone_source_product}'
+
+
+# ── Red #5: D10's server-rendered status must never claim provenance the
+#    save will not produce — run across BOTH failure renders ──────────────
+
+@pytest.mark.parametrize('bad_field', ['packaging_th', 'cost_price'])
+def test_clone_status_server_renders_armed_state_on_failure_with_valid_pid(
+    admin_client, clone_source_product, bad_field
+):
+    """A valid clone_source_pid surviving a validation error must be
+    VISIBLE, not just present in the hidden field (Codex R1 #3): status
+    text carries the source pid, the clear button is shown."""
+    client, _db = admin_client
+    data = {
+        'product_name': 'pytest PR5 armed status',
+        'unit_type': 'ตัว',
+        'clone_source_pid': str(clone_source_product),
+    }
+    if bad_field == 'packaging_th':
+        data['packaging_th'] = 'ไม่มีจริง'
+    else:
+        data['cost_price'] = 'not-a-number'
+
+    resp = client.post('/products/new', data=data, follow_redirects=False)
+    assert resp.status_code == 200, resp.data[:500]
+    html = resp.get_data(as_text=True)
+
+    assert _extract_clone_source_pid_input(html) == str(clone_source_product)
+
+    status_text = _extract_clone_status_text(html)
+    assert f'คัดลอกจาก #{clone_source_product}' in status_text
+
+    clear_tag = _extract_clone_clear_tag(html)
+    assert 'd-none' not in clear_tag, "clear button must be VISIBLE when a source is armed"
+
+
+@pytest.mark.parametrize('bad_field', ['packaging_th', 'cost_price'])
+def test_clone_status_server_renders_disarmed_state_on_failure_with_bad_pid(
+    admin_client, nonexistent_pid, bad_field
+):
+    """D11: a pid that fails to resolve must leave NO provenance armed on
+    the re-render — the page must never claim a clone the save will not
+    produce. Hidden value empty, status carries no 'คัดลอกจาก', clear
+    button present (D10a stable children) but hidden."""
+    client, _db = admin_client
+    data = {
+        'product_name': 'pytest PR5 disarmed status',
+        'unit_type': 'ตัว',
+        'clone_source_pid': str(nonexistent_pid),
+    }
+    if bad_field == 'packaging_th':
+        data['packaging_th'] = 'ไม่มีจริง'
+    else:
+        data['cost_price'] = 'not-a-number'
+
+    resp = client.post('/products/new', data=data, follow_redirects=False)
+    assert resp.status_code == 200, resp.data[:500]
+    html = resp.get_data(as_text=True)
+
+    hidden_val = _extract_clone_source_pid_input(html)
+    assert hidden_val == '', f"expected empty hidden value for an unresolved pid, got {hidden_val!r}"
+
+    status_text = _extract_clone_status_text(html)
+    assert 'คัดลอกจาก' not in status_text
+
+    clear_tag = _extract_clone_clear_tag(html)
+    assert 'd-none' in clear_tag, "clear button must be present but HIDDEN when nothing is armed"
+
+
+# ── Red #4: the hidden field + the live JS both arm and clear it ───────────
+
+def test_product_new_get_renders_clone_source_pid_hidden_input(admin_client):
+    client, _db = admin_client
+    html = client.get('/products/new').get_data(as_text=True)
+    assert 'id="clone_source_pid"' in html
+
+
+def test_clone_from_product_routes_state_through_set_clone_source(admin_client):
+    """D10a: clone-status is owned by JS — cloneFromProduct's
+    `status.textContent = ...` writes (form.html:513,537,542 on
+    origin/main) DELETE every child, so a server-rendered clear BUTTON
+    placed inside clone-status would be wiped by the next clone. Every
+    state change must route through ONE helper, setCloneSource(), so the
+    hidden value / text / button stay in sync — scoped to cloneFromProduct
+    only (parseRawName legitimately still writes its OWN #parse-status
+    through a same-named `status` variable — do not touch that, per the
+    plan's explicit note)."""
+    client, _db = admin_client
+    live = _live_js(client.get('/products/new').get_data(as_text=True))
+    fn_src = _extract_js_function(live, 'cloneFromProduct')
+    assert 'textContent =' not in fn_src, (
+        "cloneFromProduct must not write .textContent directly — route "
+        "through setCloneSource() (D10a)"
+    )
+    assert 'function setCloneSource(' in live, "setCloneSource helper must exist"
+
+
+def test_set_clone_source_call_shapes_are_unambiguous(admin_client):
+    """Pins the THREE call shapes verification contract #4 requires, fixed
+    so there is exactly one reading (Codex R5 — folding R3 then R4 left a
+    v5 draft requiring `setCloneSource(null` in the failure paths on one
+    line and forbidding it two lines later):
+      - success (cloneFromProduct's .then): setCloneSource(pid, ...)
+      - BOTH failure paths (spec.error branch + .catch):
+        setCloneSource(RETAIN, ...) — a named sentinel, never null
+      - the clone-clear listener: setCloneSource(null, ...) — the ONLY
+        null call in the file
+    A test demanding merely 'some setCloneSource(' call is satisfied by
+    the success call alone (Codex R3 #3) — so pin the COUNTS, not just
+    presence."""
+    client, _db = admin_client
+    live = _live_js(client.get('/products/new').get_data(as_text=True))
+
+    fn_src = _extract_js_function(live, 'cloneFromProduct')
+    assert 'setCloneSource(pid' in fn_src, (
+        "cloneFromProduct's success path must call setCloneSource(pid, ...)"
+    )
+
+    assert live.count('setCloneSource(null') == 1, (
+        "setCloneSource(null must appear EXACTLY ONCE — the clone-clear "
+        "listener disarming. A version demanding merely 'some "
+        "setCloneSource(' call would pass on the success call alone."
+    )
+    assert live.count('setCloneSource(RETAIN') == 2, (
+        "both failure paths (spec.error branch and .catch) must call "
+        "setCloneSource(RETAIN, ...) — never null, which would disarm a "
+        "still-valid clone after a later unrelated failure (D10b/Codex R4)"
+    )
+    assert "getElementById('clone-clear')" in live, (
+        "a ล้าง listener wired to #clone-clear must exist to call "
+        "setCloneSource(null, ...) — the only path that disarms (D10c)"
+    )
+
+
+def test_clone_seq_guard_checked_before_state_write_in_then_and_catch(admin_client):
+    """D7: cloneFromProduct fires an async fetch with no request guard —
+    select A, then select B (B resolves before A) arms A over B, and
+    clicking ล้าง mid-flight is undone when a stale fetch lands. The fix
+    is a monotonic _cloneSeq; EVERY success/failure callback must capture
+    it and bail out early if stale, BEFORE writing any state. Pinned as a
+    SOURCE-ORDER check (no JS runner in this repo — same idiom as
+    test_preview_drops_out_of_order_responses above), and the .then/.catch
+    callbacks are checked SEPARATELY (Codex R4: one combined assertion
+    lets an implementer guard .then and leave .catch open)."""
+    client, _db = admin_client
+    live = _live_js(client.get('/products/new').get_data(as_text=True))
+    fn_src = _extract_js_function(live, 'cloneFromProduct')
+
+    then_body = _extract_callback_body(fn_src, '.then(function (spec)')
+    catch_body = _extract_callback_body(fn_src, '.catch(function (')
+
+    for label, body in (('.then', then_body), ('.catch', catch_body)):
+        guard_idx = body.index('seq !== _cloneSeq')
+        write_idx = body.index('setCloneSource(')
+        assert guard_idx < write_idx, (
+            f"{label} callback: the _cloneSeq guard must sit BEFORE the "
+            f"first setCloneSource(...) state write"
+        )
+        assert 'return' in body[guard_idx:write_idx], (
+            f"{label} callback: the _cloneSeq check must actually `return` "
+            f"— found the comparison but no bail-out before the state write"
+        )
+
+
+def test_clone_seq_increments_on_clone_start_and_on_clear(admin_client):
+    """D7: _cloneSeq must be incremented on clone-START (invalidating any
+    in-flight older fetch) AND on CLEAR (so ล้าง mid-flight can't be undone
+    by a stale response landing after it) — same idiom as _pnPreviewSeq
+    (form.html:457-505), which this file already exercises above."""
+    client, _db = admin_client
+    live = _live_js(client.get('/products/new').get_data(as_text=True))
+    assert live.count('++_cloneSeq') == 2, (
+        "_cloneSeq must be incremented in exactly two places: clone-start "
+        "(inside cloneFromProduct) and clear (the ล้าง handler) — D7"
+    )
+
+
+# ── Regression / already-green (#6-#9): the fallback already exists on
+#    origin/main (:384 hardcodes 'manual' and nothing reads the field) —
+#    these pin it does NOT regress once the resolver lands, they are not
+#    expected to be red now ─────────────────────────────────────────────
+
+def test_product_new_post_with_nonexistent_clone_source_pid_falls_back_to_manual(
+    admin_client, nonexistent_pid, caplog
+):
+    """#6: a pid that resolves to no product still creates the row as
+    plain 'manual', and D4 requires a WARNING to be logged (so a real bug
+    stays visible instead of silently becoming indistinguishable from a
+    genuine hand-typed product)."""
+    client, db_path = admin_client
+    product_name = 'pytest PR5 nonexistent pid fallback'
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM products WHERE product_name = ?", (product_name,))
+    conn.commit()
+    conn.close()
+
+    with caplog.at_level(logging.WARNING):
+        resp = client.post('/products/new', data={
+            'product_name': product_name,
+            'unit_type': 'ตัว',
+            'clone_source_pid': str(nonexistent_pid),
+        }, follow_redirects=False)
+    assert resp.status_code == 302, resp.data[:500]
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT created_via FROM products WHERE product_name = ?", (product_name,)
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row['created_via'] == 'manual'
+
+    assert any(
+        str(nonexistent_pid) in r.getMessage() and r.levelno >= logging.WARNING
+        for r in caplog.records
+    ), "a non-blank clone_source_pid that fails to resolve must log a warning (D4)"
+
+
+@pytest.mark.parametrize('bad_value', ['abc', ''])
+def test_product_new_post_with_non_numeric_clone_source_pid_falls_back_no_500(admin_client, bad_value):
+    """#7: a non-numeric pid ('abc' or '') falls back to plain 'manual' —
+    and critically must NOT 500."""
+    client, db_path = admin_client
+    product_name = f'pytest PR5 non-numeric fallback {bad_value or "blank"}'
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM products WHERE product_name = ?", (product_name,))
+    conn.commit()
+    conn.close()
+
+    resp = client.post('/products/new', data={
+        'product_name': product_name,
+        'unit_type': 'ตัว',
+        'clone_source_pid': bad_value,
+    }, follow_redirects=False)
+    assert resp.status_code == 302, resp.data[:500]
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT created_via FROM products WHERE product_name = ?", (product_name,)
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row['created_via'] == 'manual'
+
+
+def test_product_new_post_with_oversized_clone_source_pid_falls_back_no_500(admin_client):
+    """#8: '9' * 100 parses fine in Python's int() and then raises
+    OverflowError when bound to a SQLite query — NOT a sqlite3.DatabaseError,
+    so the route's existing `except` would not catch it without an explicit
+    range check (D4, verified empirically: int('9'*100) raises OverflowError,
+    and isinstance(e, sqlite3.DatabaseError) is False). This is a guard
+    against a SPECIFIC implementation mistake: there is no query to overflow
+    on origin/main today, but the moment the resolver is added WITHOUT the
+    range check, this 500s — which is what break-it-once at review time
+    proves."""
+    client, db_path = admin_client
+    product_name = 'pytest PR5 oversized pid fallback'
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM products WHERE product_name = ?", (product_name,))
+    conn.commit()
+    conn.close()
+
+    resp = client.post('/products/new', data={
+        'product_name': product_name,
+        'unit_type': 'ตัว',
+        'clone_source_pid': '9' * 100,
+    }, follow_redirects=False)
+    assert resp.status_code == 302, resp.data[:500]
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT created_via FROM products WHERE product_name = ?", (product_name,)
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row['created_via'] == 'manual'
+
+
+def test_product_new_post_without_clone_source_pid_key_defaults_to_manual(admin_client):
+    """#9: no clone_source_pid key at all (pre-existing POSTs from before
+    this feature, or a form submitted with JS disabled) → plain 'manual',
+    same as today."""
+    client, db_path = admin_client
+    product_name = 'pytest PR5 no clone_source_pid key'
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM products WHERE product_name = ?", (product_name,))
+    conn.commit()
+    conn.close()
+
+    resp = client.post('/products/new', data={
+        'product_name': product_name,
+        'unit_type': 'ตัว',
+    }, follow_redirects=False)
+    assert resp.status_code == 302, resp.data[:500]
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT created_via FROM products WHERE product_name = ?", (product_name,)
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row['created_via'] == 'manual'
