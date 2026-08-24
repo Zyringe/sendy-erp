@@ -250,10 +250,19 @@ def product_save(pid):
 
     Returns old/new name plus the (unchanged) sku_code."""
     fields = request.get_json(silent=True) or {}
+    # Popped, never whitelisted into the columns: it is a caller INTENT flag, not a
+    # product field. _clean_updates ignores unknown keys anyway; popping keeps the
+    # two kinds of thing visibly separate.
+    allow_name_loss = bool(fields.pop('allow_name_loss', False))
     db_path = _db_path()
     try:
         res = nc.save_product(db_path, pid, fields,
-                              backup_dir=db_backup.default_backup_dir(db_path))
+                              backup_dir=db_backup.default_backup_dir(db_path),
+                              allow_name_loss=allow_name_loss)
+    except nc.NameLossRefused as e:
+        # 409, not 400: the request is well-formed and the operator can proceed by
+        # confirming. `name_loss` is what the UI needs to say WHAT would be lost.
+        return jsonify({'ok': False, 'error': str(e), 'name_loss': e.lost}), 409
     except nc.ProductNotFound:
         return jsonify({'ok': False, 'error': f'ไม่พบสินค้า #{pid}'}), 404
     except nc.CascadeInvariantError as e:

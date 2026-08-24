@@ -20,6 +20,7 @@ they unit-test without the Flask app.
 """
 from __future__ import annotations
 
+import collections
 import sqlite3
 
 import db_backup
@@ -240,6 +241,40 @@ _EDITABLE_TEXT = ("series", "model", "size", "color_code", "packaging_th",
                   "condition", "pack_variant", "sub_category")
 
 
+class NameLossRefused(Exception):
+    """The rebuild would DESTROY text the stored product_name carries but no
+    structured column holds, and the caller did not ask for that.
+
+    Measured on the 2026-08-24 prod snapshot: 356 of 2,044 active products
+    (101 in stock) are in this state. `save_product` UPDATEs product_name
+    unconditionally, so without this guard opening such a product in the Master
+    Naming workbench and saving ANY unrelated field silently drops the extra
+    text — the `(แบบหุล)` incident, generalised.
+
+    ⚠ Only PRE-EXISTING drift is refused. The baseline is rebuilt BEFORE the
+    caller's updates are applied, so a shrink the operator causes themselves
+    (clearing `condition`, blanking `packaging_th`) still goes through.
+    """
+
+    def __init__(self, lost):
+        self.lost = list(lost)
+        super().__init__(
+            "ชื่อสินค้าจะสูญข้อความที่ไม่มีคอลัมน์ไหนเก็บไว้: "
+            + " ".join(self.lost)
+            + " — กรอกข้อมูลลงคอลัมน์ก่อน หรือยืนยันว่ายอมให้ชื่อสั้นลง"
+        )
+
+
+def _name_tokens(s):
+    """Whitespace tokens, with `_` treated as a space.
+
+    `sub_category` legitimately stores `แผ่นตัดเหล็กบาง_Super_Thin` while the
+    stored name spells it with spaces; 137 active products differ ONLY that way
+    and none of them loses information. Comparing raw would flag every one.
+    """
+    return collections.Counter((s or "").replace("_", " ").split())
+
+
 def _clean_updates(fields):
     """Whitelist + normalize the editable structured columns from `fields`.
 
@@ -263,7 +298,7 @@ def _clean_updates(fields):
 
 
 def save_product(db_path, pid, fields, *, backup_dir=None,
-                 reason="master_naming_edit"):
+                 reason="master_naming_edit", allow_name_loss=False):
     """Update a product's structured naming columns and rebuild product_name.
 
     ⚠ **sku_code is deliberately NOT regenerated here** (issue #383). It used to
@@ -316,6 +351,14 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
             raise ProductNotFound(f"product {pid} not found")
         old_name, old_sku = cur["product_name"], cur["sku_code"]
         before_active = _active_count(conn)
+
+        # Rebuild from the CURRENT columns, before this caller's edits land, so
+        # what we measure is pre-existing drift and not the operator's own change.
+        baseline = name_builder.rebuild_product_name(conn, pid)
+        lost = _name_tokens(old_name) - _name_tokens(baseline)
+        if lost and not allow_name_loss:
+            conn.execute("ROLLBACK")
+            raise NameLossRefused(sorted(lost.elements()))
 
         if updates:
             set_clause = ", ".join(f"{k}=?" for k in updates)

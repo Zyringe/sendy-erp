@@ -364,13 +364,25 @@ function _edRefresh() {
   }, 250);
 }
 
-async function saveProduct() {
+async function saveProduct(allowNameLoss) {
   if (!_edPid) return;
   const btn = document.getElementById('ed-save');
   btn.disabled = true;
-  const {data} = await _postJSON(`/naming/product/${_edPid}/save`, _edFields());
-  if (data.ok) { location.reload(); }
-  else { alert(data.error || 'เกิดข้อผิดพลาด'); btn.disabled = false; }
+  const body = _edFields();
+  if (allowNameLoss) body.allow_name_loss = true;
+  const {data} = await _postJSON(`/naming/product/${_edPid}/save`, body);
+  if (data.ok) { location.reload(); return; }
+  // The server refuses a save that would DESTROY name text no column holds. Show
+  // exactly what would go, and let the operator proceed on purpose.
+  if (data.name_loss && data.name_loss.length && !allowNameLoss) {
+    btn.disabled = false;
+    if (confirm('บันทึกแล้วชื่อจะหายคำนี้: ' + data.name_loss.join(' ')
+                + '\n\nกด OK เพื่อยืนยันให้ชื่อสั้นลง หรือ Cancel เพื่อไปกรอกคอลัมน์ให้ครบก่อน')) {
+      return saveProduct(true);
+    }
+    return;
+  }
+  alert(data.error || 'เกิดข้อผิดพลาด'); btn.disabled = false;
 }
 
 // Live-preview wiring — only on the workbench tab (editor fields exist there).
