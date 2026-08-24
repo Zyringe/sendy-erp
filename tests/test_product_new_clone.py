@@ -745,6 +745,50 @@ def test_clone_seq_increments_on_clone_start_and_on_clear(admin_client):
     )
 
 
+def test_retain_message_names_the_still_armed_source_on_failure(admin_client):
+    """Review finding 1: both clone-failure paths call
+    setCloneSource(RETAIN, 'โหลดข้อมูลสินค้าไม่สำเร็จ'). RETAIN correctly
+    KEEPS whatever pid is armed (D10b), but before this fix the message was
+    overwritten with that bare error unconditionally. Sequence: clone A
+    succeeds (hidden=A, fields=A's copy) -> clone B fails -> the operator
+    saw only 'โหลดข้อมูลสินค้าไม่สำเร็จ', with no sign A is still armed and
+    will be stamped on save. D10's whole point is "visible whenever it is
+    armed" — a silent bare error violates it.
+
+    Pinned structurally (no JS runner in this repo — same idiom as the
+    _cloneSeq/call-shape tests above): the code that only runs for a RETAIN
+    call must read the hidden input's CURRENT value and emit one of two
+    distinct message shapes depending on it."""
+    client, _db = admin_client
+    live = _live_js(client.get('/products/new').get_data(as_text=True))
+    fn_src = _extract_js_function(live, 'setCloneSource')
+
+    retain_guard = fn_src.index('pid !== RETAIN')
+    armed_msg = fn_src.index('ยังคัดลอกจาก #')
+    assert retain_guard < armed_msg, (
+        "the still-armed message must be built by code that only runs "
+        "AFTER the RETAIN check, not in the shared/non-RETAIN branch"
+    )
+
+    # Between the check and the message, the CURRENT hidden-input value
+    # must be read — not a value captured earlier, which would go stale
+    # the moment a later clear/clone changed it.
+    retain_section = fn_src[retain_guard:armed_msg]
+    assert 'hidden' in retain_section and '.value' in retain_section, (
+        "RETAIN handling must read the hidden input's current value to "
+        "know whether a source is still armed"
+    )
+
+    # Shape 2: nothing armed -> fall back to the plain error the caller
+    # passed in, claiming no provenance (D10b's other half) — a ternary
+    # or if/else, not an unconditional overwrite of the armed-pid message.
+    after_armed_msg = fn_src[armed_msg:]
+    assert ':' in after_armed_msg and 'message' in after_armed_msg, (
+        "the still-armed message must be conditional, with the plain "
+        "'message' argument as the fallback when nothing is armed"
+    )
+
+
 # ── Regression / already-green (#6-#9): the fallback already exists on
 #    origin/main (:384 hardcodes 'manual' and nothing reads the field) —
 #    these pin it does NOT regress once the resolver lands, they are not

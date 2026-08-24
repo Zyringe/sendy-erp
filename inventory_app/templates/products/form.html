@@ -527,8 +527,18 @@ function setCloneSource(pid, message) {
   if (pid !== RETAIN) {
     if (hidden) hidden.value = pid == null ? '' : pid;
     if (clear) clear.classList.toggle('d-none', pid == null);
+    if (text) text.textContent = message || '';
+    return;
   }
-  if (text) text.textContent = message || '';
+  // RETAIN keeps the armed pid, but the message must say so — a bare "load
+  // failed" would hide that an earlier successful clone is still armed and
+  // will be stamped on save (review finding: clone A succeeds, clone B
+  // fails, status showed only the bare error with no sign A was still
+  // armed). Nothing armed -> fall through to the plain error message.
+  var armedPid = hidden ? hidden.value : '';
+  if (text) text.textContent = armedPid
+    ? 'โหลดสินค้าใหม่ไม่สำเร็จ — ยังคัดลอกจาก #' + armedPid
+    : (message || '');
 }
 
 // D7: fires an async fetch with no request guard by default — select A then
