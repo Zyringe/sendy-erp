@@ -1052,6 +1052,11 @@ CREATE TABLE marketplace_wallet_txns (
     UNIQUE(platform, txn_time, txn_type, order_sn, amount)
 );
 
+CREATE TABLE mig171_packaging_th_backfill (
+    product_id INTEGER PRIMARY KEY REFERENCES products(id),
+    packaging_th TEXT NOT NULL
+);
+
 CREATE TABLE "paid_invoices" (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     re_id      INTEGER NOT NULL REFERENCES received_payments(id),
