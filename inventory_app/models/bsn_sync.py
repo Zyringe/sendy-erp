@@ -200,7 +200,7 @@ def _get_base_qty(conn, product_id: int, product_unit_type: str, bsn_unit: str, 
 
 
 def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
-                       product_ids=None):
+                       product_ids=None, replayed_ids=None):
     """
     สร้าง transaction ย้อนหลังสำหรับแถว BSN ที่มี product_id แล้ว
     แต่ยังไม่ถูก sync (synced_to_stock = 0)
@@ -214,6 +214,16 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
     Measured before the guard existed: a no-op ratio edit on pid 456 took 93
     units off four live listings while the warehouse ledger stayed correct.
 
+    replayed_ids: source-row ids in `table` that ALREADY hold a platform
+    deduction, so this call must re-post their ledger movement WITHOUT taking
+    marketplace stock off again. Use it where a replay and a first sync are
+    mixed in one call — import_weekly's pass 2 resets synced_to_stock=0 for
+    every row of an affected product, so the same re-post carries the file's
+    brand-new sales (which DO owe a deduction) alongside history that was
+    deducted weeks ago. `deduct_platform=False` cannot express that: it would
+    silence the new sales too and walk marketplace stock UP, i.e. straight into
+    the oversell direction this deduction exists to prevent.
+
     product_ids: restrict the scan to these products. This function otherwise
     picks up EVERY unsynced mapped row in the table, which a replay must not do
     — an unrelated product's pending marketplace sale would first-sync under
@@ -222,6 +232,7 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
     deduct_platform=False.
     """
     txn_type = 'IN' if file_type == 'purchase' else 'OUT'
+    _replayed = frozenset(replayed_ids or ())
 
     # ORDER BY id is load-bearing on a REPLAY (update_unit_conversion_ratio /
     # repoint_bsn_code delete a product's ledger and re-post it): recalculate_
@@ -343,7 +354,8 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
             # genuine sales OUT, never for a sales return (a return would have to
             # ADD platform stock back, not deduct; we leave platform stock to the
             # marketplace sync rather than guess on returns).
-            if deduct_platform and txn_type == 'OUT' and not is_sales_return:
+            if (deduct_platform and txn_type == 'OUT' and not is_sales_return
+                    and row['id'] not in _replayed):
                 customer = (row['customer'] or '').strip()
                 platform = PLATFORM_STOCK_DEDUCT_CUSTOMERS.get(customer)
 

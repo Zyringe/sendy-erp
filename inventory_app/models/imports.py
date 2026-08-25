@@ -341,11 +341,28 @@ def import_weekly(entries: list, file_type: str, filename: str,
             f"AND note IN ({n_ph})",
             pids + list(bsn_notes)
         )
+        # Rows that currently hold a ledger movement have ALSO already had
+        # their platform_skus.stock deduction taken — it happened when they
+        # first synced, and the DELETE above does not give it back. Capture
+        # them BEFORE the reset so the re-post can tell a replay from a first
+        # sync: this file's brand-new marketplace sales still owe a deduction,
+        # the history does not. Without this, every weekly import walked each
+        # affected listing down by that product's ENTIRE marketplace sales
+        # history and MAX(0, ...) hid the overshoot (six live listings hit 0 on
+        # 2026-08-24; #412 fell from 501 against 1,967 units of history).
+        # Sales only: the deduction is gated on txn_type == 'OUT', so a
+        # purchase replay cannot touch platform stock and the set would be
+        # built for nothing.
+        replayed_ids = None
+        if file_type == 'sales':
+            replayed_ids = {r[0] for r in conn.execute(
+                f"SELECT id FROM {table} WHERE product_id IN ({p_ph})"
+                f" AND synced_to_stock = 1", pids)}
         conn.execute(
             f"UPDATE {table} SET synced_to_stock=0 WHERE product_id IN ({p_ph})",
             pids
         )
-        _sync_bsn_to_stock(conn, table, file_type)
+        _sync_bsn_to_stock(conn, table, file_type, replayed_ids=replayed_ids)
 
     # Register new BSN codes in mapping table (unmapped)
     for code, name in new_bsn_codes.items():

@@ -140,7 +140,11 @@ EXPECTED = {
         'guarded: is_non_stock_code(product_code_raw) drives the revenue-preserving '
         'import branch, keeping the row even when the mapping still says is_ignored=1 '
         '(tests/test_nonstock_line_sync.py::test_non_stock_line_is_imported_as_revenue, '
-        'tests/test_nonstock_line_sync.py::test_non_stock_row_survives_pass_2_rebuild)',
+        'tests/test_nonstock_line_sync.py::test_non_stock_row_survives_pass_2_rebuild). '
+        'The synced_to_stock=1 SELECT that now precedes the pass-2 reset is unrelated '
+        'to the non-stock guard: it captures which source rows already carry a '
+        'platform_skus.stock deduction so the re-post does not take it twice '
+        '(tests/test_import_pass2_platform_deduct.py)',
 
     ('models/mapping.py', 'get_pending_split_mappings'):
         'guarded: both UNION branches filtered by non_stock_clause() '
@@ -257,6 +261,7 @@ EXPECTED_SEQUENCE = {
         'AND NOT (st.synced_to_stock = 1 AND st.customer IN (',
     ],
     ('models/imports.py', 'import_weekly'): [
+        ') AND synced_to_stock = 1',
         'SET synced_to_stock=0 WHERE product_id IN (',
     ],
     ('models/mapping.py', '_repoint_rows'): [
