@@ -219,7 +219,18 @@ def test_importer_resolves_and_flags_unmapped(tmp_db_conn):
          'unit_price': 5.0, 'item_subtotal': 5.0},
     ])
     stats = models.import_marketplace_orders(conn, [order], 'test.xlsx')
-    assert stats == {'orders': 1, 'items': 2, 'unmapped': 1, 'lines_resolved': 1}
+    # Exact-dict equality retired here: import_marketplace_orders now also
+    # returns the order-driven-deduction diff engine's counters (deducted/
+    # credited/skipped_lines/gated_lines — projects/order-driven-platform-
+    # deduction/plan.md, Task 1.3), which this test doesn't control (they
+    # depend on the live-DB-clone listing's real stock_as_of vs the fixture's
+    # fixed order_date). Assert only the mapping/resolution counts this test
+    # is actually about; the diff engine itself is covered exhaustively in
+    # tests/test_order_driven_deduction.py.
+    assert stats['orders'] == 1
+    assert stats['items'] == 2
+    assert stats['unmapped'] == 1
+    assert stats['lines_resolved'] == 1
 
     # header landed
     h = conn.execute("SELECT id FROM marketplace_orders WHERE order_sn='TEST-ORD-1'").fetchone()

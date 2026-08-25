@@ -13,6 +13,7 @@ mid-body position (verbatim), directly above the `_FEE_LABELS` constant it
 was already adjacent to in the monolith.
 """
 import json
+import re
 
 from database import get_connection
 import marketplace_match
@@ -94,12 +95,161 @@ def resolve_line_listing(conn, platform, item):
     return None
 
 
+# Statuses on which Shopee/Lazada have completed a cancel/return and restocked
+# the item themselves (Put, 2026-08-25). Scrapped/lost packages never re-enter
+# sellable stock; 'In Transit: Returning to seller' credits later, when the
+# status flips to a completed one. Unknown statuses = active (deduct): errs
+# toward a too-low estimate (false-red), never toward oversell.
+RESTOCK_STATUSES = {'ยกเลิกแล้ว', 'canceled', 'returned', 'Package Returned'}
+
+_ORDER_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}')
+
+
+def _normalize_order_date(order_date):
+    """'YYYY-MM-DD HH:MM' (Shopee/Lazada, from parse_orders) -> seconds-padded
+    'YYYY-MM-DD HH:MM:SS' for ISO string comparison against stock_as_of /
+    imported_at. Anything that doesn't even look like a date (missing,
+    malformed — Lazada's _iso_dt returns the raw unparsed string on
+    ValueError) -> None, so the baseline gate treats it as unparseable
+    rather than comparing garbage (D11)."""
+    if not order_date or not _ORDER_DATE_RE.match(order_date):
+        return None
+    if len(order_date) == 16:                    # 'YYYY-MM-DD HH:MM'
+        return order_date + ':00'
+    return order_date
+
+
+def _apply_order_stock_effect(conn, platform, order_id, status, order_date, items):
+    """Diff-based mirror maintenance for ONE order. Idempotent by construction.
+
+    wanted[listing] = sum of line qty (listing units, D10) for resolvable lines
+                      whose order_date > listing.stock_as_of (D3),
+                      or {} when status is in RESTOCK_STATUSES (D4).
+    stored[listing] = signed units already recorded for this order.
+    Applies wanted - stored per listing: downward clamps at MAX(0, ...) and
+    records the ACTUALLY applied amount; upward (credit) is unclamped, mirroring
+    the platform's own restock. NULL-stock listings are untouched and record
+    nothing (mig-172 rule). Provenance rows are DELETE+INSERT inside the
+    caller's transaction — a deliberate departure from the walk's bare INSERT:
+    here a re-import legitimately revisits the same key, and idempotency is
+    asserted by the tests, not by a PK abort.
+    Returns {'deducted': n, 'credited': n, 'skipped_lines': n, 'gated_lines': n}.
+    """
+    result = {'deducted': 0, 'credited': 0, 'skipped_lines': 0, 'gated_lines': 0}
+
+    stored = {r['platform_sku_id']: r['units'] for r in conn.execute(
+        "SELECT platform_sku_id, units FROM platform_stock_deductions "
+        "WHERE source_table='marketplace_orders' AND source_id=?",
+        (order_id,)).fetchall()}
+
+    wanted = {}
+    if status not in RESTOCK_STATUSES:
+        order_date_norm = _normalize_order_date(order_date)
+        for it in items:
+            qty = it.get('qty')
+            if qty is None:
+                result['skipped_lines'] += 1
+                continue
+            qty_int = int(round(qty))
+            if abs(qty - qty_int) > 1e-6:
+                # Marketplaces sell whole units; a fractional qty is a parse
+                # bug — do not silently floor it into the stock ledger.
+                result['skipped_lines'] += 1
+                continue
+            listing = resolve_line_listing(conn, platform, it)
+            if listing is None:
+                result['skipped_lines'] += 1
+                continue
+            baseline = (listing['stock_as_of'] if listing['stock_as_of'] is not None
+                        else listing['imported_at'])
+            # baseline is None only if imported_at is ALSO NULL (schema keeps
+            # imported_at NOT NULL, so this is the "no figure at all" case,
+            # not the common one) -> gate open. Otherwise a missing/malformed
+            # order_date cannot be compared -> gate CLOSED (D11): one missed
+            # deduction, corrected by the next snapshot, beats an unbounded
+            # re-deduction on every re-import after every snapshot.
+            if baseline is not None and (order_date_norm is None
+                                          or order_date_norm <= baseline):
+                result['gated_lines'] += 1
+                continue
+            wanted[listing['id']] = wanted.get(listing['id'], 0) + qty_int
+
+    for lid in set(wanted) | set(stored):
+        w = wanted.get(lid, 0)
+        s = stored.get(lid, 0)
+        delta = w - s
+        if delta == 0:
+            continue
+
+        stock_row = conn.execute(
+            "SELECT stock FROM platform_skus WHERE id=?", (lid,)).fetchone()
+        stock = stock_row['stock'] if stock_row else None
+
+        if delta > 0:
+            # A listing whose stock is NULL is a listing we have no figure
+            # for: MAX(0, NULL - n) is NULL (SQLite's scalar MAX/min return
+            # NULL if any argument is NULL), so the write below is a no-op —
+            # deliberately NOT COALESCEd (mig-172 rule).
+            applied = 0 if stock is None else min(delta, max(stock, 0))
+            conn.execute(
+                "UPDATE platform_skus SET stock = MAX(0, stock - ?) WHERE id=?",
+                (delta, lid))
+            new_units = s + applied
+            if applied:
+                result['deducted'] += applied
+        else:
+            give_back = -delta
+            conn.execute(
+                "UPDATE platform_skus SET stock = stock + ? WHERE id=?",
+                (give_back, lid))
+            new_units = s - give_back
+            result['credited'] += give_back
+
+        conn.execute(
+            "DELETE FROM platform_stock_deductions "
+            "WHERE source_table='marketplace_orders' AND source_id=? AND platform_sku_id=?",
+            (order_id, lid))
+        if new_units != 0:
+            conn.execute(
+                "INSERT INTO platform_stock_deductions "
+                "(source_table, source_id, platform_sku_id, units) "
+                "VALUES ('marketplace_orders', ?, ?, ?)",
+                (order_id, lid, new_units))
+
+    return result
+
+
+def _order_header_values(o, source_file):
+    """Value tuple for the marketplace_orders header upsert. Split out of
+    the upsert call so the concurrency test has a seam to intercept strictly
+    BEFORE the first write of import_marketplace_orders — a monkeypatch on
+    the conn.execute() call itself would fire only after the statement runs
+    (erp-engineering-discipline.md, concurrency-test rule)."""
+    return (o['platform'], o['order_sn'], o.get('status'), o.get('buyer_name'),
+            o.get('buyer_phone'), o.get('ship_address'), o.get('order_date'),
+            o.get('paid_date'), o.get('item_total'), o.get('marketplace_fee'),
+            o.get('payout'), o.get('currency', 'THB'), source_file,
+            json.dumps(o, ensure_ascii=False))
+
+
 def import_marketplace_orders(conn, orders, source_file=None):
     """Upsert parsed marketplace orders (from parse_orders.py) into
-    marketplace_orders / marketplace_order_items. Idempotent: re-importing the
-    same order updates the header and rebuilds its lines (handles edits/removals).
-    Returns stats dict. Caller owns the connection (commits here)."""
-    stats = {'orders': 0, 'items': 0, 'unmapped': 0, 'lines_resolved': 0}
+    marketplace_orders / marketplace_order_items, then maintain each
+    resolved listing's platform_skus.stock mirror via the diff engine
+    (_apply_order_stock_effect). Idempotent: re-importing the same order
+    updates the header, rebuilds its lines (handles edits/removals), and
+    re-diffs the stock effect against what was already recorded for it.
+
+    ONE `BEGIN IMMEDIATE` transaction spans the header upsert through every
+    stock write, held to the single commit at the end: the diff engine reads
+    platform_stock_deductions provenance and platform_skus.stock under the
+    same lock that writes them (check-then-write rule,
+    .claude/rules/erp-engineering-discipline.md — gunicorn -w 2 makes the
+    interleaving worker real). Returns stats dict. Caller owns the
+    connection (commits here)."""
+    stats = {'orders': 0, 'items': 0, 'unmapped': 0, 'lines_resolved': 0,
+             'deducted': 0, 'credited': 0, 'skipped_lines': 0, 'gated_lines': 0}
+    conn.execute("BEGIN IMMEDIATE")
     for o in orders:
         conn.execute(
             """INSERT INTO marketplace_orders
@@ -115,11 +265,7 @@ def import_marketplace_orders(conn, orders, source_file=None):
                    payout=excluded.payout, currency=excluded.currency,
                    source_file=excluded.source_file, raw_json=excluded.raw_json,
                    last_synced_at=datetime('now','localtime')""",
-            (o['platform'], o['order_sn'], o.get('status'), o.get('buyer_name'),
-             o.get('buyer_phone'), o.get('ship_address'), o.get('order_date'),
-             o.get('paid_date'), o.get('item_total'), o.get('marketplace_fee'),
-             o.get('payout'), o.get('currency', 'THB'), source_file,
-             json.dumps(o, ensure_ascii=False)))
+            _order_header_values(o, source_file))
 
         oid = conn.execute(
             "SELECT id FROM marketplace_orders WHERE platform=? AND order_sn=?",
@@ -127,7 +273,8 @@ def import_marketplace_orders(conn, orders, source_file=None):
 
         # Rebuild this order's lines so re-import reflects the latest export.
         conn.execute("DELETE FROM marketplace_order_items WHERE order_id=?", (oid,))
-        for it in o.get('items', []):
+        items = o.get('items', [])
+        for it in items:
             pid = resolve_marketplace_product_id(conn, o['platform'], it)
             if pid is None:
                 stats['unmapped'] += 1
@@ -144,6 +291,13 @@ def import_marketplace_orders(conn, orders, source_file=None):
                  pid, it.get('qty'), it.get('unit_price'), it.get('item_subtotal')))
             stats['items'] += 1
         stats['orders'] += 1
+
+        effect = _apply_order_stock_effect(
+            conn, o['platform'], oid, o.get('status'), o.get('order_date'), items)
+        stats['deducted'] += effect['deducted']
+        stats['credited'] += effect['credited']
+        stats['skipped_lines'] += effect['skipped_lines']
+        stats['gated_lines'] += effect['gated_lines']
 
     conn.commit()
     return stats
