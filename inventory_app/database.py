@@ -510,9 +510,16 @@ def init_db():
     cols = [r[1] for r in conn.execute("PRAGMA table_info(sales_transactions)").fetchall()]
     if 'doc_base' not in cols:
         conn.execute("ALTER TABLE sales_transactions ADD COLUMN doc_base TEXT")
+        # doc_base is a guarded column under mig 172. This one-shot backfill
+        # only fires on a DB old enough to lack the column, but if mig 172 has
+        # already run in the same init_db pass the guard would refuse it — so it
+        # declares itself like any other automated write.
         conn.execute("""
             UPDATE sales_transactions
-            SET doc_base = SUBSTR(doc_no, 1, INSTR(doc_no || '-', '-') - 1)
+            SET doc_base = SUBSTR(doc_no, 1, INSTR(doc_no || '-', '-') - 1),
+                change_source = 'import',
+                change_actor  = 'init-db-doc-base-backfill',
+                change_token  = 'doc_base-backfill'
         """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_st_doc_base ON sales_transactions(doc_base)")
     # paid_invoices: column was renamed iv_no → doc_no in mig 082 (2026-05-25).

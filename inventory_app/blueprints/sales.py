@@ -82,6 +82,8 @@ def sales_doc(doc_base):
     return render_template('sales_doc.html', rows=rows, doc_base=doc_base,
                            total_net=total_net,
                            non_stock_codes=sorted(models.NON_STOCK_BSN_CODES),
+                           audit_history=models.get_source_doc_audit_history(
+                               doc_base, 'sales_transactions'),
                            pending_map=len(models.get_pending_mappings(conn=conn)))
 
 
@@ -134,6 +136,8 @@ def purchases_doc(doc_base):
     return render_template('purchases_doc.html', rows=rows, doc_base=doc_base,
                            total_net=total_net,
                            non_stock_codes=sorted(models.NON_STOCK_BSN_CODES),
+                           audit_history=models.get_source_doc_audit_history(
+                               doc_base, 'purchase_transactions'),
                            pending_map=len(models.get_pending_mappings(conn=conn)))
 
 

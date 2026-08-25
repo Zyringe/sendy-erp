@@ -10,6 +10,8 @@ for every affected product) — acyclic, flagged in the Phase 12 report.
 from database import get_connection
 import bsn_units
 
+from . import _shared
+
 from .bsn_sync import (_BSN_LEDGER_NOTE_PATTERNS, _sync_bsn_to_stock,
                        _synced_source_ids, cross_unit_hazard)
 from .stock_filters import non_stock_clause, is_non_stock_code, NonStockCodeError
@@ -172,10 +174,13 @@ def resolve_pending_mappings(conn):
                 conn, row['bsn_code'], row['unit']
             )
             if mapped and not is_ignored and product_id is not None:
-                conn.execute(
-                    f"UPDATE {table} SET product_id = ? WHERE id = ?",
-                    (product_id, row['id'])
-                )
+                # mig 172: product_id is a guarded column, so this write has
+                # to say who made it. It is a pipeline step, not a human
+                # decision, hence source='import' — `change_actor` is what
+                # distinguishes which pipeline.
+                _shared.declared_update(
+                    conn, table, row['id'], {'product_id': product_id},
+                    source='import', actor='mapping-resolve')
         # sync แถวที่เพิ่ง resolve ไปยัง transactions/stock
         _sync_bsn_to_stock(conn, table, file_type)
     conn.commit()

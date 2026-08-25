@@ -190,10 +190,12 @@ def _process_entry(conn, entry, ref_conflicts):
         backfilled = 0
         if not db_ref and file_ref:
             # DB is null/empty; file has a ref → backfill
-            conn.execute(
-                "UPDATE sales_transactions SET ref_invoice = ? WHERE id = ?",
-                (file_ref, existing["id"])
-            )
+            # mig 172: ref_invoice is guarded. Automated backfill from the
+            # credit-note file, so source='import'.
+            from models._shared import declared_update
+            declared_update(conn, "sales_transactions", existing["id"],
+                            {"ref_invoice": file_ref},
+                            source="import", actor="credit-notes-backfill")
             backfilled = 1
         elif db_ref and file_ref and db_ref != file_ref:
             # Both non-null but different → log conflict, do not change

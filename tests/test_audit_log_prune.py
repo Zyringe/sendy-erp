@@ -16,6 +16,14 @@ money-table and human-edit forensic trail.
 These tests lock that intent: old `transactions` churn is pruned, everything
 else (including old non-`transactions` INSERTs on finance tables) survives, the
 boundary day is kept, and the function is idempotent.
+
+mig 172 widened the predicate to also prune source-document churn that positively
+declares `change_source='import'` — deliberately NOT the `transactions` shape,
+where a hand-void is pruned with the churn because the schema could not tell them
+apart. Since the predicate now reads `audit_log.change_source`, these tests need
+that column: `tmp_db` clones the live dev DB, which does not carry an unmerged
+migration, so `_with_mig172` applies it. Production never hits that gap —
+`init_db()` runs every migration before anything can call prune_audit_log().
 """
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
@@ -23,7 +31,23 @@ os.environ.setdefault('SKIP_DB_INIT', '1')
 import sqlite3
 from datetime import date, timedelta
 
+import pytest
+
 import models
+
+
+@pytest.fixture(autouse=True)
+def _with_mig172(tmp_db):
+    """Give the cloned dev DB the schema prune_audit_log() now requires."""
+    mig = os.path.join(os.path.dirname(__file__), '..', 'data', 'migrations',
+                       '172_source_doc_provenance.sql')
+    conn = sqlite3.connect(tmp_db)
+    cols = [r[1] for r in conn.execute('PRAGMA table_info(audit_log)')]
+    if 'change_source' not in cols:
+        with open(mig, encoding='utf-8') as fh:
+            conn.executescript(fh.read())
+        conn.commit()
+    conn.close()
 
 
 def _seed(db_path, rows):
