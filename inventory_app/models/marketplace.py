@@ -53,6 +53,47 @@ def resolve_marketplace_product_id(conn, platform, item):
     return None
 
 
+def resolve_line_listing(conn, platform, item):
+    """Resolve one parsed order line -> platform_skus row (the LISTING), or None.
+
+    Same 3-step fallback as resolve_marketplace_product_id but WITHOUT the
+    internal_product_id requirement: the mirror is listing-grain, an unmapped
+    listing can still be deducted. Returns the row (id, stock, stock_as_of).
+    """
+    # variation_id is UNIQUE(platform, variation_id) → at most one row. The
+    # seller_sku and name steps are NOT unique (a live Lazada duplicate exists:
+    # seller_sku '9x18" (1/2 กก.)' matches two different products — Codex,
+    # 2026-08-25, measured on the dev DB). The read-only resolver tolerates
+    # that; this one has WRITE power over stock, so an ambiguous match is
+    # treated like no match: skip + count (D6's philosophy, same as
+    # resolve_line_ratio's 'ambiguous'). Stub rows (variation_id NULL, stock
+    # NULL) are excluded from candidacy outright — a stub winning would make
+    # the deduction a silent no-op.
+    q = ("SELECT id, stock, stock_as_of, imported_at FROM platform_skus "
+         "WHERE platform = ? AND is_ignored = 0 AND NOT (variation_id IS NULL AND stock IS NULL) "
+         "AND {} LIMIT 2")
+    vid = item.get('variation_id')
+    if vid:
+        rows = conn.execute(q.format("variation_id = ?"), (platform, vid)).fetchall()
+        if rows:
+            return rows[0]                      # UNIQUE → len is 1
+    ssku = item.get('seller_sku')
+    if ssku:
+        rows = conn.execute(q.format("seller_sku = ?"), (platform, ssku)).fetchall()
+        if len(rows) == 1:
+            return rows[0]
+        if len(rows) > 1:
+            return None                         # ambiguous — do not guess with write power
+    name = item.get('item_name')
+    if name:
+        rows = conn.execute(
+            q.format("product_name = ? AND IFNULL(variation_name,'') = ?"),
+            (platform, name, item.get('variation_name') or '')).fetchall()
+        if len(rows) == 1:
+            return rows[0]
+    return None
+
+
 def import_marketplace_orders(conn, orders, source_file=None):
     """Upsert parsed marketplace orders (from parse_orders.py) into
     marketplace_orders / marketplace_order_items. Idempotent: re-importing the
