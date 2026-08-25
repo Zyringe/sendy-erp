@@ -58,6 +58,7 @@ KIND_CONVERSION_ROLE_ERROR = 'conversion_role_error'
 KIND_IMPORT_STALE = 'import_stale'
 KIND_UNMAPPED_CODES = 'unmapped_bsn_codes'
 KIND_EXPRESS_DOC_DRIFT = 'express_doc_drift'
+KIND_EXPRESS_DRIFT_SKIPPED = 'express_doc_drift_skipped'
 
 # Prod runs `gunicorn --timeout 60` (Procfile / railway.toml). A request that
 # exceeds it is SIGABRT'd mid-flight, so it cannot report itself — the warning
@@ -262,6 +263,97 @@ def _refresh_open_drift_alert(conn, doc_no, message, context):
         "UPDATE system_alerts SET message = ?, context_json = ? WHERE id = ?",
         (message, json.dumps(context, ensure_ascii=False), row[0]))
     return True
+
+
+def record_express_doc_drift_skipped_alert(reason, *, elapsed=None, conn=None):
+    """The document scan did not run this time, and somebody has to hear about it.
+
+    ⚠ THIS IS THE POINT OF THE WHOLE FEATURE, INVERTED. A watchman that switches
+    itself off quietly is the exact failure the drift detector exists to fix, so
+    a skip cannot be allowed to look like a clean run. The import results page
+    already says it to whoever uploaded; this says it to Put, who is not that
+    person and would otherwise never learn the check has been off for a week.
+
+    ONE OPEN ROW, WITH A COUNT. Dedupe key is the KIND alone, per _dedupe_key's
+    rule — the elapsed seconds are diagnostics. Repeat skips increment `times` in
+    the existing row instead of stacking one alert per upload, so the message
+    reads "ข้ามมาแล้ว 6 ครั้ง" rather than burying the page in six identical rows.
+
+    Cleared automatically by clear_express_doc_drift_skipped_alert() the next
+    time the scan does run — a warning that needs a human click when it has
+    already fixed itself is the wolf-crying this module exists to stop.
+
+    Best-effort: never raises. Skipping the scan already means the import
+    succeeded, and an alert failure must not change that.
+    """
+    try:
+        own = conn is None
+        if own:
+            conn = get_connection()
+        try:
+            key = _dedupe_key([KIND_EXPRESS_DRIFT_SKIPPED])
+            row = conn.execute(
+                "SELECT id, context_json FROM system_alerts"
+                "  WHERE kind = ? AND dedupe_key = ? AND resolved_at IS NULL",
+                (KIND_EXPRESS_DRIFT_SKIPPED, key)).fetchone()
+            times = 1
+            if row is not None:
+                try:
+                    times = int(json.loads(row[1] or '{}').get('times') or 1) + 1
+                except (ValueError, TypeError):
+                    times = 2
+            context = {'reason': reason, 'elapsed_s': elapsed, 'times': times}
+            message = (
+                f'ไม่ได้ตรวจว่าเอกสารถูกแก้ที่ต้นทางหรือไม่ ในการนำเข้า {times} ครั้งล่าสุด '
+                f'({reason}). ⚠ ข้อมูลเข้าครบแล้ว ไม่ต้องอัปโหลดใหม่ — แต่ระหว่างนี้ '
+                f'บิลที่ถูกแก้ฝั่ง Express จะไม่มีใครเห็น. '
+                f'จะหายเองเมื่อการนำเข้าครั้งถัดไปตรวจได้สำเร็จ')
+            if row is None:
+                aid = create_system_alert(
+                    KIND_EXPRESS_DRIFT_SKIPPED, message, dedupe_key=key,
+                    severity='warning', context=context, conn=conn)
+            else:
+                conn.execute(
+                    "UPDATE system_alerts SET message = ?, context_json = ?"
+                    " WHERE id = ?",
+                    (message, json.dumps(context, ensure_ascii=False), row[0]))
+                aid = row[0]
+            if own:
+                conn.commit()
+            return aid
+        finally:
+            if own:
+                conn.close()
+    except Exception as alert_exc:            # noqa: BLE001
+        print(f"[system_alerts] drift-skip alert failed: {alert_exc}", file=sys.stderr)
+
+
+def clear_express_doc_drift_skipped_alert(*, conn=None):
+    """The scan ran, so retire any open "it did not run" alert.
+
+    RESOLVED, not deleted: a week when the check was off stays on the record.
+    Returns how many rows were retired. Best-effort, like its counterpart.
+    """
+    try:
+        own = conn is None
+        if own:
+            conn = get_connection()
+        try:
+            cur = conn.execute(
+                "UPDATE system_alerts"
+                "   SET resolved_at = datetime('now','localtime'),"
+                "       resolved_by = 'auto: ตรวจเอกสารสำเร็จแล้ว'"
+                " WHERE kind = ? AND resolved_at IS NULL",
+                (KIND_EXPRESS_DRIFT_SKIPPED,))
+            if own:
+                conn.commit()
+            return cur.rowcount
+        finally:
+            if own:
+                conn.close()
+    except Exception as alert_exc:            # noqa: BLE001
+        print(f"[system_alerts] drift-skip clear failed: {alert_exc}", file=sys.stderr)
+        return 0
 
 
 def _drift_already_acknowledged(conn, doc_no, fingerprint):

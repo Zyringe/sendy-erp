@@ -13,6 +13,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 import tempfile
 import time
 import zipfile
@@ -1105,6 +1106,11 @@ def express_dbf_upload():
     # form — PRG pattern: flash the result and redirect back to the GET
     # page, same as every other Sendy import route.
     redirect_to = url_for('bsn.express_dbf_import')
+    # The clock the drift scan is measured against. Taken HERE, at the top of
+    # the request, because gunicorn's 60s ceiling applies to the whole request
+    # and the scan runs at the very end of it — measuring from the scan's own
+    # start would tell it there is plenty of time left when there is none.
+    _req_started_at = time.monotonic()
 
     # Checked via the Content-Length header BEFORE touching request.files —
     # accessing request.files is what makes werkzeug parse/spool the whole
@@ -1312,7 +1318,11 @@ def express_dbf_upload():
                     # invents an incident. None here means "unknown", and the
                     # scan then withholds that class of finding entirely.
                     export_at=export_at,
-                    detect_drift=True)
+                    detect_drift=True,
+                    # Wall clock from the TOP of this request, so the scan is
+                    # measured against the same 60s gunicorn budget the browser
+                    # is waiting on — not against its own start.
+                    started_at=_req_started_at)
                 results['bsn'] = {'ok': True,
                                   'summary': _express_dbf_summary_message(per_type),
                                   'reconcile': per_type.get('reconcile', {}),
@@ -1388,7 +1398,12 @@ def express_dbf_upload():
                 # results['bsn'] to failed and send the team to re-upload a file
                 # that imported fine.
                 _drift = results['bsn']['doc_drift']
-                if _drift.get('error'):
+                if _drift.get('skipped'):
+                    flashes.append(('warning',
+                                    f'ข้ามการตรวจเอกสารที่ถูกแก้ที่ต้นทางรอบนี้ '
+                                    f'({_drift["skipped"]}) — ข้อมูลเข้าครบแล้ว '
+                                    f'ไม่ต้องอัปโหลดใหม่'))
+                elif _drift.get('error'):
                     flashes.append(('warning',
                                     f'ตรวจเอกสารที่ถูกแก้ที่ต้นทางไม่สำเร็จ: {_drift["error"]} '
                                     f'— การนำเข้าปกติไม่กระทบ'))
@@ -1423,6 +1438,18 @@ def express_dbf_upload():
         # key is the doc_no alone, so a document that keeps disagreeing week
         # after week does not stack an alert per upload.
         _bsn_drift = (results.get('bsn') or {}).get('doc_drift') or {}
+        if _bsn_drift.get('skipped'):
+            # ⛔ Put is not the person who uploaded, so the page above does not
+            # reach him. Without this the check can be off for a week and the
+            # only symptom is a page that says nothing — a watchman switching
+            # itself off quietly, which is the failure this feature exists for.
+            models.record_express_doc_drift_skipped_alert(
+                _bsn_drift['skipped'], elapsed=_bsn_drift.get('remaining_s'))
+        elif _bsn_drift.get('findings') or _bsn_drift.get('counters'):
+            # The scan ran (with or without findings) — retire any open
+            # "it did not run" alert. A warning that needs a human click after
+            # it has already fixed itself is the wolf-crying this stops.
+            models.clear_express_doc_drift_skipped_alert()
         if _bsn_drift.get('findings'):
             try:
                 models.record_express_doc_drift_alerts(

@@ -14,6 +14,7 @@ Returns one of:
 from __future__ import annotations
 
 import os
+import time
 
 REPORT_TYPES = (
     "sales", "purchase", "payments_in", "payments_out",
@@ -319,8 +320,18 @@ ISOLATED_REGISTER_KEYS = frozenset({
 })
 
 
+# How much of the request's 60s budget the drift scan is allowed to need. It is
+# a RESERVE, not a stopwatch on the scan itself: the scan is one call and cannot
+# be interrupted halfway, so the only honest guard is to refuse to START it
+# without room. Measured 0.89s on a developer Mac against a full prod extract;
+# Railway is slower and shares CPU, so the reserve is ~13x that. Raising it makes
+# the scan skip more often, never makes an upload time out.
+DRIFT_SCAN_RESERVE_SECONDS = 12
+
+
 def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
-                       snapshot_date=None, export_at=None, detect_drift=False):
+                       snapshot_date=None, export_at=None, detect_drift=False,
+                       started_at=None):
     """Import all 8 Express DBF transactional types for one dataset
     directory into Sendy — the DBF branch parallel to the text-report path
     above (Phase 1 slices A+B — payments/credit-notes join sales/purchase
@@ -540,11 +551,27 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     # months after its own date).
     doc_drift = None
     if detect_drift:
-        try:
-            doc_drift = eds.run_document_drift_scan(
-                artrn, aptrn, stcrd, armas, apmas, db_path, export_at=export_at)
-        except Exception as exc:
-            doc_drift = {'error': str(exc)[:200], 'scope': eds.DRIFT_SCOPE_NOTE}
+        # ⛔ A watchman that switches itself off quietly is the failure this
+        # whole feature exists to fix, so a skip is REPORTED, never silent —
+        # here, on the results page, and as an alert for Put (who is not the
+        # person who uploaded). Everything above this line is already committed.
+        remaining = None
+        if started_at is not None:
+            remaining = (models.system_alerts.REQUEST_TIMEOUT_SECONDS
+                         - (time.monotonic() - started_at))
+        if remaining is not None and remaining < DRIFT_SCAN_RESERVE_SECONDS:
+            doc_drift = {
+                'skipped': f'การนำเข้าใช้เวลาไปมากแล้ว เหลือเวลาไม่พอ '
+                           f'({remaining:.0f} วินาที จากที่ต้องใช้อย่างน้อย '
+                           f'{DRIFT_SCAN_RESERVE_SECONDS})',
+                'remaining_s': round(remaining, 1),
+                'scope': eds.DRIFT_SCOPE_NOTE}
+        else:
+            try:
+                doc_drift = eds.run_document_drift_scan(
+                    artrn, aptrn, stcrd, armas, apmas, db_path, export_at=export_at)
+            except Exception as exc:
+                doc_drift = {'error': str(exc)[:200], 'scope': eds.DRIFT_SCOPE_NOTE}
 
     return {"sales": sales_stats, "purchase": purchase_stats,
             "invoice_refs_upserted": refs_upserted,
