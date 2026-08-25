@@ -34,6 +34,17 @@ def _set_price_change_source(conn, source):
 
 SOURCE_DOC_TABLES = ('sales_transactions', 'purchase_transactions')
 
+# What a declared change is allowed to touch. The guarded document columns plus
+# synced_to_stock, which is exempt from the guard but legitimately rides along
+# with a repoint. Deliberately excludes id / batch_id / created_at and the
+# change_* columns themselves — those are the mechanism, not the content.
+SOURCE_DOC_WRITABLE_COLUMNS = frozenset({
+    'date_iso', 'doc_no', 'doc_base', 'product_id', 'bsn_code', 'product_name_raw',
+    'customer', 'customer_code', 'supplier', 'supplier_code', 'supplier_id',
+    'qty', 'unit', 'unit_price', 'vat_type', 'discount', 'total', 'net',
+    'ref_invoice', 'line_seq', 'synced_to_stock',
+})
+
 
 def declared_update(conn, table, row_id, changes, *, actor,
                     source='manual', reason=None):
@@ -64,11 +75,43 @@ def declared_update(conn, table, row_id, changes, *, actor,
                          f'got {reason!r}. The DB will refuse it anyway.')
     if not changes:
         raise ValueError('no changes given')
+    # Column names are interpolated, not bound — SQLite cannot parameterise an
+    # identifier. Every caller passes literals today; the allowlist is what keeps
+    # that true if one ever forwards a request value.
+    unknown = set(changes) - SOURCE_DOC_WRITABLE_COLUMNS
+    if unknown:
+        raise ValueError(f'not writable through declared_update: {sorted(unknown)}')
     sets = ', '.join(f'{c} = ?' for c in changes)
     conn.execute(
         f"UPDATE {table} SET {sets}, change_source = ?, change_actor = ?, "
         f"change_reason = ?, change_token = ? WHERE id = ?",
         (*changes.values(), source, actor, reason, uuid.uuid4().hex, row_id))
+
+
+def declared_delete(conn, table, row_id, *, actor, reason):
+    """Delete a source-document row so the audit trail says who and why.
+
+    ⚠ Unlike `declared_update`, this cannot be ENFORCED. A DELETE has no NEW row,
+    so mig 172 has nothing to attach a declaration to and no BEFORE DELETE guard
+    can demand one — a plain DELETE still succeeds and its audit row inherits
+    whatever the row last declared, which for an imported line reads
+    `source='import'`. Measured, see spike/provenance-2026-08-25/c_delete_insert.py
+    in the brain repo.
+
+    Blocking DELETE was not an option either: the importer replaces every changed
+    line with DELETE+INSERT, so a guard there would block every import.
+
+    So this is the RIGHT way, not the ONLY way. It stamps the declaration onto the
+    row first — which the UPDATE guard does enforce — and then deletes, leaving a
+    DELETE audit row that carries the human's actor and reason. Retention keeps
+    every source-document DELETE forever precisely because the ones that matter
+    cannot be told apart from churn by rule.
+    """
+    if table not in SOURCE_DOC_TABLES:
+        raise ValueError(f'declared_delete is for {SOURCE_DOC_TABLES}, not {table!r}')
+    declared_update(conn, table, row_id, {'synced_to_stock': 0},
+                    actor=actor, source='manual', reason=reason)
+    conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
 
 
 SOURCE_DOC_FIELD_LABELS = {

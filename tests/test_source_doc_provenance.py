@@ -515,3 +515,79 @@ def test_history_reads_the_book_it_was_given(db, empty_db, monkeypatch, tmp_path
     main = sqlite3.connect(str(empty_db))
     assert models.get_source_doc_audit_history('IV0001', 'sales_transactions', conn=main)
     main.close()
+
+
+def test_declared_delete_leaves_a_human_trail(db):
+    """The right way to remove a line. It cannot be the only way — no BEFORE
+    DELETE guard can demand a reason a DELETE has nowhere to carry — so this
+    pins that the supported path produces the record, and the CONTROL below pins
+    exactly how a bare DELETE differs, which is the residual risk in writing."""
+    import models
+    rid = seed_sale(db, doc_no='IV0011-1')
+    models.declared_delete(db, 'sales_transactions', rid, actor='put',
+                           reason='บรรทัดค้างที่ Express ยกเลิกไปแล้ว')
+    db.commit()
+    d = [r for r in audit(db, 'DELETE') if r['row_key'] == 'IV0011-1|A001']
+    assert len(d) == 1
+    assert (d[0]['user'], d[0]['change_source']) == ('put', 'manual')
+    assert d[0]['change_reason'] == 'บรรทัดค้างที่ Express ยกเลิกไปแล้ว'
+
+    # CONTROL / residual risk: a bare DELETE of an imported row is still allowed
+    # and still recorded, but it reads as the importer's. That is the documented
+    # limitation, asserted rather than described so it cannot drift silently.
+    rid2 = seed_sale(db, doc_no='IV0012-1')
+    db.execute("DELETE FROM sales_transactions WHERE id=?", (rid2,))
+    db.commit()
+    bare = [r for r in audit(db, 'DELETE') if r['row_key'] == 'IV0012-1|A001'][0]
+    assert bare['change_source'] == 'import'      # ⛔ not 'manual' — the known gap
+    assert bare['change_reason'] is None
+
+
+def test_declared_delete_refuses_a_thin_reason(db):
+    import models
+    rid = seed_sale(db, doc_no='IV0013-1')
+    with pytest.raises(ValueError):
+        models.declared_delete(db, 'sales_transactions', rid, actor='put', reason='ลบ')
+    db.rollback()
+    assert db.execute("SELECT COUNT(*) FROM sales_transactions WHERE doc_no='IV0013-1'"
+                      ).fetchone()[0] == 1, 'row was deleted despite the refusal'
+
+
+def test_declared_update_refuses_a_column_outside_the_allowlist(db, empty_db):
+    """Column names cannot be bound parameters, so they are interpolated. The
+    allowlist is what keeps that safe if a caller ever forwards a request value."""
+    import models
+    conn = sqlite3.connect(str(empty_db))
+    rid = seed_sale(db, doc_no='IV0014-1')
+    for bad in ('batch_id', 'id', 'change_source', "net = 0 --"):
+        with pytest.raises(ValueError):
+            models.declared_update(conn, 'sales_transactions', rid, {bad: 1},
+                                   actor='put', reason='เหตุผลที่ยาวพอสมควรจริง')
+    conn.close()
+
+
+def test_a_hand_edited_document_is_flagged_before_you_expand_the_panel(db, empty_db, monkeypatch):
+    """The panel is collapsed by default. If the one event worth seeing is only
+    visible after a click, the page has not told anyone anything."""
+    rid = seed_sale(db, doc_no='IV0015-1')
+    db.execute("UPDATE sales_transactions SET date_iso='2026-02-02',"
+               " change_source='manual', change_actor='put',"
+               " change_reason='เหตุผลที่ยาวพอสมควรจริง', change_token='tb' WHERE id=?", (rid,))
+    db.commit()
+    import config, database, book_registry
+    monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
+    monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
+    def _book(*a, **k):
+        c = sqlite3.connect(str(empty_db)); c.row_factory = sqlite3.Row; return c
+    monkeypatch.setattr(book_registry, 'get_book_connection', _book)
+    from app import app
+    client = app.test_client()
+    with client.session_transaction() as sess:
+        sess['role'] = 'admin'; sess['username'] = 'admin'; sess['user_id'] = 1
+
+    html = client.get('/sales/doc/IV0015').get_data(as_text=True)
+    assert 'คนแก้ 1' in html
+    # CONTROL: an untouched document must not carry the flag, so the assertion
+    # above is not satisfied by markup that is always emitted.
+    seed_sale(db, doc_no='IV0016-1')
+    assert 'คนแก้' not in client.get('/sales/doc/IV0016').get_data(as_text=True)
