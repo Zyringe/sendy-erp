@@ -555,6 +555,12 @@ def upload():
                                 f'(settlement {len(parsed["settlements"])} รอบบิล)')
                     _log_import(conn, name, rows=ins, notes='marketplace:laz_wallet')
             except Exception as e:
+                # A failed file must leave nothing behind: the 'order' kind now
+                # holds stock/provenance writes inside its open transaction
+                # (order-driven-platform-deduction, Task 1.3), so _log_import's
+                # own commit below — issued with no rollback first — would make
+                # a PARTIAL import durable instead of merely an unimported row.
+                conn.rollback()
                 problems.append(('danger', f'❌ {name}: นำเข้าไม่สำเร็จ — {e}'))
                 _log_import(conn, name, notes=f'marketplace:{kind}:ERROR {e}')
 
