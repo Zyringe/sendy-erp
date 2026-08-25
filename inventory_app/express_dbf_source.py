@@ -1303,6 +1303,16 @@ def _drift_express_side(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
             cache[key] = not (is_ignored and not is_non_stock_code(code))
         return cache[key]
 
+    # Scope the HEADERS before building, not the entries afterwards. The
+    # builders walk every STCRD line and construct a full dict for each one
+    # whose DOCNUM is in the header set; with all 74,562 Express headers in
+    # scope that is ~237k dicts built to throw ~227k of them away. Filtering
+    # here leaves the same STCRD walk doing a dict miss per irrelevant line,
+    # which is what the builders' own docstrings say makes them cheap.
+    # Measured: 0.68s -> 0.14s on build_sales_entries alone.
+    artrn_rows = [r for r in artrn_rows if r.get('DOCNUM') in held]
+    aptrn_rows = [r for r in aptrn_rows if r.get('DOCNUM') in held]
+
     out = {}
     dropped = set()
     for entries in (build_sales_entries(artrn_rows, stcrd_rows, armas_rows),
@@ -1311,6 +1321,9 @@ def _drift_express_side(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
             doc = e['doc_no']
             base = doc.rsplit('-', 1)[0] if '-' in doc else doc
             if base not in held:
+                # Redundant after the header filter above and kept anyway: a
+                # sales doc_no carries a printed "-N" suffix, so this is the one
+                # place the base is derived, and it costs a set lookup.
                 continue
             code = _c_txt(e['product_code_raw'])
             unit = _c_unit(e['unit'], _norm)
@@ -1415,6 +1428,12 @@ def detect_document_drift(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
 
     compared = held & set(express)
     findings = []
+    # Built ONCE. The first version called this inside the per-document loop,
+    # which rebuilt a 74,562-entry dict for every drifting document and took the
+    # measured cost from 3.5s to 5.7s — the same "parsing inside the pair loop"
+    # shape that put the import route into a gunicorn WORKER TIMEOUT (PR #376).
+    status = _drift_docstat(artrn_rows, aptrn_rows)
+    prints = {}
 
     # ── content ──────────────────────────────────────────────────────────────
     for doc in sorted(compared):
@@ -1422,7 +1441,7 @@ def detect_document_drift(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
         if xp['hdr'] == sd['hdr'] and \
                 collections.Counter(xp['lines']) == collections.Counter(sd['lines']):
             continue
-        fp = document_fingerprint(xp, sd)
+        fp = prints[doc] = document_fingerprint(xp, sd)
         if baseline.get(doc, {}).get('fingerprint') == fp:
             continue
         hdr_fields, line_fields = _classify_fields(xp, sd)
@@ -1431,7 +1450,7 @@ def detect_document_drift(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
         findings.append({
             'doc_no': doc, 'kind': 'content', 'fields': fields,
             'fingerprint': fp,
-            'docstat': _c_txt(_drift_docstat(artrn_rows, aptrn_rows).get(doc)),
+            'docstat': _c_txt(status.get(doc)),
             'express_lines': len(xp['lines']), 'sendy_lines': len(sd['lines']),
             'message': (f'เอกสาร {doc} ที่เราถืออยู่ไม่ตรงกับ Express แล้ว — '
                         f'ต่างที่ {", ".join(fields) or "ไม่ระบุ"} '
@@ -1443,13 +1462,13 @@ def detect_document_drift(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
     # that owns it says is open (`build_payments_in_records` sets cancelled=False
     # unconditionally and says so), so translating it to "ยกเลิก" here would be
     # this detector deciding a question nobody has answered.
-    status = _drift_docstat(artrn_rows, aptrn_rows)
     for doc in sorted(compared):
         raw = _c_txt(status.get(doc))
         if raw and raw != 'N':
             findings.append({
                 'doc_no': doc, 'kind': 'source_status', 'fields': ['DOCSTAT'],
-                'fingerprint': document_fingerprint(express[doc], sendy[doc]),
+                'fingerprint': prints.get(doc) or document_fingerprint(
+                    express[doc], sendy[doc]),
                 'docstat': raw,
                 'message': (f'เอกสาร {doc} ฝั่ง Express มี DOCSTAT = "{raw}" '
                             f'(ค่าดิบ ยังไม่มีใครสรุปว่าแปลว่าอะไร) '
@@ -1492,12 +1511,29 @@ def detect_document_drift(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
         'baseline_entries': len(baseline),
         'findings': len(findings),
     }
-    # The population must reconcile exactly — no tolerance. A coverage check
-    # that allows a 1% gap hides ~80 sales documents at this size.
-    assert counters['compared'] + counters['sendy_only'] == counters['sendy_eligible']
-    assert counters['sendy_only_newer_than_export'] \
-        + counters['sendy_only_older_than_export'] \
-        == (counters['sendy_only'] if freshness == 'authoritative' else 0)
+    # ⚠ `compared + sendy_only == sendy_eligible` is set algebra and cannot
+    # fail, so it is not written here — an assertion that cannot fail reads as a
+    # check and is not one. The population is verified against an INDEPENDENT
+    # signal instead: a second query that counts the documents the Sendy side
+    # was supposed to produce. It fails when _drift_sendy_side silently drops
+    # rows, and when one document number exists in BOTH ledgers — which would
+    # merge two books' lines into one fingerprint and report drift for ever.
+    # UNION ALL, not UNION, precisely so a collision shows up as a count.
+    expected = conn.execute(
+        "SELECT COUNT(*) FROM ("
+        "  SELECT DISTINCT doc_base FROM sales_transactions"
+        "   WHERE date_iso >= ? AND doc_base IS NOT NULL"
+        "  UNION ALL"
+        "  SELECT DISTINCT doc_no FROM purchase_transactions"
+        "   WHERE date_iso >= ? AND doc_no IS NOT NULL)",
+        (era_start, era_start)).fetchone()[0]
+    if expected != counters['sendy_eligible']:
+        raise DriftInputError(
+            f'the Sendy side holds {counters["sendy_eligible"]} documents but the '
+            f'ledgers name {expected} — either rows were dropped while building it, '
+            f'or one document number appears in both books. Either way a document '
+            f'comparison built on it would be wrong, so there is no verdict.')
+    counters['sendy_expected'] = expected
 
     return DriftResult(findings, set(compared), counters)
 

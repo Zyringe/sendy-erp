@@ -258,6 +258,12 @@ def test_10_express_only_document_is_not_reported(empty_db_conn):
     # detector had silently compared IV0001 against nothing
     assert r.compared_doc_nos == {'IV0002'}
     assert r.findings == []
+    # …and IV0001 was never fingerprinted at all. Without this the scoping to
+    # the documents Sendy holds could be deleted and no test would notice —
+    # measured. It is worth 5.3x on the real dataset (Sendy holds ~9.9k of
+    # Express's ~67k), so it is a property, not an accident.
+    assert r.counters['express_eligible'] == 1
+    assert r.counters['express_headers'] == 2      # CONTROL: Express really had 2
 
 
 # ── 11. the same document twice must not stack alerts ────────────────────────
@@ -326,6 +332,18 @@ def test_14_baseline_entry_without_a_reason_is_refused(empty_db_conn):
     with pytest.raises(eds.DriftInputError):
         run(c, artrn=[hdr('IV0001')], stcrd=[line('IV0001')],
             baseline={'IV0001': {'fingerprint': 'abc', 'reason': '   '}})
+    # …and an entry with a reason but NO fingerprint is refused too: it would
+    # silence IV0001 for ever, however far it drifted afterwards. Measured:
+    # without this case the fingerprint check could be deleted silently.
+    with pytest.raises(eds.DriftInputError):
+        run(c, artrn=[hdr('IV0001')], stcrd=[line('IV0001')],
+            baseline={'IV0001': {'reason': 'legacy column swap, net identical'}})
+    # CONTROL: a complete entry is accepted, so the two above are not passing
+    # because every baseline raises.
+    assert run(c, artrn=[hdr('IV0001')], stcrd=[line('IV0001')],
+               baseline={'IV0001': {'fingerprint': 'abc',
+                                    'reason': 'legacy column swap, net identical'}}
+               ).compared_doc_nos == {'IV0001'}
 
 
 # ── 15. freshness is indeterminate → no "deleted at source" claim ────────────
@@ -360,3 +378,21 @@ def test_15_unknown_export_time_forbids_a_deleted_at_source_finding(empty_db_con
     assert [f for f in r3.findings if f['kind'] == 'deleted_at_source'] == []
     assert r3.counters['sendy_only_newer_than_export'] == 1
 
+
+
+# ── 16. the population is checked against the ledgers, not against itself ────
+def test_16_a_document_number_in_both_books_refuses_a_verdict(empty_db_conn):
+    """`compared + sendy_only == sendy_eligible` is set algebra: true whatever
+    the data is. The real check is a second query over the ledgers, and this is
+    the case it exists for — one doc_no in BOTH books would merge two documents'
+    lines into one fingerprint and report drift for ever, silently."""
+    c = empty_db_conn
+    put_sales(c, 'IV0001')
+    # CONTROL: the same fixture without the collision produces a verdict.
+    assert run(c, artrn=[hdr('IV0001')], stcrd=[line('IV0001')]).compared_doc_nos \
+        == {'IV0001'}
+
+    put_purchase(c, 'IV0001')                                # same number, other book
+    with pytest.raises(eds.DriftInputError) as e:
+        run(c, artrn=[hdr('IV0001')], stcrd=[line('IV0001')])
+    assert 'both books' in str(e.value) or 'dropped' in str(e.value)
