@@ -320,7 +320,7 @@ ISOLATED_REGISTER_KEYS = frozenset({
 
 
 def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
-                       snapshot_date=None):
+                       snapshot_date=None, export_at=None, detect_drift=False):
     """Import all 8 Express DBF transactional types for one dataset
     directory into Sendy — the DBF branch parallel to the text-report path
     above (Phase 1 slices A+B — payments/credit-notes join sales/purchase
@@ -349,6 +349,19 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     regardless), but models.import_weekly() only ever sees entries for
     in-window docs instead of diffing the full multi-year history against
     the DB row by row.
+
+    export_at: when Express exported this dataset, or None when that is not
+    knowable (the zip carried no readable DBF member time, or the LAN clock read
+    the future). It is passed straight through to the drift scan, which refuses
+    to claim a document was deleted at source on a fallback value. The blueprint
+    owns this — do NOT recompute it here, and do NOT substitute
+    `effective_export_at`, which is the fallback-to-today variant.
+
+    detect_drift: run the Express-vs-Sendy document comparison. OFF by default
+    and deliberately explicit rather than inferred from db_path, because
+    vat_book_builder calls this same function against vat_book.db with the xp5
+    dataset, and the shipped baseline describes BSN5657's documents. Silently
+    scanning the other book would report its entire history as drift.
 
     Called by the web route (blueprints/bsn.py::express_dbf_upload).
     Returns a summary dict.
@@ -516,6 +529,23 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     except Exception as exc:
         reconcile_counts = {'error': str(exc)[:200]}
 
+    # Document drift — same contract as the scan above: read-only, LAST, and
+    # wrapped, because it observes ledgers that are already committed. It answers
+    # the question `build_out_of_window_docs` does not: not "did we miss a
+    # document" but "is a document we already hold being changed under our feet".
+    # ⚠ The un-windowed tables are passed on purpose. `cutoff` exists to keep the
+    # IMPORT fast by ignoring old documents; drift is the opposite problem —
+    # an edit made after a document ages out of that window is exactly the case
+    # that goes unnoticed for ever (IV6900631 was cancelled at source five
+    # months after its own date).
+    doc_drift = None
+    if detect_drift:
+        try:
+            doc_drift = eds.run_document_drift_scan(
+                artrn, aptrn, stcrd, armas, apmas, db_path, export_at=export_at)
+        except Exception as exc:
+            doc_drift = {'error': str(exc)[:200], 'scope': eds.DRIFT_SCOPE_NOTE}
+
     return {"sales": sales_stats, "purchase": purchase_stats,
             "invoice_refs_upserted": refs_upserted,
             "billing_notes": billing_notes_stats,
@@ -529,7 +559,8 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
             "ar_snapshot": ar_snapshot_stats,
             "ap_snapshot": ap_snapshot_stats,
             "snapshot_date": snapshot_date,
-            "reconcile": reconcile_counts}
+            "reconcile": reconcile_counts,
+            "doc_drift": doc_drift}
 
 
 def _replace_general_ledger(accounts, vouchers, lines, entity, db_path):
