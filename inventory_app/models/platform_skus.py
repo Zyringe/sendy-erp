@@ -76,6 +76,10 @@ def import_platform_skus(platform, records):
         ))
         count += 1
     propagated = _propagate_listings_to_platform_skus(conn, platform)
+    # The file just overwrote the stock figure of every listing it carried, so
+    # the deductions recorded against those are superseded — see the helper.
+    _invalidate_deduction_provenance(
+        conn, platform, [r.get('variation_id') for r in records])
     conn.commit()
     conn.close()
     return count, propagated
@@ -269,6 +273,16 @@ def import_tiktok_snapshot(parsed):
                 stock_present, stock_present,
             ))
 
+        # Same supersession rule as the Shopee/Lazada path. TikTok cannot hold
+        # provenance TODAY (PLATFORM_CUSTOMERS['tiktok'] is empty, so a TikTok
+        # sale never deducts), but the day TikTok orders enter the ERP it will,
+        # and a stock-bearing export must not leave stale rows behind. Gated on
+        # stock_present because an export without the quantity column keeps the
+        # stock already on record — nothing was superseded.
+        if stock_present:
+            _invalidate_deduction_provenance(
+                conn, 'tiktok', [x['variation_id'] for x in skus])
+
         # No row-count assertion here on purpose: every record either INSERTs
         # or UPDATEs (ON CONFLICT, no WHERE), so a short write is unreachable
         # and a check for it can never go red — a green checkmark, not a test.
@@ -285,6 +299,47 @@ def import_tiktok_snapshot(parsed):
         conn.close()
 
     return len(products), len(skus), absent
+
+
+def _invalidate_deduction_provenance(conn, platform, variation_ids):
+    """Forget the recorded deductions for the listings a file just overwrote.
+
+    Call this whenever an authoritative stock file overwrites
+    platform_skus.stock. The file IS the platform's own number, so anything the
+    local deduction took off before it is already reflected in — or superseded
+    by — that value. Leaving the provenance behind lets a later reversal add
+    those units on TOP of the fresh figure and invent stock that the platform
+    does not have, which is the oversell direction (Codex, 2026-08-25):
+    100 → sale of 5 → 95 → file says 92 → remove the sale → 97, but the
+    platform holds 92.
+
+    ⚠ Scoped to the variations the file actually CARRIED, not the whole
+    platform. A Seller Center export can be category-filtered, and
+    import_platform_skus only upserts the rows it was given — a listing absent
+    from the file keeps the stock it already had, so its provenance is still
+    live and wiping it would make a later reversal silently restore nothing.
+    (That error runs the other way, toward a too-low estimate and a false 🔴,
+    but it is still wrong.)
+
+    Consequence worth stating: a correction to a sale that was deducted BEFORE
+    the most recent file import reverses nothing, and that is correct — the
+    import already replaced the number that deduction was applied to.
+
+    Returns the number of provenance rows dropped.
+    """
+    ids = [v for v in variation_ids if v is not None]
+    if not ids:
+        return 0
+    dropped = 0
+    for i in range(0, len(ids), 400):          # keep under SQLITE_MAX_VARIABLE_NUMBER
+        chunk = ids[i:i + 400]
+        ph = ','.join('?' * len(chunk))
+        cur = conn.execute(
+            "DELETE FROM platform_stock_deductions WHERE platform_sku_id IN"
+            f" (SELECT id FROM platform_skus WHERE platform = ? AND variation_id IN ({ph}))",
+            [platform] + chunk)
+        dropped += cur.rowcount
+    return dropped
 
 
 def _propagate_listings_to_platform_skus(conn, platform):
@@ -495,11 +550,28 @@ def update_platform_sku(sku_id, price, special_price, stock, qty_per_sale):
     # ecommerce_overview._snapshot_dates() reads as MAX(imported_at) — a manual
     # edit bumping it would shift the whole platform's snapshot to today
     # (freshness pill lies, sold_since window collapses to zero).
+    before = conn.execute(
+        "SELECT stock FROM platform_skus WHERE id=?", (sku_id,)).fetchone()
     conn.execute("""
         UPDATE platform_skus
         SET price=?, special_price=?, stock=?, qty_per_sale=?
         WHERE id=?
     """, (price, special_price, stock, qty_per_sale, sku_id))
+    # A hand-typed stock figure is authoritative for this listing exactly like a
+    # file is, so it supersedes any deduction recorded against it — otherwise
+    # reversing that stale record later adds units the operator's number already
+    # accounts for and invents stock (Codex, 2026-08-25): 100 → sale takes 5 → 95
+    # with +5 on record → operator types 92 → removing the sale hands back 5 → 97.
+    # Same failure _invalidate_deduction_provenance exists to stop for imports;
+    # this is the other door into the same column.
+    #
+    # Only when the figure actually MOVED. The edit form resubmits every field,
+    # so a price-only save carries the unchanged stock with it, and discarding
+    # live provenance there would make a later reversal restore nothing.
+    if before is not None and before['stock'] != stock:
+        conn.execute(
+            "DELETE FROM platform_stock_deductions WHERE platform_sku_id = ?",
+            (sku_id,))
     conn.commit()
     conn.close()
 

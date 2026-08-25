@@ -14,7 +14,7 @@ from database import get_connection
 import bsn_units
 
 from .mapping import _resolve_mapping
-from .bsn_sync import _sync_bsn_to_stock
+from .bsn_sync import _sync_bsn_to_stock, reverse_platform_deduction
 from .wacc import (recalculate_product_wacc, preflight_batch,
                    WaccIdentityError)
 from .system_alerts import (record_wacc_identity_alert,
@@ -182,6 +182,20 @@ def import_weekly(entries: list, file_type: str, filename: str,
     ignored_detail = {}       # bsn_code -> {'bsn_code','name','lines','net'}
     new_bsn_codes = {}        # code → name for codes not yet in mapping table
     affected_pids = set()     # products whose ledger must be rebuilt in pass 2
+    # Replacement rows that inherited a provenance record from the row they
+    # replaced (a price-only correction): pass 2 must NOT let them deduct
+    # again, exactly as if they had never been reset. See the carry below.
+    carried_ids = set()
+    # Corrections/removals whose platform reversal could not be applied in
+    # full because the undo hit the zero floor — the credited units had
+    # already been sold again. The resulting listing figure is approximate,
+    # and this is the ONLY moment anything knows that. Reported, not fatal:
+    # nothing in the app decides from platform_skus.stock (it feeds the
+    # /ecommerce flags, the products-list columns and the mapping export, all
+    # display), and aborting the weekly whole-book import over a display-level
+    # approximation would cost far more than it buys. The next authoritative
+    # file import replaces the figure outright.
+    lossy_reversals = 0
     contradictions = set()    # non-stock codes whose mapping row still says is_ignored=1
 
     # Ledger notes this file_type owns. The pass-2 re-sync deletes ONLY these
@@ -257,6 +271,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
         if not mapped and e['product_code_raw']:
             new_bsn_codes[e['product_code_raw']] = e['product_name_raw']
 
+        carry_from = None
         if old is not None:
             # Normalise the STORED unit before comparing: legacy/rebuild rows
             # were saved with raw acronym units (หล/ตว/กก…) while e['unit'] was
@@ -277,11 +292,38 @@ def import_weekly(entries: list, file_type: str, filename: str,
             # Real change → replace the source row; pass 2 rebuilds its ledger.
             if old['product_id']:
                 affected_pids.add(old['product_id'])
+            # The replacement re-inserts with a NEW id, so it is a first sync
+            # and would take its own deduction. Two cases:
+            #
+            #  • the STOCK-affecting identity is unchanged (a price/net-only
+            #    correction — the overwhelmingly common one): the stock event
+            #    did not change at all, so reversing and re-applying it is pure
+            #    churn, and churn is LOSSY because the undo clamps at zero. Carry
+            #    the existing record over to the replacement instead and mark it
+            #    replayed, making the correction a true no-op on stock.
+            #  • anything that changes the stock event (quantity, unit, product,
+            #    or the customer that decides the platform): hand back what the
+            #    old row took, or the corrected line pays twice — a 5 -> 7
+            #    correction landed at 88 instead of 93 before mig 172.
+            if file_type == 'sales':
+                stock_event_same = (
+                    abs((old['qty'] or 0) - (e['qty'] or 0)) < 1e-9
+                    and bsn_units.normalize_unit(old['unit'] or '') == (e['unit'] or '')
+                    and (old['product_id'] or 0) == (product_id or 0)
+                    and (old[party_col] or '').strip() == (e['party'] or '').strip()
+                )
+                if stock_event_same:
+                    carry_from = old['id']
+                else:
+                    _moved, _recorded = reverse_platform_deduction(
+                        conn, table, old['id'])
+                    if _moved != _recorded:
+                        lossy_reversals += 1
             conn.execute(f"DELETE FROM {table} WHERE id=?", (old['id'],))
             overwritten += 1
 
         if file_type == 'purchase':
-            conn.execute(f"""
+            cur_ins = conn.execute(f"""
                 INSERT INTO {table}
                     (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,
                      product_name_raw, {party_col}, {party_code_col}, qty, unit,
@@ -294,7 +336,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
                 e['vat_type'], e['discount'], e['total'], e['net'], line_seq
             ))
         else:
-            conn.execute(f"""
+            cur_ins = conn.execute(f"""
                 INSERT INTO {table}
                     (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,
                      product_name_raw, {party_col}, {party_code_col}, qty, unit,
@@ -306,6 +348,13 @@ def import_weekly(entries: list, file_type: str, filename: str,
                 e['party_code'], e['qty'], e['unit'], e['unit_price'],
                 e['vat_type'], e['discount'], e['total'], e['net']
             ))
+        if carry_from is not None:
+            new_id = cur_ins.lastrowid
+            conn.execute(
+                "UPDATE platform_stock_deductions SET source_id = ?"
+                " WHERE source_table = ? AND source_id = ?",
+                (new_id, table, carry_from))
+            carried_ids.add(new_id)
         imported += 1
         if product_id:
             affected_pids.add(product_id)
@@ -322,6 +371,14 @@ def import_weekly(entries: list, file_type: str, filename: str,
         for r in to_remove:
             if r['product_id']:
                 affected_pids.add(r['product_id'])
+            # The sale did not happen, so the listing gets its units back.
+            # Nothing re-posts for this row afterwards — pass 2 replays only
+            # what is still in the table.
+            if file_type == 'sales':
+                _moved, _recorded = reverse_platform_deduction(
+                    conn, table, r['id'])
+                if _moved != _recorded:
+                    lossy_reversals += 1
             conn.execute(f"DELETE FROM {table} WHERE id=?", (r['id'],))
             removed += 1
     else:
@@ -358,6 +415,10 @@ def import_weekly(entries: list, file_type: str, filename: str,
             replayed_ids = {r[0] for r in conn.execute(
                 f"SELECT id FROM {table} WHERE product_id IN ({p_ph})"
                 f" AND synced_to_stock = 1", pids)}
+            # Replacements that inherited their predecessor's record are
+            # already accounted for on the listing, so they are replays too
+            # even though they have never been synced.
+            replayed_ids |= carried_ids
         conn.execute(
             f"UPDATE {table} SET synced_to_stock=0 WHERE product_id IN ({p_ph})",
             pids
@@ -493,6 +554,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
         'removed_skipped': removed_skipped,
         'new_unmapped': len(new_bsn_codes),
         'affected_products': len(affected_pids),
+        'lossy_platform_reversals': lossy_reversals,
         'batch_id': batch_id,
         'non_stock': non_stock,
         'ignored_contradictions': sorted(contradictions),

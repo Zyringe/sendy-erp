@@ -350,16 +350,20 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
                 src_bsn_code, src_line_seq,
             ))
 
-            # Deduct online stock for Shopee/Lazada store customers — only for
-            # genuine sales OUT, never for a sales return (a return would have to
-            # ADD platform stock back, not deduct; we leave platform stock to the
-            # marketplace sync rather than guess on returns).
-            if (deduct_platform and txn_type == 'OUT' and not is_sales_return
+            # Track online stock for Shopee/Lazada store customers. A sale takes
+            # units off; a customer return (SR) puts them BACK, because both
+            # platforms restock a returned item themselves once the refund
+            # completes (Put, 2026-08-25) and this column mirrors their number.
+            # Skipping returns — the old behaviour — left the mirror reading LOW
+            # by the returned quantity until the next file import, which is the
+            # false-🔴 direction.
+            if (deduct_platform and txn_type == 'OUT'
                     and row['id'] not in _replayed):
                 customer = (row['customer'] or '').strip()
                 platform = PLATFORM_STOCK_DEDUCT_CUSTOMERS.get(customer)
 
-                # Also deduct platform_skus.stock if mapped
+                # Only listings mapped to this product, and only on a platform
+                # whose sales are booked under a หน้าร้าน customer.
                 if platform and row['product_id']:
                     skus = conn.execute("""
                         SELECT id, qty_per_sale, stock FROM platform_skus
@@ -367,6 +371,22 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
                           AND qty_per_sale > 0
                         ORDER BY stock DESC
                     """, (platform, row['product_id'])).fetchall()
+                    # +1 removes units from the listing, -1 puts them back.
+                    # ONE walk for both so a return can never disagree with the
+                    # sale it mirrors about rounding.
+                    #
+                    # ⚠ What this guarantees is the product's TOTAL on that
+                    # platform, not the per-listing split. Both directions rank
+                    # by CURRENT stock, and the sale itself changes that
+                    # ranking: with A=10 B=9, a 5-unit sale takes A to 5, and
+                    # the return then picks B — total restored, split shifted
+                    # (A=5 B=14 where the platform holds A=10 B=9). Nothing in
+                    # an SR row identifies the listing the original sale came
+                    # off, and every consumer that DECIDES anything — the
+                    # red/amber flags, the stock-sync targets — reads the
+                    # per-platform total, so the split is display-only and the
+                    # next authoritative file import corrects it.
+                    sign = -1 if is_sales_return else 1
                     remaining = float(base_qty)
                     for sku in skus:
                         if remaining <= 0:
@@ -380,11 +400,51 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
                             # later (smaller-stock) SKU in the ORDER BY stock DESC
                             # list, so stop instead of forcing a whole unit off.
                             break
-                        conn.execute("""
-                            UPDATE platform_skus
-                            SET stock = MAX(0, stock - ?)
-                            WHERE id = ?
-                        """, (platform_deduct, sku['id']))
+                        # What the write ACTUALLY moves. On the way down a
+                        # listing holding 3 against a wanted 10 gives up 3, not
+                        # 10 — provenance must carry that or a later reversal
+                        # invents the 7 that never moved. On the way back up
+                        # there is no clamp, so the full amount lands.
+                        #
+                        # A listing whose stock is NULL is a listing we have no
+                        # figure for: MAX(0, NULL - n) and NULL + n are both
+                        # NULL, so the write is a no-op in BOTH directions and
+                        # nothing is recorded. Two live Lazada listings sit that
+                        # way today. Deliberately NOT COALESCEd — inventing a
+                        # number for an unknown listing is worse than leaving it
+                        # unknown.
+                        if sku['stock'] is None:
+                            applied = 0
+                        elif sign > 0:
+                            applied = min(platform_deduct, max(sku['stock'], 0))
+                        else:
+                            applied = platform_deduct
+                        conn.execute(
+                            "UPDATE platform_skus SET stock = %s WHERE id = ?"
+                            % ('MAX(0, stock - ?)' if sign > 0 else 'stock + ?'),
+                            (platform_deduct, sku['id']))
+                        if applied > 0:
+                            # Signed: what this row REMOVED from the listing.
+                            # A return records a negative, so reversal stays a
+                            # single `stock = stock + units` for both kinds.
+                            # A BARE insert on purpose. One source row deducts
+                            # exactly once (replayed_ids blocks the replay) and
+                            # each listing appears once in this walk, so the PK
+                            # cannot collide on any valid path — and if it ever
+                            # does, that IS the replay protection having failed.
+                            # ON CONFLICT ... units = units + excluded.units
+                            # would keep such a run reversible while leaving
+                            # stock silently double-deducted until someone
+                            # happened to correct the line. Let it raise and
+                            # roll the import back instead (Codex, 2026-08-25).
+                            conn.execute("""
+                                INSERT INTO platform_stock_deductions
+                                  (source_table, source_id, platform_sku_id, units)
+                                VALUES (?, ?, ?, ?)
+                            """, (table, row['id'], sku['id'], sign * applied))
+                        # `remaining` still walks down by the INTENDED amount:
+                        # changing it would change which listings the walk
+                        # reaches, and this is not a behaviour change.
                         remaining -= platform_deduct * qps
 
             # history_import: สร้าง txn ตรงข้ามคู่กันเพื่อไม่ให้กระทบสต็อคปัจจุบัน
@@ -544,6 +604,57 @@ def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str) -> int:
         return deleted
     finally:
         conn.close()
+
+
+def reverse_platform_deduction(conn, table, source_id):
+    """Undo whatever a source row did to marketplace stock, and forget it.
+
+    `platform_stock_deductions.units` is SIGNED — the net amount that row
+    removed from that listing, so a sale is positive and a customer return is
+    negative. Undoing is therefore `stock = stock + units` in both directions,
+    and it is exact even where the original write was truncated by MAX(0, ...),
+    because the recorded amount is what actually moved. Call it BEFORE deleting
+    a source row — once the row is gone the link is gone too.
+
+    `stock` is added to WITHOUT a COALESCE on purpose: a NULL listing never
+    gets a provenance row (the write is a no-op in both directions), so a NULL
+    here would mean the figure was cleared after the fact, and inventing one
+    from an old deduction would be worse than leaving it unknown.
+    (`MAX(0, NULL + n)` is NULL in SQLite, so the clamp preserves that.)
+
+    ⚠ CLAMPED at zero, because undoing a RETURN moves stock DOWN and the units
+    it handed back may already have been sold again: 5 → SR credits 5 → 10 →
+    a later sale takes 8 → 2 → deleting the SR would subtract 5 and land on
+    −3. Every other downward write in this module clamps; this one is the new
+    downward path and has to as well (Codex, 2026-08-25). Harmless on the
+    upward path, where `stock + units` can never go below zero anyway.
+
+    Rows written before mig 172 have no provenance and reverse to 0. That is
+    the same position the app was in before this existed, so a caller cannot
+    regress by calling it; it simply has nothing to give back.
+
+    Returns ``(moved, recorded)``. They differ only when the undo CLAMPED — a
+    credit whose units have since been sold again cannot be fully taken back —
+    and that difference is the one signal the caller has that the resulting
+    figure is approximate. Reporting only the record would hide it.
+    """
+    rows = conn.execute(
+        "SELECT platform_sku_id, units FROM platform_stock_deductions"
+        " WHERE source_table = ? AND source_id = ?", (table, source_id)).fetchall()
+    moved = 0
+    for r in rows:
+        cur = conn.execute(
+            "SELECT stock FROM platform_skus WHERE id = ?",
+            (r['platform_sku_id'],)).fetchone()
+        conn.execute(
+            "UPDATE platform_skus SET stock = MAX(0, stock + ?) WHERE id = ?",
+            (r['units'], r['platform_sku_id']))
+        if cur is not None and cur['stock'] is not None:
+            moved += max(0, cur['stock'] + r['units']) - cur['stock']
+    conn.execute(
+        "DELETE FROM platform_stock_deductions"
+        " WHERE source_table = ? AND source_id = ?", (table, source_id))
+    return moved, sum(r['units'] for r in rows)
 
 
 def _synced_source_ids(conn, product_id):
