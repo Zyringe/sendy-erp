@@ -30,7 +30,7 @@ def _set_price_change_source(conn, source):
     )
 
 
-# ── source-document provenance (mig 172) ─────────────────────────────────────
+# ── source-document provenance (mig 173) ─────────────────────────────────────
 
 SOURCE_DOC_TABLES = ('sales_transactions', 'purchase_transactions')
 
@@ -50,7 +50,7 @@ def declared_update(conn, table, row_id, changes, *, actor,
                     source='manual', reason=None):
     """The only supported way to change a sales/purchase document row.
 
-    mig 172 refuses an UPDATE that touches a meaningful column without saying who
+    mig 173 refuses an UPDATE that touches a meaningful column without saying who
     made it and, for a human edit, why. The reason travels ON THE ROW rather than
     through a side table on purpose: `_set_price_change_source` above uses the
     side-table shape, and it is only safe while the set and the UPDATE share one
@@ -69,7 +69,7 @@ def declared_update(conn, table, row_id, changes, *, actor,
         raise ValueError(f'declared_update is for {SOURCE_DOC_TABLES}, not {table!r}')
     if not (actor or '').strip():
         raise ValueError('actor is required — an unattributed change is the thing '
-                         'mig 172 exists to prevent')
+                         'mig 173 exists to prevent')
     if source == 'manual' and len((reason or '').strip()) < 12:
         raise ValueError('a manual change needs a reason that explains it; '
                          f'got {reason!r}. The DB will refuse it anyway.')
@@ -92,7 +92,7 @@ def declared_delete(conn, table, row_id, *, actor, reason):
     """Delete a source-document row so the audit trail says who and why.
 
     ⚠ Unlike `declared_update`, this cannot be ENFORCED. A DELETE has no NEW row,
-    so mig 172 has nothing to attach a declaration to and no BEFORE DELETE guard
+    so mig 173 has nothing to attach a declaration to and no BEFORE DELETE guard
     can demand one — a plain DELETE still succeeds and its audit row inherits
     whatever the row last declared, which for an imported line reads
     `source='import'`. Measured, see spike/provenance-2026-08-25/c_delete_insert.py
@@ -128,7 +128,7 @@ def get_source_doc_audit_history(doc_base, table, limit=30, conn=None):
     """Every recorded change to one document's lines, newest first.
 
     Unlike `get_customer_audit_history`, this DOES answer "who" and "why":
-    mig 172 stamps `change_actor` / `change_source` / `change_reason` onto the
+    mig 173 stamps `change_actor` / `change_source` / `change_reason` onto the
     row, and the trigger copies them into the audit row it writes. A panel that
     only a SQL prompt can read is not provenance anyone has — Put is the sole
     digital operator and does not run SQL.
@@ -221,7 +221,7 @@ _AUDIT_PRUNE_PREDICATE = (
 )
 
 # The source-document half is a SEPARATE predicate because it needs a column that
-# only exists after mig 172, and prune_audit_log() must not crash on a restored or
+# only exists after mig 173, and prune_audit_log() must not crash on a restored or
 # downgraded DB that predates it (there are no source-doc audit rows to prune
 # there anyway).
 #
@@ -235,7 +235,7 @@ _AUDIT_PRUNE_SOURCE_DOC_PREDICATE = (
     "(table_name IN ('sales_transactions','purchase_transactions')"
     " AND action = 'INSERT' AND change_source = 'import')"
 )
-# ⚠ The second clause is only safe because mig 172 made "who wrote this" a
+# ⚠ The second clause is only safe because mig 173 made "who wrote this" a
 # recorded fact instead of a guess. The comment above this block explains why the
 # `transactions` hand-void is pruned along with the churn: it was
 # "indistinguishable from import churn". That is exactly the mistake this clause

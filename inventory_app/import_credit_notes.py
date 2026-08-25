@@ -190,7 +190,7 @@ def _process_entry(conn, entry, ref_conflicts):
         backfilled = 0
         if not db_ref and file_ref:
             # DB is null/empty; file has a ref → backfill
-            # mig 172: ref_invoice is guarded. Automated backfill from the
+            # mig 173: ref_invoice is guarded. Automated backfill from the
             # credit-note file, so source='import'.
             from models._shared import declared_update
             declared_update(conn, "sales_transactions", existing["id"],

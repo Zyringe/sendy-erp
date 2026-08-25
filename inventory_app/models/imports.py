@@ -290,7 +290,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
                 unchanged += 1
                 continue
             # Real change → replace the source row; pass 2 rebuilds its ledger.
-            # ⚠ This is a DELETE+INSERT, not an UPDATE, so mig 172's guard never
+            # ⚠ This is a DELETE+INSERT, not an UPDATE, so mig 173's guard never
             # sees it. Deliberate: blocking either half would block every import,
             # and the audit trail still records both events with source='import'
             # (the INSERT below stamps the columns).

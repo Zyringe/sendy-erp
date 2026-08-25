@@ -8,6 +8,8 @@ calls it directly after a ratio change) — acyclic, flagged in the Phase 12
 report.
 """
 from database import get_connection
+import uuid as _uuid
+
 import bsn_units
 
 from .stock_filters import is_non_stock_code, non_stock_clause
@@ -527,15 +529,17 @@ def learn_acronyms_normalize(pairs: dict):
     for acr, full in pairs.items():
         bsn_units.add_acronym(acr, full)
         for t in ('sales_transactions', 'purchase_transactions'):
-            # mig 172: `unit` is guarded, and this is reachable from
+            # mig 173: `unit` is guarded, and this is reachable from
             # /unit-conversions. A bulk rewrite cannot go through
             # declared_update (that takes one row id), so it declares itself
             # inline — one fresh token for the whole rewrite, which is what it
-            # is: a single operator action, not N unrelated ones.
+            # is: a single operator action, not N unrelated ones. The uuid
+            # suffix keeps the token from ever equalling a row's existing
+            # one, which would trip the reused-token clause and abort.
             conn.execute(
                 f"UPDATE {t} SET unit=?, change_source='import',"
                 f" change_actor='learn-acronyms', change_token=? WHERE unit=?",
-                (full, f'acronym-{acr}-{full}', acr))
+                (full, f'acronym-{acr}-{full}-{_uuid.uuid4().hex[:8]}', acr))
     conn.commit()
     conn.close()
 

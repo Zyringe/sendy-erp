@@ -1,7 +1,7 @@
 """Every writer of the two source-document tables must declare itself.
 
 WHY THIS FILE EXISTS
-    mig 172 makes an undeclared UPDATE of a meaningful column abort. That turns
+    mig 173 makes an undeclared UPDATE of a meaningful column abort. That turns
     "did I find every writer?" from a tidiness question into a runtime failure —
     and I got it wrong twice. A hand grep missed `repoint_bsn_code`
     (/mapping/split-save would have aborted for an admin doing a split) and then
@@ -19,7 +19,7 @@ import re
 APP = os.path.join(os.path.dirname(__file__), '..', 'inventory_app')
 TABLES = ('sales_transactions', 'purchase_transactions')
 
-# Columns mig 172 does NOT guard. An UPDATE touching only these needs nothing.
+# Columns mig 173 does NOT guard. An UPDATE touching only these needs nothing.
 EXEMPT = {'synced_to_stock', 'batch_id', 'created_at',
           'change_source', 'change_actor', 'change_reason', 'change_token'}
 
@@ -97,7 +97,7 @@ def test_every_guarded_writer_is_accounted_for():
     undeclared = {f: sorted(c) for f, c in found.items() if f not in DECLARED}
     assert not undeclared, (
         'these write a guarded column but are not in DECLARED — they will abort '
-        f'at runtime under mig 172: {undeclared}')
+        f'at runtime under mig 173: {undeclared}')
 
 
 def test_every_exemption_carries_a_real_reason():

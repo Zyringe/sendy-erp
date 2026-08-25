@@ -174,7 +174,7 @@ def resolve_pending_mappings(conn):
                 conn, row['bsn_code'], row['unit']
             )
             if mapped and not is_ignored and product_id is not None:
-                # mig 172: product_id is a guarded column, so this write has
+                # mig 173: product_id is a guarded column, so this write has
                 # to say who made it. It is a pipeline step, not a human
                 # decision, hence source='import' — `change_actor` is what
                 # distinguishes which pipeline.
@@ -563,7 +563,7 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
         # ── 3. Re-point the code's source rows (unit-scoped) ────────────────
         def _repoint_rows(table, rows):
             for r in rows:
-                # mig 172: product_id is guarded, and this path is reachable from
+                # mig 173: product_id is guarded, and this path is reachable from
                 # a live admin route (/mapping/split-save), so without a
                 # declaration the whole split would abort. synced_to_stock is
                 # exempt and rides along in the same statement.

@@ -29,7 +29,7 @@ import sqlite3
 import pytest
 
 MIGRATION = os.path.join(os.path.dirname(__file__), '..', 'data', 'migrations',
-                         '172_source_doc_provenance.sql')
+                         '173_source_doc_provenance.sql')
 
 MEANINGFUL = 'date_iso'          # one representative guarded column
 
@@ -257,7 +257,7 @@ def test_history_reader_refuses_an_unknown_table(db, empty_db, monkeypatch):
 # ── retention ────────────────────────────────────────────────────────────────
 # The precedent this must not repeat: `transactions` hand-voids are pruned with
 # the import churn because the schema could not tell them apart
-# (models/_shared.py). mig 172 can, so the manual half is kept forever.
+# (models/_shared.py). mig 173 can, so the manual half is kept forever.
 
 def _seed_audit(conn, table, action, source, days_old):
     conn.execute(
@@ -639,3 +639,45 @@ def test_bulk_acronym_rewrite_still_works(db, empty_db, monkeypatch):
                       " WHERE table_name='sales_transactions' AND action='UPDATE'"
                       " ORDER BY id DESC LIMIT 1").fetchone()
     assert (last['change_source'], last['user']) == ('import', 'learn-acronyms')
+
+
+def test_reconcile_delete_records_the_human_who_resolved_it(db, empty_db, monkeypatch):
+    """apply_reconcile_flag knows who confirmed the deletion. Without carrying
+    that in, the DELETE audit row inherits the importer's filename and retention
+    then keeps that misleading row forever."""
+    from models import reconcile
+    rid = seed_sale(db, doc_no='IV0030-1')
+    reconcile._delete_sales_rows(db, [rid], resolved_by='put', doc_base='IV0030')
+    db.commit()
+    d = [r for r in audit(db, 'DELETE') if r['row_key'] == 'IV0030-1|A001']
+    assert len(d) == 1
+    assert (d[0]['user'], d[0]['change_source']) == ('put', 'manual')
+    assert 'IV0030' in (d[0]['change_reason'] or '')
+
+    # CONTROL: without a resolver it still deletes and still records — but as the
+    # importer. That is the documented residual, asserted so it cannot drift.
+    rid2 = seed_sale(db, doc_no='IV0031-1')
+    reconcile._delete_sales_rows(db, [rid2])
+    db.commit()
+    bare = [r for r in audit(db, 'DELETE') if r['row_key'] == 'IV0031-1|A001'][0]
+    assert bare['change_source'] == 'import'
+
+
+def test_running_the_same_acronym_normalisation_twice_does_not_abort(db, empty_db, monkeypatch):
+    """The token is derived from the acronym pair. If it ever equalled a row's
+    existing token the reused-token clause would abort the whole route."""
+    import config, database, models
+    monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
+    monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
+    seed_sale(db, doc_no='IV0032-1', unit='ตว')
+    db.commit()
+    models.learn_acronyms_normalize({'ตว': 'ตัว'})
+    models.learn_acronyms_normalize({'ตว': 'ตัว'})        # must not raise
+    # …and a row that comes back as the acronym is normalised again cleanly.
+    db.execute("UPDATE sales_transactions SET unit='ตว', change_source='import',"
+               " change_actor='reimport', change_token='acronym-ตว-ตัว'"
+               " WHERE doc_no='IV0032-1'")
+    db.commit()
+    models.learn_acronyms_normalize({'ตว': 'ตัว'})
+    assert db.execute("SELECT unit FROM sales_transactions WHERE doc_no='IV0032-1'"
+                      ).fetchone()[0] == 'ตัว'
