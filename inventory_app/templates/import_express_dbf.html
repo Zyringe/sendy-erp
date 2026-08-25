@@ -61,6 +61,46 @@
             {% endif %}
           </li>
           {% endif %}
+          {# ── เอกสารที่ถูกแก้ที่ต้นทาง (drift) ─────────────────────────────
+             The scope note prints on EVERY run, including a clean one. A
+             detector whose limits appear only when it finds something teaches
+             the reader that silence means "nothing is wrong" rather than
+             "nothing I look at is wrong". #}
+          {% set dd = last_run.results.bsn.doc_drift %}
+          {% if dd and dd.error %}
+          <li class="text-danger doc-drift-error">
+            ตรวจเอกสารที่ถูกแก้ที่ต้นทางล้มเหลว: {{ dd.error }} — การนำเข้าปกติไม่กระทบ
+          </li>
+          {# A skip has to look different from a clean run. Without this branch
+             the page falls silent, and silence reads as "nothing is wrong" —
+             which is the exact thing this detector exists to stop. #}
+          {% elif dd and dd.skipped %}
+          <li class="text-warning doc-drift-skipped">
+            ⏭ ข้ามการตรวจเอกสารที่ถูกแก้ที่ต้นทางรอบนี้ ({{ dd.skipped }}) —
+            <strong>ข้อมูลเข้าครบแล้ว ไม่ต้องอัปโหลดใหม่</strong>
+          </li>
+          {% elif dd %}
+          {% set n = (dd.findings or [])|map(attribute='doc_no')|unique|list|length %}
+          <li class="{{ 'text-danger' if n else 'text-muted' }}">
+            เอกสารที่ถูกแก้ที่ต้นทาง: พบ {{ n }} ใบ
+            จากที่เทียบ {{ dd.counters.compared or 0 }} ใบ
+            {%- if dd.counters.freshness != 'authoritative' %} ·
+            <span class="text-warning">อ่านเวลาส่งออกของ zip ไม่ได้ จึงยังไม่สรุปว่าใบไหน "ถูกลบที่ต้นทาง"</span>
+            {%- endif %}
+            {%- if not dd.counters.baseline_loaded %} ·
+            <span class="text-warning">อ่านไฟล์ baseline ไม่ได้ ตัวเลขนี้จึงรวมเรื่องที่อธิบายไว้แล้ว</span>
+            {%- endif %}
+            {% if n %}— <a href="{{ url_for('inventory.alerts_view') }}">ดูที่การแจ้งเตือนระบบ</a>{% endif %}
+          </li>
+          {% endif %}
+          {# OUTSIDE the branches on purpose. It used to sit inside the "we got a
+             result" arm, so a SKIPPED or FAILED run silently dropped the very
+             sentence that says what this check does not cover — the reader would
+             have seen a page with no limits stated at all, which is worse than a
+             page that never mentioned them. #}
+          {% if dd and dd.scope %}
+          <li class="text-muted doc-drift-scope"><small>{{ dd.scope }}</small></li>
+          {% endif %}
           {% endif %}
           {% if last_run.results.vat %}
           <li class="{{ 'text-warning' if last_run.results.vat.status == 'building'

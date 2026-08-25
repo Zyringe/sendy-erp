@@ -29,6 +29,8 @@ import sqlite3
 
 import pytest
 
+from tests._pre_mig173 import emulate_pre_mig173
+
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MIG_133 = os.path.join(
     REPO, "data", "migrations",
@@ -39,6 +41,11 @@ ROLLBACK_133 = os.path.join(
 
 
 def _apply(conn, path):
+    # mig 133 shipped in April and UPDATEs sales_transactions.customer_code,
+    # a column mig 173 later guarded. 133 < 173, so in every real environment
+    # it ran years before the guard existed; only this reconstruction puts the
+    # two in the same database. See tests/_pre_mig173.py.
+    emulate_pre_mig173(conn)
     with open(path, encoding="utf-8") as f:
         conn.executescript(f.read())
 

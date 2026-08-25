@@ -57,6 +57,8 @@ KIND_ORPHAN_BSN_LEDGER = 'orphan_bsn_ledger'
 KIND_CONVERSION_ROLE_ERROR = 'conversion_role_error'
 KIND_IMPORT_STALE = 'import_stale'
 KIND_UNMAPPED_CODES = 'unmapped_bsn_codes'
+KIND_EXPRESS_DOC_DRIFT = 'express_doc_drift'
+KIND_EXPRESS_DRIFT_SKIPPED = 'express_doc_drift_skipped'
 
 # Prod runs `gunicorn --timeout 60` (Procfile / railway.toml). A request that
 # exceeds it is SIGABRT'd mid-flight, so it cannot report itself — the warning
@@ -147,6 +149,235 @@ def record_ignored_import_lines_alert(ignored_detail, *, file_type, filename):
         if aid:
             ids.append(aid)
     return ids
+
+
+def record_express_doc_drift_alerts(findings, *, dataset_label=None, conn=None):
+    """A document Sendy already holds no longer matches Express.
+
+    The weekly import only re-reads a 60-day window, so an edit made at source
+    after a document ages out is never seen again — the line just stays wrong,
+    and on the purchase side it stays wrong in the stock ledger and in WACC. The
+    import results page is not enough on its own: it is read by whoever ran the
+    import, which is exactly the failure this module exists for.
+
+    ⛔ Detect and tell, never repair. Nothing here writes to the ledgers: an
+    automatic "fix" would be this code deciding which of the two books is right,
+    and the answer is per-document (a source edit vs a deliberate Sendy change —
+    IV6701854 was the second kind and correcting it would have destroyed a
+    team's own SKU split).
+
+    ONE ALERT PER DOCUMENT, CARRYING EVERY FINDING. A cancelled-at-source
+    document normally drifts in content too (Express dropped its lines), so it
+    arrives here as two findings. Left as two create_system_alert calls the
+    second is silently discarded by the dedupe index, and which fact survives is
+    decided by append order — for IV6900631, the case this feature was built
+    for, the alert would have said "line count differs" and never mentioned that
+    Express CANCELLED the document.
+
+    ⚠ AND ACKNOWLEDGING HAS TO STICK. create_system_alert's contract is that a
+    resolved incident may alert again because "a recurrence is news". For drift
+    that contract inverts: the disagreement persists until somebody edits data,
+    so the identical alert would come back on the very next upload, and the next,
+    for ever — which is how a page stops being read. Here a recurrence is news
+    only when the document's FINGERPRINT moved, i.e. it changed AGAIN since the
+    acknowledgement. That check is why this function takes the fingerprint
+    seriously enough to store it in context.
+
+    Best-effort. Callers invoke this AFTER their own connection is closed and
+    must not let an alert failure sink an import that really succeeded.
+    """
+    if not findings:
+        return []
+
+    by_doc = {}
+    for f in findings:
+        doc = f.get('doc_no')
+        if not doc:
+            continue
+        by_doc.setdefault(doc, []).append(f)
+    if not by_doc:
+        return []
+
+    own = conn is None
+    if own:
+        conn = get_connection()
+    try:
+        ids = []
+        for doc, group in by_doc.items():
+            # The document's identity across this run: every finding for it
+            # shares the compared pair, so any one of them names the state that
+            # was acknowledged. `None` (a deleted_at_source finding has no pair)
+            # sorts out as the empty string rather than crashing the join.
+            fingerprint = next((f.get('fingerprint') for f in group
+                                if f.get('fingerprint')), None)
+            if _drift_already_acknowledged(conn, doc, fingerprint):
+                continue
+            message = ' · '.join(f.get('message') or f.get('kind') or ''
+                                 for f in group).strip(' ·')
+            docstat = next((f.get('docstat') for f in group if f.get('docstat')), '')
+            message = message or f'เอกสาร {doc} ไม่ตรงกับ Express'
+            context = {'dataset': dataset_label, 'doc_no': doc,
+                       'drift_kinds': sorted({f.get('kind') for f in group
+                                              if f.get('kind')}),
+                       'fields': sorted({x for f in group
+                                         for x in (f.get('fields') or [])}),
+                       'docstat': docstat, 'fingerprint': fingerprint}
+            aid = create_system_alert(
+                KIND_EXPRESS_DOC_DRIFT, message,
+                dedupe_key=_dedupe_key([doc]),
+                severity='warning', context=context, conn=conn)
+            if aid:
+                ids.append(aid)
+            else:
+                # An alert for this document is already open, so the INSERT was
+                # a no-op — which is right for ONE ROW PER DOCUMENT and wrong
+                # for the row's CONTENT. Without this the alert raised on Monday
+                # still describes Monday after the document drifts again on
+                # Tuesday, and the operator acts on stale text. Rewritten only
+                # when the fingerprint actually moved, so an unchanged
+                # disagreement leaves created_at meaning "first seen".
+                _refresh_open_drift_alert(conn, doc, message, context)
+        if own:
+            conn.commit()
+        return ids
+    finally:
+        if own:
+            conn.close()
+
+
+def _refresh_open_drift_alert(conn, doc_no, message, context):
+    """Move an already-open alert to what the document says NOW. True if it moved."""
+    row = conn.execute(
+        "SELECT id, context_json FROM system_alerts"
+        "  WHERE kind = ? AND dedupe_key = ? AND resolved_at IS NULL",
+        (KIND_EXPRESS_DOC_DRIFT, _dedupe_key([doc_no]))).fetchone()
+    if row is None:
+        return False
+    try:
+        prev = json.loads(row[1] or '{}').get('fingerprint')
+    except ValueError:
+        prev = None
+    if prev == context.get('fingerprint'):
+        return False
+    conn.execute(
+        "UPDATE system_alerts SET message = ?, context_json = ? WHERE id = ?",
+        (message, json.dumps(context, ensure_ascii=False), row[0]))
+    return True
+
+
+def record_express_doc_drift_skipped_alert(reason, *, elapsed=None, conn=None):
+    """The document scan did not run this time, and somebody has to hear about it.
+
+    ⚠ THIS IS THE POINT OF THE WHOLE FEATURE, INVERTED. A watchman that switches
+    itself off quietly is the exact failure the drift detector exists to fix, so
+    a skip cannot be allowed to look like a clean run. The import results page
+    already says it to whoever uploaded; this says it to Put, who is not that
+    person and would otherwise never learn the check has been off for a week.
+
+    ONE OPEN ROW, WITH A COUNT. Dedupe key is the KIND alone, per _dedupe_key's
+    rule — the elapsed seconds are diagnostics. Repeat skips increment `times` in
+    the existing row instead of stacking one alert per upload, so the message
+    reads "ข้ามมาแล้ว 6 ครั้ง" rather than burying the page in six identical rows.
+
+    Cleared automatically by clear_express_doc_drift_skipped_alert() the next
+    time the scan does run — a warning that needs a human click when it has
+    already fixed itself is the wolf-crying this module exists to stop.
+
+    Best-effort: never raises. Skipping the scan already means the import
+    succeeded, and an alert failure must not change that.
+    """
+    try:
+        own = conn is None
+        if own:
+            conn = get_connection()
+        try:
+            key = _dedupe_key([KIND_EXPRESS_DRIFT_SKIPPED])
+            row = conn.execute(
+                "SELECT id, context_json FROM system_alerts"
+                "  WHERE kind = ? AND dedupe_key = ? AND resolved_at IS NULL",
+                (KIND_EXPRESS_DRIFT_SKIPPED, key)).fetchone()
+            times = 1
+            if row is not None:
+                try:
+                    times = int(json.loads(row[1] or '{}').get('times') or 1) + 1
+                except (ValueError, TypeError):
+                    times = 2
+            context = {'reason': reason, 'elapsed_s': elapsed, 'times': times}
+            message = (
+                f'ไม่ได้ตรวจว่าเอกสารถูกแก้ที่ต้นทางหรือไม่ ในการนำเข้า {times} ครั้งล่าสุด '
+                f'({reason}). ⚠ ข้อมูลเข้าครบแล้ว ไม่ต้องอัปโหลดใหม่ — แต่ระหว่างนี้ '
+                f'บิลที่ถูกแก้ฝั่ง Express จะไม่มีใครเห็น. '
+                f'จะหายเองเมื่อการนำเข้าครั้งถัดไปตรวจได้สำเร็จ')
+            if row is None:
+                aid = create_system_alert(
+                    KIND_EXPRESS_DRIFT_SKIPPED, message, dedupe_key=key,
+                    severity='warning', context=context, conn=conn)
+            else:
+                conn.execute(
+                    "UPDATE system_alerts SET message = ?, context_json = ?"
+                    " WHERE id = ?",
+                    (message, json.dumps(context, ensure_ascii=False), row[0]))
+                aid = row[0]
+            if own:
+                conn.commit()
+            return aid
+        finally:
+            if own:
+                conn.close()
+    except Exception as alert_exc:            # noqa: BLE001
+        print(f"[system_alerts] drift-skip alert failed: {alert_exc}", file=sys.stderr)
+
+
+def clear_express_doc_drift_skipped_alert(*, conn=None):
+    """The scan ran, so retire any open "it did not run" alert.
+
+    RESOLVED, not deleted: a week when the check was off stays on the record.
+    Returns how many rows were retired. Best-effort, like its counterpart.
+    """
+    try:
+        own = conn is None
+        if own:
+            conn = get_connection()
+        try:
+            cur = conn.execute(
+                "UPDATE system_alerts"
+                "   SET resolved_at = datetime('now','localtime'),"
+                "       resolved_by = 'auto: ตรวจเอกสารสำเร็จแล้ว'"
+                " WHERE kind = ? AND resolved_at IS NULL",
+                (KIND_EXPRESS_DRIFT_SKIPPED,))
+            if own:
+                conn.commit()
+            return cur.rowcount
+        finally:
+            if own:
+                conn.close()
+    except Exception as alert_exc:            # noqa: BLE001
+        print(f"[system_alerts] drift-skip clear failed: {alert_exc}", file=sys.stderr)
+        return 0
+
+
+def _drift_already_acknowledged(conn, doc_no, fingerprint):
+    """True when someone already resolved this document at this exact state.
+
+    Keyed on the fingerprint stored in context_json, not on the message: the
+    message is prose and will be reworded, while the fingerprint is what
+    "changed again" actually means. A finding with no fingerprint (a document
+    that vanished from Express) is matched on the document alone — there is no
+    pair to hash, and re-raising a deletion someone already looked at every
+    single day is the same failure.
+    """
+    row = conn.execute(
+        "SELECT context_json FROM system_alerts"
+        "  WHERE kind = ? AND dedupe_key = ? AND resolved_at IS NOT NULL"
+        "  ORDER BY id DESC LIMIT 1",
+        (KIND_EXPRESS_DOC_DRIFT, _dedupe_key([doc_no]))).fetchone()
+    if row is None:
+        return False
+    try:
+        prev = json.loads(row[0] or '{}').get('fingerprint')
+    except ValueError:
+        return False
+    return prev == fingerprint
 
 
 def record_orphan_bsn_ledger_alerts(*, file_type, filename):

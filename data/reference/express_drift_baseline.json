@@ -1,0 +1,665 @@
+{
+ "baseline": {
+  "GR6700021": {
+   "fingerprint": "4e91cee7635cd964a75205e3aa9bfde3",
+   "reason": "VAT carve (plan §2): Express ฿390.00 incl. VAT, Sendy stores ฿364.49 = ฿390.00/1.07 — an inconsistency inside Express, writing Express's number back would invent revenue",
+   "rule": "r_vat_carve",
+   "label": "line:net"
+  },
+  "HS6800006": {
+   "fingerprint": "03220411130bdb44c24495371fd7f722",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿4.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6700441": {
+   "fingerprint": "89fd1620b1801720cfc5383fad5f30fb",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿21.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6700460": {
+   "fingerprint": "c6438031d5722dfff3a42c2825280b13",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿13.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6700476": {
+   "fingerprint": "014b1c3f05ede0554ab3d283fcadbf47",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿14.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6700759": {
+   "fingerprint": "91c56dda137fda39586d4f449aeece17",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿14.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6701034": {
+   "fingerprint": "0dd32b631b128e8b75980abe56c15af8",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿31.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6701161": {
+   "fingerprint": "aca055eb451fb0876b50046dc1c1ced9",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿170.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6701211": {
+   "fingerprint": "a357132de263df22fb804bc7391904eb",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿55.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6701246": {
+   "fingerprint": "dfa2d06e49c6595d92c1a94bb2428796",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿10.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6701463": {
+   "fingerprint": "a84553a4420ea72a3f0bf04e72536e9e",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿322.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6701489": {
+   "fingerprint": "7af141b5581baf4e5c542c50b14904bd",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿10.70), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6701614": {
+   "fingerprint": "f2a7acb06e824bfa5396c7f01aec73eb",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿32.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6701854": {
+   "fingerprint": "e291f289f31a954436a0a7b218c0bbfe",
+   "reason": "ตัดสินแล้ว 2026-08-25 (Put): ไม่ใช่ drift — บรรทัดนี้ทีมย้ายไป SKU `ตัว` เองตอนแยก แผง/ตัว เมื่อ ก.ค. 69 และเขียนโน้ตไว้ใน ADJUST ว่า \"ปรับยอดหลังแยก SKU แผง/ตัว — คงสต็อกเดิม (phase 3)\". Express ยังเป็น `แผง` เพราะต้นทางไม่ได้แยก. แก้ตาม Express = ทำลายการแยก SKU ของทีม.",
+   "rule": "decided_by_put",
+   "label": "line:unit"
+  },
+  "IV6701977": {
+   "fingerprint": "0c6188c9f413c48297340d2dda0e3dd3",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿51.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6701978": {
+   "fingerprint": "9a0c99775333024de3be7ae29ad09fc0",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿9.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6701979": {
+   "fingerprint": "eb4ff2be1ccd7390d2a40487214c9e75",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿7.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6701980": {
+   "fingerprint": "fbca2780549692ba016f1e92e192da24",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿9.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6702352": {
+   "fingerprint": "1f69a5972aa056d0f90ad05bfaa5d1f2",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿2,856.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6702419": {
+   "fingerprint": "84e2cbc41fb1b37a09bf6e9b22c22a64",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿13.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6703344": {
+   "fingerprint": "6b3e629e7f5b45f2171c2fb3f21c7142",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿5.35), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6703432": {
+   "fingerprint": "1a5dd022cda921e1fbc880c1bdcca9cb",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿5.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6703455": {
+   "fingerprint": "78a1be7ec4cc4539a30897459b306115",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿9.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800342": {
+   "fingerprint": "61c7705e0e00f8466d2fe75db8ba1292",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿14.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800389": {
+   "fingerprint": "1e38ce94d115e9dcf59ad1b8cc4234d7",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿13.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800545": {
+   "fingerprint": "ee9c35fdd32c0117f7e4080de40c2222",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿1,569.50), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800546": {
+   "fingerprint": "74fba9a5af85546c57c53167176d7d49",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿3,045.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800547": {
+   "fingerprint": "8220df819202d78dbdede3d9afe8df69",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿1,731.25), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800548": {
+   "fingerprint": "8869e0783cc9a01cdbf35a33348641e3",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿4,024.50), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800549": {
+   "fingerprint": "a7421632c71b4813d9d720b9a324353d",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿3,513.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800550": {
+   "fingerprint": "f0e6db2da3c433c03d051eae71400328",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿2,537.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800551": {
+   "fingerprint": "a16e14a5e219073224758575421b0cc0",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿2,537.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800552": {
+   "fingerprint": "153bc3895c9c86a0626080da0aff2ade",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿1,387.50), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800553": {
+   "fingerprint": "dd95d77e1f1497405203cbab5e6a52ac",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿1,569.50), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800554": {
+   "fingerprint": "2fa85492d83b23db286802ff3c4a05ee",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿1,398.50), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800555": {
+   "fingerprint": "6009d894de8ce004174efeb677118657",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿1,398.50), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800556": {
+   "fingerprint": "b2dde09d98be61ed9f9ebab710a1ae9e",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿1,173.50), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800557": {
+   "fingerprint": "f8815fb74c8f69355a5f264d1e8c4249",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿804.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800558": {
+   "fingerprint": "4bc94c6bf5666f79616dc6bd3bdf70f3",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿644.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800589": {
+   "fingerprint": "be84970c91c3112e97bf8f8064cafe09",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿6.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800766": {
+   "fingerprint": "e54b957a2c1cd76fb181975f791d6d8e",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿5.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800890": {
+   "fingerprint": "3fc2ec9c2a6a1bf8a3c393636c21ee38",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿51.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6800925": {
+   "fingerprint": "2a1ee8c1d663d5465965e8fb8e06cb18",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿43.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6801002": {
+   "fingerprint": "a932e704e9705e3288bcac9065ad3c72",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿6.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6801041": {
+   "fingerprint": "e60272b6ac327540ed716fde00fdaedc",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿6.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6801042": {
+   "fingerprint": "1a8bb7c2c7ac109b5f4d4a2bcf0e92e0",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿5.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6801198": {
+   "fingerprint": "31ab1104a45f91f66fdb8971a9f5b8e4",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿14.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6801404": {
+   "fingerprint": "b996d388a40daafaf05de14c002e6544",
+   "reason": "sub-unit representation: Express 1 ขีด@10, Sendy 0.1 กล่อง@100 — same line total, expressed in the product's stock unit on the Sendy side",
+   "rule": "r_subunit_representation",
+   "label": "line:qty,unit,unit_price"
+  },
+  "IV6801448": {
+   "fingerprint": "feacd1f19e313efee374af397b065ca5",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿34.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6801449": {
+   "fingerprint": "7cbb507ed23613abf872f9e56d78e31b",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿64.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6801539": {
+   "fingerprint": "7054df4b1657d4cd714b6cf7aedac117",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿51.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6801816": {
+   "fingerprint": "695b36f565d6186e5c15150129c00c8b",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿51.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6801819": {
+   "fingerprint": "e712517b322a75150d2a7bc2a1cf8201",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿59.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6801880": {
+   "fingerprint": "252bed191a3a0bb497f9a1a31fbd9e05",
+   "reason": "sub-unit representation: Express 4 ขีด@10, Sendy 0.4 กล่อง@100 — same line total, expressed in the product's stock unit on the Sendy side",
+   "rule": "r_subunit_representation",
+   "label": "line:qty,unit,unit_price"
+  },
+  "IV6802074": {
+   "fingerprint": "98593e46c8665b65e0620af1aa98bb78",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿25.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6802104": {
+   "fingerprint": "8c13f2c4a0a15d75b7ed2636062dc42b",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿95.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6802672": {
+   "fingerprint": "964b30808b5c943cf37f4dd0c5b9175d",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿14.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6803096": {
+   "fingerprint": "127a877bbab75a684bfa3646fc4b73bc",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿68.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900395": {
+   "fingerprint": "66f9053333ffa271e41486b0ca3fcac9",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the LINE discount (STCRD.DISC ฿1,429.00; this document's header carries no discount), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900520": {
+   "fingerprint": "fd73dd7cb345031b9a3d556e68fdecc1",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿354.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900535": {
+   "fingerprint": "2542f59eb65d65777dc91cc569f1f551",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿134.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900540": {
+   "fingerprint": "89b8fcc2612af8dec99f2f6be546c40f",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿32.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900557": {
+   "fingerprint": "c0c7884211516aeaf971d7fa96366066",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿69.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900576": {
+   "fingerprint": "87b5451bfa8d611be2196c70d913714a",
+   "reason": "sub-unit representation: Express 1 ขีด@10, Sendy 0.1 กล่อง@100 — same line total, expressed in the product's stock unit on the Sendy side",
+   "rule": "r_subunit_representation",
+   "label": "line:qty,unit,unit_price"
+  },
+  "IV6900593": {
+   "fingerprint": "04d63b56811e1cd3041bff6346fcfca4",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿50.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900627": {
+   "fingerprint": "42e0a7deca54091f012b9c599a4c2e2d",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿43.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900633": {
+   "fingerprint": "71d548991f2da5581d5038dad23bf301",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿21.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900669": {
+   "fingerprint": "17184ecbf3f18c42fce9e0e021155a49",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿14.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900676": {
+   "fingerprint": "cb2a71d8bb5db70df47305c8e35fa747",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿35.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900716": {
+   "fingerprint": "e39059eaaab6958bf6d579e35800e195",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿106.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900749": {
+   "fingerprint": "4c9aa8c0bb7aec4fd5e700655ba44e5c",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿71.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900770": {
+   "fingerprint": "302ada8746076b9e420ce197425d2f8a",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿41.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900778": {
+   "fingerprint": "c6d8164527953e6b077082a8709908b5",
+   "reason": "Express typed the channel wrong: it says Zหน้าร้าน, Sendy says Lหน้าร้าน, and the invoice is linked to lazada order 1097541664108148 — which exists (status 'confirmed', ordered 2026-05-27 08:46). No order on the platform Express names matches. Link confirmed by data-fix-mistyped-channel",
+   "rule": "r_marketplace_channel_mistype",
+   "label": "hdr:party_code"
+  },
+  "IV6900779": {
+   "fingerprint": "b9381002ac5690340524589816be43a2",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿40.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900781": {
+   "fingerprint": "13ebfca5e3845844ffb602b7c071fba7",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿179.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900819": {
+   "fingerprint": "fb9a1f72b32fa5e87a95e017821319df",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿309.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900824": {
+   "fingerprint": "5eafa460066f9f6f45ea10a963386cb7",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿11.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900835": {
+   "fingerprint": "6959a3c1238b2db0a7696b9b03ae3d83",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿138.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900836": {
+   "fingerprint": "571a17a3ac15fa227093d6519850fb36",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿15.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900841": {
+   "fingerprint": "8ea9cfbd27429f7c1eb639bafaebe1c4",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿53.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900902": {
+   "fingerprint": "69b001d51816af36a80b2ed4a53e8106",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿7.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900915": {
+   "fingerprint": "685717b753fcfcb527b873fbe7474f81",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿17.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6900936": {
+   "fingerprint": "0dd0c0975d06825f39c2a8f6c710b7cc",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿45.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6901005": {
+   "fingerprint": "eec6956d537dfd37eedff5476fdd9d7d",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿37.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "IV6901011": {
+   "fingerprint": "2829c99890525beca94aea02650b3ce3",
+   "reason": "legacy text-parse column swap: Sendy `total` holds the document discount (ARTRN.DISCAMT ฿23.00), identical on every line, and `discount` holds the line amount; `net` identical on both sides",
+   "rule": "r_legacy_discamt_swap",
+   "label": "line:discount,total"
+  },
+  "RR6800398": {
+   "fingerprint": "0b09cb35e9ef8dc05c01dc06ec7e261b",
+   "reason": "ignore-rule era: 888ค8887 is ignored by today's rule, so the detector drops it from the Express side, but Sendy holds a row imported before the code was ignored",
+   "rule": "r_ignore_rule_era",
+   "label": "line:LINE_COUNT"
+  },
+  "RR6800425": {
+   "fingerprint": "c4b09f4e76a3d1815efcaf74ac942155",
+   "reason": "ignore-rule era: 888ค8887 is ignored by today's rule, so the detector drops it from the Express side, but Sendy holds a row imported before the code was ignored",
+   "rule": "r_ignore_rule_era",
+   "label": "line:LINE_COUNT"
+  },
+  "SR6700019": {
+   "fingerprint": "fa664397f802306c2f2b08f822785712",
+   "reason": "legacy credit-note parse stored no party code; Express has 'L1303ท02', Sendy has ''",
+   "rule": "r_sr_missing_party",
+   "label": "hdr:party_code"
+  },
+  "SR6700035": {
+   "fingerprint": "37cdb1891728610acadbb1c950317dc3",
+   "reason": "legacy credit-note parse: Sendy stored net=0 and put ฿5.35 in `discount`; SR rows are excluded from every revenue query, so no revenue effect — the stored record is wrong, the totals are not",
+   "rule": "r_sr_zero_net",
+   "label": "line:net,total,unit_price"
+  },
+  "SR6700040": {
+   "fingerprint": "825afb87a256bc372a79793b87f5a596",
+   "reason": "legacy credit-note parse: Sendy stored net=0 and put ฿1,530.00 in `discount`; SR rows are excluded from every revenue query, so no revenue effect — the stored record is wrong, the totals are not",
+   "rule": "r_sr_zero_net",
+   "label": "line:discount,net,total"
+  },
+  "SR6700051": {
+   "fingerprint": "c7ce324a4d0f5243cffb01de74751005",
+   "reason": "legacy credit-note parse stored no party code; Express has 'L1201บ01', Sendy has ''",
+   "rule": "r_sr_missing_party",
+   "label": "hdr:party_code"
+  },
+  "SR6700060": {
+   "fingerprint": "f2d90a5f88ff534841cb42cec4e1084f",
+   "reason": "legacy credit-note parse: Sendy stored net=0 and put ฿150.00 in `discount`; SR rows are excluded from every revenue query, so no revenue effect — the stored record is wrong, the totals are not",
+   "rule": "r_sr_zero_net",
+   "label": "line:discount,net,total"
+  },
+  "SR6700067": {
+   "fingerprint": "c069311e8ff041d0dbb99324b14b64af",
+   "reason": "legacy credit-note parse stored no party code; Express has 'L1101ม02', Sendy has ''",
+   "rule": "r_sr_missing_party",
+   "label": "hdr:party_code"
+  },
+  "SR6700074": {
+   "fingerprint": "ab7fbc40a92edc2da02fa55c69b43be8",
+   "reason": "legacy credit-note parse: Sendy stored net=0 and put ฿4,040.00 in `discount`; SR rows are excluded from every revenue query, so no revenue effect — the stored record is wrong, the totals are not",
+   "rule": "r_sr_zero_net",
+   "label": "line:discount,net,total"
+  },
+  "SR6700088": {
+   "fingerprint": "4ad2431e2febe1ab8f3f40917aea9b84",
+   "reason": "unit spelling normalize_unit() does not unify: กิโลกรัม/กิโล — same unit, every other field identical",
+   "rule": "r_unit_alias",
+   "label": "line:unit"
+  },
+  "SR6700116": {
+   "fingerprint": "d4e05c0ecb4c869f7f7d0bac0ff7729f",
+   "reason": "legacy credit-note parse stored no party code; Express has 'L1301ส02', Sendy has ''",
+   "rule": "r_sr_missing_party",
+   "label": "hdr:party_code"
+  },
+  "SR6700123": {
+   "fingerprint": "b7663b23fd7e7ebeed749b5ea56dc901",
+   "reason": "legacy credit-note parse stored no party code; Express has 'L1201บ01', Sendy has ''",
+   "rule": "r_sr_missing_party",
+   "label": "hdr:party_code"
+  },
+  "SR6700124": {
+   "fingerprint": "d4a9c62e341ac39078c7518e3efbbabc",
+   "reason": "legacy credit-note parse: Sendy stored net=0 and put ฿473.57 in `discount`; SR rows are excluded from every revenue query, so no revenue effect — the stored record is wrong, the totals are not",
+   "rule": "r_sr_zero_net",
+   "label": "line:discount,net,total"
+  },
+  "SR6700125": {
+   "fingerprint": "08a6a3999d37b5e8b1fad27cd9f50971",
+   "reason": "legacy credit-note parse: Sendy stored net=0 and put ฿86.00 in `discount`; SR rows are excluded from every revenue query, so no revenue effect — the stored record is wrong, the totals are not",
+   "rule": "r_sr_zero_net",
+   "label": "line:net,total,unit_price"
+  },
+  "SR6700144": {
+   "fingerprint": "1933c0f0b0fc69dac3f8072773359e6d",
+   "reason": "legacy credit-note parse: Sendy stored net=0 and put ฿1,010.52 in `discount`; SR rows are excluded from every revenue query, so no revenue effect — the stored record is wrong, the totals are not",
+   "rule": "r_sr_zero_net",
+   "label": "line:discount,net,total"
+  },
+  "SR6700149": {
+   "fingerprint": "094490ddf05822b4a1c2d66fc8081146",
+   "reason": "legacy credit-note parse stored no party code; Express has 'L1304น01', Sendy has ''",
+   "rule": "r_sr_missing_party",
+   "label": "hdr:party_code"
+  },
+  "SR6700152": {
+   "fingerprint": "196bda6e31e9cb0396f0a46cb0cafae5",
+   "reason": "unit spelling normalize_unit() does not unify: คค/ครั้ง — same unit, every other field identical",
+   "rule": "r_unit_alias",
+   "label": "line:unit"
+  },
+  "SR6700154": {
+   "fingerprint": "d729093811250123eac129f79dc8e895",
+   "reason": "unit spelling normalize_unit() does not unify: คค/ครั้ง — same unit, every other field identical",
+   "rule": "r_unit_alias",
+   "label": "line:unit"
+  },
+  "SR6700161": {
+   "fingerprint": "d9bfc8e7dd66fa625d7e3c18428f0fa6",
+   "reason": "legacy credit-note parse: Sendy stored net=0 and put ฿290.70 in `discount`; SR rows are excluded from every revenue query, so no revenue effect — the stored record is wrong, the totals are not",
+   "rule": "r_sr_zero_net",
+   "label": "line:discount,net,total"
+  },
+  "SR6700163": {
+   "fingerprint": "03a8f427e245cc2095184c249424713d",
+   "reason": "legacy credit-note parse: Sendy stored net=0 and put ฿650.00 in `discount`; SR rows are excluded from every revenue query, so no revenue effect — the stored record is wrong, the totals are not",
+   "rule": "r_sr_zero_net",
+   "label": "line:discount,net,total"
+  },
+  "SR6700174": {
+   "fingerprint": "7d39207e2027b15ad4295a7fab43a14a",
+   "reason": "legacy credit-note parse stored no party code; Express has 'LMส006', Sendy has ''",
+   "rule": "r_sr_missing_party",
+   "label": "hdr:party_code"
+  },
+  "SR6700175": {
+   "fingerprint": "1cd63846c009da01e4e742053af3330e",
+   "reason": "legacy credit-note parse stored no party code; Express has 'L1406ม01', Sendy has ''",
+   "rule": "r_sr_missing_party",
+   "label": "hdr:party_code"
+  },
+  "SR6700177": {
+   "fingerprint": "c67ea1dea58508f7fcd87ff786db4c44",
+   "reason": "legacy credit-note parse stored no party code; Express has 'L1303ห01', Sendy has ''",
+   "rule": "r_sr_missing_party",
+   "label": "hdr:party_code"
+  },
+  "SR6900001": {
+   "fingerprint": "477632f7358eeceb33c04d58aed0263a",
+   "reason": "legacy credit-note parse stored no party code; Express has 'L1406ม01', Sendy has ''",
+   "rule": "r_sr_missing_party",
+   "label": "hdr:party_code"
+  },
+  "SR6900002": {
+   "fingerprint": "514a395db8e6df0cf3ed48f871d11ff1",
+   "reason": "legacy credit-note parse stored no party code; Express has 'L1406ม01', Sendy has ''",
+   "rule": "r_sr_missing_party",
+   "label": "hdr:party_code"
+  }
+ },
+ "open_findings": {}
+}

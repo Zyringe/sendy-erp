@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(REPO, "scripts"))
 import apply_stock_and_mapping_csv as app  # noqa: E402
 
 from tests import mapping_fixture  # noqa: E402  (idempotent mig-124 replay)
+from tests._pre_mig173 import emulate_pre_mig173  # noqa: E402
 
 
 def _migrate124(conn):
@@ -75,6 +76,8 @@ def test_ledger_unit_normalized_and_ratio_applied(tmp_db, tmp_path):
         "sku_code": "NEW-950001", "product_name": "NEW NAME 950001",
         "base_unit": "แผ่น", "bsn_code": "ZZ950001", "bsn_name": "bn",
         "bsn_unit": "หล", "ratio_to_base": "12"}])
+    # Dated one-off, pre-mig-173 — see tests/_pre_mig173.py.
+    assert emulate_pre_mig173(tmp_db) == 2
     assert app.main([csvf, "--db", tmp_db, "--apply"]) == 0
 
     conn = sqlite3.connect(tmp_db)
@@ -109,6 +112,8 @@ def test_forced_base_equals_1_overrides_csv(tmp_db, tmp_path):
         "sku_code": "S2", "product_name": "P2", "base_unit": "อัน",
         "bsn_code": "ZZ950002", "bsn_name": "b", "bsn_unit": "อน",
         "ratio_to_base": "30"}])                # CSV says 30 — must be ignored
+    # Dated one-off, pre-mig-173 — see tests/_pre_mig173.py.
+    assert emulate_pre_mig173(tmp_db) == 2
     assert app.main([csvf, "--db", tmp_db, "--apply"]) == 0
     conn = sqlite3.connect(tmp_db)
     sm = conn.execute("SELECT COALESCE(SUM(quantity_change),0) FROM transactions "
@@ -131,6 +136,8 @@ def test_unknown_acronym_skips_conversion_keeps_mapping(tmp_db, tmp_path):
         "sku_code": "S3", "product_name": "P3", "base_unit": "ตัว",
         "bsn_code": "ZZ950003", "bsn_name": "b", "bsn_unit": "ปน",
         "ratio_to_base": ""}])
+    # Dated one-off, pre-mig-173 — see tests/_pre_mig173.py.
+    assert emulate_pre_mig173(tmp_db) == 2
     assert app.main([csvf, "--db", tmp_db, "--apply"]) == 0
     conn = sqlite3.connect(tmp_db)
     assert conn.execute("SELECT COUNT(*) FROM unit_conversions WHERE product_id=950003"
@@ -159,6 +166,8 @@ def test_false_and_done_rows_untouched(tmp_db, tmp_path):
          "sku_code": "Y", "product_name": "Y", "base_unit": "ตัว",
          "bsn_code": "ZZ950004b", "bsn_name": "b", "bsn_unit": "อน",
          "ratio_to_base": "1"}])
+    # Dated one-off, pre-mig-173 — see tests/_pre_mig173.py.
+    assert emulate_pre_mig173(tmp_db) == 2
     assert app.main([csvf, "--db", tmp_db, "--apply"]) == 0
     conn = sqlite3.connect(tmp_db)
     # untouched: original OLD name/sku, no mapping rows created
