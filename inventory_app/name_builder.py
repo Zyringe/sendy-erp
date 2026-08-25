@@ -24,8 +24,19 @@ def build_name(row):
 
     Keys: category, series, brand, model, size, color_th, color_code,
     packaging, condition, pack_variant (all optional, "" when absent).
+
+    ⚠ `_` is collapsed to a space in the RESULT. 196 active `series` values hold a
+    literal underscore (a storage convention that keeps a multi-word series as one
+    token) and `_bnc.build` splices them into the name raw — so a save quietly moved
+    a curated `Super Thin` to `Super_Thin` in a customer-facing name. Normalising is
+    provably safe rather than a judgement call: measured 2026-08-24 on the prod
+    snapshot, **ZERO stored product_name values contain an underscore**, so this can
+    only ever bring a generated name CLOSER to the stored one, never away from it.
+
+    Applied here, not in save_product, so `preview_name` shows the operator exactly
+    what will be stored — the live preview and the save must not disagree.
     """
-    return _bnc.build(row)
+    return " ".join(_bnc.build(row).replace("_", " ").split())
 
 
 def preview_name(conn, fields):

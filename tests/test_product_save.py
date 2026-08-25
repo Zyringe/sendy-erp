@@ -64,7 +64,7 @@ def editable_product(empty_db):
     return empty_db, pid, bid
 
 
-def test_save_rebuilds_name_but_never_touches_sku_code(editable_product, tmp_path):
+def test_save_never_touches_sku_code(editable_product, tmp_path):
     """The core of #383. `SEED-1` is nothing like what the generator would
     produce for this product (`SD-#230-4in-CR-PN`), so this fixture has exactly
     the drift that made real saves dangerous."""
@@ -74,14 +74,17 @@ def test_save_rebuilds_name_but_never_touches_sku_code(editable_product, tmp_pat
 
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT product_name, sku_code FROM products WHERE id=?",
+    row = conn.execute("SELECT product_name, sku_code, color_code FROM products WHERE id=?",
                        (pid,)).fetchone()
     conn.close()
 
     # CONTROL FIRST: the save must actually have done its job, or "sku_code did
     # not change" would pass on a no-op that never reached the code under test.
-    assert row["product_name"] == "กลอน Sendai #230-4in สีโครเมียม (CR) (แผง)"
-    assert res["new_name"] == "กลอน Sendai #230-4in สีโครเมียม (CR) (แผง)"
+    # CONTROL moved to the COLUMN (2026-08-25): the name is the source of truth now and
+    # a naming save no longer rewrites it, so "the name changed" can no longer prove the
+    # save reached the code under test.
+    assert row["color_code"] == "CR"
+    assert res["new_name"] == row["product_name"], "a naming save must not move the name"
 
     assert row["sku_code"] == "SEED-1", "a naming save must never move the join key"
     assert res["sku_code"] == "SEED-1"
@@ -117,8 +120,8 @@ def test_save_derives_packaging_short_from_packaging_th(editable_product, tmp_pa
         "SELECT product_name, packaging_short, sku_code FROM products WHERE id=?",
         (pid,)).fetchone()
     conn.close()
-    assert row["packaging_short"] == "UN"                      # ตัว → UN derived
-    assert row["product_name"].endswith("(ตัว)")
+    assert row["packaging_short"] == "UN"                      # ตัว → UN derived — THE SUBJECT
+    # (the old `product_name.endswith("(ตัว)")` assertion went with the rebuild)
     # packaging_short still feeds the GENERATOR (and so the explicit regen
     # route); it just no longer reaches sku_code through a naming save.
     assert row["sku_code"] == "SEED-1"
@@ -142,10 +145,10 @@ def test_sku_is_preserved_regardless_of_lock_state(editable_product, tmp_path, l
 
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT product_name, sku_code FROM products WHERE id=?",
+    row = conn.execute("SELECT color_code, sku_code FROM products WHERE id=?",
                        (pid,)).fetchone()
     conn.close()
-    assert row["product_name"] == "กลอน Sendai #230-4in สีโครเมียม (CR) (แผง)"  # control
+    assert row["color_code"] == "CR"                            # control: the save landed
     assert row["sku_code"] == "SEED-1"
 
 
@@ -218,7 +221,7 @@ def test_the_workbench_save_ROUTE_does_not_move_the_sku(admin_client, tmp_db):
     pid = conn.execute(
         "INSERT INTO products(product_name, brand_id, sub_category, model, size,"
         "                     packaging_th, packaging_short, sku_code, is_active)"
-        " VALUES ('ทดสอบ 383 route', ?, 'กลอน', '#383', '4in', 'แผง', 'PN',"
+        " VALUES ('กลอน Sendai #383-4in (แผง)', ?, 'กลอน', '#383', '4in', 'แผง', 'PN',"
         "         'ZZZ-383-ROUTE', 1)", (bid,)).lastrowid
     conn.commit()
     conn.close()
@@ -230,10 +233,244 @@ def test_the_workbench_save_ROUTE_does_not_move_the_sku(admin_client, tmp_db):
 
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT product_name, sku_code FROM products WHERE id=?",
+    row = conn.execute("SELECT size, sku_code FROM products WHERE id=?",
                        (pid,)).fetchone()
     conn.close()
-    # CONTROL: the edit really landed, so the sku assertion is not on a no-op.
-    assert "6in" in row["product_name"], row["product_name"]
+    # CONTROL: the edit really landed, so the sku assertion is not on a no-op. Asserts
+    # the COLUMN — a naming save no longer rewrites the name (2026-08-25).
+    assert row["size"] == "6in", row["size"]
     assert row["sku_code"] == "ZZZ-383-ROUTE", "the route must not move the join key"
     assert body["sku_code"] == "ZZZ-383-ROUTE"
+
+
+# ── the name is the SOURCE OF TRUTH (2026-08-25) ─────────────────────────────
+# save_product used to recompose product_name from the columns on every save and UPDATE
+# it unconditionally. Measured on the 2026-08-24 prod snapshot, 342 of 1,994 active
+# products carry text no column holds, so that silently destroyed it — and the audit log
+# shows all 2,594 recorded name changes were DIRECT writes with no naming-column edit,
+# i.e. the naming standard has always been enforced by scripts, never by this rebuild.
+# Put confirmed the single-product workbench is "แทบไม่ได้ใช้เลย".
+
+
+def _name(path, pid):
+    conn = sqlite3.connect(path)
+    row = conn.execute("SELECT product_name FROM products WHERE id=?", (pid,)).fetchone()
+    conn.close()
+    return row[0]
+
+
+def test_editing_a_column_does_NOT_touch_the_name(editable_product, tmp_path):
+    """The whole point. Changing colour used to rewrite the name from the columns."""
+    path, pid, _ = editable_product
+    before = _name(path, pid)
+    res = nc.save_product(path, pid, {"color_code": "CR"}, backup_dir=str(tmp_path / "b"))
+
+    assert res["new_name"] == before
+    assert _name(path, pid) == before
+    # CONTROL — the column really did change, so this is not "the save did nothing".
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT color_code FROM products WHERE id=?", (pid,)).fetchone()[0] == "CR"
+    conn.close()
+
+
+def test_a_hand_tuned_name_survives_a_column_edit(editable_product, tmp_path):
+    """The prod shape: 'TAYITA' lives in no column, so a rebuild would drop it."""
+    path, pid, _ = editable_product
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE products SET product_name=? WHERE id=?",
+                 ("กลอน TAYITA Sendai #230-4in สีรมดำ (AC) (แผง)", pid))
+    conn.commit()
+    conn.close()
+
+    nc.save_product(path, pid, {"color_code": "CR"}, backup_dir=str(tmp_path / "b"))
+    assert "TAYITA" in _name(path, pid)
+
+
+def test_an_explicit_name_is_what_gets_stored(editable_product, tmp_path):
+    """How the operator (or the workbench's adopt-suggestion button) changes a name."""
+    path, pid, _ = editable_product
+    res = nc.save_product(path, pid, {"product_name": "  ชื่อใหม่ที่พิมพ์เอง  "},
+                          backup_dir=str(tmp_path / "b"))
+    assert res["new_name"] == "ชื่อใหม่ที่พิมพ์เอง"          # trimmed
+    assert _name(path, pid) == "ชื่อใหม่ที่พิมพ์เอง"
+
+
+def test_a_blank_explicit_name_is_ignored_not_stored(editable_product, tmp_path):
+    """An empty box must never blank a product's name."""
+    path, pid, _ = editable_product
+    before = _name(path, pid)
+    nc.save_product(path, pid, {"product_name": "   "}, backup_dir=str(tmp_path / "b"))
+    assert _name(path, pid) == before
+
+
+def test_rebuild_name_opt_in_still_recomposes(editable_product, tmp_path):
+    """scripts/hammer_bundle_datafix.py W1 depends on this and asserts the exact result;
+    removing the default rebuild must not remove the capability."""
+    path, pid, _ = editable_product
+    res = nc.save_product(path, pid, {"color_code": "CR"},
+                          backup_dir=str(tmp_path / "b"), rebuild_name=True)
+    assert "สีโครเมียม" in res["new_name"], res["new_name"]
+    assert _name(path, pid) == res["new_name"]
+
+
+def test_the_ROUTE_stores_the_typed_name_and_leaves_it_alone_otherwise(admin_client, tmp_db):
+    """Route level: a column-only save must not move the name, and a typed name must land."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("DELETE FROM products WHERE sku_code='ZZZ-TRUTH-ROUTE'")
+    bid = conn.execute("SELECT id FROM brands WHERE short_code='SD'").fetchone()[0]
+    pid = conn.execute(
+        "INSERT INTO products(product_name, brand_id, sub_category, model, size,"
+        "                     packaging_th, packaging_short, sku_code, is_active)"
+        " VALUES ('กลอน TAYITA Sendai #902-4in (แผง)', ?, 'กลอน', '#902', '4in',"
+        "         'แผง', 'PN', 'ZZZ-TRUTH-ROUTE', 1)", (bid,)).lastrowid
+    conn.commit()
+    conn.close()
+
+    r = admin_client.post(f'/naming/product/{pid}/save', json={"size": "6in"})
+    assert r.status_code == 200, r.get_data(as_text=True)[:200]
+    assert "TAYITA" in _name(tmp_db, pid)
+
+    r2 = admin_client.post(f'/naming/product/{pid}/save',
+                           json={"product_name": "กลอน TAYITA Sendai #902-6in (แผง)"})
+    assert r2.status_code == 200
+    assert _name(tmp_db, pid) == "กลอน TAYITA Sendai #902-6in (แผง)"
+
+
+def test_the_preview_route_reports_what_adopting_the_suggestion_would_drop(
+        admin_client, tmp_db):
+    """The workbench shows this beside the button, so replacing a hand-tuned name is a
+    visible choice instead of something a save does behind the operator's back."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM products WHERE sku_code='ZZZ-PREVIEW-LOSS'")
+    bid = conn.execute("SELECT id FROM brands WHERE short_code='SD'").fetchone()[0]
+    pid = conn.execute(
+        "INSERT INTO products(product_name, brand_id, sub_category, model, size,"
+        "                     packaging_th, packaging_short, sku_code, is_active)"
+        " VALUES ('กลอน TAYITA Sendai #903-4in (แผง)', ?, 'กลอน', '#903', '4in',"
+        "         'แผง', 'PN', 'ZZZ-PREVIEW-LOSS', 1)", (bid,)).lastrowid
+    conn.commit()
+    conn.close()
+
+    r = admin_client.post('/naming/product/preview-name', json={
+        "pid": pid, "sub_category": "กลอน", "brand_id": bid, "model": "#903",
+        "size": "4in", "packaging_th": "แผง"})
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["loss"] == ["TAYITA"], body
+    assert "TAYITA" in body["stored_name"]
+    assert "TAYITA" not in body["name"]
+
+
+def test_the_generated_name_never_gains_a_literal_underscore(editable_product, tmp_path):
+    """196 active `series` values hold a literal underscore; the composer spliced it into
+    the name raw, so adopting a suggestion would put 'DEAD_LOCK' in a customer-facing
+    name. ZERO stored names contain an underscore, so normalising is provably safe."""
+    path, pid, _ = editable_product
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE products SET series='DEAD_LOCK' WHERE id=?", (pid,))
+    conn.commit()
+    conn.close()
+    res = nc.save_product(path, pid, {}, backup_dir=str(tmp_path / "b"), rebuild_name=True)
+    assert "_" not in res["new_name"], res["new_name"]
+    assert "DEAD LOCK" in res["new_name"], res["new_name"]
+
+
+@pytest.mark.parametrize("stored,generated,expected", [
+    (None, "กลอน Sendai", []),                       # nothing stored -> nothing to lose
+    ("", "กลอน Sendai", []),
+    ("กลอน Sendai", None, ["กลอน Sendai"]),          # rebuild returned nothing at all
+    ("กลอน Sendai", "", ["กลอน Sendai"]),            # prod pid 1994 (OTH-FILER): every
+                                                     # naming column NULL -> empty name
+    ("ABC", "XYZ", ["ABC"]),                         # wholly replaced
+    ("กลอน", "กลอน Sendai #230 (แผง)", []),           # candidate LONGER: a gain, not a loss
+    ("###", "#", []),                                # punctuation-only delta
+    # Thai สระ/วรรณยุกต์ are combining marks (category Mn), NOT punctuation. Dropping
+    # one changes the word, and an L/N-only content test reported "nothing lost".
+    # The fragment is the MARK alone (only it was deleted); the refusal also carries
+    # old_name/new_name, which is what makes a bare diacritic readable to an operator.
+    ("กิ", "ก", ["ิ"]),                               # สระอิ destroyed
+    ("ก่", "ก", ["่"]),                               # ไม้เอก destroyed
+    ("สีรมดำ", "สีรมดา", ["ำ"]),                       # sanity: an Lo change was caught
+    # ZWJ/ZWNJ are Cf, not L/M/N. Dropping one changes shaping, so they are content —
+    # explicitly, not the whole Cf category (RLM/LRM and SOFT HYPHEN really are format).
+    ("ก\u200dข", "กข", ["\u200d"]),                   # ZERO WIDTH JOINER destroyed
+    ("ก\u200cข", "กข", ["\u200c"]),                   # ZERO WIDTH NON-JOINER destroyed
+    # Canonically EQUIVALENT, marks in a different order. Without NFC this reported a
+    # deleted mark and refused a save that could never have lost anything.
+    ("x\u0315\u0300", "x\u0300\u0315", []),
+    ("  กลอน   Sendai  ", "กลอน Sendai", []),         # whitespace-only delta
+    ("a_b", "a b", []),                              # underscore-only delta
+])
+def test_name_loss_edge_cases(stored, generated, expected):
+    """`rebuild_product_name` returns None for a missing row and "" when every naming
+    column is NULL, and a candidate can be longer than the stored name. None of these
+    may raise, and none may be silently treated as "no loss" when text really goes."""
+    assert nc._name_loss(stored, generated) == expected
+
+
+# ── concurrent rename (Codex, 2026-08-25) ────────────────────────────────────
+# The workbench seeds its name box at PAGE LOAD, and the cascade + mass-rename scripts
+# write names continuously (223 changes in July, 42 in August). A page left open and
+# then saved must not restore an obsolete name over a newer one — that is the same
+# undetectable loss this redesign removed, arriving through a different door.
+
+
+def _rename_behind_our_back(path, pid, new):
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE products SET product_name=? WHERE id=?", (new, pid))
+    conn.commit()
+    conn.close()
+
+
+def test_a_stale_rename_is_refused_not_silently_applied(editable_product, tmp_path):
+    path, pid, _ = editable_product
+    at_open = _name(path, pid)
+    _rename_behind_our_back(path, pid, "ชื่อใหม่จากสคริปต์")
+
+    with pytest.raises(nc.CascadeConflict) as e:
+        nc.save_product(path, pid, {"product_name": "ชื่อที่พิมพ์ในหน้าเก่า"},
+                        backup_dir=str(tmp_path / "b"), expected_product_name=at_open)
+    assert "ชื่อใหม่จากสคริปต์" in str(e.value), str(e.value)
+    assert _name(path, pid) == "ชื่อใหม่จากสคริปต์", "the newer name must survive"
+
+    # CONTROL — the same rename with an up-to-date expectation must SUCCEED, so this is
+    # not a guard that simply refuses every rename.
+    nc.save_product(path, pid, {"product_name": "ชื่อที่พิมพ์ในหน้าเก่า"},
+                    backup_dir=str(tmp_path / "c"),
+                    expected_product_name="ชื่อใหม่จากสคริปต์")
+    assert _name(path, pid) == "ชื่อที่พิมพ์ในหน้าเก่า"
+
+
+def test_a_column_only_save_never_carries_a_name_at_all(editable_product, tmp_path):
+    """The workbench omits product_name unless the box was touched. Belt: even a caller
+    that sends nothing must leave a name that moved underneath it alone."""
+    path, pid, _ = editable_product
+    _rename_behind_our_back(path, pid, "ชื่อใหม่จากสคริปต์")
+    nc.save_product(path, pid, {"color_code": "CR"}, backup_dir=str(tmp_path / "b"))
+    assert _name(path, pid) == "ชื่อใหม่จากสคริปต์"
+
+
+def test_the_ROUTE_returns_409_stale_on_a_concurrent_rename(admin_client, tmp_db):
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM products WHERE sku_code='ZZZ-STALE-ROUTE'")
+    bid = conn.execute("SELECT id FROM brands WHERE short_code='SD'").fetchone()[0]
+    pid = conn.execute(
+        "INSERT INTO products(product_name, brand_id, sub_category, model, size,"
+        "                     packaging_th, packaging_short, sku_code, is_active)"
+        " VALUES ('ชื่อตอนเปิดหน้า', ?, 'กลอน', '#904', '4in', 'แผง', 'PN',"
+        "         'ZZZ-STALE-ROUTE', 1)", (bid,)).lastrowid
+    conn.commit()
+    conn.close()
+    _rename_behind_our_back(tmp_db, pid, "ชื่อใหม่จากสคริปต์")
+
+    r = admin_client.post(f'/naming/product/{pid}/save', json={
+        "product_name": "ชื่อที่พิมพ์ในหน้าเก่า",
+        "expected_product_name": "ชื่อตอนเปิดหน้า"})
+    assert r.status_code == 409, r.get_data(as_text=True)[:200]
+    body = r.get_json()
+    assert body["stale"] is True
+    # The 409 must carry the CURRENT name, or the page can only recover by reloading —
+    # which throws away the operator's unsaved column edits (Codex, 2026-08-25).
+    assert body["current_name"] == "ชื่อใหม่จากสคริปต์", body
+    assert _name(tmp_db, pid) == "ชื่อใหม่จากสคริปต์"

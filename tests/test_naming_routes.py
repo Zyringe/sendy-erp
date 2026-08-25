@@ -324,5 +324,8 @@ def test_a_null_condition_still_destroys_it(manager_client, empty_db):
     cond, name = conn.execute(
         "SELECT condition, product_name FROM products WHERE id=?", (pid,)).fetchone()
     conn.close()
-    assert cond is None
-    assert 'มียอด' not in name
+    assert cond is None                      # THE SUBJECT: the column really is wiped
+    # ...and the NAME is deliberately untouched (2026-08-25). It used to be rebuilt from
+    # the columns on every save, which is what destroyed text no column holds on 342
+    # products; the stored name is the source of truth now.
+    assert name == 'บานพับทดสอบมียอดสอง'

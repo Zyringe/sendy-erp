@@ -235,9 +235,20 @@ def product_preview_name():
     conn = get_connection()
     try:
         name = name_builder.preview_name(conn, fields)
+        # What ADOPTING this suggestion would drop from the name as stored today. The
+        # workbench shows it beside the button, so replacing a hand-tuned name is a
+        # visible choice rather than something a save does behind the operator's back.
+        stored, loss = '', []
+        pid = fields.get('pid')
+        if pid:
+            row = conn.execute("SELECT product_name FROM products WHERE id=?",
+                               (pid,)).fetchone()
+            if row:
+                stored = row['product_name'] or ''
+                loss = nc._name_loss(stored, name)
     finally:
         conn.close()
-    return jsonify({'ok': True, 'name': name})
+    return jsonify({'ok': True, 'name': name, 'stored_name': stored, 'loss': loss})
 
 
 @bp_naming.route('/naming/product/<int:pid>/save', methods=['POST'])
@@ -250,10 +261,19 @@ def product_save(pid):
 
     Returns old/new name plus the (unchanged) sku_code."""
     fields = request.get_json(silent=True) or {}
+    # Popped, never whitelisted into the columns: it is a caller INTENT flag, not a
+    # product field. _clean_updates ignores unknown keys anyway; popping keeps the
+    # two kinds of thing visibly separate.
     db_path = _db_path()
     try:
-        res = nc.save_product(db_path, pid, fields,
-                              backup_dir=db_backup.default_backup_dir(db_path))
+        res = nc.save_product(
+            db_path, pid, fields,
+            backup_dir=db_backup.default_backup_dir(db_path),
+            expected_product_name=fields.get('expected_product_name'))
+    except nc.CascadeConflict as e:
+        # 409: the request was fine, the world moved underneath it. Reloading is the fix.
+        return jsonify({'ok': False, 'error': str(e), 'stale': True,
+                        'current_name': getattr(e, 'current_name', '')}), 409
     except nc.ProductNotFound:
         return jsonify({'ok': False, 'error': f'ไม่พบสินค้า #{pid}'}), 404
     except nc.CascadeInvariantError as e:

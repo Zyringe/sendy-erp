@@ -201,9 +201,13 @@ def run_w1(db_path, backup_dir, reason):
 
         sku_before = row["sku_code"]
         name_before = row["product_name"]
+        # rebuild_name=True: this checkpoint's whole purpose is to let the columns
+        # recompose the name, and it asserts the exact expected result below.
+        # save_product stopped rebuilding by default on 2026-08-25 — the stored name
+        # is the source of truth now — so the intent has to be stated.
         result = naming_cascade.save_product(
             db_path, target["pid"], target["fields"],
-            backup_dir=backup_dir, reason=reason)
+            backup_dir=backup_dir, reason=reason, rebuild_name=True)
 
         problems = []
         if result["new_name"] != target["new_name"]:

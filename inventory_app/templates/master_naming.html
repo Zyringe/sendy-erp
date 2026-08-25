@@ -215,8 +215,18 @@
             <input class="form-control form-control-sm" id="ed-variant"></div>
         </div>
         <hr class="my-2">
-        <div class="small text-muted">ชื่อใหม่:</div>
-        <div id="ed-preview" class="fw-bold">—</div>
+        {# The NAME is the source of truth and is typed here. The composed name below is
+           a SUGGESTION with a button — save_product stopped overwriting the name on
+           2026-08-25, because doing so destroyed text no column holds on 342 products. #}
+        <div class="small text-muted">ชื่อสินค้า (แก้ได้ตรงนี้):</div>
+        <input class="form-control form-control-sm fw-bold" id="ed-name">
+        <div class="d-flex align-items-center gap-2 mt-2">
+          {# starts DISABLED: nothing is adoptable until a validated preview arrives #}
+          <button type="button" class="btn btn-outline-secondary btn-sm" disabled
+                  id="ed-adopt" onclick="adoptSuggestedName()">ใช้ชื่อที่ระบบแนะนำ →</button>
+          <div id="ed-preview" class="small text-muted flex-grow-1">—</div>
+        </div>
+        <div id="ed-loss" class="small text-danger mt-1 d-none"></div>
         <div id="ed-locked-warn" class="small text-warning mt-1 d-none">
           ⚠ sku_code ถูกล็อกไว้ — จะแก้เฉพาะชื่อ ไม่สร้าง sku ใหม่</div>
       </div>
@@ -327,6 +337,20 @@ async function confirmApply() {
 
 // ── Tab 1 single-product inline editor ──────────────────────────────────────
 let _edPid = null;
+let _edNameAtOpen = '';
+let _edNameDirty = false;
+let _edGen = 0;          // preview generation — a late response must not win
+// The ONLY value the adopt button may write. null = there is no validated suggestion,
+// so adoption is impossible: reading the DOM instead let a click during the 250ms
+// debounce rename a product to the '…' placeholder, or to the previous product's
+// suggestion (Codex, 2026-08-25).
+let _edSuggestion = null;
+
+function _setSuggestion(name) {
+  _edSuggestion = name || null;
+  document.getElementById('ed-adopt').disabled = !_edSuggestion;
+  document.getElementById('ed-preview').textContent = name || '…';
+}
 const _edIds = ['ed-subcat','ed-brand','ed-series','ed-model','ed-size',
                 'ed-color','ed-packaging','ed-condition','ed-variant'];
 
@@ -343,6 +367,13 @@ function _edFields() {
 function openEditor(btn) {
   const d = btn.dataset;
   _edPid = d.pid;
+  // data-name = the STORED name at PAGE LOAD. Kept as `_edNameAtOpen` so a save can
+  // prove nothing renamed the product in the meantime, and `_edNameDirty` so a
+  // column-only save does not send the name at all.
+  document.getElementById('ed-name').value = d.name || '';
+  _edNameAtOpen = d.name || '';
+  _edGen++;
+  _edNameDirty = false;
   document.getElementById('edit-pid').textContent = '#' + d.pid;
   const set = (id, val) => document.getElementById(id).value = val || '';
   set('ed-subcat', d.subcat); set('ed-brand', d.brand); set('ed-series', d.series);
@@ -350,7 +381,9 @@ function openEditor(btn) {
   set('ed-packaging', d.packaging); set('ed-condition', d.condition);
   set('ed-variant', d.variant);
   document.getElementById('ed-locked-warn').classList.toggle('d-none', d.locked !== '1');
-  document.getElementById('ed-preview').textContent = d.name || '—';
+  // preview holds the SUGGESTION, not the stored name — _edRefresh() fills it in
+  _setSuggestion(null);
+  document.getElementById('ed-loss').classList.add('d-none');
   bootstrap.Modal.getOrCreateInstance(document.getElementById('editModal')).show();
   _edRefresh();
 }
@@ -358,24 +391,68 @@ function openEditor(btn) {
 let _edTimer = null;
 function _edRefresh() {
   clearTimeout(_edTimer);
+  // Invalidate SYNCHRONOUSLY, before the debounce. Doing it inside the timeout left a
+  // 250ms window where the button was live and showing a stale suggestion.
+  _setSuggestion(null);
   _edTimer = setTimeout(async () => {
-    const {data} = await _postJSON('/naming/product/preview-name', _edFields());
-    if (data.ok) document.getElementById('ed-preview').textContent = data.name || '—';
+    // Pin the request to (product, generation). A response that arrives after the
+    // operator switched product or changed a field again must be DISCARDED: the adopt
+    // button would otherwise turn a stale suggestion into a real rename of the wrong
+    // product, and it would pass the expected-name check legitimately (Codex, 2026-08-25).
+    const pid = _edPid, gen = ++_edGen;
+    const {data} = await _postJSON('/naming/product/preview-name',
+                                   {..._edFields(), pid});
+    if (pid !== _edPid || gen !== _edGen) return;      // stale response, drop it
+    // Only a response that is current AND ok may arm the button. A failed preview must
+    // leave the previous suggestion un-adoptable rather than re-enabling it.
+    if (!data.ok) return;
+    _setSuggestion(data.name || null);
+    // Say what pressing the button would drop, BEFORE it is pressed.
+    const warn = document.getElementById('ed-loss');
+    const cur = document.getElementById('ed-name').value;
+    const loss = (data.stored_name === cur) ? (data.loss || []) : [];
+    if (loss.length) {
+      warn.textContent = '⚠ กดใช้ชื่อที่ระบบแนะนำแล้วจะหาย: ' + loss.join(' ');
+      warn.classList.remove('d-none');
+    } else { warn.classList.add('d-none'); }
   }, 250);
+}
+
+function adoptSuggestedName() {
+  if (!_edSuggestion) return;          // validated state only, never the DOM text
+  document.getElementById('ed-name').value = _edSuggestion;
+  _edNameDirty = true;
+  document.getElementById('ed-loss').classList.add('d-none');
 }
 
 async function saveProduct() {
   if (!_edPid) return;
   const btn = document.getElementById('ed-save');
   btn.disabled = true;
-  const {data} = await _postJSON(`/naming/product/${_edPid}/save`, _edFields());
-  if (data.ok) { location.reload(); }
-  else { alert(data.error || 'เกิดข้อผิดพลาด'); btn.disabled = false; }
+  const body = _edFields();
+  if (_edNameDirty) {
+    body.product_name = document.getElementById('ed-name').value;
+    body.expected_product_name = _edNameAtOpen;   // refuse if it moved since page load
+  }
+  const {data} = await _postJSON(`/naming/product/${_edPid}/save`, body);
+  if (data.ok) { location.reload(); return; }
+  // A stale rename must NOT cost the operator their column edits: reconcile in place
+  // (adopt the server's current name as the new baseline) and let them press again.
+  if (data.stale) {
+    _edNameAtOpen = data.current_name || _edNameAtOpen;
+    alert(data.error || 'ข้อมูลถูกแก้จากที่อื่น');
+    btn.disabled = false;
+    return;
+  }
+  alert(data.error || 'เกิดข้อผิดพลาด');
+  btn.disabled = false;
 }
 
 // Live-preview wiring — only on the workbench tab (editor fields exist there).
 if (document.getElementById('ed-subcat')) {
   _edIds.forEach(id => document.getElementById(id).addEventListener('input', _edRefresh));
+  document.getElementById('ed-name')
+          .addEventListener('input', () => { _edNameDirty = true; });
 }
 </script>
 {% endblock %}

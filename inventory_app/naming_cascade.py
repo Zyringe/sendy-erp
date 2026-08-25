@@ -20,7 +20,9 @@ they unit-test without the Flask app.
 """
 from __future__ import annotations
 
+import difflib
 import sqlite3
+import unicodedata
 
 import db_backup
 import name_builder
@@ -172,6 +174,7 @@ def apply(db_path, kind, key, target, expected_count, *,
     """
     if backup_dir is None:
         backup_dir = db_backup.default_backup_dir(db_path)
+
     info, err = db_backup.safe_create_backup(reason, db_path=db_path,
                                              backup_dir=backup_dir)
     if err:
@@ -240,6 +243,79 @@ _EDITABLE_TEXT = ("series", "model", "size", "color_code", "packaging_th",
                   "condition", "pack_variant", "sub_category")
 
 
+# ZERO WIDTH JOINER / NON-JOINER. Explicitly, NOT the whole Cf category: RLM/LRM and
+# SOFT HYPHEN really are formatting, but a dropped ZWJ/ZWNJ changes shaping.
+_ZW = ("\u200d", "\u200c")
+
+
+def _norm_name(s):
+    """NFC, `_` -> space, collapse runs of whitespace.
+
+    `sub_category` legitimately stores `แผ่นตัดเหล็กบาง_Super_Thin` while the stored name
+    spells it with spaces; 137 active products differ ONLY that way, losing nothing.
+
+    NFC matters now that category M counts as content: without it, two names that are
+    canonically EQUIVALENT but order their combining marks differently compare unequal
+    by position, SequenceMatcher reports a mark deleted, and the operator is refused —
+    then pushed toward the DESTRUCTIVE override to save something that was never going
+    to lose anything (Codex, 2026-08-24). Measured on the prod snapshot, NFC changes
+    0 of 2,044 stored names, so it is pure insurance for imported text.
+    """
+    return " ".join(
+        unicodedata.normalize("NFC", (s or "")).replace("_", " ").split())
+
+
+def _loss_spans(old_name, new_name):
+    """Indices of `_norm_name(old_name)` whose characters `new_name` does not carry.
+
+    POSITIONS, not fragments. Two loss sets must be comparable across different edits,
+    and SequenceMatcher's fragment BOUNDARIES move when the candidate changes: with an
+    orphan `TAYITA`, the pre-edit rebuild reports the fragment `TAYITA` while a
+    candidate that preserved only `TAYI` reports `TA`. Comparing those two strings for
+    equality finds no overlap and lets the save through, destroying the leftover — the
+    exact bypass this function exists to close (Codex, 2026-08-24). Character positions
+    intersect correctly no matter where the boundaries fall.
+    """
+    a, b = _norm_name(old_name), _norm_name(new_name)
+    out = set()
+    for tag, i1, i2, _j1, _j2 in difflib.SequenceMatcher(
+            None, a, b, autojunk=False).get_opcodes():
+        if tag in ("delete", "replace"):
+            out.update(range(i1, i2))
+    return out
+
+
+def _spans_to_fragments(old_name, spans):
+    """Contiguous runs of `spans` rendered as readable text, keeping only runs that
+    carry a letter or digit. A hand-picked punctuation allowlist missed '#', ':', '+',
+    quotes and Thai punctuation, so formatting-only round-trips were refused for no
+    reason."""
+    a = _norm_name(old_name)
+    frags, run = [], []
+    for i in sorted(spans):
+        if run and i == run[-1] + 1:
+            run.append(i)
+        else:
+            if run:
+                frags.append("".join(a[k] for k in run))
+            run = [i]
+    if run:
+        frags.append("".join(a[k] for k in run))
+    # L, M and N. **M is not optional for Thai**: สระ and วรรณยุกต์ (ิ ่ ้ ็ ...) are
+    # combining marks, category Mn — dropping one changes the word, but an L/N-only
+    # test reads it as punctuation and reports "nothing lost". `กิ` -> `ก` produced a
+    # loss span and an EMPTY fragment list, so both the probe and the authoritative
+    # check waved the save through (Codex, 2026-08-24).
+    return [f.strip() for f in frags
+            if any(unicodedata.category(ch)[0] in ("L", "M", "N") or ch in _ZW
+                   for ch in f)]
+
+
+def _name_loss(old_name, new_name):
+    """Readable fragments of `old_name` that `new_name` drops."""
+    return _spans_to_fragments(old_name, _loss_spans(old_name, new_name))
+
+
 def _clean_updates(fields):
     """Whitelist + normalize the editable structured columns from `fields`.
 
@@ -263,8 +339,36 @@ def _clean_updates(fields):
 
 
 def save_product(db_path, pid, fields, *, backup_dir=None,
-                 reason="master_naming_edit"):
-    """Update a product's structured naming columns and rebuild product_name.
+                 reason="master_naming_edit", rebuild_name=False,
+                 expected_product_name=None):
+    """Update a product's structured naming columns. **`product_name` is NOT rebuilt.**
+
+    ⚠ This function used to recompose product_name from the columns on EVERY save and
+    UPDATE it unconditionally. That is what destroyed hand-tuned names: measured on the
+    2026-08-24 prod snapshot, 342 of 1,994 active products carry text no column holds,
+    so saving any unrelated field silently dropped it.
+
+    The stored name is now the source of truth, which is what the rest of the system
+    already assumed. `naming_cascade.apply()` — the bulk dictionary cascade in this very
+    module — has always refused to rebuild ("~42% of decomposed names diverge from
+    build()"), and the audit log shows all 2,594 recorded name changes were direct
+    writes, none of them accompanied by a naming-column edit: the naming standard has
+    been enforced by scripts, never by this rebuild. `save_product` was the odd one out.
+
+    Two ways the name can still change, both explicit:
+      * `fields["product_name"]` — the operator typed it, or adopted the workbench's
+        suggested name by pressing the button (which shows what adopting would drop).
+      * `rebuild_name=True` — recompose from the columns. Only
+        `scripts/hammer_bundle_datafix.py` asks for this, and it asserts the exact
+        name it expects afterwards.
+
+    `expected_product_name` is optimistic concurrency for the rename: the workbench
+    seeds its name box when the page LOADS, and the cascade and the mass-rename scripts
+    write names continuously (223 changes in July, 42 in August). Without the check, a
+    page left open and then saved would quietly restore an obsolete name over a newer
+    one — the same undetectable loss this redesign exists to remove, arriving through a
+    different door (Codex, 2026-08-25). Mismatch raises `CascadeConflict`, matching what
+    `apply()` already does when its affected set moves between preview and apply.
 
     ⚠ **sku_code is deliberately NOT regenerated here** (issue #383). It used to
     be, lock-aware. The two fields are different kinds of thing:
@@ -322,9 +426,31 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
             conn.execute(f"UPDATE products SET {set_clause} WHERE id=?",
                          list(updates.values()) + [pid])
 
-        new_name = name_builder.rebuild_product_name(conn, pid)
-        conn.execute("UPDATE products SET product_name=? WHERE id=?",
-                     (new_name, pid))
+        # The name moves only when someone says so. `_clean_updates` still ignores
+        # product_name (it is not a spec column), so it is read straight from `fields`.
+        typed = fields.get("product_name")
+        typed = typed.strip() if isinstance(typed, str) else None
+        if (expected_product_name is not None
+                and typed and typed != old_name
+                and expected_product_name != old_name):
+            conn.execute("ROLLBACK")
+            err = CascadeConflict(
+                f"ชื่อสินค้าถูกแก้จากที่อื่นระหว่างที่เปิดหน้านี้ค้างไว้ "
+                f"(ตอนเปิด: {expected_product_name!r} · ตอนนี้: {old_name!r}) "
+                f"— ตรวจแล้วกดบันทึกอีกครั้ง")
+            # carried so the client can reconcile IN PLACE instead of reloading and
+            # throwing away the operator's column edits (Codex, 2026-08-25)
+            err.current_name = old_name
+            raise err
+        if rebuild_name:
+            new_name = name_builder.rebuild_product_name(conn, pid)
+        elif typed:
+            new_name = typed
+        else:
+            new_name = old_name
+        if new_name != old_name:
+            conn.execute("UPDATE products SET product_name=? WHERE id=?",
+                         (new_name, pid))
 
         problems = []
         # Structural, not merely "we don't call the generator any more": if any
