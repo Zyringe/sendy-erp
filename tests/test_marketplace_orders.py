@@ -6,6 +6,8 @@ fine, buyer fields are fake.
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')  # don't init the live DB when importing app
 
+import io
+
 import pandas as pd
 import pytest
 
@@ -219,7 +221,18 @@ def test_importer_resolves_and_flags_unmapped(tmp_db_conn):
          'unit_price': 5.0, 'item_subtotal': 5.0},
     ])
     stats = models.import_marketplace_orders(conn, [order], 'test.xlsx')
-    assert stats == {'orders': 1, 'items': 2, 'unmapped': 1, 'lines_resolved': 1}
+    # Exact-dict equality retired here: import_marketplace_orders now also
+    # returns the order-driven-deduction diff engine's counters (deducted/
+    # credited/skipped_lines/gated_lines — projects/order-driven-platform-
+    # deduction/plan.md, Task 1.3), which this test doesn't control (they
+    # depend on the live-DB-clone listing's real stock_as_of vs the fixture's
+    # fixed order_date). Assert only the mapping/resolution counts this test
+    # is actually about; the diff engine itself is covered exhaustively in
+    # tests/test_order_driven_deduction.py.
+    assert stats['orders'] == 1
+    assert stats['items'] == 2
+    assert stats['unmapped'] == 1
+    assert stats['lines_resolved'] == 1
 
     # header landed
     h = conn.execute("SELECT id FROM marketplace_orders WHERE order_sn='TEST-ORD-1'").fetchone()
@@ -336,3 +349,65 @@ def test_staff_allowed_to_import_orders(tmp_db):
     assert loc.endswith('/marketplace'), (
         f"staff should reach the import route (→ /marketplace), got {loc!r}"
     )
+
+
+# --- Task 3.3: flash surfaces skipped deduction lines ---
+
+def _skipped_lines_note():
+    from blueprints.marketplace import _skipped_lines_note as fn
+    return fn
+
+
+def test_skipped_lines_note_none_when_nothing_skipped():
+    """CONTROL: skipped_lines == 0 must produce no note at all -- the flash
+    stays silent, not an empty '· ข้ามการหักสต็อก 0 บรรทัด'."""
+    note = _skipped_lines_note()({'skipped_lines': 0, 'skipped_order_sns': []})
+    assert note is None
+
+
+def test_skipped_lines_note_lists_order_sns():
+    note = _skipped_lines_note()(
+        {'skipped_lines': 2, 'skipped_order_sns': ['ORD-A', 'ORD-B']})
+    assert 'ข้ามการหักสต็อก 2 บรรทัด (หา listing ไม่พบ)' in note
+    assert 'ORD-A' in note and 'ORD-B' in note
+
+
+def test_skipped_lines_note_caps_order_sns_at_five():
+    sns = [f'ORD-{i}' for i in range(7)]
+    note = _skipped_lines_note()({'skipped_lines': 7, 'skipped_order_sns': sns})
+    for s in sns[:5]:
+        assert s in note
+    for s in sns[5:]:
+        assert s not in note
+    assert 'และอีก 2 ออเดอร์' in note
+
+
+def _shopee_order_xlsx(order_sn, item_name='สินค้าไม่ผูก'):
+    """A real Shopee order export (every column parse_shopee_orders needs,
+    via the module's own _shopee_df helper) whose one line matches no
+    platform_skus row -- resolves to neither a product NOR a listing, so it
+    lands as both unmapped and a skipped deduction line."""
+    df = _shopee_df([{
+        _SP.ORDER: order_sn, _SP.STATUS: 'ที่ต้องจัดส่ง',
+        _SP.ORDER_DATE: '2026-08-20 09:00', _SP.PAID_TIME: '2026-08-20 09:05',
+        _SP.ITEM_NAME: item_name, _SP.VAR_NAME: '',
+        _SP.SELL_PRICE: '150.00', _SP.QTY: '1', _SP.NET_SELL: '150.00',
+        _SP.COMMISSION: '0.00', _SP.TXN_FEE: '0.00', _SP.SVC_FEE: '0.00',
+        _SP.TOTAL: '150.00', _SP.RECIPIENT: 'ผู้รับทดสอบ', _SP.PHONE: '0800000000',
+        _SP.ADDR: '99/9', _SP.DISTRICT: 'x', _SP.PROVINCE: 'x', _SP.ZIP: '10000',
+    }])
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    buf.seek(0)
+    return buf
+
+
+def test_import_flash_surfaces_skipped_lines_and_order_sn(mp_client):
+    order_sn = 'FLASHSKIPTEST01'
+    resp = mp_client.post(
+        '/marketplace/import',
+        data={'order_file': (_shopee_order_xlsx(order_sn), 'orders.xlsx')},
+        content_type='multipart/form-data', follow_redirects=True)
+    html = resp.data.decode('utf-8')
+    assert 'ข้ามการหักสต็อก 1 บรรทัด (หา listing ไม่พบ)' in html
+    assert order_sn in html

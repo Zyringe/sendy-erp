@@ -473,6 +473,47 @@ def test_freshness_platform_with_no_data_returns_none(empty_db_conn):
     assert fresh['tiktok']['sales_through'] is None
 
 
+# ── get_marketplace_freshness: last_order_import (Task 3.2) ──────────────────
+
+def test_freshness_last_order_import_and_days_old(empty_db_conn):
+    c = empty_db_conn
+    c.execute(
+        "INSERT INTO marketplace_orders (platform, order_sn, last_synced_at) "
+        "VALUES ('shopee', 'ORD-1', datetime('now','localtime','-3 days'))")
+    c.commit()
+    fresh = models.get_marketplace_freshness()
+    assert fresh['shopee']['last_order_import'] is not None
+    assert fresh['shopee']['order_days_old'] == 3
+
+
+def test_freshness_last_order_import_none_when_marketplace_orders_empty(empty_db_conn):
+    """New-install case: marketplace_orders carries zero rows -- must not
+    crash, and every platform (incl. tiktok, which structurally can never
+    have order rows -- CHECK excludes it) reads last_order_import/
+    order_days_old as None."""
+    fresh = models.get_marketplace_freshness()
+    for platform in ('shopee', 'lazada', 'tiktok'):
+        assert fresh[platform]['last_order_import'] is None
+        assert fresh[platform]['order_days_old'] is None
+
+
+def test_freshness_tiktok_last_order_import_always_none(empty_db_conn):
+    """D9: TikTok orders don't exist in the ERP (CHECK excludes the
+    platform) -- even with shopee/lazada order rows present, tiktok's
+    last_order_import must stay None, never accidentally inherit a value."""
+    c = empty_db_conn
+    c.execute(
+        "INSERT INTO marketplace_orders (platform, order_sn, last_synced_at) "
+        "VALUES ('shopee', 'ORD-1', datetime('now','localtime'))")
+    c.execute(
+        "INSERT INTO marketplace_orders (platform, order_sn, last_synced_at) "
+        "VALUES ('lazada', 'ORD-2', datetime('now','localtime'))")
+    c.commit()
+    fresh = models.get_marketplace_freshness()
+    assert fresh['tiktok']['last_order_import'] is None
+    assert fresh['tiktok']['order_days_old'] is None
+
+
 # ── get_unmapped_counts / get_unmapped_rows ───────────────────────────────────
 
 def test_unmapped_counts_platform_skus_and_listings(empty_db_conn):

@@ -13,6 +13,7 @@ mid-body position (verbatim), directly above the `_FEE_LABELS` constant it
 was already adjacent to in the monolith.
 """
 import json
+import re
 
 from database import get_connection
 import marketplace_match
@@ -53,12 +54,220 @@ def resolve_marketplace_product_id(conn, platform, item):
     return None
 
 
+def resolve_line_listing(conn, platform, item):
+    """Resolve one parsed order line -> platform_skus row (the LISTING), or None.
+
+    Same 3-step fallback as resolve_marketplace_product_id but WITHOUT the
+    internal_product_id requirement: the mirror is listing-grain, an unmapped
+    listing can still be deducted. Returns the row (id, stock, stock_as_of,
+    imported_at) — imported_at is the diff engine's baseline-gate fallback
+    for a listing whose stock_as_of is still NULL.
+    """
+    # variation_id is UNIQUE(platform, variation_id) → at most one row. The
+    # seller_sku and name steps are NOT unique (a live Lazada duplicate exists:
+    # seller_sku '9x18" (1/2 กก.)' matches two different products — Codex,
+    # 2026-08-25, measured on the dev DB). The read-only resolver tolerates
+    # that; this one has WRITE power over stock, so an ambiguous match is
+    # treated like no match: skip + count (D6's philosophy, same as
+    # resolve_line_ratio's 'ambiguous'). Stub rows (variation_id NULL, stock
+    # NULL) are excluded from candidacy outright — a stub winning would make
+    # the deduction a silent no-op.
+    q = ("SELECT id, stock, stock_as_of, imported_at FROM platform_skus "
+         "WHERE platform = ? AND is_ignored = 0 AND NOT (variation_id IS NULL AND stock IS NULL) "
+         "AND {} LIMIT 2")
+    vid = item.get('variation_id')
+    if vid:
+        rows = conn.execute(q.format("variation_id = ?"), (platform, vid)).fetchall()
+        if rows:
+            return rows[0]                      # UNIQUE → len is 1
+    ssku = item.get('seller_sku')
+    if ssku:
+        rows = conn.execute(q.format("seller_sku = ?"), (platform, ssku)).fetchall()
+        if len(rows) == 1:
+            return rows[0]
+        if len(rows) > 1:
+            return None                         # ambiguous — do not guess with write power
+    name = item.get('item_name')
+    if name:
+        rows = conn.execute(
+            q.format("product_name = ? AND IFNULL(variation_name,'') = ?"),
+            (platform, name, item.get('variation_name') or '')).fetchall()
+        if len(rows) == 1:
+            return rows[0]
+    return None
+
+
+# Statuses on which Shopee/Lazada have completed a cancel/return and restocked
+# the item themselves (Put, 2026-08-25). Scrapped/lost packages never re-enter
+# sellable stock; 'In Transit: Returning to seller' credits later, when the
+# status flips to a completed one. Unknown statuses = active (deduct): errs
+# toward a too-low estimate (false-red), never toward oversell.
+RESTOCK_STATUSES = {'ยกเลิกแล้ว', 'canceled', 'returned', 'Package Returned'}
+
+_ORDER_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}')
+
+
+def _normalize_order_date(order_date):
+    """'YYYY-MM-DD HH:MM' (Shopee/Lazada, from parse_orders) -> seconds-padded
+    'YYYY-MM-DD HH:MM:SS' for ISO string comparison against stock_as_of /
+    imported_at. Anything that doesn't even look like a date (missing,
+    malformed — Lazada's _iso_dt returns the raw unparsed string on
+    ValueError) -> None, so the baseline gate treats it as unparseable
+    rather than comparing garbage (D11)."""
+    if not order_date or not _ORDER_DATE_RE.match(order_date):
+        return None
+    if len(order_date) == 16:                    # 'YYYY-MM-DD HH:MM'
+        return order_date + ':00'
+    return order_date
+
+
+def _apply_order_stock_effect(conn, platform, order_id, status, order_date, items):
+    """Diff-based mirror maintenance for ONE order. Idempotent by construction.
+
+    wanted[listing] = sum of line qty (listing units, D10) for resolvable lines
+                      whose order_date > listing.stock_as_of (D3),
+                      or {} when status is in RESTOCK_STATUSES (D4).
+    stored[listing] = signed units already recorded for this order.
+    Applies wanted - stored per listing: downward clamps at MAX(0, ...) and
+    records the ACTUALLY applied amount; upward (credit) is unclamped, mirroring
+    the platform's own restock. NULL-stock listings are untouched and record
+    nothing (mig-172 rule). Provenance rows are DELETE+INSERT inside the
+    caller's transaction — a deliberate departure from the walk's bare INSERT:
+    here a re-import legitimately revisits the same key, and idempotency is
+    asserted by the tests, not by a PK abort.
+    Returns {'deducted': n, 'credited': n, 'skipped_lines': n, 'gated_lines': n}.
+    """
+    result = {'deducted': 0, 'credited': 0, 'skipped_lines': 0, 'gated_lines': 0}
+
+    stored = {r['platform_sku_id']: r['units'] for r in conn.execute(
+        "SELECT platform_sku_id, units FROM platform_stock_deductions "
+        "WHERE source_table='marketplace_orders' AND source_id=?",
+        (order_id,)).fetchall()}
+
+    wanted = {}
+    if status not in RESTOCK_STATUSES:
+        order_date_norm = _normalize_order_date(order_date)
+        for it in items:
+            qty = it.get('qty')
+            if qty is None:
+                result['skipped_lines'] += 1
+                continue
+            qty_int = int(round(qty))
+            if abs(qty - qty_int) > 1e-6:
+                # Marketplaces sell whole units; a fractional qty is a parse
+                # bug — do not silently floor it into the stock ledger.
+                result['skipped_lines'] += 1
+                continue
+            listing = resolve_line_listing(conn, platform, it)
+            if listing is None:
+                result['skipped_lines'] += 1
+                continue
+            baseline = (listing['stock_as_of'] if listing['stock_as_of'] is not None
+                        else listing['imported_at'])
+            # baseline is None only if imported_at is ALSO NULL (schema keeps
+            # imported_at NOT NULL, so this is the "no figure at all" case,
+            # not the common one) -> gate open. Otherwise a missing/malformed
+            # order_date cannot be compared -> gate CLOSED (D11): one missed
+            # deduction, corrected by the next snapshot, beats an unbounded
+            # re-deduction on every re-import after every snapshot.
+            if baseline is not None and (order_date_norm is None
+                                          or order_date_norm <= baseline):
+                result['gated_lines'] += 1
+                continue
+            wanted[listing['id']] = wanted.get(listing['id'], 0) + qty_int
+
+    for lid in set(wanted) | set(stored):
+        w = wanted.get(lid, 0)
+        s = stored.get(lid, 0)
+        delta = w - s
+        if delta == 0:
+            continue
+
+        stock_row = conn.execute(
+            "SELECT stock FROM platform_skus WHERE id=?", (lid,)).fetchone()
+        stock = stock_row['stock'] if stock_row else None
+
+        if delta > 0:
+            # A listing whose stock is NULL is a listing we have no figure
+            # for: MAX(0, NULL - n) is NULL (SQLite's scalar MAX/min return
+            # NULL if any argument is NULL), so the write below is a no-op —
+            # deliberately NOT COALESCEd (mig-172 rule).
+            applied = 0 if stock is None else min(delta, max(stock, 0))
+            conn.execute(
+                "UPDATE platform_skus SET stock = MAX(0, stock - ?) WHERE id=?",
+                (delta, lid))
+            new_units = s + applied
+            if applied:
+                result['deducted'] += applied
+        else:
+            give_back = -delta
+            conn.execute(
+                "UPDATE platform_skus SET stock = stock + ? WHERE id=?",
+                (give_back, lid))
+            new_units = s - give_back
+            result['credited'] += give_back
+
+        conn.execute(
+            "DELETE FROM platform_stock_deductions "
+            "WHERE source_table='marketplace_orders' AND source_id=? AND platform_sku_id=?",
+            (order_id, lid))
+        if new_units != 0:
+            conn.execute(
+                "INSERT INTO platform_stock_deductions "
+                "(source_table, source_id, platform_sku_id, units) "
+                "VALUES ('marketplace_orders', ?, ?, ?)",
+                (order_id, lid, new_units))
+
+    return result
+
+
+def _order_header_values(o, source_file):
+    """Value tuple for the marketplace_orders header upsert. Split out of
+    the upsert call so the concurrency test has a seam to intercept strictly
+    BEFORE the first write of import_marketplace_orders — a monkeypatch on
+    the conn.execute() call itself would fire only after the statement runs
+    (erp-engineering-discipline.md, concurrency-test rule)."""
+    return (o['platform'], o['order_sn'], o.get('status'), o.get('buyer_name'),
+            o.get('buyer_phone'), o.get('ship_address'), o.get('order_date'),
+            o.get('paid_date'), o.get('item_total'), o.get('marketplace_fee'),
+            o.get('payout'), o.get('currency', 'THB'), source_file,
+            json.dumps(o, ensure_ascii=False))
+
+
 def import_marketplace_orders(conn, orders, source_file=None):
     """Upsert parsed marketplace orders (from parse_orders.py) into
-    marketplace_orders / marketplace_order_items. Idempotent: re-importing the
-    same order updates the header and rebuilds its lines (handles edits/removals).
-    Returns stats dict. Caller owns the connection (commits here)."""
-    stats = {'orders': 0, 'items': 0, 'unmapped': 0, 'lines_resolved': 0}
+    marketplace_orders / marketplace_order_items, then maintain each
+    resolved listing's platform_skus.stock mirror via the diff engine
+    (_apply_order_stock_effect). Idempotent: re-importing the same order
+    updates the header, rebuilds its lines (handles edits/removals), and
+    re-diffs the stock effect against what was already recorded for it.
+
+    ONE `BEGIN IMMEDIATE` transaction spans the header upsert through every
+    stock write, held to the single commit at the end: the diff engine reads
+    platform_stock_deductions provenance and platform_skus.stock under the
+    same lock that writes them (check-then-write rule,
+    .claude/rules/erp-engineering-discipline.md — gunicorn -w 2 makes the
+    interleaving worker real). Returns stats dict. Caller owns the
+    connection (commits here).
+
+    `skipped_order_sns` (Task 3.3) lists every order_sn that had >=1 skipped
+    line (no listing match), once each regardless of how many lines it
+    skipped — the flash surfaces these so Put can chase the mapping.
+
+    Caller contract: `conn` must hold NO open transaction when this is
+    called — the leading `BEGIN IMMEDIATE` raises "cannot start a
+    transaction within a transaction" otherwise. Both current callers are
+    clean: `/marketplace/import` (blueprints/marketplace.py) opens a fresh
+    connection just for this call. `/marketplace/upload`'s multi-file loop
+    reuses one connection across files, but `_KIND_ORDER` sorts 'order'
+    files first, and every iteration ends the connection's transaction one
+    way or another before the next starts — success via this function's own
+    `conn.commit()`, failure via the route's `except` handler, which calls
+    `_log_import()` (itself an INSERT + `conn.commit()`) before moving on."""
+    stats = {'orders': 0, 'items': 0, 'unmapped': 0, 'lines_resolved': 0,
+             'deducted': 0, 'credited': 0, 'skipped_lines': 0, 'gated_lines': 0,
+             'skipped_order_sns': []}
+    conn.execute("BEGIN IMMEDIATE")
     for o in orders:
         conn.execute(
             """INSERT INTO marketplace_orders
@@ -74,11 +283,7 @@ def import_marketplace_orders(conn, orders, source_file=None):
                    payout=excluded.payout, currency=excluded.currency,
                    source_file=excluded.source_file, raw_json=excluded.raw_json,
                    last_synced_at=datetime('now','localtime')""",
-            (o['platform'], o['order_sn'], o.get('status'), o.get('buyer_name'),
-             o.get('buyer_phone'), o.get('ship_address'), o.get('order_date'),
-             o.get('paid_date'), o.get('item_total'), o.get('marketplace_fee'),
-             o.get('payout'), o.get('currency', 'THB'), source_file,
-             json.dumps(o, ensure_ascii=False)))
+            _order_header_values(o, source_file))
 
         oid = conn.execute(
             "SELECT id FROM marketplace_orders WHERE platform=? AND order_sn=?",
@@ -86,7 +291,8 @@ def import_marketplace_orders(conn, orders, source_file=None):
 
         # Rebuild this order's lines so re-import reflects the latest export.
         conn.execute("DELETE FROM marketplace_order_items WHERE order_id=?", (oid,))
-        for it in o.get('items', []):
+        items = o.get('items', [])
+        for it in items:
             pid = resolve_marketplace_product_id(conn, o['platform'], it)
             if pid is None:
                 stats['unmapped'] += 1
@@ -104,8 +310,103 @@ def import_marketplace_orders(conn, orders, source_file=None):
             stats['items'] += 1
         stats['orders'] += 1
 
+        effect = _apply_order_stock_effect(
+            conn, o['platform'], oid, o.get('status'), o.get('order_date'), items)
+        stats['deducted'] += effect['deducted']
+        stats['credited'] += effect['credited']
+        stats['skipped_lines'] += effect['skipped_lines']
+        stats['gated_lines'] += effect['gated_lines']
+        if effect['skipped_lines']:
+            stats['skipped_order_sns'].append(o['order_sn'])
+
     conn.commit()
     return stats
+
+
+# Order platforms this ERP tracks (marketplace_orders.platform CHECK). TikTok
+# excluded (D9): no TikTok orders exist in the ERP, so a staleness warning
+# about a TikTok order-import gap would be meaningless.
+_ORDER_PLATFORMS = ('shopee', 'lazada')
+
+# D8: weekly cadence (Put's chosen operating rhythm) + weekend/holiday slack.
+# The ONLY freshness rule for order imports -- do not invent a second one.
+ORDER_STALENESS_DAYS = 10
+
+
+def get_last_order_import_dates(conn):
+    """{platform: MAX(last_synced_at)} for shopee/lazada platforms that have
+    at least one imported order (platforms with zero orders are absent from
+    the dict, not mapped to None -- callers use .get()).
+
+    The ONE query for "when did we last import an order file" -- shared by
+    get_order_staleness_alerts (below) and
+    models.ecommerce_overview.get_marketplace_freshness (the /ecommerce
+    freshness pill). Do not add a second copy of this query (D8's "do not
+    invent a second freshness rule" applies to reads of the signal too, not
+    just the staleness threshold)."""
+    return {r['platform']: r['last'] for r in conn.execute(
+        "SELECT platform, MAX(last_synced_at) AS last FROM marketplace_orders "
+        "WHERE platform IN ('shopee','lazada') GROUP BY platform").fetchall()}
+
+
+def get_order_staleness_alerts(conn=None):
+    """Per shopee/lazada platform with >=1 active (is_ignored=0) listing,
+    warn when the marketplace order file hasn't been imported in over
+    ORDER_STALENESS_DAYS days -- or has never been imported at all.
+
+    WHY: D5 accepts that a หน้าร้าน sale is excluded from `sold_since` the
+    moment it syncs, but the mirror (platform_skus.stock) only catches up
+    at the NEXT order import. If imports simply stop, `platform_est` keeps
+    reading high (the oversell direction) with nothing else to say so --
+    this is that containment (task 1.8, "the phase that creates the
+    exposure ships its own containment").
+
+    `last_synced_at` is written ONLY by this module's own order-header
+    upsert (see import_marketplace_orders) -- verified no settlement/payout
+    writer touches it (test_last_synced_at_not_bumped_by_settlement_or_
+    payout_writers), so a settlement/payout action can never fake order
+    freshness.
+
+    Computed fresh on every call, like `models.get_stock_alerts()` -- no
+    durable system_alerts row, because the condition self-clears the
+    moment a fresh order file lands; nothing here needs a human dismiss.
+
+    Returns a list of {'platform', 'days_old' (None if never imported),
+    'message'} for platforms currently stale, in _ORDER_PLATFORMS order.
+    """
+    own = conn is None
+    if own:
+        conn = get_connection()
+    try:
+        active = {r['platform'] for r in conn.execute(
+            "SELECT DISTINCT platform FROM platform_skus "
+            "WHERE platform IN ('shopee','lazada') AND is_ignored = 0").fetchall()}
+        last_by_platform = get_last_order_import_dates(conn)
+
+        alerts = []
+        for platform in _ORDER_PLATFORMS:
+            if platform not in active:
+                continue
+            last = last_by_platform.get(platform)
+            label = platform.capitalize()
+            if last is None:
+                alerts.append({
+                    'platform': platform, 'days_old': None,
+                    'message': f"ยังไม่เคย import ออเดอร์ {label} เลย — "
+                               "สต็อกหน้าร้านใน Sendy อาจสูงกว่าจริง"})
+                continue
+            days_old = conn.execute(
+                "SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER)",
+                (last,)).fetchone()[0]
+            if days_old > ORDER_STALENESS_DAYS:
+                alerts.append({
+                    'platform': platform, 'days_old': days_old,
+                    'message': f"ยังไม่ได้ import ออเดอร์ {label} มา {days_old} วัน — "
+                               "สต็อกหน้าร้านใน Sendy อาจสูงกว่าจริง"})
+        return alerts
+    finally:
+        if own:
+            conn.close()
 
 
 def upsert_marketplace_settlements(conn, settlements, source_file=None,

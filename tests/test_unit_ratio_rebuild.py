@@ -146,11 +146,15 @@ def test_ratio_edit_on_a_product_with_an_empty_ledger(empty_db_conn):
     assert orphans == 0
 
 
-def test_replay_does_not_re_deduct_platform_stock(empty_db_conn):
-    """Defect 4: deleting a ledger row does NOT put back the platform_skus.stock
-    that posting it took off, so a rebuild must not run that deduction again.
-    The deduction belongs to a row FIRST becoming synced (an import), not to a
-    replay. 327 products / 5,220 synced marketplace sales rows were exposed."""
+def test_ratio_edit_replay_leaves_platform_stock_alone(empty_db_conn):
+    """Formerly Defect 4 (deleting a ledger row does not put back the
+    platform_skus.stock that posting it took off, so a rebuild must not run
+    that deduction again). Inverted for the order-driven-platform-deduction
+    plan (task 1.4): BSN import -- first sync OR a ratio-edit replay alike --
+    no longer touches platform_skus.stock or platform_stock_deductions AT
+    ALL. Both the first save AND the replay must leave the mirror and its
+    provenance exactly where they started; only the warehouse ledger moves.
+    """
     _seed(empty_db_conn)
     empty_db_conn.execute(
         "INSERT INTO platform_skus (platform, product_name, variation_id,"
@@ -160,13 +164,17 @@ def test_replay_does_not_re_deduct_platform_stock(empty_db_conn):
     empty_db_conn.commit()
 
     models.save_unit_conversions([{'product_id': PID, 'bsn_unit': 'โหล', 'ratio': 12}])
-    # The import-time deduction is correct and must still happen.
-    assert _platform_stock(empty_db_conn) == 88
+    assert _platform_stock(empty_db_conn) == 100, 'first sync must not deduct'
+    assert _stock(empty_db_conn) == -12, 'CONTROL: the warehouse ledger still moves'
+    assert empty_db_conn.execute(
+        "SELECT COUNT(*) FROM platform_stock_deductions").fetchone()[0] == 0
 
     assert models.update_unit_conversion_ratio(PID, 'โหล', 12) == {'ok': True}
 
-    assert _platform_stock(empty_db_conn) == 88, 'replay re-deducted platform stock'
+    assert _platform_stock(empty_db_conn) == 100, 'replay must not deduct platform stock either'
     assert _stock(empty_db_conn) == -12
+    assert empty_db_conn.execute(
+        "SELECT COUNT(*) FROM platform_stock_deductions").fetchone()[0] == 0
 
 
 def test_a_newly_synced_row_cannot_compensate_for_a_lost_one(empty_db_conn):

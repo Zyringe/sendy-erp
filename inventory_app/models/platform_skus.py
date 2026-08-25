@@ -7,7 +7,8 @@ No behavior changes.
 brief).
 """
 
-from datetime import datetime
+import re
+from datetime import datetime, timedelta, timezone
 
 from database import get_connection
 
@@ -18,7 +19,79 @@ from ._shared import PLATFORMS, _clean_for_match
 _MKT_HISTORY_CAP = 500
 
 
-def import_platform_skus(platform, records):
+# ── Task 2.1: export timestamp parsed from the snapshot filename ───────────
+#
+# Real Seller Center filename shapes, verified 2026-08-25
+# (projects/order-driven-platform-deduction/task-2.1-brief.md):
+#   Shopee: mass_update_sales_info_74562936_20260825135939.xlsx
+#           -> the trailing 14 digits ARE 'YYYYMMDDHHMMSS'.
+#   Lazada: pricestock100522265export1787637561277_0825-13-59-21.xlsx
+#           -> a 13-digit epoch-ms token supplies the YEAR; the trailing
+#              dash suffix supplies month/day/time. The epoch token runs on
+#              UTC+8 — confirmed empirically: converting the real filename's
+#              own epoch at +8 reproduces its own dash-suffix time to the
+#              second (+7, Bangkok, is off by exactly one hour). Both must
+#              agree on month/day or the filename is unparseable (D11's
+#              conservative stance: a missed baseline advance self-heals at
+#              the next snapshot; a wrong one does not).
+#   TikTok: Tiktoksellercenter_batchedit_20260825_all_information_template.xlsx
+#           -> date only -> '00:00:00' (conservative: an earlier baseline
+#              gates LESS, never causes a missed deduction).
+_SHOPEE_TS_RE = re.compile(r'_(\d{14})\.xlsx$', re.IGNORECASE)
+_LAZADA_EPOCH_RE = re.compile(r'(?<!\d)(\d{13})(?!\d)')
+_LAZADA_SUFFIX_RE = re.compile(r'_(\d{2})(\d{2})-(\d{2})-(\d{2})-(\d{2})\.xlsx$', re.IGNORECASE)
+_TIKTOK_DATE_RE = re.compile(r'_(\d{8})_')
+_LAZADA_EPOCH_TZ = timezone(timedelta(hours=8))
+
+
+def _parse_export_timestamp(filename):
+    """Best-effort export timestamp from a Seller Center export's filename.
+
+    Returns 'YYYY-MM-DD HH:MM:SS' or None when the shape isn't recognised —
+    the caller falls back to datetime('now','localtime') (Phase-1 behavior).
+    A small pure function on purpose: no DB access, no side effects.
+    """
+    if not filename:
+        return None
+
+    m = _SHOPEE_TS_RE.search(filename)
+    if m:
+        try:
+            return datetime.strptime(
+                m.group(1), '%Y%m%d%H%M%S').strftime('%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            pass
+
+    m_suffix = _LAZADA_SUFFIX_RE.search(filename)
+    m_epoch = _LAZADA_EPOCH_RE.search(filename)
+    if m_suffix and m_epoch:
+        mm, dd, hh, mi, ss = m_suffix.groups()
+        try:
+            epoch_dt = datetime.fromtimestamp(
+                int(m_epoch.group(1)) / 1000, _LAZADA_EPOCH_TZ)
+        except (ValueError, OSError, OverflowError):
+            epoch_dt = None
+        if epoch_dt is not None and epoch_dt.strftime('%m%d') == mm + dd:
+            candidate = f'{epoch_dt.year:04d}-{mm}-{dd} {hh}:{mi}:{ss}'
+            try:
+                datetime.strptime(candidate, '%Y-%m-%d %H:%M:%S')
+                return candidate
+            except ValueError:
+                pass
+
+    m = _TIKTOK_DATE_RE.search(filename)
+    if m:
+        try:
+            d = datetime.strptime(m.group(1), '%Y%m%d')
+        except ValueError:
+            d = None
+        if d is not None:
+            return d.strftime('%Y-%m-%d') + ' 00:00:00'
+
+    return None
+
+
+def import_platform_skus(platform, records, source_filename=None):
     """Upsert platform SKU records keyed on (platform, variation_id).
 
     SAFE UPSERT CONTRACT (spec §3.1):
@@ -28,9 +101,22 @@ def import_platform_skus(platform, records):
       use COALESCE(excluded.col, col) so a partial import never nulls existing data.
     - price/stock/name/variation_name/raw_json overwrite normally.
 
+    `source_filename` (task 2.1): when it parses to an export timestamp
+    (`_parse_export_timestamp`), `stock_as_of` is stamped with THAT moment
+    instead of import wall-clock time — the platform's own snapshot is as
+    of the export, not as of whenever Sendy got around to importing it.
+    Unparseable/absent -> falls back to now(), same as Phase 1.
+    `imported_at` is DELIBERATELY untouched by this: it stays real import
+    time (ecommerce_overview reads it as "when Sendy last saw this
+    platform's file").
+
     Returns (count_upserted, propagated_count).
     """
     conn = get_connection()
+    export_ts = _parse_export_timestamp(source_filename)
+    if export_ts is None:
+        export_ts = conn.execute(
+            "SELECT datetime('now','localtime')").fetchone()[0]
     # NO DELETE — that is the whole point of this rewrite.
     count = 0
     for r in records:
@@ -39,8 +125,9 @@ def import_platform_skus(platform, records):
               (platform, variation_id, product_id_str, product_name, variation_name,
                parent_sku, seller_sku, price, special_price, stock, raw_json,
                weight_kg, length_cm, width_cm, height_cm, gtin,
-               special_price_start, special_price_end, variation_image_url)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               special_price_start, special_price_end, variation_image_url,
+               stock_as_of)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(platform, variation_id) DO UPDATE SET
               product_id_str      = excluded.product_id_str,
               product_name        = excluded.product_name,
@@ -59,6 +146,12 @@ def import_platform_skus(platform, records):
               special_price_start = COALESCE(excluded.special_price_start, special_price_start),
               special_price_end   = COALESCE(excluded.special_price_end, special_price_end),
               variation_image_url = COALESCE(excluded.variation_image_url, variation_image_url),
+              -- stock_as_of is the baseline the order-driven diff engine
+              -- gates on (D3): this file IS the platform's own stock figure
+              -- as of its export (task 2.1), so it overwrites PLAIN (not
+              -- COALESCE) like imported_at does, for every row the file
+              -- carries.
+              stock_as_of         = excluded.stock_as_of,
               imported_at         = datetime('now','localtime')
               -- internal_product_id and qty_per_sale are DELIBERATELY ABSENT from UPDATE SET
         """, (
@@ -73,13 +166,15 @@ def import_platform_skus(platform, records):
             r.get('gtin'),
             r.get('special_price_start'), r.get('special_price_end'),
             r.get('variation_image_url'),
+            export_ts,
         ))
         count += 1
     propagated = _propagate_listings_to_platform_skus(conn, platform)
     # The file just overwrote the stock figure of every listing it carried, so
-    # the deductions recorded against those are superseded — see the helper.
-    _invalidate_deduction_provenance(
-        conn, platform, [r.get('variation_id') for r in records])
+    # the deductions recorded against those are superseded (or re-applied
+    # onto the fresh figure, task 2.2) — see the helper.
+    _supersede_deduction_provenance(
+        conn, platform, [r.get('variation_id') for r in records], export_ts)
     conn.commit()
     conn.close()
     return count, propagated
@@ -200,15 +295,30 @@ _TIKTOK_SKU_UPSERT = """
       -- ecommerce_overview._snapshot_dates() reads MAX(imported_at) as "when
       -- this platform's stock was last true", so bumping it would make a stale
       -- number look like today's and collapse the sold_since window to zero.
+      -- stock_as_of (the order-driven diff engine's baseline, D3) follows
+      -- the exact same gate: it only moves when the file actually carried a
+      -- fresh stock figure, and (task 2.1) moves to the file's own EXPORT
+      -- timestamp rather than import wall-clock time when the filename
+      -- parses. Not present in the INSERT column list above — a genuinely
+      -- NEW row only reaches this INSERT when stock_present is True (the
+      -- ValueError guard earlier refuses one otherwise), and NULL there
+      -- already falls back to imported_at (itself "now" on a fresh row),
+      -- so the effective baseline is identical without a second CASE.
       stock       = CASE WHEN ? THEN excluded.stock ELSE stock END,
-      imported_at = CASE WHEN ? THEN datetime('now','localtime') ELSE imported_at END
+      imported_at = CASE WHEN ? THEN datetime('now','localtime') ELSE imported_at END,
+      stock_as_of = CASE WHEN ? THEN ? ELSE stock_as_of END
       -- internal_product_id and qty_per_sale are DELIBERATELY ABSENT, exactly
       -- as in import_platform_skus: they are the operator's work, not the file's.
 """
 
 
-def import_tiktok_snapshot(parsed):
+def import_tiktok_snapshot(parsed, source_filename=None):
     """Write one `parse_tiktok` result — both grains — in ONE transaction.
+
+    `source_filename` (task 2.1): same contract as `import_platform_skus` —
+    when it parses (`_parse_export_timestamp`), a stock-bearing export
+    stamps `stock_as_of` with the file's own export moment instead of
+    import wall-clock time. Unparseable/absent -> falls back to now().
 
     Returns ``(n_products, n_skus, absent)`` where `absent` lists the active
     TikTok rows already on record that this file did NOT contain. They are
@@ -221,6 +331,10 @@ def import_tiktok_snapshot(parsed):
     stock_present = 1 if parsed.get('stock_present') else 0
 
     conn = get_connection()
+    export_ts = _parse_export_timestamp(source_filename)
+    if export_ts is None:
+        export_ts = conn.execute(
+            "SELECT datetime('now','localtime')").fetchone()[0]
     conn.isolation_level = None          # manual transaction control
     try:
         conn.execute('PRAGMA busy_timeout=10000')
@@ -270,7 +384,7 @@ def import_tiktok_snapshot(parsed):
                 s.get('seller_sku'), s.get('price'), s.get('special_price'),
                 s.get('stock'), s.get('raw_json'), s.get('weight_kg'),
                 s.get('length_cm'), s.get('width_cm'), s.get('height_cm'),
-                stock_present, stock_present,
+                stock_present, stock_present, stock_present, export_ts,
             ))
 
         # Same supersession rule as the Shopee/Lazada path. TikTok cannot hold
@@ -280,8 +394,8 @@ def import_tiktok_snapshot(parsed):
         # stock_present because an export without the quantity column keeps the
         # stock already on record — nothing was superseded.
         if stock_present:
-            _invalidate_deduction_provenance(
-                conn, 'tiktok', [x['variation_id'] for x in skus])
+            _supersede_deduction_provenance(
+                conn, 'tiktok', [x['variation_id'] for x in skus], export_ts)
 
         # No row-count assertion here on purpose: every record either INSERTs
         # or UPDATEs (ON CONFLICT, no WHERE), so a short write is unreachable
@@ -301,45 +415,123 @@ def import_tiktok_snapshot(parsed):
     return len(products), len(skus), absent
 
 
-def _invalidate_deduction_provenance(conn, platform, variation_ids):
-    """Forget the recorded deductions for the listings a file just overwrote.
+def _supersede_deduction_provenance(conn, platform, variation_ids, export_ts):
+    """Reconcile the recorded deductions for the listings a file just
+    overwrote against that file's own EXPORT timestamp (task 2.2; renamed
+    from `_invalidate_deduction_provenance`, which only ever deleted — this
+    now also RE-APPLIES some rows, so a bare "invalidate" no longer
+    describes it).
 
     Call this whenever an authoritative stock file overwrites
-    platform_skus.stock. The file IS the platform's own number, so anything the
-    local deduction took off before it is already reflected in — or superseded
-    by — that value. Leaving the provenance behind lets a later reversal add
-    those units on TOP of the fresh figure and invent stock that the platform
-    does not have, which is the oversell direction (Codex, 2026-08-25):
-    100 → sale of 5 → 95 → file says 92 → remove the sale → 97, but the
-    platform holds 92.
+    platform_skus.stock, right after `stock_as_of` has been stamped to
+    `export_ts` for the same listings. Per provenance row found on a
+    listing the file carried:
+
+    - `source_table='sales_transactions'` (the retired BSN walk, D7) ->
+      always DELETE, exactly as before. Its event time is a business DATE
+      only, not precise enough to compare against an export TIMESTAMP or
+      to re-apply, and the walk that created these rows is retired — no
+      more of them are ever written.
+    - `source_table='marketplace_orders'` whose `order_date` is missing/
+      malformed, or <= `export_ts` -> DELETE (superseded): the file's own
+      number already reflects that order, or cannot be proven not to
+      (D11 — gate CLOSED on an unparseable date, one missed baseline
+      advance is cheap and self-heals at the next snapshot; treating it as
+      NOT superseded would re-apply on every future overwrite, unbounded).
+    - `source_table='marketplace_orders'` whose `order_date` is strictly
+      AFTER `export_ts` -> the file predates that order, so its effect is
+      NOT in the fresh figure. KEEP the row and RE-APPLY its signed
+      `units` onto the fresh `stock` the file just wrote:
+      `new_stock = MAX(0, stock - units)` (units negative = a completed-
+      return credit -> stock increases; same formula, no separate branch —
+      Codex, 2026-08-25). The row's `units` is updated to the amount
+      ACTUALLY applied (clamped), matching the diff engine's own
+      contract; if that clamps to 0 the row is deleted (CHECK units<>0).
+      A listing whose fresh `stock` is NULL (mig-172: NULL means no
+      figure, writes must no-op on it) cannot be re-applied against
+      anything -> superseded (deleted) rather than left stale.
+
+    Leaving a KEPT-but-not-superseded row behind untouched (the old,
+    Phase-1 behavior) would let it sit against a stock figure it was never
+    computed for; leaving it deleted (this function's own old behavior for
+    ALL rows) would silently lose a real, not-yet-reflected order deduction
+    the moment any snapshot file arrives — that is the oversell direction
+    this task exists to close.
 
     ⚠ Scoped to the variations the file actually CARRIED, not the whole
     platform. A Seller Center export can be category-filtered, and
-    import_platform_skus only upserts the rows it was given — a listing absent
-    from the file keeps the stock it already had, so its provenance is still
-    live and wiping it would make a later reversal silently restore nothing.
-    (That error runs the other way, toward a too-low estimate and a false 🔴,
-    but it is still wrong.)
+    import_platform_skus only upserts the rows it was given — a listing
+    absent from the file keeps the stock it already had, so its provenance
+    is still live and untouched here.
 
-    Consequence worth stating: a correction to a sale that was deducted BEFORE
-    the most recent file import reverses nothing, and that is correct — the
-    import already replaced the number that deduction was applied to.
-
-    Returns the number of provenance rows dropped.
+    Returns the number of provenance rows removed (deleted outright, or
+    re-applied down to a clamped 0).
     """
     ids = [v for v in variation_ids if v is not None]
     if not ids:
         return 0
-    dropped = 0
+    from .marketplace import _normalize_order_date
+
+    removed = 0
     for i in range(0, len(ids), 400):          # keep under SQLITE_MAX_VARIABLE_NUMBER
         chunk = ids[i:i + 400]
         ph = ','.join('?' * len(chunk))
-        cur = conn.execute(
-            "DELETE FROM platform_stock_deductions WHERE platform_sku_id IN"
-            f" (SELECT id FROM platform_skus WHERE platform = ? AND variation_id IN ({ph}))",
-            [platform] + chunk)
-        dropped += cur.rowcount
-    return dropped
+        rows = conn.execute(
+            "SELECT d.source_table, d.source_id, d.platform_sku_id, d.units, "
+            "       o.order_date "
+            "  FROM platform_stock_deductions d "
+            "  JOIN platform_skus s ON s.id = d.platform_sku_id "
+            "  LEFT JOIN marketplace_orders o "
+            "         ON d.source_table = 'marketplace_orders' AND o.id = d.source_id "
+            f" WHERE s.platform = ? AND s.variation_id IN ({ph})",
+            [platform] + chunk).fetchall()
+
+        for r in rows:
+            keep = False
+            if r['source_table'] == 'marketplace_orders':
+                order_date_norm = _normalize_order_date(r['order_date'])
+                keep = order_date_norm is not None and order_date_norm > export_ts
+
+            if not keep:
+                conn.execute(
+                    "DELETE FROM platform_stock_deductions "
+                    "WHERE source_table=? AND source_id=? AND platform_sku_id=?",
+                    (r['source_table'], r['source_id'], r['platform_sku_id']))
+                removed += 1
+                continue
+
+            stock_row = conn.execute(
+                "SELECT stock FROM platform_skus WHERE id=?",
+                (r['platform_sku_id'],)).fetchone()
+            before = stock_row['stock'] if stock_row else None
+            if before is None:
+                # No figure to re-apply against (mig-172: NULL stays a
+                # no-op, never COALESCEd) -- can't carry a real deduction
+                # forward onto nothing, so it is superseded, not stranded.
+                conn.execute(
+                    "DELETE FROM platform_stock_deductions "
+                    "WHERE source_table=? AND source_id=? AND platform_sku_id=?",
+                    (r['source_table'], r['source_id'], r['platform_sku_id']))
+                removed += 1
+                continue
+
+            new_stock = max(0, before - r['units'])
+            applied = before - new_stock
+            conn.execute(
+                "UPDATE platform_skus SET stock=? WHERE id=?",
+                (new_stock, r['platform_sku_id']))
+            if applied == 0:
+                conn.execute(
+                    "DELETE FROM platform_stock_deductions "
+                    "WHERE source_table=? AND source_id=? AND platform_sku_id=?",
+                    (r['source_table'], r['source_id'], r['platform_sku_id']))
+                removed += 1
+            elif applied != r['units']:
+                conn.execute(
+                    "UPDATE platform_stock_deductions SET units=? "
+                    "WHERE source_table=? AND source_id=? AND platform_sku_id=?",
+                    (applied, r['source_table'], r['source_id'], r['platform_sku_id']))
+    return removed
 
 
 def _propagate_listings_to_platform_skus(conn, platform):
@@ -562,16 +754,25 @@ def update_platform_sku(sku_id, price, special_price, stock, qty_per_sale):
     # reversing that stale record later adds units the operator's number already
     # accounts for and invents stock (Codex, 2026-08-25): 100 → sale takes 5 → 95
     # with +5 on record → operator types 92 → removing the sale hands back 5 → 97.
-    # Same failure _invalidate_deduction_provenance exists to stop for imports;
-    # this is the other door into the same column.
+    # Same failure _supersede_deduction_provenance exists to stop for imports;
+    # this is the other door into the same column. (This manual-edit door
+    # still deletes unconditionally, no re-apply — task 2.2 is scoped to
+    # the snapshot-import path only.)
     #
     # Only when the figure actually MOVED. The edit form resubmits every field,
     # so a price-only save carries the unchanged stock with it, and discarding
     # live provenance there would make a later reversal restore nothing.
+    #
+    # Same move for stock_as_of: a hand-typed figure is a baseline exactly
+    # like a file's is (D3) — leaving it behind would let a same-day order
+    # import re-deduct against a number the operator already accounted for.
     if before is not None and before['stock'] != stock:
         conn.execute(
             "DELETE FROM platform_stock_deductions WHERE platform_sku_id = ?",
             (sku_id,))
+        conn.execute(
+            "UPDATE platform_skus SET stock_as_of = datetime('now','localtime') "
+            "WHERE id = ?", (sku_id,))
     conn.commit()
     conn.close()
 

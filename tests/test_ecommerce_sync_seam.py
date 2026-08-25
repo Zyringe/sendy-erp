@@ -1,21 +1,33 @@
-"""The seam between the BSN stock sync and the /ecommerce estimate.
+"""The seam between the BSN stock sync, the /ecommerce estimate, and a
+marketplace ORDER import (order-driven-platform-deduction plan, Phase 1).
 
-Both subsystems deduct a marketplace sale, and neither knew about the other:
-`_sync_bsn_to_stock` decrements platform_skus.stock, while
-`_sold_since_by_pid` subtracts the same sale from file_units. One 100-unit
-Shopee sale used to make `est` fall by 200 -> false RED alerts.
+Historically `_sync_bsn_to_stock`'s walk decremented platform_skus.stock for
+a synced หน้าร้าน sale, so by the time `_sold_since_by_pid` excluded that same
+sale from sold_since, the mirror already carried it — one 100-unit Shopee
+sale, counted exactly once. That walk is retired (task 1.4): the sync now
+ONLY posts the warehouse ledger and marks the row synced; it never touches
+platform_skus.stock. `_sold_since_by_pid`'s exclusion is unchanged, so it
+still stops counting a synced sale — but nothing else counts it either,
+until a marketplace ORDER import runs the new diff engine
+(`_apply_order_stock_effect`) against it.
 
-Every existing test covers ONE side (tests/test_ecommerce_overview.py seeds
-platform_skus by hand and never runs the sync; tests/test_platform_deduct_
-rounding.py runs the sync and never reads the overview), which is exactly why
-the double count survived. These tests cross the boundary.
+This is D5's accepted gap, by design: between a BSN sync and the next order
+import, a synced sale is invisible to BOTH signals and `est` reads HIGH by
+that sale's amount (never toward oversell — the opposite of the old
+false-RED failure this file used to pin). The gap is bounded (self-heals at
+the next order import or platform snapshot) and Put accepted it as the price
+of option A (weekly order-file cadence). This test walks the seam through
+all three stages and is the one place the whole BSN sync -> overview ->
+order-import chain is exercised together.
 """
 import models
 from models.bsn_sync import PLATFORM_STOCK_DEDUCT_CUSTOMERS, _sync_bsn_to_stock
+from models.marketplace import import_marketplace_orders
 
 SNAP = '2026-07-01 00:00:00'
 SNAP_DAY = '2026-07-01'
 AFTER = '2026-07-05'
+ORDER_DATE = '2026-07-05 10:00'
 
 
 def _seed(conn, pid, *, stock, ps_stock, qty_per_sale=1, unit='ตัว'):
@@ -47,49 +59,76 @@ def _est(pid):
     return r['platforms']['shopee']['est']
 
 
-def test_one_sale_is_deducted_exactly_once_across_the_sync(empty_db_conn):
+def _order_for(pid, qty, *, order_sn='ORDER900', status='shipped'):
+    """A minimal parsed order (parse_orders.py shape) whose single line
+    resolves to pid's listing via variation_id, exactly as _seed wrote it."""
+    return {
+        'platform': 'shopee', 'order_sn': order_sn, 'status': status,
+        'order_date': ORDER_DATE,
+        'items': [{
+            'line_key': f'{order_sn}-1', 'seller_sku': None, 'variation_id': f'v{pid}',
+            'item_name': 'listing', 'variation_name': None,
+            'qty': qty, 'unit_price': 10.0, 'item_subtotal': qty * 10.0,
+        }],
+    }
+
+
+def test_the_bsn_sync_to_overview_to_order_import_seam(empty_db_conn):
+    """The seam, all three stages, one product:
+
+    (a) the BSN sync posts the warehouse OUT -- (b) and leaves
+    platform_skus.stock untouched -- (c) the sale stays EXCLUDED from
+    sold_since (unchanged behaviour, still correct) -- so (d) est reads HIGH
+    by the sale's own amount, the D5 gap, asserted explicitly, not merely
+    tolerated -- then (e) CONTROL: an order import for the SAME sale runs
+    the diff engine and est settles back to the expected post-sale figure.
+    """
     c = empty_db_conn
     _seed(c, 70, stock=500, ps_stock=500)
     c.commit()
-    assert _est(70) == 500
+    assert _est(70) == 500                        # CONTROL: baseline
 
     _sale(c, 70, qty=100)
     c.commit()
-    # before the sync: platform_skus untouched, so sold_since carries it
+    # Before the sync: unsynced, so sold_since still subtracts it directly.
     assert _est(70) == 400
 
     _sync_bsn_to_stock(c, 'sales_transactions', 'sales')
     c.commit()
-    # after the sync: platform_skus now carries it, sold_since must stand down.
-    # Still 400 — the same sale, counted once. Was 300 before the fix.
-    assert _est(70) == 400
 
+    # (a) the warehouse ledger moved.
+    warehouse_qty = c.execute(
+        "SELECT quantity FROM stock_levels WHERE product_id = 70"
+    ).fetchone()['quantity']
+    assert warehouse_qty == 400, 'the warehouse OUT must still post'
+
+    # (b) platform_skus.stock is untouched by the sync -- no walk left to move it.
     ps_stock = c.execute(
         "SELECT stock FROM platform_skus WHERE internal_product_id = 70"
     ).fetchone()['stock']
-    assert ps_stock == 400, "the sync should have moved the deduction into platform_skus"
+    assert ps_stock == 500, 'the sync must not touch platform_skus.stock'
 
+    # (c)+(d) the D5 gap, asserted explicitly: the sale is now synced (excluded
+    # from sold_since, unchanged behaviour) but nothing else has deducted it
+    # from the mirror yet, so est reads HIGH -- back up to the pre-sale figure,
+    # not the 400 a reader might expect. This is intended, not a bug: it heals
+    # at the next order import (below) or platform snapshot.
+    assert _est(70) == 500, (
+        'D5 gap: a synced-but-not-yet-order-imported sale must read est HIGH, '
+        'never toward oversell')
 
-def test_sync_does_not_flip_a_healthy_listing_to_red(empty_db_conn):
-    """The user-visible symptom: a listing that is open and adequately stocked
-    must not show as RED just because a sale was imported."""
-    c = empty_db_conn
-    _seed(c, 71, stock=200, ps_stock=100)
-    _sale(c, 71, qty=100, doc_no='IV901')
-    c.commit()
-    _sync_bsn_to_stock(c, 'sales_transactions', 'sales')
-    c.commit()
-    rows, _, _ = models.get_marketplace_overview()
-    r = next(x for x in rows if x['product_id'] == 71)
-    # 100 file units - 100 sold would floor to 0 -> RED. Correct answer is 0
-    # left on the platform only because the sync took it, not twice over.
-    assert r['platforms']['shopee']['sold_since'] == 0
-    assert r['platforms']['shopee']['est'] == 0
+    # (e) CONTROL: the order file arrives. The diff engine deducts the listing
+    # exactly once, closing the gap -- est settles to the true post-sale figure.
+    stats = import_marketplace_orders(c, [_order_for(70, 100)], source_file='test')
+    assert stats['deducted'] == 100, stats         # CONTROL: the diff engine really ran
+    assert _est(70) == 400, 'the order import must close the D5 gap'
 
 
 def test_customer_the_sync_never_deducts_for_is_still_adjusted(empty_db_conn):
     """หน้าร้านB books Shopee sales but is absent from the deduct map, so the
-    sync leaves platform_skus alone and sold_since must still do the work."""
+    sync leaves platform_skus alone and sold_since must still do the work.
+    Unaffected by the walk's retirement: the sync never touched this
+    customer's sales either way."""
     assert 'หน้าร้านB' not in PLATFORM_STOCK_DEDUCT_CUSTOMERS
     c = empty_db_conn
     _seed(c, 72, stock=500, ps_stock=500)

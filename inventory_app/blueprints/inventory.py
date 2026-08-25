@@ -27,8 +27,10 @@ bp_inventory = Blueprint('inventory', __name__)
 def alerts_view():
     alerts = models.get_stock_alerts()
     system_alerts = models.get_open_system_alerts()
+    order_staleness_alerts = models.get_order_staleness_alerts()
     return render_template('alerts.html', alerts=alerts,
-                           system_alerts=system_alerts)
+                           system_alerts=system_alerts,
+                           order_staleness_alerts=order_staleness_alerts)
 
 
 @bp_inventory.route('/alerts/<int:alert_id>/resolve', methods=['POST'])
