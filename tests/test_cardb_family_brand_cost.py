@@ -561,6 +561,28 @@ def test_effective_ratio_normalises_a_blank_unit():
     assert _effective_ratio(None, 'ตัว', 12) == 1.0
     assert _effective_ratio('  ', 'ตัว', 12) == 1.0
     assert _effective_ratio('ตัว', '', 12) == 1.0      # no BSN unit known
+    assert _effective_ratio(' โหล ', 'โหล', 12) == 1.0  # padded == same unit
+
+
+@pytest.mark.parametrize('given,stored', [
+    ('  ', 'ตัว'), ('', 'ตัว'), (None, 'ตัว'), (' โหล ', 'โหล'), ('ตัว', 'ตัว'),
+])
+def test_the_unit_that_is_COSTED_is_the_unit_that_is_STORED(empty_db, given, stored):
+    """The costing helper and the INSERT must agree by construction. They used
+    not to: `d.get('unit_type') or 'ตัว'` persisted '  ' verbatim (two spaces
+    are truthy) while `_effective_ratio` read it as 'ตัว' and dropped the
+    conversion divisor. Asserting the helper alone could never see that —
+    this asserts the PERSISTED value (round 4)."""
+    import models
+    from models.suggestions import _effective_ratio
+    pid = models.create_structured_product(
+        {'product_name': 'ของทดสอบหน่วย', 'unit_type': given}, 'manual')
+    c = _conn(empty_db)
+    got = c.execute("SELECT unit_type FROM products WHERE id=?", (pid,)).fetchone()[0]
+    c.close()
+    assert got == stored, f'stored {got!r}, expected {stored!r}'
+    # and the costing helper reaches the SAME verdict for that stored unit
+    assert _effective_ratio(given, stored, 12) == _effective_ratio(stored, stored, 12) == 1.0
 
 
 def test_an_unknown_staged_ratio_never_justifies_a_rewrite(empty_db):

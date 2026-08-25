@@ -1012,7 +1012,9 @@ document.addEventListener('change', e => {
 
 function refreshUnitConvVisibility() {
   // Show ratio row in Card B only when BSN unit ≠ Card B's unit_type
-  const baseUnit = (document.getElementById('sm-unit').value || 'ตัว').trim();
+  // trim FIRST, then default — `('  ' || 'ตัว').trim()` is '', which
+  // matches neither the BSN unit nor what the server will store
+  const baseUnit = (document.getElementById('sm-unit').value || '').trim() || 'ตัว';
   document.getElementById('sm-base-unit-display').textContent = baseUnit;
   const row = document.getElementById('sm-bunit-row');
   if (_smBsnUnit && _smBsnUnit !== baseUnit) row.style.display = '';
@@ -1031,7 +1033,9 @@ function refreshUnitConvVisibility() {
    has not typed yet while the units DIFFER is unknown, so we leave the field
    alone rather than divide by a guessed 1. */
 function effectiveRatio() {
-  const baseUnit = (document.getElementById('sm-unit').value || 'ตัว').trim();
+  // trim FIRST, then default — `('  ' || 'ตัว').trim()` is '', which
+  // matches neither the BSN unit nor what the server will store
+  const baseUnit = (document.getElementById('sm-unit').value || '').trim() || 'ตัว';
   if (!_smBsnUnit || _smBsnUnit === baseUnit) return 1;
   const typed = parseFloat(document.getElementById('sm-ratio').value);
   return (isFinite(typed) && typed > 0) ? typed : null;

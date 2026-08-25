@@ -140,6 +140,18 @@ def create_product(data: dict) -> int:
 SINGLETON_FAMILY_NOTE = 'auto-singleton-from-photo-import-2026-05-25'
 
 
+def normalize_unit_type(unit_type):
+    """The single rule for what a product's `unit_type` becomes.
+
+    Strip, then fall back to 'ตัว'. Used by BOTH the INSERT below and
+    `models.suggestions._effective_ratio`, because a unit that is normalised
+    for COSTING but persisted verbatim is a silent divergence: '  ' is truthy,
+    so the old `d.get('unit_type') or 'ตัว'` stored two spaces while the cost
+    helper read it as 'ตัว' and dropped the conversion divisor (round 4).
+    """
+    return (unit_type or '').strip() or 'ตัว'
+
+
 def ensure_product_family(conn, product_id: int):
     """Return `product_id`'s family_id, minting a singleton family when it has
     none. Does NOT commit — the caller owns the transaction.
@@ -345,7 +357,7 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
             d.get('product_name') or '',
             d.get('units_per_carton') or 1,
             d.get('units_per_box') or 1,
-            d.get('unit_type') or 'ตัว',
+            normalize_unit_type(d.get('unit_type')),
             1 if d.get('hard_to_sell') else 0,
             cost_price,
             cost_price,

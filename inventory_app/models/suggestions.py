@@ -16,6 +16,7 @@ import sqlite3
 import sku_code_utils
 from database import get_connection
 
+from . import products as products_mod
 from .products import create_structured_product
 from .mapping import resolve_pending_mappings
 from .bsn_sync import cross_unit_hazard
@@ -199,7 +200,8 @@ def _effective_ratio(unit_type, bsn_unit, ratio):
     # PERSISTS. Without it a cleared unit box compares '' against bsn_unit
     # 'ตัว', concludes a conversion applies, and divides the cost by the ratio
     # for a product that is then saved AS 'ตัว' -- 12x too low (round 3).
-    unit_type = (unit_type or '').strip() or 'ตัว'
+    from .products import normalize_unit_type
+    unit_type = normalize_unit_type(unit_type)
     bsn_unit = (bsn_unit or '').strip()
     if not bsn_unit or unit_type == bsn_unit:
         return 1.0
@@ -426,7 +428,9 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         # Auto-create unit_conversion if BSN ships in different unit than product
         bsn_unit = d.get('bsn_unit')
         ratio = d.get('unit_conversion_ratio')
-        product_unit = d.get('suggested_unit_type') or 'ตัว'
+        # same normalisation the row was actually stored with, so the
+        # "is a conversion needed?" comparison cannot disagree with reality
+        product_unit = products_mod.normalize_unit_type(d.get('suggested_unit_type'))
         if bsn_unit and ratio and float(ratio) > 0 and bsn_unit != product_unit:
             hz = cross_unit_hazard(conn, new_pid, bsn_unit)
             # Allowlist, not a blocklist: only a clean None or a ratio-1
