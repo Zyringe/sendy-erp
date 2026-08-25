@@ -552,10 +552,22 @@ def _delete_verified_txns(conn, txn_ids):
     conn.execute(f"DELETE FROM transactions WHERE id IN ({ph})", ids)
 
 
-def _delete_sales_rows(conn, row_ids):
+def _delete_sales_rows(conn, row_ids, resolved_by=None, doc_base=None):
+    """⚠ Stamp BEFORE deleting. A DELETE audit row copies what the row last
+    DECLARED, so deleting an imported line leaves the importer's filename as the
+    actor — a human resolution recorded as `weekly.csv / import` (Codex,
+    2026-08-25). `apply_reconcile_flag` knows who resolved it; carry that in."""
     if not row_ids:
         return
     ph = ','.join('?' * len(row_ids))
+    if resolved_by:
+        conn.execute(
+            f"UPDATE sales_transactions SET synced_to_stock=0,"
+            f" change_source='manual', change_actor=?, change_reason=?,"
+            f" change_token=? WHERE id IN ({ph})",
+            (resolved_by,
+             f'ยืนยันลบตามการตรวจสอบเอกสาร {doc_base or ""}'.strip(),
+             f'reconcile-{doc_base}-{row_ids[0]}', *row_ids))
     conn.execute(f"DELETE FROM sales_transactions WHERE id IN ({ph})", row_ids)
 
 
@@ -619,7 +631,8 @@ def apply_reconcile_flag(flag_id, resolved_by, conn=None):
         # no+note sweep that could catch a corrupted/stale row sharing those
         # two fields but pointing at the wrong product or direction.
         _delete_verified_txns(c, verified_txn_ids)
-        _delete_sales_rows(c, row_ids)
+        _delete_sales_rows(c, row_ids, resolved_by=resolved_by,
+                           doc_base=row['doc_base'])
         _clean_review_docs(c, row['doc_base'])
         c.execute(
             "UPDATE express_reconcile_flags SET state='applied', resolved_by=?, "

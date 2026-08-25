@@ -591,3 +591,51 @@ def test_a_hand_edited_document_is_flagged_before_you_expand_the_panel(db, empty
     # above is not satisfied by markup that is always emitted.
     seed_sale(db, doc_no='IV0016-1')
     assert 'คนแก้' not in client.get('/sales/doc/IV0016').get_data(as_text=True)
+
+
+def test_rollback_restores_the_pre_migration_schema(empty_db):
+    """A rollback that leaves its columns behind has not rolled anything back,
+    and rollback-then-reapply would then die on `duplicate column name`."""
+    import sqlite3 as s3
+    conn = s3.connect(empty_db)
+    def cols(t):
+        return {r[1] for r in conn.execute(f'PRAGMA table_info({t})')}
+    def trigs():
+        return {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+            " AND (name LIKE '%sales_transactions%' OR name LIKE '%purchase_transactions%')")}
+    mig = MIGRATION
+    roll = mig.replace('.sql', '.rollback.sql')
+    before_cols, before_trigs = cols('sales_transactions'), trigs()
+    with open(mig, encoding='utf-8') as fh:
+        conn.executescript(fh.read())
+    assert 'change_token' in cols('sales_transactions')
+    assert len(trigs() - before_trigs) == 8
+    with open(roll, encoding='utf-8') as fh:
+        conn.executescript(fh.read())
+    assert cols('sales_transactions') == before_cols, 'columns survived the rollback'
+    assert cols('audit_log') == cols('audit_log') - {'change_source', 'change_reason'} \
+        or 'change_source' not in cols('audit_log')
+    assert trigs() == before_trigs, 'triggers survived the rollback'
+    # …and it can be applied again, which the first rollback made impossible.
+    with open(mig, encoding='utf-8') as fh:
+        conn.executescript(fh.read())
+    assert 'change_token' in cols('sales_transactions')
+    conn.close()
+
+
+def test_bulk_acronym_rewrite_still_works(db, empty_db, monkeypatch):
+    """/unit-conversions rewrites `unit` in bulk across both tables. `unit` is
+    guarded, so before this declared itself the whole route aborted."""
+    import config, database, models
+    monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
+    monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
+    seed_sale(db, doc_no='IV0020-1', unit='ตว')
+    db.commit()
+    models.learn_acronyms_normalize({'ตว': 'ตัว'})
+    assert db.execute("SELECT unit FROM sales_transactions WHERE doc_no='IV0020-1'"
+                      ).fetchone()[0] == 'ตัว'
+    last = db.execute("SELECT change_source, user FROM audit_log"
+                      " WHERE table_name='sales_transactions' AND action='UPDATE'"
+                      " ORDER BY id DESC LIMIT 1").fetchone()
+    assert (last['change_source'], last['user']) == ('import', 'learn-acronyms')

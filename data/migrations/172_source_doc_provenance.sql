@@ -26,7 +26,13 @@
 -- doc_no or bsn_code, the event belongs in the history of the line you were
 -- looking at; the diff itself names where it went.
 --
--- Re-runnable (DROP ... IF EXISTS first), per this repo's migration rule.
+-- ⚠ RE-RUNNABILITY, precisely: every trigger is DROP ... IF EXISTS first, so the
+-- trigger half re-applies cleanly. The ALTER TABLE ADD COLUMN statements are NOT
+-- idempotent and cannot be — SQLite has no ADD COLUMN IF NOT EXISTS — so a second
+-- execution of the whole file stops at `duplicate column name: change_source`.
+-- The runner never repeats an applied migration; a hand re-run against a DB that
+-- already has the columns should start from the first DROP TRIGGER below. The
+-- rollback drops the columns as well, so rollback-then-reapply DOES work.
 
 ALTER TABLE audit_log ADD COLUMN change_source TEXT;
 ALTER TABLE audit_log ADD COLUMN change_reason TEXT;

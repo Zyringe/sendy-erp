@@ -527,7 +527,15 @@ def learn_acronyms_normalize(pairs: dict):
     for acr, full in pairs.items():
         bsn_units.add_acronym(acr, full)
         for t in ('sales_transactions', 'purchase_transactions'):
-            conn.execute(f"UPDATE {t} SET unit=? WHERE unit=?", (full, acr))
+            # mig 172: `unit` is guarded, and this is reachable from
+            # /unit-conversions. A bulk rewrite cannot go through
+            # declared_update (that takes one row id), so it declares itself
+            # inline — one fresh token for the whole rewrite, which is what it
+            # is: a single operator action, not N unrelated ones.
+            conn.execute(
+                f"UPDATE {t} SET unit=?, change_source='import',"
+                f" change_actor='learn-acronyms', change_token=? WHERE unit=?",
+                (full, f'acronym-{acr}-{full}', acr))
     conn.commit()
     conn.close()
 
