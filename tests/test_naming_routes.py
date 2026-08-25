@@ -316,19 +316,16 @@ def test_a_null_condition_still_destroys_it(manager_client, empty_db):
     conn.close()
 
     c, _ = manager_client
-    # `allow_name_loss` because this fixture's name ('บานพับทดสอบมียอดสอง') carries
-    # 'สอง', which no column holds — the 2026-08-24 name-loss guard refuses that with
-    # 409 by design. The subject of THIS test is the condition being wiped, not the
-    # name, so the flag keeps it testing its own thing (and covers the override at
-    # route level). Removing the flag must turn this into a 409, not a silent pass.
     r = c.post('/naming/product/{}/save'.format(pid),
-               json={'sub_category': 'บานพับทดสอบ', 'condition': None,
-                     'allow_name_loss': True})
+               json={'sub_category': 'บานพับทดสอบ', 'condition': None})
     assert r.status_code == 200
 
     conn = sqlite3.connect(empty_db)
     cond, name = conn.execute(
         "SELECT condition, product_name FROM products WHERE id=?", (pid,)).fetchone()
     conn.close()
-    assert cond is None
-    assert 'มียอด' not in name
+    assert cond is None                      # THE SUBJECT: the column really is wiped
+    # ...and the NAME is deliberately untouched (2026-08-25). It used to be rebuilt from
+    # the columns on every save, which is what destroyed text no column holds on 342
+    # products; the stored name is the source of truth now.
+    assert name == 'บานพับทดสอบมียอดสอง'

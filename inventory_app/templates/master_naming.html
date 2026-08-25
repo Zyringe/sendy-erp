@@ -215,8 +215,17 @@
             <input class="form-control form-control-sm" id="ed-variant"></div>
         </div>
         <hr class="my-2">
-        <div class="small text-muted">ชื่อใหม่:</div>
-        <div id="ed-preview" class="fw-bold">—</div>
+        {# The NAME is the source of truth and is typed here. The composed name below is
+           a SUGGESTION with a button — save_product stopped overwriting the name on
+           2026-08-25, because doing so destroyed text no column holds on 342 products. #}
+        <div class="small text-muted">ชื่อสินค้า (แก้ได้ตรงนี้):</div>
+        <input class="form-control form-control-sm fw-bold" id="ed-name">
+        <div class="d-flex align-items-center gap-2 mt-2">
+          <button type="button" class="btn btn-outline-secondary btn-sm"
+                  id="ed-adopt" onclick="adoptSuggestedName()">ใช้ชื่อที่ระบบแนะนำ →</button>
+          <div id="ed-preview" class="small text-muted flex-grow-1">—</div>
+        </div>
+        <div id="ed-loss" class="small text-danger mt-1 d-none"></div>
         <div id="ed-locked-warn" class="small text-warning mt-1 d-none">
           ⚠ sku_code ถูกล็อกไว้ — จะแก้เฉพาะชื่อ ไม่สร้าง sku ใหม่</div>
       </div>
@@ -343,6 +352,7 @@ function _edFields() {
 function openEditor(btn) {
   const d = btn.dataset;
   _edPid = d.pid;
+  document.getElementById('ed-name').value = d.name || '';   // data-name = the STORED name
   document.getElementById('edit-pid').textContent = '#' + d.pid;
   const set = (id, val) => document.getElementById(id).value = val || '';
   set('ed-subcat', d.subcat); set('ed-brand', d.brand); set('ed-series', d.series);
@@ -350,7 +360,9 @@ function openEditor(btn) {
   set('ed-packaging', d.packaging); set('ed-condition', d.condition);
   set('ed-variant', d.variant);
   document.getElementById('ed-locked-warn').classList.toggle('d-none', d.locked !== '1');
-  document.getElementById('ed-preview').textContent = d.name || '—';
+  // preview holds the SUGGESTION, not the stored name — _edRefresh() fills it in
+  document.getElementById('ed-preview').textContent = '…';
+  document.getElementById('ed-loss').classList.add('d-none');
   bootstrap.Modal.getOrCreateInstance(document.getElementById('editModal')).show();
   _edRefresh();
 }
@@ -359,31 +371,36 @@ let _edTimer = null;
 function _edRefresh() {
   clearTimeout(_edTimer);
   _edTimer = setTimeout(async () => {
-    const {data} = await _postJSON('/naming/product/preview-name', _edFields());
-    if (data.ok) document.getElementById('ed-preview').textContent = data.name || '—';
+    const {data} = await _postJSON('/naming/product/preview-name',
+                                   {..._edFields(), pid: _edPid});
+    if (!data.ok) return;
+    document.getElementById('ed-preview').textContent = data.name || '—';
+    // Say what pressing the button would drop, BEFORE it is pressed.
+    const warn = document.getElementById('ed-loss');
+    const cur = document.getElementById('ed-name').value;
+    const loss = (data.stored_name === cur) ? (data.loss || []) : [];
+    if (loss.length) {
+      warn.textContent = '⚠ กดใช้ชื่อที่ระบบแนะนำแล้วจะหาย: ' + loss.join(' ');
+      warn.classList.remove('d-none');
+    } else { warn.classList.add('d-none'); }
   }, 250);
 }
 
-async function saveProduct(allowNameLoss) {
+function adoptSuggestedName() {
+  const suggested = document.getElementById('ed-preview').textContent;
+  if (suggested && suggested !== '—') {
+    document.getElementById('ed-name').value = suggested;
+    document.getElementById('ed-loss').classList.add('d-none');
+  }
+}
+
+async function saveProduct() {
   if (!_edPid) return;
   const btn = document.getElementById('ed-save');
   btn.disabled = true;
-  const body = _edFields();
-  if (allowNameLoss) body.allow_name_loss = true;
+  const body = {..._edFields(), product_name: document.getElementById('ed-name').value};
   const {data} = await _postJSON(`/naming/product/${_edPid}/save`, body);
   if (data.ok) { location.reload(); return; }
-  // The server refuses a save that would DESTROY name text no column holds. Show
-  // exactly what would go, and let the operator proceed on purpose.
-  if (data.name_loss && data.name_loss.length && !allowNameLoss) {
-    btn.disabled = false;
-    if (confirm('บันทึกแล้วชื่อจะเปลี่ยน และหายข้อความ: ' + data.name_loss.join(' ')
-                + '\n\nเดิม: ' + (data.old_name || '')
-                + '\nใหม่: ' + (data.new_name || '')
-                + '\n\nกด OK เพื่อยืนยันให้ชื่อเปลี่ยน หรือ Cancel เพื่อไปกรอกคอลัมน์ให้ตรงก่อน')) {
-      return saveProduct(true);
-    }
-    return;
-  }
   alert(data.error || 'เกิดข้อผิดพลาด'); btn.disabled = false;
 }
 

@@ -64,7 +64,7 @@ def editable_product(empty_db):
     return empty_db, pid, bid
 
 
-def test_save_rebuilds_name_but_never_touches_sku_code(editable_product, tmp_path):
+def test_save_never_touches_sku_code(editable_product, tmp_path):
     """The core of #383. `SEED-1` is nothing like what the generator would
     produce for this product (`SD-#230-4in-CR-PN`), so this fixture has exactly
     the drift that made real saves dangerous."""
@@ -74,14 +74,17 @@ def test_save_rebuilds_name_but_never_touches_sku_code(editable_product, tmp_pat
 
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT product_name, sku_code FROM products WHERE id=?",
+    row = conn.execute("SELECT product_name, sku_code, color_code FROM products WHERE id=?",
                        (pid,)).fetchone()
     conn.close()
 
     # CONTROL FIRST: the save must actually have done its job, or "sku_code did
     # not change" would pass on a no-op that never reached the code under test.
-    assert row["product_name"] == "กลอน Sendai #230-4in สีโครเมียม (CR) (แผง)"
-    assert res["new_name"] == "กลอน Sendai #230-4in สีโครเมียม (CR) (แผง)"
+    # CONTROL moved to the COLUMN (2026-08-25): the name is the source of truth now and
+    # a naming save no longer rewrites it, so "the name changed" can no longer prove the
+    # save reached the code under test.
+    assert row["color_code"] == "CR"
+    assert res["new_name"] == row["product_name"], "a naming save must not move the name"
 
     assert row["sku_code"] == "SEED-1", "a naming save must never move the join key"
     assert res["sku_code"] == "SEED-1"
@@ -117,8 +120,8 @@ def test_save_derives_packaging_short_from_packaging_th(editable_product, tmp_pa
         "SELECT product_name, packaging_short, sku_code FROM products WHERE id=?",
         (pid,)).fetchone()
     conn.close()
-    assert row["packaging_short"] == "UN"                      # ตัว → UN derived
-    assert row["product_name"].endswith("(ตัว)")
+    assert row["packaging_short"] == "UN"                      # ตัว → UN derived — THE SUBJECT
+    # (the old `product_name.endswith("(ตัว)")` assertion went with the rebuild)
     # packaging_short still feeds the GENERATOR (and so the explicit regen
     # route); it just no longer reaches sku_code through a naming save.
     assert row["sku_code"] == "SEED-1"
@@ -142,10 +145,10 @@ def test_sku_is_preserved_regardless_of_lock_state(editable_product, tmp_path, l
 
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT product_name, sku_code FROM products WHERE id=?",
+    row = conn.execute("SELECT color_code, sku_code FROM products WHERE id=?",
                        (pid,)).fetchone()
     conn.close()
-    assert row["product_name"] == "กลอน Sendai #230-4in สีโครเมียม (CR) (แผง)"  # control
+    assert row["color_code"] == "CR"                            # control: the save landed
     assert row["sku_code"] == "SEED-1"
 
 
@@ -218,9 +221,6 @@ def test_the_workbench_save_ROUTE_does_not_move_the_sku(admin_client, tmp_db):
     pid = conn.execute(
         "INSERT INTO products(product_name, brand_id, sub_category, model, size,"
         "                     packaging_th, packaging_short, sku_code, is_active)"
-        # The name must ROUND-TRIP through name_builder: a free-text name would trip
-        # the 2026-08-24 name-loss guard and this test would stop exercising the thing
-        # it is named after (sku_code stability). The guard has its own tests below.
         " VALUES ('กลอน Sendai #383-4in (แผง)', ?, 'กลอน', '#383', '4in', 'แผง', 'PN',"
         "         'ZZZ-383-ROUTE', 1)", (bid,)).lastrowid
     conn.commit()
@@ -233,38 +233,23 @@ def test_the_workbench_save_ROUTE_does_not_move_the_sku(admin_client, tmp_db):
 
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT product_name, sku_code FROM products WHERE id=?",
+    row = conn.execute("SELECT size, sku_code FROM products WHERE id=?",
                        (pid,)).fetchone()
     conn.close()
-    # CONTROL: the edit really landed, so the sku assertion is not on a no-op.
-    assert "6in" in row["product_name"], row["product_name"]
+    # CONTROL: the edit really landed, so the sku assertion is not on a no-op. Asserts
+    # the COLUMN — a naming save no longer rewrites the name (2026-08-25).
+    assert row["size"] == "6in", row["size"]
     assert row["sku_code"] == "ZZZ-383-ROUTE", "the route must not move the join key"
     assert body["sku_code"] == "ZZZ-383-ROUTE"
 
 
-# ── name-loss guard (2026-08-24) ─────────────────────────────────────────────
-# save_product UPDATEs product_name to the regenerated value unconditionally. If
-# the stored name carries text that NO structured column holds, that text is
-# destroyed. Measured on the 2026-08-24 prod snapshot: 356 of 2,044 active
-# products would lose text this way, 101 of them in stock.
-#
-# The guard flags only PRE-EXISTING drift: the baseline name is rebuilt BEFORE
-# the caller's updates are applied, so a shrink the user causes themselves (e.g.
-# clearing `condition`) is still allowed. `allow_name_loss=True` is the explicit
-# override — refusing forever would strand the 317 products whose names carry a
-# brand or word the columns cannot express.
-
-@pytest.fixture
-def orphan_token_product(editable_product):
-    """Same product, but its stored name carries 'TAYITA' — a word no column
-    holds. Rebuilding drops it. This is the real prod shape (pid 852)."""
-    path, pid, bid = editable_product
-    conn = sqlite3.connect(path)
-    conn.execute("UPDATE products SET product_name=? WHERE id=?",
-                 ("กลอน TAYITA Sendai #230-4in สีรมดำ (AC) (แผง)", pid))
-    conn.commit()
-    conn.close()
-    return path, pid, bid
+# ── the name is the SOURCE OF TRUTH (2026-08-25) ─────────────────────────────
+# save_product used to recompose product_name from the columns on every save and UPDATE
+# it unconditionally. Measured on the 2026-08-24 prod snapshot, 342 of 1,994 active
+# products carry text no column holds, so that silently destroyed it — and the audit log
+# shows all 2,594 recorded name changes were DIRECT writes with no naming-column edit,
+# i.e. the naming standard has always been enforced by scripts, never by this rebuild.
+# Put confirmed the single-product workbench is "แทบไม่ได้ใช้เลย".
 
 
 def _name(path, pid):
@@ -274,211 +259,121 @@ def _name(path, pid):
     return row[0]
 
 
-def test_save_refuses_when_the_rebuild_would_destroy_stored_text(
-        orphan_token_product, tmp_path):
-    path, pid, _ = orphan_token_product
+def test_editing_a_column_does_NOT_touch_the_name(editable_product, tmp_path):
+    """The whole point. Changing colour used to rewrite the name from the columns."""
+    path, pid, _ = editable_product
     before = _name(path, pid)
-
-    with pytest.raises(nc.NameLossRefused) as e:
-        nc.save_product(path, pid, {"color_code": "CR"},
-                        backup_dir=str(tmp_path / "b"))
-
-    # the message must NAME what would be lost, or the operator cannot act on it
-    assert "TAYITA" in str(e.value), str(e.value)
-    # ...and carry BOTH names. A clean suffix drop reads fine as a bare fragment, but a
-    # mid-word disagreement does not — prod pid 665's misspelled sub_category renders as
-    # the fragment 'นก', which is true and useless. The before/after pair is what makes
-    # every case actionable, so it is part of the contract, not decoration.
-    assert e.value.old_name == before
-    assert "TAYITA" not in e.value.new_name and e.value.new_name
-    assert "เดิม:" in str(e.value) and "ใหม่:" in str(e.value)
-    # nothing was written: neither the name nor the field the caller submitted
-    conn = sqlite3.connect(path)
-    row = conn.execute("SELECT product_name, color_code FROM products WHERE id=?",
-                       (pid,)).fetchone()
-    conn.close()
-    assert row[0] == before
-    assert row[1] == "AC", "the refused save must not have applied color_code"
-
-    # CONTROL — the identical call on a product with NO orphan token must SUCCEED,
-    # so a guard that simply refused everything could not pass this test. It has to
-    # be a SEPARATE row: `orphan_token_product` mutates `editable_product` in place,
-    # so asking for both fixtures hands back the same product twice.
-    conn = sqlite3.connect(path)
-    bid = conn.execute("SELECT brand_id FROM products WHERE id=?", (pid,)).fetchone()[0]
-    ctl = conn.execute(
-        "INSERT INTO products(product_name, brand_id, sub_category, model, size, "
-        "                     color_code, packaging_th, packaging_short, sku_code) "
-        "VALUES ('กลอน Sendai #231-4in สีรมดำ (AC) (แผง)', ?, 'กลอน', '#231', '4in', "
-        "        'AC', 'แผง', 'PN', 'SEED-CTL')", (bid,)).lastrowid
-    conn.commit()
-    conn.close()
-    nc.save_product(path, ctl, {"color_code": "CR"}, backup_dir=str(tmp_path / "c"))
-    assert "สีโครเมียม" in _name(path, ctl)
-
-
-def test_allow_name_loss_lets_the_operator_through_on_purpose(
-        orphan_token_product, tmp_path):
-    path, pid, _ = orphan_token_product
-    res = nc.save_product(path, pid, {"color_code": "CR"},
-                          backup_dir=str(tmp_path / "b"), allow_name_loss=True)
-    assert "TAYITA" not in res["new_name"]
-    assert "TAYITA" not in _name(path, pid)
-
-
-def test_a_shrink_the_caller_causes_themselves_is_not_refused(
-        editable_product, tmp_path):
-    """Clearing `packaging_th` legitimately removes '(แผง)' from the name. The
-    baseline is rebuilt BEFORE the update, so this is the caller's own edit and
-    must go through — otherwise the guard blocks ordinary work."""
-    path, pid, _ = editable_product
-    res = nc.save_product(path, pid, {"packaging_th": ""},
-                          backup_dir=str(tmp_path / "b"))
-    assert "(แผง)" not in res["new_name"], res["new_name"]
-
-
-def test_an_underscore_only_difference_is_not_a_loss(editable_product, tmp_path):
-    """`sub_category` legitimately stores 'แผ่นตัดเหล็กบาง_Super_Thin' while the
-    stored name spells it with spaces — 137 active products differ ONLY that way
-    and none of them loses information."""
-    path, pid, _ = editable_product
-    conn = sqlite3.connect(path)
-    conn.execute("UPDATE products SET sub_category='กลอน_จัมโบ้', "
-                 "product_name='กลอน จัมโบ้ Sendai #230-4in สีรมดำ (AC) (แผง)' WHERE id=?",
-                 (pid,))
-    conn.commit()
-    conn.close()
-    nc.save_product(path, pid, {"color_code": "CR"}, backup_dir=str(tmp_path / "b"))
-    assert "จัมโบ้" in _name(path, pid)
-
-
-def test_the_generated_name_never_gains_a_literal_underscore(editable_product, tmp_path):
-    """196 active `series` values hold a literal underscore (a storage convention that
-    keeps a multi-word series as one token) and the composer spliced it into the name
-    raw, so a save quietly moved a curated `DEAD LOCK` to `DEAD_LOCK` in a
-    customer-facing name. The guard could not see it — no information is LOST — which
-    is exactly why it needed fixing at the composer instead.
-
-    Safe rather than a judgement call: measured on the 2026-08-24 prod snapshot, ZERO
-    stored product_name values contain an underscore."""
-    path, pid, _ = editable_product
-    conn = sqlite3.connect(path)
-    conn.execute("UPDATE products SET series='DEAD_LOCK', "
-                 "product_name='กลอน DEAD LOCK Sendai #230-4in สีรมดำ (AC) (แผง)' WHERE id=?",
-                 (pid,))
-    conn.commit()
-    conn.close()
-
     res = nc.save_product(path, pid, {"color_code": "CR"}, backup_dir=str(tmp_path / "b"))
-    assert "_" not in res["new_name"], res["new_name"]
-    assert "DEAD LOCK" in res["new_name"], res["new_name"]
-    assert "_" not in _name(path, pid)
+
+    assert res["new_name"] == before
+    assert _name(path, pid) == before
+    # CONTROL — the column really did change, so this is not "the save did nothing".
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT color_code FROM products WHERE id=?", (pid,)).fetchone()[0] == "CR"
+    conn.close()
 
 
-def test_the_ROUTE_returns_409_with_the_loss_and_changes_nothing(admin_client, tmp_db):
-    """Route level. `save_product` has its own tests, but the 409 body IS the contract
-    the workbench's confirm-and-retry reads — a route can diverge from the function it
-    wraps, and nothing else pins `name_loss` / `old_name` / `new_name`."""
+def test_a_hand_tuned_name_survives_a_column_edit(editable_product, tmp_path):
+    """The prod shape: 'TAYITA' lives in no column, so a rebuild would drop it."""
+    path, pid, _ = editable_product
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE products SET product_name=? WHERE id=?",
+                 ("กลอน TAYITA Sendai #230-4in สีรมดำ (AC) (แผง)", pid))
+    conn.commit()
+    conn.close()
+
+    nc.save_product(path, pid, {"color_code": "CR"}, backup_dir=str(tmp_path / "b"))
+    assert "TAYITA" in _name(path, pid)
+
+
+def test_an_explicit_name_is_what_gets_stored(editable_product, tmp_path):
+    """How the operator (or the workbench's adopt-suggestion button) changes a name."""
+    path, pid, _ = editable_product
+    res = nc.save_product(path, pid, {"product_name": "  ชื่อใหม่ที่พิมพ์เอง  "},
+                          backup_dir=str(tmp_path / "b"))
+    assert res["new_name"] == "ชื่อใหม่ที่พิมพ์เอง"          # trimmed
+    assert _name(path, pid) == "ชื่อใหม่ที่พิมพ์เอง"
+
+
+def test_a_blank_explicit_name_is_ignored_not_stored(editable_product, tmp_path):
+    """An empty box must never blank a product's name."""
+    path, pid, _ = editable_product
+    before = _name(path, pid)
+    nc.save_product(path, pid, {"product_name": "   "}, backup_dir=str(tmp_path / "b"))
+    assert _name(path, pid) == before
+
+
+def test_rebuild_name_opt_in_still_recomposes(editable_product, tmp_path):
+    """scripts/hammer_bundle_datafix.py W1 depends on this and asserts the exact result;
+    removing the default rebuild must not remove the capability."""
+    path, pid, _ = editable_product
+    res = nc.save_product(path, pid, {"color_code": "CR"},
+                          backup_dir=str(tmp_path / "b"), rebuild_name=True)
+    assert "สีโครเมียม" in res["new_name"], res["new_name"]
+    assert _name(path, pid) == res["new_name"]
+
+
+def test_the_ROUTE_stores_the_typed_name_and_leaves_it_alone_otherwise(admin_client, tmp_db):
+    """Route level: a column-only save must not move the name, and a typed name must land."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("DELETE FROM products WHERE sku_code='ZZZ-LOSS-ROUTE'")
+    conn.execute("DELETE FROM products WHERE sku_code='ZZZ-TRUTH-ROUTE'")
     bid = conn.execute("SELECT id FROM brands WHERE short_code='SD'").fetchone()[0]
     pid = conn.execute(
         "INSERT INTO products(product_name, brand_id, sub_category, model, size,"
         "                     packaging_th, packaging_short, sku_code, is_active)"
-        " VALUES ('กลอน TAYITA Sendai #900-4in (แผง)', ?, 'กลอน', '#900', '4in',"
-        "         'แผง', 'PN', 'ZZZ-LOSS-ROUTE', 1)", (bid,)).lastrowid
+        " VALUES ('กลอน TAYITA Sendai #902-4in (แผง)', ?, 'กลอน', '#902', '4in',"
+        "         'แผง', 'PN', 'ZZZ-TRUTH-ROUTE', 1)", (bid,)).lastrowid
     conn.commit()
     conn.close()
 
     r = admin_client.post(f'/naming/product/{pid}/save', json={"size": "6in"})
-    assert r.status_code == 409, r.get_data(as_text=True)[:300]
-    body = r.get_json()
-    assert body["ok"] is False
-    assert body["name_loss"] == ["TAYITA"], body["name_loss"]
-    assert "TAYITA" in body["old_name"] and "TAYITA" not in body["new_name"]
+    assert r.status_code == 200, r.get_data(as_text=True)[:200]
+    assert "TAYITA" in _name(tmp_db, pid)
 
-    conn = sqlite3.connect(tmp_db)
-    row = conn.execute("SELECT product_name, size FROM products WHERE id=?", (pid,)).fetchone()
-    conn.close()
-    assert row[0] == 'กลอน TAYITA Sendai #900-4in (แผง)'
-    assert row[1] == '4in', "the refused save must not have applied size"
-
-    # ...and the documented way through must actually work, or the 409 is a dead end.
     r2 = admin_client.post(f'/naming/product/{pid}/save',
-                           json={"size": "6in", "allow_name_loss": True})
-    assert r2.status_code == 200, r2.get_data(as_text=True)[:300]
-    assert "TAYITA" not in r2.get_json()["new_name"]
+                           json={"product_name": "กลอน TAYITA Sendai #902-6in (แผง)"})
+    assert r2.status_code == 200
+    assert _name(tmp_db, pid) == "กลอน TAYITA Sendai #902-6in (แผง)"
 
 
-def test_an_edit_that_REPAIRS_the_drift_is_allowed_without_the_override(
-        orphan_token_product, tmp_path):
-    """The guard must not block the fix it exists to encourage. Moving the orphan
-    'TAYITA' into `series` produces a candidate name that loses nothing — but a check
-    against the PRE-update rebuild alone still shows the loss, so the operator would
-    have had to use the destructive override to perform a NON-destructive repair
-    (Codex, 2026-08-24)."""
-    path, pid, _ = orphan_token_product
-    res = nc.save_product(path, pid, {"series": "TAYITA"},
-                          backup_dir=str(tmp_path / "b"))
-    assert "TAYITA" in res["new_name"], res["new_name"]
-    assert "TAYITA" in _name(path, pid)
-
-
-def test_a_punctuation_only_delta_does_not_refuse(editable_product, tmp_path):
-    """A hand-picked strip list missed '#', ':', '+', quotes and Thai punctuation, so a
-    formatting-only round-trip 409'd for no reason. Content = has a letter or digit."""
-    path, pid, _ = editable_product
-    conn = sqlite3.connect(path)
-    conn.execute("UPDATE products SET product_name=? WHERE id=?",
-                 ("กลอน Sendai #230-4in สีรมดำ (AC) (แผง) #", pid))   # a bare stray '#'
-    conn.commit()
-    conn.close()
-    res = nc.save_product(path, pid, {"color_code": "CR"}, backup_dir=str(tmp_path / "b"))
-    assert "สีโครเมียม" in res["new_name"]
-
-
-def test_the_route_rejects_a_non_boolean_override(admin_client, tmp_db):
-    """bool("false") is True. A caller serialising an unchecked checkbox would have
-    disarmed the guard with the string "false"."""
+def test_the_preview_route_reports_what_adopting_the_suggestion_would_drop(
+        admin_client, tmp_db):
+    """The workbench shows this beside the button, so replacing a hand-tuned name is a
+    visible choice instead of something a save does behind the operator's back."""
     conn = sqlite3.connect(tmp_db)
-    conn.execute("DELETE FROM products WHERE sku_code='ZZZ-BOOL-ROUTE'")
+    conn.execute("DELETE FROM products WHERE sku_code='ZZZ-PREVIEW-LOSS'")
     bid = conn.execute("SELECT id FROM brands WHERE short_code='SD'").fetchone()[0]
     pid = conn.execute(
         "INSERT INTO products(product_name, brand_id, sub_category, model, size,"
         "                     packaging_th, packaging_short, sku_code, is_active)"
-        " VALUES ('กลอน TAYITA Sendai #901-4in (แผง)', ?, 'กลอน', '#901', '4in',"
-        "         'แผง', 'PN', 'ZZZ-BOOL-ROUTE', 1)", (bid,)).lastrowid
+        " VALUES ('กลอน TAYITA Sendai #903-4in (แผง)', ?, 'กลอน', '#903', '4in',"
+        "         'แผง', 'PN', 'ZZZ-PREVIEW-LOSS', 1)", (bid,)).lastrowid
     conn.commit()
     conn.close()
 
-    r = admin_client.post(f'/naming/product/{pid}/save',
-                          json={"size": "6in", "allow_name_loss": "false"})
-    assert r.status_code == 400, r.get_data(as_text=True)[:200]
-    # CONTROL: the real boolean still works, so this is not just "everything 400s"
-    r2 = admin_client.post(f'/naming/product/{pid}/save',
-                           json={"size": "6in", "allow_name_loss": True})
-    assert r2.status_code == 200, r2.get_data(as_text=True)[:200]
+    r = admin_client.post('/naming/product/preview-name', json={
+        "pid": pid, "sub_category": "กลอน", "brand_id": bid, "model": "#903",
+        "size": "4in", "packaging_th": "แผง"})
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["loss"] == ["TAYITA"], body
+    assert "TAYITA" in body["stored_name"]
+    assert "TAYITA" not in body["name"]
 
 
-def test_a_PARTIAL_repair_is_still_refused(orphan_token_product, tmp_path):
-    """The bypass that fragment-equality intersection allowed (Codex, 2026-08-24).
-
-    Moving only 'TAYI' into `series` leaves 'TA' with nowhere to live. The pre-edit
-    rebuild reports the fragment 'TAYITA'; the candidate reports 'TA'. Comparing those
-    two STRINGS finds no overlap, so the save committed and silently destroyed the
-    leftover. Character POSITIONS intersect correctly however the boundaries fall."""
-    path, pid, _ = orphan_token_product
-    before = _name(path, pid)
-
-    with pytest.raises(nc.NameLossRefused) as e:
-        nc.save_product(path, pid, {"series": "TAYI"}, backup_dir=str(tmp_path / "b"))
-    assert "TA" in "".join(e.value.lost), e.value.lost
-    assert _name(path, pid) == before
-
-    # CONTROL — the FULL repair must still go through, or this is just "refuse always".
-    res = nc.save_product(path, pid, {"series": "TAYITA"}, backup_dir=str(tmp_path / "c"))
-    assert "TAYITA" in res["new_name"]
+def test_the_generated_name_never_gains_a_literal_underscore(editable_product, tmp_path):
+    """196 active `series` values hold a literal underscore; the composer spliced it into
+    the name raw, so adopting a suggestion would put 'DEAD_LOCK' in a customer-facing
+    name. ZERO stored names contain an underscore, so normalising is provably safe."""
+    path, pid, _ = editable_product
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE products SET series='DEAD_LOCK' WHERE id=?", (pid,))
+    conn.commit()
+    conn.close()
+    res = nc.save_product(path, pid, {}, backup_dir=str(tmp_path / "b"), rebuild_name=True)
+    assert "_" not in res["new_name"], res["new_name"]
+    assert "DEAD LOCK" in res["new_name"], res["new_name"]
 
 
 @pytest.mark.parametrize("stored,generated,expected", [

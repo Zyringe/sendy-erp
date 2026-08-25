@@ -243,38 +243,6 @@ _EDITABLE_TEXT = ("series", "model", "size", "color_code", "packaging_th",
                   "condition", "pack_variant", "sub_category")
 
 
-class NameLossRefused(Exception):
-    """The rebuild would DESTROY text the stored product_name carries but no
-    structured column holds, and the caller did not ask for that.
-
-    Measured on the 2026-08-24 prod snapshot: 356 of 2,044 active products
-    (101 in stock) are in this state. `save_product` UPDATEs product_name
-    unconditionally, so without this guard opening such a product in the Master
-    Naming workbench and saving ANY unrelated field silently drops the extra
-    text — the `(แบบหุล)` incident, generalised.
-
-    ⚠ Only PRE-EXISTING drift is refused. The baseline is rebuilt BEFORE the
-    caller's updates are applied, so a shrink the operator causes themselves
-    (clearing `condition`, blanking `packaging_th`) still goes through.
-    """
-
-    def __init__(self, lost, old_name="", new_name=""):
-        self.lost = list(lost)
-        self.old_name = old_name
-        self.new_name = new_name
-        # ⚠ Carry BOTH names, not just the fragments. A clean suffix drop reads fine as
-        # a fragment ("(แผง)"), but a mid-word disagreement does not: pid 665's
-        # sub_category is misspelled 'ตะปูคอรีต' against a correctly spelled name, and
-        # the fragment alone renders as "นก" — true, and useless to the operator. The
-        # before/after pair is what makes every case actionable.
-        super().__init__(
-            "ชื่อสินค้าจะเปลี่ยนและสูญข้อความที่ไม่มีคอลัมน์ไหนเก็บไว้: "
-            + " ".join(self.lost)
-            + f"\nเดิม: {old_name}\nใหม่: {new_name}"
-            + "\n— กรอกข้อมูลลงคอลัมน์ให้ตรงก่อน หรือยืนยันว่ายอมให้ชื่อเปลี่ยน"
-        )
-
-
 # ZERO WIDTH JOINER / NON-JOINER. Explicitly, NOT the whole Cf category: RLM/LRM and
 # SOFT HYPHEN really are formatting, but a dropped ZWJ/ZWNJ changes shaping.
 _ZW = ("\u200d", "\u200c")
@@ -370,39 +338,28 @@ def _clean_updates(fields):
     return updates
 
 
-_PREVIEW_FIELDS = ("brand_id", "sub_category", "series", "model", "size",
-                   "color_code", "packaging_th", "condition", "pack_variant")
-
-
-def unrepaired_name_loss(conn, pid, old_name, updates):
-    """Text `old_name` carries that the rebuild drops BOTH before and after `updates`.
-
-    ⚠ Two baselines, deliberately. Checking only the PRE-update rebuild refuses the very
-    repair the guard exists to encourage: an operator who moves the orphan 'TAYITA' into
-    `series` in the same save produces a candidate name that loses nothing, yet the
-    pre-update baseline still shows the loss, so the fix would have required the
-    destructive override to perform a NON-destructive repair (Codex, 2026-08-24).
-
-    Checking only the POST-update rebuild is wrong the other way: it would refuse an
-    operator who deliberately clears `condition`, which legitimately shortens the name.
-
-    So: refuse a fragment only when it is missing before the edit AND still missing
-    after it. Pre-existing drift the edit did not repair — nothing else.
-    """
-    baseline = name_builder.rebuild_product_name(conn, pid)
-    base_spans = _loss_spans(old_name, baseline)
-    if not base_spans:
-        return [], baseline
-    row = conn.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
-    proposed = {k: (updates[k] if k in updates else row[k]) for k in _PREVIEW_FIELDS}
-    candidate = name_builder.preview_name(conn, proposed)
-    still_lost = base_spans & _loss_spans(old_name, candidate)
-    return _spans_to_fragments(old_name, still_lost), candidate
-
-
 def save_product(db_path, pid, fields, *, backup_dir=None,
-                 reason="master_naming_edit", allow_name_loss=False):
-    """Update a product's structured naming columns and rebuild product_name.
+                 reason="master_naming_edit", rebuild_name=False):
+    """Update a product's structured naming columns. **`product_name` is NOT rebuilt.**
+
+    ⚠ This function used to recompose product_name from the columns on EVERY save and
+    UPDATE it unconditionally. That is what destroyed hand-tuned names: measured on the
+    2026-08-24 prod snapshot, 342 of 1,994 active products carry text no column holds,
+    so saving any unrelated field silently dropped it.
+
+    The stored name is now the source of truth, which is what the rest of the system
+    already assumed. `naming_cascade.apply()` — the bulk dictionary cascade in this very
+    module — has always refused to rebuild ("~42% of decomposed names diverge from
+    build()"), and the audit log shows all 2,594 recorded name changes were direct
+    writes, none of them accompanied by a naming-column edit: the naming standard has
+    been enforced by scripts, never by this rebuild. `save_product` was the odd one out.
+
+    Two ways the name can still change, both explicit:
+      * `fields["product_name"]` — the operator typed it, or adopted the workbench's
+        suggested name by pressing the button (which shows what adopting would drop).
+      * `rebuild_name=True` — recompose from the columns. Only
+        `scripts/hammer_bundle_datafix.py` asks for this, and it asserts the exact
+        name it expects afterwards.
 
     ⚠ **sku_code is deliberately NOT regenerated here** (issue #383). It used to
     be, lock-aware. The two fields are different kinds of thing:
@@ -432,24 +389,6 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
     """
     if backup_dir is None:
         backup_dir = db_backup.default_backup_dir(db_path)
-    # Cheap read-only pre-check, BEFORE the backup. ~17% of active products are in the
-    # drift class, so a workbench cleanup pass would otherwise pay a full WAL backup +
-    # gzip for every refusal. This is an OPTIMISATION ONLY — the authoritative check is
-    # the identical one inside the write transaction below, so a row that changes
-    # between the two is still caught there rather than slipping through.
-    if not allow_name_loss:
-        probe = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        probe.row_factory = sqlite3.Row
-        try:
-            cur = probe.execute("SELECT product_name FROM products WHERE id=?",
-                                (pid,)).fetchone()
-            if cur is not None:
-                lost, cand = unrepaired_name_loss(
-                    probe, pid, cur["product_name"], _clean_updates(fields))
-                if lost:
-                    raise NameLossRefused(lost, cur["product_name"], cand)
-        finally:
-            probe.close()
     info, err = db_backup.safe_create_backup(reason, db_path=db_path,
                                              backup_dir=backup_dir)
     if err:
@@ -473,23 +412,24 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
         old_name, old_sku = cur["product_name"], cur["sku_code"]
         before_active = _active_count(conn)
 
-        # Authoritative check. The read-only probe above is only an optimisation that
-        # avoids paying for a backup on a refusal; a row that changed in between is
-        # caught here, inside the write lock.
-        if not allow_name_loss:
-            lost, cand = unrepaired_name_loss(conn, pid, old_name, updates)
-            if lost:
-                conn.execute("ROLLBACK")
-                raise NameLossRefused(lost, old_name, cand)
-
         if updates:
             set_clause = ", ".join(f"{k}=?" for k in updates)
             conn.execute(f"UPDATE products SET {set_clause} WHERE id=?",
                          list(updates.values()) + [pid])
 
-        new_name = name_builder.rebuild_product_name(conn, pid)
-        conn.execute("UPDATE products SET product_name=? WHERE id=?",
-                     (new_name, pid))
+        # The name moves only when someone says so. `_clean_updates` still ignores
+        # product_name (it is not a spec column), so it is read straight from `fields`.
+        typed = fields.get("product_name")
+        typed = typed.strip() if isinstance(typed, str) else None
+        if rebuild_name:
+            new_name = name_builder.rebuild_product_name(conn, pid)
+        elif typed:
+            new_name = typed
+        else:
+            new_name = old_name
+        if new_name != old_name:
+            conn.execute("UPDATE products SET product_name=? WHERE id=?",
+                         (new_name, pid))
 
         problems = []
         # Structural, not merely "we don't call the generator any more": if any

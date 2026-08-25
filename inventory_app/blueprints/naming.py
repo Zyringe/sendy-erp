@@ -235,9 +235,20 @@ def product_preview_name():
     conn = get_connection()
     try:
         name = name_builder.preview_name(conn, fields)
+        # What ADOPTING this suggestion would drop from the name as stored today. The
+        # workbench shows it beside the button, so replacing a hand-tuned name is a
+        # visible choice rather than something a save does behind the operator's back.
+        stored, loss = '', []
+        pid = fields.get('pid')
+        if pid:
+            row = conn.execute("SELECT product_name FROM products WHERE id=?",
+                               (pid,)).fetchone()
+            if row:
+                stored = row['product_name'] or ''
+                loss = nc._name_loss(stored, name)
     finally:
         conn.close()
-    return jsonify({'ok': True, 'name': name})
+    return jsonify({'ok': True, 'name': name, 'stored_name': stored, 'loss': loss})
 
 
 @bp_naming.route('/naming/product/<int:pid>/save', methods=['POST'])
@@ -253,24 +264,10 @@ def product_save(pid):
     # Popped, never whitelisted into the columns: it is a caller INTENT flag, not a
     # product field. _clean_updates ignores unknown keys anyway; popping keeps the
     # two kinds of thing visibly separate.
-    # Strictly `true`, never bool(): the string "false", 0-length-checks on objects and
-    # arrays, and any non-empty number all read as approval under bool(), so a caller
-    # serialising an unchecked checkbox as "false" would silently disarm the guard.
-    raw_allow = fields.pop('allow_name_loss', False)
-    if raw_allow not in (True, False, None):
-        return jsonify({'ok': False,
-                        'error': 'allow_name_loss ต้องเป็น true/false เท่านั้น'}), 400
-    allow_name_loss = raw_allow is True
     db_path = _db_path()
     try:
         res = nc.save_product(db_path, pid, fields,
-                              backup_dir=db_backup.default_backup_dir(db_path),
-                              allow_name_loss=allow_name_loss)
-    except nc.NameLossRefused as e:
-        # 409, not 400: the request is well-formed and the operator can proceed by
-        # confirming. `name_loss` is what the UI needs to say WHAT would be lost.
-        return jsonify({'ok': False, 'error': str(e), 'name_loss': e.lost,
-                        'old_name': e.old_name, 'new_name': e.new_name}), 409
+                              backup_dir=db_backup.default_backup_dir(db_path))
     except nc.ProductNotFound:
         return jsonify({'ok': False, 'error': f'ไม่พบสินค้า #{pid}'}), 404
     except nc.CascadeInvariantError as e:
