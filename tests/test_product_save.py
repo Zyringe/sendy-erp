@@ -407,3 +407,66 @@ def test_name_loss_edge_cases(stored, generated, expected):
     column is NULL, and a candidate can be longer than the stored name. None of these
     may raise, and none may be silently treated as "no loss" when text really goes."""
     assert nc._name_loss(stored, generated) == expected
+
+
+# ── concurrent rename (Codex, 2026-08-25) ────────────────────────────────────
+# The workbench seeds its name box at PAGE LOAD, and the cascade + mass-rename scripts
+# write names continuously (223 changes in July, 42 in August). A page left open and
+# then saved must not restore an obsolete name over a newer one — that is the same
+# undetectable loss this redesign removed, arriving through a different door.
+
+
+def _rename_behind_our_back(path, pid, new):
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE products SET product_name=? WHERE id=?", (new, pid))
+    conn.commit()
+    conn.close()
+
+
+def test_a_stale_rename_is_refused_not_silently_applied(editable_product, tmp_path):
+    path, pid, _ = editable_product
+    at_open = _name(path, pid)
+    _rename_behind_our_back(path, pid, "ชื่อใหม่จากสคริปต์")
+
+    with pytest.raises(nc.CascadeConflict) as e:
+        nc.save_product(path, pid, {"product_name": "ชื่อที่พิมพ์ในหน้าเก่า"},
+                        backup_dir=str(tmp_path / "b"), expected_product_name=at_open)
+    assert "ชื่อใหม่จากสคริปต์" in str(e.value), str(e.value)
+    assert _name(path, pid) == "ชื่อใหม่จากสคริปต์", "the newer name must survive"
+
+    # CONTROL — the same rename with an up-to-date expectation must SUCCEED, so this is
+    # not a guard that simply refuses every rename.
+    nc.save_product(path, pid, {"product_name": "ชื่อที่พิมพ์ในหน้าเก่า"},
+                    backup_dir=str(tmp_path / "c"),
+                    expected_product_name="ชื่อใหม่จากสคริปต์")
+    assert _name(path, pid) == "ชื่อที่พิมพ์ในหน้าเก่า"
+
+
+def test_a_column_only_save_never_carries_a_name_at_all(editable_product, tmp_path):
+    """The workbench omits product_name unless the box was touched. Belt: even a caller
+    that sends nothing must leave a name that moved underneath it alone."""
+    path, pid, _ = editable_product
+    _rename_behind_our_back(path, pid, "ชื่อใหม่จากสคริปต์")
+    nc.save_product(path, pid, {"color_code": "CR"}, backup_dir=str(tmp_path / "b"))
+    assert _name(path, pid) == "ชื่อใหม่จากสคริปต์"
+
+
+def test_the_ROUTE_returns_409_stale_on_a_concurrent_rename(admin_client, tmp_db):
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM products WHERE sku_code='ZZZ-STALE-ROUTE'")
+    bid = conn.execute("SELECT id FROM brands WHERE short_code='SD'").fetchone()[0]
+    pid = conn.execute(
+        "INSERT INTO products(product_name, brand_id, sub_category, model, size,"
+        "                     packaging_th, packaging_short, sku_code, is_active)"
+        " VALUES ('ชื่อตอนเปิดหน้า', ?, 'กลอน', '#904', '4in', 'แผง', 'PN',"
+        "         'ZZZ-STALE-ROUTE', 1)", (bid,)).lastrowid
+    conn.commit()
+    conn.close()
+    _rename_behind_our_back(tmp_db, pid, "ชื่อใหม่จากสคริปต์")
+
+    r = admin_client.post(f'/naming/product/{pid}/save', json={
+        "product_name": "ชื่อที่พิมพ์ในหน้าเก่า",
+        "expected_product_name": "ชื่อตอนเปิดหน้า"})
+    assert r.status_code == 409, r.get_data(as_text=True)[:200]
+    assert r.get_json()["stale"] is True
+    assert _name(tmp_db, pid) == "ชื่อใหม่จากสคริปต์"

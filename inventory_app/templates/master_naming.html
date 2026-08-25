@@ -336,6 +336,8 @@ async function confirmApply() {
 
 // ── Tab 1 single-product inline editor ──────────────────────────────────────
 let _edPid = null;
+let _edNameAtOpen = '';
+let _edNameDirty = false;
 const _edIds = ['ed-subcat','ed-brand','ed-series','ed-model','ed-size',
                 'ed-color','ed-packaging','ed-condition','ed-variant'];
 
@@ -352,7 +354,12 @@ function _edFields() {
 function openEditor(btn) {
   const d = btn.dataset;
   _edPid = d.pid;
-  document.getElementById('ed-name').value = d.name || '';   // data-name = the STORED name
+  // data-name = the STORED name at PAGE LOAD. Kept as `_edNameAtOpen` so a save can
+  // prove nothing renamed the product in the meantime, and `_edNameDirty` so a
+  // column-only save does not send the name at all.
+  document.getElementById('ed-name').value = d.name || '';
+  _edNameAtOpen = d.name || '';
+  _edNameDirty = false;
   document.getElementById('edit-pid').textContent = '#' + d.pid;
   const set = (id, val) => document.getElementById(id).value = val || '';
   set('ed-subcat', d.subcat); set('ed-brand', d.brand); set('ed-series', d.series);
@@ -390,6 +397,7 @@ function adoptSuggestedName() {
   const suggested = document.getElementById('ed-preview').textContent;
   if (suggested && suggested !== '—') {
     document.getElementById('ed-name').value = suggested;
+    _edNameDirty = true;
     document.getElementById('ed-loss').classList.add('d-none');
   }
 }
@@ -398,15 +406,23 @@ async function saveProduct() {
   if (!_edPid) return;
   const btn = document.getElementById('ed-save');
   btn.disabled = true;
-  const body = {..._edFields(), product_name: document.getElementById('ed-name').value};
+  const body = _edFields();
+  if (_edNameDirty) {
+    body.product_name = document.getElementById('ed-name').value;
+    body.expected_product_name = _edNameAtOpen;   // refuse if it moved since page load
+  }
   const {data} = await _postJSON(`/naming/product/${_edPid}/save`, body);
   if (data.ok) { location.reload(); return; }
-  alert(data.error || 'เกิดข้อผิดพลาด'); btn.disabled = false;
+  alert(data.error || 'เกิดข้อผิดพลาด');
+  if (data.stale) location.reload();
+  else btn.disabled = false;
 }
 
 // Live-preview wiring — only on the workbench tab (editor fields exist there).
 if (document.getElementById('ed-subcat')) {
   _edIds.forEach(id => document.getElementById(id).addEventListener('input', _edRefresh));
+  document.getElementById('ed-name')
+          .addEventListener('input', () => { _edNameDirty = true; });
 }
 </script>
 {% endblock %}

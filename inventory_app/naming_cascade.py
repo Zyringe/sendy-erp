@@ -339,7 +339,8 @@ def _clean_updates(fields):
 
 
 def save_product(db_path, pid, fields, *, backup_dir=None,
-                 reason="master_naming_edit", rebuild_name=False):
+                 reason="master_naming_edit", rebuild_name=False,
+                 expected_product_name=None):
     """Update a product's structured naming columns. **`product_name` is NOT rebuilt.**
 
     ⚠ This function used to recompose product_name from the columns on EVERY save and
@@ -360,6 +361,14 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
       * `rebuild_name=True` — recompose from the columns. Only
         `scripts/hammer_bundle_datafix.py` asks for this, and it asserts the exact
         name it expects afterwards.
+
+    `expected_product_name` is optimistic concurrency for the rename: the workbench
+    seeds its name box when the page LOADS, and the cascade and the mass-rename scripts
+    write names continuously (223 changes in July, 42 in August). Without the check, a
+    page left open and then saved would quietly restore an obsolete name over a newer
+    one — the same undetectable loss this redesign exists to remove, arriving through a
+    different door (Codex, 2026-08-25). Mismatch raises `CascadeConflict`, matching what
+    `apply()` already does when its affected set moves between preview and apply.
 
     ⚠ **sku_code is deliberately NOT regenerated here** (issue #383). It used to
     be, lock-aware. The two fields are different kinds of thing:
@@ -421,6 +430,14 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
         # product_name (it is not a spec column), so it is read straight from `fields`.
         typed = fields.get("product_name")
         typed = typed.strip() if isinstance(typed, str) else None
+        if (expected_product_name is not None
+                and typed and typed != old_name
+                and expected_product_name != old_name):
+            conn.execute("ROLLBACK")
+            raise CascadeConflict(
+                f"ชื่อสินค้าถูกแก้จากที่อื่นระหว่างที่เปิดหน้านี้ค้างไว้ "
+                f"(ตอนเปิด: {expected_product_name!r} · ตอนนี้: {old_name!r}) "
+                f"— โหลดหน้าใหม่แล้วแก้อีกครั้ง")
         if rebuild_name:
             new_name = name_builder.rebuild_product_name(conn, pid)
         elif typed:

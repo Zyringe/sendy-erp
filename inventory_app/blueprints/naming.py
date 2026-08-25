@@ -266,8 +266,13 @@ def product_save(pid):
     # two kinds of thing visibly separate.
     db_path = _db_path()
     try:
-        res = nc.save_product(db_path, pid, fields,
-                              backup_dir=db_backup.default_backup_dir(db_path))
+        res = nc.save_product(
+            db_path, pid, fields,
+            backup_dir=db_backup.default_backup_dir(db_path),
+            expected_product_name=fields.get('expected_product_name'))
+    except nc.CascadeConflict as e:
+        # 409: the request was fine, the world moved underneath it. Reloading is the fix.
+        return jsonify({'ok': False, 'error': str(e), 'stale': True}), 409
     except nc.ProductNotFound:
         return jsonify({'ok': False, 'error': f'ไม่พบสินค้า #{pid}'}), 404
     except nc.CascadeInvariantError as e:
