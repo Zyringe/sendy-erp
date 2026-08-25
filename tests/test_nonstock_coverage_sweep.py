@@ -265,25 +265,6 @@ EXPECTED_SEQUENCE = {
         'The exact `(table, row id)` pairs for `product_id` that currently hold a     led',
         'WHERE product_id=? AND synced_to_stock=1',
     ],
-    ('models/_shared.py', '<module level>'):
-        'allowlisted: SOURCE_DOC_WRITABLE_COLUMNS lists synced_to_stock as a '
-        'column declared_update may set — a name in a frozenset, not a branch on '
-        'the non-stock semantics '
-        '(tests/test_source_doc_provenance.py::test_declared_update_refuses_a_column_outside_the_allowlist)',
-
-    ('models/_shared.py', 'declared_delete'):
-        'allowlisted: sets synced_to_stock=0 purely as a carrier so the stamping '
-        'UPDATE has a column to write — it never reads or filters on the value, '
-        'and the rows it touches are the caller-chosen id only '
-        '(tests/test_source_doc_provenance.py::test_declared_delete_leaves_a_human_trail)',
-
-    ('models/reconcile.py', '_delete_sales_rows'):
-        'allowlisted: the mig-173 stamp before a confirmed reconciliation delete. '
-        'synced_to_stock=0 is the carrier column; the row set is the exact ids '
-        '_ledger_check already verified, so it can neither widen nor narrow what '
-        'apply_reconcile_flag deletes '
-        '(tests/test_source_doc_provenance.py::test_reconcile_delete_records_the_human_who_resolved_it)',
-
     # ── mig 173 provenance additions ────────────────────────────────────────
     ('models/_shared.py', '<module level>'): [
         'synced_to_stock',

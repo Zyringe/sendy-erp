@@ -323,6 +323,14 @@ def import_weekly(entries: list, file_type: str, filename: str,
                         conn, table, old['id'])
                     if _moved != _recorded:
                         lossy_reversals += 1
+            # ⚠ Stamp before deleting. The DELETE audit row copies what the
+            # row last DECLARED, so a line a human had corrected through
+            # declared_update would be audited as THAT human deleting it,
+            # for their old reason (Codex round 6). This is the importer's
+            # own replace/removal, so it says so.
+            conn.execute(
+                f"UPDATE {table} SET change_source='import', change_actor=?,"
+                f" change_reason=NULL WHERE id=?", (filename, old['id']))
             conn.execute(f"DELETE FROM {table} WHERE id=?", (old['id'],))
             overwritten += 1
 
@@ -387,6 +395,14 @@ def import_weekly(entries: list, file_type: str, filename: str,
                     conn, table, r['id'])
                 if _moved != _recorded:
                     lossy_reversals += 1
+            # ⚠ Stamp before deleting. The DELETE audit row copies what the
+            # row last DECLARED, so a line a human had corrected through
+            # declared_update would be audited as THAT human deleting it,
+            # for their old reason (Codex round 6). This is the importer's
+            # own replace/removal, so it says so.
+            conn.execute(
+                f"UPDATE {table} SET change_source='import', change_actor=?,"
+                f" change_reason=NULL WHERE id=?", (filename, r['id']))
             conn.execute(f"DELETE FROM {table} WHERE id=?", (r['id'],))
             removed += 1
     else:

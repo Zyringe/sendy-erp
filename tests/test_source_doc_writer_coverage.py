@@ -111,8 +111,12 @@ VIA_HELPER = {
 # ⛔ A bare string is not a reason. Name the route or the caller, and what it sets.
 DECLARED = {
     'models/imports.py':
-        'the importer. INSERTs stamp change_source=import plus the batch token; a '
-        'changed line is replaced by DELETE+INSERT, which the UPDATE guard never sees',
+        'the importer. INSERTs stamp change_source=import plus the batch token. A '
+        'changed or removed line is a raw DELETE, which the guard never sees and '
+        'whose audit row would otherwise inherit whatever the row last declared — '
+        'so a human-corrected line replaced by a later import would read as that '
+        'human deleting it. Both DELETE sites therefore re-stamp source=import '
+        'first (Codex round 6).',
     'models/bsn_sync.py':
         'learn_acronyms_normalize bulk-rewrites unit from /unit-conversions and '
         'declares inline; dismiss_pending_unit_conversion stamps the operator '
@@ -303,7 +307,10 @@ def test_every_exemption_carries_a_real_reason():
 
 @pytest.mark.parametrize('shape', [
     'conn.execute("UPDATE sales_transactions SET customer_code=? WHERE id=?")',
-    'conn.execute("UPDATE sales_transactions AS t SET t.customer_code=? WHERE id=?")',
+    # ⚠ `SET t.customer_code` is NOT valid SQLite — a qualified column on the
+    # left of SET is a parse error, so the old fixture pinned a shape that can
+    # never reach a database (Codex round 6). The alias itself is legal.
+    'conn.execute("UPDATE sales_transactions AS t SET customer_code=? WHERE t.id=?")',
     'table = "sales_transactions"\nconn.execute(f"UPDATE {table} SET customer_code=? WHERE id=?")',
     'conn.execute("UPDATE " "sales_transactions" " SET customer_code=? WHERE id=?")',
     'table = "purchase_transactions"\nconn.execute("UPDATE {} SET customer_code=? WHERE id=?".format(table))',

@@ -6,6 +6,8 @@
 -- seconds — cheaper than leaving a schema that claims to have been rolled back
 -- but has not been.
 
+BEGIN;
+
 DROP TRIGGER IF EXISTS sales_transactions_change_needs_declaration;
 DROP TRIGGER IF EXISTS audit_sales_transactions_update;
 DROP TRIGGER IF EXISTS audit_sales_transactions_insert;
@@ -25,3 +27,5 @@ ALTER TABLE purchase_transactions DROP COLUMN change_reason;
 ALTER TABLE purchase_transactions DROP COLUMN change_token;
 ALTER TABLE audit_log             DROP COLUMN change_source;
 ALTER TABLE audit_log             DROP COLUMN change_reason;
+
+COMMIT;

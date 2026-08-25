@@ -39,6 +39,8 @@
 -- already has the columns should start from the first DROP TRIGGER below. The
 -- rollback drops the columns as well, so rollback-then-reapply DOES work.
 
+BEGIN;
+
 ALTER TABLE audit_log ADD COLUMN change_source TEXT;
 ALTER TABLE audit_log ADD COLUMN change_reason TEXT;
 
@@ -271,3 +273,5 @@ BEGIN
             json_object('doc_no', OLD.doc_no, 'bsn_code', OLD.bsn_code, 'net', OLD.net),
             OLD.change_actor, OLD.change_source, OLD.change_reason);
 END;
+
+COMMIT;
