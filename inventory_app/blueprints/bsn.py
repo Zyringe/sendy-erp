@@ -318,7 +318,7 @@ def _build_suggestion_payload(bsn_code, item):
         'units_per_box': item.get('units_per_box'),
         # Round-2 extras (mig 037)
         'brand_other_name': item.get('brand_other_name') or None,
-        # mig 173 — a brand typed here does not exist yet, so its short_code
+        # mig 174 — a brand typed here does not exist yet, so its short_code
         # (a segment of every sku_code in the brand) has to ride along.
         'brand_other_short_code': item.get('brand_other_short_code') or None,
         'brand_other_name_th': item.get('brand_other_name_th') or None,

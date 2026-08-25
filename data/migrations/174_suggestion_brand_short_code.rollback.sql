@@ -1,4 +1,4 @@
--- Rollback 173. SQLite supports DROP COLUMN from 3.35; both columns are
+-- Rollback 174. SQLite supports DROP COLUMN from 3.35; both columns are
 -- nullable add-ons with no index/constraint, so dropping them is exact.
 PRAGMA busy_timeout = 10000;
 

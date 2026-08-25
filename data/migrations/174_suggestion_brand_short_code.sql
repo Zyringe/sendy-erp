@@ -1,4 +1,4 @@
--- 173: carry a NEW brand's short_code + Thai name across stage -> approve.
+-- 174: carry a NEW brand's short_code + Thai name across stage -> approve.
 --
 -- Card B lets you type a brand that does not exist yet. Before this, the only
 -- thing that survived staging was `brand_other_name`, so `brands.short_code`
