@@ -563,10 +563,14 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
         # ── 3. Re-point the code's source rows (unit-scoped) ────────────────
         def _repoint_rows(table, rows):
             for r in rows:
-                conn.execute(
-                    f"UPDATE {table} SET product_id=?, synced_to_stock=0 WHERE id=?",
-                    (new_pid, r['id']),
-                )
+                # mig 172: product_id is guarded, and this path is reachable from
+                # a live admin route (/mapping/split-save), so without a
+                # declaration the whole split would abort. synced_to_stock is
+                # exempt and rides along in the same statement.
+                _shared.declared_update(
+                    conn, table, r['id'],
+                    {'product_id': new_pid, 'synced_to_stock': 0},
+                    source='import', actor='repoint-bsn-code')
             return len(rows)
 
         rows_moved = {

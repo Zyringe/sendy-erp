@@ -271,7 +271,10 @@ def _seed_audit(conn, table, action, source, days_old):
 @pytest.mark.parametrize('table', ['sales_transactions', 'purchase_transactions'])
 @pytest.mark.parametrize('action,source,should_survive', [
     ('INSERT', 'import', False),   # churn — the importer re-inserts constantly
-    ('DELETE', 'import', False),
+    ('DELETE', 'import', True),    # ⛔ a DELETE row carries what the row last
+                                   # DECLARED, not who deleted it — a hand-deleted
+                                   # import row reads 'import'. Pruning those would
+                                   # erase the record a person needs.
     ('INSERT', 'manual', True),    # a hand-added line is never noise
     ('DELETE', 'manual', True),    # ⭐ the case the `transactions` policy loses
     ('DELETE', None,     True),    # unknown origin: keep, never assume churn
@@ -294,3 +297,221 @@ def test_retention_keeps_the_human_half(db, empty_db, monkeypatch, table, action
     assert (old_id in left) is should_survive, (
         f'{table} {action} source={source!r}: '
         f'{"should have been kept" if should_survive else "should have been pruned"}')
+
+
+# ── the page actually renders it ─────────────────────────────────────────────
+def test_document_page_shows_who_changed_it_and_why(db, empty_db, monkeypatch):
+    """A render test, because the model returning the right dict proves nothing
+    about whether Put ever sees it. Asserts on the rendered VALUES, not on a bare
+    substring — `'manual' in html` would be true from the page chrome alone."""
+    rid = seed_sale(db)
+    db.execute("UPDATE sales_transactions SET date_iso='2026-02-02',"
+               " change_source='manual', change_actor='put',"
+               " change_reason='คืนใบกำกับให้ลูกค้าที่ Express ระบุว่าเป็นเจ้าของ',"
+               " change_token='tp' WHERE id=?", (rid,))
+    db.commit()
+
+    import config, database
+    monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
+    monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
+    import book_registry
+    def _book_conn(*a, **k):
+        c = sqlite3.connect(str(empty_db))
+        c.row_factory = sqlite3.Row      # the route indexes rows by name
+        return c
+    monkeypatch.setattr(book_registry, 'get_book_connection', _book_conn)
+    from app import app
+    client = app.test_client()
+    with client.session_transaction() as sess:
+        sess['role'] = 'admin'; sess['username'] = 'admin'; sess['user_id'] = 1
+
+    html = client.get('/sales/doc/IV0001').get_data(as_text=True)
+    assert 'ประวัติการแก้ไข' in html
+    assert 'คืนใบกำกับให้ลูกค้าที่ Express ระบุว่าเป็นเจ้าของ' in html   # the WHY
+    assert '>put<' in html or 'put' in html                              # the WHO
+    assert 'คนแก้' in html                                               # manual badge
+    # CONTROL. ⚠ Not "a document with no history": seed_sale writes an audited
+    # INSERT, so IV0009 has a panel too and an `assert ... not in` on the other
+    # document's reason string would pass for free (Codex, 2026-08-25). The
+    # discriminating claim is that a document nobody hand-edited shows the panel
+    # WITHOUT the manual badge or any reason.
+    seed_sale(db, doc_no='IV0009-1')
+    quiet = client.get('/sales/doc/IV0009').get_data(as_text=True)
+    assert 'ประวัติการแก้ไข' in quiet          # it does have a panel
+    assert 'คนแก้' not in quiet                # …but nothing human in it
+    assert 'คืนใบกำกับให้ลูกค้าที่ Express ระบุว่าเป็นเจ้าของ' not in quiet
+
+
+# ── the real importer, through the real triggers ─────────────────────────────
+# The highest-traffic writer of these tables. Everything above tests the guard;
+# this tests that the guard did not break the thing it guards.
+
+def _entry(**kw):
+    e = {'date_iso': '2026-01-15', 'doc_no': 'IV7001-1', 'qty': 2.0, 'unit': 'ตัว',
+         'unit_price': 10.0, 'vat_type': 1, 'discount': '', 'total': 20.0, 'net': 20.0,
+         'product_name_raw': 'สินค้า', 'product_code_raw': 'A001',
+         'party': 'ลูกค้า ก', 'party_code': 'C001'}
+    e.update(kw)
+    return e
+
+
+def test_a_real_import_round_trip_still_works_and_declares_itself(db, empty_db, monkeypatch):
+    import config, database, models
+    monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
+    monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
+
+    first = models.import_weekly([_entry()], 'sales', 'ยอดขาย_ทดสอบ.csv')
+    assert first['imported'] == 1, first
+    row = db.execute("SELECT change_source, change_actor, change_token, net"
+                     " FROM sales_transactions WHERE doc_no='IV7001-1'").fetchone()
+    assert row['change_source'] == 'import'
+    assert row['change_actor'] == 'ยอดขาย_ทดสอบ.csv'
+    assert row['change_token'], 'the importer must stamp a token or its rows cannot be edited later'
+
+    # Re-import the SAME line: a genuine no-op, and must stay one.
+    again = models.import_weekly([_entry()], 'sales', 'ยอดขาย_ทดสอบ.csv')
+    assert again['unchanged'] == 1 and again['imported'] == 0, again
+
+    # Re-import a CHANGED line — imports.py does DELETE+INSERT here, which the
+    # UPDATE guard deliberately never sees. If that ever became an UPDATE this
+    # test is where the import would start failing.
+    changed = models.import_weekly([_entry(net=25.0, total=25.0)], 'sales',
+                                   'ยอดขาย_ทดสอบ.csv')
+    assert changed['overwritten'] == 1, changed
+    assert db.execute("SELECT net FROM sales_transactions WHERE doc_no='IV7001-1'"
+                      ).fetchone()[0] == 25.0
+
+    acts = [r['action'] for r in db.execute(
+        "SELECT action FROM audit_log WHERE table_name='sales_transactions' ORDER BY id")]
+    assert acts == ['INSERT', 'DELETE', 'INSERT'], acts
+    assert {r['change_source'] for r in db.execute(
+        "SELECT change_source FROM audit_log WHERE table_name='sales_transactions'"
+    )} == {'import'}, 'every importer-written audit row must say so'
+
+
+def test_a_line_the_importer_wrote_can_still_be_hand_corrected(db, empty_db, monkeypatch):
+    """The whole point: the two documents Put approved fixing are import-written
+    rows. If the guard made them uneditable the feature would be a wall."""
+    import config, database, models
+    monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
+    monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
+    models.import_weekly([_entry()], 'sales', 'ยอดขาย_ทดสอบ.csv')
+    rid = db.execute("SELECT id FROM sales_transactions").fetchone()['id']
+
+    conn = sqlite3.connect(str(empty_db))
+    models.declared_update(conn, 'sales_transactions', rid, {'date_iso': '2026-01-14'},
+                           actor='put', reason='Express ต้นฉบับว่า 2026-01-14')
+    conn.commit(); conn.close()
+
+    last = db.execute("SELECT action, user, change_source, change_reason FROM audit_log"
+                      " WHERE table_name='sales_transactions' ORDER BY id DESC LIMIT 1").fetchone()
+    assert (last['action'], last['user'], last['change_source']) == ('UPDATE', 'put', 'manual')
+    assert last['change_reason'] == 'Express ต้นฉบับว่า 2026-01-14'
+
+
+def test_helper_refuses_a_reason_that_explains_nothing(db, empty_db):
+    import models
+    conn = sqlite3.connect(str(empty_db))
+    rid = seed_sale(db)
+    for bad in ('', '   ', 'fix'):
+        with pytest.raises(ValueError):
+            models.declared_update(conn, 'sales_transactions', rid,
+                                   {'date_iso': '2026-02-02'}, actor='put', reason=bad)
+    with pytest.raises(ValueError):        # actor is not optional either
+        models.declared_update(conn, 'sales_transactions', rid, {'date_iso': '2026-02-02'},
+                               actor='', reason='เหตุผลที่ยาวพอสมควรจริง ๆ')
+    with pytest.raises(ValueError):        # and not for any other table
+        models.declared_update(conn, 'products', 1, {'name': 'x'},
+                               actor='put', reason='เหตุผลที่ยาวพอสมควรจริง ๆ')
+    conn.close()
+
+
+# ── regressions found by review, pinned so they cannot come back ─────────────
+
+def test_null_source_does_not_slip_past_the_guard(db):
+    """⚠ SQL three-valued logic. `NULL NOT IN (...)` and `NULL = 'manual'` are
+    both NULL, so an UPDATE with a fresh token and a real actor but a NULL source
+    made the whole OR chain NULL — and a trigger whose WHEN is NULL does not fire.
+    That was a working bypass until `change_source IS NULL` became its own term."""
+    rid = seed_sale(db)
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("UPDATE sales_transactions SET date_iso='2026-02-02',"
+                   " change_token='fresh', change_actor='someone',"
+                   " change_source=NULL WHERE id=?", (rid,))
+    db.rollback()
+    assert db.execute("SELECT date_iso FROM sales_transactions WHERE id=?",
+                      (rid,)).fetchone()[0] == '2026-01-15'
+
+
+@pytest.mark.parametrize('column,value', [
+    ('product_name_raw', 'ชื่อที่ถูกแก้'),   # user-visible via COALESCE in models/sales.py
+])
+def test_content_columns_are_guarded_too(db, column, value):
+    rid = seed_sale(db)
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute(f"UPDATE sales_transactions SET {column}=? WHERE id=?", (value, rid))
+    db.rollback()
+
+
+def test_purchase_supplier_id_is_guarded(db):
+    db.execute("INSERT INTO purchase_transactions (date_iso, doc_no, doc_base, bsn_code,"
+               " supplier_code, qty, unit, unit_price, total, net, line_seq,"
+               " change_source, change_actor, change_token)"
+               " VALUES ('2026-01-15','RR9001','RR9001','A001','S001',1,'ตัว',10,10,10,1,"
+               "'import','express-dbf','b1')")
+    db.commit()
+    rid = db.execute("SELECT id FROM purchase_transactions WHERE doc_no='RR9001'").fetchone()['id']
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("UPDATE purchase_transactions SET supplier_id=7 WHERE id=?", (rid,))
+    db.rollback()
+
+
+def test_repoint_bsn_code_still_works_through_the_guard(db, empty_db, monkeypatch):
+    """/mapping/split-save reaches repoint_bsn_code, which UPDATEs product_id —
+    a guarded column. Before it declared itself, an admin doing a split would
+    have hit IntegrityError on the first row."""
+    import config, database, models
+    monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
+    monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
+    db.execute("INSERT INTO products (sku_code, product_name, unit_type)"
+               " VALUES ('SKU-A','สินค้า A','ตัว'), ('SKU-B','สินค้า B','ตัว')")
+    db.commit()
+    old_pid, new_pid = [r[0] for r in db.execute(
+        "SELECT id FROM products WHERE sku_code IN ('SKU-A','SKU-B') ORDER BY id")]
+    db.execute("INSERT INTO product_code_mapping (bsn_code, bsn_name, bsn_unit,"
+               " product_id, is_ignored) VALUES ('A001','สินค้า A','', ?, 0)", (old_pid,))
+    seed_sale(db)
+    db.execute("UPDATE sales_transactions SET product_id=?, change_source='import',"
+               " change_actor='seed', change_token='seed1' WHERE bsn_code='A001'", (old_pid,))
+    db.commit()
+
+    report = models.repoint_bsn_code(None, 'A001', new_pid)
+    assert report, report
+    assert db.execute("SELECT product_id FROM sales_transactions WHERE bsn_code='A001'"
+                      ).fetchone()[0] == new_pid
+    last = db.execute("SELECT change_source, user FROM audit_log"
+                      " WHERE table_name='sales_transactions' AND action='UPDATE'"
+                      " ORDER BY id DESC LIMIT 1").fetchone()
+    assert (last['change_source'], last['user']) == ('import', 'repoint-bsn-code')
+
+
+def test_history_reads_the_book_it_was_given(db, empty_db, monkeypatch, tmp_path):
+    """The document routes are permitted VAT-book endpoints while get_connection()
+    is always the main No-VAT DB. Defaulting to it would show a VAT invoice the
+    other book's history for the same document number."""
+    import config, database, models, shutil
+    other = tmp_path / 'other_book.db'
+    shutil.copy2(empty_db, other)
+    monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
+    monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
+    seed_sale(db)                                        # history exists in the MAIN db only
+
+    book = sqlite3.connect(str(other))
+    got = models.get_source_doc_audit_history('IV0001', 'sales_transactions', conn=book)
+    book.close()
+    assert got == [], 'history leaked in from the other book'
+    # CONTROL: the same call against the right book DOES find it, so the empty
+    # result above is isolation working and not a broken query.
+    main = sqlite3.connect(str(empty_db))
+    assert models.get_source_doc_audit_history('IV0001', 'sales_transactions', conn=main)
+    main.close()

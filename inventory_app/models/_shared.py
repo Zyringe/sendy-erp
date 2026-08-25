@@ -6,6 +6,7 @@ rationale. No behavior changes.
 """
 from database import get_connection
 import re as _re_mod
+import sqlite3 as _sqlite3
 
 # The marketplaces the schema accepts — CHECK(platform IN (...)) on
 # platform_skus / platform_products / ecommerce_listings (mig 140).
@@ -80,7 +81,7 @@ SOURCE_DOC_FIELD_LABELS = {
 }
 
 
-def get_source_doc_audit_history(doc_base, table, limit=30):
+def get_source_doc_audit_history(doc_base, table, limit=30, conn=None):
     """Every recorded change to one document's lines, newest first.
 
     Unlike `get_customer_audit_history`, this DOES answer "who" and "why":
@@ -88,6 +89,12 @@ def get_source_doc_audit_history(doc_base, table, limit=30):
     row, and the trigger copies them into the audit row it writes. A panel that
     only a SQL prompt can read is not provenance anyone has — Put is the sole
     digital operator and does not run SQL.
+
+    ⚠ `conn` is not optional in practice. The document routes are permitted
+    VAT-book endpoints and get_connection() is always the main No-VAT DB, so
+    defaulting to it would show a VAT-book invoice the history of whatever
+    document happens to share its number in the other book (Codex, 2026-08-25).
+    Callers pass the same connection the rows came from.
 
     Matched on `row_key`, not `row_id`: the importer replaces a changed line
     with DELETE+INSERT, so the numeric id changes at exactly the moment the
@@ -97,7 +104,11 @@ def get_source_doc_audit_history(doc_base, table, limit=30):
     """
     if table not in SOURCE_DOC_TABLES:
         raise ValueError(f'unknown source table {table!r}')
-    conn = get_connection()
+    own = conn is None
+    if own:
+        conn = get_connection()
+    prev_factory = conn.row_factory
+    conn.row_factory = _sqlite3.Row
     try:
         rows = conn.execute(
             """SELECT created_at, action, changed_fields, user, change_source, change_reason
@@ -108,7 +119,9 @@ def get_source_doc_audit_history(doc_base, table, limit=30):
             (table, _like_prefix(doc_base) + '-%', _like_prefix(doc_base) + '|%', limit)
         ).fetchall()
     finally:
-        conn.close()
+        conn.row_factory = prev_factory
+        if own:
+            conn.close()
     import json
     out = []
     for r in rows:
@@ -161,12 +174,23 @@ AUDIT_LOG_RETENTION_DAYS = 90
 # current schema (trigger writes leave `user` NULL), so it is pruned after the
 # window too.
 _AUDIT_PRUNE_PREDICATE = (
-    "("
-    "  (table_name = 'transactions' AND action IN ('INSERT','DELETE'))"
-    "  OR (table_name IN ('sales_transactions','purchase_transactions')"
-    "      AND action IN ('INSERT','DELETE')"
-    "      AND change_source = 'import')"
-    ")"
+    "(table_name = 'transactions' AND action IN ('INSERT','DELETE'))"
+)
+
+# The source-document half is a SEPARATE predicate because it needs a column that
+# only exists after mig 172, and prune_audit_log() must not crash on a restored or
+# downgraded DB that predates it (there are no source-doc audit rows to prune
+# there anyway).
+#
+# ⛔ INSERT ONLY. A DELETE audit row carries whatever the row last DECLARED, not
+# who deleted it — so a hand-deleted line the importer had written reads as
+# source='import'. Pruning those would erase exactly the record a person needs,
+# which is the mistake the `transactions` policy above already made once
+# ("indistinguishable from import churn"). Deletes are far rarer than the insert
+# churn, so keeping them forever costs little.
+_AUDIT_PRUNE_SOURCE_DOC_PREDICATE = (
+    "(table_name IN ('sales_transactions','purchase_transactions')"
+    " AND action = 'INSERT' AND change_source = 'import')"
 )
 # ⚠ The second clause is only safe because mig 172 made "who wrote this" a
 # recorded fact instead of a guess. The comment above this block explains why the
@@ -209,6 +233,14 @@ def prune_audit_log(conn=None):
             (f"-{AUDIT_LOG_RETENTION_DAYS} day",),
         )
         deleted = cur.rowcount
+        if any(r[1] == 'change_source'
+               for r in conn.execute("PRAGMA table_info(audit_log)")):
+            deleted += conn.execute(
+                "DELETE FROM audit_log "
+                "WHERE created_at < date('now','localtime',?) "
+                f"AND {_AUDIT_PRUNE_SOURCE_DOC_PREDICATE}",
+                (f"-{AUDIT_LOG_RETENTION_DAYS} day",),
+            ).rowcount
         if own:
             conn.commit()
         return deleted

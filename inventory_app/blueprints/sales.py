@@ -83,7 +83,7 @@ def sales_doc(doc_base):
                            total_net=total_net,
                            non_stock_codes=sorted(models.NON_STOCK_BSN_CODES),
                            audit_history=models.get_source_doc_audit_history(
-                               doc_base, 'sales_transactions'),
+                               doc_base, 'sales_transactions', conn=conn),
                            pending_map=len(models.get_pending_mappings(conn=conn)))
 
 
@@ -137,7 +137,7 @@ def purchases_doc(doc_base):
                            total_net=total_net,
                            non_stock_codes=sorted(models.NON_STOCK_BSN_CODES),
                            audit_history=models.get_source_doc_audit_history(
-                               doc_base, 'purchase_transactions'),
+                               doc_base, 'purchase_transactions', conn=conn),
                            pending_map=len(models.get_pending_mappings(conn=conn)))
 
 
