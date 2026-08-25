@@ -451,7 +451,7 @@ def product_new():
 
         try:
             pid = models.create_structured_product(data, created_via)
-        except sqlite3.DatabaseError as e:
+        except (sqlite3.DatabaseError, ValueError) as e:
             flash(f'บันทึกไม่สำเร็จ: {e}', 'danger')
             return render_template('products/form.html', product=f, action='new',
                                    locations=[], clone_source_pid=clone_source_pid,
@@ -578,13 +578,18 @@ def product_set_brand(product_id):
     raw = request.form.get('brand_id', '').strip()
     new_brand_name = request.form.get('new_brand_name', '').strip()
     new_brand_name_th = request.form.get('new_brand_name_th', '').strip()
+    new_brand_short_code = request.form.get('new_brand_short_code', '').strip()
     new_brand_is_own = bool(request.form.get('new_brand_is_own'))
 
     brand_id = None
     if raw == '__new__' and new_brand_name:
         try:
+            # THIRD brand-creation call site. It was left out of the first
+            # sweep and kept minting NULL short_codes — the same defect Card B
+            # and /products/new were just fixed for (peer review 2026-08-25).
             brand_id = models.create_brand(new_brand_name,
                                             name_th=new_brand_name_th,
+                                            short_code=new_brand_short_code,
                                             is_own=new_brand_is_own)
             flash(f'เพิ่มแบรนด์ "{new_brand_name}" แล้ว', 'success')
         except ValueError as e:

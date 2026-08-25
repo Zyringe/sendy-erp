@@ -108,3 +108,46 @@ def test_ratio_recompute_function_is_live_code_not_a_comment(staged_client):
     # the ratio input for THIS row exists, so the listener has something to fire on
     assert f'id="sug-ratio-{sid}"' in html
     assert f'id="sug-cost-{sid}"' in html
+
+
+def test_open_suggest_clears_the_cost_and_ratio_boxes(staged_client):
+    """A cost left over from a previously-reviewed BSN code must not be
+    submittable as the next code's cost_price/opening_cost.
+
+    recomputeCostFromPurchase() returns early WITHOUT touching the box when
+    there is no purchase line or no ratio yet, so the reset block is the only
+    thing standing between "review code A, then open code B" and A's number
+    being saved as B's cost. sm-ratio was never reset either (pre-existing) and
+    now feeds the derivation, so a stale ratio yields a plausible wrong number
+    rather than an obviously wrong one. Found by peer review 2026-08-25.
+    """
+    client, _sid = staged_client
+    html = client.get('/mapping').get_data(as_text=True)
+    stripped = _script_without_comments(html)
+
+    # CONTROL: the function that must contain the reset actually survived the
+    # comment strip — otherwise the two assertions below are void.
+    assert 'function openSuggest(' in stripped, \
+        'openSuggest was stripped away; this test cannot fail as written'
+
+    start = stripped.index('function openSuggest(')
+    body = stripped[start:start + 3000]
+    assert "getElementById('sm-cost').value = ''" in body, \
+        'openSuggest must clear the cost box on every open'
+    assert "getElementById('sm-ratio').value = ''" in body, \
+        'openSuggest must clear the ratio box — it feeds the cost derivation'
+
+
+def test_new_brand_short_code_is_required_before_submitting(staged_client):
+    """A blank short_code reproduces the SONAX defect (no brand segment in any
+    sku_code of that brand), and a purely-Thai brand name gets NO auto-proposal
+    — exactly the case that must be typed rather than waved through."""
+    client, _sid = staged_client
+    html = client.get('/mapping').get_data(as_text=True)
+    stripped = _script_without_comments(html)
+    assert 'function newBrandShortCodeMissing(' in stripped
+    # both submit paths must consult it, not just one
+    for fn in ('function confirmStageNew(', 'function confirmCreateNow('):
+        start = stripped.index(fn)
+        assert 'newBrandShortCodeMissing()' in stripped[start:start + 700], \
+            f'{fn} does not check for a blank short_code'

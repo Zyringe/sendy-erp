@@ -96,6 +96,10 @@ def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) ->
     the same bsn_code" (must not let one clobber the other's payload before
     it gets approved) — see `create_now`.
     """
+    # `suggested_cost_dirty` is a per-REQUEST signal, not a column — drop it
+    # before the INSERT binds `data` by name (it is consumed at approve time,
+    # where it arrives on `edits` instead).
+    data = {k: v for k, v in data.items() if k != 'suggested_cost_dirty'}
     # Default any missing extras to None so SQL params bind cleanly
     for k in ('brand_other_name', 'color_code_other', 'packaging_other',
               'bsn_unit', 'unit_conversion_ratio',
@@ -178,20 +182,46 @@ _CLEARABLE_EDIT_KEYS = frozenset({
 })
 
 
+def _effective_ratio(unit_type, bsn_unit, ratio):
+    """Base units per BSN unit — the divisor a cost must be derived against.
+
+    1.0 when the product is held in the SAME unit the BSN bills in: no
+    conversion applies, so one purchase unit IS one base unit. Otherwise the
+    conversion ratio, which may be None (not yet known).
+
+    This mirrors `effectiveRatio()` in mapping.html. Keeping the two in step
+    matters because the base unit is an input to the cost basis just as much as
+    the ratio is: switching a product from ตัว to โหล while leaving ratio 12
+    alone changes the correct cost by 12x even though the ratio field never
+    moved (Codex review round 2, 2026-08-25).
+    """
+    if not bsn_unit or (unit_type or '') == bsn_unit:
+        return 1.0
+    return ratio
+
+
 def _cost_for_saved_ratio(conn, staged, merged):
-    """Re-derive `suggested_cost` when the ratio moved but the cost did not.
+    """Re-derive `suggested_cost` when the COST BASIS moved but the cost did not.
 
-    Returns the cost to persist. Leaves the value alone — returning it
-    unchanged — in every case except the one it exists for:
+    The basis is `net / (qty * effective_ratio)`, where effective_ratio folds in
+    BOTH the conversion ratio and the chosen base unit (see `_effective_ratio`).
+    Derived through the single implementation in `bsn_suggest.base_unit_cost`,
+    the same arithmetic `models.wacc` uses to cost a `BSN ซื้อ` leg.
 
-      * the operator retyped the cost      -> their number wins
-      * the ratio was not changed          -> the staged cost is still right
-      * no purchase row for this bsn_code  -> nothing to derive from
-      * the derivation yields None/<=0     -> never write a zero basis
+    Returns the cost to persist, unchanged in every case except the one this
+    exists for:
 
-    The basis is `purchase_transactions.net / (qty * ratio)`, the same
-    arithmetic `models.wacc` uses to cost a `BSN ซื้อ` leg, via the single
-    implementation in `bsn_suggest.base_unit_cost`.
+      * `suggested_cost_dirty` -> the operator typed it; their number wins
+      * the basis did not move          -> the staged cost is still right
+      * no purchase row for this code   -> nothing to derive from
+      * derivation yields None or <= 0  -> never write a zero basis
+
+    ⚠ `suggested_cost_dirty` is the AUTHORITY on whether a human touched the
+    field. The numeric fallback below cannot be: an operator who deliberately
+    retypes the same number the derivation produced is indistinguishable from
+    one who never touched it, and guessing wrong overwrites a deliberate cost
+    (Codex review round 2). Both of our forms send the flag; the fallback only
+    covers a client that does not.
     """
     import bsn_suggest
 
@@ -201,27 +231,36 @@ def _cost_for_saved_ratio(conn, staged, merged):
         except (TypeError, ValueError):
             return None
 
-    staged_cost = _f(staged['suggested_cost'])
     final_cost = _f(merged.get('suggested_cost'))
-    staged_ratio = _f(staged['unit_conversion_ratio'])
-    final_ratio = _f(merged.get('unit_conversion_ratio'))
+    if final_cost is None:
+        return merged.get('suggested_cost')
 
-    if final_cost is None or staged_cost is None:
+    if merged.get('suggested_cost_dirty'):
         return merged.get('suggested_cost')
-    # cost was retyped -> the operator owns it
-    if abs(final_cost - staged_cost) > 1e-9:
+
+    staged_cost = _f(staged['suggested_cost'])
+    if staged_cost is None or abs(final_cost - staged_cost) > 1e-9:
+        # legacy fallback: a client that sent no flag, and a cost that visibly
+        # differs from what was staged, is treated as hand-edited
         return merged.get('suggested_cost')
-    # ratio unchanged (or unknown on either side) -> nothing to re-derive
-    if final_ratio is None or staged_ratio is None:
+
+    staged_eff = _effective_ratio(
+        staged['suggested_unit_type'], staged['bsn_unit'],
+        _f(staged['unit_conversion_ratio']))
+    final_eff = _effective_ratio(
+        merged.get('suggested_unit_type'), merged.get('bsn_unit'),
+        _f(merged.get('unit_conversion_ratio')))
+
+    if final_eff is None or final_eff <= 0:
         return merged.get('suggested_cost')
-    if abs(final_ratio - staged_ratio) <= 1e-9:
+    if staged_eff is not None and abs(final_eff - staged_eff) <= 1e-9:
         return merged.get('suggested_cost')
 
     latest = bsn_suggest._latest_purchase(conn, staged['bsn_code'])
     if not latest:
         return merged.get('suggested_cost')
     derived = bsn_suggest.base_unit_cost(
-        latest.get('line_net'), latest.get('last_qty'), final_ratio)
+        latest.get('line_net'), latest.get('last_qty'), final_eff)
     if derived is None or derived <= 0:
         return merged.get('suggested_cost')
     return derived
@@ -263,6 +302,10 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         # protects the free-text fields (which submit '' for a clear, and ''
         # already passes the filter below).
         d = dict(sug)
+        # Not a column on the staged row: whether the human touched the cost
+        # box is a fact about THIS request. Default False so a client that
+        # omits it falls through to the numeric heuristic.
+        d['suggested_cost_dirty'] = False
         d.update({
             k: v for k, v in edits.items()
             if v is not None or k in _CLEARABLE_EDIT_KEYS

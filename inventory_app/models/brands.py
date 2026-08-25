@@ -189,14 +189,24 @@ def upsert_brand(conn, name, *, name_th=None, short_code=None, is_own=False):
         code = f'{code_base}_{n}'
         n += 1
 
+    # ON CONFLICT DO NOTHING + re-select: prod runs `gunicorn -w 2`, so two
+    # requests can create the same never-seen brand in the same instant. The
+    # inline path this replaced used INSERT OR IGNORE and tolerated that; a
+    # plain INSERT would turn the loser into an IntegrityError that rolls back
+    # a whole product creation (peer review 2026-08-25). Losing the race and
+    # reusing the winner's row is the correct outcome either way.
     cur = conn.execute("""
         INSERT INTO brands (code, name, name_th, short_code, is_own_brand, sort_order)
         VALUES (?, ?, ?, ?, ?, 100)
+        ON CONFLICT(code) DO NOTHING
     """, (code, name,
           (name_th or '').strip() or None,
           (short_code or '').strip().upper() or None,
           1 if is_own else 0))
-    return cur.lastrowid
+    if cur.rowcount:
+        return cur.lastrowid
+    return conn.execute(
+        'SELECT id FROM brands WHERE code = ?', (code,)).fetchone()[0]
 
 
 def create_brand(name, name_th=None, is_own=False, short_code=None):

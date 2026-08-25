@@ -444,3 +444,87 @@ def test_brand_reuse_is_deterministic_and_the_product_gets_that_brand(empty_db):
     assert c.execute("SELECT brand_id FROM products WHERE id=?", (pid,)).fetchone()[0] == first, \
         'oldest row wins, every time'
     c.close()
+
+
+# --------------------------------------------------------------------------
+# Review round 2 — the cost BASIS is (ratio AND base unit), and "did a human
+# type this?" is a fact the client reports, never one the server infers
+# --------------------------------------------------------------------------
+def test_changing_only_the_base_unit_moves_the_cost(empty_db):
+    """The ratio field never moves, but switching the product from ตัว to โหล
+    changes the correct cost by 12x: at โหล the BSN unit IS the base unit, so
+    the divisor is 1. Comparing ratios alone missed this entirely."""
+    import models
+    _seed_purchase(empty_db, 'TSTCOST1', net=1044.55, qty=1, unit='โหล')
+    sid = _stage(empty_db)          # staged as ตัว, ratio 12 -> 87.0458
+
+    pid = models.approve_pending_suggestion(
+        sid, {'suggested_unit_type': 'โหล'}, reviewer_id=None)
+
+    c = _conn(empty_db)
+    row = c.execute("SELECT unit_type, cost_price FROM products WHERE id=?",
+                    (pid,)).fetchone()
+    c.close()
+    assert row['unit_type'] == 'โหล'
+    assert row['cost_price'] == pytest.approx(1044.55), (
+        f"got {row['cost_price']} — one โหล costs the whole line, not 1/12 of it"
+    )
+
+
+def test_changing_unit_and_ratio_together_uses_the_effective_divisor(empty_db):
+    """Base unit == BSN unit wins over whatever the ratio box says: no
+    conversion applies, so a stale ratio must not divide the cost again."""
+    import models
+    _seed_purchase(empty_db, 'TSTCOST1', net=1044.55, qty=1, unit='โหล')
+    sid = _stage(empty_db)
+    pid = models.approve_pending_suggestion(
+        sid, {'suggested_unit_type': 'โหล', 'unit_conversion_ratio': 24},
+        reviewer_id=None)
+    c = _conn(empty_db)
+    got = c.execute("SELECT cost_price FROM products WHERE id=?", (pid,)).fetchone()[0]
+    c.close()
+    assert got == pytest.approx(1044.55)
+
+
+def test_an_explicit_dirty_flag_protects_a_retyped_identical_cost(empty_db):
+    """The case numeric comparison cannot see: the operator deliberately types
+    the same number the derivation produced, then corrects the ratio. Without
+    the flag the server reads 'unchanged' and overwrites a deliberate value."""
+    import models
+    _seed_purchase(empty_db, 'TSTCOST1', net=1044.55, qty=1)
+    sid = _stage(empty_db)
+    pid = models.approve_pending_suggestion(
+        sid,
+        {'unit_conversion_ratio': 24,
+         'suggested_cost': 87.0458,          # byte-identical to the staged value
+         'suggested_cost_dirty': True},
+        reviewer_id=None)
+    c = _conn(empty_db)
+    got = c.execute("SELECT cost_price FROM products WHERE id=?", (pid,)).fetchone()[0]
+    c.close()
+    assert got == pytest.approx(87.0458), (
+        f'got {got} — an explicitly-flagged hand-typed cost must survive'
+    )
+
+
+def test_without_the_flag_the_same_edit_is_still_recomputed(empty_db):
+    """CONTROL for the test above. If this passed too, the flag would be
+    decoration and the test above would prove nothing."""
+    import models
+    _seed_purchase(empty_db, 'TSTCOST1', net=1044.55, qty=1)
+    sid = _stage(empty_db)
+    pid = models.approve_pending_suggestion(
+        sid, {'unit_conversion_ratio': 24, 'suggested_cost': 87.0458},
+        reviewer_id=None)
+    c = _conn(empty_db)
+    got = c.execute("SELECT cost_price FROM products WHERE id=?", (pid,)).fetchone()[0]
+    c.close()
+    assert got == pytest.approx(1044.55 / 24)
+
+
+def test_effective_ratio_folds_the_base_unit_in():
+    from models.suggestions import _effective_ratio
+    assert _effective_ratio('ตัว', 'โหล', 12) == 12        # conversion applies
+    assert _effective_ratio('โหล', 'โหล', 12) == 1.0       # same unit -> no divide
+    assert _effective_ratio('ตัว', None, 12) == 1.0        # no BSN unit known
+    assert _effective_ratio('ตัว', 'โหล', None) is None    # ratio not known yet

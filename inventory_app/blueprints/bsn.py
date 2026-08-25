@@ -218,15 +218,28 @@ def mapping():
     # (models.suggestions._cost_for_saved_ratio); this is only what the manager
     # sees. `net` is the whole purchase line after discount, `qty` is in the
     # BSN unit — the divisor is qty * ratio.
-    import bsn_suggest   # local import, matching mapping_suggest below
+    # ONE query for every staged row's latest purchase line, not one per
+    # row: get_pending_suggestions() is unpaginated, so a per-row lookup is
+    # an unbounded N+1 that also runs when the user is only opening the
+    # mapping tab (Codex round 2). The window function picks the same row
+    # bsn_suggest._latest_purchase does - ORDER BY date_iso DESC, id DESC.
     suggestion_cost_basis = {}
-    for s in pending_suggestions:
-        latest = bsn_suggest._latest_purchase(conn, s['bsn_code'])
-        if latest and latest.get('last_qty'):
-            suggestion_cost_basis[str(s['id'])] = {
-                'net': latest.get('line_net') or 0,
-                'qty': latest.get('last_qty'),
-            }
+    codes = [s['bsn_code'] for s in pending_suggestions]
+    if codes:
+        ph = ','.join('?' * len(codes))
+        latest_by_code = {r['bsn_code']: r for r in conn.execute(
+            "SELECT bsn_code, net, qty FROM ("
+            "  SELECT bsn_code, net, qty,"
+            "         ROW_NUMBER() OVER (PARTITION BY bsn_code"
+            "                            ORDER BY date_iso DESC, id DESC) AS rn"
+            "    FROM purchase_transactions"
+            f"   WHERE bsn_code IN ({ph})"
+            ") WHERE rn = 1", codes)}
+        for s in pending_suggestions:
+            row = latest_by_code.get(s['bsn_code'])
+            if row and row['qty']:
+                suggestion_cost_basis[str(s['id'])] = {
+                    'net': row['net'] or 0, 'qty': row['qty']}
     conn.close()
     tab = request.args.get('tab', 'mapping')
     return render_template(
@@ -310,6 +323,9 @@ def _build_suggestion_payload(bsn_code, item):
         # (a segment of every sku_code in the brand) has to ride along.
         'brand_other_short_code': item.get('brand_other_short_code') or None,
         'brand_other_name_th': item.get('brand_other_name_th') or None,
+        # Not stored on the staged row - a fact about THIS request,
+        # consumed by models.suggestions._cost_for_saved_ratio.
+        'suggested_cost_dirty': bool(item.get('suggested_cost_dirty')),
         'color_code_other': item.get('color_code_other') or None,
         'packaging_other': item.get('packaging_other') or None,
         'bsn_unit': item.get('bsn_unit') or None,

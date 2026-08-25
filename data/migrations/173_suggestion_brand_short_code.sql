@@ -10,6 +10,8 @@
 -- `brand_other_name_th` exists because the old inline INSERT copied `name` into
 -- `name_th`, which rendered the picker label as "SONAX / SONAX". The fix stops
 -- copying and lets the operator type a real Thai name when there is one.
+PRAGMA busy_timeout = 10000;
+
 BEGIN;
 
 ALTER TABLE pending_product_suggestions ADD COLUMN brand_other_short_code TEXT;

@@ -184,11 +184,18 @@ def ensure_product_family(conn, product_id: int):
     if existing:
         family_id = existing['id']
     else:
-        family_id = conn.execute(
+        # ON CONFLICT DO NOTHING + re-select, same reason as upsert_brand:
+        # `gunicorn -w 2` means two requests can mint the same family_code at
+        # once, and losing that race should reuse the winner's row rather than
+        # roll back a product creation.
+        cur = conn.execute(
             "INSERT INTO product_families (family_code, display_name, brand_id, note) "
-            "VALUES (?,?,?,?)",
+            "VALUES (?,?,?,?) ON CONFLICT(family_code) DO NOTHING",
             (fam_code, prod['product_name'], prod['brand_id'], SINGLETON_FAMILY_NOTE)
-        ).lastrowid
+        )
+        family_id = cur.lastrowid if cur.rowcount else conn.execute(
+            "SELECT id FROM product_families WHERE family_code = ?",
+            (fam_code,)).fetchone()[0]
     conn.execute(
         "UPDATE products SET family_id = ? WHERE id = ? AND family_id IS NULL",
         (family_id, prod['id'])
