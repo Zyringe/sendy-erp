@@ -47,10 +47,11 @@ from ._shared import (
 from .products import (
     get_products, get_product, create_product, create_structured_product,
     update_product, deactivate_product, weight_edit_fields, WEIGHT_SOURCES,
+    ensure_product_family, SINGLETON_FAMILY_NOTE, normalize_unit_type,
 )
 from .brands import (
     get_brands, get_brand, set_product_brand, _topup_pre_feb_for_product,
-    create_brand,
+    create_brand, upsert_brand, derive_brand_short_code,
 )
 from .stock import (
     get_stock_alerts, count_stock_alerts, get_product_locations,

@@ -272,10 +272,21 @@ def product_spec(pid):
         no-cost/GP role. The clone feature does not copy cost anyway (decision
         Q4 — a sibling's WACC is not this product's cost) so there is no
         reason to ship it here regardless of role.
-      - family_id. Decision Q14: a clone must NOT inherit the source's photo
-        family — sharing one would silently render the white variant's page
-        with the black sibling's photo the day product_images is repopulated
-        (it is 0 today, but that is exactly why this can't wait to be caught).
+    Ships `family_id` (2026-08-25, reversing decision Q14). Q14 assumed colour
+    was part of the family key, so a clone joining its template's family would
+    render the white variant with the black sibling's photo. Measured on prod
+    that day, the premise does not hold: **82 families already hold more than
+    one colour** (328 products), only 2 groups are split by colour alone, and
+    the family Q14 named as its example — `SD-230-AC` — does not exist. The
+    real row is `SD-230`, holding AC + CR + SN in one `size_table`. Withholding
+    the family was therefore enforcing a rule the catalogue does not follow,
+    against the common case: 263 of 301 families are `size_table`, i.e. "same
+    product, other size", which is what a clone usually is.
+
+    The residual hazard is real but lives one layer down and predates cloning:
+    a `role='family'` image is stored with `sku_id = NULL`, so it belongs to
+    every member. That is a photo-layer decision (use `role='single'` for a
+    colour-variant family), not a reason to leave a clone family-less.
     """
     conn = get_connection()
     row = conn.execute("""
@@ -283,9 +294,11 @@ def product_spec(pid):
                p.category_id, p.series, p.brand_id, p.model, p.size,
                p.color_code, cf.name_th AS color_th,
                p.packaging_th, p.condition, p.pack_variant, p.unit_type,
-               p.units_per_carton, p.units_per_box
+               p.units_per_carton, p.units_per_box,
+               p.family_id, pf.display_name AS family_name
           FROM products p
           LEFT JOIN color_finish_codes cf ON cf.code = p.color_code
+          LEFT JOIN product_families pf ON pf.id = p.family_id
          WHERE p.id = ?
     """, (pid,)).fetchone()
     conn.close()
@@ -406,6 +419,14 @@ def product_new():
                 'sub_category_short_code': f.get('sub_category_short_code', '').strip() or None,
                 'brand_id': int(brand_raw) if brand_raw and brand_raw != '__other__' else None,
                 'brand_other_name': f.get('brand_other_name', '').strip() or None,
+                # A brand typed here is NEW, so its short_code (a segment of
+                # every sku_code in the brand) has to come from the operator —
+                # guessing it silently creates a rename debt across the brand.
+                'brand_other_short_code': f.get('brand_other_short_code', '').strip() or None,
+                'brand_other_name_th': f.get('brand_other_name_th', '').strip() or None,
+                # Clone joins its template's family (minting one and pulling the
+                # template in when it had none). Same source of truth as Card B.
+                'clone_source_pid': clone_source_pid or None,
                 'color_code': color_raw if color_raw and color_raw != '__other__' else None,
                 'color_code_other': f.get('color_code_other', '').strip() or None,
                 'packaging_th': f.get('packaging_th', '').strip() or None,
@@ -430,7 +451,7 @@ def product_new():
 
         try:
             pid = models.create_structured_product(data, created_via)
-        except sqlite3.DatabaseError as e:
+        except (sqlite3.DatabaseError, ValueError) as e:
             flash(f'บันทึกไม่สำเร็จ: {e}', 'danger')
             return render_template('products/form.html', product=f, action='new',
                                    locations=[], clone_source_pid=clone_source_pid,
@@ -557,13 +578,18 @@ def product_set_brand(product_id):
     raw = request.form.get('brand_id', '').strip()
     new_brand_name = request.form.get('new_brand_name', '').strip()
     new_brand_name_th = request.form.get('new_brand_name_th', '').strip()
+    new_brand_short_code = request.form.get('new_brand_short_code', '').strip()
     new_brand_is_own = bool(request.form.get('new_brand_is_own'))
 
     brand_id = None
     if raw == '__new__' and new_brand_name:
         try:
+            # THIRD brand-creation call site. It was left out of the first
+            # sweep and kept minting NULL short_codes — the same defect Card B
+            # and /products/new were just fixed for (peer review 2026-08-25).
             brand_id = models.create_brand(new_brand_name,
                                             name_th=new_brand_name_th,
+                                            short_code=new_brand_short_code,
                                             is_own=new_brand_is_own)
             flash(f'เพิ่มแบรนด์ "{new_brand_name}" แล้ว', 'success')
         except ValueError as e:
@@ -913,7 +939,10 @@ _REVIEW_ROOT_REL = os.path.abspath(os.path.join(
 _PHOTOS_ROOT_REL = os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', '..', '..', 'Design', 'photos'))
 _IMG_EXTS_REV = ('.png', '.jpg', '.jpeg', '.webp')
-_SINGLETON_NOTE = 'auto-singleton-from-photo-import-2026-05-25'
+# Moved to models.products.SINGLETON_FAMILY_NOTE (one producer of the note,
+# now that the clone path mints these rows too). Re-exported so any
+# external reference to the old name keeps resolving.
+_SINGLETON_NOTE = models.SINGLETON_FAMILY_NOTE
 
 
 def _walk_review_files():
@@ -986,26 +1015,11 @@ def photos_review_assign():
         if not prod:
             return jsonify({'ok': False, 'error': 'product not in db'}), 404
 
-        # If product has no family, auto-create singleton (mirror rebuild_photo_index logic)
-        family_id = prod['family_id']
-        if not family_id:
-            fam_code = prod['sku_code']
-            existing = conn.execute(
-                "SELECT id FROM product_families WHERE family_code=?", (fam_code,)
-            ).fetchone()
-            if existing:
-                family_id = existing['id']
-            else:
-                ins = conn.execute(
-                    "INSERT INTO product_families "
-                    "(family_code, display_name, brand_id, note) VALUES (?,?,?,?)",
-                    (fam_code, prod['product_name'], prod['brand_id'], _SINGLETON_NOTE)
-                )
-                family_id = ins.lastrowid
-            conn.execute(
-                "UPDATE products SET family_id=? WHERE id=? AND family_id IS NULL",
-                (family_id, prod['id'])
-            )
+        # If product has no family, auto-create singleton. The logic lives in
+        # models.ensure_product_family so the clone path (create_structured_product)
+        # and this one cannot drift — they mint the same shape of row, with the
+        # same note, and both backfill guarded on `family_id IS NULL`.
+        family_id = models.ensure_product_family(conn, prod['id'])
 
         fam = conn.execute(
             "SELECT family_code FROM product_families WHERE id=?", (family_id,)

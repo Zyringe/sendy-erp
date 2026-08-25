@@ -403,6 +403,14 @@
                 <input type="text" name="new_brand_name" class="form-control form-control-sm mb-2" placeholder="เช่น MyBrand">
                 <label class="form-label small">ชื่อภาษาไทย (optional)</label>
                 <input type="text" name="new_brand_name_th" class="form-control form-control-sm mb-2" placeholder="เช่น แบรนด์ของฉัน">
+                {# short_code is a SEGMENT of every sku_code in the brand. This
+                   was the THIRD brand-creation call site and the sweep missed
+                   it, so it kept minting NULL short_codes — the exact SONAX
+                   defect, via "change brand on an existing product" instead of
+                   Card B (peer review 2026-08-25). #}
+                <label class="form-label small">รหัสย่อ (short_code) — ใช้ใน sku_code</label>
+                <input type="text" name="new_brand_short_code" maxlength="10"
+                       class="form-control form-control-sm mb-2" placeholder="เช่น SONAX">
                 <div class="form-check">
                   <input class="form-check-input" type="checkbox" name="new_brand_is_own" id="new-brand-own">
                   <label class="form-check-label small" for="new-brand-own">เป็นแบรนด์ของบริษัท (own brand → ใช้ rate own)</label>

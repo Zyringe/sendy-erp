@@ -122,6 +122,17 @@
               <div class="ac-drop"></div>
             </div>
           </div>
+          {# mig 174: a staged row can name a brand that does not exist yet.
+             short_code is a segment of every sku_code in that brand, so the
+             manager confirms it here rather than letting the brand be born
+             without one (which is how SONAX lost its brand segment). #}
+          <div class="col-md-4"><label class="form-label mb-0">รหัสย่อแบรนด์ใหม่</label>
+            <input class="form-control form-control-sm" id="sug-brand-short-{{ s.id }}"
+                   maxlength="10" placeholder="ใช้เมื่อเป็นแบรนด์ใหม่เท่านั้น"
+                   value="{{ s.brand_other_short_code or '' }}"></div>
+          <div class="col-md-4"><label class="form-label mb-0">ชื่อไทยแบรนด์ใหม่</label>
+            <input class="form-control form-control-sm" id="sug-brand-th-{{ s.id }}"
+                   placeholder="เว้นว่างได้" value="{{ s.brand_other_name_th or '' }}"></div>
           <div class="col-md-3"><label class="form-label mb-0">Model</label>
             <input class="form-control form-control-sm" id="sug-model-{{ s.id }}" value="{{ s.model or '' }}"></div>
           <div class="col-md-3"><label class="form-label mb-0">Size</label>
@@ -196,6 +207,39 @@
 </div>
 
 <script>
+/* Cost basis per staged suggestion: {sid: {net, qty}}. Only the rows whose
+   BSN code has a purchase line appear — a missing entry means "no basis", and
+   sugRatioChanged() then leaves the cost alone rather than deriving from 0. */
+const SUG_COST_BASIS = {{ suggestion_cost_basis|tojson }};
+
+/* A ratio corrected here changes the cost basis: staged cost was
+   net / (qty x staged_ratio). Recompute so the manager sees the number that
+   will actually be written. The SERVER re-derives this too
+   (models.suggestions._cost_for_saved_ratio) — that is the authority; this is
+   the visible half, so the form does not silently disagree with what lands. */
+function sugRatioChanged(id) {
+  const ratioEl = document.getElementById('sug-ratio-' + id);
+  const costEl  = document.getElementById('sug-cost-' + id);
+  if (!ratioEl || !costEl || costEl.dataset.dirty === '1') return;
+  const basis = SUG_COST_BASIS[String(id)];
+  const ratio = parseFloat(ratioEl.value);
+  if (!basis || !isFinite(ratio) || ratio <= 0) return;
+  const qty = parseFloat(basis.qty), net = parseFloat(basis.net);
+  if (!isFinite(qty) || !isFinite(net) || qty <= 0) return;
+  costEl.value = Math.round((net / (qty * ratio)) * 10000) / 10000;
+}
+document.addEventListener('input', e => {
+  if (!e.target.id) return;
+  if (e.target.id.startsWith('sug-ratio-')) sugRatioChanged(e.target.id.slice('sug-ratio-'.length));
+  if (e.target.id.startsWith('sug-cost-')) e.target.dataset.dirty = '1';
+});
+document.addEventListener('change', e => {
+  // the base unit is an input to the cost basis just as much as the ratio is
+  if (e.target.id && e.target.id.startsWith('sug-unit-')) {
+    sugRatioChanged(e.target.id.slice('sug-unit-'.length));
+  }
+});
+
 function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgOther) {
   const v = (key) => {
     const el = document.getElementById('sug-' + key + '-' + id);
@@ -210,6 +254,8 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
     series:              v('series'),
     brand_id:            v('brand') || null,
     brand_other_name:    v('brand-other') || null,
+    brand_other_short_code: v('brand-short') || null,
+    brand_other_name_th: v('brand-th') || null,
     model:               v('model'),
     size:                v('size'),
     color_th:            v('colorth'),
@@ -220,6 +266,9 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
     condition:           v('cond'),
     pack_variant:        v('pv'),
     suggested_cost:      v('cost'),
+    suggested_cost_dirty: (document.getElementById('sug-cost-' + id) || {}).dataset
+                            ? document.getElementById('sug-cost-' + id).dataset.dirty === '1'
+                            : false,
     suggested_unit_type: v('unit'),
     units_per_carton:    v('upc') || null,
     units_per_box:       v('upb') || null,
@@ -480,6 +529,31 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                     <div class="ac-drop"></div>
                   </div></div>
 
+                {# A brand typed here does not exist yet. short_code is a SEGMENT
+                   of every sku_code in the brand, so it is asked for once, at
+                   creation, rather than guessed silently — a wrong guess has to
+                   be undone across the whole brand later. Shown only while the
+                   combo is in new-brand mode. #}
+                <div class="col-12" id="sm-newbrand-row" style="display:none">
+                  <div class="alert alert-warning py-2 px-2 mb-0 small">
+                    <i class="bi bi-plus-square me-1"></i>
+                    แบรนด์ใหม่: <strong id="sm-newbrand-name"></strong>
+                    <div class="row g-2 mt-1">
+                      <div class="col-md-4">
+                        <label class="form-label mb-0">รหัสย่อแบรนด์ (short_code)</label>
+                        <input class="form-control form-control-sm" id="sm-brand-short"
+                               maxlength="10" placeholder="เช่น SONAX">
+                        <div class="form-text small">ใช้เป็นท่อนหนึ่งของ sku_code — เว้นว่าง = sku ไม่มีท่อนแบรนด์</div>
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label mb-0">ชื่อไทย (ถ้ามี)</label>
+                        <input class="form-control form-control-sm" id="sm-brand-th"
+                               placeholder="เว้นว่างได้ถ้าแบรนด์เป็นอังกฤษล้วน">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="col-md-3"><label class="form-label mb-0">Model</label>
                   <input class="form-control form-control-sm" id="sm-model"></div>
                 <div class="col-md-3"><label class="form-label mb-0">Size</label>
@@ -511,8 +585,9 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                   </div></div>
                 <div class="col-md-3"><label class="form-label mb-0">Pack variant</label>
                   <input class="form-control form-control-sm" id="sm-pv"></div>
-                <div class="col-md-3"><label class="form-label mb-0">Cost (initial WACC)</label>
-                  <input type="number" step="0.01" class="form-control form-control-sm" id="sm-cost"></div>
+                <div class="col-md-3"><label class="form-label mb-0">Cost (ต่อ 1 unit type)</label>
+                  <input type="number" step="0.0001" class="form-control form-control-sm" id="sm-cost">
+                  <div class="form-text small text-subtle" id="sm-cost-hint"></div></div>
 
                 <div class="col-md-3"><label class="form-label mb-0">Unit type (base/finest)</label>
                   <div class="combo" data-opts="units" data-allow-new="1">
@@ -545,6 +620,11 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
                  clone either (server already defaults to 1 when absent). #}
               <input type="hidden" id="sm-units-per-carton">
               <input type="hidden" id="sm-units-per-box">
+              {# Clone provenance. The server derives family_id from this pid
+                 at approve time (not at stage time) so the new SKU lands in
+                 whatever family the template belongs to THEN — and mints one,
+                 pulling the template in, if the template has none. #}
+              <div class="small text-subtle mt-1" id="sm-family-note"></div>
               <div class="mt-3 d-flex gap-2">
                 <button class="btn btn-warning btn-sm" onclick="confirmStageNew()">
                   <i class="bi bi-clipboard-plus me-1"></i>ส่งให้ manager review
@@ -619,6 +699,13 @@ let _smBsnUnit = null;     // unit from latest_purchase
 // reset only when the modal is reopened (openSuggest), never by editing an
 // individual field — that matches decision Q1 ("close and reopen to reset").
 let _smCloneSourcePid = null;
+let _smCostDirty = false;  // set the moment the operator types in sm-cost.
+                           // A real boolean, not a comparison against the last
+                           // auto value: typing the SAME number the derivation
+                           // produced is still a deliberate choice, and a
+                           // value-compare would silently overwrite it on the
+                           // next ratio change (Codex review 2026-08-25).
+let _smPurchase = {};      // latest_purchase for the open modal (net + qty)
 let _smNameDirty = false;
 
 // Passed from the route (models.NON_STOCK_BSN_CODES), not hard-coded here —
@@ -655,6 +742,21 @@ function openSuggest(idx, bsnCode) {
   // mapping-suggest-clone PR3 — clone state resets ONLY here (decision Q1:
   // close/reopen the modal, not per-field edits).
   _smCloneSourcePid = null;
+  _smCostDirty = false;
+  // Clear BOTH cost inputs on every open. recomputeCostFromPurchase() returns
+  // early without touching the box when there is no purchase line or no ratio
+  // yet — so without this, reviewing code A and then opening code B leaves A's
+  // cost sitting in the box, and it is submitted as B's cost_price/opening_cost.
+  // That is the very failure this branch exists to fix, re-entered through a
+  // different door (peer review 2026-08-25). sm-ratio was never reset either
+  // (pre-existing), and it now FEEDS the cost derivation, so a leftover ratio
+  // produces a plausible but wrong number rather than just a bad conversion row.
+  document.getElementById('sm-cost').value = '';
+  document.getElementById('sm-ratio').value = '';
+  _smPurchase = {};
+  document.getElementById('sm-brand-short').value = '';
+  document.getElementById('sm-brand-th').value = '';
+  document.getElementById('sm-family-note').textContent = '';
   _smNameDirty = false;
   document.getElementById('sm-clone-search').value = '';
   document.getElementById('sm-sku-preview').textContent = '—';
@@ -833,7 +935,7 @@ function populateSuggestModal(data) {
   setVal('sm-pkg', p.packaging || '');
   setVal('sm-cond', p.condition || '');
   document.getElementById('sm-pv').value       = p.pack_variant || '';
-  document.getElementById('sm-cost').value     = lp.cost_price || 0;
+  _smPurchase = lp;   // cost is derived AFTER unit + ratio settle, below
   // Default new-SKU base unit to BSN unit (issue #4) — most often they match
   // and no conversion is needed. User can edit if product is sold in smaller pcs.
   const defaultBaseUnit = _smBsnUnit || 'ตัว';
@@ -860,19 +962,118 @@ function populateSuggestModal(data) {
   }
 
   refreshUnitConvVisibility();
+  // Cost last: effectiveRatio() reads sm-unit and sm-ratio, both of which are
+  // only final at this point (the packaging-count autofill above can still set
+  // the ratio). Deriving earlier would divide by a stale unit.
+  recomputeCostFromPurchase();
+  refreshNewBrandRow();
   fetchIdentityPreview();   // mapping-suggest-clone PR3 — seed the sku preview from the parser's guess
 }
 
+/* ── New-brand extras: reveal short_code + Thai name only while the brand
+   combo is actually in "new brand" mode (combo-other non-empty). short_code
+   is a SEGMENT of sku_code, so it is asked for at creation rather than
+   guessed — and the box is prefilled with a proposal, not left blank. ── */
+function deriveBrandShort(name) {
+  return (name || '').replace(/[^A-Za-z0-9]+/g, '').toUpperCase().slice(0, 6);
+}
+
+function refreshNewBrandRow() {
+  const row   = document.getElementById('sm-newbrand-row');
+  const other = (document.getElementById('sm-brand-other').value || '').trim();
+  const picked = (document.getElementById('sm-brand').value || '').trim();
+  if (!row) return;
+  if (other && !picked) {
+    row.style.display = '';
+    document.getElementById('sm-newbrand-name').textContent = other;
+    const short = document.getElementById('sm-brand-short');
+    // Only propose while the operator has not typed their own.
+    if (!short.value || short.dataset.auto === '1') {
+      short.value = deriveBrandShort(other);
+      short.dataset.auto = '1';
+    }
+  } else {
+    row.style.display = 'none';
+  }
+}
+document.addEventListener('input', e => {
+  if (e.target.id === 'sm-brand-short') e.target.dataset.auto = '';
+  // scoped to the BRAND combo — `.combo-input` is shared by ~12 unrelated
+  // fields (category, colour, packaging, unit) that cannot affect this row
+  if (e.target.classList && e.target.classList.contains('combo-input') &&
+      e.target.closest('.combo') &&
+      e.target.closest('.combo').querySelector('#sm-brand')) {
+    refreshNewBrandRow();
+  }
+});
+document.addEventListener('change', e => {
+  if (e.target.id === 'sm-brand' || e.target.id === 'sm-brand-other') refreshNewBrandRow();
+});
+
 function refreshUnitConvVisibility() {
   // Show ratio row in Card B only when BSN unit ≠ Card B's unit_type
-  const baseUnit = (document.getElementById('sm-unit').value || 'ตัว').trim();
+  // trim FIRST, then default — `('  ' || 'ตัว').trim()` is '', which
+  // matches neither the BSN unit nor what the server will store
+  const baseUnit = (document.getElementById('sm-unit').value || '').trim() || 'ตัว';
   document.getElementById('sm-base-unit-display').textContent = baseUnit;
   const row = document.getElementById('sm-bunit-row');
   if (_smBsnUnit && _smBsnUnit !== baseUnit) row.style.display = '';
   else row.style.display = 'none';
 }
+
+/* ── Cost = net ÷ (qty × ratio), never the raw per-BSN-unit list price ──────
+   `latest_purchase.cost_price` is unit_price: per BSN UNIT and BEFORE the
+   line discount. Pasting it into a product held in a finer unit is what put
+   ฿1,810/โหล onto a ตัว-based SONAX SKU (真 cost ฿87.05) and, via opening_cost,
+   froze its WACC there — recalculate_product_wacc keeps the last known WACC
+   when stock is 0, so the correct purchase could never displace the seed.
+
+   The ratio is the one in the conversion box; when BSN unit == the chosen
+   unit_type no conversion applies and the divisor is 1. A ratio the operator
+   has not typed yet while the units DIFFER is unknown, so we leave the field
+   alone rather than divide by a guessed 1. */
+function effectiveRatio() {
+  // trim FIRST, then default — `('  ' || 'ตัว').trim()` is '', which
+  // matches neither the BSN unit nor what the server will store
+  const baseUnit = (document.getElementById('sm-unit').value || '').trim() || 'ตัว';
+  if (!_smBsnUnit || _smBsnUnit === baseUnit) return 1;
+  const typed = parseFloat(document.getElementById('sm-ratio').value);
+  return (isFinite(typed) && typed > 0) ? typed : null;
+}
+
+function recomputeCostFromPurchase() {
+  const box = document.getElementById('sm-cost');
+  if (!box) return;
+  // Respect a hand-typed cost: once the operator has touched this box we never
+  // write it again for the rest of the modal's life.
+  if (_smCostDirty) return;
+
+  const net = parseFloat(_smPurchase.line_net);
+  const qty = parseFloat(_smPurchase.last_qty);
+  const ratio = effectiveRatio();
+  const hint = document.getElementById('sm-cost-hint');
+  if (!isFinite(net) || !isFinite(qty) || qty <= 0 || ratio === null || !(ratio > 0)) {
+    if (hint) {
+      hint.textContent = (_smPurchase.line_net === undefined)
+        ? 'ยังไม่มีใบซื้อของรหัสนี้ — กรอกต้นทุนเอง'
+        : 'ใส่ ratio ก่อน ระบบจึงคำนวณต้นทุนต่อหน่วยได้';
+    }
+    return;
+  }
+  const perBase = net / (qty * ratio);
+  box.value = Math.round(perBase * 10000) / 10000;
+  if (hint) {
+    hint.textContent = 'จาก net ฿' + net.toLocaleString() + ' ÷ (' + qty + ' ' +
+      (_smPurchase.unit_type || _smBsnUnit || '') + ' × ' + ratio + ')';
+  }
+}
+
 document.addEventListener('change', e => {
-  if (e.target.id === 'sm-unit') refreshUnitConvVisibility();
+  if (e.target.id === 'sm-unit') { refreshUnitConvVisibility(); recomputeCostFromPurchase(); }
+});
+document.addEventListener('input', e => {
+  if (e.target.id === 'sm-ratio') recomputeCostFromPurchase();
+  if (e.target.id === 'sm-cost') _smCostDirty = true;
 });
 
 /* ── mapping-suggest-clone PR3: live name + sku_code preview ──────────────
@@ -968,6 +1169,20 @@ function cloneFromProduct(pid) {
       _smCloneSourcePid = pid;
       _smNameDirty = false;   // clone counts as a fresh start for the name box too
       refreshUnitConvVisibility();
+      // The template's unit_type overrides the BSN-unit default, so the cost
+      // divisor just changed — re-derive rather than leave a number computed
+      // against the previous unit.
+      recomputeCostFromPurchase();
+      refreshNewBrandRow();
+      // Say where this SKU will land. The server resolves the family from
+      // clone_source_pid at approve time, so this is a statement about the
+      // template, not a value being posted.
+      const famNote = document.getElementById('sm-family-note');
+      if (famNote) {
+        famNote.textContent = spec.family_id
+          ? '📁 จะเข้า family เดียวกับต้นแบบ: ' + (spec.family_name || ('#' + spec.family_id))
+          : '📁 ต้นแบบยังไม่มี family — ระบบจะสร้างใหม่แล้วดึงต้นแบบเข้ามาด้วย';
+      }
       fetchIdentityPreview();
     })
     .catch(() => alert('โหลดข้อมูลสินค้าไม่สำเร็จ'));
@@ -1135,6 +1350,10 @@ function _smBuildStagePayload() {
     series: v('series'),
     brand_id: v('brand') || null,
     brand_other_name: v('brand-other') || null,
+    // Only meaningful when brand_other_name is set (a brand that does not
+    // exist yet). short_code becomes a segment of every sku_code in the brand.
+    brand_other_short_code: v('brand-short') || null,
+    brand_other_name_th: v('brand-th') || null,
     model: v('model'),
     size: v('size'),
     color_th: v('colorth'),
@@ -1145,6 +1364,10 @@ function _smBuildStagePayload() {
     condition: v('cond'),
     pack_variant: v('pv'),
     suggested_cost: parseFloat(v('cost') || 0),
+    // Authority on whether a human typed this. The server cannot infer it:
+    // retyping the same number the derivation produced is indistinguishable
+    // from never touching the box (Codex round 2).
+    suggested_cost_dirty: _smCostDirty,
     suggested_unit_type: v('unit') || 'ตัว',
     bsn_unit: _smBsnUnit,
     unit_conversion_ratio: v('ratio') || null,
@@ -1154,11 +1377,31 @@ function _smBuildStagePayload() {
   };
 }
 
+/* A new brand with a blank short_code reproduces the exact SONAX defect: the
+   brand segment vanishes from every sku_code in that brand. The auto-proposal
+   only fires for names with ASCII, so a purely-Thai brand name gets nothing —
+   which is precisely the case that must be typed by hand, not waved through. */
+function newBrandShortCodeMissing() {
+  const row = document.getElementById('sm-newbrand-row');
+  if (!row || row.style.display === 'none') return false;
+  return !(document.getElementById('sm-brand-short').value || '').trim();
+}
+
 function confirmStageNew() {
+  if (newBrandShortCodeMissing()) {
+    alert('กรุณาใส่รหัสย่อแบรนด์ (short_code) — ถ้าเว้นว่าง sku_code จะไม่มีท่อนแบรนด์');
+    document.getElementById('sm-brand-short').focus();
+    return;
+  }
   saveSingle(Object.assign({ action: 'stage' }, _smBuildStagePayload()));
 }
 
 function confirmCreateNow(confirmDuplicate) {
+  if (newBrandShortCodeMissing()) {
+    alert('กรุณาใส่รหัสย่อแบรนด์ (short_code) — ถ้าเว้นว่าง sku_code จะไม่มีท่อนแบรนด์');
+    document.getElementById('sm-brand-short').focus();
+    return;
+  }
   const entry = Object.assign({ action: 'create_now' }, _smBuildStagePayload());
   if (confirmDuplicate) entry.confirm_duplicate = true;
   fetch('{{ url_for("bsn.mapping_save") }}', {

@@ -90,9 +90,10 @@ def spec_source_product(tmp_db):
     pid = conn.execute(
         "SELECT id FROM products WHERE product_name=?", (_SPEC_TEST_NAME,)
     ).fetchone()[0]
-    # family_id: leave NULL on the row itself (decision Q14 — a clone must
-    # never inherit family_id even when the SOURCE has one). Set it here so
-    # a leak has something concrete to leak.
+    # family_id is set to a REAL family here so both halves of the contract
+    # have something concrete to check: the money fields must still be absent,
+    # and family_id must now be PRESENT and correct (Q14 reversed 2026-08-25 —
+    # a clone joins its template's family).
     fam = conn.execute("SELECT id FROM product_families LIMIT 1").fetchone()
     if fam:
         conn.execute("UPDATE products SET family_id=? WHERE id=?", (fam[0], pid))
@@ -128,17 +129,55 @@ def test_product_spec_returns_expected_keys(admin_client, spec_source_product):
     assert body['units_per_box'] == 6
 
 
-def test_product_spec_excludes_money_and_family(admin_client, spec_source_product):
-    """The negative half — must not leak cost_price / base_sell_price /
-    family_id. Asserted explicitly (not merely absent from a dict that also
-    happens to lack other things) with a control row that DOES carry
-    non-trivial values for all three, seeded above."""
+def test_product_spec_excludes_money(admin_client, spec_source_product):
+    """The negative half — must not leak cost_price / base_sell_price. GET is
+    fail-open for every logged-in role and staff is explicitly a no-cost role,
+    so money must never cross this boundary.
+
+    Asserted explicitly (not merely absent from a dict that also happens to
+    lack other things): the fixture row carries 123.45 / 199.0, so an absent
+    key is a real exclusion rather than an absent value matching by
+    coincidence. The `family_id` CONTROL below is what makes this test unable
+    to pass on a broken/empty response — if the whole SELECT returned nothing,
+    the money keys would be absent too and this would look clean."""
     client, _db = admin_client
     resp = client.get(f'/products/spec/{spec_source_product}')
     body = resp.get_json()
+    assert body.get('family_id'), (
+        'CONTROL: the fixture set a real family — without a populated response '
+        'the money assertions below could not fail'
+    )
     assert 'cost_price' not in body
     assert 'base_sell_price' not in body
-    assert 'family_id' not in body
+
+
+def test_product_spec_ships_family_so_a_clone_can_join_it(admin_client, spec_source_product):
+    """Reverses decision Q14 (2026-08-25). Q14 withheld family_id on the theory
+    that colour is part of the family key, so a clone joining its template's
+    family would render the white variant with the black sibling's photo.
+    Measured on prod that day: 82 families already hold more than one colour
+    (328 products), only 2 groups are split by colour alone, and Q14's own
+    example `SD-230-AC` does not exist — the real family is `SD-230`, holding
+    AC + CR + SN in one size_table.
+
+    The endpoint must therefore report the template's family (and its name, for
+    the "จะเข้า family ..." line the two clone UIs show). It is REPORTING, not
+    posting: the server derives the new product's family from
+    `clone_source_pid` at create time, so this value can go stale without
+    causing a wrong write."""
+    client, db_path = admin_client
+    resp = client.get(f'/products/spec/{spec_source_product}')
+    body = resp.get_json()
+
+    conn = sqlite3.connect(db_path)
+    expected = conn.execute(
+        'SELECT p.family_id, pf.display_name FROM products p '
+        'LEFT JOIN product_families pf ON pf.id = p.family_id WHERE p.id = ?',
+        (spec_source_product,)).fetchone()
+    conn.close()
+    assert expected[0], 'fixture did not attach a family — the rest is vacuous'
+    assert body['family_id'] == expected[0]
+    assert body['family_name'] == expected[1]
 
 
 def test_product_spec_unknown_id_404(admin_client):

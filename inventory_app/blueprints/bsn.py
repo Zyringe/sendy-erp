@@ -210,6 +210,35 @@ def mapping():
     # drop_dated=True: a new product should not be offered a 2019 expiry.
     # /naming keeps dated values (edit form, see form_options.conditions docstring).
     condition_suggestions = form_options.conditions(conn, drop_dated=True)
+    # Cost basis per staged suggestion, so the Tab-2 review form can re-derive
+    # cost when the manager corrects the conversion ratio. Without it the form
+    # would keep showing a cost computed against the OLD ratio while the server
+    # writes a different (correct) one — the number on screen has to match what
+    # lands. The server is still the authority
+    # (models.suggestions._cost_for_saved_ratio); this is only what the manager
+    # sees. `net` is the whole purchase line after discount, `qty` is in the
+    # BSN unit — the divisor is qty * ratio.
+    # ONE query, and ZERO bound parameters: get_pending_suggestions() is
+    # unpaginated, so binding one variable per pending row would hit
+    # SQLITE_MAX_VARIABLE_NUMBER (999 on older builds) and 500 the page
+    # (round 3). Joining against the table instead has no such ceiling.
+    # The window picks the same row bsn_suggest._latest_purchase does:
+    # ORDER BY date_iso DESC, id DESC. Population matches
+    # get_pending_suggestions() exactly -- status = 'pending'.
+    suggestion_cost_basis = {
+        str(r['sid']): {'net': r['net'] or 0, 'qty': r['qty']}
+        for r in conn.execute("""
+            SELECT s.id AS sid, pt.net AS net, pt.qty AS qty
+              FROM pending_product_suggestions s
+              JOIN (SELECT bsn_code, net, qty,
+                           ROW_NUMBER() OVER (PARTITION BY bsn_code
+                                              ORDER BY date_iso DESC, id DESC) AS rn
+                      FROM purchase_transactions) pt
+                ON pt.bsn_code = s.bsn_code AND pt.rn = 1
+             WHERE s.status = 'pending'
+        """)
+        if r['qty']
+    }
     conn.close()
     tab = request.args.get('tab', 'mapping')
     return render_template(
@@ -226,6 +255,7 @@ def mapping():
         condition_suggestions=condition_suggestions,
         active_tab=tab,
         non_stock_codes=sorted(models.NON_STOCK_BSN_CODES),
+        suggestion_cost_basis=suggestion_cost_basis,
     )
 
 
@@ -288,6 +318,13 @@ def _build_suggestion_payload(bsn_code, item):
         'units_per_box': item.get('units_per_box'),
         # Round-2 extras (mig 037)
         'brand_other_name': item.get('brand_other_name') or None,
+        # mig 174 — a brand typed here does not exist yet, so its short_code
+        # (a segment of every sku_code in the brand) has to ride along.
+        'brand_other_short_code': item.get('brand_other_short_code') or None,
+        'brand_other_name_th': item.get('brand_other_name_th') or None,
+        # Not stored on the staged row - a fact about THIS request,
+        # consumed by models.suggestions._cost_for_saved_ratio.
+        'suggested_cost_dirty': bool(item.get('suggested_cost_dirty')),
         'color_code_other': item.get('color_code_other') or None,
         'packaging_other': item.get('packaging_other') or None,
         'bsn_unit': item.get('bsn_unit') or None,

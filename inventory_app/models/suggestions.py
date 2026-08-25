@@ -16,6 +16,7 @@ import sqlite3
 import sku_code_utils
 from database import get_connection
 
+from . import products as products_mod
 from .products import create_structured_product
 from .mapping import resolve_pending_mappings
 from .bsn_sync import cross_unit_hazard
@@ -96,11 +97,16 @@ def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) ->
     the same bsn_code" (must not let one clobber the other's payload before
     it gets approved) — see `create_now`.
     """
+    # `suggested_cost_dirty` is a per-REQUEST signal, not a column — drop it
+    # before the INSERT binds `data` by name (it is consumed at approve time,
+    # where it arrives on `edits` instead).
+    data = {k: v for k, v in data.items() if k != 'suggested_cost_dirty'}
     # Default any missing extras to None so SQL params bind cleanly
     for k in ('brand_other_name', 'color_code_other', 'packaging_other',
               'bsn_unit', 'unit_conversion_ratio',
               'sub_category', 'sub_category_short_code', 'category_id',
-              'clone_source_pid'):
+              'clone_source_pid',
+              'brand_other_short_code', 'brand_other_name_th'):
         data.setdefault(k, None)
     conflict_clause = """
         ON CONFLICT(bsn_code) DO UPDATE SET
@@ -121,6 +127,8 @@ def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) ->
             units_per_carton = excluded.units_per_carton,
             units_per_box = excluded.units_per_box,
             brand_other_name = excluded.brand_other_name,
+            brand_other_short_code = excluded.brand_other_short_code,
+            brand_other_name_th = excluded.brand_other_name_th,
             color_code_other = excluded.color_code_other,
             packaging_other = excluded.packaging_other,
             bsn_unit = excluded.bsn_unit,
@@ -139,7 +147,8 @@ def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) ->
               (bsn_code, bsn_name, suggested_name, category, series, brand_id,
                model, size, color_th, color_code, packaging, condition, pack_variant,
                suggested_cost, suggested_unit_type, units_per_carton, units_per_box,
-               brand_other_name, color_code_other, packaging_other,
+               brand_other_name, brand_other_short_code, brand_other_name_th,
+               color_code_other, packaging_other,
                bsn_unit, unit_conversion_ratio,
                sub_category, sub_category_short_code, category_id, clone_source_pid,
                suggested_by_user_id, status)
@@ -147,7 +156,8 @@ def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) ->
               (:bsn_code, :bsn_name, :suggested_name, :category, :series, :brand_id,
                :model, :size, :color_th, :color_code, :packaging, :condition, :pack_variant,
                :suggested_cost, :suggested_unit_type, :units_per_carton, :units_per_box,
-               :brand_other_name, :color_code_other, :packaging_other,
+               :brand_other_name, :brand_other_short_code, :brand_other_name_th,
+               :color_code_other, :packaging_other,
                :bsn_unit, :unit_conversion_ratio,
                :sub_category, :sub_category_short_code, :category_id, :clone_source_pid,
                :suggested_by_user_id, 'pending'){conflict_clause}
@@ -171,6 +181,104 @@ def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) ->
 _CLEARABLE_EDIT_KEYS = frozenset({
     'category_id', 'brand_id', 'color_code', 'packaging',
 })
+
+
+def _effective_ratio(unit_type, bsn_unit, ratio):
+    """Base units per BSN unit — the divisor a cost must be derived against.
+
+    1.0 when the product is held in the SAME unit the BSN bills in: no
+    conversion applies, so one purchase unit IS one base unit. Otherwise the
+    conversion ratio, which may be None (not yet known).
+
+    This mirrors `effectiveRatio()` in mapping.html. Keeping the two in step
+    matters because the base unit is an input to the cost basis just as much as
+    the ratio is: switching a product from ตัว to โหล while leaving ratio 12
+    alone changes the correct cost by 12x even though the ratio field never
+    moved (Codex review round 2, 2026-08-25).
+    """
+    # `unit_type or 'ตัว'` mirrors what create_structured_product actually
+    # PERSISTS. Without it a cleared unit box compares '' against bsn_unit
+    # 'ตัว', concludes a conversion applies, and divides the cost by the ratio
+    # for a product that is then saved AS 'ตัว' -- 12x too low (round 3).
+    unit_type = products_mod.normalize_unit_type(unit_type)
+    bsn_unit = (bsn_unit or '').strip()
+    if not bsn_unit or unit_type == bsn_unit:
+        return 1.0
+    return ratio
+
+
+def _cost_for_saved_ratio(conn, staged, merged):
+    """Re-derive `suggested_cost` when the COST BASIS moved but the cost did not.
+
+    The basis is `net / (qty * effective_ratio)`, where effective_ratio folds in
+    BOTH the conversion ratio and the chosen base unit (see `_effective_ratio`).
+    Derived through the single implementation in `bsn_suggest.base_unit_cost`,
+    the same arithmetic `models.wacc` uses to cost a `BSN ซื้อ` leg.
+
+    Returns the cost to persist, unchanged in every case except the one this
+    exists for:
+
+      * `suggested_cost_dirty` -> the operator typed it; their number wins
+      * the basis did not move          -> the staged cost is still right
+      * no purchase row for this code   -> nothing to derive from
+      * derivation yields None or <= 0  -> never write a zero basis
+
+    ⚠ `suggested_cost_dirty` is the AUTHORITY on whether a human touched the
+    field. The numeric fallback below cannot be: an operator who deliberately
+    retypes the same number the derivation produced is indistinguishable from
+    one who never touched it, and guessing wrong overwrites a deliberate cost
+    (Codex review round 2). Both of our forms send the flag; the fallback only
+    covers a client that does not.
+    """
+    import bsn_suggest
+
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    final_cost = _f(merged.get('suggested_cost'))
+    if final_cost is None:
+        return merged.get('suggested_cost')
+
+    if merged.get('suggested_cost_dirty'):
+        return merged.get('suggested_cost')
+
+    staged_cost = _f(staged['suggested_cost'])
+    if staged_cost is None or abs(final_cost - staged_cost) > 1e-9:
+        # legacy fallback: a client that sent no flag, and a cost that visibly
+        # differs from what was staged, is treated as hand-edited
+        return merged.get('suggested_cost')
+
+    staged_eff = _effective_ratio(
+        staged['suggested_unit_type'], staged['bsn_unit'],
+        _f(staged['unit_conversion_ratio']))
+    final_eff = _effective_ratio(
+        merged.get('suggested_unit_type'), merged.get('bsn_unit'),
+        _f(merged.get('unit_conversion_ratio')))
+
+    if final_eff is None or final_eff <= 0:
+        return merged.get('suggested_cost')
+    # An UNKNOWN staged basis is not evidence the basis moved. Staging with no
+    # ratio and then supplying one at approval does not prove the staged cost
+    # was derived from the old basis -- it may have been typed by hand at a
+    # stage where no flag was captured. Preserving it is the conservative
+    # reading; only a basis we can see BOTH sides of justifies a rewrite
+    # (round 3).
+    if staged_eff is None:
+        return merged.get('suggested_cost')
+    if abs(final_eff - staged_eff) <= 1e-9:
+        return merged.get('suggested_cost')
+
+    latest = bsn_suggest._latest_purchase(conn, staged['bsn_code'])
+    if not latest:
+        return merged.get('suggested_cost')
+    derived = bsn_suggest.base_unit_cost(
+        latest.get('line_net'), latest.get('last_qty'), final_eff)
+    if derived is None or derived <= 0:
+        return merged.get('suggested_cost')
+    return derived
 
 
 def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int) -> int:
@@ -209,6 +317,10 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         # protects the free-text fields (which submit '' for a clear, and ''
         # already passes the filter below).
         d = dict(sug)
+        # Not a column on the staged row: whether the human touched the cost
+        # box is a fact about THIS request. Default False so a client that
+        # omits it falls through to the numeric heuristic.
+        d['suggested_cost_dirty'] = False
         d.update({
             k: v for k, v in edits.items()
             if v is not None or k in _CLEARABLE_EDIT_KEYS
@@ -230,6 +342,20 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         created_via = ('smart_mapping_clone_' + str(d['clone_source_pid'])
                        if d.get('clone_source_pid') else 'smart_mapping')
 
+        # ── Cost basis: keep it tied to the ratio actually being saved ──────
+        # Card B derives cost as net / (qty x ratio). If the manager corrects
+        # the ratio on the Tab-2 review form but leaves the cost box alone,
+        # the staged number is now wrong by exactly the ratio delta — and it
+        # is written to BOTH cost_price and opening_cost, so it seeds the WACC
+        # walk (which keeps the last known WACC while stock is 0, i.e. the
+        # wrong seed outlives the first correct purchase). That is the same
+        # money defect this branch fixes in Card B, surviving at a different
+        # door; found by Codex review 2026-08-25.
+        #
+        # Only fires when the human did NOT touch the cost box: an explicitly
+        # retyped cost is the operator's call and stays untouched.
+        d['suggested_cost'] = _cost_for_saved_ratio(conn, sug, d)
+
         # Row-insert + name + sku_code all go through the canonical create
         # path. It re-resolves brand_other_name/color_code_other into new FK
         # rows and free-text `category` into `category_id` itself (same
@@ -241,6 +367,12 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
             'product_name': d.get('suggested_name') or d.get('bsn_name'),
             'brand_id': d.get('brand_id'),
             'brand_other_name': d.get('brand_other_name'),
+            'brand_other_short_code': d.get('brand_other_short_code'),
+            'brand_other_name_th': d.get('brand_other_name_th'),
+            # Card B's clone: the new SKU joins its template's family. Passed
+            # here rather than stored on the staged row so the family reflects
+            # the template's CURRENT one at approve time, not at stage time.
+            'clone_source_pid': d.get('clone_source_pid'),
             'color_code': d.get('color_code'),
             'color_code_other': d.get('color_code_other'),
             'color_th': d.get('color_th'),
@@ -292,10 +424,17 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
              WHERE id = ?
         """, (reviewer_id, new_pid, suggestion_id))
 
-        # Auto-create unit_conversion if BSN ships in different unit than product
-        bsn_unit = d.get('bsn_unit')
+        # Auto-create unit_conversion if BSN ships in different unit than product.
+        # BOTH sides are stripped before comparison, and the STRIPPED value is
+        # what gets inserted. Normalising only one side is a money bug in either
+        # direction: ' โหล ' != 'โหล' would insert a conversion between two
+        # semantically identical units, and every sales row carrying the padded
+        # unit then matches it and is multiplied by the ratio (round 5). The
+        # product side uses the same rule the row was actually stored with, so
+        # the comparison cannot disagree with reality.
+        bsn_unit = (d.get('bsn_unit') or '').strip()
         ratio = d.get('unit_conversion_ratio')
-        product_unit = d.get('suggested_unit_type') or 'ตัว'
+        product_unit = products_mod.normalize_unit_type(d.get('suggested_unit_type'))
         if bsn_unit and ratio and float(ratio) > 0 and bsn_unit != product_unit:
             hz = cross_unit_hazard(conn, new_pid, bsn_unit)
             # Allowlist, not a blocklist: only a clean None or a ratio-1

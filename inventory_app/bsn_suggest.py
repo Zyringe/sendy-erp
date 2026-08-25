@@ -94,11 +94,31 @@ def _fuzzy_match(bsn_name: str, products: list) -> list:
 
 def _latest_purchase(conn, bsn_code: str) -> dict:
     """Pull latest purchase_transactions row for this BSN code.
-    Returns cost, unit, qty for prefilling new-SKU form. None on no match.
-    Caller uses cost_price only — for the *unit* the BSN normally bills in,
-    use _latest_bsn_unit() (which falls back to sales for sale-only codes)."""
+
+    Returns the raw bill figures the new-SKU form needs to derive a cost:
+
+      cost_price   unit_price — the LIST price per BSN unit, kept for display
+      line_net     `net`, the whole line AFTER discount
+      last_qty     qty, counted in the BSN unit (`unit`), not in base units
+      unit_type    the BSN unit this line was billed in
+
+    ⚠ `cost_price` alone is NOT a cost basis and must not be written to
+    `products.cost_price`. It is per BSN UNIT and pre-discount, while the
+    product stores cost per `unit_type`. Card B used to prefill it verbatim:
+    for SONAX that put ฿1,810/โหล into a product held in ตัว, seeding
+    `opening_cost` with a value 20.8x the real ฿87.05 — and because
+    `recalculate_product_wacc` keeps the last known WACC when stock is 0, the
+    correct purchase that landed later could never displace it.
+
+    The real per-base-unit cost is `line_net / (last_qty * ratio)`, which is
+    exactly what the WACC walk computes; `base_unit_cost()` below is the one
+    place that division lives.
+
+    Empty dict on no match. For the *unit* the BSN normally bills in, use
+    _latest_bsn_unit() (which falls back to sales for sale-only codes).
+    """
     row = conn.execute(
-        """SELECT unit_price, unit, qty, date_iso
+        """SELECT unit_price, unit, qty, net, date_iso
              FROM purchase_transactions
             WHERE bsn_code = ?
             ORDER BY date_iso DESC, id DESC
@@ -109,10 +129,37 @@ def _latest_purchase(conn, bsn_code: str) -> dict:
         return {}
     return {
         'cost_price': row['unit_price'] or 0.0,
+        'line_net':   row['net'] or 0.0,
         'unit_type':  row['unit'] or 'ตัว',
         'last_qty':   row['qty'] or 0,
         'last_date':  row['date_iso'],
     }
+
+
+def base_unit_cost(line_net, qty, ratio):
+    """Cost per BASE unit from one purchase line: net / (qty * ratio).
+
+    `net` is the whole line after discount and `qty` is in the BSN unit, so the
+    number of base units on the line is `qty * ratio` — the same arithmetic
+    `models.wacc._recalculate_product_wacc` does when it costs a `BSN ซื้อ`
+    leg (`unit_cost = net / qty` there, where its qty has ALREADY been scaled
+    by the conversion ratio when the ledger row was posted).
+
+    Returns None when the inputs cannot produce a number, so a caller can
+    distinguish "no basis" from "the basis is 0" — prefilling 0 into the cost
+    field would seed `opening_cost = 0`, which is right for the SONAX repair
+    but wrong as a silent default here.
+    """
+    try:
+        qty = float(qty or 0)
+        ratio = float(ratio or 0)
+        net = float(line_net or 0)
+    except (TypeError, ValueError):
+        return None
+    base_units = qty * ratio
+    if base_units <= 0:
+        return None
+    return net / base_units
 
 
 def _latest_bsn_unit(conn, bsn_code: str) -> dict:
@@ -259,6 +306,15 @@ def suggest_for_bsn(conn, bsn_code: str, bsn_name: str) -> dict:
     latest_unit = _latest_bsn_unit(conn, bsn_code)
     # Split-unit awareness (length > 1 → override candidate)
     units_seen = _all_units_seen(conn, bsn_code)
+
+    # A ratio the operator has not typed yet is unknown, NOT 1: for a code
+    # billed in โหล against a product held in ตัว, assuming 1 hands back the
+    # per-โหล price again. Only a same-unit line (BSN unit == the unit the new
+    # SKU will be held in) is a safe 1, and Card B defaults the unit to the BSN
+    # unit — so this is the common case, and the clone-overrides-unit case is
+    # exactly the one that must wait for the operator's ratio.
+    latest['base_unit_cost_at_ratio_1'] = base_unit_cost(
+        latest.get('line_net'), latest.get('last_qty'), 1) if latest else None
 
     return {
         'bsn_code': bsn_code,
