@@ -246,9 +246,14 @@ def import_marketplace_orders(conn, orders, source_file=None):
     same lock that writes them (check-then-write rule,
     .claude/rules/erp-engineering-discipline.md — gunicorn -w 2 makes the
     interleaving worker real). Returns stats dict. Caller owns the
-    connection (commits here)."""
+    connection (commits here).
+
+    `skipped_order_sns` (Task 3.3) lists every order_sn that had >=1 skipped
+    line (no listing match), once each regardless of how many lines it
+    skipped — the flash surfaces these so Put can chase the mapping."""
     stats = {'orders': 0, 'items': 0, 'unmapped': 0, 'lines_resolved': 0,
-             'deducted': 0, 'credited': 0, 'skipped_lines': 0, 'gated_lines': 0}
+             'deducted': 0, 'credited': 0, 'skipped_lines': 0, 'gated_lines': 0,
+             'skipped_order_sns': []}
     conn.execute("BEGIN IMMEDIATE")
     for o in orders:
         conn.execute(
@@ -298,6 +303,8 @@ def import_marketplace_orders(conn, orders, source_file=None):
         stats['credited'] += effect['credited']
         stats['skipped_lines'] += effect['skipped_lines']
         stats['gated_lines'] += effect['gated_lines']
+        if effect['skipped_lines']:
+            stats['skipped_order_sns'].append(o['order_sn'])
 
     conn.commit()
     return stats

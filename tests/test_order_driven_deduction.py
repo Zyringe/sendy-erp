@@ -372,6 +372,38 @@ def test_unresolvable_line_skipped_counted(empty_db_conn):
     assert _provenance(conn, oid, lid) == 2
 
 
+def test_skipped_order_sns_records_the_order(empty_db_conn):
+    """Task 3.3: the affected order_sn is logged so Put can chase the
+    mapping, not just a bare count."""
+    conn = empty_db_conn
+    order = _order('ORD-SKIP-1', [_line('L1', variation_id='V-DOES-NOT-EXIST', qty=1.0)])
+    stats = import_marketplace_orders(conn, [order], 'f.xlsx')
+    assert stats['skipped_lines'] == 1
+    assert stats['skipped_order_sns'] == ['ORD-SKIP-1']
+
+
+def test_skipped_order_sns_excludes_clean_orders(empty_db_conn):
+    """CONTROL: an order whose lines all resolve must NOT appear in
+    skipped_order_sns -- proves the list isn't just every order_sn seen."""
+    conn = empty_db_conn
+    _seed_sku(conn, variation_id='V-OK', stock=10, stock_as_of='2026-01-01 00:00:00')
+    order = _order('ORD-CLEAN', [_line('L1', variation_id='V-OK', qty=1.0)])
+    stats = import_marketplace_orders(conn, [order], 'f.xlsx')
+    assert stats['skipped_lines'] == 0
+    assert stats['skipped_order_sns'] == []
+
+
+def test_skipped_order_sns_dedupes_multiple_skips_in_one_order(empty_db_conn):
+    conn = empty_db_conn
+    order = _order('ORD-SKIP-2', [
+        _line('L1', variation_id='V-GONE-1', qty=1.0),
+        _line('L2', variation_id='V-GONE-2', qty=1.0),
+    ])
+    stats = import_marketplace_orders(conn, [order], 'f.xlsx')
+    assert stats['skipped_lines'] == 2
+    assert stats['skipped_order_sns'] == ['ORD-SKIP-2']   # once, not twice
+
+
 def test_two_lines_same_listing_aggregate(empty_db_conn):
     conn = empty_db_conn
     lid = _seed_sku(conn, variation_id='V-AGG', stock=20, stock_as_of='2026-01-01 00:00:00')

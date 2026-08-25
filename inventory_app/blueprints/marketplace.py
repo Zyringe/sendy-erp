@@ -40,6 +40,26 @@ def _detect_platform(columns):
     return None
 
 
+def _skipped_lines_note(stats):
+    """Thai flash note for import_marketplace_orders' skipped_lines/
+    skipped_order_sns (Task 3.3 — order-driven-platform-deduction plan):
+    lines whose listing couldn't be resolved, so the stock mirror was never
+    touched for them. Names the affected orders (capped at 5, same pattern
+    as the TikTok-absent-listings note in blueprints/ecommerce.py) so Put
+    can chase the mapping. Shared by both import routes (single-file
+    /marketplace/import and the 'order' kind of /marketplace/upload) so the
+    two flashes can't drift into different wording. Returns None when
+    nothing was skipped — no empty '0 บรรทัด' note."""
+    n = stats['skipped_lines']
+    if not n:
+        return None
+    sns = stats.get('skipped_order_sns', [])
+    shown = ', '.join(sns[:5])
+    more = f' และอีก {len(sns) - 5} ออเดอร์' if len(sns) > 5 else ''
+    return (f'ข้ามการหักสต็อก {n} บรรทัด (หา listing ไม่พบ) — '
+            f'ออเดอร์: {shown}{more}')
+
+
 ROW_LIMIT = 500  # dashboard shows the newest N orders; see caption in the template
 
 
@@ -96,7 +116,10 @@ def import_orders():
     msg = (f"นำเข้า {platform.capitalize()} สำเร็จ: {stats['orders']} ออเดอร์, "
            f"{stats['items']} รายการ (จับคู่สินค้าได้ {stats['lines_resolved']}, "
            f"ยังไม่จับคู่ {stats['unmapped']})")
-    flash(msg, 'success' if stats['unmapped'] == 0 else 'warning')
+    skipped_note = _skipped_lines_note(stats)
+    if skipped_note:
+        msg += f' · {skipped_note}'
+    flash(msg, 'success' if stats['unmapped'] == 0 and not skipped_note else 'warning')
     return redirect(url_for('marketplace.dashboard', platform=platform))
 
 
@@ -475,6 +498,9 @@ def upload():
                     s = models.import_marketplace_orders(conn, orders, name)
                     done.append(f'📦 {name}: ออเดอร์ {s["orders"]} (ใหม่), จับคู่ {s["lines_resolved"]}')
                     _log_import(conn, name, rows=s['orders'], notes=f'marketplace:order:{platform}')
+                    skipped_note = _skipped_lines_note(s)
+                    if skipped_note:
+                        problems.append(('warning', f'⚠️ {name}: {skipped_note}'))
                 elif kind == 'income':
                     df = load_income_sheet(io.BytesIO(data))
                     ss = models.upsert_marketplace_settlements(

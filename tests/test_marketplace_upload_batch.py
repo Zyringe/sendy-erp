@@ -182,6 +182,17 @@ def test_one_raising_file_does_not_abort_the_rest_of_the_batch(tmp_db, clean_ord
     assert 'Income.เสีย.xlsx' in html, 'the failing file must be named to the user'
 
 
+def test_order_kind_flash_surfaces_skipped_lines(tmp_db, clean_order):
+    """Task 3.3: the multi-file box's 'order' kind must surface the same
+    skipped-lines note as the single-file /marketplace/import route — the
+    order xlsx's one line ('สินค้าทดสอบ') matches no platform_skus row, so
+    it resolves to neither a product nor a listing."""
+    resp = _post(_client(), [(_order_xlsx(), 'Order.all.20260820.xlsx')])
+    html = resp.get_data(as_text=True)
+    assert 'ข้ามการหักสต็อก 1 บรรทัด (หา listing ไม่พบ)' in html
+    assert ORDER_SN in html
+
+
 def test_batch_leaves_an_import_log_row_even_with_no_files(tmp_db, tmp_db_conn):
     """Durable forensics.
 
