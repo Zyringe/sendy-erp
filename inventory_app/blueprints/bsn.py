@@ -172,7 +172,8 @@ def unit_conversions_dismiss():
     product_id = request.form.get('product_id', type=int)
     bsn_unit   = request.form.get('bsn_unit', '').strip()
     if product_id and bsn_unit:
-        deleted = models.dismiss_pending_unit_conversion(product_id, bsn_unit)
+        deleted = models.dismiss_pending_unit_conversion(
+            product_id, bsn_unit, actor=session.get('username'))
         if deleted:
             flash(f'ยกเลิก {deleted} แถวที่ยังไม่ sync ออกแล้ว (หน่วย "{bsn_unit}")', 'success')
         else:

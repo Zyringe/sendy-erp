@@ -1,4 +1,4 @@
--- 172 — provenance for the two source-document tables.
+-- 173 — provenance for the two source-document tables.
 --
 -- audit_log covers 38 tables through 111 triggers and held ZERO rows for these
 -- two, which carry every invoice and every purchase line. When 47 invoices were

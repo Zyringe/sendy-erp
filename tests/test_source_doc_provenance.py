@@ -681,3 +681,28 @@ def test_running_the_same_acronym_normalisation_twice_does_not_abort(db, empty_d
     models.learn_acronyms_normalize({'ตว': 'ตัว'})
     assert db.execute("SELECT unit FROM sales_transactions WHERE doc_no='IV0032-1'"
                       ).fetchone()[0] == 'ตัว'
+
+
+def test_dismissing_a_pending_conversion_records_the_operator(db, empty_db, monkeypatch):
+    """/unit-conversions/dismiss deletes rows a human chose to discard. Without a
+    stamp the DELETE audit row inherits the importer's filename — the same
+    misattribution fixed in reconcile.py, reachable through a second route."""
+    import config, database, models
+    monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
+    monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
+    db.execute("INSERT INTO products (sku_code, product_name, unit_type)"
+               " VALUES ('SKU-D','สินค้า D','ตัว')")
+    db.commit()
+    pid = db.execute("SELECT id FROM products WHERE sku_code='SKU-D'").fetchone()['id']
+    seed_sale(db, doc_no='IV0040-1', unit='กล')
+    db.execute("UPDATE sales_transactions SET product_id=?, synced_to_stock=0,"
+               " change_source='import', change_actor='weekly.csv', change_token='b7'"
+               " WHERE doc_no='IV0040-1'", (pid,))
+    db.commit()
+
+    n = models.dismiss_pending_unit_conversion(pid, 'กล', actor='put')
+    assert n == 1, n
+    d = [r for r in audit(db, 'DELETE') if r['row_key'] == 'IV0040-1|A001']
+    assert len(d) == 1
+    assert (d[0]['user'], d[0]['change_source']) == ('put', 'manual'), dict(d[0])
+    assert 'ยกเลิกรายการรอแปลงหน่วย' in (d[0]['change_reason'] or '')

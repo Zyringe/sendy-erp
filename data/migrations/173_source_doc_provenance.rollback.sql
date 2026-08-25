@@ -1,5 +1,5 @@
--- rollback 172 — drop the triggers AND the columns, so the schema returns to
--- exactly its pre-172 shape and a rollback-then-reapply cycle works.
+-- rollback 173 — drop the triggers AND the columns, so the schema returns to
+-- exactly its pre-173 shape and a rollback-then-reapply cycle works.
 --
 -- Column drops rewrite the table, which is why the first version skipped them.
 -- The tables are ~20k and ~4k rows and audit_log ~440k, so the rewrite is
