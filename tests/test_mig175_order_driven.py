@@ -263,3 +263,42 @@ def test_rollback_restores_pre_state_byte_identical(pre175_conn):
         ).fetchall()
     ]
     assert remaining == [("sales_transactions", 1)]  # marketplace_orders row dropped
+
+
+def test_forward_migration_is_atomic_on_mid_script_failure(pre175_conn):
+    """The transaction-wrapper fix (review round 1, CRITICAL): without an
+    explicit BEGIN, executescript() autocommits DDL statement-by-statement,
+    so a crash between ADD COLUMN and the backfill UPDATE would leave
+    stock_as_of durably added with no applied_migrations row — every next
+    boot retries the whole script and dies forever on "duplicate column
+    name". Simulate that crash: truncate the migration right after ADD
+    COLUMN and append a guaranteed-failing statement, run it the same way
+    database.py's run_pending_migrations does (executescript, except:
+    rollback, re-raise — see database.py's comment on this exact shape),
+    then confirm (a) NOTHING landed — not the column, not the deductions
+    table rebuild that ran earlier in the same script — and (b) the INTACT
+    script then applies cleanly, proving a retry after the crash just
+    works instead of dying forever."""
+    conn = pre175_conn
+    with open(MIG_175, encoding="utf-8") as f:
+        full_sql = f.read()
+    marker = "ALTER TABLE platform_skus ADD COLUMN stock_as_of TEXT;"
+    assert full_sql.count(marker) == 1  # vacuity guard: the cut point exists exactly once
+    cut = full_sql.index(marker) + len(marker)
+    broken_sql = full_sql[:cut] + "\nSELECT * FROM this_table_does_not_exist;\n"
+
+    with pytest.raises(sqlite3.OperationalError):
+        conn.executescript(broken_sql)
+    conn.rollback()  # mirrors database.py's run_pending_migrations except-block
+
+    # Nothing landed: neither the column add nor the earlier table rebuild
+    # in the same script (both happened inside the still-open transaction).
+    assert "stock_as_of" not in _platform_skus_cols(conn)
+    table_sql, _ = _deductions_ddl(conn)
+    assert "marketplace_orders" not in table_sql
+
+    # A retry with the INTACT script (as a real reboot would do) applies clean.
+    _apply(conn, MIG_175)
+    assert "stock_as_of" in _platform_skus_cols(conn)
+    table_sql, _ = _deductions_ddl(conn)
+    assert "marketplace_orders" in table_sql

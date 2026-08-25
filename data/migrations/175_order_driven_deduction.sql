@@ -25,6 +25,23 @@
 --
 -- Drop-first so a hand-applied rehearsal can be re-run (see
 -- .claude/rules/erp-engineering-discipline.md).
+--
+-- Transaction wrapper (Codex/review, 2026-08-25, CRITICAL — the brief's
+-- verbatim SQL lacked this): executescript() autocommits DDL statement-by-
+-- statement with no explicit BEGIN. Without a wrapper, a crash between the
+-- ADD COLUMN and the backfill UPDATE leaves stock_as_of durably added with
+-- no applied_migrations row — every next boot retries the whole script and
+-- dies forever on "duplicate column name". BEGIN makes the whole migration
+-- atomic: a mid-script failure rolls back to nothing-applied, so a retry
+-- (with the file intact) just runs clean. foreign_keys=OFF BEFORE BEGIN
+-- (a no-op once inside a txn) mirrors mig 140's recipe for the same shape
+-- of rebuild — platform_stock_deductions itself carries an FK to
+-- platform_skus(id), so drop+recreate follows the same safe pattern even
+-- though nothing currently references platform_stock_deductions back.
+
+PRAGMA foreign_keys = OFF;
+
+BEGIN;
 
 DROP TABLE IF EXISTS platform_stock_deductions_new;
 CREATE TABLE platform_stock_deductions_new (
@@ -57,3 +74,7 @@ WHERE id IN (
     HAVING MAX(d.created_at) > COALESCE(
         (SELECT ps.stock_as_of FROM platform_skus ps WHERE ps.id = d.platform_sku_id), '')
 );
+
+COMMIT;
+
+PRAGMA foreign_keys = ON;

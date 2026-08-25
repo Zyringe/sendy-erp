@@ -7,6 +7,16 @@
 -- 'marketplace_orders' row is dropped — under the old regime that source
 -- doesn't exist, so there is nothing for those rows to mean; dropping them
 -- IS what rolling back means here.
+--
+-- Transaction wrapper (same reasoning as the forward migration): without an
+-- explicit BEGIN, executescript() autocommits statement-by-statement, so a
+-- mid-script failure could leave the table rebuilt but stock_as_of not yet
+-- dropped, or vice versa. foreign_keys=OFF BEFORE BEGIN mirrors mig 140.
+
+PRAGMA foreign_keys = OFF;
+
+BEGIN;
+
 DROP TABLE IF EXISTS platform_stock_deductions_old;
 CREATE TABLE platform_stock_deductions_old (
     source_table    TEXT    NOT NULL CHECK(source_table IN ('sales_transactions')),
@@ -25,3 +35,7 @@ CREATE INDEX idx_platform_stock_deductions_sku ON platform_stock_deductions (pla
 
 -- prod SQLite is modern (3.35+): DROP COLUMN directly, no table rebuild needed.
 ALTER TABLE platform_skus DROP COLUMN stock_as_of;
+
+COMMIT;
+
+PRAGMA foreign_keys = ON;
