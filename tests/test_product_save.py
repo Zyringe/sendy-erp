@@ -468,5 +468,9 @@ def test_the_ROUTE_returns_409_stale_on_a_concurrent_rename(admin_client, tmp_db
         "product_name": "ชื่อที่พิมพ์ในหน้าเก่า",
         "expected_product_name": "ชื่อตอนเปิดหน้า"})
     assert r.status_code == 409, r.get_data(as_text=True)[:200]
-    assert r.get_json()["stale"] is True
+    body = r.get_json()
+    assert body["stale"] is True
+    # The 409 must carry the CURRENT name, or the page can only recover by reloading —
+    # which throws away the operator's unsaved column edits (Codex, 2026-08-25).
+    assert body["current_name"] == "ชื่อใหม่จากสคริปต์", body
     assert _name(tmp_db, pid) == "ชื่อใหม่จากสคริปต์"

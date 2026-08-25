@@ -272,7 +272,8 @@ def product_save(pid):
             expected_product_name=fields.get('expected_product_name'))
     except nc.CascadeConflict as e:
         # 409: the request was fine, the world moved underneath it. Reloading is the fix.
-        return jsonify({'ok': False, 'error': str(e), 'stale': True}), 409
+        return jsonify({'ok': False, 'error': str(e), 'stale': True,
+                        'current_name': getattr(e, 'current_name', '')}), 409
     except nc.ProductNotFound:
         return jsonify({'ok': False, 'error': f'ไม่พบสินค้า #{pid}'}), 404
     except nc.CascadeInvariantError as e:

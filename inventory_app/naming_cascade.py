@@ -434,10 +434,14 @@ def save_product(db_path, pid, fields, *, backup_dir=None,
                 and typed and typed != old_name
                 and expected_product_name != old_name):
             conn.execute("ROLLBACK")
-            raise CascadeConflict(
+            err = CascadeConflict(
                 f"ชื่อสินค้าถูกแก้จากที่อื่นระหว่างที่เปิดหน้านี้ค้างไว้ "
                 f"(ตอนเปิด: {expected_product_name!r} · ตอนนี้: {old_name!r}) "
-                f"— โหลดหน้าใหม่แล้วแก้อีกครั้ง")
+                f"— ตรวจแล้วกดบันทึกอีกครั้ง")
+            # carried so the client can reconcile IN PLACE instead of reloading and
+            # throwing away the operator's column edits (Codex, 2026-08-25)
+            err.current_name = old_name
+            raise err
         if rebuild_name:
             new_name = name_builder.rebuild_product_name(conn, pid)
         elif typed:

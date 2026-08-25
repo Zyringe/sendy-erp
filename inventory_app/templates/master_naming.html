@@ -338,6 +338,7 @@ async function confirmApply() {
 let _edPid = null;
 let _edNameAtOpen = '';
 let _edNameDirty = false;
+let _edGen = 0;          // preview generation — a late response must not win
 const _edIds = ['ed-subcat','ed-brand','ed-series','ed-model','ed-size',
                 'ed-color','ed-packaging','ed-condition','ed-variant'];
 
@@ -359,6 +360,7 @@ function openEditor(btn) {
   // column-only save does not send the name at all.
   document.getElementById('ed-name').value = d.name || '';
   _edNameAtOpen = d.name || '';
+  _edGen++;
   _edNameDirty = false;
   document.getElementById('edit-pid').textContent = '#' + d.pid;
   const set = (id, val) => document.getElementById(id).value = val || '';
@@ -378,8 +380,17 @@ let _edTimer = null;
 function _edRefresh() {
   clearTimeout(_edTimer);
   _edTimer = setTimeout(async () => {
+    // Pin the request to (product, generation). A response that arrives after the
+    // operator switched product or changed a field again must be DISCARDED: the adopt
+    // button would otherwise turn a stale suggestion into a real rename of the wrong
+    // product, and it would pass the expected-name check legitimately (Codex, 2026-08-25).
+    const pid = _edPid, gen = ++_edGen;
+    const adopt = document.getElementById('ed-adopt');
+    adopt.disabled = true;
     const {data} = await _postJSON('/naming/product/preview-name',
-                                   {..._edFields(), pid: _edPid});
+                                   {..._edFields(), pid});
+    if (pid !== _edPid || gen !== _edGen) return;      // stale response, drop it
+    adopt.disabled = false;
     if (!data.ok) return;
     document.getElementById('ed-preview').textContent = data.name || '—';
     // Say what pressing the button would drop, BEFORE it is pressed.
@@ -413,9 +424,16 @@ async function saveProduct() {
   }
   const {data} = await _postJSON(`/naming/product/${_edPid}/save`, body);
   if (data.ok) { location.reload(); return; }
+  // A stale rename must NOT cost the operator their column edits: reconcile in place
+  // (adopt the server's current name as the new baseline) and let them press again.
+  if (data.stale) {
+    _edNameAtOpen = data.current_name || _edNameAtOpen;
+    alert(data.error || 'ข้อมูลถูกแก้จากที่อื่น');
+    btn.disabled = false;
+    return;
+  }
   alert(data.error || 'เกิดข้อผิดพลาด');
-  if (data.stale) location.reload();
-  else btn.disabled = false;
+  btn.disabled = false;
 }
 
 // Live-preview wiring — only on the workbench tab (editor fields exist there).
