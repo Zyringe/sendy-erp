@@ -164,6 +164,7 @@ from .suggestions import (
 )
 from .marketplace import (
     resolve_marketplace_product_id, import_marketplace_orders,
+    get_order_staleness_alerts, ORDER_STALENESS_DAYS,
     upsert_marketplace_settlements, upsert_marketplace_fees,
     import_wallet_txns, upsert_lazada_settlements, get_payout_years,
     get_payout_summaries, LAZADA_BUCKET, GRANULAR_LABEL,

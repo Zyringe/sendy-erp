@@ -303,6 +303,78 @@ def import_marketplace_orders(conn, orders, source_file=None):
     return stats
 
 
+# Order platforms this ERP tracks (marketplace_orders.platform CHECK). TikTok
+# excluded (D9): no TikTok orders exist in the ERP, so a staleness warning
+# about a TikTok order-import gap would be meaningless.
+_ORDER_PLATFORMS = ('shopee', 'lazada')
+
+# D8: weekly cadence (Put's chosen operating rhythm) + weekend/holiday slack.
+# The ONLY freshness rule for order imports -- do not invent a second one.
+ORDER_STALENESS_DAYS = 10
+
+
+def get_order_staleness_alerts(conn=None):
+    """Per shopee/lazada platform with >=1 active (is_ignored=0) listing,
+    warn when the marketplace order file hasn't been imported in over
+    ORDER_STALENESS_DAYS days -- or has never been imported at all.
+
+    WHY: D5 accepts that a หน้าร้าน sale is excluded from `sold_since` the
+    moment it syncs, but the mirror (platform_skus.stock) only catches up
+    at the NEXT order import. If imports simply stop, `platform_est` keeps
+    reading high (the oversell direction) with nothing else to say so --
+    this is that containment (task 1.8, "the phase that creates the
+    exposure ships its own containment").
+
+    `last_synced_at` is written ONLY by this module's own order-header
+    upsert (see import_marketplace_orders) -- verified no settlement/payout
+    writer touches it (test_last_synced_at_not_bumped_by_settlement_or_
+    payout_writers), so a settlement/payout action can never fake order
+    freshness.
+
+    Computed fresh on every call, like `models.get_stock_alerts()` -- no
+    durable system_alerts row, because the condition self-clears the
+    moment a fresh order file lands; nothing here needs a human dismiss.
+
+    Returns a list of {'platform', 'days_old' (None if never imported),
+    'message'} for platforms currently stale, in _ORDER_PLATFORMS order.
+    """
+    own = conn is None
+    if own:
+        conn = get_connection()
+    try:
+        active = {r['platform'] for r in conn.execute(
+            "SELECT DISTINCT platform FROM platform_skus "
+            "WHERE platform IN ('shopee','lazada') AND is_ignored = 0").fetchall()}
+        last_by_platform = {r['platform']: r['last'] for r in conn.execute(
+            "SELECT platform, MAX(last_synced_at) AS last FROM marketplace_orders "
+            "WHERE platform IN ('shopee','lazada') GROUP BY platform").fetchall()}
+
+        alerts = []
+        for platform in _ORDER_PLATFORMS:
+            if platform not in active:
+                continue
+            last = last_by_platform.get(platform)
+            label = platform.capitalize()
+            if last is None:
+                alerts.append({
+                    'platform': platform, 'days_old': None,
+                    'message': f"ยังไม่เคย import ออเดอร์ {label} เลย — "
+                               "สต็อกหน้าร้านใน Sendy อาจสูงกว่าจริง"})
+                continue
+            days_old = conn.execute(
+                "SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER)",
+                (last,)).fetchone()[0]
+            if days_old > ORDER_STALENESS_DAYS:
+                alerts.append({
+                    'platform': platform, 'days_old': days_old,
+                    'message': f"ยังไม่ได้ import ออเดอร์ {label} มา {days_old} วัน — "
+                               "สต็อกหน้าร้านใน Sendy อาจสูงกว่าจริง"})
+        return alerts
+    finally:
+        if own:
+            conn.close()
+
+
 def upsert_marketplace_settlements(conn, settlements, source_file=None,
                                    platform='shopee'):
     """Stamp actual_payout + settled_at on marketplace_orders matched by order_sn.
