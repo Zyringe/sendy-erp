@@ -52,7 +52,8 @@ def ecommerce():
                            rows=rows, total=total, counts=counts,
                            search=search, flt=flt, page=page, pages=pages,
                            freshness=freshness, unmapped_counts=unmapped_counts,
-                           unmapped_rows=unmapped_rows)
+                           unmapped_rows=unmapped_rows,
+                           order_staleness_days=models.ORDER_STALENESS_DAYS)
 
 
 @bp_ecommerce.route('/ecommerce/product/<int:product_id>')

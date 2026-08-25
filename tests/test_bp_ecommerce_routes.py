@@ -11,6 +11,7 @@ Phase 3 model tests use.
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
+import re
 import sqlite3
 
 import pytest
@@ -28,6 +29,36 @@ def admin_client(tmp_db):
         sess['username'] = 'test-admin'
         sess['role']     = 'admin'
     return c
+
+
+@pytest.fixture
+def admin_client_empty(empty_db):
+    """Same as admin_client but on a data-less schema-only DB (empty_db) —
+    the new-install case: zero rows anywhere, incl. marketplace_orders."""
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id']  = 1
+        sess['username'] = 'test-admin'
+        sess['role']     = 'admin'
+    return c
+
+
+def _fresh_pill(html, label):
+    """Isolate one platform's freshness pill from /ecommerce's html so an
+    assertion can't accidentally match text sitting in a DIFFERENT platform's
+    pill or elsewhere on the page (Thai-substring trap,
+    .claude/rules/verification-discipline.md). The pill can nest its own
+    <span class="text-danger"> (staleness badges) -- the lookahead makes the
+    non-greedy capture stop at the OUTER closing </span> (right before the
+    next pill or the container's </div>), not the first nested one."""
+    m = re.search(
+        rf'<span class="ecom-fresh-pill">\s*<strong>{label}:</strong>(.*?)</span>'
+        r'\s*(?=<span class="ecom-fresh-pill">|</div>)',
+        html, re.S)
+    assert m, f'no freshness pill found for {label}'
+    return m.group(1)
 
 
 def _skip_if_missing(tmp_db, product_id):
@@ -82,6 +113,33 @@ def test_overview_sidebar_present(admin_client):
 def test_overview_upload_forms_have_csrf(admin_client):
     html = admin_client.get('/ecommerce').data.decode('utf-8')
     assert html.count('name="csrf_token"') >= 2  # weekly-file form + import-info form
+
+
+# ── freshness pill: last_order_import (Task 3.2) ──────────────────────────
+
+def test_overview_renders_when_marketplace_orders_empty(admin_client_empty):
+    """New-install case: marketplace_orders has zero rows -- the page must
+    still render (not 500), and the pill must say so rather than silently
+    showing a blank / crashing on a None."""
+    resp = admin_client_empty.get('/ecommerce')
+    assert resp.status_code == 200, resp.data[:500]
+    html = resp.data.decode('utf-8')
+    pill = _fresh_pill(html, 'Shopee')
+    assert 'ยังไม่เคย import ออเดอร์' in pill
+
+
+def test_overview_shows_last_order_import_date(admin_client, tmp_db):
+    conn = sqlite3.connect(tmp_db)
+    conn.execute(
+        "INSERT INTO marketplace_orders (platform, order_sn, last_synced_at) "
+        "VALUES ('shopee', 'ORD-FRESH-TEST', datetime('now','localtime','-2 days'))")
+    conn.commit()
+    conn.close()
+
+    html = admin_client.get('/ecommerce').data.decode('utf-8')
+    pill = _fresh_pill(html, 'Shopee')
+    assert 'ออเดอร์ล่าสุด' in pill
+    assert 'ยังไม่เคย import ออเดอร์' not in pill
 
 
 # ── product detail page ───────────────────────────────────────────────────

@@ -50,6 +50,7 @@ from database import get_connection
 
 from .bsn_sync import PLATFORM_STOCK_DEDUCT_CUSTOMERS
 from .conversions import get_buildable
+from .marketplace import get_last_order_import_dates
 from ._shared import PLATFORMS
 from .stock_filters import non_stock_clause
 
@@ -162,12 +163,19 @@ def _sold_since_by_pid(conn, platform, snapshot_date, pids=None):
 
 
 def get_marketplace_freshness():
-    """{platform: {'snapshot_date', 'days_old', 'sales_through'}} — the
-    freshness pills on the overview page. `sales_through` = MAX(date_iso) of
-    the platform's หน้าร้าน customer rows (independent of platform_skus)."""
+    """{platform: {'snapshot_date', 'days_old', 'sales_through',
+    'last_order_import', 'order_days_old'}} — the freshness pills on the
+    overview page. `sales_through` = MAX(date_iso) of the platform's
+    หน้าร้าน customer rows (independent of platform_skus). `last_order_import`
+    / `order_days_old` = MAX(marketplace_orders.last_synced_at) per platform
+    (shopee/lazada only — tiktok has no order rows, CHECK-excluded — so both
+    stay None for it). Reuses get_last_order_import_dates, the SAME query
+    get_order_staleness_alerts (the /alerts warning, D8) reads — this pill
+    is a second DISPLAY of that signal, never a second DEFINITION of it."""
     conn = get_connection()
     try:
         snapshots = _snapshot_dates(conn)
+        last_order_by_platform = get_last_order_import_dates(conn)
         result = {}
         for platform in PLATFORMS:
             snap = snapshots[platform]
@@ -185,8 +193,17 @@ def get_marketplace_freshness():
                     f"SELECT MAX(date_iso) FROM sales_transactions WHERE customer IN ({ph})",
                     customers,
                 ).fetchone()[0]
+            last_order_import = last_order_by_platform.get(platform)
+            if last_order_import:
+                order_days_old = conn.execute(
+                    "SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER)",
+                    (last_order_import,)
+                ).fetchone()[0]
+            else:
+                order_days_old = None
             result[platform] = {
                 'snapshot_date': snap, 'days_old': days_old, 'sales_through': sales_through,
+                'last_order_import': last_order_import, 'order_days_old': order_days_old,
             }
         return result
     finally:

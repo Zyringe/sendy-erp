@@ -313,6 +313,22 @@ _ORDER_PLATFORMS = ('shopee', 'lazada')
 ORDER_STALENESS_DAYS = 10
 
 
+def get_last_order_import_dates(conn):
+    """{platform: MAX(last_synced_at)} for shopee/lazada platforms that have
+    at least one imported order (platforms with zero orders are absent from
+    the dict, not mapped to None -- callers use .get()).
+
+    The ONE query for "when did we last import an order file" -- shared by
+    get_order_staleness_alerts (below) and
+    models.ecommerce_overview.get_marketplace_freshness (the /ecommerce
+    freshness pill). Do not add a second copy of this query (D8's "do not
+    invent a second freshness rule" applies to reads of the signal too, not
+    just the staleness threshold)."""
+    return {r['platform']: r['last'] for r in conn.execute(
+        "SELECT platform, MAX(last_synced_at) AS last FROM marketplace_orders "
+        "WHERE platform IN ('shopee','lazada') GROUP BY platform").fetchall()}
+
+
 def get_order_staleness_alerts(conn=None):
     """Per shopee/lazada platform with >=1 active (is_ignored=0) listing,
     warn when the marketplace order file hasn't been imported in over
@@ -345,9 +361,7 @@ def get_order_staleness_alerts(conn=None):
         active = {r['platform'] for r in conn.execute(
             "SELECT DISTINCT platform FROM platform_skus "
             "WHERE platform IN ('shopee','lazada') AND is_ignored = 0").fetchall()}
-        last_by_platform = {r['platform']: r['last'] for r in conn.execute(
-            "SELECT platform, MAX(last_synced_at) AS last FROM marketplace_orders "
-            "WHERE platform IN ('shopee','lazada') GROUP BY platform").fetchall()}
+        last_by_platform = get_last_order_import_dates(conn)
 
         alerts = []
         for platform in _ORDER_PLATFORMS:

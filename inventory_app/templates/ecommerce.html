@@ -44,6 +44,14 @@ tr.ecom-row-dim    td { opacity:.55; }
     {% else %}
       <span class="text-subtle">ยังไม่มีข้อมูล</span>
     {% endif %}
+    {% if p in ('shopee', 'lazada') %}
+      {% if f.last_order_import %}
+        · ออเดอร์ล่าสุด {{ f.last_order_import[:10] | thaidate }}
+        {% if f.order_days_old is not none and f.order_days_old > order_staleness_days %}<span class="text-danger">⚠ {{ f.order_days_old }} วันแล้ว</span>{% endif %}
+      {% else %}
+        · <span class="text-subtle">ยังไม่เคย import ออเดอร์</span>
+      {% endif %}
+    {% endif %}
   </span>
   {% endfor %}
 </div>
