@@ -673,3 +673,42 @@ def test_the_same_name_losing_the_race_DOES_reuse_the_winner(empty_db):
     conn.close()
     assert len(rows) == 1, [dict(r) for r in rows]
     assert got == rows[0]['id']
+
+
+def test_a_padded_bsn_unit_does_not_create_a_false_conversion(empty_db):
+    """' โหล ' and 'โหล' are the same unit. Comparing them raw inserted a
+    unit_conversions row between two semantically identical units — and every
+    sales row carrying the padded unit then matches it and gets multiplied by
+    the ratio. The inverse of the round-4 defect (round 5)."""
+    import models
+    sid = _stage(empty_db, bsn_unit=' โหล ', suggested_unit_type=' โหล ',
+                 unit_conversion_ratio=12)
+    pid = models.approve_pending_suggestion(sid, {}, reviewer_id=None)
+    c = _conn(empty_db)
+    unit = c.execute("SELECT unit_type FROM products WHERE id=?", (pid,)).fetchone()[0]
+    convs = c.execute("SELECT bsn_unit, ratio FROM unit_conversions WHERE product_id=?",
+                      (pid,)).fetchall()
+    c.close()
+    assert unit == 'โหล', f'stored {unit!r}'
+    assert not convs, (
+        f'got {[dict(r) for r in convs]} — the product IS held in the unit the '
+        f'BSN bills in, so no conversion may be created')
+
+
+def test_a_genuinely_different_padded_unit_still_gets_its_conversion(empty_db):
+    """CONTROL: the fix must not suppress a REAL conversion just because the
+    input had whitespace — and the row it writes must carry the stripped unit,
+    or nothing will ever match it."""
+    import models
+    sid = _stage(empty_db, bsn_unit=' โหล ', suggested_unit_type='ตัว',
+                 unit_conversion_ratio=12)
+    pid = models.approve_pending_suggestion(sid, {}, reviewer_id=None)
+    c = _conn(empty_db)
+    convs = c.execute("SELECT bsn_unit, ratio FROM unit_conversions WHERE product_id=?",
+                      (pid,)).fetchall()
+    c.close()
+    assert len(convs) == 1, [dict(r) for r in convs]
+    assert convs[0]['bsn_unit'] == 'โหล', (
+        f"got {convs[0]['bsn_unit']!r} — a padded unit stored here would never "
+        f"match the stripped unit on incoming rows")
+    assert convs[0]['ratio'] == 12

@@ -200,8 +200,7 @@ def _effective_ratio(unit_type, bsn_unit, ratio):
     # PERSISTS. Without it a cleared unit box compares '' against bsn_unit
     # 'ตัว', concludes a conversion applies, and divides the cost by the ratio
     # for a product that is then saved AS 'ตัว' -- 12x too low (round 3).
-    from .products import normalize_unit_type
-    unit_type = normalize_unit_type(unit_type)
+    unit_type = products_mod.normalize_unit_type(unit_type)
     bsn_unit = (bsn_unit or '').strip()
     if not bsn_unit or unit_type == bsn_unit:
         return 1.0
@@ -425,11 +424,16 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
              WHERE id = ?
         """, (reviewer_id, new_pid, suggestion_id))
 
-        # Auto-create unit_conversion if BSN ships in different unit than product
-        bsn_unit = d.get('bsn_unit')
+        # Auto-create unit_conversion if BSN ships in different unit than product.
+        # BOTH sides are stripped before comparison, and the STRIPPED value is
+        # what gets inserted. Normalising only one side is a money bug in either
+        # direction: ' โหล ' != 'โหล' would insert a conversion between two
+        # semantically identical units, and every sales row carrying the padded
+        # unit then matches it and is multiplied by the ratio (round 5). The
+        # product side uses the same rule the row was actually stored with, so
+        # the comparison cannot disagree with reality.
+        bsn_unit = (d.get('bsn_unit') or '').strip()
         ratio = d.get('unit_conversion_ratio')
-        # same normalisation the row was actually stored with, so the
-        # "is a conversion needed?" comparison cannot disagree with reality
         product_unit = products_mod.normalize_unit_type(d.get('suggested_unit_type'))
         if bsn_unit and ratio and float(ratio) > 0 and bsn_unit != product_unit:
             hz = cross_unit_hazard(conn, new_pid, bsn_unit)
