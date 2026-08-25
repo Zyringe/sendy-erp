@@ -49,6 +49,18 @@ ALLOWED = {
         'and both-direction ledger verification all pass — companion to '
         'the import path (reconciling Sendy TO match Express), not an '
         'independent writer.',
+    'models/_shared.py':
+        'declared_delete() is the SUPPORTED way to remove a source row under '
+        'mig 173: it stamps change_actor/change_reason onto the row and only '
+        'then deletes, so the DELETE audit row carries the human instead of '
+        'inheriting the importer that wrote it. ⚠ The stamp itself touches only '
+        'synced_to_stock plus the provenance columns, all of which the guard '
+        'EXEMPTS — so the reason requirement here is enforced in Python by the '
+        'helper, not by the trigger. A raw DELETE remains possible and is why '
+        'retention keeps every source-document DELETE forever. '
+        'Not an independent writer — it is the mechanism the other allowlisted '
+        'deleters are being migrated onto, and it refuses any table outside '
+        'SOURCE_DOC_TABLES.',
     'import_credit_notes.py':
         'False positive from its own module docstring, which explicitly '
         'says "Do NOT insert into sales_transactions" while explaining why '

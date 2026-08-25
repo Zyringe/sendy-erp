@@ -126,4 +126,79 @@
     </table>
   </div>
 </div>
+
+{# ── ประวัติการแก้ไข (mig 173) ──────────────────────────────────────────────
+   Unlike the customers card, this one CAN say who and why: mig 173 refuses an
+   UPDATE to a meaningful column unless the writer declares change_source /
+   change_actor and, for a human edit, a real change_reason. #}
+{% if audit_history %}
+<div class="card mb-4">
+  <div class="card-header py-2">
+    <a class="text-decoration-none d-flex align-items-center" data-bs-toggle="collapse"
+       href="#docAuditHistory" role="button">
+      <i class="bi bi-clock-history me-2"></i>
+      <span class="fw-600">ประวัติการแก้ไข</span>
+      <span class="badge badge-gray ms-2">{{ audit_history|length }}</span>
+      {# A human edit must be visible WITHOUT expanding: this panel sits on pages
+         Put scans, and a collapsed card hides the one event he would want to
+         know about. #}
+      {% set hand = audit_history | selectattr('source', 'equalto', 'manual') | list %}
+      {% if hand %}
+      <span class="badge bg-warning text-dark ms-2">คนแก้ {{ hand|length }}</span>
+      {% endif %}
+      <i class="bi bi-chevron-down ms-auto"></i>
+    </a>
+  </div>
+  <div class="collapse" id="docAuditHistory">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 align-middle">
+        <thead>
+          <tr>
+            <th style="width:150px">เมื่อ</th>
+            <th style="width:80px">ทำอะไร</th>
+            <th style="width:150px">ใคร</th>
+            <th>เปลี่ยนอะไร / เพราะอะไร</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for h in audit_history %}
+          <tr>
+            <td class="small font-mono">{{ h.created_at }}</td>
+            <td class="small">{{ h.action }}</td>
+            <td class="small">
+              {% if h.source == 'manual' %}
+                <span class="badge bg-warning text-dark">คนแก้</span>
+              {% elif h.source == 'import' %}
+                <span class="badge badge-gray">ระบบ</span>
+              {% else %}
+                <span class="badge bg-danger">ไม่ทราบที่มา</span>
+              {% endif %}
+              <div class="text-subtle">{{ h.actor or '—' }}</div>
+            </td>
+            <td class="small">
+              {% for ch in h.changes %}
+              <div>
+                <span class="text-subtle">{{ ch.label }}:</span>
+                <span class="text-danger">{{ ch.old if ch.old not in (None, '') else '—' }}</span>
+                <i class="bi bi-arrow-right mx-1"></i>
+                <span class="text-success">{{ ch.new if ch.new not in (None, '') else '—' }}</span>
+              </div>
+              {% endfor %}
+              {% if h.reason %}
+              <div class="mt-1 fst-italic">&ldquo;{{ h.reason }}&rdquo;</div>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="card-body py-2 text-subtle small">
+      แสดง {{ audit_history|length }} รายการล่าสุด ·
+      รายการก่อน 25 ส.ค. 2569 ไม่มีบันทึก เพราะเพิ่งเริ่มเก็บวันนั้น
+    </div>
+  </div>
+</div>
+{% endif %}
+
 {% endblock %}

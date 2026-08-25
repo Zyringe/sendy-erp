@@ -39,7 +39,8 @@ from collections import defaultdict
 from datetime import date
 
 from ._shared import (
-    _set_price_change_source,
+    _set_price_change_source, declared_update, declared_delete, SOURCE_DOC_TABLES, SOURCE_DOC_WRITABLE_COLUMNS,
+    get_source_doc_audit_history, SOURCE_DOC_FIELD_LABELS,
     AUDIT_LOG_RETENTION_DAYS, _AUDIT_PRUNE_PREDICATE, prune_audit_log,
     _NOISE_WORDS, _QTY_PREFIX, _clean_for_match, _re_mod,
 )

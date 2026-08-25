@@ -120,6 +120,25 @@ EXPECTED = {
         '(tests/test_nonstock_line_sync.py::test_non_stock_line_creates_no_ledger_row, '
         'tests/test_nonstock_line_sync.py::test_non_stock_row_survives_pass_2_rebuild)',
 
+    ('models/_shared.py', '<module level>'):
+        'allowlisted: SOURCE_DOC_WRITABLE_COLUMNS lists synced_to_stock as a '
+        'column declared_update may set — a name in a frozenset, not a branch on '
+        'the non-stock semantics '
+        '(tests/test_source_doc_provenance.py::test_declared_update_refuses_a_column_outside_the_allowlist)',
+
+    ('models/_shared.py', 'declared_delete'):
+        'allowlisted: sets synced_to_stock=0 purely as a carrier so the stamping '
+        'UPDATE has a column to write — it never reads or filters on the value, '
+        'and the rows it touches are the caller-chosen id only '
+        '(tests/test_source_doc_provenance.py::test_declared_delete_leaves_a_human_trail)',
+
+    ('models/reconcile.py', '_delete_sales_rows'):
+        'allowlisted: the mig-173 stamp before a confirmed reconciliation delete. '
+        'synced_to_stock=0 is the carrier column; the row set is the exact ids '
+        '_ledger_check already verified, so it can neither widen nor narrow what '
+        'apply_reconcile_flag deletes '
+        '(tests/test_source_doc_provenance.py::test_reconcile_delete_records_the_human_who_resolved_it)',
+
     ('models/bsn_sync.py', 'dismiss_pending_unit_conversion'):
         'guarded: function-level rejection (non_stock_clause-narrowed protected-row '
         'check) refuses the WHOLE group before any DELETE, and the DELETE itself is '
@@ -246,9 +265,24 @@ EXPECTED_SEQUENCE = {
         'The exact `(table, row id)` pairs for `product_id` that currently hold a     led',
         'WHERE product_id=? AND synced_to_stock=1',
     ],
+    # ── mig 173 provenance additions ────────────────────────────────────────
+    ('models/_shared.py', '<module level>'): [
+        'synced_to_stock',
+    ],
+    ('models/_shared.py', 'declared_delete'): [
+        'synced_to_stock',
+    ],
+    ('models/reconcile.py', '_delete_sales_rows'): [
+        "UPDATE sales_transactions SET synced_to_stock=0, change_source='manual', change_",
+    ],
+
     ('models/bsn_sync.py', 'dismiss_pending_unit_conversion'): [
         'Delete all synced_to_stock=0 rows for (product_id, bsn_unit) from both     ledge',
         'WHERE product_id=? AND unit=? AND synced_to_stock=0   AND NOT (',
+        # mig 173: stamp the operator onto the rows BEFORE deleting them, or the
+        # DELETE audit row inherits the importer that wrote them. Same predicate
+        # as the DELETE below, so it can neither widen nor narrow the group.
+        "SET change_source='manual', change_actor=?, change_reason=? WHERE product_id=? A",
         'WHERE product_id=? AND unit=? AND synced_to_stock=0 AND',
     ],
     ('models/bsn_sync.py', 'get_pending_unit_conversions'): [
@@ -265,7 +299,9 @@ EXPECTED_SEQUENCE = {
         'SET synced_to_stock=0 WHERE product_id IN (',
     ],
     ('models/mapping.py', '_repoint_rows'): [
-        'SET product_id=?, synced_to_stock=0 WHERE id=?',
+        # mig 173: the raw UPDATE became a declared_update call, so the literal
+        # the scan sees is the dict key rather than the SQL.
+        'synced_to_stock',
     ],
     ('models/mapping.py', 'get_pending_split_mappings'): [
         'SELECT bsn_code, unit, product_id,                COUNT(*) AS row_count,        ',

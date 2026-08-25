@@ -8,6 +8,8 @@ calls it directly after a ratio change) — acyclic, flagged in the Phase 12
 report.
 """
 from database import get_connection
+import uuid as _uuid
+
 import bsn_units
 
 from .stock_filters import is_non_stock_code, non_stock_clause
@@ -527,7 +529,17 @@ def learn_acronyms_normalize(pairs: dict):
     for acr, full in pairs.items():
         bsn_units.add_acronym(acr, full)
         for t in ('sales_transactions', 'purchase_transactions'):
-            conn.execute(f"UPDATE {t} SET unit=? WHERE unit=?", (full, acr))
+            # mig 173: `unit` is guarded, and this is reachable from
+            # /unit-conversions. A bulk rewrite cannot go through
+            # declared_update (that takes one row id), so it declares itself
+            # inline — one fresh token for the whole rewrite, which is what it
+            # is: a single operator action, not N unrelated ones. The uuid
+            # suffix keeps the token from ever equalling a row's existing
+            # one, which would trip the reused-token clause and abort.
+            conn.execute(
+                f"UPDATE {t} SET unit=?, change_source='import',"
+                f" change_actor='learn-acronyms', change_token=? WHERE unit=?",
+                (full, f'acronym-{acr}-{full}-{_uuid.uuid4().hex[:8]}', acr))
     conn.commit()
     conn.close()
 
@@ -558,7 +570,8 @@ def save_unit_conversions(items: list):
     return {'saved': saved, 'blocked': blocked}
 
 
-def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str) -> int:
+def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str,
+                                    actor: str = None) -> int:
     """Delete all synced_to_stock=0 rows for (product_id, bsn_unit) from both
     ledger tables. Used when the team entered a wrong unit and the rows are
     stale — they have never touched stock so deletion is safe.
@@ -594,6 +607,21 @@ def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str) -> int:
                 return 0
         deleted = 0
         for table in ('sales_transactions', 'purchase_transactions'):
+            # ⚠ Stamp BEFORE deleting. The DELETE audit trigger copies what the
+            # row last DECLARED, so an operator dismissing a pending conversion
+            # from /unit-conversions/dismiss would be recorded as the importer
+            # that wrote the row (Codex round 3) — the same misattribution
+            # already fixed in reconcile.py, reachable through a second route.
+            # This UPDATE touches no guarded column, so it needs no token to
+            # pass the guard; it exists only to set what the DELETE row inherits.
+            conn.execute(
+                f"UPDATE {table} SET change_source='manual',"
+                f" change_actor=?, change_reason=?"
+                f" WHERE product_id=? AND unit=? AND synced_to_stock=0"
+                f"   AND {non_stock_clause()}",
+                (actor or 'unit-conversion-dismiss',
+                 f'ยกเลิกรายการรอแปลงหน่วย (สินค้า {product_id} / {bsn_unit})',
+                 product_id, bsn_unit))
             cur = conn.execute(
                 f"DELETE FROM {table} WHERE product_id=? AND unit=?"
                 f" AND synced_to_stock=0 AND {non_stock_clause()}",

@@ -290,6 +290,10 @@ def import_weekly(entries: list, file_type: str, filename: str,
                 unchanged += 1
                 continue
             # Real change → replace the source row; pass 2 rebuilds its ledger.
+            # ⚠ This is a DELETE+INSERT, not an UPDATE, so mig 173's guard never
+            # sees it. Deliberate: blocking either half would block every import,
+            # and the audit trail still records both events with source='import'
+            # (the INSERT below stamps the columns).
             if old['product_id']:
                 affected_pids.add(old['product_id'])
             # The replacement re-inserts with a NEW id, so it is a first sync
@@ -319,6 +323,14 @@ def import_weekly(entries: list, file_type: str, filename: str,
                         conn, table, old['id'])
                     if _moved != _recorded:
                         lossy_reversals += 1
+            # ⚠ Stamp before deleting. The DELETE audit row copies what the
+            # row last DECLARED, so a line a human had corrected through
+            # declared_update would be audited as THAT human deleting it,
+            # for their old reason (Codex round 6). This is the importer's
+            # own replace/removal, so it says so.
+            conn.execute(
+                f"UPDATE {table} SET change_source='import', change_actor=?,"
+                f" change_reason=NULL WHERE id=?", (filename, old['id']))
             conn.execute(f"DELETE FROM {table} WHERE id=?", (old['id'],))
             overwritten += 1
 
@@ -327,26 +339,30 @@ def import_weekly(entries: list, file_type: str, filename: str,
                 INSERT INTO {table}
                     (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,
                      product_name_raw, {party_col}, {party_code_col}, qty, unit,
-                     unit_price, vat_type, discount, total, net, line_seq)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     unit_price, vat_type, discount, total, net, line_seq,
+                     change_source, change_actor, change_token)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 batch_id, e['date_iso'], doc_no, doc_base, product_id,
                 e['product_code_raw'], e['product_name_raw'], e['party'],
                 e['party_code'], e['qty'], e['unit'], e['unit_price'],
-                e['vat_type'], e['discount'], e['total'], e['net'], line_seq
+                e['vat_type'], e['discount'], e['total'], e['net'], line_seq,
+                'import', filename, f'batch-{batch_id}'
             ))
         else:
             cur_ins = conn.execute(f"""
                 INSERT INTO {table}
                     (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,
                      product_name_raw, {party_col}, {party_code_col}, qty, unit,
-                     unit_price, vat_type, discount, total, net)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     unit_price, vat_type, discount, total, net,
+                     change_source, change_actor, change_token)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 batch_id, e['date_iso'], doc_no, doc_base, product_id,
                 e['product_code_raw'], e['product_name_raw'], e['party'],
                 e['party_code'], e['qty'], e['unit'], e['unit_price'],
-                e['vat_type'], e['discount'], e['total'], e['net']
+                e['vat_type'], e['discount'], e['total'], e['net'],
+                'import', filename, f'batch-{batch_id}'
             ))
         if carry_from is not None:
             new_id = cur_ins.lastrowid
@@ -379,6 +395,14 @@ def import_weekly(entries: list, file_type: str, filename: str,
                     conn, table, r['id'])
                 if _moved != _recorded:
                     lossy_reversals += 1
+            # ⚠ Stamp before deleting. The DELETE audit row copies what the
+            # row last DECLARED, so a line a human had corrected through
+            # declared_update would be audited as THAT human deleting it,
+            # for their old reason (Codex round 6). This is the importer's
+            # own replace/removal, so it says so.
+            conn.execute(
+                f"UPDATE {table} SET change_source='import', change_actor=?,"
+                f" change_reason=NULL WHERE id=?", (filename, r['id']))
             conn.execute(f"DELETE FROM {table} WHERE id=?", (r['id'],))
             removed += 1
     else:

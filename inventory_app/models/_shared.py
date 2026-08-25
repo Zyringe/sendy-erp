@@ -6,6 +6,7 @@ rationale. No behavior changes.
 """
 from database import get_connection
 import re as _re_mod
+import sqlite3 as _sqlite3
 
 # The marketplaces the schema accepts — CHECK(platform IN (...)) on
 # platform_skus / platform_products / ecommerce_listings (mig 140).
@@ -27,6 +28,165 @@ def _set_price_change_source(conn, source):
         "ON CONFLICT(id) DO UPDATE SET source = excluded.source",
         (source,)
     )
+
+
+# ── source-document provenance (mig 173) ─────────────────────────────────────
+
+SOURCE_DOC_TABLES = ('sales_transactions', 'purchase_transactions')
+
+# What a declared change is allowed to touch. The guarded document columns plus
+# synced_to_stock, which is exempt from the guard but legitimately rides along
+# with a repoint. Deliberately excludes id / batch_id / created_at and the
+# change_* columns themselves — those are the mechanism, not the content.
+SOURCE_DOC_WRITABLE_COLUMNS = frozenset({
+    'date_iso', 'doc_no', 'doc_base', 'product_id', 'bsn_code', 'product_name_raw',
+    'customer', 'customer_code', 'supplier', 'supplier_code', 'supplier_id',
+    'qty', 'unit', 'unit_price', 'vat_type', 'discount', 'total', 'net',
+    'ref_invoice', 'line_seq', 'synced_to_stock',
+})
+
+
+def declared_update(conn, table, row_id, changes, *, actor,
+                    source='manual', reason=None):
+    """The only supported way to change a sales/purchase document row.
+
+    mig 173 refuses an UPDATE that touches a meaningful column without saying who
+    made it and, for a human edit, why. The reason travels ON THE ROW rather than
+    through a side table on purpose: `_set_price_change_source` above uses the
+    side-table shape, and it is only safe while the set and the UPDATE share one
+    transaction. Set it, commit, then update, and a second connection can stamp
+    ITS source onto YOUR row — reproduced in
+    projects/express-integration/spike/provenance-2026-08-25/. Both existing
+    price callers happen to hold one transaction, so that hazard is latent there,
+    but it is not a shape to copy into a new feature.
+
+    `token` is generated per call and must differ from the row's current one. An
+    UPDATE that simply omits these columns inherits the PREVIOUS change's reason
+    and would read as fully explained, which is worse than no reason at all.
+    """
+    import uuid
+    if table not in SOURCE_DOC_TABLES:
+        raise ValueError(f'declared_update is for {SOURCE_DOC_TABLES}, not {table!r}')
+    if not (actor or '').strip():
+        raise ValueError('actor is required — an unattributed change is the thing '
+                         'mig 173 exists to prevent')
+    if source == 'manual' and len((reason or '').strip()) < 12:
+        raise ValueError('a manual change needs a reason that explains it; '
+                         f'got {reason!r}. The DB will refuse it anyway.')
+    if not changes:
+        raise ValueError('no changes given')
+    # Column names are interpolated, not bound — SQLite cannot parameterise an
+    # identifier. Every caller passes literals today; the allowlist is what keeps
+    # that true if one ever forwards a request value.
+    unknown = set(changes) - SOURCE_DOC_WRITABLE_COLUMNS
+    if unknown:
+        raise ValueError(f'not writable through declared_update: {sorted(unknown)}')
+    sets = ', '.join(f'{c} = ?' for c in changes)
+    conn.execute(
+        f"UPDATE {table} SET {sets}, change_source = ?, change_actor = ?, "
+        f"change_reason = ?, change_token = ? WHERE id = ?",
+        (*changes.values(), source, actor, reason, uuid.uuid4().hex, row_id))
+
+
+def declared_delete(conn, table, row_id, *, actor, reason):
+    """Delete a source-document row so the audit trail says who and why.
+
+    ⚠ Unlike `declared_update`, this cannot be ENFORCED. A DELETE has no NEW row,
+    so mig 173 has nothing to attach a declaration to and no BEFORE DELETE guard
+    can demand one — a plain DELETE still succeeds and its audit row inherits
+    whatever the row last declared, which for an imported line reads
+    `source='import'`. Measured, see spike/provenance-2026-08-25/c_delete_insert.py
+    in the brain repo.
+
+    Blocking DELETE was not an option either: the importer replaces every changed
+    line with DELETE+INSERT, so a guard there would block every import.
+
+    So this is the RIGHT way, not the ONLY way. It stamps the declaration onto the
+    row first — which the UPDATE guard does enforce — and then deletes, leaving a
+    DELETE audit row that carries the human's actor and reason. Retention keeps
+    every source-document DELETE forever precisely because the ones that matter
+    cannot be told apart from churn by rule.
+    """
+    if table not in SOURCE_DOC_TABLES:
+        raise ValueError(f'declared_delete is for {SOURCE_DOC_TABLES}, not {table!r}')
+    declared_update(conn, table, row_id, {'synced_to_stock': 0},
+                    actor=actor, source='manual', reason=reason)
+    conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+
+
+SOURCE_DOC_FIELD_LABELS = {
+    'date_iso': 'วันที่', 'doc_no': 'เลขที่บรรทัด', 'doc_base': 'เลขที่เอกสาร',
+    'product_id': 'สินค้าที่ผูก', 'bsn_code': 'รหัส BSN', 'customer': 'ลูกค้า',
+    'customer_code': 'รหัสลูกค้า', 'supplier': 'ผู้ขาย', 'supplier_code': 'รหัสผู้ขาย',
+    'qty': 'จำนวน', 'unit': 'หน่วย', 'unit_price': 'ราคา/หน่วย', 'vat_type': 'ชนิด VAT',
+    'discount': 'ส่วนลด', 'total': 'ยอดรวม', 'net': 'ยอดสุทธิ',
+    'ref_invoice': 'อ้างอิงใบกำกับ', 'line_seq': 'ลำดับบรรทัด',
+}
+
+
+def get_source_doc_audit_history(doc_base, table, limit=30, conn=None):
+    """Every recorded change to one document's lines, newest first.
+
+    Unlike `get_customer_audit_history`, this DOES answer "who" and "why":
+    mig 173 stamps `change_actor` / `change_source` / `change_reason` onto the
+    row, and the trigger copies them into the audit row it writes. A panel that
+    only a SQL prompt can read is not provenance anyone has — Put is the sole
+    digital operator and does not run SQL.
+
+    ⚠ `conn` is not optional in practice. The document routes are permitted
+    VAT-book endpoints and get_connection() is always the main No-VAT DB, so
+    defaulting to it would show a VAT-book invoice the history of whatever
+    document happens to share its number in the other book (Codex, 2026-08-25).
+    Callers pass the same connection the rows came from.
+
+    Matched on `row_key`, not `row_id`: the importer replaces a changed line
+    with DELETE+INSERT, so the numeric id changes at exactly the moment the
+    history matters. Sales keys are `<doc_no>|<bsn_code>` where doc_no carries
+    the printed `-N` suffix, so a document's lines are matched by prefix — with
+    the separator included, otherwise `IV0001` would also collect `IV00010`.
+    """
+    if table not in SOURCE_DOC_TABLES:
+        raise ValueError(f'unknown source table {table!r}')
+    own = conn is None
+    if own:
+        conn = get_connection()
+    prev_factory = conn.row_factory
+    conn.row_factory = _sqlite3.Row
+    try:
+        rows = conn.execute(
+            """SELECT created_at, action, changed_fields, user, change_source, change_reason
+                 FROM audit_log
+                WHERE table_name = ?
+                  AND (row_key LIKE ? ESCAPE '\\' OR row_key LIKE ? ESCAPE '\\')
+                ORDER BY id DESC LIMIT ?""",
+            (table, _like_prefix(doc_base) + '-%', _like_prefix(doc_base) + '|%', limit)
+        ).fetchall()
+    finally:
+        conn.row_factory = prev_factory
+        if own:
+            conn.close()
+    import json
+    out = []
+    for r in rows:
+        try:
+            raw = json.loads(r['changed_fields'] or '{}')
+        except ValueError:
+            raw = {}
+        changes = []
+        for field, val in raw.items():
+            old, new = (val + [None, None])[:2] if isinstance(val, list) else (None, val)
+            changes.append({'field': field,
+                            'label': SOURCE_DOC_FIELD_LABELS.get(field, field),
+                            'old': old, 'new': new})
+        out.append({'created_at': r['created_at'], 'action': r['action'],
+                    'actor': r['user'], 'source': r['change_source'],
+                    'reason': r['change_reason'], 'changes': changes})
+    return out
+
+
+def _like_prefix(value):
+    """LIKE metacharacters in a document number would silently widen the match."""
+    return (value or '').replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 
 # audit_log TTL: low-value `transactions` import churn older than this many days
@@ -60,6 +220,30 @@ _AUDIT_PRUNE_PREDICATE = (
     "(table_name = 'transactions' AND action IN ('INSERT','DELETE'))"
 )
 
+# The source-document half is a SEPARATE predicate because it needs a column that
+# only exists after mig 173, and prune_audit_log() must not crash on a restored or
+# downgraded DB that predates it (there are no source-doc audit rows to prune
+# there anyway).
+#
+# ⛔ INSERT ONLY. A DELETE audit row carries whatever the row last DECLARED, not
+# who deleted it — so a hand-deleted line the importer had written reads as
+# source='import'. Pruning those would erase exactly the record a person needs,
+# which is the mistake the `transactions` policy above already made once
+# ("indistinguishable from import churn"). Deletes are far rarer than the insert
+# churn, so keeping them forever costs little.
+_AUDIT_PRUNE_SOURCE_DOC_PREDICATE = (
+    "(table_name IN ('sales_transactions','purchase_transactions')"
+    " AND action = 'INSERT' AND change_source = 'import')"
+)
+# ⚠ The second clause is only safe because mig 173 made "who wrote this" a
+# recorded fact instead of a guess. The comment above this block explains why the
+# `transactions` hand-void is pruned along with the churn: it was
+# "indistinguishable from import churn". That is exactly the mistake this clause
+# must not repeat — so it prunes ONLY rows that positively declare
+# change_source='import', and a row with a NULL or 'manual' source is kept
+# forever. Every guarded UPDATE is kept regardless of source: those are the
+# meaningful changes the whole feature exists to preserve.
+
 
 def prune_audit_log(conn=None):
     """Prune old `transactions` import churn from audit_log.
@@ -92,6 +276,14 @@ def prune_audit_log(conn=None):
             (f"-{AUDIT_LOG_RETENTION_DAYS} day",),
         )
         deleted = cur.rowcount
+        if any(r[1] == 'change_source'
+               for r in conn.execute("PRAGMA table_info(audit_log)")):
+            deleted += conn.execute(
+                "DELETE FROM audit_log "
+                "WHERE created_at < date('now','localtime',?) "
+                f"AND {_AUDIT_PRUNE_SOURCE_DOC_PREDICATE}",
+                (f"-{AUDIT_LOG_RETENTION_DAYS} day",),
+            ).rowcount
         if own:
             conn.commit()
         return deleted
