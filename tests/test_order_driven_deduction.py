@@ -22,6 +22,7 @@ import sqlite3
 
 import pytest
 
+import models
 import models.marketplace as marketplace_mod
 from models.marketplace import (
     resolve_line_listing, RESTOCK_STATUSES, import_marketplace_orders,
@@ -439,3 +440,178 @@ def test_import_holds_lock_before_first_write(empty_db, empty_db_conn, monkeypat
 
     assert seen.get('locked') is True
     assert stats['orders'] == 1
+
+
+# ── Task 1.5: snapshot import / manual edit stamp the baseline ─────────────
+#
+# `import_platform_skus`, `import_tiktok_snapshot` and `update_platform_sku`
+# each write `platform_skus.stock`, and each must ALSO move
+# `platform_skus.stock_as_of` forward when they do — otherwise the baseline
+# the diff engine gates on (D3) goes stale the moment stock is refreshed any
+# way other than an order import, and a historical order re-import (or a
+# late-arriving one) double-deducts against a number the file/operator
+# already accounted for.
+
+def _stamp_at(conn, lid):
+    return conn.execute(
+        "SELECT stock_as_of FROM platform_skus WHERE id=?", (lid,)).fetchone()[0]
+
+
+def _today(conn):
+    return conn.execute("SELECT date('now','localtime')").fetchone()[0]
+
+
+def test_import_platform_skus_stamps_stock_as_of(empty_db_conn):
+    conn = empty_db_conn
+    lid = _seed_sku(conn, variation_id='V-SNAP', stock=50,
+                    stock_as_of='2020-01-01 00:00:00')
+    assert _stamp_at(conn, lid) == '2020-01-01 00:00:00'  # vacuity guard
+
+    models.import_platform_skus('shopee', [{
+        'variation_id': 'V-SNAP', 'product_id_str': 'p', 'product_name': 'p',
+        'variation_name': None, 'parent_sku': None, 'seller_sku': None,
+        'price': 10.0, 'special_price': None, 'stock': 92, 'raw_json': '{}',
+    }])
+
+    stamped = _stamp_at(conn, lid)
+    assert stamped != '2020-01-01 00:00:00'
+    assert stamped.startswith(_today(conn))  # plain overwrite, not COALESCE
+
+
+def test_import_platform_skus_stamps_a_brand_new_row_too(empty_db_conn):
+    """A variation never seen before also gets a baseline — the file IS the
+    first stock figure Sendy has for it."""
+    conn = empty_db_conn
+    models.import_platform_skus('shopee', [{
+        'variation_id': 'V-NEW', 'product_id_str': 'p', 'product_name': 'p',
+        'variation_name': None, 'parent_sku': None, 'seller_sku': None,
+        'price': 10.0, 'special_price': None, 'stock': 10, 'raw_json': '{}',
+    }])
+    row = conn.execute(
+        "SELECT id, stock_as_of FROM platform_skus WHERE variation_id='V-NEW'").fetchone()
+    assert row['stock_as_of'] is not None and row['stock_as_of'].startswith(_today(conn))
+
+
+def test_manual_stock_edit_stamps_baseline_and_gates_earlier_order(empty_db_conn):
+    """update_platform_sku's stock-changing branch also stamps stock_as_of —
+    a hand-typed figure is authoritative exactly like a file (the function's
+    own comment already says so re: provenance; task 1.5 extends it to the
+    baseline). Test per the brief: manual edit -> immediately import an
+    order dated before the edit -> gated. CONTROL: dated after -> deducts."""
+    conn = empty_db_conn
+    lid = _seed_sku(conn, variation_id='V-EDIT-BASE', stock=50,
+                    stock_as_of='2020-01-01 00:00:00')
+
+    models.update_platform_sku(lid, price=10.0, special_price=None,
+                               stock=92, qty_per_sale=1)
+
+    stamped = _stamp_at(conn, lid)
+    assert stamped != '2020-01-01 00:00:00'
+    assert stamped.startswith(_today(conn))
+
+    # Dated AFTER the old baseline but the edit (hence the manual figure)
+    # already reflects it -> gated, no re-deduction on top of 92.
+    before_order = _order('ORD-BEFORE',
+                          [_line('L1', variation_id='V-EDIT-BASE', qty=3.0)],
+                          order_date='2020-06-01 10:00')
+    stats = import_marketplace_orders(conn, [before_order], 'f.xlsx')
+    oid = _order_id(conn, 'shopee', 'ORD-BEFORE')
+    assert _stock(conn, lid) == 92
+    assert _provenance(conn, oid, lid) is None
+    assert stats['gated_lines'] == 1
+
+    # CONTROL: an order dated AFTER the edit still deducts.
+    after_order = _order('ORD-AFTER',
+                         [_line('L1', variation_id='V-EDIT-BASE', qty=3.0)],
+                         order_date='2099-01-01 10:00')
+    import_marketplace_orders(conn, [after_order], 'f.xlsx')
+    assert _stock(conn, lid) == 89
+
+
+def test_manual_price_only_edit_does_not_stamp_baseline(empty_db_conn):
+    """A price-only save carries the unchanged stock — must not disturb the
+    baseline either, same reasoning that already keeps the historical
+    provenance record alive for it."""
+    conn = empty_db_conn
+    lid = _seed_sku(conn, variation_id='V-PRICE-ONLY', stock=50,
+                    stock_as_of='2020-01-01 00:00:00')
+
+    models.update_platform_sku(lid, price=99.0, special_price=None,
+                               stock=50, qty_per_sale=1)  # same stock
+
+    assert _stamp_at(conn, lid) == '2020-01-01 00:00:00'
+
+
+def test_import_tiktok_snapshot_stamps_stock_as_of_when_stock_present(empty_db_conn):
+    conn = empty_db_conn
+    lid = _seed_sku(conn, platform='tiktok', variation_id='TT-1', stock=10,
+                    stock_as_of='2020-01-01 00:00:00')
+
+    parsed = {
+        'products': [],
+        'skus': [{'variation_id': 'TT-1', 'product_id_str': 'p',
+                  'product_name': 'p', 'variation_name': None,
+                  'seller_sku': None, 'price': 10.0, 'special_price': None,
+                  'stock': 8, 'raw_json': '{}', 'weight_kg': None,
+                  'length_cm': None, 'width_cm': None, 'height_cm': None}],
+        'stock_present': True,
+    }
+    models.import_tiktok_snapshot(parsed)
+
+    stamped = _stamp_at(conn, lid)
+    assert stamped != '2020-01-01 00:00:00'
+    assert stamped.startswith(_today(conn))
+
+
+def test_import_tiktok_snapshot_no_stock_column_leaves_baseline_alone(empty_db_conn):
+    """An export with no `quantity` column must not move the baseline either
+    — same reasoning that already keeps it from moving imported_at."""
+    conn = empty_db_conn
+    lid = _seed_sku(conn, platform='tiktok', variation_id='TT-2', stock=10,
+                    stock_as_of='2020-01-01 00:00:00')
+
+    parsed = {
+        'products': [],
+        'skus': [{'variation_id': 'TT-2', 'product_id_str': 'p',
+                  'product_name': 'p', 'variation_name': None,
+                  'seller_sku': None, 'price': 12.0, 'special_price': None,
+                  'stock': None, 'raw_json': '{}', 'weight_kg': None,
+                  'length_cm': None, 'width_cm': None, 'height_cm': None}],
+        'stock_present': False,
+    }
+    models.import_tiktok_snapshot(parsed)
+
+    assert _stamp_at(conn, lid) == '2020-01-01 00:00:00'
+
+
+def test_snapshot_import_drops_order_provenance(empty_db_conn):
+    """`_invalidate_deduction_provenance` must be source_table-agnostic: an
+    order-sourced provenance row is superseded by a fresh snapshot exactly
+    like a sales_transactions-sourced one always was (mig 172). Category-
+    filtered-export property (Codex round 2): a listing NOT in the file
+    keeps its record."""
+    conn = empty_db_conn
+    carried_lid = _seed_sku(conn, variation_id='V-CARRIED', stock=50,
+                            stock_as_of='2020-01-01 00:00:00')
+    absent_lid = _seed_sku(conn, variation_id='V-ABSENT', stock=50,
+                           stock_as_of='2020-01-01 00:00:00')
+
+    order = _order('ORD-INVAL', [
+        _line('L1', variation_id='V-CARRIED', qty=2.0),
+        _line('L2', variation_id='V-ABSENT', qty=2.0),
+    ], order_date='2020-06-01 10:00')
+    import_marketplace_orders(conn, [order], 'f.xlsx')
+    oid = _order_id(conn, 'shopee', 'ORD-INVAL')
+    assert _provenance(conn, oid, carried_lid) == 2  # vacuity guard
+    assert _provenance(conn, oid, absent_lid) == 2   # vacuity guard
+
+    models.import_platform_skus('shopee', [{
+        'variation_id': 'V-CARRIED', 'product_id_str': 'p', 'product_name': 'p',
+        'variation_name': None, 'parent_sku': None, 'seller_sku': None,
+        'price': 10.0, 'special_price': None, 'stock': 40, 'raw_json': '{}',
+    }])
+
+    assert _provenance(conn, oid, carried_lid) is None, \
+        'carried by the file -> superseded'
+    assert _provenance(conn, oid, absent_lid) == 2, \
+        'not in the file -> the record stands'

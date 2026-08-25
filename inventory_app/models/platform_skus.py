@@ -39,8 +39,9 @@ def import_platform_skus(platform, records):
               (platform, variation_id, product_id_str, product_name, variation_name,
                parent_sku, seller_sku, price, special_price, stock, raw_json,
                weight_kg, length_cm, width_cm, height_cm, gtin,
-               special_price_start, special_price_end, variation_image_url)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               special_price_start, special_price_end, variation_image_url,
+               stock_as_of)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now','localtime'))
             ON CONFLICT(platform, variation_id) DO UPDATE SET
               product_id_str      = excluded.product_id_str,
               product_name        = excluded.product_name,
@@ -59,6 +60,11 @@ def import_platform_skus(platform, records):
               special_price_start = COALESCE(excluded.special_price_start, special_price_start),
               special_price_end   = COALESCE(excluded.special_price_end, special_price_end),
               variation_image_url = COALESCE(excluded.variation_image_url, variation_image_url),
+              -- stock_as_of is the baseline the order-driven diff engine
+              -- gates on (D3): this file IS the platform's own stock figure
+              -- as of now, so it overwrites PLAIN (not COALESCE) like
+              -- imported_at does, for every row the file carries.
+              stock_as_of         = datetime('now','localtime'),
               imported_at         = datetime('now','localtime')
               -- internal_product_id and qty_per_sale are DELIBERATELY ABSENT from UPDATE SET
         """, (
@@ -200,8 +206,16 @@ _TIKTOK_SKU_UPSERT = """
       -- ecommerce_overview._snapshot_dates() reads MAX(imported_at) as "when
       -- this platform's stock was last true", so bumping it would make a stale
       -- number look like today's and collapse the sold_since window to zero.
+      -- stock_as_of (the order-driven diff engine's baseline, D3) follows
+      -- the exact same gate: it only moves when the file actually carried a
+      -- fresh stock figure. Not present in the INSERT column list above —
+      -- a genuinely NEW row only reaches this INSERT when stock_present is
+      -- True (the ValueError guard earlier refuses one otherwise), and NULL
+      -- there already falls back to imported_at (itself "now" on a fresh
+      -- row), so the effective baseline is identical without a second CASE.
       stock       = CASE WHEN ? THEN excluded.stock ELSE stock END,
-      imported_at = CASE WHEN ? THEN datetime('now','localtime') ELSE imported_at END
+      imported_at = CASE WHEN ? THEN datetime('now','localtime') ELSE imported_at END,
+      stock_as_of = CASE WHEN ? THEN datetime('now','localtime') ELSE stock_as_of END
       -- internal_product_id and qty_per_sale are DELIBERATELY ABSENT, exactly
       -- as in import_platform_skus: they are the operator's work, not the file's.
 """
@@ -270,7 +284,7 @@ def import_tiktok_snapshot(parsed):
                 s.get('seller_sku'), s.get('price'), s.get('special_price'),
                 s.get('stock'), s.get('raw_json'), s.get('weight_kg'),
                 s.get('length_cm'), s.get('width_cm'), s.get('height_cm'),
-                stock_present, stock_present,
+                stock_present, stock_present, stock_present,
             ))
 
         # Same supersession rule as the Shopee/Lazada path. TikTok cannot hold
@@ -568,10 +582,17 @@ def update_platform_sku(sku_id, price, special_price, stock, qty_per_sale):
     # Only when the figure actually MOVED. The edit form resubmits every field,
     # so a price-only save carries the unchanged stock with it, and discarding
     # live provenance there would make a later reversal restore nothing.
+    #
+    # Same move for stock_as_of: a hand-typed figure is a baseline exactly
+    # like a file's is (D3) — leaving it behind would let a same-day order
+    # import re-deduct against a number the operator already accounted for.
     if before is not None and before['stock'] != stock:
         conn.execute(
             "DELETE FROM platform_stock_deductions WHERE platform_sku_id = ?",
             (sku_id,))
+        conn.execute(
+            "UPDATE platform_skus SET stock_as_of = datetime('now','localtime') "
+            "WHERE id = ?", (sku_id,))
     conn.commit()
     conn.close()
 
