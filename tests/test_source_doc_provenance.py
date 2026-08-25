@@ -24,6 +24,8 @@ SCOPE, AND WHY IT IS THIS SHAPE
 """
 import json
 import os
+import pathlib
+import re
 import sqlite3
 
 import pytest
@@ -725,3 +727,63 @@ def test_dismissing_a_pending_conversion_records_the_operator(db, empty_db, monk
     assert len(d) == 1
     assert (d[0]['user'], d[0]['change_source']) == ('put', 'manual'), dict(d[0])
     assert 'ยกเลิกรายการรอแปลงหน่วย' in (d[0]['change_reason'] or '')
+
+
+# ── the importer must not take credit for a human's deletion ─────────────────
+# ⚠ The round-6 fix (stamping before the importer's two raw DELETEs) had no test
+# that could fail. test_a_real_import_round_trip re-imports a row whose
+# provenance is still 'import', so deleting BOTH stamps left it green (Codex
+# round 7). These two build the actual failure sequence: import → a human
+# corrects it → the importer replaces or removes it.
+
+def _import_then_hand_correct(db, empty_db, monkeypatch, doc='IV8001-1'):
+    import config, database, models
+    monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
+    monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
+    models.import_weekly([_entry(doc_no=doc)], 'sales', 'ยอดขาย_wk1.csv')
+    rid = db.execute("SELECT id FROM sales_transactions WHERE doc_no=?", (doc,)).fetchone()['id']
+    conn = sqlite3.connect(str(empty_db))
+    models.declared_update(conn, 'sales_transactions', rid, {'date_iso': '2026-01-14'},
+                           actor='put', reason='Express ต้นฉบับว่า 2026-01-14')
+    conn.commit(); conn.close()
+    # CONTROL: the row really is carrying the human now, so the assertions below
+    # are about the importer overwriting it, not about it never being there.
+    assert db.execute("SELECT change_source, change_actor FROM sales_transactions"
+                      " WHERE id=?", (rid,)).fetchone()[:] == ('manual', 'put')
+    return models, rid
+
+
+def test_importer_replacing_a_hand_corrected_line_is_not_recorded_as_the_human(
+        db, empty_db, monkeypatch):
+    models, _ = _import_then_hand_correct(db, empty_db, monkeypatch, 'IV8001-1')
+    models.import_weekly([_entry(doc_no='IV8001-1', net=25.0, total=25.0)],
+                         'sales', 'ยอดขาย_wk2.csv')
+    d = [r for r in audit(db, 'DELETE') if r['row_key'] == 'IV8001-1|A001']
+    assert len(d) == 1, [dict(x) for x in audit(db, 'DELETE')]
+    assert d[0]['change_source'] == 'import', (
+        'the importer replaced the line but the audit blames the human who had '
+        f'corrected it: {dict(d[0])}')
+    assert d[0]['user'] == 'ยอดขาย_wk2.csv'
+    assert d[0]['change_reason'] is None, "the human's old reason was carried onto a delete they did not make"
+
+
+def test_both_importer_delete_sites_stamp_before_deleting():
+    """The removal path resisted a behavioural fixture, and a skipped test is not
+    evidence. This asserts the invariant structurally instead: EVERY raw DELETE
+    of a source row inside models/imports.py is immediately preceded by a stamp.
+
+    Deliberately source-level, and deliberately not the only test — the replace
+    path above is behavioural and was watched going red with the stamps removed.
+    """
+    src = (pathlib.Path(__file__).parent.parent / 'inventory_app' / 'models'
+           / 'imports.py').read_text(encoding='utf-8')
+    lines = src.splitlines()
+    deletes = [i for i, l in enumerate(lines)
+               if re.search(r'DELETE FROM \{table\} WHERE id=', l)]
+    # CONTROL: if the search finds nothing the assertion below is vacuous.
+    assert len(deletes) == 2, f'expected the two known DELETE sites, found {deletes}'
+    for i in deletes:
+        window = '\n'.join(lines[max(0, i - 6):i])
+        assert "change_source='import'" in window and 'change_reason=NULL' in window, (
+            f'imports.py:{i + 1} deletes a source row without stamping first — its '
+            f'audit row will blame whoever last declared that row:\n{window}')
