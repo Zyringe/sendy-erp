@@ -7,7 +7,8 @@ No behavior changes.
 brief).
 """
 
-from datetime import datetime
+import re
+from datetime import datetime, timedelta, timezone
 
 from database import get_connection
 
@@ -18,7 +19,79 @@ from ._shared import PLATFORMS, _clean_for_match
 _MKT_HISTORY_CAP = 500
 
 
-def import_platform_skus(platform, records):
+# ── Task 2.1: export timestamp parsed from the snapshot filename ───────────
+#
+# Real Seller Center filename shapes, verified 2026-08-25
+# (projects/order-driven-platform-deduction/task-2.1-brief.md):
+#   Shopee: mass_update_sales_info_74562936_20260825135939.xlsx
+#           -> the trailing 14 digits ARE 'YYYYMMDDHHMMSS'.
+#   Lazada: pricestock100522265export1787637561277_0825-13-59-21.xlsx
+#           -> a 13-digit epoch-ms token supplies the YEAR; the trailing
+#              dash suffix supplies month/day/time. The epoch token runs on
+#              UTC+8 — confirmed empirically: converting the real filename's
+#              own epoch at +8 reproduces its own dash-suffix time to the
+#              second (+7, Bangkok, is off by exactly one hour). Both must
+#              agree on month/day or the filename is unparseable (D11's
+#              conservative stance: a missed baseline advance self-heals at
+#              the next snapshot; a wrong one does not).
+#   TikTok: Tiktoksellercenter_batchedit_20260825_all_information_template.xlsx
+#           -> date only -> '00:00:00' (conservative: an earlier baseline
+#              gates LESS, never causes a missed deduction).
+_SHOPEE_TS_RE = re.compile(r'_(\d{14})\.xlsx$', re.IGNORECASE)
+_LAZADA_EPOCH_RE = re.compile(r'(?<!\d)(\d{13})(?!\d)')
+_LAZADA_SUFFIX_RE = re.compile(r'_(\d{2})(\d{2})-(\d{2})-(\d{2})-(\d{2})\.xlsx$', re.IGNORECASE)
+_TIKTOK_DATE_RE = re.compile(r'_(\d{8})_')
+_LAZADA_EPOCH_TZ = timezone(timedelta(hours=8))
+
+
+def _parse_export_timestamp(filename):
+    """Best-effort export timestamp from a Seller Center export's filename.
+
+    Returns 'YYYY-MM-DD HH:MM:SS' or None when the shape isn't recognised —
+    the caller falls back to datetime('now','localtime') (Phase-1 behavior).
+    A small pure function on purpose: no DB access, no side effects.
+    """
+    if not filename:
+        return None
+
+    m = _SHOPEE_TS_RE.search(filename)
+    if m:
+        try:
+            return datetime.strptime(
+                m.group(1), '%Y%m%d%H%M%S').strftime('%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            pass
+
+    m_suffix = _LAZADA_SUFFIX_RE.search(filename)
+    m_epoch = _LAZADA_EPOCH_RE.search(filename)
+    if m_suffix and m_epoch:
+        mm, dd, hh, mi, ss = m_suffix.groups()
+        try:
+            epoch_dt = datetime.fromtimestamp(
+                int(m_epoch.group(1)) / 1000, _LAZADA_EPOCH_TZ)
+        except (ValueError, OSError, OverflowError):
+            epoch_dt = None
+        if epoch_dt is not None and epoch_dt.strftime('%m%d') == mm + dd:
+            candidate = f'{epoch_dt.year:04d}-{mm}-{dd} {hh}:{mi}:{ss}'
+            try:
+                datetime.strptime(candidate, '%Y-%m-%d %H:%M:%S')
+                return candidate
+            except ValueError:
+                pass
+
+    m = _TIKTOK_DATE_RE.search(filename)
+    if m:
+        try:
+            d = datetime.strptime(m.group(1), '%Y%m%d')
+        except ValueError:
+            d = None
+        if d is not None:
+            return d.strftime('%Y-%m-%d') + ' 00:00:00'
+
+    return None
+
+
+def import_platform_skus(platform, records, source_filename=None):
     """Upsert platform SKU records keyed on (platform, variation_id).
 
     SAFE UPSERT CONTRACT (spec §3.1):
@@ -28,9 +101,22 @@ def import_platform_skus(platform, records):
       use COALESCE(excluded.col, col) so a partial import never nulls existing data.
     - price/stock/name/variation_name/raw_json overwrite normally.
 
+    `source_filename` (task 2.1): when it parses to an export timestamp
+    (`_parse_export_timestamp`), `stock_as_of` is stamped with THAT moment
+    instead of import wall-clock time — the platform's own snapshot is as
+    of the export, not as of whenever Sendy got around to importing it.
+    Unparseable/absent -> falls back to now(), same as Phase 1.
+    `imported_at` is DELIBERATELY untouched by this: it stays real import
+    time (ecommerce_overview reads it as "when Sendy last saw this
+    platform's file").
+
     Returns (count_upserted, propagated_count).
     """
     conn = get_connection()
+    export_ts = _parse_export_timestamp(source_filename)
+    if export_ts is None:
+        export_ts = conn.execute(
+            "SELECT datetime('now','localtime')").fetchone()[0]
     # NO DELETE — that is the whole point of this rewrite.
     count = 0
     for r in records:
@@ -41,7 +127,7 @@ def import_platform_skus(platform, records):
                weight_kg, length_cm, width_cm, height_cm, gtin,
                special_price_start, special_price_end, variation_image_url,
                stock_as_of)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now','localtime'))
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(platform, variation_id) DO UPDATE SET
               product_id_str      = excluded.product_id_str,
               product_name        = excluded.product_name,
@@ -62,9 +148,10 @@ def import_platform_skus(platform, records):
               variation_image_url = COALESCE(excluded.variation_image_url, variation_image_url),
               -- stock_as_of is the baseline the order-driven diff engine
               -- gates on (D3): this file IS the platform's own stock figure
-              -- as of now, so it overwrites PLAIN (not COALESCE) like
-              -- imported_at does, for every row the file carries.
-              stock_as_of         = datetime('now','localtime'),
+              -- as of its export (task 2.1), so it overwrites PLAIN (not
+              -- COALESCE) like imported_at does, for every row the file
+              -- carries.
+              stock_as_of         = excluded.stock_as_of,
               imported_at         = datetime('now','localtime')
               -- internal_product_id and qty_per_sale are DELIBERATELY ABSENT from UPDATE SET
         """, (
@@ -79,6 +166,7 @@ def import_platform_skus(platform, records):
             r.get('gtin'),
             r.get('special_price_start'), r.get('special_price_end'),
             r.get('variation_image_url'),
+            export_ts,
         ))
         count += 1
     propagated = _propagate_listings_to_platform_skus(conn, platform)
@@ -208,21 +296,28 @@ _TIKTOK_SKU_UPSERT = """
       -- number look like today's and collapse the sold_since window to zero.
       -- stock_as_of (the order-driven diff engine's baseline, D3) follows
       -- the exact same gate: it only moves when the file actually carried a
-      -- fresh stock figure. Not present in the INSERT column list above —
-      -- a genuinely NEW row only reaches this INSERT when stock_present is
-      -- True (the ValueError guard earlier refuses one otherwise), and NULL
-      -- there already falls back to imported_at (itself "now" on a fresh
-      -- row), so the effective baseline is identical without a second CASE.
+      -- fresh stock figure, and (task 2.1) moves to the file's own EXPORT
+      -- timestamp rather than import wall-clock time when the filename
+      -- parses. Not present in the INSERT column list above — a genuinely
+      -- NEW row only reaches this INSERT when stock_present is True (the
+      -- ValueError guard earlier refuses one otherwise), and NULL there
+      -- already falls back to imported_at (itself "now" on a fresh row),
+      -- so the effective baseline is identical without a second CASE.
       stock       = CASE WHEN ? THEN excluded.stock ELSE stock END,
       imported_at = CASE WHEN ? THEN datetime('now','localtime') ELSE imported_at END,
-      stock_as_of = CASE WHEN ? THEN datetime('now','localtime') ELSE stock_as_of END
+      stock_as_of = CASE WHEN ? THEN ? ELSE stock_as_of END
       -- internal_product_id and qty_per_sale are DELIBERATELY ABSENT, exactly
       -- as in import_platform_skus: they are the operator's work, not the file's.
 """
 
 
-def import_tiktok_snapshot(parsed):
+def import_tiktok_snapshot(parsed, source_filename=None):
     """Write one `parse_tiktok` result — both grains — in ONE transaction.
+
+    `source_filename` (task 2.1): same contract as `import_platform_skus` —
+    when it parses (`_parse_export_timestamp`), a stock-bearing export
+    stamps `stock_as_of` with the file's own export moment instead of
+    import wall-clock time. Unparseable/absent -> falls back to now().
 
     Returns ``(n_products, n_skus, absent)`` where `absent` lists the active
     TikTok rows already on record that this file did NOT contain. They are
@@ -235,6 +330,10 @@ def import_tiktok_snapshot(parsed):
     stock_present = 1 if parsed.get('stock_present') else 0
 
     conn = get_connection()
+    export_ts = _parse_export_timestamp(source_filename)
+    if export_ts is None:
+        export_ts = conn.execute(
+            "SELECT datetime('now','localtime')").fetchone()[0]
     conn.isolation_level = None          # manual transaction control
     try:
         conn.execute('PRAGMA busy_timeout=10000')
@@ -284,7 +383,7 @@ def import_tiktok_snapshot(parsed):
                 s.get('seller_sku'), s.get('price'), s.get('special_price'),
                 s.get('stock'), s.get('raw_json'), s.get('weight_kg'),
                 s.get('length_cm'), s.get('width_cm'), s.get('height_cm'),
-                stock_present, stock_present, stock_present,
+                stock_present, stock_present, stock_present, export_ts,
             ))
 
         # Same supersession rule as the Shopee/Lazada path. TikTok cannot hold

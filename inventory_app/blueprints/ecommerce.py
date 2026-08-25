@@ -99,7 +99,7 @@ def _import_tiktok_snapshot_file(filename, label, parsed):
         category-filtered one, and auto-flagging a partial export would hide
         listings that are still selling.
     """
-    n_prod, n_sku, absent = models.import_tiktok_snapshot(parsed)
+    n_prod, n_sku, absent = models.import_tiktok_snapshot(parsed, source_filename=filename)
     flash(f'{filename} → {label}: นำเข้า {n_sku} ตัวเลือก / {n_prod} listing', 'success')
     if not parsed.get('stock_present'):
         flash('ไฟล์นี้ไม่มีคอลัมน์สต็อก (ปริมาณ) — คงสต็อกเดิมไว้ ยังไม่ได้อัปเดต '
@@ -140,7 +140,8 @@ def _import_platform_files(files):
                 _import_tiktok_snapshot_file(f.filename, label, records)
                 continue
             if kind == 'stock':
-                count, propagated = models.import_platform_skus(platform, records)
+                count, propagated = models.import_platform_skus(
+                    platform, records, source_filename=f.filename)
                 extra = f' · restore mapping {propagated} รายการ' if propagated else ''
             else:
                 count = models.import_platform_products(platform, records)

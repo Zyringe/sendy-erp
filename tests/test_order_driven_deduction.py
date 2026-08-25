@@ -27,6 +27,7 @@ import models.marketplace as marketplace_mod
 from models.marketplace import (
     resolve_line_listing, RESTOCK_STATUSES, import_marketplace_orders,
 )
+from models.platform_skus import _parse_export_timestamp
 
 
 # ── Task 1.2: resolve_line_listing ──────────────────────────────────────────
@@ -615,3 +616,102 @@ def test_snapshot_import_drops_order_provenance(empty_db_conn):
         'carried by the file -> superseded'
     assert _provenance(conn, oid, absent_lid) == 2, \
         'not in the file -> the record stands'
+
+
+# ── Task 2.1: parse the export timestamp from the snapshot filename ────────
+#
+# Real filename shapes verified 2026-08-25 (task-2.1-brief.md). Lazada's
+# epoch-ms token runs on UTC+8 — confirmed empirically: converting the real
+# filename's own epoch token at +8 reproduces its own dash-suffix time to
+# the second (+7 does not; it is off by exactly one hour). Only the YEAR is
+# taken from the epoch; month/day/time come from the dash suffix, cross-
+# checked against the epoch's own month/day as a sanity gate.
+
+def test_parse_export_timestamp_shopee():
+    assert _parse_export_timestamp(
+        'mass_update_sales_info_74562936_20260825135939.xlsx'
+    ) == '2026-08-25 13:59:39'
+
+
+def test_parse_export_timestamp_lazada():
+    assert _parse_export_timestamp(
+        'pricestock100522265export1787637561277_0825-13-59-21.xlsx'
+    ) == '2026-08-25 13:59:21'
+
+
+def test_parse_export_timestamp_lazada_month_day_disagreement_falls_back():
+    """Epoch says 08/25; the dash suffix says 01/01 — cannot both be right,
+    so the filename is treated as unparseable (D11's conservative stance)."""
+    assert _parse_export_timestamp(
+        'pricestock100522265export1787637561277_0101-00-00-00.xlsx'
+    ) is None
+
+
+def test_parse_export_timestamp_tiktok():
+    assert _parse_export_timestamp(
+        'Tiktoksellercenter_batchedit_20260825_all_information_template.xlsx'
+    ) == '2026-08-25 00:00:00'
+
+
+def test_parse_export_timestamp_garbage_returns_none():
+    assert _parse_export_timestamp('random_export_file.xlsx') is None
+
+
+def test_parse_export_timestamp_none_filename_returns_none():
+    assert _parse_export_timestamp(None) is None
+
+
+def test_import_platform_skus_uses_parsed_export_timestamp(empty_db_conn):
+    conn = empty_db_conn
+    lid = _seed_sku(conn, variation_id='V-TS', stock=50,
+                    stock_as_of='2020-01-01 00:00:00')
+    assert _stamp_at(conn, lid) == '2020-01-01 00:00:00'  # vacuity guard
+
+    # 2025-06-30 — distinct from "today" (2026-08-25 in this dev env) so the
+    # assertion actually distinguishes "parsed the filename" from "fell
+    # back to now()".
+    models.import_platform_skus('shopee', [{
+        'variation_id': 'V-TS', 'product_id_str': 'p', 'product_name': 'p',
+        'variation_name': None, 'parent_sku': None, 'seller_sku': None,
+        'price': 10.0, 'special_price': None, 'stock': 92, 'raw_json': '{}',
+    }], source_filename='mass_update_sales_info_1_20250630235959.xlsx')
+
+    assert _stamp_at(conn, lid) == '2025-06-30 23:59:59'
+
+
+def test_import_platform_skus_unparseable_filename_falls_back_to_now(empty_db_conn):
+    conn = empty_db_conn
+    lid = _seed_sku(conn, variation_id='V-TS-FB', stock=50,
+                    stock_as_of='2020-01-01 00:00:00')
+
+    models.import_platform_skus('shopee', [{
+        'variation_id': 'V-TS-FB', 'product_id_str': 'p', 'product_name': 'p',
+        'variation_name': None, 'parent_sku': None, 'seller_sku': None,
+        'price': 10.0, 'special_price': None, 'stock': 92, 'raw_json': '{}',
+    }], source_filename='not_a_recognised_shape.xlsx')
+
+    stamped = _stamp_at(conn, lid)
+    assert stamped != '2020-01-01 00:00:00'
+    assert stamped.startswith(_today(conn))
+
+
+def test_import_tiktok_snapshot_uses_parsed_export_timestamp(empty_db_conn):
+    conn = empty_db_conn
+    lid = _seed_sku(conn, platform='tiktok', variation_id='TT-TS', stock=10,
+                    stock_as_of='2020-01-01 00:00:00')
+
+    parsed = {
+        'products': [],
+        'skus': [{'variation_id': 'TT-TS', 'product_id_str': 'p',
+                  'product_name': 'p', 'variation_name': None,
+                  'seller_sku': None, 'price': 10.0, 'special_price': None,
+                  'stock': 8, 'raw_json': '{}', 'weight_kg': None,
+                  'length_cm': None, 'width_cm': None, 'height_cm': None}],
+        'stock_present': True,
+    }
+    models.import_tiktok_snapshot(
+        parsed,
+        source_filename='Tiktoksellercenter_batchedit_20250630_all_information_template.xlsx')
+
+    assert _stamp_at(conn, lid) == '2025-06-30 00:00:00'
+
