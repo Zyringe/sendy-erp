@@ -143,6 +143,21 @@ DECLARED = {
 # that is ACCEPTED, not overlooked — they are archived evidence of past data ops,
 # not runtime paths, and rewriting them would falsify what was actually run.
 # ⚠ Anything that is a real TOOL rather than a dated one-off does not belong here.
+# Scripts that are LIVE TOOLS and therefore declare, rather than one-offs that
+# are allowed to abort. A third outcome was needed the moment the first script
+# was converted: with only "exempt or fail", converting one made the sweep fail,
+# which pushes the next person toward the exemption list instead of the fix.
+# Every entry is checked below for an actual declared_update call, so it cannot
+# become a place to park a file.
+SCRIPT_DECLARED = {
+    'merge_product.py':
+        'live duplicate-consolidation tool; re-points product_id on both source '
+        'tables through declared_update, actor merge-product. ⚠ The sweep sees '
+        'it only because of the DECLARED constant in it — its real UPDATE takes '
+        'the table name from sqlite_master at runtime, which no text scan can '
+        'reach (tests/test_merge_product_declares.py is what actually covers it).',
+}
+
 SCRIPT_EXEMPTIONS = {
     # Dated one-off data ops that write a GUARDED column. They pre-date the guard
     # and would abort if re-run;
@@ -277,10 +292,25 @@ def test_no_new_guarded_column_appears_inside_a_declared_file():
 def test_every_script_writer_is_either_converted_or_knowingly_exempt():
     found = _scan(SCRIPTS)
     assert found, 'the script sweep found nothing — it is broken'
-    unknown = sorted(set(found) - set(SCRIPT_EXEMPTIONS))
+    unknown = sorted(set(found) - set(SCRIPT_EXEMPTIONS) - set(SCRIPT_DECLARED))
     assert not unknown, (
         'new or unlisted scripts write source-document rows. A dated one-off can '
-        f'join SCRIPT_EXEMPTIONS; a real tool must declare instead: {unknown}')
+        'join SCRIPT_EXEMPTIONS; a real tool must declare and join '
+        f'SCRIPT_DECLARED: {unknown}')
+
+
+def test_declared_scripts_actually_declare():
+    """SCRIPT_DECLARED is a claim about a file. Check it, or the list becomes a
+    second exemption list wearing a better name."""
+    assert SCRIPT_DECLARED, 'the list is empty; this test would prove nothing'
+    for name, reason in SCRIPT_DECLARED.items():
+        path = os.path.join(SCRIPTS, name)
+        assert os.path.exists(path), f'{name}: listed but not on disk'
+        assert len(reason.split()) >= 8, f'{name}: not a reason: {reason!r}'
+        src = strip_prose(open(path, encoding='utf-8').read())
+        assert 'declared_update' in src, (
+            f'{name} is listed as declaring but never calls declared_update — '
+            'the entry is a claim nobody checked')
 
 
 def test_script_exemptions_are_not_stale_and_carry_reasons():

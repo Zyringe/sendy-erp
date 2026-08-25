@@ -1238,11 +1238,15 @@ def _c_txt(v):
 
 
 def _c_num(v):
-    """int 25 and float 25.0 are the same value."""
-    try:
-        return round(float(v or 0), 2)
-    except (TypeError, ValueError):
-        return 0.0
+    """int 25 and float 25.0 are the same value.
+
+    Deliberately NOT wrapped in a try: a value that will not parse as a number
+    would become 0.0 on both sides and compare EQUAL, which is a detector
+    reporting "these agree" about data it could not read. Letting it raise makes
+    the scan fail visibly instead — the caller already isolates it, so the
+    import still succeeds and the page says the scan did not run.
+    """
+    return round(float(v or 0), 2)
 
 
 def _c_unit(v, _norm):
@@ -1464,6 +1468,10 @@ def detect_document_drift(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
     # this detector deciding a question nobody has answered.
     for doc in sorted(compared):
         raw = _c_txt(status.get(doc))
+        # Measured on the real 2026-08-25 dataset: in-scope headers carry only
+        # 'N' (74,102) and 'C' (460). 'M' and 'R' exist in ARTRN but never on a
+        # RECTYP this comparison looks at. The test is `!= 'N'` rather than
+        # `== 'C'` so a value nobody has seen surfaces instead of being dropped.
         if raw and raw != 'N':
             findings.append({
                 'doc_no': doc, 'kind': 'source_status', 'fields': ['DOCSTAT'],
@@ -1480,9 +1488,15 @@ def detect_document_drift(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
     freshness = 'authoritative' if export_at is not None else 'indeterminate'
     only_newer, only_older = set(), set()
     if freshness == 'authoritative':
-        cut = export_at.isoformat() if hasattr(export_at, 'isoformat') else str(export_at)
+        # DATE, and STRICTLY older. An export taken at 08:32 does not prove that
+        # a document dated the SAME DAY is missing at source — it may simply have
+        # been keyed after the export ran. Comparing the raw datetime would call
+        # every one of those "deleted at source", which is the false-alarm class
+        # this whole freshness rule exists to prevent.
+        cut = (export_at.date() if hasattr(export_at, 'date')
+               else export_at).isoformat()
         for doc in sendy_only:
-            (only_older if (sendy[doc]['hdr'][0] or '') <= cut else only_newer).add(doc)
+            (only_older if (sendy[doc]['hdr'][0] or '') < cut else only_newer).add(doc)
         for doc in sorted(only_older):
             findings.append({
                 'doc_no': doc, 'kind': 'deleted_at_source', 'fields': ['DOCUMENT'],

@@ -159,40 +159,105 @@ def record_express_doc_drift_alerts(findings, *, dataset_label=None, conn=None):
     import results page is not enough on its own: it is read by whoever ran the
     import, which is exactly the failure this module exists for.
 
-    Dedupe key is the `doc_no` ALONE, per _dedupe_key's rule. The dataset name,
-    the differing fields and the raw DOCSTAT are diagnostics and live in context,
-    so a document that keeps disagreeing week after week holds ONE open alert
-    instead of stacking one per upload — and a recurrence after someone
-    acknowledges it is allowed to alert again.
-
     ⛔ Detect and tell, never repair. Nothing here writes to the ledgers: an
     automatic "fix" would be this code deciding which of the two books is right,
     and the answer is per-document (a source edit vs a deliberate Sendy change —
     IV6701854 was the second kind and correcting it would have destroyed a
     team's own SKU split).
 
+    ONE ALERT PER DOCUMENT, CARRYING EVERY FINDING. A cancelled-at-source
+    document normally drifts in content too (Express dropped its lines), so it
+    arrives here as two findings. Left as two create_system_alert calls the
+    second is silently discarded by the dedupe index, and which fact survives is
+    decided by append order — for IV6900631, the case this feature was built
+    for, the alert would have said "line count differs" and never mentioned that
+    Express CANCELLED the document.
+
+    ⚠ AND ACKNOWLEDGING HAS TO STICK. create_system_alert's contract is that a
+    resolved incident may alert again because "a recurrence is news". For drift
+    that contract inverts: the disagreement persists until somebody edits data,
+    so the identical alert would come back on the very next upload, and the next,
+    for ever — which is how a page stops being read. Here a recurrence is news
+    only when the document's FINGERPRINT moved, i.e. it changed AGAIN since the
+    acknowledgement. That check is why this function takes the fingerprint
+    seriously enough to store it in context.
+
     Best-effort. Callers invoke this AFTER their own connection is closed and
     must not let an alert failure sink an import that really succeeded.
     """
     if not findings:
         return []
-    ids = []
+
+    by_doc = {}
     for f in findings:
         doc = f.get('doc_no')
         if not doc:
             continue
-        aid = create_system_alert(
-            KIND_EXPRESS_DOC_DRIFT, f.get('message') or f'เอกสาร {doc} ไม่ตรงกับ Express',
-            dedupe_key=_dedupe_key([doc]),
-            severity='warning',
-            context={'dataset': dataset_label, 'doc_no': doc,
-                     'drift_kind': f.get('kind'), 'fields': f.get('fields'),
-                     'docstat': f.get('docstat'),
-                     'fingerprint': f.get('fingerprint')},
-            conn=conn)
-        if aid:
-            ids.append(aid)
-    return ids
+        by_doc.setdefault(doc, []).append(f)
+    if not by_doc:
+        return []
+
+    own = conn is None
+    if own:
+        conn = get_connection()
+    try:
+        ids = []
+        for doc, group in by_doc.items():
+            # The document's identity across this run: every finding for it
+            # shares the compared pair, so any one of them names the state that
+            # was acknowledged. `None` (a deleted_at_source finding has no pair)
+            # sorts out as the empty string rather than crashing the join.
+            fingerprint = next((f.get('fingerprint') for f in group
+                                if f.get('fingerprint')), None)
+            if _drift_already_acknowledged(conn, doc, fingerprint):
+                continue
+            message = ' · '.join(f.get('message') or f.get('kind') or ''
+                                 for f in group).strip(' ·')
+            docstat = next((f.get('docstat') for f in group if f.get('docstat')), '')
+            aid = create_system_alert(
+                KIND_EXPRESS_DOC_DRIFT,
+                message or f'เอกสาร {doc} ไม่ตรงกับ Express',
+                dedupe_key=_dedupe_key([doc]),
+                severity='warning',
+                context={'dataset': dataset_label, 'doc_no': doc,
+                         'drift_kinds': sorted({f.get('kind') for f in group
+                                                if f.get('kind')}),
+                         'fields': sorted({x for f in group
+                                           for x in (f.get('fields') or [])}),
+                         'docstat': docstat, 'fingerprint': fingerprint},
+                conn=conn)
+            if aid:
+                ids.append(aid)
+        if own:
+            conn.commit()
+        return ids
+    finally:
+        if own:
+            conn.close()
+
+
+def _drift_already_acknowledged(conn, doc_no, fingerprint):
+    """True when someone already resolved this document at this exact state.
+
+    Keyed on the fingerprint stored in context_json, not on the message: the
+    message is prose and will be reworded, while the fingerprint is what
+    "changed again" actually means. A finding with no fingerprint (a document
+    that vanished from Express) is matched on the document alone — there is no
+    pair to hash, and re-raising a deletion someone already looked at every
+    single day is the same failure.
+    """
+    row = conn.execute(
+        "SELECT context_json FROM system_alerts"
+        "  WHERE kind = ? AND dedupe_key = ? AND resolved_at IS NOT NULL"
+        "  ORDER BY id DESC LIMIT 1",
+        (KIND_EXPRESS_DOC_DRIFT, _dedupe_key([doc_no]))).fetchone()
+    if row is None:
+        return False
+    try:
+        prev = json.loads(row[0] or '{}').get('fingerprint')
+    except ValueError:
+        return False
+    return prev == fingerprint
 
 
 def record_orphan_bsn_ledger_alerts(*, file_type, filename):

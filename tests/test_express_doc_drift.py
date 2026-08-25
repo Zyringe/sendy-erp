@@ -378,6 +378,14 @@ def test_15_unknown_export_time_forbids_a_deleted_at_source_finding(empty_db_con
     assert [f for f in r3.findings if f['kind'] == 'deleted_at_source'] == []
     assert r3.counters['sendy_only_newer_than_export'] == 1
 
+    # …and neither is one dated the SAME DAY as the export. An export taken at
+    # some hour of 2024-03-04 does not prove a document dated 2024-03-04 is
+    # missing at source; it may have been keyed after the export ran.
+    r4 = run(c, artrn=[hdr('IV0002')], stcrd=[line('IV0002')],
+             export_at=datetime.datetime(2024, 3, 4, 8, 32))
+    assert [f for f in r4.findings if f['kind'] == 'deleted_at_source'] == []
+    assert r4.counters['sendy_only_newer_than_export'] == 1
+
 
 
 # ── 16. the population is checked against the ledgers, not against itself ────
