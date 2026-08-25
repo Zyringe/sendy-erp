@@ -218,28 +218,27 @@ def mapping():
     # (models.suggestions._cost_for_saved_ratio); this is only what the manager
     # sees. `net` is the whole purchase line after discount, `qty` is in the
     # BSN unit — the divisor is qty * ratio.
-    # ONE query for every staged row's latest purchase line, not one per
-    # row: get_pending_suggestions() is unpaginated, so a per-row lookup is
-    # an unbounded N+1 that also runs when the user is only opening the
-    # mapping tab (Codex round 2). The window function picks the same row
-    # bsn_suggest._latest_purchase does - ORDER BY date_iso DESC, id DESC.
-    suggestion_cost_basis = {}
-    codes = [s['bsn_code'] for s in pending_suggestions]
-    if codes:
-        ph = ','.join('?' * len(codes))
-        latest_by_code = {r['bsn_code']: r for r in conn.execute(
-            "SELECT bsn_code, net, qty FROM ("
-            "  SELECT bsn_code, net, qty,"
-            "         ROW_NUMBER() OVER (PARTITION BY bsn_code"
-            "                            ORDER BY date_iso DESC, id DESC) AS rn"
-            "    FROM purchase_transactions"
-            f"   WHERE bsn_code IN ({ph})"
-            ") WHERE rn = 1", codes)}
-        for s in pending_suggestions:
-            row = latest_by_code.get(s['bsn_code'])
-            if row and row['qty']:
-                suggestion_cost_basis[str(s['id'])] = {
-                    'net': row['net'] or 0, 'qty': row['qty']}
+    # ONE query, and ZERO bound parameters: get_pending_suggestions() is
+    # unpaginated, so binding one variable per pending row would hit
+    # SQLITE_MAX_VARIABLE_NUMBER (999 on older builds) and 500 the page
+    # (round 3). Joining against the table instead has no such ceiling.
+    # The window picks the same row bsn_suggest._latest_purchase does:
+    # ORDER BY date_iso DESC, id DESC. Population matches
+    # get_pending_suggestions() exactly -- status = 'pending'.
+    suggestion_cost_basis = {
+        str(r['sid']): {'net': r['net'] or 0, 'qty': r['qty']}
+        for r in conn.execute("""
+            SELECT s.id AS sid, pt.net AS net, pt.qty AS qty
+              FROM pending_product_suggestions s
+              JOIN (SELECT bsn_code, net, qty,
+                           ROW_NUMBER() OVER (PARTITION BY bsn_code
+                                              ORDER BY date_iso DESC, id DESC) AS rn
+                      FROM purchase_transactions) pt
+                ON pt.bsn_code = s.bsn_code AND pt.rn = 1
+             WHERE s.status = 'pending'
+        """)
+        if r['qty']
+    }
     conn.close()
     tab = request.args.get('tab', 'mapping')
     return render_template(

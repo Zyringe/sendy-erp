@@ -205,8 +205,25 @@ def upsert_brand(conn, name, *, name_th=None, short_code=None, is_own=False):
           1 if is_own else 0))
     if cur.rowcount:
         return cur.lastrowid
-    return conn.execute(
-        'SELECT id FROM brands WHERE code = ?', (code,)).fetchone()[0]
+    # Lost the race. Reuse the winner ONLY if it is the same brand: two
+    # different names can normalise to one code ('ACME!' and 'ACME?' both ->
+    # 'acme'), and silently attaching the product to an unrelated brand is
+    # worse than the IntegrityError this replaced (round 3). A genuine
+    # different-name collision falls through to a suffixed code.
+    winner = conn.execute(
+        'SELECT id, name FROM brands WHERE code = ?', (code,)).fetchone()
+    if winner and winner['name'].strip().lower() == name.lower():
+        return winner['id']
+    while conn.execute('SELECT 1 FROM brands WHERE code = ?', (code,)).fetchone():
+        code = f'{code_base}_{n}'
+        n += 1
+    return conn.execute("""
+        INSERT INTO brands (code, name, name_th, short_code, is_own_brand, sort_order)
+        VALUES (?, ?, ?, ?, ?, 100)
+    """, (code, name,
+          (name_th or '').strip() or None,
+          (short_code or '').strip().upper() or None,
+          1 if is_own else 0)).lastrowid
 
 
 def create_brand(name, name_th=None, is_own=False, short_code=None):

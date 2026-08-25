@@ -195,7 +195,13 @@ def _effective_ratio(unit_type, bsn_unit, ratio):
     alone changes the correct cost by 12x even though the ratio field never
     moved (Codex review round 2, 2026-08-25).
     """
-    if not bsn_unit or (unit_type or '') == bsn_unit:
+    # `unit_type or 'ตัว'` mirrors what create_structured_product actually
+    # PERSISTS. Without it a cleared unit box compares '' against bsn_unit
+    # 'ตัว', concludes a conversion applies, and divides the cost by the ratio
+    # for a product that is then saved AS 'ตัว' -- 12x too low (round 3).
+    unit_type = (unit_type or '').strip() or 'ตัว'
+    bsn_unit = (bsn_unit or '').strip()
+    if not bsn_unit or unit_type == bsn_unit:
         return 1.0
     return ratio
 
@@ -253,7 +259,15 @@ def _cost_for_saved_ratio(conn, staged, merged):
 
     if final_eff is None or final_eff <= 0:
         return merged.get('suggested_cost')
-    if staged_eff is not None and abs(final_eff - staged_eff) <= 1e-9:
+    # An UNKNOWN staged basis is not evidence the basis moved. Staging with no
+    # ratio and then supplying one at approval does not prove the staged cost
+    # was derived from the old basis -- it may have been typed by hand at a
+    # stage where no flag was captured. Preserving it is the conservative
+    # reading; only a basis we can see BOTH sides of justifies a rewrite
+    # (round 3).
+    if staged_eff is None:
+        return merged.get('suggested_cost')
+    if abs(final_eff - staged_eff) <= 1e-9:
         return merged.get('suggested_cost')
 
     latest = bsn_suggest._latest_purchase(conn, staged['bsn_code'])

@@ -528,3 +528,126 @@ def test_effective_ratio_folds_the_base_unit_in():
     assert _effective_ratio('โหล', 'โหล', 12) == 1.0       # same unit -> no divide
     assert _effective_ratio('ตัว', None, 12) == 1.0        # no BSN unit known
     assert _effective_ratio('ตัว', 'โหล', None) is None    # ratio not known yet
+
+
+# --------------------------------------------------------------------------
+# Review round 3 — defects introduced BY the round-2 fixes
+# --------------------------------------------------------------------------
+def test_a_cleared_unit_box_does_not_divide_the_cost(empty_db):
+    """`_effective_ratio` must normalise the unit the same way the INSERT does
+    (`or 'ตัว'`). A cleared unit box compared '' against bsn_unit 'ตัว',
+    concluded a conversion applied, and divided by the ratio for a product
+    saved AS 'ตัว' — 12x too low."""
+    import models
+    _seed_purchase(empty_db, 'TSTCOST1', net=240.0, qty=2, unit='ตัว')
+    sid = _stage(empty_db, bsn_unit='ตัว', unit_conversion_ratio=1,
+                 suggested_cost=120.0)
+    pid = models.approve_pending_suggestion(
+        sid, {'suggested_unit_type': '', 'unit_conversion_ratio': 12},
+        reviewer_id=None)
+    c = _conn(empty_db)
+    row = c.execute("SELECT unit_type, cost_price FROM products WHERE id=?",
+                    (pid,)).fetchone()
+    c.close()
+    assert row['unit_type'] == 'ตัว', 'the INSERT defaults a blank unit to ตัว'
+    assert row['cost_price'] == pytest.approx(120.0), (
+        f"got {row['cost_price']} — the product is held in the unit the BSN "
+        f"bills in, so no conversion applies and the ratio box is irrelevant")
+
+
+def test_effective_ratio_normalises_a_blank_unit():
+    from models.suggestions import _effective_ratio
+    assert _effective_ratio('', 'ตัว', 12) == 1.0
+    assert _effective_ratio(None, 'ตัว', 12) == 1.0
+    assert _effective_ratio('  ', 'ตัว', 12) == 1.0
+    assert _effective_ratio('ตัว', '', 12) == 1.0      # no BSN unit known
+
+
+def test_an_unknown_staged_ratio_never_justifies_a_rewrite(empty_db):
+    """Staging with no ratio and supplying one at approval does not prove the
+    staged cost was derived from the old basis — it may have been typed by
+    hand before any dirty flag existed. Preserve it."""
+    import models
+    _seed_purchase(empty_db, 'TSTCOST1', net=1044.55, qty=1)
+    sid = _stage(empty_db, unit_conversion_ratio=None, suggested_cost=100.0)
+    pid = models.approve_pending_suggestion(
+        sid, {'unit_conversion_ratio': 12}, reviewer_id=None)
+    c = _conn(empty_db)
+    got = c.execute("SELECT cost_price FROM products WHERE id=?", (pid,)).fetchone()[0]
+    c.close()
+    assert got == pytest.approx(100.0), (
+        f'got {got} — a staged cost with no known basis must survive')
+
+
+class _RacingConn:
+    """Wraps a connection and inserts a COMPETING brand row the first time an
+    INSERT INTO brands is attempted — i.e. exactly between upsert_brand's
+    code-uniqueness loop and its own INSERT.
+
+    Needed because the ON CONFLICT DO NOTHING branch is unreachable
+    sequentially: called one after another, the uniqueness loop already sees
+    the taken code and picks `acme_2`. Only a concurrent writer (real on prod:
+    `gunicorn -w 2`) can make the INSERT lose. Patching the seam is the
+    documented alternative to racing threads.
+    """
+
+    def __init__(self, conn, competitor_sql):
+        self._conn = conn
+        self._competitor = competitor_sql
+        self.fired = False
+
+    def execute(self, sql, *a, **kw):
+        if not self.fired and 'INSERT INTO brands' in sql:
+            self.fired = True
+            self._conn.execute(self._competitor)
+        return self._conn.execute(sql, *a, **kw)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_losing_the_code_race_to_a_DIFFERENT_name_does_not_reuse_it(empty_db):
+    """'ACME!' and 'ACME?' both slugify to 'acme'. Losing the race must NOT
+    attach this product to the winner — that is a different brand, with a
+    different short_code and own-brand flag."""
+    import models
+    from database import get_connection
+    conn = get_connection()
+    racer = _RacingConn(
+        conn,
+        "INSERT INTO brands (code, name, short_code, is_own_brand, sort_order) "
+        "VALUES ('acme', 'ACME?', 'ACME2', 0, 100)",
+    )
+    new_id = models.upsert_brand(racer, 'ACME!', short_code='ACME1')
+    conn.commit()
+
+    assert racer.fired, 'the seam never fired — this test proved nothing'
+    rows = {r['id']: dict(r) for r in
+            conn.execute("SELECT id, code, name, short_code FROM brands").fetchall()}
+    conn.close()
+    assert len(rows) == 2, rows
+    assert rows[new_id]['name'] == 'ACME!', (
+        f'got {rows[new_id]} — losing the code race must not hand back the '
+        f'winner, whose name is a different brand entirely')
+    assert rows[new_id]['short_code'] == 'ACME1'
+    assert rows[new_id]['code'] != 'acme', 'the loser needs its own code'
+
+
+def test_the_same_name_losing_the_race_DOES_reuse_the_winner(empty_db):
+    """The other half: an identical name is the same brand, so reusing the
+    winner is correct — that is the whole point of tolerating the race."""
+    import models
+    from database import get_connection
+    conn = get_connection()
+    racer = _RacingConn(
+        conn,
+        "INSERT INTO brands (code, name, short_code, is_own_brand, sort_order) "
+        "VALUES ('acme', 'ACME', 'ACME', 0, 100)",
+    )
+    got = models.upsert_brand(racer, 'ACME', short_code='ACME')
+    conn.commit()
+    assert racer.fired
+    rows = conn.execute("SELECT id, name FROM brands").fetchall()
+    conn.close()
+    assert len(rows) == 1, [dict(r) for r in rows]
+    assert got == rows[0]['id']
