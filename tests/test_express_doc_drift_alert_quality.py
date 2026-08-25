@@ -97,3 +97,90 @@ def test_acknowledging_holds_until_the_document_moves_again(db):
     assert len(rows) == 2, 'a changed fingerprint must raise a fresh alert'
     assert rows[1]['resolved_at'] is None
     assert json.loads(rows[1]['context_json'])['fingerprint'] == 'bbb'
+
+
+def test_an_open_alert_is_kept_truthful_when_the_document_drifts_further(db):
+    """The dedupe index makes a second INSERT for an open document a no-op, so
+    an alert raised on Monday still describes Monday even after the document
+    drifts again on Tuesday. That is not a duplicate-suppression success — it is
+    the page understating what is wrong, and the operator acting on stale text.
+
+    One row per document is still right. The row has to move with the document.
+    """
+    sa.record_express_doc_drift_alerts(
+        [_finding('IV0001', 'content', fingerprint='aaa',
+                  message='ต่างที่ line:net')], dataset_label='BSN5657')
+    rows = _alerts(db)
+    assert len(rows) == 1 and json.loads(rows[0]['context_json'])['fingerprint'] == 'aaa'
+
+    # Tuesday: the same document has drifted further and is now cancelled too.
+    sa.record_express_doc_drift_alerts([
+        _finding('IV0001', 'content', fingerprint='bbb', message='ต่างที่ line:net, line:qty'),
+        _finding('IV0001', 'source_status', fingerprint='bbb', docstat='C',
+                 message='DOCSTAT = "C" แต่ Sendy ยังถือบรรทัดอยู่'),
+    ], dataset_label='BSN5657')
+
+    rows = _alerts(db)
+    assert len(rows) == 1, f'{len(rows)} rows — one document must hold one alert'
+    ctx = json.loads(rows[0]['context_json'])
+    assert ctx['fingerprint'] == 'bbb', 'the open alert still describes yesterday'
+    assert 'DOCSTAT' in rows[0]['message'], (
+        'the document was cancelled at source and the open alert never said so')
+    assert ctx['docstat'] == 'C'
+    assert sorted(ctx['drift_kinds']) == ['content', 'source_status']
+
+
+def test_an_unchanged_document_does_not_rewrite_its_open_alert(db):
+    """CONTROL for the test above: keeping the row truthful must not turn every
+    upload into a write. An unchanged fingerprint leaves the row alone, so
+    created_at keeps meaning "when this was first seen"."""
+    f = _finding('IV0002', 'content', fingerprint='same', message='ต่างที่ line:net')
+    sa.record_express_doc_drift_alerts([f], dataset_label='BSN5657')
+    before = _alerts(db)[0]
+    sa.record_express_doc_drift_alerts([f], dataset_label='BSN5657')
+    after = _alerts(db)
+    assert len(after) == 1
+    assert after[0]['id'] == before['id']
+    assert after[0]['message'] == before['message']
+
+    # ⚠ The three assertions above CANNOT fail on an unconditional refresh: it
+    # would write the same id and the same message back. Measured — removing the
+    # fingerprint guard left this test green. So pin the guard where it can be
+    # observed, on the helper's own answer.
+    conn = sqlite3.connect(str(db))
+    try:
+        assert sa._refresh_open_drift_alert(
+            conn, 'IV0002', 'x', {'fingerprint': 'same'}) is False, \
+            'an unchanged document rewrote its alert row'
+        assert sa._refresh_open_drift_alert(
+            conn, 'IV0002', 'x', {'fingerprint': 'moved'}) is True, \
+            'a changed document did NOT rewrite its alert row'
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def test_refresh_survives_a_caller_owned_connection_and_a_null_context(db):
+    """Round-3 check on the round-2 fix. Two paths nothing else exercises:
+    a caller that owns the connection (bench_doc_drift does), and a stored row
+    whose context_json is NULL — json.loads(None) would raise inside a
+    best-effort alert writer and take an otherwise-successful import's alerting
+    down with it."""
+    conn = sqlite3.connect(str(db))
+    sa.record_express_doc_drift_alerts(
+        [_finding('IV0009', 'content', fingerprint='aaa')],
+        dataset_label='bench', conn=conn)
+    conn.commit()
+    assert len(_alerts(db)) == 1, 'nothing was written on a caller-owned conn'
+
+    conn.execute("UPDATE system_alerts SET context_json=NULL WHERE dedupe_key='IV0009'")
+    conn.commit()
+    # Must not raise, and must repair the row rather than leave it contextless.
+    sa.record_express_doc_drift_alerts(
+        [_finding('IV0009', 'content', fingerprint='bbb', message='ต่างเพิ่ม')],
+        dataset_label='bench', conn=conn)
+    conn.commit()
+    conn.close()
+    rows = _alerts(db)
+    assert len(rows) == 1
+    assert json.loads(rows[0]['context_json'])['fingerprint'] == 'bbb'

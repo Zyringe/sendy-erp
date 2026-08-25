@@ -214,26 +214,54 @@ def record_express_doc_drift_alerts(findings, *, dataset_label=None, conn=None):
             message = ' · '.join(f.get('message') or f.get('kind') or ''
                                  for f in group).strip(' ·')
             docstat = next((f.get('docstat') for f in group if f.get('docstat')), '')
+            message = message or f'เอกสาร {doc} ไม่ตรงกับ Express'
+            context = {'dataset': dataset_label, 'doc_no': doc,
+                       'drift_kinds': sorted({f.get('kind') for f in group
+                                              if f.get('kind')}),
+                       'fields': sorted({x for f in group
+                                         for x in (f.get('fields') or [])}),
+                       'docstat': docstat, 'fingerprint': fingerprint}
             aid = create_system_alert(
-                KIND_EXPRESS_DOC_DRIFT,
-                message or f'เอกสาร {doc} ไม่ตรงกับ Express',
+                KIND_EXPRESS_DOC_DRIFT, message,
                 dedupe_key=_dedupe_key([doc]),
-                severity='warning',
-                context={'dataset': dataset_label, 'doc_no': doc,
-                         'drift_kinds': sorted({f.get('kind') for f in group
-                                                if f.get('kind')}),
-                         'fields': sorted({x for f in group
-                                           for x in (f.get('fields') or [])}),
-                         'docstat': docstat, 'fingerprint': fingerprint},
-                conn=conn)
+                severity='warning', context=context, conn=conn)
             if aid:
                 ids.append(aid)
+            else:
+                # An alert for this document is already open, so the INSERT was
+                # a no-op — which is right for ONE ROW PER DOCUMENT and wrong
+                # for the row's CONTENT. Without this the alert raised on Monday
+                # still describes Monday after the document drifts again on
+                # Tuesday, and the operator acts on stale text. Rewritten only
+                # when the fingerprint actually moved, so an unchanged
+                # disagreement leaves created_at meaning "first seen".
+                _refresh_open_drift_alert(conn, doc, message, context)
         if own:
             conn.commit()
         return ids
     finally:
         if own:
             conn.close()
+
+
+def _refresh_open_drift_alert(conn, doc_no, message, context):
+    """Move an already-open alert to what the document says NOW. True if it moved."""
+    row = conn.execute(
+        "SELECT id, context_json FROM system_alerts"
+        "  WHERE kind = ? AND dedupe_key = ? AND resolved_at IS NULL",
+        (KIND_EXPRESS_DOC_DRIFT, _dedupe_key([doc_no]))).fetchone()
+    if row is None:
+        return False
+    try:
+        prev = json.loads(row[1] or '{}').get('fingerprint')
+    except ValueError:
+        prev = None
+    if prev == context.get('fingerprint'):
+        return False
+    conn.execute(
+        "UPDATE system_alerts SET message = ?, context_json = ? WHERE id = ?",
+        (message, json.dumps(context, ensure_ascii=False), row[0]))
+    return True
 
 
 def _drift_already_acknowledged(conn, doc_no, fingerprint):

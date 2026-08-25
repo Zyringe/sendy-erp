@@ -404,3 +404,29 @@ def test_16_a_document_number_in_both_books_refuses_a_verdict(empty_db_conn):
     with pytest.raises(eds.DriftInputError) as e:
         run(c, artrn=[hdr('IV0001')], stcrd=[line('IV0001')])
     assert 'both books' in str(e.value) or 'dropped' in str(e.value)
+
+
+# ── 17. an unreadable number must not read as agreement ─────────────────────
+def test_17_a_value_that_is_not_a_number_fails_loudly(empty_db_conn):
+    """SQLite is dynamically typed: a TEXT value lands in a REAL column happily.
+    If the canonicaliser swallowed that into 0.0 it would land as 0.0 on BOTH
+    sides and the document would be reported as AGREEING — a detector making a
+    positive claim about data it could not read. Failing is the caller's problem
+    to isolate (it does), and it is the only honest answer."""
+    c = empty_db_conn
+    put_sales(c, 'IV0001')
+    # CONTROL: the identical fixture with a real number produces a verdict.
+    assert run(c, artrn=[hdr('IV0001')], stcrd=[line('IV0001')]).compared_doc_nos \
+        == {'IV0001'}
+
+    # INSERTed, not UPDATEd: mig 173 refuses an undeclared UPDATE of a source
+    # document, so the obvious way to write this test is itself blocked by the
+    # guard. (Found by writing it the obvious way.)
+    c.execute("INSERT INTO sales_transactions (date_iso, doc_no, doc_base,"
+              " customer_code, bsn_code, product_name_raw, qty, unit, unit_price,"
+              " vat_type, discount, total, net) VALUES"
+              " ('2026-01-15','IV0003-1','IV0003','C001','A001','x',"
+              " 'ไม่ใช่ตัวเลข','ตัว',10,1,'',10,10)")
+    with pytest.raises(ValueError):
+        run(c, artrn=[hdr('IV0001'), hdr('IV0003')],
+            stcrd=[line('IV0001'), line('IV0003')])

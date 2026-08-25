@@ -307,9 +307,17 @@ def test_declared_scripts_actually_declare():
         path = os.path.join(SCRIPTS, name)
         assert os.path.exists(path), f'{name}: listed but not on disk'
         assert len(reason.split()) >= 8, f'{name}: not a reason: {reason!r}'
-        src = strip_prose(open(path, encoding='utf-8').read())
-        assert 'declared_update' in src, (
-            f'{name} is listed as declaring but never calls declared_update — '
+        # ⚠ AST, not a substring. `in src` matched an import line that merely
+        # RENAMED the helper away — measured: aliasing the call to something
+        # else left this test green, which is the substring trap this repo has
+        # already been bitten by. A Call node cannot be faked by an import.
+        import ast as _ast
+        tree = _ast.parse(open(path, encoding='utf-8').read())
+        called = {(n.func.id if isinstance(n.func, _ast.Name) else
+                   getattr(n.func, 'attr', None))
+                  for n in _ast.walk(tree) if isinstance(n, _ast.Call)}
+        assert 'declared_update' in called, (
+            f'{name} is listed as declaring but never CALLS declared_update — '
             'the entry is a claim nobody checked')
 
 
