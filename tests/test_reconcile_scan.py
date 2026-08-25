@@ -583,7 +583,9 @@ def test_post_scan_drift_refuses_apply(empty_db_conn):
     flag_id = _make_flag(c, 'IV1000026')   # payload snapshot: net=100.0
 
     # A credit-note import (or any other post-scan write) changes ref_invoice.
-    c.execute("UPDATE sales_transactions SET ref_invoice='SR9999999' WHERE doc_base='IV1000026'")
+    c.execute("UPDATE sales_transactions SET ref_invoice='SR9999999',"
+        " change_source='import', change_actor='test-setup', change_token='drift'"
+        " WHERE doc_base='IV1000026'")
     c.commit()
 
     result = mr.apply_reconcile_flag(flag_id, 'tester', conn=c)

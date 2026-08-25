@@ -208,7 +208,9 @@ def test_repoint_bsn_code_no_orphans_independent_audit(empty_db_conn):
     # Prove the check has teeth: deliberately reproduce the OLD bug shape
     # (source row moved back, ledger left on the other product) and confirm
     # the SAME query flags exactly 1 orphan.
-    conn.execute("UPDATE sales_transactions SET product_id=? WHERE doc_no='ZO-S1'", (OLD,))
+    conn.execute("UPDATE sales_transactions SET product_id=?, change_source='import',"
+        " change_actor='test-setup', change_token='zo-s1'"
+        " WHERE doc_no='ZO-S1'", (OLD,))
     conn.commit()
     assert _sales_orphans(['ZO-S1']) == 1
 
@@ -431,7 +433,9 @@ def test_orphan_detector_still_catches_a_stranded_ledger_row(empty_db_conn):
     assert models._bsn_code_ledger_orphans(conn, CODE) == 0
 
     # Reproduce the old buggy script: move ONLY the source row.
-    conn.execute("UPDATE purchase_transactions SET product_id=? WHERE bsn_code=?",
+    conn.execute("UPDATE purchase_transactions SET product_id=?, change_source='import',"
+        " change_actor='test-setup', change_token=lower(hex(randomblob(4)))"
+        " WHERE bsn_code=?",
                  (NEW, CODE))
     conn.commit()
 
@@ -747,7 +751,9 @@ def test_orphan_detector_uses_purchase_line_provenance(empty_db_conn):
     # Old-buggy-script shape: move only CODE's source row. OLD still holds
     # OTHER's line on the same doc, so the doc+product fallback alone would
     # report a clean 0 — provenance must still see the stranding.
-    conn.execute("UPDATE purchase_transactions SET product_id=? WHERE bsn_code=?",
+    conn.execute("UPDATE purchase_transactions SET product_id=?, change_source='import',"
+        " change_actor='test-setup', change_token=lower(hex(randomblob(4)))"
+        " WHERE bsn_code=?",
                  (NEW, CODE))
     conn.commit()
 
