@@ -1221,6 +1221,15 @@ CREATE TABLE "platform_skus" (
     UNIQUE(platform, variation_id)
 );
 
+CREATE TABLE platform_stock_deductions (
+    source_table    TEXT    NOT NULL CHECK(source_table IN ('sales_transactions')),
+    source_id       INTEGER NOT NULL,
+    platform_sku_id INTEGER NOT NULL REFERENCES platform_skus(id),
+    units           INTEGER NOT NULL CHECK(units <> 0),
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (source_table, source_id, platform_sku_id)
+);
+
 CREATE TABLE po_receipts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     line_id       INTEGER NOT NULL REFERENCES purchase_order_lines(id) ON DELETE CASCADE,
@@ -2033,6 +2042,9 @@ CREATE INDEX idx_plat_price_hist_variation
 
 CREATE INDEX idx_platform_products_parent_sku
     ON platform_products(platform, parent_sku);
+
+CREATE INDEX idx_platform_stock_deductions_sku
+    ON platform_stock_deductions (platform_sku_id);
 
 CREATE INDEX idx_po_company    ON purchase_orders(company_id);
 

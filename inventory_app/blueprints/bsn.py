@@ -32,6 +32,35 @@ bp_bsn = Blueprint('bsn', __name__)
 
 # ── Weekly Import (legacy) → consolidated into /import-data ──────────────────
 
+def _lossy_reversal_warning(stats, label):
+    """One message for every import_weekly entry point (Codex, 2026-08-25).
+
+    A corrected or removed line whose marketplace credit had already been sold
+    again cannot be handed back in full — the undo stops at the zero floor.
+    NOT fatal: nothing downstream decides from platform_skus.stock (it feeds
+    the /ecommerce flags, the products-list columns and the mapping export, and
+    Shopee/Lazada sell from their own number, not ours). But it is the one
+    moment anything knows the figure went approximate, so it is said out loud
+    rather than swallowed.
+
+    ⚠ Worded as MAY be off, not IS. A clamped undo does not prove drift: in the
+    5 → return +5 → sale −8 → delete-the-return sequence the removal lands on
+    0, and replaying that history without the return also lands on 0, because
+    the sale floors too. Asserting "the figure is high" would make the rare
+    warning a demonstrable false positive and teach the operator to ignore it.
+
+    Returns the message, or None when there is nothing to say — so callers can
+    stay a two-liner and a new entry point cannot quietly skip the signal.
+    """
+    n = (stats or {}).get('lossy_platform_reversals') or 0
+    if not n:
+        return None
+    return (f"{label}: {n} บรรทัดที่แก้/ลบ คืนสต็อกฝั่งร้านค้าได้ไม่ครบ "
+            f"เพราะของถูกขายไปก่อนแล้ว — ตัวเลขร้านค้าของสินค้านั้นบนหน้า "
+            f"/ecommerce อาจคลาดเคลื่อน (มีโอกาสสูงกว่าจริง) จนกว่าจะนำเข้าไฟล์"
+            f"จาก Seller Center รอบถัดไป ซึ่งเขียนทับให้เอง")
+
+
 @bp_bsn.route('/import-weekly')
 def import_weekly():
     # Legacy per-file ขาย/ซื้อ + AR/AP importer. The unified box (/import-data)
@@ -620,6 +649,9 @@ def unified_import_confirm():
             result_row = {'filename': row['filename'], 'ok': True,
                           'label': _REPORT_LABELS.get(rtype, rtype),
                           'summary': out.get('summary')}
+            _lossy = _lossy_reversal_warning(out.get('summary'), row['filename'])
+            if _lossy:
+                flash(_lossy, 'warning')
             if rtype == 'sales':
                 bid = (out.get('summary') or {}).get('batch_id')
                 if bid:
@@ -1239,6 +1271,10 @@ def express_dbf_upload():
                                   'summary': _express_dbf_summary_message(per_type),
                                   'reconcile': per_type.get('reconcile', {})}
                 flashes.append(('success', f"BSN5657: {results['bsn']['summary']}"))
+                _dbf_lossy = _lossy_reversal_warning(
+                    per_type.get('sales'), 'BSN5657 (DBF)')
+                if _dbf_lossy:
+                    flashes.append(('warning', _dbf_lossy))
                 # Each register is isolated from the money import, so one that
                 # refused leaves the ledger above perfectly fine while that
                 # register silently keeps YESTERDAY's rows. The green summary
