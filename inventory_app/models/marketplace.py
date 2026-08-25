@@ -59,7 +59,9 @@ def resolve_line_listing(conn, platform, item):
 
     Same 3-step fallback as resolve_marketplace_product_id but WITHOUT the
     internal_product_id requirement: the mirror is listing-grain, an unmapped
-    listing can still be deducted. Returns the row (id, stock, stock_as_of).
+    listing can still be deducted. Returns the row (id, stock, stock_as_of,
+    imported_at) — imported_at is the diff engine's baseline-gate fallback
+    for a listing whose stock_as_of is still NULL.
     """
     # variation_id is UNIQUE(platform, variation_id) → at most one row. The
     # seller_sku and name steps are NOT unique (a live Lazada duplicate exists:
@@ -250,7 +252,18 @@ def import_marketplace_orders(conn, orders, source_file=None):
 
     `skipped_order_sns` (Task 3.3) lists every order_sn that had >=1 skipped
     line (no listing match), once each regardless of how many lines it
-    skipped — the flash surfaces these so Put can chase the mapping."""
+    skipped — the flash surfaces these so Put can chase the mapping.
+
+    Caller contract: `conn` must hold NO open transaction when this is
+    called — the leading `BEGIN IMMEDIATE` raises "cannot start a
+    transaction within a transaction" otherwise. Both current callers are
+    clean: `/marketplace/import` (blueprints/marketplace.py) opens a fresh
+    connection just for this call. `/marketplace/upload`'s multi-file loop
+    reuses one connection across files, but `_KIND_ORDER` sorts 'order'
+    files first, and every iteration ends the connection's transaction one
+    way or another before the next starts — success via this function's own
+    `conn.commit()`, failure via the route's `except` handler, which calls
+    `_log_import()` (itself an INSERT + `conn.commit()`) before moving on."""
     stats = {'orders': 0, 'items': 0, 'unmapped': 0, 'lines_resolved': 0,
              'deducted': 0, 'credited': 0, 'skipped_lines': 0, 'gated_lines': 0,
              'skipped_order_sns': []}
