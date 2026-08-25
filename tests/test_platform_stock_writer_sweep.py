@@ -263,7 +263,7 @@ EXPECTED = {
         'overwrite+stamp (D-scope): the Seller Center export IS the '
         "platform's own stock figure, upserted via INSERT...ON CONFLICT DO "
         'UPDATE SET stock=excluded.stock. Also calls '
-        '_invalidate_deduction_provenance (its own entry below) so a stale '
+        '_supersede_deduction_provenance (its own entry below) so a stale '
         'record cannot be added back on top of the fresh figure.',
 
     ('models/platform_skus.py', MODULE_LEVEL):
@@ -278,15 +278,25 @@ EXPECTED = {
         'here rather than tracing the name reference -- see "WHAT THIS '
         'SWEEP CANNOT CATCH" in the module docstring. TikTok has no orders '
         'in the ERP yet (D9), so this is snapshot-only; import_tiktok_'
-        'snapshot also calls _invalidate_deduction_provenance (its own '
+        'snapshot also calls _supersede_deduction_provenance (its own '
         'entry below) when the export DOES carry stock.',
 
-    ('models/platform_skus.py', '_invalidate_deduction_provenance'):
-        'DELETE FROM platform_stock_deductions, scoped to the variation_ids '
-        'the overwriting file actually carried (not the whole platform) -- '
-        'called by both import_platform_skus and import_tiktok_snapshot '
-        'above. The file already reflects/supersedes any recorded '
-        'deduction for the listings it carried.',
+    ('models/platform_skus.py', '_supersede_deduction_provenance'):
+        'task 2.2, renamed from _invalidate_deduction_provenance (it no '
+        'longer only invalidates): per provenance row on a variation_id '
+        'the overwriting file actually carried (not the whole platform), '
+        'reconciled against that same file\'s own EXPORT timestamp. A '
+        "sales_transactions row (the retired BSN walk, D7), or a "
+        'marketplace_orders row whose order_date is missing/malformed or '
+        '<= the export ts, is superseded -- DELETE FROM '
+        'platform_stock_deductions. A marketplace_orders row dated AFTER '
+        'the export ts is KEPT and RE-APPLIED onto the fresh figure the '
+        'caller just wrote: UPDATE platform_skus SET stock=MAX(0, stock - '
+        'units), then UPDATE platform_stock_deductions SET units=<the '
+        'actually-applied, possibly re-clamped amount> (or DELETE if that '
+        'clamps to 0, or if the fresh stock is NULL -- mig-172, nothing to '
+        're-apply onto). Called by both import_platform_skus and '
+        'import_tiktok_snapshot above.',
 
     ('models/platform_skus.py', 'update_platform_sku'):
         'the manual SKU edit form (/ecommerce SKU edit route) -- the OTHER '

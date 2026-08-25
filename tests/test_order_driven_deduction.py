@@ -715,3 +715,189 @@ def test_import_tiktok_snapshot_uses_parsed_export_timestamp(empty_db_conn):
 
     assert _stamp_at(conn, lid) == '2025-06-30 00:00:00'
 
+
+# ── Task 2.2: re-apply post-export deductions after an overwrite ───────────
+#
+# `_supersede_deduction_provenance` (renamed from `_invalidate_deduction_
+# provenance` — task 2.2's brief suggestion: the function no longer only
+# invalidates, it also re-applies). For a listing the file carried, with
+# export ts T: an order-sourced row whose order_date > T is KEPT and
+# re-applied onto the fresh figure the file just wrote; one <= T (or with
+# no usable order_date) is deleted, exactly as before. Legacy
+# sales_transactions-sourced rows keep today's unconditional delete.
+
+def test_order_after_export_survives_and_reapplies(empty_db_conn):
+    """An order 2 hours after the file's export timestamp is not reflected
+    in the file's own stock figure -> its recorded deduction must survive
+    the overwrite AND be re-applied on top of the fresh number."""
+    conn = empty_db_conn
+    lid = _seed_sku(conn, variation_id='V-SURVIVE', stock=100,
+                    stock_as_of='2020-01-01 00:00:00')
+
+    order = _order('ORD-SURVIVE',
+                   [_line('L1', variation_id='V-SURVIVE', qty=5.0)],
+                   order_date='2026-08-25 15:59:39')     # 2h after the file's export
+    import_marketplace_orders(conn, [order], 'f.xlsx')
+    oid = _order_id(conn, 'shopee', 'ORD-SURVIVE')
+    assert _stock(conn, lid) == 95 and _provenance(conn, oid, lid) == 5  # vacuity guard
+
+    # Fresh snapshot exported 2026-08-25 13:59:39, stock=80 at export time
+    # (i.e. before the 15:59 order was even placed).
+    models.import_platform_skus('shopee', [{
+        'variation_id': 'V-SURVIVE', 'product_id_str': 'p', 'product_name': 'p',
+        'variation_name': None, 'parent_sku': None, 'seller_sku': None,
+        'price': 10.0, 'special_price': None, 'stock': 80, 'raw_json': '{}',
+    }], source_filename='mass_update_sales_info_1_20260825135939.xlsx')
+
+    assert _stock(conn, lid) == 75            # 80 (fresh) - 5 (re-applied)
+    assert _provenance(conn, oid, lid) == 5    # kept, same amount (no clamp needed)
+
+
+def test_order_before_export_is_superseded(empty_db_conn):
+    """An order dated before the file's export ts is already reflected in
+    the file's own number -> delete, as today (no double-deduction)."""
+    conn = empty_db_conn
+    lid = _seed_sku(conn, variation_id='V-SUPERSEDE', stock=100,
+                    stock_as_of='2020-01-01 00:00:00')
+
+    order = _order('ORD-SUPERSEDE',
+                   [_line('L1', variation_id='V-SUPERSEDE', qty=5.0)],
+                   order_date='2026-08-25 10:00:00')      # before the export
+    import_marketplace_orders(conn, [order], 'f.xlsx')
+    oid = _order_id(conn, 'shopee', 'ORD-SUPERSEDE')
+    assert _provenance(conn, oid, lid) == 5  # vacuity guard
+
+    models.import_platform_skus('shopee', [{
+        'variation_id': 'V-SUPERSEDE', 'product_id_str': 'p', 'product_name': 'p',
+        'variation_name': None, 'parent_sku': None, 'seller_sku': None,
+        'price': 10.0, 'special_price': None, 'stock': 80, 'raw_json': '{}',
+    }], source_filename='mass_update_sales_info_1_20260825135939.xlsx')
+
+    assert _stock(conn, lid) == 80             # the file's figure, untouched
+    assert _provenance(conn, oid, lid) is None  # superseded
+
+
+def test_reapply_reclamps_to_smaller_figure(empty_db_conn):
+    """The fresh figure the file carries can be smaller than what the
+    order's recorded units would need — the re-apply clamps at 0 exactly
+    like the diff engine's own first application does, and records the
+    CLAMPED amount, not the original 5."""
+    conn = empty_db_conn
+    lid = _seed_sku(conn, variation_id='V-RECLAMP', stock=100,
+                    stock_as_of='2020-01-01 00:00:00')
+
+    order = _order('ORD-RECLAMP',
+                   [_line('L1', variation_id='V-RECLAMP', qty=5.0)],
+                   order_date='2026-08-25 15:59:39')
+    import_marketplace_orders(conn, [order], 'f.xlsx')
+    oid = _order_id(conn, 'shopee', 'ORD-RECLAMP')
+    assert _provenance(conn, oid, lid) == 5  # vacuity guard
+
+    # Fresh figure is only 3 — less than the 5 the order needs.
+    models.import_platform_skus('shopee', [{
+        'variation_id': 'V-RECLAMP', 'product_id_str': 'p', 'product_name': 'p',
+        'variation_name': None, 'parent_sku': None, 'seller_sku': None,
+        'price': 10.0, 'special_price': None, 'stock': 3, 'raw_json': '{}',
+    }], source_filename='mass_update_sales_info_1_20260825135939.xlsx')
+
+    assert _stock(conn, lid) == 0               # clamped at zero
+    assert _provenance(conn, oid, lid) == 3      # records the CLAMPED amount, not 5
+
+
+def test_reapply_credit_row_increases_fresh_stock(empty_db_conn):
+    """A negative (credit) provenance row — a completed return recorded
+    before the snapshot — re-applies symmetrically via the same MAX(0,
+    stock - units) formula: units negative -> stock INCREASES."""
+    conn = empty_db_conn
+    lid = _seed_sku(conn, variation_id='V-CREDIT', stock=100,
+                    stock_as_of='2020-01-01 00:00:00')
+
+    deduct = _order('ORD-CREDIT',
+                    [_line('L1', variation_id='V-CREDIT', qty=5.0)],
+                    order_date='2026-08-25 14:00:00')
+    import_marketplace_orders(conn, [deduct], 'f.xlsx')
+    ret = _order('ORD-CREDIT',
+                 [_line('L1', variation_id='V-CREDIT', qty=5.0)],
+                 status='returned', order_date='2026-08-25 15:59:39')
+    import_marketplace_orders(conn, [ret], 'f.xlsx')
+    oid = _order_id(conn, 'shopee', 'ORD-CREDIT')
+    # returned wanted={} -> stored 5 -> delta -5 -> credited, provenance gone
+    assert _stock(conn, lid) == 100 and _provenance(conn, oid, lid) is None
+
+    # Re-seed a NEGATIVE provenance row directly (a credited amount, as a
+    # completed return would leave behind if the order carried units>0
+    # elsewhere too) to isolate the re-apply arithmetic itself.
+    conn.execute(
+        "INSERT INTO platform_stock_deductions "
+        "(source_table, source_id, platform_sku_id, units) VALUES "
+        "('marketplace_orders', ?, ?, -5)", (oid, lid))
+    conn.commit()
+
+    models.import_platform_skus('shopee', [{
+        'variation_id': 'V-CREDIT', 'product_id_str': 'p', 'product_name': 'p',
+        'variation_name': None, 'parent_sku': None, 'seller_sku': None,
+        'price': 10.0, 'special_price': None, 'stock': 50, 'raw_json': '{}',
+    }], source_filename='mass_update_sales_info_1_20260825135939.xlsx')
+
+    assert _stock(conn, lid) == 55              # 50 - (-5) = 55, credited back
+    assert _provenance(conn, oid, lid) == -5     # unclamped, kept as-is
+
+
+def test_reapply_null_order_date_is_superseded(empty_db_conn):
+    """D11: an order row with no usable order_date cannot be compared to
+    the export ts -> gate CLOSED -> treated as superseded (deleted), not
+    re-applied. Seeded directly (a malformed/legacy row) since the diff
+    engine itself never stores a NULL-order_date row (D11 gates it out
+    before it is ever recorded)."""
+    conn = empty_db_conn
+    lid = _seed_sku(conn, variation_id='V-NULLDATE', stock=100,
+                    stock_as_of='2020-01-01 00:00:00')
+    oid_row = conn.execute(
+        "INSERT INTO marketplace_orders (platform, order_sn, status, order_date) "
+        "VALUES ('shopee', 'ORD-NULLDATE', 'ready_to_ship', NULL)")
+    conn.commit()
+    oid = oid_row.lastrowid
+    conn.execute(
+        "INSERT INTO platform_stock_deductions "
+        "(source_table, source_id, platform_sku_id, units) VALUES "
+        "('marketplace_orders', ?, ?, 5)", (oid, lid))
+    conn.commit()
+    assert _provenance(conn, oid, lid) == 5  # vacuity guard
+
+    models.import_platform_skus('shopee', [{
+        'variation_id': 'V-NULLDATE', 'product_id_str': 'p', 'product_name': 'p',
+        'variation_name': None, 'parent_sku': None, 'seller_sku': None,
+        'price': 10.0, 'special_price': None, 'stock': 80, 'raw_json': '{}',
+    }], source_filename='mass_update_sales_info_1_20260825135939.xlsx')
+
+    assert _stock(conn, lid) == 80              # untouched — not re-applied
+    assert _provenance(conn, oid, lid) is None   # superseded
+
+
+def test_reapply_sales_transactions_row_still_deletes_unconditionally(empty_db_conn):
+    """A legacy sales_transactions-sourced row keeps today's blanket-delete
+    behavior regardless of any 'date' — it has no comparable event time
+    precise enough to re-apply (D7/task-2.2 brief)."""
+    conn = empty_db_conn
+    lid = _seed_sku(conn, variation_id='V-LEGACY', stock=100,
+                    stock_as_of='2020-01-01 00:00:00')
+    conn.execute(
+        "INSERT INTO platform_stock_deductions "
+        "(source_table, source_id, platform_sku_id, units) VALUES "
+        "('sales_transactions', 999, ?, 5)", (lid,))
+    conn.commit()
+    assert conn.execute(
+        "SELECT units FROM platform_stock_deductions WHERE source_table="
+        "'sales_transactions' AND source_id=999 AND platform_sku_id=?",
+        (lid,)).fetchone()[0] == 5  # vacuity guard
+
+    models.import_platform_skus('shopee', [{
+        'variation_id': 'V-LEGACY', 'product_id_str': 'p', 'product_name': 'p',
+        'variation_name': None, 'parent_sku': None, 'seller_sku': None,
+        'price': 10.0, 'special_price': None, 'stock': 80, 'raw_json': '{}',
+    }], source_filename='mass_update_sales_info_1_20260825135939.xlsx')
+
+    assert conn.execute(
+        "SELECT units FROM platform_stock_deductions WHERE source_table="
+        "'sales_transactions' AND source_id=999 AND platform_sku_id=?",
+        (lid,)).fetchone() is None

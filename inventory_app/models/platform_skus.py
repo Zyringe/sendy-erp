@@ -171,9 +171,10 @@ def import_platform_skus(platform, records, source_filename=None):
         count += 1
     propagated = _propagate_listings_to_platform_skus(conn, platform)
     # The file just overwrote the stock figure of every listing it carried, so
-    # the deductions recorded against those are superseded — see the helper.
-    _invalidate_deduction_provenance(
-        conn, platform, [r.get('variation_id') for r in records])
+    # the deductions recorded against those are superseded (or re-applied
+    # onto the fresh figure, task 2.2) — see the helper.
+    _supersede_deduction_provenance(
+        conn, platform, [r.get('variation_id') for r in records], export_ts)
     conn.commit()
     conn.close()
     return count, propagated
@@ -393,8 +394,8 @@ def import_tiktok_snapshot(parsed, source_filename=None):
         # stock_present because an export without the quantity column keeps the
         # stock already on record — nothing was superseded.
         if stock_present:
-            _invalidate_deduction_provenance(
-                conn, 'tiktok', [x['variation_id'] for x in skus])
+            _supersede_deduction_provenance(
+                conn, 'tiktok', [x['variation_id'] for x in skus], export_ts)
 
         # No row-count assertion here on purpose: every record either INSERTs
         # or UPDATEs (ON CONFLICT, no WHERE), so a short write is unreachable
@@ -414,45 +415,123 @@ def import_tiktok_snapshot(parsed, source_filename=None):
     return len(products), len(skus), absent
 
 
-def _invalidate_deduction_provenance(conn, platform, variation_ids):
-    """Forget the recorded deductions for the listings a file just overwrote.
+def _supersede_deduction_provenance(conn, platform, variation_ids, export_ts):
+    """Reconcile the recorded deductions for the listings a file just
+    overwrote against that file's own EXPORT timestamp (task 2.2; renamed
+    from `_invalidate_deduction_provenance`, which only ever deleted — this
+    now also RE-APPLIES some rows, so a bare "invalidate" no longer
+    describes it).
 
     Call this whenever an authoritative stock file overwrites
-    platform_skus.stock. The file IS the platform's own number, so anything the
-    local deduction took off before it is already reflected in — or superseded
-    by — that value. Leaving the provenance behind lets a later reversal add
-    those units on TOP of the fresh figure and invent stock that the platform
-    does not have, which is the oversell direction (Codex, 2026-08-25):
-    100 → sale of 5 → 95 → file says 92 → remove the sale → 97, but the
-    platform holds 92.
+    platform_skus.stock, right after `stock_as_of` has been stamped to
+    `export_ts` for the same listings. Per provenance row found on a
+    listing the file carried:
+
+    - `source_table='sales_transactions'` (the retired BSN walk, D7) ->
+      always DELETE, exactly as before. Its event time is a business DATE
+      only, not precise enough to compare against an export TIMESTAMP or
+      to re-apply, and the walk that created these rows is retired — no
+      more of them are ever written.
+    - `source_table='marketplace_orders'` whose `order_date` is missing/
+      malformed, or <= `export_ts` -> DELETE (superseded): the file's own
+      number already reflects that order, or cannot be proven not to
+      (D11 — gate CLOSED on an unparseable date, one missed baseline
+      advance is cheap and self-heals at the next snapshot; treating it as
+      NOT superseded would re-apply on every future overwrite, unbounded).
+    - `source_table='marketplace_orders'` whose `order_date` is strictly
+      AFTER `export_ts` -> the file predates that order, so its effect is
+      NOT in the fresh figure. KEEP the row and RE-APPLY its signed
+      `units` onto the fresh `stock` the file just wrote:
+      `new_stock = MAX(0, stock - units)` (units negative = a completed-
+      return credit -> stock increases; same formula, no separate branch —
+      Codex, 2026-08-25). The row's `units` is updated to the amount
+      ACTUALLY applied (clamped), matching the diff engine's own
+      contract; if that clamps to 0 the row is deleted (CHECK units<>0).
+      A listing whose fresh `stock` is NULL (mig-172: NULL means no
+      figure, writes must no-op on it) cannot be re-applied against
+      anything -> superseded (deleted) rather than left stale.
+
+    Leaving a KEPT-but-not-superseded row behind untouched (the old,
+    Phase-1 behavior) would let it sit against a stock figure it was never
+    computed for; leaving it deleted (this function's own old behavior for
+    ALL rows) would silently lose a real, not-yet-reflected order deduction
+    the moment any snapshot file arrives — that is the oversell direction
+    this task exists to close.
 
     ⚠ Scoped to the variations the file actually CARRIED, not the whole
     platform. A Seller Center export can be category-filtered, and
-    import_platform_skus only upserts the rows it was given — a listing absent
-    from the file keeps the stock it already had, so its provenance is still
-    live and wiping it would make a later reversal silently restore nothing.
-    (That error runs the other way, toward a too-low estimate and a false 🔴,
-    but it is still wrong.)
+    import_platform_skus only upserts the rows it was given — a listing
+    absent from the file keeps the stock it already had, so its provenance
+    is still live and untouched here.
 
-    Consequence worth stating: a correction to a sale that was deducted BEFORE
-    the most recent file import reverses nothing, and that is correct — the
-    import already replaced the number that deduction was applied to.
-
-    Returns the number of provenance rows dropped.
+    Returns the number of provenance rows removed (deleted outright, or
+    re-applied down to a clamped 0).
     """
     ids = [v for v in variation_ids if v is not None]
     if not ids:
         return 0
-    dropped = 0
+    from .marketplace import _normalize_order_date
+
+    removed = 0
     for i in range(0, len(ids), 400):          # keep under SQLITE_MAX_VARIABLE_NUMBER
         chunk = ids[i:i + 400]
         ph = ','.join('?' * len(chunk))
-        cur = conn.execute(
-            "DELETE FROM platform_stock_deductions WHERE platform_sku_id IN"
-            f" (SELECT id FROM platform_skus WHERE platform = ? AND variation_id IN ({ph}))",
-            [platform] + chunk)
-        dropped += cur.rowcount
-    return dropped
+        rows = conn.execute(
+            "SELECT d.source_table, d.source_id, d.platform_sku_id, d.units, "
+            "       o.order_date "
+            "  FROM platform_stock_deductions d "
+            "  JOIN platform_skus s ON s.id = d.platform_sku_id "
+            "  LEFT JOIN marketplace_orders o "
+            "         ON d.source_table = 'marketplace_orders' AND o.id = d.source_id "
+            f" WHERE s.platform = ? AND s.variation_id IN ({ph})",
+            [platform] + chunk).fetchall()
+
+        for r in rows:
+            keep = False
+            if r['source_table'] == 'marketplace_orders':
+                order_date_norm = _normalize_order_date(r['order_date'])
+                keep = order_date_norm is not None and order_date_norm > export_ts
+
+            if not keep:
+                conn.execute(
+                    "DELETE FROM platform_stock_deductions "
+                    "WHERE source_table=? AND source_id=? AND platform_sku_id=?",
+                    (r['source_table'], r['source_id'], r['platform_sku_id']))
+                removed += 1
+                continue
+
+            stock_row = conn.execute(
+                "SELECT stock FROM platform_skus WHERE id=?",
+                (r['platform_sku_id'],)).fetchone()
+            before = stock_row['stock'] if stock_row else None
+            if before is None:
+                # No figure to re-apply against (mig-172: NULL stays a
+                # no-op, never COALESCEd) -- can't carry a real deduction
+                # forward onto nothing, so it is superseded, not stranded.
+                conn.execute(
+                    "DELETE FROM platform_stock_deductions "
+                    "WHERE source_table=? AND source_id=? AND platform_sku_id=?",
+                    (r['source_table'], r['source_id'], r['platform_sku_id']))
+                removed += 1
+                continue
+
+            new_stock = max(0, before - r['units'])
+            applied = before - new_stock
+            conn.execute(
+                "UPDATE platform_skus SET stock=? WHERE id=?",
+                (new_stock, r['platform_sku_id']))
+            if applied == 0:
+                conn.execute(
+                    "DELETE FROM platform_stock_deductions "
+                    "WHERE source_table=? AND source_id=? AND platform_sku_id=?",
+                    (r['source_table'], r['source_id'], r['platform_sku_id']))
+                removed += 1
+            elif applied != r['units']:
+                conn.execute(
+                    "UPDATE platform_stock_deductions SET units=? "
+                    "WHERE source_table=? AND source_id=? AND platform_sku_id=?",
+                    (applied, r['source_table'], r['source_id'], r['platform_sku_id']))
+    return removed
 
 
 def _propagate_listings_to_platform_skus(conn, platform):
@@ -675,8 +754,10 @@ def update_platform_sku(sku_id, price, special_price, stock, qty_per_sale):
     # reversing that stale record later adds units the operator's number already
     # accounts for and invents stock (Codex, 2026-08-25): 100 → sale takes 5 → 95
     # with +5 on record → operator types 92 → removing the sale hands back 5 → 97.
-    # Same failure _invalidate_deduction_provenance exists to stop for imports;
-    # this is the other door into the same column.
+    # Same failure _supersede_deduction_provenance exists to stop for imports;
+    # this is the other door into the same column. (This manual-edit door
+    # still deletes unconditionally, no re-apply — task 2.2 is scoped to
+    # the snapshot-import path only.)
     #
     # Only when the figure actually MOVED. The edit form resubmits every field,
     # so a price-only save carries the unchanged stock with it, and discarding
