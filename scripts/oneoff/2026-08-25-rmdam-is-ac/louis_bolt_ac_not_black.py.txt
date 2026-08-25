@@ -1,0 +1,192 @@
+"""2026-08-25 — กลอนเหล็กลายหลุยส์ (pids 1086/1087): สี BLK → AC และเลิกเอาสีมาเป็นชื่อลาย.
+
+WHY. Same misreading that produced the phantom merged by
+`2026_08_25_merge_1880_into_559.py`: "รมดำ" is an ANTIQUE finish (colour code
+AC), not the colour black. The 2026-04-06 backfill read it as black and, worse,
+promoted the finish into the pattern slot — so both rows carry
+`sub_category='กลอนเหล็กรมดำ'` (short code RMD) while the real pattern
+(`series='ลายหลุยส์'`) sits in the next column along.
+
+Every other bolt in the catalogue follows category = กลอนเหล็ก + pattern:
+    กลอนเหล็กพิมพ์ลาย  Sendai #511-4in สีรมดำ (AC)
+    กลอนเหล็กลายพฤกษา Sendai #512-4in สีรมดำ (AC)
+so these two should read กลอนเหล็ก + ลายหลุยส์ + สีรมดำ (AC).
+
+WHAT MOVES
+    products.sub_category            กลอนเหล็กรมดำ  → กลอนเหล็ก
+    products.sub_category_short_code RMD           → NULL
+    products.color_code              BLK           → AC
+    products.product_name / sku_code               → REBUILT, not hand-typed
+    product_families(697).display_name  กลอนเหล็กรมดำ ลายหลุยส์ → กลอนเหล็กลายหลุยส์
+
+WHY THE NAME AND SKU ARE BUILT, NOT TYPED
+`name_builder.rebuild_product_name` and `sku_code_utils.regenerate_for_product`
+are the canonical derivations, and — measured on a snapshot first — the builder
+reproduces 1086's CURRENT stored name byte-for-byte, which is what makes it safe
+to trust for the new one. The expected results are still asserted literally
+below, so a future change to the builders cannot silently rename these rows.
+
+⛔ DO NOT run the builders over pids 559/560. Measured 2026-08-25: their stored
+names omit the brand and their stored skus (BLT-4in-AC / BLT-6in-AC) differ from
+what the generator produces (BLT-SD-4in-AC-559 / BLT-SD-6in-AC). They are in the
+accepted-legacy set — regenerating them is a rename, not a fix.
+
+SAFE BECAUSE (all measured on prod + local, 2026-08-25, identical)
+  * stock 0, no photo folder, no marketplace/listing/promotion/tier/location row
+  * sku_code_locked = 0 on both; the two target skus are free (UNIQUE index)
+  * 7 ledger rows between them, all pre-2024-07, both bought-and-sold same week
+
+    python3 scripts/2026_08_25_louis_bolt_ac_not_black.py --db PATH
+    python3 scripts/2026_08_25_louis_bolt_ac_not_black.py --db PATH --apply
+"""
+from __future__ import annotations
+
+import argparse
+import sqlite3
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "inventory_app"))
+
+FAMILY = 697
+OLD_FAMILY_NAME = "กลอนเหล็กรมดำ ลายหลุยส์"
+NEW_FAMILY_NAME = "กลอนเหล็กลายหลุยส์"
+
+# pid: (old sku, expected new name, expected new sku)
+PLAN = {
+    1086: ("BLT-RMD-SD-SCB94-4in-BLK",
+           "กลอนเหล็กลายหลุยส์ Sendai 4in สีรมดำ (AC)", "BLT-SD-SCB94-4in-AC"),
+    1087: ("BLT-RMD-SD-SCB94-6in-BLK",
+           "กลอนเหล็กลายหลุยส์ Sendai 6in สีรมดำ (AC)", "BLT-SD-SCB94-6in-AC"),
+}
+# Must hold NOTHING for these pids — each would need its own story.
+MUST_BE_EMPTY = (
+    ("platform_skus", "internal_product_id"), ("ecommerce_listings", "product_id"),
+    ("marketplace_order_items", "internal_product_id"), ("promotions", "product_id"),
+    ("product_price_tiers", "product_id"), ("product_locations", "product_id"),
+)
+
+
+class Refused(Exception):
+    """A precondition or assert failed. Always rolls back."""
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--db", type=Path, required=True)
+    ap.add_argument("--apply", action="store_true",
+                    help="commit; without it everything runs then ROLLS BACK")
+    a = ap.parse_args(argv)
+
+    import name_builder, sku_code_utils  # noqa: E402
+
+    conn = sqlite3.connect(str(a.db), timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=15000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # ── preconditions ───────────────────────────────────────────────────
+        for pid, (old_sku, want_name, want_sku) in PLAN.items():
+            r = conn.execute(
+                "SELECT sku_code, sku_code_locked, sub_category,"
+                " sub_category_short_code, series, color_code, family_id,"
+                " product_name FROM products WHERE id=?", (pid,)).fetchone()
+            if not r:
+                raise Refused(f"product {pid} not found")
+            if r["sku_code"] != old_sku:
+                raise Refused(f"{pid} sku is {r['sku_code']!r}, expected {old_sku!r}")
+            if r["sku_code_locked"]:
+                raise Refused(f"{pid} has sku_code_locked=1")
+            if (r["sub_category"], r["sub_category_short_code"], r["series"],
+                    r["color_code"], r["family_id"]) != (
+                    "กลอนเหล็กรมดำ", "RMD", "ลายหลุยส์", "BLK", FAMILY):
+                raise Refused(f"{pid} columns drifted: {dict(r)}")
+            # The builder must reproduce what is stored TODAY — that is what
+            # makes it trustworthy for the new value.
+            built = name_builder.rebuild_product_name(conn, pid)
+            if built != r["product_name"]:
+                raise Refused(
+                    f"{pid}: builder does not reproduce the stored name "
+                    f"({built!r} vs {r['product_name']!r}) — do not trust it here")
+            if conn.execute("SELECT 1 FROM products WHERE sku_code=?",
+                            (want_sku,)).fetchone():
+                raise Refused(f"target sku {want_sku} already taken")
+            for table, col in MUST_BE_EMPTY:
+                n = conn.execute(
+                    f'SELECT COUNT(*) FROM "{table}" WHERE {col}=?', (pid,)).fetchone()[0]
+                if n:
+                    raise Refused(f"{table} holds {n} row(s) for {pid} — handle by hand")
+
+        fam = conn.execute("SELECT display_name FROM product_families WHERE id=?",
+                           (FAMILY,)).fetchone()
+        if not fam or fam["display_name"] != OLD_FAMILY_NAME:
+            raise Refused(f"family {FAMILY} display_name is {fam and fam['display_name']!r}")
+        print("preconditions OK")
+
+        # ── mutate ──────────────────────────────────────────────────────────
+        for pid, (_old, want_name, want_sku) in PLAN.items():
+            conn.execute(
+                "UPDATE products SET sub_category='กลอนเหล็ก',"
+                " sub_category_short_code=NULL, color_code='AC' WHERE id=?", (pid,))
+            new_name = name_builder.rebuild_product_name(conn, pid)
+            _stored, new_sku = sku_code_utils.regenerate_for_product(conn, pid)
+            if new_name != want_name:
+                raise Refused(f"{pid}: builder produced {new_name!r}, expected {want_name!r}")
+            if new_sku != want_sku:
+                raise Refused(f"{pid}: generator produced {new_sku!r}, expected {want_sku!r}")
+            conn.execute("UPDATE products SET product_name=?, sku_code=? WHERE id=?",
+                         (new_name, new_sku, pid))
+        conn.execute("UPDATE product_families SET display_name=? WHERE id=?",
+                     (NEW_FAMILY_NAME, FAMILY))
+
+        # ── asserts ─────────────────────────────────────────────────────────
+        for pid, (_old, want_name, want_sku) in PLAN.items():
+            r = conn.execute(
+                "SELECT product_name, sku_code, color_code, sub_category,"
+                " sub_category_short_code FROM products WHERE id=?", (pid,)).fetchone()
+            if (r["product_name"], r["sku_code"], r["color_code"],
+                    r["sub_category"], r["sub_category_short_code"]) != (
+                    want_name, want_sku, "AC", "กลอนเหล็ก", None):
+                raise Refused(f"{pid} after: {dict(r)}")
+        n = conn.execute(
+            "SELECT COUNT(*) FROM product_families WHERE id=? AND display_name=?",
+            (FAMILY, NEW_FAMILY_NAME)).fetchone()[0]
+        if n != 1:
+            raise Refused("family display_name not updated")
+        # Nothing outside the plan may have moved.
+        stray = conn.execute(
+            "SELECT COUNT(*) FROM products WHERE color_code='BLK'"
+            " AND product_name LIKE '%รมดำ%' AND is_active=1").fetchone()[0]
+        if stray:
+            raise Refused(f"{stray} active product(s) still say รมดำ but are coded BLK")
+        print("asserts OK — both rows rebuilt, family renamed, no รมดำ/BLK left active")
+
+        if not a.apply:
+            conn.execute("ROLLBACK")
+            print("\nREHEARSAL — ran everything, asserts passed, ROLLED BACK.")
+            conn.close()
+            return 0
+        conn.execute("COMMIT")
+    except Exception as e:
+        conn.execute("ROLLBACK")
+        print(f"\nROLLED BACK: {type(e).__name__}: {e}", file=sys.stderr)
+        conn.close()
+        return 1
+    conn.close()
+
+    v = sqlite3.connect(str(a.db))
+    v.row_factory = sqlite3.Row
+    print("\nAPPLIED. Independent re-read:")
+    for r in v.execute("SELECT id, product_name, sku_code, color_code FROM products"
+                       " WHERE id IN (1086,1087) ORDER BY id"):
+        print(f"  {r['id']}: {r['sku_code']:22s} {r['color_code']}  {r['product_name']}")
+    print("  family 697:", v.execute(
+        "SELECT display_name FROM product_families WHERE id=697").fetchone()[0])
+    v.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

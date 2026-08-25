@@ -1,0 +1,337 @@
+"""2026-08-25 — รวมสินค้าผี pid 1880 เข้า pid 559 (กลอนเหล็กลายเรียบ 4in สีรมดำ AC).
+
+WHY. BSN code `998ก3710 "กลอนเหล็กรมดำ 4""` was mapped to pid 1880
+"กลอนเหล็กรมดำ 4in สีดำ (BLK)" — a product that does not physically exist. It was
+created in the 2026-04-17 10:48:19 backfill batch, which read "รมดำ" (an antique
+finish, colour code AC) as "black" and invented a new BLK product instead of
+matching the existing pid 559.
+
+The 6in twin proves it: `515ก3720 "กลอนเหล็กรมดำ 6""` is mapped to pid 560
+"กลอนเหล็กลายเรียบ 6in สีรมดำ (AC)" — correctly, and has been all along.
+
+WHAT THIS DOES
+  1. Re-points every products.id reference from 1880 → 559.
+  2. Zeroes 559's own back-solved opening ADJUST (+24 → 0).
+  3. Forces stock_levels from the ledger sum → 0.
+  4. Retires 1880 as "[MERGED→559] ..." / sku INT-1880 / is_active=0.
+  5. Rebuilds 559's WACC inside the same transaction.
+
+WHY THE OPENING IS ZEROED (Put's ruling, 2026-08-25, option B)
+559's +24 came from a back-solve on 2024-01-03 and never moved again in 2.5
+years — 559 has no purchase bill of its own that could account for 2 โหล.
+Meanwhile 1880's real movements balance EXACTLY: bought 780, sold 780, and its
+last sale (IV6900997-8, 2026-06-23) walks it 24 → 0. So the +24 is the plug, and
+the merged product must read 0 — which Put confirmed against the shelf.
+
+WHAT THIS DELIBERATELY DOES *NOT* DO (reversal of an earlier draft, on review)
+The two cancelling ADJUSTs on 1880 — `2026-05-30 −24 ปรับปรุงยอด` and
+`2026-06-24 +24 นับสต๊อก` — are KEPT. An earlier version deleted them as "noise
+from the phantom card". They net to zero, so deleting them moves no number; it
+would only destroy the one ledger record that somebody physically counted this
+product, and make this script non-idempotent. Keep them.
+
+SAFETY NOTES THIS SCRIPT ENCODES
+  * `product_id` is not the only spelling — `platform_skus` and
+    `marketplace_order_items` use `internal_product_id`. A hand-written table
+    list missed exactly that during planning. Columns are DISCOVERED, not typed.
+  * Forensic/snapshot tables (`migration_*`, `mig*_*`) are NEVER re-pointed —
+    they are archives of what a past migration removed. Asserted empty instead.
+  * `legacy_product_sku_map.product_id` is a PRIMARY KEY archive of the dropped
+    integer sku (mig 097) — re-pointing collides and corrupts the trace. Skipped.
+  * Six touched tables have NO audit trigger (unit_conversions,
+    product_code_mapping, stock_levels, product_cost_ledger,
+    product_price_history, product_locations), so `audit_log` alone CANNOT roll
+    this back. Their pre-state is dumped to JSON before the first write.
+  * Every assert runs INSIDE the transaction; any failure rolls back. The
+    post-commit re-read uses a FRESH connection and is confirmation, not
+    protection.
+  * Row COUNTS are asserted before end state. "stock == 0" alone cannot fail —
+    step 3 forces it from the sum — so it could not detect a partial re-point.
+
+    python3 scripts/2026_08_25_merge_1880_into_559.py --db PATH           # rehearse
+    python3 scripts/2026_08_25_merge_1880_into_559.py --db PATH --apply   # commit
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sqlite3
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "inventory_app"))
+
+SRC = 1880
+DST = 559
+SRC_NAME = "กลอนเหล็กรมดำ 4in สีดำ (BLK)"
+DST_NAME = "กลอนเหล็กลายเรียบ 4in สีรมดำ (AC)"
+BSN_CODE = "998ก3710"
+NEW_SRC_SKU = f"INT-{SRC}"
+WACC = 4.583333333333333
+
+# Measured on BOTH prod and local, 2026-08-25 — identical on every value.
+EXPECT_MOVE = {
+    "transactions":          20,
+    "sales_transactions":    15,
+    "purchase_transactions":  2,
+    "unit_conversions":       3,
+    "product_code_mapping":   1,
+    "product_cost_ledger":    2,
+    "product_price_history":  1,
+}
+EXPECT_DST_AFTER = {
+    "transactions":          21,   # 20 moved + 559's own opening row
+    "sales_transactions":    15,
+    "purchase_transactions":  2,
+    "unit_conversions":       3,
+    "product_code_mapping":   1,
+    "product_price_tiers":    1,   # 559's own, untouched
+    "product_locations":      1,   # 559's own (A-170), untouched
+}
+SKIP = {"stock_levels", "legacy_product_sku_map"}
+FORENSIC = re.compile(r"^(migration_\d+|mig\d+)_")
+NO_AUDIT = ["unit_conversions", "product_code_mapping", "stock_levels",
+            "product_cost_ledger", "product_price_history", "product_locations"]
+
+ACTOR = "claude:merge-1880-into-559"
+REPOINT_REASON = (
+    "ย้ายเอกสารจาก pid 1880 (กลอนเหล็กรมดำ 4in สีดำ BLK — สินค้าผีที่ backfill "
+    "2026-04-17 สร้างขึ้นจากการอ่าน 'รมดำ' เป็นสีดำ) ไป pid 559 "
+    "กลอนเหล็กลายเรียบ 4in สีรมดำ (AC) ซึ่งเป็นสินค้าจริง — Put ยืนยัน 2026-08-25"
+)
+
+NEW_OPENING_NOTE = (
+    "ยอดยกมา 0 — เดิม back-solve 24 ซึ่งซ้ำกับของที่ขายไปแล้วใต้ pid 1880 "
+    "(รวมสินค้า 2026-08-25, Put ยืนยันของหมดจริง) — อย่า rebuild ทับ"
+)
+
+
+class Refused(Exception):
+    """A precondition or an assert failed. Always rolls back."""
+
+
+def product_ref_columns(conn):
+    """Discover every (table, column) referencing products.id. Never typed by hand."""
+    out = []
+    for (name,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+            " AND name NOT LIKE 'sqlite_%'"):
+        cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{name}")')]
+        for col in ("product_id", "internal_product_id"):
+            if col in cols:
+                out.append((name, col))
+    return sorted(out)
+
+
+def count(conn, table, col, pid):
+    return conn.execute(
+        f'SELECT COUNT(*) FROM "{table}" WHERE {col}=?', (pid,)).fetchone()[0]
+
+
+def preconditions(conn, refs):
+    """Refuse on ANY drift from the state this fix was designed against."""
+    for pid, name in ((SRC, SRC_NAME), (DST, DST_NAME)):
+        row = conn.execute(
+            "SELECT product_name, is_active, sku_code FROM products WHERE id=?",
+            (pid,)).fetchone()
+        if not row:
+            raise Refused(f"product {pid} not found")
+        if row["product_name"] != name:
+            raise Refused(f"product {pid} name is {row['product_name']!r}, expected {name!r}")
+        if not row["is_active"]:
+            raise Refused(f"product {pid} is already inactive")
+
+    for table, n in EXPECT_MOVE.items():
+        got = count(conn, table, "product_id", SRC)
+        if got != n:
+            raise Refused(f"{table}: {got} rows on {SRC}, expected {n}")
+
+    # Forensic archives must be untouched by this product pair.
+    for table, col in refs:
+        if FORENSIC.match(table) and count(conn, table, col, SRC):
+            raise Refused(f"forensic table {table} holds rows for {SRC} — stop and inspect")
+
+    m = conn.execute(
+        "SELECT product_id FROM product_code_mapping WHERE bsn_code=?",
+        (BSN_CODE,)).fetchall()
+    if len(m) != 1 or m[0]["product_id"] != SRC:
+        raise Refused(f"mapping for {BSN_CODE} is {[dict(r) for r in m]}, expected exactly [{SRC}]")
+
+    if count(conn, "unit_conversions", "product_id", DST):
+        raise Refused(f"{DST} already has unit_conversions — collision risk, handle by hand")
+
+    opening = conn.execute(
+        "SELECT id, quantity_change, note FROM transactions WHERE product_id=?",
+        (DST,)).fetchall()
+    if len(opening) != 1:
+        raise Refused(f"{DST} has {len(opening)} transactions, expected exactly 1 (the opening)")
+    if opening[0]["quantity_change"] != 24 or not opening[0]["note"].startswith("ยอดยกมา"):
+        raise Refused(f"{DST}'s single txn is not the +24 back-solved opening: {dict(opening[0])}")
+
+    for pid, want in ((DST, 24), (SRC, 0)):
+        r = conn.execute("SELECT quantity FROM stock_levels WHERE product_id=?", (pid,)).fetchone()
+        if not r or r["quantity"] != want:
+            raise Refused(f"stock_levels[{pid}] is {r and r['quantity']}, expected {want}")
+
+    if conn.execute("SELECT 1 FROM products WHERE sku_code=?", (NEW_SRC_SKU,)).fetchone():
+        raise Refused(f"sku {NEW_SRC_SKU} already taken")
+
+    return opening[0]["id"]
+
+
+def snapshot(conn, path):
+    """Pre-state of every touched table that has NO audit trigger."""
+    data = {}
+    for table in NO_AUDIT:
+        data[table] = [dict(r) for r in conn.execute(
+            f'SELECT * FROM "{table}" WHERE product_id IN (?,?)', (SRC, DST))]
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    return sum(len(v) for v in data.values())
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--db", type=Path, required=True)
+    ap.add_argument("--apply", action="store_true",
+                    help="commit; without it the whole thing runs then ROLLS BACK")
+    a = ap.parse_args(argv)
+
+    import models  # noqa: E402  (needs sys.path above)
+
+    conn = sqlite3.connect(str(a.db), timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=15000")
+    conn.execute("PRAGMA foreign_keys=ON")
+
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    snap_path = ROOT / "data" / "exports" / f"merge_{SRC}_to_{DST}_prestate_{ts}.json"
+    snap_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        refs = product_ref_columns(conn)
+        print(f"discovered {len(refs)} product-referencing columns "
+              f"({sum(1 for t, c in refs if c == 'internal_product_id')} via internal_product_id)")
+        opening_id = preconditions(conn, refs)
+        print(f"preconditions OK — {DST}'s opening txn is id {opening_id}")
+
+        n = snapshot(conn, snap_path)
+        print(f"pre-state of {len(NO_AUDIT)} un-audited tables ({n} rows) → {snap_path.name}")
+
+        # ── 1. re-point every reference ─────────────────────────────────────
+        moved = {}
+        for table, col in refs:
+            if table in SKIP or FORENSIC.match(table):
+                continue
+            if table in models.SOURCE_DOC_TABLES:
+                # mig 173 (merged 2026-08-25) REFUSES any change to a source
+                # document that does not say who made it and why. A bulk UPDATE
+                # is rejected by the trigger — caught here on the first
+                # rehearsal. models.declared_update is the supported path and
+                # stamps a fresh token per row, so it must run row by row.
+                ids = [r[0] for r in conn.execute(
+                    f'SELECT id FROM "{table}" WHERE {col}=?', (SRC,))]
+                for rid in ids:
+                    models.declared_update(conn, table, rid, {col: DST},
+                                           actor=ACTOR, source="manual",
+                                           reason=REPOINT_REASON)
+                if ids:
+                    moved[table] = len(ids)
+                continue
+            cur = conn.execute(
+                f'UPDATE "{table}" SET {col}=? WHERE {col}=?', (DST, SRC))
+            if cur.rowcount:
+                moved[table] = cur.rowcount
+
+        # ── 2. zero the back-solved opening (the only phantom quantity) ─────
+        conn.execute(
+            "UPDATE transactions SET quantity_change=0, note=? WHERE id=?",
+            (NEW_OPENING_NOTE, opening_id))
+
+        # ── 3. stock from the ledger — triggers already moved it, this is the
+        #       single source of truth and is idempotent. Never hand-adjust.
+        conn.execute("DELETE FROM stock_levels WHERE product_id IN (?,?)", (DST, SRC))
+        conn.execute(
+            "INSERT INTO stock_levels (product_id, quantity)"
+            " SELECT ?, COALESCE(SUM(quantity_change),0) FROM transactions WHERE product_id=?",
+            (DST, DST))
+
+        # ── 4. retire the phantom ───────────────────────────────────────────
+        conn.execute(
+            "UPDATE products SET product_name=?, sku_code=?, is_active=0 WHERE id=?",
+            (f"[MERGED→{DST}] {SRC_NAME}", NEW_SRC_SKU, SRC))
+
+        # ── 5. rebuild WACC in the SAME transaction (a failure must roll back,
+        #       not print a warning like scripts/merge_product.py does) ──────
+        wacc = models.recalculate_product_wacc(DST, conn)
+
+        # ── ASSERTS — counts first: "stock == 0" is forced above and therefore
+        #    cannot, on its own, detect a re-point that silently moved nothing.
+        if moved != EXPECT_MOVE:
+            raise Refused(f"moved rows {moved} != expected {EXPECT_MOVE}")
+        for table, want in EXPECT_DST_AFTER.items():
+            got = count(conn, table, "product_id", DST)
+            if got != want:
+                raise Refused(f"after: {table} has {got} rows on {DST}, expected {want}")
+        leftover = {t: count(conn, t, c, SRC) for t, c in refs
+                    if t not in SKIP and not FORENSIC.match(t) and count(conn, t, c, SRC)}
+        if leftover:
+            raise Refused(f"leftover references to {SRC}: {leftover}")
+
+        stock = conn.execute(
+            "SELECT quantity FROM stock_levels WHERE product_id=?", (DST,)).fetchone()["quantity"]
+        if stock != 0:
+            raise Refused(f"{DST} stock is {stock}, expected 0")
+        if conn.execute("SELECT 1 FROM stock_levels WHERE product_id=?", (SRC,)).fetchone():
+            raise Refused(f"{SRC} still has a stock_levels row")
+        if conn.execute(
+                "SELECT quantity_change FROM transactions WHERE id=?",
+                (opening_id,)).fetchone()["quantity_change"] != 0:
+            raise Refused("opening txn was not zeroed")
+        if abs(wacc - WACC) > 1e-9:
+            raise Refused(f"WACC moved: {wacc!r}, expected {WACC!r}")
+        src = conn.execute(
+            "SELECT product_name, sku_code, is_active FROM products WHERE id=?", (SRC,)).fetchone()
+        if src["is_active"] or src["sku_code"] != NEW_SRC_SKU \
+                or not src["product_name"].startswith(f"[MERGED→{DST}]"):
+            raise Refused(f"{SRC} not retired correctly: {dict(src)}")
+
+        print(f"asserts OK — moved {sum(moved.values())} rows, {DST} stock=0, WACC={wacc:.6f}")
+
+        if not a.apply:
+            conn.execute("ROLLBACK")
+            print("\nREHEARSAL — every mutation ran and every assert passed, then ROLLED BACK.")
+            print("Re-run with --apply to commit.")
+            conn.close()
+            return 0
+        conn.execute("COMMIT")
+    except Exception as e:
+        conn.execute("ROLLBACK")
+        print(f"\nROLLED BACK: {type(e).__name__}: {e}", file=sys.stderr)
+        conn.close()
+        return 1
+
+    conn.close()
+
+    # ── independent re-read on a FRESH connection ───────────────────────────
+    v = sqlite3.connect(str(a.db))
+    v.row_factory = sqlite3.Row
+    print("\nAPPLIED. Independent re-read:")
+    for r in v.execute(
+            "SELECT p.id, p.product_name, p.sku_code, p.is_active, p.cost_price,"
+            " COALESCE(s.quantity,-999) AS qty FROM products p"
+            " LEFT JOIN stock_levels s ON s.product_id=p.id WHERE p.id IN (?,?)", (DST, SRC)):
+        print(f"  {r['id']}: qty={r['qty']} active={r['is_active']} "
+              f"cost={r['cost_price']:.6f} sku={r['sku_code']} — {r['product_name']}")
+    mp = v.execute("SELECT product_id FROM product_code_mapping WHERE bsn_code=?",
+                   (BSN_CODE,)).fetchone()
+    print(f"  {BSN_CODE} → pid {mp['product_id']}")
+    v.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
