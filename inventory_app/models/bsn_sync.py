@@ -208,33 +208,20 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
     แต่ยังไม่ถูก sync (synced_to_stock = 0)
     file_type: 'sales' → OUT,  'purchase' → IN
 
-    deduct_platform: pass False on a REPLAY (update_unit_conversion_ratio /
-    repoint_bsn_code re-post a product's whole ledger). The platform_skus.stock
-    deduction below belongs to a row FIRST becoming synced — i.e. an import —
-    and is NOT reversed when the ledger rows are deleted, so replaying it walks
-    marketplace stock down by the product's entire sales history every time.
-    Measured before the guard existed: a no-op ratio edit on pid 456 took 93
-    units off four live listings while the warehouse ledger stayed correct.
-
-    replayed_ids: source-row ids in `table` that ALREADY hold a platform
-    deduction, so this call must re-post their ledger movement WITHOUT taking
-    marketplace stock off again. Use it where a replay and a first sync are
-    mixed in one call — import_weekly's pass 2 resets synced_to_stock=0 for
-    every row of an affected product, so the same re-post carries the file's
-    brand-new sales (which DO owe a deduction) alongside history that was
-    deducted weeks ago. `deduct_platform=False` cannot express that: it would
-    silence the new sales too and walk marketplace stock UP, i.e. straight into
-    the oversell direction this deduction exists to prevent.
+    deduct_platform, replayed_ids: platform deduction moved to order imports
+    (order-driven-platform-deduction plan, Phase 1) — `platform_skus.stock` is
+    now deducted/credited only by `import_marketplace_orders`'s diff engine.
+    These params are retained for signature stability (callers in imports.py,
+    update_unit_conversion_ratio, repoint_bsn_code still pass them) but are no
+    longer consulted by this function. Removing the plumbing from all callers
+    is a follow-up cleanup, not this change.
 
     product_ids: restrict the scan to these products. This function otherwise
-    picks up EVERY unsynced mapped row in the table, which a replay must not do
-    — an unrelated product's pending marketplace sale would first-sync under
-    the caller's deduct_platform=False and lose the platform deduction it is
-    owed and will never be offered again. Always pass it alongside
-    deduct_platform=False.
+    picks up EVERY unsynced mapped row in the table, which a replay must not
+    do — an unrelated product's pending row would first-sync under the
+    caller's intent to replay only the products it named.
     """
     txn_type = 'IN' if file_type == 'purchase' else 'OUT'
-    _replayed = frozenset(replayed_ids or ())
 
     # ORDER BY id is load-bearing on a REPLAY (update_unit_conversion_ratio /
     # repoint_bsn_code delete a product's ledger and re-post it): recalculate_
@@ -351,103 +338,6 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
                 row['date_iso'] + ' 00:00:00',
                 src_bsn_code, src_line_seq,
             ))
-
-            # Track online stock for Shopee/Lazada store customers. A sale takes
-            # units off; a customer return (SR) puts them BACK, because both
-            # platforms restock a returned item themselves once the refund
-            # completes (Put, 2026-08-25) and this column mirrors their number.
-            # Skipping returns — the old behaviour — left the mirror reading LOW
-            # by the returned quantity until the next file import, which is the
-            # false-🔴 direction.
-            if (deduct_platform and txn_type == 'OUT'
-                    and row['id'] not in _replayed):
-                customer = (row['customer'] or '').strip()
-                platform = PLATFORM_STOCK_DEDUCT_CUSTOMERS.get(customer)
-
-                # Only listings mapped to this product, and only on a platform
-                # whose sales are booked under a หน้าร้าน customer.
-                if platform and row['product_id']:
-                    skus = conn.execute("""
-                        SELECT id, qty_per_sale, stock FROM platform_skus
-                        WHERE platform = ? AND internal_product_id = ?
-                          AND qty_per_sale > 0
-                        ORDER BY stock DESC
-                    """, (platform, row['product_id'])).fetchall()
-                    # +1 removes units from the listing, -1 puts them back.
-                    # ONE walk for both so a return can never disagree with the
-                    # sale it mirrors about rounding.
-                    #
-                    # ⚠ What this guarantees is the product's TOTAL on that
-                    # platform, not the per-listing split. Both directions rank
-                    # by CURRENT stock, and the sale itself changes that
-                    # ranking: with A=10 B=9, a 5-unit sale takes A to 5, and
-                    # the return then picks B — total restored, split shifted
-                    # (A=5 B=14 where the platform holds A=10 B=9). Nothing in
-                    # an SR row identifies the listing the original sale came
-                    # off, and every consumer that DECIDES anything — the
-                    # red/amber flags, the stock-sync targets — reads the
-                    # per-platform total, so the split is display-only and the
-                    # next authoritative file import corrects it.
-                    sign = -1 if is_sales_return else 1
-                    remaining = float(base_qty)
-                    for sku in skus:
-                        if remaining <= 0:
-                            break
-                        qps = float(sku['qty_per_sale'])
-                        platform_units = remaining / qps
-                        platform_deduct = round(platform_units)
-                        if platform_deduct < 1:
-                            # Remaining base qty is under half a platform unit —
-                            # nothing meaningful left to deduct from this or any
-                            # later (smaller-stock) SKU in the ORDER BY stock DESC
-                            # list, so stop instead of forcing a whole unit off.
-                            break
-                        # What the write ACTUALLY moves. On the way down a
-                        # listing holding 3 against a wanted 10 gives up 3, not
-                        # 10 — provenance must carry that or a later reversal
-                        # invents the 7 that never moved. On the way back up
-                        # there is no clamp, so the full amount lands.
-                        #
-                        # A listing whose stock is NULL is a listing we have no
-                        # figure for: MAX(0, NULL - n) and NULL + n are both
-                        # NULL, so the write is a no-op in BOTH directions and
-                        # nothing is recorded. Two live Lazada listings sit that
-                        # way today. Deliberately NOT COALESCEd — inventing a
-                        # number for an unknown listing is worse than leaving it
-                        # unknown.
-                        if sku['stock'] is None:
-                            applied = 0
-                        elif sign > 0:
-                            applied = min(platform_deduct, max(sku['stock'], 0))
-                        else:
-                            applied = platform_deduct
-                        conn.execute(
-                            "UPDATE platform_skus SET stock = %s WHERE id = ?"
-                            % ('MAX(0, stock - ?)' if sign > 0 else 'stock + ?'),
-                            (platform_deduct, sku['id']))
-                        if applied > 0:
-                            # Signed: what this row REMOVED from the listing.
-                            # A return records a negative, so reversal stays a
-                            # single `stock = stock + units` for both kinds.
-                            # A BARE insert on purpose. One source row deducts
-                            # exactly once (replayed_ids blocks the replay) and
-                            # each listing appears once in this walk, so the PK
-                            # cannot collide on any valid path — and if it ever
-                            # does, that IS the replay protection having failed.
-                            # ON CONFLICT ... units = units + excluded.units
-                            # would keep such a run reversible while leaving
-                            # stock silently double-deducted until someone
-                            # happened to correct the line. Let it raise and
-                            # roll the import back instead (Codex, 2026-08-25).
-                            conn.execute("""
-                                INSERT INTO platform_stock_deductions
-                                  (source_table, source_id, platform_sku_id, units)
-                                VALUES (?, ?, ?, ?)
-                            """, (table, row['id'], sku['id'], sign * applied))
-                        # `remaining` still walks down by the INTENDED amount:
-                        # changing it would change which listings the walk
-                        # reaches, and this is not a behaviour change.
-                        remaining -= platform_deduct * qps
 
             # history_import: สร้าง txn ตรงข้ามคู่กันเพื่อไม่ให้กระทบสต็อคปัจจุบัน
             # ต้อง reverse แถวจริง (row_txn_type/change) ไม่ใช่สมมติว่าเป็นขายเสมอ —

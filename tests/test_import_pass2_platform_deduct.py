@@ -116,6 +116,30 @@ def _stock(path, pid):
     return None if row is None else row['quantity']
 
 
+def test_bsn_import_leaves_platform_stock_alone(empty_db):
+    """The Phase-1 cutover, across the shapes that used to matter to the
+    walk: a first-sync sale, a second sale on the same product (which also
+    forces pass 2 to rebuild the first row alongside the new one), and an
+    unchanged reimport. None may touch platform_skus.stock."""
+    import models
+    pid = _seed(empty_db, 'B900', listing_stock=100)
+
+    models.import_weekly([_entry('IV001', 'B900', 5)], 'sales', 'week1')
+    assert _platform_stock(empty_db, pid) == 100, 'first sync must not deduct'
+    assert _stock(empty_db, pid) == -5, 'CONTROL: warehouse OUT still posts'
+
+    models.import_weekly([_entry('IV002', 'B900', 1)], 'sales', 'week2')
+    assert _stock(empty_db, pid) == -6, 'CONTROL: warehouse ledger counts both sales'
+    assert _platform_stock(empty_db, pid) == 100, 'second import must not deduct either'
+
+    stats = models.import_weekly([_entry('IV002', 'B900', 1)], 'sales', 'week2-again')
+    assert stats['unchanged'] == 1, stats
+    assert stats['affected_products'] == 0, stats
+    assert _platform_stock(empty_db, pid) == 100
+    assert _provenance(empty_db, pid) == [], 'no provenance is ever created'
+
+
+
 def test_a_later_import_does_not_re_deduct_an_earlier_marketplace_sale(empty_db):
     """The regression itself: two imports, two separate marketplace sales.
 

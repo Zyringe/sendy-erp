@@ -17,9 +17,12 @@ Core-math invariants (see projects/ecommerce-revamp/plan.md — do not re-derive
                                   AND st.doc_no NOT LIKE 'HS%'          -- opening balances
                                   AND st.customer IN <platform's หน้าร้าน set>
                                   AND NOT already-deducted-from-platform_skus
-                                  -- ^ _sync_bsn_to_stock ALREADY takes synced
-                                  -- หน้าร้านS/L sales off platform_skus.stock, so
-                                  -- counting them here deducts the sale twice.
+                                  -- ^ once a หน้าร้านS/L sale is synced, the
+                                  -- matching marketplace ORDER import is
+                                  -- presumed to maintain platform_skus.stock
+                                  -- for it (order-driven-platform-deduction
+                                  -- plan) -- so counting it here too would
+                                  -- deduct the sale twice.
                                   -- See _sold_since_by_pid for the full note.
     platform_est(p, pf)        = max(platform_file_units - sold_since, 0)
     true_available(p)          = stock_levels.quantity + buildable     -- models.get_buildable()
@@ -100,18 +103,23 @@ def _sold_since_by_pid(conn, platform, snapshot_date, pids=None):
       SR%  sales returns — goods came back, they are not a deduction
       HS%  historical opening balances, not trade (same exclusion every money
            page applies via sales_filters)
-      rows already applied to platform_skus.stock by _sync_bsn_to_stock — see
-           the guard below
+      rows presumed already reflected in platform_skus.stock via the
+           marketplace ORDER import — see the guard below
 
-    ⚠ THE DOUBLE-DEDUCTION GUARD. `_sync_bsn_to_stock` decrements
-    platform_skus.stock for the customers in PLATFORM_STOCK_DEDUCT_CUSTOMERS
-    when it marks a row synced, so once synced the sale is ALREADY inside
-    file_units. Counting it here too subtracts the same sale twice: one 100-unit
-    Shopee sale made est fall by 200, which shows as a false RED (listing looks
-    closed while it is open). Only rows NOT yet folded into platform_skus.stock
-    belong in this adjustment: unsynced rows (e.g. the sync skipped them because
-    no unit ratio is defined) and rows on booking customers the sync never
-    deducts for (หน้าร้านB, the closed second Shopee shop).
+    ⚠ THE DOUBLE-DEDUCTION GUARD. Meaning updated for the
+    order-driven-platform-deduction plan: `_sync_bsn_to_stock` no longer
+    touches platform_skus.stock itself — the marketplace ORDER import now
+    maintains that mirror. A synced sale on a customer in
+    PLATFORM_STOCK_DEDUCT_CUSTOMERS is presumed to already be inside
+    file_units via that order import, so counting it here too would subtract
+    the same sale twice: one 100-unit Shopee sale made est fall by 200, which
+    shows as a false RED (listing looks closed while it is open). Only rows
+    NOT presumed reflected belong in this adjustment: unsynced rows (e.g. the
+    BSN sync skipped them because no unit ratio is defined) and rows on
+    booking customers the order-import mirror never covers (หน้าร้านB, the
+    closed second Shopee shop). This presumption is imperfect between a BSN
+    sync and the NEXT order import (D5 in the plan) — a known, bounded gap,
+    not a bug to fix here.
 
     `excludes_revenue` is deliberately NOT applied: those goods physically left
     the warehouse, so they must still come off marketplace stock. Same reasoning
