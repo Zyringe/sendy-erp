@@ -221,7 +221,8 @@
         <div class="small text-muted">ชื่อสินค้า (แก้ได้ตรงนี้):</div>
         <input class="form-control form-control-sm fw-bold" id="ed-name">
         <div class="d-flex align-items-center gap-2 mt-2">
-          <button type="button" class="btn btn-outline-secondary btn-sm"
+          {# starts DISABLED: nothing is adoptable until a validated preview arrives #}
+          <button type="button" class="btn btn-outline-secondary btn-sm" disabled
                   id="ed-adopt" onclick="adoptSuggestedName()">ใช้ชื่อที่ระบบแนะนำ →</button>
           <div id="ed-preview" class="small text-muted flex-grow-1">—</div>
         </div>
@@ -339,6 +340,17 @@ let _edPid = null;
 let _edNameAtOpen = '';
 let _edNameDirty = false;
 let _edGen = 0;          // preview generation — a late response must not win
+// The ONLY value the adopt button may write. null = there is no validated suggestion,
+// so adoption is impossible: reading the DOM instead let a click during the 250ms
+// debounce rename a product to the '…' placeholder, or to the previous product's
+// suggestion (Codex, 2026-08-25).
+let _edSuggestion = null;
+
+function _setSuggestion(name) {
+  _edSuggestion = name || null;
+  document.getElementById('ed-adopt').disabled = !_edSuggestion;
+  document.getElementById('ed-preview').textContent = name || '…';
+}
 const _edIds = ['ed-subcat','ed-brand','ed-series','ed-model','ed-size',
                 'ed-color','ed-packaging','ed-condition','ed-variant'];
 
@@ -370,7 +382,7 @@ function openEditor(btn) {
   set('ed-variant', d.variant);
   document.getElementById('ed-locked-warn').classList.toggle('d-none', d.locked !== '1');
   // preview holds the SUGGESTION, not the stored name — _edRefresh() fills it in
-  document.getElementById('ed-preview').textContent = '…';
+  _setSuggestion(null);
   document.getElementById('ed-loss').classList.add('d-none');
   bootstrap.Modal.getOrCreateInstance(document.getElementById('editModal')).show();
   _edRefresh();
@@ -379,20 +391,22 @@ function openEditor(btn) {
 let _edTimer = null;
 function _edRefresh() {
   clearTimeout(_edTimer);
+  // Invalidate SYNCHRONOUSLY, before the debounce. Doing it inside the timeout left a
+  // 250ms window where the button was live and showing a stale suggestion.
+  _setSuggestion(null);
   _edTimer = setTimeout(async () => {
     // Pin the request to (product, generation). A response that arrives after the
     // operator switched product or changed a field again must be DISCARDED: the adopt
     // button would otherwise turn a stale suggestion into a real rename of the wrong
     // product, and it would pass the expected-name check legitimately (Codex, 2026-08-25).
     const pid = _edPid, gen = ++_edGen;
-    const adopt = document.getElementById('ed-adopt');
-    adopt.disabled = true;
     const {data} = await _postJSON('/naming/product/preview-name',
                                    {..._edFields(), pid});
     if (pid !== _edPid || gen !== _edGen) return;      // stale response, drop it
-    adopt.disabled = false;
+    // Only a response that is current AND ok may arm the button. A failed preview must
+    // leave the previous suggestion un-adoptable rather than re-enabling it.
     if (!data.ok) return;
-    document.getElementById('ed-preview').textContent = data.name || '—';
+    _setSuggestion(data.name || null);
     // Say what pressing the button would drop, BEFORE it is pressed.
     const warn = document.getElementById('ed-loss');
     const cur = document.getElementById('ed-name').value;
@@ -405,12 +419,10 @@ function _edRefresh() {
 }
 
 function adoptSuggestedName() {
-  const suggested = document.getElementById('ed-preview').textContent;
-  if (suggested && suggested !== '—') {
-    document.getElementById('ed-name').value = suggested;
-    _edNameDirty = true;
-    document.getElementById('ed-loss').classList.add('d-none');
-  }
+  if (!_edSuggestion) return;          // validated state only, never the DOM text
+  document.getElementById('ed-name').value = _edSuggestion;
+  _edNameDirty = true;
+  document.getElementById('ed-loss').classList.add('d-none');
 }
 
 async function saveProduct() {
