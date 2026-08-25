@@ -151,3 +151,20 @@ def test_the_upload_route_asks_for_the_scan_and_passes_the_real_export_time():
     assert kw['export_at'].id == 'export_at', (
         f"passes {kw['export_at'].id} — effective_export_at falls back to today, "
         "and a fallback cannot decide that a document was deleted at source")
+
+    # started_at feeds the time reserve. It is read ~200 lines below where it is
+    # assigned, so a rename would be a NameError on the SUCCESS path of every
+    # upload — a 500 after the money has already been committed, which is the
+    # worst shape of failure this route can have.
+    assert isinstance(kw.get('started_at'), ast.Name), 'started_at must be passed'
+    clock = kw['started_at'].id
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == 'express_dbf_upload')
+    assigned = [n.lineno for n in ast.walk(fn)
+                if isinstance(n, ast.Assign)
+                for t in n.targets
+                if isinstance(t, ast.Name) and t.id == clock]
+    assert assigned, f'{clock} is passed but never assigned in express_dbf_upload'
+    assert min(assigned) < calls[0].lineno, (
+        f'{clock} is assigned at line {min(assigned)}, after it is used at '
+        f'{calls[0].lineno}')
