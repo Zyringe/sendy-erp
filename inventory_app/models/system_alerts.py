@@ -57,6 +57,7 @@ KIND_ORPHAN_BSN_LEDGER = 'orphan_bsn_ledger'
 KIND_CONVERSION_ROLE_ERROR = 'conversion_role_error'
 KIND_IMPORT_STALE = 'import_stale'
 KIND_UNMAPPED_CODES = 'unmapped_bsn_codes'
+KIND_EXPRESS_DOC_DRIFT = 'express_doc_drift'
 
 # Prod runs `gunicorn --timeout 60` (Procfile / railway.toml). A request that
 # exceeds it is SIGABRT'd mid-flight, so it cannot report itself — the warning
@@ -144,6 +145,51 @@ def record_ignored_import_lines_alert(ignored_detail, *, file_type, filename):
             severity='warning',
             context={'file_type': file_type, 'filename': filename,
                      'ignored_detail': ignored_detail})
+        if aid:
+            ids.append(aid)
+    return ids
+
+
+def record_express_doc_drift_alerts(findings, *, dataset_label=None, conn=None):
+    """A document Sendy already holds no longer matches Express.
+
+    The weekly import only re-reads a 60-day window, so an edit made at source
+    after a document ages out is never seen again — the line just stays wrong,
+    and on the purchase side it stays wrong in the stock ledger and in WACC. The
+    import results page is not enough on its own: it is read by whoever ran the
+    import, which is exactly the failure this module exists for.
+
+    Dedupe key is the `doc_no` ALONE, per _dedupe_key's rule. The dataset name,
+    the differing fields and the raw DOCSTAT are diagnostics and live in context,
+    so a document that keeps disagreeing week after week holds ONE open alert
+    instead of stacking one per upload — and a recurrence after someone
+    acknowledges it is allowed to alert again.
+
+    ⛔ Detect and tell, never repair. Nothing here writes to the ledgers: an
+    automatic "fix" would be this code deciding which of the two books is right,
+    and the answer is per-document (a source edit vs a deliberate Sendy change —
+    IV6701854 was the second kind and correcting it would have destroyed a
+    team's own SKU split).
+
+    Best-effort. Callers invoke this AFTER their own connection is closed and
+    must not let an alert failure sink an import that really succeeded.
+    """
+    if not findings:
+        return []
+    ids = []
+    for f in findings:
+        doc = f.get('doc_no')
+        if not doc:
+            continue
+        aid = create_system_alert(
+            KIND_EXPRESS_DOC_DRIFT, f.get('message') or f'เอกสาร {doc} ไม่ตรงกับ Express',
+            dedupe_key=_dedupe_key([doc]),
+            severity='warning',
+            context={'dataset': dataset_label, 'doc_no': doc,
+                     'drift_kind': f.get('kind'), 'fields': f.get('fields'),
+                     'docstat': f.get('docstat'),
+                     'fingerprint': f.get('fingerprint')},
+            conn=conn)
         if aid:
             ids.append(aid)
     return ids

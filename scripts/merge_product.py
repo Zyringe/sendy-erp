@@ -33,9 +33,21 @@ DB_PATH = ROOT / "inventory_app" / "instance" / "inventory.db"
 EXPORTS = ROOT / "data" / "exports"
 sys.path.insert(0, str(ROOT / "inventory_app"))
 import sqlite3  # noqa: E402
+from models._shared import declared_update  # noqa: E402
 
 # product_id reassigned by plain UPDATE here; the two below are special-cased.
 SPECIAL = {"unit_conversions", "product_code_mapping"}
+# mig 173 refuses an UPDATE of a source document that does not say who made it
+# and why. This tool re-points product_id, which is one of the guarded columns,
+# so a plain UPDATE aborts the whole merge — measured: after mig 173 shipped,
+# `--apply` rolled back on every product that had ever been sold or bought.
+#
+# ⚠ tests/test_source_doc_writer_coverage.py CANNOT see this file. It matches SQL
+# text, and `tables_with_product_id()` reads the table list out of sqlite_master
+# at runtime, so neither name is ever a literal here. The sweep says as much in
+# its own docstring. This constant exists so the two tables are named ONCE, in a
+# place a future reader greps.
+DECLARED = {"sales_transactions", "purchase_transactions"}
 # Never re-point these: product_id is a PRIMARY KEY forensic archive of the
 # dropped integer sku (mig 097). Re-pointing collides on a merge where both
 # products have a row, and would corrupt the id->old-sku trace. Leave the
@@ -125,8 +137,21 @@ def main(argv=None):
         conn.execute("UPDATE product_code_mapping SET product_id=? "
                      "WHERE product_id=?", (a.dst, a.src))
         # everything else with a product_id column
+        reason = (f"รวมสินค้าซ้ำ: ย้ายบรรทัดจากสินค้า {a.src} ไปสินค้า {a.dst} "
+                  f"(scripts/merge_product.py)")
         for t in tabs:
             if t in SPECIAL or t in SKIP:
+                continue
+            if t in DECLARED:
+                # Row by row, because declared_update stamps a fresh token per
+                # row: one token shared across a set UPDATE would let the NEXT
+                # edit of any of those rows inherit this reason and read as
+                # explained. See models/_shared.py.
+                for (rid,) in conn.execute(
+                        f"SELECT id FROM {t} WHERE product_id=?", (a.src,)).fetchall():
+                    declared_update(conn, t, rid, {"product_id": a.dst},
+                                    actor="merge-product", source="manual",
+                                    reason=reason)
                 continue
             conn.execute(f"UPDATE {t} SET product_id=? WHERE product_id=?",
                          (a.dst, a.src))

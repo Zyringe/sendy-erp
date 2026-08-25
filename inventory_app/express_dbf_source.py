@@ -42,6 +42,8 @@ dict-fixture-testable shape. Their traps (MAPPING.md §3-6, Phase 0):
 Each builder feeds its existing downstream importer directly (a records
 list, not a file path) — see import_router.py::commit_express_dbf.
 """
+import collections
+import hashlib
 import os
 from collections import defaultdict
 
@@ -1157,3 +1159,355 @@ def split_era_findings(rows, era_start):
     real = [r for r in rest if r['value'] or r['remamt']]
     empty = [r for r in rest if not (r['value'] or r['remamt'])]
     return real, unvalued, empty
+
+
+# ── document-drift detection (plan-express-drift-detector-2026-08-24) ────────
+#
+# WHAT THIS ANSWERS, AND WHAT IT DOES NOT
+#     `build_out_of_window_docs` answers "did we MISS a document". Nothing
+#     answered "is a document we already hold being changed under our feet".
+#     Express is edited by people after the fact, and the weekly import only
+#     re-reads a 60-day window, so an edit to an older document is permanent and
+#     silent — IV6900631 was cancelled at source on 2026-08-22, five months after
+#     its own date, and the stale line survived every check until a human deleted
+#     it. On the purchase side that same shape moves stock and WACC.
+#
+# ⛔ IT CANNOT SEE A BUG IN THE BUILDERS. Both sides run through
+#     build_sales_entries / build_purchase_entries, which is what makes the
+#     comparison meaningful at all (see below) and also means a builder that
+#     mis-reads a field mis-reads it identically on both sides. Catching that is
+#     the import tests' job, not this one's.
+#
+# ⛔ IT CANNOT SEE product_name_raw OR party NAME CHANGES. Both are excluded from
+#     the fingerprint on measured grounds (see DRIFT_LINE_FIELDS below).
+#
+# WHY THE COMPARISON GOES THROUGH THE IMPORT'S OWN BUILDERS
+#     Sendy does not store what Express holds; it stores what the import MADE of
+#     it. Measured 2026-08-25 on the real dataset: comparing raw DBF fields
+#     reported 9,551 of 9,551 documents as drift. Each normalisation layer below
+#     was found by running, never by reading:
+#         raw                                        9,551
+#         + through the builders + normalize_unit     2,986
+#         + normalize the unit on the Sendy side too  2,944   (old rows hold 'หล')
+#         + treat '\xa0' as a space                   1,627
+#         + drop product_name_raw from the compare      167
+ERA_START = '2024-01-01'
+
+# The fields a line is compared on. `line_seq` is deliberately absent: Sendy's
+# value is a 1-based counter per (doc_no, product code) (parse_weekly.py) while
+# Express's SEQNUM is the physical line number, so they agree only on
+# single-line documents. Measured on prod: including it takes the drift set from
+# 116 documents to 1,005, of which 580 are line_seq alone. Sendy's value is not
+# derived from Express's, so comparing them could not detect a source change
+# even in principle, and it moves neither money nor stock.
+DRIFT_LINE_FIELDS = ('code', 'qty', 'unit', 'unit_price', 'total', 'net', 'discount')
+
+# Header fields, in the order _classify_fields reports them.
+DRIFT_HEADER_FIELDS = ('date_iso', 'vat_type', 'party_code')
+
+
+class DriftInputError(ValueError):
+    """The inputs cannot support a verdict, so there is no verdict.
+
+    Raised rather than returning an empty finding list, because "no findings"
+    and "nothing was looked at" are indistinguishable to a caller and the second
+    one has already been mistaken for the first in this project.
+    """
+
+
+class DriftResult:
+    """findings + the population they were drawn from.
+
+    `compared_doc_nos` is not a diagnostic: a caller that sees no findings needs
+    to know whether that is because everything agreed or because the scoping
+    silently matched nothing.
+    """
+
+    __slots__ = ('findings', 'compared_doc_nos', 'counters')
+
+    def __init__(self, findings, compared_doc_nos, counters):
+        self.findings = findings
+        self.compared_doc_nos = compared_doc_nos
+        self.counters = counters
+
+
+def _c_txt(v):
+    """None and '' are the same value; \\xa0 is a space. Measured: the \\xa0 rule
+    alone accounts for 1,317 documents."""
+    return ('' if v is None else str(v)).replace('\xa0', ' ').strip()
+
+
+def _c_num(v):
+    """int 25 and float 25.0 are the same value."""
+    try:
+        return round(float(v or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _c_unit(v, _norm):
+    """normalize_unit on BOTH sides — rows written before the import applied it
+    still hold Express's raw 2-char code ('หล' for 'โหล'). Idempotent."""
+    return _c_txt(_norm(_c_txt(v)))
+
+
+def _c_line(code, qty, unit, price, total, net, disc, _norm):
+    return (_c_txt(code), _c_num(qty), _c_unit(unit, _norm), _c_num(price),
+            _c_num(total), _c_num(net), _c_txt(disc))
+
+
+def _drift_sendy_side(conn, era_start, _norm):
+    """Every document Sendy holds from `era_start`, in canonical form."""
+    out = {}
+    for table, doc_col, party_col in (
+            ('sales_transactions', 'doc_base', 'customer_code'),
+            ('purchase_transactions', 'doc_no', 'supplier_code')):
+        rows = conn.execute(
+            f"SELECT {doc_col}, date_iso, vat_type, {party_col}, bsn_code, qty,"
+            f" unit, unit_price, total, net, discount"
+            f"  FROM {table} WHERE date_iso >= ?", (era_start,))
+        for r in rows:
+            doc = r[0]
+            if doc is None:
+                continue
+            d = out.setdefault(doc, {'hdr': (r[1], str(r[2]), _c_txt(r[3])),
+                                     'lines': []})
+            d['lines'].append(_c_line(r[4], r[5], r[6], r[7], r[8], r[9], r[10],
+                                      _norm))
+    return out
+
+
+def _drift_express_side(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
+                        apmas_rows, held, conn, _norm):
+    """The same documents as Express holds them, scoped to `held`.
+
+    Scoping to the documents Sendy actually holds is not only an optimisation
+    (Sendy holds ~9.9k of Express's ~67k, measured 5.3x); documents Express has
+    and Sendy does not are `build_out_of_window_docs`'s job, and reporting them
+    here would double-report them.
+    """
+    from models.mapping import _resolve_mapping
+    from models.stock_filters import is_non_stock_code
+    cache = {}
+
+    def kept(code, unit):
+        """Mirror of models/imports.py `if is_ignored and not non_stock_line`.
+
+        ⚠ Mirrored deliberately, not paraphrased from memory: an earlier
+        revision of the plan recorded this branch BACKWARDS (as skipping
+        non-stock lines) and review caught it. Non-stock lines are KEPT.
+        """
+        key = (code, unit)
+        if key not in cache:
+            _pid, is_ignored, _mapped = _resolve_mapping(conn, code, unit)
+            cache[key] = not (is_ignored and not is_non_stock_code(code))
+        return cache[key]
+
+    out = {}
+    dropped = set()
+    for entries in (build_sales_entries(artrn_rows, stcrd_rows, armas_rows),
+                    build_purchase_entries(aptrn_rows, stcrd_rows, apmas_rows)):
+        for e in entries:
+            doc = e['doc_no']
+            base = doc.rsplit('-', 1)[0] if '-' in doc else doc
+            if base not in held:
+                continue
+            code = _c_txt(e['product_code_raw'])
+            unit = _c_unit(e['unit'], _norm)
+            if not kept(code, unit):
+                dropped.add(base)
+                continue
+            d = out.setdefault(base, {'hdr': (e['date_iso'], str(e['vat_type']),
+                                              _c_txt(e['party_code'])),
+                                      'lines': []})
+            d['lines'].append(_c_line(code, e['qty'], unit, e['unit_price'],
+                                      e['total'], e['net'], e['discount'], _norm))
+    return out, (dropped - set(out))
+
+
+def _side_repr(side):
+    return (side['hdr'], sorted(side['lines'], key=repr))
+
+
+def document_fingerprint(express_side, sendy_side):
+    """What a baseline entry is pinned to — BOTH sides, not one.
+
+    ⚠ A Sendy-only fingerprint cannot notice the source changing again, which is
+    the entire subject of this detector: the baseline would stay silent through
+    exactly the event it is supposed to stop hiding. (The first baseline builder
+    stored the Sendy-side hash; regenerate any baseline written before this
+    function existed.)
+    """
+    payload = repr((_side_repr(express_side), _side_repr(sendy_side)))
+    return hashlib.blake2b(payload.encode('utf-8'), digest_size=16).hexdigest()
+
+
+def _classify_fields(express_side, sendy_side):
+    """Name WHAT differs, so an alert says more than "this document differs"."""
+    hdr = [n for n, a, b in zip(DRIFT_HEADER_FIELDS,
+                                express_side['hdr'], sendy_side['hdr']) if a != b]
+    ex = collections.Counter(express_side['lines'])
+    sy = collections.Counter(sendy_side['lines'])
+    if len(express_side['lines']) != len(sendy_side['lines']):
+        return hdr, ['LINE_COUNT']
+    changed = set()
+    for a, b in zip(sorted((ex - sy).elements()), sorted((sy - ex).elements())):
+        changed |= {n for n, x, y in zip(DRIFT_LINE_FIELDS, a, b) if x != y}
+    return hdr, sorted(changed)
+
+
+def detect_document_drift(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
+                          apmas_rows, conn, *, baseline=None, export_at=None,
+                          era_start=ERA_START):
+    """Compare every document Sendy holds against the same document in Express.
+
+    `export_at` is the moment the uploaded dataset was exported, and it must come
+    from the caller — the blueprint computes it (`_zip_export_datetime`) and it
+    is NOT always authoritative: it falls back to "today" when the zip carries no
+    readable DBF timestamp. Passing None says "unknown", and this function will
+    then refuse to claim any document was deleted at source, because deciding
+    that on a fallback value is how a detector invents an incident.
+
+    `baseline` maps doc_base -> {'fingerprint': ..., 'reason': ...} for
+    disagreements already explained (old parser eras, ignore rules that changed
+    since). An entry without a reason is refused rather than honoured: a silent
+    exemption is closing your eyes, written as code. A baselined document is
+    still COMPARED — it goes quiet only while its fingerprint is unchanged.
+
+    Returns a DriftResult. Raises DriftInputError when the inputs cannot support
+    a verdict.
+    """
+    import bsn_units
+    if not stcrd_rows:
+        raise DriftInputError('STCRD is empty — there is nothing to compare '
+                              'against, and "no findings" would be a lie')
+    if not artrn_rows and not aptrn_rows:
+        raise DriftInputError('both ARTRN and APTRN are empty — the Express side '
+                              'has no documents at all')
+    if artrn_rows and not armas_rows:
+        raise DriftInputError('ARTRN has rows but ARMAS is empty — a partial read')
+    if aptrn_rows and not apmas_rows:
+        raise DriftInputError('APTRN has rows but APMAS is empty — a partial read')
+
+    baseline = baseline or {}
+    for doc, entry in baseline.items():
+        if not _c_txt((entry or {}).get('reason')):
+            raise DriftInputError(
+                f'baseline entry {doc!r} has no reason. An entry that silences a '
+                'document without saying why is not a baseline, it is a blindfold')
+        if not _c_txt((entry or {}).get('fingerprint')):
+            raise DriftInputError(
+                f'baseline entry {doc!r} has no fingerprint, so it would silence '
+                f'{doc!r} no matter how far it drifts afterwards')
+
+    # One map, read once, instead of per line: normalize_unit() is called on
+    # every line of both sides (~150k times on the real dataset).
+    unit_map = bsn_units.load_unit_map()
+
+    def _norm(u):
+        return unit_map.get(u, u) if u else u
+
+    sendy = _drift_sendy_side(conn, era_start, _norm)
+    held = set(sendy)
+    express, dropped_by_ignore = _drift_express_side(
+        artrn_rows, aptrn_rows, stcrd_rows, armas_rows, apmas_rows, held, conn,
+        _norm)
+
+    compared = held & set(express)
+    findings = []
+
+    # ── content ──────────────────────────────────────────────────────────────
+    for doc in sorted(compared):
+        xp, sd = express[doc], sendy[doc]
+        if xp['hdr'] == sd['hdr'] and \
+                collections.Counter(xp['lines']) == collections.Counter(sd['lines']):
+            continue
+        fp = document_fingerprint(xp, sd)
+        if baseline.get(doc, {}).get('fingerprint') == fp:
+            continue
+        hdr_fields, line_fields = _classify_fields(xp, sd)
+        fields = (['hdr:' + f for f in hdr_fields]
+                  + ['line:' + f for f in line_fields])
+        findings.append({
+            'doc_no': doc, 'kind': 'content', 'fields': fields,
+            'fingerprint': fp,
+            'docstat': _c_txt(_drift_docstat(artrn_rows, aptrn_rows).get(doc)),
+            'express_lines': len(xp['lines']), 'sendy_lines': len(sd['lines']),
+            'message': (f'เอกสาร {doc} ที่เราถืออยู่ไม่ตรงกับ Express แล้ว — '
+                        f'ต่างที่ {", ".join(fields) or "ไม่ระบุ"} '
+                        f'(บรรทัด Express {len(xp["lines"])} · Sendy {len(sd["lines"])})'),
+        })
+
+    # ── status at source ─────────────────────────────────────────────────────
+    # Reported RAW. `DOCSTAT='C'` on the AR side is an open question the code
+    # that owns it says is open (`build_payments_in_records` sets cancelled=False
+    # unconditionally and says so), so translating it to "ยกเลิก" here would be
+    # this detector deciding a question nobody has answered.
+    status = _drift_docstat(artrn_rows, aptrn_rows)
+    for doc in sorted(compared):
+        raw = _c_txt(status.get(doc))
+        if raw and raw != 'N':
+            findings.append({
+                'doc_no': doc, 'kind': 'source_status', 'fields': ['DOCSTAT'],
+                'fingerprint': document_fingerprint(express[doc], sendy[doc]),
+                'docstat': raw,
+                'message': (f'เอกสาร {doc} ฝั่ง Express มี DOCSTAT = "{raw}" '
+                            f'(ค่าดิบ ยังไม่มีใครสรุปว่าแปลว่าอะไร) '
+                            f'แต่ Sendy ยังถือบรรทัดของเอกสารนี้อยู่'),
+            })
+
+    # ── gone at source ───────────────────────────────────────────────────────
+    sendy_only = held - set(express)
+    freshness = 'authoritative' if export_at is not None else 'indeterminate'
+    only_newer, only_older = set(), set()
+    if freshness == 'authoritative':
+        cut = export_at.isoformat() if hasattr(export_at, 'isoformat') else str(export_at)
+        for doc in sendy_only:
+            (only_older if (sendy[doc]['hdr'][0] or '') <= cut else only_newer).add(doc)
+        for doc in sorted(only_older):
+            findings.append({
+                'doc_no': doc, 'kind': 'deleted_at_source', 'fields': ['DOCUMENT'],
+                'fingerprint': None, 'docstat': '',
+                'message': (f'เอกสาร {doc} ({sendy[doc]["hdr"][0]}) อยู่ใน Sendy '
+                            f'แต่ไม่มีใน Express ที่ export เมื่อ {cut} — '
+                            f'อาจถูกลบที่ต้นทาง'),
+            })
+
+    counters = {
+        'freshness': freshness,
+        'era_start': era_start,
+        'export_at': (export_at.isoformat() if hasattr(export_at, 'isoformat')
+                      else export_at),
+        'sendy_eligible': len(held),
+        'express_headers': len({r.get('DOCNUM') for r in artrn_rows
+                                if r.get('RECTYP') in _SCOPE_RECTYP}
+                               | {r.get('DOCNUM') for r in aptrn_rows
+                                  if r.get('RECTYP') in _SCOPE_RECTYP}),
+        'express_eligible': len(express),
+        'express_dropped_all_lines_ignored': len(dropped_by_ignore),
+        'compared': len(compared),
+        'sendy_only': len(sendy_only),
+        'sendy_only_newer_than_export': len(only_newer),
+        'sendy_only_older_than_export': len(only_older),
+        'baseline_entries': len(baseline),
+        'findings': len(findings),
+    }
+    # The population must reconcile exactly — no tolerance. A coverage check
+    # that allows a 1% gap hides ~80 sales documents at this size.
+    assert counters['compared'] + counters['sendy_only'] == counters['sendy_eligible']
+    assert counters['sendy_only_newer_than_export'] \
+        + counters['sendy_only_older_than_export'] \
+        == (counters['sendy_only'] if freshness == 'authoritative' else 0)
+
+    return DriftResult(findings, set(compared), counters)
+
+
+def _drift_docstat(artrn_rows, aptrn_rows):
+    """doc_no -> raw DOCSTAT, both books. Built per call and small; the drift
+    loop calls it a handful of times, not per line."""
+    out = {}
+    for rows in (artrn_rows, aptrn_rows):
+        for r in rows:
+            if r.get('DOCNUM') is not None:
+                out[r['DOCNUM']] = r.get('DOCSTAT')
+    return out

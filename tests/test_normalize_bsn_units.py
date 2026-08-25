@@ -16,6 +16,7 @@ import sys
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 import normalize_bsn_units as nz  # noqa: E402
+from tests._pre_mig173 import emulate_pre_mig173  # noqa: E402
 
 P1, P2, P3, P5 = 900701, 900702, 900703, 900705
 
@@ -67,6 +68,11 @@ def test_normalize(tmp_db, tmp_path):
     conn.close()
 
     mf = _mapfile(tmp_path)
+    # This script is a DATED ONE-OFF that ran before mig 173 existed; its own
+    # docstring and SCRIPT_EXEMPTIONS both record that re-running it now aborts,
+    # and that this is accepted. The test documents what the run DID, so it has
+    # to run in the world the script ran in. See tests/_pre_mig173.py.
+    assert emulate_pre_mig173(tmp_db) == 2
     assert nz.main(["--db", tmp_db, "--map", mf, "--apply"]) == 0
 
     conn = sqlite3.connect(tmp_db)
