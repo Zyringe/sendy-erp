@@ -168,8 +168,15 @@ def upsert_brand(conn, name, *, name_th=None, short_code=None, is_own=False):
         raise ValueError('ชื่อแบรนด์ว่างเปล่า')
     name = name.strip()
 
+    # ORDER BY id: if two legacy rows already share a display name (none do on
+    # prod today, but the constraint is on `code`, not `name`), reuse must be
+    # DETERMINISTIC — an unordered LIMIT-less query lets SQLite hand back
+    # whichever row it likes, so the same typed name could attach a different
+    # brand_id, sku segment and own-brand flag on different days. Oldest wins
+    # (Codex review 2026-08-25).
     existing = conn.execute(
-        'SELECT id FROM brands WHERE lower(trim(name)) = lower(?)', (name,)
+        'SELECT id FROM brands WHERE lower(trim(name)) = lower(?) '
+        'ORDER BY id LIMIT 1', (name,)
     ).fetchone()
     if existing:
         return existing['id'] if hasattr(existing, 'keys') else existing[0]

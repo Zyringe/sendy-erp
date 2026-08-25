@@ -273,3 +273,174 @@ def test_latest_purchase_exposes_net_and_qty_not_just_list_price(empty_db):
     # the number Card B must actually use
     assert bsn_suggest.base_unit_cost(
         got['line_net'], got['last_qty'], 12) == pytest.approx(87.0458333333)
+
+
+# --------------------------------------------------------------------------
+# Codex review 2026-08-25 — the same money defect at the OTHER door, plus the
+# clone-source integrity rules
+# --------------------------------------------------------------------------
+def _seed_purchase(db_path, bsn_code, net, qty, unit='โหล', unit_price=None):
+    c = _conn(db_path)
+    c.execute(
+        "INSERT INTO purchase_transactions "
+        "(bsn_code, product_name_raw, unit, qty, unit_price, net, date_iso, doc_no) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (bsn_code, 'ราคาทดสอบ', unit, qty, unit_price if unit_price is not None else net,
+         net, '2026-08-15', 'RR-TEST'))
+    c.commit(); c.close()
+
+
+def _stage(db_path, **over):
+    """Stage one suggestion straight into the table, forcing every column the
+    cost logic reads. Not via save_pending_suggestion: a fixture built by code
+    adjacent to the code under test can mask a change in it."""
+    import models
+    payload = {
+        'bsn_code': 'TSTCOST1', 'bsn_name': 'ของทดสอบ',
+        'suggested_name': 'ของทดสอบ', 'suggested_cost': 87.0458,
+        'suggested_unit_type': 'ตัว', 'bsn_unit': 'โหล',
+        'unit_conversion_ratio': 12,
+        # every remaining NOT-defaulted binding, spelled out rather than
+        # inherited: save_pending_suggestion only setdefaults its "extras"
+        'category': None, 'series': None, 'brand_id': None, 'model': None,
+        'size': None, 'color_th': None, 'color_code': None, 'packaging': None,
+        'condition': None, 'pack_variant': None,
+        'units_per_carton': None, 'units_per_box': None,
+    }
+    payload.update(over)
+    return models.save_pending_suggestion(payload, user_id=None)
+
+
+def test_approve_reprices_when_the_manager_corrects_the_ratio(empty_db):
+    """The staged cost was net/(qty x 12). Approving with ratio 24 must halve
+    it — otherwise the wrong number is written to cost_price AND opening_cost,
+    and the WACC walk keeps it (zero-stock branch) past the first real
+    purchase. Found by Codex review; the Card-B fix alone did not cover it."""
+    import models
+    _seed_purchase(empty_db, 'TSTCOST1', net=1044.55, qty=1)
+    sid = _stage(empty_db)
+
+    pid = models.approve_pending_suggestion(
+        sid, {'unit_conversion_ratio': 24}, reviewer_id=None)
+
+    c = _conn(empty_db)
+    row = c.execute("SELECT cost_price, opening_cost FROM products WHERE id=?",
+                    (pid,)).fetchone()
+    c.close()
+    expected = 1044.55 / (1 * 24)
+    assert row['cost_price'] == pytest.approx(expected), (
+        f"got {row['cost_price']} — a ratio corrected at approve time must "
+        f"move the cost with it")
+    assert row['opening_cost'] == pytest.approx(expected), (
+        'opening_cost seeds the WACC walk — it must carry the same basis')
+
+
+def test_approve_keeps_an_unchanged_ratio_alone(empty_db):
+    """CONTROL for the test above: without this, 'the cost changed' could not
+    be told apart from 'the cost is always recomputed'."""
+    import models
+    _seed_purchase(empty_db, 'TSTCOST1', net=1044.55, qty=1)
+    sid = _stage(empty_db)
+    pid = models.approve_pending_suggestion(sid, {}, reviewer_id=None)
+    c = _conn(empty_db)
+    got = c.execute("SELECT cost_price FROM products WHERE id=?", (pid,)).fetchone()[0]
+    c.close()
+    assert got == pytest.approx(87.0458)
+
+
+def test_approve_never_overrides_a_retyped_cost(empty_db):
+    """A cost the manager typed is their call, even when the ratio also moved."""
+    import models
+    _seed_purchase(empty_db, 'TSTCOST1', net=1044.55, qty=1)
+    sid = _stage(empty_db)
+    pid = models.approve_pending_suggestion(
+        sid, {'unit_conversion_ratio': 24, 'suggested_cost': 55.0}, reviewer_id=None)
+    c = _conn(empty_db)
+    got = c.execute("SELECT cost_price FROM products WHERE id=?", (pid,)).fetchone()[0]
+    c.close()
+    assert got == pytest.approx(55.0)
+
+
+def test_approve_with_no_purchase_row_keeps_the_staged_cost(empty_db):
+    """No basis to derive from — the staged number must survive rather than
+    being zeroed."""
+    import models
+    sid = _stage(empty_db)          # deliberately no purchase row seeded
+    pid = models.approve_pending_suggestion(
+        sid, {'unit_conversion_ratio': 24}, reviewer_id=None)
+    c = _conn(empty_db)
+    got = c.execute("SELECT cost_price FROM products WHERE id=?", (pid,)).fetchone()[0]
+    c.close()
+    assert got == pytest.approx(87.0458)
+
+
+def test_clone_from_an_inactive_template_does_not_mint_a_family_from_it(empty_db):
+    """A retired SKU still LENDS a family it belongs to, but one is never
+    minted from it — that would name the family after a dead code and write
+    family_id onto a row nobody is looking at."""
+    import models
+    src = _seed_product(empty_db, product_name='ของเก่า', sku_code='OLD-1', is_active=0)
+    new_pid = models.create_structured_product(
+        {'product_name': 'ของใหม่', 'clone_source_pid': src}, 'manual_clone_%d' % src)
+    c = _conn(empty_db)
+    assert c.execute("SELECT COUNT(*) FROM product_families").fetchone()[0] == 0, \
+        'no family may be minted from an inactive template'
+    assert c.execute("SELECT family_id FROM products WHERE id=?", (src,)).fetchone()[0] is None, \
+        'the inactive template must not be mutated'
+    assert c.execute("SELECT family_id FROM products WHERE id=?", (new_pid,)).fetchone()[0] is None
+    c.close()
+
+
+def test_clone_from_an_inactive_template_that_HAS_a_family_still_joins_it(empty_db):
+    """The other half — deactivating a product does not dissolve its grouping,
+    so joining it is correct. Without this the rule above would read as
+    'inactive templates are ignored', which is not what was decided."""
+    import models
+    c = _conn(empty_db)
+    fam = c.execute("INSERT INTO product_families (family_code, display_name) "
+                    "VALUES ('OLDFAM','เก่า')").lastrowid
+    c.commit(); c.close()
+    src = _seed_product(empty_db, sku_code='OLD-2', is_active=0, family_id=fam)
+    new_pid = models.create_structured_product(
+        {'product_name': 'ของใหม่', 'clone_source_pid': src}, 'manual_clone_%d' % src)
+    c = _conn(empty_db)
+    assert c.execute("SELECT family_id FROM products WHERE id=?", (new_pid,)).fetchone()[0] == fam
+    c.close()
+
+
+def test_a_clone_source_that_does_not_exist_is_refused(empty_db):
+    """Silently producing a family-less 'clone' whose created_via still names a
+    template is a lie in the provenance column."""
+    import models
+    with pytest.raises(ValueError, match='clone_source_pid'):
+        models.create_structured_product(
+            {'product_name': 'x', 'clone_source_pid': 999999}, 'manual_clone_999999')
+    c = _conn(empty_db)
+    assert c.execute("SELECT COUNT(*) FROM products WHERE product_name='x'").fetchone()[0] == 0, \
+        'the refusal must leave no orphan product behind'
+    c.close()
+
+
+def test_brand_reuse_is_deterministic_and_the_product_gets_that_brand(empty_db):
+    """Closes the Codex note that the reuse test never checked which brand the
+    PRODUCT ended up on: returning None while leaving the table untouched would
+    have passed the old assertion."""
+    import models
+    c = _conn(empty_db)
+    first = c.execute("INSERT INTO brands (code, name, short_code, is_own_brand, sort_order) "
+                      "VALUES ('sonax','SONAX','SONAX',0,100)").lastrowid
+    # a second row with the same display name — only possible for legacy data,
+    # which is exactly when determinism matters
+    c.execute("INSERT INTO brands (code, name, short_code, is_own_brand, sort_order) "
+              "VALUES ('sonax_2','SONAX','SNX2',0,100)")
+    c.commit(); c.close()
+
+    pid = models.create_structured_product(
+        {'product_name': 'x', 'brand_other_name': 'SONAX'}, 'manual')
+
+    c = _conn(empty_db)
+    assert c.execute("SELECT COUNT(*) FROM brands").fetchone()[0] == 2, \
+        'reuse must not add a third row'
+    assert c.execute("SELECT brand_id FROM products WHERE id=?", (pid,)).fetchone()[0] == first, \
+        'oldest row wins, every time'
+    c.close()

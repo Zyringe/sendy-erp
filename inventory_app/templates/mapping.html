@@ -207,6 +207,33 @@
 </div>
 
 <script>
+/* Cost basis per staged suggestion: {sid: {net, qty}}. Only the rows whose
+   BSN code has a purchase line appear — a missing entry means "no basis", and
+   sugRatioChanged() then leaves the cost alone rather than deriving from 0. */
+const SUG_COST_BASIS = {{ suggestion_cost_basis|tojson }};
+
+/* A ratio corrected here changes the cost basis: staged cost was
+   net / (qty x staged_ratio). Recompute so the manager sees the number that
+   will actually be written. The SERVER re-derives this too
+   (models.suggestions._cost_for_saved_ratio) — that is the authority; this is
+   the visible half, so the form does not silently disagree with what lands. */
+function sugRatioChanged(id) {
+  const ratioEl = document.getElementById('sug-ratio-' + id);
+  const costEl  = document.getElementById('sug-cost-' + id);
+  if (!ratioEl || !costEl || costEl.dataset.dirty === '1') return;
+  const basis = SUG_COST_BASIS[String(id)];
+  const ratio = parseFloat(ratioEl.value);
+  if (!basis || !isFinite(ratio) || ratio <= 0) return;
+  const qty = parseFloat(basis.qty), net = parseFloat(basis.net);
+  if (!isFinite(qty) || !isFinite(net) || qty <= 0) return;
+  costEl.value = Math.round((net / (qty * ratio)) * 10000) / 10000;
+}
+document.addEventListener('input', e => {
+  if (!e.target.id) return;
+  if (e.target.id.startsWith('sug-ratio-')) sugRatioChanged(e.target.id.slice('sug-ratio-'.length));
+  if (e.target.id.startsWith('sug-cost-')) e.target.dataset.dirty = '1';
+});
+
 function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgOther) {
   const v = (key) => {
     const el = document.getElementById('sug-' + key + '-' + id);
@@ -663,9 +690,12 @@ let _smBsnUnit = null;     // unit from latest_purchase
 // reset only when the modal is reopened (openSuggest), never by editing an
 // individual field — that matches decision Q1 ("close and reopen to reset").
 let _smCloneSourcePid = null;
-let _smCostDirty = null;   // last value THIS code wrote into sm-cost; any other
-                           // value in the box means the operator typed one and
-                           // the ratio-driven recompute must stop overwriting it
+let _smCostDirty = false;  // set the moment the operator types in sm-cost.
+                           // A real boolean, not a comparison against the last
+                           // auto value: typing the SAME number the derivation
+                           // produced is still a deliberate choice, and a
+                           // value-compare would silently overwrite it on the
+                           // next ratio change (Codex review 2026-08-25).
 let _smPurchase = {};      // latest_purchase for the open modal (net + qty)
 let _smNameDirty = false;
 
@@ -703,7 +733,7 @@ function openSuggest(idx, bsnCode) {
   // mapping-suggest-clone PR3 — clone state resets ONLY here (decision Q1:
   // close/reopen the modal, not per-field edits).
   _smCloneSourcePid = null;
-  _smCostDirty = null;
+  _smCostDirty = false;
   _smPurchase = {};
   document.getElementById('sm-brand-short').value = '';
   document.getElementById('sm-brand-th').value = '';
@@ -985,9 +1015,9 @@ function effectiveRatio() {
 function recomputeCostFromPurchase() {
   const box = document.getElementById('sm-cost');
   if (!box) return;
-  // Respect a hand-typed cost: only ever overwrite a value we wrote ourselves.
-  const current = (box.value || '').trim();
-  if (_smCostDirty !== null && current !== String(_smCostDirty)) return;
+  // Respect a hand-typed cost: once the operator has touched this box we never
+  // write it again for the rest of the modal's life.
+  if (_smCostDirty) return;
 
   const net = parseFloat(_smPurchase.line_net);
   const qty = parseFloat(_smPurchase.last_qty);
@@ -1002,9 +1032,7 @@ function recomputeCostFromPurchase() {
     return;
   }
   const perBase = net / (qty * ratio);
-  const rounded = Math.round(perBase * 10000) / 10000;
-  box.value = rounded;
-  _smCostDirty = rounded;
+  box.value = Math.round(perBase * 10000) / 10000;
   if (hint) {
     hint.textContent = 'จาก net ฿' + net.toLocaleString() + ' ÷ (' + qty + ' ' +
       (_smPurchase.unit_type || _smBsnUnit || '') + ' × ' + ratio + ')';
@@ -1016,6 +1044,7 @@ document.addEventListener('change', e => {
 });
 document.addEventListener('input', e => {
   if (e.target.id === 'sm-ratio') recomputeCostFromPurchase();
+  if (e.target.id === 'sm-cost') _smCostDirty = true;
 });
 
 /* ── mapping-suggest-clone PR3: live name + sku_code preview ──────────────

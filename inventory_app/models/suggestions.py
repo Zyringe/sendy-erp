@@ -178,6 +178,55 @@ _CLEARABLE_EDIT_KEYS = frozenset({
 })
 
 
+def _cost_for_saved_ratio(conn, staged, merged):
+    """Re-derive `suggested_cost` when the ratio moved but the cost did not.
+
+    Returns the cost to persist. Leaves the value alone — returning it
+    unchanged — in every case except the one it exists for:
+
+      * the operator retyped the cost      -> their number wins
+      * the ratio was not changed          -> the staged cost is still right
+      * no purchase row for this bsn_code  -> nothing to derive from
+      * the derivation yields None/<=0     -> never write a zero basis
+
+    The basis is `purchase_transactions.net / (qty * ratio)`, the same
+    arithmetic `models.wacc` uses to cost a `BSN ซื้อ` leg, via the single
+    implementation in `bsn_suggest.base_unit_cost`.
+    """
+    import bsn_suggest
+
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    staged_cost = _f(staged['suggested_cost'])
+    final_cost = _f(merged.get('suggested_cost'))
+    staged_ratio = _f(staged['unit_conversion_ratio'])
+    final_ratio = _f(merged.get('unit_conversion_ratio'))
+
+    if final_cost is None or staged_cost is None:
+        return merged.get('suggested_cost')
+    # cost was retyped -> the operator owns it
+    if abs(final_cost - staged_cost) > 1e-9:
+        return merged.get('suggested_cost')
+    # ratio unchanged (or unknown on either side) -> nothing to re-derive
+    if final_ratio is None or staged_ratio is None:
+        return merged.get('suggested_cost')
+    if abs(final_ratio - staged_ratio) <= 1e-9:
+        return merged.get('suggested_cost')
+
+    latest = bsn_suggest._latest_purchase(conn, staged['bsn_code'])
+    if not latest:
+        return merged.get('suggested_cost')
+    derived = bsn_suggest.base_unit_cost(
+        latest.get('line_net'), latest.get('last_qty'), final_ratio)
+    if derived is None or derived <= 0:
+        return merged.get('suggested_cost')
+    return derived
+
+
 def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int) -> int:
     """Apply manager/admin edits → create product → map BSN code → mark approved.
     Returns the new product id. Single transaction (on `conn`) — the product
@@ -234,6 +283,20 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         # create_now path.
         created_via = ('smart_mapping_clone_' + str(d['clone_source_pid'])
                        if d.get('clone_source_pid') else 'smart_mapping')
+
+        # ── Cost basis: keep it tied to the ratio actually being saved ──────
+        # Card B derives cost as net / (qty x ratio). If the manager corrects
+        # the ratio on the Tab-2 review form but leaves the cost box alone,
+        # the staged number is now wrong by exactly the ratio delta — and it
+        # is written to BOTH cost_price and opening_cost, so it seeds the WACC
+        # walk (which keeps the last known WACC while stock is 0, i.e. the
+        # wrong seed outlives the first correct purchase). That is the same
+        # money defect this branch fixes in Card B, surviving at a different
+        # door; found by Codex review 2026-08-25.
+        #
+        # Only fires when the human did NOT touch the cost box: an explicitly
+        # retyped cost is the operator's call and stays untouched.
+        d['suggested_cost'] = _cost_for_saved_ratio(conn, sug, d)
 
         # Row-insert + name + sku_code all go through the canonical create
         # path. It re-resolves brand_other_name/color_code_other into new FK

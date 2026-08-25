@@ -153,15 +153,29 @@ def ensure_product_family(conn, product_id: int):
 
     The backfill is guarded `AND family_id IS NULL`, so this can never move a
     product that already belongs somewhere.
+
+    Returns None for a product that does not exist. Two narrower rules, both
+    from Codex review 2026-08-25:
+
+      * An INACTIVE template still LENDS a family it already belongs to — a
+        deactivated product keeps its grouping and joining it is correct — but
+        one is never MINTED from it. Minting would name the family after a
+        retired SKU's code and write `family_id` onto that retired row, which
+        is a mutation of a product nobody is looking at any more.
+      * `is_active` is read explicitly rather than assumed from the UI: the
+        pickers only offer active products, but a staged suggestion can sit on
+        the review list while its template is merged away.
     """
     prod = conn.execute(
-        "SELECT id, sku_code, product_name, brand_id, family_id "
+        "SELECT id, sku_code, product_name, brand_id, family_id, is_active "
         "FROM products WHERE id = ?", (product_id,)
     ).fetchone()
     if not prod:
         return None
     if prod['family_id']:
         return prod['family_id']
+    if not prod['is_active']:
+        return None
 
     fam_code = prod['sku_code'] or f"INT-{prod['id']}"
     existing = conn.execute(
@@ -297,7 +311,17 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
         # behaviour (family_id stays NULL).
         family_id = d.get('family_id') or None
         if not family_id and d.get('clone_source_pid'):
-            family_id = ensure_product_family(conn, int(d['clone_source_pid']))
+            src_pid = int(d['clone_source_pid'])
+            # A clone_source_pid that resolves to nothing is a caller bug, not
+            # a reason to quietly create a family-less "clone" whose
+            # created_via still claims a template (Codex review 2026-08-25).
+            # An INACTIVE template resolves to None from ensure_product_family
+            # unless it already has a family — that case is deliberate, not an
+            # error, so it is distinguished by an existence check here.
+            if not conn.execute("SELECT 1 FROM products WHERE id = ?",
+                                (src_pid,)).fetchone():
+                raise ValueError(f'clone_source_pid {src_pid} does not exist')
+            family_id = ensure_product_family(conn, src_pid)
 
         cur = conn.execute("""
             INSERT INTO products
