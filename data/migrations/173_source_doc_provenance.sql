@@ -22,6 +22,11 @@
 -- trigger whose WHEN is NULL does not fire. That was a working bypass (Codex,
 -- 2026-08-25); every other term is TRUE/FALSE, this one restores that property.
 --
+-- ⚠ `id` is guarded too. It is not content, but changing it moves the row's
+-- identity, and the audit trigger records NEW.id — so an unguarded id rewrite
+-- would relocate a document's history with no actor, source or reason attached
+-- (Codex round 4).
+--
 -- ⚠ The UPDATE audit row is keyed on the OLD identity. If a change renames
 -- doc_no or bsn_code, the event belongs in the history of the line you were
 -- looking at; the diff itself names where it went.
@@ -52,7 +57,8 @@ DROP TRIGGER IF EXISTS sales_transactions_change_needs_declaration;
 CREATE TRIGGER sales_transactions_change_needs_declaration
 BEFORE UPDATE ON sales_transactions
 WHEN (
-        (   OLD.date_iso IS NOT NEW.date_iso
+        (   OLD.id       IS NOT NEW.id
+           OR OLD.date_iso IS NOT NEW.date_iso
            OR OLD.doc_no IS NOT NEW.doc_no
            OR OLD.doc_base IS NOT NEW.doc_base
            OR OLD.product_id IS NOT NEW.product_id
@@ -88,7 +94,8 @@ END;
 DROP TRIGGER IF EXISTS audit_sales_transactions_update;
 CREATE TRIGGER audit_sales_transactions_update
 AFTER UPDATE ON sales_transactions
-WHEN (   OLD.date_iso IS NOT NEW.date_iso
+WHEN (   OLD.id       IS NOT NEW.id
+           OR OLD.date_iso IS NOT NEW.date_iso
            OR OLD.doc_no IS NOT NEW.doc_no
            OR OLD.doc_base IS NOT NEW.doc_base
            OR OLD.product_id IS NOT NEW.product_id
@@ -112,7 +119,8 @@ BEGIN
            json_group_object(field, json_array(old_v, new_v)),
            NEW.change_actor, NEW.change_source, NEW.change_reason
     FROM (
-                  SELECT 'date_iso'         AS field, OLD.date_iso         AS old_v, NEW.date_iso         AS new_v WHERE OLD.date_iso         IS NOT NEW.date_iso
+                  SELECT 'id'      AS field, OLD.id       AS old_v, NEW.id       AS new_v WHERE OLD.id       IS NOT NEW.id
+        UNION ALL SELECT 'date_iso'         AS field, OLD.date_iso         AS old_v, NEW.date_iso         AS new_v WHERE OLD.date_iso         IS NOT NEW.date_iso
         UNION ALL SELECT 'doc_no',                     OLD.doc_no,            NEW.doc_no            WHERE OLD.doc_no           IS NOT NEW.doc_no
         UNION ALL SELECT 'doc_base',                   OLD.doc_base,          NEW.doc_base          WHERE OLD.doc_base         IS NOT NEW.doc_base
         UNION ALL SELECT 'product_id',                 OLD.product_id,        NEW.product_id        WHERE OLD.product_id       IS NOT NEW.product_id
@@ -157,7 +165,8 @@ DROP TRIGGER IF EXISTS purchase_transactions_change_needs_declaration;
 CREATE TRIGGER purchase_transactions_change_needs_declaration
 BEFORE UPDATE ON purchase_transactions
 WHEN (
-        (   OLD.date_iso IS NOT NEW.date_iso
+        (   OLD.id       IS NOT NEW.id
+           OR OLD.date_iso IS NOT NEW.date_iso
            OR OLD.doc_no IS NOT NEW.doc_no
            OR OLD.doc_base IS NOT NEW.doc_base
            OR OLD.product_id IS NOT NEW.product_id
@@ -194,7 +203,8 @@ END;
 DROP TRIGGER IF EXISTS audit_purchase_transactions_update;
 CREATE TRIGGER audit_purchase_transactions_update
 AFTER UPDATE ON purchase_transactions
-WHEN (   OLD.date_iso IS NOT NEW.date_iso
+WHEN (   OLD.id       IS NOT NEW.id
+           OR OLD.date_iso IS NOT NEW.date_iso
            OR OLD.doc_no IS NOT NEW.doc_no
            OR OLD.doc_base IS NOT NEW.doc_base
            OR OLD.product_id IS NOT NEW.product_id
@@ -219,7 +229,8 @@ BEGIN
            json_group_object(field, json_array(old_v, new_v)),
            NEW.change_actor, NEW.change_source, NEW.change_reason
     FROM (
-                  SELECT 'date_iso'         AS field, OLD.date_iso         AS old_v, NEW.date_iso         AS new_v WHERE OLD.date_iso         IS NOT NEW.date_iso
+                  SELECT 'id'      AS field, OLD.id       AS old_v, NEW.id       AS new_v WHERE OLD.id       IS NOT NEW.id
+        UNION ALL SELECT 'date_iso'         AS field, OLD.date_iso         AS old_v, NEW.date_iso         AS new_v WHERE OLD.date_iso         IS NOT NEW.date_iso
         UNION ALL SELECT 'doc_no',                     OLD.doc_no,            NEW.doc_no            WHERE OLD.doc_no           IS NOT NEW.doc_no
         UNION ALL SELECT 'doc_base',                   OLD.doc_base,          NEW.doc_base          WHERE OLD.doc_base         IS NOT NEW.doc_base
         UNION ALL SELECT 'product_id',                 OLD.product_id,        NEW.product_id        WHERE OLD.product_id       IS NOT NEW.product_id

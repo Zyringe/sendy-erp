@@ -3889,7 +3889,8 @@ END;
 
 CREATE TRIGGER audit_purchase_transactions_update
 AFTER UPDATE ON purchase_transactions
-WHEN (   OLD.date_iso IS NOT NEW.date_iso
+WHEN (   OLD.id       IS NOT NEW.id
+           OR OLD.date_iso IS NOT NEW.date_iso
            OR OLD.doc_no IS NOT NEW.doc_no
            OR OLD.doc_base IS NOT NEW.doc_base
            OR OLD.product_id IS NOT NEW.product_id
@@ -3914,7 +3915,8 @@ BEGIN
            json_group_object(field, json_array(old_v, new_v)),
            NEW.change_actor, NEW.change_source, NEW.change_reason
     FROM (
-                  SELECT 'date_iso'         AS field, OLD.date_iso         AS old_v, NEW.date_iso         AS new_v WHERE OLD.date_iso         IS NOT NEW.date_iso
+                  SELECT 'id'      AS field, OLD.id       AS old_v, NEW.id       AS new_v WHERE OLD.id       IS NOT NEW.id
+        UNION ALL SELECT 'date_iso'         AS field, OLD.date_iso         AS old_v, NEW.date_iso         AS new_v WHERE OLD.date_iso         IS NOT NEW.date_iso
         UNION ALL SELECT 'doc_no',                     OLD.doc_no,            NEW.doc_no            WHERE OLD.doc_no           IS NOT NEW.doc_no
         UNION ALL SELECT 'doc_base',                   OLD.doc_base,          NEW.doc_base          WHERE OLD.doc_base         IS NOT NEW.doc_base
         UNION ALL SELECT 'product_id',                 OLD.product_id,        NEW.product_id        WHERE OLD.product_id       IS NOT NEW.product_id
@@ -4113,7 +4115,8 @@ END;
 
 CREATE TRIGGER audit_sales_transactions_update
 AFTER UPDATE ON sales_transactions
-WHEN (   OLD.date_iso IS NOT NEW.date_iso
+WHEN (   OLD.id       IS NOT NEW.id
+           OR OLD.date_iso IS NOT NEW.date_iso
            OR OLD.doc_no IS NOT NEW.doc_no
            OR OLD.doc_base IS NOT NEW.doc_base
            OR OLD.product_id IS NOT NEW.product_id
@@ -4137,7 +4140,8 @@ BEGIN
            json_group_object(field, json_array(old_v, new_v)),
            NEW.change_actor, NEW.change_source, NEW.change_reason
     FROM (
-                  SELECT 'date_iso'         AS field, OLD.date_iso         AS old_v, NEW.date_iso         AS new_v WHERE OLD.date_iso         IS NOT NEW.date_iso
+                  SELECT 'id'      AS field, OLD.id       AS old_v, NEW.id       AS new_v WHERE OLD.id       IS NOT NEW.id
+        UNION ALL SELECT 'date_iso'         AS field, OLD.date_iso         AS old_v, NEW.date_iso         AS new_v WHERE OLD.date_iso         IS NOT NEW.date_iso
         UNION ALL SELECT 'doc_no',                     OLD.doc_no,            NEW.doc_no            WHERE OLD.doc_no           IS NOT NEW.doc_no
         UNION ALL SELECT 'doc_base',                   OLD.doc_base,          NEW.doc_base          WHERE OLD.doc_base         IS NOT NEW.doc_base
         UNION ALL SELECT 'product_id',                 OLD.product_id,        NEW.product_id        WHERE OLD.product_id       IS NOT NEW.product_id
@@ -4511,7 +4515,8 @@ CREATE TRIGGER products_packaging_th_check_update
 CREATE TRIGGER purchase_transactions_change_needs_declaration
 BEFORE UPDATE ON purchase_transactions
 WHEN (
-        (   OLD.date_iso IS NOT NEW.date_iso
+        (   OLD.id       IS NOT NEW.id
+           OR OLD.date_iso IS NOT NEW.date_iso
            OR OLD.doc_no IS NOT NEW.doc_no
            OR OLD.doc_base IS NOT NEW.doc_base
            OR OLD.product_id IS NOT NEW.product_id
@@ -4548,7 +4553,8 @@ END;
 CREATE TRIGGER sales_transactions_change_needs_declaration
 BEFORE UPDATE ON sales_transactions
 WHEN (
-        (   OLD.date_iso IS NOT NEW.date_iso
+        (   OLD.id       IS NOT NEW.id
+           OR OLD.date_iso IS NOT NEW.date_iso
            OR OLD.doc_no IS NOT NEW.doc_no
            OR OLD.doc_base IS NOT NEW.doc_base
            OR OLD.product_id IS NOT NEW.product_id

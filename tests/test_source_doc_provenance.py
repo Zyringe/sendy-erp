@@ -41,8 +41,15 @@ def db(empty_db):
     about what it is testing and independent of the shared dev DB's state."""
     conn = sqlite3.connect(empty_db, timeout=10)
     conn.row_factory = sqlite3.Row
-    with open(MIGRATION, encoding='utf-8') as fh:
-        conn.executescript(fh.read())
+    # ⚠ Only if it is not already there. `empty_db` clones the LIVE local schema,
+    # so the moment anyone boots the app on this branch the columns exist and an
+    # unconditional re-apply dies on `duplicate column name` — the documented
+    # trap in .claude/rules/erp-engineering-discipline.md, which this file walked
+    # straight into once the worktree got a migrated DB.
+    have = {r[1] for r in conn.execute('PRAGMA table_info(sales_transactions)')}
+    if 'change_source' not in have:
+        with open(MIGRATION, encoding='utf-8') as fh:
+            conn.executescript(fh.read())
     conn.commit()
     yield conn
     conn.close()
@@ -606,16 +613,28 @@ def test_rollback_restores_the_pre_migration_schema(empty_db):
             " AND (name LIKE '%sales_transactions%' OR name LIKE '%purchase_transactions%')")}
     mig = MIGRATION
     roll = mig.replace('.sql', '.rollback.sql')
-    before_cols, before_trigs = cols('sales_transactions'), trigs()
+    # Normalise to the PRE-migration shape first. `empty_db` clones the live
+    # schema, so whether the columns are already there depends on whether anyone
+    # booted the app on this branch — a test whose meaning changes with that is
+    # not a test.
+    if 'change_source' in cols('sales_transactions'):
+        with open(roll, encoding='utf-8') as fh:
+            conn.executescript(fh.read())
+    before = {t: cols(t) for t in ('sales_transactions', 'purchase_transactions',
+                                   'audit_log')}
+    assert 'change_source' not in before['sales_transactions']
+    before_cols, before_trigs = before['sales_transactions'], trigs()
     with open(mig, encoding='utf-8') as fh:
         conn.executescript(fh.read())
     assert 'change_token' in cols('sales_transactions')
     assert len(trigs() - before_trigs) == 8
     with open(roll, encoding='utf-8') as fh:
         conn.executescript(fh.read())
-    assert cols('sales_transactions') == before_cols, 'columns survived the rollback'
-    assert cols('audit_log') == cols('audit_log') - {'change_source', 'change_reason'} \
-        or 'change_source' not in cols('audit_log')
+    # ⚠ Compare each table against its OWN captured pre-migration set. The first
+    # version compared audit_log to a re-read of itself, which is true whatever
+    # happened and would have passed with change_reason left behind (Codex r4).
+    for t, want in before.items():
+        assert cols(t) == want, f'{t}: columns survived the rollback: {cols(t) - want}'
     assert trigs() == before_trigs, 'triggers survived the rollback'
     # …and it can be applied again, which the first rollback made impossible.
     with open(mig, encoding='utf-8') as fh:
