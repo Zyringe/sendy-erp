@@ -125,31 +125,86 @@ def _topup_pre_feb_for_product(product_id, commission_mod, cutoff='2026-02-01'):
         print(f'[set_product_brand] topped up {inserted} pre-Feb payouts for product {product_id}')
 
 
-def create_brand(name, name_th=None, is_own=False):
-    """Create a new brand row. `code` derived from name (lowercased, words
-    joined by '_'). Returns the new brand id.
-    Raises ValueError if `name` is empty or `code` already exists.
+def derive_brand_short_code(name: str) -> str:
+    """Default `brands.short_code` proposed for a brand the operator is
+    creating inline. UPPERCASE, ASCII-alnum only, capped at 6 — matching the
+    shape of every short_code already in use (SD, GL, CHG, ALTECO, 4STAR).
+
+    This is only ever a DEFAULT shown in the form for the human to accept or
+    replace. It is deliberately not applied silently: short_code is a segment
+    of every `sku_code` in the brand, so a wrong guess that nobody saw becomes
+    a rename debt across the whole brand (see the sku_code warning in
+    `naming_cascade.save_product`). A name with no ASCII at all (a purely Thai
+    brand) yields '' — the caller must then ask rather than invent one.
+    """
+    import re as _re
+    ascii_only = _re.sub(r'[^A-Za-z0-9]+', '', (name or ''))
+    return ascii_only.upper()[:6]
+
+
+def upsert_brand(conn, name, *, name_th=None, short_code=None, is_own=False):
+    """Resolve a typed brand name to a brand id, creating the row if new.
+
+    ONE creation path for both entry points (`/products/new`'s hand form via
+    `create_brand` below, and `create_structured_product`'s inline
+    `brand_other_name`). They used to disagree in two ways that both showed up
+    in live data:
+
+      * the inline path wrote `name_th = name`, so an English-only brand
+        rendered as "SONAX / SONAX" in every picker (mapping.html builds the
+        label as `name ~ ' / ' ~ name_th`). `name_th` is now NULL unless a real
+        Thai name is supplied — matching the 56 of 76 brands that already have
+        it empty.
+      * neither path set `short_code`, which is a SEGMENT OF `sku_code`. SONAX
+        was the only brand of 76 missing one, and its five products lost the
+        brand segment from their codes.
+
+    Reuses an existing brand when the trimmed name matches case-insensitively,
+    rather than minting a second row under a suffixed code — `create_brand`
+    used to produce `sonax_2` alongside `sonax`, i.e. a duplicate brand with an
+    identical display name. Does NOT commit: the caller owns the transaction.
     """
     if not name or not name.strip():
         raise ValueError('ชื่อแบรนด์ว่างเปล่า')
     name = name.strip()
-    # generate slug-ish code from name
+
+    existing = conn.execute(
+        'SELECT id FROM brands WHERE lower(trim(name)) = lower(?)', (name,)
+    ).fetchone()
+    if existing:
+        return existing['id'] if hasattr(existing, 'keys') else existing[0]
+
     import re as _re
-    code_base = _re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')
-    if not code_base:
-        # fall back to a numeric suffix from the next id
-        code_base = 'brand'
-    conn = get_connection()
+    code_base = _re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') or 'brand'
     code = code_base
     n = 2
     while conn.execute('SELECT 1 FROM brands WHERE code = ?', (code,)).fetchone():
         code = f'{code_base}_{n}'
         n += 1
+
     cur = conn.execute("""
-        INSERT INTO brands (code, name, name_th, is_own_brand, sort_order)
-        VALUES (?, ?, ?, ?, 100)
-    """, (code, name, (name_th or '').strip() or None, 1 if is_own else 0))
-    conn.commit()
-    new_id = cur.lastrowid
-    conn.close()
-    return new_id
+        INSERT INTO brands (code, name, name_th, short_code, is_own_brand, sort_order)
+        VALUES (?, ?, ?, ?, ?, 100)
+    """, (code, name,
+          (name_th or '').strip() or None,
+          (short_code or '').strip().upper() or None,
+          1 if is_own else 0))
+    return cur.lastrowid
+
+
+def create_brand(name, name_th=None, is_own=False, short_code=None):
+    """Create (or reuse) a brand row and commit. Returns the brand id.
+    Thin owning-connection wrapper around `upsert_brand`.
+    Raises ValueError if `name` is empty.
+    """
+    conn = get_connection()
+    try:
+        new_id = upsert_brand(conn, name, name_th=name_th,
+                              short_code=short_code, is_own=is_own)
+        conn.commit()
+        return new_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()

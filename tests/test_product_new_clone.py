@@ -812,6 +812,13 @@ def test_clone_from_product_executable_contract(admin_client, tmp_path):
     cloneseq_decl = _extract_var_declaration(live, '_cloneSeq')
     select_or_warn_src = _extract_js_function(live, 'setSelectOrWarn')
     toggle_other_src = _extract_js_function(live, 'toggleOtherField')
+    # cloneFromProduct also calls toggleNewBrandExtras by name (which itself
+    # calls syncNewBrandShort). Extract the REAL ones rather than stubbing:
+    # a stub here would hide a throw in production code, and a throw inside
+    # cloneFromProduct lands in its .catch — turning every scenario into the
+    # "โหลดข้อมูลสินค้าไม่สำเร็จ" branch while still looking like a DOM bug.
+    new_brand_extras_src = _extract_js_function(live, 'toggleNewBrandExtras')
+    sync_brand_short_src = _extract_js_function(live, 'syncNewBrandShort')
     set_clone_source_src = _extract_js_function(live, 'setCloneSource')
     clone_from_product_src = _extract_js_function(live, 'cloneFromProduct')
 
@@ -819,6 +826,8 @@ def test_clone_from_product_executable_contract(admin_client, tmp_path):
         _DOM_STUB,
         select_or_warn_src,
         toggle_other_src,
+        new_brand_extras_src,
+        sync_brand_short_src,
         retain_decl,
         cloneseq_decl,
         set_clone_source_src,
@@ -842,11 +851,20 @@ def test_clone_from_product_executable_contract(admin_client, tmp_path):
         "cloneFromProduct's success path must arm the hidden pid through "
         "the REAL setCloneSource(pid, ...) call site"
     )
-    assert success['statusText'] == 'คัดลอกจาก #23 แล้ว — ตรวจสอบก่อนบันทึก', (
+    # Two halves, asserted separately so neither can go missing unnoticed:
+    # the provenance sentence, and the family sentence appended 2026-08-25
+    # (a clone joins its template's family; the SPEC fixture has no family_id,
+    # so this is the mint-and-pull-the-template-in wording).
+    assert success['statusText'].startswith('คัดลอกจาก #23 แล้ว — ตรวจสอบก่อนบันทึก'), (
         f"got {success!r} — catches the production success call being "
         "mutated to setCloneSource(pid, ''): the source-substring pin "
         "'setCloneSource(pid' still matches that, but live it would arm "
         "provenance while the status shows nothing (D10)"
+    )
+    assert 'family' in success['statusText'], (
+        f"got {success!r} — the success message must say which family this "
+        "SKU will land in; dropping it takes the only visible signal that "
+        "clone_source_pid drives family_id server-side"
     )
     assert success['clearHidden'] is False, "clear button must show once a source is armed"
     assert success['requestedUrl'] == '/products/spec/23', (
@@ -1025,6 +1043,13 @@ def test_clone_from_product_race_guard_ignores_stale_out_of_order_responses(admi
     cloneseq_decl = _extract_var_declaration(live, '_cloneSeq')
     select_or_warn_src = _extract_js_function(live, 'setSelectOrWarn')
     toggle_other_src = _extract_js_function(live, 'toggleOtherField')
+    # cloneFromProduct also calls toggleNewBrandExtras by name (which itself
+    # calls syncNewBrandShort). Extract the REAL ones rather than stubbing:
+    # a stub here would hide a throw in production code, and a throw inside
+    # cloneFromProduct lands in its .catch — turning every scenario into the
+    # "โหลดข้อมูลสินค้าไม่สำเร็จ" branch while still looking like a DOM bug.
+    new_brand_extras_src = _extract_js_function(live, 'toggleNewBrandExtras')
+    sync_brand_short_src = _extract_js_function(live, 'syncNewBrandShort')
     set_clone_source_src = _extract_js_function(live, 'setCloneSource')
     clone_from_product_src = _extract_js_function(live, 'cloneFromProduct')
     # The REAL ล้าง click-handler body, not a reimplementation — same
@@ -1040,6 +1065,8 @@ def test_clone_from_product_race_guard_ignores_stale_out_of_order_responses(admi
         "elements['model'] = { value: '' };",
         select_or_warn_src,
         toggle_other_src,
+        new_brand_extras_src,
+        sync_brand_short_src,
         retain_decl,
         cloneseq_decl,
         set_clone_source_src,
@@ -1081,9 +1108,13 @@ def test_clone_from_product_race_guard_ignores_stale_out_of_order_responses(admi
         "fields overwrite B's would save a row whose visible spec doesn't "
         "match its stamped provenance"
     )
-    assert after_stale_a['statusText'] == 'คัดลอกจาก #77 แล้ว — ตรวจสอบก่อนบันทึก', (
+    assert after_stale_a['statusText'].startswith('คัดลอกจาก #77 แล้ว — ตรวจสอบก่อนบันทึก'), (
         f"got {after_stale_a!r} — the status message must still name B, "
         "not have been overwritten by A's stale success callback"
+    )
+    assert '#23' not in after_stale_a['statusText'], (
+        f"got {after_stale_a!r} — A's stale callback must not appear anywhere "
+        "in the message, family sentence included"
     )
 
     immediately_after_clear = results['immediately_after_clear']

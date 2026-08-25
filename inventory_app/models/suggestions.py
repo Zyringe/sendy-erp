@@ -100,7 +100,8 @@ def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) ->
     for k in ('brand_other_name', 'color_code_other', 'packaging_other',
               'bsn_unit', 'unit_conversion_ratio',
               'sub_category', 'sub_category_short_code', 'category_id',
-              'clone_source_pid'):
+              'clone_source_pid',
+              'brand_other_short_code', 'brand_other_name_th'):
         data.setdefault(k, None)
     conflict_clause = """
         ON CONFLICT(bsn_code) DO UPDATE SET
@@ -121,6 +122,8 @@ def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) ->
             units_per_carton = excluded.units_per_carton,
             units_per_box = excluded.units_per_box,
             brand_other_name = excluded.brand_other_name,
+            brand_other_short_code = excluded.brand_other_short_code,
+            brand_other_name_th = excluded.brand_other_name_th,
             color_code_other = excluded.color_code_other,
             packaging_other = excluded.packaging_other,
             bsn_unit = excluded.bsn_unit,
@@ -139,7 +142,8 @@ def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) ->
               (bsn_code, bsn_name, suggested_name, category, series, brand_id,
                model, size, color_th, color_code, packaging, condition, pack_variant,
                suggested_cost, suggested_unit_type, units_per_carton, units_per_box,
-               brand_other_name, color_code_other, packaging_other,
+               brand_other_name, brand_other_short_code, brand_other_name_th,
+               color_code_other, packaging_other,
                bsn_unit, unit_conversion_ratio,
                sub_category, sub_category_short_code, category_id, clone_source_pid,
                suggested_by_user_id, status)
@@ -147,7 +151,8 @@ def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) ->
               (:bsn_code, :bsn_name, :suggested_name, :category, :series, :brand_id,
                :model, :size, :color_th, :color_code, :packaging, :condition, :pack_variant,
                :suggested_cost, :suggested_unit_type, :units_per_carton, :units_per_box,
-               :brand_other_name, :color_code_other, :packaging_other,
+               :brand_other_name, :brand_other_short_code, :brand_other_name_th,
+               :color_code_other, :packaging_other,
                :bsn_unit, :unit_conversion_ratio,
                :sub_category, :sub_category_short_code, :category_id, :clone_source_pid,
                :suggested_by_user_id, 'pending'){conflict_clause}
@@ -241,6 +246,12 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
             'product_name': d.get('suggested_name') or d.get('bsn_name'),
             'brand_id': d.get('brand_id'),
             'brand_other_name': d.get('brand_other_name'),
+            'brand_other_short_code': d.get('brand_other_short_code'),
+            'brand_other_name_th': d.get('brand_other_name_th'),
+            # Card B's clone: the new SKU joins its template's family. Passed
+            # here rather than stored on the staged row so the family reflects
+            # the template's CURRENT one at approve time, not at stage time.
+            'clone_source_pid': d.get('clone_source_pid'),
             'color_code': d.get('color_code'),
             'color_code_other': d.get('color_code_other'),
             'color_th': d.get('color_th'),

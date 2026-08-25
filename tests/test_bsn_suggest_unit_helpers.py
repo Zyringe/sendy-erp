@@ -2,7 +2,9 @@
 
 Covers the structural split between cost-from-purchase and unit-from-anywhere:
 
-- _latest_purchase: unchanged contract — only purchase rows feed cost
+- _latest_purchase: only purchase rows feed cost, and it now also returns the
+  discount-aware figures (`line_net`, `last_qty`) a caller needs to compute a
+  per-BASE-unit cost. `cost_price` alone is per BSN UNIT and pre-discount.
 - _latest_bsn_unit: latest unit across purchase ∪ sales (handles sale-only codes)
 - _all_units_seen: distinct units ordered by latest date (split-unit detection)
 """
@@ -24,7 +26,7 @@ def _seed_schema(conn):
         CREATE TABLE purchase_transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             bsn_code TEXT, date_iso TEXT, unit TEXT,
-            unit_price REAL, qty REAL
+            unit_price REAL, qty REAL, net REAL
         );
         CREATE TABLE sales_transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,10 +36,13 @@ def _seed_schema(conn):
     """)
 
 
-def _add_p(conn, date, unit, cost=10.0):
+def _add_p(conn, date, unit, cost=10.0, net=None):
+    # `net` mirrors the real column: the whole LINE after discount. Defaults to
+    # unit_price x qty (qty is 1 here) so a line with no discount reads the same
+    # as it did before the column existed.
     conn.execute(
-        "INSERT INTO purchase_transactions (bsn_code, date_iso, unit, unit_price, qty) "
-        "VALUES (?,?,?,?,1)", (CODE, date, unit, cost))
+        "INSERT INTO purchase_transactions (bsn_code, date_iso, unit, unit_price, qty, net) "
+        "VALUES (?,?,?,?,1,?)", (CODE, date, unit, cost, cost if net is None else net))
 
 
 def _add_s(conn, date, unit):

@@ -195,7 +195,7 @@
 
             <div class="col-md-4">
               <label class="form-label">แบรนด์</label>
-              <select name="brand_id" id="brand_id" class="form-select" onchange="toggleOtherField('brand_id','brand_other_name')">
+              <select name="brand_id" id="brand_id" class="form-select" onchange="toggleOtherField('brand_id','brand_other_name'); toggleNewBrandExtras()">
                 <option value="">— ไม่ระบุ —</option>
                 {% for b in brands %}
                 <option value="{{ b.id }}" {% if (product.brand_id|string) == (b.id|string) %}selected{% endif %}>{{ b.name }}{% if b.name_th %} / {{ b.name_th }}{% endif %}</option>
@@ -204,7 +204,22 @@
               </select>
               <input type="text" name="brand_other_name" id="brand_other_name"
                      class="form-control mt-1 d-none" placeholder="ชื่อแบรนด์ใหม่"
-                     value="{{ product.brand_other_name or '' }}">
+                     value="{{ product.brand_other_name or '' }}"
+                     oninput="syncNewBrandShort()">
+              {# A brand typed here is NEW. short_code is a SEGMENT of every
+                 sku_code in that brand, so it is asked for once at creation
+                 instead of guessed — a wrong guess has to be undone across the
+                 whole brand later (see naming_cascade's sku_code warning).
+                 Same visibility rule as brand_other_name itself. #}
+              <input type="text" name="brand_other_short_code" id="brand_other_short_code"
+                     class="form-control form-control-sm mt-1 d-none" maxlength="10"
+                     placeholder="รหัสย่อแบรนด์ (ใช้ใน sku_code) เช่น SONAX"
+                     value="{{ product.brand_other_short_code or '' }}"
+                     oninput="this.dataset.auto=''">
+              <input type="text" name="brand_other_name_th" id="brand_other_name_th"
+                     class="form-control form-control-sm mt-1 d-none"
+                     placeholder="ชื่อไทยของแบรนด์ (เว้นว่างได้)"
+                     value="{{ product.brand_other_name_th or '' }}">
             </div>
             <div class="col-md-4">
               <label class="form-label">รุ่น (model)</label>
@@ -358,8 +373,44 @@ function toggleOtherField(selectId, otherId) {
     other.value = '';
   }
 }
+
+/* The new-brand name has two companions that must appear and clear with it:
+   short_code (a segment of every sku_code in the brand — asked for, never
+   guessed silently) and an optional Thai name. Kept in one function so a
+   hidden field can never be submitted with a stale value. */
+function toggleNewBrandExtras() {
+  var sel = document.getElementById('brand_id');
+  var shortEl = document.getElementById('brand_other_short_code');
+  var thEl = document.getElementById('brand_other_name_th');
+  if (!sel || !shortEl || !thEl) return;
+  if (sel.value === '__other__') {
+    shortEl.classList.remove('d-none');
+    thEl.classList.remove('d-none');
+    syncNewBrandShort();
+  } else {
+    [shortEl, thEl].forEach(function (el) {
+      el.classList.add('d-none');
+      el.value = '';
+      el.dataset.auto = '';
+    });
+  }
+}
+
+/* Propose a short_code from the typed name, and stop proposing the moment the
+   operator types their own. Mirrors models.brands.derive_brand_short_code —
+   UPPERCASE ASCII-alnum, capped at 6 — so the form shows what the server
+   would have defaulted to rather than a different guess. */
+function syncNewBrandShort() {
+  var nameEl = document.getElementById('brand_other_name');
+  var shortEl = document.getElementById('brand_other_short_code');
+  if (!nameEl || !shortEl) return;
+  if (shortEl.value && shortEl.dataset.auto !== '1') return;
+  shortEl.value = (nameEl.value || '').replace(/[^A-Za-z0-9]+/g, '').toUpperCase().slice(0, 6);
+  shortEl.dataset.auto = '1';
+}
 document.addEventListener('DOMContentLoaded', function () {
   toggleOtherField('brand_id', 'brand_other_name');
+  toggleNewBrandExtras();
   toggleOtherField('color_code', 'color_code_other');
 });
 
@@ -404,6 +455,7 @@ function parseRawName() {
 
       setSelectIfPresent('brand_id', d.brand_id || '');
       toggleOtherField('brand_id', 'brand_other_name');
+  toggleNewBrandExtras();
 
       setSelectIfPresent('color_code', d.color_code || '');
       toggleOtherField('color_code', 'color_code_other');
@@ -567,6 +619,7 @@ function cloneFromProduct(pid) {
       setSelectOrWarn('brand_id', spec.brand_id, 'แบรนด์', warnings);
       setVal('brand_other_name', '');
       toggleOtherField('brand_id', 'brand_other_name');
+      toggleNewBrandExtras();
       setVal('model', spec.model);
       setVal('size', spec.size);
       setSelectOrWarn('color_code', spec.color_code, 'สี', warnings);
@@ -579,9 +632,15 @@ function cloneFromProduct(pid) {
       setVal('units_per_carton', spec.units_per_carton);
       setVal('units_per_box', spec.units_per_box);
       _pnNameDirty = false;   // clone counts as a fresh start for the name box too
-      setCloneSource(pid, warnings.length
+      // Say where this SKU will land. The server resolves family_id from
+      // clone_source_pid at save time, so this reports the TEMPLATE's family
+      // rather than posting a value of its own.
+      var famNote = spec.family_id
+        ? ' · จะเข้า family เดียวกับต้นแบบ: ' + (spec.family_name || ('#' + spec.family_id))
+        : ' · ต้นแบบยังไม่มี family — ระบบจะสร้างใหม่แล้วดึงต้นแบบเข้ามาด้วย';
+      setCloneSource(pid, (warnings.length
         ? 'คัดลอกจาก #' + pid + ' แล้ว — ' + warnings.join(', ') + ' ไม่มีในตัวเลือกปัจจุบัน กรุณาเลือกเอง'
-        : 'คัดลอกจาก #' + pid + ' แล้ว — ตรวจสอบก่อนบันทึก');
+        : 'คัดลอกจาก #' + pid + ' แล้ว — ตรวจสอบก่อนบันทึก') + famNote);
       fetchPnIdentityPreview();
     })
     .catch(function () {

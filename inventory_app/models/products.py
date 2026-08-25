@@ -10,6 +10,7 @@ import name_builder
 from sku_code_utils import PACKAGING_SHORT, regenerate_for_product
 
 from ._shared import _set_price_change_source
+from .brands import upsert_brand
 
 
 def get_products(search=None, low_stock=False, hard_to_sell=False,
@@ -132,6 +133,55 @@ def create_product(data: dict) -> int:
     return pid
 
 
+# Note stamped on a product_families row this module minted on demand rather
+# than one the 2026-05-08 family-review pass created deliberately. Kept
+# byte-identical to the string the photo-import path has written since
+# 2026-05-25 so both producers stay greppable as one population.
+SINGLETON_FAMILY_NOTE = 'auto-singleton-from-photo-import-2026-05-25'
+
+
+def ensure_product_family(conn, product_id: int):
+    """Return `product_id`'s family_id, minting a singleton family when it has
+    none. Does NOT commit — the caller owns the transaction.
+
+    One source of truth for a motion that existed only inside the photo-upload
+    route (`blueprints/products.py::photos_review_assign`). A clone now needs
+    the same thing: "put the new SKU in its template's family" is meaningless
+    when the template itself has no family, so we create one and pull the
+    SOURCE in as well — that is what makes the two rows siblings rather than
+    just giving the newcomer a private family.
+
+    The backfill is guarded `AND family_id IS NULL`, so this can never move a
+    product that already belongs somewhere.
+    """
+    prod = conn.execute(
+        "SELECT id, sku_code, product_name, brand_id, family_id "
+        "FROM products WHERE id = ?", (product_id,)
+    ).fetchone()
+    if not prod:
+        return None
+    if prod['family_id']:
+        return prod['family_id']
+
+    fam_code = prod['sku_code'] or f"INT-{prod['id']}"
+    existing = conn.execute(
+        "SELECT id FROM product_families WHERE family_code = ?", (fam_code,)
+    ).fetchone()
+    if existing:
+        family_id = existing['id']
+    else:
+        family_id = conn.execute(
+            "INSERT INTO product_families (family_code, display_name, brand_id, note) "
+            "VALUES (?,?,?,?)",
+            (fam_code, prod['product_name'], prod['brand_id'], SINGLETON_FAMILY_NOTE)
+        ).lastrowid
+    conn.execute(
+        "UPDATE products SET family_id = ? WHERE id = ? AND family_id IS NULL",
+        (family_id, prod['id'])
+    )
+    return family_id
+
+
 def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
     """Canonical structured product-creation path (P3 of the
     product-creation-consolidation plan). Resolves inline "other"
@@ -163,6 +213,16 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
     `fields` keys (all optional unless noted):
       product_name          -- explicit override; falsy => name is derived
       brand_id, brand_other_name
+      brand_other_short_code, brand_other_name_th
+                            -- only read when a NEW brand is being created from
+                            -- brand_other_name. short_code becomes a segment of
+                            -- every sku_code in that brand; name_th stays NULL
+                            -- when omitted (never a copy of the English name).
+      family_id             -- explicit family; wins over clone_source_pid
+      clone_source_pid      -- template product; supplies family_id when none was
+                            -- given (minting one and backfilling the template if
+                            -- it had none), and is what the caller stamps into
+                            -- created_via as '<flow>_clone_<pid>'
       color_code, color_code_other, color_th
       category_id, category (free-text, resolved only when category_id absent)
       sub_category, sub_category_short_code, series, model, size, condition,
@@ -183,20 +243,20 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
     own_conn = conn is None
     conn = conn or get_connection()
     try:
-        # brand: if brand_other_name set and no brand_id -> INSERT new brand row
+        # brand: if brand_other_name set and no brand_id -> resolve/create the
+        # brand row through the ONE shared path. It carries `short_code`
+        # (a segment of sku_code) and leaves `name_th` NULL unless the operator
+        # typed a real Thai name -- the old inline INSERT here did neither,
+        # which is how brand 77 SONAX ended up labelled "SONAX / SONAX" with a
+        # NULL short_code and five products missing their brand segment.
         if not d.get('brand_id') and d.get('brand_other_name'):
             new_brand_name = d['brand_other_name'].strip()
             if new_brand_name:
-                code = new_brand_name.upper().replace(' ', '_')[:30]
-                cur = conn.execute(
-                    "INSERT OR IGNORE INTO brands (code, name, name_th, is_own_brand, sort_order)"
-                    " VALUES (?, ?, ?, 0, 100)",
-                    (code, new_brand_name, new_brand_name)
+                d['brand_id'] = upsert_brand(
+                    conn, new_brand_name,
+                    name_th=d.get('brand_other_name_th'),
+                    short_code=d.get('brand_other_short_code'),
                 )
-                bid = cur.lastrowid or conn.execute(
-                    "SELECT id FROM brands WHERE code = ?", (code,)
-                ).fetchone()[0]
-                d['brand_id'] = bid
 
         # color: if color_code_other set and no color_code -> INSERT new color row
         if not d.get('color_code') and d.get('color_code_other'):
@@ -226,6 +286,19 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
         pkg_short = PACKAGING_SHORT.get(pkg_th) if pkg_th else None
         cost_price = d.get('cost_price') or 0.0
 
+        # family: a clone joins its template's family, so the two render as one
+        # card (263 of 301 families are `size_table` -- literally "same product,
+        # other size", which is what a clone usually is). When the template has
+        # no family yet, mint one and pull the TEMPLATE in too, so they end up
+        # siblings rather than the newcomer owning a private family.
+        #
+        # An explicit `family_id` in `fields` wins; `clone_source_pid` is only
+        # consulted when none was given. Passing neither keeps the historical
+        # behaviour (family_id stays NULL).
+        family_id = d.get('family_id') or None
+        if not family_id and d.get('clone_source_pid'):
+            family_id = ensure_product_family(conn, int(d['clone_source_pid']))
+
         cur = conn.execute("""
             INSERT INTO products
               (product_name, units_per_carton, units_per_box,
@@ -233,9 +306,10 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
                low_stock_threshold,
                brand_id, category_id, sub_category, sub_category_short_code,
                color_code, packaging_th, packaging_short,
-               series, model, size, condition, pack_variant, created_via)
+               series, model, size, condition, pack_variant, created_via,
+               family_id)
             VALUES
-              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             d.get('product_name') or '',
             d.get('units_per_carton') or 1,
@@ -260,6 +334,7 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
             d.get('condition') or None,
             d.get('pack_variant') or None,
             created_via,
+            family_id,
         ))
         new_pid = cur.lastrowid
 
