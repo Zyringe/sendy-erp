@@ -221,6 +221,38 @@ def test_family_hint_empty_for_no_price_product_without_family(tmp_db, tmp_db_co
     assert result['family_hint'] == []
 
 
+def test_ambiguous_customer_query_renames_last_seen_date(tmp_db, tmp_db_conn):
+    token = f"ลูกค้ากำกวมทดสอบ{_pid_counter[0] + 1}"
+    code_a = f"TESTAMB{_pid_counter[0]}A"
+    code_b = f"TESTAMB{_pid_counter[0]}B"
+    _mk_customer(tmp_db_conn, code_a, f"{token} A")
+    _mk_customer(tmp_db_conn, code_b, f"{token} B")
+    pid = _mk_product(tmp_db_conn, "ทดสอบลูกค้ากำกวม", base=10.0)
+    _clear_pid(tmp_db_conn, pid)
+
+    out, _proc = _run_cli(tmp_db, {"lines": [{"product_id": pid, "customer_query": token}]})
+
+    line = out['lines'][0]
+    assert 'result' not in line
+    assert 'candidates' in line
+    customers = line['candidates']['customers']
+    codes = {c['code'] for c in customers}
+    assert {code_a, code_b} <= codes
+    for c in customers:
+        assert 'last_purchase_date' not in c  # renamed away, not just added
+        assert 'last_seen_date' in c
+
+
+def test_nonexistent_product_id_returns_error_not_traceback(tmp_db):
+    out, proc = _run_cli(tmp_db, {"lines": [{"product_id": 999999999}]})
+
+    line = out['lines'][0]
+    assert 'error' in line
+    assert 'result' not in line
+    assert '999999999' in line['error']
+    assert 'Traceback' not in proc.stderr
+
+
 def test_script_never_writes(tmp_db, tmp_db_conn):
     pid = _mk_product(tmp_db_conn, "ทดสอบไม่เขียน", base=100.0)
     _clear_pid(tmp_db_conn, pid)
