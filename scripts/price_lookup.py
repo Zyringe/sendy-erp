@@ -13,6 +13,8 @@ stdin (JSON), read from stdin:
 stdout (JSON), written to stdout, always exit code 0:
     {"db_max_sale_date": "...", "db_path_basename": "inventory.db",
      "lines": [{"candidates": {...}} | {"result": {...}} | {"error": "..."}]}
+Malformed top-level JSON on stdin instead emits {"error": "...", "lines": []}
+(same exit code 0, no traceback) -- the DB is never even opened in that case.
 
 Per line:
   - `product_id` (if given) is used as-is; else `product_query` is matched
@@ -20,9 +22,11 @@ Per line:
     except a customer is OPTIONAL — no code and no query resolves to "no
     customer", not an error.
   - >1 match on either query -> "candidates" for that line (no "result").
-    Zero matches, a missing product identifier, or an unresolvable unit
-    (resolve_price raises ValueError) -> "error" (a string; never a Python
-    traceback on stderr).
+    Zero matches, a missing product identifier, an unresolvable unit
+    (resolve_price raises ValueError), or a non-numeric `qty`/`extra_disc`
+    (resolve_price raises TypeError) -> "error" (a string; never a Python
+    traceback on stderr) -- scoped to that one line, the rest of the batch
+    is unaffected.
   - Exactly one match (or an explicit id/code) resolves normally via
     resolve_price(); its return dict is passed through to JSON verbatim,
     including any `None` values (JSON `null`) it carries on pack units with
@@ -224,7 +228,7 @@ def _resolve_line(conn, line, today):
             conn, product_id=product_id, customer_code=customer_code,
             unit=line.get('unit'), qty=qty, extra_disc=extra_disc, today=today,
         )
-    except ValueError as e:
+    except (ValueError, TypeError) as e:
         return {'error': str(e)}
 
     if result['list']['list_for_unit'] == 0:
@@ -235,7 +239,14 @@ def _resolve_line(conn, line, today):
 
 
 def main():
-    payload = json.load(sys.stdin)
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError as e:
+        json.dump({'error': f'invalid JSON on stdin: {e}', 'lines': []}, sys.stdout,
+                   ensure_ascii=False)
+        sys.stdout.write('\n')
+        return
+
     today = payload.get('today')
     db_path = _db_path()
     conn = _open_readonly(db_path)

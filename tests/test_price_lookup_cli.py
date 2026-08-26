@@ -84,6 +84,15 @@ def _mk_family(conn, display_name):
     return cur.lastrowid
 
 
+def _tier(conn, pid, qty_label, price, sort_order=100):
+    conn.execute(
+        "INSERT INTO product_price_tiers (product_id, qty_label, price, sort_order) "
+        "VALUES (?,?,?,?)",
+        (pid, qty_label, price, sort_order),
+    )
+    conn.commit()
+
+
 def _bill(conn, *, pid, customer_code, customer_name, date_iso, qty, unit,
           unit_price, vat_type, net, suffix=1):
     _doc_counter[0] += 1
@@ -273,3 +282,92 @@ def test_script_never_writes(tmp_db, tmp_db_conn):
     # only sees writes made through the probe connection itself).
     after = tmp_db_conn.execute("PRAGMA data_version").fetchone()[0]
     assert after == before
+
+
+def test_bad_qty_and_extra_disc_types_error_per_line_not_whole_batch(tmp_db, tmp_db_conn):
+    """Review finding (Important): a stringified qty/extra_disc — entirely
+    plausible from a tool-built JSON payload — used to raise an uncaught
+    TypeError from inside the resolver (price_lookup.py:876 for extra_disc,
+    :908 for qty), crashing the whole batch. Line 0 here is a CONTROL: it
+    must still come back with a 'result' in the SAME batch as the two bad
+    lines, proving the catch is per-line, not merely that the bad line
+    reports an error (a whole-batch crash and a per-line catch both look
+    identical if you only check the bad line)."""
+    pid_good = _mk_product(tmp_db_conn, "CLI ทดสอบ qty ปกติ", base=100.0)
+    pid_bad_qty = _mk_product(tmp_db_conn, "CLI ทดสอบ qty ผิดชนิด", base=100.0)
+    pid_bad_disc = _mk_product(tmp_db_conn, "CLI ทดสอบ extra_disc ผิดชนิด", base=100.0)
+    _clear_pid(tmp_db_conn, pid_good)
+    _clear_pid(tmp_db_conn, pid_bad_qty)
+    _clear_pid(tmp_db_conn, pid_bad_disc)
+
+    out, _proc = _run_cli(tmp_db, {"lines": [
+        {"product_id": pid_good},
+        {"product_id": pid_bad_qty, "qty": "5"},
+        {"product_id": pid_bad_disc, "extra_disc": "abc"},
+    ]})
+
+    assert len(out['lines']) == 3
+    assert 'result' in out['lines'][0]
+    assert out['lines'][0]['result']['product']['id'] == pid_good
+    assert 'error' in out['lines'][1] and 'result' not in out['lines'][1]
+    assert 'error' in out['lines'][2] and 'result' not in out['lines'][2]
+
+
+def test_malformed_top_level_json_returns_error_not_traceback(tmp_db):
+    """Review ⚠, promoted to a required fix: the CLI's own docstring promises
+    'always exit code 0 / never a traceback on stderr' — malformed top-level
+    JSON must honour that too, not just a well-formed-but-bad line."""
+    _need_env()
+    env = dict(os.environ)
+    env['DATABASE_PATH'] = tmp_db
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        input='not json', capture_output=True, text=True, env=env, timeout=30,
+    )
+
+    assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert 'Traceback' not in proc.stderr
+    out = json.loads(proc.stdout)
+    assert out['lines'] == []
+    assert isinstance(out['error'], str) and out['error']
+
+
+def test_null_passthrough_for_no_ratio_pack_unit(tmp_db, tmp_db_conn):
+    """Review ⚠, promoted to a required test: the resolver deliberately
+    returns None (never a fabricated ratio of 1.0) for unit.ratio,
+    list.tier_equals_base_x_ratio, answer.qty/line_total, and every
+    internal.* money key when a pack unit has no derivable piece ratio —
+    fixture shape mirrors inventory_app/tests/test_price_lookup.py's
+    `_mk_box_only_product` / test_r2b_b_dozen_only_fallback_no_ratio
+    (base=0, unit_type='ตัว', one tier '1 กล่อง' with no unit_conversions
+    row; asking the default piece unit takes the dozen-only fallback).
+    Assert each key is PRESENT and None -- not 0, not 1, and not a dropped
+    key, since a dropped key and a null both read as falsy to a careless
+    check."""
+    pid = _mk_product(tmp_db_conn, "CLI null passthrough กล่องเท่านั้น",
+                       unit_type='ตัว', base=0.0)
+    _clear_pid(tmp_db_conn, pid)
+    _tier(tmp_db_conn, pid, '1 กล่อง', 500.0)
+
+    out, _proc = _run_cli(tmp_db, {"lines": [{"product_id": pid, "qty": 12}],
+                                    "today": "2026-08-20"})
+
+    line = out['lines'][0]
+    assert 'result' in line
+    result = line['result']
+
+    # Control: this is a resolved, non-degenerate line (real list price),
+    # not an all-null result -- proves the nulls below are selective.
+    assert result['list']['list_source'] == 'dozen-only'
+    assert result['list']['list_for_unit'] == 500.0
+
+    assert 'ratio' in result['unit'] and result['unit']['ratio'] is None
+    assert ('tier_equals_base_x_ratio' in result['list']
+            and result['list']['tier_equals_base_x_ratio'] is None)
+    assert 'qty' in result['answer'] and result['answer']['qty'] is None
+    assert 'line_total' in result['answer'] and result['answer']['line_total'] is None
+    internal = result['internal']
+    for key in ('cost_per_unit', 'cost_side', 'margin_at_answer_pct',
+                'margin_at_lowest_pct', 'below_cost_by'):
+        assert key in internal and internal[key] is None, key
+    assert internal['note'] == 'no piece ratio for this pack unit'
