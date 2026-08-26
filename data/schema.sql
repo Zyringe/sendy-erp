@@ -1432,7 +1432,8 @@ CREATE TABLE "promotions" (
     bundle_condition  TEXT,
     bundle_tiers_json TEXT,
     gift_desc         TEXT,
-    gift_qty          TEXT,
+    gift_qty          TEXT, source TEXT
+  CHECK (source IS NULL OR source IN ('catalog-import','manual')),
 
     -- Type enum + shape integrity per type
     CHECK (
@@ -3687,6 +3688,7 @@ BEGIN
             'bundle_tiers_json', OLD.bundle_tiers_json,
             'gift_desc',         OLD.gift_desc,
             'gift_qty',          OLD.gift_qty,
+            'source',            OLD.source,
             'is_active',         OLD.is_active
         )
     );
@@ -3710,6 +3712,7 @@ BEGIN
             'bundle_tiers_json', NEW.bundle_tiers_json,
             'gift_desc',         NEW.gift_desc,
             'gift_qty',          NEW.gift_qty,
+            'source',            NEW.source,
             'date_start',        NEW.date_start,
             'date_end',          NEW.date_end,
             'is_active',         NEW.is_active
@@ -3731,6 +3734,7 @@ WHEN (
     OR OLD.bundle_tiers_json IS NOT NEW.bundle_tiers_json
     OR OLD.gift_desc         IS NOT NEW.gift_desc
     OR OLD.gift_qty          IS NOT NEW.gift_qty
+    OR OLD.source            IS NOT NEW.source
     OR OLD.date_start        IS NOT NEW.date_start
     OR OLD.date_end          IS NOT NEW.date_end
     OR OLD.is_active         IS NOT NEW.is_active
@@ -3751,6 +3755,7 @@ BEGIN
         UNION ALL SELECT 'bundle_tiers_json',         OLD.bundle_tiers_json,         NEW.bundle_tiers_json         WHERE OLD.bundle_tiers_json IS NOT NEW.bundle_tiers_json
         UNION ALL SELECT 'gift_desc',                 OLD.gift_desc,                 NEW.gift_desc                 WHERE OLD.gift_desc         IS NOT NEW.gift_desc
         UNION ALL SELECT 'gift_qty',                  OLD.gift_qty,                  NEW.gift_qty                  WHERE OLD.gift_qty          IS NOT NEW.gift_qty
+        UNION ALL SELECT 'source',                    OLD.source,                    NEW.source                    WHERE OLD.source            IS NOT NEW.source
         UNION ALL SELECT 'date_start',                OLD.date_start,                NEW.date_start                WHERE OLD.date_start        IS NOT NEW.date_start
         UNION ALL SELECT 'date_end',                  OLD.date_end,                  NEW.date_end                  WHERE OLD.date_end          IS NOT NEW.date_end
         UNION ALL SELECT 'is_active',                 OLD.is_active,                 NEW.is_active                 WHERE OLD.is_active         IS NOT NEW.is_active
