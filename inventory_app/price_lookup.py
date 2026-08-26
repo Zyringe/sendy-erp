@@ -6,7 +6,8 @@ stdlib + `sales_filters` / `models.promotions` only, so it can run on prod
 under `/opt/venv/bin/python`.
 
 Design (see .superpowers/sdd/plan/task-1-brief.md for the numbered rules
-R1-R8 this file implements):
+R1-R8 this file implements, and .superpowers/sdd/plan/task-1-report.md for
+the review-round-1 fixes and their reasoning):
 
   - `evidence_filter(alias)` is the ONE population predicate — every
     money-relevant query in this module (last-paid, lowest, promo
@@ -16,13 +17,22 @@ R1-R8 this file implements):
   - `epochs_for` / `_epoch_candidates` find the most recent "price regime
     change" for a product (base price change, promo start, promo end with
     no replacement, or — for the ~124 dozen-only products whose only price
-    lives in product_price_tiers — a tier change via audit_log). The
+    lives in product_price_tiers — a PRICE-carrying tier change via
+    audit_log; a note/sort_order-only tier edit does not count). The
     window used for last-paid/lowest/promo-evidence never reaches behind
     that date.
   - `latest_evidence` is the one place that turns a sales_transactions row
     into "cash the customer paid, per some unit" — used both for the
     in-window last-paid answer and (with an unbounded window_from) for the
     pre-window informational lookup that drives `price_changed_since_last`.
+  - `_resolve_ratio` refuses to guess: for a unit the caller explicitly
+    asked about (not the product's own unit_type) that resolves via
+    neither `unit_conversions` nor a matching โหล tier, it raises rather
+    than silently returning ratio 1.0 (which would present the per-piece
+    price as if it were the asked unit's price — review round 1, C1). The
+    `strict=False` escape hatch is for INTERNAL reuse only, where a
+    missing ratio should degrade a computation rather than abort an
+    otherwise-answerable quote (see its docstring for the two call sites).
 
 Python 3.9+ compatible (no `X | None` syntax) — same constraint as
 sales_filters.py, this runs on prod's older interpreter too.
@@ -128,9 +138,57 @@ def _normalize_unit(unit, unit_type):
     return _UNIT_ALIASES.get(unit, unit)
 
 
-def _resolve_ratio(conn, product_id, unit):
-    """(ratio, ratio_source) for `unit`, per R1: unit_conversions row first;
-    else a matching โหล tier implies ratio 12; else 1.0 / 'none'."""
+def _known_ratio_units(conn, product_id):
+    """Units this product has an established ratio for — used only to build
+    the C1 error message (names what DOES resolve, so the reader knows what
+    to ask for or what to go set up)."""
+    units = [r['bsn_unit'] for r in conn.execute(
+        "SELECT DISTINCT bsn_unit FROM unit_conversions WHERE product_id = ?",
+        (product_id,)
+    ).fetchall()]
+    if _find_matching_tier(conn, product_id, 'โหล') is not None and 'โหล' not in units:
+        units.append('โหล')
+    return units
+
+
+def _resolve_ratio(conn, product_id, unit, unit_type, strict=False):
+    """(ratio, ratio_source) for `unit`, per R1: a `unit_conversions` row
+    wins first; else a matching โหล tier implies ratio 12
+    (`ratio_source='tier-implied'`); else 1.0/`'none'` when `unit ==
+    unit_type` (the ask is already in the base unit — ratio is trivially
+    1, and this is always safe regardless of `strict`).
+
+    When `unit != unit_type` and NEITHER source resolves, returning 1.0
+    silently presents the per-piece price as if it were the requested
+    unit's price — e.g. `unit='ลัง'` with no conversion/tier row would
+    silently answer with the per-piece price labelled as a carton price
+    (review round 1, finding C1). `strict=True` raises `ValueError`
+    instead (message names the product, the unit, and the units that DO
+    resolve, for a human — the CLI/skill — to act on).
+
+    `strict=False` (the default) is for the two INTERNAL reuse sites where
+    a missing ratio should degrade a computation rather than abort an
+    otherwise-answerable quote, deliberately NOT treated as a C1-shaped
+    bug:
+      - `_resolve_list`'s dozen-only fallback: `unit` there is not
+        something the caller asked for, it's the label of the product's
+        ONLY tier (e.g. a real live product's tier is '1 กล่อง' — a box,
+        which encodes no derivable piece-count the way 'โหล' does). The
+        tier's PRICE itself never depends on this ratio — only the
+        breadcrumb's "≈ ฿x/piece" note and internal cost/margin do —
+        so refusing to quote a real, known, tier-priced product over a
+        piece-ratio we were never going to be able to state precisely
+        would make the R1 dozen-only case unusable for exactly the
+        products it exists to serve.
+      - `latest_evidence`'s bill-unit conversion: called internally by
+        `resolve_price` with the SAME `unit` `_resolve_list` already
+        resolved (raising there already, if it was going to). Re-raising
+        here for the identical unit would just move the crash from one
+        line to the next with no new information; `latest_evidence`'s
+        existing contract ("returns None when nothing usable is found")
+        already covers "can't be answered", the same way a missing bill
+        does.
+    """
     row = conn.execute(
         "SELECT ratio FROM unit_conversions WHERE product_id = ? AND bsn_unit = ?",
         (product_id, unit)
@@ -140,7 +198,36 @@ def _resolve_ratio(conn, product_id, unit):
     tier = _find_matching_tier(conn, product_id, unit)
     if tier is not None and unit == 'โหล':
         return 12.0, 'tier-implied'
+    if unit == unit_type:
+        return 1.0, 'none'
+    if strict:
+        prod = _get_product(conn, product_id)
+        pname = prod['product_name'] if prod is not None else f'product_id {product_id}'
+        known = _known_ratio_units(conn, product_id)
+        resolves = ', '.join(known) if known else f'only {unit_type!r} (the base unit)'
+        raise ValueError(
+            f"{pname} (id {product_id}): no ratio known for unit {unit!r} "
+            f"(unit_type={unit_type!r}; units that DO resolve: {resolves})"
+        )
     return 1.0, 'none'
+
+
+def _bundle_buy_ratio(conn, product_id, bundle_unit, unit_type):
+    """Ratio to convert a qty_promo's `bundle_buy` (denominated in
+    `bundle_unit`) into pieces, for I2's qty-gating check. 1.0 when
+    `bundle_unit` is NULL or already the piece unit; else the
+    `unit_conversions` ratio for `bundle_unit` specifically (per the
+    ruling — not the general `_resolve_ratio` fallback chain, no
+    tier-implied step). Best-effort 1.0 when no row exists: this is an
+    internal margin-gating computation, not a user-facing ask, so (like
+    the two `strict=False` sites above) it degrades rather than raising."""
+    if not bundle_unit or bundle_unit == unit_type:
+        return 1.0
+    row = conn.execute(
+        "SELECT ratio FROM unit_conversions WHERE product_id = ? AND bsn_unit = ?",
+        (product_id, bundle_unit)
+    ).fetchone()
+    return float(row['ratio']) if row is not None else 1.0
 
 
 def _bill_ratio(conn, product_id, unit_type, bill_unit, cache):
@@ -165,9 +252,18 @@ def _bill_ratio(conn, product_id, unit_type, bill_unit, cache):
 def _resolve_list(conn, product_id, unit_type, base, asked_unit):
     """R1: unit + list. Returns a dict with ratio/ratio_source/answer_unit
     (answer_unit differs from asked_unit only in the dozen-only case, where
-    the answer switches to the tier's own unit) /list_for_unit/list_source/
-    tier_equals_base_x_ratio."""
-    ratio, ratio_source = _resolve_ratio(conn, product_id, asked_unit)
+    the answer switches to the tier's own unit) / asked_ratio (the ratio
+    for the unit actually asked about — needed by I1's qty conversion,
+    always 1.0 in the dozen-only branch since that branch only triggers
+    when asked_unit == unit_type) / list_for_unit / list_source /
+    tier_equals_base_x_ratio.
+
+    The FIRST `_resolve_ratio` call below is `strict=True` — this is the
+    literal ask-level resolution C1 is about. The dozen-only fallback's
+    call is `strict=False` — see `_resolve_ratio`'s docstring for why.
+    """
+    asked_ratio, asked_ratio_source = _resolve_ratio(conn, product_id, asked_unit, unit_type, strict=True)
+    ratio, ratio_source = asked_ratio, asked_ratio_source
     tier = _find_matching_tier(conn, product_id, asked_unit)
     answer_unit = asked_unit
 
@@ -178,7 +274,7 @@ def _resolve_list(conn, product_id, unit_type, base, asked_unit):
         fallback = _first_tier(conn, product_id)
         if fallback is not None:
             fb_unit = _strip_tier_qty(fallback['qty_label'])
-            ratio, ratio_source = _resolve_ratio(conn, product_id, fb_unit)
+            ratio, ratio_source = _resolve_ratio(conn, product_id, fb_unit, unit_type, strict=False)
             answer_unit = fb_unit
             list_for_unit = round(float(fallback['price']), 2)
             list_source = 'dozen-only'
@@ -195,6 +291,7 @@ def _resolve_list(conn, product_id, unit_type, base, asked_unit):
         'ratio': ratio,
         'ratio_source': ratio_source,
         'answer_unit': answer_unit,
+        'asked_ratio': asked_ratio,
         'list_for_unit': list_for_unit,
         'list_source': list_source,
         'tier_equals_base_x_ratio': tier_equals_base_x_ratio,
@@ -203,12 +300,12 @@ def _resolve_list(conn, product_id, unit_type, base, asked_unit):
 
 def _apply_price_promo(list_for_unit, ratio, price_promo):
     """R2 list_after_promo. percent (and a 'mixed' row using discount_value
-    as a percent — see price_lookup module docstring / task-1-report for
-    why: the 15 real mixed+discount rows in the catalog carry values like
-    10/15/20, which are percentages, not final per-piece prices; a FIXED
-    final price of ฿10-20 on a ฿35-250 product is not a real catalog
-    price) → list × (1 − d/100). fixed → discount_value × ratio (fixed IS
-    the final per-PIECE price, mirrors models.promotions.effective_price)."""
+    as a percent — see the module docstring / task-1-report for why: the
+    15 real mixed+discount rows in the catalog carry values like 10/15/20,
+    which are percentages, not final per-piece prices; a FIXED final price
+    of ฿10-20 on a ฿35-250 product is not a real catalog price) → list ×
+    (1 − d/100). fixed → discount_value × ratio (fixed IS the final
+    per-PIECE price, mirrors models.promotions.effective_price)."""
     if price_promo is None:
         return list_for_unit
     if price_promo['promo_type'] == 'fixed':
@@ -224,7 +321,10 @@ def _bundle_multiplier(qty_promo):
     buy-N-get-M-free qty promo. 1.0 when there is no qty promo or it isn't
     a bundle shape (bundle_buy/bundle_free both populated — a pure 'gift'
     promo has neither). Mirrors quote_worsawat.py's `_bundle_multiplier`
-    (R8: dropping this would overstate margin on bundle/mixed products)."""
+    (R8: dropping this would overstate margin on bundle/mixed products).
+    Whether this multiplier actually APPLIES to a given ask (I2's
+    piece-qty gate) is decided by the caller in `resolve_price`, not
+    here — this function only computes the ratio for when it does."""
     if qty_promo is None:
         return 1.0
     buy = qty_promo['bundle_buy']
@@ -246,9 +346,19 @@ def _epoch_candidates(conn, product_id, unit, today):
       promo_start   — the CURRENT price-slot promo's date_start
       promo_end     — last price-slot promo that ended with no replacement,
                        date_end + 1 day
-      tier_changed  — latest audit_log row for product_price_tiers, for the
-                       tier matching `unit` (only possible source for
-                       dozen-only products; None when no tier matches).
+      tier_changed  — latest audit_log row for product_price_tiers, for
+                       the tier matching `unit`, that actually carries a
+                       PRICE change: an INSERT or DELETE action (the whole
+                       row is new/gone, so 'price' is always part of it),
+                       or an UPDATE whose changed_fields JSON names
+                       'price' specifically. A note/sort_order-only UPDATE
+                       must NOT move the epoch (review round 1 ruling) —
+                       audit_product_price_tiers_update's changed_fields
+                       only includes fields that actually changed, so
+                       `json_extract(changed_fields, '$.price')` is NULL
+                       for a note-only edit and non-NULL when price moved.
+                       Only possible source for dozen-only products; None
+                       when no tier matches `unit`.
     """
     out = {'base_changed': None, 'promo_start': None, 'promo_end': None, 'tier_changed': None}
 
@@ -289,6 +399,9 @@ def _epoch_candidates(conn, product_id, unit, today):
             arow = conn.execute(
                 "SELECT created_at FROM audit_log "
                 "WHERE table_name = 'product_price_tiers' AND row_id = ? "
+                "  AND (action IN ('INSERT','DELETE') "
+                "       OR (action = 'UPDATE' "
+                "           AND json_extract(changed_fields, '$.price') IS NOT NULL)) "
                 "ORDER BY created_at DESC, id DESC LIMIT 1",
                 (tier['id'],)
             ).fetchone()
@@ -298,26 +411,27 @@ def _epoch_candidates(conn, product_id, unit, today):
     return out
 
 
-def _epoch_with_reason(conn, product_id, unit, today):
-    cands = _epoch_candidates(conn, product_id, unit, today)
-    best_source, best_date = None, None
-    for src, d in cands.items():
-        if d and (best_date is None or d > best_date):
-            best_date, best_source = d, src
-    return best_date, best_source
-
-
 def epochs_for(conn, product_ids, unit_by_pid, today=None):
     """{pid: date | None} — the most recent price-regime-change date for
     each product, or None if none of the 4 sources apply. `unit_by_pid[pid]`
     is the unit whose tier (if any) should be watched for source 4 — pass
-    the resolved answer unit for that product. `today` is an addition
-    beyond the brief's literal 3-arg signature: without it, epoch
-    computation for 'the current promo' / 'a promo that ended' would always
-    use real wall-clock date.today() even when a caller (resolve_price)
-    was asked to simulate a different `today` for determinism — silently
-    breaking any test that pins `today`. Purely additive/keyword-only, so
-    every 3-positional-arg call site still works unchanged."""
+    the resolved answer unit for that product.
+
+    `today` is an addition beyond the brief's literal 3-arg signature:
+    without it, epoch computation for 'the current promo' / 'a promo that
+    ended' would always use real wall-clock date.today() even when a
+    caller (resolve_price) was asked to simulate a different `today` for
+    determinism — silently breaking any test that pins `today`. It is a
+    plain trailing parameter with a default (positional-or-keyword, NOT
+    keyword-only — nothing stops a 4th positional argument), so every
+    existing 3-positional-arg call site still works unchanged.
+
+    `resolve_price` calls this function directly (via `_epoch_with_reason`
+    below) for the date it uses, rather than duplicating the
+    epoch-selection logic — so this is the one and only place that turns
+    the 4 candidate sources into a single "most recent" date, exercised on
+    every `resolve_price` call, not a parallel, untested bulk-only path.
+    """
     today = today or date.today().isoformat()
     result = {}
     for pid in product_ids:
@@ -327,31 +441,61 @@ def epochs_for(conn, product_ids, unit_by_pid, today=None):
     return result
 
 
+def _epoch_with_reason(conn, product_id, unit, today):
+    """(epoch_date, epoch_source) — epoch_date comes from `epochs_for`
+    itself (so resolve_price's window computation and the public bulk API
+    can never silently disagree); epoch_source is recovered by checking
+    which of `_epoch_candidates`'s 4 named sources produced that exact
+    date, purely so `resolve_price` can label `window.reason`
+    (`epochs_for`'s own return type — {pid: date | None} — carries no
+    reason, by the brief's contract)."""
+    cands = _epoch_candidates(conn, product_id, unit, today)
+    epoch = epochs_for(conn, [product_id], {product_id: unit}, today=today)[product_id]
+    epoch_source = None
+    if epoch is not None:
+        for src, d in cands.items():
+            if d == epoch:
+                epoch_source = src
+                break
+    return epoch, epoch_source
+
+
 # ── evidence lookups ─────────────────────────────────────────────────────────
 
-def latest_evidence(conn, product_id, customer_code, window_from, unit=None):
+def latest_evidence(conn, product_id, customer_code, window_from, unit=None, today=None):
     """The customer's most recent evidence-filtered, ratio-convertible bill
-    for this product at/after `window_from` (pass '' for an unbounded
-    search — used by resolve_price for the pre-window informational
-    lookup), converted to `unit` (default: the product's unit_type).
-    None when customer_code is falsy, the product doesn't exist, or no
-    matching bill exists."""
+    for this product in [`window_from`, `today`] (pass window_from='' for
+    an unbounded-from-below search — used by resolve_price for the
+    pre-window informational lookup), converted to `unit` (default: the
+    product's unit_type). None when customer_code is falsy, the product
+    doesn't exist, or no matching bill exists.
+
+    `today` (default: real wall-clock date) is an addition beyond the
+    brief's literal signature, for the same reason as `epochs_for`'s —
+    positional-or-keyword, not keyword-only, so every existing call site
+    is unaffected. Without an upper bound the query had NO ceiling at
+    all (review round 1, finding I4): a future-dated bill — a data-entry
+    mistake, or simply "today" as simulated by a caller pinning a fixed
+    date for determinism — would be treated as the customer's most recent
+    evidence, becoming `basis='last_paid'` ahead of its own time.
+    """
     if not customer_code:
         return None
     prod = _get_product(conn, product_id)
     if prod is None:
         return None
+    today = today or date.today().isoformat()
     unit_type = prod['unit_type']
     target_unit = unit or unit_type
-    ratio, _source = _resolve_ratio(conn, product_id, target_unit)
+    ratio, _source = _resolve_ratio(conn, product_id, target_unit, unit_type, strict=False)
 
     rows = conn.execute(f"""
         SELECT * FROM sales_transactions st
         WHERE st.product_id = ? AND st.customer_code = ?
-          AND st.date_iso >= ?
+          AND st.date_iso >= ? AND st.date_iso <= ?
           AND {evidence_filter('st')}
         ORDER BY st.date_iso DESC, st.id DESC
-    """, (product_id, customer_code, window_from)).fetchall()
+    """, (product_id, customer_code, window_from, today)).fetchall()
 
     cache = {}
     for row in rows:
@@ -437,9 +581,15 @@ def _customer_context(conn, customer_code, today):
 
 # ── promo evidence (R6) ──────────────────────────────────────────────────────
 
-def _promo_evidence(comparable, list_after_promo, ratio):
+def _promo_evidence(price_promo, comparable, list_after_promo, ratio):
     """comparable: [(cash_per_piece, row), ...] over the window. Returns
-    (promo_last_used, promo_stale)."""
+    (promo_last_used, promo_stale). No price promo -> (None, None), no
+    matter what the bills look like (review round 1, C2 — this used to
+    compare bills against the plain list price when no promo existed at
+    all, false-flagging real live products as 'promo not used' when there
+    was never a promo to use)."""
+    if price_promo is None:
+        return None, None
     if not comparable:
         return None, None
     per_piece_promo_price = (list_after_promo / ratio) if ratio else list_after_promo
@@ -522,7 +672,8 @@ def find_customers(conn, query, limit=8):
 def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
                    extra_disc=0.0, today=None):
     """Pure function: reads conn, never writes. See module docstring + R1-R8
-    in task-1-brief.md."""
+    in task-1-brief.md, and task-1-report.md for the review-round-1 fixes
+    (C1-C3, I1-I7, and the tier-epoch ruling) applied here."""
     today = today or date.today().isoformat()
 
     prod = _get_product(conn, product_id)
@@ -585,12 +736,12 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     in_window = False
     price_changed_since_last = False
     if customer_code:
-        within = latest_evidence(conn, product_id, customer_code, window_from, unit=answer_unit)
+        within = latest_evidence(conn, product_id, customer_code, window_from, unit=answer_unit, today=today)
         if within is not None:
             customer_last = within
             in_window = True
         else:
-            broad = latest_evidence(conn, product_id, customer_code, '', unit=answer_unit)
+            broad = latest_evidence(conn, product_id, customer_code, '', unit=answer_unit, today=today)
             if broad is not None:
                 customer_last = broad
                 in_window = False
@@ -598,7 +749,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
                     price_changed_since_last = True
 
     # R6 promo evidence
-    promo_last_used, promo_stale = _promo_evidence(comparable, list_after_promo, ratio)
+    promo_last_used, promo_stale = _promo_evidence(price_promo, comparable, list_after_promo, ratio)
 
     # R7 customer context
     cust_row = None
@@ -638,15 +789,42 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         else:
             basis = 'list_after_promo_extra'
 
-    line_total = round(price * qty, 2)
+    # I1: in the dozen-only case, `qty` was expressed in the unit the caller
+    # actually asked about (always the piece, per _resolve_list's dozen-only
+    # trigger condition), but the ANSWER is priced per `answer_unit` (the
+    # tier's own unit, e.g. โหล) — qty must convert the same way, or
+    # line_total silently multiplies a per-dozen price by a piece count.
+    qty_answer = qty
+    pack_only_text = None
+    if list_info['list_source'] == 'dozen-only':
+        qty_answer = qty * list_info['asked_ratio'] / ratio if ratio else qty
+        if qty_answer != round(qty_answer):
+            pack_only_text = (
+                f"ขายยกโหลเท่านั้น: {qty:g} {unit_type} = {qty_answer:g} {answer_unit}"
+            )
 
+    line_total = round(price * qty_answer, 2)
+
+    # I2: a qty (bundle) promo's free-units multiplier only affects cost/
+    # margin when the ASK actually reaches the bundle's own threshold,
+    # converted to pieces so a โหล ask against a piece-denominated bundle
+    # (or vice versa) compares apples to apples. Below threshold: cost_side
+    # stays plain cost_per_unit, and free_units still reports the deal with
+    # applies=False so the caller can show it without implying it's active.
     free_units = None
-    mult = _bundle_multiplier(qty_promo)
+    mult = 1.0
     if qty_promo is not None and qty_promo['bundle_buy'] and qty_promo['bundle_free'] is not None:
+        qty_pieces = qty * list_info['asked_ratio']
+        bundle_buy_ratio = _bundle_buy_ratio(conn, product_id, qty_promo['bundle_unit'], unit_type)
+        bundle_buy_pieces = qty_promo['bundle_buy'] * bundle_buy_ratio
+        bundle_applies = qty_pieces >= bundle_buy_pieces
+        if bundle_applies:
+            mult = _bundle_multiplier(qty_promo)
         free_units = {
             'buy': qty_promo['bundle_buy'],
             'free': qty_promo['bundle_free'],
             'unit': qty_promo['bundle_unit'] or answer_unit,
+            'applies': bundle_applies,
         }
 
     breadcrumb = _build_breadcrumb(list_info, price_promo, list_after_promo, basis,
@@ -655,7 +833,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     answer = {
         'price_per_unit': price,
         'unit': answer_unit,
-        'qty': qty,
+        'qty': qty_answer,
         'line_total': line_total,
         'basis': basis,
         'breadcrumb': breadcrumb,
@@ -671,14 +849,19 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         round((lowest['cash_per_unit'] - cost_side) / lowest['cash_per_unit'] * 100, 2)
         if lowest else None
     )
+    # I3: below_cost (R5, and this field) compares against cost_price x
+    # ratio specifically — the UNADJUSTED per-unit cost — never cost_side
+    # (which already has the bundle free-units multiplier folded in, and
+    # is for margin display only). below_cost_by is the internal-only
+    # number (C3): the flag text itself never carries it.
+    below_cost_by = round(cost_per_unit - price, 2) if price < cost_per_unit else None
 
     # R5 flags
     flags = []
-    if price < cost_side:
-        flags.append({'code': 'below_cost', 'text': f'ราคาต่ำกว่าทุน (ทุน ฿{cost_side:g})'})
+    if price < cost_per_unit:
+        flags.append({'code': 'below_cost', 'text': 'ราคาต่ำกว่าทุน'})
     if lowest is not None and price < lowest['cash_per_unit']:
-        flags.append({'code': 'new_floor',
-                      'text': f'ราคานี้ต่ำกว่าที่เคยขายต่ำสุด (฿{lowest["cash_per_unit"]:g})'})
+        flags.append({'code': 'new_floor', 'text': 'ราคานี้ต่ำกว่าที่เคยขายต่ำสุด'})
     if price_changed_since_last:
         flags.append({'code': 'price_changed_since_last',
                       'text': 'ราคาเปลี่ยนไปตั้งแต่ลูกค้ารายนี้ซื้อครั้งล่าสุด'})
@@ -689,6 +872,8 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     if promo_stale:
         flags.append({'code': 'promo_stale',
                       'text': f'โปรนี้ไม่ถูกใช้ในบิล — ทุกบิล {len(comparable)} ใบล่าสุดจ่ายสูงกว่าราคาโปร'})
+    if pack_only_text is not None:
+        flags.append({'code': 'pack_only', 'text': pack_only_text})
 
     return {
         'product': {
@@ -723,5 +908,6 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
             'margin_at_answer_pct': margin_at_answer_pct,
             'margin_at_lowest_pct': margin_at_lowest_pct,
             'margin_incl_free_units': margin_incl_free_units,
+            'below_cost_by': below_cost_by,
         },
     }

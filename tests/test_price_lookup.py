@@ -280,7 +280,10 @@ def test_r2_bundle_promo_free_units_price_unchanged(db):
            bundle_unit='ใบ', date_start='2026-06-01', is_active=1)
     out = pl.resolve_price(db, product_id=pid, unit='โหล', today=TODAY)
     assert out['list']['list_after_promo'] == out['list']['list_for_unit']  # price unchanged
-    assert out['answer']['free_units'] == {'buy': 12, 'free': 1, 'unit': 'ใบ'}
+    # qty=1 โหล = 12 pieces >= bundle_buy 12 (bundle_unit 'ใบ' has no
+    # unit_conversions row -> falls back to ratio 1.0, i.e. already pieces)
+    # -> the bundle applies (I2, review round 1).
+    assert out['answer']['free_units'] == {'buy': 12, 'free': 1, 'unit': 'ใบ', 'applies': True}
 
 
 def test_r2_price_and_qty_promo_both_returned(db):
