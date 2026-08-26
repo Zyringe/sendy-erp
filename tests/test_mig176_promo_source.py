@@ -79,7 +79,7 @@ def test_stamps_only_the_catalog_batch_control_row_stays_unstamped(db):
     control = conn.execute(
         "SELECT source, date_start FROM promotions WHERE promo_name = 'manual test'"
     ).fetchone()
-    assert control == (None, None), "the stamp must not touch a promo outside the batch"
+    assert tuple(control) == (None, None), "the stamp must not touch a promo outside the batch"
 
 
 def test_check_rejects_an_unlisted_source(db):
