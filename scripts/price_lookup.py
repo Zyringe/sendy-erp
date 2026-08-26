@@ -32,12 +32,14 @@ Per line:
     base_sell_price=0 product with no tier; NOTE the brief's literal
     `list_source == 'none'` condition does not occur in price_lookup.py —
     'none' is a value of the DIFFERENT field `unit.ratio_source`, verified
-    against the source, see task-1b-report.md), the result gets a
-    `family_hint`: up to 5 active sibling products sharing the same
-    `products.family_id` (excluding this product), each with its own
-    base_sell_price, โหล tier price (if any), and most recent evidence-
-    filtered B2B cash per piece (if any). `[]` when the product has no
-    family.
+    against the source, see task-1b-report.md), the result gets
+    `no_list_price: true` (so the skill can say "ยังไม่มีราคาตั้ง" outright
+    instead of inferring it from a ฿0) plus a `family_hint`: up to 5 active
+    sibling products sharing the same `products.family_id` (excluding this
+    product), each with its own base_sell_price, โหล tier price (if any),
+    and most recent evidence-filtered B2B cash per piece (if any). Neither
+    key is present when the product has a real price; `family_hint` is `[]`
+    (with `no_list_price` still `true`) when the product has no family.
 
 Env: importing price_lookup pulls inventory_app/models -> config, which
 requires SECRET_KEY and ADMIN_PASSWORD (raises RuntimeError otherwise).
@@ -226,6 +228,7 @@ def _resolve_line(conn, line, today):
         return {'error': str(e)}
 
     if result['list']['list_for_unit'] == 0:
+        result['no_list_price'] = True
         result['family_hint'] = _family_hint(conn, product_id)
 
     return {'result': result}

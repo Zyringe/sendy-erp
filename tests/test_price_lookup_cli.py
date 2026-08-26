@@ -142,6 +142,11 @@ def test_json_round_trip_one_resolved_line(tmp_db, tmp_db_conn):
     assert 'customer' in result
     assert result['customer'] is None
 
+    # Control for the no-price case below: a normally-priced product carries
+    # NEITHER key at all.
+    assert 'no_list_price' not in result
+    assert 'family_hint' not in result
+
 
 def test_ambiguous_product_query_returns_candidates(tmp_db, tmp_db_conn):
     token = f"เอกลักษณ์กำกวม{_pid_counter[0] + 1}"
@@ -198,6 +203,7 @@ def test_family_hint_present_for_no_price_product_with_priced_sibling(tmp_db, tm
     result = line['result']
     # The trigger this feature hangs off: no real price at all.
     assert result['list']['list_for_unit'] == 0
+    assert result['no_list_price'] is True
     assert 'family_hint' in result
     hints = result['family_hint']
     assert len(hints) >= 1
@@ -218,6 +224,7 @@ def test_family_hint_empty_for_no_price_product_without_family(tmp_db, tmp_db_co
     line = out['lines'][0]
     result = line['result']
     assert result['list']['list_for_unit'] == 0
+    assert result['no_list_price'] is True
     assert result['family_hint'] == []
 
 
