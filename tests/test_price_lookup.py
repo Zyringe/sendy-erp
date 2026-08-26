@@ -1093,3 +1093,97 @@ def test_ruling_tier_epoch_price_only(db):
     db.commit()
     out2 = pl.resolve_price(db, product_id=pid, today=TODAY)
     assert out2['window']['from'] == price_update_date
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Review round 2 — C1 not fully addressed + the ordering regression it
+# introduced. Fix shape: tier lookup FIRST, ratio can be None
+# ('ratio_source'='unknown'), every ratio-dependent number degrades to
+# None/skipped rather than being derived from a fabricated ratio of 1.0.
+#
+# Fixture shape matches two REAL live products found during round 1's
+# report (pid 459 'ลูกรีเวท DOME Sendai 4-4', tier '1 กล่อง'=480; pid 718
+# 'บานพับเหล็ก KPS 1.5in', tier '1 โหลคู่'=65) -- base=0, unit_type='ตัว',
+# ONE tier whose unit is NOT 'โหล' and has NO unit_conversions row.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _mk_box_only_product(db, name, *, tier_price=500.0, cost=2.0):
+    """A 459/718-shaped fixture: base=0, unit_type='ตัว', a single tier
+    labeled '1 กล่อง' (a box -- no derivable piece count), no
+    unit_conversions row at all."""
+    pid = _mk_product(db, name, unit_type='ตัว', base=0.0, cost=cost)
+    _clear_pid(db, pid)
+    _tier(db, pid, '1 กล่อง', tier_price)
+    return pid
+
+
+def test_r2b_a_direct_tier_unit_ask_no_ratio_no_raise(db):
+    """(a) ask unit='กล่อง', qty=3 -> no raise, list_for_unit 500, answer.qty
+    3, line_total 1500, internal.cost_per_unit is None, no below_cost,
+    breadcrumb contains 'กล่อง' and not 'ชิ้น'."""
+    pid = _mk_box_only_product(db, "R2b box direct ask")
+    out = pl.resolve_price(db, product_id=pid, unit='กล่อง', qty=3, today=TODAY)
+    assert out['list']['list_for_unit'] == 500.0
+    assert out['list']['list_source'] == 'tier'
+    assert out['unit']['ratio'] is None
+    assert out['unit']['ratio_source'] == 'unknown'
+    assert out['answer']['qty'] == 3
+    assert out['answer']['line_total'] == 1500.0
+    assert out['internal']['cost_per_unit'] is None
+    assert out['internal']['cost_side'] is None
+    assert out['internal']['note'] == 'no piece ratio for this pack unit'
+    assert 'below_cost' not in [f['code'] for f in out['flags']]
+    breadcrumb_text = ' '.join(out['answer']['breadcrumb'])
+    assert 'กล่อง' in breadcrumb_text
+    assert 'ชิ้น' not in breadcrumb_text
+
+
+def test_r2b_b_dozen_only_fallback_no_ratio(db):
+    """(b) ask unit='ตัว' (default piece), qty=12 -> answers at 500/กล่อง
+    (dozen-only fallback), answer.qty is None, line_total is None,
+    pack_only flag contains 'กล่อง', internal.cost_per_unit is None, and
+    the serialized result contains neither the wrong-multiply '6000' nor
+    the raw cost '2.0' anywhere."""
+    pid = _mk_box_only_product(db, "R2b box dozen-only fallback")
+    out = pl.resolve_price(db, product_id=pid, unit='ตัว', qty=12, today=TODAY)
+    assert out['list']['list_source'] == 'dozen-only'
+    assert out['answer']['unit'] == 'กล่อง'
+    assert out['list']['list_for_unit'] == 500.0
+    assert out['answer']['qty'] is None
+    assert out['answer']['line_total'] is None
+    pack_only = next(f for f in out['flags'] if f['code'] == 'pack_only')
+    assert 'กล่อง' in pack_only['text']
+    assert out['internal']['cost_per_unit'] is None
+    serialized = json.dumps(out, ensure_ascii=False)
+    assert '6000' not in serialized   # 12 (pieces) x 500 -- the round-1 bug's wrong line_total
+    assert '2.0' not in serialized    # the raw cost_price never leaks out
+
+
+def test_r2b_c_unresolvable_unit_message_lists_tier_only_units(db):
+    """(c) ask unit='ลัง' on the box-only fixture -> still raises, and the
+    message lists 'กล่อง' among the units that DO resolve (round 2 fix to
+    the C1 error message)."""
+    pid = _mk_box_only_product(db, "R2b box unresolvable ask")
+    with pytest.raises(ValueError) as exc_info:
+        pl.resolve_price(db, product_id=pid, unit='ลัง', today=TODAY)
+    assert 'กล่อง' in str(exc_info.value)
+
+
+def test_r2b_d_control_dozen_tier_unaffected(db):
+    """(d) control: the ORIGINAL โหล-tier dozen-only shape (ratio known via
+    tier-implied) is completely unaffected by the round-2 restructure --
+    keeps its ≈/ชิ้น breadcrumb, internal.cost_per_unit == cost x 12, and
+    the round-1 I1 qty conversion (12 ตัว -> 1 โหล)."""
+    pid = _mk_product(db, "R2b control dozen tier", unit_type='ตัว', base=0.0, cost=10.0)
+    _clear_pid(db, pid)
+    _tier(db, pid, '1 โหล', 460.0)
+    out = pl.resolve_price(db, product_id=pid, qty=12, today=TODAY)
+    assert out['unit']['ratio'] == 12.0
+    assert out['unit']['ratio_source'] == 'tier-implied'
+    assert out['answer']['unit'] == 'โหล'
+    assert out['answer']['qty'] == 1.0
+    assert out['answer']['line_total'] == 460.0
+    assert out['internal']['cost_per_unit'] == round(10.0 * 12, 2)
+    assert out['internal']['note'] is None
+    breadcrumb_text = ' '.join(out['answer']['breadcrumb'])
+    assert 'ชิ้น' in breadcrumb_text
