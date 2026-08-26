@@ -1187,3 +1187,55 @@ def test_r2b_d_control_dozen_tier_unaffected(db):
     assert out['internal']['note'] is None
     breadcrumb_text = ' '.join(out['answer']['breadcrumb'])
     assert 'ชิ้น' in breadcrumb_text
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Review round 3 — a `fixed` price promo silently dropped when ratio is
+# None, but the breadcrumb still announced it (no flag, list.price_promo
+# still non-None beside an unchanged list_after_promo).
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_r3_fixed_promo_not_convertible_when_ratio_none(db):
+    """(1) 459-shaped fixture + fixed promo discount_value=18 -> ratio is
+    None (a กล่อง tier, no unit_conversions row) -> the promo cannot be
+    converted to a per-กล่อง price. list_after_promo stays the plain tier
+    price, price_promo_applied is False, promo_not_convertible flag
+    fires, and the breadcrumb does NOT announce 'ราคาพิเศษ'."""
+    pid = _mk_box_only_product(db, "R3 box fixed promo not convertible")
+    _promo(db, pid, promo_type='fixed', discount_value=18.0, date_start='2026-06-01', is_active=1)
+    out = pl.resolve_price(db, product_id=pid, unit='กล่อง', today=TODAY)
+    assert out['list']['list_after_promo'] == 500.0
+    assert out['list']['price_promo_applied'] is False
+    codes = [f['code'] for f in out['flags']]
+    assert 'promo_not_convertible' in codes
+    breadcrumb_text = ' '.join(out['answer']['breadcrumb'])
+    assert 'ราคาพิเศษ' not in breadcrumb_text
+
+
+def test_r3_percent_promo_still_applies_when_ratio_none(db):
+    """(2) control: the SAME box-only product with a PERCENT promo (10%)
+    instead -- percent never needs ratio, so it applies normally: 450,
+    price_promo_applied True, no promo_not_convertible flag, breadcrumb
+    carries the discount line."""
+    pid = _mk_box_only_product(db, "R3 box percent promo control")
+    _promo(db, pid, promo_type='percent', discount_value=10.0, date_start='2026-06-01', is_active=1)
+    out = pl.resolve_price(db, product_id=pid, unit='กล่อง', today=TODAY)
+    assert out['list']['list_after_promo'] == 450.0
+    assert out['list']['price_promo_applied'] is True
+    assert 'promo_not_convertible' not in [f['code'] for f in out['flags']]
+    breadcrumb_text = ' '.join(out['answer']['breadcrumb'])
+    assert 'ลด' in breadcrumb_text
+
+
+def test_r3_fixed_promo_applies_normally_when_ratio_known(db):
+    """(3) control: the โหล-tier dozen-only product (ratio known, 12) with
+    the SAME fixed promo (18) -> applies normally: 18*12=216,
+    price_promo_applied True."""
+    pid = _mk_product(db, "R3 dozen fixed promo control", unit_type='ตัว', base=0.0, cost=10.0)
+    _clear_pid(db, pid)
+    _tier(db, pid, '1 โหล', 460.0)
+    _promo(db, pid, promo_type='fixed', discount_value=18.0, date_start='2026-06-01', is_active=1)
+    out = pl.resolve_price(db, product_id=pid, today=TODAY)
+    assert out['list']['list_after_promo'] == 216.0
+    assert out['list']['price_promo_applied'] is True
+    assert 'promo_not_convertible' not in [f['code'] for f in out['flags']]

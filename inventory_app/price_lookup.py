@@ -674,7 +674,13 @@ def _build_breadcrumb(list_info, price_promo, list_after_promo, basis,
         lines.append(f"ราคาตั้ง {list_info['list_for_unit']:g}/{answer_unit}")
     if price_promo is not None:
         if price_promo['promo_type'] == 'fixed':
-            lines.append(f"ราคาพิเศษ {list_after_promo:g}")
+            # review round 3: a fixed promo needs `ratio` to convert its
+            # per-piece price into answer_unit. When ratio is None it was
+            # never applied (see promo_not_convertible) -- announcing
+            # "ราคาพิเศษ" here would be an over-quote with nothing behind
+            # it, exactly the bug this round fixes.
+            if ratio is not None:
+                lines.append(f"ราคาพิเศษ {list_after_promo:g}")
         elif price_promo['discount_value'] is not None:
             lines.append(f"ลด {price_promo['discount_value']:g}% → {list_after_promo:g}")
     if basis == 'last_paid' and customer_last is not None:
@@ -753,6 +759,16 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
 
     price_promo, qty_promo = promo_models.get_active_promos_by_class(product_id, today, conn)
     list_after_promo = _apply_price_promo(list_info['list_for_unit'], ratio, price_promo)
+    # review round 3: a price promo "applied" iff it actually changed the
+    # number — False for the no-promo case (per the ruling) AND for a
+    # 'fixed' promo that _apply_price_promo left unapplied because ratio
+    # is None (it cannot convert the promo's per-piece price into
+    # answer_unit — see promo_not_convertible below). 'percent' is
+    # unaffected by ratio and always applies when a promo exists.
+    price_promo_applied = price_promo is not None and list_after_promo != list_info['list_for_unit']
+    promo_not_convertible = (
+        price_promo is not None and price_promo['promo_type'] == 'fixed' and ratio is None
+    )
 
     epoch, epoch_source = _epoch_with_reason(conn, product_id, answer_unit, today)
     window_from, n_bills, widened = _window(conn, product_id, epoch, today)
@@ -974,6 +990,12 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     if promo_stale:
         flags.append({'code': 'promo_stale',
                       'text': f'โปรนี้ไม่ถูกใช้ในบิล — ทุกบิล {len(comparable)} ใบล่าสุดจ่ายสูงกว่าราคาโปร'})
+    if promo_not_convertible:
+        flags.append({
+            'code': 'promo_not_convertible',
+            'text': (f"ราคาพิเศษ ฿{price_promo['discount_value']:g}/ชิ้น "
+                     f"ใช้กับหน่วย {answer_unit} ไม่ได้ — ไม่ทราบจำนวนชิ้นต่อแพ็ค"),
+        })
     if pack_only_text is not None:
         flags.append({'code': 'pack_only', 'text': pack_only_text})
 
@@ -991,6 +1013,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
             'price_promo': dict(price_promo) if price_promo is not None else None,
             'qty_promo': dict(qty_promo) if qty_promo is not None else None,
             'list_after_promo': list_after_promo,
+            'price_promo_applied': price_promo_applied,
             'promo_since': price_promo['date_start'] if price_promo is not None else None,
             'promo_source': price_promo['source'] if price_promo is not None else None,
         },
