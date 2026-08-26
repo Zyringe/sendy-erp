@@ -64,7 +64,8 @@ from .transactions import (
 )
 from .promotions import (
     get_promotions, get_active_promotion, effective_price, create_promotion,
-    deactivate_promotion, get_product_price_tiers,
+    deactivate_promotion, get_product_price_tiers, replace_promotion,
+    is_current, classify_promotions,
 )
 from .customers import (
     get_customer_summary, get_regions, get_customers,

@@ -114,13 +114,166 @@ def create_promotion(data: dict) -> int:
         conn.close()
 
 
-def deactivate_promotion(promo_id: int):
-    conn = get_connection()
+def deactivate_promotion(promo_id: int, today=None, conn=None):
+    """The 'ปิดเลย' button — the only path that sets is_active = 0. Also
+    stamps date_end = today when it was NULL (task-2-brief.md 2a), so a
+    deactivated promo has a real closing date for history/is_current
+    purposes instead of relying on is_active alone."""
+    today = today or date.today().isoformat()
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     try:
-        conn.execute("UPDATE promotions SET is_active = 0 WHERE id = ?", (promo_id,))
+        conn.execute(
+            "UPDATE promotions SET is_active = 0, "
+            "date_end = COALESCE(date_end, ?) WHERE id = ?",
+            (today, promo_id),
+        )
         conn.commit()
     finally:
-        conn.close()
+        if owned:
+            conn.close()
+
+
+def is_current(row, day):
+    """The shared vocabulary (task-2-brief.md 2a): is_active = 1 AND
+    (date_start IS NULL OR date_start <= day) AND (date_end IS NULL OR
+    date_end >= day). Used by the route (2d), the resolver (R2, already
+    inline in get_active_promotion / get_active_promos_by_class above),
+    the stale flag (R6) and the DB trigger (2b, same predicate rendered
+    in SQL) — never bare is_active.
+
+    `row` is a sqlite3.Row or dict carrying is_active/date_start/date_end.
+    """
+    if not row['is_active']:
+        return False
+    if row['date_start'] is not None and row['date_start'] > day:
+        return False
+    if row['date_end'] is not None and row['date_end'] < day:
+        return False
+    return True
+
+
+def classify_promotions(rows, day):
+    """Partition `rows` (e.g. from get_promotions) into (current, scheduled,
+    closed) per is_current(row, day) — task-2-brief.md 2d. scheduled = not
+    yet current because date_start is in the future (is_active still 1);
+    closed = everything else (is_active = 0, or date_end has passed)."""
+    current, scheduled, closed = [], [], []
+    for row in rows:
+        if is_current(row, day):
+            current.append(row)
+        elif row['is_active'] and row['date_start'] is not None and row['date_start'] > day:
+            scheduled.append(row)
+        else:
+            closed.append(row)
+    return current, scheduled, closed
+
+
+def promo_slots_for(conn, promo_type, discount_value, bundle_buy, gift_desc):
+    """Which slot(s) a (not-yet-inserted) row with these fields would
+    occupy — evaluated by the SAME promo_slot_sql() expression the
+    resolver (R2) and the mig-177 trigger use, against a throwaway 1-row
+    derived table, so this can never drift from them. Needed by
+    replace_promotion (2a) and the catalog importer (2c), which must know
+    slot membership BEFORE the row exists (replace_promotion closes the
+    old occupant of a slot BEFORE inserting the new row, or mig 177's
+    overlap trigger sees a transient overlap and aborts).
+
+    Returns (occupies_price: bool, occupies_qty: bool).
+    """
+    price_expr, qty_expr = promo_slot_sql('')
+    row = conn.execute(f"""
+        SELECT ({price_expr}) AS price_slot, ({qty_expr}) AS qty_slot
+        FROM (SELECT ? AS promo_type, ? AS discount_value,
+                     ? AS bundle_buy, ? AS gift_desc)
+    """, (promo_type, discount_value, bundle_buy, gift_desc)).fetchone()
+    return bool(row['price_slot']), bool(row['qty_slot'])
+
+
+def replace_promotion(product_id, data, today, conn=None):
+    """Create promotion `data` for product_id, closing whatever currently
+    occupies the same slot(s) it touches — task-2-brief.md 2a. Change =
+    close old (by DATE, keeping is_active = 1) + open new; never flips
+    is_active early (that would leave a gap where every quote falls back
+    to list price when new_start is in the future).
+
+    Returns (ok: bool, message: str, new_id: int | None). `ok is False`
+    means refused (new_start < today — backdating a promo rewrites
+    evidence) and NOTHING was written.
+
+    `today` must be passed by the caller (ISO date string) — this
+    function does no wall-clock read, so callers/tests can pin it.
+    """
+    owned = conn is None
+    if owned:
+        conn = get_connection()
+    try:
+        new_start = data.get('date_start') or today
+        if new_start < today:
+            return False, 'ไม่สามารถตั้งวันเริ่มโปรย้อนหลังได้ (การย้อนวันจะเขียนทับหลักฐานราคาที่ผ่านมา)', None
+
+        occupies_price, occupies_qty = promo_slots_for(
+            conn, data['promo_type'], data.get('discount_value'),
+            data.get('bundle_buy'), data.get('gift_desc'))
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            price_current, qty_current = get_active_promos_by_class(product_id, today, conn)
+            day_before = _add_days(new_start, -1)
+
+            closed_ids = set()
+            if occupies_price and price_current is not None:
+                closed_ids.add(price_current['id'])
+            if occupies_qty and qty_current is not None:
+                closed_ids.add(qty_current['id'])
+            for cid in closed_ids:
+                conn.execute(
+                    "UPDATE promotions SET date_end = ? WHERE id = ?", (day_before, cid))
+
+            full = {
+                "product_id":        product_id,
+                "promo_name":        data["promo_name"],
+                "promo_type":        data["promo_type"],
+                "discount_value":    data.get("discount_value"),
+                "date_start":        new_start,
+                "date_end":          data.get("date_end"),
+                "bundle_buy":        data.get("bundle_buy"),
+                "bundle_free":       data.get("bundle_free"),
+                "bundle_unit":       data.get("bundle_unit"),
+                "bundle_condition":  data.get("bundle_condition"),
+                "bundle_tiers_json": data.get("bundle_tiers_json"),
+                "gift_desc":         data.get("gift_desc"),
+                "gift_qty":          data.get("gift_qty"),
+                "source":            "manual",
+            }
+            cur = conn.execute("""
+                INSERT INTO promotions (
+                    product_id, promo_name, promo_type, discount_value,
+                    date_start, date_end,
+                    bundle_buy, bundle_free, bundle_unit, bundle_condition,
+                    bundle_tiers_json, gift_desc, gift_qty, source
+                ) VALUES (
+                    :product_id, :promo_name, :promo_type, :discount_value,
+                    :date_start, :date_end,
+                    :bundle_buy, :bundle_free, :bundle_unit, :bundle_condition,
+                    :bundle_tiers_json, :gift_desc, :gift_qty, :source
+                )
+            """, full)
+            new_id = cur.lastrowid
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return True, 'บันทึกโปรโมชันเรียบร้อย', new_id
+    finally:
+        if owned:
+            conn.close()
+
+
+def _add_days(iso_date, n):
+    from datetime import timedelta
+    return (date.fromisoformat(iso_date) + timedelta(days=n)).isoformat()
 
 
 def promo_slot_sql(alias):

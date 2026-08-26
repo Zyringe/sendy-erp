@@ -1,6 +1,7 @@
 import os
 import shutil
 import sqlite3
+from datetime import date
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort, current_app, send_file)
@@ -882,12 +883,19 @@ def promotion_new(product_id):
             flash(f'ไม่รองรับ promo_type {t!r}', 'danger')
             return render_template('promotions/form.html', product=product)
 
+        # 2a: creating a promo REPLACES whatever currently occupies the same
+        # slot (price / qty / both) — closes the old row by date (date_end =
+        # new_start − 1, is_active untouched) and inserts this one with
+        # source='manual'. `ok is False` means new_start < today (backdating
+        # refused) — flash + redirect either way (302 on success AND on
+        # refusal), never re-render the form for THIS check.
+        today = date.today().isoformat()
         try:
-            models.create_promotion(data)
+            ok, msg, _new_id = models.replace_promotion(product_id, data, today=today)
         except sqlite3.IntegrityError as e:
             flash(f'บันทึกไม่สำเร็จ (CHECK constraint): {e}', 'danger')
             return render_template('promotions/form.html', product=product)
-        flash('เพิ่มโปรโมชันเรียบร้อย', 'success')
+        flash(msg, 'success' if ok else 'danger')
         return redirect(url_for('products.product_detail', product_id=product_id))
 
     return render_template('promotions/form.html', product=product)
