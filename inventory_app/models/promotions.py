@@ -123,6 +123,57 @@ def deactivate_promotion(promo_id: int):
         conn.close()
 
 
+def promo_slot_sql(alias):
+    """Return (price_expr, qty_expr) — the two independent promo-class
+    predicates, every column prefixed with `alias.` (pass '' for an
+    unaliased FROM, 'NEW' for a trigger body).
+
+    A `mixed` row can satisfy BOTH slots at once (discount_value set AND
+    bundle_buy/gift_desc set) — the two slots are selected independently
+    by the caller, not mutually exclusive. See price_lookup.py R2.
+    """
+    p = f'{alias}.' if alias else ''
+    price_expr = (
+        f"({p}promo_type IN ('percent','fixed') "
+        f"OR ({p}promo_type = 'mixed' AND {p}discount_value IS NOT NULL))"
+    )
+    qty_expr = (
+        f"({p}promo_type IN ('bundle','gift') "
+        f"OR ({p}promo_type = 'mixed' AND ({p}bundle_buy IS NOT NULL OR {p}gift_desc IS NOT NULL)))"
+    )
+    return price_expr, qty_expr
+
+
+def get_active_promos_by_class(product_id: int, on_date: str, conn):
+    """Return (price_promo_row, qty_promo_row) for product_id, active on
+    on_date — each slot selected independently (ORDER BY id DESC LIMIT 1
+    among rows whose date window contains on_date), so a later-created
+    bundle/gift promo can never shadow an earlier price promo (or vice
+    versa) the way a single ORDER BY id DESC LIMIT 1 over all promo_types
+    would. A `mixed` row satisfying both predicates is returned in both
+    slots (see promo_slot_sql). Caller (price_lookup.resolve_price) owns
+    the conn — this never opens/closes its own.
+    """
+    price_expr, qty_expr = promo_slot_sql('')
+    price_promo = conn.execute(f"""
+        SELECT * FROM promotions
+        WHERE product_id = ? AND is_active = 1
+          AND (date_start IS NULL OR date_start <= ?)
+          AND (date_end IS NULL OR date_end >= ?)
+          AND {price_expr}
+        ORDER BY id DESC LIMIT 1
+    """, (product_id, on_date, on_date)).fetchone()
+    qty_promo = conn.execute(f"""
+        SELECT * FROM promotions
+        WHERE product_id = ? AND is_active = 1
+          AND (date_start IS NULL OR date_start <= ?)
+          AND (date_end IS NULL OR date_end >= ?)
+          AND {qty_expr}
+        ORDER BY id DESC LIMIT 1
+    """, (product_id, on_date, on_date)).fetchone()
+    return price_promo, qty_promo
+
+
 def get_product_price_tiers(product_id: int, conn=None):
     """Return all tier rows for this product, ordered by sort_order then price."""
     owned = conn is None
