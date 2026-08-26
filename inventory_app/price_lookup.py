@@ -7,7 +7,7 @@ under `/opt/venv/bin/python`.
 
 Design (see .superpowers/sdd/plan/task-1-brief.md for the numbered rules
 R1-R8 this file implements, and .superpowers/sdd/plan/task-1-report.md for
-the review-round-1 fixes and their reasoning):
+the review-round fixes and their reasoning — two rounds so far):
 
   - `evidence_filter(alias)` is the ONE population predicate — every
     money-relevant query in this module (last-paid, lowest, promo
@@ -25,14 +25,18 @@ the review-round-1 fixes and their reasoning):
     into "cash the customer paid, per some unit" — used both for the
     in-window last-paid answer and (with an unbounded window_from) for the
     pre-window informational lookup that drives `price_changed_since_last`.
-  - `_resolve_ratio` refuses to guess: for a unit the caller explicitly
-    asked about (not the product's own unit_type) that resolves via
-    neither `unit_conversions` nor a matching โหล tier, it raises rather
-    than silently returning ratio 1.0 (which would present the per-piece
-    price as if it were the asked unit's price — review round 1, C1). The
-    `strict=False` escape hatch is for INTERNAL reuse only, where a
-    missing ratio should degrade a computation rather than abort an
-    otherwise-answerable quote (see its docstring for the two call sites).
+  - `_resolve_unit` looks up a tier FIRST, then a ratio — a tier row
+    matching the asked unit always answers at the tier's own price,
+    whether or not a piece-equivalent ratio is derivable for it (review
+    round 2). It refuses to guess a ratio: for a unit that resolves via
+    neither `unit_conversions` nor a matching tier at all, it raises
+    rather than silently returning ratio 1.0 (round 1, C1). When a tier
+    DOES answer but no piece ratio is derivable (ratio_source='unknown',
+    ratio=None), `resolve_price` degrades every ratio-dependent number
+    (qty/line_total in the dozen-only case, internal cost/margin, the
+    below_cost flag) to None/skipped rather than deriving them from a
+    fabricated ratio of 1.0 — see `resolve_price`'s inline comments at
+    each such site.
 
 Python 3.9+ compatible (no `X | None` syntax) — same constraint as
 sales_filters.py, this runs on prod's older interpreter too.
@@ -139,67 +143,81 @@ def _normalize_unit(unit, unit_type):
 
 
 def _known_ratio_units(conn, product_id):
-    """Units this product has an established ratio for — used only to build
-    the C1 error message (names what DOES resolve, so the reader knows what
-    to ask for or what to go set up)."""
+    """Units this product can answer a price question for at all — used to
+    build the C1 error message. Includes units with a KNOWN ratio
+    (`unit_conversions` rows) AND units that can only be answered at a
+    tier's own price with the ratio itself unknown (review round 2 — the
+    message must list tier-only units too, e.g. a box tier with no
+    unit_conversions row, so a human reading the error knows 'กล่อง' is a
+    real, answerable ask even though its piece-equivalent isn't known)."""
     units = [r['bsn_unit'] for r in conn.execute(
         "SELECT DISTINCT bsn_unit FROM unit_conversions WHERE product_id = ?",
         (product_id,)
     ).fetchall()]
-    if _find_matching_tier(conn, product_id, 'โหล') is not None and 'โหล' not in units:
-        units.append('โหล')
+    tier_units = [_strip_tier_qty(r['qty_label']) for r in conn.execute(
+        "SELECT qty_label FROM product_price_tiers WHERE product_id = ?",
+        (product_id,)
+    ).fetchall()]
+    for u in tier_units:
+        if u not in units:
+            units.append(u)
     return units
 
 
-def _resolve_ratio(conn, product_id, unit, unit_type, strict=False):
-    """(ratio, ratio_source) for `unit`, per R1: a `unit_conversions` row
-    wins first; else a matching โหล tier implies ratio 12
-    (`ratio_source='tier-implied'`); else 1.0/`'none'` when `unit ==
-    unit_type` (the ask is already in the base unit — ratio is trivially
-    1, and this is always safe regardless of `strict`).
+def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
+    """(ratio, ratio_source, tier_row) for `unit`.
 
-    When `unit != unit_type` and NEITHER source resolves, returning 1.0
-    silently presents the per-piece price as if it were the requested
-    unit's price — e.g. `unit='ลัง'` with no conversion/tier row would
-    silently answer with the per-piece price labelled as a carton price
-    (review round 1, finding C1). `strict=True` raises `ValueError`
-    instead (message names the product, the unit, and the units that DO
-    resolve, for a human — the CLI/skill — to act on).
+    Tier lookup happens FIRST — a tier row matching `unit` always means
+    the price question CAN be answered (at the tier's own price),
+    regardless of whether a piece-ratio is separately derivable for it.
+    This governs the STRICT raise condition below (review round 2 — the
+    round 1 fix checked `unit_conversions`/unit_type BEFORE the tier,
+    so a valid tier-only ask like `unit='กล่อง'` on a box-tiered product
+    raised even though the DB has a perfectly good answer for it).
 
-    `strict=False` (the default) is for the two INTERNAL reuse sites where
-    a missing ratio should degrade a computation rather than abort an
-    otherwise-answerable quote, deliberately NOT treated as a C1-shaped
-    bug:
-      - `_resolve_list`'s dozen-only fallback: `unit` there is not
-        something the caller asked for, it's the label of the product's
-        ONLY tier (e.g. a real live product's tier is '1 กล่อง' — a box,
-        which encodes no derivable piece-count the way 'โหล' does). The
-        tier's PRICE itself never depends on this ratio — only the
-        breadcrumb's "≈ ฿x/piece" note and internal cost/margin do —
-        so refusing to quote a real, known, tier-priced product over a
-        piece-ratio we were never going to be able to state precisely
-        would make the R1 dozen-only case unusable for exactly the
-        products it exists to serve.
-      - `latest_evidence`'s bill-unit conversion: called internally by
-        `resolve_price` with the SAME `unit` `_resolve_list` already
-        resolved (raising there already, if it was going to). Re-raising
-        here for the identical unit would just move the crash from one
-        line to the next with no new information; `latest_evidence`'s
-        existing contract ("returns None when nothing usable is found")
-        already covers "can't be answered", the same way a missing bill
-        does.
+    ratio_source values:
+      'unit_conversions' -- a unit_conversions row exists for (pid, unit)
+      'tier-implied'      -- unit == 'โหล', a โหล tier exists, no
+                              unit_conversions row (ratio = 12.0)
+      'none'              -- unit == unit_type (ratio trivially 1.0)
+      'unknown'           -- a tier row (any label) answers the price, but
+                              no unit_conversions row exists for `unit` and
+                              it isn't the โหล-implied case — ratio is
+                              genuinely not derivable (ratio = None).
+                              `resolve_price` must never treat this the
+                              same as ratio=1.0: every ratio-dependent
+                              number (qty conversion, internal cost/
+                              margin, below_cost) degrades to None/skipped
+                              at the one place ratio is consumed, not
+                              silently computed here.
+
+    `strict=True` raises `ValueError` (message names the product, the
+    unit, and every unit that DOES resolve — including tier-only units)
+    only when NONE of the above apply: `unit != unit_type`, no
+    `unit_conversions` row, and no tier row matches `unit` at all. This
+    is the literal C1 bug (an ask like `unit='ลัง'` with nothing in the DB
+    to answer it) — a tier answering the price, even without a ratio, is
+    never itself grounds for raising.
+
+    `strict=False` (the default) is for the INTERNAL reuse site
+    (`latest_evidence`'s bill-unit conversion) where a genuinely
+    unresolvable unit should make that lookup return None (its existing
+    "nothing usable found" contract) rather than raise.
     """
+    tier = _find_matching_tier(conn, product_id, unit)
+
     row = conn.execute(
         "SELECT ratio FROM unit_conversions WHERE product_id = ? AND bsn_unit = ?",
         (product_id, unit)
     ).fetchone()
     if row is not None:
-        return float(row['ratio']), 'unit_conversions'
-    tier = _find_matching_tier(conn, product_id, unit)
+        return float(row['ratio']), 'unit_conversions', tier
     if tier is not None and unit == 'โหล':
-        return 12.0, 'tier-implied'
+        return 12.0, 'tier-implied', tier
     if unit == unit_type:
-        return 1.0, 'none'
+        return 1.0, 'none', tier
+    if tier is not None:
+        return None, 'unknown', tier
     if strict:
         prod = _get_product(conn, product_id)
         pname = prod['product_name'] if prod is not None else f'product_id {product_id}'
@@ -209,7 +227,7 @@ def _resolve_ratio(conn, product_id, unit, unit_type, strict=False):
             f"{pname} (id {product_id}): no ratio known for unit {unit!r} "
             f"(unit_type={unit_type!r}; units that DO resolve: {resolves})"
         )
-    return 1.0, 'none'
+    return 1.0, 'none', tier
 
 
 def _bundle_buy_ratio(conn, product_id, bundle_unit, unit_type):
@@ -217,10 +235,10 @@ def _bundle_buy_ratio(conn, product_id, bundle_unit, unit_type):
     `bundle_unit`) into pieces, for I2's qty-gating check. 1.0 when
     `bundle_unit` is NULL or already the piece unit; else the
     `unit_conversions` ratio for `bundle_unit` specifically (per the
-    ruling — not the general `_resolve_ratio` fallback chain, no
-    tier-implied step). Best-effort 1.0 when no row exists: this is an
-    internal margin-gating computation, not a user-facing ask, so (like
-    the two `strict=False` sites above) it degrades rather than raising."""
+    ruling — not the general `_resolve_unit` chain, no tier-implied
+    step). Best-effort 1.0 when no row exists: this is an internal
+    margin-gating computation, not a user-facing ask, so it degrades
+    rather than raising."""
     if not bundle_unit or bundle_unit == unit_type:
         return 1.0
     row = conn.execute(
@@ -253,18 +271,17 @@ def _resolve_list(conn, product_id, unit_type, base, asked_unit):
     """R1: unit + list. Returns a dict with ratio/ratio_source/answer_unit
     (answer_unit differs from asked_unit only in the dozen-only case, where
     the answer switches to the tier's own unit) / asked_ratio (the ratio
-    for the unit actually asked about — needed by I1's qty conversion,
-    always 1.0 in the dozen-only branch since that branch only triggers
-    when asked_unit == unit_type) / list_for_unit / list_source /
-    tier_equals_base_x_ratio.
+    for the unit actually asked about — needed by I1's qty conversion; can
+    be None in the (rare) case the asked unit itself is only answerable
+    via a non-โหล tier with no unit_conversions row) / list_for_unit /
+    list_source / tier_equals_base_x_ratio (None when ratio is None — it
+    can't be computed without one).
 
-    The FIRST `_resolve_ratio` call below is `strict=True` — this is the
-    literal ask-level resolution C1 is about. The dozen-only fallback's
-    call is `strict=False` — see `_resolve_ratio`'s docstring for why.
+    The FIRST `_resolve_unit` call below is `strict=True` — this is the
+    literal ask-level resolution C1 is about.
     """
-    asked_ratio, asked_ratio_source = _resolve_ratio(conn, product_id, asked_unit, unit_type, strict=True)
+    asked_ratio, asked_ratio_source, tier = _resolve_unit(conn, product_id, asked_unit, unit_type, strict=True)
     ratio, ratio_source = asked_ratio, asked_ratio_source
-    tier = _find_matching_tier(conn, product_id, asked_unit)
     answer_unit = asked_unit
 
     if tier is not None:
@@ -274,7 +291,7 @@ def _resolve_list(conn, product_id, unit_type, base, asked_unit):
         fallback = _first_tier(conn, product_id)
         if fallback is not None:
             fb_unit = _strip_tier_qty(fallback['qty_label'])
-            ratio, ratio_source = _resolve_ratio(conn, product_id, fb_unit, unit_type, strict=False)
+            ratio, ratio_source, _fb_tier = _resolve_unit(conn, product_id, fb_unit, unit_type, strict=False)
             answer_unit = fb_unit
             list_for_unit = round(float(fallback['price']), 2)
             list_source = 'dozen-only'
@@ -285,7 +302,9 @@ def _resolve_list(conn, product_id, unit_type, base, asked_unit):
         list_for_unit = round(base * ratio, 2)
         list_source = 'base×ratio'
 
-    tier_equals_base_x_ratio = abs(list_for_unit - round(base * ratio, 2)) < 0.01
+    tier_equals_base_x_ratio = (
+        abs(list_for_unit - round(base * ratio, 2)) < 0.01 if ratio is not None else None
+    )
 
     return {
         'ratio': ratio,
@@ -304,11 +323,17 @@ def _apply_price_promo(list_for_unit, ratio, price_promo):
     15 real mixed+discount rows in the catalog carry values like 10/15/20,
     which are percentages, not final per-piece prices; a FIXED final price
     of ฿10-20 on a ฿35-250 product is not a real catalog price) → list ×
-    (1 − d/100). fixed → discount_value × ratio (fixed IS the final
-    per-PIECE price, mirrors models.promotions.effective_price)."""
+    (1 − d/100) — this branch never needs `ratio`. fixed → discount_value
+    × ratio (fixed IS the final per-PIECE price, mirrors
+    models.promotions.effective_price) — when `ratio is None` (review
+    round 2: a tier answers the price but no piece-ratio is derivable),
+    that per-piece conversion cannot be computed; the fixed promo is left
+    unapplied (list_for_unit unchanged) rather than guessed."""
     if price_promo is None:
         return list_for_unit
     if price_promo['promo_type'] == 'fixed':
+        if ratio is None:
+            return list_for_unit
         return round(price_promo['discount_value'] * ratio, 2)
     d = price_promo['discount_value']
     if d is None:
@@ -463,9 +488,9 @@ def _epoch_with_reason(conn, product_id, unit, today):
 # ── evidence lookups ─────────────────────────────────────────────────────────
 
 def latest_evidence(conn, product_id, customer_code, window_from, unit=None, today=None):
-    """The customer's most recent evidence-filtered, ratio-convertible bill
-    for this product in [`window_from`, `today`] (pass window_from='' for
-    an unbounded-from-below search — used by resolve_price for the
+    """The customer's most recent evidence-filtered bill for this product
+    in [`window_from`, `today`] (pass window_from='' for an
+    unbounded-from-below search — used by resolve_price for the
     pre-window informational lookup), converted to `unit` (default: the
     product's unit_type). None when customer_code is falsy, the product
     doesn't exist, or no matching bill exists.
@@ -474,10 +499,15 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
     brief's literal signature, for the same reason as `epochs_for`'s —
     positional-or-keyword, not keyword-only, so every existing call site
     is unaffected. Without an upper bound the query had NO ceiling at
-    all (review round 1, finding I4): a future-dated bill — a data-entry
-    mistake, or simply "today" as simulated by a caller pinning a fixed
-    date for determinism — would be treated as the customer's most recent
-    evidence, becoming `basis='last_paid'` ahead of its own time.
+    all (review round 1, I4): a future-dated bill would be treated as the
+    customer's most recent evidence.
+
+    When `unit`'s ratio is unknown (review round 2 — `_resolve_unit`
+    returns `ratio=None`, a tier answers the ask but no piece-equivalent
+    is derivable), only a bill whose OWN unit is already exactly `unit`
+    can be answered directly (no conversion needed); a bill in any other
+    unit cannot be converted and is skipped, same as an ordinary
+    unratioed bill.
     """
     if not customer_code:
         return None
@@ -487,7 +517,7 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
     today = today or date.today().isoformat()
     unit_type = prod['unit_type']
     target_unit = unit or unit_type
-    ratio, _source = _resolve_ratio(conn, product_id, target_unit, unit_type, strict=False)
+    ratio, _source, _tier = _resolve_unit(conn, product_id, target_unit, unit_type, strict=False)
 
     rows = conn.execute(f"""
         SELECT * FROM sales_transactions st
@@ -499,6 +529,17 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
 
     cache = {}
     for row in rows:
+        if ratio is None:
+            if row['unit'] != target_unit:
+                continue
+            cash_val = round((row['net'] / row['qty']) * (1.07 if row['vat_type'] == 2 else 1.0), 2)
+            return {
+                'cash_per_unit': cash_val,
+                'unit': target_unit,
+                'qty': row['qty'],
+                'date': row['date_iso'],
+                'doc_no': row['doc_no'],
+            }
         bill_ratio = _bill_ratio(conn, product_id, unit_type, row['unit'], cache)
         if bill_ratio is None:
             continue
@@ -587,7 +628,12 @@ def _promo_evidence(price_promo, comparable, list_after_promo, ratio):
     matter what the bills look like (review round 1, C2 — this used to
     compare bills against the plain list price when no promo existed at
     all, false-flagging real live products as 'promo not used' when there
-    was never a promo to use)."""
+    was never a promo to use). `comparable` is populated by the caller
+    only when a per-piece cash figure could actually be computed for a
+    bill (round 2: with no piece ratio for the asked unit, R6's per-piece
+    comparison has no basis at all, so the caller passes an empty list
+    and this naturally returns (None, None) via the 'not comparable'
+    branch below — no ratio math happens in this function)."""
     if price_promo is None:
         return None, None
     if not comparable:
@@ -606,12 +652,26 @@ def _promo_evidence(price_promo, comparable, list_after_promo, ratio):
 def _build_breadcrumb(list_info, price_promo, list_after_promo, basis,
                        customer_last, extra_disc):
     lines = []
+    ratio = list_info['ratio']
+    answer_unit = list_info['answer_unit']
     if list_info['list_source'] == 'dozen-only':
-        per_piece = round(list_info['list_for_unit'] / list_info['ratio'], 2) if list_info['ratio'] else list_info['list_for_unit']
-        lines.append(f"ขายยกโหล ฿{list_info['list_for_unit']:g} (≈ ฿{per_piece:.2f}/ชิ้น)")
+        if ratio is not None:
+            per_piece = round(list_info['list_for_unit'] / ratio, 2) if ratio else list_info['list_for_unit']
+            lines.append(f"ขายยก{answer_unit} ฿{list_info['list_for_unit']:g} (≈ ฿{per_piece:.2f}/ชิ้น)")
+        else:
+            # review round 2: no piece ratio for this pack unit — never
+            # fabricate a per-piece figure (that was the round-1 bug: a
+            # box's own price rendered as "≈ ฿500.00/ชิ้น").
+            lines.append(f"ขายยก{answer_unit} ฿{list_info['list_for_unit']:g}")
+    elif list_info['list_source'] == 'tier':
+        if ratio is None:
+            lines.append(f"ราคาตั้ง {list_info['list_for_unit']:g}/{answer_unit} (จากช่องราคาแพ็ค)")
+        elif answer_unit == 'โหล':
+            lines.append(f"ราคาตั้ง {list_info['list_for_unit']:g}/{answer_unit} (จากช่องราคาโหล)")
+        else:
+            lines.append(f"ราคาตั้ง {list_info['list_for_unit']:g}/{answer_unit} (จากช่องราคาแพ็ค)")
     else:
-        lines.append(f"ราคาตั้ง {list_info['list_for_unit']:g}/{list_info['answer_unit']}"
-                     + (" (จากช่องราคาโหล)" if list_info['list_source'] == 'tier' else ""))
+        lines.append(f"ราคาตั้ง {list_info['list_for_unit']:g}/{answer_unit}")
     if price_promo is not None:
         if price_promo['promo_type'] == 'fixed':
             lines.append(f"ราคาพิเศษ {list_after_promo:g}")
@@ -672,8 +732,9 @@ def find_customers(conn, query, limit=8):
 def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
                    extra_disc=0.0, today=None):
     """Pure function: reads conn, never writes. See module docstring + R1-R8
-    in task-1-brief.md, and task-1-report.md for the review-round-1 fixes
-    (C1-C3, I1-I7, and the tier-epoch ruling) applied here."""
+    in task-1-brief.md, and task-1-report.md for the review-round fixes
+    (round 1: C1-C3, I1-I7, tier-epoch ruling; round 2: the tier-first
+    ratio ordering and every ratio=None degrade site) applied here."""
     today = today or date.today().isoformat()
 
     prod = _get_product(conn, product_id)
@@ -697,19 +758,34 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     window_from, n_bills, widened = _window(conn, product_id, epoch, today)
     window_reason = epoch_source if (epoch is not None and window_from == epoch) else '12m'
 
+    # R4 lowest / promo-evidence population. When `ratio` is None (review
+    # round 2: the answer unit is only a tier's own price, no piece
+    # equivalent), a bill can only be converted to "cash per answer_unit"
+    # if its OWN unit already IS answer_unit — no via-pieces conversion is
+    # possible. `new_floor` still works from such direct-unit bills;
+    # anything else is uncomparable and counted in n_unratioed like an
+    # ordinary unratioed bill. `comparable` (R6, which is inherently a
+    # per-PIECE comparison) stays empty in this case — there is no piece
+    # basis to compare against at all.
     rows = _evidence_rows(conn, product_id, window_from, today)
     cache = {}
     n_unratioed = 0
     lowest = None
     comparable = []  # (cash_per_piece, row) — used for R6 promo evidence
     for row in rows:
-        bill_ratio = _bill_ratio(conn, product_id, unit_type, row['unit'], cache)
-        if bill_ratio is None:
-            n_unratioed += 1
-            continue
-        cash_pp = (row['net'] / row['qty']) * (1.07 if row['vat_type'] == 2 else 1.0) / bill_ratio
-        comparable.append((cash_pp, row))
-        cash_asked = round(cash_pp * ratio, 2)
+        if ratio is None:
+            if row['unit'] != answer_unit:
+                n_unratioed += 1
+                continue
+            cash_asked = round((row['net'] / row['qty']) * (1.07 if row['vat_type'] == 2 else 1.0), 2)
+        else:
+            bill_ratio = _bill_ratio(conn, product_id, unit_type, row['unit'], cache)
+            if bill_ratio is None:
+                n_unratioed += 1
+                continue
+            cash_pp = (row['net'] / row['qty']) * (1.07 if row['vat_type'] == 2 else 1.0) / bill_ratio
+            comparable.append((cash_pp, row))
+            cash_asked = round(cash_pp * ratio, 2)
         if lowest is None or cash_asked < lowest['cash_per_unit']:
             lowest = {
                 'cash_per_unit': cash_asked,
@@ -789,35 +865,49 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         else:
             basis = 'list_after_promo_extra'
 
-    # I1: in the dozen-only case, `qty` was expressed in the unit the caller
-    # actually asked about (always the piece, per _resolve_list's dozen-only
-    # trigger condition), but the ANSWER is priced per `answer_unit` (the
-    # tier's own unit, e.g. โหล) — qty must convert the same way, or
-    # line_total silently multiplies a per-dozen price by a piece count.
+    # I1 (round 1) + round 2's no-ratio dozen-only case. In the dozen-only
+    # branch, `qty` was expressed in the unit the caller actually asked
+    # about (always the piece), but the ANSWER is priced per `answer_unit`
+    # (the tier's own unit). When `ratio` (answer_unit's ratio) is known,
+    # convert qty the same way (I1); when it is None, we cannot state how
+    # many answer_units the ask represents at all — answer.qty/line_total
+    # become None rather than silently treating ratio as 1 (review round
+    # 2's core finding). Outside the dozen-only branch, asked_unit ==
+    # answer_unit always, so qty needs no conversion regardless of ratio
+    # (ruling's general no-ratio case: "qty = the asked qty, it is already
+    # in the tier unit").
     qty_answer = qty
     pack_only_text = None
     if list_info['list_source'] == 'dozen-only':
-        qty_answer = qty * list_info['asked_ratio'] / ratio if ratio else qty
-        if qty_answer != round(qty_answer):
-            pack_only_text = (
-                f"ขายยกโหลเท่านั้น: {qty:g} {unit_type} = {qty_answer:g} {answer_unit}"
-            )
+        if ratio is not None:
+            qty_answer = qty * list_info['asked_ratio'] / ratio
+            if qty_answer != round(qty_answer):
+                pack_only_text = (
+                    f"ขายยก{answer_unit}เท่านั้น: {qty:g} {unit_type} = {qty_answer:g} {answer_unit}"
+                )
+        else:
+            qty_answer = None
+            pack_only_text = f"ขายยก{answer_unit}เท่านั้น — ไม่ทราบจำนวนชิ้นต่อแพ็ค"
 
-    line_total = round(price * qty_answer, 2)
+    line_total = round(price * qty_answer, 2) if qty_answer is not None else None
 
-    # I2: a qty (bundle) promo's free-units multiplier only affects cost/
-    # margin when the ASK actually reaches the bundle's own threshold,
-    # converted to pieces so a โหล ask against a piece-denominated bundle
-    # (or vice versa) compares apples to apples. Below threshold: cost_side
-    # stays plain cost_per_unit, and free_units still reports the deal with
-    # applies=False so the caller can show it without implying it's active.
+    # I2 (round 1): a qty (bundle) promo's free-units multiplier only
+    # affects cost/margin when the ASK actually reaches the bundle's own
+    # threshold, converted to pieces. When `asked_ratio` is None (round 2
+    # — the asked unit itself has no known piece-equivalent), whether the
+    # threshold is met can't be determined at all; never guess "applies"
+    # in that case — treat it the same as not reaching the threshold
+    # (mult stays 1.0, applies=False). free_units still reports the deal.
     free_units = None
     mult = 1.0
     if qty_promo is not None and qty_promo['bundle_buy'] and qty_promo['bundle_free'] is not None:
-        qty_pieces = qty * list_info['asked_ratio']
-        bundle_buy_ratio = _bundle_buy_ratio(conn, product_id, qty_promo['bundle_unit'], unit_type)
-        bundle_buy_pieces = qty_promo['bundle_buy'] * bundle_buy_ratio
-        bundle_applies = qty_pieces >= bundle_buy_pieces
+        asked_ratio = list_info['asked_ratio']
+        bundle_applies = False
+        if asked_ratio is not None:
+            qty_pieces = qty * asked_ratio
+            bundle_buy_ratio = _bundle_buy_ratio(conn, product_id, qty_promo['bundle_unit'], unit_type)
+            bundle_buy_pieces = qty_promo['bundle_buy'] * bundle_buy_ratio
+            bundle_applies = qty_pieces >= bundle_buy_pieces
         if bundle_applies:
             mult = _bundle_multiplier(qty_promo)
         free_units = {
@@ -840,25 +930,37 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         'free_units': free_units,
     }
 
-    # R8 internal
-    cost_per_unit = round(cost * ratio, 2)
-    cost_side = round(cost_per_unit * mult, 2)
-    margin_incl_free_units = mult != 1.0
-    margin_at_answer_pct = round((price - cost_side) / price * 100, 2) if price else None
-    margin_at_lowest_pct = (
-        round((lowest['cash_per_unit'] - cost_side) / lowest['cash_per_unit'] * 100, 2)
-        if lowest else None
-    )
-    # I3: below_cost (R5, and this field) compares against cost_price x
-    # ratio specifically — the UNADJUSTED per-unit cost — never cost_side
-    # (which already has the bundle free-units multiplier folded in, and
-    # is for margin display only). below_cost_by is the internal-only
-    # number (C3): the flag text itself never carries it.
-    below_cost_by = round(cost_per_unit - price, 2) if price < cost_per_unit else None
+    # R8 internal. I3 (round 1): below_cost compares against cost_price x
+    # ratio specifically, never cost_side (margin display only). Round 2:
+    # with no piece ratio (`ratio is None`), NONE of cost_per_unit /
+    # cost_side / either margin / below_cost_by can be computed at all —
+    # they are None, `internal.note` says why, and below_cost is simply
+    # never evaluated (not "evaluated and false").
+    below_cost_flag = False
+    if ratio is not None:
+        cost_per_unit = round(cost * ratio, 2)
+        cost_side = round(cost_per_unit * mult, 2)
+        margin_incl_free_units = mult != 1.0
+        margin_at_answer_pct = round((price - cost_side) / price * 100, 2) if price else None
+        margin_at_lowest_pct = (
+            round((lowest['cash_per_unit'] - cost_side) / lowest['cash_per_unit'] * 100, 2)
+            if lowest else None
+        )
+        below_cost_by = round(cost_per_unit - price, 2) if price < cost_per_unit else None
+        below_cost_flag = price < cost_per_unit
+        internal_note = None
+    else:
+        cost_per_unit = None
+        cost_side = None
+        margin_incl_free_units = mult != 1.0
+        margin_at_answer_pct = None
+        margin_at_lowest_pct = None
+        below_cost_by = None
+        internal_note = 'no piece ratio for this pack unit'
 
     # R5 flags
     flags = []
-    if price < cost_per_unit:
+    if below_cost_flag:
         flags.append({'code': 'below_cost', 'text': 'ราคาต่ำกว่าทุน'})
     if lowest is not None and price < lowest['cash_per_unit']:
         flags.append({'code': 'new_floor', 'text': 'ราคานี้ต่ำกว่าที่เคยขายต่ำสุด'})
@@ -909,5 +1011,6 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
             'margin_at_lowest_pct': margin_at_lowest_pct,
             'margin_incl_free_units': margin_incl_free_units,
             'below_cost_by': below_cost_by,
+            'note': internal_note,
         },
     }
