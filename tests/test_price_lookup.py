@@ -14,6 +14,7 @@ one fixture below (`db`) checks `PRAGMA table_info(promotions)` for the
 if it's missing. Every test in this file uses that fixture, not the bare
 tmp_db_conn.
 """
+import json
 import os
 import sqlite3
 from datetime import date, timedelta
@@ -821,3 +822,256 @@ def test_resolve_price_readonly_connection_ok(tmp_db):
         assert out['answer']['price_per_unit'] == 100.0
     finally:
         conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Review round 1 (task-1-report.md fix log) — C1-C3, I1-I5, I7, tier-epoch
+# ruling. Each test's finding code is in its name.
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── C1: unresolvable caller-asked unit raises, never silently ratio=1.0 ────
+
+def test_c1_unresolvable_unit_raises(db):
+    pid = _mk_product(db, "C1 unresolvable unit", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    with pytest.raises(ValueError) as exc_info:
+        pl.resolve_price(db, product_id=pid, unit='ลัง', today=TODAY)
+    msg = str(exc_info.value)
+    assert 'ลัง' in msg
+    assert str(pid) in msg
+
+    # control: unit == unit_type never raises, ratio stays trivially 1.0
+    out = pl.resolve_price(db, product_id=pid, unit='ตัว', today=TODAY)
+    assert out['unit']['ratio'] == 1.0
+    assert out['unit']['ratio_source'] == 'none'
+
+
+# ── C2: promo_stale is None (not True) with no active price promo ──────────
+
+def test_c2_promo_stale_none_without_price_promo(db):
+    pid = _mk_product(db, "C2 no promo stale", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    for i in range(3):
+        _bill(db, pid=pid, customer_code=f'TST-C2-{i}', customer_name='ลูกค้า C2',
+              date_iso=_days_ago(5 + i), qty=1, unit='ตัว', unit_price=150.0, vat_type=1, net=150.0)
+    out = pl.resolve_price(db, product_id=pid, today=TODAY)
+    assert out['context']['promo_stale'] is None
+    assert out['context']['promo_last_used'] is None
+    assert 'promo_stale' not in [f['code'] for f in out['flags']]
+
+    # control: the SAME bill shape, but WITH a percent promo -> stale True
+    # (list=100, promo=90, all 3 bills at 150 > 90*1.01)
+    pid2 = _mk_product(db, "C2 with promo stale control", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid2)
+    _promo(db, pid2, promo_type='percent', discount_value=10.0, date_start='2026-06-01', is_active=1)
+    for i in range(3):
+        _bill(db, pid=pid2, customer_code=f'TST-C2b-{i}', customer_name='ลูกค้า C2b',
+              date_iso=_days_ago(5 + i), qty=1, unit='ตัว', unit_price=150.0, vat_type=1, net=150.0)
+    out2 = pl.resolve_price(db, product_id=pid2, today=TODAY)
+    assert out2['context']['promo_stale'] is True
+
+
+# ── C3: cost/floor numbers never leak into flag text or anything outside
+#        `internal` ───────────────────────────────────────────────────────
+
+def test_c3_cost_never_leaks_outside_internal(db):
+    pid = _mk_product(db, "C3 cost leak check", unit_type='ตัว', base=100.0, cost=63.47)
+    _clear_pid(db, pid)
+    out = pl.resolve_price(db, product_id=pid, extra_disc=0.5, today=TODAY)  # price 50 < cost 63.47
+    assert 'below_cost' in [f['code'] for f in out['flags']]
+    assert out['internal']['cost_per_unit'] == 63.47
+    non_internal = {k: v for k, v in out.items() if k != 'internal'}
+    serialized = json.dumps(non_internal, ensure_ascii=False)
+    assert '63.47' not in serialized
+    # below_cost_by stays where it belongs -- inside internal
+    assert out['internal']['below_cost_by'] == round(63.47 - 50.0, 2)
+
+
+def test_c3_new_floor_flag_text_has_no_number(db):
+    pid = _mk_product(db, "C3 new floor text", unit_type='ตัว', base=100.0, cost=10.0)
+    _clear_pid(db, pid)
+    _bill(db, pid=pid, customer_code='TST-C3nf', customer_name='ลูกค้า C3nf',
+          date_iso=_days_ago(30), qty=1, unit='ตัว', unit_price=77.0, vat_type=1, net=77.0)
+    out = pl.resolve_price(db, product_id=pid, extra_disc=0.5, today=TODAY)  # price 50 < lowest 77
+    nf = next(f for f in out['flags'] if f['code'] == 'new_floor')
+    assert '77' not in nf['text']
+    assert out['context']['lowest']['cash_per_unit'] == 77.0  # the number still lives here
+
+
+# ── I1: dozen-only quoting converts qty into the answer unit ───────────────
+
+def test_i1_dozen_only_qty_conversion_whole_dozen(db):
+    pid = _mk_product(db, "I1 dozen-only qty whole", unit_type='ตัว', base=0.0, cost=10.0)
+    _clear_pid(db, pid)
+    _tier(db, pid, '1 โหล', 460.0)
+    out = pl.resolve_price(db, product_id=pid, qty=12, today=TODAY)
+    assert out['answer']['unit'] == 'โหล'
+    assert out['answer']['qty'] == 1.0
+    assert out['answer']['line_total'] == 460.0
+    assert 'pack_only' not in [f['code'] for f in out['flags']]
+
+
+def test_i1_dozen_only_qty_conversion_fractional_flags_pack_only(db):
+    pid = _mk_product(db, "I1 dozen-only qty fractional", unit_type='ตัว', base=0.0, cost=10.0)
+    _clear_pid(db, pid)
+    _tier(db, pid, '1 โหล', 460.0)
+    out = pl.resolve_price(db, product_id=pid, qty=15, today=TODAY)
+    assert out['answer']['qty'] == 1.25
+    assert out['answer']['line_total'] == round(460.0 * 1.25, 2)
+    assert 'pack_only' in [f['code'] for f in out['flags']]
+
+
+# ── I2: bundle multiplier gated on the ask reaching the threshold in pieces ─
+
+def test_i2_bundle_multiplier_gated_on_qty(db):
+    pid = _mk_product(db, "I2 bundle gate", unit_type='ตัว', base=20.0, cost=10.0)
+    _clear_pid(db, pid)
+    _uc(db, pid, 'โหล', 12.0)
+    _promo(db, pid, promo_type='bundle', bundle_buy=12, bundle_free=1,
+           date_start='2026-06-01', is_active=1)
+
+    # 1 ตัว (1 piece) < 12-piece threshold -> does not apply
+    out_piece = pl.resolve_price(db, product_id=pid, unit='ตัว', qty=1, today=TODAY)
+    assert out_piece['internal']['cost_side'] == round(10.0, 2)
+    assert out_piece['internal']['margin_incl_free_units'] is False
+    assert out_piece['answer']['free_units']['applies'] is False
+
+    # 1 โหล (qty=1, asked โหล -> 12 pieces) == 12-piece threshold -> applies
+    out_1dz = pl.resolve_price(db, product_id=pid, unit='โหล', qty=1, today=TODAY)
+    assert out_1dz['internal']['cost_side'] == round(10.0 * 12 * 13 / 12, 2)
+    assert out_1dz['answer']['free_units']['applies'] is True
+
+    # 2 โหล (24 pieces) > threshold -> applies
+    out_2dz = pl.resolve_price(db, product_id=pid, unit='โหล', qty=2, today=TODAY)
+    assert out_2dz['answer']['free_units']['applies'] is True
+
+
+# ── I3: below_cost compares against cost_price x ratio, not cost_side ──────
+
+def test_i3_below_cost_compares_against_cost_x_ratio_not_cost_side(db):
+    pid = _mk_product(db, "I3 below cost ratio", unit_type='ตัว', base=20.0, cost=10.0)
+    _clear_pid(db, pid)
+    _uc(db, pid, 'โหล', 12.0)
+    _promo(db, pid, promo_type='bundle', bundle_buy=12, bundle_free=1,
+           date_start='2026-06-01', is_active=1)
+    # cost_per_unit = 10*12 = 120; cost_side = 120*13/12 = 130 (bundle applies at qty=1 โหล = 12 pieces)
+    cust = _mk_customer(db, 'TST-I3a', 'ลูกค้า I3a')
+    _clear_customer_pid(db, cust, pid)
+    _bill(db, pid=pid, customer_code=cust, customer_name='ลูกค้า I3a',
+          date_iso=_days_ago(5), qty=1, unit='โหล', unit_price=125.0, vat_type=1, net=125.0)
+    out = pl.resolve_price(db, product_id=pid, customer_code=cust, unit='โหล', qty=1, today=TODAY)
+    assert out['answer']['price_per_unit'] == 125.0  # between cost_per_unit(120) and cost_side(130)
+    assert out['internal']['cost_per_unit'] == 120.0
+    assert out['internal']['cost_side'] == 130.0
+    assert 'below_cost' not in [f['code'] for f in out['flags']]
+
+    # control: price BELOW cost_per_unit(120) -> flags
+    cust2 = _mk_customer(db, 'TST-I3b', 'ลูกค้า I3b')
+    _clear_customer_pid(db, cust2, pid)
+    _bill(db, pid=pid, customer_code=cust2, customer_name='ลูกค้า I3b',
+          date_iso=_days_ago(5), qty=1, unit='โหล', unit_price=110.0, vat_type=1, net=110.0)
+    out2 = pl.resolve_price(db, product_id=pid, customer_code=cust2, unit='โหล', qty=1, today=TODAY)
+    assert out2['answer']['price_per_unit'] == 110.0
+    assert 'below_cost' in [f['code'] for f in out2['flags']]
+
+
+# ── I4: latest_evidence ignores future-dated bills ──────────────────────────
+
+def test_i4_latest_evidence_ignores_future_dated_bills(db):
+    pid = _mk_product(db, "I4 future bill", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    cust = _mk_customer(db, 'TST-I4', 'ลูกค้า I4')
+    _clear_customer_pid(db, cust, pid)
+    future_date = (date.fromisoformat(TODAY) + timedelta(days=30)).isoformat()
+    _bill(db, pid=pid, customer_code=cust, customer_name='ลูกค้า I4',
+          date_iso=future_date, qty=1, unit='ตัว', unit_price=999.0, vat_type=1, net=999.0)
+    out = pl.resolve_price(db, product_id=pid, customer_code=cust, today=TODAY)
+    assert out['answer']['basis'] != 'last_paid'
+    assert out['customer']['last'] is None
+
+    # control: a bill dated exactly TODAY is used
+    _bill(db, pid=pid, customer_code=cust, customer_name='ลูกค้า I4',
+          date_iso=TODAY, qty=1, unit='ตัว', unit_price=88.0, vat_type=1, net=88.0)
+    out2 = pl.resolve_price(db, product_id=pid, customer_code=cust, today=TODAY)
+    assert out2['answer']['basis'] == 'last_paid'
+    assert out2['answer']['price_per_unit'] == 88.0
+
+
+# ── I5: epochs_for (the public bulk API) actually exercised + returns ──────
+
+def test_i5_epochs_for_bulk(db):
+    pid_with = _mk_product(db, "I5 epoch bulk with", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid_with)
+    change_date = _days_ago(10)
+    _base_price_history(db, pid_with, changed_at=change_date + " 09:00:00", old=80.0, new=100.0)
+
+    pid_without = _mk_product(db, "I5 epoch bulk without", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid_without)
+
+    result = pl.epochs_for(db, [pid_with, pid_without],
+                            {pid_with: 'ตัว', pid_without: 'ตัว'}, today=TODAY)
+    assert result[pid_with] == change_date
+    assert result[pid_without] is None
+
+    # today is positional-or-keyword, not keyword-only (I5) -- prove it
+    result_positional = pl.epochs_for(db, [pid_with], {pid_with: 'ตัว'}, TODAY)
+    assert result_positional[pid_with] == change_date
+
+
+# ── I7: R3 cross-unit conversion, hand-computed oracles with bill_ratio != 1
+
+def test_i7_cross_unit_conversion_dozen_bill_answered_in_piece(db):
+    pid = _mk_product(db, "I7 cross unit dozen to piece", unit_type='ตัว', base=30.0, cost=15.0)
+    _clear_pid(db, pid)
+    _uc(db, pid, 'โหล', 12.0)
+    cust = _mk_customer(db, 'TST-I7a', 'ลูกค้า I7a')
+    _clear_customer_pid(db, cust, pid)
+    # 1 โหล billed at net 360 (no VAT) -> per piece = 360/12 = 30
+    _bill(db, pid=pid, customer_code=cust, customer_name='ลูกค้า I7a',
+          date_iso=_days_ago(5), qty=1, unit='โหล', unit_price=360.0, vat_type=1, net=360.0)
+    result = pl.latest_evidence(db, pid, cust, _days_ago(365), unit='ตัว', today=TODAY)
+    assert result['cash_per_unit'] == 30.00
+
+
+def test_i7_cross_unit_conversion_piece_bill_answered_in_dozen(db):
+    pid = _mk_product(db, "I7 cross unit piece to dozen", unit_type='ตัว', base=30.0, cost=15.0)
+    _clear_pid(db, pid)
+    _uc(db, pid, 'โหล', 12.0)
+    cust = _mk_customer(db, 'TST-I7b', 'ลูกค้า I7b')
+    _clear_customer_pid(db, cust, pid)
+    # 1 ตัว billed at net 30 -> per โหล = 30*12 = 360
+    _bill(db, pid=pid, customer_code=cust, customer_name='ลูกค้า I7b',
+          date_iso=_days_ago(5), qty=1, unit='ตัว', unit_price=30.0, vat_type=1, net=30.0)
+    result = pl.latest_evidence(db, pid, cust, _days_ago(365), unit='โหล', today=TODAY)
+    assert result['cash_per_unit'] == 360.00
+
+
+# ── Ruling: tier epoch keys on PRICE changes only, not note/sort_order ─────
+
+def test_ruling_tier_epoch_price_only(db):
+    pid = _mk_product(db, "Ruling tier epoch price-only", unit_type='ตัว', base=0.0, cost=10.0)
+    _clear_pid(db, pid)
+    tier_id = _tier(db, pid, '1 โหล', 230.0)
+    price_change_date = _days_ago(10)
+    _stamp_tier_audit(db, tier_id, pid, price_change_date + " 09:00:00")  # INSERT -> always counts
+
+    # A later note-only edit must NOT move the epoch
+    note_only_date = _days_ago(3)
+    db.execute(
+        "INSERT INTO audit_log (table_name, row_id, action, changed_fields, created_at) "
+        "VALUES ('product_price_tiers', ?, 'UPDATE', '{\"note\": [null, \"x\"]}', ?)",
+        (tier_id, note_only_date + " 09:00:00"))
+    db.commit()
+
+    out = pl.resolve_price(db, product_id=pid, today=TODAY)
+    assert out['window']['from'] == price_change_date  # note-only edit ignored
+
+    # control: a price-changing UPDATE DOES move the epoch
+    price_update_date = _days_ago(2)
+    db.execute(
+        "INSERT INTO audit_log (table_name, row_id, action, changed_fields, created_at) "
+        "VALUES ('product_price_tiers', ?, 'UPDATE', '{\"price\": [230.0, 250.0]}', ?)",
+        (tier_id, price_update_date + " 09:00:00"))
+    db.commit()
+    out2 = pl.resolve_price(db, product_id=pid, today=TODAY)
+    assert out2['window']['from'] == price_update_date
