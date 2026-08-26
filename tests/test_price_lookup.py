@@ -471,10 +471,21 @@ def test_r4_population_excludes_every_bad_shape(db):
     assert out['window']['n_unratioed'] == 1
 
 
-def test_r4_population_break_it_once_doc_no_instead_of_doc_base(db, monkeypatch):
-    """Break-it-once: replace doc_base with doc_no in evidence_filter and
-    confirm the writeoff + dummy-invoice cases go green-for-the-wrong-reason
-    -- i.e. this guard test goes RED when the doc_base keying is removed."""
+def test_fixture_discriminates_doc_base_from_doc_no(db, monkeypatch):
+    """NOT a standing regression guard (review round 1, I6): this
+    monkeypatches evidence_filter with a HAND-BROKEN copy (doc_base
+    swapped for doc_no) and asserts the broken copy behaves wrongly. It
+    proves the FIXTURE below can tell a doc_base-keyed filter apart from a
+    doc_no-keyed one -- i.e. that this fixture is capable of catching that
+    specific class of regression IF one is introduced -- not that the
+    real `evidence_filter` in price_lookup.py is currently correct. If
+    the real function regressed to doc_no-keying, this test would still
+    pass (it never calls the real function). The actual standing guards
+    that exercise the real, unmodified code are
+    test_r4_population_excludes_every_bad_shape and
+    test_r4b_base_changed_epoch_window_and_pre_epoch (below) -- those call
+    pl.evidence_filter / pl._window directly and would go red on a real
+    regression."""
     pid = _mk_product(db, "R4 break-it-once", unit_type='ตัว', base=100.0, cost=60.0)
     _clear_pid(db, pid)
     _, wo_base = _bill(db, pid=pid, customer_code='TST-R4B', customer_name='ลูกค้า R4B',
@@ -580,10 +591,17 @@ def test_r4b_base_change_datetime_boundary_bill_in_window(db):
     assert out['window']['n_bills'] == 1  # the boundary bill IS included, not dropped
 
 
-def test_r4b_break_it_once_max_clamp_removed(db, monkeypatch):
-    """Break-it-once: remove the max(epoch, calendar-cap) clamp in the
-    widening step and confirm the epoch's floor is violated (the widened
-    window reaches BEFORE the epoch, which R4 explicitly forbids)."""
+def test_fixture_discriminates_epoch_clamp(db, monkeypatch):
+    """NOT a standing regression guard (review round 1, I6): this
+    monkeypatches `_window` with a HAND-BROKEN copy (the max(epoch, ...)
+    clamp removed from both the 365d and 730d steps) and asserts the
+    broken copy lets the window reach before the epoch. It proves this
+    fixture can tell a clamped `_window` apart from an unclamped one --
+    not that the real `_window` in price_lookup.py is currently correct;
+    it never calls the real function. The actual standing guard is
+    test_r4b_base_changed_epoch_window_and_pre_epoch (above), which calls
+    the real, unmodified resolve_price and would go red on a real
+    regression."""
     pid = _mk_product(db, "R4b break clamp", unit_type='ตัว', base=100.0, cost=60.0)
     _clear_pid(db, pid)
     change_date = _days_ago(10)
