@@ -661,7 +661,14 @@
             </tr>
           </thead>
           <tbody>
-            {% for promo in promotions %}
+            {# 2d: three states, classified in the ROUTE (models.classify_promotions
+               -> models.is_current). Never judge a promo by a bare is_active here:
+               a row can be closed by DATE with is_active still 1. #}
+            {% for state, state_label, state_class, group in [
+                 ('current',   'ใช้อยู่',     'badge-success', promos_current),
+                 ('scheduled', 'ตั้งเวลาไว้', 'badge-info',    promos_scheduled),
+                 ('closed',    'ปิดแล้ว',     'badge-gray',    promos_closed)] %}
+            {% for promo in group %}
             <tr>
               <td class="fw-500">{{ promo.promo_name }}</td>
               <td class="text-center">
@@ -701,11 +708,18 @@
               </td>
               <td class="text-subtle small">{{ promo.date_start or '∞' }} – {{ promo.date_end or '∞' }}</td>
               <td class="text-center">
-                {% if promo.is_active %}<span class="badge badge-success">ใช้งาน</span>
-                {% else %}<span class="badge badge-gray">ปิด</span>{% endif %}
+                <span class="badge {{ state_class }}">{{ state_label }}</span>
+                {% if state == 'scheduled' %}
+                  <div class="text-subtle small">เริ่ม {{ promo.date_start }}</div>
+                {% elif state == 'current' and promo.source %}
+                  <div class="text-subtle small">{% if promo.source == 'catalog-import' %}จากแค็ตตาล็อก{% else %}พิมพ์เอง{% endif %}</div>
+                {% endif %}
               </td>
               <td>
-                {% if is_admin and promo.is_active %}
+                {# ยกเลิก stays on scheduled rows: a scheduled promo has not started but WILL,
+                   and this page is the only UI that can call it off. It disappears only on
+                   closed rows, which is the bug 2d fixes. #}
+                {% if is_admin and state != 'closed' %}
                 <form method="post" action="{{ url_for('products.promotion_deactivate', promo_id=promo.id) }}"
                       onsubmit="return confirm('ยกเลิกโปรโมชันนี้?')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -715,9 +729,11 @@
                 {% endif %}
               </td>
             </tr>
-            {% else %}
-            <tr><td colspan="6" class="text-center text-subtle py-3">ยังไม่มีโปรโมชัน</td></tr>
             {% endfor %}
+            {% endfor %}
+            {% if not (promos_current or promos_scheduled or promos_closed) %}
+            <tr><td colspan="6" class="text-center text-subtle py-3">ยังไม่มีโปรโมชัน</td></tr>
+            {% endif %}
           </tbody>
         </table>
       </div>
