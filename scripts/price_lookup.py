@@ -13,8 +13,10 @@ stdin (JSON), read from stdin:
 stdout (JSON), written to stdout, always exit code 0:
     {"db_max_sale_date": "...", "db_path_basename": "inventory.db",
      "lines": [{"candidates": {...}} | {"result": {...}} | {"error": "..."}]}
-Malformed top-level JSON on stdin instead emits {"error": "...", "lines": []}
-(same exit code 0, no traceback) -- the DB is never even opened in that case.
+Malformed OR wrong-shaped top-level JSON on stdin instead emits
+{"error": "...", "lines": []} (same exit code 0, no traceback) -- the DB is
+never even opened in that case. Wrong-shaped = not an object, `lines` not a
+list, or a non-string `today`.
 
 Per line:
   - `product_id` (if given) is used as-is; else `product_query` is matched
@@ -23,10 +25,16 @@ Per line:
     customer", not an error.
   - >1 match on either query -> "candidates" for that line (no "result").
     Zero matches, a missing product identifier, an unresolvable unit
-    (resolve_price raises ValueError), or a non-numeric `qty`/`extra_disc`
-    (resolve_price raises TypeError) -> "error" (a string; never a Python
-    traceback on stderr) -- scoped to that one line, the rest of the batch
-    is unaffected.
+    (resolve_price raises ValueError), or a line that fails _validate_line
+    (not an object; a non-scalar `product_id`/`customer_code`; a non-string
+    `product_query`/`customer_query`/`unit`; a `qty` that is not a number
+    > 0; an `extra_disc` that is not a number in 0..1) -> "error" (a string;
+    never a Python traceback on stderr) -- scoped to that one line, the rest
+    of the batch is unaffected. Because every input is validated BEFORE
+    resolve_price is called, ANY other exception out of it is a resolver BUG,
+    not bad input; it is caught per line and reported with an "internal
+    error" prefix naming the exception type, so it can never be mistaken for
+    a pricing answer and can never take the rest of the batch down.
   - Exactly one match (or an explicit id/code) resolves normally via
     resolve_price(); its return dict is passed through to JSON verbatim,
     including any `None` values (JSON `null`) it carries on pack units with
@@ -162,6 +170,72 @@ def _family_hint(conn, product_id):
     } for s in siblings]
 
 
+def _is_number(v):
+    """bool is an int subclass in Python; `qty: true` is not a quantity."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _validate_payload(payload):
+    """Top-level stdin shape. Returns an error string, or None when usable.
+    Well-formed JSON of the wrong shape used to crash past the JSONDecodeError
+    wrapper (`payload.get` on a list, iterating a non-list `lines`)."""
+    if not isinstance(payload, dict):
+        return f'stdin JSON must be an object, got {type(payload).__name__}'
+    if not isinstance(payload.get('lines', []), list):
+        return f"'lines' must be a list, got {type(payload['lines']).__name__}"
+    today = payload.get('today')
+    if today is not None and not isinstance(today, str):
+        return f"'today' must be an ISO date string or null, got {type(today).__name__}"
+    return None
+
+
+def _validate_line(line):
+    """One line's shape and ranges. Returns an error string, or None.
+
+    This is the trust boundary: everything here is tool- or human-built JSON.
+    Validating at the boundary is also what makes a TypeError from inside
+    resolve_price a real bug rather than an input problem (see _resolve_line).
+    """
+    if not isinstance(line, dict):
+        return f'line must be an object, got {type(line).__name__}'
+
+    for key in ('product_id', 'customer_code'):
+        val = line.get(key)
+        if val is None:
+            continue
+        if isinstance(val, bool) or not isinstance(val, (int, float, str)):
+            # a list/dict reaches sqlite3 as a bind parameter and raises
+            # InterfaceError, which is neither ValueError nor TypeError.
+            # float IS accepted: JSON has one numeric type, so a producer that
+            # round-trips an id emits 26.0, and SQLite compares that to an
+            # INTEGER PRIMARY KEY numerically. bool is excluded on purpose --
+            # it is an int subclass, so `true` would resolve product 1.
+            return f"'{key}' must be a number or a string, got {type(val).__name__}"
+
+    for key in ('product_query', 'customer_query', 'unit'):
+        val = line.get(key)
+        if val is not None and not isinstance(val, str):
+            return f"'{key}' must be a string, got {type(val).__name__}"
+
+    qty = line.get('qty')
+    if qty is not None:
+        if not _is_number(qty):
+            return f"'qty' must be a number, got {qty!r}"
+        if qty <= 0:
+            return f"'qty' must be greater than 0, got {qty}"
+
+    extra_disc = line.get('extra_disc')
+    if extra_disc is not None:
+        if not _is_number(extra_disc):
+            return f"'extra_disc' must be a number, got {extra_disc!r}"
+        if not 0 <= extra_disc <= 1:
+            return (f"'extra_disc' is a FRACTION where 0.20 means 20% (the render "
+                    f"side's discount_pct is the percent one) — must be 0..1, "
+                    f"got {extra_disc}")
+
+    return None
+
+
 def _resolve_product(conn, line):
     """(product_id, candidates_list_or_None, error_or_None)."""
     product_id = line.get('product_id')
@@ -201,6 +275,10 @@ def _resolve_customer(conn, line):
 
 
 def _resolve_line(conn, line, today):
+    shape_error = _validate_line(line)
+    if shape_error:
+        return {'error': shape_error}
+
     product_id, product_candidates, product_error = _resolve_product(conn, line)
     customer_code, customer_candidates, customer_error = _resolve_customer(conn, line)
 
@@ -228,8 +306,24 @@ def _resolve_line(conn, line, today):
             conn, product_id=product_id, customer_code=customer_code,
             unit=line.get('unit'), qty=qty, extra_disc=extra_disc, today=today,
         )
-    except (ValueError, TypeError) as e:
+    except ValueError as e:
         return {'error': str(e)}
+    except Exception as e:
+        # Everything reaching here is a BUG, not bad input: the inputs were
+        # validated above, and the resolver says "cannot price this" with a
+        # ValueError (caught just above). A TypeError is most likely
+        # arithmetic on one of the None money keys the resolver deliberately
+        # carries.
+        #
+        # This is deliberately a catch-all rather than a list of exception
+        # types. Validating input types is still an ENUMERATION, and the
+        # first version of that enumeration missed sqlite3.InterfaceError and
+        # AttributeError -- both of which killed the whole batch. A net whose
+        # guarantee does not depend on having imagined every shape is the
+        # only one worth the docstring's promise. Keep the rest of the batch
+        # alive; never let this read as an answer about the product's price.
+        return {'error': f'internal error resolving this line (report this): '
+                          f'{type(e).__name__}: {e}'}
 
     if result['list']['list_for_unit'] == 0:
         result['no_list_price'] = True
@@ -238,14 +332,20 @@ def _resolve_line(conn, line, today):
     return {'result': result}
 
 
+def _emit(obj):
+    json.dump(obj, sys.stdout, ensure_ascii=False)
+    sys.stdout.write('\n')
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
     except json.JSONDecodeError as e:
-        json.dump({'error': f'invalid JSON on stdin: {e}', 'lines': []}, sys.stdout,
-                   ensure_ascii=False)
-        sys.stdout.write('\n')
-        return
+        return _emit({'error': f'invalid JSON on stdin: {e}', 'lines': []})
+
+    payload_error = _validate_payload(payload)
+    if payload_error:
+        return _emit({'error': payload_error, 'lines': []})
 
     today = payload.get('today')
     db_path = _db_path()
@@ -258,12 +358,11 @@ def main():
     finally:
         conn.close()
 
-    json.dump({
+    _emit({
         'db_max_sale_date': db_max_sale_date,
         'db_path_basename': os.path.basename(db_path),
         'lines': lines_out,
-    }, sys.stdout, ensure_ascii=False)
-    sys.stdout.write('\n')
+    })
 
 
 if __name__ == '__main__':
