@@ -275,7 +275,7 @@ def _pid_with_no_promos(tmp_db):
 
 
 class TestPromotionNewRouteReplaces:
-    def test_backdated_date_start_redirects_and_writes_nothing(self, admin_client, tmp_db):
+    def test_backdated_date_start_re_renders_and_writes_nothing(self, admin_client, tmp_db):
         pid = _pid_with_no_promos(tmp_db)
         yesterday = (date.today() - timedelta(days=1)).isoformat()
         r = admin_client.post(
@@ -284,7 +284,10 @@ class TestPromotionNewRouteReplaces:
                   'discount_value': '10', 'date_start': yesterday},
             follow_redirects=False,
         )
-        assert r.status_code == 302  # 302 on refusal too — flash + redirect, not re-render
+        # A refusal re-renders the form (200), like every other validation in
+        # this route — task-2-brief.md's "302 on refusal" is deliberately
+        # diverged from so the cancel checkbox stays reachable. Success is 302.
+        assert r.status_code == 200
         conn = sqlite3.connect(tmp_db)
         found = conn.execute(
             "SELECT 1 FROM promotions WHERE product_id = ? AND promo_name = 'backdated route test'",
@@ -324,3 +327,241 @@ class TestPromotionNewRouteReplaces:
         yesterday = (date.today() - timedelta(days=1)).isoformat()
         assert old_row == (yesterday, 1)
         assert new_row == ('fixed', 'manual', today)
+
+
+# ── 2a-fix: occupant lookup by DATE OVERLAP, not "current today" ────────────
+# Regression suite for the blocker found in task-2a-review.md: the old code
+# asked get_active_promos_by_class(pid, TODAY) — so a SCHEDULED row (date_start
+# in the future) was invisible and survived, leaving two current price promos.
+# Ruling (Put, 2026-08-27): REFUSE and name the conflict, with an explicit
+# opt-in to cancel the conflicting row (`cancel_conflicts=True`).
+
+class TestScheduledConflict:
+    def _seed_x_and_scheduled_y(self, db):
+        """X current since -30, already CLOSED at +6 (closeable by date) + Y
+        scheduled at +7 (NOT closeable — its window starts after any new_start
+        we use here).
+
+        ⚠ X must carry date_end = +6, not NULL. This is the only shape that is
+        reachable in production: an open-ended X beside a +7 Y is a genuine
+        overlap, and once mig 177 is applied to the DB this fixture clones, the
+        trigger refuses to seed it. It is also what replace_promotion itself
+        produces when a future-dated promo is created."""
+        pid = _mk_product(db, 'p')
+        x_id = _mk_promo(db, pid, promo_type='percent', discount_value=10,
+                         date_start=_d(-30), date_end=_d(6))
+        y_id = _mk_promo(db, pid, promo_type='fixed', discount_value=50, date_start=_d(7))
+        return pid, x_id, y_id
+
+    def test_scheduled_row_in_the_same_slot_is_refused_and_nothing_is_written(self, db):
+        pid, x_id, y_id = self._seed_x_and_scheduled_y(db)
+        before = _promo_rows(db, pid)
+        assert len(before) == 2          # count first — the setup really reaches the branch
+
+        ok, msg, new_id = promo_models.replace_promotion(
+            pid, {'promo_name': 'Z', 'promo_type': 'fixed', 'discount_value': 40,
+                  'date_start': _d(3)},
+            today=TODAY, conn=db,
+        )
+        assert ok is False
+        assert new_id is None
+        # the message must NAME the conflict, not just say "failed"
+        assert _d(7) in msg, msg
+
+        after = _promo_rows(db, pid)
+        assert len(after) == 2
+        x = db.execute("SELECT * FROM promotions WHERE id = ?", (x_id,)).fetchone()
+        y = db.execute("SELECT * FROM promotions WHERE id = ?", (y_id,)).fetchone()
+        assert x['date_end'] == _d(6) and x['is_active'] == 1  # untouched
+        assert y['date_end'] is None and y['is_active'] == 1   # untouched
+
+    def test_cancel_conflicts_deactivates_the_scheduled_row_and_inserts(self, db):
+        pid, x_id, y_id = self._seed_x_and_scheduled_y(db)
+
+        ok, msg, new_id = promo_models.replace_promotion(
+            pid, {'promo_name': 'Z', 'promo_type': 'fixed', 'discount_value': 40,
+                  'date_start': _d(3)},
+            today=TODAY, conn=db, cancel_conflicts=True,
+        )
+        assert ok, msg
+
+        rows = _promo_rows(db, pid)
+        assert len(rows) == 3
+        x = db.execute("SELECT * FROM promotions WHERE id = ?", (x_id,)).fetchone()
+        y = db.execute("SELECT * FROM promotions WHERE id = ?", (y_id,)).fetchone()
+        z = db.execute("SELECT * FROM promotions WHERE id = ?", (new_id,)).fetchone()
+        assert (x['date_end'], x['is_active']) == (_d(2), 1)   # closed BY DATE, still active
+        assert y['is_active'] == 0                              # cancelled, not date-closed
+        assert z['date_start'] == _d(3)
+
+        # THE invariant: never two current rows in one slot, on any day
+        price_expr, _ = promo_models.promo_slot_sql('')
+        for off in (0, 3, 7, 30, 400):
+            day = _d(off)
+            n = db.execute(
+                f"SELECT COUNT(*) FROM promotions WHERE product_id = ? AND is_active = 1 "
+                f"AND (date_start IS NULL OR date_start <= ?) "
+                f"AND (date_end IS NULL OR date_end >= ?) AND {price_expr}",
+                (pid, day, day)).fetchone()[0]
+            assert n <= 1, f'{n} current price promos on {day}'
+
+    def test_scheduled_row_in_the_OTHER_slot_is_not_a_conflict_control(self, db):
+        """Control: a scheduled QTY promo must not block a new PRICE promo —
+        otherwise the refusal would fire for the wrong reason and this whole
+        class would pass while testing nothing about slots."""
+        pid = _mk_product(db, 'p')
+        _mk_promo(db, pid, promo_type='percent', discount_value=10, date_start=_d(-30))
+        qty_id = _mk_promo(db, pid, promo_type='bundle', bundle_buy=12, bundle_free=1,
+                           date_start=_d(7))
+
+        ok, msg, new_id = promo_models.replace_promotion(
+            pid, {'promo_name': 'Z price', 'promo_type': 'fixed', 'discount_value': 40,
+                  'date_start': _d(3)},
+            today=TODAY, conn=db,
+        )
+        assert ok, msg
+        qty = db.execute("SELECT * FROM promotions WHERE id = ?", (qty_id,)).fetchone()
+        assert (qty['is_active'], qty['date_end']) == (1, None)
+
+    def test_a_bounded_new_promo_ending_before_the_scheduled_one_is_allowed(self, db):
+        """Adjacency is not overlap: Z running +1..+6 next to Y starting +7 is fine."""
+        pid, x_id, y_id = self._seed_x_and_scheduled_y(db)
+        ok, msg, new_id = promo_models.replace_promotion(
+            pid, {'promo_name': 'Z bounded', 'promo_type': 'fixed', 'discount_value': 40,
+                  'date_start': _d(1), 'date_end': _d(6)},
+            today=TODAY, conn=db,
+        )
+        assert ok, msg
+        y = db.execute("SELECT * FROM promotions WHERE id = ?", (y_id,)).fetchone()
+        assert (y['is_active'], y['date_start']) == (1, _d(7))
+        x = db.execute("SELECT * FROM promotions WHERE id = ?", (x_id,)).fetchone()
+        assert x['date_end'] == _d(0)      # closed the day before Z starts
+
+    def test_an_inactive_scheduled_row_is_not_a_conflict(self, db):
+        pid = _mk_product(db, 'p')
+        _mk_promo(db, pid, promo_type='fixed', discount_value=50, date_start=_d(7), is_active=0)
+        ok, msg, new_id = promo_models.replace_promotion(
+            pid, {'promo_name': 'Z', 'promo_type': 'fixed', 'discount_value': 40},
+            today=TODAY, conn=db,
+        )
+        assert ok, msg
+
+
+class TestClassifyPromotions:
+    """MAJOR 3 in the review: classify_promotions shipped with zero tests."""
+    def test_partitions_current_scheduled_closed(self):
+        cur = {'is_active': 1, 'date_start': _d(-1), 'date_end': None}
+        sched = {'is_active': 1, 'date_start': _d(1), 'date_end': None}
+        expired = {'is_active': 1, 'date_start': _d(-9), 'date_end': _d(-1)}
+        killed = {'is_active': 0, 'date_start': None, 'date_end': None}
+        current, scheduled, closed = promo_models.classify_promotions(
+            [cur, sched, expired, killed], TODAY)
+        assert (len(current), len(scheduled), len(closed)) == (1, 1, 2)
+        assert current == [cur]
+        assert scheduled == [sched]
+        assert closed == [expired, killed]
+
+    def test_every_row_lands_in_exactly_one_bucket(self):
+        rows = [{'is_active': a, 'date_start': s, 'date_end': e}
+                for a in (0, 1) for s in (None, _d(-1), _d(1)) for e in (None, _d(-1), _d(1))]
+        current, scheduled, closed = promo_models.classify_promotions(rows, TODAY)
+        assert len(current) + len(scheduled) + len(closed) == len(rows) == 18
+
+
+class TestPromotionNewRouteConflictOption:
+    """Put's ruling (2026-08-27): a scheduled promo blocking the new one is
+    REFUSED and named, with a checkbox to cancel it instead."""
+
+    def _pid_with_scheduled(self, tmp_db, days=7):
+        pid = _pid_with_no_promos(tmp_db)
+        start = (date.today() + timedelta(days=days)).isoformat()
+        conn = sqlite3.connect(tmp_db)
+        conn.execute(
+            "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+            "date_start, is_active) VALUES (?, 'SCHEDULED-Y', 'fixed', 50, ?, 1)",
+            (pid, start))
+        conn.commit(); conn.close()
+        return pid, start
+
+    def test_get_renders_the_blank_form(self, admin_client, tmp_db):
+        """Control: the GET path has no `f` in scope — it must not 500."""
+        pid = _pid_with_no_promos(tmp_db)
+        r = admin_client.get(f'/products/{pid}/promotions/new')
+        assert r.status_code == 200
+        assert 'name="cancel_conflicts"' in r.get_data(as_text=True)
+
+    def test_conflict_refused_names_it_and_repopulates_the_form(self, admin_client, tmp_db):
+        pid, start = self._pid_with_scheduled(tmp_db)
+        r = admin_client.post(
+            f'/products/{pid}/promotions/new',
+            data={'promo_name': 'CONFLICTING-Z', 'promo_type': 'fixed',
+                  'discount_value': '40'},
+            follow_redirects=False,
+        )
+        assert r.status_code == 200
+        body = r.get_data(as_text=True)
+        assert 'SCHEDULED-Y' in body and start in body      # the conflict is NAMED
+        # the operator's input came back — otherwise ticking the box means retyping
+        assert 'value="CONFLICTING-Z"' in body
+        assert '<option value="fixed" selected>' in body
+
+        conn = sqlite3.connect(tmp_db)
+        n = conn.execute("SELECT COUNT(*) FROM promotions WHERE product_id = ?", (pid,)).fetchone()[0]
+        conn.close()
+        assert n == 1                                        # nothing written
+
+    def test_ticking_cancel_conflicts_cancels_the_scheduled_one_and_saves(self, admin_client, tmp_db):
+        pid, start = self._pid_with_scheduled(tmp_db)
+        r = admin_client.post(
+            f'/products/{pid}/promotions/new',
+            data={'promo_name': 'CONFLICTING-Z', 'promo_type': 'fixed',
+                  'discount_value': '40', 'cancel_conflicts': '1'},
+            follow_redirects=False,
+        )
+        assert r.status_code == 302                          # success still redirects
+
+        conn = sqlite3.connect(tmp_db)
+        rows = conn.execute(
+            "SELECT promo_name, is_active, date_start FROM promotions "
+            "WHERE product_id = ? ORDER BY id", (pid,)).fetchall()
+        conn.close()
+        assert len(rows) == 2
+        by_name = {r[0]: r for r in rows}
+        assert by_name['SCHEDULED-Y'][1] == 0                # cancelled
+        assert by_name['CONFLICTING-Z'][1] == 1
+        assert by_name['CONFLICTING-Z'][2] == date.today().isoformat()
+
+
+class TestMalformedDateInput:
+    """MINOR 6 in task-2a-review.md: a non-ISO date_start used to reach
+    replace_promotion's date maths and 500 the route. The backdate guard could
+    not catch it — '27/08/2026' sorts ABOVE '2026-08-27' as a string."""
+
+    def test_non_iso_date_start_is_a_friendly_error_not_a_500(self, admin_client, tmp_db):
+        pid = _pid_with_no_promos(tmp_db)
+        r = admin_client.post(
+            f'/products/{pid}/promotions/new',
+            data={'promo_name': 'bad date', 'promo_type': 'percent',
+                  'discount_value': '10', 'date_start': '27/08/2026'},
+            follow_redirects=False,
+        )
+        assert r.status_code == 200          # the form, not a 500
+        conn = sqlite3.connect(tmp_db)
+        n = conn.execute("SELECT COUNT(*) FROM promotions WHERE product_id = ?", (pid,)).fetchone()[0]
+        conn.close()
+        assert n == 0
+
+    def test_a_well_formed_date_still_gets_through_control(self, admin_client, tmp_db):
+        pid = _pid_with_no_promos(tmp_db)
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        r = admin_client.post(
+            f'/products/{pid}/promotions/new',
+            data={'promo_name': 'good date', 'promo_type': 'percent',
+                  'discount_value': '10', 'date_start': tomorrow},
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        conn = sqlite3.connect(tmp_db)
+        row = conn.execute("SELECT date_start FROM promotions WHERE product_id = ?", (pid,)).fetchone()
+        conn.close()
+        assert row[0] == tomorrow

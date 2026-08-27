@@ -191,19 +191,65 @@ def promo_slots_for(conn, promo_type, discount_value, bundle_buy, gift_desc):
     return bool(row['price_slot']), bool(row['qty_slot'])
 
 
-def replace_promotion(product_id, data, today, conn=None):
-    """Create promotion `data` for product_id, closing whatever currently
-    occupies the same slot(s) it touches — task-2-brief.md 2a. Change =
-    close old (by DATE, keeping is_active = 1) + open new; never flips
-    is_active early (that would leave a gap where every quote falls back
-    to list price when new_start is in the future).
+def _overlapping_promos(conn, product_id, new_start, new_end,
+                        occupies_price, occupies_qty):
+    """Active promos on `product_id` whose date window OVERLAPS
+    [new_start, new_end] in a slot the incoming row occupies.
+
+    The overlap predicate is byte-identical in intent to migration 177's
+    trigger (`COALESCE` to open-ended sentinels), so the model and the DB
+    guard can never disagree about what "already occupied" means:
+        p.date_start <= new_end  AND  new_start <= p.date_end
+    Asking `get_active_promos_by_class(pid, today)` instead — "what is
+    current TODAY" — is the bug this replaced: a row whose window starts
+    AFTER today is invisible to it, so a scheduled promo survived and
+    stacked (task-2a-review.md, BLOCKER 1).
+    """
+    if not (occupies_price or occupies_qty):
+        return []
+    price_expr, qty_expr = promo_slot_sql('')
+    if occupies_price and occupies_qty:
+        slot_clause = f"({price_expr} OR {qty_expr})"
+    else:
+        slot_clause = price_expr if occupies_price else qty_expr
+    return conn.execute(f"""
+        SELECT * FROM promotions
+         WHERE product_id = ? AND is_active = 1
+           AND COALESCE(date_start, '0000-01-01') <= COALESCE(?, '9999-12-31')
+           AND ? <= COALESCE(date_end, '9999-12-31')
+           AND {slot_clause}
+         ORDER BY id
+    """, (product_id, new_end, new_start)).fetchall()
+
+
+def replace_promotion(product_id, data, today, conn=None, cancel_conflicts=False):
+    """Create promotion `data` for product_id, closing whatever occupies the
+    same slot(s) over the same dates — task-2-brief.md 2a. Change = close old
+    (by DATE, keeping is_active = 1) + open new; never flips is_active early
+    (that would leave a gap where every quote falls back to list price when
+    new_start is in the future).
+
+    Two kinds of occupant, split by whether closing them by date is even
+    expressible:
+      * starts BEFORE new_start → closed with `date_end = new_start - 1`,
+        `is_active` untouched. This is the ordinary replace.
+      * starts ON or AFTER new_start (a SCHEDULED promo) → its whole window
+        sits inside the new one, so there is no date to close it at. Refused
+        by default, naming the conflict, writing NOTHING — unless the caller
+        passes `cancel_conflicts=True` (the operator ticked
+        "ยกเลิกโปรที่ตั้งเวลาไว้"), which deactivates it the same way the
+        "ปิดเลย" button does. Ruling: Put, 2026-08-27.
 
     Returns (ok: bool, message: str, new_id: int | None). `ok is False`
-    means refused (new_start < today — backdating a promo rewrites
-    evidence) and NOTHING was written.
+    means refused and NOTHING was written.
 
     `today` must be passed by the caller (ISO date string) — this
     function does no wall-clock read, so callers/tests can pin it.
+
+    ⚠ Opens its own `BEGIN IMMEDIATE` and commits: it CANNOT be called with a
+    `conn` that is already inside a transaction (raises OperationalError), and
+    it commits whatever else that connection had pending. See task-2a-review.md
+    MINOR 5 before wiring it into the 2c importer.
     """
     owned = conn is None
     if owned:
@@ -212,6 +258,7 @@ def replace_promotion(product_id, data, today, conn=None):
         new_start = data.get('date_start') or today
         if new_start < today:
             return False, 'ไม่สามารถตั้งวันเริ่มโปรย้อนหลังได้ (การย้อนวันจะเขียนทับหลักฐานราคาที่ผ่านมา)', None
+        new_end = data.get('date_end')
 
         occupies_price, occupies_qty = promo_slots_for(
             conn, data['promo_type'], data.get('discount_value'),
@@ -219,17 +266,34 @@ def replace_promotion(product_id, data, today, conn=None):
 
         conn.execute("BEGIN IMMEDIATE")
         try:
-            price_current, qty_current = get_active_promos_by_class(product_id, today, conn)
-            day_before = _add_days(new_start, -1)
+            overlapping = _overlapping_promos(
+                conn, product_id, new_start, new_end, occupies_price, occupies_qty)
+            closeable, conflicts = [], []
+            for row in overlapping:
+                start = row['date_start'] or '0000-01-01'
+                (closeable if start < new_start else conflicts).append(row)
 
-            closed_ids = set()
-            if occupies_price and price_current is not None:
-                closed_ids.add(price_current['id'])
-            if occupies_qty and qty_current is not None:
-                closed_ids.add(qty_current['id'])
-            for cid in closed_ids:
+            if conflicts and not cancel_conflicts:
+                conn.rollback()
+                names = ', '.join(
+                    f'"{r["promo_name"]}" เริ่ม {r["date_start"]}' for r in conflicts)
+                return False, (
+                    f'มีโปรโมชันที่ตั้งเวลาไว้ทับช่วงนี้อยู่แล้ว: {names} — '
+                    f'ติ๊ก "ยกเลิกโปรที่ตั้งเวลาไว้" เพื่อยกเลิกใบนั้นแล้วบันทึกใบนี้แทน'
+                ), None
+
+            # Order matters: cancel first, then date-close, then insert — so
+            # mig 177's trigger never sees a transient overlap mid-statement.
+            for row in conflicts:
                 conn.execute(
-                    "UPDATE promotions SET date_end = ? WHERE id = ?", (day_before, cid))
+                    "UPDATE promotions SET is_active = 0, "
+                    "date_end = COALESCE(date_end, ?) WHERE id = ?",
+                    (today, row['id']))
+
+            day_before = _add_days(new_start, -1)
+            for row in closeable:
+                conn.execute(
+                    "UPDATE promotions SET date_end = ? WHERE id = ?", (day_before, row['id']))
 
             full = {
                 "product_id":        product_id,
@@ -237,7 +301,7 @@ def replace_promotion(product_id, data, today, conn=None):
                 "promo_type":        data["promo_type"],
                 "discount_value":    data.get("discount_value"),
                 "date_start":        new_start,
-                "date_end":          data.get("date_end"),
+                "date_end":          new_end,
                 "bundle_buy":        data.get("bundle_buy"),
                 "bundle_free":       data.get("bundle_free"),
                 "bundle_unit":       data.get("bundle_unit"),
@@ -265,7 +329,8 @@ def replace_promotion(product_id, data, today, conn=None):
         except Exception:
             conn.rollback()
             raise
-        return True, 'บันทึกโปรโมชันเรียบร้อย', new_id
+        cancelled = ' (ยกเลิกโปรที่ตั้งเวลาไว้แล้ว)' if (cancel_conflicts and conflicts) else ''
+        return True, f'บันทึกโปรโมชันเรียบร้อย{cancelled}', new_id
     finally:
         if owned:
             conn.close()
