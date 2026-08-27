@@ -26,6 +26,7 @@ branch's base, before 176 ever existed) and independently verified
 byte-for-byte against a real `ROLLBACK.sql` run on a snapshot -- see
 task-0-report.md's fix section for the verification transcript.
 """
+import re
 import sqlite3
 from pathlib import Path
 
@@ -91,7 +92,23 @@ def test_stamps_only_the_catalog_batch_control_row_stays_unstamped(db):
 
     _insert_control_row(conn)
 
+    # The migration's header states "date_end and is_active are NOT touched".
+    # Nothing tested it, so a stamp that also closed or deactivated the batch
+    # would have shipped green.
+    before_untouched = {r[0]: (r[1], r[2]) for r in conn.execute(
+        "SELECT id, date_end, is_active FROM promotions WHERE promo_name LIKE ?",
+        (BATCH_PATTERN,),
+    )}
+    assert len(before_untouched) == n_batch  # control: we captured the whole batch
+
     conn.executescript(MIG.read_text(encoding="utf-8"))
+
+    after_untouched = {r[0]: (r[1], r[2]) for r in conn.execute(
+        "SELECT id, date_end, is_active FROM promotions WHERE promo_name LIKE ?",
+        (BATCH_PATTERN,),
+    )}
+    assert after_untouched == before_untouched, (
+        "the stamp must leave date_end and is_active exactly as they were")
 
     n_stamped = conn.execute(
         "SELECT COUNT(*) FROM promotions"
@@ -110,6 +127,19 @@ def test_check_rejects_an_unlisted_source(db):
     conn = db
     conn.executescript(MIG.read_text(encoding="utf-8"))
     pid = conn.execute("SELECT id FROM products LIMIT 1").fetchone()[0]
+
+    # CONTROL, and it has to come first: every value the CHECK is meant to
+    # ACCEPT must insert cleanly. Observing only a refusal cannot tell a
+    # correct CHECK from one that rejects everything -- or from a table that
+    # lost the column and now errors on any insert naming it.
+    for accepted in ('catalog-import', 'manual', None):
+        conn.execute(
+            "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value,"
+            " is_active, source) VALUES (?, 'accepted control', 'percent', 10, 1, ?)",
+            (pid, accepted),
+        )
+    conn.commit()
+
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value,"
@@ -124,7 +154,17 @@ def test_audit_triggers_carry_source_after_the_migration(db):
     bodies = _trigger_bodies(conn)
     assert set(bodies) == set(AUDIT_TRIGGERS)
     for name, sql in bodies.items():
-        assert "NEW.source" in sql or "OLD.source" in sql, f"{name} does not audit source"
+        # `NEW.source` ANYWHERE is too weak: a trigger naming the column only
+        # in a WHEN guard -- and never writing it into the JSON it records --
+        # satisfies that while auditing nothing. Pin the payload key itself,
+        # which is how all three triggers spell a recorded column.
+        assert "'source'," in sql, f"{name} does not record source in its JSON payload"
+
+    # The UPDATE trigger additionally has to FIRE on a source-only edit;
+    # its payload could name the column while the WHEN clause never wakes it.
+    assert re.search(r"OLD\.source\s+IS NOT NEW\.source",
+                     bodies['audit_promotions_update']), (
+        "audit_promotions_update would not fire when only `source` changed")
 
 
 def test_rollback_drops_column_unstamps_only_migrated_rows_restores_trigger_bodies(db):
@@ -133,7 +173,9 @@ def test_rollback_drops_column_unstamps_only_migrated_rows_restores_trigger_bodi
     # present). NOT the expected value for the byte-identity assertion below --
     # this snapshot is itself produced by running ROLLBACK.sql (see the `db`
     # fixture), so comparing against it would be circular. See module docstring.
-    assert _trigger_bodies(conn), "control: the 3 audit triggers must exist pre-migration"
+    assert len(_trigger_bodies(conn)) == len(AUDIT_TRIGGERS), (
+        "control: all 3 audit triggers must exist pre-migration -- a truthiness\n"
+        "        check here passes on a dict holding only ONE of them")
 
     n_batch = _n_batch(conn)
     assert n_batch > 0
