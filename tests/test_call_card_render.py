@@ -1,14 +1,20 @@
 """Render tests for the call-card pricing/promo upgrade.
 
-Two layers the unit tests can't reach:
+Three layers the unit tests can't reach:
   1. The promo macros (macros.html) rendered across all promo_types + multi-tier.
   2. The real /call list + a sample of real customer cards rendering without a 500
      — catches Jinja/macro/template errors that get_card unit tests don't surface.
+  3. (2e, PR C) The rendered ราคาล่าสุดที่ลูกค้าได้ cell for a seeded pair equals
+     resolve_price's own customer.last.cash_per_unit — the actual number Put
+     reads on the page, not just what _assemble_products returns in Python.
 """
+import datetime as dt
 import os
+import re
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
 import call_card as cc
+import price_lookup as pl
 
 
 def _app():
@@ -115,3 +121,55 @@ def test_call_list_and_sample_cards_render(tmp_db_conn):
     assert saw_cell, "no sampled card rendered the new price-cell markup"
     assert saw_orders, "no sampled card rendered the peer + orders modal templates"
     assert saw_position, "no sampled card rendered the peer-position (ส่วนต่าง) text"
+
+
+# ── 2e (PR C): the rendered price cell matches resolve_price ─────────────────
+
+def test_customer_latest_cell_matches_resolver(tmp_db_conn):
+    """C3 parity: the ราคาล่าสุดที่ลูกค้าได้ cell's number must equal
+    resolve_price(...)['customer']['last']['cash_per_unit'] for a seeded
+    pair — parse the number out of the rendered HTML, never compare
+    formatted strings."""
+    conn = tmp_db_conn
+    cur = conn.execute(
+        "INSERT INTO products (product_name, unit_type, base_sell_price, cost_price, is_active) "
+        "VALUES ('พารีตี้ทดสอบ 2e', 'ตัว', 100.0, 60.0, 1)"
+    )
+    pid = cur.lastrowid
+    code = 'TST-2E-PARITY'
+    conn.execute(
+        "INSERT INTO customers (code, name) VALUES (?, ?) "
+        "ON CONFLICT(code) DO UPDATE SET name=excluded.name",
+        (code, 'ลูกค้าทดสอบ parity'),
+    )
+    today = dt.date.today().isoformat()
+    bill_date = (dt.date.today() - dt.timedelta(days=10)).isoformat()
+    conn.execute(
+        "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, "
+        "customer, customer_code, qty, unit, unit_price, vat_type, net) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (bill_date, 'IVPARITY-1', 'IVPARITY', pid, 'ลูกค้าทดสอบ parity', code,
+         1, 'ตัว', 100.0, 0, 100.0),
+    )
+    conn.commit()
+
+    expected = pl.resolve_price(conn, product_id=pid, customer_code=code, today=today)
+    assert expected['customer']['last']['in_window'] is True  # sanity: not the stale-fallback case
+    expected_val = expected['customer']['last']['cash_per_unit']
+
+    app = _app()
+    client = _client(app)
+    resp = client.get(f'/call/{code}')
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+
+    # The bare product name also appears earlier on the page (the "แบรนด์เด่น"
+    # summary stat) -- anchor on the ซื้อประจำ table row specifically
+    # (cc-namelink), not the first occurrence of the name anywhere.
+    name_match = re.search(r'cc-namelink">พารีตี้ทดสอบ 2e<', html)
+    assert name_match, "product row not found in the ซื้อประจำ table"
+    row_html = html[name_match.start():name_match.start() + 4000]
+    m = re.search(r'cc-px-net">สุทธิ ฿([\d,]+\.\d{2})', row_html)
+    assert m, "customer_latest cell not found in rendered row"
+    rendered_val = float(m.group(1).replace(',', ''))
+    assert rendered_val == expected_val
