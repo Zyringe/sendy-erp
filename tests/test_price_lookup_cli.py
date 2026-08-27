@@ -371,3 +371,163 @@ def test_null_passthrough_for_no_ratio_pack_unit(tmp_db, tmp_db_conn):
                 'margin_at_lowest_pct', 'below_cost_by'):
         assert key in internal and internal[key] is None, key
     assert internal['note'] == 'no piece ratio for this pack unit'
+
+
+def _run_cli_raw(tmp_db, raw_stdin):
+    """Like _run_cli but sends RAW text — the only way to exercise a stdin
+    payload that json.dumps() could never produce (a non-object top level).
+    Keeps the same two contract assertions: exit 0, no traceback."""
+    _need_env()
+    env = dict(os.environ)
+    env['DATABASE_PATH'] = tmp_db
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        input=raw_stdin, capture_output=True, text=True, env=env, timeout=30,
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert 'Traceback' not in proc.stderr, f"CLI printed a traceback: {proc.stderr}"
+    return json.loads(proc.stdout), proc
+
+
+@pytest.mark.parametrize('raw', ['[]', '"a string"', '42', 'null',
+                                  '{"lines": "not a list"}', '{"lines": 5}'])
+def test_wellformed_but_wrong_shaped_top_level_json_returns_error_not_traceback(tmp_db, raw):
+    """Scoped-review finding 1a. The commit that added the JSONDecodeError
+    wrapper documented 'always exit code 0, no traceback' for malformed stdin,
+    but only caught a PARSE failure — valid JSON of the wrong SHAPE walked
+    past it and died on `payload.get('today')` / iterating a non-list. Every
+    shape here is well-formed JSON, so json.load() succeeds and the old code
+    reached the crash."""
+    out, _proc = _run_cli_raw(tmp_db, raw)
+
+    assert out['lines'] == []
+    assert isinstance(out['error'], str) and out['error']
+
+
+def test_non_dict_line_errors_only_that_line(tmp_db, tmp_db_conn):
+    """Scoped-review finding 1b. A `lines` entry that is not an object took
+    the WHOLE batch down (AttributeError on `line.get`), losing the valid
+    lines beside it — exactly the property the commit claimed to establish
+    ('scoped to that one line, the rest of the batch is unaffected').
+
+    Line 0 is the CONTROL and must still carry a 'result' in the SAME batch:
+    a whole-batch crash and a per-line catch are indistinguishable if you
+    only look at the bad line."""
+    pid = _mk_product(tmp_db_conn, "CLI แถวไม่ใช่ object", base=100.0)
+    _clear_pid(tmp_db_conn, pid)
+
+    out, _proc = _run_cli(tmp_db, {"lines": [{"product_id": pid}, None, "x", 7]})
+
+    assert len(out['lines']) == 4
+    assert 'result' in out['lines'][0]
+    assert out['lines'][0]['result']['product']['id'] == pid
+    for i in (1, 2, 3):
+        assert 'error' in out['lines'][i] and 'result' not in out['lines'][i]
+
+
+def test_non_scalar_identifier_errors_only_that_line(tmp_db, tmp_db_conn):
+    """Scoped-review finding 1c (found while probing, NOT in the original
+    review): a list/dict `product_id` or `customer_code` reaches sqlite3 as a
+    bind parameter and raises sqlite3.InterfaceError — which is neither
+    ValueError nor TypeError, so the commit's widened except never saw it and
+    the whole batch died. Line 0 is the CONTROL."""
+    pid = _mk_product(tmp_db_conn, "CLI id ไม่ใช่ scalar", base=100.0)
+    _clear_pid(tmp_db_conn, pid)
+
+    out, _proc = _run_cli(tmp_db, {"lines": [
+        {"product_id": pid},
+        {"product_id": [pid]},
+        {"product_id": pid, "customer_code": ["01อ35"]},
+        {"product_id": pid, "unit": [1, 2]},
+    ]})
+
+    assert len(out['lines']) == 4
+    assert 'result' in out['lines'][0]
+    for i in (1, 2, 3):
+        assert 'error' in out['lines'][i] and 'result' not in out['lines'][i]
+
+
+def test_out_of_range_extra_disc_is_refused_not_priced_negative(tmp_db, tmp_db_conn):
+    """Scoped-review finding 4. `extra_disc` is a FRACTION (resolve_price
+    computes `list_after_promo * (1 - extra_disc)`), but the adjacent render
+    API takes a PERCENT (`to_render_line(discount_pct=5.0)`) — so passing 20
+    where 0.20 was meant is a live confusion. Measured before the fix on
+    pid 26: price_per_unit -1710.00 with internal.margin_at_answer_pct
+    +235.56, i.e. a NEGATIVE price carrying a positive-looking margin.
+    (render_png.validate_input does refuse it three layers later, so no
+    customer document was ever at risk — this is about diagnosing it where
+    it happens.) Line 0 is the CONTROL: a legitimate 0.20 must still price."""
+    pid = _mk_product(tmp_db_conn, "CLI extra_disc นอกช่วง", base=100.0)
+    _clear_pid(tmp_db_conn, pid)
+
+    out, _proc = _run_cli(tmp_db, {"lines": [
+        {"product_id": pid, "extra_disc": 0.20},
+        {"product_id": pid, "extra_disc": 20},
+        {"product_id": pid, "extra_disc": -0.5},
+    ]})
+
+    assert 'result' in out['lines'][0]
+    assert out['lines'][0]['result']['answer']['price_per_unit'] > 0
+    for i in (1, 2):
+        assert 'error' in out['lines'][i], out['lines'][i]
+        assert 'extra_disc' in out['lines'][i]['error']
+
+
+def test_non_positive_qty_is_refused(tmp_db, tmp_db_conn):
+    """A quotation line with qty <= 0 is meaningless, and render_png already
+    refuses it downstream (`_require_positive_number(line['qty'], ...)`).
+    Before the fix the CLI happily returned line_total -360.00 for qty=-4."""
+    pid = _mk_product(tmp_db_conn, "CLI qty ไม่บวก", base=100.0)
+    _clear_pid(tmp_db_conn, pid)
+
+    out, _proc = _run_cli(tmp_db, {"lines": [
+        {"product_id": pid, "qty": 3},
+        {"product_id": pid, "qty": 0},
+        {"product_id": pid, "qty": -4},
+    ]})
+
+    assert 'result' in out['lines'][0]
+    for i in (1, 2):
+        assert 'error' in out['lines'][i], out['lines'][i]
+        assert 'qty' in out['lines'][i]['error']
+
+
+def test_bad_type_error_names_the_field_it_rejected(tmp_db, tmp_db_conn):
+    """Scoped-review finding 3, caller-visible half. A stringified qty used to
+    surface the resolver's own TypeError text (e.g. "can't multiply sequence
+    by non-int of type 'float'"), which reads as gibberish to whoever asked
+    for a price. Validated at the boundary, the message names the field."""
+    pid = _mk_product(tmp_db_conn, "CLI ชนิดผิดบอกชื่อฟิลด์", base=100.0)
+    _clear_pid(tmp_db_conn, pid)
+
+    out, _proc = _run_cli(tmp_db, {"lines": [
+        {"product_id": pid, "qty": "5"},
+        {"product_id": pid, "extra_disc": "abc"},
+        {"product_id": pid, "qty": True},
+    ]})
+
+    assert 'qty' in out['lines'][0]['error']
+    assert 'extra_disc' in out['lines'][1]['error']
+    assert 'qty' in out['lines'][2]['error']
+
+
+def test_non_string_query_errors_only_that_line(tmp_db, tmp_db_conn):
+    """Scoped-review finding 1d (found while checking whether the string
+    requirement broke a working input — it does not, it closes a crash).
+    `find_products`/`find_customers` call `.split()` on the query, so a
+    numeric query raises AttributeError — a THIRD exception type the widened
+    `except (ValueError, TypeError)` never saw, taking the whole batch with
+    it. Line 0 is the CONTROL."""
+    pid = _mk_product(tmp_db_conn, "CLI query ไม่ใช่สตริง", base=100.0)
+    _clear_pid(tmp_db_conn, pid)
+
+    out, _proc = _run_cli(tmp_db, {"lines": [
+        {"product_id": pid},
+        {"product_query": 360},
+        {"product_id": pid, "customer_query": 12345},
+    ]})
+
+    assert 'result' in out['lines'][0]
+    for i in (1, 2):
+        assert 'error' in out['lines'][i] and 'result' not in out['lines'][i]
+        assert 'must be a string' in out['lines'][i]['error']
