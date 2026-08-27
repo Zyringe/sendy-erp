@@ -21,16 +21,43 @@ If peer_n == 0: peer_median = None, flag = 'same' (no comparison possible).
 import sqlite3
 import statistics
 from collections import defaultdict
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
+
+import sales_filters
 
 
-def product_peer_prices(conn, customer_code: str) -> List[Dict[str, Any]]:
+def product_peer_prices(
+    conn, customer_code: str, *,
+    window_from_by_pair: Optional[Dict[Tuple[int, str], Optional[str]]] = None,
+) -> List[Dict[str, Any]]:
     """Return peer-price comparison for every (product_id, unit) the customer bought.
 
     Args:
         conn: sqlite3 connection with sales_transactions table.
               Row factory can be sqlite3.Row or None.
         customer_code: the identity key to compare (must match sales_transactions.customer_code).
+        window_from_by_pair: task-2-brief.md PR C / 2e, C3/C4. {(product_id, unit):
+              'YYYY-MM-DD' | None}, or the default `None`.
+              `None` (the default) → legacy behaviour: the population is
+              ALL rows (marketplace/write-offs/dummy invoices included, no
+              date floor) — UNCHANGED from before this parameter existed,
+              so tests/test_peer_pricing.py's minimal fixture (which lacks
+              doc_base/customer/ar_writeoffs — see its own tests) keeps
+              passing untouched.
+              Given a dict → the population is restricted to
+              sales_filters.evidence_filter('st') (excludes SR/HS returns,
+              write-offs, รายการหน้าร้าน marketplace rows, and the
+              cost-basis dummy invoices — the SAME predicate
+              price_lookup.py's resolver evidence uses), AND, for each
+              (product_id, unit) pair PRESENT in the map with a non-None
+              value, further restricted to date_iso >= that pair's date.
+              A pair absent from the map, or mapped to None, still gets
+              evidence_filter but is NOT date-restricted (there is no
+              price-regime change to anchor it to) — it is never silently
+              dropped and never treated as "today". Call-card callers pass
+              this keyed on the (product_id, unit) PAIR (never just
+              product_id — see price_lookup.epochs_for_pairs, C2) so one
+              product bought at two units gets two independent epochs.
 
     Returns:
         List of dicts, one per (product_id, unit) pair the customer bought, each with:
@@ -47,12 +74,27 @@ def product_peer_prices(conn, customer_code: str) -> List[Dict[str, Any]]:
           diff           - float or None  (customer_median - peer_median)
           flag           - 'cheaper' | 'same' | 'higher'
     """
-    rows = conn.execute(
-        "SELECT product_id, unit, customer_code, qty, net, vat_type, date_iso, "
-        "unit_price, discount "
-        "FROM sales_transactions "
-        "WHERE product_id IS NOT NULL AND qty > 0 AND net > 0",
-    ).fetchall()
+    if window_from_by_pair is None:
+        rows = conn.execute(
+            "SELECT product_id, unit, customer_code, qty, net, vat_type, date_iso, "
+            "unit_price, discount "
+            "FROM sales_transactions "
+            "WHERE product_id IS NOT NULL AND qty > 0 AND net > 0",
+        ).fetchall()
+    else:
+        all_rows = conn.execute(
+            "SELECT product_id, unit, customer_code, qty, net, vat_type, date_iso, "
+            "unit_price, discount "
+            "FROM sales_transactions st "
+            f"WHERE {sales_filters.evidence_filter('st')}",
+        ).fetchall()
+        rows = []
+        for r in all_rows:
+            pair = (r[0], r[1] or '')
+            floor = window_from_by_pair.get(pair)
+            if floor is not None and r[6] < floor:  # r[6] = date_iso
+                continue
+            rows.append(r)
 
     # Build per-(product_id, unit) per-customer line lists.
     # Structure: data[(pid, unit)][cust_code] = [(cash, unit_price, discount), ...]

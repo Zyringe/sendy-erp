@@ -317,7 +317,7 @@ def _resolve_list(conn, product_id, unit_type, base, asked_unit):
     }
 
 
-def _apply_price_promo(list_for_unit, ratio, price_promo):
+def apply_price_promo(list_for_unit, ratio, price_promo):
     """R2 list_after_promo. percent (and a 'mixed' row using discount_value
     as a percent — see the module docstring / task-1-report for why: the
     15 real mixed+discount rows in the catalog carry values like 10/15/20,
@@ -328,7 +328,14 @@ def _apply_price_promo(list_for_unit, ratio, price_promo):
     models.promotions.effective_price) — when `ratio is None` (review
     round 2: a tier answers the price but no piece-ratio is derivable),
     that per-piece conversion cannot be computed; the fixed promo is left
-    unapplied (list_for_unit unchanged) rather than guessed."""
+    unapplied (list_for_unit unchanged) rather than guessed.
+
+    Public (task-2-brief.md PR C / 2e, C1) — this is the ONE promo-price
+    application in the app: `resolve_price` calls it, and
+    `call_card._assemble_products` calls it too, so the 3-branch promo
+    math cannot drift between the two the way the call card's old hand
+    copy did. Tested directly (no DB needed — it's pure) in
+    tests/test_price_lookup.py, not only through resolve_price."""
     if price_promo is None:
         return list_for_unit
     if price_promo['promo_type'] == 'fixed':
@@ -339,6 +346,59 @@ def _apply_price_promo(list_for_unit, ratio, price_promo):
     if d is None:
         return list_for_unit
     return round(list_for_unit * (1 - d / 100), 2)
+
+
+def batch_active_promos_by_class(conn, product_ids, on_date):
+    """{pid: (price_promo_row, qty_promo_row)} for every pid in
+    `product_ids`, active on `on_date` — the SAME slot-independent
+    selection as models.promotions.get_active_promos_by_class (each slot
+    picked by `ORDER BY id DESC` among that product's candidates for that
+    slot, so a later-created qty/bundle promo can never shadow an
+    earlier price promo or vice versa), just batched into 2 queries
+    instead of 2×N.
+
+    Task-2-brief.md PR C / 2e, C1 — this is the ONE promo-slot selector in
+    the app: `resolve_price` calls it (one-element `product_ids`) and
+    `call_card._assemble_products` calls it (its whole top-30 product
+    list), so the two can never disagree about which row occupies which
+    slot the way the call card's old `MAX(created_at)` join could (a qty
+    promo created after a price promo used to win by luck of the join).
+
+    Returns `(None, None)` for a pid with no promotions row for either
+    slot; a pid absent from `product_ids` is simply not a key in the
+    result (callers should `.get(pid, (None, None))`).
+    """
+    result = {pid: (None, None) for pid in product_ids}
+    if not product_ids:
+        return result
+
+    price_expr, qty_expr = promo_models.promo_slot_sql('')
+    ph = ",".join("?" * len(product_ids))
+
+    def _pick_one_per_pid(slot_expr):
+        rows = conn.execute(f"""
+            SELECT * FROM promotions
+            WHERE product_id IN ({ph}) AND is_active = 1
+              AND (date_start IS NULL OR date_start <= ?)
+              AND (date_end IS NULL OR date_end >= ?)
+              AND {slot_expr}
+            ORDER BY product_id, id DESC
+        """, list(product_ids) + [on_date, on_date]).fetchall()
+        picked = {}
+        for r in rows:
+            # ORDER BY product_id, id DESC groups each product's rows
+            # together with the highest id FIRST — setdefault keeps that
+            # first (highest-id) row per product, same as a per-product
+            # "ORDER BY id DESC LIMIT 1".
+            picked.setdefault(r['product_id'], r)
+        return picked
+
+    price_by_pid = _pick_one_per_pid(price_expr)
+    qty_by_pid = _pick_one_per_pid(qty_expr)
+
+    for pid in product_ids:
+        result[pid] = (price_by_pid.get(pid), qty_by_pid.get(pid))
+    return result
 
 
 def _bundle_multiplier(qty_promo):
@@ -463,6 +523,29 @@ def epochs_for(conn, product_ids, unit_by_pid, today=None):
         cands = _epoch_candidates(conn, pid, unit_by_pid.get(pid), today)
         vals = [v for v in cands.values() if v]
         result[pid] = max(vals) if vals else None
+    return result
+
+
+def epochs_for_pairs(conn, pairs, today=None):
+    """{(product_id, unit): date | None} — like `epochs_for`, but keyed on
+    the (product_id, unit) PAIR instead of `unit_by_pid` (task-2-brief.md
+    PR C / 2e, C2). `epochs_for`'s `unit_by_pid` is one unit per product,
+    so a product bought at two different units would have one unit's
+    epoch silently overwrite the other's; keying on the pair itself keeps
+    them independent. Reuses `_epoch_candidates` directly (the same 4
+    epoch sources, same "most recent" reduction) so this can never drift
+    from `epochs_for`'s own answer for the one-unit-per-product case.
+
+    `pairs` is any iterable of (product_id, unit) tuples; duplicates are
+    harmless (recomputed, not cached — this runs over a page's worth of
+    products, not the whole catalog).
+    """
+    today = today or date.today().isoformat()
+    result = {}
+    for pid, unit in pairs:
+        cands = _epoch_candidates(conn, pid, unit, today)
+        vals = [v for v in cands.values() if v]
+        result[(pid, unit)] = max(vals) if vals else None
     return result
 
 
@@ -757,11 +840,15 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     ratio = list_info['ratio']
     answer_unit = list_info['answer_unit']
 
-    price_promo, qty_promo = promo_models.get_active_promos_by_class(product_id, today, conn)
-    list_after_promo = _apply_price_promo(list_info['list_for_unit'], ratio, price_promo)
+    # PR C / 2e (C1): routed through the shared batch selector — same
+    # predicate/ordering as models.promotions.get_active_promos_by_class,
+    # just called via the one function the call card also uses, so the
+    # resolver and the call card can never silently pick different rows.
+    price_promo, qty_promo = batch_active_promos_by_class(conn, [product_id], today)[product_id]
+    list_after_promo = apply_price_promo(list_info['list_for_unit'], ratio, price_promo)
     # review round 3: a price promo "applied" iff it actually changed the
     # number — False for the no-promo case (per the ruling) AND for a
-    # 'fixed' promo that _apply_price_promo left unapplied because ratio
+    # 'fixed' promo that apply_price_promo left unapplied because ratio
     # is None (it cannot convert the promo's per-piece price into
     # answer_unit — see promo_not_convertible below). 'percent' is
     # unaffected by ratio and always applies when a promo exists.
