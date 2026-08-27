@@ -491,6 +491,14 @@ def product_detail(product_id):
         price_tiers = models.get_product_price_tiers(product_id, conn=book_conn)
         sell_price = models.effective_price(product, conn=book_conn)
         locations = models.get_product_locations(product_id, conn=book_conn)
+    # 2d: the promo table judged each row by a bare `is_active`, so a promo
+    # closed by DATE (date_end past, is_active still 1 — the state 2a's
+    # deactivate_promotion and an expired window both produce) rendered a green
+    # "ใช้งาน" badge and still offered ยกเลิก. Classify here with the shared
+    # vocabulary (models.is_current) and hand the template three lists; the
+    # predicate is never re-implemented in Jinja.
+    promos_current, promos_scheduled, promos_closed = models.classify_promotions(
+        promotions, date.today().isoformat())
     txn_page = int(request.args.get('txn_page', 1))
     per_page = 20
     txns, txn_total = models.get_transactions(product_id=product_id, page=txn_page,
@@ -555,7 +563,9 @@ def product_detail(product_id):
                            back_url=back_url,
                            xp5_mapping=xp5_mapping,
                            buildable=buildable,
-                           promotions=promotions,
+                           promos_current=promos_current,
+                           promos_scheduled=promos_scheduled,
+                           promos_closed=promos_closed,
                            active_promo=active_promo,
                            price_tiers=price_tiers,
                            sell_price=sell_price,
