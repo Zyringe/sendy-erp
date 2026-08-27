@@ -464,19 +464,31 @@ def test_call_list_excludes_marketplace_customers(mig103_conn):
 def _assemble_db():
     """Minimal DB to exercise call_card._assemble_products in isolation:
     products + a bundle promotion + a price tier + sales for a target (C001)
-    and a peer (C002)."""
+    and a peer (C002).
+
+    2e (PR C): carries the full column/table set price_lookup's
+    evidence_filter + latest_evidence + epochs_for_pairs need --
+    products.cost_price/is_active/brand_id, a `brands` table,
+    sales_transactions.doc_base, and product_price_history/audit_log/
+    ar_writeoffs (all empty by default, so every pair's epoch is None and
+    evidence_filter's static conditions are the only new constraint the
+    existing bills must clear -- they do, doc_base is a clean 'IV1'/'IV2',
+    no marketplace/write-off rows).
+    """
     c = sqlite3.connect(":memory:")
     c.row_factory = sqlite3.Row
     c.executescript("""
         CREATE TABLE customers (code TEXT PRIMARY KEY, name TEXT);
+        CREATE TABLE brands (id INTEGER PRIMARY KEY, name TEXT, name_th TEXT, is_own_brand INTEGER);
         CREATE TABLE products (
-            id INTEGER PRIMARY KEY, product_name TEXT, base_sell_price REAL, unit_type TEXT
+            id INTEGER PRIMARY KEY, product_name TEXT, base_sell_price REAL, unit_type TEXT,
+            cost_price REAL DEFAULT 0, is_active INTEGER DEFAULT 1, brand_id INTEGER
         );
         CREATE TABLE promotions (
             id INTEGER PRIMARY KEY, product_id INTEGER, promo_name TEXT, promo_type TEXT,
             discount_value REAL, date_start TEXT, date_end TEXT, is_active INTEGER, created_at TEXT,
             bundle_buy INTEGER, bundle_free INTEGER, bundle_unit TEXT, bundle_condition TEXT,
-            bundle_tiers_json TEXT, gift_desc TEXT, gift_qty TEXT
+            bundle_tiers_json TEXT, gift_desc TEXT, gift_qty TEXT, source TEXT
         );
         CREATE TABLE product_price_tiers (
             id INTEGER PRIMARY KEY, product_id INTEGER, qty_label TEXT, price REAL,
@@ -485,14 +497,24 @@ def _assemble_db():
         CREATE TABLE unit_conversions (
             id INTEGER PRIMARY KEY, product_id INTEGER, bsn_unit TEXT, ratio REAL
         );
+        CREATE TABLE product_price_history (
+            id INTEGER PRIMARY KEY, product_id INTEGER, field_name TEXT,
+            old_value REAL, new_value REAL, changed_at TEXT
+        );
+        CREATE TABLE audit_log (
+            id INTEGER PRIMARY KEY, table_name TEXT, row_id INTEGER, action TEXT,
+            changed_fields TEXT, created_at TEXT
+        );
+        CREATE TABLE ar_writeoffs (doc_no TEXT, excludes_revenue INTEGER);
         CREATE TABLE sales_transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, product_name_raw TEXT,
             unit TEXT, customer TEXT, customer_code TEXT, qty REAL, unit_price REAL,
-            net REAL, vat_type INTEGER, discount TEXT, doc_no TEXT, date_iso TEXT
+            net REAL, vat_type INTEGER, discount TEXT, doc_no TEXT, doc_base TEXT, date_iso TEXT
         );
     """)
     c.execute("INSERT INTO customers VALUES ('C001','ร้าน A'),('C002','ร้าน B')")
-    c.execute("INSERT INTO products VALUES (1,'ดอกสว่าน',100,'ตัว')")
+    c.execute("INSERT INTO products (id,product_name,base_sell_price,unit_type) "
+              "VALUES (1,'ดอกสว่าน',100,'ตัว')")
     c.execute(
         "INSERT INTO promotions (id,product_id,promo_name,promo_type,is_active,created_at,"
         "bundle_buy,bundle_free) VALUES (1,1,'โปรลัง','bundle',1,'2026-06-01 00:00:00',10,1)"
@@ -503,10 +525,11 @@ def _assemble_db():
     )
     c.executemany(
         "INSERT INTO sales_transactions (product_id,product_name_raw,unit,customer,customer_code,"
-        "qty,unit_price,net,vat_type,discount,doc_no,date_iso) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "qty,unit_price,net,vat_type,discount,doc_no,doc_base,date_iso) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [
-            (1, 'ดอกสว่าน', 'ตัว', 'ร้าน A', 'C001', 1, 100, 90, 0, '10%', 'IV1', '2026-05-01'),
-            (1, 'ดอกสว่าน', 'ตัว', 'ร้าน B', 'C002', 1, 100, 95, 0, '5%',  'IV2', '2026-04-01'),
+            (1, 'ดอกสว่าน', 'ตัว', 'ร้าน A', 'C001', 1, 100, 90, 0, '10%', 'IV1', 'IV1', '2026-05-01'),
+            (1, 'ดอกสว่าน', 'ตัว', 'ร้าน B', 'C002', 1, 100, 95, 0, '5%',  'IV2', 'IV2', '2026-04-01'),
         ],
     )
     c.commit()
@@ -541,6 +564,92 @@ def test_assemble_products_no_promo_is_none_tiers_independent():
     assert p['promo'] is None
     # price tiers are independent of promo
     assert p['price_tiers'][0]['qty_label'] == '1 โหล'
+
+
+# ── 2e (PR C): call card ↔ resolver parity (C1-C4) ─────────────────────────
+
+def test_assemble_products_price_promo_not_shadowed_by_later_qty_promo():
+    """C1's headline bug: a price promo created BEFORE a qty promo must
+    still win the price slot. The old code picked whichever promo had the
+    latest created_at across ALL promo_types, so a bundle/gift promo
+    created after a price promo silently hid the price promo's discount.
+    Goes red on the pre-2e code (customer_price stayed at the raw base,
+    100.0, instead of 90.0)."""
+    c = _assemble_db()
+    c.execute("DELETE FROM promotions")
+    c.execute(
+        "INSERT INTO promotions (id,product_id,promo_name,promo_type,discount_value,"
+        "is_active,created_at) VALUES (1,1,'ลด10%','percent',10,1,'2026-06-01 00:00:00')"
+    )
+    c.execute(
+        "INSERT INTO promotions (id,product_id,promo_name,promo_type,"
+        "bundle_buy,bundle_free,is_active,created_at) "
+        "VALUES (2,1,'แถม1','bundle',10,1,1,'2026-06-02 00:00:00')"  # created AFTER
+    )
+    c.commit()
+    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    assert p['customer_price'] == 90.0        # 100 * (1 - 10%), from the PRICE promo
+    assert p['promo']['promo_type'] == 'percent'
+
+
+def test_assemble_products_qty_only_promo_still_displayed_when_no_price_promo():
+    """Control: with NO price-slot promo, the qty (bundle) promo is still
+    shown as `promo` (display falls back to qty_promo) even though it
+    does not change customer_price."""
+    c = _assemble_db()  # fixture's only promo is the 'bundle' one
+    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    assert p['customer_price'] == 100.0
+    assert p['promo']['promo_type'] == 'bundle'
+
+
+def test_assemble_products_peer_filtered_by_epoch_excludes_pre_epoch_peer():
+    """C4: peers are filtered by the SAME epoch as customer_latest -- a
+    peer's bill from BEFORE a price-regime change must not count toward
+    peer_median. C002's only bill (2026-04-01) predates the base-price
+    change (2026-04-15); a fresh peer C003 (2026-06-01) postdates it and
+    is the only one left."""
+    c = _assemble_db()
+    epoch_date = '2026-04-15'
+    c.execute(
+        "INSERT INTO product_price_history (product_id,field_name,old_value,new_value,changed_at) "
+        "VALUES (1,'base_sell_price',80,100,?)", (epoch_date + ' 09:00:00',))
+    c.execute("INSERT INTO customers VALUES ('C003','ร้าน C')")
+    c.execute(
+        "INSERT INTO sales_transactions (product_id,product_name_raw,unit,customer,customer_code,"
+        "qty,unit_price,net,vat_type,discount,doc_no,doc_base,date_iso) "
+        "VALUES (1,'ดอกสว่าน','ตัว','ร้าน C','C003',1,100,80,0,'20%','IV3','IV3','2026-06-01')"
+    )
+    c.commit()
+    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    assert p['peer_n'] == 1
+    assert p['peer_median'] == 80
+
+
+def test_assemble_products_customer_latest_excludes_pre_epoch_bill():
+    """C3/C4: customer_latest now comes from price_lookup.latest_evidence,
+    bounded by this pair's epoch -- a bill from BEFORE a price-regime
+    change is EXCLUDED (None), not merely flagged the way resolve_price's
+    own customer.last falls back and flags price_changed_since_last.
+    Control: a post-epoch bill for the same pair IS returned."""
+    c = _assemble_db()
+    epoch_date = '2026-06-01'
+    c.execute(
+        "INSERT INTO product_price_history (product_id,field_name,old_value,new_value,changed_at) "
+        "VALUES (1,'base_sell_price',80,100,?)", (epoch_date + ' 09:00:00',))
+    c.commit()
+    # C001's only bill (2026-05-01, seeded by _assemble_db) predates the epoch.
+    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    assert p['customer_latest'] is None
+
+    # control: a post-epoch bill for the same pair IS returned.
+    c.execute(
+        "INSERT INTO sales_transactions (product_id,product_name_raw,unit,customer,customer_code,"
+        "qty,unit_price,net,vat_type,discount,doc_no,doc_base,date_iso) "
+        "VALUES (1,'ดอกสว่าน','ตัว','ร้าน A','C001',1,100,70,0,'30%','IV9','IV9','2026-07-01')"
+    )
+    c.commit()
+    p2 = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    assert p2['customer_latest'] == 70
 
 
 def _special_db(rows):

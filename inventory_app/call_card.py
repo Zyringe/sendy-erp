@@ -524,7 +524,7 @@ def get_card(conn, customer_code):
     }
 
 
-def _assemble_products(conn, names, canon_code):
+def _assemble_products(conn, names, canon_code, today=None):
     """Build the 'ซื้อประจำ' product list: the customer's top-30 products by net
     revenue, each enriched with unit-aware base price, the full active-promotion
     dict, quantity price-tiers, and peer pricing (the customer's latest line + a
@@ -532,8 +532,30 @@ def _assemble_products(conn, names, canon_code):
 
     Extracted from get_card so the pricing assembly is unit-testable without the
     models.get_customer_summary dependency (which opens its own connection).
+
+    `today` (default: real wall-clock date, ISO string) — positional-or-keyword
+    like price_lookup's own `today` params, so every existing call site
+    (get_card doesn't pass it) is unaffected; tests can pin it.
+
+    task-2-brief.md PR C / 2e — this function used to hand-copy the 3-branch
+    promo math and pick "the" active promo via `MAX(created_at)` with no
+    is_active/date filter of its own (a qty promo could shadow a price promo,
+    and a closed row sharing created_at could leak in), and compared the
+    customer's peer-derived `customer_latest` against an ALL-TIME unfiltered
+    peer median. All three are now routed through the shared, tested helpers
+    in price_lookup.py (C1-C4): `batch_active_promos_by_class` (same
+    slot-independent selection resolve_price uses), `apply_price_promo` (the
+    one promo-price application in the app), `epochs_for_pairs` (C2, one
+    epoch per (product_id, unit) pair), and `latest_evidence` (the canonical
+    "customer's most recent evidence-filtered bill" lookup) — with
+    `peer_pricing.product_peer_prices`'s peer population filtered by the SAME
+    epoch (C4's decision: both sides of the ส่วนต่าง flag must share one
+    population, or the flag compares apples to oranges).
     """
     import peer_pricing as pp
+    import price_lookup as pl
+
+    today_str = today or dt.date.today().isoformat()
 
     # Pull customer's top products by net revenue
     product_rows = conn.execute("""
@@ -556,10 +578,18 @@ def _assemble_products(conn, names, canon_code):
         LIMIT 30
     """.format(",".join("?" * len(names))), names).fetchall()
 
-    # Build peer pricing map for this customer_code
+    # C2: one epoch per (product_id, unit) PAIR — a product bought at two
+    # units must not have one unit's epoch silently overwrite the other's.
+    pairs = sorted({(row['product_id'], row['unit'] or '')
+                    for row in product_rows if row['product_id']})
+    epoch_map = pl.epochs_for_pairs(conn, pairs, today=today_str) if pairs else {}
+
+    # Build peer pricing map for this customer_code — C4's decision: filter
+    # the peer population the same way (epoch + evidence_filter) so it
+    # compares the same population as customer_latest below.
     peer_map = {}
     if canon_code:
-        peer_rows = pp.product_peer_prices(conn, canon_code)
+        peer_rows = pp.product_peer_prices(conn, canon_code, window_from_by_pair=epoch_map)
         peer_map = {(r['product_id'], r['unit']): r for r in peer_rows}
         # Enrich each per-peer breakdown with the peer's customer NAME (one query)
         # so the "where does this price come from" modal can name the peers.
@@ -584,29 +614,13 @@ def _assemble_products(conn, names, canon_code):
         uc_map = {(r['product_id'], r['bsn_unit']): float(r['ratio'])
                   for r in uc_rows if r['ratio']}
 
-        # Batch-fetch active promotions for all product_ids (one query, no per-product
-        # connection open/close — models.get_active_promotion opens its own conn each call).
-        # We apply the same promo-price logic here (same 3-branch if/elif/else as
-        # models.effective_price) rather than calling effective_price, because
-        # effective_price also opens its own connection and expects a pre-fetched
-        # product dict with key 'id'. Reusing that function would still require N round-trips.
-        # The math is verbatim from models.effective_price so the two can't drift silently;
-        # any change to promo math in models must be mirrored here.
-        today_str = dt.date.today().isoformat()
-        promo_rows = conn.execute(f"""
-            SELECT p.*
-            FROM promotions p
-            INNER JOIN (
-                SELECT product_id, MAX(created_at) AS latest
-                FROM promotions
-                WHERE product_id IN ({ph})
-                  AND is_active = 1
-                  AND (date_start IS NULL OR date_start <= ?)
-                  AND (date_end IS NULL OR date_end >= ?)
-                GROUP BY product_id
-            ) sub ON p.product_id = sub.product_id AND p.created_at = sub.latest
-        """, pid_list + [today_str, today_str]).fetchall()
-        promo_map = {r['product_id']: r for r in promo_rows}
+        # C1: ONE promo-slot selector, shared verbatim with
+        # price_lookup.resolve_price — a qty (bundle/gift) promo can no
+        # longer shadow a price (percent/fixed) promo the way the old
+        # MAX(created_at) join could, and a closed/date-expired row can no
+        # longer leak in (the old join applied no is_active/date filter of
+        # its own beyond the subquery it joined against).
+        promo_batch = pl.batch_active_promos_by_class(conn, pid_list, today_str)
 
         # Batch-fetch quantity price-tiers (one query) — shown in the click-through modal.
         tier_rows = conn.execute(
@@ -632,7 +646,7 @@ def _assemble_products(conn, names, canon_code):
             orders_map.setdefault(r['product_id'], []).append(dict(r))
     else:
         uc_map = {}
-        promo_map = {}
+        promo_batch = {}
         tiers_map = {}
         orders_map = {}
 
@@ -643,34 +657,57 @@ def _assemble_products(conn, names, canon_code):
         base = row['base_sell_price'] or 0.0
         unit_type = row['unit_type'] or ''
 
-        # Unit-aware base price: multiply base by ratio when unit != unit_type
+        # Unit-aware base price + the ratio apply_price_promo needs for a
+        # 'fixed' promo (its discount_value is per-PIECE — see
+        # price_lookup.apply_price_promo's docstring). ratio stays None
+        # when unit != unit_type and no unit_conversions row answers it —
+        # the pre-existing degrade for `base` itself (out of this PR's
+        # scope); apply_price_promo's own ratio=None branch then leaves a
+        # 'fixed' promo unapplied rather than guessing, same as the resolver.
         if unit and unit_type and unit != unit_type:
             ratio = uc_map.get((pid, unit))
             if ratio:
                 base = base * ratio
-
-        # Promo-price from pre-fetched batch (same logic as models.effective_price)
-        promo = promo_map.get(pid)
-        if promo:
-            promo_label = f"{promo['promo_name']} ({promo['promo_type']})"
-            if promo['promo_type'] == 'percent':
-                promo_price = round(base * (1 - promo['discount_value'] / 100), 2)
-            elif promo['promo_type'] == 'fixed':
-                promo_price = promo['discount_value']
-            else:
-                # bundle / gift / mixed — per-unit price unchanged (same as effective_price)
-                promo_price = base
         else:
-            promo_label = None
-            promo_price = base
+            ratio = 1.0
+
+        # C1: price_promo only — a qty (bundle/gift) promo never changes
+        # per-unit price (mirrors price_lookup.resolve_price exactly; the
+        # bundle/gift terms are shown via `promo` below, not priced here).
+        price_promo, qty_promo = promo_batch.get(pid, (None, None))
+        promo_price = pl.apply_price_promo(base, ratio, price_promo)
+
+        # Display promo: price_promo when one occupies that slot, else
+        # qty_promo (bundle/gift) so the card still shows a deal with no
+        # price-slot component. A 'mixed' row occupying BOTH slots is the
+        # same row either way (see price_lookup.promo_slot_sql).
+        promo = price_promo if price_promo is not None else qty_promo
+        promo_label = f"{promo['promo_name']} ({promo['promo_type']})" if promo else None
 
         peer_key = (pid, unit)
         peer = peer_map.get(peer_key, {})
 
+        # C3/C4: customer_latest now comes from the SAME canonical
+        # latest-evidence lookup the resolver uses (satang precision, the
+        # higher-id line wins a same-date tie) — not peer_pricing's own
+        # rounded/median computation (kept separately as `customer_median`
+        # below; C3's ruling is that the two must NOT be made to agree,
+        # they are different computations). window_from is this pair's
+        # epoch, or unbounded ('') when there is none — a bill from BEFORE
+        # the epoch is EXCLUDED here, not merely flagged the way
+        # resolve_price's customer.last falls back and flags
+        # price_changed_since_last.
+        cust_latest = None
+        if canon_code:
+            window_from = epoch_map.get(peer_key) or ''
+            within = pl.latest_evidence(conn, pid, canon_code, window_from,
+                                         unit=unit, today=today_str)
+            if within is not None:
+                cust_latest = within['cash_per_unit']
+
         # The card's "ราคาล่าสุดที่ลูกค้าได้" column shows the customer's MOST-RECENT
         # price, so the ส่วนต่าง flag must compare THAT (not the median) vs the peer
         # median — otherwise the shown price and the cheaper/higher flag would disagree.
-        cust_latest = peer.get('customer_latest')
         peer_med = peer.get('peer_median')
         if cust_latest is None or peer_med is None:
             card_flag = 'same'

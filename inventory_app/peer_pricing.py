@@ -23,7 +23,7 @@ import statistics
 from collections import defaultdict
 from typing import List, Dict, Any, Optional, Tuple
 
-import sales_filters
+import price_lookup as pl
 
 
 def product_peer_prices(
@@ -45,10 +45,11 @@ def product_peer_prices(
               doc_base/customer/ar_writeoffs — see its own tests) keeps
               passing untouched.
               Given a dict → the population is restricted to
-              sales_filters.evidence_filter('st') (excludes SR/HS returns,
+              price_lookup.evidence_filter('st') (excludes SR/HS returns,
               write-offs, รายการหน้าร้าน marketplace rows, and the
-              cost-basis dummy invoices — the SAME predicate
-              price_lookup.py's resolver evidence uses), AND, for each
+              cost-basis dummy invoices — the SAME predicate the resolver's
+              own evidence lookups use, so peers and resolve_price can never
+              silently disagree about which rows count), AND, for each
               (product_id, unit) pair PRESENT in the map with a non-None
               value, further restricted to date_iso >= that pair's date.
               A pair absent from the map, or mapped to None, still gets
@@ -86,7 +87,7 @@ def product_peer_prices(
             "SELECT product_id, unit, customer_code, qty, net, vat_type, date_iso, "
             "unit_price, discount "
             "FROM sales_transactions st "
-            f"WHERE {sales_filters.evidence_filter('st')}",
+            f"WHERE {pl.evidence_filter('st')}",
         ).fetchall()
         rows = []
         for r in all_rows:
