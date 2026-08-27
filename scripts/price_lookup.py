@@ -31,9 +31,10 @@ Per line:
     > 0; an `extra_disc` that is not a number in 0..1) -> "error" (a string;
     never a Python traceback on stderr) -- scoped to that one line, the rest
     of the batch is unaffected. Because every input is validated BEFORE
-    resolve_price is called, a TypeError raised from inside it is a resolver
-    BUG, not bad input, and is reported with an "internal error" prefix so it
-    is never mistaken for a pricing answer.
+    resolve_price is called, ANY other exception out of it is a resolver BUG,
+    not bad input; it is caught per line and reported with an "internal
+    error" prefix naming the exception type, so it can never be mistaken for
+    a pricing answer and can never take the rest of the batch down.
   - Exactly one match (or an explicit id/code) resolves normally via
     resolve_price(); its return dict is passed through to JSON verbatim,
     including any `None` values (JSON `null`) it carries on pack units with
@@ -202,9 +203,13 @@ def _validate_line(line):
         val = line.get(key)
         if val is None:
             continue
-        if isinstance(val, bool) or not isinstance(val, (int, str)):
+        if isinstance(val, bool) or not isinstance(val, (int, float, str)):
             # a list/dict reaches sqlite3 as a bind parameter and raises
-            # InterfaceError, which is neither ValueError nor TypeError
+            # InterfaceError, which is neither ValueError nor TypeError.
+            # float IS accepted: JSON has one numeric type, so a producer that
+            # round-trips an id emits 26.0, and SQLite compares that to an
+            # INTEGER PRIMARY KEY numerically. bool is excluded on purpose --
+            # it is an int subclass, so `true` would resolve product 1.
             return f"'{key}' must be a number or a string, got {type(val).__name__}"
 
     for key in ('product_query', 'customer_query', 'unit'):
@@ -303,12 +308,22 @@ def _resolve_line(conn, line, today):
         )
     except ValueError as e:
         return {'error': str(e)}
-    except TypeError as e:
-        # Every input was validated above, so this is a resolver bug (most
-        # likely arithmetic on one of the None money keys it deliberately
-        # carries). Keep the rest of the batch alive, but never let it read
-        # as an answer about this product's price.
-        return {'error': f'internal error resolving this line (report this): {e}'}
+    except Exception as e:
+        # Everything reaching here is a BUG, not bad input: the inputs were
+        # validated above, and the resolver says "cannot price this" with a
+        # ValueError (caught just above). A TypeError is most likely
+        # arithmetic on one of the None money keys the resolver deliberately
+        # carries.
+        #
+        # This is deliberately a catch-all rather than a list of exception
+        # types. Validating input types is still an ENUMERATION, and the
+        # first version of that enumeration missed sqlite3.InterfaceError and
+        # AttributeError -- both of which killed the whole batch. A net whose
+        # guarantee does not depend on having imagined every shape is the
+        # only one worth the docstring's promise. Keep the rest of the batch
+        # alive; never let this read as an answer about the product's price.
+        return {'error': f'internal error resolving this line (report this): '
+                          f'{type(e).__name__}: {e}'}
 
     if result['list']['list_for_unit'] == 0:
         result['no_list_price'] = True

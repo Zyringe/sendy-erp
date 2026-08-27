@@ -15,6 +15,7 @@ batch alive is right; presenting an engine bug as a pricing answer is not.
 """
 import importlib.util
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -65,3 +66,27 @@ def test_engine_valueerror_stays_a_plain_user_facing_message(monkeypatch):
     out = mod._resolve_line(None, {'product_id': 999999}, None)
 
     assert out['error'] == "product_id 999999 not found"
+
+
+def test_an_unanticipated_exception_type_does_not_kill_the_batch(monkeypatch):
+    """The review of this very change: validating input types is still an
+    ENUMERATION, and the evidence that enumerations miss shapes is that the
+    first pass missed sqlite3.InterfaceError and AttributeError. A net under
+    the enumeration is the only version whose guarantee does not depend on
+    having imagined every shape — an unanticipated exception degrades to a
+    per-line internal error, never a dead batch.
+
+    sqlite3.InterfaceError is the real one that got through: it is neither
+    ValueError nor TypeError."""
+    mod = _load_script()
+
+    def _boom(*a, **kw):
+        raise sqlite3.InterfaceError(
+            "Error binding parameter 0 - probably unsupported type.")
+
+    monkeypatch.setattr(mod.pl, 'resolve_price', _boom)
+    out = mod._resolve_line(None, {'product_id': 26}, None)
+
+    assert 'error' in out and 'result' not in out
+    assert out['error'].startswith('internal error'), out['error']
+    assert 'binding parameter' in out['error']

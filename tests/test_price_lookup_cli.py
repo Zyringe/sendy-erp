@@ -531,3 +531,25 @@ def test_non_string_query_errors_only_that_line(tmp_db, tmp_db_conn):
     for i in (1, 2):
         assert 'error' in out['lines'][i] and 'result' not in out['lines'][i]
         assert 'must be a string' in out['lines'][i]['error']
+
+
+def test_float_product_id_still_resolves(tmp_db, tmp_db_conn):
+    """Regression guard on the boundary validation itself. JSON has ONE
+    numeric type, so any producer that round-trips an id through a float
+    (JavaScript, pandas, a normalising serialiser) emits 26.0 rather than 26.
+    That resolved before this validation existed — SQLite compares 26.0 to an
+    INTEGER PRIMARY KEY numerically — and must keep resolving.
+
+    `True` is the CONTROL: bool is an int subclass, so a scalar check widened
+    carelessly would start accepting it and silently resolve product 1."""
+    pid = _mk_product(tmp_db_conn, "CLI product_id เป็น float", base=100.0)
+    _clear_pid(tmp_db_conn, pid)
+
+    out, _proc = _run_cli(tmp_db, {"lines": [
+        {"product_id": float(pid)},
+        {"product_id": True},
+    ]})
+
+    assert 'result' in out['lines'][0], out['lines'][0]
+    assert out['lines'][0]['result']['product']['id'] == pid
+    assert 'error' in out['lines'][1] and 'result' not in out['lines'][1]
