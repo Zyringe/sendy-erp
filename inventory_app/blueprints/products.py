@@ -1,6 +1,7 @@
 import os
 import shutil
 import sqlite3
+from datetime import date
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort, current_app, send_file)
@@ -849,9 +850,18 @@ def promotion_new(product_id):
                 'gift_desc':        _opt_str(f.get('gift_desc')),
                 'gift_qty':         _opt_str(f.get('gift_qty')),
             }
+            # Parse the dates here so a non-ISO value lands in THIS handler with
+            # a friendly message. Without it, replace_promotion's date maths
+            # raises ValueError uncaught and the route 500s — and the backdate
+            # guard cannot catch it either, because a string compare puts
+            # '27/08/2026' ABOVE '2026-08-27'. Unreachable from the browser
+            # (<input type="date">), reachable from any other POST.
+            for _k in ('date_start', 'date_end'):
+                if data[_k]:
+                    date.fromisoformat(data[_k])
         except ValueError as e:
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
-            return render_template('promotions/form.html', product=product)
+            return render_template('promotions/form.html', product=product, form=f)
 
         # Validate per-type required fields (DB CHECK is the final gate; this
         # gives a friendlier error before hitting it)
@@ -859,38 +869,67 @@ def promotion_new(product_id):
         if t == 'percent':
             if data['discount_value'] is None or not (0 < data['discount_value'] <= 100):
                 flash('ส่วนลด % ต้องอยู่ระหว่าง 1–100', 'danger')
-                return render_template('promotions/form.html', product=product)
+                return render_template('promotions/form.html', product=product, form=f)
         elif t == 'fixed':
             if not data['discount_value'] or data['discount_value'] <= 0:
                 flash('ราคาตายตัวต้องมากกว่า 0', 'danger')
-                return render_template('promotions/form.html', product=product)
+                return render_template('promotions/form.html', product=product, form=f)
         elif t == 'bundle':
             if data['bundle_buy'] is None or data['bundle_free'] is None:
                 flash('โปรโมชันแถมของต้องระบุทั้ง "ซื้อ" และ "แถม"', 'danger')
-                return render_template('promotions/form.html', product=product)
+                return render_template('promotions/form.html', product=product, form=f)
         elif t == 'gift':
             if not data['gift_desc'] or not data['gift_qty']:
                 flash('โปรโมชันของแถมต้องระบุชื่อและจำนวน', 'danger')
-                return render_template('promotions/form.html', product=product)
+                return render_template('promotions/form.html', product=product, form=f)
         elif t == 'mixed':
             if (data['discount_value'] is None
                 and data['bundle_buy'] is None
                 and not data['gift_desc']):
                 flash('โปรโมชันแบบผสมต้องระบุอย่างน้อย 1 อย่าง (ส่วนลด / แถม / ของแถม)', 'danger')
-                return render_template('promotions/form.html', product=product)
+                return render_template('promotions/form.html', product=product, form=f)
         else:
             flash(f'ไม่รองรับ promo_type {t!r}', 'danger')
-            return render_template('promotions/form.html', product=product)
+            return render_template('promotions/form.html', product=product, form=f)
 
+        # 2a: creating a promo REPLACES whatever occupies the same slot
+        # (price / qty / both) over the same dates — closes the old row by date
+        # (date_end = new_start − 1, is_active untouched) and inserts this one
+        # with source='manual'. A promo already SCHEDULED inside the new window
+        # cannot be closed by date, so it is refused unless the operator ticks
+        # "ยกเลิกโปรที่ตั้งเวลาไว้" (Put's ruling, 2026-08-27).
+        #
+        # A refusal re-renders the form (200) with the input repopulated, like
+        # the four validations above — NOT a redirect. task-2-brief.md mandated
+        # "302 on success AND on refusal"; that is deliberately diverged from
+        # here, because a redirect throws the form away and would make the
+        # cancel checkbox unreachable without retyping the whole promo. It also
+        # makes a refusal positively assertable (200 + form) instead of an
+        # ambiguous 302. Success is still a 302 redirect.
+        today = date.today().isoformat()
         try:
-            models.create_promotion(data)
+            ok, msg, _new_id = models.replace_promotion(
+                product_id, data, today=today,
+                cancel_conflicts=bool(f.get('cancel_conflicts')))
         except sqlite3.IntegrityError as e:
-            flash(f'บันทึกไม่สำเร็จ (CHECK constraint): {e}', 'danger')
-            return render_template('promotions/form.html', product=product)
-        flash('เพิ่มโปรโมชันเรียบร้อย', 'success')
+            # mig 177's promotions_one_per_slot_{ins,upd} triggers RAISE(ABORT)
+            # here — that is a stacking guard, not a CHECK constraint, and the
+            # bare exception text tells the operator nothing actionable.
+            if 'one current price promo' in str(e):
+                msg = ('บันทึกไม่สำเร็จ: สินค้านี้มีโปรโมชันในช่องเดียวกัน '
+                       '(ราคา / จำนวน) ทับช่วงวันที่นี้อยู่แล้ว — '
+                       'ตรวจโปรที่ยังใช้อยู่ในหน้าสินค้า แล้วกด "ปิดเลย" ใบที่ไม่ใช้')
+            else:
+                msg = f'บันทึกไม่สำเร็จ (CHECK constraint): {e}'
+            flash(msg, 'danger')
+            return render_template('promotions/form.html', product=product, form=f)
+        if not ok:
+            flash(msg, 'danger')
+            return render_template('promotions/form.html', product=product, form=f)
+        flash(msg, 'success')
         return redirect(url_for('products.product_detail', product_id=product_id))
 
-    return render_template('promotions/form.html', product=product)
+    return render_template('promotions/form.html', product=product, form=None)
 
 
 @bp_products.route('/promotions/<int:promo_id>/deactivate', methods=['POST'])

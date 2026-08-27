@@ -34,17 +34,19 @@
           <div class="mb-3">
             <label class="form-label">ชื่อโปรโมชัน <span class="text-danger">*</span></label>
             <input type="text" name="promo_name" class="form-control" required
+                   value="{{ form.get('promo_name', '') if form else '' }}"
                    placeholder="เช่น ลดราคาต้อนรับปีใหม่">
           </div>
 
           <div class="mb-3">
             <label class="form-label">ประเภท <span class="text-danger">*</span></label>
             <select name="promo_type" id="promoType" class="form-select" onchange="togglePromoType()">
-              <option value="percent">ส่วนลด % จากราคาปกติ</option>
-              <option value="fixed">ราคาตายตัว (Fixed Price)</option>
-              <option value="bundle">แถมของ (Buy X Get Y)</option>
-              <option value="gift">ของแถม (Free Gift Item)</option>
-              <option value="mixed">ผสม (% + แถม / + ของแถม)</option>
+              {% set _pt = form.get('promo_type', 'percent') if form else 'percent' %}
+              <option value="percent" {{ 'selected' if _pt == 'percent' }}>ส่วนลด % จากราคาปกติ</option>
+              <option value="fixed" {{ 'selected' if _pt == 'fixed' }}>ราคาตายตัว (Fixed Price)</option>
+              <option value="bundle" {{ 'selected' if _pt == 'bundle' }}>แถมของ (Buy X Get Y)</option>
+              <option value="gift" {{ 'selected' if _pt == 'gift' }}>ของแถม (Free Gift Item)</option>
+              <option value="mixed" {{ 'selected' if _pt == 'mixed' }}>ผสม (% + แถม / + ของแถม)</option>
             </select>
           </div>
 
@@ -52,7 +54,7 @@
           <div class="mb-3" id="discountValueGroup">
             <label class="form-label" id="valueLabel">ส่วนลด (%) <span class="text-danger">*</span></label>
             <div class="input-group">
-              <input type="number" name="discount_value" id="discountValue"
+              <input type="number" name="discount_value" id="discountValue" value="{{ form.get('discount_value', '') if form else '' }}"
                      class="form-control" step="0.01" min="0" placeholder="0">
               <span class="input-group-text" id="valueSuffix">%</span>
             </div>
@@ -65,15 +67,15 @@
             <div class="row g-2">
               <div class="col">
                 <label class="form-label small">ซื้อ (จำนวน)</label>
-                <input type="number" name="bundle_buy" id="bundleBuy" class="form-control" min="1" placeholder="12">
+                <input type="number" name="bundle_buy" id="bundleBuy" value="{{ form.get('bundle_buy', '') if form else '' }}" class="form-control" min="1" placeholder="12">
               </div>
               <div class="col">
                 <label class="form-label small">แถม (จำนวน)</label>
-                <input type="number" name="bundle_free" id="bundleFree" class="form-control" min="0" placeholder="1">
+                <input type="number" name="bundle_free" id="bundleFree" value="{{ form.get('bundle_free', '') if form else '' }}" class="form-control" min="0" placeholder="1">
               </div>
               <div class="col">
                 <label class="form-label small">หน่วย (optional)</label>
-                <input type="text" name="bundle_unit" id="bundleUnit" class="form-control" placeholder="ดอก / ตัว / ใบ">
+                <input type="text" name="bundle_unit" id="bundleUnit" value="{{ form.get('bundle_unit', '') if form else '' }}" class="form-control" placeholder="ดอก / ตัว / ใบ">
               </div>
             </div>
             <div class="form-text mt-2">ตัวอย่าง: ซื้อ 12 แถม 1 ตัว · ซื้อ 120 ดอก แถม 12 ดอก</div>
@@ -85,11 +87,11 @@
             <div class="row g-2">
               <div class="col-7">
                 <label class="form-label small">ชื่อของแถม</label>
-                <input type="text" name="gift_desc" id="giftDesc" class="form-control" placeholder="เช่น ดจ.สแตนเลส">
+                <input type="text" name="gift_desc" id="giftDesc" value="{{ form.get('gift_desc', '') if form else '' }}" class="form-control" placeholder="เช่น ดจ.สแตนเลส">
               </div>
               <div class="col-5">
                 <label class="form-label small">จำนวน + หน่วย</label>
-                <input type="text" name="gift_qty" id="giftQty" class="form-control" placeholder="20 ดอก">
+                <input type="text" name="gift_qty" id="giftQty" value="{{ form.get('gift_qty', '') if form else '' }}" class="form-control" placeholder="20 ดอก">
               </div>
             </div>
             <div class="form-text mt-2">สำหรับสินค้าที่แถมเป็นของคนละชนิดกับสินค้าหลัก</div>
@@ -109,12 +111,12 @@
           <div class="row g-3 mb-4">
             <div class="col">
               <label class="form-label">วันเริ่มต้น</label>
-              <input type="date" name="date_start" class="form-control">
+              <input type="date" name="date_start" value="{{ form.get('date_start', '') if form else '' }}" class="form-control">
               <div class="form-text">เว้นว่าง = ไม่กำหนด</div>
             </div>
             <div class="col">
               <label class="form-label">วันสิ้นสุด</label>
-              <input type="date" name="date_end" class="form-control">
+              <input type="date" name="date_end" value="{{ form.get('date_end', '') if form else '' }}" class="form-control">
               <div class="form-text">เว้นว่าง = ไม่กำหนด</div>
             </div>
           </div>
@@ -124,6 +126,18 @@
             <button type="submit" class="btn btn-primary flex-fill btn-touch">
               <i class="bi bi-check-circle me-1"></i>บันทึกโปรโมชัน
             </button>
+          </div>
+          <div class="form-check mb-3" id="cancelConflictsBox">
+            <input class="form-check-input" type="checkbox" value="1"
+                   name="cancel_conflicts" id="cancelConflicts"
+                   {{ 'checked' if form and form.get('cancel_conflicts') }}>
+            <label class="form-check-label" for="cancelConflicts">
+              ยกเลิกโปรที่ตั้งเวลาไว้
+            </label>
+            <div class="form-text">
+              ถ้ามีโปรที่ตั้งเวลาไว้ล่วงหน้าทับช่วงของใบนี้ ให้ยกเลิกใบนั้น
+              แล้วบันทึกใบนี้แทน. เว้นว่างไว้ = ระบบจะไม่บันทึกและบอกว่าชนกับใบไหน.
+            </div>
           </div>
         </form>
       </div>
