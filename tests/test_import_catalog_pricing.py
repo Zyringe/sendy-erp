@@ -678,9 +678,10 @@ class TestMixedOccupantRefusal:
         _write_csv(csv_path, [{
             "product_id": str(pid), "sku_code": "X", "special_price": "80",
         }])
-        with pytest.raises(imp.RunAbort):
+        with pytest.raises(imp.RunAbort) as exc_info:
             imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                            show_sample=0, verbose=False, batch_date="2026-07-01")
+        assert str(pid) in str(exc_info.value)  # names the offending product
 
         conn = sqlite3.connect(tmp_db)
         cnt = conn.execute(
@@ -703,9 +704,10 @@ class TestMixedOccupantRefusal:
             "product_id": str(pid), "sku_code": "X",
             "promo_type": "bundle", "bundle_buy": "60", "bundle_free": "6",
         }])
-        with pytest.raises(imp.RunAbort):
+        with pytest.raises(imp.RunAbort) as exc_info:
             imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                            show_sample=0, verbose=False, batch_date="2026-07-01")
+        assert str(pid) in str(exc_info.value)  # names the offending product
 
         conn = sqlite3.connect(tmp_db)
         cnt = conn.execute(
@@ -757,9 +759,10 @@ class TestTwoPriceSlotPromosAbort:
             {"product_id": str(pid_ok), "sku_code": "OK",
              "promo_type": "percent", "promo_value": "5"},
         ])
-        with pytest.raises(imp.RunAbort):
+        with pytest.raises(imp.RunAbort) as exc_info:
             imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                            show_sample=0, verbose=False, batch_date=BATCH)
+        assert str(pid_bad) in str(exc_info.value)  # names the offending product/row
 
         # CONTROL: the clean row in the SAME file was also not written —
         # proves the abort is atomic, not per-row.
@@ -783,9 +786,10 @@ class TestFileShapeAndConcurrency:
             {"product_id": str(pid), "sku_code": "A", "base_sell_price": "10"},
             {"product_id": str(pid), "sku_code": "B", "base_sell_price": "20"},
         ])
-        with pytest.raises(imp.RunAbort):
+        with pytest.raises(imp.RunAbort) as exc_info:
             imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                            show_sample=0, verbose=False, batch_date=BATCH)
+        assert str(pid) in str(exc_info.value)  # names the duplicated product_id
 
     def test_duplicate_tier_label_within_row_aborts(self, tmp_db, tmp_path):
         conn = sqlite3.connect(tmp_db)
@@ -798,9 +802,10 @@ class TestFileShapeAndConcurrency:
             "tier1_qty_label": "1 โหล", "tier1_price": "100",
             "tier2_qty_label": "1 โหล", "tier2_price": "200",
         }])
-        with pytest.raises(imp.RunAbort):
+        with pytest.raises(imp.RunAbort) as exc_info:
             imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                            show_sample=0, verbose=False, batch_date=BATCH)
+        assert "1 โหล" in str(exc_info.value)  # names the duplicated tier label
 
     def test_row_with_no_promo_columns_leaves_existing_promo_untouched(self, tmp_db, tmp_path):
         conn = sqlite3.connect(tmp_db)
@@ -844,9 +849,10 @@ class TestFileShapeAndConcurrency:
             "promo_type": "percent", "promo_value": "20",  # changed -> would close
         }])
         # batch date EARLIER than the occupant's own date_start
-        with pytest.raises(imp.RunAbort):
+        with pytest.raises(imp.RunAbort) as exc_info:
             imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                            show_sample=0, verbose=False, batch_date="2026-06-01")
+        assert str(pid) in str(exc_info.value)  # names the offending product/promo
 
         conn = sqlite3.connect(tmp_db)
         cnt = conn.execute(
