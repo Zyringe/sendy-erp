@@ -291,8 +291,17 @@ def _reconcile_promos(conn, product_id, intents, batch_date):
     union_price = any(it["_price"] for it in intents)
     union_qty = any(it["_qty"] for it in intents)
 
+    # A "live occupant" is is_active=1 AND not already date-closed as of
+    # batch_date. Closing only ever sets date_end (2a's rule: never flip
+    # is_active early), so an already-closed row stays is_active=1 forever
+    # — without this filter a row this importer closed in an EARLIER run
+    # keeps coming back as a candidate on every later run and gets
+    # re-touched (found via the real-catalog rehearsal: a product carrying
+    # two independent single-slot promos had its already-closed one
+    # re-closed a second time on a subsequent run, breaking idempotency).
     occupants = conn.execute(
-        "SELECT * FROM promotions WHERE product_id=? AND is_active=1", (product_id,)
+        "SELECT * FROM promotions WHERE product_id=? AND is_active=1 "
+        "AND (date_end IS NULL OR date_end >= ?)", (product_id, batch_date)
     ).fetchall()
 
     touched = []  # (occ_row, occ_price, occ_qty)

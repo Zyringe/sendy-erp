@@ -509,6 +509,49 @@ class TestIdempotency:
         conn.close()
         assert date_start_after == date_start_before  # NOT moved to the newer batch date
 
+    def test_already_closed_occupant_is_not_touched_by_a_later_run(self, tmp_db, tmp_path):
+        """Regression (found via the real-CSV rehearsal): closing an occupant
+        only date-closes it (is_active stays 1, per 2a's rule) — so a THIRD
+        run, at a batch date newer than that close, must not re-select the
+        already-closed row as a candidate occupant and touch it again. Real
+        shape hit: product 445 carries a 'fixed' promo (price slot) AND a
+        separate 'mixed' promo (qty slot only, discount_value NULL) at the
+        same time; replacing just the qty-slot one across two runs re-closed
+        the same already-closed row a second time."""
+        conn = sqlite3.connect(tmp_db)
+        conn.row_factory = sqlite3.Row
+        pid = _pick_real_product_id(conn)
+        _clean_product(conn, pid)
+        # Two independent occupants on two different slots, like pid 445 above.
+        _insert_promo(conn, pid, "fixed", discount_value=220.0, date_start=BATCH)
+        _insert_promo(conn, pid, "mixed", bundle_buy=1, bundle_free=1,
+                      gift_desc="clean text", gift_qty="1", date_start=BATCH)
+        conn.commit()
+        conn.close()
+
+        csv_path = tmp_path / "cat.csv"
+        _write_csv(csv_path, [{
+            "product_id": str(pid), "sku_code": "X",
+            "special_price": "220",                      # matches the 'fixed' occupant exactly
+            "promo_type": "mixed",
+            "bundle_buy": "1", "bundle_free": "1",
+            "gift_desc": "messy raw catalogue text", "gift_qty": "1",  # differs -> changed
+        }])
+
+        run1 = imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
+                              show_sample=0, verbose=False, batch_date="2026-08-01")
+        assert run1["promos_closed"] == 1     # only the mixed occupant, fixed is preserved
+        assert run1["promos_inserted"] == 1
+
+        # Re-run the SAME file at a NEWER batch date. The only live occupant
+        # of the qty slot is now the row run1 just inserted, with the SAME
+        # (messy) gift_desc as the CSV — must match and preserve. The row
+        # run1 already closed must be left alone, not re-closed.
+        run2 = imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
+                              show_sample=0, verbose=False, batch_date="2026-09-01")
+        assert run2["promos_closed"] == 0
+        assert run2["promos_inserted"] == 0
+
 
 # ── Tier reconciliation matrix (B0) ──────────────────────────────────────────
 
