@@ -700,12 +700,25 @@ def _assemble_products(conn, names, canon_code, today=None):
         cust_latest = None
         cust_latest_list = None
         cust_latest_disc = None
+        cust_latest_date = None
+        cust_latest_is_stale = False
         if canon_code:
             window_from = epoch_map.get(peer_key) or ''
             within = pl.latest_evidence(conn, pid, canon_code, window_from,
                                          unit=unit, today=today_str)
+            if within is None and window_from:
+                # Put's decision B (2026-08-28), overriding the plan's option A.
+                # Excluding a pre-epoch bill outright blanked 26 of 30 rows for a
+                # real customer on a page read live on the phone. resolve_price
+                # already handles this exact case by returning the old bill with
+                # in_window=False and flagging price_changed_since_last; mirror
+                # it here with the same unbounded lookup ('' = no lower bound).
+                within = pl.latest_evidence(conn, pid, canon_code, '',
+                                            unit=unit, today=today_str)
+                cust_latest_is_stale = within is not None
             if within is not None:
                 cust_latest = within['cash_per_unit']
+                cust_latest_date = within['date']
                 # Codex 2e MAJOR-2: take list + discount from the SAME row as
                 # the net. peer_pricing's customer_latest_list/_disc come from
                 # its same-date MEDIAN representative, which on a day with two
@@ -719,7 +732,7 @@ def _assemble_products(conn, names, canon_code, today=None):
         # price, so the ส่วนต่าง flag must compare THAT (not the median) vs the peer
         # median — otherwise the shown price and the cheaper/higher flag would disagree.
         peer_med = peer.get('peer_median')
-        if cust_latest is None or peer_med is None:
+        if cust_latest_is_stale or cust_latest is None or peer_med is None:
             card_flag = 'same'
         elif cust_latest < peer_med:
             card_flag = 'cheaper'
@@ -738,7 +751,7 @@ def _assemble_products(conn, names, canon_code, today=None):
         # population or its integer rounding (C3: the two computations stay
         # deliberately different).
         peer_vals = [pr['price'] for pr in peer.get('peers', [])]
-        if cust_latest is None or not peer_vals:
+        if cust_latest_is_stale or cust_latest is None or not peer_vals:
             card_cheaper_pct = None
         else:
             n_more = sum(1 for pv in peer_vals if pv > cust_latest)
@@ -762,6 +775,8 @@ def _assemble_products(conn, names, canon_code, today=None):
             'customer_latest': cust_latest,
             'customer_latest_list': cust_latest_list,
             'customer_latest_disc': cust_latest_disc,
+            'customer_latest_date': cust_latest_date,
+            'customer_latest_is_stale': cust_latest_is_stale,
             'peer_median':     peer_med,
             'peer_repr_list':  peer.get('peer_repr_list'),
             'peer_repr_disc':  peer.get('peer_repr_disc'),

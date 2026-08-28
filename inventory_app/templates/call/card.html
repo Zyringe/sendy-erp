@@ -72,7 +72,8 @@
 .cc-clickhint{font-size:10px;color:var(--cc-brand);margin-top:2px;opacity:.7}
 .cc-px-list{font-weight:700}
 .cc-px-disc{font-size:11px;color:var(--cc-red);font-weight:600;margin-top:1px}
-.cc-px-net{font-size:11px;color:var(--cc-muted);margin-top:1px}
+.cc-px-stale{color:#b45309;font-size:10px;line-height:1.25;margin-top:2px;font-style:italic}
+    .cc-px-net{font-size:11px;color:var(--cc-muted);margin-top:1px}
 .cc-freebie{display:inline-block;font-size:10px;font-weight:600;background:var(--cc-gold-bg);color:var(--cc-gold);border-radius:6px;padding:1px 6px;margin-left:4px}
 .cc-namelink{color:var(--cc-brand);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px}
 
@@ -391,6 +392,12 @@
                   {% if dl %}<div class="cc-px-disc">{{ dl }}</div>{% endif %}
                   {% if p.customer_latest is not none %}<div class="cc-px-net">สุทธิ ฿{{ '{:,.2f}'.format(p.customer_latest) }}</div>{% endif %}
                   {% elif p.customer_latest is not none %}฿{{ '{:,.2f}'.format(p.customer_latest) }}{% else %}—{% endif %}
+                  {# Put's decision B: a bill from before this pair's price change is
+                     still SHOWN, but must never read as the current price. Same
+                     framing resolve_price uses (price_changed_since_last). #}
+                  {% if p.customer_latest_is_stale %}
+                  <div class="cc-px-stale">ก่อนเปลี่ยนราคา{% if p.customer_latest_date %} ({{ p.customer_latest_date }}){% endif %}<br>ไม่ใช่ราคาปัจจุบัน</div>
+                  {% endif %}
                 </td>
                 <td class="cc-clickcell" style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle"
                     data-bs-toggle="modal" data-bs-target="#detailModal"

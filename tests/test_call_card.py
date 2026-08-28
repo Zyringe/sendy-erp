@@ -625,12 +625,18 @@ def test_assemble_products_peer_filtered_by_epoch_excludes_pre_epoch_peer():
     assert p['peer_median'] == 80
 
 
-def test_assemble_products_customer_latest_excludes_pre_epoch_bill():
-    """C3/C4: customer_latest now comes from price_lookup.latest_evidence,
-    bounded by this pair's epoch -- a bill from BEFORE a price-regime
-    change is EXCLUDED (None), not merely flagged the way resolve_price's
-    own customer.last falls back and flags price_changed_since_last.
-    Control: a post-epoch bill for the same pair IS returned."""
+def test_assemble_products_pre_epoch_bill_is_returned_and_marked_stale():
+    """C3/C4 + Put's decision B (2026-08-28).
+
+    SUPERSEDED CONTRACT: this used to assert the pre-epoch bill was EXCLUDED
+    (customer_latest is None) — the plan's option A. Measured on a real
+    customer it blanked 26 of 30 rows, so Put chose B: return the bill and mark
+    it stale, mirroring resolve_price's in_window=False +
+    price_changed_since_last. This test pins the MECHANISM (which bill comes
+    back, and the marker); test_pre_epoch_bill_is_shown_flagged_stale_not_
+    blanked pins the CONSEQUENCE (a stale value must not drive the flag).
+
+    Control: a post-epoch bill for the same pair is returned and NOT stale."""
     c = _assemble_db()
     epoch_date = '2026-06-01'
     c.execute(
@@ -639,7 +645,9 @@ def test_assemble_products_customer_latest_excludes_pre_epoch_bill():
     c.commit()
     # C001's only bill (2026-05-01, seeded by _assemble_db) predates the epoch.
     p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
-    assert p['customer_latest'] is None
+    assert p['customer_latest'] is not None      # shown, not blanked (decision B)
+    assert p['customer_latest_is_stale'] is True
+    assert p['customer_latest_date'] < epoch_date, p['customer_latest_date']
 
     # control: a post-epoch bill for the same pair IS returned.
     c.execute(
@@ -650,6 +658,7 @@ def test_assemble_products_customer_latest_excludes_pre_epoch_bill():
     c.commit()
     p2 = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
     assert p2['customer_latest'] == 70
+    assert p2['customer_latest_is_stale'] is False   # control: in-window, not stale
 
 
 def _special_db(rows):
@@ -765,3 +774,49 @@ def test_card_latest_line_is_one_canonical_row_not_the_median_representative():
     assert p['peer_cheaper_pct'] == 100, p['peer_cheaper_pct']
     # 4. and the flag agrees with the number shown, rather than contradicting it
     assert p['flag'] == 'cheaper', p['flag']
+
+
+def test_pre_epoch_bill_is_shown_flagged_stale_not_blanked():
+    """Put's decision B (2026-08-28), overriding the plan's option A.
+
+    A bill from BEFORE the pair's price epoch is not current-price evidence, so
+    it must not drive the cheaper/higher flag — but blanking the row entirely
+    emptied 26 of 30 rows for a real customer on a page read live on the phone.
+    `resolve_price` already handles this exact case by returning the old bill
+    with `in_window: false` and setting `price_changed_since_last`; the card now
+    mirrors that: show the number, mark it pre-change.
+
+    ⚠ The stale number must NOT feed the comparison. Peers are epoch-filtered
+    (decision #8), so comparing a pre-epoch customer price against post-epoch
+    peers is the two-populations bug C4 exists to prevent. flag stays 'same' and
+    peer_cheaper_pct stays None while the shown number is stale.
+    """
+    c = _assemble_db()
+    epoch_date = '2026-06-01'
+    c.execute(
+        "INSERT INTO product_price_history (product_id,field_name,old_value,new_value,changed_at) "
+        "VALUES (1,'base_sell_price',80,100,?)", (epoch_date + ' 09:00:00',))
+    c.commit()
+    # C001's only bill (2026-05-01, seeded by _assemble_db) predates the epoch.
+    n = c.execute("SELECT COUNT(*) FROM sales_transactions WHERE customer_code='C001' "
+                  "AND product_id=1 AND date_iso < ?", (epoch_date,)).fetchone()[0]
+    assert n >= 1, n                       # count before property
+
+    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+
+    assert p['customer_latest'] is not None, "the pre-epoch bill must still be SHOWN"
+    assert p['customer_latest_is_stale'] is True
+    assert p['customer_latest_date'] < epoch_date, p['customer_latest_date']
+    # the stale number must not drive the comparison
+    assert p['peer_cheaper_pct'] is None, p['peer_cheaper_pct']
+    assert p['flag'] == 'same', p['flag']
+
+    # CONTROL, same fixture: a POST-epoch bill is not stale and DOES compare.
+    c.execute(
+        "INSERT INTO sales_transactions (product_id,product_name_raw,unit,customer,customer_code,"
+        "qty,unit_price,net,vat_type,discount,doc_no,doc_base,date_iso) "
+        "VALUES (1,'ดอกสว่าน','ตัว','ร้าน A','C001',1,100,70,0,'30%','IV9','IV9','2026-07-01')")
+    c.commit()
+    p2 = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    assert p2['customer_latest'] == 70
+    assert p2['customer_latest_is_stale'] is False
