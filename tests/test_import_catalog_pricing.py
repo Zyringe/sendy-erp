@@ -20,6 +20,7 @@ import csv
 import json
 import sqlite3
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,43 @@ def _insert_promo(conn, pid, promo_type, discount_value=None, bundle_buy=None,
         "date_start, is_active, source) VALUES (?, 'existing', ?, ?, ?, ?, ?, ?, ?, 1, ?)",
         (pid, promo_type, discount_value, bundle_buy, bundle_free, gift_desc,
          gift_qty, date_start, source))
+
+
+
+def _promo_snapshot(db_path, pid):
+    """EVERY column of EVERY promo row on `pid`, ordered by id.
+
+    Codex review 2026-08-27: the abort tests asserted only
+    `COUNT(*) WHERE is_active = 1 == 1`. Closing a promo deliberately leaves
+    `is_active = 1` and only stamps `date_end` (2a's rule), so that count is
+    UNCHANGED by a regression that date-closes the occupant before raising —
+    the assertion could not fail for the damage it existed to catch. Comparing
+    the whole row, `date_end` included, is what actually pins "untouched".
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT * FROM promotions WHERE product_id = ? ORDER BY id", (pid,)
+        ).fetchall()
+        return [tuple(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def _tier_snapshot(db_path, pid):
+    """EVERY column of EVERY tier row on `pid`, ordered by qty_label. The
+    headline idempotency test preserved only the global COUNT, which an
+    in-place mutation of price/note/sort_order/updated_at leaves untouched."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT * FROM product_price_tiers WHERE product_id = ? ORDER BY qty_label",
+            (pid,)).fetchall()
+        return [tuple(r) for r in rows]
+    finally:
+        conn.close()
 
 
 BATCH = "2026-06-01"
@@ -412,6 +450,13 @@ class TestIdempotency:
             "SELECT date_start FROM promotions WHERE product_id=?", (pid,)).fetchone()[0]
         tier_count_before = conn.execute("SELECT COUNT(*) FROM product_price_tiers").fetchone()[0]
         conn.close()
+        # Codex MINOR: a global COUNT is unchanged by an IN-PLACE mutation of an
+        # existing tier's price/note/sort_order/updated_at, so the count alone
+        # cannot see the spec's "every tier row unchanged". Snapshot the rows.
+        promo_rows_before = _promo_snapshot(tmp_db, pid)
+        tier_rows_before = _tier_snapshot(tmp_db, pid)
+        assert len(promo_rows_before) == 1 and len(tier_rows_before) == 1, (
+            promo_rows_before, tier_rows_before)   # count before property
 
         stats2 = imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                                 show_sample=0, verbose=False, batch_date=BATCH)
@@ -429,6 +474,9 @@ class TestIdempotency:
         ).fetchone()[0] == date_start_before
         assert conn.execute("SELECT COUNT(*) FROM product_price_tiers").fetchone()[0] == tier_count_before
         conn.close()
+        # every column of every row, not just the counts
+        assert _promo_snapshot(tmp_db, pid) == promo_rows_before
+        assert _tier_snapshot(tmp_db, pid) == tier_rows_before
 
     def test_control_one_change_moves_only_that_product(self, tmp_db, tmp_path):
         """Change one discount_value → exactly 1 closed / 1 inserted, that
@@ -585,6 +633,28 @@ class TestTierReconciliation:
             "SELECT id, price FROM product_price_tiers WHERE product_id=?", (pid,)).fetchone()
         assert row["id"] == tier_id_before  # same row, updated in place
         assert row["price"] == 150
+
+        # Codex MINOR: B0's whole point is that a tier PRICE change is
+        # epoch-dated at IMPORT TIME (today) while a promo changed in the same
+        # run carries --batch-date. Asserting only id+price proves neither. The
+        # epoch signal price_lookup.epochs_for reads is an audit_log row for
+        # THIS tier whose changed_fields carries 'price'. Scope it to this
+        # row_id — tmp_db clones the live dev DB WITH its history.
+        # action='UPDATE' scopes this to the IMPORTER's write — the test's own
+        # tier INSERT also logs a `price` field and would otherwise be counted.
+        epochs = conn.execute(
+            "SELECT created_at FROM audit_log WHERE table_name='product_price_tiers' "
+            "AND row_id=? AND action='UPDATE' "
+            "AND json_extract(changed_fields, '$.price') IS NOT NULL "
+            "ORDER BY created_at DESC", (tier_id_before,)).fetchall()
+        assert len(epochs) == 1, epochs          # count before property
+        today = date.today().isoformat()
+        assert epochs[0]["created_at"][:10] == today, (
+            f"tier price epoch must be IMPORT TIME ({today}), not --batch-date "
+            f"({BATCH}) — got {epochs[0]['created_at']}")
+        assert BATCH != today, (
+            "control: this test only proves the divergence while BATCH differs "
+            "from today; pick a different BATCH constant")
         conn.close()
 
     def test_tier_note_only_change_updates_but_does_not_move_epoch(self, tmp_db, tmp_path):
@@ -678,11 +748,18 @@ class TestMixedOccupantRefusal:
         _write_csv(csv_path, [{
             "product_id": str(pid), "sku_code": "X", "special_price": "80",
         }])
+        before = _promo_snapshot(tmp_db, pid)   # control: full rows, pre-abort
+        assert len(before) == 1, before          # count before property
         with pytest.raises(imp.RunAbort) as exc_info:
             imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                            show_sample=0, verbose=False, batch_date="2026-07-01")
         assert str(pid) in str(exc_info.value)  # names the offending product
 
+        # Codex MAJOR: `COUNT(*) WHERE is_active=1 == 1` cannot fail for the
+        # damage it guards — a regression that date-closes the occupant before
+        # aborting leaves is_active=1 and the count at 1. Compare the WHOLE row.
+        assert _promo_snapshot(tmp_db, pid) == before, (
+            "abort must leave the occupant byte-identical")
         conn = sqlite3.connect(tmp_db)
         cnt = conn.execute(
             "SELECT COUNT(*) FROM promotions WHERE product_id=? AND is_active=1",
@@ -704,11 +781,18 @@ class TestMixedOccupantRefusal:
             "product_id": str(pid), "sku_code": "X",
             "promo_type": "bundle", "bundle_buy": "60", "bundle_free": "6",
         }])
+        before = _promo_snapshot(tmp_db, pid)   # control: full rows, pre-abort
+        assert len(before) == 1, before          # count before property
         with pytest.raises(imp.RunAbort) as exc_info:
             imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                            show_sample=0, verbose=False, batch_date="2026-07-01")
         assert str(pid) in str(exc_info.value)  # names the offending product
 
+        # Codex MAJOR: `COUNT(*) WHERE is_active=1 == 1` cannot fail for the
+        # damage it guards — a regression that date-closes the occupant before
+        # aborting leaves is_active=1 and the count at 1. Compare the WHOLE row.
+        assert _promo_snapshot(tmp_db, pid) == before, (
+            "abort must leave the occupant byte-identical")
         conn = sqlite3.connect(tmp_db)
         cnt = conn.execute(
             "SELECT COUNT(*) FROM promotions WHERE product_id=? AND is_active=1",
@@ -759,6 +843,9 @@ class TestTwoPriceSlotPromosAbort:
             {"product_id": str(pid_ok), "sku_code": "OK",
              "promo_type": "percent", "promo_value": "5"},
         ])
+        before_bad = _promo_snapshot(tmp_db, pid_bad)
+        before_ok = _promo_snapshot(tmp_db, pid_ok)
+        assert before_bad == [] and before_ok == [], (before_bad, before_ok)
         with pytest.raises(imp.RunAbort) as exc_info:
             imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                            show_sample=0, verbose=False, batch_date=BATCH)
@@ -766,11 +853,23 @@ class TestTwoPriceSlotPromosAbort:
 
         # CONTROL: the clean row in the SAME file was also not written —
         # proves the abort is atomic, not per-row.
-        conn = sqlite3.connect(tmp_db)
-        cnt_ok = conn.execute(
-            "SELECT COUNT(*) FROM promotions WHERE product_id=?", (pid_ok,)).fetchone()[0]
-        assert cnt_ok == 0
-        conn.close()
+        assert _promo_snapshot(tmp_db, pid_bad) == before_bad
+        assert _promo_snapshot(tmp_db, pid_ok) == before_ok
+
+        # ⚠ ANTI-VACUITY CONTROL: `pid_ok has no promo` would also pass if this
+        # importer never wrote anything at all. Re-run the SAME file with only
+        # the offending row removed and prove the clean row DOES get written —
+        # so the assertion above is measuring atomicity, not inertia.
+        clean_csv = tmp_path / "clean.csv"
+        _write_csv(clean_csv, [
+            {"product_id": str(pid_ok), "sku_code": "OK",
+             "promo_type": "percent", "promo_value": "5"},
+        ])
+        imp.run_import(clean_csv, Path(tmp_db), commit=True, limit=None,
+                       show_sample=0, verbose=False, batch_date=BATCH)
+        assert len(_promo_snapshot(tmp_db, pid_ok)) == 1, (
+            "control failed: the clean row must be writable on its own, "
+            "otherwise the atomicity assertion above proves nothing")
 
 
 # ── B5: file-shape validation + concurrency ─────────────────────────────────
@@ -786,6 +885,8 @@ class TestFileShapeAndConcurrency:
             {"product_id": str(pid), "sku_code": "A", "base_sell_price": "10"},
             {"product_id": str(pid), "sku_code": "B", "base_sell_price": "20"},
         ])
+        before = _promo_snapshot(tmp_db, pid)   # control: full rows, pre-abort
+        assert len(before) == 1, before          # count before property
         with pytest.raises(imp.RunAbort) as exc_info:
             imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                            show_sample=0, verbose=False, batch_date=BATCH)
@@ -802,6 +903,8 @@ class TestFileShapeAndConcurrency:
             "tier1_qty_label": "1 โหล", "tier1_price": "100",
             "tier2_qty_label": "1 โหล", "tier2_price": "200",
         }])
+        before = _promo_snapshot(tmp_db, pid)   # control: full rows, pre-abort
+        assert len(before) == 1, before          # count before property
         with pytest.raises(imp.RunAbort) as exc_info:
             imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                            show_sample=0, verbose=False, batch_date=BATCH)
@@ -849,11 +952,18 @@ class TestFileShapeAndConcurrency:
             "promo_type": "percent", "promo_value": "20",  # changed -> would close
         }])
         # batch date EARLIER than the occupant's own date_start
+        before = _promo_snapshot(tmp_db, pid)   # control: full rows, pre-abort
+        assert len(before) == 1, before          # count before property
         with pytest.raises(imp.RunAbort) as exc_info:
             imp.run_import(csv_path, Path(tmp_db), commit=True, limit=None,
                            show_sample=0, verbose=False, batch_date="2026-06-01")
         assert str(pid) in str(exc_info.value)  # names the offending product/promo
 
+        # Codex MAJOR: `COUNT(*) WHERE is_active=1 == 1` cannot fail for the
+        # damage it guards — a regression that date-closes the occupant before
+        # aborting leaves is_active=1 and the count at 1. Compare the WHOLE row.
+        assert _promo_snapshot(tmp_db, pid) == before, (
+            "abort must leave the occupant byte-identical")
         conn = sqlite3.connect(tmp_db)
         cnt = conn.execute(
             "SELECT COUNT(*) FROM promotions WHERE product_id=? AND is_active=1",
