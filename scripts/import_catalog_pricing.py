@@ -715,14 +715,22 @@ def main():
         backup_path = backup_db(db_path)
         print(f"📦 DB backed up to: {backup_path}")
 
-    run_import(
-        csv_path=csv_path,
-        db_path=db_path,
-        commit=args.commit,
-        limit=args.limit,
-        show_sample=args.sample,
-        batch_date=args.batch_date,
-    )
+    try:
+        run_import(
+            csv_path=csv_path,
+            db_path=db_path,
+            commit=args.commit,
+            limit=args.limit,
+            show_sample=args.sample,
+            batch_date=args.batch_date,
+        )
+    except RunAbort:
+        # run_import already printed "❌ ABORTED — nothing written. <reason>" to
+        # stderr with the offending product/row/promo IDs. This is a hand-run
+        # operator tool: dumping a Python traceback on top of that reads as a
+        # crash rather than the deliberate refusal it is. Exit non-zero (the
+        # one-failure rule) without the traceback.
+        sys.exit(1)
 
 
 if __name__ == "__main__":
