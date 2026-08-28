@@ -1,20 +1,30 @@
 #!/usr/bin/env python3
 """Catalog-pricing CSV importer for Sendy.
 
-Reads a normalized catalog CSV (output of `normalize_base_price.py`) and writes
-its data into Sendy across three tables:
+Reads a normalized catalog CSV (output of `normalize_base_price.py`) and
+reconciles it into Sendy across three tables:
 
     products.base_sell_price    — UPDATE (skipped when CSV value matches DB)
-    product_price_tiers          — INSERT (per tier; UNIQUE(product_id, qty_label))
-    promotions                   — INSERT (per row's special_price + per row's promo)
+    product_price_tiers          — INSERT new (product_id, qty_label) pairs,
+                                    UPDATE in place when price/note differ,
+                                    leave alone everything else
+    promotions                   — close-and-reopen an offer that changed,
+                                    preserve one that didn't (see below)
 
-Designed for ONE-SHOT execution. Re-running on an already-imported CSV will
-fail loudly via the UNIQUE constraint on product_price_tiers and via duplicate
-promo rows on promotions. For re-import, manually clear the relevant rows by
-their promo_name (e.g. `DELETE FROM promotions WHERE promo_name LIKE 'catalog
-2026-05-25%'`) first.
+IDEMPOTENT by design (phase-2-finish-plan.md, PR B / 2c). A CSV row is the
+desired state ONLY for the slots and tier labels it NAMES — anything it does
+not mention is left alone. Re-running the identical file (any --batch-date)
+reports all-zero counters and changes nothing.
 
-Default mode is DRY RUN (no writes). Pass --commit to actually write.
+One failure rule for the whole importer: every validation failure (a CSV
+row producing two price-slot promos, two rows for one product, a row that
+would silently half-close a `mixed` promo occupying both slots, a batch
+date that would close a promo before its own start) ABORTS THE ENTIRE RUN
+BEFORE ANY WRITE, naming the offending product/row/promo IDs, and exits
+non-zero. Never skip-a-row-and-continue.
+
+Default mode is DRY RUN (no writes persisted — the planner still runs for
+real against a transaction, then rolls back). Pass --commit to persist.
 """
 from __future__ import annotations
 
@@ -25,16 +35,38 @@ import os
 import shutil
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "inventory_app"))
+from models import promotions as promo_models  # noqa: E402  (needs sys.path above)
 
-# Promo-name label embedded in INSERTed promotion rows. Lets you filter for
-# re-cleanup later: `DELETE FROM promotions WHERE promo_name LIKE 'catalog 2026-05-25%'`.
-CATALOG_BATCH_DATE = "2026-05-25"
-PROMO_NAME_FROM_SPECIAL_PRICE = f"catalog {CATALOG_BATCH_DATE} (special_price)"
-PROMO_NAME_FROM_PROMO_COL     = f"catalog {CATALOG_BATCH_DATE} (promo)"
+
+class RunAbort(Exception):
+    """A validation failure that must stop the whole run before any write.
+    Carries a human-readable message naming the offending product/row/promo
+    IDs (B3/B4/B5 in phase-2-finish-plan.md)."""
+
+
+# Offer identity (phase-2-finish-plan.md B2) — promo_name is deliberately
+# excluded: it carries the batch date and would make every re-import of the
+# same offer look "changed" just because --batch-date differs.
+_IDENTITY_FIELDS = (
+    "promo_type", "discount_value", "bundle_buy", "bundle_free",
+    "bundle_unit", "bundle_condition", "bundle_tiers_json",
+    "gift_desc", "gift_qty",
+)
+
+
+def _offer_identity(row_or_dict):
+    if isinstance(row_or_dict, sqlite3.Row):
+        return tuple(row_or_dict[f] for f in _IDENTITY_FIELDS)
+    return tuple(row_or_dict.get(f) for f in _IDENTITY_FIELDS)
+
+
+def _add_days(iso_date: str, n: int) -> str:
+    return (date.fromisoformat(iso_date) + timedelta(days=n)).isoformat()
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -66,32 +98,26 @@ def load_csv(path: Path):
             yield r
 
 
-# ── Per-row write planning ──────────────────────────────────────────────────
+def _validate_batch_date(batch_date: str) -> None:
+    try:
+        date.fromisoformat(batch_date)
+    except (ValueError, TypeError):
+        raise ValueError(f"--batch-date must be ISO YYYY-MM-DD, got {batch_date!r}")
 
-def plan_writes_for_row(row: dict, current_base_sell_price: float):
-    """Return a dict describing what would be written for this CSV row.
 
-    {
-      'update_base': (new_value,) or None,
-      'tier_inserts': [(qty_label, price, note), ...],
-      'promo_inserts': [
-        {
-          'promo_type', 'discount_value', 'bundle_buy', 'bundle_free',
-          'bundle_unit', 'bundle_condition', 'bundle_tiers_json',
-          'gift_desc', 'gift_qty', 'promo_name'
-        },
-        ...
-      ],
-    }
-    """
-    plan = {"update_base": None, "tier_inserts": [], "promo_inserts": []}
+# ── Per-row planning (pure — no DB writes) ──────────────────────────────────
 
-    # 1) base_sell_price UPDATE — only if CSV has a value AND it differs from DB
+def _base_update_for_row(row: dict, current_base_sell_price: float):
+    """New base_sell_price, or None if the CSV has no value or it matches DB."""
     csv_bsp = to_float(row.get("base_sell_price", ""))
     if csv_bsp is not None and csv_bsp != current_base_sell_price:
-        plan["update_base"] = (csv_bsp,)
+        return csv_bsp
+    return None
 
-    # 2) Tier INSERTs — tier1, tier2, extra_tiers_json entries
+
+def _tiers_from_row(row: dict) -> list:
+    """[(qty_label, price, note), ...] from tier1/tier2/extra_tiers_json."""
+    out = []
     for ql_key, pr_key, nt_key in [
         ("tier1_qty_label", "tier1_price", "tier1_note"),
         ("tier2_qty_label", "tier2_price", "tier2_note"),
@@ -100,37 +126,44 @@ def plan_writes_for_row(row: dict, current_base_sell_price: float):
         if ql:
             pr = to_float(row.get(pr_key, ""))
             if pr is not None:
-                plan["tier_inserts"].append((ql, pr, row.get(nt_key, "") or None))
+                out.append((ql, pr, row.get(nt_key, "") or None))
 
     extra_json = row.get("extra_tiers_json", "").strip()
     if extra_json:
         try:
             for et in json.loads(extra_json):
                 if "qty_label" in et and "price" in et:
-                    plan["tier_inserts"].append(
+                    out.append(
                         (et["qty_label"], float(et["price"]), et.get("note") or None)
                     )
         except (json.JSONDecodeError, KeyError, ValueError, TypeError):
             # Bad JSON → caller decides; we just drop the extras
             pass
+    return out
 
-    # 3) Promo from special_price (numeric → 'fixed' promo)
+
+def _promo_intents_from_row(row: dict, batch_date: str) -> list:
+    """0-2 candidate promo offers this row names — NOT yet reconciled against
+    the DB. Two independent sources: a numeric special_price → 'fixed', and
+    the structured promo_type/promo_value/bundle/gift columns → any type.
+    promo_name is cosmetic (derived from batch_date); identity ignores it."""
+    intents = []
+
     csv_sp = to_float(row.get("special_price", ""))
     if csv_sp is not None and csv_sp > 0:
-        plan["promo_inserts"].append({
+        intents.append({
             "promo_type": "fixed",
             "discount_value": csv_sp,
             "bundle_buy": None, "bundle_free": None,
             "bundle_unit": None, "bundle_condition": None,
             "bundle_tiers_json": None,
             "gift_desc": None, "gift_qty": None,
-            "promo_name": PROMO_NAME_FROM_SPECIAL_PRICE,
+            "promo_name": f"catalog {batch_date} (special_price)",
         })
 
-    # 4) Promo from promo_type column (any type)
     pt = row.get("promo_type", "").strip()
     if pt:
-        plan["promo_inserts"].append({
+        intents.append({
             "promo_type": pt,
             "discount_value": to_float(row.get("promo_value", "")),
             "bundle_buy": to_int(row.get("bundle_buy", "")),
@@ -140,30 +173,206 @@ def plan_writes_for_row(row: dict, current_base_sell_price: float):
             "bundle_tiers_json": row.get("bundle_tiers_json", "").strip() or None,
             "gift_desc": row.get("gift_desc", "").strip() or None,
             "gift_qty": row.get("gift_qty", "").strip() or None,
-            "promo_name": PROMO_NAME_FROM_PROMO_COL,
+            "promo_name": f"catalog {batch_date} (promo)",
         })
 
-    return plan
+    return intents
 
 
-# ── Main import flow ────────────────────────────────────────────────────────
+def plan_writes_for_row(row: dict, current_base_sell_price: float, batch_date: str):
+    """What this ONE row names, as data — not yet reconciled against DB
+    state (that's `_reconcile_tiers` / `_reconcile_promos`).
 
-def run_import(csv_path: Path, db_path: Path, commit: bool, limit: Optional[int],
-               show_sample: int = 10, verbose: bool = True):
-    """Plan + (optionally) execute the import. Returns a stats dict."""
-    if not csv_path.exists():
-        raise FileNotFoundError(f"CSV not found: {csv_path}")
-    if not db_path.exists():
-        raise FileNotFoundError(f"DB not found: {db_path}")
+    {
+      'update_base': (new_value,) or None,
+      'tier_inserts': [(qty_label, price, note), ...],
+      'promo_intents': [{'promo_type', 'discount_value', ..., 'promo_name'}, ...],
+    }
+    """
+    base = _base_update_for_row(row, current_base_sell_price)
+    return {
+        "update_base": (base,) if base is not None else None,
+        "tier_inserts": _tiers_from_row(row),
+        "promo_intents": _promo_intents_from_row(row, batch_date),
+    }
 
-    rows_all = list(load_csv(csv_path))
-    if verbose:
-        print(f"Loaded {len(rows_all)} CSV rows from {csv_path}")
 
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+# ── File-shape validation (B4/B5) — pure CSV shape, before any DB read ──────
 
-    # Snapshot product baseline prices for all referenced product_ids
+def _validate_file_shape(conn, rows, batch_date):
+    """Structural checks that need no table state: one row per product, no
+    duplicate tier label within a row, no two price-slot promo intents in
+    one row. Raises RunAbort naming the offending row(s)/product before any
+    DB read of base/tiers/promos happens. `conn` is used only to evaluate
+    promo_slots_for's throwaway 1-row SELECT — no table is touched."""
+    seen_pids = {}
+    for i, r in enumerate(rows):
+        pid_raw = r.get("product_id", "").strip()
+        try:
+            pid = int(pid_raw)
+        except ValueError:
+            continue  # non-integer product_id — skipped later, not this file's problem
+
+        if pid in seen_pids:
+            raise RunAbort(
+                f"duplicate product_id {pid}: rows {seen_pids[pid]} and {i} both "
+                f"reference it — one row per product only"
+            )
+        seen_pids[pid] = i
+
+        tiers = _tiers_from_row(r)
+        labels = [ql for ql, _, _ in tiers]
+        dupes = sorted({l for l in labels if labels.count(l) > 1})
+        if dupes:
+            raise RunAbort(
+                f"row {i} (product_id {pid}): duplicate tier qty_label {dupes} "
+                f"within the same row"
+            )
+
+        intents = _promo_intents_from_row(r, batch_date)
+        price_slot_count = 0
+        for it in intents:
+            occ_price, _ = promo_models.promo_slots_for(
+                conn, it["promo_type"], it["discount_value"],
+                it["bundle_buy"], it["gift_desc"])
+            if occ_price:
+                price_slot_count += 1
+        if price_slot_count > 1:
+            raise RunAbort(
+                f"row {i} (product_id {pid}): {price_slot_count} price-slot promo "
+                f"intents in one row (special_price + promo_type column both "
+                f"resolve to the price slot) — cannot know which one the "
+                f"catalogue meant"
+            )
+
+
+# ── Tier reconciliation (B0) ─────────────────────────────────────────────────
+
+def _reconcile_tiers(conn, product_id, csv_tiers):
+    """ops: (product_id, 'insert'|'update', tier_id_or_None, qty_label,
+    price, note, price_changed). A tier present in the DB but absent from
+    the CSV is left alone (not returned as an op)."""
+    existing = {
+        row["qty_label"]: row
+        for row in conn.execute(
+            "SELECT id, qty_label, price, note FROM product_price_tiers "
+            "WHERE product_id=?", (product_id,)
+        ).fetchall()
+    }
+    ops = []
+    for ql, price, note in csv_tiers:
+        cur = existing.get(ql)
+        if cur is None:
+            ops.append((product_id, "insert", None, ql, price, note, True))
+            continue
+        price_changed = cur["price"] != price
+        note_changed = (cur["note"] or None) != (note or None)
+        if price_changed or note_changed:
+            ops.append((product_id, "update", cur["id"], ql, price, note, price_changed))
+        # else: identical — no-op, nothing appended
+    return ops
+
+
+# ── Promo reconciliation (B2/B3/B1) ──────────────────────────────────────────
+
+def _reconcile_promos(conn, product_id, intents, batch_date):
+    """(close_ops, insert_ops) or raises RunAbort.
+
+    close_ops:  [(product_id, promo_id, close_date), ...]
+    insert_ops: [(product_id, full_promo_dict), ...]
+    """
+    if not intents:
+        return [], []  # B7: a row with no promo columns leaves existing promos alone
+
+    for it in intents:
+        it["_price"], it["_qty"] = promo_models.promo_slots_for(
+            conn, it["promo_type"], it["discount_value"],
+            it["bundle_buy"], it["gift_desc"])
+    union_price = any(it["_price"] for it in intents)
+    union_qty = any(it["_qty"] for it in intents)
+
+    # A "live occupant" is is_active=1 AND not already date-closed as of
+    # batch_date. Closing only ever sets date_end (2a's rule: never flip
+    # is_active early), so an already-closed row stays is_active=1 forever
+    # — without this filter a row this importer closed in an EARLIER run
+    # keeps coming back as a candidate on every later run and gets
+    # re-touched (found via the real-catalog rehearsal: a product carrying
+    # two independent single-slot promos had its already-closed one
+    # re-closed a second time on a subsequent run, breaking idempotency).
+    occupants = conn.execute(
+        "SELECT * FROM promotions WHERE product_id=? AND is_active=1 "
+        "AND (date_end IS NULL OR date_end >= ?)", (product_id, batch_date)
+    ).fetchall()
+
+    touched = []  # (occ_row, occ_price, occ_qty)
+    for occ in occupants:
+        occ_price, occ_qty = promo_models.promo_slots_for(
+            conn, occ["promo_type"], occ["discount_value"],
+            occ["bundle_buy"], occ["gift_desc"])
+        if not (occ_price or occ_qty):
+            continue
+        if not ((occ_price and union_price) or (occ_qty and union_qty)):
+            continue  # this occupant's slot(s) aren't touched by this row at all
+
+        # B3: an occupant's own footprint must be FULLY covered by what this
+        # row replaces — otherwise closing it would silently drop the slot
+        # the row does not provide a replacement for.
+        if (occ_price and not union_price) or (occ_qty and not union_qty):
+            occ_slots = "price+qty" if (occ_price and occ_qty) else ("price" if occ_price else "qty")
+            row_slots = ("price+qty" if (union_price and union_qty)
+                         else ("price" if union_price else "qty"))
+            raise RunAbort(
+                f"product {product_id}: promo {occ['id']} ({occ['promo_type']}) "
+                f"occupies {occ_slots}, but this row's promo(s) only cover "
+                f"{row_slots} — closing it would silently drop the uncovered "
+                f"slot. Clear/split it by hand first."
+            )
+        touched.append((occ, occ_price, occ_qty))
+
+    # Match each intent to an occupant that exactly matches its slot-set AND
+    # its offer identity → preserved (no write for either side).
+    preserved_intent_idx = set()
+    preserved_occ_ids = set()
+    for idx, it in enumerate(intents):
+        it_slots = (it["_price"], it["_qty"])
+        for occ, occ_price, occ_qty in touched:
+            if occ["id"] in preserved_occ_ids:
+                continue
+            if (occ_price, occ_qty) == it_slots and _offer_identity(occ) == _offer_identity(it):
+                preserved_intent_idx.add(idx)
+                preserved_occ_ids.add(occ["id"])
+                break
+
+    close_date = _add_days(batch_date, -1)
+    close_ops = []
+    for occ, _occ_price, _occ_qty in touched:
+        if occ["id"] in preserved_occ_ids:
+            continue
+        existing_start = occ["date_start"] or "0000-01-01"
+        if close_date < existing_start:
+            raise RunAbort(
+                f"product {product_id}: --batch-date {batch_date} would close "
+                f"promo {occ['id']} at {close_date}, before its own date_start "
+                f"{occ['date_start']} — refusing to backdate"
+            )
+        close_ops.append((product_id, occ["id"], close_date))
+
+    insert_ops = []
+    for idx, it in enumerate(intents):
+        if idx in preserved_intent_idx:
+            continue
+        full = {k: v for k, v in it.items() if not k.startswith("_")}
+        full["date_start"] = batch_date
+        full["date_end"] = None
+        full["source"] = "catalog-import"
+        insert_ops.append((product_id, full))
+
+    return close_ops, insert_ops
+
+
+# ── Pass 1: build the full plan (reads only — no writes) ────────────────────
+
+def _build_ops(conn, rows_all, batch_date, limit):
     csv_pids = []
     skipped_non_int = []
     for r in rows_all:
@@ -173,11 +382,6 @@ def run_import(csv_path: Path, db_path: Path, commit: bool, limit: Optional[int]
         except ValueError:
             skipped_non_int.append(r.get("sku_code", "(unknown)"))
 
-    if verbose and skipped_non_int:
-        print(f"Skipping {len(skipped_non_int)} rows with non-integer product_id "
-              f"(likely new products not yet in Sendy)")
-
-    # Bulk-fetch current base_sell_price for all referenced pids
     bsp_lookup = {}
     sendy_known_pids = set()
     if csv_pids:
@@ -192,9 +396,8 @@ def run_import(csv_path: Path, db_path: Path, commit: bool, limit: Optional[int]
                 sendy_known_pids.add(row["id"])
 
     skipped_missing_pids = []
-    plans = []  # list of (row, plan, pid)
+    row_plans = []  # (row, pid)
     flagged_rows = []
-
     for r in rows_all:
         pid_raw = r.get("product_id", "").strip()
         try:
@@ -204,169 +407,258 @@ def run_import(csv_path: Path, db_path: Path, commit: bool, limit: Optional[int]
         if pid not in sendy_known_pids:
             skipped_missing_pids.append((pid, r.get("sku_code", "(unknown)")))
             continue
-        current = bsp_lookup[pid]
-        plan = plan_writes_for_row(r, current)
-        plans.append((r, plan, pid))
+        row_plans.append((r, pid))
         if r.get("normalize_notes", "").strip():
             flagged_rows.append(r)
 
-    if verbose and skipped_missing_pids:
-        print(f"Skipping {len(skipped_missing_pids)} rows whose product_id is not in Sendy")
-
     if limit is not None:
-        plans = plans[:limit]
-        if verbose:
-            print(f"--limit {limit} → processing first {len(plans)} rows only")
+        row_plans = row_plans[:limit]
 
-    # ── Compute summary stats ──────────────────────────────────────────────
-    stats = {
-        "rows_processed": len(plans),
-        "base_updates_total": 0,
-        "base_updates_from_zero": 0,
-        "base_updates_from_nonzero": 0,
-        "base_noops": 0,
-        "tier_inserts": 0,
-        "tier_inserts_tier1": 0,
-        "tier_inserts_tier2": 0,
-        "tier_inserts_extra": 0,
-        "promo_inserts_total": 0,
-        "promo_inserts_by_type": {"percent": 0, "fixed": 0, "bundle": 0,
-                                  "mixed": 0, "gift": 0},
-        "promo_inserts_from_special_price": 0,
-        "promo_inserts_from_promo_col": 0,
+    ops = {"base": [], "tiers": [], "promo_close": [], "promo_insert": []}
+
+    for r, pid in row_plans:
+        current_base = bsp_lookup[pid]
+        plan = plan_writes_for_row(r, current_base, batch_date)
+
+        if plan["update_base"] is not None:
+            ops["base"].append((pid, plan["update_base"][0]))
+
+        ops["tiers"].extend(_reconcile_tiers(conn, pid, plan["tier_inserts"]))
+
+        close_ops, insert_ops = _reconcile_promos(conn, pid, plan["promo_intents"], batch_date)
+        ops["promo_close"].extend(close_ops)
+        ops["promo_insert"].extend(insert_ops)
+
+    meta = {
+        "rows_processed": len(row_plans),
         "rows_flagged": len(flagged_rows),
+        "flagged_rows": flagged_rows,
+        "skipped_non_int": skipped_non_int,
+        "skipped_missing_pids": skipped_missing_pids,
     }
-    for row, plan, pid in plans:
-        if plan["update_base"]:
-            stats["base_updates_total"] += 1
-            current = bsp_lookup[pid]
-            if current == 0:
-                stats["base_updates_from_zero"] += 1
-            else:
-                stats["base_updates_from_nonzero"] += 1
-        stats["tier_inserts"] += len(plan["tier_inserts"])
-        # Sub-counts for tier1/tier2/extra
-        tier1_present = bool(row.get("tier1_qty_label", "").strip())
-        tier2_present = bool(row.get("tier2_qty_label", "").strip())
-        if tier1_present:
-            stats["tier_inserts_tier1"] += 1
-        if tier2_present:
-            stats["tier_inserts_tier2"] += 1
-        # extras = total - (tier1 count) - (tier2 count) for this row
-        row_extras = len(plan["tier_inserts"]) - int(tier1_present) - int(tier2_present)
-        if row_extras > 0:
-            stats["tier_inserts_extra"] += row_extras
-        for p in plan["promo_inserts"]:
-            stats["promo_inserts_total"] += 1
-            stats["promo_inserts_by_type"][p["promo_type"]] += 1
-            if p["promo_name"] == PROMO_NAME_FROM_SPECIAL_PRICE:
-                stats["promo_inserts_from_special_price"] += 1
-            else:
-                stats["promo_inserts_from_promo_col"] += 1
+    return ops, meta
 
-    # ── Print summary ──────────────────────────────────────────────────────
-    mode = "COMMIT" if commit else "DRY RUN"
+
+# ── Pass 2: execute the plan (writes) ────────────────────────────────────────
+
+def _execute_ops(conn, ops):
+    for pid, new_price in ops["base"]:
+        conn.execute(
+            "UPDATE products SET base_sell_price=? WHERE id=?", (new_price, pid))
+
+    for pid, kind, tier_id, ql, price, note, _price_changed in ops["tiers"]:
+        if kind == "insert":
+            conn.execute(
+                "INSERT INTO product_price_tiers (product_id, qty_label, price, note) "
+                "VALUES (?, ?, ?, ?)", (pid, ql, price, note))
+        else:
+            conn.execute(
+                "UPDATE product_price_tiers SET price=?, note=?, "
+                "updated_at=datetime('now','localtime') WHERE id=?",
+                (price, note, tier_id))
+
+    for pid, promo_id, close_date in ops["promo_close"]:
+        conn.execute(
+            "UPDATE promotions SET date_end=? WHERE id=?", (close_date, promo_id))
+
+    inserted_promo_ids = []
+    for pid, full in ops["promo_insert"]:
+        cur = conn.execute("""
+            INSERT INTO promotions (
+                product_id, promo_name, promo_type, discount_value,
+                date_start, date_end, source,
+                bundle_buy, bundle_free, bundle_unit, bundle_condition,
+                bundle_tiers_json, gift_desc, gift_qty
+            ) VALUES (
+                :product_id, :promo_name, :promo_type, :discount_value,
+                :date_start, :date_end, :source,
+                :bundle_buy, :bundle_free, :bundle_unit, :bundle_condition,
+                :bundle_tiers_json, :gift_desc, :gift_qty
+            )
+        """, {**full, "product_id": pid})
+        inserted_promo_ids.append(cur.lastrowid)
+
+    return inserted_promo_ids
+
+
+def _assert_invariants(conn, ops, inserted_promo_ids):
+    """Re-read every planned write on the SAME connection, inside the same
+    transaction, before commit/rollback is decided — verification-discipline
+    ("write-scripts: verify by re-read in the SAME step")."""
+    problems = []
+
+    for pid, new_price in ops["base"]:
+        got = conn.execute(
+            "SELECT base_sell_price FROM products WHERE id=?", (pid,)).fetchone()[0]
+        if got != new_price:
+            problems.append(f"product {pid}: base_sell_price expected {new_price}, got {got}")
+
+    for pid, kind, tier_id, ql, price, note, _pc in ops["tiers"]:
+        got = conn.execute(
+            "SELECT price, note FROM product_price_tiers WHERE product_id=? AND qty_label=?",
+            (pid, ql)).fetchone()
+        if got is None or got["price"] != price or (got["note"] or None) != (note or None):
+            problems.append(
+                f"product {pid} tier {ql!r}: expected price={price} note={note!r}, "
+                f"got {dict(got) if got else None}")
+
+    for pid, promo_id, close_date in ops["promo_close"]:
+        got = conn.execute(
+            "SELECT date_end FROM promotions WHERE id=?", (promo_id,)).fetchone()[0]
+        if got != close_date:
+            problems.append(f"promo {promo_id}: expected date_end={close_date}, got {got}")
+
+    if len(inserted_promo_ids) != len(ops["promo_insert"]):
+        problems.append(
+            f"promo insert count mismatch: planned {len(ops['promo_insert'])}, "
+            f"executed {len(inserted_promo_ids)}")
+    # /scrutinize: existence-by-id was the only check here, while base prices,
+    # tiers and closes all had their VALUES re-read. That asymmetry mattered
+    # most for `date_start`: it is the evidence epoch price_lookup reads, and it
+    # is deliberately NOT part of _offer_identity — so a wrong date_start would
+    # be invisible to the idempotency contract too (the next run still matches
+    # the offer and reports zero) and would silently shift the window every
+    # price answer is computed in. Re-read the values, not just the row.
+    # inserted_promo_ids is appended in ops["promo_insert"] order (_execute_ops).
+    for promo_id, (pid, full) in zip(inserted_promo_ids, ops["promo_insert"]):
+        got = conn.execute(
+            "SELECT * FROM promotions WHERE id=?", (promo_id,)).fetchone()
+        if got is None:
+            problems.append(f"promo {promo_id}: not found after insert")
+            continue
+        for field in ('product_id', 'date_start', 'date_end', 'source') + _IDENTITY_FIELDS:
+            want = pid if field == 'product_id' else full.get(field)
+            if got[field] != want:
+                problems.append(
+                    f"promo {promo_id} (product {pid}): {field} expected "
+                    f"{want!r}, got {got[field]!r}")
+
+    if problems:
+        raise RuntimeError(
+            "post-write invariant check failed (rolled back):\n  " + "\n  ".join(problems))
+
+
+# ── Printing ─────────────────────────────────────────────────────────────────
+
+def _print_summary(mode, stats, ops, meta, show_sample, verbose):
+    if not verbose:
+        return
     print()
     print("=" * 72)
-    print(f"=== {mode} — {'will write to DB' if commit else 'no writes'} ===")
+    print(f"=== {mode} — {'will write to DB' if mode == 'COMMIT' else 'no writes persisted'} ===")
     print("=" * 72)
-    print(f"\nRows processed:        {stats['rows_processed']}")
+    print(f"\nRows processed:          {stats['rows_processed']}")
     print(f"Rows flagged for review: {stats['rows_flagged']}")
+    if meta["skipped_non_int"]:
+        print(f"Skipped (non-integer product_id): {len(meta['skipped_non_int'])}")
+    if meta["skipped_missing_pids"]:
+        print(f"Skipped (product_id not in Sendy): {len(meta['skipped_missing_pids'])}")
     print()
-    print(f"products.base_sell_price UPDATEs:  {stats['base_updates_total']}")
-    print(f"  from 0.0 → real value:           {stats['base_updates_from_zero']}")
-    print(f"  from existing value → diff:      {stats['base_updates_from_nonzero']}")
-    print()
-    print(f"product_price_tiers INSERTs:       {stats['tier_inserts']}")
-    print(f"  tier1:                           {stats['tier_inserts_tier1']}")
-    print(f"  tier2:                           {stats['tier_inserts_tier2']}")
-    print(f"  extra_tiers_json (3+ tiers):     {stats['tier_inserts_extra']}")
-    print()
-    print(f"promotions INSERTs:                {stats['promo_inserts_total']}")
-    for t, c in stats["promo_inserts_by_type"].items():
-        print(f"  {t:12s}                     {c}")
-    print(f"  (from special_price column):     {stats['promo_inserts_from_special_price']}")
-    print(f"  (from โปรโมชั่น column):           {stats['promo_inserts_from_promo_col']}")
+    print(f"products.base_sell_price:  {stats['base_updated']} updated")
+    print(f"product_price_tiers:       {stats['tiers_inserted']} inserted / "
+          f"{stats['tiers_updated']} updated")
+    print(f"promotions:                {stats['promos_closed']} closed / "
+          f"{stats['promos_inserted']} inserted")
 
-    # ── Print flagged rows ─────────────────────────────────────────────────
-    if flagged_rows:
+    if meta["flagged_rows"]:
         print()
-        print(f"⚠ Flagged rows ({len(flagged_rows)}) — auto-imported but review the notes:")
-        for r in flagged_rows:
+        print(f"⚠ Flagged rows ({len(meta['flagged_rows'])}) — auto-imported but review the notes:")
+        for r in meta["flagged_rows"]:
             print(f"  {r['sku_code']:50s} {r['normalize_notes']}")
 
-    # ── Sample diff ────────────────────────────────────────────────────────
-    if show_sample and plans:
+    if show_sample and ops["promo_insert"]:
         print()
-        print(f"📄 Sample of first {min(show_sample, len(plans))} planned writes:")
-        for row, plan, pid in plans[:show_sample]:
-            parts = []
-            if plan["update_base"]:
-                parts.append(f"UPDATE base_sell_price={plan['update_base'][0]} "
-                             f"(was {bsp_lookup[pid]})")
-            for ql, pr, nt in plan["tier_inserts"]:
-                parts.append(f"+ tier {ql!r}=฿{pr}")
-            for pp in plan["promo_inserts"]:
-                desc = f"+ promo {pp['promo_type']}"
-                if pp["discount_value"]:
-                    desc += f" val={pp['discount_value']}"
-                if pp["bundle_buy"]:
-                    desc += f" buy={pp['bundle_buy']}+free={pp['bundle_free']}"
-                if pp["bundle_condition"]:
-                    desc += f" condition={pp['bundle_condition']}"
-                if pp["gift_desc"]:
-                    desc += f" gift={pp['gift_desc']}"
-                parts.append(desc)
-            if not parts:
-                parts.append("(no writes)")
-            print(f"  pid={pid} {row['sku_code'][:40]:40s}")
-            for p in parts:
-                print(f"      {p}")
+        print(f"📄 Sample of first {min(show_sample, len(ops['promo_insert']))} new promo rows:")
+        for pid, full in ops["promo_insert"][:show_sample]:
+            print(f"  pid={pid} {full['promo_type']} val={full.get('discount_value')} "
+                  f"start={full['date_start']}")
 
-    # ── Execute (or stop) ──────────────────────────────────────────────────
-    if not commit:
-        print()
-        print(f"DRY RUN complete. To commit, re-run with: --commit")
-        conn.close()
+
+# ── Main import flow ────────────────────────────────────────────────────────
+
+def run_import(csv_path: Path, db_path: Path, commit: bool, limit: Optional[int],
+               show_sample: int = 10, verbose: bool = True,
+               batch_date: Optional[str] = None, _after_begin_hook=None):
+    """Plan + reconcile + (optionally persist) the import. Returns a stats
+    dict. Both dry-run and commit run the IDENTICAL planner against a real
+    `BEGIN IMMEDIATE` transaction — dry-run just rolls back at the end
+    instead of committing (phase-2-finish-plan.md B5)."""
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV not found: {csv_path}")
+    if not db_path.exists():
+        raise FileNotFoundError(f"DB not found: {db_path}")
+    if batch_date is None:
+        raise ValueError("batch_date is required (pass --batch-date, ISO YYYY-MM-DD)")
+    _validate_batch_date(batch_date)
+
+    rows_all = list(load_csv(csv_path))
+    if verbose:
+        print(f"Loaded {len(rows_all)} CSV rows from {csv_path}")
+        print(f"Batch date: {batch_date}")
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+
+    try:
+        # B5: validate the file's own shape BEFORE any DB read of state.
+        _validate_file_shape(conn, rows_all, batch_date)
+
+        conn.execute("BEGIN IMMEDIATE")
+        if _after_begin_hook is not None:
+            _after_begin_hook(conn)
+
+        # Pass 1 — plan (reads only; raises RunAbort before any write).
+        ops, meta = _build_ops(conn, rows_all, batch_date, limit)
+
+        stats = {
+            "rows_processed": meta["rows_processed"],
+            "rows_flagged": meta["rows_flagged"],
+            "base_updated": len(ops["base"]),
+            "tiers_inserted": sum(1 for o in ops["tiers"] if o[1] == "insert"),
+            "tiers_updated": sum(1 for o in ops["tiers"] if o[1] == "update"),
+            "promos_closed": len(ops["promo_close"]),
+            "promos_inserted": len(ops["promo_insert"]),
+        }
+
+        today_iso = date.today().isoformat()
+        tier_epoch_risk = any(o[-1] for o in ops["tiers"])  # any price-changing tier op
+        if tier_epoch_risk and batch_date != today_iso and verbose:
+            print(
+                f"\n⚠ --batch-date {batch_date} != today ({today_iso}): tier PRICE "
+                f"changes in this run are epoch-dated at IMPORT TIME ({today_iso}), "
+                f"not --batch-date, while promo changes carry {batch_date}. "
+                f"See phase-2-finish-plan.md B0."
+            )
+
+        # Pass 2 — execute, then verify by re-read in the SAME transaction.
+        inserted_promo_ids = _execute_ops(conn, ops)
+        _assert_invariants(conn, ops, inserted_promo_ids)
+
+        mode = "COMMIT" if commit else "DRY RUN"
+        _print_summary(mode, stats, ops, meta, show_sample, verbose)
+
+        if commit:
+            conn.commit()
+            if verbose:
+                print("\n✅ COMMIT complete.")
+        else:
+            conn.rollback()
+            if verbose:
+                print("\nDRY RUN complete (rolled back). To commit, re-run with: --commit")
         return stats
 
-    # COMMIT path: single atomic transaction
-    print()
-    print(f"💾 Executing {stats['base_updates_total']} UPDATEs + "
-          f"{stats['tier_inserts']} tier INSERTs + "
-          f"{stats['promo_inserts_total']} promo INSERTs ...")
-    try:
-        conn.execute("BEGIN")
-        for row, plan, pid in plans:
-            if plan["update_base"]:
-                conn.execute(
-                    "UPDATE products SET base_sell_price=? WHERE id=?",
-                    (plan["update_base"][0], pid))
-            for ql, pr, nt in plan["tier_inserts"]:
-                conn.execute(
-                    "INSERT INTO product_price_tiers (product_id, qty_label, price, note) "
-                    "VALUES (?, ?, ?, ?)",
-                    (pid, ql, pr, nt))
-            for pp in plan["promo_inserts"]:
-                conn.execute(
-                    "INSERT INTO promotions ("
-                    "  product_id, promo_name, promo_type, discount_value,"
-                    "  bundle_buy, bundle_free, bundle_unit, bundle_condition,"
-                    "  bundle_tiers_json, gift_desc, gift_qty"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (pid, pp["promo_name"], pp["promo_type"], pp["discount_value"],
-                     pp["bundle_buy"], pp["bundle_free"], pp["bundle_unit"],
-                     pp["bundle_condition"], pp["bundle_tiers_json"],
-                     pp["gift_desc"], pp["gift_qty"]))
-        conn.execute("COMMIT")
-        print(f"✅ COMMIT complete.")
+    except RunAbort as e:
+        conn.rollback()
+        if verbose:
+            print(f"\n❌ ABORTED — nothing written. {e}", file=sys.stderr)
+        raise
     except Exception as e:
-        conn.execute("ROLLBACK")
-        print(f"❌ COMMIT FAILED — transaction rolled back. Error: {e}", file=sys.stderr)
+        conn.rollback()
+        if verbose:
+            print(f"\n❌ FAILED — transaction rolled back. Error: {e}", file=sys.stderr)
         raise
     finally:
         conn.close()
-    return stats
 
 
 def backup_db(db_path: Path) -> Path:
@@ -382,6 +674,14 @@ def backup_db(db_path: Path) -> Path:
     return dst
 
 
+def _iso_date(s):
+    try:
+        date.fromisoformat(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be ISO YYYY-MM-DD, got {s!r}")
+    return s
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Catalog-pricing CSV importer for Sendy.",
@@ -393,10 +693,15 @@ def main():
     parser.add_argument("--db", type=Path,
                         default=Path(__file__).parent.parent / "inventory_app/instance/inventory.db",
                         help="Path to Sendy inventory.db (default: ../inventory_app/instance/inventory.db)")
+    parser.add_argument("--batch-date", required=True, type=_iso_date,
+                        help="ISO batch date (YYYY-MM-DD). Written ONLY to "
+                             "promotions.date_start for any new/changed promo "
+                             "row in this run (base prices and tiers carry no "
+                             "date). Never inferred or defaulted.")
     parser.add_argument("--commit", action="store_true",
                         help="Actually write to the DB (default is dry-run)")
     parser.add_argument("--limit", type=int, default=None,
-                        help="Process only the first N CSV rows (useful with --dry-run for sampling)")
+                        help="Process only the first N CSV rows (useful with dry-run for sampling)")
     parser.add_argument("--no-backup", action="store_true",
                         help="Skip the automatic DB backup before --commit (NOT recommended)")
     parser.add_argument("--sample", type=int, default=10,
@@ -410,13 +715,22 @@ def main():
         backup_path = backup_db(db_path)
         print(f"📦 DB backed up to: {backup_path}")
 
-    run_import(
-        csv_path=csv_path,
-        db_path=db_path,
-        commit=args.commit,
-        limit=args.limit,
-        show_sample=args.sample,
-    )
+    try:
+        run_import(
+            csv_path=csv_path,
+            db_path=db_path,
+            commit=args.commit,
+            limit=args.limit,
+            show_sample=args.sample,
+            batch_date=args.batch_date,
+        )
+    except RunAbort:
+        # run_import already printed "❌ ABORTED — nothing written. <reason>" to
+        # stderr with the offending product/row/promo IDs. This is a hand-run
+        # operator tool: dumping a Python traceback on top of that reads as a
+        # crash rather than the deliberate refusal it is. Exit non-zero (the
+        # one-failure rule) without the traceback.
+        sys.exit(1)
 
 
 if __name__ == "__main__":
