@@ -76,6 +76,15 @@
                    placeholder="พิมพ์ชื่อ / รหัส / บาร์โค้ด เพื่อค้นหา… (ไม่ต้องเลือกก็ได้)"
                    value="{{ prefill.packaging_name if prefill else '' }}">
             <div class="conv-results"></div>
+            <div class="mt-2">
+              <label class="form-label fw-500 mb-1">จำนวนวัสดุแพ็คต่อ 1 แพ็ค</label>
+              <input type="number" class="form-control" name="packaging_qty" min="1" step="1"
+                     style="max-width:8rem"
+                     value="{{ prefill.packaging_qty if prefill and prefill.packaging_qty else 1 }}">
+              <div class="form-text text-subtle">
+                ปกติ 1 (การ์ด 1 ใบต่อแพ็ค) — ใส่มากกว่านั้นถ้าแพ็คหนึ่งกินวัสดุหลายชิ้น เช่น แผงกลอนที่มีขากลอน 2 ตัว
+              </div>
+            </div>
             <div class="form-text text-subtle">
               ถ้าเลือก ระบบจะบังคับทิศทางเป็น "แพ็คอย่างเดียว" — แกะแพ็คแล้วดึงวัสดุแพ็คคืนไม่ได้ จึงไม่มีสูตรแกะ
             </div>

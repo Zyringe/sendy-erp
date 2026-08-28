@@ -199,6 +199,74 @@ def test_switching_plain_pair_to_bundle_does_not_violate_unique_index(empty_db_c
     assert len(fs) == 1
 
 
+# ── packaging_qty — a pack can hold more than one of its packaging item ────
+
+def test_bundle_packaging_qty_two_lands_two(empty_db_conn):
+    """A #511 แผง holds 2 bolts AND 2 keepers. While the packaging quantity was
+    hardcoded to 1, such a formula deducted half the keepers the pack consumed —
+    and looked correct on the formula list."""
+    c = empty_db_conn
+    _seed_bundle_products(c)
+    models.upsert_pack_unpack_pair(PACK, LOOSE, 2, direction='both', conn=c,
+                                   packaging_id=CARD, packaging_qty=2)
+    c.commit()
+    fs = _active_formulas(c)
+    assert len(fs) == 1
+    assert _inputs(c, fs[0]["id"]) == {LOOSE: (2, ROLE_COMPONENT), CARD: (2, ROLE_PACKAGING)}
+
+
+def test_bundle_packaging_qty_defaults_to_one_name_unchanged(empty_db_conn):
+    """CONTROL — omitting packaging_qty stays byte-identical to before, NAME
+    included, or the two live hammer formulas rewrite themselves on next save."""
+    c = empty_db_conn
+    _seed_bundle_products(c)
+    models.upsert_pack_unpack_pair(PACK, LOOSE, 1, direction='both', conn=c, packaging_id=CARD)
+    c.commit()
+    f = _active_formulas(c)[0]
+    assert _inputs(c, f["id"]) == {LOOSE: (1, ROLE_COMPONENT), CARD: (1, ROLE_PACKAGING)}
+    assert f["name"] == '[แพ็ค] hammer pack ⟵ 1 อัน + blister card'
+
+
+def test_bundle_packaging_qty_two_named_with_its_count(empty_db_conn):
+    """The count belongs in the name: the formula list is where an operator
+    checks what a pack eats, and '+ blister card' reads as one."""
+    c = empty_db_conn
+    _seed_bundle_products(c)
+    models.upsert_pack_unpack_pair(PACK, LOOSE, 2, direction='both', conn=c,
+                                   packaging_id=CARD, packaging_qty=2)
+    c.commit()
+    assert _active_formulas(c)[0]["name"] == '[แพ็ค] hammer pack ⟵ 2 อัน + 2 blister card'
+
+
+def test_derive_returns_packaging_qty(empty_db_conn):
+    c = empty_db_conn
+    _seed_bundle_products(c)
+    res = models.upsert_pack_unpack_pair(PACK, LOOSE, 2, direction='both', conn=c,
+                                         packaging_id=CARD, packaging_qty=2)
+    c.commit()
+    derived = models.derive_pair_from_formula(res['formula_ids'][0], conn=c)
+    assert derived is not None
+    assert derived['packaging_qty'] == 2
+
+
+def test_bundle_qty2_round_trip_does_not_silently_halve(empty_db_conn):
+    """Reopening a qty-2 bundle in the pair form and saving must not reset the
+    packaging to 1. derive_pair_from_formula not carrying the quantity is the
+    exact shape that would halve it with nothing on screen to show it."""
+    c = empty_db_conn
+    _seed_bundle_products(c)
+    res1 = models.upsert_pack_unpack_pair(PACK, LOOSE, 2, direction='both', conn=c,
+                                          packaging_id=CARD, packaging_qty=2)
+    c.commit()
+    fid = res1['formula_ids'][0]
+    d = models.derive_pair_from_formula(fid, conn=c)
+    models.upsert_pack_unpack_pair(d['pack_id'], d['loose_id'], d['ratio'], direction='both',
+                                   conn=c, packaging_id=d['packaging_id'],
+                                   packaging_qty=d['packaging_qty'])
+    c.commit()
+    assert _inputs(c, fid) == {LOOSE: (2, ROLE_COMPONENT), CARD: (2, ROLE_PACKAGING)}
+
+
 # ── [แพ็ค] dedup must never silently re-point to a different component ─────
 # Codex review finding 2 (blocker on PR #388): dedup now matches on (output,
 # name LIKE '[แพ็ค]%') alone, so saving with a DIFFERENT loose product would
@@ -481,6 +549,26 @@ def test_route_post_with_packaging_creates_bundle_no_500(admin_client, tmp_db):
         "SELECT product_id, role FROM conversion_formula_inputs WHERE formula_id=?", (fid,))}
     conn.close()
     assert roles == {loose_pid: ROLE_COMPONENT, card_pid: ROLE_PACKAGING}
+
+
+def test_route_post_packaging_qty_two_lands_two(admin_client, tmp_db):
+    """The form is the only supported way to author a bundle, so a quantity the
+    model accepts but the route drops is the same bug one layer up."""
+    pack_pid, loose_pid, card_pid = 900431, 900432, 900433
+    _seed_route_products(tmp_db, pack_pid, loose_pid, card_pid)
+    resp = admin_client.post('/conversions/pair', data={
+        'pack_id': str(pack_pid), 'loose_id': str(loose_pid), 'packaging_id': str(card_pid),
+        'packaging_qty': '2', 'ratio': '2', 'direction': 'both', 'note': 'route-qty2',
+    }, follow_redirects=False)
+    assert resp.status_code == 302, resp.data[:500]
+    conn = sqlite3.connect(tmp_db)
+    fid = conn.execute(
+        "SELECT id FROM conversion_formulas WHERE output_product_id=? AND is_active=1",
+        (pack_pid,)).fetchone()[0]
+    rows = {r[0]: r[1] for r in conn.execute(
+        "SELECT product_id, quantity FROM conversion_formula_inputs WHERE formula_id=?", (fid,))}
+    conn.close()
+    assert rows == {loose_pid: 2, card_pid: 2}
 
 
 def test_route_rejects_packaging_same_as_pack_reshows_not_500(admin_client, tmp_db):
