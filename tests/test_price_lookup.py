@@ -1239,3 +1239,166 @@ def test_r3_fixed_promo_applies_normally_when_ratio_known(db):
     assert out['list']['list_after_promo'] == 216.0
     assert out['list']['price_promo_applied'] is True
     assert 'promo_not_convertible' not in [f['code'] for f in out['flags']]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PR C / 2e — the call card and the resolver stop disagreeing.
+# C1: two shared helpers, tested directly (not only through resolve_price).
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── C1a: apply_price_promo (public, pure — no DB needed) ────────────────────
+
+def test_apply_price_promo_none_passthrough():
+    assert pl.apply_price_promo(100.0, 1.0, None) == 100.0
+
+
+def test_apply_price_promo_percent():
+    promo = {'promo_type': 'percent', 'discount_value': 10.0}
+    assert pl.apply_price_promo(200.0, 1.0, promo) == 180.0
+
+
+def test_apply_price_promo_fixed_uses_ratio():
+    """fixed's discount_value is per-PIECE -- must be multiplied by ratio
+    to become the per-answer-unit price (a dozen line: 18/piece * 12)."""
+    promo = {'promo_type': 'fixed', 'discount_value': 18.0}
+    assert pl.apply_price_promo(240.0, 12.0, promo) == 216.0
+
+
+def test_apply_price_promo_fixed_ratio_none_left_unapplied():
+    """When ratio is unknown (a tier answers the price but no piece
+    equivalent is derivable) a fixed promo cannot be converted -- leave
+    list_for_unit unchanged rather than guessing ratio=1."""
+    promo = {'promo_type': 'fixed', 'discount_value': 18.0}
+    assert pl.apply_price_promo(500.0, None, promo) == 500.0
+
+
+def test_apply_price_promo_mixed_treated_as_percent():
+    """A 'mixed' row's discount_value is a PERCENT (see the module
+    docstring) -- same branch as 'percent', never needs ratio."""
+    promo = {'promo_type': 'mixed', 'discount_value': 20.0}
+    assert pl.apply_price_promo(100.0, None, promo) == 80.0
+
+
+def test_apply_price_promo_bundle_no_discount_value_unchanged():
+    """bundle/gift promos (and a 'mixed' row with discount_value NULL)
+    never change per-unit price."""
+    promo = {'promo_type': 'bundle', 'discount_value': None}
+    assert pl.apply_price_promo(100.0, 1.0, promo) == 100.0
+
+
+# ── C1b: batch_active_promos_by_class (tested directly, then through both
+#         resolve_price and call_card._assemble_products) ───────────────────
+
+def test_batch_promos_matches_single_product_get_active_promos_by_class(db):
+    """Direct parity check: the batch selector must agree with
+    models.promotions.get_active_promos_by_class for the same product —
+    same predicate, same per-slot ORDER BY id DESC selection, just batched."""
+    pid1 = _mk_product(db, "C1b batch price only", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid1)
+    _promo(db, pid1, promo_type='percent', discount_value=10.0, date_start='2026-06-01', is_active=1)
+
+    pid2 = _mk_product(db, "C1b batch qty only", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid2)
+    _promo(db, pid2, promo_type='bundle', bundle_buy=10, bundle_free=1,
+           date_start='2026-06-01', is_active=1)
+
+    batch = pl.batch_active_promos_by_class(db, [pid1, pid2], TODAY)
+    for pid in (pid1, pid2):
+        expected = promo_models.get_active_promos_by_class(pid, TODAY, db)
+        got = batch[pid]
+        assert (got[0]['id'] if got[0] else None) == (expected[0]['id'] if expected[0] else None)
+        assert (got[1]['id'] if got[1] else None) == (expected[1]['id'] if expected[1] else None)
+
+
+def test_batch_promos_qty_never_shadows_price_even_when_created_later(db):
+    """C1's headline bug: a price promo created BEFORE a qty promo must
+    still win the price slot -- each slot is selected independently
+    (ORDER BY id DESC per slot), never one ORDER BY over all promo_types."""
+    pid = _mk_product(db, "C1b price then qty", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    _promo(db, pid, promo_type='percent', discount_value=10.0,
+           date_start='2026-06-01', is_active=1)  # created first (lower id)
+    _promo(db, pid, promo_type='bundle', bundle_buy=10, bundle_free=1,
+           date_start='2026-06-01', is_active=1)  # created after (higher id)
+
+    price_promo, qty_promo = pl.batch_active_promos_by_class(db, [pid], TODAY)[pid]
+    assert price_promo is not None and price_promo['promo_type'] == 'percent'
+    assert qty_promo is not None and qty_promo['promo_type'] == 'bundle'
+
+
+def test_batch_promos_no_promo_is_none_pair(db):
+    pid = _mk_product(db, "C1b no promo", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    assert pl.batch_active_promos_by_class(db, [pid], TODAY)[pid] == (None, None)
+
+
+def test_batch_promos_excludes_closed_and_scheduled(db):
+    """is_active/date filter applies per-slot in the batch, same as the
+    single-product selector -- a date-closed row must not be selected."""
+    pid = _mk_product(db, "C1b closed excluded", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    _promo(db, pid, promo_type='percent', discount_value=10.0,
+           date_start='2026-01-01', date_end='2026-02-01', is_active=1)  # closed by date
+    price_promo, _qty = pl.batch_active_promos_by_class(db, [pid], TODAY)[pid]
+    assert price_promo is None
+
+
+def test_batch_promos_empty_product_ids_returns_empty_dict(db):
+    assert pl.batch_active_promos_by_class(db, [], TODAY) == {}
+
+
+def test_resolve_price_routes_through_batch_selector(db):
+    """The resolver itself is routed through batch_active_promos_by_class
+    (not calling get_active_promos_by_class directly any more) -- the
+    existing R2/R9 tests already exercise this; this pins the specific
+    qty-never-shadows-price case at the resolve_price level too."""
+    pid = _mk_product(db, "C1b resolver routing", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    _promo(db, pid, promo_type='percent', discount_value=10.0,
+           date_start='2026-06-01', is_active=1)
+    _promo(db, pid, promo_type='bundle', bundle_buy=10, bundle_free=1,
+           date_start='2026-06-01', is_active=1)
+    out = pl.resolve_price(db, product_id=pid, today=TODAY)
+    assert out['list']['price_promo']['promo_type'] == 'percent'
+    assert out['list']['qty_promo']['promo_type'] == 'bundle'
+    assert out['list']['list_after_promo'] == 90.0
+
+
+# ── C2: epochs_for_pairs — one epoch per (product_id, unit) pair ────────────
+
+def test_epochs_for_pairs_two_units_different_epochs(db):
+    """The plan's own C2 test: ONE product at TWO units, each with its own
+    tier-driven epoch. unit_by_pid (epochs_for) can only hold one unit per
+    product and would overwrite one epoch with the other's -- pairs keep
+    them independent."""
+    pid = _mk_product(db, "C2 two units", unit_type='ตัว', base=0.0, cost=10.0)
+    _clear_pid(db, pid)
+    tier_a = _tier(db, pid, '1 โหล', 230.0, sort_order=100)
+    tier_b = _tier(db, pid, '1 กล่อง', 500.0, sort_order=200)
+    epoch_a = _days_ago(10)
+    epoch_b = _days_ago(40)
+    _stamp_tier_audit(db, tier_a, pid, epoch_a + " 09:00:00")
+    _stamp_tier_audit(db, tier_b, pid, epoch_b + " 09:00:00")
+
+    result = pl.epochs_for_pairs(db, [(pid, 'โหล'), (pid, 'กล่อง')], today=TODAY)
+    assert result[(pid, 'โหล')] == epoch_a
+    assert result[(pid, 'กล่อง')] == epoch_b
+
+
+def test_epochs_for_pairs_matches_epochs_for_single_unit(db):
+    """Control: for the ordinary one-unit-per-product case, epochs_for_pairs
+    must agree with epochs_for exactly (same _epoch_candidates reduction)."""
+    pid = _mk_product(db, "C2 parity with epochs_for", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    change_date = _days_ago(10)
+    _base_price_history(db, pid, changed_at=change_date + " 09:00:00", old=80.0, new=100.0)
+
+    bulk = pl.epochs_for(db, [pid], {pid: 'ตัว'}, today=TODAY)
+    pairs = pl.epochs_for_pairs(db, [(pid, 'ตัว')], today=TODAY)
+    assert pairs[(pid, 'ตัว')] == bulk[pid] == change_date
+
+
+def test_epochs_for_pairs_none_when_no_epoch_source(db):
+    pid = _mk_product(db, "C2 no epoch", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    assert pl.epochs_for_pairs(db, [(pid, 'ตัว')], today=TODAY)[(pid, 'ตัว')] is None
