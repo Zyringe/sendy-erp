@@ -33,6 +33,48 @@ PRAGMA busy_timeout = 10000;
 
 BEGIN;
 
+-- ── D1 precondition: ABORT if any product ALREADY violates one-per-slot ──
+-- SQLite creates a trigger WITHOUT validating existing rows, so without this
+-- block any row that drifted in between the rehearsal and the deployment is
+-- grandfathered in silently and forever. 2a is live, so Put can create promos
+-- between the measurement and this migration running.
+--
+-- Mechanism: BEFORE DELETE fires once per row, so DELETE on an EMPTY precheck
+-- table is a no-op and on a NON-empty one aborts. The runner
+-- (database.py::run_pending_migrations) catches, rolls back, and does NOT stamp
+-- applied_migrations — so a failed precondition leaves the DB untouched.
+--
+-- RECOVERY: the abort means some product holds two overlapping active promos in
+-- one slot. List them with:
+--     SELECT p.product_id, p.id, q.id FROM promotions p JOIN promotions q
+--       ON q.product_id = p.product_id AND q.id <> p.id
+--      AND p.is_active = 1 AND q.is_active = 1
+--      AND COALESCE(p.date_start,'0000-01-01') <= COALESCE(q.date_end,'9999-12-31')
+--      AND COALESCE(q.date_start,'0000-01-01') <= COALESCE(p.date_end,'9999-12-31');
+-- then close the earlier row at (later row's date_start - 1 day) and re-run.
+--
+-- The predicate below is rendered from models/promotions.py::promo_slot_sql, the
+-- same source as the trigger bodies, so precondition and guard cannot drift.
+DROP TABLE IF EXISTS temp._mig177_precheck;
+CREATE TEMP TABLE _mig177_precheck AS
+SELECT DISTINCT p.product_id
+  FROM promotions p JOIN promotions q
+    ON q.product_id = p.product_id AND q.id <> p.id
+   AND p.is_active = 1 AND q.is_active = 1
+   AND COALESCE(p.date_start,'0000-01-01') <= COALESCE(q.date_end,'9999-12-31')
+   AND COALESCE(q.date_start,'0000-01-01') <= COALESCE(p.date_end,'9999-12-31')
+   AND ((((p.promo_type IN ('percent','fixed') OR (p.promo_type = 'mixed' AND p.discount_value IS NOT NULL))) AND ((q.promo_type IN ('percent','fixed') OR (q.promo_type = 'mixed' AND q.discount_value IS NOT NULL)))) OR (((p.promo_type IN ('bundle','gift') OR (p.promo_type = 'mixed' AND (p.bundle_buy IS NOT NULL OR p.gift_desc IS NOT NULL)))) AND ((q.promo_type IN ('bundle','gift') OR (q.promo_type = 'mixed' AND (q.bundle_buy IS NOT NULL OR q.gift_desc IS NOT NULL))))));
+
+CREATE TEMP TRIGGER _mig177_precondition_guard
+BEFORE DELETE ON _mig177_precheck
+BEGIN
+  SELECT RAISE(ABORT, 'mig 177 precondition FAILED: a product already holds two overlapping active promos in one slot. See the RECOVERY query in this migration header.');
+END;
+
+DELETE FROM _mig177_precheck;
+DROP TRIGGER _mig177_precondition_guard;
+DROP TABLE _mig177_precheck;
+
 DROP TRIGGER IF EXISTS promotions_one_per_slot_ins;
 CREATE TRIGGER promotions_one_per_slot_ins
 BEFORE INSERT ON promotions
