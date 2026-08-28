@@ -73,6 +73,27 @@ def _pick_real_product_id(conn):
     return row[0]
 
 
+def _pick_product_without_active_promos(conn):
+    """A product carrying ZERO active promotions (neither slot).
+
+    `tmp_db` clones the live DB with its data, so `_pick_real_product_id`'s
+    product can already hold an active price-slot promo. Migration 177's
+    one-per-slot trigger then refuses a second price-shaped INSERT
+    (percent/fixed/mixed/percent+bundle_condition) with an unrelated
+    IntegrityError, which is not what these tests are proving. Picking a
+    product with no active promo at all sidesteps the trigger entirely
+    (rule #1: different product) so the only thing that can still reject
+    the INSERT is the CHECK constraint under test.
+    """
+    row = conn.execute(
+        "SELECT p.id FROM products p WHERE p.id NOT IN "
+        "(SELECT product_id FROM promotions WHERE is_active = 1) "
+        "ORDER BY p.id LIMIT 1"
+    ).fetchone()
+    assert row is not None, "no promo-free product found in the live DB snapshot"
+    return row[0]
+
+
 # ── 1. Schema shape ─────────────────────────────────────────────────────────
 
 def test_new_columns_present(tmp_db):
@@ -165,7 +186,7 @@ def test_check_accepts_percent(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
     _apply_086(conn)
-    pid = _pick_real_product_id(conn)
+    pid = _pick_product_without_active_promos(conn)
     conn.execute(
         "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value) "
         "VALUES (?, 'test_pct', 'percent', 10)", (pid,))
@@ -177,7 +198,7 @@ def test_check_accepts_fixed(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
     _apply_086(conn)
-    pid = _pick_real_product_id(conn)
+    pid = _pick_product_without_active_promos(conn)
     conn.execute(
         "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value) "
         "VALUES (?, 'test_fixed', 'fixed', 199.50)", (pid,))
@@ -229,7 +250,7 @@ def test_check_accepts_mixed(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
     _apply_086(conn)
-    pid = _pick_real_product_id(conn)
+    pid = _pick_product_without_active_promos(conn)
     conn.execute(
         "INSERT INTO promotions (product_id, promo_name, promo_type, "
         "                        discount_value, bundle_buy, bundle_free, bundle_unit) "
@@ -243,7 +264,7 @@ def test_check_accepts_percent_with_bundle_condition(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
     _apply_086(conn)
-    pid = _pick_real_product_id(conn)
+    pid = _pick_product_without_active_promos(conn)
     conn.execute(
         "INSERT INTO promotions (product_id, promo_name, promo_type, "
         "                        discount_value, bundle_condition) "
@@ -341,7 +362,7 @@ def test_audit_log_on_insert_update_delete(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
     _apply_086(conn)
-    pid = _pick_real_product_id(conn)
+    pid = _pick_product_without_active_promos(conn)
 
     def audit_count(action):
         return conn.execute(
@@ -374,7 +395,7 @@ def test_audit_update_skips_noop(tmp_db):
     conn = sqlite3.connect(tmp_db)
     conn.execute("PRAGMA foreign_keys = ON")
     _apply_086(conn)
-    pid = _pick_real_product_id(conn)
+    pid = _pick_product_without_active_promos(conn)
     cur = conn.execute(
         "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value) "
         "VALUES (?, 'noop_test', 'percent', 10)", (pid,))
