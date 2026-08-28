@@ -134,7 +134,7 @@ def get_buildable(product_ids=None, conn=None):
 
 
 def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='', conn=None,
-                            packaging_id=None):
+                            packaging_id=None, packaging_qty=1):
     """Create or update the conversion formula(s) for a pack↔loose pair, in one
     call (the /conversions pair-mode form). Idempotent — re-running updates the
     matching formula instead of duplicating.
@@ -144,11 +144,18 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
 
     `packaging_id`: optional extra component (e.g. a blister card destroyed
     on opening). When given, the [แพ็ค] formula gets TWO inputs —
-    (loose_id, ratio, role='component') and (packaging_id, 1,
+    (loose_id, ratio, role='component') and (packaging_id, packaging_qty,
     role='packaging') — validated through conversion_roles before any write
     — and `direction` is forced to 'pack': a blister card cannot be
     recovered by opening the pack, so there is no real [แกะ] to author.
     Omitting it is byte-identical to before: a single input, role NULL.
+
+    `packaging_qty`: how many of the packaging item ONE pack consumes; default
+    1. Not every pack eats exactly one: a #511 แผง holds 2 bolts AND 2 keepers,
+    and while this was hardcoded to 1 such a formula deducted half the keepers
+    it really used — a wrong number that reads as a fixed one on the formula
+    list. The count is rendered into the formula NAME only when it is above 1,
+    so every name written before this parameter existed stays byte-identical.
 
     direction: 'both' | 'pack' | 'unpack' (forced to 'pack' when
     packaging_id is given, regardless of what was passed). Dedup key for the
@@ -176,6 +183,7 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
              'deactivated': int, 'deactivated_ids': [...]}.
     """
     ratio = int(ratio)
+    packaging_qty = int(packaging_qty)
     if packaging_id is not None:
         direction = 'pack'
     own = conn is None
@@ -192,10 +200,12 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
         if direction in ('both', 'pack'):
             if packaging_id is not None:
                 packaging_name, _pkg_unit = _pinfo(packaging_id)
-                pack_name_full = f"[แพ็ค] {pack_name} ⟵ {ratio} {loose_unit} + {packaging_name}"
+                pkg_label = (packaging_name if packaging_qty == 1
+                             else f"{packaging_qty} {packaging_name}")
+                pack_name_full = f"[แพ็ค] {pack_name} ⟵ {ratio} {loose_unit} + {pkg_label}"
                 pack_inputs = [
                     {'product_id': loose_id, 'quantity': ratio, 'role': ROLE_COMPONENT},
-                    {'product_id': packaging_id, 'quantity': 1, 'role': ROLE_PACKAGING},
+                    {'product_id': packaging_id, 'quantity': packaging_qty, 'role': ROLE_PACKAGING},
                 ]
             else:
                 pack_name_full = f"[แพ็ค] {pack_name} ⟵ {ratio} {loose_unit}"
@@ -377,12 +387,12 @@ def derive_pair_from_formula(formula_id, conn=None):
         PACK   half:   output=pack qty1, input=(loose, ratio)  → ratio = input qty
         UNPACK half:   output=loose qty ratio, input=(pack, 1)  → ratio = output_qty
         PACK bundle:   output=pack qty1, inputs=(loose role='component', qty=ratio)
-                       + (packaging role='packaging', qty=1) — the component row
+                       + (packaging role='packaging', qty=packaging_qty) — the component row
                        (found BY ROLE via conversion_roles.component_product_id,
                        never by row position) plays the loose role above.
 
     Returns {'pack_id','loose_id','ratio','direction','pack_name','loose_name','note'
-    [,'packaging_id','packaging_name']}, or None for anything that is NOT a clean
+    [,'packaging_id','packaging_name','packaging_qty']}, or None for anything that is NOT a clean
     pair-half or pack+packaging bundle: missing formula, no [แพ็ค]/[แกะ] prefix, a
     role-less/malformed multi-input shape (fails closed rather than guess), a
     >2-input formula, or a 2-input [แกะ] (no [แกะ] bundle is ever created, so
@@ -410,7 +420,7 @@ def derive_pair_from_formula(formula_id, conn=None):
             "SELECT product_id, quantity, role FROM conversion_formula_inputs WHERE formula_id=?",
             (formula_id,)).fetchall()
 
-        packaging_id = None
+        packaging_id = packaging_qty = None
         if len(rows) == 1:
             in_pid, in_qty = rows[0]["product_id"], rows[0]["quantity"]
         elif len(rows) == 2 and is_pack:
@@ -419,7 +429,8 @@ def derive_pair_from_formula(formula_id, conn=None):
             except ConversionRoleError:
                 return None                      # malformed bundle — fail closed, not a guess
             in_qty = next(r["quantity"] for r in rows if r["product_id"] == in_pid)
-            packaging_id = next(r["product_id"] for r in rows if r["role"] == ROLE_PACKAGING)
+            pkg_row = next(r for r in rows if r["role"] == ROLE_PACKAGING)
+            packaging_id, packaging_qty = pkg_row["product_id"], pkg_row["quantity"]
         else:
             return None                          # not a clean 1-input half, or a 2-input [แกะ]
 
@@ -440,6 +451,9 @@ def derive_pair_from_formula(formula_id, conn=None):
         if packaging_id is not None:
             result['packaging_id'] = packaging_id
             result['packaging_name'] = _name(packaging_id)
+            # Carried explicitly: a re-save that dropped it would reset the
+            # packaging to 1 with nothing on the form or the list to show it.
+            result['packaging_qty'] = int(packaging_qty)
         return result
     finally:
         if own:

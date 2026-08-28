@@ -191,7 +191,8 @@ def conversion_history():
     return render_template('conversions/history.html', runs=runs)
 
 
-def _pair_prefill(pack_id, loose_id, ratio, direction, note, packaging_id=None):
+def _pair_prefill(pack_id, loose_id, ratio, direction, note, packaging_id=None,
+                  packaging_qty=1):
     """Build a pair_form prefill dict from raw submitted strings, so a validation
     error re-shows the form without losing the user's input."""
     def _name(pid):
@@ -207,6 +208,7 @@ def _pair_prefill(pack_id, loose_id, ratio, direction, note, packaging_id=None):
             'pack_name': _name(pack_id), 'loose_name': _name(loose_id),
             'ratio': ratio, 'direction': direction or 'both', 'note': note,
             'packaging_id': packaging_id, 'packaging_name': _name(packaging_id),
+            'packaging_qty': packaging_qty or 1,
             'editing': False}
 
 
@@ -230,11 +232,12 @@ def conversion_pair():
         direction    = request.form.get('direction', 'both').strip()
         note         = request.form.get('note', '').strip()
         packaging_id = request.form.get('packaging_id', '').strip()
+        packaging_qty = request.form.get('packaging_qty', '').strip() or '1'
 
         def _reshow():
             return render_template('conversions/pair_form.html',
                                    prefill=_pair_prefill(pack_id, loose_id, ratio, direction, note,
-                                                          packaging_id))
+                                                          packaging_id, packaging_qty))
         if not pack_id or not loose_id or not ratio:
             flash('กรุณาเลือกสินค้าแพ็ค สินค้าตัวหลวม และจำนวนตัวต่อแพ็ค', 'danger')
             return _reshow()
@@ -250,6 +253,13 @@ def conversion_pair():
                 raise ValueError
         except ValueError:
             flash('จำนวนตัวต่อแพ็คต้องเป็นจำนวนเต็มตั้งแต่ 1 ขึ้นไป', 'danger')
+            return _reshow()
+        try:
+            packaging_qty_i = int(packaging_qty)
+            if packaging_qty_i < 1:
+                raise ValueError
+        except ValueError:
+            flash('จำนวนวัสดุแพ็คต่อแพ็คต้องเป็นจำนวนเต็มตั้งแต่ 1 ขึ้นไป', 'danger')
             return _reshow()
         if direction not in ('both', 'pack', 'unpack'):
             direction = 'both'
@@ -267,7 +277,8 @@ def conversion_pair():
             direction = 'pack'                   # server-side backstop for the JS lock
         try:
             res = models.upsert_pack_unpack_pair(pack_id_i, loose_id_i, ratio_i, direction, note,
-                                                  packaging_id=packaging_id_i)
+                                                  packaging_id=packaging_id_i,
+                                                  packaging_qty=packaging_qty_i)
         except (models.ConversionRoleError, sqlite3.IntegrityError) as e:
             flash(f'บันทึกไม่สำเร็จ: {e}', 'danger')
             return _reshow()
