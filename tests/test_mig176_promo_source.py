@@ -63,9 +63,31 @@ def _n_batch(conn):
     ).fetchone()[0]
 
 
+def _pick_products_without_active_promos(conn, n=1):
+    """`n` distinct products holding ZERO active promotions.
+
+    `tmp_db_conn` clones the live dev DB with its data, including the
+    566-row 2026-06-01 catalog batch, so `SELECT id FROM products LIMIT 1`
+    can land on a product that already carries an active price-slot promo
+    from that batch. Migration 177's one-per-slot trigger then refuses a
+    second price-shaped INSERT (a fresh 'percent' control/test row) for an
+    unrelated reason. Different products (rule #1) sidesteps this so only
+    the constraint each test actually exercises -- the `source` CHECK, or
+    "the stamp doesn't touch a row outside the batch" -- can still make the
+    insert fail.
+    """
+    rows = conn.execute(
+        "SELECT id FROM products WHERE id NOT IN "
+        "(SELECT product_id FROM promotions WHERE is_active = 1) "
+        "ORDER BY id LIMIT ?", (n,)
+    ).fetchall()
+    assert len(rows) == n, f"needed {n} promo-free products, found {len(rows)}"
+    return [r[0] for r in rows]
+
+
 def _insert_control_row(conn):
     """A promo that must NOT match the batch pattern -- proves the stamp is scoped."""
-    pid = conn.execute("SELECT id FROM products LIMIT 1").fetchone()[0]
+    pid = _pick_products_without_active_promos(conn, 1)[0]
     conn.execute(
         "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, is_active)"
         " VALUES (?, 'manual test', 'percent', 10, 1)",
@@ -126,13 +148,17 @@ def test_stamps_only_the_catalog_batch_control_row_stays_unstamped(db):
 def test_check_rejects_an_unlisted_source(db):
     conn = db
     conn.executescript(MIG.read_text(encoding="utf-8"))
-    pid = conn.execute("SELECT id FROM products LIMIT 1").fetchone()[0]
+    # Each INSERT below is its own fresh 'percent' (price-slot) promo; sharing
+    # ONE product across all four would make each collide with the previous
+    # one under migration 177 regardless of `source`. A distinct promo-free
+    # product per insert (rule #1) means only the `source` CHECK is on trial.
+    pids = _pick_products_without_active_promos(conn, 4)
 
     # CONTROL, and it has to come first: every value the CHECK is meant to
     # ACCEPT must insert cleanly. Observing only a refusal cannot tell a
     # correct CHECK from one that rejects everything -- or from a table that
     # lost the column and now errors on any insert naming it.
-    for accepted in ('catalog-import', 'manual', None):
+    for pid, accepted in zip(pids, ('catalog-import', 'manual', None)):
         conn.execute(
             "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value,"
             " is_active, source) VALUES (?, 'accepted control', 'percent', 10, 1, ?)",
@@ -144,7 +170,7 @@ def test_check_rejects_an_unlisted_source(db):
         conn.execute(
             "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value,"
             " is_active, source) VALUES (?, 'shopee test', 'percent', 10, 1, 'shopee')",
-            (pid,),
+            (pids[3],),
         )
 
 

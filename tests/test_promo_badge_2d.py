@@ -23,10 +23,11 @@ FIXTURE DISCIPLINE: `tmp_db` clones the live dev DB *with its data*, so every
 promo read here is INSERTed by this file after deleting the product's existing
 promos, and every count is asserted before any property. The closed and the
 current promo share a product on purpose (they are the primary test's own
-control, in one render); their windows do NOT overlap, so the fixture stays
-well-formed if migration 177's one-per-slot trigger later lands. The scheduled
-promo sits on a SECOND product because its open-ended window WOULD overlap the
-current one under 177.
+control, in one render); the closed promo's `date_end` is stamped strictly
+before the current promo's `date_start` (one day earlier), because migration
+177's one-per-slot trigger treats a SHARED end/start day as an overlap, not
+just a crossed one. The scheduled promo sits on a SECOND product because its
+open-ended window WOULD overlap the current one under 177.
 
 Assertions are on the rendered ELEMENT (`>ปิดแล้ว<`) scoped to the promo's own
 <tr>, never a bare Thai substring on the whole page.
@@ -83,7 +84,7 @@ def seeded(tmp_db):
     ids = {
         # is_active is 1 on ALL THREE — that is the whole point. Only the dates
         # differ, so a bare `is_active` check cannot tell them apart.
-        CLOSED:    add(pid_a, CLOSED,    D(-60), D(-1), 'catalog-import'),
+        CLOSED:    add(pid_a, CLOSED,    D(-60), D(-2), 'catalog-import'),
         CURRENT:   add(pid_a, CURRENT,   D(-1),  None,  'catalog-import'),
         SCHEDULED: add(pid_b, SCHEDULED, D(30),  None,  'manual'),
     }

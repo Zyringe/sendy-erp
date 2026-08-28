@@ -34,12 +34,33 @@ def _first_active_product_id(tmp_db) -> int:
     return pid
 
 
+def _first_product_without_active_promos(tmp_db) -> int:
+    """A product with ZERO active promotions.
+
+    `tmp_db` clones the live dev DB with its data, so `_first_active_product_id`'s
+    product can already carry an active price-slot promo. Migration 177's
+    one-per-slot trigger then refuses a second price-shaped INSERT
+    (percent/mixed-with-discount_value) with an unrelated IntegrityError. Used
+    only by tests that insert a fresh promo directly (via models.create_promotion)
+    and don't care WHICH product they land on — a different, promo-free product
+    (rule #1) sidesteps the trigger so only the CHECK constraint under test can
+    still reject the insert.
+    """
+    conn = sqlite3.connect(tmp_db)
+    pid = conn.execute(
+        "SELECT id FROM products WHERE is_active = 1 AND id NOT IN "
+        "(SELECT product_id FROM promotions WHERE is_active = 1) LIMIT 1"
+    ).fetchone()[0]
+    conn.close()
+    return pid
+
+
 # ── models.create_promotion accepts all new fields ──────────────────────────
 
 class TestCreatePromotionExtended:
     def test_create_percent(self, tmp_db):
         import models
-        pid = _first_active_product_id(tmp_db)
+        pid = _first_product_without_active_promos(tmp_db)
         promo_id = models.create_promotion({
             'product_id': pid,
             'promo_name': 'test percent',
@@ -91,7 +112,7 @@ class TestCreatePromotionExtended:
 
     def test_create_mixed_with_condition(self, tmp_db):
         import models
-        pid = _first_active_product_id(tmp_db)
+        pid = _first_product_without_active_promos(tmp_db)
         promo_id = models.create_promotion({
             'product_id': pid,
             'promo_name': 'test ยกลัง 5%',
@@ -226,6 +247,20 @@ class TestProductDetailRendersAllTypes:
         deterministic (otherwise rapid-fire inserts can tie on the second).
         The 'render-mixed-ยกลัง' row is intentionally LAST (latest timestamp)
         so it becomes the active promo for `test_active_promo_badge_*`.
+
+        Migration 177 allows only one CURRENT promo per (product, slot).
+        render-pct/render-fixed/render-mixed-ยกลัง all occupy the PRICE slot
+        (percent/fixed, and mixed via discount_value); render-bundle/
+        render-gift both occupy the QTY slot. So within each slot the dates
+        are staggered into sequential, non-overlapping windows — the earlier
+        ones closed in the past, the slot's last row left open-ended so it is
+        the one still "current" today. An open date_start/date_end reads as
+        the sentinel "since/until forever", so it is NOT enough to just
+        close the EARLIER row's date_end before the LATER row's date_start
+        when the later row's date_start is itself NULL: give render-mixed-
+        ยกลัง (and render-gift) an explicit past date_start rather than NULL,
+        so their interval has a real lower bound the earlier same-slot rows
+        can sit before.
         """
         conn = sqlite3.connect(tmp_db)
         conn.execute("PRAGMA foreign_keys = ON")
@@ -236,20 +271,25 @@ class TestProductDetailRendersAllTypes:
         seeds = [
             # (created_at, sql, params)
             ('2026-01-01 09:00:01',
-             "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, created_at) "
-             "VALUES (?, 'render-pct', 'percent', 10, ?)"),
+             "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+             "                        date_end, created_at) "
+             "VALUES (?, 'render-pct', 'percent', 10, '2020-01-01', ?)"),
             ('2026-01-01 09:00:02',
-             "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, created_at) "
-             "VALUES (?, 'render-fixed', 'fixed', 75, ?)"),
+             "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+             "                        date_start, date_end, created_at) "
+             "VALUES (?, 'render-fixed', 'fixed', 75, '2020-01-02', '2020-01-03', ?)"),
             ('2026-01-01 09:00:03',
-             "INSERT INTO promotions (product_id, promo_name, promo_type, bundle_buy, bundle_free, bundle_unit, created_at) "
-             "VALUES (?, 'render-bundle', 'bundle', 12, 1, 'ดอก', ?)"),
+             "INSERT INTO promotions (product_id, promo_name, promo_type, bundle_buy, bundle_free, "
+             "                        bundle_unit, date_end, created_at) "
+             "VALUES (?, 'render-bundle', 'bundle', 12, 1, 'ดอก', '2020-01-04', ?)"),
             ('2026-01-01 09:00:04',
-             "INSERT INTO promotions (product_id, promo_name, promo_type, gift_desc, gift_qty, created_at) "
-             "VALUES (?, 'render-gift', 'gift', 'ดจ.สแตนเลส', '20 ดอก', ?)"),
+             "INSERT INTO promotions (product_id, promo_name, promo_type, gift_desc, gift_qty, "
+             "                        date_start, created_at) "
+             "VALUES (?, 'render-gift', 'gift', 'ดจ.สแตนเลส', '20 ดอก', '2020-01-05', ?)"),
             ('2026-01-01 09:00:05',
-             "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, bundle_condition, created_at) "
-             "VALUES (?, 'render-mixed-ยกลัง', 'mixed', 5, 'ยกลัง', ?)"),
+             "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+             "                        bundle_condition, date_start, created_at) "
+             "VALUES (?, 'render-mixed-ยกลัง', 'mixed', 5, 'ยกลัง', '2020-01-06', ?)"),
         ]
         for ts, sql in seeds:
             # Each SQL has placeholders for (pid, ts)

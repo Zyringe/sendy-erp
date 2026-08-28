@@ -4516,6 +4516,36 @@ CREATE TRIGGER products_packaging_th_check_update
             'packaging_th must be NULL or one of: แผง, ตัว, ถุง, แพ็คหัว, แพ็คถุง, ซอง, อัดแผง, แพ็ค, แบบหลอด, โหล, 1กลมี60ใบ');
     END;
 
+CREATE TRIGGER promotions_one_per_slot_ins
+BEFORE INSERT ON promotions
+WHEN NEW.is_active = 1 AND EXISTS (
+  SELECT 1 FROM promotions p
+   WHERE p.product_id = NEW.product_id AND p.is_active = 1 AND p.id <> NEW.id
+     AND COALESCE(p.date_start,  '0000-01-01') <= COALESCE(NEW.date_end,  '9999-12-31')
+     AND COALESCE(NEW.date_start,'0000-01-01') <= COALESCE(p.date_end,    '9999-12-31')
+     AND ( ((p.promo_type IN ('percent','fixed') OR (p.promo_type = 'mixed' AND p.discount_value IS NOT NULL))
+            AND (NEW.promo_type IN ('percent','fixed') OR (NEW.promo_type = 'mixed' AND NEW.discount_value IS NOT NULL)))
+        OR ((p.promo_type IN ('bundle','gift') OR (p.promo_type = 'mixed' AND (p.bundle_buy IS NOT NULL OR p.gift_desc IS NOT NULL)))
+            AND (NEW.promo_type IN ('bundle','gift') OR (NEW.promo_type = 'mixed' AND (NEW.bundle_buy IS NOT NULL OR NEW.gift_desc IS NOT NULL)))) ))
+BEGIN
+  SELECT RAISE(ABORT, 'one current price promo and one current qty promo per product');
+END;
+
+CREATE TRIGGER promotions_one_per_slot_upd
+BEFORE UPDATE ON promotions
+WHEN NEW.is_active = 1 AND EXISTS (
+  SELECT 1 FROM promotions p
+   WHERE p.product_id = NEW.product_id AND p.is_active = 1 AND p.id <> NEW.id
+     AND COALESCE(p.date_start,  '0000-01-01') <= COALESCE(NEW.date_end,  '9999-12-31')
+     AND COALESCE(NEW.date_start,'0000-01-01') <= COALESCE(p.date_end,    '9999-12-31')
+     AND ( ((p.promo_type IN ('percent','fixed') OR (p.promo_type = 'mixed' AND p.discount_value IS NOT NULL))
+            AND (NEW.promo_type IN ('percent','fixed') OR (NEW.promo_type = 'mixed' AND NEW.discount_value IS NOT NULL)))
+        OR ((p.promo_type IN ('bundle','gift') OR (p.promo_type = 'mixed' AND (p.bundle_buy IS NOT NULL OR p.gift_desc IS NOT NULL)))
+            AND (NEW.promo_type IN ('bundle','gift') OR (NEW.promo_type = 'mixed' AND (NEW.bundle_buy IS NOT NULL OR NEW.gift_desc IS NOT NULL)))) ))
+BEGIN
+  SELECT RAISE(ABORT, 'one current price promo and one current qty promo per product');
+END;
+
 CREATE TRIGGER purchase_transactions_change_needs_declaration
 BEFORE UPDATE ON purchase_transactions
 WHEN (
