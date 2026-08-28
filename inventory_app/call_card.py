@@ -698,12 +698,22 @@ def _assemble_products(conn, names, canon_code, today=None):
         # resolve_price's customer.last falls back and flags
         # price_changed_since_last.
         cust_latest = None
+        cust_latest_list = None
+        cust_latest_disc = None
         if canon_code:
             window_from = epoch_map.get(peer_key) or ''
             within = pl.latest_evidence(conn, pid, canon_code, window_from,
                                          unit=unit, today=today_str)
             if within is not None:
                 cust_latest = within['cash_per_unit']
+                # Codex 2e MAJOR-2: take list + discount from the SAME row as
+                # the net. peer_pricing's customer_latest_list/_disc come from
+                # its same-date MEDIAN representative, which on a day with two
+                # lines can belong to a different invoice line than the
+                # canonical (higher-id) one — the card would then show a net of
+                # 70 next to a discount of 20% that implies 80.
+                cust_latest_list = within.get('unit_price')
+                cust_latest_disc = within.get('discount')
 
         # The card's "ราคาล่าสุดที่ลูกค้าได้" column shows the customer's MOST-RECENT
         # price, so the ส่วนต่าง flag must compare THAT (not the median) vs the peer
@@ -717,6 +727,23 @@ def _assemble_products(conn, names, canon_code, today=None):
             card_flag = 'higher'
         else:
             card_flag = 'same'
+
+        # Codex 2e MAJOR-1: peer_pricing computes peer_cheaper_pct against ITS
+        # OWN rounded, same-date-median `customer_latest`. The card shows (and
+        # flags on) the canonical latest_evidence number instead, so the two
+        # could disagree — the card could read "higher" while positioning the
+        # customer as cheaper than most peers. Recompute the percentile here
+        # from the canonical value, using peer_pricing's own midpoint-percentile
+        # formula so only the customer-side input changes, never the peer
+        # population or its integer rounding (C3: the two computations stay
+        # deliberately different).
+        peer_vals = [pr['price'] for pr in peer.get('peers', [])]
+        if cust_latest is None or not peer_vals:
+            card_cheaper_pct = None
+        else:
+            n_more = sum(1 for pv in peer_vals if pv > cust_latest)
+            n_equal = sum(1 for pv in peer_vals if pv == cust_latest)
+            card_cheaper_pct = round(100 * (n_more + 0.5 * n_equal) / len(peer_vals))
 
         products.append({
             'product_id':      pid,
@@ -733,14 +760,14 @@ def _assemble_products(conn, names, canon_code, today=None):
             'customer_price':  round(promo_price, 2),
             'customer_median': peer.get('customer_median'),
             'customer_latest': cust_latest,
-            'customer_latest_list': peer.get('customer_latest_list'),
-            'customer_latest_disc': peer.get('customer_latest_disc'),
+            'customer_latest_list': cust_latest_list,
+            'customer_latest_disc': cust_latest_disc,
             'peer_median':     peer_med,
             'peer_repr_list':  peer.get('peer_repr_list'),
             'peer_repr_disc':  peer.get('peer_repr_disc'),
             'peer_min':        peer.get('peer_min'),
             'peer_max':        peer.get('peer_max'),
-            'peer_cheaper_pct': peer.get('peer_cheaper_pct'),
+            'peer_cheaper_pct': card_cheaper_pct,
             'peers':           peer.get('peers', []),
             'orders':          orders_map.get(pid, []),
             'peer_n':          peer.get('peer_n', 0),

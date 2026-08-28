@@ -622,6 +622,14 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
                 'qty': row['qty'],
                 'date': row['date_iso'],
                 'doc_no': row['doc_no'],
+                # Codex 2e MAJOR-2: the gross list price and the raw discount
+                # text of THIS row. The call card used to take them from
+                # peer_pricing's same-date MEDIAN representative while taking
+                # the net from here, so the decomposition could imply a
+                # different net than the สุทธิ shown. All three now come from
+                # one row.
+                'unit_price': row['unit_price'],
+                'discount': row['discount'],
             }
         bill_ratio = _bill_ratio(conn, product_id, unit_type, row['unit'], cache)
         if bill_ratio is None:
@@ -633,6 +641,8 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
             'qty': row['qty'],
             'date': row['date_iso'],
             'doc_no': row['doc_no'],
+            'unit_price': row['unit_price'],   # same row as cash_per_unit
+            'discount': row['discount'],
         }
     return None
 

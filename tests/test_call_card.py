@@ -708,3 +708,60 @@ def test_assemble_products_peer_position_names_and_orders():
     assert len(p['orders']) == 1
     assert p['orders'][0]['discount'] == '10%'
     assert p['orders'][0]['unit_price'] == 100
+
+
+def test_card_latest_line_is_one_canonical_row_not_the_median_representative():
+    """Codex 2e review, MAJOR-1 + MAJOR-2 (its MINOR-3 asked for exactly this).
+
+    peer_pricing deliberately rounds cash to an INTEGER and resolves a same-date
+    tie by MEDIAN (C3 says do NOT make it reproduce latest_evidence). The card,
+    however, shows and flags on the CANONICAL latest line: `ORDER BY date_iso
+    DESC, id DESC`, satang precision. Before this fix the card mixed the two —
+    it took the net from the canonical row but the list price, the discount text
+    and peer_cheaper_pct from peer_pricing's median representative. On a day
+    with two lines those are DIFFERENT invoice lines, so the card could print a
+    net of 70.37 beside a discount that implies 80.49, and could read "higher"
+    while positioning the customer as cheaper than every peer.
+
+    Fixture (Codex's own trigger): two same-date target lines, 80.49 and 70.37,
+    the CHEAPER one carrying the higher id, plus one peer at 75. Every asserted
+    number differs between the two selection rules, so this test cannot pass on
+    the old behaviour:
+        canonical (id DESC) -> 70.37, list 100, '30%', cheaper than 1/1 peers
+        median representative -> 75.43, list 90,  '10%', cheaper than 0/1 peers
+    """
+    c = _assemble_db()
+    c.execute("DELETE FROM sales_transactions")
+    rows = [
+        # (id, product, unit, customer, code, qty, unit_price, net, vat, disc, doc, date)
+        (101, 1, 'ดอกสว่าน', 'ตัว', 'ร้าน A', 'C001', 1, 90.0,  80.49, 0, '10%', 'IV-A', '2026-07-01'),
+        (102, 1, 'ดอกสว่าน', 'ตัว', 'ร้าน A', 'C001', 1, 100.0, 70.37, 0, '30%', 'IV-B', '2026-07-01'),
+        (103, 1, 'ดอกสว่าน', 'ตัว', 'ร้าน B', 'C002', 1, 100.0, 75.00, 0, '25%', 'IV-C', '2026-07-01'),
+    ]
+    c.executemany(
+        "INSERT INTO sales_transactions (id,product_id,product_name_raw,unit,customer,"
+        "customer_code,qty,unit_price,net,vat_type,discount,doc_no,doc_base,date_iso) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[11], r[12])
+         for r in rows])
+    c.commit()
+
+    # count before property: the fixture must really produce two same-date
+    # target lines, or every assertion below is about a case that never arose.
+    n = c.execute("SELECT COUNT(*) FROM sales_transactions WHERE customer_code='C001' "
+                  "AND date_iso='2026-07-01'").fetchone()[0]
+    assert n == 2, n
+
+    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+
+    # 1. satang precision + higher-id line, NOT the 75.43 same-date median
+    assert p['customer_latest'] == 70.37, p['customer_latest']
+    # 2. list + discount come from THAT SAME row (MAJOR-2)
+    assert p['customer_latest_list'] == 100.0, p['customer_latest_list']
+    assert p['customer_latest_disc'] == '30%', p['customer_latest_disc']
+    # 3. the percentile is computed from the canonical 70.37 (MAJOR-1).
+    #    70.37 < the single peer's 75 -> cheaper than 100% of peers.
+    #    On the median 75.43 it would have been 0.
+    assert p['peer_cheaper_pct'] == 100, p['peer_cheaper_pct']
+    # 4. and the flag agrees with the number shown, rather than contradicting it
+    assert p['flag'] == 'cheaper', p['flag']
