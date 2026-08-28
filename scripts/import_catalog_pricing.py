@@ -512,11 +512,26 @@ def _assert_invariants(conn, ops, inserted_promo_ids):
         problems.append(
             f"promo insert count mismatch: planned {len(ops['promo_insert'])}, "
             f"executed {len(inserted_promo_ids)}")
-    for promo_id in inserted_promo_ids:
+    # /scrutinize: existence-by-id was the only check here, while base prices,
+    # tiers and closes all had their VALUES re-read. That asymmetry mattered
+    # most for `date_start`: it is the evidence epoch price_lookup reads, and it
+    # is deliberately NOT part of _offer_identity — so a wrong date_start would
+    # be invisible to the idempotency contract too (the next run still matches
+    # the offer and reports zero) and would silently shift the window every
+    # price answer is computed in. Re-read the values, not just the row.
+    # inserted_promo_ids is appended in ops["promo_insert"] order (_execute_ops).
+    for promo_id, (pid, full) in zip(inserted_promo_ids, ops["promo_insert"]):
         got = conn.execute(
-            "SELECT id FROM promotions WHERE id=?", (promo_id,)).fetchone()
+            "SELECT * FROM promotions WHERE id=?", (promo_id,)).fetchone()
         if got is None:
             problems.append(f"promo {promo_id}: not found after insert")
+            continue
+        for field in ('product_id', 'date_start', 'date_end', 'source') + _IDENTITY_FIELDS:
+            want = pid if field == 'product_id' else full.get(field)
+            if got[field] != want:
+                problems.append(
+                    f"promo {promo_id} (product {pid}): {field} expected "
+                    f"{want!r}, got {got[field]!r}")
 
     if problems:
         raise RuntimeError(
