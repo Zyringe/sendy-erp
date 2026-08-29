@@ -36,6 +36,13 @@ def seeded_client(tmp_db):
         "INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, is_ignored) "
         "VALUES ('ZZWIRE01', 'wiring render test', NULL, 0)"
     )
+    # Placeholder + its bill: /mapping drops a placeholder with no surviving
+    # line, and this fixture exists to make the Suggest modal render.
+    conn.execute("DELETE FROM sales_transactions WHERE bsn_code = 'ZZWIRE01'")
+    conn.execute(
+        "INSERT INTO sales_transactions (date_iso, doc_no, bsn_code, product_id) "
+        "VALUES ('2026-08-20', 'IV-ZZWIRE01', 'ZZWIRE01', NULL)"
+    )
     for sku, cond in (('ZZ-WIRE-DATED', DATED), ('ZZ-WIRE-PLAIN', UNDATED_EXTRA)):
         conn.execute("DELETE FROM products WHERE sku_code = ?", (sku,))
         conn.execute(

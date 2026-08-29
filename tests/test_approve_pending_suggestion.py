@@ -121,6 +121,13 @@ def test_approve_clears_pending_placeholder(empty_db_with_user):
         INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id)
         VALUES ('TEST005', 'test 005', NULL)
     """)
+    # The placeholder alone is no longer enough to be "pending": a code whose
+    # bills were all edited away in Express is residue, not a backlog item.
+    # Seed the bill the placeholder was created for.
+    conn.execute("""
+        INSERT INTO sales_transactions (date_iso, doc_no, bsn_code, product_id)
+        VALUES ('2026-08-20', 'IV-TEST005', 'TEST005', NULL)
+    """)
     conn.commit()
     conn.close()
 
@@ -182,12 +189,20 @@ def test_upsert_mapping_clears_pending_placeholder(empty_db_with_user):
         INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id)
         VALUES ('TEST006', 'test 006', NULL)
     """)
+    conn.execute("""
+        INSERT INTO sales_transactions (date_iso, doc_no, bsn_code, product_id)
+        VALUES ('2026-08-20', 'IV-TEST006', 'TEST006', NULL)
+    """)
     # Need an existing product to map to
     cur = conn.execute("INSERT INTO products (product_name, unit_type) VALUES ('existing', 'ตัว')")
     pid = cur.lastrowid
     conn.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 0)", (pid,))
     conn.commit()
     conn.close()
+
+    # CONTROL: without this the closing `not any` passes on an empty list, so
+    # the test would stay green with upsert_mapping doing nothing at all.
+    assert any(r['bsn_code'] == 'TEST006' for r in models.get_pending_mappings())
 
     models.upsert_mapping('TEST006', 'test 006', product_id=pid)
 

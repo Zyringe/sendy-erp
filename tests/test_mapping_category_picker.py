@@ -22,9 +22,17 @@ def manager_client(tmp_db):
     # Seed one pending mapping (surfaces the Suggest modal w/ Card B combos)
     # and one pending suggestion (surfaces the approve-form combos).
     conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM product_code_mapping WHERE bsn_code = 'ZZTEST01'")
+    conn.execute("DELETE FROM sales_transactions WHERE bsn_code = 'ZZTEST01'")
     conn.execute(
         "INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, is_ignored) "
         "VALUES ('ZZTEST01', 'combo render test', NULL, 0)"
+    )
+    # /mapping hides a placeholder whose bills were all edited away at source,
+    # so the bill it was created for has to exist or the modal never renders.
+    conn.execute(
+        "INSERT INTO sales_transactions (date_iso, doc_no, bsn_code, product_id) "
+        "VALUES ('2026-08-20', 'IV-ZZTEST01', 'ZZTEST01', NULL)"
     )
     conn.execute(
         "INSERT INTO pending_product_suggestions (bsn_code, bsn_name, status, created_at) "

@@ -247,6 +247,7 @@ def mapping():
         pending=pending,
         pending_suggestions=pending_suggestions,
         pending_splits=models.get_pending_split_mappings(),
+        orphans=models.get_orphan_mappings(),
         all_products=all_products,
         brands=brands,
         color_codes=color_codes,

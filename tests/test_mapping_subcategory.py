@@ -347,9 +347,16 @@ def test_stage_via_route_reload_approve_preserves_category_id(manager_client):
 @pytest.fixture
 def render_client(db169):
     conn = sqlite3.connect(db169)
+    conn.execute("DELETE FROM sales_transactions WHERE bsn_code = ?", (_TEST_BSN_CODE,))
     conn.execute(
         "INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, is_ignored) "
         "VALUES (?, 'combo render test', NULL, 0)", (_TEST_BSN_CODE,)
+    )
+    # The placeholder needs its bill, or /mapping treats it as residue from an
+    # Express edit and the Suggest modal this fixture is for never renders.
+    conn.execute(
+        "INSERT INTO sales_transactions (date_iso, doc_no, bsn_code, product_id) "
+        "VALUES ('2026-08-20', ?, ?, NULL)", ('IV-' + _TEST_BSN_CODE, _TEST_BSN_CODE)
     )
     cur = conn.execute(
         "INSERT INTO pending_product_suggestions "

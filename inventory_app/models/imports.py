@@ -13,7 +13,7 @@ import sqlite3
 from database import get_connection
 import bsn_units
 
-from .mapping import _resolve_mapping
+from .mapping import _resolve_mapping, get_pending_mappings
 from .bsn_sync import _sync_bsn_to_stock, reverse_platform_deduction
 from .wacc import (recalculate_product_wacc, preflight_batch,
                    WaccIdentityError)
@@ -542,7 +542,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
     # never deduct stock, and nothing else in the app says so — 7 had piled up
     # on prod by 2026-08-17, the oldest since 07-30. The import is the event.
     try:
-        record_unmapped_bsn_codes_alert()
+        record_unmapped_bsn_codes_alert(get_pending_mappings())
     except Exception as _alert_exc:          # noqa: BLE001 - observability only
         print('[import] could not record unmapped-codes alert: %s' % _alert_exc)
 
