@@ -373,3 +373,161 @@ def test_approve_falls_back_to_catchall_when_bsn_unit_missing(empty_db_with_user
     conn.close()
 
     assert row['product_id'] == new_pid
+
+
+# ── The status UPDATE's rowcount guard ────────────────────────────────────────
+#
+# approve_pending_suggestion reads its staged row (`WHERE id=? AND
+# status='pending'`) on a connection holding NO lock: Python sqlite3's default
+# deferred isolation takes one only at the first WRITE, which here is
+# create_structured_product. Everything between that read and that first write
+# is a window another request can commit into, and `gunicorn -w 2` makes the
+# other request real.
+#
+# Both race tests below inject at exactly that seam. A seam placed AFTER the
+# first write would prove nothing — the lock is already held by then, so the
+# concurrent writer is excluded with or without the guard.
+
+
+def _concurrent_writer_at_the_seam(db_path, sql, params, calls):
+    """A create_structured_product stand-in that lets ANOTHER request commit
+    `sql` first, then delegates to the real creation.
+
+    Patched onto `models.suggestions.create_structured_product` — the name is
+    bound INTO that module (`from .products import create_structured_product`),
+    so patching `models.products` would silently miss the call.
+    """
+    import models
+    real = models.products.create_structured_product
+
+    def _stand_in(*a, **k):
+        calls.append(1)
+        other = sqlite3.connect(db_path, timeout=10)
+        try:
+            other.execute("BEGIN IMMEDIATE")
+            other.execute(sql, params)
+            other.commit()
+        finally:
+            other.close()
+        return real(*a, **k)
+
+    return _stand_in
+
+
+def test_approve_refuses_when_the_staged_row_vanished_mid_flight(
+        empty_db_with_user, monkeypatch):
+    """A delete that commits between approve's read and its first write must
+    not leave a product behind.
+
+    Without the guard the status UPDATE matches 0 rows, nothing raises, and
+    approve commits a product whose suggestion no longer exists — the failure
+    mode a reject/dismiss button on /mapping tab 2 would make reachable.
+    """
+    empty_db, uid = empty_db_with_user
+    import models
+
+    sid = _stage_minimal(_stage_payload('TEST010'), user_id=uid)
+
+    conn = sqlite3.connect(empty_db)
+    before_products = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+    conn.close()
+
+    calls = []
+    monkeypatch.setattr(
+        models.suggestions, 'create_structured_product',
+        _concurrent_writer_at_the_seam(
+            empty_db,
+            "DELETE FROM pending_product_suggestions WHERE id = ?", (sid,),
+            calls),
+    )
+
+    with pytest.raises(ValueError, match='ถูกเปลี่ยนสถานะหรือถูกลบ'):
+        models.approve_pending_suggestion(sid, edits={}, reviewer_id=uid)
+
+    # The seam MUST have fired: without this the assertions below would pass on
+    # a run that never reached the race at all.
+    assert len(calls) == 1, "the create_structured_product seam never fired"
+
+    conn = sqlite3.connect(empty_db)
+    after_products = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+    still_there = conn.execute(
+        "SELECT COUNT(*) FROM pending_product_suggestions WHERE id = ?", (sid,)
+    ).fetchone()[0]
+    conn.close()
+
+    assert still_there == 0, "the concurrent delete must have committed"
+    assert after_products == before_products, (
+        "approve committed a product for a suggestion that no longer exists"
+    )
+
+
+def test_approve_refuses_when_another_approve_already_won(
+        empty_db_with_user, monkeypatch):
+    """Two managers approving the same suggestion concurrently: both read it as
+    pending, so the loser must not create a SECOND product and overwrite the
+    winner's approved_product_id.
+
+    The staged read's own `AND status='pending'` cannot catch this — both reads
+    happen before either write. Only the UPDATE's rowcount can.
+    """
+    empty_db, uid = empty_db_with_user
+    import models
+
+    sid = _stage_minimal(_stage_payload('TEST011'), user_id=uid)
+
+    conn = sqlite3.connect(empty_db)
+    before_products = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+    conn.close()
+
+    calls = []
+    monkeypatch.setattr(
+        models.suggestions, 'create_structured_product',
+        _concurrent_writer_at_the_seam(
+            empty_db,
+            "UPDATE pending_product_suggestions SET status='approved' WHERE id = ?",
+            (sid,), calls),
+    )
+
+    with pytest.raises(ValueError, match='ถูกเปลี่ยนสถานะหรือถูกลบ'):
+        models.approve_pending_suggestion(sid, edits={}, reviewer_id=uid)
+
+    assert len(calls) == 1, "the create_structured_product seam never fired"
+
+    conn = sqlite3.connect(empty_db)
+    conn.row_factory = sqlite3.Row
+    after_products = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+    row = conn.execute(
+        "SELECT status, approved_product_id FROM pending_product_suggestions "
+        "WHERE id = ?", (sid,)
+    ).fetchone()
+    conn.close()
+
+    assert after_products == before_products, "the loser created a second product"
+    assert row['status'] == 'approved'
+    assert row['approved_product_id'] is None, (
+        "the loser overwrote the winner's approved_product_id"
+    )
+
+
+def test_the_rowcount_guard_leaves_an_ordinary_approve_alone(empty_db_with_user):
+    """Control for the two race tests above — a guard has to survive its own
+    success. With nobody interfering the same UPDATE matches its one row,
+    flips the status and stamps the new product."""
+    empty_db, uid = empty_db_with_user
+    import models
+
+    sid = _stage_minimal(_stage_payload('TEST012'), user_id=uid)
+
+    new_pid = models.approve_pending_suggestion(sid, edits={}, reviewer_id=uid)
+
+    conn = sqlite3.connect(empty_db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT status, approved_product_id, reviewed_by_user_id "
+        "FROM pending_product_suggestions WHERE id = ?", (sid,)
+    ).fetchone()
+    conn.close()
+
+    assert row['status'] == 'approved'
+    assert row['approved_product_id'] == new_pid
+    assert row['reviewed_by_user_id'] == uid
