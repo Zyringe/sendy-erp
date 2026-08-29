@@ -414,15 +414,33 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
                 (sug['bsn_code'], sug['bsn_name'], new_pid)
             )
 
-        # Mark suggestion approved
-        conn.execute("""
+        # Mark suggestion approved.
+        #
+        # `AND status='pending'` + the rowcount check guard this function's own
+        # check-then-write. The staged row was read at the top on a connection
+        # holding NO lock -- Python sqlite3's deferred isolation takes one only
+        # at the first WRITE, which is create_structured_product above -- so
+        # another request can commit into that window under `gunicorn -w 2`.
+        # Two states are reachable there: the row was DELETED (a reject/dismiss
+        # on /mapping tab 2), or a concurrent approve already flipped it to
+        # 'approved'. Without this check the UPDATE quietly matches 0 rows and
+        # the function still commits a product with nothing pointing at it, or
+        # overwrites the winner's approved_product_id with a second product.
+        # Raising rolls the WHOLE transaction back -- product, product_code_
+        # mapping and stock_levels rows included (see the except at the bottom).
+        updated_sug = conn.execute("""
             UPDATE pending_product_suggestions
                SET status = 'approved',
                    reviewed_by_user_id = ?,
                    approved_product_id = ?,
                    reviewed_at = datetime('now','localtime')
-             WHERE id = ?
-        """, (reviewer_id, new_pid, suggestion_id))
+             WHERE id = ? AND status = 'pending'
+        """, (reviewer_id, new_pid, suggestion_id)).rowcount
+        if updated_sug != 1:
+            raise ValueError(
+                'คำขอสร้าง SKU นี้ถูกเปลี่ยนสถานะหรือถูกลบไปแล้ว '
+                '— กรุณารีเฟรชหน้าแล้วลองใหม่'
+            )
 
         # Auto-create unit_conversion if BSN ships in different unit than product.
         # BOTH sides are stripped before comparison, and the STRIPPED value is
