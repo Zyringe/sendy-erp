@@ -63,6 +63,9 @@ _STAFF_POST_OK = frozenset([
     'customer_review.normalize_confirm',
     'customer_review.normalize_skip',
     'inventory.stock_adjust',
+    # Reach the route so unauthorized mapping reviewers receive its JSON 403
+    # instead of this gate's HTML redirect. The route remains authoritative.
+    'bsn.mapping_suggestion_reject',
     # Phase 5 self-service leave — any employee may submit/edit/cancel their OWN
     # pending leave. Ownership is enforced inside each route via _my_employee()
     # (employee_id never read from form/URL); this gate only permits the POST to
@@ -136,6 +139,8 @@ _ROLE_POST_OK = {
     'shareholder': frozenset([
         'logout',
         'toggle_book',
+        # Route-local gate returns JSON 403; shareholder cannot reject.
+        'bsn.mapping_suggestion_reject',
         'cashbook.new_transaction', 'cashbook.txn_edit', 'cashbook.txn_delete',
         'hr.payroll_item_pay', 'hr.payroll_item_unpay',
         'me.change_password',

@@ -131,7 +131,7 @@ MOVED_NAMES = {
     'suggestions': [
         'count_pending_suggestions', 'get_pending_suggestions',
         'get_pending_suggestion', 'save_pending_suggestion',
-        'approve_pending_suggestion',
+        'approve_pending_suggestion', 'reject_pending_suggestion',
     ],
     'marketplace': [
         'resolve_marketplace_product_id', 'import_marketplace_orders',

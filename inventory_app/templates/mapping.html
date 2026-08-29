@@ -77,6 +77,11 @@
             <i class="bi bi-exclamation-triangle me-1"></i>ไม่มีหน่วย BSN
           </span>
           {% endif %}
+          {% if not s.has_bills %}
+          <span class="badge bg-warning text-dark" title="ไม่พบบิลขาย ซื้อ หรือใบลดหนี้ที่ยังมีรหัสนี้">
+            <i class="bi bi-exclamation-triangle me-1"></i>ไม่มีบิลเหลือแล้ว
+          </span>
+          {% endif %}
           <span class="text-subtle small ms-md-auto">
             โดย {{ s.suggested_by_name or 'ระบบ' }} · {{ s.created_at }}
           </span>
@@ -192,10 +197,21 @@
             <input type="number" class="form-control form-control-sm" id="sug-upb-{{ s.id }}" value="{{ s.units_per_box or '' }}"></div>
         </div>
 
-        <div class="d-flex gap-2 mt-3">
+        <div class="d-flex gap-2 mt-3 align-items-end flex-wrap">
           <button class="btn btn-success btn-sm" onclick="approveSuggestion({{ s.id }}, {{ 1 if s.bsn_unit else 0 }}, {{ 1 if s.brand_other_name else 0 }}, {{ 1 if s.color_code_other else 0 }}, {{ 1 if s.packaging_other else 0 }})">
             <i class="bi bi-check-circle me-1"></i>อนุมัติ + สร้าง SKU
           </button>
+          {% if session.get('role') in ('admin', 'manager') %}
+          <div class="flex-grow-1" style="min-width: 16rem; max-width: 32rem">
+            <label class="form-label small mb-1" for="sug-reject-reason-{{ s.id }}">เหตุผลที่ปฏิเสธ</label>
+            <input class="form-control form-control-sm" id="sug-reject-reason-{{ s.id }}"
+                   required maxlength="500" placeholder="ระบุเหตุผลก่อนปฏิเสธ">
+          </div>
+          <button type="button" class="btn btn-outline-danger btn-sm"
+                  id="sug-reject-button-{{ s.id }}" onclick="rejectSuggestion({{ s.id }})">
+            <i class="bi bi-x-circle me-1"></i>ปฏิเสธ
+          </button>
+          {% endif %}
           <span class="text-subtle small ms-auto align-self-center">
             อนุมัติ → สร้าง product + auto-map BSN code + flush pending transactions
           </span>
@@ -289,6 +305,38 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
       alert('Error: ' + (d.error || 'unknown'));
     }
   });
+}
+
+async function rejectSuggestion(id) {
+  const reasonEl = document.getElementById('sug-reject-reason-' + id);
+  const button = document.getElementById('sug-reject-button-' + id);
+  if (!reasonEl || !button) return;
+  reasonEl.value = reasonEl.value.trim();
+  if (!reasonEl.reportValidity()) return;
+
+  reasonEl.disabled = true;
+  button.disabled = true;
+  try {
+    const response = await fetch('/mapping/suggestions/' + id + '/reject', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+      },
+      body: JSON.stringify({reason: reasonEl.value})
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      alert('Error: ' + (data.error || 'ไม่สามารถปฏิเสธคำขอได้'));
+      return;
+    }
+    window.location.reload();
+  } catch (error) {
+    alert('Error: ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้');
+  } finally {
+    reasonEl.disabled = false;
+    button.disabled = false;
+  }
 }
 </script>
 

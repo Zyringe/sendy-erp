@@ -468,6 +468,29 @@ def mapping_suggestion_approve(sid):
     return jsonify({'ok': True, 'product_id': new_pid})
 
 
+@bp_bsn.route('/mapping/suggestions/<int:sid>/reject', methods=['POST'])
+def mapping_suggestion_reject(sid):
+    """Manager/admin permanently rejects one staged SKU suggestion."""
+    if session.get('role') not in ('admin', 'manager'):
+        return jsonify({'ok': False, 'error': 'ไม่มีสิทธิ์ปฏิเสธคำขอนี้'}), 403
+    body = request.get_json(silent=True) or {}
+    try:
+        models.reject_pending_suggestion(
+            sid, session.get('username') or '', body.get('reason')
+        )
+    except models.SuggestionRejectValidationError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+    except models.SuggestionRejectConflictError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 409
+    except Exception:
+        current_app.logger.exception('Failed to reject pending suggestion %s', sid)
+        return jsonify({
+            'ok': False,
+            'error': 'เกิดข้อผิดพลาดในระบบ กรุณาลองใหม่',
+        }), 500
+    return jsonify({'ok': True})
+
+
 # (was: "make import_express's machinery available to the upload form" — the
 # form never referenced it; the import is gone with the text-report AR/AP path.)
 # We inject
