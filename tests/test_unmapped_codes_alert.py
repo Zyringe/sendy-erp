@@ -19,11 +19,28 @@ import models
 from models import system_alerts as sa
 
 
-def _unmapped(conn, code, created_at, ignored=0):
+def _bill(conn, code, date_iso='2026-08-20'):
+    """A real ขาย line carrying this code, with no product behind it.
+
+    The alert's whole claim is "these bills sell but never deduct stock", so a
+    code with NO surviving bill is not a backlog item at all -- the team edited
+    it away at source in Express and the importer already deleted the line.
+    Every fixture here therefore has to say which of the two it is; seeding the
+    mapping row alone used to mean "unmapped" and now means "residue".
+    """
+    conn.execute(
+        "INSERT INTO sales_transactions (date_iso, doc_no, bsn_code,"
+        " product_name_raw, product_id) VALUES (?, ?, ?, ?, NULL)",
+        (date_iso, 'IV-TEST-' + code, code, 'ของทดสอบ ' + code))
+
+
+def _unmapped(conn, code, created_at, ignored=0, with_bill=True):
     conn.execute(
         "INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id,"
         " is_ignored, created_at) VALUES (?, ?, NULL, ?, ?)",
         (code, 'ของทดสอบ ' + code, ignored, created_at))
+    if with_bill:
+        _bill(conn, code)
     conn.commit()
 
 
@@ -36,6 +53,16 @@ def _mapped(conn, code):
     conn.commit()
 
 
+def _raise(conn):
+    """The importer's own two-step: ask mapping for the backlog, hand it over.
+
+    get_pending_mappings is the single definition of which codes count, so the
+    alert never re-derives it -- see record_unmapped_bsn_codes_alert.
+    """
+    models.record_unmapped_bsn_codes_alert(
+        models.get_pending_mappings(conn=conn), conn=conn)
+
+
 def _open_alerts(conn):
     return conn.execute(
         "SELECT id, message, context_json FROM system_alerts"
@@ -46,7 +73,7 @@ def _open_alerts(conn):
 def test_unmapped_codes_raise_one_alert_carrying_count_and_oldest(empty_db_conn):
     _unmapped(empty_db_conn, 'AAA1', '2026-07-30 17:00:48')
     _unmapped(empty_db_conn, 'BBB2', '2026-08-15 16:57:26')
-    models.record_unmapped_bsn_codes_alert(conn=empty_db_conn)
+    _raise(empty_db_conn)
     empty_db_conn.commit()
 
     rows = _open_alerts(empty_db_conn)
@@ -58,14 +85,14 @@ def test_unmapped_codes_raise_one_alert_carrying_count_and_oldest(empty_db_conn)
 def test_repeat_imports_hold_one_alert_not_many(empty_db_conn):
     _unmapped(empty_db_conn, 'AAA1', '2026-07-30 17:00:48')
     for _ in range(4):
-        models.record_unmapped_bsn_codes_alert(conn=empty_db_conn)
+        _raise(empty_db_conn)
     empty_db_conn.commit()
     assert len(_open_alerts(empty_db_conn)) == 1
 
 
 def test_a_mapped_code_does_not_count(empty_db_conn):
     _mapped(empty_db_conn, 'MAP1')
-    models.record_unmapped_bsn_codes_alert(conn=empty_db_conn)
+    _raise(empty_db_conn)
     empty_db_conn.commit()
     assert _open_alerts(empty_db_conn) == []
 
@@ -74,20 +101,20 @@ def test_an_ignored_code_does_not_count(empty_db_conn):
     """ไม่นำเข้า is a deliberate decision, not a backlog item -- and it has its
     own alert (record_ignored_import_lines_alert) with a different message."""
     _unmapped(empty_db_conn, 'IGN1', '2026-07-30 17:00:48', ignored=1)
-    models.record_unmapped_bsn_codes_alert(conn=empty_db_conn)
+    _raise(empty_db_conn)
     empty_db_conn.commit()
     assert _open_alerts(empty_db_conn) == []
 
 
 def test_clearing_the_backlog_resolves_the_alert(empty_db_conn):
     _unmapped(empty_db_conn, 'AAA1', '2026-07-30 17:00:48')
-    models.record_unmapped_bsn_codes_alert(conn=empty_db_conn)
+    _raise(empty_db_conn)
     empty_db_conn.commit()
     assert len(_open_alerts(empty_db_conn)) == 1        # control
 
     empty_db_conn.execute("DELETE FROM product_code_mapping WHERE bsn_code='AAA1'")
     empty_db_conn.commit()
-    models.record_unmapped_bsn_codes_alert(conn=empty_db_conn)
+    _raise(empty_db_conn)
     empty_db_conn.commit()
     assert _open_alerts(empty_db_conn) == []
     row = empty_db_conn.execute(
@@ -104,7 +131,7 @@ def test_an_open_alert_refreshes_its_count_instead_of_going_stale(empty_db_conn)
     in place -- same alert, current facts."""
     import json
     _unmapped(empty_db_conn, 'AAA1', '2026-07-30 17:00:48')
-    models.record_unmapped_bsn_codes_alert(conn=empty_db_conn)
+    _raise(empty_db_conn)
     empty_db_conn.commit()
     rows = _open_alerts(empty_db_conn)
     assert len(rows) == 1 and '1' in rows[0]['message']         # control
@@ -112,7 +139,7 @@ def test_an_open_alert_refreshes_its_count_instead_of_going_stale(empty_db_conn)
 
     for i in range(2, 6):
         _unmapped(empty_db_conn, f'BBB{i}', '2026-08-19 17:08:04')
-    models.record_unmapped_bsn_codes_alert(conn=empty_db_conn)
+    _raise(empty_db_conn)
     empty_db_conn.commit()
 
     rows = _open_alerts(empty_db_conn)

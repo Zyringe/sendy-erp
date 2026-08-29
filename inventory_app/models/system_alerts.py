@@ -729,7 +729,7 @@ def clear_import_staleness_alert(*, conn=None):
         return 0
 
 
-def record_unmapped_bsn_codes_alert(*, conn=None):
+def record_unmapped_bsn_codes_alert(pending, *, conn=None):
     """BSN codes registered by an import with no product behind them (plan F6).
 
     A code in this state is not an error the import can report: the row is
@@ -737,6 +737,12 @@ def record_unmapped_bsn_codes_alert(*, conn=None):
     the sales on that code simply never deduct stock. Nothing surfaces it, so
     it accumulates -- 7 open on prod at 2026-08-17, oldest 2026-07-30, with
     ฿5,804 of the 08-15 sales not moving stock.
+
+    `pending` is the backlog itself -- the rows from
+    models.mapping.get_pending_mappings(), which is the ONE place that decides
+    which codes count. Passing them in rather than re-querying is deliberate:
+    a placeholder whose bills were all edited away in Express is residue, and
+    an alert saying its bills fail to deduct stock would be false.
 
     Unlike staleness this event exists at import time, so the importer raises
     it directly rather than through a request hook.
@@ -761,11 +767,16 @@ def record_unmapped_bsn_codes_alert(*, conn=None):
         if own:
             conn = get_connection()
         try:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n, MIN(created_at) AS oldest"
-                "  FROM product_code_mapping"
-                " WHERE product_id IS NULL AND is_ignored = 0").fetchone()
-            n = row['n'] or 0
+            # The backlog is handed IN, never re-queried here. `mapping.
+            # get_pending_mappings` is the single definition of which codes
+            # count -- it excludes placeholders whose bills were all edited
+            # away at source, and this alert's own message ("ขายได้แต่ไม่ตัด
+            # สต็อก") is only true of codes that still have bills. A second
+            # copy of that predicate living here is how the page and the alert
+            # would drift apart; models.mapping cannot be imported at module
+            # level either (mapping.py already imports this module).
+            n = len(pending)
+            oldest_raw = min((r['created_at'] or '') for r in pending) if pending else ''
             if not n:
                 conn.execute(
                     "UPDATE system_alerts"
@@ -776,7 +787,7 @@ def record_unmapped_bsn_codes_alert(*, conn=None):
                 if own:
                     conn.commit()
                 return None
-            oldest = (row['oldest'] or '')[:10]
+            oldest = oldest_raw[:10]
             msg = (f"มีรหัส BSN ค้างไม่ได้ผูกสินค้า {n} รหัส (เก่าสุด {oldest}) — "
                    f"บิลที่ใช้รหัสเหล่านี้ขายได้แต่ไม่ตัดสต็อก สต็อกจะเพี้ยนขึ้นเรื่อยๆ "
                    f"ผูกให้ครบที่หน้า \"จับคู่รหัส\" (/mapping)")

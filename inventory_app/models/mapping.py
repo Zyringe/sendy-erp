@@ -59,19 +59,96 @@ def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
     conn.close()
 
 
-def get_pending_mappings(conn=None):
-    """Return all BSN codes not yet mapped and not ignored."""
+# Every table that carries a raw BSN code. A code is a backlog item only while
+# at least one imported line still carries it — `imports.py` registers a
+# placeholder the first time a code appears and nothing removes it when the
+# team later edits that line away in Express, so the placeholder outlives the
+# bill it was created for.
+#
+# Written as ONE materialised set rather than an EXISTS per row: measured on
+# prod 2026-08-29, the correlated form costs ~1ms per pending row (3 → 13ms,
+# 30 → 37ms, 200 → 205ms) and this runs on five routes including
+# /sales/doc/<doc_base>. The IN form is flat at ~9.5ms and needs no index.
+#
+# credit_note_imports earns its branch on asymmetry, not on measured need
+# (today it holds no code the other two lack): counting it can only surface a
+# code that turns out to need nothing, while omitting it could hide one that
+# does.
+#
+# Equality is exact, matching `_resolve_mapping`'s own `WHERE bsn_code = ?`.
+# Do NOT wrap either side in TRIM(): a code that does not match exactly cannot
+# be resolved either, so a padded value is a data bug to expose, not to absorb.
+#
+# ⚠ ANY bill counts, NOT only bills that are still unlinked (`product_id IS
+# NULL`). Codex raised the narrower rule on review 2026-08-29: a placeholder
+# whose every surviving line is already linked to a product cannot drift stock,
+# so counting it keeps a backlog entry that has nothing behind it. Rejected,
+# for two measured reasons.
+#   1. The state is not constructible. `repoint_bsn_code(..., bsn_unit=X)`
+#      touches only the X row and can leave a blank-unit placeholder behind,
+#      but its ONE caller (/mapping/split-save) is fed by
+#      get_pending_split_mappings(), which requires `product_id IS NOT NULL` on
+#      the ledger rows -- which in turn requires a mapping row that already
+#      carries a pid. Nothing anywhere sets a mapping row's product_id back to
+#      NULL. Prod 2026-08-29: 0 such codes, and 0 blank-unit NULL rows whose
+#      code also has a unit-specific row with a pid.
+#   2. The narrower rule would file such a code under "ไม่มีบิลเหลือแล้ว" on
+#      /mapping, and that label would be FALSE -- its bills exist, they are
+#      merely already linked. Trading a theoretical false positive for a
+#      caption that lies is the worse deal.
+# `test_a_code_whose_bills_are_all_linked_is_not_called_residue` pins the half
+# that actually matters, so a future refinement stays free to hide the row some
+# other way but can never call it residue.
+_EVIDENCE_SUBQUERY = """
+        SELECT bsn_code FROM sales_transactions    WHERE bsn_code IS NOT NULL
+        UNION
+        SELECT bsn_code FROM purchase_transactions WHERE bsn_code IS NOT NULL
+        UNION
+        SELECT bsn_code FROM credit_note_imports   WHERE bsn_code IS NOT NULL
+"""
+
+
+def _pending_rows(conn=None):
+    """Every unmapped, un-ignored code, each tagged with whether a bill survives.
+
+    ONE query for both halves so the two lists cannot drift apart: a row is in
+    exactly one of them, by construction.
+    """
     owned = conn is None
     if owned:
         conn = get_connection()
-    rows = conn.execute("""
-        SELECT * FROM product_code_mapping
-        WHERE product_id IS NULL AND is_ignored = 0
-        ORDER BY bsn_code
+    rows = conn.execute(f"""
+        SELECT *, (bsn_code IN ({_EVIDENCE_SUBQUERY})) AS has_bills
+          FROM product_code_mapping
+         WHERE product_id IS NULL AND is_ignored = 0
+         ORDER BY bsn_code
     """).fetchall()
     if owned:
         conn.close()
     return rows
+
+
+def get_pending_mappings(conn=None):
+    """BSN codes not yet mapped, not ignored, and still carried by a real bill.
+
+    A code whose lines were all deleted at source is NOT returned — see
+    get_orphan_mappings. This is a read-side filter: the placeholder row is
+    left exactly where it is, so if the code reappears on a bill it becomes
+    pending again on its own, with no import-time write and nothing to undo.
+    """
+    return [r for r in _pending_rows(conn) if r['has_bills']]
+
+
+def get_orphan_mappings(conn=None):
+    """The complement: placeholders whose bills no longer exist anywhere.
+
+    Newest first. The list only ever grows, so the total says nothing — what
+    carries signal is several codes sharing one date, which is what a bulk
+    deletion at source looks like.
+    """
+    return sorted((r for r in _pending_rows(conn) if not r['has_bills']),
+                  key=lambda r: (r['created_at'] or '', r['bsn_code']),
+                  reverse=True)
 
 
 def get_pending_split_mappings():

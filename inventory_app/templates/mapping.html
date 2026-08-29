@@ -361,6 +361,46 @@ function approveSuggestion(id, hasBsnUnit, hasBrandOther, hasColorOther, hasPkgO
   </div>
 </div>
 {% endif %}
+{# ─── Residue: codes whose bills no longer exist ────────────────────
+   These are NOT work. The team edited or deleted the line in Express, the
+   next import correctly removed it, and this placeholder is what was left
+   behind. Kept visible, collapsed, and newest-first on purpose: the list only
+   ever grows, so the count says nothing — several codes sharing one date is
+   what a bulk deletion at source looks like, and nothing else in the app
+   would show it (express_doc_drift only sees whole documents). #}
+{% if orphans %}
+<details class="card mb-3">
+  <summary class="card-body py-2 px-3 small text-subtle" style="cursor:pointer">
+    <i class="bi bi-archive me-1"></i>
+    ไม่มีบิลเหลือแล้ว <strong>{{ orphans | length }}</strong> รหัส — ไม่ต้องทำอะไร
+  </summary>
+  <div class="table-responsive border-top">
+    <table class="table table-sm mb-0 small">
+      <thead>
+        <tr>
+          <th style="width:130px">รหัส BSN</th>
+          <th>ชื่อสินค้าใน BSN</th>
+          <th style="width:150px">เห็นครั้งแรก</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in orphans %}
+        <tr>
+          <td><span class="badge badge-gray font-mono">{{ item.bsn_code }}</span></td>
+          <td class="text-subtle">{{ item.bsn_name }}</td>
+          <td class="text-subtle font-mono">{{ (item.created_at or '')[:10] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-body py-2 px-3 small text-subtle border-top">
+    รหัสพวกนี้เคยอยู่บนบิล แล้วบิลถูกแก้หรือลบที่ Express — ระบบนำเข้าลบบรรทัดออกให้แล้ว
+    เหลือแค่ชื่อรหัสค้างอยู่ ถ้ารหัสไหนกลับมาอยู่บนบิลจริงอีก มันจะเด้งขึ้นไปอยู่ในรายการข้างบนเอง
+  </div>
+</details>
+{% endif %}
+
 
 {% if not pending %}
 <div class="card">

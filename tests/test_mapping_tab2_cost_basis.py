@@ -44,6 +44,15 @@ def staged_client(tmp_db):
         "(bsn_code, product_name_raw, unit, qty, unit_price, net, date_iso, doc_no) "
         "VALUES (?,?,?,?,?,?,?,?)",
         (_BSN_CODE, 'ของทดสอบ', 'โหล', 1, 1810.0, 1044.55, '2026-08-15', 'RR-T2'))
+    # Two of the assertions below read the tab-1 Suggest modal, which only
+    # renders when a code is pending. That used to come free from whatever the
+    # cloned dev DB happened to hold; /mapping now drops placeholders whose
+    # bills were edited away at source, so the fixture forces its own -- which
+    # is what this docstring asked for in the first place.
+    conn.execute("DELETE FROM product_code_mapping WHERE bsn_code=?", (_BSN_CODE,))
+    conn.execute(
+        "INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, is_ignored)"
+        " VALUES (?, 'ของทดสอบ', NULL, 0)", (_BSN_CODE,))
     cur = conn.execute(
         "INSERT INTO pending_product_suggestions "
         "(bsn_code, bsn_name, suggested_name, suggested_cost, suggested_unit_type, "
