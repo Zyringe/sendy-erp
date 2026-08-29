@@ -54,13 +54,18 @@ from .marketplace import get_last_order_import_dates
 from ._shared import PLATFORMS
 from .stock_filters import non_stock_clause
 
-# หน้าร้าน customer codes that book a platform's marketplace sales in
-# sales_transactions (see workspace-operating-manual.md). TikTok sales are
-# not booked in the ERP yet (100% outside ERP as of 2026-07) -> empty set.
+# Values stored in sales_transactions.customer for each marketplace; each is
+# the trailing tag in the Express customer name and maps 1:1 to customers.code
+# Zหน้าร้าน / Bหน้าร้าน / Lหน้าร้าน / Tหน้าร้าน. TikTok was wired here on
+# 2026-08-29 after
+# PR #416 put it in the ERP on 2026-08-22: the empty tuple had silently pinned
+# platform_est to the file figure. หน้าร้านT intentionally stays OUT of
+# bsn_sync.PLATFORM_STOCK_DEDUCT_CUSTOMERS because no TikTok order import
+# updates the platform mirror; every synced TikTok sale must remain sold_since.
 PLATFORM_CUSTOMERS = {
     'shopee': ('หน้าร้านS', 'หน้าร้านB'),
     'lazada': ('หน้าร้านL',),
-    'tiktok': (),
+    'tiktok': ('หน้าร้านT',),
 }
 
 _STATUS_RANK = {'red': 0, 'amber': 1, 'ok': 2, 'dead': 3}

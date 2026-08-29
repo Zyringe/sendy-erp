@@ -8,10 +8,13 @@ Seeds a clean-schema DB directly (empty_db_conn), same style as
 tests/test_conversion_buildable.py. Oracle = hand-computed expected numbers.
 """
 import sqlite3
+from pathlib import Path
 
 import pytest
 
+import config
 import models
+from models.ecommerce_overview import PLATFORM_CUSTOMERS
 
 
 # ── seed helpers ──────────────────────────────────────────────────────────────
@@ -170,6 +173,37 @@ def test_synced_sale_on_a_non_deducting_customer_is_still_counted(empty_db_conn)
     r = _row(models.get_marketplace_overview()[0], 62)
     assert r['platforms']['shopee']['sold_since'] == 10
     assert r['platforms']['shopee']['est'] == 40
+
+
+def test_tiktok_sale_is_deducted_from_est(empty_db_conn):
+    """A real BSN-synced TikTok sale is not baked into the TikTok mirror, so
+    sold_since must still remove it from the file-based estimate."""
+    c = empty_db_conn
+    _product(c, 65, 'สินค้า TikTok')
+    _ps(c, 'tiktok', 65, stock=50, qty_per_sale=1,
+        imported_at='2026-07-01 00:00:00')
+    _sale(c, 65, '2026-07-05', qty=10, customer='หน้าร้านT',
+          synced_to_stock=1)
+    c.commit()
+    r = _row(models.get_marketplace_overview()[0], 65)
+    assert (r['platforms']['tiktok']['sold_since'],
+            r['platforms']['tiktok']['est']) == (10, 40)
+
+
+def test_tiktok_sale_applies_unit_conversion_ratio(empty_db_conn):
+    """TikTok pack sales deduct base units, including the live 5-unit listing
+    shape, rather than one unit per pack sold."""
+    c = empty_db_conn
+    _product(c, 66, 'สินค้า TikTok แพ็ค')
+    _ps(c, 'tiktok', 66, stock=10, qty_per_sale=5,
+        imported_at='2026-07-01 00:00:00')
+    _uc(c, 66, 'แพ็ค', 5)
+    _sale(c, 66, '2026-07-05', qty=2, unit='แพ็ค',
+          customer='หน้าร้านT', synced_to_stock=1)
+    c.commit()
+    r = _row(models.get_marketplace_overview()[0], 66)
+    assert (r['platforms']['tiktok']['sold_since'],
+            r['platforms']['tiktok']['est']) == (10, 40)
 
 
 def test_hs_opening_balance_excluded_from_sold_since(empty_db_conn):
@@ -699,6 +733,37 @@ def test_product_detail_shopee_item_highlights_is_none(empty_db_conn):
 
 
 # ── independent-oracle spot-check against the live local DB (skips cleanly) ──
+
+def test_platform_customers_bidirectionally_cover_live_master():
+    """Every live หน้าร้าน master row and every configured booking customer
+    must match exactly once. A CI skip means this live-data guard did not run."""
+    live_db = Path(config.DATABASE_PATH)
+    if not live_db.exists():
+        pytest.skip(f"Live DB not found at {live_db} — coverage guard did not run")
+
+    conn = sqlite3.connect(f"file:{live_db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        masters = conn.execute(
+            "SELECT code, name FROM customers WHERE name LIKE '%หน้าร้าน%'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert len(masters) >= 4
+    configured = [customer for customers in PLATFORM_CUSTOMERS.values()
+                  for customer in customers]
+    master_match_counts = [
+        sum(row['name'].endswith(customer) for customer in configured)
+        for row in masters
+    ]
+    configured_match_counts = [
+        sum(row['name'].endswith(customer) for row in masters)
+        for customer in configured
+    ]
+    assert master_match_counts == [1] * len(masters)
+    assert configured_match_counts == [1] * len(configured)
+
 
 def test_pid22_true_available_matches_stock_plus_buildable_on_live_db(tmp_db):
     """Per plan's verified facts: pid 22 has a [แกะ] formula (แผง pid 26 x2).

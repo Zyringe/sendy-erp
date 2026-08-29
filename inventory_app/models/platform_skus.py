@@ -387,12 +387,12 @@ def import_tiktok_snapshot(parsed, source_filename=None):
                 stock_present, stock_present, stock_present, export_ts,
             ))
 
-        # Same supersession rule as the Shopee/Lazada path. TikTok cannot hold
-        # provenance TODAY (PLATFORM_CUSTOMERS['tiktok'] is empty, so a TikTok
-        # sale never deducts), but the day TikTok orders enter the ERP it will,
-        # and a stock-bearing export must not leave stale rows behind. Gated on
-        # stock_present because an export without the quantity column keeps the
-        # stock already on record — nothing was superseded.
+        # Same generic supersession rule as the Shopee/Lazada path. TikTok has
+        # no marketplace order import today, so it cannot yet hold deduction
+        # provenance; when that import exists, a stock-bearing export must not
+        # leave stale rows behind. Gated on stock_present because an export
+        # without the quantity column keeps the stock already on record —
+        # nothing was superseded.
         if stock_present:
             _supersede_deduction_provenance(
                 conn, 'tiktok', [x['variation_id'] for x in skus], export_ts)
