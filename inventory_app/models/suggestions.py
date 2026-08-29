@@ -11,6 +11,7 @@ binding here is load-bearing: a test patches `models.suggestions.resolve_pending
 report's monkeypatch-retarget section.
 """
 
+import json
 import sqlite3
 
 import sku_code_utils
@@ -18,7 +19,7 @@ from database import get_connection
 
 from . import products as products_mod
 from .products import create_structured_product
-from .mapping import resolve_pending_mappings
+from .mapping import _EVIDENCE_SUBQUERY, resolve_pending_mappings
 from .bsn_sync import cross_unit_hazard
 
 
@@ -48,6 +49,14 @@ class SuggestionAlreadyStagedError(Exception):
         )
 
 
+class SuggestionRejectValidationError(ValueError):
+    """The rejection reason is missing or exceeds the audit-field limit."""
+
+
+class SuggestionRejectConflictError(ValueError):
+    """The staged row is absent or no longer pending."""
+
+
 def count_pending_suggestions() -> int:
     conn = get_connection()
     n = conn.execute(
@@ -60,8 +69,9 @@ def count_pending_suggestions() -> int:
 def get_pending_suggestions():
     """List of suggestions awaiting manager/admin review, oldest first."""
     conn = get_connection()
-    rows = conn.execute("""
-        SELECT pps.*, u.display_name AS suggested_by_name, b.name AS brand_name
+    rows = conn.execute(f"""
+        SELECT pps.*, u.display_name AS suggested_by_name, b.name AS brand_name,
+               (pps.bsn_code IN ({_EVIDENCE_SUBQUERY})) AS has_bills
           FROM pending_product_suggestions pps
           LEFT JOIN users u ON u.id = pps.suggested_by_user_id
           LEFT JOIN brands b ON b.id = pps.brand_id
@@ -80,6 +90,51 @@ def get_pending_suggestion(suggestion_id: int):
     ).fetchone()
     conn.close()
     return row
+
+
+def reject_pending_suggestion(suggestion_id: int, actor: str, reason: str) -> None:
+    """Delete one pending suggestion and preserve its full row in audit_log."""
+    reason = (reason or '').strip()
+    if not reason or len(reason) > 500:
+        raise SuggestionRejectValidationError(
+            'กรุณาระบุเหตุผลในการปฏิเสธไม่เกิน 500 ตัวอักษร'
+        )
+
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM pending_product_suggestions "
+            "WHERE id=? AND status='pending'",
+            (suggestion_id,),
+        ).fetchone()
+        if row is None:
+            raise SuggestionRejectConflictError(
+                'คำขอสร้าง SKU นี้ถูกเปลี่ยนสถานะหรือถูกลบไปแล้ว'
+            )
+
+        conn.execute(
+            "INSERT INTO audit_log "
+            "(table_name,row_id,action,changed_fields,user,change_source,change_reason) "
+            "VALUES ('pending_product_suggestions',?,'DELETE',?,?,'manual',?)",
+            (suggestion_id, json.dumps(dict(row), ensure_ascii=False),
+             (actor or '').strip(), reason),
+        )
+        deleted = conn.execute(
+            "DELETE FROM pending_product_suggestions "
+            "WHERE id=? AND status='pending'",
+            (suggestion_id,),
+        ).rowcount
+        if deleted != 1:
+            raise SuggestionRejectConflictError(
+                'คำขอสร้าง SKU นี้ถูกเปลี่ยนสถานะหรือถูกลบไปแล้ว'
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) -> int:

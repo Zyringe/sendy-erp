@@ -162,8 +162,9 @@ from .ecommerce import (
 from .suggestions import (
     count_pending_suggestions, get_pending_suggestions,
     get_pending_suggestion, save_pending_suggestion,
-    approve_pending_suggestion, create_now,
+    approve_pending_suggestion, reject_pending_suggestion, create_now,
     DuplicateSkuError, SuggestionAlreadyStagedError,
+    SuggestionRejectValidationError, SuggestionRejectConflictError,
 )
 from .marketplace import (
     resolve_marketplace_product_id, import_marketplace_orders,
@@ -197,4 +198,3 @@ from .vat_sub import (
 from .stock_filters import (
     NON_STOCK_BSN_CODES, NonStockCodeError, is_non_stock_code, non_stock_clause,
 )
-
