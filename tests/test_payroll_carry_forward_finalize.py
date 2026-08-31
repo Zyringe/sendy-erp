@@ -357,3 +357,51 @@ def test_finalize_route_needs_no_confirm_when_clean(admin_client, tmp_db):
     status = sqlite3.connect(tmp_db).execute(
         "SELECT status FROM payroll_runs WHERE id=?", (rid,)).fetchone()[0]
     assert status == 'finalized', "an ordinary finalize must not need confirm_carry"
+
+
+# ── staleness guard (added by /scrutinize 2026-08-31) ─────────────────────
+# `_assert_carry_chronology` is deliberately scoped to runs that TOUCH carry
+# money, which leaves one residual case it cannot see: Sep is generated while
+# Aug drafts at 0, Aug is then finalized carrying 950, and Sep is finalized
+# WITHOUT a regenerate — Sep's stored carried_in still says 0 and the ฿950 is
+# collected from nobody. `stale_carry_in` closes it at the finalize boundary,
+# the same philosophy as `pending_advance_stamp`.
+
+def test_stale_carried_in_refuses_finalize(tmp_db_conn):
+    eid = _mk_employee(tmp_db_conn, 'T_STALE1', 'stale carry', '2025-01-01',
+                       monthly_salary=15000.0)
+    src_run = _plant_finalized_run(tmp_db_conn, eid, '2029-07', 950.0)
+
+    aug = hr.generate_run('2029-08', 1, created_by=1, conn=tmp_db_conn)
+    assert _item(tmp_db_conn, aug['id'], eid)['carried_in'] == 950.0, \
+        "control: the run must actually have read the 950 at generate time"
+
+    # The source moves AFTER Aug was generated (Jul reopened, edited, re-finalized).
+    tmp_db_conn.execute(
+        "UPDATE payroll_items SET carried_out = 1500.0 WHERE run_id = ? AND employee_id = ?",
+        (src_run, eid))
+    tmp_db_conn.commit()
+
+    stale = hr.stale_carry_in(aug['id'], conn=tmp_db_conn)
+    assert len(stale) == 1, f"expected exactly one stale row, got {stale}"
+    assert stale[0][1] == 950.0 and stale[0][2] == 1500.0
+
+    with pytest.raises(hr.StaleCarryInError):
+        hr.finalize_run(aug['id'], conn=tmp_db_conn, confirm_carry=True)
+    assert tmp_db_conn.execute(
+        "SELECT status FROM payroll_runs WHERE id=?", (aug['id'],)).fetchone()[0] == 'draft', \
+        "the run must still be draft — a refusal that finalized anyway is no refusal"
+
+
+def test_stale_guard_does_not_fire_on_a_fresh_run(tmp_db_conn):
+    """CONTROL — without this, the test above passes even if the guard fires
+    on everything and finalize is simply broken for all runs."""
+    eid = _mk_employee(tmp_db_conn, 'T_STALE2', 'fresh carry', '2025-01-01',
+                       monthly_salary=15000.0)
+    _plant_finalized_run(tmp_db_conn, eid, '2029-07', 950.0)
+    aug = hr.generate_run('2029-08', 1, created_by=1, conn=tmp_db_conn)
+
+    assert hr.stale_carry_in(aug['id'], conn=tmp_db_conn) == []
+    hr.finalize_run(aug['id'], conn=tmp_db_conn, confirm_carry=True)
+    assert tmp_db_conn.execute(
+        "SELECT status FROM payroll_runs WHERE id=?", (aug['id'],)).fetchone()[0] == 'finalized'

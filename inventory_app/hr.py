@@ -691,6 +691,80 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
     return round(unpaid, 4), notes
 
 
+def _assert_carry_chronology(c: sqlite3.Connection, employee_id: int,
+                             src_month: str, year_month: str) -> None:
+    """CHRONOLOGICAL FINALIZE invariant (plan.md P1d step 3) — the rule that
+    prevents the same debt being collected twice, or silently lost.
+
+    Refuses when a run for THIS employee exists strictly between the carry
+    source month and `year_month` and is NOT finalized.
+
+    Traced double-collection path: Aug finalized carried_out=950 -> Sep
+    generated carried_in=950 but left DRAFT -> Oct generated: the source query
+    finds Aug (the nearest FINALIZED run before Oct, since Sep is draft) and
+    sets carried_in=950 AGAIN. If Oct is finalized before Sep, ฿950 is
+    collected twice and nothing anywhere says so.
+
+    Mirror case: while Aug sits reopened (draft), regenerating a still-draft
+    Sep makes the `status = 'finalized'` filter skip Aug and fall back past it.
+
+    ⚠ **Must run even when there is NO finalized source** (`src_month == ""`).
+    An employee whose ONLY prior run is the draft one holding the carry —
+    hired mid-stream, or whose sole earlier run was reopened — would otherwise
+    fall straight to `carried_in = 0.0` and the debt would vanish with no
+    error at all. Reproduced 2026-08-31 while this check still lived inside
+    `if carry_row is not None:`: generating the next month returned
+    `carried_in=0.0` for a ฿950 carry sitting in a draft run, silently.
+    `"" ` sorts below every 'YYYY-MM', so an empty `src_month` lets EVERY
+    earlier non-finalized run be considered.
+
+    ⚠ Scoped to runs that TOUCH carry money — `carried_out > 0` (still holding
+    a debt) **OR `carried_in > 0` (already consumed one)**. Both halves are
+    load-bearing, each measured on 2026-08-31:
+      * Refusing on ANY earlier draft was too strict — it broke three unrelated
+        pre-existing tests that legitimately generate month N+1 while N is a
+        draft (new-hire proration, floored entitlement, the connection-lock
+        test), i.e. it would block previewing next month before closing this
+        one. A draft touching no carry can lose nothing.
+      * Scoping to `carried_out > 0` ALONE re-opened the original
+        double-collection blocker: in that path Sep has already *consumed* the
+        carry (`carried_in=950, carried_out=0`), so it is invisible to an
+        out-only test and Oct would read Aug's 950 a second time.
+        `test_double_collection_path_is_refused_at_generate` caught it.
+
+    The narrower rule leaves ONE residual case: a draft whose carry only
+    materialises later (Sep generated while Aug drafts at 0, Aug then finalises
+    at 950, Sep finalised without a regenerate would keep a stale
+    `carried_in`). That is caught at the other end by
+    `stale_carry_in()` / the finalize guard, which is the right place —
+    the same philosophy as `pending_advance_stamp`: the value was computed at
+    generate time, so refuse at finalize if reality has moved since.
+    """
+    gap = c.execute(
+        """SELECT pr.year_month, pr.status
+             FROM payroll_items pi
+             JOIN payroll_runs pr ON pr.id = pi.run_id
+            WHERE pi.employee_id = ?
+              AND pr.year_month > ?
+              AND pr.year_month < ?
+              AND pr.status != 'finalized'
+              AND (pi.carried_in > 0 OR pi.carried_out > 0)
+            ORDER BY pr.year_month
+            LIMIT 1""",
+        (employee_id, src_month, year_month),
+    ).fetchone()
+    if gap is None:
+        return
+    whose = _employee_names(c, [employee_id])
+    where_from = f"ยกยอดมา ({src_month})" if src_month else "รอบก่อนหน้า"
+    raise CarryChronologyError(
+        f"สร้างรอบเดือน {year_month} ให้ {whose} ไม่ได้ — "
+        f"มีรอบเดือน {gap['year_month']} (สถานะ {gap['status']}) ค้างอยู่ระหว่างเดือนที่ "
+        f"{where_from} กับเดือนนี้ · ต้อง finalize เดือน "
+        f"{gap['year_month']} ก่อน ไม่งั้นยอดยกจะถูกเก็บซ้ำหรือหายไป"
+    )
+
+
 class CarryChronologyError(ValueError):
     """A run exists for a month between the carry source and this one and is
     NOT finalized — plan.md P1d step 3, the CHRONOLOGICAL FINALIZE invariant
@@ -830,45 +904,10 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
             LIMIT 1""",
         (emp["id"], year_month),
     ).fetchone()
-    if carry_row is not None:
-        # CHRONOLOGICAL FINALIZE invariant (plan.md P1d step 3) — the rule
-        # that prevents the same debt being collected twice.
-        #
-        # Traced double-collection path: Aug finalized carried_out=950 -> Sep
-        # generated carried_in=950 but left DRAFT -> Oct generated: this
-        # query above finds Aug (the nearest FINALIZED run before Oct, since
-        # Sep is draft), sets carried_in=950 AGAIN. If Oct is finalized
-        # before Sep, ฿950 is collected twice and nothing anywhere says so.
-        #
-        # Mirror case: while Aug sits reopened (draft), regenerating a still-
-        # draft Sep makes the `status = 'finalized'` filter above skip Aug
-        # and silently fall back past it to an older source or to 0.
-        #
-        # Both are the same shape: a run for THIS employee exists strictly
-        # between the carry source month and this one, and is not finalized.
-        # Refuse — never silently fall back.
-        gap = c.execute(
-            """SELECT pr.year_month, pr.status
-                 FROM payroll_items pi
-                 JOIN payroll_runs pr ON pr.id = pi.run_id
-                WHERE pi.employee_id = ?
-                  AND pr.year_month > ?
-                  AND pr.year_month < ?
-                  AND pr.status != 'finalized'
-                ORDER BY pr.year_month
-                LIMIT 1""",
-            (emp["id"], carry_row["src_month"], year_month),
-        ).fetchone()
-        if gap is not None:
-            raise CarryChronologyError(
-                f"สร้างรอบเดือน {year_month} ให้ {_employee_names(c, [emp['id']])} ไม่ได้ — "
-                f"มีรอบเดือน {gap['year_month']} (สถานะ {gap['status']}) ค้างอยู่ระหว่างเดือนที่ "
-                f"ยกยอดมา ({carry_row['src_month']}) กับเดือนนี้ · ต้อง finalize เดือน "
-                f"{gap['year_month']} ก่อน ไม่งั้นยอดยกจะถูกเก็บซ้ำหรือหายไป"
-            )
-        carried_in = round(float(carry_row["carried_out"]), 2)
-    else:
-        carried_in = 0.0
+    # CHRONOLOGICAL FINALIZE invariant — runs UNCONDITIONALLY (see the helper).
+    _assert_carry_chronology(
+        c, emp["id"], carry_row["src_month"] if carry_row else "", year_month)
+    carried_in = round(float(carry_row["carried_out"]), 2) if carry_row else 0.0
 
     note = "; ".join(unpaid_notes) if unpaid_notes else None
 
@@ -1660,6 +1699,55 @@ def pending_carry_forward(run_id: int, conn: Optional[sqlite3.Connection] = None
         return len(rows), total, [(r["name"], float(r["amount"])) for r in rows]
 
 
+class StaleCarryInError(ValueError):
+    """This run's stored `carried_in` no longer matches its source."""
+
+
+def stale_carry_in(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                   db_path: Optional[str] = None):
+    """[(name, stored, expected), ...] for items whose `carried_in` has gone
+    stale since the run was generated.
+
+    Closes the residual case that `_assert_carry_chronology` deliberately does
+    NOT cover (see its docstring): Sep is generated while Aug is a draft
+    carrying 0, Aug is then finalized carrying 950, and Sep is finalized
+    WITHOUT a regenerate — its `carried_in` would still say 0 and the ฿950
+    would be collected from nobody.
+
+    Same philosophy as `pending_advance_stamp`: the number was computed at
+    generate time, so refuse at the finalize boundary if reality moved since.
+    The fix is always the same — regenerate the run, which recomputes it.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        run = c.execute("SELECT * FROM payroll_runs WHERE id = ?",
+                        (run_id,)).fetchone()
+        if run is None:
+            return []
+        out = []
+        for it in c.execute(
+                """SELECT pi.employee_id, pi.carried_in,
+                          COALESCE(e.nickname, e.full_name) AS name
+                     FROM payroll_items pi
+                     JOIN employees e ON e.id = pi.employee_id
+                    WHERE pi.run_id = ?""", (run_id,)).fetchall():
+            src = c.execute(
+                """SELECT pi.carried_out
+                     FROM payroll_items pi
+                     JOIN payroll_runs pr ON pr.id = pi.run_id
+                    WHERE pi.employee_id = ?
+                      AND pr.status = 'finalized'
+                      AND pr.year_month < ?
+                    ORDER BY pr.year_month DESC
+                    LIMIT 1""",
+                (it["employee_id"], run["year_month"]),
+            ).fetchone()
+            expected = round(float(src["carried_out"]), 2) if src else 0.0
+            stored = round(float(it["carried_in"] or 0), 2)
+            if stored != expected:
+                out.append((it["name"], stored, expected))
+        return out
+
+
 def _carry_forward_message(n: int, total: float, rows) -> str:
     """One text for the banner AND the refusal (same precedent as
     _pending_advance_message), so the page cannot promise something the
@@ -1750,6 +1838,20 @@ def finalize_run(run_id: int,
         # check and the mutation below, so nothing can change the answer
         # between this read and the write (same reasoning as the lock note
         # above finalize_run's docstring).
+        # Staleness first: a stale carried_in makes every downstream number
+        # wrong, and unlike a pending carry it can NEVER be legitimately
+        # confirmed away — the only fix is a regenerate. So it refuses
+        # outright, with no confirm flag, before the confirmable check below.
+        stale = stale_carry_in(run_id, conn=c)
+        if stale:
+            detail = " · ".join(
+                f"{n}: สลิปบอก {s:,.2f} แต่รอบก่อนบอก {e:,.2f}" for n, s, e in stale)
+            raise StaleCarryInError(
+                f"finalize รอบนี้ไม่ได้ — ยอดยกยอดมาในสลิปไม่ตรงกับรอบก่อนแล้ว "
+                f"({len(stale)} คน) {detail} · "
+                f"ยอดนี้คำนวณตอนสร้างรอบ และรอบก่อนเปลี่ยนไปหลังจากนั้น "
+                f"· ทางแก้: กด \"สร้างรอบใหม่\" (regenerate) รอบนี้ แล้วยอดจะถูกต้องเอง"
+            )
         cn, ctotal, crows = pending_carry_forward(run_id, conn=c)
         if cn and not confirm_carry:
             raise CarryForwardWarning(_carry_forward_message(cn, ctotal, crows))

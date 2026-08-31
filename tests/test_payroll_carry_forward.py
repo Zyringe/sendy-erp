@@ -369,14 +369,33 @@ def test_regenerate_stability_carried_in_does_not_drift(tmp_db_conn):
     assert it2['carried_in'] == 950.0
 
 
-def test_draft_prior_run_does_not_count(tmp_db_conn):
+def test_draft_prior_run_carrying_nothing_is_not_a_source(tmp_db_conn):
+    """A draft is never a carry SOURCE. When it carries nothing, generating the
+    next month proceeds normally with carried_in = 0 — previewing next month
+    before closing this one is ordinary use and must not be blocked."""
     eid = _mk_employee(tmp_db_conn, 'T_CF6', 'draft prior', '2025-01-01',
                        monthly_salary=15000.0)
-    _plant_draft_run(tmp_db_conn, eid, '2025-12', 500.0)
+    _plant_draft_run(tmp_db_conn, eid, '2025-12', 0.0)
 
     run = hr.generate_run('2026-01', 1, created_by=1, conn=tmp_db_conn)
     it = _item(tmp_db_conn, run['id'], eid)
+    assert it is not None, "control: the run must actually have generated an item"
     assert it['carried_in'] == 0.0
+
+
+def test_draft_prior_run_HOLDING_a_carry_is_refused_not_silently_zeroed(tmp_db_conn):
+    """⚠ Supersedes the original form of this test, which asserted
+    `carried_in == 0` for a draft holding 500. Returning 0 there IS the
+    debt-vanishing bug: the 500 is owed, the draft is not a valid source, and
+    silently reading 0 loses it with no error. Found by /scrutinize 2026-08-31
+    and reproduced (`carried_in=0.0` for a ฿950 carry in a draft run).
+    The CHRONOLOGICAL FINALIZE invariant must refuse instead."""
+    eid = _mk_employee(tmp_db_conn, 'T_CF6b', 'draft holds carry', '2025-01-01',
+                       monthly_salary=15000.0)
+    _plant_draft_run(tmp_db_conn, eid, '2025-12', 500.0)
+
+    with pytest.raises(hr.CarryChronologyError):
+        hr.generate_run('2026-01', 1, created_by=1, conn=tmp_db_conn)
 
 
 def test_ordering_by_year_month_not_by_run_id(tmp_db_conn):
