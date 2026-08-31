@@ -63,7 +63,12 @@
               <td class="fw-semibold">{{ run.year_month }}</td>
               <td class="small text-muted">{{ run.company_name or run.company_id }}</td>
               <td class="text-center small">{{ run.item_count or 0 }}</td>
-              <td class="text-end">{{ fmt_baht(run.total_net or 0) }}</td>
+              <td class="text-end">
+                {{ fmt_baht(run.total_net or 0) }}
+                {% if run.total_carried_out and run.total_carried_out > 0 %}
+                <div class="small text-warning" data-note="carry-total">ยกไป {{ fmt_baht(run.total_carried_out) }}</div>
+                {% endif %}
+              </td>
               <td>
                 {% if run.status == 'finalized' %}
                   <span class="badge bg-success">finalized</span>

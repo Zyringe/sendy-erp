@@ -20,7 +20,12 @@
         {% set ym = p.year_month.split('-') %}
         <tr>
           <td>{{ month_names[ym[1]|int] }} พ.ศ. {{ ym[0]|int + 543 }}</td>
-          <td class="text-end fw-semibold text-success">฿{{ '{:,.2f}'.format(p.net_pay) }}</td>
+          <td class="text-end fw-semibold text-success">
+            ฿{{ '{:,.2f}'.format(p.net_pay) }}
+            {% if p.carried_out and p.carried_out > 0 %}
+            <div class="small text-warning fw-normal" data-note="carried-out">ยกไป ฿{{ '{:,.2f}'.format(p.carried_out) }}</div>
+            {% endif %}
+          </td>
           <td class="text-end">
             <a href="{{ url_for('me.payslip_detail', item_id=p.item_id) }}"
                class="btn btn-sm btn-outline-primary">

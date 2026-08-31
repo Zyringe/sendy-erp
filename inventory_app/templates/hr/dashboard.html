@@ -151,7 +151,12 @@
                   <span class="badge bg-secondary">draft</span>
                 {% endif %}
               </td>
-              <td class="text-end small">{{ fmt_baht(run.total_net or 0) }}</td>
+              <td class="text-end small">
+                {{ fmt_baht(run.total_net or 0) }}
+                {% if run.total_carried_out and run.total_carried_out > 0 %}
+                <div class="text-warning" data-note="carry-total">ยกไป {{ fmt_baht(run.total_carried_out) }}</div>
+                {% endif %}
+              </td>
             </tr>
             {% endfor %}
           </tbody>

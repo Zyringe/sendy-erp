@@ -695,7 +695,8 @@ def get_payroll_runs(conn: Optional[sqlite3.Connection] = None):
         return c.execute(
             """SELECT pr.*, co.name_th AS company_name,
                       COUNT(pi.id) AS item_count,
-                      ROUND(SUM(pi.net_pay), 2) AS total_net
+                      ROUND(SUM(pi.net_pay), 2) AS total_net,
+                      ROUND(SUM(pi.carried_out), 2) AS total_carried_out
                  FROM payroll_runs pr
                  LEFT JOIN companies co ON co.id = pr.company_id
                  LEFT JOIN payroll_items pi ON pi.run_id = pr.id
@@ -806,6 +807,7 @@ def get_employee_payslips(employee_id: int,
         return c.execute(
             """SELECT pi.id AS item_id, pr.id AS run_id, pr.year_month,
                       pr.status, pi.gross, pi.net_pay,
+                      pi.carried_in, pi.carried_out,
                       co.name_th AS company_name
                  FROM payroll_items pi
                  JOIN payroll_runs pr ON pr.id = pi.run_id
