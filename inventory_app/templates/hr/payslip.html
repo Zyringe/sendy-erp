@@ -151,6 +151,12 @@
             <td class="text-end text-danger">-{{ fmt_baht(item.other_deductions) }}</td>
           </tr>
           {% endif %}
+          {% if item.carried_in and item.carried_in > 0 %}
+          <tr data-row="carried-in">
+            <td>ยกยอดมาจากเดือนก่อน</td>
+            <td class="text-end text-danger">-{{ fmt_baht(item.carried_in) }}</td>
+          </tr>
+          {% endif %}
           {% if item.note %}
           <tr>
             <td colspan="2" class="small text-muted">{{ item.note }}</td>
@@ -165,6 +171,13 @@
       <span class="fw-bold fs-6">เงินที่ได้รับสุทธิ (Net Pay)</span>
       <span class="fw-bold fs-4 text-success">{{ fmt_baht(item.net_pay) }}</span>
     </div>
+
+    {% if item.carried_out and item.carried_out > 0 %}
+    <div class="mt-2 small text-warning" data-note="carried-out">
+      <i class="bi bi-arrow-return-right me-1"></i>
+      ยกไปหักรอบหน้า {{ fmt_baht(item.carried_out) }} (ยอดที่เก็บไม่ได้เดือนนี้ — ไม่ใช่รายการหัก จะถูกหักในรอบถัดไป)
+    </div>
+    {% endif %}
 
     {% if item.commission_amount and item.commission_amount > 0 %}
     <div class="mt-2 small text-muted">

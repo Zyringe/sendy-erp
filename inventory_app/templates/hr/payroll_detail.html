@@ -82,6 +82,10 @@
       <div class="col-md-3 text-end">
         <span class="text-muted">เงินสุทธิรวม:</span>
         <strong class="fs-5">{{ fmt_baht(items | sum(attribute='net_pay')) }}</strong>
+        {% set total_carried_out = items | sum(attribute='carried_out') %}
+        {% if total_carried_out and total_carried_out > 0 %}
+        <div class="small text-warning" data-note="carry-total">ยกไปหักรอบหน้ารวม {{ fmt_baht(total_carried_out) }}</div>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -105,7 +109,9 @@
           <th class="text-end">ภาษี</th>
           <th class="text-end">เบิกล่วงหน้า</th>
           <th class="text-end">รายการหัก</th>
+          <th class="text-end" title="ยกยอดมาจากเดือนก่อน">ยกมา</th>
           <th class="text-end fw-bold">เงินสุทธิ</th>
+          <th class="text-end" title="ยกไปหักรอบหน้า">ยกไป</th>
           <th>หมายเหตุ</th>
           {% if session.role == 'admin' and run.status == 'draft' %}
           <th class="text-end">แก้ไข</th>
@@ -149,7 +155,9 @@
           <td class="text-end small {% if item.other_deductions > 0 %}text-danger{% endif %}">
             {% if item.other_deductions > 0 %}-{{ fmt_baht(item.other_deductions) }}{% else %}–{% endif %}
           </td>
+          <td class="text-end small {% if item.carried_in and item.carried_in > 0 %}text-danger{% endif %}" data-col="carried-in">{% if item.carried_in and item.carried_in > 0 %}-{{ fmt_baht(item.carried_in) }}{% else %}–{% endif %}</td>
           <td class="text-end fw-bold">{{ fmt_baht(item.net_pay) }}</td>
+          <td class="text-end small {% if item.carried_out and item.carried_out > 0 %}text-warning{% endif %}" data-col="carried-out">{% if item.carried_out and item.carried_out > 0 %}{{ fmt_baht(item.carried_out) }}{% else %}–{% endif %}</td>
           <td class="small text-muted" style="max-width:200px;white-space:normal">
             {{ item.note or '–' }}
           </td>
@@ -165,7 +173,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="{% if session.role == 'admin' and run.status == 'draft' %}15{% else %}14{% endif %}" class="text-center text-muted py-4">ไม่มีรายการพนักงาน</td>
+          <td colspan="{% if session.role == 'admin' and run.status == 'draft' %}17{% else %}16{% endif %}" class="text-center text-muted py-4">ไม่มีรายการพนักงาน</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -182,7 +190,9 @@
           <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='wht_amount')) }}</td>
           <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='salary_advance_deduction')) }}</td>
           <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='other_deductions')) }}</td>
+          <td class="text-end small text-danger">-{{ fmt_baht(items | sum(attribute='carried_in')) }}</td>
           <td class="text-end fw-bold">{{ fmt_baht(items | sum(attribute='net_pay')) }}</td>
+          <td class="text-end small">{{ fmt_baht(items | sum(attribute='carried_out')) }}</td>
           {% if session.role == 'admin' and run.status == 'draft' %}
           <td colspan="2"></td>
           {% else %}
