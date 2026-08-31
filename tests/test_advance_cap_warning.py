@@ -150,11 +150,15 @@ def test_collectable_with_zero_payroll_runs_still_produces_a_ceiling(tmp_db_conn
     c = tmp_db_conn_hr_clean
     eid = _mk_employee(c, 'T_CAPB', 'cap-blocker-b', '2027-01-01',
                        monthly_salary=15000.0, sso_enrolled=1)
+    # 2027-03 has 31 calendar days -> worked_days capped at divisor 30, so a
+    # full-month employee has NO proration loss here (2027-02's 28 days
+    # would legitimately prorate base_amount to 14000, which is a distinct
+    # and correctly-tested behaviour, not this test's concern).
     assert c.execute(
-        "SELECT COUNT(*) FROM payroll_runs WHERE year_month='2027-02'"
+        "SELECT COUNT(*) FROM payroll_runs WHERE year_month='2027-03'"
     ).fetchone()[0] == 0, "control: no run exists for the target month"
 
-    status = hr.collectable_this_month(c, eid, '2027-02')
+    status = hr.collectable_this_month(c, eid, '2027-03')
     assert status is not None
     # base 15000, sso = 15000*0.05 = 750, no carry, no unpaid leave
     assert status["salary_rate"] == 15000.0

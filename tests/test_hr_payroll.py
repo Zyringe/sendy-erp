@@ -431,7 +431,8 @@ def test_combined_net_pay_diligence_kept(tmp_db_conn):
 # 054 specifically. 054 is already applied to the live DB and (per plan) does
 # NOT self-insert into applied_migrations. This asserts the realistic
 # invariant on the tmp_db copy: 054 recorded exactly once, all 9 HR tables
-# present, seeds (2 employees, 5 leave types, 4 config keys) present once.
+# present, seeds (2 employees, 5 leave types, 4 config keys from 054 + 1 from
+# migration 179's advance_warn_pct seed) present once.
 
 def test_migration_054_applied_exactly_once(tmp_db_conn):
     n = tmp_db_conn.execute(
@@ -454,7 +455,7 @@ def test_migration_054_applied_exactly_once(tmp_db_conn):
     ).fetchone()[0] == 5
     assert tmp_db_conn.execute(
         "SELECT COUNT(*) FROM hr_config"
-    ).fetchone()[0] == 4
+    ).fetchone()[0] == 5
 
 
 # ── full-month diligence rule ────────────────────────────────────────────────

@@ -208,6 +208,14 @@ def _load_config(conn: sqlite3.Connection) -> dict:
         "sso_min_base": float(cfg.get("sso_min_base", 1650)),
         "sso_max_base": float(cfg.get("sso_max_base", 15000)),
         "day_divisor": float(cfg.get("day_divisor", 30)),
+        # plan.md P2 — advance-cap yellow-bar threshold. Fallback default
+        # MUST match migration 179's seeded value (0.5): a deploy where the
+        # code lands before the migration (or a DB predating 179) would
+        # otherwise apply a different threshold than a fully migrated one —
+        # the drift already live for sso_max_base above (code default 15000,
+        # prod holds 17500). Pinned by
+        # test_advance_warn_pct_code_default_matches_migration.
+        "advance_warn_pct": float(cfg.get("advance_warn_pct", 0.5)),
     }
 
 
@@ -775,6 +783,73 @@ class CarryChronologyError(ValueError):
     only fix is to finalize (or otherwise resolve) the run in between."""
 
 
+# ── shared "what this month pays" arithmetic ─────────────────────────────────
+# Extracted so _build_item and the advance-cap ceiling (plan.md P2) share ONE
+# definition each, instead of two copies that can drift — the same reason
+# sales_filters.py exists elsewhere in this app.
+def _worked_days_and_base(start_date: Optional[date], end_date: Optional[date],
+                          period_start: date, period_end: date,
+                          divisor: float, rate: float):
+    """(capped_days, base_amount) — worked-day window inside the month (see
+    module docstring), capped at the divisor, times the rate."""
+    eff_start = max(period_start, start_date) if start_date else period_start
+    eff_end = min(period_end, end_date) if end_date else period_end
+    worked_days = (eff_end - eff_start).days + 1
+    if worked_days < 0:
+        worked_days = 0
+    capped_days = min(worked_days, divisor)
+    base_amount = round(rate / divisor * capped_days, 2)
+    return capped_days, base_amount
+
+
+def _clamped_unpaid_deduction(rate: float, divisor: float, unpaid_days: float,
+                              base_amount: float):
+    """(unpaid_deduction, uncapped_deduction) — the money actually withheld
+    for unpaid leave, never more than the month's own base_amount.
+
+    A month cannot deduct more than it pays. unpaid_days counts CALENDAR days
+    (31 in a 31-day month) while the deduction divides by the fixed 30-day
+    divisor that also caps base_amount — so an unclamped full month of unpaid
+    leave deducted 31/30 of salary (฿15,500 against a ฿15,000 base). The
+    worst honest case is a zero-wage month.
+
+    The cap is on the MONEY, not on unpaid_days: the day count stays a true
+    record of the absence, so it still reconciles with the leave request and
+    with the allocation total (Put's call, 2026-08-06)."""
+    uncapped_deduction = round(rate / divisor * unpaid_days, 2)
+    return min(uncapped_deduction, base_amount), uncapped_deduction
+
+
+def _carried_in_for(c: sqlite3.Connection, employee_id: int, year_month: str):
+    """(carried_in, src_month) — the carried_out of the employee's most
+    recent FINALIZED run before year_month, else (0.0, "").
+
+    Shared by _build_item (which additionally enforces the CHRONOLOGICAL
+    FINALIZE invariant via _assert_carry_chronology) and the advance-cap
+    ceiling (plan.md P2, which does not enforce that invariant — a cap is
+    advisory context for a human keying an advance, not a guarded write;
+    refusing advance entry over a payroll-run bookkeeping gap would be the
+    wrong failure mode there).
+
+    ⚠ OPEN QUESTION, deliberately NOT decided here (/scrutinize 2026-08-31).
+    Keyed on employee_id alone, no pr.company_id filter — see plan.md's open
+    items; unaffected by which caller uses this."""
+    carry_row = c.execute(
+        """SELECT pi.carried_out AS carried_out, pr.year_month AS src_month
+             FROM payroll_items pi
+             JOIN payroll_runs pr ON pr.id = pi.run_id
+            WHERE pi.employee_id = ?
+              AND pr.status = 'finalized'
+              AND pr.year_month < ?
+            ORDER BY pr.year_month DESC
+            LIMIT 1""",
+        (employee_id, year_month),
+    ).fetchone()
+    if carry_row is None:
+        return 0.0, ""
+    return round(float(carry_row["carried_out"]), 2), carry_row["src_month"]
+
+
 # ── core: build one payroll_items payload ────────────────────────────────────
 def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
                 cfg: dict, run_id: Optional[int] = None):
@@ -790,32 +865,15 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
     start_date = _to_date(emp["start_date"])
     end_date = _to_date(emp["end_date"])
 
-    # worked-day window inside the month (see module docstring)
-    eff_start = max(period_start, start_date) if start_date else period_start
-    eff_end = min(period_end, end_date) if end_date else period_end
-    worked_days = (eff_end - eff_start).days + 1
-    if worked_days < 0:
-        worked_days = 0
-    capped_days = min(worked_days, divisor)
-    base_amount = round(rate / divisor * capped_days, 2)
+    capped_days, base_amount = _worked_days_and_base(
+        start_date, end_date, period_start, period_end, divisor, rate)
 
     # unpaid leave
     unpaid_days, unpaid_notes = _compute_unpaid_days(
         c, emp["id"], year_month, period_start, period_end
     )
-    # A month cannot deduct more than it pays. unpaid_days counts CALENDAR days
-    # (31 in a 31-day month) while the deduction divides by the fixed 30-day
-    # divisor that also caps base_amount — so an unclamped full month of unpaid
-    # leave deducted 31/30 of salary (฿15,500 against a ฿15,000 base). The
-    # worst honest case is a zero-wage month.
-    #
-    # The cap is on the MONEY, not on unpaid_days: the day count stays a true
-    # record of the absence, so it still reconciles with the leave request and
-    # with the allocation total (Put's call, 2026-08-06). That does mean
-    # deduction < unpaid_days × daily rate on a capped month, which would read
-    # as an arithmetic error on the payslip — hence the note.
-    uncapped_deduction = round(rate / divisor * unpaid_days, 2)
-    unpaid_deduction = min(uncapped_deduction, base_amount)
+    unpaid_deduction, uncapped_deduction = _clamped_unpaid_deduction(
+        rate, divisor, unpaid_days, base_amount)
     if uncapped_deduction > unpaid_deduction:
         unpaid_notes.append(
             f"ขาดงานทั้งเดือน — หักได้ไม่เกินฐานเงินเดือนของเดือนนี้ "
@@ -905,21 +963,9 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
     # debt. Both are business calls for Put, not defaults to bake in silently.
     # No filter is added, and no speculative guard: adding either would pick one
     # policy without asking. Recorded in plan.md's open items.
-    carry_row = c.execute(
-        """SELECT pi.carried_out AS carried_out, pr.year_month AS src_month
-             FROM payroll_items pi
-             JOIN payroll_runs pr ON pr.id = pi.run_id
-            WHERE pi.employee_id = ?
-              AND pr.status = 'finalized'
-              AND pr.year_month < ?
-            ORDER BY pr.year_month DESC
-            LIMIT 1""",
-        (emp["id"], year_month),
-    ).fetchone()
+    carried_in, src_month = _carried_in_for(c, emp["id"], year_month)
     # CHRONOLOGICAL FINALIZE invariant — runs UNCONDITIONALLY (see the helper).
-    _assert_carry_chronology(
-        c, emp["id"], carry_row["src_month"] if carry_row else "", year_month)
-    carried_in = round(float(carry_row["carried_out"]), 2) if carry_row else 0.0
+    _assert_carry_chronology(c, emp["id"], src_month, year_month)
 
     note = "; ".join(unpaid_notes) if unpaid_notes else None
 
@@ -993,6 +1039,156 @@ def _recompute_totals(d: dict) -> dict:
     d["net_pay"] = net
     d["carried_out"] = carried_out
     return d
+
+
+# ── advance cap warning (plan.md P2) ─────────────────────────────────────────
+# Put's ruling: warn at 50% of what a month can pay, and require an extra
+# confirm when a salary advance entry would exceed what is actually
+# collectable this month — not a hard block (Put is the only person who keys
+# advances, so there is no second approver to gate on).
+
+def advance_is_warn(month_advance_total: float, base_amount: float,
+                    warn_pct: float) -> bool:
+    """True once month_advance_total exceeds warn_pct × base_amount — the
+    yellow-bar (advisory-only) threshold. Strictly greater: exactly
+    warn_pct × base_amount does NOT warn ("at 50%" reads as the line, not
+    past it)."""
+    return month_advance_total > round(base_amount * warn_pct, 2)
+
+
+def collectable_this_month(c: sqlite3.Connection, employee_id: int,
+                           year_month: str, cfg: Optional[dict] = None):
+    """What `year_month` can still pay this employee, computed from SOURCE —
+    never from a payroll_items row (plan.md P2 Blocker B: advance_history's
+    old net_pay lookup returns None whenever the month's run doesn't exist
+    yet, which is the NORMAL case at advance-entry time — measured
+    2026-08-31, ฿8,400 of หลุย's August advances were keyed before run 8
+    ever existed).
+
+    collectable = base_amount − unpaid_deduction − sso_employee − carried_in
+
+    Deliberately excludes bonus/other_additions/other_deductions/wht/
+    diligence: those are admin edits made AFTER a run exists
+    (update_payroll_item), unknowable before generate_run ever runs, and
+    this ceiling exists to warn BEFORE a run exists. It also excludes THIS
+    month's own advances — the caller (check_advance_cap) adds those
+    separately, so this function never double-subtracts the amount being
+    checked against it.
+
+    Shares _worked_days_and_base / _clamped_unpaid_deduction /
+    _carried_in_for with _build_item so "what this month can pay" cannot
+    drift between the payslip and the cap. Does NOT call
+    _assert_carry_chronology — a cap is advisory context for a human keying
+    an advance, not a guarded write; refusing advance entry over a
+    payroll-run bookkeeping gap would be the wrong failure mode here.
+
+    Returns None if `employee_id` does not exist. Returns a dict with
+    salary_rate / base_amount / collectable otherwise.
+    """
+    if cfg is None:
+        cfg = _load_config(c)
+    period_start, period_end = _month_bounds(year_month)
+    divisor = cfg["day_divisor"]
+
+    emp = c.execute(
+        "SELECT id, start_date, end_date, sso_enrolled FROM employees WHERE id=?",
+        (employee_id,),
+    ).fetchone()
+    if emp is None:
+        return None
+
+    sal = resolve_salary(employee_id, year_month, conn=c)
+    rate = float(sal["monthly_salary"]) if sal else 0.0
+
+    start_date = _to_date(emp["start_date"])
+    end_date = _to_date(emp["end_date"])
+    capped_days, base_amount = _worked_days_and_base(
+        start_date, end_date, period_start, period_end, divisor, rate)
+
+    unpaid_days, _notes = _compute_unpaid_days(
+        c, employee_id, year_month, period_start, period_end)
+    unpaid_deduction, _uncapped = _clamped_unpaid_deduction(
+        rate, divisor, unpaid_days, base_amount)
+
+    sso_emp = _sso(rate, emp["sso_enrolled"], cfg)
+    carried_in, _src_month = _carried_in_for(c, employee_id, year_month)
+
+    collectable = round(base_amount - unpaid_deduction - sso_emp - carried_in, 2)
+    return {
+        "salary_rate": rate,
+        "base_amount": base_amount,
+        "collectable": collectable,
+    }
+
+
+class AdvanceCapWarning(Exception):
+    """A salary-advance entry would exceed what year_month can actually pay
+    this employee, OR lands in a month whose payroll run is already
+    finalized (Blocker C — that money cannot be collected in its own month
+    at all and will surface in a later run). Not a hard block: the caller
+    (blueprints/cashbook.py) re-renders the form with a confirm checkbox on
+    this, mirroring CarryForwardWarning's shape. Same message-and-confirm
+    convention as the other payroll guards — no confirm can bypass a
+    genuine data problem, but this is a business judgment call, not one."""
+
+
+def check_advance_cap(c: sqlite3.Connection, employee_id: int, target_month: str,
+                      additional_amount: float, cfg: Optional[dict] = None) -> None:
+    """Raise AdvanceCapWarning if this employee's `target_month` salary
+    advances (existing rows dated in that month + additional_amount) would
+    exceed collectable_this_month(target_month), or if a payroll run for
+    target_month is already finalized.
+
+    `target_month` MUST be the month of the advance's OWN advance_date, not
+    "this month" (plan.md Blocker C) — a backdated advance lands in the run
+    for its own month, not the one it was keyed in.
+
+    PURE READ — raises no lock of its own. The caller must already hold the
+    write lock (BEGIN IMMEDIATE) spanning this read and its own insert, or
+    the check-then-write race this function exists to prevent is not
+    actually prevented (plan.md Blocker A)."""
+    if cfg is None:
+        cfg = _load_config(c)
+    status = collectable_this_month(c, employee_id, target_month, cfg=cfg)
+    if status is None:
+        return  # unknown employee — caller already validated this upstream
+
+    existing = c.execute(
+        """SELECT COALESCE(SUM(amount), 0) AS amt FROM salary_advances
+            WHERE employee_id = ? AND strftime('%Y-%m', advance_date) = ?""",
+        (employee_id, target_month),
+    ).fetchone()["amt"]
+    projected = round(float(existing or 0) + additional_amount, 2)
+
+    emp_row = c.execute(
+        "SELECT company_id FROM employees WHERE id = ?", (employee_id,)
+    ).fetchone()
+    target_finalized = c.execute(
+        """SELECT 1 FROM payroll_runs
+            WHERE year_month = ? AND company_id = ? AND status = 'finalized'
+            LIMIT 1""",
+        (target_month, emp_row["company_id"]),
+    ).fetchone() is not None
+
+    over_cap = projected > status["collectable"]
+    if not over_cap and not target_finalized:
+        return
+
+    whose = _employee_names(c, [employee_id])
+    parts = []
+    if over_cap:
+        parts.append(
+            f"เดือน {target_month} เก็บได้ประมาณ ฿{status['collectable']:,.2f} "
+            f"แต่ยอดเบิกรวมของเดือนนั้นจะเป็น ฿{projected:,.2f}"
+        )
+    if target_finalized:
+        parts.append(
+            f"รอบเงินเดือนเดือน {target_month} ปิดไปแล้ว — "
+            f"เงินนี้จะไปโผล่ในรอบถัดไปแทน ไม่ใช่รอบของเดือนนี้เอง"
+        )
+    raise AdvanceCapWarning(
+        f"{whose}: " + " · ".join(parts) + " · ยืนยันเพื่อบันทึกต่อ"
+    )
 
 
 # ── regenerate blast-radius guard ────────────────────────────────────────────
