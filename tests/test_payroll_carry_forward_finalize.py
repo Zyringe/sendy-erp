@@ -405,3 +405,39 @@ def test_stale_guard_does_not_fire_on_a_fresh_run(tmp_db_conn):
     hr.finalize_run(aug['id'], conn=tmp_db_conn, confirm_carry=True)
     assert tmp_db_conn.execute(
         "SELECT status FROM payroll_runs WHERE id=?", (aug['id'],)).fetchone()[0] == 'finalized'
+
+
+def test_finalize_route_reports_stale_carry_as_a_refusal_not_a_crash(admin_client, tmp_db):
+    """The route must catch StaleCarryInError explicitly. Without its own
+    `except`, it falls into the generic `except Exception` and the operator
+    reads a deliberate guard as an unexpected error. Found by /scrutinize
+    2026-08-31, after the guard itself was added mid-review."""
+    rid, eid = _make_carrying_draft_run(tmp_db)
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        ym = conn.execute("SELECT year_month FROM payroll_runs WHERE id=?",
+                          (rid,)).fetchone()['year_month']
+        src = conn.execute(
+            """SELECT pi.id FROM payroll_items pi JOIN payroll_runs pr ON pr.id=pi.run_id
+                WHERE pi.employee_id=? AND pr.status='finalized' AND pr.year_month < ?
+                ORDER BY pr.year_month DESC LIMIT 1""", (eid, ym)).fetchone()
+        assert src is not None, "control: the fixture must really have a finalized source"
+        # Source moves after the run was generated -> this run's carried_in is stale.
+        conn.execute("UPDATE payroll_items SET carried_out = carried_out + 777 WHERE id=?",
+                     (src['id'],))
+        conn.commit()
+    finally:
+        conn.close()
+
+    resp = admin_client.post(f'/hr/payroll/{rid}/finalize',
+                             data={'confirm_carry': '1'}, follow_redirects=True)
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    status = sqlite3.connect(tmp_db).execute(
+        "SELECT status FROM payroll_runs WHERE id=?", (rid,)).fetchone()[0]
+    assert status == 'draft', "a stale carry must NOT finalize, even with confirm_carry"
+    assert 'ยอดยกยอดมาในสลิปไม่ตรงกับรอบก่อนแล้ว' in html, \
+        "the operator must see the specific stale-carry message"
+    assert 'ไม่สามารถ finalize:' not in html, \
+        "must NOT fall through to the generic crash-shaped handler"

@@ -747,6 +747,12 @@ def payroll_finalize(run_id: int):
         # normal operator never reaches this branch — same shape as the
         # RosterDriftWarning catch in payroll_reopen below.
         flash(f"{w} — ติ๊กยืนยันแล้วกด Finalize อีกครั้ง", "warning")
+    except hr_mod.StaleCarryInError as w:
+        # Deliberate refusal, NOT a crash — caught explicitly so it does not
+        # fall into the generic handler below and read as an unexpected error.
+        # Unlike CarryForwardWarning there is no confirm to offer: a stale
+        # carried_in can only be corrected by regenerating the run.
+        flash(str(w), "danger")
     except Exception as e:
         flash(f"ไม่สามารถ finalize: {e}", "danger")
     return redirect(url_for("hr.payroll_detail", run_id=run_id))
