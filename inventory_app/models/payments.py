@@ -3,6 +3,8 @@
 docstring for the overall file-split rationale. No behavior changes.
 """
 
+import math
+
 from database import get_connection
 from cashflow import BSN_AR_PREDICATE
 
@@ -590,18 +592,145 @@ def get_ar_reconciliation():
             'diff_total': round(led_total - snap_total, 2)}
 
 
-def find_payment_candidates(amount, tolerance_pct=5):
-    """คาดคะเนลูกค้าที่น่าจะโอนเงิน amount บาท
-    ลองทุก subset ของบิลที่ค้างชำระของแต่ละลูกค้า
-    คืนค่า list of dict เรียงตาม abs(diff) ASC
+# Default ± window in baht for "is this the same money". Replaces the old
+# `max(amount * 5%, 200)`, whose ฿200 FLOOR made every small search meaningless
+# (a ฿7.77 query returned candidates). ฿20 covers keying/rounding slack; the
+# page lets Put widen it per search.
+MATCH_TOLERANCE_BAHT = 20.0
+
+# Which SHAPES of payment are searched. Not every subset: with 61 outstanding
+# bills a subset sums to almost any amount by coincidence, and an "exact match"
+# built from 9 unrelated invoices is worse than no answer — it looks like
+# evidence. Measured on the real book (2026-08-31): searching ฿1,440 with a
+# full subset-sum produced a 9-bill exact hit for หน้าร้านS and a 10-bill one
+# for หน้าร้านL, next to the single invoice that genuinely is ฿1,440.
+#
+# So: any combination of up to _MAX_BILLS_PER_MATCH invoices (how a transfer is
+# normally composed), PLUS the date-ordered prefixes — "paid everything" and
+# "paid everything up to <date>", which is how a statement settlement looks.
+_MAX_BILLS_PER_MATCH = 4
+
+# Distinct matching subsets counted per customer before giving up — a bound on
+# how much ambiguity is COUNTED, never a truncation of the search for the
+# simplest answer (see `_combinations_of_size`). The count is
+# reported (`match_count`) precisely so ambiguity is visible: 1 way to reach the
+# amount is evidence, 200 ways is noise, and the page must not present them the
+# same. Reaching the cap already means "noise", so the exact number stops
+# mattering there.
+MATCH_COUNT_CAP = 200
+
+# Walk steps one customer may spend before the search stops deepening (~0.25s of
+# the request each, measured at 6.6M steps/s). Shapes are searched cheapest
+# first, so exhausting this costs the widest combinations, never the one- or
+# two-invoice answers. Without it a single 300-bill customer takes 52s on its
+# own and the request dies at gunicorn's 60s limit with no flash and no
+# traceback — see `_combinations_of_size`.
+_SEARCH_NODE_BUDGET = 1_500_000
+
+
+def _combinations_of_size(satang, lo, hi, size, limit, node_budget):
+    """Index tuples of EXACTLY `size` bills summing into [lo, hi].
+
+    Returns (found, nodes_spent). `node_budget` bounds the walk itself: cost is
+    C(n, size) once the target is large enough that nothing prunes, measured at
+    9.8s for 200 bills and 51.9s for 300 — one customer alone past gunicorn's
+    60-second budget. The budget is spent cheapest-shape-first by the caller, so
+    a book too big to search exhaustively still yields its single-invoice and
+    two-invoice answers, which are the ones worth having.
+
+    Amounts are walked in ascending order so the loop can `break` the moment a
+    partial sum overshoots — every later bill is bigger. That prune is what
+    keeps 61 bills cheap without a size heuristic.
+
+    Exactly-`size` rather than up-to-`size` so the caller can deepen one step at
+    a time: the cheapest-first walk otherwise burns the whole match budget on
+    four-bill coincidences before it ever reaches the single large invoice that
+    IS the amount (real case: หน้าร้านL / IV6901291 / ฿1,440).
     """
-    from itertools import combinations
+    order = sorted(range(len(satang)), key=lambda i: (satang[i], i))
+    n = len(order)
+    found, chosen = [], []
+    spent = [0]
+
+    def walk(start, total):
+        need = size - len(chosen)
+        if need == 0:
+            if lo <= total <= hi:
+                found.append(tuple(chosen))
+                return len(found) >= limit
+            return False
+        for pos in range(start, n - need + 1):
+            spent[0] += 1
+            if spent[0] > node_budget:
+                return True
+            i = order[pos]
+            if total + satang[i] > hi:
+                break
+            chosen.append(i)
+            stop = walk(pos + 1, total + satang[i])
+            chosen.pop()
+            if stop:
+                return True
+        return False
+
+    walk(0, 0)
+    return found, spent[0]
+
+
+def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
+                            max_results=20, per_customer=3):
+    """"ยอดที่โอนเข้ามานี้ เป็นของบิลไหน" — customers whose outstanding invoices
+    can add up to `amount` (± `tolerance` baht).
+
+    EVERY customer is searched, including the handful with large books. The
+    predecessor compared customers past 15 bills on their grand total alone,
+    which silenced exactly the three who transfer money most often (61 / 41 / 24
+    outstanding bills on 2026-08-31) — a ฿1,440 search could not surface
+    IV6901291 even though that single bill is exactly ฿1,440.
+
+    Each row carries `match_count`: how many different bill combinations reach
+    the amount for that customer. One way is a finding; two hundred ways is a
+    coincidence, and rows are ranked so the unambiguous customer wins a tie on
+    exactness. See `_MAX_BILLS_PER_MATCH` for which shapes are searched at all.
+
+    Outstanding = Sendy's LEDGER view (sales_transactions minus active
+    paid_invoices), NOT the Express AR snapshot that the rest of /ar treats as
+    the source of truth. The two can disagree; the page says so.
+
+    Documents the accountant has written off are dropped regardless of source —
+    incoming cash cannot belong to a receivable that was retired. The whole
+    `ar_writeoffs` table, NOT `sales_filters`\' `excludes_revenue = 1` subset:
+    that flag answers "is this revenue", and 2 of the 5 write-offs in the book
+    on 2026-08-31 carry it as 0 while being just as uncollectable. Before this
+    clause the population held ฿175,113.39 of them, and searching ฿95,704.35
+    named the วรสวัสดิ์ giveaway IV6900401 as the owner of the transfer.
+
+    ⚠ Same NULL hazard cashflow.py:71 documents for its own subquery:
+    `ar_writeoffs.doc_no` must stay NOT NULL (migration 095). One NULL makes
+    `NOT IN (...)` evaluate to NULL for every row and this returns nothing at
+    all — silently, with no error.
+
+    Row shape is the page's contract: customer, customer_code, matched_bills
+    [{doc_base, vat_type}], matched_sum, diff (matched − amount), match_count,
+    total_unpaid_bills, total_outstanding.
+    """
+    if amount is None or not math.isfinite(amount) or amount <= 0:
+        return []
+    if not math.isfinite(tolerance) or tolerance < 0:
+        tolerance = MATCH_TOLERANCE_BAHT      # 'inf' reached round(inf * 100)
+
+    # Satang integers from here down. A float compare of "does this subset equal
+    # the transfer" fails on IEEE-754 noise, and these amounts are built by
+    # multiplying by 1.07.
+    target = round(amount * 100)
+    tol = max(0, round(tolerance * 100))
+    lo, hi = target - tol, target + tol
 
     conn = get_connection()
-    # ดึงบิลค้างชำระทั้งหมดแยกรายบิล (รวม vat_type ที่พบมากที่สุดในบิล)
     bill_rows = conn.execute(f"""
         WITH {_ACTIVE_PAID_DOCS_CTE}
         SELECT st.customer, st.customer_code, st.doc_base,
+               MIN(st.date_iso) AS bill_date,
                SUM(CASE WHEN st.vat_type=2 THEN st.net*1.07 ELSE st.net END) AS bill_net,
                MAX(st.vat_type) AS vat_type
         FROM sales_transactions st
@@ -609,62 +738,86 @@ def find_payment_candidates(amount, tolerance_pct=5):
         WHERE st.doc_base IS NOT NULL
           AND st.doc_base NOT LIKE 'SR%' AND st.doc_base NOT LIKE 'HS%'
           AND apd.doc_no IS NULL
+          AND st.doc_base NOT IN (SELECT doc_no FROM ar_writeoffs)
         GROUP BY st.customer, st.customer_code, st.doc_base
         HAVING bill_net > 0
-        ORDER BY st.customer, st.doc_base
+        ORDER BY st.customer, bill_date, st.doc_base
     """).fetchall()
     conn.close()
 
-    # จัดกลุ่มตามลูกค้า
     customers = {}
     for r in bill_rows:
-        key = r['customer']
-        if key not in customers:
-            customers[key] = {'customer_code': r['customer_code'], 'bills': []}
-        customers[key]['bills'].append({'doc_base': r['doc_base'], 'net': r['bill_net'], 'vat_type': r['vat_type']})
+        c = customers.setdefault(r['customer'],
+                                 {'customer_code': r['customer_code'], 'bills': []})
+        c['bills'].append({'doc_base': r['doc_base'],
+                           'satang': round(r['bill_net'] * 100),
+                           'vat_type': r['vat_type']})
 
-    tolerance = max(amount * tolerance_pct / 100, 200)
     results = []
-
     for customer, data in customers.items():
-        bills = data['bills']
-        if len(bills) > 15:
-            # ถ้าบิลเยอะเกินไป ตรวจแค่ยอดรวมทั้งหมด
-            total = sum(b['net'] for b in bills)
-            if abs(total - amount) <= tolerance:
-                results.append({
-                    'customer': customer,
-                    'customer_code': data['customer_code'],
-                    'matched_bills': [{'doc_base': b['doc_base'], 'vat_type': b['vat_type']} for b in bills],
-                    'matched_sum': total,
-                    'diff': total - amount,
-                    'total_unpaid_bills': len(bills),
-                    'total_outstanding': total,
-                })
+        bills = data['bills']                       # date order — prefixes below rely on it
+        total_s = sum(b['satang'] for b in bills)
+        if total_s < lo:
+            continue                                # no combination can reach the transfer
+
+        # A bill bigger than the top of the window cannot sit in any matching
+        # combination; dropping it only shrinks the walk.
+        usable = [i for i, b in enumerate(bills) if b['satang'] <= hi]
+        usable_satang = [bills[i]['satang'] for i in usable]
+        subsets = {}
+        # Simplest shapes first. Stopping only BETWEEN depths is what keeps a
+        # one-invoice answer reachable no matter how many coincidences exist at
+        # the depth below it.
+        nodes_left = _SEARCH_NODE_BUDGET
+        for size in range(1, _MAX_BILLS_PER_MATCH + 1):
+            budget = MATCH_COUNT_CAP - len(subsets)
+            if budget <= 0:
+                break        # already ambiguous — deeper combinations add only noise
+            if nodes_left <= 0:
+                break        # book too large to search this deep — see the budget
+            combos, spent = _combinations_of_size(usable_satang, lo, hi, size,
+                                                  budget, nodes_left)
+            nodes_left -= spent
+            for combo in combos:
+                subsets[frozenset(usable[p] for p in combo)] = None
+
+        # "จ่ายยกยอด" / "จ่ายถึงบิลวันที่ ..." — shapes a real settlement takes
+        # that are wider than _MAX_BILLS_PER_MATCH. The last prefix is the whole
+        # book, so the grand total is covered here too.
+        run = 0
+        for k, b in enumerate(bills):
+            run += b['satang']
+            if run > hi:
+                break
+            if run >= lo:
+                subsets[frozenset(range(k + 1))] = None
+
+        if not subsets:
             continue
+        picks = sorted(subsets,
+                       key=lambda idx: (abs(sum(bills[i]['satang'] for i in idx) - target),
+                                        len(idx), sorted(idx)))
+        for idx in picks[:per_customer]:
+            matched = [bills[i] for i in sorted(idx)]
+            matched_s = sum(b['satang'] for b in matched)
+            results.append({
+                'customer': customer,
+                'customer_code': data['customer_code'],
+                'matched_bills': [{'doc_base': b['doc_base'], 'vat_type': b['vat_type']}
+                                  for b in matched],
+                'matched_sum': round(matched_s / 100, 2),
+                'diff': round((matched_s - target) / 100, 2),
+                'match_count': len(subsets),
+                'total_unpaid_bills': len(bills),
+                'total_outstanding': round(total_s / 100, 2),
+            })
 
-        best_per_customer = []
-        for r in range(1, len(bills) + 1):
-            for combo in combinations(bills, r):
-                combo_sum = sum(b['net'] for b in combo)
-                diff = combo_sum - amount
-                if abs(diff) <= tolerance:
-                    best_per_customer.append({
-                        'customer': customer,
-                        'customer_code': data['customer_code'],
-                        'matched_bills': [{'doc_base': b['doc_base'], 'vat_type': b['vat_type']} for b in combo],
-                        'matched_sum': combo_sum,
-                        'diff': diff,
-                        'total_unpaid_bills': len(bills),
-                        'total_outstanding': sum(b['net'] for b in bills),
-                    })
-
-        # เก็บแค่ 3 combo ที่ใกล้ที่สุดต่อลูกค้า
-        best_per_customer.sort(key=lambda x: abs(x['diff']))
-        results.extend(best_per_customer[:3])
-
-    results.sort(key=lambda x: abs(x['diff']))
-    return results[:20]
+    # Exactness first, then how UNAMBIGUOUS the customer is, then the simplest
+    # combination. Without match_count here, a 200-way coincidence sorts level
+    # with the single invoice that actually is the amount.
+    results.sort(key=lambda x: (abs(round(x['diff'] * 100)), x['match_count'],
+                                len(x['matched_bills']), x['customer']))
+    return results[:max_results]
 
 
 def _unpaid_bills(match_sql, match_params):

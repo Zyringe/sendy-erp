@@ -366,6 +366,43 @@ def ar_dashboard():
             date_from=date_from, date_to=date_to,
             page=page, total_pages=total_pages,
         )
+    elif tab == 'match':
+        # "ยอดที่โอนเข้ามานี้ เป็นของบิลไหน" — restored here after PR #169
+        # consolidated /payment-status/customers onto /ar and dropped its
+        # matcher instead of moving it. Read-only; ledger-derived outstanding,
+        # NOT the Express snapshot the other tabs serve (the block says so).
+        amount_raw = (request.args.get('amount') or '').strip().replace(',', '')
+        tol_raw    = (request.args.get('tol') or '').strip().replace(',', '')
+        match_amount, match_tol = None, models.MATCH_TOLERANCE_BAHT
+        # float() happily returns inf for 'inf' / '1e400', and inf reached
+        # round(inf * 100) inside the matcher — a plain 500 with OverflowError,
+        # reachable by typing "inf" in the box. Reject non-finite here.
+        if amount_raw:
+            try:
+                parsed = float(amount_raw)
+            except ValueError:
+                parsed = None
+            if parsed is None or not math.isfinite(parsed):
+                flash('ยอดเงินที่ค้นหาต้องเป็นตัวเลข', 'warning')
+            else:
+                match_amount = parsed
+        if tol_raw:
+            try:
+                parsed_tol = float(tol_raw)
+            except ValueError:
+                parsed_tol = None
+            if parsed_tol is None or not math.isfinite(parsed_tol):
+                flash('ส่วนต่างที่ยอมรับต้องเป็นตัวเลข — ใช้ค่าเริ่มต้นแทน', 'warning')
+            else:
+                match_tol = max(0.0, parsed_tol)
+        ctx.update(
+            match_amount=match_amount,
+            match_tol=match_tol,
+            match_cap=models.MATCH_COUNT_CAP,
+            candidates=(models.find_payment_candidates(match_amount, tolerance=match_tol)
+                        if match_amount and match_amount > 0 else None),
+        )
+
     elif tab == 'reconcile':
         rec = models.get_ar_reconciliation()
         ctx['reconcile'] = rec
