@@ -262,7 +262,7 @@ def test_target_days_for_default_when_crm_has_none(mig103_conn):
 EXPECTED_KEYS = {
     'customer_code', 'name', 'province', 'region',
     'last_buy', 'spend', 'call_status', 'call_days',
-    'last_called', 'badges',
+    'last_called', 'phone', 'badges',
 }
 EXPECTED_BADGE_KEYS = {'ar', 'quiet', 'special'}
 
@@ -820,3 +820,71 @@ def test_pre_epoch_bill_is_shown_flagged_stale_not_blanked():
     p2 = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
     assert p2['customer_latest'] == 70
     assert p2['customer_latest_is_stale'] is False
+
+
+# ── quiet filter + phone column (feat/call-quiet-filter) ─────────────────────
+# `quiet` is already COMPUTED as a badge (days_since_buy > 180) but there was no
+# way to filter on it, so a calling session had to eyeball the badge column.
+
+def _seed(conn, code, name, days_ago_list, phone=None, net=1000):
+    conn.execute("INSERT INTO customers(code, name, address, phone) VALUES (?,?,?,?)",
+                 (code, name, 'กรุงเทพมหานคร', phone))
+    for i, d in enumerate(days_ago_list):
+        day = (dt.date.today() - dt.timedelta(days=d)).isoformat()
+        conn.execute(
+            "INSERT INTO sales_transactions(date_iso, doc_no, customer, customer_code, "
+            "qty, unit, unit_price, vat_type, net, product_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (day, f'IV-{code}-{i}', name, code, 1, 'ตัว', net, 0, net, 1))
+    conn.commit()
+
+
+def test_quiet_filter_returns_only_customers_quiet_over_180_days(mig103_conn):
+    conn = mig103_conn
+    _seed(conn, 'Q001', 'ร้านเงียบ', [200])
+    _seed(conn, 'A001', 'ร้านยังซื้อ', [30])
+
+    # CONTROL: both are present when the filter is off — proves the seed reaches
+    # get_call_list at all, so an empty filtered result means the filter worked
+    # rather than that nothing was there.
+    unfiltered = {r['customer_code'] for r in cc.get_call_list(conn)}
+    assert {'Q001', 'A001'} <= unfiltered
+
+    quiet = {r['customer_code'] for r in cc.get_call_list(conn, quiet=True)}
+    assert quiet == {'Q001'}
+
+
+def test_quiet_filter_widens_a_spend_window_shorter_than_the_quiet_threshold(mig103_conn):
+    """A quiet customer has no purchase inside a 6-month window by definition, so
+    quiet + spend_window=6m would rank every row at ฿0. Measured on prod
+    2026-08-31: 109 of 113 quiet rows showed ฿0 under 6m."""
+    conn = mig103_conn
+    _seed(conn, 'Q002', 'ร้านเงียบสอง', [200], net=5000)
+
+    # CONTROL: without the quiet filter, 6m genuinely shows 0 — that is correct
+    # behaviour for the window and must not change.
+    plain = [r for r in cc.get_call_list(conn, spend_window='6m') if r['customer_code'] == 'Q002']
+    assert plain and plain[0]['spend'] == 0
+
+    row = [r for r in cc.get_call_list(conn, quiet=True, spend_window='6m')
+           if r['customer_code'] == 'Q002']
+    assert row, "quiet filter dropped the quiet customer"
+    assert row[0]['spend'] == 5000
+
+
+def test_quiet_filter_does_not_shrink_a_window_that_is_already_long(mig103_conn):
+    conn = mig103_conn
+    _seed(conn, 'Q003', 'ร้านเงียบสาม', [200, 500], net=1000)   # 500d only inside 2y
+
+    row = [r for r in cc.get_call_list(conn, quiet=True, spend_window='2y')
+           if r['customer_code'] == 'Q003']
+    assert row
+    assert row[0]['spend'] == 2000, "2y window was narrowed — the 500-day purchase was dropped"
+
+
+def test_call_list_row_carries_the_customer_phone(mig103_conn):
+    conn = mig103_conn
+    _seed(conn, 'P001', 'ร้านมีเบอร์', [10], phone='053-115732,089-4317234')
+
+    row = [r for r in cc.get_call_list(conn) if r['customer_code'] == 'P001']
+    assert row
+    assert row[0]['phone'] == '053-115732,089-4317234'
