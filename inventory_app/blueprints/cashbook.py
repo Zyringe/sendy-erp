@@ -520,6 +520,22 @@ def advance_history(employee_id):
             (employee_id, month),
         ).fetchone()
         net_pay = net_row["np"] if net_row["n"] else None
+
+        # Advance cap warning (plan.md P2 step 2): the SAME collectable_this_
+        # month ceiling the server-side guard checks against, surfaced here
+        # so the "ดูประวัติ" modal can show a yellow/red advisory before
+        # submit. Advisory ONLY — this JSON read is on a separate, already-
+        # closed connection by the time the form is submitted, so it can be
+        # stale; the real guard is the server-side check in new_transaction.
+        cfg = hr_mod._load_config(conn)
+        cap_status = hr_mod.collectable_this_month(conn, employee_id, month, cfg=cfg)
+        target_finalized = conn.execute(
+            """SELECT 1 FROM payroll_runs
+                WHERE year_month=? AND company_id=(SELECT company_id FROM employees WHERE id=?)
+                  AND status='finalized'
+                LIMIT 1""",
+            (month, employee_id),
+        ).fetchone() is not None
     finally:
         conn.close()
     return jsonify(
@@ -529,6 +545,13 @@ def advance_history(employee_id):
         month_total=month_total,
         outstanding_total=outstanding_total,
         net_pay=net_pay,
+        salary_rate=cap_status["salary_rate"] if cap_status else None,
+        base_amount=cap_status["base_amount"] if cap_status else None,
+        warn_pct=cfg["advance_warn_pct"],
+        month_advance_total=month_total,
+        collectable=cap_status["collectable"] if cap_status else None,
+        target_month=month,
+        target_month_finalized=target_finalized,
     )
 
 

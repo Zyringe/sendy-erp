@@ -61,3 +61,79 @@ def test_advance_history_month_outstanding_and_netpay(migrated_db):
 
 def test_advance_history_unknown_employee_404(migrated_db):
     assert _client().get("/cashbook/advance-history/999999?month=2099-07").status_code == 404
+
+
+# ── plan.md P2 step 2: the advance-cap fields (advisory bar) ───────────────
+
+def test_advance_history_adds_cap_fields_keeps_existing_keys(migrated_db):
+    """New fields land ALONGSIDE the pre-existing ones (net_pay etc.) — other
+    callers still read those, per plan.md step 2 ('Keep every existing key')."""
+    conn = sqlite3.connect(migrated_db)
+    conn.row_factory = sqlite3.Row
+    emp = conn.execute(
+        "SELECT id FROM employees WHERE is_active=1 AND company_id IS NOT NULL LIMIT 1"
+    ).fetchone()["id"]
+    conn.close()
+
+    resp = _client().get(f"/cashbook/advance-history/{emp}?month=2099-08")
+    assert resp.status_code == 200
+    data = resp.get_json()
+
+    # pre-existing keys still present (regression guard)
+    for key in ("employee", "month", "advances", "month_total",
+               "outstanding_total", "net_pay"):
+        assert key in data, f"pre-existing key {key} must survive"
+
+    # new keys (plan.md step 2)
+    for key in ("salary_rate", "base_amount", "warn_pct", "month_advance_total",
+               "collectable", "target_month", "target_month_finalized"):
+        assert key in data, f"new field {key} missing"
+    assert data["month_advance_total"] == data["month_total"], (
+        "same figure under the plan.md-named key")
+    assert data["target_month"] == "2099-08"
+    assert data["target_month_finalized"] is False
+    assert data["collectable"] is not None and data["collectable"] > 0
+    assert data["warn_pct"] == 0.5
+
+
+def test_advance_history_target_month_finalized_true_when_run_closed(migrated_db):
+    conn = sqlite3.connect(migrated_db)
+    conn.row_factory = sqlite3.Row
+    emp = conn.execute(
+        "SELECT id, company_id FROM employees WHERE is_active=1 AND company_id IS NOT NULL LIMIT 1"
+    ).fetchone()
+    conn.execute(
+        "INSERT INTO payroll_runs (year_month, company_id, status) VALUES ('2099-09', ?, 'finalized')",
+        (emp["company_id"],),
+    )
+    conn.commit()
+    conn.close()
+
+    resp = _client().get(f"/cashbook/advance-history/{emp['id']}?month=2099-09")
+    data = resp.get_json()
+    assert data["target_month_finalized"] is True
+
+
+def test_advance_history_collectable_is_lower_with_carried_in(migrated_db):
+    """Sanity check that collectable is computed via hr.collectable_this_month
+    (shares the carry source with the payslip), not hardcoded."""
+    conn = sqlite3.connect(migrated_db)
+    conn.row_factory = sqlite3.Row
+    emp = conn.execute(
+        "SELECT id, company_id FROM employees WHERE is_active=1 AND company_id IS NOT NULL LIMIT 1"
+    ).fetchone()
+    run_id = conn.execute(
+        "INSERT INTO payroll_runs (year_month, company_id, status) VALUES ('2099-10', ?, 'finalized')",
+        (emp["company_id"],),
+    ).lastrowid
+    conn.execute(
+        "INSERT INTO payroll_items (run_id, employee_id, carried_out) VALUES (?,?,950)",
+        (run_id, emp["id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    no_carry = _client().get(f"/cashbook/advance-history/{emp['id']}?month=2099-10").get_json()
+    with_carry = _client().get(f"/cashbook/advance-history/{emp['id']}?month=2099-11").get_json()
+    assert with_carry["collectable"] < no_carry["collectable"]
+    assert with_carry["collectable"] == pytest.approx(no_carry["collectable"] - 950, abs=0.01)
