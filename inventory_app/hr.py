@@ -800,6 +800,28 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
     ).fetchone()
     salary_advance_deduction = round(sa_row["amt"] or 0.0, 2)
 
+    # carry-forward (ยกยอด) — ยอดที่รอบก่อนเก็บไม่ได้ (carried_out) ของ
+    # FINALIZED run ล่าสุดของพนักงานคนนี้ ก่อนเดือนนี้ กลายเป็น carried_in ของ
+    # เดือนนี้. Ordered by year_month (a sortable 'YYYY-MM' string), NOT by
+    # run id — run ids are not chronological (prod: run 3 = 2026-05, run 4 =
+    # 2026-04). Only a FINALIZED run counts: a draft can still change, and
+    # "finalized in chronological order" is the invariant that keeps a debt
+    # from being collected twice (see plan.md P1d) — a run existing but not
+    # yet finalized for a month between the source and this one would break
+    # that invariant, but REFUSING for that case is P1d's job, not P1a's.
+    carry_row = c.execute(
+        """SELECT pi.carried_out AS carried_out
+             FROM payroll_items pi
+             JOIN payroll_runs pr ON pr.id = pi.run_id
+            WHERE pi.employee_id = ?
+              AND pr.status = 'finalized'
+              AND pr.year_month < ?
+            ORDER BY pr.year_month DESC
+            LIMIT 1""",
+        (emp["id"], year_month),
+    ).fetchone()
+    carried_in = round(float(carry_row["carried_out"]), 2) if carry_row else 0.0
+
     note = "; ".join(unpaid_notes) if unpaid_notes else None
 
     return {
@@ -821,16 +843,26 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
         "sso_employee": sso_emp,
         "sso_employer": sso_empr,
         "commission_amount": commission_amount,
+        "carried_in": carried_in,
+        "carried_out": 0.0,  # recomputed by _recompute_totals
         "note": note,
     }
 
 
 def _recompute_totals(d: dict) -> dict:
-    """Compute gross + net_pay from a payroll_items dict in place.
+    """Compute gross + net_pay (+ carried_out) from a payroll_items dict in
+    place.
 
     gross = base + (diligence if kept) + bonus + other_additions
-    net   = gross - unpaid_leave_deduction - sso_employee - other_deductions
-            - wht_amount - salary_advance_deduction
+    net_before_carry = gross - unpaid_leave_deduction - sso_employee
+                        - other_deductions - wht_amount
+                        - salary_advance_deduction - carried_in
+
+    ⚠ net_pay is CLAMPED at 0, never negative — this is the carry-forward
+    behaviour change (plan.md "The arithmetic"): when net_before_carry < 0,
+    the uncollectible remainder becomes carried_out (what next month's
+    carried_in will read, via _build_item) and net_pay is 0, not negative.
+    Otherwise carried_out is 0 and net_pay is net_before_carry unchanged.
     """
     diligence = 0.0
     if not d["diligence_forfeited"]:
@@ -842,17 +874,25 @@ def _recompute_totals(d: dict) -> dict:
         + float(d["other_additions"] or 0),
         2,
     )
-    net = round(
+    net_before_carry = round(
         gross
         - float(d["unpaid_leave_deduction"] or 0)
         - float(d["sso_employee"] or 0)
         - float(d["other_deductions"] or 0)
         - float(d.get("wht_amount", 0) or 0)
-        - float(d.get("salary_advance_deduction", 0) or 0),
+        - float(d.get("salary_advance_deduction", 0) or 0)
+        - float(d.get("carried_in", 0) or 0),
         2,
     )
+    if net_before_carry < 0:
+        carried_out = round(-net_before_carry, 2)
+        net = 0.0
+    else:
+        carried_out = 0.0
+        net = net_before_carry
     d["gross"] = gross
     d["net_pay"] = net
+    d["carried_out"] = carried_out
     return d
 
 
@@ -1256,8 +1296,9 @@ def generate_run(year_month: str, company_id: int, created_by: int,
                       other_deductions_note, wht_amount,
                       salary_advance_deduction,
                       sso_employee, sso_employer,
-                      commission_amount, gross, net_pay, note)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      commission_amount, carried_in, carried_out,
+                      gross, net_pay, note)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (run_id, d["employee_id"], d["salary_rate"], d["base_amount"],
                  d["unpaid_leave_days"], d["unpaid_leave_deduction"],
                  d["diligence_allowance"], d["diligence_forfeited"],
@@ -1266,7 +1307,8 @@ def generate_run(year_month: str, company_id: int, created_by: int,
                  d["other_deductions"], d["other_deductions_note"],
                  d["wht_amount"], d["salary_advance_deduction"],
                  d["sso_employee"], d["sso_employer"],
-                 d["commission_amount"], d["gross"], d["net_pay"], d["note"]),
+                 d["commission_amount"], d["carried_in"], d["carried_out"],
+                 d["gross"], d["net_pay"], d["note"]),
             )
         # Reconcile orphaned advance stamps. Scenario: run was finalized
         # (advances stamped to this run), then reopened, then regenerated
@@ -1371,12 +1413,14 @@ def update_payroll_item(item_id: int,
                       other_deductions = ?, other_deductions_note = ?,
                       wht_amount = ?,
                       diligence_forfeited = ?, diligence_forfeit_reason = ?,
+                      carried_out = ?,
                       gross = ?, net_pay = ?
                 WHERE id = ?""",
             (d["bonus"], d["other_additions"], d["other_additions_note"],
              d["other_deductions"], d["other_deductions_note"],
              d["wht_amount"],
              d["diligence_forfeited"], d["diligence_forfeit_reason"],
+             d["carried_out"],
              d["gross"], d["net_pay"], item_id),
         )
         c.commit()

@@ -193,7 +193,16 @@ def test_unpaid_deduction_never_exceeds_the_month_base(tmp_db_conn):
 def test_long_maternity_month_does_not_deduct_more_than_base(tmp_db_conn):
     """The same clamp on the path the maternity cap newly reaches: a calendar
     month falling wholly past the 45 paid days is a zero-wage month, not a
-    negative-wage one."""
+    negative-wage one.
+
+    ⚠ UPDATED for payroll carry-forward (P1a, migration 178): net_pay can no
+    longer go negative — _recompute_totals clamps ANY negative
+    net_before_carry to 0, not only ones driven by carried_in. SSO is still
+    charged on a zero-wage month (still the same open policy question with
+    Put's accountant), but the shortfall it creates now carries forward as
+    carried_out instead of surfacing as a negative net_pay — which is
+    actually the resolution to that policy question, not a new gap: the SSO
+    charge is no longer silently unaccounted for either way."""
     eid = _mk_employee(tmp_db_conn, 'T_CLAMP2', 'long maternity', '2024-01-01',
                        monthly_salary=15000.0)
     _add_leave(tmp_db_conn, eid, 'MATERNITY', '2026-11-15', '2027-02-20', 98)
@@ -202,9 +211,8 @@ def test_long_maternity_month_does_not_deduct_more_than_base(tmp_db_conn):
 
     assert it['unpaid_leave_days'] == 31
     assert it['unpaid_leave_deduction'] == it['base_amount'] == 15000.00
-    # SSO is still charged (a separate policy question raised with Put's
-    # accountant), so net is -sso rather than 0 — but never worse than that.
-    assert it['net_pay'] == -it['sso_employee']
+    assert it['net_pay'] == 0.0
+    assert it['carried_out'] == it['sso_employee'] == 750.0
 
 
 def test_floored_annual_entitlement_deducts_the_excess(tmp_db_conn_hr_clean):
