@@ -372,3 +372,58 @@ def test_snapshot_staleness_banner_is_not_shown_on_the_match_tab(seeded):
 def test_the_searched_amount_is_echoed_cleanly(seeded):
     body = _admin().get('/ar?tab=match&amount=1440').data.decode()
     assert 'value="1440"' in body and 'value="1440.0"' not in body
+
+
+# ── /scrutinize round 2, 2026-08-31: written-off bills ───────────────────────
+
+def _write_off(db_path, doc_no, amount, excludes_revenue=1):
+    conn = sqlite3.connect(db_path)
+    conn.execute("""INSERT INTO ar_writeoffs
+                      (doc_no, customer_name, amount, type, writeoff_date, excludes_revenue)
+                    VALUES (?, 'ทดสอบ ฮาร์ดแวร์', ?, 'expense', '2026-01-15', ?)""",
+                 (doc_no, amount, excludes_revenue))
+    conn.commit()
+    conn.close()
+
+
+def test_a_written_off_bill_is_never_proposed_as_the_owner_of_a_transfer(seeded):
+    """The accountant has retired the document; incoming cash cannot belong to
+    it. Measured on the real book before the fix: the matcher's population held
+    5 write-offs worth ฿175,113.39, including the three วรสวัสดิ์ giveaway
+    invoices (IV6900401/402/403 = ฿164,911.39) — and searching ฿95,704.35
+    returned IV6900401 as the answer."""
+    # CONTROL: it IS proposed while it is a live receivable.
+    assert models.find_payment_candidates(1000.0, tolerance=0)
+
+    _write_off(seeded, 'IV001', 1000.0)
+    assert models.find_payment_candidates(1000.0, tolerance=0) == []
+    # CONTROL: the neighbouring bill of the same customer still answers.
+    assert [b['doc_base'] for b in
+            models.find_payment_candidates(2500.0, tolerance=0)[0]['matched_bills']] == ['IV002']
+
+
+def test_write_offs_are_excluded_by_AR_rules_not_revenue_rules(seeded):
+    """`sales_filters` excludes only `excludes_revenue = 1` — that is the
+    REVENUE population. Collectability is the whole table: 2 of the 5 real
+    write-offs carry the flag as 0 and are still not chaseable."""
+    _write_off(seeded, 'IV001', 1000.0, excludes_revenue=0)
+    assert models.find_payment_candidates(1000.0, tolerance=0) == []
+
+
+def test_a_customers_total_drops_the_written_off_bills_too(seeded):
+    """Not just the matched combination — the "ยอดค้าง" column beside it. On the
+    real book วรสวัสดิ์ read ฿223,045.03 / 24 bills here against ฿6,393.68 /
+    2 bills one tab away."""
+    before = models.find_payment_candidates(2500.0, tolerance=0)[0]
+    assert before['total_outstanding'] == pytest.approx(3840.25)
+    _write_off(seeded, 'IV001', 1000.0)
+    after = models.find_payment_candidates(2500.0, tolerance=0)[0]
+    assert after['total_outstanding'] == pytest.approx(2840.25)
+    assert after['total_unpaid_bills'] == 2
+
+
+def test_the_ledger_source_is_named_in_the_column_header(seeded):
+    """The other /ar tabs serve the Express snapshot under the same words, and
+    the two figures legitimately differ. Say which one this column is."""
+    body = _admin().get('/ar?tab=match&amount=1000').data.decode()
+    assert 'ยอดค้างตาม ledger' in body

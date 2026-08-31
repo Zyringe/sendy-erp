@@ -697,6 +697,19 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
     paid_invoices), NOT the Express AR snapshot that the rest of /ar treats as
     the source of truth. The two can disagree; the page says so.
 
+    Documents the accountant has written off are dropped regardless of source —
+    incoming cash cannot belong to a receivable that was retired. The whole
+    `ar_writeoffs` table, NOT `sales_filters`\' `excludes_revenue = 1` subset:
+    that flag answers "is this revenue", and 2 of the 5 write-offs in the book
+    on 2026-08-31 carry it as 0 while being just as uncollectable. Before this
+    clause the population held ฿175,113.39 of them, and searching ฿95,704.35
+    named the วรสวัสดิ์ giveaway IV6900401 as the owner of the transfer.
+
+    ⚠ Same NULL hazard cashflow.py:71 documents for its own subquery:
+    `ar_writeoffs.doc_no` must stay NOT NULL (migration 095). One NULL makes
+    `NOT IN (...)` evaluate to NULL for every row and this returns nothing at
+    all — silently, with no error.
+
     Row shape is the page's contract: customer, customer_code, matched_bills
     [{doc_base, vat_type}], matched_sum, diff (matched − amount), match_count,
     total_unpaid_bills, total_outstanding.
@@ -725,6 +738,7 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
         WHERE st.doc_base IS NOT NULL
           AND st.doc_base NOT LIKE 'SR%' AND st.doc_base NOT LIKE 'HS%'
           AND apd.doc_no IS NULL
+          AND st.doc_base NOT IN (SELECT doc_no FROM ar_writeoffs)
         GROUP BY st.customer, st.customer_code, st.doc_base
         HAVING bill_net > 0
         ORDER BY st.customer, bill_date, st.doc_base
