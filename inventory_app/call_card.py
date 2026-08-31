@@ -43,6 +43,20 @@ import customer_geo as geo
 
 DEFAULT_CALL_TARGET_DAYS = 365   # Put's global default (1 ปี); override per customer via CRM
 
+QUIET_AFTER_DAYS = 180   # a customer with no purchase for this long gets the เงียบ badge
+
+
+def effective_spend_window(window, quiet):
+    """The window to actually aggregate spend over.
+
+    A เงียบ customer has not bought for QUIET_AFTER_DAYS, so a 6-month window
+    (183 days) can only ever catch a 3-day sliver of their history and almost
+    every row ranks at ฿0 — measured on prod 2026-08-31: 109 of 113 quiet rows
+    showed ฿0 under '6m'. Sorting by spend then orders nothing. Widen to 1y so
+    the quiet worklist has a meaningful ranking; leave longer windows alone.
+    """
+    return '1y' if quiet and window == '6m' else window
+
 STATUS_LABEL = {
     'recent': 'ยังไม่ถึงกำหนด',
     'due':    'ถึงกำหนดโทร',
@@ -188,7 +202,7 @@ def _spend_cutoff(window):
 # ── get_call_list ─────────────────────────────────────────────────────────────
 
 def get_call_list(conn, *, q=None, region=None, call=None,
-                  spend_window='1y', sort='spend', sp=None):
+                  spend_window='1y', sort='spend', sp=None, quiet=None):
     """Return the call worklist — one dict per active customer.
 
     Parameters
@@ -201,6 +215,9 @@ def get_call_list(conn, *, q=None, region=None, call=None,
                    Does NOT affect which customers appear in the list.
     sort         : 'spend'|'last_buy'|'name'|'call'
     sp           : salesperson code filter
+    quiet        : truthy → only customers with the เงียบ badge (no purchase for
+                   more than QUIET_AFTER_DAYS). Also widens a '6m' spend window —
+                   see effective_spend_window().
 
     Returns
     -------
@@ -217,6 +234,7 @@ def get_call_list(conn, *, q=None, region=None, call=None,
       - customers master join for name/address/salesperson
       - all assembled in Python
     """
+    spend_window = effective_spend_window(spend_window, quiet)
     cutoff = _spend_cutoff(spend_window)
 
     # ── 1. Customer universe: ALL customers with any sales row ────────────────
@@ -228,7 +246,8 @@ def get_call_list(conn, *, q=None, region=None, call=None,
             COALESCE(c.name, st.customer)                            AS name,
             COALESCE(c.address, '')                                   AS address,
             st.customer_code                                          AS raw_code,
-            c.salesperson                                             AS salesperson_code
+            c.salesperson                                             AS salesperson_code,
+            c.phone                                                   AS phone
         FROM (
             SELECT DISTINCT
                 customer,
@@ -252,6 +271,7 @@ def get_call_list(conn, *, q=None, region=None, call=None,
                 'name': row['name'],
                 'address': row['address'],
                 'salesperson_code': row['salesperson_code'],
+                'phone': row['phone'],
             }
 
     # ── 2. Spend aggregate — window-filtered (shows ฿0 for quiet customers) ──
@@ -350,7 +370,11 @@ def get_call_list(conn, *, q=None, region=None, call=None,
         quiet_badge = False
         if last_buy:
             days_since_buy = (dt.date.today() - dt.date.fromisoformat(last_buy)).days
-            quiet_badge = days_since_buy > 180
+            quiet_badge = days_since_buy > QUIET_AFTER_DAYS
+
+        # Apply เงียบ filter
+        if quiet and not quiet_badge:
+            continue
 
         result.append({
             'customer_code': code,
@@ -362,6 +386,7 @@ def get_call_list(conn, *, q=None, region=None, call=None,
             'call_status':   cs,
             'call_days':     call_days,
             'last_called':   last_called[:10] if last_called else None,
+            'phone':         info.get('phone'),
             'badges': {
                 'ar':      False,   # populated cheaply in route via cf_mod.ar_aging when needed
                 'quiet':   quiet_badge,

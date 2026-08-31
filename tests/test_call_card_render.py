@@ -221,3 +221,78 @@ def test_stale_pre_epoch_price_renders_with_its_warning(tmp_db_conn):
     assert bill in row                        # and it names WHEN
     nums = [float(m.replace(',', '')) for m in re.findall(r'฿([\d,]+\.\d{2})', row)]
     assert 73.0 in nums, nums                 # the number itself is still shown
+
+
+# ── เงียบ filter + phone column (feat/call-quiet-filter) ─────────────────────
+# Rendered at the TEMPLATE layer, with no DB: a route test would call
+# get_connection() and create inventory_app/instance/inventory.db inside the
+# worktree, which poisons every later run (conftest resolves LIVE_DB to it).
+# Route wiring is covered by the booted-server check in the PR description.
+
+def _list_ctx(**over):
+    ctx = {
+        'rows': [{
+            'customer_code': 'C001', 'name': 'ร้านทดสอบ', 'province': 'เชียงใหม่',
+            'region': 'เหนือ', 'last_buy': '2026-02-09', 'spend': 105524.0,
+            'call_status': 'never', 'call_days': None, 'last_called': None,
+            'phone': '053-115732,089-4317234',
+            'badges': {'ar': 0, 'quiet': True, 'special': False},
+        }],
+        'regions': ['เหนือ'], 'salespersons': [{'code': '00', 'name': 'บริษัท /00'}],
+        'args': {}, 'spend_window': '1y',
+        'elapsed_th': cc.elapsed_th, 'status_label': cc.STATUS_LABEL,
+    }
+    ctx.update(over)
+    return ctx
+
+
+def _render_list(app, **over):
+    # test_request_context, not app_context: the template calls url_for() and
+    # csrf_token(), both of which need a request.
+    app.config['WTF_CSRF_ENABLED'] = False
+    with app.test_request_context('/call'):
+        return app.jinja_env.get_template('call/list.html').render(**_list_ctx(**over))
+
+
+def test_list_page_offers_a_quiet_filter_control():
+    html = _render_list(_app())
+    # assert on the CONTROL, not the word — 'เงียบ' already appears as a badge label
+    assert 'name="quiet"' in html
+
+
+def test_list_page_shows_the_phone_number():
+    html = _render_list(_app())
+    assert '053-115732,089-4317234' in html
+
+
+def test_quiet_selection_survives_touching_another_filter():
+    """The filter form submits on change and drops any param it does not carry —
+    that is why spend_window has a hidden input. quiet needs the same."""
+    html = _render_list(_app(), args={'quiet': '1'})
+    form = html.split('id="cc-filter-form"', 1)[1].split('</form>', 1)[0]
+    assert 'quiet' in form, "quiet is not carried inside the filter form"
+    assert ('value="1"' in form and 'name="quiet"' in form), \
+        "quiet is in the form but its current value is not preserved"
+
+
+def test_window_selector_shows_the_window_actually_used_not_the_one_asked_for():
+    """quiet widens a 6m window to 1y (effective_spend_window). If the selector
+    still reads '6 เดือน' the page shows 1-year money under a 6-month label."""
+    html = _render_list(_app(), args={'quiet': '1', 'spend_window': '6m'}, spend_window='1y')
+    opts = dict(re.findall(r'<option value="(6m|1y|2y|all)"([^>]*)>', html))
+    assert 'selected' in opts['1y'], "the window actually used (1y) is not the selected option"
+    assert 'selected' not in opts['6m'], "the page still claims 6 เดือน while showing 1y numbers"
+
+
+def test_phone_cell_cannot_widen_the_table_on_a_narrow_screen():
+    """.cc-table-wrap is overflow:hidden with table{width:100%}, so a long
+    unbroken phone string (seen on prod: '02-4178295,01-643-4024 02-4178287,
+    089-2032484') would squeeze every other column instead of scrolling."""
+    html = _render_list(_app())
+    assert 'cc-phone' in html
+    style = html.split('<style', 1)[1].split('</style>', 1)[0]
+    assert '.cc-phone' in style, "the phone cell has no width constraint"
+    rule = style.split('.cc-phone', 1)[1].split('}', 1)[0]
+    # word-break, NOT max-width: a max-width on a <td> is advisory under
+    # table-layout:auto (measured 2026-08-31 — a 150px cap rendered 263px).
+    assert 'word-break' in rule

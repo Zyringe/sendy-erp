@@ -44,14 +44,22 @@ def _ar_badge_map(conn):
 def call_list():
     conn = get_connection()
 
+    quiet = bool(request.args.get('quiet'))
+    # The เงียบ filter widens a 6-month window (see call_card.effective_spend_window).
+    # Resolve it HERE too so the header selector shows the window whose numbers are
+    # actually on screen, instead of the one that was asked for.
+    spend_window = cc.effective_spend_window(
+        request.args.get('spend_window', '1y'), quiet)
+
     rows = cc.get_call_list(
         conn,
         q=request.args.get('q', '').strip() or None,
         region=request.args.get('region', '').strip() or None,
         call=request.args.get('call', '').strip() or None,
-        spend_window=request.args.get('spend_window', '1y'),
+        spend_window=spend_window,
         sort=request.args.get('sort', 'spend'),
         sp=request.args.get('sp', '').strip() or None,
+        quiet=quiet,
     )
 
     # AR badge — ONE call for all rows, then map by customer name
@@ -70,6 +78,7 @@ def call_list():
         regions=REGION_ORDER,
         salespersons=salespersons,
         args=request.args,
+        spend_window=spend_window,
         elapsed_th=cc.elapsed_th,
         status_label=cc.STATUS_LABEL,
     )

@@ -17,6 +17,11 @@
 .cc-table-wrap thead th{text-align:left;font-size:12px;font-weight:600;color:#6b7787;padding:10px 12px;border-bottom:1px solid #e3e8ef;white-space:nowrap}
 .cc-table-wrap thead th.num,.cc-table-wrap tbody td.num{text-align:right}
 .cc-table-wrap tbody td{padding:11px 12px;border-bottom:1px solid #e3e8ef;font-size:13.5px;vertical-align:middle}
+/* word-break only: max-width on a <td> is advisory under table-layout:auto
+   (measured 2026-08-31: a 150px cap rendered 263px), so it would be dead CSS.
+   Wrapping is what actually stops a long multi-number string from squeezing
+   the other columns inside .cc-table-wrap's overflow:hidden. */
+.cc-table-wrap tbody td.cc-phone{word-break:break-word;font-size:12.5px;color:#41505f}
 .cc-table-wrap tbody tr:last-child td{border-bottom:0}
 .cc-table-wrap tbody tr:hover{background:#f7f9fc;cursor:pointer}
 
@@ -85,6 +90,16 @@
           <option value="recent" {% if args.get('call') == 'recent' %}selected{% endif %}>🟢 ยังไม่ถึงกำหนด</option>
         </select>
       </div>
+
+      <div class="cc-fld">
+        <label>เงียบ</label>
+        <label class="cc-selbox" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" name="quiet" value="1"
+                 {% if args.get('quiet') %}checked{% endif %}
+                 onchange="this.form.submit()">
+          <span>ไม่ซื้อเกิน 180 วัน</span>
+        </label>
+      </div>
       {# เรียงตาม #}
       <div class="cc-fld">
         <label>เรียงตาม</label>
@@ -104,7 +119,7 @@
         </div>
       </div>
       {# Hidden: spend_window is submitted by the table header select below #}
-      <input type="hidden" name="spend_window" id="spend_window_hidden" value="{{ args.get('spend_window','1y') }}">
+      <input type="hidden" name="spend_window" id="spend_window_hidden" value="{{ spend_window or args.get('spend_window','1y') }}">
     </div>
   </form>
 
@@ -116,13 +131,14 @@
           <th>ลูกค้า</th>
           <th>จังหวัด / ภาค</th>
           <th>ซื้อล่าสุด</th>
+          <th>โทร</th>
           <th class="num">
             ยอดซื้อ
             <select class="cc-hsel" onchange="document.getElementById('spend_window_hidden').value=this.value; document.getElementById('cc-filter-form').submit()">
-              <option value="6m" {% if args.get('spend_window') == '6m' %}selected{% endif %}>6 เดือน</option>
-              <option value="1y" {% if args.get('spend_window','1y') == '1y' %}selected{% endif %}>1 ปี</option>
-              <option value="2y" {% if args.get('spend_window') == '2y' %}selected{% endif %}>2 ปี</option>
-              <option value="all" {% if args.get('spend_window') == 'all' %}selected{% endif %}>ทั้งหมด</option>
+              <option value="6m" {% if (spend_window or args.get('spend_window','1y')) == '6m' %}selected{% endif %}>6 เดือน</option>
+              <option value="1y" {% if (spend_window or args.get('spend_window','1y')) == '1y' %}selected{% endif %}>1 ปี</option>
+              <option value="2y" {% if (spend_window or args.get('spend_window','1y')) == '2y' %}selected{% endif %}>2 ปี</option>
+              <option value="all" {% if (spend_window or args.get('spend_window','1y')) == 'all' %}selected{% endif %}>ทั้งหมด</option>
             </select>
           </th>
           <th>สถานะการโทร</th>
@@ -142,6 +158,7 @@
             <div class="rg">{{ r.region }}</div>
           </td>
           <td>{{ r.last_buy or '—' }}</td>
+          <td class="cc-phone">{{ r.phone or '—' }}</td>
           <td class="num cc-spend">
             {% if r.spend %}฿{{ '{:,.0f}'.format(r.spend) }}{% else %}—{% endif %}
           </td>
@@ -176,7 +193,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="7" class="text-center text-muted py-4">ไม่พบลูกค้า</td>
+          <td colspan="8" class="text-center text-muted py-4">ไม่พบลูกค้า</td>
         </tr>
         {% endfor %}
       </tbody>
