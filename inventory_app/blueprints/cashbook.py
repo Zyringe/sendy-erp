@@ -26,6 +26,7 @@ from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
                    request, session, url_for)
 
 import database
+import hr as hr_mod
 import hr_queries as hrq
 
 bp_cashbook = Blueprint("cashbook", __name__, url_prefix="/cashbook")
@@ -923,6 +924,7 @@ def new_transaction():
             account_id = int(account_id_raw) if account_id_raw.isdigit() else None
             bulk_mode = request.form.get("bulk_mode") == "1"
             confirm_duplicates = request.form.get("confirm_duplicates") == "1"
+            confirm_advance_cap = request.form.get("confirm_advance_cap") == "1"
 
             rows = _parse_batch_rows(request.form)
             to_insert = _validate_batch(rows, txn_date)
@@ -1018,12 +1020,67 @@ def new_transaction():
                         commission_reps=_commission_reps_for_picker(conn),
                     )
 
-            # All rows valid (and no unconfirmed duplicates) — insert within one
-            # transaction (single connection, single commit): upsert any
-            # brand-new category first, then the rows, each at ITS OWN
-            # effective date (decision B2, plan.md — single mode: the shared
-            # top date; bulk mode: the row's own date, or the top date if the
-            # row was left blank).
+            # Advance cap warning (plan.md P2): each advance row is checked
+            # against what ITS OWN month can actually pay (Blocker C — keyed
+            # off advance_date's month via r["effective_date"], never "today"
+            # or the form's top txn_date), summed per (employee, target
+            # month) across the whole submitted batch — plan.md step 5: two
+            # rows individually under the ceiling can together exceed it.
+            # Warn-then-confirm, same shape as the duplicate guard above;
+            # never a hard block (Put: he is the only person who keys
+            # advances, so there is no second approver to gate on).
+            #
+            # The lock is taken HERE, before _upsert_category below (the
+            # first DML in this function) — hr_mod._begin_immediate refuses a
+            # transaction already in flight, and the read (existing month
+            # total + the ceiling) + the decision + the insert must be ONE
+            # BEGIN IMMEDIATE transaction, or a concurrent worker can insert
+            # a competing advance between the read and the write (Blocker A
+            # — gunicorn -w 2 on Railway makes the second worker real).
+            advance_rows = [r for r in to_insert if r.get("is_advance")]
+            if advance_rows:
+                hr_mod._begin_immediate(conn)
+                groups = {}
+                for r in advance_rows:
+                    key = (r["employee_id"], r["effective_date"][:7])
+                    groups[key] = groups.get(key, 0.0) + r["amount"]
+                cap_warnings = []
+                for (emp_id, target_month), amount in groups.items():
+                    try:
+                        hr_mod.check_advance_cap(conn, emp_id, target_month, amount)
+                    except hr_mod.AdvanceCapWarning as w:
+                        cap_warnings.append(str(w))
+                if cap_warnings and not confirm_advance_cap:
+                    # Release the lock before re-rendering — nothing was
+                    # written, so there is nothing to keep it open for.
+                    conn.rollback()
+                    for w in cap_warnings:
+                        flash(w, "warning")
+                    return render_template(
+                        "cashbook/new.html",
+                        accounts=accounts,
+                        txn_date=txn_date,
+                        account_id=account_id_raw,
+                        bulk_mode=bulk_mode,
+                        rows=rows,
+                        show_advance_cap_confirm=True,
+                        categories_by_direction=_categories_by_direction(conn),
+                        known_tags=_get_known_user_tags(conn),
+                        employees=employees,
+                        advance_category=ADVANCE_CATEGORY,
+                        salary_category=SALARY_CATEGORY,
+                        commission_category=COMMISSION_CATEGORY,
+                        commission_reps=_commission_reps_for_picker(conn),
+                    )
+
+            # All rows valid (and no unconfirmed duplicates or advance-cap
+            # warnings) — insert within one transaction (single connection,
+            # single commit; if the advance-cap check above took the lock,
+            # this reuses that SAME open transaction): upsert any brand-new
+            # category first, then the rows, each at ITS OWN effective date
+            # (decision B2, plan.md — single mode: the shared top date; bulk
+            # mode: the row's own date, or the top date if the row was left
+            # blank).
             created_by = session.get("display_name") or session.get("username")
             for r in to_insert:
                 _upsert_category(conn, r["category"], r["direction"])

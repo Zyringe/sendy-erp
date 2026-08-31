@@ -224,6 +224,21 @@
   </div>
   {% endif %}
 
+  {# advance cap warning (plan.md P2): the exact reason is already in the
+     flashed messages above (rendered by base.html) — this box is only the
+     confirm control, same shape as show_duplicate_confirm. Not a hard
+     block: Put is the only person who keys advances. #}
+  {% if show_advance_cap_confirm %}
+  <div class="alert alert-warning">
+    <div class="form-check">
+      <input class="form-check-input" type="checkbox" id="confirm-advance-cap" name="confirm_advance_cap" value="1">
+      <label class="form-check-label" for="confirm-advance-cap">
+        ยืนยันบันทึกรายการเบิกล่วงหน้าแม้เกินยอดที่คาดว่าจะเก็บได้ (ดูรายละเอียดในข้อความเตือนด้านบน)
+      </label>
+    </div>
+  </div>
+  {% endif %}
+
   <button type="submit" class="btn btn-primary">
     <i class="bi bi-save me-1"></i>บันทึกทั้งหมด
   </button>

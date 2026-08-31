@@ -81,7 +81,15 @@ def test_advance_row_writes_both_rows_linked(migrated_db):
     emp_id, emp_display = _active_employee(migrated_db)
     c = _client_as_user(1, "admin")
     form = {
-        "txn_date": "2026-07-02",
+        # plan.md P2 (added after this test was written): a payroll run for
+        # 2026-07 IS finalized on this live-DB clone (real prod-snapshot
+        # data — company 1, run 7), so an advance dated INTO 2026-07 now
+        # correctly triggers the advance-cap guard's distinct
+        # already-finalized-month warning and needs an explicit confirm.
+        # This test is about the write-linking mechanics, not the cap guard
+        # (that has its own coverage in test_advance_cap_warning.py), so it
+        # targets a month with no payroll run at all instead.
+        "txn_date": "2030-07-02",
         "account_id": str(account_id),
         "rows-0-direction": "expense",
         "rows-0-category": ADVANCE_CATEGORY,
@@ -95,7 +103,7 @@ def test_advance_row_writes_both_rows_linked(migrated_db):
     conn = sqlite3.connect(migrated_db)
     conn.row_factory = sqlite3.Row
     adv = conn.execute(
-        "SELECT * FROM salary_advances WHERE employee_id=? AND advance_date='2026-07-02'"
+        "SELECT * FROM salary_advances WHERE employee_id=? AND advance_date='2030-07-02'"
         " AND amount=500 ORDER BY id DESC LIMIT 1",
         (emp_id,),
     ).fetchone()

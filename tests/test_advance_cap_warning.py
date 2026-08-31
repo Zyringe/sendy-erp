@@ -530,9 +530,14 @@ def test_advance_post_holds_the_write_lock_across_the_cap_check(clean_migrated_d
     IMMEDIATE transaction. Under gunicorn -w 2 a second worker could
     otherwise insert a competing advance between the read and the write.
 
-    The seam is patched at hr_mod._begin_immediate, BEFORE the first write —
-    a probe placed after it would be excluded either way and pass with the
-    fix removed (same shape as tests/test_hr_payroll.py's finalize test)."""
+    hr_mod._begin_immediate IS the first write (BEGIN IMMEDIATE reserves the
+    write lock immediately, before any statement) — same shape as
+    tests/test_hr_payroll.py's test_reopen_and_post_cannot_interleave: the
+    window that matters is AFTER it returns and before the next statement,
+    lock held. Probing BEFORE calling through to the real _begin_immediate
+    would merely race a still-unlocked connection and prove nothing about
+    serialization (caught in this exact test: it silently passed with
+    seen['blocked'] required True but produced False before this fix)."""
     import hr as hr_mod
     account_id = _active_account(clean_migrated_db)
     eid = _mk_route_employee(clean_migrated_db, 'T_R_RACE', 'route-race', '2027-01-01', 15000.0)
@@ -541,9 +546,10 @@ def test_advance_post_holds_the_write_lock_across_the_cap_check(clean_migrated_d
     real = hr_mod._begin_immediate
 
     def probe(c):
+        out = real(c)  # take the lock for real FIRST
         seen['blocked'] = _concurrent_advance_insert_blocked(
             clean_migrated_db, eid, '2027-12-10', 500.0)
-        return real(c)
+        return out
 
     monkeypatch.setattr(hr_mod, '_begin_immediate', probe)
 
