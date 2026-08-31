@@ -1347,6 +1347,21 @@ def _departing_employee_message(carried_out: float, advance_total: float) -> str
     )
 
 
+def departing_employee_note(employee_id: int,
+                            conn: Optional[sqlite3.Connection] = None,
+                            db_path: Optional[str] = None):
+    """The departing-employee warning for `employee_id`, or None when they
+    owe nothing. Same shape as carry_forward_note / carry_consumed_note /
+    pending_advance_note / roster_drift_note — the route calls this public
+    wrapper rather than the private message-builder directly."""
+    with _ConnCtx(conn, db_path) as c:
+        carried_out, advance_total = departing_employee_outstanding(
+            employee_id, conn=c)
+        if carried_out <= 0 and advance_total <= 0:
+            return None
+        return _departing_employee_message(carried_out, advance_total)
+
+
 def _was_reopened(c, run_id: int) -> bool:
     """True if this run was ever un-finalized by `reopen_run`.
 

@@ -264,10 +264,9 @@ def employee_edit(id: int):
         now_end_date = bool(data.get("end_date"))
         departing = (was_active and not now_active) or (not had_end_date and now_end_date)
         if departing:
-            carried_out, advance_total = hr_mod.departing_employee_outstanding(id)
-            if carried_out > 0 or advance_total > 0:
-                flash(hr_mod._departing_employee_message(carried_out, advance_total),
-                     "warning")
+            note = hr_mod.departing_employee_note(id)
+            if note:
+                flash(note, "warning")
     except Exception as e:
         flash(f"ไม่สามารถบันทึก: {e}", "danger")
     return redirect(url_for("hr.employee_detail", id=id))
