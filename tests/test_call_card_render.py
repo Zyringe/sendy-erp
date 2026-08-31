@@ -282,3 +282,17 @@ def test_window_selector_shows_the_window_actually_used_not_the_one_asked_for():
     opts = dict(re.findall(r'<option value="(6m|1y|2y|all)"([^>]*)>', html))
     assert 'selected' in opts['1y'], "the window actually used (1y) is not the selected option"
     assert 'selected' not in opts['6m'], "the page still claims 6 เดือน while showing 1y numbers"
+
+
+def test_phone_cell_cannot_widen_the_table_on_a_narrow_screen():
+    """.cc-table-wrap is overflow:hidden with table{width:100%}, so a long
+    unbroken phone string (seen on prod: '02-4178295,01-643-4024 02-4178287,
+    089-2032484') would squeeze every other column instead of scrolling."""
+    html = _render_list(_app())
+    assert 'cc-phone' in html
+    style = html.split('<style', 1)[1].split('</style>', 1)[0]
+    assert '.cc-phone' in style, "the phone cell has no width constraint"
+    rule = style.split('.cc-phone', 1)[1].split('}', 1)[0]
+    # word-break, NOT max-width: a max-width on a <td> is advisory under
+    # table-layout:auto (measured 2026-08-31 — a 150px cap rendered 263px).
+    assert 'word-break' in rule
