@@ -224,6 +224,21 @@
   </div>
   {% endif %}
 
+  {# advance cap warning (plan.md P2): the exact reason is already in the
+     flashed messages above (rendered by base.html) — this box is only the
+     confirm control, same shape as show_duplicate_confirm. Not a hard
+     block: Put is the only person who keys advances. #}
+  {% if show_advance_cap_confirm %}
+  <div class="alert alert-warning">
+    <div class="form-check">
+      <input class="form-check-input" type="checkbox" id="confirm-advance-cap" name="confirm_advance_cap" value="1">
+      <label class="form-check-label" for="confirm-advance-cap">
+        ยืนยันบันทึกรายการเบิกล่วงหน้าแม้เกินยอดที่คาดว่าจะเก็บได้ (ดูรายละเอียดในข้อความเตือนด้านบน)
+      </label>
+    </div>
+  </div>
+  {% endif %}
+
   <button type="submit" class="btn btn-primary">
     <i class="bi bi-save me-1"></i>บันทึกทั้งหมด
   </button>
@@ -352,6 +367,31 @@
       '<tr><td colspan="3" class="text-center text-muted small py-2">ไม่มีรายการเดือนนี้</td></tr>';
       document.getElementById('ah-title').textContent =
         'ประวัติเบิกล่วงหน้า — ' + ((d.employee && d.employee.name) || '') + ' (' + (d.month || '') + ')';
+
+      // Advance cap advisory bar (plan.md P2 step 3): yellow past
+      // warn_pct × base_amount, red past collectable. ADVISORY ONLY — this
+      // fetch happens on a connection that closes right after, so the real
+      // numbers can move by submit time; the server-side guard on save is
+      // what actually enforces this (never trust this bar alone).
+      var barHtml = '';
+      if (d.collectable != null) {
+        var warnLine = d.base_amount != null ? d.warn_pct * d.base_amount : null;
+        var overCap = d.month_advance_total > d.collectable;
+        var overWarn = warnLine != null && d.month_advance_total > warnLine;
+        var barClass = overCap ? 'bg-danger' : (overWarn ? 'bg-warning' : 'bg-success');
+        var pct = d.collectable > 0
+          ? Math.min(100, (d.month_advance_total / d.collectable) * 100)
+          : (d.month_advance_total > 0 ? 100 : 0);
+        barHtml =
+          '<div class="d-flex justify-content-between small mt-2"><span>เก็บได้ประมาณเดือนนี้ (ประมาณการ)</span>' +
+          '<strong>' + fmtBaht(d.collectable) + '</strong></div>' +
+          '<div class="progress mb-1" style="height:6px" aria-hidden="true">' +
+          '<div class="progress-bar ' + barClass + '" style="width:' + pct + '%"></div>' +
+          '</div>' +
+          (overCap ? '<div class="small text-danger">เบิกรวมเดือนนี้เกินยอดที่คาดว่าจะเก็บได้ — ระบบจะขอให้ยืนยันตอนบันทึก</div>' : '') +
+          (d.target_month_finalized ? '<div class="small text-danger">รอบเงินเดือนเดือนนี้ปิดไปแล้ว — เงินนี้จะไปโผล่ในรอบถัดไปแทน</div>' : '');
+      }
+
       document.getElementById('ah-body').innerHTML =
         '<table class="table table-sm mb-2"><thead><tr><th>วันที่</th>' +
         '<th class="text-end">จำนวน</th><th>สถานะ</th></tr></thead><tbody>' + advRows + '</tbody></table>' +
@@ -360,7 +400,8 @@
         '<div class="d-flex justify-content-between small text-danger">' +
         '<span>ค้างยังไม่ถูกหัก (รวมทุกเดือน)</span><strong>' + fmtBaht(d.outstanding_total) + '</strong></div>' +
         '<div class="d-flex justify-content-between small"><span>เงินเดือนสุทธิเดือนนี้</span>' +
-        '<strong>' + (d.net_pay == null ? '—' : fmtBaht(d.net_pay)) + '</strong></div>';
+        '<strong>' + (d.net_pay == null ? '—' : fmtBaht(d.net_pay)) + '</strong></div>' +
+        barHtml;
       bootstrap.Modal.getOrCreateInstance(document.getElementById('advanceHistoryModal')).show();
     });
   }

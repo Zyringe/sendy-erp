@@ -208,6 +208,14 @@ def _load_config(conn: sqlite3.Connection) -> dict:
         "sso_min_base": float(cfg.get("sso_min_base", 1650)),
         "sso_max_base": float(cfg.get("sso_max_base", 15000)),
         "day_divisor": float(cfg.get("day_divisor", 30)),
+        # plan.md P2 — advance-cap yellow-bar threshold. Fallback default
+        # MUST match migration 179's seeded value (0.5): a deploy where the
+        # code lands before the migration (or a DB predating 179) would
+        # otherwise apply a different threshold than a fully migrated one —
+        # the drift already live for sso_max_base above (code default 15000,
+        # prod holds 17500). Pinned by
+        # test_advance_warn_pct_code_default_matches_migration.
+        "advance_warn_pct": float(cfg.get("advance_warn_pct", 0.5)),
     }
 
 
@@ -691,6 +699,157 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
     return round(unpaid, 4), notes
 
 
+def _assert_carry_chronology(c: sqlite3.Connection, employee_id: int,
+                             src_month: str, year_month: str) -> None:
+    """CHRONOLOGICAL FINALIZE invariant (plan.md P1d step 3) — the rule that
+    prevents the same debt being collected twice, or silently lost.
+
+    Refuses when a run for THIS employee exists strictly between the carry
+    source month and `year_month` and is NOT finalized.
+
+    Traced double-collection path: Aug finalized carried_out=950 -> Sep
+    generated carried_in=950 but left DRAFT -> Oct generated: the source query
+    finds Aug (the nearest FINALIZED run before Oct, since Sep is draft) and
+    sets carried_in=950 AGAIN. If Oct is finalized before Sep, ฿950 is
+    collected twice and nothing anywhere says so.
+
+    Mirror case: while Aug sits reopened (draft), regenerating a still-draft
+    Sep makes the `status = 'finalized'` filter skip Aug and fall back past it.
+
+    ⚠ **Must run even when there is NO finalized source** (`src_month == ""`).
+    An employee whose ONLY prior run is the draft one holding the carry —
+    hired mid-stream, or whose sole earlier run was reopened — would otherwise
+    fall straight to `carried_in = 0.0` and the debt would vanish with no
+    error at all. Reproduced 2026-08-31 while this check still lived inside
+    `if carry_row is not None:`: generating the next month returned
+    `carried_in=0.0` for a ฿950 carry sitting in a draft run, silently.
+    `"" ` sorts below every 'YYYY-MM', so an empty `src_month` lets EVERY
+    earlier non-finalized run be considered.
+
+    ⚠ Scoped to runs that TOUCH carry money — `carried_out > 0` (still holding
+    a debt) **OR `carried_in > 0` (already consumed one)**. Both halves are
+    load-bearing, each measured on 2026-08-31:
+      * Refusing on ANY earlier draft was too strict — it broke three unrelated
+        pre-existing tests that legitimately generate month N+1 while N is a
+        draft (new-hire proration, floored entitlement, the connection-lock
+        test), i.e. it would block previewing next month before closing this
+        one. A draft touching no carry can lose nothing.
+      * Scoping to `carried_out > 0` ALONE re-opened the original
+        double-collection blocker: in that path Sep has already *consumed* the
+        carry (`carried_in=950, carried_out=0`), so it is invisible to an
+        out-only test and Oct would read Aug's 950 a second time.
+        `test_double_collection_path_is_refused_at_generate` caught it.
+
+    The narrower rule leaves ONE residual case: a draft whose carry only
+    materialises later (Sep generated while Aug drafts at 0, Aug then finalises
+    at 950, Sep finalised without a regenerate would keep a stale
+    `carried_in`). That is caught at the other end by
+    `stale_carry_in()` / the finalize guard, which is the right place —
+    the same philosophy as `pending_advance_stamp`: the value was computed at
+    generate time, so refuse at finalize if reality has moved since.
+    """
+    gap = c.execute(
+        """SELECT pr.year_month, pr.status
+             FROM payroll_items pi
+             JOIN payroll_runs pr ON pr.id = pi.run_id
+            WHERE pi.employee_id = ?
+              AND pr.year_month > ?
+              AND pr.year_month < ?
+              AND pr.status != 'finalized'
+              AND (pi.carried_in > 0 OR pi.carried_out > 0)
+            ORDER BY pr.year_month
+            LIMIT 1""",
+        (employee_id, src_month, year_month),
+    ).fetchone()
+    if gap is None:
+        return
+    whose = _employee_names(c, [employee_id])
+    where_from = f"ยกยอดมา ({src_month})" if src_month else "รอบก่อนหน้า"
+    raise CarryChronologyError(
+        f"สร้างรอบเดือน {year_month} ให้ {whose} ไม่ได้ — "
+        f"มีรอบเดือน {gap['year_month']} (สถานะ {gap['status']}) ค้างอยู่ระหว่างเดือนที่ "
+        f"{where_from} กับเดือนนี้ · ต้อง finalize เดือน "
+        f"{gap['year_month']} ก่อน ไม่งั้นยอดยกจะถูกเก็บซ้ำหรือหายไป"
+    )
+
+
+class CarryChronologyError(ValueError):
+    """A run exists for a month between the carry source and this one and is
+    NOT finalized — plan.md P1d step 3, the CHRONOLOGICAL FINALIZE invariant
+    that prevents a debt from being collected twice (or silently dropped).
+    Subclasses ValueError so it reads like generate_run's other refusals
+    (_dropped_employees_message / _added_employees_message) to any caller
+    catching Exception/ValueError. No confirm can override this one — the
+    only fix is to finalize (or otherwise resolve) the run in between."""
+
+
+# ── shared "what this month pays" arithmetic ─────────────────────────────────
+# Extracted so _build_item and the advance-cap ceiling (plan.md P2) share ONE
+# definition each, instead of two copies that can drift — the same reason
+# sales_filters.py exists elsewhere in this app.
+def _worked_days_and_base(start_date: Optional[date], end_date: Optional[date],
+                          period_start: date, period_end: date,
+                          divisor: float, rate: float):
+    """(capped_days, base_amount) — worked-day window inside the month (see
+    module docstring), capped at the divisor, times the rate."""
+    eff_start = max(period_start, start_date) if start_date else period_start
+    eff_end = min(period_end, end_date) if end_date else period_end
+    worked_days = (eff_end - eff_start).days + 1
+    if worked_days < 0:
+        worked_days = 0
+    capped_days = min(worked_days, divisor)
+    base_amount = round(rate / divisor * capped_days, 2)
+    return capped_days, base_amount
+
+
+def _clamped_unpaid_deduction(rate: float, divisor: float, unpaid_days: float,
+                              base_amount: float):
+    """(unpaid_deduction, uncapped_deduction) — the money actually withheld
+    for unpaid leave, never more than the month's own base_amount.
+
+    A month cannot deduct more than it pays. unpaid_days counts CALENDAR days
+    (31 in a 31-day month) while the deduction divides by the fixed 30-day
+    divisor that also caps base_amount — so an unclamped full month of unpaid
+    leave deducted 31/30 of salary (฿15,500 against a ฿15,000 base). The
+    worst honest case is a zero-wage month.
+
+    The cap is on the MONEY, not on unpaid_days: the day count stays a true
+    record of the absence, so it still reconciles with the leave request and
+    with the allocation total (Put's call, 2026-08-06)."""
+    uncapped_deduction = round(rate / divisor * unpaid_days, 2)
+    return min(uncapped_deduction, base_amount), uncapped_deduction
+
+
+def _carried_in_for(c: sqlite3.Connection, employee_id: int, year_month: str):
+    """(carried_in, src_month) — the carried_out of the employee's most
+    recent FINALIZED run before year_month, else (0.0, "").
+
+    Shared by _build_item (which additionally enforces the CHRONOLOGICAL
+    FINALIZE invariant via _assert_carry_chronology) and the advance-cap
+    ceiling (plan.md P2, which does not enforce that invariant — a cap is
+    advisory context for a human keying an advance, not a guarded write;
+    refusing advance entry over a payroll-run bookkeeping gap would be the
+    wrong failure mode there).
+
+    ⚠ OPEN QUESTION, deliberately NOT decided here (/scrutinize 2026-08-31).
+    Keyed on employee_id alone, no pr.company_id filter — see plan.md's open
+    items; unaffected by which caller uses this."""
+    carry_row = c.execute(
+        """SELECT pi.carried_out AS carried_out, pr.year_month AS src_month
+             FROM payroll_items pi
+             JOIN payroll_runs pr ON pr.id = pi.run_id
+            WHERE pi.employee_id = ?
+              AND pr.status = 'finalized'
+              AND pr.year_month < ?
+            ORDER BY pr.year_month DESC
+            LIMIT 1""",
+        (employee_id, year_month),
+    ).fetchone()
+    if carry_row is None:
+        return 0.0, ""
+    return round(float(carry_row["carried_out"]), 2), carry_row["src_month"]
+
+
 # ── core: build one payroll_items payload ────────────────────────────────────
 def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
                 cfg: dict, run_id: Optional[int] = None):
@@ -706,32 +865,15 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
     start_date = _to_date(emp["start_date"])
     end_date = _to_date(emp["end_date"])
 
-    # worked-day window inside the month (see module docstring)
-    eff_start = max(period_start, start_date) if start_date else period_start
-    eff_end = min(period_end, end_date) if end_date else period_end
-    worked_days = (eff_end - eff_start).days + 1
-    if worked_days < 0:
-        worked_days = 0
-    capped_days = min(worked_days, divisor)
-    base_amount = round(rate / divisor * capped_days, 2)
+    capped_days, base_amount = _worked_days_and_base(
+        start_date, end_date, period_start, period_end, divisor, rate)
 
     # unpaid leave
     unpaid_days, unpaid_notes = _compute_unpaid_days(
         c, emp["id"], year_month, period_start, period_end
     )
-    # A month cannot deduct more than it pays. unpaid_days counts CALENDAR days
-    # (31 in a 31-day month) while the deduction divides by the fixed 30-day
-    # divisor that also caps base_amount — so an unclamped full month of unpaid
-    # leave deducted 31/30 of salary (฿15,500 against a ฿15,000 base). The
-    # worst honest case is a zero-wage month.
-    #
-    # The cap is on the MONEY, not on unpaid_days: the day count stays a true
-    # record of the absence, so it still reconciles with the leave request and
-    # with the allocation total (Put's call, 2026-08-06). That does mean
-    # deduction < unpaid_days × daily rate on a capped month, which would read
-    # as an arithmetic error on the payslip — hence the note.
-    uncapped_deduction = round(rate / divisor * unpaid_days, 2)
-    unpaid_deduction = min(uncapped_deduction, base_amount)
+    unpaid_deduction, uncapped_deduction = _clamped_unpaid_deduction(
+        rate, divisor, unpaid_days, base_amount)
     if uncapped_deduction > unpaid_deduction:
         unpaid_notes.append(
             f"ขาดงานทั้งเดือน — หักได้ไม่เกินฐานเงินเดือนของเดือนนี้ "
@@ -800,6 +942,31 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
     ).fetchone()
     salary_advance_deduction = round(sa_row["amt"] or 0.0, 2)
 
+    # carry-forward (ยกยอด) — ยอดที่รอบก่อนเก็บไม่ได้ (carried_out) ของ
+    # FINALIZED run ล่าสุดของพนักงานคนนี้ ก่อนเดือนนี้ กลายเป็น carried_in ของ
+    # เดือนนี้. Ordered by year_month (a sortable 'YYYY-MM' string), NOT by
+    # run id — run ids are not chronological (prod: run 3 = 2026-05, run 4 =
+    # 2026-04). Only a FINALIZED run counts: a draft can still change, and
+    # "finalized in chronological order" is the invariant that keeps a debt
+    # from being collected twice (see plan.md P1d) — a run existing but not
+    # yet finalized for a month between the source and this one would break
+    # that invariant, but REFUSING for that case is P1d's job, not P1a's.
+    # ⚠ OPEN QUESTION, deliberately NOT decided here (/scrutinize 2026-08-31).
+    # This is keyed on employee_id alone, with no `pr.company_id` filter. Measured
+    # on the dev snapshot: 0 employees appear in runs of more than one company,
+    # only company 1 (BSN) has ever had a payroll run, and every employee has a
+    # non-NULL company_id — so today the two are equivalent and nothing is wrong.
+    # It becomes a real question only if SD starts running its own payroll (the
+    # operating manual's stated target model) AND someone transfers between the
+    # two: carrying the debt across would move money between two P&Ls the manual
+    # says are kept separate, while filtering it out would silently drop a real
+    # debt. Both are business calls for Put, not defaults to bake in silently.
+    # No filter is added, and no speculative guard: adding either would pick one
+    # policy without asking. Recorded in plan.md's open items.
+    carried_in, src_month = _carried_in_for(c, emp["id"], year_month)
+    # CHRONOLOGICAL FINALIZE invariant — runs UNCONDITIONALLY (see the helper).
+    _assert_carry_chronology(c, emp["id"], src_month, year_month)
+
     note = "; ".join(unpaid_notes) if unpaid_notes else None
 
     return {
@@ -821,16 +988,26 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
         "sso_employee": sso_emp,
         "sso_employer": sso_empr,
         "commission_amount": commission_amount,
+        "carried_in": carried_in,
+        "carried_out": 0.0,  # recomputed by _recompute_totals
         "note": note,
     }
 
 
 def _recompute_totals(d: dict) -> dict:
-    """Compute gross + net_pay from a payroll_items dict in place.
+    """Compute gross + net_pay (+ carried_out) from a payroll_items dict in
+    place.
 
     gross = base + (diligence if kept) + bonus + other_additions
-    net   = gross - unpaid_leave_deduction - sso_employee - other_deductions
-            - wht_amount - salary_advance_deduction
+    net_before_carry = gross - unpaid_leave_deduction - sso_employee
+                        - other_deductions - wht_amount
+                        - salary_advance_deduction - carried_in
+
+    ⚠ net_pay is CLAMPED at 0, never negative — this is the carry-forward
+    behaviour change (plan.md "The arithmetic"): when net_before_carry < 0,
+    the uncollectible remainder becomes carried_out (what next month's
+    carried_in will read, via _build_item) and net_pay is 0, not negative.
+    Otherwise carried_out is 0 and net_pay is net_before_carry unchanged.
     """
     diligence = 0.0
     if not d["diligence_forfeited"]:
@@ -842,18 +1019,176 @@ def _recompute_totals(d: dict) -> dict:
         + float(d["other_additions"] or 0),
         2,
     )
-    net = round(
+    net_before_carry = round(
         gross
         - float(d["unpaid_leave_deduction"] or 0)
         - float(d["sso_employee"] or 0)
         - float(d["other_deductions"] or 0)
         - float(d.get("wht_amount", 0) or 0)
-        - float(d.get("salary_advance_deduction", 0) or 0),
+        - float(d.get("salary_advance_deduction", 0) or 0)
+        - float(d.get("carried_in", 0) or 0),
         2,
     )
+    if net_before_carry < 0:
+        carried_out = round(-net_before_carry, 2)
+        net = 0.0
+    else:
+        carried_out = 0.0
+        net = net_before_carry
     d["gross"] = gross
     d["net_pay"] = net
+    d["carried_out"] = carried_out
     return d
+
+
+# ── advance cap warning (plan.md P2) ─────────────────────────────────────────
+# Put's ruling: warn at 50% of what a month can pay, and require an extra
+# confirm when a salary advance entry would exceed what is actually
+# collectable this month — not a hard block (Put is the only person who keys
+# advances, so there is no second approver to gate on).
+
+def advance_is_warn(month_advance_total: float, base_amount: float,
+                    warn_pct: float) -> bool:
+    """True once month_advance_total exceeds warn_pct × base_amount — the
+    yellow-bar (advisory-only) threshold. Strictly greater: exactly
+    warn_pct × base_amount does NOT warn ("at 50%" reads as the line, not
+    past it)."""
+    return month_advance_total > round(base_amount * warn_pct, 2)
+
+
+def collectable_this_month(c: sqlite3.Connection, employee_id: int,
+                           year_month: str, cfg: Optional[dict] = None):
+    """What `year_month` can still pay this employee, computed from SOURCE —
+    never from a payroll_items row (plan.md P2 Blocker B: advance_history's
+    old net_pay lookup returns None whenever the month's run doesn't exist
+    yet, which is the NORMAL case at advance-entry time — measured
+    2026-08-31, ฿8,400 of หลุย's August advances were keyed before run 8
+    ever existed).
+
+    collectable = base_amount − unpaid_deduction − sso_employee − carried_in
+
+    Deliberately excludes bonus/other_additions/other_deductions/wht/
+    diligence: those are admin edits made AFTER a run exists
+    (update_payroll_item), unknowable before generate_run ever runs, and
+    this ceiling exists to warn BEFORE a run exists. It also excludes THIS
+    month's own advances — the caller (check_advance_cap) adds those
+    separately, so this function never double-subtracts the amount being
+    checked against it.
+
+    Shares _worked_days_and_base / _clamped_unpaid_deduction /
+    _carried_in_for with _build_item so "what this month can pay" cannot
+    drift between the payslip and the cap. Does NOT call
+    _assert_carry_chronology — a cap is advisory context for a human keying
+    an advance, not a guarded write; refusing advance entry over a
+    payroll-run bookkeeping gap would be the wrong failure mode here.
+
+    Returns None if `employee_id` does not exist. Returns a dict with
+    salary_rate / base_amount / collectable otherwise.
+    """
+    if cfg is None:
+        cfg = _load_config(c)
+    period_start, period_end = _month_bounds(year_month)
+    divisor = cfg["day_divisor"]
+
+    emp = c.execute(
+        "SELECT id, start_date, end_date, sso_enrolled FROM employees WHERE id=?",
+        (employee_id,),
+    ).fetchone()
+    if emp is None:
+        return None
+
+    sal = resolve_salary(employee_id, year_month, conn=c)
+    rate = float(sal["monthly_salary"]) if sal else 0.0
+
+    start_date = _to_date(emp["start_date"])
+    end_date = _to_date(emp["end_date"])
+    capped_days, base_amount = _worked_days_and_base(
+        start_date, end_date, period_start, period_end, divisor, rate)
+
+    unpaid_days, _notes = _compute_unpaid_days(
+        c, employee_id, year_month, period_start, period_end)
+    unpaid_deduction, _uncapped = _clamped_unpaid_deduction(
+        rate, divisor, unpaid_days, base_amount)
+
+    sso_emp = _sso(rate, emp["sso_enrolled"], cfg)
+    carried_in, _src_month = _carried_in_for(c, employee_id, year_month)
+
+    collectable = round(base_amount - unpaid_deduction - sso_emp - carried_in, 2)
+    return {
+        "salary_rate": rate,
+        "base_amount": base_amount,
+        "collectable": collectable,
+    }
+
+
+class AdvanceCapWarning(Exception):
+    """A salary-advance entry would exceed what year_month can actually pay
+    this employee, OR lands in a month whose payroll run is already
+    finalized (Blocker C — that money cannot be collected in its own month
+    at all and will surface in a later run). Not a hard block: the caller
+    (blueprints/cashbook.py) re-renders the form with a confirm checkbox on
+    this, mirroring CarryForwardWarning's shape. Same message-and-confirm
+    convention as the other payroll guards — no confirm can bypass a
+    genuine data problem, but this is a business judgment call, not one."""
+
+
+def check_advance_cap(c: sqlite3.Connection, employee_id: int, target_month: str,
+                      additional_amount: float, cfg: Optional[dict] = None) -> None:
+    """Raise AdvanceCapWarning if this employee's `target_month` salary
+    advances (existing rows dated in that month + additional_amount) would
+    exceed collectable_this_month(target_month), or if a payroll run for
+    target_month is already finalized.
+
+    `target_month` MUST be the month of the advance's OWN advance_date, not
+    "this month" (plan.md Blocker C) — a backdated advance lands in the run
+    for its own month, not the one it was keyed in.
+
+    PURE READ — raises no lock of its own. The caller must already hold the
+    write lock (BEGIN IMMEDIATE) spanning this read and its own insert, or
+    the check-then-write race this function exists to prevent is not
+    actually prevented (plan.md Blocker A)."""
+    if cfg is None:
+        cfg = _load_config(c)
+    status = collectable_this_month(c, employee_id, target_month, cfg=cfg)
+    if status is None:
+        return  # unknown employee — caller already validated this upstream
+
+    existing = c.execute(
+        """SELECT COALESCE(SUM(amount), 0) AS amt FROM salary_advances
+            WHERE employee_id = ? AND strftime('%Y-%m', advance_date) = ?""",
+        (employee_id, target_month),
+    ).fetchone()["amt"]
+    projected = round(float(existing or 0) + additional_amount, 2)
+
+    emp_row = c.execute(
+        "SELECT company_id FROM employees WHERE id = ?", (employee_id,)
+    ).fetchone()
+    target_finalized = c.execute(
+        """SELECT 1 FROM payroll_runs
+            WHERE year_month = ? AND company_id = ? AND status = 'finalized'
+            LIMIT 1""",
+        (target_month, emp_row["company_id"]),
+    ).fetchone() is not None
+
+    over_cap = projected > status["collectable"]
+    if not over_cap and not target_finalized:
+        return
+
+    whose = _employee_names(c, [employee_id])
+    parts = []
+    if over_cap:
+        parts.append(
+            f"เดือน {target_month} เก็บได้ประมาณ ฿{status['collectable']:,.2f} "
+            f"แต่ยอดเบิกรวมของเดือนนั้นจะเป็น ฿{projected:,.2f}"
+        )
+    if target_finalized:
+        parts.append(
+            f"รอบเงินเดือนเดือน {target_month} ปิดไปแล้ว — "
+            f"เงินนี้จะไปโผล่ในรอบถัดไปแทน ไม่ใช่รอบของเดือนนี้เอง"
+        )
+    raise AdvanceCapWarning(
+        f"{whose}: " + " · ".join(parts) + " · ยืนยันเพื่อบันทึกต่อ"
+    )
 
 
 # ── regenerate blast-radius guard ────────────────────────────────────────────
@@ -1125,6 +1460,155 @@ def _roster_drift_message(c, dropped_ids, added_ids) -> str:
     )
 
 
+class CarryConsumedWarning(Exception):
+    """Reopening this run would put the carry-forward chain into a state
+    where a later run's carried_in was sourced from THIS run's carried_out
+    (plan.md P1d — the Codex blocker). Distinct from ValueError so the route
+    can offer a confirmation instead of a dead end, same shape as
+    RosterDriftWarning."""
+
+
+def carry_consumed_by(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                      db_path: Optional[str] = None):
+    """[{'run_id', 'year_month', 'employee_id', 'carried_in'}, ...] — the
+    later run(s) whose carried_in was sourced from THIS run's carried_out.
+
+    For each employee `run_id` carried a debt for, the consumer is the
+    EARLIEST later FINALIZED run for that employee. Under the CHRONOLOGICAL
+    FINALIZE invariant `_build_item` now enforces (a run existing but not
+    finalized between the carry source and a later target REFUSES to
+    generate — plan.md P1d step 3, `CarryChronologyError`), that earliest
+    later finalized run is the only one whose carried_in could have come
+    from this one — there cannot be an unfinalized run standing between them
+    while such a chain exists.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        run = c.execute("SELECT * FROM payroll_runs WHERE id = ?",
+                        (run_id,)).fetchone()
+        if run is None:
+            return []
+        sources = c.execute(
+            """SELECT employee_id FROM payroll_items
+                WHERE run_id = ? AND carried_out > 0""",
+            (run_id,),
+        ).fetchall()
+        out = []
+        for s in sources:
+            nxt = c.execute(
+                """SELECT pr.id AS run_id, pr.year_month AS year_month,
+                          pi.carried_in AS carried_in
+                     FROM payroll_items pi
+                     JOIN payroll_runs pr ON pr.id = pi.run_id
+                    WHERE pi.employee_id = ?
+                      AND pr.status = 'finalized'
+                      AND pr.year_month > ?
+                    ORDER BY pr.year_month ASC
+                    LIMIT 1""",
+                (s["employee_id"], run["year_month"]),
+            ).fetchone()
+            if nxt is not None and nxt["carried_in"] > 0:
+                out.append({
+                    "run_id": nxt["run_id"],
+                    "year_month": nxt["year_month"],
+                    "employee_id": s["employee_id"],
+                    "carried_in": nxt["carried_in"],
+                })
+        return out
+
+
+def _carry_consumed_message(c, consumers) -> str:
+    """Warning shown before a reopen whose carried_out was already read by a
+    later finalized run. Names who and which downstream month(s), and spells
+    out the double-collection hazard so the operator knows what "confirm"
+    actually commits to — same precedent as _roster_drift_message."""
+    ids = sorted({row["employee_id"] for row in consumers})
+    names = _employee_names(c, ids)
+    downstream = ", ".join(sorted({row["year_month"] for row in consumers}))
+    return (
+        f"รอบนี้เปิดใหม่ได้ แต่ยอดยกของ {names} ที่รอบนี้ยกไป ถูกรอบเดือน {downstream} "
+        f"ที่ finalized แล้วอ่านไปใช้เป็นยอดยกมาแล้ว — ถ้าแก้ตัวเลขในรอบนี้แล้ว regenerate/"
+        f"finalize ใหม่ โดยไม่ไปแก้รอบ {downstream} ด้วย หนี้ก้อนเดียวกันจะถูกเก็บซ้ำสองรอบ "
+        f"· ต้อง reopen รอบ {downstream} ด้วย แล้ว regenerate/finalize ใหม่เรียงตามลำดับเดือน"
+    )
+
+
+def carry_consumed_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                        db_path: Optional[str] = None):
+    """The reopen warning for `run_id`'s carry chain, or None when no later
+    finalized run consumed its carried_out.
+
+    Same text `reopen_run` raises, so the page and the refusal cannot drift
+    apart — same precedent as roster_drift_note.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        consumers = carry_consumed_by(run_id, conn=c)
+        if not consumers:
+            return None
+        return _carry_consumed_message(c, consumers)
+
+
+def departing_employee_outstanding(employee_id: int,
+                                    conn: Optional[sqlite3.Connection] = None,
+                                    db_path: Optional[str] = None):
+    """(carried_out, advance_total) this employee still owes — the basis for
+    the departing-employee warning (plan.md P1d step 4). A WARNING only: no
+    collection logic, no new table. Settling with a leaver (e.g. deducting
+    from a final pay) is a human/legal matter the ERP does not decide.
+
+    carried_out: this employee's LATEST run's carried_out (0 if none, or if
+    their latest run doesn't carry).
+    advance_total: SUM of salary_advances not yet deducted
+    (deducted_in_run_id IS NULL), regardless of date.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        row = c.execute(
+            """SELECT pi.carried_out
+                 FROM payroll_items pi
+                 JOIN payroll_runs pr ON pr.id = pi.run_id
+                WHERE pi.employee_id = ?
+                ORDER BY pr.year_month DESC
+                LIMIT 1""",
+            (employee_id,),
+        ).fetchone()
+        carried_out = round(float(row["carried_out"]), 2) if row else 0.0
+
+        adv = c.execute(
+            """SELECT COALESCE(SUM(amount), 0) AS total FROM salary_advances
+                WHERE employee_id = ? AND deducted_in_run_id IS NULL""",
+            (employee_id,),
+        ).fetchone()
+        advance_total = round(float(adv["total"] or 0), 2)
+        return carried_out, advance_total
+
+
+def _departing_employee_message(carried_out: float, advance_total: float) -> str:
+    parts = []
+    if carried_out > 0:
+        parts.append(f"ยอดยกไปหักรอบหน้า ฿{carried_out:,.2f}")
+    if advance_total > 0:
+        parts.append(f"เงินเบิกล่วงหน้าที่ยังไม่ได้หัก ฿{advance_total:,.2f}")
+    return (
+        "พนักงานคนนี้ยังมี" + " และ ".join(parts) + " ค้างอยู่ — "
+        "ระบบไม่ได้หักหรือเรียกเก็บให้อัตโนมัติ กรุณาตกลงกับพนักงานเอง "
+        "(เช่น หักจากเงินเดือนงวดสุดท้าย) ก่อนปิดการจ้างงาน"
+    )
+
+
+def departing_employee_note(employee_id: int,
+                            conn: Optional[sqlite3.Connection] = None,
+                            db_path: Optional[str] = None):
+    """The departing-employee warning for `employee_id`, or None when they
+    owe nothing. Same shape as carry_forward_note / carry_consumed_note /
+    pending_advance_note / roster_drift_note — the route calls this public
+    wrapper rather than the private message-builder directly."""
+    with _ConnCtx(conn, db_path) as c:
+        carried_out, advance_total = departing_employee_outstanding(
+            employee_id, conn=c)
+        if carried_out <= 0 and advance_total <= 0:
+            return None
+        return _departing_employee_message(carried_out, advance_total)
+
+
 def _was_reopened(c, run_id: int) -> bool:
     """True if this run was ever un-finalized by `reopen_run`.
 
@@ -1256,8 +1740,9 @@ def generate_run(year_month: str, company_id: int, created_by: int,
                       other_deductions_note, wht_amount,
                       salary_advance_deduction,
                       sso_employee, sso_employer,
-                      commission_amount, gross, net_pay, note)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      commission_amount, carried_in, carried_out,
+                      gross, net_pay, note)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (run_id, d["employee_id"], d["salary_rate"], d["base_amount"],
                  d["unpaid_leave_days"], d["unpaid_leave_deduction"],
                  d["diligence_allowance"], d["diligence_forfeited"],
@@ -1266,7 +1751,8 @@ def generate_run(year_month: str, company_id: int, created_by: int,
                  d["other_deductions"], d["other_deductions_note"],
                  d["wht_amount"], d["salary_advance_deduction"],
                  d["sso_employee"], d["sso_employer"],
-                 d["commission_amount"], d["gross"], d["net_pay"], d["note"]),
+                 d["commission_amount"], d["carried_in"], d["carried_out"],
+                 d["gross"], d["net_pay"], d["note"]),
             )
         # Reconcile orphaned advance stamps. Scenario: run was finalized
         # (advances stamped to this run), then reopened, then regenerated
@@ -1371,12 +1857,14 @@ def update_payroll_item(item_id: int,
                       other_deductions = ?, other_deductions_note = ?,
                       wht_amount = ?,
                       diligence_forfeited = ?, diligence_forfeit_reason = ?,
+                      carried_out = ?,
                       gross = ?, net_pay = ?
                 WHERE id = ?""",
             (d["bonus"], d["other_additions"], d["other_additions_note"],
              d["other_deductions"], d["other_deductions_note"],
              d["wht_amount"],
              d["diligence_forfeited"], d["diligence_forfeit_reason"],
+             d["carried_out"],
              d["gross"], d["net_pay"], item_id),
         )
         c.commit()
@@ -1385,10 +1873,120 @@ def update_payroll_item(item_id: int,
         ).fetchone()
 
 
+class CarryForwardWarning(Exception):
+    """This run has items whose net went negative and would carry an
+    uncollected remainder into next month's carried_in (plan.md P1b).
+
+    Distinct from PendingAdvanceStampWarning: a carry is not a data-integrity
+    problem to go fix first — it IS the intended behaviour (Put's ruling,
+    plan.md: "ไม่ยกหนี้ให้สิ เอาหนี้ไปตัดเดือนหน้า") — so the operator's own
+    acknowledgement is enough to proceed. Distinct from ValueError so the
+    route can offer a confirmation instead of a dead end, same shape as
+    RosterDriftWarning for reopen_run."""
+
+
+def pending_carry_forward(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                          db_path: Optional[str] = None):
+    """(count, total, [(name, amount), ...]) of items in `run_id` whose net
+    went negative and would carry a remainder into next month.
+
+    Named per employee (not just a total) so the finalize confirm banner can
+    say WHO, not just how much — Put must see who before confirming.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        rows = c.execute(
+            """SELECT COALESCE(e.nickname, e.full_name) AS name,
+                      pi.carried_out AS amount
+                 FROM payroll_items pi
+                 JOIN employees e ON e.id = pi.employee_id
+                WHERE pi.run_id = ? AND pi.carried_out > 0
+                ORDER BY pi.carried_out DESC""",
+            (run_id,),
+        ).fetchall()
+        total = round(sum(float(r["amount"]) for r in rows), 2)
+        return len(rows), total, [(r["name"], float(r["amount"])) for r in rows]
+
+
+class StaleCarryInError(ValueError):
+    """This run's stored `carried_in` no longer matches its source."""
+
+
+def stale_carry_in(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                   db_path: Optional[str] = None):
+    """[(name, stored, expected), ...] for items whose `carried_in` has gone
+    stale since the run was generated.
+
+    Closes the residual case that `_assert_carry_chronology` deliberately does
+    NOT cover (see its docstring): Sep is generated while Aug is a draft
+    carrying 0, Aug is then finalized carrying 950, and Sep is finalized
+    WITHOUT a regenerate — its `carried_in` would still say 0 and the ฿950
+    would be collected from nobody.
+
+    Same philosophy as `pending_advance_stamp`: the number was computed at
+    generate time, so refuse at the finalize boundary if reality moved since.
+    The fix is always the same — regenerate the run, which recomputes it.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        run = c.execute("SELECT * FROM payroll_runs WHERE id = ?",
+                        (run_id,)).fetchone()
+        if run is None:
+            return []
+        out = []
+        for it in c.execute(
+                """SELECT pi.employee_id, pi.carried_in,
+                          COALESCE(e.nickname, e.full_name) AS name
+                     FROM payroll_items pi
+                     JOIN employees e ON e.id = pi.employee_id
+                    WHERE pi.run_id = ?""", (run_id,)).fetchall():
+            src = c.execute(
+                """SELECT pi.carried_out
+                     FROM payroll_items pi
+                     JOIN payroll_runs pr ON pr.id = pi.run_id
+                    WHERE pi.employee_id = ?
+                      AND pr.status = 'finalized'
+                      AND pr.year_month < ?
+                    ORDER BY pr.year_month DESC
+                    LIMIT 1""",
+                (it["employee_id"], run["year_month"]),
+            ).fetchone()
+            expected = round(float(src["carried_out"]), 2) if src else 0.0
+            stored = round(float(it["carried_in"] or 0), 2)
+            if stored != expected:
+                out.append((it["name"], stored, expected))
+        return out
+
+
+def _carry_forward_message(n: int, total: float, rows) -> str:
+    """One text for the banner AND the refusal (same precedent as
+    _pending_advance_message), so the page cannot promise something the
+    finalize boundary then contradicts."""
+    names = ", ".join(f"{name} (฿{amount:,.2f})" for name, amount in rows)
+    return (
+        f"รอบนี้มี {n} คนที่ยอดสุทธิติดลบ รวม ฿{total:,.2f} ({names}) — "
+        f"เดือนนี้จ่ายให้ไม่ครบ ส่วนที่เก็บไม่ได้จะถูกยกไปหักในรอบเดือนถัดไปให้อัตโนมัติ "
+        f"(ไม่มีการยกหนี้ให้) · กดยืนยันด้านล่างเพื่อ finalize ต่อ"
+    )
+
+
+def carry_forward_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                       db_path: Optional[str] = None):
+    """The finalize-confirm warning for `run_id`, or None.
+
+    Same text finalize_run raises, so the page and the refusal cannot drift
+    apart — same precedent as pending_advance_note / roster_drift_note.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        n, total, rows = pending_carry_forward(run_id, conn=c)
+        if not n:
+            return None
+        return _carry_forward_message(n, total, rows)
+
+
 # ── finalize a payroll run (stamps salary advances) ──────────────────────────
 def finalize_run(run_id: int,
                   conn: Optional[sqlite3.Connection] = None,
-                  db_path: Optional[str] = None):
+                  db_path: Optional[str] = None,
+                  confirm_carry: bool = False):
     """Mark a draft run finalized and STAMP the salary advances it consumed.
 
     If the run is already finalized this is a no-op (returns the row; does
@@ -1399,6 +1997,10 @@ def finalize_run(run_id: int,
       2. every un-stamped salary_advances row for an employee in this run,
          dated on/before the run month's period_end, gets
          deducted_in_run_id = run_id so a later month never re-deducts it.
+
+    `confirm_carry` (plan.md P1b): raises CarryForwardWarning, inside the
+    lock and before any mutation, when this run has an item whose net went
+    negative — unless the caller has already acknowledged it.
     Returns the payroll_runs row (or None if run_id unknown).
     """
     with _ConnCtx(conn, db_path, lock=True) as c:
@@ -1436,6 +2038,32 @@ def finalize_run(run_id: int,
         if n:
             raise PendingAdvanceStampWarning(_pending_advance_message(n, total))
 
+        # Carry-forward confirm (plan.md P1b). Unlike the advance check above,
+        # this is expected to fire on an ordinary month — a negative net is
+        # not a data-integrity problem to go fix first, so the operator's own
+        # confirmation is enough; there is no regenerate that would make it
+        # go away. Checked in the SAME locked transaction as the advance
+        # check and the mutation below, so nothing can change the answer
+        # between this read and the write (same reasoning as the lock note
+        # above finalize_run's docstring).
+        # Staleness first: a stale carried_in makes every downstream number
+        # wrong, and unlike a pending carry it can NEVER be legitimately
+        # confirmed away — the only fix is a regenerate. So it refuses
+        # outright, with no confirm flag, before the confirmable check below.
+        stale = stale_carry_in(run_id, conn=c)
+        if stale:
+            detail = " · ".join(
+                f"{n}: สลิปบอก {s:,.2f} แต่รอบก่อนบอก {e:,.2f}" for n, s, e in stale)
+            raise StaleCarryInError(
+                f"finalize รอบนี้ไม่ได้ — ยอดยกยอดมาในสลิปไม่ตรงกับรอบก่อนแล้ว "
+                f"({len(stale)} คน) {detail} · "
+                f"ยอดนี้คำนวณตอนสร้างรอบ และรอบก่อนเปลี่ยนไปหลังจากนั้น "
+                f"· ทางแก้: กด \"สร้างรอบใหม่\" (regenerate) รอบนี้ แล้วยอดจะถูกต้องเอง"
+            )
+        cn, ctotal, crows = pending_carry_forward(run_id, conn=c)
+        if cn and not confirm_carry:
+            raise CarryForwardWarning(_carry_forward_message(cn, ctotal, crows))
+
         _, period_end = _month_bounds(run["year_month"])
 
         c.execute(
@@ -1466,7 +2094,8 @@ def finalize_run(run_id: int,
 def reopen_run(run_id: int, reason: str, actor: str,
                conn: Optional[sqlite3.Connection] = None,
                db_path: Optional[str] = None,
-               confirm_roster_change: bool = False):
+               confirm_roster_change: bool = False,
+               confirm_carry_break: bool = False):
     """Un-finalize a finalized run. Records an explicit audit_log entry with
     the actor + human reason so the "why" survives (mig 071's UPDATE trigger
     captures the field diff with user=NULL).
@@ -1477,6 +2106,12 @@ def reopen_run(run_id: int, reason: str, actor: str,
     create a foot-gun — if the admin forgets to re-finalize, the unstamped
     advances would bleed into the next month's run (the exact bug we fixed
     when reconciling 2026-05).
+
+    `confirm_carry_break` (plan.md P1d — the Codex blocker): raises
+    CarryConsumedWarning, inside the lock and before any mutation, when a
+    LATER finalized run already read its carried_in from THIS run's
+    carried_out — reopening (then regenerating/re-finalizing) without also
+    touching that downstream run risks collecting the same debt twice.
 
     Raises ValueError on empty reason. Returns the run row, or None if
     run_id not found. No-op (returns row) if run is already draft.
@@ -1522,6 +2157,14 @@ def reopen_run(run_id: int, reason: str, actor: str,
         if (dropped or added) and not confirm_roster_change:
             raise RosterDriftWarning(
                 _roster_drift_message(c, dropped, added))
+
+        # Carry-consumed check (plan.md P1d — the Codex blocker). Checked in
+        # the SAME locked transaction as the roster check and the mutation
+        # below, so a later run cannot finalize (and consume this run's
+        # carried_out) between this read and the status flip.
+        consumers = carry_consumed_by(run_id, conn=c)
+        if consumers and not confirm_carry_break:
+            raise CarryConsumedWarning(_carry_consumed_message(c, consumers))
 
         c.execute(
             "UPDATE payroll_runs SET status='draft', finalized_at=NULL WHERE id=?",

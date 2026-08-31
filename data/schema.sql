@@ -1104,7 +1104,9 @@ CREATE TABLE payroll_items (
     net_pay                 REAL    NOT NULL DEFAULT 0,
     note                    TEXT,
     created_at              TEXT    NOT NULL DEFAULT (datetime('now','localtime')), salary_advance_deduction REAL NOT NULL DEFAULT 0, wht_amount REAL NOT NULL DEFAULT 0
-    CHECK (wht_amount >= 0),
+    CHECK (wht_amount >= 0), carried_in REAL NOT NULL DEFAULT 0
+    CHECK (carried_in >= 0), carried_out REAL NOT NULL DEFAULT 0
+    CHECK (carried_out >= 0),
     UNIQUE(run_id, employee_id)
 );
 
@@ -3285,6 +3287,8 @@ BEGIN
             'sso_employer',              OLD.sso_employer,
             'commission_amount',         OLD.commission_amount,
             'salary_advance_deduction',  OLD.salary_advance_deduction,
+            'carried_in',                OLD.carried_in,
+            'carried_out',               OLD.carried_out,
             'gross',                     OLD.gross,
             'net_pay',                   OLD.net_pay,
             'note',                      OLD.note
@@ -3318,6 +3322,8 @@ BEGIN
             'sso_employer',              NEW.sso_employer,
             'commission_amount',         NEW.commission_amount,
             'salary_advance_deduction',  NEW.salary_advance_deduction,
+            'carried_in',                NEW.carried_in,
+            'carried_out',               NEW.carried_out,
             'gross',                     NEW.gross,
             'net_pay',                   NEW.net_pay,
             'note',                      NEW.note
@@ -3336,6 +3342,8 @@ WHEN (
     OR OLD.diligence_forfeited         IS NOT NEW.diligence_forfeited
     OR OLD.sso_employee                IS NOT NEW.sso_employee
     OR OLD.salary_advance_deduction    IS NOT NEW.salary_advance_deduction
+    OR OLD.carried_in                  IS NOT NEW.carried_in
+    OR OLD.carried_out                 IS NOT NEW.carried_out
     OR OLD.gross                       IS NOT NEW.gross
     OR OLD.net_pay                     IS NOT NEW.net_pay
     OR OLD.note                        IS NOT NEW.note
@@ -3356,6 +3364,8 @@ BEGIN
         UNION ALL SELECT 'diligence_forfeited',         OLD.diligence_forfeited,         NEW.diligence_forfeited         WHERE OLD.diligence_forfeited         IS NOT NEW.diligence_forfeited
         UNION ALL SELECT 'sso_employee',                OLD.sso_employee,                NEW.sso_employee                WHERE OLD.sso_employee                IS NOT NEW.sso_employee
         UNION ALL SELECT 'salary_advance_deduction',    OLD.salary_advance_deduction,    NEW.salary_advance_deduction    WHERE OLD.salary_advance_deduction    IS NOT NEW.salary_advance_deduction
+        UNION ALL SELECT 'carried_in',                  OLD.carried_in,                  NEW.carried_in                  WHERE OLD.carried_in                  IS NOT NEW.carried_in
+        UNION ALL SELECT 'carried_out',                 OLD.carried_out,                 NEW.carried_out                 WHERE OLD.carried_out                 IS NOT NEW.carried_out
         UNION ALL SELECT 'gross',                       OLD.gross,                       NEW.gross                       WHERE OLD.gross                       IS NOT NEW.gross
         UNION ALL SELECT 'net_pay',                     OLD.net_pay,                     NEW.net_pay                     WHERE OLD.net_pay                     IS NOT NEW.net_pay
         UNION ALL SELECT 'note',                        OLD.note,                        NEW.note                        WHERE OLD.note                        IS NOT NEW.note

@@ -193,7 +193,16 @@ def test_unpaid_deduction_never_exceeds_the_month_base(tmp_db_conn):
 def test_long_maternity_month_does_not_deduct_more_than_base(tmp_db_conn):
     """The same clamp on the path the maternity cap newly reaches: a calendar
     month falling wholly past the 45 paid days is a zero-wage month, not a
-    negative-wage one."""
+    negative-wage one.
+
+    ⚠ UPDATED for payroll carry-forward (P1a, migration 178): net_pay can no
+    longer go negative — _recompute_totals clamps ANY negative
+    net_before_carry to 0, not only ones driven by carried_in. SSO is still
+    charged on a zero-wage month (still the same open policy question with
+    Put's accountant), but the shortfall it creates now carries forward as
+    carried_out instead of surfacing as a negative net_pay — which is
+    actually the resolution to that policy question, not a new gap: the SSO
+    charge is no longer silently unaccounted for either way."""
     eid = _mk_employee(tmp_db_conn, 'T_CLAMP2', 'long maternity', '2024-01-01',
                        monthly_salary=15000.0)
     _add_leave(tmp_db_conn, eid, 'MATERNITY', '2026-11-15', '2027-02-20', 98)
@@ -202,9 +211,8 @@ def test_long_maternity_month_does_not_deduct_more_than_base(tmp_db_conn):
 
     assert it['unpaid_leave_days'] == 31
     assert it['unpaid_leave_deduction'] == it['base_amount'] == 15000.00
-    # SSO is still charged (a separate policy question raised with Put's
-    # accountant), so net is -sso rather than 0 — but never worse than that.
-    assert it['net_pay'] == -it['sso_employee']
+    assert it['net_pay'] == 0.0
+    assert it['carried_out'] == it['sso_employee'] == 750.0
 
 
 def test_floored_annual_entitlement_deducts_the_excess(tmp_db_conn_hr_clean):
@@ -423,7 +431,8 @@ def test_combined_net_pay_diligence_kept(tmp_db_conn):
 # 054 specifically. 054 is already applied to the live DB and (per plan) does
 # NOT self-insert into applied_migrations. This asserts the realistic
 # invariant on the tmp_db copy: 054 recorded exactly once, all 9 HR tables
-# present, seeds (2 employees, 5 leave types, 4 config keys) present once.
+# present, seeds (2 employees, 5 leave types, 4 config keys from 054 + 1 from
+# migration 179's advance_warn_pct seed) present once.
 
 def test_migration_054_applied_exactly_once(tmp_db_conn):
     n = tmp_db_conn.execute(
@@ -446,7 +455,7 @@ def test_migration_054_applied_exactly_once(tmp_db_conn):
     ).fetchone()[0] == 5
     assert tmp_db_conn.execute(
         "SELECT COUNT(*) FROM hr_config"
-    ).fetchone()[0] == 4
+    ).fetchone()[0] == 5
 
 
 # ── full-month diligence rule ────────────────────────────────────────────────
@@ -1328,6 +1337,25 @@ def test_no_writer_leaves_the_caller_connection_holding_the_lock(tmp_db):
     setup = sqlite3.connect(tmp_db, timeout=10)
     setup.row_factory = sqlite3.Row
     try:
+        # Wipe existing payroll history first (same statements as conftest's
+        # tmp_db_conn_hr_clean). generate_run builds items for EVERY active
+        # employee of company 1, not just this test's own T_LEAK — so the
+        # live-DB clone's real payroll history for a real employee (e.g.
+        # พุธ, id 1) can otherwise collide with the P1d chronological-
+        # finalize invariant: a real finalized run followed by this test's
+        # own un-finalized 2028-06 draft is exactly the double-collection
+        # shape that invariant refuses. This test is about connection-lock
+        # hygiene, not carry-forward chronology.
+        setup.executescript("""
+            DELETE FROM cashbook_transactions
+             WHERE payroll_item_id IS NOT NULL
+                OR payroll_run_id  IS NOT NULL
+                OR salary_advance_id IS NOT NULL;
+            DELETE FROM payroll_items;
+            DELETE FROM salary_advances;
+            DELETE FROM payroll_runs;
+        """)
+        setup.commit()
         _mk_employee(setup, 'T_LEAK', 'leak-probe', '2028-06-01')
         draft = hr_mod.generate_run('2028-06', 1, created_by=1, conn=setup)
         draft_id = draft['id']
