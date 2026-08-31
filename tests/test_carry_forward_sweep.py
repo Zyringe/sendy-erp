@@ -64,11 +64,17 @@ _SKIP_DIRS = ("__pycache__", "instance", "static", ".pytest_cache", ".git")
 # them under the wrong assumption that P1a should have.
 APP_DECISIONS = {
     "hr.py":
-        "P1a (THIS phase) — the engine itself: _recompute_totals subtracts "
-        "carried_in and clamps net_pay at 0 (never negative); _build_item "
-        "derives carried_in from the most recent FINALIZED prior run's "
-        "carried_out; generate_run's INSERT and update_payroll_item's UPDATE "
-        "both persist carried_out so a regenerate/admin-edit doesn't drop it.",
+        "P1a — the engine itself: _recompute_totals subtracts carried_in "
+        "and clamps net_pay at 0 (never negative); _build_item derives "
+        "carried_in from the most recent FINALIZED prior run's carried_out; "
+        "generate_run's INSERT and update_payroll_item's UPDATE both persist "
+        "carried_out so a regenerate/admin-edit doesn't drop it. "
+        "P1b — finalize_run(confirm_carry=...) + CarryForwardWarning + "
+        "pending_carry_forward()/carry_forward_note(). "
+        "P1d — _build_item's CarryChronologyError (the chronological-"
+        "finalize invariant); reopen_run(confirm_carry_break=...) + "
+        "CarryConsumedWarning + carry_consumed_by()/carry_consumed_note(); "
+        "departing_employee_outstanding()/departing_employee_note().",
     "hr_queries.py":
         "P1c — get_payroll_runs SUMs pi.net_pay for the run-list total "
         "(feeds payroll.html + dashboard.html); get_employee_payslips feeds "
