@@ -691,6 +691,16 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
     return round(unpaid, 4), notes
 
 
+class CarryChronologyError(ValueError):
+    """A run exists for a month between the carry source and this one and is
+    NOT finalized — plan.md P1d step 3, the CHRONOLOGICAL FINALIZE invariant
+    that prevents a debt from being collected twice (or silently dropped).
+    Subclasses ValueError so it reads like generate_run's other refusals
+    (_dropped_employees_message / _added_employees_message) to any caller
+    catching Exception/ValueError. No confirm can override this one — the
+    only fix is to finalize (or otherwise resolve) the run in between."""
+
+
 # ── core: build one payroll_items payload ────────────────────────────────────
 def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
                 cfg: dict, run_id: Optional[int] = None):
@@ -810,7 +820,7 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
     # yet finalized for a month between the source and this one would break
     # that invariant, but REFUSING for that case is P1d's job, not P1a's.
     carry_row = c.execute(
-        """SELECT pi.carried_out AS carried_out
+        """SELECT pi.carried_out AS carried_out, pr.year_month AS src_month
              FROM payroll_items pi
              JOIN payroll_runs pr ON pr.id = pi.run_id
             WHERE pi.employee_id = ?
@@ -820,7 +830,45 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
             LIMIT 1""",
         (emp["id"], year_month),
     ).fetchone()
-    carried_in = round(float(carry_row["carried_out"]), 2) if carry_row else 0.0
+    if carry_row is not None:
+        # CHRONOLOGICAL FINALIZE invariant (plan.md P1d step 3) — the rule
+        # that prevents the same debt being collected twice.
+        #
+        # Traced double-collection path: Aug finalized carried_out=950 -> Sep
+        # generated carried_in=950 but left DRAFT -> Oct generated: this
+        # query above finds Aug (the nearest FINALIZED run before Oct, since
+        # Sep is draft), sets carried_in=950 AGAIN. If Oct is finalized
+        # before Sep, ฿950 is collected twice and nothing anywhere says so.
+        #
+        # Mirror case: while Aug sits reopened (draft), regenerating a still-
+        # draft Sep makes the `status = 'finalized'` filter above skip Aug
+        # and silently fall back past it to an older source or to 0.
+        #
+        # Both are the same shape: a run for THIS employee exists strictly
+        # between the carry source month and this one, and is not finalized.
+        # Refuse — never silently fall back.
+        gap = c.execute(
+            """SELECT pr.year_month, pr.status
+                 FROM payroll_items pi
+                 JOIN payroll_runs pr ON pr.id = pi.run_id
+                WHERE pi.employee_id = ?
+                  AND pr.year_month > ?
+                  AND pr.year_month < ?
+                  AND pr.status != 'finalized'
+                ORDER BY pr.year_month
+                LIMIT 1""",
+            (emp["id"], carry_row["src_month"], year_month),
+        ).fetchone()
+        if gap is not None:
+            raise CarryChronologyError(
+                f"สร้างรอบเดือน {year_month} ให้ {_employee_names(c, [emp['id']])} ไม่ได้ — "
+                f"มีรอบเดือน {gap['year_month']} (สถานะ {gap['status']}) ค้างอยู่ระหว่างเดือนที่ "
+                f"ยกยอดมา ({carry_row['src_month']}) กับเดือนนี้ · ต้อง finalize เดือน "
+                f"{gap['year_month']} ก่อน ไม่งั้นยอดยกจะถูกเก็บซ้ำหรือหายไป"
+            )
+        carried_in = round(float(carry_row["carried_out"]), 2)
+    else:
+        carried_in = 0.0
 
     note = "; ".join(unpaid_notes) if unpaid_notes else None
 
@@ -1162,6 +1210,140 @@ def _roster_drift_message(c, dropped_ids, added_ids) -> str:
         + " · ".join(parts)
         + " · การกดเปิดรอบเองไม่แก้ตัวเลขของใคร แต่ถ้ากด \"สร้างรอบใหม่\" ระบบจะปฏิเสธ "
         "เพื่อกันไม่ให้ประวัติเดือนนี้ถูกเขียนทับ — ให้แก้ตัวเลขรายบุคคลแทน แล้ว finalize ใหม่"
+    )
+
+
+class CarryConsumedWarning(Exception):
+    """Reopening this run would put the carry-forward chain into a state
+    where a later run's carried_in was sourced from THIS run's carried_out
+    (plan.md P1d — the Codex blocker). Distinct from ValueError so the route
+    can offer a confirmation instead of a dead end, same shape as
+    RosterDriftWarning."""
+
+
+def carry_consumed_by(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                      db_path: Optional[str] = None):
+    """[{'run_id', 'year_month', 'employee_id', 'carried_in'}, ...] — the
+    later run(s) whose carried_in was sourced from THIS run's carried_out.
+
+    For each employee `run_id` carried a debt for, the consumer is the
+    EARLIEST later FINALIZED run for that employee. Under the CHRONOLOGICAL
+    FINALIZE invariant `_build_item` now enforces (a run existing but not
+    finalized between the carry source and a later target REFUSES to
+    generate — plan.md P1d step 3, `CarryChronologyError`), that earliest
+    later finalized run is the only one whose carried_in could have come
+    from this one — there cannot be an unfinalized run standing between them
+    while such a chain exists.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        run = c.execute("SELECT * FROM payroll_runs WHERE id = ?",
+                        (run_id,)).fetchone()
+        if run is None:
+            return []
+        sources = c.execute(
+            """SELECT employee_id FROM payroll_items
+                WHERE run_id = ? AND carried_out > 0""",
+            (run_id,),
+        ).fetchall()
+        out = []
+        for s in sources:
+            nxt = c.execute(
+                """SELECT pr.id AS run_id, pr.year_month AS year_month,
+                          pi.carried_in AS carried_in
+                     FROM payroll_items pi
+                     JOIN payroll_runs pr ON pr.id = pi.run_id
+                    WHERE pi.employee_id = ?
+                      AND pr.status = 'finalized'
+                      AND pr.year_month > ?
+                    ORDER BY pr.year_month ASC
+                    LIMIT 1""",
+                (s["employee_id"], run["year_month"]),
+            ).fetchone()
+            if nxt is not None and nxt["carried_in"] > 0:
+                out.append({
+                    "run_id": nxt["run_id"],
+                    "year_month": nxt["year_month"],
+                    "employee_id": s["employee_id"],
+                    "carried_in": nxt["carried_in"],
+                })
+        return out
+
+
+def _carry_consumed_message(c, consumers) -> str:
+    """Warning shown before a reopen whose carried_out was already read by a
+    later finalized run. Names who and which downstream month(s), and spells
+    out the double-collection hazard so the operator knows what "confirm"
+    actually commits to — same precedent as _roster_drift_message."""
+    ids = sorted({row["employee_id"] for row in consumers})
+    names = _employee_names(c, ids)
+    downstream = ", ".join(sorted({row["year_month"] for row in consumers}))
+    return (
+        f"รอบนี้เปิดใหม่ได้ แต่ยอดยกของ {names} ที่รอบนี้ยกไป ถูกรอบเดือน {downstream} "
+        f"ที่ finalized แล้วอ่านไปใช้เป็นยอดยกมาแล้ว — ถ้าแก้ตัวเลขในรอบนี้แล้ว regenerate/"
+        f"finalize ใหม่ โดยไม่ไปแก้รอบ {downstream} ด้วย หนี้ก้อนเดียวกันจะถูกเก็บซ้ำสองรอบ "
+        f"· ต้อง reopen รอบ {downstream} ด้วย แล้ว regenerate/finalize ใหม่เรียงตามลำดับเดือน"
+    )
+
+
+def carry_consumed_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                        db_path: Optional[str] = None):
+    """The reopen warning for `run_id`'s carry chain, or None when no later
+    finalized run consumed its carried_out.
+
+    Same text `reopen_run` raises, so the page and the refusal cannot drift
+    apart — same precedent as roster_drift_note.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        consumers = carry_consumed_by(run_id, conn=c)
+        if not consumers:
+            return None
+        return _carry_consumed_message(c, consumers)
+
+
+def departing_employee_outstanding(employee_id: int,
+                                    conn: Optional[sqlite3.Connection] = None,
+                                    db_path: Optional[str] = None):
+    """(carried_out, advance_total) this employee still owes — the basis for
+    the departing-employee warning (plan.md P1d step 4). A WARNING only: no
+    collection logic, no new table. Settling with a leaver (e.g. deducting
+    from a final pay) is a human/legal matter the ERP does not decide.
+
+    carried_out: this employee's LATEST run's carried_out (0 if none, or if
+    their latest run doesn't carry).
+    advance_total: SUM of salary_advances not yet deducted
+    (deducted_in_run_id IS NULL), regardless of date.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        row = c.execute(
+            """SELECT pi.carried_out
+                 FROM payroll_items pi
+                 JOIN payroll_runs pr ON pr.id = pi.run_id
+                WHERE pi.employee_id = ?
+                ORDER BY pr.year_month DESC
+                LIMIT 1""",
+            (employee_id,),
+        ).fetchone()
+        carried_out = round(float(row["carried_out"]), 2) if row else 0.0
+
+        adv = c.execute(
+            """SELECT COALESCE(SUM(amount), 0) AS total FROM salary_advances
+                WHERE employee_id = ? AND deducted_in_run_id IS NULL""",
+            (employee_id,),
+        ).fetchone()
+        advance_total = round(float(adv["total"] or 0), 2)
+        return carried_out, advance_total
+
+
+def _departing_employee_message(carried_out: float, advance_total: float) -> str:
+    parts = []
+    if carried_out > 0:
+        parts.append(f"ยอดยกไปหักรอบหน้า ฿{carried_out:,.2f}")
+    if advance_total > 0:
+        parts.append(f"เงินเบิกล่วงหน้าที่ยังไม่ได้หัก ฿{advance_total:,.2f}")
+    return (
+        "พนักงานคนนี้ยังมี" + " และ ".join(parts) + " ค้างอยู่ — "
+        "ระบบไม่ได้หักหรือเรียกเก็บให้อัตโนมัติ กรุณาตกลงกับพนักงานเอง "
+        "(เช่น หักจากเงินเดือนงวดสุดท้าย) ก่อนปิดการจ้างงาน"
     )
 
 
@@ -1587,7 +1769,8 @@ def finalize_run(run_id: int,
 def reopen_run(run_id: int, reason: str, actor: str,
                conn: Optional[sqlite3.Connection] = None,
                db_path: Optional[str] = None,
-               confirm_roster_change: bool = False):
+               confirm_roster_change: bool = False,
+               confirm_carry_break: bool = False):
     """Un-finalize a finalized run. Records an explicit audit_log entry with
     the actor + human reason so the "why" survives (mig 071's UPDATE trigger
     captures the field diff with user=NULL).
@@ -1598,6 +1781,12 @@ def reopen_run(run_id: int, reason: str, actor: str,
     create a foot-gun — if the admin forgets to re-finalize, the unstamped
     advances would bleed into the next month's run (the exact bug we fixed
     when reconciling 2026-05).
+
+    `confirm_carry_break` (plan.md P1d — the Codex blocker): raises
+    CarryConsumedWarning, inside the lock and before any mutation, when a
+    LATER finalized run already read its carried_in from THIS run's
+    carried_out — reopening (then regenerating/re-finalizing) without also
+    touching that downstream run risks collecting the same debt twice.
 
     Raises ValueError on empty reason. Returns the run row, or None if
     run_id not found. No-op (returns row) if run is already draft.
@@ -1643,6 +1832,14 @@ def reopen_run(run_id: int, reason: str, actor: str,
         if (dropped or added) and not confirm_roster_change:
             raise RosterDriftWarning(
                 _roster_drift_message(c, dropped, added))
+
+        # Carry-consumed check (plan.md P1d — the Codex blocker). Checked in
+        # the SAME locked transaction as the roster check and the mutation
+        # below, so a later run cannot finalize (and consume this run's
+        # carried_out) between this read and the status flip.
+        consumers = carry_consumed_by(run_id, conn=c)
+        if consumers and not confirm_carry_break:
+            raise CarryConsumedWarning(_carry_consumed_message(c, consumers))
 
         c.execute(
             "UPDATE payroll_runs SET status='draft', finalized_at=NULL WHERE id=?",

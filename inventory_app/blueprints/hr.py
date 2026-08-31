@@ -251,9 +251,23 @@ def employee_edit(id: int):
     if data.get("bank_name") == "__other__":
         data["bank_name"] = (request.form.get("bank_name_other") or "").strip()
     _fill_probation_end(data)
+    # Departing-employee warning (plan.md P1d step 4, Put: เอาคำเตือน). Read
+    # the OLD state before the write so the transition (newly deactivated /
+    # newly given an end_date) can be detected — a warning only, no
+    # collection logic; settling with a leaver is a human/legal matter.
+    was_active = bool(emp["is_active"])
+    had_end_date = bool(emp["end_date"])
     try:
         hrq.update_employee(id, data)
         flash("อัปเดตข้อมูลพนักงานเรียบร้อย", "success")
+        now_active = bool(int(data.get("is_active", 1) or 0))
+        now_end_date = bool(data.get("end_date"))
+        departing = (was_active and not now_active) or (not had_end_date and now_end_date)
+        if departing:
+            carried_out, advance_total = hr_mod.departing_employee_outstanding(id)
+            if carried_out > 0 or advance_total > 0:
+                flash(hr_mod._departing_employee_message(carried_out, advance_total),
+                     "warning")
     except Exception as e:
         flash(f"ไม่สามารถบันทึก: {e}", "danger")
     return redirect(url_for("hr.employee_detail", id=id))
@@ -590,6 +604,10 @@ def payroll_detail(run_id: int):
     # stamp, and vice versa.
     finalized = run["status"] == "finalized"
     roster_drift_note = hr_mod.roster_drift_note(run_id) if finalized else None
+    # Same gate as roster_drift_note: only a finalized run can be reopened
+    # (plan.md P1d), so only that one needs to know whether a later run
+    # already consumed its carry.
+    carry_consumed_note = hr_mod.carry_consumed_note(run_id) if finalized else None
     # NOT gated on `finalized`: after a reopen the run is draft, and that is
     # exactly when the operator reaches the Finalize button — the one action
     # that stamps the money. Gating this on finalized made the banner vanish
@@ -607,6 +625,7 @@ def payroll_detail(run_id: int):
         dup_manual_salary_count=dup_manual_salary_count,
         any_paid=any_paid,
         roster_drift_note=roster_drift_note,
+        carry_consumed_note=carry_consumed_note,
         pending_advance_note=pending_advance_note,
         carry_forward_note=carry_forward_note,
         today_iso=date.today().isoformat(),
@@ -752,12 +771,18 @@ def payroll_reopen(run_id: int):
             run_id, reason=reason,
             actor=session.get("username") or "unknown",
             confirm_roster_change=(request.form.get("confirm_roster_change") == "1"),
+            confirm_carry_break=(request.form.get("confirm_carry_break") == "1"),
         )
         flash(f"Reopened run #{run_id} แล้ว — แก้ไขเสร็จอย่าลืม finalize ใหม่", "success")
     except hr_mod.RosterDriftWarning as w:
         # Not an error: reopening is permitted, it just needs an explicit ack.
         # The page renders the same warning + a required checkbox, so a normal
         # operator never reaches this branch — it catches a stale form.
+        flash(f"{w} — ติ๊กยืนยันในกล่อง Reopen แล้วกดอีกครั้ง", "warning")
+    except hr_mod.CarryConsumedWarning as w:
+        # Same shape as RosterDriftWarning above — reopening is permitted, it
+        # just needs an explicit ack that a downstream run already consumed
+        # this run's carry.
         flash(f"{w} — ติ๊กยืนยันในกล่อง Reopen แล้วกดอีกครั้ง", "warning")
     except Exception as e:
         flash(f"ไม่สามารถ reopen: {e}", "danger")

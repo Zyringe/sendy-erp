@@ -395,6 +395,18 @@
             </label>
           </div>
           {% endif %}
+          {% if carry_consumed_note %}
+          <div class="alert alert-danger small mb-3" data-warn="carry-consumed">
+            <i class="bi bi-arrow-return-right me-1"></i>{{ carry_consumed_note }}
+          </div>
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" value="1" required
+                   name="confirm_carry_break" id="confirmCarryBreak">
+            <label class="form-check-label small" for="confirmCarryBreak">
+              เข้าใจแล้ว — จะไปแก้รอบเดือนถัดไปด้วยเพื่อไม่ให้เก็บหนี้ซ้ำ
+            </label>
+          </div>
+          {% endif %}
           <label class="form-label small">เหตุผล (จำเป็น) <span class="text-danger">*</span></label>
           <textarea name="reason" class="form-control" rows="3" required
                     placeholder="เช่น: แก้ไขเบี้ยขยันของบอลที่ลืมหัก / เพิ่ม advance ที่ตกหล่น"></textarea>

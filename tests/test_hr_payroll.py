@@ -1336,6 +1336,25 @@ def test_no_writer_leaves_the_caller_connection_holding_the_lock(tmp_db):
     setup = sqlite3.connect(tmp_db, timeout=10)
     setup.row_factory = sqlite3.Row
     try:
+        # Wipe existing payroll history first (same statements as conftest's
+        # tmp_db_conn_hr_clean). generate_run builds items for EVERY active
+        # employee of company 1, not just this test's own T_LEAK — so the
+        # live-DB clone's real payroll history for a real employee (e.g.
+        # พุธ, id 1) can otherwise collide with the P1d chronological-
+        # finalize invariant: a real finalized run followed by this test's
+        # own un-finalized 2028-06 draft is exactly the double-collection
+        # shape that invariant refuses. This test is about connection-lock
+        # hygiene, not carry-forward chronology.
+        setup.executescript("""
+            DELETE FROM cashbook_transactions
+             WHERE payroll_item_id IS NOT NULL
+                OR payroll_run_id  IS NOT NULL
+                OR salary_advance_id IS NOT NULL;
+            DELETE FROM payroll_items;
+            DELETE FROM salary_advances;
+            DELETE FROM payroll_runs;
+        """)
+        setup.commit()
         _mk_employee(setup, 'T_LEAK', 'leak-probe', '2028-06-01')
         draft = hr_mod.generate_run('2028-06', 1, created_by=1, conn=setup)
         draft_id = draft['id']
