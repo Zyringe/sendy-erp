@@ -893,6 +893,18 @@ def _build_item(c: sqlite3.Connection, emp: sqlite3.Row, year_month: str,
     # from being collected twice (see plan.md P1d) — a run existing but not
     # yet finalized for a month between the source and this one would break
     # that invariant, but REFUSING for that case is P1d's job, not P1a's.
+    # ⚠ OPEN QUESTION, deliberately NOT decided here (/scrutinize 2026-08-31).
+    # This is keyed on employee_id alone, with no `pr.company_id` filter. Measured
+    # on the dev snapshot: 0 employees appear in runs of more than one company,
+    # only company 1 (BSN) has ever had a payroll run, and every employee has a
+    # non-NULL company_id — so today the two are equivalent and nothing is wrong.
+    # It becomes a real question only if SD starts running its own payroll (the
+    # operating manual's stated target model) AND someone transfers between the
+    # two: carrying the debt across would move money between two P&Ls the manual
+    # says are kept separate, while filtering it out would silently drop a real
+    # debt. Both are business calls for Put, not defaults to bake in silently.
+    # No filter is added, and no speculative guard: adding either would pick one
+    # policy without asking. Recorded in plan.md's open items.
     carry_row = c.execute(
         """SELECT pi.carried_out AS carried_out, pr.year_month AS src_month
              FROM payroll_items pi

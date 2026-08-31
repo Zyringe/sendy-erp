@@ -454,7 +454,8 @@ def test_employee_edit_warns_when_deactivating_a_leaver_with_outstanding_carry(
                              follow_redirects=True)
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert 'ยังมี' in html and '200' in html, "the outstanding-balance warning must show"
+    assert 'พนักงานคนนี้ยังมี' in html and 'ค้างอยู่' in html and '200' in html, \
+        "the outstanding-balance warning must show"
     is_active = sqlite3.connect(tmp_db).execute(
         "SELECT is_active FROM employees WHERE id=?", (eid,)).fetchone()[0]
     assert is_active == 0, "control: the deactivation must have actually landed"
@@ -478,7 +479,7 @@ def test_employee_edit_warns_when_setting_end_date_with_outstanding_advance(
                              follow_redirects=True)
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert 'ยังมี' in html and '500' in html
+    assert 'พนักงานคนนี้ยังมี' in html and 'ค้างอยู่' in html and '500' in html
     end_date = sqlite3.connect(tmp_db).execute(
         "SELECT end_date FROM employees WHERE id=?", (eid,)).fetchone()[0]
     assert end_date == '2026-01-31', "control: the end_date must have actually landed"
@@ -499,7 +500,7 @@ def test_employee_edit_no_warning_when_leaver_owes_nothing(admin_client, tmp_db)
                              follow_redirects=True)
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert 'ยังมี' not in html, "no outstanding balance -> no warning"
+    assert 'พนักงานคนนี้ยังมี' not in html, "no outstanding balance -> no warning"
     is_active = sqlite3.connect(tmp_db).execute(
         "SELECT is_active FROM employees WHERE id=?", (eid,)).fetchone()[0]
     assert is_active == 0, \
@@ -527,7 +528,8 @@ def test_employee_edit_no_warning_when_no_departure_transition(admin_client, tmp
                              follow_redirects=True)
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert 'ยังมี' not in html, "no departure transition -> no warning, despite owing money"
+    assert 'พนักงานคนนี้ยังมี' not in html, \
+        "no departure transition -> no warning, despite owing money"
     nickname = sqlite3.connect(tmp_db).execute(
         "SELECT nickname FROM employees WHERE id=?", (eid,)).fetchone()[0]
     assert nickname == 'renamed', "control: the edit must have actually landed"
