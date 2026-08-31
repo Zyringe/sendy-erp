@@ -22,11 +22,18 @@
     <a class="nav-link {% if tab == 'reconcile' %}active{% endif %}"
        href="{{ url_for('accounting.ar_dashboard', tab='reconcile') }}">กระทบยอด</a>
   </li>
+  <li class="nav-item">
+    <a class="nav-link {% if tab == 'match' %}active{% endif %}"
+       href="{{ url_for('accounting.ar_dashboard', tab='match') }}">จับคู่ยอดโอน</a>
+  </li>
 </ul>
 
 {# ── AR snapshot freshness — OUTSIDE the tab blocks on purpose: every tab   #}
 {#    serves the same authoritative snapshot, so every tab warns.            #}
-{% include '_ar_snapshot_banner.html' %}
+{# ...except จับคู่ยอดโอน, whose numbers come from the Sendy ledger rather than
+   the snapshot — showing the banner there puts two provenance claims on one
+   money page. That tab carries its own source note instead. #}
+{% if tab != 'match' %}{% include '_ar_snapshot_banner.html' %}{% endif %}
 
 {# ═══════════════════════════════════════════════════════════════════════════ #}
 {# TAB: ภาพรวม (overview)                                                     #}
@@ -654,5 +661,127 @@
 </div>
 
 {% endif %}{# end reconcile #}
+
+{# ── Tab: จับคู่ยอดโอน ───────────────────────────────────────────────────── #}
+{# Put types the amount that landed in the bank; this answers which customer's #}
+{# outstanding invoices can add up to it. Lived on /payment-status/customers   #}
+{# until PR #169 folded that page into /ar without bringing the matcher.       #}
+{% if tab == 'match' %}
+<div class="card mb-3">
+  <div class="card-body py-3">
+    <form method="get" class="row g-2 align-items-end">
+      <input type="hidden" name="tab" value="match">
+      <div class="col-auto">
+        <label class="form-label small mb-1" for="matchAmount">ยอดที่โอนเข้ามา (บาท)</label>
+        <input type="text" inputmode="decimal" class="form-control form-control-sm" style="width:11rem"
+               id="matchAmount" name="amount" autofocus placeholder="เช่น 42503"
+               value="{{ '{:.10g}'.format(match_amount) if match_amount is not none else '' }}">
+      </div>
+      <div class="col-auto">
+        <label class="form-label small mb-1" for="matchTol">ส่วนต่างที่ยอมรับ (± บาท)</label>
+        <input type="text" inputmode="decimal" class="form-control form-control-sm" style="width:8rem"
+               id="matchTol" name="tol" value="{{ '{:g}'.format(match_tol) }}">
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-sm btn-primary" type="submit"><i class="bi bi-search me-1"></i>ค้นหา</button>
+        {% if match_amount is not none %}
+        <a href="{{ url_for('accounting.ar_dashboard', tab='match') }}"
+           class="btn btn-sm btn-outline-secondary">ล้าง</a>
+        {% endif %}
+      </div>
+    </form>
+    <p class="text-subtle small mb-0 mt-2">
+      ค้นลูกค้า <strong>ทุกราย</strong> (ไม่ตัดคนที่บิลเยอะออก) โดยไล่ชุดบิล <strong>ไม่เกิน 4 ใบ</strong>
+      บวกกับ <strong>จ่ายยกยอดทั้งหมด / จ่ายยกถึงบิลวันที่ใดวันหนึ่ง</strong> &nbsp;·&nbsp;
+      ยอดค้างที่ใช้ที่นี่คำนวณจาก <strong>ledger ของ Sendy</strong> (บิลขาย ลบใบเสร็จที่ยังไม่ถูกยกเลิก)
+      ไม่ใช่ snapshot ของ Express ที่แท็บอื่นใช้ — ตัวเลขสองฝั่งอาจไม่ตรงกัน
+      ให้ใช้ผลที่นี่เป็น <strong>ตัวช่วยเดา ไม่ใช่คำตอบสุดท้าย</strong>
+    </p>
+  </div>
+</div>
+
+{% if candidates is not none %}
+<div class="card mb-3 border-warning">
+  <div class="card-header bg-warning-subtle text-warning-emphasis">
+    <i class="bi bi-magic me-2"></i>คาดคะเนการชำระเงิน
+    <span class="fw-bold ms-1">฿{{ '{:,.2f}'.format(match_amount) }}</span>
+    <span class="text-subtle small ms-2">(ส่วนต่างไม่เกิน ±฿{{ '{:,.2f}'.format(match_tol) }})</span>
+  </div>
+  {% if candidates %}
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0 small">
+      <thead class="table-warning">
+        <tr>
+          <th class="ps-3" style="width:2rem">#</th>
+          <th>ลูกค้า</th>
+          <th>บิลที่ตรงกัน</th>
+          <th class="text-end">ยอดบิลรวม</th>
+          <th class="text-end">ส่วนต่าง</th>
+          <th class="text-center">ทางที่เป็นไปได้</th>
+          <th class="text-center">บิลค้างทั้งหมด</th>
+          <th class="text-end pe-3">ยอดค้างทั้งหมด</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in candidates %}
+        <tr class="{{ 'table-success' if c.diff == 0 else '' }}">
+          <td class="ps-3 text-subtle">{{ loop.index }}</td>
+          <td class="fw-medium">
+            <a href="{{ url_for('partners.customer_summary', customer_name=c.customer) }}"
+               class="text-decoration-none">{{ c.customer }}</a>
+          </td>
+          <td class="text-subtle small">
+            {% for b in c.matched_bills %}
+              {% if b.vat_type == 2 %}
+                <span class="badge bg-info-subtle text-info me-1" title="แยก VAT">{{ b.doc_base }}</span>
+              {% elif b.vat_type == 1 %}
+                <span class="badge bg-success-subtle text-success me-1" title="รวม VAT">{{ b.doc_base }}</span>
+              {% else %}
+                <span class="badge bg-secondary-subtle text-secondary me-1" title="ยกเว้น VAT">{{ b.doc_base }}</span>
+              {% endif %}
+            {% endfor %}
+          </td>
+          <td class="text-end fw-bold">{{ '{:,.2f}'.format(c.matched_sum) }}</td>
+          <td class="text-end {% if c.diff == 0 %}text-success fw-bold{% elif c.diff > 0 %}text-success{% else %}text-danger{% endif %}">
+            {% if c.diff == 0 %}✓ ตรงเป๊ะ
+            {% elif c.diff > 0 %}+{{ '{:,.2f}'.format(c.diff) }}
+            {% else %}{{ '{:,.2f}'.format(c.diff) }}{% endif %}
+          </td>
+          <td class="text-center">
+            {% if c.match_count == 1 %}
+            <span class="badge bg-success-subtle text-success"
+                  title="มีชุดบิลเดียวเท่านั้นที่รวมได้เท่านี้ — น่าเชื่อถือ">1 ชุด</span>
+            {% else %}
+            <span class="badge bg-secondary-subtle text-secondary"
+                  title="ยิ่งหลายชุด ยิ่งเป็นการบังเอิญ ไม่ใช่หลักฐาน">
+              {{ c.match_count }}{{ '+' if c.match_count >= match_cap else '' }} ชุด</span>
+            {% endif %}
+          </td>
+          <td class="text-center">
+            <span class="badge bg-danger-subtle text-danger">{{ c.total_unpaid_bills }} ใบ</span>
+          </td>
+          <td class="text-end pe-3 text-danger">{{ '{:,.2f}'.format(c.total_outstanding) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer text-subtle small">
+    ส่วนต่างเป็นบวก = ยอดบิลมากกว่าเงินที่โอนเข้ามา (จ่ายไม่ครบ) · ลบ = โอนเกินยอดบิลชุดนั้น
+    <br>
+    <strong>"ทางที่เป็นไปได้"</strong> = จำนวนชุดบิลของลูกค้ารายนั้นที่รวมได้เข้าช่วงยอดนี้ ·
+    <strong>1 ชุด = น่าเชื่อถือ</strong> · หลายชุด = ลูกค้ามีบิลย่อยเยอะจนบวกได้พอดีโดยบังเอิญ
+    ให้ดูเป็นการเดา ไม่ใช่หลักฐาน
+  </div>
+  {% else %}
+  <div class="card-body text-center text-subtle py-3">
+    <i class="bi bi-search me-2"></i>ไม่พบชุดบิลค้างที่รวมได้ใกล้ ฿{{ '{:,.2f}'.format(match_amount) }}
+    — ลองเพิ่มส่วนต่างที่ยอมรับ
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% endif %}{# end match #}
 
 {% endblock %}
