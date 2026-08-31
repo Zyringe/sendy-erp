@@ -1429,10 +1429,71 @@ def update_payroll_item(item_id: int,
         ).fetchone()
 
 
+class CarryForwardWarning(Exception):
+    """This run has items whose net went negative and would carry an
+    uncollected remainder into next month's carried_in (plan.md P1b).
+
+    Distinct from PendingAdvanceStampWarning: a carry is not a data-integrity
+    problem to go fix first — it IS the intended behaviour (Put's ruling,
+    plan.md: "ไม่ยกหนี้ให้สิ เอาหนี้ไปตัดเดือนหน้า") — so the operator's own
+    acknowledgement is enough to proceed. Distinct from ValueError so the
+    route can offer a confirmation instead of a dead end, same shape as
+    RosterDriftWarning for reopen_run."""
+
+
+def pending_carry_forward(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                          db_path: Optional[str] = None):
+    """(count, total, [(name, amount), ...]) of items in `run_id` whose net
+    went negative and would carry a remainder into next month.
+
+    Named per employee (not just a total) so the finalize confirm banner can
+    say WHO, not just how much — Put must see who before confirming.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        rows = c.execute(
+            """SELECT COALESCE(e.nickname, e.full_name) AS name,
+                      pi.carried_out AS amount
+                 FROM payroll_items pi
+                 JOIN employees e ON e.id = pi.employee_id
+                WHERE pi.run_id = ? AND pi.carried_out > 0
+                ORDER BY pi.carried_out DESC""",
+            (run_id,),
+        ).fetchall()
+        total = round(sum(float(r["amount"]) for r in rows), 2)
+        return len(rows), total, [(r["name"], float(r["amount"])) for r in rows]
+
+
+def _carry_forward_message(n: int, total: float, rows) -> str:
+    """One text for the banner AND the refusal (same precedent as
+    _pending_advance_message), so the page cannot promise something the
+    finalize boundary then contradicts."""
+    names = ", ".join(f"{name} (฿{amount:,.2f})" for name, amount in rows)
+    return (
+        f"รอบนี้มี {n} คนที่ยอดสุทธิติดลบ รวม ฿{total:,.2f} ({names}) — "
+        f"เดือนนี้จ่ายให้ไม่ครบ ส่วนที่เก็บไม่ได้จะถูกยกไปหักในรอบเดือนถัดไปให้อัตโนมัติ "
+        f"(ไม่มีการยกหนี้ให้) · กดยืนยันด้านล่างเพื่อ finalize ต่อ"
+    )
+
+
+def carry_forward_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                       db_path: Optional[str] = None):
+    """The finalize-confirm warning for `run_id`, or None.
+
+    Same text finalize_run raises, so the page and the refusal cannot drift
+    apart — same precedent as pending_advance_note / roster_drift_note.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        n, total, rows = pending_carry_forward(run_id, conn=c)
+        if not n:
+            return None
+        return _carry_forward_message(n, total, rows)
+
+
 # ── finalize a payroll run (stamps salary advances) ──────────────────────────
 def finalize_run(run_id: int,
                   conn: Optional[sqlite3.Connection] = None,
-                  db_path: Optional[str] = None):
+                  db_path: Optional[str] = None,
+                  confirm_carry: bool = False):
     """Mark a draft run finalized and STAMP the salary advances it consumed.
 
     If the run is already finalized this is a no-op (returns the row; does
@@ -1443,6 +1504,10 @@ def finalize_run(run_id: int,
       2. every un-stamped salary_advances row for an employee in this run,
          dated on/before the run month's period_end, gets
          deducted_in_run_id = run_id so a later month never re-deducts it.
+
+    `confirm_carry` (plan.md P1b): raises CarryForwardWarning, inside the
+    lock and before any mutation, when this run has an item whose net went
+    negative — unless the caller has already acknowledged it.
     Returns the payroll_runs row (or None if run_id unknown).
     """
     with _ConnCtx(conn, db_path, lock=True) as c:
@@ -1479,6 +1544,18 @@ def finalize_run(run_id: int,
         n, total = pending_advance_stamp(run_id, conn=c)
         if n:
             raise PendingAdvanceStampWarning(_pending_advance_message(n, total))
+
+        # Carry-forward confirm (plan.md P1b). Unlike the advance check above,
+        # this is expected to fire on an ordinary month — a negative net is
+        # not a data-integrity problem to go fix first, so the operator's own
+        # confirmation is enough; there is no regenerate that would make it
+        # go away. Checked in the SAME locked transaction as the advance
+        # check and the mutation below, so nothing can change the answer
+        # between this read and the write (same reasoning as the lock note
+        # above finalize_run's docstring).
+        cn, ctotal, crows = pending_carry_forward(run_id, conn=c)
+        if cn and not confirm_carry:
+            raise CarryForwardWarning(_carry_forward_message(cn, ctotal, crows))
 
         _, period_end = _month_bounds(run["year_month"])
 

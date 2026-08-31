@@ -595,6 +595,10 @@ def payroll_detail(run_id: int):
     # that stamps the money. Gating this on finalized made the banner vanish
     # at the only moment it matters (Codex review of PR #367).
     pending_advance_note = hr_mod.pending_advance_note(run_id)
+    # Same reasoning as pending_advance_note above: NOT gated on `finalized`.
+    # A draft run is exactly when the Finalize button (and its confirm) is
+    # reachable (plan.md P1b).
+    carry_forward_note = hr_mod.carry_forward_note(run_id)
     return render_template(
         "hr/payroll_detail.html",
         run=run,
@@ -604,6 +608,7 @@ def payroll_detail(run_id: int):
         any_paid=any_paid,
         roster_drift_note=roster_drift_note,
         pending_advance_note=pending_advance_note,
+        carry_forward_note=carry_forward_note,
         today_iso=date.today().isoformat(),
         be_year=_be_year,
         fmt_baht=_fmt_baht,
@@ -711,10 +716,19 @@ def payroll_finalize(run_id: int):
         flash("Run นี้ finalized แล้ว", "warning")
         return redirect(url_for("hr.payroll_detail", run_id=run_id))
     try:
-        hr_mod.finalize_run(run_id)
+        hr_mod.finalize_run(
+            run_id,
+            confirm_carry=(request.form.get("confirm_carry") == "1"),
+        )
         flash(f"Finalized payroll run #{run_id} เรียบร้อย", "success")
     except hr_mod.PendingAdvanceStampWarning as w:
         flash(str(w), "danger")
+    except hr_mod.CarryForwardWarning as w:
+        # Not an error: finalizing is permitted, it just needs an explicit
+        # ack. The page renders the same warning + a required checkbox, so a
+        # normal operator never reaches this branch — same shape as the
+        # RosterDriftWarning catch in payroll_reopen below.
+        flash(f"{w} — ติ๊กยืนยันแล้วกด Finalize อีกครั้ง", "warning")
     except Exception as e:
         flash(f"ไม่สามารถ finalize: {e}", "danger")
     return redirect(url_for("hr.payroll_detail", run_id=run_id))

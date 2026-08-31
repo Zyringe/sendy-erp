@@ -20,6 +20,18 @@
       <i class="bi bi-cash-coin me-1"></i>{{ pending_advance_note }}
     </div>
     {% endif %}
+    {% if carry_forward_note %}
+    <div class="alert alert-warning small my-2" data-warn="carry-forward">
+      <i class="bi bi-arrow-return-right me-1"></i>{{ carry_forward_note }}
+    </div>
+    <div class="form-check mb-2">
+      <input class="form-check-input" type="checkbox" value="1" required
+             name="confirm_carry" id="confirmCarry">
+      <label class="form-check-label small" for="confirmCarry">
+        เข้าใจแล้ว — ยอดที่เก็บไม่ได้จะถูกยกไปหักเดือนถัดไป
+      </label>
+    </div>
+    {% endif %}
     <button type="submit" class="btn btn-sm btn-success">
       <i class="bi bi-check-circle me-1"></i>Finalize
     </button>

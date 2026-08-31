@@ -466,7 +466,11 @@ def test_carry_clamped_item_refuses_salary_payment(tmp_db_conn):
     it = _item(tmp_db_conn, run['id'], eid)
     assert it['net_pay'] == 0.0, "control: this item must actually be clamped to 0"
 
-    hr.finalize_run(run['id'], conn=tmp_db_conn)
+    # confirm_carry=True: this run has a carried_out > 0 item (P1b's finalize
+    # guard, added after this P1a test was written) — this test is about
+    # post_salary_payment's refusal downstream of finalize, not about the
+    # carry-confirm guard itself, so acknowledge it to reach that state.
+    hr.finalize_run(run['id'], conn=tmp_db_conn, confirm_carry=True)
 
     acct = tmp_db_conn.execute(
         "SELECT id FROM cashbook_accounts WHERE is_transfer=0 AND is_active=1 "
