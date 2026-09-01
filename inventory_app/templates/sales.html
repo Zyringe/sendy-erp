@@ -119,10 +119,15 @@
             {% if r.product_id %}
               <a href="{{ url_for('products.product_detail', product_id=r.product_id) }}"
                  class="text-decoration-none text-main">{{ r.display_name }}</a>
-            {% else %}
+            {% elif r.bsn_code %}
               <span class="text-warning small">
                 <i class="bi bi-exclamation-triangle me-1"></i>{{ r.display_name }}
               </span>
+            {% else %}
+              {# No product AND no BSN code: the placeholder row for a credit
+                 note with no product lines at source. Nothing to map, and
+                 display_name is NULL — see the same branch in sales_doc.html. #}
+              <span class="text-subtle small">ไม่มีรายการสินค้า</span>
             {% endif %}
           </td>
           <td data-label="ลูกค้า" class="text-subtle small">{{ r.customer or '–' }}</td>

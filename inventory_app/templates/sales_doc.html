@@ -67,16 +67,27 @@
             {%- set suffix = r.doc_no.rsplit('-', 1) -%}
             {%- if suffix | length > 1 -%}{{ suffix[-1] }}{%- else -%}{{ loop.index }}{%- endif -%}
           </td>
-          <td class="font-mono small text-subtle">{{ r.bsn_code }}</td>
+          <td class="font-mono small text-subtle">{{ r.bsn_code or '–' }}</td>
           <td>
             {% if r.product_id %}
               <a href="{{ url_for('products.product_detail', product_id=r.product_id) }}"
                  class="text-decoration-none text-main">{{ r.display_name }}</a>
               <div class="text-subtle" style="font-size:0.75rem">รหัส (ID) {{ r.product_id }}</div>
-            {% else %}
+            {% elif r.bsn_code %}
               <span class="text-warning small">
                 <i class="bi bi-exclamation-triangle me-1"></i>{{ r.display_name }}
               </span>
+            {% else %}
+              {# No product AND no BSN code: this is the placeholder row for a
+                 credit note whose source document carries no product lines at
+                 all (Express ARTRN header with zero STCRD details — see
+                 parse_weekly.parse_credit_notes). There is nothing to map, so
+                 the yellow "unmapped" warning above would send someone to
+                 /mapping to look for a code that does not exist, and
+                 display_name is NULL, which Jinja prints as "None". The
+                 discriminator is bsn_code, never display_name: a real line can
+                 carry a code whose name is blank and must keep its warning. #}
+              <span class="text-subtle small">ไม่มีรายการสินค้า</span>
             {% endif %}
           </td>
           <td class="text-end small">{{ r.qty | fmt_qty }} {{ r.unit }}</td>
@@ -93,6 +104,12 @@
                hard-code it here (design.md §3.3: one definition, imported). #}
             {% if r.bsn_code in non_stock_codes %}
               <span class="badge badge-info">ไม่นับสต็อก</span>
+            {% elif not r.bsn_code %}
+              {# Same placeholder row as the สินค้า cell above: no product line
+                 exists, so nothing can ever post to the ledger and 'รอ' would
+                 read as an unfinished job forever — the identical failure the
+                 ไม่นับสต็อก branch above exists to prevent. #}
+              <span class="badge badge-info">ไม่มีรายการ</span>
             {% elif r.synced_to_stock %}
               <span class="badge badge-success"><i class="bi bi-check2"></i></span>
             {% else %}
