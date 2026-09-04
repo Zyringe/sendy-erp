@@ -23,6 +23,7 @@ from .system_alerts import (record_wacc_identity_alert,
                             record_unmapped_bsn_codes_alert,
                             create_system_alert)
 from .stock_filters import is_non_stock_code
+from . import bsn_line
 
 
 def _detect_removed_lines(conn, table: str, file_type: str, entries: list) -> list:
@@ -37,15 +38,8 @@ def _detect_removed_lines(conn, table: str, file_type: str, entries: list) -> li
     """
     if not entries:
         return []
-    if file_type == 'purchase':
-        file_keys = {(e['doc_no'], e['product_code_raw'], e.get('line_seq', 1)) for e in entries}
-    else:
-        file_keys = {(e['doc_no'], e['product_code_raw']) for e in entries}
-
-    def _base(dn):
-        return dn.rsplit('-', 1)[0] if '-' in dn else dn
-
-    docs = sorted({_base(e['doc_no']) for e in entries})
+    file_keys = {bsn_line.entry_key(e, file_type) for e in entries}
+    docs = sorted({bsn_line.doc_base(e['doc_no']) for e in entries})
     extra = ", line_seq" if file_type == 'purchase' else ""
     found = []
     CHUNK = 800
@@ -57,8 +51,7 @@ def _detect_removed_lines(conn, table: str, file_type: str, entries: list) -> li
             f"FROM {table} WHERE doc_base IN ({ph})", batch
         ).fetchall()
         for r in rows:
-            key = ((r['doc_no'], r['bsn_code'], r['line_seq']) if file_type == 'purchase'
-                   else (r['doc_no'], r['bsn_code']))
+            key = bsn_line.row_key(r, file_type)
             if key not in file_keys:
                 found.append(r)
     return found
@@ -115,17 +108,7 @@ def preview_import(entries: list, file_type: str) -> dict:
             if old is None:
                 counts['new'] += 1
                 continue
-            diffs = []
-            if abs((old['qty'] or 0) - (e['qty'] or 0)) >= 1e-9:
-                diffs.append(('qty', old['qty'], e['qty']))
-            if bsn_units.normalize_unit(old['unit'] or '') != (unit or ''):
-                diffs.append(('unit', old['unit'], unit))
-            if abs((old['unit_price'] or 0) - (e['unit_price'] or 0)) >= 1e-9:
-                diffs.append(('unit_price', old['unit_price'], e['unit_price']))
-            if abs((old['net'] or 0) - (e['net'] or 0)) >= 1e-9:
-                diffs.append(('net', old['net'], e['net']))
-            if (old['product_id'] or 0) != (pid or 0):
-                diffs.append(('product_id', old['product_id'], pid))
+            diffs = bsn_line.field_diff(old, e, pid, unit)
             if not diffs:
                 counts['unchanged'] += 1
             else:
@@ -269,20 +252,13 @@ def import_weekly(entries: list, file_type: str, filename: str,
 
         carry_from = None
         if old is not None:
-            # Normalise the STORED unit before comparing: legacy/rebuild rows
-            # were saved with raw acronym units (หล/ตว/กก…) while e['unit'] was
-            # normalised at the top of the loop. Without this, re-importing the
-            # identical file flags ~95% of purchase rows as "changed" (cosmetic
-            # only — same base_qty), churning the ledger needlessly. Comparing
-            # normalize(old) == new makes a true re-upload a genuine no-op.
-            same = (
-                abs((old['qty'] or 0) - (e['qty'] or 0)) < 1e-9
-                and bsn_units.normalize_unit(old['unit'] or '') == (e['unit'] or '')
-                and abs((old['unit_price'] or 0) - (e['unit_price'] or 0)) < 1e-9
-                and abs((old['net'] or 0) - (e['net'] or 0)) < 1e-9
-                and (old['product_id'] or 0) == (product_id or 0)
-            )
-            if same:
+            # Same five predicates the confirm page showed the operator, from
+            # the same place — see models/bsn_line.py. They used to be written
+            # out here a second time and kept in step with preview_import by
+            # hand, which matters because the operator ticks `apply_removals`
+            # on a count the PREVIEW produced and this function is what acts
+            # on it.
+            if not bsn_line.field_diff(old, e, product_id, e['unit']):
                 unchanged += 1
                 continue
             # Real change → replace the source row; pass 2 rebuilds its ledger.
@@ -306,13 +282,8 @@ def import_weekly(entries: list, file_type: str, filename: str,
             #    old row took, or the corrected line pays twice — a 5 -> 7
             #    correction landed at 88 instead of 93 before mig 172.
             if file_type == 'sales':
-                stock_event_same = (
-                    abs((old['qty'] or 0) - (e['qty'] or 0)) < 1e-9
-                    and bsn_units.normalize_unit(old['unit'] or '') == (e['unit'] or '')
-                    and (old['product_id'] or 0) == (product_id or 0)
-                    and (old[party_col] or '').strip() == (e['party'] or '').strip()
-                )
-                if stock_event_same:
+                if not bsn_line.stock_event_changed(
+                        old, e, product_id, e['unit'], file_type):
                     carry_from = old['id']
                 else:
                     _moved, _recorded = reverse_platform_deduction(
