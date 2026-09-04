@@ -34,6 +34,7 @@ import uuid
 from datetime import datetime
 
 import bsn_units
+import import_router
 
 
 def seed_companies(conn):
@@ -232,7 +233,10 @@ def _guard_subprocess_target():
     return config.DATABASE_PATH
 
 
-_SNAPSHOT_LABELS = {'ar_snapshot': 'ลูกหนี้คงค้าง', 'ap_snapshot': 'เจ้าหนี้คงค้าง'}
+# The labels come from import_router's single declaration; only the CHOICE of
+# which registers are fatal here is this module's own (see _require_snapshots_ok).
+_SNAPSHOT_LABELS = {k: label for k, label, _hint in import_router.ISOLATED_REGISTERS
+                    if k in import_router.SNAPSHOT_REGISTER_KEYS}
 
 
 def _require_snapshots_ok(per_type):

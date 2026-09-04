@@ -969,21 +969,40 @@ def test_a_failing_register_warns_but_does_not_fail_the_money_import(tmp_db, mon
 
 
 def test_the_blueprint_reads_back_every_register_import_router_declares():
-    """The source of truth is import_router's own constant, beside the try/except
-    blocks that create these dicts — NOT a literal restated here.
+    """The register vocabulary has ONE declaration and every consumer derives.
 
-    HONEST LIMIT (Codex round 6): the previous version of this test compared
-    _ISOLATED_REGISTERS against a literal written in the test itself, i.e. a
-    closed loop, while its docstring claimed it would catch a seventh register
-    added in import_router. It could not: both sides would still have said six.
-    What this DOES catch is the blueprint drifting from the declared set. What it
-    still cannot catch is someone adding a register in import_router without
-    declaring it — that needs the declaration to sit next to the code, which is
-    why the constant moved there."""
+    HISTORY: this test used to compare two hand-maintained lists — first against
+    a literal restated in the test itself (a closed loop that could never have
+    caught a seventh register), then against import_router's constant. Its own
+    docstring recorded the gap it still could not close: a register added in
+    import_router and never declared in the blueprint. That gap is now shut by
+    construction, because the blueprint no longer has a second list to fall
+    behind with — so the set comparison this test used to make would now be
+    vacuously true, and asserting it would be theatre.
+
+    What is left is what can still actually break.
+    """
     import import_router
-    assert {k for k, *_ in bsn._ISOLATED_REGISTERS} == import_router.ISOLATED_REGISTER_KEYS
-    # CONTROL: labels must be non-empty, or the warning names nothing.
-    assert all(label for _, label, *_ in bsn._ISOLATED_REGISTERS)
+    import vat_book_builder
+
+    # Identity, not equality: an equal-but-separate list is EXACTLY the drift
+    # this change removed, and `==` would happily accept it back.
+    assert bsn._ISOLATED_REGISTERS is import_router.ISOLATED_REGISTERS, (
+        'the blueprint has its own register list again — it will drift, which '
+        'is what the duplicate pair did before')
+
+    # A register declared without a label produces a warning that names nothing.
+    assert all(label for _key, label, _hint in import_router.ISOLATED_REGISTERS)
+
+    # The snapshot subset must be drawn FROM the declared set, not beside it.
+    assert set(import_router.SNAPSHOT_REGISTER_KEYS) <= import_router.ISOLATED_REGISTER_KEYS
+    assert set(vat_book_builder._SNAPSHOT_LABELS) == set(import_router.SNAPSHOT_REGISTER_KEYS)
+
+    # CONTROL: everything above runs against a non-empty declaration, so an
+    # emptied tuple cannot pass this test by having nothing to check.
+    assert len(import_router.ISOLATED_REGISTERS) == 6, (
+        'adding or removing an isolated register is a deliberate act: update '
+        'this count and re-read every consumer of the vocabulary')
 
 
 def test_every_declared_register_key_exists_in_a_real_import_result(empty_db, monkeypatch):
