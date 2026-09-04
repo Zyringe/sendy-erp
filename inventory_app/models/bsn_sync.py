@@ -171,14 +171,6 @@ def _product_name(conn, product_id):
     return row['product_name'] if row else None
 
 
-def to_base_units(quantity: int, mode: str, product) -> int:
-    if mode == 'carton':
-        return quantity * (product['units_per_carton'] or 1)
-    if mode == 'box':
-        return quantity * (product['units_per_box'] or 1)
-    return quantity
-
-
 def _get_base_qty(conn, product_id: int, product_unit_type: str, bsn_unit: str, qty):
     """
     Convert BSN qty to base-unit qty.
@@ -201,20 +193,18 @@ def _get_base_qty(conn, product_id: int, product_unit_type: str, bsn_unit: str, 
     return None  # ratio not defined yet
 
 
-def _sync_bsn_to_stock(conn, table: str, file_type: str, deduct_platform=True,
-                       product_ids=None, replayed_ids=None):
+def _sync_bsn_to_stock(conn, table: str, file_type: str, product_ids=None):
     """
     สร้าง transaction ย้อนหลังสำหรับแถว BSN ที่มี product_id แล้ว
     แต่ยังไม่ถูก sync (synced_to_stock = 0)
     file_type: 'sales' → OUT,  'purchase' → IN
 
-    deduct_platform, replayed_ids: platform deduction moved to order imports
-    (order-driven-platform-deduction plan, Phase 1) — `platform_skus.stock` is
-    now deducted/credited only by `import_marketplace_orders`'s diff engine.
-    These params are retained for signature stability (callers in imports.py,
-    update_unit_conversion_ratio, repoint_bsn_code still pass them) but are no
-    longer consulted by this function. Removing the plumbing from all callers
-    is a follow-up cleanup, not this change.
+    Platform deduction is NOT this function's job: `platform_skus.stock` is
+    deducted/credited only by `import_marketplace_orders`'s diff engine
+    (order-driven-platform-deduction plan, Phase 1). The `deduct_platform` and
+    `replayed_ids` parameters that used to say so were removed once every
+    caller stopped feeding them — one of which was paying a SELECT per import
+    to build an argument this function discarded.
 
     product_ids: restrict the scan to these products. This function otherwise
     picks up EVERY unsynced mapped row in the table, which a replay must not
@@ -634,9 +624,9 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
         (product_id, *_BSN_LEDGER_NOTE_PATTERNS))
 
     _sync_bsn_to_stock(conn, 'sales_transactions', 'sales',
-                       deduct_platform=False, product_ids=(product_id,))
+                       product_ids=(product_id,))
     _sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase',
-                       deduct_platform=False, product_ids=(product_id,))
+                       product_ids=(product_id,))
 
     # EVERY row that was synced must be synced again — identity by identity.
     # A shortfall means some row's ratio is gone (the ad-hoc scripts under

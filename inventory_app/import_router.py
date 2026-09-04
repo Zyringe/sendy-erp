@@ -16,12 +16,6 @@ from __future__ import annotations
 import os
 import time
 
-REPORT_TYPES = (
-    "sales", "purchase", "payments_in", "payments_out",
-    "credit_notes_ar", "credit_notes_ap", "ar_snapshot", "ap_snapshot",
-)
-
-
 class HistoryExportBlocked(ValueError):
     """A full-history Express export was dropped on the weekly importer.
 
@@ -80,8 +74,10 @@ def _reject_history_export(path):
 
 
 def detect_express_report(path):
-    """Classify an Express export by its title line. Returns a REPORT_TYPES
-    value or 'unknown'. Never raises — an unreadable file is 'unknown'."""
+    """Classify an Express export by its title line.
+
+    Returns one of the keys `_EXPRESS_KIND` dispatches on, or 'unknown'.
+    Never raises — an unreadable file is 'unknown'."""
     try:
         with open(path, encoding="cp874") as f:
             head = "".join(next(f, "") for _ in range(8)).replace("\xa0", " ")

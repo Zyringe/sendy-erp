@@ -295,7 +295,12 @@ EXPECTED_SEQUENCE = {
         'AND NOT (st.synced_to_stock = 1 AND st.customer IN (',
     ],
     ('models/imports.py', 'import_weekly'): [
-        ') AND synced_to_stock = 1',
+        # The `) AND synced_to_stock = 1` SELECT that used to sit here built
+        # `replayed_ids` for _sync_bsn_to_stock. That parameter had already
+        # stopped being consulted when platform deduction moved to the order
+        # importer, so the query was doing a per-import round trip for an
+        # argument the callee discarded; both are gone. The reset below is the
+        # only synced_to_stock write this function still makes.
         'SET synced_to_stock=0 WHERE product_id IN (',
     ],
     ('models/mapping.py', '_repoint_rows'): [

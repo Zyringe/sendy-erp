@@ -95,7 +95,7 @@ from .system_alerts import (
     record_express_doc_drift_skipped_alert, clear_express_doc_drift_skipped_alert,
 )
 from .bsn_sync import (
-    to_base_units, _get_base_qty, _sync_bsn_to_stock,
+    _get_base_qty, _sync_bsn_to_stock,
     get_pending_unit_conversions, learn_acronyms_normalize,
     save_unit_conversions, dismiss_pending_unit_conversion,
     update_unit_conversion_ratio, get_all_unit_conversions,
@@ -108,7 +108,7 @@ from .mapping import (
     repoint_bsn_code, get_pending_split_mappings, missing_unit_ratios,
 )
 from .imports import (
-    _detect_removed_lines, preview_import, import_weekly, get_recent_imports,
+    _detect_removed_lines, preview_import, import_weekly,
     get_express_dbf_freshness, last_working_day_before,
 )
 from .sales import (

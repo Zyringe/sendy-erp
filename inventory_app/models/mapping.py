@@ -676,16 +676,13 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
             )
 
         # ── 5. Re-sync via the real app function ────────────────────────────
-        # deduct_platform=False: this is a REPLAY of rows that already deducted
-        # platform_skus.stock when they were first imported, and deleting their
-        # ledger rows in step 4 did not put that stock back.
-        # product_ids: and it must stay INSIDE the affected set — an unrelated
-        # product's pending row swept in here would first-sync under that same
-        # deduct_platform=False and lose the deduction it is owed.
+        # product_ids: the replay must stay INSIDE the affected set — this
+        # function otherwise picks up EVERY unsynced mapped row in the table,
+        # so an unrelated product's pending row would first-sync under a
+        # caller that only meant to replay the products it named.
         for _t, _ft in (('sales_transactions', 'sales'),
                         ('purchase_transactions', 'purchase')):
-            _sync_bsn_to_stock(conn, _t, _ft, deduct_platform=False,
-                               product_ids=affected)
+            _sync_bsn_to_stock(conn, _t, _ft, product_ids=affected)
 
         # ── 5a. Refuse if the product-wide reset+replay silently dropped a
         # row that was synced before we touched anything ──────────────────
