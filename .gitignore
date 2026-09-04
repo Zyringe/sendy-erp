@@ -21,3 +21,4 @@ Thumbs.db
 .claude.local.json
 .claude/.session/
 .claude/cache/
+.claude/worktrees/
