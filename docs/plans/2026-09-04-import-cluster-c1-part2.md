@@ -70,3 +70,54 @@ template-render failures, and `pytest` cannot see bfcache at all.
 If nothing in this cluster is due to change in the next quarter, stop after
 part 1. Every candidate here says the code would be *easier to change*; none of
 them says the business needs it changed. The Express import works.
+
+---
+
+## C4 findings (step 1 shipped in `9b28f0a`; step 2 not started)
+
+**Step 1 — the connection leak — is done.** `import_weekly` now has the
+`try`/`finally` its read-only twin always had. TDD: the test failed on the
+pre-fix build with `close_calls == 0`.
+
+**Step 2 — the `conn` parameter — hit two constraints worth writing down
+before anyone starts it.**
+
+### 1. The alert writers cannot run inside a caller's transaction
+
+`import_weekly` ends with four best-effort alert writers, and the code states
+the rule outright:
+
+> system_alerts' ownership rule: never write the alert on the connection that
+> did the work … a second connection opened while this one still holds the
+> write lock risks "database is locked"
+
+So under a caller-owned connection the transaction is still open at the end of
+the function and those alerts **cannot** be written. A `conn` parameter that
+just skips them would lose them silently, which is worse than not having the
+parameter. They have to be returned for the caller to write after it commits.
+
+Good news, checked rather than assumed: `templates/import_box.html` accesses
+the summary by NAMED key (`r.summary.ignored_detail`), not by iterating
+`.items()`, so adding a `pending_alerts` key does **not** change the operator's
+results page. The "renders this dict verbatim" comment at the return statement
+is about key *names*, not about iteration.
+
+Doing this properly also closes the KNOWN GAP the code already documents: when
+the WACC block raises, the alert writers are never reached, so an import can
+commit its rows, skip billable lines, and produce no skip alert.
+
+### 2. `conn.rollback()` in the WACC block would roll back the CALLER
+
+Both WACC failure branches call `conn.rollback()`. That is correct while the
+function owns the connection. Under a caller-owned connection it would discard
+whatever the caller had done before calling in — including, in the C1 part 2
+design, the watermark claim and anything else in the same transaction.
+
+This is the part that needs a rehearsal on a `.backup` snapshot rather than
+reasoning: the question "what should a WACC identity failure do to a caller's
+transaction?" is a money decision, not a refactor detail. Options are to
+promote it to a savepoint, to hand the decision to the caller, or to keep WACC
+outside the caller's transaction entirely (which is what the current
+commit-then-recalculate order effectively does).
+
+**Do not add the `conn` parameter without answering #2.**
