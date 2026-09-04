@@ -148,302 +148,323 @@ def import_weekly(entries: list, file_type: str, filename: str,
     party_code_col = 'customer_code' if file_type == 'sales' else 'supplier_code'
 
     conn = get_connection()
+    conn_open = True
+    # Everything from here to the close below runs BEFORE the first commit
+    # for ~260 lines, and `entries` is an undeclared shape read with bare
+    # subscripts from two independent producers — so a raise in it is
+    # reachable, and used to return with this connection still open,
+    # holding a write transaction. preview_import, the read-only twin over
+    # the same table, always had this contract.
+    #
+    # The explicit closes inside are deliberately ORDERED — the WACC
+    # branches close BEFORE alerting on a fresh connection, because a
+    # second connection opened under the write lock risks "database is
+    # locked". So this must not close for them: hence the flag rather than
+    # a bare `finally: conn.close()`, which would move the close after the
+    # alert and reintroduce exactly that.
+    try:
 
-    # Log the batch
-    cur = conn.execute(
-        "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes) VALUES (?,0,0,?)",
-        (filename, file_type)
-    )
-    batch_id = cur.lastrowid
+        # Log the batch
+        cur = conn.execute(
+            "INSERT INTO import_log (filename, rows_imported, rows_skipped, notes) VALUES (?,0,0,?)",
+            (filename, file_type)
+        )
+        batch_id = cur.lastrowid
 
-    imported = ignored = overwritten = unchanged = removed = removed_skipped = 0
-    non_stock = 0
-    # Per-code detail for the lines we SKIP because the mapping says is_ignored.
-    # A bare count is not actionable: these are frequently billable service lines
-    # (ค่าขนส่ง, code 888ค8888) whose revenue is dropped along with their stock,
-    # so the operator needs the code and the money to decide whether it mattered.
-    ignored_detail = {}       # bsn_code -> {'bsn_code','name','lines','net'}
-    new_bsn_codes = {}        # code → name for codes not yet in mapping table
-    affected_pids = set()     # products whose ledger must be rebuilt in pass 2
-    # Corrections/removals whose platform reversal could not be applied in
-    # full because the undo hit the zero floor — the credited units had
-    # already been sold again. The resulting listing figure is approximate,
-    # and this is the ONLY moment anything knows that. Reported, not fatal:
-    # nothing in the app decides from platform_skus.stock (it feeds the
-    # /ecommerce flags, the products-list columns and the mapping export, all
-    # display), and aborting the weekly whole-book import over a display-level
-    # approximation would cost far more than it buys. The next authoritative
-    # file import replaces the figure outright.
-    lossy_reversals = 0
-    contradictions = set()    # non-stock codes whose mapping row still says is_ignored=1
+        imported = ignored = overwritten = unchanged = removed = removed_skipped = 0
+        non_stock = 0
+        # Per-code detail for the lines we SKIP because the mapping says is_ignored.
+        # A bare count is not actionable: these are frequently billable service lines
+        # (ค่าขนส่ง, code 888ค8888) whose revenue is dropped along with their stock,
+        # so the operator needs the code and the money to decide whether it mattered.
+        ignored_detail = {}       # bsn_code -> {'bsn_code','name','lines','net'}
+        new_bsn_codes = {}        # code → name for codes not yet in mapping table
+        affected_pids = set()     # products whose ledger must be rebuilt in pass 2
+        # Corrections/removals whose platform reversal could not be applied in
+        # full because the undo hit the zero floor — the credited units had
+        # already been sold again. The resulting listing figure is approximate,
+        # and this is the ONLY moment anything knows that. Reported, not fatal:
+        # nothing in the app decides from platform_skus.stock (it feeds the
+        # /ecommerce flags, the products-list columns and the mapping export, all
+        # display), and aborting the weekly whole-book import over a display-level
+        # approximation would cost far more than it buys. The next authoritative
+        # file import replaces the figure outright.
+        lossy_reversals = 0
+        contradictions = set()    # non-stock codes whose mapping row still says is_ignored=1
 
-    # Ledger notes this file_type owns. The pass-2 re-sync deletes ONLY these
-    # for affected products, so a sales re-import never wipes a product's
-    # purchase movements (or vice versa).
-    bsn_notes = (('BSN ขาย', 'BSN ขาย-คืน') if file_type == 'sales'
-                 else ('BSN ซื้อ', 'BSN ซื้อ-คืน'))
+        # Ledger notes this file_type owns. The pass-2 re-sync deletes ONLY these
+        # for affected products, so a sales re-import never wipes a product's
+        # purchase movements (or vice versa).
+        bsn_notes = (('BSN ขาย', 'BSN ขาย-คืน') if file_type == 'sales'
+                     else ('BSN ซื้อ', 'BSN ซื้อ-คืน'))
 
-    # ── Pass 1: diff each line vs the stored row; upsert only REAL changes ──
-    # Line identity: sales doc_no already carries the printed "-N" line suffix
-    # (line-unique), so (doc_no, bsn_code) is enough. Purchase doc_no has no
-    # suffix, so line_seq (from the parser, formalised by mig 091) disambiguates
-    # multiple lines of one product in one document. Re-uploading an identical
-    # line is a true no-op (counted as `unchanged`) → idempotent.
-    for e in entries:
-        # Auto-normalise the BSN unit acronym → full Thai so it matches the
-        # (already-normalised) unit_conversions table → far fewer pending.
-        e['unit'] = bsn_units.normalize_unit(e.get('unit'))
-        doc_no   = e['doc_no']
-        doc_base = doc_no.rsplit('-', 1)[0] if '-' in doc_no else doc_no
-        line_seq = e.get('line_seq', 1)
+        # ── Pass 1: diff each line vs the stored row; upsert only REAL changes ──
+        # Line identity: sales doc_no already carries the printed "-N" line suffix
+        # (line-unique), so (doc_no, bsn_code) is enough. Purchase doc_no has no
+        # suffix, so line_seq (from the parser, formalised by mig 091) disambiguates
+        # multiple lines of one product in one document. Re-uploading an identical
+        # line is a true no-op (counted as `unchanged`) → idempotent.
+        for e in entries:
+            # Auto-normalise the BSN unit acronym → full Thai so it matches the
+            # (already-normalised) unit_conversions table → far fewer pending.
+            e['unit'] = bsn_units.normalize_unit(e.get('unit'))
+            doc_no   = e['doc_no']
+            doc_base = doc_no.rsplit('-', 1)[0] if '-' in doc_no else doc_no
+            line_seq = e.get('line_seq', 1)
 
-        product_id, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'], e['unit'])
-        non_stock_line = is_non_stock_code(e['product_code_raw'])
-        if is_ignored and not non_stock_line:
-            # NOT a duplicate. This counter used to be `skipped_dup`, whose only
-            # increment in the whole module was right here — a true re-upload
-            # lands in `unchanged`, never here. So an ignored line was reported
-            # to the operator as a DUPLICATE, which reads as "fine, already have
-            # it". That is how ฿592 of ค่าขนส่ง revenue disappeared unnoticed
-            # over two years (฿480 of it billed to named B2B customers). Preview
-            # already called this `ignored`; commit now agrees with it.
-            ignored += 1
-            code = e['product_code_raw']
-            d = ignored_detail.setdefault(
-                code, {'bsn_code': code, 'name': e.get('product_name_raw'),
-                       'lines': 0, 'net': 0.0})
-            d['lines'] += 1
-            d['net'] = round(d['net'] + (e.get('net') or 0), 2)
-            continue
-        if non_stock_line:
-            # The constant is the authority. A mapping row that still says
-            # is_ignored=1 for one of these codes (a restored pre-mig-155
-            # backup is the realistic way) must NOT drop the revenue — but it
-            # must not pass silently either. Task 7 raises the alert; here we
-            # only record it so the alert is written after conn closes.
-            non_stock += 1
-            if is_ignored:
-                contradictions.add(e['product_code_raw'])
-        # ... falls through to the normal insert path unchanged ...
-
-        if file_type == 'purchase':
-            old = conn.execute(
-                f"SELECT * FROM {table} WHERE doc_no=? AND bsn_code=? AND line_seq=?",
-                (doc_no, e['product_code_raw'], line_seq)
-            ).fetchone()
-        else:
-            old = conn.execute(
-                f"SELECT * FROM {table} WHERE doc_no=? AND bsn_code=?",
-                (doc_no, e['product_code_raw'])
-            ).fetchone()
-
-        # Preserve an existing product link: if this code is no longer in the
-        # mapping but the stored row was already linked to a product, KEEP that
-        # product_id instead of nulling it. Nulling would orphan the row's stock
-        # movement (_sync only posts non-null product_id) and float stock UP —
-        # the opposite of the "won't affect stock" the preview shows for a truly
-        # unmapped code.
-        if product_id is None and old is not None and old['product_id']:
-            product_id = old['product_id']
-            mapped = True
-
-        if not mapped and e['product_code_raw']:
-            new_bsn_codes[e['product_code_raw']] = e['product_name_raw']
-
-        carry_from = None
-        if old is not None:
-            # Same five predicates the confirm page showed the operator, from
-            # the same place — see models/bsn_line.py. They used to be written
-            # out here a second time and kept in step with preview_import by
-            # hand, which matters because the operator ticks `apply_removals`
-            # on a count the PREVIEW produced and this function is what acts
-            # on it.
-            if not bsn_line.field_diff(old, e, product_id, e['unit']):
-                unchanged += 1
+            product_id, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'], e['unit'])
+            non_stock_line = is_non_stock_code(e['product_code_raw'])
+            if is_ignored and not non_stock_line:
+                # NOT a duplicate. This counter used to be `skipped_dup`, whose only
+                # increment in the whole module was right here — a true re-upload
+                # lands in `unchanged`, never here. So an ignored line was reported
+                # to the operator as a DUPLICATE, which reads as "fine, already have
+                # it". That is how ฿592 of ค่าขนส่ง revenue disappeared unnoticed
+                # over two years (฿480 of it billed to named B2B customers). Preview
+                # already called this `ignored`; commit now agrees with it.
+                ignored += 1
+                code = e['product_code_raw']
+                d = ignored_detail.setdefault(
+                    code, {'bsn_code': code, 'name': e.get('product_name_raw'),
+                           'lines': 0, 'net': 0.0})
+                d['lines'] += 1
+                d['net'] = round(d['net'] + (e.get('net') or 0), 2)
                 continue
-            # Real change → replace the source row; pass 2 rebuilds its ledger.
-            # ⚠ This is a DELETE+INSERT, not an UPDATE, so mig 173's guard never
-            # sees it. Deliberate: blocking either half would block every import,
-            # and the audit trail still records both events with source='import'
-            # (the INSERT below stamps the columns).
-            if old['product_id']:
-                affected_pids.add(old['product_id'])
-            # The replacement re-inserts with a NEW id, so it is a first sync
-            # and would take its own deduction. Two cases:
-            #
-            #  • the STOCK-affecting identity is unchanged (a price/net-only
-            #    correction — the overwhelmingly common one): the stock event
-            #    did not change at all, so reversing and re-applying it is pure
-            #    churn, and churn is LOSSY because the undo clamps at zero. Carry
-            #    the existing record over to the replacement instead and mark it
-            #    replayed, making the correction a true no-op on stock.
-            #  • anything that changes the stock event (quantity, unit, product,
-            #    or the customer that decides the platform): hand back what the
-            #    old row took, or the corrected line pays twice — a 5 -> 7
-            #    correction landed at 88 instead of 93 before mig 172.
-            if file_type == 'sales':
-                if not bsn_line.stock_event_changed(
-                        old, e, product_id, e['unit'], file_type):
-                    carry_from = old['id']
-                else:
+            if non_stock_line:
+                # The constant is the authority. A mapping row that still says
+                # is_ignored=1 for one of these codes (a restored pre-mig-155
+                # backup is the realistic way) must NOT drop the revenue — but it
+                # must not pass silently either. Task 7 raises the alert; here we
+                # only record it so the alert is written after conn closes.
+                non_stock += 1
+                if is_ignored:
+                    contradictions.add(e['product_code_raw'])
+            # ... falls through to the normal insert path unchanged ...
+
+            if file_type == 'purchase':
+                old = conn.execute(
+                    f"SELECT * FROM {table} WHERE doc_no=? AND bsn_code=? AND line_seq=?",
+                    (doc_no, e['product_code_raw'], line_seq)
+                ).fetchone()
+            else:
+                old = conn.execute(
+                    f"SELECT * FROM {table} WHERE doc_no=? AND bsn_code=?",
+                    (doc_no, e['product_code_raw'])
+                ).fetchone()
+
+            # Preserve an existing product link: if this code is no longer in the
+            # mapping but the stored row was already linked to a product, KEEP that
+            # product_id instead of nulling it. Nulling would orphan the row's stock
+            # movement (_sync only posts non-null product_id) and float stock UP —
+            # the opposite of the "won't affect stock" the preview shows for a truly
+            # unmapped code.
+            if product_id is None and old is not None and old['product_id']:
+                product_id = old['product_id']
+                mapped = True
+
+            if not mapped and e['product_code_raw']:
+                new_bsn_codes[e['product_code_raw']] = e['product_name_raw']
+
+            carry_from = None
+            if old is not None:
+                # Same five predicates the confirm page showed the operator, from
+                # the same place — see models/bsn_line.py. They used to be written
+                # out here a second time and kept in step with preview_import by
+                # hand, which matters because the operator ticks `apply_removals`
+                # on a count the PREVIEW produced and this function is what acts
+                # on it.
+                if not bsn_line.field_diff(old, e, product_id, e['unit']):
+                    unchanged += 1
+                    continue
+                # Real change → replace the source row; pass 2 rebuilds its ledger.
+                # ⚠ This is a DELETE+INSERT, not an UPDATE, so mig 173's guard never
+                # sees it. Deliberate: blocking either half would block every import,
+                # and the audit trail still records both events with source='import'
+                # (the INSERT below stamps the columns).
+                if old['product_id']:
+                    affected_pids.add(old['product_id'])
+                # The replacement re-inserts with a NEW id, so it is a first sync
+                # and would take its own deduction. Two cases:
+                #
+                #  • the STOCK-affecting identity is unchanged (a price/net-only
+                #    correction — the overwhelmingly common one): the stock event
+                #    did not change at all, so reversing and re-applying it is pure
+                #    churn, and churn is LOSSY because the undo clamps at zero. Carry
+                #    the existing record over to the replacement instead and mark it
+                #    replayed, making the correction a true no-op on stock.
+                #  • anything that changes the stock event (quantity, unit, product,
+                #    or the customer that decides the platform): hand back what the
+                #    old row took, or the corrected line pays twice — a 5 -> 7
+                #    correction landed at 88 instead of 93 before mig 172.
+                if file_type == 'sales':
+                    if not bsn_line.stock_event_changed(
+                            old, e, product_id, e['unit'], file_type):
+                        carry_from = old['id']
+                    else:
+                        _moved, _recorded = reverse_platform_deduction(
+                            conn, table, old['id'])
+                        if _moved != _recorded:
+                            lossy_reversals += 1
+                # ⚠ Stamp before deleting. The DELETE audit row copies what the
+                # row last DECLARED, so a line a human had corrected through
+                # declared_update would be audited as THAT human deleting it,
+                # for their old reason (Codex round 6). This is the importer's
+                # own replace/removal, so it says so.
+                conn.execute(
+                    f"UPDATE {table} SET change_source='import', change_actor=?,"
+                    f" change_reason=NULL WHERE id=?", (filename, old['id']))
+                conn.execute(f"DELETE FROM {table} WHERE id=?", (old['id'],))
+                overwritten += 1
+
+            if file_type == 'purchase':
+                cur_ins = conn.execute(f"""
+                    INSERT INTO {table}
+                        (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,
+                         product_name_raw, {party_col}, {party_code_col}, qty, unit,
+                         unit_price, vat_type, discount, total, net, line_seq,
+                         change_source, change_actor, change_token)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    batch_id, e['date_iso'], doc_no, doc_base, product_id,
+                    e['product_code_raw'], e['product_name_raw'], e['party'],
+                    e['party_code'], e['qty'], e['unit'], e['unit_price'],
+                    e['vat_type'], e['discount'], e['total'], e['net'], line_seq,
+                    'import', filename, f'batch-{batch_id}'
+                ))
+            else:
+                cur_ins = conn.execute(f"""
+                    INSERT INTO {table}
+                        (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,
+                         product_name_raw, {party_col}, {party_code_col}, qty, unit,
+                         unit_price, vat_type, discount, total, net,
+                         change_source, change_actor, change_token)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    batch_id, e['date_iso'], doc_no, doc_base, product_id,
+                    e['product_code_raw'], e['product_name_raw'], e['party'],
+                    e['party_code'], e['qty'], e['unit'], e['unit_price'],
+                    e['vat_type'], e['discount'], e['total'], e['net'],
+                    'import', filename, f'batch-{batch_id}'
+                ))
+            if carry_from is not None:
+                new_id = cur_ins.lastrowid
+                conn.execute(
+                    "UPDATE platform_stock_deductions SET source_id = ?"
+                    " WHERE source_table = ? AND source_id = ?",
+                    (new_id, table, carry_from))
+            imported += 1
+            if product_id:
+                affected_pids.add(product_id)
+
+        # ── Deletion detection: lines removed from the source within docs that ARE
+        # in this file. Scoped to doc_base present in the file, so a PARTIAL slice
+        # never reverses docs it doesn't mention. Drop the orphan source row and mark
+        # its product affected — Pass 2's rebuild reverses the stock movement.
+        # Gated by apply_removals: a FILTERED export (narrowed รหัสสินค้า/พนักงานขาย)
+        # produces partial invoices whose filtered-out lines look "deleted" — only
+        # reverse when the user explicitly opted in (the route's checkbox).
+        to_remove = _detect_removed_lines(conn, table, file_type, entries)
+        if apply_removals:
+            for r in to_remove:
+                if r['product_id']:
+                    affected_pids.add(r['product_id'])
+                # The sale did not happen, so the listing gets its units back.
+                # Nothing re-posts for this row afterwards — pass 2 replays only
+                # what is still in the table.
+                if file_type == 'sales':
                     _moved, _recorded = reverse_platform_deduction(
-                        conn, table, old['id'])
+                        conn, table, r['id'])
                     if _moved != _recorded:
                         lossy_reversals += 1
-            # ⚠ Stamp before deleting. The DELETE audit row copies what the
-            # row last DECLARED, so a line a human had corrected through
-            # declared_update would be audited as THAT human deleting it,
-            # for their old reason (Codex round 6). This is the importer's
-            # own replace/removal, so it says so.
-            conn.execute(
-                f"UPDATE {table} SET change_source='import', change_actor=?,"
-                f" change_reason=NULL WHERE id=?", (filename, old['id']))
-            conn.execute(f"DELETE FROM {table} WHERE id=?", (old['id'],))
-            overwritten += 1
-
-        if file_type == 'purchase':
-            cur_ins = conn.execute(f"""
-                INSERT INTO {table}
-                    (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,
-                     product_name_raw, {party_col}, {party_code_col}, qty, unit,
-                     unit_price, vat_type, discount, total, net, line_seq,
-                     change_source, change_actor, change_token)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                batch_id, e['date_iso'], doc_no, doc_base, product_id,
-                e['product_code_raw'], e['product_name_raw'], e['party'],
-                e['party_code'], e['qty'], e['unit'], e['unit_price'],
-                e['vat_type'], e['discount'], e['total'], e['net'], line_seq,
-                'import', filename, f'batch-{batch_id}'
-            ))
+                # ⚠ Stamp before deleting. The DELETE audit row copies what the
+                # row last DECLARED, so a line a human had corrected through
+                # declared_update would be audited as THAT human deleting it,
+                # for their old reason (Codex round 6). This is the importer's
+                # own replace/removal, so it says so.
+                conn.execute(
+                    f"UPDATE {table} SET change_source='import', change_actor=?,"
+                    f" change_reason=NULL WHERE id=?", (filename, r['id']))
+                conn.execute(f"DELETE FROM {table} WHERE id=?", (r['id'],))
+                removed += 1
         else:
-            cur_ins = conn.execute(f"""
-                INSERT INTO {table}
-                    (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,
-                     product_name_raw, {party_col}, {party_code_col}, qty, unit,
-                     unit_price, vat_type, discount, total, net,
-                     change_source, change_actor, change_token)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                batch_id, e['date_iso'], doc_no, doc_base, product_id,
-                e['product_code_raw'], e['product_name_raw'], e['party'],
-                e['party_code'], e['qty'], e['unit'], e['unit_price'],
-                e['vat_type'], e['discount'], e['total'], e['net'],
-                'import', filename, f'batch-{batch_id}'
-            ))
-        if carry_from is not None:
-            new_id = cur_ins.lastrowid
+            removed_skipped = len(to_remove)
+
+        # ── Pass 2: rebuild the ledger for affected products ONCE ──
+        # Delete only this file_type's BSN movements for the affected products (the
+        # mig-080 triggers auto-reconcile stock_levels — no manual stock surgery),
+        # reset their source rows, then a SINGLE _sync_bsn_to_stock re-posts. An
+        # all-unchanged re-import touches 0 products → genuine no-op.
+        if affected_pids:
+            pids = list(affected_pids)
+            p_ph = ",".join("?" * len(pids))
+            n_ph = ",".join("?" * len(bsn_notes))
             conn.execute(
-                "UPDATE platform_stock_deductions SET source_id = ?"
-                " WHERE source_table = ? AND source_id = ?",
-                (new_id, table, carry_from))
-        imported += 1
-        if product_id:
-            affected_pids.add(product_id)
-
-    # ── Deletion detection: lines removed from the source within docs that ARE
-    # in this file. Scoped to doc_base present in the file, so a PARTIAL slice
-    # never reverses docs it doesn't mention. Drop the orphan source row and mark
-    # its product affected — Pass 2's rebuild reverses the stock movement.
-    # Gated by apply_removals: a FILTERED export (narrowed รหัสสินค้า/พนักงานขาย)
-    # produces partial invoices whose filtered-out lines look "deleted" — only
-    # reverse when the user explicitly opted in (the route's checkbox).
-    to_remove = _detect_removed_lines(conn, table, file_type, entries)
-    if apply_removals:
-        for r in to_remove:
-            if r['product_id']:
-                affected_pids.add(r['product_id'])
-            # The sale did not happen, so the listing gets its units back.
-            # Nothing re-posts for this row afterwards — pass 2 replays only
-            # what is still in the table.
-            if file_type == 'sales':
-                _moved, _recorded = reverse_platform_deduction(
-                    conn, table, r['id'])
-                if _moved != _recorded:
-                    lossy_reversals += 1
-            # ⚠ Stamp before deleting. The DELETE audit row copies what the
-            # row last DECLARED, so a line a human had corrected through
-            # declared_update would be audited as THAT human deleting it,
-            # for their old reason (Codex round 6). This is the importer's
-            # own replace/removal, so it says so.
+                f"DELETE FROM transactions WHERE product_id IN ({p_ph}) "
+                f"AND note IN ({n_ph})",
+                pids + list(bsn_notes)
+            )
             conn.execute(
-                f"UPDATE {table} SET change_source='import', change_actor=?,"
-                f" change_reason=NULL WHERE id=?", (filename, r['id']))
-            conn.execute(f"DELETE FROM {table} WHERE id=?", (r['id'],))
-            removed += 1
-    else:
-        removed_skipped = len(to_remove)
+                f"UPDATE {table} SET synced_to_stock=0 WHERE product_id IN ({p_ph})",
+                pids
+            )
+            _sync_bsn_to_stock(conn, table, file_type)
 
-    # ── Pass 2: rebuild the ledger for affected products ONCE ──
-    # Delete only this file_type's BSN movements for the affected products (the
-    # mig-080 triggers auto-reconcile stock_levels — no manual stock surgery),
-    # reset their source rows, then a SINGLE _sync_bsn_to_stock re-posts. An
-    # all-unchanged re-import touches 0 products → genuine no-op.
-    if affected_pids:
-        pids = list(affected_pids)
-        p_ph = ",".join("?" * len(pids))
-        n_ph = ",".join("?" * len(bsn_notes))
+        # Register new BSN codes in mapping table (unmapped)
+        for code, name in new_bsn_codes.items():
+            conn.execute("""
+                INSERT OR IGNORE INTO product_code_mapping (bsn_code, bsn_name)
+                VALUES (?, ?)
+            """, (code, name))
+
+        # Update batch log
         conn.execute(
-            f"DELETE FROM transactions WHERE product_id IN ({p_ph}) "
-            f"AND note IN ({n_ph})",
-            pids + list(bsn_notes)
+            "UPDATE import_log SET rows_imported=?, rows_skipped=? WHERE id=?",
+            (imported, ignored, batch_id)
         )
-        conn.execute(
-            f"UPDATE {table} SET synced_to_stock=0 WHERE product_id IN ({p_ph})",
-            pids
-        )
-        _sync_bsn_to_stock(conn, table, file_type)
+        conn.commit()
 
-    # Register new BSN codes in mapping table (unmapped)
-    for code, name in new_bsn_codes.items():
-        conn.execute("""
-            INSERT OR IGNORE INTO product_code_mapping (bsn_code, bsn_name)
-            VALUES (?, ?)
-        """, (code, name))
+        # WACC: recalculate for the products whose ledger actually changed.
+        #
+        # Pre-flight the WHOLE batch before rebuilding any of it. Without this, an
+        # early product could be rebuilt and a later one raise, leaving an
+        # iteration-order-dependent subset recalculated with the rest stale — and
+        # the source/stock import above is ALREADY COMMITTED, so there is no outer
+        # transaction to unwind it. On failure every product keeps its previous
+        # WACC, the connection is rolled back and closed, and the error propagates
+        # so the import cannot report plain success (the caller surfaces it as
+        # "นำเข้าสำเร็จ แต่คำนวณต้นทุนไม่สำเร็จ").
+        if affected_pids:
+            try:
+                preflight_batch(conn, sorted(affected_pids), operation='purchase_import')
+                for pid in sorted(affected_pids):
+                    recalculate_product_wacc(pid, conn)
+                conn.commit()
+            except WaccIdentityError as e:
+                # Roll back and CLOSE first, then alert on a fresh connection: an
+                # alert written on `conn` would be rolled back with the failure,
+                # and a second connection opened while this one still holds the
+                # write lock risks "database is locked". Alerting is best-effort
+                # and never masks this error, which must propagate so the import
+                # cannot report plain success.
+                conn.rollback()
+                conn.close()
+                conn_open = False
+                record_wacc_identity_alert(
+                    e, operation='purchase_import',
+                    extra={'filename': filename, 'file_type': file_type,
+                           'batch_id': batch_id})
+                raise
+            except Exception:
+                conn.rollback()
+                conn.close()
+                conn_open = False
+                raise
 
-    # Update batch log
-    conn.execute(
-        "UPDATE import_log SET rows_imported=?, rows_skipped=? WHERE id=?",
-        (imported, ignored, batch_id)
-    )
-    conn.commit()
-
-    # WACC: recalculate for the products whose ledger actually changed.
-    #
-    # Pre-flight the WHOLE batch before rebuilding any of it. Without this, an
-    # early product could be rebuilt and a later one raise, leaving an
-    # iteration-order-dependent subset recalculated with the rest stale — and
-    # the source/stock import above is ALREADY COMMITTED, so there is no outer
-    # transaction to unwind it. On failure every product keeps its previous
-    # WACC, the connection is rolled back and closed, and the error propagates
-    # so the import cannot report plain success (the caller surfaces it as
-    # "นำเข้าสำเร็จ แต่คำนวณต้นทุนไม่สำเร็จ").
-    if affected_pids:
-        try:
-            preflight_batch(conn, sorted(affected_pids), operation='purchase_import')
-            for pid in sorted(affected_pids):
-                recalculate_product_wacc(pid, conn)
-            conn.commit()
-        except WaccIdentityError as e:
-            # Roll back and CLOSE first, then alert on a fresh connection: an
-            # alert written on `conn` would be rolled back with the failure,
-            # and a second connection opened while this one still holds the
-            # write lock risks "database is locked". Alerting is best-effort
-            # and never masks this error, which must propagate so the import
-            # cannot report plain success.
-            conn.rollback()
+        conn.close()
+        conn_open = False
+    finally:
+        if conn_open:
             conn.close()
-            record_wacc_identity_alert(
-                e, operation='purchase_import',
-                extra={'filename': filename, 'file_type': file_type,
-                       'batch_id': batch_id})
-            raise
-        except Exception:
-            conn.rollback()
-            conn.close()
-            raise
-
-    conn.close()
 
     # A skipped billable line must reach Put, not just whoever ran the import.
     # The results page (PR #364) shows it to the operator; this is the durable
