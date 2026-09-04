@@ -73,7 +73,7 @@ MOVED_NAMES = {
     ],
     # ── Phase 12 ──────────────────────────────────────────────────────────
     'bsn_sync': [
-        'to_base_units', '_get_base_qty', '_sync_bsn_to_stock',
+        '_get_base_qty', '_sync_bsn_to_stock',
         'get_pending_unit_conversions', 'learn_acronyms_normalize',
         'save_unit_conversions', 'dismiss_pending_unit_conversion',
         'update_unit_conversion_ratio', 'get_all_unit_conversions',
@@ -86,7 +86,6 @@ MOVED_NAMES = {
     ],
     'imports': [
         '_detect_removed_lines', 'preview_import', 'import_weekly',
-        'get_recent_imports',
     ],
     'sales': [
         'get_sales', 'get_purchases_by_doc', 'get_sales_summary',
