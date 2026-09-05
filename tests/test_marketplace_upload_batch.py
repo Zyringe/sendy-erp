@@ -98,14 +98,30 @@ def _broken_income_xlsx():
     return buf
 
 
-def _client():
+def _balance_xlsx():
+    """Minimal real Seller Balance workbook accepted by parse_balance."""
+    columns = ['วันที่', 'ประเภทการทำธุรกรรม', 'คำอธิบาย', 'รหัสคำสั่งซื้อ',
+               'จำนวนเงิน', 'ยอดเงินหลังทำธุรกรรมเสร็จสิ้น']
+    body = pd.DataFrame([
+        ['2099-09-05 09:00', 'รายการปรับปรุง', 'BACKUP-GUARD-TEST', '-', '1.00', '1.00'],
+    ], columns=columns)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as w:
+        pd.DataFrame([['Seller Balance']]).to_excel(
+            w, sheet_name='Transaction Report', index=False, header=False)
+        body.to_excel(w, sheet_name='Transaction Report', index=False, startrow=1)
+    buf.seek(0)
+    return buf
+
+
+def _client(role='staff'):
     from app import app as flask_app
     flask_app.config['TESTING'] = True
     c = flask_app.test_client()
     with c.session_transaction() as sess:
-        sess['user_id'] = 4
-        sess['username'] = 'staffer'
-        sess['role'] = 'staff'
+        sess['user_id'] = 1 if role == 'admin' else 4
+        sess['username'] = 'test-admin' if role == 'admin' else 'staffer'
+        sess['role'] = role
     return c
 
 
@@ -157,6 +173,48 @@ def test_unrecognised_file_does_not_report_success(tmp_db, clean_order):
     assert 'ไม่รู้จักชนิดไฟล์' in html, 'the skip should be reported at all'
     assert 'alert-success' not in html, (
         'a file that imported NOTHING was reported on a green success banner')
+
+
+def test_upload_backup_failure_is_visible(tmp_db, clean_order, monkeypatch):
+    """The all-files upload must not silently discard a failed rollback point."""
+    import db_backup
+
+    def fail_backup(*args, **kwargs):
+        raise RuntimeError("disk full test")
+
+    monkeypatch.setattr(db_backup, 'create_backup', fail_backup)
+    html = _post(_client(), [(_junk_xlsx(), 'random.xlsx')]).get_data(as_text=True)
+
+    assert 'สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ' in html
+    assert 'disk full test' in html
+
+
+def test_balance_import_backup_failure_is_visible(tmp_db, monkeypatch):
+    """The direct wallet import must surface backup failure before continuing."""
+    import db_backup
+
+    def fail_backup(*args, **kwargs):
+        raise RuntimeError("disk full test")
+
+    monkeypatch.setattr(db_backup, 'create_backup', fail_backup)
+    response = _client(role='admin').post(
+        '/marketplace/balance-import',
+        data={'balance_file': (_balance_xlsx(), 'balance.xlsx')},
+        content_type='multipart/form-data', follow_redirects=True)
+    html = response.get_data(as_text=True)
+
+    assert 'สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ' in html
+    assert 'disk full test' in html
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    try:
+        landed = conn.execute(
+            "SELECT COUNT(*) FROM marketplace_wallet_txns "
+            "WHERE txn_time='2099-09-05 09:00' "
+            "AND description='BACKUP-GUARD-TEST'").fetchone()[0]
+    finally:
+        conn.close()
+    assert landed == 1, 'warn policy must continue into the wallet mutation'
 
 
 def test_one_raising_file_does_not_abort_the_rest_of_the_batch(tmp_db, clean_order):
@@ -213,6 +271,35 @@ def test_batch_leaves_an_import_log_row_even_with_no_files(tmp_db, tmp_db_conn):
     ).fetchone()[0]
     assert count == before + 1, 'an empty submit left no trace to diagnose from'
     assert '0' in (after['notes'] or ''), 'the file count must be recorded'
+
+
+def test_upload_backup_precedes_the_batch_log(tmp_db, clean_order, monkeypatch):
+    """The rollback point must predate this request's first database write."""
+    import db_backup
+    import sqlite3
+
+    conn = sqlite3.connect(tmp_db)
+    before = conn.execute(
+        "SELECT COUNT(*) FROM import_log WHERE filename='marketplace:upload'"
+    ).fetchone()[0]
+    conn.close()
+    seen = {}
+
+    def inspect_before_backup(*args, **kwargs):
+        check = sqlite3.connect(tmp_db)
+        try:
+            seen['log_count'] = check.execute(
+                "SELECT COUNT(*) FROM import_log "
+                "WHERE filename='marketplace:upload'").fetchone()[0]
+        finally:
+            check.close()
+        return {'name': 'test-backup'}
+
+    monkeypatch.setattr(db_backup, 'create_backup', inspect_before_backup)
+    _post(_client(), [(_junk_xlsx(), 'random.xlsx')])
+
+    assert seen['log_count'] == before, (
+        'the batch log was committed before the pre-mutation backup')
 
 
 # ── Rollback on a mid-import failure (order-driven-platform-deduction) ─────

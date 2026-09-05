@@ -504,21 +504,6 @@ import import_router  # noqa: E402  (unified /import box: detect + preview + com
 _IMPORT_STAGE_DIR = 'import-stage'   # under UPLOAD_FOLDER
 
 
-def _snapshot_before_import(reason):
-    """Full-DB snapshot right before an import commits, so an admin can roll
-    the whole DB back (see /admin/backups).
-
-    Returns (info, error) and FLASHES NOTHING. Callers decide what a failure
-    means — /import-data warns and continues (its legacy contract), while
-    /import-express-dbf refuses unless the operator explicitly overrides — so
-    the helper cannot announce an outcome it does not decide. It used to flash
-    "นำเข้าต่อโดยไม่มีจุดกู้คืน" unconditionally, which meant the refusing route
-    showed the user "carrying on" and "cancelled everything" in one response
-    (Codex round 8, P2)."""
-    return db_backup.safe_create_backup(
-        reason, db_path=config.DATABASE_PATH,
-        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
-
 _REPORT_LABELS = {
     'sales': 'ขาย',
     'purchase': 'ซื้อ',
@@ -653,10 +638,12 @@ def unified_import_confirm():
     # deliberate and unchanged: this box is a preview/confirm flow the operator
     # drives file by file, not one destructive commit. The message lives here
     # rather than in the helper because it states THIS route's decision.
-    _unified_info, _unified_err = _snapshot_before_import('unified')
-    if _unified_err:
-        flash(f'⚠️ สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ ({_unified_err}) — '
-              f'นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
+    db_backup.guarded_backup(
+        'unified', policy='warn', db_path=config.DATABASE_PATH,
+        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH),
+        warn=lambda error: flash(
+            f'⚠️ สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ ({error}) — '
+            'นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning'))
     base = os.path.join(current_app.config['UPLOAD_FOLDER'], _IMPORT_STAGE_DIR, token)
     results = []
     for row in rows:
@@ -928,19 +915,19 @@ def _release_import_lock(fd):
             pass
 
 
-def _audit_forced_import(incoming, overrode, upload_meta):
-    """Record a deliberate override BEFORE the import touches anything.
+def _audit_forced_import_authorization(incoming, overrode, upload_meta):
+    """Record authorization to override the stale-export guard.
 
-    The run record is only written once the importer RETURNS, and the importer
-    commits in several transactions — so a forced import that died half way left
-    no evidence the guard had been overridden at all (Codex P2, 2026-08-18).
+    This is the operator's decision, not a claim that the import completed. It is
+    written before the rollback snapshot so restoring after a partially failed
+    import cannot erase the evidence. The later run record says what completed.
     """
     conn = get_connection()
     try:
         conn.execute(
             "INSERT INTO audit_log (table_name, row_id, action, changed_fields, user) "
             "VALUES ('express_import_watermark', 0, 'UPDATE', ?, ?)",
-            (json.dumps({'event': 'forced_older_import', 'incoming': incoming,
+            (json.dumps({'event': 'forced_older_authorized', 'incoming': incoming,
                          'overrode': overrode, 'filename': upload_meta.get('filename'),
                          'sha256': upload_meta.get('sha256')}, ensure_ascii=False),
              session.get('username') or ''))
@@ -962,10 +949,12 @@ def _snapshot_derived_watermark(conn):
     return row[0] if row else None
 
 
-def _claim_export_date(export_at, entity='BSN'):
-    """Atomically decide whether this upload may proceed, and stake its claim.
+def _claim_export_date(export_at, entity='BSN', *, advance=True):
+    """Atomically decide whether this upload may proceed and optionally claim.
 
     Returns (ok, previous_date). When ok is False the caller must refuse.
+    ``advance=False`` is the read-only preflight used before a backup; its
+    caller must hold the import lock until a later advancing call.
 
     Two failures this closes, both found by Codex on 2026-08-18:
 
@@ -1011,6 +1000,9 @@ def _claim_export_date(export_at, entity='BSN'):
         if previous and incoming < previous:
             conn.rollback()
             return False, previous
+        if not advance:
+            conn.rollback()
+            return True, previous
         if not have_table:
             conn.commit()
             return True, previous
@@ -1245,7 +1237,8 @@ def express_dbf_upload():
                 return redirect(redirect_to)
 
             stale_msg = None
-            _ok, _latest = _claim_export_date(effective_export_at)
+            _ok, _latest = _claim_export_date(
+                effective_export_at, advance=False)
             _exp_date = effective_export_at.date().isoformat()
             if not _ok:
                 forced_over = _latest
@@ -1258,13 +1251,6 @@ def express_dbf_upload():
                 flash(stale_msg, 'danger')
                 return redirect(redirect_to)
             forced_older = bool(stale_msg)
-            if forced_older:
-                _audit_forced_import(_exp_date, forced_over, upload_meta)
-                # Deliberately overriding the guard. Say so in the run record: this
-                # is the one path that can let an older file rewrite newer state, so
-                # "who did this and over what" has to be answerable afterwards.
-                flash(f'นำเข้าทับด้วยไฟล์ที่เก่ากว่า ({_exp_date} '
-                      f'ทับของ {forced_over}) ตามที่ติ๊กยืนยัน', 'warning')
 
         # Per-dataset outcomes, reported separately (partial success is a
         # legitimate, honestly-reported state — the BSN path is idempotent,
@@ -1287,9 +1273,15 @@ def express_dbf_upload():
                             'อ่านเวลา export จากไฟล์ zip ไม่ได้ — ใช้วันที่วันนี้แทน '
                             'ยอดคงค้างอาจลงวันที่ไม่ตรงกับตอน export จริง'))
         if 'bsn' in classified:
+            if forced_older:
+                # The operator has authorized bypassing the stale-export guard.
+                # Record that decision before the snapshot so the evidence also
+                # survives restoring this rollback point after a partial import.
+                _audit_forced_import_authorization(
+                    _exp_date, forced_over, upload_meta)
             # Rollback point, taken only now: everything above this line either
-            # validates or refuses, so a rejected upload never pays for a
-            # snapshot it cannot use. Below it the request starts deleting
+            # validates/refuses or records the forced-stale authorization that
+            # must survive a restore. Below it the request starts deleting
             # receipt→invoice links, replacing both outstanding snapshots and
             # flagging vanished documents — the most destructive routine write
             # in the app, and until now the only import with no way back.
@@ -1310,18 +1302,34 @@ def express_dbf_upload():
             # operator gets the same deliberate escape hatch this route already
             # uses for a stale export: tick it and proceed knowingly.
             # (Codex round 7, P1.)
-            _info, _bkerr = _snapshot_before_import('express_dbf')
-            if _bkerr and not request.form.get('force_no_backup'):
-                flash(f'สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ ({_bkerr}) — ยกเลิกทั้งไฟล์ '
+            force_no_backup = bool(request.form.get('force_no_backup'))
+            try:
+                db_backup.guarded_backup(
+                    'express_dbf',
+                    policy='warn' if force_no_backup else 'refuse',
+                    db_path=config.DATABASE_PATH,
+                    backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH),
+                    warn=(lambda error: flash(
+                        f'นำเข้าต่อโดยไม่มีจุดกู้คืนตามที่ติ๊กยืนยัน ({error}) — '
+                        'ถ้าข้อมูลผิดพลาดรอบนี้จะย้อนกลับไม่ได้', 'warning'))
+                    if force_no_backup else None)
+            except db_backup.BackupRefused as exc:
+                flash(f'สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ ({exc}) — ยกเลิกทั้งไฟล์ '
                       f'ไม่มีการนำเข้าใดๆ. การนำเข้ารอบนี้จะลบ/เขียนทับข้อมูลจริง '
                       f'จึงต้องมีจุดกู้คืนก่อน. ถ้าพื้นที่เต็ม ให้ลบไฟล์สำรองเก่าที่ '
                       f'"สำรอง/กู้คืนข้อมูล" ก่อน แล้วอัปโหลดใหม่ '
                       f'(ถ้าจำเป็นต้องนำเข้าตอนนี้จริงๆ ให้ติ๊ก '
-                      f'"นำเข้าต่อโดยไม่มีจุดกู้คืน")', 'danger')
+                       f'"นำเข้าต่อโดยไม่มีจุดกู้คืน")', 'danger')
                 return redirect(redirect_to)
-            if _bkerr:
-                flash(f'นำเข้าต่อโดยไม่มีจุดกู้คืนตามที่ติ๊กยืนยัน ({_bkerr}) — '
-                      f'ถ้าข้อมูลผิดพลาดรอบนี้จะย้อนกลับไม่ได้', 'warning')
+            if forced_older:
+                # Announce execution only after the backup policy allows it.
+                flash(f'นำเข้าทับด้วยไฟล์ที่เก่ากว่า ({_exp_date} '
+                      f'ทับของ {forced_over}) ตามที่ติ๊กยืนยัน', 'warning')
+            else:
+                claimed, _previous = _claim_export_date(effective_export_at)
+                if not claimed:
+                    raise RuntimeError(
+                        'express import watermark changed while import lock was held')
             try:
                 # since_days defaults to 60 inside commit_express_dbf — a
                 # daily upload only ever needs the recent window, and that window

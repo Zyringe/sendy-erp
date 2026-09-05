@@ -20,7 +20,10 @@ not pay for a snapshot it will never use).
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
+import datetime
 import io
+import json
+import sqlite3
 import zipfile
 
 import pytest
@@ -135,11 +138,9 @@ def test_import_data_keeps_its_warn_and_continue_contract(tmp_db, monkeypatch):
     from app import app as flask_app
     monkeypatch.setattr(_bsn.db_backup, 'safe_create_backup',
                         lambda reason, **kw: (None, 'ดิสก์เต็ม'))
-    info, err = _bsn._snapshot_before_import('unified')
-    assert info is None and err == 'ดิสก์เต็ม'
 
-    # And the warning must still REACH the user -- moving the flash out of the
-    # helper is only correct if the caller took it over. Drive the real confirm
+    # The warning must reach the user through guarded_backup's warn policy.
+    # Drive the real confirm
     # route with an empty stage: the snapshot runs before any file work.
     # This route RENDERS (200) rather than redirecting, so the flash is
     # consumed into the body -- read it there, not from the session queue.
@@ -191,6 +192,91 @@ def test_backup_failure_refuses_the_import(tmp_db, monkeypatch, trace):
     r = _upload(_client(), [('data/ARTRN.DBF', b'x')])
     assert r.status_code == 302
     assert ('import', None) not in trace, 'the import must not run'
+
+
+def test_backup_failure_does_not_advance_the_watermark(tmp_db, monkeypatch):
+    """Refusing for no rollback point must leave no accepted-upload state."""
+    import config
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    conn.execute(
+        "INSERT INTO express_import_watermark "
+        "(entity, last_export_date, last_export_at, updated_at) "
+        "VALUES ('BSN', '2026-01-01', '2026-01-01T00:00:00', datetime('now')) "
+        "ON CONFLICT(entity) DO UPDATE SET "
+        "last_export_date='2026-01-01', last_export_at='2026-01-01T00:00:00'")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(
+        bsn.db_backup, 'safe_create_backup',
+        lambda reason, **kw: (None, 'ดิสก์เต็ม'))
+
+    _upload(_client(), [('data/ARTRN.DBF', b'x')])
+
+    check = sqlite3.connect(config.DATABASE_PATH)
+    actual = check.execute(
+        "SELECT last_export_date FROM express_import_watermark "
+        "WHERE entity='BSN'").fetchone()[0]
+    check.close()
+    assert actual == '2026-01-01'
+
+
+def test_forced_stale_authorization_is_audited_before_backup(
+        tmp_db, monkeypatch):
+    """The operator's authorization is real even if backup later refuses.
+
+    It must exist before the snapshot so restoring after a partially failed
+    forced import cannot erase the evidence that the stale guard was waived.
+    """
+    import config
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    conn.execute(
+        "INSERT INTO express_import_watermark "
+        "(entity, last_export_date, last_export_at, updated_at) "
+        "VALUES ('BSN', '2099-01-01', '2099-01-01T00:00:00', datetime('now')) "
+        "ON CONFLICT(entity) DO UPDATE SET "
+        "last_export_date='2099-01-01', last_export_at='2099-01-01T00:00:00'")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
+    monkeypatch.setattr(
+        bsn, '_zip_export_datetime',
+        lambda zf: datetime.datetime(2026, 8, 15, 16, 50))
+
+    audit_at_backup = []
+
+    def _refuse_after_reading_audit(reason, **kwargs):
+        check = sqlite3.connect(config.DATABASE_PATH)
+        try:
+            row = check.execute(
+                "SELECT changed_fields FROM audit_log "
+                "WHERE table_name='express_import_watermark' "
+                "ORDER BY id DESC LIMIT 1").fetchone()
+            audit_at_backup.append(json.loads(row[0]) if row else None)
+        finally:
+            check.close()
+        return None, 'ดิสก์เต็ม'
+
+    monkeypatch.setattr(bsn.db_backup, 'safe_create_backup',
+                        _refuse_after_reading_audit)
+
+    client = _client()
+    _upload(client, [('data/ARTRN.DBF', b'x')], force_older='1')
+
+    assert audit_at_backup[0] is not None, (
+        'the forced-stale authorization was not durable when backup started')
+    assert audit_at_backup == [{
+        'event': 'forced_older_authorized',
+        'incoming': '2026-08-15',
+        'overrode': '2099-01-01',
+        'filename': 'daily.zip',
+        'sha256': audit_at_backup[0]['sha256'],
+    }]
+    assert len(audit_at_backup[0]['sha256']) == 64
+    with client.session_transaction() as session:
+        messages = [message for _category, message in session.get('_flashes', [])]
+    assert not any('นำเข้าทับด้วยไฟล์ที่เก่ากว่า' in message
+                   for message in messages)
 
 
 def test_explicit_override_lets_the_import_proceed_without_a_backup(

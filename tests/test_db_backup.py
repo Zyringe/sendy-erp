@@ -94,6 +94,51 @@ def test_create_backup_refuses_when_disk_low(tmp_path, monkeypatch):
     assert info is None and err
 
 
+# ─── guarded pre-mutation policy ───────────────────────────────────────────
+
+def test_guarded_backup_warn_policy_delivers_failure(monkeypatch):
+    """A warn-and-continue caller cannot accidentally drop the backup error."""
+    def fail_backup(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(db_backup, "create_backup", fail_backup)
+    warnings = []
+
+    info = db_backup.guarded_backup(
+        "marketplace", policy="warn", db_path="ignored.db",
+        backup_dir="ignored-backups", warn=warnings.append)
+
+    assert info is None
+    assert warnings == ["disk full"]
+
+
+def test_guarded_backup_refuse_policy_stops_the_caller(monkeypatch):
+    """A fail-closed caller must not reach its mutation after backup failure."""
+    def fail_backup(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(db_backup, "create_backup", fail_backup)
+
+    with pytest.raises(db_backup.BackupRefused, match="disk full"):
+        db_backup.guarded_backup(
+            "express_dbf", policy="refuse", db_path="ignored.db",
+            backup_dir="ignored-backups")
+
+
+def test_guarded_backup_success_returns_snapshot_without_warning(monkeypatch):
+    """A successful snapshot stays quiet and is returned to the caller."""
+    snapshot = {"name": "auto-marketplace-test.db.gz"}
+    monkeypatch.setattr(db_backup, "create_backup", lambda *a, **k: snapshot)
+    warnings = []
+
+    info = db_backup.guarded_backup(
+        "marketplace", policy="warn", db_path="ignored.db",
+        backup_dir="ignored-backups", warn=warnings.append)
+
+    assert info is snapshot
+    assert warnings == []
+
+
 # ── list_backups ─────────────────────────────────────────────────────────────
 
 def test_list_backups_newest_first_with_metadata(tmp_path):

@@ -31,6 +31,11 @@ from parse_lazada_wallet import (parse_lazada_wallet, load_lazada_wallet_csv,
 bp_marketplace = Blueprint('marketplace', __name__)
 
 
+def _flash_backup_warning(error):
+    flash(f'⚠️ สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ '
+          f'({error}) — นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
+
+
 def _detect_platform(columns):
     cols = set(columns)
     if 'orderItemId' in cols and 'orderNumber' in cols:
@@ -95,11 +100,10 @@ def import_orders():
         return redirect(url_for('marketplace.dashboard'))
 
     # Rollback point before the upsert overwrites existing orders' status etc.
-    _info, _err = db_backup.safe_create_backup(
-        'marketplace', db_path=config.DATABASE_PATH,
-        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
-    if _err:
-        flash(f'⚠️ สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ ({_err}) — นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
+    db_backup.guarded_backup(
+        'marketplace', policy='warn', db_path=config.DATABASE_PATH,
+        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH),
+        warn=_flash_backup_warning)
 
     try:
         orders = (parse_shopee_orders(df) if platform == 'shopee'
@@ -158,11 +162,10 @@ def settlement_import():
         flash(f'อ่านไฟล์ไม่ได้: {e} — ต้องเป็นไฟล์ Income Transfer จาก Shopee ค่ะ', 'danger')
         return redirect(url_for('marketplace.settlement'))
 
-    _info, _err = db_backup.safe_create_backup(
-        'marketplace_settlement', db_path=config.DATABASE_PATH,
-        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
-    if _err:
-        flash(f'⚠️ สำรองข้อมูลไม่สำเร็จ ({_err}) — นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
+    db_backup.guarded_backup(
+        'marketplace_settlement', policy='warn', db_path=config.DATABASE_PATH,
+        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH),
+        warn=_flash_backup_warning)
 
     try:
         conn = get_connection()
@@ -389,9 +392,10 @@ def balance_import():
     except Exception as e:
         flash(f'อ่านไฟล์ไม่ได้: {e}', 'danger')
         return redirect(url_for('marketplace.settlement'))
-    _info, _err = db_backup.safe_create_backup(
-        'marketplace_balance', db_path=config.DATABASE_PATH,
-        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
+    db_backup.guarded_backup(
+        'marketplace_balance', policy='warn', db_path=config.DATABASE_PATH,
+        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH),
+        warn=_flash_backup_warning)
     conn = get_connection()
     try:
         ins = models.import_wallet_txns(conn, wallet, f.filename)
@@ -461,13 +465,15 @@ def upload():
     """
     files = request.files.getlist('files')
     files = [f for f in files if f and f.filename]
-    _log_upload_batch(files)
     if not files:
+        _log_upload_batch(files)
         flash('กรุณาเลือกไฟล์ค่ะ', 'warning')
         return redirect(url_for('marketplace.settlement'))
-    _info, _err = db_backup.safe_create_backup(
-        'marketplace_upload', db_path=config.DATABASE_PATH,
-        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH))
+    db_backup.guarded_backup(
+        'marketplace_upload', policy='warn', db_path=config.DATABASE_PATH,
+        backup_dir=db_backup.default_backup_dir(config.DATABASE_PATH),
+        warn=_flash_backup_warning)
+    _log_upload_batch(files)
 
     # Detect every file up front so the batch can be ordered by dependency
     # rather than by however the browser happened to send it.
