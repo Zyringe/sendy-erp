@@ -102,7 +102,7 @@ condition, pack_variant                              -- structured (mig 033)
 ### product_families *(mig 025)*
 `id, family_code, display_name, brand_id, sort_order, note, created_at, updated_at`
 - 1 family = 1 catalog card (สินค้าเดียวกันหลายไซส์/หลายสีรวม 1 ใบ)
-- ปัจจุบัน count=0 (schema พร้อม รอ populate)
+- ปัจจุบัน **populated** (prod 2026-09-05: 315 rows) — ⛔ อย่าอ้างว่า count=0 อีก
 
 ### product_images *(mig 025)*
 `id, family_id, sku_id, image_path, presentation_tag, sort_order, note, ...`
