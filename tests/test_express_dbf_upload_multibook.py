@@ -968,39 +968,21 @@ def test_a_failing_register_warns_but_does_not_fail_the_money_import(tmp_db, mon
     assert notes['bsn']['register_errors'] == {'general_ledger': 'GLJNL exploded'}
 
 
-def test_the_blueprint_reads_back_every_register_import_router_declares():
-    """The register vocabulary has ONE declaration and every consumer derives.
-
-    HISTORY: this test used to compare two hand-maintained lists — first against
-    a literal restated in the test itself (a closed loop that could never have
-    caught a seventh register), then against import_router's constant. Its own
-    docstring recorded the gap it still could not close: a register added in
-    import_router and never declared in the blueprint. That gap is now shut by
-    construction, because the blueprint no longer has a second list to fall
-    behind with — so the set comparison this test used to make would now be
-    vacuously true, and asserting it would be theatre.
-
-    What is left is what can still actually break.
-    """
-    import import_router
+def test_register_vocabulary_has_labels_and_derived_snapshot_subset():
+    """Pin the two metadata facts consumers need, not private aliases."""
+    import express_registers
     import vat_book_builder
 
-    # Identity, not equality: an equal-but-separate list is EXACTLY the drift
-    # this change removed, and `==` would happily accept it back.
-    assert bsn._ISOLATED_REGISTERS is import_router.ISOLATED_REGISTERS, (
-        'the blueprint has its own register list again — it will drift, which '
-        'is what the duplicate pair did before')
-
     # A register declared without a label produces a warning that names nothing.
-    assert all(label for _key, label, _hint in import_router.ISOLATED_REGISTERS)
+    assert all(register.label for register in express_registers.REGISTERS)
 
     # The snapshot subset must be drawn FROM the declared set, not beside it.
-    assert set(import_router.SNAPSHOT_REGISTER_KEYS) <= import_router.ISOLATED_REGISTER_KEYS
-    assert set(vat_book_builder._SNAPSHOT_LABELS) == set(import_router.SNAPSHOT_REGISTER_KEYS)
+    assert set(express_registers.SNAPSHOT_KEYS) <= express_registers.REGISTER_KEYS
+    assert set(vat_book_builder._SNAPSHOT_LABELS) == set(express_registers.SNAPSHOT_KEYS)
 
     # CONTROL: everything above runs against a non-empty declaration, so an
     # emptied tuple cannot pass this test by having nothing to check.
-    assert len(import_router.ISOLATED_REGISTERS) == 6, (
+    assert len(express_registers.REGISTERS) == 6, (
         'adding or removing an isolated register is a deliberate act: update '
         'this count and re-read every consumer of the vocabulary')
 
@@ -1010,6 +992,7 @@ def test_every_declared_register_key_exists_in_a_real_import_result(empty_db, mo
     commit_express_dbf's result dict. The blueprint looks registers up by key, so
     a rename re-opens the silent-swallow bug with every test still green."""
     import express_dbf_source as eds
+    import express_registers
     import import_router
     monkeypatch.setattr(eds, 'open_table', lambda _d, _n: [])
     c = sqlite3.connect(empty_db)
@@ -1020,10 +1003,10 @@ def test_every_declared_register_key_exists_in_a_real_import_result(empty_db, mo
     out = import_router.commit_express_dbf('/x', db_path=empty_db,
                                            snapshot_date='2026-08-17')
 
-    missing = import_router.ISOLATED_REGISTER_KEYS - set(out)
+    missing = express_registers.REGISTER_KEYS - set(out)
     assert not missing, f'declared register keys absent from the result: {missing}'
     # CONTROL: the assertion above is over a non-empty set.
-    assert len(import_router.ISOLATED_REGISTER_KEYS) == 6
+    assert len(express_registers.REGISTER_KEYS) == 6
 
 
 def test_a_clean_run_records_no_register_errors(tmp_db, monkeypatch):

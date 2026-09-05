@@ -16,6 +16,8 @@ from __future__ import annotations
 import os
 import time
 
+import express_registers
+
 class HistoryExportBlocked(ValueError):
     """A full-history Express export was dropped on the weekly importer.
 
@@ -304,41 +306,6 @@ def _commit_snapshot(kind, build, db_path, snapshot_date):
                 "error": str(exc)[:300]}
 
 
-# The datasets commit_express_dbf() isolates behind their own try/except, i.e.
-# the ones that can come back as {'error': ...} while the ledger commits fine.
-# Declared HERE, next to the blocks that produce them, so adding a register and
-# declaring it are the same edit. blueprints/bsn.py must read every one of these
-# back or the failure is swallowed and the upload flashes green over a register
-# still holding the previous run's rows (Codex rounds 5-6, 2026-08-18/19).
-#
-# Key, Thai label, and the page that goes stale when this register refuses.
-# The hint is filled in only for the two registers a page actually reads
-# today — the other four have no reader yet, so naming one would be a lie
-# (Codex round 6).
-#
-# This is the VOCABULARY, not the policy. Callers deliberately disagree about
-# what a failed register means, and both are right: the daily BSN upload warns
-# and carries on, because the ledger has already committed and yesterday's rows
-# are still readable; vat_book_builder raises and refuses to publish, because it
-# replaces a whole book and would publish one with no balances at all. What they
-# must NOT disagree about is which registers exist and what they are called.
-ISOLATED_REGISTERS = (
-    ('ar_snapshot',    'ลูกหนี้คงค้าง',  'หน้าลูกหนี้ยังเป็นของรอบก่อน'),
-    ('ap_snapshot',    'เจ้าหนี้คงค้าง', 'หน้าเจ้าหนี้ยังเป็นของรอบก่อน'),
-    ('billing_notes',  'ใบวางบิล',       ''),
-    ('bank_cheques',   'ทะเบียนเช็ค',     ''),
-    ('sales_orders',   'ใบสั่งขาย',       ''),
-    ('general_ledger', 'บัญชีแยกประเภท', ''),
-)
-
-ISOLATED_REGISTER_KEYS = frozenset(k for k, *_ in ISOLATED_REGISTERS)
-
-# The subset that carries an outstanding BALANCE rather than documents. These
-# are the ones a from-scratch book cannot publish without: a refused snapshot
-# leaves `ar_snapshot: 0`, indistinguishable from a book that owes nothing.
-SNAPSHOT_REGISTER_KEYS = ('ar_snapshot', 'ap_snapshot')
-
-
 # How much of the request's 60s budget the drift scan is allowed to need. It is
 # a RESERVE, not a stopwatch on the scan itself: the scan is one call and cannot
 # be interrupted halfway, so the only honest guard is to refuse to START it
@@ -488,10 +455,10 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
             gl_stats = {"accounts": 0, "vouchers": 0, "lines": 0,
                         "skipped": "GL tables not in this zip"}
         else:
-            n_acc, n_vou, n_lin = _replace_general_ledger(
-                *eds.build_gl_records(group["GLACC"], group["GLJNL"],
-                                      group["GLJNLIT"], eds.gl_cutoff()),
-                "BSN", db_path)
+            gl_records = eds.build_gl_records(
+                group["GLACC"], group["GLJNL"], group["GLJNLIT"], eds.gl_cutoff())
+            n_acc, n_vou, n_lin = express_registers.replace(
+                'general_ledger', gl_records, "BSN", db_path)
             gl_stats = {"accounts": n_acc, "vouchers": n_vou, "lines": n_lin}
     except Exception as exc:
         gl_stats = {"accounts": 0, "vouchers": 0, "lines": 0, "error": str(exc)[:300]}
@@ -503,9 +470,10 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
             sales_orders_stats = {"orders": 0, "lines": 0,
                                   "skipped": "OESO/OESOIT not in this zip"}
         else:
-            n_head, n_line = _replace_sales_orders(
-                *eds.build_sales_order_records(group["OESO"], group["OESOIT"], armas),
-                "BSN", db_path)
+            sales_order_records = eds.build_sales_order_records(
+                group["OESO"], group["OESOIT"], armas)
+            n_head, n_line = express_registers.replace(
+                'sales_orders', sales_order_records, "BSN", db_path)
             sales_orders_stats = {"orders": n_head, "lines": n_line}
     except Exception as exc:
         sales_orders_stats = {"orders": 0, "lines": 0, "error": str(exc)[:300]}
@@ -517,8 +485,10 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
         if bktrn is None:
             bank_cheques_stats = {"stored": 0, "skipped": "BKTRN not in this zip"}
         else:
-            bank_cheques_stats = {"stored": _replace_bank_cheques(
-                eds.build_bank_cheque_records(bktrn), "BSN", db_path)}
+            stored, = express_registers.replace(
+                'bank_cheques', (eds.build_bank_cheque_records(bktrn),),
+                "BSN", db_path)
+            bank_cheques_stats = {"stored": stored}
     except Exception as exc:
         bank_cheques_stats = {"stored": 0, "error": str(exc)[:300]}
 
@@ -607,151 +577,6 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
             "snapshot_date": snapshot_date,
             "reconcile": reconcile_counts,
             "doc_drift": doc_drift}
-
-
-def _replace_general_ledger(accounts, vouchers, lines, entity, db_path):
-    """บัญชีแยกประเภท (mig 165). All three tables replaced in ONE transaction:
-    a line pointing at a voucher that has gone, or an account number that has
-    gone, is unreachable.
-
-    Same empty-write guard as the other registers, keyed on the vouchers — the
-    chart of accounts alone is not evidence the journal parsed.
-    """
-    import sqlite3
-    conn = sqlite3.connect(db_path, timeout=10)
-    try:
-        conn.execute("PRAGMA busy_timeout=10000")
-        if not vouchers:
-            existing = conn.execute(
-                "SELECT COUNT(*) FROM express_gl_vouchers WHERE entity = ?",
-                (entity,)).fetchone()[0]
-            if existing:
-                raise ValueError(
-                    f'บัญชีแยกประเภท: parsed 0 vouchers but {existing} already stored '
-                    f'for {entity} — refusing to erase them')
-            return 0, 0, 0
-        conn.execute("BEGIN IMMEDIATE")
-        for t in ("express_gl_lines", "express_gl_vouchers", "express_gl_accounts"):
-            conn.execute(f"DELETE FROM {t} WHERE entity = ?", (entity,))
-        conn.executemany(
-            "INSERT INTO express_gl_accounts "
-            " (entity, account_no, account_name, level, parent_no, account_type,"
-            "  nature, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [(entity, a['account_no'], a['account_name'], a['level'], a['parent_no'],
-              a['account_type'], a['nature'], a['status']) for a in accounts])
-        conn.executemany(
-            "INSERT INTO express_gl_vouchers "
-            " (entity, voucher, voucher_date_iso, journal_type, reference_no,"
-            "  description, source_journal, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [(entity, v['voucher'], v['voucher_date_iso'], v['journal_type'],
-              v['reference_no'], v['description'], v['source_journal'], v['status'])
-             for v in vouchers])
-        conn.executemany(
-            "INSERT INTO express_gl_lines "
-            " (entity, voucher, line_seq, voucher_date_iso, account_no, description,"
-            "  entry_side, type_code, amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [(entity, l['voucher'], l['line_seq'], l['voucher_date_iso'],
-              l['account_no'], l['description'], l['entry_side'], l['type_code'],
-              l['amount']) for l in lines])
-        conn.commit()
-    finally:
-        conn.close()
-    return len(accounts), len(vouchers), len(lines)
-
-
-def _replace_sales_orders(heads, lines, entity, db_path):
-    """ใบสั่งขาย (mig 164). Replace per entity in ONE transaction so headers and
-    lines can never be seen half-swapped: a line whose header has been deleted is
-    unreachable, and a header whose lines have not landed reads as an empty order.
-
-    Same empty-write guard as the other registers.
-    """
-    import sqlite3
-    conn = sqlite3.connect(db_path, timeout=10)
-    try:
-        conn.execute("PRAGMA busy_timeout=10000")
-        if not heads:
-            existing = conn.execute(
-                "SELECT COUNT(*) FROM express_sales_orders WHERE entity = ?",
-                (entity,)).fetchone()[0]
-            if existing:
-                raise ValueError(
-                    f'ใบสั่งขาย: parsed 0 orders but {existing} already stored for '
-                    f'{entity} — refusing to erase them')
-            return 0, 0
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DELETE FROM express_sales_order_lines WHERE entity = ?", (entity,))
-        conn.execute("DELETE FROM express_sales_orders WHERE entity = ?", (entity,))
-        conn.executemany(
-            "INSERT INTO express_sales_orders "
-            " (entity, so_no, so_date_iso, customer_code, customer_name,"
-            "  salesperson_code, your_ref, pay_terms, delivery_date_iso,"
-            "  completed_date_iso, total, discount_amount, vat_amount, net_amount,"
-            "  status_code) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [(entity, h['so_no'], h['so_date_iso'], h['customer_code'],
-              h['customer_name'], h['salesperson_code'], h['your_ref'],
-              h['pay_terms'], h['delivery_date_iso'], h['completed_date_iso'],
-              h['total'], h['discount_amount'], h['vat_amount'], h['net_amount'],
-              h['status_code']) for h in heads])
-        conn.executemany(
-            "INSERT INTO express_sales_order_lines "
-            " (entity, so_no, line_seq, product_code, product_name, ordered_qty,"
-            "  cancelled_qty, remaining_qty, unit, unit_price, line_total) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [(entity, l['so_no'], l['line_seq'], l['product_code'], l['product_name'],
-              l['ordered_qty'], l['cancelled_qty'], l['remaining_qty'], l['unit'],
-              l['unit_price'], l['line_total']) for l in lines])
-        conn.commit()
-    finally:
-        conn.close()
-    return len(heads), len(lines)
-
-
-def _replace_bank_cheques(records, entity, db_path):
-    """ทะเบียนเช็ค (mig 163). REPLACE per entity, not upsert: BKTRN has no unique
-    natural key (CHQNUM repeats on 38 of 12,805 rows), and the table is a mirror
-    of Express's register at export time — the same shape as the outstanding
-    snapshots.
-
-    Same empty-write guard the snapshots use, for the same reason: a parse that
-    yields nothing and a register that is genuinely empty are indistinguishable
-    here, and deleting a good register to write nothing is the one outcome that
-    cannot be undone by the next import.
-    """
-    import sqlite3
-    conn = sqlite3.connect(db_path, timeout=10)
-    try:
-        conn.execute("PRAGMA busy_timeout=10000")
-        if not records:
-            existing = conn.execute(
-                "SELECT COUNT(*) FROM express_bank_cheques WHERE entity = ?",
-                (entity,)).fetchone()[0]
-            if existing:
-                raise ValueError(
-                    f'ทะเบียนเช็ค: parsed 0 rows but {existing} already stored for '
-                    f'{entity} — refusing to erase them')
-            return 0
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DELETE FROM express_bank_cheques WHERE entity = ?", (entity,))
-        conn.executemany(
-            "INSERT INTO express_bank_cheques "
-            " (entity, kind, type_code, cheque_no, trn_date_iso, cheque_date_iso,"
-            "  received_date_iso, paid_in_date_iso, bank_code, branch, bank_account,"
-            "  party_code, party_name, amount, charge, vat_amount, net_amount,"
-            "  remaining_amount, status_code, remark, ref_doc, ref_no, voucher) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [(entity, r['kind'], r['type_code'], r['cheque_no'], r['trn_date_iso'],
-              r['cheque_date_iso'], r['received_date_iso'], r['paid_in_date_iso'],
-              r['bank_code'], r['branch'], r['bank_account'], r['party_code'],
-              r['party_name'], r['amount'], r['charge'], r['vat_amount'],
-              r['net_amount'], r['remaining_amount'], r['status_code'], r['remark'],
-              r['ref_doc'], r['ref_no'], r['voucher']) for r in records]
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return len(records)
 
 
 def _upsert_billing_notes(records, entity, db_path):
