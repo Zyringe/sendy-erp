@@ -35,6 +35,8 @@ class Register:
 
 
 _BANK_CHEQUES = Replacement(
+    # BKTRN has no unique natural key (CHQNUM repeats), so this is an export-time
+    # mirror rather than an upserted document set.
     tables=(RegisterTable('express_bank_cheques', (
         'kind', 'type_code', 'cheque_no', 'trn_date_iso', 'cheque_date_iso',
         'received_date_iso', 'paid_in_date_iso', 'bank_code', 'branch',
@@ -81,11 +83,15 @@ _GENERAL_LEDGER = Replacement(
         )),
     ),
     delete_order=('express_gl_lines', 'express_gl_vouchers', 'express_gl_accounts'),
+    # Accounts alone are not evidence that the journal parsed; vouchers are.
     guard_group=1,
     empty_noun='vouchers',
 )
 
 
+# This is vocabulary and storage shape, not caller policy. The daily upload
+# warns and keeps yesterday's register after a failure; vat_book_builder must
+# refuse to publish a from-scratch book without its two balance snapshots.
 REGISTERS = (
     Register('ar_snapshot', 'ลูกหนี้คงค้าง', 'หน้าลูกหนี้ยังเป็นของรอบก่อน', True),
     Register('ap_snapshot', 'เจ้าหนี้คงค้าง', 'หน้าเจ้าหนี้ยังเป็นของรอบก่อน', True),

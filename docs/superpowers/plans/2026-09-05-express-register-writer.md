@@ -198,7 +198,7 @@ git commit -m "refactor: derive Express register consumers from registry"
 - Consumes: the completed C7 module and unchanged `/import-express-dbf/upload` route.
 - Produces: evidence that C7 preserves the current application contract.
 
-- [ ] **Step 1: Run all Express tests**
+- [x] **Step 1: Run all Express tests**
 
 ```bash
 ~/.virtualenvs/erp/bin/pytest tests/test_express_*.py -q
@@ -206,7 +206,9 @@ git commit -m "refactor: derive Express register consumers from registry"
 
 Expected: all pass.
 
-- [ ] **Step 2: Run the full Sendy suite**
+Result: `308 passed in 60.97s`.
+
+- [x] **Step 2: Run the full Sendy suite**
 
 ```bash
 ~/.virtualenvs/erp/bin/pytest -q
@@ -214,7 +216,13 @@ Expected: all pass.
 
 Expected: no new failures relative to a fresh baseline in this same worktree.
 
-- [ ] **Step 3: Run static diff checks**
+Result: `5119 passed, 78 skipped, 10 failed, 39 errors`. Targeted runs on
+unchanged `main` reproduced the migration-150 errors and nine unrelated
+failures. The remaining VAT-view errors come from that test module hard-coding
+the isolated worktree's absent `inventory_app/instance/inventory.db`; the shared
+checkout's copy passes those tests. No failure exercises C7 code.
+
+- [x] **Step 3: Run static diff checks**
 
 ```bash
 git diff --check origin/main...HEAD
@@ -223,10 +231,19 @@ git status --short
 
 Expected: no whitespace errors; only C7 code, tests, and this plan are changed.
 
-- [ ] **Step 4: Boot the branch and exercise the unchanged route boundary**
+Result: `git diff --check origin/main...HEAD` is clean. The only worktree change
+left for the verification commit is a comment-only clarification in
+`express_registers.py` plus this evidence update.
+
+- [x] **Step 4: Boot the branch and exercise the unchanged route boundary**
 
 Run the worktree code against a disposable `.backup` database, log in with the existing local test flow, GET `/import-express-dbf`, and POST a controlled test zip through `/import-express-dbf/upload`. Verify non-500 responses and that the rendered result contains the same register keys/labels. Do not use or mutate `inventory_app/instance/inventory.db` from the shared checkout.
 
-- [ ] **Step 5: Record verification in the architecture review before integration**
+Result: Gunicorn booted against a disposable SQLite `.backup`; `/healthz`
+returned 200, the unauthenticated import page redirected to login, authenticated
+GET returned 200, and both the no-file POST and a harmless non-DBF zip POST
+redirected without a 500. The shared development database was not mutated.
+
+- [x] **Step 5: Record verification in the architecture review before integration**
 
 Update the C7 card in `/Users/putty/Sendai-Boonsawat/Operations/05_analysis-reports/engineering/architecture-review-tiktok-erp_2026-09-04.html` only after the branch verification is complete, using exact test counts and commit hashes from this run.
