@@ -34,6 +34,7 @@ import uuid
 from datetime import datetime
 
 import bsn_units
+import express_registers
 import import_router
 
 
@@ -233,10 +234,13 @@ def _guard_subprocess_target():
     return config.DATABASE_PATH
 
 
-# The labels come from import_router's single declaration; only the CHOICE of
-# which registers are fatal here is this module's own (see _require_snapshots_ok).
-_SNAPSHOT_LABELS = {k: label for k, label, _hint in import_router.ISOLATED_REGISTERS
-                    if k in import_router.SNAPSHOT_REGISTER_KEYS}
+# The executable vocabulary owns which balance snapshots a from-scratch book
+# cannot publish without (see _require_snapshots_ok).
+_SNAPSHOT_LABELS = {
+    register.key: register.label
+    for register in express_registers.REGISTERS
+    if register.snapshot_required
+}
 
 
 def _require_snapshots_ok(per_type):

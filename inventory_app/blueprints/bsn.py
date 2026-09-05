@@ -23,6 +23,7 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 
 import config
 import db_backup
+import express_registers
 import form_options
 import models
 import review_rules as rr
@@ -525,17 +526,14 @@ _REPORT_LABELS = {
 # Each MUST be read back after the import or its failure is swallowed and the
 # upload flashes green over a register still holding the previous run's rows
 # (Codex round 5, 2026-08-18). The data itself is never at risk — each
-# _replace_* refuses to erase on an empty parse — so this is the alarm, not the
-# guard. The list itself is import_router's, declared next to the try/except
-# blocks that produce these results, so adding a seventh register and declaring
-# it are now the same edit — this file cannot fall behind it, which is the drift
-# the old duplicate pair needed a test to police.
+# replacement writer refuses to erase on an empty parse — so this is the alarm,
+# not the guard. express_registers owns both the executable vocabulary and the
+# storage shape, so this route cannot maintain a second list that drifts.
 #
 # What stays HERE is this route's policy: warn and carry on. The ledger has
 # already committed and the previous run's rows are still readable, so a refused
 # register must not report the money import as failed. vat_book_builder makes the
 # opposite call on the same vocabulary, for its own good reason.
-_ISOLATED_REGISTERS = import_router.ISOLATED_REGISTERS
 
 
 @bp_bsn.route('/import-data', methods=['GET', 'POST'])
@@ -1365,14 +1363,15 @@ def express_dbf_upload():
                 # register silently keeps YESTERDAY's rows. The green summary
                 # flash means "the money landed" and must not be read as "all
                 # six datasets landed" — so say the difference out loud.
-                for _key, _label, _hint in _ISOLATED_REGISTERS:
-                    _err = (per_type.get(_key) or {}).get('error')
+                for _register in express_registers.REGISTERS:
+                    _err = (per_type.get(_register.key) or {}).get('error')
                     if _err:
-                        results['bsn'].setdefault('register_errors', {})[_key] = _err
+                        results['bsn'].setdefault(
+                            'register_errors', {})[_register.key] = _err
                         flashes.append(('warning',
-                                        f'{_label}: นำเข้ารอบนี้ไม่สำเร็จ ({_err}) '
+                                        f'{_register.label}: นำเข้ารอบนี้ไม่สำเร็จ ({_err}) '
                                         f'— ยอดขาย/ซื้อ/รับชำระเข้าปกติ แต่'
-                                        f'{_hint or "ข้อมูลส่วนนี้ยังเป็นของรอบก่อน"} '
+                                        f'{_register.stale_hint or "ข้อมูลส่วนนี้ยังเป็นของรอบก่อน"} '
                                         f'— ลองอัปโหลด zip เดิมอีกครั้ง '
                                         f'ถ้ายังเตือนให้แจ้ง Put'))
                 # The import committed, so a future mark can now be retired.

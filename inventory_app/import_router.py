@@ -306,41 +306,6 @@ def _commit_snapshot(kind, build, db_path, snapshot_date):
                 "error": str(exc)[:300]}
 
 
-# The datasets commit_express_dbf() isolates behind their own try/except, i.e.
-# the ones that can come back as {'error': ...} while the ledger commits fine.
-# Declared HERE, next to the blocks that produce them, so adding a register and
-# declaring it are the same edit. blueprints/bsn.py must read every one of these
-# back or the failure is swallowed and the upload flashes green over a register
-# still holding the previous run's rows (Codex rounds 5-6, 2026-08-18/19).
-#
-# Key, Thai label, and the page that goes stale when this register refuses.
-# The hint is filled in only for the two registers a page actually reads
-# today — the other four have no reader yet, so naming one would be a lie
-# (Codex round 6).
-#
-# This is the VOCABULARY, not the policy. Callers deliberately disagree about
-# what a failed register means, and both are right: the daily BSN upload warns
-# and carries on, because the ledger has already committed and yesterday's rows
-# are still readable; vat_book_builder raises and refuses to publish, because it
-# replaces a whole book and would publish one with no balances at all. What they
-# must NOT disagree about is which registers exist and what they are called.
-ISOLATED_REGISTERS = (
-    ('ar_snapshot',    'ลูกหนี้คงค้าง',  'หน้าลูกหนี้ยังเป็นของรอบก่อน'),
-    ('ap_snapshot',    'เจ้าหนี้คงค้าง', 'หน้าเจ้าหนี้ยังเป็นของรอบก่อน'),
-    ('billing_notes',  'ใบวางบิล',       ''),
-    ('bank_cheques',   'ทะเบียนเช็ค',     ''),
-    ('sales_orders',   'ใบสั่งขาย',       ''),
-    ('general_ledger', 'บัญชีแยกประเภท', ''),
-)
-
-ISOLATED_REGISTER_KEYS = frozenset(k for k, *_ in ISOLATED_REGISTERS)
-
-# The subset that carries an outstanding BALANCE rather than documents. These
-# are the ones a from-scratch book cannot publish without: a refused snapshot
-# leaves `ar_snapshot: 0`, indistinguishable from a book that owes nothing.
-SNAPSHOT_REGISTER_KEYS = ('ar_snapshot', 'ap_snapshot')
-
-
 # How much of the request's 60s budget the drift scan is allowed to need. It is
 # a RESERVE, not a stopwatch on the scan itself: the scan is one call and cannot
 # be interrupted halfway, so the only honest guard is to refuse to START it
