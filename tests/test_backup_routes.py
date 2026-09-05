@@ -137,7 +137,7 @@ def test_restore_no_reload_signal_off_gunicorn(tmp_db, monkeypatch):
 #
 # Imports are consolidated into the unified box (/import-data); the retired
 # /import-payments and /import-credit-notes/* routes' snapshot-before-write
-# guarantee now lives in /import-data/confirm (_snapshot_before_import('unified')).
+# guarantee now lives in /import-data/confirm (guarded_backup policy='warn').
 
 def test_staff_import_via_unified_box_snapshots_first(tmp_db, tmp_path, monkeypatch):
     """Staff import via the unified box, and /import-data/confirm must take a
@@ -149,7 +149,7 @@ def test_staff_import_via_unified_box_snapshots_first(tmp_db, tmp_path, monkeypa
 
     seen = {}
 
-    def fake_import(path):
+    def fake_import(path, **kwargs):
         # the snapshot must already exist by the time the commit runs
         seen['reasons'] = [b['reason'] for b in db_backup.list_backups(backup_dir=bdir)]
         return {'imported': 1, 'updated': 0, 'skipped': 0}

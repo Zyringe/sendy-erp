@@ -40,7 +40,7 @@ _STAFF_POST_OK = frozenset([
     'bsn.mapping_save', 'bsn.unit_conversions_save', 'bsn.unit_conversions_edit',
     'bsn.unit_conversions_dismiss',
     # Decision B — staff may import everything; the unified box (/import-data)
-    # snapshots the DB before writing (see _snapshot_before_import call sites).
+    # snapshots the DB before writing (see guarded_backup call sites).
     'bsn.unified_import', 'bsn.unified_import_confirm', 'bsn.express_dbf_upload',
     'marketplace.import_orders', 'marketplace.settlement_import', 'marketplace.upload', 'marketplace.link_iv',
     'products.product_location_save',

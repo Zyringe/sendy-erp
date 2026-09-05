@@ -66,6 +66,10 @@ MIN_FREE_BYTES = 60 * 1024 * 1024
 DEFAULT_COMPRESSLEVEL = 6
 
 
+class BackupRefused(RuntimeError):
+    """A required pre-mutation snapshot could not be created."""
+
+
 def default_backup_dir(db_path):
     """Backups live next to the live DB → on Railway that's the persistent
     volume (DATA_DIR), so they survive redeploys."""
@@ -148,6 +152,28 @@ def safe_create_backup(reason, *, db_path, backup_dir, **kw):
         return create_backup(reason, db_path=db_path, backup_dir=backup_dir, **kw), None
     except Exception as e:                      # disk full, permission, etc.
         return None, str(e)
+
+
+def guarded_backup(reason, *, policy, db_path, backup_dir, warn=None, **kw):
+    """Create a pre-mutation snapshot and enact its failure policy.
+
+    ``warn`` delivers the error to the required ``warn`` callback and lets the
+    caller continue. ``refuse`` raises :class:`BackupRefused`, so a route
+    cannot silently continue past a missing rollback point.
+    """
+    if policy not in ("warn", "refuse"):
+        raise ValueError(f"unknown backup failure policy: {policy!r}")
+    if policy == "warn" and warn is None:
+        raise ValueError("warn callback is required for warn policy")
+
+    info, error = safe_create_backup(
+        reason, db_path=db_path, backup_dir=backup_dir, **kw)
+    if error is None:
+        return info
+    if policy == "refuse":
+        raise BackupRefused(error)
+    warn(error)
+    return None
 
 
 def snapshot_db(db_path, dest_path):
