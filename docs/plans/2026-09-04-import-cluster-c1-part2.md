@@ -1,7 +1,11 @@
 # C1 part 2 — move the import-run policy below the route
 
-**Status: NOT STARTED. Deliberately deferred.**
+**Status: CLOSED 2026-09-05 — stopped after part 1, on this plan's own exit
+criterion below ("What would make this NOT worth doing"). Put's call.**
 Part 1 (one declaration of the register vocabulary) shipped in `ce0c1f8`.
+C4 step 2 is **answered and deliberately not built** — see the closing section.
+The one real defect this cluster has is not C4; it is tracked separately at
+`projects/express-integration/plan-dbf-run-atomicity-2026-09-05.md`.
 
 ## Why this is a separate project
 
@@ -121,3 +125,92 @@ outside the caller's transaction entirely (which is what the current
 commit-then-recalculate order effectively does).
 
 **Do not add the `conn` parameter without answering #2.**
+
+---
+
+## C4 step 2 — answered: don't (2026-09-05)
+
+Question asked above: *"what should a WACC identity failure do to a caller's
+transaction — savepoint, hand it to the caller, or keep WACC outside?"*
+
+### The answer is already in the codebase, three times
+
+Hand it to the caller. This is not a new decision, it is the house rule, stated
+verbatim in three places:
+
+- `models/wacc.py:147` (`recalculate_product_wacc`) — *"When a connection is
+  PASSED IN the caller owns rollback and close; this function only propagates."*
+- `models/wacc.py:32` (`WaccIdentityError`) — *"Carries structured context so
+  whoever OWNS the failed connection can persist an actionable alert after
+  rolling back and releasing it."*
+- `models/mapping.py:895-916` (`repoint_bsn_code`, the precedent this plan
+  points at) — every `rollback()` / `close()` / alert is gated behind `if own:`
+  and it re-raises bare, with the reason written down: *"When we do NOT own the
+  connection we cannot roll back or close it, so the alert is the supplying
+  caller's responsibility."*
+
+So: **not** a savepoint (nothing in this repo uses one for this, and it would
+invent a fourth semantic), and **not** "keep WACC outside" (impossible under a
+caller-owned connection without committing the caller). Gate the two
+`rollback()`/`close()` pairs behind `if own:` and propagate. Constraint #1 above
+resolves the same way — under a caller-owned connection the alerts become the
+caller's responsibility, exactly as `scripts/remap_bsn_code.py` already does.
+
+Footnote that shrinks #2 further: `preflight_batch` is READ-ONLY and runs before
+anything is mutated, so a `WaccIdentityError` raised from it has nothing to roll
+back at all.
+
+### But #2 was the wrong question — the real blocker is 20 lines above it
+
+`import_weekly` calls `conn.commit()` at `models/imports.py:424`, **before** the
+WACC block. `repoint_bsn_code` has no such mid-function commit; that is why its
+contract transplants cleanly and this one does not.
+
+Under a caller-owned connection the two failure modes are not symmetric:
+
+- a wrong `rollback()` is **loud** — the caller can see its own work vanish;
+- a mid-function `commit()` is **silent** — the caller's work (the watermark
+  claim, in the C1 part 2 design) lands anyway, including when the caller
+  fails afterwards and believes it rolled back.
+
+And that commit is deliberate, not incidental. `models/imports.py:426-434` says
+so: the source/stock rows are committed first precisely so that *"On failure
+every product keeps its previous WACC"* and the operator is told **"นำเข้าสำเร็จ
+แต่คำนวณต้นทุนไม่สำเร็จ"**.
+
+Gating it as `if own: conn.commit()` therefore changes a **money-visible
+outcome** for the new call shape. Today a WACC identity failure still lets the
+import land (rows + stock durable, cost stale, alert raised). Inside a caller's
+transaction the caller would unwind the whole import — and `WaccIdentityError`
+is a data-state failure, not a transient one, so the import cannot land on retry
+either until someone repairs the provenance. On a weekly book that means the
+week's sales sit outside the ERP. That is Put's call, not a refactor detail.
+
+### And solving it would still buy nothing today
+
+- `import_weekly` has exactly two production call sites, `import_router.py:167`
+  and `:431-432`. **Neither passes a connection**, and nothing is queued to.
+  Adding the parameter now is dead code (YAGNI, rung 1 of the ladder).
+- The payoff this plan claims for C4 — one transaction per run, `flock`
+  replaceable — needs **all 15+ sub-imports** of a DBF run converted, not two:
+  `_upsert_invoice_refs`, `import_payment_records` ×2, `run_import_records` ×2,
+  `import_credit_note_amounts_records`, `_replace_general_ledger`,
+  `_replace_sales_orders`, `_replace_bank_cheques`, the billing-note and
+  AR/AP-snapshot writers. Each opens its own connection and commits on its own.
+- The `flock` was never the thing standing in the way of atomicity. It serialises
+  *concurrent* runs; it says nothing about *partial* ones, and
+  `blueprints/bsn.py::_audit_forced_import` already records that
+  *"the importer commits in several transactions."*
+
+### What is real, and where it went
+
+A DBF run is **not atomic across its sub-imports** — a purchase import that
+fails after the sales import committed leaves a half-applied run, and the
+existing recovery is an audit row plus the next day's idempotent re-import.
+That is a genuine defect and it is now tracked on its own, with the money
+question above as its gate:
+`projects/express-integration/plan-dbf-run-atomicity-2026-09-05.md`.
+
+Steps 2-4 of "Order of work" (freshness module, extract the run, C6) are
+untouched and still available; they never depended on C4 except through the
+`flock` argument, which the bullet above retires.
