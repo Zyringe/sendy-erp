@@ -528,7 +528,7 @@ def record_wacc_identity_alert(exc, *, operation=None, extra=None):
         return None
 
 
-def record_conversion_role_alert(formula_id, exc):
+def record_conversion_role_alert(formula_id, exc, *, conn=None):
     """Persist a ConversionRoleError caught inside cross_unit_hazard.
 
     cross_unit_hazard itself never raises this past its own boundary (see its
@@ -539,9 +539,24 @@ def record_conversion_role_alert(formula_id, exc):
     and READ/LIST paths (a raise there would 500 a whole page over one bad
     row). This module is the one durable place the operator actually sees it.
 
-    Best-effort, on a FRESH connection — cross_unit_hazard is called mid
-    read-only query loops on the caller's own connection, and this must never
-    interfere with (or be rolled back by) whatever that caller does next.
+    Best-effort. By DEFAULT this opens a FRESH connection: cross_unit_hazard is
+    called mid read-only query loop on the caller's own connection, and filing
+    the alert there would open a write transaction inside that loop and hold the
+    lock for the rest of the request.
+
+    `conn` is for the opposite case (issue #389): a caller that has ALREADY
+    written on its own connection holds the write lock until it commits, so the
+    fresh connection can only sit on `database is locked` until the busy timeout
+    and then be swallowed here — the operator gets the block with no durable
+    explanation. Such a caller passes its own connection, and the alert commits
+    with the rest of its transaction; `create_system_alert` neither commits nor
+    closes a connection it was given.
+
+    The trade that makes this safe: a caller passing `conn` must be one whose
+    transaction COMMITS on the path that met the malformed formula. If it rolls
+    back the alert goes with it — acceptable only because the formula is still
+    malformed afterwards and the next read/list page files it from a connection
+    holding no lock.
 
     Dedupe key is the formula id ALONE. Load-bearing: cross_unit_hazard can
     be called many times for the SAME malformed formula within one request
@@ -554,7 +569,8 @@ def record_conversion_role_alert(formula_id, exc):
             KIND_CONVERSION_ROLE_ERROR, str(exc),
             dedupe_key=_dedupe_key([formula_id]),
             severity='error',
-            context={'formula_id': formula_id})
+            context={'formula_id': formula_id},
+            conn=conn)
     except Exception as alert_exc:            # noqa: BLE001
         print(f"[system_alerts] failed to record conversion-role alert: {alert_exc}",
               file=sys.stderr)
