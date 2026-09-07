@@ -156,6 +156,12 @@ REPORT_TYPES: Tuple[ReportType, ...] = (
         book_meta_key='purchase_imported',
     ),
     # The fallback. No markers, so `matches` is never true for it.
+    #
+    # This label reaches the preview table's label column (_REPORT_LABELS.get)
+    # but NOT the <option>: import_box.html skips 'unknown' in the loop and
+    # renders its own "— ข้ามไฟล์นี้ —" instead, so the operator is told what
+    # will HAPPEN rather than what was detected. Verified unchanged from
+    # origin/main, 2026-09-07 — do not "fix" the two strings to match.
     ReportType(
         key='unknown',
         label='— ไม่รู้จัก (เลือกเอง) —',
