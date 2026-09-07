@@ -36,6 +36,7 @@ from datetime import datetime
 import bsn_units
 import express_registers
 import import_router
+import report_types
 
 
 def seed_companies(conn):
@@ -300,16 +301,13 @@ def build(source_dir, snapshot_date=None):
             'products': len(code_to_pid),
             'isvat_rows': isvat_n,
             'stmas_meta_rows': stmas_meta_n,
-            'sales_imported': per_type['sales']['imported'],
-            'purchase_imported': per_type['purchase']['imported'],
-            'payments_in': per_type['payments_in']['imported'],
-            'payments_out': per_type['payments_out']['imported'],
-            'credit_notes_ar': per_type['credit_notes_ar']['upserted'],
-            'credit_notes_ap': per_type['credit_notes_ap']['imported'],
-            # This book's OWN outstanding balances (xp5's RR26/IV series) —
-            # kept here, never merged into the main book's figures.
-            'ar_snapshot': per_type['ar_snapshot']['imported'],
-            'ap_snapshot': per_type['ap_snapshot']['imported'],
+            # One row count per report type, each read through its own registry
+            # record. That is what fixes the inconsistency this block carried:
+            # credit_notes_ar reports 'upserted' where every sibling reports
+            # 'imported', and it was hand-typed here with nothing pinning it.
+            # Includes this book's OWN outstanding balances (xp5's RR26/IV
+            # series) — kept here, never merged into the main book's figures.
+            **report_types.book_meta_counts(per_type),
             'snapshot_date': per_type['snapshot_date'],
         }
         write_book_meta(conn, source_dir, isinfo, counts)

@@ -250,10 +250,26 @@ def test_preview_removal_count_is_zero_for_an_unchanged_replay(tmp_db, monkeypat
 
 
 def test_payments_in_offers_the_removals_checkbox_on_the_preview_page():
-    """Without payments_in in this list the whole opt-in is unreachable and the
-    stale-allocation fix ships inert."""
+    """Without payments_in in the removal-capable set the whole opt-in is
+    unreachable and the stale-allocation fix ships inert.
+
+    The set used to be a literal tuple inside unified_import and this test read
+    it out of the source text. Card 10 moved it to report_types, so the check
+    now pins BOTH halves — neither alone is enough:
+
+      * the registry value, because a source check would still pass if the set
+        it reads had quietly lost payments_in;
+      * that unified_import still calls removal_capable_keys(), because a
+        registry check would still pass if bsn stopped consulting it and went
+        back to hardcoding something narrower.
+    """
     import inspect
     import blueprints.bsn as bsn_mod
+    import report_types
+
+    assert report_types.removal_capable_keys() == {'sales', 'purchase', 'payments_in'}, \
+        'the removal-capable set changed — was that deliberate?'
+
     src = inspect.getsource(bsn_mod.unified_import)
-    assert "'sales', 'purchase', 'payments_in'" in src, \
-        'payments_in cannot reach the removals checkbox'
+    assert 'removal_capable_keys()' in src, \
+        'unified_import no longer reads the registry, so the set cannot reach the row'
