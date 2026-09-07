@@ -499,26 +499,21 @@ def mapping_suggestion_reject(sid):
 # semantics (lights-on FK off etc).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'scripts'))
 import import_router  # noqa: E402  (unified /import box: detect + preview + commit dispatch)
+import report_types  # noqa: E402  (the one declaration of the report-type vocabulary)
 
 
 # ── Unified import box (/import) — one drop zone for all weekly Express files ──
 _IMPORT_STAGE_DIR = 'import-stage'   # under UPLOAD_FOLDER
 
 
-_REPORT_LABELS = {
-    'sales': 'ขาย',
-    'purchase': 'ซื้อ',
-    'payments_in': 'การรับชำระหนี้ (ลูกหนี้)',
-    'payments_out': 'การจ่ายชำระหนี้ (เจ้าหนี้)',
-    'credit_notes_ar': 'ใบลดหนี้ — รับคืน (ลูกค้า)',
-    'credit_notes_ap': 'ใบลดหนี้ — ส่งคืน (ผู้ขาย)',
-    # Kept selectable ON PURPOSE even though nothing imports them: a blocked row
-    # keeps its DETECTED type selected, and a type the detector emits but the
-    # dropdown lacks makes the browser fall through to the FIRST option ('ขาย').
-    'ar_snapshot': 'ลูกหนี้คงค้าง — ปิดแล้ว ใช้ zip รายวัน',
-    'ap_snapshot': 'เจ้าหนี้คงค้าง — ปิดแล้ว ใช้ zip รายวัน',
-    'unknown': '— ไม่รู้จัก (เลือกเอง) —',
-}
+# key -> Thai label for the type <select>, in registry order.
+#
+# Every key is selectable ON PURPOSE, the retired ones included: a blocked row
+# keeps its DETECTED type selected, and a type the detector emits but the
+# dropdown lacks makes the browser fall through to the FIRST option ('ขาย').
+# Reading the labels from the registry is what now guarantees the dropdown and
+# the detector cover the same set — this used to be a second hand-typed list.
+_REPORT_LABELS = report_types.labels()
 
 
 # Every dataset commit_express_dbf() isolates behind its own try/except, i.e.
@@ -592,7 +587,7 @@ def unified_import():
                     # removal count — without that the operator would be opting
                     # into a deletion they cannot see (Task 2 shipped inert
                     # until this line included it).
-                    row['removals_ok'] = rtype in ('sales', 'purchase', 'payments_in')
+                    row['removals_ok'] = rtype in report_types.removal_capable_keys()
                 except import_router.HistoryExportBlocked as exc:
                     # Policy A: full history goes through the Express ZIP module
                     # only. Flagged (not just errored) so the template can point

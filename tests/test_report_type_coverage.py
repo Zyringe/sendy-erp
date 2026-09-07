@@ -93,6 +93,31 @@ REGISTRY = 'report_types.py'
 
 # path -> (keys it may hardcode, why)
 ALLOWED = {
+    'import_router.py': (
+        frozenset({'payments_in', 'payments_out', 'credit_notes_ar',
+                   'credit_notes_ap', 'ar_snapshot', 'ap_snapshot'}),
+        'DISPATCH AND RESULT ASSEMBLY, not a list of the vocabulary. Every '
+        'LIST here now derives from the registry (RETIRED_REPORT_TYPES, '
+        'RETIRED_REPORT_REASON, _EXPRESS_KIND, and the detector walk). What '
+        'remains is code that must name the type it is calling an importer '
+        'for: commit_file/preview_file branch to different importers with '
+        "different arguments, and commit_express_dbf's return dict binds each "
+        'key to its own computed variable and mixes THREE vocabularies '
+        '(report types, Express registers, plus reconcile/drift). Putting '
+        'those callables in the registry would invert the import direction '
+        'for no gain. The key set is pinned exactly, so wiring a NEW type in '
+        'here fails this test until the registry is updated too.'),
+    'blueprints/bsn.py': (
+        frozenset({'payments_in', 'payments_out', 'credit_notes_ar',
+                   'credit_notes_ap', 'ar_snapshot', 'ap_snapshot'}),
+        '_express_dbf_summary_message builds a Thai one-liner in which every '
+        'type has its own word (ขาย / รับชำระ / ลดหนี้ขาย ...), so the message '
+        'cannot be generated from the registry without inventing a label '
+        'field nothing else wants. It reads per_type[key][field] by hand, '
+        'which is the SAME imported-vs-upserted trap that was live in '
+        'vat_book_builder - so the field-choice test below pins it to the '
+        'registry instead. The labels dict and the removals_ok list are gone; '
+        'both read the registry now.'),
     'express_registers.py': (
         frozenset({'ar_snapshot', 'ap_snapshot'}),
         'A DIFFERENT record for a DIFFERENT concept that legitimately shares '
@@ -219,3 +244,46 @@ def test_allowlist_has_no_stale_entries():
             stale[rel] = f'no longer hardcodes {sorted(unused)}'
     assert not stale, ('stale allowlist entries:\n' +
                        '\n'.join(f'  {f}: {w}' for f, w in sorted(stale.items())))
+
+
+def test_summary_message_field_choices_match_the_registry():
+    """bsn._express_dbf_summary_message reads per_type[key][field] by hand.
+
+    It is allowlisted above because the Thai wording cannot be generated from
+    the registry, but the FIELD choice is exactly what drifted in
+    vat_book_builder: every type reports 'imported' except credit_notes_ar,
+    which reports 'upserted'. This pins the hand-written choices so the two
+    cannot part without a test going red.
+    """
+    import inspect
+    import re
+
+    import report_types
+    from blueprints import bsn
+
+    src = inspect.getsource(bsn._express_dbf_summary_message)
+    want = report_types.dbf_count_fields()
+
+    # One key and one count-field on the same line is the shape both variants
+    # use: per_type['k']['f'] and (per_type.get('k') or {}).get('f').
+    found = {}
+    for line in src.splitlines():
+        if 'per_type' not in line:
+            continue
+        keys = [k for k in re.findall(r"'([a-z_]+)'", line) if k in want]
+        fields = [f for f in re.findall(r"'(imported|upserted)'", line)]
+        if len(keys) == 1 and len(fields) == 1:
+            found[keys[0]] = fields[0]
+
+    # CONTROL: if the parse stops matching, this says so rather than letting an
+    # empty result pass as agreement.
+    assert len(found) >= 6, (
+        f'only parsed {sorted(found)} out of the summary message — the parse, '
+        'not the code, is what changed; fix this test before trusting it')
+
+    wrong = {k: (f, want[k]) for k, f in found.items() if f != want[k]}
+    assert not wrong, (
+        'the summary message reads a different count field than the registry '
+        'declares:\n' +
+        '\n'.join(f'  {k}: reads {got!r}, registry says {exp!r}'
+                   for k, (got, exp) in sorted(wrong.items())))

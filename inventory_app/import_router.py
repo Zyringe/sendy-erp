@@ -17,6 +17,7 @@ import os
 import time
 
 import express_registers
+import report_types
 
 class HistoryExportBlocked(ValueError):
     """A full-history Express export was dropped on the weekly importer.
@@ -78,36 +79,22 @@ def _reject_history_export(path):
 def detect_express_report(path):
     """Classify an Express export by its title line.
 
-    Returns one of the keys `_EXPRESS_KIND` dispatches on, or 'unknown'.
+    Returns one of `report_types.REPORT_TYPES`' keys — the registry is the only
+    place the vocabulary and the matching rules are written down.
     Never raises — an unreadable file is 'unknown'."""
     try:
         with open(path, encoding="cp874") as f:
             head = "".join(next(f, "") for _ in range(8)).replace("\xa0", " ")
     except (OSError, UnicodeDecodeError):
-        return "unknown"
+        return report_types.UNKNOWN
 
-    # Credit notes first — both kinds carry 'ใบลดหนี้'; the รับคืน/ส่งคืน
-    # qualifier separates the AR (customer returns) from the AP (we return to
-    # supplier) side. They route to different importers.
-    if "ใบลดหนี้" in head:
-        if "ส่งคืน" in head:
-            return "credit_notes_ap"
-        return "credit_notes_ar"   # 'รับคืนสินค้า' or unqualified → AR side
-    if "การรับชำระหนี้" in head:
-        return "payments_in"
-    if "การจ่ายชำระหนี้" in head:
-        return "payments_out"
-    if "ลูกหนี้คงค้าง" in head:
-        return "ar_snapshot"
-    if "เจ้าหนี้คงค้าง" in head:
-        return "ap_snapshot"
-    # Specific sales/purchase report titles — NOT bare 'ขาย'/'ซื้อ', so the
-    # wrong 'ขายเงินเชื่อ' report stays unknown.
-    if "ประวัติการขาย" in head or "รายงานการขาย" in head:
-        return "sales"
-    if "ประวัติการซื้อ" in head or "รายงานการซื้อ" in head:
-        return "purchase"
-    return "unknown"
+    # The title rules, the order they are tried in, and the ส่งคืน qualifier
+    # that splits the two ใบลดหนี้ sides all live in report_types.REPORT_TYPES.
+    # First match wins; nothing matches 'unknown', which is the fallback.
+    for rt in report_types.REPORT_TYPES:
+        if rt.matches(head):
+            return rt.key
+    return report_types.UNKNOWN
 
 
 # report_type → express_importer file_type (the express-family share one path).
@@ -121,16 +108,10 @@ def detect_express_report(path):
 # dropdown while the detector still emits it is worse still: no <option> matches,
 # so the browser selects the FIRST one ('ขาย') and an unchanged confirm would
 # feed a ลูกหนี้คงค้าง report to the SALES importer (Codex review, 2026-08-22).
-RETIRED_REPORT_TYPES = frozenset({"ar_snapshot", "ap_snapshot"})
-RETIRED_REPORT_REASON = (
-    "ทางนำเข้าแบบไฟล์รายงานสำหรับ ลูกหนี้/เจ้าหนี้คงค้าง ปิดแล้ว — "
-    "ยอดคงค้างมาจาก zip รายวันของ Express ที่หน้า นำเข้า Express (DBF) แทน"
-)
+RETIRED_REPORT_TYPES = report_types.retired_keys()
+RETIRED_REPORT_REASON = report_types.BY_KEY['ar_snapshot'].retired_reason
 
-_EXPRESS_KIND = {
-    "payments_out": "payments_out",
-    "credit_notes_ap": "credit_notes",
-}
+_EXPRESS_KIND = report_types.express_kinds()
 
 
 def commit_file(path, report_type, filename=None, db_path=None,
