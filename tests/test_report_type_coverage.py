@@ -98,7 +98,8 @@ ALLOWED = {
                    'credit_notes_ap', 'ar_snapshot', 'ap_snapshot'}),
         'DISPATCH AND RESULT ASSEMBLY, not a list of the vocabulary. Every '
         'LIST here now derives from the registry (RETIRED_REPORT_TYPES, '
-        'RETIRED_REPORT_REASON, _EXPRESS_KIND, and the detector walk). What '
+        '_EXPRESS_KIND, and the detector walk; the retired REASON moved to '
+        'report_types.retired_reason_for, per type). What '
         'remains is code that must name the type it is calling an importer '
         'for: commit_file/preview_file branch to different importers with '
         "different arguments, and commit_express_dbf's return dict binds each "

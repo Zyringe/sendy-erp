@@ -60,8 +60,29 @@ def test_the_detector_still_recognises_them(tmp_path, text, expected):
 
 
 def test_the_retired_set_and_its_reason_live_in_one_place():
+    """That one place is now `report_types` (card 10, 2026-09-07).
+
+    `import_router.RETIRED_REPORT_TYPES` is kept as a derived alias, so the
+    first assertion still pins the set the rest of this file relies on. The
+    reason became PER TYPE rather than one shared module constant — checking
+    each one separately is the point: a shared constant would report ar's
+    reason for ap without anything noticing.
+    """
+    import report_types
+
     assert import_router.RETIRED_REPORT_TYPES == {'ar_snapshot', 'ap_snapshot'}
-    assert 'zip' in import_router.RETIRED_REPORT_REASON
+    assert import_router.RETIRED_REPORT_TYPES == report_types.retired_keys(), \
+        'the alias drifted from the registry it is supposed to derive from'
+
+    for key in ('ar_snapshot', 'ap_snapshot'):
+        reason = report_types.retired_reason_for(key)
+        assert reason and 'zip' in reason, \
+            f'{key} has no reason pointing the operator at the daily zip'
+
+    # A live type must NOT carry one — otherwise "is it retired?" stops meaning
+    # anything and every row could be blocked with an explanation.
+    assert report_types.retired_reason_for('sales') is None
+    assert report_types.retired_reason_for('nonsense-key') is None
 
 
 def test_the_types_are_still_offered_in_the_dropdown():

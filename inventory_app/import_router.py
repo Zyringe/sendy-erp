@@ -109,7 +109,6 @@ def detect_express_report(path):
 # so the browser selects the FIRST one ('ขาย') and an unchanged confirm would
 # feed a ลูกหนี้คงค้าง report to the SALES importer (Codex review, 2026-08-22).
 RETIRED_REPORT_TYPES = report_types.retired_keys()
-RETIRED_REPORT_REASON = report_types.BY_KEY['ar_snapshot'].retired_reason
 
 _EXPRESS_KIND = report_types.express_kinds()
 

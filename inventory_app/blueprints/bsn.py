@@ -576,7 +576,7 @@ def unified_import():
                 # verdict rides the session into /confirm — the type dropdown is
                 # operator-supplied, so a decision keyed on the submitted type
                 # alone can be re-routed around.
-                row['error'] = import_router.RETIRED_REPORT_REASON
+                row['error'] = report_types.retired_reason_for(rtype)
                 row['blocked'] = 'retired'
             elif rtype != 'unknown':
                 try:
@@ -658,10 +658,10 @@ def unified_import_confirm():
                 # reads the file's date range and returns None for a retired
                 # type, which would fall through to the generic line and leave
                 # the operator without the one instruction that helps.
-                'msg': (import_router.RETIRED_REPORT_REASON
-                        if row.get('blocked') == 'retired'
-                        else import_router.history_block_reason(path) or
-                        'ไฟล์นี้ถูกปฏิเสธตั้งแต่ตอนตรวจสอบ — นำเข้าไม่ได้'),
+                'msg': ((report_types.retired_reason_for(row.get('detected'))
+                         if row.get('blocked') == 'retired' else None)
+                        or import_router.history_block_reason(path)
+                        or 'ไฟล์นี้ถูกปฏิเสธตั้งแต่ตอนตรวจสอบ — นำเข้าไม่ได้'),
                 'blocked': row['blocked']})
             continue
         if rtype == 'unknown' or not os.path.isfile(path):

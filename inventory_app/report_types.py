@@ -177,6 +177,17 @@ def retired_keys():
     return frozenset(rt.key for rt in REPORT_TYPES if rt.is_retired)
 
 
+def retired_reason_for(key):
+    """Why THIS type is refused, or None if it is live (or not a type at all).
+
+    Per-type on purpose. The two retired types share one reason today, and a
+    single module-level constant would work — right up until they don't, at
+    which point the shared constant silently shows one type's reason for the
+    other. Asking the type is the same length and cannot go wrong."""
+    rt = BY_KEY.get(key)
+    return rt.retired_reason if rt else None
+
+
 def express_kinds():
     """report_type -> express_importer file_type, for the types that share the
     express_importer path."""
