@@ -367,3 +367,45 @@ def test_call_card_single_number_renders_as_before(tmp_db_conn):
     dials = re.findall(r'href="tel:([^"]*)"', html)
     assert dials == ['024358899']
     assert '02-435-8899' in html, "the reader still sees the stored spelling"
+
+
+def test_card_without_a_phone_field_makes_no_claim_either_way(tmp_db_conn):
+    """`get_card` builds a SYNTHETIC master — code/name/fax/nickname/contact_note,
+    with no `phone` key at all — whenever `_resolve_target` cannot resolve the
+    code. Those customers can still hold a number in `customers`: verified on
+    the live clone, `01ก02` has two, and its card gets the synthetic master.
+
+    So "ไม่ได้บันทึกเบอร์" must NOT appear there. Absent field means unknown,
+    which is a different statement from a recorded blank, and only the second
+    one may be shown to the reader.
+
+    Found by loading the real page — pytest could not have caught it, because
+    every fixture in this file uses a customer whose master DOES carry phone.
+    """
+    import ar_followup as arf
+    conn = tmp_db_conn
+    # NOT get_call_list: that lists customers WITH activity, and those all
+    # resolve, so their master always carries phone. The synthetic shape lives
+    # among customers that hold a number but no resolvable history.
+    target = None
+    rows = conn.execute(
+        "SELECT code FROM customers WHERE COALESCE(TRIM(phone),'')<>'' "
+        "ORDER BY code LIMIT 400").fetchall()
+    for (code,) in rows:
+        if arf._resolve_target(conn, code)[0] is not None:
+            continue
+        try:
+            d = cc.get_card(conn, code)
+        except Exception:
+            continue                      # unrelated per-customer failures
+        if d and 'phone' not in d['master'].keys():
+            target = code
+            break
+    assert target, ("no synthetic-master card in the clone — this test would "
+                    "pass vacuously, so treat it as a failure, not a skip")
+
+    html = _client(_app()).get('/call/' + target).get_data(as_text=True)
+    assert 'callstack' in html, "CONTROL: the phone block really rendered"
+    assert 'ไม่ได้บันทึกเบอร์' not in html, \
+        "claims no number is recorded on a card that simply does not carry the field"
+    assert 'href="tel:' not in html

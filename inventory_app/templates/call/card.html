@@ -140,7 +140,13 @@
         <span class="callbtn off">☎️ {{ e.text }}<small>โทรไม่ได้</small></span>
         {% endif %}
       {% else %}
+        {# Only claim "not recorded" when the card actually CARRIES the field.
+           get_card builds a synthetic master (no phone key at all) when
+           _resolve_target cannot resolve the code, and those customers may well
+           have a number in `customers` — saying otherwise would be a lie. #}
+        {% if m.phone is defined %}
         <span class="callbtn off">☎️ <small>ไม่ได้บันทึกเบอร์</small></span>
+        {% endif %}
       {% endfor %}
     </div>
 
