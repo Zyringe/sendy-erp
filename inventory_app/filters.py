@@ -83,13 +83,44 @@ def html_text(v):
 # function server-side and ships its output rather than re-deciding in JS.
 _FAX_MARKER_RE = re.compile(r'(?i)^\s*(?:f|fax|แฟกซ์)\s*[:.]?\s*')
 
+# The same marker INSIDE a chunk splits it in two. 58 chunks on the dev DB glue
+# a fax straight onto a phone with no comma (`053-295633-7 F:053-295638`,
+# `053-812993-7F:053-272114`), and the whole run then fails `is_valid_thai_phone`
+# — so the number gets no dial target at all.
+#
+# #461 left these alone on purpose ("messy DATA, the normalizer's job"), and
+# that was right while the call card was the only consumer: the card had been
+# dialling the whole blob anyway, so it lost nothing. It stopped being right in
+# #462, which moved `m/customer.html` here — that screen's inline workaround did
+# `.split('F:')[0]` and DID dial them. Without this, 7 real customers lose a
+# working call button.
+#
+# Two conditions, both load-bearing: the ':'/'.' terminator, and a NON-LETTER
+# before the marker. `OFF:9218909` is a real stored value — an OFFICE number —
+# and a bare-`f` rule tears it into a junk `OF` entry plus a mislabelled "fax".
+_INLINE_FAX_RE = re.compile(r'(?i)(?<=[^A-Za-z])(?:fax|แฟกซ์|f)\s*[:.]')
+
+
+def _split_inline_fax(chunk):
+    """`'02-111 F:02-222'` -> `['02-111', 'F:02-222']`; anything else unchanged.
+
+    Splits at most once: a second marker stays inside the fax part, where it
+    changes nothing.
+    """
+    m = _INLINE_FAX_RE.search(chunk)
+    if not m:
+        return [chunk]
+    return [chunk[:m.start()], chunk[m.start():]]
+
 
 def phone_entries(v):
     """Split a stored phone field into one entry per number.
 
     Each entry is {'text', 'dial', 'is_fax'}:
       text    what to show — the stored spelling, untouched, so a single-number
-              customer renders exactly as before
+              customer renders exactly as before. The one edit is structural:
+              a chunk gluing a fax onto a phone is split between the two, so
+              neither is shown as part of the other.
       dial    bare digits for a tel: link, or None when the entry is not a
               number anyone should call (a fax, a contact name, junk)
       is_fax  the entry carried an F:/FAX marker
@@ -105,16 +136,17 @@ def phone_entries(v):
                                             _landline_core_digits)
     out = []
     for chunk in str(v).split(','):
-        text = chunk.strip()
-        if not text:
-            continue
-        stripped = _FAX_MARKER_RE.sub('', text)
-        is_fax = stripped != text
-        # A fax is shown, never offered as a call.
-        dial = None
-        if not is_fax and is_valid_thai_phone(stripped):
-            dial = _landline_core_digits(stripped)
-        out.append({'text': text, 'dial': dial, 'is_fax': is_fax})
+        for part in _split_inline_fax(chunk):
+            text = part.strip()
+            if not text:
+                continue
+            stripped = _FAX_MARKER_RE.sub('', text)
+            is_fax = stripped != text
+            # A fax is shown, never offered as a call.
+            dial = None
+            if not is_fax and is_valid_thai_phone(stripped):
+                dial = _landline_core_digits(stripped)
+            out.append({'text': text, 'dial': dial, 'is_fax': is_fax})
     return out
 
 

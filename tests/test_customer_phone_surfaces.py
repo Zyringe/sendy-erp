@@ -102,6 +102,20 @@ def test_mobile_customer_screen_marks_a_customer_with_no_number():
     assert _dials(html) == []
 
 
+def test_mobile_customer_screen_keeps_the_dial_target_for_a_glued_fax():
+    """The regression the rollout nearly shipped. The deleted inline workaround
+    did `.split('F:')[0]`, so it dialled a chunk that glues a fax onto a phone
+    with no comma. Real stored value, customer 053ช22 — 7 customers were
+    affected, and #462 rules out exactly this ("no behaviour regression on that
+    screen"). Fixed in `filters._split_inline_fax`, pinned here at the surface
+    because that is where the loss would have been felt.
+    """
+    html = _m_customer(phone='053-295633-7 F:053-295638')
+    assert ADDRESS in html, 'CONTROL'
+    assert _dials(html) == ['053295633']
+    assert 'แฟกซ์' in html, 'the fax half is not shown and labelled'
+
+
 # ── mobile sales-trip screen ─────────────────────────────────────────────────
 
 def _sales_trip(**over):
