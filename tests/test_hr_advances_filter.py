@@ -14,6 +14,7 @@ preserving the seeded employees + leave_types.
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
+import re
 from datetime import date
 
 import hr_queries as hrq
@@ -34,11 +35,12 @@ def _mk_run(conn, ym):
     ).lastrowid
 
 
-def _mk_advance(conn, emp_id, advance_date, amount, deducted_run=None):
+def _mk_advance(conn, emp_id, advance_date, amount, deducted_run=None, note=None):
     return conn.execute(
-        "INSERT INTO salary_advances (employee_id, advance_date, amount, deducted_in_run_id) "
-        "VALUES (?, ?, ?, ?)",
-        (emp_id, advance_date, amount, deducted_run),
+        "INSERT INTO salary_advances "
+        "  (employee_id, advance_date, amount, deducted_in_run_id, note) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (emp_id, advance_date, amount, deducted_run, note),
     ).lastrowid
 
 
@@ -198,3 +200,116 @@ def test_advance_with_no_account_still_reports_no_account_name(tmp_db_conn_hr_cl
     # the row itself must still be returned — a NULL account cannot make an
     # advance disappear from the page (an inner join would do exactly that)
     assert adv_id in {r["id"] for r in hrq.get_salary_advances(conn=c)}
+
+
+# ── รายละเอียด: the linked cashbook row's description ────────────────────────
+
+def _mk_linked_cashbook_row(conn, adv_id, acct_id, description, note=None,
+                            txn_date='2026-10-07', amount=500.0):
+    """Mirror what /cashbook/new writes: the advance's partner expense row.
+
+    blueprints/cashbook.py::_resolve_advance_rows inserts BOTH rows in one
+    commit — salary_advances (which stores `note` only) and this row (which
+    stores `description` AND `note`) — linked by salary_advance_id.
+    """
+    return conn.execute(
+        "INSERT INTO cashbook_transactions "
+        "  (account_id, txn_date, direction, category, amount, description, note,"
+        "   salary_advance_id) "
+        "VALUES (?, ?, 'expense', 'เงินเดือน (เบิกล่วงหน้า)', ?, ?, ?, ?)",
+        (acct_id, txn_date, amount, description, note, adv_id),
+    ).lastrowid
+
+
+def test_get_salary_advances_exposes_the_linked_cashbook_description(
+        tmp_db_conn_hr_clean):
+    """/hr/advances is a read-only mirror (CONTEXT.md) and `salary_advances`
+    has no description column — the รายละเอียด the user typed lives on the
+    LINKED cashbook row, one join away, and the page showed only หมายเหตุ.
+
+    Measured on the local dev snapshot 2026-09-08: 23 of 28 advances carried a
+    linked description that the page never rendered, and 0 advances lacked a
+    partner row.
+
+    Only the LIST query is changed. `get_salary_advance` (singular) has no
+    production consumer — grep 2026-09-08 finds only tests — so giving it the
+    field too would be speculative. That is deliberate, not an oversight; the
+    account_name pair above is different because that was a shared fallback bug.
+    """
+    c = tmp_db_conn_hr_clean
+    emp, _ = _two_emps(c)
+    acct = c.execute(
+        "SELECT id FROM cashbook_accounts ORDER BY id LIMIT 1").fetchone()
+    assert acct is not None, "fixture must have an account, or this pins nothing"
+
+    adv_id = _mk_advance(c, emp, '2026-10-07', 500, note='NOTEMARK')
+    _mk_linked_cashbook_row(c, adv_id, acct["id"],
+                            description='DESCMARK', note='NOTEMARK')
+    c.commit()
+
+    rows = [r for r in hrq.get_salary_advances(conn=c) if r["id"] == adv_id]
+    assert len(rows) == 1, "exactly one row for this advance, or the rest is vacuous"
+    row = rows[0]
+    # CONTROL: the advance's own note still arrives — proves the fixture reaches
+    # the query and that a broken join did not just blank the whole row.
+    assert row["note"] == 'NOTEMARK'
+    assert row["cashbook_description"] == 'DESCMARK'
+
+
+def test_advance_without_a_linked_cashbook_row_still_lists_with_no_description(
+        tmp_db_conn_hr_clean):
+    """The join must be a LEFT join. Every advance on the local snapshot has a
+    partner row today, which is exactly when this invariant rots unnoticed: an
+    inner join would silently drop any advance created by a path that does not
+    write the cashbook side (the pre-mig-128 rows, or a future importer).
+    """
+    c = tmp_db_conn_hr_clean
+    emp, _ = _two_emps(c)
+    adv_id = _mk_advance(c, emp, '2026-10-08', 700, note='LONEMARK')
+    c.commit()
+
+    ids = {r["id"] for r in hrq.get_salary_advances(conn=c)}
+    assert adv_id in ids, "an advance with no cashbook partner must not disappear"
+    row = next(r for r in hrq.get_salary_advances(conn=c) if r["id"] == adv_id)
+    assert row["note"] == 'LONEMARK'          # CONTROL
+    assert row["cashbook_description"] is None
+
+
+def test_advances_page_renders_the_description_column(tmp_db_conn_hr_clean):
+    """Both columns must reach the HTML, and the empty-state colspan must track
+    the header count — adding a <th> without widening the colspan leaves a
+    visibly broken 'ไม่มีรายการ' row that no substring assertion would catch.
+    """
+    c = tmp_db_conn_hr_clean
+    emp, _ = _two_emps(c)
+    acct = c.execute(
+        "SELECT id FROM cashbook_accounts ORDER BY id LIMIT 1").fetchone()
+    assert acct is not None, "fixture must have an account, or this pins nothing"
+    adv_id = _mk_advance(c, emp, '2026-10-09', 900, note='หมายเหตุทดสอบ')
+    _mk_linked_cashbook_row(c, adv_id, acct["id"],
+                            description='รายละเอียดทดสอบ', note='หมายเหตุทดสอบ')
+    c.commit()
+
+    cl = _client()
+    html = cl.get('/hr/advances').get_data(as_text=True)
+    assert 'หมายเหตุทดสอบ' in html, "CONTROL: the note column still renders"
+    assert 'รายละเอียดทดสอบ' in html, "the linked description must reach the page"
+    # header label, asserted as an element so it cannot match a longer word
+    assert '>รายละเอียด<' in html
+
+    # empty state: no pending advances at all → the placeholder row must span
+    # every column
+    c.execute("DELETE FROM cashbook_transactions WHERE salary_advance_id=?", (adv_id,))
+    c.execute("DELETE FROM salary_advances WHERE id=?", (adv_id,))
+    c.commit()
+    empty = cl.get('/hr/advances').get_data(as_text=True)
+    assert 'ไม่มีรายการเบิกล่วงหน้า' in empty, "CONTROL: this really is the empty state"
+    # Derive the width from the header rather than restating a literal, or a
+    # future 9th <th> with the colspan left at 8 would still pass — the exact
+    # bug this test exists to catch. `<th(\s|>)` cannot match `<thead>`.
+    head = re.search(r'<thead>.*?</thead>', empty, re.S)
+    assert head, "CONTROL: the advances table head must be in the page"
+    n_cols = len(re.findall(r'<th(?:\s[^>]*)?>', head.group(0)))
+    assert n_cols == 8, f"header should carry 8 columns, found {n_cols}"
+    assert f'colspan="{n_cols}"' in empty, \
+        f"placeholder must span all {n_cols} header columns"

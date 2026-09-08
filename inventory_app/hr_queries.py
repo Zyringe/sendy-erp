@@ -892,11 +892,20 @@ def get_salary_advances(employee_id: Optional[int] = None,
             f"""SELECT sa.*,
                       e.full_name, e.emp_code,
                       COALESCE(ca.display_name, ca.code) AS account_name,
-                      pr.year_month   AS deducted_ym
+                      pr.year_month   AS deducted_ym,
+                      ct.description  AS cashbook_description
                  FROM salary_advances sa
                  JOIN employees e ON e.id = sa.employee_id
                  LEFT JOIN cashbook_accounts ca ON ca.id = sa.from_account_id
                  LEFT JOIN payroll_runs pr ON pr.id = sa.deducted_in_run_id
+                 -- the รายละเอียด the user typed lives on the linked cashbook
+                 -- row, not on salary_advances (ADR 0008 / CONTEXT.md). Safe as
+                 -- a join: idx_cashbook_txn_salary_advance is UNIQUE.
+                 -- Aliased away from a bare `description` on purpose: sqlite3.Row
+                 -- returns the FIRST of duplicate keys, so if salary_advances ever
+                 -- gains its own `description`, `sa.*` would silently win.
+                 LEFT JOIN cashbook_transactions ct
+                        ON ct.salary_advance_id = sa.id
                  {where}
                  ORDER BY sa.advance_date DESC, sa.id DESC""",
             params,
@@ -907,7 +916,13 @@ def get_salary_advances(employee_id: Optional[int] = None,
 
 
 def get_salary_advance(adv_id: int, conn: Optional[sqlite3.Connection] = None):
-    """Return a single advance row with employee + account info, or None."""
+    """Return a single advance row with employee + account info, or None.
+
+    Deliberately does NOT carry `cashbook_description` like the list query does:
+    this helper has no production consumer (only tests, verified 2026-09-08), so
+    adding the join here would be speculative. If a route ever starts calling it,
+    mirror the LEFT JOIN from `get_salary_advances`.
+    """
     c, owned = _conn(conn)
     try:
         return c.execute(
