@@ -83,21 +83,30 @@ def html_text(v):
 # function server-side and ships its output rather than re-deciding in JS.
 _FAX_MARKER_RE = re.compile(r'(?i)^\s*(?:f|fax|แฟกซ์)\s*[:.]?\s*')
 
-# The same marker INSIDE a chunk splits it in two. 58 chunks on the dev DB glue
-# a fax straight onto a phone with no comma (`053-295633-7 F:053-295638`,
-# `053-812993-7F:053-272114`), and the whole run then fails `is_valid_thai_phone`
-# — so the number gets no dial target at all.
+# The same marker INSIDE a chunk splits it in two: a fax glued straight onto a
+# phone with no comma (`053-295633-7 F:053-295638`, `053-812993-7F:053-272114`)
+# makes the whole run fail `is_valid_thai_phone`, so the number gets no dial
+# target at all. 57 chunks on the dev DB split under the regex BELOW (⚠ prod
+# lags this, re-derive there). A looser predicate without the non-letter rule
+# says 58 — the extra one is `OFF:9218909`, the exact false positive that rule
+# exists to stop, so the two counts answer different questions and only the
+# first describes what ships.
 #
 # #461 left these alone on purpose ("messy DATA, the normalizer's job"), and
 # that was right while the call card was the only consumer: the card had been
 # dialling the whole blob anyway, so it lost nothing. It stopped being right in
 # #462, which moved `m/customer.html` here — that screen's inline workaround did
-# `.split('F:')[0]` and DID dial them. Without this, 7 real customers lose a
-# working call button.
+# `.split('F:')[0]` and DID dial them. Three populations, three numbers, each
+# measured on the dev DB 2026-09-09: without this, 7 customers LOSE a dial the
+# old mobile screen gave them (the regression, and why this is not optional);
+# 11 customers / 20 chunks GAIN one the pre-fix filter could not produce; 28
+# customers end up dialable where the old screen never could.
 #
-# Two conditions, both load-bearing: the ':'/'.' terminator, and a NON-LETTER
-# before the marker. `OFF:9218909` is a real stored value — an OFFICE number —
-# and a bare-`f` rule tears it into a junk `OF` entry plus a mislabelled "fax".
+# Two conditions, both load-bearing and both pinned by a test: the ':'/'.'
+# terminator, and a NON-LETTER before the marker. Without the terminator any
+# word holding an f would cut a number in half; `OFF:9218909` is a real stored
+# value — an OFFICE number — and without the non-letter rule a bare-`f` tears
+# it into a junk `OF` entry plus a callable line mislabelled as a fax.
 _INLINE_FAX_RE = re.compile(r'(?i)(?<=[^A-Za-z])(?:fax|แฟกซ์|f)\s*[:.]')
 
 

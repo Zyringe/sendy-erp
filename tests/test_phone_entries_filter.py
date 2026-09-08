@@ -147,3 +147,19 @@ def test_a_leading_marker_still_makes_the_whole_chunk_one_fax():
     e = phone_entries('081-234-5678,F:02-123-4567')
     assert len(e) == 2, "count first"
     assert e[1]['text'] == 'F:02-123-4567' and e[1]['is_fax'] is True
+
+
+def test_the_marker_needs_its_colon_or_dot_to_split():
+    """The other half of the inline rule, and why it is not just `\\bfax\\b`.
+
+    Without the terminator, `FAX` sitting between two numbers with no
+    punctuation is left alone — 8 chunks on the dev DB look like
+    `4763702-4 FAX 4763704`, and the old mobile screen could not dial those
+    either (its `.split('F:')` found no `F:`), so splitting them is a change
+    this ticket did not ask for.
+    """
+    e = phone_entries('02-123-4567 FAX 02-999-8888')
+    assert len(e) == 1, f'split on a bare FAX with no terminator: {e}'
+    # CONTROL: the same string WITH the terminator does split, or this would
+    # pass just as happily against a filter that never splits anything.
+    assert len(phone_entries('02-123-4567 FAX: 02-999-8888')) == 2
