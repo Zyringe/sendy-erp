@@ -42,30 +42,92 @@ def get_active_promotion(product_id: int, conn=None):
             conn.close()
 
 
-def effective_price(product, conn=None) -> float:
-    """Return the effective per-unit selling price for this product.
+def affects_price(promo) -> bool:
+    """Does this promo change the per-unit price? The Python twin of
+    promo_slot_sql()'s price_expr.
 
-    Behavior per promo_type:
-      - None / no active promo → base_sell_price
-      - 'percent' → base_sell_price × (1 − discount_value/100), rounded 2dp
-      - 'fixed'   → discount_value (treated as the FINAL selling price,
-                    not a discount amount — see templates/promotions/form.html)
-      - 'bundle' / 'gift' / 'mixed' → base_sell_price UNCHANGED
-                    These types don't alter per-unit price. They define deal
-                    terms (extra free units, free-gift items, bulk conditions)
-                    that the cart/quote layer applies separately when summing
-                    the order total. Per-unit display price is the catalog
-                    price. Cart-level bundle resolution is out of scope here.
+    `percent` and `fixed` always do. A `mixed` row does exactly when it carries
+    a discount_value: the promotions CHECK forbids one on `bundle`/`gift` and
+    allows any combination on `mixed` ("At least one structured field
+    populated"), so a discount_value on a mixed row is a real percent — the
+    same reading migration 177 renders into a DB trigger and the promo form
+    offers as "ผสม (% + แถม / + ของแถม)".
+
+    Callers that need the price itself want promo_price(); this predicate is
+    for callers that must distinguish "no price effect" from "price unchanged"
+    (review_rules' R5 skips the former). tests/test_promo_price_owner.py pins
+    it against the SQL spelling over every row in the table, because two
+    spellings of one rule is the defect this pair of functions exists to end.
     """
-    promo = get_active_promotion(product['id'], conn=conn)
     if promo is None:
-        return product['base_sell_price']
-    if promo['promo_type'] == 'percent':
-        return round(product['base_sell_price'] * (1 - promo['discount_value'] / 100), 2)
+        return False
+    promo_type = promo['promo_type']
+    if promo_type in ('percent', 'fixed'):
+        return True
+    if promo_type == 'mixed':
+        return promo['discount_value'] is not None
+    return False
+
+
+def promo_price(list_for_unit, ratio, promo):
+    """THE promo→price application for the whole app. Given a list price for
+    some unit and that unit's piece-ratio, return the price after `promo`.
+
+      - no promo, or a promo with no price effect (bundle / gift, and a mixed
+        row carrying only deal terms) → list_for_unit unchanged
+      - 'fixed' → discount_value × ratio (fixed IS the final per-PIECE price).
+        When `ratio is None` — a tier answers the price but no piece-ratio is
+        derivable — that conversion cannot be computed, so the promo is left
+        unapplied rather than guessed.
+      - 'percent', and a 'mixed' row carrying a discount_value → list ×
+        (1 − d/100), rounded 2dp. This branch never needs `ratio`.
+
+    Was price_lookup.apply_price_promo, which now delegates here; it lives in
+    this module so models.effective_price and review_rules can reach it
+    without importing upward into price_lookup. Pure — no DB.
+    """
+    if promo is None:
+        return list_for_unit
     if promo['promo_type'] == 'fixed':
-        return promo['discount_value']
-    # bundle / mixed / gift — per-unit price unchanged
-    return product['base_sell_price']
+        if ratio is None:
+            return list_for_unit
+        return round(promo['discount_value'] * ratio, 2)
+    d = promo['discount_value']
+    if d is None:
+        return list_for_unit
+    return round(list_for_unit * (1 - d / 100), 2)
+
+
+def effective_price(product, conn=None) -> float:
+    """Return the effective per-unit selling price for this product, i.e. the
+    catalog price after whatever promo occupies its PRICE slot today.
+
+    Two defects lived here until 2026-09-09 (card 3 of the 2026-09-08
+    architecture review), both because this function answered "what does a
+    promo do to the price?" itself instead of asking the owner:
+
+    1. it returned base_sell_price for every `mixed` row, so 27 own-brand
+       products on prod rendered a price 10-20% above the one the quote
+       resolver charged the customer for the same SKU;
+    2. it picked its promo with get_active_promotion() — newest row across ALL
+       types — so a later bundle/gift promo shadowed an earlier percent one and
+       the discount vanished. Measured 0 products affected on prod 2026-09-08,
+       but migration 177 permits one promo per slot, i.e. both at once.
+
+    Now: select the price-slot promo, then hand it to promo_price(). Both
+    steps are the app's single definition, shared with price_lookup and the
+    mig-177 trigger.
+    """
+    owned = conn is None
+    if owned:
+        conn = get_connection()
+    try:
+        price_promo, _qty_promo = get_active_promos_by_class(
+            product['id'], date.today().isoformat(), conn)
+        return promo_price(product['base_sell_price'], 1.0, price_promo)
+    finally:
+        if owned:
+            conn.close()
 
 
 def create_promotion(data: dict) -> int:

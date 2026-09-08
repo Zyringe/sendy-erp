@@ -320,9 +320,10 @@ def _resolve_list(conn, product_id, unit_type, base, asked_unit):
 def apply_price_promo(list_for_unit, ratio, price_promo):
     """R2 list_after_promo. percent (and a 'mixed' row using discount_value
     as a percent — see the module docstring / task-1-report for why: the
-    15 real mixed+discount rows in the catalog carry values like 10/15/20,
+    real mixed+discount rows in the catalog carry values like 10/15/20,
     which are percentages, not final per-piece prices; a FIXED final price
-    of ฿10-20 on a ฿35-250 product is not a real catalog price) → list ×
+    of ฿10-20 on a ฿35-250 product is not a real catalog price. 27 of the 28
+    active mixed rows on prod 2026-09-08 carry one) → list ×
     (1 − d/100) — this branch never needs `ratio`. fixed → discount_value
     × ratio (fixed IS the final per-PIECE price, mirrors
     models.promotions.effective_price) — when `ratio is None` (review
@@ -330,22 +331,17 @@ def apply_price_promo(list_for_unit, ratio, price_promo):
     that per-piece conversion cannot be computed; the fixed promo is left
     unapplied (list_for_unit unchanged) rather than guessed.
 
-    Public (task-2-brief.md PR C / 2e, C1) — this is the ONE promo-price
-    application in the app: `resolve_price` calls it, and
-    `call_card._assemble_products` calls it too, so the 3-branch promo
-    math cannot drift between the two the way the call card's old hand
-    copy did. Tested directly (no DB needed — it's pure) in
-    tests/test_price_lookup.py, not only through resolve_price."""
-    if price_promo is None:
-        return list_for_unit
-    if price_promo['promo_type'] == 'fixed':
-        if ratio is None:
-            return list_for_unit
-        return round(price_promo['discount_value'] * ratio, 2)
-    d = price_promo['discount_value']
-    if d is None:
-        return list_for_unit
-    return round(list_for_unit * (1 - d / 100), 2)
+    Public (task-2-brief.md PR C / 2e, C1) — `resolve_price` calls it, and
+    `call_card._assemble_products` calls it too. Tested directly (no DB
+    needed — it's pure) in tests/test_price_lookup.py, not only through
+    resolve_price.
+
+    ⚠ The math itself moved DOWN to models.promotions.promo_price on
+    2026-09-09 (card 3): models.effective_price and review_rules' R5 both
+    needed it and neither can import upward into price_lookup, so keeping it
+    here meant three hand copies that had already drifted on `mixed`. This
+    stays as the name those two callers know; it adds nothing of its own."""
+    return promo_models.promo_price(list_for_unit, ratio, price_promo)
 
 
 def batch_active_promos_by_class(conn, product_ids, on_date):
