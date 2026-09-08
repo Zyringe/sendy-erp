@@ -74,9 +74,13 @@ def html_text(v):
 # comma-joined in that one column. Fax markers, counted two ways because the
 # predicate matters: 83 chunks contain `F:`, 111 contain `F:` OR `FAX`.
 # ADR 0011 keeps the column that shape deliberately, so the split belongs here,
-# at display. The call card is the only consumer so far; the remaining surfaces
-# (m/customer.html and m/sales_trip.html still split on commas by hand, which
-# ADR 0011 explicitly rejects) move over in #462.
+# at display. Since #462 this is the ONLY phone rendering in the app: the call
+# card, call list, customer summary, customer map popup, contact-review screens
+# and both mobile screens all read it, and the two hand-rolled `.split(',')`
+# workarounds are gone. tests/test_customer_phone_render_coverage.py sweeps the
+# template tree so a new surface cannot quietly introduce a second convention.
+# The map popup is built in JS, so `partners._with_phone_entries` runs this
+# function server-side and ships its output rather than re-deciding in JS.
 _FAX_MARKER_RE = re.compile(r'(?i)^\s*(?:f|fax|แฟกซ์)\s*[:.]?\s*')
 
 

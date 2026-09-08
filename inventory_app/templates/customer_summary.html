@@ -103,7 +103,16 @@
         {% if ci.phone %}
         <div>
           <div class="text-subtle small mb-1">โทรศัพท์</div>
-          <div class="fw-500">{{ ci.phone }}</div>
+          {# ADR 0011: the column holds a LIST of numbers. One line each, each
+             independently dialable; the edit modal below keeps the raw column
+             because that box writes back to it. #}
+          {% for e in ci.phone | phone_entries %}
+          <div class="fw-500 phone-entry">
+            {% if e.dial %}<a href="tel:{{ e.dial }}">{{ e.text }}</a>
+            {% elif e.is_fax %}{{ e.text }} <span class="text-subtle small">แฟกซ์</span>
+            {% else %}{{ e.text }}{% endif %}
+          </div>
+          {% endfor %}
         </div>
         {% endif %}
         {% if ci.contact %}

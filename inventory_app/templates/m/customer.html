@@ -39,14 +39,34 @@
       {% endif %}
     </div>
 
-    {% if customer and (customer.phone or customer.address) %}
+    {% if customer %}
     <div class="d-flex flex-wrap gap-2 mt-3">
-      {% if customer.phone %}
-        {% set primary_phone = customer.phone.split(',')[0].strip().split('F:')[0].strip() %}
-        <a href="tel:{{ primary_phone }}" class="btn btn-sm btn-success">
-          <i class="bi bi-telephone-fill me-1"></i>โทร {{ primary_phone }}
+      {# The column holds a LIST of numbers (ADR 0011): one button per number,
+         never a guessed "primary". This screen used to split the field inline
+         and dial `[0]`, which is how the rest of the app kept the broken
+         behaviour unnoticed — nothing in the data says which number is primary,
+         so a wrong guess quietly sends a rep to the wrong one.
+         No `phone is defined` guard as on the call card: `customer` here is a
+         `SELECT *` row, so the column is always present when the row is. #}
+      {% for e in customer.phone | phone_entries %}
+        {% if e.dial %}
+        <a href="tel:{{ e.dial }}" class="btn btn-sm btn-success">
+          <i class="bi bi-telephone-fill me-1"></i>โทร {{ e.text }}
         </a>
-      {% endif %}
+        {% elif e.is_fax %}
+        <span class="btn btn-sm btn-outline-secondary disabled">
+          <i class="bi bi-printer me-1"></i>แฟกซ์ {{ e.text }}
+        </span>
+        {% else %}
+        <span class="btn btn-sm btn-outline-secondary disabled">
+          <i class="bi bi-telephone me-1"></i>{{ e.text }}
+        </span>
+        {% endif %}
+      {% else %}
+        <span class="btn btn-sm btn-outline-secondary disabled">
+          <i class="bi bi-telephone-x me-1"></i>ไม่ได้บันทึกเบอร์
+        </span>
+      {% endfor %}
       {% if customer.address %}
         <button type="button" class="btn btn-sm btn-outline-secondary"
                 onclick="copyText({{ customer.address|tojson }}, this)">

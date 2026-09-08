@@ -129,11 +129,16 @@
               <span class="text-muted" style="font-size:12px">—</span>
             {% endif %}
           </td>
+          {# One line per number (ADR 0011), both columns the same way. #}
           <td class="cr-phone">
-            <div class="orig">{{ r.orig_phone or '—' }}</div>
+            {% for e in r.orig_phone | phone_entries %}
+            <div class="orig">{{ e.text }}{% if e.is_fax %} แฟกซ์{% endif %}</div>
+            {% else %}<div class="orig">—</div>{% endfor %}
           </td>
           <td class="cr-phone">
-            <div class="prop">{{ r.proposed_phone or '—' }}</div>
+            {% for e in r.proposed_phone | phone_entries %}
+            <div class="prop">{{ e.text }}{% if e.is_fax %} แฟกซ์{% endif %}</div>
+            {% else %}<div class="prop">—</div>{% endfor %}
           </td>
           <td>
             <div style="font-size:13px">{{ r.proposed_fax or '—' }}</div>

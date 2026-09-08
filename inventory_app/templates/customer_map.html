@@ -114,7 +114,10 @@ function renderMarkers() {
       <span class="badge badge-zone ms-1" style="background:${color}">${c.zone || '-'}</span><br>
       <small>${c.customer_type || ''}</small><br>
       ${c.address ? `<div class="mt-1 text-muted">${c.address}</div>` : ''}
-      ${c.phone ? `<div><i class="bi bi-telephone"></i> ${c.phone}</div>` : ''}
+      ${(c.phone_entries || []).map(e => e.dial
+          ? `<div><i class="bi bi-telephone"></i> <a href="tel:${e.dial}">${e.text}</a></div>`
+          : `<div><i class="bi bi-${e.is_fax ? 'printer' : 'telephone'}"></i> ${e.text}${e.is_fax ? ' แฟกซ์' : ''}</div>`
+        ).join('')}
       ${c.credit_days ? `<div>เครดิต ${c.credit_days} วัน</div>` : ''}
     `);
     markers.addLayer(m);
