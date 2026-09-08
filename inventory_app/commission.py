@@ -780,7 +780,20 @@ def get_invoices_for_salesperson(year_month, salesperson_code, db_path=None):
            AND pi.amount IS NOT NULL AND pi.amount <> 0
     """).fetchall()}
 
-    # Map invoice_no → outstanding info (currently unpaid)
+    # Map invoice_no → OUTSTANDING info (CONTEXT.md), deliberately NOT chaseable.
+    #
+    # ⚠ Do not "fix" this by adding cashflow.BSN_AR_PREDICATE. Every other reader
+    # of this table excludes written-off / anomalous / pre-2024 rows because it is
+    # chase-facing; this one must not, and ADR 0012 records why:
+    #   - This map never reaches money anyone is PAID. Payouts run off
+    #     `received_payments JOIN paid_invoices` (_BASE_QUERY above); the commission
+    #     engine cannot see the AR snapshot at all except here. This feeds three
+    #     read-only cells on the rep's invoice tab (คงค้าง, the paid/partial/unpaid
+    #     badge, and an ownership fallback used only when no receipt exists).
+    #   - Excluding written-off bills here would flip never-collected invoices to a
+    #     green "จ่ายแล้ว ฿0.00" badge — measured at 3 invoices / ฿35,201.25. A bill
+    #     that was forgiven was still never collected, and a page reporting collection
+    #     history must not render it as paid.
     open_ar = {r['doc_no']: dict(r) for r in conn.execute("""
         SELECT doc_no, salesperson_code, outstanding_amount
           FROM express_ar_outstanding

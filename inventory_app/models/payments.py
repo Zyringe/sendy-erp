@@ -823,11 +823,20 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
 def _unpaid_bills(match_sql, match_params):
     """Outstanding-bill rows for one customer, defined ONCE.
 
+    Returns the CHASEABLE population (CONTEXT.md): outstanding minus the three
+    exclusions in `cashflow.BSN_AR_PREDICATE` — written-off docs, `is_anomalous`
+    ("ลูกหนี้จ่ายแล้ว"), and pre-2024 legacy debt. Both callers are chase-facing
+    (`/customer/code/<code>` and the mobile customer page), so they must agree
+    with `/ar` rather than showing a superset of it.
+
+    ⚠ The predicate is IMPORTED, never re-typed. Re-typing it here is exactly
+    how this surface drifted from `/ar` and showed forgiven bills as chaseable.
+
     `match_sql` is the caller's identity predicate (by name or by code) — a
     literal chosen at the call site, never user input; its placeholders are
     filled from `match_params`. Everything else (BSN entity, latest snapshot,
-    doc_date >= 2024, outstanding > 0, column list, ordering) is shared, so the
-    two entry points below cannot drift apart.
+    the chaseable predicate, outstanding > 0, column list, ordering) is shared,
+    so the two entry points below cannot drift apart.
 
     Returns (rows, snapshot_date) — snapshot_date is the latest BSN AR snapshot
     date (same value other AR widgets show as "ณ {snapshot_date}", e.g.
@@ -854,7 +863,7 @@ def _unpaid_bills(match_sql, match_params):
         LEFT JOIN customers c ON c.code = ao.customer_code
         WHERE ao.entity = 'BSN'
           AND ao.snapshot_date_iso = (SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding WHERE entity = 'BSN')
-          AND ao.doc_date_iso >= '2024-01-01'
+          AND {BSN_AR_PREDICATE}
           AND {match_sql}
           AND ao.outstanding_amount > 0
         ORDER BY ao.doc_date_iso DESC

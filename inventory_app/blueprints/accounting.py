@@ -63,9 +63,10 @@ def express_ar_customer(customer_code):
          WHERE entity = 'BSN'
            AND snapshot_date_iso = ?
            AND customer_code = ?
-           AND is_anomalous = 0
+           AND {BSN_AR_PREDICATE}
          ORDER BY doc_date_iso ASC
-    """, (snapshot_date, customer_code)).fetchall()
+    """.format(BSN_AR_PREDICATE=cf_mod.BSN_AR_PREDICATE),
+       (snapshot_date, customer_code)).fetchall()
 
     if not rows:
         flash(f'ไม่พบลูกหนี้รหัส {customer_code}', 'warning')
