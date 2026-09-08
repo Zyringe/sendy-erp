@@ -8,11 +8,11 @@ prefix.
 """
 from datetime import date
 
-from flask import (Blueprint, render_template, request, redirect, url_for,
-                   current_app)
+from flask import Blueprint, render_template, request, redirect, url_for
 
 import book_registry
 import models
+from paging import paging
 
 bp_sales = Blueprint('sales', __name__)
 
@@ -43,8 +43,7 @@ def sales_view():
     vat_raw   = request.args.get('vat_type',  '').strip()
     vat_type  = int(vat_raw) if vat_raw.isdigit() else None
     doc_no    = request.args.get('doc_no', '').strip() or None
-    page      = int(request.args.get('page', 1))
-    per_page  = current_app.config['ITEMS_PER_PAGE']
+    page, per_page = paging(request.args)
 
     conn = book_registry.get_book_connection()
     filter_product = models.get_product(product_id, conn=conn) if product_id else None
@@ -99,8 +98,7 @@ def purchases_view():
     vat_raw   = request.args.get('vat_type',  '').strip()
     vat_type  = int(vat_raw) if vat_raw.isdigit() else None
     doc_no    = request.args.get('doc_no', '').strip() or None
-    page      = int(request.args.get('page', 1))
-    per_page  = current_app.config['ITEMS_PER_PAGE']
+    page, per_page = paging(request.args)
 
     conn = book_registry.get_book_connection()
     rows, total = models.get_purchases(

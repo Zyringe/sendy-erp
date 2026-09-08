@@ -26,6 +26,7 @@ from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
                    request, session, url_for)
 
 import database
+from paging import paging
 import hr as hr_mod
 import hr_queries as hrq
 
@@ -568,8 +569,7 @@ def account_ledger(account_id):
 
         month_filter = request.args.get("month", "").strip()
         dir_filter   = request.args.get("dir", "").strip()
-        page         = max(1, int(request.args.get("page", 1)))
-        per_page     = 50
+        page, per_page = paging(request.args, per_page=50)
 
         params = [account_id]
         where  = ["t.account_id=?"]

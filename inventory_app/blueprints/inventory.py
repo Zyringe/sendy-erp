@@ -12,11 +12,12 @@ from datetime import date, datetime
 from uuid import uuid4
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
-                   flash, session, abort, current_app)
+                   flash, session, abort)
 
 import book_registry
 import models
 from database import get_connection
+from paging import paging
 
 bp_inventory = Blueprint('inventory', __name__)
 
@@ -141,15 +142,15 @@ def transaction_history():
     txn_type = request.args.get('type', '').strip() or None
     date_from = request.args.get('date_from', '').strip() or None
     date_to = request.args.get('date_to', '').strip() or None
-    page = int(request.args.get('page', 1))
+    page, per_page = paging(request.args)
 
     txns, total = models.get_transactions(
         product_id=product_id, txn_type=txn_type,
         date_from=date_from, date_to=date_to,
-        page=page, per_page=current_app.config['ITEMS_PER_PAGE'],
+        page=page, per_page=per_page,
         conn=book_registry.get_book_connection()
     )
-    pages = (total + current_app.config['ITEMS_PER_PAGE'] - 1) // current_app.config['ITEMS_PER_PAGE']
+    pages = (total + per_page - 1) // per_page
     return render_template('transactions/history.html',
                            txns=txns, total=total, page=page, pages=pages,
                            product_id=product_id, txn_type=txn_type,

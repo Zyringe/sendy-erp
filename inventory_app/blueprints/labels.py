@@ -29,6 +29,7 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, abort, jsonify)
 
 from database import get_connection
+from paging import page_arg
 
 bp_labels = Blueprint('labels', __name__)
 
@@ -84,10 +85,7 @@ def manage():
     _require_admin()
     q = request.args.get('q', '').strip()
     review = request.args.get('review', '')
-    try:
-        page = max(1, int(request.args.get('page', 1)))
-    except (TypeError, ValueError):
-        page = 1
+    page = page_arg(request.args)
     conn = get_connection()
     try:
         rows, total, pages = _list_labels(conn, q, review, page)

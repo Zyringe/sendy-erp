@@ -15,10 +15,11 @@ import io
 import os
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
-                   flash, abort, current_app, send_file)
+                   flash, abort, send_file)
 
 import config
 import models
+from paging import paging
 from parse_platform import (parse_shopee, parse_lazada, export_shopee, export_lazada,
                             export_mapping, parse_mapping,
                             parse_shopee_orders, parse_lazada_orders,
@@ -36,8 +37,7 @@ bp_ecommerce = Blueprint('ecommerce', __name__)
 def ecommerce():
     search   = request.args.get('q', '').strip()
     flt      = request.args.get('flt') or None
-    page     = int(request.args.get('page', 1))
-    per_page = current_app.config['ITEMS_PER_PAGE']
+    page, per_page = paging(request.args)
 
     rows, total, counts = models.get_marketplace_overview(
         search=search or None, flt=flt, page=page, per_page=per_page)

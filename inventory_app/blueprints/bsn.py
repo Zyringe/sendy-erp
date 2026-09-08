@@ -28,6 +28,7 @@ import form_options
 import models
 import review_rules as rr
 from database import get_connection
+from paging import paging
 
 bp_bsn = Blueprint('bsn', __name__)
 
@@ -90,8 +91,7 @@ def _flash_unit_hazard(b):
 @bp_bsn.route('/unit-conversions')
 def unit_conversions():
     search = request.args.get('q', '').strip()
-    page = int(request.args.get('page', 1))
-    per_page = current_app.config['ITEMS_PER_PAGE']
+    page, per_page = paging(request.args)
     pending = models.get_pending_unit_conversions(search=search or None)
     existing, total = models.get_all_unit_conversions(
         search=search or None, page=page, per_page=per_page
