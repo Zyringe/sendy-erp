@@ -68,6 +68,7 @@
           <th class="text-end">จำนวนเงิน</th>
           <th>โอนจากบัญชี</th>
           <th>สถานะ</th>
+          <th>รายละเอียด</th>
           <th>หมายเหตุ</th>
         </tr>
       </thead>
@@ -90,11 +91,12 @@
             <span class="badge bg-warning text-dark">รอหัก</span>
             {% endif %}
           </td>
+          <td class="small">{{ adv.cashbook_description or '—' }}</td>
           <td class="small text-muted">{{ adv.note or '—' }}</td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="7" class="text-center text-muted py-4">ไม่มีรายการเบิกล่วงหน้าตามที่กรอง</td>
+          <td colspan="8" class="text-center text-muted py-4">ไม่มีรายการเบิกล่วงหน้าตามที่กรอง</td>
         </tr>
         {% endfor %}
       </tbody>
