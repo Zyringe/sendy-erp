@@ -10,10 +10,11 @@ import os
 import re
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
-                   flash, session, jsonify, abort, current_app)
+                   flash, session, jsonify, abort)
 
 import models
 from database import get_connection
+from paging import paging
 
 bp_partners = Blueprint('partners', __name__)
 
@@ -26,8 +27,7 @@ def customer_list():
     region_id        = request.args.get('region_id', '').strip()
     region           = request.args.get('region', '').strip()  # legacy bookmarks
     include_billless = request.args.get('include_billless') == '1'
-    page             = request.args.get('page', 1, type=int) or 1
-    per_page         = current_app.config['ITEMS_PER_PAGE']
+    page, per_page   = paging(request.args)
 
     # Legacy ?region=<text>: warn the user when it doesn't resolve so we don't
     # silently show all customers and look like the filter is broken.
@@ -191,8 +191,7 @@ def customer_bulk_reassign():
     salesperson_f = request.args.get('salesperson_filter', '').strip()
     region_f      = request.args.get('region_filter', '').strip()
     orphan_only   = request.args.get('orphan') == '1'
-    page          = request.args.get('page', 1, type=int) or 1
-    per_page      = 100
+    page, per_page = paging(request.args, per_page=100)
 
     region_id_int = int(region_f) if region_f.isdigit() else None
     customers, total = models.get_customers_master(
@@ -220,8 +219,7 @@ def customer_bulk_reassign():
 @bp_partners.route('/suppliers')
 def supplier_list():
     search   = request.args.get('q', '').strip()
-    page     = int(request.args.get('page', 1))
-    per_page = current_app.config['ITEMS_PER_PAGE']
+    page, per_page = paging(request.args)
     suppliers, total = models.get_suppliers(
         search=search or None, page=page, per_page=per_page
     )

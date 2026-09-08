@@ -13,6 +13,7 @@ import models
 import name_builder
 import sku_code_utils
 from database import get_connection
+from paging import paging
 
 bp_products = Blueprint('products', __name__)
 
@@ -151,8 +152,7 @@ def product_list():
     in_stock = request.args.get('in_stock') == '1'
     restock = request.args.get('restock') == '1'
     show_inactive = request.args.get('show_inactive') == '1'
-    page = int(request.args.get('page', 1))
-    per_page = current_app.config['ITEMS_PER_PAGE']
+    page, per_page = paging(request.args)
 
     book_conn = book_registry.get_book_connection()
     products, total = models.get_products(

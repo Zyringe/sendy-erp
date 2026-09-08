@@ -26,6 +26,7 @@ import db_backup
 import form_options
 import name_builder
 import naming_cascade as nc
+from paging import page_arg
 from flask import (Blueprint, render_template, request, jsonify)
 
 from database import get_connection
@@ -153,10 +154,7 @@ def index():
         # default: workbench
         q = request.args.get('q', '').strip()
         scope = request.args.get('scope', 'all')
-        try:
-            page = max(1, int(request.args.get('page', 1)))
-        except (TypeError, ValueError):
-            page = 1
+        page = page_arg(request.args)
         rows, total, pages = _workbench_products(conn, q, scope, page)
         return render_template(
             'master_naming.html', active_tab='workbench',

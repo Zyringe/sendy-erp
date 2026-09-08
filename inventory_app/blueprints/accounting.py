@@ -12,23 +12,19 @@ import sqlite3
 from datetime import date
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
-                   flash, session, current_app)
+                   flash, session)
 
 import book_registry
 import commission_attribution
 import models
 from database import get_connection
+from paging import paging
 import cashflow as cf_mod
 import revenue as rev_mod
 import ar_followup as arf_mod
 import payments_alloc as pa_mod
 
 bp_accounting = Blueprint('accounting', __name__)
-
-# Upper bound for the /ar invoices page parameter. Far beyond any real page
-# count (~158 today) but well inside SQLite's INTEGER range, so a hostile or
-# fat-fingered value cannot overflow the OFFSET bind.
-_MAX_INVOICE_PAGE = 1_000_000
 
 
 @bp_accounting.route('/express/import')
@@ -346,13 +342,7 @@ def ar_dashboard():
         inv_search = request.args.get('q', '').strip()
         date_from = request.args.get('date_from', '').strip()
         date_to = request.args.get('date_to', '').strip()
-        # A bare int() raised ValueError on 'abc' (→ 500), and an out-of-range
-        # value overflowed the SQLite OFFSET bind. Anything not a usable page
-        # number resolves to page 1.
-        page = request.args.get('page', 1, type=int) or 1
-        if page < 1 or page > _MAX_INVOICE_PAGE:
-            page = 1
-        per_page = current_app.config['ITEMS_PER_PAGE']
+        page, per_page = paging(request.args)
         rows, total = models.get_payment_status(
             status=inv_status, search=inv_search,
             date_from=date_from, date_to=date_to,
