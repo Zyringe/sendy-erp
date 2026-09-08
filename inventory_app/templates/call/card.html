@@ -22,6 +22,8 @@
 .cc-hdr .who{font-size:12.5px;opacity:.88;margin-top:7px}
 .cc-hdr .callbtn{background:rgba(255,255,255,.16);border-radius:10px;padding:10px 16px;color:#fff;text-decoration:none;font-weight:700;font-size:17px;display:flex;align-items:center;gap:9px}
 .cc-hdr .callbtn small{display:block;font-size:11px;font-weight:500;opacity:.85}
+.cc-hdr .callstack{display:flex;flex-direction:column;gap:6px}
+.cc-hdr .callbtn.off{opacity:.62;font-weight:600;cursor:default}
 .cc-hdr .right{margin-left:auto;display:flex;flex-direction:column;gap:9px;align-items:flex-end}
 .cc-hdr .badges{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}
 .cc-hb{font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:6px;background:rgba(255,255,255,.18);color:#fff;display:inline-flex;gap:4px;align-items:center}
@@ -124,12 +126,23 @@
       </div>
     </div>
 
-    {# Phone link — tel: so mobile taps dial directly #}
-    {% if m.phone %}
-    <a class="callbtn" href="tel:{{ m.phone }}">
-      📞 {{ m.phone }}<small>กดเพื่อโทร</small>
-    </a>
-    {% endif %}
+    {# Phone — the column holds a LIST of numbers (ADR 0011), so one tap
+       target per number. Never pass the raw field to tel:. #}
+    <div class="callstack">
+      {% for e in m.phone | phone_entries %}
+        {% if e.dial %}
+        <a class="callbtn" href="tel:{{ e.dial }}">
+          📞 {{ e.text }}<small>กดเพื่อโทร</small>
+        </a>
+        {% elif e.is_fax %}
+        <span class="callbtn off">📠 {{ e.text }}<small>แฟกซ์</small></span>
+        {% else %}
+        <span class="callbtn off">☎️ {{ e.text }}<small>โทรไม่ได้</small></span>
+        {% endif %}
+      {% else %}
+        <span class="callbtn off">☎️ <small>ไม่ได้บันทึกเบอร์</small></span>
+      {% endfor %}
+    </div>
 
     <div class="right">
       <div class="badges">

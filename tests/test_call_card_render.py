@@ -296,3 +296,74 @@ def test_phone_cell_cannot_widen_the_table_on_a_narrow_screen():
     # word-break, NOT max-width: a max-width on a <td> is advisory under
     # table-layout:auto (measured 2026-08-31 — a 150px cap rendered 263px).
     assert 'word-break' in rule
+
+
+# ── one tap target per number (ADR 0011) ─────────────────────────────────────
+
+def _card_customer(conn):
+    """A customer the card route can actually render. `get_card` returns None
+    for anyone with no sales history, so a bare customers row is not enough —
+    take a real one from the clone, then FORCE the phone the test needs rather
+    than inheriting whatever the clone happens to hold.
+    """
+    for row in cc.get_call_list(conn):
+        code = row['customer_code']
+        if code and cc.get_card(conn, code):
+            name = conn.execute(
+                "SELECT name FROM customers WHERE code=?", (code,)).fetchone()[0]
+            return code, name
+    raise AssertionError("live clone has no customer with a renderable card")
+
+
+def _force_phone(conn, code, phone):
+    conn.execute("UPDATE customers SET phone=? WHERE code=?", (phone, code))
+    conn.commit()
+
+
+def test_call_card_gives_one_tap_target_per_callable_number(tmp_db_conn):
+    """The defect this ticket exists to kill. The card passed the raw stored
+    field into href="tel:", and `customers.phone` holds a LIST — measured on
+    PROD 2026-09-08, 1,422 of the 2,307 customers with a phone (61.6%) carry
+    two to five comma-joined numbers. Tapping กดเพื่อโทร handed the dialler a
+    comma-joined blob for the majority of the book.
+
+    Asserts the rendered tel: targets — what the phone actually dials — not
+    that the filter exists.
+    """
+    code, name = _card_customer(tmp_db_conn)
+    _force_phone(tmp_db_conn, code, '02-435-8899,081-234-5678,F:02-111-2222')
+    html = _client(_app()).get('/call/' + code).get_data(as_text=True)
+
+    assert name in html, \
+        "CONTROL: the fixture never reached the page, so the rest pins nothing"
+
+    dials = re.findall(r'href="tel:([^"]*)"', html)
+    assert len(dials) == 2, "count first — one target per callable number"
+    assert dials == ['024358899', '0812345678']
+    assert not any(',' in d for d in dials), "the bug: a comma-joined dial target"
+    assert 'แฟกซ์' in html, "the F: entry is labelled a fax, not offered as a call"
+
+
+def test_call_card_marks_a_customer_with_no_phone_recorded(tmp_db_conn):
+    """Before, an empty phone rendered nothing at all, so 'no number recorded'
+    and 'the button failed to render' looked identical."""
+    code, name = _card_customer(tmp_db_conn)
+    _force_phone(tmp_db_conn, code, None)
+    html = _client(_app()).get('/call/' + code).get_data(as_text=True)
+
+    assert name in html, "CONTROL"
+    assert 'ไม่ได้บันทึกเบอร์' in html
+    assert 'href="tel:' not in html
+
+
+def test_call_card_single_number_renders_as_before(tmp_db_conn):
+    """885 of the customers with a phone hold exactly one. The common case must
+    not get noisier for the sake of the multi-number fix."""
+    code, name = _card_customer(tmp_db_conn)
+    _force_phone(tmp_db_conn, code, '02-435-8899')
+    html = _client(_app()).get('/call/' + code).get_data(as_text=True)
+
+    assert name in html, "CONTROL"
+    dials = re.findall(r'href="tel:([^"]*)"', html)
+    assert dials == ['024358899']
+    assert '02-435-8899' in html, "the reader still sees the stored spelling"

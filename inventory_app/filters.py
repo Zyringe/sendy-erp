@@ -69,9 +69,52 @@ def html_text(v):
     return s.strip()
 
 
+# `customers.phone` holds a LIST, not a number: measured on PROD 2026-09-08,
+# 1,422 of the 2,307 customers with a phone carry two to five numbers
+# comma-joined in that one column, and 111 carry an inline F:/FAX marker.
+# ADR 0011 keeps the column that shape deliberately, so the split belongs here,
+# at display, and no template may split on commas itself.
+_FAX_MARKER_RE = re.compile(r'(?i)^\s*(?:f|fax|แฟกซ์)\s*[:.]?\s*')
+
+
+def phone_entries(v):
+    """Split a stored phone field into one entry per number.
+
+    Each entry is {'text', 'dial', 'is_fax'}:
+      text    what to show — the stored spelling, untouched, so a single-number
+              customer renders exactly as before
+      dial    bare digits for a tel: link, or None when the entry is not a
+              number anyone should call (a fax, a contact name, junk)
+      is_fax  the entry carried an F:/FAX marker
+
+    Reuses `is_valid_thai_phone` / `_landline_core_digits` rather than
+    re-deciding what a dialable number is: one definition, one place. The
+    private import is deliberate — a second copy of that rule is exactly how
+    the two would drift.
+    """
+    if not v:
+        return []
+    from customer_contact_normalize import (is_valid_thai_phone,
+                                            _landline_core_digits)
+    out = []
+    for chunk in str(v).split(','):
+        text = chunk.strip()
+        if not text:
+            continue
+        stripped = _FAX_MARKER_RE.sub('', text)
+        is_fax = stripped != text
+        # A fax is shown, never offered as a call.
+        dial = None
+        if not is_fax and is_valid_thai_phone(stripped):
+            dial = _landline_core_digits(stripped)
+        out.append({'text': text, 'dial': dial, 'is_fax': is_fax})
+    return out
+
+
 def register_filters(app):
     app.template_filter('fmt_price')(fmt_price)
     app.template_filter('fmt_qty')(fmt_qty)
     app.template_filter('thaidate')(thaidate)
     app.template_filter('from_json')(from_json)
     app.template_filter('html_text')(html_text)
+    app.template_filter('phone_entries')(phone_entries)
