@@ -1,0 +1,91 @@
+{# ── Documents excluded from the CHASEABLE (ตามได้) total ──────────────────
+   Included by every per-customer AR surface that shows a chaseable balance:
+   the dunning detail page, /customer/code/<code>, and /express/ar/customer/<code>.
+   One copy on purpose — the same reason `_ar_snapshot_banner.html` is shared.
+   (/m/customer renders a one-line note instead; a table does not fit a phone.)
+
+   Since #465 those pages total the chaseable population, so a bill that was
+   forgiven, already paid, or predates the Sendy era is removed from the figure.
+   Removing it silently is its own defect: a person on the phone who remembers
+   an invoice needs to see what happened to it. See ADR 0012.
+
+   Expects `excluded_docs` — rows from cashflow.bsn_ar_excluded_docs{,_by_code}().
+   Renders NOTHING when the list is empty, which is most customers.
+#}
+{% if excluded_docs %}
+{% set excluded_total = excluded_docs | sum(attribute='outstanding') %}
+<div class="card mb-3 border-secondary-subtle">
+  <div class="card-header py-2 bg-body-tertiary d-flex flex-wrap align-items-baseline gap-2">
+    <strong class="text-secondary">หนี้ที่ไม่นับว่าตามได้</strong>
+    <span class="small text-subtle">
+      ยอดค้างด้านบนคือยอด <strong>ตามได้</strong> — ตัด {{ excluded_docs|length }} ใบ
+      ฿{{ '{:,.2f}'.format(excluded_total) }} ออกไปแล้ว ไม่ต้องโทรตามรายการข้างล่างนี้
+    </span>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 align-middle">
+        <thead class="table-light">
+          <tr>
+            <th>วันที่</th>
+            <th>เลขที่</th>
+            <th class="text-end">ยอด</th>
+            <th>เหตุผล</th>
+            <th>หมายเหตุ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in excluded_docs %}
+          <tr class="text-subtle">
+            <td class="small">{{ d.doc_date_iso or '—' }}</td>
+            {# Link only the write-off bucket. Those are >=2024 IV documents —
+               the same population the chaseable table above links, and they
+               resolve. The other two buckets are structurally unreachable from
+               /sales/doc, not incidentally missing: an RE row is a RECEIPT and
+               never has sales lines, and a pre-2024 row predates the Sendy
+               ledger by definition (that era boundary is exactly why it is
+               excluded). Verified on the running app 2026-09-09: 3 write-off
+               docs -> 200, 3 RE -> 404, 3 legacy -> 404. #}
+            <td>
+              {%- if d.excluded_by == 'writeoff' -%}
+                <a href="{{ url_for('sales.sales_doc', doc_base=d.doc_no) }}">{{ d.doc_no }}</a>
+              {%- else -%}
+                {{ d.doc_no }}
+              {%- endif -%}
+            </td>
+            <td class="text-end">฿{{ '{:,.2f}'.format(d.outstanding) }}</td>
+            <td>
+              {%- if d.excluded_by == 'writeoff' -%}
+                {%- if d.writeoff_type == 'writeback' -%}
+                  <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle">ตั้งกลับ</span>
+                {%- else -%}
+                  <span class="badge bg-secondary">ตัดหนี้สูญ</span>
+                {%- endif -%}
+              {%- elif d.excluded_by == 're' -%}
+                <span class="badge bg-success-subtle text-success-emphasis border border-success-subtle">ลูกค้าจ่ายแล้ว (RE)</span>
+              {%- else -%}
+                <span class="badge bg-light text-dark border">หนี้ก่อนปี 2024</span>
+              {%- endif -%}
+              {#- A doc can be BOTH anomalous/legacy and carry an accountant's
+                  write-off decision. The bucket above deliberately puts RE and
+                  legacy first (copied from bsn_ar_excluded(), so the buckets stay
+                  disjoint), which would otherwise leave the หมายเหตุ column
+                  saying "AR write-off" beside a badge saying the customer paid.
+                  Both are true; say both. (Put, 2026-09-09.) -#}
+              {%- if d.writeoff_date and d.excluded_by != 'writeoff' %}
+                <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle ms-1">มีบันทึกตัดหนี้</span>
+              {%- endif -%}
+            </td>
+            <td class="small">
+              {%- if d.writeoff_date %}บันทึก {{ d.writeoff_date }}{% endif -%}
+              {%- if d.writeoff_reason %} — {{ d.writeoff_reason }}{% endif -%}
+              {%- if not d.writeoff_date and not d.writeoff_reason %}<span class="text-subtle">–</span>{% endif -%}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
