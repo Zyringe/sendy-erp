@@ -69,7 +69,7 @@ BSN_SYNC_HISTORY_NOTE_PREFIX = 'ประวัติขาย (ไม่นั�
 _UNCONDITIONAL_BLOCK_KINDS = frozenset(('pair', 'configuration_error'))
 
 
-def cross_unit_hazard(conn, product_id, bsn_unit):
+def cross_unit_hazard(conn, product_id, bsn_unit, *, alert_on_caller_conn=False):
     """None when (product, bsn_unit) may take a unit_conversions ratio.
     {'kind': 'pair', 'partner_id', 'partner_name', 'partner_unit'} when the
     product has an active [แพ็ค]/[แกะ] pair whose partner's unit_type equals
@@ -92,7 +92,30 @@ def cross_unit_hazard(conn, product_id, bsn_unit):
     of flagging just that one row. The malformed formula also gets a
     durable system_alerts row (system_alerts.record_conversion_role_alert,
     dedupe-keyed on the formula id) so it surfaces on /alerts even though a
-    read path found it and nobody is watching that page."""
+    read path found it and nobody is watching that page.
+
+    `alert_on_caller_conn` (issue #389) — pass True from a caller that has
+    ALREADY written on `conn` and will COMMIT. Such a caller holds SQLite's
+    write lock, so the alert's default fresh connection can only wait out the
+    busy timeout and be swallowed, and the block arrives with no durable
+    explanation. Passing True files the alert inside the caller's own
+    transaction instead. Leave it False on every read/list path: they call this
+    mid-SELECT-loop, and a write there would hold the lock for the whole
+    request. Callers, measured 2026-09-07:
+
+        save_unit_conversions         True  — its first INSERT takes the lock
+                                              and holds it to the one commit
+                                              after the loop
+        upsert_unit_conversion        False — the hazard check precedes its
+        update_unit_conversion_ratio  False   writes, so no lock is held yet
+        approve_pending_suggestion    False — holds the lock, but hands us a
+                                              just-created product id, which no
+                                              formula can reference; the
+                                              configuration_error branch is
+                                              unreachable there (pinned by
+                                              tests/test_conversion_role_alert_
+                                              durability.py)
+        the two read/list callers     False — never write"""
     norm = bsn_units.normalize_unit(bsn_unit) or ''
     product = conn.execute(
         "SELECT product_name, unit_type FROM products WHERE id = ?", (product_id,)
@@ -122,7 +145,8 @@ def cross_unit_hazard(conn, product_id, bsn_unit):
             try:
                 partner_ids.add(component_product_id(f['name'], True, ins))
             except ConversionRoleError as e:
-                record_conversion_role_alert(f['id'], e)
+                record_conversion_role_alert(
+                    f['id'], e, conn=conn if alert_on_caller_conn else None)
                 return {'kind': 'configuration_error', 'formula_id': f['id'], 'message': str(e)}
         # a multi-input [แกะ] never happens (no [แกะ] bundle is ever
         # created) — left unmatched rather than guessed, as before.
@@ -144,7 +168,8 @@ def cross_unit_hazard(conn, product_id, bsn_unit):
             try:
                 is_component = component_product_id(f['name'], True, ins) == product_id
             except ConversionRoleError as e:
-                record_conversion_role_alert(f['id'], e)
+                record_conversion_role_alert(
+                    f['id'], e, conn=conn if alert_on_caller_conn else None)
                 return {'kind': 'configuration_error', 'formula_id': f['id'], 'message': str(e)}
             if is_component:
                 partner_ids.add(f['output_product_id'])
@@ -429,7 +454,11 @@ def save_unit_conversions(items: list):
     saved = 0
     blocked = []
     for item in items:
-        hazard = cross_unit_hazard(conn, item['product_id'], item['bsn_unit'])
+        # alert_on_caller_conn: from iteration 2 this connection holds the write
+        # lock taken by the INSERT below, and keeps it until the single commit
+        # after the loop — a fresh connection could not file the alert (#389).
+        hazard = cross_unit_hazard(conn, item['product_id'], item['bsn_unit'],
+                                   alert_on_caller_conn=True)
         if hazard is not None and (hazard['kind'] in _UNCONDITIONAL_BLOCK_KINDS or float(item['ratio']) != 1):
             blocked.append(dict(hazard, product_id=item['product_id'],
                                  bsn_unit=item['bsn_unit'],

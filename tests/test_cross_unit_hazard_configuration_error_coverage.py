@@ -60,6 +60,100 @@ CALL_SITES = {
         "this call site needed no code change for this finding.",
 }
 
+# Second axis, added for issue #389: does this call site already hold SQLite's
+# WRITE LOCK when it calls cross_unit_hazard? If it does, the alert's default
+# fresh connection cannot get in — it waits out the busy timeout and the
+# best-effort except swallows it, so the site must pass
+# alert_on_caller_conn=True and file the alert inside its own transaction.
+#
+# This axis gets its own registry because it is invisible at the call site and
+# the ORIGINAL issue got it wrong in both directions: it named two callers that
+# check the hazard BEFORE their first write (no lock held) and missed the one
+# that writes three times first. The rule is mechanical — a caller is exposed
+# iff it writes on `conn` before the call AND can reach the
+# configuration_error branch — but nothing enforced it until this sweep.
+ALERT_CONN = {
+    ('models/mapping.py', 'get_pending_split_mappings'): (
+        False,
+        "Read/list builder — never writes on its connection, and calls this "
+        "mid-SELECT-loop, so a write here would hold the lock for the whole "
+        "request. Must keep the fresh connection."),
+    ('models/bsn_sync.py', 'get_pending_unit_conversions'): (
+        False,
+        "Read/list builder — same as get_pending_split_mappings."),
+    ('models/bsn_sync.py', 'save_unit_conversions'): (
+        True,
+        "EXPOSED. The loop's first INSERT INTO unit_conversions takes the write "
+        "lock and holds it until the single commit after the loop, so a "
+        "malformed formula met on iteration 2+ could not be alerted from a "
+        "fresh connection. It has no rollback path, so filing on its own "
+        "connection is genuinely durable."),
+    ('models/bsn_sync.py', 'update_unit_conversion_ratio'): (
+        False,
+        "The hazard check is the first statement to touch the DB after "
+        "get_connection(), and it close()s and returns on a block — under "
+        "deferred isolation no write lock exists yet."),
+    ('models/bsn_sync.py', 'upsert_unit_conversion'): (
+        False,
+        "Same shape as update_unit_conversion_ratio — hazard check precedes "
+        "every write."),
+    ('models/suggestions.py', 'approve_pending_suggestion'): (
+        False,
+        "Holds the lock (three writes precede the call) but hands "
+        "cross_unit_hazard a product id create_structured_product just "
+        "INSERTed, and no conversion_formulas row can reference a brand-new "
+        "id — the configuration_error branch is unreachable, so no alert can "
+        "be lost. Pinned by test_conversion_role_alert_durability.py::"
+        "test_approve_pending_suggestion_cannot_reach_the_alert_path; if that "
+        "goes red this entry becomes True."),
+}
+
+
+def _function_body(rel_path, fn):
+    src = open(os.path.join(APP, rel_path), encoding='utf-8').read()
+    m = re.search(rf'\ndef {fn}\(.*?(?=\ndef |\Z)', src, re.S)
+    assert m, f'{fn} not found in {rel_path}'
+    return m.group(0)
+
+
+def test_every_call_site_declares_whether_it_holds_the_write_lock():
+    missing = set(CALL_SITES) - set(ALERT_CONN)
+    assert not missing, (
+        "New cross_unit_hazard call site(s) with no ALERT_CONN entry. Decide: "
+        "does this caller WRITE on its connection before the call, and can it "
+        "reach the configuration_error branch? If both, pass "
+        "alert_on_caller_conn=True or its durable alert is silently lost "
+        "(#389):\n  " + "\n  ".join(f'{f}::{fn}' for f, fn in sorted(missing)))
+    stale = set(ALERT_CONN) - set(CALL_SITES)
+    assert not stale, "Remove these stale ALERT_CONN entries:\n  " + "\n  ".join(
+        f'{f}::{fn}' for f, fn in sorted(stale))
+
+
+@pytest.mark.parametrize('site', sorted(ALERT_CONN))
+def test_alert_conn_declaration_matches_the_code(site):
+    """The registry is a claim about the source; check the source agrees.
+
+    Each of these functions contains exactly ONE cross_unit_hazard call, so
+    looking for the keyword anywhere in the function body is unambiguous."""
+    expected, reason = ALERT_CONN[site]
+    assert len(reason) > 40, f'{site}: explain WHY, in a sentence'
+    body = _function_body(*site)
+    passes_flag = 'alert_on_caller_conn=True' in body
+    assert passes_flag == expected, (
+        f'{site[0]}::{site[1]} — ALERT_CONN says '
+        f'{"it must pass" if expected else "it must NOT pass"} '
+        f'alert_on_caller_conn=True, but the code '
+        f'{"does not" if expected else "does"}. Registry reason: {reason}')
+
+
+def test_the_flag_defaults_to_off():
+    """The safe default is the read/list one: a new call site that forgets to
+    think about this gets the fresh connection, which is at worst a missed
+    alert — never a write transaction held open inside someone's SELECT loop."""
+    src = open(os.path.join(APP, 'models/bsn_sync.py'), encoding='utf-8').read()
+    assert 'def cross_unit_hazard(conn, product_id, bsn_unit, *, alert_on_caller_conn=False):' in src
+
+
 _CALL_RE = re.compile(r'cross_unit_hazard\(')
 _DEF_RE = re.compile(r'^def (\w+)\(')
 _IMPORT_HINTS = ('import', 'from ')
