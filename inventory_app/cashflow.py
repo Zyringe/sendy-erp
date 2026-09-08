@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import date, timedelta
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple
 
 import sales_filters
 from config import DATABASE_PATH
@@ -654,3 +654,135 @@ def bsn_ar_excluded_by_customer(conn: Optional[sqlite3.Connection] = None,
             ORDER BY outstanding DESC
         """, (snap,)).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Per-document complement of BSN_AR_PREDICATE, for ONE customer ────────────
+# `bsn_ar_excluded()` totals the excluded amount and `bsn_ar_excluded_by_customer()`
+# gives one aggregate row per customer. Neither answers the question a per-customer
+# AR page has to ask — "WHICH of this customer's documents were removed from the
+# chaseable total, and why" — which is what the four chase-facing surfaces render
+# below their bill list so a removed bill stops silently disappearing (ADR 0012).
+
+def _excluded_docs(match_sql: str,
+                   match_params: Sequence,
+                   conn: Optional[sqlite3.Connection] = None,
+                   db_path: Optional[str] = None) -> Tuple[List[dict], Optional[str]]:
+    """Rows in the latest BSN snapshot for one customer that are NOT chaseable.
+
+    Returns (rows, snapshot_date). Each row carries `excluded_by`, exactly one of:
+
+      're'       is_anomalous = 1                              (any date)
+      'legacy'   is_anomalous = 0 AND doc_date_iso < 2024
+      'writeoff' is_anomalous = 0 AND doc >= 2024 AND in ar_writeoffs
+
+    ⚠ The buckets are COPIED from `bsn_ar_excluded()`, not re-derived, so the two
+    helpers cannot disagree and a doc that is both written off and pre-2024 is
+    counted ONCE (as legacy). `excluded_by` is the display bucket; the write-off
+    metadata below is attached whenever an `ar_writeoffs` row exists at all, so a
+    legacy doc that was also written off still shows its reason.
+
+    ⚠ The WHERE is `NOT (BSN_AR_PREDICATE)` — the predicate is IMPORTED, never
+    re-typed. A hand-typed complement is ADR 0012's defect in mirror image: it
+    would drift from the chaseable list and let a document fall out of BOTH,
+    which is worse than showing it twice because nothing would ever surface it.
+    `tests/test_ar_excluded_docs.py` pins the partition in both directions.
+
+    ⚠ Filter FIRST, join second — same reason as `ar_due_buckets()`. The
+    predicate uses bare column names, and `ar_writeoffs` also has a `doc_no`,
+    so applying it beside that join fails with "ambiguous column name".
+
+    ⚠ Deliberately NOT filtered on `outstanding_amount > 0`. `_unpaid_bills`
+    filters credit rows out of a chaseable LIST on purpose; here the partition
+    against the chaseable set is the property that matters, and a filter would
+    let a doc be invisible on both lists.
+
+    The `ar_writeoffs` join is safe to make plainly because that table carries
+    `UNIQUE(doc_no)` ("one write-off decision per doc"), so it cannot fan a
+    document out into two rows and break the partition. That constraint is the
+    assumption this query rests on, and
+    `test_one_writeoff_decision_per_doc_is_a_db_invariant` pins it.
+
+    `match_sql` is the caller's identity predicate — a literal chosen at the
+    call site, never user input; placeholders are filled from `match_params`.
+    Same contract as `models/payments.py::_unpaid_bills`.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        snap = c.execute(
+            "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding "
+            "WHERE entity = 'BSN'").fetchone()['d']
+        if not snap:
+            return [], None
+        rows = c.execute(f"""
+            SELECT ao.doc_no,
+                   ao.doc_date_iso,
+                   COALESCE(cust.name, ao.customer_name) AS customer,
+                   ao.customer_code,
+                   ao.bill_amount,
+                   ao.paid_amount,
+                   ao.outstanding_amount                AS outstanding,
+                   CASE WHEN ao.is_anomalous = 1            THEN 're'
+                        WHEN ao.doc_date_iso < '2024-01-01' THEN 'legacy'
+                        ELSE 'writeoff' END              AS excluded_by,
+                   w.type                               AS writeoff_type,
+                   w.writeoff_date                      AS writeoff_date,
+                   w.reason                             AS writeoff_reason
+              FROM (SELECT * FROM express_ar_outstanding
+                     WHERE entity = 'BSN' AND snapshot_date_iso = ?
+                       AND NOT ({BSN_AR_PREDICATE})) ao
+              LEFT JOIN customers cust ON cust.code = ao.customer_code
+              LEFT JOIN ar_writeoffs w ON w.doc_no = ao.doc_no
+             WHERE {match_sql}
+             ORDER BY ao.doc_date_iso DESC
+        """, [snap] + list(match_params)).fetchall()
+    return [dict(r) for r in rows], snap
+
+
+def bsn_ar_excluded_docs_by_code(customer_code: str,
+                                 conn: Optional[sqlite3.Connection] = None,
+                                 db_path: Optional[str] = None
+                                 ) -> Tuple[List[dict], Optional[str]]:
+    """Code-keyed: `/customer/code/<code>` and `/express/ar/customer/<code>`.
+
+    TRIMs the snapshot's code, matching `ar_followup.get_customer_ar_detail`.
+    The chaseable and excluded sides of a page must key IDENTICALLY or a code
+    carrying stray whitespace lands in one list and not the other, and the
+    partition that makes this pair trustworthy quietly stops holding.
+    """
+    return _excluded_docs("TRIM(ao.customer_code) = ?", [customer_code],
+                          conn=conn, db_path=db_path)
+
+
+def bsn_ar_excluded_docs(customer_name: str,
+                         conn: Optional[sqlite3.Connection] = None,
+                         db_path: Optional[str] = None
+                         ) -> Tuple[List[dict], Optional[str]]:
+    """Name-keyed, mirroring `models.get_customer_unpaid_bills`: match the
+    customers master first, then fall back to the name on the snapshot row.
+
+    ⚠ Pair this ONLY with a surface whose chaseable list uses that same
+    matcher — `/customer/code/<code>` and the mobile page. The dunning page
+    does NOT: see `bsn_ar_excluded_docs_by_snapshot_name` below for why.
+    """
+    return _excluded_docs("(COALESCE(cust.name, '') = ? OR ao.customer_name = ?)",
+                          [customer_name, customer_name],
+                          conn=conn, db_path=db_path)
+
+
+def bsn_ar_excluded_docs_by_snapshot_name(customer_name: str,
+                                          conn: Optional[sqlite3.Connection] = None,
+                                          db_path: Optional[str] = None
+                                          ) -> Tuple[List[dict], Optional[str]]:
+    """Name-keyed the NARROW way, mirroring `ar_followup.get_customer_ar_detail`'s
+    orphan branch: the name stamped on the snapshot row, and nothing else.
+
+    Two name matchers exist because the two chaseable helpers use two different
+    ones, and an excluded list keyed differently from the chaseable list beside
+    it is ADR 0012's defect wearing a new hat. The gap is reachable: a customer
+    renamed in the master, with no sales history under the new name, resolves to
+    no code — so the dunning page falls to its orphan branch and finds nothing,
+    while the COALESCE matcher above would still match through `customers.name`
+    and render an excluded section for a customer the list above it does not
+    recognise.
+    """
+    return _excluded_docs("ao.customer_name = ?", [customer_name],
+                          conn=conn, db_path=db_path)

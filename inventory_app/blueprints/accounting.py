@@ -670,6 +670,10 @@ def ar_followup_customer(customer_key):
     invoices = arf_mod.get_customer_ar_detail(customer=customer_key)
     followups = arf_mod.get_customer_followups(customer=customer_key)
     total_outstanding = round(sum(i['outstanding'] for i in invoices), 2)
+    # The chaseable list above drops forgiven / already-paid / pre-2024 bills.
+    # This is the same customer's REMOVED documents, so the page can say what
+    # happened to a bill instead of letting it vanish before a phone call.
+    excluded_docs = arf_mod.get_customer_excluded_docs(customer=customer_key)
 
     # Display name = name on the most recent invoice; else newest log; else key.
     if invoices:
@@ -690,6 +694,7 @@ def ar_followup_customer(customer_key):
         customer_code=customer_code,
         invoices=invoices,
         followups=followups,
+        excluded_docs=excluded_docs,
         total_outstanding=total_outstanding,
         aging=cf_mod.ar_aging(),
         today=date.today().isoformat(),

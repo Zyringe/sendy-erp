@@ -24,7 +24,8 @@ Outreach workspace:
 Public surface
 ──────────────
 - customer_ranking(...)           — per-customer roll-up sorted by outstanding DESC
-- get_customer_ar_detail(...)     — outstanding invoices for one customer + age
+- get_customer_ar_detail(...)     — CHASEABLE invoices for one customer + age
+- get_customer_excluded_docs(...) — the same customer's NOT-chaseable docs + why
 - get_customer_followups(...)     — outreach history for one customer (newest first)
 - list_overdue_followups(...)     — followups whose next_action_date has passed
 - log_outreach(...)               — insert an outreach attempt
@@ -40,6 +41,7 @@ import sqlite3
 
 import config
 import payments_alloc as pa   # kept as diagnostic — do not remove
+import cashflow
 from cashflow import BSN_AR_PREDICATE
 
 
@@ -471,6 +473,31 @@ def get_customer_ar_detail(customer: str,
             })
         out.sort(key=lambda x: -(x['age_days'] or 0))
         return out
+
+
+def get_customer_excluded_docs(customer: str,
+                               conn: Optional[sqlite3.Connection] = None,
+                               db_path: Optional[str] = None) -> List[dict]:
+    """The counterpart of `get_customer_ar_detail`: the snapshot rows for this
+    customer that are NOT chaseable, so the dunning page can say what happened
+    to a bill instead of letting it disappear (ADR 0012).
+
+    Exists here rather than at the call site so the code-or-name fork is made
+    ONCE, by the same `_resolve_target` the chaseable side uses, and so each
+    branch reaches the matcher that mirrors `get_customer_ar_detail`'s own —
+    TRIM'd code, or the snapshot name exactly. Keying the two sides differently
+    is how a page ends up showing a document on neither list, or an excluded
+    section belonging to a customer the list above it did not match. Returns the
+    rows only — the snapshot date is already on the page from the chaseable side.
+    """
+    with _ConnCtx(conn, db_path) as c:
+        code, _names = _resolve_target(c, customer)
+        if code:
+            rows, _snap = cashflow.bsn_ar_excluded_docs_by_code(code, conn=c)
+        else:
+            rows, _snap = cashflow.bsn_ar_excluded_docs_by_snapshot_name(
+                customer.strip(), conn=c)
+    return rows
 
 
 # ── outreach log CRUD ───────────────────────────────────────────────────────
