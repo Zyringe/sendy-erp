@@ -31,6 +31,7 @@ import statistics
 from typing import Optional, List
 
 import config
+from models import promotions as promo_models
 
 # ── Detection thresholds ─────────────────────────────────────────────────────
 
@@ -116,21 +117,18 @@ def _get_active_promo_on_date(conn, product_id: int, date_iso: str):
 
 
 def _promo_expected_per_base_unit(product, promo) -> Optional[float]:
-    """Compute expected per-base-unit price from promo.
+    """Expected per-base-unit price under `promo`, or None when the promo has
+    no price effect at all (bundle / gift, and a mixed row carrying only deal
+    terms) — R5's caller reads None as "nothing to check".
 
-    Returns None for bundle/gift/mixed (skip).
-    Mirrors effective_price() semantics from models.py:
-      percent → base * (1 - disc/100), rounded 2dp
-      fixed   → discount_value (IS the final selling price)
+    ⚠ Until 2026-09-09 this skipped every `mixed` row, which exempted 27
+    own-brand products from R5_PROMO_MISMATCH even though their mixed rows
+    carry a real percent. It now asks models.promotions, the one owner of both
+    questions, instead of re-typing the branches (card 3).
     """
-    ptype = promo['promo_type']
-    if ptype in ('bundle', 'gift', 'mixed'):
+    if not promo_models.affects_price(promo):
         return None
-    if ptype == 'percent':
-        return round(product['base_sell_price'] * (1 - promo['discount_value'] / 100), 2)
-    if ptype == 'fixed':
-        return float(promo['discount_value'])
-    return None
+    return promo_models.promo_price(product['base_sell_price'], 1.0, promo)
 
 
 # ── R3 median helpers ─────────────────────────────────────────────────────────
