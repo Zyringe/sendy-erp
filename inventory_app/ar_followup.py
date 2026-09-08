@@ -425,8 +425,9 @@ def get_customer_ar_detail(customer: str,
                 LEFT JOIN customers cust ON cust.code = ao.customer_code
                 WHERE ao.entity = 'BSN'
                   AND ao.snapshot_date_iso = ?
+                  AND {BSN_AR_PREDICATE}
                   AND TRIM(ao.customer_code) = ?
-            """, (snap, code)).fetchall()
+            """.format(BSN_AR_PREDICATE=BSN_AR_PREDICATE), (snap, code)).fetchall()
         else:
             # Orphan / walk-in: match by customer_name
             target_name = customer.strip()
@@ -443,8 +444,9 @@ def get_customer_ar_detail(customer: str,
                 FROM express_ar_outstanding ao
                 WHERE ao.entity = 'BSN'
                   AND ao.snapshot_date_iso = ?
+                  AND {BSN_AR_PREDICATE}
                   AND ao.customer_name = ?
-            """, (snap, target_name)).fetchall()
+            """.format(BSN_AR_PREDICATE=BSN_AR_PREDICATE), (snap, target_name)).fetchall()
 
         out = []
         for r in rows:

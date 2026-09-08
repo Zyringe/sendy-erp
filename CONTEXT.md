@@ -108,6 +108,28 @@
 - **ลูกหนี้ (AR)** — outstanding money customers still owe the business (money-owed sense
   of ลูกค้า). Pairs with เจ้าหนี้.
 
+- **outstanding (ยอดค้างตามสมุด)** — what the latest Express BSN snapshot says is still
+  unpaid, with nothing removed. Includes bills that were forgiven, bills the customer has
+  in fact already paid, and pre-Sendy legacy debt. The honest answer to "what is on the
+  books", and the wrong answer to "who do I call".
+
+- **chaseable (ตามได้)** — the subset of **outstanding** a person may actually phone a
+  customer about: outstanding minus all three of Put's standing rulings — bills recorded in
+  `ar_writeoffs` (forgiven, and permanently so — the write-off survives the next snapshot
+  import), bills marked anomalous (`ลูกหนี้จ่ายแล้ว` — already paid), and debt dated before
+  the Sendy era (pre-2024). Every chase-facing screen shows this one: the AR dashboard, the
+  per-customer pages, and the dunning detail page a person opens before making the call.
+
+  > **These are two different questions and must be named, never assumed.** A reader that
+  > does not say which one it wants gets whichever the author happened to type, which is how
+  > four per-customer screens came to show forgiven bills as owed while the list one click
+  > above them correctly dropped them (see ADR 0012). "AR" alone is ambiguous: say
+  > *outstanding* or *chaseable*.
+  >
+  > A surface may legitimately want **outstanding** — the sales-rep invoice tab does, because
+  > it reports collection history and a bill that was never collected should not read as paid.
+  > That is a valid choice; it just has to be a stated one.
+
 - **เจ้าหนี้ (AP)** — outstanding money the business still owes its ผู้จำหน่าย (money-owed
   sense of ผู้จำหน่าย). _Avoid_: "AP / ซัพพลายเออร์" (old label that named the data source
   era, not the concept).
