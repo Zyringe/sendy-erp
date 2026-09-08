@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from 'macros.html' import phone_lines %}
 {% block title %}ตรวจข้อมูลลูกค้า — Sendy{% endblock %}
 
 {% block head_extra %}
@@ -130,16 +131,8 @@
             {% endif %}
           </td>
           {# One line per number (ADR 0011), both columns the same way. #}
-          <td class="cr-phone">
-            {% for e in r.orig_phone | phone_entries %}
-            <div class="orig">{{ e.text }}{% if e.is_fax %} แฟกซ์{% endif %}</div>
-            {% else %}<div class="orig">—</div>{% endfor %}
-          </td>
-          <td class="cr-phone">
-            {% for e in r.proposed_phone | phone_entries %}
-            <div class="prop">{{ e.text }}{% if e.is_fax %} แฟกซ์{% endif %}</div>
-            {% else %}<div class="prop">—</div>{% endfor %}
-          </td>
+          <td class="cr-phone">{{ phone_lines(r.orig_phone | phone_entries, cls='orig') }}</td>
+          <td class="cr-phone">{{ phone_lines(r.proposed_phone | phone_entries, cls='prop') }}</td>
           <td>
             <div style="font-size:13px">{{ r.proposed_fax or '—' }}</div>
           </td>

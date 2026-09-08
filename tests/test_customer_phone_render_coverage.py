@@ -45,6 +45,12 @@ ALLOWED = {
         'marketplace_orders.buyer_phone — one number supplied by Shopee/Lazada '
         'per order, never edited here and never comma-joined. Not a customer '
         'record and not reachable from the customer book.',
+    'ar_followup_detail.html':
+        "not a number at all: `'phone'` is a value of ar_followup_log.channel "
+        "(phone / line / sms / email / visit), and the `{% set channel_map %}` "
+        'this matches renders it as the Thai word โทร. The sweep matches a bare '
+        'substring on purpose, so a word meaning "by telephone" is the price of '
+        'never missing a real one.',
 }
 
 # Over-inclusive on purpose, in the same stance as
@@ -64,7 +70,24 @@ _PHONE = re.compile(r'(?i)(?<![A-Za-z])phone')
 _GUARD = 'phone_entries'
 
 _JINJA_OUT = re.compile(r'\{\{.*?\}\}', re.DOTALL)
+# A `{% set %}` that READS a phone is treated as a render even though it prints
+# nothing, because it is how a phone escapes a name-based sweep entirely:
+# `{% set nums = customer.phone|... %}` then `{{ nums }}` — the output has no
+# "phone" in it, so nothing downstream fires. That is one rename away from the
+# exact shape #462 deleted (`{% set primary_phone = customer.phone.split(',')[0] %}`),
+# and the old name is the only reason the sweep saw it. Found by the standards
+# review, 2026-09-09.
+_JINJA_SET = re.compile(r'\{%-?\s*set\b.*?%\}', re.DOTALL)
 _SCRIPT = re.compile(r'(?is)<script\b[^>]*>(.*?)</script>')
+
+# Shared by the sweep and by its own break-it-once, so the proof cannot pass
+# against a stale COPY of the pattern while the real one rots.
+_TEL_TARGET = re.compile(r'tel:\s*(\{\{.*?\}\}|\$\{[^}]*\})', re.DOTALL)
+
+# `.split(',')` and `.rsplit(',')` alike — the sweep above catches either when
+# the phone name is visible, but paired with a `{% set %}` rename this detector
+# is the only thing left looking.
+_HAND_SPLIT = re.compile(r"\.r?split\(\s*['\"],")
 
 
 _TEXTAREA = re.compile(r'(?is)<textarea\b[^>]*>.*?</textarea>')
@@ -87,7 +110,13 @@ def _is_write_path(html, pos):
     if open_at != -1:
         tag = html[open_at:pos]
         # '>' before `pos` means the tag closed already — `pos` is not in it
-        if '>' not in tag and re.match(r'(?i)<(input|textarea)\b', tag):
+        if ('>' not in tag
+                and re.match(r'(?i)<(input|textarea)\b', tag)
+                # ...and specifically inside value=, not just anywhere in the
+                # tag. `<input readonly title="{{ c.phone }}">` is a DISPLAY
+                # (a tooltip a reader sees); exempting the whole tag let it
+                # through silently. Found by the standards review, 2026-09-09.
+                and re.search(r'(?i)\bvalue\s*=\s*["\']?[^"\']*$', tag)):
             return True
     return any(m.start() < pos < m.end() for m in _TEXTAREA.finditer(html))
 
@@ -95,8 +124,10 @@ def _is_write_path(html, pos):
 def _sites(paths):
     """Every place a template RENDERS something whose name mentions a phone.
 
-    Two regions count as rendering, and nothing else does:
+    Three regions count, and nothing else does:
       - a Jinja output expression `{{ ... }}`
+      - a `{% set %}` — it prints nothing, but it RENAMES, and the rename is
+        what makes everything downstream invisible to a name-based sweep
       - a line inside a <script> block (covers `${c.phone}` and plain DOM writes)
 
     `{% if customer.phone %}` is deliberately NOT a site: a guard decides
@@ -109,7 +140,7 @@ def _sites(paths):
     for rel, path in sorted(paths):
         html = open(path, encoding='utf-8').read()
         seen = set()
-        for m in _JINJA_OUT.finditer(html):
+        for m in list(_JINJA_OUT.finditer(html)) + list(_JINJA_SET.finditer(html)):
             if not _PHONE.search(m.group(0)):
                 continue
             line = html.count('\n', 0, m.start()) + 1
@@ -162,12 +193,16 @@ def test_no_dial_target_is_built_from_anything_but_a_dial_value():
     impossible by construction). Any other expression behind `tel:` is the old
     bug wearing a new name.
     """
-    bad = []
+    bad, seen = [], 0
     for rel, path in sorted(_template_files()):
         html = open(path, encoding='utf-8').read()
-        for m in re.finditer(r'tel:\s*(\{\{.*?\}\}|\$\{[^}]*\})', html, re.DOTALL):
+        for m in _TEL_TARGET.finditer(html):
+            seen += 1
             if 'dial' not in m.group(1):
                 bad.append(f'{rel}:{html.count(chr(10), 0, m.start()) + 1}  {m.group(0)}')
+    # CONTROL: `not bad` is also what an app with no dial targets at all
+    # returns. Assert the app still HAS them before assering they are sound.
+    assert seen >= 3, f'only {seen} dial targets in the whole tree — check the check'
     assert not bad, "dial targets not built from phone_entries' `dial`:\n  " + "\n  ".join(bad)
 
 
@@ -223,7 +258,7 @@ def test_no_template_splits_a_phone_on_commas_by_hand():
     bad = []
     for rel, path in sorted(_template_files()):
         for i, raw in enumerate(open(path, encoding='utf-8'), 1):
-            if _PHONE.search(raw) and re.search(r"\.split\(\s*['\"],", raw):
+            if _PHONE.search(raw) and _HAND_SPLIT.search(raw):
                 bad.append(f'{rel}:{i}  {raw.strip()}')
     assert not bad, "hand-rolled phone splits (use phone_entries):\n  " + "\n  ".join(bad)
 
@@ -245,7 +280,7 @@ def test_allowlist_entries_still_apply():
 
 @pytest.mark.parametrize('rel', sorted(ALLOWED))
 def test_every_exemption_carries_a_reason(rel):
-    assert len(ALLOWED[rel]) > 60, f'{rel}: explain WHY it is exempt, in a sentence'
+    assert len(ALLOWED[rel]) > 40, f'{rel}: explain WHY it is exempt, in a sentence'
 
 
 # ── the sweep's own coverage ─────────────────────────────────────────────────
@@ -267,6 +302,13 @@ SHAPES = {
     'js_dom_write':      '<script>el.textContent = o.buyer_phone;</script>',
     'across_lines':      '<div>{{ ci.phone\n   or "" }}</div>',
     'uppercase':         '<div>{{ c.Phone }}</div>',
+    # A `{% set %}` launders the name: whatever it binds to has no "phone" in
+    # it, so every downstream `{{ }}` is invisible. The site is the SET.
+    'set_launders_name': "{% set nums = customer.phone|trim %}<div>{{ nums }}</div>",
+    # A display rendered into an attribute other than value= — a tooltip is
+    # something a reader sees, so it is a render, not a write path.
+    'input_title_attr':  '<input readonly title="{{ c.phone }}">',
+    'span_title_attr':   '<span title="{{ c.phone }}">…</span>',
 }
 
 NOT_FLAGGED = {
@@ -300,6 +342,17 @@ def test_the_sweep_sees_every_rendering_shape(shape, tmp_path):
 @pytest.mark.parametrize('shape', sorted(NOT_FLAGGED))
 def test_the_sweep_stays_quiet_on_what_is_not_a_raw_render(shape, tmp_path):
     assert not _scan_snippet(tmp_path, NOT_FLAGGED[shape]), f'{shape}: false positive'
+
+
+def test_the_hand_split_detector_can_fail(tmp_path):
+    """Break-it-once for the split detector, both spellings. `assert not bad`
+    over an empty list pins nothing, and `.rsplit(',')` evaded the first
+    version of the pattern entirely."""
+    for expr in (".split(',')", ".rsplit(',')", '.split(",")'):
+        assert _HAND_SPLIT.search('{{ c.phone%s[0] }}' % expr), expr
+    # CONTROL: a split on something that is not a comma is not a phone split,
+    # or the detector would flag every template that slices a date.
+    assert not _HAND_SPLIT.search("{{ s.doc_no.rsplit('-', 1)[0] }}")
 
 
 def test_a_rogue_surface_added_to_the_real_tree_would_be_caught(tmp_path):

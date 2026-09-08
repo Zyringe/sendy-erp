@@ -106,3 +106,31 @@
   {% endif %}
 {%- endif -%}
 {% endmacro %}
+
+
+{# One line per stored phone number (ADR 0011) — `customers.phone` holds a LIST.
+   Feed it `something.phone | phone_entries`; the filter is the single place that
+   decides what a dialable number is, and this is the single place that decides
+   what a stack of them looks like.
+
+   Surfaces whose phone block is a plain stack of lines use this. The ones with
+   their own layout — the call card's buttons, the call list's table cell, the
+   two mobile screens' chips — keep their own markup and read the same filter:
+   the visual shape differs per surface, the convention never does.
+
+   entries : the filter's output
+   cls     : extra class per line (the review list's struck-through .orig)
+   dial    : offer a callable number as a tel: link. Off where the surface is
+             for reading rather than calling (the contact-review screens), and
+             off wherever the line already sits inside a click target. #}
+{% macro phone_lines(entries, cls='', dial=False) %}
+{%- for e in entries -%}
+  <div class="phone-entry{% if cls %} {{ cls }}{% endif %}">
+    {%- if dial and e.dial -%}<a href="tel:{{ e.dial }}">{{ e.text }}</a>
+    {%- else -%}{{ e.text }}{%- endif -%}
+    {%- if e.is_fax %} <span class="text-subtle small">แฟกซ์</span>{%- endif -%}
+  </div>
+{%- else -%}
+  <div class="phone-entry{% if cls %} {{ cls }}{% endif %}">—</div>
+{%- endfor -%}
+{% endmacro %}
