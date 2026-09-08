@@ -148,6 +148,14 @@
   description, note. Entered **by hand** — the Excel importer + round-trip export are
   retired (ADR 0005).
 
+- **รายละเอียด (`description`) vs หมายเหตุ (`note`)** — two *different* free-text fields on a
+  cashbook transaction, and the cashbook is the **only** feature that offers both.
+  **รายละเอียด** answers "**what was this money**" — it is the primary field, the one a
+  reader needs to understand the row at a glance. **หมายเหตุ** carries the **exception**: a
+  side fact that does not fit the description (which dates a lump sum covers, which bank it
+  actually moved through, "this was not a real transaction"). Blank is its normal state.
+  _Avoid_: treating the two as interchangeable, or putting the row's *identity* in หมายเหตุ.
+
 - **Category (หมวดหมู่)** — the accounting bucket of a transaction (`เงินเดือน`, `ค่าไฟ`,
   `ซื้อสินค้า`, …). Lives in `cashbook_categories`, scoped by direction. A new one can be
   typed on the entry form (created on save).
