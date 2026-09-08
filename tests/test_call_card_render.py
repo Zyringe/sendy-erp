@@ -396,8 +396,8 @@ def test_card_without_a_phone_field_makes_no_claim_either_way(tmp_db_conn):
             continue
         try:
             d = cc.get_card(conn, code)
-        except Exception:
-            continue                      # unrelated per-customer failures
+        except AttributeError:
+            continue        # the known local price_lookup shadowing (bsn.py:500)
         if d and 'phone' not in d['master'].keys():
             target = code
             break
@@ -405,7 +405,10 @@ def test_card_without_a_phone_field_makes_no_claim_either_way(tmp_db_conn):
                     "pass vacuously, so treat it as a failure, not a skip")
 
     html = _client(_app()).get('/call/' + target).get_data(as_text=True)
-    assert 'callstack' in html, "CONTROL: the phone block really rendered"
+    # NOT the bare word: `.cc-hdr .callstack{...}` sits in this template's own
+    # <style> block, so `'callstack' in html` is true even when the phone block
+    # never renders. Assert the ELEMENT.
+    assert 'class="callstack"' in html, "CONTROL: the phone block really rendered"
     assert 'ไม่ได้บันทึกเบอร์' not in html, \
         "claims no number is recorded on a card that simply does not carry the field"
     assert 'href="tel:' not in html

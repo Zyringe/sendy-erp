@@ -77,3 +77,12 @@ def test_extension_dials_the_switchboard_not_the_extension():
     assert len(e) == 1
     assert e[0]['text'] == '02-123-4567-11', "the reader still sees the extension"
     assert e[0]['dial'] == '021234567', "but the dialler gets the core"
+
+
+def test_bare_digits_with_no_separators_are_still_dialable():
+    """Employee-side storage (#463/#464) will be bare digits, and customers hold
+    some already. The splitter must not depend on the dashes being there."""
+    e = phone_entries('0812345678,024358899')
+    assert len(e) == 2, "count first"
+    assert [x['dial'] for x in e] == ['0812345678', '024358899']
+    assert [x['text'] for x in e] == ['0812345678', '024358899']

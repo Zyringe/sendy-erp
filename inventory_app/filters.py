@@ -71,9 +71,12 @@ def html_text(v):
 
 # `customers.phone` holds a LIST, not a number: measured on PROD 2026-09-08,
 # 1,422 of the 2,307 customers with a phone carry two to five numbers
-# comma-joined in that one column, and 111 carry an inline F:/FAX marker.
+# comma-joined in that one column. Fax markers, counted two ways because the
+# predicate matters: 83 chunks contain `F:`, 111 contain `F:` OR `FAX`.
 # ADR 0011 keeps the column that shape deliberately, so the split belongs here,
-# at display, and no template may split on commas itself.
+# at display. The call card is the only consumer so far; the remaining surfaces
+# (m/customer.html and m/sales_trip.html still split on commas by hand, which
+# ADR 0011 explicitly rejects) move over in #462.
 _FAX_MARKER_RE = re.compile(r'(?i)^\s*(?:f|fax|แฟกซ์)\s*[:.]?\s*')
 
 
