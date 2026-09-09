@@ -1,3 +1,4 @@
+{% from 'macros.html' import phone_lines %}
 {% extends 'base.html' %}
 {% block title %}{{ data.customer }} – ลูกค้า{% endblock %}
 {% block page_title %}ลูกค้า: {{ data.customer }}{% endblock %}
@@ -103,7 +104,10 @@
         {% if ci.phone %}
         <div>
           <div class="text-subtle small mb-1">โทรศัพท์</div>
-          <div class="fw-500">{{ ci.phone }}</div>
+          {# ADR 0011: the column holds a LIST of numbers. One line each, each
+             independently dialable; the edit modal below keeps the raw column
+             because that box writes back to it. #}
+          {{ phone_lines(ci.phone | phone_entries, cls='fw-500', dial=True) }}
         </div>
         {% endif %}
         {% if ci.contact %}

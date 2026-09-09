@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from 'macros.html' import phone_lines %}
 {% block title %}ตรวจข้อมูลลูกค้า — Sendy{% endblock %}
 
 {% block head_extra %}
@@ -129,12 +130,9 @@
               <span class="text-muted" style="font-size:12px">—</span>
             {% endif %}
           </td>
-          <td class="cr-phone">
-            <div class="orig">{{ r.orig_phone or '—' }}</div>
-          </td>
-          <td class="cr-phone">
-            <div class="prop">{{ r.proposed_phone or '—' }}</div>
-          </td>
+          {# One line per number (ADR 0011), both columns the same way. #}
+          <td class="cr-phone">{{ phone_lines(r.orig_phone | phone_entries, cls='orig') }}</td>
+          <td class="cr-phone">{{ phone_lines(r.proposed_phone | phone_entries, cls='prop') }}</td>
           <td>
             <div style="font-size:13px">{{ r.proposed_fax or '—' }}</div>
           </td>

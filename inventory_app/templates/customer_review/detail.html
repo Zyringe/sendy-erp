@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from 'macros.html' import phone_lines %}
 {% block title %}ตรวจสอบ {{ customer_code }} — Sendy{% endblock %}
 
 {% block head_extra %}
@@ -68,8 +69,13 @@
       <h2>📄 ข้อมูลเดิม (ต้นฉบับ)</h2>
       <div class="cr-row"><div class="cr-label">ชื่อ</div>
         <div class="cr-val{% if not orig.get('name') %} empty{% endif %}">{{ orig.get('name') or '—' }}</div></div>
+      {# ADR 0011: the column holds a LIST. Both sides of this comparison are
+         rendered the same way, or the reviewer is comparing two conventions.
+         No dial links: this screen is for judging the data, not calling it. #}
       <div class="cr-row"><div class="cr-label">เบอร์โทร</div>
-        <div class="cr-val{% if not orig.get('phone') %} empty{% endif %}">{{ orig.get('phone') or '—' }}</div></div>
+        <div class="cr-val{% if not orig.get('phone') %} empty{% endif %}">
+          {{- phone_lines(orig.get('phone') | phone_entries) -}}
+        </div></div>
       <div class="cr-row"><div class="cr-label">ผู้ติดต่อ</div>
         <div class="cr-val{% if not orig.get('contact') %} empty{% endif %}">{{ orig.get('contact') or '—' }}</div></div>
       <div class="cr-row"><div class="cr-label">ที่อยู่</div>
@@ -83,7 +89,9 @@
       <div class="cr-row"><div class="cr-label">ชื่อ</div>
         <div class="cr-val">{{ live.name or '—' }}</div></div>
       <div class="cr-row"><div class="cr-label">เบอร์โทร</div>
-        <div class="cr-val{% if not live.phone %} empty{% endif %}">{{ live.phone or '—' }}</div></div>
+        <div class="cr-val{% if not live.phone %} empty{% endif %}">
+          {{- phone_lines(live.phone | phone_entries) -}}
+        </div></div>
       <div class="cr-row"><div class="cr-label">แฟกซ์</div>
         <div class="cr-val{% if not live.fax %} empty{% endif %}">{{ live.fax or '—' }}</div></div>
       <div class="cr-row"><div class="cr-label">ชื่อเล่น</div>

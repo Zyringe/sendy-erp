@@ -14,9 +14,22 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 
 import models
 from database import get_connection
+from filters import phone_entries
 from paging import paging
 
 bp_partners = Blueprint('partners', __name__)
+
+
+def _with_phone_entries(customers):
+    """Attach each customer's split phone entries for the map popup.
+
+    Every other surface pipes `phone_entries` in the template, but the map
+    popup is assembled in JavaScript from a JSON array — so the route runs the
+    same filter and ships its output rather than letting the popup invent a
+    second convention. Returns new dicts; the caller's rows are untouched.
+    """
+    return [dict(c, phone_entries=phone_entries(c.get('phone')))
+            for c in customers]
 
 
 # ── Customers ─────────────────────────────────────────────────────────────────
@@ -402,9 +415,9 @@ def customer_map():
     total, geocoded = models.get_geocode_progress()
     zones  = models.get_customer_zones()
     ctypes = models.get_customer_types()
-    customers_json = models.get_customers_for_map(
+    customers_json = _with_phone_entries(models.get_customers_for_map(
         zone=zone or None, customer_type=ctype or None
-    )
+    ))
     return render_template('customer_map.html',
                            customers_json=customers_json,
                            zones=zones, ctypes=ctypes,

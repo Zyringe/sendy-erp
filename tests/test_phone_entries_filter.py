@@ -86,3 +86,80 @@ def test_bare_digits_with_no_separators_are_still_dialable():
     assert len(e) == 2, "count first"
     assert [x['dial'] for x in e] == ['0812345678', '024358899']
     assert [x['text'] for x in e] == ['0812345678', '024358899']
+
+
+# ── a fax glued to a phone with no comma (#462) ──────────────────────────────
+#
+# #461 deliberately left these alone: "messy DATA, and the
+# customer_contact_normalize rollout is what fixes it". That held while the
+# call card was the only consumer, because the card lost nothing — it had been
+# dialling the whole blob anyway.
+#
+# It stopped holding when #462 moved `m/customer.html` onto this filter. That
+# screen's inline workaround did `.split('F:')[0]`, so it DID dial these. Left
+# unhandled, the rollout would have taken a working call button away from 7
+# real customers (measured on the dev DB 2026-09-09: 27ช001, 039ว06, 056ต02,
+# 038ธ04, 053อ02, 053ช22, 053อ09) — the one thing #462's acceptance criteria
+# rule out ("no behaviour regression on that screen").
+
+def test_a_fax_glued_to_a_phone_without_a_comma_still_yields_a_dial_target():
+    """Real stored value, customer 053ช22."""
+    e = phone_entries('053-295633-7 F:053-295638')
+    assert len(e) == 2, "count first — one number, one fax"
+    phone, fax = e
+    assert phone['dial'] == '053295633', 'the phone lost its dial target'
+    assert phone['is_fax'] is False
+    assert fax['is_fax'] is True and fax['dial'] is None
+
+
+def test_the_glue_needs_no_space_either():
+    """Real stored value, customer 053อ02 — the marker sits tight against the
+    last digit."""
+    e = phone_entries('053-812993-7F:053-272114,')
+    assert [x['dial'] for x in e] == ['053812993', None]
+    assert e[1]['is_fax'] is True
+
+
+def test_every_inline_marker_spelling_splits():
+    """F: is 40 of the 58 inline markers on the dev DB; the rest are FAX:, F.,
+    FAX., Fax:, 'FAX :', 'Fax :', 'F :'. One rule, not seven."""
+    for marker in ('F:', 'FAX:', 'F.', 'FAX.', 'Fax:', 'FAX :', 'Fax :', 'F :', 'แฟกซ์:'):
+        e = phone_entries('02-123-4567 %s02-999-8888' % marker)
+        assert len(e) == 2, f'{marker!r} did not split: {e}'
+        assert e[0]['dial'] == '021234567', f'{marker!r} ate the phone'
+        assert e[1]['is_fax'] is True, f'{marker!r} not marked a fax'
+
+
+def test_a_marker_inside_a_word_is_not_a_fax_marker():
+    """`OFF:9218909` is a real stored value — an OFFICE number. Splitting on
+    the bare `F:` inside it would invent a junk 'OF' entry AND mislabel a
+    callable office line as a fax.
+    """
+    e = phone_entries('OFF:9218909')
+    assert len(e) == 1, f'split a word that merely contains an f: {e}'
+    assert e[0]['text'] == 'OFF:9218909'
+    assert e[0]['is_fax'] is False
+
+
+def test_a_leading_marker_still_makes_the_whole_chunk_one_fax():
+    """The #461 behaviour must not change: a chunk that STARTS with the marker
+    is one fax entry, not an empty entry plus a fax."""
+    e = phone_entries('081-234-5678,F:02-123-4567')
+    assert len(e) == 2, "count first"
+    assert e[1]['text'] == 'F:02-123-4567' and e[1]['is_fax'] is True
+
+
+def test_the_marker_needs_its_colon_or_dot_to_split():
+    """The other half of the inline rule, and why it is not just `\\bfax\\b`.
+
+    Without the terminator, `FAX` sitting between two numbers with no
+    punctuation is left alone — 8 chunks on the dev DB look like
+    `4763702-4 FAX 4763704`, and the old mobile screen could not dial those
+    either (its `.split('F:')` found no `F:`), so splitting them is a change
+    this ticket did not ask for.
+    """
+    e = phone_entries('02-123-4567 FAX 02-999-8888')
+    assert len(e) == 1, f'split on a bare FAX with no terminator: {e}'
+    # CONTROL: the same string WITH the terminator does split, or this would
+    # pass just as happily against a filter that never splits anything.
+    assert len(phone_entries('02-123-4567 FAX: 02-999-8888')) == 2

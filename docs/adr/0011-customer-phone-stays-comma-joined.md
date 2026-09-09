@@ -15,17 +15,20 @@ this is entirely a rendering problem, and rendering is where it can be fixed wit
   screens) and rewrites 2,307 rows of the numbers reps actually dial, to fix a symptom that never
   leaves the template layer. Revisit only if the trigger below fires.
 - **Designate the first number as the "primary phone".** Rejected — **nothing in the data says which
-  number is primary.** `templates/m/customer.html` already guesses this inline
+  number is primary.** `templates/m/customer.html` guessed this inline
   (`customer.phone.split(',')[0]`), and a wrong guess silently sends a rep to the wrong number.
-  Showing all of them removes the guess entirely.
+  Showing all of them removes the guess entirely. _(Both inline guesses — that screen and
+  `m/sales_trip.html` — were deleted in #462; the rejection is now enforced by
+  `tests/test_customer_phone_render_coverage.py`, which fails on any hand-rolled comma split.)_
 - **Normalize storage to one canonical separator and stop there.** Rejected as insufficient — it
   leaves the broken `tel:` link and the unreadable single-line blob exactly as they are.
 
 ## Consequences
 
-- **`call/card.html` is currently broken and the display layer is where it gets fixed.** It passes
-  the raw column into `href="tel:{{ m.phone }}"`, so the "กดเพื่อโทร" button hands the dialler a
-  comma-joined string for 62% of customers.
+- **`call/card.html` was broken and the display layer is where it got fixed.** It passed
+  the raw column into `href="tel:{{ m.phone }}"`, so the "กดเพื่อโทร" button handed the dialler a
+  comma-joined string for 62% of customers. Fixed in #461 by `filters.phone_entries`; #462 then
+  made that filter the only phone rendering in the app, across all seven surfaces.
 - **`customer_contact_normalize.py` leaving the comma-joined list intact is deliberate, not an
   unfinished job.** That pipeline normalizes *noise* — โทร/Tel labels, embedded contact names, fax,
   address — and correctly leaves a genuine multi-number list alone. Do not "finish" it by splitting.

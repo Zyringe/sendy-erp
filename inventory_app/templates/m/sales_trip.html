@@ -83,7 +83,11 @@
   <div class="trip-cust-meta">
     <span class="font-mono">{{ c.code }}</span>
     {% if c.last_sale %}<span><i class="bi bi-clock me-1"></i>{{ c.last_sale }}</span>{% endif %}
-    {% if c.phone %}<span><i class="bi bi-telephone me-1"></i>{{ c.phone.split(',')[0].strip() }}</span>{% endif %}
+    {# One chip per number (ADR 0011), not `split(',')[0]` — that showed one
+       number and hid the rest. Shown, not tappable: this whole row is already
+       an <a> to the customer screen, and a nested <a href="tel:"> is invalid
+       HTML. The dial targets live one tap away, on that screen. #}
+    {% for e in c.phone | phone_entries %}<span><i class="bi bi-{{ 'printer' if e.is_fax else 'telephone' }} me-1"></i>{{ e.text }}{% if e.is_fax %} แฟกซ์{% endif %}</span>{% endfor %}
     {% if c.outstanding and c.outstanding > 0 %}
       <span class="trip-cust-due">฿{{ '{:,.0f}'.format(c.outstanding) }}</span>
     {% endif %}

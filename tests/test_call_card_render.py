@@ -261,8 +261,14 @@ def test_list_page_offers_a_quiet_filter_control():
 
 
 def test_list_page_shows_the_phone_number():
+    """Both numbers still reach the page — but not as the stored blob. #462
+    moved this cell onto `phone_entries`, so the assertion that used to read
+    `'053-115732,089-4317234' in html` now describes the defect, not the
+    behaviour. What the cell renders is covered in detail by
+    tests/test_customer_phone_surfaces.py."""
     html = _render_list(_app())
-    assert '053-115732,089-4317234' in html
+    assert '053-115732' in html and '089-4317234' in html
+    assert '053-115732,089-4317234' not in html
 
 
 def test_quiet_selection_survives_touching_another_filter():
