@@ -188,10 +188,29 @@ def test_dashboard_table_colspan_matches_header_count():
 
 # ── AR customer page: header badge reads the master, not the Express snapshot ──
 def test_ar_header_badge_prefers_the_customer_master():
+    """The badge reads `customers.salesperson`, with the snapshot only as a
+    fallback. The snapshot is re-stamped by Express on every import and drifts —
+    on 2026-07-30 four reassigned customers still read '31' there while the
+    master already said '00'.
+
+    ⚠ This is a SOURCE-INSPECTION guard, so it pins text and goes red on
+    honest edits. It has, twice in one change: #470 widened the master SELECT to
+    fetch `name` as well, and moved the fallback off `rows[0]` — which is empty
+    for a customer with no chaseable bills, the very state that ticket exists to
+    render — onto `identity`. So assert the two things that carry the MEANING
+    (the master is the source; the snapshot is only the fallback) rather than a
+    column list or a variable name. The behavioural counterpart is the test
+    below, and it is the one that would catch a real inversion.
+    """
+    import re
+
     src = open(os.path.join(APP, "blueprints", "accounting.py"), encoding="utf-8").read()
-    assert "SELECT salesperson FROM customers WHERE code = ?" in src, (
-        "AR header must read customers.salesperson")
-    assert "or rows[0]['salesperson_code']" in src, (
+    # Control: we read the file we think we did, so the assertions have a subject.
+    assert "def express_ar_customer(" in src, "read the wrong file"
+
+    assert re.search(r"SELECT[^\"\']*\bsalesperson\b[^\"\']*FROM customers WHERE code = \?", src), (
+        "AR header must read salesperson from the customers master")
+    assert re.search(r"or \w+\[\'salesperson_code\'\]", src), (
         "must fall back to the snapshot when the customer is absent from the "
         "master, otherwise the badge silently disappears for those rows")
 
