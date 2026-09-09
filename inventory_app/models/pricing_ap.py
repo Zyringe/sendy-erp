@@ -5,6 +5,7 @@ No behavior changes.
 """
 
 from database import get_connection
+import vat_math
 
 
 def get_product_pricing_summary(product_id, conn=None):
@@ -12,10 +13,10 @@ def get_product_pricing_summary(product_id, conn=None):
     owned = conn is None
     if owned:
         conn = get_connection()
-    row = conn.execute("""
+    row = conn.execute(f"""
         SELECT
             SUM(unit_price * qty) / NULLIF(SUM(qty), 0) AS avg_list_price,
-            SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END)
+            SUM({vat_math.cash_sql()})
               / NULLIF(SUM(qty), 0)                      AS avg_effective,
             COUNT(DISTINCT unit_price)                   AS price_variants
         FROM sales_transactions
@@ -73,13 +74,13 @@ def get_product_pricing(product_id):
     """, [product_id]).fetchall()
 
     # ── ราคาเฉลี่ยต่อร้าน (actual customer-paid, after discount + VAT) ──────
-    eff_rows = conn.execute("""
+    eff_rows = conn.execute(f"""
         SELECT
             customer,
             customer_code,
             COUNT(DISTINCT doc_no)  AS invoice_count,
             SUM(qty)                AS total_qty,
-            SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END)
+            SUM({vat_math.cash_sql()})
               / NULLIF(SUM(qty), 0) AS avg_effective,
             MAX(date_iso)           AS last_sale
         FROM sales_transactions
@@ -91,10 +92,10 @@ def get_product_pricing(product_id):
     """, [product_id]).fetchall()
 
     # ── สรุปภาพรวม ────────────────────────────────────────────────────────────
-    summary = conn.execute("""
+    summary = conn.execute(f"""
         SELECT
             SUM(unit_price * qty) / NULLIF(SUM(qty), 0)                          AS avg_list_price,
-            SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END)
+            SUM({vat_math.cash_sql()})
               / NULLIF(SUM(qty), 0)                                               AS avg_effective,
             COUNT(DISTINCT doc_no)                                                AS total_invoices,
             SUM(qty)                                                              AS total_qty

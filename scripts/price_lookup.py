@@ -84,6 +84,7 @@ sys.path.insert(0, str(ROOT / "inventory_app"))
 
 import config  # noqa: E402  (after sys.path insert, matches other scripts/*.py)
 import price_lookup as pl  # noqa: E402
+import vat_math  # noqa: E402
 
 # Same normalization price_lookup.py uses internally (its private
 # _strip_tier_qty / _TIER_QTY_PREFIX_RE) to match a tier's qty_label
@@ -119,7 +120,7 @@ def _dozen_tier_price(conn, product_id):
 def _latest_cash_per_piece(conn, product_id, unit_type):
     """Most recent evidence-filtered sale of this product (any customer),
     converted to cash per unit_type — same cash formula price_lookup.py
-    uses everywhere (net/qty, ×1.07 when vat_type=2, /ratio). A bill in a
+    uses everywhere (net/qty, then vat_math.cash_from_net, /ratio). A bill in a
     unit with no unit_conversions row is skipped, never treated as ratio 1
     (same rule as price_lookup._bill_ratio); checks the 5 most recent
     evidence-filtered bills before giving up rather than only the single
@@ -140,7 +141,7 @@ def _latest_cash_per_piece(conn, product_id, unit_type):
             if r is None:
                 continue
             ratio = float(r['ratio'])
-        cash_pp = (row['net'] / row['qty']) * (1.07 if row['vat_type'] == 2 else 1.0) / ratio
+        cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / ratio
         return round(cash_pp, 2)
     return None
 

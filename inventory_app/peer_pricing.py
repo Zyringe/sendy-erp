@@ -9,7 +9,9 @@ should only be shown as reference, not used to flag pricing anomalies.
 
 Cash calculation:
   cash = net / qty
-  vat_type=2 rows get cash = (net * 1.07) / qty  (apples-to-apples with non-VAT rows)
+  vat_type=2 rows get cash = (net / qty) * 1.07 via vat_math.cash_from_net
+  (apples-to-apples with non-VAT rows). The division comes FIRST — the other
+  ordering differs in the last bits for ~34% of values, and this is rounded to int.
   Round cash to int before grouping/counting (per quoting rule: avoids float-dup miscounts
   where 90.00 vat_type=1 and 90.01 vat_type=2 would be counted as distinct tiers).
 
@@ -19,6 +21,7 @@ peer_n = number of distinct peer customer_codes.
 If peer_n == 0: peer_median = None, flag = 'same' (no comparison possible).
 """
 import sqlite3
+import vat_math
 import statistics
 from collections import defaultdict
 from typing import List, Dict, Any, Optional, Tuple
@@ -119,9 +122,7 @@ def product_peer_prices(
         unit_price = row[7]
         discount = row[8]
 
-        cash = net / qty
-        if vat_type == 2:
-            cash = cash * 1.07
+        cash = vat_math.cash_from_net(net / qty, vat_type)
         cash = round(cash)  # round to int before counting (quoting rule)
         data[(pid, unit)][cust].append((cash, unit_price, discount))
         if cust == customer_code:

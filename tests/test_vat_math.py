@@ -10,6 +10,8 @@ vat_type=2 → net is VAT-exclusive (add 7%)
 """
 import sqlite3
 
+import vat_math
+
 
 def _seed_sale(conn, *, doc_no, doc_base, vat_type, net, customer='C1',
                customer_code='C001', date_iso='2026-04-01'):
@@ -24,11 +26,15 @@ def _seed_sale(conn, *, doc_no, doc_base, vat_type, net, customer='C1',
 
 
 def _grossed(conn, *, doc_base):
-    """Run the same VAT math the app uses, against the seeded rows."""
-    return conn.execute("""
-        SELECT SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) AS g
-        FROM sales_transactions WHERE doc_base = ?
-    """, (doc_base,)).fetchone()['g']
+    """Run the app's OWN VAT math against the seeded rows.
+
+    ⚠ This used to re-type the SQL here. It therefore checked its own typing:
+    deleting `* 1.07` from a production query left all four tests below green.
+    Importing vat_math is what makes them able to fail (card 2, 2026-09-09)."""
+    return conn.execute(
+        f"SELECT SUM({vat_math.cash_sql()}) AS g "
+        "FROM sales_transactions WHERE doc_base = ?",
+        (doc_base,)).fetchone()['g']
 
 
 def test_vat_type_1_does_not_add_vat(empty_db_conn):

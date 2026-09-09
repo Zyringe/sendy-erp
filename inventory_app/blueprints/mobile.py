@@ -9,6 +9,7 @@ from flask import Blueprint, render_template, request, jsonify, abort
 
 import models
 from database import get_connection
+import vat_math
 
 bp_mobile = Blueprint('mobile', __name__, url_prefix='/m',
                       template_folder='../templates/m')
@@ -180,7 +181,7 @@ def sales_trip():
     # Customers + outstanding total + last sale, optionally filtered by region.
     # Read from customers MASTER + salespersons + regions JOINs (post-D1);
     # customer_regions is no longer touched.
-    sql = """
+    sql = f"""
         SELECT c.code, c.name, c.zone, c.phone, c.address,
                COALESCE(r.name_th, r.code)      AS region,
                r.code                           AS region_code,
@@ -191,7 +192,7 @@ def sales_trip():
                   AND c.salesperson != ''
                   AND sp.code IS NULL)          AS salesperson_orphan,
                (SELECT MAX(date_iso) FROM sales_transactions s WHERE s.customer = c.name) AS last_sale,
-               (SELECT ROUND(SUM(CASE WHEN s.vat_type = 2 THEN s.net * 1.07 ELSE s.net END), 2)
+               (SELECT ROUND(SUM({vat_math.cash_sql('s')}), 2)
                   FROM sales_transactions s
                   WHERE s.customer = c.name
                     AND s.doc_base IS NOT NULL

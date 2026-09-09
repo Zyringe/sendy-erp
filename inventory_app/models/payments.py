@@ -6,6 +6,7 @@ docstring for the overall file-split rationale. No behavior changes.
 import math
 
 from database import get_connection
+import vat_math
 from cashflow import BSN_AR_PREDICATE
 
 
@@ -421,7 +422,7 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
             st.doc_base,
             MIN(st.date_iso) AS bill_date,
             st.customer,
-            SUM(CASE WHEN st.vat_type = 2 THEN st.net * 1.07 ELSE st.net END) AS total_net,
+            SUM({vat_math.cash_sql('st')}) AS total_net,
             MAX(CASE WHEN apd.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
             MAX(apay.paid_date) AS paid_date,
             MAX(apay.re_no) AS re_no
@@ -441,7 +442,7 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
         SELECT COUNT(*) FROM (
             SELECT st.doc_base,
                 MAX(CASE WHEN apd.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
-                SUM(CASE WHEN st.vat_type = 2 THEN st.net * 1.07 ELSE st.net END) AS total_net
+                SUM({vat_math.cash_sql('st')}) AS total_net
             FROM sales_transactions st
             LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
             WHERE {where}
@@ -473,11 +474,11 @@ def get_payment_summary():
             SUM(CASE WHEN apd.doc_no IS NULL THEN st.net ELSE 0 END) AS unpaid_amount
         FROM (
             SELECT doc_base,
-                   SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) AS net
+                   SUM({vat_math.cash_sql()}) AS net
             FROM sales_transactions
             WHERE doc_base IS NOT NULL AND doc_base NOT LIKE 'SR%' AND doc_base NOT LIKE 'HS%'
             GROUP BY doc_base
-            HAVING SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) > 0
+            HAVING SUM({vat_math.cash_sql()}) > 0
         ) st
         LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
     """).fetchone()
@@ -549,7 +550,7 @@ def get_ar_reconciliation():
                ROUND(SUM(bill_net), 2) AS unpaid
           FROM (
               SELECT customer_code, customer, doc_base,
-                     SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) AS bill_net
+                     SUM({vat_math.cash_sql()}) AS bill_net
                 FROM sales_transactions
                WHERE doc_base IS NOT NULL
                  AND doc_base NOT LIKE 'SR%'
@@ -584,7 +585,12 @@ def get_ar_reconciliation():
         rows.append({'customer_code': code, 'customer_name': name,
                      'snapshot_amount': round(s, 2), 'ledger_amount': round(l, 2),
                      'diff': round(l - s, 2), 'status': status})
-    rows.sort(key=lambda r: abs(r['diff']), reverse=True)
+    # Tie-break on the code: |diff| alone leaves every reconciled customer
+    # (diff == 0) in whatever order SQLite happened to return, so the tail of
+    # this list reshuffled on any query-plan change. Surfaced 2026-09-09 when
+    # card 2 rewrote the SELECT text and the row SET stayed identical while
+    # four rows swapped places.
+    rows.sort(key=lambda r: (-abs(r['diff']), r['customer_code'] or ''))
 
     snap_total = round(sum(v['amount'] for v in snap.values()), 2)
     led_total = round(sum(v['amount'] for v in led.values()), 2)
@@ -721,7 +727,7 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
 
     # Satang integers from here down. A float compare of "does this subset equal
     # the transfer" fails on IEEE-754 noise, and these amounts are built by
-    # multiplying by 1.07.
+    # multiplying by 1.07 (vat_math.cash_sql owns it).
     target = round(amount * 100)
     tol = max(0, round(tolerance * 100))
     lo, hi = target - tol, target + tol
@@ -731,7 +737,7 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
         WITH {_ACTIVE_PAID_DOCS_CTE}
         SELECT st.customer, st.customer_code, st.doc_base,
                MIN(st.date_iso) AS bill_date,
-               SUM(CASE WHEN st.vat_type=2 THEN st.net*1.07 ELSE st.net END) AS bill_net,
+               SUM({vat_math.cash_sql('st')}) AS bill_net,
                MAX(st.vat_type) AS vat_type
         FROM sales_transactions st
         LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
