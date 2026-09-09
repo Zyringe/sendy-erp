@@ -41,6 +41,7 @@ import logging
 from collections import deque
 from datetime import datetime
 from functools import lru_cache
+import vat_math
 
 # Customer code per platform (sales_transactions.customer_code).
 _CUST_CODE = {'shopee': 'Zหน้าร้าน', 'lazada': 'Lหน้าร้าน'}
@@ -65,7 +66,7 @@ _GAP_WEIGHT = 10 ** 9
 
 # Amount the customer actually paid = VAT-aware net (the idiom used across the
 # codebase: models.py · payments_alloc.py · cashflow). vat_type 2 = VAT-exclusive.
-_VAT_NET = "CASE WHEN vat_type=2 THEN net*1.07 ELSE net END"
+_VAT_NET = vat_math.cash_sql()
 
 
 @lru_cache(maxsize=None)

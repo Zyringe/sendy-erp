@@ -86,7 +86,11 @@ GUARD_TOKENS = ('excludes_revenue', 'not_a_sale_clause', 'revenue_filter',
 # counts. Over-inclusive on purpose: a false hit costs one allowlist decision,
 # a false miss costs a wrong number on a money page.
 _SUM_NET = re.compile(
-    r'SUM\(\s*(?:(?:[a-z]{1,3}\.)?net\s*\)|CASE\b.{0,200}?\bnet\b)',
+    r'SUM\(\s*(?:(?:[a-z]{1,3}\.)?net\s*\)|CASE\b.{0,200}?\bnet\b'
+    # The net→cash CASE moved into vat_math (2026-09-09, card 2). A call site
+    # now reads SUM({vat_math.cash_sql()}) and carries no literal `net`, so the
+    # pattern above would stop seeing a revenue surface that is still there.
+    r'|\{vat_math\.cash_sql\()',
     re.IGNORECASE | re.DOTALL)
 
 
@@ -192,6 +196,9 @@ AGGREGATE_SHAPES = {
     'rounded_vat_case':  'ROUND(SUM(CASE WHEN vat_type=2 THEN net*1.07 ELSE net END), 2)',
     'case_inner_call':   'SUM(CASE WHEN x THEN ROUND(net, 2) ELSE 0 END)',
     'case_over_lines':   'SUM(CASE WHEN vat_type = 2\n THEN net * 1.07\n ELSE net END)',
+    'vat_math_owner':    'SUM({vat_math.cash_sql()})',
+    'vat_math_aliased':  "SUM({vat_math.cash_sql('st')})",
+    'vat_math_rounded':  'ROUND(SUM({vat_math.cash_sql()}), 2)',
 }
 
 NOT_AGGREGATES = {
@@ -199,6 +206,7 @@ NOT_AGGREGATES = {
     'different column':   'SELECT SUM(qty) FROM sales_transactions',
     'net inside a name':  'SELECT SUM(total_net_x) FROM t',
     'case without net':   'SUM(CASE WHEN vat_type = 2 THEN qty ELSE 0 END)',
+    'vat_math in prose':  'see vat_math.cash_sql for the rule',
 }
 
 

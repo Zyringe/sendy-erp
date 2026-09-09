@@ -22,19 +22,30 @@ os.environ.setdefault('SKIP_DB_INIT', '1')
 
 import pytest
 
-# ⚠ `import price_lookup` is ORDER-DEPENDENT in this repo: there are two modules by
-# that name (inventory_app/price_lookup.py — the resolver — and scripts/price_lookup.py
-# — its CLI wrapper), and importing `models` first makes the bare name resolve to the
-# CLI one, which has no apply_price_promo. Import the resolver FIRST, then pin it, so a
-# future import-order change fails loudly here instead of silently testing the wrapper.
-# (Pre-existing; tests/test_price_lookup.py has the same bare import. Out of scope for
-# this card, recorded so it is not mistaken for new.)
-import price_lookup as pl
+# ⚠ `import price_lookup` is ORDER-DEPENDENT in this repo: two modules share the name
+# (inventory_app/price_lookup.py — the resolver — and scripts/price_lookup.py — its CLI
+# wrapper), and three module-level `sys.path.insert(0, .../scripts)` calls put the
+# wrapper first (name_builder.py:17, bsn_suggest.py:24, blueprints/bsn.py:500). Whether
+# a bare import wins therefore depends on what an EARLIER test module imported, which is
+# not something this file can control. See sendy-erp #476.
+#
+# Load the resolver by PATH so the result cannot depend on collection order, and keep the
+# assert as a control: if the loader ever returns the wrong file, this fails loudly.
+import importlib.util as _ilu
+import os as _os
+
+_RESOLVER = _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+    'inventory_app', 'price_lookup.py')
+_spec = _ilu.spec_from_file_location('inv_price_lookup_under_test', _RESOLVER)
+pl = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(pl)
+assert pl.__file__.endswith(_os.path.join('inventory_app', 'price_lookup.py')), (
+    f'wrong price_lookup loaded: {pl.__file__}')
+assert hasattr(pl, 'apply_price_promo'), 'control: the resolver must expose apply_price_promo'
+
 from models import promotions as promo_models
 import review_rules
-
-assert pl.__file__.endswith('inventory_app/price_lookup.py'), (
-    f'wrong price_lookup imported: {pl.__file__}')
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

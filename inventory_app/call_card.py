@@ -38,6 +38,7 @@ import statistics
 from typing import Optional
 
 import customer_geo as geo
+import vat_math
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -284,7 +285,7 @@ def get_call_list(conn, *, q=None, region=None, call=None,
     spend_rows = conn.execute(f"""
         SELECT
             COALESCE(NULLIF(TRIM(customer_code),''), customer) AS canonical_code,
-            SUM(CASE WHEN vat_type=2 THEN net*1.07 ELSE net END) AS spend
+            SUM({vat_math.cash_sql()}) AS spend
         FROM sales_transactions
         {spend_where}
         GROUP BY canonical_code
@@ -436,9 +437,8 @@ def special_customers(conn):
         ck = r['ckey']
         if not ck:
             continue
-        cash = r['net'] / r['qty']
-        if (r['vat_type'] or 0) == 2:
-            cash *= 1.07
+        cash = vat_math.cash_from_net(r['net'] / r['qty'],
+                                      r['vat_type'] or 0)
         by_prod[(r['product_id'], r['unit'])][ck].append(round(cash))
 
     below_flags = defaultdict(list)   # ckey -> [bool: below this product's overall median]

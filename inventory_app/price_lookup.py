@@ -48,6 +48,7 @@ from datetime import date, timedelta
 
 import sales_filters
 from models import promotions as promo_models
+import vat_math
 
 # Cost-basis dummy invoices (every line at exactly cost, 2026-04-28) and the
 # marketplace customer-code prefix. See task-1-brief.md "Verified codebase
@@ -611,7 +612,7 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
         if ratio is None:
             if row['unit'] != target_unit:
                 continue
-            cash_val = round((row['net'] / row['qty']) * (1.07 if row['vat_type'] == 2 else 1.0), 2)
+            cash_val = round(vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']), 2)
             return {
                 'cash_per_unit': cash_val,
                 'unit': target_unit,
@@ -630,7 +631,7 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
         bill_ratio = _bill_ratio(conn, product_id, unit_type, row['unit'], cache)
         if bill_ratio is None:
             continue
-        cash_pp = (row['net'] / row['qty']) * (1.07 if row['vat_type'] == 2 else 1.0) / bill_ratio
+        cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / bill_ratio
         return {
             'cash_per_unit': round(cash_pp * ratio, 2),
             'unit': target_unit,
@@ -698,7 +699,7 @@ def _customer_context(conn, customer_code, today):
             bill_ratio = _bill_ratio(conn, pid, prod['unit_type'], r['unit'], cache)
             if bill_ratio is None:
                 continue
-            cash_pp = (r['net'] / r['qty']) * (1.07 if r['vat_type'] == 2 else 1.0) / bill_ratio
+            cash_pp = vat_math.cash_from_net(r['net'] / r['qty'], r['vat_type']) / bill_ratio
             cash_list.append(cash_pp)
         if not cash_list:
             continue
@@ -886,13 +887,13 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
             if row['unit'] != answer_unit:
                 n_unratioed += 1
                 continue
-            cash_asked = round((row['net'] / row['qty']) * (1.07 if row['vat_type'] == 2 else 1.0), 2)
+            cash_asked = round(vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']), 2)
         else:
             bill_ratio = _bill_ratio(conn, product_id, unit_type, row['unit'], cache)
             if bill_ratio is None:
                 n_unratioed += 1
                 continue
-            cash_pp = (row['net'] / row['qty']) * (1.07 if row['vat_type'] == 2 else 1.0) / bill_ratio
+            cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / bill_ratio
             comparable.append((cash_pp, row))
             cash_asked = round(cash_pp * ratio, 2)
         if lowest is None or cash_asked < lowest['cash_per_unit']:

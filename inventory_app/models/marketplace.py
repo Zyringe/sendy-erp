@@ -17,6 +17,7 @@ import re
 
 from database import get_connection
 import marketplace_match
+import vat_math
 
 
 def resolve_marketplace_product_id(conn, platform, item):
@@ -1169,7 +1170,7 @@ def set_amount_review(conn, order_id, accept, reviewed_by=None):
     # both platforms, so a change to either half fails rather than silently
     # making every acknowledgement un-clearable again.
     billed = conn.execute(
-        """SELECT ROUND(SUM(CASE WHEN vat_type=2 THEN net*1.07 ELSE net END), 2) AS b
+        f"""SELECT ROUND(SUM({vat_math.cash_sql()}), 2) AS b
            FROM sales_transactions WHERE doc_base = ?""",
         (o['doc_base'],)
     ).fetchone()['b'] or 0.0
