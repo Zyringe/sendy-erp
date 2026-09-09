@@ -116,6 +116,32 @@ def test_mobile_customer_screen_keeps_the_dial_target_for_a_glued_fax():
     assert 'แฟกซ์' in html, 'the fax half is not shown and labelled'
 
 
+def test_mobile_customer_dial_buttons_are_touch_targets():
+    """docs/mobile-conventions.md §5: ">=44x44px for any primary tap target on
+    mobile" and "`.btn-sm` is banned for primary mobile actions".
+
+    Calling a customer IS the primary action on this screen, and #462 turned one
+    button into one per number — so the violation went from a single button to
+    a whole row of them. `.btn-touch` is the convention's own lever (app.css,
+    mobile-only under 991.98px).
+    """
+    html = _m_customer()
+    assert ADDRESS in html, 'CONTROL: the contact row never rendered'
+
+    # Scope to the contact-action row only. The page's other buttons (the
+    # bottom "ดูรายละเอียดเต็ม" link) are not primary actions and are not this
+    # rule's subject — an unscoped slice would silently drag them in.
+    start = html.find('d-flex flex-wrap gap-2 mt-3')
+    end = html.find('text-subtle small mt-2', start)          # the address line
+    assert start != -1 and end > start, 'the contact row boundary moved'
+    row = html[start:end]
+    buttons = re.findall(r'<(?:a|button|span)[^>]*class="([^"]*btn[^"]*)"', row)
+    assert len(buttons) == 4, f'2 dial + address + fax chip expected, got {buttons}'
+    for cls in buttons:
+        assert 'btn-touch' in cls, f'button below the 44px touch target: {cls!r}'
+        assert 'btn-sm' not in cls, f'btn-sm on a primary mobile action: {cls!r}'
+
+
 # ── mobile sales-trip screen ─────────────────────────────────────────────────
 
 def _sales_trip(**over):
