@@ -139,8 +139,19 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
   - `0` = ยกเว้น VAT → ลูกค้าจ่าย `net`
   - `1` = ไม่บวก VAT ตอนเก็บเงิน (เช่น ขายหน้าร้าน/เงินสด) → ลูกค้าจ่าย `net`
   - `2` = **แยก VAT** (ขายต้องเพิ่ม VAT 7%) → ลูกค้าจ่าย **`net × 1.07`**
-  - **Idiom เดียวทั้ง codebase**: `CASE WHEN vat_type=2 THEN net*1.07 ELSE net END`
-    (models.py · payments_alloc.py · cashflow ar_aging · tests/test_vat_math.py)
+  - **เจ้าของกฎมีตัวเดียว: `inventory_app/vat_math.py`** — `cash_sql(alias='')` คืน
+    SQL fragment (`SUM({vat_math.cash_sql('st')})`), `cash_from_net(net, vat_type)`
+    ฝั่ง Python. ⛔ **ห้ามพิมพ์ `CASE WHEN vat_type=2 ...` หรือ `1.07` เองอีก** —
+    `tests/test_vat_cash_coverage.py` กวาด `inventory_app/` + `scripts/` ด้วย AST
+    แล้วแดงถ้าเจอสำเนา (allowlist ต้องเขียนเหตุผลกำกับ).
+  - ⚠ **ทิศกลับไม่ได้อยู่ในโมดูลนี้ และห้ามย้ายมารวมโดยไม่คิด**: `price ÷ 1.07`
+    (`models/vat_sub.py`) คือการ**ถอด** VAT ออกจากราคารวม VAT ซึ่ง Express
+    **ปัดขึ้น 2 ตำแหน่ง** — คนละกฎที่บังเอิญใช้ค่าคงที่เดียวกัน ดู
+    `.claude/rules/quoting-and-pricing.md`. `total_net * 0.07` ใน `sales_doc.html`
+    (บรรทัด VAT บนเอกสาร) ก็เป็นอีกเรื่องหนึ่ง.
+  - ⚠ ก่อน 2026-09-09 กฎนี้ถูกพิมพ์มือ **23 จุดใน 10 ไฟล์ 4 สำนวน** และ
+    `tests/test_vat_math.py` พิมพ์ SQL เองจึง**สอบตกไม่ได้** — วัดแล้ว: ลบ `* 1.07`
+    ออกจากคิวรีจริงใน `models/payments.py` เทสต์ยัง **4 passed**. แก้ใน #478.
   - ⚠️ ก่อน 2026-05-19 doc นี้เขียนกลับด้าน (`1→×1.07, 2→÷1.07`) — ผิด.
     payments_alloc/cashflow เคยใช้ `SUM(net)` เปล่า ทำให้บิล `แยก VAT` ที่จ่าย
     ครบทุกใบดู "จ่ายเกิน 7%" → ยอดเครดิตค้างคืนลูกค้าปลอม ~฿446k. แก้แล้ว.
