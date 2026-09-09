@@ -899,5 +899,14 @@ def get_customer_unpaid_bills_by_code(customer_code):
     Verified 2026-08-01 on the live snapshot: all 114 outstanding rows carry a
     customer_code that exists in `customers`, and zero rows match by name only —
     so this loses no bill the name path would have found.
+
+    ⚠ TRIMs the snapshot's code, matching `cashflow.bsn_ar_excluded_docs_by_code`
+    and `ar_followup.get_customer_ar_detail`. `/customer/code/<code>` renders both
+    lists on one page, and two lists keyed differently is ADR 0012's defect in
+    miniature: a code stored with stray whitespace would land on one and not the
+    other, with nothing on the page saying so. Measured 2026-09-09 on the dev
+    snapshot: zero rows in `express_ar_outstanding` differ from their own TRIM,
+    all-time — so this widens the match without changing a single current row,
+    and it fails SAFE (a padded code would show its bills rather than none).
     """
-    return _unpaid_bills("ao.customer_code = ?", [customer_code])
+    return _unpaid_bills("TRIM(ao.customer_code) = ?", [customer_code])

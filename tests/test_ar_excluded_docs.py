@@ -39,6 +39,7 @@ import pytest
 
 import cashflow
 import ar_followup
+import models
 
 
 CODE = 'ZZEXCL1'
@@ -53,6 +54,28 @@ CONTROL_DOC = 'ZZEX-CLEAN'
 # A second customer whose every bill is chaseable — nothing to disclose.
 CLEAN_CODE = 'ZZEXCL2'
 CLEAN_NAME = 'ทดสอบ ลูกหนี้สะอาด'
+
+# A customer whose EVERY bill is excluded. `/express/ar/customer/<code>` told
+# this person "ไม่พบลูกหนี้รหัส X" and redirected — 33 of the 60 customers in the
+# prod snapshot (2026-09-08) are in exactly this state.
+ONLY_EXCL_CODE = 'ZZEXCL3'
+ONLY_EXCL_NAME = 'ทดสอบ ลูกหนี้ที่ตัดหมดแล้ว'
+
+# Stored with a TRAILING SPACE, reached from the URL without one. The two lists
+# on one page must key identically; before #470/#471 the chaseable side matched
+# `customer_code = ?` while the excluded wrapper TRIMs, so this customer landed
+# on one list and not the other.
+PAD_CODE = 'ZZEXCL4'
+PAD_NAME = 'ทดสอบ รหัสมีช่องว่างท้าย'
+
+# A CHASEABLE credit row (outstanding < 0). `_unpaid_bills` drops it on purpose
+# (ADR 0012 — a per-customer bill list should not render a credit) while the
+# excluded helper does not filter on the amount at all. That one clause is the
+# whole legitimate gap between the two, and it needs a customer that actually
+# HAS such a row: without one the `> 0` filter never fires, and a test claiming
+# to pin the gap passes with the clause deleted.
+CREDIT_CODE = 'ZZEXCL5'
+CREDIT_NAME = 'ทดสอบ ลูกหนี้มีใบลดหนี้'
 
 # doc_no -> the bucket it must land in, and why
 EXPECTED = {
@@ -133,6 +156,21 @@ def _seed(db_path):
         conn.execute("DELETE FROM express_ar_outstanding WHERE customer_code = ?",
                      (CLEAN_CODE,))
         _ins(CLEAN_CODE, CLEAN_NAME, 'ZZEX-ONLYCLEAN', '2025-05-05', 0, 700.00)
+
+        conn.execute("DELETE FROM express_ar_outstanding WHERE customer_code = ?",
+                     (ONLY_EXCL_CODE,))
+        _ins(ONLY_EXCL_CODE, ONLY_EXCL_NAME, 'ZZEX-ALLGONE', '2025-06-06', 1, 800.00)
+
+        conn.execute("DELETE FROM express_ar_outstanding WHERE TRIM(customer_code) = ?",
+                     (PAD_CODE,))
+        _ins(PAD_CODE + ' ', PAD_NAME, 'ZZEX-PAD-OK', '2025-07-07', 0, 600.00)
+        _ins(PAD_CODE + ' ', PAD_NAME, 'ZZEX-PAD-RE', '2025-07-08', 1, 900.00)
+
+        conn.execute("DELETE FROM express_ar_outstanding WHERE customer_code = ?",
+                     (CREDIT_CODE,))
+        _ins(CREDIT_CODE, CREDIT_NAME, 'ZZEX-CR-BILL', '2025-08-01', 0, 1200.00)
+        _ins(CREDIT_CODE, CREDIT_NAME, 'ZZEX-CR-CREDIT', '2025-08-02', 0, -250.00)
+        _ins(CREDIT_CODE, CREDIT_NAME, 'ZZEX-CR-RE', '2025-08-03', 1, 400.00)
 
         for doc, (wtype, wdate, reason) in WRITEOFFS.items():
             for suffix in ('', '-O'):
@@ -572,3 +610,249 @@ def test_the_second_badge_appears_only_where_a_write_off_decision_exists(tmp_db)
         assert '>มีบันทึกตัดหนี้<' not in frag, f'{doc} has no write-off record'
     assert '>มีบันทึกตัดหนี้<' not in _row_html(html, 'ZZEX-WOFF'), (
         'the writeoff bucket already says so in its own badge')
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The three remaining per-customer surfaces (#470 /express/ar, #471 /customer,
+# #472 /m/customer). The dunning page above was #469; these consume the same
+# seam, so what is new here is the WIRING and the keying, not the query.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _seed_master(db_path):
+    """Give the fixture customers a `customers` master row.
+
+    `/customer/code/<code>` 404s a code with neither a master row nor sales, and
+    `/m/customer/<name>` looks the customer up by `customers.name` — so without
+    this the render tests below would exercise the 404 path and pass for the
+    wrong reason. Deliberately NOT folded into `_seed`: the seam tests above
+    assert `row['customer'] == NAME` through the snapshot's own name, and adding
+    a master row there would change what they are testing.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        for code, name in ((CODE, NAME), (CLEAN_CODE, CLEAN_NAME),
+                           (ONLY_EXCL_CODE, ONLY_EXCL_NAME), (PAD_CODE, PAD_NAME)):
+            conn.execute("DELETE FROM customers WHERE code = ? OR name = ?", (code, name))
+            conn.execute("INSERT INTO customers (code, name) VALUES (?, ?)", (code, name))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ── #471 customer summary — /customer/code/<code> ───────────────────────────
+
+def test_customer_summary_lists_the_excluded_docs_below_its_bills(tmp_db):
+    _seed(tmp_db)
+    _seed_master(tmp_db)
+    html = _manager_client().get(f'/customer/code/{CODE}').get_data(as_text=True)
+
+    # Control FIRST: the chaseable bill this page has always shown is still there.
+    assert CONTROL_DOC in html, 'page did not render its own bill list — nothing below means anything'
+
+    assert '>หนี้ที่ไม่นับว่าตามได้<' in html
+    for doc in EXPECTED:
+        assert doc in html, f'{doc} was removed from the total and never disclosed'
+    assert '>ลูกค้าจ่ายแล้ว (RE)<' in html
+    assert '>ตัดหนี้สูญ<' in html
+
+
+def test_customer_summary_states_what_was_removed_from_its_total(tmp_db):
+    _seed(tmp_db)
+    _seed_master(tmp_db)
+    html = _manager_client().get(f'/customer/code/{CODE}').get_data(as_text=True)
+    # 6 excluded docs; 2000 - 500 + 3000 + 4000 + 5000 + 1500 = 15,000.00
+    assert 'ตัด 6 ใบ' in html
+    assert '฿15,000.00' in html
+
+
+def test_customer_summary_omits_the_section_when_nothing_was_excluded(tmp_db):
+    """The control for the two tests above."""
+    _seed(tmp_db)
+    _seed_master(tmp_db)
+    html = _manager_client().get(f'/customer/code/{CLEAN_CODE}').get_data(as_text=True)
+
+    assert 'ZZEX-ONLYCLEAN' in html, 'page did not render the clean customer at all'
+    assert '>หนี้ที่ไม่นับว่าตามได้<' not in html
+    assert '>ตัดหนี้สูญ<' not in html
+
+
+def test_customer_summary_shows_the_section_even_with_no_chaseable_bills(tmp_db):
+    """The bill card is wrapped in `{% if unpaid_bills %}`. A customer whose every
+    bill is excluded has none, so a section nested inside that card would vanish
+    for exactly the customer who needs the explanation most."""
+    _seed(tmp_db)
+    _seed_master(tmp_db)
+    html = _manager_client().get(f'/customer/code/{ONLY_EXCL_CODE}').get_data(as_text=True)
+
+    assert '>หนี้ที่ไม่นับว่าตามได้<' in html
+    assert 'ZZEX-ALLGONE' in html
+    assert '>ลูกค้าจ่ายแล้ว (RE)<' in html
+
+
+def test_customer_summary_keys_both_of_its_lists_the_same_way(tmp_db):
+    """`_unpaid_bills` matched `ao.customer_code = ?` while the excluded wrapper
+    TRIMs. A code stored with stray whitespace therefore landed on one list and
+    not the other — ADR 0012's defect in miniature, one page instead of two."""
+    _seed(tmp_db)
+    chaseable, _ = models.get_customer_unpaid_bills_by_code(PAD_CODE)
+    excluded, _ = cashflow.bsn_ar_excluded_docs_by_code(PAD_CODE, db_path=tmp_db)
+
+    assert [r['doc_base'] for r in chaseable] == ['ZZEX-PAD-OK'], (
+        'the chaseable side did not match a code stored with a trailing space')
+    assert [r['doc_no'] for r in excluded] == ['ZZEX-PAD-RE']
+
+
+def test_customer_summary_lists_partition_the_positive_snapshot_rows(tmp_db):
+    """chaseable ∪ excluded == every row this customer has, disjoint.
+
+    ⚠ Scoped to `outstanding_amount > 0`, because `_unpaid_bills` drops credit
+    rows on purpose (ADR 0012). This test does NOT pin that clause — every
+    chaseable row on this fixture is positive, so the filter never fires here
+    and deleting it leaves this green. The test below owns that gap.
+    """
+    _seed(tmp_db)
+    chaseable, _ = models.get_customer_unpaid_bills_by_code(CODE)
+    excluded, _ = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
+
+    cha = {r['doc_base'] for r in chaseable}
+    exc_positive = {r['doc_no'] for r in excluded if float(r['outstanding']) > 0}
+    # Control: both sides non-empty, or "disjoint" and "union" are free.
+    assert cha and exc_positive
+
+    assert cha & exc_positive == set(), f'counted twice: {cha & exc_positive}'
+    assert cha | exc_positive == {d for d, v in _SEEDED.items() if v[2] > 0}
+
+    # The credit row is on the excluded list and in neither positive set — the
+    # documented gap, pinned so a future change to either filter shows up here.
+    assert 'ZZEX-WBACK' in {r['doc_no'] for r in excluded}
+    assert 'ZZEX-WBACK' not in cha
+
+
+def test_the_only_gap_between_this_pages_two_lists_is_a_credit_row(tmp_db):
+    """`_unpaid_bills` keeps `outstanding_amount > 0` deliberately (ADR 0012 — a
+    per-customer bill list should not render a credit) while the excluded helper
+    does not filter on amount at all. A CHASEABLE credit row therefore appears on
+    NEITHER list: ~3 rows / −฿346 on the prod snapshot. That is the one
+    legitimate hole in this page's partition, and it is pinned here so a change
+    to either filter shows up as a failure instead of quietly widening it.
+
+    ⚠ This customer exists because the `> 0` clause never fires on the CODE
+    fixture — every chaseable row there is positive — so the partition test
+    above stayed green with the clause deleted. Verified by mutation 2026-09-09.
+    """
+    _seed(tmp_db)
+    chaseable, _ = models.get_customer_unpaid_bills_by_code(CREDIT_CODE)
+    excluded, _ = cashflow.bsn_ar_excluded_docs_by_code(CREDIT_CODE, db_path=tmp_db)
+
+    cha = {r['doc_base'] for r in chaseable}
+    exc = {r['doc_no'] for r in excluded}
+    # Control: both sides found the customer, so the set arithmetic below has a
+    # subject. The chaseable side must hold the positive bill and NOT the credit.
+    assert cha == {'ZZEX-CR-BILL'}, cha
+    assert exc == {'ZZEX-CR-RE'}, exc
+
+    all_rows = {'ZZEX-CR-BILL', 'ZZEX-CR-CREDIT', 'ZZEX-CR-RE'}
+    assert cha & exc == set()
+    assert all_rows - (cha | exc) == {'ZZEX-CR-CREDIT'}, (
+        'the credit row is the ONLY document this page shows on neither list')
+
+
+# ── #470 Express AR drill-down — /express/ar/customer/<code> ─────────────────
+
+def test_express_ar_page_lists_the_excluded_docs(tmp_db):
+    _seed(tmp_db)
+    html = _manager_client().get(
+        f'/express/ar/customer/{CODE}').get_data(as_text=True)
+
+    assert CONTROL_DOC in html, 'page did not render its chaseable list'
+    assert '>หนี้ที่ไม่นับว่าตามได้<' in html
+    for doc in EXPECTED:
+        assert doc in html, f'{doc} was removed from the total and never disclosed'
+    assert 'ตัด 6 ใบ' in html
+    assert '฿15,000.00' in html
+
+
+def test_express_ar_page_omits_the_section_when_nothing_was_excluded(tmp_db):
+    _seed(tmp_db)
+    html = _manager_client().get(
+        f'/express/ar/customer/{CLEAN_CODE}').get_data(as_text=True)
+
+    assert 'ZZEX-ONLYCLEAN' in html, 'page did not render the clean customer at all'
+    assert '>หนี้ที่ไม่นับว่าตามได้<' not in html
+
+
+def test_express_ar_page_renders_a_customer_whose_every_bill_is_excluded(tmp_db):
+    """The headline fix. This customer exists, is in the snapshot, and has debt
+    on the books — the page used to flash "ไม่พบลูกหนี้รหัส X" and redirect."""
+    _seed(tmp_db)
+    resp = _manager_client().get(f'/express/ar/customer/{ONLY_EXCL_CODE}')
+    assert resp.status_code == 200, 'a real customer was still told they do not exist'
+
+    html = resp.get_data(as_text=True)
+    assert '>ไม่มีหนี้ที่ต้องตาม<' in html, 'the chaseable table has no empty state'
+    assert '>หนี้ที่ไม่นับว่าตามได้<' in html
+    assert 'ZZEX-ALLGONE' in html
+    # Identity must come off the excluded rows, not off an empty chaseable list.
+    assert ONLY_EXCL_NAME in html, 'the page could not name the customer'
+
+
+def test_express_ar_page_still_redirects_a_code_with_no_snapshot_rows(tmp_db):
+    """A genuine typo is still caught — the flash-and-redirect fires only when
+    BOTH lists are empty."""
+    _seed(tmp_db)
+    client = _manager_client()
+    resp = client.get('/express/ar/customer/ZZNOSUCHCODE')
+    assert resp.status_code == 302
+    assert '/express/ar' in resp.headers['Location']
+
+    # Control: the route is not redirecting everything.
+    assert client.get(f'/express/ar/customer/{ONLY_EXCL_CODE}').status_code == 200
+
+
+def test_express_ar_page_keys_both_of_its_lists_the_same_way(tmp_db):
+    """The route's inline chaseable query matched `customer_code = ?` while the
+    excluded wrapper TRIMs. Both lists must see the same customer."""
+    _seed(tmp_db)
+    html = _manager_client().get(
+        f'/express/ar/customer/{PAD_CODE}').get_data(as_text=True)
+
+    assert 'ZZEX-PAD-OK' in html, 'the chaseable side missed a code stored padded'
+    assert 'ZZEX-PAD-RE' in html, 'the excluded side missed it'
+    assert '>หนี้ที่ไม่นับว่าตามได้<' in html
+
+
+# ── #472 mobile customer page — /m/customer/<name> ──────────────────────────
+
+def test_mobile_customer_page_notes_what_was_removed_in_one_line(tmp_db):
+    _seed(tmp_db)
+    _seed_master(tmp_db)
+    html = _manager_client().get(f'/m/customer/{NAME}').get_data(as_text=True)
+
+    # Control: the page rendered this customer's bills at all.
+    assert CONTROL_DOC in html, 'mobile page did not render its bill list'
+    assert '>ตัด 6 ใบ ฿15,000.00<' in html
+    assert 'ตามได้' in html
+
+
+def test_mobile_customer_page_does_not_render_the_desktop_table(tmp_db):
+    """A phone screen on a sales trip. The count is the deliverable; the table
+    is explicitly out of scope for this surface."""
+    _seed(tmp_db)
+    _seed_master(tmp_db)
+    html = _manager_client().get(f'/m/customer/{NAME}').get_data(as_text=True)
+
+    # Control: the note IS there, so this cannot pass by the wiring being absent.
+    assert '>ตัด 6 ใบ ฿15,000.00<' in html
+    assert '>หนี้ที่ไม่นับว่าตามได้<' not in html
+    assert '>ตัดหนี้สูญ<' not in html
+    assert 'ZZEX-WOFF' not in html
+
+
+def test_mobile_customer_page_omits_the_note_when_nothing_was_excluded(tmp_db):
+    _seed(tmp_db)
+    _seed_master(tmp_db)
+    html = _manager_client().get(f'/m/customer/{CLEAN_NAME}').get_data(as_text=True)
+
+    assert 'ZZEX-ONLYCLEAN' in html, 'page did not render the clean customer at all'
+    assert 'ตัด 1 ใบ' not in html
+    assert 'ยอดค้างด้านบนคือยอด' not in html

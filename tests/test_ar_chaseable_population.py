@@ -187,6 +187,16 @@ def test_dunning_detail_orphan_by_name_shows_only_chaseable(tmp_db):
 # ── blueprints/accounting.py::express_ar_customer ─────────────────────────────
 
 def test_express_ar_customer_page_shows_only_chaseable(tmp_db):
+    """The chaseable TABLE and its totals hold only chaseable documents.
+
+    ⚠ Widened 2026-09-09 (#470). This asserted `doc not in html`, which was
+    right while nothing on the page mentioned a removed bill and became wrong
+    the moment #468 shipped the disclosure: the page now renders exactly these
+    documents in a separate "หนี้ที่ไม่นับว่าตามได้" section, on purpose. A
+    guard that goes red when the thing it guards is finally fixed teaches people
+    to delete guards, so what it pins is now WHERE each document appears —
+    above the section marker is the chaseable list, below it is the disclosure.
+    """
     _seed(tmp_db)
     os.environ.setdefault('WTF_CSRF_ENABLED', 'False')
     from app import app
@@ -200,8 +210,17 @@ def test_express_ar_customer_page_shows_only_chaseable(tmp_db):
     # Control first: the page must actually be rendering our customer at all,
     # or every absence assertion below is meaningless.
     assert CONTROL_DOC in html, 'control row missing — page did not render our data'
+
+    marker = 'หนี้ที่ไม่นับว่าตามได้'
+    assert marker in html, 'the excluded-docs section is gone — see #468 / #470'
+    chaseable_part, excluded_part = html.split(marker, 1)
+    # Second control: the split put the chaseable table on the side we think.
+    assert CONTROL_DOC in chaseable_part, 'a chaseable bill fell below the section'
+
     for doc, why in EXPECTED_GONE.items():
-        assert doc not in html, f'{doc} rendered on /express/ar — {why}'
+        assert doc not in chaseable_part, f'{doc} rendered as chaseable — {why}'
+        assert doc in excluded_part, (
+            f'{doc} was removed from the total and never disclosed — {why}')
 
 
 # ── the predicate is the oracle, and it is imported, never re-typed ───────────

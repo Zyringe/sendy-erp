@@ -7,6 +7,7 @@ the routes work there too.
 """
 from flask import Blueprint, render_template, request, jsonify, abort
 
+import cashflow
 import models
 from database import get_connection
 import vat_math
@@ -113,6 +114,11 @@ def customer_detail(customer_name):
     unpaid_full, unpaid_snapshot_date = models.get_customer_unpaid_bills(customer_name)
     unpaid = unpaid_full[:5]
     unpaid_total = sum((b['total_net'] or 0) for b in unpaid_full)
+    # What was REMOVED from that total (ADR 0012, #468). Name-keyed through the
+    # same COALESCE matcher `get_customer_unpaid_bills` uses, so both sides of
+    # this page see the same customer. This surface renders the one-line count
+    # only — the desktop table does not fit a phone on a sales trip.
+    excluded_docs, _excluded_snapshot = cashflow.bsn_ar_excluded_docs(customer_name)
     conn = get_connection()
 
     # Last 5 sales docs (any status) — quick reference of recent activity
@@ -149,6 +155,7 @@ def customer_detail(customer_name):
         unpaid=unpaid,
         unpaid_total=unpaid_total,
         unpaid_snapshot_date=unpaid_snapshot_date,
+        excluded_docs=excluded_docs,
         last_sales=last_sales,
         stats=stats,
     )

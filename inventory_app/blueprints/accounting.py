@@ -58,18 +58,42 @@ def express_ar_customer(customer_code):
           FROM express_ar_outstanding
          WHERE entity = 'BSN'
            AND snapshot_date_iso = ?
-           AND customer_code = ?
+           AND TRIM(customer_code) = ?
            AND {BSN_AR_PREDICATE}
          ORDER BY doc_date_iso ASC
     """.format(BSN_AR_PREDICATE=cf_mod.BSN_AR_PREDICATE),
        (snapshot_date, customer_code)).fetchall()
 
-    if not rows:
+    # The complement: this customer's snapshot rows that are NOT chaseable, and
+    # why (ADR 0012, #468). Keyed by the SAME TRIM'd code as the query above —
+    # two lists on one page keyed differently is that ADR's defect in miniature.
+    excluded_docs, _excluded_snapshot = cf_mod.bsn_ar_excluded_docs_by_code(
+        customer_code, conn=conn)
+
+    # "No chaseable bills" is NOT "no such customer". 33 of the 60 customers in
+    # the prod AR snapshot (2026-09-08) have every bill forgiven, already paid,
+    # or pre-2024, and this route used to tell every one of them they do not
+    # exist. Flash only when the code has no rows in the snapshot AT ALL, which
+    # is the typo the flash was written for.
+    if not rows and not excluded_docs:
         flash(f'ไม่พบลูกหนี้รหัส {customer_code}', 'warning')
         return redirect(url_for('accounting.express_ar_dashboard'))
 
-    customer_name = rows[0]['customer_name']
-    customer_type = rows[0]['customer_type']
+    # Identity off the chaseable rows when there are any, else off any row the
+    # customer has in the snapshot — chaseable ∪ excluded covers every one, so
+    # this cannot come back empty once the guard above has passed. Reading
+    # `rows[0]` unconditionally is what made the empty chaseable list
+    # unrenderable to begin with.
+    identity = rows[0] if rows else conn.execute("""
+        SELECT customer_name, customer_type, salesperson_code
+          FROM express_ar_outstanding
+         WHERE entity = 'BSN'
+           AND snapshot_date_iso = ?
+           AND TRIM(customer_code) = ?
+         ORDER BY doc_date_iso DESC
+         LIMIT 1
+    """, (snapshot_date, customer_code)).fetchone()
+
     # "Who looks after this customer" comes from the customers MASTER, not from
     # express_ar_outstanding. The snapshot is re-stamped by Express on every
     # import and drifts: on 2026-07-30 all four reassigned customers read '31'
@@ -78,13 +102,17 @@ def express_ar_customer(customer_code):
     # reassignment flow keeps it in step), so it is the one to display.
     # Falls back to the snapshot when the customer is not in the master.
     master = conn.execute(
-        "SELECT salesperson FROM customers WHERE code = ?", (customer_code,)
+        "SELECT name, salesperson FROM customers WHERE code = ?", (customer_code,)
     ).fetchone()
+    customer_name = (identity['customer_name']
+                     or (master['name'] if master else None)
+                     or customer_code)
+    customer_type = identity['customer_type']
     salesperson_code = ((master['salesperson'] if master else None)
-                        or rows[0]['salesperson_code'])
+                        or identity['salesperson_code'])
     total_outstanding = sum((r['outstanding_amount'] or 0) for r in rows)
     total_billed = sum((r['bill_amount'] or 0) for r in rows)
-    oldest = min((r['doc_date_iso'] or '9999-12-31') for r in rows)
+    oldest = min((r['doc_date_iso'] or '9999-12-31') for r in rows) if rows else None
 
     # Pull recent payment history from the CANONICAL received_payments table
     # (the express_payments_in twin is frozen / being retired). received_payments
@@ -117,6 +145,7 @@ def express_ar_customer(customer_code):
                            salesperson_code=salesperson_code,
                            snapshot_date=snapshot_date,
                            rows=[dict(r) for r in rows],
+                           excluded_docs=excluded_docs,
                            recent_payments=[dict(r) for r in recent_payments],
                            total_outstanding=total_outstanding,
                            total_billed=total_billed,

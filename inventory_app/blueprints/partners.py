@@ -12,6 +12,7 @@ import re
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort)
 
+import cashflow
 import models
 from database import get_connection
 from filters import phone_entries
@@ -90,12 +91,20 @@ def customer_detail(customer_code):
     unpaid_bills, unpaid_snapshot_date = models.get_customer_unpaid_bills_by_code(customer_code)
     unpaid_total = sum(b['total_net'] or 0 for b in unpaid_bills)
 
+    # The bills REMOVED from that total. Since #465 `unpaid_bills` is the
+    # chaseable population, so a forgiven / already-paid / pre-2024 bill simply
+    # vanished from this page — the person on the phone who remembers it had no
+    # way to see what happened to it (ADR 0012, #468). Same code key as the list
+    # above: `get_customer_unpaid_bills_by_code` TRIMs for this reason.
+    excluded_docs, _excluded_snapshot = cashflow.bsn_ar_excluded_docs_by_code(customer_code)
+
     master = models.get_customer_master(customer_code)
     return render_template('customer_summary.html',
                            data=data,
                            audit_history=models.get_customer_audit_history(customer_code),
                            unpaid_bills=unpaid_bills, unpaid_total=unpaid_total,
                            unpaid_snapshot_date=unpaid_snapshot_date,
+                           excluded_docs=excluded_docs,
                            master=master,
                            salespersons=models.get_active_salespersons(),
                            regions=models.get_all_regions(),
