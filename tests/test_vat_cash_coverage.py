@@ -27,15 +27,14 @@ SCAN_DIRS = ('inventory_app', 'scripts')
 OWNER = os.path.join('inventory_app', 'vat_math.py')
 
 # path -> why this file may carry the constant without calling vat_math.
-ALLOWED = {
-    os.path.join('inventory_app', 'models', 'vat_sub.py'):
-        'The INVERSE direction: price ÷ 1.07 carves VAT out of a VAT-inclusive '
-        'price for the VAT sub-book. It rounds differently (ปัดขึ้น 2 decimals, '
-        'to match how Express stores a line — see .claude/rules/'
-        'quoting-and-pricing.md), so it is a different rule that happens to '
-        'share the constant. Folding it into vat_math would apply the wrong '
-        'rounding to one of the two.',
-}
+#
+# vat_sub.py was here until 2026-09-10, exempted as "the inverse direction, it
+# rounds differently — ปัดขึ้น 2 decimals". That is true of the QUOTATION
+# renderer; it was not true of the one call site this exemption covered.
+# compute_badge divides, divides again by unit_ratio and compares with `>` —
+# there is no rounding anywhere in that path, so the exemption was protecting a
+# plain duplicate. It now calls vat_math.net_from_cash().
+ALLOWED = {}
 
 
 def _docstring_nodes(tree):
