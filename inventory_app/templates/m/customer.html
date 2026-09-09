@@ -50,32 +50,32 @@
          `SELECT *` row, so the column is always present when the row is. #}
       {% for e in customer.phone | phone_entries %}
         {% if e.dial %}
-        <a href="tel:{{ e.dial }}" class="btn btn-sm btn-success">
+        <a href="tel:{{ e.dial }}" class="btn btn-success btn-touch">
           <i class="bi bi-telephone-fill me-1"></i>โทร {{ e.text }}
         </a>
         {% elif e.is_fax %}
-        <span class="btn btn-sm btn-outline-secondary disabled">
+        <span class="btn btn-outline-secondary btn-touch disabled">
           <i class="bi bi-printer me-1"></i>แฟกซ์ {{ e.text }}
         </span>
         {% else %}
-        <span class="btn btn-sm btn-outline-secondary disabled">
+        <span class="btn btn-outline-secondary btn-touch disabled">
           <i class="bi bi-telephone me-1"></i>{{ e.text }}
         </span>
         {% endif %}
       {% else %}
-        <span class="btn btn-sm btn-outline-secondary disabled">
+        <span class="btn btn-outline-secondary btn-touch disabled">
           <i class="bi bi-telephone-x me-1"></i>ไม่ได้บันทึกเบอร์
         </span>
       {% endfor %}
       {% if customer.address %}
-        <button type="button" class="btn btn-sm btn-outline-secondary"
+        <button type="button" class="btn btn-outline-secondary btn-touch"
                 onclick="copyText({{ customer.address|tojson }}, this)">
           <i class="bi bi-clipboard me-1"></i>คัดลอกที่อยู่
         </button>
       {% endif %}
       {% if customer and customer.lat and customer.lng %}
         <a href="https://www.google.com/maps?q={{ customer.lat }},{{ customer.lng }}"
-           class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener">
+           class="btn btn-outline-secondary btn-touch" target="_blank" rel="noopener">
           <i class="bi bi-geo-alt me-1"></i>แผนที่
         </a>
       {% endif %}
