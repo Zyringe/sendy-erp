@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""price_lookup.py — prod-runnable, read-only CLI over the B2B price resolver
+"""price_lookup_cli.py — prod-runnable, read-only CLI over the B2B price resolver
 (`inventory_app/price_lookup.py::resolve_price` / `find_products` /
 `find_customers`). Adds no pricing logic of its own beyond the family_hint
 sibling lookup below (a small query gated by the resolver's own
@@ -70,7 +70,10 @@ idempotent statement on an already-WAL db) so the connection touches
 nothing beyond ordinary reads.
 
 Run:
-    echo '{"lines":[{"product_id":50,"unit":"โหล"}]}' | python scripts/price_lookup.py
+    echo '{"lines":[{"product_id":50,"unit":"โหล"}]}' | python scripts/price_lookup_cli.py
+
+Named `_cli` on purpose: `scripts/` is put on sys.path at app import time, so a
+file here called `price_lookup.py` shadows the resolver (sendy-erp #476).
 """
 import json
 import os

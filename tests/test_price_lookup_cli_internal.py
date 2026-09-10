@@ -1,4 +1,4 @@
-"""scripts/price_lookup.py — the one in-process test.
+"""scripts/price_lookup_cli.py — the one in-process test.
 
 Every OTHER test for this script runs it as a subprocess on purpose (see
 test_price_lookup_cli.py's docstring). This file deliberately does not, and
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'price_lookup.py'
+SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'price_lookup_cli.py'
 
 
 def _load_script():
