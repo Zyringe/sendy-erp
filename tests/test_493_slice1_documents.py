@@ -303,9 +303,15 @@ def test_customer_page_document_list_has_one_row_per_document(tmp_db):
 
     c = _client(tmp_db)
     html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
-    # One row → one link to the document (a raw substring count would double-
-    # count the href and the visible text of a single row).
-    assert html.count('doc/IV49311"') == 1
+    # One row in รายการเอกสาร → one link there (a raw substring count would
+    # double-count the href and the visible text of a single row). #493
+    # slice 2 added a SECOND link to the same invoice in the product card's
+    # ราคาล่าสุด cell (this product's only invoice is its "last" purchase),
+    # so the page-wide count is legitimately 2 now, not 1 — scope this
+    # assertion to รายการเอกสาร specifically so it still pins ITS OWN
+    # one-row-per-document behaviour without depending on the other card.
+    docs_section = html[html.find('รายการเอกสาร'):]
+    assert docs_section.count('doc/IV49311"') == 1
 
 
 def test_invoice_page_has_back_control(tmp_db):

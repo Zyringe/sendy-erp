@@ -235,6 +235,88 @@ def resolve_customer_codes(name):
     return [r['customer_code'] for r in rows]
 
 
+def _customer_product_cards(conn, where, params):
+    """สินค้าที่ซื้อบ่อย, enriched (#493 slice 2, trimmed scope B): one row per
+    (product, unit), keyed and populated by the price resolver's evidence
+    predicate (the one definition of "a bill that counts") restricted to
+    this customer — same population `resolve_price`'s customer.last uses.
+
+    ADDITIVE, not a replacement for `top_products`: the call card
+    (`call_card.py::get_card` → `get_customer_summary`, name-keyed) reads
+    `top_products[0].name` as "แบรนด์เด่น", money-ordered — changing that
+    query's shape or order would silently change what the call card shows.
+    This is its own query, its own field, wired only into the code-keyed
+    page get_customer_summary_by_code renders.
+
+    Deferred to a later round (Put, 2026-09-11): the ครั้ง/ยอด toggle (opens
+    on times-bought only), stale-note, stock badge, VAT-note/bill-discount/
+    freebie breakdown — `last`/`today` carry only the bare numbers.
+    """
+    import price_lookup
+    import vat_math
+
+    rows = conn.execute(f"""
+        SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
+               s.unit,
+               COUNT(DISTINCT s.doc_base) AS times_bought,
+               SUM(s.qty) AS total_qty,
+               SUM(s.net) AS total_net
+        FROM sales_transactions s
+        LEFT JOIN products p ON p.id = s.product_id
+        WHERE {where} AND {price_lookup.evidence_filter('s')}
+        GROUP BY s.product_id, s.unit
+        ORDER BY times_bought DESC, total_net DESC
+        LIMIT 20
+    """, params).fetchall()
+
+    cards = []
+    for r in rows:
+        card = dict(r)
+        pid, unit = card['product_id'], card['unit']
+        card['last'] = None
+        card['today'] = None
+        if pid is None:
+            # Unmapped BSN raw name — no product row to price against.
+            cards.append(card)
+            continue
+
+        last_row = conn.execute(f"""
+            SELECT date_iso, doc_base, net, qty, vat_type
+            FROM sales_transactions s
+            WHERE {where} AND {price_lookup.evidence_filter('s')}
+              AND s.product_id = ? AND s.unit = ?
+            ORDER BY s.date_iso DESC, s.id DESC LIMIT 1
+        """, list(params) + [pid, unit]).fetchone()
+        if last_row is not None:
+            price_per_unit = vat_math.cash_from_net(last_row['net'] / last_row['qty'],
+                                                      last_row['vat_type'])
+            card['last'] = {
+                'date_iso': last_row['date_iso'],
+                'doc_base': last_row['doc_base'],
+                'price_per_unit': round(price_per_unit, 2) if price_per_unit is not None else None,
+            }
+
+        # Today's price = resolve_price with no customer_code, so the
+        # resolver's basis is always list_after_promo/dozen_only, never
+        # last_paid — exactly "the list price for the row's unit (tier
+        # first, then base × ratio) and the active price promotion" the
+        # issue asks for, reusing the ONE pricing engine (never re-derived
+        # here — .claude/rules/quoting-and-pricing.md).
+        try:
+            resolved = price_lookup.resolve_price(conn, product_id=pid, unit=unit)
+        except ValueError:
+            pass  # unit has no resolvable ratio/tier — leave today=None
+        else:
+            has_list_price = resolved['list']['list_for_unit'] != 0
+            card['today'] = {
+                'price_per_unit': resolved['answer']['price_per_unit'] if has_list_price else None,
+                'has_list_price': has_list_price,
+            }
+
+        cards.append(card)
+    return cards
+
+
 def get_customer_summary_by_code(customer_code, date_from=None, date_to=None):
     """Code-keyed counterpart to get_customer_summary().
 
@@ -250,6 +332,7 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None):
         'customer_code', customer_code, date_from, date_to)
     summary, top_products, monthly, docs = _customer_sales_aggregates(
         conn, where, params)
+    product_cards = _customer_product_cards(conn, where, params)
 
     # Bill (short) name for THIS code specifically — most recent sale wins.
     # This is what distinguishes ทรัพย์ทวี's two codes; a name-keyed lookup
@@ -318,6 +401,7 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None):
         'date_to': date_to,
         'summary': dict(summary),
         'top_products': [dict(r) for r in top_products],
+        'product_cards': product_cards,
         'monthly': [dict(r) for r in monthly],
         'docs': [dict(r) for r in docs],
     }
