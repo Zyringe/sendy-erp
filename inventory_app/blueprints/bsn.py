@@ -497,7 +497,9 @@ def mapping_suggestion_reject(sid):
 # We inject
 # our own DB connection so the import shares this app's transaction
 # semantics (lights-on FK off etc).
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'scripts'))
+# import_router lazily imports scripts/import_express.py, so scripts/ stays on the path —
+# appended, never insert(0): scripts/ must not shadow inventory_app (#476).
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'scripts'))
 import import_router  # noqa: E402  (unified /import box: detect + preview + commit dispatch)
 import report_types  # noqa: E402  (the one declaration of the report-type vocabulary)
 
