@@ -33,6 +33,7 @@ import sqlite3
 
 import book_registry
 from database import get_connection
+import vat_math
 from .products import get_product
 
 # Stock threshold — kills the 6e-154 FoxPro garbage + dust (plan §4.3).
@@ -149,7 +150,7 @@ def compute_badge(price_per_unit, unit_ratio, x_unit, candidate_unit, candidate_
     normalized Thai unit names via bsn_units, so a plain string compare is
     the normalized compare). Otherwise "เทียบไม่ได้" — both raw numbers
     always returned so the caller can still show them."""
-    ex_vat = price_per_unit / 1.07 if price_per_unit is not None else None
+    ex_vat = vat_math.net_from_cash(price_per_unit)
     per_base_unit = (ex_vat / unit_ratio
                      if ex_vat is not None and unit_ratio else None)
     x_u = (x_unit or '').strip()

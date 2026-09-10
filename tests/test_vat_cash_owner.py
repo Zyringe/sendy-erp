@@ -96,3 +96,67 @@ def test_sql_and_python_agree_on_every_row(tmp_db_conn):
     bad = [(r['net'], r['vat_type']) for r in rows
            if vat_math.cash_from_net(r['net'], r['vat_type']) != r['sql_cash']]
     assert bad == [], f'{len(bad)} rows disagree, e.g. {bad[:3]}'
+
+
+# ── C · the inverse: cash → net ──────────────────────────────────────────────
+#
+# models/vat_sub.py::compute_badge carves VAT out of a VAT-inclusive price to
+# compare it against a book cost kept ex-VAT. It was left out of this module on
+# the grounds that the carve-out "rounds differently — ปัดขึ้น 2 decimals". That
+# is true of the QUOTATION renderer (the skill's express_ex_vat, which reproduces
+# how a human keys a line into Express); it is not true of compute_badge, which
+# divides, divides again by unit_ratio, and compares with `>` — no rounding
+# anywhere in the path. So the raw carve-out belongs here with its twin.
+
+@pytest.mark.parametrize('cash,expected', [
+    (107.0, 100.0),
+    (0.0, 0.0),
+    (-53.5, -50.0),          # a credit line keeps its sign, like cash_from_net
+])
+def test_net_from_cash_carves_the_vat_back_out(cash, expected):
+    assert vat_math.net_from_cash(cash) == pytest.approx(expected)
+
+
+def test_net_from_cash_passes_none_through():
+    """Same NULL contract as cash_from_net — "no data" is not ฿0.00."""
+    assert vat_math.net_from_cash(None) is None
+
+
+def test_net_from_cash_round_trips_with_cash_from_net():
+    assert vat_math.net_from_cash(vat_math.cash_from_net(16.5, 2)) == pytest.approx(16.5)
+
+
+def test_net_from_cash_does_not_apply_express_document_rounding():
+    """The line Express PRINTS for ฿16.50 incl. VAT is 15.43 (ปัดขึ้น, keyed by
+    a human). This function is the raw quotient — 15.4205… — because its caller
+    compares against a cost, it does not print a document. Anything that renders
+    a quotation must round for itself; that rule lives with the renderer."""
+    assert vat_math.net_from_cash(16.50) == pytest.approx(16.50 / 1.07)
+    assert round(vat_math.net_from_cash(16.50), 2) == 15.42      # not 15.43
+
+
+# ── D · the money gate: one real invoice, to the satang ──────────────────────
+#
+# IV6901440 · 27/08/2569 · แยก VAT. Read from PROD 2026-09-09: doc_base
+# 'IV6901440' is 4 lines, every one vat_type=2. The paper bill says ฿14,209.29.
+# Characterisation, not a new behaviour — it pins the arithmetic to a document
+# a human can hold, which nothing else in the suite does.
+
+IV6901440_NETS = [5540.25, 4221.65, 1406.99, 2110.82]
+
+
+def test_a_real_vat_invoice_reconciles_to_the_satang():
+    total_net = sum(IV6901440_NETS)
+    assert total_net == pytest.approx(13279.71)
+    assert round(vat_math.cash_from_net(total_net, 2), 2) == 14209.29
+
+
+def test_vat_lands_on_the_invoice_total_not_on_each_line():
+    """Rounding each line's cash before summing over-collects by one satang.
+
+    Express rounds the line NET (already stored that way) and computes one VAT
+    line from the total. A caller that rounds per line stops matching the bill.
+    """
+    per_line = sum(round(vat_math.cash_from_net(n, 2), 2) for n in IV6901440_NETS)
+    assert round(per_line, 2) == 14209.30
+    assert round(per_line, 2) != 14209.29

@@ -19,14 +19,29 @@ had it INVERTED (`1 → ×1.07, 2 → ÷1.07`) and payments_alloc/cashflow summe
 bare `net`; every fully-paid `แยก VAT` bill then read as "จ่ายเกิน 7%",
 producing roughly ฿446k of customer credit that did not exist.
 
-⚠ This module owns ONE direction: net → cash. It deliberately does NOT own:
+⚠ This module owns both directions of the CONVERSION and nothing else.
 
-  * `net → ex-VAT` (dividing by 1.07). That is the carve-OUT used for quotes
-    and the VAT sub-book, and it rounds differently — **ปัดขึ้น** 2 decimals to
-    match how Express stores a line, see .claude/rules/quoting-and-pricing.md.
-    Lives in models/vat_sub.py and its templates. Same constant, different rule;
-    folding them together would apply the wrong rounding to one of them.
-  * `net × 0.07`, the VAT amount shown on a document (templates/sales_doc.html).
+`net_from_cash()` is the carve-OUT: a VAT-inclusive price the customer pays,
+back to the ex-VAT figure. (Not "net → ex-VAT" — `net` is already ex-VAT; what
+gets divided is a customer-facing price.) Raw quotient, deliberately unrounded:
+its user, models/vat_sub.py::compute_badge, divides again by a unit ratio and
+compares with `>`. It prints no document, so it must not round like one.
+
+  * **Document rounding is NOT here.** A quotation line reproduces how a human
+    keys Express: **ปัดขึ้น** 2 decimals on the unit ex-VAT price, half-up on the
+    line amount, one VAT line off the invoice total — see
+    .claude/rules/quoting-and-pricing.md. That lives with whatever renders the
+    quotation, and folding it in here would round every comparison too.
+  * `net × 0.07`, the VAT amount shown on a document (templates/sales_doc.html),
+    is a third thing again — the tax itself, not a conversion.
+
+⚠ compute_badge has **no production caller** — it is exported through
+models/__init__.py and exercised only by tests. The badge a user actually sees
+is computed in JavaScript, by a line-for-line twin of that function in
+templates/vat_sub/product_view.html (`const exVat = pricePerUnit / 1.07`), which
+recomputes as the user types a price. So the constant still exists twice, in two
+languages, and a `.py`-only sweep cannot see the live one. Collapsing that pair
+is its own piece of work, not a constant to move.
 
 ⚠ No rounding here. Callers round where they always did — some per row, some
 after SUM() — and moving that inside would silently shift every one of them.
@@ -65,3 +80,14 @@ def cash_from_net(net, vat_type):
     if vat_type == VAT_TYPE_ADDS_VAT:
         return net * VAT_MULTIPLIER
     return net
+
+
+def net_from_cash(cash):
+    """The inverse: a VAT-inclusive price back to its ex-VAT figure.
+
+    Raw quotient, no rounding — see the module docstring. Returns None for a
+    NULL input, the same contract as cash_from_net().
+    """
+    if cash is None:
+        return None
+    return cash / VAT_MULTIPLIER
