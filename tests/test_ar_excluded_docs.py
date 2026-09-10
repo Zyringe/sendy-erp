@@ -856,3 +856,45 @@ def test_mobile_customer_page_omits_the_note_when_nothing_was_excluded(tmp_db):
     assert 'ZZEX-ONLYCLEAN' in html, 'page did not render the clean customer at all'
     assert 'ตัด 1 ใบ' not in html
     assert 'ยอดค้างด้านบนคือยอด' not in html
+
+
+# ── The mobile page must not deny a customer whose data it already loaded ────
+# `/m/customer/<name>` shows "ไม่พบข้อมูลลูกค้า" whenever the name misses the
+# `customers` master AND has no sales_transactions — regardless of the AR rows the
+# route fetched two lines earlier. That is #470's defect on the mobile surface:
+# "not in the master under this name" is not "no such customer". `_seed_master`
+# above exists precisely to steer the other tests PAST this branch; these two pin
+# the branch itself, so it fires on a real typo and nowhere else.
+
+def _forget_master(db_path, *keys):
+    """Guarantee the master lookup misses. Forced, never inherited."""
+    conn = sqlite3.connect(db_path)
+    try:
+        for k in keys:
+            conn.execute("DELETE FROM customers WHERE code = ? OR name = ?", (k, k))
+            conn.execute("DELETE FROM sales_transactions WHERE customer = ?", (k,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_mobile_page_renders_ar_data_for_a_customer_absent_from_the_master(tmp_db):
+    _seed(tmp_db)
+    _forget_master(tmp_db, CODE, NAME)
+    html = _manager_client().get(f'/m/customer/{NAME}').get_data(as_text=True)
+
+    assert 'ไม่พบข้อมูลลูกค้า' not in html, \
+        'the page denied a customer whose AR rows the route had already loaded'
+    # Controls: it did not merely stop saying "not found", it rendered the data.
+    assert CONTROL_DOC in html, 'the chaseable bill is missing — the page rendered nothing'
+    assert '>ตัด 6 ใบ ฿15,000.00<' in html, 'the excluded-docs note is missing'
+
+
+def test_mobile_page_still_reports_a_name_that_has_nothing_anywhere(tmp_db):
+    """The guard survives its own fix: a real typo must still be caught."""
+    _seed(tmp_db)
+    _forget_master(tmp_db, CODE, NAME)
+    html = _manager_client().get('/m/customer/ไม่มีลูกค้าชื่อนี้จริง').get_data(as_text=True)
+
+    assert 'ไม่พบข้อมูลลูกค้า' in html
+    assert CONTROL_DOC not in html, 'control — a page showing another customer would pass anyway'
