@@ -41,11 +41,6 @@ EXEMPT = {
     '_ar_snapshot_banner.html':
         'it IS the banner — it matches its own markers because it renders '
         'aging.as_of and aging.age_days.',
-    'ar_followup.html':
-        'DEAD — zero references in the whole repo (the dunning list was folded '
-        'into the /ar tabs). Left on disk deliberately; deleting it is its own '
-        'call, and adding the banner to a template nothing renders is worse '
-        'than leaving it out.',
     'm/sales_trip.html':
         'its ยอดค้างรวม is summed from sales_transactions via vat_math.cash_sql, '
         'NOT from express_ar_outstanding — a snapshot-age warning would be '
