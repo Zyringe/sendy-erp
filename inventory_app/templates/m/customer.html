@@ -4,7 +4,12 @@
 
 {% block content %}
 {% include '_ar_snapshot_banner.html' %}
-{% if not customer and not stats.doc_count %}
+{# "Missing from the `customers` master under this name, with no sales history" is
+   NOT "no such customer" — the same conflation #470 fixed on /express/ar/customer.
+   By this point the route has already loaded the outstanding bills AND the excluded
+   docs for this name, so denying the customer hides debt that is on the books.
+   Deny only when there is genuinely nothing to show, which is the typo this was for. #}
+{% if not customer and not stats.doc_count and not unpaid and not excluded_docs %}
 <div class="card">
   <div class="card-body text-center text-subtle py-5">
     <i class="bi bi-person-x fs-2 d-block mb-2 opacity-50"></i>
