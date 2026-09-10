@@ -72,7 +72,7 @@
           <th>พนักงานขาย</th>
           <th class="text-center">เอกสาร</th>
           <th class="text-end">ยอดรวม (฿)</th>
-          <th class="text-center">ซื้อล่าสุด</th>
+          <th class="text-center" title="วันที่ซื้อจริงล่าสุด ไม่นับใบลดหนี้/ของแถม — อาจเก่ากว่าวันที่ในยอดรวมข้างซ้าย">ซื้อล่าสุด</th>
         </tr>
       </thead>
       <tbody>
@@ -111,7 +111,7 @@
           <td data-label="ยอดรวม (฿)" class="text-end fw-600 font-mono text-success td-hero">
             {{ '{:,.0f}'.format(c.total_net) }}
           </td>
-          <td data-label="ซื้อล่าสุด" class="text-center font-mono small text-subtle">{{ c.last_date or '—' }}</td>
+          <td data-label="ซื้อล่าสุด" class="text-center font-mono small text-subtle">{{ c.last_purchase_date or '—' }}</td>
         </tr>
         {% else %}
         <tr><td colspan="7" class="text-center text-subtle py-4">ไม่พบลูกค้าที่ตรงกับการค้นหา</td></tr>

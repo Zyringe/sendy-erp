@@ -8,6 +8,7 @@ prefix.
 """
 import os
 import re
+from datetime import date
 
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort)
@@ -102,8 +103,24 @@ def customer_detail(customer_code):
     aging = cashflow.ar_aging()
 
     master = models.get_customer_master(customer_code)
+
+    # ซื้อล่าสุด + days quiet (#493) — last_purchase_date is already the
+    # evidence-filtered date (never a credit note or a freebie-only line);
+    # the day count is a rendering concern, computed here, not in the model.
+    days_quiet = None
+    last_purchase_date = data['summary'].get('last_purchase_date')
+    if last_purchase_date:
+        try:
+            days_quiet = (date.today() - date.fromisoformat(last_purchase_date)).days
+        except ValueError:
+            # A malformed date_iso must not 500 the whole page — every live
+            # row is a clean YYYY-MM-DD today, but this is a rendering
+            # concern, not a data-integrity guarantee to bet the page on.
+            days_quiet = None
+
     return render_template('customer_summary.html',
                            data=data,
+                           days_quiet=days_quiet,
                            audit_history=models.get_customer_audit_history(customer_code),
                            unpaid_bills=unpaid_bills, unpaid_total=unpaid_total,
                            unpaid_snapshot_date=unpaid_snapshot_date,

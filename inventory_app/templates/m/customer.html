@@ -141,26 +141,31 @@
   </div>
   <div class="col-6">
     <div class="card text-center"><div class="card-body py-2">
-      <div class="text-subtle small">ยอดสะสม</div>
+      <div class="text-subtle small">ยอดสะสม (ก่อน VAT)</div>
       <div class="fs-5 fw-bold text-success">฿{{ '{:,.0f}'.format(stats.total_net or 0) }}</div>
     </div></div>
   </div>
 </div>
 {% endif %}
 
-{# ── Last 5 sales ─────────────────────────────────────────────────────────── #}
+{# ── Last 5 documents ─────────────────────────────────────────────────────── #}
 {% if last_sales %}
 <div class="card mb-3">
   <div class="card-header"><i class="bi bi-clock-history me-2"></i>ขายล่าสุด</div>
   <div class="list-group list-group-flush">
     {% for s in last_sales %}
-    <a href="{{ url_for('sales.sales_doc', doc_base=s.doc_no.rsplit('-',1)[0]) }}"
+    <a href="{{ url_for('sales.sales_doc', doc_base=s.doc_base) }}"
        class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
       <div>
-        <div class="font-mono small">{{ s.doc_no }}</div>
-        <div class="text-subtle small">{{ s.date_iso }} · {{ s.lines }} รายการ</div>
+        <div class="font-mono small">
+          {{ s.doc_base }}
+          {% if s.is_credit_note %}<span class="badge bg-danger-subtle text-danger-emphasis ms-1">ใบลดหนี้</span>{% endif %}
+        </div>
+        <div class="text-subtle small">{{ s.date_iso }} · {{ s.item_count }} รายการ</div>
       </div>
-      <div class="fw-600">฿{{ '{:,.2f}'.format(s.total) }}</div>
+      {# A credit note's total is negative (#493) — the sign goes before ฿,
+         not after it ("-฿500.00", not "฿-500.00"). #}
+      <div class="fw-600{% if s.is_credit_note %} text-danger{% endif %}">{{ '-' if s.total < 0 else '' }}฿{{ '{:,.2f}'.format(s.total|abs) }}</div>
     </a>
     {% endfor %}
   </div>

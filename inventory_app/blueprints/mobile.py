@@ -9,6 +9,7 @@ from flask import Blueprint, render_template, request, jsonify, abort
 
 import cashflow
 import models
+import sales_filters
 from database import get_connection
 import vat_math
 
@@ -112,6 +113,9 @@ def customer_detail(customer_name):
     conn.close()
     # Use existing model fn — handles VAT, SR/HS doc filtering, paid-status correctly
     unpaid_full, unpaid_snapshot_date = models.get_customer_unpaid_bills(customer_name)
+    # #493: the shared document grouping — same one the desktop customer page
+    # uses — so this page's doc list/count can never drift from it again.
+    last_sales = models.get_customer_documents('customer', customer_name, limit=5)
     unpaid = unpaid_full[:5]
     unpaid_total = sum((b['total_net'] or 0) for b in unpaid_full)
     # What was REMOVED from that total (ADR 0012, #468). Name-keyed through the
@@ -124,27 +128,21 @@ def customer_detail(customer_name):
     aging = cashflow.ar_aging()
     conn = get_connection()
 
-    # Last 5 sales docs (any status) — quick reference of recent activity
-    last_sales = conn.execute(
-        """
-        SELECT date_iso, doc_no, ROUND(SUM(net), 2) AS total, COUNT(*) AS lines
-          FROM sales_transactions
-         WHERE customer = ?
-         GROUP BY doc_no
-         ORDER BY date_iso DESC
-         LIMIT 5
-        """,
-        (customer_name,),
-    ).fetchall()
-
-    # Aggregate stats
+    # Aggregate stats. total_net stays pre-VAT/unchanged (same convention as
+    # the desktop header's ยอดซื้อรวม) — only doc_count is fixed (#493):
+    # doc_no carries a per-line '-N' suffix, so COUNT(DISTINCT doc_no) counted
+    # LINES, not documents. Also applies the same not_a_sale_clause() exclusion
+    # `last_sales` (via get_customer_documents -> _customer_sales_scope)
+    # already carries — without it, a document invoiced in error would count
+    # here but be silently absent from the list right below it.
     stats = conn.execute(
-        """
-        SELECT COUNT(DISTINCT doc_no) AS doc_count,
+        f"""
+        SELECT COUNT(DISTINCT doc_base) AS doc_count,
                ROUND(SUM(net), 2) AS total_net,
                MIN(date_iso) AS first_seen,
                MAX(date_iso) AS last_seen
-          FROM sales_transactions WHERE customer = ?
+          FROM sales_transactions
+         WHERE customer = ? AND {sales_filters.not_a_sale_clause()}
         """,
         (customer_name,),
     ).fetchone()

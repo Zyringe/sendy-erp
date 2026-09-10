@@ -77,6 +77,7 @@ from .customers import (
     get_customers_master, import_customers_from_bsn, get_customers_for_map,
     save_customer_geocode, get_customer_zones, get_customer_types,
     get_geocode_progress, resolve_customer_codes, get_customer_summary_by_code,
+    get_customer_documents,
 )
 from .suppliers import get_suppliers, get_supplier_summary
 from .wacc import (
