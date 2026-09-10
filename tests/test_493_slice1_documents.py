@@ -187,6 +187,73 @@ def test_customer_list_last_purchase_date_skips_credit_notes(cust):
     assert row['last_date'] == '2026-05-01'  # raw activity date, unchanged
 
 
+def test_customer_list_null_customer_code_still_gets_last_purchase_date(cust):
+    """/code-review (verified live: ~21 real rows carry NULL customer_code).
+    `s2.customer_code = s.customer_code` is never TRUE when both sides are
+    NULL (SQL semantics), so that real population's last_purchase_date read
+    as '—' even with a recent real purchase. Fixed with `IS`."""
+    conn, pid = cust
+    name = 'ลูกค้าไม่มีรหัสทดสอบ493'
+    conn.execute("DELETE FROM sales_transactions WHERE customer = ?", (name,))
+    _line(conn, doc_base='IV49316', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=1, unit_price=500, net=500, vat_type=0,
+          customer_code=None, customer_name=name)
+    try:
+        import models
+        rows, _total = models.get_customers(search=name)
+        row = next(r for r in rows if r['customer'] == name)
+        assert row['customer_code'] is None
+        assert row['last_purchase_date'] == '2026-01-01'
+    finally:
+        conn.execute("DELETE FROM sales_transactions WHERE customer = ?", (name,))
+        conn.commit()
+
+
+def test_get_customer_documents_limit_zero_returns_no_rows(cust):
+    """limit=0 must mean 'zero rows', not 'no LIMIT clause' — get_customer_
+    documents() is a public model function and a future caller passing an
+    explicit 0 should get an empty list, not every document (/code-review)."""
+    conn, pid = cust
+    _line(conn, doc_base='IV49317', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=1, unit_price=100, net=100, vat_type=0)
+    import models
+    docs = models.get_customer_documents('customer', TEST_NAME, limit=0)
+    assert docs == []
+
+
+def test_mobile_stats_and_doc_list_agree_on_a_giveaway_document(tmp_db):
+    """The mobile quick page's stats card and its ขายล่าสุด list must exclude
+    the same rows — /code-review caught them disagreeing (stats had no
+    not_a_sale_clause while the list, via get_customer_documents, did). A
+    second, real document keeps doc_count > 0 so the stats card actually
+    renders (the template hides it entirely at doc_count=0)."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _mk_customer(conn)
+    _clear_customer(conn)
+    pid = _mk_product(conn)
+    _line(conn, doc_base='IV49318', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=1, unit_price=1000, net=1000, vat_type=0)
+    _line(conn, doc_base='IV49319', suffix=1, pid=pid, date_iso='2026-01-02',
+          qty=1, unit_price=200, net=200, vat_type=0)
+    conn.execute(
+        "INSERT INTO ar_writeoffs (doc_no, customer_code, customer_name, amount, "
+        " type, writeoff_date, excludes_revenue) VALUES "
+        " ('IV49318', ?, ?, 1000, 'expense', '2026-02-01', 1)",
+        (TEST_CODE, TEST_NAME))
+    conn.commit()
+    conn.close()
+
+    c = _client(tmp_db)
+    html = c.get(f'/m/customer/{quote(TEST_NAME)}').data.decode()
+    assert 'IV49318' not in html
+    assert 'IV49319' in html
+    idx = html.find('เอกสารทั้งหมด')
+    assert idx != -1, 'stats card did not render'
+    assert '>1<' in html[idx:idx + 200]
+
+
 def test_mobile_customer_documents_grouped_by_doc_base(cust):
     conn, pid = cust
     _line(conn, doc_base='IV49309', suffix=1, pid=pid, date_iso='2026-01-01',

@@ -163,7 +163,9 @@
         </div>
         <div class="text-subtle small">{{ s.date_iso }} · {{ s.item_count }} รายการ</div>
       </div>
-      <div class="fw-600{% if s.is_credit_note %} text-danger{% endif %}">฿{{ '{:,.2f}'.format(s.total) }}</div>
+      {# A credit note's total is negative (#493) — the sign goes before ฿,
+         not after it ("-฿500.00", not "฿-500.00"). #}
+      <div class="fw-600{% if s.is_credit_note %} text-danger{% endif %}">{{ '-' if s.total < 0 else '' }}฿{{ '{:,.2f}'.format(s.total|abs) }}</div>
     </a>
     {% endfor %}
   </div>

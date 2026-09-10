@@ -44,7 +44,7 @@ def _customer_documents(conn, where, params, limit=None):
     vat_math for แยก VAT documents, summed; NEGATIVE for a credit note),
     is_credit_note, ref_invoice (the invoice an SR credits, NULL otherwise).
     """
-    limit_sql = f'LIMIT {int(limit)}' if limit else ''
+    limit_sql = f'LIMIT {int(limit)}' if limit is not None else ''
     rows = conn.execute(f"""
         SELECT doc_base,
                MAX(date_iso) AS date_iso,
@@ -117,7 +117,7 @@ def _customer_sales_aggregates(conn, where, params):
                s.unit,
                SUM(s.qty)  AS total_qty,
                SUM(s.net)  AS total_net,
-               COUNT(DISTINCT s.doc_no) AS doc_count
+               COUNT(DISTINCT s.doc_base) AS doc_count
         FROM sales_transactions s
         LEFT JOIN products p ON p.id = s.product_id
         WHERE {where}
@@ -412,8 +412,13 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
                -- customer detail page's header — MAX(s.date_iso) above stays
                -- a raw activity date (it can land on a credit note) and is
                -- not shown to Put; this column is what the list renders.
+               -- `IS`, not `=`: ~21 rows carry a NULL customer_code (a real,
+               -- acknowledged population — GROUP BY already collapses them
+               -- into one row); `=` against NULL is never true in SQL, so
+               -- that row's last_purchase_date silently read NULL even with
+               -- real recent activity. `IS` is SQLite's NULL-safe equality.
                (SELECT MAX(s2.date_iso) FROM sales_transactions s2
-                 WHERE s2.customer_code = s.customer_code
+                 WHERE s2.customer_code IS s.customer_code
                    AND {price_lookup.evidence_filter('s2')}) AS last_purchase_date
         FROM sales_transactions s
         LEFT JOIN customers     c  ON c.code  = s.customer_code

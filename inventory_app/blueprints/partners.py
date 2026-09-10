@@ -110,7 +110,13 @@ def customer_detail(customer_code):
     days_quiet = None
     last_purchase_date = data['summary'].get('last_purchase_date')
     if last_purchase_date:
-        days_quiet = (date.today() - date.fromisoformat(last_purchase_date)).days
+        try:
+            days_quiet = (date.today() - date.fromisoformat(last_purchase_date)).days
+        except ValueError:
+            # A malformed date_iso must not 500 the whole page — every live
+            # row is a clean YYYY-MM-DD today, but this is a rendering
+            # concern, not a data-integrity guarantee to bet the page on.
+            days_quiet = None
 
     return render_template('customer_summary.html',
                            data=data,

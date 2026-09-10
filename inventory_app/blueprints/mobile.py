@@ -9,6 +9,7 @@ from flask import Blueprint, render_template, request, jsonify, abort
 
 import cashflow
 import models
+import sales_filters
 from database import get_connection
 import vat_math
 
@@ -130,14 +131,18 @@ def customer_detail(customer_name):
     # Aggregate stats. total_net stays pre-VAT/unchanged (same convention as
     # the desktop header's ยอดซื้อรวม) — only doc_count is fixed (#493):
     # doc_no carries a per-line '-N' suffix, so COUNT(DISTINCT doc_no) counted
-    # LINES, not documents.
+    # LINES, not documents. Also applies the same not_a_sale_clause() exclusion
+    # `last_sales` (via get_customer_documents -> _customer_sales_scope)
+    # already carries — without it, a document invoiced in error would count
+    # here but be silently absent from the list right below it.
     stats = conn.execute(
-        """
+        f"""
         SELECT COUNT(DISTINCT doc_base) AS doc_count,
                ROUND(SUM(net), 2) AS total_net,
                MIN(date_iso) AS first_seen,
                MAX(date_iso) AS last_seen
-          FROM sales_transactions WHERE customer = ?
+          FROM sales_transactions
+         WHERE customer = ? AND {sales_filters.not_a_sale_clause()}
         """,
         (customer_name,),
     ).fetchone()

@@ -526,8 +526,10 @@
                 {% if r.is_credit_note %}
                 <span class="badge bg-danger-subtle text-danger-emphasis">ใบลดหนี้</span>
                 {% if r.ref_invoice %}
-                <a href="{{ url_for('sales.sales_doc', doc_base=r.ref_invoice) }}"
-                   class="text-subtle" style="font-size:.75rem">คืน {{ r.ref_invoice }}</a>
+                {# Plain text, not a link: 37 real ref_invoice values on prod
+                   point at a doc_base with no matching sales_transactions
+                   row (pre-Sendy-era invoices), which would 404. #}
+                <span class="text-subtle" style="font-size:.75rem">คืน {{ r.ref_invoice }}</span>
                 {% endif %}
                 {% elif r.vat_type == 2 %}
                 <span class="badge bg-info-subtle text-info">แยก VAT</span>
