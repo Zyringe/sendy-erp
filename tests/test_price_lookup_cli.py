@@ -1,8 +1,8 @@
-"""scripts/price_lookup.py — subprocess-level tests for the prod-runnable CLI
+"""scripts/price_lookup_cli.py — subprocess-level tests for the prod-runnable CLI
 over price_lookup.resolve_price / find_products / find_customers.
 
 Every test runs the SCRIPT AS A SUBPROCESS against `tmp_db` (never imports it
-directly — the whole point is proving the exact `python scripts/price_lookup.py`
+directly — the whole point is proving the exact `python scripts/price_lookup_cli.py`
 invocation that will run on prod). Env: DATABASE_PATH points the script at the
 tmp_db clone; SECRET_KEY/ADMIN_PASSWORD are passed through from the pytest
 process's own os.environ (conftest.py sets defaults for both via
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'price_lookup.py'
+SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'price_lookup_cli.py'
 
 SENDAI_BRAND_ID = 3  # เซ็นได — verified against the live dev DB (test_price_lookup.py)
 

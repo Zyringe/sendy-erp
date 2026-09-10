@@ -22,12 +22,12 @@ os.environ.setdefault('SKIP_DB_INIT', '1')
 
 import pytest
 
-# ⚠ `import price_lookup` is ORDER-DEPENDENT in this repo: two modules share the name
-# (inventory_app/price_lookup.py — the resolver — and scripts/price_lookup.py — its CLI
-# wrapper), and three module-level `sys.path.insert(0, .../scripts)` calls put the
-# wrapper first (name_builder.py:17, bsn_suggest.py:24, blueprints/bsn.py:500). Whether
-# a bare import wins therefore depends on what an EARLIER test module imported, which is
-# not something this file can control. See sendy-erp #476.
+# ⚠ `import price_lookup` WAS order-dependent in this repo until #476 renamed the CLI
+# wrapper to scripts/price_lookup_cli.py: two modules shared the name (the resolver in
+# inventory_app/ and the wrapper in scripts/), and three module-level
+# `sys.path.insert(0, .../scripts)` calls put the wrapper first (name_builder.py:17,
+# bsn_suggest.py:24, blueprints/bsn.py:500). The inserts are still there;
+# tests/test_price_lookup_import_shadow.py now guards the name.
 #
 # Load the resolver by PATH so the result cannot depend on collection order, and keep the
 # assert as a control: if the loader ever returns the wrong file, this fails loudly.
