@@ -352,6 +352,8 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
     — 2,390 of 2,665 customers, invisible here otherwise. Default False keeps
     today's billing-only, 275-row view unchanged.
     """
+    import price_lookup
+
     conn = get_connection()
     conds = []
     billing_params = []
@@ -405,7 +407,14 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
                COUNT(DISTINCT s.doc_base)                 AS doc_count,
                COALESCE(SUM(s.net), 0)                    AS total_net,
                MAX(s.date_iso)                            AS last_date,
-               (c.code IS NULL)                           AS missing_master
+               (c.code IS NULL)                           AS missing_master,
+               -- ซื้อล่าสุด (#493): same evidence-filtered definition as the
+               -- customer detail page's header — MAX(s.date_iso) above stays
+               -- a raw activity date (it can land on a credit note) and is
+               -- not shown to Put; this column is what the list renders.
+               (SELECT MAX(s2.date_iso) FROM sales_transactions s2
+                 WHERE s2.customer_code = s.customer_code
+                   AND {price_lookup.evidence_filter('s2')}) AS last_purchase_date
         FROM sales_transactions s
         LEFT JOIN customers     c  ON c.code  = s.customer_code
         LEFT JOIN salespersons  sp ON sp.code = c.salesperson
@@ -442,7 +451,8 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
                    0                                         AS doc_count,
                    0                                         AS total_net,
                    NULL                                      AS last_date,
-                   0                                         AS missing_master
+                   0                                         AS missing_master,
+                   NULL                                      AS last_purchase_date
             FROM customers c
             LEFT JOIN salespersons sp ON sp.code = c.salesperson
             LEFT JOIN regions      r  ON r.id    = c.region_id

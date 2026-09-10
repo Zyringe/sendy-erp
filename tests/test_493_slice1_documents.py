@@ -174,6 +174,19 @@ def test_customer_list_doc_count_counts_documents_not_lines(cust):
     assert row['doc_count'] == 2
 
 
+def test_customer_list_last_purchase_date_skips_credit_notes(cust):
+    conn, pid = cust
+    _line(conn, doc_base='IV49314', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=1, unit_price=500, net=500, vat_type=1)
+    _line(conn, doc_base='SR49315', suffix=1, pid=pid, date_iso='2026-05-01',
+          qty=1, unit_price=500, net=500, vat_type=1, ref_invoice='IV49314')
+    import models
+    rows, _total = models.get_customers(search=TEST_CODE)
+    row = next(r for r in rows if r['customer_code'] == TEST_CODE)
+    assert row['last_purchase_date'] == '2026-01-01'
+    assert row['last_date'] == '2026-05-01'  # raw activity date, unchanged
+
+
 def test_mobile_customer_documents_grouped_by_doc_base(cust):
     conn, pid = cust
     _line(conn, doc_base='IV49309', suffix=1, pid=pid, date_iso='2026-01-01',
