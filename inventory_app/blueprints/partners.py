@@ -97,6 +97,9 @@ def customer_detail(customer_code):
     # way to see what happened to it (ADR 0012, #468). Same code key as the list
     # above: `get_customer_unpaid_bills_by_code` TRIMs for this reason.
     excluded_docs, _excluded_snapshot = cashflow.bsn_ar_excluded_docs_by_code(customer_code)
+    # The บิลค้างชำระ card below is the Express AR snapshot, so this page owes
+    # the same freshness warning the other AR surfaces carry.
+    aging = cashflow.ar_aging()
 
     master = models.get_customer_master(customer_code)
     return render_template('customer_summary.html',
@@ -105,6 +108,7 @@ def customer_detail(customer_code):
                            unpaid_bills=unpaid_bills, unpaid_total=unpaid_total,
                            unpaid_snapshot_date=unpaid_snapshot_date,
                            excluded_docs=excluded_docs,
+                           aging=aging,
                            master=master,
                            salespersons=models.get_active_salespersons(),
                            regions=models.get_all_regions(),

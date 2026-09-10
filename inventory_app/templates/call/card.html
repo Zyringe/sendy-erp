@@ -200,6 +200,9 @@
       {% if d.ar %}
       <div class="cc-panel">
         <h2>💰 ยอดค้าง / เครดิต</h2>
+        {# Inside the `if d.ar` on purpose: warn exactly when a snapshot-derived
+           balance is on screen, not on every card. #}
+        {% include '_ar_snapshot_banner.html' %}
         {% set total_outstanding = (d.ar | map(attribute='outstanding') | list | sum) %}
         {% set total_overdue_rows = d.ar | selectattr('age_days', 'gt', 30) | list %}
         {% set total_overdue = (total_overdue_rows | map(attribute='outstanding') | list | sum) %}
