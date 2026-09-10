@@ -3,7 +3,7 @@
 {% block page_title %}ลูกค้า{% endblock %}
 
 {% block content %}
-
+{% include '_ar_snapshot_banner.html' %}
 {% if not customer and not stats.doc_count %}
 <div class="card">
   <div class="card-body text-center text-subtle py-5">

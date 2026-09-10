@@ -3,6 +3,7 @@
 {% block page_title %}AR — {{ customer_name }}{% endblock %}
 
 {% block content %}
+{% include '_ar_snapshot_banner.html' %}
 <div class="d-flex align-items-center gap-3 mb-4 flex-wrap">
   <a href="{{ url_for('accounting.express_ar_dashboard') }}" class="btn btn-sm btn-outline-secondary">
     <i class="bi bi-arrow-left me-1"></i>กลับ AR

@@ -119,6 +119,9 @@ def customer_detail(customer_name):
     # this page see the same customer. This surface renders the one-line count
     # only — the desktop table does not fit a phone on a sales trip.
     excluded_docs, _excluded_snapshot = cashflow.bsn_ar_excluded_docs(customer_name)
+    # A rep on a sales trip reads the outstanding total off this screen, so it
+    # needs the staleness warning most of the four, not least.
+    aging = cashflow.ar_aging()
     conn = get_connection()
 
     # Last 5 sales docs (any status) — quick reference of recent activity
@@ -156,6 +159,7 @@ def customer_detail(customer_name):
         unpaid_total=unpaid_total,
         unpaid_snapshot_date=unpaid_snapshot_date,
         excluded_docs=excluded_docs,
+        aging=aging,
         last_sales=last_sales,
         stats=stats,
     )

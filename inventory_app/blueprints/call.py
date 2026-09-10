@@ -7,6 +7,7 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 
 from database import get_connection
 import call_card as cc
+import cashflow as cf_mod
 import models
 import ar_followup as arf_mod
 from customer_geo import REGION_ORDER
@@ -89,6 +90,11 @@ def call_list():
 def call_card(customer_code):
     conn = get_connection()
     data = cc.get_card(conn, customer_code)
+    # Read the snapshot age BEFORE the connection closes. `d.ar` is the Express
+    # AR snapshot (via ar_followup.get_customer_ar_detail), and this is the page
+    # someone is looking at while the phone is ringing — the worst place to show
+    # a chase figure without saying how old it is.
+    aging = cf_mod.ar_aging(conn=conn)
     conn.close()
     if not data:
         flash('ไม่พบลูกค้า', 'warning')
@@ -96,6 +102,7 @@ def call_card(customer_code):
     return render_template(
         'call/card.html',
         d=data,
+        aging=aging,
         status_label=cc.STATUS_LABEL,
         elapsed_th=cc.elapsed_th,
         customer_code=customer_code,

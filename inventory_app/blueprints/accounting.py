@@ -70,6 +70,12 @@ def express_ar_customer(customer_code):
     excluded_docs, _excluded_snapshot = cf_mod.bsn_ar_excluded_docs_by_code(
         customer_code, conn=conn)
 
+    # How OLD the balance below is. This page serves the authoritative chase
+    # figure, so it owes the same freshness warning /ar and the dunning page
+    # already carry (Finding 1, 2026-08-15) — it was the only AR drill-down
+    # without one.
+    aging = cf_mod.ar_aging(conn=conn)
+
     # "No chaseable bills" is NOT "no such customer". 33 of the 60 customers in
     # the prod AR snapshot (2026-09-08) have every bill forgiven, already paid,
     # or pre-2024, and this route used to tell every one of them they do not
@@ -146,6 +152,7 @@ def express_ar_customer(customer_code):
                            snapshot_date=snapshot_date,
                            rows=[dict(r) for r in rows],
                            excluded_docs=excluded_docs,
+                           aging=aging,
                            recent_payments=[dict(r) for r in recent_payments],
                            total_outstanding=total_outstanding,
                            total_billed=total_billed,
