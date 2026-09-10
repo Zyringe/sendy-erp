@@ -92,6 +92,14 @@ def _detail(**over):
                    linked_account=None, cashbook_accounts=[])
 
 
+def _nid_cell(html):
+    """The <dd> that renders the national ID, extracted so an assertion about
+    the reveal cannot be satisfied by markup elsewhere on the page."""
+    import re
+    m = re.search(r'เลขบัตรประชาชน</dt>\s*(<dd\b.*?</dd>)', html, re.DOTALL)
+    return m.group(1) if m else ''
+
+
 def test_detail_page_masks_the_national_id_by_default():
     html = _detail()
     assert 'ทดสอบ ระบบ' in html, "CONTROL — the fixture never reached the page"
@@ -105,22 +113,50 @@ def test_detail_page_carries_a_reveal_control_for_the_full_number():
     assert 'data-nid-full' in html
 
 
+def test_the_reveal_swaps_the_number_in_place_and_not_onto_a_new_line():
+    """Put, on prod: tapping the eye put the full number on the NEXT LINE.
+
+    Cause: `<details>` does not lay its content out inline. Chrome and Safari
+    wrap everything after `<summary>` in a `::details-content` box that is
+    `display: block`, so the revealed number always broke to a new line no
+    matter what `display` the span itself carried — `d-inline` on the
+    <details> and its <summary> cannot reach that wrapper.
+
+    A render test cannot see layout, so this pins the STRUCTURE that made the
+    layout wrong: the reveal must not be a <details> disclosure at all. It is
+    a toggle that swaps text in place, which is a button (`aria-pressed`), not
+    a region being disclosed. The visual confirmation stays a human's job.
+    """
+    cell = _nid_cell(_detail())
+    assert 'data-nid-full' in cell, "CONTROL — the reveal is not in this cell"
+    assert '<details' not in cell, \
+        '<details> wraps its content in a block box: the number breaks to a new line'
+    assert 'aria-pressed' in cell, 'a swap-in-place toggle is a button, not a disclosure'
+
+
 def test_the_reveal_control_carries_a_visible_affordance():
-    """`<details>` is the native toggle, but `display:inline` on its <summary>
-    removes the disclosure triangle in every WebKit/Blink browser — and the
-    summary MUST be inline to sit beside the number in a <dd>. Without an
-    explicit icon the control is invisible: the page would look like a plain
-    masked number with nothing to click, which is not 'an explicit reveal
-    control'."""
-    html = _detail()
-    assert 'data-nid-reveal' in html, "CONTROL"
-    assert 'bi-eye' in html
+    """Without an icon the control is invisible: the page would look like a
+    plain masked number with nothing to click, which is not 'an explicit
+    reveal control'.
+
+    Scoped to the cell, not the page: the delegated toggle script mentions
+    both `data-nid-reveal` and `bi bi-eye`, so a page-wide substring search
+    would pass with the markup entirely absent."""
+    cell = _nid_cell(_detail())
+    assert 'data-nid-mask' in cell, "CONTROL — the cell rendered"
+    assert 'data-nid-reveal' in cell
+    assert 'bi-eye' in cell
 
 
 def test_an_employee_with_no_national_id_gets_no_reveal_control():
     html = _detail(national_id=None)
-    assert 'ทดสอบ ระบบ' in html, "CONTROL"
-    assert 'data-nid-reveal' not in html
+    assert 'ทดสอบ ระบบ' in html, "CONTROL — the page rendered"
+    cell = _nid_cell(html)
+    assert cell, "CONTROL — the national-ID cell is still on the page"
+    # Scoped to the cell: the toggle SCRIPT names `data-nid-reveal` on every
+    # render, so `not in html` would be satisfied by nothing at all.
+    assert 'data-nid-reveal' not in cell
+    assert 'data-nid-full' not in cell, "the full number must not reach the page"
     assert NID_MASKED not in html
 
 
