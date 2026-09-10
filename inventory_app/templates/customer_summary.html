@@ -456,28 +456,28 @@
 
 <div class="row g-3 mb-4">
 
-  {# ── Top products ────────────────────────────────────────────────────────── #}
+  {# ── Product card (#493 slice 2, trimmed): ครั้งที่ซื้อ + ราคาล่าสุด + ─────────
+     ราคาวันนี้, keyed (product, unit). Opens sorted by times bought — no
+     ครั้ง/ยอด toggle yet (deferred, Put 2026-09-11). #}
   <div class="col-lg-6">
     <div class="card h-100">
       <div class="card-header">
         <i class="bi bi-trophy me-2 text-accent"></i>สินค้าที่ซื้อบ่อย
       </div>
       <div class="table-responsive">
-        <table class="table mb-0">
+        <table class="table table-mobile-cards mb-0">
           <thead>
             <tr>
-              <th>#</th>
               <th>สินค้า</th>
-              <th class="text-end">จำนวน</th>
-              <th class="text-end">ยอด</th>
+              <th class="text-end">ครั้งที่ซื้อ</th>
+              <th class="text-end">ราคาล่าสุด</th>
+              <th class="text-end">ราคาวันนี้</th>
             </tr>
           </thead>
           <tbody>
-            {% for r in data.top_products %}
+            {% for r in data.product_cards %}
             <tr>
-              <td class="text-subtle">{{ loop.index }}</td>
-              <td>
-                {% if r.product_id %}<span class="badge badge-gray me-1">{{ r.product_id }}</span>{% endif %}
+              <td class="td-primary">
                 {% if r.product_id %}
                   <a href="{{ url_for('products.product_detail', product_id=r.product_id) }}"
                      class="text-decoration-none text-main">{{ r.name }}</a>
@@ -485,8 +485,28 @@
                   <span class="text-warning small">{{ r.name }}</span>
                 {% endif %}
               </td>
-              <td class="text-end font-mono text-subtle">{{ r.total_qty | fmt_qty }} {{ r.unit }}</td>
-              <td class="text-end font-mono fw-600 text-success">{{ r.total_net | fmt_price }}</td>
+              <td data-label="ครั้งที่ซื้อ" class="text-end font-mono text-subtle">
+                {{ r.times_bought }} ครั้ง <span class="small">({{ r.unit }})</span>
+              </td>
+              <td data-label="ราคาล่าสุด" class="text-end">
+                {% if r.last %}
+                <div class="font-mono fw-600">{{ r.last.price_per_unit | fmt_price }}</div>
+                <div class="text-subtle small">
+                  <a href="{{ url_for('sales.sales_doc', doc_base=r.last.doc_base) }}"
+                     class="text-decoration-none">{{ r.last.doc_base }}</a>
+                  · {{ r.last.date_iso }}
+                </div>
+                {% else %}
+                <span class="text-subtle">—</span>
+                {% endif %}
+              </td>
+              <td data-label="ราคาวันนี้" class="text-end font-mono">
+                {% if r.today and r.today.has_list_price %}
+                  {{ r.today.price_per_unit | fmt_price }}
+                {% else %}
+                  <span class="text-subtle small">ยังไม่มีราคาตั้ง</span>
+                {% endif %}
+              </td>
             </tr>
             {% else %}
             <tr><td colspan="4" class="text-center text-subtle py-4">ไม่มีข้อมูล</td></tr>
