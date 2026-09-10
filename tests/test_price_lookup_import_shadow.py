@@ -32,17 +32,16 @@ print(hasattr(price_lookup, 'epochs_for_pairs'))
 
 
 def test_price_lookup_resolves_to_the_resolver_after_the_app_is_imported(tmp_path):
+    # SECRET_KEY / ADMIN_PASSWORD come through from conftest's os.environ defaults.
     env = dict(os.environ,
                SKIP_DB_INIT='1',          # import only, never touch a DB
-               DATA_DIR=str(tmp_path),
-               SECRET_KEY=os.environ.get('SECRET_KEY', 'test-only-secret'),
-               ADMIN_PASSWORD=os.environ.get('ADMIN_PASSWORD', 'test-only-admin'))
+               DATA_DIR=str(tmp_path))
     proc = subprocess.run([sys.executable, '-c', _PROBE], cwd=INVENTORY_APP,
                           env=env, capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr[-2000:]
 
     n_blueprints, resolved, has_epochs = proc.stdout.strip().splitlines()[-3:]
-    # CONTROL: the whole app really was imported, so its sys.path edits ran.
+    # CONTROL: the app really was imported (a crash or an empty probe fails above).
     assert int(n_blueprints) >= 10
     assert Path(resolved).resolve() == INVENTORY_APP / 'price_lookup.py'
     assert has_epochs == 'True'
