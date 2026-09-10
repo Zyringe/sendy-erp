@@ -8,6 +8,19 @@
   </a>
 {% endblock %}
 
+{% block head_extra %}
+<style>
+  /* Collapsed shows the mask; open swaps it for the full number, so the two
+     spellings are never on screen together. */
+  /* The summary must be inline to sit beside the number, and inline display
+     removes the native disclosure triangle — hence the explicit eye icon. */
+  details.nid-reveal > summary { cursor: pointer; list-style: none; }
+  details.nid-reveal > summary::-webkit-details-marker { display: none; }
+  details.nid-reveal[open] > summary > span { display: none; }
+  details.nid-reveal:not([open]) > .nid-full { display: none; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="row g-4">
   {# ── Personal info card ──────────────────────────────────────────────── #}
@@ -31,11 +44,25 @@
           <dt class="col-5">ชื่อเล่น</dt>
           <dd class="col-7">{{ employee.nickname or '–' }}</dd>
           <dt class="col-5">เลขบัตรประชาชน</dt>
-          <dd class="col-7 font-mono">{{ employee.national_id or '–' }}</dd>
+          <dd class="col-7 font-mono">
+            {%- if employee.national_id -%}
+            {# Masked like the list. The full number travels with the page and is
+               uncovered client-side: no new route and no audit entry, because the
+               page is already restricted to the roles allowed to see it at all
+               (spec #460). <details> gives the toggle natively — no JS. #}
+            <details class="nid-reveal d-inline" data-nid-reveal>
+              <summary class="d-inline" title="แสดง/ซ่อนเลขเต็ม"
+                       aria-label="แสดงเลขบัตรประชาชนเต็ม"><span
+                >{{ employee.national_id|mask_national_id }}</span><i
+                class="bi bi-eye ms-1 text-muted"></i></summary><span
+                class="nid-full" data-nid-full>{{ employee.national_id }}</span>
+            </details>
+            {%- else -%}–{%- endif -%}
+          </dd>
           <dt class="col-5">เพศ</dt>
           <dd class="col-7">{{ 'ชาย' if employee.gender == 'M' else ('หญิง' if employee.gender == 'F' else '–') }}</dd>
           <dt class="col-5">เบอร์โทร</dt>
-          <dd class="col-7">{{ employee.phone or '–' }}</dd>
+          <dd class="col-7">{{ employee.phone|thai_phone or '–' }}</dd>
           <dt class="col-5">ที่อยู่</dt>
           <dd class="col-7">{{ employee.address or '–' }}</dd>
           <dt class="col-5">ตำแหน่ง</dt>
@@ -235,7 +262,7 @@
           <dt class="col-5">สาขา</dt>
           <dd class="col-7">{{ employee.bank_branch or '–' }}</dd>
           <dt class="col-5">เลขบัญชี</dt>
-          <dd class="col-7 font-mono">{{ employee.bank_account_no or '–' }}</dd>
+          <dd class="col-7 font-mono">{{ employee.bank_account_no|bank_account(employee.bank_name) or '–' }}</dd>
           <dt class="col-5">ชื่อบัญชี</dt>
           <dd class="col-7">{{ employee.bank_account_name or '–' }}</dd>
         </dl>

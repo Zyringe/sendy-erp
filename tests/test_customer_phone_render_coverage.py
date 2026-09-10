@@ -37,10 +37,11 @@ TEMPLATES = os.path.join(
 ALLOWED = {
     'hr/employee_detail.html':
         'employees.phone, not customers.phone — a single number in its own '
-        'column, with no comma-joined list to split. Its formatting is the '
-        "employee-identity half of #460 and lands with that ticket's display "
-        'helper; wiring it to a customer-phone filter now would be the second '
-        'convention this sweep exists to prevent.',
+        'column, with no comma-joined list to split. It renders through '
+        '`thai_phone` (the single-number formatter added by #463), and is '
+        'pinned by test_employee_identity_surfaces.py. Wiring it to '
+        '`phone_entries` instead would split a column that never holds a list '
+        '— the second convention this sweep exists to prevent.',
     'marketplace/_order_detail_modal.html':
         'marketplace_orders.buyer_phone — one number supplied by Shopee/Lazada '
         'per order, never edited here and never comma-joined. Not a customer '

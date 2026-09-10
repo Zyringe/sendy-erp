@@ -159,6 +159,111 @@ def phone_entries(v):
     return out
 
 
+def mask_national_id(nid):
+    """Thai national ID -> last four digits only: 'x-xxxx-xxxx0-12-3'.
+
+    Moved verbatim from `blueprints/hr.py::_mask_national_id`, which handed it
+    to `hr/employees.html` by hand as `mask_nid`. It lives here so the employee
+    DETAIL page can mask the number the same way the list already does, instead
+    of a second copy of the rule (#463).
+
+    Separators in the stored value are ignored, so it masks the same whether
+    the number was typed with dashes or without.
+    """
+    if not nid:
+        return "-"
+    digits = "".join(c for c in str(nid) if c.isdigit())
+    if len(digits) < 4:
+        return "xxxx"
+    masked = "x" * (len(digits) - 4) + digits[-4:]
+    # format as Thai 13-digit blocks: x-xxxx-xxxxx-xx-x
+    if len(masked) == 13:
+        return (f"{masked[0]}-{masked[1:5]}-{masked[5:10]}"
+                f"-{masked[10:12]}-{masked[12]}")
+    return masked
+
+
+def thai_phone(v):
+    """A single bare Thai number -> conventional blocks; '' when not recorded.
+
+    Three shapes, and nothing else is guessed at:
+      10 digits          mobile           081-234-5678
+       9 digits from 02  Bangkok          02-123-4567
+       9 digits          provincial       038-123-456
+
+    Anything of another length is returned exactly as stored — inventing a
+    grouping for a number we do not recognise is the same mistake the
+    bank-account filter refuses to make for an unknown bank.
+
+    Separators in the stored value are dropped before grouping, so a legacy row
+    holding dashes renders identically to a canonical one holding bare digits.
+
+    Takes ONE number. A customer's phone column holds a LIST and belongs to
+    `phone_entries`; this is for the single-value columns (employees.phone).
+    """
+    if not v:
+        return ''
+    digits = ''.join(c for c in str(v) if c.isdigit())
+    if len(digits) == 10:
+        return f'{digits[:3]}-{digits[3:6]}-{digits[6:]}'
+    if len(digits) == 9:
+        if digits.startswith('02'):
+            return f'{digits[:2]}-{digits[2:5]}-{digits[5:]}'
+        return f'{digits[:3]}-{digits[3:6]}-{digits[6:]}'
+    return str(v)
+
+
+# Thai bank accounts are grouped differently by bank, so the dashes are only
+# ever applied when we know THAT bank's convention. A number under a bank we
+# have no convention for is shown as plain digits — the same stance the ticket
+# takes for a bank that was never recorded, and for the same reason: a guessed
+# grouping reads as authoritative and cannot be told apart from a real one.
+#
+# The six below all print xxx-x-xxxxx-x on their own passbooks. Two of them are
+# confirmed against stored data rather than from memory: on PROD 2026-09-10 the
+# only two accounts saved WITH separators are a ธนาคารกรุงไทย and a
+# ธนาคารกสิกรไทย row, both already in this shape.
+#
+# Deliberately NOT here, and each would need Put to confirm before it is:
+#   ธนาคารยูโอบี            10 digits, but grouped xxx-xxx-xxx-x, not 3-1-5-1
+#   ธนาคารออมสิน            12 digits
+#   ธนาคารเพื่อการเกษตรฯ     12 digits
+#   ธนาคารเกียรตินาคินภัทร / ธนาคารทิสโก้ / ธนาคารซีไอเอ็มบีไทย   unverified
+# All five fall through to plain digits, which is correct-but-plain, never wrong.
+_BANK_ACCOUNT_GROUPS = {
+    'ธนาคารกสิกรไทย':      (3, 1, 5, 1),
+    'ธนาคารไทยพาณิชย์':     (3, 1, 5, 1),
+    'ธนาคารกรุงเทพ':        (3, 1, 5, 1),
+    'ธนาคารกรุงไทย':        (3, 1, 5, 1),
+    'ธนาคารกรุงศรีอยุธยา':   (3, 1, 5, 1),
+    'ธนาคารทหารไทยธนชาต':  (3, 1, 5, 1),
+}
+
+
+def bank_account(v, bank=None):
+    """Bank account number -> the grouping that bank's passbook uses.
+
+    Grouped ONLY when `bank` names a convention we hold AND the stored number
+    has exactly the digits that convention describes. Every other case —
+    no bank, an unknown bank, a digit count that does not fit — renders plain
+    digits rather than a guess (spec #460).
+
+    Returns '' for a missing value so a template's own 'not recorded' marker
+    still shows.
+    """
+    if not v:
+        return ''
+    digits = ''.join(c for c in str(v) if c.isdigit())
+    groups = _BANK_ACCOUNT_GROUPS.get((bank or '').strip())
+    if not groups or sum(groups) != len(digits):
+        return digits
+    out, i = [], 0
+    for n in groups:
+        out.append(digits[i:i + n])
+        i += n
+    return '-'.join(out)
+
+
 def register_filters(app):
     app.template_filter('fmt_price')(fmt_price)
     app.template_filter('fmt_qty')(fmt_qty)
@@ -166,3 +271,6 @@ def register_filters(app):
     app.template_filter('from_json')(from_json)
     app.template_filter('html_text')(html_text)
     app.template_filter('phone_entries')(phone_entries)
+    app.template_filter('mask_national_id')(mask_national_id)
+    app.template_filter('thai_phone')(thai_phone)
+    app.template_filter('bank_account')(bank_account)
