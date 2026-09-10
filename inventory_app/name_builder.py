@@ -14,7 +14,7 @@ import sys
 
 _SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts"))
 if _SCRIPTS not in sys.path:
-    sys.path.insert(0, _SCRIPTS)
+    sys.path.append(_SCRIPTS)  # never insert(0): scripts/ must not shadow inventory_app (#476)
 
 import build_name_from_columns as _bnc  # noqa: E402
 

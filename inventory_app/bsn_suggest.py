@@ -21,7 +21,7 @@ _SCRIPTS_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), '..', 'scripts')
 )
 if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+    sys.path.append(_SCRIPTS_DIR)  # never insert(0): scripts/ must not shadow inventory_app (#476)
 
 import parse_sku_names as psn  # noqa: E402
 import build_name_from_columns as bnc  # noqa: E402
