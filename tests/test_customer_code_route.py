@@ -68,11 +68,12 @@ def test_by_code_renders_for_billless_customer(tmp_db):
 
 
 def test_bug2_two_companies_render_separate_totals(tmp_db):
-    """43ท013 (82 docs) and 01พ14 (1 doc) must never merge."""
+    """43ท013 (13 docs, 82 lines — #493 groups by doc_base, not doc_no) and
+    01พ14 (1 doc) must never merge."""
     import models
     big = models.get_customer_summary_by_code('43ท013')
     small = models.get_customer_summary_by_code('01พ14')
-    assert big['summary']['doc_count'] == 82
+    assert big['summary']['doc_count'] == 13
     assert small['summary']['doc_count'] == 1
     assert big['customer_info']['name'] == 'ร้าน ทรัพย์ทวี'
     assert small['customer_info']['name'] == 'บจก. พงศ์ทรัพย์ทวี'

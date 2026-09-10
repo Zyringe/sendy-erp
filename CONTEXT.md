@@ -153,6 +153,38 @@
   lines of that document), which the detail page regroups back into one invoice. _Avoid_:
   calling a single table row "an invoice" — it is one line of one.
 
+### Customer page (`/customer/code/<code>` — #493)
+
+- **ยอดรวมเอกสาร (document total)** — the sum of a document's lines, plus 7% VAT when the
+  document is แยก VAT (`vat_type=2`). A credit note's ยอดรวมเอกสาร is **negative**. This is
+  what the customer page's document list shows per row — never a raw `SUM(net)`, which
+  omits VAT on แยก VAT documents and shows a credit note as positive money.
+
+- **ครั้งที่ซื้อ (times bought)** — the number of invoices carrying a *paid* line (net > 0)
+  of a product. A freebie-only invoice or a credit note does not count.
+
+- **ซื้อล่าสุด (last purchase date)** — the latest date with a paid invoice line; never a
+  credit note or a freebie-only document. Computed over the price resolver's evidence
+  population (`price_lookup.evidence_filter`) — the same population `last_paid` uses. Distinct
+  from the header's existing "ช่วงเวลา" activity range, which stays a raw
+  `MIN/MAX(date_iso)` and can end on a credit note.
+
+- **ราคาล่าสุดที่ลูกค้าได้ (customer's last price)** — the per-unit money paid on the
+  customer's most recent paid line of a product **in that unit**, VAT-inclusive when the
+  invoice added VAT, with that invoice's line discount, bill-level discount, and any
+  same-product freebies.
+
+- **ราคาตั้งหลังโปร (list after promo)** — the catalogue price for a unit after the active
+  price promotion, stored VAT-inclusive. "Today's price", shown next to ราคาล่าสุดที่ลูกค้าได้.
+
+- **ทุนเฉลี่ย (WACC)** / **ทุนซื้อล่าสุด (last purchase cost)** — both ex-VAT, per base unit,
+  converted to a row's unit. ทุนเฉลี่ย is the product's current `cost_price`; ทุนซื้อล่าสุด is
+  the latest PURCHASE event read from `product_cost_ledger` (read-only — the loader that
+  recalculates this ledger writes, and must never be called from a page render).
+
+- **กำไรที่ราคาเดิม ("ขายราคาเดิมวันนี้")** — the margin if the customer's last price were
+  charged today, against today's WACC. Not the historical margin of that invoice.
+
 ## Cashbook (the `/cashbook` feature — บัญชีรับ-จ่าย)
 
 - **Cashbook (บัญชีรับ-จ่าย)** — the multi-account operating cash ledger: money in/out of

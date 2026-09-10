@@ -223,7 +223,9 @@ def test_customer_page_document_list_has_one_row_per_document(tmp_db):
 
     c = _client(tmp_db)
     html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
-    assert html.count('IV49311') == 1
+    # One row → one link to the document (a raw substring count would double-
+    # count the href and the visible text of a single row).
+    assert html.count('doc/IV49311"') == 1
 
 
 def test_invoice_page_has_back_control(tmp_db):
@@ -257,5 +259,5 @@ def test_mobile_customer_page_lists_documents_not_lines(tmp_db):
 
     c = _client(tmp_db)
     html = c.get(f'/m/customer/{quote(TEST_NAME)}').data.decode()
-    assert html.count('IV49313') == 1
+    assert html.count('doc/IV49313"') == 1
     assert '2 รายการ' in html

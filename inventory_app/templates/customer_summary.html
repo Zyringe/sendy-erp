@@ -372,7 +372,7 @@
           <i class="bi bi-cash-stack" style="color:#2e7d3a"></i>
         </div>
         <div>
-          <div class="stat-card-label">ยอดซื้อรวม</div>
+          <div class="stat-card-label">ยอดซื้อรวม (ก่อน VAT)</div>
           <div class="stat-card-value text-success">{{ data.summary.total_net | fmt_price }}</div>
         </div>
       </div>
@@ -417,6 +417,24 @@
               {{ data.summary.first_date }}<br>
               <span class="text-subtle" style="font-size:.8rem">ถึง {{ data.summary.last_date }}</span>
             {% else %}—{% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="stat-card">
+      <div class="d-flex align-items-center gap-3">
+        <div class="stat-card-icon" style="background:#fde8e8">
+          <i class="bi bi-hourglass-split" style="color:#b42318"></i>
+        </div>
+        <div>
+          <div class="stat-card-label">ซื้อล่าสุด</div>
+          <div class="stat-card-value small fw-600" style="color:#b42318;font-size:1rem">
+            {% if data.summary.last_purchase_date %}
+              {{ data.summary.last_purchase_date }}<br>
+              <span class="text-subtle" style="font-size:.8rem">เงียบไป {{ days_quiet }} วัน</span>
+            {% else %}ยังไม่เคยซื้อ{% endif %}
           </div>
         </div>
       </div>
@@ -492,7 +510,7 @@
             <tr>
               <th>วันที่</th>
               <th>เลขเอกสาร</th>
-              <th class="text-end">ชิ้น</th>
+              <th class="text-end">รายการ</th>
               <th class="text-end">ยอด</th>
             </tr>
           </thead>
@@ -501,13 +519,24 @@
             <tr>
               <td class="font-mono text-subtle small">{{ r.date_iso }}</td>
               <td class="font-mono small">
-                <a href="{{ url_for('sales.sales_doc', doc_base=r.doc_no.rsplit('-',1)[0]) }}"
+                <a href="{{ url_for('sales.sales_doc', doc_base=r.doc_base) }}"
                    class="text-decoration-none text-main">
-                  {{ r.doc_no.rsplit('-',1)[0] }}
+                  {{ r.doc_base }}
                 </a>
+                {% if r.is_credit_note %}
+                <span class="badge bg-danger-subtle text-danger-emphasis">ใบลดหนี้</span>
+                {% if r.ref_invoice %}
+                <a href="{{ url_for('sales.sales_doc', doc_base=r.ref_invoice) }}"
+                   class="text-subtle" style="font-size:.75rem">คืน {{ r.ref_invoice }}</a>
+                {% endif %}
+                {% elif r.vat_type == 2 %}
+                <span class="badge bg-info-subtle text-info">แยก VAT</span>
+                {% endif %}
               </td>
-              <td class="text-end small text-subtle">{{ r.total_qty | fmt_qty }}</td>
-              <td class="text-end fw-600 text-success small">{{ r.total_net | fmt_price }}</td>
+              <td class="text-end small text-subtle">{{ r.item_count }}</td>
+              <td class="text-end fw-600 small {{ 'text-danger' if r.is_credit_note else 'text-success' }}">
+                {{ r.total | fmt_price }}
+              </td>
             </tr>
             {% else %}
             <tr><td colspan="4" class="text-center text-subtle py-4">ไม่มีข้อมูล</td></tr>
