@@ -5,6 +5,7 @@ rationale. No behavior changes.
 """
 import json
 import sales_filters
+import vat_math
 from database import get_connection
 
 
@@ -27,6 +28,58 @@ def _customer_sales_scope(key_col, key_value, date_from, date_to):
     return ' AND '.join(conds), params
 
 
+def _customer_documents(conn, where, params, limit=None):
+    """One row per DOCUMENT (doc_base), never per line — the shared grouping
+    #493 introduced. `sales_transactions.doc_no` carries a per-line '-N'
+    suffix, so grouping by it (the pre-#493 code) produced one "document" per
+    LINE: 247 lines on customer 23ท06 read as 247 documents when the real
+    count is 66. `_customer_sales_aggregates`'s docs list and the mobile quick
+    page (models.get_customer_documents) both call this now, so they cannot
+    drift apart again.
+
+    Each row: doc_base, date_iso (latest line date on the doc), item_count
+    ('รายการ' — the line count, not a quantity summed across units),
+    vat_type (of the doc's lines; ยกเว้น/ไม่บวก VAT are never mixed with แยก
+    VAT on one document in practice), total (ยอดรวมเอกสาร — VAT added through
+    vat_math for แยก VAT documents, summed; NEGATIVE for a credit note),
+    is_credit_note, ref_invoice (the invoice an SR credits, NULL otherwise).
+    """
+    limit_sql = f'LIMIT {int(limit)}' if limit else ''
+    rows = conn.execute(f"""
+        SELECT doc_base,
+               MAX(date_iso) AS date_iso,
+               COUNT(*) AS item_count,
+               MAX(vat_type) AS vat_type,
+               SUM({vat_math.cash_sql()}) AS raw_total,
+               (doc_base LIKE 'SR%') AS is_credit_note,
+               MAX(ref_invoice) AS ref_invoice
+        FROM sales_transactions
+        WHERE {where}
+        GROUP BY doc_base
+        ORDER BY date_iso DESC, doc_base
+        {limit_sql}
+    """, params).fetchall()
+    docs = []
+    for r in rows:
+        d = dict(r)
+        total = d.pop('raw_total') or 0
+        d['is_credit_note'] = bool(d['is_credit_note'])
+        d['total'] = -total if d['is_credit_note'] else total
+        docs.append(d)
+    return docs
+
+
+def get_customer_documents(key_col, key_value, date_from=None, date_to=None, limit=None):
+    """Public wrapper around `_customer_documents` — used directly by the
+    mobile quick page (name-keyed), so its document list can never drift from
+    the desktop customer page's (#493)."""
+    conn = get_connection()
+    where, params = _customer_sales_scope(key_col, key_value, date_from, date_to)
+    docs = _customer_documents(conn, where, params, limit=limit)
+    conn.close()
+    return docs
+
+
 def _customer_sales_aggregates(conn, where, params):
     """The four per-customer sales aggregates, defined ONCE.
 
@@ -36,15 +89,27 @@ def _customer_sales_aggregates(conn, where, params):
 
     Returns (summary, top_products, monthly, docs).
     """
-    summary = conn.execute(f"""
-        SELECT COUNT(DISTINCT doc_no) AS doc_count,
+    import price_lookup
+
+    summary = dict(conn.execute(f"""
+        SELECT COUNT(DISTINCT doc_base) AS doc_count,
                COALESCE(SUM(net), 0)  AS total_net,
                COALESCE(SUM(qty), 0)  AS total_qty,
                MIN(date_iso)          AS first_date,
                MAX(date_iso)          AS last_date
         FROM sales_transactions
         WHERE {where}
+    """, params).fetchone())
+
+    # ซื้อล่าสุด (#493): the latest date with a PAID evidence-filtered line —
+    # never a credit note (SR) or a free/zero-net line, unlike last_date above
+    # (which stays a raw activity date, unchanged, for the "ช่วงเวลา" range).
+    last_purchase = conn.execute(f"""
+        SELECT MAX(date_iso) AS d
+        FROM sales_transactions
+        WHERE {where} AND {price_lookup.evidence_filter('')}
     """, params).fetchone()
+    summary['last_purchase_date'] = last_purchase['d']
 
     top_products = conn.execute(f"""
         SELECT COALESCE(p.product_name, s.product_name_raw) AS name,
@@ -63,7 +128,7 @@ def _customer_sales_aggregates(conn, where, params):
 
     monthly = conn.execute(f"""
         SELECT strftime('%Y-%m', date_iso) AS month,
-               COUNT(DISTINCT doc_no) AS doc_count,
+               COUNT(DISTINCT doc_base) AS doc_count,
                SUM(net) AS total_net
         FROM sales_transactions
         WHERE {where}
@@ -71,18 +136,9 @@ def _customer_sales_aggregates(conn, where, params):
         ORDER BY month
     """, params).fetchall()
 
-    # All invoices (paginated not needed here — keep it simple, limit 200)
-    docs = conn.execute(f"""
-        SELECT date_iso, doc_no,
-               COUNT(*) AS line_count,
-               SUM(qty) AS total_qty,
-               SUM(net) AS total_net
-        FROM sales_transactions
-        WHERE {where}
-        GROUP BY doc_no
-        ORDER BY date_iso DESC, doc_no
-        LIMIT 200
-    """, params).fetchall()
+    # Every document (#493 — no 200-LINE cap cutting off old invoices; the old
+    # cap was on `doc_no`, i.e. lines, so it silently dropped whole invoices).
+    docs = _customer_documents(conn, where, params)
 
     return summary, top_products, monthly, docs
 
@@ -346,7 +402,7 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
                (c.salesperson IS NOT NULL
                   AND c.salesperson != ''
                   AND sp.code IS NULL)                    AS salesperson_orphan,
-               COUNT(DISTINCT s.doc_no)                   AS doc_count,
+               COUNT(DISTINCT s.doc_base)                 AS doc_count,
                COALESCE(SUM(s.net), 0)                    AS total_net,
                MAX(s.date_iso)                            AS last_date,
                (c.code IS NULL)                           AS missing_master
