@@ -111,6 +111,20 @@
 </div>
 {% endif %}
 
+{# ── What was removed from that total — ONE LINE, no table ─────────────────
+   The desktop surfaces render `_ar_excluded_docs.html`; a phone on a sales trip
+   gets the count and the amount so the shorter list reads as deliberate rather
+   than as missing bills (#472). OUTSIDE the `{% if unpaid %}` above: a customer
+   whose every bill is excluded has no card at all. #}
+{% if excluded_docs %}
+{% set excluded_total = excluded_docs | sum(attribute='outstanding') %}
+<div class="alert alert-secondary py-2 px-3 small mb-3">
+  <i class="bi bi-info-circle me-1"></i>ยอดค้างด้านบนคือยอด <strong>ตามได้</strong> —
+  <strong>ตัด {{ excluded_docs|length }} ใบ ฿{{ '{:,.2f}'.format(excluded_total) }}</strong>
+  ออกไปแล้ว (ตัดหนี้สูญ / ลูกค้าจ่ายแล้ว / หนี้ก่อนปี 2024)
+</div>
+{% endif %}
+
 {# ── Stats card ───────────────────────────────────────────────────────────── #}
 {% if stats and stats.doc_count %}
 <div class="row g-2 mb-3">

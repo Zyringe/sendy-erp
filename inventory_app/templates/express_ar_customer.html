@@ -37,7 +37,7 @@
   </div></div></div>
   <div class="col-md-3"><div class="card"><div class="card-body">
     <div class="text-subtle small">เก่าสุด</div>
-    <div class="fs-5 fw-600 font-mono">{{ oldest_date }}</div>
+    <div class="fs-5 fw-600 font-mono">{{ oldest_date or '—' }}</div>
   </div></div></div>
 </div>
 
@@ -73,8 +73,14 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="7" class="text-center text-subtle py-4">ไม่พบบิลค้างของลูกค้านี้</td></tr>
+        {# Reachable since #470: a customer whose every bill is excluded used to
+           be redirected away with "ไม่พบลูกหนี้รหัส X". The section below the
+           card says what happened to those bills. #}
+        <tr><td colspan="7" class="text-center text-subtle py-4">
+          <span>ไม่มีหนี้ที่ต้องตาม</span>
+        </td></tr>
         {% endfor %}
+        {% if rows %}
         <tr class="table-light d-none d-lg-table-row">
           <td colspan="3" class="text-end fw-600">รวม</td>
           <td class="text-end font-mono fw-600">{{ '{:,.2f}'.format(total_billed) }}</td>
@@ -82,10 +88,13 @@
           <td class="text-end font-mono fw-600 text-danger">{{ '{:,.2f}'.format(total_outstanding) }}</td>
           <td></td>
         </tr>
+        {% endif %}
       </tbody>
     </table>
   </div>
 </div>
+
+{% include '_ar_excluded_docs.html' %}
 
 {% if recent_payments %}
 <h5 class="mt-4 mb-2 px-1"><i class="bi bi-cash-coin text-success me-2"></i>การจ่ายล่าสุด ({{ recent_payments|length }} รายการ)</h5>

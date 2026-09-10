@@ -357,6 +357,12 @@
 </div>
 {% endif %}
 
+{# ── What was REMOVED from the บิลค้างชำระ total ──────────────────────────
+   OUTSIDE the `{% if unpaid_bills %}` above on purpose: a customer whose every
+   bill is excluded has no bill card at all, and that is exactly the customer
+   who needs the explanation. #}
+{% include '_ar_excluded_docs.html' %}
+
 {# ── Summary cards ───────────────────────────────────────────────────────── #}
 <div class="row g-3 mb-4">
   <div class="col-sm-6 col-xl-3">
