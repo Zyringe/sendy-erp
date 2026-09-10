@@ -8,19 +8,6 @@
   </a>
 {% endblock %}
 
-{% block head_extra %}
-<style>
-  /* Collapsed shows the mask; open swaps it for the full number, so the two
-     spellings are never on screen together. */
-  /* The summary must be inline to sit beside the number, and inline display
-     removes the native disclosure triangle — hence the explicit eye icon. */
-  details.nid-reveal > summary { cursor: pointer; list-style: none; }
-  details.nid-reveal > summary::-webkit-details-marker { display: none; }
-  details.nid-reveal[open] > summary > span { display: none; }
-  details.nid-reveal:not([open]) > .nid-full { display: none; }
-</style>
-{% endblock %}
-
 {% block content %}
 <div class="row g-4">
   {# ── Personal info card ──────────────────────────────────────────────── #}
@@ -49,14 +36,19 @@
             {# Masked like the list. The full number travels with the page and is
                uncovered client-side: no new route and no audit entry, because the
                page is already restricted to the roles allowed to see it at all
-               (spec #460). <details> gives the toggle natively — no JS. #}
-            <details class="nid-reveal d-inline" data-nid-reveal>
-              <summary class="d-inline" title="แสดง/ซ่อนเลขเต็ม"
-                       aria-label="แสดงเลขบัตรประชาชนเต็ม"><span
-                >{{ employee.national_id|mask_national_id }}</span><i
-                class="bi bi-eye ms-1 text-muted"></i></summary><span
-                class="nid-full" data-nid-full>{{ employee.national_id }}</span>
-            </details>
+               (spec #460).
+
+               A BUTTON, not a <details>: this swaps one string for another in
+               place, it does not disclose a region. <details> was the first
+               attempt and it put the revealed number on the next line on prod --
+               Chrome and Safari wrap everything after <summary> in a
+               ::details-content box that is display:block, which no `d-inline`
+               on the <details> or its <summary> can reach. #}
+            <span data-nid-mask>{{ employee.national_id|mask_national_id }}</span><span
+              class="d-none" data-nid-full>{{ employee.national_id }}</span><button
+              type="button" class="btn btn-link p-0 ms-1 align-baseline text-muted"
+              data-nid-reveal aria-pressed="false" title="แสดง/ซ่อนเลขเต็ม"
+              aria-label="แสดงเลขบัตรประชาชนเต็ม"><i class="bi bi-eye"></i></button>
             {%- else -%}–{%- endif -%}
           </dd>
           <dt class="col-5">เพศ</dt>
@@ -462,4 +454,25 @@
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Swap the masked national ID for the full one in place. Delegated so the
+  // markup carries no handler and no value.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('[data-nid-reveal]') : null;
+    if (!btn) return;
+    var cell = btn.parentElement;
+    var mask = cell.querySelector('[data-nid-mask]');
+    var full = cell.querySelector('[data-nid-full]');
+    if (!mask || !full) return;
+    var showing = btn.getAttribute('aria-pressed') === 'true';
+    mask.classList.toggle('d-none', !showing);
+    full.classList.toggle('d-none', showing);
+    btn.setAttribute('aria-pressed', showing ? 'false' : 'true');
+    var icon = btn.querySelector('i');
+    if (icon) icon.className = showing ? 'bi bi-eye' : 'bi bi-eye-slash';
+  });
+</script>
 {% endblock %}
