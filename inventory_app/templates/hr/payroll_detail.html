@@ -243,7 +243,7 @@
               <span class="text-muted">ยังไม่มีเลขบัญชี</span>
             {% endif %}
           </td>
-          <td class="small font-mono">{{ item.bank_account_no or '–' }}</td>
+          <td class="small font-mono">{{ item.bank_account_no|bank_account(item.bank_name) or '–' }}</td>
           <td class="text-end small fw-bold">{{ fmt_baht(item.net_pay) }}</td>
           <td class="small">{{ item.default_cashbook_account_name or '—' }}</td>
           <td>

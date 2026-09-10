@@ -79,21 +79,6 @@ def _be_year(iso_date: Optional[str]) -> str:
         return str(iso_date)
 
 
-def _mask_national_id(nid: Optional[str]) -> str:
-    """Show only last 4 digits: 'x-xxxx-xxxxx-xx-x' style."""
-    if not nid:
-        return "-"
-    digits = "".join(c for c in str(nid) if c.isdigit())
-    if len(digits) < 4:
-        return "xxxx"
-    masked = "x" * (len(digits) - 4) + digits[-4:]
-    # format as Thai 13-digit blocks: x-xxxx-xxxxx-xx-x
-    if len(masked) == 13:
-        return (f"{masked[0]}-{masked[1:5]}-{masked[5:10]}"
-                f"-{masked[10:12]}-{masked[12]}")
-    return masked
-
-
 def _fmt_baht(value) -> str:
     try:
         return f"฿{float(value):,.2f}"
@@ -170,7 +155,6 @@ def employee_list():
         "hr/employees.html",
         employees=employees,
         show_inactive=show_inactive,
-        mask_nid=_mask_national_id,
         be_year=_be_year,
     )
 

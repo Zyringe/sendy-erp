@@ -70,7 +70,7 @@
         <table class="table table-borderless table-sm mb-0 small">
           <tr><td class="text-muted" style="width:100px">ธนาคาร</td><td>{{ item.bank_name or '–' }}</td></tr>
           <tr><td class="text-muted">สาขา</td><td>{{ item.bank_branch or '–' }}</td></tr>
-          <tr><td class="text-muted">เลขบัญชี</td><td class="font-mono">{{ item.bank_account_no or '–' }}</td></tr>
+          <tr><td class="text-muted">เลขบัญชี</td><td class="font-mono">{{ item.bank_account_no|bank_account(item.bank_name) or '–' }}</td></tr>
           <tr><td class="text-muted">ชื่อบัญชี</td><td>{{ item.bank_account_name or '–' }}</td></tr>
         </table>
       </div>

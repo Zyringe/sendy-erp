@@ -57,7 +57,7 @@
           </td>
           <td class="small">{{ emp.position or '–' }}</td>
           <td class="small text-muted">{{ emp.company_name or '–' }}</td>
-          <td class="font-mono small text-muted">{{ mask_nid(emp.national_id) }}</td>
+          <td class="font-mono small text-muted">{{ emp.national_id|mask_national_id }}</td>
           <td class="small">{{ be_year(emp.start_date) }}</td>
           <td class="small {% if emp.probation_end_date %}text-warning{% endif %}">
             {{ be_year(emp.probation_end_date) if emp.probation_end_date else '–' }}
