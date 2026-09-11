@@ -214,6 +214,24 @@ def test_margin_at_last_price_converts_a_freebie_in_another_unit(cust):
     assert m['pct'] == pytest.approx(-32.0)
 
 
+def test_margin_arithmetic_ties_to_the_displayed_unit_cost(cust):
+    """The reveal shows "ทุน 55.51 × 12" — so the cost it subtracts must BE
+    55.51 × 12 = 666.12, not 55.5061475 × 12 = 666.07 (found on real data,
+    38จ01 pid 787). Same rule as the resolver's own margin: round the
+    per-unit cost to 2 decimals first (price_lookup: cost_per_unit =
+    round(cost * ratio, 2)), so both margins on a row use one method."""
+    conn = cust
+    pid = _mk_product(conn, cost=55.5061475)
+    _line(conn, doc_base='IV49524', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=12, unit_price=52.92, net=635.04)
+    cost = _card(_summary(), pid)['cost']
+    m = cost['margin_last']
+    assert cost['wacc_per_unit'] == pytest.approx(55.51)
+    assert m['paid_cost'] == pytest.approx(666.12)          # 55.51 × 12, what the screen says
+    assert m['profit'] == pytest.approx(-31.08)
+    assert m['pct'] == pytest.approx(-4.89)
+
+
 def test_margin_at_last_price_is_unknown_when_a_freebie_ratio_is_unknown(cust):
     conn = cust
     pid = _mk_product(conn, cost=60.0)

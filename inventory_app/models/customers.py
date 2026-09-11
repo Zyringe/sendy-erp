@@ -278,11 +278,18 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
         ORDER BY event_date DESC, id DESC LIMIT 1
     """, (pid,)).fetchone()
 
-    if row_ratio is not None:
-        out['wacc_per_unit'] = round(cost * row_ratio, 2)
+    # Per-unit costs are rounded to 2 decimals FIRST and everything below
+    # multiplies the rounded figure — the resolver's own rule (price_lookup:
+    # cost_per_unit = round(cost * ratio, 2)). The reveal prints "ทุน 55.51
+    # × 12", so 666.12 is what must be subtracted, not 55.5061 × 12 = 666.07
+    # (seen on real data, 38จ01). Both margins on a row then use one method.
+    wacc_pu = round(cost * row_ratio, 2) if row_ratio is not None else None
+    lp_pu = (round(lp['unit_cost'] * row_ratio, 2)
+             if lp is not None and row_ratio is not None else None)
+    out['wacc_per_unit'] = wacc_pu
     if lp is not None:
         out['last_purchase'] = {
-            'per_unit': round(lp['unit_cost'] * row_ratio, 2) if row_ratio is not None else None,
+            'per_unit': lp_pu,
             'date': lp['event_date'],
             'ref': lp['reference_no'],
         }
@@ -290,19 +297,19 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
     if last_row is not None and row_ratio is not None:
         kept = last_row['net']
         kept_per_unit = kept / last_row['qty']
-        out['last_below_wacc'] = kept_per_unit < cost * row_ratio
-        if lp is not None:
-            out['last_below_last_purchase'] = kept_per_unit < lp['unit_cost'] * row_ratio
+        out['last_below_wacc'] = kept_per_unit < wacc_pu
+        if lp_pu is not None:
+            out['last_below_last_purchase'] = kept_per_unit < lp_pu
         free_ratios = [price_lookup._bill_ratio(conn, pid, prod['unit_type'], f['unit'], ratio_cache)
                        for f in freebie_rows]
         if None not in free_ratios:
-            paid_cost = cost * row_ratio * last_row['qty']
-            free_cost = cost * sum(f['qty'] * r for f, r in zip(freebie_rows, free_ratios))
+            paid_cost = wacc_pu * last_row['qty']
+            free_cost = sum(round(cost * r, 2) * f['qty'] for f, r in zip(freebie_rows, free_ratios))
             profit = kept - paid_cost - free_cost
             out['margin_last'] = {
                 'kept': round(kept, 2),
                 'paid_qty': last_row['qty'],
-                'wacc_per_unit': round(cost * row_ratio, 2),
+                'wacc_per_unit': wacc_pu,
                 'paid_cost': round(paid_cost, 2),
                 'free_cost': round(free_cost, 2),
                 'profit': round(profit, 2),

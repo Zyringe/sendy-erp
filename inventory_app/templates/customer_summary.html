@@ -585,7 +585,8 @@
                   {% set lp = r.cost.last_purchase %}
                   {% if lp and lp.per_unit is not none %}
                   <div class="font-mono">{{ lp.per_unit | fmt_price }}</div>
-                  <div class="text-subtle small">{{ lp.date }}{% if lp.ref %} · {{ lp.ref }}{% endif %}</div>
+                  <div class="text-subtle small">{{ lp.date }}</div>
+                  {% if lp.ref %}<div class="text-subtle small">{{ lp.ref }}</div>{% endif %}
                   {% else %}
                   <div class="text-subtle">—</div>
                   {% endif %}
