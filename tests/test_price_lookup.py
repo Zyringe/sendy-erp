@@ -1402,3 +1402,74 @@ def test_epochs_for_pairs_none_when_no_epoch_source(db):
     pid = _mk_product(db, "C2 no epoch", unit_type='ตัว', base=100.0, cost=60.0)
     _clear_pid(db, pid)
     assert pl.epochs_for_pairs(db, [(pid, 'ตัว')], today=TODAY)[(pid, 'ตัว')] is None
+
+
+# ── #500: date_start is the ONLY thing that makes a promo an epoch source ────
+#
+# A NULL date_start says "standing catalogue discount — this never moved the
+# price regime". A real date_start says "the price changed that day". The two
+# tests below are exact counterfactuals: identical fixtures, that one field
+# differs, opposite windows.
+#
+# ⚠ The -200d bill is load-bearing, not scenery. Without a bill on the FAR
+# side of the promo's floor neither test could fail (verification-discipline.md
+# "a test that cannot fail", shape #8 — a filter with nothing on its far side).
+# n_bills 1-vs-2 is the discriminator; assert the COUNT before the property.
+
+
+def test_r4b_epoch_source_promo_start_clamps_window_and_drops_older_bills(db):
+    """A dated promo IS a price-regime change: the window floor becomes its
+    date_start and a bill from before it leaves the evidence population.
+
+    Deliberately no _base_price_history — this is the shape #500 found live on
+    prod (4 กิ๊ปรัด ORBIT products whose promo is their ONLY price event), so
+    promo_start is the sole epoch source and nothing else can mask a failure.
+    """
+    pid = _mk_product(db, "R4b promo start clamps", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    promo_start = _days_ago(30)
+    _promo(db, pid, promo_type='percent', discount_value=20.0, date_start=promo_start)
+    _bill(db, pid=pid, customer_code='TST-500A', customer_name='ลูกค้า 500A',
+          date_iso=_days_ago(200), qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
+    _bill(db, pid=pid, customer_code='TST-500A', customer_name='ลูกค้า 500A',
+          date_iso=_days_ago(10), qty=1, unit='ตัว', unit_price=80.0, vat_type=1, net=80.0)
+
+    out = pl.resolve_price(db, product_id=pid, today=TODAY)
+    assert out['window']['n_bills'] == 1, "the -200d bill must fall outside the promo epoch"
+    assert out['window']['from'] == promo_start
+    assert out['window']['reason'] == 'promo_start'
+
+
+def test_r4b_null_date_start_is_not_an_epoch_source(db):
+    """Counterfactual of the test above: the SAME fixture with date_start
+    NULL. A standing catalogue discount must not clamp the window, so the
+    -200d bill stays in evidence and the window falls back to plain age.
+    """
+    pid = _mk_product(db, "R4b promo no start", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    _promo(db, pid, promo_type='percent', discount_value=20.0, date_start=None)
+    _bill(db, pid=pid, customer_code='TST-500B', customer_name='ลูกค้า 500B',
+          date_iso=_days_ago(200), qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
+    _bill(db, pid=pid, customer_code='TST-500B', customer_name='ลูกค้า 500B',
+          date_iso=_days_ago(10), qty=1, unit='ตัว', unit_price=80.0, vat_type=1, net=80.0)
+
+    out = pl.resolve_price(db, product_id=pid, today=TODAY)
+    assert out['window']['n_bills'] == 2, "CONTROL: the -200d bill must survive"
+    assert out['window']['from'] == _days_ago(730)
+    assert out['window']['reason'] == '12m'
+
+
+def test_epoch_candidates_reports_promo_start_only_when_date_start_is_set(db):
+    """Unit-level pin on the single line #500 turns on, with its own control:
+    the dated product must report a promo_start in the same run that the
+    undated one reports None."""
+    dated = _mk_product(db, "500 dated promo", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, dated)
+    _promo(db, dated, promo_type='percent', discount_value=20.0, date_start=_days_ago(30))
+
+    undated = _mk_product(db, "500 undated promo", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, undated)
+    _promo(db, undated, promo_type='percent', discount_value=20.0, date_start=None)
+
+    assert pl._epoch_candidates(db, dated, 'ตัว', TODAY)['promo_start'] == _days_ago(30)
+    assert pl._epoch_candidates(db, undated, 'ตัว', TODAY)['promo_start'] is None
