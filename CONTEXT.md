@@ -181,9 +181,18 @@
   converted to a row's unit. ทุนเฉลี่ย is the product's current `cost_price`; ทุนซื้อล่าสุด is
   the latest PURCHASE event read from `product_cost_ledger` (read-only — the loader that
   recalculates this ledger writes, and must never be called from a page render).
+  A product with `cost_price` 0 shows **ไม่มีทุน** — no WACC, no margin, no 🔴 — but a real
+  ทุนซื้อล่าสุด and its ⚠ still show (Put, 2026-09-11): some products hold a purchase in the
+  ledger while their WACC reads 0, and for them it is the only cost figure there is.
 
 - **กำไรที่ราคาเดิม ("ขายราคาเดิมวันนี้")** — the margin if the customer's last price were
   charged today, against today's WACC. Not the historical margin of that invoice.
+  Its badges (🔴 ต่ำกว่าทุน / ⚠ ต่ำกว่าทุนซื้อล่าสุด) judge the money **kept** — net ÷ qty,
+  ex-VAT — never the VAT-inclusive price displayed on a แยก VAT bill (Put, 2026-09-11).
+
+- **กำไรที่ราคาวันนี้** — the price resolver's own internal margin (NoVAT basis) at
+  ราคาตั้งหลังโปร, taken at the customer's **last order quantity**, so a bundle promo's free
+  units count once that quantity reaches the bundle (Put, 2026-09-11).
 
 ## Cashbook (the `/cashbook` feature — บัญชีรับ-จ่าย)
 

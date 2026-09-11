@@ -467,7 +467,10 @@
      discount, freebies, ก่อนเปลี่ยนราคา) / ราคาวันนี้ (+ โปร) / สต็อก, keyed
      (product, unit). Union of both top-20 orderings (see
      models/customers.py::_customer_product_cards); opens sorted by times
-     bought, the ครั้ง/ยอด buttons below just re-sort these SAME rows. #}
+     bought, the ครั้ง/ยอด buttons below just re-sort these SAME rows.
+     Slice 3 cost block (ทุน column, badges, margins): TWO gates, both kept
+     on purpose — the route only puts `r.cost` in the data for admin/manager,
+     and every cost element here also checks `is_manager`. #}
   <div class="col-lg-6">
     <div class="card h-100">
       <div class="card-header d-flex justify-content-between align-items-center">
@@ -487,6 +490,7 @@
               <th class="text-end">ครั้งที่ซื้อ</th>
               <th class="text-end">ราคาล่าสุด</th>
               <th class="text-end">ราคาวันนี้</th>
+              {% if is_manager %}<th class="text-end">ทุน</th>{% endif %}
               <th class="text-end">สต็อก</th>
             </tr>
           </thead>
@@ -502,12 +506,19 @@
                   <span class="text-warning small">{{ r.name }}</span>
                 {% endif %}
               </td>
-              <td data-label="ครั้งที่ซื้อ" class="text-end font-mono text-subtle">
+              {# Each labelled cell holds ONE wrapper <div>: on phones the td is a
+                 2-column grid (label | value), and every extra child would become
+                 its own grid item and scatter across both columns. #}
+              <td data-label="ครั้งที่ซื้อ" class="text-end font-mono text-subtle"><div>
                 {{ r.times_bought }} ครั้ง <span class="small">({{ r.unit }})</span>
-              </td>
-              <td data-label="ราคาล่าสุด" class="text-end">
+              </div></td>
+              <td data-label="ราคาล่าสุด" class="text-end"><div>
                 {% if r.last %}
-                <div class="font-mono fw-600">{{ r.last.price_per_unit | fmt_price }}</div>
+                {% set c = r.cost if is_manager else none %}
+                <div class="font-mono fw-600">{{ r.last.price_per_unit | fmt_price }}
+                  {% if c and c.last_below_wacc %}<span class="badge bg-danger-subtle text-danger-emphasis">🔴 ต่ำกว่าทุน</span>{% endif %}
+                  {% if c and c.last_below_last_purchase %}<span class="badge bg-warning-subtle text-warning-emphasis">⚠ ต่ำกว่าทุนซื้อล่าสุด</span>{% endif %}
+                </div>
                 <div class="text-subtle small">
                   <a href="{{ url_for('sales.sales_doc', doc_base=r.last.doc_base) }}"
                      class="text-decoration-none">{{ r.last.doc_base }}</a>
@@ -527,21 +538,68 @@
                 {% if r.last.is_stale %}
                 <div class="text-warning small">⚠ ก่อนเปลี่ยนราคา</div>
                 {% endif %}
+                {% if c and c.has_cost %}
+                  {% set m = c.margin_last %}
+                  {% if m %}
+                  <button type="button" class="btn btn-link p-0 small text-decoration-none btn-touch {{ 'text-danger' if m.pct < 0 else 'text-subtle' }}"
+                          data-margin-reveal aria-pressed="false" aria-controls="ml-{{ loop.index }}">กำไรถ้าขายราคาเดิมวันนี้ {{ '%.2f' | format(m.pct) }}%</button>
+                  <div id="ml-{{ loop.index }}" class="small text-subtle" data-margin-detail hidden>เก็บจริง {{ m.kept | fmt_price }} − ทุน {{ m.wacc_per_unit | fmt_price }} × {{ '%g' | format(m.paid_qty) }} {{ r.unit }} ({{ m.paid_cost | fmt_price }}){% if m.free_cost %} − ทุนของแถม {{ m.free_cost | fmt_price }}{% endif %} = {{ m.profit | fmt_price }}<br>{{ m.profit | fmt_price }} ÷ {{ m.kept | fmt_price }} = {{ '%.2f' | format(m.pct) }}%</div>
+                  {% else %}
+                  <div class="small text-subtle">กำไรถ้าขายราคาเดิมวันนี้ —</div>
+                  {% endif %}
+                {% endif %}
                 {% else %}
                 <span class="text-subtle">—</span>
                 {% endif %}
-              </td>
-              <td data-label="ราคาวันนี้" class="text-end font-mono">
+              </div></td>
+              <td data-label="ราคาวันนี้" class="text-end font-mono"><div>
+                {% set c = r.cost if is_manager else none %}
                 {% if r.today and r.today.has_list_price %}
                   {{ r.today.price_per_unit | fmt_price }}
+                  {% if c and c.today_below_wacc %}<span class="badge bg-danger-subtle text-danger-emphasis">🔴 ต่ำกว่าทุน</span>{% endif %}
+                  {% if c and c.today_below_last_purchase %}<span class="badge bg-warning-subtle text-warning-emphasis">⚠ ต่ำกว่าทุนซื้อล่าสุด</span>{% endif %}
                   {% if r.today.promo %}
                   <div class="text-subtle small">{{ promo_summary(r.today.promo) }}</div>
+                  {% endif %}
+                  {% if c and c.has_cost %}
+                    {% set m = c.margin_today %}
+                    {% if m %}
+                    <button type="button" class="btn btn-link p-0 small text-decoration-none btn-touch {{ 'text-danger' if m.pct < 0 else 'text-subtle' }}"
+                            data-margin-reveal aria-pressed="false" aria-controls="mt-{{ loop.index }}">กำไร {{ '%.2f' | format(m.pct) }}%</button>
+                    <div id="mt-{{ loop.index }}" class="small text-subtle" data-margin-detail hidden>ราคา {{ m.price | fmt_price }}/{{ m.unit }} − ทุน {{ m.cost_side | fmt_price }}{% if m.incl_free_units %} (ทุน {{ m.cost_per_unit | fmt_price }} + ของแถมตามโปร){% endif %} = {{ (m.price - m.cost_side) | fmt_price }}<br>{{ (m.price - m.cost_side) | fmt_price }} ÷ {{ m.price | fmt_price }} = {{ '%.2f' | format(m.pct) }}%</div>
+                    {% else %}
+                    <div class="small text-subtle">กำไร —</div>
+                    {% endif %}
                   {% endif %}
                 {% else %}
                   <span class="text-subtle small">ยังไม่มีราคาตั้ง</span>
                 {% endif %}
-              </td>
-              <td data-label="สต็อก" class="text-end font-mono">
+              </div></td>
+              {% if is_manager %}
+              <td data-label="ทุน" class="text-end"><div>
+                {% if not r.cost %}
+                  <span class="text-subtle">—</span>
+                {% else %}
+                  <div class="small text-subtle">ทุนเฉลี่ย</div>
+                  {% if not r.cost.has_cost %}
+                  {# No WACC → no margin, no 🔴; a real last purchase still shows (Put, 2026-09-11). #}
+                  <div class="text-subtle small">ไม่มีทุน</div>
+                  {% else %}
+                  <div class="font-mono">{{ r.cost.wacc_per_unit | fmt_price if r.cost.wacc_per_unit is not none else '—' }}</div>
+                  {% endif %}
+                  <div class="small text-subtle">ทุนซื้อล่าสุด</div>
+                  {% set lp = r.cost.last_purchase %}
+                  {% if lp and lp.per_unit is not none %}
+                  <div class="font-mono">{{ lp.per_unit | fmt_price }}</div>
+                  <div class="text-subtle small">{{ lp.date }}</div>
+                  {% if lp.ref %}<div class="text-subtle small">{{ lp.ref }}</div>{% endif %}
+                  {% else %}
+                  <div class="text-subtle">—</div>
+                  {% endif %}
+                {% endif %}
+              </div></td>
+              {% endif %}
+              <td data-label="สต็อก" class="text-end font-mono"><div>
                 {% if r.stock %}
                   <span class="{{ 'text-danger fw-600' if r.stock.insufficient else 'text-subtle' }}">
                     {{ r.stock.base_qty | fmt_qty }}
@@ -552,10 +610,10 @@
                 {% else %}
                   <span class="text-subtle">—</span>
                 {% endif %}
-              </td>
+              </div></td>
             </tr>
             {% else %}
-            <tr><td colspan="5" class="text-center text-subtle py-4">ไม่มีข้อมูล</td></tr>
+            <tr><td colspan="{{ 6 if is_manager else 5 }}" class="text-center text-subtle py-4">ไม่มีข้อมูล</td></tr>
             {% endfor %}
           </tbody>
         </table>
@@ -639,6 +697,22 @@
   });
 })();
 </script>
+{% if is_manager %}
+{# Margin tap-to-reveal (#493 slice 3): a button toggling its own arithmetic
+   (touch — no hover). Delegated, so it survives the ครั้ง/ยอด re-sort moving
+   rows. Same <button aria-pressed> shape as hr/employee_detail.html's reveal. #}
+<script>
+document.addEventListener('click', function (e) {
+  var btn = e.target.closest('[data-margin-reveal]');
+  if (!btn) return;
+  var detail = document.getElementById(btn.getAttribute('aria-controls'));
+  if (!detail) return;
+  var open = btn.getAttribute('aria-pressed') === 'true';
+  btn.setAttribute('aria-pressed', open ? 'false' : 'true');
+  detail.hidden = open;
+});
+</script>
+{% endif %}
 {% if data.monthly %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>
