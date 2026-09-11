@@ -312,10 +312,33 @@ def test_a_product_with_no_cost_has_no_margin_and_no_badges(cust):
     cost = _card(_summary(), pid)['cost']
     assert cost['has_cost'] is False
     assert cost['wacc_per_unit'] is None
+    assert cost['last_purchase'] is None
     assert cost['margin_last'] is None
     assert cost['margin_today'] is None
     assert not any(cost[k] for k in ('last_below_wacc', 'last_below_last_purchase',
                                      'today_below_wacc', 'today_below_last_purchase'))
+
+
+def test_no_cost_still_shows_a_real_last_purchase_and_its_badges(cust):
+    """Put, 2026-09-11 (review W2): 21 products on prod have cost_price 0 yet a
+    real PURCHASE in the ledger (pid 1330 ตลับเมตร Tylon, 68.83). "ไม่มีทุน"
+    means no WACC, no margin and no 🔴 — but the last purchase cost is the
+    only cost figure these products have, so it and its ⚠ still show."""
+    conn = cust
+    # Kept 65 and today's list 60 are both below the 68.83 last purchase.
+    pid = _mk_product(conn, base=60.0, cost=0.0)
+    _ledger(conn, pid, 'PURCHASE', '2025-11-19', 68.83, ref='RR050')
+    _line(conn, doc_base='IV49528', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=1, unit_price=65, net=65)
+    cost = _card(_summary(), pid)['cost']
+    assert cost['has_cost'] is False
+    assert cost['wacc_per_unit'] is None
+    assert cost['last_purchase']['per_unit'] == pytest.approx(68.83)
+    assert cost['last_purchase']['ref'] == 'RR050'
+    assert cost['last_below_last_purchase'] is True
+    assert cost['today_below_last_purchase'] is True
+    assert cost['margin_last'] is None and cost['margin_today'] is None
+    assert cost['last_below_wacc'] is False and cost['today_below_wacc'] is False
 
 
 def test_last_price_below_wacc_is_judged_on_the_money_we_keep(cust):
@@ -606,3 +629,22 @@ def test_manager_sees_no_cost_text_for_a_costless_product(tmp_db):
     assert 'ไม่มีทุน' in cells['ทุน']
     assert 'data-margin-reveal' not in cells['ราคาล่าสุด']
     assert '100.00' in cells['ราคาล่าสุด']   # control: the price itself rendered
+
+
+def test_manager_sees_last_purchase_and_its_badge_for_a_costless_product(tmp_db):
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    _mk_customer(conn)
+    _clear_customer(conn)
+    pid = _mk_product(conn, name='ไม่มีทุนแต่มีบิลซื้อ', base=60.0, cost=0.0)
+    _ledger(conn, pid, 'PURCHASE', '2025-11-19', 68.83, ref='RR051')
+    _line(conn, doc_base='IV49529', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=1, unit_price=65, net=65)
+    name = _name(conn, pid)
+    conn.close()
+    cells = _row_cells(_client('manager').get(f'/customer/code/{quote(TEST_CODE)}').data.decode(), name)
+    assert 'ไม่มีทุน' in cells['ทุน']
+    assert '68.83' in cells['ทุน'] and 'RR051' in cells['ทุน']
+    assert '⚠ ต่ำกว่าทุนซื้อล่าสุด</span>' in cells['ราคาล่าสุด']
+    assert '🔴' not in cells['ราคาล่าสุด']
+    assert 'data-margin-reveal' not in cells['ราคาล่าสุด'] + cells['ราคาวันนี้']

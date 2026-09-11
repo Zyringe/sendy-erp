@@ -579,11 +579,14 @@
               <td data-label="ทุน" class="text-end"><div>
                 {% if not r.cost %}
                   <span class="text-subtle">—</span>
-                {% elif not r.cost.has_cost %}
-                  <span class="text-subtle small">ไม่มีทุน</span>
                 {% else %}
                   <div class="small text-subtle">ทุนเฉลี่ย</div>
+                  {% if not r.cost.has_cost %}
+                  {# No WACC → no margin, no 🔴; a real last purchase still shows (Put, 2026-09-11). #}
+                  <div class="text-subtle small">ไม่มีทุน</div>
+                  {% else %}
                   <div class="font-mono">{{ r.cost.wacc_per_unit | fmt_price if r.cost.wacc_per_unit is not none else '—' }}</div>
+                  {% endif %}
                   <div class="small text-subtle">ทุนซื้อล่าสุด</div>
                   {% set lp = r.cost.last_purchase %}
                   {% if lp and lp.per_unit is not none %}

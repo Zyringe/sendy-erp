@@ -255,20 +255,24 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
     own bill-unit → base-unit lookup, the one it converts every evidence
     row with — never a re-typed unit_conversions query. A ratio it cannot
     find degrades the figure to None ("—"), never to 1.
+
+    "ไม่มีทุน" (cost_price <= 0) means no WACC, no margin and no 🔴 — but a
+    real PURCHASE in the ledger still shows as ทุนซื้อล่าสุด with its ⚠
+    badges (Put, 2026-09-11): 21 products on prod sit exactly there, and
+    for them it is the only cost figure there is.
     """
     import price_lookup
 
     prod = conn.execute(
         "SELECT cost_price, unit_type FROM products WHERE id = ?", (pid,)).fetchone()
     cost = prod['cost_price'] or 0
+    has_cost = cost > 0
     out = {
-        'has_cost': cost > 0, 'wacc_per_unit': None, 'last_purchase': None,
+        'has_cost': has_cost, 'wacc_per_unit': None, 'last_purchase': None,
         'margin_last': None, 'margin_today': None,
         'last_below_wacc': False, 'last_below_last_purchase': False,
         'today_below_wacc': False, 'today_below_last_purchase': False,
     }
-    if cost <= 0:
-        return out   # "ไม่มีทุน" — no margin, no badges
 
     ratio_cache = {}
     row_ratio = price_lookup._bill_ratio(conn, pid, prod['unit_type'], unit, ratio_cache)
@@ -283,7 +287,7 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
     # cost_per_unit = round(cost * ratio, 2)). The reveal prints "ทุน 55.51
     # × 12", so 666.12 is what must be subtracted, not 55.5061 × 12 = 666.07
     # (seen on real data, 38จ01). Both margins on a row then use one method.
-    wacc_pu = round(cost * row_ratio, 2) if row_ratio is not None else None
+    wacc_pu = round(cost * row_ratio, 2) if has_cost and row_ratio is not None else None
     lp_pu = (round(lp['unit_cost'] * row_ratio, 2)
              if lp is not None and row_ratio is not None else None)
     out['wacc_per_unit'] = wacc_pu
@@ -300,12 +304,13 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
         # against 181.69 must not read "181.69 🔴 ต่ำกว่าทุน" beside
         # "ทุนเฉลี่ย 181.69" (seen on real rows).
         kept_per_unit = round(kept / last_row['qty'], 2)
-        out['last_below_wacc'] = kept_per_unit < wacc_pu
         if lp_pu is not None:
             out['last_below_last_purchase'] = kept_per_unit < lp_pu
         free_ratios = [price_lookup._bill_ratio(conn, pid, prod['unit_type'], f['unit'], ratio_cache)
                        for f in freebie_rows]
-        if None not in free_ratios:
+        if has_cost:
+            out['last_below_wacc'] = kept_per_unit < wacc_pu
+        if has_cost and None not in free_ratios:
             paid_cost = wacc_pu * last_row['qty']
             free_cost = sum(round(cost * r, 2) * f['qty'] for f, r in zip(freebie_rows, free_ratios))
             profit = kept - paid_cost - free_cost
@@ -322,7 +327,7 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
     if resolved is not None and resolved['list']['list_for_unit'] != 0:
         internal = resolved['internal']
         price = resolved['answer']['price_per_unit']
-        if internal['margin_at_answer_pct'] is not None:
+        if has_cost and internal['margin_at_answer_pct'] is not None:
             out['margin_today'] = {
                 'pct': internal['margin_at_answer_pct'] + 0.0,
                 'price': price,
@@ -331,7 +336,7 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
                 'cost_side': internal['cost_side'],
                 'incl_free_units': internal['margin_incl_free_units'],
             }
-        out['today_below_wacc'] = internal['below_cost_by'] is not None
+        out['today_below_wacc'] = has_cost and internal['below_cost_by'] is not None
         ratio = resolved['unit']['ratio']
         if lp is not None and ratio is not None:
             out['today_below_last_purchase'] = price < round(lp['unit_cost'] * ratio, 2)
