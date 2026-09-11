@@ -233,6 +233,34 @@ def test_margin_arithmetic_ties_to_the_displayed_unit_cost(cust):
     assert m['pct'] == pytest.approx(-4.89)
 
 
+def test_badges_judge_the_figures_as_printed_not_a_sub_satang_gap(cust):
+    """Review nit (real rows, 94บ04): kept 181.6875/unit against WACC 181.69
+    printed "181.69 🔴 ต่ำกว่าทุน" next to "ทุนเฉลี่ย 181.69" and a "-0.00%"
+    margin. Judge at the precision shown: no badge, and zero reads 0.00."""
+    conn = cust
+    pid = _mk_product(conn, cost=181.69)
+    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 181.69, ref='RR040')
+    _line(conn, doc_base='IV49526', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=4, unit_price=181.69, net=726.75)
+    cost = _card(_summary(), pid)['cost']
+    assert cost['last_below_wacc'] is False
+    assert cost['last_below_last_purchase'] is False
+    assert '%.2f' % cost['margin_last']['pct'] == '0.00'
+
+
+def test_today_badge_against_last_purchase_uses_the_printed_cost(cust):
+    """Review nit: 18.2604 × 1 prints as 18.26 in the ทุน column, so a today
+    price of 18.26 is not below it."""
+    conn = cust
+    pid = _mk_product(conn, base=18.26, cost=10.0)
+    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 18.2604, ref='RR041')
+    _line(conn, doc_base='IV49527', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=1, unit_price=18.26, net=18.26)
+    cost = _card(_summary(), pid)['cost']
+    assert cost['last_purchase']['per_unit'] == pytest.approx(18.26)   # control: what prints
+    assert cost['today_below_last_purchase'] is False
+
+
 def test_margin_at_last_price_is_unknown_when_a_freebie_ratio_is_unknown(cust):
     conn = cust
     pid = _mk_product(conn, cost=60.0)
@@ -356,12 +384,14 @@ def _row_cells(html, product_name):
 
 def _seed_distinctive(tmp_db):
     """One product whose cost figures are strings nothing else on the page
-    carries: WACC 37.13, last purchase 41.27, both margins 62.87%."""
+    carries: WACC 37.13, last purchase 41.27, margin at the last price
+    62.87% (100 kept) and at today's price 69.06% (list 120) — different on
+    purpose, so each margin is checked on its own."""
     import sqlite3
     conn = sqlite3.connect(tmp_db)
     _mk_customer(conn)
     _clear_customer(conn)
-    pid = _mk_product(conn, name='สินค้าทุนลับ', base=100.0, cost=37.13)
+    pid = _mk_product(conn, name='สินค้าทุนลับ', base=120.0, cost=37.13)
     _ledger(conn, pid, 'PURCHASE', '2026-01-01', 41.27, ref='RR020')
     _line(conn, doc_base='IV49520', suffix=1, pid=pid, date_iso='2026-02-01',
           qty=1, unit_price=100, net=100)
@@ -370,7 +400,7 @@ def _seed_distinctive(tmp_db):
     return name
 
 
-_SECRETS = ('37.13', '41.27', '62.87', 'ทุนเฉลี่ย', 'ทุนซื้อล่าสุด')
+_SECRETS = ('37.13', '41.27', '62.87', '69.06', 'ทุนเฉลี่ย', 'ทุนซื้อล่าสุด')
 
 
 @pytest.mark.parametrize('role', ['staff', 'shareholder'])
@@ -446,6 +476,50 @@ def test_manager_badge_sits_on_the_figure_it_judges(tmp_db):
     assert 'ต่ำกว่าทุน' not in cells['ราคาวันนี้']
 
 
+def _seed_every_line(tmp_db):
+    """A row that renders EVERY optional line: last price 95 kept (แยก VAT,
+    3% line discount, 2% bill discount, a freebie) and today's list 120 −10%
+    = 108, against WACC 110 and last purchase 115 — so all FOUR badges fire,
+    two on each price, and both margins show (negative)."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    _mk_customer(conn)
+    _clear_customer(conn)
+    pid = _mk_product(conn, name='ทุกบรรทัดในช่อง', base=120.0, cost=110.0)
+    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 115.0, ref='RR030')
+    conn.execute("INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+                 " date_start, is_active) VALUES (?, 'ลด 10%', 'percent', 10, '2024-01-01', 1)", (pid,))
+    _line(conn, doc_base='IV49525', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=10, unit_price=100, net=950, total=969.39, discount='3%', vat_type=2)
+    _line(conn, doc_base='IV49525', suffix=2, pid=pid, date_iso='2026-02-01',
+          qty=1, unit_price=0, net=0)
+    name = _name(conn, pid)
+    conn.close()
+    return name
+
+
+def test_every_badge_sits_on_the_figure_it_judges(tmp_db):
+    """Review W1: only one of the four badges was pinned in rendered HTML.
+    Exact badge strings — 'ต่ำกว่าทุน' is a SUBSTRING of 'ต่ำกว่าทุนซื้อล่าสุด'."""
+    name = _seed_every_line(tmp_db)
+    cells = _row_cells(_client('manager').get(f'/customer/code/{quote(TEST_CODE)}').data.decode(), name)
+    for label in ('ราคาล่าสุด', 'ราคาวันนี้'):
+        assert '🔴 ต่ำกว่าทุน</span>' in cells[label], f'{label}: no 🔴'
+        assert '⚠ ต่ำกว่าทุนซื้อล่าสุด</span>' in cells[label], f'{label}: no ⚠'
+    assert 'ต่ำกว่าทุน' not in cells['ทุน'] and '110.00' in cells['ทุน']   # control + scope
+
+
+def test_manager_today_margin_reveal_shows_its_arithmetic(tmp_db):
+    name = _seed_every_line(tmp_db)
+    cell = _row_cells(_client('manager').get(f'/customer/code/{quote(TEST_CODE)}').data.decode(),
+                      name)['ราคาวันนี้']
+    assert re.search(r'<button[^>]*data-margin-reveal[^>]*aria-pressed="false"[^>]*>กำไร -1', cell)
+    detail = re.search(r'<div[^>]*data-margin-detail[^>]*hidden[^>]*>(.*?)</div>', cell, re.S).group(1)
+    # (108 − 110) ÷ 108 = −1.85%
+    for figure in ('108.00', '110.00', '-2.00', '-1.85'):
+        assert figure in detail, f'today reveal is missing {figure}'
+
+
 def test_manager_margin_reveal_shows_the_rows_own_arithmetic(tmp_db):
     import sqlite3
     conn = sqlite3.connect(tmp_db)
@@ -504,26 +578,13 @@ class _CellChildren(HTMLParser):
 
 
 def test_multi_line_cells_hold_one_child_so_the_phone_grid_cannot_scatter(tmp_db):
-    import sqlite3
-    conn = sqlite3.connect(tmp_db)
-    _mk_customer(conn)
-    _clear_customer(conn)
-    # Every optional line at once: 🔴 + ⚠ badges, VAT note, bill discount,
-    # freebie, margin + reveal, today's promo + margin, both cost figures.
-    pid = _mk_product(conn, name='ทุกบรรทัดในช่อง', base=120.0, cost=100.0)
-    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 105.0, ref='RR030')
-    conn.execute("INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
-                 " date_start, is_active) VALUES (?, 'ลด 10%', 'percent', 10, '2024-01-01', 1)", (pid,))
-    _line(conn, doc_base='IV49525', suffix=1, pid=pid, date_iso='2026-02-01',
-          qty=10, unit_price=100, net=950, total=980, discount='3%', vat_type=2)
-    _line(conn, doc_base='IV49525', suffix=2, pid=pid, date_iso='2026-02-01',
-          qty=1, unit_price=0, net=0)
-    name = _name(conn, pid)
-    conn.close()
+    name = _seed_every_line(tmp_db)
     html = _client('manager').get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
     row = next(r for r in re.findall(r'<tr data-times-bought.*?</tr>', html, re.S) if name in r)
     cells = _row_cells(html, name)
-    assert '🔴 ต่ำกว่าทุน' in cells['ราคาล่าสุด'] and 'แถม' in cells['ราคาล่าสุด']   # control: full cell
+    # control: the cells really carry every optional line
+    assert '🔴 ต่ำกว่าทุน' in cells['ราคาล่าสุด'] and 'แถม' in cells['ราคาล่าสุด']
+    assert '⚠ ต่ำกว่าทุนซื้อล่าสุด' in cells['ราคาวันนี้'] and 'data-margin-reveal' in cells['ราคาวันนี้']
     p = _CellChildren()
     p.feed(row)
     assert set(p.counts) == {'ครั้งที่ซื้อ', 'ราคาล่าสุด', 'ราคาวันนี้', 'ทุน', 'สต็อก'}   # control

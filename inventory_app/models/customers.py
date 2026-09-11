@@ -296,7 +296,10 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
 
     if last_row is not None and row_ratio is not None:
         kept = last_row['net']
-        kept_per_unit = kept / last_row['qty']
+        # Badges judge the figures at the precision they print: 181.6875 kept
+        # against 181.69 must not read "181.69 🔴 ต่ำกว่าทุน" beside
+        # "ทุนเฉลี่ย 181.69" (seen on real rows).
+        kept_per_unit = round(kept / last_row['qty'], 2)
         out['last_below_wacc'] = kept_per_unit < wacc_pu
         if lp_pu is not None:
             out['last_below_last_purchase'] = kept_per_unit < lp_pu
@@ -313,7 +316,7 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
                 'paid_cost': round(paid_cost, 2),
                 'free_cost': round(free_cost, 2),
                 'profit': round(profit, 2),
-                'pct': round(profit / kept * 100, 2),
+                'pct': round(profit / kept * 100, 2) + 0.0,   # + 0.0: -0.0 would print "-0.00%"
             }
 
     if resolved is not None and resolved['list']['list_for_unit'] != 0:
@@ -321,7 +324,7 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
         price = resolved['answer']['price_per_unit']
         if internal['margin_at_answer_pct'] is not None:
             out['margin_today'] = {
-                'pct': internal['margin_at_answer_pct'],
+                'pct': internal['margin_at_answer_pct'] + 0.0,
                 'price': price,
                 'unit': resolved['answer']['unit'],
                 'cost_per_unit': internal['cost_per_unit'],
@@ -331,7 +334,7 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
         out['today_below_wacc'] = internal['below_cost_by'] is not None
         ratio = resolved['unit']['ratio']
         if lp is not None and ratio is not None:
-            out['today_below_last_purchase'] = price < lp['unit_cost'] * ratio
+            out['today_below_last_purchase'] = price < round(lp['unit_cost'] * ratio, 2)
     return out
 
 
