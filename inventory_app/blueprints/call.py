@@ -152,24 +152,26 @@ def call_crm(customer_code):
 
 @bp_call.route('/call/<path:customer_code>/contact', methods=['POST'])
 def call_contact(customer_code):
+    # Save through the customer page's own path: it stamps contact_normalized_at,
+    # which is what stops the next Express customer import from rewriting the edit.
     conn = get_connection()
-    f = request.form
-    cur = conn.execute(
-        'UPDATE customers SET phone=?, contact=?, address=?, fax=?, nickname=?, contact_note=? WHERE code=?',
-        (f.get('phone', '').strip() or None,
-         f.get('contact', '').strip() or None,
-         f.get('address', '').strip() or None,
-         f.get('fax', '').strip() or None,
-         f.get('nickname', '').strip() or None,
-         f.get('contact_note', '').strip() or None,
-         customer_code),
-    )
-    conn.commit()
+    row = conn.execute(
+        'SELECT salesperson, region_id FROM customers WHERE code=?', (customer_code,)
+    ).fetchone()
     conn.close()
-    if cur.rowcount == 0:
+    if row is None:
         flash('ลูกค้านี้ไม่มีระเบียนหลัก แก้ข้อมูลติดต่อไม่ได้', 'warning')
-    else:
+        return redirect(url_for('call.call_card', customer_code=customer_code))
+    # Only keys the form actually sent: a missing key is refused, never read as "clear".
+    contact = {k: request.form[k] for k in models.CUSTOMER_CONTACT_FIELDS if k in request.form}
+    # simplify: salesperson/region are passed back as just read; a change landing between
+    # this read and the save would be reverted (ms window, accepted ceiling).
+    result = models.update_customer_edit(
+        customer_code, row['salesperson'], row['region_id'], contact, session.get('username'))
+    if result['ok']:
         flash('แก้ข้อมูลติดต่อแล้ว', 'success')
+    else:
+        flash(f'ไม่สามารถบันทึก: {result["error"]}', 'warning')
     return redirect(url_for('call.call_card', customer_code=customer_code))
 
 
