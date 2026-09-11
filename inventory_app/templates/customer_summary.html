@@ -1,4 +1,4 @@
-{% from 'macros.html' import phone_lines %}
+{% from 'macros.html' import phone_lines, promo_summary, disc_label %}
 {% extends 'base.html' %}
 {% block title %}{{ data.customer }} – ลูกค้า{% endblock %}
 {% block page_title %}ลูกค้า: {{ data.customer }}{% endblock %}
@@ -41,12 +41,19 @@
 <div class="card mb-4">
   <div class="card-header py-2 d-flex justify-content-between align-items-center">
     <span class="fw-600"><i class="bi bi-person-vcard me-2 text-accent"></i>ข้อมูลลูกค้า</span>
-    {% if is_manager and master %}
-    <button type="button" class="btn btn-sm btn-outline-primary"
-            data-bs-toggle="modal" data-bs-target="#customerEditModal">
-      <i class="bi bi-pencil-square me-1"></i>แก้ไข
-    </button>
-    {% endif %}
+    <div class="d-flex gap-2">
+      {# #493: win-back / clearance / notes — one tap away from the customer page. #}
+      <a href="{{ url_for('call.call_card', customer_code=data.customer_code) }}"
+         class="btn btn-sm btn-outline-secondary btn-touch">
+        <i class="bi bi-telephone me-1"></i>Call Card
+      </a>
+      {% if is_manager and master %}
+      <button type="button" class="btn btn-sm btn-outline-primary btn-touch"
+              data-bs-toggle="modal" data-bs-target="#customerEditModal">
+        <i class="bi bi-pencil-square me-1"></i>แก้ไข
+      </button>
+      {% endif %}
+    </div>
   </div>
   <div class="card-body py-2">
     <div class="d-flex flex-wrap gap-4 align-items-start">
@@ -456,27 +463,37 @@
 
 <div class="row g-3 mb-4">
 
-  {# ── Product card (#493 slice 2, trimmed): ครั้งที่ซื้อ + ราคาล่าสุด + ─────────
-     ราคาวันนี้, keyed (product, unit). Opens sorted by times bought — no
-     ครั้ง/ยอด toggle yet (deferred, Put 2026-09-11). #}
+  {# ── Product card (#493 slice 2): ครั้งที่ซื้อ / ราคาล่าสุด (VAT note, bill ─────
+     discount, freebies, ก่อนเปลี่ยนราคา) / ราคาวันนี้ (+ โปร) / สต็อก, keyed
+     (product, unit). Union of both top-20 orderings (see
+     models/customers.py::_customer_product_cards); opens sorted by times
+     bought, the ครั้ง/ยอด buttons below just re-sort these SAME rows. #}
   <div class="col-lg-6">
     <div class="card h-100">
-      <div class="card-header">
-        <i class="bi bi-trophy me-2 text-accent"></i>สินค้าที่ซื้อบ่อย
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-trophy me-2 text-accent"></i>สินค้าที่ซื้อบ่อย</span>
+        <div class="btn-group btn-group-sm" role="group" aria-label="เรียงตาม">
+          <button type="button" class="btn btn-outline-secondary active btn-touch"
+                  data-sort-cards="times">ครั้ง</button>
+          <button type="button" class="btn btn-outline-secondary btn-touch"
+                  data-sort-cards="money">ยอด</button>
+        </div>
       </div>
       <div class="table-responsive">
-        <table class="table table-mobile-cards mb-0">
+        <table class="table table-mobile-cards mb-0" id="productCardsTable">
           <thead>
             <tr>
               <th>สินค้า</th>
               <th class="text-end">ครั้งที่ซื้อ</th>
               <th class="text-end">ราคาล่าสุด</th>
               <th class="text-end">ราคาวันนี้</th>
+              <th class="text-end">สต็อก</th>
             </tr>
           </thead>
           <tbody>
             {% for r in data.product_cards %}
-            <tr>
+            <tr data-times-bought="{{ r.times_bought }}" data-total-net="{{ r.total_net }}"
+                class="{{ 'row-low-stock' if r.stock and r.stock.insufficient else '' }}">
               <td class="td-primary">
                 {% if r.product_id %}
                   <a href="{{ url_for('products.product_detail', product_id=r.product_id) }}"
@@ -496,6 +513,20 @@
                      class="text-decoration-none">{{ r.last.doc_base }}</a>
                   · {{ r.last.date_iso }}
                 </div>
+                {% if r.last.vat_type == 2 %}
+                <div class="text-subtle small">{{ r.last.unit_price | fmt_price }}{% if r.last.discount %} {{ disc_label(r.last.discount) }}{% endif %} + VAT</div>
+                {% elif r.last.discount %}
+                <div class="text-subtle small">{{ disc_label(r.last.discount) }}</div>
+                {% endif %}
+                {% if r.last.bill_discount_pct %}
+                <div class="text-subtle small">ลดท้ายบิล {{ '%g' | format(r.last.bill_discount_pct) }}%</div>
+                {% endif %}
+                {% if r.last.freebies %}
+                <div class="text-success small">{% for f in r.last.freebies %}แถม {{ f.qty | fmt_qty }} {{ f.unit }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
+                {% endif %}
+                {% if r.last.is_stale %}
+                <div class="text-warning small">⚠ ก่อนเปลี่ยนราคา</div>
+                {% endif %}
                 {% else %}
                 <span class="text-subtle">—</span>
                 {% endif %}
@@ -503,13 +534,28 @@
               <td data-label="ราคาวันนี้" class="text-end font-mono">
                 {% if r.today and r.today.has_list_price %}
                   {{ r.today.price_per_unit | fmt_price }}
+                  {% if r.today.promo %}
+                  <div class="text-subtle small">{{ promo_summary(r.today.promo) }}</div>
+                  {% endif %}
                 {% else %}
                   <span class="text-subtle small">ยังไม่มีราคาตั้ง</span>
                 {% endif %}
               </td>
+              <td data-label="สต็อก" class="text-end font-mono">
+                {% if r.stock %}
+                  <span class="{{ 'text-danger fw-600' if r.stock.insufficient else 'text-subtle' }}">
+                    {{ r.stock.base_qty | fmt_qty }}
+                  </span>
+                  {% if r.stock.insufficient %}
+                  <div class="text-danger small">⚠ ไม่พอ 1 {{ r.unit }}</div>
+                  {% endif %}
+                {% else %}
+                  <span class="text-subtle">—</span>
+                {% endif %}
+              </td>
             </tr>
             {% else %}
-            <tr><td colspan="4" class="text-center text-subtle py-4">ไม่มีข้อมูล</td></tr>
+            <tr><td colspan="5" class="text-center text-subtle py-4">ไม่มีข้อมูล</td></tr>
             {% endfor %}
           </tbody>
         </table>
@@ -574,6 +620,25 @@
 {% endblock %}
 
 {% block scripts %}
+{# ครั้ง/ยอด toggle (#493): re-sorts the ALREADY-rendered union client-side —
+   no re-fetch, so it works even when the phone is on a weak sales-trip
+   connection. #}
+<script>
+(function () {
+  var tbody = document.querySelector('#productCardsTable tbody');
+  var buttons = document.querySelectorAll('[data-sort-cards]');
+  if (!tbody || !buttons.length) return;
+  buttons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var key = btn.dataset.sortCards === 'times' ? 'timesBought' : 'totalNet';
+      var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr[data-times-bought]'));
+      rows.sort(function (a, b) { return parseFloat(b.dataset[key] || 0) - parseFloat(a.dataset[key] || 0); });
+      rows.forEach(function (r) { tbody.appendChild(r); });
+      buttons.forEach(function (b) { b.classList.toggle('active', b === btn); });
+    });
+  });
+})();
+</script>
 {% if data.monthly %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>

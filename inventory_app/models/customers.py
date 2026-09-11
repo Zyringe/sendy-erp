@@ -248,14 +248,19 @@ def _customer_product_cards(conn, where, params):
     This is its own query, its own field, wired only into the code-keyed
     page get_customer_summary_by_code renders.
 
-    Deferred to a later round (Put, 2026-09-11): the ครั้ง/ยอด toggle (opens
-    on times-bought only), stale-note, stock badge, VAT-note/bill-discount/
-    freebie breakdown — `last`/`today` carry only the bare numbers.
+    Round 2 (Put, 2026-09-11 — finishing the deferred remainder): the union
+    of both top-20 orderings (times bought, and money — the template's
+    ครั้ง/ยอด toggle just re-sorts this ONE rendered set client-side, it
+    never re-fetches), the stale-note (reusing price_lookup's own
+    price-regime epochs, the call card's mechanism), the stock badge, and
+    on `last`: vat_type/unit_price/discount for the VAT note, the
+    bill-level discount (net vs total), and same-product freebies on that
+    document.
     """
     import price_lookup
     import vat_math
 
-    rows = conn.execute(f"""
+    rows = [dict(r) for r in conn.execute(f"""
         SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
                s.unit,
                COUNT(DISTINCT s.doc_base) AS times_bought,
@@ -265,23 +270,44 @@ def _customer_product_cards(conn, where, params):
         LEFT JOIN products p ON p.id = s.product_id
         WHERE {where} AND {price_lookup.evidence_filter('s')}
         GROUP BY s.product_id, s.unit
-        ORDER BY times_bought DESC, total_net DESC
-        LIMIT 20
-    """, params).fetchall()
+        ORDER BY s.product_id, s.unit
+    """, params).fetchall()]
+
+    # Two top-20 orderings, unioned (the issue's own decision) — a one-off
+    # big-ticket purchase must still be ON the page even when 20 OTHER
+    # products each outrank it on times bought alone. The template renders
+    # this ONE set and re-sorts it client-side; it opens on times-bought.
+    by_times = sorted(rows, key=lambda r: (-r['times_bought'], -r['total_net']))[:20]
+    by_money = sorted(rows, key=lambda r: -r['total_net'])[:20]
+    seen = set()
+    union = []
+    for r in by_times + by_money:
+        key = (r['product_id'], r['unit'])
+        if key not in seen:
+            seen.add(key)
+            union.append(r)
+    union.sort(key=lambda r: (-r['times_bought'], -r['total_net']))
+
+    # One epoch batch for the whole page (price_lookup.epochs_for_pairs) —
+    # the same price-regime-change detection the call card's stale flag
+    # uses, never re-derived here.
+    pairs = [(r['product_id'], r['unit']) for r in union if r['product_id'] is not None]
+    epoch_map = price_lookup.epochs_for_pairs(conn, pairs) if pairs else {}
 
     cards = []
-    for r in rows:
+    for r in union:
         card = dict(r)
         pid, unit = card['product_id'], card['unit']
         card['last'] = None
         card['today'] = None
+        card['stock'] = None
         if pid is None:
             # Unmapped BSN raw name — no product row to price against.
             cards.append(card)
             continue
 
         last_row = conn.execute(f"""
-            SELECT date_iso, doc_base, net, qty, vat_type
+            SELECT date_iso, doc_base, net, qty, vat_type, unit_price, discount, total
             FROM sales_transactions s
             WHERE {where} AND {price_lookup.evidence_filter('s')}
               AND s.product_id = ? AND s.unit = ?
@@ -290,10 +316,37 @@ def _customer_product_cards(conn, where, params):
         if last_row is not None:
             price_per_unit = vat_math.cash_from_net(last_row['net'] / last_row['qty'],
                                                       last_row['vat_type'])
+
+            # Bill-level discount: net vs total (the line's own subtotal,
+            # pre-doc-discount) — a float-noise difference (<0.005 บาท) is
+            # not a real discount, never show it.
+            total, net = last_row['total'], last_row['net']
+            bill_discount_pct = None
+            if total and abs(total - net) > 0.005:
+                bill_discount_pct = round((1 - net / total) * 100, 2)
+
+            # Freebies: OTHER lines on the SAME document, SAME product, that
+            # earned no revenue — shown in their OWN unit (may differ from
+            # this row's unit), never restricted by unit.
+            freebie_rows = conn.execute("""
+                SELECT qty, unit FROM sales_transactions
+                WHERE doc_base = ? AND product_id = ?
+                  AND qty > 0 AND (net IS NULL OR net = 0)
+            """, (last_row['doc_base'], pid)).fetchall()
+
+            epoch = epoch_map.get((pid, unit))
+            is_stale = epoch is not None and last_row['date_iso'] < epoch
+
             card['last'] = {
                 'date_iso': last_row['date_iso'],
                 'doc_base': last_row['doc_base'],
                 'price_per_unit': round(price_per_unit, 2) if price_per_unit is not None else None,
+                'vat_type': last_row['vat_type'],
+                'unit_price': last_row['unit_price'],
+                'discount': last_row['discount'],
+                'bill_discount_pct': bill_discount_pct,
+                'freebies': [{'qty': fr['qty'], 'unit': fr['unit']} for fr in freebie_rows],
+                'is_stale': is_stale,
             }
 
         # Today's price = resolve_price with no customer_code, so the
@@ -305,13 +358,31 @@ def _customer_product_cards(conn, where, params):
         try:
             resolved = price_lookup.resolve_price(conn, product_id=pid, unit=unit)
         except ValueError:
-            pass  # unit has no resolvable ratio/tier — leave today=None
+            pass  # unit has no resolvable ratio/tier — leave today/stock=None
         else:
             has_list_price = resolved['list']['list_for_unit'] != 0
             card['today'] = {
                 'price_per_unit': resolved['answer']['price_per_unit'] if has_list_price else None,
                 'has_list_price': has_list_price,
+                'base_per_piece': resolved['list']['base_per_piece'],
+                'promo': resolved['list']['price_promo'],
             }
+
+            # Stock badge: current stock in BASE units vs this row unit's
+            # ratio. "No badge when the ratio is unknown" (issue's own
+            # decision) — without a ratio there is no way to relate a
+            # base-unit count to the row's own unit, so leave stock=None
+            # rather than show a figure nobody can judge.
+            ratio = resolved['unit']['ratio']
+            if ratio is not None:
+                stock_row = conn.execute(
+                    "SELECT quantity FROM stock_levels WHERE product_id = ?", (pid,)
+                ).fetchone()
+                base_qty = stock_row['quantity'] if stock_row else 0
+                card['stock'] = {
+                    'base_qty': base_qty,
+                    'insufficient': base_qty < ratio,
+                }
 
         cards.append(card)
     return cards
