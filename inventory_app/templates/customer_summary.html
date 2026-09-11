@@ -506,10 +506,13 @@
                   <span class="text-warning small">{{ r.name }}</span>
                 {% endif %}
               </td>
-              <td data-label="ครั้งที่ซื้อ" class="text-end font-mono text-subtle">
+              {# Each labelled cell holds ONE wrapper <div>: on phones the td is a
+                 2-column grid (label | value), and every extra child would become
+                 its own grid item and scatter across both columns. #}
+              <td data-label="ครั้งที่ซื้อ" class="text-end font-mono text-subtle"><div>
                 {{ r.times_bought }} ครั้ง <span class="small">({{ r.unit }})</span>
-              </td>
-              <td data-label="ราคาล่าสุด" class="text-end">
+              </div></td>
+              <td data-label="ราคาล่าสุด" class="text-end"><div>
                 {% if r.last %}
                 {% set c = r.cost if is_manager else none %}
                 <div class="font-mono fw-600">{{ r.last.price_per_unit | fmt_price }}
@@ -548,8 +551,8 @@
                 {% else %}
                 <span class="text-subtle">—</span>
                 {% endif %}
-              </td>
-              <td data-label="ราคาวันนี้" class="text-end font-mono">
+              </div></td>
+              <td data-label="ราคาวันนี้" class="text-end font-mono"><div>
                 {% set c = r.cost if is_manager else none %}
                 {% if r.today and r.today.has_list_price %}
                   {{ r.today.price_per_unit | fmt_price }}
@@ -571,9 +574,9 @@
                 {% else %}
                   <span class="text-subtle small">ยังไม่มีราคาตั้ง</span>
                 {% endif %}
-              </td>
+              </div></td>
               {% if is_manager %}
-              <td data-label="ทุน" class="text-end">
+              <td data-label="ทุน" class="text-end"><div>
                 {% if not r.cost %}
                   <span class="text-subtle">—</span>
                 {% elif not r.cost.has_cost %}
@@ -591,9 +594,9 @@
                   <div class="text-subtle">—</div>
                   {% endif %}
                 {% endif %}
-              </td>
+              </div></td>
               {% endif %}
-              <td data-label="สต็อก" class="text-end font-mono">
+              <td data-label="สต็อก" class="text-end font-mono"><div>
                 {% if r.stock %}
                   <span class="{{ 'text-danger fw-600' if r.stock.insufficient else 'text-subtle' }}">
                     {{ r.stock.base_qty | fmt_qty }}
@@ -604,7 +607,7 @@
                 {% else %}
                   <span class="text-subtle">—</span>
                 {% endif %}
-              </td>
+              </div></td>
             </tr>
             {% else %}
             <tr><td colspan="{{ 6 if is_manager else 5 }}" class="text-center text-subtle py-4">ไม่มีข้อมูล</td></tr>

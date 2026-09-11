@@ -28,6 +28,7 @@ import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
 import re
+from html.parser import HTMLParser
 from urllib.parse import quote
 
 import pytest
@@ -466,6 +467,68 @@ def test_manager_margin_reveal_shows_the_rows_own_arithmetic(tmp_db):
     detail = reveal.group(1)
     for figure in ('1,000.00', '600.00', '120.00', '280.00', '28.00'):
         assert figure in detail, f'reveal is missing {figure}'
+
+
+class _CellChildren(HTMLParser):
+    """Top-level children (elements + non-blank text) of each <td data-label>.
+    On phones `table-mobile-cards` makes every td a 2-column grid (label |
+    value), so a cell with more than ONE child scatters its lines across both
+    columns — seen in a 390px render of 38จ01, the invoice link landing under
+    the label and "ทุนเฉลี่ย" beside its own number."""
+    VOID = {'br', 'img', 'input', 'hr', 'meta', 'link', 'wbr'}
+
+    def __init__(self):
+        super().__init__()
+        self.label, self.depth, self.counts = None, 0, {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'td':
+            self.label, self.depth = dict(attrs).get('data-label'), 0
+            if self.label:
+                self.counts[self.label] = 0
+            return
+        if self.label and self.depth == 0:
+            self.counts[self.label] += 1
+        if tag not in self.VOID:
+            self.depth += 1
+
+    def handle_endtag(self, tag):
+        if tag == 'td':
+            self.label = None
+        elif self.label and tag not in self.VOID:
+            self.depth -= 1
+
+    def handle_data(self, data):
+        if self.label and self.depth == 0 and data.strip():
+            self.counts[self.label] += 1
+
+
+def test_multi_line_cells_hold_one_child_so_the_phone_grid_cannot_scatter(tmp_db):
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    _mk_customer(conn)
+    _clear_customer(conn)
+    # Every optional line at once: 🔴 + ⚠ badges, VAT note, bill discount,
+    # freebie, margin + reveal, today's promo + margin, both cost figures.
+    pid = _mk_product(conn, name='ทุกบรรทัดในช่อง', base=120.0, cost=100.0)
+    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 105.0, ref='RR030')
+    conn.execute("INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+                 " date_start, is_active) VALUES (?, 'ลด 10%', 'percent', 10, '2024-01-01', 1)", (pid,))
+    _line(conn, doc_base='IV49525', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=10, unit_price=100, net=950, total=980, discount='3%', vat_type=2)
+    _line(conn, doc_base='IV49525', suffix=2, pid=pid, date_iso='2026-02-01',
+          qty=1, unit_price=0, net=0)
+    name = _name(conn, pid)
+    conn.close()
+    html = _client('manager').get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
+    row = next(r for r in re.findall(r'<tr data-times-bought.*?</tr>', html, re.S) if name in r)
+    cells = _row_cells(html, name)
+    assert '🔴 ต่ำกว่าทุน' in cells['ราคาล่าสุด'] and 'แถม' in cells['ราคาล่าสุด']   # control: full cell
+    p = _CellChildren()
+    p.feed(row)
+    assert set(p.counts) == {'ครั้งที่ซื้อ', 'ราคาล่าสุด', 'ราคาวันนี้', 'ทุน', 'สต็อก'}   # control
+    for label, n in p.counts.items():
+        assert n == 1, f'{label} has {n} top-level children'
 
 
 def test_manager_sees_no_cost_text_for_a_costless_product(tmp_db):
