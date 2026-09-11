@@ -490,23 +490,28 @@ def get_card(conn, customer_code):
     primary_name = names[0] if names else customer_code
 
     # ── 2. Master row ─────────────────────────────────────────────────────────
-    if canon_code:
+    # The URL key first: `call_contact` writes `WHERE code = <this key>`, so the
+    # contact form must be rendered from that same row. `_resolve_target` only
+    # resolves codes that have sales/AR/log rows, and a synthetic master renders
+    # every contact field blank — one save then wiped a real customer's phone,
+    # contact and address (#467).
+    master_row = conn.execute(
+        "SELECT * FROM customers WHERE code=?", (customer_code,)
+    ).fetchone()
+    if master_row is None and canon_code:
         master_row = conn.execute(
             "SELECT * FROM customers WHERE code=?", (canon_code,)
         ).fetchone()
-        if master_row:
-            master = dict(master_row)
-            # Ensure fax, nickname, and contact_note keys are always present (added
-            # across various migrations; older rows may lack them in sqlite3.Row).
-            master.setdefault('fax', None)
-            master.setdefault('nickname', None)
-            master.setdefault('contact_note', None)
-        else:
-            master = {'code': canon_code, 'name': primary_name, 'fax': None, 'nickname': None,
-                      'contact_note': None}
+    if master_row:
+        master = dict(master_row)
+        # Ensure fax, nickname, and contact_note keys are always present (added
+        # across various migrations; older rows may lack them in sqlite3.Row).
+        master.setdefault('fax', None)
+        master.setdefault('nickname', None)
+        master.setdefault('contact_note', None)
     else:
-        master = {'code': customer_code, 'name': primary_name, 'fax': None, 'nickname': None,
-                  'contact_note': None}
+        master = {'code': canon_code or customer_code, 'name': primary_name, 'fax': None,
+                  'nickname': None, 'contact_note': None}
 
     # ── 3. Sales summary (via models — uses customer NAME) ───────────────────
     summary = models.get_customer_summary(primary_name)

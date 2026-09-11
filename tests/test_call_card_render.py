@@ -11,6 +11,7 @@ Three layers the unit tests can't reach:
 import datetime as dt
 import os
 import re
+from html.parser import HTMLParser
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
 import call_card as cc
@@ -375,45 +376,112 @@ def test_call_card_single_number_renders_as_before(tmp_db_conn):
     assert '02-435-8899' in html, "the reader still sees the stored spelling"
 
 
-def test_card_without_a_phone_field_makes_no_claim_either_way(tmp_db_conn):
-    """`get_card` builds a SYNTHETIC master — code/name/fax/nickname/contact_note,
-    with no `phone` key at all — whenever `_resolve_target` cannot resolve the
-    code. Those customers can still hold a number in `customers`: verified on
-    the live clone, `01ก02` has two, and its card gets the synthetic master.
+# ── #467: a customer with no history still has a master row ──────────────────
+#
+# `_resolve_target` resolves a code only through sales / AR / follow-up rows,
+# so a customer who is in `customers` but has none of those comes back
+# unresolved. Measured on PROD 2026-09-10, that is 2,030 of the 2,307
+# customers holding a phone. Since #504 the customer page links every one of
+# them to this card.
 
-    So "ไม่ได้บันทึกเบอร์" must NOT appear there. Absent field means unknown,
-    which is a different statement from a recorded blank, and only the second
-    one may be shown to the reader.
-
-    Found by loading the real page — pytest could not have caught it, because
-    every fixture in this file uses a customer whose master DOES carry phone.
-    """
+def _no_history_customer(conn, code, **fields):
+    """A `customers` row and nothing else — no sales, AR or follow-up rows, so
+    `_resolve_target` cannot resolve it. A fresh code guarantees that instead
+    of inheriting whatever the clone holds."""
+    cols = {'code': code, 'name': 'ร้านทดสอบ ' + code, **fields}
+    conn.execute(
+        f"INSERT INTO customers ({', '.join(cols)}) "
+        f"VALUES ({', '.join('?' * len(cols))})", tuple(cols.values()))
+    conn.commit()
     import ar_followup as arf
-    conn = tmp_db_conn
-    # NOT get_call_list: that lists customers WITH activity, and those all
-    # resolve, so their master always carries phone. The synthetic shape lives
-    # among customers that hold a number but no resolvable history.
-    target = None
-    rows = conn.execute(
-        "SELECT code FROM customers WHERE COALESCE(TRIM(phone),'')<>'' "
-        "ORDER BY code LIMIT 400").fetchall()
-    for (code,) in rows:
-        if arf._resolve_target(conn, code)[0] is not None:
-            continue
-        try:
-            d = cc.get_card(conn, code)
-        except AttributeError:
-            continue        # the known local price_lookup shadowing (bsn.py:500)
-        if d and 'phone' not in d['master'].keys():
-            target = code
-            break
-    assert target, ("no synthetic-master card in the clone — this test would "
-                    "pass vacuously, so treat it as a failure, not a skip")
+    assert arf._resolve_target(conn, code)[0] is None, \
+        "CONTROL: the code resolved, so the no-history path is not under test"
+    return code
 
-    html = _client(_app()).get('/call/' + target).get_data(as_text=True)
+
+class _ContactForm(HTMLParser):
+    """name → value of every <input> inside the card's contact form."""
+
+    def __init__(self):
+        super().__init__()
+        self.inside = False
+        self.fields = {}
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == 'form' and (a.get('action') or '').endswith('/contact'):
+            self.inside = True
+        elif tag == 'input' and self.inside and a.get('name'):
+            self.fields[a['name']] = a.get('value') or ''
+
+    def handle_endtag(self, tag):
+        if tag == 'form':
+            self.inside = False
+
+
+def test_no_history_card_dials_the_recorded_phone(tmp_db_conn):
+    code = _no_history_customer(tmp_db_conn, 'T467-DIAL',
+                                phone='02-435-8899,081-234-5678')
+    html = _client(_app()).get('/call/' + code).get_data(as_text=True)
+
     # NOT the bare word: `.cc-hdr .callstack{...}` sits in this template's own
     # <style> block, so `'callstack' in html` is true even when the phone block
     # never renders. Assert the ELEMENT.
+    assert 'class="callstack"' in html, "CONTROL: the phone block really rendered"
+    dials = re.findall(r'href="tel:([^"]*)"', html)
+    assert dials == ['024358899', '0812345678']
+
+
+def test_no_history_card_with_a_blank_phone_says_none_is_recorded(tmp_db_conn):
+    code = _no_history_customer(tmp_db_conn, 'T467-BLANK', phone=None)
+    html = _client(_app()).get('/call/' + code).get_data(as_text=True)
+
+    assert 'class="callstack"' in html, "CONTROL: the phone block really rendered"
+    assert 'ไม่ได้บันทึกเบอร์' in html
+    assert 'href="tel:' not in html
+
+
+def test_saving_the_contact_form_keeps_what_the_row_holds(tmp_db_conn):
+    """The harm, not just the display. `call_contact` writes every contact
+    column `WHERE code = <url key>` from what the form posts back. When the
+    card was built from a master without those keys, the form rendered them
+    blank, so changing only the nickname and pressing save wiped the phone,
+    contact person and address of a real customer row."""
+    conn = tmp_db_conn
+    code = _no_history_customer(conn, 'T467-SAVE',
+                                phone='02-435-8899,081-234-5678',
+                                contact='คุณสมศรี', address='99 ถนนทดสอบ')
+    c = _client(_app())
+    form = _ContactForm()
+    form.feed(c.get('/call/' + code).get_data(as_text=True))
+    assert 'nickname' in form.fields, "CONTROL: the contact form rendered"
+
+    c.post(f'/call/{code}/contact', data=dict(form.fields, nickname='เจ๊ศรี'))
+
+    row = conn.execute(
+        "SELECT phone, contact, address, nickname FROM customers WHERE code=?",
+        (code,)).fetchone()
+    # A 302 is not evidence the write happened; the one field we changed is.
+    assert row['nickname'] == 'เจ๊ศรี', "CONTROL: the save itself landed"
+    assert row['phone'] == '02-435-8899,081-234-5678'
+    assert row['contact'] == 'คุณสมศรี'
+    assert row['address'] == '99 ถนนทดสอบ'
+
+
+def test_card_without_a_master_row_makes_no_phone_claim(tmp_db_conn):
+    """A key with no `customers` row at all (an orphan code, or a legacy
+    name-keyed URL) still gets a SYNTHETIC master with no `phone` key. Nothing
+    is known about its number, so "ไม่ได้บันทึกเบอร์" must NOT appear: absent
+    field means unknown, a different statement from a recorded blank."""
+    import ar_followup as arf
+    conn = tmp_db_conn
+    code = 'T467-ORPHAN'
+    assert conn.execute("SELECT 1 FROM customers WHERE code=?", (code,)).fetchone() is None
+    assert arf._resolve_target(conn, code)[0] is None
+    assert 'phone' not in cc.get_card(conn, code)['master'], \
+        "CONTROL: this card really is built from the synthetic master"
+
+    html = _client(_app()).get('/call/' + code).get_data(as_text=True)
     assert 'class="callstack"' in html, "CONTROL: the phone block really rendered"
     assert 'ไม่ได้บันทึกเบอร์' not in html, \
         "claims no number is recorded on a card that simply does not carry the field"
