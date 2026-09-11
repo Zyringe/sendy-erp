@@ -7,6 +7,7 @@ Run:
 
 All cases listed in plan.md Phase P3 are covered here.
 """
+import json
 import sqlite3
 import pytest
 
@@ -730,7 +731,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 100.0,
-            'qty': 1.0, 'net': 100.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 100.0, 'total': 100.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         assert 'R5_PROMO_MISMATCH' in [f['rule_code'] for f in flags]
@@ -747,7 +748,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 70.0,
-            'qty': 1.0, 'net': 70.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 70.0, 'total': 70.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         assert 'R5_PROMO_MISMATCH' in [f['rule_code'] for f in flags]
@@ -764,7 +765,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 80.0,
-            'qty': 1.0, 'net': 80.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 80.0, 'total': 80.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         assert 'R5_PROMO_MISMATCH' not in [f['rule_code'] for f in flags]
@@ -781,7 +782,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 100.0,
-            'qty': 1.0, 'net': 100.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 100.0, 'total': 100.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         assert 'R5_PROMO_MISMATCH' in [f['rule_code'] for f in flags]
@@ -798,7 +799,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 75.0,
-            'qty': 1.0, 'net': 75.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 75.0, 'total': 75.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         assert 'R5_PROMO_MISMATCH' not in [f['rule_code'] for f in flags]
@@ -815,7 +816,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 999.0,
-            'qty': 1.0, 'net': 999.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 999.0, 'total': 999.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         assert 'R5_PROMO_MISMATCH' not in [f['rule_code'] for f in flags]
@@ -831,7 +832,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 999.0,
-            'qty': 1.0, 'net': 999.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 999.0, 'total': 999.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         assert 'R5_PROMO_MISMATCH' not in [f['rule_code'] for f in flags]
@@ -847,7 +848,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 999.0,
-            'qty': 1.0, 'net': 999.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 999.0, 'total': 999.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         assert 'R5_PROMO_MISMATCH' not in [f['rule_code'] for f in flags]
@@ -864,7 +865,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 100.0,
-            'qty': 1.0, 'net': 100.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 100.0, 'total': 100.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         assert 'R5_PROMO_MISMATCH' not in [f['rule_code'] for f in flags]
@@ -882,7 +883,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2025-12-15', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 100.0,
-            'qty': 1.0, 'net': 100.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 100.0, 'total': 100.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         # Promo was active on 2025-12-15 → should flag
@@ -902,7 +903,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 90.0,
-            'qty': 12.0, 'net': 1080.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 12.0, 'net': 1080.0, 'total': 1080.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         assert 'R5_PROMO_MISMATCH' not in [f['rule_code'] for f in flags]
@@ -919,7 +920,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 100.0,
-            'qty': 1.0, 'net': 100.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 100.0, 'total': 100.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         r5 = next(f for f in flags if f['rule_code'] == 'R5_PROMO_MISMATCH')
@@ -940,7 +941,7 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'โหล', 'unit_price': 960.0,
-            'qty': 1.0, 'net': 960.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 960.0, 'total': 960.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': None,
         })
         assert 'R5_PROMO_MISMATCH' not in [f['rule_code'] for f in flags]
@@ -957,10 +958,76 @@ class TestR5PromoMismatch:
             'id': 1, 'batch_id': batch_id, 'doc_no': 'SR001-1', 'doc_base': 'SR001',
             'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
             'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 100.0,
-            'qty': 1.0, 'net': 100.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
+            'qty': 1.0, 'net': 100.0, 'total': 100.0, 'customer': 'ลูกค้า', 'customer_code': 'C001',
             'ref_invoice': 'IV001',
         })
         assert 'R5_PROMO_MISMATCH' not in [f['rule_code'] for f in flags]
+
+    # ── #475: R5 compares the price after the LINE discount ──────────────────
+    # `unit_price` is the price before the line discount; `total` is after it
+    # and before the doc-level discount; `net` is after both.
+
+    def _r5(self, flags):
+        return [f for f in flags if f['rule_code'] == 'R5_PROMO_MISMATCH']
+
+    def test_no_fire_line_discount_brings_price_to_promo(self, tmp_path):
+        """IV6901184-1 on prod: base 75, promo −15% → 63.75. Keyed at 75 with a
+        15% line discount, so the customer paid 63.75 to the satang. R5 read
+        the 75 and said the promo was not applied."""
+        db_path, conn = _make_db(tmp_path)
+        batch_id = _add_batch(conn)
+        _add_product(conn, 1, base_sell_price=75.0)
+        _add_promo(conn, 1, 'percent', 15.0,
+                   date_start='2026-01-01', date_end='2026-12-31')
+        rr = _import_rr(db_path)
+        flags = rr._check_row_rules(conn, {
+            'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
+            'date_iso': '2026-07-27', 'product_id': 1, 'bsn_code': 'ABC001',
+            'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 75.0,
+            'qty': 12.0, 'net': 765.0, 'total': 765.0, 'customer': 'ลูกค้า',
+            'customer_code': 'C001', 'ref_invoice': None,
+        })
+        assert self._r5(flags) == []
+
+    def test_fires_extra_line_discount_below_promo(self, tmp_path):
+        """Keyed at the promo price 80, then 20% more off on the line: the
+        customer paid 64. The message must say what was actually charged."""
+        db_path, conn = _make_db(tmp_path)
+        batch_id = _add_batch(conn)
+        _add_product(conn, 1, base_sell_price=100.0)
+        _add_promo(conn, 1, 'percent', 20.0,
+                   date_start='2026-01-01', date_end='2026-12-31')
+        rr = _import_rr(db_path)
+        flags = rr._check_row_rules(conn, {
+            'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
+            'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
+            'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 80.0,
+            'qty': 1.0, 'net': 64.0, 'total': 64.0, 'customer': 'ลูกค้า',
+            'customer_code': 'C001', 'ref_invoice': None,
+        })
+        r5 = self._r5(flags)
+        assert len(r5) == 1
+        assert 'แต่ขาย 64.00' in r5[0]['message_th']
+        assert json.loads(r5[0]['details_json'])['observed'] == 64.0
+
+    def test_no_fire_doc_discount_on_a_promo_price_line(self, tmp_path):
+        """Why `total` and not `net`: a 2% cash discount on the whole bill puts
+        net/qty 2% under the promo price, past R5's 1% tolerance, on a line
+        that was sold at exactly the promo price."""
+        db_path, conn = _make_db(tmp_path)
+        batch_id = _add_batch(conn)
+        _add_product(conn, 1, base_sell_price=100.0)
+        _add_promo(conn, 1, 'percent', 20.0,
+                   date_start='2026-01-01', date_end='2026-12-31')
+        rr = _import_rr(db_path)
+        flags = rr._check_row_rules(conn, {
+            'id': 1, 'batch_id': batch_id, 'doc_no': 'IV001-1', 'doc_base': 'IV001',
+            'date_iso': '2026-06-01', 'product_id': 1, 'bsn_code': 'ABC001',
+            'product_name_raw': 'ชื่อดิบ', 'unit': 'ตัว', 'unit_price': 80.0,
+            'qty': 1.0, 'net': 78.4, 'total': 80.0, 'customer': 'ลูกค้า',
+            'customer_code': 'C001', 'ref_invoice': None,
+        })
+        assert self._r5(flags) == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
