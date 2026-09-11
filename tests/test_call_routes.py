@@ -64,8 +64,10 @@ def test_crm_route_upserts_fields(empty_db_conn):
 
 def test_contact_route_updates_customer(empty_db_conn):
     code = _seed_customer(empty_db_conn)
+    # All six fields, as call/card.html's form sends them; a partial payload is refused.
     r = _client().post(f'/call/{code}/contact',
-                       data={'phone': '081-234-5678', 'contact': 'คุณสมชาย', 'address': 'กรุงเทพ'})
+                       data={'phone': '081-234-5678', 'contact': 'คุณสมชาย', 'address': 'กรุงเทพ',
+                             'fax': '', 'nickname': '', 'contact_note': ''})
     assert r.status_code in (302, 303)
     row = empty_db_conn.execute(
         "SELECT phone, contact, address FROM customers WHERE code=?", (code,)).fetchone()
