@@ -78,7 +78,13 @@ def customer_list():
 def customer_detail(customer_code):
     date_from = request.args.get('date_from') or None
     date_to   = request.args.get('date_to')   or None
-    data = models.get_customer_summary_by_code(customer_code, date_from, date_to)
+    # Cost block (#493 slice 3) is gated at the DATA layer: this page is open
+    # to staff, so the model is asked for cost only for the same roles the
+    # template's `is_manager` flag covers (access_control.inject_auth) —
+    # shareholder deliberately excluded. Every other role's data holds none.
+    include_cost = session.get('role') in ('admin', 'manager')
+    data = models.get_customer_summary_by_code(customer_code, date_from, date_to,
+                                               include_cost=include_cost)
 
     # A code with no master row AND no sales at all is not a customer — 404 rather
     # than render a page titled after whatever was typed into the URL. A code that

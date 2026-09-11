@@ -235,7 +235,100 @@ def resolve_customer_codes(name):
     return [r['customer_code'] for r in rows]
 
 
-def _customer_product_cards(conn, where, params):
+def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
+    """The cost block for one product card (#493 slice 3). Only ever called
+    when the route asked for cost, i.e. for admin/manager — every other
+    role's page data never carries any of this.
+
+    READS ONLY. `models.get_cost_history` (the product page's loader)
+    lazily recalculates the ledger and COMMITS, so it is never called here;
+    the latest PURCHASE event is read straight from product_cost_ledger.
+
+    Put's two rulings (2026-09-11):
+      * the last price's badges judge the money we KEEP — net ÷ qty, ex-VAT
+        (on a แยก VAT bill the displayed price includes the 7% we remit);
+      * the margin at today's price is the resolver's own internal margin,
+        from a call made at the customer's LAST quantity so a bundle's free
+        units count — the caller made that call and passes `resolved`.
+
+    Unit conversions go through price_lookup._bill_ratio — the resolver's
+    own bill-unit → base-unit lookup, the one it converts every evidence
+    row with — never a re-typed unit_conversions query. A ratio it cannot
+    find degrades the figure to None ("—"), never to 1.
+    """
+    import price_lookup
+
+    prod = conn.execute(
+        "SELECT cost_price, unit_type FROM products WHERE id = ?", (pid,)).fetchone()
+    cost = prod['cost_price'] or 0
+    out = {
+        'has_cost': cost > 0, 'wacc_per_unit': None, 'last_purchase': None,
+        'margin_last': None, 'margin_today': None,
+        'last_below_wacc': False, 'last_below_last_purchase': False,
+        'today_below_wacc': False, 'today_below_last_purchase': False,
+    }
+    if cost <= 0:
+        return out   # "ไม่มีทุน" — no margin, no badges
+
+    ratio_cache = {}
+    row_ratio = price_lookup._bill_ratio(conn, pid, prod['unit_type'], unit, ratio_cache)
+    lp = conn.execute("""
+        SELECT unit_cost, event_date, reference_no FROM product_cost_ledger
+        WHERE product_id = ? AND event_type = 'PURCHASE'
+        ORDER BY event_date DESC, id DESC LIMIT 1
+    """, (pid,)).fetchone()
+
+    if row_ratio is not None:
+        out['wacc_per_unit'] = round(cost * row_ratio, 2)
+    if lp is not None:
+        out['last_purchase'] = {
+            'per_unit': round(lp['unit_cost'] * row_ratio, 2) if row_ratio is not None else None,
+            'date': lp['event_date'],
+            'ref': lp['reference_no'],
+        }
+
+    if last_row is not None and row_ratio is not None:
+        kept = last_row['net']
+        kept_per_unit = kept / last_row['qty']
+        out['last_below_wacc'] = kept_per_unit < cost * row_ratio
+        if lp is not None:
+            out['last_below_last_purchase'] = kept_per_unit < lp['unit_cost'] * row_ratio
+        free_ratios = [price_lookup._bill_ratio(conn, pid, prod['unit_type'], f['unit'], ratio_cache)
+                       for f in freebie_rows]
+        if None not in free_ratios:
+            paid_cost = cost * row_ratio * last_row['qty']
+            free_cost = cost * sum(f['qty'] * r for f, r in zip(freebie_rows, free_ratios))
+            profit = kept - paid_cost - free_cost
+            out['margin_last'] = {
+                'kept': round(kept, 2),
+                'paid_qty': last_row['qty'],
+                'wacc_per_unit': round(cost * row_ratio, 2),
+                'paid_cost': round(paid_cost, 2),
+                'free_cost': round(free_cost, 2),
+                'profit': round(profit, 2),
+                'pct': round(profit / kept * 100, 2),
+            }
+
+    if resolved is not None and resolved['list']['list_for_unit'] != 0:
+        internal = resolved['internal']
+        price = resolved['answer']['price_per_unit']
+        if internal['margin_at_answer_pct'] is not None:
+            out['margin_today'] = {
+                'pct': internal['margin_at_answer_pct'],
+                'price': price,
+                'unit': resolved['answer']['unit'],
+                'cost_per_unit': internal['cost_per_unit'],
+                'cost_side': internal['cost_side'],
+                'incl_free_units': internal['margin_incl_free_units'],
+            }
+        out['today_below_wacc'] = internal['below_cost_by'] is not None
+        ratio = resolved['unit']['ratio']
+        if lp is not None and ratio is not None:
+            out['today_below_last_purchase'] = price < lp['unit_cost'] * ratio
+    return out
+
+
+def _customer_product_cards(conn, where, params, include_cost=False):
     """สินค้าที่ซื้อบ่อย, enriched (#493 slice 2, trimmed scope B): one row per
     (product, unit), keyed and populated by the price resolver's evidence
     predicate (the one definition of "a bill that counts") restricted to
@@ -256,6 +349,11 @@ def _customer_product_cards(conn, where, params):
     on `last`: vat_type/unit_price/discount for the VAT note, the
     bill-level discount (net vs total), and same-product freebies on that
     document.
+
+    Slice 3: `include_cost=True` (the route passes it for admin/manager
+    only) adds a `cost` key to every card — see _card_cost. With the
+    default False the key is absent entirely, so nothing about cost can
+    reach a staff page, not even through a data attribute.
     """
     import price_lookup
     import vat_math
@@ -301,6 +399,8 @@ def _customer_product_cards(conn, where, params):
         card['last'] = None
         card['today'] = None
         card['stock'] = None
+        if include_cost:
+            card['cost'] = None
         if pid is None:
             # Unmapped BSN raw name — no product row to price against.
             cards.append(card)
@@ -313,6 +413,7 @@ def _customer_product_cards(conn, where, params):
               AND s.product_id = ? AND s.unit = ?
             ORDER BY s.date_iso DESC, s.id DESC LIMIT 1
         """, list(params) + [pid, unit]).fetchone()
+        freebie_rows = []
         if last_row is not None:
             price_per_unit = vat_math.cash_from_net(last_row['net'] / last_row['qty'],
                                                       last_row['vat_type'])
@@ -355,8 +456,14 @@ def _customer_product_cards(conn, where, params):
         # first, then base × ratio) and the active price promotion" the
         # issue asks for, reusing the ONE pricing engine (never re-derived
         # here — .claude/rules/quoting-and-pricing.md).
+        # Called at the customer's LAST quantity (Put, 2026-09-11, slice 3) so
+        # the internal margin counts a bundle's free units when that order
+        # size reaches the bundle; the price itself does not depend on qty.
+        resolved = None
         try:
-            resolved = price_lookup.resolve_price(conn, product_id=pid, unit=unit)
+            resolved = price_lookup.resolve_price(
+                conn, product_id=pid, unit=unit,
+                qty=last_row['qty'] if last_row is not None else 1)
         except ValueError:
             pass  # unit has no resolvable ratio/tier — leave today/stock=None
         else:
@@ -384,12 +491,19 @@ def _customer_product_cards(conn, where, params):
                     'insufficient': base_qty < ratio,
                 }
 
+        if include_cost:
+            card['cost'] = _card_cost(conn, pid, unit, last_row, freebie_rows, resolved)
         cards.append(card)
     return cards
 
 
-def get_customer_summary_by_code(customer_code, date_from=None, date_to=None):
+def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
+                                 include_cost=False):
     """Code-keyed counterpart to get_customer_summary().
+
+    `include_cost` (#493 slice 3) is the DATA-layer cost gate: the route
+    passes True only for admin/manager, and only then do the product cards
+    carry a `cost` key (WACC, last purchase cost, margins, badges).
 
     Unlike get_customer_summary (keyed on the bill name in sales_transactions),
     this resolves the master row DIRECTLY from `customers` by code, so the
@@ -403,7 +517,7 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None):
         'customer_code', customer_code, date_from, date_to)
     summary, top_products, monthly, docs = _customer_sales_aggregates(
         conn, where, params)
-    product_cards = _customer_product_cards(conn, where, params)
+    product_cards = _customer_product_cards(conn, where, params, include_cost=include_cost)
 
     # Bill (short) name for THIS code specifically — most recent sale wins.
     # This is what distinguishes ทรัพย์ทวี's two codes; a name-keyed lookup
