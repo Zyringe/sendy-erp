@@ -184,6 +184,12 @@
 
 - **กำไรที่ราคาเดิม ("ขายราคาเดิมวันนี้")** — the margin if the customer's last price were
   charged today, against today's WACC. Not the historical margin of that invoice.
+  Its badges (🔴 ต่ำกว่าทุน / ⚠ ต่ำกว่าทุนซื้อล่าสุด) judge the money **kept** — net ÷ qty,
+  ex-VAT — never the VAT-inclusive price displayed on a แยก VAT bill (Put, 2026-09-11).
+
+- **กำไรที่ราคาวันนี้** — the price resolver's own internal margin (NoVAT basis) at
+  ราคาตั้งหลังโปร, taken at the customer's **last order quantity**, so a bundle promo's free
+  units count once that quantity reaches the bundle (Put, 2026-09-11).
 
 ## Cashbook (the `/cashbook` feature — บัญชีรับ-จ่าย)
 
