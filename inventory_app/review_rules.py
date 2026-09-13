@@ -251,7 +251,7 @@ def _evaluate_doc(conn, lines: List[dict]) -> dict:
 
 _SALES_COLS = """s.id, s.batch_id, s.date_iso, s.doc_no, s.doc_base,
     s.product_id, s.bsn_code, s.product_name_raw, s.customer, s.customer_code,
-    s.qty, s.unit, s.unit_price, s.vat_type, s.net, s.ref_invoice"""
+    s.qty, s.unit, s.unit_price, s.vat_type, s.total, s.net, s.ref_invoice"""
 
 
 def _persist_doc(c, doc_base: str, lines: List[dict]) -> Optional[int]:
@@ -473,6 +473,7 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
     unit_price = float(row.get('unit_price') or 0)
     qty = float(row.get('qty') or 0)
     net = float(row.get('net') or 0)
+    total = float(row.get('total') or 0)
     bsn_code = row.get('bsn_code') or ''
     raw_name = row.get('product_name_raw') or ''
     ref_invoice = row.get('ref_invoice') or ''
@@ -620,28 +621,35 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
                 {'base_sell_price': base_sell_price}, promo
             )
             if expected_per_base is not None:
+                # What the customer was charged per sold unit: after the LINE
+                # discount (the usual way a promo is keyed), before the doc-level
+                # cash discount (a payment term, not the promo). Raw unit_price
+                # misses the line discount; net/qty adds the 2% cash discount,
+                # past R5_TOLERANCE (#475). qty > 0 here: skip_price covers <= 0.
+                line_price = total / qty
                 # Scale expected to the sold unit
                 expected_per_sold = expected_per_base * ratio
                 # Check if sold at base_sell_price × ratio (not applying promo)
                 base_per_sold = base_sell_price * ratio
-                sold_at_full_price = abs(unit_price - base_per_sold) / (base_per_sold or 1) <= R5_TOLERANCE
+                sold_at_full_price = abs(line_price - base_per_sold) / (base_per_sold or 1) <= R5_TOLERANCE
 
                 # Pass if within R5_TOLERANCE of expected promo price
-                within_promo = abs(unit_price - expected_per_sold) / (expected_per_sold or 1) <= R5_TOLERANCE
+                within_promo = abs(line_price - expected_per_sold) / (expected_per_sold or 1) <= R5_TOLERANCE
 
-                # Pass if matches any price tier
+                # Pass if matches any price tier (a tier is a list price, so it
+                # is matched against the price as keyed)
                 tier_match = _matches_tier(conn, product_id, unit_price)
 
                 if not within_promo and not tier_match:
                     if sold_at_full_price:
                         msg = (
                             f'มีโปร "{promo["promo_name"]}" คาดราคา {expected_per_sold:.2f} '
-                            f'แต่ขาย {unit_price} — ไม่ได้ใช้โปร?'
+                            f'แต่ขาย {line_price:.2f} — ไม่ได้ใช้โปร?'
                         )
                     else:
                         msg = (
                             f'มีโปร "{promo["promo_name"]}" คาดราคา {expected_per_sold:.2f} '
-                            f'แต่ขาย {unit_price}'
+                            f'แต่ขาย {line_price:.2f}'
                         )
                     flags.append({
                         'rule_code': 'R5_PROMO_MISMATCH',
@@ -651,7 +659,7 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
                             'promo_name': promo['promo_name'],
                             'promo_type': promo['promo_type'],
                             'expected': round(expected_per_sold, 2),
-                            'observed': unit_price,
+                            'observed': round(line_price, 2),
                         }, ensure_ascii=False),
                     })
 
