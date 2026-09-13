@@ -1080,3 +1080,98 @@ def test_batch_date_malformed_rejected(tmp_db, tmp_path):
     with pytest.raises(ValueError):
         imp.run_import(csv_path, Path(tmp_db), commit=False, limit=None,
                        show_sample=0, verbose=False, batch_date="2026/06/01")
+
+
+# ── #500 follow-up: a batch date may not predate the FIRST catalogue batch ──
+#
+# The 2024-01-01 placeholder that issue #500 fixed was typed on all three real
+# catalogue runs, and the importer printed `Batch date: 2024-01-01` every time
+# without anyone noticing — so a louder warning was never going to help. This
+# is the refusal instead.
+#
+# Bound = MIN(created_at) of catalogue rows: the day this DB first recorded a
+# catalogue batch. NOT date_start (only what a batch CLAIMED — all three bad
+# runs claimed the same date, so that bound could never fire) and NOT MAX
+# (measured: breaks 22 tests in this file, and catches the real mistake no
+# better — see the guard's docstring). Every test forces its own promotions
+# state rather than inheriting the clone's.
+
+
+def _force_catalog_promos(db_path, rows):
+    """Wipe every promotion and seed exactly `rows` of (source, created_at).
+    tmp_db clones the live dev DB WITH data, so the bound must be forced."""
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM promotions")
+    pid = conn.execute("SELECT id FROM products LIMIT 1").fetchone()[0]
+    for source, created_at in rows:
+        conn.execute(
+            "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value,"
+            " date_start, date_end, is_active, source, created_at)"
+            " VALUES (?,?, 'percent', 5, NULL, NULL, 0, ?, ?)",
+            (pid, f"seeded {created_at}", source, created_at))
+    conn.commit()
+    conn.close()
+    return pid
+
+
+def _run(csv_path, db_path, batch_date):
+    return imp.run_import(csv_path, Path(db_path), commit=False, limit=None,
+                          show_sample=0, verbose=False, batch_date=batch_date)
+
+
+def _one_row_csv(tmp_path, pid):
+    csv_path = tmp_path / "cat.csv"
+    _write_csv(csv_path, [{"product_id": str(pid), "sku_code": "A",
+                           "promo_type": "percent", "promo_value": "10"}])
+    return csv_path
+
+
+# prod's shape at the time of the bug: two catalogue batches already recorded
+PROD_SHAPED = [("catalog-import", "2026-06-01 12:25:57"),
+               ("catalog-import", "2026-08-11 08:00:00")]
+
+
+class TestBatchDateNotBackdated:
+    def test_the_real_2024_placeholder_is_refused(self, tmp_db, tmp_path):
+        """The exact mistake from #500, against prod's shape at the time."""
+        pid = _force_catalog_promos(tmp_db, PROD_SHAPED)
+        csv_path = _one_row_csv(tmp_path, pid)
+        with pytest.raises(imp.RunAbort) as exc:
+            _run(csv_path, tmp_db, "2024-01-01")
+        msg = str(exc.value)
+        assert "2024-01-01" in msg and "2026-06-01" in msg
+
+    def test_a_date_between_two_batches_is_allowed(self, tmp_db, tmp_path):
+        """DISCRIMINATOR — this is the ONLY test that tells this bound apart
+        from the stricter 'not before the LATEST batch' rule. With batches on
+        06-01 and 08-11, a 07-01 batch date is allowed here and would be
+        refused there. Without it both rules pass every other test in this
+        class and the suite would pin neither."""
+        pid = _force_catalog_promos(tmp_db, PROD_SHAPED)
+        _run(_one_row_csv(tmp_path, pid), tmp_db, "2026-07-01")
+
+    def test_the_first_batchs_own_day_is_allowed(self, tmp_db, tmp_path):
+        """CONTROL: the bound is `earlier than`, not `not later than`."""
+        pid = _force_catalog_promos(tmp_db, PROD_SHAPED)
+        _run(_one_row_csv(tmp_path, pid), tmp_db, "2026-06-01")
+
+    def test_the_first_ever_catalogue_batch_has_no_bound(self, tmp_db, tmp_path):
+        """CONTROL: with nothing to compare against the guard must not fire.
+        This is the run the guard structurally cannot catch, by design."""
+        pid = _force_catalog_promos(tmp_db, [])
+        _run(_one_row_csv(tmp_path, pid), tmp_db, "2024-01-01")
+
+    def test_a_manual_promo_does_not_set_the_bound(self, tmp_db, tmp_path):
+        """The far side of the `source = 'catalog-import'` filter: a promo Put
+        typed by hand says nothing about when the last FILE was imported.
+        Without a row on this side, deleting that clause would change no row."""
+        pid = _force_catalog_promos(tmp_db, [("manual", "2026-06-01 12:25:57")])
+        _run(_one_row_csv(tmp_path, pid), tmp_db, "2024-01-01")
+
+    def test_the_guard_refuses_in_dry_run_too(self, tmp_db, tmp_path):
+        """The operator must find out at dry-run, not only at --commit."""
+        pid = _force_catalog_promos(tmp_db, PROD_SHAPED)
+        csv_path = _one_row_csv(tmp_path, pid)
+        with pytest.raises(imp.RunAbort):
+            imp.run_import(csv_path, Path(tmp_db), commit=False, limit=None,
+                           show_sample=0, verbose=False, batch_date="2024-01-01")

@@ -105,6 +105,53 @@ def _validate_batch_date(batch_date: str) -> None:
         raise ValueError(f"--batch-date must be ISO YYYY-MM-DD, got {batch_date!r}")
 
 
+def _validate_batch_date_not_backdated(conn, batch_date: str) -> None:
+    """Refuse a --batch-date that predates the FIRST catalogue batch this
+    database ever recorded (issue #500 follow-up).
+
+    #500: `2024-01-01` was typed as --batch-date on all three real catalogue
+    runs, so every promotion claimed to have started before the ERP had any
+    catalogue prices at all, and no promotion could ever move the price epoch.
+
+    Why a refusal and not a warning: the importer already prints
+    `Batch date: ...` on every run, dry-run and commit alike. That line was
+    read past three times, so more output was never going to be the fix.
+
+    Why the bound is `created_at` and not `date_start`: date_start is only what
+    a batch CLAIMED, and all three bad runs claimed the same date — a
+    date_start bound could never have fired.
+
+    Why MIN and not MAX (Put, 2026-09-12): both refuse the real mistake
+    identically (2024-01-01 is below either bound), and they differ only on a
+    plausible back-date such as dating a batch 2026-07-01 when the last one
+    was recorded 2026-08-11. MAX was implemented and measured first: it breaks
+    22 existing tests in tests/test_import_catalog_pricing.py, which inherit
+    the cloned dev DB's catalogue rows and then import with an older batch
+    date. MIN breaks none and still catches the shape that actually occurred —
+    a batch dated before this catalogue existed.
+
+    The FIRST catalogue batch on a fresh DB has nothing to compare against and
+    is allowed. This narrows the window for the mistake, it does not close it.
+
+    Only `source = 'catalog-import'` rows set the bound — a promo Put typed by
+    hand says nothing about when the last FILE was imported. There is
+    deliberately no override flag: a genuine historical back-fill should be a
+    considered code change, not a flag that turns the guard off in a hurry.
+    """
+    row = conn.execute(
+        "SELECT MIN(date(created_at)) AS d FROM promotions "
+        "WHERE source = 'catalog-import'"
+    ).fetchone()
+    first = row["d"] if row is not None else None
+    if first and batch_date < first:
+        raise RunAbort(
+            f"--batch-date {batch_date} predates the first catalogue batch this "
+            f"database ever recorded ({first}), so every promotion in this file "
+            f"would claim to have started before the catalogue existed. Re-run "
+            f"with the date this catalogue actually takes effect (usually today)."
+        )
+
+
 # ── Per-row planning (pure — no DB writes) ──────────────────────────────────
 
 def _base_update_for_row(row: dict, current_base_sell_price: float):
@@ -602,6 +649,7 @@ def run_import(csv_path: Path, db_path: Path, commit: bool, limit: Optional[int]
     try:
         # B5: validate the file's own shape BEFORE any DB read of state.
         _validate_file_shape(conn, rows_all, batch_date)
+        _validate_batch_date_not_backdated(conn, batch_date)
 
         conn.execute("BEGIN IMMEDIATE")
         if _after_begin_hook is not None:
