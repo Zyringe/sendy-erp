@@ -11,10 +11,11 @@ this file known", not "is this aggregate declared"): every SQL string in
 inventory_app/ that reads sales_transactions and is keyed to a customer (it
 names the customer or customer_code column, or it lives in a function whose
 name says customer) has its raw net aggregates counted — SUM(net),
-SUM(s.net), SUM(CASE ... net ...), anything over {vat_math.cash_sql()}. Each
-function holding any must be listed in ALLOWED with that exact count and a
-reason. A new raw aggregate inside an already-listed function changes its
-count, so it cannot hide behind the old entry.
+SUM(s2.net), SUM(COALESCE(net, 0)), SUM(CASE ... net ...), anything over
+{vat_math.cash_sql()}. Each function holding any must be listed in ALLOWED
+with that exact count and a reason. A new raw aggregate inside an
+already-listed function changes its count, so it cannot hide behind the old
+entry.
 
 What it still cannot see: SQL assembled from separate variables (the FROM in
 one string, the SUM in another), files outside inventory_app/ (scripts/), and
@@ -30,9 +31,12 @@ import pytest
 APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    'inventory_app')
 
-# Raw net aggregates: the same shapes test_revenue_filter_coverage.py sweeps.
+# Raw net aggregates: the shapes test_revenue_filter_coverage.py sweeps, plus
+# two it is blind to (review of #519): an alias with a digit (`s2.net`) and a
+# net wrapped before it is summed (`SUM(COALESCE(net, 0))`).
 _RAW_NET_AGG = re.compile(
-    r'SUM\(\s*(?:(?:[a-z]{1,3}\.)?net\s*\)|CASE\b.{0,200}?\bnet\b)'
+    r'SUM\(\s*(?:(?:(?:COALESCE|ROUND|IFNULL)\(\s*)?(?:\w+\.)?net\b'
+    r'|CASE\b.{0,200}?\bnet\b)'
     r'|\{vat_math\.cash_sql\(',
     re.IGNORECASE | re.DOTALL)
 _HELPER = re.compile(r'\{sales_filters\.purchase_net_sql\(')
@@ -229,6 +233,8 @@ AGGREGATE_SHAPES = {
                         '  FROM sales_transactions WHERE customer_code = ?',
     'vat_math_cash':    'SELECT SUM({vat_math.cash_sql()}) FROM sales_transactions '
                         'WHERE customer_code = ?',
+    'digit alias':      'SELECT SUM(s2.net) FROM sales_transactions s2 WHERE s2.customer_code = ?',
+    'wrapped':          'SELECT SUM(COALESCE(net, 0)) FROM sales_transactions WHERE customer = ?',
 }
 
 CUSTOMER_KEY_SHAPES = {
