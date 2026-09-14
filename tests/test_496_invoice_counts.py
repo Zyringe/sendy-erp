@@ -139,3 +139,18 @@ def test_trade_dashboard_purchase_counts_unchanged(seeded):
     assert _oracle(seeded, "SELECT COUNT(DISTINCT doc_base) FROM purchase_transactions") == 2
     assert len(d['top_suppliers']) == 1
     assert d['top_suppliers'][0]['doc_count'] == 2
+
+
+def test_trade_dashboard_page_shows_invoice_counts(admin):
+    html = admin.get(f'/trade-dashboard?date_from={MONTH_FROM}&date_to={MONTH_TO}'
+                     ).get_data(as_text=True)
+    # The sales and purchase cards' "N เอกสาร" lines, in page order.
+    card_counts = re.findall(r'<div class="mt-2 text-subtle small">(\d+) เอกสาร &middot;', html)
+    assert card_counts == ['4', '2']
+    total = re.search(r'เอกสารทั้งหมด</div>\s*<div class="stat-card-value"[^>]*>\s*(\d+)\s*</div>',
+                      html)
+    assert total and total.group(1) == '6'           # 4 sales invoices + 2 purchase docs
+    assert re.search(r'ขาย (\d+) &middot; ซื้อ (\d+)', html).groups() == ('4', '2')
+    cust_cell = re.search(re.escape(X_NAME) + r'</a>\s*</td>\s*<td class="text-end font-mono '
+                          r'text-subtle">(\d+)</td>', html)
+    assert cust_cell and cust_cell.group(1) == '3'

@@ -135,8 +135,10 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
         date_from = '2000-01-01'
 
     # ── Summary this month ────────────────────────────────────────────────────
+    # Sales count doc_base (the invoice); doc_no is one LINE of it (#496).
+    # Purchases below keep doc_no: on purchase_transactions it IS the document.
     s = conn.execute("""
-        SELECT COUNT(DISTINCT doc_no) AS doc_count,
+        SELECT COUNT(DISTINCT doc_base) AS doc_count,
                COALESCE(SUM(net), 0)  AS total_net,
                COALESCE(SUM(qty), 0)  AS total_qty
         FROM sales_transactions
@@ -197,7 +199,7 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
     # ── Top 10 ลูกค้า ─────────────────────────────────────────────────────────
     top_customers = conn.execute("""
         SELECT customer,
-               COUNT(DISTINCT doc_no) AS doc_count,
+               COUNT(DISTINCT doc_base) AS doc_count,
                SUM(net)               AS total_net
         FROM sales_transactions
         WHERE date_iso >= ? AND date_iso <= ?
