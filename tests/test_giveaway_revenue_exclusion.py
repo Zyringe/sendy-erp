@@ -178,8 +178,13 @@ def test_customer_page_drops_the_giveaway(live_conn):
     exactly the giveaway — no more, no less."""
     import models.customers as customers
     summary = customers.get_customer_summary('วรสวัสดิ์ ฮาร์ดแวร์')['summary']
+    # Every line, a credit note counted AGAINST the total, as ยอดซื้อรวม counts
+    # it (#494), typed out here rather than read from the helper. A raw
+    # SUM(net) would add the next credit note วรสวัสดิ์ receives on this side
+    # while the page subtracts it, and break this test for the wrong reason.
     raw = live_conn.execute(
-        "SELECT ROUND(COALESCE(SUM(net), 0), 2) FROM sales_transactions "
+        "SELECT ROUND(COALESCE(SUM(CASE WHEN doc_base LIKE 'SR%' THEN -net "
+        "ELSE net END), 0), 2) FROM sales_transactions "
         "WHERE customer = ?", ('วรสวัสดิ์ ฮาร์ดแวร์',)).fetchone()[0]
     assert round(raw - summary['total_net'], 2) == 154122.80
 

@@ -175,6 +175,22 @@
   what the customer page's document list shows per row — never a raw `SUM(net)`, which
   omits VAT on แยก VAT documents and shows a credit note as positive money.
 
+- **ยอดซื้อรวม (purchase total)** — what a customer bought, **before VAT and net of
+  returns**: every invoice and cash-sale (HS) line adds its amount, every credit-note line
+  subtracts its amount, and documents invoiced in error are left out. One figure wherever a
+  customer's purchase total shows: the customer page header (labelled "(ก่อน VAT)") and its
+  monthly chart, the `/customers` list, the mobile page's ยอดสะสม, the call card, and the
+  `/call` list's spend (over the window it is set to). It can be **negative**: a customer, or
+  a month, whose returns exceed its purchases reads below zero, never clamped (#494, Put
+  2026-09-13).
+  _Not to be confused with_: **ยอดรวมเอกสาร**, which adds VAT on แยก VAT documents, so a
+  customer's document list does not sum to its ยอดซื้อรวม once it holds a แยก VAT bill; and
+  revenue (`/revenue`, `/accounting`), which leaves returns and HS out instead of subtracting
+  them (whether HS is revenue: #514).
+  > Known imprecision, left alone: a credit-note line's amount is carried **before** that
+  > credit note's bill-level discount, while an invoice line's is after its own. ยอดซื้อรวม
+  > subtracts the same credit-note amount the document list shows.
+
 - **ครั้งที่ซื้อ (times bought)** — the number of invoices carrying a *paid* line (net > 0)
   of a product. A freebie-only invoice or a credit note does not count.
 

@@ -100,6 +100,14 @@ def _build_mig103_db(path):
             doc_base TEXT,
             ref_invoice TEXT
         );
+
+        -- get_call_list's spend drops documents invoiced in error through
+        -- sales_filters.not_a_sale_clause(), which reads this table (#494).
+        CREATE TABLE IF NOT EXISTS ar_writeoffs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_no TEXT NOT NULL UNIQUE,
+            excludes_revenue INTEGER NOT NULL DEFAULT 0
+        );
     """)
     conn.commit()
 

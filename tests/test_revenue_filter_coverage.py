@@ -42,7 +42,9 @@ ALLOWED = {
         'Sums SR (credit-note) rows for AR allocation, not revenue.',
     'call_card.py':
         'Sales-rep call card shows a customer purchase history, not a revenue '
-        'report; left with the ledger for consistency with /sales.',
+        'report. Its /call spend is ยอดซื้อรวม (#494: credit notes subtracted, '
+        'HS kept, only the not-a-sale guard); the product lists stay on the '
+        'ledger for consistency with /sales.',
     'models/payments.py':
         'AR-balance surfaces, not revenue reports. get_payment_status and '
         'get_payment_summary are the document ledger behind /ar?tab=รายบิล — '

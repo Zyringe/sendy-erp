@@ -24,6 +24,9 @@ single NULL in the subquery makes `NOT IN (SELECT ...)` evaluate to NULL for
 every row, and every revenue figure in the app would silently become 0. Same
 hazard cashflow.py documents for its own ar_writeoffs subquery.
 
+A customer's purchase total (ยอดซื้อรวม) is a different question from revenue
+and has its own single definition here too: purchase_net_sql() (#494).
+
 Python 3.9 — no `X | None` syntax.
 """
 
@@ -54,3 +57,25 @@ def revenue_filter(alias=''):
             "AND {p}doc_base NOT LIKE 'HS%' "
             "AND {not_a_sale}"
             .format(p=p, not_a_sale=not_a_sale_clause(alias)))
+
+
+def purchase_net_sql(alias=''):
+    """SQL expression: one line's share of a customer's ยอดซื้อรวม (#494).
+
+    Before VAT (`net` is always ex-VAT, see vat_math), and NET of returns: a
+    credit-note (SR) line is stored with a POSITIVE net, so it is negated here.
+    Before #494 the header summed a bare `net` and ADDED returns (prod 56ช001:
+    ฿94,140.00 against the ฿50,460.00 its own document list sums to).
+
+    HS cash sales count like invoices, as the customer page's document list
+    shows them. That is why this is NOT built on revenue_filter(), which drops
+    HS (whether HS is revenue is #514, a separate question).
+
+    Per-row expression only, like vat_math.cash_sql(): wrap it in SUM()
+    yourself, and keep documents invoiced in error out with
+    not_a_sale_clause() in the same query's WHERE. `alias` as for
+    not_a_sale_clause().
+    """
+    p = '{}.'.format(alias) if alias else ''
+    return ("CASE WHEN {p}doc_base LIKE 'SR%' THEN -{p}net ELSE {p}net END"
+            .format(p=p))

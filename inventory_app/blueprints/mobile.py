@@ -128,8 +128,9 @@ def customer_detail(customer_name):
     aging = cashflow.ar_aging()
     conn = get_connection()
 
-    # Aggregate stats. total_net stays pre-VAT/unchanged (same convention as
-    # the desktop header's ยอดซื้อรวม) — only doc_count is fixed (#493):
+    # Aggregate stats. total_net is ยอดซื้อรวม, the desktop header's own
+    # definition (sales_filters.purchase_net_sql, #494: before VAT, credit notes
+    # subtracted). doc_count counts documents (#493):
     # doc_no carries a per-line '-N' suffix, so COUNT(DISTINCT doc_no) counted
     # LINES, not documents. Also applies the same not_a_sale_clause() exclusion
     # `last_sales` (via get_customer_documents -> _customer_sales_scope)
@@ -138,7 +139,7 @@ def customer_detail(customer_name):
     stats = conn.execute(
         f"""
         SELECT COUNT(DISTINCT doc_base) AS doc_count,
-               ROUND(SUM(net), 2) AS total_net,
+               ROUND(SUM({sales_filters.purchase_net_sql()}), 2) AS total_net,
                MIN(date_iso) AS first_seen,
                MAX(date_iso) AS last_seen
           FROM sales_transactions
