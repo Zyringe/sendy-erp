@@ -36,7 +36,7 @@
           </select>
         </div>
         <div class="col-auto text-muted small">
-          ราคาจ่ายจริง ÷ 1.07 (ไม่รวม VAT) ÷ อัตราแปลงหน่วย แล้วเทียบกับต้นทุนในสมุด VAT
+          ราคาจ่ายจริง ÷ {{ vat_multiplier }} (ไม่รวม VAT) ÷ อัตราแปลงหน่วย แล้วเทียบกับต้นทุนในสมุด VAT
         </div>
       </div>
     </div>
@@ -134,10 +134,21 @@
   // RATIO only (decision 10; Codex r1 finding 1: passing the selected
   // unit here wrongly flipped โหล→ตัว deals to "เทียบไม่ได้").
   const X_BASE_UNIT = {{ product.unit_type|tojson }};
+  // vat_math.VAT_MULTIPLIER, rendered by the route: the one owner of the rate.
+  const VAT_MULTIPLIER = {{ vat_multiplier|tojson }};
 
+  // The badge's only implementation (#485 deleted models.vat_sub.compute_badge,
+  // an uncalled Python copy that had drifted from this one). Its decisions:
+  // the price box is VAT-inclusive, for ONE of the selected unit (decision 9:
+  // carve VAT out, never add it on top); the ratio turns that unit into X's
+  // base unit and comes from X's own unit_conversions only (decision 10: never
+  // an invented cross-product ratio); the candidate's cost is its VAT-book
+  // cost_price (STMAS.UNITPR, ex-VAT), compared only when both units are
+  // non-blank and equal. Both books store normalised Thai unit names, so the
+  // plain string compare is the normalised compare.
   function computeBadge(pricePerUnit, unitRatio, xu, candUnit, candCost) {
     if (!pricePerUnit || !unitRatio) return {label: 'เทียบไม่ได้', cls: 'bg-secondary'};
-    const exVat = pricePerUnit / 1.07;
+    const exVat = pricePerUnit / VAT_MULTIPLIER;
     const perBase = exVat / unitRatio;
     if (!xu || !candUnit || xu !== candUnit) {
       return {label: (xu && candUnit) ? 'เทียบไม่ได้ (หน่วยต่างกัน)' : 'เทียบไม่ได้', cls: 'bg-secondary'};

@@ -34,6 +34,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 
 import book_registry
 import models
+import vat_math
 from database import get_connection
 
 bp_vat_sub = Blueprint('vat_sub', __name__, url_prefix='/vat-sub')
@@ -100,7 +101,7 @@ def product_view(product_id):
             book_conn.close()
     return render_template('vat_sub/product_view.html', product=product, own_card=own_card,
                            candidates=candidates, guesses=guesses, unit_options=unit_options,
-                           group_choices=group_choices,
+                           group_choices=group_choices, vat_multiplier=vat_math.VAT_MULTIPLIER,
                            vat_freshness=book_registry.vat_book_freshness())
 
 
