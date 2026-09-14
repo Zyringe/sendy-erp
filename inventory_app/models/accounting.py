@@ -93,10 +93,11 @@ def get_accounting_summary(date_from=None, date_to=None):
         date_from = '2000-01-01'
 
     # ── Revenue (SR return rows EXCLUDED — = GL 41-01, see convention above) ──
+    # doc_count counts invoices (doc_base); doc_no is one line of one (#496).
     s = conn.execute("""
         SELECT COALESCE(SUM(net), 0) AS total_net,
                COUNT(*)               AS line_count,
-               COUNT(DISTINCT doc_no) AS doc_count
+               COUNT(DISTINCT doc_base) AS doc_count
           FROM sales_transactions
          WHERE date_iso >= ? AND date_iso <= ?
            AND doc_no NOT LIKE 'SR%' AND doc_no NOT LIKE 'HS%'
