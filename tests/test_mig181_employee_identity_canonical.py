@@ -244,20 +244,34 @@ def test_rollback_restores_every_employee_cell_and_the_schema_byte_identical(db)
     assert _schema(db) == schema
 
 
-def test_rollback_keeps_an_edit_made_after_the_migration(db):
+_DASHED = {'national_id': '1-2345-67890-12-3', 'phone': '081-234-5678',
+           'bank_account_no': '123-4-56789-0'}
+_EDITED = {'national_id': '9999999999999', 'phone': '0899999999',
+           'bank_account_no': '9999999999'}
+
+
+@pytest.mark.parametrize('edited', FIELDS)
+def test_rollback_keeps_an_edit_made_after_the_migration(db, edited):
     """A field HR changed after 181 is newer than the snapshot: restoring the
     old spelling would silently undo that edit. Only a value still exactly as
-    181 wrote it goes back."""
-    emp_id = _seed(db, national_id='1-2345-67890-12-3', phone='081-234-5678')
+    181 wrote it goes back.
+
+    The guard is written once PER COLUMN in the rollback, so it is pinned once
+    per column: for the bank account, a rollback that forgot it would put back
+    the OLD account and the next payroll would pay into it."""
+    emp_id = _seed(db, **_DASHED)
     _apply(db, MIG_181)
-    db.execute("UPDATE employees SET phone='0899999999' WHERE id=?", (emp_id,))
+    db.execute(f"UPDATE employees SET {edited} = ? WHERE id = ?",
+               (_EDITED[edited], emp_id))
     db.commit()
 
     _apply(db, ROLLBACK_181)
 
-    assert _row(db, emp_id)['national_id'] == '1-2345-67890-12-3', \
-        "CONTROL — the untouched field did go back"
-    assert _row(db, emp_id)['phone'] == '0899999999'
+    got = _row(db, emp_id)
+    for f in FIELDS:
+        if f != edited:
+            assert got[f] == _DASHED[f], f"CONTROL — untouched {f} did go back"
+    assert got[edited] == _EDITED[edited]
 
 
 def test_rollback_is_re_runnable_and_forward_runs_again_after_it(db):
