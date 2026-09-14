@@ -46,8 +46,10 @@
 --   UNION ALL
 --   SELECT id, emp_code, 'bank_account_no' FROM employees
 --    WHERE REPLACE(REPLACE(REPLACE(REPLACE(bank_account_no,'-',''),' ',''),'(',''),')','') GLOB '*[^0-9]*';
--- then open each employee in /hr, type the ONE number that should be kept
--- (the page stores it as bare digits), save, and restart.
+-- then open each employee in /hr on the build that is STILL RUNNING (the build
+-- carrying 181 is the one that just failed to boot), type the ONE number that
+-- should be kept (dashes and spaces are fine: 181 strips those), save, and
+-- redeploy.
 --
 -- ROLLBACK is exact, not derived: a stripped number cannot say where its dashes
 -- were, so migration_181_snapshot records every cell this migration rewrites —
