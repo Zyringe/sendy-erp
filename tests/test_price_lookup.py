@@ -1500,3 +1500,187 @@ def test_epoch_candidates_reports_promo_start_only_when_date_start_is_set(db):
 
     assert pl._epoch_candidates(db, dated, 'ตัว', TODAY)['promo_start'] == _days_ago(30)
     assert pl._epoch_candidates(db, undated, 'ตัว', TODAY)['promo_start'] is None
+
+
+# ── #512: R4 and the promo_stale text count INVOICES (doc_base), not lines ──
+#
+# A sales_transactions.doc_no is one LINE of an invoice (`IV6901304-1`); the
+# invoice is doc_base (CONTEXT.md, "บรรทัดเอกสาร"). Every fixture below seeds
+# the real shape through _bill(doc_base=..., suffix=n), and states its own
+# invoice/line counts as literals — the expected values never come from the
+# code under test.
+
+def test_512_three_lines_on_two_invoices_widens_to_24m(db):
+    """3 evidence lines on 2 invoices inside 12 months = 2 bills < 3, so R4
+    widens. CONTROL in the same run: 4 lines on 3 invoices, one of them a
+    two-line invoice and two of them on the same date, does not widen and
+    reports 3 — so neither a line count (4) nor a date count (2) passes."""
+    pid = _mk_product(db, "512 3 lines 2 invoices", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    # invoice A carries the product on two paid lines, invoice B on one
+    _bill(db, pid=pid, customer_code='TST-512A', customer_name='ลูกค้า 512A',
+          date_iso=_days_ago(20), doc_base='IV5120001', suffix=1,
+          qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
+    _bill(db, pid=pid, customer_code='TST-512A', customer_name='ลูกค้า 512A',
+          date_iso=_days_ago(20), doc_base='IV5120001', suffix=2,
+          qty=2, unit='ตัว', unit_price=95.0, vat_type=1, net=190.0)
+    _bill(db, pid=pid, customer_code='TST-512B', customer_name='ลูกค้า 512B',
+          date_iso=_days_ago(40), doc_base='IV5120002', suffix=1,
+          qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
+    # precondition: all 3 lines really are evidence (else the widening
+    # below could come from a filtered-out line, not from the invoice count)
+    assert len(pl._evidence_rows(db, pid, _days_ago(365), TODAY)) == 3
+
+    out = pl.resolve_price(db, product_id=pid, today=TODAY)
+    assert out['window']['widened_to_24m'] is True
+    assert out['window']['n_bills'] == 2
+    assert out['window']['from'] == _days_ago(730)
+    assert 'window_widened' in [f['code'] for f in out['flags']]
+    # _window's own return shape is unchanged: (from_date, n_bills, widened)
+    assert pl._window(db, pid, None, TODAY) == (_days_ago(730), 2, True)
+
+    ctl = _mk_product(db, "512 4 lines 3 invoices", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, ctl)
+    # invoice C: two lines; invoices D and E: one line each, on the SAME date
+    for base, suffix, days in (('IV5120003', 1, 20), ('IV5120003', 2, 20),
+                               ('IV5120004', 1, 30), ('IV5120005', 1, 30)):
+        _bill(db, pid=ctl, customer_code='TST-512C', customer_name='ลูกค้า 512C',
+              date_iso=_days_ago(days), doc_base=base, suffix=suffix,
+              qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
+    ctl_rows = pl._evidence_rows(db, ctl, _days_ago(365), TODAY)
+    assert len(ctl_rows) == 4                              # precondition: 4 lines
+    assert len({r['date_iso'] for r in ctl_rows}) == 2     # precondition: on 2 dates
+    c = pl.resolve_price(db, product_id=ctl, today=TODAY)
+    assert c['window']['widened_to_24m'] is False
+    assert c['window']['n_bills'] == 3
+    assert c['window']['from'] == _days_ago(365)
+    assert 'window_widened' not in [f['code'] for f in c['flags']]
+
+
+def test_512_widened_24m_branch_reports_invoices_not_lines(db):
+    """Both the old and the new count widen this fixture (12 months: 2 lines
+    on 1 invoice), so it isolates the 24-month count: 5 lines on 3 invoices
+    reports 3."""
+    pid = _mk_product(db, "512 24m branch", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    # 12 months: invoice F, two lines
+    _bill(db, pid=pid, customer_code='TST-512F', customer_name='ลูกค้า 512F',
+          date_iso=_days_ago(30), doc_base='IV5120011', suffix=1,
+          qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
+    _bill(db, pid=pid, customer_code='TST-512F', customer_name='ลูกค้า 512F',
+          date_iso=_days_ago(30), doc_base='IV5120011', suffix=2,
+          qty=1, unit='ตัว', unit_price=98.0, vat_type=1, net=98.0)
+    # 13-24 months: invoice G (two lines) and invoice H (one line)
+    for suffix in (1, 2):
+        _bill(db, pid=pid, customer_code='TST-512G', customer_name='ลูกค้า 512G',
+              date_iso=_days_ago(400), doc_base='IV5120012', suffix=suffix,
+              qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
+    _bill(db, pid=pid, customer_code='TST-512H', customer_name='ลูกค้า 512H',
+          date_iso=_days_ago(500), doc_base='IV5120013', suffix=1,
+          qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
+    assert len(pl._evidence_rows(db, pid, _days_ago(730), TODAY)) == 5  # precondition
+
+    out = pl.resolve_price(db, product_id=pid, today=TODAY)
+    assert out['window']['widened_to_24m'] is True
+    assert out['window']['n_bills'] == 3
+
+
+def test_512_every_line_still_feeds_lowest(db):
+    """Only the COUNT is per-invoice. Every line still feeds `lowest`: on a
+    two-line invoice the cheaper line wins whichever of the two was inserted
+    first, so a one-line-per-invoice de-dup of the ROWS (keeping either the
+    first or the last line of each invoice) goes red on one of the two."""
+    for cheap_suffix in (1, 2):
+        pid = _mk_product(db, f"512 lowest cheap -{cheap_suffix}", unit_type='ตัว',
+                          base=100.0, cost=60.0)
+        _clear_pid(db, pid)
+        doc_base = f'IV51200{40 + cheap_suffix}'
+        for suffix in (1, 2):   # inserted in suffix order, so -1 has the lower id
+            price = 70.0 if suffix == cheap_suffix else 100.0
+            _bill(db, pid=pid, customer_code='TST-512L', customer_name='ลูกค้า 512L',
+                  date_iso=_days_ago(10), doc_base=doc_base, suffix=suffix,
+                  qty=1, unit='ตัว', unit_price=price, vat_type=1, net=price)
+        out = pl.resolve_price(db, product_id=pid, today=TODAY)
+        assert out['window']['n_bills'] == 1
+        assert out['context']['lowest']['cash_per_unit'] == 70.0
+        assert out['context']['lowest']['doc_no'] == f'{doc_base}-{cheap_suffix}'
+
+
+def test_512_promo_stale_text_counts_invoices(db):
+    """2 comparable lines on 1 invoice read "ทุกบิล 1 ใบ". CONTROL: the same
+    two lines on 2 invoices read "ทุกบิล 2 ใบ", so the number is a count and
+    not a constant. Whether the flag fires does not change."""
+    def _stale_flags(pid):
+        out = pl.resolve_price(db, product_id=pid, today=TODAY)
+        assert out['context']['promo_stale'] is True
+        return [f for f in out['flags'] if f['code'] == 'promo_stale']
+
+    pid = _mk_product(db, "512 promo stale 1 invoice", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    _promo(db, pid, promo_type='percent', discount_value=10.0,
+           date_start='2026-06-01', is_active=1)  # promo price 90
+    for suffix in (1, 2):
+        _bill(db, pid=pid, customer_code='TST-512P', customer_name='ลูกค้า 512P',
+              date_iso=_days_ago(10), doc_base='IV5120021', suffix=suffix,
+              qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
+    flags = _stale_flags(pid)
+    assert len(flags) == 1
+    assert flags[0]['text'] == 'โปรนี้ไม่ถูกใช้ในบิล — ทุกบิล 1 ใบล่าสุดจ่ายสูงกว่าราคาโปร'
+
+    ctl = _mk_product(db, "512 promo stale 2 invoices", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, ctl)
+    _promo(db, ctl, promo_type='percent', discount_value=10.0,
+           date_start='2026-06-01', is_active=1)
+    for base in ('IV5120022', 'IV5120023'):
+        _bill(db, pid=ctl, customer_code='TST-512P', customer_name='ลูกค้า 512P',
+              date_iso=_days_ago(10), doc_base=base, suffix=1,
+              qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
+    flags = _stale_flags(ctl)
+    assert len(flags) == 1
+    assert flags[0]['text'] == 'โปรนี้ไม่ถูกใช้ในบิล — ทุกบิล 2 ใบล่าสุดจ่ายสูงกว่าราคาโปร'
+
+
+def test_512_resolve_price_output_keys_pinned(db):
+    """The brain repo's /quote-customer skill reads resolve_price's output
+    through scripts/price_lookup_cli.py, which passes it through verbatim.
+    Pin every key the resolver itself builds, so a counting change (or any
+    other) cannot silently rename or drop one. The promo rows inside
+    list.price_promo / list.qty_promo are DB rows and are not pinned."""
+    pid = _mk_product(db, "512 output shape", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    cust = _mk_customer(db, 'TST-512S', 'ลูกค้า 512S')
+    _clear_customer_pid(db, cust, pid)
+    _base_price_history(db, pid, changed_at=_days_ago(30) + " 09:00:00", old=90.0, new=100.0)
+    _bill(db, pid=pid, customer_code=cust, customer_name='ลูกค้า 512S',   # pre-epoch
+          date_iso=_days_ago(60), doc_base='IV5120031', suffix=1,
+          qty=1, unit='ตัว', unit_price=90.0, vat_type=1, net=90.0)
+    _bill(db, pid=pid, customer_code=cust, customer_name='ลูกค้า 512S',   # in window
+          date_iso=_days_ago(10), doc_base='IV5120032', suffix=1,
+          qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
+
+    out = pl.resolve_price(db, product_id=pid, customer_code=cust, today=TODAY)
+
+    assert set(out) == {'product', 'unit', 'list', 'customer', 'window', 'context',
+                        'answer', 'flags', 'internal'}
+    assert set(out['product']) == {'id', 'name', 'unit_type', 'brand', 'own_brand'}
+    assert set(out['unit']) == {'asked', 'ratio', 'ratio_source'}
+    assert set(out['list']) == {'base_per_piece', 'list_for_unit', 'list_source',
+                                'tier_equals_base_x_ratio', 'price_promo', 'qty_promo',
+                                'list_after_promo', 'price_promo_applied', 'promo_since',
+                                'promo_source'}
+    assert set(out['customer']) == {'code', 'name', 'last', 'typical_disc_pct', 'n_products_12m'}
+    assert set(out['customer']['last']) == {'cash_per_unit', 'unit', 'qty', 'date', 'doc_no',
+                                            'in_window'}
+    assert set(out['window']) == {'from', 'reason', 'widened_to_24m', 'n_bills', 'n_unratioed'}
+    assert isinstance(out['window']['n_bills'], int)
+    assert set(out['context']) == {'lowest', 'promo_last_used', 'promo_stale', 'pre_epoch'}
+    assert set(out['context']['lowest']) == {'cash_per_unit', 'customer', 'date', 'doc_no'}
+    assert len(out['context']['pre_epoch']) == 1
+    assert set(out['context']['pre_epoch'][0]) == {'customer', 'date', 'doc_no'}
+    assert set(out['answer']) == {'price_per_unit', 'unit', 'qty', 'line_total', 'basis',
+                                  'breadcrumb', 'free_units'}
+    assert set(out['internal']) == {'cost_per_unit', 'cost_side', 'margin_at_answer_pct',
+                                    'margin_at_lowest_pct', 'margin_incl_free_units',
+                                    'below_cost_by', 'note'}
+    assert len(out['flags']) >= 1  # window_widened fires here (1 bill < 3)
+    assert all(set(f) == {'code', 'text'} for f in out['flags'])

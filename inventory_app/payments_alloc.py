@@ -84,6 +84,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import date
+from statistics import median
 from typing import Optional
 
 from config import DATABASE_PATH
@@ -142,7 +143,7 @@ def _has_cna(conn) -> bool:
 
 # ── core settlement query ────────────────────────────────────────────────────
 def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
-                      as_of=None):
+                      as_of=None, customer_code=None):
     """Per-invoice billed/collected with the legacy-NULL rule applied.
 
     Aggregations computed per doc_base, then reconciled in Python:
@@ -159,6 +160,10 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
     `as_of` (ISO date) — point-in-time AR: only invoice lines with
     date_iso <= as_of, and only payments with received_payments.date_iso
     <= as_of are considered.
+
+    `customer` matches the BILL name, which one name can share across two
+    codes; `customer_code` matches `sales_transactions.customer_code` exactly
+    and is the key for anything shown on a code-keyed customer page (#499).
     """
     sale_conds = ["st.doc_base IS NOT NULL",
                   "st.doc_base NOT LIKE 'SR%'",
@@ -167,6 +172,9 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
     if customer:
         sale_conds.append("st.customer = ?")
         sale_params.append(customer)
+    if customer_code:
+        sale_conds.append("st.customer_code = ?")
+        sale_params.append(customer_code)
     if date_from:
         sale_conds.append("st.date_iso >= ?")
         sale_params.append(date_from)
@@ -580,12 +588,15 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
 
 # ── 1. invoice_settlement ────────────────────────────────────────────────────
 def invoice_settlement(customer=None, date_from=None, date_to=None,
-                       conn=None, db_path=None, as_of=None):
+                       conn=None, db_path=None, as_of=None, customer_code=None):
     """Per-invoice settlement (read-only).
 
     Returns list[dict]: doc_base, customer, customer_code, invoice_date,
     billed, credit_notes, net_owed, collected, outstanding, status,
     over_credited, last_payment_date.
+
+    `customer` filters by bill name, `customer_code` by exact code (see
+    `_settlement_rows`).
 
     as_of (ISO date, default None = now): point-in-time AR, passed straight
     through to `_settlement_rows` — only invoices raised on or before the date,
@@ -596,10 +607,100 @@ def invoice_settlement(customer=None, date_from=None, date_to=None,
     """
     with _ConnCtx(conn, db_path) as c:
         raw = _settlement_rows(c, customer=customer,
-                               date_from=date_from, date_to=date_to, as_of=as_of)
+                               date_from=date_from, date_to=date_to, as_of=as_of,
+                               customer_code=customer_code)
     out = [_reconcile(r) for r in raw]
     out.sort(key=lambda d: (d['invoice_date'] or '', d['doc_base']))
     return out
+
+
+# ── 1a. payment_speed ────────────────────────────────────────────────────────
+# Put, 2026-09-13 (#499): the latest 20 settled invoices, no figure below 3.
+PAYMENT_SPEED_WINDOW = 20
+PAYMENT_SPEED_MIN_INVOICES = 3
+
+
+def payment_speed(customer_code, conn=None, db_path=None):
+    """How many days this customer usually takes to pay (read-only).
+
+    Receipt history over SETTLED invoices: the median of (settling receipt
+    date − invoice date) over the customer's latest 20 settled invoices,
+    ordered by invoice date. It is neither **outstanding** nor **chaseable**
+    (CONTEXT.md, ADR 0012) — those are two populations of UNPAID bills in the
+    Express snapshot, and this figure is about bills that were paid. Do not
+    total it, rank AR by it, or label it with those words.
+
+    Why this reads the settlement engine: `ar_followup`'s "invoice_settlement
+    is diagnostic only" rule protects AR TOTALS, which Express owns. This
+    figure needs the date each invoice was settled, which the snapshot does not
+    carry at all; `invoice_settlement` is where that date is already worked out
+    (credit notes, legacy NULL-amount links, cancelled receipts).
+
+      settled     status 'paid' or 'overpaid' AND a settling receipt. Unpaid,
+                  partial and fully-credited invoices stay out, and so does an
+                  over-credited one with no receipt (the engine reads it as
+                  'overpaid'). Every invoice in `ar_writeoffs` stays out too —
+                  the WHOLE table, not only `excludes_revenue` rows: Express
+                  can still close a forgiven bill with a receipt (the 3
+                  วรสวัสดิ์ giveaway bills, RE6900376 on 2026-07-30), and that
+                  receipt is bookkeeping, not the customer paying.
+      settle date the invoice's latest active receipt (`last_payment_date`) —
+                  for instalments, the one that completed it. A post-dated
+                  cheque counts on its receipt (RE) date: receipts carry no
+                  clearing date, so this is never the day the cash cleared.
+      customer    the exact `customer_code`. A bill name shared by another code
+                  never leaks in.
+
+    Returns None below 3 settled invoices (or for a blank code), else:
+      median_days   statistics.median of the per-invoice days (can end in .5)
+      invoices      invoices in the sample (at most 20)
+      receipts      distinct active receipts that paid them, every instalment
+                    included — for a shop a rep collects from, how many
+                    collection rounds the figure actually reflects
+      first_invoice_date, last_invoice_date   the sample's invoice-date span
+      sample        [{doc_base, invoice_date, settle_date, days}], oldest first
+    """
+    if not customer_code:
+        # The code filter is skipped for a falsy code: without this, a blank
+        # code would read every customer's invoices.
+        return None
+    with _ConnCtx(conn, db_path) as c:
+        # Before the window and the threshold, so a written-off bill can
+        # neither take a slot in the 20 nor make up the 3.
+        written_off = {r[0] for r in c.execute("SELECT doc_no FROM ar_writeoffs")}
+        settled = [r for r in invoice_settlement(customer_code=customer_code, conn=c)
+                   if r['status'] in ('paid', 'overpaid') and r['last_payment_date']
+                   and r['doc_base'] not in written_off]
+        # invoice_settlement is sorted by (invoice_date, doc_base): the tail is
+        # the latest by invoice date.
+        sample = settled[-PAYMENT_SPEED_WINDOW:]
+        if len(sample) < PAYMENT_SPEED_MIN_INVOICES:
+            return None
+        docs = [r['doc_base'] for r in sample]
+        receipts = c.execute(
+            f"""SELECT COUNT(DISTINCT rp.id)
+                  FROM paid_invoices pi
+                  JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
+                 WHERE pi.doc_kind = 'IV'
+                   AND pi.doc_no IN ({','.join('?' * len(docs))})""",
+            docs,
+        ).fetchone()[0]
+
+    rows = [{
+        'doc_base': r['doc_base'],
+        'invoice_date': r['invoice_date'],
+        'settle_date': r['last_payment_date'],
+        'days': (date.fromisoformat(r['last_payment_date'])
+                 - date.fromisoformat(r['invoice_date'])).days,
+    } for r in sample]
+    return {
+        'median_days': median(r['days'] for r in rows),
+        'invoices': len(rows),
+        'receipts': receipts,
+        'first_invoice_date': rows[0]['invoice_date'],
+        'last_invoice_date': rows[-1]['invoice_date'],
+        'sample': rows,
+    }
 
 
 # ── 1b. unattributable_sr_count ──────────────────────────────────────────────

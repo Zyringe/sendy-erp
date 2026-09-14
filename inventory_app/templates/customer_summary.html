@@ -135,6 +135,20 @@
           <div class="fw-500">{{ ci.credit_days }} วัน</div>
         </div>
         {% endif %}
+        {# #499: how fast this customer actually pays, beside the term it is read
+           against. Receipt history over SETTLED bills, never AR (neither
+           outstanding nor chaseable, ADR 0012). Counted to the receipt (RE)
+           date, so the label says ใบเสร็จ and never claims the day cash
+           cleared. Absent below 3 settled bills. #}
+        {% if pay_speed %}
+        <div id="pay-speed"
+             title="มัธยฐานจำนวนวันจากวันที่บิลถึงวันที่ใบเสร็จที่ปิดบิล ของบิลที่จ่ายครบล่าสุด {{ pay_speed.invoices }} ใบ (นับวันที่ออกใบเสร็จ เช็คล่วงหน้าไม่ได้นับวันที่เช็คขึ้นเงิน)">
+          <div class="text-subtle small mb-1">จ่ายจริง</div>
+          <div class="fw-500">~{{ '{:g}'.format(pay_speed.median_days) }} วัน</div>
+          <div class="text-subtle small">{{ pay_speed.invoices }} บิล / {{ pay_speed.receipts }} ใบเสร็จ</div>
+          <div class="text-subtle small">บิล {{ pay_speed.first_invoice_date }} ถึง {{ pay_speed.last_invoice_date }}</div>
+        </div>
+        {% endif %}
         {% if ci.address %}
         <div style="min-width:200px;max-width:320px">
           <div class="text-subtle small mb-1">ที่อยู่</div>

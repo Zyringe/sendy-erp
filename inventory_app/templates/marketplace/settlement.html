@@ -307,6 +307,8 @@
 <script>
 document.addEventListener('DOMContentLoaded', function () {
   const platform = {{ platform | tojson }};
+  // Built by url_for so it carries this page's book, like every Jinja link (#501).
+  const SALES_DOC_URL = {{ url_for('sales.sales_doc', doc_base='__DOC__')|tojson }};
 
   // ---- Show what the file picker actually took, before submitting ----
   const pick = document.getElementById('mkt-upload-files');
@@ -352,7 +354,7 @@ document.addEventListener('DOMContentLoaded', function () {
       else if (o.iv_confidence === 'probable') badge = ' <span class="badge bg-warning text-dark" title="ยอดตรง แต่มีหลายใบยอดเท่ากัน อาจสลับใบ">~</span>';
       else if (o.iv_confidence === 'review') badge = ' <span class="badge bg-info text-dark" title="ยอดบิลไม่ตรงยอดโอน">⚠</span>';
       else if (o.iv_confidence === 'manual') badge = ' <span class="badge bg-primary" title="ยืนยันเอง">★</span>';
-      return `<a href="/sales/doc/${encodeURIComponent(o.matched_iv)}" target="_blank" title="เปิดใบกำกับใน Express"><code>${o.matched_iv}</code></a>${badge}`
+      return `<a href="${SALES_DOC_URL.replace('__DOC__', encodeURIComponent(o.matched_iv))}" target="_blank" title="เปิดใบกำกับใน Express"><code>${o.matched_iv}</code></a>${badge}`
         + ` <button type="button" class="btn btn-link btn-sm p-0 ms-1 js-iv-pick" data-order-id="${o.id}" data-order-sn="${o.order_sn}">แก้</button>`;
     }
     return `<button type="button" class="btn btn-sm btn-outline-secondary py-0 js-iv-pick" data-order-id="${o.id}" data-order-sn="${o.order_sn}">เลือก</button>`;

@@ -25,9 +25,11 @@ inode; the next request opens the new file.
 import json
 import os
 import sqlite3
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit
 
 from flask import (g, session, has_request_context, flash, redirect, url_for,
-                   request, jsonify)
+                   request, jsonify, render_template, current_app)
+from werkzeug.exceptions import HTTPException
 
 import config
 import database
@@ -61,6 +63,20 @@ INFRA_ENDPOINTS = {
 }
 
 SAFE_METHODS = {'GET', 'HEAD', 'OPTIONS'}
+
+# The URL keys that name ONE document or ONE product (#501). A parity URL
+# carrying one is bound to the book its page was rendered under; list and
+# navigation URLs carry none and keep following the session book.
+ENTITY_KEYS = ('doc_base', 'product_id')
+
+# Where "กลับ" on the #501 page falls back to when there is no history: the
+# entity's own list. Every value is a parity endpoint, so it renders in
+# either book; the two product-filtered lists fall back to themselves.
+_ENTITY_LIST = {
+    'sales.sales_doc': 'sales.sales_view',
+    'sales.purchases_doc': 'sales.purchases_view',
+    'products.product_detail': 'products.product_list',
+}
 
 BOOKS = {
     'novat': {
@@ -156,10 +172,58 @@ def vat_book_freshness():
     return meta
 
 
+def names_entity(endpoint, values):
+    """True when a parity URL names one document or one product. The SAME
+    test decides both what gets stamped (url_defaults) and what the read
+    guard checks, so the two sides cannot drift apart."""
+    return (endpoint in PARITY_ENDPOINTS
+            and any(values.get(k) not in (None, '') for k in ENTITY_KEYS))
+
+
 def _wants_json():
     return (request.path.startswith('/api/')
             or request.headers.get('X-Expected-Book') is not None
             or 'application/json' in (request.headers.get('Accept') or ''))
+
+
+def _read_mismatch(ep, values, carried, book):
+    """A link to one entity, rendered under `carried`, followed while the
+    session holds `book`. Reads NEITHER book: says so, and offers the switch.
+    (The one parity API, /api/products/<id>/barcodes, always gets the JSON.)"""
+    msg = 'ลิงก์นี้มาจากอีกสมุด — สลับสมุดก่อนเปิดค่ะ'
+    if _wants_json():
+        return jsonify({'error': msg, 'expected_book': carried,
+                        'active_book': book}), 409
+    doc = values.get('doc_base')
+    entity = f'เอกสาร {doc}' if doc else f"สินค้า #{values.get('product_id')}"
+    return render_template(
+        'book_link.html', mode='mismatch', entity=entity,
+        link_book=carried, link_book_label=BOOKS[carried]['label'],
+        next_url=request.full_path,          # always has a query: it carries `book`
+        back_url=url_for(_ENTITY_LIST.get(ep, ep))), 409
+
+
+def _landing(raw, book):
+    """The switch control's landing target (#501), or None to keep today's
+    landing. Honoured only as an internal path that routes, by GET, to a page
+    `book` can render (the parity set for the VAT book). The redirect is
+    REBUILT from the matched route, never echoed, so no spelling of an
+    outside URL (a scheme, `//host`, `/\\host`) can survive it."""
+    if not raw or not raw.startswith('/') or raw.startswith(('//', '/\\')):
+        return None
+    parts = urlsplit(raw)
+    if parts.scheme or parts.netloc:
+        return None
+    adapter = current_app.create_url_adapter(request)
+    try:
+        ep, view_args = adapter.match(unquote(parts.path), method='GET')
+    except HTTPException:
+        return None
+    if ep in INFRA_ENDPOINTS or (book != DEFAULT_BOOK and ep not in PARITY_ENDPOINTS):
+        return None
+    path = adapter.build(ep, view_args, method='GET')
+    query = urlencode(parse_qsl(parts.query, keep_blank_values=True))
+    return f'{path}?{query}' if query else path
 
 
 def _expected_book_from_request():
@@ -194,6 +258,18 @@ def init_book_registry(app):
               'warning')
         return redirect(url_for('dashboard'))
 
+    @app.url_defaults
+    def _stamp_render_book(endpoint, values):
+        # Read-link binding (#501), the build side. Every url_for-built link to
+        # one document or one product carries the book this page is rendered
+        # under, so a tab left open across a book switch cannot silently read
+        # the other book (doc numbers never collide, but product ids always
+        # do, and never name the same product). Assigned, not setdefault: a
+        # `book` copied along from request.args must not outvote the render
+        # book.
+        if has_request_context() and names_entity(endpoint, values):
+            values['book'] = active_book()
+
     @app.post('/book/toggle')
     def toggle_book():
         if session.get('role') == 'general':
@@ -209,6 +285,10 @@ def init_book_registry(app):
                   'warning')
             return redirect(request.referrer or url_for('dashboard'))
         session['active_book'] = target
+        # The #501 page's switch control names the entity to land back on.
+        landing = _landing(request.form.get('next'), target)
+        if landing:
+            return redirect(landing)
         if target == DEFAULT_BOOK:
             return redirect(url_for('dashboard'))
         # Land on a parity page — the dashboard is blocked in VAT mode.
@@ -242,6 +322,20 @@ def init_book_registry(app):
                                     'active_book': book}), 409
                 flash(msg, 'warning')
                 return redirect(request.referrer or url_for('dashboard'))
+
+        # Read-link binding (#501), the serve side: the GET twin of the
+        # binding above. A link naming one document or one product carries
+        # the book its page was rendered under (_stamp_render_book); if the
+        # session has switched since, it is answered before the route reads
+        # anything, from either book. The session is left alone. An absent or
+        # unrecognised `book` falls through: bookmarks, typed URLs and
+        # hand-built JS links keep following the session, as writes do.
+        if request.method in ('GET', 'HEAD'):
+            carried = request.args.get('book')
+            if carried in BOOKS and carried != book:
+                values = {**request.args.to_dict(), **(request.view_args or {})}
+                if names_entity(ep, values):
+                    return _read_mismatch(ep, values, carried, book)
 
         if book == DEFAULT_BOOK:
             return

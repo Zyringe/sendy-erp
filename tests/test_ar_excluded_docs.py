@@ -34,6 +34,8 @@ import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
 import sqlite3
+from html.parser import HTMLParser
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -548,12 +550,34 @@ def test_only_writeoff_docs_are_linked_to_the_sales_document(tmp_db):
     html = _manager_client().get(
         f'/accounting/ar-followup/customer/{CODE}').get_data(as_text=True)
 
+    # Parsed <a> PATHS, never a substring pinned by its closing quote: since #501
+    # every doc link carries `?book=`, which turns `'/sales/doc/X"' in html`
+    # false and `... not in html` VACUOUSLY true. Exact path equality also keeps
+    # ZZEX-OLD from matching inside ZZEX-OLDWO.
+    linked = [urlsplit(h).path for h in _hrefs(html)]
     # Control: the linkable bucket IS linked, so this cannot pass by the section
     # dropping every link.
-    assert '/sales/doc/ZZEX-WOFF"' in html, 'write-off doc lost its link'
+    assert linked.count('/sales/doc/ZZEX-WOFF') >= 1, 'write-off doc lost its link'
     for doc in ('ZZEX-ANOM', 'ZZEX-OLD', 'ZZEX-OLDWO'):
-        assert f'/sales/doc/{doc}"' not in html, f'{doc} rendered a link that 404s'
+        assert f'/sales/doc/{doc}' not in linked, f'{doc} rendered a link that 404s'
         assert doc in html, f'{doc} disappeared entirely instead of losing its link'
+
+
+class _HrefParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.hrefs = []
+
+    def handle_starttag(self, tag, attrs):
+        href = dict(attrs).get('href') if tag == 'a' else None
+        if href:
+            self.hrefs.append(href)
+
+
+def _hrefs(html):
+    p = _HrefParser()
+    p.feed(html)
+    return p.hrefs
 
 
 # ── a doc can be excluded for one reason and still carry a write-off decision ─

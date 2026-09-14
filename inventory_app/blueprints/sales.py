@@ -12,6 +12,7 @@ from flask import Blueprint, render_template, request, redirect, url_for
 
 import book_registry
 import models
+import vat_math
 from paging import paging
 
 bp_sales = Blueprint('sales', __name__)
@@ -76,10 +77,14 @@ def sales_doc(doc_base):
     conn = book_registry.get_book_connection()
     rows = models.get_sales_by_doc(doc_base, conn=conn)
     if not rows:
-        return "ไม่พบเอกสาร", 404
+        # Inside the layout (#501): its banner carries the book switch, and a
+        # bare string is a dead end in the standalone PWA.
+        return render_template('book_link.html', mode='not_found',
+                               entity=f'เอกสาร {doc_base}',
+                               back_url=url_for('sales.sales_view')), 404
     total_net = sum(r['net'] or 0 for r in rows)
     return render_template('sales_doc.html', rows=rows, doc_base=doc_base,
-                           total_net=total_net,
+                           total_net=total_net, vat_rate=vat_math.VAT_RATE,
                            non_stock_codes=sorted(models.NON_STOCK_BSN_CODES),
                            audit_history=models.get_source_doc_audit_history(
                                doc_base, 'sales_transactions', conn=conn),
@@ -129,7 +134,9 @@ def purchases_doc(doc_base):
     conn = book_registry.get_book_connection()
     rows = models.get_purchases_by_doc(doc_base, conn=conn)
     if not rows:
-        return "ไม่พบเอกสาร", 404
+        return render_template('book_link.html', mode='not_found',
+                               entity=f'เอกสาร {doc_base}',
+                               back_url=url_for('sales.purchases_view')), 404
     total_net = sum(r['net'] or 0 for r in rows)
     return render_template('purchases_doc.html', rows=rows, doc_base=doc_base,
                            total_net=total_net,

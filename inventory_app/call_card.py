@@ -38,6 +38,7 @@ import statistics
 from typing import Optional
 
 import customer_geo as geo
+import sales_filters
 import vat_math
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -276,8 +277,12 @@ def get_call_list(conn, *, q=None, region=None, call=None,
             }
 
     # ── 2. Spend aggregate — window-filtered (shows ฿0 for quiet customers) ──
+    # ยอดซื้อรวม over the window: the customer page header's definition
+    # (sales_filters.purchase_net_sql, #494: before VAT, credit notes
+    # subtracted) with its population (documents invoiced in error excluded).
     spend_params = []
-    spend_where = "WHERE customer NOT LIKE 'หน้าร้าน%'"
+    spend_where = ("WHERE customer NOT LIKE 'หน้าร้าน%' "
+                   f"AND {sales_filters.not_a_sale_clause()}")
     if cutoff:
         spend_where += " AND date_iso >= ?"
         spend_params.append(cutoff)
@@ -285,7 +290,7 @@ def get_call_list(conn, *, q=None, region=None, call=None,
     spend_rows = conn.execute(f"""
         SELECT
             COALESCE(NULLIF(TRIM(customer_code),''), customer) AS canonical_code,
-            SUM({vat_math.cash_sql()}) AS spend
+            SUM({sales_filters.purchase_net_sql()}) AS spend
         FROM sales_transactions
         {spend_where}
         GROUP BY canonical_code
@@ -595,7 +600,7 @@ def _assemble_products(conn, names, canon_code, today=None):
             st.unit,
             SUM(st.qty)   AS total_qty,
             SUM(st.net)   AS total_net,
-            COUNT(DISTINCT st.doc_no) AS doc_count,
+            COUNT(DISTINCT st.doc_base) AS doc_count,   -- invoices, not lines (#496)
             MAX(st.date_iso) AS last_buy,
             p.base_sell_price,
             p.unit_type

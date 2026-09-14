@@ -654,18 +654,27 @@ def _evidence_rows(conn, product_id, from_date, today):
     """, (product_id, from_date, today)).fetchall()
 
 
+def _n_invoices(rows):
+    """R4's "bills" are invoices: distinct doc_base among the rows. A
+    sales_transactions.doc_no is one LINE of an invoice (CONTEXT.md,
+    บรรทัดเอกสาร), so a product on two lines of one invoice is one bill (#512).
+    Only the COUNT is per-invoice — every line still feeds lowest/last-paid."""
+    return len({r['doc_base'] for r in rows})
+
+
 def _window(conn, product_id, epoch, today):
-    """R4 window. Returns (from_date, n_bills, widened)."""
+    """R4 window. Returns (from_date, n_bills, widened); n_bills counts
+    invoices, not lines (see _n_invoices)."""
     today_d = date.fromisoformat(today)
     from_365 = (today_d - timedelta(days=365)).isoformat()
     if epoch:
         from_365 = max(epoch, from_365)
-    n_bills = len(_evidence_rows(conn, product_id, from_365, today))
+    n_bills = _n_invoices(_evidence_rows(conn, product_id, from_365, today))
     if n_bills < 3:
         from_730 = (today_d - timedelta(days=730)).isoformat()
         if epoch:
             from_730 = max(epoch, from_730)
-        n_bills = len(_evidence_rows(conn, product_id, from_730, today))
+        n_bills = _n_invoices(_evidence_rows(conn, product_id, from_730, today))
         return from_730, n_bills, True
     return from_365, n_bills, False
 
@@ -1082,8 +1091,9 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     if widened:
         flags.append({'code': 'window_widened', 'text': 'ขยายช่วงเวลาเป็น 24 เดือนเพราะบิลในช่วง 12 เดือนมีน้อย'})
     if promo_stale:
+        n_stale_bills = _n_invoices(r for _cpp, r in comparable)
         flags.append({'code': 'promo_stale',
-                      'text': f'โปรนี้ไม่ถูกใช้ในบิล — ทุกบิล {len(comparable)} ใบล่าสุดจ่ายสูงกว่าราคาโปร'})
+                      'text': f'โปรนี้ไม่ถูกใช้ในบิล — ทุกบิล {n_stale_bills} ใบล่าสุดจ่ายสูงกว่าราคาโปร'})
     if promo_not_convertible:
         flags.append({
             'code': 'promo_not_convertible',
@@ -1114,7 +1124,8 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         'customer': customer_out,
         'window': {
             'from': window_from, 'reason': window_reason, 'widened_to_24m': widened,
-            'n_bills': n_bills, 'n_unratioed': n_unratioed,
+            'n_bills': n_bills,
+            'n_unratioed': n_unratioed,  # counts LINES (n_bills counts invoices)
         },
         'context': {
             'lowest': lowest, 'promo_last_used': promo_last_used, 'promo_stale': promo_stale,

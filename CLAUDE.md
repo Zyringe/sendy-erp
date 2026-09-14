@@ -141,14 +141,22 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
   - `2` = **แยก VAT** (ขายต้องเพิ่ม VAT 7%) → ลูกค้าจ่าย **`net × 1.07`**
   - **เจ้าของกฎมีตัวเดียว: `inventory_app/vat_math.py`** — `cash_sql(alias='')` คืน
     SQL fragment (`SUM({vat_math.cash_sql('st')})`), `cash_from_net(net, vat_type)`
-    ฝั่ง Python. ⛔ **ห้ามพิมพ์ `CASE WHEN vat_type=2 ...` หรือ `1.07` เองอีก** —
-    `tests/test_vat_cash_coverage.py` กวาด `inventory_app/` + `scripts/` ด้วย AST
-    แล้วแดงถ้าเจอสำเนา (allowlist ต้องเขียนเหตุผลกำกับ).
-  - ⚠ **ทิศกลับไม่ได้อยู่ในโมดูลนี้ และห้ามย้ายมารวมโดยไม่คิด**: `price ÷ 1.07`
-    (`models/vat_sub.py`) คือการ**ถอด** VAT ออกจากราคารวม VAT ซึ่ง Express
-    **ปัดขึ้น 2 ตำแหน่ง** — คนละกฎที่บังเอิญใช้ค่าคงที่เดียวกัน ดู
-    `.claude/rules/quoting-and-pricing.md`. `total_net * 0.07` ใน `sales_doc.html`
-    (บรรทัด VAT บนเอกสาร) ก็เป็นอีกเรื่องหนึ่ง.
+    ฝั่ง Python. ค่าคงที่: `VAT_RATE = 0.07` เป็นต้นทาง, `VAT_MULTIPLIER = 1 + VAT_RATE`
+    (ตรงกับ 1.07 เดิมทุกบิต — ห้ามกลับทิศเป็น `1.07 - 1` เพราะได้ 0.07000000000000006).
+    ⛔ **ห้ามพิมพ์ `CASE WHEN vat_type=2 ...` หรือ `1.07` / `0.07` เองอีก ทั้งใน
+    `.py`, template และ static JS** — `tests/test_vat_cash_coverage.py` กวาด
+    `inventory_app/` + `scripts/` ด้วย AST และกวาด `templates/` + `static/*.js`
+    (ยกเว้น `*.min.js`) ด้วย text scanner ที่ตัดคอมเมนต์ทิ้งก่อน แล้วแดงถ้าเจอสำเนา
+    (allowlist ต้องเขียนเหตุผลกำกับ).
+  - **Template ไม่พิมพ์ค่าคงที่เอง ให้ route ส่งเข้าไป** (#485): `sales_doc.html`
+    บรรทัด VAT = `total_net * vat_rate`; badge หน้า `/vat-sub/product/<id>` คำนวณ
+    ใน JS (ราคารวม VAT ÷ `VAT_MULTIPLIER` ที่ render ผ่าน `tojson`) และ label เหนือ
+    ช่องราคาก็ render ค่าเดียวกัน — JS นี้คือ implementation เดียวของ badge
+    (`models.vat_sub.compute_badge` ที่เคยเป็นสำเนา Python ไม่มีคนเรียกและเพี้ยนไปแล้ว ถูกลบ).
+  - ⚠ **การปัดแบบเอกสาร Express ไม่อยู่ในโมดูลนี้**: ใบเสนอราคาถอด VAT ต่อหน่วยแบบ
+    **ปัดขึ้น 2 ตำแหน่ง** — เป็นกฎของตัว render ใบเสนอราคา ดู
+    `.claude/rules/quoting-and-pricing.md`. `net_from_cash()` ใน vat_math คือผลหารดิบ
+    ไม่ปัด (ตอนนี้ไม่มีโค้ด production เรียก).
   - ⚠ ก่อน 2026-09-09 กฎนี้ถูกพิมพ์มือ **23 จุดใน 10 ไฟล์ 4 สำนวน** และ
     `tests/test_vat_math.py` พิมพ์ SQL เองจึง**สอบตกไม่ได้** — วัดแล้ว: ลบ `* 1.07`
     ออกจากคิวรีจริงใน `models/payments.py` เทสต์ยัง **4 passed**. แก้ใน #478.

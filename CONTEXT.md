@@ -130,6 +130,17 @@
   > it reports collection history and a bill that was never collected should not read as paid.
   > That is a valid choice; it just has to be a stated one.
 
+- **จ่ายจริง (payment speed)** — how many days a customer usually takes to pay: the median
+  number of days from an invoice's date to the receipt that settled it, over the customer's
+  latest 20 **settled** invoices (paid in full, after credit notes), shown with the number of
+  bills and of distinct receipts behind it. It is **receipt history over settled invoices,
+  not AR** — neither outstanding nor chaseable, which both name *unpaid* bills in the Express
+  snapshot (ADR 0012). Counted to the receipt (RE) date: a post-dated cheque counts on the day
+  its receipt was written, never the day the cash cleared. Shown beside เครดิต on the customer
+  page and `/m/customer`; absent below 3 settled invoices (Put, 2026-09-13).
+  _Avoid_: calling it an AR figure, or "days late" — it runs from the invoice date, not from
+  the end of the credit term.
+
 - **เจ้าหนี้ (AP)** — outstanding money the business still owes its ผู้จำหน่าย (money-owed
   sense of ผู้จำหน่าย). _Avoid_: "AP / ซัพพลายเออร์" (old label that named the data source
   era, not the concept).
@@ -153,12 +164,43 @@
   lines of that document), which the detail page regroups back into one invoice. _Avoid_:
   calling a single table row "an invoice" — it is one line of one.
 
+- **VAT mode (`vat_type`)** — Express's per-document VAT mode, the same on every line of a
+  document. `net` is ex-VAT in all three.
+  - **ไม่บวก VAT (1)** — no VAT added on top. On a **sale** it almost always means no VAT
+    at all: the customer paid `net` (the exceptions are 2 marketplace docs where Express
+    carved VAT out of the price, left out of scope in #495). On a **purchase** the
+    supplier's VAT, when there was any, sits *inside* the price and Express carved it out,
+    so the same mode holds no-VAT bills and VAT-inclusive ones (sometimes from the same
+    supplier).
+  - **แยก VAT (2)** — 7% added on top: the buyer pays `net × 1.07`.
+  - **ยกเว้น VAT (0)** — no VAT.
+
+  _Avoid_: "รวม VAT" (VAT included) for type 1. It is true only of the documents where
+  Express carved VAT out of the price (those 2 sales, some purchases) and reads as "VAT
+  was paid" on every other one (#495).
+
 ### Customer page (`/customer/code/<code>` — #493)
 
 - **ยอดรวมเอกสาร (document total)** — the sum of a document's lines, plus 7% VAT when the
   document is แยก VAT (`vat_type=2`). A credit note's ยอดรวมเอกสาร is **negative**. This is
   what the customer page's document list shows per row — never a raw `SUM(net)`, which
   omits VAT on แยก VAT documents and shows a credit note as positive money.
+
+- **ยอดซื้อรวม (purchase total)** — what a customer bought, **before VAT and net of
+  returns**: every invoice and cash-sale (HS) line adds its amount, every credit-note line
+  subtracts its amount, and documents invoiced in error are left out. One figure wherever a
+  customer's purchase total shows: the customer page header (labelled "(ก่อน VAT)") and its
+  monthly chart, the `/customers` list, the mobile page's ยอดสะสม, the call card, and the
+  `/call` list's spend (over the window it is set to). It can be **negative**: a customer, or
+  a month, whose returns exceed its purchases reads below zero, never clamped (#494, Put
+  2026-09-13).
+  _Not to be confused with_: **ยอดรวมเอกสาร**, which adds VAT on แยก VAT documents, so a
+  customer's document list does not sum to its ยอดซื้อรวม once it holds a แยก VAT bill; and
+  revenue (`/revenue`, `/accounting`), which leaves returns and HS out instead of subtracting
+  them (whether HS is revenue: #514).
+  > Known imprecision, left alone: a credit-note line's amount is carried **before** that
+  > credit note's bill-level discount, while an invoice line's is after its own. ยอดซื้อรวม
+  > subtracts the same credit-note amount the document list shows.
 
 - **ครั้งที่ซื้อ (times bought)** — the number of invoices carrying a *paid* line (net > 0)
   of a product. A freebie-only invoice or a credit note does not count.

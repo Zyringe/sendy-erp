@@ -9,6 +9,7 @@ from flask import Blueprint, render_template, request, jsonify, abort
 
 import cashflow
 import models
+import payments_alloc
 import sales_filters
 from database import get_connection
 import vat_math
@@ -111,6 +112,10 @@ def customer_detail(customer_name):
         ).fetchone()
 
     conn.close()
+    # How fast this customer pays (#499), keyed by the customers row's CODE —
+    # this page is keyed by bill name, which another code can share. No
+    # customers row → no code → no figure.
+    pay_speed = payments_alloc.payment_speed(customer['code']) if customer else None
     # Use existing model fn — handles VAT, SR/HS doc filtering, paid-status correctly
     unpaid_full, unpaid_snapshot_date = models.get_customer_unpaid_bills(customer_name)
     # #493: the shared document grouping — same one the desktop customer page
@@ -128,8 +133,9 @@ def customer_detail(customer_name):
     aging = cashflow.ar_aging()
     conn = get_connection()
 
-    # Aggregate stats. total_net stays pre-VAT/unchanged (same convention as
-    # the desktop header's ยอดซื้อรวม) — only doc_count is fixed (#493):
+    # Aggregate stats. total_net is ยอดซื้อรวม, the desktop header's own
+    # definition (sales_filters.purchase_net_sql, #494: before VAT, credit notes
+    # subtracted). doc_count counts documents (#493):
     # doc_no carries a per-line '-N' suffix, so COUNT(DISTINCT doc_no) counted
     # LINES, not documents. Also applies the same not_a_sale_clause() exclusion
     # `last_sales` (via get_customer_documents -> _customer_sales_scope)
@@ -138,7 +144,7 @@ def customer_detail(customer_name):
     stats = conn.execute(
         f"""
         SELECT COUNT(DISTINCT doc_base) AS doc_count,
-               ROUND(SUM(net), 2) AS total_net,
+               ROUND(SUM({sales_filters.purchase_net_sql()}), 2) AS total_net,
                MIN(date_iso) AS first_seen,
                MAX(date_iso) AS last_seen
           FROM sales_transactions
@@ -152,6 +158,7 @@ def customer_detail(customer_name):
         'm/customer.html',
         customer_name=customer_name,
         customer=customer,
+        pay_speed=pay_speed,
         region=region_row,
         unpaid=unpaid,
         unpaid_total=unpaid_total,
