@@ -17,6 +17,8 @@ from datetime import date
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort)
 
+import access_control
+import call_card as cc
 import cashflow
 import customer_geo
 import models
@@ -110,6 +112,17 @@ def customer_detail(customer_code):
     # always the latest 20 settled bills.
     pay_speed = payments_alloc.payment_speed(customer_code)
 
+    # Call-log notes (#497) — the SAME rows the call card lists (same table,
+    # same key: `customer_call_log.customer_code`, and on THIS route
+    # `customer_code` is always the literal code, never a bill name to
+    # resolve). The add-note box only renders for a role whose POST
+    # whitelist actually contains call.call_note — never a hand-copied role
+    # tuple that could drift from the real gate.
+    conn = get_connection()
+    call_log = cc.get_log(conn, customer_code)
+    conn.close()
+    can_add_note = access_control.role_can_post(session.get('role', ''), 'call.call_note')
+
     # ซื้อล่าสุด + days quiet (#493) — last_purchase_date is already the
     # evidence-filtered date (never a credit note or a freebie-only line);
     # the day count is a rendering concern, computed here, not in the model.
@@ -134,6 +147,9 @@ def customer_detail(customer_code):
                            aging=aging,
                            master=master,
                            pay_speed=pay_speed,
+                           call_log=call_log,
+                           can_add_note=can_add_note,
+                           elapsed_th=cc.elapsed_th,
                            salespersons=models.get_active_salespersons(),
                            orphan_codes=models.get_orphan_salesperson_codes())
 
