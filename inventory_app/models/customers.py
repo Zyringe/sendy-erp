@@ -304,6 +304,11 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
     # other badge on this card.
     above_wacc = has_cost and lp_pu is not None and lp_pu > wacc_pu
     out['last_purchase_above_wacc'] = above_wacc
+    # The cost column's "↑gap%" beside ทุนซื้อล่าสุด. None when the WACC
+    # prints as 0.00 (a real cost below half a satang per row unit): above,
+    # but there is no percentage of zero to show.
+    out['last_purchase_gap_pct'] = (round((lp_pu - wacc_pu) / wacc_pu * 100, 1)
+                                    if above_wacc and wacc_pu > 0 else None)
 
     if last_row is not None and row_ratio is not None:
         kept = last_row['net']

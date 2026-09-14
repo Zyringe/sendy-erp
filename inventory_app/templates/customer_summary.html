@@ -491,7 +491,7 @@
               <th class="text-end">ครั้งที่ซื้อ</th>
               <th class="text-end">ราคาล่าสุด</th>
               <th class="text-end">ราคาวันนี้</th>
-              {% if is_manager %}<th class="text-end">ทุน</th>{% endif %}
+              {% if is_manager %}<th class="text-end">ทุนซื้อล่าสุด</th>{% endif %}
               <th class="text-end">สต็อก</th>
             </tr>
           </thead>
@@ -577,26 +577,29 @@
                 {% endif %}
               </div></td>
               {% if is_manager %}
-              <td data-label="ทุน" class="text-end"><div>
+              {# #527 (Put, 2026-09-15): ONE number, the last purchase cost. The WACC
+                 shows only when it adds something: beside a ↑gap% when the last
+                 purchase is above it, or as "เฉลี่ย …" when there is no purchase.
+                 No WACC → no margin, no 🔴, but a real last purchase still shows
+                 and the missing WACC is named (Put, 2026-09-11). #}
+              <td data-label="ทุนซื้อล่าสุด" class="text-end"><div>
+                {% set lp = r.cost.last_purchase if r.cost else none %}
                 {% if not r.cost %}
                   <span class="text-subtle">—</span>
-                {% else %}
-                  <div class="small text-subtle">ทุนเฉลี่ย</div>
-                  {% if not r.cost.has_cost %}
-                  {# No WACC → no margin, no 🔴; a real last purchase still shows (Put, 2026-09-11). #}
+                {% elif lp and lp.per_unit is not none %}
+                  {% set g = r.cost.last_purchase_gap_pct %}
+                  <div class="font-mono">{{ lp.per_unit | fmt_price }}{% if r.cost.last_purchase_above_wacc %} <span class="text-danger small">↑{% if g is none %}{% elif g < 0.1 %}&lt;0.1%{% else %}{{ '%.1f' | format(g) }}%{% endif %}</span>{% endif %}</div>
+                  {% if r.cost.last_purchase_above_wacc %}
+                  <div class="text-subtle small">เฉลี่ย {{ r.cost.wacc_per_unit | fmt_price }} · ซื้อ {{ lp.date }}</div>
+                  {% elif not r.cost.has_cost %}
+                  <div class="text-subtle small">ไม่มีทุนเฉลี่ย</div>
+                  {% endif %}
+                {% elif r.cost.has_cost and r.cost.wacc_per_unit is not none %}
+                  <div class="font-mono">เฉลี่ย {{ r.cost.wacc_per_unit | fmt_price }}</div>
+                {% elif not r.cost.has_cost %}
                   <div class="text-subtle small">ไม่มีทุน</div>
-                  {% else %}
-                  <div class="font-mono">{{ r.cost.wacc_per_unit | fmt_price if r.cost.wacc_per_unit is not none else '—' }}</div>
-                  {% endif %}
-                  <div class="small text-subtle">ทุนซื้อล่าสุด</div>
-                  {% set lp = r.cost.last_purchase %}
-                  {% if lp and lp.per_unit is not none %}
-                  <div class="font-mono">{{ lp.per_unit | fmt_price }}</div>
-                  <div class="text-subtle small">{{ lp.date }}</div>
-                  {% if lp.ref %}<div class="text-subtle small">{{ lp.ref }}</div>{% endif %}
-                  {% else %}
-                  <div class="text-subtle">—</div>
-                  {% endif %}
+                {% else %}
+                  <span class="text-subtle">—</span>
                 {% endif %}
               </div></td>
               {% endif %}
