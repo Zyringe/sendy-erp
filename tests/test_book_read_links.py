@@ -406,10 +406,13 @@ def test_switch_control_lands_on_the_same_product_in_the_vat_book(books):
     assert VAT_BANNER in body
 
 
+# Every outside target carries a path that WOULD route internally, and that
+# path differs from the fallback: a guard that dropped the scheme/host but kept
+# the path would land on it and fail here, instead of passing by coincidence.
 @pytest.mark.parametrize('target', [
-    'https://evil.example/sales',
-    '//evil.example/sales',
-    '/\\evil.example/sales',
+    f'https://evil.example/products/{PID}',
+    f'//evil.example/products/{PID}',
+    f'/\\evil.example/products/{PID}',
     f'/customer/code/{CODE}',        # main-book-only: cannot be a VAT landing
     '/no/such/page',
 ])
@@ -424,9 +427,9 @@ def test_vat_switch_ignores_an_outside_or_non_parity_landing(books, target):
 
 
 @pytest.mark.parametrize('target', [
-    'https://evil.example/',
-    '//evil.example/',
-    '/\\evil.example/',
+    f'https://evil.example/customer/code/{CODE}',
+    f'//evil.example/customer/code/{CODE}',
+    f'/\\evil.example/customer/code/{CODE}',
     'javascript:alert(1)',
     '/no/such/page',
 ])
