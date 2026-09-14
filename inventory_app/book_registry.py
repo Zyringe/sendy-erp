@@ -76,7 +76,6 @@ _ENTITY_LIST = {
     'sales.sales_doc': 'sales.sales_view',
     'sales.purchases_doc': 'sales.purchases_view',
     'products.product_detail': 'products.product_list',
-    'products.api_product_barcodes': 'products.product_list',
 }
 
 BOOKS = {
@@ -189,7 +188,8 @@ def _wants_json():
 
 def _read_mismatch(ep, values, carried, book):
     """A link to one entity, rendered under `carried`, followed while the
-    session holds `book`. Reads NEITHER book: says so, and offers the switch."""
+    session holds `book`. Reads NEITHER book: says so, and offers the switch.
+    (The one parity API, /api/products/<id>/barcodes, always gets the JSON.)"""
     msg = 'ลิงก์นี้มาจากอีกสมุด — สลับสมุดก่อนเปิดค่ะ'
     if _wants_json():
         return jsonify({'error': msg, 'expected_book': carried,
@@ -199,7 +199,7 @@ def _read_mismatch(ep, values, carried, book):
     return render_template(
         'book_link.html', mode='mismatch', entity=entity,
         link_book=carried, link_book_label=BOOKS[carried]['label'],
-        next_url=request.full_path if request.query_string else request.path,
+        next_url=request.full_path,          # always has a query: it carries `book`
         back_url=url_for(_ENTITY_LIST.get(ep, ep))), 409
 
 
