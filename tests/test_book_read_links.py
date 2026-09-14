@@ -413,6 +413,8 @@ def test_switch_control_lands_on_the_same_product_in_the_vat_book(books):
     f'https://evil.example/products/{PID}',
     f'//evil.example/products/{PID}',
     f'/\\evil.example/products/{PID}',
+    f'/\t/evil.example/products/{PID}',   # urlsplit drops \t and \n: //host
+    f'/\n/evil.example/products/{PID}',
     f'/customer/code/{CODE}',        # main-book-only: cannot be a VAT landing
     '/no/such/page',
 ])
@@ -430,6 +432,8 @@ def test_vat_switch_ignores_an_outside_or_non_parity_landing(books, target):
     f'https://evil.example/customer/code/{CODE}',
     f'//evil.example/customer/code/{CODE}',
     f'/\\evil.example/customer/code/{CODE}',
+    f'/\t/evil.example/customer/code/{CODE}',
+    f'/\n/evil.example/customer/code/{CODE}',
     'javascript:alert(1)',
     '/no/such/page',
 ])
