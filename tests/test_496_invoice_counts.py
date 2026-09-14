@@ -19,7 +19,8 @@ this table, not a re-run of the code's query.
   IV49602   2031-03-03  X         P1 5 ตัว ฿800    +  P2 1 ตัว ฿50   (two products)
   IV49603   2031-03-04  Y         P1 2 แผง ฿3,000  +  P1 4 ตัว ฿640  (one product, two units)
   IV49604   2031-03-05  X         P1 10 ตัว ฿1,600 +  P1 1 ตัว ฿0 (freebie priced 160, 100% off)
-  SR49601   2031-03-06  X         P1 -2 ตัว -฿320  +  P1 -1 ตัว -฿160 (credit note)
+  SR49601   2031-03-06  X         P1 2 ตัว ฿320    +  P1 1 ตัว ฿0 (credit note, stored
+                                  positive like prod; its ฿0 line is a return, not แถม)
   HP49601   2031-03-02  supplier  purchase, 2 lines (doc_no = doc_base, line_seq 1/2)
   HP49602   2031-03-03  supplier  purchase, 1 line
 """
@@ -48,8 +49,8 @@ SALES = [
     ('IV49603', 2, '2031-03-04', 'Y', P1, 4, 'ตัว', 160, None, 640),
     ('IV49604', 1, '2031-03-05', 'X', P1, 10, 'ตัว', 160, None, 1600),
     ('IV49604', 2, '2031-03-05', 'X', P1, 1, 'ตัว', 160, '100%', 0),
-    ('SR49601', 1, '2031-03-06', 'X', P1, -2, 'ตัว', 160, None, -320),
-    ('SR49601', 2, '2031-03-06', 'X', P1, -1, 'ตัว', 160, None, -160),
+    ('SR49601', 1, '2031-03-06', 'X', P1, 2, 'ตัว', 160, None, 320),
+    ('SR49601', 2, '2031-03-06', 'X', P1, 1, 'ตัว', 0, None, 0),
 ]
 _CUST = {'X': (X_NAME, X_CODE), 'Y': (Y_NAME, Y_CODE)}
 
@@ -176,45 +177,47 @@ def test_accounting_page_period_line(admin):
 
 # ── /products/<id>/pricing (models.get_product_pricing) ──────────────────────
 # Population today, kept: qty > 0 AND unit_price > 0. That drops IV49601's
-# unpriced freebie and the credit note, and keeps IV49604's PRICED freebie
-# (unit_price 160, 100% off), so IV49604 carries two lines at ฿160.
+# unpriced freebie and SR49601's ฿0 line, and keeps IV49604's PRICED freebie
+# (unit_price 160, 100% off), so IV49604 carries two lines at ฿160. It also
+# keeps SR49601's priced line, because prod stores credit notes with positive
+# qty; whether pricing should drop credit notes is out of #496's scope.
 
 def test_pricing_counts_invoices(seeded):
     pr = models.get_product_pricing(P1)
-    assert pr['total_invoices'] == 4                  # 01, 02, 03, 04 (6 lines)
+    assert pr['total_invoices'] == 5                  # 01, 02, 03, 04, SR (7 lines)
 
     assert len(pr['list_prices']) == 2
     by_price = {lp['unit_price']: lp for lp in pr['list_prices']}
-    assert by_price[160]['invoice_count'] == 4        # 01, 02, 03, 04 (5 lines)
+    assert by_price[160]['invoice_count'] == 5        # 01, 02, 03, 04, SR (6 lines)
     assert by_price[1500]['invoice_count'] == 1       # 03
 
     assert len(by_price[160]['customers']) == 2
     under_160 = {c['customer']: c['invoice_count'] for c in by_price[160]['customers']}
-    assert under_160 == {X_NAME: 3, Y_NAME: 1}        # X: 01, 02, 04 (4 lines)
+    assert under_160 == {X_NAME: 4, Y_NAME: 1}        # X: 01, 02, 04, SR (5 lines)
 
     assert len(pr['effective_per_customer']) == 2
     eff = {e['customer']: e['invoice_count'] for e in pr['effective_per_customer']}
-    assert eff == {X_NAME: 3, Y_NAME: 1}              # Y: 03 on two lines
+    assert eff == {X_NAME: 4, Y_NAME: 1}              # Y: 03 on two lines
 
 
 def test_pricing_page_shows_invoice_counts(admin):
     html = admin.get(f'/products/{P1}/pricing').get_data(as_text=True)
     total = re.findall(r'บิลทั้งหมด</div>\s*<div class="stat-card-value">(\d+)</div>', html)
-    assert total == ['4']
+    assert total == ['5']
     # ราคาตั้ง table: the ฿160.00 row's จำนวนบิล cell (VAT badge cell in between).
     row160 = re.findall(r'<td class="fw-600">฿160\.00</td>\s*<td>.*?</td>\s*'
                         r'<td class="text-end">(\d+)</td>', html, re.S)
-    assert row160 == ['4']
+    assert row160 == ['5']
     # Per-customer sub-table under ฿160 (two customers, so it renders).
     sub_x = re.findall(r'<td>' + re.escape(X_NAME) + r'</td>\s*<td class="text-subtle">'
                        + X_CODE + r'</td>\s*<td class="text-end">(\d+)</td>', html)
-    assert sub_x == ['3']
+    assert sub_x == ['4']
     # ราคาเฉลี่ย table: the บิล cell after the price cell.
     eff_x = re.findall(r'<td class="fw-500">' + re.escape(X_NAME) + r'</td>\s*'
                        r'<td class="text-subtle">' + X_CODE + r'</td>\s*'
                        r'<td class="text-end">.*?</td>\s*<td class="text-end">(\d+)</td>',
                        html, re.S)
-    assert eff_x == ['3']
+    assert eff_x == ['4']
 
 
 # ── call card (call_card.get_card, per-product doc_count; not rendered today) ─
@@ -281,8 +284,9 @@ def test_product_trade_docs_one_row_per_invoice(seeded):
     assert docs['IV49603']['total_net'] == 3640
     # Another product on the invoice (P2) is not this product's quantity.
     assert docs['IV49602']['units'] == [{'unit': 'ตัว', 'qty': 5, 'free_qty': 0}]
-    assert docs['SR49601']['units'] == [{'unit': 'ตัว', 'qty': -3, 'free_qty': 0}]
-    assert docs['SR49601']['total_net'] == -480
+    # A credit note's ฿0 line is a return, never แถม (prod stores SR positive).
+    assert docs['SR49601']['units'] == [{'unit': 'ตัว', 'qty': 3, 'free_qty': 0}]
+    assert docs['SR49601']['total_net'] == 320
     assert docs['IV49601']['customer'] == X_NAME and docs['IV49601']['date_iso'] == '2031-03-02'
 
 
@@ -355,7 +359,7 @@ def test_product_trade_page_shows_invoices(admin):
     assert len(rows) == 5
     by_doc = {}
     for row in rows:
-        links = re.findall(r'href="/sales/doc/([^"]+)"', row)
+        links = re.findall(r'href="/sales/doc/([^"?]+)', row)    # a ?book= may follow
         assert len(links) == 1
         by_doc[links[0]] = _cells(row)
     assert sorted(by_doc) == ['IV49601', 'IV49602', 'IV49603', 'IV49604', 'SR49601']
@@ -364,7 +368,7 @@ def test_product_trade_page_shows_invoices(admin):
     assert by_doc['IV49601'][4] == '3,840.00'
     assert by_doc['IV49603'][3] == '2.0 แผง<br>4.0 ตัว'
     assert by_doc['IV49604'][3] == '11.0 ตัว (แถม 1.0)'
-    assert by_doc['SR49601'][3] == '-3.0 ตัว'
+    assert by_doc['SR49601'][3] == '3.0 ตัว'                  # its ฿0 line is no แถม
 
 
 # ── edge: a freebie-only invoice ──────────────────────────────────────────────
@@ -386,7 +390,7 @@ def test_freebie_only_invoice_counts_where_its_population_does(seeded):
     assert t['summary']['doc_count'] == 6
     assert len(t['docs']) == 6
     assert _docs_by_base(t)['IV49605']['units'] == [{'unit': 'ตัว', 'qty': 2, 'free_qty': 2}]
-    assert models.get_product_pricing(P1)['total_invoices'] == 4
+    assert models.get_product_pricing(P1)['total_invoices'] == 5    # unchanged: unit_price 0
     import call_card
     x = {(p['product_id'], p['unit']): p['doc_count']
          for p in call_card.get_card(seeded, X_CODE)['products']}
