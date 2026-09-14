@@ -87,13 +87,16 @@ def _customer_sales_aggregates(conn, where, params):
     two copies of these queries drift invisibly — the same reason `sales_filters`
     and `commission_attribution` exist as single definitions.
 
+    `total_net` in summary and monthly is ยอดซื้อรวม: before VAT, credit notes
+    subtracted (sales_filters.purchase_net_sql, #494).
+
     Returns (summary, top_products, monthly, docs).
     """
     import price_lookup
 
     summary = dict(conn.execute(f"""
         SELECT COUNT(DISTINCT doc_base) AS doc_count,
-               COALESCE(SUM(net), 0)  AS total_net,
+               COALESCE(SUM({sales_filters.purchase_net_sql()}), 0) AS total_net,
                COALESCE(SUM(qty), 0)  AS total_qty,
                MIN(date_iso)          AS first_date,
                MAX(date_iso)          AS last_date
@@ -129,7 +132,7 @@ def _customer_sales_aggregates(conn, where, params):
     monthly = conn.execute(f"""
         SELECT strftime('%Y-%m', date_iso) AS month,
                COUNT(DISTINCT doc_base) AS doc_count,
-               SUM(net) AS total_net
+               SUM({sales_filters.purchase_net_sql()}) AS total_net
         FROM sales_transactions
         WHERE {where}
         GROUP BY month
