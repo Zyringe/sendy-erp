@@ -9,6 +9,9 @@ Seam 2 (HTTP / render): the customer page's notes card, add-note box role
 gate, contact_note display, win-back badge + overflow line — session-injected
 roles, prior art tests/test_493_slice2_product_card.py + test_call_routes.py.
 Seam 3 (redirect): call.call_note's return_to allow-list — no open redirect.
+Seam 4: access_control.role_can_post actually reads the real POST
+whitelist, for every role — not just the roles this page happens to render
+for.
 
 Prior art for fixtures: tests/test_493_slice2_product_card.py.
 """
@@ -20,6 +23,8 @@ from urllib.parse import quote, urlsplit
 
 import pytest
 
+import access_control
+
 SENDAI_BRAND_ID = 3
 
 TEST_CODE = 'TEST4972'
@@ -28,6 +33,13 @@ TEST_NAME = 'ลูกค้าทดสอบ 497 หน้าลูกค้�
 SHARED_NAME = 'ร้านทดสอบ 497 หน้าลูกค้าชื่อซ้ำ'
 CODE_A = 'TEST4972A'
 CODE_B = 'TEST4972B'
+
+# N7: every role the real gate distinguishes, derived from the gate's OWN
+# whitelist dict rather than hand-typed — a hand-typed list would rot the
+# moment a new role is added, exactly the drift risk role_can_post exists
+# to avoid. 'admin' is not a key in _ROLE_POST_OK (it bypasses the
+# whitelist check entirely in require_login), so it's added explicitly.
+_ROLES_TO_CHECK = sorted(access_control._ROLE_POST_OK.keys()) + ['admin']
 
 _pid_counter = [497200]
 
@@ -330,6 +342,68 @@ def test_shareholder_sees_the_list_but_no_add_note_box(tmp_db):
     html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
     assert 'โน้ตของผู้ถือหุ้นอ่านได้' in html
     assert f'action="{url_customer_note(TEST_CODE)}"' not in html
+
+
+@pytest.mark.parametrize('role', _ROLES_TO_CHECK)
+def test_role_can_post_matches_the_real_post_gate_for_call_note(role, tmp_db):
+    """N7: role_can_post's own docstring promises it reads the same
+    whitelist require_login enforces — re-typing it as a hardcoded
+    ('admin','manager','staff') tuple passed every render test (24/24), so
+    nothing actually pins it to the gate it claims to mirror. Drive the
+    REAL POST for every role the gate distinguishes and assert the
+    helper's prediction matches whether a row actually got written."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _mk_customer(conn, TEST_CODE, TEST_NAME)
+    _clear(conn, TEST_CODE)
+    conn.close()
+
+    predicted = access_control.role_can_post(role, 'call.call_note')
+    c = _client(tmp_db, role=role)
+    c.post(f'/call/{TEST_CODE}/note', data={'body': f'จาก {role}'})
+
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM customer_call_log WHERE customer_code = ?", (TEST_CODE,)
+    ).fetchall()
+    conn.close()
+    actual = len(rows) == 1
+    assert predicted == actual, f"role={role}: predicted={predicted}, actual={actual}"
+
+
+def test_role_can_post_matches_the_real_gate_across_endpoints(tmp_db, monkeypatch):
+    """N7, stronger form: `call.call_note` happens to be whitelisted for
+    EXACTLY {admin, manager, staff} today, so a hardcoded
+    `role in ('admin','manager','staff')` retyping of role_can_post matches
+    the real gate for THAT ONE endpoint by pure coincidence — verified: the
+    reviewer's own M3c mutation (that exact retype) stays green against a
+    call.call_note-only test, including the one directly above. Two more
+    real endpoints with DIFFERENT role membership close that gap:
+    partners.customer_reassign (manager/admin, NOT staff) and
+    cashbook.new_transaction (manager/shareholder/admin, NOT staff) — a
+    hardcoded tuple mispredicts staff on both. Each view is stubbed to a
+    no-op (no side effects on customer/cashbook data), so this exercises
+    ONLY require_login's routing decision, never the endpoints' own logic."""
+    from app import app as flask_app
+    paths = {
+        'call.call_note': f'/call/{TEST_CODE}/note',
+        'partners.customer_reassign': f'/customer/{TEST_CODE}/reassign',
+        'cashbook.new_transaction': '/cashbook/new',
+    }
+    for ep in paths:
+        monkeypatch.setitem(flask_app.view_functions, ep, lambda **kw: ('stub', 200))
+
+    for ep, path in paths.items():
+        for role in _ROLES_TO_CHECK:
+            predicted = access_control.role_can_post(role, ep)
+            c = _client(tmp_db, role=role)
+            r = c.post(path, data={})
+            actual = r.status_code == 200
+            assert predicted == actual, (
+                f"endpoint={ep} role={role}: predicted={predicted} "
+                f"actual={actual} status={r.status_code}")
 
 
 def url_customer_note(code):
