@@ -1,3 +1,4 @@
+{% from 'macros.html' import vat_badge %}
 {% extends 'base.html' %}
 {% block title %}{{ product.product_name }} – ราคาขาย{% endblock %}
 {% block page_title %}ราคาขาย: {{ product.product_name }}{% endblock %}
@@ -99,15 +100,7 @@
           {% set loop_idx = loop.index %}
           <tr>
             <td class="fw-600">฿{{ lp.unit_price | fmt_price }}</td>
-            <td>
-              {% if lp.vat_type == 1 %}
-                <span class="badge badge-success">รวม VAT</span>
-              {% elif lp.vat_type == 2 %}
-                <span class="badge badge-info">แยก VAT</span>
-              {% else %}
-                <span class="badge badge-gray">ยกเว้น VAT</span>
-              {% endif %}
-            </td>
+            <td>{{ vat_badge(lp.vat_type) }}</td>
             <td class="text-end">{{ lp.invoice_count }}</td>
             <td class="text-end">{{ lp.total_qty | fmt_qty }}</td>
             <td class="text-subtle">{{ lp.last_sale or '–' }}</td>

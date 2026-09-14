@@ -1,4 +1,4 @@
-{% from 'macros.html' import doc_link %}
+{% from 'macros.html' import doc_link, vat_label %}
 {% extends 'base.html' %}
 {% block title %}ยอดซื้อ – ERP{% endblock %}
 {% block page_title %}รายงานยอดซื้อ{% endblock %}
@@ -19,7 +19,7 @@
 <div class="row g-3 mb-3">
   <div class="col-md-4">
     <div class="stat-card" style="border-left:4px solid #2e7d3a">
-      <div class="stat-card-label"><i class="bi bi-receipt me-1"></i>รวม VAT &nbsp;<span class="badge badge-success">Type 1</span></div>
+      <div class="stat-card-label"><i class="bi bi-receipt me-1"></i>{{ vat_label(1) }} &nbsp;<span class="badge badge-success">Type 1</span></div>
       <div class="stat-card-value text-success mt-2">
         ฿{{ vat_summary.get(1, {}).get('total_net', 0) | fmt_price }}
       </div>
@@ -29,7 +29,7 @@
   </div>
   <div class="col-md-4">
     <div class="stat-card" style="border-left:4px solid #38bdf8">
-      <div class="stat-card-label"><i class="bi bi-receipt-cutoff me-1"></i>แยก VAT &nbsp;<span class="badge badge-info">Type 2</span></div>
+      <div class="stat-card-label"><i class="bi bi-receipt-cutoff me-1"></i>{{ vat_label(2) }} &nbsp;<span class="badge badge-info">Type 2</span></div>
       <div class="stat-card-value mt-2" style="color:#0369a1">
         ฿{{ vat_summary.get(2, {}).get('total_net', 0) | fmt_price }}
       </div>
@@ -39,7 +39,7 @@
   </div>
   <div class="col-md-4">
     <div class="stat-card" style="border-left:4px solid #94a3b8">
-      <div class="stat-card-label"><i class="bi bi-dash-circle me-1"></i>ยกเว้น VAT &nbsp;<span class="badge badge-gray">Type 0</span></div>
+      <div class="stat-card-label"><i class="bi bi-dash-circle me-1"></i>{{ vat_label(0) }} &nbsp;<span class="badge badge-gray">Type 0</span></div>
       <div class="stat-card-value text-subtle mt-2">
         ฿{{ vat_summary.get(0, {}).get('total_net', 0) | fmt_price }}
       </div>
@@ -68,9 +68,9 @@
         <label class="form-label small mb-1">VAT</label>
         <select name="vat_type" class="form-select form-select-sm">
           <option value="">ทั้งหมด</option>
-          <option value="1" {% if vat_type == 1 %}selected{% endif %}>รวม VAT (1)</option>
-          <option value="2" {% if vat_type == 2 %}selected{% endif %}>แยก VAT (2)</option>
-          <option value="0" {% if vat_type == 0 %}selected{% endif %}>ยกเว้น VAT (0)</option>
+          <option value="1" {% if vat_type == 1 %}selected{% endif %}>{{ vat_label(1) }} (1)</option>
+          <option value="2" {% if vat_type == 2 %}selected{% endif %}>{{ vat_label(2) }} (2)</option>
+          <option value="0" {% if vat_type == 0 %}selected{% endif %}>{{ vat_label(0) }} (0)</option>
         </select>
       </div>
       <div class="col-auto">

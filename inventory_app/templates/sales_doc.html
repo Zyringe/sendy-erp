@@ -1,3 +1,4 @@
+{% from 'macros.html' import vat_badge %}
 {% extends 'base.html' %}
 {% block title %}{{ doc_base }} – ERP{% endblock %}
 {% block page_title %}เอกสารขาย {{ doc_base }}{% endblock %}
@@ -41,9 +42,7 @@
       </div>
       <div class="col-auto">
         <span class="text-subtle small">VAT</span><br>
-        {% if first.vat_type == 1 %}<span class="badge badge-success">รวม VAT</span>
-        {% elif first.vat_type == 2 %}<span class="badge badge-info">แยก VAT</span>
-        {% else %}<span class="badge badge-gray">ยกเว้น VAT</span>{% endif %}
+        {{ vat_badge(first.vat_type) }}
       </div>
       <div class="col-auto ms-auto text-end">
         <span class="text-subtle small">ยอดสุทธิรวม</span><br>
