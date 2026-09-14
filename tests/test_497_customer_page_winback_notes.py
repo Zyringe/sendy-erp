@@ -397,6 +397,38 @@ def test_overflow_line_absent_at_zero(tmp_db):
     assert 'รายการซื้อขาดช่วง' not in html
 
 
+def test_overflow_line_renders_with_count_and_call_card_link(tmp_db):
+    """F3: `winback_overflow_count` was pinned only at the data layer — the
+    render was untested in the POSITIVE direction (only the absent-at-zero
+    case had a render test), so `{% if data.winback_overflow_count %}`
+    could have been replaced with `{% if false %}` and every render test
+    would still pass. Same 20-filler shape as
+    test_overflow_count_positive_when_flagged_item_falls_outside_the_card_union
+    (data layer) pushes ONE flagged product out of the card union."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _mk_customer(conn, TEST_CODE, TEST_NAME)
+    _clear(conn, TEST_CODE)
+    pid = _mk_product(conn)
+    for i, d in enumerate(['2020-01-01', '2020-02-01', '2020-03-01']):
+        _line(conn, doc_base=f'IVOVF{i}', pid=pid, date_iso=d, code=TEST_CODE)
+    for n in range(20):
+        filler = _mk_product(conn, name=f'สินค้าเติมล้น {n}')
+        for i, d in enumerate(['2024-01-01', '2024-01-02', '2024-01-03']):
+            _line(conn, doc_base=f'IVOVFILL{n:02d}{i}', pid=filler, date_iso=d,
+                  code=TEST_CODE, unit_price=1000000, net=1000000)
+    conn.close()
+
+    c = _client(tmp_db)
+    html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
+    m = re.search(r'<a\b[^>]*href="([^"]*)"[^>]*>\s*⏰\s*อีก\s*(\d+)\s*รายการซื้อขาดช่วง', html)
+    assert m, "overflow line with a count not found"
+    href, count = m.group(1), m.group(2)
+    assert count == '1'
+    assert urlsplit(href).path == f'/call/{TEST_CODE}'
+
+
 # ── Seam 3: redirect ─────────────────────────────────────────────────────────
 
 def test_post_from_customer_page_creates_row_and_returns_to_customer_page(tmp_db):
