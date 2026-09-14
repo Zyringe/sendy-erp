@@ -233,3 +233,99 @@ def test_call_card_per_product_count_is_invoices(seeded):
     # IV49603 carries P1 in two units: one invoice in EACH unit's group.
     assert {(p['product_id'], p['unit']): p['doc_count'] for p in y['products']} == \
         {(P1, 'แผง'): 1, (P1, 'ตัว'): 1}
+
+
+# ── /products/<id>/trade (models.get_product_trade_summary) ──────────────────
+# Population today, kept: every P1 line in the date range, credit note
+# included. P1 has 9 lines on 5 documents: IV49601-04 + SR49601.
+
+def test_product_trade_counts_invoices(seeded):
+    d = models.get_product_trade_summary(P1)
+    assert d['summary']['doc_count'] == 5
+
+    assert len(d['top_customers']) == 2
+    assert {r['customer']: r['doc_count'] for r in d['top_customers']} == \
+        {X_NAME: 4, Y_NAME: 1}                        # X: 01, 02, 04, SR (7 lines)
+
+    assert len(d['monthly']) == 1
+    assert d['monthly'][0]['doc_count'] == 5          # not rendered today, fixed anyway
+
+    # Unit chips: ตัว sits on all 5 documents (8 lines), แผง on IV49603 only.
+    assert d['units'] == [{'unit': 'ตัว', 'doc_count': 5},
+                          {'unit': 'แผง', 'doc_count': 1}]
+    # "ทั้งหมด" is the invoice count across units, NOT the chips' sum (6):
+    # IV49603 carries P1 in both units and is one invoice.
+    assert d['all_units_doc_count'] == 5 == d['summary']['doc_count']
+    assert sum(u['doc_count'] for u in d['units']) == 6
+
+
+def _docs_by_base(d):
+    return {r['doc_base']: r for r in d['docs']}
+
+
+def test_product_trade_docs_one_row_per_invoice(seeded):
+    d = models.get_product_trade_summary(P1)
+    assert len(d['docs']) == 5
+    assert [r['doc_base'] for r in d['docs']] == \
+        ['SR49601', 'IV49604', 'IV49603', 'IV49602', 'IV49601']    # newest first
+    docs = _docs_by_base(d)
+    # Paid 24 + unpriced ฿0 freebie 3 = one row, 27 units, 3 of them free.
+    assert docs['IV49601']['units'] == [{'unit': 'ตัว', 'qty': 27, 'free_qty': 3}]
+    assert docs['IV49601']['total_net'] == 3840
+    # Paid 10 + PRICED freebie (160, 100% off, ฿0) 1.
+    assert docs['IV49604']['units'] == [{'unit': 'ตัว', 'qty': 11, 'free_qty': 1}]
+    assert docs['IV49604']['total_net'] == 1600
+    # Two units on one invoice: each unit's quantity on its own, never summed.
+    assert docs['IV49603']['units'] == [{'unit': 'แผง', 'qty': 2, 'free_qty': 0},
+                                        {'unit': 'ตัว', 'qty': 4, 'free_qty': 0}]
+    assert docs['IV49603']['total_net'] == 3640
+    # Another product on the invoice (P2) is not this product's quantity.
+    assert docs['IV49602']['units'] == [{'unit': 'ตัว', 'qty': 5, 'free_qty': 0}]
+    assert docs['SR49601']['units'] == [{'unit': 'ตัว', 'qty': -3, 'free_qty': 0}]
+    assert docs['SR49601']['total_net'] == -480
+    assert docs['IV49601']['customer'] == X_NAME and docs['IV49601']['date_iso'] == '2031-03-02'
+
+
+def test_product_trade_unit_filter_keeps_population(seeded):
+    t = models.get_product_trade_summary(P1, unit='ตัว')
+    assert t['summary']['doc_count'] == 5             # 8 ตัว lines on 5 documents
+    assert len(t['docs']) == 5
+    # The filter narrows the lines, so IV49603 shows only its ตัว quantity.
+    assert _docs_by_base(t)['IV49603']['units'] == [{'unit': 'ตัว', 'qty': 4, 'free_qty': 0}]
+
+    p = models.get_product_trade_summary(P1, unit='แผง')
+    assert p['summary']['doc_count'] == 1
+    assert [r['doc_base'] for r in p['docs']] == ['IV49603']
+    assert p['docs'][0]['units'] == [{'unit': 'แผง', 'qty': 2, 'free_qty': 0}]
+    # Chips and "ทั้งหมด" never narrow with the active filter.
+    assert t['units'] == p['units'] == models.get_product_trade_summary(P1)['units']
+    assert t['all_units_doc_count'] == p['all_units_doc_count'] == 5
+
+
+def test_product_trade_docs_cap_counts_invoices(seeded):
+    """210 invoices, each a paid line + a ฿0 freebie line (420 lines): the
+    list holds the newest 200 INVOICES. Capping lines held only 100."""
+    P3 = 949603
+    seeded.execute("INSERT INTO products (id, product_name, unit_type, sku_code, is_active) "
+                   "VALUES (?, 'สินค้าทดสอบ496 สาม', 'ตัว', 'SKU-496-3', 1)", (P3,))
+    rows = []
+    for i in range(210):
+        base, date = f'IV497{i:03d}', f'2030-{1 + i // 28:02d}-{1 + i % 28:02d}'
+        rows.append((date, f'{base}-1', base, P3, 5, 100, 500))
+        rows.append((date, f'{base}-2', base, P3, 1, 0, 0))
+    seeded.executemany(
+        "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, customer,"
+        " qty, unit, unit_price, vat_type, total, net) VALUES (?, ?, ?, ?, 'Z', ?, 'ตัว',"
+        " ?, 1, ?, ?)", [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[6]) for r in rows])
+    seeded.commit()
+    assert _oracle(seeded, "SELECT COUNT(*) FROM sales_transactions WHERE product_id = ?", P3) == 420
+
+    d = models.get_product_trade_summary(P3)
+    assert d['summary']['doc_count'] == 210
+    assert len(d['docs']) == 200
+    assert len({r['doc_base'] for r in d['docs']}) == 200
+    newest_200 = [r[0] for r in seeded.execute(
+        "SELECT doc_base FROM sales_transactions WHERE product_id = ? GROUP BY doc_base "
+        "ORDER BY MAX(date_iso) DESC, doc_base LIMIT 200", (P3,))]
+    assert [r['doc_base'] for r in d['docs']] == newest_200
+    assert all(r['units'] == [{'unit': 'ตัว', 'qty': 6, 'free_qty': 1}] for r in d['docs'])
