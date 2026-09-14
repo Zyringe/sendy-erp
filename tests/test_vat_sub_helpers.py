@@ -1,6 +1,7 @@
 """vat-substitute — pure-function helpers: category-noun extraction/matching
-(plan §5 guess section), xp5 name size/color parsing + ordering (§4.4),
-badge formula (§5, decisions 9/10). No DB — these are unit tests only."""
+(plan §5 guess section), xp5 name size/color parsing + ordering (§4.4). No DB —
+these are unit tests only. The badge formula (§5, decisions 9/10) is JS only
+since #485; tests/test_vat_sub_render.py executes it."""
 import models.vat_sub as vs
 
 
@@ -94,47 +95,3 @@ def test_order_candidates_unparsed_attrs_never_hide_a_candidate():
     rows = [{'xp5_code': 'X', 'size': None, 'color': None, 'stock': 1}]
     ordered = vs.order_candidates(rows, x_size='4', x_color='AC')
     assert [r['xp5_code'] for r in ordered] == ['X']
-
-
-# ── compute_badge (§5, decisions 9/10) ──────────────────────────────────────
-
-def test_badge_ok_when_exvat_per_base_unit_exceeds_cost():
-    # price 107 VAT-incl, ratio 1 -> ex-VAT 100 per base unit; cost 80 -> ok
-    r = vs.compute_badge(107.0, 1.0, 'ตัว', 'ตัว', 80.0)
-    assert r['badge'] == 'ok'
-    assert round(r['ex_vat_per_base_unit'], 2) == 100.0
-
-
-def test_badge_warn_when_exvat_per_base_unit_at_or_below_cost():
-    r = vs.compute_badge(107.0, 1.0, 'ตัว', 'ตัว', 100.0)   # exactly equal -> not >, so warn
-    assert r['badge'] == 'warn'
-    r2 = vs.compute_badge(53.5, 1.0, 'ตัว', 'ตัว', 100.0)   # well below
-    assert r2['badge'] == 'warn'
-
-
-def test_badge_unknown_when_candidate_cost_is_zero_or_none():
-    r = vs.compute_badge(107.0, 1.0, 'ตัว', 'ตัว', 0.0)
-    assert r['badge'] == 'unknown'
-    r2 = vs.compute_badge(107.0, 1.0, 'ตัว', 'ตัว', None)
-    assert r2['badge'] == 'unknown'
-
-
-def test_badge_incomparable_when_units_differ():
-    r = vs.compute_badge(107.0, 1.0, 'ตัว', 'แผง', 80.0)
-    assert r['badge'] == 'incomparable'
-    assert 'หน่วยต่างกัน' in r['label']
-
-
-def test_badge_incomparable_when_either_unit_blank():
-    r = vs.compute_badge(107.0, 1.0, '', 'ตัว', 80.0)
-    assert r['badge'] == 'incomparable'
-    r2 = vs.compute_badge(107.0, 1.0, 'ตัว', '', 80.0)
-    assert r2['badge'] == 'incomparable'
-
-
-def test_badge_applies_unit_ratio_before_comparing():
-    # deal unit = โหล (ratio 12 -> base unit ตัว): price 214 VAT-incl per โหล
-    # ex-VAT 200 per โหล -> per-base-unit 200/12 = 16.667
-    r = vs.compute_badge(214.0, 12.0, 'ตัว', 'ตัว', 10.0)
-    assert r['badge'] == 'ok'
-    assert round(r['ex_vat_per_base_unit'], 3) == round(200.0 / 12, 3)

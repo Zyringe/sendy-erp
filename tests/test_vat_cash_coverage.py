@@ -38,7 +38,10 @@ OWNER = os.path.join('inventory_app', 'vat_math.py')
 # renderer; it was not true of the one call site this exemption covered.
 # compute_badge divides, divides again by unit_ratio and compares with `>` —
 # there is no rounding anywhere in that path, so the exemption was protecting a
-# plain duplicate. It now calls vat_math.net_from_cash().
+# plain duplicate. It then called vat_math.net_from_cash(); #485 deleted it, as
+# the live badge is the JS in templates/vat_sub/product_view.html.
+#
+# The same dict serves the template/JS sweep below (#485): a path is a path.
 ALLOWED = {}
 
 

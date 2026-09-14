@@ -33,7 +33,6 @@ import sqlite3
 
 import book_registry
 from database import get_connection
-import vat_math
 from .products import get_product
 
 # Stock threshold — kills the 6e-154 FoxPro garbage + dust (plan §4.3).
@@ -132,52 +131,6 @@ def order_candidates(rows, x_size, x_color):
             tier = 3
         return (tier, -(r.get('stock') or 0))
     return sorted(rows, key=key)
-
-
-# ── Badge formula (§5, decisions 9/10) ──────────────────────────────────────
-
-def compute_badge(price_per_unit, unit_ratio, x_unit, candidate_unit, candidate_cost):
-    """price_per_unit = VAT-inclusive price the customer pays for ONE of the
-    SELECTED deal unit (decision 9 — the workspace-wide carve-out
-    convention, never add-on-top). unit_ratio converts that unit to X's own
-    base unit_type (1.0 if the selected unit already IS the base unit;
-    X's unit_conversions ratio otherwise — decision 10, X's side only, never
-    an invented cross-product ratio).
-
-    Compared against the candidate's book cost_price (STMAS.UNITPR-sourced,
-    ex-VAT by convention — see vat_book_builder) ONLY when both units are
-    non-blank and equal after normalization (both books already store
-    normalized Thai unit names via bsn_units, so a plain string compare is
-    the normalized compare). Otherwise "เทียบไม่ได้" — both raw numbers
-    always returned so the caller can still show them."""
-    ex_vat = vat_math.net_from_cash(price_per_unit)
-    per_base_unit = (ex_vat / unit_ratio
-                     if ex_vat is not None and unit_ratio else None)
-    x_u = (x_unit or '').strip()
-    c_u = (candidate_unit or '').strip()
-    result = {
-        'ex_vat_per_base_unit': per_base_unit,
-        'price_per_unit': price_per_unit,
-        'x_unit': x_u,
-        'candidate_cost': candidate_cost,
-        'candidate_unit': c_u,
-    }
-    if not x_u or not c_u or x_u != c_u or per_base_unit is None:
-        result['badge'] = 'incomparable'
-        result['label'] = ('เทียบไม่ได้ (หน่วยต่างกัน)' if (x_u and c_u and x_u != c_u)
-                            else 'เทียบไม่ได้')
-        return result
-    if not candidate_cost or candidate_cost <= 0:
-        result['badge'] = 'unknown'
-        result['label'] = '❓ ไม่ทราบต้นทุน'
-        return result
-    if per_base_unit > candidate_cost:
-        result['badge'] = 'ok'
-        result['label'] = '✅ คุ้ม'
-    else:
-        result['badge'] = 'warn'
-        result['label'] = '⚠️ ไม่คุ้ม'
-    return result
 
 
 # ── VAT book access (always cross-read, independent of the session's

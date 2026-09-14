@@ -19,29 +19,35 @@ had it INVERTED (`1 → ×1.07, 2 → ÷1.07`) and payments_alloc/cashflow summe
 bare `net`; every fully-paid `แยก VAT` bill then read as "จ่ายเกิน 7%",
 producing roughly ฿446k of customer credit that did not exist.
 
-⚠ This module owns both directions of the CONVERSION and nothing else.
+⚠ This module owns both directions of the CONVERSION, and the rate they are
+built from, and nothing else.
 
 `net_from_cash()` is the carve-OUT: a VAT-inclusive price the customer pays,
 back to the ex-VAT figure. (Not "net → ex-VAT" — `net` is already ex-VAT; what
 gets divided is a customer-facing price.) Raw quotient, deliberately unrounded:
-its user, models/vat_sub.py::compute_badge, divides again by a unit ratio and
-compares with `>`. It prints no document, so it must not round like one.
+a carve-out that feeds a comparison must not round like a printed document.
+⚠ No production code calls it: its only user was models/vat_sub.py::
+compute_badge, itself called only by tests, and #485 deleted that (see below).
 
   * **Document rounding is NOT here.** A quotation line reproduces how a human
     keys Express: **ปัดขึ้น** 2 decimals on the unit ex-VAT price, half-up on the
     line amount, one VAT line off the invoice total — see
     .claude/rules/quoting-and-pricing.md. That lives with whatever renders the
     quotation, and folding it in here would round every comparison too.
-  * `net × 0.07`, the VAT amount shown on a document (templates/sales_doc.html),
-    is a third thing again — the tax itself, not a conversion.
+  * `net × VAT_RATE`, the VAT amount shown on a document, is a third thing
+    again — the tax itself, not a conversion.
 
-⚠ compute_badge has **no production caller** — it is exported through
-models/__init__.py and exercised only by tests. The badge a user actually sees
-is computed in JavaScript, by a line-for-line twin of that function in
-templates/vat_sub/product_view.html (`const exVat = pricePerUnit / 1.07`), which
-recomputes as the user types a price. So the constant still exists twice, in two
-languages, and a `.py`-only sweep cannot see the live one. Collapsing that pair
-is its own piece of work, not a constant to move.
+Where the constant flows outside Python (#485). Templates never type it; the
+route renders it in:
+  * templates/sales_doc.html — the VAT line is `total_net * vat_rate`
+    (blueprints/sales.py passes `VAT_RATE`).
+  * templates/vat_sub/product_view.html — the substitute badge is computed in
+    JavaScript as the user types a price, dividing by `VAT_MULTIPLIER` rendered
+    through `tojson`; the label above the price box renders the same constant
+    (blueprints/vat_sub.py passes `vat_multiplier`). That JS is the badge's only
+    implementation.
+tests/test_vat_cash_coverage.py sweeps templates and static JS as well as
+`.py`, so a hand-typed 1.07 / 0.07 in either fails the suite.
 
 ⚠ No rounding here. Callers round where they always did — some per row, some
 after SUM() — and moving that inside would silently shift every one of them.

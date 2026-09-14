@@ -12,11 +12,11 @@ That rule getting inverted once already cost real money visibility: before
 SUM(net), and every fully-paid `แยก VAT` bill read as "จ่ายเกิน 7%" — about
 ฿446k of fake customer credit.
 
-⚠ Deliberately NOT in this module: `vat_sub.py`'s `price / 1.07` and the two
-templates that do the same. That is the INVERSE direction (carving VAT out of a
-VAT-inclusive price) and it rounds differently — ปัดขึ้น 2 ตำแหน่ง per Express,
-see .claude/rules/quoting-and-pricing.md. Same constant, different rule.
-`sales_doc.html`'s `total_net * 0.07` is a third thing again (the VAT line).
+⚠ Deliberately NOT in this module: Express's document rounding (ปัดขึ้น 2
+ตำแหน่ง on a quotation's unit ex-VAT price, see
+.claude/rules/quoting-and-pricing.md). The raw carve-out is here (section C);
+rounding it for a printed line is the renderer's rule. `sales_doc.html`'s VAT
+line is a third thing again, the tax itself: it reads `VAT_RATE` since #485.
 """
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
@@ -111,13 +111,16 @@ def test_sql_and_python_agree_on_every_row(tmp_db_conn):
 
 # ── C · the inverse: cash → net ──────────────────────────────────────────────
 #
-# models/vat_sub.py::compute_badge carves VAT out of a VAT-inclusive price to
+# models/vat_sub.py::compute_badge carved VAT out of a VAT-inclusive price to
 # compare it against a book cost kept ex-VAT. It was left out of this module on
 # the grounds that the carve-out "rounds differently — ปัดขึ้น 2 decimals". That
 # is true of the QUOTATION renderer (the skill's express_ex_vat, which reproduces
 # how a human keys a line into Express); it is not true of compute_badge, which
-# divides, divides again by unit_ratio, and compares with `>` — no rounding
+# divided, divided again by unit_ratio, and compared with `>` — no rounding
 # anywhere in the path. So the raw carve-out belongs here with its twin.
+# ⚠ #485 deleted compute_badge (no production caller; the live badge is the JS
+# in templates/vat_sub/product_view.html, which divides by VAT_MULTIPLIER), so
+# nothing in production calls net_from_cash now.
 
 @pytest.mark.parametrize('cash,expected', [
     (107.0, 100.0),
