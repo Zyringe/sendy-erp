@@ -13,11 +13,12 @@ own hard-coded literal, which is historical and is what the forward stamp
 matches.
 
 The non-batch rows are not scenery: each sits on the far side of a WHERE
-clause this file pins (the stamp's name pattern: the 'manual test' control;
-the un-stamp's `date_start` clause: the operator-edited row; its `source`
-clause: the manual promo dated 2026-06-01). Without them, deleting that clause
-would change no row (verification-discipline.md, "a test that cannot fail",
-shape #8).
+clause this file pins (the stamp's name pattern: the 'manual test' control
+and a `catalog 2024-01-01 (promo)` row; the un-stamp's `date_start` clause:
+the operator-edited row; its `source` clause: two promos dated 2026-06-01,
+one with `source` NULL and one with 'manual'). Without them, deleting or
+loosening that clause would change no row (verification-discipline.md, "a
+test that cannot fail", shape #8).
 
 Drop-first fixture: the live DB this is copied from may already have 176
 applied (init_db() applies any migration file present the moment any test
@@ -97,6 +98,20 @@ def _mk_product(conn, name):
     return cur.lastrowid
 
 
+def _promo_on_fresh_product(conn, **cols):
+    """An active percent-10 promo on its own fresh product (migration 177 allows
+    one current price-shaped promo per product); `cols` adds or overrides
+    columns. Name `source` only after the forward migration: before it, the
+    column does not exist."""
+    row = {"product_id": _mk_product(conn, "mig176 promo"), "promo_type": "percent",
+           "discount_value": 10, "is_active": 1, **cols}
+    cur = conn.execute(
+        f"INSERT INTO promotions ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",
+        list(row.values()))
+    conn.commit()
+    return cur.lastrowid
+
+
 def _seed_batch(conn):
     """The 2026-06-01 batch in its pre-176 shape: no `source` column yet (the
     `db` fixture rolled 176 back), date_start and date_end NULL, is_active = 1.
@@ -129,10 +144,12 @@ def _seed_batch(conn):
 def _pick_products_without_active_promos(conn, n=1):
     """`n` distinct products holding ZERO active promotions.
 
-    `tmp_db_conn` clones the live dev DB with its data, including the
-    566-row 2026-06-01 catalog batch, so `SELECT id FROM products LIMIT 1`
-    can land on a product that already carries an active price-slot promo
-    from that batch. Migration 177's one-per-slot trigger then refuses a
+    `tmp_db_conn` clones the live DB with its data, so `SELECT id FROM
+    products LIMIT 1` can land on a product that already carries an active
+    price-slot promo: an inherited one (the dev DB's 566 `catalog 2026-06-01`
+    rows, in the tests that do not replace them via `_seed_batch`; a
+    prod-derived clone's 570 `catalog 2024-01-01` rows) or one this module
+    seeded. Migration 177's one-per-slot trigger then refuses a
     second price-shaped INSERT (a fresh 'percent' control/test row) for an
     unrelated reason. Different products (rule #1) sidesteps this so only
     the constraint each test actually exercises -- the `source` CHECK, or
@@ -180,6 +197,11 @@ def test_stamps_only_the_catalog_batch_control_row_stays_unstamped(db):
     assert n_batch == N_BATCH_SEEDED, "the batch must be exactly the rows this test seeded"
 
     control_id = _insert_control_row(conn)
+    # FAR SIDE of the date in the stamp's name pattern: another catalogue batch,
+    # named the way prod's rows are today. The migration header promises such a
+    # batch is left `source IS NULL`; 'manual test' sits outside `'catalog %'` too,
+    # so on its own it cannot pin the date.
+    other_batch_id = _promo_on_fresh_product(conn, promo_name="catalog 2024-01-01 (promo)")
 
     # The migration's header states "date_end and is_active are NOT touched".
     # Nothing tested it, so a stamp that also closed or deactivated the batch
@@ -210,6 +232,11 @@ def test_stamps_only_the_catalog_batch_control_row_stays_unstamped(db):
         "SELECT source, date_start FROM promotions WHERE id = ?", (control_id,)
     ).fetchone()
     assert tuple(control) == (None, None), "the stamp must not touch a promo outside the batch"
+    other_batch = conn.execute(
+        "SELECT source, date_start FROM promotions WHERE id = ?", (other_batch_id,)
+    ).fetchone()
+    assert tuple(other_batch) == (None, None), (
+        "the stamp must not touch a different catalogue batch (catalog 2024-01-01)")
 
 
 def test_check_rejects_an_unlisted_source(db):
@@ -274,22 +301,23 @@ def test_rollback_drops_column_unstamps_only_migrated_rows_restores_trigger_bodi
     n_batch = _n_batch(conn)
     assert n_batch == N_BATCH_SEEDED, "the batch must be exactly the rows this test seeded"
     control_id = _insert_control_row(conn)
-    # FAR SIDE of the un-stamp's `source = 'catalog-import'` clause: a promo the
-    # stamp never owned that carries the stamp's own date. Its own fresh product,
-    # since it is price-shaped (migration 177).
-    far_side_id = conn.execute(
-        "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value,"
-        " date_start, is_active) VALUES (?, 'manual dated 2026-06-01', 'percent', 10,"
-        " '2026-06-01', 1)",
-        (_mk_product(conn, "mig176 far side"),),
-    ).lastrowid
-    conn.commit()
+    # FAR SIDE of the un-stamp's `source = 'catalog-import'` clause, part 1: a promo
+    # that existed before the migration (so its `source` stays NULL) and carries
+    # the stamp's own date.
+    far_side_id = _promo_on_fresh_product(
+        conn, promo_name="manual dated 2026-06-01", date_start="2026-06-01")
 
     conn.executescript(MIG.read_text(encoding="utf-8"))
     # CONTROL: it really was applied.
     assert conn.execute(
         "SELECT COUNT(*) FROM promotions WHERE source = 'catalog-import'"
     ).fetchone()[0] == n_batch
+    # FAR SIDE, part 2: a promo made by hand after the migration, which
+    # models/promotions.py writes with source = 'manual'. Part 1 alone cannot
+    # tell `source = 'catalog-import'` from `source IS NOT NULL`.
+    manual_id = _promo_on_fresh_product(
+        conn, promo_name="hand-made dated 2026-06-01", date_start="2026-06-01",
+        source="manual")
 
     conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
 
@@ -303,6 +331,8 @@ def test_rollback_drops_column_unstamps_only_migrated_rows_restores_trigger_bodi
     assert all(d is None for d in dates), "the batch's date_start must roll back to NULL"
     assert _date_start(conn, far_side_id) == '2026-06-01', (
         "the rollback un-stamped a promo the migration never stamped")
+    assert _date_start(conn, manual_id) == '2026-06-01', (
+        "the rollback un-stamped a hand-made promo (source = 'manual')")
 
     control = conn.execute(
         "SELECT promo_name FROM promotions WHERE id = ?", (control_id,)
