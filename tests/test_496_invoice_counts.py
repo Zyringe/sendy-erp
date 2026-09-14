@@ -215,3 +215,21 @@ def test_pricing_page_shows_invoice_counts(admin):
                        r'<td class="text-end">.*?</td>\s*<td class="text-end">(\d+)</td>',
                        html, re.S)
     assert eff_x == ['3']
+
+
+# ── call card (call_card.get_card, per-product doc_count; not rendered today) ─
+
+def test_call_card_per_product_count_is_invoices(seeded):
+    import call_card
+    x = call_card.get_card(seeded, X_CODE)
+    assert len(x['products']) == 2
+    by_key = {(p['product_id'], p['unit']): p['doc_count'] for p in x['products']}
+    # X's P1 ตัว lines: 01-1, 01-2 (freebie), 02-1, 04-1, 04-2 (freebie), SR-1,
+    # SR-2 = 7 lines on 4 documents. This population keeps the credit note.
+    assert by_key == {(P1, 'ตัว'): 4, (P2, 'ตัว'): 1}
+
+    y = call_card.get_card(seeded, Y_CODE)
+    assert len(y['products']) == 2
+    # IV49603 carries P1 in two units: one invoice in EACH unit's group.
+    assert {(p['product_id'], p['unit']): p['doc_count'] for p in y['products']} == \
+        {(P1, 'แผง'): 1, (P1, 'ตัว'): 1}
