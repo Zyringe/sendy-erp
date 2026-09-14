@@ -58,8 +58,9 @@ def _docstring_nodes(tree):
 
 
 def find_vat_constants(source):
-    """Line numbers where 1.07 appears as code — as a number, or inside a string
-    (SQL text and f-string fragments included). Docstrings are excluded."""
+    """Line numbers where 1.07 (or, since #485, the rate 0.07) appears as code —
+    as a number, or inside a string (SQL text and f-string fragments included).
+    Docstrings are excluded."""
     tree = ast.parse(source)
     skip = _docstring_nodes(tree)
     hits = []
@@ -67,9 +68,9 @@ def find_vat_constants(source):
         if not isinstance(node, ast.Constant) or id(node) in skip:
             continue
         v = node.value
-        if isinstance(v, float) and v == 1.07:
+        if isinstance(v, float) and v in (1.07, 0.07):
             hits.append(node.lineno)
-        elif isinstance(v, str) and '1.07' in v:
+        elif isinstance(v, str) and ('1.07' in v or _VAT_NUMBER.search(v)):
             hits.append(node.lineno)
     return sorted(set(hits))
 

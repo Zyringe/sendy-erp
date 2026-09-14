@@ -12,6 +12,7 @@ from flask import Blueprint, render_template, request, redirect, url_for
 
 import book_registry
 import models
+import vat_math
 from paging import paging
 
 bp_sales = Blueprint('sales', __name__)
@@ -79,7 +80,7 @@ def sales_doc(doc_base):
         return "ไม่พบเอกสาร", 404
     total_net = sum(r['net'] or 0 for r in rows)
     return render_template('sales_doc.html', rows=rows, doc_base=doc_base,
-                           total_net=total_net,
+                           total_net=total_net, vat_rate=vat_math.VAT_RATE,
                            non_stock_codes=sorted(models.NON_STOCK_BSN_CODES),
                            audit_history=models.get_source_doc_audit_history(
                                doc_base, 'sales_transactions', conn=conn),

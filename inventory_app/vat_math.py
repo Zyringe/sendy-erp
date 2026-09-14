@@ -49,9 +49,12 @@ after SUM() — and moving that inside would silently shift every one of them.
 Python 3.9 — no `X | None` syntax.
 """
 
-# The two constants the whole rule is made of. Both spellings below are built
-# from these, so the SQL and the Python cannot drift apart.
-VAT_MULTIPLIER = 1.07
+# The constants the whole rule is made of. Both spellings below are built from
+# these, so the SQL and the Python cannot drift apart. The rate is the source:
+# 1 + 0.07 is exactly the double 1.07 was, while 1.07 - 1 is not 0.07, so
+# never derive in the other direction.
+VAT_RATE = 0.07
+VAT_MULTIPLIER = 1 + VAT_RATE
 VAT_TYPE_ADDS_VAT = 2
 
 
