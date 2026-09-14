@@ -15,14 +15,15 @@
 {% endmacro %}
 
 
-{# A document's VAT mode as words (#495) — the ONE place a vat_type gets its
-   label. Every surface that names it calls this: the invoice header, the
-   sales and purchases lists (stat cards, filter options, row badge), the
-   pricing page, the /ar transfer matcher. vat_type is Express's per-document
-   VAT mode (CONTEXT.md):
-     1  ไม่บวก VAT  nothing added on top. On a sale the customer paid `net`,
-                    with no VAT in it; on a purchase the supplier's VAT, when
-                    there was any, sits inside the price.
+{# A document's VAT mode as words (#495), shared so the words are typed once.
+   Called, for all three types, by the nine places that used to hand-type the
+   type-1 label: the invoice header, the sales and purchases lists (stat cards,
+   filter options, row badge), the pricing page, the /ar transfer matcher. Not
+   every VAT badge in the app goes through it yet. vat_type is Express's
+   per-document VAT mode (CONTEXT.md):
+     1  ไม่บวก VAT  nothing added on top. On a sale almost always no VAT at all
+                    (the customer paid `net`); on a purchase the supplier's VAT,
+                    when there was any, sits inside the price.
      2  แยก VAT     7% added on top of `net`.
      0  ยกเว้น VAT  (and anything else).
    Type 1 used to read "VAT included", which was true of only the few documents
