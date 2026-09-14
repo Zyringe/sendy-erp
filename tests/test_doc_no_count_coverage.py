@@ -20,13 +20,16 @@ implicit and `+` concatenation, and the receiver of `.format()`. Comments and
 docstrings are prose and are skipped.
 
 ⚠ What this sweep CANNOT see, so a green run says nothing about them:
-  - Python `len()` over line rows. The price resolver's R4 "fewer than 3
-    bills" rule (`n_bills = len(_evidence_rows(...))` in price_lookup.py)
-    counts evidence LINES in exactly this shape; it is tracked in #512.
+  - Python `len()` over line rows. E.g. price_lookup's R4 `n_bills` was
+    `len(_evidence_rows(...))` (evidence LINES) until #512 (PR #515); this
+    sweep could not have caught it.
   - Jinja `|length` over line rows in a template.
   - JavaScript counting rows in the browser.
   - A line count spelled any other way: COUNT(*) or COUNT(id) on a line
-    table, SUM(1), and so on.
+    table, SUM(1), `COUNT(*) FROM (SELECT DISTINCT doc_no ...)`, and so on.
+  - doc_no inside an expression: `COUNT(DISTINCT CASE WHEN ... THEN doc_no
+    END)`; a positional `GROUP BY 1`; `PARTITION BY doc_no`; a column name
+    that arrives through an f-string field.
   - SQL whose table arrives at run time (`FROM {table}`): such a hit cannot
     be attributed, so it FAILS here until someone states what it reads.
 """
@@ -62,7 +65,7 @@ _SQL_KEYWORDS = {
     'JOIN', 'LEFT', 'RIGHT', 'INNER', 'OUTER', 'CROSS', 'NATURAL', 'ON', 'USING',
     'AS', 'SELECT', 'FROM', 'WINDOW', 'INDEXED', 'NOT',
 }
-_COUNT = re.compile(r'\bCOUNT\s*\(\s*DISTINCT\s+(?:(\w+)\s*\.\s*)?doc_no\s*\)', re.I)
+_COUNT = re.compile(r'\bCOUNT\s*\(\s*DISTINCT\s*\(?\s*(?:(\w+)\s*\.\s*)?doc_no\s*\)', re.I)
 _GROUP = re.compile(r'\bGROUP\s+BY\b', re.I)
 _GROUP_END = re.compile(r'\bHAVING\b|\bORDER\b|\bLIMIT\b|\bUNION\b|\bEXCEPT\b'
                         r'|\bINTERSECT\b|\bWINDOW\b|;', re.I)
@@ -200,7 +203,9 @@ def find_doc_no_hits(source):
 def _app_hits():
     out = []
     for root, _dirs, names in os.walk(APP):
-        if any(part in root for part in ('__pycache__', 'instance', 'static')):
+        # Judge the path BELOW the app, so a checkout under e.g. /x/ecstatic/
+        # still scans.
+        if set(os.path.relpath(root, APP).split(os.sep)) & {'__pycache__', 'instance', 'static'}:
             continue
         for n in sorted(names):
             if n.endswith('.py'):
@@ -262,6 +267,8 @@ SALES_SHAPES = {
         'Q = "SELECT COUNT(DISTINCT doc_no) AS n FROM sales_transactions WHERE x = 1"\n',
     'aliased COUNT':
         'Q = "SELECT COUNT(DISTINCT st.doc_no) FROM sales_transactions st"\n',
+    'COUNT(DISTINCT(...)) parenthesised':
+        'Q = "SELECT COUNT(DISTINCT(s.doc_no)) FROM sales_transactions s"\n',
     'GROUP BY bare':
         'Q = "SELECT doc_no, SUM(qty) FROM sales_transactions GROUP BY doc_no"\n',
     'GROUP BY aliased, second key':
