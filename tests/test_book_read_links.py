@@ -481,11 +481,14 @@ def test_document_not_found_is_a_404_inside_the_layout(books, path, back):
     assert 'ZZ501NOPE' in notice.text
     backs = [a for a in notice.links if 'data-book-link-back' in a]
     assert len(backs) == 1 and backs[0]['href'] == back
-    # the layout: the sidebar, and the book strip whose form is the switch
+    # the layout: desktop sidebar + phone drawer, and the book switch each of
+    # them carries (banner strip + drawer); the not-found card has none of its own
     assert [a for a in _tags(body, 'aside') if a.get('id') == 'sidebar']
+    assert [a for a in _tags(body, 'div') if a.get('id') == 'mobileDrawer']
     toggles = [f for f in _tags(body, 'form')
                if urlsplit(f.get('action', '')).path == '/book/toggle']
-    assert len(toggles) == 1, 'the banner (and its switch) did not render'
+    assert len(toggles) == 2, 'banner + drawer switch did not both render'
+    assert notice.forms == []
 
 
 def test_document_not_found_under_the_vat_book_keeps_the_red_banner(books):
