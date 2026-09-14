@@ -184,6 +184,7 @@ def _insert_employee(c: sqlite3.Connection, data: dict) -> int:
     """
     import re
     _blank_dates_to_none(data)
+    _identity_to_digits(data)
     code = (data.get("emp_code") or "").strip()
     m = re.fullmatch(r"EMP(\d+)", code)
     explicit_id = int(m.group(1)) if m else None
@@ -338,6 +339,7 @@ def create_employee_with_initial_salary(
 def update_employee(emp_id: int, data: dict,
                     conn: Optional[sqlite3.Connection] = None):
     _blank_dates_to_none(data)
+    _identity_to_digits(data)
     c, owned = _conn(conn)
     try:
         # on_payroll: checkbox sends "1" when checked, nothing when unchecked
