@@ -6,10 +6,11 @@ triggers and migration 177's one-per-slot triggers are in force. The batch
 itself is NOT inherited (#507): every test that needs one seeds it on
 throwaway products (`_seed_batch`) after deleting whatever the clone holds
 under `BATCH_PATTERN`. The clone cannot be trusted to hold it: the dev DB
-carries 566 such rows, but prod's 2026-08-28 catalogue import renamed its
-batch to `catalog 2024-01-01 (...)`, so on any prod-derived DB the pattern
-matches 0 rows. `BATCH_PATTERN` still mirrors the migration's own hard-coded
-literal, which is historical and is what the forward stamp matches.
+carries 566 such rows, but on prod all 566 were renamed to
+`catalog 2024-01-01 (...)` on 2026-08-28 (audit_log), so on any prod-derived
+DB the pattern matches 0 rows. `BATCH_PATTERN` still mirrors the migration's
+own hard-coded literal, which is historical and is what the forward stamp
+matches.
 
 The non-batch rows are not scenery: each sits on the far side of a WHERE
 clause this file pins (the stamp's name pattern: the 'manual test' control;
