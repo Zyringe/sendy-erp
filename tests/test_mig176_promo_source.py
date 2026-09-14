@@ -1,11 +1,24 @@
 """Migration 176 — promotions.source + date_start stamp for the 2026-06-01
 catalog batch.
 
-Built on `tmp_db_conn` (clones the LIVE dev DB with data) rather than a
-purpose-made SQLite file: the point of this migration is stamping the REAL
-566-row batch, and a synthetic table would not exercise the actual
-`promo_name LIKE 'catalog 2026-06-01%'` population or the real audit
-triggers.
+Built on `tmp_db_conn` (clones the LIVE dev DB with data) so the real audit
+triggers and migration 177's one-per-slot triggers are in force. The batch
+itself is NOT inherited (#507): every test that needs one seeds it on
+throwaway products (`_seed_batch`) after deleting whatever the clone holds
+under `BATCH_PATTERN`. The clone cannot be trusted to hold it: the dev DB
+carries 566 such rows, but on prod all 566 were renamed to
+`catalog 2024-01-01 (...)` on 2026-08-28 (audit_log), so on any prod-derived
+DB the pattern matches 0 rows. `BATCH_PATTERN` still mirrors the migration's
+own hard-coded literal, which is historical and is what the forward stamp
+matches.
+
+The non-batch rows are not scenery: each sits on the far side of a WHERE
+clause this file pins (the stamp's name pattern: the 'manual test' control
+and a `catalog 2024-01-01 (promo)` row; the un-stamp's `date_start` clause:
+the operator-edited row; its `source` clause: two promos dated 2026-06-01,
+one with `source` NULL and one with 'manual'). Without them, deleting or
+loosening that clause would change no row (verification-discipline.md, "a
+test that cannot fail", shape #8).
 
 Drop-first fixture: the live DB this is copied from may already have 176
 applied (init_db() applies any migration file present the moment any test
@@ -63,13 +76,80 @@ def _n_batch(conn):
     ).fetchone()[0]
 
 
+def _date_start(conn, promo_id):
+    return conn.execute(
+        "SELECT date_start FROM promotions WHERE id = ?", (promo_id,)
+    ).fetchone()[0]
+
+
+_pid = [960000]
+
+# How many rows `_seed_batch` writes. A literal on purpose, not len() of the
+# seed: a seed that shrinks to nothing must turn the count controls red.
+N_BATCH_SEEDED = 2
+
+
+def _mk_product(conn, name):
+    _pid[0] += 1
+    cur = conn.execute(
+        "INSERT INTO products (product_name, unit_type, base_sell_price, cost_price, is_active) "
+        "VALUES (?, 'ตัว', 100, 60, 1)", (f'{name} #{_pid[0]}',))
+    conn.commit()
+    return cur.lastrowid
+
+
+def _promo_on_fresh_product(conn, **cols):
+    """An active percent-10 promo on its own fresh product (migration 177 allows
+    one current price-shaped promo per product); `cols` adds or overrides
+    columns. Name `source` only after the forward migration: before it, the
+    column does not exist."""
+    row = {"product_id": _mk_product(conn, "mig176 promo"), "promo_type": "percent",
+           "discount_value": 10, "is_active": 1, **cols}
+    cur = conn.execute(
+        f"INSERT INTO promotions ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",
+        list(row.values()))
+    conn.commit()
+    return cur.lastrowid
+
+
+def _seed_batch(conn):
+    """The 2026-06-01 batch in its pre-176 shape: no `source` column yet (the
+    `db` fixture rolled 176 back), date_start and date_end NULL, is_active = 1.
+    One row per promo_name the catalogue import writes
+    (scripts/import_catalog_pricing.py: `(special_price)` is always 'fixed',
+    `(promo)` takes the row's own type).
+
+    Whatever the clone holds under BATCH_PATTERN is deleted first, so the
+    population the migration stamps is exactly these rows on the dev DB (566
+    inherited) and on a prod-derived one (0) alike. No table holds a foreign
+    key to promotions.id; the delete only writes audit_log rows in the clone.
+    Each row gets its own fresh product: both are price-shaped, and migration
+    177 allows one current price-shaped promo per product.
+    """
+    conn.execute("DELETE FROM promotions WHERE promo_name LIKE ?", (BATCH_PATTERN,))
+    ids = []
+    for promo_name, promo_type, value in (
+        ("catalog 2026-06-01 (promo)", "percent", 10),
+        ("catalog 2026-06-01 (special_price)", "fixed", 90),
+    ):
+        ids.append(conn.execute(
+            "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value,"
+            " date_start, date_end, is_active) VALUES (?, ?, ?, ?, NULL, NULL, 1)",
+            (_mk_product(conn, "mig176 batch"), promo_name, promo_type, value),
+        ).lastrowid)
+    conn.commit()
+    return ids
+
+
 def _pick_products_without_active_promos(conn, n=1):
     """`n` distinct products holding ZERO active promotions.
 
-    `tmp_db_conn` clones the live dev DB with its data, including the
-    566-row 2026-06-01 catalog batch, so `SELECT id FROM products LIMIT 1`
-    can land on a product that already carries an active price-slot promo
-    from that batch. Migration 177's one-per-slot trigger then refuses a
+    `tmp_db_conn` clones the live DB with its data, so `SELECT id FROM
+    products LIMIT 1` can land on a product that already carries an active
+    price-slot promo: an inherited one (the dev DB's 566 `catalog 2026-06-01`
+    rows, in the tests that do not replace them via `_seed_batch`; a
+    prod-derived clone's 570 `catalog 2024-01-01` rows) or one this module
+    seeded. Migration 177's one-per-slot trigger then refuses a
     second price-shaped INSERT (a fresh 'percent' control/test row) for an
     unrelated reason. Different products (rule #1) sidesteps this so only
     the constraint each test actually exercises -- the `source` CHECK, or
@@ -88,12 +168,13 @@ def _pick_products_without_active_promos(conn, n=1):
 def _insert_control_row(conn):
     """A promo that must NOT match the batch pattern -- proves the stamp is scoped."""
     pid = _pick_products_without_active_promos(conn, 1)[0]
-    conn.execute(
+    cur = conn.execute(
         "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, is_active)"
         " VALUES (?, 'manual test', 'percent', 10, 1)",
         (pid,),
     )
     conn.commit()
+    return cur.lastrowid
 
 
 @pytest.fixture
@@ -108,11 +189,19 @@ def db(tmp_db_conn):
 
 def test_stamps_only_the_catalog_batch_control_row_stays_unstamped(db):
     conn = db
+    _seed_batch(conn)
     n_batch = _n_batch(conn)
-    # CONTROL: a fixture that lost the batch would make everything below vacuous.
-    assert n_batch > 0, "fixture lost the 2026-06-01 catalog batch"
+    # CONTROL: exactly the rows seeded above. A seed that lands nothing would make
+    # everything below vacuous; an inherited row would put rows the test does not
+    # control into the population.
+    assert n_batch == N_BATCH_SEEDED, "the batch must be exactly the rows this test seeded"
 
-    _insert_control_row(conn)
+    control_id = _insert_control_row(conn)
+    # FAR SIDE of the date in the stamp's name pattern: another catalogue batch,
+    # named the way prod's rows are today. The migration header promises such a
+    # batch is left `source IS NULL`; 'manual test' sits outside `'catalog %'` too,
+    # so on its own it cannot pin the date.
+    other_batch_id = _promo_on_fresh_product(conn, promo_name="catalog 2024-01-01 (promo)")
 
     # The migration's header states "date_end and is_active are NOT touched".
     # Nothing tested it, so a stamp that also closed or deactivated the batch
@@ -140,9 +229,14 @@ def test_stamps_only_the_catalog_batch_control_row_stays_unstamped(db):
     assert n_stamped == n_batch
 
     control = conn.execute(
-        "SELECT source, date_start FROM promotions WHERE promo_name = 'manual test'"
+        "SELECT source, date_start FROM promotions WHERE id = ?", (control_id,)
     ).fetchone()
     assert tuple(control) == (None, None), "the stamp must not touch a promo outside the batch"
+    other_batch = conn.execute(
+        "SELECT source, date_start FROM promotions WHERE id = ?", (other_batch_id,)
+    ).fetchone()
+    assert tuple(other_batch) == (None, None), (
+        "the stamp must not touch a different catalogue batch (catalog 2024-01-01)")
 
 
 def test_check_rejects_an_unlisted_source(db):
@@ -203,15 +297,27 @@ def test_rollback_drops_column_unstamps_only_migrated_rows_restores_trigger_bodi
         "control: all 3 audit triggers must exist pre-migration -- a truthiness\n"
         "        check here passes on a dict holding only ONE of them")
 
+    _seed_batch(conn)
     n_batch = _n_batch(conn)
-    assert n_batch > 0
-    _insert_control_row(conn)
+    assert n_batch == N_BATCH_SEEDED, "the batch must be exactly the rows this test seeded"
+    control_id = _insert_control_row(conn)
+    # FAR SIDE of the un-stamp's `source = 'catalog-import'` clause, part 1: a promo
+    # that existed before the migration (so its `source` stays NULL) and carries
+    # the stamp's own date.
+    far_side_id = _promo_on_fresh_product(
+        conn, promo_name="manual dated 2026-06-01", date_start="2026-06-01")
 
     conn.executescript(MIG.read_text(encoding="utf-8"))
     # CONTROL: it really was applied.
     assert conn.execute(
         "SELECT COUNT(*) FROM promotions WHERE source = 'catalog-import'"
     ).fetchone()[0] == n_batch
+    # FAR SIDE, part 2: a promo made by hand after the migration, which
+    # models/promotions.py writes with source = 'manual'. Part 1 alone cannot
+    # tell `source = 'catalog-import'` from `source IS NOT NULL`.
+    manual_id = _promo_on_fresh_product(
+        conn, promo_name="hand-made dated 2026-06-01", date_start="2026-06-01",
+        source="manual")
 
     conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
 
@@ -221,10 +327,15 @@ def test_rollback_drops_column_unstamps_only_migrated_rows_restores_trigger_bodi
     dates = [r[0] for r in conn.execute(
         "SELECT date_start FROM promotions WHERE promo_name LIKE ?", (BATCH_PATTERN,)
     ).fetchall()]
+    assert len(dates) == N_BATCH_SEEDED  # count first: all() over no rows is True
     assert all(d is None for d in dates), "the batch's date_start must roll back to NULL"
+    assert _date_start(conn, far_side_id) == '2026-06-01', (
+        "the rollback un-stamped a promo the migration never stamped")
+    assert _date_start(conn, manual_id) == '2026-06-01', (
+        "the rollback un-stamped a hand-made promo (source = 'manual')")
 
     control = conn.execute(
-        "SELECT promo_name FROM promotions WHERE promo_name = 'manual test'"
+        "SELECT promo_name FROM promotions WHERE id = ?", (control_id,)
     ).fetchone()
     assert control is not None, "the control row must survive the rollback"
 
@@ -241,15 +352,22 @@ def test_rollback_leaves_a_date_start_an_operator_set_afterwards(db):
     than on promo_name alone means a date someone deliberately edited after the migration
     survives a later rollback. Mirrors the equivalent case in test_mig171."""
     conn = db
+    ids = _seed_batch(conn)
+    # CONTROL, before any row is picked: with no batch this used to die on a None row.
+    assert _n_batch(conn) == N_BATCH_SEEDED, "the batch must be exactly the rows this test seeded"
+    edited, untouched = ids
+
     conn.executescript(MIG.read_text(encoding="utf-8"))
-    row = conn.execute(
-        "SELECT id FROM promotions WHERE promo_name LIKE ? LIMIT 1", (BATCH_PATTERN,)
-    ).fetchone()
-    pid = row[0]
-    conn.execute("UPDATE promotions SET date_start = '2026-07-15' WHERE id = ?", (pid,))
+    # CONTROL: the stamp reached both rows, so the edit below replaces a stamped date
+    # and the un-edited row has a stamp for the rollback to remove.
+    assert (_date_start(conn, edited), _date_start(conn, untouched)) == ('2026-06-01', '2026-06-01')
+    conn.execute("UPDATE promotions SET date_start = '2026-07-15' WHERE id = ?", (edited,))
     conn.commit()
 
     conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
 
-    kept = conn.execute("SELECT date_start FROM promotions WHERE id = ?", (pid,)).fetchone()[0]
-    assert kept == '2026-07-15', "rollback destroyed a date an operator set after the migration"
+    # CONTROL: the rollback did un-stamp the row nobody edited, so the edited row
+    # below survives the `date_start` clause, not a rollback that un-stamped nothing.
+    assert _date_start(conn, untouched) is None, "control: the un-edited batch row must roll back to NULL"
+    assert _date_start(conn, edited) == '2026-07-15', (
+        "rollback destroyed a date an operator set after the migration")
