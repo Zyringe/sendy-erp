@@ -142,7 +142,7 @@ def _has_cna(conn) -> bool:
 
 # ── core settlement query ────────────────────────────────────────────────────
 def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
-                      as_of=None):
+                      as_of=None, customer_code=None):
     """Per-invoice billed/collected with the legacy-NULL rule applied.
 
     Aggregations computed per doc_base, then reconciled in Python:
@@ -159,6 +159,10 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
     `as_of` (ISO date) — point-in-time AR: only invoice lines with
     date_iso <= as_of, and only payments with received_payments.date_iso
     <= as_of are considered.
+
+    `customer` matches the BILL name, which one name can share across two
+    codes; `customer_code` matches `sales_transactions.customer_code` exactly
+    and is the key for anything shown on a code-keyed customer page (#499).
     """
     sale_conds = ["st.doc_base IS NOT NULL",
                   "st.doc_base NOT LIKE 'SR%'",
@@ -167,6 +171,9 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
     if customer:
         sale_conds.append("st.customer = ?")
         sale_params.append(customer)
+    if customer_code:
+        sale_conds.append("st.customer_code = ?")
+        sale_params.append(customer_code)
     if date_from:
         sale_conds.append("st.date_iso >= ?")
         sale_params.append(date_from)
@@ -580,12 +587,15 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
 
 # ── 1. invoice_settlement ────────────────────────────────────────────────────
 def invoice_settlement(customer=None, date_from=None, date_to=None,
-                       conn=None, db_path=None, as_of=None):
+                       conn=None, db_path=None, as_of=None, customer_code=None):
     """Per-invoice settlement (read-only).
 
     Returns list[dict]: doc_base, customer, customer_code, invoice_date,
     billed, credit_notes, net_owed, collected, outstanding, status,
     over_credited, last_payment_date.
+
+    `customer` filters by bill name, `customer_code` by exact code (see
+    `_settlement_rows`).
 
     as_of (ISO date, default None = now): point-in-time AR, passed straight
     through to `_settlement_rows` — only invoices raised on or before the date,
@@ -596,7 +606,8 @@ def invoice_settlement(customer=None, date_from=None, date_to=None,
     """
     with _ConnCtx(conn, db_path) as c:
         raw = _settlement_rows(c, customer=customer,
-                               date_from=date_from, date_to=date_to, as_of=as_of)
+                               date_from=date_from, date_to=date_to, as_of=as_of,
+                               customer_code=customer_code)
     out = [_reconcile(r) for r in raw]
     out.sort(key=lambda d: (d['invoice_date'] or '', d['doc_base']))
     return out
