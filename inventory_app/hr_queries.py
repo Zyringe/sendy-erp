@@ -166,6 +166,8 @@ def _identity_to_digits(data: dict) -> None:
 
     Display is `filters.py`'s job (thai_phone / bank_account / mask_national_id);
     storing the separators is what let two shapes of bank account accumulate.
+    Rows written before this existed were brought to the same shape by
+    migration 181.
     """
     for k in ("national_id", "phone", "bank_account_no"):
         if k in data:
