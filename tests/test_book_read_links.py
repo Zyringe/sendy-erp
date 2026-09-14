@@ -124,6 +124,65 @@ def _book_of(url):
     return parse_qs(urlsplit(url).query).get('book')
 
 
+class _Notice(HTMLParser):
+    """Text, forms (+ their inputs) and links inside the FIRST element that
+    carries data-book-link="<mode>" — the #501 page's own root element, so
+    nothing the layout or a <script> says can satisfy an assertion on it."""
+    VOID = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+            'link', 'meta', 'source', 'track', 'wbr'}
+
+    def __init__(self, mode):
+        super().__init__()
+        self.mode, self.found, self.depth = mode, False, 0
+        self.text, self.forms, self.links = [], [], []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if not self.found and a.get('data-book-link') == self.mode:
+            self.found, self.depth = True, 1
+            return
+        if not self.depth:
+            return
+        if tag == 'form':
+            self.forms.append({'action': a.get('action'), 'inputs': {}})
+        elif tag == 'input' and self.forms:
+            self.forms[-1]['inputs'][a.get('name')] = a.get('value')
+        elif tag == 'a':
+            self.links.append(a)
+        if tag not in self.VOID:
+            self.depth += 1
+
+    def handle_endtag(self, tag):
+        if self.depth and tag not in self.VOID:
+            self.depth -= 1
+
+    def handle_data(self, data):
+        if self.depth:
+            self.text.append(data)
+
+
+def _notice(html, mode):
+    p = _Notice(mode)
+    p.feed(html)
+    p.text = ' '.join(' '.join(p.text).split())
+    return p
+
+
+def _customer_page_link(c, path):
+    html = c.get(f'/customer/code/{quote(CODE)}').get_data(as_text=True)
+    hrefs = _hrefs_to(html, path)
+    assert len(hrefs) >= 1, f'no link to {path} on the customer page'
+    return hrefs[0]
+
+
+def _vat_sales_page_link(c, path):
+    html = c.get('/sales?date_from=2026-03-01&date_to=2026-03-31').get_data(as_text=True)
+    assert VAT_BANNER in html, '/sales did not render under the VAT book'
+    hrefs = _hrefs_to(html, path)
+    assert len(hrefs) >= 1, f'no link to {path} on the VAT /sales page'
+    return hrefs[0]
+
+
 # ── build side: the stamp ────────────────────────────────────────────────────
 
 def test_customer_page_document_and_product_links_carry_the_main_book(books):
@@ -190,3 +249,114 @@ def test_only_entity_urls_on_book_scoped_routes_are_stamped(books):
         session['active_book'] = 'vat'
         assert _book_of(url_for('sales.sales_doc', doc_base='IV1')) == ['vat']
         assert _book_of(url_for('products.product_detail', product_id=5)) == ['vat']
+
+
+# ── serve side: a stale link is explained, never read ───────────────────────
+
+def test_stale_document_link_shows_the_mismatch_page_not_a_404(books):
+    c = _client()
+    href = _customer_page_link(c, f'/sales/doc/{MAIN_DOC}')
+    control = c.get(href).get_data(as_text=True)
+    assert MAIN_NAME in control, 'control: same book, the link opens the document'
+
+    c.post('/book/toggle', data={'book': 'vat'})
+    assert _session_book(c) == 'vat'
+    r = c.get(href)
+    body = r.get_data(as_text=True)
+
+    assert r.status_code == 409
+    notice = _notice(body, 'mismatch')
+    assert notice.found, 'no mismatch page'
+    assert VAT_BANNER in body, 'red VAT banner missing — the layout did not render'
+    # it names both books
+    assert br.BOOKS['novat']['label'] in notice.text
+    assert br.BOOKS['vat']['label'] in notice.text
+    # the document's data from NEITHER book
+    for leaked in (MAIN_NAME, CUST, VAT_NAME, 'ลูกค้าVAT 501'):
+        assert leaked not in body, leaked
+    assert _session_book(c) == 'vat', 'the read changed the session'
+
+
+def test_stale_product_link_main_to_vat_reads_neither_book(books):
+    c = _client()
+    href = _customer_page_link(c, f'/products/{PID}')
+    assert MAIN_NAME in c.get(href).get_data(as_text=True), 'control'
+
+    c.post('/book/toggle', data={'book': 'vat'})
+    r = c.get(href)
+    body = r.get_data(as_text=True)
+
+    assert r.status_code == 409
+    assert _notice(body, 'mismatch').found
+    assert MAIN_NAME not in body
+    assert VAT_NAME not in body, 'showed the VAT book product that shares the id'
+
+
+def test_stale_product_link_vat_to_main_reads_neither_book(books):
+    """The direction that showed nothing unusual before #501: a VAT-rendered
+    product link followed after switching back to the main book opened the
+    MAIN product with that id, with no red banner to hint at it."""
+    c = _client()
+    c.post('/book/toggle', data={'book': 'vat'})
+    href = _vat_sales_page_link(c, f'/products/{PID}')
+    assert VAT_NAME in c.get(href).get_data(as_text=True), 'control'
+
+    c.post('/book/toggle', data={'book': 'novat'})
+    assert _session_book(c) == 'novat'
+    r = c.get(href)
+    body = r.get_data(as_text=True)
+
+    assert r.status_code == 409
+    notice = _notice(body, 'mismatch')
+    assert notice.found
+    assert br.BOOKS['vat']['label'] in notice.text
+    assert MAIN_NAME not in body, 'showed the main book product that shares the id'
+    assert VAT_NAME not in body
+    assert VAT_BANNER not in body       # the session really is the main book
+
+
+def test_stale_product_filtered_sales_link_reads_neither_book(books):
+    """`/sales?product_id=` from the product page names one product too."""
+    c = _client()
+    html = c.get(f'/products/{PID}').get_data(as_text=True)
+    hrefs = [h for h in _hrefs_to(html, '/sales')
+             if parse_qs(urlsplit(h).query).get('product_id') == [str(PID)]]
+    assert len(hrefs) == 1, hrefs
+    assert _book_of(hrefs[0]) == ['novat']
+
+    c.post('/book/toggle', data={'book': 'vat'})
+    r = c.get(hrefs[0])
+    body = r.get_data(as_text=True)
+    assert r.status_code == 409
+    assert _notice(body, 'mismatch').found
+    assert MAIN_NAME not in body and VAT_NAME not in body
+
+
+def test_matching_absent_and_unknown_book_read_as_before(books):
+    vat = _client('vat')
+    assert VAT_NAME in vat.get(f'/products/{PID}?book=vat').get_data(as_text=True)
+    assert VAT_NAME in vat.get(f'/products/{PID}').get_data(as_text=True)
+    r = vat.get(f'/sales/doc/{VAT_DOC}?book=vat')
+    assert r.status_code == 200 and VAT_NAME in r.get_data(as_text=True)
+
+    main = _client()
+    assert MAIN_NAME in main.get(f'/products/{PID}?book=novat').get_data(as_text=True)
+    assert MAIN_NAME in main.get(f'/products/{PID}').get_data(as_text=True)
+    # an unrecognised value is treated as absent
+    assert MAIN_NAME in main.get(f'/products/{PID}?book=hack').get_data(as_text=True)
+    r = main.get(f'/sales/doc/{MAIN_DOC}')
+    assert r.status_code == 200 and MAIN_NAME in r.get_data(as_text=True)
+
+
+def test_mismatched_json_read_gets_409_with_both_books(books):
+    c = _client('vat')
+    r = c.get(f'/products/{PID}?book=novat', headers={'Accept': 'application/json'})
+    assert r.status_code == 409
+    j = r.get_json()
+    assert (j['expected_book'], j['active_book']) == ('novat', 'vat')
+
+    r = c.get(f'/api/products/{PID}/barcodes?book=novat')
+    assert r.status_code == 409
+    j = r.get_json()
+    assert (j['expected_book'], j['active_book']) == ('novat', 'vat')
+    assert _session_book(c) == 'vat'
