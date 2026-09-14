@@ -16,9 +16,14 @@ occurred in this codebase; a sweep that cannot fail is what we are replacing.
 
 The allowlist is the record of DELIBERATE exceptions. Adding an entry is fine —
 silently leaving a conversion unguarded is not.
+
+⚠ Templates and static JS get their own text scanner (bottom half, #485): an
+AST sweep cannot read HTML, and until #485 the live constant sat in three
+template lines while this file reported clean.
 """
 import ast
 import os
+import re
 
 import pytest
 
@@ -99,7 +104,9 @@ def test_the_owner_and_every_allowlisted_file_really_do_carry_it():
     guarding nothing and this test says so instead of going quietly green."""
     for rel in [OWNER] + sorted(ALLOWED):
         src = open(os.path.join(ROOT, rel), encoding='utf-8').read()
-        assert find_vat_constants(src), f'{rel} no longer carries 1.07 — is ALLOWED stale?'
+        found = (find_vat_constants(src) if rel.endswith('.py')
+                 else find_vat_constants_in_front_end(src, is_js=rel.endswith('.js')))
+        assert found, f'{rel} no longer carries 1.07 — is ALLOWED stale?'
 
 
 # ── break-it-once: the sweep must SEE each shape this codebase actually had ──
@@ -128,3 +135,130 @@ def test_sweep_ignores_prose(src):
     """The counter-control. Without this, a sweep that flags everything would
     pass every shape test above and still be useless."""
     assert find_vat_constants(src) == []
+
+
+# ── templates + static JS (#485) ─────────────────────────────────────────────
+#
+# No AST here, so "prose" means comments, stripped before matching: Jinja
+# {# #}, HTML <!-- -->, and // + /* */ inside <script> (or anywhere in a .js
+# file). Visible page text is NOT prose: a label that states the rate renders
+# it from vat_math like any other figure. Vendored bundles (*.min.js) are not
+# ours to change and are skipped. A constant rendered through Jinja
+# ({{ vat_multiplier|tojson }}) has no literal in the source and passes.
+#
+# Known blind spot, deliberately accepted: `//` preceded by a space inside a JS
+# string reads as a comment, hiding the rest of that line. `//` after a colon
+# (http://) is left alone.
+
+FRONT_END_DIRS = (os.path.join('inventory_app', 'templates'),
+                  os.path.join('inventory_app', 'static'))
+
+# 1.07, 0.07, .07 (trailing zeros allowed) as a whole number: not the tail of
+# 21.07 or 10.07, not the head of 1.075.
+_VAT_NUMBER = re.compile(r'(?<![\d.])[01]?\.070*(?!\d)')
+_JINJA_COMMENT = re.compile(r'\{#.*?#\}', re.S)
+_HTML_COMMENT = re.compile(r'<!--.*?-->', re.S)
+# One alternation so whichever comment OPENS first wins: `// see /* x` is a
+# line comment, `/* a // b */` a block one.
+_JS_COMMENT = re.compile(r'/\*.*?\*/|(?<!:)//[^\n]*', re.S)
+_SCRIPT = re.compile(r'(<script\b[^>]*>)(.*?)(</script\s*>)', re.S | re.I)
+
+
+def _blank(m):
+    """Spaces for everything but newlines, so every line number after the
+    comment stays true."""
+    return re.sub(r'[^\n]', ' ', m.group(0))
+
+
+def find_vat_constants_in_front_end(source, is_js=False):
+    """Line numbers where 1.07 / 0.07 appears in a template or static .js file
+    as anything but a comment: JS code, a Jinja expression, visible text."""
+    if is_js:
+        code = _JS_COMMENT.sub(_blank, source)
+    else:
+        # Jinja first: it strips {# #} at compile time, whatever HTML surrounds it.
+        code = _HTML_COMMENT.sub(_blank, _JINJA_COMMENT.sub(_blank, source))
+        code = _SCRIPT.sub(
+            lambda m: m.group(1) + _JS_COMMENT.sub(_blank, m.group(2)) + m.group(3),
+            code)
+    return sorted({code.count('\n', 0, m.start()) + 1
+                   for m in _VAT_NUMBER.finditer(code)})
+
+
+def _front_end_files(root=ROOT):
+    for d in FRONT_END_DIRS:
+        for base, _dirs, files in os.walk(os.path.join(root, d)):
+            for fn in files:
+                if fn.endswith('.html') or (fn.endswith('.js') and not fn.endswith('.min.js')):
+                    yield os.path.relpath(os.path.join(base, fn), root)
+
+
+def test_no_hand_typed_vat_constant_in_templates_or_static_js():
+    scanned = 0
+    offenders = {}
+    for rel in _front_end_files():
+        if rel in ALLOWED:
+            continue
+        scanned += 1
+        src = open(os.path.join(ROOT, rel), encoding='utf-8').read()
+        lines = find_vat_constants_in_front_end(src, is_js=rel.endswith('.js'))
+        if lines:
+            offenders[rel] = lines
+    assert scanned > 100, f'control: expected to scan every template, scanned {scanned}'
+    assert offenders == {}, (
+        'these type the VAT constant by hand — render it from vat_math through '
+        'the route ({{ vat_multiplier }} / {{ vat_rate }}), or add an entry to '
+        'ALLOWED saying why: ' + repr(offenders))
+
+
+def test_minified_vendor_bundles_are_not_scanned(tmp_path):
+    """A vendored bundle can contain 1.07 for reasons that are not ours; it
+    must not fail the sweep. The control proves the same tree IS walked."""
+    (tmp_path / 'inventory_app' / 'static' / 'js').mkdir(parents=True)
+    (tmp_path / 'inventory_app' / 'templates').mkdir(parents=True)
+    (tmp_path / 'inventory_app' / 'static' / 'js' / 'vendor.min.js').write_text('a=b*1.07;')
+    (tmp_path / 'inventory_app' / 'static' / 'js' / 'own.js').write_text('a=b*1.07;')
+    (tmp_path / 'inventory_app' / 'templates' / 'page.html').write_text('<p>1.07</p>')
+    assert sorted(_front_end_files(str(tmp_path))) == [
+        os.path.join('inventory_app', 'static', 'js', 'own.js'),
+        os.path.join('inventory_app', 'templates', 'page.html'),
+    ]
+
+
+# break-it-once: each shape must be SEEN, on the line it sits on.
+FRONT_END_SHAPES = {
+    'JS divide':            ('<script>\n  const exVat = p / 1.07;\n</script>\n', False, [2]),
+    'JS multiply':          ('<script>\n  const cash = n * 1.07;\n</script>\n', False, [2]),
+    'Jinja set, the rate':  ('<tr>\n{% set v = t * 0.07 %}\n</tr>\n', False, [2]),
+    'Jinja expression':     ('<td>{{ t * 1.07 }}</td>\n', False, [1]),
+    'visible text':         ('<div>\n  ราคาจ่ายจริง ÷ 1.07 (ไม่รวม VAT)\n</div>\n', False, [2]),
+    'code before a comment': ('<script>\n  x = p / 1.07; // carve it out\n</script>\n', False, [2]),
+    'JS after a URL':       ("<script>\n  f('http://h/' + n * 1.07);\n</script>\n", False, [2]),
+    'static .js file':      ('const cash = n * 1.07;\n', True, [1]),
+    'line after a comment': ('{# a\n  multi-line note #}\n<p>{{ t * 0.07 }}</p>\n', False, [3]),
+}
+
+
+@pytest.mark.parametrize('name', sorted(FRONT_END_SHAPES))
+def test_front_end_sweep_detects_every_shape(name):
+    src, is_js, lines = FRONT_END_SHAPES[name]
+    assert find_vat_constants_in_front_end(src, is_js=is_js) == lines, \
+        f'the template sweep is blind to: {name}'
+
+
+@pytest.mark.parametrize('src,is_js', [
+    ('{# divide by 1.07 here #}\n<p>x</p>\n', False),
+    ('{# a note\n   over two lines: t * 0.07\n#}\n', False),
+    ('<!-- t * 1.07 -->\n<p>x</p>\n', False),
+    ('<script>\n  // divide by 1.07\n  x = 1;\n</script>\n', False),
+    ('<script>\n  /* x * 1.07\n     and 0.07 */\n  x = 1;\n</script>\n', False),
+    ('// divide by 1.07\n/* 0.07 */\nx = 1;\n', True),
+    ('<p>ราคาจ่ายจริง ÷ {{ vat_multiplier }}</p>\n', False),
+    ('<script>\n  const M = {{ vat_multiplier|tojson }};\n</script>\n', False),
+    ('<p>21.07 10.07 1.075 0.0701</p>\n', False),
+])
+def test_front_end_sweep_ignores_prose_and_rendered_constants(src, is_js):
+    """The counter-control: comments are prose, a constant rendered through
+    Jinja has no literal, and other numbers that merely contain the digits
+    are not the rate."""
+    assert find_vat_constants_in_front_end(src, is_js=is_js) == []
