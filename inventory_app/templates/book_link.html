@@ -1,0 +1,50 @@
+{% extends 'base.html' %}
+{#- #501: the page a link to ONE document or ONE product lands on when it
+    cannot be shown. Two modes, both inside the normal layout (banner + nav),
+    because in the standalone PWA a bare error string is a dead end:
+      mismatch  — the link was rendered under another book than the session's
+                  (another tab switched books). Neither book's row is read.
+      not_found — the document is not in the session's book (404).
+    Context: mode, entity, back_url; mismatch adds link_book,
+    link_book_label, next_url. active_book_label comes from book_registry. -#}
+{% block title %}{{ entity }} – ERP{% endblock %}
+{% block page_title %}{% if mode == 'mismatch' %}ลิงก์นี้มาจากอีกสมุด{% else %}ไม่พบ{{ entity }}{% endif %}{% endblock %}
+
+{% block content %}
+<div class="card" data-book-link="{{ mode }}">
+  <div class="card-body">
+    {% if mode == 'mismatch' %}
+    <p class="mb-2">
+      <i class="bi bi-journals me-1"></i>
+      ลิงก์ไป{{ entity }} นี้มาจากหน้าที่เปิดใน <strong>{{ link_book_label }}</strong>
+      แต่ตอนนี้กำลังดู <strong>{{ active_book_label }}</strong> อยู่
+      (มีการสลับสมุดหลังเปิดหน้านั้น เช่น จากอีกแท็บ)
+    </p>
+    <p class="text-subtle small mb-3">ยังไม่เปิดให้ เพื่อไม่ให้แสดงข้อมูลผิดสมุด</p>
+    {% else %}
+    <p class="mb-3">
+      <i class="bi bi-search me-1"></i>ไม่พบ{{ entity }} ใน<strong>{{ active_book_label }}</strong>
+    </p>
+    {% endif %}
+    <div class="d-flex flex-wrap gap-2">
+      {% if mode == 'mismatch' %}
+      <form method="post" action="{{ url_for('toggle_book') }}" class="mb-0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="book" value="{{ link_book }}">
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <button type="submit" class="btn btn-primary btn-touch">
+          <i class="bi bi-arrow-left-right me-1"></i>สลับไป{{ link_book_label }} แล้วเปิด{{ entity }}
+        </button>
+      </form>
+      {% endif %}
+      {# No browser back button in the installed PWA, and a link opened in a
+         new tab has no history: fall back to the entity's list, a page every
+         book can render. #}
+      <a href="{{ back_url }}" class="btn btn-outline-secondary btn-touch" data-book-link-back
+         onclick="if (window.history.length > 1) { window.history.back(); return false; }">
+        <i class="bi bi-arrow-left me-1"></i>กลับ
+      </a>
+    </div>
+  </div>
+</div>
+{% endblock %}

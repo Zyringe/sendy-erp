@@ -17,7 +17,8 @@ test_customer_code_route.py.
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
-from urllib.parse import quote
+import re
+from urllib.parse import quote, urlsplit
 
 import pytest
 
@@ -88,6 +89,14 @@ def _client(tmp_db, role='admin'):
         s['username'] = role
         s['role'] = role
     return c
+
+
+def _doc_links(html, doc_base):
+    """How many <a> elements link to this document, by their href PATH. Not a
+    `'doc/X"'` substring: since #501 the href carries `?book=`, after which
+    the closing-quote form matches nothing."""
+    hrefs = re.findall(r'<a\b[^>]*?\bhref="([^"]*)"', html)
+    return sum(urlsplit(h).path == f'/sales/doc/{doc_base}' for h in hrefs)
 
 
 # ── Seam 1: document grouping (models.get_customer_summary_by_code) ────────
@@ -311,7 +320,7 @@ def test_customer_page_document_list_has_one_row_per_document(tmp_db):
     # assertion to รายการเอกสาร specifically so it still pins ITS OWN
     # one-row-per-document behaviour without depending on the other card.
     docs_section = html[html.find('รายการเอกสาร'):]
-    assert docs_section.count('doc/IV49311"') == 1
+    assert _doc_links(docs_section, 'IV49311') == 1
 
 
 def test_invoice_page_has_back_control(tmp_db):
@@ -345,5 +354,5 @@ def test_mobile_customer_page_lists_documents_not_lines(tmp_db):
 
     c = _client(tmp_db)
     html = c.get(f'/m/customer/{quote(TEST_NAME)}').data.decode()
-    assert html.count('doc/IV49313"') == 1
+    assert _doc_links(html, 'IV49313') == 1
     assert '2 รายการ' in html

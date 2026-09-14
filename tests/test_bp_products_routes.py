@@ -14,6 +14,7 @@ import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
 import sqlite3
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -171,7 +172,8 @@ def test_product_new_post_creates_via_structured_path(admin_client, tmp_db):
     assert row is not None
     assert row['created_via'] == 'manual'
     assert row['sku_code'] == f"INT-{row['id']}"
-    assert resp.headers['Location'].endswith(f"/products/{row['id']}")
+    # path, not the whole URL: the redirect carries `?book=` since #501
+    assert urlsplit(resp.headers['Location']).path.endswith(f"/products/{row['id']}")
 
 
 # ── P4: /products/parse-name + structured /products/new form ────────────────
