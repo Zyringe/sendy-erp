@@ -325,6 +325,34 @@ def _table_row_containing(html, marker):
     return hits[0]
 
 
+def _form_with_action_containing(html, needle):
+    """The (action, inner-HTML) of the single `<form>` on the page whose
+    action URL contains `needle`. Review finding F2: a test that hand-crafts
+    its own POST payload (`data={'body': ..., 'return_to': 'customer'}`)
+    proves the ROUTE works but not that the RENDERED form actually submits
+    those fields — deleting the template's hidden `return_to` input left
+    the hand-crafted version green while a real click would have silently
+    landed on the call card."""
+    forms = re.findall(r'<form\b([^>]*)>(.*?)</form>', html, re.S)
+    for attrs_str, body in forms:
+        attrs = dict(re.findall(r'(\w+)="([^"]*)"', attrs_str))
+        if needle in attrs.get('action', ''):
+            return attrs.get('action'), body
+    raise AssertionError(f"no <form> with action containing {needle!r}")
+
+
+def _hidden_inputs(form_inner_html):
+    """{name: value} for every `type="hidden"` `<input>` inside a form's
+    inner HTML — attribute-order independent, so it doesn't matter whether
+    the template writes `type` before or after `name`/`value`."""
+    hidden = {}
+    for tag in re.findall(r'<input\b[^>]*>', form_inner_html):
+        attrs = dict(re.findall(r'(\w+)="([^"]*)"', tag))
+        if attrs.get('type') == 'hidden' and 'name' in attrs:
+            hidden[attrs['name']] = attrs.get('value', '')
+    return hidden
+
+
 def test_winback_badge_shown_only_on_flagged_row(tmp_db):
     import sqlite3
     conn = sqlite3.connect(tmp_db)
@@ -393,6 +421,43 @@ def test_post_from_customer_page_creates_row_and_returns_to_customer_page(tmp_db
     assert len(rows) == 1
     assert rows[0]['body'] == 'เยี่ยมร้านวันนี้'
 
+    assert urlsplit(r.headers['Location']).path == f'/customer/code/{TEST_CODE}'
+
+
+def test_rendered_add_note_form_submits_its_own_fields_and_returns_to_customer_page(tmp_db):
+    """F2: the ABOVE test hand-crafts `return_to=customer` and never touches
+    the rendered form at all — deleting the template's hidden `return_to`
+    input left it green. Here we GET the real page, scrape the note form's
+    action + every hidden input, and submit exactly that (plus the note
+    text), the way a real click does."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _mk_customer(conn, TEST_CODE, TEST_NAME)
+    _clear(conn, TEST_CODE)
+    conn.close()
+
+    c = _client(tmp_db, role='staff')
+    html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
+    action, body_html = _form_with_action_containing(html, f'/call/{TEST_CODE}/note')
+    hidden = _hidden_inputs(body_html)
+    # Control: the scrape actually found the field under test — if this
+    # fails, the assertion below is meaningless (see F2's break-it-once).
+    assert hidden.get('return_to') == 'customer'
+
+    payload = dict(hidden)
+    payload['body'] = 'จากฟอร์มจริงบนหน้าลูกค้า'
+    r = c.post(action, data=payload)
+    assert r.status_code in (302, 303)
+
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM customer_call_log WHERE customer_code = ?", (TEST_CODE,)
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 1
+    assert rows[0]['body'] == 'จากฟอร์มจริงบนหน้าลูกค้า'
     assert urlsplit(r.headers['Location']).path == f'/customer/code/{TEST_CODE}'
 
 
