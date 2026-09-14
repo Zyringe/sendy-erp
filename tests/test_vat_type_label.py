@@ -340,7 +340,6 @@ def test_purchases_list_stat_card_and_filter(admin_client, seeded):
 # (the แยก VAT grand total on the invoice page). "(รวม VAT)" qualifies a
 # VAT-inclusive price (the vat-sub price box). Jinja comments never render.
 _OLD_LABEL = re.compile(r'(?<![฀-๿(])รวม(?:\s|&nbsp;|&#160;)*VAT', re.I)
-_ANY_PHRASE = re.compile(r'รวม(?:\s|&nbsp;|&#160;)*VAT', re.I)
 _JINJA_COMMENT = re.compile(r'\{#.*?#\}', re.S)
 
 
@@ -386,16 +385,18 @@ def test_no_template_retypes_the_old_type_1_label():
                 with open(path, encoding='utf-8') as fh:
                     bodies[os.path.relpath(path, TEMPLATES)] = fh.read()
     # CONTROLS: the walk read the tree, subfolders included, and two real files
-    # that carry a legitimate shape (ไม่รวม VAT; the "(รวม VAT)" parenthetical,
-    # in a subfolder) were read and passed, so a clean result below is the
-    # exemption at work on real input, not files the sweep never saw.
+    # still hold the exact legitimate shape named beside them, so the clean
+    # result below is the exemption at work on real input, not files the sweep
+    # never saw. Pin the SHAPE, not "some phrase": vat_sub/product_view.html
+    # also says (ไม่รวม VAT), which would keep a looser check green on its own.
     # sales_doc.html's ยอดรวมรวม VAT is deliberately NOT pinned here: that row
     # sits in the invoice VAT block other work edits (#485), and rewording it
     # must not break this guard. Its shape is pinned in the parametrized test.
     assert len(bodies) > 100
-    with_phrase = {rel for rel, body in bodies.items()
-                   if _ANY_PHRASE.search(_rendered_source(body))}
-    assert {'accounting.html', 'vat_sub/product_view.html'} <= with_phrase
+    for rel, shape in (('accounting.html', 'ไม่รวม VAT'),
+                       ('vat_sub/product_view.html', '(รวม VAT)')):
+        assert shape in _rendered_source(bodies.get(rel, '')), (
+            f'{rel} no longer holds {shape!r}: point this control at another real use')
 
     flagged = [f'{rel}:{line}' for rel, body in sorted(bodies.items())
                for line in _old_label_lines(body)]
