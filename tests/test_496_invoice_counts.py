@@ -365,3 +365,29 @@ def test_product_trade_page_shows_invoices(admin):
     assert by_doc['IV49603'][3] == '2.0 แผง<br>4.0 ตัว'
     assert by_doc['IV49604'][3] == '11.0 ตัว (แถม 1.0)'
     assert by_doc['SR49601'][3] == '-3.0 ตัว'
+
+
+# ── edge: a freebie-only invoice ──────────────────────────────────────────────
+
+def test_freebie_only_invoice_counts_where_its_population_does(seeded):
+    """An invoice carrying only a ฿0 freebie line of the product is still an
+    invoice on every page whose population holds that line today. Pricing's
+    population (unit_price > 0) never held it, and still does not."""
+    seeded.execute(
+        "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, customer,"
+        " customer_code, qty, unit, unit_price, vat_type, total, net)"
+        " VALUES ('2031-03-07', 'IV49605-1', 'IV49605', ?, ?, ?, 2, 'ตัว', 0, 1, 0, 0)",
+        (P1, X_NAME, X_CODE))
+    seeded.commit()
+    assert models.get_trade_dashboard(MONTH_FROM, MONTH_TO, conn=seeded)['sales']['doc_count'] == 5
+    acc = models.get_accounting_summary(MONTH_FROM, MONTH_TO)
+    assert (acc['doc_count'], acc['line_count']) == (5, 9)
+    t = models.get_product_trade_summary(P1)
+    assert t['summary']['doc_count'] == 6
+    assert len(t['docs']) == 6
+    assert _docs_by_base(t)['IV49605']['units'] == [{'unit': 'ตัว', 'qty': 2, 'free_qty': 2}]
+    assert models.get_product_pricing(P1)['total_invoices'] == 4
+    import call_card
+    x = {(p['product_id'], p['unit']): p['doc_count']
+         for p in call_card.get_card(seeded, X_CODE)['products']}
+    assert x[(P1, 'ตัว')] == 5
