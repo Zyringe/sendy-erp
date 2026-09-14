@@ -692,7 +692,8 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
                   AND c.salesperson != ''
                   AND sp.code IS NULL)                    AS salesperson_orphan,
                COUNT(DISTINCT s.doc_base)                 AS doc_count,
-               COALESCE(SUM(s.net), 0)                    AS total_net,
+               -- ยอดซื้อรวม, the detail page header's definition (#494)
+               COALESCE(SUM({sales_filters.purchase_net_sql('s')}), 0) AS total_net,
                MAX(s.date_iso)                            AS last_date,
                (c.code IS NULL)                           AS missing_master,
                -- ซื้อล่าสุด (#493): same evidence-filtered definition as the
