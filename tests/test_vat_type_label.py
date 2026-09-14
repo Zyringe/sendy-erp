@@ -385,13 +385,17 @@ def test_no_template_retypes_the_old_type_1_label():
                 path = os.path.join(root, fn)
                 with open(path, encoding='utf-8') as fh:
                     bodies[os.path.relpath(path, TEMPLATES)] = fh.read()
-    # CONTROL: the walk read the tree, subfolders included, and the files that
-    # hold each legitimate shape contain the phrase — so a clean result below
-    # is the exemption at work, not files the sweep never saw.
+    # CONTROLS: the walk read the tree, subfolders included, and two real files
+    # that carry a legitimate shape (ไม่รวม VAT; the "(รวม VAT)" parenthetical,
+    # in a subfolder) were read and passed, so a clean result below is the
+    # exemption at work on real input, not files the sweep never saw.
+    # sales_doc.html's ยอดรวมรวม VAT is deliberately NOT pinned here: that row
+    # sits in the invoice VAT block other work edits (#485), and rewording it
+    # must not break this guard. Its shape is pinned in the parametrized test.
     assert len(bodies) > 100
     with_phrase = {rel for rel, body in bodies.items()
                    if _ANY_PHRASE.search(_rendered_source(body))}
-    assert {'accounting.html', 'sales_doc.html', 'vat_sub/product_view.html'} <= with_phrase
+    assert {'accounting.html', 'vat_sub/product_view.html'} <= with_phrase
 
     flagged = [f'{rel}:{line}' for rel, body in sorted(bodies.items())
                for line in _old_label_lines(body)]
