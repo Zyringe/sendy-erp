@@ -28,7 +28,8 @@ Seam 2: HTTP render, session-injected roles — prior art: test_customer_code_ro
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
-from urllib.parse import quote
+import re
+from urllib.parse import parse_qs, quote, urlsplit
 
 import pytest
 
@@ -103,6 +104,13 @@ def _client(tmp_db, role='admin'):
         s['username'] = role
         s['role'] = role
     return c
+
+
+def _doc_hrefs(html, doc_base):
+    """Every <a> href whose PATH is this document. Not a `'doc/X"'` substring:
+    since #501 the href carries `?book=`, after which that form matches nothing."""
+    hrefs = re.findall(r'<a\b[^>]*?\bhref="([^"]*)"', html)
+    return [h for h in hrefs if urlsplit(h).path == f'/sales/doc/{doc_base}']
 
 
 def _card(data, pid, unit='ตัว'):
@@ -352,7 +360,9 @@ def test_customer_page_product_card_shows_last_price_and_invoice_link(tmp_db):
     html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
     # Two links to the same invoice on this page now: one in the product
     # card's ราคาล่าสุด cell (new), one in รายการเอกสาร (Slice 1, unchanged).
-    assert html.count('doc/IV49340"') == 2
+    links = _doc_hrefs(html, 'IV49340')
+    assert len(links) == 2, links
+    assert all(parse_qs(urlsplit(h).query).get('book') == ['novat'] for h in links), links
     assert '2026-01-01' in html
     assert 'ครั้งที่ซื้อ' in html
     assert 'ราคาวันนี้' in html
