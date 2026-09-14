@@ -6,7 +6,11 @@ directly and never render Jinja — so a template bug like accessing a dict's
 METHOD instead, per its attribute-then-subscript lookup) is invisible to
 them. Caught only by an actual GET through the real app during the manual
 port-5003 smoke test; these pin it so it can't regress silently again."""
+import json
 import os
+import re
+import shutil
+import subprocess
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
 import pytest
@@ -197,11 +201,6 @@ def test_badge_js_compares_base_unit_not_selected_unit(route_client, tmp_db):
 # unit with a trailing space all disagreed), so it was deleted and the JS the
 # user runs is the copy these tests pin. Its multiplier comes from vat_math,
 # rendered into the page.
-
-import json
-import re
-import shutil
-import subprocess
 
 _JS_COMMENT = re.compile(r'/\*.*?\*/|(?<!:)//[^\n]*', re.S)
 
