@@ -75,6 +75,10 @@ def find_vat_constants(source):
             hits.append(node.lineno)
         elif isinstance(v, str) and ('1.07' in v or _VAT_NUMBER.search(v)):
             hits.append(node.lineno)
+    # Percent spellings (net * 7 / 100, price * 100/107) are arithmetic on ints,
+    # invisible to the Constant checks above.
+    hits += [node.lineno for node in ast.walk(tree)
+             if isinstance(node, ast.BinOp) and _VAT_PERCENT.search(ast.unparse(node))]
     return sorted(set(hits))
 
 
@@ -157,22 +161,35 @@ def test_sweep_ignores_prose(src):
 # No AST here, so "prose" means comments, stripped before matching: Jinja
 # {# #}, HTML <!-- -->, and // + /* */ inside <script> (or anywhere in a .js
 # file). Visible page text is NOT prose: a label that states the rate renders
-# it from vat_math like any other figure. Vendored bundles (*.min.js) are not
-# ours to change and are skipped. A constant rendered through Jinja
-# ({{ vat_multiplier|tojson }}) has no literal in the source and passes.
+# it from vat_math like any other figure. CSS is blanked too — <style> blocks
+# and style="..." attributes never carry VAT, and .07 is an ordinary CSS
+# number there (rgba(26,26,26,.07) is the app's own shadow). Vendored bundles
+# (*.min.js) are not ours to change and are skipped. A constant rendered
+# through Jinja ({{ vat_multiplier|tojson }}) has no literal and passes.
 #
-# Known blind spot, deliberately accepted: `//` preceded by a space inside a JS
-# string reads as a comment, hiding the rest of that line. `//` after a colon
-# (http://) is left alone.
+# Known blind spots, deliberately accepted (parsing JS is not worth it):
+#   * `//` preceded by a space inside a JS string reads as a line comment and
+#     hides the rest of that line (`//` after a colon, as in http://, does not);
+#   * a JS string containing `/*` blanks everything up to the next `*/`, across
+#     lines, and one containing `<!--` does the same up to `-->` (the
+#     HTML-comment pass also runs over <script> bodies);
+#   * a regex literal containing `//` reads as a line comment.
 
 FRONT_END_DIRS = (os.path.join('inventory_app', 'templates'),
                   os.path.join('inventory_app', 'static'))
 
-# 1.07, 0.07, .07 (trailing zeros allowed) as a whole number: not the tail of
-# 21.07 or 10.07, not the head of 1.075.
-_VAT_NUMBER = re.compile(r'(?<![\d.])[01]?\.070*(?!\d)')
+# The rate in percent: * 7 / 100, * 107 / 100, / 107 * 100, 100/107, 7/107.
+_PERCENT = (r'\*\s*(?:107|7)\s*/\s*100(?!\d)'
+            r'|/\s*107\s*\*\s*100(?!\d)'
+            r'|(?<![\d.])(?:100|7)\s*/\s*107(?!\d)')
+_VAT_PERCENT = re.compile(_PERCENT)
+# ... or 1.07, 0.07, .07 (trailing zeros allowed) as a whole number: not the
+# tail of 21.07 or 10.07, not the head of 1.075.
+_VAT_NUMBER = re.compile(r'(?<![\d.])[01]?\.070*(?!\d)|' + _PERCENT)
 _JINJA_COMMENT = re.compile(r'\{#.*?#\}', re.S)
 _HTML_COMMENT = re.compile(r'<!--.*?-->', re.S)
+_CSS = re.compile(r'<style\b[^>]*>.*?</style\s*>'
+                  r'''|\bstyle\s*=\s*(?:"[^"]*"|'[^']*')''', re.S | re.I)
 # One alternation so whichever comment OPENS first wins: `// see /* x` is a
 # line comment, `/* a // b */` a block one.
 _JS_COMMENT = re.compile(r'/\*.*?\*/|(?<!:)//[^\n]*', re.S)
@@ -186,13 +203,15 @@ def _blank(m):
 
 
 def find_vat_constants_in_front_end(source, is_js=False):
-    """Line numbers where 1.07 / 0.07 appears in a template or static .js file
-    as anything but a comment: JS code, a Jinja expression, visible text."""
+    """Line numbers where 1.07 / 0.07 (or a percent spelling) appears in a
+    template or static .js file as anything but a comment or CSS: JS code, a
+    Jinja expression, visible text."""
     if is_js:
         code = _JS_COMMENT.sub(_blank, source)
     else:
         # Jinja first: it strips {# #} at compile time, whatever HTML surrounds it.
         code = _HTML_COMMENT.sub(_blank, _JINJA_COMMENT.sub(_blank, source))
+        code = _CSS.sub(_blank, code)
         code = _SCRIPT.sub(
             lambda m: m.group(1) + _JS_COMMENT.sub(_blank, m.group(2)) + m.group(3),
             code)
