@@ -130,6 +130,17 @@
   > it reports collection history and a bill that was never collected should not read as paid.
   > That is a valid choice; it just has to be a stated one.
 
+- **จ่ายจริง (payment speed)** — how many days a customer usually takes to pay: the median
+  number of days from an invoice's date to the receipt that settled it, over the customer's
+  latest 20 **settled** invoices (paid in full, after credit notes), shown with the number of
+  bills and of distinct receipts behind it. It is **receipt history over settled invoices,
+  not AR** — neither outstanding nor chaseable, which both name *unpaid* bills in the Express
+  snapshot (ADR 0012). Counted to the receipt (RE) date: a post-dated cheque counts on the day
+  its receipt was written, never the day the cash cleared. Shown beside เครดิต on the customer
+  page and `/m/customer`; absent below 3 settled invoices (Put, 2026-09-13).
+  _Avoid_: calling it an AR figure, or "days late" — it runs from the invoice date, not from
+  the end of the credit term.
+
 - **เจ้าหนี้ (AP)** — outstanding money the business still owes its ผู้จำหน่าย (money-owed
   sense of ผู้จำหน่าย). _Avoid_: "AP / ซัพพลายเออร์" (old label that named the data source
   era, not the concept).
