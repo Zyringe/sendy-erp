@@ -1,3 +1,4 @@
+{% from 'macros.html' import vat_label %}
 {% extends 'base.html' %}
 {% block title %}หนี้ค้างชำระรายลูกค้า – ERP{% endblock %}
 {% block page_title %}หนี้ค้างชำระรายลูกค้า{% endblock %}
@@ -103,11 +104,11 @@
           <td class="text-subtle small">
             {% for b in c.matched_bills %}
               {% if b.vat_type == 2 %}
-                <span class="badge bg-info-subtle text-info me-1" title="แยก VAT">{{ b.doc_base }}</span>
+                <span class="badge bg-info-subtle text-info me-1" title="{{ vat_label(b.vat_type) }}">{{ b.doc_base }}</span>
               {% elif b.vat_type == 1 %}
-                <span class="badge bg-success-subtle text-success me-1" title="รวม VAT">{{ b.doc_base }}</span>
+                <span class="badge bg-success-subtle text-success me-1" title="{{ vat_label(b.vat_type) }}">{{ b.doc_base }}</span>
               {% else %}
-                <span class="badge bg-secondary-subtle text-secondary me-1" title="ยกเว้น VAT">{{ b.doc_base }}</span>
+                <span class="badge bg-secondary-subtle text-secondary me-1" title="{{ vat_label(b.vat_type) }}">{{ b.doc_base }}</span>
               {% endif %}
             {% endfor %}
           </td>
