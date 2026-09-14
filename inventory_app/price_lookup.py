@@ -1124,7 +1124,8 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         'customer': customer_out,
         'window': {
             'from': window_from, 'reason': window_reason, 'widened_to_24m': widened,
-            'n_bills': n_bills, 'n_unratioed': n_unratioed,
+            'n_bills': n_bills,
+            'n_unratioed': n_unratioed,  # counts LINES (n_bills counts invoices)
         },
         'context': {
             'lowest': lowest, 'promo_last_used': promo_last_used, 'promo_stale': promo_stale,

@@ -1485,7 +1485,9 @@ def test_epoch_candidates_reports_promo_start_only_when_date_start_is_set(db):
 
 def test_512_three_lines_on_two_invoices_widens_to_24m(db):
     """3 evidence lines on 2 invoices inside 12 months = 2 bills < 3, so R4
-    widens. CONTROL in the same run: 3 lines on 3 invoices does not."""
+    widens. CONTROL in the same run: 4 lines on 3 invoices, one of them a
+    two-line invoice and two of them on the same date, does not widen and
+    reports 3 — so neither a line count (4) nor a date count (2) passes."""
     pid = _mk_product(db, "512 3 lines 2 invoices", unit_type='ตัว', base=100.0, cost=60.0)
     _clear_pid(db, pid)
     # invoice A carries the product on two paid lines, invoice B on one
@@ -1510,12 +1512,17 @@ def test_512_three_lines_on_two_invoices_widens_to_24m(db):
     # _window's own return shape is unchanged: (from_date, n_bills, widened)
     assert pl._window(db, pid, None, TODAY) == (_days_ago(730), 2, True)
 
-    ctl = _mk_product(db, "512 3 lines 3 invoices", unit_type='ตัว', base=100.0, cost=60.0)
+    ctl = _mk_product(db, "512 4 lines 3 invoices", unit_type='ตัว', base=100.0, cost=60.0)
     _clear_pid(db, ctl)
-    for i, base in enumerate(('IV5120003', 'IV5120004', 'IV5120005')):
+    # invoice C: two lines; invoices D and E: one line each, on the SAME date
+    for base, suffix, days in (('IV5120003', 1, 20), ('IV5120003', 2, 20),
+                               ('IV5120004', 1, 30), ('IV5120005', 1, 30)):
         _bill(db, pid=ctl, customer_code='TST-512C', customer_name='ลูกค้า 512C',
-              date_iso=_days_ago(20 + 10 * i), doc_base=base, suffix=1,
+              date_iso=_days_ago(days), doc_base=base, suffix=suffix,
               qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
+    ctl_rows = pl._evidence_rows(db, ctl, _days_ago(365), TODAY)
+    assert len(ctl_rows) == 4                              # precondition: 4 lines
+    assert len({r['date_iso'] for r in ctl_rows}) == 2     # precondition: on 2 dates
     c = pl.resolve_price(db, product_id=ctl, today=TODAY)
     assert c['window']['widened_to_24m'] is False
     assert c['window']['n_bills'] == 3
