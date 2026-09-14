@@ -63,6 +63,8 @@ document.addEventListener('DOMContentLoaded', function () {
     return html;
   }
   const detModal = new bootstrap.Modal(document.getElementById('orderDetailModal'));
+  // Built by url_for so it carries this page's book, like every Jinja link (#501).
+  const SALES_DOC_URL = {{ url_for('sales.sales_doc', doc_base='__DOC__')|tojson }};
   const ivBadge = {confident: '<span class="badge bg-success">ยอดตรง ใบเดียว</span>',
                    probable:  '<span class="badge bg-warning text-dark">ยอดตรง (อาจสลับใบยอดเท่ากัน)</span>',
                    review:    '<span class="badge bg-info text-dark">⚠ ยอดในบิลไม่ตรงยอดโอน</span>',
@@ -102,7 +104,7 @@ document.addEventListener('DOMContentLoaded', function () {
           title: 'ค่าธรรมเนียมแยกรายการ', content: feeBreakdownHtml(breakdown, ff.net_payout),
         });
         document.getElementById('odIv').innerHTML = o.matched_iv
-          ? `<a href="/sales/doc/${o.matched_iv}" target="_blank" title="เปิดใบกำกับใน Express"><code>${o.matched_iv}</code></a> ${ivBadge[o.iv_confidence] || ''}`
+          ? `<a href="${SALES_DOC_URL.replace('__DOC__', encodeURIComponent(o.matched_iv))}" target="_blank" title="เปิดใบกำกับใน Express"><code>${o.matched_iv}</code></a> ${ivBadge[o.iv_confidence] || ''}`
           : '<span class="text-muted">ยังไม่ผูก</span>';
         document.getElementById('odItems').innerHTML = (d.items.length ? d.items.map(it => `
           <tr>
