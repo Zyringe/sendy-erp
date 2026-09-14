@@ -15,6 +15,7 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 
 import cashflow
 import models
+import payments_alloc
 from database import get_connection
 from filters import phone_entries
 from paging import paging
@@ -110,6 +111,12 @@ def customer_detail(customer_code):
 
     master = models.get_customer_master(customer_code)
 
+    # How fast this customer pays (#499): receipt history over SETTLED bills,
+    # shown beside the credit term. Not AR — neither outstanding nor chaseable
+    # (ADR 0012) — and deliberately blind to the date filter above: it is
+    # always the latest 20 settled bills.
+    pay_speed = payments_alloc.payment_speed(customer_code)
+
     # ซื้อล่าสุด + days quiet (#493) — last_purchase_date is already the
     # evidence-filtered date (never a credit note or a freebie-only line);
     # the day count is a rendering concern, computed here, not in the model.
@@ -133,6 +140,7 @@ def customer_detail(customer_code):
                            excluded_docs=excluded_docs,
                            aging=aging,
                            master=master,
+                           pay_speed=pay_speed,
                            salespersons=models.get_active_salespersons(),
                            regions=models.get_all_regions(),
                            orphan_codes=models.get_orphan_salesperson_codes())

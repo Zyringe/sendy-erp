@@ -42,6 +42,11 @@
       {% if customer and customer.credit_days %}
         <span class="badge bg-warning-subtle text-warning-emphasis">เครดิต {{ customer.credit_days }} วัน</span>
       {% endif %}
+      {# #499: receipt history over settled bills, beside the credit term. Not
+         AR; counted to the receipt (RE) date. Absent below 3 settled bills. #}
+      {% if pay_speed %}
+        <span id="m-pay-speed" class="badge bg-light text-dark border text-wrap">จ่ายจริง ~{{ '{:g}'.format(pay_speed.median_days) }} วัน · {{ pay_speed.invoices }} บิล / {{ pay_speed.receipts }} ใบเสร็จ</span>
+      {% endif %}
     </div>
 
     {% if customer %}

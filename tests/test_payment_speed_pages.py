@@ -15,6 +15,7 @@ os.environ.setdefault('SKIP_DB_INIT', '1')
 
 import re
 import sqlite3
+from html.parser import HTMLParser
 from urllib.parse import quote
 
 import payments_alloc as pa
@@ -90,16 +91,42 @@ def _client(role='admin'):
     return c
 
 
+class _ById(HTMLParser):
+    """Collects the visible text of every element carrying `id=element_id`,
+    nested children included (a regex stops at the first inner close tag)."""
+
+    def __init__(self, element_id):
+        super().__init__()
+        self.element_id = element_id
+        self.found = []      # one text list per matching element
+        self._depth = 0      # open tags inside the current match
+
+    _VOID = {'br', 'img', 'input', 'hr', 'meta', 'link', 'wbr'}
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._VOID:
+            return
+        if self._depth:
+            self._depth += 1
+        elif dict(attrs).get('id') == self.element_id:
+            self.found.append([])
+            self._depth = 1
+
+    def handle_endtag(self, tag):
+        if self._depth:
+            self._depth -= 1
+
+    def handle_data(self, data):
+        if self._depth:
+            self.found[-1].append(data)
+
+
 def _element(html, element_id):
-    """The single element carrying `id=element_id`, opening tag to its close.
-    Counts first: zero or two matches is a failure, never a silent pass."""
-    found = re.findall(rf'<(div|span)\b[^>]*\bid="{element_id}"[^>]*>(.*?)</\1>',
-                       html, flags=re.S)
-    return found
-
-
-def _text(fragment):
-    return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', fragment)).strip()
+    """Text of each element with this id — the caller asserts the COUNT first,
+    so zero or two matches is a failure, never a silent pass."""
+    p = _ById(element_id)
+    p.feed(html)
+    return [re.sub(r'\s+', ' ', ''.join(parts)).strip() for parts in p.found]
 
 
 def _get(client, url):
@@ -124,7 +151,7 @@ def test_customer_page_shows_the_figure_beside_the_credit_term(tmp_db):
 
     found = _element(html, 'pay-speed')
     assert len(found) == 1, found
-    text = _text(found[0][1])
+    text = found[0]
     assert 'จ่ายจริง' in text
     assert '~30 วัน' in text
     assert '3 บิล / 2 ใบเสร็จ' in text
@@ -137,7 +164,7 @@ def test_customer_page_figure_is_not_gated_like_cost(tmp_db):
     html = _get(_client('staff'), f'/customer/code/{quote(FAST[0])}')
     found = _element(html, 'pay-speed')
     assert len(found) == 1, found
-    assert '~30 วัน' in _text(found[0][1])
+    assert '~30 วัน' in found[0]
 
 
 def test_customer_page_omits_the_figure_below_three_settled_bills(tmp_db):
@@ -167,7 +194,7 @@ def test_mobile_page_shows_the_figure_beside_the_credit_badge(tmp_db):
 
     found = _element(html, 'm-pay-speed')
     assert len(found) == 1, found
-    assert _text(found[0][1]) == 'จ่ายจริง ~30 วัน · 3 บิล / 2 ใบเสร็จ'
+    assert found[0] == 'จ่ายจริง ~30 วัน · 3 บิล / 2 ใบเสร็จ'
 
 
 def test_mobile_page_omits_the_figure_below_three_settled_bills(tmp_db):

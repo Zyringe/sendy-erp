@@ -9,6 +9,7 @@ from flask import Blueprint, render_template, request, jsonify, abort
 
 import cashflow
 import models
+import payments_alloc
 import sales_filters
 from database import get_connection
 import vat_math
@@ -111,6 +112,10 @@ def customer_detail(customer_name):
         ).fetchone()
 
     conn.close()
+    # How fast this customer pays (#499), keyed by the customers row's CODE —
+    # this page is keyed by bill name, which another code can share. No
+    # customers row → no code → no figure.
+    pay_speed = payments_alloc.payment_speed(customer['code']) if customer else None
     # Use existing model fn — handles VAT, SR/HS doc filtering, paid-status correctly
     unpaid_full, unpaid_snapshot_date = models.get_customer_unpaid_bills(customer_name)
     # #493: the shared document grouping — same one the desktop customer page
@@ -152,6 +157,7 @@ def customer_detail(customer_name):
         'm/customer.html',
         customer_name=customer_name,
         customer=customer,
+        pay_speed=pay_speed,
         region=region_row,
         unpaid=unpaid,
         unpaid_total=unpaid_total,
