@@ -329,7 +329,9 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
 
     # จำนวน per unit on each listed invoice, freebies included and also
     # counted apart ("27 ใบ (แถม 3)"). A freebie is the customer page's own
-    # definition: a line of the product that earned nothing. Units are never
+    # definition: a line of the product that earned nothing. Never on a credit
+    # note: prod stores SR lines with positive qty, so a ฿0 returned line would
+    # otherwise read as แถม (SR = sales_filters' definition). Units are never
     # summed into each other.
     if docs:
         by_doc = {}
@@ -337,6 +339,7 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
             SELECT s.doc_base, s.unit,
                    SUM(s.qty) AS qty,
                    SUM(CASE WHEN s.qty > 0 AND (s.net IS NULL OR s.net = 0)
+                             AND s.doc_base NOT LIKE 'SR%'
                             THEN s.qty ELSE 0 END) AS free_qty
             FROM sales_transactions s
             WHERE {where} AND s.doc_base IN ({','.join('?' * len(docs))})
