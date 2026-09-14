@@ -360,3 +360,91 @@ def test_mismatched_json_read_gets_409_with_both_books(books):
     j = r.get_json()
     assert (j['expected_book'], j['active_book']) == ('novat', 'vat')
     assert _session_book(c) == 'vat'
+
+
+# ── the one-tap switch and its landing target ───────────────────────────────
+
+def _switch_form(body):
+    notice = _notice(body, 'mismatch')
+    assert notice.found, 'no mismatch page'
+    forms = [f for f in notice.forms if urlsplit(f['action']).path == '/book/toggle']
+    assert len(forms) == 1, notice.forms
+    return forms[0]['inputs']
+
+
+def test_switch_control_lands_on_the_same_document_in_the_link_book(books):
+    c = _client()
+    href = _customer_page_link(c, f'/sales/doc/{MAIN_DOC}')
+    c.post('/book/toggle', data={'book': 'vat'})
+    inputs = _switch_form(c.get(href).get_data(as_text=True))
+    assert inputs['book'] == 'novat'
+
+    r = c.post('/book/toggle', data=inputs, follow_redirects=True)
+    body = r.get_data(as_text=True)
+    assert _session_book(c) == 'novat'
+    assert r.status_code == 200
+    assert r.request.path == f'/sales/doc/{MAIN_DOC}'
+    assert f'เอกสารขาย {MAIN_DOC}' in body          # the doc page's own title
+    assert MAIN_NAME in body                         # its line, from the main book
+    assert VAT_BANNER not in body
+
+
+def test_switch_control_lands_on_the_same_product_in_the_vat_book(books):
+    c = _client()
+    c.post('/book/toggle', data={'book': 'vat'})
+    href = _vat_sales_page_link(c, f'/products/{PID}')
+    c.post('/book/toggle', data={'book': 'novat'})
+    inputs = _switch_form(c.get(href).get_data(as_text=True))
+    assert inputs['book'] == 'vat'
+
+    r = c.post('/book/toggle', data=inputs, follow_redirects=True)
+    body = r.get_data(as_text=True)
+    assert _session_book(c) == 'vat'
+    assert r.request.path == f'/products/{PID}'
+    assert VAT_NAME in body
+    assert MAIN_NAME not in body
+    assert VAT_BANNER in body
+
+
+@pytest.mark.parametrize('target', [
+    'https://evil.example/sales',
+    '//evil.example/sales',
+    '/\\evil.example/sales',
+    f'/customer/code/{CODE}',        # main-book-only: cannot be a VAT landing
+    '/no/such/page',
+])
+def test_vat_switch_ignores_an_outside_or_non_parity_landing(books, target):
+    c = _client()
+    r = c.post('/book/toggle', data={'book': 'vat', 'next': target})
+    loc = r.headers['Location']
+    assert _session_book(c) == 'vat'                 # the switch itself happened
+    assert r.status_code == 302
+    assert 'evil' not in loc
+    assert urlsplit(loc).path == '/sales' and not urlsplit(loc).query, loc
+
+
+@pytest.mark.parametrize('target', [
+    'https://evil.example/',
+    '//evil.example/',
+    '/\\evil.example/',
+    'javascript:alert(1)',
+    '/no/such/page',
+])
+def test_main_switch_ignores_an_outside_landing(books, target):
+    c = _client('vat')
+    r = c.post('/book/toggle', data={'book': 'novat', 'next': target})
+    loc = r.headers['Location']
+    assert _session_book(c) == 'novat'
+    assert r.status_code == 302
+    assert 'evil' not in loc
+    assert urlsplit(loc).path == '/' and not urlsplit(loc).query, loc
+
+
+def test_switch_honours_an_internal_landing_the_target_book_can_render(books):
+    c = _client()
+    r = c.post('/book/toggle', data={'book': 'vat', 'next': f'/products/{PID}?book=vat'})
+    loc = urlsplit(r.headers['Location'])
+    assert (loc.path, parse_qs(loc.query)) == (f'/products/{PID}', {'book': ['vat']})
+
+    r = c.post('/book/toggle', data={'book': 'novat', 'next': f'/customer/code/{CODE}'})
+    assert urlsplit(r.headers['Location']).path == f'/customer/code/{CODE}'
