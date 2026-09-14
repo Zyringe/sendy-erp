@@ -725,8 +725,11 @@
         <form method="post" action="{{ url_for('call.call_note', customer_code=data.customer_code) }}" class="mb-3">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           {# Validated return target (#497) — an allow-listed INTENT string,
-             never a URL, so call.call_note builds the redirect itself from
-             the trusted customer_code (no open redirect). #}
+             never a URL, so call.call_note builds the redirect itself via
+             url_for from customer_code. customer_code is attacker-chosen
+             (any path segment, no existence check) — it is url_for that
+             confines the result to a same-origin path, not any assumption
+             that this value is trustworthy (no open redirect). #}
           <input type="hidden" name="return_to" value="customer">
           <div class="input-group input-group-sm">
             <input type="text" name="body" class="form-control" placeholder="เพิ่มบันทึก… (พิมพ์อะไรก็ได้)" required>
