@@ -595,7 +595,7 @@ def _assemble_products(conn, names, canon_code, today=None):
             st.unit,
             SUM(st.qty)   AS total_qty,
             SUM(st.net)   AS total_net,
-            COUNT(DISTINCT st.doc_no) AS doc_count,
+            COUNT(DISTINCT st.doc_base) AS doc_count,   -- invoices, not lines (#496)
             MAX(st.date_iso) AS last_buy,
             p.base_sell_price,
             p.unit_type
