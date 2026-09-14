@@ -241,3 +241,69 @@ def test_edit_employee_page_stores_what_was_typed_as_bare_digits(tmp_db):
     assert got['national_id'] == CANONICAL['national_id']
     assert got['bank_account_no'] == CANONICAL['bank_account_no']
     assert got['phone'] is None, "a cleared field is NULL, not ''"
+
+
+# ── the form boxes must let a dashed national ID IN ─────────────────────────
+# Both national-ID boxes carried maxlength="13". A browser stops typing at the
+# limit and TRUNCATES a paste to it, so '1-2345-67890-12-3' (17 characters)
+# arrived as '1-2345-67890-' — and the normalizer, correctly, stored the 10
+# digits that survived. Accepting an ID "with dashes" is only true if the box
+# lets the dashes in. Rendered at the template layer, no DB (the reason is in
+# test_employee_identity_surfaces.py's header).
+
+import re
+
+_DASHED_NID_LEN = len('1-2345-67890-12-3')
+
+
+def _render(template, path, **ctx):
+    """As admin: the edit form only renders for `session.role == 'admin'`."""
+    from flask import session
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    flask_app.config['WTF_CSRF_ENABLED'] = False
+    with flask_app.test_request_context(path):
+        session['role'] = 'admin'
+        return flask_app.jinja_env.get_template(template).render(**ctx)
+
+
+def _national_id_inputs(html):
+    """Every <input> named national_id — asserted on the ELEMENT, not the page."""
+    return re.findall(r'<input\b[^>]*\bname="national_id"[^>]*>', html)
+
+
+def _admits_a_dashed_id(tag):
+    m = re.search(r'\bmaxlength="(\d+)"', tag)
+    return m is None or int(m.group(1)) >= _DASHED_NID_LEN
+
+
+def test_new_employee_form_lets_a_dashed_national_id_in():
+    html = _render('hr/employee_form.html', '/hr/employees/new',
+                   employee=None, companies=[], form={},
+                   action_url='/hr/employees/new', page_title='เพิ่มพนักงาน',
+                   banks=[], next_emp_code='EMP999', cashbook_accounts=[])
+    tags = _national_id_inputs(html)
+    assert len(tags) == 1, "CONTROL — the new-employee form has one national-ID box"
+    assert _admits_a_dashed_id(tags[0]), tags[0]
+
+
+def test_edit_employee_form_lets_a_dashed_national_id_in():
+    emp = {'id': 1, 'emp_code': 'EMP001', 'full_name': 'ทดสอบ ระบบ',
+           'nickname': None, 'national_id': '1234567890123', 'gender': 'M',
+           'phone': '0812345678', 'address': None, 'position': None,
+           'company_id': 1, 'company_name': 'BSN', 'employment_type': 'monthly',
+           'start_date': '2024-01-01', 'probation_days': 90,
+           'probation_end_date': None, 'end_date': None, 'sso_enrolled': 1,
+           'diligence_allowance': 0, 'bank_name': 'ธนาคารกสิกรไทย',
+           'bank_branch': None, 'bank_account_no': '1234567890',
+           'bank_account_name': None, 'salesperson_code': None, 'user_id': None,
+           'is_active': 1, 'note': None, 'current_salary': 0, 'on_payroll': 1,
+           'sort_order': 100}
+    html = _render('hr/employee_detail.html', '/hr/employees/1',
+                   employee=emp, salary_history=[], wht_history=[],
+                   leave_balance={}, leave_types=[], banks=[], year=2026,
+                   be_year=lambda v: str(v or '-'), fmt_baht=lambda v: str(v),
+                   linked_account=None, cashbook_accounts=[])
+    tags = _national_id_inputs(html)
+    assert len(tags) == 1, "CONTROL — the edit form has one national-ID box"
+    assert _admits_a_dashed_id(tags[0]), tags[0]
