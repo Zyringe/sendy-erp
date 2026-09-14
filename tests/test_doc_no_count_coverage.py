@@ -276,11 +276,13 @@ SALES_SHAPES = {
     'multi-line GROUP BY':
         'Q = """\n    SELECT s.doc_no FROM sales_transactions s\n    GROUP BY\n'
         '        s.doc_no\n    LIMIT 200\n"""\n',
+    # A field sits between the hit and its FROM, so only reading the f-string
+    # WHOLE can tie them together (its literal parts alone would not).
     'f-string':
-        'w = "1=1"\nQ = f"SELECT COUNT(DISTINCT s.doc_no) FROM sales_transactions s WHERE {w}"\n',
-    'f-string, FROM after a field':
-        'c = "x"\nQ = f"""SELECT {c}, COUNT(DISTINCT doc_no)\n  FROM sales_transactions\n'
-        '  WHERE customer IN ({c})"""\n',
+        'w = "1=1"\nQ = f"SELECT COUNT(DISTINCT s.doc_no){w} FROM sales_transactions s WHERE {w}"\n',
+    'f-string, multi-line':
+        'c = "x"\nQ = f"""SELECT {c},\n       COUNT(DISTINCT doc_no) AS n{c}\n'
+        '  FROM sales_transactions\n  WHERE customer IN ({c})"""\n',
     '.format() receiver':
         'Q = "SELECT COUNT(DISTINCT st.doc_no) FROM sales_transactions st '
         'WHERE st.customer IN ({})".format("?")\n',
