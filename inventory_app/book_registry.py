@@ -62,6 +62,11 @@ INFRA_ENDPOINTS = {
 
 SAFE_METHODS = {'GET', 'HEAD', 'OPTIONS'}
 
+# The URL keys that name ONE document or ONE product (#501). A parity URL
+# carrying one is bound to the book its page was rendered under; list and
+# navigation URLs carry none and keep following the session book.
+ENTITY_KEYS = ('doc_base', 'product_id')
+
 BOOKS = {
     'novat': {
         'label': 'สมุดปัจจุบัน (No-VAT)',
@@ -156,6 +161,14 @@ def vat_book_freshness():
     return meta
 
 
+def names_entity(endpoint, values):
+    """True when a parity URL names one document or one product. The SAME
+    test decides both what gets stamped (url_defaults) and what the read
+    guard checks, so the two sides cannot drift apart."""
+    return (endpoint in PARITY_ENDPOINTS
+            and any(values.get(k) not in (None, '') for k in ENTITY_KEYS))
+
+
 def _wants_json():
     return (request.path.startswith('/api/')
             or request.headers.get('X-Expected-Book') is not None
@@ -193,6 +206,18 @@ def init_book_registry(app):
         flash('สมุด VAT ยังไม่ถูกสร้าง — อัปโหลดชุดข้อมูล xp5 ที่หน้า Import ก่อนค่ะ',
               'warning')
         return redirect(url_for('dashboard'))
+
+    @app.url_defaults
+    def _stamp_render_book(endpoint, values):
+        # Read-link binding (#501), the build side. Every url_for-built link to
+        # one document or one product carries the book this page is rendered
+        # under, so a tab left open across a book switch cannot silently read
+        # the other book (doc numbers never collide, but product ids always
+        # do, and never name the same product). Assigned, not setdefault: a
+        # `book` copied along from request.args must not outvote the render
+        # book.
+        if has_request_context() and names_entity(endpoint, values):
+            values['book'] = active_book()
 
     @app.post('/book/toggle')
     def toggle_book():
