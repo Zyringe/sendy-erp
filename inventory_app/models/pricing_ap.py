@@ -32,7 +32,11 @@ def get_product_pricing_summary(product_id, conn=None):
 
 
 def get_product_pricing(product_id):
-    """ราคาขายสินค้า: list_prices (GROUP BY unit_price,vat_type) + effective_per_customer"""
+    """ราคาขายสินค้า: list_prices (GROUP BY unit_price,vat_type) + effective_per_customer
+
+    Every บิล count is COUNT(DISTINCT doc_base) — the invoice. doc_no is one
+    LINE of it, and one invoice can carry the product on two lines (#496).
+    """
     from collections import defaultdict
 
     conn = get_connection()
@@ -42,7 +46,7 @@ def get_product_pricing(product_id):
         SELECT
             unit_price,
             vat_type,
-            COUNT(DISTINCT doc_no)  AS invoice_count,
+            COUNT(DISTINCT doc_base) AS invoice_count,
             SUM(qty)                AS total_qty,
             MAX(date_iso)           AS last_sale,
             COUNT(DISTINCT customer) AS customer_count
@@ -61,7 +65,7 @@ def get_product_pricing(product_id):
             vat_type,
             customer,
             customer_code,
-            COUNT(DISTINCT doc_no)          AS invoice_count,
+            COUNT(DISTINCT doc_base)        AS invoice_count,
             SUM(qty)                        AS total_qty,
             MAX(date_iso)                   AS last_sale,
             GROUP_CONCAT(DISTINCT discount) AS discounts
@@ -78,7 +82,7 @@ def get_product_pricing(product_id):
         SELECT
             customer,
             customer_code,
-            COUNT(DISTINCT doc_no)  AS invoice_count,
+            COUNT(DISTINCT doc_base) AS invoice_count,
             SUM(qty)                AS total_qty,
             SUM({vat_math.cash_sql()})
               / NULLIF(SUM(qty), 0) AS avg_effective,
@@ -97,7 +101,7 @@ def get_product_pricing(product_id):
             SUM(unit_price * qty) / NULLIF(SUM(qty), 0)                          AS avg_list_price,
             SUM({vat_math.cash_sql()})
               / NULLIF(SUM(qty), 0)                                               AS avg_effective,
-            COUNT(DISTINCT doc_no)                                                AS total_invoices,
+            COUNT(DISTINCT doc_base)                                              AS total_invoices,
             SUM(qty)                                                              AS total_qty
         FROM sales_transactions
         WHERE product_id = ?
