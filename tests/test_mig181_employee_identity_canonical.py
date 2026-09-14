@@ -39,8 +39,15 @@ _code = [0]
 
 @pytest.fixture
 def db(tmp_db_conn):
-    """Pre-state: 181 NOT applied (undone first if this clone ever had it)."""
+    """Pre-state: 181 NOT applied — undone AND unstamped if this clone had it.
+
+    Forced, never inherited: once 181 ships, the dev DB pulled from prod carries
+    both the canonical values and the applied_migrations row. Without the
+    un-stamp, the runner test below would find nothing pending and go red for a
+    reason that has nothing to do with the migration."""
     tmp_db_conn.executescript(ROLLBACK_181.read_text())
+    tmp_db_conn.execute("DELETE FROM applied_migrations WHERE filename = ?",
+                        (MIG_181.name,))
     tmp_db_conn.commit()
     return tmp_db_conn
 
