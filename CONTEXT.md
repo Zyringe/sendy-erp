@@ -169,13 +169,28 @@
   from the header's existing "ช่วงเวลา" activity range, which stays a raw
   `MIN/MAX(date_iso)` and can end on a credit note.
 
+- **ส่วนลด (line discount)** — the discount keyed on an invoice line. Either percentages,
+  where `15+5%` compounds (never back-computed into one effective percentage), or a baht
+  amount taken off the **whole line**, never per piece.
+
 - **ราคาล่าสุดที่ลูกค้าได้ (customer's last price)** — the per-unit money paid on the
   customer's most recent paid line of a product **in that unit**, VAT-inclusive when the
-  invoice added VAT, with that invoice's line discount, bill-level discount, and any
-  same-product freebies.
+  invoice added VAT. Shown as the invoice's own derivation — "list −ส่วนลด = paid"
+  (`55.00 −2% = 53.90`), reconciled against that line's own `total`/`net` before it is
+  allowed to render; a line whose numbers don't add up (or a negative bill-level discount,
+  #525) shows the price alone rather than a wrong formula (#527).
+
+- **ก่อนเปลี่ยนราคา (pre-change bill)** — a customer's last bill dated before the product's
+  most recent price change: a list-price change, a price promo starting or ending, or a
+  dozen-price change. Today a first-time recording of a list price also counts, which makes
+  most older bills carry it (#526). **No longer shown on the customer page's product card**
+  (#527, measured 80% false-positive rate) — the invoice-line formula above replaced it.
 
 - **ราคาตั้งหลังโปร (list after promo)** — the catalogue price for a unit after the active
-  price promotion, stored VAT-inclusive. "Today's price", shown next to ราคาล่าสุดที่ลูกค้าได้.
+  price promotion, stored VAT-inclusive. "Today's price", shown next to ราคาล่าสุดที่ลูกค้าได้ —
+  as a formula (`60.00 −10% = 54.00`) when the promo is percent, or a mixed row carrying a
+  discount_value; a fixed/bundle/gift promo keeps the plain price plus its own summary text
+  (#527).
 
 - **ทุนเฉลี่ย (WACC)** / **ทุนซื้อล่าสุด (last purchase cost)** — both ex-VAT, per base unit,
   converted to a row's unit. ทุนเฉลี่ย is the product's current `cost_price`; ทุนซื้อล่าสุด is
@@ -193,6 +208,11 @@
 - **กำไรที่ราคาวันนี้** — the price resolver's own internal margin (NoVAT basis) at
   ราคาตั้งหลังโปร, taken at the customer's **last order quantity**, so a bundle promo's free
   units count once that quantity reaches the bundle (Put, 2026-09-11).
+
+- **กำไรที่ทุนใหม่ (margin at last purchase cost)** — the same margin recomputed against
+  ทุนซื้อล่าสุด instead of ทุนเฉลี่ย. Shown under **both** กำไรที่ราคาเดิม and กำไรที่ราคาวันนี้, only
+  when ทุนซื้อล่าสุด is above ทุนเฉลี่ย — the case where the next restock costs more than what
+  the average is currently pricing against (#527).
 
 ## Cashbook (the `/cashbook` feature — บัญชีรับ-จ่าย)
 

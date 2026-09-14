@@ -793,6 +793,33 @@ def test_r8_bundle_multiplier_on_margin(db):
     assert ctl['internal']['margin_incl_free_units'] is False
 
 
+def test_527_cost_mult_is_the_bundle_multiplier_when_it_applies(db):
+    """#527: internal.cost_mult is additive-only -- (buy+free)/buy when the
+    bundle applies (same qty/unit as R8 above), 1.0 otherwise (no promo, and
+    a promo present but not reached)."""
+    pid = _mk_product(db, "cost_mult bundle applies", unit_type='ตัว', base=20.0, cost=10.0)
+    _clear_pid(db, pid)
+    _uc(db, pid, 'โหล', 12.0)
+    _promo(db, pid, promo_type='bundle', bundle_buy=12, bundle_free=1,
+           date_start='2026-06-01', is_active=1)
+    out = pl.resolve_price(db, product_id=pid, unit='โหล', today=TODAY)
+    assert out['internal']['cost_mult'] == pytest.approx(13 / 12)
+
+    pid_no_promo = _mk_product(db, "cost_mult no promo", unit_type='ตัว', base=20.0, cost=10.0)
+    _clear_pid(db, pid_no_promo)
+    _uc(db, pid_no_promo, 'โหล', 12.0)
+    ctl = pl.resolve_price(db, product_id=pid_no_promo, unit='โหล', today=TODAY)
+    assert ctl['internal']['cost_mult'] == 1.0
+
+    pid_not_reached = _mk_product(db, "cost_mult qty not reached", unit_type='ตัว', base=20.0, cost=10.0)
+    _clear_pid(db, pid_not_reached)
+    _uc(db, pid_not_reached, 'โหล', 12.0)
+    _promo(db, pid_not_reached, promo_type='bundle', bundle_buy=24, bundle_free=1,
+           date_start='2026-06-01', is_active=1)
+    not_reached = pl.resolve_price(db, product_id=pid_not_reached, unit='โหล', qty=1, today=TODAY)
+    assert not_reached['internal']['cost_mult'] == 1.0
+
+
 # ── find_products / find_customers ──────────────────────────────────────────
 
 def test_find_products_multi_token_and(db):

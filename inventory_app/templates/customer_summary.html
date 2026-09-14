@@ -1,4 +1,4 @@
-{% from 'macros.html' import phone_lines, promo_summary, disc_label %}
+{% from 'macros.html' import phone_lines, promo_summary, invoice_formula_prefix %}
 {% extends 'base.html' %}
 {% block title %}{{ data.customer }} – ลูกค้า{% endblock %}
 {% block page_title %}ลูกค้า: {{ data.customer }}{% endblock %}
@@ -463,8 +463,9 @@
 
 <div class="row g-3 mb-4">
 
-  {# ── Product card (#493 slice 2): ครั้งที่ซื้อ / ราคาล่าสุด (VAT note, bill ─────
-     discount, freebies, ก่อนเปลี่ยนราคา) / ราคาวันนี้ (+ โปร) / สต็อก, keyed
+  {# ── Product card (#493 slice 2, reworked #527): ครั้งที่ซื้อ / ราคาล่าสุด ────
+     (one "list -discount = paid" formula line, freebies) / ราคาวันนี้ (formula
+     when a promo changed the price, else list + promo_summary) / สต็อก, keyed
      (product, unit). Union of both top-20 orderings (see
      models/customers.py::_customer_product_cards); opens sorted by times
      bought, the ครั้ง/ยอด buttons below just re-sort these SAME rows.
@@ -515,7 +516,8 @@
               <td data-label="ราคาล่าสุด" class="text-end"><div>
                 {% if r.last %}
                 {% set c = r.cost if is_manager else none %}
-                <div class="font-mono fw-600">{{ r.last.price_per_unit | fmt_price }}
+                <div class="font-mono fw-600">
+                  {% if r.last.formula %}{{ invoice_formula_prefix(r.last.formula) }} = {% endif %}{{ r.last.price_per_unit | fmt_price }}
                   {% if c and c.last_below_wacc %}<span class="badge bg-danger-subtle text-danger-emphasis">🔴 ต่ำกว่าทุน</span>{% endif %}
                   {% if c and c.last_below_last_purchase %}<span class="badge bg-warning-subtle text-warning-emphasis">⚠ ต่ำกว่าทุนซื้อล่าสุด</span>{% endif %}
                 </div>
@@ -524,28 +526,20 @@
                      class="text-decoration-none">{{ r.last.doc_base }}</a>
                   · {{ r.last.date_iso }}
                 </div>
-                {% if r.last.vat_type == 2 %}
-                <div class="text-subtle small">{{ r.last.unit_price | fmt_price }}{% if r.last.discount %} {{ disc_label(r.last.discount) }}{% endif %} + VAT</div>
-                {% elif r.last.discount %}
-                <div class="text-subtle small">{{ disc_label(r.last.discount) }}</div>
-                {% endif %}
-                {% if r.last.bill_discount_pct %}
-                <div class="text-subtle small">ลดท้ายบิล {{ '%g' | format(r.last.bill_discount_pct) }}%</div>
-                {% endif %}
                 {% if r.last.freebies %}
                 <div class="text-success small">{% for f in r.last.freebies %}แถม {{ f.qty | fmt_qty }} {{ f.unit }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
-                {% endif %}
-                {% if r.last.is_stale %}
-                <div class="text-warning small">⚠ ก่อนเปลี่ยนราคา</div>
                 {% endif %}
                 {% if c and c.has_cost %}
                   {% set m = c.margin_last %}
                   {% if m %}
                   <button type="button" class="btn btn-link p-0 small text-decoration-none btn-touch {{ 'text-danger' if m.pct < 0 else 'text-subtle' }}"
-                          data-margin-reveal aria-pressed="false" aria-controls="ml-{{ loop.index }}">กำไรถ้าขายราคาเดิมวันนี้ {{ '%.2f' | format(m.pct) }}%</button>
+                          data-margin-reveal aria-pressed="false" aria-controls="ml-{{ loop.index }}">กำไร {{ '%.2f' | format(m.pct) }}%</button>
                   <div id="ml-{{ loop.index }}" class="small text-subtle" data-margin-detail hidden>เก็บจริง {{ m.kept | fmt_price }} − ทุน {{ m.wacc_per_unit | fmt_price }} × {{ '%g' | format(m.paid_qty) }} {{ r.unit }} ({{ m.paid_cost | fmt_price }}){% if m.free_cost %} − ทุนของแถม {{ m.free_cost | fmt_price }}{% endif %} = {{ m.profit | fmt_price }}<br>{{ m.profit | fmt_price }} ÷ {{ m.kept | fmt_price }} = {{ '%.2f' | format(m.pct) }}%</div>
+                  {% if 'at_new_cost_pct' in m %}
+                  <div class="small text-subtle">ที่ทุนใหม่ {{ '%.2f' | format(m.at_new_cost_pct) }}%</div>
+                  {% endif %}
                   {% else %}
-                  <div class="small text-subtle">กำไรถ้าขายราคาเดิมวันนี้ —</div>
+                  <div class="small text-subtle">กำไร —</div>
                   {% endif %}
                 {% endif %}
                 {% else %}
@@ -555,10 +549,14 @@
               <td data-label="ราคาวันนี้" class="text-end font-mono"><div>
                 {% set c = r.cost if is_manager else none %}
                 {% if r.today and r.today.has_list_price %}
-                  {{ r.today.price_per_unit | fmt_price }}
+                  {% if r.today.promo_affects_price %}
+                    {{ r.today.list_for_unit | fmt_price }} −{{ '%g' | format(r.today.promo.discount_value) }}% = {{ r.today.price_per_unit | fmt_price }}
+                  {% else %}
+                    {{ r.today.price_per_unit | fmt_price }}
+                  {% endif %}
                   {% if c and c.today_below_wacc %}<span class="badge bg-danger-subtle text-danger-emphasis">🔴 ต่ำกว่าทุน</span>{% endif %}
                   {% if c and c.today_below_last_purchase %}<span class="badge bg-warning-subtle text-warning-emphasis">⚠ ต่ำกว่าทุนซื้อล่าสุด</span>{% endif %}
-                  {% if r.today.promo %}
+                  {% if r.today.promo and not r.today.promo_affects_price %}
                   <div class="text-subtle small">{{ promo_summary(r.today.promo) }}</div>
                   {% endif %}
                   {% if c and c.has_cost %}
@@ -567,6 +565,9 @@
                     <button type="button" class="btn btn-link p-0 small text-decoration-none btn-touch {{ 'text-danger' if m.pct < 0 else 'text-subtle' }}"
                             data-margin-reveal aria-pressed="false" aria-controls="mt-{{ loop.index }}">กำไร {{ '%.2f' | format(m.pct) }}%</button>
                     <div id="mt-{{ loop.index }}" class="small text-subtle" data-margin-detail hidden>ราคา {{ m.price | fmt_price }}/{{ m.unit }} − ทุน {{ m.cost_side | fmt_price }}{% if m.incl_free_units %} (ทุน {{ m.cost_per_unit | fmt_price }} + ของแถมตามโปร){% endif %} = {{ (m.price - m.cost_side) | fmt_price }}<br>{{ (m.price - m.cost_side) | fmt_price }} ÷ {{ m.price | fmt_price }} = {{ '%.2f' | format(m.pct) }}%</div>
+                    {% if 'at_new_cost_pct' in m %}
+                    <div class="small text-subtle">ที่ทุนใหม่ {{ '%.2f' | format(m.at_new_cost_pct) }}%</div>
+                    {% endif %}
                     {% else %}
                     <div class="small text-subtle">กำไร —</div>
                     {% endif %}

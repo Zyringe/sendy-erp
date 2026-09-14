@@ -304,6 +304,54 @@ def test_margin_today_is_the_resolvers_at_the_customers_last_quantity(cust):
     assert m['pct'] == pytest.approx(35.0)
 
 
+def test_margin_at_new_cost_shown_on_both_margins_when_last_purchase_is_above_wacc(cust):
+    """#527: last purchase (80) > WACC (60) -> both margins ALSO show a
+    ที่ทุนใหม่ reading at the replacement cost. Last: (1000-800)/1000=20%.
+    Today: list 100, no promo -> cost_mult 1.0 -> (100-80)/100=20%."""
+    conn = cust
+    pid = _mk_product(conn, base=100.0, cost=60.0)
+    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 80.0, ref='RR060')
+    _line(conn, doc_base='IV49530', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=10, unit_price=100, net=1000)
+    cost = _card(_summary(), pid)['cost']
+    assert cost['last_purchase_above_wacc'] is True
+    assert cost['margin_last']['pct'] == pytest.approx(40.0)
+    assert cost['margin_last']['at_new_cost_pct'] == pytest.approx(20.0)
+    assert cost['margin_today']['pct'] == pytest.approx(40.0)
+    assert cost['margin_today']['at_new_cost_pct'] == pytest.approx(20.0)
+
+
+def test_margin_at_new_cost_absent_when_last_purchase_is_not_above_wacc(cust):
+    conn = cust
+    pid = _mk_product(conn, base=100.0, cost=80.0)
+    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 60.0, ref='RR061')  # below WACC
+    _line(conn, doc_base='IV49531', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=10, unit_price=100, net=1000)
+    cost = _card(_summary(), pid)['cost']
+    assert cost['last_purchase_above_wacc'] is False
+    assert 'at_new_cost_pct' not in cost['margin_last']
+    assert 'at_new_cost_pct' not in cost['margin_today']
+
+
+def test_margin_at_new_cost_counts_a_bundles_free_units_via_cost_mult(cust):
+    """ที่ทุนใหม่ reuses the resolver's own cost_mult for today's price -- a
+    buy-12-get-1 bundle at last purchase 80 (> WACC 60) carries 13/12 of a
+    unit: new_cost_side = round(80 * 13/12, 2) = 86.67."""
+    conn = cust
+    pid = _mk_product(conn, base=100.0, cost=60.0)
+    conn.execute(
+        "INSERT INTO promotions (product_id, promo_name, promo_type, bundle_buy, "
+        " bundle_free, date_start, is_active) VALUES (?, 'ซื้อ 12 แถม 1', 'bundle', 12, 1, "
+        " '2024-01-01', 1)", (pid,))
+    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 80.0, ref='RR062')
+    conn.commit()
+    _line(conn, doc_base='IV49532', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=12, unit_price=100, net=1200)
+    cost = _card(_summary(), pid)['cost']
+    assert cost['margin_today']['incl_free_units'] is True
+    assert cost['margin_today']['at_new_cost_pct'] == pytest.approx((100 - 86.67) / 100 * 100, abs=0.01)
+
+
 def test_a_product_with_no_cost_has_no_margin_and_no_badges(cust):
     conn = cust
     pid = _mk_product(conn, base=100.0, cost=0.0)
@@ -613,6 +661,24 @@ def test_multi_line_cells_hold_one_child_so_the_phone_grid_cannot_scatter(tmp_db
     assert set(p.counts) == {'ครั้งที่ซื้อ', 'ราคาล่าสุด', 'ราคาวันนี้', 'ทุน', 'สต็อก'}   # control
     for label, n in p.counts.items():
         assert n == 1, f'{label} has {n} top-level children'
+
+
+def test_manager_sees_at_new_cost_margin_under_both_margins(tmp_db):
+    """#527: last purchase 80 > WACC 60 -> ที่ทุนใหม่ 20.00% shows under BOTH
+    the ราคาล่าสุด and ราคาวันนี้ margins."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    _mk_customer(conn)
+    _clear_customer(conn)
+    pid = _mk_product(conn, name='ทุนใหม่สูงกว่าเฉลี่ย', base=100.0, cost=60.0)
+    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 80.0, ref='RR063')
+    _line(conn, doc_base='IV49533', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=10, unit_price=100, net=1000)
+    name = _name(conn, pid)
+    conn.close()
+    cells = _row_cells(_client('manager').get(f'/customer/code/{quote(TEST_CODE)}').data.decode(), name)
+    assert cells['ราคาล่าสุด'].count('ที่ทุนใหม่ 20.00%') == 1
+    assert cells['ราคาวันนี้'].count('ที่ทุนใหม่ 20.00%') == 1
 
 
 def test_manager_sees_no_cost_text_for_a_costless_product(tmp_db):

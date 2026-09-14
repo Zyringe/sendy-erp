@@ -298,6 +298,13 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
             'ref': lp['reference_no'],
         }
 
+    # #527: ที่ทุนใหม่ — both margins ALSO get a "at replacement cost" reading
+    # when the last purchase cost is above WACC. Judged at the figures as
+    # printed (wacc_pu / lp_pu, both already rounded 2dp), same as every
+    # other badge on this card.
+    above_wacc = has_cost and lp_pu is not None and lp_pu > wacc_pu
+    out['last_purchase_above_wacc'] = above_wacc
+
     if last_row is not None and row_ratio is not None:
         kept = last_row['net']
         # Badges judge the figures at the precision they print: 181.6875 kept
@@ -323,6 +330,14 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
                 'profit': round(profit, 2),
                 'pct': round(profit / kept * 100, 2) + 0.0,   # + 0.0: -0.0 would print "-0.00%"
             }
+            if above_wacc:
+                # Same shape, priced at ทุนซื้อล่าสุด instead of ทุนเฉลี่ย —
+                # freebies too, so a bundle-heavy row doesn't understate the
+                # replacement-cost margin.
+                free_cost_at_lp = sum(round(lp['unit_cost'] * r, 2) * f['qty']
+                                       for f, r in zip(freebie_rows, free_ratios))
+                profit_at_lp = kept - lp_pu * last_row['qty'] - free_cost_at_lp
+                out['margin_last']['at_new_cost_pct'] = round(profit_at_lp / kept * 100, 2) + 0.0
 
     if resolved is not None and resolved['list']['list_for_unit'] != 0:
         internal = resolved['internal']
@@ -336,6 +351,13 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
                 'cost_side': internal['cost_side'],
                 'incl_free_units': internal['margin_incl_free_units'],
             }
+            if above_wacc:
+                # #527: same today's-bundle-deal, priced at ทุนซื้อล่าสุด —
+                # reuses the resolver's own cost_mult so the buy-N-get-M
+                # rule is never re-derived here.
+                new_cost_side = round(lp_pu * internal['cost_mult'], 2)
+                out['margin_today']['at_new_cost_pct'] = (
+                    round((price - new_cost_side) / price * 100, 2) + 0.0)
         out['today_below_wacc'] = has_cost and internal['below_cost_by'] is not None
         ratio = resolved['unit']['ratio']
         if lp is not None and ratio is not None:
@@ -372,6 +394,7 @@ def _customer_product_cards(conn, where, params, include_cost=False):
     """
     import price_lookup
     import vat_math
+    import invoice_formula
 
     rows = [dict(r) for r in conn.execute(f"""
         SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
@@ -401,12 +424,6 @@ def _customer_product_cards(conn, where, params, include_cost=False):
             union.append(r)
     union.sort(key=lambda r: (-r['times_bought'], -r['total_net']))
 
-    # One epoch batch for the whole page (price_lookup.epochs_for_pairs) —
-    # the same price-regime-change detection the call card's stale flag
-    # uses, never re-derived here.
-    pairs = [(r['product_id'], r['unit']) for r in union if r['product_id'] is not None]
-    epoch_map = price_lookup.epochs_for_pairs(conn, pairs) if pairs else {}
-
     cards = []
     for r in union:
         card = dict(r)
@@ -433,14 +450,6 @@ def _customer_product_cards(conn, where, params, include_cost=False):
             price_per_unit = vat_math.cash_from_net(last_row['net'] / last_row['qty'],
                                                       last_row['vat_type'])
 
-            # Bill-level discount: net vs total (the line's own subtotal,
-            # pre-doc-discount) — a float-noise difference (<0.005 บาท) is
-            # not a real discount, never show it.
-            total, net = last_row['total'], last_row['net']
-            bill_discount_pct = None
-            if total and abs(total - net) > 0.005:
-                bill_discount_pct = round((1 - net / total) * 100, 2)
-
             # Freebies: OTHER lines on the SAME document, SAME product, that
             # earned no revenue — shown in their OWN unit (may differ from
             # this row's unit), never restricted by unit.
@@ -450,8 +459,14 @@ def _customer_product_cards(conn, where, params, include_cost=False):
                   AND qty > 0 AND (net IS NULL OR net = 0)
             """, (last_row['doc_base'], pid)).fetchall()
 
-            epoch = epoch_map.get((pid, unit))
-            is_stale = epoch is not None and last_row['date_iso'] < epoch
+            # #527: "list -discount = paid", derived from this line's OWN
+            # numbers (pure helper, reconciliation-guarded) — replaces the
+            # separate VAT-note / bill-discount / stale-note lines the card
+            # used to print. None ("no formula") renders the price alone.
+            formula = invoice_formula.invoice_line_formula(
+                unit_price=last_row['unit_price'], qty=last_row['qty'],
+                discount=last_row['discount'], total=last_row['total'],
+                net=last_row['net'], vat_type=last_row['vat_type'])
 
             card['last'] = {
                 'date_iso': last_row['date_iso'],
@@ -460,9 +475,8 @@ def _customer_product_cards(conn, where, params, include_cost=False):
                 'vat_type': last_row['vat_type'],
                 'unit_price': last_row['unit_price'],
                 'discount': last_row['discount'],
-                'bill_discount_pct': bill_discount_pct,
+                'formula': formula,
                 'freebies': [{'qty': fr['qty'], 'unit': fr['unit']} for fr in freebie_rows],
-                'is_stale': is_stale,
             }
 
         # Today's price = resolve_price with no customer_code, so the
@@ -483,11 +497,25 @@ def _customer_product_cards(conn, where, params, include_cost=False):
             pass  # unit has no resolvable ratio/tier — leave today/stock=None
         else:
             has_list_price = resolved['list']['list_for_unit'] != 0
+            price_promo = resolved['list']['price_promo']
+            # #527: "60.00 -10% = 54.00" only for the percent-shaped branch
+            # of promotions.promo_price — 'percent', or a 'mixed' row
+            # carrying a discount_value. NOT promotions.affects_price (that
+            # predicate also covers 'fixed', which the issue explicitly
+            # keeps on the plain promo_summary text: a fixed promo's
+            # discount_value IS the final price, not a percentage to print
+            # in this formula's shape).
+            promo_affects_price = (
+                price_promo is not None and price_promo['promo_type'] != 'fixed'
+                and price_promo['discount_value'] is not None
+            )
             card['today'] = {
                 'price_per_unit': resolved['answer']['price_per_unit'] if has_list_price else None,
                 'has_list_price': has_list_price,
                 'base_per_piece': resolved['list']['base_per_piece'],
-                'promo': resolved['list']['price_promo'],
+                'promo': price_promo,
+                'list_for_unit': resolved['list']['list_for_unit'],
+                'promo_affects_price': promo_affects_price,
             }
 
             # Stock badge: current stock in BASE units vs this row unit's
