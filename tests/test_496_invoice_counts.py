@@ -172,3 +172,46 @@ def test_accounting_page_period_line(admin):
                      ).get_data(as_text=True)
     m = re.findall(r'(\d+) เอกสาร &nbsp;·&nbsp; (\d+) รายการ', html)
     assert m == [('4', '8')]
+
+
+# ── /products/<id>/pricing (models.get_product_pricing) ──────────────────────
+# Population today, kept: qty > 0 AND unit_price > 0. That drops IV49601's
+# unpriced freebie and the credit note, and keeps IV49604's PRICED freebie
+# (unit_price 160, 100% off), so IV49604 carries two lines at ฿160.
+
+def test_pricing_counts_invoices(seeded):
+    pr = models.get_product_pricing(P1)
+    assert pr['total_invoices'] == 4                  # 01, 02, 03, 04 (6 lines)
+
+    assert len(pr['list_prices']) == 2
+    by_price = {lp['unit_price']: lp for lp in pr['list_prices']}
+    assert by_price[160]['invoice_count'] == 4        # 01, 02, 03, 04 (5 lines)
+    assert by_price[1500]['invoice_count'] == 1       # 03
+
+    assert len(by_price[160]['customers']) == 2
+    under_160 = {c['customer']: c['invoice_count'] for c in by_price[160]['customers']}
+    assert under_160 == {X_NAME: 3, Y_NAME: 1}        # X: 01, 02, 04 (4 lines)
+
+    assert len(pr['effective_per_customer']) == 2
+    eff = {e['customer']: e['invoice_count'] for e in pr['effective_per_customer']}
+    assert eff == {X_NAME: 3, Y_NAME: 1}              # Y: 03 on two lines
+
+
+def test_pricing_page_shows_invoice_counts(admin):
+    html = admin.get(f'/products/{P1}/pricing').get_data(as_text=True)
+    total = re.findall(r'บิลทั้งหมด</div>\s*<div class="stat-card-value">(\d+)</div>', html)
+    assert total == ['4']
+    # ราคาตั้ง table: the ฿160.00 row's จำนวนบิล cell (VAT badge cell in between).
+    row160 = re.findall(r'<td class="fw-600">฿160\.00</td>\s*<td>.*?</td>\s*'
+                        r'<td class="text-end">(\d+)</td>', html, re.S)
+    assert row160 == ['4']
+    # Per-customer sub-table under ฿160 (two customers, so it renders).
+    sub_x = re.findall(r'<td>' + re.escape(X_NAME) + r'</td>\s*<td class="text-subtle">'
+                       + X_CODE + r'</td>\s*<td class="text-end">(\d+)</td>', html)
+    assert sub_x == ['3']
+    # ราคาเฉลี่ย table: the บิล cell after the price cell.
+    eff_x = re.findall(r'<td class="fw-500">' + re.escape(X_NAME) + r'</td>\s*'
+                       r'<td class="text-subtle">' + X_CODE + r'</td>\s*'
+                       r'<td class="text-end">.*?</td>\s*<td class="text-end">(\d+)</td>',
+                       html, re.S)
+    assert eff_x == ['3']
