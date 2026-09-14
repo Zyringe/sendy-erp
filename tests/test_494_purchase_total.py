@@ -15,7 +15,8 @@ import json
 import os
 import re
 import sqlite3
-from urllib.parse import quote
+from html import unescape
+from urllib.parse import quote, urlsplit
 
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
@@ -95,6 +96,13 @@ def _monthly_series(html):
     return json.loads(m.group(1))
 
 
+def _link_paths(html):
+    """Path of every <a href> on the page, query string dropped, so a pin on a
+    document link survives the link gaining a query (#523 adds ?book=...)."""
+    return [urlsplit(unescape(h)).path
+            for h in re.findall(r'<a\b[^>]*\bhref="([^"]*)"', html)]
+
+
 def _row_for(html, marker):
     """The one table row carrying `marker`, so a figure is read off THIS
     customer's row and never off a neighbour's."""
@@ -161,7 +169,9 @@ def test_credit_note_only_customer_renders_negative(tmp_db):
     html = _client().get(f'/customer/code/{quote(SR_CODE)}').data.decode()
 
     # CONTROL: the page resolved this customer and listed its one document.
-    assert 'doc/SR49409"' in html
+    links = _link_paths(html)
+    assert links, 'no <a href> parsed off the page'
+    assert '/sales/doc/SR49409' in links
     assert _header_total(html) == -690.0
     series = _monthly_series(html)
     assert len(series) == 1
@@ -184,7 +194,7 @@ def test_every_surface_shows_the_same_purchase_total(tmp_db):
 
     # Customer page header
     html = c.get(f'/customer/code/{quote(CODE)}').data.decode()
-    assert 'doc/IV49401"' in html                      # CONTROL: this customer's page
+    assert '/sales/doc/IV49401' in _link_paths(html)   # CONTROL: this customer's page
     seen['header'] = _header_total(html)
 
     # /customers list: the row whose รหัส cell is this code
@@ -196,7 +206,7 @@ def test_every_surface_shows_the_same_purchase_total(tmp_db):
 
     # Mobile customer page (name-keyed)
     html = c.get(f'/m/customer/{quote(NAME)}').data.decode()
-    assert 'doc/IV49401"' in html                      # CONTROL: this customer's documents
+    assert '/sales/doc/IV49401' in _link_paths(html)   # CONTROL: this customer's documents
     m = re.search(r'ยอดสะสม \(ก่อน VAT\)</div>\s*<div[^>]*>([^<]+)</div>', html)
     assert m, 'ยอดสะสม card did not render'
     seen['mobile'] = _num(m.group(1))
