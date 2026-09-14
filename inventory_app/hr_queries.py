@@ -8,6 +8,7 @@ Python 3.9 — Optional[...] not `X | None`.
 from __future__ import annotations
 
 import sqlite3
+import unicodedata
 from datetime import date
 from typing import Optional
 
@@ -151,6 +152,27 @@ def _blank_dates_to_none(data: dict) -> None:
     for k in ("start_date", "end_date", "probation_end_date"):
         if k in data and isinstance(data[k], str) and not data[k].strip():
             data[k] = None
+
+
+def _identity_to_digits(data: dict) -> None:
+    """National ID, phone and bank account are stored as bare digits, with
+    "not recorded" always NULL (#464, spec #460). Normalize in the write path.
+
+    Accepted however it was typed — dashes, spaces, parentheses, a line pasted
+    from a chat — because every non-digit is dropped. Thai numerals ๐-๙ are
+    digits, not separators, so they become 0-9 instead of vanishing. A box left
+    empty (or holding only separators) is NULL, never '': the two used to be
+    indistinguishable spellings of "not recorded".
+
+    Display is `filters.py`'s job (thai_phone / bank_account / mask_national_id);
+    storing the separators is what let two shapes of bank account accumulate.
+    """
+    for k in ("national_id", "phone", "bank_account_no"):
+        if k in data:
+            raw = "" if data[k] is None else str(data[k])
+            digits = "".join(str(unicodedata.decimal(c))
+                             for c in raw if c.isdecimal())
+            data[k] = digits or None
 
 
 def _insert_employee(c: sqlite3.Connection, data: dict) -> int:
