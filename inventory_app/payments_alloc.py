@@ -84,6 +84,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import date
+from statistics import median
 from typing import Optional
 
 from config import DATABASE_PATH
@@ -611,6 +612,87 @@ def invoice_settlement(customer=None, date_from=None, date_to=None,
     out = [_reconcile(r) for r in raw]
     out.sort(key=lambda d: (d['invoice_date'] or '', d['doc_base']))
     return out
+
+
+# ── 1a. payment_speed ────────────────────────────────────────────────────────
+# Put, 2026-09-13 (#499): the latest 20 settled invoices, no figure below 3.
+PAYMENT_SPEED_WINDOW = 20
+PAYMENT_SPEED_MIN_INVOICES = 3
+
+
+def payment_speed(customer_code, conn=None, db_path=None):
+    """How many days this customer usually takes to pay (read-only).
+
+    Receipt history over SETTLED invoices: the median of (settling receipt
+    date − invoice date) over the customer's latest 20 settled invoices,
+    ordered by invoice date. It is neither **outstanding** nor **chaseable**
+    (CONTEXT.md, ADR 0012) — those are two populations of UNPAID bills in the
+    Express snapshot, and this figure is about bills that were paid. Do not
+    total it, rank AR by it, or label it with those words.
+
+    Why this reads the settlement engine: `ar_followup`'s "invoice_settlement
+    is diagnostic only" rule protects AR TOTALS, which Express owns. This
+    figure needs the date each invoice was settled, which the snapshot does not
+    carry at all; `invoice_settlement` is where that date is already worked out
+    (credit notes, legacy NULL-amount links, cancelled receipts).
+
+      settled     status 'paid' or 'overpaid' AND a settling receipt. Unpaid,
+                  partial and fully-credited invoices stay out, and so does an
+                  over-credited one with no receipt (the engine reads it as
+                  'overpaid'). Write-offs have no receipt, so never enter.
+      settle date the invoice's latest active receipt (`last_payment_date`) —
+                  for instalments, the one that completed it. A post-dated
+                  cheque counts on its receipt (RE) date: receipts carry no
+                  clearing date, so this is never the day the cash cleared.
+      customer    the exact `customer_code`. A bill name shared by another code
+                  never leaks in.
+
+    Returns None below 3 settled invoices (or for a blank code), else:
+      median_days   statistics.median of the per-invoice days (can end in .5)
+      invoices      invoices in the sample (at most 20)
+      receipts      distinct active receipts that paid them, every instalment
+                    included — for a shop a rep collects from, how many
+                    collection rounds the figure actually reflects
+      first_invoice_date, last_invoice_date   the sample's invoice-date span
+      sample        [{doc_base, invoice_date, settle_date, days}], oldest first
+    """
+    if not customer_code:
+        # The code filter is skipped for a falsy code: without this, a blank
+        # code would read every customer's invoices.
+        return None
+    with _ConnCtx(conn, db_path) as c:
+        settled = [r for r in invoice_settlement(customer_code=customer_code, conn=c)
+                   if r['status'] in ('paid', 'overpaid') and r['last_payment_date']]
+        # invoice_settlement is sorted by (invoice_date, doc_base): the tail is
+        # the latest by invoice date.
+        sample = settled[-PAYMENT_SPEED_WINDOW:]
+        if len(sample) < PAYMENT_SPEED_MIN_INVOICES:
+            return None
+        docs = [r['doc_base'] for r in sample]
+        receipts = c.execute(
+            f"""SELECT COUNT(DISTINCT rp.id)
+                  FROM paid_invoices pi
+                  JOIN received_payments rp ON rp.id = pi.re_id AND rp.cancelled = 0
+                 WHERE pi.doc_kind = 'IV'
+                   AND pi.doc_no IN ({','.join('?' * len(docs))})""",
+            docs,
+        ).fetchone()[0]
+
+    rows = [{
+        'doc_base': r['doc_base'],
+        'invoice_date': r['invoice_date'],
+        'settle_date': r['last_payment_date'],
+        'days': (date.fromisoformat(r['last_payment_date'])
+                 - date.fromisoformat(r['invoice_date'])).days,
+    } for r in sample]
+    return {
+        'median_days': median(r['days'] for r in rows),
+        'invoices': len(rows),
+        'receipts': receipts,
+        'first_invoice_date': rows[0]['invoice_date'],
+        'last_invoice_date': rows[-1]['invoice_date'],
+        'sample': rows,
+    }
 
 
 # ── 1b. unattributable_sr_count ──────────────────────────────────────────────
