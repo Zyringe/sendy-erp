@@ -291,6 +291,33 @@ def test_customer_page_notes_card_shows_placeholder_with_no_entries(tmp_db):
     assert 'ยังไม่มีบันทึก' in html
 
 
+def test_soft_deleted_note_is_hidden_control_live_note_shows(tmp_db):
+    """N8: no PAGE-level test pinned that a soft-deleted note stays hidden
+    here — it was only covered indirectly, via call_card.get_log's own
+    tests, and only because this route happens to call that shared
+    function rather than reading customer_call_log itself."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _mk_customer(conn, TEST_CODE, TEST_NAME)
+    _clear(conn, TEST_CODE)
+    conn.execute(
+        "INSERT INTO customer_call_log (customer_code, kind, body, created_by) "
+        "VALUES (?,?,?,?)", (TEST_CODE, 'note', 'บันทึกที่ยังอยู่', 'sanchai'))
+    conn.execute(
+        "INSERT INTO customer_call_log (customer_code, kind, body, created_by, deleted_at, deleted_by) "
+        "VALUES (?,?,?,?,datetime('now'),?)",
+        (TEST_CODE, 'note', 'บันทึกที่ถูกลบแล้ว', 'sanchai', 'sanchai'))
+    conn.commit()
+    conn.close()
+
+    c = _client(tmp_db)
+    html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
+    # Control: the live note DOES render.
+    assert 'บันทึกที่ยังอยู่' in html
+    assert 'บันทึกที่ถูกลบแล้ว' not in html
+
+
 def test_staff_sees_the_add_note_box(tmp_db):
     import sqlite3
     conn = sqlite3.connect(tmp_db)
