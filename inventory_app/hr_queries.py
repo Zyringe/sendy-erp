@@ -8,6 +8,7 @@ Python 3.9 — Optional[...] not `X | None`.
 from __future__ import annotations
 
 import sqlite3
+import unicodedata
 from datetime import date
 from typing import Optional
 
@@ -153,6 +154,29 @@ def _blank_dates_to_none(data: dict) -> None:
             data[k] = None
 
 
+def _identity_to_digits(data: dict) -> None:
+    """National ID, phone and bank account are stored as bare digits, with
+    "not recorded" always NULL (#464, spec #460). Normalize in the write path.
+
+    Accepted however it was typed — dashes, spaces, parentheses, a line pasted
+    from a chat — because every non-digit is dropped. Thai numerals ๐-๙ are
+    digits, not separators, so they become 0-9 instead of vanishing. A box left
+    empty (or holding only separators) is NULL, never '': the two used to be
+    indistinguishable spellings of "not recorded".
+
+    Display is `filters.py`'s job (thai_phone / bank_account / mask_national_id);
+    storing the separators is what let two shapes of bank account accumulate.
+    Rows written before this existed were brought to the same shape by
+    migration 181.
+    """
+    for k in ("national_id", "phone", "bank_account_no"):
+        if k in data:
+            raw = "" if data[k] is None else str(data[k])
+            digits = "".join(str(unicodedata.decimal(c))
+                             for c in raw if c.isdecimal())
+            data[k] = digits or None
+
+
 def _insert_employee(c: sqlite3.Connection, data: dict) -> int:
     """INSERT the employee row on `c` and return its id — WITHOUT committing.
 
@@ -162,6 +186,7 @@ def _insert_employee(c: sqlite3.Connection, data: dict) -> int:
     """
     import re
     _blank_dates_to_none(data)
+    _identity_to_digits(data)
     code = (data.get("emp_code") or "").strip()
     m = re.fullmatch(r"EMP(\d+)", code)
     explicit_id = int(m.group(1)) if m else None
@@ -316,6 +341,7 @@ def create_employee_with_initial_salary(
 def update_employee(emp_id: int, data: dict,
                     conn: Optional[sqlite3.Connection] = None):
     _blank_dates_to_none(data)
+    _identity_to_digits(data)
     c, owned = _conn(conn)
     try:
         # on_payroll: checkbox sends "1" when checked, nothing when unchecked
