@@ -25,9 +25,11 @@ inode; the next request opens the new file.
 import json
 import os
 import sqlite3
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit
 
 from flask import (g, session, has_request_context, flash, redirect, url_for,
-                   request, jsonify, render_template)
+                   request, jsonify, render_template, current_app)
+from werkzeug.exceptions import HTTPException
 
 import config
 import database
@@ -201,6 +203,29 @@ def _read_mismatch(ep, values, carried, book):
         back_url=url_for(_ENTITY_LIST.get(ep, ep))), 409
 
 
+def _landing(raw, book):
+    """The switch control's landing target (#501), or None to keep today's
+    landing. Honoured only as an internal path that routes, by GET, to a page
+    `book` can render (the parity set for the VAT book). The redirect is
+    REBUILT from the matched route, never echoed, so no spelling of an
+    outside URL (a scheme, `//host`, `/\\host`) can survive it."""
+    if not raw or not raw.startswith('/') or raw.startswith(('//', '/\\')):
+        return None
+    parts = urlsplit(raw)
+    if parts.scheme or parts.netloc:
+        return None
+    adapter = current_app.create_url_adapter(request)
+    try:
+        ep, view_args = adapter.match(unquote(parts.path), method='GET')
+    except HTTPException:
+        return None
+    if ep in INFRA_ENDPOINTS or (book != DEFAULT_BOOK and ep not in PARITY_ENDPOINTS):
+        return None
+    path = adapter.build(ep, view_args, method='GET')
+    query = urlencode(parse_qsl(parts.query, keep_blank_values=True))
+    return f'{path}?{query}' if query else path
+
+
 def _expected_book_from_request():
     """The book the submitting page was RENDERED under (stale-tab binding).
     Header first (fetch writes); then the injected hidden form field — but only
@@ -260,6 +285,10 @@ def init_book_registry(app):
                   'warning')
             return redirect(request.referrer or url_for('dashboard'))
         session['active_book'] = target
+        # The #501 page's switch control names the entity to land back on.
+        landing = _landing(request.form.get('next'), target)
+        if landing:
+            return redirect(landing)
         if target == DEFAULT_BOOK:
             return redirect(url_for('dashboard'))
         # Land on a parity page — the dashboard is blocked in VAT mode.
