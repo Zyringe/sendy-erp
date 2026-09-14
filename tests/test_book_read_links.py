@@ -448,3 +448,50 @@ def test_switch_honours_an_internal_landing_the_target_book_can_render(books):
 
     r = c.post('/book/toggle', data={'book': 'novat', 'next': f'/customer/code/{CODE}'})
     assert urlsplit(r.headers['Location']).path == f'/customer/code/{CODE}'
+
+
+# ── a document that is not in this book: 404, but inside the layout ─────────
+
+class _Tags(HTMLParser):
+    def __init__(self, tag):
+        super().__init__()
+        self.tag, self.found = tag, []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == self.tag:
+            self.found.append(dict(attrs))
+
+
+def _tags(html, tag):
+    p = _Tags(tag)
+    p.feed(html)
+    return p.found
+
+
+@pytest.mark.parametrize('path,back', [
+    ('/sales/doc/ZZ501NOPE', '/sales'),
+    ('/purchases/doc/ZZ501NOPE', '/purchases'),
+])
+def test_document_not_found_is_a_404_inside_the_layout(books, path, back):
+    r = _client().get(path)
+    body = r.get_data(as_text=True)
+    assert r.status_code == 404
+    notice = _notice(body, 'not_found')
+    assert notice.found, 'bare not-found response, no page'
+    assert 'ZZ501NOPE' in notice.text
+    backs = [a for a in notice.links if 'data-book-link-back' in a]
+    assert len(backs) == 1 and backs[0]['href'] == back
+    # the layout: the sidebar, and the book strip whose form is the switch
+    assert [a for a in _tags(body, 'aside') if a.get('id') == 'sidebar']
+    toggles = [f for f in _tags(body, 'form')
+               if urlsplit(f.get('action', '')).path == '/book/toggle']
+    assert len(toggles) == 1, 'the banner (and its switch) did not render'
+
+
+def test_document_not_found_under_the_vat_book_keeps_the_red_banner(books):
+    r = _client('vat').get(f'/sales/doc/{MAIN_DOC}')   # a main-book doc, no stamp
+    body = r.get_data(as_text=True)
+    assert r.status_code == 404
+    assert _notice(body, 'not_found').found
+    assert VAT_BANNER in body
+    assert MAIN_NAME not in body
