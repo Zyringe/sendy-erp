@@ -154,3 +154,21 @@ def test_trade_dashboard_page_shows_invoice_counts(admin):
     cust_cell = re.search(re.escape(X_NAME) + r'</a>\s*</td>\s*<td class="text-end font-mono '
                           r'text-subtle">(\d+)</td>', html)
     assert cust_cell and cust_cell.group(1) == '3'
+
+
+# ── /accounting (models.get_accounting_summary) ──────────────────────────────
+
+def test_accounting_period_counts_invoices_below_lines(seeded):
+    s = models.get_accounting_summary(MONTH_FROM, MONTH_TO)
+    # Revenue population excludes SR/HS: 4 invoices over 8 lines. The two
+    # numbers used to be identical on every period.
+    assert s['line_count'] == 8
+    assert s['doc_count'] == 4
+    assert s['doc_count'] < s['line_count']
+
+
+def test_accounting_page_period_line(admin):
+    html = admin.get(f'/accounting?date_from={MONTH_FROM}&date_to={MONTH_TO}'
+                     ).get_data(as_text=True)
+    m = re.findall(r'(\d+) เอกสาร &nbsp;·&nbsp; (\d+) รายการ', html)
+    assert m == [('4', '8')]
