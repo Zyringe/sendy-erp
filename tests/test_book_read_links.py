@@ -498,3 +498,50 @@ def test_document_not_found_under_the_vat_book_keeps_the_red_banner(books):
     assert _notice(body, 'not_found').found
     assert VAT_BANNER in body
     assert MAIN_NAME not in body
+
+
+# ── the two JS-built document links (marketplace order modal + settlement) ──
+
+class _Scripts(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.inside, self.bodies = False, []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'script' and not dict(attrs).get('src'):
+            self.inside = True
+            self.bodies.append('')
+
+    def handle_endtag(self, tag):
+        if tag == 'script':
+            self.inside = False
+
+    def handle_data(self, data):
+        if self.inside:
+            self.bodies[-1] += data
+
+
+@pytest.mark.parametrize('path,builders', [
+    ('/marketplace', 1),              # order-detail modal
+    ('/marketplace/settlement', 2),   # the modal + the settlement list's ivCell
+])
+def test_marketplace_js_document_links_carry_the_render_book(books, path, builders):
+    """⚠ This pins the rendered SOURCE, not a click — the JS only runs in a
+    browser (Put's check). Each builder must take its URL from a url_for-built
+    template, so the stamp comes from the same hook as every Jinja link."""
+    import json
+    import re
+    r = _client().get(path)
+    assert r.status_code == 200
+    p = _Scripts()
+    p.feed(r.get_data(as_text=True))
+    js = '\n'.join(p.bodies)
+    assert 'openDetail' in js, 'control: the order modal script is not on the page'
+    templates = [json.loads(t) for t in
+                 re.findall(r'SALES_DOC_URL = ("[^"\n]*");', js)]
+    assert len(templates) == builders, templates
+    for t in templates:
+        assert urlsplit(t).path == '/sales/doc/__DOC__'
+        assert _book_of(t) == ['novat'], t
+    # no builder still types the bare path by hand
+    assert '/sales/doc/${' not in js
