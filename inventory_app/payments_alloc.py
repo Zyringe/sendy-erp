@@ -639,7 +639,11 @@ def payment_speed(customer_code, conn=None, db_path=None):
       settled     status 'paid' or 'overpaid' AND a settling receipt. Unpaid,
                   partial and fully-credited invoices stay out, and so does an
                   over-credited one with no receipt (the engine reads it as
-                  'overpaid'). Write-offs have no receipt, so never enter.
+                  'overpaid'). Every invoice in `ar_writeoffs` stays out too —
+                  the WHOLE table, not only `excludes_revenue` rows: Express
+                  can still close a forgiven bill with a receipt (the 3
+                  วรสวัสดิ์ giveaway bills, RE6900376 on 2026-07-30), and that
+                  receipt is bookkeeping, not the customer paying.
       settle date the invoice's latest active receipt (`last_payment_date`) —
                   for instalments, the one that completed it. A post-dated
                   cheque counts on its receipt (RE) date: receipts carry no
@@ -661,8 +665,12 @@ def payment_speed(customer_code, conn=None, db_path=None):
         # code would read every customer's invoices.
         return None
     with _ConnCtx(conn, db_path) as c:
+        # Before the window and the threshold, so a written-off bill can
+        # neither take a slot in the 20 nor make up the 3.
+        written_off = {r[0] for r in c.execute("SELECT doc_no FROM ar_writeoffs")}
         settled = [r for r in invoice_settlement(customer_code=customer_code, conn=c)
-                   if r['status'] in ('paid', 'overpaid') and r['last_payment_date']]
+                   if r['status'] in ('paid', 'overpaid') and r['last_payment_date']
+                   and r['doc_base'] not in written_off]
         # invoice_settlement is sorted by (invoice_date, doc_base): the tail is
         # the latest by invoice date.
         sample = settled[-PAYMENT_SPEED_WINDOW:]
