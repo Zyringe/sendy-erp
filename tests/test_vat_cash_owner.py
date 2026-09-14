@@ -39,6 +39,17 @@ def test_cash_from_net(net, vat_type, expected):
     assert vat_math.cash_from_net(net, vat_type) == pytest.approx(expected)
 
 
+def test_the_multiplier_is_derived_from_the_rate_and_stays_bit_identical():
+    """#485: the rate is the source and the multiplier is built from it, and
+    the multiplier must stay the exact double the literal 1.07 was, or
+    cash_sql's text and every SUM over it could move. Only this direction is
+    safe: 1.07 - 1 is 0.07000000000000006, which can shift a VAT line at a
+    half-satang boundary."""
+    assert vat_math.VAT_RATE == 0.07
+    assert vat_math.VAT_MULTIPLIER == 1 + vat_math.VAT_RATE
+    assert vat_math.VAT_MULTIPLIER.hex() == (1.07).hex()
+
+
 def test_cash_from_net_does_not_round():
     """Callers round where they always did — some at the row, some after SUM().
     Rounding inside would silently move every one of them."""
@@ -160,3 +171,44 @@ def test_vat_lands_on_the_invoice_total_not_on_each_line():
     per_line = sum(round(vat_math.cash_from_net(n, 2), 2) for n in IV6901440_NETS)
     assert round(per_line, 2) == 14209.30
     assert round(per_line, 2) != 14209.29
+
+
+def test_the_invoice_page_prints_the_paper_bills_vat_line(tmp_db):
+    """#485: the same bill through the page that shows it. /sales/doc's VAT
+    line takes its rate from vat_math now; the paper says VAT ฿929.58 and
+    ฿14,209.29 in total.
+
+    The four lines are seeded under a doc_base the dev DB cannot hold (asserted
+    absent first), so nothing is inherited. Cells are read by position among
+    the tfoot's money cells, not by their labels, which #495 may reword."""
+    import re
+    import sqlite3
+    from app import app as flask_app
+
+    doc = 'IVVATLINE485'
+    conn = sqlite3.connect(tmp_db, timeout=10)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM sales_transactions WHERE doc_no LIKE ?",
+                            (doc + '-%',)).fetchone()[0] == 0, 'fixture would inherit rows'
+        conn.executemany(
+            "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, customer, qty,"
+            " unit, unit_price, vat_type, total, net, synced_to_stock)"
+            " VALUES ('2026-08-27', ?, ?, 'ลูกค้าทดสอบ', 1, 'ตัว', ?, 2, ?, ?, 0)",
+            [('{}-{}'.format(doc, i), doc, n, n, n)
+             for i, n in enumerate(IV6901440_NETS, 1)])
+        conn.commit()
+    finally:
+        conn.close()
+
+    flask_app.config['TESTING'] = True
+    client = flask_app.test_client()
+    with client.session_transaction() as sess:
+        sess['user_id'] = 1
+        sess['username'] = 'test-admin'
+        sess['role'] = 'admin'
+    resp = client.get('/sales/doc/' + doc)
+    assert resp.status_code == 200
+    tfoot = re.search(r'<tfoot>(.*?)</tfoot>', resp.get_data(as_text=True), re.S).group(1)
+    money = re.findall(r'<td class="text-end[^"]*">\s*([\d,]+\.\d\d)\s*</td>', tfoot)
+    # รวมทั้งสิ้น (total, net) · VAT · ยอดรวมรวม VAT
+    assert money == ['13,279.71', '13,279.71', '929.58', '14,209.29']

@@ -119,6 +119,9 @@ SHAPES = {
     'bare float':         'cash = net * 1.07\n',
     'conditional float':  'cash = base * (1.07 if vt == 2 else 1.0)\n',
     'triple-quoted SQL':  'X = """\n  SUM(CASE WHEN vat_type=2 THEN net*1.07 ELSE net END)\n"""\n',
+    # #485: vat_math.VAT_RATE owns the rate too, so a hand-typed one is a copy.
+    'rate as a float':    'vat = net * 0.07\n',
+    'rate in SQL':        'X = "SELECT SUM(net) * 0.07 FROM sales_transactions"\n',
 }
 
 
