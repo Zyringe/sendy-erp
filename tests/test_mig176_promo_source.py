@@ -11,6 +11,13 @@ batch to `catalog 2024-01-01 (...)`, so on any prod-derived DB the pattern
 matches 0 rows. `BATCH_PATTERN` still mirrors the migration's own hard-coded
 literal, which is historical and is what the forward stamp matches.
 
+The non-batch rows are not scenery: each sits on the far side of a WHERE
+clause this file pins (the stamp's name pattern: the 'manual test' control;
+the un-stamp's `date_start` clause: the operator-edited row; its `source`
+clause: the manual promo dated 2026-06-01). Without them, deleting that clause
+would change no row (verification-discipline.md, "a test that cannot fail",
+shape #8).
+
 Drop-first fixture: the live DB this is copied from may already have 176
 applied (init_db() applies any migration file present the moment any test
 imports `app`), so the `db` fixture rolls back to a known pre-176 state
@@ -266,6 +273,16 @@ def test_rollback_drops_column_unstamps_only_migrated_rows_restores_trigger_bodi
     n_batch = _n_batch(conn)
     assert n_batch == N_BATCH_SEEDED, "the batch must be exactly the rows this test seeded"
     control_id = _insert_control_row(conn)
+    # FAR SIDE of the un-stamp's `source = 'catalog-import'` clause: a promo the
+    # stamp never owned that carries the stamp's own date. Its own fresh product,
+    # since it is price-shaped (migration 177).
+    far_side_id = conn.execute(
+        "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value,"
+        " date_start, is_active) VALUES (?, 'manual dated 2026-06-01', 'percent', 10,"
+        " '2026-06-01', 1)",
+        (_mk_product(conn, "mig176 far side"),),
+    ).lastrowid
+    conn.commit()
 
     conn.executescript(MIG.read_text(encoding="utf-8"))
     # CONTROL: it really was applied.
@@ -283,6 +300,8 @@ def test_rollback_drops_column_unstamps_only_migrated_rows_restores_trigger_bodi
     ).fetchall()]
     assert len(dates) == N_BATCH_SEEDED  # count first: all() over no rows is True
     assert all(d is None for d in dates), "the batch's date_start must roll back to NULL"
+    assert _date_start(conn, far_side_id) == '2026-06-01', (
+        "the rollback un-stamped a promo the migration never stamped")
 
     control = conn.execute(
         "SELECT promo_name FROM promotions WHERE id = ?", (control_id,)
