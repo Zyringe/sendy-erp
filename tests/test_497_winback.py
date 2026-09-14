@@ -222,6 +222,66 @@ def test_not_flagged_when_days_since_is_within_the_median_gap(cust):
     assert rows == []
 
 
+def test_median_not_mean_or_min_and_strict_greater_than(cust):
+    """F4: every OTHER fixture in this file has exactly 3 dates (2 gaps),
+    where median == mean and min never flips a verdict — so `statistics.mean`,
+    `min(gaps)`, and `days_since >= med_gap` (instead of `>`) all silently
+    pass the rest of the suite. This fixture has 4 dates / 3 SKEWED gaps
+    (5, 40, 300 days: median 40, mean 115, min 5) and pins all three
+    decisions with one shared dataset."""
+    conn, pid = cust
+    d0 = dt.date(2020, 1, 1)
+    d1 = d0 + dt.timedelta(days=5)
+    d2 = d1 + dt.timedelta(days=40)
+    d3 = d2 + dt.timedelta(days=300)
+    dates = [d0, d1, d2, d3]
+    for i, d in enumerate(dates):
+        _line(conn, doc_base=f'IV4980{i}', suffix=1, pid=pid, date_iso=d.isoformat(),
+              qty=1, unit_price=100, net=100)
+
+    import winback
+    where, params = _scope()
+
+    # median=40: 60 days since the last purchase must flag (60 > 40), even
+    # though it would NOT flag under mean (60 is not > 115).
+    rows = winback.compute_winback(conn, where, params, today=d3 + dt.timedelta(days=60))
+    assert len(rows) == 1
+    assert rows[0]['median_gap_days'] == 40
+
+    # median=40: 20 days since must NOT flag (20 < 40), even though it WOULD
+    # flag under min (20 > 5).
+    rows = winback.compute_winback(conn, where, params, today=d3 + dt.timedelta(days=20))
+    assert rows == []
+
+    # Exactly AT the median gap (40) must NOT flag — the rule is strictly
+    # ">", not ">=".
+    rows = winback.compute_winback(conn, where, params, today=d3 + dt.timedelta(days=40))
+    assert rows == []
+
+
+def test_keyed_by_product_and_unit_not_product_alone(cust):
+    """F5: every other fixture buys a product in exactly one unit, so
+    collapsing the unit out of the key (e.g. grouping by product_id alone)
+    would silently pass. Same product, ตัว lapsed + โหล fresh — only
+    (pid, 'ตัว') may be flagged."""
+    conn, pid = cust
+    for i, d in enumerate(['2020-01-01', '2020-02-01', '2020-03-01']):
+        _line(conn, doc_base=f'IV4981{i}', suffix=1, pid=pid, date_iso=d,
+              qty=1, unit_price=100, net=100, unit='ตัว')
+    # โหล: same cadence, but bought again TODAY -> never flagged.
+    today = dt.date(2026, 1, 1)
+    for i, d in enumerate(['2025-11-01', '2025-12-01', today.isoformat()]):
+        _line(conn, doc_base=f'IV4982{i}', suffix=1, pid=pid, date_iso=d,
+              qty=1, unit_price=1000, net=1000, unit='โหล')
+
+    import winback
+    where, params = _scope()
+    rows = winback.compute_winback(conn, where, params, today=today)
+    keys = {(r['product_id'], r['unit']) for r in rows}
+    assert (pid, 'ตัว') in keys
+    assert (pid, 'โหล') not in keys
+
+
 def test_rows_with_no_product_id_are_skipped(cust):
     conn, pid = cust
     for i, d in enumerate(['2024-01-01', '2024-02-01', '2024-03-01']):
