@@ -329,3 +329,39 @@ def test_product_trade_docs_cap_counts_invoices(seeded):
         "ORDER BY MAX(date_iso) DESC, doc_base LIMIT 200", (P3,))]
     assert [r['doc_base'] for r in d['docs']] == newest_200
     assert all(r['units'] == [{'unit': 'ตัว', 'qty': 6, 'free_qty': 1}] for r in d['docs'])
+
+
+def _cells(row):
+    return [re.sub(r'\s+', ' ', c).strip()
+            for c in re.findall(r'<td[^>]*>(.*?)</td>', row, re.S)]
+
+
+def test_product_trade_page_shows_invoices(admin):
+    html = admin.get(f'/products/{P1}/trade').get_data(as_text=True)
+    chips = re.findall(r'class="btn btn-outline-secondary[^"]*">([^<]+)</a>', html)
+    assert chips == ['ทั้งหมด 5', 'ตัว 5', 'แผง 1']   # ทั้งหมด is not 5 + 1
+    card = re.findall(r'จำนวนเอกสาร</div>\s*<div class="stat-card-value text-warning">'
+                      r'(\d+)</div>', html)
+    assert card == ['5']
+    top_x = re.findall(re.escape(X_NAME) + r'</a>\s*</td>(?:\s*<td[^>]*>[^<]*</td>){2}\s*'
+                       r'<td class="text-end font-mono text-subtle">(\d+)</td>', html)
+    assert top_x == ['4']
+
+    # รายการเอกสารล่าสุด: one row per invoice, each linked once.
+    assert html.count('รายการเอกสารล่าสุด') == 1
+    section = html.split('รายการเอกสารล่าสุด', 1)[1].split('</table>', 1)[0]
+    assert re.search(r'\((\d+) รายการ\)', section).group(1) == '5'
+    rows = re.findall(r'<tr>(.*?)</tr>', section.split('<tbody>', 1)[1], re.S)
+    assert len(rows) == 5
+    by_doc = {}
+    for row in rows:
+        links = re.findall(r'href="/sales/doc/([^"]+)"', row)
+        assert len(links) == 1
+        by_doc[links[0]] = _cells(row)
+    assert sorted(by_doc) == ['IV49601', 'IV49602', 'IV49603', 'IV49604', 'SR49601']
+    assert all(len(c) == 5 for c in by_doc.values())    # วันที่ เลขเอกสาร ลูกค้า จำนวน ยอด
+    assert by_doc['IV49601'][3] == '27.0 ตัว (แถม 3.0)'
+    assert by_doc['IV49601'][4] == '3,840.00'
+    assert by_doc['IV49603'][3] == '2.0 แผง<br>4.0 ตัว'
+    assert by_doc['IV49604'][3] == '11.0 ตัว (แถม 1.0)'
+    assert by_doc['SR49601'][3] == '-3.0 ตัว'

@@ -257,6 +257,11 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
     that unit. The unit-chips breakdown (`units`) is always computed from the
     product+dates conds WITHOUT the unit cond, so the chips keep showing
     every unit's count even while one is active.
+
+    Every count is invoices, COUNT(DISTINCT doc_base): doc_no is one LINE of
+    an invoice, and one invoice can carry this product on several lines (a
+    paid line plus a ฿0 freebie, or two units) (#496). So the unit chips can
+    add up to more than `all_units_doc_count`, the "ทั้งหมด" chip.
     """
     conn = get_connection()
     conds = ['s.product_id = ?']
@@ -276,7 +281,7 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
     ).fetchone()
 
     summary = conn.execute(f"""
-        SELECT COUNT(DISTINCT s.doc_no) AS doc_count,
+        SELECT COUNT(DISTINCT s.doc_base) AS doc_count,
                COALESCE(SUM(s.net), 0)  AS total_net,
                COALESCE(SUM(s.qty), 0)  AS total_qty,
                MIN(s.date_iso)          AS first_date,
@@ -289,7 +294,7 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
         SELECT s.customer,
                SUM(s.qty)            AS total_qty,
                SUM(s.net)            AS total_net,
-               COUNT(DISTINCT s.doc_no) AS doc_count
+               COUNT(DISTINCT s.doc_base) AS doc_count
         FROM sales_transactions s
         WHERE {where}
           AND s.customer IS NOT NULL AND s.customer != ''
@@ -300,7 +305,7 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
 
     monthly = conn.execute(f"""
         SELECT strftime('%Y-%m', s.date_iso) AS month,
-               COUNT(DISTINCT s.doc_no) AS doc_count,
+               COUNT(DISTINCT s.doc_base) AS doc_count,
                SUM(s.qty)  AS total_qty,
                SUM(s.net)  AS total_net
         FROM sales_transactions s
@@ -309,25 +314,55 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
         ORDER BY month
     """, params).fetchall()
 
-    docs = conn.execute(f"""
-        SELECT s.date_iso, s.doc_no, s.customer,
-               SUM(s.qty) AS total_qty,
-               SUM(s.net) AS total_net,
-               MIN(s.unit) AS unit
+    # One row per INVOICE, newest first; the 200 cap counts invoices.
+    docs = [dict(r) for r in conn.execute(f"""
+        SELECT s.doc_base,
+               MAX(s.date_iso) AS date_iso,
+               MAX(s.customer) AS customer,
+               SUM(s.net)      AS total_net
         FROM sales_transactions s
         WHERE {where}
-        GROUP BY s.doc_no
-        ORDER BY s.date_iso DESC, s.doc_no
+        GROUP BY s.doc_base
+        ORDER BY date_iso DESC, s.doc_base
         LIMIT 200
-    """, params).fetchall()
+    """, params).fetchall()]
+
+    # จำนวน per unit on each listed invoice, freebies included and also
+    # counted apart ("27 ใบ (แถม 3)"). A freebie is the customer page's own
+    # definition: a line of the product that earned nothing. Units are never
+    # summed into each other.
+    if docs:
+        by_doc = {}
+        for r in conn.execute(f"""
+            SELECT s.doc_base, s.unit,
+                   SUM(s.qty) AS qty,
+                   SUM(CASE WHEN s.qty > 0 AND (s.net IS NULL OR s.net = 0)
+                            THEN s.qty ELSE 0 END) AS free_qty
+            FROM sales_transactions s
+            WHERE {where} AND s.doc_base IN ({','.join('?' * len(docs))})
+            GROUP BY s.doc_base, s.unit
+            ORDER BY s.doc_base, MIN(s.id)
+        """, params + [d['doc_base'] for d in docs]):
+            by_doc.setdefault(r['doc_base'], []).append(
+                {'unit': r['unit'], 'qty': r['qty'], 'free_qty': r['free_qty']})
+        for d in docs:
+            d['units'] = by_doc[d['doc_base']]
 
     units = conn.execute(f"""
-        SELECT s.unit, COUNT(DISTINCT s.doc_no) AS doc_count
+        SELECT s.unit, COUNT(DISTINCT s.doc_base) AS doc_count
         FROM sales_transactions s
         WHERE {base_where}
         GROUP BY s.unit
         ORDER BY doc_count DESC
     """, base_params).fetchall()
+
+    # The "ทั้งหมด" chip: invoices across every unit, like the chips never
+    # narrowed by the active filter. Not the chips' sum (see docstring).
+    all_units_doc_count = conn.execute(f"""
+        SELECT COUNT(DISTINCT s.doc_base)
+        FROM sales_transactions s
+        WHERE {base_where}
+    """, base_params).fetchone()[0]
 
     conn.close()
     return {
@@ -336,10 +371,11 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
         'date_to':    date_to,
         'unit':       unit,
         'units':      [dict(r) for r in units],
+        'all_units_doc_count': all_units_doc_count,
         'summary':    dict(summary),
         'top_customers': [dict(r) for r in top_customers],
         'monthly':    [dict(r) for r in monthly],
-        'docs':       [dict(r) for r in docs],
+        'docs':       docs,
     }
 
 
