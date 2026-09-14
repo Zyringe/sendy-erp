@@ -599,3 +599,28 @@ def test_call_card_still_reads_top_products_unaffected(tmp_db):
     import models
     data = models.get_customer_summary(TEST_NAME)
     assert data['top_products'][0]['product_id'] == pid_costly
+
+
+def test_call_card_summary_region_is_phak_not_the_retired_region_id(tmp_db):
+    """#528 (code-review finding): get_customer_summary is the one place that
+    still read customers.region_id -> regions after the retirement — unused
+    by call/card.html today, but a loaded gun for whoever wires it in next.
+    Pin it to customer_geo.region_of, same as every other surface."""
+    import sqlite3
+    import customer_geo
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _mk_customer(conn)
+    conn.execute("UPDATE customers SET address = ? WHERE code = ?",
+                 ('123 ถ.สุขุมวิท ชลบุรี', TEST_CODE))
+    conn.commit()
+    _clear_customer(conn)
+    pid = _mk_product(conn)
+    _line(conn, doc_base='IV49361', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=1, unit_price=10, net=10, vat_type=0)
+    conn.close()
+
+    import models
+    data = models.get_customer_summary(TEST_NAME)
+    assert data['region'] == customer_geo.region_of('123 ถ.สุขุมวิท ชลบุรี')
+    assert data['region'] == 'ภาคตะวันออก'  # control: the address really parses

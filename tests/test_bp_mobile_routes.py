@@ -65,12 +65,11 @@ def test_sales_trip_outstanding_ignores_cancelled_receipts(tmp_db):
     import sqlite3
     conn = sqlite3.connect(tmp_db)
     conn.execute("DELETE FROM customers WHERE code='C-MOB'")
-    conn.execute("DELETE FROM regions WHERE code='ZMOB'")
-    rid = conn.execute("INSERT INTO regions (code, name_th) VALUES ('ZMOB','เขตทดสอบมือถือ')").lastrowid
-    # Region-scoped: the page LIMITs to 300 customers and the live-DB clone has
-    # thousands, so an unscoped request would not render this row at all.
-    conn.execute("INSERT INTO customers (code, name, region_id) VALUES ('C-MOB','ร้านมือถือทดสอบ',?)",
-                 (rid,))
+    # #528: grouped/filtered by ภาค (customer_geo.region_of), not region_id —
+    # an address that parses to ภาคตะวันออก scopes the request to a small,
+    # deterministic group instead of relying on a row-count cap.
+    conn.execute(
+        "INSERT INTO customers (code, name, address) VALUES ('C-MOB','ร้านมือถือทดสอบ','123 ถ.สุขุมวิท ชลบุรี')")
     conn.execute("""INSERT INTO sales_transactions
                       (date_iso, doc_no, doc_base, customer, customer_code,
                        qty, unit, unit_price, vat_type, total, net)
@@ -89,7 +88,8 @@ def test_sales_trip_outstanding_ignores_cancelled_receipts(tmp_db):
     c = app.test_client()
     with c.session_transaction() as sess:
         sess['user_id'] = 1; sess['username'] = 'admin'; sess['role'] = 'admin'
-    body = c.get(f'/m/sales-trip?region_id={rid}').get_data(as_text=True)
+    from urllib.parse import quote
+    body = c.get(f"/m/sales-trip?region={quote('ภาคตะวันออก')}").get_data(as_text=True)
 
     assert 'ร้านมือถือทดสอบ' in body, 'control — the seeded customer is on the page'
     assert '900' in body, 'a cancelled receipt erased a real debt from /m/sales-trip'

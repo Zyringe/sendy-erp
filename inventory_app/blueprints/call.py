@@ -156,7 +156,7 @@ def call_contact(customer_code):
     # which is what stops the next Express customer import from rewriting the edit.
     conn = get_connection()
     row = conn.execute(
-        'SELECT salesperson, region_id FROM customers WHERE code=?', (customer_code,)
+        'SELECT salesperson FROM customers WHERE code=?', (customer_code,)
     ).fetchone()
     conn.close()
     if row is None:
@@ -164,10 +164,11 @@ def call_contact(customer_code):
         return redirect(url_for('call.call_card', customer_code=customer_code))
     # Only keys the form actually sent: a missing key is refused, never read as "clear".
     contact = {k: request.form[k] for k in models.CUSTOMER_CONTACT_FIELDS if k in request.form}
-    # simplify: salesperson/region are passed back as just read; a change landing between
+    # simplify: salesperson is passed back as just read; a change landing between
     # this read and the save would be reverted (ms window, accepted ceiling).
+    # #528: region_id dropped — update_customer_edit no longer takes it.
     result = models.update_customer_edit(
-        customer_code, row['salesperson'], row['region_id'], contact, session.get('username'))
+        customer_code, row['salesperson'], contact, session.get('username'))
     if result['ok']:
         flash('แก้ข้อมูลติดต่อแล้ว', 'success')
     else:

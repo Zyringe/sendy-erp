@@ -76,7 +76,7 @@ _STAFF_POST_OK = frozenset([
     'me.change_password',
 ])
 _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
-    'partners.customer_reassign', 'partners.customer_bulk_reassign',
+    'partners.customer_reassign',
     # Customer map geocoding (B5) — manager+ feature; staff doesn't need it.
     'partners.customer_geocode',
     'products.product_sku_code_save', 'products.product_regen_sku_code',
@@ -116,8 +116,6 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'vat_sub.group_remove_member', 'vat_sub.group_link_product',
     'vat_sub.group_unlink_product', 'vat_sub.group_rename', 'vat_sub.group_delete',
 ])
-# partners.regions_admin POST is intentionally admin-only — gated inline at
-# the top of the route. Other admin-only writes use _require_admin().
 # admin can POST anything
 
 _GENERAL_POST_OK = frozenset([
@@ -348,8 +346,6 @@ _ENDPOINT_MODULE = {
     'partners.customer_summary': 'trade',
     'partners.customer_detail': 'trade',
     'partners.customer_map': 'trade',
-    'partners.customer_bulk_reassign': 'trade',
-    'partners.regions_admin': 'trade',
     'partners.supplier_list': 'trade',
     'partners.supplier_summary': 'trade',
     'ecommerce.ecommerce': 'trade',

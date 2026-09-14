@@ -4,6 +4,7 @@ models/__init__.py's module docstring for the overall file-split
 rationale. No behavior changes.
 """
 import json
+import customer_geo
 import sales_filters
 import vat_math
 from database import get_connection
@@ -160,19 +161,16 @@ def get_customer_summary(customer, date_from=None, date_to=None):
     summary, top_products, monthly, docs = _customer_sales_aggregates(
         conn, where, params)
 
-    # Pull region + salesperson from customers MASTER (post-D1 view migration).
+    # Pull salesperson from customers MASTER (post-D1 view migration).
     # 3-way fallback: salespersons.name → customers.salesperson code → '(ไม่กำหนด)'.
-    # Same for region: regions.name_th → regions.code → '(ไม่ระบุ)'.
     master_row = conn.execute("""
         SELECT s.customer_code,
                c.code AS master_code, c.name AS master_name,
-               c.salesperson AS sp_code, c.region_id,
-               sp.name AS sp_name, sp.is_active AS sp_active,
-               r.code AS region_code, r.name_th AS region_name
+               c.salesperson AS sp_code,
+               sp.name AS sp_name, sp.is_active AS sp_active
         FROM sales_transactions s
         LEFT JOIN customers     c  ON c.code  = s.customer_code
         LEFT JOIN salespersons  sp ON sp.code = c.salesperson
-        LEFT JOIN regions       r  ON r.id    = c.region_id
         WHERE s.customer = ?
         LIMIT 1
     """, [customer]).fetchone()
@@ -182,7 +180,6 @@ def get_customer_summary(customer, date_from=None, date_to=None):
     salesperson_code = None
     salesperson_display = None
     salesperson_orphan = False
-    region_code = None
     region_display = None
 
     if master_row:
@@ -193,6 +190,10 @@ def get_customer_summary(customer, date_from=None, date_to=None):
             ).fetchone()
             if row:
                 customer_info = dict(row)
+                # #528: ภาค from the address, same source the call card and
+                # every other surface now uses (customer_geo.region_of) —
+                # retires the last remaining เขตการขาย FK read in this file.
+                region_display = customer_geo.region_of(row['address'])
             salesperson_code = master_row['sp_code']
             if salesperson_code:
                 if master_row['sp_name']:
@@ -200,15 +201,12 @@ def get_customer_summary(customer, date_from=None, date_to=None):
                 else:
                     salesperson_display = salesperson_code
                     salesperson_orphan = True
-            region_code = master_row['region_code']
-            region_display = master_row['region_name'] or master_row['region_code']
 
     conn.close()
     return {
         'customer': customer,
         'customer_code': customer_code,
         'region': region_display,
-        'region_code': region_code,
         'salesperson': salesperson_display,
         'salesperson_code': salesperson_code,
         'salesperson_orphan': salesperson_orphan,
@@ -582,13 +580,11 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
 
     # Master row is the anchor — resolves even when this code has zero sales.
     master_row = conn.execute("""
-        SELECT c.code AS master_code, c.name AS master_name,
-               c.salesperson AS sp_code, c.region_id,
-               sp.name AS sp_name, sp.is_active AS sp_active,
-               r.code AS region_code, r.name_th AS region_name
+        SELECT c.code AS master_code, c.name AS master_name, c.address,
+               c.salesperson AS sp_code,
+               sp.name AS sp_name, sp.is_active AS sp_active
         FROM customers c
         LEFT JOIN salespersons sp ON sp.code = c.salesperson
-        LEFT JOIN regions r ON r.id = c.region_id
         WHERE c.code = ?
     """, [customer_code]).fetchone()
 
@@ -596,7 +592,6 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
     salesperson_code = None
     salesperson_display = None
     salesperson_orphan = False
-    region_code = None
     region_display = None
     display_name = bill_name or customer_code
 
@@ -615,8 +610,10 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
             else:
                 salesperson_display = salesperson_code
                 salesperson_orphan = True
-        region_code = master_row['region_code']
-        region_display = master_row['region_name'] or master_row['region_code']
+        # #528: ภาค from the address, same source the call card uses
+        # (customer_geo.region_of) — retires the เขตการขาย FK, a one-time
+        # copy of Express's โซน that was never maintained.
+        region_display = customer_geo.region_of(master_row['address'])
 
     conn.close()
     return {
@@ -628,7 +625,6 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
         'customer': display_name,
         'customer_code': customer_code,
         'region': region_display,
-        'region_code': region_code,
         'salesperson': salesperson_display,
         'salesperson_code': salesperson_code,
         'salesperson_orphan': salesperson_orphan,
@@ -643,29 +639,29 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
     }
 
 
-def get_regions():
-    """Region list for filter dropdowns. Returns [{id, code, name_th}].
-    Driven by the regions master (migration 010), not the legacy
-    customer_regions snapshot."""
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT id, code, name_th FROM regions ORDER BY sort_order, code"
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
+def get_customers(search=None, region=None, page=1, per_page=50,
                    include_billless=False):
-    """Customer list backed by customers master + salespersons + regions.
+    """Customer list backed by customers master + salespersons.
 
-    Filter precedence: region_id (FK, new) > region (text, legacy URL).
     `search` matches the code, the name on the bill, and the name on the
     customers master — on BOTH halves of the union, so a customer answers to
     the same search before and after its first bill.
     Returns customer rows with display fields:
         salesperson  → name from salespersons master, or raw code if orphan
-        region       → name_th from regions, or code as fallback
+        region       → ภาค derived from the master address (customer_geo.
+                       region_of), same source the call card uses.
+
+    `region`, when given, must be one of `customer_geo.REGION_ORDER` (e.g.
+    "ภาคตะวันออก", "ไม่ระบุภาค") — #528 retired เขตการขาย (customers.region_id),
+    a one-time, never-maintained copy of Express's โซน. A legacy `?region_id=`
+    or the old FK-based `?region=<code|name_th>` bookmark is simply IGNORED:
+    neither value matches a REGION_ORDER string, so the filter no-ops rather
+    than erroring.
+
+    ภาค can't be filtered in SQL (it's derived in Python from the address),
+    so unlike the old region_id filter this queries UNPAGINATED, derives ภาค
+    per row, filters, THEN paginates — the same shape call_card.get_call_list
+    already uses. 276 billing rows, or 2,665 with include_billless, is fine.
 
     `include_billless=True` unions in `customers` master rows with NO
     sales_transactions row at all (doc_count 0, total_net 0, last_date NULL)
@@ -690,24 +686,6 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
             "(s.customer LIKE ? OR s.customer_code LIKE ? OR c.name LIKE ?)")
         billing_params += [f"%{search}%"] * 3
 
-    rid_int = None
-    if region_id is not None and str(region_id).strip():
-        try:
-            rid_int = int(region_id)
-        except (ValueError, TypeError):
-            rid_int = None
-    elif region:
-        # Legacy URL: ?region=<code or name_th>. Resolve to id.
-        match = conn.execute(
-            "SELECT id FROM regions WHERE code = ? OR name_th = ? LIMIT 1",
-            (region, region),
-        ).fetchone()
-        if match:
-            rid_int = match['id']
-    if rid_int is not None:
-        conds.append("c.region_id = ?")
-        billing_params.append(rid_int)
-
     # Same exclusion as the customer DETAIL page — without it the list and the
     # detail disagree by the giveaway (proved: วรสวัสดิ์ ฿499,577.31 vs ฿345,454.51).
     conds.append(sales_filters.not_a_sale_clause('s'))
@@ -716,9 +694,7 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
     billing_sql = f"""
         SELECT s.customer                                AS customer,
                s.customer_code                            AS customer_code,
-               COALESCE(r.name_th, r.code)                AS region,
-               r.code                                     AS region_code,
-               c.region_id                                AS region_id,
+               COALESCE(c.address, '')                    AS address,
                COALESCE(sp.name, c.salesperson)           AS salesperson,
                c.salesperson                              AS salesperson_code,
                (c.salesperson IS NOT NULL
@@ -744,31 +720,25 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
         FROM sales_transactions s
         LEFT JOIN customers     c  ON c.code  = s.customer_code
         LEFT JOIN salespersons  sp ON sp.code = c.salesperson
-        LEFT JOIN regions       r  ON r.id    = c.region_id
         {where}
         GROUP BY s.customer_code
     """
     union_parts = [billing_sql]
     params = list(billing_params)
-    bl_params = []
 
     if include_billless:
         bl_conds = ["NOT EXISTS (SELECT 1 FROM sales_transactions s2 "
                     "WHERE s2.customer_code = c.code)"]
+        bl_params = []
         if search:
             bl_conds.append("(c.name LIKE ? OR c.code LIKE ?)")
             bl_params += [f"%{search}%", f"%{search}%"]
-        if rid_int is not None:
-            bl_conds.append("c.region_id = ?")
-            bl_params.append(rid_int)
         bl_where = "WHERE " + " AND ".join(bl_conds)
 
         billless_sql = f"""
             SELECT c.name                                 AS customer,
                    c.code                                  AS customer_code,
-                   COALESCE(r.name_th, r.code)              AS region,
-                   r.code                                   AS region_code,
-                   c.region_id                              AS region_id,
+                   COALESCE(c.address, '')                 AS address,
                    COALESCE(sp.name, c.salesperson)         AS salesperson,
                    c.salesperson                            AS salesperson_code,
                    (c.salesperson IS NOT NULL
@@ -781,108 +751,39 @@ def get_customers(search=None, region=None, region_id=None, page=1, per_page=50,
                    NULL                                      AS last_purchase_date
             FROM customers c
             LEFT JOIN salespersons sp ON sp.code = c.salesperson
-            LEFT JOIN regions      r  ON r.id    = c.region_id
             {bl_where}
         """
         union_parts.append(billless_sql)
         params = params + bl_params
 
     union_sql = "\nUNION ALL\n".join(union_parts)
-
-    sql = f"""
-        SELECT * FROM ({union_sql})
-        ORDER BY customer
-        LIMIT ? OFFSET ?
-    """
-    rows = conn.execute(sql, params + [per_page, (page - 1) * per_page]).fetchall()
-
-    # `total` counts the ROWS this function can paginate, so it must be built
-    # from the same GROUP BY the row query uses — not `COUNT(DISTINCT
-    # s.customer_code)`, which the pre-Phase-3 code used and which SQL makes
-    # skip NULL. ~21 sales_transactions rows carry a blank customer_code and
-    # GROUP BY collapses them into one real, rendered row, so the old count was
-    # one short of what the page shows (275 vs 276 today). That is a lie the
-    # pagination maths is built on: the moment the undercount lands on a
-    # multiple of per_page, the last row becomes unreachable. Fixing it moves
-    # the displayed default figure 275 -> 276, which is the number of rows the
-    # list actually has.
-    billing_total = conn.execute(f"""
-        SELECT COUNT(*) FROM (
-            SELECT 1
-            FROM sales_transactions s
-            LEFT JOIN customers c ON c.code = s.customer_code
-            {where}
-            GROUP BY s.customer_code
-        )
-    """, billing_params).fetchone()[0]
-
-    total = billing_total
-    if include_billless:
-        billless_total = conn.execute(f"""
-            SELECT COUNT(*) FROM customers c {bl_where}
-        """, bl_params).fetchone()[0]
-        total += billless_total
-
+    rows = [dict(r) for r in conn.execute(union_sql, params).fetchall()]
     conn.close()
-    return [dict(r) for r in rows], total
+
+    for r in rows:
+        r['region'] = customer_geo.region_of(r.pop('address'))
+    if region:
+        rows = [r for r in rows if r['region'] == region]
+
+    rows.sort(key=lambda r: r['customer'] or '')
+    total = len(rows)
+    start = (page - 1) * per_page
+    page_rows = rows[start:start + per_page]
+    return page_rows, total
 
 
-# ── Customer Assignment (salesperson + region on customers master) ────────────
-# Migration 010 introduced customers.salesperson (TEXT code) + customers.region_id
-# (FK regions.id). The legacy customer_regions table is the *display* source
-# (read by get_customer_summary / get_customers above) until UI migration D1
-# lands. The helpers below write to the MASTER table only — audit triggers on
-# customers cover the change automatically.
-
-def get_all_regions_with_counts():
-    conn = get_connection()
-    rows = conn.execute("""
-        SELECT r.id, r.code, r.name_th, r.sort_order, r.note,
-               COUNT(c.code) AS customer_count
-          FROM regions r
-          LEFT JOIN customers c ON c.region_id = r.id
-         GROUP BY r.id
-         ORDER BY r.sort_order, r.code
-    """).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def update_region(region_id, name_th, sort_order, note):
-    name_th = (name_th or '').strip() or None
-    note    = (note or '').strip() or None
-    try:
-        sort_order = int(sort_order) if str(sort_order).strip() else 100
-    except (ValueError, TypeError):
-        return {'ok': False, 'error': 'sort_order ต้องเป็นจำนวนเต็ม'}
-
-    conn = get_connection()
-    try:
-        cur = conn.execute(
-            "UPDATE regions SET name_th = ?, sort_order = ?, note = ? WHERE id = ?",
-            (name_th, sort_order, note, region_id),
-        )
-        if cur.rowcount == 0:
-            return {'ok': False, 'error': f'ไม่พบ region id {region_id}'}
-        conn.commit()
-        return {'ok': True, 'error': None}
-    finally:
-        conn.close()
-
+# ── Customer Assignment (salesperson on customers master) ─────────────────────
+# Migration 010 introduced customers.salesperson (TEXT code). It also added
+# customers.region_id (FK regions.id) — เขตการขาย, retired in #528 (a
+# one-time, never-maintained copy of Express's โซน; see customer_geo.region_of
+# for the ภาค this workspace actually uses). The helpers below write to the
+# MASTER table only — audit triggers on customers cover the change
+# automatically.
 
 def get_active_salespersons():
     conn = get_connection()
     rows = conn.execute(
         "SELECT code, name FROM salespersons WHERE is_active = 1 ORDER BY code"
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_all_regions():
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT id, code, name_th FROM regions ORDER BY sort_order, code"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -904,24 +805,20 @@ def get_orphan_salesperson_codes():
 def get_customer_master(customer_code):
     conn = get_connection()
     row = conn.execute(
-        "SELECT code, name, salesperson, region_id FROM customers WHERE code = ?",
+        "SELECT code, name, salesperson FROM customers WHERE code = ?",
         [customer_code],
     ).fetchone()
     conn.close()
     return dict(row) if row else None
 
 
-_BULK_MAX = 5000  # SQLITE_MAX_VARIABLE_NUMBER is 999 on older builds; cap well below.
-
-
-def update_customer_assignment(customer_code, salesperson_code, region_id):
+def update_customer_assignment(customer_code, salesperson_code):
+    """Legacy assignment-only save (no contact fields in the request) — see
+    update_customer_edit for the full-form path. #528: region_id dropped
+    entirely (retired เขตการขาย — see customer_geo.region_of / ภาค); this
+    function never touches that column, so a stale page posting only
+    salesperson can never NULL it."""
     sp = (salesperson_code or '').strip() or None
-    rid = region_id if region_id not in ('', None, 'null') else None
-    if rid is not None:
-        try:
-            rid = int(rid)
-        except (ValueError, TypeError):
-            return {'ok': False, 'error': 'region_id ไม่ถูกต้อง'}
 
     conn = get_connection()
     try:
@@ -939,13 +836,10 @@ def update_customer_assignment(customer_code, salesperson_code, region_id):
                 "SELECT 1 FROM salespersons WHERE code = ? AND is_active = 1", (sp,)
             ).fetchone():
                 return {'ok': False, 'error': f'ไม่พบ salesperson code "{sp}" (หรือ inactive)'}
-        if rid is not None:
-            if not conn.execute("SELECT 1 FROM regions WHERE id = ?", (rid,)).fetchone():
-                return {'ok': False, 'error': f'ไม่พบ region id {rid}'}
 
         conn.execute(
-            "UPDATE customers SET salesperson = ?, region_id = ? WHERE code = ?",
-            (sp, rid, customer_code),
+            "UPDATE customers SET salesperson = ? WHERE code = ?",
+            (sp, customer_code),
         )
         conn.commit()
         return {'ok': True, 'error': None}
@@ -954,7 +848,7 @@ def update_customer_assignment(customer_code, salesperson_code, region_id):
 
 
 # Group 2 (customer_summary.html plan.md terminology): the contact fields the
-# customer-edit modal writes, alongside group 1 (salesperson/region_id above).
+# customer-edit modal writes, alongside group 1 (salesperson above).
 # NOT `name` (locked — see plan.md decision 3) and NOT the group-3 operational
 # columns (customer_type/credit_days/tax_id/zone), which import_customers_from_bsn
 # always overwrites even on a protected row — a form for those would lie.
@@ -973,9 +867,16 @@ _REVIEW_COL = {
 }
 
 
-def update_customer_edit(customer_code, salesperson_code, region_id, contact, username):
-    """Customer-edit modal's save path: group 1 (salesperson/region_id) +
-    group 2 (contact fields), one UPDATE per save.
+def update_customer_edit(customer_code, salesperson_code, contact, username):
+    """Customer-edit modal's save path: group 1 (salesperson) + group 2
+    (contact fields), one UPDATE per save.
+
+    #528: region_id dropped entirely (retired เขตการขาย — see
+    customer_geo.region_of / ภาค). This function never touches that
+    column, on purpose: the modal no longer sends it, and a form built
+    before this change that still posts region_id must not silently NULL
+    it — removing the column from the SQL, not defaulting the value, is
+    what makes that impossible rather than merely unlikely.
 
     `contact` is a dict with `CUSTOMER_CONTACT_FIELDS` keys, raw form strings (blank
     means "clear this field" — the modal always echoes the live value back,
@@ -995,12 +896,6 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
     live row; 17 billing customers are in that state as of 2026-08-01).
     """
     sp = (salesperson_code or '').strip() or None
-    rid = region_id if region_id not in ('', None, 'null') else None
-    if rid is not None:
-        try:
-            rid = int(rid)
-        except (ValueError, TypeError):
-            return {'ok': False, 'error': 'region_id ไม่ถูกต้อง'}
 
     # A short payload is a caller bug, never "clear the rest". The route already
     # branches on this, but this function is exported through the models facade,
@@ -1028,9 +923,6 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
                 "SELECT 1 FROM salespersons WHERE code = ? AND is_active = 1", (sp,)
             ).fetchone():
                 return {'ok': False, 'error': f'ไม่พบ salesperson code "{sp}" (หรือ inactive)'}
-        if rid is not None:
-            if not conn.execute("SELECT 1 FROM regions WHERE id = ?", (rid,)).fetchone():
-                return {'ok': False, 'error': f'ไม่พบ region id {rid}'}
 
         changed_fields = [k for k in CUSTOMER_CONTACT_FIELDS if new_contact[k] != current[k]]
         contact_changed = bool(changed_fields)
@@ -1052,19 +944,19 @@ def update_customer_edit(customer_code, salesperson_code, region_id, contact, us
             }, ensure_ascii=False)
             conn.execute("""
                 UPDATE customers
-                   SET salesperson = ?, region_id = ?,
+                   SET salesperson = ?,
                        nickname = ?, phone = ?, fax = ?, contact = ?,
                        address = ?, contact_note = ?,
                        contact_orig_json = COALESCE(contact_orig_json, ?),
                        contact_normalized_at = datetime('now','localtime'),
                        contact_normalized_by = ?
                  WHERE code = ?
-            """, (sp, rid, *[new_contact[k] for k in CUSTOMER_CONTACT_FIELDS],
+            """, (sp, *[new_contact[k] for k in CUSTOMER_CONTACT_FIELDS],
                   orig_json, username, customer_code))
         else:
             conn.execute(
-                "UPDATE customers SET salesperson = ?, region_id = ? WHERE code = ?",
-                (sp, rid, customer_code),
+                "UPDATE customers SET salesperson = ? WHERE code = ?",
+                (sp, customer_code),
             )
 
         if contact_changed:
@@ -1161,55 +1053,14 @@ def get_customer_audit_history(customer_code, limit=15):
     return out
 
 
-def bulk_reassign_customers(customer_codes, region_id, salesperson_code=None):
-    """Region-only bulk reassignment of the customers master.
-
-    Put's decision (plan Phase 3): no UI may move `customers.salesperson` for
-    many customers in one click — commission rules (models/commission.py) do
-    NOT follow a master-record salesperson change, and 472 customers carry an
-    active commission rule perfectly aligned with their master today. A bulk
-    click that silently drifted even a few of those would be very hard to
-    notice. A request that still carries a salesperson target (e.g. a stale
-    page rendered before this deploy) is REJECTED, not silently dropped —
-    same "missing/extra is not clear, ask again" spirit as Phase 2's
-    customer_reassign.
-    """
-    if (salesperson_code or '').strip():
-        return {'ok': False, 'updated': 0,
-                'error': 'เปลี่ยน salesperson แบบกลุ่มถูกปิดแล้ว — คอมมิชชั่นไม่ขยับตาม '
-                         'master record; แก้ทีละรายที่หน้าลูกค้า หรือใช้ /commission/reassign'}
-    if not customer_codes:
-        return {'ok': False, 'updated': 0, 'error': 'ไม่มีลูกค้าที่เลือก'}
-    if len(customer_codes) > _BULK_MAX:
-        return {'ok': False, 'updated': 0,
-                'error': f'เลือกได้สูงสุด {_BULK_MAX} ลูกค้า (เลือก {len(customer_codes)})'}
-
-    rid = region_id if region_id not in ('', None, 'null') else None
-    if rid is None:
-        return {'ok': False, 'updated': 0, 'error': 'กรุณาเลือก region ปลายทาง'}
-    try:
-        rid = int(rid)
-    except (ValueError, TypeError):
-        return {'ok': False, 'updated': 0, 'error': 'region_id ไม่ถูกต้อง'}
-
-    conn = get_connection()
-    try:
-        if not conn.execute("SELECT 1 FROM regions WHERE id = ?", (rid,)).fetchone():
-            return {'ok': False, 'updated': 0, 'error': f'ไม่พบ region id {rid}'}
-
-        placeholders = ','.join(['?'] * len(customer_codes))
-        sql = f"UPDATE customers SET region_id = ? WHERE code IN ({placeholders})"
-        params = [rid, *customer_codes]
-
-        with conn:
-            cur = conn.execute(sql, params)
-        return {'ok': True, 'updated': cur.rowcount, 'error': None}
-    finally:
-        conn.close()
-
-
 def get_customers_master(search=None, salesperson=None, region_id=None,
                          orphan_only=False, page=1, per_page=100):
+    """Every customer + salesperson (+ legacy region_id), for
+    commission_bp.py's admin-only reassign-customer datalist. NOT the
+    เขตการขาย write path — read-only, and its only caller
+    (_reassign_customer_choices) never passes region_id; kept as-is rather
+    than trimmed, since #528 retired the UI that filtered by it, not the
+    column itself (see decisions/log.md — no DB change)."""
     conn = get_connection()
     conds = []
     params = []
@@ -1233,11 +1084,9 @@ def get_customers_master(search=None, salesperson=None, region_id=None,
 
     sql = f"""
         SELECT c.code, c.name, c.salesperson AS salesperson_code,
-               s.name AS salesperson_name, s.is_active AS salesperson_active,
-               c.region_id, r.code AS region_code, r.name_th AS region_name
+               s.name AS salesperson_name, s.is_active AS salesperson_active
         FROM customers c
         LEFT JOIN salespersons s ON s.code = c.salesperson
-        LEFT JOIN regions      r ON r.id   = c.region_id
         {where}
         ORDER BY c.name
         LIMIT ? OFFSET ?

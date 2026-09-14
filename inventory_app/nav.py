@@ -210,7 +210,7 @@ NAV = [
         # require_login, so general genuinely can open it.
         'module': None, 'section': 'แอป', 'roles': ALL_ROLES, 'desktop': False,
         'links': [
-            {'ep': 'mobile.sales_trip', 'label': 'แผนทริปขาย (เขต)', 'icon': 'bi-pin-map',
+            {'ep': 'mobile.sales_trip', 'label': 'แผนทริปขาย (ภาค)', 'icon': 'bi-pin-map',
              'roles_exclude': {'general'}},
             {'ep': 'help_install', 'label': 'ติดตั้งแอปบนมือถือ', 'icon': 'bi-phone-fill'},
         ],

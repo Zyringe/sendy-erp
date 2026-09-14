@@ -105,6 +105,15 @@
   ป้ายสินค้า: the opposite direction of the supply chain. The two must never be used
   interchangeably.
 
+- **ภาค (region)** — the part of the country a customer is in, derived from the province in
+  its address (`customer_geo.region_of`). The only geographic grouping in the app —
+  `/customers`, the customer page header, `/m/customer`, `/m/sales-trip`, and the call card
+  all derive it from the same address, so no two screens can disagree about one shop.
+  _Avoid_: เขต, เขตการขาย. That was `customers.region_id`, a one-time copy of Express's โซน
+  (route codes, not geography) made in migration 010, edited twice ever, and retired in
+  #528 — 34 of its 35 codes had no Thai name, and it put 99บ09 (ชลบุรี) in "กท". The column
+  still exists in the DB (no data was dropped) but nothing reads or writes it anymore.
+
 - **ลูกหนี้ (AR)** — outstanding money customers still owe the business (money-owed sense
   of ลูกค้า). Pairs with เจ้าหนี้.
 

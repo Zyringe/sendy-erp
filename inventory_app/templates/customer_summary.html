@@ -75,13 +75,8 @@
       {% endif %}
       {% if data.region %}
       <div>
-        <div class="text-subtle small mb-1">เขตการขาย</div>
-        <div>
-          <span class="badge badge-info">{{ data.region }}</span>
-          {% if data.region_code and data.region != data.region_code %}
-          <span class="text-subtle small ms-1 font-mono">{{ data.region_code }}</span>
-          {% endif %}
-        </div>
+        <div class="text-subtle small mb-1">ภาค</div>
+        <div><span class="badge badge-info">{{ data.region }}</span></div>
       </div>
       {% endif %}
       {% if data.salesperson %}
@@ -214,12 +209,14 @@
 
 {# ── Edit-customer modal (manager+ only) ─────────────────────────────────── #}
 {# Replaces the old standalone "เปลี่ยน salesperson / เขตการขาย" card — one
-   modal now edits group 1 (salesperson/region_id) + group 2 (contact
-   fields) together, opened from the card header's แก้ไข button above.
-   `code` and `name` are read-only (plan.md decision 2/3); the operational
-   columns (customer_type/credit_days/tax_id/zone) aren't editable here
-   either — import_customers_from_bsn always overwrites them, so a form for
-   them would lie. #}
+   modal now edits group 1 (salesperson) + group 2 (contact fields) together,
+   opened from the card header's แก้ไข button above. `code` and `name` are
+   read-only (plan.md decision 2/3); the operational columns
+   (customer_type/credit_days/tax_id/zone) aren't editable here either —
+   import_customers_from_bsn always overwrites them, so a form for them
+   would lie. #528: no region_id field — เขตการขาย is retired, and ภาค
+   (shown above, in the header) is derived from the address, not editable
+   here. #}
 {% if is_manager and master %}
 <div class="modal fade" id="customerEditModal" tabindex="-1">
   <div class="modal-dialog modal-lg">
@@ -260,19 +257,6 @@
                 {% endif %}
               </select>
             </div>
-            <div class="col-md-6">
-              <label class="form-label small mb-1">เขตการขาย</label>
-              <select name="region_id" class="form-select form-select-sm">
-                <option value="">— ไม่กำหนด —</option>
-                {% for r in regions %}
-                  <option value="{{ r.id }}"
-                    {% if master.region_id == r.id %}selected{% endif %}>
-                    {{ r.code }}{% if r.name_th %} — {{ r.name_th }}{% endif %}
-                  </option>
-                {% endfor %}
-              </select>
-            </div>
-
             <div class="col-12"><hr class="my-1"></div>
 
             <div class="col-md-6">

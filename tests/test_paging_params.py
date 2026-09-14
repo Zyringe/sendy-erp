@@ -26,7 +26,9 @@ import pytest
 
 APP_DIR = Path(__file__).resolve().parents[1] / 'inventory_app'
 
-# (review-report site, url template). The report measured 13; if this list
+# (review-report site, url template). The report measured 13; #528 deleted
+# one of those sites (/customers/bulk-reassign, the region bulk-reassign page)
+# along with the route itself, so this list now tracks 12 LIVE sites — if it
 # ever disagrees with the sweep test below, one of them is stale.
 PAGING_SITES = [
     ('sales.py:46',       '/sales'),
@@ -36,7 +38,6 @@ PAGING_SITES = [
     ('ecommerce.py:39',   '/ecommerce'),
     ('inventory.py:144',  '/transactions'),
     ('partners.py:29',    '/customers'),
-    ('partners.py:194',   '/customers/bulk-reassign'),
     ('partners.py:223',   '/suppliers'),
     ('labels.py:88',      '/labels/manage'),
     ('naming.py:157',     '/naming'),
@@ -112,7 +113,7 @@ def test_paging_returns_per_page_from_app_config(tmp_db):
 
 
 def test_paging_honours_an_explicit_per_page(tmp_db):
-    """Sites with their own page size (cashbook 50, bulk-reassign 100) pass it in."""
+    """Sites with their own page size (cashbook 50) pass it in."""
     from app import app as flask_app
     from paging import paging
     with flask_app.test_request_context('/x?page=abc'):
@@ -124,8 +125,9 @@ def test_paging_honours_an_explicit_per_page(tmp_db):
 # ── 2. every real page survives a typo'd URL ─────────────────────────────────
 
 def test_all_thirteen_reported_sites_are_listed():
-    """Guard the parametrize lists below against silently shrinking to nothing."""
-    assert len(PAGING_SITES) == 13
+    """Guard the parametrize lists below against silently shrinking to nothing.
+    12, not the original 13 — #528 deleted /customers/bulk-reassign itself."""
+    assert len(PAGING_SITES) == 12
 
 
 @pytest.mark.parametrize('site, template', PAGING_SITES)
