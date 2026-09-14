@@ -153,6 +153,19 @@
   lines of that document), which the detail page regroups back into one invoice. _Avoid_:
   calling a single table row "an invoice" — it is one line of one.
 
+- **VAT mode (`vat_type`)** — Express's per-document VAT mode, the same on every line of a
+  document. `net` is ex-VAT in all three.
+  - **ไม่บวก VAT (1)** — no VAT added on top. On a **sale** there is no VAT in it: the
+    customer paid `net`. On a **purchase** the supplier's VAT, when there was any, sits
+    *inside* the price and Express carved it out, so the same mode holds no-VAT bills and
+    VAT-inclusive ones (sometimes from the same supplier).
+  - **แยก VAT (2)** — 7% added on top: the customer paid `net × 1.07`.
+  - **ยกเว้น VAT (0)** — no VAT.
+
+  _Avoid_: "รวม VAT" (VAT included) for type 1. It is true only of the documents where
+  Express carved VAT out of the price (a handful of sales, some purchases) and reads as
+  "the customer paid VAT" on every other one (#495).
+
 ### Customer page (`/customer/code/<code>` — #493)
 
 - **ยอดรวมเอกสาร (document total)** — the sum of a document's lines, plus 7% VAT when the
