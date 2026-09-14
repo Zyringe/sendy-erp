@@ -10,9 +10,14 @@ Population = `price_lookup.evidence_filter`, restricted to whatever scope the
 caller passes — the SAME population `models.customers._customer_product_cards`
 counts as ครั้งที่ซื้อ, so a product's win-back flag and its purchase count on
 the customer page can never disagree about what counts as a real sale.
-Keyed by (product_id, unit). Eligible at >=3 distinct purchase DATES (two
-invoices on one day count as one visit, matching ครั้งที่ซื้อ); flagged when
-days since the last date exceeds the median inter-purchase gap.
+Keyed by (product_id, unit). Eligible at >=3 distinct INVOICES (doc_base —
+the same ครั้งที่ซื้อ definition the product card counts,
+`COUNT(DISTINCT s.doc_base)`); two invoices dated the SAME day are still two
+separate ครั้ง. Gaps, however, are measured between distinct purchase DATES
+(a product bought twice on one day has nothing to compute a within-day gap
+from), so a product needs >=2 distinct dates before it can be flagged at
+all — 3 invoices on one date is eligible but has no gap. Flagged when days
+since the last date exceeds the median inter-purchase gap.
 
 `where` / `params`: a scope built the way
 `models.customers._customer_sales_scope` builds one. The CALLER decides which
@@ -47,7 +52,8 @@ def compute_winback(conn, where, params, today=None):
             s.product_id,
             COALESCE(p.product_name, s.product_name_raw) AS product_name,
             s.unit,
-            s.date_iso
+            s.date_iso,
+            s.doc_base
         FROM sales_transactions s
         LEFT JOIN products p ON p.id = s.product_id
         WHERE {where}
@@ -56,16 +62,25 @@ def compute_winback(conn, where, params, today=None):
         ORDER BY s.product_id, s.unit, s.date_iso
     """, params).fetchall()
 
-    groups = defaultdict(lambda: {'product_name': None, 'dates': []})
+    groups = defaultdict(lambda: {'product_name': None, 'dates': [], 'doc_bases': set()})
     for row in rows:
         key = (row['product_id'], row['unit'])
         groups[key]['product_name'] = row['product_name']
         groups[key]['dates'].append(row['date_iso'])
+        groups[key]['doc_bases'].add(row['doc_base'])
 
     out = []
     for (pid, unit), info in groups.items():
+        # Eligibility = ครั้งที่ซื้อ >= 3 (distinct INVOICES), same definition
+        # the product card counts — NOT distinct dates. Two invoices on one
+        # day are two ครั้ง.
+        if len(info['doc_bases']) < 3:
+            continue
+
         dates = sorted(set(info['dates']))
-        if len(dates) < 3:
+        # A gap needs two ENDPOINTS. 3 invoices dated the same single day are
+        # eligible (>=3 ครั้ง) but there is no gap to measure yet — never flag.
+        if len(dates) < 2:
             continue
 
         date_objs = [dt.date.fromisoformat(d) for d in dates]

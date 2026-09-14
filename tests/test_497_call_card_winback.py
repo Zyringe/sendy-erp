@@ -67,11 +67,14 @@ def scenario(tmp_db_conn):
     pid_a = _mk_product(conn, name='สินค้าเฉพาะรหัสเอ')
     pid_b = _mk_product(conn, name='สินค้าเฉพาะรหัสบี')
     # CODE_A: winback-eligible history for pid_a only.
-    for d in ['2020-01-01', '2020-02-01', '2020-03-01']:
-        _line(conn, doc_base=f'IVA{d[-2:]}', pid=pid_a, date_iso=d, code=CODE_A)
+    # Eligibility is >=3 DISTINCT INVOICES (doc_base), so each line needs its
+    # own doc_base — `d[-2:]` used to collide on '01' for every date here
+    # (all three dates end in day "01") before this was caught.
+    for i, d in enumerate(['2020-01-01', '2020-02-01', '2020-03-01']):
+        _line(conn, doc_base=f'IVA{i}', pid=pid_a, date_iso=d, code=CODE_A)
     # CODE_B: winback-eligible history for pid_b only.
-    for d in ['2020-01-01', '2020-02-01', '2020-03-01']:
-        _line(conn, doc_base=f'IVB{d[-2:]}', pid=pid_b, date_iso=d, code=CODE_B)
+    for i, d in enumerate(['2020-01-01', '2020-02-01', '2020-03-01']):
+        _line(conn, doc_base=f'IVB{i}', pid=pid_b, date_iso=d, code=CODE_B)
     yield conn, pid_a, pid_b
     _clear(conn)
 

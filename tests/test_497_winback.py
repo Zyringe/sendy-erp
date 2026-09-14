@@ -154,20 +154,56 @@ def test_flags_a_product_with_three_evidenced_purchases_and_a_stale_gap(cust):
     assert row['days_since'] == expected_days_since
 
 
-def test_two_invoices_on_one_day_count_as_one_visit(cust):
-    """Gaps are measured between DISTINCT dates — two invoices on the same
-    day must not inflate the purchase count or shrink the gap to zero."""
+def test_three_invoices_on_two_dates_is_eligible_and_flags_when_lapsed(cust):
+    """The real shape found on prod (01อ06 / pid 398 / แผ่น): eligibility is
+    ครั้งที่ซื้อ (distinct INVOICES) >= 3, matching the product card's own
+    `COUNT(DISTINCT s.doc_base)` — NOT distinct dates. Two invoices dated the
+    same day are still two separate ครั้ง, so 3 invoices spread over only 2
+    dates must be eligible (not blocked at the raw 2-invoices-one-day
+    scenario this test replaces)."""
     conn, pid = cust
     _line(conn, doc_base='IV49720', suffix=1, pid=pid, date_iso='2024-01-01',
           qty=1, unit_price=100, net=100)
     _line(conn, doc_base='IV49721', suffix=1, pid=pid, date_iso='2024-01-01',
           qty=1, unit_price=100, net=100)
-    _line(conn, doc_base='IV49722', suffix=1, pid=pid, date_iso='2024-02-01',
+    _line(conn, doc_base='IV49722', suffix=1, pid=pid, date_iso='2024-06-01',
           qty=1, unit_price=100, net=100)
 
     import winback
     where, params = _scope()
-    # Only 2 distinct dates -> below the >=3 threshold, whatever the row count.
+    # 3 ครั้ง (doc_bases), 2 distinct dates -> one gap of 152 days
+    # (2024-01-01 to 2024-06-01). Far enough past that gap -> flagged.
+    rows = winback.compute_winback(conn, where, params, today=dt.date(2026, 1, 1))
+    assert len(rows) == 1
+    assert rows[0]['product_id'] == pid
+    assert rows[0]['median_gap_days'] == 152
+
+
+def test_three_invoices_on_one_date_is_eligible_but_never_flagged_no_gap(cust):
+    """3 ครั้ง clears the eligibility threshold, but all three share ONE
+    date — there are no two distinct dates to compute a gap from, so this
+    must never flag regardless of how long ago that date was."""
+    conn, pid = cust
+    for i in range(3):
+        _line(conn, doc_base=f'IV4973{i}', suffix=1, pid=pid, date_iso='2020-01-01',
+              qty=1, unit_price=100, net=100)
+
+    import winback
+    where, params = _scope()
+    rows = winback.compute_winback(conn, where, params, today=dt.date(2026, 1, 1))
+    assert rows == []
+
+
+def test_two_invoices_on_two_dates_is_not_eligible(cust):
+    """Below the >=3 ครั้ง threshold, however many distinct dates it spans."""
+    conn, pid = cust
+    _line(conn, doc_base='IV49740', suffix=1, pid=pid, date_iso='2020-01-01',
+          qty=1, unit_price=100, net=100)
+    _line(conn, doc_base='IV49741', suffix=1, pid=pid, date_iso='2020-06-01',
+          qty=1, unit_price=100, net=100)
+
+    import winback
+    where, params = _scope()
     rows = winback.compute_winback(conn, where, params, today=dt.date(2026, 1, 1))
     assert rows == []
 
