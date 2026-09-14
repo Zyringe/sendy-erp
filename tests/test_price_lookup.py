@@ -1526,9 +1526,7 @@ def test_512_three_lines_on_two_invoices_widens_to_24m(db):
 def test_512_widened_24m_branch_reports_invoices_not_lines(db):
     """Both the old and the new count widen this fixture (12 months: 2 lines
     on 1 invoice), so it isolates the 24-month count: 5 lines on 3 invoices
-    reports 3. The lines themselves still all feed `lowest` — the cheapest is
-    the SECOND line of a two-line invoice, which a doc_base de-dup of the
-    rows (instead of just the count) would lose."""
+    reports 3."""
     pid = _mk_product(db, "512 24m branch", unit_type='ตัว', base=100.0, cost=60.0)
     _clear_pid(db, pid)
     # 12 months: invoice F, two lines
@@ -1538,14 +1536,11 @@ def test_512_widened_24m_branch_reports_invoices_not_lines(db):
     _bill(db, pid=pid, customer_code='TST-512F', customer_name='ลูกค้า 512F',
           date_iso=_days_ago(30), doc_base='IV5120011', suffix=2,
           qty=1, unit='ตัว', unit_price=98.0, vat_type=1, net=98.0)
-    # 13-24 months: invoice G (two lines, the -2 line is the cheapest of all)
-    # and invoice H (one line)
-    _bill(db, pid=pid, customer_code='TST-512G', customer_name='ลูกค้า 512G',
-          date_iso=_days_ago(400), doc_base='IV5120012', suffix=1,
-          qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
-    _bill(db, pid=pid, customer_code='TST-512G', customer_name='ลูกค้า 512G',
-          date_iso=_days_ago(400), doc_base='IV5120012', suffix=2,
-          qty=1, unit='ตัว', unit_price=70.0, vat_type=1, net=70.0)
+    # 13-24 months: invoice G (two lines) and invoice H (one line)
+    for suffix in (1, 2):
+        _bill(db, pid=pid, customer_code='TST-512G', customer_name='ลูกค้า 512G',
+              date_iso=_days_ago(400), doc_base='IV5120012', suffix=suffix,
+              qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
     _bill(db, pid=pid, customer_code='TST-512H', customer_name='ลูกค้า 512H',
           date_iso=_days_ago(500), doc_base='IV5120013', suffix=1,
           qty=1, unit='ตัว', unit_price=100.0, vat_type=1, net=100.0)
@@ -1554,8 +1549,27 @@ def test_512_widened_24m_branch_reports_invoices_not_lines(db):
     out = pl.resolve_price(db, product_id=pid, today=TODAY)
     assert out['window']['widened_to_24m'] is True
     assert out['window']['n_bills'] == 3
-    assert out['context']['lowest']['cash_per_unit'] == 70.0
-    assert out['context']['lowest']['doc_no'] == 'IV5120012-2'
+
+
+def test_512_every_line_still_feeds_lowest(db):
+    """Only the COUNT is per-invoice. Every line still feeds `lowest`: on a
+    two-line invoice the cheaper line wins whichever of the two was inserted
+    first, so a one-line-per-invoice de-dup of the ROWS (keeping either the
+    first or the last line of each invoice) goes red on one of the two."""
+    for cheap_suffix in (1, 2):
+        pid = _mk_product(db, f"512 lowest cheap -{cheap_suffix}", unit_type='ตัว',
+                          base=100.0, cost=60.0)
+        _clear_pid(db, pid)
+        doc_base = f'IV51200{40 + cheap_suffix}'
+        for suffix in (1, 2):   # inserted in suffix order, so -1 has the lower id
+            price = 70.0 if suffix == cheap_suffix else 100.0
+            _bill(db, pid=pid, customer_code='TST-512L', customer_name='ลูกค้า 512L',
+                  date_iso=_days_ago(10), doc_base=doc_base, suffix=suffix,
+                  qty=1, unit='ตัว', unit_price=price, vat_type=1, net=price)
+        out = pl.resolve_price(db, product_id=pid, today=TODAY)
+        assert out['window']['n_bills'] == 1
+        assert out['context']['lowest']['cash_per_unit'] == 70.0
+        assert out['context']['lowest']['doc_no'] == f'{doc_base}-{cheap_suffix}'
 
 
 def test_512_promo_stale_text_counts_invoices(db):
