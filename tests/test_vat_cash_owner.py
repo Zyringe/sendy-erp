@@ -183,9 +183,15 @@ def test_the_invoice_page_prints_the_paper_bills_vat_line(tmp_db):
 
     The four lines are seeded under a doc_base the dev DB cannot hold (asserted
     absent first), so nothing is inherited. Cells are read by position among
-    the tfoot's money cells, not by their labels, which #495 may reword."""
+    the tfoot's money cells, not by their labels, which #495 may reword.
+
+    This bill's VAT (929.5797) sits nowhere near a half satang, so a rate
+    derived the forbidden way (VAT_MULTIPLIER - 1 = 0.07000000000000006) prints
+    the same figures here while moving 16 of 1,130 real totals on prod. The
+    value the route hands the template is therefore pinned bit for bit too."""
     import re
     import sqlite3
+    from flask import template_rendered
     from app import app as flask_app
 
     doc = 'IVVATLINE485'
@@ -209,8 +215,15 @@ def test_the_invoice_page_prints_the_paper_bills_vat_line(tmp_db):
         sess['user_id'] = 1
         sess['username'] = 'test-admin'
         sess['role'] = 'admin'
-    resp = client.get('/sales/doc/' + doc)
+    rendered = []
+    with template_rendered.connected_to(
+            lambda sender, template, context, **extra: rendered.append((template.name, context)),
+            flask_app):
+        resp = client.get('/sales/doc/' + doc)
     assert resp.status_code == 200
+    ctxs = [c for name, c in rendered if name == 'sales_doc.html']
+    assert len(ctxs) == 1
+    assert ctxs[0]['vat_rate'].hex() == (0.07).hex()
     tfoot = re.search(r'<tfoot>(.*?)</tfoot>', resp.get_data(as_text=True), re.S).group(1)
     money = re.findall(r'<td class="text-end[^"]*">\s*([\d,]+\.\d\d)\s*</td>', tfoot)
     # รวมทั้งสิ้น (total, net) · VAT · ยอดรวมรวม VAT

@@ -310,8 +310,18 @@ def run_badge_script(script, node, cases=BADGE_CASES):
 def test_badge_multiplier_and_label_come_from_vat_math(route_client, tmp_db):
     """Source level, runs everywhere (no node needed): the page renders
     vat_math's multiplier into the script and into the label above the price
-    box, and the badge divides by the rendered constant, not a typed one."""
-    html = _product_view_html(route_client)
+    box, and the badge divides by the rendered constant, not a typed one. The
+    value the route hands the template is pinned bit for bit as well."""
+    from flask import template_rendered
+    from app import app as flask_app
+    rendered = []
+    with template_rendered.connected_to(
+            lambda sender, template, context, **extra: rendered.append((template.name, context)),
+            flask_app):
+        html = _product_view_html(route_client)
+    ctxs = [c for name, c in rendered if name == 'vat_sub/product_view.html']
+    assert len(ctxs) == 1
+    assert ctxs[0]['vat_multiplier'].hex() == (1.07).hex()
     code = _JS_COMMENT.sub('', _badge_script(html))
     assert 'function recompute(' in code, 'CONTROL: the comment strip ate the script'
     assert 'const VAT_MULTIPLIER = 1.07;' in code

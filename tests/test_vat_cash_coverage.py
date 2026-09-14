@@ -126,6 +126,13 @@ SHAPES = {
     # #485: vat_math.VAT_RATE owns the rate too, so a hand-typed one is a copy.
     'rate as a float':    'vat = net * 0.07\n',
     'rate in SQL':        'X = "SELECT SUM(net) * 0.07 FROM sales_transactions"\n',
+    # ... and the percent spellings of both, as arithmetic and in SQL text.
+    'percent * 7 / 100':   'vat = net * 7 / 100\n',
+    'percent * 107 / 100': 'cash = net * 107 / 100\n',
+    'percent / 107 * 100': 'ex = price / 107 * 100\n',
+    'percent 100/107':     'ex = price * 100/107\n',
+    'percent 7/107':       'vat = price * 7/107\n',
+    'percent in SQL':      'X = "SELECT SUM(net) * 7 / 100 FROM sales_transactions"\n',
 }
 
 
@@ -137,6 +144,7 @@ def test_sweep_detects_every_shape(name, src):
 @pytest.mark.parametrize('src', [
     '"""A module docstring mentioning net * 1.07 in prose."""\nx = 1\n',
     'def f():\n    """Docstring: multiply by 1.07 here."""\n    return 1\n',
+    'a = x * 17 / 100\nb = y * 7 / 1000\nc = z / 107.5 * 100\nd = 1000 / 107\n',
 ])
 def test_sweep_ignores_prose(src):
     """The counter-control. Without this, a sweep that flags everything would
@@ -243,7 +251,28 @@ FRONT_END_SHAPES = {
     'JS after a URL':       ("<script>\n  f('http://h/' + n * 1.07);\n</script>\n", False, [2]),
     'static .js file':      ('const cash = n * 1.07;\n', True, [1]),
     'line after a comment': ('{# a\n  multi-line note #}\n<p>{{ t * 0.07 }}</p>\n', False, [3]),
+    'percent * 7 / 100':    ('{% set v = t * 7 / 100 %}\n', False, [1]),
+    'percent * 107 / 100':  ('<script>\n  const cash = n * 107 / 100;\n</script>\n', False, [2]),
+    'percent / 107 * 100':  ('<script>\n  const ex = p / 107 * 100;\n</script>\n', False, [2]),
+    'percent 100/107':      ('<td>{{ p * 100/107 }}</td>\n', False, [1]),
+    'percent 7/107':        ('<p>VAT = ราคา × 7/107</p>\n', False, [1]),
 }
+
+
+def test_front_end_sweep_blanks_css_but_still_sees_js():
+    """CSS never carries VAT, and .07 is an ordinary CSS number (the app's own
+    shadow is rgba(26,26,26,.07)). A <style> block or style="..." attribute must
+    not trip the sweep — or push someone to a whole-file ALLOWED entry — while a
+    JS carve-out in the same file is still caught, on its own line."""
+    src = ('<style>\n'
+           '  .c { box-shadow: 0 1px 2px rgba(26,26,26,.07); letter-spacing: 0.07em; }\n'
+           '</style>\n'
+           '<div style="opacity: 0.07">x</div>\n'
+           "<span style='opacity:.07'>y</span>\n"
+           '<script>\n'
+           '  x = p / 1.07;\n'
+           '</script>\n')
+    assert find_vat_constants_in_front_end(src) == [7]
 
 
 @pytest.mark.parametrize('name', sorted(FRONT_END_SHAPES))
@@ -263,6 +292,9 @@ def test_front_end_sweep_detects_every_shape(name):
     ('<p>ราคาจ่ายจริง ÷ {{ vat_multiplier }}</p>\n', False),
     ('<script>\n  const M = {{ vat_multiplier|tojson }};\n</script>\n', False),
     ('<p>21.07 10.07 1.075 0.0701</p>\n', False),
+    ('<style>\n  .c { color: rgba(0,0,0,.07); opacity: 0.07; }\n</style>\n', False),
+    ('<div style="opacity: 0.07; letter-spacing: .07em">x</div>\n', False),
+    ('<p>* 17 / 100 · 7 / 1000 · 3 / 107 · 1000/107 · / 107.5 * 100</p>\n', False),
 ])
 def test_front_end_sweep_ignores_prose_and_rendered_constants(src, is_js):
     """The counter-control: comments are prose, a constant rendered through
