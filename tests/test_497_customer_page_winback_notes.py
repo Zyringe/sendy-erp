@@ -384,6 +384,34 @@ def test_winback_badge_shown_only_on_flagged_row(tmp_db):
     assert 'ขาดช่วง' not in fresh_row
 
 
+def test_winback_badge_only_on_the_flagged_units_own_card_row(tmp_db):
+    """F5 render check: ONE product bought as both ตัว (lapsed) and โหล
+    (fresh) must produce TWO card rows (models/customers.py keys product
+    cards by (product_id, unit) too), and the badge must land on the ตัว
+    row only — never bleed onto the โหล row for the same product name."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _mk_customer(conn, TEST_CODE, TEST_NAME)
+    _clear(conn, TEST_CODE)
+    pid = _mk_product(conn, name='สินค้าสองหน่วย 497 หน้าลูกค้า')
+    for i, d in enumerate(['2020-01-01', '2020-02-01', '2020-03-01']):
+        _line(conn, doc_base=f'IVUN{i}', pid=pid, date_iso=d, code=TEST_CODE, unit='ตัว')
+    import datetime as _dt
+    recent = _dt.date.today().isoformat()
+    for i, d in enumerate(['2025-11-01', '2025-12-01', recent]):
+        _line(conn, doc_base=f'IVUL{i}', pid=pid, date_iso=d, code=TEST_CODE,
+              unit='โหล', unit_price=1000, net=1000)
+    conn.close()
+
+    c = _client(tmp_db)
+    html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
+    piece_row = _table_row_containing(html, '(ตัว)</span>')
+    dozen_row = _table_row_containing(html, '(โหล)</span>')
+    assert 'ขาดช่วง' in piece_row
+    assert 'ขาดช่วง' not in dozen_row
+
+
 def test_overflow_line_absent_at_zero(tmp_db):
     import sqlite3
     conn = sqlite3.connect(tmp_db)
