@@ -292,6 +292,28 @@ def test_staff_sees_the_add_note_box(tmp_db):
     assert f'action="{url_customer_note(TEST_CODE)}"' in html
 
 
+def test_add_note_button_has_min_width_and_body_input_is_required(tmp_db):
+    """F6: `input-group-sm` shrinks the เพิ่ม button below the 44px touch
+    floor (measured 39.2px wide in real Chrome) even with btn-touch's own
+    min-height:44px applied. N11: the blank-note SERVER behaviour is
+    pre-existing (same as the call card's own form) and stays as-is —
+    this only pins the client-side `required` guard on the new input."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _mk_customer(conn, TEST_CODE, TEST_NAME)
+    _clear(conn, TEST_CODE)
+    conn.close()
+
+    c = _client(tmp_db, role='staff')
+    html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
+    action, body_html = _form_with_action_containing(html, f'/call/{TEST_CODE}/note')
+    body_input = re.search(r'<input\b[^>]*name="body"[^>]*>', body_html)
+    submit_btn = re.search(r'<button\b[^>]*type="submit"[^>]*>', body_html)
+    assert body_input and 'required' in body_input.group(0)
+    assert submit_btn and 'min-width:44px' in submit_btn.group(0)
+
+
 def test_shareholder_sees_the_list_but_no_add_note_box(tmp_db):
     import sqlite3
     conn = sqlite3.connect(tmp_db)
@@ -450,11 +472,15 @@ def test_overflow_line_renders_with_count_and_call_card_link(tmp_db):
 
     c = _client(tmp_db)
     html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
-    m = re.search(r'<a\b[^>]*href="([^"]*)"[^>]*>\s*⏰\s*อีก\s*(\d+)\s*รายการซื้อขาดช่วง', html)
+    m = re.search(r'<a\b([^>]*)href="([^"]*)"([^>]*)>\s*⏰\s*อีก\s*(\d+)\s*รายการซื้อขาดช่วง', html)
     assert m, "overflow line with a count not found"
-    href, count = m.group(1), m.group(2)
+    attrs_before, href, attrs_after, count = m.groups()
     assert count == '1'
     assert urlsplit(href).path == f'/call/{TEST_CODE}'
+    # F6: this link's text-only height (17px, real Chrome) was under the
+    # 44px mobile tap-target floor — btn-touch (mobile-conventions.md §5)
+    # gives it min-height:44px.
+    assert 'btn-touch' in (attrs_before + attrs_after)
 
 
 # ── Seam 3: redirect ─────────────────────────────────────────────────────────

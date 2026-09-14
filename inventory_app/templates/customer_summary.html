@@ -644,8 +644,10 @@
          Absent entirely at 0. #}
       {% if data.winback_overflow_count %}
       <div class="card-footer py-2 text-subtle small">
+        {# btn-touch: mobile-conventions.md §5 (≥44x44px tap target) — this
+           link's own text (17px tall) was under that floor (F6). #}
         <a href="{{ url_for('call.call_card', customer_code=data.customer_code) }}"
-           class="text-decoration-none">
+           class="text-decoration-none btn-touch">
           ⏰ อีก {{ data.winback_overflow_count }} รายการซื้อขาดช่วง — ดูที่ Call Card
         </a>
       </div>
@@ -727,8 +729,11 @@
              the trusted customer_code (no open redirect). #}
           <input type="hidden" name="return_to" value="customer">
           <div class="input-group input-group-sm">
-            <input type="text" name="body" class="form-control" placeholder="เพิ่มบันทึก… (พิมพ์อะไรก็ได้)">
-            <button type="submit" class="btn btn-primary btn-touch">เพิ่ม</button>
+            <input type="text" name="body" class="form-control" placeholder="เพิ่มบันทึก… (พิมพ์อะไรก็ได้)" required>
+            {# min-width inline: input-group-sm shrinks .btn below the 44px
+               floor btn-touch's min-height already gives it (F6) — this is
+               the one use site, so a page-wide app.css rule isn't needed. #}
+            <button type="submit" class="btn btn-primary btn-touch" style="min-width:44px">เพิ่ม</button>
           </div>
         </form>
         {% endif %}
