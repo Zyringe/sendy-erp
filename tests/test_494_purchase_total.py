@@ -95,6 +95,39 @@ def _monthly_series(html):
     return json.loads(m.group(1))
 
 
+def _row_for(html, marker):
+    """The one table row carrying `marker`, so a figure is read off THIS
+    customer's row and never off a neighbour's."""
+    rows = [r for r in re.findall(r'<tr\b.*?</tr>', html, re.S) if marker in r]
+    assert len(rows) == 1, f'expected exactly one row carrying {marker!r}, got {len(rows)}'
+    return rows[0]
+
+
+# The fixture every surface is read from. Worked by hand:
+#   IV49401  2026-01  ไม่บวก VAT        +1,000
+#   IV49402  2026-02  แยก VAT           +1,000   before VAT, never 1,070
+#   HS49403  2026-03  HS cash sale        +200   counted, as the document list shows it
+#   SR49404  2026-04  credit note, +300   −300
+#   IV49405  2026-03  invoiced in error  excluded (ar_writeoffs.excludes_revenue = 1)
+# ยอดซื้อรวม = 1,000 + 1,000 + 200 − 300 = 1,900
+EXPECTED_TOTAL = 1900.0
+
+
+def _seed_full_customer(conn):
+    _reset(conn)
+    pid = _product(conn)
+    _line(conn, 'IV49401', 1000, date_iso='2026-01-10', vat_type=1, pid=pid)
+    _line(conn, 'IV49402', 1000, date_iso='2026-02-10', vat_type=2, pid=pid)
+    _line(conn, 'HS49403', 200, date_iso='2026-03-10', vat_type=1, pid=pid)
+    _line(conn, 'SR49404', 300, date_iso='2026-04-10', vat_type=1, pid=pid)
+    _line(conn, 'IV49405', 5000, date_iso='2026-03-20', vat_type=1, pid=pid)
+    conn.execute(
+        "INSERT INTO ar_writeoffs (doc_no, customer_code, customer_name, amount, "
+        " type, writeoff_date, excludes_revenue) "
+        "VALUES ('IV49405', ?, ?, 5000, 'expense', '2026-04-01', 1)", (CODE, NAME))
+    conn.commit()
+
+
 # ── The sign rule ────────────────────────────────────────────────────────────
 
 def test_header_and_monthly_subtract_a_credit_note(tmp_db_conn):
@@ -134,3 +167,56 @@ def test_credit_note_only_customer_renders_negative(tmp_db):
     assert len(series) == 1
     assert series[0]['month'] == '2026-03'
     assert series[0]['total_net'] == pytest.approx(-690.0)
+
+
+# ── One figure on every surface ──────────────────────────────────────────────
+
+def test_every_surface_shows_the_same_purchase_total(tmp_db):
+    """Header, /customers row, mobile ยอดสะสม, call card and the /call list's
+    spend (window "all") must all read ฿1,900 for the same customer. Each
+    figure is taken from its own element, after a CONTROL that the element is
+    this customer's."""
+    conn = sqlite3.connect(tmp_db)
+    _seed_full_customer(conn)
+    conn.close()
+    c = _client()
+    seen = {}
+
+    # Customer page header
+    html = c.get(f'/customer/code/{quote(CODE)}').data.decode()
+    assert 'doc/IV49401"' in html                      # CONTROL: this customer's page
+    seen['header'] = _header_total(html)
+
+    # /customers list: the row whose รหัส cell is this code
+    html = c.get(f'/customers?q={quote(CODE)}').data.decode()
+    row = _row_for(html, f'<span class="badge badge-gray font-mono">{CODE}</span></td>')
+    m = re.search(r'data-label="ยอดรวม \(฿\)"[^>]*>\s*([^<]+?)\s*</td>', row)
+    assert m, 'ยอดรวม cell missing from the row'
+    seen['customers_list'] = _num(m.group(1))
+
+    # Mobile customer page (name-keyed)
+    html = c.get(f'/m/customer/{quote(NAME)}').data.decode()
+    assert 'doc/IV49401"' in html                      # CONTROL: this customer's documents
+    m = re.search(r'ยอดสะสม \(ก่อน VAT\)</div>\s*<div[^>]*>([^<]+)</div>', html)
+    assert m, 'ยอดสะสม card did not render'
+    seen['mobile'] = _num(m.group(1))
+
+    # Call card: the not-found branch redirects, so 200 is this customer's card
+    resp = c.get(f'/call/{quote(CODE)}')
+    assert resp.status_code == 200                     # CONTROL
+    m = re.search(r'<div class="k">ยอดซื้อทั้งหมด</div><div class="v">([^<]+)</div>',
+                  resp.data.decode())
+    assert m, 'ยอดซื้อทั้งหมด did not render'
+    seen['call_card'] = _num(m.group(1))
+
+    # /call list, all-time window: this customer's row
+    html = c.get(f'/call?q={quote(CODE)}&spend_window=all').data.decode()
+    row = _row_for(html, f"/call/{CODE}'")            # CONTROL: exactly one row
+    m = re.search(r'<td class="num cc-spend">\s*([^<]+?)\s*</td>', row)
+    assert m, 'spend cell missing from the row'
+    seen['call_list'] = _num(m.group(1))
+
+    assert len(seen) == 5
+    assert seen == {k: EXPECTED_TOTAL for k in seen}, (
+        f'every surface must read ฿1,900 (credit note subtracted, before VAT, '
+        f'HS counted, the document invoiced in error excluded): {seen}')
