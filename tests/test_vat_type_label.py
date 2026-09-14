@@ -339,7 +339,17 @@ def test_purchases_list_stat_card_and_filter(admin_client, seeded):
 # before it: ไม่รวม VAT (ex-VAT, /accounting /cashflow /revenue), ยอดรวมรวม VAT
 # (the แยก VAT grand total on the invoice page). "(รวม VAT)" qualifies a
 # VAT-inclusive price (the vat-sub price box). Jinja comments never render.
-_OLD_LABEL = re.compile(r'(?<![฀-๿(])รวม(?:\s|&nbsp;|&#160;)*VAT', re.I)
+# Cannot see: labels built in Python or static JS, and an exempt shape used AS a
+# label ("(รวม VAT)", a glued "ราคารวม VAT"). On a false positive, e.g. a spaced
+# <th>รวม VAT</th> VAT-total header, reword it ("ยอดรวม VAT") rather than loosen this.
+_PHRASE = r'รวม(?:\s|&nbsp;|&#160;)*VAT'
+_THAI = r'[\u0e00-\u0e7f]'
+_OLD_LABEL = re.compile(r'(?<!' + _THAI + r')(?<!\()' + _PHRASE, re.I)
+# The two exemptions as positive shapes, for the real-input control in the sweep.
+_EXEMPT_SHAPES = (
+    ('Thai-glued "…รวม VAT"', re.compile(_THAI + _PHRASE, re.I)),
+    ('parenthesised "(รวม VAT)"', re.compile(r'\(' + _PHRASE, re.I)),
+)
 _JINJA_COMMENT = re.compile(r'\{#.*?#\}', re.S)
 
 
@@ -384,19 +394,17 @@ def test_no_template_retypes_the_old_type_1_label():
                 path = os.path.join(root, fn)
                 with open(path, encoding='utf-8') as fh:
                     bodies[os.path.relpath(path, TEMPLATES)] = fh.read()
-    # CONTROLS: the walk read the tree, subfolders included, and two real files
-    # still hold the exact legitimate shape named beside them, so the clean
-    # result below is the exemption at work on real input, not files the sweep
-    # never saw. Pin the SHAPE, not "some phrase": vat_sub/product_view.html
-    # also says (ไม่รวม VAT), which would keep a looser check green on its own.
-    # sales_doc.html's ยอดรวมรวม VAT is deliberately NOT pinned here: that row
-    # sits in the invoice VAT block other work edits (#485), and rewording it
-    # must not break this guard. Its shape is pinned in the parametrized test.
-    assert len(bodies) > 100
-    for rel, shape in (('accounting.html', 'ไม่รวม VAT'),
-                       ('vat_sub/product_view.html', '(รวม VAT)')):
-        assert shape in _rendered_source(bodies.get(rel, '')), (
-            f'{rel} no longer holds {shape!r}: point this control at another real use')
+    # CONTROLS. The walk read the tree and went into subfolders, and each exempt
+    # shape still occurs in some real template, so the clean result below is the
+    # exemption at work on real input. Shapes, not pages: rewording one page cannot
+    # turn this red unless that page held the last real example of a shape.
+    assert len(bodies) > 100, f'the walk read only {len(bodies)} templates'
+    assert any(os.sep in rel for rel in bodies), 'the walk never entered a subfolder'
+    for name, shape in _EXEMPT_SHAPES:
+        assert any(shape.search(_rendered_source(b)) for b in bodies.values()), (
+            f'no template holds a {name} phrase any more, so that exemption is not '
+            'exercised on real input. If the wording was retired on purpose, drop the '
+            'shape here: test_the_sweep_leaves_legitimate_uses_alone still pins it.')
 
     flagged = [f'{rel}:{line}' for rel, body in sorted(bodies.items())
                for line in _old_label_lines(body)]
