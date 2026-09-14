@@ -280,6 +280,75 @@ def test_over_credited_invoice_with_no_receipt_is_excluded(empty_db_conn):
     assert 'IVO' not in _docs(ps)
 
 
+def _write_off(c, doc, excludes_revenue=0):
+    c.execute(
+        """INSERT INTO ar_writeoffs
+           (doc_no, customer_code, customer_name, amount, type, writeoff_date,
+            reason, excludes_revenue)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (doc, CODE, NAME, 1000, 'expense', '2026-06-24', 'test', excludes_revenue),
+    )
+
+
+def test_written_off_invoice_closed_by_a_receipt_is_excluded(empty_db_conn):
+    """Prod: the 3 วรสวัสดิ์ giveaway bills (IV6900401-403) were written off,
+    then Express closed them with RE6900376 141 days later, so the engine reads
+    them as paid. A receipt that closes a forgiven bill is bookkeeping, not the
+    customer paying. The WHOLE ar_writeoffs table is excluded, not only the
+    excludes_revenue rows — this one is flagged 0 on purpose."""
+    c = empty_db_conn
+    _fillers(c)
+    _iv(c, 'IVWO', '2026-03-11', 1000)
+    _re(c, 'RE-WO', '2026-07-30', [('IVWO', 1000)])        # day 141
+    c.commit()
+    # CONTROL: not yet written off, the same bill is in the sample.
+    before = pa.payment_speed(CODE, conn=c)
+    assert before['invoices'] == 4
+    assert _row(before, 'IVWO')['days'] == 141
+
+    _write_off(c, 'IVWO', excludes_revenue=0)
+    c.commit()
+    assert _status(c, 'IVWO')['status'] == 'paid'          # the engine is unchanged
+
+    ps = pa.payment_speed(CODE, conn=c)
+    assert ps['invoices'] == 3
+    assert 'IVWO' not in _docs(ps)
+    assert ps['receipts'] == 3
+
+
+def test_a_written_off_bill_does_not_make_up_the_three(empty_db_conn):
+    """The write-off exclusion runs BEFORE the window and the threshold: two real
+    paid bills plus a written-off one is two, so no figure."""
+    c = empty_db_conn
+    for doc, inv_date, paid_date in [('IVK1', '2026-01-01', '2026-01-11'),
+                                     ('IVK2', '2026-01-02', '2026-01-14'),
+                                     ('IVK3', '2026-03-11', '2026-07-30')]:
+        _iv(c, doc, inv_date, 1000)
+        _re(c, f'RE-{doc}', paid_date, [(doc, 1000)])
+    c.commit()
+    assert pa.payment_speed(CODE, conn=c)['invoices'] == 3   # CONTROL
+
+    _write_off(c, 'IVK3', excludes_revenue=1)
+    c.commit()
+    assert pa.payment_speed(CODE, conn=c) is None
+
+
+def test_receipt_count_skips_a_cancelled_receipt_on_a_sample_invoice(empty_db_conn):
+    """Cancel-and-reissue: the sample invoice carries a cancelled RE and the
+    active RE that replaced it. Only the active one is a receipt that paid it."""
+    c = empty_db_conn
+    _fillers(c)
+    _iv(c, 'IVCR', '2026-01-01', 1000)
+    _re(c, 'RE-CR1', '2026-01-15', [('IVCR', 1000)], cancelled=1)
+    _re(c, 'RE-CR2', '2026-01-20', [('IVCR', 1000)])        # day 19
+    c.commit()
+
+    ps = pa.payment_speed(CODE, conn=c)
+    assert ps['invoices'] == 4
+    assert _row(ps, 'IVCR')['days'] == 19
+    assert ps['receipts'] == 4            # 3 filler receipts + RE-CR2, never RE-CR1
+
+
 def test_legacy_null_amount_link_counts_on_its_receipt_date(empty_db_conn):
     c = empty_db_conn
     _fillers(c)
