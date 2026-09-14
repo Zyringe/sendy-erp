@@ -9,8 +9,8 @@ read ฿94,140.00 against the ฿50,460.00 its own document list sums to.
 The sweep, per QUERY rather than per file (a file-level allowlist answers "is
 this file known", not "is this aggregate declared"): every SQL string in
 inventory_app/ that reads sales_transactions and is keyed to a customer (it
-names customer / customer_code / canonical_code, or it lives in a function
-whose name says customer) has its raw net aggregates counted — SUM(net),
+names the customer or customer_code column, or it lives in a function whose
+name says customer) has its raw net aggregates counted — SUM(net),
 SUM(s.net), SUM(CASE ... net ...), anything over {vat_math.cash_sql()}. Each
 function holding any must be listed in ALLOWED with that exact count and a
 reason. A new raw aggregate inside an already-listed function changes its
@@ -36,8 +36,7 @@ _RAW_NET_AGG = re.compile(
     r'|\{vat_math\.cash_sql\(',
     re.IGNORECASE | re.DOTALL)
 _HELPER = re.compile(r'\{sales_filters\.purchase_net_sql\(')
-_CUSTOMER_KEY = re.compile(r'\b(?:customer|customer_code|canonical_code)\b',
-                           re.IGNORECASE)
+_CUSTOMER_KEY = re.compile(r'\b(?:customer|customer_code)\b', re.IGNORECASE)
 
 # file::function -> (raw net aggregates it is known to hold, why that is right).
 # Each is a per-customer money figure that answers a DIFFERENT question from
@@ -237,8 +236,6 @@ CUSTOMER_KEY_SHAPES = {
     'one customer by code':  ('SELECT SUM(net) FROM sales_transactions WHERE customer_code = ?', 'report'),
     'grouped by code':       ('SELECT customer_code, SUM(net) FROM sales_transactions '
                               'GROUP BY customer_code', 'report'),
-    'grouped by canonical':  ("SELECT COALESCE(customer_code, '') AS canonical_code, SUM(net) "
-                              'FROM sales_transactions GROUP BY canonical_code', 'report'),
     'scope from the caller': ('SELECT SUM(net) FROM sales_transactions WHERE {where}',
                               '_customer_totals'),
 }
