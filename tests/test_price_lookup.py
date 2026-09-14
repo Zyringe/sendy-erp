@@ -1681,6 +1681,6 @@ def test_512_resolve_price_output_keys_pinned(db):
                                   'breadcrumb', 'free_units'}
     assert set(out['internal']) == {'cost_per_unit', 'cost_side', 'margin_at_answer_pct',
                                     'margin_at_lowest_pct', 'margin_incl_free_units',
-                                    'below_cost_by', 'note'}
+                                    'below_cost_by', 'note', 'cost_mult'}
     assert len(out['flags']) >= 1  # window_widened fires here (1 bill < 3)
     assert all(set(f) == {'code', 'text'} for f in out['flags'])
