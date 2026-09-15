@@ -375,16 +375,19 @@ def review_dismiss(order_id):
 @bp_marketplace.route('/marketplace/order/<int:order_id>/link-iv', methods=['POST'])
 def link_iv(order_id):
     """Human confirms (or overrides) the IV for one order. doc_base from the picker."""
-    # The picker radios POST `doc_base`; the free-text fallback POSTs `doc_base_manual`.
-    doc_base = (request.form.get('doc_base_manual') or request.form.get('doc_base') or '').strip()
     conn = get_connection()
     try:
         order = models.get_marketplace_order(conn, order_id)
         if order is None:
             abort(404)
-        if not doc_base:
-            flash('กรุณาเลือกหรือพิมพ์เลขใบกำกับ (IV) ค่ะ', 'warning')
+        # The picker radios POST `doc_base`; the free-text fallback POSTs `doc_base_manual`.
+        plan = marketplace_match.plan_manual_pick(
+            conn, order, picked=request.form.get('doc_base'),
+            typed=request.form.get('doc_base_manual'))
+        if 'refuse' in plan:
+            flash(plan['refuse'], 'warning')
         else:
+            doc_base = plan['doc_base']
             stolen = marketplace_match.link_manual(
                 conn, order['platform'], order['order_sn'], doc_base,
                 confirmed_by=session.get('username'))

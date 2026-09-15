@@ -46,6 +46,19 @@ import vat_math
 # Customer code per platform (sales_transactions.customer_code).
 _CUST_CODE = {'shopee': 'Zหน้าร้าน', 'lazada': 'Lหน้าร้าน'}
 
+# The Express doc kinds a person might type into the picker that are not an IV.
+_DOC_KIND_TH = {'HS': 'บิลเงินสด', 'SR': 'ใบลดหนี้'}
+
+# Every Express customer code a marketplace order's IV can be billed to, and the
+# channel it means. Named one by one, never LIKE 'หน้าร้าน%': Gหน้าร้าน is the
+# walk-in counter, not an online sale (workspace-operating-manual).
+MARKETPLACE_CODES = {
+    'Zหน้าร้าน': 'Shopee',
+    'Bหน้าร้าน': 'Shopee ร้าน B (ปิดแล้ว)',
+    'Lหน้าร้าน': 'Lazada',
+    'Tหน้าร้าน': 'TikTok',
+}
+
 # The IV is keyed within this many days AFTER the platform order date.
 FORWARD_WINDOW_DAYS = 7
 PICKER_WINDOW_DAYS = 14          # the manual picker looks a bit further out
@@ -770,6 +783,27 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
     conn.commit()
     return {'matched': confident + review, 'confident': confident,
             'review': review, 'unmatched': unmatched, 'returns_matched': returns_matched}
+
+
+def plan_manual_pick(conn, order, picked=None, typed=None):
+    """What saving a person's IV pick for ``order`` would do — read-only (#545).
+    Returns ``{'refuse': <Thai message>}`` or ``{'doc_base': ...}``."""
+    doc_base = (typed or picked or '').strip()
+    if not doc_base:
+        return {'refuse': 'กรุณาเลือกหรือพิมพ์เลขใบกำกับ (IV) ค่ะ'}
+    found = conn.execute(
+        "SELECT customer_code FROM sales_transactions WHERE doc_base = ? LIMIT 1",
+        (doc_base,)).fetchone()
+    if found is None:
+        return {'refuse': f'ไม่พบ {doc_base} ในระบบ ตรวจเลขอีกครั้ง '
+                          '(ถ้าเพิ่งคีย์ใน Express รอข้อมูลรอบถัดไป)'}
+    if not doc_base.startswith('IV'):
+        kind = _DOC_KIND_TH.get(doc_base[:2], 'เอกสารประเภทอื่น')
+        return {'refuse': f'{doc_base} เป็น{kind} ไม่ใช่ใบกำกับ'}
+    code = found['customer_code']
+    if code not in MARKETPLACE_CODES:
+        return {'refuse': f'{doc_base} เป็นบิลของ {code} ไม่ใช่บิลขายออนไลน์ ผูกกับออเดอร์ไม่ได้'}
+    return {'doc_base': doc_base}
 
 
 def link_manual(conn, platform, order_sn, doc_base, customer_code=None, confirmed_by=None):
