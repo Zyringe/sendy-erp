@@ -243,13 +243,69 @@ def test_edit_stale_form_post_preserves_flag_and_name(admin_client, tmp_db):
     assert _acct_by_code(tmp_db, 'TEST-STALE')['income_recorded_elsewhere'] == 0
 
 
+def _edit_form_fragment(html, aid):
+    """The <tr class="collapse" id="edit-{aid}">...</tr> fragment — the ONE
+    account's edit form, not the add-form (which shares field names) and
+    not a sibling account's edit row."""
+    marker = f'id="edit-{aid}"'
+    idx = html.index(marker)
+    start = html.rfind('<tr', 0, idx)
+    assert start != -1, f"no <tr containing {marker}"
+    end = html.index('</tr>', idx) + len('</tr>')
+    return html[start:end]
+
+
 def test_admin_list_shows_name_with_code_and_flag_badge(admin_client, tmp_db):
+    """Scoped to the LIST TABLE, not page-wide — the add-form above the
+    table also contains the label text 'รายรับบันทึกที่อื่น' (M15: a
+    page-wide assertion is satisfied by that label alone and never proves
+    the list row rendered anything)."""
     admin_client.post('/cashbook-accounts/new', data={
         'code': 'TEST-G', 'display_name': 'บัญชีทดสอบ G', 'income_recorded_elsewhere': '1',
     }, follow_redirects=True)
     html = admin_client.get('/cashbook-accounts').data.decode('utf-8')
-    assert 'บัญชีทดสอบ G' in html
-    assert 'รายรับบันทึกที่อื่น' in html
+    table = re.search(r'<table.*?</table>', html, re.DOTALL)
+    assert table, "control: the account list table must have rendered"
+    row = _row_containing(table.group(0), 'บัญชีทดสอบ G', after='')
+    assert 'รายรับบันทึกที่อื่น' in row
+
+
+# ── G. Edit-form prefill (review SHOULD-FIX 2) ──────────────────────────────
+
+def test_edit_form_prefills_name_and_flag_for_flagged_account(admin_client, tmp_db):
+    """The edit form's inputs must carry the STORED values, or saving any
+    other field on that same form silently wipes them (the form always
+    resubmits every field on save — there is no per-field partial update
+    from the browser). Scoped to this account's own edit <form>."""
+    admin_client.post('/cashbook-accounts/new', data={
+        'code': 'TEST-H', 'display_name': 'บัญชีทดสอบ H', 'income_recorded_elsewhere': '1',
+    }, follow_redirects=True)
+    aid = _acct_by_code(tmp_db, 'TEST-H')['id']
+    html = admin_client.get('/cashbook-accounts').data.decode('utf-8')
+    frag = _edit_form_fragment(html, aid)
+    assert 'value="บัญชีทดสอบ H"' in frag
+    option_1 = re.search(r'<option value="1"[^>]*>ใช่', frag)
+    assert option_1, "control: the flag's 'ใช่' option must be present"
+    assert 'selected' in option_1.group(0)
+    option_0 = re.search(r'<option value="0"[^>]*>ไม่ใช่', frag)
+    assert option_0, "control: the flag's 'ไม่ใช่' option must be present"
+    assert 'selected' not in option_0.group(0)
+
+
+def test_edit_form_prefills_unflagged_account_correctly(admin_client, tmp_db):
+    """Control: an unflagged, unnamed account's edit form shows an empty
+    name input and 'ไม่ใช่' selected, not 'ใช่'."""
+    admin_client.post('/cashbook-accounts/new', data={'code': 'TEST-I'}, follow_redirects=True)
+    aid = _acct_by_code(tmp_db, 'TEST-I')['id']
+    html = admin_client.get('/cashbook-accounts').data.decode('utf-8')
+    frag = _edit_form_fragment(html, aid)
+    name_input = re.search(r'<input[^>]*name="display_name"[^>]*>', frag, re.DOTALL)
+    assert name_input, "control: the display_name input must be present"
+    assert 'value=""' in name_input.group(0)
+    option_0 = re.search(r'<option value="0"[^>]*>ไม่ใช่', frag)
+    assert option_0 and 'selected' in option_0.group(0)
+    option_1 = re.search(r'<option value="1"[^>]*>ใช่', frag)
+    assert option_1 and 'selected' not in option_1.group(0)
 
 
 # ── B. Dashboard: name+code rendering, falls back to code ──────────────────
