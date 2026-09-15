@@ -37,6 +37,7 @@ projects/marketplace-iv-matching/plan.md §3b / matcher-rebuild-spec.md):
 
 Manual links are never clobbered and their IV is never reused.
 """
+import json
 import logging
 import re
 from collections import deque
@@ -855,31 +856,60 @@ def holder_token(holders):
     return ','.join(sorted(f"{h['platform']}:{h['order_sn']}" for h in holders))
 
 
-def link_manual(conn, platform, order_sn, doc_base, customer_code=None, confirmed_by=None):
-    """Record a human-confirmed link. One IV = one order: if another order already
-    holds this IV, it is unlinked (stolen) and reverts to needing a pick. Returns
-    the list of order_sns that lost this IV (for a flash message)."""
+class HolderChanged(Exception):
+    """A different order took the IV after the person saw the confirm page."""
+
+
+def link_manual(conn, platform, order_sn, doc_base, customer_code=None, confirmed_by=None,
+                expected_holders=None):
+    """Record a human-confirmed link. One IV = one order: any other order holding
+    this IV, on ANY platform, loses it (a move, ย้ายใบกำกับ) and reverts to needing
+    a pick; each move writes one audit_log row. Returns the order_sns that lost it.
+
+    ``expected_holders`` is the holder_token the person was shown. If other orders
+    hold the IV now and they are not those, raises HolderChanged and writes
+    nothing; if nobody holds it now, the save goes ahead. None skips the check
+    (callers with no confirm page in front of a person).
+
+    The holder is read and the move written in ONE ``BEGIN IMMEDIATE``
+    transaction, so a second worker cannot move the same IV in between."""
+    if conn.in_transaction:
+        raise RuntimeError('link_manual needs a connection with no open transaction: '
+                           'the holder check and the write must share one')
     if customer_code is None:
         customer_code = _CUST_CODE.get(platform)
-    stolen = [r['order_sn'] for r in conn.execute(
-        "SELECT order_sn FROM marketplace_order_invoice WHERE platform=? AND doc_base=? AND order_sn<>?",
-        (platform, doc_base, order_sn)).fetchall()]
-    if stolen:
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        holders = _other_holders(conn, doc_base, platform, order_sn)
+        if expected_holders is not None and holders and holder_token(holders) != expected_holders:
+            raise HolderChanged(doc_base)
+        for h in holders:
+            conn.execute("DELETE FROM marketplace_order_invoice WHERE id = ?", (h['id'],))
+            conn.execute(
+                """INSERT INTO audit_log
+                       (table_name, row_id, action, row_key, changed_fields, user, change_source)
+                   VALUES ('marketplace_order_invoice', ?, 'DELETE', ?, ?, ?, 'iv_picker_move')""",
+                (h['id'], doc_base, json.dumps({
+                    'order_sn': [h['order_sn'], order_sn],
+                    'platform': [h['platform'], platform],
+                    'match_method': [h['match_method'], 'manual'],
+                    'confidence': [h['confidence'], 'manual']}, ensure_ascii=False),
+                 confirmed_by))
         conn.execute(
-            "DELETE FROM marketplace_order_invoice WHERE platform=? AND doc_base=? AND order_sn<>?",
-            (platform, doc_base, order_sn))
-    conn.execute(
-        """INSERT INTO marketplace_order_invoice
-               (platform, order_sn, doc_base, customer_code, match_method, confidence,
-                confirmed_by, confirmed_at)
-           VALUES (?,?,?,?, 'manual', 'manual', ?, datetime('now','localtime'))
-           ON CONFLICT(platform, order_sn) DO UPDATE SET
-               doc_base      = excluded.doc_base,
-               customer_code = excluded.customer_code,
-               match_method  = 'manual',
-               confidence    = 'manual',
-               confirmed_by  = excluded.confirmed_by,
-               confirmed_at  = excluded.confirmed_at""",
-        (platform, order_sn, doc_base, customer_code, confirmed_by))
-    conn.commit()
-    return stolen
+            """INSERT INTO marketplace_order_invoice
+                   (platform, order_sn, doc_base, customer_code, match_method, confidence,
+                    confirmed_by, confirmed_at)
+               VALUES (?,?,?,?, 'manual', 'manual', ?, datetime('now','localtime'))
+               ON CONFLICT(platform, order_sn) DO UPDATE SET
+                   doc_base      = excluded.doc_base,
+                   customer_code = excluded.customer_code,
+                   match_method  = 'manual',
+                   confidence    = 'manual',
+                   confirmed_by  = excluded.confirmed_by,
+                   confirmed_at  = excluded.confirmed_at""",
+            (platform, order_sn, doc_base, customer_code, confirmed_by))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return [h['order_sn'] for h in holders]

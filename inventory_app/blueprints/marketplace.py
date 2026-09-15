@@ -374,7 +374,8 @@ def review_dismiss(order_id):
 
 @bp_marketplace.route('/marketplace/order/<int:order_id>/link-iv', methods=['POST'])
 def link_iv(order_id):
-    """Human confirms (or overrides) the IV for one order. doc_base from the picker."""
+    """A person picks the IV for one order (#545). Every check runs here, not in the
+    picker: refuse, show the confirm page (nothing written), or save."""
     conn = get_connection()
     try:
         order = models.get_marketplace_order(conn, order_id)
@@ -384,19 +385,31 @@ def link_iv(order_id):
         plan = marketplace_match.plan_manual_pick(
             conn, order, picked=request.form.get('doc_base'),
             typed=request.form.get('doc_base_manual'))
+        confirming = request.form.get('confirm') == '1'
         if 'refuse' in plan:
             flash(plan['refuse'], 'warning')
-        elif plan['needs_confirm'] and request.form.get('confirm') != '1':
+        elif plan['needs_confirm'] and not confirming:
             return render_template('marketplace/link_iv_confirm.html', order=order, plan=plan)
         else:
             doc_base = plan['doc_base']
-            stolen = marketplace_match.link_manual(
-                conn, order['platform'], order['order_sn'], doc_base,
-                confirmed_by=session.get('username'))
-            msg = f'ผูกออเดอร์ {order["order_sn"]} กับ {doc_base} แล้วค่ะ'
-            if stolen:
-                msg += f' (ปลด {doc_base} ออกจากออเดอร์ {", ".join(stolen)} — ต้องเลือกใบกำกับใหม่ให้ออเดอร์นั้น)'
-            flash(msg, 'success')
+            # A confirm carries the holders the person saw; a direct save saw none.
+            expected = (request.form.get('expected_holders', '') if confirming
+                        else plan['expected_holders'])
+            try:
+                moved = marketplace_match.link_manual(
+                    conn, order['platform'], order['order_sn'], doc_base,
+                    customer_code=plan['customer_code'],
+                    confirmed_by=session.get('username'), expected_holders=expected)
+            except marketplace_match.HolderChanged:
+                flash(f'มีการเปลี่ยนแปลง ({doc_base} ถูกผูกกับออเดอร์อื่นแล้ว) กรุณาเลือกใหม่',
+                      'warning')
+            else:
+                if moved:
+                    flash(f'ย้าย {doc_base} มาที่ออเดอร์ {order["order_sn"]} แล้วค่ะ — '
+                          f'ออเดอร์ {", ".join(moved)} ไม่มีใบกำกับแล้ว ต้องเลือกใบใหม่ให้ออเดอร์นั้น',
+                          'success')
+                else:
+                    flash(f'ผูกออเดอร์ {order["order_sn"]} กับ {doc_base} แล้วค่ะ', 'success')
     finally:
         conn.close()
     return redirect(url_for('marketplace.settlement',

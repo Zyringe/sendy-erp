@@ -50,6 +50,8 @@ def pick(tmp_db_conn):
     marks = ','.join('?' * len(TEST_DOCS))
     c.execute(f"DELETE FROM sales_transactions WHERE doc_base IN ({marks})", TEST_DOCS)
     c.execute(f"DELETE FROM marketplace_order_invoice WHERE doc_base IN ({marks})", TEST_DOCS)
+    c.execute(f"DELETE FROM audit_log WHERE table_name='marketplace_order_invoice' "
+              f"AND row_key IN ({marks})", TEST_DOCS)
     omarks = ','.join('?' * len(TEST_ORDERS))
     c.execute(f"DELETE FROM marketplace_order_invoice WHERE order_sn IN ({omarks})", TEST_ORDERS)
     c.execute(f"DELETE FROM marketplace_orders WHERE order_sn IN ({omarks})", TEST_ORDERS)
@@ -96,6 +98,28 @@ def _order_link(c, order_sn):
     r = c.execute("SELECT doc_base FROM marketplace_order_invoice WHERE order_sn=?",
                   (order_sn,)).fetchone()
     return r['doc_base'] if r else None
+
+
+def _audit(c):
+    marks = ','.join('?' * len(TEST_DOCS))
+    return [dict(r) for r in c.execute(
+        f"""SELECT row_id, action, row_key, changed_fields, user, change_source
+            FROM audit_log WHERE table_name='marketplace_order_invoice'
+            AND row_key IN ({marks}) ORDER BY id""", TEST_DOCS)]
+
+
+def _row(c, platform, order_sn):
+    return dict(c.execute(
+        """SELECT id, doc_base, match_method, confidence, customer_code, confirmed_by
+           FROM marketplace_order_invoice WHERE platform=? AND order_sn=?""",
+        (platform, order_sn)).fetchone())
+
+
+def _press_confirm(cl, resp):
+    """Submit the confirm page's form exactly as the browser would."""
+    action, fields = _confirm_form(resp.get_data(as_text=True))
+    fields.pop('_submit_label')
+    return cl.post(action, data=fields)
 
 
 def _section(html, section_id):
@@ -248,6 +272,94 @@ def test_a_free_iv_under_another_channels_code_asks_first(pick):
     assert fields['expected_holders'] == ''
     assert fields['_submit_label'] == 'ผูกกับออเดอร์นี้'
     assert _order_link(c, 'PICKS1') is None
+
+    # Confirmed: the link records the code the IV is really billed to.
+    assert _press_confirm(cl, resp).status_code == 302
+    row = _row(c, 'shopee', 'PICKS1')
+    assert (row['doc_base'], row['customer_code']) == ('IV9500008', 'Bหน้าร้าน')
+
+
+def test_a_free_own_channel_pick_from_the_list_saves_straight_away(pick):
+    """Rule 6, as before #545: no confirm page, and nothing moved so no audit row."""
+    c, ids = pick
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['S1']}/link-iv", data={'doc_base': 'IV9500001'})
+    assert resp.status_code == 302
+    row = _row(c, 'shopee', 'PICKS1')
+    assert (row['doc_base'], row['match_method'], row['customer_code'], row['confirmed_by']) == \
+        ('IV9500001', 'manual', 'Zหน้าร้าน', 'staffer')
+    assert _audit(c) == []
+
+
+def test_confirming_a_move_takes_the_iv_and_writes_one_audit_row(pick):
+    """Rule 8: PICKS2's auto link is deleted, PICKS1 holds the IV, one audit row."""
+    import json
+    c, ids = pick
+    loser_id = _row(c, 'shopee', 'PICKS2')['id']
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['S1']}/link-iv", data={'doc_base': 'IV9500002'})
+    assert resp.status_code == 200 and _audit(c) == []        # the page alone writes nothing
+    assert _press_confirm(cl, resp).status_code == 302
+    assert _links(c, 'IV9500002') == [
+        {'platform': 'shopee', 'order_sn': 'PICKS1', 'match_method': 'manual'}]
+    assert _order_link(c, 'PICKS2') is None
+    audit = _audit(c)
+    assert len(audit) == 1
+    a = audit[0]
+    assert (a['row_id'], a['action'], a['row_key'], a['user'], a['change_source']) == \
+        (loser_id, 'DELETE', 'IV9500002', 'staffer', 'iv_picker_move')
+    assert json.loads(a['changed_fields']) == {
+        'order_sn': ['PICKS2', 'PICKS1'], 'platform': ['shopee', 'shopee'],
+        'match_method': ['auto', 'manual'], 'confidence': ['confident', 'manual']}
+    assert any('ย้าย IV9500002' in m and 'PICKS2' in m for m in _flashes(cl))
+
+
+def test_a_shopee_iv_moved_to_a_lazada_order_leaves_exactly_one_holder(pick):
+    """Acceptance: a Zหน้าร้าน IV held by a Shopee order, picked for a Lazada order."""
+    c, ids = pick
+    _link(c, 'shopee', 'PICKS3', 'IV9500001')
+    c.commit()
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['L1']}/link-iv",
+                   data={'doc_base_manual': 'IV9500001'})
+    assert resp.status_code == 200
+    holder = _section(resp.get_data(as_text=True), 'ivConfirmHolder')
+    assert 'PICKS3' in holder and 'Shopee' in holder
+    assert _press_confirm(cl, resp).status_code == 302
+    assert _links(c, 'IV9500001') == [
+        {'platform': 'lazada', 'order_sn': 'PICKL1', 'match_method': 'manual'}]
+    assert _row(c, 'lazada', 'PICKL1')['customer_code'] == 'Zหน้าร้าน'
+    assert len(_audit(c)) == 1
+
+
+def test_confirm_is_refused_when_a_different_order_took_the_iv_meanwhile(pick):
+    """Rule 7: the page named PICKS2; by the time it is pressed PICKS3 holds it."""
+    c, ids = pick
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['S1']}/link-iv", data={'doc_base': 'IV9500002'})
+    assert resp.status_code == 200
+    c.execute("UPDATE marketplace_order_invoice SET order_sn='PICKS3' WHERE doc_base='IV9500002'")
+    c.commit()
+    assert _press_confirm(cl, resp).status_code == 302
+    assert _flashes(cl) == ['มีการเปลี่ยนแปลง (IV9500002 ถูกผูกกับออเดอร์อื่นแล้ว) กรุณาเลือกใหม่']
+    assert _links(c, 'IV9500002') == [
+        {'platform': 'shopee', 'order_sn': 'PICKS3', 'match_method': 'auto'}]
+    assert _order_link(c, 'PICKS1') is None
+    assert _audit(c) == []
+
+
+def test_confirm_saves_when_the_holder_let_go_meanwhile(pick):
+    """Rule 7: the page named PICKS2; by the time it is pressed nobody holds it."""
+    c, ids = pick
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['S1']}/link-iv", data={'doc_base': 'IV9500002'})
+    assert resp.status_code == 200
+    c.execute("DELETE FROM marketplace_order_invoice WHERE doc_base='IV9500002'")
+    c.commit()
+    assert _press_confirm(cl, resp).status_code == 302
+    assert _links(c, 'IV9500002') == [
+        {'platform': 'shopee', 'order_sn': 'PICKS1', 'match_method': 'manual'}]
+    assert _audit(c) == []
 
 
 def test_a_clicked_row_and_a_different_typed_number_are_refused(pick):
