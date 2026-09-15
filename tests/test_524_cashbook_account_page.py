@@ -350,15 +350,18 @@ def test_dashboard_link_to_account_with_no_rows_that_month_shows_empty_message_n
     when that account has zero rows in it (must NOT silently fall back to the
     account's own latest month)."""
     aid = _account_ids(migrated_db)[0]
-    # This account's only row is in a DIFFERENT month from the one we'll follow.
+    # This account's only row is in a DIFFERENT month from the one we'll
+    # follow. Target month is far-future — tmp_db clones the LIVE dev DB
+    # WITH its data, so a near-term month could legitimately already hold
+    # real rows for this account; force emptiness rather than assume it.
     _insert_txn(migrated_db, aid, '2026-01-10')
-    resp = _client_as_user(1, 'admin').get(f'/cashbook/account/{aid}?month=2026-09')
+    resp = _client_as_user(1, 'admin').get(f'/cashbook/account/{aid}?month=2099-01')
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
     assert 'ไม่มีรายการในช่วงนี้' in html
     select = re.search(r'<select name="month".*?</select>', html, re.DOTALL)
     assert select, "control: month select must have rendered"
-    assert 'value="2026-09" selected' in select.group(0)
+    assert 'value="2099-01" selected' in select.group(0)
 
 
 # ── 3e. paging keeps the resolved month in effect ───────────────────────────
@@ -382,3 +385,93 @@ def test_pagination_link_carries_selected_month(migrated_db):
     nav = re.search(r'<nav>(.*?)</nav>', html, re.DOTALL)
     assert nav, "control: pagination nav must have rendered (60 rows > 50/page)"
     assert 'month=2026-08' in nav.group(1)
+
+
+# ── 3f. regression tests for /code-review findings on this same diff ───────
+
+def test_account_ledger_survives_a_row_with_an_unparseable_date(migrated_db):
+    """A txn_date SQLite's strftime can't parse makes the DISTINCT-months
+    query return SQL NULL alongside real 'YYYY-MM' values — sorting that
+    mixed set (None vs str) must not crash the page."""
+    aid = _account_ids(migrated_db)[0]
+    _insert_txn(migrated_db, aid, '2026-05-10')
+    conn = sqlite3.connect(migrated_db)
+    conn.execute(
+        "INSERT INTO cashbook_transactions"
+        " (account_id, txn_date, direction, category, amount, created_by)"
+        " VALUES (?,'not-a-date','expense','ทดสอบ 524',50.0,'seed')",
+        (aid,),
+    )
+    conn.commit()
+    conn.close()
+
+    resp = _client_as_user(1, 'admin').get(f'/cashbook/account/{aid}')
+    assert resp.status_code == 200, resp.get_data(as_text=True)[:1000]
+
+
+def test_txn_edit_validation_failure_redirects_to_the_rows_own_month(migrated_db):
+    """An edit that FAILS validation must land back on the row's own
+    (unchanged) month — never the account's default latest month, which
+    would silently hide both the flashed error and the row itself."""
+    aid = _account_ids(migrated_db)[0]
+    _insert_txn(migrated_db, aid, '2026-08-20')            # this account's latest
+    txn_id = _insert_txn(migrated_db, aid, '2026-01-10')    # the row under edit
+
+    resp = _client_as_user(1, 'admin').post(f'/cashbook/txn/{txn_id}/edit', data={
+        'account_id': str(aid), 'txn_date': '2026-01-10', 'direction': 'expense',
+        'category': 'ทดสอบ 524', 'amount': '0',   # invalid: must be > 0
+    }, follow_redirects=False)
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:500]
+    assert 'month=2026-01' in resp.headers['Location']
+
+
+def test_clear_filters_link_shows_all_history_not_just_the_default_month(migrated_db):
+    """"ล้าง" must mean "all history", exactly like the dropdown's own
+    "— ทุกเดือน —" option — not silently fall into the smart-default month."""
+    aid = _account_ids(migrated_db)[0]
+    _insert_txn(migrated_db, aid, '2026-01-05')
+    _insert_txn(migrated_db, aid, '2026-08-20')   # this account's latest
+
+    resp = _client_as_user(1, 'admin').get(f'/cashbook/account/{aid}')
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    m = re.search(r'>ล้าง</a>', html)
+    assert m, "control: the ล้าง link must have rendered"
+    href_start = html.rfind('<a href="', 0, m.start())
+    clear_href = html[href_start:m.end()]
+    assert 'month=' in clear_href
+    from urllib.parse import unquote
+    month_val = re.search(r'month=([^"&]+)', clear_href).group(1)
+    assert unquote(month_val) == 'ทั้งหมด'
+
+
+def test_card3_net_movement_not_zeroed_by_the_direction_filter(migrated_db):
+    """Card 3 (เข้า-ออกสุทธิ in month mode) is the account's real net
+    movement and must stay correct even when the รายรับ/รายจ่าย filter
+    narrows the row LISTING — filtering to "รายจ่าย" must not silently
+    zero out the income side of the net-movement figure."""
+    aid = _account_ids(migrated_db)[0]
+    # tmp_db clones the LIVE dev DB WITH its data — force the exact state
+    # this test asserts, don't inherit whatever real May-2026 rows this
+    # account already has.
+    conn = sqlite3.connect(migrated_db)
+    conn.execute(
+        "DELETE FROM cashbook_transactions"
+        " WHERE account_id=? AND strftime('%Y-%m', txn_date)='2026-05'",
+        (aid,),
+    )
+    conn.commit()
+    conn.close()
+    _insert_txn(migrated_db, aid, '2026-05-01', direction='income', amount=1000.0)
+    _insert_txn(migrated_db, aid, '2026-05-02', direction='expense', amount=400.0)
+
+    resp = _client_as_user(1, 'admin').get(
+        f'/cashbook/account/{aid}?month=2026-05&dir=expense'
+    )
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    # Third stat-card value (คงเหลือ/เข้า-ออกสุทธิ) — the third occurrence of
+    # this card markup on the page.
+    cards = re.findall(r'<div class="fw-semibold[^"]*">\s*฿([\d,\.\-]+)\s*</div>', html)
+    assert len(cards) >= 3, "control: all 3 stat cards must have rendered"
+    assert cards[2] == '600.00'   # 1,000 income - 400 expense, true net

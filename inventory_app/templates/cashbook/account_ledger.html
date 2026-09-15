@@ -86,7 +86,7 @@
         </select>
       </div>
       <div class="col-auto">
-        <a href="{{ url_for('cashbook.account_ledger', account_id=acct.id) }}"
+        <a href="{{ url_for('cashbook.account_ledger', account_id=acct.id, month='ทั้งหมด') }}"
            class="btn btn-sm btn-outline-secondary">ล้าง</a>
       </div>
     </form>

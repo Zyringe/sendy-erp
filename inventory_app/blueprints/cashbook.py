@@ -211,6 +211,11 @@ def _get_tag_summary(conn, month: Optional[str] = None):
 _OVERSPEND_PCT_THRESHOLD = 0.20     # this >= prev * 1.20
 _OVERSPEND_DIFF_FLOOR = 1000.0      # AND (this - prev) >= ฿1,000
 
+# The "show everything" token in `?month=`, shared by the dashboard and the
+# account-ledger page (#524) so a link from one to the other means the same
+# thing on both sides.
+_ALL_TIME = "ทั้งหมด"
+
 
 def _default_month(conn, account_id: Optional[int] = None) -> Optional[str]:
     """Most recent calendar month ('YYYY-MM') that has any cashbook transaction,
@@ -233,6 +238,30 @@ def _default_month(conn, account_id: Optional[int] = None) -> Optional[str]:
             (account_id,),
         ).fetchone()
     return row["m"] if row and row["m"] else None
+
+
+def _resolve_month_scope(conn, raw_month: Optional[str], account_id: Optional[int] = None):
+    """The `?month=` decision, shared by dashboard() and account_ledger()
+    (#524) so the two copies of this logic can't drift apart:
+
+      raw_month is None            -> the default: `_default_month`, scoped
+                                       to `account_id` when given
+      raw_month in ("", _ALL_TIME) -> all-time (month=None)
+      raw_month == 'YYYY-MM'       -> that exact month, caller's own choice
+                                       (even with zero rows in it)
+
+    Returns (month, is_all_time, selected_month) — `month` is the value SQL
+    filters on (None means no filter), `selected_month` is what the template
+    renders (`_ALL_TIME` in place of None)."""
+    if raw_month is None:
+        month = _default_month(conn, account_id=account_id)
+    elif raw_month in ("", _ALL_TIME):
+        month = None
+    else:
+        month = raw_month
+    is_all_time = month is None
+    selected_month = _ALL_TIME if is_all_time else month
+    return month, is_all_time, selected_month
 
 
 def _prev_month(month: str) -> str:
@@ -397,18 +426,14 @@ def _get_detail_rows(conn, dim, key):
 def dashboard():
     conn = database.get_connection()
     try:
-        # Month-scope resolution (decision 2+6, plan.md):
+        # Month-scope resolution (decision 2+6, plan.md; shared with
+        # account_ledger() via _resolve_month_scope, #524):
         #   absent ?month=      -> resolve to the most-recent month with data
         #   ?month=  or ทั้งหมด  -> all-time (month=None)
         #   ?month=YYYY-MM      -> that month
-        raw_month = request.args.get("month")
-        if raw_month is None:
-            month = _default_month(conn)          # None if the ledger is empty
-        elif raw_month in ("", "ทั้งหมด"):
-            month = None
-        else:
-            month = raw_month
-        is_all_time = month is None
+        month, is_all_time, selected_month = _resolve_month_scope(
+            conn, request.args.get("month")
+        )
 
         accounts      = _get_accounts_with_totals(conn, month)
         monthly       = _get_monthly_summary(conn, exclude_transfer=True)  # never scoped (trend chart)
@@ -468,7 +493,7 @@ def dashboard():
         expense_cats=expense_cats,
         expense_chart=_expense_topn(expense_cats),
         tag_summary=tag_summary,
-        selected_month=("ทั้งหมด" if is_all_time else month),
+        selected_month=selected_month,
         is_all_time=is_all_time,
         is_current_month=is_current_month,
         card3_value=card3_value,
@@ -578,8 +603,9 @@ def account_ledger(account_id):
             flash("ไม่พบบัญชีนี้ในระบบ", "danger")
             return redirect(url_for("cashbook.dashboard"))
 
-        # Month-scope resolution (ticket #524 — the dashboard's own rule,
-        # ADR 0007, scoped to this one account):
+        # Month-scope resolution (ticket #524 — ADR 0007's rule, scoped to
+        # this one account; shared with dashboard() via _resolve_month_scope
+        # so the two can't drift):
         #   absent ?month=      -> most-recent month THIS account has data in
         #                          (None if the account has none at all)
         #   ?month=ทั้งหมด or "" -> all history (reuses the dashboard's own
@@ -588,15 +614,9 @@ def account_ledger(account_id):
         #   ?month=YYYY-MM      -> that exact month, even with zero rows — the
         #                          caller (a dashboard link, or a redirect
         #                          after add/edit/delete) picked it on purpose.
-        raw_month = request.args.get("month")
-        if raw_month is None:
-            month = _default_month(conn, account_id=account_id)
-        elif raw_month in ("", "ทั้งหมด"):
-            month = None
-        else:
-            month = raw_month
-        is_all_time = month is None
-        selected_month = "ทั้งหมด" if is_all_time else month
+        month, is_all_time, selected_month = _resolve_month_scope(
+            conn, request.args.get("month"), account_id=account_id
+        )
 
         dir_filter = request.args.get("dir", "").strip()
         page, per_page = paging(request.args, per_page=50)
@@ -626,7 +646,9 @@ def account_ledger(account_id):
             params + [per_page, offset],
         ).fetchall()
 
-        # Running totals for displayed page
+        # Running totals for the displayed (filtered) page — "รายรับ/รายจ่าย
+        # (ที่กรอง)" cards, meant to reflect whatever รายรับ/รายจ่าย filter is
+        # active (so filtering to รายจ่าย correctly shows ฿0.00 รายรับ).
         sum_income  = conn.execute(
             f"SELECT COALESCE(SUM(amount),0) FROM cashbook_transactions t "
             f"WHERE {where_sql} AND direction='income'",
@@ -638,11 +660,37 @@ def account_ledger(account_id):
             params,
         ).fetchone()[0]
 
+        # Card 3 (คงเหลือ / เข้า-ออกสุทธิ, #524) is the account's real net
+        # movement and must NOT be narrowed by the รายรับ/รายจ่าย filter —
+        # it needs its own account+month-only WHERE, never `where_sql`
+        # (which already carries `direction=?` when dir_filter is set; on
+        # top of `AND direction='expense'` that becomes a self-contradicting
+        # `direction='income' AND direction='expense'`, silently zeroing the
+        # other side and corrupting the net figure).
+        balance_where = ["t.account_id=?"]
+        balance_params = [account_id]
+        if month:
+            balance_where.append("strftime('%Y-%m', t.txn_date)=?")
+            balance_params.append(month)
+        balance_where_sql = " AND ".join(balance_where)
+        balance_income = conn.execute(
+            f"SELECT COALESCE(SUM(amount),0) FROM cashbook_transactions t "
+            f"WHERE {balance_where_sql} AND direction='income'",
+            balance_params,
+        ).fetchone()[0]
+        balance_expense = conn.execute(
+            f"SELECT COALESCE(SUM(amount),0) FROM cashbook_transactions t "
+            f"WHERE {balance_where_sql} AND direction='expense'",
+            balance_params,
+        ).fetchone()[0]
+
         # Available months for filter dropdown — always includes the
         # RESOLVED month even when this account has zero rows in it (ticket
         # #524: a dashboard link or a redirect can land here on a month this
         # account never touched, and the dropdown must still show it as
-        # selected rather than silently reverting to "ทุกเดือน").
+        # selected rather than silently reverting to "ทุกเดือน"). `r["m"]`
+        # can be SQL NULL (a txn_date strftime can't parse) — drop it, or
+        # `sorted()` crashes mixing None with strings.
         months = {
             r["m"] for r in conn.execute(
                 """SELECT DISTINCT strftime('%Y-%m', txn_date) AS m
@@ -650,6 +698,7 @@ def account_ledger(account_id):
                    WHERE account_id=?""",
                 (account_id,),
             ).fetchall()
+            if r["m"] is not None
         }
         if month:
             months.add(month)
@@ -677,7 +726,7 @@ def account_ledger(account_id):
         total_pages=total_pages,
         sum_income=sum_income,
         sum_expense=sum_expense,
-        balance=sum_income - sum_expense,
+        balance=balance_income - balance_expense,
         months=months,
         accounts=accounts,
         categories_by_direction=categories_by_direction,
@@ -1196,11 +1245,11 @@ def new_transaction():
         # ?account_id=<this account>), if it's still active; otherwise fall
         # back to the user's own default, same as when nothing is passed.
         requested_account_id_raw = request.args.get("account_id", "").strip()
+        _requested_account_id = (
+            int(requested_account_id_raw) if requested_account_id_raw.isdigit() else None
+        )
         preselected_account_id = (
-            int(requested_account_id_raw)
-            if requested_account_id_raw.isdigit()
-            and int(requested_account_id_raw) in account_ids
-            else None
+            _requested_account_id if _requested_account_id in account_ids else None
         )
         default_account_id = preselected_account_id or _default_account_id_for_user(
             conn, session.get("user_id")
@@ -1372,15 +1421,26 @@ def txn_edit(txn_id):
         if not category:
             errors.append("กรุณาระบุหมวดหมู่")
 
+        # Both refusal paths below land back on the row's ORIGINAL month
+        # (nothing was saved, so nothing moved) — never the default, which
+        # under #524's own scoping can silently jump the admin to a
+        # different month and hide both the flash and the row they were
+        # trying to fix.
         if errors:
             for msg in errors:
                 flash(msg, "danger")
-            return redirect(url_for("cashbook.account_ledger", account_id=row["account_id"]))
+            return redirect(url_for(
+                "cashbook.account_ledger",
+                account_id=row["account_id"], month=row["txn_date"][:7],
+            ))
 
         blocked = _edit_policy_blocked_reason(conn, category, user_category)
         if blocked:
             flash(blocked, "danger")
-            return redirect(url_for("cashbook.account_ledger", account_id=row["account_id"]))
+            return redirect(url_for(
+                "cashbook.account_ledger",
+                account_id=row["account_id"], month=row["txn_date"][:7],
+            ))
 
         _upsert_category(conn, category, direction)
 
