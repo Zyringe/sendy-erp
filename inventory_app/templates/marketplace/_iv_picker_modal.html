@@ -3,32 +3,33 @@
    /marketplace/order/<id>/link-iv. Requires `platform` in the including
    template's context. Extracted verbatim from marketplace/settlement.html so
    other pages (e.g. marketplace/review.html) can reuse the picker instead of
-   rebuilding it — include this once per page, alongside _order_detail_modal.html. #}
+   rebuilding it — include this once per page, alongside _order_detail_modal.html.
+   The <form> IS the .modal-content: any wrapper between .modal-content and
+   .modal-body stops modal-dialog-scrollable from scrolling and cuts the บันทึก
+   footer off below the screen (tests/test_scrollable_modal_structure.py). #}
 <div class="modal fade" id="ivPickModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-scrollable">
-    <div class="modal-content">
-      <form method="post" id="ivPickForm">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <div class="modal-header">
-          <h2 class="modal-title h5 mb-0">เลือกใบกำกับ (IV) — <code id="ivPickOrderSn"></code></h2>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="ปิด"></button>
+    <form class="modal-content" method="post" id="ivPickForm">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header">
+        <h2 class="modal-title h5 mb-0">เลือกใบกำกับ (IV) — <code id="ivPickOrderSn"></code></h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="ปิด"></button>
+      </div>
+      <div class="modal-body">
+        <div id="ivPickLoading" class="text-center text-muted py-3 d-none">
+          <div class="spinner-border spinner-border-sm" role="status"></div> กำลังโหลด...
         </div>
-        <div class="modal-body">
-          <div id="ivPickLoading" class="text-center text-muted py-3 d-none">
-            <div class="spinner-border spinner-border-sm" role="status"></div> กำลังโหลด...
-          </div>
-          <p class="small text-muted mb-1">ใบที่ยอดสุทธิเท่ากับยอดโอนจริง เรียงตามวันใกล้วันโอนที่สุด</p>
-          <div id="ivPickList" class="list-group mb-3 small"></div>
-          <label class="form-label small mb-1">หรือพิมพ์เลข IV เอง</label>
-          <input type="text" class="form-control form-control-sm" name="doc_base_manual"
-                 id="ivPickManual" placeholder="เช่น IV6900827" autocomplete="off">
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
-          <button type="submit" class="btn btn-primary btn-sm">บันทึก</button>
-        </div>
-      </form>
-    </div>
+        <p class="small text-muted mb-1">ใบที่ยอดสุทธิเท่ากับยอดโอนจริง เรียงตามวันใกล้วันโอนที่สุด</p>
+        <div id="ivPickList" class="list-group mb-3 small"></div>
+        <label class="form-label small mb-1">หรือพิมพ์เลข IV เอง</label>
+        <input type="text" class="form-control form-control-sm" name="doc_base_manual"
+               id="ivPickManual" placeholder="เช่น IV6900827" autocomplete="off">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">ยกเลิก</button>
+        <button type="submit" class="btn btn-primary btn-sm">บันทึก</button>
+      </div>
+    </form>
   </div>
 </div>
 
