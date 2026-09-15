@@ -1,10 +1,14 @@
-"""Partners blueprint — customers, suppliers, customer map/geocoding, and
-regions admin.
+"""Partners blueprint — customers, suppliers, customer map/geocoding.
 
 Extracted verbatim from app.py (behavior-preserving split) — see app.py's
 module docstring for the overall file-split rationale. No URL changes;
 route rules are unchanged, only their endpoint names gain a `partners.`
 prefix.
+
+#528: the region bulk-reassign page (`/customers/bulk-reassign`) and the
+regions admin page (`/regions`) were deleted — เขตการขาย (customers.region_id)
+is retired, replaced everywhere by ภาค (customer_geo.region_of, derived from
+the address).
 """
 import os
 import re
@@ -14,6 +18,7 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort)
 
 import cashflow
+import customer_geo
 import models
 import payments_alloc
 from database import get_connection
@@ -40,39 +45,27 @@ def _with_phone_entries(customers):
 @bp_partners.route('/customers')
 def customer_list():
     search           = request.args.get('q', '').strip()
-    region_id        = request.args.get('region_id', '').strip()
-    region           = request.args.get('region', '').strip()  # legacy bookmarks
+    # #528: ภาค text filter (customer_geo.REGION_ORDER), retiring เขตการขาย.
+    # A legacy ?region_id= or an old FK-style ?region=<code|name_th> bookmark
+    # is simply ignored — get_customers() no-ops on a value that isn't a real
+    # REGION_ORDER string.
+    region           = request.args.get('region', '').strip()
     include_billless = request.args.get('include_billless') == '1'
     page, per_page   = paging(request.args)
-
-    # Legacy ?region=<text>: warn the user when it doesn't resolve so we don't
-    # silently show all customers and look like the filter is broken.
-    if region and not region_id:
-        from database import get_connection as _gc
-        _conn = _gc()
-        match = _conn.execute(
-            "SELECT id FROM regions WHERE code = ? OR name_th = ? LIMIT 1",
-            (region, region),
-        ).fetchone()
-        _conn.close()
-        if not match:
-            flash(f'ไม่พบเขต "{region}" — แสดงลูกค้าทั้งหมดแทน', 'warning')
 
     customers, total = models.get_customers(
         search=search or None,
         region=region or None,
-        region_id=region_id or None,
         page=page, per_page=per_page,
         include_billless=include_billless,
     )
-    pages   = (total + per_page - 1) // per_page
-    regions = models.get_regions()
+    pages = (total + per_page - 1) // per_page
     return render_template('customers.html',
                            customers=customers, total=total,
                            page=page, pages=pages,
-                           search=search, region=region, region_id=region_id,
+                           search=search, region=region,
                            include_billless=include_billless,
-                           regions=regions)
+                           regions=customer_geo.REGION_ORDER)
 
 
 @bp_partners.route('/customer/code/<customer_code>')
@@ -142,7 +135,6 @@ def customer_detail(customer_code):
                            master=master,
                            pay_speed=pay_speed,
                            salespersons=models.get_active_salespersons(),
-                           regions=models.get_all_regions(),
                            orphan_codes=models.get_orphan_salesperson_codes())
 
 
@@ -174,30 +166,28 @@ def customer_summary(customer_name):
 @bp_partners.route('/customer/<customer_code>/reassign', methods=['POST'])
 def customer_reassign(customer_code):
     """Save handler for the customer-edit modal (customer_summary.html):
-    group 1 (salesperson/region_id) + group 2 contact fields in one POST.
+    group 1 (salesperson) + group 2 contact fields in one POST.
     See models.update_customer_edit for the field-group + stamping rules.
     """
     salesperson = request.form.get('salesperson', '').strip()
-    region_id   = request.form.get('region_id', '').strip()
 
     # MISSING is not CLEAR. This URL is unchanged from the pre-modal card, which
-    # POSTed salesperson + region_id and nothing else — a page rendered before
-    # this deploy and submitted after it is a real caller, not a hypothetical
-    # one. Reading its absent contact keys as blanks wipes phone/contact/address,
-    # stamps the row as curated, and pushes NULLs into the pending review row
-    # (reproduced against a live copy on 2026-08-01 for 11ม06 — all three
-    # columns went to NULL). So branch on what the request actually carried.
+    # POSTed salesperson (+ region_id, before #528 retired it) and nothing
+    # else — a page rendered before this deploy and submitted after it is a
+    # real caller, not a hypothetical one. Reading its absent contact keys as
+    # blanks wipes phone/contact/address, stamps the row as curated, and
+    # pushes NULLs into the pending review row (reproduced against a live
+    # copy on 2026-08-01 for 11ม06 — all three columns went to NULL). So
+    # branch on what the request actually carried.
     present = [k for k in models.CUSTOMER_CONTACT_FIELDS if k in request.form]
 
     if not present:
         # Legacy assignment-only form. Same behaviour it always had.
-        result = models.update_customer_assignment(
-            customer_code, salesperson, region_id)
+        result = models.update_customer_assignment(customer_code, salesperson)
     elif len(present) == len(models.CUSTOMER_CONTACT_FIELDS):
         contact = {k: request.form.get(k, '') for k in models.CUSTOMER_CONTACT_FIELDS}
         result = models.update_customer_edit(
-            customer_code, salesperson, region_id, contact,
-            session.get('username'))
+            customer_code, salesperson, contact, session.get('username'))
     else:
         # Neither shape — refuse rather than guess which half to trust.
         missing = [k for k in models.CUSTOMER_CONTACT_FIELDS if k not in request.form]
@@ -214,61 +204,6 @@ def customer_reassign(customer_code):
     # (not a hostile form value), and the code-keyed page can never diverge
     # from it the way the old master-NAME redirect could (BUG 1).
     return redirect(url_for('partners.customer_detail', customer_code=customer_code))
-
-
-@bp_partners.route('/customers/bulk-reassign', methods=['GET', 'POST'])
-def customer_bulk_reassign():
-    if session.get('role') not in ('admin', 'manager', 'shareholder'):
-        abort(403)
-
-    if request.method == 'POST':
-        codes       = request.form.getlist('customer_codes')
-        region_id   = request.form.get('region_id', '').strip()
-        # Still read `salesperson` (no longer rendered by the template) so a
-        # page loaded before this deploy can be REJECTED with a clear error
-        # rather than having its salesperson choice silently dropped.
-        salesperson = request.form.get('salesperson', '').strip()
-
-        result = models.bulk_reassign_customers(codes, region_id,
-                                                 salesperson_code=salesperson)
-        if result['ok']:
-            flash(f'อัปเดต {result["updated"]} ลูกค้าเรียบร้อย (master record)', 'success')
-        else:
-            flash(f'ไม่สามารถบันทึก: {result["error"]}', 'danger')
-        redirect_args = {
-            'q':                  request.form.get('q', '') or None,
-            'salesperson_filter': request.form.get('salesperson_filter', '') or None,
-            'region_filter':      request.form.get('region_filter', '') or None,
-            'orphan':             '1' if request.form.get('orphan_filter') == '1' else None,
-        }
-        return redirect(url_for('partners.customer_bulk_reassign',
-                                **{k: v for k, v in redirect_args.items() if v}))
-
-    search        = request.args.get('q', '').strip()
-    salesperson_f = request.args.get('salesperson_filter', '').strip()
-    region_f      = request.args.get('region_filter', '').strip()
-    orphan_only   = request.args.get('orphan') == '1'
-    page, per_page = paging(request.args, per_page=100)
-
-    region_id_int = int(region_f) if region_f.isdigit() else None
-    customers, total = models.get_customers_master(
-        search=search or None,
-        salesperson=salesperson_f or None,
-        region_id=region_id_int,
-        orphan_only=orphan_only,
-        page=page, per_page=per_page,
-    )
-    pages = (total + per_page - 1) // per_page
-
-    return render_template(
-        'customers_bulk_reassign.html',
-        customers=customers, total=total, page=page, pages=pages,
-        search=search, salesperson_filter=salesperson_f,
-        region_filter=region_f, orphan_only=orphan_only,
-        salespersons=models.get_active_salespersons(),
-        regions=models.get_all_regions(),
-        orphan_codes=models.get_orphan_salesperson_codes(),
-    )
 
 
 # ── Suppliers ─────────────────────────────────────────────────────────────────
@@ -519,28 +454,3 @@ def customer_geocode(code):
         return jsonify({'ok': False, 'reason': str(e)}), 500
 
 
-# ── Regions admin (fill in name_th + sort_order) ─────────────────────────────
-
-@bp_partners.route('/regions', methods=['GET', 'POST'])
-def regions_admin():
-    if session.get('role') != 'admin':
-        abort(403)
-
-    if request.method == 'POST':
-        try:
-            region_id = int(request.form.get('region_id', '0'))
-        except ValueError:
-            abort(400)
-        result = models.update_region(
-            region_id,
-            request.form.get('name_th', ''),
-            request.form.get('sort_order', ''),
-            request.form.get('note', ''),
-        )
-        if result['ok']:
-            flash(f'อัปเดต region #{region_id} เรียบร้อย', 'success')
-        else:
-            flash(f'ไม่สามารถบันทึก: {result["error"]}', 'danger')
-        return redirect(url_for('partners.regions_admin'))
-
-    return render_template('regions.html', regions=models.get_all_regions_with_counts())

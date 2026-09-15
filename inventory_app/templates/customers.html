@@ -14,13 +14,11 @@
                class="form-control form-control-sm" placeholder="พิมพ์ชื่อหรือรหัส…">
       </div>
       <div class="col-md-3">
-        <label class="form-label small mb-1">เขตการขาย</label>
-        <select name="region_id" class="form-select form-select-sm">
-          <option value="">— ทุกเขต —</option>
+        <label class="form-label small mb-1">ภาค</label>
+        <select name="region" class="form-select form-select-sm">
+          <option value="">— ทุกภาค —</option>
           {% for r in regions %}
-          <option value="{{ r.id }}" {% if region_id == r.id|string %}selected{% endif %}>
-            {{ r.code }}{% if r.name_th %} — {{ r.name_th }}{% endif %}
-          </option>
+          <option value="{{ r }}" {% if region == r %}selected{% endif %}>{{ r }}</option>
           {% endfor %}
         </select>
       </div>
@@ -35,27 +33,13 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-touch">ค้นหา</button>
-        {% if search or region_id or region or include_billless %}
+        {% if search or region or include_billless %}
         <a href="{{ url_for('partners.customer_list') }}" class="btn btn-sm btn-outline-secondary ms-1">ล้าง</a>
         {% endif %}
       </div>
       <div class="col-auto ms-auto align-self-center">
         <span class="text-subtle small">ทั้งหมด {{ total }} ราย</span>
       </div>
-      {% if is_manager %}
-      <div class="col-auto align-self-center">
-        <a href="{{ url_for('partners.customer_bulk_reassign') }}"
-           class="btn btn-sm btn-outline-primary">
-          <i class="bi bi-geo-alt me-1"></i>กำหนดเขตหลายราย
-        </a>
-        {% if is_admin %}
-        <a href="{{ url_for('partners.regions_admin') }}"
-           class="btn btn-sm btn-outline-secondary">
-          <i class="bi bi-geo-alt me-1"></i>เขตการขาย
-        </a>
-        {% endif %}
-      </div>
-      {% endif %}
     </form>
   </div>
 </div>
@@ -68,7 +52,7 @@
         <tr>
           <th>ชื่อลูกค้า</th>
           <th>รหัส</th>
-          <th class="text-center">เขต</th>
+          <th class="text-center">ภาค</th>
           <th>พนักงานขาย</th>
           <th class="text-center">เอกสาร</th>
           <th class="text-end">ยอดรวม (฿)</th>
@@ -90,7 +74,7 @@
             <span class="d-mobile-only badge badge-gray font-mono ms-1">{{ c.customer_code }}</span>
           </td>
           <td data-label="รหัส" class="td-hide-mobile"><span class="badge badge-gray font-mono">{{ c.customer_code }}</span></td>
-          <td data-label="เขต" class="text-center td-hide-mobile">
+          <td data-label="ภาค" class="text-center td-hide-mobile">
             {% if c.region %}
             <span class="badge badge-info">{{ c.region }}</span>
             {% else %}
@@ -129,17 +113,17 @@
     <nav>
       <ul class="pagination pagination-sm mb-0">
         <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, include_billless=('1' if include_billless else ''), page=page-1) }}">‹</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region=region, include_billless=('1' if include_billless else ''), page=page-1) }}">‹</a>
         </li>
         <li class="page-item {% if page == 1 %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, include_billless=('1' if include_billless else ''), page=1) }}">1</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region=region, include_billless=('1' if include_billless else ''), page=1) }}">1</a>
         </li>
         {% if p_start > 2 %}
         <li class="page-item disabled"><span class="page-link">…</span></li>
         {% endif %}
         {% for p in range(p_start, p_end+1) %}
         <li class="page-item {% if p == page %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, include_billless=('1' if include_billless else ''), page=p) }}">{{ p }}</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region=region, include_billless=('1' if include_billless else ''), page=p) }}">{{ p }}</a>
         </li>
         {% endfor %}
         {% if p_end < pages-1 %}
@@ -147,11 +131,11 @@
         {% endif %}
         {% if pages > 1 %}
         <li class="page-item {% if page == pages %}active{% endif %}">
-          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, include_billless=('1' if include_billless else ''), page=pages) }}">{{ pages }}</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region=region, include_billless=('1' if include_billless else ''), page=pages) }}">{{ pages }}</a>
         </li>
         {% endif %}
         <li class="page-item {% if page >= pages %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region_id=region_id, include_billless=('1' if include_billless else ''), page=page+1) }}">›</a>
+          <a class="page-link" href="{{ url_for('partners.customer_list', q=search, region=region, include_billless=('1' if include_billless else ''), page=page+1) }}">›</a>
         </li>
       </ul>
     </nav>

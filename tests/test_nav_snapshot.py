@@ -56,8 +56,6 @@ REAL_LANDING_CASES = [
     ('admin', 'products.product_categorize'),
     ('admin', 'products.photos_review'),
     ('admin', 'products.promotion_new'),
-    ('admin', 'partners.regions_admin'),
-    ('admin', 'partners.customer_bulk_reassign'),
     ('admin', 'marketplace.returns_cancelled'),
     ('admin', 'mobile.sales_trip'),
 ]
@@ -163,8 +161,6 @@ B_SAMPLES = [
     ('admin', 'products.product_categorize', False),
     ('admin', 'products.photos_review', False),
     ('admin', 'products.promotion_new', False),
-    ('admin', 'partners.regions_admin', False),
-    ('admin', 'partners.customer_bulk_reassign', False),
     ('admin', 'marketplace.returns_cancelled', False),
     ('general', 'mobile.stock_search', False),
     ('admin', 'mobile.sales_trip', False),

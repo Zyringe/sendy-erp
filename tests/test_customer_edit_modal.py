@@ -2,10 +2,11 @@
 modal + commission warning.
 
 Covers:
-  - the modal renders every group-1 (salesperson/region_id) + group-2
+  - the modal renders every group-1 (salesperson) + group-2
     (nickname/phone/fax/contact/address/contact_note) input, even ones the
     card itself hides because they're empty (the card's `{% if ci.phone %}`
-    guard must not leak into the modal)
+    guard must not leak into the modal). #528: no region_id field at all —
+    เขตการขาย is retired.
   - the save path (models.update_customer_edit / partners.customer_reassign):
       * stamps contact_normalized_at/_by only when a group-2 field changed
       * a salesperson-only save leaves contact_normalized_at untouched
@@ -14,6 +15,8 @@ Covers:
       * a changed group-2 field refreshes a PENDING customer_contact_review
         row's proposed_* columns (status stays pending) so the review queue
         can't silently revert the edit
+      * #528: customers.region_id is preserved untouched by every save path
+        (the modal never sends it) — see test_region_id_preserved_across_a_save
   - the commission warning shows for manager+admin; the admin-only link to
     /commission/reassign/new is present for admin and absent for manager
   - GET /commission/reassign/new?customer_code=X prefills the field
@@ -46,9 +49,11 @@ def test_modal_renders_every_field_including_empty_ones(tmp_db):
     c = _client(tmp_db)
     html = c.get(f'/customer/code/{quote("11ม06")}').data.decode()
     assert 'id="customerEditModal"' in html
-    for name in ('salesperson', 'region_id', 'nickname', 'phone', 'fax',
+    for name in ('salesperson', 'nickname', 'phone', 'fax',
                  'contact', 'address', 'contact_note'):
         assert f'name="{name}"' in html, f'{name} input missing from modal'
+    # #528: เขตการขาย retired — no region_id field in the modal at all.
+    assert 'name="region_id"' not in html
     # fax/nickname/contact_note are NULL for this customer and the OLD card
     # hid empty fields entirely — the modal must show the input anyway.
     import re
@@ -98,7 +103,6 @@ def test_saving_a_changed_phone_stamps_contact_normalized_at(tmp_db):
     c = _client(tmp_db, role='admin')
     r = c.post('/customer/11ม06/reassign', data={
         'salesperson': before['salesperson'] or '',
-        'region_id': str(before['region_id'] or ''),
         'nickname': before['nickname'] or '',
         'phone': '099-999-9999',  # changed from "เฮีย 081-5502828"
         'fax': before['fax'] or '',
@@ -132,7 +136,6 @@ def test_saving_only_salesperson_does_not_stamp_or_touch_review_row(tmp_db):
     c = _client(tmp_db, role='admin')
     r = c.post('/customer/11ม06/reassign', data={
         'salesperson': '02',  # changed: was '00'
-        'region_id': str(before['region_id'] or ''),
         'nickname': before['nickname'] or '',
         'phone': before['phone'] or '',
         'fax': before['fax'] or '',
@@ -166,7 +169,6 @@ def test_saving_a_changed_contact_field_updates_pending_review_row(tmp_db):
     c = _client(tmp_db, role='admin')
     r = c.post('/customer/11ม06/reassign', data={
         'salesperson': before['salesperson'] or '',
-        'region_id': str(before['region_id'] or ''),
         'nickname': before['nickname'] or '',
         'phone': '099-999-9999',
         'fax': before['fax'] or '',
@@ -196,7 +198,6 @@ def test_stamped_contact_survives_next_bsn_import(tmp_db):
     c = _client(tmp_db, role='admin')
     c.post('/customer/11ม06/reassign', data={
         'salesperson': before['salesperson'] or '',
-        'region_id': str(before['region_id'] or ''),
         'nickname': before['nickname'] or '',
         'phone': '099-999-9999',
         'fax': before['fax'] or '',
@@ -299,7 +300,6 @@ def test_review_sync_touches_only_the_fields_that_changed(tmp_db):
     c = _client(tmp_db, role='admin')
     r = c.post('/customer/11ม06/reassign', data={
         'salesperson': before_row['salesperson'] or '',
-        'region_id': str(before_row['region_id'] or ''),
         'nickname': before_row['nickname'] or '',
         'phone': '02-111-2222',                    # the ONLY change
         'fax': before_row['fax'] or '',
@@ -351,7 +351,6 @@ def test_first_contact_edit_freezes_pre_edit_snapshot(tmp_db):
     c = _client(tmp_db, role='admin')
     payload = {
         'salesperson': before['salesperson'] or '',
-        'region_id': str(before['region_id'] or ''),
         'nickname': before['nickname'] or '', 'fax': before['fax'] or '',
         'contact': before['contact'] or '', 'address': before['address'] or '',
         'contact_note': before['contact_note'] or '',
@@ -389,7 +388,6 @@ def test_salesperson_only_edit_does_not_freeze_a_snapshot(tmp_db):
     c = _client(tmp_db, role='admin')
     c.post(f'/customer/{code}/reassign', data={
         'salesperson': '00',
-        'region_id': str(before['region_id'] or ''),
         'nickname': before['nickname'] or '', 'phone': before['phone'] or '',
         'fax': before['fax'] or '', 'contact': before['contact'] or '',
         'address': before['address'] or '', 'contact_note': before['contact_note'] or '',
@@ -416,7 +414,9 @@ def test_legacy_assignment_only_post_does_not_clear_contact(tmp_db):
         'fixture has no contact data — this test would be vacuous'
 
     c = _client(tmp_db, role='admin')
-    # EXACTLY the old form's payload: no contact keys at all.
+    # EXACTLY the old (pre-#528) form's payload: no contact keys at all, and
+    # still carrying region_id — a page rendered before เขตการขาย was retired
+    # could still send it. It must be silently ignored, never applied.
     assert c.post('/customer/11ม06/reassign',
                   data={'salesperson': '00', 'region_id': '3'}).status_code == 302
 
@@ -425,8 +425,9 @@ def test_legacy_assignment_only_post_does_not_clear_contact(tmp_db):
         assert after[f] == before[f], f'legacy POST cleared {f}'
     assert after['contact_normalized_at'] == before['contact_normalized_at'], \
         'legacy POST must not stamp the row as curated'
-    assert after['salesperson'] == '00' and after['region_id'] == 3, \
-        'the assignment it DID send must still be applied'
+    assert after['salesperson'] == '00', 'the assignment it DID send must still be applied'
+    assert after['region_id'] == before['region_id'], \
+        '#528: a stale region_id in the POST must be ignored, never applied'
 
     conn = sqlite3.connect(tmp_db)
     prop = conn.execute(
@@ -444,7 +445,6 @@ def test_partial_contact_post_is_rejected_not_guessed(tmp_db):
     c = _client(tmp_db, role='admin')
     r = c.post('/customer/11ม06/reassign',
                data={'salesperson': before['salesperson'] or '',
-                     'region_id': str(before['region_id'] or ''),
                      'phone': '02-000-0000'},          # phone only, 5 keys missing
                follow_redirects=True)
     assert r.status_code == 200
@@ -463,7 +463,7 @@ def test_model_rejects_a_short_contact_payload(tmp_db):
     import models
     before = _customer_row(tmp_db, '11ม06')
     r = models.update_customer_edit(
-        '11ม06', before['salesperson'], before['region_id'],
+        '11ม06', before['salesperson'],
         {'phone': '02-000-0000'}, 'tester')          # 5 keys missing
     assert r['ok'] is False
     assert 'ไม่ครบ' in r['error']
@@ -506,7 +506,6 @@ def test_full_payload_of_blanks_clears_deliberately(tmp_db):
     c = _client(tmp_db, role='admin')
     assert c.post('/customer/11ม06/reassign', data={
         'salesperson': before['salesperson'] or '',
-        'region_id': str(before['region_id'] or ''),
         'nickname': '', 'phone': '', 'fax': '',
         'contact': '', 'address': '', 'contact_note': '',
     }).status_code == 302
@@ -537,3 +536,45 @@ def test_full_payload_of_blanks_clears_deliberately(tmp_db):
         else:                              # already NULL = unchanged, proposal survives
             assert prop_after[f] == prop_before[f], \
                 f'{f} did not change but its proposal was overwritten'
+
+
+# ── #528: region_id is preserved — the modal never sends it, but the route/
+#    model must never NULL it just because the field is missing ───────────
+
+def test_region_id_preserved_across_a_save_with_salesperson_and_contact(tmp_db):
+    """The blocker found in review: the modal stopped sending region_id, and
+    the OLD route/model wrote `region_id = ?` unconditionally on every save
+    (reading the missing form field as NULL) — a full-edit save through the
+    modal would have wiped every customer's เขตการขาย. Also asserts a
+    POSITIVE change the save could only have made (the phone), so a refused
+    save can't pass for a preserved one."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("UPDATE customers SET region_id = 5 WHERE code = '11ม06'")
+    conn.commit()
+    conn.close()
+
+    before = _customer_row(tmp_db, '11ม06')
+    assert before['region_id'] == 5, 'fixture setup did not take'
+
+    c = _client(tmp_db, role='admin')
+    # The modal's REAL payload shape: salesperson + all 6 contact fields, no
+    # region_id key at all.
+    r = c.post('/customer/11ม06/reassign', data={
+        'salesperson': before['salesperson'] or '',
+        'nickname': before['nickname'] or '',
+        'phone': '099-000-1111',                 # the one deliberate change
+        'fax': before['fax'] or '',
+        'contact': before['contact'] or '',
+        'address': before['address'] or '',
+        'contact_note': before['contact_note'] or '',
+    })
+    assert r.status_code == 302
+
+    after = _customer_row(tmp_db, '11ม06')
+    assert after['phone'] == '099-000-1111', 'control: the save actually applied'
+    assert after['region_id'] == 5, 'region_id must survive a save that never sent it'
+    # Break-it-once (verified manually, not committed): restoring the old
+    # `UPDATE customers SET ..., region_id = ?` with the missing form field
+    # read as NULL turns this assertion red — after['region_id'] comes back
+    # None instead of 5.

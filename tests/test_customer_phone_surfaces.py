@@ -145,12 +145,11 @@ def test_mobile_customer_dial_buttons_are_touch_targets():
 # ── mobile sales-trip screen ─────────────────────────────────────────────────
 
 def _sales_trip(**over):
-    cust = {'code': 'C001', 'name': 'ร้านทดสอบทริป', 'region': 'ตะวันออก',
-            'region_id': 1, 'last_sale': '2026-09-01', 'phone': PHONE,
-            'outstanding': 0}
+    cust = {'code': 'C001', 'name': 'ร้านทดสอบทริป', 'region': 'ภาคตะวันออก',
+            'last_sale': '2026-09-01', 'phone': PHONE, 'outstanding': 0}
     cust.update(over)
     return _render('m/sales_trip.html', path='/m/sales-trip',
-                   grouped={1: [cust]}, all_regions=[], region_id=None,
+                   grouped={'ภาคตะวันออก': [cust]}, regions=[], region=None,
                    total_outstanding=0)
 
 

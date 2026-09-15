@@ -51,14 +51,13 @@
 
 <div class="card mb-3">
   <div class="card-body py-2">
-    <div class="text-subtle small mb-1">เลือกเขต:</div>
+    <div class="text-subtle small mb-1">เลือกภาค:</div>
     <div>
       <a href="{{ url_for('mobile.sales_trip') }}"
-         class="region-chip {% if not region_id %}active{% endif %}">ทั้งหมด</a>
-      {% for r in all_regions %}
-      <a href="{{ url_for('mobile.sales_trip', region_id=r.id) }}"
-         class="region-chip {% if region_id == r.id %}active{% endif %}"
-         title="{{ r.name_th or '' }}">{{ r.code }}</a>
+         class="region-chip {% if not region %}active{% endif %}">ทั้งหมด</a>
+      {% for r in regions %}
+      <a href="{{ url_for('mobile.sales_trip', region=r) }}"
+         class="region-chip {% if region == r %}active{% endif %}">{{ r }}</a>
       {% endfor %}
     </div>
   </div>
@@ -71,9 +70,9 @@
 </div>
 {% endif %}
 
-{% for region_key, customers in grouped.items() %}
+{% for region_name, customers in grouped.items() %}
 <div class="region-section">
-  <i class="bi bi-pin-map me-1"></i>{{ customers[0].region or '— ไม่ระบุเขต —' }}
+  <i class="bi bi-pin-map me-1"></i>{{ region_name }}
   <span class="text-subtle ms-2">({{ customers|length }} ราย)</span>
 </div>
 {% for c in customers %}
@@ -98,7 +97,7 @@
 <div class="card">
   <div class="card-body text-center text-subtle py-5">
     <i class="bi bi-people fs-2 d-block mb-2 opacity-50"></i>
-    ไม่พบลูกค้าในเขตนี้
+    ไม่พบลูกค้าในภาคนี้
   </div>
 </div>
 {% endfor %}

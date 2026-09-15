@@ -1,29 +1,20 @@
-"""TDD for Phase 3 of projects/customer-edit-card/plan.md — bulk page →
-region-only + customer-list "include bill-less" toggle.
+"""TDD for `/customers` — the "include bill-less" toggle and pagination
+integrity, migrated out of test_bulk_region_only.py (#528) when the bulk
+region-reassign page was deleted. The bulk-specific tests went with the page;
+these ones are about get_customers()/the route generally and still apply.
 
-Two independent pieces:
-
-  A. Bulk reassign loses its salesperson mode. Put's decision: no UI may
-     change `customers.salesperson` for many customers at once — commission
-     rules (models/commission.py) do not follow a master-record salesperson
-     change, and 472 customers carry an active commission rule perfectly
-     aligned with their master today (P1/P2 baton). `bulk_reassign_customers`
-     is now region-only; a request that still carries a salesperson target
-     is REJECTED, not silently ignored.
-
-  B. `/customers` gets an opt-in "รวมลูกค้าที่ไม่มีบิล" checkbox.
-     `get_customers` is `FROM sales_transactions LEFT JOIN customers`, so the
-     page shows only customers with a bill. `include_billless=True` UNIONs in
-     `customers` master rows with no sales_transactions row at all (doc_count
-     0, total_net 0, last_date NULL). Default OFF, so today's view/totals are
-     unchanged.
+`get_customers` is `FROM sales_transactions LEFT JOIN customers`, so the page
+shows only customers with a bill by default. `include_billless=True` UNIONs
+in `customers` master rows with no sales_transactions row at all (doc_count
+0, total_net 0, last_date NULL). Default OFF, so today's view/totals are
+unchanged.
 
 Baseline note (verified 2026-08-01 against the live DB copied by the `tmp_db`
 fixture): the plan text cites 275 billing customers / 2,665 total — that has
-already drifted to 276 / 2,666 by the time this file was written (one more
-customer has since billed). Counts below are derived from an INDEPENDENT SQL
-query against the SAME tmp_db snapshot the test runs against, not hardcoded
-to either figure, so this file can't rot the way a literal would.
+already drifted to 276 / 2,666 by the time this file was written. Counts
+below are derived from an INDEPENDENT SQL query against the SAME tmp_db
+snapshot the test runs against, not hardcoded to either figure, so this file
+can't rot the way a literal would.
 """
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
@@ -48,125 +39,6 @@ def _raw_conn(tmp_db):
     conn.row_factory = sqlite3.Row
     return conn
 
-
-# ── A. bulk_reassign_customers is region-only ───────────────────────────────
-
-def test_region_only_bulk_still_updates_customers(tmp_db):
-    import models
-    conn = _raw_conn(tmp_db)
-    before = conn.execute(
-        "SELECT region_id FROM customers WHERE code IN ('01ก01','01ค01')"
-    ).fetchall()
-    assert {r['region_id'] for r in before} == {3, 17}  # sanity: distinct, known start state
-
-    result = models.bulk_reassign_customers(['01ก01', '01ค01'], region_id=1)
-    assert result['ok'] is True
-    assert result['updated'] == 2
-
-    after = conn.execute(
-        "SELECT code, region_id FROM customers WHERE code IN ('01ก01','01ค01')"
-    ).fetchall()
-    conn.close()
-    assert {r['region_id'] for r in after} == {1}
-
-
-def test_bulk_rejects_a_request_carrying_a_salesperson_target(tmp_db):
-    """A stale page rendered before this deploy could still POST a
-    `salesperson` value. It must be REJECTED with a clear error, and the
-    master rows must be untouched — not silently dropped and applied
-    region-only anyway (that would look like partial success)."""
-    import models
-    conn = _raw_conn(tmp_db)
-    before = dict(conn.execute(
-        "SELECT code, salesperson, region_id FROM customers WHERE code = '01ก01'"
-    ).fetchone())
-
-    result = models.bulk_reassign_customers(
-        ['01ก01'], region_id=1, salesperson_code='13')
-    assert result['ok'] is False
-    assert result['updated'] == 0
-    assert 'salesperson' in result['error'] or 'คอมมิชชั่น' in result['error']
-
-    after = dict(conn.execute(
-        "SELECT code, salesperson, region_id FROM customers WHERE code = '01ก01'"
-    ).fetchone())
-    conn.close()
-    assert after == before  # nothing moved, not even the region
-
-
-def test_bulk_no_mode_kwarg_left_in_signature(tmp_db):
-    """The function no longer accepts a mode — region-only was the only mode
-    that survives. Calling with the old `mode=` kwarg must fail loudly
-    (TypeError), not be silently ignored."""
-    import models
-    import inspect
-    sig = inspect.signature(models.bulk_reassign_customers)
-    assert 'mode' not in sig.parameters
-
-
-def test_bulk_still_rejects_empty_selection_and_bad_region(tmp_db):
-    import models
-    r1 = models.bulk_reassign_customers([], region_id=1)
-    assert r1['ok'] is False
-    r2 = models.bulk_reassign_customers(['01ก01'], region_id='')
-    assert r2['ok'] is False
-    r3 = models.bulk_reassign_customers(['01ก01'], region_id=999999)
-    assert r3['ok'] is False
-
-
-# ── A2. Route level: /customers/bulk-reassign POST ──────────────────────────
-
-def test_route_region_only_post_updates_master(tmp_db):
-    c = _client(tmp_db, role='admin')
-    r = c.post('/customers/bulk-reassign', data={
-        'customer_codes': ['01ก01'],
-        'region_id': '1',
-    }, follow_redirects=True)
-    assert r.status_code == 200
-    assert 'อัปเดต 1 ลูกค้าเรียบร้อย' in r.data.decode()
-
-    conn = _raw_conn(tmp_db)
-    row = conn.execute("SELECT region_id FROM customers WHERE code='01ก01'").fetchone()
-    conn.close()
-    assert row['region_id'] == 1
-
-
-def test_route_rejects_salesperson_field_when_present(tmp_db):
-    """Simulates a stale pre-deploy form still submitting `salesperson`."""
-    conn = _raw_conn(tmp_db)
-    before = conn.execute("SELECT salesperson, region_id FROM customers WHERE code='01ก01'").fetchone()
-    before = dict(before)
-    conn.close()
-
-    c = _client(tmp_db, role='admin')
-    r = c.post('/customers/bulk-reassign', data={
-        'customer_codes': ['01ก01'],
-        'region_id': '1',
-        'salesperson': '13',
-    }, follow_redirects=True)
-    assert r.status_code == 200
-    assert 'ไม่สามารถบันทึก' in r.data.decode()
-
-    conn = _raw_conn(tmp_db)
-    after = dict(conn.execute("SELECT salesperson, region_id FROM customers WHERE code='01ก01'").fetchone())
-    conn.close()
-    assert after == before
-
-
-# ── A3. Template: salesperson dropdown + mode selector gone ─────────────────
-
-def test_bulk_template_has_no_salesperson_or_mode_inputs(tmp_db):
-    c = _client(tmp_db, role='admin')
-    html = c.get('/customers/bulk-reassign').data.decode()
-    # The bulk ASSIGNMENT dropdown named exactly "salesperson" (distinct from
-    # the read-only "salesperson_filter" current-value filter, which stays).
-    assert html.count('name="salesperson"') == 0
-    assert html.count('name="mode"') == 0
-    assert html.count('name="region_id"') == 1  # the one bulk-target select
-    assert '>กำหนดเขตการขายหลายราย<' in html
-
-
-# ── B. get_customers(include_billless=...) ──────────────────────────────────
 
 def test_default_billing_only_matches_independent_count(tmp_db):
     import models
@@ -224,28 +96,54 @@ def test_include_billless_false_omits_known_billless_customer(tmp_db):
 
 
 def test_search_and_region_filter_work_with_flag_on(tmp_db):
+    """#528: the region filter is ภาค (customer_geo.region_of, from the
+    address), not the retired region_id FK."""
+    import customer_geo
     import models
+    conn = _raw_conn(tmp_db)
+    address = conn.execute(
+        "SELECT address FROM customers WHERE code = '01ก01'").fetchone()[0]
+    conn.close()
+    real_region = customer_geo.region_of(address)
+
     # Search narrows to exactly the known bill-less customer.
     rows, total = models.get_customers(
         search='กรีน ดิสทธิบิวชั่น', include_billless=True)
     assert total == 1
     assert rows[0]['customer_code'] == '01ก01'
 
-    # Region filter (region_id=3, the customer's real region) still includes it.
+    # ภาค filter (the customer's REAL ภาค, derived from its address) still includes it.
     rows2, total2 = models.get_customers(
-        region_id=3, include_billless=True, per_page=5000)
+        region=real_region, include_billless=True, per_page=5000)
     codes2 = {r['customer_code'] for r in rows2}
     assert '01ก01' in codes2
-    assert all(r['region_id'] == 3 for r in rows2)
+    assert all(r['region'] == real_region for r in rows2)
 
-    # A region that is NOT its region excludes it.
+    # A ภาค that is NOT its ภาค excludes it.
+    other_region = next(r for r in customer_geo.REGION_ORDER if r != real_region)
     rows3, total3 = models.get_customers(
-        region_id=17, include_billless=True, per_page=5000)
+        region=other_region, include_billless=True, per_page=5000)
     codes3 = {r['customer_code'] for r in rows3}
     assert '01ก01' not in codes3
 
 
-# ── B2. Route + template: /customers toggle ─────────────────────────────────
+def test_legacy_region_id_query_param_is_ignored(tmp_db):
+    """#528: a stale ?region_id=<n> bookmark no longer means anything — the
+    route doesn't even read it — so the page renders unfiltered, not 500 or
+    empty."""
+    c = _client(tmp_db, role='admin')
+    unfiltered = c.get('/customers').data.decode()
+    with_legacy_param = c.get('/customers?region_id=3').data.decode()
+    assert 'ทั้งหมด' in with_legacy_param  # control: the page rendered at all
+    # Same total shown either way — the param is a no-op, not a filter.
+    import re
+    def _total(html):
+        m = re.search(r'ทั้งหมด ([\d,]+) ราย', html)
+        return m.group(1)
+    assert _total(unfiltered) == _total(with_legacy_param)
+
+
+# ── Route + template: /customers toggle ─────────────────────────────────
 
 def test_customers_page_default_omits_billless_customer(tmp_db):
     c = _client(tmp_db, role='admin')

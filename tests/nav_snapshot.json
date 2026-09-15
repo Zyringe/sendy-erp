@@ -71,146 +71,6 @@
    }
   ],
   "admin@mobile.sales_trip": [],
-  "admin@partners.customer_bulk_reassign": [
-   {
-    "kind": "section",
-    "label": "การค้า"
-   },
-   {
-    "href": "/trade-dashboard",
-    "icon": "bi-bar-chart-line",
-    "kind": "link",
-    "label": "ภาพรวมการค้า"
-   },
-   {
-    "href": "/sales",
-    "icon": "bi-graph-up-arrow",
-    "kind": "link",
-    "label": "ยอดขาย"
-   },
-   {
-    "href": "/purchases",
-    "icon": "bi-truck",
-    "kind": "link",
-    "label": "ยอดซื้อ"
-   },
-   {
-    "href": "/customers",
-    "icon": "bi-people",
-    "kind": "link",
-    "label": "ลูกค้า"
-   },
-   {
-    "href": "/suppliers",
-    "icon": "bi-truck",
-    "kind": "link",
-    "label": "ผู้จำหน่าย"
-   },
-   {
-    "href": "/call",
-    "icon": "bi-telephone-outbound",
-    "kind": "link",
-    "label": "โทรหาลูกค้า"
-   },
-   {
-    "href": "/vat-sub",
-    "icon": "bi-arrow-left-right",
-    "kind": "link",
-    "label": "สินค้าทดแทน (สมุด VAT)"
-   },
-   {
-    "kind": "section",
-    "label": "ขายออนไลน์"
-   },
-   {
-    "href": "/ecommerce",
-    "icon": "bi-bag-heart",
-    "kind": "link",
-    "label": "รายการขายออนไลน์"
-   },
-   {
-    "href": "/marketplace",
-    "icon": "bi-receipt",
-    "kind": "link",
-    "label": "คำสั่งซื้อ Marketplace"
-   },
-   {
-    "href": "/marketplace/review",
-    "icon": "bi-clipboard-check",
-    "kind": "link",
-    "label": "ต้องตรวจการจับคู่ใบกำกับ"
-   }
-  ],
-  "admin@partners.regions_admin": [
-   {
-    "kind": "section",
-    "label": "การค้า"
-   },
-   {
-    "href": "/trade-dashboard",
-    "icon": "bi-bar-chart-line",
-    "kind": "link",
-    "label": "ภาพรวมการค้า"
-   },
-   {
-    "href": "/sales",
-    "icon": "bi-graph-up-arrow",
-    "kind": "link",
-    "label": "ยอดขาย"
-   },
-   {
-    "href": "/purchases",
-    "icon": "bi-truck",
-    "kind": "link",
-    "label": "ยอดซื้อ"
-   },
-   {
-    "href": "/customers",
-    "icon": "bi-people",
-    "kind": "link",
-    "label": "ลูกค้า"
-   },
-   {
-    "href": "/suppliers",
-    "icon": "bi-truck",
-    "kind": "link",
-    "label": "ผู้จำหน่าย"
-   },
-   {
-    "href": "/call",
-    "icon": "bi-telephone-outbound",
-    "kind": "link",
-    "label": "โทรหาลูกค้า"
-   },
-   {
-    "href": "/vat-sub",
-    "icon": "bi-arrow-left-right",
-    "kind": "link",
-    "label": "สินค้าทดแทน (สมุด VAT)"
-   },
-   {
-    "kind": "section",
-    "label": "ขายออนไลน์"
-   },
-   {
-    "href": "/ecommerce",
-    "icon": "bi-bag-heart",
-    "kind": "link",
-    "label": "รายการขายออนไลน์"
-   },
-   {
-    "href": "/marketplace",
-    "icon": "bi-receipt",
-    "kind": "link",
-    "label": "คำสั่งซื้อ Marketplace"
-   },
-   {
-    "href": "/marketplace/review",
-    "icon": "bi-clipboard-check",
-    "kind": "link",
-    "label": "ต้องตรวจการจับคู่ใบกำกับ"
-   }
-  ],
   "admin@products.photos_review": [
    {
     "kind": "section",
@@ -2088,10 +1948,8 @@
   "admin|marketplace.unmapped|0": "/marketplace",
   "admin|mobile.sales_trip|0": null,
   "admin|naming.index|0": "/naming",
-  "admin|partners.customer_bulk_reassign|0": null,
   "admin|partners.customer_list|0": "/customers",
   "admin|partners.customer_summary|0": "/customers",
-  "admin|partners.regions_admin|0": null,
   "admin|partners.supplier_list|0": "/suppliers",
   "admin|partners.supplier_summary|0": "/suppliers",
   "admin|products.photos_review|0": "/products",

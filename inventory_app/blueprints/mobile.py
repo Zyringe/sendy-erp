@@ -8,6 +8,7 @@ the routes work there too.
 from flask import Blueprint, render_template, request, jsonify, abort
 
 import cashflow
+import customer_geo
 import models
 import payments_alloc
 import sales_filters
@@ -88,28 +89,28 @@ def customer_detail(customer_name):
         "SELECT * FROM customers WHERE name = ? LIMIT 1", (customer_name,)
     ).fetchone()
 
-    # Region / salesperson from customers MASTER + lookup tables (post-D1).
+    # Salesperson from customers MASTER + lookup table; ภาค (#528) derived
+    # from the address (customer_geo.region_of), same source the call card
+    # uses — retires the เขตการขาย FK lookup this used to run.
     # Returns a dict-shaped row with display fields:
-    #   region        → regions.name_th, fall back to regions.code, then NULL
+    #   region        → ภาค from the address, or ไม่ระบุภาค
     #   salesperson   → salespersons.name, fall back to raw code, then NULL
     region_row = None
     if customer:
-        region_row = conn.execute(
+        region_row = dict(conn.execute(
             """
-            SELECT COALESCE(r.name_th, r.code)        AS region,
-                   COALESCE(sp.name, c.salesperson)   AS salesperson,
+            SELECT COALESCE(sp.name, c.salesperson)   AS salesperson,
                    c.salesperson                      AS salesperson_code,
                    (c.salesperson IS NOT NULL
                       AND c.salesperson != ''
-                      AND sp.code IS NULL)            AS salesperson_orphan,
-                   r.code                             AS region_code
+                      AND sp.code IS NULL)            AS salesperson_orphan
               FROM customers c
               LEFT JOIN salespersons sp ON sp.code = c.salesperson
-              LEFT JOIN regions      r  ON r.id    = c.region_id
              WHERE c.code = ?
             """,
             (customer['code'],),
-        ).fetchone()
+        ).fetchone())
+        region_row['region'] = customer_geo.region_of(customer['address'])
 
     conn.close()
     # How fast this customer pays (#499), keyed by the customers row's CODE —
@@ -174,34 +175,25 @@ def customer_detail(customer_name):
 
 @bp_mobile.route('/sales-trip')
 def sales_trip():
-    """Customers grouped by region → quick view for sales-rep field trip planning."""
-    # Filter by regions.id (new) — fall back to legacy ?region=<code|name_th> for old bookmarks.
-    region_id_raw = (request.args.get('region_id') or '').strip()
-    region_legacy = (request.args.get('region') or '').strip()
-    region_id = int(region_id_raw) if region_id_raw.isdigit() else None
+    """Customers grouped by ภาค → quick view for sales-rep field trip
+    planning. #528: retired เขตการขาย (customers.region_id) — grouped and
+    filtered by ภาค (customer_geo.region_of, derived from the address), the
+    same source the call card and /customers use.
+
+    ภาค can't be filtered or grouped in SQL, so — same shape as
+    get_customers() — this queries every customer, derives ภาค per row in
+    Python, then groups/filters/sorts. ~2,665 customers is fine for this (no
+    heavier than the SUM/EXISTS subqueries below already ran on every
+    candidate row before the old query's own LIMIT 300 truncated it).
+    A legacy `?region_id=` bookmark is simply ignored.
+    """
+    region = (request.args.get('region') or '').strip() or None
 
     conn = get_connection()
-    if region_id is None and region_legacy:
-        match = conn.execute(
-            "SELECT id FROM regions WHERE code = ? OR name_th = ? LIMIT 1",
-            (region_legacy, region_legacy),
-        ).fetchone()
-        if match:
-            region_id = match['id']
-
-    # All regions for filter chips, sorted by sort_order then code (master)
-    all_regions = [dict(r) for r in conn.execute(
-        "SELECT id, code, name_th FROM regions ORDER BY sort_order, code"
-    ).fetchall()]
-
-    # Customers + outstanding total + last sale, optionally filtered by region.
-    # Read from customers MASTER + salespersons + regions JOINs (post-D1);
-    # customer_regions is no longer touched.
+    # Customers + outstanding total + last sale. Read from customers MASTER +
+    # salespersons; customer_regions/regions no longer touched.
     sql = f"""
-        SELECT c.code, c.name, c.zone, c.phone, c.address,
-               COALESCE(r.name_th, r.code)      AS region,
-               r.code                           AS region_code,
-               c.region_id,
+        SELECT c.code, c.name, c.zone, c.phone, COALESCE(c.address, '') AS address,
                COALESCE(sp.name, c.salesperson) AS salesperson,
                c.salesperson                    AS salesperson_code,
                (c.salesperson IS NOT NULL
@@ -228,32 +220,30 @@ def sales_trip():
                ) AS outstanding
           FROM customers c
      LEFT JOIN salespersons sp ON sp.code = c.salesperson
-     LEFT JOIN regions      r  ON r.id    = c.region_id
     """
-    params = []
-    if region_id is not None:
-        sql += " WHERE c.region_id = ? "
-        params.append(region_id)
-    sql += """
-         ORDER BY COALESCE(r.name_th, r.code, 'zzz'), c.name
-         LIMIT 300
-    """
-    rows = conn.execute(sql, params).fetchall()
+    rows = [dict(r) for r in conn.execute(sql).fetchall()]
     conn.close()
 
-    # Group by region. Key is the FK id so two regions with an identical
-    # name_th can't merge accidentally; the section header pulls the display
-    # name from the customer row.
+    for r in rows:
+        r['region'] = customer_geo.region_of(r.pop('address'))
+    if region:
+        rows = [r for r in rows if r['region'] == region]
+
+    # Sort by ภาค (customer_geo.REGION_ORDER's geographic sequence, not
+    # alphabetical) then customer name — grouping below then builds `grouped`
+    # in that same order for free (dict preserves insertion order).
+    region_rank = {name: i for i, name in enumerate(customer_geo.REGION_ORDER)}
+    rows.sort(key=lambda r: (region_rank[r['region']], r['name'] or ''))
+
     grouped = {}
     total_outstanding = 0.0
     for r in rows:
-        key = r['region_id'] if r['region_id'] is not None else '__none__'
-        grouped.setdefault(key, []).append(r)
+        grouped.setdefault(r['region'], []).append(r)
         if r['outstanding']:
             total_outstanding += r['outstanding']
 
     return render_template('m/sales_trip.html',
                            grouped=grouped,
-                           all_regions=all_regions,
-                           region_id=region_id,
+                           regions=customer_geo.REGION_ORDER,
+                           region=region,
                            total_outstanding=total_outstanding)
