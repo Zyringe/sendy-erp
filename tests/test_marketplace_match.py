@@ -222,7 +222,7 @@ def test_shopee_ignores_lazada_iv(mm_conn):
     assert c.execute("SELECT COUNT(*) FROM marketplace_order_invoice").fetchone()[0] == 0
 
 
-def test_manual_link_steals_iv(mm_conn):
+def test_manual_link_moves_iv(mm_conn):
     c = mm_conn
     _add_order(c, 'O-OLD', 50.0, '2026-06-04')
     _add_order(c, 'O-NEW', 50.0, '2026-06-05')
@@ -231,8 +231,8 @@ def test_manual_link_steals_iv(mm_conn):
     holder = c.execute(
         "SELECT order_sn FROM marketplace_order_invoice WHERE doc_base='IV9000200'").fetchone()['order_sn']
     other = 'O-NEW' if holder == 'O-OLD' else 'O-OLD'
-    stolen = mm.link_manual(c, 'shopee', other, 'IV9000200', confirmed_by='put')
-    assert holder in stolen
+    moved = mm.link_manual(c, 'shopee', other, 'IV9000200', confirmed_by='put')
+    assert holder in moved
     rows = c.execute(
         "SELECT order_sn, match_method FROM marketplace_order_invoice WHERE doc_base='IV9000200'").fetchall()
     assert len(rows) == 1 and rows[0]['order_sn'] == other and rows[0]['match_method'] == 'manual'
