@@ -143,16 +143,30 @@ def _row(out, pid):
 # ── Positive case + ranking threshold ───────────────────────────────────────
 
 def test_positive_case_never_bought_by_3_other_shops_appears_with_their_count(cust):
+    """SF1 (review round 1): a 4th shop buys on 3 SEPARATE invoices, so
+    doc_count for this product is 6 while shop_count is 4 -- every fixture
+    used to give each shop exactly one document, so a mutation reading
+    doc_count instead of shop_count for the headline "N ร้าน" stayed green
+    (measured on prod: 457 of 648 real qualifying products have
+    doc_count != shop_count)."""
     conn = cust
     today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าขายดี 498 หนึ่ง')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 4, prefix='POS', date_iso=recent)
+    _other_shops(conn, pid, 3, prefix='POS', date_iso=recent)
+    for i in range(3):
+        _line(conn, doc_base=f'IVPOSHEAVY{i}', suffix=1, pid=pid, date_iso=recent,
+              code='POSHEAVY', unit_price=100, net=100)
 
     out = _suggestions(conn, today=today)
     assert len(out) == 1
     assert out[0]['product_id'] == pid
     assert out[0]['shop_count'] == 4
+    # N-stock (review round 1): a whole-number stock renders as an int
+    # (50), never a trailing-.0 float, matching how ซื้อบ่อย's own stock
+    # column reads.
+    assert out[0]['stock_qty'] == 50
+    assert isinstance(out[0]['stock_qty'], int)
 
 
 def test_product_bought_by_only_two_other_shops_never_appears(cust):
@@ -168,16 +182,20 @@ def test_product_bought_by_only_two_other_shops_never_appears(cust):
 
 # ── Exclusion clauses: must NOT add to shop count (far-side fixtures) ───────
 
-def test_this_shops_own_padded_code_never_counts_as_an_other_shop(cust):
-    """The self-exclusion clause is redundant with "already bought" for a
-    CLEANLY-coded row (any row this shop's exact code can see is also
-    caught by the all-time bought_pids exclusion, since both use the same
-    key) -- the one case where it is NOT redundant is a row whose
-    `customer_code` carries incidental whitespace: the own-history query
-    (`s.customer_code = ?`, exact match, same convention as
-    `_customer_sales_scope`) misses it, so it never reaches bought_pids,
-    but its CANONICAL key (TRIM'd) is still this shop's own. Without the
-    self-exclusion clause that padded row would inflate shop_count by 1."""
+def test_this_shops_own_padded_code_is_recognized_as_already_bought(cust):
+    """Review round 1 (SF5): own-history and self-exclusion are now keyed
+    the SAME way (the canonical key, via a sub-select), so a row whose
+    `customer_code` carries incidental whitespace is recognized as this
+    shop's own purchase -- the product must be excluded entirely
+    ("already bought"), not merely have its shop_count corrected.
+
+    Flipped from the original version of this test (which asserted
+    `row is not None` / `shop_count == 3`): that version PINNED the bug —
+    own-history used an exact `customer_code = ?` match and missed the
+    padded row, so the shop's own product was suggested back to it (with
+    a shop_count merely "corrected" by the separately-keyed self-exclusion
+    clause). Confirmed red under the fix before flipping (erp rule: "a
+    guard must survive its own success" — the OLD assertion could not)."""
     conn = cust
     today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้ารหัสเว้นวรรค 498')
@@ -187,9 +205,7 @@ def test_this_shops_own_padded_code_never_counts_as_an_other_shop(cust):
           code=f' {TEST_CODE} ', name=TEST_NAME, unit_price=100, net=100)
 
     out = _suggestions(conn, today=today)
-    row = _row(out, pid)
-    assert row is not None
-    assert row['shop_count'] == 3
+    assert _row(out, pid) is None
 
 
 def test_credit_note_does_not_count_toward_shop_count(cust):
@@ -263,6 +279,45 @@ def test_line_older_than_24_months_does_not_count_toward_shop_count(cust):
     _other_shops(conn, pid, 3, prefix='OLD', date_iso=recent)
     _line(conn, doc_base='IVOLD999', suffix=1, pid=pid, date_iso=stale, code='OLDSHOP',
           unit_price=100, net=100)
+
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['shop_count'] == 3
+
+
+def test_window_boundary_exactly_730_days_ago_still_counts(cust):
+    """SF3 (review round 1): pins the EXACT boundary the code implements
+    (`s.date_iso >= today - 730 days`) -- the previous fixtures only ever
+    used dates at today-30 ("recent") or the live DB's own historical max
+    ("stale", ~800 days back), so window_days could drift to anywhere in
+    31..799 and `>=` could flip to `>` without any test noticing."""
+    conn = cust
+    today, recent, stale = _window_dates(conn)
+    boundary_in = (dt.date.fromisoformat(today) - dt.timedelta(days=730)).isoformat()
+    pid = _mk_product(conn, name='สินค้าขอบเขต 730 วัน 498')
+    _set_stock(conn, pid, 50)
+    _other_shops(conn, pid, 2, prefix='BOUNDIN', date_iso=recent)
+    _line(conn, doc_base='IVBOUNDIN', suffix=1, pid=pid, date_iso=boundary_in,
+          code='BOUNDIN', unit_price=100, net=100)
+
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['shop_count'] == 3
+
+
+def test_window_boundary_731_days_ago_does_not_count(cust):
+    """The mirror of the test above: one day further back than the window
+    must NOT count toward shop_count."""
+    conn = cust
+    today, recent, stale = _window_dates(conn)
+    boundary_out = (dt.date.fromisoformat(today) - dt.timedelta(days=731)).isoformat()
+    pid = _mk_product(conn, name='สินค้าขอบเขต 731 วัน 498')
+    _set_stock(conn, pid, 50)
+    _other_shops(conn, pid, 3, prefix='BOUNDOUT', date_iso=recent)
+    _line(conn, doc_base='IVBOUNDOUT', suffix=1, pid=pid, date_iso=boundary_out,
+          code='BOUNDOUT', unit_price=100, net=100)
 
     out = _suggestions(conn, today=today)
     row = _row(out, pid)
@@ -397,6 +452,31 @@ def test_at_most_one_row_per_subcategory_takes_the_highest_ranked(cust):
     assert ours[0]['product_id'] == pid_a
 
 
+def test_unpriced_top_of_subcategory_does_not_hide_a_priced_lower_ranked_one(cust):
+    """SF4 (review round 1): the spec orders "exclude (incl. unpriced)"
+    BEFORE "one row per sub_category, taking its highest-ranked product" --
+    the sub-category claim must happen AFTER the price check, so an
+    unpriced top-ranked candidate never silently blocks a priced,
+    lower-ranked one sharing its sub-category. Reproduced on real prod
+    data: sub-category ลูกกลิ้งขนแกะ+ด้าม, unpriced pid 791 (higher
+    popularity) hid priced pid 864 (lower popularity) before this fix."""
+    conn = cust
+    today, recent, stale = _window_dates(conn)
+    pid_unpriced_top = _mk_product(conn, name='ลูกกลิ้งไม่มีราคา 498', base=0,
+                                    sub_category='กลุ่มลูกกลิ้ง498')
+    pid_priced_second = _mk_product(conn, name='ลูกกลิ้งมีราคา 498',
+                                     sub_category='กลุ่มลูกกลิ้ง498')
+    _set_stock(conn, pid_unpriced_top, 50)
+    _set_stock(conn, pid_priced_second, 50)
+    _other_shops(conn, pid_unpriced_top, 5, prefix='UNPTOP', date_iso=recent)    # ranks higher
+    _other_shops(conn, pid_priced_second, 4, prefix='PRICED2', date_iso=recent)  # ranks lower
+
+    out = _suggestions(conn, today=today)
+    ours = [r for r in out if r['product_id'] in (pid_unpriced_top, pid_priced_second)]
+    assert len(ours) == 1
+    assert ours[0]['product_id'] == pid_priced_second
+
+
 def test_null_subcategory_products_each_stand_on_their_own(cust):
     conn = cust
     today, recent, stale = _window_dates(conn)
@@ -429,23 +509,31 @@ def test_ranked_by_shop_count_descending(cust):
 
 
 def test_tie_break_by_doc_count_then_by_product_id(cust):
+    """SF2 (review round 1): `pid_higher_id` is created SECOND (so it holds
+    the higher product id) and is the one given the extra document -- the
+    ORIGINAL version of this test created the doc-count winner FIRST, so
+    the product-id tie-break alone produced the same order and the test
+    could never distinguish "ranked by doc_count" from "ranked by id"
+    (confirmed: dropping the doc_count ORDER BY term stayed green). Here,
+    doc_count and product-id ASC point in OPPOSITE directions, so only a
+    real doc_count tie-break can put the higher-id product first."""
     conn = cust
     today, recent, stale = _window_dates(conn)
-    pid_first = _mk_product(conn, name='สินค้าไทเบรค A 498')
-    pid_second = _mk_product(conn, name='สินค้าไทเบรค B 498')
-    _set_stock(conn, pid_first, 50)
-    _set_stock(conn, pid_second, 50)
-    # Same shop_count (3) for both. pid_first gets an EXTRA doc from one of
-    # its 3 shops (higher doc_count, same shop set); pid_second gets
+    pid_lower_id = _mk_product(conn, name='สินค้าไทเบรค id น้อย 498')
+    pid_higher_id = _mk_product(conn, name='สินค้าไทเบรค id มาก 498')
+    _set_stock(conn, pid_lower_id, 50)
+    _set_stock(conn, pid_higher_id, 50)
+    # Same shop_count (3) for both. pid_higher_id gets an EXTRA doc from one
+    # of its 3 shops (higher doc_count, same shop set); pid_lower_id gets
     # exactly 1 doc per shop.
-    _other_shops(conn, pid_first, 3, prefix='DOC', date_iso=recent)
-    _line(conn, doc_base='IVDOCEXTRA', suffix=1, pid=pid_first, date_iso=recent,
+    _other_shops(conn, pid_lower_id, 3, prefix='DOC2', date_iso=recent)
+    _other_shops(conn, pid_higher_id, 3, prefix='DOC', date_iso=recent)
+    _line(conn, doc_base='IVDOCEXTRA', suffix=1, pid=pid_higher_id, date_iso=recent,
           code='DOC000', unit_price=100, net=100)
-    _other_shops(conn, pid_second, 3, prefix='DOC2', date_iso=recent)
 
     out = _suggestions(conn, today=today)
-    ours = [r['product_id'] for r in out if r['product_id'] in (pid_first, pid_second)]
-    assert ours == [pid_first, pid_second]
+    ours = [r['product_id'] for r in out if r['product_id'] in (pid_lower_id, pid_higher_id)]
+    assert ours == [pid_higher_id, pid_lower_id]
 
 
 def test_tie_break_by_product_id_when_shop_and_doc_counts_are_equal(cust):

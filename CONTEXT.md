@@ -268,9 +268,12 @@
 - **เสนอเพิ่ม → ขายดีที่ร้านนี้ยังไม่มี (#498)** — up to 10 in-stock, active, priced products
   that at least 3 *other* B2B shops bought in the trailing 24 months, that this shop has
   **never** bought (all-time — same `price_lookup.evidence_filter` population ครั้งที่ซื้อ
-  counts). One row per `products.sub_category`: a sub-category this shop already buys in
-  any variant is dropped entirely, and the highest-ranked remaining candidate stands for the
-  rest; a NULL sub_category product stands on its own. Ranked by distinct-other-shop count,
+  counts). Every exclusion (already-bought, inactive, out of stock, **no resolvable price**)
+  applies BEFORE grouping: one row per `products.sub_category`, taking the highest-ranked
+  candidate that actually qualifies (an unpriced top candidate never blocks a priced,
+  lower-ranked candidate sharing its sub-category — review round 1). A sub-category this
+  shop already buys in any variant is dropped entirely; a NULL sub_category product stands
+  on its own. Ranked by distinct-other-shop count,
   then document count, then product id. Always all-time — the page's date filter never
   reaches it (the helper, `models.customers._cross_sell_suggestions`, takes no date
   parameters at all). Shown per row: the product name, "N ร้านซื้อ (24 เดือน)", today's

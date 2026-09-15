@@ -546,35 +546,44 @@ def _customer_product_cards(conn, where, params, include_cost=False):
     return cards
 
 
-def _cross_sell_suggestions(conn, customer_code, today=None, limit=10,
-                             min_other_shops=3, window_days=730):
+# #498 เสนอเพิ่ม tuning — module constants, not caller-configurable parameters.
+# Nothing in the app (route or test) has ever needed a different value; the
+# ladder says cut speculative configurability (review round 1, N-yagni).
+_SUGGESTION_MIN_OTHER_SHOPS = 3
+_SUGGESTION_WINDOW_DAYS = 730
+
+
+def _cross_sell_suggestions(conn, customer_code, today=None, limit=10):
     """เสนอเพิ่ม → ขายดีที่ร้านนี้ยังไม่มี (#498): up to `limit` in-stock,
-    active, priced products that at least `min_other_shops` OTHER B2B shops
-    bought in the trailing `window_days` (24 months), that THIS shop has
-    never bought (all-time — same population as ครั้งที่ซื้อ). One row per
-    `products.sub_category`.
+    active, priced products that at least `_SUGGESTION_MIN_OTHER_SHOPS`
+    OTHER B2B shops bought in the trailing `_SUGGESTION_WINDOW_DAYS` (24
+    months), that THIS shop has never bought (all-time — same population as
+    ครั้งที่ซื้อ). One row per `products.sub_category`.
 
     Population = `price_lookup.evidence_filter` throughout — never a second
     "does this count as a sale" predicate. Shop key = the call list's own
     canonical key (`COALESCE(NULLIF(TRIM(customer_code),''), customer)`), so
     a bill name shared by two companies is never conflated into one "shop"
     (same reasoning winback.py's module docstring gives for the same key).
+    Review round 1 (SF5): this shop's OWN history is now looked up by the
+    SAME canonical key, via a sub-select — previously it used an exact
+    `customer_code = ?` match, which a whitespace-padded code could dodge
+    while the self-exclusion (already on the canonical key) still caught it
+    for counting, letting a shop's own product get suggested back to it.
 
     Ranking: distinct-other-shop count desc, then document count desc, then
     product id asc — deterministic. This shop's own code never counts
-    toward any product's shop_count (excluded in the WHERE, on top of the
-    separate "already bought" exclusion below — the two overlap for a
-    cleanly-coded row, but only the key-based exclusion catches a stray row
-    where this shop's OWN code carries leading/trailing whitespace).
+    toward any product's shop_count (excluded in the WHERE).
 
     Grouping: at most one row per sub_category, taking the HIGHEST-RANKED
-    candidate in that sub_category. A sub-category this shop already buys
-    in ANY variant is dropped entirely before ranking. If the sub-category's
-    designated (highest-ranked) candidate later fails a downstream filter
-    (no resolvable price), that sub-category simply produces no row — it is
-    never backfilled from the next-ranked candidate sharing it. A NULL
-    sub_category product stands on its own (never grouped with another NULL
-    row).
+    candidate in that sub_category THAT ACTUALLY QUALIFIES (has a
+    resolvable price). Review round 1 (SF4): the sub-category claim used to
+    happen BEFORE the price check, so an unpriced top-ranked product could
+    silently hide a priced, lower-ranked product sharing its sub-category —
+    the spec orders exclusions (including "no resolvable price") BEFORE
+    grouping. A sub-category this shop already buys in ANY variant is
+    dropped entirely up front (in SQL, before ranking). A NULL sub_category
+    product stands on its own (never grouped with another NULL row).
 
     Independent of any date filter: the caller must never thread
     date_from/date_to through — there is no such parameter here at all, so
@@ -582,49 +591,35 @@ def _cross_sell_suggestions(conn, customer_code, today=None, limit=10,
 
     Performance: ONE aggregate query does the ranking + every cheap filter
     (population, 24-month window, self-exclusion, is_active, in-stock,
-    already-bought product, already-bought sub-category) in SQL.
-    `price_lookup.resolve_price` — the only per-candidate call, and the
-    only way to know whether a product has a resolvable list price — runs
-    in ranked order and stops as soon as `limit` rows have qualified, never
-    for every candidate.
+    already-bought product, already-bought sub-category — the last two via
+    sub-selects on the SAME canonical key, not a growing `NOT IN (?,?,...)`
+    bound list: review round 1 (N-params) measured that list at 431 params
+    for one real shop, close enough to SQLite's default 999-variable cap to
+    be a real risk as a shop's history grows) in SQL. `price_lookup.
+    resolve_price` — the only per-candidate call, and the only way to know
+    whether a product has a resolvable list price — runs in ranked order
+    and stops as soon as `limit` rows have qualified, never for every
+    candidate.
 
     Returns a list of dicts: product_id, product_name, unit, shop_count,
     price_per_unit, list_for_unit, promo, promo_affects_price, stock_qty
     (None when the unit's piece ratio isn't derivable — same convention as
-    the product card's stock badge). NEVER a cost/WACC/margin field, for
-    any caller/role — `resolve_price`'s `internal` block is never touched
-    here (#498's own rule: no cost on suggestions, admin included), and no
-    other shop's name or code is ever included (counts only).
+    the product card's stock badge; a whole-number result is an `int`, not
+    a trailing-`.0` float, matching how ซื้อบ่อย's own stock column reads).
+    NEVER a cost/WACC/margin field, for any caller/role — `resolve_price`'s
+    `internal` block is never touched here (#498's own rule: no cost on
+    suggestions, admin included), and no other shop's name or code is ever
+    included (counts only).
     """
     import datetime as dt
     import price_lookup
 
     today = today or dt.date.today().isoformat()
-    cutoff = (dt.date.fromisoformat(today) - dt.timedelta(days=window_days)).isoformat()
-
-    # This shop's own all-time evidence-filtered history: which products
-    # (any unit) and which sub-categories it already buys.
-    own_rows = conn.execute(f"""
-        SELECT DISTINCT s.product_id, p.sub_category
-        FROM sales_transactions s
-        JOIN products p ON p.id = s.product_id
-        WHERE s.customer_code = ? AND {price_lookup.evidence_filter('s')}
-    """, (customer_code,)).fetchall()
-    bought_pids = {r['product_id'] for r in own_rows}
-    bought_subcats = {r['sub_category'] for r in own_rows if r['sub_category'] is not None}
+    cutoff = (dt.date.fromisoformat(today)
+              - dt.timedelta(days=_SUGGESTION_WINDOW_DAYS)).isoformat()
 
     key_expr = "COALESCE(NULLIF(TRIM(s.customer_code),''), s.customer)"
-    params = [cutoff, customer_code]
-    exclude_sql = ''
-    if bought_pids:
-        ph = ",".join("?" * len(bought_pids))
-        exclude_sql += f" AND s.product_id NOT IN ({ph})"
-        params.extend(sorted(bought_pids))
-    if bought_subcats:
-        ph = ",".join("?" * len(bought_subcats))
-        exclude_sql += f" AND (p.sub_category IS NULL OR p.sub_category NOT IN ({ph}))"
-        params.extend(sorted(bought_subcats))
-    params.append(min_other_shops)
+    own_key_expr = "COALESCE(NULLIF(TRIM(s2.customer_code),''), s2.customer)"
 
     rows = conn.execute(f"""
         SELECT s.product_id AS product_id,
@@ -640,11 +635,23 @@ def _cross_sell_suggestions(conn, customer_code, today=None, limit=10,
           AND {key_expr} != ?
           AND p.is_active = 1
           AND COALESCE(sl.quantity, 0) > 0
-          {exclude_sql}
+          AND s.product_id NOT IN (
+              SELECT DISTINCT s2.product_id
+              FROM sales_transactions s2
+              WHERE {own_key_expr} = ? AND {price_lookup.evidence_filter('s2')}
+          )
+          AND (p.sub_category IS NULL OR p.sub_category NOT IN (
+              SELECT DISTINCT p2.sub_category
+              FROM sales_transactions s2
+              JOIN products p2 ON p2.id = s2.product_id
+              WHERE {own_key_expr} = ? AND {price_lookup.evidence_filter('s2')}
+                AND p2.sub_category IS NOT NULL
+          ))
         GROUP BY s.product_id
         HAVING COUNT(DISTINCT {key_expr}) >= ?
         ORDER BY shop_count DESC, doc_count DESC, s.product_id ASC
-    """, params).fetchall()
+    """, (cutoff, customer_code, customer_code, customer_code,
+          _SUGGESTION_MIN_OTHER_SHOPS)).fetchall()
 
     out = []
     seen_subcats = set()
@@ -652,10 +659,8 @@ def _cross_sell_suggestions(conn, customer_code, today=None, limit=10,
         if len(out) >= limit:
             break
         subcat = r['sub_category']
-        if subcat is not None:
-            if subcat in seen_subcats:
-                continue
-            seen_subcats.add(subcat)
+        if subcat is not None and subcat in seen_subcats:
+            continue
 
         try:
             resolved = price_lookup.resolve_price(conn, product_id=r['product_id'],
@@ -664,6 +669,14 @@ def _cross_sell_suggestions(conn, customer_code, today=None, limit=10,
             continue
         if resolved['list']['list_for_unit'] == 0:
             continue
+
+        # SF4: claim the sub-category only once the candidate has actually
+        # cleared every exclusion (here: has a resolvable price) — never
+        # before. A sub-category whose top candidate fails this check is
+        # NOT backfilled from the next-ranked candidate sharing it; it is
+        # simply never claimed, so a lower-ranked one is free to claim it.
+        if subcat is not None:
+            seen_subcats.add(subcat)
 
         price_promo = resolved['list']['price_promo']
         promo_affects_price = (
@@ -677,7 +690,12 @@ def _cross_sell_suggestions(conn, customer_code, today=None, limit=10,
                 "SELECT quantity FROM stock_levels WHERE product_id = ?", (r['product_id'],)
             ).fetchone()
             base_qty = stock_row['quantity'] if stock_row else 0
-            stock_qty = round(base_qty / ratio, 4) if ratio else base_qty
+            raw_qty = base_qty / ratio
+            # N-stock: a whole-number result prints as `4298` not `4298.0`
+            # (fmt_qty formats a float with its decimal point kept) — the
+            # common ratio=1.0 case would otherwise ALWAYS show ".0" even
+            # though the underlying stock_levels.quantity is an integer.
+            stock_qty = int(raw_qty) if raw_qty == int(raw_qty) else round(raw_qty, 4)
 
         out.append({
             'product_id': r['product_id'],
