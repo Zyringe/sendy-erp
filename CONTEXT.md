@@ -308,14 +308,23 @@
   _Avoid_: treating the two as interchangeable, or putting the row's *identity* in หมายเหตุ.
 
 - **Category (หมวดหมู่)** — the accounting bucket of a transaction (`เงินเดือน`, `ค่าไฟ`,
-  `ซื้อสินค้า`, …). Lives in `cashbook_categories`, scoped by direction. A new one can be
-  typed on the entry form (created on save).
+  `ซื้อสินค้า`, …). Lives in `cashbook_categories`, scoped by direction (`UNIQUE(name,
+  direction)`). A brand-new name typed on the **entry form** re-renders asking for explicit
+  confirmation before it's created — nothing saves until confirmed (issue #532). A name that
+  exists but is **retired** (`is_active=0`) is refused outright, on entry AND on edit. The
+  **edit** form may only set an active existing category, or leave the row's current
+  (category, direction) pair unchanged (so a row already sitting in a retired category stays
+  editable on its other fields) — edit never creates a category.
   _Not to be confused with_: ผู้ใช้ tag.
 
 - **ผู้ใช้ tag (`user_category`)** — a free-text "**who / where** this money was for" label
   (e.g. `บ่าว`, `โกดัง Lion`, `ออฟฟิสสุนทร`). A *different axis* from category, and NOT the
-  person who keyed the row (that is `created_by`). For salary rows it holds the employee's
-  nickname.
+  person who keyed the row (that is `created_by`). When the typed text names exactly one
+  employee — their full name, or its first word — the system silently saves that employee's
+  **system name** instead (nickname, or full_name when blank) and flashes a notice; an
+  ambiguous match (two employees sharing a first name) saves as typed, and editing a row
+  without touching its tag never changes it (issue #532). Salesperson real-name aliases
+  (`เจียรนัย`=`ต๋อ`/`06`, …) are a separate, out-of-scope concept — see ADR 0008.
   _Avoid_: calling this a "user" — it has nothing to do with a login.
 
 - **Transfer account / transfer category** — capital / inter-account movements

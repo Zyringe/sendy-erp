@@ -103,6 +103,7 @@ def test_bulk_post_two_rows_different_dates_saved_at_own_dates(tmp_db):
         "txn_date": "2026-06-01",
         "account_id": str(account_id),
         "bulk_mode": "1",
+        "confirm_new_categories": "1",  # both categories are brand-new; #532 §1 covers the confirm step itself
         "rows-0-direction": "expense", "rows-0-category": "ทดสอบ Bulk A",
         "rows-0-amount": "111", "rows-0-txn_date": "2026-06-02",
         "rows-1-direction": "expense", "rows-1-category": "ทดสอบ Bulk B",
@@ -131,6 +132,7 @@ def test_bulk_row_with_blank_date_falls_back_to_top_date(tmp_db):
         "txn_date": "2026-06-04",
         "account_id": str(account_id),
         "bulk_mode": "1",
+        "confirm_new_categories": "1",
         "rows-0-direction": "expense", "rows-0-category": "ทดสอบ Bulk Blank",
         "rows-0-amount": "33", "rows-0-txn_date": "",
     }
@@ -153,6 +155,7 @@ def test_single_mode_post_uses_top_date(tmp_db):
     form = {
         "txn_date": "2026-06-05",
         "account_id": str(account_id),
+        "confirm_new_categories": "1",
         "rows-0-direction": "expense", "rows-0-category": "ทดสอบ Single",
         "rows-0-amount": "50",
     }
@@ -185,6 +188,10 @@ def test_duplicate_guard_blocks_then_confirm_saves(tmp_db):
     form = {
         "txn_date": "2026-06-10",
         "account_id": str(account_id),
+        # "ทดสอบ Dup" is brand-new too, but this test isolates the DUPLICATE
+        # gate (#532 §1's new-category gate has its own dedicated tests) —
+        # pre-confirm it so the new-category screen doesn't intercept first.
+        "confirm_new_categories": "1",
         "rows-0-direction": "expense", "rows-0-category": "ทดสอบ Dup",
         "rows-0-amount": "999",
     }
@@ -219,6 +226,7 @@ def test_duplicate_guard_flags_in_batch_duplicate_pair(tmp_db):
         "txn_date": "2026-06-11",
         "account_id": str(account_id),
         "bulk_mode": "1",
+        "confirm_new_categories": "1",  # isolate the duplicate gate, see test above
         "rows-0-direction": "expense", "rows-0-category": "ทดสอบ DupBatch",
         "rows-0-amount": "77",
         "rows-1-direction": "expense", "rows-1-category": "ทดสอบ DupBatch",

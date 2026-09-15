@@ -81,8 +81,11 @@ def _insert_salary_row(tmp_db, account_id, run_id, item_id, amount=15000.0):
 
 
 def _batch_form(account_id, txn_date="2026-06-01", rows=None):
-    """Build a rows-<i>-* form dict for POST /cashbook/new."""
-    data = {"txn_date": txn_date, "account_id": str(account_id)}
+    """Build a rows-<i>-* form dict for POST /cashbook/new. Pre-confirms any
+    brand-new category (issue #532 §1) — the confirm step itself is covered
+    dedicatedly in test_cashbook_category_guards.py, not re-tested by every
+    caller of this helper."""
+    data = {"txn_date": txn_date, "account_id": str(account_id), "confirm_new_categories": "1"}
     for i, row in enumerate(rows or []):
         data[f"rows-{i}-direction"] = row.get("direction", "expense")
         data[f"rows-{i}-category"] = row.get("category", "")
