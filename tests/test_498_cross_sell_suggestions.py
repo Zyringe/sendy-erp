@@ -180,6 +180,45 @@ def test_product_bought_by_only_two_other_shops_never_appears(cust):
     assert _row(out, pid) is None
 
 
+def test_two_codes_sharing_one_bill_name_count_as_two_shops(cust):
+    """A11 (review round 1): counting by the bill NAME instead of the
+    canonical (code-first) key would collapse these two real, distinct
+    shops into one, since they share a `customer` value."""
+    conn = cust
+    today, recent, stale = _window_dates(conn)
+    pid = _mk_product(conn, name='สินค้าชื่อซ้ำสองรหัส 498')
+    _set_stock(conn, pid, 50)
+    shared_name = 'ร้านชื่อซ้ำ 498'
+    for i, code in enumerate(['SHAREDCODEA', 'SHAREDCODEB', 'SHAREDCODEC']):
+        _line(conn, doc_base=f'IVSHARED{i}', suffix=1, pid=pid, date_iso=recent,
+              code=code, name=shared_name, unit_price=100, net=100)
+
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['shop_count'] == 3
+
+
+def test_orphan_row_with_no_code_counts_via_its_bill_name(cust):
+    """A12 (review round 1): counting by the RAW `customer_code` column
+    (no COALESCE fallback to the bill name) would silently drop this row
+    -- `COUNT(DISTINCT ...)` ignores SQL NULL entirely, so a code-less
+    orphan row would never be counted at all under that mutation, unlike
+    an empty-string code (which IS a distinct, countable value)."""
+    conn = cust
+    today, recent, stale = _window_dates(conn)
+    pid = _mk_product(conn, name='สินค้ารหัสว่างนับผ่านชื่อ 498')
+    _set_stock(conn, pid, 50)
+    _other_shops(conn, pid, 2, prefix='ORPH', date_iso=recent)
+    _line(conn, doc_base='IVORPHANNULL', suffix=1, pid=pid, date_iso=recent,
+          code=None, name='ร้านไม่มีรหัส 498', unit_price=100, net=100)
+
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['shop_count'] == 3
+
+
 # ── Exclusion clauses: must NOT add to shop count (far-side fixtures) ───────
 
 def test_this_shops_own_padded_code_is_recognized_as_already_bought(cust):
@@ -492,6 +531,55 @@ def test_null_subcategory_products_each_stand_on_their_own(cust):
     assert _row(out, pid_b) is not None
 
 
+def test_null_subcategory_candidate_shown_even_when_shop_owns_a_subcategorized_purchase(cust):
+    """A13 (review round 1): the original NULL-stands-alone test never gave
+    TEST_CODE any own purchase, so `bought_subcats` stayed empty and the
+    subcat-exclusion SQL branch (`if bought_subcats:` / the sub-select)
+    never even ran -- dropping the "p.sub_category IS NULL OR" half of
+    that clause stayed green. Here TEST_CODE owns a REAL subcategorized
+    purchase (bought_subcats non-empty), and a NULL-subcategory candidate
+    must still show: a NULL row's `p.sub_category NOT IN (...)` is SQL
+    NULL regardless of the list's contents, so the "IS NULL OR" half is
+    the only thing that can ever let it through."""
+    conn = cust
+    today, recent, stale = _window_dates(conn)
+    pid_owned = _mk_product(conn, name='สินค้าที่ร้านนี้ซื้อมีหมวดย่อย 498',
+                             sub_category='หมวดที่ร้านนี้ซื้อ498')
+    _line(conn, doc_base='IVOWNSUBCAT', suffix=1, pid=pid_owned, date_iso=recent,
+          code=TEST_CODE, name=TEST_NAME, unit_price=100, net=100)
+
+    pid_null = _mk_product(conn, name='สินค้าไม่มีหมวดย่อยควรขึ้น 498', sub_category=None)
+    _set_stock(conn, pid_null, 50)
+    _other_shops(conn, pid_null, 4, prefix='NULLSHOW', date_iso=recent)
+
+    out = _suggestions(conn, today=today)
+    assert _row(out, pid_null) is not None
+
+
+def test_subcategorized_candidate_shown_even_when_shop_owns_a_null_subcategory_purchase(cust):
+    """A15 (review round 1), the mirror of A13: TEST_CODE's own purchase
+    has NO sub_category. The `is not None` filter on bought_subcats must
+    keep that NULL OUT of the exclusion list -- if it leaked in,
+    `p.sub_category NOT IN (NULL, ...)` is SQL NULL for every row that
+    ISN'T NULL, so the exclusion clause would silently hide every
+    non-null-sub_category candidate for a shop that has ever bought even
+    one uncategorized product."""
+    conn = cust
+    today, recent, stale = _window_dates(conn)
+    pid_owned_null = _mk_product(conn, name='สินค้าที่ร้านนี้ซื้อไม่มีหมวดย่อย 498',
+                                  sub_category=None)
+    _line(conn, doc_base='IVOWNNULL', suffix=1, pid=pid_owned_null, date_iso=recent,
+          code=TEST_CODE, name=TEST_NAME, unit_price=100, net=100)
+
+    pid_candidate = _mk_product(conn, name='สินค้ามีหมวดย่อยควรขึ้น 498',
+                                 sub_category='หมวดจริงควรขึ้น498')
+    _set_stock(conn, pid_candidate, 50)
+    _other_shops(conn, pid_candidate, 4, prefix='REALSUB', date_iso=recent)
+
+    out = _suggestions(conn, today=today)
+    assert _row(out, pid_candidate) is not None
+
+
 # ── Ranking / tie-breaks ─────────────────────────────────────────────────────
 
 def test_ranked_by_shop_count_descending(cust):
@@ -569,6 +657,24 @@ def test_limit_caps_at_ten_even_with_more_qualifying_products(cust):
     assert [r['product_id'] for r in out] == pids[:10]
 
 
+def test_real_default_limit_is_ten(cust):
+    """A16 (review round 1): `_suggestions()` (this file's own test helper)
+    always passes `limit=10` explicitly, so the FUNCTION's own default
+    value was never actually exercised by any test -- a change to the
+    real signature default (e.g. 10 -> 100) went unnoticed. Calls the
+    helper directly with no `limit` kwarg at all."""
+    conn = cust
+    today, recent, stale = _window_dates(conn)
+    for n in range(12):
+        pid = _mk_product(conn, name=f'สินค้าดีฟอลต์ลิมิต 498 {n}')
+        _set_stock(conn, pid, 50)
+        _other_shops(conn, pid, 20 - n, prefix=f'DEF{n:02d}', date_iso=recent)
+
+    import models.customers as customers
+    out = customers._cross_sell_suggestions(conn, TEST_CODE, today=today)
+    assert len(out) == 10
+
+
 # ── Edge cases ───────────────────────────────────────────────────────────────
 
 def test_shop_with_no_qualifying_purchases_gets_plain_top10(cust):
@@ -607,6 +713,12 @@ def test_code_with_no_master_row_still_computes(cust):
 # ── Shape: no cost/margin, price + promo shown ──────────────────────────────
 
 def test_suggestion_dict_carries_no_cost_or_margin_keys(cust):
+    """A20/A21 (review round 1): asserts the EXACT key allowlist, not a
+    denylist -- a denylist only catches keys named on the list, so adding
+    `resolved['context']` (other shops' names, `pre_epoch`) or the whole
+    `internal` block (cost/WACC/margin) would both stay green against the
+    old forbidden-set check. An exact-set comparison catches ANY new key,
+    named or not."""
     conn = cust
     today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าตรวจคีย์ 498')
@@ -616,9 +728,10 @@ def test_suggestion_dict_carries_no_cost_or_margin_keys(cust):
     out = _suggestions(conn, today=today)
     row = _row(out, pid)
     assert row is not None
-    forbidden = {'cost', 'cost_price', 'cost_per_unit', 'wacc', 'margin',
-                 'margin_at_answer_pct', 'internal', 'customer'}
-    assert forbidden.isdisjoint(row.keys())
+    assert set(row.keys()) == {
+        'product_id', 'product_name', 'unit', 'shop_count', 'price_per_unit',
+        'list_for_unit', 'promo', 'promo_affects_price', 'stock_qty',
+    }
 
 
 def test_price_reflects_active_percent_promo(cust):
@@ -642,6 +755,30 @@ def test_price_reflects_active_percent_promo(cust):
     assert row['promo']['promo_type'] == 'percent'
 
 
+def test_fixed_promo_draws_as_the_fixed_amount_not_a_percent_formula(cust):
+    """A24 (review round 1): a `fixed` promo's discount_value IS the final
+    price, not a percentage -- 65 active `fixed` promos exist on prod.
+    `promo_affects_price` must stay False so the template renders the
+    plain price, never a "-X%" formula."""
+    conn = cust
+    today, recent, stale = _window_dates(conn)
+    pid = _mk_product(conn, name='สินค้าโปรราคาคงที่ 498', base=100.0)
+    _set_stock(conn, pid, 50)
+    conn.execute(
+        "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+        " date_start, is_active) VALUES (?, 'ราคาพิเศษ', 'fixed', 75, '2024-01-01', 1)",
+        (pid,))
+    conn.commit()
+    _other_shops(conn, pid, 3, prefix='FIXEDPROMO', date_iso=recent)
+
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['price_per_unit'] == pytest.approx(75.0)
+    assert row['promo_affects_price'] is False
+    assert row['promo']['promo_type'] == 'fixed'
+
+
 def test_stock_qty_is_none_when_ratio_is_not_derivable(cust):
     """Dozen-only product (base_sell_price=0, only a pack tier) -- the
     resolver answers the price at the tier's own unit with ratio=None
@@ -662,6 +799,30 @@ def test_stock_qty_is_none_when_ratio_is_not_derivable(cust):
     assert row is not None
     assert row['stock_qty'] is None
     assert row['unit'] == 'แพ็ค'
+
+
+def test_dozen_only_product_stock_shown_in_its_own_unit(cust):
+    """A18 (review round 1): a dozen-only product whose ratio IS known
+    (a '1 โหล' tier gets the resolver's own tier-implied ratio=12, unlike
+    the 'แพ็ค' tier above which has no such special case) -- 24 base units
+    in stock must show as 2 in the product's own unit (โหล), not 24 in
+    base units."""
+    conn = cust
+    today, recent, stale = _window_dates(conn)
+    pid = _mk_product(conn, name='สินค้าขายยกโหลเท่านั้น 498', base=0)
+    conn.execute(
+        "INSERT INTO product_price_tiers (product_id, qty_label, price) VALUES (?,?,?)",
+        (pid, '1 โหล', 1200),
+    )
+    conn.commit()
+    _set_stock(conn, pid, 24)
+    _other_shops(conn, pid, 3, prefix='DOZ', date_iso=recent)
+
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['unit'] == 'โหล'
+    assert row['stock_qty'] == 2
 
 
 # ── Independent of the page's date filter ───────────────────────────────────
