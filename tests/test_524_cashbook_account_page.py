@@ -276,6 +276,9 @@ def test_add_single_row_redirects_to_that_rows_month(migrated_db):
     aid = _account_ids(migrated_db)[0]
     resp = _client_as_user(1, 'admin').post('/cashbook/new', data={
         'txn_date': '2026-05-20', 'account_id': str(aid),
+        # 'ทดสอบ 524' is brand-new; #532's new-category confirm gate isn't
+        # this test's subject, so pre-confirm it.
+        'confirm_new_categories': '1',
         'rows-0-direction': 'expense', 'rows-0-category': 'ทดสอบ 524',
         'rows-0-amount': '150',
     }, follow_redirects=False)
@@ -289,6 +292,8 @@ def test_bulk_add_redirects_to_latest_row_in_batch_not_first(migrated_db):
     aid = _account_ids(migrated_db)[0]
     resp = _client_as_user(1, 'admin').post('/cashbook/new', data={
         'txn_date': '2026-04-01', 'account_id': str(aid), 'bulk_mode': '1',
+        # 'ทดสอบ A'/'ทดสอบ B' are brand-new; see comment above.
+        'confirm_new_categories': '1',
         'rows-0-direction': 'expense', 'rows-0-category': 'ทดสอบ A',
         'rows-0-amount': '10', 'rows-0-txn_date': '2026-04-05',
         'rows-1-direction': 'expense', 'rows-1-category': 'ทดสอบ B',
