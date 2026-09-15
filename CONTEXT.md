@@ -273,7 +273,7 @@
   `cashbook_transactions` over `cashbook_accounts`.
 
 - **Cashbook account (บัญชี)** — one bank/wallet the cash flows through (`392`, `LEX`,
-  `SPX`, `ชฎามาศ`, `กิติยา`, `904`). `cashbook_accounts`. NOT a User account (login) and
+  `SPX`, `ชฎามาศ`, `กิติยา`, `904`, `Put-Cash`). `cashbook_accounts`. NOT a User account (login) and
   NOT an Employee — a third, unrelated "account" sense. Accounts are entered/edited out of
   band (no in-app add-account screen yet).
 
@@ -376,6 +376,18 @@
   headline card in month mode (the same slot shows **คงเหลือ**, true cash, in all-time mode — the
   label swaps with the mode). It is a monthly P&L net, **NOT** a cash balance, and is computed as
   `income − expense`, never `sum(account.balance)` (which folds in `เงินทุน/เงินโอน` transfers).
+
+- **Three money figures, three different scopes — do not conflate them** (#524):
+  - **คงเหลือ (account balance)** — one account's `income − expense` over **all history**,
+    transfers included. Card 3 on `/cashbook` in ทั้งหมด mode (summed across accounts) and on
+    `/cashbook/account/<id>` in ทั้งหมด mode (that one account only). NOT scoped to a month.
+  - **เข้า-ออกสุทธิ (net movement)** — one account's `income − expense` within **one month**,
+    transfers included. Card 3 on `/cashbook/account/<id>` when a month is selected.
+  - **สุทธิเดือนนี้ (monthly P&L net)** — the WHOLE cashbook's `income − expense` for one month,
+    transfers **excluded**. Card 3 on `/cashbook` when a month is selected (defined above).
+  _Avoid_: calling any month-scoped figure "คงเหลือ" — คงเหลือ is always all-history. The account
+  page used to do exactly this (labelled its month-filtered total "คงเหลือ" even though the total
+  includes transfer rows the dashboard's สุทธิเดือนนี้ would exclude); fixed in #524.
 
 - **Overspend flag** — a per-category expense alert on the month-scoped dashboard: this month's
   category total ≥ 20% **and** ≥ ฿1,000 above the previous month's (both). Categories absent last

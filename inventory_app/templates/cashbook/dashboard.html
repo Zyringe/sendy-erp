@@ -170,7 +170,7 @@
           </td>
           <td class="text-end small text-muted">{{ a.txn_count }}</td>
           <td>
-            <a href="{{ url_for('cashbook.account_ledger', account_id=a.id) }}"
+            <a href="{{ url_for('cashbook.account_ledger', account_id=a.id, month=selected_month) }}"
                class="btn btn-xs btn-outline-primary btn-sm py-0 px-2 small">บัญชี</a>
           </td>
         </tr>
@@ -214,7 +214,7 @@
           <td class="text-end small">฿{{ "{:,.2f}".format(a.balance) }}</td>
           <td class="text-end small">{{ a.txn_count }}</td>
           <td>
-            <a href="{{ url_for('cashbook.account_ledger', account_id=a.id) }}"
+            <a href="{{ url_for('cashbook.account_ledger', account_id=a.id, month=selected_month) }}"
                class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2 small">บัญชี</a>
           </td>
         </tr>

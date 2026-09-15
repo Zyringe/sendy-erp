@@ -3,9 +3,14 @@
 {% block page_title %}รายการบัญชี: {{ acct.code }}{% endblock %}
 
 {% block topbar_actions %}
-<a href="{{ url_for('cashbook.dashboard') }}" class="btn btn-sm btn-outline-secondary">
+<a href="{{ url_for('cashbook.dashboard') }}" class="btn btn-sm btn-outline-secondary me-2">
   <i class="bi bi-arrow-left me-1"></i>กลับ
 </a>
+{% if can_edit_cashbook %}
+<a href="{{ url_for('cashbook.new_transaction', account_id=acct.id) }}" class="btn btn-primary btn-sm">
+  <i class="bi bi-plus-lg me-1"></i>เพิ่มรายการ
+</a>
+{% endif %}
 {% endblock %}
 
 {% block content %}
@@ -49,7 +54,9 @@
   </div>
   <div class="col-sm-4">
     <div class="stat-card py-2">
-      <div class="stat-card-label small">คงเหลือ</div>
+      <div class="stat-card-label small" id="ledgerCard3Label">
+        {% if is_all_time %}คงเหลือ{% else %}เข้า-ออกสุทธิ ({{ selected_month }}){% endif %}
+      </div>
       <div class="fw-semibold {% if balance >= 0 %}text-primary{% else %}text-danger{% endif %}">
         ฿{{ "{:,.2f}".format(balance) }}
       </div>
@@ -64,9 +71,9 @@
       <div class="col-auto">
         <label class="form-label small mb-1">เดือน</label>
         <select name="month" class="form-select form-select-sm" onchange="this.form.submit()">
-          <option value="">— ทุกเดือน —</option>
+          <option value="ทั้งหมด" {% if is_all_time %}selected{% endif %}>— ทุกเดือน —</option>
           {% for m in months %}
-          <option value="{{ m }}" {% if m == month_filter %}selected{% endif %}>{{ m }}</option>
+          <option value="{{ m }}" {% if m == selected_month %}selected{% endif %}>{{ m }}</option>
           {% endfor %}
         </select>
       </div>
@@ -79,7 +86,7 @@
         </select>
       </div>
       <div class="col-auto">
-        <a href="{{ url_for('cashbook.account_ledger', account_id=acct.id) }}"
+        <a href="{{ url_for('cashbook.account_ledger', account_id=acct.id, month='ทั้งหมด') }}"
            class="btn btn-sm btn-outline-secondary">ล้าง</a>
       </div>
     </form>
@@ -195,7 +202,7 @@
     {% for p in range(1, total_pages + 1) %}
     <li class="page-item {% if p == page %}active{% endif %}">
       <a class="page-link"
-         href="{{ url_for('cashbook.account_ledger', account_id=acct.id, month=month_filter, dir=dir_filter, page=p) }}">
+         href="{{ url_for('cashbook.account_ledger', account_id=acct.id, month=selected_month, dir=dir_filter, page=p) }}">
         {{ p }}
       </a>
     </li>
