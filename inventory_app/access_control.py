@@ -145,6 +145,20 @@ _ROLE_POST_OK = {
     ]),
 }
 
+
+def role_can_post(role, endpoint):
+    """Whether `role` may POST to `endpoint`, per the same whitelist
+    `require_login` enforces below (admin bypasses it entirely).
+
+    For a template that needs to show/hide a form based on permission (#497:
+    the customer page's add-note box), read THIS rather than hand-listing
+    roles — a literal ('admin', 'manager', 'staff') tuple next to the form
+    would silently drift from the real gate the first time a role's
+    whitelist changes.
+    """
+    return role == 'admin' or endpoint in _ROLE_POST_OK.get(role, frozenset())
+
+
 # GET allowlist for the 'general' role (PWA stock-lookup kiosk + own leave).
 # Everything not in this set → redirect to mobile.stock_search.
 _GENERAL_ALLOWED = frozenset([

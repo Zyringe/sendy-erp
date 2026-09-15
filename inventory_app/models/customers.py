@@ -568,6 +568,28 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
         conn, where, params)
     product_cards = _customer_product_cards(conn, where, params, include_cost=include_cost)
 
+    # Win-back (#497): the ONE shared computation (winback.py), ALWAYS over
+    # the customer's FULL history — a fresh, date-INDEPENDENT scope built
+    # here, never the (possibly date-filtered) `where` the product cards
+    # above use. `import winback` is local (not at module top) for the same
+    # reason `_customer_product_cards` imports price_lookup locally: both
+    # pull in `models.promotions` at their own top level, and this file is
+    # itself a submodule `models/__init__.py` is still in the middle of
+    # importing at module-load time.
+    import winback
+    wb_where, wb_params = _customer_sales_scope('customer_code', customer_code, None, None)
+    winback_rows = winback.compute_winback(conn, wb_where, wb_params)
+    winback_by_key = {(w['product_id'], w['unit']): w for w in winback_rows}
+    card_keys = set()
+    for card in product_cards:
+        key = (card['product_id'], card['unit'])
+        card_keys.add(key)
+        card['winback'] = winback_by_key.get(key)
+    # Flagged items the card's top-40 union doesn't render at all — surfaced
+    # as a count only (the customer page links it to the call card, which
+    # lists every one of them).
+    winback_overflow_count = sum(1 for k in winback_by_key if k not in card_keys)
+
     # Bill (short) name for THIS code specifically — most recent sale wins.
     # This is what distinguishes ทรัพย์ทวี's two codes; a name-keyed lookup
     # cannot (BUG 2).
@@ -634,6 +656,11 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
         'summary': dict(summary),
         'top_products': [dict(r) for r in top_products],
         'product_cards': product_cards,
+        # Raw shared list (#497) — same shape call_card.get_card returns under
+        # its own 'winback' key, so a caller comparing the two surfaces never
+        # has to reach into product_cards to rebuild it.
+        'winback': winback_rows,
+        'winback_overflow_count': winback_overflow_count,
         'monthly': [dict(r) for r in monthly],
         'docs': [dict(r) for r in docs],
     }

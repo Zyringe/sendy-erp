@@ -120,6 +120,17 @@ def call_mark_called(customer_code):
 
 # ── P5 write routes ────────────────────────────────────────────────────────────
 
+# Where a note POST returns (#497 — the customer page's own add-note box
+# posts here too). An ALLOW-LIST of INTENT strings, never a URL: the value
+# never becomes part of the redirect target directly, so there is nothing
+# for an attacker-controlled `return_to` to redirect to but one of these two
+# app-internal, url_for-built pages — no open redirect is reachable no
+# matter what the client sends.
+_RETURN_TARGETS = {
+    'customer': lambda code: url_for('partners.customer_detail', customer_code=code),
+}
+
+
 @bp_call.route('/call/<path:customer_code>/note', methods=['POST'])
 def call_note(customer_code):
     conn = get_connection()
@@ -128,7 +139,10 @@ def call_note(customer_code):
     cc.add_log(conn, customer_code, kind, body, session.get('username'))
     conn.close()
     flash('บันทึกแล้ว', 'success')
-    return redirect(url_for('call.call_card', customer_code=customer_code))
+    build_target = _RETURN_TARGETS.get(request.form.get('return_to'))
+    target = build_target(customer_code) if build_target else url_for(
+        'call.call_card', customer_code=customer_code)
+    return redirect(target)
 
 
 @bp_call.route('/call/<path:customer_code>/crm', methods=['POST'])

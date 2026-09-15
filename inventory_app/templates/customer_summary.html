@@ -118,6 +118,15 @@
           <div class="fw-500">{{ ci.contact }}</div>
         </div>
         {% endif %}
+        {# #497: read-only — the editable copy of this same column lives in
+           the manager-only edit modal's textarea below (labelled
+           "หมายเหตุติดต่อ"); this is the always-visible summary. #}
+        {% if ci.contact_note %}
+        <div style="min-width:200px;max-width:320px">
+          <div class="text-subtle small mb-1">หมายเหตุ</div>
+          <div class="small" data-contact-note-value>{{ ci.contact_note }}</div>
+        </div>
+        {% endif %}
         {% if ci.tax_id %}
         <div>
           <div class="text-subtle small mb-1">Tax ID</div>
@@ -151,6 +160,58 @@
         </div>
         {% endif %}
       {% endif %}
+    </div>
+  </div>
+</div>
+
+{# ── บันทึกการโทร / โน้ต (#497) ───────────────────────────────────────────
+   Moved directly under ข้อมูลลูกค้า (Put, 2026-09-15): on a 390px phone the
+   old bottom-of-page position sat under สินค้าที่ซื้อบ่อย + รายการเอกสาร —
+   nobody scrolled that far before walking into a shop. Same
+   customer_call_log rows the call card lists (same key, customer_code) —
+   a note added here shows up there too, and vice versa. No delete / CRM /
+   clearance here (Out of scope — those stay call-card only); the Call
+   Card button up top is still the way to reach them. #}
+<div class="row g-3 mb-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-journal-text me-2 text-accent"></i>บันทึกการโทร / โน้ต
+      </div>
+      <div class="card-body">
+        {% if can_add_note %}
+        <form method="post" action="{{ url_for('call.call_note', customer_code=data.customer_code) }}" class="mb-3">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {# Validated return target (#497) — an allow-listed INTENT string,
+             never a URL, so call.call_note builds the redirect itself via
+             url_for from customer_code. customer_code is attacker-chosen
+             (any path segment, no existence check) — it is url_for that
+             confines the result to a same-origin path, not any assumption
+             that this value is trustworthy (no open redirect). #}
+          <input type="hidden" name="return_to" value="customer">
+          <div class="input-group input-group-sm">
+            <input type="text" name="body" class="form-control" placeholder="เพิ่มบันทึก… (พิมพ์อะไรก็ได้)" required>
+            {# min-width inline: input-group-sm shrinks .btn below the 44px
+               floor btn-touch's min-height already gives it (F6) — this is
+               the one use site, so a page-wide app.css rule isn't needed. #}
+            <button type="submit" class="btn btn-primary btn-touch" style="min-width:44px">เพิ่ม</button>
+          </div>
+        </form>
+        {% endif %}
+        {% for entry in call_log %}
+        <div class="d-flex justify-content-between align-items-start py-2 {{ '' if loop.last else 'border-bottom' }}">
+          <div>
+            {% if entry.kind == 'call' %}<span class="badge bg-info-subtle text-info-emphasis">📞 โทรแล้ว</span>{% if entry.body %} — {{ entry.body }}{% endif %}
+            {% elif entry.kind == 'data_flag' %}<span class="badge bg-danger-subtle text-danger-emphasis">🚩 ข้อมูลน่าจะผิด</span>{% if entry.body %} — {{ entry.body }}{% endif %}
+            {% else %}{{ entry.body or '' }}
+            {% endif %}
+          </div>
+          <div class="text-subtle small text-nowrap ms-2">{{ entry.created_by or '—' }} · {{ (entry.created_at or '')[:16] }}</div>
+        </div>
+        {% else %}
+        <p class="text-subtle small mb-0">ยังไม่มีบันทึก</p>
+        {% endfor %}
+      </div>
     </div>
   </div>
 </div>
@@ -527,6 +588,15 @@
                 {% if r.last.freebies %}
                 <div class="text-success small">{% for f in r.last.freebies %}แถม {{ f.qty | fmt_qty }} {{ f.unit }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
                 {% endif %}
+                {# #497: same win-back definition as the call card
+                   (winback.compute_winback) — flagged when this row's
+                   (product, unit) hasn't sold in longer than its own median
+                   gap between purchases. Survives the ครั้ง/ยอด re-sort
+                   below for free: that JS moves the whole <tr> DOM node,
+                   never rebuilds its innerHTML. #}
+                {% if r.winback %}
+                <div class="text-warning small">⏰ ขาดช่วง · ปกติซื้อทุก ~{{ r.winback.median_gap_days }} วัน · ล่าสุด {{ elapsed_th(r.winback.days_since) }}</div>
+                {% endif %}
                 {% if c and c.has_cost %}
                   {% set m = c.margin_last %}
                   {% if m %}
@@ -620,6 +690,20 @@
           </tbody>
         </table>
       </div>
+      {# #497: win-back items the top-40 union above never rendered at all
+         (never double-counted with the badge on a visible row — see
+         models.customers.get_customer_summary_by_code's winback_overflow_count).
+         Absent entirely at 0. #}
+      {% if data.winback_overflow_count %}
+      <div class="card-footer py-2 text-subtle small">
+        {# btn-touch: mobile-conventions.md §5 (≥44x44px tap target) — this
+           link's own text (17px tall) was under that floor (F6). #}
+        <a href="{{ url_for('call.call_card', customer_code=data.customer_code) }}"
+           class="text-decoration-none btn-touch">
+          ⏰ อีก {{ data.winback_overflow_count }} รายการซื้อขาดช่วง — ดูที่ Call Card
+        </a>
+      </div>
+      {% endif %}
     </div>
   </div>
 

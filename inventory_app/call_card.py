@@ -524,8 +524,17 @@ def get_card(conn, customer_code):
     # ── 4. Top products: peer pricing + unit-aware base + promo + price tiers ──
     products = _assemble_products(conn, names, canon_code)
 
-    # ── 5. Win-back: products with ≥3 prior buys whose last buy > median interval
-    winback = _compute_winback(conn, names)
+    # ── 5. Win-back: one shared computation (#497) — scoped by customer_code
+    # when we have one (never by bill name: two codes can share one name,
+    # BUG 2 / ทรัพย์ทวี), by the orphan name only for a true orphan (no code
+    # anywhere for this customer, `canon_code is None`).
+    import winback as wb_mod
+    from models.customers import _customer_sales_scope
+    if canon_code:
+        wb_where, wb_params = _customer_sales_scope('customer_code', canon_code, None, None)
+    else:
+        wb_where, wb_params = _customer_sales_scope('customer', primary_name, None, None)
+    winback = wb_mod.compute_winback(conn, wb_where, wb_params, today=_today())
 
     # ── 6. Clearance: hard_to_sell=1 products in stock that overlap customer's categories
     clearance = _compute_clearance(conn, products)
@@ -825,66 +834,6 @@ def _assemble_products(conn, names, canon_code, today=None):
         })
 
     return products
-
-
-def _compute_winback(conn, names):
-    """Win-back list: products with ≥3 distinct purchase dates whose last buy
-    is older than the median inter-purchase interval for that product.
-
-    Returns list of dicts {product_id, product_name, unit, last_buy, median_gap_days}.
-    """
-    if not names:
-        return []
-
-    # Pull per-product purchase dates for this customer
-    rows = conn.execute("""
-        SELECT
-            st.product_id,
-            COALESCE(p.product_name, st.product_name_raw) AS product_name,
-            st.unit,
-            st.date_iso
-        FROM sales_transactions st
-        LEFT JOIN products p ON p.id = st.product_id
-        WHERE st.customer IN ({})
-          AND st.product_id IS NOT NULL
-        ORDER BY st.product_id, st.unit, st.date_iso
-    """.format(",".join("?" * len(names))), names).fetchall()
-
-    # Group by (product_id, unit) → sorted date list
-    from collections import defaultdict
-    groups = defaultdict(lambda: {'product_name': None, 'dates': []})
-    for row in rows:
-        key = (row['product_id'], row['unit'])
-        groups[key]['product_name'] = row['product_name']
-        groups[key]['dates'].append(row['date_iso'])
-
-    today_str = _today().isoformat()
-    winback = []
-    for (pid, unit), info in groups.items():
-        dates = sorted(set(info['dates']))
-        if len(dates) < 3:
-            continue
-
-        # Compute inter-purchase gaps
-        date_objs = [dt.date.fromisoformat(d) for d in dates]
-        gaps = [(date_objs[i+1] - date_objs[i]).days for i in range(len(date_objs)-1)]
-        med_gap = statistics.median(gaps)
-
-        last_date = dt.date.fromisoformat(dates[-1])
-        days_since = (dt.date.today() - last_date).days
-
-        if days_since > med_gap:
-            winback.append({
-                'product_id':      pid,
-                'product_name':    info['product_name'],
-                'unit':            unit,
-                'last_buy':        dates[-1],
-                'median_gap_days': int(med_gap),
-                'days_since':      days_since,
-            })
-
-    winback.sort(key=lambda r: -r['days_since'])
-    return winback
 
 
 def _compute_clearance(conn, products):
