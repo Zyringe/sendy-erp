@@ -168,6 +168,30 @@ def test_product_bought_by_only_two_other_shops_never_appears(cust):
 
 # ── Exclusion clauses: must NOT add to shop count (far-side fixtures) ───────
 
+def test_this_shops_own_padded_code_never_counts_as_an_other_shop(cust):
+    """The self-exclusion clause is redundant with "already bought" for a
+    CLEANLY-coded row (any row this shop's exact code can see is also
+    caught by the all-time bought_pids exclusion, since both use the same
+    key) -- the one case where it is NOT redundant is a row whose
+    `customer_code` carries incidental whitespace: the own-history query
+    (`s.customer_code = ?`, exact match, same convention as
+    `_customer_sales_scope`) misses it, so it never reaches bought_pids,
+    but its CANONICAL key (TRIM'd) is still this shop's own. Without the
+    self-exclusion clause that padded row would inflate shop_count by 1."""
+    conn = cust
+    today, recent, stale = _window_dates(conn)
+    pid = _mk_product(conn, name='สินค้ารหัสเว้นวรรค 498')
+    _set_stock(conn, pid, 50)
+    _other_shops(conn, pid, 3, prefix='PAD', date_iso=recent)
+    _line(conn, doc_base='IVPADSELF', suffix=1, pid=pid, date_iso=recent,
+          code=f' {TEST_CODE} ', name=TEST_NAME, unit_price=100, net=100)
+
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['shop_count'] == 3
+
+
 def test_credit_note_does_not_count_toward_shop_count(cust):
     """3 real invoices (qualifies) + 1 credit note from a 4th shop that
     would tip it to 4 if counted."""
@@ -248,14 +272,24 @@ def test_line_older_than_24_months_does_not_count_toward_shop_count(cust):
 
 def test_a_product_bought_once_long_ago_by_everyone_never_appears(cust):
     """The acceptance criteria's own phrasing: every buyer is outside the
-    24-month window -> shop_count for the window is 0, well under 3."""
+    24-month window -> shop_count for the window is 0, well under 3.
+
+    Uses a large `limit` deliberately, not the real default (10): removing
+    the date-window clause floods the candidate pool with the live dev
+    DB's entire all-time history, which would rank this 5-shop fixture
+    below the top 10 REGARDLESS of whether the window clause is present —
+    "not in the top 10" would then hold for the wrong reason and this
+    break-it-once would go undetected (confirmed: at limit=10 this stayed
+    green with the window clause deleted). At limit=10000 the only way the
+    product can be absent is the window/HAVING clause actually excluding
+    it, which is the property under test."""
     conn = cust
     today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าเก่าทั้งหมด 498')
     _set_stock(conn, pid, 50)
     _other_shops(conn, pid, 5, prefix='ALLOLD', date_iso=stale)
 
-    out = _suggestions(conn, today=today)
+    out = _suggestions(conn, today=today, limit=10000)
     assert _row(out, pid) is None
 
 
