@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{# Confirm page for a manual IV pick (#545). Rendered as the response to the
+   picker's POST; nothing is written until its own form is submitted. #}
+{% block title %}ยืนยันใบกำกับ — {{ order.order_sn }}{% endblock %}
+{% block content %}
+<div class="container py-3" style="max-width: 40rem">
+  <h1 class="h4 mb-3">ยืนยันใบกำกับของออเดอร์ <code>{{ order.order_sn }}</code></h1>
+
+  <section id="ivConfirmIv" class="card mb-3">
+    <div class="card-body">
+      <div class="small text-muted">ใบกำกับที่เลือก</div>
+      <div class="fs-5"><code>{{ plan.doc_base }}</code></div>
+    </div>
+  </section>
+
+  <form method="post" id="ivConfirmForm"
+        action="{{ url_for('marketplace.link_iv', order_id=order.id, platform=order.platform) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="doc_base" value="{{ plan.doc_base }}">
+    <input type="hidden" name="confirm" value="1">
+    <div class="d-grid gap-2 d-sm-flex">
+      <button type="submit" class="btn btn-primary btn-lg">ผูกกับออเดอร์นี้</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

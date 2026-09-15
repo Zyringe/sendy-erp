@@ -98,6 +98,41 @@ def _order_link(c, order_sn):
     return r['doc_base'] if r else None
 
 
+def _section(html, section_id):
+    """The inner HTML of one confirm-page section; fails loudly when it is absent,
+    so no assertion scoped to it can pass on a page that never rendered it."""
+    import re
+    m = re.search(rf'<section[^>]*id="{section_id}"[^>]*>(.*?)</section>', html, re.S)
+    assert m, f'section #{section_id} not rendered'
+    return m.group(1)
+
+
+def _confirm_form(html):
+    """The confirm form's action + every <input> name→value, read with a real
+    parser the way the browser will submit it."""
+    from html.parser import HTMLParser
+
+    class P(HTMLParser):
+        inside, action, fields = False, None, {}
+
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag == 'form' and a.get('id') == 'ivConfirmForm':
+                self.inside, self.action = True, a.get('action')
+            elif tag == 'input' and self.inside and a.get('name'):
+                self.fields[a['name']] = a.get('value', '')
+
+        def handle_endtag(self, tag):
+            if tag == 'form':
+                self.inside = False
+
+    p = P()
+    p.fields = {}
+    p.feed(html)
+    assert p.action, 'confirm form not rendered'
+    return p.action, p.fields
+
+
 def test_typed_number_not_in_sendy_is_refused(pick):
     c, ids = pick
     cl = _client()
@@ -130,4 +165,32 @@ def test_an_iv_billed_to_a_non_marketplace_customer_is_refused(pick, doc, code):
     resp = cl.post(f"/marketplace/order/{ids['S1']}/link-iv", data={'doc_base_manual': doc})
     assert resp.status_code == 302
     assert _flashes(cl) == [f'{doc} เป็นบิลของ {code} ไม่ใช่บิลขายออนไลน์ ผูกกับออเดอร์ไม่ได้']
+    assert _order_link(c, 'PICKS1') is None
+
+
+def test_a_typed_number_is_normalised_and_previewed_before_anything_is_written(pick):
+    """Rules 3 + 5: '  iv9500001-1 ' (the /sales table prints line suffixes) is the
+    free Shopee IV9500001, and a typed number is always previewed, never saved."""
+    c, ids = pick
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['S1']}/link-iv",
+                   data={'doc_base_manual': '  iv9500001-1 '})
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert '>IV9500001<' in _section(html, 'ivConfirmIv')
+    _action, fields = _confirm_form(html)
+    assert fields['doc_base'] == 'IV9500001'
+    assert _order_link(c, 'PICKS1') is None
+
+
+def test_a_clicked_row_and_a_different_typed_number_are_refused(pick):
+    """Rule 3: the picker used to let the typed box silently win over a clicked row.
+    Both valid IVs here, so only the disagreement can be the reason."""
+    c, ids = pick
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['S1']}/link-iv",
+                   data={'doc_base': 'IV9500001', 'doc_base_manual': 'IV9500008'})
+    assert resp.status_code == 302
+    assert _flashes(cl) == ['เลือกใบในรายการ (IV9500001) แต่พิมพ์เลข IV9500008 '
+                            'ไม่ตรงกัน กรุณาเลือกอย่างใดอย่างหนึ่ง']
     assert _order_link(c, 'PICKS1') is None

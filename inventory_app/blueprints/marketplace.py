@@ -386,6 +386,8 @@ def link_iv(order_id):
             typed=request.form.get('doc_base_manual'))
         if 'refuse' in plan:
             flash(plan['refuse'], 'warning')
+        elif plan['needs_confirm'] and request.form.get('confirm') != '1':
+            return render_template('marketplace/link_iv_confirm.html', order=order, plan=plan)
         else:
             doc_base = plan['doc_base']
             stolen = marketplace_match.link_manual(

@@ -38,6 +38,7 @@ projects/marketplace-iv-matching/plan.md §3b / matcher-rebuild-spec.md):
 Manual links are never clobbered and their IV is never reused.
 """
 import logging
+import re
 from collections import deque
 from datetime import datetime
 from functools import lru_cache
@@ -785,14 +786,31 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
             'review': review, 'unmatched': unmatched, 'returns_matched': returns_matched}
 
 
+_LINE_SUFFIX = re.compile(r'-\d+$')
+
+
+def normalize_doc_base(raw):
+    """'  iv6901554-1 ' -> 'IV6901554': trim, uppercase, and drop the line suffix
+    the /sales table prints after a document number."""
+    return _LINE_SUFFIX.sub('', (raw or '').strip().upper())
+
+
 def plan_manual_pick(conn, order, picked=None, typed=None):
     """What saving a person's IV pick for ``order`` would do — read-only (#545).
-    Returns ``{'refuse': <Thai message>}`` or ``{'doc_base': ...}``."""
-    doc_base = (typed or picked or '').strip()
+    Returns ``{'refuse': <Thai message>}``, or the IV with ``needs_confirm``
+    saying whether the person must see the confirm page before it is saved."""
+    typed_doc = normalize_doc_base(typed)
+    picked_doc = (picked or '').strip()
+    if typed_doc and picked_doc and typed_doc != picked_doc:
+        return {'refuse': f'เลือกใบในรายการ ({picked_doc}) แต่พิมพ์เลข {typed_doc} '
+                          'ไม่ตรงกัน กรุณาเลือกอย่างใดอย่างหนึ่ง'}
+    doc_base = typed_doc or picked_doc
     if not doc_base:
         return {'refuse': 'กรุณาเลือกหรือพิมพ์เลขใบกำกับ (IV) ค่ะ'}
     found = conn.execute(
-        "SELECT customer_code FROM sales_transactions WHERE doc_base = ? LIMIT 1",
+        f"""SELECT MIN(customer_code) AS customer_code, MIN(date_iso) AS date_iso,
+                   ROUND(SUM({_VAT_NET}), 2) AS iv_net
+            FROM sales_transactions WHERE doc_base = ? GROUP BY doc_base""",
         (doc_base,)).fetchone()
     if found is None:
         return {'refuse': f'ไม่พบ {doc_base} ในระบบ ตรวจเลขอีกครั้ง '
@@ -803,7 +821,9 @@ def plan_manual_pick(conn, order, picked=None, typed=None):
     code = found['customer_code']
     if code not in MARKETPLACE_CODES:
         return {'refuse': f'{doc_base} เป็นบิลของ {code} ไม่ใช่บิลขายออนไลน์ ผูกกับออเดอร์ไม่ได้'}
-    return {'doc_base': doc_base}
+    return {'doc_base': doc_base, 'customer_code': code,
+            'date_iso': found['date_iso'], 'iv_net': found['iv_net'],
+            'typed': bool(typed_doc), 'needs_confirm': bool(typed_doc)}
 
 
 def link_manual(conn, platform, order_sn, doc_base, customer_code=None, confirmed_by=None):

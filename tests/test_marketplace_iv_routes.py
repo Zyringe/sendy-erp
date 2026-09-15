@@ -98,19 +98,6 @@ def test_link_iv_persists_manual(seeded):
     assert row['confirmed_by'] == 'staffer'
 
 
-def test_link_iv_manual_text_overrides(seeded):
-    conn, oid = seeded
-    c = _client()
-    # both fields present: the free-text override wins
-    resp = c.post(f'/marketplace/order/{oid}/link-iv',
-                  data={'doc_base': 'IV9100001', 'doc_base_manual': 'IV6900999'})
-    assert resp.status_code == 302
-    row = conn.execute(
-        "SELECT doc_base FROM marketplace_order_invoice WHERE order_sn='IVROUTE1'"
-    ).fetchone()
-    assert row['doc_base'] == 'IV6900999'
-
-
 def _link_and_pay(conn):
     """Link IVROUTE1→IV9100001 and record รับชำระ 132 for that IV."""
     conn.execute(
