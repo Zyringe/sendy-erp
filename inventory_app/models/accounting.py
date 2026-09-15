@@ -31,12 +31,16 @@ _MARCH_2026_START = '2026-03-01'
 _MARCH_2026_END = '2026-03-31'
 
 
-# Revenue convention (Put 2026-07-21): match revenue.py's canonical sales
-# universe = GL 41-01 (ยอดขาย). EXCLUDE SR (returns — not a sale, live in the
-# GL 41-02 contra account) AND HS (historical opening-balance, not a sale).
-# Ranpo's GL-verified identity: `SUM(net) − Σ SR == GL 41-01` (non-SR rows).
+# Revenue convention (Put 2026-07-21; corrected #514, 2026-09-16): match
+# revenue.py's canonical sales universe = GL 41-01 (ยอดขาย). EXCLUDE SR
+# (returns — not a sale, live in the GL 41-02 contra account). COUNT HS
+# (cash sales, ขายสด) — GL-verified (#514): 260/260 non-zero HS docs credit
+# 41-01 for exactly their net, same account IV uses, and their COGS posts to
+# the same 51-01 account too. The old "SUM(net) − Σ SR == GL 41-01" identity
+# was measured on a population that already included HS inside SUM(net); the
+# 2026-07-21 comment excluding HS was the misreading, not the identity.
 # Every sales_transactions query in this P&L carries
-# `AND doc_no NOT LIKE 'SR%' AND doc_no NOT LIKE 'HS%'`.
+# `AND doc_no NOT LIKE 'SR%'`.
 # (SR/HS rows stay stored as-is — SR syncs to stock as an IN; NEVER flip that.)
 
 
@@ -92,7 +96,8 @@ def get_accounting_summary(date_from=None, date_to=None):
     elif date_to and not date_from:
         date_from = '2000-01-01'
 
-    # ── Revenue (SR return rows EXCLUDED — = GL 41-01, see convention above) ──
+    # ── Revenue (SR return rows EXCLUDED, HS cash sales COUNTED — = GL 41-01,
+    # see convention above) ──
     # doc_count counts invoices (doc_base); doc_no is one line of one (#496).
     s = conn.execute("""
         SELECT COALESCE(SUM(net), 0) AS total_net,
@@ -100,7 +105,7 @@ def get_accounting_summary(date_from=None, date_to=None):
                COUNT(DISTINCT doc_base) AS doc_count
           FROM sales_transactions
          WHERE date_iso >= ? AND date_iso <= ?
-           AND doc_no NOT LIKE 'SR%' AND doc_no NOT LIKE 'HS%'
+           AND doc_no NOT LIKE 'SR%'
            AND {not_a_sale}
     """.format(not_a_sale=sales_filters.not_a_sale_clause()), (date_from, date_to)).fetchone()
     sales_net = float(s['total_net'])
@@ -113,10 +118,13 @@ def get_accounting_summary(date_from=None, date_to=None):
           FROM sales_transactions st
           LEFT JOIN products p ON p.id = st.product_id
          WHERE st.date_iso >= ? AND st.date_iso <= ?
-           AND st.doc_no NOT LIKE 'SR%' AND st.doc_no NOT LIKE 'HS%'
+           AND st.doc_no NOT LIKE 'SR%'
            -- NO excludes_revenue filter here, on purpose: a giveaway's goods
            -- really left the warehouse, so their cost is a real expense.
            -- Dropping it too would hand the margin back. See sales_filters.
+           -- HS cash sales COUNTED here too, same reason — the goods really
+           -- left the warehouse, and HS posts its COGS to the same 51-01 GL
+           -- account IV uses (#514).
     """, (date_from, date_to)).fetchone()
     cogs = float(cogs_row['cogs'])
     no_cost_lines = cogs_row['no_cost_lines'] or 0
@@ -161,8 +169,9 @@ def get_accounting_summary(date_from=None, date_to=None):
 
     # ── Brand breakdown (own-brands first per CLAUDE.md priority) ────────────
     # Own-brand order: Golden Lion (sort 10) → A-SPEC (sort 20) → Sendai (sort 30)
-    # then 3rd-party by sort_order → finally NULL brand rows. SR rows EXCLUDED
-    # per-brand too (same GL-41-01 convention as total revenue, see top of file).
+    # then 3rd-party by sort_order → finally NULL brand rows. SR rows EXCLUDED,
+    # HS cash sales COUNTED, per-brand too (same GL-41-01 convention as total
+    # revenue, see top of file).
     brand_rows = conn.execute("""
         SELECT
           COALESCE(b.name_th, b.name, '(ไม่ระบุแบรนด์)') AS brand_label,
@@ -177,7 +186,7 @@ def get_accounting_summary(date_from=None, date_to=None):
         LEFT JOIN products  p ON p.id = st.product_id
         LEFT JOIN brands    b ON b.id = p.brand_id
         WHERE st.date_iso >= ? AND st.date_iso <= ?
-          AND st.doc_no NOT LIKE 'SR%' AND st.doc_no NOT LIKE 'HS%'
+          AND st.doc_no NOT LIKE 'SR%'
           AND """ + sales_filters.not_a_sale_clause('st') + """
         GROUP BY b.id, b.name, b.name_th, b.is_own_brand, b.sort_order
         ORDER BY COALESCE(b.is_own_brand, 0) DESC,
