@@ -12,7 +12,8 @@
     <div class="card-body">
       <div class="small text-muted">ออเดอร์</div>
       <div class="fs-5"><code>{{ order.order_sn }}</code> · {{ order.platform | capitalize }}</div>
-      <div>สั่งวันที่ {{ order.order_date | thaidate }} · ยอดโอน ฿{{ order.actual_payout | fmt_price }}</div>
+      <div>สั่งวันที่ {{ order.order_date | thaidate }} · ยอดโอน ฿{{ order.actual_payout | fmt_price }}
+        {%- if plan.basis_label != 'ยอดโอน' %} · {{ plan.basis_label }} ฿{{ plan.basis | fmt_price }}{% endif %}</div>
     </div>
   </section>
 
@@ -22,7 +23,7 @@
       <div class="fs-5"><code>{{ plan.doc_base }}</code> · {{ plan.channel }}</div>
       <div>ลงวันที่ {{ plan.date_iso | thaidate }} · ฿{{ plan.iv_net | fmt_price }}
         {%- if plan.amount_diff is not none %}
-        ({% if plan.amount_diff == 0 %}ยอดตรง{% else %}ต่าง {{ '{:+,.2f}'.format(plan.amount_diff) }}฿{% endif %})
+        ({% if plan.amount_diff == 0 %}ตรงกับ{{ plan.basis_label }}{% else %}ต่างจาก{{ plan.basis_label }} {{ '{:+,.2f}'.format(plan.amount_diff) }}฿{% endif %})
         {%- endif %}</div>
     </div>
   </section>
@@ -59,11 +60,11 @@
     <input type="hidden" name="confirm" value="1">
     <input type="hidden" name="expected_holders" value="{{ plan.expected_holders }}">
     <input type="hidden" name="next" value="{{ back }}">
-    <div class="d-grid gap-2 d-sm-flex">
-      <button type="submit" class="btn {{ 'btn-danger' if plan.holders else 'btn-primary' }} btn-lg">
+    <div class="d-flex flex-wrap gap-2">
+      <button type="submit" class="btn {{ 'btn-danger' if plan.holders else 'btn-primary' }} btn-lg btn-block-mobile">
         {{- 'ย้ายมาออเดอร์นี้' if plan.holders else 'ผูกกับออเดอร์นี้' -}}
       </button>
-      <a href="{{ back }}" id="ivConfirmCancel" class="btn btn-outline-secondary btn-lg">ยกเลิก</a>
+      <a href="{{ back }}" id="ivConfirmCancel" class="btn btn-outline-secondary btn-lg btn-block-mobile">ยกเลิก</a>
     </div>
   </form>
 </div>

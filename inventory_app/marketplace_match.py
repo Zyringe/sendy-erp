@@ -834,8 +834,14 @@ def plan_manual_pick(conn, order, picked=None, typed=None):
     holders = _other_holders(conn, doc_base, order['platform'], order['order_sn'])
     other_channel = code != _CUST_CODE.get(order['platform'])
     basis = _order_basis(order)
+    payout = dict(order).get('actual_payout')
+    # Name the number the ฿ difference is measured from: for Lazada it is the
+    # billed item value, which almost never equals the payout.
+    basis_label = ('ยอดโอน' if basis is None or payout is None or round(basis, 2) == round(payout, 2)
+                   else 'ยอดสินค้า')
     return {'doc_base': doc_base, 'customer_code': code, 'channel': MARKETPLACE_CODES[code],
             'date_iso': found['date_iso'], 'iv_net': found['iv_net'],
+            'basis': basis, 'basis_label': basis_label,
             'amount_diff': None if basis is None else round((found['iv_net'] or 0) - basis, 2),
             'holders': holders, 'expected_holders': holder_token(holders),
             'typed': bool(typed_doc), 'other_channel': other_channel,
@@ -875,10 +881,10 @@ def link_manual(conn, platform, order_sn, doc_base, customer_code=None, confirme
     (callers with no confirm page in front of a person).
 
     The holder is read and the move written in ONE ``BEGIN IMMEDIATE``
-    transaction, so a second worker cannot move the same IV in between."""
-    if conn.in_transaction:
-        raise RuntimeError('link_manual needs a connection with no open transaction: '
-                           'the holder check and the write must share one')
+    transaction, so a second worker cannot move the same IV in between. A
+    connection with a transaction already open is refused by SQLite itself
+    ("cannot start a transaction within a transaction"): never commit the
+    caller's work to get past that."""
     if customer_code is None:
         customer_code = _CUST_CODE.get(platform)
     conn.execute('BEGIN IMMEDIATE')

@@ -373,15 +373,13 @@ def review_dismiss(order_id):
                             platform=request.form.get('platform', 'shopee')))
 
 
-_PICKER_PAGES = ('/marketplace/settlement', '/marketplace/review')
-
-
 def _picker_return_url(raw, platform):
     """The page the IV picker was opened from (its tab + year included), #545.
     Only a same-site path to one of the two pages hosting the picker is honoured,
     so the form field cannot redirect anywhere else."""
+    picker_pages = (url_for('marketplace.settlement'), url_for('marketplace.review'))
     parts = urlsplit(raw or '')
-    if not parts.scheme and not parts.netloc and parts.path in _PICKER_PAGES:
+    if not parts.scheme and not parts.netloc and parts.path in picker_pages:
         return urlunsplit(('', '', parts.path, parts.query, ''))
     return url_for('marketplace.settlement', platform=platform)
 

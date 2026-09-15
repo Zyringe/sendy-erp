@@ -279,6 +279,25 @@ def test_a_free_iv_under_another_channels_code_asks_first(pick):
     assert (row['doc_base'], row['customer_code']) == ('IV9500008', 'Bหน้าร้าน')
 
 
+def test_the_confirm_page_names_the_amount_the_difference_is_measured_from(pick):
+    """Lazada IVs are compared with the billed item value, not the payout (the
+    picker does the same). The page must show that number beside the ฿ difference,
+    not only the payout: on 1,675 of 1,676 settled Lazada orders they differ."""
+    c, ids = pick
+    c.execute("DELETE FROM marketplace_order_fees WHERE order_sn='PICKL1'")
+    c.execute("INSERT INTO marketplace_order_fees (platform, order_sn, item_value) "
+              "VALUES ('lazada', 'PICKL1', 210.0)")
+    c.commit()
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['L1']}/link-iv",
+                   data={'doc_base_manual': 'IV9500003'})
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    order = _section(html, 'ivConfirmOrder')
+    assert 'ยอดโอน ฿200.00' in order and 'ยอดสินค้า ฿210.00' in order
+    assert 'ต่างจากยอดสินค้า -10.00฿' in _section(html, 'ivConfirmIv')
+
+
 def test_a_free_own_channel_pick_from_the_list_saves_straight_away(pick):
     """Rule 6, as before #545: no confirm page, and nothing moved so no audit row."""
     c, ids = pick
@@ -360,17 +379,20 @@ def _location(resp):
 
 def test_a_save_returns_to_the_page_the_picker_was_opened_from(pick):
     """Rule 9: settlement with its tab + year, not the bare settlement page."""
-    _c, ids = pick
+    c, ids = pick
     resp = _client().post(f"/marketplace/order/{ids['S1']}/link-iv",
                           data={'doc_base': 'IV9500001', 'next': DEPOSITS})
     assert resp.status_code == 302 and _location(resp) == DEPOSITS
+    assert _order_link(c, 'PICKS1') == 'IV9500001'      # a 302 alone is also what a refusal gives
 
 
 def test_a_refusal_returns_to_the_review_page_it_came_from(pick):
     _c, ids = pick
-    resp = _client().post(f"/marketplace/order/{ids['S1']}/link-iv",
-                          data={'doc_base_manual': 'IV9599999', 'next': REVIEW})
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['S1']}/link-iv",
+                   data={'doc_base_manual': 'IV9599999', 'next': REVIEW})
     assert resp.status_code == 302 and _location(resp) == REVIEW
+    assert _flashes(cl)[0].startswith('ไม่พบ IV9599999')
 
 
 def test_the_confirm_page_cancels_and_confirms_back_to_where_it_came_from(pick):

@@ -275,6 +275,55 @@ def test_the_picker_shows_a_holder_on_another_platform(mm_conn):
         ('L-HOLD2', 'lazada')
 
 
+def test_link_manual_locks_other_writers_out_from_the_holder_read(mm_conn, tmp_db, monkeypatch):
+    """#545 rule 7: the holder check and the move share one BEGIN IMMEDIATE, so a
+    second worker cannot move the same IV in between. The probe runs right after
+    the holder is read, BEFORE link_manual's first write: the only moment where a
+    deferred transaction would still let another connection in."""
+    import sqlite3
+    c = mm_conn
+    _add_order(c, 'O-LOCK', 40.0, '2026-06-04')
+    _add_iv(c, 'IV9000400', 40.0, '2026-06-05')
+    seen = []
+    real = mm._other_holders
+
+    def probe(*args, **kwargs):
+        rows = real(*args, **kwargs)
+        other = sqlite3.connect(tmp_db, timeout=0.1)
+        try:
+            other.execute("INSERT INTO marketplace_order_invoice (platform, order_sn, doc_base, match_method) "
+                          "VALUES ('shopee', 'O-PROBE', 'IV9000401', 'auto')")
+            other.commit()
+            seen.append('wrote')
+        except sqlite3.OperationalError as e:
+            seen.append(str(e))
+        finally:
+            other.close()
+        return rows
+
+    monkeypatch.setattr(mm, '_other_holders', probe)
+    mm.link_manual(c, 'shopee', 'O-LOCK', 'IV9000400', confirmed_by='put', expected_holders='')
+    assert seen == ['database is locked']
+    assert _holders(c, 'IV9000400') == [('shopee', 'O-LOCK')]      # control: the save itself landed
+
+
+def test_link_manual_refuses_a_connection_with_an_open_transaction(mm_conn):
+    """The lock is only real if link_manual opens the transaction itself, and the
+    caller's uncommitted work must not be committed on its behalf."""
+    import sqlite3
+    c = mm_conn
+    _add_order(c, 'O-TXN', 40.0, '2026-06-04')
+    _add_iv(c, 'IV9000402', 40.0, '2026-06-05')
+    c.execute("UPDATE marketplace_orders SET status = 'caller-work' WHERE order_sn = 'O-TXN'")
+    assert c.in_transaction                                       # control: one is open
+    with pytest.raises(sqlite3.OperationalError, match='within a transaction'):
+        mm.link_manual(c, 'shopee', 'O-TXN', 'IV9000402', confirmed_by='put')
+    c.rollback()
+    assert c.execute("SELECT status FROM marketplace_orders WHERE order_sn='O-TXN'").fetchone()[0] \
+        == 'สำเร็จแล้ว'                                           # the caller's work was not committed
+    assert _holders(c, 'IV9000402') == []
+
+
 def test_picker_surfaces_near_amount_iv(mm_conn):
     """The picker shows a near-amount invoice (10฿ off) with its diff + days-after."""
     c = mm_conn
