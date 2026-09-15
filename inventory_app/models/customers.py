@@ -546,6 +546,171 @@ def _customer_product_cards(conn, where, params, include_cost=False):
     return cards
 
 
+# #498 เสนอเพิ่ม tuning — module constants, not caller-configurable parameters.
+# Nothing in the app (route or test) has ever needed a different value; the
+# ladder says cut speculative configurability (review round 1, N-yagni).
+_SUGGESTION_MIN_OTHER_SHOPS = 3
+_SUGGESTION_WINDOW_DAYS = 730
+
+
+def _cross_sell_suggestions(conn, customer_code, today=None, limit=10):
+    """เสนอเพิ่ม → ขายดีที่ร้านนี้ยังไม่มี (#498): up to `limit` in-stock,
+    active, priced products that at least `_SUGGESTION_MIN_OTHER_SHOPS`
+    OTHER B2B shops bought in the trailing `_SUGGESTION_WINDOW_DAYS` (24
+    months), that THIS shop has never bought (all-time — same population as
+    ครั้งที่ซื้อ). One row per `products.sub_category`.
+
+    Population = `price_lookup.evidence_filter` throughout — never a second
+    "does this count as a sale" predicate. Shop key = the call list's own
+    canonical key (`COALESCE(NULLIF(TRIM(customer_code),''), customer)`), so
+    a bill name shared by two companies is never conflated into one "shop"
+    (same reasoning winback.py's module docstring gives for the same key).
+    Review round 1 (SF5): this shop's OWN history is now looked up by the
+    SAME canonical key, via a sub-select — previously it used an exact
+    `customer_code = ?` match, which a whitespace-padded code could dodge
+    while the self-exclusion (already on the canonical key) still caught it
+    for counting, letting a shop's own product get suggested back to it.
+
+    Ranking: distinct-other-shop count desc, then document count desc, then
+    product id asc — deterministic. This shop's own code never counts
+    toward any product's shop_count (excluded in the WHERE).
+
+    Grouping: at most one row per sub_category, taking the HIGHEST-RANKED
+    candidate in that sub_category THAT ACTUALLY QUALIFIES (has a
+    resolvable price). Review round 1 (SF4): the sub-category claim used to
+    happen BEFORE the price check, so an unpriced top-ranked product could
+    silently hide a priced, lower-ranked product sharing its sub-category —
+    the spec orders exclusions (including "no resolvable price") BEFORE
+    grouping. A sub-category this shop already buys in ANY variant is
+    dropped entirely up front (in SQL, before ranking). A NULL sub_category
+    product stands on its own (never grouped with another NULL row).
+
+    Independent of any date filter: the caller must never thread
+    date_from/date_to through — there is no such parameter here at all, so
+    it cannot happen by accident.
+
+    Performance: ONE aggregate query does the ranking + every cheap filter
+    (population, 24-month window, self-exclusion, is_active, in-stock,
+    already-bought product, already-bought sub-category — the last two via
+    sub-selects on the SAME canonical key, not a growing `NOT IN (?,?,...)`
+    bound list: review round 1 (N-params) measured that list at 431 params
+    for one real shop, close enough to SQLite's default 999-variable cap to
+    be a real risk as a shop's history grows) in SQL. `price_lookup.
+    resolve_price` — the only per-candidate call, and the only way to know
+    whether a product has a resolvable list price — runs in ranked order
+    and stops as soon as `limit` rows have qualified, never for every
+    candidate.
+
+    Returns a list of dicts: product_id, product_name, unit, shop_count,
+    price_per_unit, list_for_unit, promo, promo_affects_price, stock_qty
+    (None when the unit's piece ratio isn't derivable — same convention as
+    the product card's stock badge; a whole-number result is an `int`, not
+    a trailing-`.0` float, matching how ซื้อบ่อย's own stock column reads).
+    NEVER a cost/WACC/margin field, for any caller/role — `resolve_price`'s
+    `internal` block is never touched here (#498's own rule: no cost on
+    suggestions, admin included), and no other shop's name or code is ever
+    included (counts only).
+    """
+    import datetime as dt
+    import price_lookup
+
+    today = today or dt.date.today().isoformat()
+    cutoff = (dt.date.fromisoformat(today)
+              - dt.timedelta(days=_SUGGESTION_WINDOW_DAYS)).isoformat()
+
+    key_expr = "COALESCE(NULLIF(TRIM(s.customer_code),''), s.customer)"
+    own_key_expr = "COALESCE(NULLIF(TRIM(s2.customer_code),''), s2.customer)"
+
+    rows = conn.execute(f"""
+        SELECT s.product_id AS product_id,
+               p.product_name AS product_name,
+               p.sub_category AS sub_category,
+               COUNT(DISTINCT {key_expr}) AS shop_count,
+               COUNT(DISTINCT s.doc_base) AS doc_count
+        FROM sales_transactions s
+        JOIN products p ON p.id = s.product_id
+        LEFT JOIN stock_levels sl ON sl.product_id = p.id
+        WHERE {price_lookup.evidence_filter('s')}
+          AND s.date_iso >= ?
+          AND {key_expr} != ?
+          AND p.is_active = 1
+          AND COALESCE(sl.quantity, 0) > 0
+          AND s.product_id NOT IN (
+              SELECT DISTINCT s2.product_id
+              FROM sales_transactions s2
+              WHERE {own_key_expr} = ? AND {price_lookup.evidence_filter('s2')}
+          )
+          AND (p.sub_category IS NULL OR p.sub_category NOT IN (
+              SELECT DISTINCT p2.sub_category
+              FROM sales_transactions s2
+              JOIN products p2 ON p2.id = s2.product_id
+              WHERE {own_key_expr} = ? AND {price_lookup.evidence_filter('s2')}
+                AND p2.sub_category IS NOT NULL
+          ))
+        GROUP BY s.product_id
+        HAVING COUNT(DISTINCT {key_expr}) >= ?
+        ORDER BY shop_count DESC, doc_count DESC, s.product_id ASC
+    """, (cutoff, customer_code, customer_code, customer_code,
+          _SUGGESTION_MIN_OTHER_SHOPS)).fetchall()
+
+    out = []
+    seen_subcats = set()
+    for r in rows:
+        if len(out) >= limit:
+            break
+        subcat = r['sub_category']
+        if subcat is not None and subcat in seen_subcats:
+            continue
+
+        try:
+            resolved = price_lookup.resolve_price(conn, product_id=r['product_id'],
+                                                   unit=None, today=today)
+        except ValueError:
+            continue
+        if resolved['list']['list_for_unit'] == 0:
+            continue
+
+        # SF4: claim the sub-category only once the candidate has actually
+        # cleared every exclusion (here: has a resolvable price) — never
+        # before. A sub-category whose top candidate fails this check is
+        # NOT backfilled from the next-ranked candidate sharing it; it is
+        # simply never claimed, so a lower-ranked one is free to claim it.
+        if subcat is not None:
+            seen_subcats.add(subcat)
+
+        price_promo = resolved['list']['price_promo']
+        promo_affects_price = (
+            price_promo is not None and price_promo['promo_type'] != 'fixed'
+            and price_promo['discount_value'] is not None
+        )
+        ratio = resolved['unit']['ratio']
+        stock_qty = None
+        if ratio is not None:
+            stock_row = conn.execute(
+                "SELECT quantity FROM stock_levels WHERE product_id = ?", (r['product_id'],)
+            ).fetchone()
+            base_qty = stock_row['quantity'] if stock_row else 0
+            raw_qty = base_qty / ratio
+            # N-stock: a whole-number result prints as `4298` not `4298.0`
+            # (fmt_qty formats a float with its decimal point kept) — the
+            # common ratio=1.0 case would otherwise ALWAYS show ".0" even
+            # though the underlying stock_levels.quantity is an integer.
+            stock_qty = int(raw_qty) if raw_qty == int(raw_qty) else round(raw_qty, 4)
+
+        out.append({
+            'product_id': r['product_id'],
+            'product_name': r['product_name'],
+            'unit': resolved['answer']['unit'],
+            'shop_count': r['shop_count'],
+            'price_per_unit': resolved['answer']['price_per_unit'],
+            'list_for_unit': resolved['list']['list_for_unit'],
+            'promo': price_promo,
+            'promo_affects_price': promo_affects_price,
+            'stock_qty': stock_qty,
+        })
+    return out
+
+
 def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
                                  include_cost=False):
     """Code-keyed counterpart to get_customer_summary().
@@ -562,6 +727,21 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
     exists for this code, else the master name.
     """
     conn = get_connection()
+
+    # N-404 (review round 1, #498): a cheap existence probe BEFORE the
+    # suggestions helper's own aggregate query + up to 10 resolve_price
+    # calls, so a typo'd code costs 2 lookups instead of a full top-10
+    # computation before its eventual 404. This is deliberately a SEPARATE,
+    # narrower check than the `exists` field returned below (which also
+    # derives `display_name`/`salesperson`/etc. from the same two rows) —
+    # duplicating just the boolean here keeps this an additive, low-risk
+    # change rather than restructuring the rest of the function's order.
+    exists_early = bool(conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM customers WHERE code = ?) "
+        "OR EXISTS(SELECT 1 FROM sales_transactions WHERE customer_code = ?)",
+        (customer_code, customer_code)
+    ).fetchone()[0])
+
     where, params = _customer_sales_scope(
         'customer_code', customer_code, date_from, date_to)
     summary, top_products, monthly, docs = _customer_sales_aggregates(
@@ -579,6 +759,13 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
     import winback
     wb_where, wb_params = _customer_sales_scope('customer_code', customer_code, None, None)
     winback_rows = winback.compute_winback(conn, wb_where, wb_params)
+
+    # เสนอเพิ่ม (#498): ALWAYS all-time / trailing-24-months, independent of
+    # date_from/date_to — the helper takes no date params at all, so the
+    # page's date filter can never reach it by accident (see the helper's
+    # own docstring + tests/test_498_cross_sell_suggestions.py). Skipped
+    # entirely for a code that doesn't exist at all (N-404 above).
+    suggestions = _cross_sell_suggestions(conn, customer_code) if exists_early else []
     winback_by_key = {(w['product_id'], w['unit']): w for w in winback_rows}
     card_keys = set()
     for card in product_cards:
@@ -661,6 +848,9 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
         # has to reach into product_cards to rebuild it.
         'winback': winback_rows,
         'winback_overflow_count': winback_overflow_count,
+        # เสนอเพิ่ม (#498) — additive, no cost/margin key ever (see the
+        # helper's own docstring). Always all-time, never date-filtered.
+        'suggestions': suggestions,
         'monthly': [dict(r) for r in monthly],
         'docs': [dict(r) for r in docs],
     }
