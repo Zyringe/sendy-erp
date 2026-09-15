@@ -342,9 +342,26 @@ def test_dashboard_bantuek_thueng_shows_latest_txn_date_unscoped_by_month(admin_
     assert '2026-06-15' in html
 
 
+def _cells(row_html):
+    return re.findall(r'<td[^>]*>.*?</td>', row_html, re.DOTALL)
+
+
+# op_accounts table column order (dashboard.html): บัญชี, เจ้าของ, ธนาคาร,
+# รายรับ, รายจ่าย, คงเหลือ, #รายการ, บันทึกถึง, [action] — 9 <td>s.
+_OP_BANTUEK_THUENG_COL = 7
+
+# tr_accounts table column order: บัญชี, เจ้าของ, รายรับ, รายจ่าย, คงเหลือ,
+# #รายการ, บันทึกถึง, [action] — 8 <td>s (no ธนาคาร column here).
+_TR_BANTUEK_THUENG_COL = 6
+
+
 def test_dashboard_bantuek_thueng_absent_for_idle_account(admin_client, tmp_db):
-    """Control: an account with zero rows ever shows the '—' placeholder,
-    not a crash and not some other account's date."""
+    """Control: an account with zero rows shows '—' in the บันทึกถึง
+    COLUMN specifically — selected by position, not by matching '—'
+    anywhere in the row. The ธนาคาร cell shares the IDENTICAL
+    `class="small text-muted"` and is ALSO '—' when blank, so a class-only
+    or row-wide '—' search is satisfied without บันทึกถึง ever rendering
+    correctly (M4)."""
     conn = sqlite3.connect(tmp_db)
     conn.execute("DELETE FROM cashbook_transactions")
     conn.execute("DELETE FROM cashbook_accounts")
@@ -355,7 +372,35 @@ def test_dashboard_bantuek_thueng_absent_for_idle_account(admin_client, tmp_db):
     conn.commit()
     conn.close()
     html = admin_client.get('/cashbook/?month=ทั้งหมด').data.decode('utf-8')
-    assert re.search(r'IDLE.*?<td class="small text-muted">—</td>', html, re.DOTALL)
+    row = _row_containing(html, 'IDLE', after='บัญชีดำเนินการ')
+    cells = _cells(row)
+    assert len(cells) == 9, "control: all 9 op_accounts columns must have rendered"
+    assert cells[_OP_BANTUEK_THUENG_COL] == '<td class="small text-muted">—</td>'
+
+
+def test_dashboard_transfer_table_bantuek_thueng_shows_latest_txn_date(admin_client, tmp_db):
+    """M22: the transfer-accounts table (บัญชีพักเงิน/โอน) gets the same
+    บันทึกถึง column as op_accounts — untested until now. Its column layout
+    differs (no ธนาคาร column), so the index differs too; selected by
+    position, matching M4's discipline."""
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM cashbook_transactions")
+    conn.execute("DELETE FROM cashbook_accounts")
+    conn.execute(
+        "INSERT INTO cashbook_accounts (id, code, is_active, is_transfer, sort_order)"
+        " VALUES (1,'TR',1,1,1)"
+    )
+    conn.execute(
+        "INSERT INTO cashbook_transactions (account_id, txn_date, direction, category, amount)"
+        " VALUES (1,'2026-07-04','income','เงินทุน/เงินโอน',500.0)"
+    )
+    conn.commit()
+    conn.close()
+    html = admin_client.get('/cashbook/?month=ทั้งหมด').data.decode('utf-8')
+    row = _row_containing(html, 'TR', after='บัญชีพักเงิน/โอนระหว่างบัญชี')
+    cells = _cells(row)
+    assert len(cells) == 8, "control: all 8 tr_accounts columns must have rendered"
+    assert '2026-07-04' in cells[_TR_BANTUEK_THUENG_COL]
 
 
 # ── D. Flagged account: "—" balance cell with a hint ────────────────────────
@@ -407,10 +452,17 @@ def test_dashboard_headline_income_expense_include_flagged_accounts_expense(admi
 
 
 def test_dashboard_headline_note_appears_when_a_flagged_account_exists(admin_client, tmp_db):
+    """M8: 'บัญชีชฎามาศทดสอบ' also appears in the per-account table row, so
+    a page-wide check passes even if the note itself never rendered the
+    name. Scoped to the note's own <li>."""
     _seed_flag_scenario(tmp_db)
     html = admin_client.get('/cashbook/?month=ทั้งหมด').data.decode('utf-8')
-    assert 'ไม่รวมบัญชีที่รายรับบันทึกที่อื่น' in html
-    assert 'บัญชีชฎามาศทดสอบ' in html   # the note names the flagged account
+    li = re.search(
+        r'<li>\s*<span class="fw-semibold">คงเหลือ</span> ไม่รวมบัญชีที่รายรับบันทึกที่อื่น.*?</li>',
+        html, re.DOTALL,
+    )
+    assert li, "control: the note <li> must have rendered"
+    assert 'บัญชีชฎามาศทดสอบ' in li.group(0)   # the note names the flagged account
 
 
 def test_dashboard_headline_note_absent_with_no_flagged_accounts(admin_client, tmp_db):
@@ -422,12 +474,28 @@ def test_dashboard_headline_note_absent_with_no_flagged_accounts(admin_client, t
 
 # ── F. Account page: header/title name, badge, no card in flagged all-time ─
 
+def _account_header_fragment(html):
+    """The account page's header <div class="card mb-3">...</div> — name,
+    code badge and status badges — bounded by the next visible marker (the
+    running-totals banner's first label). {# Jinja comments #} strip at
+    render so they can't anchor the end; this text can't."""
+    start = html.index('<div class="card mb-3">')
+    end = html.index('รายรับ (ที่กรอง)', start)
+    return html[start:end]
+
+
 def test_account_page_header_shows_name_with_code(admin_client, tmp_db):
+    """M7: page-wide 'code beside the name' is unprovable by substring
+    alone — the code ALSO appears in <title> and account_ledger links.
+    Scoped to the header fragment and asserts the SPECIFIC code badge
+    markup that sits beside the name."""
     _seed_flag_scenario(tmp_db)
     html = admin_client.get('/cashbook/account/2?month=ทั้งหมด').data.decode('utf-8')
-    assert 'บัญชีชฎามาศทดสอบ' in html
+    header = _account_header_fragment(html)
+    assert 'บัญชีชฎามาศทดสอบ' in header
+    assert '<span class="badge bg-secondary ms-1">FLAG</span>' in header   # code beside the name
     assert '<title>บัญชีชฎามาศทดสอบ – บัญชีรับ-จ่าย – Sendy</title>' in html
-    assert 'รายรับบันทึกที่อื่น' in html   # badge
+    assert 'รายรับบันทึกที่อื่น' in header   # badge, scoped to the header
 
 
 def test_account_page_falls_back_to_code_when_unnamed(admin_client, tmp_db):
