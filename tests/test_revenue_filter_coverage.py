@@ -183,6 +183,79 @@ def test_the_surfaces_that_must_be_guarded_are():
             f'{rel} lost its revenue guard'
 
 
+# ── #514: HS is a cash sale, not an opening balance — sweep the leftovers ───
+#
+# sales_filters.revenue_filter() dropped its `NOT LIKE 'HS%'` clause (#514):
+# an HS document is a cash sale, real revenue, real price evidence. A file
+# that still hand-types its OWN `NOT LIKE 'HS%'` exclusion is either a
+# leftover that needs the same fix, or a deliberate AR/settlement/stock-
+# quantity site that keeps excluding HS on purpose — the issue names
+# `ar_diagnostic` / `_settlement_rows` as the deliberate ones. Same shape as
+# the ALLOWED sweep above: silently leaving one unswept is the failure mode.
+HS_EXCLUSION_ALLOWED = {
+    'models/payments.py':
+        'AR-balance surfaces (payment-status, unpaid bills, customer debt) — '
+        'HS is paid on the spot, never a receivable (#514).',
+    'payments_alloc.py':
+        'Invoice settlement / cash allocation — the issue names '
+        '_settlement_rows explicitly as keep-excluded (#514).',
+    'blueprints/mobile.py':
+        "/m/sales-trip's per-customer 'outstanding' figure is an AR figure, "
+        'same reason as models/payments.py (#514).',
+    'models/ecommerce_overview.py':
+        'Marketplace STOCK-quantity deduction (sold units reducing the '
+        'platform stock estimate), not revenue or price evidence — a '
+        'separate business question, deliberately left unchanged pending '
+        "Put's call (#514).",
+}
+
+_HS_EXCLUSION_RE = re.compile(r"NOT LIKE\s+'HS%'")
+
+
+def test_no_stray_hs_exclusion_outside_the_allowlist():
+    """After #514, a hand-typed `NOT LIKE 'HS%'` may only survive in a file
+    listed above with a reason. Every revenue/price surface must have
+    dropped it (either by importing sales_filters.revenue_filter, or by
+    dropping its own copy of the clause)."""
+    hits = set()
+    for rel, path in _py_files():
+        src = open(path, encoding='utf-8').read()
+        if _HS_EXCLUSION_RE.search(_code_only(src)):
+            hits.add(rel)
+    unexpected = hits - set(HS_EXCLUSION_ALLOWED)
+    assert not unexpected, (
+        "These files still hand-exclude HS (\"NOT LIKE 'HS%'\") with no "
+        "allowlist entry — either they should now count HS as revenue "
+        "(#514), or add a reason:\n  " + "\n  ".join(sorted(unexpected)))
+
+
+@pytest.mark.parametrize('rel', sorted(HS_EXCLUSION_ALLOWED))
+def test_every_hs_exemption_carries_a_reason(rel):
+    assert len(HS_EXCLUSION_ALLOWED[rel]) > 40, f'{rel}: explain WHY it still excludes HS'
+
+
+def test_hs_allowlist_entries_still_apply():
+    """A stale entry hides a surface that has since dropped the exclusion
+    (or been deleted) — same trap as the revenue-guard allowlist above."""
+    stale = []
+    for rel in HS_EXCLUSION_ALLOWED:
+        path = os.path.join(APP, rel)
+        if not os.path.exists(path):
+            stale.append(f'{rel} (file no longer exists)')
+            continue
+        src = open(path, encoding='utf-8').read()
+        if not _HS_EXCLUSION_RE.search(_code_only(src)):
+            stale.append(f'{rel} (no longer hand-excludes HS)')
+    assert not stale, "Remove these stale HS-allowlist entries:\n  " + "\n  ".join(stale)
+
+
+def test_sales_filters_revenue_filter_itself_does_not_exclude_hs():
+    """Positive control — the sweep above only catches files that DUPLICATE
+    the clause; it says nothing about the one shared definition itself."""
+    import sales_filters
+    assert "NOT LIKE 'HS%'" not in sales_filters.revenue_filter()
+
+
 # ── the sweep's own coverage ─────────────────────────────────────────────────
 #
 # A sweep is only worth what its pattern can see, and nothing about reading it

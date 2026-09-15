@@ -440,10 +440,12 @@ def test_r4_population_excludes_every_bad_shape(db):
           date_iso=_days_ago(13), doc_base='SR9900001', qty=1, unit='ตัว',
           unit_price=100.0, vat_type=1, net=100.0)
 
-    # 4) doc_base 'HS...' -- excluded
+    # 4) doc_base 'HS...' -- a cash sale, INCLUDED (#514: real revenue, real
+    #    price evidence — not an "opening balance")
     _bill(db, pid=pid, customer_code='TST-R4', customer_name='ลูกค้า R4',
           date_iso=_days_ago(14), doc_base='HS9900001', qty=1, unit='ตัว',
           unit_price=100.0, vat_type=1, net=100.0)
+    included_count += 1
 
     # 5) cost-basis dummy invoice -- excluded
     _bill(db, pid=pid, customer_code='TST-R4', customer_name='ลูกค้า R4',
@@ -465,7 +467,7 @@ def test_r4_population_excludes_every_bad_shape(db):
     included_count += 1
 
     out = pl.resolve_price(db, product_id=pid, today=TODAY)
-    assert out['window']['n_bills'] == included_count == 3
+    assert out['window']['n_bills'] == included_count == 4
     assert out['context']['lowest'] is not None
     assert out['context']['lowest']['cash_per_unit'] == 70.0
     assert out['window']['n_unratioed'] == 1

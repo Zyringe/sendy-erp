@@ -55,10 +55,12 @@ def test_clause_handles_alias_and_bare_table():
     assert 'COALESCE(st.doc_base, st.doc_no)' in sales_filters.not_a_sale_clause('st')
 
 
-def test_revenue_filter_keeps_all_three_exclusions():
+def test_revenue_filter_keeps_its_two_exclusions_and_no_longer_excludes_hs():
+    """#514: HS is a cash sale, real revenue — dropped from the exclusion
+    list. SR and excludes_revenue are untouched."""
     f = sales_filters.revenue_filter()
     assert "NOT LIKE 'SR%'" in f
-    assert "NOT LIKE 'HS%'" in f
+    assert "NOT LIKE 'HS%'" not in f
     assert 'excludes_revenue = 1' in f
 
 
@@ -77,13 +79,16 @@ MARCH = ('2026-03-01', '2026-03-31')
 def _oracle_march_revenue(conn, *, exclude_giveaway):
     """Rebuild March revenue from raw rows, listing the giveaway doc numbers
     literally instead of consulting ar_writeoffs — an independent path, so a
-    bug in the flag or the clause cannot make this agree by construction."""
+    bug in the flag or the clause cannot make this agree by construction.
+
+    HS (cash sale) is deliberately NOT excluded here (#514) — matching the
+    real sales_filters.revenue_filter() this oracle is compared against."""
     skip = " AND doc_base NOT IN ('IV6900401','IV6900402','IV6900403')" if exclude_giveaway else ""
     return conn.execute(f"""
         SELECT ROUND(COALESCE(SUM(net), 0), 2) FROM sales_transactions
          WHERE date_iso >= ? AND date_iso <= ?
            AND doc_base IS NOT NULL
-           AND doc_base NOT LIKE 'SR%' AND doc_base NOT LIKE 'HS%'{skip}
+           AND doc_base NOT LIKE 'SR%'{skip}
     """, MARCH).fetchone()[0]
 
 

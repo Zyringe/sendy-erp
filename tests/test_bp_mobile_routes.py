@@ -93,3 +93,42 @@ def test_sales_trip_outstanding_ignores_cancelled_receipts(tmp_db):
 
     assert 'ร้านมือถือทดสอบ' in body, 'control — the seeded customer is on the page'
     assert '900' in body, 'a cancelled receipt erased a real debt from /m/sales-trip'
+
+
+def test_sales_trip_outstanding_still_excludes_hs_cash_sale(tmp_db):
+    """#514: HS is a cash sale, paid on the spot — this AR-facing 'outstanding'
+    figure keeps excluding it on purpose (money is revenue, not receivable).
+    Control: a real unpaid IV for a second customer still shows its debt, so
+    the assertion below proves the HS exclusion, not a broken query."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM customers WHERE code IN ('C-MOB-HS514','C-MOB-IV514')")
+    conn.execute(
+        "INSERT INTO customers (code, name, address) VALUES "
+        "('C-MOB-HS514','ร้านทดสอบเงินสด514','123 ถ.สุขุมวิท ชลบุรี'),"
+        "('C-MOB-IV514','ร้านทดสอบค้างชำระ514','456 ถ.สุขุมวิท ชลบุรี')")
+    conn.execute("""INSERT INTO sales_transactions
+                      (date_iso, doc_no, doc_base, customer, customer_code,
+                       qty, unit, unit_price, vat_type, total, net)
+                    VALUES ('2026-07-01','HS-MOB514-1','HS-MOB514','ร้านทดสอบเงินสด514','C-MOB-HS514',
+                            1,'ตัว',7777.0,1,7777.0,7777.0)""")
+    conn.execute("""INSERT INTO sales_transactions
+                      (date_iso, doc_no, doc_base, customer, customer_code,
+                       qty, unit, unit_price, vat_type, total, net)
+                    VALUES ('2026-07-01','IV-MOB514-1','IV-MOB514','ร้านทดสอบค้างชำระ514','C-MOB-IV514',
+                            1,'ตัว',5555.0,1,5555.0,5555.0)""")
+    conn.commit()
+    conn.close()
+
+    from app import app
+    app.config['TESTING'] = True
+    c = app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 1; sess['username'] = 'admin'; sess['role'] = 'admin'
+    from urllib.parse import quote
+    body = c.get(f"/m/sales-trip?region={quote('ภาคตะวันออก')}").get_data(as_text=True)
+
+    assert 'ร้านทดสอบเงินสด514' in body, 'control — the HS customer is on the page'
+    assert 'ร้านทดสอบค้างชำระ514' in body, 'control — the IV customer is on the page'
+    assert '7,777' not in body, 'HS cash sale must never render as outstanding debt'
+    assert '5,555' in body, 'a real unpaid IV must still render as outstanding debt'
