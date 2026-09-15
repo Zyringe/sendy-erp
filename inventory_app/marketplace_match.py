@@ -346,9 +346,9 @@ def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
     if code is None or basis is None or not order['order_date']:
         return []
     payout = round(basis, 2)
-    linked = {r['doc_base']: r['order_sn'] for r in conn.execute(
-        "SELECT doc_base, order_sn FROM marketplace_order_invoice WHERE platform = ?",
-        (order['platform'],)).fetchall()}
+    # Every platform: a Lazada order can hold a Zหน้าร้าน IV by a manual link (#545).
+    linked = {r['doc_base']: r for r in conn.execute(
+        "SELECT doc_base, order_sn, platform FROM marketplace_order_invoice").fetchall()}
     iv_prod = _iv_products(conn, code)
     my_prod = _order_products(conn, order['platform']).get(order['order_sn'], set())
     my_prod_standin = _apply_standins(my_prod, _generic_standins(conn))
@@ -360,10 +360,12 @@ def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
         ivp = iv_prod.get(iv['doc_base'], set())
         direct = bool(my_prod & ivp)
         standin = (not direct) and bool(my_prod_standin & ivp)
+        holder = linked.get(iv['doc_base'])
         out.append({**iv, 'date_gap': gap, 'product_match': direct or standin,
                     'standin_match': standin,
                     'amount_diff': round((iv['iv_net'] or 0) - payout, 2),
-                    'linked_to': linked.get(iv['doc_base'])})
+                    'linked_to': holder['order_sn'] if holder else None,
+                    'linked_platform': holder['platform'] if holder else None})
     # product-match first; then AMOUNT-closeness, then nearest date. Amount before
     # date matters for the common sibling-pid order (its listing maps to a sibling
     # of the IV's pid, so NO candidate can be a product-match): the team keys
@@ -712,10 +714,11 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
     iv_prod = _iv_products(conn, code)
     o_prod = _order_products(conn, platform)
 
+    # Manual links on EVERY platform: a Lazada order can hold a Zหน้าร้าน IV (#545).
     manual_rows = conn.execute(
-        "SELECT order_sn, doc_base FROM marketplace_order_invoice WHERE platform=? AND match_method='manual'",
-        (platform,)).fetchall()
-    manual_orders = {r['order_sn'] for r in manual_rows}
+        "SELECT platform, order_sn, doc_base FROM marketplace_order_invoice WHERE match_method='manual'"
+    ).fetchall()
+    manual_orders = {r['order_sn'] for r in manual_rows if r['platform'] == platform}
     claimed = {r['doc_base'] for r in manual_rows}   # manually-held IVs are off-limits
 
     conn.execute(

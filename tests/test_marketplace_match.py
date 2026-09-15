@@ -238,6 +238,43 @@ def test_manual_link_steals_iv(mm_conn):
     assert len(rows) == 1 and rows[0]['order_sn'] == other and rows[0]['match_method'] == 'manual'
 
 
+def _holders(c, doc_base):
+    return [(r['platform'], r['order_sn']) for r in c.execute(
+        "SELECT platform, order_sn FROM marketplace_order_invoice WHERE doc_base=? ORDER BY platform",
+        (doc_base,))]
+
+
+def test_an_iv_held_manually_on_another_platform_is_off_limits_to_the_matcher(mm_conn):
+    """#545 rule 11: a Lazada order can hold a Zหน้าร้าน IV by a manual link; the
+    Shopee matcher must not hand that IV to a Shopee order as well."""
+    c = mm_conn
+    _add_order(c, 'O-SH', 77.0, '2026-06-04')
+    _add_order(c, 'L-HOLD', 77.0, '2026-06-04', platform='lazada')
+    _add_iv(c, 'IV9000300', 77.0, '2026-06-05')
+    mm.run_automatch(c, 'shopee')
+    assert _holders(c, 'IV9000300') == [('shopee', 'O-SH')]      # control: free, it IS taken
+    c.execute("DELETE FROM marketplace_order_invoice")
+    c.commit()
+    mm.link_manual(c, 'lazada', 'L-HOLD', 'IV9000300', customer_code='Zหน้าร้าน', confirmed_by='put')
+    mm.run_automatch(c, 'shopee')
+    assert _holders(c, 'IV9000300') == [('lazada', 'L-HOLD')]
+
+
+def test_the_picker_shows_a_holder_on_another_platform(mm_conn):
+    """#545 rule 11: iv_candidates' linked_to spans platforms."""
+    c = mm_conn
+    _add_order(c, 'O-SH2', 77.0, '2026-06-04')
+    _add_order(c, 'L-HOLD2', 77.0, '2026-06-04', platform='lazada')
+    _add_iv(c, 'IV9000301', 77.0, '2026-06-05')
+    _add_iv(c, 'IV9000302', 77.0, '2026-06-05')
+    mm.link_manual(c, 'lazada', 'L-HOLD2', 'IV9000301', customer_code='Zหน้าร้าน', confirmed_by='put')
+    order = c.execute("SELECT * FROM marketplace_orders WHERE order_sn='O-SH2'").fetchone()
+    cands = {x['doc_base']: x for x in mm.iv_candidates(c, order)}
+    assert cands['IV9000302']['linked_to'] is None                 # control: a free one reads free
+    assert (cands['IV9000301']['linked_to'], cands['IV9000301']['linked_platform']) == \
+        ('L-HOLD2', 'lazada')
+
+
 def test_picker_surfaces_near_amount_iv(mm_conn):
     """The picker shows a near-amount invoice (10฿ off) with its diff + days-after."""
     c = mm_conn
