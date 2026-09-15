@@ -201,19 +201,46 @@ def test_edit_income_recorded_elsewhere_untick_to_0(admin_client, tmp_db):
     assert _acct_by_code(tmp_db, 'TEST-E')['income_recorded_elsewhere'] == 0
 
 
-def test_edit_income_recorded_elsewhere_missing_key_resolves_to_0(admin_client, tmp_db):
-    """Mirrors is_transfer's own existing convention exactly (issue brief:
-    "mirror exactly how that flag is rendered, posted and saved") — a
-    <select>, not a checkbox, so a real browser always sends a value; a
-    POST missing the key falls back to 0, same as is_transfer would."""
-    admin_client.post('/cashbook-accounts/new', data={
-        'code': 'TEST-F', 'income_recorded_elsewhere': '1',
-    }, follow_redirects=True)
-    aid = _acct_by_code(tmp_db, 'TEST-F')['id']
-    admin_client.post(f'/cashbook-accounts/{aid}/edit', data={
-        'code': 'TEST-F',   # income_recorded_elsewhere key entirely absent
-    }, follow_redirects=True)
+def test_create_missing_income_recorded_elsewhere_key_defaults_to_0(admin_client, tmp_db):
+    """CREATE path only: a brand-new row has nothing to preserve, so a
+    missing key on /new is fine as 0 (same as is_transfer's own convention
+    there). This is NOT the stale-form hazard F2 guards against below —
+    that one is EDIT-only."""
+    admin_client.post('/cashbook-accounts/new', data={'code': 'TEST-F'}, follow_redirects=True)
     assert _acct_by_code(tmp_db, 'TEST-F')['income_recorded_elsewhere'] == 0
+
+
+def test_edit_stale_form_post_preserves_flag_and_name(admin_client, tmp_db):
+    """review SHOULD-FIX 1 (money): a stale/partial edit POST — e.g. a
+    browser tab still holding the form from BEFORE this feature shipped, or
+    any caller sending only the old field set — must not silently wipe
+    income_recorded_elsewhere back to 0. That flip would swing the
+    dashboard's all-time คงเหลือ headline by the account's own balance
+    (฿1.74M on prod for ชฎามาศ). Mirrors display_name's own missing-key
+    preserve guard, same shape, same reason.
+
+    Control in the SAME test: an explicit '0' POST still turns the flag off
+    — this is a preserve-on-ABSENCE guard, not a "flag can never change"
+    guard."""
+    admin_client.post('/cashbook-accounts/new', data={
+        'code': 'TEST-STALE', 'display_name': 'ชื่อเดิม', 'income_recorded_elsewhere': '1',
+    }, follow_redirects=True)
+    aid = _acct_by_code(tmp_db, 'TEST-STALE')['id']
+
+    # The stale/partial POST: only `code` (required) + an unrelated field
+    # (`note`) — display_name AND income_recorded_elsewhere keys both absent.
+    admin_client.post(f'/cashbook-accounts/{aid}/edit', data={
+        'code': 'TEST-STALE', 'note': 'แก้แค่หมายเหตุ',
+    }, follow_redirects=True)
+    row = _acct_by_code(tmp_db, 'TEST-STALE')
+    assert row['display_name'] == 'ชื่อเดิม'          # preserved
+    assert row['income_recorded_elsewhere'] == 1      # preserved — NOT wiped to 0
+
+    # Control: an explicit, present '0' still works.
+    admin_client.post(f'/cashbook-accounts/{aid}/edit', data={
+        'code': 'TEST-STALE', 'income_recorded_elsewhere': '0',
+    }, follow_redirects=True)
+    assert _acct_by_code(tmp_db, 'TEST-STALE')['income_recorded_elsewhere'] == 0
 
 
 def test_admin_list_shows_name_with_code_and_flag_badge(admin_client, tmp_db):

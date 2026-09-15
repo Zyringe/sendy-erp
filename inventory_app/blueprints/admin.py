@@ -189,12 +189,19 @@ def _cashbook_form_fields():
     """Pull the shared account fields from the POST form. Empty strings → None
     so blank optional fields store NULL (a เงินสด account has no bank).
 
-    `display_name_in_form` distinguishes "the field was submitted blank"
-    (clear the name -> falls back to code) from "the key wasn't in the POST
-    at all" (a real browser form always sends the input; only a partial/
-    programmatic POST omits it) — cashbook_account_edit uses it to PRESERVE
-    a stored name rather than wipe it, matching this codebase's `form[k].strip()
-    if k in form else None` convention for exactly this hazard."""
+    `display_name_in_form` / `income_recorded_elsewhere_in_form` distinguish
+    "the field was submitted" (blank name -> clear to code; '0' -> off) from
+    "the key wasn't in the POST at all" (a real browser form always sends
+    both — the flag is a <select>, always posts a value; only a stale/
+    partial/programmatic POST omits either) — cashbook_account_edit uses
+    both to PRESERVE the stored value rather than wipe it, matching this
+    codebase's `form[k].strip() if k in form else None` convention for
+    exactly this hazard. A stale form flipping the flag back to 0 is a
+    MONEY bug: it swings the dashboard's all-time คงเหลือ headline by the
+    account's own balance (review SHOULD-FIX 1). cashbook_account_new (a
+    brand-new row, nothing to preserve) does NOT use either _in_form flag —
+    a missing key there is correctly 0/None, same as is_transfer's own
+    convention."""
     code = request.form.get('code', '').strip()
     return {
         'code':                       code,
@@ -203,6 +210,7 @@ def _cashbook_form_fields():
         'display_name_in_form':       'display_name' in request.form,
         'is_transfer':                1 if request.form.get('is_transfer') == '1' else 0,
         'income_recorded_elsewhere':  1 if request.form.get('income_recorded_elsewhere') == '1' else 0,
+        'income_recorded_elsewhere_in_form': 'income_recorded_elsewhere' in request.form,
         'account_owner_name': request.form.get('account_owner_name', '').strip() or None,
         'bank_name':          request.form.get('bank_name', '').strip() or None,
         'bank_account_no':    request.form.get('bank_account_no', '').strip() or None,
@@ -250,11 +258,15 @@ def cashbook_account_edit(aid):
             "UPDATE cashbook_accounts SET code=?,"
             " display_name=CASE WHEN ?=1 THEN ? ELSE display_name END,"
             " account_owner_name=?, bank_name=?,"
-            " bank_account_no=?, note=?, is_transfer=?, income_recorded_elsewhere=?, is_active=?,"
+            " bank_account_no=?, note=?, is_transfer=?,"
+            " income_recorded_elsewhere=CASE WHEN ?=1 THEN ? ELSE income_recorded_elsewhere END,"
+            " is_active=?,"
             " updated_at=datetime('now','localtime') WHERE id=?",
             (f['code'], 1 if f['display_name_in_form'] else 0, f['display_name'],
              f['account_owner_name'], f['bank_name'], f['bank_account_no'],
-             f['note'], f['is_transfer'], f['income_recorded_elsewhere'], is_active, aid)
+             f['note'], f['is_transfer'],
+             1 if f['income_recorded_elsewhere_in_form'] else 0, f['income_recorded_elsewhere'],
+             is_active, aid)
         )
         conn.commit()
         flash(f'อัปเดตบัญชี {f["code"]} สำเร็จ', 'success')
