@@ -761,6 +761,79 @@
 
 </div>
 
+{# ── เสนอเพิ่ม (#498): bestsellers OTHER B2B shops buy that this shop has
+   never bought, one row per sub_category. Placed after สินค้าที่ซื้อบ่อย.
+   Single tab for now — nav-tabs/tab-content so a second tab (the call
+   card's clearance list, per the issue's own note) can be added later
+   without restructuring this card. No cost/margin/other-shop-name ever,
+   for any role (data layer already guarantees this — see
+   models.customers._cross_sell_suggestions). #}
+<div class="row g-3 mb-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-lightbulb me-2 text-accent"></i>เสนอเพิ่ม
+      </div>
+      <ul class="nav nav-tabs px-3 pt-2" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active" data-bs-toggle="tab"
+                  data-bs-target="#suggest-bestseller" type="button"
+                  role="tab" aria-selected="true">ขายดีที่ร้านนี้ยังไม่มี</button>
+        </li>
+      </ul>
+      <div class="tab-content">
+        <div class="tab-pane fade show active" id="suggest-bestseller" role="tabpanel">
+          <div class="table-responsive">
+            <table class="table table-mobile-cards mb-0">
+              <thead>
+                <tr>
+                  <th>สินค้า</th>
+                  <th class="text-end">ร้านซื้อ</th>
+                  <th class="text-end">ราคาวันนี้</th>
+                  <th class="text-end">สต็อก</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for r in data.suggestions %}
+                <tr>
+                  <td class="td-primary">
+                    <a href="{{ url_for('products.product_detail', product_id=r.product_id) }}"
+                       class="text-decoration-none text-main">{{ r.product_name }}</a>
+                  </td>
+                  <td data-label="ร้านซื้อ" class="text-end font-mono text-subtle"><div>
+                    {{ r.shop_count }} ร้านซื้อ (24 เดือน)
+                  </div></td>
+                  <td data-label="ราคาวันนี้" class="text-end font-mono"><div>
+                    {% if r.promo_affects_price %}
+                      {{ r.list_for_unit | fmt_price }} −{{ '%g' | format(r.promo.discount_value) }}% = {{ r.price_per_unit | fmt_price }}
+                    {% else %}
+                      {{ r.price_per_unit | fmt_price }}
+                    {% endif %}
+                    <span class="small">/{{ r.unit }}</span>
+                    {% if r.promo and not r.promo_affects_price %}
+                    <div class="text-subtle small">{{ promo_summary(r.promo) }}</div>
+                    {% endif %}
+                  </div></td>
+                  <td data-label="สต็อก" class="text-end font-mono"><div>
+                    {% if r.stock_qty is not none %}
+                      {{ r.stock_qty | fmt_qty }}
+                    {% else %}
+                      <span class="text-subtle">—</span>
+                    {% endif %}
+                  </div></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" class="text-center text-subtle py-4">ยังไม่มีสินค้าแนะนำ</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}

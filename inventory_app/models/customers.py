@@ -726,6 +726,12 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
     import winback
     wb_where, wb_params = _customer_sales_scope('customer_code', customer_code, None, None)
     winback_rows = winback.compute_winback(conn, wb_where, wb_params)
+
+    # เสนอเพิ่ม (#498): ALWAYS all-time / trailing-24-months, independent of
+    # date_from/date_to — the helper takes no date params at all, so the
+    # page's date filter can never reach it by accident (see the helper's
+    # own docstring + tests/test_498_cross_sell_suggestions.py).
+    suggestions = _cross_sell_suggestions(conn, customer_code)
     winback_by_key = {(w['product_id'], w['unit']): w for w in winback_rows}
     card_keys = set()
     for card in product_cards:
@@ -808,6 +814,9 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
         # has to reach into product_cards to rebuild it.
         'winback': winback_rows,
         'winback_overflow_count': winback_overflow_count,
+        # เสนอเพิ่ม (#498) — additive, no cost/margin key ever (see the
+        # helper's own docstring). Always all-time, never date-filtered.
+        'suggestions': suggestions,
         'monthly': [dict(r) for r in monthly],
         'docs': [dict(r) for r in docs],
     }
