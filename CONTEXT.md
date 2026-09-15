@@ -328,6 +328,21 @@
   employee's month advances + total outstanding + net salary (an over-advance guard). See ADR 0008
   + mig 128.
 
+- **Payout-sourced row (มาร์เก็ตเพลสลงให้)** — a `LEX` (Lazada) / `SPX` (Shopee) income row that
+  `cashbook_payout_mirror.mirror_platform()` wrote from a `marketplace_payouts` row, after every
+  marketplace import/reconcile: category `ยอดขายของ`, dated the payout's deposit date, described
+  `"<Platform> โอนเงิน (N ออเดอร์)"`, `created_by = 'ระบบ'`. **Not** a linked-by-id row like salary
+  (`payroll_item_id`) — `marketplace_payouts` is deleted and rebuilt on every reconcile, so its `id`
+  isn't stable. Identified instead by VALUE: `payout_platform` / `payout_deposit_date` /
+  `payout_amount` / `payout_occurrence` (an occurrence number disambiguates two payouts sharing
+  platform+date+amount). A row is payout-sourced iff `payout_platform IS NOT NULL`, and — same as
+  salary/advance/commission — **locked**: `/cashbook/txn/<id>/{edit,delete}` refuse it, pointing at
+  the marketplace pages instead. **The mirror only covers `deposit_date >= 2026-01-01`** and never
+  touches a manual row, even one that happens to match a payout's amount and date — the 12 (of 15)
+  pre-existing hand-keyed LEX/SPX rows that really were payouts were converted ONCE
+  (`scripts/convert_legacy_cashbook_payout_rows.py`); the mirror itself never adopts a manual row.
+  See ADR 0013.
+
 - **Pay-from account** — the cashbook account a given salary transfer is paid *out of*.
   Chosen per employee at mark-paid time, defaulting to that employee's **default pay-from
   account** (`employees.default_cashbook_account_id`, e.g. Put's staff → `392`, his mother's

@@ -17,6 +17,7 @@ import db_backup
 import models
 import marketplace_match
 import marketplace_reconcile
+import cashbook_payout_mirror
 from database import get_connection
 from parse_balance import parse_shopee_balance, load_balance_sheet, BalanceError
 from marketplace_files import detect_file
@@ -34,6 +35,26 @@ bp_marketplace = Blueprint('marketplace', __name__)
 def _flash_backup_warning(error):
     flash(f'⚠️ สำรองข้อมูลก่อนนำเข้าไม่สำเร็จ '
           f'({error}) — นำเข้าต่อโดยไม่มีจุดกู้คืน', 'warning')
+
+
+def _mirror_payouts_to_cashbook(conn, platform):
+    """Mirror `platform`'s payouts into its cashbook account (LEX/SPX) —
+    issue #533. Called after reconcile_payouts has committed. Never lets a
+    failure break the import: the mirror is idempotent, so the next import
+    repairs it. Returns a Thai warning string when something needs Put's
+    attention, None on a fully clean run (silent — the reconcile's own
+    flash already reports payout counts)."""
+    try:
+        result = cashbook_payout_mirror.mirror_platform(conn, platform)
+    except Exception as e:
+        return (f'⚠️ {platform}: บันทึกยอดโอนลงบัญชีรับ-จ่ายไม่สำเร็จ ({e}) — '
+                'นำเข้าสำเร็จตามปกติ นำเข้ารอบถัดไปจะซ่อมยอดในบัญชีรับ-จ่ายให้เอง')
+    if result.get('skipped_conflicts'):
+        return (f'⚠️ {platform}: ยอดโอน {result["skipped_conflicts"]} รายการยังไม่ลงบัญชีรับ-จ่าย '
+                'เพราะมีรายการที่คีย์มืออยู่แล้วตรงกัน (วันที่+จำนวนเงิน) — '
+                'ต้องรัน scripts/convert_legacy_cashbook_payout_rows.py ก่อน '
+                'ไม่งั้นจะลงบัญชีซ้ำ')
+    return None
 
 
 def _detect_platform(columns):
@@ -405,12 +426,15 @@ def balance_import():
             flash(f'นำเข้าแล้ว {ins} รายการ แต่กระทบยอดไม่ลงตัว: {e} '
                   '(ไฟล์ Balance อาจไม่ครบช่วง) — ตรวจดูยอดโอนค่ะ', 'warning')
             return redirect(url_for('marketplace.settlement'))
+        mirror_warning = _mirror_payouts_to_cashbook(conn, 'shopee')
     finally:
         conn.close()
     flash(f'นำเข้า Balance สำเร็จ: เพิ่ม {ins} รายการ · ยอดโอนเข้าบัญชี '
           f'{rec["payouts"]} ก้อน ({rec["orders_linked"]} ออเดอร์)'
           + (f' · ⚠ {rec["unbalanced"]} ก้อนยอดไม่ตรง รอตรวจ' if rec.get('unbalanced') else ''),
           'success')
+    if mirror_warning:
+        flash(mirror_warning, 'warning')
     return redirect(url_for('marketplace.settlement'))
 
 
@@ -587,6 +611,10 @@ def upload():
                         f'⚠️ {plat}: {rec["unbalanced"]} ก้อนยอดไม่ตรง รอตรวจค่ะ'))
             except marketplace_reconcile.ReconcileError as e:
                 problems.append(('warning', f'⚠️ {plat}: กระทบยอดไม่ลงตัว: {e}'))
+                continue
+            mirror_warning = _mirror_payouts_to_cashbook(conn, plat)
+            if mirror_warning:
+                problems.append(('warning', mirror_warning))
     finally:
         conn.close()
 
