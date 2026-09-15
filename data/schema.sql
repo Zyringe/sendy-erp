@@ -96,7 +96,8 @@ CREATE TABLE cashbook_accounts (
     created_at         TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at         TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 , is_transfer INTEGER NOT NULL DEFAULT 0
-    CHECK(is_transfer IN (0,1)));
+    CHECK(is_transfer IN (0,1)), income_recorded_elsewhere INTEGER
+    NOT NULL DEFAULT 0 CHECK (income_recorded_elsewhere IN (0,1)));
 
 CREATE TABLE cashbook_categories (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
