@@ -437,6 +437,58 @@ def url_customer_note(code):
     return f'/call/{code}/note'
 
 
+def _strip_scripts(html):
+    """Remove every `<script>...</script>` block. No HTML parser is a
+    declared project dependency (lxml/bs4 aren't in requirements*.txt, and
+    nothing in tests/ imports either today) — a regex strip is the
+    stdlib-only way to make sure a position comparison can never
+    accidentally match a header's TEXT sitting inside JS (a toast string,
+    a chart label). Jinja `{# #}` comments never reach the rendered output
+    at all, so nothing extra is needed for those."""
+    return re.sub(r'<script\b.*?</script>', '', html, flags=re.S | re.I)
+
+
+def test_notes_card_sits_right_after_customer_info_before_product_cards(tmp_db):
+    """Put's decision, 2026-09-15: on a 390px phone the notes card used to
+    render after สินค้าที่ซื้อบ่อย + รายการเอกสาร (~15,600px down the page
+    for 23ท06) — nobody read it there before walking into a shop. Pins the
+    new position: right after ข้อมูลลูกค้า, before สินค้าที่ซื้อบ่อย.
+
+    Compares ELEMENT positions via icon-qualified markers, never a bare
+    substring of the header text — 'ข้อมูลลูกค้า' alone also matches the
+    edit modal's "แก้ไขข้อมูลลูกค้า" title further down the page, which
+    would corrupt a naive position check even though it happens to still
+    give the right answer today. `<script>` blocks are stripped first
+    (see _strip_scripts) so JS content can never be mistaken for a
+    header."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _mk_customer(conn, TEST_CODE, TEST_NAME)
+    _clear(conn, TEST_CODE)
+    conn.close()
+
+    c = _client(tmp_db)
+    html = _strip_scripts(c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode())
+
+    customer_info_hdr = '<i class="bi bi-person-vcard me-2 text-accent"></i>ข้อมูลลูกค้า'
+    notes_hdr = '<i class="bi bi-journal-text me-2 text-accent"></i>บันทึกการโทร / โน้ต'
+    products_hdr = '<i class="bi bi-trophy me-2 text-accent"></i>สินค้าที่ซื้อบ่อย'
+
+    pos_customer_info = html.find(customer_info_hdr)
+    pos_notes = html.find(notes_hdr)
+    pos_products = html.find(products_hdr)
+
+    # Control: all three headers actually rendered (a page returning a 404
+    # shell or an error page would make every position -1 and the ordering
+    # assertion below vacuously pass on -1 < -1 < -1 otherwise).
+    assert pos_customer_info != -1, 'ข้อมูลลูกค้า header not found'
+    assert pos_notes != -1, 'บันทึกการโทร / โน้ต header not found'
+    assert pos_products != -1, 'สินค้าที่ซื้อบ่อย header not found'
+
+    assert pos_customer_info < pos_notes < pos_products
+
+
 def _table_row_containing(html, marker):
     """The single `<tr ...>...</tr>` block whose text contains `marker` —
     scopes an assertion to ONE product card row instead of the whole page
