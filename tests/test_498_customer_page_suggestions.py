@@ -16,7 +16,7 @@ os.environ.setdefault('SKIP_DB_INIT', '1')
 import datetime as dt
 import re
 from html.parser import HTMLParser
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import pytest
 
@@ -244,6 +244,15 @@ def test_customer_page_shows_a_qualifying_suggestion(tmp_db):
     assert 'สินค้าขายดีหน้าเว็บ 498' in card
     assert '4 ร้านซื้อ (24 เดือน)' in card
     assert 'ขายดีที่ร้านนี้ยังไม่มี' in card
+    # T8 (review round 1): "the product name, linked to the product page" --
+    # parse the PATH (url_for appends a `?book=` query param via the book
+    # registry's url_defaults hook, so an exact href string would be wrong).
+    hrefs = re.findall(r'<a\b[^>]*?\bhref="([^"]*)"', card)
+    assert any(urlsplit(h).path == f'/products/{pid}' for h in hrefs)
+    # T4 (review round 1): the empty-state line must NOT render when real
+    # rows are present -- control for the negative assertion in
+    # test_customer_page_shows_empty_state_when_nothing_qualifies below.
+    assert 'ยังไม่มีสินค้าแนะนำ' not in card
 
 
 def test_customer_page_shows_empty_state_when_nothing_qualifies(tmp_db):
