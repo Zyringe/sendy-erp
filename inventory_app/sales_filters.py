@@ -7,11 +7,21 @@ returns, 2026-07-21), which is why the rule now is: one definition, imported.
 
 Exclusions, in the order they were introduced:
   doc_base LIKE 'SR%'   sales returns / credit notes
-  doc_base LIKE 'HS%'   historical opening balances, not trade
   excludes_revenue      documents invoiced in error — no sale ever happened
                         (migration 142; today: the three วรสวัสดิ์ giveaway
                         invoices). Distinct from bad debt, which WAS a sale
                         and keeps its revenue.
+
+⚠ HS (doc_base LIKE 'HS%') is NOT excluded, on purpose: an HS document is a
+cash sale (ขายสด) in the BSN5657 Express book, not a historical opening
+balance — that earlier reading was an assumption and was wrong (#514). It
+posts real money to the GL sales account (41-01, same as IV) and its goods
+really left the warehouse, so it counts as revenue AND as COGS. AR/
+settlement paths (payments_alloc._settlement_rows, models/payments.py,
+blueprints/mobile.py's per-customer "outstanding") keep excluding it
+deliberately — a cash sale is paid on the spot, so it is never a
+receivable. That is a different question from this filter and is NOT
+revisited here.
 
 ⚠ COGS is deliberately NOT filtered by `excludes_revenue`. A giveaway's goods
 really did leave the warehouse, so their cost is a real expense. Removing the
@@ -49,12 +59,12 @@ def not_a_sale_clause(alias=''):
 
 
 def revenue_filter(alias=''):
-    """Full revenue-row filter: excludes returns, opening balances, and
-    documents invoiced in error. Use for any SUM(net) presented as revenue."""
+    """Full revenue-row filter: excludes returns and documents invoiced in
+    error. Counts HS (cash sales, #514) same as IV. Use for any SUM(net)
+    presented as revenue."""
     p = '{}.'.format(alias) if alias else ''
     return ("{p}doc_base IS NOT NULL "
             "AND {p}doc_base NOT LIKE 'SR%' "
-            "AND {p}doc_base NOT LIKE 'HS%' "
             "AND {not_a_sale}"
             .format(p=p, not_a_sale=not_a_sale_clause(alias)))
 
@@ -68,8 +78,11 @@ def purchase_net_sql(alias=''):
     ฿94,140.00 against the ฿50,460.00 its own document list sums to).
 
     HS cash sales count like invoices, as the customer page's document list
-    shows them. That is why this is NOT built on revenue_filter(), which drops
-    HS (whether HS is revenue is #514, a separate question).
+    shows them — same stance as revenue_filter() since #514. This function
+    predates that fix and stays separate anyway: it is a per-row CASE
+    expression, not a WHERE predicate, and doesn't fold in
+    `doc_base IS NOT NULL` / not_a_sale_clause() the way revenue_filter()
+    does — callers add those themselves (see below).
 
     Per-row expression only, like vat_math.cash_sql(): wrap it in SUM()
     yourself, and keep documents invoiced in error out with
