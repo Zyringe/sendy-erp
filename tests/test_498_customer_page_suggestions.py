@@ -198,6 +198,65 @@ def test_summary_never_threads_the_date_filter_into_suggestions(cust, monkeypatc
     assert calls == [TEST_CODE]
 
 
+def test_suggestions_helper_skipped_for_a_nonexistent_code(tmp_db_conn, monkeypatch):
+    """N-404 (review round 1): a code with no master row and no sales
+    history at all must never reach the suggestions helper's aggregate
+    query + resolve_price calls -- it is about to 404 anyway. Control:
+    test_summary_wires_suggestions_key_from_the_helper (above) proves the
+    helper IS called for a real, existing code."""
+    conn = tmp_db_conn
+    ghost_code = 'GHOST4981NOTREAL'
+    conn.execute("DELETE FROM customers WHERE code = ?", (ghost_code,))
+    conn.execute("DELETE FROM sales_transactions WHERE customer_code = ?", (ghost_code,))
+    conn.commit()
+
+    calls = []
+
+    def _stub(conn_arg, customer_code):
+        calls.append(customer_code)
+        return []
+
+    import models.customers as customers
+    monkeypatch.setattr(customers, '_cross_sell_suggestions', _stub)
+
+    data = customers.get_customer_summary_by_code(ghost_code)
+    assert data['exists'] is False
+    assert calls == []
+
+
+def test_suggestions_helper_still_runs_for_a_code_with_sales_but_no_master_row(
+        tmp_db_conn, monkeypatch):
+    """Companion control for the N-404 gate above: the early existence
+    probe ORs the customers-master check with a sales_transactions check,
+    so a code with real bill history but NO master row (the "code with no
+    master row renders the same" case the spec calls out) must still be
+    treated as existing, and the suggestions helper must still run."""
+    conn = tmp_db_conn
+    code = 'NOMASTER4981'
+    conn.execute("DELETE FROM customers WHERE code = ?", (code,))
+    conn.execute("DELETE FROM sales_transactions WHERE customer_code = ?", (code,))
+    conn.execute(
+        "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, customer, "
+        "customer_code, qty, unit, unit_price, vat_type, total, net) "
+        "VALUES ('2020-01-01','IVNOMASTER-1','IVNOMASTER',?,?,1,'ตัว',100,0,100,100)",
+        ('ร้านไม่มีมาสเตอร์ 498', code),
+    )
+    conn.commit()
+
+    calls = []
+
+    def _stub(conn_arg, customer_code):
+        calls.append(customer_code)
+        return []
+
+    import models.customers as customers
+    monkeypatch.setattr(customers, '_cross_sell_suggestions', _stub)
+
+    data = customers.get_customer_summary_by_code(code)
+    assert data['exists'] is True
+    assert calls == [code]
+
+
 def test_date_filter_still_changes_product_cards(cust):
     """Companion control for the two stub tests above: proves the date
     filter reaches product_cards at all (so "independent of the date

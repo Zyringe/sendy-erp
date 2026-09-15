@@ -727,6 +727,21 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
     exists for this code, else the master name.
     """
     conn = get_connection()
+
+    # N-404 (review round 1, #498): a cheap existence probe BEFORE the
+    # suggestions helper's own aggregate query + up to 10 resolve_price
+    # calls, so a typo'd code costs 2 lookups instead of a full top-10
+    # computation before its eventual 404. This is deliberately a SEPARATE,
+    # narrower check than the `exists` field returned below (which also
+    # derives `display_name`/`salesperson`/etc. from the same two rows) —
+    # duplicating just the boolean here keeps this an additive, low-risk
+    # change rather than restructuring the rest of the function's order.
+    exists_early = bool(conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM customers WHERE code = ?) "
+        "OR EXISTS(SELECT 1 FROM sales_transactions WHERE customer_code = ?)",
+        (customer_code, customer_code)
+    ).fetchone()[0])
+
     where, params = _customer_sales_scope(
         'customer_code', customer_code, date_from, date_to)
     summary, top_products, monthly, docs = _customer_sales_aggregates(
@@ -748,8 +763,9 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
     # เสนอเพิ่ม (#498): ALWAYS all-time / trailing-24-months, independent of
     # date_from/date_to — the helper takes no date params at all, so the
     # page's date filter can never reach it by accident (see the helper's
-    # own docstring + tests/test_498_cross_sell_suggestions.py).
-    suggestions = _cross_sell_suggestions(conn, customer_code)
+    # own docstring + tests/test_498_cross_sell_suggestions.py). Skipped
+    # entirely for a code that doesn't exist at all (N-404 above).
+    suggestions = _cross_sell_suggestions(conn, customer_code) if exists_early else []
     winback_by_key = {(w['product_id'], w['unit']): w for w in winback_rows}
     card_keys = set()
     for card in product_cards:
