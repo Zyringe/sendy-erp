@@ -169,6 +169,22 @@
             </span>
             <a href="{{ url_for('marketplace.settlement', platform=r.payout_platform) }}"
                class="small">ดูที่มาร์เก็ตเพลส</a>
+            {% elif r.commission_payout_id %}
+            {# Commission-linked row (issue #540) — auto-posted by
+               commission.record_payout (plan.md decision C1/C4), never
+               editable/deletable here (guard: _reject_if_commission_row).
+               Tooltip echoes that guard's own flash wording. The link has no
+               role gate beyond can_edit_cashbook — commission.commission_payouts_list
+               has no per-route role check, and require_login's only relevant
+               gates (the staff block on hr./cashbook./naming.* and the
+               general-role allowlist) don't apply to commission.*, so every
+               role that reaches this cell can already open it — do not
+               re-type a role list here. #}
+            <span class="text-muted small" title="รายการคอมมิชชั่นที่ผูกกับหน้าคอมมิชชั่น — แก้ไข/ลบที่นี่ไม่ได้ (ยกเลิกได้ที่หน้าคอมมิชชั่นเท่านั้น)">
+              <i class="bi bi-lock-fill"></i>
+            </span>
+            <a href="{{ url_for('commission.commission_payouts_list') }}"
+               class="small">ดูที่หน้าคอมมิชชั่น</a>
             {% else %}
             <button type="button" class="btn btn-sm btn-outline-secondary"
                     data-bs-toggle="modal" data-bs-target="#editTxnModal{{ r.id }}">
@@ -214,7 +230,7 @@
 {# ── Edit modals (manual rows only) ───────────────────────────────────────── #}
 {% if can_edit_cashbook %}
 {% for r in rows %}
-{% if not r.payroll_item_id and not r.salary_advance_id and not r.payout_platform %}
+{% if not r.payroll_item_id and not r.salary_advance_id and not r.payout_platform and not r.commission_payout_id %}
 {% include 'cashbook/txn_edit.html' %}
 {% endif %}
 {% endfor %}
