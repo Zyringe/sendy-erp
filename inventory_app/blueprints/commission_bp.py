@@ -196,7 +196,11 @@ def commission_record_payout():
     paid_date   = request.form.get('paid_date') or date.today().isoformat()
     paid_method = request.form.get('paid_method', '').strip()
     note        = request.form.get('note', '').strip()
-    paid_by     = session.get('username', '')
+    # Same expression as the cashbook form's `created_by` (issue #532 §4) —
+    # a commission payout used to stamp the login username ('admin') while
+    # the cashbook form and payroll stamp the display name ('Put'), so one
+    # keyer showed up two ways in the ledger.
+    paid_by     = session.get('display_name') or session.get('username') or ''
     redirect_to = request.form.get('redirect_to') or url_for('commission.commission_dashboard',
                                                               month=year_month)
 

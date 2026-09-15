@@ -76,6 +76,7 @@ def test_single_normal_row_still_saves(migrated_db):
     c = _client_as_user(1, 'admin')
     form = {
         'txn_date': '2026-07-20', 'account_id': str(account_id),
+        'confirm_new_categories': '1',  # 'ทดสอบ Normal Save' is brand-new; #532 §1 tests the confirm step itself
         'rows-0-direction': 'expense', 'rows-0-category': 'ทดสอบ Normal Save',
         'rows-0-amount': '111',
     }
@@ -98,6 +99,7 @@ def test_bulk_skips_salary_row_saves_the_rest_with_summary(migrated_db):
     c = _client_as_user(1, 'admin')
     form = {
         'txn_date': '2026-07-21', 'account_id': str(account_id), 'bulk_mode': '1',
+        'confirm_new_categories': '1',  # rows 1/2's categories are brand-new, see test above
         'rows-0-direction': 'expense', 'rows-0-category': SALARY_CATEGORY,
         'rows-0-amount': '4000',
         'rows-1-direction': 'expense', 'rows-1-category': 'ทดสอบ BulkSkip A',

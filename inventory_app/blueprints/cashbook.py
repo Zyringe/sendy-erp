@@ -758,15 +758,147 @@ def _categories_by_direction(conn):
 
 
 def _get_known_user_tags(conn):
-    """Distinct ผู้ใช้ tags already used, for the user_category <datalist>.
-    There is no separate tags table — user_category is free text on
-    cashbook_transactions."""
-    rows = conn.execute(
+    """ผู้ใช้ tag suggestions for the user_category <datalist>: every
+    employee's SYSTEM name (nickname, or full_name when blank) first — issue
+    #532 §2, so a keyer sees and picks the name the system itself posts —
+    then every other tag already used on a transaction, in existing order.
+    Deduped; there is no separate tags table, user_category is free text.
+    `COALESCE(nickname, full_name)` (not NULLIF-blank-aware) matches
+    `_resolve_advance_rows`'s existing convention below — one rule for what
+    "the employee's display name" means, not two slightly different ones."""
+    emp_rows = conn.execute(
+        "SELECT COALESCE(nickname, full_name) AS name FROM employees ORDER BY name"
+    ).fetchall()
+    seen = set()
+    tags = []
+    for r in emp_rows:
+        if r["name"] and r["name"] not in seen:
+            seen.add(r["name"])
+            tags.append(r["name"])
+    other_rows = conn.execute(
         """SELECT DISTINCT user_category FROM cashbook_transactions
             WHERE user_category IS NOT NULL AND user_category != ''
             ORDER BY user_category"""
     ).fetchall()
-    return [r["user_category"] for r in rows]
+    for r in other_rows:
+        if r["user_category"] not in seen:
+            seen.add(r["user_category"])
+            tags.append(r["user_category"])
+    return tags
+
+
+def _match_employee_tag(employees, typed):
+    """Pure matching logic (no DB access) against a PRE-FETCHED list of
+    employee rows (each carrying full_name/nickname) — the actual rule
+    behind `_resolve_employee_tag`. Split out so a batch caller
+    (`_resolve_person_tags`) can fetch `employees` ONCE per request instead
+    of once per row (an N+1 re-fetch found in code review).
+
+    `typed` unambiguously names exactly one employee by their full name OR
+    the first word of it (issue #532 §2 — Put's rule: a person's tag is the
+    name the system itself posts).
+
+    Returns (resolved, notice): `resolved` is `typed` unchanged when there is
+    no match, an AMBIGUOUS match (two+ employees share the same first word),
+    or the system name already equals what was typed; `notice` is a Thai
+    flash message (or None) naming the change. Matches against ALL employees,
+    not just active ones — a manual row can legitimately name someone who has
+    since left. Salesperson real-name aliases (off-system reps like บ่าว/แต/
+    อัคเรศ included) are a separate, out-of-scope concept (ADR 0008) — never
+    matched here; an employee record that happens to collide with one of
+    those alias strings would still resolve (accepted residual risk, no
+    off-system-alias registry exists to check against)."""
+    typed = (typed or "").strip()
+    if not typed:
+        return typed, None
+    matches = []
+    for r in employees:
+        full = r["full_name"] or ""
+        first = full.split()[0] if full.split() else full
+        if typed == full or typed == first:
+            matches.append(r)
+    if len(matches) != 1:
+        return typed, None
+    system_name = matches[0]["nickname"] or matches[0]["full_name"]
+    if system_name == typed:
+        return typed, None
+    return system_name, f"เปลี่ยนป้าย '{typed}' เป็น '{system_name}' ตามชื่อเล่นใน HR"
+
+
+def _resolve_employee_tag(conn, typed):
+    """Single-tag convenience wrapper around `_match_employee_tag` — fetches
+    `employees` fresh on every call. Fine for `txn_edit`, which resolves at
+    most one tag per request; a batch caller fetches once and calls
+    `_match_employee_tag` directly (see `_resolve_person_tags`)."""
+    rows = conn.execute("SELECT full_name, nickname FROM employees").fetchall()
+    return _match_employee_tag(rows, typed)
+
+
+def _resolve_person_tags(conn, to_insert):
+    """Apply `_match_employee_tag` to every NON-advance row's user_category
+    in `to_insert`, mutating it in place (advance rows already carry the
+    employee's system name from `_resolve_advance_rows`). Fetches `employees`
+    ONCE for the whole batch. Returns the list of distinct Thai notices to
+    flash, in first-seen order.
+
+    ⚠ Caller must run this AFTER `_apply_policy_blocks` — the in-engine
+    commission double-book guard (`_is_in_engine_commission_recipient`) must
+    see the RAW typed tag, not an already-resolved employee nickname, or an
+    employee whose name happens to collide with a salesperson's real-name
+    alias would silently defeat the guard (issue #532 review)."""
+    employees = conn.execute("SELECT full_name, nickname FROM employees").fetchall()
+    notices = []
+    seen = set()
+    for item in to_insert:
+        if item.get("is_advance"):
+            continue
+        resolved, notice = _match_employee_tag(employees, item.get("user_category") or "")
+        item["user_category"] = resolved
+        if notice and notice not in seen:
+            seen.add(notice)
+            notices.append(notice)
+    return notices
+
+
+def _category_lookup(conn):
+    """{(name, direction): is_active} for every row in `cashbook_categories`
+    — fetched ONCE per request and shared by `_reject_inactive_categories`
+    and `_find_new_categories` (issue #532 review: avoids a per-row/per-pair
+    re-query of this small table)."""
+    rows = conn.execute("SELECT name, direction, is_active FROM cashbook_categories").fetchall()
+    return {(r["name"], r["direction"]): r["is_active"] for r in rows}
+
+
+def _find_new_categories(cat_lookup, to_insert):
+    """Distinct (name, direction) pairs among `to_insert` absent from
+    `cat_lookup` — these need explicit confirmation before they're created
+    (issue #532 §1). Returns a list of {"name", "direction"} dicts,
+    first-seen order."""
+    new_cats = []
+    checked = set()
+    for item in to_insert:
+        key = (item["category"], item["direction"])
+        if key in checked:
+            continue
+        checked.add(key)
+        if key not in cat_lookup:
+            new_cats.append({"name": key[0], "direction": key[1]})
+    return new_cats
+
+
+def _reject_inactive_categories(cat_lookup, rows, to_insert):
+    """Append a row error for any `to_insert` row whose category EXISTS in
+    `cat_lookup` but is inactive (retired) — refused, never silently saved
+    (issue #532 §1). Mutates `rows` in place; the caller's existing
+    `row_errors` check (any row now carrying an error) blocks the whole
+    submission, the same as every other basic-validation failure."""
+    rows_by_index = {r["index"]: r for r in rows}
+    for item in to_insert:
+        is_active = cat_lookup.get((item["category"], item["direction"]))
+        if is_active == 0:
+            rows_by_index[item["index"]]["errors"].append(
+                "หมวดหมู่นี้ถูกปิดใช้งานแล้ว กรุณาเลือกหมวดหมู่ที่ใช้งานอยู่"
+            )
 
 
 def _blank_rows(n=1):
@@ -1019,6 +1151,38 @@ def _default_account_id_for_user(conn, user_id):
     return row["default_cashbook_account_id"] if row else None
 
 
+def _new_form_ctx(conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
+                   confirm_duplicates=False, confirm_advance_cap=False,
+                   confirm_new_categories=False, **extra):
+    """Shared render context for every `cashbook/new.html` re-render inside
+    `new_transaction()` (issue #532 review: was 5 near-identical
+    render_template calls, each hand-copying the same 3 helper queries).
+
+    Also carries the CURRENT request's three confirm flags into the
+    template unconditionally — even the ones NOT being confirmed on this
+    particular render — so the page can echo them back as hidden fields.
+    Without this, tripping two confirm gates in one submission (e.g. a
+    brand-new category on a duplicate row) loses the FIRST confirmation the
+    moment the SECOND gate's screen renders (its form only has its own
+    checkbox), and the user can never get past either gate (issue #532
+    review finding: infinite ping-pong, confirmed empirically)."""
+    ctx = dict(
+        accounts=accounts, txn_date=txn_date, account_id=account_id_raw,
+        bulk_mode=bulk_mode, rows=rows,
+        categories_by_direction=_categories_by_direction(conn),
+        known_tags=_get_known_user_tags(conn),
+        employees=employees,
+        advance_category=ADVANCE_CATEGORY, salary_category=SALARY_CATEGORY,
+        commission_category=COMMISSION_CATEGORY,
+        commission_reps=_commission_reps_for_picker(conn),
+        confirm_duplicates=confirm_duplicates,
+        confirm_advance_cap=confirm_advance_cap,
+        confirm_new_categories=confirm_new_categories,
+    )
+    ctx.update(extra)
+    return ctx
+
+
 @bp_cashbook.route("/new", methods=["GET", "POST"])
 def new_transaction():
     conn = database.get_connection()
@@ -1036,6 +1200,7 @@ def new_transaction():
             bulk_mode = request.form.get("bulk_mode") == "1"
             confirm_duplicates = request.form.get("confirm_duplicates") == "1"
             confirm_advance_cap = request.form.get("confirm_advance_cap") == "1"
+            confirm_new_categories = request.form.get("confirm_new_categories") == "1"
 
             rows = _parse_batch_rows(request.form)
             to_insert = _validate_batch(rows, txn_date)
@@ -1043,6 +1208,13 @@ def new_transaction():
             # employee; invalid ones get a row error here and drop out of
             # to_insert (plan.md C5). Must run BEFORE row_errors is computed.
             to_insert = _resolve_advance_rows(conn, rows, to_insert)
+            # A category that EXISTS but is retired is refused outright — a
+            # row error, so it blocks the whole batch the same as any other
+            # basic-validation failure (issue #532 §1). Must also run BEFORE
+            # row_errors is computed. cat_lookup is fetched once and reused
+            # by the new-category-confirm gate further down.
+            cat_lookup = _category_lookup(conn)
+            _reject_inactive_categories(cat_lookup, rows, to_insert)
 
             form_errors = []
             if account_id not in account_ids:
@@ -1054,21 +1226,10 @@ def new_transaction():
             if form_errors or row_errors:
                 for msg in form_errors:
                     flash(msg, "danger")
-                return render_template(
-                    "cashbook/new.html",
-                    accounts=accounts,
-                    txn_date=txn_date,
-                    account_id=account_id_raw,
-                    bulk_mode=bulk_mode,
-                    rows=rows,
-                    categories_by_direction=_categories_by_direction(conn),
-                    known_tags=_get_known_user_tags(conn),
-                    employees=employees,
-                    advance_category=ADVANCE_CATEGORY,
-                    salary_category=SALARY_CATEGORY,
-                    commission_category=COMMISSION_CATEGORY,
-                    commission_reps=_commission_reps_for_picker(conn),
-                )
+                return render_template("cashbook/new.html", **_new_form_ctx(
+                    conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
+                    confirm_duplicates, confirm_advance_cap, confirm_new_categories,
+                ))
 
             # Policy blocks (plan.md C1-C3, D1, findings #1/#3/#6): manual
             # เงินเดือน is ALWAYS blocked; manual จ่ายค่าคอมมิชชั่น is blocked only
@@ -1076,6 +1237,14 @@ def new_transaction():
             # Blocked rows drop out of to_insert; genuine validation errors
             # above already rejected the whole batch, so anything remaining
             # here is otherwise-valid and safe to keep saving.
+            #
+            # ⚠ Must run BEFORE ผู้ใช้ tag resolution below — the in-engine
+            # check matches the RAW typed tag against salesperson aliases
+            # (plan.md D3, ADR 0008); resolving it to an employee nickname
+            # first could silently defeat the double-book guard if an
+            # employee's name ever collides with a salesperson alias (issue
+            # #532 review — confirmed empirically, this was a real ordering
+            # bug in an earlier version of this change).
             to_insert, policy_blocked = _apply_policy_blocks(conn, rows, to_insert)
             if policy_blocked and not to_insert:
                 # Nothing left to save (single-mode block, or a bulk batch
@@ -1083,27 +1252,45 @@ def new_transaction():
                 # validation error, no insert.
                 for b in policy_blocked:
                     flash(b["reason"], "danger")
-                return render_template(
-                    "cashbook/new.html",
-                    accounts=accounts,
-                    txn_date=txn_date,
-                    account_id=account_id_raw,
-                    bulk_mode=bulk_mode,
-                    rows=rows,
-                    categories_by_direction=_categories_by_direction(conn),
-                    known_tags=_get_known_user_tags(conn),
-                    employees=employees,
-                    advance_category=ADVANCE_CATEGORY,
-                    salary_category=SALARY_CATEGORY,
-                    commission_category=COMMISSION_CATEGORY,
-                    commission_reps=_commission_reps_for_picker(conn),
-                )
+                return render_template("cashbook/new.html", **_new_form_ctx(
+                    conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
+                    confirm_duplicates, confirm_advance_cap, confirm_new_categories,
+                ))
             if policy_blocked:
                 # Bulk mode with at least one valid row left (decision D1):
                 # skip the blocked rows + summarize, still save the rest.
                 from collections import Counter
                 for reason, n in Counter(b["reason"] for b in policy_blocked).items():
                     flash(f"ข้าม {n} แถว: {reason}", "warning")
+
+            # ผู้ใช้ tag normalization (issue #532 §2): map a typed real name
+            # to the employee's system name BEFORE duplicate detection and
+            # insertion, so both see the canonical tag. Advance rows are
+            # skipped (already carry the employee's system name). Notices
+            # flash HERE — past every hard block above, so "we renamed your
+            # tag" is never shown on a page where nothing was actually saved
+            # (issue #532 review).
+            tag_notices = _resolve_person_tags(conn, to_insert)
+            for notice in tag_notices:
+                flash(notice, "info")
+
+            # New-category confirmation (issue #532 §1): a category that does
+            # not exist yet needs explicit confirmation before it's created —
+            # warn-then-confirm, same shape as the duplicate-row guard below.
+            # Never silently creates one.
+            if not confirm_new_categories:
+                new_cats = _find_new_categories(cat_lookup, to_insert)
+                if new_cats:
+                    names = ", ".join(
+                        f"{c['name']} ({'รายรับ' if c['direction'] == 'income' else 'รายจ่าย'})"
+                        for c in new_cats
+                    )
+                    flash(f"หมวดหมู่ใหม่ที่ยังไม่มีในระบบ: {names} — ยืนยันเพื่อสร้างหมวดหมู่และบันทึกรายการ", "warning")
+                    return render_template("cashbook/new.html", **_new_form_ctx(
+                        conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
+                        confirm_duplicates, confirm_advance_cap, confirm_new_categories,
+                        show_new_category_confirm=True, new_categories=new_cats,
+                    ))
 
             # Duplicate-row guard (decision D2, plan.md): warn-then-confirm,
             # never silently block or silently double-insert.
@@ -1114,22 +1301,11 @@ def new_transaction():
                         if r["index"] in dup_indices:
                             r["errors"].append("รายการนี้ซ้ำกับรายการที่มีอยู่แล้ว")
                     flash(f"พบรายการซ้ำ {len(dup_indices)} รายการ กรุณาตรวจสอบและยืนยัน", "warning")
-                    return render_template(
-                        "cashbook/new.html",
-                        accounts=accounts,
-                        txn_date=txn_date,
-                        account_id=account_id_raw,
-                        bulk_mode=bulk_mode,
-                        rows=rows,
+                    return render_template("cashbook/new.html", **_new_form_ctx(
+                        conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
+                        confirm_duplicates, confirm_advance_cap, confirm_new_categories,
                         show_duplicate_confirm=True,
-                        categories_by_direction=_categories_by_direction(conn),
-                        known_tags=_get_known_user_tags(conn),
-                        employees=employees,
-                        advance_category=ADVANCE_CATEGORY,
-                        salary_category=SALARY_CATEGORY,
-                        commission_category=COMMISSION_CATEGORY,
-                        commission_reps=_commission_reps_for_picker(conn),
-                    )
+                    ))
 
             # Advance cap warning (plan.md P2): each advance row is checked
             # against what ITS OWN month can actually pay (Blocker C — keyed
@@ -1167,22 +1343,11 @@ def new_transaction():
                     conn.rollback()
                     for w in cap_warnings:
                         flash(w, "warning")
-                    return render_template(
-                        "cashbook/new.html",
-                        accounts=accounts,
-                        txn_date=txn_date,
-                        account_id=account_id_raw,
-                        bulk_mode=bulk_mode,
-                        rows=rows,
+                    return render_template("cashbook/new.html", **_new_form_ctx(
+                        conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
+                        confirm_duplicates, confirm_advance_cap, confirm_new_categories,
                         show_advance_cap_confirm=True,
-                        categories_by_direction=_categories_by_direction(conn),
-                        known_tags=_get_known_user_tags(conn),
-                        employees=employees,
-                        advance_category=ADVANCE_CATEGORY,
-                        salary_category=SALARY_CATEGORY,
-                        commission_category=COMMISSION_CATEGORY,
-                        commission_reps=_commission_reps_for_picker(conn),
-                    )
+                    ))
 
             # All rows valid (and no unconfirmed duplicates or advance-cap
             # warnings) — insert within one transaction (single connection,
@@ -1254,21 +1419,11 @@ def new_transaction():
         default_account_id = preselected_account_id or _default_account_id_for_user(
             conn, session.get("user_id")
         )
-        return render_template(
-            "cashbook/new.html",
-            accounts=accounts,
-            txn_date=date.today().isoformat(),
-            account_id=(str(default_account_id) if default_account_id else ""),
-            bulk_mode=False,
-            rows=_blank_rows(),
-            categories_by_direction=_categories_by_direction(conn),
-            known_tags=_get_known_user_tags(conn),
-            employees=employees,
-            advance_category=ADVANCE_CATEGORY,
-            salary_category=SALARY_CATEGORY,
-            commission_category=COMMISSION_CATEGORY,
-            commission_reps=_commission_reps_for_picker(conn),
-        )
+        return render_template("cashbook/new.html", **_new_form_ctx(
+            conn, accounts, date.today().isoformat(),
+            (str(default_account_id) if default_account_id else ""),
+            False, _blank_rows(), employees,
+        ))
     finally:
         conn.close()
 
@@ -1414,6 +1569,11 @@ def txn_edit(txn_id):
             errors.append("กรุณาเลือกบัญชีที่ถูกต้องและยังใช้งานอยู่")
         if not txn_date:
             errors.append("กรุณาระบุวันที่")
+        else:
+            try:
+                date.fromisoformat(txn_date)
+            except ValueError:
+                errors.append("รูปแบบวันที่ไม่ถูกต้อง")
         if amount is None or amount <= 0:
             errors.append("จำนวนเงินต้องมากกว่า 0")
         if direction not in ("income", "expense"):
@@ -1442,7 +1602,33 @@ def txn_edit(txn_id):
                 account_id=row["account_id"], month=row["txn_date"][:7],
             ))
 
-        _upsert_category(conn, category, direction)
+        # Category guard (issue #532 §1): edit may only set an ACTIVE existing
+        # category, or leave the row's current (category, direction) pair
+        # unchanged — rows 723/664/665 sit in retired categories on purpose,
+        # and their OTHER fields must stay editable. Edit never creates one
+        # (unlike /cashbook/new, which upserts after confirmation).
+        category_changed = category != row["category"] or direction != row["direction"]
+        if category_changed:
+            active_cat = conn.execute(
+                "SELECT 1 FROM cashbook_categories WHERE name=? AND direction=? AND is_active=1",
+                (category, direction),
+            ).fetchone()
+            if active_cat is None:
+                flash("หมวดหมู่นี้ไม่มีอยู่หรือถูกปิดใช้งานแล้ว กรุณาเลือกหมวดหมู่ที่ใช้งานอยู่", "danger")
+                return redirect(url_for(
+                    "cashbook.account_ledger",
+                    account_id=row["account_id"], month=row["txn_date"][:7],
+                ))
+
+        # ผู้ใช้ tag normalization (issue #532 §2) — ONLY when the tag field
+        # was actually changed: editing a row without touching its tag must
+        # never change it, even if the stored value happens to look like an
+        # employee's real name.
+        if user_category != (row["user_category"] or ""):
+            resolved, notice = _resolve_employee_tag(conn, user_category)
+            user_category = resolved
+            if notice:
+                flash(notice, "info")
 
         new_vals = {
             "account_id": int(account_id_raw), "txn_date": txn_date, "direction": direction,

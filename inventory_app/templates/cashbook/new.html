@@ -12,6 +12,16 @@
 
 <form method="post" action="{{ url_for('cashbook.new_transaction') }}" id="batch-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  {# Carry an ALREADY-confirmed gate forward across a re-render triggered by
+     a DIFFERENT gate (issue #532 review: tripping two confirm gates at once
+     — e.g. a brand-new category on a row that's also a duplicate — must not
+     lose the first confirmation the moment the second gate's own screen
+     renders, or the batch can never be saved through the normal UI). Each
+     gate's OWN checkbox below (name-matched) still controls whether THIS
+     render's gate is confirmed; this only preserves the OTHER two. #}
+  {% if confirm_new_categories %}<input type="hidden" name="confirm_new_categories" value="1">{% endif %}
+  {% if confirm_duplicates %}<input type="hidden" name="confirm_duplicates" value="1">{% endif %}
+  {% if confirm_advance_cap %}<input type="hidden" name="confirm_advance_cap" value="1">{% endif %}
 
   {# ── Shared header: date + account + bulk toggle ─────────────────────────────── #}
   <div class="card mb-3">
@@ -212,6 +222,22 @@
       </table>
     </div>
   </div>
+
+  {# New-category confirmation (issue #532 §1): a category name that does not
+     exist yet is never created silently — same shape as show_duplicate_confirm. #}
+  {% if show_new_category_confirm %}
+  <div class="alert alert-warning">
+    <div>หมวดหมู่ใหม่ที่ยังไม่มีในระบบ:
+      <strong>{% for c in new_categories %}{{ c.name }} ({{ 'รายรับ' if c.direction == 'income' else 'รายจ่าย' }}){% if not loop.last %}, {% endif %}{% endfor %}</strong>
+    </div>
+    <div class="form-check mt-2">
+      <input class="form-check-input" type="checkbox" id="confirm-new-categories" name="confirm_new_categories" value="1">
+      <label class="form-check-label" for="confirm-new-categories">
+        ยืนยันสร้างหมวดหมู่ใหม่นี้และบันทึกรายการ
+      </label>
+    </div>
+  </div>
+  {% endif %}
 
   {% if show_duplicate_confirm %}
   <div class="alert alert-warning">
