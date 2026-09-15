@@ -290,6 +290,27 @@ def test_suggestion_card_control_it_actually_rendered(tmp_db):
     assert len(card) > 200  # sanity: not a truncated/empty fragment
 
 
+def test_tab_button_meets_the_44px_touch_target(tmp_db):
+    """N-tab (review round 1): the lone tab button measured 39px tall at
+    390px in a real browser (docs/mobile-conventions.md section 5's floor
+    is 44px) -- `.btn-touch` is scoped to the same
+    `@media (max-width: 991.98px)` block as every other mobile touch
+    target, so it changes nothing at desktop widths."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _mk_customer(conn)
+    _clear(conn, TEST_CODE)
+    conn.close()
+
+    c = _client(tmp_db)
+    html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
+    card = _card_html(html)
+    tab_button = re.search(r'<button\b[^>]*data-bs-toggle="tab"[^>]*>', card)
+    assert tab_button, 'tab button not found'
+    assert 'btn-touch' in tab_button.group(0)
+
+
 @pytest.mark.parametrize('role', ['staff', 'admin'])
 def test_no_other_shops_name_or_code_appears_in_the_suggestion_card(tmp_db, role):
     import sqlite3
