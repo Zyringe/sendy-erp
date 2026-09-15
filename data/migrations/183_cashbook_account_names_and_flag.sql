@@ -19,6 +19,11 @@
 -- `904` is is_transfer=1 and income_recorded_elsewhere=0; `ชฎามาศ` is the
 -- reverse. An account could in principle be both; nothing here forbids it.
 --
+-- `392` is SCB (ไทยพาณิชย์), not กสิกร (Put, 2026-09-15, correcting the
+-- issue table's own text) — `bank_name` is untouched by this migration
+-- either way; only `display_name` carries the bank's short name for
+-- at-a-glance reading on the dashboard.
+--
 -- Seed is idempotent by DESIGN, not just by the runner's filename bookkeeping:
 -- every display_name UPDATE is guarded `WHERE display_name IS NULL OR
 -- display_name = ''`, so a hand re-run after Put has renamed an account via
@@ -47,7 +52,7 @@ BEGIN IMMEDIATE;
 ALTER TABLE cashbook_accounts ADD COLUMN income_recorded_elsewhere INTEGER
     NOT NULL DEFAULT 0 CHECK (income_recorded_elsewhere IN (0,1));
 
-UPDATE cashbook_accounts SET display_name = 'กสิกร 392'
+UPDATE cashbook_accounts SET display_name = 'ไทยพาณิชย์ 392'
  WHERE code = '392' AND (display_name IS NULL OR display_name = '');
 
 UPDATE cashbook_accounts SET display_name = 'กสิกร รับเงิน Lazada'

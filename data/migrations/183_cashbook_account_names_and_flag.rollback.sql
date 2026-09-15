@@ -14,7 +14,7 @@ PRAGMA busy_timeout = 10000;
 BEGIN;
 
 UPDATE cashbook_accounts SET display_name = NULL
- WHERE code = '392' AND display_name = 'กสิกร 392';
+ WHERE code = '392' AND display_name = 'ไทยพาณิชย์ 392';
 
 UPDATE cashbook_accounts SET display_name = NULL
  WHERE code = 'LEX' AND display_name = 'กสิกร รับเงิน Lazada';

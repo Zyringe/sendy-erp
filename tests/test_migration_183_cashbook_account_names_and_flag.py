@@ -19,7 +19,7 @@ import database
 MIG = '183_cashbook_account_names_and_flag.sql'
 
 SEEDED_NAMES = {
-    '392':      'กสิกร 392',
+    '392':      'ไทยพาณิชย์ 392',   # Put, 2026-09-15: 392 is SCB, not กสิกร
     'LEX':      'กสิกร รับเงิน Lazada',
     'SPX':      'กสิกร รับเงิน Shopee',
     'ชฎามาศ':    'บัญชีส่วนตัว ชฎามาศ',
@@ -122,7 +122,7 @@ def test_seed_does_not_overwrite_an_existing_custom_name(tmp_db):
     conn = sqlite3.connect(tmp_db)
     try:
         row = _row(conn, '392')
-        assert row[0] == 'กสิกรของพุธ'   # untouched, NOT overwritten to 'กสิกร 392'
+        assert row[0] == 'กสิกรของพุธ'   # untouched, NOT overwritten to 'ไทยพาณิชย์ 392'
     finally:
         conn.close()
 
