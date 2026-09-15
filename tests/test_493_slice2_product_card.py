@@ -152,39 +152,20 @@ def test_last_price_is_vat_inclusive_and_carries_date_and_doc(cust):
     assert card['last']['doc_base'] == 'IV49331'
     assert card['last']['date_iso'] == '2026-02-01'
     assert card['last']['price_per_unit'] == pytest.approx(107.0)
-    # Controls for the round-2 fields: no price_history row → never stale;
-    # total == net (the _line default) → no bill-level discount at all.
-    assert card['last']['is_stale'] is False
-    assert card['last']['bill_discount_pct'] is None
+    # #527: no discount keyed, but a แยก VAT line still explains its own
+    # markup — "100.00 +VAT = 107.00", never "nothing to derive".
+    assert card['last']['formula']['discount_kind'] is None
+    assert card['last']['formula']['bill_discount_pct'] is None
+    assert card['last']['formula']['vat'] is True
     assert card['last']['freebies'] == []
-
-
-def test_stale_note_set_when_last_purchase_predates_a_price_change(cust):
-    conn, pid = cust
-    _line(conn, doc_base='IV49390', suffix=1, pid=pid, date_iso='2026-01-01',
-          qty=1, unit_price=100, net=100, vat_type=0)
-    # Base price changed AFTER this purchase — reuses price_lookup's own
-    # epoch source (product_price_history), the same mechanism the call
-    # card's stale flag uses (price_lookup.epochs_for_pairs).
-    conn.execute(
-        "INSERT INTO product_price_history "
-        "(product_id, field_name, old_value, new_value, changed_at) "
-        "VALUES (?, 'base_sell_price', 100, 120, '2026-02-01')",
-        (pid,),
-    )
-    conn.commit()
-    import models
-    data = models.get_customer_summary_by_code(TEST_CODE)
-    card = _card(data, pid)
-    assert card['last']['is_stale'] is True
 
 
 def test_last_line_reports_vat_note_fields_and_bill_level_discount(cust):
     conn, pid = cust
-    # แยก VAT, 10% line discount, and a 2% bill-level discount (total=200,
-    # net=196 — the customer's paid share after the doc-level cut).
+    # แยก VAT, 10% line discount (total = 100*2*0.9 = 180, reconciling), and
+    # a 2% bill-level discount on top (net = 180*0.98 = 176.4).
     _line(conn, doc_base='IV49391', suffix=1, pid=pid, date_iso='2026-01-01',
-          qty=2, unit_price=100, net=196, total=200, discount='10%',
+          qty=2, unit_price=100, net=176.4, total=180, discount='10%',
           vat_type=2)
     import models
     data = models.get_customer_summary_by_code(TEST_CODE)
@@ -192,7 +173,37 @@ def test_last_line_reports_vat_note_fields_and_bill_level_discount(cust):
     assert card['last']['vat_type'] == 2
     assert card['last']['unit_price'] == pytest.approx(100.0)
     assert card['last']['discount'] == '10%'
-    assert card['last']['bill_discount_pct'] == pytest.approx(2.0)
+    assert card['last']['formula']['discount_kind'] == 'percent'
+    assert card['last']['formula']['discount_label'] == '10%'
+    assert card['last']['formula']['bill_discount_pct'] == pytest.approx(2.0)
+    assert card['last']['formula']['vat'] is True
+
+
+def test_last_line_formula_is_none_when_the_line_does_not_reconcile(cust):
+    """#527 reconciliation guard: a keyed discount that does not explain
+    `total` must never render a wrong derivation — price alone."""
+    conn, pid = cust
+    _line(conn, doc_base='IV49409', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=1, unit_price=100, net=100, total=170, discount='3480.00',
+          vat_type=1)
+    import models
+    data = models.get_customer_summary_by_code(TEST_CODE)
+    card = _card(data, pid)
+    assert card['last']['formula'] is None
+    assert card['last']['price_per_unit'] == pytest.approx(100.0)   # price still shows
+
+
+def test_last_line_formula_none_when_net_exceeds_total(cust):
+    """#525: a negative bill discount must never render, even though the
+    line discount itself would otherwise reconcile."""
+    conn, pid = cust
+    _line(conn, doc_base='IV49410', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=1, unit_price=55, net=60, total=53.90, discount='2%',
+          vat_type=1)
+    import models
+    data = models.get_customer_summary_by_code(TEST_CODE)
+    card = _card(data, pid)
+    assert card['last']['formula'] is None
 
 
 def test_last_line_reports_same_product_freebies_on_the_same_document(cust):
@@ -236,6 +247,48 @@ def test_today_price_is_list_after_promo_no_promo_case(cust):
     card = _card(data, pid)
     assert card['today']['has_list_price'] is True
     assert card['today']['price_per_unit'] == pytest.approx(100.0)
+
+
+def test_today_price_formula_when_a_percent_promo_changes_the_price(cust):
+    """#527 worked example: 60.00 -10% = 54.00 -- the promo formula condition
+    is promotions.affects_price (percent, or a mixed row with a
+    discount_value), never promo_type == 'percent' alone."""
+    conn, pid = cust
+    conn.execute("UPDATE products SET base_sell_price = 60 WHERE id = ?", (pid,))
+    conn.execute(
+        "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+        " date_start, is_active) VALUES (?, 'ลด 10%', 'percent', 10, '2024-01-01', 1)",
+        (pid,))
+    conn.commit()
+    _line(conn, doc_base='IV49412', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=1, unit_price=54, net=54, vat_type=0)
+    import models
+    data = models.get_customer_summary_by_code(TEST_CODE)
+    card = _card(data, pid)
+    assert card['today']['price_per_unit'] == pytest.approx(54.0)
+    assert card['today']['promo_affects_price'] is True
+    assert card['today']['list_for_unit'] == pytest.approx(60.0)
+
+
+def test_today_price_keeps_promo_summary_text_for_a_fixed_promo(cust):
+    """A 'fixed' promo's discount_value IS the final price, not a percentage
+    -- it changes the price but must NOT get the "-X%" formula shape.
+    promo_affects_price stays False and the plain promo_summary text is what
+    renders (unchanged from before #527)."""
+    conn, pid = cust
+    conn.execute(
+        "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+        " date_start, is_active) VALUES (?, 'ราคาพิเศษ', 'fixed', 75, '2024-01-01', 1)",
+        (pid,))
+    conn.commit()
+    _line(conn, doc_base='IV49413', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=1, unit_price=75, net=75, vat_type=0)
+    import models
+    data = models.get_customer_summary_by_code(TEST_CODE)
+    card = _card(data, pid)
+    assert card['today']['price_per_unit'] == pytest.approx(75.0)
+    assert card['today']['promo_affects_price'] is False
+    assert card['today']['promo']['promo_type'] == 'fixed'
 
 
 def test_no_base_price_shows_no_list_price_not_zero(cust):
@@ -417,30 +470,29 @@ def test_customer_page_has_call_card_button(tmp_db):
     assert f'href="/call/{TEST_CODE}"' in html
 
 
-def test_customer_page_shows_stale_note_only_when_stale(tmp_db):
+def test_customer_page_no_longer_shows_the_stale_note(tmp_db):
+    """#527: the ก่อนเปลี่ยนราคา note is REMOVED from this card (80% false
+    positive rate — #526 owns any future replacement)."""
     import sqlite3
     conn = sqlite3.connect(tmp_db)
     conn.row_factory = sqlite3.Row
     _mk_customer(conn)
     _clear_customer(conn)
-    pid_stale = _mk_product(conn, name='สินค้าราคาเปลี่ยน')
-    pid_fresh = _mk_product(conn, name='สินค้าราคาไม่เปลี่ยน')
-    _line(conn, doc_base='IV49397', suffix=1, pid=pid_stale, date_iso='2026-01-01',
+    pid = _mk_product(conn, name='สินค้าราคาเปลี่ยน')
+    _line(conn, doc_base='IV49397', suffix=1, pid=pid, date_iso='2026-01-01',
           qty=1, unit_price=100, net=100, vat_type=0)
     conn.execute(
         "INSERT INTO product_price_history "
         "(product_id, field_name, old_value, new_value, changed_at) "
         "VALUES (?, 'base_sell_price', 100, 120, '2026-02-01')",
-        (pid_stale,),
+        (pid,),
     )
-    _line(conn, doc_base='IV49398', suffix=1, pid=pid_fresh, date_iso='2026-01-01',
-          qty=1, unit_price=100, net=100, vat_type=0)
     conn.commit()
     conn.close()
 
     c = _client(tmp_db)
     html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
-    assert html.count('ก่อนเปลี่ยนราคา') == 1
+    assert 'ก่อนเปลี่ยนราคา' not in html
 
 
 def test_customer_page_shows_vat_note_only_on_split_vat_line(tmp_db):
@@ -459,7 +511,49 @@ def test_customer_page_shows_vat_note_only_on_split_vat_line(tmp_db):
 
     c = _client(tmp_db)
     html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
-    assert html.count('+ VAT') == 1
+    # #527: "+VAT" is now part of the formula ("100.00 +VAT = 107.00"), no
+    # longer a separate note line.
+    assert html.count('+VAT') == 1
+
+
+def test_customer_page_renders_the_percent_discount_formula(tmp_db):
+    """#527 worked example (BM99 / pid 115 / IV6701495): 55.00 -2% = 53.90."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _mk_customer(conn)
+    _clear_customer(conn)
+    pid = _mk_product(conn, name='สินค้าสูตรราคา')
+    _line(conn, doc_base='IV49411', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=1, unit_price=55.00, net=53.90, total=53.90, discount='2%',
+          vat_type=0)
+    conn.close()
+
+    c = _client(tmp_db)
+    html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
+    assert '55.00 −2% = 53.90' in html
+
+
+def test_customer_page_renders_todays_promo_formula(tmp_db):
+    """#527 worked example: 60.00 -10% = 54.00."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    conn.row_factory = sqlite3.Row
+    _mk_customer(conn)
+    _clear_customer(conn)
+    pid = _mk_product(conn, name='สินค้าโปรวันนี้', base=60.0)
+    conn.execute(
+        "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+        " date_start, is_active) VALUES (?, 'ลด 10%', 'percent', 10, '2024-01-01', 1)",
+        (pid,))
+    _line(conn, doc_base='IV49414', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=1, unit_price=54, net=54, vat_type=0)
+    conn.commit()
+    conn.close()
+
+    c = _client(tmp_db)
+    html = c.get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
+    assert '60.00 −10% = 54.00' in html
 
 
 def test_customer_page_low_stock_row_gets_the_warning_class(tmp_db):

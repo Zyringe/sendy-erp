@@ -54,6 +54,22 @@
 {% endmacro %}
 
 
+{# #527: the "list -discount" PREFIX of an invoice-line formula — the caller
+   appends " = {price_per_unit}" (the card's own figure, never recomputed
+   here). `f` is customers.py::invoice_formula.invoice_line_formula's output;
+   None renders nothing (caller falls back to the price alone). Percent is
+   rendered exactly as keyed ("−2%", "−15+5%"), never back-computed. #}
+{% macro invoice_formula_prefix(f) %}
+{%- if f -%}
+  {{- f.unit_price | fmt_price }}
+  {%- if f.discount_kind == 'percent' %} −{{ f.discount_label }}{% endif -%}
+  {%- if f.discount_kind == 'baht' %} −฿{{ f.discount_label }} (ทั้งบรรทัด){% endif -%}
+  {%- if f.bill_discount_pct %} −ท้ายบิล {{ '%g' | format(f.bill_discount_pct) }}%{% endif -%}
+  {%- if f.vat %} +VAT{% endif -%}
+{%- endif -%}
+{% endmacro %}
+
+
 {# One-line promotion summary for a table cell: discount and/or freebie, plus a
    "🎁 N ระดับ" pill when a bundle has multiple tiers. Covers all promo_types. #}
 {% macro promo_summary(promo) %}

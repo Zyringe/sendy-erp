@@ -1139,6 +1139,12 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
             'margin_at_lowest_pct': margin_at_lowest_pct,
             'margin_incl_free_units': margin_incl_free_units,
             'below_cost_by': below_cost_by,
+            # #527 (additive only): the bundle multiplier already applied to
+            # cost_side above -- (buy+free)/buy when the bundle applies, 1.0
+            # otherwise. Exposed so a caller (the customer page's ที่ทุนใหม่)
+            # can price a DIFFERENT cost basis at today's same bundle deal
+            # without re-deriving the buy-N-get-M rule itself.
+            'cost_mult': mult,
             'note': internal_note,
         },
     }

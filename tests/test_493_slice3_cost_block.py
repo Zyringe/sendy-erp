@@ -304,6 +304,54 @@ def test_margin_today_is_the_resolvers_at_the_customers_last_quantity(cust):
     assert m['pct'] == pytest.approx(35.0)
 
 
+def test_margin_at_new_cost_shown_on_both_margins_when_last_purchase_is_above_wacc(cust):
+    """#527: last purchase (80) > WACC (60) -> both margins ALSO show a
+    ที่ทุนใหม่ reading at the replacement cost. Last: (1000-800)/1000=20%.
+    Today: list 100, no promo -> cost_mult 1.0 -> (100-80)/100=20%."""
+    conn = cust
+    pid = _mk_product(conn, base=100.0, cost=60.0)
+    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 80.0, ref='RR060')
+    _line(conn, doc_base='IV49530', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=10, unit_price=100, net=1000)
+    cost = _card(_summary(), pid)['cost']
+    assert cost['last_purchase_above_wacc'] is True
+    assert cost['margin_last']['pct'] == pytest.approx(40.0)
+    assert cost['margin_last']['at_new_cost_pct'] == pytest.approx(20.0)
+    assert cost['margin_today']['pct'] == pytest.approx(40.0)
+    assert cost['margin_today']['at_new_cost_pct'] == pytest.approx(20.0)
+
+
+def test_margin_at_new_cost_absent_when_last_purchase_is_not_above_wacc(cust):
+    conn = cust
+    pid = _mk_product(conn, base=100.0, cost=80.0)
+    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 60.0, ref='RR061')  # below WACC
+    _line(conn, doc_base='IV49531', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=10, unit_price=100, net=1000)
+    cost = _card(_summary(), pid)['cost']
+    assert cost['last_purchase_above_wacc'] is False
+    assert 'at_new_cost_pct' not in cost['margin_last']
+    assert 'at_new_cost_pct' not in cost['margin_today']
+
+
+def test_margin_at_new_cost_counts_a_bundles_free_units_via_cost_mult(cust):
+    """ที่ทุนใหม่ reuses the resolver's own cost_mult for today's price -- a
+    buy-12-get-1 bundle at last purchase 80 (> WACC 60) carries 13/12 of a
+    unit: new_cost_side = round(80 * 13/12, 2) = 86.67."""
+    conn = cust
+    pid = _mk_product(conn, base=100.0, cost=60.0)
+    conn.execute(
+        "INSERT INTO promotions (product_id, promo_name, promo_type, bundle_buy, "
+        " bundle_free, date_start, is_active) VALUES (?, 'ซื้อ 12 แถม 1', 'bundle', 12, 1, "
+        " '2024-01-01', 1)", (pid,))
+    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 80.0, ref='RR062')
+    conn.commit()
+    _line(conn, doc_base='IV49532', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=12, unit_price=100, net=1200)
+    cost = _card(_summary(), pid)['cost']
+    assert cost['margin_today']['incl_free_units'] is True
+    assert cost['margin_today']['at_new_cost_pct'] == pytest.approx((100 - 86.67) / 100 * 100, abs=0.01)
+
+
 def test_a_product_with_no_cost_has_no_margin_and_no_badges(cust):
     conn = cust
     pid = _mk_product(conn, base=100.0, cost=0.0)
@@ -423,7 +471,10 @@ def _seed_distinctive(tmp_db):
     return name
 
 
-_SECRETS = ('37.13', '41.27', '62.87', '69.06', 'ทุนเฉลี่ย', 'ทุนซื้อล่าสุด')
+# Cell values (#527: the cost column shows ทุนซื้อล่าสุด, and the WACC only as
+# "เฉลี่ย …" when the last purchase is above it — this seed is, 41.27 > 37.13).
+_SECRETS = ('37.13', '41.27', '62.87', '69.06', 'เฉลี่ย 37.13')
+_COST_HEADER = 'ทุนซื้อล่าสุด'   # the manager-only column header (#527)
 
 
 @pytest.mark.parametrize('role', ['staff', 'shareholder'])
@@ -434,13 +485,14 @@ def test_non_manager_page_carries_no_cost_anywhere(tmp_db, role):
     # CONTROL: the page really rendered this customer's product row.
     assert resp.status_code == 200
     assert _row_cells(html, name)['ราคาล่าสุด']
-    for s in _SECRETS:
+    for s in _SECRETS + (_COST_HEADER,):
         assert s not in html, f'{role} page leaks {s!r}'
     # CONTROL: the same seed DOES show every figure to a manager.
-    mgr = _row_cells(_client('manager').get(f'/customer/code/{quote(TEST_CODE)}').data.decode(), name)
-    mgr_row = ''.join(mgr.values())
+    mgr_html = _client('manager').get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
+    mgr_row = ''.join(_row_cells(mgr_html, name).values())
     for s in _SECRETS:
         assert s in mgr_row, f'manager row is missing {s!r}'
+    assert f'<th class="text-end">{_COST_HEADER}</th>' in mgr_html
 
 
 @pytest.mark.parametrize('role,expect_cost', [('staff', False), ('shareholder', False),
@@ -478,7 +530,7 @@ def test_template_gates_cost_even_if_the_data_carries_it(tmp_db, monkeypatch):
                         lambda code, *a, **kw: real(code, *a, **{**kw, 'include_cost': True}))
     html = _client('staff').get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
     assert _row_cells(html, name)['ราคาล่าสุด']   # control: row rendered
-    for s in _SECRETS:
+    for s in _SECRETS + (_COST_HEADER,):
         assert s not in html, f'template leaks {s!r} to staff'
 
 
@@ -529,7 +581,7 @@ def test_every_badge_sits_on_the_figure_it_judges(tmp_db):
     for label in ('ราคาล่าสุด', 'ราคาวันนี้'):
         assert '🔴 ต่ำกว่าทุน</span>' in cells[label], f'{label}: no 🔴'
         assert '⚠ ต่ำกว่าทุนซื้อล่าสุด</span>' in cells[label], f'{label}: no ⚠'
-    assert 'ต่ำกว่าทุน' not in cells['ทุน'] and '110.00' in cells['ทุน']   # control + scope
+    assert 'ต่ำกว่าทุน' not in cells['ทุนซื้อล่าสุด'] and '110.00' in cells['ทุนซื้อล่าสุด']   # control + scope
 
 
 def test_manager_today_margin_reveal_shows_its_arithmetic(tmp_db):
@@ -610,9 +662,27 @@ def test_multi_line_cells_hold_one_child_so_the_phone_grid_cannot_scatter(tmp_db
     assert '⚠ ต่ำกว่าทุนซื้อล่าสุด' in cells['ราคาวันนี้'] and 'data-margin-reveal' in cells['ราคาวันนี้']
     p = _CellChildren()
     p.feed(row)
-    assert set(p.counts) == {'ครั้งที่ซื้อ', 'ราคาล่าสุด', 'ราคาวันนี้', 'ทุน', 'สต็อก'}   # control
+    assert set(p.counts) == {'ครั้งที่ซื้อ', 'ราคาล่าสุด', 'ราคาวันนี้', 'ทุนซื้อล่าสุด', 'สต็อก'}   # control
     for label, n in p.counts.items():
         assert n == 1, f'{label} has {n} top-level children'
+
+
+def test_manager_sees_at_new_cost_margin_under_both_margins(tmp_db):
+    """#527: last purchase 80 > WACC 60 -> ที่ทุนใหม่ 20.00% shows under BOTH
+    the ราคาล่าสุด and ราคาวันนี้ margins."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    _mk_customer(conn)
+    _clear_customer(conn)
+    pid = _mk_product(conn, name='ทุนใหม่สูงกว่าเฉลี่ย', base=100.0, cost=60.0)
+    _ledger(conn, pid, 'PURCHASE', '2026-01-01', 80.0, ref='RR063')
+    _line(conn, doc_base='IV49533', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=10, unit_price=100, net=1000)
+    name = _name(conn, pid)
+    conn.close()
+    cells = _row_cells(_client('manager').get(f'/customer/code/{quote(TEST_CODE)}').data.decode(), name)
+    assert cells['ราคาล่าสุด'].count('ที่ทุนใหม่ 20.00%') == 1
+    assert cells['ราคาวันนี้'].count('ที่ทุนใหม่ 20.00%') == 1
 
 
 def test_manager_sees_no_cost_text_for_a_costless_product(tmp_db):
@@ -626,7 +696,7 @@ def test_manager_sees_no_cost_text_for_a_costless_product(tmp_db):
     name = _name(conn, pid)
     conn.close()
     cells = _row_cells(_client('manager').get(f'/customer/code/{quote(TEST_CODE)}').data.decode(), name)
-    assert 'ไม่มีทุน' in cells['ทุน']
+    assert 'ไม่มีทุน' in cells['ทุนซื้อล่าสุด']
     assert 'data-margin-reveal' not in cells['ราคาล่าสุด']
     assert '100.00' in cells['ราคาล่าสุด']   # control: the price itself rendered
 
@@ -643,8 +713,95 @@ def test_manager_sees_last_purchase_and_its_badge_for_a_costless_product(tmp_db)
     name = _name(conn, pid)
     conn.close()
     cells = _row_cells(_client('manager').get(f'/customer/code/{quote(TEST_CODE)}').data.decode(), name)
-    assert 'ไม่มีทุน' in cells['ทุน']
-    assert '68.83' in cells['ทุน'] and 'RR051' in cells['ทุน']
+    cost = cells['ทุนซื้อล่าสุด']
+    # #527: the last purchase is THE figure; the missing WACC is still named
+    # (Put 2026-09-11: a costless product shows ไม่มีทุน), the doc ref is gone.
+    assert '68.83' in cost and 'ไม่มีทุนเฉลี่ย' in cost
+    assert 'RR051' not in cost
     assert '⚠ ต่ำกว่าทุนซื้อล่าสุด</span>' in cells['ราคาล่าสุด']
     assert '🔴' not in cells['ราคาล่าสุด']
     assert 'data-margin-reveal' not in cells['ราคาล่าสุด'] + cells['ราคาวันนี้']
+
+
+# ── #527: the ทุนซื้อล่าสุด column ──────────────────────────────────────────
+# One number (the last purchase cost) by default. The WACC appears only when it
+# says something the last purchase does not: as "เฉลี่ย …" when there is no
+# purchase at all, or beside a "↑gap%" when the last purchase is ABOVE it.
+
+def test_gap_is_carried_when_last_purchase_is_above_wacc(cust):
+    pid = _mk_product(cust, name='ทุนขึ้น', base=100.0, cost=60.0)
+    _ledger(cust, pid, 'PURCHASE', '2026-01-01', 80.0)
+    _line(cust, doc_base='IV49540', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=1, unit_price=100, net=100)
+    cost = _card(_summary(), pid)['cost']
+    assert cost['last_purchase_above_wacc'] is True
+    assert cost['last_purchase_gap_pct'] == 33.3   # (80 − 60) ÷ 60
+
+
+def test_gap_is_none_when_last_purchase_is_not_above_wacc(cust):
+    pid = _mk_product(cust, name='ทุนเท่าเดิม', base=100.0, cost=60.0)
+    _ledger(cust, pid, 'PURCHASE', '2026-01-01', 60.0)
+    _line(cust, doc_base='IV49541', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=1, unit_price=100, net=100)
+    cost = _card(_summary(), pid)['cost']
+    assert cost['last_purchase_above_wacc'] is False
+    assert cost['last_purchase_gap_pct'] is None
+
+
+def test_gap_is_none_when_the_wacc_prints_as_zero(cust):
+    """cost_price 0.001 is a real cost (has_cost) that prints as 0.00 per row
+    unit, so a gap % would divide by zero. Above, but no percentage."""
+    pid = _mk_product(cust, name='ทุนจิ๋ว', base=1.0, cost=0.001)
+    _ledger(cust, pid, 'PURCHASE', '2026-01-01', 0.5)
+    _line(cust, doc_base='IV49542', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=1, unit_price=1, net=1)
+    cost = _card(_summary(), pid)['cost']
+    assert cost['wacc_per_unit'] == 0.0 and cost['last_purchase_above_wacc'] is True   # control
+    assert cost['last_purchase_gap_pct'] is None
+
+
+def _cost_cell(tmp_db, name, cost, lp=None):
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    _mk_customer(conn)
+    _clear_customer(conn)
+    pid = _mk_product(conn, name=name, base=100.0, cost=cost)
+    if lp is not None:
+        _ledger(conn, pid, 'PURCHASE', '2026-01-01', lp, ref='RR099')
+    _line(conn, doc_base='IV49543', suffix=1, pid=pid, date_iso='2026-02-01',
+          qty=1, unit_price=100, net=100)
+    n = _name(conn, pid)
+    conn.close()
+    cells = _row_cells(_client('manager').get(f'/customer/code/{quote(TEST_CODE)}').data.decode(), n)
+    assert '100.00' in cells['ราคาล่าสุด']   # control: the row really rendered
+    return cells['ทุนซื้อล่าสุด']
+
+
+def test_cost_column_above_wacc_shows_the_gap_the_wacc_and_the_purchase_date(tmp_db):
+    cell = _cost_cell(tmp_db, 'คอลัมน์ทุนขึ้น', cost=60.0, lp=80.0)
+    assert '80.00' in cell and '↑33.3%' in cell
+    assert 'เฉลี่ย 60.00 · ซื้อ 2026-01-01' in cell
+    assert 'RR099' not in cell
+
+
+def test_cost_column_at_wacc_shows_only_the_last_purchase(tmp_db):
+    cell = _cost_cell(tmp_db, 'คอลัมน์ทุนเท่า', cost=60.0, lp=60.0)
+    assert '60.00' in cell
+    assert 'เฉลี่ย' not in cell and '↑' not in cell and 'RR099' not in cell
+
+
+def test_cost_column_below_wacc_hides_the_wacc(tmp_db):
+    cell = _cost_cell(tmp_db, 'คอลัมน์ทุนลง', cost=60.0, lp=50.0)
+    assert '50.00' in cell
+    assert '60.00' not in cell and 'เฉลี่ย' not in cell and '↑' not in cell
+
+
+def test_cost_column_without_a_purchase_shows_the_wacc_labelled(tmp_db):
+    cell = _cost_cell(tmp_db, 'คอลัมน์ไม่มีบิลซื้อ', cost=60.0)
+    assert 'เฉลี่ย 60.00' in cell and '↑' not in cell
+
+
+def test_cost_column_tiny_gap_reads_less_than_a_tenth(tmp_db):
+    """100.04 over 100.00 is 0.04% — rounds to 0.0, so it must not print ↑0.0%."""
+    cell = _cost_cell(tmp_db, 'คอลัมน์ทุนขึ้นนิดเดียว', cost=100.0, lp=100.04)
+    assert '↑&lt;0.1%' in cell and '↑0.0%' not in cell
