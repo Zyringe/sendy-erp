@@ -282,6 +282,22 @@
   **no** other shop's name or code, for any role — admin included. Placed after
   สินค้าที่ซื้อบ่อย, single tab for now (a clearance-list tab may join it in a later issue).
 
+## Marketplace settlement (the `/marketplace/settlement` feature — จับคู่ออเดอร์กับใบกำกับ)
+
+- **การผูกใบกำกับ (link)** — the pairing of one marketplace order with the one Express
+  **IV** it was keyed as. An order holds at most one IV and an IV belongs to at most one
+  order. It is how a platform payout is traced to the bill it paid. _Avoid_: "match" for
+  the pairing itself (the matcher *makes* links).
+
+- **ผูกอัตโนมัติ (auto link)** — a link the matcher made. The matcher discards and rebuilds
+  every auto link each time it runs, so an auto link can change on the next import.
+
+- **ยืนยันเอง (manual link)** — a link a person confirmed in the IV picker (★). The matcher
+  never changes, removes, or reuses it; only a person picking again replaces it.
+
+- **ย้ายใบกำกับ (move an IV)** — confirming, for one order, an IV that another order
+  currently holds. The other order is left with no IV. _Avoid_: "steal", "แย่ง".
+
 ## Cashbook (the `/cashbook` feature — บัญชีรับ-จ่าย)
 
 - **Cashbook (บัญชีรับ-จ่าย)** — the multi-account operating cash ledger: money in/out of
