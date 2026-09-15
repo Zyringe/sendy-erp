@@ -546,6 +546,153 @@ def _customer_product_cards(conn, where, params, include_cost=False):
     return cards
 
 
+def _cross_sell_suggestions(conn, customer_code, today=None, limit=10,
+                             min_other_shops=3, window_days=730):
+    """เสนอเพิ่ม → ขายดีที่ร้านนี้ยังไม่มี (#498): up to `limit` in-stock,
+    active, priced products that at least `min_other_shops` OTHER B2B shops
+    bought in the trailing `window_days` (24 months), that THIS shop has
+    never bought (all-time — same population as ครั้งที่ซื้อ). One row per
+    `products.sub_category`.
+
+    Population = `price_lookup.evidence_filter` throughout — never a second
+    "does this count as a sale" predicate. Shop key = the call list's own
+    canonical key (`COALESCE(NULLIF(TRIM(customer_code),''), customer)`), so
+    a bill name shared by two companies is never conflated into one "shop"
+    (same reasoning winback.py's module docstring gives for the same key).
+
+    Ranking: distinct-other-shop count desc, then document count desc, then
+    product id asc — deterministic. This shop's own code never counts
+    toward any product's shop_count (excluded in the WHERE, on top of the
+    separate "already bought" exclusion below — the two overlap for a
+    cleanly-coded row, but only the key-based exclusion catches a stray row
+    where this shop's OWN code carries leading/trailing whitespace).
+
+    Grouping: at most one row per sub_category, taking the HIGHEST-RANKED
+    candidate in that sub_category. A sub-category this shop already buys
+    in ANY variant is dropped entirely before ranking. If the sub-category's
+    designated (highest-ranked) candidate later fails a downstream filter
+    (no resolvable price), that sub-category simply produces no row — it is
+    never backfilled from the next-ranked candidate sharing it. A NULL
+    sub_category product stands on its own (never grouped with another NULL
+    row).
+
+    Independent of any date filter: the caller must never thread
+    date_from/date_to through — there is no such parameter here at all, so
+    it cannot happen by accident.
+
+    Performance: ONE aggregate query does the ranking + every cheap filter
+    (population, 24-month window, self-exclusion, is_active, in-stock,
+    already-bought product, already-bought sub-category) in SQL.
+    `price_lookup.resolve_price` — the only per-candidate call, and the
+    only way to know whether a product has a resolvable list price — runs
+    in ranked order and stops as soon as `limit` rows have qualified, never
+    for every candidate.
+
+    Returns a list of dicts: product_id, product_name, unit, shop_count,
+    price_per_unit, list_for_unit, promo, promo_affects_price, stock_qty
+    (None when the unit's piece ratio isn't derivable — same convention as
+    the product card's stock badge). NEVER a cost/WACC/margin field, for
+    any caller/role — `resolve_price`'s `internal` block is never touched
+    here (#498's own rule: no cost on suggestions, admin included), and no
+    other shop's name or code is ever included (counts only).
+    """
+    import datetime as dt
+    import price_lookup
+
+    today = today or dt.date.today().isoformat()
+    cutoff = (dt.date.fromisoformat(today) - dt.timedelta(days=window_days)).isoformat()
+
+    # This shop's own all-time evidence-filtered history: which products
+    # (any unit) and which sub-categories it already buys.
+    own_rows = conn.execute(f"""
+        SELECT DISTINCT s.product_id, p.sub_category
+        FROM sales_transactions s
+        JOIN products p ON p.id = s.product_id
+        WHERE s.customer_code = ? AND {price_lookup.evidence_filter('s')}
+    """, (customer_code,)).fetchall()
+    bought_pids = {r['product_id'] for r in own_rows}
+    bought_subcats = {r['sub_category'] for r in own_rows if r['sub_category'] is not None}
+
+    key_expr = "COALESCE(NULLIF(TRIM(s.customer_code),''), s.customer)"
+    params = [cutoff, customer_code]
+    exclude_sql = ''
+    if bought_pids:
+        ph = ",".join("?" * len(bought_pids))
+        exclude_sql += f" AND s.product_id NOT IN ({ph})"
+        params.extend(sorted(bought_pids))
+    if bought_subcats:
+        ph = ",".join("?" * len(bought_subcats))
+        exclude_sql += f" AND (p.sub_category IS NULL OR p.sub_category NOT IN ({ph}))"
+        params.extend(sorted(bought_subcats))
+    params.append(min_other_shops)
+
+    rows = conn.execute(f"""
+        SELECT s.product_id AS product_id,
+               p.product_name AS product_name,
+               p.sub_category AS sub_category,
+               COUNT(DISTINCT {key_expr}) AS shop_count,
+               COUNT(DISTINCT s.doc_base) AS doc_count
+        FROM sales_transactions s
+        JOIN products p ON p.id = s.product_id
+        LEFT JOIN stock_levels sl ON sl.product_id = p.id
+        WHERE {price_lookup.evidence_filter('s')}
+          AND s.date_iso >= ?
+          AND {key_expr} != ?
+          AND p.is_active = 1
+          AND COALESCE(sl.quantity, 0) > 0
+          {exclude_sql}
+        GROUP BY s.product_id
+        HAVING COUNT(DISTINCT {key_expr}) >= ?
+        ORDER BY shop_count DESC, doc_count DESC, s.product_id ASC
+    """, params).fetchall()
+
+    out = []
+    seen_subcats = set()
+    for r in rows:
+        if len(out) >= limit:
+            break
+        subcat = r['sub_category']
+        if subcat is not None:
+            if subcat in seen_subcats:
+                continue
+            seen_subcats.add(subcat)
+
+        try:
+            resolved = price_lookup.resolve_price(conn, product_id=r['product_id'],
+                                                   unit=None, today=today)
+        except ValueError:
+            continue
+        if resolved['list']['list_for_unit'] == 0:
+            continue
+
+        price_promo = resolved['list']['price_promo']
+        promo_affects_price = (
+            price_promo is not None and price_promo['promo_type'] != 'fixed'
+            and price_promo['discount_value'] is not None
+        )
+        ratio = resolved['unit']['ratio']
+        stock_qty = None
+        if ratio is not None:
+            stock_row = conn.execute(
+                "SELECT quantity FROM stock_levels WHERE product_id = ?", (r['product_id'],)
+            ).fetchone()
+            base_qty = stock_row['quantity'] if stock_row else 0
+            stock_qty = round(base_qty / ratio, 4) if ratio else base_qty
+
+        out.append({
+            'product_id': r['product_id'],
+            'product_name': r['product_name'],
+            'unit': resolved['answer']['unit'],
+            'shop_count': r['shop_count'],
+            'price_per_unit': resolved['answer']['price_per_unit'],
+            'list_for_unit': resolved['list']['list_for_unit'],
+            'promo': price_promo,
+            'promo_affects_price': promo_affects_price,
+            'stock_qty': stock_qty,
+        })
+    return out
+
+
 def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
                                  include_cost=False):
     """Code-keyed counterpart to get_customer_summary().

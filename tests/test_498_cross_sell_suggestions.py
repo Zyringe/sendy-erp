@@ -14,6 +14,15 @@ Population = `price_lookup.evidence_filter`, reused, never re-derived.
 Shop key = the call list's own canonical key
 (COALESCE(NULLIF(TRIM(customer_code),''), customer)).
 
+`tmp_db_conn` clones the LIVE dev DB WITH its data (hundreds of real
+products, real B2B shop history) — every assertion here must be immune to
+that noise, not merely hope it doesn't collide. Two techniques do that:
+(1) every fixture PRODUCT is a fresh INSERT, so no pre-existing
+sales_transactions row can reference it; (2) `_window_dates()` below picks
+`today` far enough past the real DB's own latest date that the
+trailing-24-month window can never admit a single real row, so the
+ranking/limit/tie-break tests are not swamped by real popular products.
+
 Prior art for fixtures: tests/test_497_winback.py, tests/test_493_slice2_product_card.py.
 """
 import os
@@ -27,10 +36,6 @@ SENDAI_BRAND_ID = 3  # เซ็นได — verified against the live dev DB (
 
 TEST_CODE = 'TEST4980'
 TEST_NAME = 'ลูกค้าทดสอบ 498 เสนอเพิ่ม'
-
-TODAY = '2026-09-15'
-RECENT = '2026-06-01'          # inside the trailing-24-month window
-STALE = '2023-01-01'           # older than 24 months before TODAY
 
 _pid_counter = [498000]
 
@@ -90,7 +95,20 @@ def _clear_customer(conn, code=TEST_CODE):
     conn.commit()
 
 
-def _other_shops(conn, pid, n, *, prefix='OTH', date_iso=RECENT, unit_price=100, net=100,
+def _window_dates(conn):
+    """(today_iso, recent_iso, stale_iso) — see module docstring. `today` is
+    800 days past the live DB's own latest sale (comfortably more than the
+    730-day window past it, so NO real row can ever qualify); `recent` sits
+    inside the resulting window; `stale` is the real DB's own latest date —
+    comfortably OUTSIDE the 730-day window measured back from `today`."""
+    max_date = conn.execute("SELECT MAX(date_iso) FROM sales_transactions").fetchone()[0]
+    max_d = dt.date.fromisoformat(max_date or '2020-01-01')
+    today_d = max_d + dt.timedelta(days=800)
+    recent_d = today_d - dt.timedelta(days=30)
+    return today_d.isoformat(), recent_d.isoformat(), max_d.isoformat()
+
+
+def _other_shops(conn, pid, n, *, prefix, date_iso, unit_price=100, net=100,
                   unit='ตัว', start=0):
     """`n` distinct OTHER shops (no customers-master row needed — the
     helper never joins customers), each with ONE evidenced invoice for
@@ -111,20 +129,27 @@ def cust(tmp_db_conn):
     _clear_customer(conn)
 
 
-def _suggestions(conn, code=TEST_CODE, today=TODAY, limit=10):
+def _suggestions(conn, code=TEST_CODE, today=None, limit=10):
     import models.customers as customers
+    if today is None:
+        today, _r, _s = _window_dates(conn)
     return customers._cross_sell_suggestions(conn, code, today=today, limit=limit)
+
+
+def _row(out, pid):
+    return next((r for r in out if r['product_id'] == pid), None)
 
 
 # ── Positive case + ranking threshold ───────────────────────────────────────
 
 def test_positive_case_never_bought_by_3_other_shops_appears_with_their_count(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าขายดี 498 หนึ่ง')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 4, prefix='POS')
+    _other_shops(conn, pid, 4, prefix='POS', date_iso=recent)
 
-    out = _suggestions(conn)
+    out = _suggestions(conn, today=today)
     assert len(out) == 1
     assert out[0]['product_id'] == pid
     assert out[0]['shop_count'] == 4
@@ -132,12 +157,13 @@ def test_positive_case_never_bought_by_3_other_shops_appears_with_their_count(cu
 
 def test_product_bought_by_only_two_other_shops_never_appears(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าคนซื้อน้อย 498')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 2, prefix='TWO')
+    _other_shops(conn, pid, 2, prefix='TWO', date_iso=recent)
 
-    out = _suggestions(conn)
-    assert out == []
+    out = _suggestions(conn, today=today)
+    assert _row(out, pid) is None
 
 
 # ── Exclusion clauses: must NOT add to shop count (far-side fixtures) ───────
@@ -146,92 +172,104 @@ def test_credit_note_does_not_count_toward_shop_count(cust):
     """3 real invoices (qualifies) + 1 credit note from a 4th shop that
     would tip it to 4 if counted."""
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าใบลดหนี้ 498')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 3, prefix='CN')
-    _line(conn, doc_base='SRCN999', suffix=1, pid=pid, date_iso=RECENT, code='CNCREDIT',
+    _other_shops(conn, pid, 3, prefix='CN', date_iso=recent)
+    _line(conn, doc_base='SRCN999', suffix=1, pid=pid, date_iso=recent, code='CNCREDIT',
           unit_price=100, net=100)
 
-    out = _suggestions(conn)
-    assert len(out) == 1
-    assert out[0]['shop_count'] == 3
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['shop_count'] == 3
 
 
 def test_excludes_revenue_giveaway_does_not_count_toward_shop_count(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าแจกฟรี 498')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 3, prefix='GV')
-    _line(conn, doc_base='IVGV999', suffix=1, pid=pid, date_iso=RECENT, code='GVSHOP',
+    _other_shops(conn, pid, 3, prefix='GV', date_iso=recent)
+    _line(conn, doc_base='IVGV999', suffix=1, pid=pid, date_iso=recent, code='GVSHOP',
           unit_price=100, net=100)
     _writeoff(conn, 'IVGV999', 'GVSHOP', excludes_revenue=1)
 
-    out = _suggestions(conn)
-    assert len(out) == 1
-    assert out[0]['shop_count'] == 3
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['shop_count'] == 3
 
 
 def test_marketplace_pseudo_customer_does_not_count_toward_shop_count(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าหน้าร้าน 498')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 3, prefix='MP')
-    _line(conn, doc_base='IVMP999', suffix=1, pid=pid, date_iso=RECENT, code='หน้าร้านS',
+    _other_shops(conn, pid, 3, prefix='MP', date_iso=recent)
+    _line(conn, doc_base='IVMP999', suffix=1, pid=pid, date_iso=recent, code='หน้าร้านS',
           name='หน้าร้านS', unit_price=100, net=100)
 
-    out = _suggestions(conn)
-    assert len(out) == 1
-    assert out[0]['shop_count'] == 3
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['shop_count'] == 3
 
 
 def test_zero_net_line_does_not_count_toward_shop_count(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าแถม 498')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 3, prefix='FREE')
-    _line(conn, doc_base='IVFREE999', suffix=1, pid=pid, date_iso=RECENT, code='FREESHOP',
+    _other_shops(conn, pid, 3, prefix='FREE', date_iso=recent)
+    _line(conn, doc_base='IVFREE999', suffix=1, pid=pid, date_iso=recent, code='FREESHOP',
           unit_price=0, net=0)
 
-    out = _suggestions(conn)
-    assert len(out) == 1
-    assert out[0]['shop_count'] == 3
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['shop_count'] == 3
 
 
 def test_line_older_than_24_months_does_not_count_toward_shop_count(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าซื้อนานแล้ว 498')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 3, prefix='OLD')
-    _line(conn, doc_base='IVOLD999', suffix=1, pid=pid, date_iso=STALE, code='OLDSHOP',
+    _other_shops(conn, pid, 3, prefix='OLD', date_iso=recent)
+    _line(conn, doc_base='IVOLD999', suffix=1, pid=pid, date_iso=stale, code='OLDSHOP',
           unit_price=100, net=100)
 
-    out = _suggestions(conn)
-    assert len(out) == 1
-    assert out[0]['shop_count'] == 3
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['shop_count'] == 3
 
 
 def test_a_product_bought_once_long_ago_by_everyone_never_appears(cust):
     """The acceptance criteria's own phrasing: every buyer is outside the
     24-month window -> shop_count for the window is 0, well under 3."""
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าเก่าทั้งหมด 498')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 5, prefix='ALLOLD', date_iso=STALE)
+    _other_shops(conn, pid, 5, prefix='ALLOLD', date_iso=stale)
 
-    out = _suggestions(conn)
-    assert out == []
+    out = _suggestions(conn, today=today)
+    assert _row(out, pid) is None
 
 
 # ── Exclusion clauses: product must NEVER appear ────────────────────────────
 
 def test_out_of_stock_product_never_appears(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าหมดสต็อก 498')
     _set_stock(conn, pid, 0)
-    _other_shops(conn, pid, 4, prefix='OOS')
+    _other_shops(conn, pid, 4, prefix='OOS', date_iso=recent)
 
-    out = _suggestions(conn)
-    assert out == []
+    out = _suggestions(conn, today=today)
+    assert _row(out, pid) is None
 
 
 def test_product_with_no_stock_levels_row_never_appears(cust):
@@ -239,44 +277,49 @@ def test_product_with_no_stock_levels_row_never_appears(cust):
     the stock ledger has NO stock_levels row at all (not merely 0) — must
     read the same as out-of-stock, not as unknown-therefore-shown."""
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าไม่เคยมีสต็อก 498')
-    _other_shops(conn, pid, 4, prefix='NOROW')
+    _other_shops(conn, pid, 4, prefix='NOROW', date_iso=recent)
 
-    out = _suggestions(conn)
-    assert out == []
+    out = _suggestions(conn, today=today)
+    assert _row(out, pid) is None
 
 
 def test_inactive_product_never_appears(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าปิดการขาย 498', is_active=0)
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 4, prefix='INACT')
+    _other_shops(conn, pid, 4, prefix='INACT', date_iso=recent)
 
-    out = _suggestions(conn)
-    assert out == []
+    out = _suggestions(conn, today=today)
+    assert _row(out, pid) is None
 
 
 def test_unpriced_product_never_appears(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้ายังไม่ตั้งราคา 498', base=0)
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 4, prefix='NOPRICE')
+    _other_shops(conn, pid, 4, prefix='NOPRICE', date_iso=recent)
 
-    out = _suggestions(conn)
-    assert out == []
+    out = _suggestions(conn, today=today)
+    assert _row(out, pid) is None
 
 
 def test_already_bought_product_never_appears(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าที่ร้านนี้เคยซื้อ 498')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 5, prefix='OWN')
-    # This shop bought it once, long ago -- still excludes it (all-time).
-    _line(conn, doc_base='IVOWN1', suffix=1, pid=pid, date_iso=STALE, code=TEST_CODE,
+    _other_shops(conn, pid, 5, prefix='OWN', date_iso=recent)
+    # This shop bought it once, long ago -- still excludes it (all-time,
+    # no date bound on the "ever bought" population).
+    _line(conn, doc_base='IVOWN1', suffix=1, pid=pid, date_iso=stale, code=TEST_CODE,
           name=TEST_NAME, unit_price=100, net=100)
 
-    out = _suggestions(conn)
-    assert out == []
+    out = _suggestions(conn, today=today)
+    assert _row(out, pid) is None
 
 
 # ── Grouping: at most one row per sub_category ──────────────────────────────
@@ -286,109 +329,120 @@ def test_subcategory_already_bought_in_another_variant_is_excluded(cust):
     show on its product card) -- proving the exclusion is the sub_category
     rule, not an accident of the fixture."""
     conn = cust
-    pid_mine = _mk_product(conn, name='พุกไซส์ที่ร้านนี้ซื้อ 498', sub_category='พุก')
-    pid_other = _mk_product(conn, name='พุกไซส์อื่น 498', sub_category='พุก')
+    today, recent, stale = _window_dates(conn)
+    pid_mine = _mk_product(conn, name='พุกไซส์ที่ร้านนี้ซื้อ 498', sub_category='พุก498ตัวเดียว')
+    pid_other = _mk_product(conn, name='พุกไซส์อื่น 498', sub_category='พุก498ตัวเดียว')
     _set_stock(conn, pid_mine, 50)
     _set_stock(conn, pid_other, 50)
-    _line(conn, doc_base='IVMINE1', suffix=1, pid=pid_mine, date_iso=RECENT, code=TEST_CODE,
+    _line(conn, doc_base='IVMINE1', suffix=1, pid=pid_mine, date_iso=recent, code=TEST_CODE,
           name=TEST_NAME, unit_price=100, net=100)
-    _other_shops(conn, pid_other, 5, prefix='SUBCAT')
+    _other_shops(conn, pid_other, 5, prefix='SUBCAT', date_iso=recent)
 
     import models.customers as customers
     own_where, own_params = customers._customer_sales_scope('customer_code', TEST_CODE, None, None)
     cards = customers._customer_product_cards(conn, own_where, own_params)
     assert any(c['product_id'] == pid_mine for c in cards), "control: own variant must be on the card"
 
-    out = _suggestions(conn)
-    assert out == []
+    out = _suggestions(conn, today=today)
+    assert _row(out, pid_other) is None
 
 
 def test_at_most_one_row_per_subcategory_takes_the_highest_ranked(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid_a = _mk_product(conn, name='พุก A 498', sub_category='พุกกลุ่ม498')
     pid_b = _mk_product(conn, name='พุก B 498', sub_category='พุกกลุ่ม498')
     _set_stock(conn, pid_a, 50)
     _set_stock(conn, pid_b, 50)
-    _other_shops(conn, pid_a, 5, prefix='GRPA')   # higher popularity
-    _other_shops(conn, pid_b, 4, prefix='GRPB')   # lower popularity, same sub_category
+    _other_shops(conn, pid_a, 5, prefix='GRPA', date_iso=recent)   # higher popularity
+    _other_shops(conn, pid_b, 4, prefix='GRPB', date_iso=recent)   # lower, same sub_category
 
-    out = _suggestions(conn)
-    assert len(out) == 1
-    assert out[0]['product_id'] == pid_a
+    out = _suggestions(conn, today=today)
+    ours = [r for r in out if r['product_id'] in (pid_a, pid_b)]
+    assert len(ours) == 1
+    assert ours[0]['product_id'] == pid_a
 
 
 def test_null_subcategory_products_each_stand_on_their_own(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid_a = _mk_product(conn, name='สินค้าไม่มีหมวดย่อย A 498', sub_category=None)
     pid_b = _mk_product(conn, name='สินค้าไม่มีหมวดย่อย B 498', sub_category=None)
     _set_stock(conn, pid_a, 50)
     _set_stock(conn, pid_b, 50)
-    _other_shops(conn, pid_a, 5, prefix='NULLA')
-    _other_shops(conn, pid_b, 4, prefix='NULLB')
+    _other_shops(conn, pid_a, 5, prefix='NULLA', date_iso=recent)
+    _other_shops(conn, pid_b, 4, prefix='NULLB', date_iso=recent)
 
-    out = _suggestions(conn)
-    ids = {r['product_id'] for r in out}
-    assert ids == {pid_a, pid_b}
+    out = _suggestions(conn, today=today)
+    assert _row(out, pid_a) is not None
+    assert _row(out, pid_b) is not None
 
 
 # ── Ranking / tie-breaks ─────────────────────────────────────────────────────
 
 def test_ranked_by_shop_count_descending(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid_hi = _mk_product(conn, name='ยอดนิยมมาก 498')
     pid_lo = _mk_product(conn, name='ยอดนิยมน้อย 498')
     _set_stock(conn, pid_hi, 50)
     _set_stock(conn, pid_lo, 50)
-    _other_shops(conn, pid_hi, 6, prefix='HI')
-    _other_shops(conn, pid_lo, 3, prefix='LO')
+    _other_shops(conn, pid_hi, 6, prefix='HI', date_iso=recent)
+    _other_shops(conn, pid_lo, 3, prefix='LO', date_iso=recent)
 
-    out = _suggestions(conn)
+    out = _suggestions(conn, today=today)
     assert [r['product_id'] for r in out] == [pid_hi, pid_lo]
 
 
 def test_tie_break_by_doc_count_then_by_product_id(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid_first = _mk_product(conn, name='สินค้าไทเบรค A 498')
     pid_second = _mk_product(conn, name='สินค้าไทเบรค B 498')
     _set_stock(conn, pid_first, 50)
     _set_stock(conn, pid_second, 50)
-    # Same shop_count (3) for both. pid_first gets 2 docs from one of its 3
-    # shops (higher doc_count); pid_second gets exactly 1 doc per shop.
-    _other_shops(conn, pid_first, 3, prefix='DOC')
-    _line(conn, doc_base='IVDOCEXTRA', suffix=1, pid=pid_first, date_iso=RECENT,
+    # Same shop_count (3) for both. pid_first gets an EXTRA doc from one of
+    # its 3 shops (higher doc_count, same shop set); pid_second gets
+    # exactly 1 doc per shop.
+    _other_shops(conn, pid_first, 3, prefix='DOC', date_iso=recent)
+    _line(conn, doc_base='IVDOCEXTRA', suffix=1, pid=pid_first, date_iso=recent,
           code='DOC000', unit_price=100, net=100)
-    _other_shops(conn, pid_second, 3, prefix='DOC2')
+    _other_shops(conn, pid_second, 3, prefix='DOC2', date_iso=recent)
 
-    out = _suggestions(conn)
-    assert [r['product_id'] for r in out] == [pid_first, pid_second]
+    out = _suggestions(conn, today=today)
+    ours = [r['product_id'] for r in out if r['product_id'] in (pid_first, pid_second)]
+    assert ours == [pid_first, pid_second]
 
 
 def test_tie_break_by_product_id_when_shop_and_doc_counts_are_equal(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid_lower = _mk_product(conn, name='สินค้า id น้อยกว่า 498')
     pid_higher = _mk_product(conn, name='สินค้า id มากกว่า 498')
     if pid_lower > pid_higher:
         pid_lower, pid_higher = pid_higher, pid_lower
     _set_stock(conn, pid_lower, 50)
     _set_stock(conn, pid_higher, 50)
-    _other_shops(conn, pid_higher, 3, prefix='IDHI')
-    _other_shops(conn, pid_lower, 3, prefix='IDLO')
+    _other_shops(conn, pid_higher, 3, prefix='IDHI', date_iso=recent)
+    _other_shops(conn, pid_lower, 3, prefix='IDLO', date_iso=recent)
 
-    out = _suggestions(conn)
-    assert [r['product_id'] for r in out] == [pid_lower, pid_higher]
+    out = _suggestions(conn, today=today)
+    ours = [r['product_id'] for r in out if r['product_id'] in (pid_lower, pid_higher)]
+    assert ours == [pid_lower, pid_higher]
 
 
 def test_limit_caps_at_ten_even_with_more_qualifying_products(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pids = []
     for n in range(12):
         pid = _mk_product(conn, name=f'สินค้าเกิน 10 รายการ 498 {n}')
         _set_stock(conn, pid, 50)
         # Descending popularity so ordering is deterministic: n=0 highest.
-        _other_shops(conn, pid, 20 - n, prefix=f'LIM{n:02d}')
+        _other_shops(conn, pid, 20 - n, prefix=f'LIM{n:02d}', date_iso=recent)
         pids.append(pid)
 
-    out = _suggestions(conn)
+    out = _suggestions(conn, today=today)
     assert len(out) == 10
     assert [r['product_id'] for r in out] == pids[:10]
 
@@ -397,18 +451,19 @@ def test_limit_caps_at_ten_even_with_more_qualifying_products(cust):
 
 def test_shop_with_no_qualifying_purchases_gets_plain_top10(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าลูกค้าใหม่ 498')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 3, prefix='NEWCUST')
+    _other_shops(conn, pid, 3, prefix='NEWCUST', date_iso=recent)
 
-    out = _suggestions(conn)
-    assert len(out) == 1
-    assert out[0]['product_id'] == pid
+    out = _suggestions(conn, today=today)
+    assert _row(out, pid) is not None
 
 
 def test_empty_when_nothing_qualifies(cust):
     conn = cust
-    out = _suggestions(conn)
+    today, recent, stale = _window_dates(conn)
+    out = _suggestions(conn, today=today)
     assert out == []
 
 
@@ -416,27 +471,29 @@ def test_code_with_no_master_row_still_computes(cust):
     """A code with no `customers` master row at all -- the helper never
     joins customers, so it must not error."""
     conn = cust
+    today, recent, stale = _window_dates(conn)
     ghost_code = 'GHOST4980'
     pid = _mk_product(conn, name='สินค้าโค้ดไม่มีมาสเตอร์ 498')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 3, prefix='GHOST')
+    _other_shops(conn, pid, 3, prefix='GHOST', date_iso=recent)
 
     import models.customers as customers
-    out = customers._cross_sell_suggestions(conn, ghost_code, today=TODAY, limit=10)
-    assert len(out) == 1
+    out = customers._cross_sell_suggestions(conn, ghost_code, today=today, limit=10)
+    assert _row(out, pid) is not None
 
 
 # ── Shape: no cost/margin, price + promo shown ──────────────────────────────
 
 def test_suggestion_dict_carries_no_cost_or_margin_keys(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าตรวจคีย์ 498')
     _set_stock(conn, pid, 50)
-    _other_shops(conn, pid, 3, prefix='KEYS')
+    _other_shops(conn, pid, 3, prefix='KEYS', date_iso=recent)
 
-    out = _suggestions(conn)
-    assert len(out) == 1
-    row = out[0]
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
     forbidden = {'cost', 'cost_price', 'cost_per_unit', 'wacc', 'margin',
                  'margin_at_answer_pct', 'internal', 'customer'}
     assert forbidden.isdisjoint(row.keys())
@@ -444,6 +501,7 @@ def test_suggestion_dict_carries_no_cost_or_margin_keys(cust):
 
 def test_price_reflects_active_percent_promo(cust):
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าโปรโมชั่น 498', base=60.0)
     _set_stock(conn, pid, 50)
     conn.execute(
@@ -451,11 +509,11 @@ def test_price_reflects_active_percent_promo(cust):
         " date_start, is_active) VALUES (?, 'ลด 10%', 'percent', 10, '2024-01-01', 1)",
         (pid,))
     conn.commit()
-    _other_shops(conn, pid, 3, prefix='PROMO')
+    _other_shops(conn, pid, 3, prefix='PROMO', date_iso=recent)
 
-    out = _suggestions(conn)
-    assert len(out) == 1
-    row = out[0]
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
     assert row['list_for_unit'] == pytest.approx(60.0)
     assert row['price_per_unit'] == pytest.approx(54.0)
     assert row['promo_affects_price'] is True
@@ -467,6 +525,7 @@ def test_stock_qty_is_none_when_ratio_is_not_derivable(cust):
     resolver answers the price at the tier's own unit with ratio=None
     (ratio_source='unknown'); stock cannot be expressed in that unit."""
     conn = cust
+    today, recent, stale = _window_dates(conn)
     pid = _mk_product(conn, name='สินค้าขายยกแพ็คเท่านั้น 498', base=0)
     conn.execute(
         "INSERT INTO product_price_tiers (product_id, qty_label, price) VALUES (?,?,?)",
@@ -474,12 +533,13 @@ def test_stock_qty_is_none_when_ratio_is_not_derivable(cust):
     )
     conn.commit()
     _set_stock(conn, pid, 12)
-    _other_shops(conn, pid, 3, prefix='PACK')
+    _other_shops(conn, pid, 3, prefix='PACK', date_iso=recent)
 
-    out = _suggestions(conn)
-    assert len(out) == 1
-    assert out[0]['stock_qty'] is None
-    assert out[0]['unit'] == 'แพ็ค'
+    out = _suggestions(conn, today=today)
+    row = _row(out, pid)
+    assert row is not None
+    assert row['stock_qty'] is None
+    assert row['unit'] == 'แพ็ค'
 
 
 # ── Independent of the page's date filter ───────────────────────────────────
