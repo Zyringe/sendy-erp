@@ -6,7 +6,8 @@ of tests/test_cashflow.py.
 Key rules under test
 ────────────────────
 revenue_summary:
-  - excludes doc_base IS NULL, doc_base LIKE 'SR%', doc_base LIKE 'HS%'
+  - excludes doc_base IS NULL, doc_base LIKE 'SR%'; COUNTS doc_base LIKE 'HS%'
+    (a cash sale, real revenue — #514)
   - AOV = total_revenue / total_invoices, 0 when no invoices
   - total_customers groups by COALESCE(customer_code, customer)
   - date_iso filters
@@ -72,7 +73,9 @@ def test_summary_empty_db_returns_zeros(empty_db_conn):
     }
 
 
-def test_summary_excludes_sr_hs_and_null_docbase(empty_db_conn):
+def test_summary_excludes_sr_and_null_docbase_but_counts_hs(empty_db_conn):
+    """#514: HS is a cash sale, real revenue — no longer excluded. SR
+    (returns) and a NULL doc_base still are."""
     c = empty_db_conn
     # 2 IV lines on one invoice + 1 SR + 1 HS + 1 row with NULL doc_base
     _ins_sale(c, 'IV001', 'ลูกค้า A', 'C001', '2026-01-10', 100, line=1)
@@ -89,8 +92,8 @@ def test_summary_excludes_sr_hs_and_null_docbase(empty_db_conn):
     c.commit()
 
     s = rev.revenue_summary(conn=c)
-    assert s['total_revenue'] == 150.0
-    assert s['total_invoices'] == 1     # only IV001
+    assert s['total_revenue'] == 1149.0   # 150 (IV001) + 999 (HS001)
+    assert s['total_invoices'] == 2       # IV001 + HS001
     assert s['total_customers'] == 1
 
 
@@ -222,7 +225,8 @@ def test_top_brands_respects_limit_and_order(empty_db_conn):
     assert [r['revenue'] for r in rows] == [500.0, 400.0, 300.0]
 
 
-def test_top_brands_excludes_sr_hs(empty_db_conn):
+def test_top_brands_excludes_sr_but_counts_hs(empty_db_conn):
+    """#514: HS is a cash sale, real revenue — no longer excluded."""
     c = empty_db_conn
     bid = _ins_brand(c, 'sendai', 'Sendai', name_th='เซ็นได')
     pid = _ins_product(c, 90001, 'P', brand_id=bid)
@@ -233,8 +237,8 @@ def test_top_brands_excludes_sr_hs(empty_db_conn):
 
     rows = rev.top_brands_by_revenue(conn=c, limit=20)
     assert len(rows) == 1
-    assert rows[0]['revenue']    == 100.0
-    assert rows[0]['line_count'] == 1
+    assert rows[0]['revenue']    == 1099.0   # 100 (IV001) + 999 (HS001)
+    assert rows[0]['line_count'] == 2
 
 
 def test_top_brands_date_filter(empty_db_conn):
@@ -358,14 +362,15 @@ def test_drilldown_ordered_by_revenue_desc_capped_at_limit(empty_db_conn):
     assert rows[0]['bsn_code'] == 'CODE-B'
 
 
-def test_drilldown_excludes_sr_hs(empty_db_conn):
+def test_drilldown_excludes_sr_but_counts_hs(empty_db_conn):
+    """#514: HS is a cash sale, real revenue — no longer excluded."""
     c = empty_db_conn
     _ins_sale_unmapped(c, 'IV001', 'A', '2026-01-10', 100, 'CODE-A', 'name')
     _ins_sale_unmapped(c, 'SR001', 'A', '2026-01-11', -50, 'CODE-A', 'name')  # CN
-    _ins_sale_unmapped(c, 'HS001', 'A', '2026-01-12', 999, 'CODE-A', 'name')  # opening
+    _ins_sale_unmapped(c, 'HS001', 'A', '2026-01-12', 999, 'CODE-A', 'name')  # cash sale
     c.commit()
     rows = rev.unmapped_revenue_drilldown(conn=c)
-    assert rows[0]['revenue'] == 100.0  # SR + HS filtered out
+    assert rows[0]['revenue'] == 1099.0  # 100 (IV001) + 999 (HS001); SR still filtered out
 
 
 def test_drilldown_date_filter(empty_db_conn):
