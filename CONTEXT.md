@@ -332,6 +332,24 @@
   cash (so they count toward an account **balance**) but excluded from the headline **P&L**
   (รายรับ/รายจ่าย), the category summary and the monthly chart.
 
+- **รายรับบันทึกที่อื่น (income recorded elsewhere)** — `cashbook_accounts
+  .income_recorded_elsewhere=1` (mig 183), a DIFFERENT axis from `is_transfer`: the
+  account's INCOME is real but tracked in a book outside the cashbook entirely (`ชฎามาศ`
+  receives all No-VAT sales money, none of which is ever keyed here — Put, 2026-09-15), so
+  its all-history balance is a meaningless negative. Its EXPENSES still count everywhere
+  (รายจ่าย, category summary, P&L) — only the balance/คงเหลือ reading is suppressed: no
+  all-history คงเหลือ card on its own account page (all-time mode only; the month-mode
+  เข้า-ออกสุทธิ figure is unaffected), "—" in the per-account table's balance cell, and
+  excluded from the dashboard's all-time คงเหลือ headline (with a disclosure note naming
+  which account(s)). Editable on the admin cashbook-accounts page, same shape as
+  `is_transfer` (a `<select>`, not a checkbox). See #534.
+
+- **บันทึกถึง (keyed up to)** — a per-account column on the `/cashbook` dashboard's
+  per-account table: that account's single latest `cashbook_transactions.txn_date`,
+  **unscoped by the dashboard's month filter** — the point is surfacing entry lag (e.g.
+  `ชฎามาศ` is typically keyed ~18 days late, in monthly batches) even while viewing an
+  earlier month, so a scoped read would defeat its purpose. See #534.
+
 - **Salary posting (pay-event)** — salary reaches the cashbook when a transfer is actually
   **marked paid**, per employee, on the payroll detail page — NOT when the run is finalized
   (finalize only locks the numbers). "จ่ายแล้ว" posts one `เงินเดือน` **expense**

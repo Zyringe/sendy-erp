@@ -26,7 +26,21 @@ TRANSFER = TRANSFER_CATEGORIES[0]
 
 # ── Seed helpers ─────────────────────────────────────────────────────────────
 
+def _ensure_income_recorded_elsewhere_column(conn):
+    """empty_db_conn clones the LIVE dev DB's schema verbatim (conftest.py) —
+    until #534's migration 183 has actually run against that live DB, its
+    clone won't carry this column either. Guarded so this is a no-op once it
+    does (a bare ALTER would then die on `duplicate column name`)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(cashbook_accounts)")}
+    if 'income_recorded_elsewhere' not in cols:
+        conn.execute(
+            "ALTER TABLE cashbook_accounts ADD COLUMN income_recorded_elsewhere"
+            " INTEGER NOT NULL DEFAULT 0 CHECK(income_recorded_elsewhere IN (0,1))"
+        )
+
+
 def _seed_accounts(conn):
+    _ensure_income_recorded_elsewhere_column(conn)
     conn.execute("DELETE FROM cashbook_transactions")
     conn.execute("DELETE FROM cashbook_accounts")
     conn.execute("INSERT INTO cashbook_accounts (id, code, is_active, is_transfer, sort_order) VALUES (1,'OP',1,0,1)")

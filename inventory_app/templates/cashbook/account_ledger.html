@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
-{% block title %}{{ acct.code }} – บัญชีรับ-จ่าย – Sendy{% endblock %}
-{% block page_title %}รายการบัญชี: {{ acct.code }}{% endblock %}
+{% block title %}{{ acct.display_name or acct.code }} – บัญชีรับ-จ่าย – Sendy{% endblock %}
+{% block page_title %}รายการบัญชี: {{ acct.display_name or acct.code }}{% endblock %}
 
 {% block topbar_actions %}
 <a href="{{ url_for('cashbook.dashboard') }}" class="btn btn-sm btn-outline-secondary me-2">
@@ -20,9 +20,17 @@
   <div class="card-body py-2">
     <div class="d-flex flex-wrap gap-3 align-items-center">
       <div>
+        {% if acct.display_name %}
+        <span class="fw-semibold fs-5">{{ acct.display_name }}</span>
+        <span class="badge bg-secondary ms-1">{{ acct.code }}</span>
+        {% else %}
         <span class="badge bg-secondary fs-6">{{ acct.code }}</span>
+        {% endif %}
         {% if acct.is_transfer %}
         <span class="badge bg-warning text-dark ms-1">บัญชีพักเงิน/โอน</span>
+        {% endif %}
+        {% if acct.income_recorded_elsewhere %}
+        <span class="badge bg-info-subtle text-info ms-1">รายรับบันทึกที่อื่น</span>
         {% endif %}
       </div>
       {% if acct.account_owner_name %}
@@ -39,19 +47,25 @@
 </div>
 
 {# ── Running totals banner ─────────────────────────────────────────────────── #}
+{# #534: a flagged account's all-history balance is meaningless (its income
+   is never keyed here) — the คงเหลือ card is dropped entirely in all-time
+   mode. The month-mode เข้า-ออกสุทธิ figure (#524) is unaffected: it is the
+   month's real operating movement, not a claim about accumulated cash. #}
+{% set hide_balance_card = is_all_time and acct.income_recorded_elsewhere %}
 <div class="row g-3 mb-3">
-  <div class="col-sm-4">
+  <div class="col-sm-{{ 6 if hide_balance_card else 4 }}">
     <div class="stat-card py-2">
       <div class="stat-card-label small">รายรับ (ที่กรอง)</div>
       <div class="fw-semibold text-success">฿{{ "{:,.2f}".format(sum_income) }}</div>
     </div>
   </div>
-  <div class="col-sm-4">
+  <div class="col-sm-{{ 6 if hide_balance_card else 4 }}">
     <div class="stat-card py-2">
       <div class="stat-card-label small">รายจ่าย (ที่กรอง)</div>
       <div class="fw-semibold text-danger">฿{{ "{:,.2f}".format(sum_expense) }}</div>
     </div>
   </div>
+  {% if not hide_balance_card %}
   <div class="col-sm-4">
     <div class="stat-card py-2">
       <div class="stat-card-label small" id="ledgerCard3Label">
@@ -62,6 +76,7 @@
       </div>
     </div>
   </div>
+  {% endif %}
 </div>
 
 {# ── Filters ───────────────────────────────────────────────────────────────── #}

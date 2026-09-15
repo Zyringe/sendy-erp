@@ -46,6 +46,8 @@ def test_expense_topn_empty():
 
 @pytest.fixture
 def admin_client(tmp_db):
+    import database
+    database.init_db()  # #534: ensure migration 183 (income_recorded_elsewhere) has run
     from app import app as flask_app
     flask_app.config['TESTING'] = True
     c = flask_app.test_client()

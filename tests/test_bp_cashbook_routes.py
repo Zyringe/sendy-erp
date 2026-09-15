@@ -22,6 +22,8 @@ def admin_client(tmp_db):
     """Flask test client with an admin session pre-populated. tmp_db
     must be pulled in first so config.DATABASE_PATH is monkeypatched
     before `from app import app` runs."""
+    import database
+    database.init_db()  # #534: ensure migration 183 (income_recorded_elsewhere) has run
     from app import app as flask_app
     flask_app.config['TESTING'] = True
     c = flask_app.test_client()
