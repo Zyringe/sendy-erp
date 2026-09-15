@@ -128,9 +128,6 @@ def _card_html(html):
     card header icon is unique; the same product name pattern can also
     appear on สินค้าที่ซื้อบ่อย for a DIFFERENT customer's card, and hook
     names/other data can hide inside a <script> block)."""
-    m = re.search(
-        r'<i class="bi bi-lightbulb me-2 text-accent"></i>เสนอเพิ่ม.*?(?=\{% endblock %\}|$)',
-        html, re.S)
     # Template renders, not source — find the card's own containing <div
     # class="card"> block by scanning forward to the matching depth-0 close.
     start = html.find('<i class="bi bi-lightbulb me-2 text-accent"></i>เสนอเพิ่ม')
@@ -140,7 +137,6 @@ def _card_html(html):
     assert card_open != -1
     # Find the matching close by depth-counting <div ...> vs </div> from card_open.
     depth = 0
-    i = card_open
     for tag in re.finditer(r'<div\b[^>]*>|</div>', html[card_open:]):
         depth += 1 if tag.group(0).startswith('<div') else -1
         if depth == 0:
