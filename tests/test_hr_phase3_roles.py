@@ -18,6 +18,8 @@ def _client_as(role, tmp_db):
     tmp_db is set up (config.DATABASE_PATH already patched by tmp_db fixture)."""
     import os
     os.environ.setdefault('SKIP_DB_INIT', '1')
+    import database
+    database.init_db()  # #534: /cashbook/ needs migration 183 (income_recorded_elsewhere) on the clone
     from app import app as a
     a.config['TESTING'] = True
     c = a.test_client()
