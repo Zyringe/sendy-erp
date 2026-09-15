@@ -125,7 +125,7 @@ CREATE TABLE "cashbook_transactions" (
     source_row      INTEGER,
     import_batch_id TEXT,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-, created_by      TEXT, payroll_run_id  INTEGER REFERENCES payroll_runs(id), payroll_item_id INTEGER REFERENCES payroll_items(id), salary_advance_id INTEGER REFERENCES salary_advances(id), commission_payout_id INTEGER REFERENCES commission_payouts(id));
+, created_by      TEXT, payroll_run_id  INTEGER REFERENCES payroll_runs(id), payroll_item_id INTEGER REFERENCES payroll_items(id), salary_advance_id INTEGER REFERENCES salary_advances(id), commission_payout_id INTEGER REFERENCES commission_payouts(id), payout_platform TEXT, payout_deposit_date TEXT, payout_amount REAL, payout_occurrence INTEGER);
 
 CREATE TABLE categories (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1844,6 +1844,11 @@ CREATE UNIQUE INDEX idx_cashbook_txn_commission_payout
     ON cashbook_transactions(commission_payout_id);
 
 CREATE INDEX idx_cashbook_txn_date         ON cashbook_transactions(txn_date);
+
+CREATE UNIQUE INDEX idx_cashbook_txn_payout_natural_key
+    ON cashbook_transactions(payout_platform, payout_deposit_date,
+                              payout_amount, payout_occurrence)
+    WHERE payout_platform IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_cashbook_txn_payroll_item ON cashbook_transactions(payroll_item_id);
 

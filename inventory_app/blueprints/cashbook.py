@@ -1241,6 +1241,30 @@ def _reject_if_commission_row(row):
         abort(403)
 
 
+def _is_payout_row(row):
+    """True for a marketplace-payout-sourced row (payout_platform set, added
+    by cashbook_payout_mirror.mirror_platform — issue #533). Absent column
+    (a DB predating mig 182) or NULL both mean "not a payout row"."""
+    try:
+        return row["payout_platform"] is not None
+    except (IndexError, KeyError):
+        return False
+
+
+def _reject_if_payout_row(row):
+    """Marketplace-payout-sourced rows (payout_platform set) are locked —
+    never editable/deletable from the cashbook. They are kept in sync by
+    cashbook_payout_mirror.mirror_platform on every marketplace import;
+    correcting one means fixing the source payout on the marketplace pages,
+    not hand-editing the mirror. Mirror of _reject_if_salary_row, keyed by
+    value (marketplace_payouts has no stable row id to link) instead of an
+    FK. Flashes + aborts 403 if locked."""
+    if _is_payout_row(row):
+        flash("รายการนี้เป็นยอดโอนจากมาร์เก็ตเพลสที่ระบบลงให้อัตโนมัติ — "
+              "แก้ไข/ลบที่นี่ไม่ได้ (แก้ที่หน้ามาร์เก็ตเพลสแทน)", "danger")
+        abort(403)
+
+
 @bp_cashbook.route("/txn/<int:txn_id>/edit", methods=["POST"])
 def txn_edit(txn_id):
     """Edit a manual row. Submitted from the edit modal on account_ledger.html
@@ -1257,6 +1281,7 @@ def txn_edit(txn_id):
         _reject_if_salary_row(row)
         _reject_if_advance_edit(row)
         _reject_if_commission_row(row)
+        _reject_if_payout_row(row)
 
         account_id_raw = request.form.get("account_id", "").strip()
         txn_date = request.form.get("txn_date", "").strip()
@@ -1347,6 +1372,7 @@ def txn_delete(txn_id):
             abort(404)
         _reject_if_salary_row(row)
         _reject_if_commission_row(row)
+        _reject_if_payout_row(row)
 
         account_id = row["account_id"]
         adv_id = _advance_link_id(row)
