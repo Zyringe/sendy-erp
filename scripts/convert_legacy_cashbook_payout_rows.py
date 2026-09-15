@@ -49,7 +49,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # after inventory_a
 
 import cashbook_payout_mirror as mirror  # noqa: E402  (after sys.path setup)
 
-WINDOW_DAYS = 2
+# Same window mirror_platform's own conflict guard uses (CONFLICT_WINDOW_DAYS)
+# — imported, not copied, so the two can never drift apart.
+WINDOW_DAYS = mirror.CONFLICT_WINDOW_DAYS
 
 
 def _candidates(conn, account_id, platform, deposit_date, amount):

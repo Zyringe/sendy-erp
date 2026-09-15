@@ -97,6 +97,26 @@ def test_balance_import_mirror_failure_warns_but_import_still_succeeds(tmp_db, m
     assert 'ไม่พบบัญชี SPX' in html
 
 
+def test_balance_import_skipped_conflicts_surfaces_a_visible_warning(tmp_db, monkeypatch):
+    """Deploy-then-import ordering hazard (review finding): the mirror
+    itself defers rather than double-books when an un-linked manual row
+    already matches a payout, but that deferral must not be silent — Put
+    needs to know to run the conversion script."""
+    import blueprints.marketplace as marketplace_bp
+
+    def conflicted_mirror(conn, platform):
+        return {'inserted': 3, 'deleted': 0, 'updated': 0, 'unchanged': 0, 'skipped_conflicts': 2}
+
+    monkeypatch.setattr(marketplace_bp.cashbook_payout_mirror, 'mirror_platform', conflicted_mirror)
+    resp = _post_balance_import(_client())
+    html = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert 'นำเข้า Balance สำเร็จ' in html, "a deferral must not fail the import itself"
+    assert 'ยังไม่ลงบัญชีรับ-จ่าย' in html
+    assert 'convert_legacy_cashbook_payout_rows.py' in html
+
+
 # ── /marketplace/upload ──────────────────────────────────────────────────────
 
 def test_upload_calls_mirror_after_reconcile(tmp_db, monkeypatch):

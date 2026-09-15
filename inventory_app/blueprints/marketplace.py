@@ -41,14 +41,20 @@ def _mirror_payouts_to_cashbook(conn, platform):
     """Mirror `platform`'s payouts into its cashbook account (LEX/SPX) —
     issue #533. Called after reconcile_payouts has committed. Never lets a
     failure break the import: the mirror is idempotent, so the next import
-    repairs it. Returns a Thai warning string on failure, None on success
-    (silent — the reconcile's own flash already reports payout counts)."""
+    repairs it. Returns a Thai warning string when something needs Put's
+    attention, None on a fully clean run (silent — the reconcile's own
+    flash already reports payout counts)."""
     try:
-        cashbook_payout_mirror.mirror_platform(conn, platform)
-        return None
+        result = cashbook_payout_mirror.mirror_platform(conn, platform)
     except Exception as e:
         return (f'⚠️ {platform}: บันทึกยอดโอนลงบัญชีรับ-จ่ายไม่สำเร็จ ({e}) — '
                 'นำเข้าสำเร็จตามปกติ นำเข้ารอบถัดไปจะซ่อมยอดในบัญชีรับ-จ่ายให้เอง')
+    if result.get('skipped_conflicts'):
+        return (f'⚠️ {platform}: ยอดโอน {result["skipped_conflicts"]} รายการยังไม่ลงบัญชีรับ-จ่าย '
+                'เพราะมีรายการที่คีย์มืออยู่แล้วตรงกัน (วันที่+จำนวนเงิน) — '
+                'ต้องรัน scripts/convert_legacy_cashbook_payout_rows.py ก่อน '
+                'ไม่งั้นจะลงบัญชีซ้ำ')
+    return None
 
 
 def _detect_platform(columns):
