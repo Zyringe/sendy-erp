@@ -25,6 +25,7 @@ from typing import Optional
 from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
                    request, session, url_for)
 
+import access_control
 import database
 from paging import paging
 import hr as hr_mod
@@ -724,6 +725,13 @@ def account_ledger(account_id):
 
     total_pages = max(1, (total_count + per_page - 1) // per_page)
 
+    # Whether the CURRENT session's role could go cancel a commission-linked
+    # row at /commission — same rule that gates commission.commission_delete_payout
+    # (access_control.role_can_post), never a hand-typed role tuple (#542).
+    # Drives the lock tooltip's wording on a commission-linked row.
+    can_cancel_commission_payout = access_control.role_can_post(
+        session.get('role', ''), 'commission.commission_delete_payout')
+
     return render_template(
         "cashbook/account_ledger.html",
         acct=dict(acct),
@@ -742,6 +750,7 @@ def account_ledger(account_id):
         accounts=accounts,
         categories_by_direction=categories_by_direction,
         known_tags=known_tags,
+        can_cancel_commission_payout=can_cancel_commission_payout,
     )
 
 
@@ -1505,13 +1514,24 @@ def _commission_link_id(row):
 def _reject_if_commission_row(row):
     """Commission-linked rows (commission_payout_id set, posted by the
     /commission auto-post — plan.md decision C1/C4, finding #6) are locked —
-    never editable/deletable from the cashbook. They are removed only via
-    /commission's "ยกเลิกการจ่าย" (commission.delete_payout), which cascades
-    the linked row itself — mirror of _reject_if_salary_row for
-    payroll_item_id. Flashes + aborts 403 if locked."""
+    never editable/deletable from the cashbook, for EVERY role including
+    admin. They are removed only via /commission's "ยกเลิกการจ่าย"
+    (commission.delete_payout), which cascades the linked row itself —
+    mirror of _reject_if_salary_row for payroll_item_id. Flashes + aborts 403
+    if locked.
+
+    The flash wording is role-aware (#542): whether the CURRENT session's
+    role could actually go cancel it at /commission is derived from the same
+    rule that gates commission.commission_delete_payout
+    (access_control.role_can_post) — never a hand-typed role list here, so a
+    future change to who may cancel doesn't leave this flash stale."""
     if _commission_link_id(row) is not None:
+        can_cancel = access_control.role_can_post(
+            session.get('role', ''), 'commission.commission_delete_payout')
+        cancel_clause = ('ยกเลิกได้ที่หน้าคอมมิชชั่นเท่านั้น' if can_cancel
+                         else 'ให้แอดมินยกเลิกที่หน้าคอมมิชชั่น')
         flash("รายการนี้เป็นรายการคอมมิชชั่นที่ผูกกับหน้าคอมมิชชั่น — "
-              "แก้ไข/ลบที่นี่ไม่ได้ (ยกเลิกได้ที่หน้าคอมมิชชั่นเท่านั้น)", "danger")
+              f"แก้ไข/ลบที่นี่ไม่ได้ ({cancel_clause})", "danger")
         abort(403)
 
 
