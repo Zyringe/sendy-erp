@@ -91,13 +91,21 @@ def _seed_commission_row(conn):
 
 def test_commission_row_shows_lock_not_edit_delete_manual_row_still_does(conn, tmp_db):
     account_id, txn_id, commission_marker = _seed_commission_row(conn)
+    # Control row: SAME category ('จ่ายค่าคอมมิชชั่น') and a description that
+    # also contains 'คอมมิชชั่น' — mirrors a real prod row (id 763, manual,
+    # commission_payout_id NULL). A row that only differed in category/text
+    # would let an implementation keyed on category or description text pass
+    # this test for the wrong reason; this control only passes when the
+    # branch keys on the commission_payout_id FK, like the real guard does.
     manual_marker = 'RENDER-TEST-MANUAL-ROW-540'
-    conn.execute(
+    manual_description = f'ค่าคอมมิชชั่น (คีย์มือ) {manual_marker}'
+    cur = conn.execute(
         "INSERT INTO cashbook_transactions"
         " (account_id, txn_date, direction, category, amount, description, created_by)"
-        " VALUES (?, '2026-07-06', 'income', 'ยอดขายของ', 111, ?, 'พุธ')",
-        (account_id, manual_marker),
+        " VALUES (?, '2026-07-06', 'expense', 'จ่ายค่าคอมมิชชั่น', 111, ?, 'พุธ')",
+        (account_id, manual_description),
     )
+    manual_id = cur.lastrowid
     conn.commit()
 
     html = _client_as('admin', tmp_db).get(
@@ -115,15 +123,22 @@ def test_commission_row_shows_lock_not_edit_delete_manual_row_still_does(conn, t
 
     manual_row = _row_fragment(html, manual_marker)
     assert 'bi-pencil' in manual_row and 'bi-trash' in manual_row, (
-        "control: a manual row must still show edit/delete — proves the assertions "
-        "above are scoped correctly and not just a page-wide absence")
+        "control: a manual row (same category + 'คอมมิชชั่น' in its description, "
+        "but commission_payout_id NULL) must still show edit/delete — proves the "
+        "branch keys on the FK, not on category/description text")
     assert 'bi-lock-fill' not in manual_row
+    # Positive control for the txn_id absence-check above: modals DO render
+    # for a non-commission row on this same page, so an implementation that
+    # dropped the WHOLE modal-include block (e.g. `{% if false %}`) — which
+    # would trivially satisfy "editTxnModal{txn_id} not in html" — is caught.
+    assert f'id="editTxnModal{manual_id}"' in html
 
 
 def test_commission_link_visible_to_manager(conn, tmp_db):
     """The commission-payouts link has no role gate of its own beyond
-    can_edit_cashbook (see notes-540.md) — pin it for a second cashbook role,
-    not just admin."""
+    can_edit_cashbook — pin it for a second cashbook role, not just admin.
+    (See test_commission_payouts_page_open_to_every_cashbook_role below for
+    the direct route-level check this template check alone can't provide.)"""
     account_id, _txn_id, commission_marker = _seed_commission_row(conn)
 
     html = _client_as('manager', tmp_db).get(
@@ -132,3 +147,15 @@ def test_commission_link_visible_to_manager(conn, tmp_db):
 
     commission_row = _row_fragment(html, commission_marker)
     assert f'href="/commission/payouts"' in commission_row
+
+
+def test_commission_payouts_page_open_to_every_cashbook_role(conn, tmp_db):
+    """A rendered href proves the template printed a link, not that the route
+    behind it actually answers for that role — a role gate could land on
+    commission.commission_payouts_list itself while the template link stays
+    unconditional, and the previous test alone would not catch it. Drive the
+    route directly for every role that can see the lock+link on the cashbook
+    page (admin/manager/shareholder — can_edit_cashbook, access_control.py)."""
+    for role in ('admin', 'manager', 'shareholder'):
+        resp = _client_as(role, tmp_db).get('/commission/payouts')
+        assert resp.status_code == 200, f"{role} could not open /commission/payouts"
