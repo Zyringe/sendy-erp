@@ -58,10 +58,12 @@
     <input type="hidden" name="doc_base" value="{{ plan.doc_base }}">
     <input type="hidden" name="confirm" value="1">
     <input type="hidden" name="expected_holders" value="{{ plan.expected_holders }}">
+    <input type="hidden" name="next" value="{{ back }}">
     <div class="d-grid gap-2 d-sm-flex">
       <button type="submit" class="btn {{ 'btn-danger' if plan.holders else 'btn-primary' }} btn-lg">
         {{- 'ย้ายมาออเดอร์นี้' if plan.holders else 'ผูกกับออเดอร์นี้' -}}
       </button>
+      <a href="{{ back }}" id="ivConfirmCancel" class="btn btn-outline-secondary btn-lg">ยกเลิก</a>
     </div>
   </form>
 </div>

@@ -7,6 +7,7 @@ marketplace revenue is not double-counted. See parse_orders.py + migration 093.
 """
 import io
 import math
+from urllib.parse import urlsplit, urlunsplit
 
 import pandas as pd
 from flask import (Blueprint, render_template, request, redirect, url_for,
@@ -372,10 +373,24 @@ def review_dismiss(order_id):
                             platform=request.form.get('platform', 'shopee')))
 
 
+_PICKER_PAGES = ('/marketplace/settlement', '/marketplace/review')
+
+
+def _picker_return_url(raw, platform):
+    """The page the IV picker was opened from (its tab + year included), #545.
+    Only a same-site path to one of the two pages hosting the picker is honoured,
+    so the form field cannot redirect anywhere else."""
+    parts = urlsplit(raw or '')
+    if not parts.scheme and not parts.netloc and parts.path in _PICKER_PAGES:
+        return urlunsplit(('', '', parts.path, parts.query, ''))
+    return url_for('marketplace.settlement', platform=platform)
+
+
 @bp_marketplace.route('/marketplace/order/<int:order_id>/link-iv', methods=['POST'])
 def link_iv(order_id):
     """A person picks the IV for one order (#545). Every check runs here, not in the
     picker: refuse, show the confirm page (nothing written), or save."""
+    back = _picker_return_url(request.form.get('next'), request.args.get('platform', 'shopee'))
     conn = get_connection()
     try:
         order = models.get_marketplace_order(conn, order_id)
@@ -389,7 +404,8 @@ def link_iv(order_id):
         if 'refuse' in plan:
             flash(plan['refuse'], 'warning')
         elif plan['needs_confirm'] and not confirming:
-            return render_template('marketplace/link_iv_confirm.html', order=order, plan=plan)
+            return render_template('marketplace/link_iv_confirm.html',
+                                   order=order, plan=plan, back=back)
         else:
             doc_base = plan['doc_base']
             # A confirm carries the holders the person saw; a direct save saw none.
@@ -412,8 +428,7 @@ def link_iv(order_id):
                     flash(f'ผูกออเดอร์ {order["order_sn"]} กับ {doc_base} แล้วค่ะ', 'success')
     finally:
         conn.close()
-    return redirect(url_for('marketplace.settlement',
-                            platform=request.args.get('platform', 'shopee')))
+    return redirect(back)
 
 
 @bp_marketplace.route('/marketplace/balance-import', methods=['POST'])

@@ -348,6 +348,56 @@ def test_confirm_is_refused_when_a_different_order_took_the_iv_meanwhile(pick):
     assert _audit(c) == []
 
 
+DEPOSITS = '/marketplace/settlement?platform=shopee&tab=deposits&year=2025'
+REVIEW = '/marketplace/review?platform=lazada'
+
+
+def _location(resp):
+    from urllib.parse import urlsplit
+    p = urlsplit(resp.headers['Location'])
+    return p.path + ('?' + p.query if p.query else '')
+
+
+def test_a_save_returns_to_the_page_the_picker_was_opened_from(pick):
+    """Rule 9: settlement with its tab + year, not the bare settlement page."""
+    _c, ids = pick
+    resp = _client().post(f"/marketplace/order/{ids['S1']}/link-iv",
+                          data={'doc_base': 'IV9500001', 'next': DEPOSITS})
+    assert resp.status_code == 302 and _location(resp) == DEPOSITS
+
+
+def test_a_refusal_returns_to_the_review_page_it_came_from(pick):
+    _c, ids = pick
+    resp = _client().post(f"/marketplace/order/{ids['S1']}/link-iv",
+                          data={'doc_base_manual': 'IV9599999', 'next': REVIEW})
+    assert resp.status_code == 302 and _location(resp) == REVIEW
+
+
+def test_the_confirm_page_cancels_and_confirms_back_to_where_it_came_from(pick):
+    import re
+    c, ids = pick
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['S1']}/link-iv",
+                   data={'doc_base': 'IV9500002', 'next': DEPOSITS})
+    html = resp.get_data(as_text=True)
+    cancel = re.search(r'<a [^>]*id="ivConfirmCancel"[^>]*>', html)
+    assert cancel, 'ยกเลิก link not rendered'
+    assert 'href="/marketplace/settlement?platform=shopee&amp;tab=deposits&amp;year=2025"' in cancel.group(0)
+    done = _press_confirm(cl, resp)
+    assert done.status_code == 302 and _location(done) == DEPOSITS
+    assert _order_link(c, 'PICKS1') == 'IV9500002'
+
+
+@pytest.mark.parametrize('bad', ['https://evil.example/marketplace/settlement',
+                                 '//evil.example/marketplace/settlement', '/admin/users'])
+def test_a_next_that_is_not_a_picker_page_falls_back_to_settlement(pick, bad):
+    _c, ids = pick
+    resp = _client().post(f"/marketplace/order/{ids['S1']}/link-iv?platform=shopee",
+                          data={'doc_base': 'IV9500001', 'next': bad})
+    assert resp.status_code == 302
+    assert _location(resp) == '/marketplace/settlement?platform=shopee'
+
+
 def test_confirm_saves_when_the_holder_let_go_meanwhile(pick):
     """Rule 7: the page named PICKS2; by the time it is pressed nobody holds it."""
     c, ids = pick
