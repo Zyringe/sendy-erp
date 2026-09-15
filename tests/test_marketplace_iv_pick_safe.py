@@ -113,7 +113,8 @@ def _confirm_form(html):
     from html.parser import HTMLParser
 
     class P(HTMLParser):
-        inside, action, fields = False, None, {}
+        inside = in_button = False
+        action, label = None, ''
 
         def handle_starttag(self, tag, attrs):
             a = dict(attrs)
@@ -121,15 +122,24 @@ def _confirm_form(html):
                 self.inside, self.action = True, a.get('action')
             elif tag == 'input' and self.inside and a.get('name'):
                 self.fields[a['name']] = a.get('value', '')
+            elif tag == 'button' and self.inside and a.get('type') == 'submit':
+                self.in_button = True
+
+        def handle_data(self, data):
+            if self.in_button:
+                self.label += data
 
         def handle_endtag(self, tag):
             if tag == 'form':
                 self.inside = False
+            elif tag == 'button':
+                self.in_button = False
 
     p = P()
     p.fields = {}
     p.feed(html)
     assert p.action, 'confirm form not rendered'
+    p.fields['_submit_label'] = p.label.strip()
     return p.action, p.fields
 
 
@@ -178,8 +188,65 @@ def test_a_typed_number_is_normalised_and_previewed_before_anything_is_written(p
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
     assert '>IV9500001<' in _section(html, 'ivConfirmIv')
+    assert 'พิมพ์เอง' in _section(html, 'ivConfirmTyped')
     _action, fields = _confirm_form(html)
     assert fields['doc_base'] == 'IV9500001'
+    assert _order_link(c, 'PICKS1') is None
+
+
+def test_an_iv_held_by_another_order_shows_the_confirm_page_naming_the_holder(pick):
+    """Rule 5: picked from the list, but PICKS2 holds it (auto). Nothing moves yet."""
+    c, ids = pick
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['S1']}/link-iv", data={'doc_base': 'IV9500002'})
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    order = _section(html, 'ivConfirmOrder')
+    for text in ('PICKS1', 'Shopee', '132.00', '8 มิ.ย. 2026'):
+        assert text in order
+    iv = _section(html, 'ivConfirmIv')
+    for text in ('>IV9500002<', '9 มิ.ย. 2026', '140.00', '+8.00', 'Shopee'):
+        assert text in iv
+    holder = _section(html, 'ivConfirmHolder')
+    for text in ('PICKS2', 'Shopee', 'ผูกอัตโนมัติ', 'ออเดอร์ PICKS2 จะไม่มีใบกำกับ'):
+        assert text in holder
+    _action, fields = _confirm_form(html)
+    assert fields['expected_holders'] == 'shopee:PICKS2'
+    assert fields['_submit_label'] == 'ย้ายมาออเดอร์นี้'
+    assert _links(c, 'IV9500002') == [
+        {'platform': 'shopee', 'order_sn': 'PICKS2', 'match_method': 'auto'}]
+    assert _order_link(c, 'PICKS1') is None
+
+
+def test_a_holder_on_another_platform_is_named_with_who_confirmed_it(pick):
+    """Rule 5, any platform: a Lazada order holds the Shopee IV by a manual link."""
+    c, ids = pick
+    _link(c, 'lazada', 'PICKL1', 'IV9500001', method='manual', confirmed_by='somchai')
+    c.commit()
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['S1']}/link-iv", data={'doc_base': 'IV9500001'})
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    holder = _section(html, 'ivConfirmHolder')
+    for text in ('PICKL1', 'Lazada', 'ยืนยันเอง', 'somchai', 'ออเดอร์ PICKL1 จะไม่มีใบกำกับ'):
+        assert text in holder
+    _action, fields = _confirm_form(html)
+    assert fields['expected_holders'] == 'lazada:PICKL1'
+    assert _order_link(c, 'PICKS1') is None
+
+
+def test_a_free_iv_under_another_channels_code_asks_first(pick):
+    """Rule 5: Bหน้าร้าน is a marketplace code, but not Shopee's own (Z)."""
+    c, ids = pick
+    cl = _client()
+    resp = cl.post(f"/marketplace/order/{ids['S1']}/link-iv", data={'doc_base': 'IV9500008'})
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert 'Shopee ร้าน B (ปิดแล้ว)' in _section(html, 'ivConfirmChannel')
+    assert 'id="ivConfirmHolder"' not in html
+    _action, fields = _confirm_form(html)
+    assert fields['expected_holders'] == ''
+    assert fields['_submit_label'] == 'ผูกกับออเดอร์นี้'
     assert _order_link(c, 'PICKS1') is None
 
 

@@ -1,25 +1,67 @@
 {% extends 'base.html' %}
 {# Confirm page for a manual IV pick (#545). Rendered as the response to the
-   picker's POST; nothing is written until its own form is submitted. #}
+   picker's POST; nothing is written until its own form is submitted. Its form
+   carries the holders the person saw (expected_holders), so the save can refuse
+   if a different order took the IV in between. #}
 {% block title %}ยืนยันใบกำกับ — {{ order.order_sn }}{% endblock %}
 {% block content %}
 <div class="container py-3" style="max-width: 40rem">
   <h1 class="h4 mb-3">ยืนยันใบกำกับของออเดอร์ <code>{{ order.order_sn }}</code></h1>
 
+  <section id="ivConfirmOrder" class="card mb-3">
+    <div class="card-body">
+      <div class="small text-muted">ออเดอร์</div>
+      <div class="fs-5"><code>{{ order.order_sn }}</code> · {{ order.platform | capitalize }}</div>
+      <div>สั่งวันที่ {{ order.order_date | thaidate }} · ยอดโอน ฿{{ order.actual_payout | fmt_price }}</div>
+    </div>
+  </section>
+
   <section id="ivConfirmIv" class="card mb-3">
     <div class="card-body">
       <div class="small text-muted">ใบกำกับที่เลือก</div>
-      <div class="fs-5"><code>{{ plan.doc_base }}</code></div>
+      <div class="fs-5"><code>{{ plan.doc_base }}</code> · {{ plan.channel }}</div>
+      <div>ลงวันที่ {{ plan.date_iso | thaidate }} · ฿{{ plan.iv_net | fmt_price }}
+        {%- if plan.amount_diff is not none %}
+        ({% if plan.amount_diff == 0 %}ยอดตรง{% else %}ต่าง {{ '{:+,.2f}'.format(plan.amount_diff) }}฿{% endif %})
+        {%- endif %}</div>
     </div>
   </section>
+
+  {% if plan.typed %}
+  <section id="ivConfirmTyped" class="alert alert-warning">
+    เลขนี้พิมพ์เอง ตรวจว่าตรงกับบิลจริงก่อนกดยืนยัน
+  </section>
+  {% endif %}
+
+  {% if plan.other_channel %}
+  <section id="ivConfirmChannel" class="alert alert-warning">
+    ใบนี้ออกในนาม <strong>{{ plan.channel }}</strong> ไม่ใช่ {{ order.platform | capitalize }}
+  </section>
+  {% endif %}
+
+  {% if plan.holders %}
+  <section id="ivConfirmHolder" class="alert alert-danger">
+    {% for h in plan.holders %}
+    <div class="{{ 'mb-2' if not loop.last }}">
+      ใบนี้ผูกกับออเดอร์ <code>{{ h.order_sn }}</code> ({{ h.platform | capitalize }}) อยู่ —
+      {% if h.match_method == 'manual' %}ยืนยันเอง โดย {{ h.confirmed_by or 'ไม่ทราบชื่อ' }}
+      {%- else %}ผูกอัตโนมัติ{% if h.confidence == 'review' %} (ต้องตรวจ){% endif %}{% endif %}
+      <div class="fw-bold">ถ้าย้าย ออเดอร์ {{ h.order_sn }} จะไม่มีใบกำกับ</div>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
 
   <form method="post" id="ivConfirmForm"
         action="{{ url_for('marketplace.link_iv', order_id=order.id, platform=order.platform) }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="doc_base" value="{{ plan.doc_base }}">
     <input type="hidden" name="confirm" value="1">
+    <input type="hidden" name="expected_holders" value="{{ plan.expected_holders }}">
     <div class="d-grid gap-2 d-sm-flex">
-      <button type="submit" class="btn btn-primary btn-lg">ผูกกับออเดอร์นี้</button>
+      <button type="submit" class="btn {{ 'btn-danger' if plan.holders else 'btn-primary' }} btn-lg">
+        {{- 'ย้ายมาออเดอร์นี้' if plan.holders else 'ผูกกับออเดอร์นี้' -}}
+      </button>
     </div>
   </form>
 </div>

@@ -325,6 +325,13 @@ def _order_products(conn, platform):
     return out
 
 
+def _order_basis(order):
+    """The amount an order's IV is compared with: Lazada's billed item value when
+    known, else the payout (see models.get_marketplace_order)."""
+    d = dict(order)
+    return d.get('billed_basis', d.get('actual_payout'))
+
+
 def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
     """IVs that could be ``order``, for the manual picker — Zหน้าร้าน/Lหน้าร้าน IVs
     dated on/after the platform order date within the window, ranked by
@@ -334,8 +341,7 @@ def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
     currently holds it.
     """
     code = _CUST_CODE.get(order['platform'])
-    d = dict(order)
-    basis = d.get('billed_basis', d.get('actual_payout'))
+    basis = _order_basis(order)
     if code is None or basis is None or not order['order_date']:
         return []
     payout = round(basis, 2)
@@ -821,9 +827,32 @@ def plan_manual_pick(conn, order, picked=None, typed=None):
     code = found['customer_code']
     if code not in MARKETPLACE_CODES:
         return {'refuse': f'{doc_base} เป็นบิลของ {code} ไม่ใช่บิลขายออนไลน์ ผูกกับออเดอร์ไม่ได้'}
-    return {'doc_base': doc_base, 'customer_code': code,
+    holders = _other_holders(conn, doc_base, order['platform'], order['order_sn'])
+    other_channel = code != _CUST_CODE.get(order['platform'])
+    basis = _order_basis(order)
+    return {'doc_base': doc_base, 'customer_code': code, 'channel': MARKETPLACE_CODES[code],
             'date_iso': found['date_iso'], 'iv_net': found['iv_net'],
-            'typed': bool(typed_doc), 'needs_confirm': bool(typed_doc)}
+            'amount_diff': None if basis is None else round((found['iv_net'] or 0) - basis, 2),
+            'holders': holders, 'expected_holders': holder_token(holders),
+            'typed': bool(typed_doc), 'other_channel': other_channel,
+            'needs_confirm': bool(typed_doc or other_channel or holders)}
+
+
+def _other_holders(conn, doc_base, platform, order_sn):
+    """Every link holding ``doc_base`` for an order other than this one, on ANY
+    platform: a Lazada order can hold a Zหน้าร้าน IV (#545)."""
+    return [dict(r) for r in conn.execute(
+        """SELECT id, platform, order_sn, match_method, confidence, confirmed_by
+           FROM marketplace_order_invoice
+           WHERE doc_base = ? AND NOT (platform = ? AND order_sn = ?)
+           ORDER BY platform, order_sn""",
+        (doc_base, platform, order_sn))]
+
+
+def holder_token(holders):
+    """'lazada:123,shopee:ABC': the holders a person saw on the confirm page,
+    carried back by its form so the save can tell whether they changed."""
+    return ','.join(sorted(f"{h['platform']}:{h['order_sn']}" for h in holders))
 
 
 def link_manual(conn, platform, order_sn, doc_base, customer_code=None, confirmed_by=None):
