@@ -212,15 +212,26 @@ _OVERSPEND_PCT_THRESHOLD = 0.20     # this >= prev * 1.20
 _OVERSPEND_DIFF_FLOOR = 1000.0      # AND (this - prev) >= ฿1,000
 
 
-def _default_month(conn) -> Optional[str]:
+def _default_month(conn, account_id: Optional[int] = None) -> Optional[str]:
     """Most recent calendar month ('YYYY-MM') that has any cashbook transaction,
-    or None if the ledger has no transactions at all (dashboard falls back to
-    all-time mode in that case). Used as the default when the dashboard route
-    receives no `?month=` — NOT `strftime('now')`: entry lags, so the strict
-    current month is often empty and would render a misleading ฿0 page."""
-    row = conn.execute(
-        "SELECT MAX(strftime('%Y-%m', txn_date)) AS m FROM cashbook_transactions"
-    ).fetchone()
+    or None if the ledger has no transactions at all (the dashboard falls back
+    to all-time mode in that case). Used as the default when the dashboard
+    route receives no `?month=` — NOT `strftime('now')`: entry lags, so the
+    strict current month is often empty and would render a misleading ฿0 page.
+
+    `account_id`, when given, scopes the same rule to one account's own rows
+    (ticket #524's account-ledger page default) — a busy account can have a
+    much older "latest month" than the ledger as a whole, and the reverse."""
+    if account_id is None:
+        row = conn.execute(
+            "SELECT MAX(strftime('%Y-%m', txn_date)) AS m FROM cashbook_transactions"
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT MAX(strftime('%Y-%m', txn_date)) AS m FROM cashbook_transactions"
+            " WHERE account_id=?",
+            (account_id,),
+        ).fetchone()
     return row["m"] if row and row["m"] else None
 
 
@@ -567,16 +578,35 @@ def account_ledger(account_id):
             flash("ไม่พบบัญชีนี้ในระบบ", "danger")
             return redirect(url_for("cashbook.dashboard"))
 
-        month_filter = request.args.get("month", "").strip()
-        dir_filter   = request.args.get("dir", "").strip()
+        # Month-scope resolution (ticket #524 — the dashboard's own rule,
+        # ADR 0007, scoped to this one account):
+        #   absent ?month=      -> most-recent month THIS account has data in
+        #                          (None if the account has none at all)
+        #   ?month=ทั้งหมด or "" -> all history (reuses the dashboard's own
+        #                          all-time token, so both pages speak the
+        #                          same `month` values)
+        #   ?month=YYYY-MM      -> that exact month, even with zero rows — the
+        #                          caller (a dashboard link, or a redirect
+        #                          after add/edit/delete) picked it on purpose.
+        raw_month = request.args.get("month")
+        if raw_month is None:
+            month = _default_month(conn, account_id=account_id)
+        elif raw_month in ("", "ทั้งหมด"):
+            month = None
+        else:
+            month = raw_month
+        is_all_time = month is None
+        selected_month = "ทั้งหมด" if is_all_time else month
+
+        dir_filter = request.args.get("dir", "").strip()
         page, per_page = paging(request.args, per_page=50)
 
         params = [account_id]
         where  = ["t.account_id=?"]
 
-        if month_filter:
+        if month:
             where.append("strftime('%Y-%m', t.txn_date)=?")
-            params.append(month_filter)
+            params.append(month)
         if dir_filter in ("income", "expense"):
             where.append("t.direction=?")
             params.append(dir_filter)
@@ -608,14 +638,22 @@ def account_ledger(account_id):
             params,
         ).fetchone()[0]
 
-        # Available months for filter dropdown
-        months = conn.execute(
-            """SELECT DISTINCT strftime('%Y-%m', txn_date) AS m
-               FROM cashbook_transactions
-               WHERE account_id=?
-               ORDER BY m""",
-            (account_id,),
-        ).fetchall()
+        # Available months for filter dropdown — always includes the
+        # RESOLVED month even when this account has zero rows in it (ticket
+        # #524: a dashboard link or a redirect can land here on a month this
+        # account never touched, and the dropdown must still show it as
+        # selected rather than silently reverting to "ทุกเดือน").
+        months = {
+            r["m"] for r in conn.execute(
+                """SELECT DISTINCT strftime('%Y-%m', txn_date) AS m
+                   FROM cashbook_transactions
+                   WHERE account_id=?""",
+                (account_id,),
+            ).fetchall()
+        }
+        if month:
+            months.add(month)
+        months = sorted(months)
 
         # For the per-row edit modals (manual rows only — see txn_edit.html).
         accounts = hrq.get_active_cashbook_accounts(conn)
@@ -630,7 +668,8 @@ def account_ledger(account_id):
         "cashbook/account_ledger.html",
         acct=dict(acct),
         rows=[dict(r) for r in rows],
-        month_filter=month_filter,
+        selected_month=selected_month,
+        is_all_time=is_all_time,
         dir_filter=dir_filter,
         page=page,
         per_page=per_page,
@@ -639,7 +678,7 @@ def account_ledger(account_id):
         sum_income=sum_income,
         sum_expense=sum_expense,
         balance=sum_income - sum_expense,
-        months=[r["m"] for r in months],
+        months=months,
         accounts=accounts,
         categories_by_direction=categories_by_direction,
         known_tags=known_tags,
@@ -1143,9 +1182,29 @@ def new_transaction():
                     )
             conn.commit()
             flash(f"บันทึก {len(to_insert)} รายการเรียบร้อย", "success")
-            return redirect(url_for("cashbook.account_ledger", account_id=account_id))
+            # Land on the month of the LATEST row just saved (ticket #524) —
+            # every row in a batch shares one account_id, but bulk mode lets
+            # each row carry its own date, so "latest" is a real max, not
+            # just the top-of-form date.
+            latest_month = max(r["effective_date"] for r in to_insert)[:7]
+            return redirect(url_for(
+                "cashbook.account_ledger", account_id=account_id, month=latest_month,
+            ))
 
-        default_account_id = _default_account_id_for_user(conn, session.get("user_id"))
+        # Preselect the account the caller asked for (ticket #524 — the
+        # account-ledger page's own "เพิ่มรายการ" button carries
+        # ?account_id=<this account>), if it's still active; otherwise fall
+        # back to the user's own default, same as when nothing is passed.
+        requested_account_id_raw = request.args.get("account_id", "").strip()
+        preselected_account_id = (
+            int(requested_account_id_raw)
+            if requested_account_id_raw.isdigit()
+            and int(requested_account_id_raw) in account_ids
+            else None
+        )
+        default_account_id = preselected_account_id or _default_account_id_for_user(
+            conn, session.get("user_id")
+        )
         return render_template(
             "cashbook/new.html",
             accounts=accounts,
@@ -1356,7 +1415,13 @@ def txn_edit(txn_id):
             )
         conn.commit()
         flash("แก้ไขรายการเรียบร้อย", "success")
-        return redirect(url_for("cashbook.account_ledger", account_id=new_vals["account_id"]))
+        # Land on the month of the row's NEW date, on its NEW account if it
+        # moved (ticket #524) — never the default, which could hide the very
+        # row just saved.
+        return redirect(url_for(
+            "cashbook.account_ledger",
+            account_id=new_vals["account_id"], month=new_vals["txn_date"][:7],
+        ))
     finally:
         conn.close()
 
@@ -1420,6 +1485,11 @@ def txn_delete(txn_id):
         )
         conn.commit()
         flash("ลบรายการเรียบร้อย", "success")
-        return redirect(url_for("cashbook.account_ledger", account_id=account_id))
+        # Land on the deleted row's own month (ticket #524), not the default —
+        # e.g. keying August rows into an account in mid-September and then
+        # correcting one must not silently jump to September.
+        return redirect(url_for(
+            "cashbook.account_ledger", account_id=account_id, month=row["txn_date"][:7],
+        ))
     finally:
         conn.close()

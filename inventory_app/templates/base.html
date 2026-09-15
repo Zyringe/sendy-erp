@@ -137,7 +137,7 @@
           <span class="badge bg-dark me-2 d-none d-lg-inline">{{ current_role }}</span>
         {% endif %}
         <span class="text-muted small me-2 d-none d-lg-inline">{{ current_user }}</span>
-        {% if is_admin %}
+        {% if is_admin and active_module == 'operation' %}
           <a href="{{ url_for('products.product_new') }}" class="btn btn-primary btn-sm me-1 d-none d-lg-inline-flex">
             <i class="bi bi-plus-lg me-1"></i>เพิ่มสินค้า
           </a>
