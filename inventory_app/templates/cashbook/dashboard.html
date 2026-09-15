@@ -91,6 +91,12 @@
         <span class="fw-semibold">คงเหลือ</span> = เงินสดจริงในบัญชี (รวมเงินทุน/เงินโอนที่โอนเข้า)
         จึง <span class="fw-semibold">ไม่เท่ากับ</span> รายรับ − รายจ่าย
       </li>
+      {% if flagged_accounts %}
+      <li>
+        <span class="fw-semibold">คงเหลือ</span> ไม่รวมบัญชีที่รายรับบันทึกที่อื่น
+        ({% for a in flagged_accounts %}{{ a.display_name or a.code }}{% if not loop.last %}, {% endif %}{% endfor %})
+      </li>
+      {% endif %}
       {% else %}
       <li>
         <span class="fw-semibold">สุทธิเดือนนี้</span> = รายรับ − รายจ่าย ของเดือน {{ selected_month }}
@@ -146,29 +152,43 @@
     <table class="table table-sm table-hover mb-0">
       <thead class="table-light">
         <tr>
-          <th>รหัส</th>
+          <th>บัญชี</th>
           <th>เจ้าของ</th>
           <th>ธนาคาร</th>
           <th class="text-end">รายรับ</th>
           <th class="text-end">รายจ่าย</th>
           <th class="text-end">คงเหลือ</th>
           <th class="text-end">#รายการ</th>
+          <th>บันทึกถึง</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
         {% for a in op_accounts %}
         <tr>
-          <td><span class="badge bg-secondary">{{ a.code }}</span></td>
+          <td>
+            {% if a.display_name %}
+            <span class="fw-semibold">{{ a.display_name }}</span>
+            <span class="text-muted small">{{ a.code }}</span>
+            {% else %}
+            <span class="badge bg-secondary">{{ a.code }}</span>
+            {% endif %}
+          </td>
           <td>{{ a.account_owner_name or '—' }}</td>
           <td class="small text-muted">{{ a.bank_name or '—' }}</td>
           <td class="text-end text-success small">฿{{ "{:,.2f}".format(a.income) }}</td>
           <td class="text-end text-danger small">฿{{ "{:,.2f}".format(a.expense) }}</td>
-          <td class="text-end fw-semibold small
-            {% if a.balance >= 0 %}text-primary{% else %}text-danger{% endif %}">
-            ฿{{ "{:,.2f}".format(a.balance) }}
+          <td class="text-end fw-semibold small">
+            {% if a.income_recorded_elsewhere %}
+            <span class="text-muted" title="รายรับบันทึกที่อื่น ยอดคงเหลือนี้จึงไม่มีความหมาย">—</span>
+            {% else %}
+            <span class="{% if a.balance >= 0 %}text-primary{% else %}text-danger{% endif %}">
+              ฿{{ "{:,.2f}".format(a.balance) }}
+            </span>
+            {% endif %}
           </td>
           <td class="text-end small text-muted">{{ a.txn_count }}</td>
+          <td class="small text-muted">{{ a.last_txn_date or '—' }}</td>
           <td>
             <a href="{{ url_for('cashbook.account_ledger', account_id=a.id, month=selected_month) }}"
                class="btn btn-xs btn-outline-primary btn-sm py-0 px-2 small">บัญชี</a>
@@ -192,12 +212,13 @@
     <table class="table table-sm mb-0">
       <thead class="table-light">
         <tr>
-          <th>รหัส</th>
+          <th>บัญชี</th>
           <th>เจ้าของ</th>
           <th class="text-end">รายรับ</th>
           <th class="text-end">รายจ่าย</th>
           <th class="text-end">คงเหลือ</th>
           <th class="text-end">#รายการ</th>
+          <th>บันทึกถึง</th>
           <th></th>
         </tr>
       </thead>
@@ -205,7 +226,12 @@
         {% for a in tr_accounts %}
         <tr class="text-muted">
           <td>
+            {% if a.display_name %}
+            <span class="fw-semibold">{{ a.display_name }}</span>
+            <span class="small">{{ a.code }}</span>
+            {% else %}
             <span class="badge bg-secondary">{{ a.code }}</span>
+            {% endif %}
             <span class="badge bg-warning text-dark ms-1 small">transfer</span>
           </td>
           <td>{{ a.account_owner_name or '—' }}</td>
@@ -213,6 +239,7 @@
           <td class="text-end small">฿{{ "{:,.2f}".format(a.expense) }}</td>
           <td class="text-end small">฿{{ "{:,.2f}".format(a.balance) }}</td>
           <td class="text-end small">{{ a.txn_count }}</td>
+          <td class="small">{{ a.last_txn_date or '—' }}</td>
           <td>
             <a href="{{ url_for('cashbook.account_ledger', account_id=a.id, month=selected_month) }}"
                class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2 small">บัญชี</a>

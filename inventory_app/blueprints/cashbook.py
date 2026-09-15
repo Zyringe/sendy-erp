@@ -101,6 +101,8 @@ def _get_accounts_with_totals(conn, month: Optional[str] = None):
             a.bank_account_no,
             a.note AS account_note,
             a.is_transfer,
+            a.income_recorded_elsewhere,
+            MAX(t.txn_date) AS last_txn_date,
             COALESCE(SUM(CASE WHEN t.direction='income'  AND COALESCE(t.category,'') NOT IN ({ph}){month_sql} THEN t.amount ELSE 0 END), 0) AS income,
             COALESCE(SUM(CASE WHEN t.direction='expense' AND COALESCE(t.category,'') NOT IN ({ph}){month_sql} THEN t.amount ELSE 0 END), 0) AS expense,
             COALESCE(SUM(CASE WHEN t.direction='income'  AND COALESCE(t.category,'') IN ({ph}){month_sql} THEN t.amount ELSE 0 END), 0) AS transfer_in,
@@ -461,10 +463,18 @@ def dashboard():
 
     total_income  = sum(a["income"]  for a in op_accounts)
     total_expense = sum(a["expense"] for a in op_accounts)
+    # #534: an account flagged income_recorded_elsewhere (e.g. ชฎามาศ) never
+    # has its income keyed here, so its all-history "balance" is a meaningless
+    # negative (−฿1.74M on prod for ชฎามาศ) — excluded from the คงเหลือ
+    # headline ONLY. Its income/expense stay summed into total_income/
+    # total_expense above (unchanged) — the issue's "expenses still count
+    # everywhere" — this exclusion touches nothing but the balance sum below.
+    balance_accounts = [a for a in op_accounts if not a["income_recorded_elsewhere"]]
+    flagged_accounts = [a for a in op_accounts if a["income_recorded_elsewhere"]]
     # คงเหลือ = actual cash on hand = sum of true-cash account balances (which include
     # capital transfers). This reconciles with the per-account balance column. It is
     # deliberately NOT income − expense: transfers fund the gap (see disclosure note).
-    total_balance = sum(a["balance"] for a in op_accounts)
+    total_balance = sum(a["balance"] for a in balance_accounts)
     # Capital/inter-account movements excluded from the P&L (disclosure figure)
     transfer_total = sum(a["transfer_in"] + a["transfer_out"] for a in op_accounts)
 
@@ -487,6 +497,7 @@ def dashboard():
         total_income=total_income,
         total_expense=total_expense,
         total_balance=total_balance,
+        flagged_accounts=flagged_accounts,
         transfer_total=transfer_total,
         monthly=monthly,
         income_cats=income_cats,

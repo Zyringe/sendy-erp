@@ -187,11 +187,22 @@ def cashbook_account_list():
 
 def _cashbook_form_fields():
     """Pull the shared account fields from the POST form. Empty strings → None
-    so blank optional fields store NULL (a เงินสด account has no bank)."""
+    so blank optional fields store NULL (a เงินสด account has no bank).
+
+    `display_name_in_form` distinguishes "the field was submitted blank"
+    (clear the name -> falls back to code) from "the key wasn't in the POST
+    at all" (a real browser form always sends the input; only a partial/
+    programmatic POST omits it) — cashbook_account_edit uses it to PRESERVE
+    a stored name rather than wipe it, matching this codebase's `form[k].strip()
+    if k in form else None` convention for exactly this hazard."""
     code = request.form.get('code', '').strip()
     return {
-        'code':               code,
-        'is_transfer':        1 if request.form.get('is_transfer') == '1' else 0,
+        'code':                       code,
+        'display_name':               request.form['display_name'].strip() or None
+                                       if 'display_name' in request.form else None,
+        'display_name_in_form':       'display_name' in request.form,
+        'is_transfer':                1 if request.form.get('is_transfer') == '1' else 0,
+        'income_recorded_elsewhere':  1 if request.form.get('income_recorded_elsewhere') == '1' else 0,
         'account_owner_name': request.form.get('account_owner_name', '').strip() or None,
         'bank_name':          request.form.get('bank_name', '').strip() or None,
         'bank_account_no':    request.form.get('bank_account_no', '').strip() or None,
@@ -210,10 +221,10 @@ def cashbook_account_new():
     conn = get_connection()
     try:
         conn.execute(
-            "INSERT INTO cashbook_accounts(code, account_owner_name, bank_name,"
-            " bank_account_no, note, is_transfer) VALUES (?,?,?,?,?,?)",
-            (f['code'], f['account_owner_name'], f['bank_name'],
-             f['bank_account_no'], f['note'], f['is_transfer'])
+            "INSERT INTO cashbook_accounts(code, display_name, account_owner_name, bank_name,"
+            " bank_account_no, note, is_transfer, income_recorded_elsewhere) VALUES (?,?,?,?,?,?,?,?)",
+            (f['code'], f['display_name'], f['account_owner_name'], f['bank_name'],
+             f['bank_account_no'], f['note'], f['is_transfer'], f['income_recorded_elsewhere'])
         )
         conn.commit()
         flash(f'เพิ่มบัญชี {f["code"]} สำเร็จ', 'success')
@@ -236,11 +247,14 @@ def cashbook_account_edit(aid):
     conn = get_connection()
     try:
         conn.execute(
-            "UPDATE cashbook_accounts SET code=?, account_owner_name=?, bank_name=?,"
-            " bank_account_no=?, note=?, is_transfer=?, is_active=?,"
+            "UPDATE cashbook_accounts SET code=?,"
+            " display_name=CASE WHEN ?=1 THEN ? ELSE display_name END,"
+            " account_owner_name=?, bank_name=?,"
+            " bank_account_no=?, note=?, is_transfer=?, income_recorded_elsewhere=?, is_active=?,"
             " updated_at=datetime('now','localtime') WHERE id=?",
-            (f['code'], f['account_owner_name'], f['bank_name'], f['bank_account_no'],
-             f['note'], f['is_transfer'], is_active, aid)
+            (f['code'], 1 if f['display_name_in_form'] else 0, f['display_name'],
+             f['account_owner_name'], f['bank_name'], f['bank_account_no'],
+             f['note'], f['is_transfer'], f['income_recorded_elsewhere'], is_active, aid)
         )
         conn.commit()
         flash(f'อัปเดตบัญชี {f["code"]} สำเร็จ', 'success')

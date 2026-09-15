@@ -1,7 +1,9 @@
 """Admin cashbook-account management (/cashbook-accounts).
 
 Self-service CRUD for the cash/bank accounts behind the /cashbook dashboard
-cards. Admin-only, mirrors /users. NO schema change.
+cards. Admin-only, mirrors /users. Originally shipped with NO schema change;
+#534 (migration 183) added `income_recorded_elsewhere` — its persistence
+tests live in test_cashbook_534_account_names_and_flag.py, not here.
 
 The load-bearing test is the delete guard: a hard delete is offered only for a
 truly-unreferenced account, and the route must REFUSE (not 500) when the account
@@ -17,6 +19,8 @@ import pytest
 
 def _client_as(role, tmp_db):
     os.environ.setdefault('SKIP_DB_INIT', '1')
+    import database
+    database.init_db()  # #534: ensure migration 183 (display_name/income_recorded_elsewhere) has run
     from app import app as a
     a.config['TESTING'] = True
     c = a.test_client()
