@@ -61,15 +61,32 @@
   employee record, e.g. กรรมการผู้จัดการ, เสมียน) = the person's *HR job title*. A
   shareholder-role login and a "ผู้ถือหุ้น" position are unrelated by mechanism.
 
-- **The five roles** — the `role` enum, in descending privilege. Source of truth = the
-  POST whitelists + GET gating + `_MODULE_DEFS` roles in `app.py`; the `/users`
-  role-permission summary is the human-readable mirror and must be kept in sync.
+- **The five roles** — the `role` enum, in descending privilege. ⚠ **There is no single
+  source of truth.** The answer to "may this role use this page?" is currently spread over
+  **seven** notations that share no code and no data, all in `inventory_app/` (they are
+  *defined* in `access_control.py` — `app.py` only re-exports four of them so older tests
+  can import them off `app`; a previous version of this entry said "in `app.py`" and that
+  pointer is stale):
+  `_MODULE_DEFS[*].roles` · `nav.py` link roles · four hardcoded blueprint-prefix checks in
+  `require_login` · the `_ROLE_POST_OK` allowlists · ten route-local `_require_*` /
+  `_arf_require_*` helpers across six blueprints · an inline `abort(403)` in
+  `products.product_cost_history` · and inline template flags (`is_ar_manager`, `is_admin`).
+  The `/users` role-permission summary is the human-readable mirror. ⛔ **It is a mirror
+  that nothing keeps in sync, and it has been wrong** — measured 2026-09-16: the `staff`
+  line read *"เข้า HR/บัญชีไม่ได้"* while `/ar` and `/ap` were open to `staff`. Treat it as
+  documentation, never as the answer.
   - **ผู้ดูแลระบบ (admin)** — full access: manages users, edits products/master data,
     sees cost/GP, every module. Only role that reaches the "ระบบ" admin module (`/users`).
   - **ผู้จัดการ (manager)** — sees cost/GP + payment status, approves leave/advances,
     edits product names/packaging, enters HR + Cashbook. Cannot manage users.
   - **พนักงานออฟฟิศ (staff)** — desktop back-office: imports every file type + stock/sales
-    views, stock-adjust, mapping. Does **not** see cost/GP; blocked from HR + Cashbook.
+    views, stock-adjust, mapping. Does **not** see cost/GP. Blocked from HR, Cashbook,
+    Master-Naming and Commission — those four are the blueprint prefixes `require_login`
+    denies by name (`commission.` added 2026-09-16, #548). ⚠ The `finance` product module
+    declares itself admin/manager/shareholder, but that declaration only hides the sidebar:
+    `/ar` and `/ap` are **reachable by `staff` today**, deliberately for `/ap` (its route
+    docstring says so) and by Put's call for `/ar`. Everything else in `finance` — P&L,
+    cashflow, revenue, financial-health — is closed to staff.
   - **ผู้ถือหุ้น (shareholder)** — reads *everything* (incl. cost/GP, HR, Cashbook) and may
     **add/edit/delete Cashbook transactions** + **mark payroll salaries paid** (which posts
     those cashbook rows — how Put's mother records the salaries she pays); otherwise the only
@@ -92,6 +109,21 @@
   from `session['user_id']` (via `_my_employee()`), so *who* you are changes what they
   show. Every other page is role-gated only: same global data regardless of user. This is
   why impersonation must swap `user_id`, not just `role`.
+
+- **render gate vs access gate** — two different questions that read like one, and the
+  single biggest source of permission bugs here. A **render gate** decides what is *drawn*:
+  whether a sidebar link, a tab, or a button appears (`_MODULE_DEFS[*].roles`, `nav.py`
+  roles, and the template flags `is_ar_manager` / `is_admin`). An **access gate** decides
+  what a *request* may reach: `require_login` for GET, `_ROLE_POST_OK` for POST, plus the
+  route-local `_require_*` helpers.
+  ⛔ **They share no code and no data, so they drift, and neither one reports the drift.**
+  Naming a product module `roles: ('admin','manager','shareholder')` gates the sidebar and
+  **not** the URL — it gives the author the impression of a gate and delivers a hidden link.
+  Two live illustrations, both measured 2026-09-16: `/ar` is absent from `staff`'s sidebar
+  yet returns 200 to `staff`; and on the AR follow-up workspace `_arf_require_manager`
+  admits `shareholder` while `is_ar_manager` (`accounting.py:314`) excludes it, so a
+  shareholder passes the access gate and then finds the contents hidden.
+  **When you change one, say out loud which one you changed and check the other.**
 
 ## Trade partners & money owed (การค้า / การเงิน)
 
