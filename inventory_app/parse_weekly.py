@@ -18,38 +18,84 @@ def _be_to_iso(d: str) -> str:
     return f"{(2500 + by) - 543:04d}-{month:02d}-{day:02d}"
 
 
-# BSN's discount columns accept: empty | percent (5%, 25+5%) | decimal baht (32.00, 14.00)
-# | comma-thousands baht (1,800.00). Both the line-discount column ("ส่วนลด") and the
-# doc-level discount column ("ส่วนลดรวม") share this format. The `.`, `%` and `,` are all
-# essential — without them the regex shifts columns and either (a) absorbs the discount
-# into total, (b) truncates net at the percent sign, or (c) — when the doc-discount column
-# is a comma'd value like '1,800.00' — fails to consume it, so `net` grabs the discount
-# column instead of the true last column (RR6700192: net read as 1,800.00 not 4358.93).
-# See test_parse_sales_decimal_baht_discount + test_parse_sales_doc_level_discount_percent
-# + test_purchase_net_with_comma_doc_discount.
-_DISCOUNT_COL = r'[\d,+%.]*'
-
 # BSN occasionally glues qty and unit with '!' instead of whitespace (e.g. "2.00!หล").
 # `.replace('!', '')` on the captured groups strips the artifact at extract time.
 _QTY_UNIT_SEP = r'[\s!]+'
 
 # Sales doc no has embedded spaces: "IV6900478-  1"  → normalise to "IV6900478-1"
+# NOTE: the regex stops right after the VAT-type digit. The four money columns
+# that follow (ส่วนลด / รวมเงิน / ส่วนลดรวม / ยอดขายสุทธิ) are extracted separately
+# by _extract_money_columns() — see the comment there for why.
 _TX_SALES = re.compile(
     r'(\d{2}/\d{2}/\d{2})\s+(\w+\-\s*\d+)\s+'           # date  doc_no
     rf'([\d,]+\.?\d*){_QTY_UNIT_SEP}(\S+)\s+'            # qty [\s!]+ unit
-    r'([\d,]+\.?\d*)\s+(\d)\s*'                          # unit_price  vat_type
-    rf'({_DISCOUNT_COL})\s+([\d,]+\.?\d*)\s+'            # discount  total
-    rf'{_DISCOUNT_COL}\s+([\d,]+\.?\d*)'                 # doc_disc (ignored)  net
+    r'([\d,]+\.?\d*)\s+(\d)'                             # unit_price  vat_type
 )
 
 # Purchase doc no is a single token: "HP6900017"
 _TX_PURCH = re.compile(
     r'(\d{2}/\d{2}/\d{2})\s+(\S+)\s+'
     rf'([\d,]+\.?\d*){_QTY_UNIT_SEP}(\S+)\s+'            # qty [\s!]+ unit
-    r'([\d,]+\.?\d*)\s+(\d)\s*'
-    rf'({_DISCOUNT_COL})\s+([\d,]+\.?\d*)\s+'
-    rf'{_DISCOUNT_COL}\s+([\d,]+\.?\d*)'
+    r'([\d,]+\.?\d*)\s+(\d)'                             # unit_price  vat_type
 )
+
+# The four money columns after the VAT-type digit — ส่วนลด (line discount),
+# รวมเงิน (line total), ส่วนลดรวม (doc-level discount, ignored — not stored per
+# line), ยอดขายสุทธิ/ยอดซื้อสุทธิ (net) — are FIXED-WIDTH columns in the
+# underlying report, counted in characters from the position immediately after
+# the VAT-type digit. Confirmed empirically against the full sales AND
+# purchase CSV history (2024-2026, ~19,300 transaction lines): the VAT-type
+# digit always lands at the same character offset, and the four widths below
+# hold with zero exceptions, real values never exceeding 8 characters against
+# an 11-14 char budget.
+#
+# #525: the previous approach searched for the next available number instead
+# of reading a fixed position, using a nullable/greedy/unanchored character
+# class (`[\d,+%.]*`) for the two optional fields (line discount, doc-level
+# discount). When ส่วนลด was genuinely BLANK and ส่วนลดรวม held a baht amount
+# (not a percent), the search could not tell "nothing here" from "a number
+# starts here" and grabbed รวมเงิน into `discount`, ส่วนลดรวม into `total` —
+# 176 lines this way, 0 keyed that way in Express. Reading a FIXED POSITION
+# makes a blank column unambiguous by construction: there is nothing left to
+# search for.
+_DISCOUNT_WIDTH = 11
+_TOTAL_WIDTH = 14
+_DOC_DISCOUNT_WIDTH = 11  # sliced past but never stored — no caller reads it
+_NET_WIDTH = 14
+
+# What a populated discount cell may hold, once its exact slot is known: blank,
+# percent (possibly compound, "25+5%"), or baht (comma-thousands allowed).
+# total/net are always a plain (optionally comma-grouped) number.
+_DISCOUNT_CELL_RE = re.compile(r'[\d,+%.]*')
+_MONEY_CELL_RE = re.compile(r'[\d,]+\.?\d*')
+
+
+# Still used by _SR_MASTER_RE below (the ใบลดหนี้/SR master row's doc-level
+# discount cell) — that row is anchored on BOTH sides by mandatory fields
+# (vat_type before, three mandatory money fields + a Y/N marker after), unlike
+# the _TX_SALES/_TX_PURCH case this ticket fixes, and its own money columns
+# were already re-done by shape rather than position for #556. Not touched here.
+_DISCOUNT_COL = r'[\d,+%.]*'
+
+
+def _extract_money_columns(line: str, anchor: int):
+    """Slice the four fixed-width money columns starting at `anchor`
+    (the `re.Match.end()` of the VAT-type digit). Returns
+    (discount, total_raw, net_raw) with `discount` already stripped, or
+    `None` if the fixed total/net slots don't hold a plausible number — the
+    caller treats that exactly like a regex non-match (line rejected)."""
+    discount = line[anchor:anchor + _DISCOUNT_WIDTH].strip()
+    pos = anchor + _DISCOUNT_WIDTH
+    total_raw = line[pos:pos + _TOTAL_WIDTH].strip()
+    pos += _TOTAL_WIDTH + _DOC_DISCOUNT_WIDTH
+    net_raw = line[pos:pos + _NET_WIDTH].strip()
+    if not _DISCOUNT_CELL_RE.fullmatch(discount):
+        return None
+    if not (total_raw and _MONEY_CELL_RE.fullmatch(total_raw)):
+        return None
+    if not (net_raw and _MONEY_CELL_RE.fullmatch(net_raw)):
+        return None
+    return discount, total_raw, net_raw
 
 _SKIP_PREFIXES = (
     '(BSN)', 'รายงาน', 'รหัส', 'วันที่', 'พนักงาน',
@@ -226,8 +272,10 @@ def _parse(filepath: str, tx_pat, file_type: str) -> list:
                 rejected.append((lineno, f"{stripped[:90]}  [{reason}]"))
                 continue
             m = tx_pat.search(line)
-            if m:
+            money = _extract_money_columns(line, m.end()) if m else None
+            if m and money:
                 try:
+                    discount, total_raw, net_raw = money
                     doc_no = re.sub(r'\s+', '', m.group(2))
                     seq_key = (doc_no, current_prod_code)
                     seq = _line_seq.get(seq_key, 0) + 1
@@ -240,9 +288,9 @@ def _parse(filepath: str, tx_pat, file_type: str) -> list:
                         'unit':             m.group(4).replace('!', ''),
                         'unit_price':       float(m.group(5).replace(',', '')),
                         'vat_type':         int(m.group(6)),
-                        'discount':         m.group(7).strip(),
-                        'total':            float(m.group(8).replace(',', '')),
-                        'net':              float(m.group(9).replace(',', '')),
+                        'discount':         discount,
+                        'total':            float(total_raw.replace(',', '')),
+                        'net':              float(net_raw.replace(',', '')),
                         'product_name_raw': current_prod_name,
                         'product_code_raw': current_prod_code,
                         'party':            current_party,
