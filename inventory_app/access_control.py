@@ -9,6 +9,7 @@ import hashlib
 from flask import session, request, redirect, url_for, flash, abort
 
 import models
+import permissions
 import review_rules as rr
 from database import get_connection
 from nav import active_link, nav_sections
@@ -161,6 +162,10 @@ def role_can_post(role, endpoint):
 
 # GET allowlist for the 'general' role (PWA stock-lookup kiosk + own leave).
 # Everything not in this set → redirect to mobile.stock_search.
+# `require_login` no longer reads this — the gate asks `permissions.may_see`.
+# It survives as the INDEPENDENT oracle the kiosk declaration is pinned
+# against (tests/test_permissions_declarations.py) and as nav.py's source,
+# until nav migrates onto the declaration in PR 3.
 _GENERAL_ALLOWED = frozenset([
     'mobile.stock_search', 'mobile.stock_search_api',
     'logout',
@@ -183,7 +188,7 @@ ROLES = {
                     'desc': 'เห็นต้นทุน/กำไร + สถานะชำระหนี้, อนุมัติลา/เบิกเงิน, แก้ชื่อสินค้า, เข้า HR + บัญชี; จัดการผู้ใช้ไม่ได้'},
     'staff':       {'label': 'พนักงานออฟฟิศ',  'badge': 'bg-secondary',
                     'icon': 'bi-person-fill',
-                    'desc': 'นำเข้าไฟล์ทุกชนิด + ดูสต็อก/ยอดขาย, ปรับสต็อก, ผูกรหัส; ไม่เห็นต้นทุน, เข้า HR/บัญชีไม่ได้'},
+                    'desc': 'นำเข้าไฟล์ทุกชนิด + ดูสต็อก/ยอดขาย, ปรับสต็อก, ผูกรหัส, ตามหนี้ลูกค้า; ไม่เห็นต้นทุน, ไม่เห็นกำไร/ค่าคอม, เข้า HR ไม่ได้'},
     'shareholder': {'label': 'ผู้ถือหุ้น',     'badge': 'bg-info',
                     'icon': 'bi-eye-fill',
                     'desc': 'ดูได้ทุกหน้า (รวมต้นทุน/กำไร, HR, บัญชี) แต่แก้ไขอะไรไม่ได้เลย'},
@@ -635,8 +640,7 @@ def require_login():
     # script upload) — it now goes through the normal login gate like any
     # other Sendy POST, since a logged-in team member uploads the daily
     # Express DBF zip through the website (see blueprints/bsn.py).
-    if endpoint in ('login', 'static', 'healthz', 'bootstrap_upload_db',
-                    'serve_sw', 'help_install'):
+    if endpoint in permissions.PUBLIC:
         return
     role = session.get('role', '')
     if not role:
@@ -673,35 +677,33 @@ def require_login():
     # admin; 'simulate-role' switches to another user (keeping the original admin
     # stashed). Only a current impersonator (_real_role set) can hit either, and
     # the route itself only ever lands on the real admin or a non-admin target → safe.
-    if endpoint in ('admin_exit_simulate', 'admin_simulate_role') and session.get('_real_role'):
+    if endpoint in permissions.IMPERSONATION_ESCAPE and session.get('_real_role'):
         return
-    # admin_module is admin-only at the module level (defense-in-depth).
-    # Exception: an admin who is simulating another role still has _real_role set,
-    # so they must be able to reach admin_exit_simulate (and other admin endpoints).
-    if _ENDPOINT_MODULE.get(endpoint) == 'admin_module' and role != 'admin' and not session.get('_real_role'):
-        abort(403)
-    # general: PWA stock-lookup + own leave only — everything else → stock search
-    if role == 'general' and endpoint not in _GENERAL_ALLOWED:
-        return redirect(url_for('mobile.stock_search'))
-    # HR module: staff cannot access any hr.* endpoint (GET or POST)
-    if (endpoint or '').startswith('hr.') and role == 'staff':
-        flash('ไม่มีสิทธิ์เข้าถึงระบบบุคลากร', 'danger')
-        return redirect(url_for('dashboard'))
-    # Cashbook module: staff cannot access any cashbook.* endpoint (GET or POST)
-    if (endpoint or '').startswith('cashbook.') and role == 'staff':
-        flash('ไม่มีสิทธิ์เข้าถึงระบบบัญชีรับ-จ่าย', 'danger')
-        return redirect(url_for('dashboard'))
-    # Master Naming: staff cannot access any naming.* endpoint (GET or POST) —
-    # bulk name cascades are manager/admin work.
-    if (endpoint or '').startswith('naming.') and role == 'staff':
-        flash('ไม่มีสิทธิ์เข้าถึงระบบตั้งชื่อสินค้า', 'danger')
-        return redirect(url_for('dashboard'))
-    # Commission module: staff cannot access any commission.* endpoint (GET or
-    # POST), same shape as hr./cashbook./naming. above (#542). Staff has no
-    # commission.* POST in _STAFF_POST_OK today, so this breaks no workflow.
-    if (endpoint or '').startswith('commission.') and role == 'staff':
-        flash('ไม่มีสิทธิ์เข้าถึงระบบคอมมิชชั่น', 'danger')
-        return redirect(url_for('dashboard'))
+    # The access gate. ONE lookup where there used to be six hardcoded checks
+    # (the admin_module abort, the `general` kiosk redirect, and the hr. /
+    # cashbook. / naming. / commission. prefix blocks). `permissions.py` owns
+    # the answer now, and carries each refusal's own words along with it.
+    #
+    # A 404 carries no endpoint, so there is nothing to look up. `general` has
+    # no chrome to render a 404 into and goes home; every other role gets
+    # Flask's 404, as today.
+    if endpoint is None:
+        if role == permissions.GENERAL:
+            return redirect(_role_home(role))
+    elif not permissions.may_see(role, endpoint):
+        # ADR 0003, deliberately scoped to admin-only endpoints. Today
+        # `_real_role` exempts ONLY the admin_module check, so an admin
+        # simulating `staff` is still blocked from hr.*, and one simulating
+        # `general` is still held in the kiosk. Widening the exemption to the
+        # whole gate would make the simulation show the admin their own app.
+        if session.get('_real_role') and permissions.admin_only(endpoint):
+            return
+        deny, msg = permissions.refusal(role, endpoint)
+        if deny == permissions.FORBID:
+            abort(403)
+        if msg:
+            flash(msg, 'danger')
+        return redirect(_role_home(role))
     if request.method != 'POST':
         return
     if role == 'admin':
