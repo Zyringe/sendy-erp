@@ -237,3 +237,40 @@ def test_total_and_net_reach_the_entry_not_zero(credit_note_file):
     assert control['unit_price'] == pytest.approx(100.00)
     assert control['total'] == pytest.approx(75.00)
     assert control['net'] == pytest.approx(75.00)
+
+
+# ── The clobber guard itself ─────────────────────────────────────────────────
+
+# SYNTHETIC, not an observed Express row: a money-shaped extra column trailing the
+# money region, which the reference-strip (correctly) will not remove because it
+# cannot be told apart from a money value. This is the residual shape of the #556
+# damage — a stray numeric reaching the `len(numerics) >= 3` branch — and it is the
+# only thing that exercises that branch's `not discount` guard. Without a case like
+# this the guard is untestable, and an untested guard is a checkmark, not a test.
+LINE_PERCENT_PLUS_STRAY_MONEY_COLUMN = (
+    "Y   1 045ล9996  ชุดมือจับประตูใหญ่ HL#9996 AC'S/D        2.00ชด"
+    "             850.00        10%       1530.00         0.00"
+)
+
+
+def test_percent_discount_is_never_overwritten_by_a_stray_numeric():
+    """A '%' read from the discount column wins over the three-numeric baht rule.
+
+    The #556 damage was precisely `discount` being replaced by the line's own
+    value, so this pins the guard that prevents it rather than trusting that the
+    reference-strip alone will always keep the token count at three.
+    """
+    d = parse_weekly._parse_detail_line(LINE_PERCENT_PLUS_STRAY_MONEY_COLUMN)
+    assert d is not None
+    assert d['discount'] == '10%', "a percent discount was clobbered by a numeric"
+    assert d['unit_price'] == pytest.approx(850.00)
+
+
+def test_three_numerics_without_a_percent_still_read_the_baht_discount():
+    """CONTROL for the guard above: with no '%' present the middle numeric IS the
+    baht discount, so the guard must not have disabled that path."""
+    d = parse_weekly._parse_detail_line(CONTROL_BAHT_DISCOUNT)
+    assert d is not None
+    assert d['discount'] == '41.00'
+    assert d['unit_price'] == pytest.approx(499.00)
+    assert d['amount'] == pytest.approx(458.00)

@@ -463,8 +463,9 @@ _SR_MASTER_RE = re.compile(
 
 # Detail header: "[YN] seq bsn_code  product_name  [qty<digits>.<digits>]unit"
 # Columns separated by 2+ spaces. After this prefix, the remaining columns
-# (unit_price / discount / amount / ref) are split on 2+ spaces and assigned
-# positionally: see _parse_detail_line.
+# (unit_price / discount / amount / ref) are classified by SHAPE — see
+# _parse_detail_line. They used to be assigned by position, which silently
+# moved a column whenever the token count differed (GH #556).
 #
 # Marker is 'Y' (cleared/ตัดหนี้แล้ว) or 'N' (record only / ยังไม่ตัดหนี้).
 # qty is OPTIONAL — N rows often record the line without a return qty (e.g.
@@ -476,6 +477,21 @@ _SR_DETAIL_HEAD_RE = re.compile(
     r'(?:([\d,]+\.\d+))?([^\d\s.,][^\s]*)'       # OPTIONAL qty<digits>.<digits> + unit
     r'(.*)$'                                       # tail (trailing cols)
 )
+
+
+# A detail row's money region holds, left to right: unit_price, discount, amount.
+# Express prints each right-aligned and leaves a 0.00 BLANK, so a column can simply
+# be absent — which is why these are identified by shape rather than by position.
+#   money  : a bare number, optionally comma-thousands, optionally negative
+#            ("58.67", "1,530.00", "-320.00" — the ค่าขนส่ง lines are negative)
+#   percent: the discount column's other form ("25%", "5+5%", "10+10%")
+# Anything else in the tail is the trailing reference column.
+_SR_MONEY_TOKEN_RE = re.compile(r'^-?[\d,]+\.?\d*$')
+_SR_PERCENT_TOKEN_RE = re.compile(r'%')
+
+
+def _sr_is_money_token(tok):
+    return bool(_SR_MONEY_TOKEN_RE.match(tok) or _SR_PERCENT_TOKEN_RE.search(tok))
 
 
 def _parse_float_or_zero(s):
@@ -561,12 +577,14 @@ def _parse_detail_line(stripped):
 
       Y  seq  bsn_code  product_name  qty<n>.<n>unit  [unit_price] [discount] [amount] [ref]
 
-    The middle three numeric columns may be blank-padded; we identify them
-    positionally after splitting on 2+ spaces:
-      - discount: any token containing '%'  (e.g. '25%', '5+5%')
-      - unit_price: first remaining numeric token (leftmost)
-      - amount: last remaining numeric token (rightmost), or unit_price if only one
-      - ref: any IV…/AVGPR… token (always last column)
+    The middle three numeric columns may be blank-padded, so after splitting on
+    2+ spaces the tokens are identified by SHAPE, not by position (GH #556):
+      - ref: the trailing token that is not money-shaped (any prefix — IV, HS,
+        AVGPR, STNPR …), possibly re-glued from "IV6602766-" + "1"
+      - discount: the token containing '%' (e.g. '25%', '5+5%'), else the middle
+        numeric of three (the baht form, e.g. '41.00')
+      - amount: the LAST remaining numeric — including when it is the only one
+      - unit_price: the first remaining numeric when two or more are present
     """
     m = _SR_DETAIL_HEAD_RE.match(stripped)
     if not m:
@@ -577,7 +595,14 @@ def _parse_detail_line(stripped):
     tokens = re.split(r'\s{2,}', tail.strip()) if tail.strip() else []
     tokens = [t for t in tokens if t]
 
-    # Pull off trailing reference (IV…, AVGPR…) if present
+    # Pull off the trailing reference column. It is whatever sits after the money
+    # region and is NOT money-shaped, so the prefix does not matter (IV, HS, AVGPR,
+    # STNPR …). Matching a prefix allowlist is what broke: Express right-aligns the
+    # reference's LINE number in 3 columns after the '-', so a 1-digit line prints
+    # "IV6602766-  1" (2 spaces → two tokens) but a 2-digit one prints
+    # "IV6601858- 12" (ONE space → a single token containing a space, which
+    # ^(IV\S*\-?|AVGPR\-?)\S*$ cannot match). The unmatched token then stayed in the
+    # money region and shifted every column left of it. See GH #556.
     ref_line = None
     if tokens:
         last = tokens[-1]
@@ -586,14 +611,16 @@ def _parse_detail_line(stripped):
         if re.match(r'^\d+$', last) and len(tokens) >= 2 and tokens[-2].endswith('-'):
             ref_line = tokens[-2] + last
             tokens = tokens[:-2]
-        elif re.match(r'^(IV\S*\-?|AVGPR\-?)\S*$', last) or 'AVGPR' in last:
+        elif not _sr_is_money_token(last):
             ref_line = last
             tokens = tokens[:-1]
 
     if ref_line:
         ref_line = re.sub(r'\s+', '', ref_line)
 
-    # Now the remaining tokens are the numeric columns.
+    # What remains is the money region: [unit_price] [discount] [amount], blanks
+    # dropped. The percent form of the discount is self-identifying; the rest are
+    # ordered, so `amount` is the RIGHTMOST and `unit_price` the leftmost of two+.
     discount = ''
     unit_price = 0.0
     amount = 0.0
@@ -604,16 +631,18 @@ def _parse_detail_line(stripped):
         else:
             numerics.append(t)
     if len(numerics) == 1:
-        # Solo numeric → unit_price (no amount column)
+        # A lone money column is the line total (รวมเงิน), never the unit price:
+        # across all 5,621 SR lines in the Express book, a row printing a
+        # unit_price but no line total occurs 0 times, while the reverse occurs 15.
+        amount = _parse_float_or_zero(numerics[0])
+    elif len(numerics) >= 2:
         unit_price = _parse_float_or_zero(numerics[0])
-    elif len(numerics) == 2:
-        unit_price = _parse_float_or_zero(numerics[0])
-        amount = _parse_float_or_zero(numerics[1])
-    elif len(numerics) >= 3:
-        # Three numerics with no '%' = unit_price, decimal-baht discount, amount
-        unit_price = _parse_float_or_zero(numerics[0])
-        discount = numerics[1]
-        amount = _parse_float_or_zero(numerics[2])
+        amount = _parse_float_or_zero(numerics[-1])
+        if len(numerics) >= 3 and not discount:
+            # Three numerics and no '%' = unit_price, decimal-baht discount, amount.
+            # Guarded on `not discount` so a percent already read from the column
+            # can never be clobbered by a stray token — that was the #556 damage.
+            discount = numerics[1]
 
     return {
         'seq':           int(seq),
