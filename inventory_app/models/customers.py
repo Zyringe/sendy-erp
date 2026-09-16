@@ -120,7 +120,7 @@ def _customer_sales_aggregates(conn, where, params):
         SELECT COUNT(DISTINCT doc_base) AS n,
                MAX(date_iso)            AS d
         FROM sales_transactions
-        WHERE {where} AND {price_lookup.evidence_filter('')}
+        WHERE {where} AND {price_lookup.purchase_population_filter('')}
     """, params).fetchone()
     summary['last_purchase_date'] = purchases['d']
     summary['purchase_doc_count'] = purchases['n']
@@ -420,7 +420,7 @@ def _customer_product_cards(conn, where, params, include_cost=False):
                SUM(s.net) AS total_net
         FROM sales_transactions s
         LEFT JOIN products p ON p.id = s.product_id
-        WHERE {where} AND {price_lookup.evidence_filter('s')}
+        WHERE {where} AND {price_lookup.purchase_population_filter('s')}
         GROUP BY s.product_id, s.unit
         ORDER BY s.product_id, s.unit
     """, params).fetchall()]
@@ -457,7 +457,15 @@ def _customer_product_cards(conn, where, params, include_cost=False):
         last_row = conn.execute(f"""
             SELECT date_iso, doc_base, net, qty, vat_type, unit_price, discount, total
             FROM sales_transactions s
-            WHERE {where} AND {price_lookup.evidence_filter('s')}
+            -- #554: the PRICE predicate here, not the purchase one two
+            -- queries up. times_bought above answers "did this shop buy"
+            -- (a written-off bill still counts, Put 2026-09-17); this row's
+            -- net/qty is rendered to a rep AS A PRICE, so a ฿1.00 written-off
+            -- line must never be it. A product whose only bill was written
+            -- off therefore shows its count with no last price (card['last']
+            -- stays None, already handled below) — which is the truthful
+            -- answer to both questions.
+            WHERE {where} AND {price_lookup.price_evidence_filter('s')}
               AND s.product_id = ? AND s.unit = ?
             ORDER BY s.date_iso DESC, s.id DESC LIMIT 1
         """, list(params) + [pid, unit]).fetchone()
@@ -570,8 +578,12 @@ def _cross_sell_suggestions(conn, customer_code, today=None, limit=10):
     months), that THIS shop has never bought (all-time — same population as
     ครั้งที่ซื้อ). One row per `products.sub_category`.
 
-    Population = `price_lookup.evidence_filter` throughout — never a second
-    "does this count as a sale" predicate. Shop key = the call list's own
+    Population = `price_lookup.purchase_population_filter` throughout — never
+    a second "does this count as a sale" predicate, and never
+    price_evidence_filter: "3 other shops bought it" is a purchase question, so
+    a written-off bill still counts (Put, 2026-09-17, #554). All THREE call
+    sites below must use the SAME one — the self-exclusion has to match the
+    counting, or a shop gets its own product suggested back to it. Shop key = the call list's own
     canonical key (`COALESCE(NULLIF(TRIM(customer_code),''), customer)`), so
     a bill name shared by two companies is never conflated into one "shop"
     (same reasoning winback.py's module docstring gives for the same key).
@@ -640,7 +652,7 @@ def _cross_sell_suggestions(conn, customer_code, today=None, limit=10):
         FROM sales_transactions s
         JOIN products p ON p.id = s.product_id
         LEFT JOIN stock_levels sl ON sl.product_id = p.id
-        WHERE {price_lookup.evidence_filter('s')}
+        WHERE {price_lookup.purchase_population_filter('s')}
           AND s.date_iso >= ?
           AND {key_expr} != ?
           AND p.is_active = 1
@@ -648,13 +660,13 @@ def _cross_sell_suggestions(conn, customer_code, today=None, limit=10):
           AND s.product_id NOT IN (
               SELECT DISTINCT s2.product_id
               FROM sales_transactions s2
-              WHERE {own_key_expr} = ? AND {price_lookup.evidence_filter('s2')}
+              WHERE {own_key_expr} = ? AND {price_lookup.purchase_population_filter('s2')}
           )
           AND (p.sub_category IS NULL OR p.sub_category NOT IN (
               SELECT DISTINCT p2.sub_category
               FROM sales_transactions s2
               JOIN products p2 ON p2.id = s2.product_id
-              WHERE {own_key_expr} = ? AND {price_lookup.evidence_filter('s2')}
+              WHERE {own_key_expr} = ? AND {price_lookup.purchase_population_filter('s2')}
                 AND p2.sub_category IS NOT NULL
           ))
         GROUP BY s.product_id
@@ -943,7 +955,7 @@ def get_customers(search=None, region=None, page=1, per_page=50,
                -- real recent activity. `IS` is SQLite's NULL-safe equality.
                (SELECT MAX(s2.date_iso) FROM sales_transactions s2
                  WHERE s2.customer_code IS s.customer_code
-                   AND {price_lookup.evidence_filter('s2')}) AS last_purchase_date
+                   AND {price_lookup.purchase_population_filter('s2')}) AS last_purchase_date
         FROM sales_transactions s
         LEFT JOIN customers     c  ON c.code  = s.customer_code
         LEFT JOIN salespersons  sp ON sp.code = c.salesperson

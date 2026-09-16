@@ -9,11 +9,15 @@ Design (see .superpowers/sdd/plan/task-1-brief.md for the numbered rules
 R1-R8 this file implements, and .superpowers/sdd/plan/task-1-report.md for
 the review-round fixes and their reasoning — two rounds so far):
 
-  - `evidence_filter(alias)` is the ONE population predicate — every
-    money-relevant query in this module (last-paid, lowest, promo
-    evidence, the customer's typical-%) filters through it, so there is
-    exactly one answer to "which sales_transactions rows count as
-    evidence" (see sales_filters.py's own rationale for why that matters).
+  - `price_evidence_filter(alias)` is the ONE population predicate for
+    PRICE — every money-relevant query in this module (last-paid, lowest,
+    promo evidence, the customer's typical-%) filters through it, so there
+    is exactly one answer to "which sales_transactions rows count as
+    evidence of a price" (see sales_filters.py's own rationale for why that
+    matters). `purchase_population_filter(alias)` is its sibling for
+    "did this customer BUY from us", which is a different question with a
+    different answer about written-off bills (#554, Put 2026-09-17) —
+    both are spelled out below.
   - `epochs_for` / `_epoch_candidates` find the most recent "price regime
     change" for a product (base price change, promo start, promo end with
     no replacement, or — for the ~124 dozen-only products whose only price
@@ -56,21 +60,30 @@ import vat_math
 # (that filter is shared with pages that DO want marketplace/dummy rows).
 _DUMMY_DOC_BASES = ('IV6900401', 'IV6900402', 'IV6900403')
 
-# #554 — the WHOLE ar_writeoffs table, not sales_filters' `excludes_revenue = 1`
-# subset. That table answers two questions and this module asks a third:
-#   revenue        -> only the flagged rows are dropped (bad debt WAS a sale and
-#                     keeps its revenue). Correct, and sales_filters owns it.
-#   collectability -> the whole table (cashflow.BSN_AR_PREDICATE).
-#   price evidence -> the whole table, here. A bill the accountant wrote off is
-#                     not a price the market agreed to, and prod carried a ฿1.00
-#                     written-off line (IV6801241) as admissible evidence until
-#                     this clause: it was the source of the two worst outliers
-#                     in #526's measurement.
-# Same whole-table stance, same reason, as models/payments.py's
-# find_payment_candidates. ⚠ LOAD-BEARING: `ar_writeoffs.doc_no` must stay NOT
-# NULL (migration 095) — one NULL makes `NOT IN (SELECT ...)` evaluate to NULL
-# for every row and silently re-admits the entire table (pinned by
-# tests/test_price_lookup.py::test_554_unflagged_writeoff_doc_is_not_price_evidence).
+# ⭐ FOUR questions are asked of `ar_writeoffs` in this repo, and they do NOT
+# have the same answer. Two of them live in this file, side by side, which is
+# why they are two NAMED functions and not one function with a flag:
+#
+#   revenue          -> the FLAG only (`excludes_revenue = 1`, 3 rows on prod).
+#                       Bad debt WAS a sale and keeps its revenue.
+#                       Owner: sales_filters.revenue_filter. Do not change it.
+#   collectability   -> the WHOLE table. Owner: cashflow.BSN_AR_PREDICATE.
+#   price evidence   -> the WHOLE table. `price_evidence_filter` below. A bill
+#                       the accountant wrote off is not a price the market
+#                       agreed to: prod carried a ฿1.00 written-off line
+#                       (IV6801241) as admissible evidence until #554, and it
+#                       was the source of the two worst outliers in #526's
+#                       measurement.
+#   purchase recency -> the FLAG only. `purchase_population_filter` below.
+#                       Put's ruling, 2026-09-17: the goods moved and the
+#                       customer engaged, we just never got paid — so moving
+#                       ซื้อล่าสุด off that bill makes the data LESS true, and
+#                       that date decides who the sales team sees as เงียบ.
+#
+# ⚠ LOAD-BEARING for the two whole-table readings: `ar_writeoffs.doc_no` must
+# stay NOT NULL (migration 095) — one NULL makes `NOT IN (SELECT ...)` evaluate
+# to NULL for every row and silently re-admits the entire table (pinned by
+# tests/test_554_population_split.py).
 _WRITEOFF_SUBQUERY = "SELECT doc_no FROM ar_writeoffs"
 
 # R1 unit normalization — only these three free-text forms collapse to the
@@ -92,33 +105,75 @@ def _strip_tier_qty(qty_label):
     return _TIER_QTY_PREFIX_RE.sub('', qty_label or '').strip()
 
 
-def evidence_filter(alias):
-    """The population predicate for 'does this sales_transactions row count
-    as evidence of a real B2B price'. Built on sales_filters.revenue_filter
-    (excludes SR/write-offs, doc_base-keyed; COUNTS HS cash sales since
-    #514) plus the three exclusions that filter does not cover: marketplace
-    รายการหน้าร้าน (customer prefix), the cost-basis dummy invoices
-    (doc_base-keyed, per quote_worsawat.py's EXCLUDED_DOC_BASES), and every
-    OTHER written-off document (#554 — see _WRITEOFF_SUBQUERY above for why
-    revenue and price evidence read ar_writeoffs differently, and why the
-    extra clause belongs here rather than in sales_filters). qty > 0 /
-    net > 0 are folded
-    in here too (not left to each caller) — every consumer of this
-    predicate needs both checks, and a caller that forgot one is exactly
-    the kind of silent population drift verification-discipline.md warns
-    about.
+def _real_sale_lines(alias):
+    """The clauses BOTH populations below share, and nothing else.
 
-    `alias` is the table alias used in the caller's FROM clause ('st' for
-    every query in this module).
+    Built on sales_filters.revenue_filter (excludes SR returns and the
+    flagged not-a-sale documents, doc_base-keyed; COUNTS HS cash sales
+    since #514) plus the two exclusions that filter does not cover:
+    marketplace รายการหน้าร้าน (customer prefix) and the cost-basis dummy
+    invoices (doc_base-keyed, per quote_worsawat.py's EXCLUDED_DOC_BASES).
+    qty > 0 / net > 0 are folded in here (not left to each caller) — every
+    consumer needs both checks, and a caller that forgot one is exactly the
+    kind of silent population drift verification-discipline.md warns about.
+
+    Not a public predicate on purpose: a caller has to say WHICH question it
+    is asking, because the two answers differ (see _WRITEOFF_SUBQUERY).
     """
     p = f'{alias}.' if alias else ''
     return (
         f"{sales_filters.revenue_filter(alias)} "
         f"AND {p}qty > 0 AND {p}net > 0 "
         f"AND {p}customer NOT LIKE 'หน้าร้าน%' "
-        f"AND {p}doc_base NOT IN ('{_DUMMY_DOC_BASES[0]}','{_DUMMY_DOC_BASES[1]}','{_DUMMY_DOC_BASES[2]}') "
-        f"AND COALESCE({p}doc_base, {p}doc_no) NOT IN ({_WRITEOFF_SUBQUERY})"
+        f"AND {p}doc_base NOT IN ('{_DUMMY_DOC_BASES[0]}','{_DUMMY_DOC_BASES[1]}','{_DUMMY_DOC_BASES[2]}')"
     )
+
+
+def price_evidence_filter(alias):
+    """PRICE: 'does this sales_transactions row count as evidence of a real
+    B2B price someone agreed to?'
+
+    `_real_sale_lines` plus the WHOLE ar_writeoffs table (#554). A bill the
+    accountant wrote off is not a price the market agreed to, and a ฿1.00
+    line is not a price under any reading.
+
+    ⛔ Do NOT merge this with purchase_population_filter, and do not "fix"
+    the difference: they disagree about written-off-but-unflagged documents
+    DELIBERATELY (the four questions are laid out at _WRITEOFF_SUBQUERY).
+    Which consumer reads which is pinned per call site by
+    tests/test_554_population_split.py — that test names the site, so
+    collapsing one back into the other fails loudly instead of quietly
+    changing a number on a screen.
+
+    `alias` is the table alias used in the caller's FROM clause ('st' for
+    every query in this module).
+    """
+    p = f'{alias}.' if alias else ''
+    return (f"{_real_sale_lines(alias)} "
+            f"AND COALESCE({p}doc_base, {p}doc_no) NOT IN ({_WRITEOFF_SUBQUERY})")
+
+
+def purchase_population_filter(alias):
+    """PURCHASE: 'did this customer buy from us, and when?'
+
+    `_real_sale_lines` and nothing more — so a written-off-but-unflagged
+    document still counts as a purchase. Put's ruling, 2026-09-17: the goods
+    moved and the customer engaged, we just never got paid. Dropping that
+    bill would move ซื้อล่าสุด backwards (measured on prod: 1 customer of
+    273, 2025-03-31 -> 2024-12-10) and that date is what decides who the
+    sales team sees as เงียบ.
+
+    The FLAGGED documents (`excludes_revenue = 1`, invoiced in error — no
+    sale ever happened) are still excluded, by revenue_filter inside
+    `_real_sale_lines`. That is the whole distinction.
+
+    Read by the ซื้อ-labelled surfaces (#493/#513): the customer page's
+    ซื้อล่าสุด + จำนวนครั้งซื้อ, the /customers list column, /call's
+    ซื้อล่าสุด and its เงียบ badge, /m/sales-trip's ล่าสุด, ซื้อบ่อย's
+    times_bought, winback, and the cross-sell "other shops bought it"
+    counts. `alias` as for price_evidence_filter.
+    """
+    return _real_sale_lines(alias)
 
 
 # ── product / tier / ratio lookups ──────────────────────────────────────────
@@ -625,7 +680,7 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
         SELECT * FROM sales_transactions st
         WHERE st.product_id = ? AND st.customer_code = ?
           AND st.date_iso >= ? AND st.date_iso <= ?
-          AND {evidence_filter('st')}
+          AND {price_evidence_filter('st')}
         ORDER BY st.date_iso DESC, st.id DESC
     """, (product_id, customer_code, window_from, today)).fetchall()
 
@@ -671,7 +726,7 @@ def _evidence_rows(conn, product_id, from_date, today):
         SELECT * FROM sales_transactions st
         WHERE st.product_id = ?
           AND st.date_iso >= ? AND st.date_iso <= ?
-          AND {evidence_filter('st')}
+          AND {price_evidence_filter('st')}
         ORDER BY st.date_iso DESC, st.id DESC
     """, (product_id, from_date, today)).fetchall()
 
@@ -711,7 +766,7 @@ def _customer_context(conn, customer_code, today):
         FROM sales_transactions st
         WHERE st.customer_code = ?
           AND st.date_iso >= ? AND st.date_iso <= ?
-          AND {evidence_filter('st')}
+          AND {price_evidence_filter('st')}
     """, (customer_code, from_365, today)).fetchall()
 
     by_pid = defaultdict(list)
@@ -837,7 +892,8 @@ def find_customers(conn, query, limit=8):
     """Customers matching `query` exactly against code, or LIKE against
     name/nickname. last_purchase_date is a plain MAX(date_iso) — this is a
     picker/search aid, not a money computation, so it is not run through
-    evidence_filter."""
+    either population filter (neither price_evidence_filter nor
+    purchase_population_filter)."""
     q = (query or '').strip()
     if not q:
         return []
@@ -940,7 +996,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         pre_rows = conn.execute(f"""
             SELECT * FROM sales_transactions st
             WHERE st.product_id = ? AND st.date_iso < ?
-              AND {evidence_filter('st')}
+              AND {price_evidence_filter('st')}
             ORDER BY st.date_iso DESC, st.id DESC LIMIT 3
         """, (product_id, epoch)).fetchall()
         pre_epoch = [

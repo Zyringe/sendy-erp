@@ -302,8 +302,11 @@ def get_call_list(conn, *, q=None, region=None, call=None,
     # ── 3. last_buy — all-time MAX (independent of spend_window) ─────────────
     # ซื้อล่าสุด, and therefore the เงียบ badge below, reads the PURCHASE
     # population (#513): the customer page's own definition
-    # (price_lookup.evidence_filter, imported — never re-typed here), which
-    # drops credit notes, documents invoiced in error and free/zero-net lines.
+    # (price_lookup.purchase_population_filter, imported — never re-typed
+    # here), which drops credit notes, documents invoiced in error and
+    # free/zero-net lines. It KEEPS a written-off-but-unflagged bill: the shop
+    # did buy, we just never got paid (Put, 2026-09-17, #554), and that is the
+    # one difference from price_evidence_filter.
     # It already excludes the หน้าร้าน marketplace accounts this query used to
     # filter by hand. A raw MAX(date_iso) let a RETURN read as a recent
     # purchase, and เงียบ exists to surface exactly the customer a return was
@@ -315,7 +318,7 @@ def get_call_list(conn, *, q=None, region=None, call=None,
             COALESCE(NULLIF(TRIM(customer_code),''), customer) AS canonical_code,
             MAX(date_iso) AS last_buy
         FROM sales_transactions
-        WHERE {pl.evidence_filter('')}
+        WHERE {pl.purchase_population_filter('')}
         GROUP BY canonical_code
     """).fetchall()
 
@@ -639,7 +642,7 @@ def _assemble_products(conn, names, canon_code, today=None):
     epoch_map = pl.epochs_for_pairs(conn, pairs, today=today_str) if pairs else {}
 
     # Build peer pricing map for this customer_code — C4's decision: filter
-    # the peer population the same way (epoch + evidence_filter) so it
+    # the peer population the same way (epoch + price_evidence_filter) so it
     # compares the same population as customer_latest below.
     peer_map = {}
     if canon_code:

@@ -520,7 +520,7 @@ def test_554_unflagged_writeoff_doc_is_not_price_evidence(db):
 
     bases = sorted(r['doc_base'] for r in db.execute(
         f"SELECT st.doc_base FROM sales_transactions st "
-        f"WHERE st.product_id = ? AND {pl.evidence_filter('st')}", (pid,)).fetchall())
+        f"WHERE st.product_id = ? AND {pl.price_evidence_filter('st')}", (pid,)).fetchall())
     # Count + identity in ONE assertion: an empty result would mean the
     # fixture never arrived, not that the guard works.
     assert bases == [ctl_base], (
@@ -550,18 +550,18 @@ def test_554_unflagged_writeoff_doc_is_not_price_evidence(db):
 
 def test_fixture_discriminates_doc_base_from_doc_no(db, monkeypatch):
     """NOT a standing regression guard (review round 1, I6): this
-    monkeypatches evidence_filter with a HAND-BROKEN copy (doc_base
+    monkeypatches price_evidence_filter with a HAND-BROKEN copy (doc_base
     swapped for doc_no) and asserts the broken copy behaves wrongly. It
     proves the FIXTURE below can tell a doc_base-keyed filter apart from a
     doc_no-keyed one -- i.e. that this fixture is capable of catching that
     specific class of regression IF one is introduced -- not that the
-    real `evidence_filter` in price_lookup.py is currently correct. If
+    real `price_evidence_filter` in price_lookup.py is currently correct. If
     the real function regressed to doc_no-keying, this test would still
     pass (it never calls the real function). The actual standing guards
     that exercise the real, unmodified code are
     test_r4_population_excludes_every_bad_shape and
     test_r4b_base_changed_epoch_window_and_pre_epoch (below) -- those call
-    pl.evidence_filter / pl._window directly and would go red on a real
+    pl.price_evidence_filter / pl._window directly and would go red on a real
     regression."""
     pid = _mk_product(db, "R4 break-it-once", unit_type='ตัว', base=100.0, cost=60.0)
     _clear_pid(db, pid)
@@ -583,10 +583,14 @@ def test_fixture_discriminates_doc_base_from_doc_no(db, monkeypatch):
             f"{sales_filters.revenue_filter(alias).replace('doc_base', 'doc_no')} "
             f"AND {p}qty > 0 AND {p}net > 0 "
             f"AND {p}customer NOT LIKE 'หน้าร้าน%' "
-            f"AND {p}doc_no NOT IN ('IV6900401-3','IV6900402','IV6900403')"
+            f"AND {p}doc_no NOT IN ('IV6900401-3','IV6900402','IV6900403') "
+            # doc_no-keyed on purpose too: the #554 whole-table clause is part
+            # of what this broken copy mis-keys, so the fixture still has to
+            # discriminate base from line here as well.
+            f"AND {p}doc_no NOT IN (SELECT doc_no FROM ar_writeoffs)"
         )
 
-    monkeypatch.setattr(pl, 'evidence_filter', _broken_filter)
+    monkeypatch.setattr(pl, 'price_evidence_filter', _broken_filter)
     out = pl.resolve_price(db, product_id=pid, today=TODAY)
     # With doc_no keying, the writeoff doc_no ('...-1', not the base) no
     # longer matches the write-off subquery's base-form doc_no, and the

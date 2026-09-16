@@ -3,7 +3,7 @@
 (`inventory_app/price_lookup.py::resolve_price` / `find_products` /
 `find_customers`). Adds no pricing logic of its own beyond the family_hint
 sibling lookup below (a small query gated by the resolver's own
-`evidence_filter`, not a fork of any resolver logic).
+`price_evidence_filter`, not a fork of any resolver logic).
 
 stdin (JSON), read from stdin:
     {"lines": [{"product_query"|"product_id", "customer_query"|"customer_code",
@@ -130,7 +130,7 @@ def _latest_cash_per_piece(conn, product_id, unit_type):
     latest one."""
     rows = conn.execute(f"""
         SELECT net, qty, vat_type, unit FROM sales_transactions st
-        WHERE st.product_id = ? AND {pl.evidence_filter('st')}
+        WHERE st.product_id = ? AND {pl.price_evidence_filter('st')}
         ORDER BY st.date_iso DESC, st.id DESC LIMIT 5
     """, (product_id,)).fetchall()
     for row in rows:
