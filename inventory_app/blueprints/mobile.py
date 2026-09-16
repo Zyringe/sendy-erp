@@ -11,6 +11,7 @@ import cashflow
 import customer_geo
 import models
 import payments_alloc
+import price_lookup
 import sales_filters
 from database import get_connection
 import vat_math
@@ -199,7 +200,15 @@ def sales_trip():
                (c.salesperson IS NOT NULL
                   AND c.salesperson != ''
                   AND sp.code IS NULL)          AS salesperson_orphan,
-               (SELECT MAX(date_iso) FROM sales_transactions s WHERE s.customer = c.name) AS last_sale,
+               -- ล่าสุด on the trip row is the customer's last PURCHASE (#513):
+               -- the purchase population, imported from price_lookup, same as
+               -- the customer page's ซื้อล่าสุด and the /call worklist. A raw
+               -- MAX(date_iso) showed a rep a RETURN as a recent sale — 6 of
+               -- the 2,665 customers here, measured on the prod snapshot
+               -- 2026-09-14 (none of them loses a date).
+               (SELECT MAX(date_iso) FROM sales_transactions s
+                 WHERE s.customer = c.name
+                   AND {price_lookup.evidence_filter('s')}) AS last_sale,
                (SELECT ROUND(SUM({vat_math.cash_sql('s')}), 2)
                   FROM sales_transactions s
                   WHERE s.customer = c.name

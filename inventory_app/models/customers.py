@@ -105,15 +105,25 @@ def _customer_sales_aggregates(conn, where, params):
         WHERE {where}
     """, params).fetchone())
 
-    # ซื้อล่าสุด (#493): the latest date with a PAID evidence-filtered line —
-    # never a credit note (SR) or a free/zero-net line, unlike last_date above
-    # (which stays a raw activity date, unchanged, for the "ช่วงเวลา" range).
-    last_purchase = conn.execute(f"""
-        SELECT MAX(date_iso) AS d
+    # The PURCHASE population (#493, #513): evidence-filtered lines only — never
+    # a credit note (SR), a document invoiced in error, or a free/zero-net line.
+    # ONE query answers both figures, so the count and the date can never come
+    # to describe different sets of documents: the newest of the documents
+    # `purchase_doc_count` counts IS `last_purchase_date`, which is what the
+    # call card prints side by side.
+    #
+    # Deliberately NOT the same thing as `doc_count`/`last_date` above, which
+    # stay raw: the customer page labels them จำนวนเอกสาร and the ช่วงเวลา range
+    # end, and a credit note IS a document and IS activity. Only a surface that
+    # says ซื้อ ("bought") may read these two.
+    purchases = conn.execute(f"""
+        SELECT COUNT(DISTINCT doc_base) AS n,
+               MAX(date_iso)            AS d
         FROM sales_transactions
         WHERE {where} AND {price_lookup.evidence_filter('')}
     """, params).fetchone()
-    summary['last_purchase_date'] = last_purchase['d']
+    summary['last_purchase_date'] = purchases['d']
+    summary['purchase_doc_count'] = purchases['n']
 
     top_products = conn.execute(f"""
         SELECT COALESCE(p.product_name, s.product_name_raw) AS name,

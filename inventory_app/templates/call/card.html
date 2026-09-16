@@ -182,13 +182,16 @@
         {% if s %}
         <div class="cc-grid">
           <div class="cc-stat"><div class="k">ยอดซื้อทั้งหมด</div><div class="v">{{ fmt_thb(stats.get('total_net')) }}</div></div>
-          <div class="cc-stat"><div class="k">จำนวนครั้งซื้อ</div><div class="v">{{ stats.get('doc_count','—') }} <small>ครั้ง</small></div></div>
+          {# ซื้อ ("bought") — so both of these read the PURCHASE population (#513),
+             never the raw doc_count / last_date the desktop page labels
+             จำนวนเอกสาร and ช่วงเวลา. A credit note is a document, not a purchase. #}
+          <div class="cc-stat"><div class="k">จำนวนครั้งซื้อ</div><div class="v">{{ stats.get('purchase_doc_count','—') }} <small>ครั้ง</small></div></div>
           <div class="cc-stat"><div class="k">แบรนด์เด่น</div><div class="v" style="font-size:14px">
             {% if s.top_products and s.top_products[0] %}{{ s.top_products[0].name or '—' }}{% else %}—{% endif %}
           </div></div>
           <div class="cc-stat"><div class="k">เซลล์</div><div class="v" style="font-size:14px">{{ s.salesperson or '—' }}</div></div>
           <div class="cc-stat"><div class="k">ซื้อครั้งแรก</div><div class="v" style="font-size:14px">{{ (stats.get('first_date') or '')[:7] or '—' }}</div></div>
-          <div class="cc-stat"><div class="k">ซื้อล่าสุด</div><div class="v" style="font-size:14px">{{ (stats.get('last_date') or '')[:7] or '—' }}</div></div>
+          <div class="cc-stat"><div class="k">ซื้อล่าสุด</div><div class="v" style="font-size:14px">{{ (stats.get('last_purchase_date') or '')[:7] or '—' }}</div></div>
         </div>
         {% else %}
         <p class="text-muted small mb-0">ไม่พบข้อมูลยอดขาย</p>
