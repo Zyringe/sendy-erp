@@ -372,6 +372,33 @@ def test_a_simulating_admin_can_still_get_back_out(tmp_db):
         assert '_real_role' not in s, dict(s)
 
 
+# ⚠ The gate's `admin_only` exemption (ADR 0003) is NOT tested, and that is
+# deliberate. Measured 2026-09-17 on this branch AND on ed80ca4: all five
+# GET-reachable admin endpoints answer 403 to an admin simulating `staff` and
+# to plain staff alike, because each route carries its own
+# `if session.get('role') != 'admin': abort(403)` reading the SIMULATED role.
+# So the exemption is behaviourally inert today — deleting the line leaves
+# this file and the role suite green — and a test asserting today's 403 would
+# go red exactly when PR 3 moves those route-local guards, which is the
+# "guard must survive its own success" trap. It earns a test then, not now.
+
+
+def test_a_404_is_a_404_for_a_desk_role_and_home_for_the_kiosk(tmp_db):
+    """A 404 carries no endpoint, so there is nothing for the gate to look up.
+
+    `roles_for(None)` would raise on `None.split('.')`, so the branch is not
+    cosmetic: without it every 404 becomes a 500. `general` has no chrome to
+    render a 404 into and goes home, which is what it did before this PR.
+    """
+    a = _app()
+    missing = '/zzz-no-such-route-exists'
+    assert _client(a, 'staff').get(missing).status_code == 404
+
+    bounced = _client(a, 'general').get(missing, follow_redirects=False)
+    assert bounced.status_code == 302, bounced.status_code
+    assert bounced.headers['Location'].endswith('/m/stock'), bounced.headers['Location']
+
+
 # ── the live proof behind EXPECTED_LOSSES ────────────────────────────────────
 
 def _url_for(a, endpoint, conn):
