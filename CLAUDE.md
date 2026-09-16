@@ -169,6 +169,13 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 - **Parser fixed 2026-04-28** — `_DISCOUNT_COL` regex ขยาย char class รองรับ `.` และ `%` ใน line/doc-level discount.
   - Bugs ที่ fix: (1) line discount แบบ decimal baht (`32.00`) shift column ผิด, (2) doc-level discount แบบ `%` (`2%`) truncate net.
   - Re-import historical files แล้วเพื่อแก้ ~695 rows.
+  - ⚠ **แก้ต่อ 2026-09-17 (#525)** — ทั้งสอง fix ข้างบนไม่ได้ anchor คอลัมน์ ยังทำให้
+    เมื่อ ส่วนลด (บรรทัด) ว่างจริงๆ แต่ ส่วนลดรวม (ท้ายบิล) เป็นบาท (ไม่ใช่ %) regex
+    เดา column ผิดอยู่ดี (176 บรรทัด ก่อน 09-17). แก้โดยอ่าน 4 คอลัมน์เงิน
+    (ส่วนลด/รวมเงิน/ส่วนลดรวม/ยอดขายสุทธิ) จาก**ตำแหน่งตัวอักษรคงที่**หลังหลัก VAT
+    (`_extract_money_columns` ใน `parse_weekly.py`) แทนการค้นหาตัวเลขถัดไปด้วย regex
+    — `_DISCOUNT_COL` เดิมเหลือใช้เฉพาะ `_SR_MASTER_RE` (ใบลดหนี้) เท่านั้น.
+    ข้อมูลเก่าที่เพี้ยนแก้ด้วย mig 184 (data-only, ไม่แตะ `net`/`qty`/`unit_price`).
 
 ### product_code_mapping
 `id, bsn_code, bsn_name, product_id, is_ignored, created_at`
