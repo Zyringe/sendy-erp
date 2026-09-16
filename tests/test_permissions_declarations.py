@@ -381,6 +381,63 @@ def test_a_simulating_admin_can_still_get_back_out(tmp_db):
 # this file and the role suite green — and a test asserting today's 403 would
 # go red exactly when PR 3 moves those route-local guards, which is the
 # "guard must survive its own success" trap. It earns a test then, not now.
+#
+# ⚠ "Inert" is about the exemption LINE, not about impersonation as a whole.
+# One refusal shape really does move, in the one direction the acceptance
+# matrix cannot see, and the next test pins it.
+
+
+def test_a_simulating_admin_is_refused_an_admin_page_like_a_plain_user(tmp_db):
+    """The one refusal SHAPE this PR moves that `EXPECTED_LOSSES` cannot see.
+
+    That matrix is keyed on `(role, endpoint)` and has no impersonation
+    dimension, so this was invisible to it. Measured against ed80ca4: an admin
+    simulating `general` who opened an admin URL got a 302 to /m/stock, while a
+    plain `general` user got 403 on the same URL. The 302 was an artefact of
+    check ORDER rather than a decision — the base exempted an impersonator from
+    the admin_module abort, and the kiosk redirect on the very next line then
+    caught them. One gate cannot keep both, and writing the ordering artefact
+    down as policy is the worse of the two options, so the two now agree.
+
+    Nothing is granted in either direction, and the way out of a simulation is
+    unaffected (`test_a_simulating_admin_can_still_get_back_out`).
+    """
+    a = _app()
+    plain = _client(a, 'general').get('/users', follow_redirects=False)
+    assert plain.status_code == 403, plain.status_code
+
+    c = a.test_client()
+    with c.session_transaction() as s:
+        s['user_id'], s['username'], s['role'] = 7, 'sim', 'general'
+        s['_real_role'], s['_real_user_id'], s['_real_username'] = 'admin', 1, 'putty'
+    simulating = c.get('/users', follow_redirects=False)
+    assert simulating.status_code == 403, simulating.status_code
+
+
+def test_the_kiosk_is_refused_without_a_message(tmp_db):
+    """`permissions.SILENT` exists so the kiosk is bounced wordlessly, as before.
+
+    Nothing else pinned this. The matrix compares `may_see` only, so dropping
+    the SILENT clause would start flashing desk-role wording at a stock-lookup
+    kiosk with every other test in this file still green (break-it-once,
+    2026-09-17).
+    """
+    import permissions as P
+    a = _app()
+    path = '/hr/advances'                     # a MANAGEMENT area that carries a msg
+    assert P.AREAS['hr'].msg, 'precondition: there must BE a message to suppress'
+
+    kiosk = _client(a, 'general')
+    bounced = kiosk.get(path, follow_redirects=False)
+    assert bounced.status_code == 302, bounced.status_code
+    assert bounced.headers['Location'].endswith('/m/stock'), bounced.headers['Location']
+    assert _flashes(kiosk) == [], _flashes(kiosk)
+
+    # Control: the message really is reachable on this very path, so this is
+    # not passing because the harness never sees a flash at all.
+    desk = _client(a, 'staff')
+    assert desk.get(path, follow_redirects=False).status_code == 302
+    assert P.AREAS['hr'].msg in _flashes(desk), _flashes(desk)
 
 
 def test_a_404_is_a_404_for_a_desk_role_and_home_for_the_kiosk(tmp_db):
