@@ -300,12 +300,22 @@ def get_call_list(conn, *, q=None, region=None, call=None,
                  for row in spend_rows if row['canonical_code']}
 
     # ── 3. last_buy — all-time MAX (independent of spend_window) ─────────────
-    last_buy_rows = conn.execute("""
+    # ซื้อล่าสุด, and therefore the เงียบ badge below, reads the PURCHASE
+    # population (#513): the customer page's own definition
+    # (price_lookup.evidence_filter, imported — never re-typed here), which
+    # drops credit notes, documents invoiced in error and free/zero-net lines.
+    # It already excludes the หน้าร้าน marketplace accounts this query used to
+    # filter by hand. A raw MAX(date_iso) let a RETURN read as a recent
+    # purchase, and เงียบ exists to surface exactly the customer a return was
+    # hiding: measured on the prod snapshot 2026-09-14, 15 of 280 rows change
+    # date and 2 regain the badge.
+    import price_lookup as pl
+    last_buy_rows = conn.execute(f"""
         SELECT
             COALESCE(NULLIF(TRIM(customer_code),''), customer) AS canonical_code,
             MAX(date_iso) AS last_buy
         FROM sales_transactions
-        WHERE customer NOT LIKE 'หน้าร้าน%'
+        WHERE {pl.evidence_filter('')}
         GROUP BY canonical_code
     """).fetchall()
 
