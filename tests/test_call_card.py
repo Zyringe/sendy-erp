@@ -190,6 +190,7 @@ def test_add_log_and_get_log(mig103_conn):
 def test_mark_called_creates_call_row(mig103_conn):
     cc.mark_called(mig103_conn, 'C001', 'sanchai')
     rows = cc.get_log(mig103_conn, 'C001')
+    assert len(rows) == 1
     assert any(r['kind'] == 'call' for r in rows)
 
 
@@ -327,6 +328,8 @@ def test_call_list_region_filter(mig103_conn):
 
     bkk_rows = cc.get_call_list(conn, region='กรุงเทพฯ/ปริมณฑล')
     isan_rows = cc.get_call_list(conn, region='ภาคอีสาน')
+    assert len(bkk_rows) == 1
+    assert len(isan_rows) == 1
     assert all(r['region'] == 'กรุงเทพฯ/ปริมณฑล' for r in bkk_rows)
     assert all(r['region'] == 'ภาคอีสาน' for r in isan_rows)
 
