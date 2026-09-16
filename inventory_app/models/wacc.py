@@ -11,7 +11,14 @@ from collections import defaultdict
 from database import get_connection
 
 from ._shared import _set_price_change_source
-from .system_alerts import record_wacc_identity_alert
+from .system_alerts import record_wacc_identity_alert, record_wacc_cost_outlier_alert
+
+# #546 (Put's 2026-09-16 triage, option B): at walk stock 0 the incoming bill
+# is taken as the new WACC (see the two `elif current_stock == 0` branches
+# below). A bill whose unit cost sits outside this band of the carried cost
+# is flagged — never blocked, never altered — via record_wacc_cost_outlier_alert.
+_OUTLIER_RATIO_LOW = 1 / 3
+_OUTLIER_RATIO_HIGH = 3.0
 
 
 _WACC_INITIAL_DATE = '2026-03-03'
@@ -58,6 +65,19 @@ class WaccIdentityError(Exception):
             'source_line_seq': self.source_line_seq,
             'operation': self.operation,
         }
+
+
+def _flag_if_cost_outlier(conn, *, product_id, reference_no, event_type,
+                          prior_cost, incoming_cost):
+    """Shared ratio check for both zero-stock branches (#546) — kept in one
+    place so PURCHASE and CONVERSION_IN cannot silently diverge on the band.
+    `prior_cost` is guaranteed non-zero by both call sites (the `current_wacc
+    == 0` branch above each one already claims that case)."""
+    if incoming_cost < prior_cost * _OUTLIER_RATIO_LOW or incoming_cost > prior_cost * _OUTLIER_RATIO_HIGH:
+        record_wacc_cost_outlier_alert(
+            conn, product_id=product_id, reference_no=reference_no,
+            event_type=event_type, prior_cost=prior_cost,
+            incoming_cost=incoming_cost)
 
 
 def preflight_source_identity(conn, product_id, operation=None):
@@ -322,8 +342,14 @@ def _recalculate_product_wacc(product_id, conn):
                         # First-time WACC — use purchase price
                         new_wacc = unit_cost
                     elif current_stock == 0:
-                        # Zero stock — keep last known WACC
-                        new_wacc = current_wacc
+                        # Zero stock (#546) — the incoming batch IS the whole
+                        # stock, so its price IS the weighted average. Flag
+                        # (never block) a unit cost far from the carried one.
+                        _flag_if_cost_outlier(
+                            conn, product_id=product_id, reference_no=ref,
+                            event_type='PURCHASE', prior_cost=current_wacc,
+                            incoming_cost=unit_cost)
+                        new_wacc = unit_cost
                     else:
                         new_wacc = (current_stock * current_wacc + qty * unit_cost) / (current_stock + qty)
                     current_stock += qty
@@ -349,8 +375,14 @@ def _recalculate_product_wacc(product_id, conn):
                 elif current_wacc == 0:
                     new_wacc = unit_cost
                 elif current_stock == 0:
-                    # Zero stock — keep last known WACC
-                    new_wacc = current_wacc
+                    # Zero stock (#546) — same reasoning as the purchase
+                    # branch above: take the conversion's own unit cost, and
+                    # flag (never block) if it is far from the carried one.
+                    _flag_if_cost_outlier(
+                        conn, product_id=product_id, reference_no=ref,
+                        event_type='CONVERSION_IN', prior_cost=current_wacc,
+                        incoming_cost=unit_cost)
+                    new_wacc = unit_cost
                 else:
                     new_wacc = (current_stock * current_wacc + qty * unit_cost) / (current_stock + qty)
                 current_stock += qty
