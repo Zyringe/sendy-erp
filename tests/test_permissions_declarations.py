@@ -60,16 +60,27 @@ EXPECTED_LOSSES = {
     ('staff', 'admin.user_delete'),
 }
 
-# The seven that a browser can reach with a GET, so the live proof below can
-# open them. The other five are POST-only.
-GET_LOSSES = {
-    ('staff', 'accounting.accounting_summary'),
-    ('staff', 'accounting.ar_followup_export'),
-    ('staff', 'accounting.cashflow_dashboard'),
-    ('staff', 'accounting.financial_health'),
-    ('staff', 'accounting.revenue_dashboard'),
-    ('staff', 'accounting.revenue_unmapped_drilldown'),
-    ('staff', 'products.product_cost_history'),
+# The exact refusal each GET-reachable loss must produce: (status, flash) with
+# flash None meaning "no message expected". These seven are the ones a browser
+# can open; the other five are POST-only.
+#
+# ⚠ Recorded HERE as literals, deliberately. An earlier version read the
+# expected shape back from `permissions.refusal` — the very thing under test —
+# so the expectation moved with the declaration and pinned nothing: flipping
+# `product_cost_history` from FORBID to a bounce left all 15 tests GREEN
+# (break-it-once, 2026-09-17). `test_recorded_refusals_match_the_declaration`
+# below is what keeps these literals and the module honest about each other.
+ACCOUNTING_GUARD_MSG = 'ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager'
+
+EXPECTED_REFUSAL = {
+    ('staff', 'accounting.accounting_summary'):         (302, ACCOUNTING_GUARD_MSG),
+    ('staff', 'accounting.ar_followup_export'):         (302, ACCOUNTING_GUARD_MSG),
+    ('staff', 'accounting.cashflow_dashboard'):         (302, ACCOUNTING_GUARD_MSG),
+    ('staff', 'accounting.financial_health'):           (302, ACCOUNTING_GUARD_MSG),
+    ('staff', 'accounting.revenue_dashboard'):          (302, ACCOUNTING_GUARD_MSG),
+    ('staff', 'accounting.revenue_unmapped_drilldown'): (302, ACCOUNTING_GUARD_MSG),
+    # The route aborts 403 today, with no message, and keeps doing so.
+    ('staff', 'products.product_cost_history'):         (403, None),
 }
 
 # 302s to the same place for every role including staff, so they are neither
@@ -336,13 +347,17 @@ def test_require_login_reads_the_impersonation_escape_by_name(tmp_db):
 
 
 def test_a_simulating_admin_can_still_get_back_out(tmp_db):
-    """The escape must outrank the new ADMIN_ONLY + FORBID row on that pair.
+    """ADR 0003's invariant, now that this pair declares ADMIN_ONLY + FORBID.
 
-    This PR declares `admin_exit_simulate` admin-only, so an admin simulating
-    `general` now fails `may_see`. If `IMPERSONATION_ESCAPE` did not come
-    first they would get a 403 and be trapped in the kiosk, which is the exact
-    failure ADR 0003 exists to prevent. Asserts the session STATE the route
-    changed, not the 302 (a Sendy route 302s on refusal too).
+    An admin simulating `general` fails `may_see` on `admin_exit_simulate`, so
+    without a carve-out they would get a 403 and be trapped in the kiosk. This
+    asserts the OUTCOME, not which carve-out delivers it: the gate has two that
+    both cover this endpoint (`IMPERSONATION_ESCAPE`, and the `admin_only`
+    exemption), and break-it-once confirmed deleting either one alone leaves
+    this green. Deleting both is what turns it red.
+
+    Asserts the session STATE the route changed, not the 302 — a Sendy route
+    302s on refusal too.
     """
     import permissions as P
     assert not P.may_see('general', 'admin_exit_simulate')      # precondition
@@ -400,9 +415,9 @@ def test_every_expected_loss_is_a_real_page_admin_can_open(tmp_db, tmp_db_conn):
     # Counts before the loops, so a row silently leaving the table cannot make
     # this pass by iterating over less.
     assert len(EXPECTED_LOSSES) == 12
-    assert len(GET_LOSSES) == 7
-    assert GET_LOSSES < EXPECTED_LOSSES
-    post_only = EXPECTED_LOSSES - GET_LOSSES
+    assert len(EXPECTED_REFUSAL) == 7
+    assert set(EXPECTED_REFUSAL) < EXPECTED_LOSSES
+    post_only = EXPECTED_LOSSES - set(EXPECTED_REFUSAL)
     assert len(post_only) == 5, sorted(post_only)
     assert all('GET' not in (r.methods or set())
                for r in a.url_map.iter_rules()
@@ -414,7 +429,7 @@ def test_every_expected_loss_is_a_real_page_admin_can_open(tmp_db, tmp_db_conn):
         'control failed: staff cannot reach /ar, so every refusal below is meaningless')
 
     not_a_page, wrong_shape = [], []
-    for role, endpoint in sorted(GET_LOSSES):
+    for (role, endpoint), (want_status, want_msg) in sorted(EXPECTED_REFUSAL.items()):
         path = _url_for(a, endpoint, tmp_db_conn)
 
         # The assertion PR 1 was missing: a shim cannot answer 200.
@@ -423,21 +438,40 @@ def test_every_expected_loss_is_a_real_page_admin_can_open(tmp_db, tmp_db_conn):
             not_a_page.append((endpoint, allowed.status_code))
             continue
 
-        deny, msg = P.refusal(role, endpoint)
         c = _client(a, role)
         refused = c.get(path, follow_redirects=False)
-        if deny == P.FORBID:
-            if refused.status_code != 403:
-                wrong_shape.append((endpoint, 'want 403', refused.status_code))
-            continue
-        if refused.status_code != 302:
-            wrong_shape.append((endpoint, 'want 302', refused.status_code))
-        elif msg not in _flashes(c):
+        if refused.status_code != want_status:
+            wrong_shape.append((endpoint, 'want %d' % want_status, refused.status_code))
+        elif want_msg is not None and want_msg not in _flashes(c):
             # The words, not just the redirect: these strings were on screen
             # before this PR and carrying them is half its point.
-            wrong_shape.append((endpoint, 'flash missing', msg, _flashes(c)))
+            wrong_shape.append((endpoint, 'flash missing', want_msg, _flashes(c)))
+        elif want_msg is None and _flashes(c):
+            wrong_shape.append((endpoint, 'unexpected flash', _flashes(c)))
     assert not_a_page == [], not_a_page
     assert wrong_shape == [], wrong_shape
+
+
+def test_recorded_refusals_match_the_declaration(tmp_db):
+    """Ties the literals above to `permissions.refusal`, in both directions.
+
+    The live test asserts the literals so it stays independent of the module.
+    That independence is only safe if somebody notices when the two disagree,
+    which is this test: it goes red if a declaration's `deny`/`msg` is edited
+    without the recorded shape following (break-it-once M2).
+    """
+    import permissions as P
+    shape = {P.FORBID: 403, P.BOUNCE: 302}
+    assert len(EXPECTED_REFUSAL) == 7
+    drift = []
+    for (role, endpoint), (want_status, want_msg) in sorted(EXPECTED_REFUSAL.items()):
+        deny, msg = P.refusal(role, endpoint)
+        if (shape[deny], msg or None) != (want_status, want_msg):
+            drift.append((endpoint, (shape[deny], msg or None), (want_status, want_msg)))
+    assert drift == [], drift
+    # Control: both shapes really occur in this table, so neither branch of the
+    # comparison above is untaken.
+    assert {s for s, _m in EXPECTED_REFUSAL.values()} == {302, 403}
 
 
 def test_redirect_shims_still_redirect_for_staff(tmp_db):
