@@ -28,11 +28,20 @@ import call_card as cc
 
 CODE = 'ZZ513'
 NAME = 'ร้านทดสอบห้าหนึ่งสาม'
+# A second customer that is still buying — the far side of the เงียบ filter.
+# Without a row the filter must DROP, `CODE in codes` below is satisfied by an
+# unfiltered list and the filter test cannot fail (measured: deleting the
+# filter left all 8 tests green until this was added).
+# Deliberately NOT a superstring of CODE: `?q=ZZ513` must narrow the rendered
+# table to ONE row, and 'ZZ513B' would match it too.
+LIVE_CODE = 'YY513'
+LIVE_NAME = 'ร้านทดสอบยังซื้ออยู่'
 
 TODAY = dt.date.today()
 BUY_1 = (TODAY - dt.timedelta(days=400)).isoformat()   # the real last purchase
 BUY_2 = (TODAY - dt.timedelta(days=430)).isoformat()   # an older purchase
 RETURN = (TODAY - dt.timedelta(days=5)).isoformat()    # a credit note, days ago
+RECENT_BUY = (TODAY - dt.timedelta(days=5)).isoformat()  # LIVE_CODE's real purchase
 
 
 def _app():
@@ -50,13 +59,13 @@ def _client():
     return c
 
 
-def _line(conn, doc_base, seq, date_iso, net, qty=10.0):
+def _line(conn, doc_base, seq, date_iso, net, qty=10.0, code=CODE, name=NAME):
     conn.execute(
         "INSERT INTO sales_transactions "
         "(date_iso, doc_no, doc_base, customer, customer_code, qty, unit, "
         " unit_price, vat_type, total, net) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (date_iso, f'{doc_base}-{seq}', doc_base, NAME, CODE, qty, 'ตัว',
+        (date_iso, f'{doc_base}-{seq}', doc_base, name, code, qty, 'ตัว',
          net / qty, 0, net, net))
 
 
@@ -67,14 +76,16 @@ def _seed(conn):
       purchases   = 2 documents, newest BUY_1
       all rows    = 3 documents, newest RETURN
     """
-    conn.execute("DELETE FROM sales_transactions WHERE customer_code = ? OR customer = ?",
-                 (CODE, NAME))
-    conn.execute("DELETE FROM customers WHERE code = ?", (CODE,))
-    conn.execute("INSERT INTO customers (code, name, address) VALUES (?,?,?)",
-                 (CODE, NAME, '1 ถนนทดสอบ กรุงเทพมหานคร'))
+    for code, name in ((CODE, NAME), (LIVE_CODE, LIVE_NAME)):
+        conn.execute("DELETE FROM sales_transactions WHERE customer_code = ? OR customer = ?",
+                     (code, name))
+        conn.execute("DELETE FROM customers WHERE code = ?", (code,))
+        conn.execute("INSERT INTO customers (code, name, address) VALUES (?,?,?)",
+                     (code, name, '1 ถนนทดสอบ กรุงเทพมหานคร'))
     _line(conn, 'IV9990001', 1, BUY_1, 1000.0)
     _line(conn, 'IV9990002', 1, BUY_2, 500.0)
     _line(conn, 'SR9990003', 1, RETURN, 300.0)
+    _line(conn, 'IV9990004', 1, RECENT_BUY, 700.0, code=LIVE_CODE, name=LIVE_NAME)
     conn.commit()
 
     # CONTROL on the fixture itself: the credit note is really there and really
@@ -115,18 +126,31 @@ def test_call_list_quiet_badge_is_not_erased_by_a_recent_return(tmp_db_conn):
 
 def test_call_list_quiet_FILTER_returns_the_customer_the_return_was_hiding(tmp_db_conn):
     """The badge drives `?quiet=1`, which is how the worklist is actually
-    worked. A row that only gets the badge is no use if the filter drops it."""
+    worked. A row that only gets the badge is no use if the filter drops it.
+
+    LIVE_CODE is the far side of the filter and is what makes this test able to
+    fail: without a row the filter must DROP, `CODE in codes` is satisfied by an
+    unfiltered list, and deleting the filter outright keeps this green
+    (measured — it did, until LIVE_CODE was added)."""
     _seed(tmp_db_conn)
+    unfiltered = [r['customer_code'] for r in
+                  cc.get_call_list(tmp_db_conn, spend_window='all', sort='name')]
+    assert {CODE, LIVE_CODE} <= set(unfiltered), \
+        'CONTROL: both fixtures must be on the unfiltered worklist'
+
     codes = [r['customer_code'] for r in
              cc.get_call_list(tmp_db_conn, spend_window='all', sort='name', quiet=True)]
-    assert CODE in codes
+    assert CODE in codes, 'the customer the return was hiding'
+    assert LIVE_CODE not in codes, 'a customer that bought 5 days ago is not เงียบ'
 
 
 def test_call_list_page_renders_the_purchase_date_and_the_badge(tmp_db_conn):
     """The rendered row, not the dict: ?q=<code> narrows the table to one row
     so each assertion is scoped to the customer under test."""
     _seed(tmp_db_conn)
-    html = _client().get('/call?q=' + CODE + '&spend_window=all').get_data(as_text=True)
+    resp = _client().get('/call?q=' + CODE + '&spend_window=all')
+    assert resp.status_code == 200, 'CONTROL: the page did not render at all'
+    html = resp.get_data(as_text=True)
 
     assert html.count('<tr onclick') == 1, \
         'CONTROL: the search did not narrow the table to the fixture row'
@@ -150,7 +174,10 @@ def _stat(html, label):
 
 def test_card_header_last_purchase_ignores_the_credit_note(tmp_db_conn):
     _seed(tmp_db_conn)
-    html = _client().get('/call/' + CODE).get_data(as_text=True)
+    resp = _client().get('/call/' + CODE)
+    assert resp.status_code == 200, \
+        'CONTROL: get_card returned None and the route redirected away'
+    html = resp.get_data(as_text=True)
 
     assert NAME in html, 'CONTROL: the card did not render this customer'
     assert _stat(html, 'ซื้อล่าสุด') == BUY_1[:7]
@@ -159,7 +186,10 @@ def test_card_header_last_purchase_ignores_the_credit_note(tmp_db_conn):
 def test_card_header_counts_purchases_not_documents(tmp_db_conn):
     """จำนวนครั้งซื้อ — two invoices, and a credit note that is not a purchase."""
     _seed(tmp_db_conn)
-    html = _client().get('/call/' + CODE).get_data(as_text=True)
+    resp = _client().get('/call/' + CODE)
+    assert resp.status_code == 200, \
+        'CONTROL: get_card returned None and the route redirected away'
+    html = resp.get_data(as_text=True)
 
     assert NAME in html, 'CONTROL'
     assert _stat(html, 'จำนวนครั้งซื้อ') == '2 <small>ครั้ง</small>'
@@ -187,7 +217,9 @@ def test_sales_trip_last_sale_is_the_last_purchase(tmp_db_conn):
     """Same concept, same defect, one surface over: a rep planning a visit saw
     a return as the customer's last sale."""
     _seed(tmp_db_conn)
-    html = _client().get('/m/sales-trip').get_data(as_text=True)
+    resp = _client().get('/m/sales-trip')
+    assert resp.status_code == 200, 'CONTROL: the page did not render at all'
+    html = resp.get_data(as_text=True)
 
     assert NAME in html, 'CONTROL: the fixture customer is not on the trip list'
     m = re.search(r'<div class="trip-cust-name">' + re.escape(NAME) + r'</div>(.*?)</a>',

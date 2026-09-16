@@ -34,7 +34,9 @@ green if the ซื้อล่าสุด subquery were later swapped back to 
     test_doc_no_count_coverage.py instead) and COUNT(*) over documents
   - SQL assembled from separate variables, or a table name that arrives at
     run time
-  - files outside inventory_app/ (scripts/)
+  - anything outside inventory_app/ and scripts/ (both ARE walked — a rogue
+    site of each shape was fed to this census end to end, scripts/ included,
+    and every one came back red)
 The behavioural half is test_513_call_card_purchase_population.py; this is the
 census.
 """
@@ -44,8 +46,13 @@ import re
 
 import pytest
 
-APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   'inventory_app')
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+APP = os.path.join(_ROOT, 'inventory_app')
+# scripts/ is swept too, unlike this sweep's two siblings. It cost ONE
+# allowlist entry to close (measured), and an ad-hoc script reading a
+# customer's last buy is exactly the kind of site that gets pasted back
+# into the app.
+SCRIPTS = os.path.join(_ROOT, 'scripts')
 
 # "when did this customer last buy" and "how many times did it buy".
 _STALE_AGG = re.compile(
@@ -137,6 +144,10 @@ ALLOWED = {
         'mobile mirror of the desktop จำนวนเอกสาร card, labelled documents. '
         'Nothing on that screen says ซื้อล่าสุด. (`last_seen` is computed and '
         'the template never renders it — pre-existing, left alone.)'),
+    'scripts/audit_product_naming.py::evidence_for_product': (1, 0,
+        "the naming audit's last-sale date for ONE PRODUCT (its customer clause "
+        'only drops marketplace rows). Per product, and an offline audit '
+        'judging names, not a worklist or a money figure.'),
     'price_lookup.py::find_customers': (1, 0,
         'the customer picker\'s search hint. A typeahead aid, not a money or '
         'worklist figure — its own docstring said so before this sweep existed.'),
@@ -205,13 +216,14 @@ def _per_function(src, pattern):
 
 
 def _py_files():
-    for root, _dirs, names in os.walk(APP):
-        if any(part in root for part in ('__pycache__', 'instance', 'static')):
-            continue
-        for n in names:
-            if n.endswith('.py'):
-                path = os.path.join(root, n)
-                yield os.path.relpath(path, APP).replace(os.sep, '/'), path
+    for base, prefix in ((APP, ''), (SCRIPTS, 'scripts/')):
+        for root, _dirs, names in os.walk(base):
+            if any(part in root for part in ('__pycache__', 'instance', 'static')):
+                continue
+            for n in names:
+                if n.endswith('.py'):
+                    path = os.path.join(root, n)
+                    yield prefix + os.path.relpath(path, base).replace(os.sep, '/'), path
 
 
 def _app_counts(pattern):
