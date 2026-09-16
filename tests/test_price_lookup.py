@@ -425,7 +425,12 @@ def test_r4_population_excludes_every_bad_shape(db):
         "VALUES (?, 'TST-R4', 100, 'expense', ?, 1)", (wo_base, _days_ago(11)))
     db.commit()
 
-    # 2b) control doc_base in ar_writeoffs with excludes_revenue=0 -- INCLUDED
+    # 2b) doc_base in ar_writeoffs with excludes_revenue=0 -- ALSO excluded
+    #     (#554). Bad debt keeps its revenue (that is what the flag encodes,
+    #     and sales_filters.revenue_filter is right to admit this row), but a
+    #     bill the accountant wrote off is not evidence of a price the market
+    #     agreed to. The whole-table exclusion lives in evidence_filter, not
+    #     in revenue_filter -- see test_554_unflagged_writeoff_doc_is_not_price_evidence.
     _, wo_base_ctl = _bill(db, pid=pid, customer_code='TST-R4', customer_name='ลูกค้า R4',
                             date_iso=_days_ago(12), qty=1, unit='ตัว', unit_price=100.0,
                             vat_type=1, net=100.0)
@@ -433,7 +438,6 @@ def test_r4_population_excludes_every_bad_shape(db):
         "INSERT INTO ar_writeoffs (doc_no, customer_code, amount, type, writeoff_date, excludes_revenue) "
         "VALUES (?, 'TST-R4', 100, 'writeback', ?, 0)", (wo_base_ctl, _days_ago(12)))
     db.commit()
-    included_count += 1
 
     # 3) doc_base 'SR...' -- excluded
     _bill(db, pid=pid, customer_code='TST-R4', customer_name='ลูกค้า R4',
@@ -467,10 +471,81 @@ def test_r4_population_excludes_every_bad_shape(db):
     included_count += 1
 
     out = pl.resolve_price(db, product_id=pid, today=TODAY)
-    assert out['window']['n_bills'] == included_count == 4
+    assert out['window']['n_bills'] == included_count == 3
     assert out['context']['lowest'] is not None
     assert out['context']['lowest']['cash_per_unit'] == 70.0
     assert out['window']['n_unratioed'] == 1
+
+
+def test_554_unflagged_writeoff_doc_is_not_price_evidence(db):
+    """#554: ANY document in ar_writeoffs is out of the price-evidence
+    population -- not just the `excludes_revenue = 1` subset that
+    sales_filters.revenue_filter drops.
+
+    `ar_writeoffs` answers two questions and this asks a third. REVENUE
+    excludes only the flagged rows (bad debt WAS a sale and keeps its
+    revenue -- asserted below, so this test also pins that #554 did not
+    redefine revenue). COLLECTABILITY excludes the whole table. PRICE
+    EVIDENCE -- "is this a price the market agreed to?" -- also wants the
+    whole table: prod carries a ฿1.00 written-off line (IV6801241) that was
+    admissible evidence until this clause.
+
+    FAR SIDE (the row this clause and nothing else in the filter excludes):
+    the excludes_revenue = 0 bill below. Every other exclusion in
+    evidence_filter passes it -- doc_base is set, not SR, not a dummy
+    doc_base, not หน้าร้าน, qty > 0, net > 0 -- so deleting the new clause
+    admits it and this test goes red (break-it-once, #554).
+
+    CONTROL, asserted in the same run: an ordinary bill on the same product
+    survives, and it is the one `lowest` reports.
+    """
+    import sales_filters
+
+    pid = _mk_product(db, "554 writeoff evidence", unit_type='ตัว', base=1000.0, cost=600.0)
+    _clear_pid(db, pid)
+
+    # FAR SIDE: cheapest line on the product, written off, NOT flagged.
+    _, wo_base = _bill(db, pid=pid, customer_code='TST-554', customer_name='ลูกค้า 554',
+                       date_iso=_days_ago(10), qty=1, unit='ตัว', unit_price=1.0,
+                       vat_type=1, net=1.0)
+    db.execute(
+        "INSERT INTO ar_writeoffs (doc_no, customer_code, amount, type, writeoff_date, excludes_revenue) "
+        "VALUES (?, 'TST-554', 1, 'writeback', ?, 0)", (wo_base, _days_ago(10)))
+    db.commit()
+
+    # CONTROL: an ordinary bill, nothing written off about it.
+    _, ctl_base = _bill(db, pid=pid, customer_code='TST-554', customer_name='ลูกค้า 554',
+                        date_iso=_days_ago(11), qty=1, unit='ตัว', unit_price=900.0,
+                        vat_type=1, net=900.0)
+
+    bases = sorted(r['doc_base'] for r in db.execute(
+        f"SELECT st.doc_base FROM sales_transactions st "
+        f"WHERE st.product_id = ? AND {pl.evidence_filter('st')}", (pid,)).fetchall())
+    # Count + identity in ONE assertion: an empty result would mean the
+    # fixture never arrived, not that the guard works.
+    assert bases == [ctl_base], (
+        f"evidence_filter population wrong: expected only the control {ctl_base}, got {bases}")
+
+    # The same row is still REVENUE. If this flips, the fix landed in the
+    # wrong place (sales_filters.revenue_filter) and every revenue surface
+    # in the app just changed.
+    assert db.execute(
+        f"SELECT COUNT(*) FROM sales_transactions st WHERE st.doc_base = ? "
+        f"AND {sales_filters.revenue_filter('st')}", (wo_base,)).fetchone()[0] == 1, \
+        "revenue_filter must still admit unflagged bad debt as revenue"
+
+    # The money consequence: ฿1.00 must not be the answer's floor.
+    out = pl.resolve_price(db, product_id=pid, today=TODAY)
+    assert out['window']['n_bills'] == 1
+    assert out['context']['lowest']['cash_per_unit'] == 900.0
+    assert out['context']['lowest']['doc_no'].startswith(ctl_base)
+
+    # LOAD-BEARING (sales_filters.py, migration 095): one NULL doc_no makes
+    # `NOT IN (SELECT doc_no FROM ar_writeoffs)` evaluate to NULL for every
+    # row and silently re-admits the whole table.
+    assert {r['name']: r['notnull'] for r in
+            db.execute("PRAGMA table_info(ar_writeoffs)")}['doc_no'] == 1, \
+        "ar_writeoffs.doc_no must stay NOT NULL or the NOT IN subquery goes NULL"
 
 
 def test_fixture_discriminates_doc_base_from_doc_no(db, monkeypatch):
