@@ -205,8 +205,11 @@
   2026-09-13).
   _Not to be confused with_: **ยอดรวมเอกสาร**, which adds VAT on แยก VAT documents, so a
   customer's document list does not sum to its ยอดซื้อรวม once it holds a แยก VAT bill; and
-  revenue (`/revenue`, `/accounting`), which leaves returns and HS out instead of subtracting
-  them (whether HS is revenue: #514).
+  revenue (`/revenue`, `/accounting`), which leaves returns (SR) out instead of subtracting
+  them but counts HS same as an invoice (a cash sale is revenue and price evidence, #514) —
+  AR and settlement (`payments_alloc._settlement_rows`, `models/payments.py`, the mobile
+  sales-trip outstanding subquery) still exclude HS, since a cash sale is paid on the spot
+  and is never a receivable.
   > Known imprecision, left alone: a credit-note line's amount is carried **before** that
   > credit note's bill-level discount, while an invoice line's is after its own. ยอดซื้อรวม
   > subtracts the same credit-note amount the document list shows.
