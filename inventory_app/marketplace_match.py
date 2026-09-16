@@ -37,7 +37,9 @@ projects/marketplace-iv-matching/plan.md §3b / matcher-rebuild-spec.md):
 
 Manual links are never clobbered and their IV is never reused.
 """
+import json
 import logging
+import re
 from collections import deque
 from datetime import datetime
 from functools import lru_cache
@@ -45,6 +47,19 @@ import vat_math
 
 # Customer code per platform (sales_transactions.customer_code).
 _CUST_CODE = {'shopee': 'Zหน้าร้าน', 'lazada': 'Lหน้าร้าน'}
+
+# The Express doc kinds a person might type into the picker that are not an IV.
+_DOC_KIND_TH = {'HS': 'บิลเงินสด', 'SR': 'ใบลดหนี้'}
+
+# Every Express customer code a marketplace order's IV can be billed to, and the
+# channel it means. Named one by one, never LIKE 'หน้าร้าน%': Gหน้าร้าน is the
+# walk-in counter, not an online sale (workspace-operating-manual).
+MARKETPLACE_CODES = {
+    'Zหน้าร้าน': 'Shopee',
+    'Bหน้าร้าน': 'Shopee ร้าน B (ปิดแล้ว)',
+    'Lหน้าร้าน': 'Lazada',
+    'Tหน้าร้าน': 'TikTok',
+}
 
 # The IV is keyed within this many days AFTER the platform order date.
 FORWARD_WINDOW_DAYS = 7
@@ -311,6 +326,13 @@ def _order_products(conn, platform):
     return out
 
 
+def _order_basis(order):
+    """The amount an order's IV is compared with: Lazada's billed item value when
+    known, else the payout (see models.get_marketplace_order)."""
+    d = dict(order)
+    return d.get('billed_basis', d.get('actual_payout'))
+
+
 def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
     """IVs that could be ``order``, for the manual picker — Zหน้าร้าน/Lหน้าร้าน IVs
     dated on/after the platform order date within the window, ranked by
@@ -320,14 +342,13 @@ def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
     currently holds it.
     """
     code = _CUST_CODE.get(order['platform'])
-    d = dict(order)
-    basis = d.get('billed_basis', d.get('actual_payout'))
+    basis = _order_basis(order)
     if code is None or basis is None or not order['order_date']:
         return []
     payout = round(basis, 2)
-    linked = {r['doc_base']: r['order_sn'] for r in conn.execute(
-        "SELECT doc_base, order_sn FROM marketplace_order_invoice WHERE platform = ?",
-        (order['platform'],)).fetchall()}
+    # Every platform: a Lazada order can hold a Zหน้าร้าน IV by a manual link (#545).
+    linked = {r['doc_base']: r for r in conn.execute(
+        "SELECT doc_base, order_sn, platform FROM marketplace_order_invoice").fetchall()}
     iv_prod = _iv_products(conn, code)
     my_prod = _order_products(conn, order['platform']).get(order['order_sn'], set())
     my_prod_standin = _apply_standins(my_prod, _generic_standins(conn))
@@ -339,10 +360,12 @@ def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
         ivp = iv_prod.get(iv['doc_base'], set())
         direct = bool(my_prod & ivp)
         standin = (not direct) and bool(my_prod_standin & ivp)
+        holder = linked.get(iv['doc_base'])
         out.append({**iv, 'date_gap': gap, 'product_match': direct or standin,
                     'standin_match': standin,
                     'amount_diff': round((iv['iv_net'] or 0) - payout, 2),
-                    'linked_to': linked.get(iv['doc_base'])})
+                    'linked_to': holder['order_sn'] if holder else None,
+                    'linked_platform': holder['platform'] if holder else None})
     # product-match first; then AMOUNT-closeness, then nearest date. Amount before
     # date matters for the common sibling-pid order (its listing maps to a sibling
     # of the IV's pid, so NO candidate can be a product-match): the team keys
@@ -691,10 +714,11 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
     iv_prod = _iv_products(conn, code)
     o_prod = _order_products(conn, platform)
 
+    # Manual links on EVERY platform: a Lazada order can hold a Zหน้าร้าน IV (#545).
     manual_rows = conn.execute(
-        "SELECT order_sn, doc_base FROM marketplace_order_invoice WHERE platform=? AND match_method='manual'",
-        (platform,)).fetchall()
-    manual_orders = {r['order_sn'] for r in manual_rows}
+        "SELECT platform, order_sn, doc_base FROM marketplace_order_invoice WHERE match_method='manual'"
+    ).fetchall()
+    manual_orders = {r['order_sn'] for r in manual_rows if r['platform'] == platform}
     claimed = {r['doc_base'] for r in manual_rows}   # manually-held IVs are off-limits
 
     conn.execute(
@@ -772,31 +796,129 @@ def run_automatch(conn, platform, window_days=FORWARD_WINDOW_DAYS):
             'review': review, 'unmatched': unmatched, 'returns_matched': returns_matched}
 
 
-def link_manual(conn, platform, order_sn, doc_base, customer_code=None, confirmed_by=None):
-    """Record a human-confirmed link. One IV = one order: if another order already
-    holds this IV, it is unlinked (stolen) and reverts to needing a pick. Returns
-    the list of order_sns that lost this IV (for a flash message)."""
+_LINE_SUFFIX = re.compile(r'-\d+$')
+
+
+def normalize_doc_base(raw):
+    """'  iv6901554-1 ' -> 'IV6901554': trim, uppercase, and drop the line suffix
+    the /sales table prints after a document number."""
+    return _LINE_SUFFIX.sub('', (raw or '').strip().upper())
+
+
+def plan_manual_pick(conn, order, picked=None, typed=None):
+    """What saving a person's IV pick for ``order`` would do — read-only (#545).
+    Returns ``{'refuse': <Thai message>}``, or the IV with ``needs_confirm``
+    saying whether the person must see the confirm page before it is saved."""
+    typed_doc = normalize_doc_base(typed)
+    picked_doc = (picked or '').strip()
+    if typed_doc and picked_doc and typed_doc != picked_doc:
+        return {'refuse': f'เลือกใบในรายการ ({picked_doc}) แต่พิมพ์เลข {typed_doc} '
+                          'ไม่ตรงกัน กรุณาเลือกอย่างใดอย่างหนึ่ง'}
+    doc_base = typed_doc or picked_doc
+    if not doc_base:
+        return {'refuse': 'กรุณาเลือกหรือพิมพ์เลขใบกำกับ (IV) ค่ะ'}
+    found = conn.execute(
+        f"""SELECT MIN(customer_code) AS customer_code, MIN(date_iso) AS date_iso,
+                   ROUND(SUM({_VAT_NET}), 2) AS iv_net
+            FROM sales_transactions WHERE doc_base = ? GROUP BY doc_base""",
+        (doc_base,)).fetchone()
+    if found is None:
+        return {'refuse': f'ไม่พบ {doc_base} ในระบบ ตรวจเลขอีกครั้ง '
+                          '(ถ้าเพิ่งคีย์ใน Express รอข้อมูลรอบถัดไป)'}
+    if not doc_base.startswith('IV'):
+        kind = _DOC_KIND_TH.get(doc_base[:2], 'เอกสารประเภทอื่น')
+        return {'refuse': f'{doc_base} เป็น{kind} ไม่ใช่ใบกำกับ'}
+    code = found['customer_code']
+    if code not in MARKETPLACE_CODES:
+        return {'refuse': f'{doc_base} เป็นบิลของ {code} ไม่ใช่บิลขายออนไลน์ ผูกกับออเดอร์ไม่ได้'}
+    holders = _other_holders(conn, doc_base, order['platform'], order['order_sn'])
+    other_channel = code != _CUST_CODE.get(order['platform'])
+    basis = _order_basis(order)
+    payout = dict(order).get('actual_payout')
+    # Name the number the ฿ difference is measured from: for Lazada it is the
+    # billed item value, which almost never equals the payout.
+    basis_label = ('ยอดโอน' if basis is None or payout is None or round(basis, 2) == round(payout, 2)
+                   else 'ยอดสินค้า')
+    return {'doc_base': doc_base, 'customer_code': code, 'channel': MARKETPLACE_CODES[code],
+            'date_iso': found['date_iso'], 'iv_net': found['iv_net'],
+            'basis': basis, 'basis_label': basis_label,
+            'amount_diff': None if basis is None else round((found['iv_net'] or 0) - basis, 2),
+            'holders': holders, 'expected_holders': holder_token(holders),
+            'typed': bool(typed_doc), 'other_channel': other_channel,
+            'needs_confirm': bool(typed_doc or other_channel or holders)}
+
+
+def _other_holders(conn, doc_base, platform, order_sn):
+    """Every link holding ``doc_base`` for an order other than this one, on ANY
+    platform: a Lazada order can hold a Zหน้าร้าน IV (#545)."""
+    return [dict(r) for r in conn.execute(
+        """SELECT id, platform, order_sn, match_method, confidence, confirmed_by
+           FROM marketplace_order_invoice
+           WHERE doc_base = ? AND NOT (platform = ? AND order_sn = ?)
+           ORDER BY platform, order_sn""",
+        (doc_base, platform, order_sn))]
+
+
+def holder_token(holders):
+    """'lazada:123,shopee:ABC': the holders a person saw on the confirm page,
+    carried back by its form so the save can tell whether they changed."""
+    return ','.join(sorted(f"{h['platform']}:{h['order_sn']}" for h in holders))
+
+
+class HolderChanged(Exception):
+    """A different order took the IV after the person saw the confirm page."""
+
+
+def link_manual(conn, platform, order_sn, doc_base, customer_code=None, confirmed_by=None,
+                expected_holders=None):
+    """Record a human-confirmed link. One IV = one order: any other order holding
+    this IV, on ANY platform, loses it (a move, ย้ายใบกำกับ) and reverts to needing
+    a pick; each move writes one audit_log row. Returns the order_sns that lost it.
+
+    ``expected_holders`` is the holder_token the person was shown. If other orders
+    hold the IV now and they are not those, raises HolderChanged and writes
+    nothing; if nobody holds it now, the save goes ahead. None skips the check
+    (callers with no confirm page in front of a person).
+
+    The holder is read and the move written in ONE ``BEGIN IMMEDIATE``
+    transaction, so a second worker cannot move the same IV in between. A
+    connection with a transaction already open is refused by SQLite itself
+    ("cannot start a transaction within a transaction"): never commit the
+    caller's work to get past that."""
     if customer_code is None:
         customer_code = _CUST_CODE.get(platform)
-    stolen = [r['order_sn'] for r in conn.execute(
-        "SELECT order_sn FROM marketplace_order_invoice WHERE platform=? AND doc_base=? AND order_sn<>?",
-        (platform, doc_base, order_sn)).fetchall()]
-    if stolen:
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        holders = _other_holders(conn, doc_base, platform, order_sn)
+        if expected_holders is not None and holders and holder_token(holders) != expected_holders:
+            raise HolderChanged(doc_base)
+        for h in holders:
+            conn.execute("DELETE FROM marketplace_order_invoice WHERE id = ?", (h['id'],))
+            conn.execute(
+                """INSERT INTO audit_log
+                       (table_name, row_id, action, row_key, changed_fields, user, change_source)
+                   VALUES ('marketplace_order_invoice', ?, 'DELETE', ?, ?, ?, 'iv_picker_move')""",
+                (h['id'], doc_base, json.dumps({
+                    'order_sn': [h['order_sn'], order_sn],
+                    'platform': [h['platform'], platform],
+                    'match_method': [h['match_method'], 'manual'],
+                    'confidence': [h['confidence'], 'manual']}, ensure_ascii=False),
+                 confirmed_by))
         conn.execute(
-            "DELETE FROM marketplace_order_invoice WHERE platform=? AND doc_base=? AND order_sn<>?",
-            (platform, doc_base, order_sn))
-    conn.execute(
-        """INSERT INTO marketplace_order_invoice
-               (platform, order_sn, doc_base, customer_code, match_method, confidence,
-                confirmed_by, confirmed_at)
-           VALUES (?,?,?,?, 'manual', 'manual', ?, datetime('now','localtime'))
-           ON CONFLICT(platform, order_sn) DO UPDATE SET
-               doc_base      = excluded.doc_base,
-               customer_code = excluded.customer_code,
-               match_method  = 'manual',
-               confidence    = 'manual',
-               confirmed_by  = excluded.confirmed_by,
-               confirmed_at  = excluded.confirmed_at""",
-        (platform, order_sn, doc_base, customer_code, confirmed_by))
-    conn.commit()
-    return stolen
+            """INSERT INTO marketplace_order_invoice
+                   (platform, order_sn, doc_base, customer_code, match_method, confidence,
+                    confirmed_by, confirmed_at)
+               VALUES (?,?,?,?, 'manual', 'manual', ?, datetime('now','localtime'))
+               ON CONFLICT(platform, order_sn) DO UPDATE SET
+                   doc_base      = excluded.doc_base,
+                   customer_code = excluded.customer_code,
+                   match_method  = 'manual',
+                   confidence    = 'manual',
+                   confirmed_by  = excluded.confirmed_by,
+                   confirmed_at  = excluded.confirmed_at""",
+            (platform, order_sn, doc_base, customer_code, confirmed_by))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return [h['order_sn'] for h in holders]

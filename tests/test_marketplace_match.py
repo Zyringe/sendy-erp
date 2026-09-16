@@ -222,7 +222,7 @@ def test_shopee_ignores_lazada_iv(mm_conn):
     assert c.execute("SELECT COUNT(*) FROM marketplace_order_invoice").fetchone()[0] == 0
 
 
-def test_manual_link_steals_iv(mm_conn):
+def test_manual_link_moves_iv(mm_conn):
     c = mm_conn
     _add_order(c, 'O-OLD', 50.0, '2026-06-04')
     _add_order(c, 'O-NEW', 50.0, '2026-06-05')
@@ -231,11 +231,97 @@ def test_manual_link_steals_iv(mm_conn):
     holder = c.execute(
         "SELECT order_sn FROM marketplace_order_invoice WHERE doc_base='IV9000200'").fetchone()['order_sn']
     other = 'O-NEW' if holder == 'O-OLD' else 'O-OLD'
-    stolen = mm.link_manual(c, 'shopee', other, 'IV9000200', confirmed_by='put')
-    assert holder in stolen
+    moved = mm.link_manual(c, 'shopee', other, 'IV9000200', confirmed_by='put')
+    assert holder in moved
     rows = c.execute(
         "SELECT order_sn, match_method FROM marketplace_order_invoice WHERE doc_base='IV9000200'").fetchall()
     assert len(rows) == 1 and rows[0]['order_sn'] == other and rows[0]['match_method'] == 'manual'
+
+
+def _holders(c, doc_base):
+    return [(r['platform'], r['order_sn']) for r in c.execute(
+        "SELECT platform, order_sn FROM marketplace_order_invoice WHERE doc_base=? ORDER BY platform",
+        (doc_base,))]
+
+
+def test_an_iv_held_manually_on_another_platform_is_off_limits_to_the_matcher(mm_conn):
+    """#545 rule 11: a Lazada order can hold a Zหน้าร้าน IV by a manual link; the
+    Shopee matcher must not hand that IV to a Shopee order as well."""
+    c = mm_conn
+    _add_order(c, 'O-SH', 77.0, '2026-06-04')
+    _add_order(c, 'L-HOLD', 77.0, '2026-06-04', platform='lazada')
+    _add_iv(c, 'IV9000300', 77.0, '2026-06-05')
+    mm.run_automatch(c, 'shopee')
+    assert _holders(c, 'IV9000300') == [('shopee', 'O-SH')]      # control: free, it IS taken
+    c.execute("DELETE FROM marketplace_order_invoice")
+    c.commit()
+    mm.link_manual(c, 'lazada', 'L-HOLD', 'IV9000300', customer_code='Zหน้าร้าน', confirmed_by='put')
+    mm.run_automatch(c, 'shopee')
+    assert _holders(c, 'IV9000300') == [('lazada', 'L-HOLD')]
+
+
+def test_the_picker_shows_a_holder_on_another_platform(mm_conn):
+    """#545 rule 11: iv_candidates' linked_to spans platforms."""
+    c = mm_conn
+    _add_order(c, 'O-SH2', 77.0, '2026-06-04')
+    _add_order(c, 'L-HOLD2', 77.0, '2026-06-04', platform='lazada')
+    _add_iv(c, 'IV9000301', 77.0, '2026-06-05')
+    _add_iv(c, 'IV9000302', 77.0, '2026-06-05')
+    mm.link_manual(c, 'lazada', 'L-HOLD2', 'IV9000301', customer_code='Zหน้าร้าน', confirmed_by='put')
+    order = c.execute("SELECT * FROM marketplace_orders WHERE order_sn='O-SH2'").fetchone()
+    cands = {x['doc_base']: x for x in mm.iv_candidates(c, order)}
+    assert cands['IV9000302']['linked_to'] is None                 # control: a free one reads free
+    assert (cands['IV9000301']['linked_to'], cands['IV9000301']['linked_platform']) == \
+        ('L-HOLD2', 'lazada')
+
+
+def test_link_manual_locks_other_writers_out_from_the_holder_read(mm_conn, tmp_db, monkeypatch):
+    """#545 rule 7: the holder check and the move share one BEGIN IMMEDIATE, so a
+    second worker cannot move the same IV in between. The probe runs right after
+    the holder is read, BEFORE link_manual's first write: the only moment where a
+    deferred transaction would still let another connection in."""
+    import sqlite3
+    c = mm_conn
+    _add_order(c, 'O-LOCK', 40.0, '2026-06-04')
+    _add_iv(c, 'IV9000400', 40.0, '2026-06-05')
+    seen = []
+    real = mm._other_holders
+
+    def probe(*args, **kwargs):
+        rows = real(*args, **kwargs)
+        other = sqlite3.connect(tmp_db, timeout=0.1)
+        try:
+            other.execute("INSERT INTO marketplace_order_invoice (platform, order_sn, doc_base, match_method) "
+                          "VALUES ('shopee', 'O-PROBE', 'IV9000401', 'auto')")
+            other.commit()
+            seen.append('wrote')
+        except sqlite3.OperationalError as e:
+            seen.append(str(e))
+        finally:
+            other.close()
+        return rows
+
+    monkeypatch.setattr(mm, '_other_holders', probe)
+    mm.link_manual(c, 'shopee', 'O-LOCK', 'IV9000400', confirmed_by='put', expected_holders='')
+    assert seen == ['database is locked']
+    assert _holders(c, 'IV9000400') == [('shopee', 'O-LOCK')]      # control: the save itself landed
+
+
+def test_link_manual_refuses_a_connection_with_an_open_transaction(mm_conn):
+    """The lock is only real if link_manual opens the transaction itself, and the
+    caller's uncommitted work must not be committed on its behalf."""
+    import sqlite3
+    c = mm_conn
+    _add_order(c, 'O-TXN', 40.0, '2026-06-04')
+    _add_iv(c, 'IV9000402', 40.0, '2026-06-05')
+    c.execute("UPDATE marketplace_orders SET status = 'caller-work' WHERE order_sn = 'O-TXN'")
+    assert c.in_transaction                                       # control: one is open
+    with pytest.raises(sqlite3.OperationalError, match='within a transaction'):
+        mm.link_manual(c, 'shopee', 'O-TXN', 'IV9000402', confirmed_by='put')
+    c.rollback()
+    assert c.execute("SELECT status FROM marketplace_orders WHERE order_sn='O-TXN'").fetchone()[0] \
+        == 'สำเร็จแล้ว'                                           # the caller's work was not committed
+    assert _holders(c, 'IV9000402') == []
 
 
 def test_picker_surfaces_near_amount_iv(mm_conn):

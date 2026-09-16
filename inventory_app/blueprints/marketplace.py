@@ -7,6 +7,7 @@ marketplace revenue is not double-counted. See parse_orders.py + migration 093.
 """
 import io
 import math
+from urllib.parse import urlsplit, urlunsplit
 
 import pandas as pd
 from flask import (Blueprint, render_template, request, redirect, url_for,
@@ -372,30 +373,60 @@ def review_dismiss(order_id):
                             platform=request.form.get('platform', 'shopee')))
 
 
+def _picker_return_url(raw, platform):
+    """The page the IV picker was opened from (its tab + year included), #545.
+    Only a same-site path to one of the two pages hosting the picker is honoured,
+    so the form field cannot redirect anywhere else."""
+    picker_pages = (url_for('marketplace.settlement'), url_for('marketplace.review'))
+    parts = urlsplit(raw or '')
+    if not parts.scheme and not parts.netloc and parts.path in picker_pages:
+        return urlunsplit(('', '', parts.path, parts.query, ''))
+    return url_for('marketplace.settlement', platform=platform)
+
+
 @bp_marketplace.route('/marketplace/order/<int:order_id>/link-iv', methods=['POST'])
 def link_iv(order_id):
-    """Human confirms (or overrides) the IV for one order. doc_base from the picker."""
-    # The picker radios POST `doc_base`; the free-text fallback POSTs `doc_base_manual`.
-    doc_base = (request.form.get('doc_base_manual') or request.form.get('doc_base') or '').strip()
+    """A person picks the IV for one order (#545). Every check runs here, not in the
+    picker: refuse, show the confirm page (nothing written), or save."""
+    back = _picker_return_url(request.form.get('next'), request.args.get('platform', 'shopee'))
     conn = get_connection()
     try:
         order = models.get_marketplace_order(conn, order_id)
         if order is None:
             abort(404)
-        if not doc_base:
-            flash('กรุณาเลือกหรือพิมพ์เลขใบกำกับ (IV) ค่ะ', 'warning')
+        # The picker radios POST `doc_base`; the free-text fallback POSTs `doc_base_manual`.
+        plan = marketplace_match.plan_manual_pick(
+            conn, order, picked=request.form.get('doc_base'),
+            typed=request.form.get('doc_base_manual'))
+        confirming = request.form.get('confirm') == '1'
+        if 'refuse' in plan:
+            flash(plan['refuse'], 'warning')
+        elif plan['needs_confirm'] and not confirming:
+            return render_template('marketplace/link_iv_confirm.html',
+                                   order=order, plan=plan, back=back)
         else:
-            stolen = marketplace_match.link_manual(
-                conn, order['platform'], order['order_sn'], doc_base,
-                confirmed_by=session.get('username'))
-            msg = f'ผูกออเดอร์ {order["order_sn"]} กับ {doc_base} แล้วค่ะ'
-            if stolen:
-                msg += f' (ปลด {doc_base} ออกจากออเดอร์ {", ".join(stolen)} — ต้องเลือกใบกำกับใหม่ให้ออเดอร์นั้น)'
-            flash(msg, 'success')
+            doc_base = plan['doc_base']
+            # A confirm carries the holders the person saw; a direct save saw none.
+            expected = (request.form.get('expected_holders', '') if confirming
+                        else plan['expected_holders'])
+            try:
+                moved = marketplace_match.link_manual(
+                    conn, order['platform'], order['order_sn'], doc_base,
+                    customer_code=plan['customer_code'],
+                    confirmed_by=session.get('username'), expected_holders=expected)
+            except marketplace_match.HolderChanged:
+                flash(f'มีการเปลี่ยนแปลง ({doc_base} ถูกผูกกับออเดอร์อื่นแล้ว) กรุณาเลือกใหม่',
+                      'warning')
+            else:
+                if moved:
+                    flash(f'ย้าย {doc_base} มาที่ออเดอร์ {order["order_sn"]} แล้วค่ะ — '
+                          f'ออเดอร์ {", ".join(moved)} ไม่มีใบกำกับแล้ว ต้องเลือกใบใหม่ให้ออเดอร์นั้น',
+                          'success')
+                else:
+                    flash(f'ผูกออเดอร์ {order["order_sn"]} กับ {doc_base} แล้วค่ะ', 'success')
     finally:
         conn.close()
-    return redirect(url_for('marketplace.settlement',
-                            platform=request.args.get('platform', 'shopee')))
+    return redirect(back)
 
 
 @bp_marketplace.route('/marketplace/balance-import', methods=['POST'])
