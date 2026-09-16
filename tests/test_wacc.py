@@ -274,6 +274,126 @@ def test_conversion_in_zero_stock_outlier_also_flags(empty_db_conn):
     assert 'CONV600' in rows[0]['message']
 
 
+# ── PR #551 review, SHOULD-FIX 1 ─────────────────────────────────────────────
+# The PURCHASE branch is protected upstream by `if net > 0:` (wacc.py ~L336),
+# so an uncosted purchase line never enters the costing block. The
+# CONVERSION_IN branch had no equivalent guard: it took
+# conversion_cost_log.unit_cost unconditionally, so a 0-cost conversion
+# landing at walk stock 0 drove wacc_after to 0.0 while the final
+# `current_wacc > 0` write guard left products.cost_price at its old value —
+# the ledger and cost_price silently disagreed until the next costed bill.
+
+def test_conversion_in_zero_cost_at_zero_stock_does_not_zero_the_wacc(empty_db_conn):
+    """Product A (the bug): buy 10 @ 20 -> sell 10 (stock 0) -> convert in
+    4 @ 0.0 -> WACC must stay 20 (not fall to 0), and the conversion must not
+    even write a ledger row — the same shape a zero-net PURCHASE takes
+    (falls through to the plain `current_stock += qty`, uncosted).
+    Product B (control, same test): identical sequence but the conversion's
+    unit_cost is 45.0 (positive) -> still takes the bill, WACC becomes 45.0.
+    Proves the fix removed exactly the zero-cost case, not the whole branch.
+    """
+    import models
+
+    pid_a = _mk_product(empty_db_conn, 91008, "WACC CONV ZERO COST", cost_price=0.0)
+    _add_purchase_txn(empty_db_conn, pid_a, "HPW700", qty=10, net=200.0,  # 20/unit
+                      date_iso='2026-03-10')
+    _add_sale_txn(empty_db_conn, pid_a, "IVW700-1", qty=10, date_iso='2026-03-12')
+    _add_conversion_txn(empty_db_conn, pid_a, "CONV700", qty=4, unit_cost=0.0,
+                        date_iso='2026-03-14')
+
+    pid_b = _mk_product(empty_db_conn, 91009, "WACC CONV POS COST CTRL", cost_price=0.0)
+    _add_purchase_txn(empty_db_conn, pid_b, "HPW701", qty=10, net=200.0,  # 20/unit
+                      date_iso='2026-03-10')
+    _add_sale_txn(empty_db_conn, pid_b, "IVW701-1", qty=10, date_iso='2026-03-12')
+    _add_conversion_txn(empty_db_conn, pid_b, "CONV701", qty=4, unit_cost=45.0,
+                        date_iso='2026-03-14')
+    empty_db_conn.commit()
+
+    wacc_a = models.recalculate_product_wacc(pid_a, empty_db_conn)
+    wacc_b = models.recalculate_product_wacc(pid_b, empty_db_conn)
+    empty_db_conn.commit()
+
+    assert wacc_a == 20.0, f"A zero-cost conversion must not zero the WACC; got {wacc_a}"
+    assert _open_alerts(empty_db_conn) == []
+    conv_rows_a = empty_db_conn.execute(
+        "SELECT * FROM product_cost_ledger WHERE product_id=? AND event_type='CONVERSION_IN'",
+        (pid_a,)).fetchall()
+    assert conv_rows_a == [], conv_rows_a
+
+    assert wacc_b == 45.0, (
+        f"Control: a positive-cost conversion at zero stock must still take "
+        f"the bill in full; got {wacc_b}"
+    )
+
+
+# ── PR #551 review, SHOULD-FIX 2 ─────────────────────────────────────────────
+# The AC-specified 1/3x..3x outlier band was pinned by NO test: mutation m5a
+# (narrowing the band to 1/2x..2x) left the whole file green because the two
+# existing fixtures (10x, 1.25x) sit outside any band between ~1.25x and
+# ~10x. Boundary fixtures on both sides of the real 1/3x..3x edges, using a
+# prior cost of 31.0 chosen so 31/3.1 == 10.0 exactly (no float-boundary
+# flakiness on the low side's flagging case).
+
+def test_outlier_band_boundary_high_side(empty_db_conn):
+    """2.9x (89.9) sits inside the band -> no alert. 3.1x (96.1) sits
+    outside -> alert. Pins the HIGH edge at 3.0x, not some wider value."""
+    import models
+
+    pid_in = _mk_product(empty_db_conn, 91010, "WACC BAND HIGH IN", cost_price=0.0)
+    _add_purchase_txn(empty_db_conn, pid_in, "HPW800", qty=10, net=310.0,  # 31/unit
+                      date_iso='2026-03-10')
+    _add_sale_txn(empty_db_conn, pid_in, "IVW800-1", qty=10, date_iso='2026-03-12')
+    _add_purchase_txn(empty_db_conn, pid_in, "HPW801", qty=5, net=449.5,  # 89.9/unit = 2.9x
+                      date_iso='2026-03-14')
+
+    pid_out = _mk_product(empty_db_conn, 91011, "WACC BAND HIGH OUT", cost_price=0.0)
+    _add_purchase_txn(empty_db_conn, pid_out, "HPW802", qty=10, net=310.0,  # 31/unit
+                      date_iso='2026-03-10')
+    _add_sale_txn(empty_db_conn, pid_out, "IVW802-1", qty=10, date_iso='2026-03-12')
+    _add_purchase_txn(empty_db_conn, pid_out, "HPW803", qty=5, net=480.5,  # 96.1/unit = 3.1x
+                      date_iso='2026-03-14')
+    empty_db_conn.commit()
+
+    models.recalculate_product_wacc(pid_in, empty_db_conn)
+    models.recalculate_product_wacc(pid_out, empty_db_conn)
+    empty_db_conn.commit()
+
+    rows = _open_alerts(empty_db_conn)
+    assert len(rows) == 1, rows
+    assert 'HPW803' in rows[0]['message']
+    assert not any('HPW801' in r['message'] for r in rows)
+
+
+def test_outlier_band_boundary_low_side(empty_db_conn):
+    """1/2.9x (~10.6897) sits inside the band -> no alert. 1/3.1x (10.0)
+    sits outside -> alert. Pins the LOW edge at 1/3x, not some wider value."""
+    import models
+
+    pid_in = _mk_product(empty_db_conn, 91012, "WACC BAND LOW IN", cost_price=0.0)
+    _add_purchase_txn(empty_db_conn, pid_in, "HPW810", qty=10, net=310.0,  # 31/unit
+                      date_iso='2026-03-10')
+    _add_sale_txn(empty_db_conn, pid_in, "IVW810-1", qty=10, date_iso='2026-03-12')
+    _add_purchase_txn(empty_db_conn, pid_in, "HPW811", qty=5, net=53.448275862068964,  # 31/2.9/unit
+                      date_iso='2026-03-14')
+
+    pid_out = _mk_product(empty_db_conn, 91013, "WACC BAND LOW OUT", cost_price=0.0)
+    _add_purchase_txn(empty_db_conn, pid_out, "HPW812", qty=10, net=310.0,  # 31/unit
+                      date_iso='2026-03-10')
+    _add_sale_txn(empty_db_conn, pid_out, "IVW812-1", qty=10, date_iso='2026-03-12')
+    _add_purchase_txn(empty_db_conn, pid_out, "HPW813", qty=5, net=50.0,  # 31/3.1 = 10.0/unit
+                      date_iso='2026-03-14')
+    empty_db_conn.commit()
+
+    models.recalculate_product_wacc(pid_in, empty_db_conn)
+    models.recalculate_product_wacc(pid_out, empty_db_conn)
+    empty_db_conn.commit()
+
+    rows = _open_alerts(empty_db_conn)
+    assert len(rows) == 1, rows
+    assert 'HPW813' in rows[0]['message']
+    assert not any('HPW811' in r['message'] for r in rows)
+
+
 # ── Regression for commit 5ce0b79 ────────────────────────────────────────────
 
 def test_initial_ledger_includes_same_day_stock_import(empty_db_conn):
