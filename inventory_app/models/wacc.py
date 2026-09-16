@@ -370,31 +370,41 @@ def _recalculate_product_wacc(product_id, conn):
             if idx < len(costs):
                 unit_cost = costs[idx]
                 conv_cursor[ref] += 1
-                if current_stock < 0:
-                    new_wacc = current_wacc
-                elif current_wacc == 0:
-                    new_wacc = unit_cost
-                elif current_stock == 0:
-                    # Zero stock (#546) — same reasoning as the purchase
-                    # branch above: take the conversion's own unit cost, and
-                    # flag (never block) if it is far from the carried one.
-                    _flag_if_cost_outlier(
-                        conn, product_id=product_id, reference_no=ref,
-                        event_type='CONVERSION_IN', prior_cost=current_wacc,
-                        incoming_cost=unit_cost)
-                    new_wacc = unit_cost
-                else:
-                    new_wacc = (current_stock * current_wacc + qty * unit_cost) / (current_stock + qty)
-                current_stock += qty
-                current_wacc   = new_wacc
-                entries.append(dict(
-                    event_type='CONVERSION_IN', event_date=date_str,
-                    qty_change=qty, unit_cost=unit_cost,
-                    stock_after=current_stock, wacc_after=current_wacc,
-                    reference_no=ref,
-                    note=f'แปลงสินค้า {qty:g} {unit_type} @ {unit_cost:.2f} บาท/{unit_type}'
-                ))
-                continue
+                # PR #551 review (SHOULD-FIX 1): mirror the PURCHASE branch's
+                # `if net > 0:` guard above — a non-positive unit cost must
+                # never enter the costing block, or a 0-cost conversion
+                # landing at zero stock would drive WACC to 0 (the write
+                # guard at the bottom of this function then leaves
+                # products.cost_price stale, so the ledger and cost_price
+                # silently disagree). Falls through to the plain
+                # `current_stock += qty` below, uncosted — same shape as an
+                # uncosted (net<=0) purchase.
+                if unit_cost > 0:
+                    if current_stock < 0:
+                        new_wacc = current_wacc
+                    elif current_wacc == 0:
+                        new_wacc = unit_cost
+                    elif current_stock == 0:
+                        # Zero stock (#546) — same reasoning as the purchase
+                        # branch above: take the conversion's own unit cost, and
+                        # flag (never block) if it is far from the carried one.
+                        _flag_if_cost_outlier(
+                            conn, product_id=product_id, reference_no=ref,
+                            event_type='CONVERSION_IN', prior_cost=current_wacc,
+                            incoming_cost=unit_cost)
+                        new_wacc = unit_cost
+                    else:
+                        new_wacc = (current_stock * current_wacc + qty * unit_cost) / (current_stock + qty)
+                    current_stock += qty
+                    current_wacc   = new_wacc
+                    entries.append(dict(
+                        event_type='CONVERSION_IN', event_date=date_str,
+                        qty_change=qty, unit_cost=unit_cost,
+                        stock_after=current_stock, wacc_after=current_wacc,
+                        reference_no=ref,
+                        note=f'แปลงสินค้า {qty:g} {unit_type} @ {unit_cost:.2f} บาท/{unit_type}'
+                    ))
+                    continue
 
         current_stock += qty
 
