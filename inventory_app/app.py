@@ -85,6 +85,7 @@ from access_control import (_STAFF_POST_OK, _MANAGER_POST_OK, _ENDPOINT_MODULE,
                             build_mobile_nav_slots, init_access_control,
                             pw_fingerprint)
 from filters import register_filters
+from permissions import init_permissions
 
 app = Flask(__name__)
 # Honor X-Forwarded-Proto/Host from Railway's edge so url_for and post-login
@@ -246,6 +247,9 @@ def bootstrap_upload_db():
 # Registered here so their effects take hold in the same relative order
 # as before (after CSRF setup + blueprint registration).
 init_access_control(app)
+# Registered here, after every blueprint, so the URL map is complete: this
+# refuses to boot an app carrying a blueprint nobody declared in AREAS.
+init_permissions(app)
 register_filters(app)
 book_registry.init_book_registry(app)
 
