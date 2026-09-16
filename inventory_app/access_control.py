@@ -696,6 +696,12 @@ def require_login():
     if (endpoint or '').startswith('naming.') and role == 'staff':
         flash('ไม่มีสิทธิ์เข้าถึงระบบตั้งชื่อสินค้า', 'danger')
         return redirect(url_for('dashboard'))
+    # Commission module: staff cannot access any commission.* endpoint (GET or
+    # POST), same shape as hr./cashbook./naming. above (#542). Staff has no
+    # commission.* POST in _STAFF_POST_OK today, so this breaks no workflow.
+    if (endpoint or '').startswith('commission.') and role == 'staff':
+        flash('ไม่มีสิทธิ์เข้าถึงระบบคอมมิชชั่น', 'danger')
+        return redirect(url_for('dashboard'))
     if request.method != 'POST':
         return
     if role == 'admin':
