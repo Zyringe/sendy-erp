@@ -183,6 +183,168 @@ def test_the_surfaces_that_must_be_guarded_are():
             f'{rel} lost its revenue guard'
 
 
+# ── #514: HS is a cash sale, not an opening balance — sweep the leftovers ───
+#
+# sales_filters.revenue_filter() dropped its `NOT LIKE 'HS%'` clause (#514):
+# an HS document is a cash sale, real revenue, real price evidence. A file
+# that still hand-types its OWN `NOT LIKE 'HS%'` exclusion is either a
+# leftover that needs the same fix, or a deliberate AR/settlement/stock-
+# quantity site that keeps excluding HS on purpose — the issue names
+# `ar_diagnostic` / `_settlement_rows` as the deliberate ones. Same shape as
+# the ALLOWED sweep above: silently leaving one unswept is the failure mode.
+HS_EXCLUSION_ALLOWED = {
+    'models/payments.py':
+        'AR-balance surfaces (payment-status, unpaid bills, customer debt) — '
+        'HS is paid on the spot, never a receivable (#514).',
+    'payments_alloc.py':
+        'Invoice settlement / cash allocation — the issue names '
+        '_settlement_rows explicitly as keep-excluded (#514).',
+    'blueprints/mobile.py':
+        "/m/sales-trip's per-customer 'outstanding' figure is an AR figure, "
+        'same reason as models/payments.py (#514).',
+    'models/ecommerce_overview.py':
+        'Marketplace STOCK-quantity deduction (sold units reducing the '
+        'platform stock estimate), not revenue or price evidence — a '
+        'separate business question, deliberately left unchanged pending '
+        "Put's call (#514).",
+}
+
+# Matched against the RAW source, never `_code_only(src)`. `_code_only` strips
+# any string token whose token-line, lstripped, starts with `"""`/`'''` — a
+# heuristic aimed at real docstrings that also fires on a SQL string built as
+# the first argument to `cur.execute(` (financial_health.py's own trailing-
+# months query is exactly this shape). That silently hid an injected
+# `NOT LIKE 'HS%'` from this sweep in 14 files across the app (proved below
+# by re-injecting one into financial_health.py and watching the sweep miss
+# it before this fix, and catch it after). Comments and docstrings are NOT
+# stripped for this sweep on purpose: a legitimate comment that happens to
+# mention the pattern is an allowlist entry with a reason, not grounds to go
+# back to stripping.
+#
+# The pattern tolerates the noise Python string-building puts between the
+# keywords (quotes, `+`, whitespace/newlines from literal concatenation) so
+# it survives the shapes below without needing one alternative per shape:
+#   NOT.{0,5}?LIKE.{0,10}?HS%   -- any `... NOT ... LIKE ... 'HS%'`-ish clause
+#   <>.{0,10}?HS['"]            -- substr(doc_no,1,2) <> 'HS' (no % wildcard)
+_HS_EXCLUSION_RE = re.compile(
+    r"NOT.{0,5}?LIKE.{0,10}?HS%"
+    r"|<>.{0,10}?HS['\"]",
+    re.IGNORECASE | re.DOTALL)
+
+
+def test_no_stray_hs_exclusion_outside_the_allowlist():
+    """After #514, a hand-typed HS exclusion may only survive in a file
+    listed above with a reason. Every revenue/price surface must have
+    dropped it (either by importing sales_filters.revenue_filter, or by
+    dropping its own copy of the clause)."""
+    hits = set()
+    for rel, path in _py_files():
+        src = open(path, encoding='utf-8').read()
+        if _HS_EXCLUSION_RE.search(src):
+            hits.add(rel)
+    unexpected = hits - set(HS_EXCLUSION_ALLOWED)
+    assert not unexpected, (
+        "These files still hand-exclude HS (\"NOT LIKE 'HS%'\" or "
+        "equivalent) with no allowlist entry — either they should now "
+        "count HS as revenue (#514), or add a reason:\n  "
+        + "\n  ".join(sorted(unexpected)))
+
+
+@pytest.mark.parametrize('rel', sorted(HS_EXCLUSION_ALLOWED))
+def test_every_hs_exemption_carries_a_reason(rel):
+    assert len(HS_EXCLUSION_ALLOWED[rel]) > 40, f'{rel}: explain WHY it still excludes HS'
+
+
+def test_hs_allowlist_entries_still_apply():
+    """A stale entry hides a surface that has since dropped the exclusion
+    (or been deleted) — same trap as the revenue-guard allowlist above."""
+    stale = []
+    for rel in HS_EXCLUSION_ALLOWED:
+        path = os.path.join(APP, rel)
+        if not os.path.exists(path):
+            stale.append(f'{rel} (file no longer exists)')
+            continue
+        src = open(path, encoding='utf-8').read()
+        if not _HS_EXCLUSION_RE.search(src):
+            stale.append(f'{rel} (no longer hand-excludes HS)')
+    assert not stale, "Remove these stale HS-allowlist entries:\n  " + "\n  ".join(stale)
+
+
+def test_sales_filters_revenue_filter_itself_does_not_exclude_hs():
+    """Positive control — the sweep above only catches files that DUPLICATE
+    the clause; it says nothing about the one shared definition itself."""
+    import sales_filters
+    assert "NOT LIKE 'HS%'" not in sales_filters.revenue_filter()
+
+
+# ── the HS sweep's own coverage ──────────────────────────────────────────────
+#
+# Mirrors AGGREGATE_SHAPES/NOT_AGGREGATES below for `_SUM_NET`: each entry is
+# a shape the HS sweep must see (or must NOT see), so a change to the regex
+# that silently narrows or widens it gets caught here instead of on a real
+# file. The BLIND_BEFORE_FIX shapes are exactly what `_code_only()` matching
+# missed (see the block comment above `_HS_EXCLUSION_RE`); the SEEN_BEFORE
+# shapes already worked and must keep working.
+
+HS_EXCLUSION_SHAPES_BLIND_BEFORE_FIX = {
+    'string_concat':
+        '"st.doc_base NOT LIKE " + "\'HS%\'"',
+    'double_quoted_literal':
+        'doc_base NOT LIKE "HS%"',
+    'substr_not_equal':
+        "substr(doc_no, 1, 2) <> 'HS'",
+    'double_space_not_like':
+        "doc_base NOT  LIKE 'HS%'",
+    'indented_triple_quote_block':
+        '            """SELECT COALESCE(SUM(net), 0) AS rev\n'
+        "               FROM sales_transactions\n"
+        "               WHERE doc_base NOT LIKE 'HS%'\"\"\"",
+}
+
+HS_EXCLUSION_SHAPES_SEEN_BEFORE = {
+    'plain':
+        "doc_base NOT LIKE 'HS%'",
+    'aliased':
+        "st.doc_base NOT LIKE 'HS%'",
+    'f_string':
+        "f\"{p}doc_base NOT LIKE 'HS%'\"",
+    'format_call':
+        '"{}doc_base NOT LIKE \'HS%\'".format(p)',
+    'inline_triple_quote':
+        'q = """SELECT 1 WHERE doc_base NOT LIKE \'HS%\'"""',
+}
+
+NOT_HS_EXCLUSIONS = {
+    'sr_exclusion_not_hs':
+        "doc_base NOT LIKE 'SR%'",
+    'unrelated_customer_pattern':
+        "customer NOT LIKE 'หน้าร้าน%'",
+    'positive_hs_like_no_not':
+        "doc_base LIKE 'HS%'",
+    'purchase_side_prefix':
+        "doc_base NOT LIKE 'GR%'",
+}
+
+
+@pytest.mark.parametrize('shape', sorted(HS_EXCLUSION_SHAPES_BLIND_BEFORE_FIX))
+def test_the_hs_sweep_sees_shapes_that_were_blind_before_the_fix(shape):
+    src = HS_EXCLUSION_SHAPES_BLIND_BEFORE_FIX[shape]
+    assert _HS_EXCLUSION_RE.search(src), \
+        f'{shape}: the HS sweep is blind to this shape, so a file using it is unswept'
+
+
+@pytest.mark.parametrize('shape', sorted(HS_EXCLUSION_SHAPES_SEEN_BEFORE))
+def test_the_hs_sweep_still_sees_shapes_it_already_saw(shape):
+    src = HS_EXCLUSION_SHAPES_SEEN_BEFORE[shape]
+    assert _HS_EXCLUSION_RE.search(src), \
+        f'{shape}: a previously-visible shape stopped matching'
+
+
+@pytest.mark.parametrize('shape', sorted(NOT_HS_EXCLUSIONS))
+def test_the_hs_sweep_ignores_what_is_not_an_hs_exclusion(shape):
+    assert not _HS_EXCLUSION_RE.search(NOT_HS_EXCLUSIONS[shape]), f'{shape}: false positive'
+
+
 # ── the sweep's own coverage ─────────────────────────────────────────────────
 #
 # A sweep is only worth what its pattern can see, and nothing about reading it

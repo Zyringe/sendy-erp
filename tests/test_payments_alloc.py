@@ -96,6 +96,21 @@ def test_billed_sums_multiline_and_excludes_cancelled(empty_db_conn):
     assert iv['invoice_date'] == '2026-01-10'
 
 
+def test_hs_cash_sale_never_appears_in_settlement(empty_db_conn):
+    """#514: HS is a cash sale, paid on the spot — payments_alloc._settlement_rows
+    keeps excluding it on purpose (it is revenue, not a receivable). Control:
+    a real IV for the same customer still appears, so this proves the HS
+    exclusion specifically, not a broken query."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV002', 'ACME', 'C01', '2026-01-10', 1000, line=1)
+    _ins_sale(c, 'HS002', 'ACME', 'C01', '2026-01-11', 500, line=1)
+    c.commit()
+
+    rows = _by_doc(pa.invoice_settlement(conn=c))
+    assert 'IV002' in rows, 'control — the real invoice must still settle'
+    assert 'HS002' not in rows, 'a cash sale must never enter AR settlement'
+
+
 def test_partial_payment(empty_db_conn):
     c = empty_db_conn
     _ins_sale(c, 'IV002', 'ACME', 'C01', '2026-01-15', 1000)

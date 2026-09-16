@@ -206,6 +206,7 @@ def sales_trip():
                     AND s.doc_base IS NOT NULL
                     AND s.doc_base NOT LIKE 'SR%'
                     AND s.doc_base NOT LIKE 'HS%'
+                    -- HS is paid on the spot, never a receivable (#514)
                     -- "paid" means an ACTIVE receipt, same contract as
                     -- models.payments._ACTIVE_PAID_DOCS_CTE. The old
                     -- `LEFT JOIN paid_invoices ... IS NULL` had no

@@ -121,6 +121,55 @@ def test_brand_breakdown_also_excludes_sr_rows(empty_db):
     assert rows['สิงห์ทอง']['sales_net'] == pytest.approx(1000.0)
 
 
+# ── 1b. Revenue COUNTS HS (cash sale) rows (#514) ────────────────────────────
+# HS is a cash sale (ขายสด), not an opening balance — real revenue, and the
+# goods really left the warehouse so COGS must count it too (same reasoning
+# that already keeps a giveaway's COGS unfiltered). Control IV row proves the
+# guard for SR above still holds unchanged.
+
+def test_revenue_counts_hs_cash_sale_rows(empty_db):
+    conn = _conn(empty_db)
+    _mk_sale(conn, '2026-06-10', 'IV003', net=1000.0)   # control
+    _mk_sale(conn, '2026-06-15', 'SR003', net=200.0)    # control: still excluded
+    _mk_sale(conn, '2026-06-16', 'HS003', net=300.0)    # counted now
+    conn.commit()
+    conn.close()
+
+    summary = models.get_accounting_summary('2026-06-01', '2026-06-30')
+    assert summary['sales_net'] == pytest.approx(1300.0)
+
+
+def test_brand_breakdown_counts_hs_cash_sale_rows(empty_db):
+    conn = _conn(empty_db)
+    brand_id = _mk_brand(conn, 'GL2', 'สิงห์ทอง2', is_own_brand=1)
+    pid = _mk_product(conn, cost_price=0.0, brand_id=brand_id)
+    _mk_sale(conn, '2026-06-10', 'IV004', net=1000.0, product_id=pid)   # control
+    _mk_sale(conn, '2026-06-15', 'SR004', net=200.0, product_id=pid)    # control: still excluded
+    _mk_sale(conn, '2026-06-16', 'HS004', net=300.0, product_id=pid)    # counted now
+    conn.commit()
+    conn.close()
+
+    summary = models.get_accounting_summary('2026-06-01', '2026-06-30')
+    rows = {r['brand_label']: r for r in summary['brand_breakdown']}
+    assert rows['สิงห์ทอง2']['sales_net'] == pytest.approx(1300.0)
+
+
+def test_cogs_counts_hs_cash_sale_rows(empty_db):
+    """A cash sale's goods really left the warehouse — same reasoning that
+    already keeps a written-off giveaway's COGS unfiltered (module docstring).
+    IV003 (qty 10 @ cost 40 = 400) is the control; HS003 (qty 5 @ cost 40 =
+    200) must be counted too."""
+    conn = _conn(empty_db)
+    pid = _mk_product(conn, cost_price=40.0)
+    _mk_sale(conn, '2026-06-10', 'IV005', net=1000.0, product_id=pid, qty=10)
+    _mk_sale(conn, '2026-06-15', 'HS005', net=300.0, product_id=pid, qty=5)
+    conn.commit()
+    conn.close()
+
+    summary = models.get_accounting_summary('2026-06-01', '2026-06-30')
+    assert summary['cogs'] == pytest.approx(600.0)
+
+
 # ── 2. Expenses from cashbook opex ──────────────────────────────────────────
 
 def test_expenses_include_commission_exclude_purchases_and_transfers(empty_db):

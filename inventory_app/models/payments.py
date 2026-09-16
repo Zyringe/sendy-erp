@@ -395,6 +395,7 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
     """
     conn = get_connection()
 
+    # HS is paid on the spot, never a receivable (#514).
     conds = ["st.doc_base IS NOT NULL", "st.doc_base NOT LIKE 'SR%'", "st.doc_base NOT LIKE 'HS%'"]
     params = []
 
@@ -477,6 +478,7 @@ def get_payment_summary():
                    SUM({vat_math.cash_sql()}) AS net
             FROM sales_transactions
             WHERE doc_base IS NOT NULL AND doc_base NOT LIKE 'SR%' AND doc_base NOT LIKE 'HS%'
+            -- HS is paid on the spot, never a receivable (#514)
             GROUP BY doc_base
             HAVING SUM({vat_math.cash_sql()}) > 0
         ) st
@@ -555,6 +557,7 @@ def get_ar_reconciliation():
                WHERE doc_base IS NOT NULL
                  AND doc_base NOT LIKE 'SR%'
                  AND doc_base NOT LIKE 'HS%'
+                 -- HS is paid on the spot, never a receivable (#514)
                GROUP BY doc_base
               HAVING bill_net > 0
           ) st
@@ -743,6 +746,7 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
         LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
         WHERE st.doc_base IS NOT NULL
           AND st.doc_base NOT LIKE 'SR%' AND st.doc_base NOT LIKE 'HS%'
+          -- HS is paid on the spot, never a receivable (#514)
           AND apd.doc_no IS NULL
           AND st.doc_base NOT IN (SELECT doc_no FROM ar_writeoffs)
         GROUP BY st.customer, st.customer_code, st.doc_base

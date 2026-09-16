@@ -8,10 +8,10 @@ caller-supplied conn (used, not closed) else opens/owns one.
 
 DATA SOURCE
   sales_transactions (BSN weekly import). Same filter as
-  cashflow.revenue_by_month:
+  cashflow.revenue_by_month (sales_filters.revenue_filter):
     doc_base IS NOT NULL
     doc_base NOT LIKE 'SR%'   -- sales returns (credit notes)
-    doc_base NOT LIKE 'HS%'   -- historical opening balance
+    HS (cash sales) COUNTED, since #514 — not an opening balance
   Revenue = net (post-doc-discount, pre-VAT).
 
 RECONCILIATION

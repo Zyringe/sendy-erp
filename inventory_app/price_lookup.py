@@ -78,10 +78,11 @@ def _strip_tier_qty(qty_label):
 def evidence_filter(alias):
     """The population predicate for 'does this sales_transactions row count
     as evidence of a real B2B price'. Built on sales_filters.revenue_filter
-    (excludes SR/HS/write-offs, doc_base-keyed) plus the two exclusions
-    that filter does not cover: marketplace รายการหน้าร้าน (customer
-    prefix) and the cost-basis dummy invoices (doc_base-keyed, per
-    quote_worsawat.py's EXCLUDED_DOC_BASES). qty > 0 / net > 0 are folded
+    (excludes SR/write-offs, doc_base-keyed; COUNTS HS cash sales since
+    #514) plus the two exclusions that filter does not cover: marketplace
+    รายการหน้าร้าน (customer prefix) and the cost-basis dummy invoices
+    (doc_base-keyed, per quote_worsawat.py's EXCLUDED_DOC_BASES). qty > 0 /
+    net > 0 are folded
     in here too (not left to each caller) — every consumer of this
     predicate needs both checks, and a caller that forgot one is exactly
     the kind of silent population drift verification-discipline.md warns
