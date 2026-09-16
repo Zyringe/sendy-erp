@@ -14,7 +14,7 @@ Core-math invariants (see projects/ecommerce-revamp/plan.md — do not re-derive
                                   FROM sales_transactions st WHERE st.product_id=p
                                   AND st.date_iso > snapshot_date(pf)   -- strict: same-day
                                   AND st.doc_no NOT LIKE 'SR%'          -- returns
-                                  AND st.doc_no NOT LIKE 'HS%'          -- opening balances
+                                  AND st.doc_no NOT LIKE 'HS%'          -- cash sales (stock Q, see below)
                                   AND st.customer IN <platform's หน้าร้าน set>
                                   AND NOT already-deducted-from-platform_skus
                                   -- ^ once a หน้าร้านS/L sale is synced, the
@@ -107,8 +107,14 @@ def _sold_since_by_pid(conn, platform, snapshot_date, pids=None):
 
     Excluded, and why:
       SR%  sales returns — goods came back, they are not a deduction
-      HS%  historical opening balances, not trade (same exclusion every money
-           page applies via sales_filters)
+      HS%  cash sales (ขายสด) — NOT an opening balance, that reading was
+           wrong (#514). sales_filters.revenue_filter() counts HS as
+           revenue now; this function does NOT follow it, on purpose. This
+           is a STOCK-quantity question (does an HS sale reduce the
+           marketplace stock estimate?), a separate call from whether HS is
+           revenue/price evidence — left unchanged pending Put, since most
+           HS docs' customers ARE the หน้าร้าน* customers this function
+           targets and changing this would move marketplace stock numbers.
       rows presumed already reflected in platform_skus.stock via the
            marketplace ORDER import — see the guard below
 

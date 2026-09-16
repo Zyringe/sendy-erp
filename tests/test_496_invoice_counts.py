@@ -161,8 +161,9 @@ def test_trade_dashboard_page_shows_invoice_counts(admin):
 
 def test_accounting_period_counts_invoices_below_lines(seeded):
     s = models.get_accounting_summary(MONTH_FROM, MONTH_TO)
-    # Revenue population excludes SR/HS: 4 invoices over 8 lines. The two
-    # numbers used to be identical on every period.
+    # Revenue population excludes SR (the fixture has no HS docs, so #514's
+    # HS-counted change doesn't move this number): 4 invoices over 8 lines.
+    # The two numbers used to be identical on every period.
     assert s['line_count'] == 8
     assert s['doc_count'] == 4
     assert s['doc_count'] < s['line_count']

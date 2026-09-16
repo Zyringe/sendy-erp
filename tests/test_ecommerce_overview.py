@@ -206,9 +206,12 @@ def test_tiktok_sale_applies_unit_conversion_ratio(empty_db_conn):
             r['platforms']['tiktok']['est']) == (10, 40)
 
 
-def test_hs_opening_balance_excluded_from_sold_since(empty_db_conn):
-    """HS = historical opening balance, not trade (same exclusion sales_filters
-    applies to every money page). It must not deduct marketplace units."""
+def test_hs_cash_sale_excluded_from_sold_since(empty_db_conn):
+    """HS = cash sale (ขายสด), real revenue — NOT an opening balance (#514
+    corrected that reading everywhere else). This site is a STOCK-quantity
+    question, not revenue/price evidence, so it is deliberately left
+    unchanged here: whether an HS sale under a หน้าร้าน* customer should also
+    reduce the marketplace stock estimate is a separate call for Put."""
     c = empty_db_conn
     _product(c, 63, 'สินค้า HS')
     _ps(c, 'shopee', 63, stock=50, qty_per_sale=1, imported_at='2026-07-01 00:00:00')

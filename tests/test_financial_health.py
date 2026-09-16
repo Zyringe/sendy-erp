@@ -224,11 +224,12 @@ def test_get_current_month_pace_no_data(empty_db_conn):
 
 # ── trailing months ────────────────────────────────────────────────────────────
 
-def test_trailing_months_excludes_returns_and_opening_balances(empty_db_conn):
-    """This page counted SR (credit notes) and HS (opening balances) as revenue
-    for its whole life, so its trend disagreed with /revenue and /accounting by
-    ฿3,688 on March 2026 alone. It now uses the same canonical filter they do
-    (Put, 2026-07-30, option ข)."""
+def test_trailing_months_excludes_returns_but_counts_hs(empty_db_conn):
+    """This page counted SR (credit notes) and HS as revenue for its whole
+    life, so its trend disagreed with /revenue and /accounting by ฿3,688 on
+    March 2026 alone. It now uses the same canonical filter they do (Put,
+    2026-07-30, option ข). #514: HS is a cash sale, real revenue — SR
+    (returns) is the only one still excluded."""
     import models.financial_health as fh
 
     conn = empty_db_conn
@@ -238,8 +239,8 @@ def test_trailing_months_excludes_returns_and_opening_balances(empty_db_conn):
     conn.commit()
 
     months = fh.get_trailing_months(n=1, conn=conn, as_of_date=date(2026, 5, 15))
-    assert months[0]['revenue'] == pytest.approx(100000.0), \
-        'SR/HS must not count as revenue'
+    assert months[0]['revenue'] == pytest.approx(101252.0), \
+        'SR must not count as revenue; HS must (#514)'
 
 
 def test_trailing_months_excludes_giveaway_documents(empty_db_conn):
