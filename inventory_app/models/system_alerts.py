@@ -51,6 +51,7 @@ import sys
 from database import get_connection
 
 KIND_WACC_IDENTITY = 'wacc_identity'
+KIND_WACC_COST_OUTLIER = 'wacc_cost_outlier'
 KIND_IMPORT_IGNORED_LINES = 'import_ignored_lines'
 KIND_SLOW_REQUEST = 'slow_request'
 KIND_ORPHAN_BSN_LEDGER = 'orphan_bsn_ledger'
@@ -524,6 +525,56 @@ def record_wacc_identity_alert(exc, *, operation=None, extra=None):
     except Exception as alert_exc:            # noqa: BLE001
         # Never let alerting replace the money-path error it was reporting.
         print(f"[system_alerts] failed to record alert: {alert_exc}",
+              file=sys.stderr)
+        return None
+
+
+def record_wacc_cost_outlier_alert(conn, *, product_id, reference_no, event_type,
+                                   prior_cost, incoming_cost):
+    """Flag (never block) a zero-stock bill whose unit cost is far from the
+    carried cost (#546, 2026-09-16 triage). ADVISORY ONLY: this must never
+    influence the WACC value it is reporting on — the caller has already
+    decided to take the bill by the time this runs.
+
+    Unlike record_wacc_identity_alert, this takes the CALLER's own `conn` and
+    never opens a fresh one. That function's fresh-connection requirement
+    exists because it fires AFTER a rollback+close, on the failure path — the
+    connection that raised is gone. This fires mid-transaction on the SUCCESS
+    path: recalculate_product_wacc (or _recalculate_product_wacc, when a
+    batch caller supplies its own conn) is still writing the same ledger
+    rewrite this alert is about, so it belongs in the same transaction. If
+    that transaction rolls back later (e.g. a sibling product's pre-flight
+    fails in a batch), the alert correctly rolls back with it: the bill was
+    never actually taken, so there is nothing to flag.
+
+    Dedupe key = product + reference_no + event_type, so recomputing the SAME
+    ledger (idempotent by design) does not stack duplicate alerts for the
+    same bill, and a genuinely new outlier bill on the same product opens its
+    own row. A resolved one may alert again (create_system_alert's normal
+    "a recurrence is news" contract) if the same reference_no is ever
+    re-walked after being acknowledged.
+
+    Best-effort — wrapped so a failure here can never turn a successful WACC
+    write into a raised exception. Returns the alert id, or None.
+    """
+    try:
+        ratio = (incoming_cost / prior_cost) if prior_cost else None
+        ratio_str = f'{ratio:.2f}x' if ratio is not None else 'N/A'
+        msg = (f"ต้นทุนบิลใหม่ต่างจากต้นทุนเดิมมาก (นอกช่วง 1/3 ถึง 3 เท่า) — "
+               f"สินค้า #{product_id}, เอกสาร {reference_no or '-'}: "
+               f"เดิม {prior_cost:.4f} บาท ใหม่ {incoming_cost:.4f} บาท "
+               f"({ratio_str}) — ระบบยังคงบันทึกต้นทุนใหม่ตามบิลตามปกติ "
+               f"นี่เป็นการแจ้งเตือนเท่านั้น")
+        return create_system_alert(
+            KIND_WACC_COST_OUTLIER, msg,
+            dedupe_key=_dedupe_key([product_id, reference_no, event_type]),
+            severity='warning',
+            context={'product_id': product_id, 'reference_no': reference_no,
+                     'event_type': event_type, 'prior_cost': prior_cost,
+                     'incoming_cost': incoming_cost, 'ratio': ratio},
+            conn=conn)
+    except Exception as alert_exc:            # noqa: BLE001
+        print(f"[system_alerts] failed to record wacc cost-outlier alert: {alert_exc}",
               file=sys.stderr)
         return None
 
