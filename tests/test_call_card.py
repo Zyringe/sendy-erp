@@ -400,12 +400,17 @@ def test_call_list_universe_stable_across_windows(mig103_conn):
     conn.execute(
         "INSERT INTO customers(code, name, address) VALUES ('C002','ร้านเก่า','กรุงเทพมหานคร')"
     )
+    # doc_base is load-bearing, not decoration: ซื้อล่าสุด reads the purchase
+    # population (#513), which is doc_base-keyed — an SR prefix is how a credit
+    # note is told from an invoice. The importer has always written it and prod
+    # holds zero NULLs (measured on the 2026-09-14 snapshot, 0 of 20,396 rows),
+    # so a fixture without it was never a state the app can be in.
     conn.executemany(
-        "INSERT INTO sales_transactions(date_iso, doc_no, customer, customer_code, qty, unit, "
-        "unit_price, vat_type, net, product_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO sales_transactions(date_iso, doc_no, doc_base, customer, customer_code, "
+        "qty, unit, unit_price, vat_type, net, product_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         [
-            ('2026-05-01', 'IV001', 'ร้านใหม่', 'C001', 1, 'ตัว', 100, 0, 500, 1),
-            ('2020-01-01', 'IV002', 'ร้านเก่า', 'C002', 1, 'ตัว', 100, 0, 1000, 1),
+            ('2026-05-01', 'IV001-1', 'IV001', 'ร้านใหม่', 'C001', 1, 'ตัว', 100, 0, 500, 1),
+            ('2020-01-01', 'IV002-1', 'IV002', 'ร้านเก่า', 'C002', 1, 'ตัว', 100, 0, 1000, 1),
         ]
     )
     conn.commit()
@@ -839,10 +844,13 @@ def _seed(conn, code, name, days_ago_list, phone=None, net=1000):
                  (code, name, 'กรุงเทพมหานคร', phone))
     for i, d in enumerate(days_ago_list):
         day = (dt.date.today() - dt.timedelta(days=d)).isoformat()
+        # doc_base, because ซื้อล่าสุด and the เงียบ badge read the purchase
+        # population (#513) and that population is doc_base-keyed. See the note
+        # in test_call_list_universe_stable_across_windows.
         conn.execute(
-            "INSERT INTO sales_transactions(date_iso, doc_no, customer, customer_code, "
-            "qty, unit, unit_price, vat_type, net, product_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (day, f'IV-{code}-{i}', name, code, 1, 'ตัว', net, 0, net, 1))
+            "INSERT INTO sales_transactions(date_iso, doc_no, doc_base, customer, customer_code, "
+            "qty, unit, unit_price, vat_type, net, product_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (day, f'IV-{code}-{i}-1', f'IV-{code}-{i}', name, code, 1, 'ตัว', net, 0, net, 1))
     conn.commit()
 
 
