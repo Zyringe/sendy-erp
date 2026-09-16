@@ -374,12 +374,16 @@
               </td>
               <td class="small text-subtle" style="max-width:300px">{{ p.note or '' }}</td>
               <td class="text-center small text-subtle">{{ p.paid_by or '—' }}</td>
+              {# Same as commission_payouts.html: the <td> stays so the row keeps
+                 8 cells for every role; only the FORM is gated (#550). #}
               <td class="text-end">
+                {% if can_cancel_payout %}
                 <form method="post" action="{{ url_for('commission.commission_delete_payout', payout_id=p.id) }}"
                       onsubmit="return confirm('ลบรายการจ่าย ฿{{ p.amount_paid }}?')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button class="btn btn-link text-danger btn-sm p-0"><i class="bi bi-trash"></i></button>
                 </form>
+                {% endif %}
               </td>
             </tr>
             {% else %}
