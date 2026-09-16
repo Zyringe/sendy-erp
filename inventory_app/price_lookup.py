@@ -56,6 +56,23 @@ import vat_math
 # (that filter is shared with pages that DO want marketplace/dummy rows).
 _DUMMY_DOC_BASES = ('IV6900401', 'IV6900402', 'IV6900403')
 
+# #554 — the WHOLE ar_writeoffs table, not sales_filters' `excludes_revenue = 1`
+# subset. That table answers two questions and this module asks a third:
+#   revenue        -> only the flagged rows are dropped (bad debt WAS a sale and
+#                     keeps its revenue). Correct, and sales_filters owns it.
+#   collectability -> the whole table (cashflow.BSN_AR_PREDICATE).
+#   price evidence -> the whole table, here. A bill the accountant wrote off is
+#                     not a price the market agreed to, and prod carried a ฿1.00
+#                     written-off line (IV6801241) as admissible evidence until
+#                     this clause: it was the source of the two worst outliers
+#                     in #526's measurement.
+# Same whole-table stance, same reason, as models/payments.py's
+# find_payment_candidates. ⚠ LOAD-BEARING: `ar_writeoffs.doc_no` must stay NOT
+# NULL (migration 095) — one NULL makes `NOT IN (SELECT ...)` evaluate to NULL
+# for every row and silently re-admits the entire table (pinned by
+# tests/test_price_lookup.py::test_554_unflagged_writeoff_doc_is_not_price_evidence).
+_WRITEOFF_SUBQUERY = "SELECT doc_no FROM ar_writeoffs"
+
 # R1 unit normalization — only these three free-text forms collapse to the
 # canonical 'โหล'. Everything else (unit_type, 'แผง', 'ลัง', ...) passes
 # through unchanged; there is no general alias-table lookup here (YAGNI —
@@ -79,9 +96,12 @@ def evidence_filter(alias):
     """The population predicate for 'does this sales_transactions row count
     as evidence of a real B2B price'. Built on sales_filters.revenue_filter
     (excludes SR/write-offs, doc_base-keyed; COUNTS HS cash sales since
-    #514) plus the two exclusions that filter does not cover: marketplace
-    รายการหน้าร้าน (customer prefix) and the cost-basis dummy invoices
-    (doc_base-keyed, per quote_worsawat.py's EXCLUDED_DOC_BASES). qty > 0 /
+    #514) plus the three exclusions that filter does not cover: marketplace
+    รายการหน้าร้าน (customer prefix), the cost-basis dummy invoices
+    (doc_base-keyed, per quote_worsawat.py's EXCLUDED_DOC_BASES), and every
+    OTHER written-off document (#554 — see _WRITEOFF_SUBQUERY above for why
+    revenue and price evidence read ar_writeoffs differently, and why the
+    extra clause belongs here rather than in sales_filters). qty > 0 /
     net > 0 are folded
     in here too (not left to each caller) — every consumer of this
     predicate needs both checks, and a caller that forgot one is exactly
@@ -96,7 +116,8 @@ def evidence_filter(alias):
         f"{sales_filters.revenue_filter(alias)} "
         f"AND {p}qty > 0 AND {p}net > 0 "
         f"AND {p}customer NOT LIKE 'หน้าร้าน%' "
-        f"AND {p}doc_base NOT IN ('{_DUMMY_DOC_BASES[0]}','{_DUMMY_DOC_BASES[1]}','{_DUMMY_DOC_BASES[2]}')"
+        f"AND {p}doc_base NOT IN ('{_DUMMY_DOC_BASES[0]}','{_DUMMY_DOC_BASES[1]}','{_DUMMY_DOC_BASES[2]}') "
+        f"AND COALESCE({p}doc_base, {p}doc_no) NOT IN ({_WRITEOFF_SUBQUERY})"
     )
 
 
