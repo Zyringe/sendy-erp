@@ -316,3 +316,30 @@ def test_overhead_excludes_salary_transfer_and_cogs_categories(empty_db_conn):
     # median(10000, 30000, 20000) == 20000 — unaffected iff every poison
     # category/account above was correctly excluded from all 3 months.
     assert result['overhead'] == pytest.approx(20000.0)
+
+
+def test_trailing_margin_converts_the_bill_unit_to_base_units(empty_db_conn):
+    """The margin that sets the break-even target reads the same COGS as
+    /accounting, so it carried the same unit bug: a 2-โหล line of a ฿10/ตัว
+    product costed ฿20 instead of ฿240, which makes the margin look far
+    better than it is and the revenue target far lower."""
+    import models.financial_health as fh
+
+    conn = empty_db_conn
+    pid = conn.execute(
+        "INSERT INTO products (product_name, unit_type, cost_price) "
+        "VALUES ('t', 'ตัว', 10.0)").lastrowid
+    conn.execute(
+        "INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?, 'โหล', 12.0)",
+        (pid,))
+    conn.execute(
+        """INSERT INTO sales_transactions
+             (date_iso, doc_no, doc_base, product_id, qty, unit, unit_price, net, total)
+           VALUES ('2026-06-15', 'IV1-1', 'IV1', ?, 2, 'โหล', 250.0, 500.0, 500.0)""",
+        (pid,))
+    conn.commit()
+
+    margin = fh._trailing_margin(conn, date(2026, 7, 15))
+
+    # (500 − 240) / 500. Costed at the raw qty it would read 0.96.
+    assert margin == pytest.approx(0.52)

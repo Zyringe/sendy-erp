@@ -58,8 +58,12 @@ def get_accounting_summary(date_from=None, date_to=None):
 
     Revenue  = Σnet from sales_transactions, SR (return) rows netted out —
                pre-VAT, post-doc-discount.
-    COGS     = SUM(qty * cost_price) from products        — current cost_price (WACC basis)
-               Lines where product has no cost_price are counted separately (no_cost_lines)
+    COGS     = SUM(qty-in-BASE-units * cost_price) — current cost_price (WACC
+               basis), with the bill's unit converted by sales_filters
+               .base_qty_sql() first (a โหล line costs 12 pieces).
+               Lines where product has no cost_price are counted separately
+               (no_cost_lines); lines whose bill unit has no ratio, and so
+               fell back to 1, are counted in unknown_ratio_lines.
     Expenses = cashbook_transactions opex (direction='expense', non-transfer
                account, category not in COGS/transfer categories) — BSN+SD
                (cashbook is not company-scoped). None when the period has
@@ -110,13 +114,15 @@ def get_accounting_summary(date_from=None, date_to=None):
     """.format(not_a_sale=sales_filters.not_a_sale_clause()), (date_from, date_to)).fetchone()
     sales_net = float(s['total_net'])
 
-    # ── COGS (current cost_price × qty; unmapped lines counted separately) ────
+    # ── COGS (current cost_price × qty in BASE units; see sales_filters) ─────
     cogs_row = conn.execute("""
-        SELECT COALESCE(SUM(st.qty * COALESCE(p.cost_price, 0)), 0) AS cogs,
+        SELECT COALESCE(SUM({base_qty} * COALESCE(p.cost_price, 0)), 0) AS cogs,
                COUNT(CASE WHEN p.cost_price IS NULL THEN 1 END)     AS no_cost_lines,
-               COUNT(CASE WHEN p.cost_price = 0    THEN 1 END)      AS zero_cost_lines
+               COUNT(CASE WHEN p.cost_price = 0    THEN 1 END)      AS zero_cost_lines,
+               COALESCE(SUM({unratioed}), 0)                        AS unknown_ratio_lines
           FROM sales_transactions st
           LEFT JOIN products p ON p.id = st.product_id
+          {uc_join}
          WHERE st.date_iso >= ? AND st.date_iso <= ?
            AND st.doc_no NOT LIKE 'SR%'
            -- NO excludes_revenue filter here, on purpose: a giveaway's goods
@@ -125,10 +131,14 @@ def get_accounting_summary(date_from=None, date_to=None):
            -- HS cash sales COUNTED here too, same reason — the goods really
            -- left the warehouse, and HS posts its COGS to the same 51-01 GL
            -- account IV uses (#514).
-    """, (date_from, date_to)).fetchone()
+    """.format(base_qty=sales_filters.base_qty_sql(),
+               unratioed=sales_filters.unratioed_line_sql(),
+               uc_join=sales_filters.unit_conversion_join()),
+       (date_from, date_to)).fetchone()
     cogs = float(cogs_row['cogs'])
     no_cost_lines = cogs_row['no_cost_lines'] or 0
     zero_cost_lines = cogs_row['zero_cost_lines'] or 0
+    unknown_ratio_lines = cogs_row['unknown_ratio_lines'] or 0
 
     # ── Gross profit ──────────────────────────────────────────────────────────
     gross_profit = sales_net - cogs
@@ -178,13 +188,15 @@ def get_accounting_summary(date_from=None, date_to=None):
           b.is_own_brand,
           COALESCE(b.sort_order, 9999)                    AS sort_ord,
           ROUND(SUM(st.net), 2)                           AS sales_net,
-          ROUND(SUM(st.qty * COALESCE(p.cost_price, 0)), 2) AS cogs_approx,
+          ROUND(SUM(""" + sales_filters.base_qty_sql() + """
+                    * COALESCE(p.cost_price, 0)), 2)      AS cogs_approx,
           COUNT(st.id)                                    AS line_count,
           COUNT(CASE WHEN p.cost_price IS NULL OR p.cost_price = 0 THEN 1 END)
                                                           AS no_cost_lines
         FROM sales_transactions st
         LEFT JOIN products  p ON p.id = st.product_id
         LEFT JOIN brands    b ON b.id = p.brand_id
+        """ + sales_filters.unit_conversion_join() + """
         WHERE st.date_iso >= ? AND st.date_iso <= ?
           AND st.doc_no NOT LIKE 'SR%'
           AND """ + sales_filters.not_a_sale_clause('st') + """
@@ -234,6 +246,7 @@ def get_accounting_summary(date_from=None, date_to=None):
         'cogs': cogs,
         'no_cost_lines': no_cost_lines,
         'zero_cost_lines': zero_cost_lines,
+        'unknown_ratio_lines': unknown_ratio_lines,
         'gross_profit': gross_profit,
         'margin_pct': margin_pct,
         'expenses': expenses,

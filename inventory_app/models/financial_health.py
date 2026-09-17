@@ -142,7 +142,9 @@ def get_current_month_pace(as_of_date=None, conn=None):
 
 
 def _trailing_margin(conn, as_of):
-    """(Σnet − Σqty*cost_price) / Σnet over the 3 complete trailing months.
+    """(Σnet − Σcost) / Σnet over the 3 complete trailing months, with each
+    line's qty converted to the product's base unit first (sales_filters
+    .base_qty_sql() — cost_price is per piece, the bill is in โหล).
     Returns None when there is no trailing revenue (can't divide, and 0%
     would misleadingly read as "sells at cost" rather than "no data")."""
     months = _trailing_month_starts(as_of, 3)
@@ -150,9 +152,11 @@ def _trailing_margin(conn, as_of):
     d_to = _month_bounds(*months[-1])[1]
     row = conn.execute(
         """SELECT COALESCE(SUM(st.net), 0) AS rev,
-                  COALESCE(SUM(st.qty * COALESCE(p.cost_price, 0)), 0) AS cogs
+                  COALESCE(SUM(""" + sales_filters.base_qty_sql() + """
+                               * COALESCE(p.cost_price, 0)), 0) AS cogs
              FROM sales_transactions st
              LEFT JOIN products p ON p.id = st.product_id
+             """ + sales_filters.unit_conversion_join() + """
             WHERE st.date_iso >= ? AND st.date_iso <= ?
                  AND """ + sales_filters.revenue_filter("st"),
         (d_from, d_to)).fetchone()

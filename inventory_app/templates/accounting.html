@@ -22,7 +22,7 @@
   <strong>รายได้ / COGS = BSN</strong> &nbsp;·&nbsp;
   <strong>ค่าใช้จ่าย = สมุดรับ-จ่าย (BSN+SD รวมกัน)</strong> &nbsp;·&nbsp;
   รายได้ = <code>net</code> (ก่อน VAT, หลังหัก discount, หักยอดคืน SR แล้ว) &nbsp;·&nbsp;
-  COGS = qty × cost_price ปัจจุบัน (<strong>ประมาณการ</strong>) &nbsp;·&nbsp;
+  COGS = qty (แปลงเป็นหน่วยสินค้าแล้ว) × cost_price ปัจจุบัน (<strong>ประมาณการ</strong>) &nbsp;·&nbsp;
   ไม่รวม VAT &nbsp;·&nbsp;
   กำไรสุทธิโดยประมาณ = กำไรขั้นต้น − ค่าใช้จ่าย (รวมค่าคอมมิชชั่นแล้ว ไม่หักซ้ำ)
 </div>
@@ -123,9 +123,13 @@
         </div>
       </div>
       <div class="mt-2 text-subtle small">
-        ประมาณการ qty × cost_price ปัจจุบัน
+        ประมาณการ qty × cost_price ปัจจุบัน (แปลง โหล/กล่อง เป็นหน่วยสินค้าก่อน)
         {% if s.no_cost_lines > 0 %}
         <span class="text-danger">· {{ s.no_cost_lines }} รายการไม่มีต้นทุน</span>
+        {% endif %}
+        {% if s.unknown_ratio_lines > 0 %}
+        <span class="text-danger" title="หน่วยบนบิลยังไม่มีอัตราแปลงใน unit_conversions — คิดเป็น 1 ไปก่อน ต้นทุนจึงต่ำกว่าจริง">
+          · {{ s.unknown_ratio_lines }} รายการยังไม่มีอัตราแปลงหน่วย</span>
         {% endif %}
       </div>
     </div>
@@ -208,7 +212,7 @@
       </div>
       <div class="mt-2">
         <span class="badge bg-warning text-dark">ประมาณการ</span>
-        <span class="text-subtle small ms-2">COGS ใช้ cost_price ปัจจุบัน · ไม่รวม VAT · รายได้/COGS = BSN, ค่าใช้จ่าย = BSN+SD</span>
+        <span class="text-subtle small ms-2">COGS ใช้ cost_price ปัจจุบัน แปลงหน่วยบิลเป็นหน่วยสินค้าแล้ว · ไม่รวม VAT · รายได้/COGS = BSN, ค่าใช้จ่าย = BSN+SD</span>
       </div>
     </div>
   </div>
@@ -333,6 +337,9 @@
     รายได้ใช้ <code>net</code> (pre-VAT, post-discount) จาก <code>sales_transactions</code>
     หักยอดคืน (SR, เก็บเป็นบวกในระบบตามปกติ — หักออกเฉพาะตอนแสดงผล) ·
     COGS = qty × <code>products.cost_price</code> ปัจจุบัน (ไม่ใช่ WACC ณ วันขาย — ค่าประมาณ) ·
+    qty บนบิลเป็นหน่วยที่ขาย (โหล/กล่อง/ซอง) แต่ <code>cost_price</code> เป็นต่อ
+    <code>unit_type</code> จึงแปลงด้วย <code>unit_conversions</code> ก่อนคูณ — แบบเดียวกับที่
+    สมุดสต็อกตัดของ · หน่วยที่ยังไม่มีอัตราแปลง คิดเป็น 1 (understate) และนับไว้ข้างยอด COGS ·
     สินค้าที่ยังไม่มี <code>cost_price</code> นับ COGS = 0 (understate) ·
     ค่าใช้จ่าย = <code>cashbook_transactions</code> (ไม่รวมหมวด เงินทุน/เงินโอน และ ซื้อสินค้า ที่นับใน COGS แล้ว)
     — ค่าคอมมิชชั่นรวมอยู่ในค่าใช้จ่ายนี้แล้ว ไม่หักซ้ำ ·
