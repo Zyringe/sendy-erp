@@ -429,7 +429,8 @@ def test_r4_population_excludes_every_bad_shape(db):
     #     (#554). Bad debt keeps its revenue (that is what the flag encodes,
     #     and sales_filters.revenue_filter is right to admit this row), but a
     #     bill the accountant wrote off is not evidence of a price the market
-    #     agreed to. The whole-table exclusion lives in evidence_filter, not
+    #     agreed to. The whole-table exclusion lives in price_evidence_filter,
+    #     not
     #     in revenue_filter -- see test_554_unflagged_writeoff_doc_is_not_price_evidence.
     _, wo_base_ctl = _bill(db, pid=pid, customer_code='TST-R4', customer_name='ลูกค้า R4',
                             date_iso=_days_ago(12), qty=1, unit='ตัว', unit_price=100.0,
@@ -492,7 +493,7 @@ def test_554_unflagged_writeoff_doc_is_not_price_evidence(db):
 
     FAR SIDE (the row this clause and nothing else in the filter excludes):
     the excludes_revenue = 0 bill below. Every other exclusion in
-    evidence_filter passes it -- doc_base is set, not SR, not a dummy
+    price_evidence_filter passes it -- doc_base is set, not SR, not a dummy
     doc_base, not หน้าร้าน, qty > 0, net > 0 -- so deleting the new clause
     admits it and this test goes red (break-it-once, #554).
 
@@ -524,7 +525,8 @@ def test_554_unflagged_writeoff_doc_is_not_price_evidence(db):
     # Count + identity in ONE assertion: an empty result would mean the
     # fixture never arrived, not that the guard works.
     assert bases == [ctl_base], (
-        f"evidence_filter population wrong: expected only the control {ctl_base}, got {bases}")
+        f"price_evidence_filter population wrong: expected only the control "
+        f"{ctl_base}, got {bases}")
 
     # The same row is still REVENUE. If this flips, the fix landed in the
     # wrong place (sales_filters.revenue_filter) and every revenue surface

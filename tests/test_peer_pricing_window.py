@@ -5,7 +5,7 @@ C5: a SEPARATE fixture from test_peer_pricing.py's minimal one -- that file's
 fixture deliberately lacks doc_base/customer/ar_writeoffs (it only needs to
 prove the `window_from_by_pair=None` legacy path, which touches none of those
 columns). This file's fixture carries the full set
-price_lookup.evidence_filter needs, so the FILTERED path can be exercised
+price_lookup.price_evidence_filter needs, so the FILTERED path can be exercised
 here without ever touching test_peer_pricing.py.
 """
 import sqlite3
@@ -17,7 +17,7 @@ def _db2(rows, writeoffs=()):
     """rows = (product_id, unit, customer, customer_code, qty, unit_price,
     net, vat_type, date_iso, discount, doc_no, doc_base).
 
-    Carries doc_base + an ar_writeoffs table so price_lookup.evidence_filter
+    Carries doc_base + an ar_writeoffs table so price_evidence_filter
     (excludes SR/HS returns, write-offs, รายการหน้าร้าน marketplace rows, the
     cost-basis dummy invoices) can run against it."""
     c = sqlite3.connect(":memory:")
@@ -58,7 +58,7 @@ def test_none_is_legacy_all_time_unfiltered():
 
 def test_dict_excludes_marketplace_and_writeoffs():
     """Given a map (even an empty one -- no pair entries), the population
-    is restricted to evidence_filter: marketplace + write-off rows drop
+    is restricted to price_evidence_filter: marketplace + write-off rows drop
     out entirely."""
     rows = [
         (1, 'ตัว', 'หน้าร้านS', 'MKT1', 1, 100, 100, 0, '2026-01-01', '', 'IV1', 'IV1'),
@@ -89,9 +89,9 @@ def test_pair_present_restricts_by_its_own_date_floor():
     assert row['peer_median'] == 60
 
 
-def test_pair_absent_from_map_gets_evidence_filter_but_no_date_restriction():
+def test_pair_absent_from_map_gets_price_evidence_filter_but_no_date_restriction():
     """A pair not present in the map (or mapped to None) still gets
-    evidence_filter, but is NOT date-restricted -- an old bill still
+    price_evidence_filter, but is NOT date-restricted -- an old bill still
     counts, it is never silently dropped and never treated as 'today'."""
     rows = [
         (1, 'ตัว', 'ร้าน T',  'T',  1, 100, 90,  0, '2020-01-01', '', 'IV1', 'IV1'),

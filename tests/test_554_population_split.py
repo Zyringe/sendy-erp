@@ -17,12 +17,21 @@ the sales team sees as เงียบ.
 
 This file holds the two halves of the guard:
 
-1. **The assignment census.** Every call site of either predicate, per
+1. **The assignment census.** Every reference to either predicate, per
    `file::function`, declared in EXPECTED as 'price' or 'purchase' with a
    reason. A parametrized test asserts each site's choice, so repointing one
    fails NAMING that site rather than moving an anonymous count. A
    file-level "this file is known" list would not catch a swap inside an
    approved file, which is the whole failure mode here.
+
+   It reads the **AST**, not the SQL text: the first version matched
+   `(?:pl|price_lookup)\.` inside an f-string hole, and review measured three
+   reachable shapes it called clean (a third import alias, concatenation
+   outside the f-string, and the predicate assigned to a local first). The
+   shapes are now fed back in as `_SHAPES_SEEN` / `_SHAPES_UNSEEN`, so the
+   claim "a new undeclared reader cannot appear" is measured — with ONE
+   recorded blind spot, a `getattr(pl, '<name>')` string lookup, which
+   nothing in the app does.
 
 2. **The behavioural pair.** Both predicates are run against ONE fixture
    holding a row on the far side of each clause: an unflagged write-off (kept
@@ -33,7 +42,6 @@ This file holds the two halves of the guard:
 """
 import ast
 import os
-import re
 
 import pytest
 
@@ -41,12 +49,19 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = os.path.join(_ROOT, 'inventory_app')
 SCRIPTS = os.path.join(_ROOT, 'scripts')
 
-# Both spellings that reach each predicate: qualified at a cross-module call
-# site (`pl.` / `price_lookup.`) and BARE inside price_lookup.py itself.
-_PRICE = re.compile(r'\{\s*(?:(?:pl|price_lookup)\s*\.\s*)?price_evidence_filter\s*\(')
-_PURCHASE = re.compile(
-    r'\{\s*(?:(?:pl|price_lookup)\s*\.\s*)?purchase_population_filter\s*\(')
-_SQL_COMMENT = re.compile(r'--[^\n]*|/\*.*?\*/', re.DOTALL)
+# The census reads the AST, not the SQL text. A text matcher has to hard-code
+# the import alias (`pl.` / `price_lookup.`) and only sees the predicate when it
+# sits inside an f-string hole — review of the first version measured three
+# reachable shapes it called clean: a third alias (`import price_lookup as PLX`),
+# concatenation OUTSIDE the f-string (`"… WHERE " + price_lookup.price_…(…)`),
+# and the predicate assigned to a local first (`pred = …` then `f"… {pred}"`).
+# An AST walk over every reference to either NAME sees all of them, and cannot
+# see prose (a docstring or a comment is not an AST reference) — which is what
+# the text matcher was really buying. `_SHAPES_SEEN` / `_SHAPES_UNSEEN` below
+# feed those exact shapes back in, so this claim is measured rather than argued.
+_NAMES = {'price_evidence_filter': 'price',
+          'purchase_population_filter': 'purchase'}
+_OLD_NAME = 'evidence_filter'   # pre-#554; must read as NEITHER half
 
 # site -> (which, reason). 'price' = the WHOLE ar_writeoffs table is excluded;
 # 'purchase' = only the flagged rows are. A site holding BOTH appears twice,
@@ -116,37 +131,36 @@ EXPECTED_COUNTS = {
 }
 
 
-def _render(node):
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.JoinedStr):
-        return ''.join(v.value if isinstance(v, ast.Constant)
-                       else '{' + ast.unparse(v.value) + '}' for v in node.values)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left, right = _render(node.left), _render(node.right)
-        if left is not None and right is not None:
-            return left + right
-    return None
+def _references(src):
+    """(function qualname, 'price'|'purchase') for every REFERENCE to either
+    predicate name in `src`, whatever shape the call site takes.
 
+    A reference, not strictly a call: `pred = pl.purchase_population_filter`
+    followed by `f"… {pred('s')}"` is a reader too, and the Call node there
+    names `pred`, not the predicate. Matching the NAME covers both.
 
-def _queries(src):
-    """(function qualname, string value) for every string EXPRESSION in `src`.
-    A bare string statement is a docstring — prose, never a query — so the
-    reasons in EXPECTED above can name both predicates without being counted
-    as call sites (the docstring trap: a source sweep that reads prose as code
-    passes while the code says something else)."""
+    Invisible to this, on purpose: a docstring, a `#` comment and a SQL
+    comment are not AST references, so the reasons in EXPECTED above can name
+    both predicates in prose without counting as call sites (the #469/#471
+    docstring trap). Also invisible, and accepted: `getattr(pl, 'price_…')`
+    — a string, not a reference. Nothing in the app does that; the harness in
+    `_SHAPES_UNSEEN` records it as a known blind spot rather than pretending.
+    """
     out = []
 
     def visit(node, scope):
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 visit(child, scope + [child.name])
-            elif isinstance(child, ast.Expr) and _render(child.value) is not None:
                 continue
-            elif _render(child) is not None:
-                out.append(('.'.join(scope) or '<module>', _render(child)))
-            else:
-                visit(child, scope)
+            name = None
+            if isinstance(child, ast.Attribute):
+                name = child.attr
+            elif isinstance(child, ast.Name):
+                name = child.id
+            if name in _NAMES:
+                out.append(('.'.join(scope) or '<module>', _NAMES[name]))
+            visit(child, scope)
 
     visit(ast.parse(src), [])
     return out
@@ -169,14 +183,9 @@ def _census():
     for rel, path in _py_files():
         with open(path, encoding='utf-8') as f:
             src = f.read()
-        for func, sql in _queries(src):
-            code = _SQL_COMMENT.sub(' ', sql)
-            price, purchase = len(_PRICE.findall(code)), len(_PURCHASE.findall(code))
-            if not (price or purchase):
-                continue
+        for func, which in _references(src):
             site = found.setdefault(f'{rel}::{func}', {'price': 0, 'purchase': 0})
-            site['price'] += price
-            site['purchase'] += purchase
+            site[which] += 1
     return found
 
 
@@ -244,32 +253,106 @@ def test_both_halves_of_the_split_are_actually_used():
         f'(ซื้อบ่อย: a count and a price); found {sorted(price & purchase)}')
 
 
-def test_the_matcher_does_not_fire_on_prose_or_on_the_old_name():
-    """Three ways this census could lie, all fed to it directly: a docstring
-    naming the predicate (the #471/#469 docstring trap), a SQL comment, and
-    the pre-#554 name `evidence_filter` — which must NOT read as either half,
-    or a half-finished rename would look declared."""
-    prose = ('def report(conn):\n'
-             '    """Was {pl.price_evidence_filter(\'s\')} before #554."""\n'
-             '    return conn.execute("SELECT 1 FROM sales_transactions")\n')
-    assert _queries(prose) and not any(
-        _PRICE.search(sql) for _f, sql in _queries(prose)), 'docstring counted as code'
+# ── the census's own coverage: one rogue source per shape ───────────────────
+#
+# A sweep is only worth what its matcher can see, and READING it never shows a
+# shape it misses (`.claude/rules/verification-discipline.md`, "a cross-cutting
+# sweep you wrote yourself is the next thing to distrust"). Every entry below
+# is a shape that either exists in this app or was measured green against the
+# first, text-matching version of this census. Prior art and the three
+# concatenation/alias shapes: test_last_purchase_population_coverage.py's
+# HELPER_SHAPES.
 
-    commented = "SELECT 1 -- {pl.purchase_population_filter('s')}\n"
-    assert not _PURCHASE.search(_SQL_COMMENT.sub(' ', commented)), 'comment counted'
+_SHAPES_SEEN = {
+    'f-string hole, pl alias':
+        "def report(c):\n    return c.execute(f\"WHERE {pl.price_evidence_filter('st')}\")\n",
+    'f-string hole, full module name':
+        "def report(c):\n"
+        "    return c.execute(f\"WHERE {price_lookup.price_evidence_filter('s')}\")\n",
+    # ⬇ the three the text matcher called CLEAN (measured, review of #562)
+    'f-string hole, a THIRD import alias':
+        "def report(c):\n    return c.execute(f\"WHERE {PLX.price_evidence_filter('st')}\")\n",
+    'plus concatenation OUTSIDE the f-string':
+        "def report(c):\n"
+        "    return c.execute(\"SELECT 1 WHERE \" + price_lookup.price_evidence_filter('st'))\n",
+    'assigned to a local first':
+        "def report(c):\n"
+        "    pred = price_lookup.price_evidence_filter('st')\n"
+        "    return c.execute(f\"SELECT 1 WHERE {pred}\")\n",
+    # ...and the same three for the purchase half, plus the shapes in the app
+    'bare name (inside price_lookup.py itself)':
+        "def report(c):\n    return c.execute(f\"WHERE {purchase_population_filter('')}\")\n",
+    'aliased WITHOUT calling, called later':
+        "def report(c):\n"
+        "    pred = pl.purchase_population_filter\n"
+        "    return c.execute(f\"WHERE {pred('s')}\")\n",
+    '.format() instead of an f-string':
+        "def report(c):\n"
+        "    return c.execute('WHERE {}'.format(pl.purchase_population_filter('s2')))\n",
+    'module-level constant':
+        "Q = f\"SELECT 1 WHERE {pl.purchase_population_filter('')}\"\n",
+}
 
-    old_name = "SELECT 1 FROM sales_transactions WHERE {pl.evidence_filter('s')}"
-    assert not _PRICE.search(old_name) and not _PURCHASE.search(old_name)
+_SHAPES_UNSEEN = {
+    # Prose. The #469/#471 trap: EXPECTED's own reasons name both predicates.
+    'a docstring naming the predicate':
+        "def report(c):\n"
+        "    \"\"\"Was pl.price_evidence_filter(\'s\') before #554.\"\"\"\n"
+        "    return c.execute('SELECT 1')\n",
+    'a python comment':
+        "def report(c):\n"
+        "    # was pl.purchase_population_filter('s')\n"
+        "    return c.execute('SELECT 1')\n",
+    'a SQL comment inside the query':
+        "def report(c):\n"
+        "    return c.execute('SELECT 1 -- pl.price_evidence_filter(x)')\n",
+    # The pre-#554 name must read as NEITHER half, or a half-finished rename
+    # looks declared.
+    'the old evidence_filter name, as a real call':
+        "def report(c):\n    return c.execute(f\"WHERE {pl.evidence_filter('s')}\")\n",
+    # KNOWN BLIND SPOT, recorded rather than hidden: a string-built lookup.
+    # Nothing in the app does this; if something ever does, this census will
+    # call it clean and only the behavioural tests would notice.
+    'getattr by string (accepted blind spot)':
+        "def report(c):\n"
+        "    pred = getattr(pl, 'price_evidence_filter')\n"
+        "    return c.execute(f\"WHERE {pred('s')}\")\n",
+}
 
-    # ...and the positive control: the real shapes ARE seen, bare and qualified.
-    for shape in ("WHERE {price_evidence_filter('st')}",
-                  "WHERE {pl.price_evidence_filter('st')}",
-                  "WHERE {price_lookup.price_evidence_filter('s')}"):
-        assert _PRICE.search(shape), shape
-    for shape in ("WHERE {purchase_population_filter('')}",
-                  "WHERE {pl.purchase_population_filter('')}",
-                  "WHERE {price_lookup.purchase_population_filter('s2')}"):
-        assert _PURCHASE.search(shape), shape
+
+@pytest.mark.parametrize('shape', sorted(_SHAPES_SEEN))
+def test_the_census_sees_every_call_site_shape(shape):
+    refs = _references(_SHAPES_SEEN[shape])
+    assert refs, f'{shape}: UNSEEN — a new undeclared reader in this shape would pass'
+
+
+@pytest.mark.parametrize('shape', sorted(_SHAPES_UNSEEN))
+def test_the_census_ignores_prose_and_the_old_name(shape):
+    """CONTROL for the battery above: a matcher that fired on everything would
+    satisfy every `_SHAPES_SEEN` case just as well."""
+    src = _SHAPES_UNSEEN[shape]
+    assert not _references(src), f'{shape}: counted as a call site'
+    # ...and prove the snippet is real code the walker did parse, so a
+    # SyntaxError cannot masquerade as "correctly ignored".
+    assert ast.parse(src).body, shape
+
+
+def test_the_old_name_is_gone_from_the_app_entirely():
+    """#554 deleted `evidence_filter` rather than aliasing it. A leftover
+    reference would mean a call site nobody classified — and this census
+    deliberately cannot see the old name, so nothing else would catch it."""
+    leftover = []
+    for rel, path in _py_files():
+        with open(path, encoding='utf-8') as f:
+            tree = ast.parse(f.read())
+        for node in ast.walk(tree):
+            name = (node.attr if isinstance(node, ast.Attribute) else
+                    node.id if isinstance(node, ast.Name) else None)
+            if name == _OLD_NAME:
+                leftover.append(f'{rel}:{node.lineno}')
+    assert not leftover, (
+        f'`{_OLD_NAME}` still referenced in app code: {leftover}. It was split '
+        'into price_evidence_filter / purchase_population_filter (#554).')
 
 
 # ── 2. the behavioural pair ─────────────────────────────────────────────────

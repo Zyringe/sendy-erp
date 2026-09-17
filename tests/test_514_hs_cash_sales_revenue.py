@@ -3,7 +3,8 @@ revenue and real price evidence. Not an "opening balance" (that reading was
 an assumption and was wrong — see the issue).
 
 Covers the ONE shared definition (`sales_filters.revenue_filter`, which
-`price_lookup.evidence_filter` is built directly on top of) and the one
+`price_lookup.price_evidence_filter` / `purchase_population_filter` are both
+built directly on top of) and the one
 revenue surface that hand-types its own copy of the SR/HS exclusion instead
 of importing the shared filter (`models/sales.py::get_trade_dashboard`,
 /trade-dashboard).
