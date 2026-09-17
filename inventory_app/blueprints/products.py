@@ -654,6 +654,7 @@ def product_edit(product_id):
     if request.method == 'POST':
         f = request.form
         try:
+            _cost = float(f.get('cost_price') or 0)
             data = {
                 # Renaming is owned by the Master Naming page (/naming) — keep
                 # the existing name and ignore whatever the read-only field
@@ -669,7 +670,17 @@ def product_edit(product_id):
                 # the real values to 0/False. models.update_product only writes
                 # columns present in this dict, so omitting them preserves
                 # whatever is already in the DB.
-                'cost_price': float(f.get('cost_price') or 0),
+                #
+                # The cost box is the WACC BASIS (ต้นทุนยกมา), not a standalone
+                # number. models/wacc.py seeds the cost ledger from
+                # `opening_cost` and writes `cost_price` back as its own live
+                # output, so writing only `cost_price` (the pre-#570 behaviour)
+                # made a typed cost inert AND let the next recalculate — which
+                # every import runs for every product in the file — silently
+                # revert it. The two move together, and the recalculate below
+                # is what turns the typed number into the real WACC.
+                'cost_price': _cost,
+                'opening_cost': _cost,
                 'base_sell_price': float(f.get('base_sell_price') or 0),
                 'low_stock_threshold': int(f.get('low_stock_threshold') or config.LOW_STOCK_DEFAULT_THRESHOLD),
             }
@@ -680,13 +691,32 @@ def product_edit(product_id):
             data.update(models.weight_edit_fields(f))
         except ValueError as e:
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
-            return render_template('products/form.html', product=f, action='edit', product_id=product_id)
+            # The cost box renders `product.opening_cost`, so the re-render has
+            # to carry the submitted value under that name or the user's typing
+            # comes back blank.
+            resubmit = dict(f)
+            resubmit['opening_cost'] = f.get('cost_price')
+            return render_template('products/form.html', product=resubmit, action='edit', product_id=product_id)
 
         _who = session.get('username') or session.get('display_name') or '?'
+        _basis_moved = float(product['opening_cost'] or 0) != _cost
         models.update_product(product_id, data, source=f'manual:{_who}')
         locations = request.form.getlist('floor_no')
         models.save_product_locations(product_id, locations)
-        flash('แก้ไขสินค้าเรียบร้อย', 'success')
+        if _basis_moved:
+            # Never let a cost edit be silent: rebuild the ledger NOW and say
+            # what it produced. For a product with bills the answer is a blend,
+            # not the typed number, and the operator has to see that.
+            try:
+                _wacc = models.recalculate_product_wacc(product_id)
+            except models.WaccIdentityError:
+                flash('บันทึกต้นทุนยกมาแล้ว แต่คำนวณ WACC ใหม่ไม่สำเร็จ '
+                      '(ที่มาของบรรทัดต้นทุนไม่สมบูรณ์) — ดูหน้าแจ้งเตือนระบบ', 'warning')
+            else:
+                flash(f'แก้ไขสินค้าเรียบร้อย ต้นทุนยกมา ฿{_cost:,.2f} '
+                      f'→ ต้นทุน (WACC) ฿{_wacc:,.2f}', 'success')
+        else:
+            flash('แก้ไขสินค้าเรียบร้อย', 'success')
         return redirect(url_for('products.product_detail', product_id=product_id))
 
     locations = models.get_product_locations(product_id)

@@ -96,7 +96,8 @@ def get_product(product_id, conn=None):
     row = conn.execute("""
         SELECT p.id, p.sku_code, p.sku_code_locked,
                p.product_name, p.units_per_carton, p.units_per_box,
-               p.unit_type, p.hard_to_sell, p.cost_price, p.base_sell_price,
+               p.unit_type, p.hard_to_sell, p.cost_price, p.opening_cost,
+               p.base_sell_price,
                p.low_stock_threshold, p.is_active, p.brand_id, p.category_id,
                p.sub_category, p.series, p.model, p.size,
                p.color_code, p.packaging_th, p.packaging_short, p.condition, p.pack_variant,
@@ -419,7 +420,12 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
 # and a fixed full-column UPDATE wiped it on every save).
 _UPDATABLE_PRODUCT_COLUMNS = (
     'product_name', 'units_per_carton', 'units_per_box', 'unit_type',
-    'hard_to_sell', 'cost_price', 'base_sell_price', 'low_stock_threshold',
+    # `opening_cost` is the WACC BASIS and `cost_price` is WACC's own OUTPUT
+    # (models/wacc.py seeds from the first and writes the second). Before #570
+    # only the output was updatable, so a typed cost was inert and the next
+    # recalculate reverted it. A caller that moves one must move both.
+    'hard_to_sell', 'cost_price', 'opening_cost', 'base_sell_price',
+    'low_stock_threshold',
     'weight_kg', 'weight_source',
 )
 
