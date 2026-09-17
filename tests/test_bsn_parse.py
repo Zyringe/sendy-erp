@@ -150,34 +150,164 @@ def test_parse_sales_qty_unit_bang_separator(sample_sales_file):
     assert e['net']        == 2372.02
 
 
+# ── #525: fixed-width money columns (ส่วนลด/รวมเงิน/ส่วนลดรวม/ยอดขายสุทธิ) ──
+#
+# The four money columns after the VAT-type digit used to be extracted by an
+# unbounded, unanchored regex character class. When ส่วนลด (line discount)
+# was genuinely blank and ส่วนลดรวม (the doc-level discount, reprinted on
+# every line of the bill) held a BAHT amount, the regex could not tell
+# "nothing here" from "a number starts here" and grabbed รวมเงิน (the true
+# line total) into `discount`, then the small doc-level discount into
+# `total`. `net` was always correct — only `discount` and `total` shifted.
+# 176 lines in production were mis-parsed this way, 0 keyed that way in
+# Express (GH #525). The fix reads the four columns at their FIXED CHARACTER
+# POSITIONS relative to the VAT-type digit instead of searching for the next
+# available number — a blank column is then unambiguous by construction.
+#
+# These build their OWN tiny sales file rather than extending the shared
+# SALES_SAMPLE_LINES/sample_sales_file fixture, which several other test
+# files (test_bsn_weekly_import_hardening.py etc.) hard-code an exact row
+# count against — appending rows there breaks tests unrelated to #525.
+
+def _write_sales_csv(tmp_path, name, party_product_txn_lines):
+    """party_product_txn_lines: one (party_line, product_line, txn_line)
+    triple per case, in real-report format (already quote-wrapped)."""
+    lines = [
+        '"(BSN)บจก.บุญสวัสดิ์นำชัย                                                                                             หน้า   :        1"',
+        '"  รายงานประวัติการขาย\xa0แยกตามลูกค้า"',
+        '"รหัสลูกค้า                       ถึง  Zหน้าร้าน                                                                      วันที่ : 15/04/69"',
+        '"วันที่จาก   12\xa0เม.ย.\xa02569         ถึง  31\xa0ธ.ค.\xa02569"',
+    ]
+    for party, product, txn in party_product_txn_lines:
+        lines += [party, product, txn]
+    p = tmp_path / name
+    p.write_text("\n".join(lines) + "\n", encoding="cp874")
+    return str(p)
+
+
+def test_parse_sales_blank_discount_baht_doc_discount_no_comma(tmp_path):
+    """Case 1 — the real corruption shape (IV6701161-1), value NOT
+    comma-grouped. Before the anchor fix this returned
+    discount='3480.00' total=170.00 (shifted). Must return blank discount,
+    total=3480.00 (รวมเงิน), net=3446.26 (ยอดขายสุทธิ, always correct)."""
+    p = _write_sales_csv(tmp_path, "ขาย_525case1.csv", [(
+        '"  ทดสอบ525เคส1\xa0/99ท525001"',
+        '"   ลูกบิด\xa0#130\xa0AC\xa0\'S/D\'\xa0/031บ4525"',
+        '"      09/05/67   IV6900910-  1        24.00 ผง          145.00  1                  3480.00     170.00       3446.26"',
+    )])
+    entries = parse_weekly.parse_sales(p)
+    assert len(entries) == 1
+    e = entries[0]
+    assert e['discount'] == ""
+    assert e['total']    == 3480.00
+    assert e['net']      == 3446.26
+
+
+def test_parse_sales_blank_discount_baht_doc_discount_comma_grouped(tmp_path):
+    """Case 2 — same shape as case 1, but the stolen รวมเงิน value is
+    comma-grouped ('3,480.00'). Proves the fix is column-position based,
+    not a character-class tweak: commit b998736 (2026-05-31, adding ','
+    to the class to fix a DIFFERENT bug) made this exact shape WORSE, not
+    better, because it let the greedy discount slot consume the comma too."""
+    p = _write_sales_csv(tmp_path, "ขาย_525case2.csv", [(
+        '"  ทดสอบ525เคส2\xa0/99ท525002"',
+        '"   ลูกบิด\xa0#130\xa0AC\xa0\'S/D\'\xa0/031บ4526"',
+        '"      09/05/67   IV6900911-  1        24.00 ผง          145.00  1                 3,480.00     170.00       3446.26"',
+    )])
+    entries = parse_weekly.parse_sales(p)
+    assert len(entries) == 1
+    e = entries[0]
+    assert e['discount'] == ""
+    assert e['total']    == 3480.00
+    assert e['net']      == 3446.26
+
+
+def test_parse_sales_blank_discount_percent_doc_discount_control(tmp_path):
+    """Case 3 (control) — blank line discount + a doc-level discount printed
+    as a PERCENT, not baht. Must stay correct: a percent sign is unambiguous
+    on its own, and this shape never triggered the bug."""
+    p = _write_sales_csv(tmp_path, "ขาย_525case3.csv", [(
+        '"  ทดสอบ525เคส3\xa0/99ท525003"',
+        '"   ทดสอบสินค้า525เคส3\xa0/99ท525013"',
+        '"      04/03/69   IV6900912-  1         1.00 ลง         1960.00  1                  1960.00         3%       1901.20"',
+    )])
+    entries = parse_weekly.parse_sales(p)
+    assert len(entries) == 1
+    e = entries[0]
+    assert e['discount'] == ""
+    assert e['total']    == 1960.00
+    assert e['net']      == 1901.20
+
+
+def test_parse_sales_both_discounts_populated_control(tmp_path):
+    """Case 4 (control) — both discount columns genuinely populated with
+    baht amounts (all four numbers present on the line). Must stay correct
+    before and after the fix."""
+    p = _write_sales_csv(tmp_path, "ขาย_525case4.csv", [(
+        '"  ทดสอบ525เคส4\xa0/99ท525004"',
+        '"   ทดสอบสินค้า525เคส4\xa0/99ท525014"',
+        '"      10/04/69   IV6900913-  1         1.00 อน          165.00  1      38.00        127.00      10.00        117.00"',
+    )])
+    entries = parse_weekly.parse_sales(p)
+    assert len(entries) == 1
+    e = entries[0]
+    assert e['discount'] == "38.00"
+    assert e['total']    == 127.00
+    assert e['net']      == 117.00
+
+
 def test_purchase_net_with_comma_doc_discount():
     """Regression (RR6700192): when the doc-level discount column carries a
-    comma-thousands value (e.g. '1,800.00'), the old _DISCOUNT_COL class
-    `[\\d+%.]*` could not match the comma, so it matched empty and `net`
-    (the last group) grabbed the doc-discount column instead of the true
-    final column. Real net is 4358.93 (last col), NOT 1,800.00.
-
-    Stock was unaffected (qty correct) but WACC would be corrupted on
-    re-import. Found via read-only preview of the full purchase history."""
-    from parse_weekly import _TX_PURCH, _clean
-    line = _clean('"        16/05/67   RR6700192        1000.00 มน            '
-                  '9.50  1      50+5%       4512.50   1,800.00       4358.93"')
-    m = _TX_PURCH.search(line)
-    assert m is not None
-    assert m.group(8) == '4512.50'                      # total
-    assert m.group(9).replace(',', '') == '4358.93'     # net = last col
+    comma-thousands value (e.g. '1,800.00'), the pre-b998736 _DISCOUNT_COL
+    class `[\\d+%.]*` could not match the comma, so `net` (the last field)
+    grabbed the doc-discount column instead of the true final column. Real
+    net is 4358.93, NOT 1,800.00. Now driven through the public parse_purchases()
+    API (the fixed-width columns are no longer regex capture groups)."""
+    from parse_weekly import parse_purchases, _clean
+    lines = [
+        '"(BSN)บจก.บุญสวัสดิ์นำชัย                                                                                            หน้า   :        1"',
+        '"  รายงานประวัติการซื้อ\xa0แยกตามผู้จำหน่าย"',
+        '"รหัสผู้จำหน่ายจาก                       ถึง  ไพ                                                                     วันที่ : 24/04/69"',
+        '"วันที่จาก          23\xa0เม.ย.\xa02569        ถึง  31\xa0ธ.ค.\xa02569"',
+        '"  ทดสอบ525comma\xa0/99ค525"',
+        '"   ทดสอบสินค้าcomma\xa0/99ค525001"',
+        '"        16/05/67   RR6700192        1000.00 มน            9.50  1      50+5%       4512.50   1,800.00       4358.93"',
+    ]
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "ซื้อ_sample_comma.csv")
+        with open(p, "w", encoding="cp874") as f:
+            f.write("\n".join(lines) + "\n")
+        entries = parse_purchases(p)
+    assert len(entries) == 1
+    e = entries[0]
+    assert e['total'] == 4512.50
+    assert e['net']   == 4358.93
 
 
 def test_purchase_net_with_plain_doc_discount_still_ok():
     """Control: a no-comma doc-discount middle column (RR6700256) already
-    parsed correctly and must keep doing so after the comma fix."""
-    from parse_weekly import _TX_PURCH, _clean
-    line = _clean('"        21/06/67   RR6700256         300.00 มน           '
-                  '14.00  1      50+5%       1995.00     540.00       1917.86"')
-    m = _TX_PURCH.search(line)
-    assert m is not None
-    assert m.group(8) == '1995.00'                      # total
-    assert m.group(9) == '1917.86'                      # net = last col
+    parsed correctly and must keep doing so."""
+    from parse_weekly import parse_purchases
+    lines = [
+        '"(BSN)บจก.บุญสวัสดิ์นำชัย                                                                                            หน้า   :        1"',
+        '"  รายงานประวัติการซื้อ\xa0แยกตามผู้จำหน่าย"',
+        '"รหัสผู้จำหน่ายจาก                       ถึง  ไพ                                                                     วันที่ : 24/04/69"',
+        '"วันที่จาก          23\xa0เม.ย.\xa02569        ถึง  31\xa0ธ.ค.\xa02569"',
+        '"  ทดสอบ525plain\xa0/99พ525"',
+        '"   ทดสอบสินค้าplain\xa0/99พ525001"',
+        '"        21/06/67   RR6700256         300.00 มน           14.00  1      50+5%       1995.00     540.00       1917.86"',
+    ]
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "ซื้อ_sample_plain.csv")
+        with open(p, "w", encoding="cp874") as f:
+            f.write("\n".join(lines) + "\n")
+        entries = parse_purchases(p)
+    assert len(entries) == 1
+    e = entries[0]
+    assert e['total'] == 1995.00
+    assert e['net']   == 1917.86
 
 
 # ── detect_file_type ─────────────────────────────────────────────────────────
