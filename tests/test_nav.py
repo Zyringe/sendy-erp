@@ -231,3 +231,60 @@ def test_active_link_unknown_or_empty_endpoint_is_none():
     assert active_link('', 'overview') is None
     assert active_link(None, 'overview') is None
     assert active_link('nonexistent.endpoint', 'overview') is None
+
+
+# ── parity: the render gate never offers what the access gate refuses ─────────
+# The two gates are separate on purpose (`permissions.py`, "Two gates, never
+# one"), which is exactly why they can disagree: for eight weeks `staff` could
+# open /ar by URL while the การเงิน section hid the link. Nothing noticed,
+# because nothing knew the two were about the same question. This is the guard
+# that notices.
+
+_NAV_MODULES = ('overview', 'operation', 'trade', 'finance', 'hr',
+                'cashbook', 'data', 'admin_module', 'settings')
+
+
+def _nav_links(role, module=None):
+    return [(section['section'], link['ep'])
+            for section in nav_sections(role, module=module)
+            for link in section['links']]
+
+
+def test_the_drawer_never_offers_a_link_the_gate_refuses():
+    """Every role, every link in the mobile drawer."""
+    import permissions as P
+    offered, refused = 0, []
+    for role in ('admin', 'manager', 'staff', 'shareholder', 'general'):
+        for section, ep in _nav_links(role):
+            offered += 1
+            if not P.may_see(role, ep):
+                refused.append((role, section, ep))
+    assert offered > 100, offered          # control: the sweep really swept
+    assert refused == [], refused
+
+
+def test_the_desktop_sidebar_never_offers_a_link_the_gate_refuses():
+    """Every DESK role, every module.
+
+    `general` is excluded, and only here. `_section_visible` treats a section's
+    `roles=None` as "every role" in the module-scoped view, so the kiosk is
+    handed the full คลังสินค้า/การค้า/นำเข้าข้อมูล content — a frozen port of a
+    sidebar that never had a role gate, documented in that function and
+    captured in `nav_snapshot.json`. It never reaches a user: `inject_auth`
+    blanks `visible_modules` for the kiosk. The drawer test above is where
+    `general` is held to the invariant.
+    """
+    import permissions as P
+    offered, refused = 0, []
+    for role in ('admin', 'manager', 'staff', 'shareholder'):
+        for module in _NAV_MODULES:
+            for section, ep in _nav_links(role, module):
+                offered += 1
+                if not P.may_see(role, ep):
+                    refused.append((role, module, section, ep))
+    assert offered > 100, offered
+    assert refused == [], refused
+    # Control: the exclusion above is real, i.e. the kiosk WOULD fail this.
+    kiosk = [(m, ep) for m in _NAV_MODULES for _s, ep in _nav_links('general', m)
+             if not P.may_see('general', ep)]
+    assert kiosk, 'the general exemption has become unnecessary, delete it'
