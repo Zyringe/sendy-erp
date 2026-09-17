@@ -1,12 +1,12 @@
 """Who may open which page, declared once.
 
-Sendy answers "may this role use this page" in seven places that share no code:
-`_MODULE_DEFS[*].roles` (sidebar only), `nav.py` link roles (sidebar only), a
-hardcoded prefix list in `require_login` (URL access, `staff` only), the
-`_ROLE_POST_OK` allowlists (POST), ten route-local `_require_*` helpers, dozens
-of inline `abort(403)` sites, and inline template flags. Two of them already
-contradict each other on the same feature, and nothing notices, because nothing
-knows the two are about the same question.
+Sendy answered "may this role use this page" in seven places that shared no
+code: `_MODULE_DEFS[*].roles` (sidebar only), `nav.py` link roles (sidebar
+only), a hardcoded prefix list in `require_login` (URL access, `staff` only),
+the `_ROLE_POST_OK` allowlists (POST), ten route-local `_require_*` helpers,
+dozens of inline `abort(403)` sites, and inline template flags. Two of them
+already contradicted each other on the same feature, and nothing noticed,
+because nothing knew the two were about the same question.
 
 This module is the one place that answers it. It is a pure function over
 `(role, endpoint)`: it never reads `session` or `request`. That purity is what
@@ -22,9 +22,12 @@ Two gates, never one (see `CONTEXT.md`, "render gate vs access gate"):
     access gate   may_see()      denies on an unknown endpoint
     render gate   the sidebar    falls back to 'overview', never raises
 
-`require_login` reads this module: it IS the access gate now, and the hardcoded
-prefix list it used to carry is gone. `nav.py` and the Jinja context still hold
-their own role lists, and migrating those two is what is left.
+`require_login` reads this module: it IS the access gate now, the hardcoded
+prefix list it used to carry is gone, and the ten route-local `_require_*`
+helpers are gone with it — every rule they enforced is a row below.
+`tests/test_nav.py` holds the render side to the same answer. What is left is
+for `nav.py` and the Jinja context to READ it rather than be checked against
+it, and for a `may_post` to give the POST allowlists the same treatment.
 """
 
 from typing import NamedTuple
@@ -40,6 +43,12 @@ OFFICE     = frozenset({ADMIN, MANAGER, STAFF, SHAREHOLDER})   # every desk role
 MANAGEMENT = frozenset({ADMIN, MANAGER, SHAREHOLDER})          # no staff
 ADMIN_ONLY = frozenset({ADMIN})
 NOBODY     = frozenset()
+
+# `shareholder` reads everything and writes almost nothing, so several rows are
+# their parent set minus her. Derived rather than re-typed, so the relationship
+# is visible and the two cannot drift apart.
+OPERATORS     = OFFICE - {SHAREHOLDER}       # admin, manager, staff
+ADMIN_MANAGER = MANAGEMENT - {SHAREHOLDER}   # admin, manager
 
 # Checked before any role logic, so these need no session at all.
 PUBLIC = frozenset({
@@ -86,10 +95,16 @@ class Access(NamedTuple):
 # and `init_permissions()` refuses to boot.
 ROOT = '(app)'
 
+# One wording, four owners. `accounting`, `reconcile`, `vat_sub` and the AR
+# follow-up pages all refuse with these exact words today, from four separate
+# call sites; the string is shared here rather than re-typed so they cannot
+# drift apart.
+ADMIN_OR_MANAGER = 'ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager'
+
 AREAS = {
     ROOT:              Access(ALL_ROLES,  'login, healthcheck, service worker, the dashboard'),
     'accounting':      Access(MANAGEMENT, 'revenue, P&L, cash flow; the AR pages are excepted below',
-                              msg='ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager'),
+                              msg=ADMIN_OR_MANAGER),
     'admin':           Access(ADMIN_ONLY, 'user accounts, DB upload/download, backups',
                               deny=FORBID),
     'bsn':             Access(OFFICE,     'Express import and code mapping; staff does the importing'),
@@ -103,7 +118,8 @@ AREAS = {
     'hr':              Access(MANAGEMENT, 'payroll, leave, advances, employee records',
                               msg='ไม่มีสิทธิ์เข้าถึงระบบบุคลากร'),
     'inventory':       Access(OFFICE,     'stock adjustments, unit conversions, alerts'),
-    'labels':          Access(OFFICE,     'label printing; the admin-only management pages keep their own guard'),
+    'labels':          Access(OFFICE,     'label printing; the four admin-only management pages are '
+                              'excepted below'),
     'marketplace':     Access(OFFICE,     'order reconciliation and IV matching'),
     'me':              Access(ALL_ROLES,  'self-service: own leave, own payslip, own password'),
     'mobile':          Access(ALL_ROLES,  'the PWA; general is a stock-lookup kiosk and reaches only the two search pages'),
@@ -111,10 +127,13 @@ AREAS = {
                               msg='ไม่มีสิทธิ์เข้าถึงระบบตั้งชื่อสินค้า'),
     'partners':        Access(OFFICE,     'customers and suppliers'),
     'products':        Access(OFFICE,     'the catalog; cost history is excepted below'),
-    'reconcile':       Access(OFFICE,     'the Express-to-Sendy reconciler'),
+    'reconcile':       Access(MANAGEMENT, 'the Express-to-Sendy reconciler: deleting a doc\'s ledger is not '
+                              'staff work, and all four endpoints were already manager-gated in the route',
+                              msg=ADMIN_OR_MANAGER),
     'review':          Access(OFFICE,     'the bill-checking queue'),
     'sales':           Access(OFFICE,     'sales and purchase documents; the payment pages are excepted below'),
-    'vat_sub':         Access(OFFICE,     'the VAT sub-book; its write routes keep their own manager guard'),
+    'vat_sub':         Access(OFFICE,     'the VAT sub-book; its four READ pages are excepted below and its '
+                              'writes are admin/manager by POST allowlist'),
 }
 
 PAGES = {
@@ -138,8 +157,96 @@ PAGES = {
         Access(OFFICE, 'open to staff today and intended to stay open'),
     'accounting.express_ar_customer':
         Access(OFFICE, 'the per-customer AR drill-down staff needs before phoning'),
-    'accounting.ar_followup_customer':
-        Access(OFFICE, 'the follow-up workspace; staff may log a call, not delete one'),
+
+    # ── the ten route-local guards, moved here ───────────────────────────────
+    # accounting: the AR follow-up LOG. Both are POST-only, so an ADMIN_ONLY
+    # see-set costs no page anybody opens; it is where `_arf_require_admin`
+    # used to live, and it is the one place the deletion rule can be written
+    # down. Plan §5: `delete_outreach` filters on `id` alone with no
+    # `created_by` check, so a second account could hide someone else's
+    # promise-to-pay from every reader. Creating is what PR 3b opens to staff;
+    # deleting stays here until it can be scoped to the rows a user wrote.
+    'accounting.ar_followup_log_new':
+        Access(ADMIN_ONLY, 'writes a collection-call record', msg='ต้องใช้บัญชี Admin'),
+    'accounting.ar_followup_log_delete':
+        Access(ADMIN_ONLY, 'hides a collection-call record from every UI reader',
+               msg='ต้องใช้บัญชี Admin'),
+
+    # Each row below replaces a `_require_*` helper that lived in a blueprint
+    # and fired INSIDE the route. Same roles, same refusal shape, same words —
+    # `tests/test_permissions_route_guards.py` holds the before/after matrix
+    # that proves it. They are exceptions to their blueprint's default, which
+    # is why they need rows at all; the guards that merely restated their
+    # blueprint were deleted outright rather than written down twice.
+
+    # labels: designing a label and editing the company block is admin work
+    # (plan decision D6); printing is the counter, minus the shareholder.
+    'labels.manage':
+        Access(ADMIN_ONLY, 'the label designer and its product list', deny=FORBID),
+    'labels.edit':
+        Access(ADMIN_ONLY, 'edits one product\'s label data', deny=FORBID),
+    'labels.bulk_size':
+        Access(ADMIN_ONLY, 'sets the label size across a filtered selection', deny=FORBID),
+    'labels.company_block':
+        Access(ADMIN_ONLY, 'the company block printed on every label', deny=FORBID),
+    'labels.print_page':
+        Access(OPERATORS, 'printing a label is counter work; the shareholder does not print',
+               deny=FORBID),
+    'labels.search_api':
+        Access(OPERATORS, 'the print page\'s own product search, same audience as the page',
+               deny=FORBID),
+
+    # hr: the area is MANAGEMENT because the shareholder reads payroll. These
+    # eleven WRITE the employee master, leave, or a payroll run.
+    #
+    # ⚠ `hr.payroll_item_pay` / `hr.payroll_item_unpay` are deliberately NOT
+    # here. They carried `_require_pay_role`, whose comment read: "Deliberately
+    # NOT `_require_admin_or_manager` — that gate excludes shareholder, and the
+    # mother (a shareholder) must be able to record salary transfers she
+    # makes." That set IS the hr default, so the decision survives by the rows
+    # being absent, and adding them would only restate the blueprint.
+    #
+    # ⚠ `hr.employee_entitlements` is not here either: its guard sat inside the
+    # POST branch, so manager and shareholder READ it today. The POST stays
+    # admin-only by omission from the POST allowlists, pinned by
+    # `test_employee_entitlements_post_is_still_admin_only`.
+    'hr.employee_new':        Access(ADMIN_ONLY, 'creates an employee record', deny=FORBID),
+    'hr.employee_edit':       Access(ADMIN_ONLY, 'edits an employee record', deny=FORBID),
+    'hr.employee_salary_add': Access(ADMIN_ONLY, 'writes a salary history row', deny=FORBID),
+    'hr.employee_wht_add':    Access(ADMIN_ONLY, 'writes a withholding-tax row', deny=FORBID),
+    'hr.leave_new':           Access(ADMIN_ONLY, 'books leave on someone else\'s behalf', deny=FORBID),
+    'hr.leave_edit':          Access(ADMIN_ONLY, 'edits a booked leave row', deny=FORBID),
+    'hr.leave_delete':        Access(ADMIN_ONLY, 'deletes a leave row', deny=FORBID),
+    'hr.payroll_generate':    Access(ADMIN_ONLY, 'creates a payroll run', deny=FORBID),
+    'hr.payroll_finalize':    Access(ADMIN_ONLY, 'closes a payroll run', deny=FORBID),
+    'hr.payroll_reopen':      Access(ADMIN_ONLY, 'reopens a closed payroll run', deny=FORBID),
+    'hr.payroll_item_edit':   Access(ADMIN_ONLY, 'edits one payslip line', deny=FORBID),
+    'hr.leave_approve':
+        Access(ADMIN_MANAGER, 'approving leave is line-management work, not the shareholder\'s',
+               deny=FORBID),
+    'hr.leave_reject':
+        Access(ADMIN_MANAGER, 'rejecting leave is line-management work, not the shareholder\'s',
+               deny=FORBID),
+
+    # commission: the area is MANAGEMENT for the dashboards; these ten are the
+    # RULES the engine computes from, and only admin edits those.
+    'commission.commission_overrides_list':   Access(ADMIN_ONLY, 'commission rule CRUD', deny=FORBID),
+    'commission.commission_overrides_new':    Access(ADMIN_ONLY, 'commission rule CRUD', deny=FORBID),
+    'commission.commission_overrides_edit':   Access(ADMIN_ONLY, 'commission rule CRUD', deny=FORBID),
+    'commission.commission_overrides_toggle': Access(ADMIN_ONLY, 'commission rule CRUD', deny=FORBID),
+    'commission.commission_overrides_delete': Access(ADMIN_ONLY, 'commission rule CRUD', deny=FORBID),
+    'commission.commission_reassign_list':    Access(ADMIN_ONLY, 'customer-reassignment rule CRUD', deny=FORBID),
+    'commission.commission_reassign_new':     Access(ADMIN_ONLY, 'customer-reassignment rule CRUD', deny=FORBID),
+    'commission.commission_reassign_edit':    Access(ADMIN_ONLY, 'customer-reassignment rule CRUD', deny=FORBID),
+    'commission.commission_reassign_toggle':  Access(ADMIN_ONLY, 'customer-reassignment rule CRUD', deny=FORBID),
+    'commission.commission_reassign_delete':  Access(ADMIN_ONLY, 'customer-reassignment rule CRUD', deny=FORBID),
+
+    # vat_sub: the area is OFFICE so a staff POST keeps meeting the POST
+    # allowlist, but the four pages a browser can open were manager-gated.
+    'vat_sub.index':        Access(MANAGEMENT, 'cost-sensitive substitution curation', msg=ADMIN_OR_MANAGER),
+    'vat_sub.product_view': Access(MANAGEMENT, 'cost-sensitive substitution curation', msg=ADMIN_OR_MANAGER),
+    'vat_sub.planning':     Access(MANAGEMENT, 'paper-stock planning off the VAT book', msg=ADMIN_OR_MANAGER),
+    'vat_sub.group_detail': Access(MANAGEMENT, 'cost-sensitive substitution curation', msg=ADMIN_OR_MANAGER),
 
     # ── cost and margin stay off the staff desk ──────────────────────────────
     'products.product_cost_history':
@@ -229,10 +336,17 @@ def refusal(role, endpoint):
     Pure, like `may_see`. It DESCRIBES the refusal; `access_control` is what
     turns it into an abort or a redirect. That split is why this module still
     needs no request context and the whole table stays sweepable in one test.
+
+    The AREA answers first, and only for a role the area itself excludes.
+    Those two refusals are different sentences: "HR is not part of your app"
+    (staff, and it gets HR's own words) versus "this page inside HR is not
+    yours" (manager, and it gets the 403 the route used to raise). Reading the
+    page row for both would have handed `staff` a bare 403 on 29 pages that
+    flash a Thai explanation today, and would have 403'd the kiosk — which has
+    no chrome to render one — on all of them.
     """
-    row = PAGES.get(endpoint)
-    if row is None:
-        row = AREAS.get(area_of(endpoint))
+    area = AREAS.get(area_of(endpoint))
+    row = area if (area is not None and role not in area.see) else PAGES.get(endpoint) or area
     if row is None:
         # An undeclared blueprint. A declaration bug rather than a permission
         # decision, and `init_permissions` refuses to boot on one, so this is

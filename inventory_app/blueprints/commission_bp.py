@@ -499,11 +499,6 @@ def commission_export():
 # (commission._load_overrides has no cache), so writes here are picked up
 # automatically (multi-worker safe). clear_override_cache() is a retained no-op.
 
-def _require_admin():
-    if session.get('role') != 'admin':
-        abort(403)
-
-
 def _safe_clear_override_cache():
     """Best-effort clear_override_cache() after a write. Now a no-op (the engine
     reads overrides fresh per computation), kept so the write paths stay
@@ -517,14 +512,12 @@ def _safe_clear_override_cache():
 
 @bp_commission.route('/commission/overrides')
 def commission_overrides_list():
-    _require_admin()
     rules = models.list_commission_overrides(active_only=False)
     return render_template('commission_overrides_list.html', rules=rules)
 
 
 @bp_commission.route('/commission/overrides/new', methods=['GET', 'POST'])
 def commission_overrides_new():
-    _require_admin()
     if request.method == 'POST':
         result = models.create_commission_override(request.form)
         if result['ok']:
@@ -545,7 +538,6 @@ def commission_overrides_new():
 
 @bp_commission.route('/commission/overrides/<int:override_id>/edit', methods=['GET', 'POST'])
 def commission_overrides_edit(override_id):
-    _require_admin()
     rule = models.get_commission_override(override_id)
     if not rule:
         abort(404)
@@ -570,7 +562,6 @@ def commission_overrides_edit(override_id):
 
 @bp_commission.route('/commission/overrides/<int:override_id>/toggle', methods=['POST'])
 def commission_overrides_toggle(override_id):
-    _require_admin()
     result = models.toggle_commission_override(override_id)
     if result['ok']:
         _safe_clear_override_cache()
@@ -583,7 +574,6 @@ def commission_overrides_toggle(override_id):
 
 @bp_commission.route('/commission/overrides/<int:override_id>/delete', methods=['POST'])
 def commission_overrides_delete(override_id):
-    _require_admin()
     result = models.delete_commission_override(override_id)
     if result['ok']:
         _safe_clear_override_cache()
@@ -631,7 +621,6 @@ def _reassign_customer_choices():
 
 @bp_commission.route('/commission/reassign')
 def commission_reassign_list():
-    _require_admin()
     return render_template(
         'commission_reassign_list.html',
         rules=models.list_customer_reassignments(active_only=False),
@@ -640,7 +629,6 @@ def commission_reassign_list():
 
 @bp_commission.route('/commission/reassign/new', methods=['GET', 'POST'])
 def commission_reassign_new():
-    _require_admin()
     if request.method == 'POST':
         result = models.create_customer_reassignment(request.form)
         if result['ok']:
@@ -668,7 +656,6 @@ def commission_reassign_new():
 
 @bp_commission.route('/commission/reassign/<int:reassign_id>/edit', methods=['GET', 'POST'])
 def commission_reassign_edit(reassign_id):
-    _require_admin()
     rule = models.get_customer_reassignment(reassign_id)
     if not rule:
         abort(404)
@@ -693,7 +680,6 @@ def commission_reassign_edit(reassign_id):
 
 @bp_commission.route('/commission/reassign/<int:reassign_id>/toggle', methods=['POST'])
 def commission_reassign_toggle(reassign_id):
-    _require_admin()
     result = models.toggle_customer_reassignment(reassign_id)
     if result['ok']:
         flash(f'กฎ #{reassign_id} → {"active" if result["is_active"] else "inactive"}', 'success')
@@ -705,7 +691,6 @@ def commission_reassign_toggle(reassign_id):
 
 @bp_commission.route('/commission/reassign/<int:reassign_id>/delete', methods=['POST'])
 def commission_reassign_delete(reassign_id):
-    _require_admin()
     result = models.delete_customer_reassignment(reassign_id)
     if result['ok']:
         flash(f'ลบกฎ #{reassign_id} เรียบร้อย', 'success')

@@ -134,7 +134,7 @@ _ROLE_POST_OK = {
     # entry (Phase 2 — manager + shareholder gain add/edit/delete on
     # cashbook_transactions, salary pay-event rows stay locked) and salary
     # pay-event posting (Phase 4 — she must be able to record real transfers
-    # she makes; _require_pay_role in blueprints/hr.py mirrors this set).
+    # she makes; `permissions.AREAS['hr']` is what lets her GET them).
     'shareholder': frozenset([
         'logout',
         'toggle_book',
