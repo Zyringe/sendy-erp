@@ -35,11 +35,11 @@ MECH_B_ID = 36661        # IV6900395-1: pre-comma-fix row, correct discount is '
 CONTROL_ID = 19783       # IV6801757-1: already-faithful line, must never move
 
 EXPECTED = {
-    MECH_A_ID:  {'old_discount': '480.00',  'old_total': 804.0, 'correct_discount': '',         'correct_total': 480.0,  'net': 0.0},
-    MECH_A_ID2: {'old_discount': '3480.00', 'old_total': 170.0, 'correct_discount': '',         'correct_total': 3480.0, 'net': 3446.26},
-    MECH_B_ID:  {'old_discount': '',        'old_total': 1429.0, 'correct_discount': '1,429.00', 'correct_total': 5991.0, 'net': 5991.0},
+    MECH_A_ID:  {'old_discount': '480.00',  'old_total': 804.0, 'correct_discount': '',         'correct_total': 480.0,  'net': 0.0,     'qty': 3.0},
+    MECH_A_ID2: {'old_discount': '3480.00', 'old_total': 170.0, 'correct_discount': '',         'correct_total': 3480.0, 'net': 3446.26, 'qty': 24.0},
+    MECH_B_ID:  {'old_discount': '',        'old_total': 1429.0, 'correct_discount': '1,429.00', 'correct_total': 5991.0, 'net': 5991.0,  'qty': 14.0},
 }
-CONTROL_EXPECTED = {'discount': '', 'total': 7477.0, 'net': 7477.0}
+CONTROL_EXPECTED = {'discount': '', 'total': 7477.0, 'net': 7477.0, 'qty': 50.0}
 
 
 @pytest.fixture
@@ -97,8 +97,12 @@ def test_forward_corrects_mechanism_a_rows(db):
         row = _row(db, row_id)
         assert row['discount'] == exp['correct_discount']
         assert row['total'] == exp['correct_total']
-        # net/qty/unit_price/product_id never touched by this migration
+        # net/qty/unit_price/product_id never touched by this migration —
+        # net and qty pinned explicitly (the postcondition asserts both
+        # inside the migration itself; pin them here too, not just via the
+        # whole-table sweep in test_forward_touches_no_row_count_no_other_column)
         assert row['net'] == exp['net']
+        assert row['qty'] == exp['qty']
 
 
 def test_forward_restores_mechanism_b_discount_not_blank(db):
@@ -110,6 +114,7 @@ def test_forward_restores_mechanism_b_discount_not_blank(db):
     assert row['discount'] == exp['correct_discount']
     assert row['total'] == exp['correct_total']
     assert row['net'] == exp['net']
+    assert row['qty'] == exp['qty']
 
 
 def test_forward_leaves_an_already_faithful_row_untouched(db):
@@ -120,6 +125,7 @@ def test_forward_leaves_an_already_faithful_row_untouched(db):
     assert row['discount'] == CONTROL_EXPECTED['discount']
     assert row['total'] == CONTROL_EXPECTED['total']
     assert row['net'] == CONTROL_EXPECTED['net']
+    assert row['qty'] == CONTROL_EXPECTED['qty']
 
 
 def test_forward_touches_no_row_count_no_other_column(db):
@@ -131,7 +137,6 @@ def test_forward_touches_no_row_count_no_other_column(db):
     _apply(db, MIG_184)
     after_count = _row_count(db)
     assert after_count == before_count
-    changed_ids = set(EXPECTED)
     for row_id, before in before_products.items():
         after = dict(db.execute(
             "SELECT id, product_id, qty, unit_price, vat_type, date_iso, doc_no, bsn_code, net "
@@ -140,20 +145,58 @@ def test_forward_touches_no_row_count_no_other_column(db):
         assert after == before, f"row {row_id} moved a column this migration must never touch"
 
 
-def test_forward_writes_exactly_176_audit_rows(db):
-    before = db.execute(
+_AUDIT_MARK = "GH #525:%"
+
+
+def _audit_counts(conn):
+    total = conn.execute(
         "SELECT COUNT(*) FROM audit_log WHERE table_name='sales_transactions'"
     ).fetchone()[0]
-    _apply(db, MIG_184)
-    after = db.execute(
+    marked = conn.execute(
         "SELECT COUNT(*) FROM audit_log WHERE table_name='sales_transactions' "
-        "AND change_reason LIKE 'GH #525:%'"
+        "AND change_reason LIKE ?", (_AUDIT_MARK,)
     ).fetchone()[0]
-    assert after - 0 == 176   # every audit row from this migration carries its own marker
-    total_after = db.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE table_name='sales_transactions'"
-    ).fetchone()[0]
-    assert total_after == before + 176
+    return total, marked
+
+
+def test_forward_writes_176_more_audit_rows_than_before(db):
+    """DELTA, not an absolute count — a DB whose audit_log ALREADY carries
+    184's own marked rows (e.g. a dev DB refreshed from a prod snapshot
+    taken after 184 shipped: this test's own `db` fixture rolls back the
+    DATA but audit_log is append-only, so those old rows survive) must not
+    make this guard go red the moment the thing it guards is finally true.
+    See test_forward_audit_delta_survives_pre_existing_184_history for the
+    world where before_marked is already 176, not 0."""
+    before_total, before_marked = _audit_counts(db)
+    _apply(db, MIG_184)
+    after_total, after_marked = _audit_counts(db)
+    assert after_total == before_total + 176
+    assert after_marked == before_marked + 176
+
+
+def test_forward_audit_delta_survives_pre_existing_184_history(db):
+    """Same guard as above, run in the world it must also hold in: seed 176
+    marked audit rows BEFORE applying (standing in for a real prior run
+    whose audit trail outlived a later rollback), confirm the seed landed
+    (control), then assert the delta is still +176 — an absolute
+    `after_marked == 176` would read 352 here and fail for no real reason."""
+    for i in range(176):
+        db.execute(
+            "INSERT INTO audit_log (table_name, row_id, action, changed_fields, "
+            "change_source, change_reason) VALUES "
+            "('sales_transactions', ?, 'UPDATE', '{}', 'manual', "
+            "'GH #525: pre-existing history from a prior real run')",
+            (900000 + i,)
+        )
+    db.commit()
+    before_total, before_marked = _audit_counts(db)
+    assert before_marked == 176   # CONTROL — the seed actually landed
+
+    _apply(db, MIG_184)
+
+    after_total, after_marked = _audit_counts(db)
+    assert after_total == before_total + 176
+    assert after_marked == before_marked + 176   # 352, not a hardcoded 176
 
 
 def test_forward_is_idempotent_second_run_changes_nothing(db):
@@ -208,6 +251,30 @@ def test_precondition_aborts_on_unexpected_drift(db):
         db.execute("SELECT COUNT(*) FROM migration_184_snapshot").fetchone()
 
 
+def test_precondition_aborts_on_a_missing_row_does_not_silently_skip_it(db):
+    """A DELETE'd row is a DIFFERENT drift shape from a hand-edited value —
+    the migration header used to claim this was a no-op ("no-op for any id
+    that does not exist"); an outside review proved that wrong by deleting a
+    row and getting an ABORT. This pins the corrected, actually-shipped
+    behaviour: missing is drift too, and the whole migration stops."""
+    db.execute("DELETE FROM sales_transactions WHERE id=?", (MECH_B_ID,))
+    db.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match='precondition FAILED'):
+        db.executescript(MIG_184.read_text())
+    db.rollback()
+
+    # Nothing else committed either — the aborted migration touched no row.
+    assert db.execute(
+        "SELECT COUNT(*) FROM sales_transactions WHERE id=?", (MECH_B_ID,)
+    ).fetchone()[0] == 0   # still deleted, not resurrected
+    other = _row(db, MECH_A_ID)
+    assert other['discount'] == EXPECTED[MECH_A_ID]['old_discount']
+    assert other['total'] == EXPECTED[MECH_A_ID]['old_total']
+    with pytest.raises(sqlite3.OperationalError, match='no such table'):
+        db.execute("SELECT COUNT(*) FROM migration_184_snapshot").fetchone()
+
+
 # ── rollback ────────────────────────────────────────────────────────────────
 
 def test_rollback_restores_the_original_wrong_values(db):
@@ -218,6 +285,7 @@ def test_rollback_restores_the_original_wrong_values(db):
         assert row['discount'] == exp['old_discount']
         assert row['total'] == exp['old_total']
         assert row['net'] == exp['net']
+        assert row['qty'] == exp['qty']
     with pytest.raises(sqlite3.OperationalError, match='no such table'):
         db.execute("SELECT COUNT(*) FROM migration_184_snapshot").fetchone()
 
@@ -228,3 +296,4 @@ def test_rollback_does_not_move_an_already_faithful_row(db):
     row = _row(db, CONTROL_ID)
     assert row['discount'] == CONTROL_EXPECTED['discount']
     assert row['total'] == CONTROL_EXPECTED['total']
+    assert row['qty'] == CONTROL_EXPECTED['qty']

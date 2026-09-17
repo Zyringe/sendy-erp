@@ -61,17 +61,25 @@
 -- then writes one audit_log row per changed line -- the intended paper
 -- trail (confirm 176 rows land there after applying).
 --
--- RE-RUNNABLE / ENVIRONMENT-SENSITIVE: the UPDATE's WHERE clause matches
--- `id` AND doc_no AND bsn_code AND the OLD (still-wrong) discount/total, so
--- it is a no-op on a DB that already holds the corrected values (a second
--- run, or a DB where the fix already landed some other way), and it is also
--- a no-op for any id that does not exist on a DB that never had this row.
--- It does not assume every environment holds all 176 rows.
+-- RE-RUNNABLE: the UPDATE's WHERE clause matches `id` AND doc_no AND
+-- bsn_code AND the OLD (still-wrong) discount/total, so it is a no-op on a
+-- DB that already holds the corrected values (a second run, or a DB where
+-- the fix already landed some other way).
+--
+-- ⚠ NOT environment-tolerant of a MISSING row -- corrected 2026-09-17,
+-- proven wrong by an outside review that deleted id 40054 and got an ABORT,
+-- not a no-op. An id from the 176 that does not exist in sales_transactions
+-- IS unexpected drift, and the precondition below treats it exactly like
+-- any other drift: it ABORTs the whole migration rather than silently
+-- skipping the row. This migration does NOT tolerate running against a DB
+-- that never had one of the 176 rows at all -- recovery in that case is to
+-- confirm the id is genuinely gone on purpose (not a bad id list) and drop
+-- it from the VALUES block, re-deriving the rest from the DBF unchanged.
 --
 -- PRECONDITION: ABORT if any of the 176 ids is in neither of the two
 -- expected states ("still holds the old wrong value" or "already holds the
 -- correct value") -- i.e. it drifted to a THIRD state between this file
--- being written and it being applied (row deleted, doc_no/bsn_code changed,
+-- being written and it being applied (row MISSING, doc_no/bsn_code changed,
 -- or discount/total hand-edited to something else). That is unexpected and
 -- must stop the whole migration rather than silently overwrite or silently
 -- skip a row nobody has looked at.
