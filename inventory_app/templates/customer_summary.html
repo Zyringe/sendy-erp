@@ -159,6 +159,24 @@
           <div class="small">{{ ci.address }}</div>
         </div>
         {% endif %}
+        {# The curated Google-Map pin (migration 053, loaded by
+           scripts/import_customer_geomap.py). The mobile page has shown this
+           since it landed; desktop had no read of lat/lng at all, so a pin the
+           sales team had already placed was invisible here. `ci` comes from
+           SELECT * on customers, so no model change was needed. #}
+        {% if ci.lat and ci.lng %}
+        <div>
+          <div class="text-subtle small mb-1">แผนที่</div>
+          <a data-customer-map-link
+             href="https://www.google.com/maps?q={{ ci.lat }},{{ ci.lng }}"
+             class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener">
+            <i class="bi bi-geo-alt me-1"></i>เปิดแผนที่
+          </a>
+          {% if ci.gmap_name %}
+          <div class="text-subtle small mt-1">{{ ci.gmap_name }}</div>
+          {% endif %}
+        </div>
+        {% endif %}
       {% endif %}
     </div>
   </div>
